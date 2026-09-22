@@ -22,7 +22,6 @@ from absl import logging
 import psutil
 import torch
 from torch.utils._pytree import tree_flatten
-from torch_tpu._internal import sync as tpu_sync
 from torch_tpu._internal.benchmarks import xprof_adapter
 
 _BYTES_IN_MB = 1024 * 1024
@@ -400,6 +399,8 @@ def synchronize(
     if tensor_to_sync is None:
       torch.accelerator.synchronize()
     else:
+      from torch_tpu._internal import sync as tpu_sync  # pylint: disable=g-import-not-at-top
+
       # TODO(b/507181043): Investigate why sync(None, wait=True) doesn't work.
       tensors = _collect_tensors(tensor_to_sync)
       # TODO(lukeboyer): Flip to global sync after cl/964180694.
@@ -448,6 +449,53 @@ def get_peak_host_compilation_memory_mb(device: str) -> float | None:
   return perf_stats.peak_compilation_host_memory_bytes / _BYTES_IN_MB
 
 
+def configure_inductor_for_benchmarks() -> None:
+  """Configures PyTorch Inductor and Triton overrides for benchmark compilation."""
+  # Spawning multiple worker processes for Inductor compilation
+  # takes several seconds per subprocess and can leave worker processes
+  # initializing during benchmark timing steps.
+  torch._inductor.config.compile_threads = 1
+  if getattr(torch._inductor.config.cpp, 'cxx', (None,))[0] is None:
+    found_cxx = False
+    for cxx_candidate in ('/usr/bin/clang++', '/usr/bin/g++'):
+      if os.path.exists(cxx_candidate):
+        setattr(torch._inductor.config.cpp, 'cxx', (None, cxx_candidate))
+        found_cxx = True
+        break
+    if not found_cxx:
+      setattr(torch._inductor.config.cpp, 'vec_isa_ok', False)
+  try:
+    from torch._inductor.codegen.triton import TritonOverrides  # pylint: disable=g-import-not-at-top
+
+    TritonOverrides.isinf = staticmethod(
+        lambda x: (
+            f'libdevice.isinf(({x}).to(tl.float32) if ({x}).dtype !='
+            f' tl.float64 else ({x})).to(tl.int1)'
+        )
+    )
+    TritonOverrides.isnan = staticmethod(
+        lambda x: (
+            f'libdevice.isnan(({x}).to(tl.float32) if ({x}).dtype !='
+            f' tl.float64 else ({x})).to(tl.int1)'
+        )
+    )
+  except ImportError:
+    pass
+  try:
+    import importlib  # pylint: disable=g-import-not-at-top
+
+    masking_utils = importlib.import_module('transformers.masking_utils')
+    setattr(
+        masking_utils,
+        'is_tracing',
+        lambda tensor=None: (
+            torch.compiler.is_exporting() or torch.jit.is_tracing()
+        ),
+    )
+  except ImportError:
+    pass
+
+
 def torch_compile(
     func: Callable[..., Any],
     device: str,
@@ -469,6 +517,7 @@ def torch_compile(
     ValueError: If the device is not supported.
   """
   if device in ('cuda', 'cpu'):
+    configure_inductor_for_benchmarks()
     func = torch.compile(func, backend='inductor', fullgraph=fullgraph)
   elif device in ('tpu', 'xla_cuda', 'xla_cpu'):
     if dynamic:

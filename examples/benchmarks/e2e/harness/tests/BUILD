@@ -157,6 +157,7 @@ torch_tpu_py_test(
     name = "compile_test",
     srcs = ["compile_test.py"],
     deps = [
+        "//examples/benchmarks/e2e:device_utils",
         "//examples/benchmarks/e2e/harness:compile",
         "//examples/benchmarks/e2e/harness:target",
         "//shims/absl_py/testing:absltest",

@@ -306,7 +306,7 @@ struct TORCH_API TpuHooksInterface : public at::PrivateUse1HooksInterface {
   }
 
   bool hasPrimaryContext(c10::DeviceIndex device_index) const override {
-    return PjrtBackend::GetInstance().GetClient() != nullptr;
+    return PjrtBackend::GetInstance().IsInitialized();
   }
 
   bool isPinnedPtr(const void* data) const override {

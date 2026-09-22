@@ -26,10 +26,7 @@ from absl import flags
 from absl import logging
 from tensorboardX import writer
 import torch
-from torch_tpu._internal import execution_mode
 from torch_tpu._internal import optim
-from torch_tpu._internal import testing as tt_testing
-from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from examples.benchmarks.e2e import benchmark_utils
 from examples.benchmarks.e2e import common
 from examples.benchmarks.e2e import device_utils
@@ -38,8 +35,6 @@ from examples.benchmarks.e2e import model_utils
 from examples.benchmarks.e2e.harness import metrics as metrics_lib
 from torch_tpu._internal.benchmarks import xprof_adapter
 from tests.distributed import distributed_utils
-
-EagerMode: TypeAlias = execution_mode.EagerMode
 
 
 WEIGHTS_DTYPE = flags.DEFINE_string(
@@ -189,37 +184,47 @@ def _run_mode_context(
   Yields:
     None
   """
-  original_eager_mode = execution_mode.eager_mode
-  new_eager_mode = None
+  original_eager_mode = None
+  execution_mode = None
+  if device.type == "tpu":
+    from torch_tpu._internal import execution_mode as tpu_execution_mode  # pylint: disable=g-import-not-at-top
 
-  match run_mode:
-    case common.RunMode.EAGER_DEFAULT:
-      new_eager_mode = EagerMode.DEFER_NEVER
+    execution_mode = tpu_execution_mode
+    EagerMode = execution_mode.EagerMode
+    original_eager_mode = execution_mode.eager_mode
+    new_eager_mode = None
 
-    case common.RunMode.EAGER_OPTIMIZED:
-      new_eager_mode = EagerMode.DEFER_AND_FUSE
+    match run_mode:
+      case common.RunMode.EAGER_DEFAULT:
+        new_eager_mode = EagerMode.DEFER_NEVER
 
-    case common.RunMode.EAGER_DEFER_NEVER_AND_LAUNCH_BLOCKING:
-      new_eager_mode = EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
+      case common.RunMode.EAGER_OPTIMIZED:
+        new_eager_mode = EagerMode.DEFER_AND_FUSE
 
-    case common.RunMode.COMPILED:
-      pass  # Explicitly do nothing
+      case common.RunMode.EAGER_DEFER_NEVER_AND_LAUNCH_BLOCKING:
+        new_eager_mode = EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
 
-    case _:
-      raise ValueError(f"Unexpected run mode: {run_mode}")
+      case common.RunMode.COMPILED:
+        pass  # Explicitly do nothing
 
-  if new_eager_mode is not None:
-    execution_mode.eager_mode = new_eager_mode
+      case _:
+        raise ValueError(f"Unexpected run mode: {run_mode}")
+
+    if new_eager_mode is not None:
+      execution_mode.eager_mode = new_eager_mode
 
   try:
     yield
   finally:
     # Change back to the original value.
-    execution_mode.eager_mode = original_eager_mode
+    if execution_mode is not None and original_eager_mode is not None:
+      execution_mode.eager_mode = original_eager_mode
     # pylint: disable=protected-access
     if clear_device_cache and device.type != "cpu":
       device_utils.clear_cache(device.type)
       if device.type == "tpu":
+        from torch_tpu._internal import testing as tt_testing  # pylint: disable=g-import-not-at-top
+
         tt_testing.reset_eager_state()
     if common.is_torch_compile(run_mode):
       torch._dynamo.reset()
@@ -244,22 +249,19 @@ _TENSORBOARD_EXPORTED = False
 def _export_to_tensorboard(
     result: metrics_lib.MetricsInterface,
     tblog_dir: str,
+    *,
+    test_method_name: str | None = None,
+    benchmark_name: str | None = None,
 ) -> None:
   """Exports benchmark results to TensorBoard.
 
   Args:
     result: The benchmark result to export.
     tblog_dir: The directory to write the TensorBoard logs to.
-
-  Raises:
-    RuntimeError: If an export has already happened in this process.
+    test_method_name: Optional test method name for prefixed scalar tags.
+    benchmark_name: Optional benchmark name for prefixed scalar tags.
   """
   global _TENSORBOARD_EXPORTED
-  if _TENSORBOARD_EXPORTED:
-    raise RuntimeError(
-        "TensorBoard export already happened in this process. "
-        "Each run is expected to export only once."
-    )
 
   try:
     os.makedirs(tblog_dir, exist_ok=True)
@@ -268,7 +270,14 @@ def _export_to_tensorboard(
     for metric_name, value in result.metric_map().items():
       # Skip metrics that are None (e.g. peak_host_compilation_memory on non-TPU platforms).
       if value is not None:
-        tb_writer.add_scalar(metric_name, value, global_step=0)
+        if not _TENSORBOARD_EXPORTED:
+          tb_writer.add_scalar(metric_name, value, global_step=0)
+        if test_method_name and benchmark_name:
+          tb_writer.add_scalar(
+              f"{test_method_name}-{benchmark_name}/{metric_name}",
+              value,
+              global_step=0,
+          )
     tb_writer.close()
   except (OSError, IOError):
     logging.exception("Error writing TensorBoard logs")
@@ -461,7 +470,12 @@ def run_single_process_benchmark(
   ):
     tblog_dir = os.environ.get(benchmark_utils.TENSORBOARD_OUTPUT_ENV_VAR.value)
     if tblog_dir:
-      _export_to_tensorboard(result, tblog_dir)
+      _export_to_tensorboard(
+          result,
+          tblog_dir,
+          test_method_name=test_method_name,
+          benchmark_name=benchmark_name,
+      )
 
   if torch.distributed.is_initialized():
     logging.info("Process %s reaching final barrier...", rank)
@@ -526,6 +540,8 @@ def _run_distributed_benchmark(
         ),
     )
   elif platform == common.Platform.GFC_1X1X1:
+    from torch_tpu._internal.distributed.launchers import singlehost_wrapper  # pylint: disable=g-import-not-at-top
+
     singlehost_wrapper.prepare_tpu_environment(world_size=2)
     distributed_utils.dist_run(
         2,
@@ -539,6 +555,8 @@ def _run_distributed_benchmark(
         ),
     )
   elif platform == common.Platform.GFC_2X2X1:
+    from torch_tpu._internal.distributed.launchers import singlehost_wrapper  # pylint: disable=g-import-not-at-top
+
     singlehost_wrapper.prepare_tpu_environment(world_size=8)
     distributed_utils.dist_run(
         8,

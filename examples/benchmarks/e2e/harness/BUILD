@@ -101,6 +101,7 @@ torch_tpu_py_library(
     deps = [
         ":target",
         "//examples/benchmarks/e2e:common",
+        "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/execution_mode",
     ],
@@ -152,6 +153,7 @@ torch_tpu_py_library(
     srcs = ["compile.py"],
     deps = [
         ":target",
+        "//examples/benchmarks/e2e:device_utils",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/compile",
     ],

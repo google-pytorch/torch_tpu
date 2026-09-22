@@ -102,11 +102,32 @@ class RaggedMoeQwen35(torch.nn.Module):
   def forward(
       self, hidden_states: torch.Tensor
   ) -> tuple[torch.Tensor, torch.Tensor]:
-    if self.ragged_dot_impl is None:
-      raise RuntimeError(
-          "torch.ops.tpu.ragged_dot is not available and no alternative"
-          " ragged_dot_impl was provided."
-      )
+    if (
+        hidden_states.device.type == "cuda"
+        and hasattr(torch, "_grouped_mm")
+        and (
+            self.ragged_dot_impl is None
+            or self.ragged_dot_impl
+            == getattr(getattr(torch.ops, "tpu", None), "ragged_dot", None)
+        )
+    ):
+
+      def _cuda_ragged_dot(x, w, groups):
+        offs = torch.cumsum(groups, dim=0).to(torch.int32)
+        orig_dtype = x.dtype
+        return torch._grouped_mm(
+            x.to(torch.bfloat16), w.to(torch.bfloat16), offs=offs
+        ).to(orig_dtype)
+
+      ragged_dot_fn = _cuda_ragged_dot
+    else:
+      if self.ragged_dot_impl is None:
+        raise RuntimeError(
+            "torch.ops.tpu.ragged_dot is not available and no alternative"
+            " ragged_dot_impl was provided."
+        )
+      ragged_dot_fn = self.ragged_dot_impl
+
     batch_size, sequence_length, hidden_size = hidden_states.shape
 
     # Fuse the sequence dimension into batch dimension
@@ -155,12 +176,10 @@ class RaggedMoeQwen35(torch.nn.Module):
     h_sparse = h_sparse[sortidx, :]  # [B*K, dm] sorted by expert id
 
     # Apply SwiGLU MoE
-    h_up = self.ragged_dot_impl(h_sparse, self.up, group_sizes)  # [B*K, df]
-    h_gate = self.ragged_dot_impl(h_sparse, self.gate, group_sizes)
+    h_up = ragged_dot_fn(h_sparse, self.up, group_sizes)  # [B*K, df]
+    h_gate = ragged_dot_fn(h_sparse, self.gate, group_sizes)
     h_sparse = h_up * F.silu(h_gate)  # [B*K, df]
-    h_sparse = self.ragged_dot_impl(
-        h_sparse, self.down, group_sizes
-    )  # [B*K, dm]
+    h_sparse = ragged_dot_fn(h_sparse, self.down, group_sizes)  # [B*K, dm]
 
     # Restore original order, and apply sum over selected experts
     h_sparse = h_sparse[reverse_sortidx, :].view(

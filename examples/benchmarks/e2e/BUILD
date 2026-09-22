@@ -675,8 +675,11 @@ torch_tpu_py_test(
     srcs = ["model_utils_test.py"],
     env = {"TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND": "1"},
     deps = [
+        ":benchmark_function_db",
+        ":common",
         ":model_utils",
         "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:flagsaver",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//tests:seed_test_utils",

@@ -306,7 +306,8 @@ bool PjrtBackend::IsInBadFork() const {
 
 xla::PjRtClient* absl_nullable PjrtBackend::GetClient() {
   if (const absl::Status s = EnsureInitialized(); !s.ok()) {
-    ABSL_LOG(ERROR) << "PjrtBackend::GetClient failed to initialize: " << s;
+    ABSL_LOG_FIRST_N(ERROR, 1)
+        << "PjrtBackend::GetClient failed to initialize: " << s;
     return nullptr;
   }
   absl::ReaderMutexLock lock(mutex_);
@@ -322,7 +323,8 @@ PjrtBackend::GetSharedClient() {
 
 xla::PjRtDevice* absl_nullable PjrtBackend::GetDevice() {
   if (const absl::Status s = EnsureInitialized(); !s.ok()) {
-    ABSL_LOG(ERROR) << "PjrtBackend::GetDevice failed to initialize: " << s;
+    ABSL_LOG_FIRST_N(ERROR, 1)
+        << "PjrtBackend::GetDevice failed to initialize: " << s;
     return nullptr;
   }
   absl::ReaderMutexLock lock(mutex_);

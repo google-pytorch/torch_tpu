@@ -444,6 +444,29 @@ class DeviceUtilsTest(seed_test_utils.RepeatableTest):
       device_utils.reset_peak_memory_stats('jax')
       mock_dev.reset_memory_stats.assert_called_once()
 
+  def test_configure_inductor_for_benchmarks(self):
+    from torch._inductor.codegen.triton import TritonOverrides  # pylint: disable=g-import-not-at-top
+
+    fake_masking_utils = mock.MagicMock()
+    with mock.patch('importlib.import_module', return_value=fake_masking_utils):
+      device_utils.configure_inductor_for_benchmarks()
+    self.assertEqual(torch._inductor.config.compile_threads, 1)
+    self.assertIn('tl.float32', TritonOverrides.isinf('x'))
+    self.assertIn('tl.float32', TritonOverrides.isnan('x'))
+    self.assertFalse(fake_masking_utils.is_tracing(torch.zeros(1)))
+
+  def test_torch_compile_cuda_calls_configure_inductor(self):
+    def dummy_fn(x):
+      return x + 1
+
+    with mock.patch.object(
+        device_utils, 'configure_inductor_for_benchmarks'
+    ) as mock_cfg, mock.patch('torch.compile', return_value='WRAPPED') as tc:
+      out = device_utils.torch_compile(dummy_fn, 'cuda', fullgraph=True)
+    self.assertEqual(out, 'WRAPPED')
+    mock_cfg.assert_called_once()
+    tc.assert_called_once_with(dummy_fn, backend='inductor', fullgraph=True)
+
 
 if __name__ == '__main__':
   absltest.main()

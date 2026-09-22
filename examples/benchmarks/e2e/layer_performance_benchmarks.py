@@ -281,7 +281,11 @@ class LayerPerformanceBenchmarks(test_utils.BenchmarkTest):
   )
   def test_batchnorm1d(self, run_mode, is_training, layer_config):
     # TODO(b/486204316): Fix batchnorm1d training with compiled mode on TPU.
-    if run_mode == common.RunMode.COMPILED and is_training:
+    if (
+        common.PLATFORM.value == common.Platform.GFC_1X1X1
+        and run_mode == common.RunMode.COMPILED
+        and is_training
+    ):
       self.skipTest(
           "Batchnorm1d in compiled mode with training doesn't stablize in cache"
           " misses.."
@@ -596,7 +600,7 @@ class LayerPerformanceBenchmarks(test_utils.BenchmarkTest):
   )
   def test_tanh(self, run_mode, is_training, layer_config):
     # TODO: b/494430218 - Fix tanh training.
-    if is_training:
+    if common.PLATFORM.value == common.Platform.GFC_1X1X1 and is_training:
       self.skipTest("Tanh test fails in training mode.")
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
@@ -809,9 +813,14 @@ class LayerPerformanceBenchmarks(test_utils.BenchmarkTest):
   )
   def test_rmsnorm(self, run_mode, is_training, layer_config):
     # TODO: b/494430218 - Fix RMSNorm training.
-    if is_training and run_mode in (
-        common.RunMode.EAGER_DEFAULT,
-        common.RunMode.EAGER_OPTIMIZED,
+    if (
+        common.PLATFORM.value == common.Platform.GFC_1X1X1
+        and is_training
+        and run_mode
+        in (
+            common.RunMode.EAGER_DEFAULT,
+            common.RunMode.EAGER_OPTIMIZED,
+        )
     ):
       self.skipTest("RMSNorm training with eager mode fails.")
     config = performance_utils.PerformanceBenchmarkConfig(
