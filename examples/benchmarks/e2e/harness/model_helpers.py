@@ -20,7 +20,9 @@ import typing
 from typing import Any
 
 import torch
-from tests import module_registry
+
+if typing.TYPE_CHECKING:
+  from tests import module_registry
 
 
 def get_vocab_size(config: Any, default: int = 128256) -> int:
@@ -39,8 +41,13 @@ def get_vocab_size(config: Any, default: int = 128256) -> int:
 
 
 @functools.cache
-def get_module_registry() -> module_registry.ModuleRegistry:
+def get_module_registry() -> "module_registry.ModuleRegistry":
   """Returns a cached ModuleRegistry instance."""
+  # Imported lazily rather than at module scope. Importing module_registry
+  # is likely to probe the CUDA driver at import time and thereby
+  # poisons fork() for CUDA.
+  from tests import module_registry  # pylint: disable=g-import-not-at-top
+
   return module_registry.ModuleRegistry()
 
 

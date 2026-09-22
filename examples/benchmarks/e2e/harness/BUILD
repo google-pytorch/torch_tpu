@@ -297,8 +297,58 @@ torch_tpu_py_test(
     shard_count = 50,
     tags = [
         "nofastbuild",  # Benchmark.
+        "requires-accel-hbm",
         "requires-net:external",
         "requires-tpu-v7x",
+    ],
+    deps = [
+        ":base_test",
+        ":cases",
+        ":compile",
+        ":context",
+        ":discovery",
+        ":flags",
+        ":measure",
+        ":metrics",
+        ":mode",
+        ":registry",
+        ":step_lib",
+        ":target",
+        ":torch_device_ops",
+        "//examples/benchmarks/e2e:common",
+        "//examples/benchmarks/e2e/harness/models",
+        "//examples/benchmarks/e2e/harness/steps",
+        "//shims/absl_py/logging",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
+    ],
+)
+
+# buildozer: disable=forbidden-tag-requires-gpu
+torch_tpu_py_test(
+    name = "torch_benchmark_full_cuda",
+    timeout = "long",
+    srcs = ["torch_benchmark_test.py"],
+    data = [
+        "//examples/benchmarks/huggingface_transformers:model_configs_data",
+    ],
+    env = {
+        "BENCHMARK_PLATFORM": "b200_1",
+    },
+    exec_properties = {
+        "cpp_link.mem": "16g",
+    },
+    main = "torch_benchmark_test.py",
+    notap = "Intended to be run with nightly benchmark suite",
+    shard_count = 50,
+    tags = [
+        "nofastbuild",  # Benchmark.
+        "requires-accel-hbm",
+        "requires-gpu-sm100-full",
+        "requires-net:external",
     ],
     deps = [
         ":base_test",

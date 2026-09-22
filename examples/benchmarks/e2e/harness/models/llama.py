@@ -26,7 +26,6 @@ from examples.benchmarks.e2e.harness import registry as registry_lib
 from examples.benchmarks.e2e.harness import step_lib
 from examples.benchmarks.e2e.harness import target as target_lib
 from examples.benchmarks.e2e.harness import torch_device_ops
-from tests import module_registry
 
 
 def _init_model_weights(model: torch.nn.Module) -> None:

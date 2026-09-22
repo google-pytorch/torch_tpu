@@ -14,8 +14,8 @@
 
 import torch
 from examples.benchmarks.e2e.harness import context as context_lib
+from examples.benchmarks.e2e.harness import model_helpers
 from examples.benchmarks.e2e.harness import torch_device_ops
-from tests import module_registry
 
 
 def default_load_model(
@@ -38,7 +38,7 @@ def default_load_model(
     batch_size = 1
     seq_len = 2048
 
-  registry = module_registry.ModuleRegistry(base_path="")
+  registry = model_helpers.get_module_registry()
 
   def modify_config_hook(config):
     if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
