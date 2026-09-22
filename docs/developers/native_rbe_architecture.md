@@ -63,13 +63,13 @@ flowchart TD
     end
 
     subgraph ControlPlane ["5. Buildbarn Control Plane & CPU Pool (GKE: rbe-tpu-oss-east5-cluster)<br/>OWNERSHIP: TorchTPU Team (Already Deployed — Self-Healing K8s Pods in namespace: buildbarn)"]
-        FE["bb-frontend (3 Pods, NodePort 30980)<br/>REAPI v2 Surface & CAS/AC Router"]:::ownedGKE
-        SCHED["bb-scheduler (1 Pod, NodePort 30983)<br/>Queue & Platform Matcher"]:::ownedGKE
-        STOR["bb-storage (2 StatefulSet Pods, ClusterIP 8981)<br/>CAS (32 GB) & Action Cache (1 GB)"]:::ownedGKE
-        CPUWorkers["worker-cpu (7 Pods on 7 x 32-vCPU GKE Nodes = 224 Slots)<br/>Uses ML Velocity ml-build Image | Standard, 16 GB, 20 GB Queues"]:::ownedGKE
+        FE["bb-frontend (3 Pods on default-pool, NodePort 30980)<br/>REAPI v2 Surface & CAS/AC Router"]:::ownedGKE
+        SCHED["bb-scheduler (1 Pod on default-pool, NodePort 30983)<br/>Queue & Platform Matcher"]:::ownedGKE
+        STOR["bb-storage (2 StatefulSet Pods on default-pool, ClusterIP 8981)<br/>CAS (32 GB) & Action Cache (1 GB)"]:::ownedGKE
+        CPUWorkers["worker-cpu (13 Pods on 13 x 32-vCPU GKE Nodes = 416 Standing Slots, Autoscaling to 63 Nodes / 2,016 Slots)<br/>Uses ML Velocity ml-build Image | Standard (416), 16 GB (52), 20 GB (52) Queues"]:::ownedGKE
 
-        GW -->|":8980 / :30980 -> NodePort 30980<br/>(10.202.0.16 + 10.202.0.6..17 failover)"| FE
-        GW -->|":30983 -> NodePort 30983<br/>(10.202.0.16 + 10.202.0.6..17 failover)"| SCHED
+        GW -->|":8980 / :30980 -> NodePort 30980<br/>(10.202.0.16 + 10.202.0.6..23 failover)"| FE
+        GW -->|":30983 -> NodePort 30983<br/>(10.202.0.16 + 10.202.0.6..23 failover)"| SCHED
         FE --> SCHED
         FE --> STOR
         SCHED --> CPUWorkers
@@ -92,7 +92,7 @@ flowchart TD
 ### Component Ownership & Operational Lifecycle
 
 Every component in the diagram above is **already deployed and live**. No
-additional services need to be stood up to merge or run this workflow.
+additional services need to be stood up to merge or merge-gate this workflow.
 
 | Diagram Layer | Component | Owner | Current State & Lifecycle | What We Maintain |
 | :--- | :--- | :--- | :--- | :--- |
@@ -100,9 +100,9 @@ additional services need to be stood up to merge or run this workflow.
 | **1. Blue** *(External / Utilized)* | **Consumer PSC Endpoint (`10.202.0.67:8980`)** | **ML Velocity Infra** (`psc_endpoints.tf`) | **Already Provisioned**: Static forwarding rule (`rbe-tpu-buildbarn-psc-endpoint`) managed by ML Velocity's `terraform_ci` pipeline (`status: ACCEPTED`). | **Nothing.** We only point `--remote_executor=grpc://10.202.0.67:8980` at it in `.bazelrc`. |
 | **2. Purple** *(Ephemeral Client)* | **Developer SSH Tunnel (`127.0.0.1:8980`)** | **Individual Developer** (Cloudtop) | **On-Demand**: Started by an engineer only when running remote TPU tests locally from a workstation. Never used by CI. | **Nothing.** |
 | **3. Green** *(Managed GCP Networking)* | **PSC Service Attachment (`rbe-tpu-service-attachment`) & Internal LB (`rbe-internal-ilb`)** | **TorchTPU Team** (`rbe-tpu-oss`), **Managed by GCP** | **Already Provisioned**: Cloud-native VPC networking objects in `us-east5`. No VMs or processes behind them. | **Zero ongoing maintenance.** Only touched if adding another consumer GCP project to `consumerAcceptLists`. |
-| **4. Red** *(TorchTPU VM Infra)* | **`rbe-tunnel-gateway` (`10.202.0.13` / alias `10.202.0.3/32`)** | **TorchTPU Team** (`rbe-tpu-oss`) | **Already Stood Up**: Single Debian 12 GCE VM in `us-east5-a` running `haproxy.service` and `rbe-gateway-hc.service` (`socat`). `systemd` auto-starts both on boot. | **Owned by us.** HAProxy automatically fails over across all 8 GKE nodes (`10.202.0.16` + `10.202.0.6..17`). Only needs updates if the GKE node IP range changes. |
-| **5. Amber** *(TorchTPU K8s Infra)* | **Buildbarn Control Plane (`bb-frontend`, `bb-scheduler`, `bb-storage`) & 224-Slot CPU Pool (`worker-cpu`)** | **TorchTPU Team** (`rbe-tpu-oss-east5-cluster`) | **Already Deployed**: Self-healing Kubernetes Deployments/StatefulSets in namespace `buildbarn`. GKE automatically restarts crashed pods. | **Owned by us.** Configured via ConfigMaps `buildbarn-config-d94cdd4g96` and `bb-worker-cpu-config`. |
-| **6. Red** *(TorchTPU TPU Fleet)* | **28 Standing Cloud TPU v5e Workers (`spot-tpu-v5e-*`)** | **TorchTPU Team** (`rbe-tpu-oss`) | **Already Deployed**: 28 single-chip Spot TPU VMs across 4 zones running `bb_worker.service` and `bb_runner.service` (`Restart=always`). | **Owned by us.** Because these are Spot TPU VMs, if GCE preempts a node, the capacity drops from 28 to `28 - N` until the preempted Spot VM is restarted/recreated. |
+| **4. Red** *(TorchTPU VM Infra)* | **`rbe-tunnel-gateway` (`10.202.0.13` / alias `10.202.0.3/32`)** | **TorchTPU Team** (`rbe-tpu-oss`) | **Already Stood Up**: Single Debian 12 GCE VM in `us-east5-a` running `haproxy.service` and `rbe-gateway-hc.service` (`socat`). `systemd` auto-starts both on boot. | **Owned by us.** HAProxy automatically fails over across all 14 standing GKE nodes (`10.202.0.16` + `10.202.0.6..23`). Only needs updates if the GKE node IP range changes. |
+| **5. Amber** *(TorchTPU K8s Infra)* | **Buildbarn Control Plane (`bb-frontend`, `bb-scheduler`, `bb-storage`) & 416-Slot Standing CPU Pool (`worker-cpu`, Autoscaling to 2,016 Slots)** | **TorchTPU Team** (`rbe-tpu-oss-east5-cluster`) | **Already Deployed**: Control plane pods (`frontend`, `scheduler-ubuntu22-04`, `storage`) are pinned to the dedicated non-autoscaled `default-pool` (`10.202.0.16`) with `safe-to-evict: "false"`. CPU workers scale from 13 standing nodes (`416` vCPUs) up to 63 nodes (`2,016` vCPUs). | **Owned by us.** Configured via ConfigMaps `buildbarn-config-d94cdd4g96` and `bb-worker-cpu-config`, `HorizontalPodAutoscaler/worker-cpu-hpa` (`13 -> 63` pods), and GKE Cluster Autoscaler (`cpu-worker-pool` `13..45` + `cpu-worker-pool-burst` `0..18`). |
+| **6. Red** *(TorchTPU TPU Fleet)* | **28 Standing Cloud TPU v5e Workers (`spot-tpu-v5e-*`)** | **TorchTPU Team** (`rbe-tpu-oss`) | **Already Deployed**: 28 single-chip Spot TPU VMs across 4 zones running `bb_worker.service` and `bb_runner.service` (`Restart=always`, `ExecStartPre` auto-creates `/tmp/torch_tpu_rbe/{build,cache}`). | **Owned by us.** Because these are Spot TPU VMs, if GCE preempts a node, the capacity drops from 28 to `28 - N` until the preempted Spot VM is restarted/recreated. |
 
 --------------------------------------------------------------------------------
 
@@ -120,7 +120,7 @@ Each standing TPU VM runs `bb_worker` as a systemd service. On startup,
 `bb_worker` dials outbound to `10.202.0.3:30983` (scheduler) and
 `10.202.0.3:30980` (frontend CAS/AC). `10.202.0.3/32` is a permanent VPC alias
 IP bound to `rbe-tunnel-gateway`, where HAProxy load-balances across all GKE
-NodePort backends (`10.202.0.16` and `10.202.0.6..17`) so GKE node rotations
+NodePort backends (`10.202.0.16` and `10.202.0.6..23`) so GKE node rotations
 never drop worker connections. Each worker advertises:
 
 ```json
@@ -137,8 +137,38 @@ ports, zero public IPs, and no incoming firewall rules.
 
 #### CPU Worker Pool & Multi-Queue Memory (`worker-cpu.jsonnet`)
 
-The CPU worker pool runs inside GKE across 7 nodes with 32 slots each (224
-concurrent slots). CPU worker pods run the official `ml-build` runner image:
+The CPU worker pool runs inside GKE with a baseline of **13 standing 32-vCPU
+nodes (416 concurrent slots)** and autoscales up to **63 32-vCPU nodes (2,016
+concurrent slots)** under multi-PR build load:
+
+-   **Primary Node Pool (`cpu-worker-pool`):** `n2-standard-32` (`32` vCPUs,
+    `128 GB` RAM) in `us-east5-a` with GKE Cluster Autoscaler enabled for **13
+    minimum nodes (`416` vCPUs)** up to **45 maximum nodes (`1,440` vCPUs)**
+    within the regional `N2_CPUS` quota (`1,500` vCPUs).
+-   **Burst Overflow Node Pool (`cpu-worker-pool-burst`):** `n2d-standard-32`
+    (`32` vCPUs, `128 GB` RAM) in `us-east5-a` with GKE Cluster Autoscaler
+    enabled for **0 minimum nodes** up to **18 maximum nodes (`576` vCPUs)**
+    using the independent regional `N2D_CPUS` quota (`1,500` vCPUs), bringing
+    total cluster CPU worker capacity to **63 nodes (`2,016` vCPUs)**.
+-   **Control-Plane Isolation (`default-pool`):** `bb-frontend` (3 pods),
+    `bb-scheduler` (1 pod), and `bb-storage` (2 StatefulSet pods) use
+    `nodeAffinity` preferring `default-pool` (`n2-standard-8`, `10.202.0.16`)
+    and excluding `cpu-worker-pool-burst`, paired with
+    `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`, so control-plane
+    and CAS/AC pods never compete with 32-core C++ compile spikes and are never
+    evicted during node scale-down.
+-   **1-to-1 Pod-to-Node Autoscaling (`worker-cpu-hpa`):** Each `worker-cpu`
+    pod requests `28,000m` CPU (`26,000m` for `runner` + `2,000m` for `worker`)
+    and `64 GiB` RAM, combined with `podAntiAffinity` on `kubernetes.io/hostname`
+    and `nodeAffinity` preferring `cpu-worker-pool` (weight `100`) before
+    overflowing to `cpu-worker-pool-burst`. `HorizontalPodAutoscaler/worker-cpu-hpa`
+    scales `Deployment/worker-cpu` between `minReplicas: 13` (`416` slots) and
+    `maxReplicas: 63` (`2,016` slots) at 60% CPU utilization with a 900-second
+    scale-down stabilization window, `terminationGracePeriodSeconds: 300`, and a
+    `preStop` drain hook on `runner` that waits for `/worker/build` to empty
+    before closing the runner socket.
+
+CPU worker pods run the official `ml-build` runner image:
 
 ```
 us-central1-docker.pkg.dev/ml-velocity-actions-production/ci-runners/ml-build
@@ -148,16 +178,19 @@ This replaces legacy generic runner images and ensures compilers, system
 libraries, Python runtimes, and LLVM/sysroot dependencies match the CI
 environment.
 
-In `worker-cpu.jsonnet`, the pool partitions into three memory queues to handle
-different action types without memory exhaustion:
+In `worker-cpu.jsonnet`, each 32-vCPU worker pod partitions into three memory
+queues to handle different action types without memory exhaustion:
 
--   **Standard Runner (`OSFamily=Linux`):** Handles standard C++ compilation,
+-   **Standard Runner (`OSFamily=Linux`):** 32 slots per pod (**416 standing
+    slots**, scaling up to **2,016 slots**). Handles standard C++ compilation,
     Python packaging, and genrules.
--   **High-Memory 16 GB Runner (`OSFamily=Linux`, `mem=16g`):** Matches
+-   **High-Memory 16 GB Runner (`OSFamily=Linux`, `mem=16g`):** 4 slots per pod
+    (**52 standing slots**, scaling up to **252 slots**). Matches
     `cpp_link.mem=16g` set in `//build_files:build_defs.bzl` (for example, in
     `//csrc/distributed:process_group_tpu_test`). C++ link actions with heavy
     symbol tables or AddressSanitizer (ASan) instrumentation land on this queue.
--   **High-Memory 20 GB Runner (`OSFamily=Linux`, `mem=20g`):** Handles large
+-   **High-Memory 20 GB Runner (`OSFamily=Linux`, `mem=20g`):** 4 slots per pod
+    (**52 standing slots**, scaling up to **252 slots**). Handles large
     monolithic link steps and heavy binary generation.
 
 ### Step 2: Bazel Invocation & Dual-Pool Platform Routing
@@ -190,8 +223,8 @@ This configuration splits execution across both pools using Bazel execution
 groups:
 
 -   **Default Execution Group (`OSFamily=Linux`):** Applies to all compilation,
-    linking, and genrules. The scheduler routes these actions to the 224-slot CPU
-    worker pool.
+    linking, and genrules. The scheduler routes these actions to the 416-slot
+    standing CPU worker pool (autoscaling up to 2,016 slots).
 -   **Test Execution Group (`test.Accelerator=tpu-v5e`, `test.OSFamily=Linux`):**
     Applies exclusively to Bazel's built-in `test` execution group. The scheduler
     routes test runner actions to the 28 standing Cloud TPU v5e workers.
@@ -209,8 +242,10 @@ Two design requirements govern this platform definition:
 
 Additional flags applied from `.bazelrc`:
 
--   `--jobs=200`: Sized for the 224-slot CPU pool to maximize concurrency. Without
-    this flag, Bazel sizes jobs to the local client core count.
+-   `--jobs=200`: Guarantees each build/compile invocation drives up to 200
+    concurrent remote actions against the 416-slot standing CPU pool (autoscaling
+    to 2,016 slots under multi-PR load). Without this flag, Bazel sizes jobs to
+    the local client core count.
 -   `--noremote_upload_local_results`: Prevents untrusted local builds from writing
     to the shared cache. Trusted CI runs re-enable uploads in `ci_rbe_presubmit`.
 -   `--remote_timeout=3600s`: Extends per-RPC deadlines so concurrent actions
@@ -249,7 +284,7 @@ The `rbe-tunnel-gateway` instance (`10.202.0.13`, with VPC alias IP
 `10.202.0.3/32`) is a dedicated Debian 12 GCE virtual machine in zone
 `us-east5-a`. HAProxy listens on ports `8980` / `30980` (`bb-frontend`) and
 `30983` (`bb-scheduler`), forwarding TCP connections across the GKE NodePort
-backends (`10.202.0.16` primary and `10.202.0.6..17` failover nodes) so GKE node
+backends (`10.202.0.16` primary and `10.202.0.6..23` failover nodes) so GKE node
 rotations never drop client or TPU worker sessions. It runs in TCP mode with a
 one hour idle timeout on each side, so a Bazel gRPC stream stays up for the
 length of a build. `option tcplog` only writes its line when a session closes,
@@ -359,7 +394,7 @@ sit across four regions in the GCP VPC network (`default`):
 | Region / Zone    | TPU Nodes                                     | Round-Trip Latency to Scheduler |
 | :--------------- | :-------------------------------------------- | :------------------------------ |
 | `us-east5-a`     | Gateway (`10.202.0.13` / alias `10.202.0.3`)  | Local (<1 ms)                   |
-:                  : & GKE Control Plane (`10.202.0.16`, `.6..17`) :                                 :
+:                  : & GKE Control Plane (`10.202.0.16`, `.6..23`) :                                 :
 | `us-south1-a`    | 8 nodes                                       | ~32 ms                          |
 | `us-west4-a`     | 4 nodes                                       | ~55 ms                          |
 | `us-west1-c`     | 8 nodes                                       | ~68 ms                          |
@@ -530,7 +565,7 @@ Real end-to-end presubmit runs verify build acceleration across both pools:
 
 1.  **Cold Run (~55m):**
     -   Compiles all C++, LLVM/OpenXLA dependencies, and PyTorch extensions across
-        the 224 CPU worker slots.
+        the 416 standing CPU worker slots (autoscaling up to 2,016 slots).
     -   Dispatches 72 test targets in parallel across the 28 standing Cloud TPU v5e
         nodes.
 
