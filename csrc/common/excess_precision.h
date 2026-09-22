@@ -22,10 +22,18 @@
 namespace torch_tpu {
 
 // Sets whether XLA is allowed to use excess precision for all compilations.
+// Throws an error if XLA compilation has already started and `allow` differs
+// from the current setting.
 void SetAllowExcessPrecision(bool allow);
 
 // Returns whether XLA is allowed to use excess precision for all compilations.
 [[nodiscard]] bool GetAllowExcessPrecision();
+
+// Locks the excess precision setting once XLA compilation has started.
+void LockAllowExcessPrecision();
+
+// Returns whether the excess precision setting is locked.
+[[nodiscard]] bool IsAllowExcessPrecisionLocked();
 
 // Returns the cached default `xla::ExecutableBuildOptions` instance.
 const xla::ExecutableBuildOptions& GetDefaultExecutableBuildOptions();

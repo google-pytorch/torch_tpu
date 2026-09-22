@@ -386,6 +386,7 @@ torch_tpu_cc_library(
     hdrs = ["excess_precision.h"],
     deps = [
         ":env_vars",
+        ":error_utils",
         "@com_google_absl//absl/base:no_destructor",
         "@xla//xla/client:executable_build_options",
     ],
@@ -1288,6 +1289,8 @@ torch_tpu_cc_test(
         ":compilation",
         ":compilation_spec",
         ":compilation_test_helper",
+        ":error_utils",
+        ":excess_precision",
         "//csrc/common:oss_test_main",
         "//csrc/pjrt:pjrt_state",
         "//shims/torch:torch_headers",

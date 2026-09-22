@@ -532,7 +532,9 @@ static const CustomCompilerOptionsContextState& GetDefaultCompilationContext() {
     ABSL_CHECK(  // CRASH_OK=obvious compiler option misconfiguration
         context.ok())
         << "Failed to create default compilation context: " << context.status();
-
+    // Lock the excess precision setting now that the default options are
+    // memoized. Future changes have no effect on XLA compilations.
+    LockAllowExcessPrecision();
     return std::move(*context);
   }());
   return *ctx;

@@ -279,24 +279,32 @@ def excess_precision_verification(torch):
         " graph with default 'True' earlier in this session)."
     )
 
-  # The 13th bit might be flipped because of the flag.
+  # Changing allow_excess_precision after XLA compilation has already started in
+  # this process raises a RuntimeError because compiler options are locked on
+  # the first compilation.
+  #
+  # To run with allow_excess_precision = True:
+  # This must be run standalone in a fresh Python session where
+  # `torch.tpu.allow_excess_precision = True` is set at the very beginning
+  # before any TPU operations or compilations occur. When run standalone, the
+  # compiler grants the MXU permission to retain intermediate downcasts,
+  # preserving the 13th mantissa bit (res_true == 1.02355957031250000000).
   print("=== TPU values: compiled with allow_excess_precision = True ===")
   torch.compiler.reset()
-  torch.tpu.allow_excess_precision = True
-  mul_add_compiled_true = torch.compile(mul_add, backend="tpu")
-  print(f"{torch.tpu.allow_excess_precision=}")
-  res_true = mul_add_compiled_true(bit_6_tensor, bit_7_tensor, one_float32)[
-      0, 0
-  ]
-  print(f"{res_true=:.20f}")
-
   try:
+    torch.tpu.allow_excess_precision = True
+    mul_add_compiled_true = torch.compile(mul_add, backend="tpu")
+    print(f"{torch.tpu.allow_excess_precision=}")
+    res_true = mul_add_compiled_true(bit_6_tensor, bit_7_tensor, one_float32)[
+        0, 0
+    ]
+    print(f"{res_true=:.20f}")
     assert res_true == bits_6_7_13_tensor[0, 0]
     print("  [PASSED] Successfully enabled excess precision.")
-  except AssertionError:
+  except (RuntimeError, AssertionError) as e:
     print(
-        "  [WARNING] Failed to enable excess precision (Expected: XLA option"
-        " latching locked the flag to 'False' earlier in this session)."
+        "  [EXPECTED] Cannot change excess precision after first compilation:"
+        f" {e}"
     )
   return
 

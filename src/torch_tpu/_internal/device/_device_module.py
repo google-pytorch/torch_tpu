@@ -292,10 +292,13 @@ class _DeviceModuleMeta(abc.ABCMeta):
   def allow_excess_precision(cls, value: bool):
     """Sets whether XLA is allowed to use excess precision.
 
-    It sets the XLA flag of --allow_excess_precision globally for all future
-    compilations. Changing its value frequently is not recommended as it will
-    trigger recompilation for the new setting.
-    File a feature request for a context manager for this flag if needed.
+    This setting cannot be changed after the first XLA compilation has started.
+    Attempting to change this value to a different setting after compilation has
+    started will raise a RuntimeError. Setting the same value is permitted and
+    acts as a no-op.
+
+    The flag can also be set via the XLA_FLAGS environment variable:
+    `XLA_FLAGS="--xla_allow_excess_precision=true|false"`.
 
     The flag defaults to False if not set in the XLA_FLAGS environment variable
     nor explicitly set by this property.
@@ -305,6 +308,10 @@ class _DeviceModuleMeta(abc.ABCMeta):
 
     Args:
       value: Whether to allow excess precision. Can be True or False.
+
+    Raises:
+      RuntimeError: If attempting to change this value to a different setting
+        after XLA compilation has already started.
     """
     setter = getattr(_device_ops_backend, "_set_allow_excess_precision", None)
     if setter is None:

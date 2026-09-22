@@ -5467,6 +5467,20 @@ module {
       start.elapsed_time(end)
     end.synchronize()
 
+  @et.why_tpu_only("torch.tpu.allow_excess_precision is TPU-specific.")
+  def test_allow_excess_precision_after_compilation(self):
+    # Run an op to initialize the TPU device and compilation context.
+    _ = torch.ones(1, device=et.device())
+    current = torch.tpu.allow_excess_precision
+    # Setting to the same value is a no-op and succeeds.
+    torch.tpu.allow_excess_precision = current
+    # Changing to a different value raises RuntimeError.
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""_set_allow_excess_precision(): cannot change allow_excess_precision after XLA compilation has already started""",
+    ):
+      torch.tpu.allow_excess_precision = not current
+
 
 class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
 

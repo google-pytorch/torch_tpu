@@ -21,22 +21,32 @@
 
 #include "absl/base/no_destructor.h"
 #include "csrc/common/env_vars.h"
+#include "csrc/common/error_utils.h"
 #include "xla/client/executable_build_options.h"
 
 namespace torch_tpu {
 namespace {
 
 enum class ExcessPrecisionState {
-  // Use XLA_FLAGS or fall back to the default.
+  // Use XLA_FLAGS or fall back to the default (unlocked).
   kUnset,
-  // Explicitly allow excess precision.
+  // Explicitly allow excess precision (unlocked).
   kAllow,
-  // Explicitly disallow excess precision.
+  // Explicitly disallow excess precision (unlocked).
   kDisallow,
+  // Locked to allow excess precision.
+  kLockedAllow,
+  // Locked to disallow excess precision.
+  kLockedDisallow,
 };
 
 static std::atomic<ExcessPrecisionState> g_allow_excess_precision{
     ExcessPrecisionState::kUnset};
+
+bool IsLocked(ExcessPrecisionState state) {
+  return state == ExcessPrecisionState::kLockedAllow ||
+         state == ExcessPrecisionState::kLockedDisallow;
+}
 
 }  // namespace
 
@@ -51,16 +61,99 @@ const xla::ExecutableBuildOptions& GetDefaultExecutableBuildOptions() {
   return *default_executable_build_options;
 }
 
+// Locks excess precision. If it was already set to allow or disallow, it
+// transitions to kLockedAllow or kLockedDisallow respectively. If it was unset,
+// it resolves to the default setting and locks it. Uses compare_exchange_strong
+// to ensure thread safety.
+void LockAllowExcessPrecision() {
+  // Relaxed is safe because if this initial read is stale,
+  // compare_exchange_strong will return false, update `current`, and the loop
+  // will retry or exit.
+  ExcessPrecisionState current =
+      g_allow_excess_precision.load(std::memory_order_relaxed);
+  while (!IsLocked(current)) {
+    ExcessPrecisionState locked_state;
+    switch (current) {
+      case ExcessPrecisionState::kAllow:
+        locked_state = ExcessPrecisionState::kLockedAllow;
+        break;
+      case ExcessPrecisionState::kDisallow:
+        locked_state = ExcessPrecisionState::kLockedDisallow;
+        break;
+      case ExcessPrecisionState::kUnset:
+        [[fallthrough]];
+      default:
+        locked_state = GetAllowExcessPrecision()
+                           ? ExcessPrecisionState::kLockedAllow
+                           : ExcessPrecisionState::kLockedDisallow;
+        break;
+    }
+
+    // On success: acquire synchronizes with prior SetAllowExcessPrecision()
+    // updates; release publishes the new state to GetAllowExcessPrecision() and
+    // IsAllowExcessPrecisionLocked().
+    // On failure: we just reload `current` and try again; relaxed matches the
+    // initial load above.
+    if (g_allow_excess_precision.compare_exchange_strong(
+            current, locked_state, std::memory_order_acq_rel,
+            std::memory_order_relaxed)) {
+      break;
+    }
+  }
+}
+
+// Returns whether excess precision is locked (i.e. whether compilation has
+// already started).
+bool IsAllowExcessPrecisionLocked() {
+  // memory_order_acquire synchronizes with the release/acq_rel CAS in
+  // LockAllowExcessPrecision().
+  return IsLocked(g_allow_excess_precision.load(std::memory_order_acquire));
+}
+
+// Sets the excess precision setting. If the setting has already been locked
+// by an ongoing or completed XLA compilation, throws an error unless the
+// value matches the current setting. Atomically checks the lock bit and writes
+// the new setting using compare_exchange_strong.
 void SetAllowExcessPrecision(bool allow) {
-  g_allow_excess_precision.store(allow ? ExcessPrecisionState::kAllow
-                                       : ExcessPrecisionState::kDisallow);
+  // Relaxed is safe because if this initial read is stale,
+  // compare_exchange_strong will return false, update `current`, and the loop
+  // will retry or exit.
+  ExcessPrecisionState current =
+      g_allow_excess_precision.load(std::memory_order_relaxed);
+  const ExcessPrecisionState desired =
+      allow ? ExcessPrecisionState::kAllow : ExcessPrecisionState::kDisallow;
+  while (true) {
+    if (IsLocked(current)) {
+      TT_CHECK_THROW(allow == GetAllowExcessPrecision(),
+                     error::kFailedPrecondition)
+          << "cannot change allow_excess_precision after XLA compilation has "
+             "already started";
+      return;
+    }
+    // On success: acquire synchronizes with prior SetAllowExcessPrecision()
+    // updates; release publishes the new state to GetAllowExcessPrecision() and
+    // IsAllowExcessPrecisionLocked().
+    // On failure: we just reload `current` and try again; relaxed matches the
+    // initial load above.
+    if (g_allow_excess_precision.compare_exchange_strong(
+            current, desired, std::memory_order_acq_rel,
+            std::memory_order_relaxed)) {
+      return;
+    }
+  }
 }
 
 bool GetAllowExcessPrecision() {
-  switch (g_allow_excess_precision.load()) {
+  // memory_order_acquire synchronizes with the release/acq_rel writes in
+  // SetAllowExcessPrecision() and LockAllowExcessPrecision(), ensuring the
+  // calling thread observes all state initialized prior to setting or locking
+  // the precision state.
+  switch (g_allow_excess_precision.load(std::memory_order_acquire)) {
     case ExcessPrecisionState::kAllow:
+    case ExcessPrecisionState::kLockedAllow:
       return true;
     case ExcessPrecisionState::kDisallow:
+    case ExcessPrecisionState::kLockedDisallow:
       return false;
     case ExcessPrecisionState::kUnset:
       // Fall back to XLA_FLAGS or default to false.

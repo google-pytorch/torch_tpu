@@ -34,34 +34,30 @@ class TpuBackendConfigTest(seed_test_utils.RepeatableTest):
   )
   def test_allow_excess_precision(self, allow: bool, expected_value: float):
     """Tests global torch.tpu.allow_excess_precision API."""
-    original_allow = torch.tpu.allow_excess_precision
-    try:
-      # Default value is False.
-      self.assertIs(torch.tpu.allow_excess_precision, False)
+    # Default value is False.
+    self.assertIs(torch.tpu.allow_excess_precision, False)
 
-      torch.tpu.allow_excess_precision = allow
-      self.assertIs(torch.tpu.allow_excess_precision, allow)
+    torch.tpu.allow_excess_precision = allow
+    self.assertIs(torch.tpu.allow_excess_precision, allow)
 
-      device = torch.device("tpu")
-      eps: float = torch.finfo(torch.bfloat16).eps
-      x_element = 1.0 + eps
-      x = torch.tensor(
-          [[x_element, 0.0], [0.0, x_element]],
-          device=device,
-          dtype=torch.bfloat16,
-      )
+    device = torch.device("tpu")
+    eps: float = torch.finfo(torch.bfloat16).eps
+    x_element = 1.0 + eps
+    x = torch.tensor(
+        [[x_element, 0.0], [0.0, x_element]],
+        device=device,
+        dtype=torch.bfloat16,
+    )
 
-      def run_compute():
-        with em.set_eager_mode(em.EagerMode.DEFER_AND_FUSE):
-          intermediate = torch.mm(x, x)
-          output = intermediate * torch.tensor(
-              [1.0], dtype=torch.float32, device=device
-          )
-        return output[0, 0]
+    def run_compute():
+      with em.set_eager_mode(em.EagerMode.DEFER_AND_FUSE):
+        intermediate = torch.mm(x, x)
+        output = intermediate * torch.tensor(
+            [1.0], dtype=torch.float32, device=device
+        )
+      return output[0, 0]
 
-      self.assertEqual(run_compute().cpu().item(), expected_value)
-    finally:
-      torch.tpu.allow_excess_precision = original_allow
+    self.assertEqual(run_compute().cpu().item(), expected_value)
 
 
 if __name__ == "__main__":

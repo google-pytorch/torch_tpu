@@ -16,11 +16,14 @@
 
 #include "csrc/common/compilation.h"
 
+#include <exception>
 #include <string>
 
 #include "absl/log/absl_check.h"
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/compilation_test_helper.h"
+#include "csrc/common/error_utils.h"
+#include "csrc/common/excess_precision.h"
 #include "csrc/pjrt/pjrt_state.h"
 #include "gtest/gtest.h"
 #include "xla/xla.pb.h"
@@ -73,6 +76,15 @@ TEST_F(MakeCompilerOptionsTest, CompilerOptionOverrides) {
     EXPECT_EQ(options->executable_build_options.optimization_level(),
               xla::ExecutionOptions::EFFORT_O2);
   }
+}
+
+TEST_F(MakeCompilerOptionsTest, LocksExcessPrecision) {
+  // Ensure the default compilation context is initialized hermetically.
+  GetCompileOptions(CompilationMode::kFastCompile);
+  EXPECT_TRUE(IsAllowExcessPrecisionLocked());
+  const bool current = GetAllowExcessPrecision();
+  SetAllowExcessPrecision(current);
+  EXPECT_THROW(SetAllowExcessPrecision(!current), torch_tpu::TtError);
 }
 
 }  // namespace
