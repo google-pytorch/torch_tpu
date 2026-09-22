@@ -315,9 +315,8 @@ def _check_and_adjust_test_tags(
             and the string will be used as the reason.
         notest_oss: If True, the test will not be run in OSS,
             but it will still be built.
-        nobuild_oss: If a string is provided, the test will not be built nor
-            run in OSS. The string provided should be a reason explaining why
-            building was disabled. You should strongly prefer notest_oss to
+        nobuild_oss: If True, the test will not be built nor
+            run in OSS. You should strongly prefer notest_oss to
             this!
         nopresubmit_oss: If a string is provided, the test will be built but not run in the
             non-nightly OSS, and it will be built and run in the nightly OSS.
@@ -361,15 +360,13 @@ def _check_and_adjust_test_tags(
 
     if type(notest_oss) != "bool":
         fail("notest_oss must be a Boolean.")
+    if type(nobuild_oss) != "bool":
+        fail("nobuild_oss must be a Boolean.")
 
     # Adjust tags for nobuild_oss and notest_oss
     #
     # This must come before the logic adding the build_test
-    if nobuild_oss != None:
-        if type(nobuild_oss) != "string" or not nobuild_oss:
-            fail("nobuild_oss must be a non-empty string documenting why the test " +
-                 "should be skipped in OSS build.")
-
+    if nobuild_oss:
         # nobuild_oss should only affect the OSS build.
         if is_oss and "nobuild" not in tags:
             tags.append("nobuild")
@@ -544,7 +541,7 @@ def check_and_adjust_test_tags_for_testing(
         nopresubmit = None,
         nolocal = None,
         notest_oss = False,
-        nobuild_oss = None,
+        nobuild_oss = False,
         nopresubmit_oss = None,
         nonightly_oss = None,
         oss_presubmit_tpu_generation = None,
@@ -585,7 +582,7 @@ def torch_tpu_cc_test(
         nopresubmit = None,
         nolocal = None,
         notest_oss = False,
-        nobuild_oss = None,
+        nobuild_oss = False,
         nopresubmit_oss = None,
         nonightly_oss = None,
         oss_presubmit_tpu_generation = None,
@@ -622,9 +619,8 @@ def torch_tpu_cc_test(
             and the string will be used as the reason.
         notest_oss: If True, the test will not be run in OSS,
             but it will still be built.
-        nobuild_oss: If a string is provided, the test will not be built nor
-            run in OSS. The string provided should be a reason explaining why
-            building was disabled. You should strongly prefer notest_oss to
+        nobuild_oss: If True, the test will not be built nor
+            run in OSS. You should strongly prefer notest_oss to
             this!
         nopresubmit_oss: If a string is provided, the test will be built but not run in the
             non-nightly OSS, and it will be built and run in the nightly OSS.
@@ -882,7 +878,7 @@ def torch_tpu_py_test(
         nopresubmit = None,
         nolocal = None,
         notest_oss = False,
-        nobuild_oss = None,
+        nobuild_oss = False,
         nopresubmit_oss = None,
         nonightly_oss = None,
         oss_presubmit_tpu_generation = None,
@@ -923,9 +919,8 @@ def torch_tpu_py_test(
             and the string will be used as the reason.
         notest_oss: If True, the test will not be run in OSS,
             but it will still be built.
-        nobuild_oss: If a string is provided, the test will not be built nor
-            run in OSS. The string provided should be a reason explaining why
-            building was disabled. You should strongly prefer notest_oss to
+        nobuild_oss: If True, the test will not be built nor
+            run in OSS. You should strongly prefer notest_oss to
             this!
         nopresubmit_oss: If a string is provided, the test will be built but not run in the
             non-nightly OSS, and it will be built and run in the nightly OSS.

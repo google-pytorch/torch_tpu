@@ -466,7 +466,7 @@ def _test_internal_nobuild_oss(env):
     tags = []
     result = check_and_adjust_test_tags_for_testing(
         is_oss = False,
-        nobuild_oss = "reason",
+        nobuild_oss = True,  # reason
         tags = tags,
     )
 
@@ -480,7 +480,7 @@ def _test_oss_nobuild_oss(env):
     tags = []
     result = check_and_adjust_test_tags_for_testing(
         is_oss = True,
-        nobuild_oss = "reason",
+        nobuild_oss = True,  # reason
         tags = tags,
     )
 
@@ -597,7 +597,7 @@ def _test_oss_notest_oss_nobuild_oss(env):
     result = check_and_adjust_test_tags_for_testing(
         is_oss = True,
         notest_oss = True,  # reason1
-        nobuild_oss = "reason2",
+        nobuild_oss = True,  # reason2
         tags = tags,
     )
 

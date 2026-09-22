@@ -80,7 +80,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "torchcomm_tpu_test",
     srcs = ["torchcomm_tpu_test.py"],
-    nobuild_oss = "torchcomms is not yet available in OSS",
+    nobuild_oss = True,  # torchcomms is not yet available in OSS
     tags = [
         "requires-tpu-v5lite",
     ],
@@ -100,7 +100,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "torchcomm_multi_tpu_test",
     srcs = ["torchcomm_multi_tpu_test.py"],
-    nobuild_oss = "torchcomms is not yet available in OSS",
+    nobuild_oss = True,  # torchcomms is not yet available in OSS
     shard_count = 7,
     tags = if_oss(
         ["exclusive"],
