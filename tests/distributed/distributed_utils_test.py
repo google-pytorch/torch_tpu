@@ -16,9 +16,11 @@
 
 import os
 import random
+import socket
 from unittest import mock
 
 from absl.testing import absltest
+import portpicker
 import torch
 import torch.multiprocessing as mp
 from torch_tpu._internal.distributed import multiprocessing
@@ -72,6 +74,14 @@ def _worker_env_check() -> None:
   assert rank == node_rank * nproc + local_rank
   assert world_size == 2
   assert nproc == 2
+
+
+def _worker_init_process_group() -> None:
+  torch.distributed.init_process_group(
+      backend="gloo",
+      init_method="env://",
+  )
+  torch.distributed.destroy_process_group()
 
 
 class DistributedUtilsTest(seed_test_utils.MultiProcessRepeatableTest):
@@ -159,6 +169,61 @@ class DistributedUtilsTest(seed_test_utils.MultiProcessRepeatableTest):
           f.read().strip(),
           "--xla_dump_to=/tmp/dumps/rank_1 --xla_tpu_rank=1",
       )
+
+  def test_dist_run_retries_on_port_collision(self) -> None:
+    """Verifies that dist_run retries when port collision (EADDRINUSE) occurs."""
+    attempt_count = 0
+
+    def mock_spawn(fn, args=(), nprocs=1, join=True):
+      nonlocal attempt_count
+      attempt_count += 1
+      if attempt_count == 1:
+        raise mp.ProcessRaisedException(
+            msg="RuntimeError: Address already in use (errno: 98 EADDRINUSE)",
+            error_index=0,
+            error_pid=12345,
+        )
+      # Second attempt succeeds.
+      return None
+
+    with mock.patch.object(mp, "spawn", side_effect=mock_spawn):
+      distributed_utils.dist_run(2, lambda: None, max_retries=3)
+
+    self.assertEqual(attempt_count, 2)
+
+  def test_dist_run_retries_and_succeeds_with_real_socket_collision(
+      self,
+  ) -> None:
+    """Verifies that dist_run handles a real OS port collision (EADDRINUSE).
+
+    We simulate a race condition by holding open a listening TCP socket
+    on the port returned by portpicker on the first attempt.
+    dist_run will fail on attempt 1 with EADDRINUSE from
+    gloo/init_process_group,
+    catch the ProcessRaisedException, request a new port from portpicker, and
+    succeed on attempt 2.
+    """
+    free_port = portpicker.pick_unused_port()
+
+    # Open and hold a real listening socket to guarantee EADDRINUSE on attempt 1.
+    busy_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    busy_sock.bind(("localhost", 0))
+    busy_sock.listen(1)
+    busy_port = busy_sock.getsockname()[1]
+
+    try:
+      with mock.patch.object(
+          portpicker,
+          "pick_unused_port",
+          side_effect=[busy_port, free_port],
+      ):
+        distributed_utils.dist_run(
+            2,
+            _worker_init_process_group,
+            max_retries=3,
+        )
+    finally:
+      busy_sock.close()
 
 
 if __name__ == "__main__":
