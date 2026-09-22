@@ -366,7 +366,7 @@ class StaticCompiler(Compiler):
                     val
                 )
                 if layout is not None:
-                  extracted_layouts.append(layout[0])
+                  extracted_layouts.append(layout)
                 else:
                   extracted_layouts.append([])
               else:

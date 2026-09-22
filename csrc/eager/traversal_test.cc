@@ -295,7 +295,7 @@ TEST_F(TraversalTest, CompileAnnotatesArgumentLayoutsWithTilingAndCaching) {
                           /*argument_layouts=*/{tiled_layout})
                   .ok());
   EXPECT_THAT(mlir_text,
-              testing::HasSubstr("mhlo.layout_mode = \"{1,0:T(8,128)}\""));
+              testing::HasSubstr("mhlo.layout_mode = \"{1,0:T(8)}\""));
 
   CustomLayout different_tile_layout{.minor_to_major = {1, 0}, .tiles = {{16}}};
   CompilationCacheKey key_untiled = tr->GetCacheKey(

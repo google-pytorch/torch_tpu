@@ -224,12 +224,7 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     results[0].cpu()  # Verify it passes
 
   def test_layout_context_auto_extracted_in_static_compile(self):
-    # Skip test pending layout/tiling propagation fixes in child commit.
-    self.skipTest(
-        'Skipping layout context test pending layout and tiling propagation'
-        ' fixes.'
-    )
-    layout = annotations.TpuLayout(minor_to_major=[0, 1], tiles=[[8]])
+    layout = annotations.TpuLayout(minor_to_major=[0, 1], tiles=[[8, 128]])
     with annotations.LayoutContext(layout):
       x = torch.ones(16, 128, device='cpu').to(device=torch.device('tpu'))
 
@@ -243,8 +238,9 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     param_layouts = executable.parameter_layouts
     self.assertLen(param_layouts, 1)
     self.assertIsNotNone(param_layouts[0])
-    minor_to_major, _, _ = param_layouts[0]
+    minor_to_major, tiles, _ = param_layouts[0]
     self.assertEqual(minor_to_major, [0, 1])
+    self.assertEqual(tiles, [[8, 128]])
 
   def test_compile_with_tiled_argument_layouts(self):
     """Verifies compilation and layout extraction with user-specified tiled argument layouts."""
