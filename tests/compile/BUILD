@@ -620,4 +620,28 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_test(
+    name = "sink_communication_ops_test",
+    srcs = ["sink_communication_ops_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile/fx_passes:sink_communication_ops",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "roll_nested_regions_test",
+    srcs = ["roll_nested_regions_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile/fx_passes:roll_nested_regions",
+        "//tests:seed_test_utils",
+    ],
+)
+
 torch_tpu_package_end()

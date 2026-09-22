@@ -121,36 +121,18 @@ def _handle_scan_impl(combine_fn, init, xs, additional_inputs, reverse=False):
   if isinstance(combine_fn, torch.export.ExportedProgram):
     actual_combine_fn = combine_fn.module
 
-  # Perform a meta-run to infer the output shapes and dtypes.
-  # pylint: disable=protected-access
-  with torch._subclasses.fake_tensor.FakeTensorMode(allow_non_fake_inputs=True):
-
-    def to_fake(tensors):
-      return [
-          tpu_torch_compile.placeholder_like(t)
-          if isinstance(t, torch.Tensor)
-          else t
-          for t in tensors
-      ]
-
-    fake_inits = to_fake(init_args)
-    fake_xs_heads = to_fake(x_list)
-    fake_extras = to_fake(extra_args)
-
-    fake_result = actual_combine_fn(*fake_inits, *fake_xs_heads, *fake_extras)
-    fake_result_flat, _ = pytree.tree_flatten(fake_result)
-
-    dummy_ys = []
-    seq_len = xs_list[0].shape[0]
-    num_carries = len(init_list)
-    for y in fake_result_flat[num_carries:]:
-      ys_shape = [seq_len] + list(y.shape)
-      dummy_ys.append(torch.zeros(ys_shape, dtype=y.dtype, device="meta"))
-
   # Compile the body sub-graph to MLIR.
   body_args = init_args + x_list + extra_args
   body_args = _pin_offloaded_body_args(actual_combine_fn, body_args)
   body_mlir = export.fx_to_mlir(actual_combine_fn, args=body_args)
+
+  # Infer dummy_ys directly from MLIR result tensors
+  seq_len = xs_list[0].shape[0] if xs_list else 1
+  num_carries = len(init_list)
+  dummy_ys = []
+  for out_t in body_mlir.mlir_result_tensors[num_carries:]:
+    ys_shape = [seq_len] + list(out_t.shape)
+    dummy_ys.append(torch.zeros(ys_shape, dtype=out_t.dtype, device="meta"))
 
   # Call the C++ binding to create a deferred scan operation.
   scan_direction = (

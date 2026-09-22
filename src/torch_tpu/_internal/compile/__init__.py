@@ -72,6 +72,15 @@ def _register_scan_operator() -> None:
 
 _register_scan_operator()
 
+
+def _register_nested_compile_region_operator() -> None:
+  """Registers the nested compile region operator implementation for TPU."""
+  from torch_tpu._internal.compile import nested_compile_region as _  # pylint: disable=g-import-not-at-top  # noqa: F401
+
+
+_register_nested_compile_region_operator()
+
+
 # PEP 8 requires this to be a list of strings, not a tuple or a list of objects.
 __all__ = [
     # go/keep-sorted start
