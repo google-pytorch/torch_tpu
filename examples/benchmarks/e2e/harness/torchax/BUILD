@@ -81,7 +81,7 @@ torch_tpu_py_test(
     },
     nolocal = "user requested to run this manually",
     nopresubmit = "Benchmark.",
-    notest_oss = "requires huggingface configs from internal infra",
+    notest_oss = True,  # requires huggingface configs from internal infra
     shard_count = 50,
     tags = [
         "nofastbuild",  # Benchmark.
@@ -135,7 +135,7 @@ torch_tpu_py_test(
     main = "torchax_benchmark_test.py",
     nolocal = "user requested to run this manually",
     notap = "Development benchmark target; run manually on demand.",
-    notest_oss = "requires huggingface configs from internal infra",
+    notest_oss = True,  # requires huggingface configs from internal infra
     shard_count = 50,
     tags = [
         "nofastbuild",

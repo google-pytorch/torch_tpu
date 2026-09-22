@@ -441,7 +441,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "cache_test",
     srcs = ["cache_test.py"],
-    notest_oss = "subprocess spawning to set env vars timeout in oss",
+    notest_oss = True,  # subprocess spawning to set env vars timeout in oss
     tags = [
         "requires-net:external",
         "requires-tpu-v5lite",

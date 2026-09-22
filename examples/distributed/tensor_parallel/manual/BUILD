@@ -29,7 +29,7 @@ torch_tpu_py_test(
     },
     main = "launch.py",
     nopresubmit = "slow example",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
+    notest_oss = True,  # Disabled during switch from opt-in to opt-out
     tags = [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.

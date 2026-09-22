@@ -152,7 +152,7 @@ torch_tpu_py_test(
     linking_mode = "static",
     main = "model_performance_benchmarks.py",
     notap = "Tested on guitar workflow.",
-    notest_oss = "Benchmarks have a separate workflow.",
+    notest_oss = True,  # Benchmarks have a separate workflow.
     shard_count = 50,
     strict = True,
     tags = if_oss(
@@ -182,7 +182,7 @@ torch_tpu_py_test(
     autoload = False,
     main = "model_performance_benchmarks.py",
     notap = "Tested on guitar workflow.",
-    notest_oss = "Benchmarks have a separate workflow.",
+    notest_oss = True,  # Benchmarks have a separate workflow.
     shard_count = 50,
     strict = True,
     tags = [
@@ -208,7 +208,7 @@ torch_tpu_py_test(
     linking_mode = "static",
     main = "model_performance_benchmarks.py",
     notap = "Tested on guitar workflow.",
-    notest_oss = "Benchmarks have a separate workflow.",
+    notest_oss = True,  # Benchmarks have a separate workflow.
     shard_count = 4,
     strict = True,
     tags = [
@@ -233,7 +233,7 @@ torch_tpu_py_test(
     linking_mode = "static",
     main = "model_performance_benchmarks.py",
     notap = "Tested on guitar workflow.",
-    notest_oss = "Benchmarks have a separate workflow.",
+    notest_oss = True,  # Benchmarks have a separate workflow.
     shard_count = 4,
     strict = True,
     tags = [
@@ -254,7 +254,7 @@ torch_tpu_py_test(
     srcs = ["model_compile_benchmarks.py"],
     main = "model_compile_benchmarks.py",
     notap = "To be tested on guitar workflow.",
-    notest_oss = "transformers version mismatches in oss with torch.compile issues",
+    notest_oss = True,  # transformers version mismatches in oss with torch.compile issues
     tags = [
         "cpu:4",
         "nofastbuild",  # Measures performance.
@@ -288,7 +288,7 @@ torch_tpu_py_test(
     linking_mode = "static",
     main = "model_quality_benchmarks.py",
     notap = "Tested on guitar workflow.",
-    notest_oss = "Benchmarks have a separate workflow.",
+    notest_oss = True,  # Benchmarks have a separate workflow.
     shard_count = 4,
     strict = True,
     tags = [
@@ -358,7 +358,7 @@ torch_tpu_py_test(
     srcs = ["layer_performance_benchmarks.py"],
     main = "layer_performance_benchmarks.py",
     notap = "Tested on guitar workflow.",
-    notest_oss = "Benchmarks have a separate workflow.",
+    notest_oss = True,  # Benchmarks have a separate workflow.
     shard_count = 8,
     strict = True,
     tags = [
@@ -412,7 +412,7 @@ torch_tpu_py_test(
     },
     main = "layer_performance_benchmarks.py",
     notap = "Tested on guitar workflow.",
-    notest_oss = "Benchmarks have a separate workflow.",
+    notest_oss = True,  # Benchmarks have a separate workflow.
     platform = "//buildenv/platforms/forge/gpu/b200_full",
     shard_count = 2,
     strict = True,
@@ -451,7 +451,7 @@ torch_tpu_py_test(
     autoload = False,
     main = "layer_performance_benchmarks.py",
     notap = "Tested on guitar workflow.",
-    notest_oss = "Benchmarks have a separate workflow.",
+    notest_oss = True,  # Benchmarks have a separate workflow.
     shard_count = 9,
     strict = True,
     tags = [
@@ -488,7 +488,7 @@ torch_tpu_py_test(
     linking_mode = "static",
     main = "model_performance_benchmarks.py",
     notap = "Tested on guitar workflow.",
-    notest_oss = "Benchmarks have a separate workflow.",
+    notest_oss = True,  # Benchmarks have a separate workflow.
     tags = [
         "cpu:4",
         "nofastbuild",  # Benchmark.
@@ -516,7 +516,7 @@ torch_tpu_py_test(
     },
     main = "model_performance_benchmarks.py",
     notap = "Frequently causes Forge OOM.",
-    notest_oss = "Benchmarks have a separate workflow.",
+    notest_oss = True,  # Benchmarks have a separate workflow.
     platform = "//buildenv/platforms/forge/gpu/b200_full",
     shard_count = 2,
     tags = [
@@ -551,7 +551,7 @@ torch_tpu_py_test(
     srcs = ["single_trace_trainer_adapter_test.py"],
     main = "single_trace_trainer_adapter_test.py",
     nopresubmit = "slow example",
-    notest_oss = "slow example",
+    notest_oss = True,  # slow example
     tags = [
         "requires-accel-hbm",
         "requires-net:external",
@@ -623,7 +623,7 @@ torch_tpu_py_test(
     name = "device_utils_test",
     srcs = ["device_utils_test.py"],
     args = ["--torch_tpu_internal_enable_compilation_container=true"],
-    notest_oss = "Flags don't work in OSS.",
+    notest_oss = True,  # Flags don't work in OSS.
     tags = [
         "requires-tpu-v5lite",
     ],
@@ -644,7 +644,7 @@ torch_tpu_py_test(
     args = ["--bounded_dynamic=True"],
     main = "layer_performance_benchmarks.py",
     notap = "disabled until dynamic shape support is added.",
-    notest_oss = "disabled until dynamic shape support is added",
+    notest_oss = True,  # disabled until dynamic shape support is added
     shard_count = 50,
     strict = True,
     tags = [

@@ -24,7 +24,7 @@ torch_tpu_py_test(
     srcs = ["launch.py"],
     main = "launch.py",
     nopresubmit = "slow example",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
+    notest_oss = True,  # Disabled during switch from opt-in to opt-out
     tags = [
         "noasan",  # OOMs even with the highest memory limit.
         "requires-mem:28g",

@@ -163,7 +163,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "env_vars_test",
     srcs = ["env_vars_test.py"],
-    notest_oss = "subprocess spawning to set env vars timeout in oss",
+    notest_oss = True,  # subprocess spawning to set env vars timeout in oss
     tags = [
         "requires-tpu-v5lite",
     ],
@@ -208,7 +208,7 @@ torch_tpu_py_test(
     srcs = ["module_registry_test.py"],
     data = ["//tests/compile:data/goldfish.jpg"],
     notap = "TODO(b/561614286): Flaky test due to unstable model cache access",
-    notest_oss = "No OSS access to model resources",
+    notest_oss = True,  # No OSS access to model resources
     shard_count = 6,
     tags = [
         "noasan",  # TODO: fix the test timing out in asan mode.
@@ -1057,7 +1057,7 @@ torch_tpu_py_test(
     srcs = ["sparse_dense_matmul_test.py"],
     main = "sparse_dense_matmul_test.py",
     notap = "Subslicing errors on tpu7x. See b/515767150",
-    notest_oss = "Disabled because of no support for tpu v7 in presubmit",
+    notest_oss = True,  # Disabled because of no support for tpu v7 in presubmit
     tags = [
         "requires-tpu-v7x",
     ],
@@ -1519,7 +1519,7 @@ torch_tpu_py_test(
         "TORCH_TPU_ENABLE_DEBUG_CHECKS": "1",
     },
     main = "errors_test.py",
-    notest_oss = "Intended not to run this slow test in OSS. It's low value to test the error messages in both OSS and internal builds.",
+    notest_oss = True,  # Intended not to run this slow test in OSS. It's low value to test the error messages in both OSS and internal builds.
     shard_count = 4,
     tags = [
         "nosan",  # *san builds are low-value for error tests.
@@ -1553,7 +1553,7 @@ torch_tpu_py_test(
         "TORCH_TPU_ENABLE_DEBUG_CHECKS": "1",
     },
     main = "tpu_errors_test.py",
-    notest_oss = "Intended not to run this slow test in OSS.",
+    notest_oss = True,  # Intended not to run this slow test in OSS.
     shard_count = 4,
     tags = [
         "nosan",  # *san builds are low-value for error tests.
@@ -1592,7 +1592,7 @@ torch_tpu_py_test(
     },
     main = "errors_test.py",
     nolocal = "Skipping in local runs by default as it requires --config=cuda.",
-    notest_oss = "Low value in maintaining for both internal and OSS and they run different versions of PyTorch.",
+    notest_oss = True,  # Low value in maintaining for both internal and OSS and they run different versions of PyTorch.
     shard_count = 8,
     tags = [
         "nosan",  # *san builds are low-value for error tests.
@@ -1988,7 +1988,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "rng_stress_test",
     srcs = ["rng_stress_test.py"],
-    notest_oss = "timeout in oss",
+    notest_oss = True,  # timeout in oss
     shard_count = 4,
     tags = [
         "requires-tpu-v5lite",
@@ -2178,7 +2178,7 @@ torch_tpu_py_test(
     env = {
         "TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND": "1",
     },
-    notest_oss = "Absl flags don't work in OSS",
+    notest_oss = True,  # Absl flags don't work in OSS
     deps = [
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",

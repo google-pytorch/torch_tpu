@@ -43,7 +43,7 @@ torch_tpu_py_test(
     name = "tpu_visualizer_test",
     srcs = ["tpu_visualizer_test.py"],
     nopresubmit = "slow example",
-    notest_oss = "Topology differences",
+    notest_oss = True,  # Topology differences
     tags = [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.

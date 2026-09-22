@@ -193,7 +193,7 @@ torch_tpu_py_test(
         "",
     },
     main = "collective_ops_test.py",
-    notest_oss = "fix hang in OSS",  # TODO
+    notest_oss = True,  # fix hang in OSS (TODO)
     shard_count = 12,
     tags = if_oss(
         ["exclusive"],
@@ -227,7 +227,7 @@ torch_tpu_py_test(
         "--test_mode=tpu",
     ],
     env = {"TORCH_SHOW_CPP_STACKTRACES": "0"},
-    notest_oss = "fix hang in OSS",  # TODO
+    notest_oss = True,  # fix hang in OSS (TODO)
     shard_count = 12,
     tags = if_oss(
         ["exclusive"],
@@ -257,7 +257,7 @@ torch_tpu_py_test(
     ],
     env = {"TORCH_SHOW_CPP_STACKTRACES": "1"},
     main = "collective_errors_test.py",
-    notest_oss = "fix hang in OSS",  # TODO
+    notest_oss = True,  # fix hang in OSS (TODO)
     shard_count = 12,
     tags = if_oss(
         ["exclusive"],
@@ -581,7 +581,7 @@ torch_tpu_py_test(
         "--xla_tpu_debug_sc_sflag_wait_timeout_ms=10000",
         "--xla_tpu_debug_sflag_wait_timeout_ms=10000",
     ],
-    notest_oss = "XLA timeout flags not available.",
+    notest_oss = True,  # XLA timeout flags not available.
     shard_count = 8,
     tags = [
         "noasan",  # Disabled due to b/497035517.
@@ -847,7 +847,7 @@ torch_tpu_py_library(
 torch_tpu_py_test(
     name = "handshake_e2e_test",
     srcs = ["handshake_e2e_test.py"],
-    notest_oss = "TODO(b/537411907): Re-enable in OSS once fixed.",
+    notest_oss = True,  # TODO(b/537411907): Re-enable in OSS once fixed.
     shard_count = 8,
     tags = [
         "noasan",  # TODO(b/497035517)
@@ -914,7 +914,7 @@ torch_tpu_py_test(
     name = "window_tpu_test",
     srcs = ["window_tpu_test.py"],
     autoload = True,
-    notest_oss = "Requires PJRT RawBuffer extension not yet exported in OSS libtpu.",
+    notest_oss = True,  # Requires PJRT RawBuffer extension not yet exported in OSS libtpu.
     shard_count = 6,
     tags = if_oss(
         ["exclusive"],

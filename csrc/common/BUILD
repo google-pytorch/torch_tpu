@@ -1476,7 +1476,7 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    notest_oss = "Need to set up a GCS bucket for OSS tests to write to.",
+    notest_oss = True,  # Need to set up a GCS bucket for OSS tests to write to.
     tags = [
         "requires-net:external",  # Requires remote file access.
         "requires-tpu-v5lite",

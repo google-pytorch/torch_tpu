@@ -313,9 +313,8 @@ def _check_and_adjust_test_tags(
             runs. This behavior can be overridden by setting nolocal to a non-empty
             string - that will add a "manual" tag to the test regardless of notap or nopresubmit,
             and the string will be used as the reason.
-        notest_oss: If a string is provided, the test will not be run in OSS,
-            but it will still be built. The string should be a reason explaining
-            why it was disabled.
+        notest_oss: If True, the test will not be run in OSS,
+            but it will still be built.
         nobuild_oss: If a string is provided, the test will not be built nor
             run in OSS. The string provided should be a reason explaining why
             building was disabled. You should strongly prefer notest_oss to
@@ -360,6 +359,9 @@ def _check_and_adjust_test_tags(
                  "should be skipped in build.")
         tags.append("nobuild")  # So that we know that this test shouldn't have a build_test.
 
+    if type(notest_oss) != "bool":
+        fail("notest_oss must be a Boolean.")
+
     # Adjust tags for nobuild_oss and notest_oss
     #
     # This must come before the logic adding the build_test
@@ -372,23 +374,9 @@ def _check_and_adjust_test_tags(
         if is_oss and "nobuild" not in tags:
             tags.append("nobuild")
 
-        # We want to allow both notest_oss and nobuild_oss to be set because
-        # sometimes the reason for disabling build is different from the reason
-        # for disabling tests (e.g. build is broken but also the tests are too
-        # slow to run even if the build were working). We will still try to
-        # discourage setting both values for the same root cause.
-        if notest_oss == nobuild_oss:
-            fail("nobuild_oss implies notest_oss, so there is no reason to set both " +
-                 "with the same reason, either set only nobuild_oss or explain " +
-                 "both reasons.")
-        if notest_oss == None:
-            notest_oss = nobuild_oss
+        notest_oss = True
 
-    if notest_oss != None:
-        if type(notest_oss) != "string" or not notest_oss:
-            fail("notest_oss must be a non-empty string documenting why the test " +
-                 "should be skipped in OSS tests.")
-
+    if notest_oss:
         # notest_oss should only affect the OSS build.
         if is_oss:
             tags.append("notest")
@@ -555,7 +543,7 @@ def check_and_adjust_test_tags_for_testing(
         notap = None,
         nopresubmit = None,
         nolocal = None,
-        notest_oss = None,
+        notest_oss = False,
         nobuild_oss = None,
         nopresubmit_oss = None,
         nonightly_oss = None,
@@ -596,7 +584,7 @@ def torch_tpu_cc_test(
         notap = None,
         nopresubmit = None,
         nolocal = None,
-        notest_oss = None,
+        notest_oss = False,
         nobuild_oss = None,
         nopresubmit_oss = None,
         nonightly_oss = None,
@@ -632,9 +620,8 @@ def torch_tpu_cc_test(
             runs. This behavior can be overridden by setting nolocal to a non-empty
             string - that will add a "manual" tag to the test regardless of notap or nopresubmit,
             and the string will be used as the reason.
-        notest_oss: If a string is provided, the test will not be run in OSS,
-            but it will still be built. The string should be a reason explaining
-            why it was disabled.
+        notest_oss: If True, the test will not be run in OSS,
+            but it will still be built.
         nobuild_oss: If a string is provided, the test will not be built nor
             run in OSS. The string provided should be a reason explaining why
             building was disabled. You should strongly prefer notest_oss to
@@ -894,7 +881,7 @@ def torch_tpu_py_test(
         notap = None,
         nopresubmit = None,
         nolocal = None,
-        notest_oss = None,
+        notest_oss = False,
         nobuild_oss = None,
         nopresubmit_oss = None,
         nonightly_oss = None,
@@ -934,9 +921,8 @@ def torch_tpu_py_test(
             runs. This behavior can be overridden by setting nolocal to a non-empty
             string - that will add a "manual" tag to the test regardless of notap or nopresubmit,
             and the string will be used as the reason.
-        notest_oss: If a string is provided, the test will not be run in OSS,
-            but it will still be built. The string should be a reason explaining
-            why it was disabled.
+        notest_oss: If True, the test will not be run in OSS,
+            but it will still be built.
         nobuild_oss: If a string is provided, the test will not be built nor
             run in OSS. The string provided should be a reason explaining why
             building was disabled. You should strongly prefer notest_oss to

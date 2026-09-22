@@ -76,7 +76,7 @@ torch_tpu_py_library(
 torch_tpu_py_test(
     name = "llama3_2_1b_quality_benchmark_test",
     srcs = ["llama3_2_1b_quality_benchmark_test.py"],
-    notest_oss = "Disabled during initial build",
+    notest_oss = True,  # Disabled during initial build
     deps = [
         ":llama3_2_1b_quality_benchmark",
         "//examples/benchmarks/quality_utils:quality_benchmark_model",
@@ -91,7 +91,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "qwen3_1_7b_quality_benchmark_test",
     srcs = ["qwen3_1_7b_quality_benchmark_test.py"],
-    notest_oss = "Disabled during initial build",
+    notest_oss = True,  # Disabled during initial build
     deps = [
         ":qwen3_1_7b_quality_benchmark",
         "//examples/benchmarks/quality_utils:quality_benchmark_model",

@@ -49,7 +49,7 @@ torch_tpu_py_library(
 torch_tpu_py_test(
     name = "perplexity_metric_test",
     srcs = ["perplexity_metric_test.py"],
-    notest_oss = "Disabled during initial build",
+    notest_oss = True,  # Disabled during initial build
     deps = [
         ":perplexity_metric",
         "//examples:init",  # build_cleaner: keep
