@@ -97,6 +97,151 @@ class DeviceUtilsTest(seed_test_utils.RepeatableTest):
     # We expect max of 1s and 2s, which is 2s.
     self.assertEqual(max_time, 2.0)
 
+  def test_get_max_total_device_time_sums_every_event(self):
+    mock_client = mock.create_autospec(xprof_adapter.XprofAnalysisClient)
+    mock_client.get_hosts.return_value = ['host1']
+
+    # A single step frequently executes more than one XLA module (forward,
+    # backward, optimizer, ...), so the event count is not the step count and
+    # events must never be truncated to a step count.
+    durations_ps = [
+        1000000000000,  # 1s
+        1000000000000,  # 1s
+        2000000000000,  # 2s
+        3000000000000,  # 3s
+    ]
+    mock_events = []
+    for i, duration_ps in enumerate(durations_ps):
+      mock_event = mock.MagicMock()
+      mock_event.offset_ps = (i + 1) * 1000
+      mock_event.duration_ps = duration_ps
+      mock_events.append(mock_event)
+
+    mock_line = mock.MagicMock()
+    mock_line.name = 'XLA Modules:...'
+    mock_line.events = mock_events
+
+    mock_plane = mock.MagicMock()
+    mock_plane.name = '/device:0'
+    mock_plane.lines = [mock_line]
+
+    mock_xspace = mock.MagicMock()
+    mock_xspace.planes = [mock_plane]
+
+    mock_client.get_xspace.return_value = mock_xspace
+
+    total_time = device_utils.get_max_total_device_time(
+        session_id='session_123', client=mock_client
+    )
+    self.assertEqual(total_time, 7.0)
+
+  def _make_xspace(self, planes):
+    mock_xspace = mock.MagicMock()
+    mock_xspace.planes = planes
+    return mock_xspace
+
+  def _make_plane(self, name, durations_ps, offsets_ps=None):
+    if offsets_ps is None:
+      offsets_ps = list(range(len(durations_ps)))
+    events = []
+    for offset_ps, duration_ps in zip(offsets_ps, durations_ps):
+      event = mock.MagicMock()
+      event.offset_ps = offset_ps
+      event.duration_ps = duration_ps
+      events.append(event)
+    line = mock.MagicMock()
+    line.name = 'XLA Modules:...'
+    line.events = events
+    plane = mock.MagicMock()
+    plane.name = name
+    plane.lines = [line]
+    return plane
+
+  def test_get_total_device_time_from_xspace(self):
+    xspace = self._make_xspace(
+        [self._make_plane('/device:0', [1000000000000, 2000000000000])]
+    )
+    self.assertEqual(
+        device_utils.get_total_device_time_from_xspace(xspace), 3.0
+    )
+
+  def test_get_total_device_time_from_xspace_expected_steps_does_not_truncate(
+      self,
+  ):
+    # A step routinely executes more than one XLA module. On TPU, torch_tpu
+    # emits a tiny prologue module plus the main module per step, so 2 profiled
+    # steps produce 4 events. Truncating to the step count would report only
+    # the last 2 events and halve the measured device time.
+    xspace = self._make_xspace([
+        self._make_plane(
+            '/device:0',
+            durations_ps=[
+                1000000000000,  # step 1, module A
+                1000000000000,  # step 1, module B
+                2000000000000,  # step 2, module A
+                3000000000000,  # step 2, module B
+            ],
+            offsets_ps=[1000, 2000, 3000, 4000],
+        )
+    ])
+    self.assertEqual(
+        device_utils.get_total_device_time_from_xspace(
+            xspace, expected_steps=2
+        ),
+        7.0,
+    )
+
+  def test_get_total_device_time_from_xspace_warns_on_partial_step(self):
+    # 3 events over 2 steps means the capture window does not line up with the
+    # measured steps. The total is still reported in full, but a warning flags
+    # the trace as suspect.
+    xspace = self._make_xspace([
+        self._make_plane(
+            '/device:0',
+            durations_ps=[1000000000000, 2000000000000, 3000000000000],
+        )
+    ])
+    with self.assertLogs(level='WARNING') as logs:
+      total = device_utils.get_total_device_time_from_xspace(
+          xspace, expected_steps=2
+      )
+    self.assertEqual(total, 6.0)
+    self.assertRegex('\n'.join(logs.output), 'not a multiple')
+
+  def test_get_total_device_time_from_xspace_takes_max_over_local_devices(self):
+    xspace = self._make_xspace([
+        self._make_plane('/device:0', [1000000000000]),
+        self._make_plane('/device:1', [4000000000000]),
+    ])
+    self.assertEqual(
+        device_utils.get_total_device_time_from_xspace(xspace), 4.0
+    )
+
+  def test_get_total_device_time_from_xspace_ignores_non_device_planes(self):
+    host_plane = self._make_plane('/host:CPU', [9000000000000])
+    device_plane = self._make_plane('/device:0', [1000000000000])
+    xspace = self._make_xspace([host_plane, device_plane])
+    self.assertEqual(
+        device_utils.get_total_device_time_from_xspace(xspace), 1.0
+    )
+
+  def test_get_total_device_time_from_xspace_none(self):
+    self.assertEqual(device_utils.get_total_device_time_from_xspace(None), -1.0)
+
+  def test_get_total_device_time_from_xspace_no_xla_modules(self):
+    plane = mock.MagicMock()
+    plane.name = '/device:0'
+    other_line = mock.MagicMock()
+    other_line.name = 'Steps'
+    other_line.events = []
+    plane.lines = [other_line]
+    self.assertEqual(
+        device_utils.get_total_device_time_from_xspace(
+            self._make_xspace([plane])
+        ),
+        -1.0,
+    )
+
   def test_get_max_total_device_time_missing_args(self):
     self.assertEqual(
         device_utils.get_max_total_device_time(session_id=None, client=None),

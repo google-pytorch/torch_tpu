@@ -103,6 +103,16 @@ class TorchDeviceOps:
     except Exception:  # pylint: disable=broad-except
       return -1.0
 
+  def get_device_time_from_xspace(
+      self,
+      xspace,
+      expected_steps: int | None = None,
+  ) -> float:
+    """Total active device time in seconds from a locally captured XSpace."""
+    return device_utils.get_total_device_time_from_xspace(
+        xspace, expected_steps=expected_steps
+    )
+
   def compile_count(self) -> int:
     """Monotonic count of successfully compiled frames this process."""
     if self.target.platform_spec.kind == target_lib.DeviceKind.TPU:

@@ -256,7 +256,7 @@ torch_tpu_py_test(
         "//examples/benchmarks/huggingface_transformers:model_configs_data",
     ],
     env = {
-        "BENCHMARK_PLATFORM": "v5e_1x1",
+        "BENCHMARK_PLATFORM": "v7_1x1x1",
     },
     main = "torch_benchmark_test.py",
     nolocal = "user requested to run this manually",
@@ -266,8 +266,9 @@ torch_tpu_py_test(
     tags = [
         "nofastbuild",
         "nosan",  # *san tests provide no benefit for benchmarks.
+        "requires-accel-hbm",
         "requires-net:external",
-        "requires-tpu-v5lite",
+        "requires-tpu-v7x",
     ],
     deps = [
         ":base_test",

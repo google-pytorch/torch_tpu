@@ -94,18 +94,117 @@ def _get_peak_hbm_memory_mb(
     return -1.0
 
 
+def _sum_xla_module_time_s(plane: Any) -> tuple[float, int]:
+  """Sums all 'XLA Modules' event durations on a single device plane.
+
+  Every event is summed. A single step commonly executes several XLA modules
+  (e.g. forward, backward and optimizer modules, or a graph split across
+  several executables), so the event count is not the step count and the
+  events must not be truncated to a step count.
+
+  Args:
+    plane: An XPlane whose name identifies a single device.
+
+  Returns:
+    A tuple of (total seconds, number of events summed).
+  """
+  device_time_ps = 0
+  event_count = 0
+  for line in plane.lines:
+    if not line.name.startswith('XLA Modules'):
+      continue
+    for e in line.events:
+      device_time_ps += e.duration_ps
+      event_count += 1
+  return device_time_ps / 1e12, event_count
+
+
+def get_total_device_time_from_xspace(
+    xspace: Any,
+    expected_steps: int | None = None,
+) -> float:
+  """Gets the max total device time from an in-process XSpace.
+
+  Prefer this over `get_max_total_device_time`. The XSpace produced by the
+  local `XprofSession` covers only this process's own capture window, so it
+  cannot pick up traces belonging to other benchmarks. Re-fetching by uploaded
+  session id is unsafe: xprof may assign one session id to several benchmark
+  processes, in which case each process appears as a separate "host" and the
+  max-across-hosts in `get_max_total_device_time` returns whichever benchmark
+  was slowest.
+
+  Args:
+    xspace: The XSpace returned by `XprofSession.end_session_and_get_xspace*`.
+    expected_steps: Optional step count, used only to sanity check the trace.
+      Event durations are never truncated to this, because a step can execute
+      more than one XLA module.
+
+  Returns:
+    The total device active time in seconds, or -1.0 if not available.
+  """
+  if xspace is None:
+    logging.warning('get_total_device_time_from_xspace: xspace is None')
+    return -1.0
+
+  try:
+    max_device_time_s = 0.0
+    has_any_device = False
+
+    for plane in xspace.planes:
+      if not plane.name.startswith('/device:'):
+        continue
+      device_time_s, event_count = _sum_xla_module_time_s(plane)
+      if event_count == 0:
+        continue
+      if expected_steps and event_count % expected_steps:
+        # Each step should contribute the same set of modules. A mismatch
+        # means the capture window does not line up with the measured steps.
+        logging.warning(
+            'Device %s: %d XLA module events is not a multiple of %d profiled'
+            ' steps; device time may be inaccurate.',
+            plane.name,
+            event_count,
+            expected_steps,
+        )
+      logging.info(
+          'Device %s time: %.6f seconds (events=%d)',
+          plane.name,
+          device_time_s,
+          event_count,
+      )
+      has_any_device = True
+      max_device_time_s = max(max_device_time_s, device_time_s)
+
+    if not has_any_device:
+      logging.warning('No XLA Modules execution events found in XSpace')
+      return -1.0
+
+    logging.info('Calculated max_device_time_s: %s', max_device_time_s)
+    return max_device_time_s
+
+  except Exception:  # pylint: disable=broad-except
+    logging.exception('Failed to parse device time from in-process XSpace')
+    return -1.0
+
+
 def get_max_total_device_time(
     session_id: str | None = None,
     client: xprof_adapter.XprofAnalysisClient | None = None,
 ) -> float:
   """Gets the max total device time across all devices running the model.
 
+  WARNING: prefer `get_total_device_time_from_xspace` when the profiling
+  session is owned by the caller. xprof may assign one session id to several
+  benchmark processes; each then appears as a separate host here, and the
+  max-across-hosts below can return another benchmark's device time. This
+  remains correct for a genuinely distributed, single-workload session.
+
   Args:
     session_id: The session ID to get the profile for.
     client: The xprof client to use.
 
   Returns:
-    The total device active time in seconds, or None if failed or not available.
+    The total device active time in seconds, or -1.0 if failed or not available.
   """
   logging.info(
       'get_total_device_time called with session_id=%s, client=%s',
@@ -138,16 +237,9 @@ def get_max_total_device_time(
       for plane in xspace.planes:
         if plane.name.startswith('/device:'):
           logging.info('Analyzing plane: %s on host: %s', plane.name, host)
-          device_time_ps = 0
-          event_count = 0
-          for line in plane.lines:
-            if line.name.startswith('XLA Modules'):
-              for e in line.events:
-                device_time_ps += e.duration_ps
-                event_count += 1
+          device_time_s, event_count = _sum_xla_module_time_s(plane)
 
           if event_count > 0:
-            device_time_s = device_time_ps / 1e12
             logging.info(
                 'Device %s on host %s time: %.6f seconds (events=%d)',
                 plane.name,

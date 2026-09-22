@@ -130,7 +130,7 @@ torch_tpu_py_test(
     ],
     autoload = False,
     env = {
-        "BENCHMARK_PLATFORM": "v5e_1x1",
+        "BENCHMARK_PLATFORM": "v7_1x1x1",
     },
     main = "torchax_benchmark_test.py",
     nolocal = "user requested to run this manually",
@@ -140,8 +140,9 @@ torch_tpu_py_test(
     tags = [
         "nofastbuild",
         "nosan",  # *san tests provide no benefit for benchmarks.
+        "requires-accel-hbm",
         "requires-net:external",
-        "requires-tpu-v5lite",
+        "requires-tpu-v7x",
     ],
     deps = [
         ":torchax_device_ops",

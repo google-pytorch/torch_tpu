@@ -65,7 +65,30 @@ class DeviceOps(Protocol):
     ...
 
   def get_device_time(self, session_id: str | None = None) -> float:
-    """Total active device time in seconds across profiling steps, or -1.0 if unsupported."""
+    """Total active device time in seconds across profiling steps, or -1.0 if unsupported.
+
+    WARNING: prefer `get_device_time_from_xspace`. Looking the trace up by
+    session id can return another benchmark's device time, because xprof may
+    assign a single session id to several benchmark processes.
+    """
+    ...
+
+  def get_device_time_from_xspace(
+      self,
+      xspace,
+      expected_steps: int | None = None,
+  ) -> float:
+    """Total active device time in seconds from a locally captured XSpace.
+
+    Args:
+      xspace: The XSpace captured by this process's own xprof session.
+      expected_steps: Number of profiled steps, used only to sanity check the
+        trace. Events are never truncated to this count, because a single step
+        can execute several XLA modules.
+
+    Returns:
+      Total device time in seconds, or -1.0 if unsupported/unavailable.
+    """
     ...
 
   def compile_count(self) -> int:

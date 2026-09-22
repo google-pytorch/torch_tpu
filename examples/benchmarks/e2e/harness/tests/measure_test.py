@@ -356,7 +356,11 @@ class XprofContextTest(seed_test_utils.RepeatableTest):
         measure_lib.xprof_adapter, "XprofSession"
     ) as mock_session_cls:
       mock_session = mock_session_cls.return_value
-      mock_session.end_session_and_get_session_id.return_value = "session_123"
+      sentinel_xspace = mock.MagicMock()
+      mock_session.end_session_and_get_xspace_and_url.return_value = (
+          sentinel_xspace,
+          "http://xprof/?session_id=session_123",
+      )
 
       with measure_lib.XprofContext(
           name="test_session", enable_xprof=True
@@ -368,19 +372,23 @@ class XprofContextTest(seed_test_utils.RepeatableTest):
             enable_python_tracer=True,
             host_cpu_profile=True,
             response_max_bytes=measure_lib._PROFILE_MAX_BYTES,
+            session_id=mock.ANY,
         )
         self.assertIsNone(ctx.session_id)
+        self.assertIsNone(ctx.xspace)
 
-      mock_session.end_session_and_get_session_id.assert_called_once()
+      mock_session.end_session_and_get_xspace_and_url.assert_called_once()
       self.assertEqual(ctx.session_id, "session_123")
+      self.assertIs(ctx.xspace, sentinel_xspace)
 
   def test_xprof_enabled_trace_only_host(self):
     with mock.patch.object(
         measure_lib.xprof_adapter, "XprofSession"
     ) as mock_session_cls:
       mock_session = mock_session_cls.return_value
-      mock_session.end_session_and_get_session_id.return_value = (
-          "session_host_only"
+      mock_session.end_session_and_get_xspace_and_url.return_value = (
+          mock.MagicMock(),
+          "http://xprof/?session_id=session_host_only",
       )
 
       with measure_lib.XprofContext(
@@ -391,10 +399,11 @@ class XprofContextTest(seed_test_utils.RepeatableTest):
             enable_python_tracer=False,
             host_cpu_profile=True,
             response_max_bytes=measure_lib._PROFILE_MAX_BYTES,
+            session_id=mock.ANY,
             trace_mode="TRACE_ONLY_HOST",
         )
 
-      mock_session.end_session_and_get_session_id.assert_called_once()
+      mock_session.end_session_and_get_xspace_and_url.assert_called_once()
       self.assertEqual(ctx.session_id, "session_host_only")
 
   def test_xprof_enabled_exception_propagates_and_session_ends(self):
@@ -402,7 +411,10 @@ class XprofContextTest(seed_test_utils.RepeatableTest):
         measure_lib.xprof_adapter, "XprofSession"
     ) as mock_session_cls:
       mock_session = mock_session_cls.return_value
-      mock_session.end_session_and_get_session_id.return_value = "session_err"
+      mock_session.end_session_and_get_xspace_and_url.return_value = (
+          mock.MagicMock(),
+          "http://xprof/?session_id=session_err",
+      )
 
       with self.assertRaises(ValueError):
         with measure_lib.XprofContext(
@@ -410,8 +422,79 @@ class XprofContextTest(seed_test_utils.RepeatableTest):
         ) as ctx:
           raise ValueError("test error")
 
-      mock_session.end_session_and_get_session_id.assert_called_once()
+      mock_session.end_session_and_get_xspace_and_url.assert_called_once()
       self.assertEqual(ctx.session_id, "session_err")
+
+  def test_xprof_falls_back_when_xspace_api_unavailable(self):
+    with mock.patch.object(
+        measure_lib.xprof_adapter, "XprofSession"
+    ) as mock_session_cls:
+      mock_session = mock_session_cls.return_value
+      mock_session.end_session_and_get_xspace_and_url.side_effect = (
+          AttributeError("unsupported")
+      )
+      mock_session.end_session_and_get_session_id.return_value = "fallback_id"
+
+      with measure_lib.XprofContext(name="fallback", enable_xprof=True) as ctx:
+        pass
+
+      mock_session.end_session_and_get_session_id.assert_called_once()
+      self.assertEqual(ctx.session_id, "fallback_id")
+      # Without an XSpace, device time is reported as unavailable rather than
+      # being resolved through a possibly-shared session id.
+      self.assertIsNone(ctx.xspace)
+
+  def test_each_session_gets_a_distinct_session_id(self):
+    """Distinct ids are what stop benchmarks sharing one XProf link."""
+    with mock.patch.object(
+        measure_lib.xprof_adapter, "XprofSession"
+    ) as mock_session_cls:
+      mock_session = mock_session_cls.return_value
+      mock_session.end_session_and_get_xspace_and_url.return_value = (
+          mock.MagicMock(),
+          "http://xprof/?session_id=x",
+      )
+
+      for _ in range(25):
+        with measure_lib.XprofContext(name="s", enable_xprof=True):
+          pass
+
+      ids = [
+          call.kwargs["session_id"]
+          for call in mock_session.start_session.call_args_list
+      ]
+      self.assertLen(ids, 25)
+      self.assertLen(set(ids), 25)
+      for session_id in ids:
+        self.assertIsInstance(session_id, int)
+        # Must fit in the uint64 the xprof API expects.
+        self.assertGreater(session_id, 0)
+        self.assertLess(session_id, 1 << 64)
+
+  def test_start_session_falls_back_when_session_id_unsupported(self):
+    with mock.patch.object(
+        measure_lib.xprof_adapter, "XprofSession"
+    ) as mock_session_cls:
+      mock_session = mock_session_cls.return_value
+
+      def start_session(**kwargs):
+        if "session_id" in kwargs:
+          raise TypeError("unexpected keyword argument 'session_id'")
+
+      mock_session.start_session.side_effect = start_session
+      mock_session.end_session_and_get_xspace_and_url.return_value = (
+          mock.MagicMock(),
+          "http://xprof/?session_id=legacy",
+      )
+
+      with measure_lib.XprofContext(name="legacy", enable_xprof=True) as ctx:
+        pass
+
+      self.assertEqual(mock_session.start_session.call_count, 2)
+      self.assertNotIn(
+          "session_id", mock_session.start_session.call_args_list[1].kwargs
+      )
+      self.assertEqual(ctx.session_id, "legacy")
 
 
 class MeasureWarmupXprofTest(seed_test_utils.RepeatableTest):
@@ -422,8 +505,9 @@ class MeasureWarmupXprofTest(seed_test_utils.RepeatableTest):
         measure_lib.xprof_adapter, "XprofSession"
     ) as mock_session_cls:
       mock_session = mock_session_cls.return_value
-      mock_session.end_session_and_get_session_id.return_value = (
-          "warmup_sess_id"
+      mock_session.end_session_and_get_xspace_and_url.return_value = (
+          mock.MagicMock(),
+          "http://xprof/?session_id=warmup_sess_id",
       )
 
       with flagsaver.flagsaver(min_warmup_steps=2, max_warmup_steps=10):
@@ -436,9 +520,10 @@ class MeasureWarmupXprofTest(seed_test_utils.RepeatableTest):
           enable_python_tracer=False,
           host_cpu_profile=True,
           response_max_bytes=measure_lib._PROFILE_MAX_BYTES,
+          session_id=mock.ANY,
           trace_mode="TRACE_ONLY_HOST",
       )
-      mock_session.end_session_and_get_session_id.assert_called_once()
+      mock_session.end_session_and_get_xspace_and_url.assert_called_once()
       self.assertEqual(
           result.warmup_session_xprof_url,
           "http://xprof/?session_id=warmup_sess_id",
@@ -467,8 +552,9 @@ class MeasurePostWarmupXprofTest(seed_test_utils.RepeatableTest):
         measure_lib.xprof_adapter, "XprofSession"
     ) as mock_session_cls:
       mock_session = mock_session_cls.return_value
-      mock_session.end_session_and_get_session_id.return_value = (
-          "post_warmup_sess_id"
+      mock_session.end_session_and_get_xspace_and_url.return_value = (
+          mock.MagicMock(),
+          "http://xprof/?session_id=post_warmup_sess_id",
       )
 
       with flagsaver.flagsaver(post_warmup_steps=3, xprof_steps=2):
@@ -481,8 +567,9 @@ class MeasurePostWarmupXprofTest(seed_test_utils.RepeatableTest):
           enable_python_tracer=True,
           host_cpu_profile=True,
           response_max_bytes=measure_lib._PROFILE_MAX_BYTES,
+          session_id=mock.ANY,
       )
-      mock_session.end_session_and_get_session_id.assert_called_once()
+      mock_session.end_session_and_get_xspace_and_url.assert_called_once()
       self.assertEqual(
           result.post_warmup_run_session_xprof_url,
           "http://xprof/?session_id=post_warmup_sess_id",
@@ -492,10 +579,12 @@ class MeasurePostWarmupXprofTest(seed_test_utils.RepeatableTest):
       self.assertEqual(step.calls, 5)
 
   def test_post_warmup_with_xprof_device_time_calculated(self):
+    sentinel_xspace = mock.MagicMock()
+
     class DeviceTimeOps(RecordingOps):
 
-      def get_device_time(self, session_id=None):
-        if session_id == "post_warmup_sess_id":
+      def get_device_time_from_xspace(self, xspace, expected_steps=None):
+        if xspace is sentinel_xspace and expected_steps == 2:
           return 0.04
         return -1.0
 
@@ -504,8 +593,9 @@ class MeasurePostWarmupXprofTest(seed_test_utils.RepeatableTest):
         measure_lib.xprof_adapter, "XprofSession"
     ) as mock_session_cls:
       mock_session = mock_session_cls.return_value
-      mock_session.end_session_and_get_session_id.return_value = (
-          "post_warmup_sess_id"
+      mock_session.end_session_and_get_xspace_and_url.return_value = (
+          sentinel_xspace,
+          "http://xprof/?session_id=post_warmup_sess_id",
       )
 
       with flagsaver.flagsaver(post_warmup_steps=3, xprof_steps=2):
@@ -513,6 +603,50 @@ class MeasurePostWarmupXprofTest(seed_test_utils.RepeatableTest):
             step, ops, name="test_post_warmup", enable_xprof=True
         )
 
+      self.assertAlmostEqual(
+          result.average_post_warmup_device_time_seconds, 0.02
+      )
+
+  def test_post_warmup_device_time_ignores_shared_session_id(self):
+    """Device time must come from this process's XSpace, not the session id.
+
+    xprof can hand the same session id to several benchmark processes. Looking
+    the trace up by id then returns whichever of them was slowest, so the
+    session-id path must not be consulted at all.
+    """
+    sentinel_xspace = mock.MagicMock()
+
+    class SharedSessionOps(RecordingOps):
+
+      def __init__(self):
+        super().__init__()
+        self.session_id_lookups = 0
+
+      def get_device_time(self, session_id=None, expected_steps=None):
+        # Would return another benchmark's (much larger) device time.
+        self.session_id_lookups += 1
+        return 10.0
+
+      def get_device_time_from_xspace(self, xspace, expected_steps=None):
+        del expected_steps
+        return 0.04 if xspace is sentinel_xspace else -1.0
+
+    step, ops = CountingStep(), SharedSessionOps()
+    with mock.patch.object(
+        measure_lib.xprof_adapter, "XprofSession"
+    ) as mock_session_cls:
+      mock_session = mock_session_cls.return_value
+      mock_session.end_session_and_get_xspace_and_url.return_value = (
+          sentinel_xspace,
+          "http://xprof/?session_id=shared_sess_id",
+      )
+
+      with flagsaver.flagsaver(post_warmup_steps=3, xprof_steps=2):
+        result = measure_lib._post_warmup_run(
+            step, ops, name="test_post_warmup", enable_xprof=True
+        )
+
+      self.assertEqual(ops.session_id_lookups, 0)
       self.assertAlmostEqual(
           result.average_post_warmup_device_time_seconds, 0.02
       )

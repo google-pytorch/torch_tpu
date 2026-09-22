@@ -17,8 +17,10 @@
 import contextlib
 import dataclasses
 import gc
+import random
 import time
 from typing import Iterator
+import urllib.parse
 
 from absl import flags
 from absl import logging
@@ -65,6 +67,33 @@ def _is_warmup_only() -> bool:
 _PROFILE_MAX_BYTES = 500 * 1024 * 1024  # 500 MB
 
 
+def _session_id_from_url(url: str | None) -> str | None:
+  """Extracts the `session_id` query parameter from an xprof URL."""
+  if not url:
+    return None
+  parsed = urllib.parse.urlparse(url)
+  session_ids = urllib.parse.parse_qs(parsed.query).get("session_id")
+  if session_ids:
+    return session_ids[0]
+  # Some xprof URLs carry the id as the final path segment.
+  tail = parsed.path.rstrip("/").rsplit("/", 1)[-1]
+  return tail or None
+
+
+# xprof derives the user-visible session id from the request's session id,
+# generating a random one only when the caller leaves it unset. Left unset,
+# benchmarks that run under one test target end up sharing a session, so their
+# XProf links all point at the same merged page. Supplying our own id per
+# session keeps each benchmark's profile separate. The harness only runs
+# single-host benchmarks, so there is no multi-host session to keep grouped.
+_MAX_UINT64 = (1 << 64) - 1
+
+
+def _new_xprof_session_id() -> int:
+  """Returns an id that is unique across benchmarks, processes, and hosts."""
+  return random.SystemRandom().randrange(1, _MAX_UINT64)
+
+
 class XprofContext:
   """A context manager for Xprof sessions that logs the session URL.
 
@@ -77,6 +106,10 @@ class XprofContext:
       otherwise None.
     session_id: The ID of the xprof session after it has ended, if xprof was
       enabled. Otherwise None.
+    xspace: The XSpace captured by this session, if xprof was enabled and the
+      trace could be retrieved. This holds only this process's own trace, which
+      is why device time is derived from it rather than by re-fetching by
+      session id.
   """
 
   def __init__(
@@ -87,6 +120,7 @@ class XprofContext:
     self.trace_only_host = trace_only_host
     self.session = None
     self.session_id = None
+    self.xspace = None
 
   def __enter__(self):
     if self.enable_xprof:
@@ -98,40 +132,92 @@ class XprofContext:
         kwargs["trace_mode"] = "TRACE_ONLY_HOST"
         host_trace_level = 1
         enable_python_tracer = False
-      self.session.start_session(
-          host_trace_level=host_trace_level,
-          enable_python_tracer=enable_python_tracer,
-          host_cpu_profile=True,
-          response_max_bytes=_PROFILE_MAX_BYTES,
-          **kwargs,
-      )
+      try:
+        self.session.start_session(
+            host_trace_level=host_trace_level,
+            enable_python_tracer=enable_python_tracer,
+            host_cpu_profile=True,
+            response_max_bytes=_PROFILE_MAX_BYTES,
+            session_id=_new_xprof_session_id(),
+            **kwargs,
+        )
+      except TypeError:
+        # Older xprof builds do not accept an explicit session id. Sessions may
+        # then be shared between benchmarks, which affects only the URLs; the
+        # reported device time still comes from this process's own XSpace.
+        logging.warning(
+            "xprof start_session does not accept session_id; xprof links may"
+            " be shared between benchmarks.",
+            exc_info=True,
+        )
+        self.session.start_session(
+            host_trace_level=host_trace_level,
+            enable_python_tracer=enable_python_tracer,
+            host_cpu_profile=True,
+            response_max_bytes=_PROFILE_MAX_BYTES,
+            **kwargs,
+        )
     return self
 
   def __exit__(self, exc_type, exc_val, exc_tb):
     # End the session and log the URL if it was started. If there is an
     # exception, we let the exception propagate.
-    if self.session:
-      self.session_id = self.session.end_session_and_get_session_id()
-      logging.info(
-          "%s xprof URL: http://xprof/?session_id=%s",
+    if not self.session:
+      return
+
+    # Retrieving the XSpace together with the URL ends the session exactly
+    # once and keeps the trace local to this process. Fall back to just the
+    # session id if the combined call is unavailable, accepting that device
+    # time will then be unavailable rather than wrong.
+    try:
+      xspace, url = self.session.end_session_and_get_xspace_and_url()
+      self.xspace = xspace
+      self.session_id = _session_id_from_url(url)
+    except (AttributeError, TypeError, ValueError):
+      logging.warning(
+          "end_session_and_get_xspace_and_url unavailable; falling back to"
+          " session id only for %s. Device time will be reported as"
+          " unavailable rather than risking another benchmark's value.",
           self.name,
-          self.session_id,
+          exc_info=True,
       )
+      self.session_id = self.session.end_session_and_get_session_id()
+
+    logging.info(
+        "%s xprof URL: http://xprof/?session_id=%s",
+        self.name,
+        self.session_id,
+    )
 
 
 def _calculate_avg_device_time(
     device_ops: device_ops_lib.DeviceOps,
-    session_id: str | None,
+    xspace,
     xprof_steps: int,
 ) -> float:
-  """Calculates the average device time in seconds across profiling steps."""
-  if not session_id or xprof_steps <= 0:
+  """Calculates the average device time in seconds across profiling steps.
+
+  Args:
+    device_ops: The device operations to use.
+    xspace: The XSpace captured by this process's own xprof session. Using the
+      local XSpace, rather than re-fetching by session id, is what keeps one
+      benchmark from reporting another benchmark's device time when xprof
+      assigns them a shared session id.
+    xprof_steps: Number of steps that were profiled.
+
+  Returns:
+    The average device time per step in seconds, or -1.0 if unavailable.
+  """
+  if xspace is None or xprof_steps <= 0:
     return -1.0
-  if hasattr(device_ops, "get_device_time"):
-    total_device_time = device_ops.get_device_time(session_id)
-    if total_device_time != -1.0:
-      return total_device_time / xprof_steps
-  return -1.0
+  if not hasattr(device_ops, "get_device_time_from_xspace"):
+    return -1.0
+  total_device_time = device_ops.get_device_time_from_xspace(
+      xspace, expected_steps=xprof_steps
+  )
+  if total_device_time == -1.0:
+    return -1.0
+  return total_device_time / xprof_steps
 
 
 class PostWarmupRecompileError(AssertionError):
@@ -264,8 +350,10 @@ def _warmup_run(
 
   return metrics.WarmupRunResult(
       num_warmup_steps=num_warmup_steps,
-      first_step_time_seconds=timings[0],
-      warmup_overhead_seconds=_get_warmup_overhead(timings, num_warmup_steps),
+      first_step_time_seconds=float(timings[0]),
+      warmup_overhead_seconds=float(
+          _get_warmup_overhead(timings, num_warmup_steps)
+      ),
       warmup_session_xprof_url=warmup_session_xprof_url,
   )
 
@@ -321,7 +409,7 @@ def _post_warmup_run(
       timings[step] = _run_single_step(compile_count_before)
 
   post_warmup_run_session_xprof_url = None
-  session_id = None
+  xspace = None
   if enable_xprof and XPROF_STEPS.value > 0:
     with gc_disabled(), XprofContext(
         name="post_warmup_run",
@@ -331,15 +419,15 @@ def _post_warmup_run(
       for xprof_step in range(XPROF_STEPS.value):
         xprof_timings[xprof_step] = _run_single_step(compile_count_before)
 
+    xspace = xprof_context.xspace
     if xprof_context.session_id:
-      session_id = xprof_context.session_id
       post_warmup_run_session_xprof_url = (
-          f"http://xprof/?session_id={session_id}"
+          f"http://xprof/?session_id={xprof_context.session_id}"
       )
 
   memory_usage = device_ops.peak_memory_mb()
   avg_device_time = _calculate_avg_device_time(
-      device_ops, session_id, XPROF_STEPS.value
+      device_ops, xspace, XPROF_STEPS.value
   )
 
   logging.info("Post Warmup Timings for %s: %s", name, timings)
