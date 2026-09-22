@@ -30,6 +30,7 @@ torch_tpu_py_library(
         "gemma.py",
         "gen_benchmarks.py",
         "llama.py",
+        "qwen.py",
     ],
     allow_multiple_srcs = True,
     deps = [
