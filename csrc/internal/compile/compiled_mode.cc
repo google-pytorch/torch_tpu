@@ -429,12 +429,31 @@ absl::StatusOr<AsyncCompileResult> TraverseAndCompile(
         unique_donated_inputs.end());
   }
 
+  std::vector<CustomLayout> unique_argument_layouts;
+  if (has_duplicates && !options.argument_layouts.empty()) {
+    absl::Span<const DeviceBufferRef> base_args = traversal->arguments();
+    unique_argument_layouts.resize(base_args.size());
+    for (size_t i = 0;
+         i < std::min(options.argument_layouts.size(), argument_indices.size());
+         ++i) {
+      int64_t base_idx = argument_indices[i];
+      if (unique_argument_layouts[base_idx].minor_to_major.empty() &&
+          options.argument_layouts[i].minor_to_major.size() ==
+              base_args[base_idx].dimensions().size()) {
+        unique_argument_layouts[base_idx] = options.argument_layouts[i];
+      }
+    }
+  } else {
+    unique_argument_layouts = options.argument_layouts;
+  }
+
+  // 2. Compile Traversal and get exec
   auto compilation_spec = GetCompilationSpec(options.compilation_mode);
   TT_ASSIGN_OR_CRASH(  // CRASH_OK=implies a bug in compile backend if this
                        // happens
       auto compiled_kernel,
       traversal->Compile(std::move(compilation_spec), nullptr,
-                         options.use_stablehlo_bounds, options.argument_layouts,
+                         options.use_stablehlo_bounds, unique_argument_layouts,
                          unique_donated_inputs, options.module_name),
       _ << "failed to compile traversal");
 

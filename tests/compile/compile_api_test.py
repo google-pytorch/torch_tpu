@@ -223,12 +223,23 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     self.assertLen(results, 1)
     results[0].cpu()  # Verify it passes
 
-  def test_layout_context_auto_extracted_in_static_compile(self):
-    # Skip test pending layout/tiling propagation fixes in child commit.
-    self.skipTest(
-        'Skipping layout context test pending layout and tiling propagation'
-        ' fixes.'
+  def test_traverse_and_compile_with_duplicate_arguments_and_layouts(self):
+    x = torch.randn(2, 3, device=self.device, dtype=torch.bfloat16)
+    torch.accelerator.synchronize(self.device)
+
+    with eager_mode_compile_fx_graph():
+      z = x + x
+
+    # 2 argument tensors pointing to the same backing storage, with 2 custom argument layouts.
+    compile_result = tpu_torch_compile.traverse_and_compile(
+        [z], [x, x], argument_layouts=[[1, 0], [1, 0]]
     )
+    self.assertIsNotNone(compile_result.executable)
+    results = tpu_torch_compile.execute(compile_result.executable, [x, x])
+    self.assertLen(results, 1)
+    utils.assert_close(results[0].cpu(), (x + x).cpu())
+
+  def test_layout_context_auto_extracted_in_static_compile(self):
     layout = annotations.TpuLayout(minor_to_major=[0, 1], tiles=[[8]])
     with annotations.LayoutContext(layout):
       x = torch.ones(16, 128, device='cpu').to(device=torch.device('tpu'))

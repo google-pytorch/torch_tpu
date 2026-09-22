@@ -353,7 +353,7 @@ class StaticCompiler(Compiler):
             example_inputs,
             bounds,
             enabled=env.get_bool_env_once(
-                "TORCHTPU_STORAGE_AWARE_PLACEHOLDERS", default_value=False
+                "TORCHTPU_STORAGE_AWARE_PLACEHOLDERS", default_value=True
             ),
         )
 
