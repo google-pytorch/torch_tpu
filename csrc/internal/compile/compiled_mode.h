@@ -19,11 +19,13 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string_view>
 #include <vector>
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/Generator.h"
+#include "absl/base/call_once.h"
 #include "absl/base/nullability.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -83,7 +85,7 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ExtractMlirFromGraph(
     mlir::MLIRContext& mlir_context, const std::vector<at::Tensor>& arg_tensors,
     const std::vector<at::Tensor>& result_tensors, bool use_stablehlo_bounds);
 
-// Result of TraverseAndCompile, containing the compiled executable and
+// Result of `TraverseAndCompile`, containing the compiled executable and
 // optionally additional compilation artifacts (like the MLIR module) if
 // requested.
 struct CompileResult {
@@ -91,10 +93,69 @@ struct CompileResult {
   SharedLoadedExecutableWithMetadata executable;
 };
 
+// Result of `TraverseAndCompile`.
+//
+// Unlike `CompileResult`, the executable is not available yet: the underlying
+// compilation future resolves once XLA compilation completes on a background
+// thread.
+class AsyncCompileResult {
+ public:
+  // Constructs an `AsyncCompileResult`.
+  //
+  // Args:
+  //   `module`: Optional MLIR `ContextedModule` built during traversal
+  //   (non-null
+  //     only when `TraverseAndCompileOptions::build_mlir_module` is `true`).
+  //   `executable_future`: Future resolving to the compiled
+  //     `LoadedExecutableWithMetadata`. Must be valid.
+  //   `argument_indices`: Mapping from each caller-supplied argument position
+  //     (`0..N-1`) to the 0-based index of its deduplicated underlying base
+  //     buffer (`0..K-1`, `K <= N`) expected by the compiled XLA executable.
+  //     When multiple input tensors are duplicates or views sharing the same
+  //     base buffer, `Traversal` deduplicates them so the XLA computation takes
+  //     only the `K` unique base buffers as parameters; `argument_indices`
+  //     records which unique base buffer each original input maps to so runtime
+  //     execution can deduplicate call-site arguments in the same order. Empty
+  //     when all input tensors already have distinct base buffers (`K == N`),
+  //     and attached to the resolved `LoadedExecutableWithMetadata` via
+  //     `WithArgumentIndices` on the first call to `Get()`.
+  AsyncCompileResult(absl_nullable std::shared_ptr<ContextedModule> module,
+                     SharedLoadedExecutableWithMetadataFuture executable_future,
+                     Indices argument_indices);
+
+  AsyncCompileResult(const AsyncCompileResult&) = delete;
+  AsyncCompileResult& operator=(const AsyncCompileResult&) = delete;
+  AsyncCompileResult(AsyncCompileResult&&) = default;
+  AsyncCompileResult& operator=(AsyncCompileResult&&) = default;
+
+  absl_nullable const std::shared_ptr<ContextedModule>& module() const {
+    return module_;
+  }
+
+  // Returns `true` if compilation has finished, i.e. if a subsequent `Get()`
+  // will not block. Never blocks.
+  bool IsReady() const;
+
+  // Blocks until compilation finishes and returns the executable, with any
+  // deduplicated argument indices applied once.
+  //
+  // May be called repeatedly and concurrently from multiple threads; every
+  // call returns the same executable (or error status).
+  absl::StatusOr<SharedLoadedExecutableWithMetadata> Get();
+
+ private:
+  std::unique_ptr<absl::once_flag> once_ = std::make_unique<absl::once_flag>();
+  absl_nullable std::shared_ptr<ContextedModule> module_;
+  SharedLoadedExecutableWithMetadataFuture executable_future_;
+  Indices argument_indices_;
+  std::optional<absl::StatusOr<SharedLoadedExecutableWithMetadata>>
+      resolved_executable_;
+};
+
 struct TraverseAndCompileOptions {
   // The compilation mode to use.
   CompilationMode compilation_mode = CompilationMode::kFastRuntime;
-  // If true, build the MLIR module and return it in the CompileResult.
+  // If true, build the MLIR module and return it in the `CompileResult`.
   bool build_mlir_module = false;
   // If true, use StableHLO style bounds in the generated MLIR for dynamic
   // inputs
@@ -107,9 +168,37 @@ struct TraverseAndCompileOptions {
   std::optional<std::string> module_name = std::nullopt;
 };
 
-// Traverses the graph from outputs to arguments and compiles it.
-// Hides the traversal logic within its implementation.
-absl::StatusOr<CompileResult> TraverseAndCompile(
+// Traverses the graph from `result_tensors` back to `argument_tensors`,
+// queries/populates the compilation cache, and returns immediately with an
+// `AsyncCompileResult` wrapping the compilation future without blocking on XLA
+// compilation.
+//
+// Pure C++: does not acquire or release the Python GIL.
+//
+// Preconditions (these indicate a bug in the compile backend, so violations
+// crash rather than return an error):
+//   * `result_tensors` is non-empty.
+//   * No argument tensor has pending deferred ops; arguments must be
+//     placeholders or already-materialized buffers.
+//   * No result tensor is already materializing.
+//
+// Callers are responsible for installing a `ScopedPythonContextProvider`
+// unless they want a specific module name scope in the generated MLIR (without
+// one, `Traversal::BuildMlirModule` falls back to `"unknown"` when
+// `options.module_name` is unset; individual ops still carry the contexts
+// captured when their deferred nodes were created). Callers are also
+// responsible for freeing the GIL if within a Python execution context.
+//
+// Thread-compatible, not thread-safe. Concurrent calls on disjoint graphs are
+// safe: this function holds no shared mutable state and deeper parts of the
+// stack which this delegates to manage synchronization appropriately. What it
+// does *not* provide is an atomic snapshot of the graph: the traversal is a
+// sequence of individually safe reads, so a concurrent mutation of the
+// subgraph reachable from `result_tensors` (materializing part of it, say) can
+// expose an inconsistent view. Callers must keep that subgraph quiescent for
+// the duration of the call; they do not need to serialize calls that touch
+// disjoint graphs.
+absl::StatusOr<AsyncCompileResult> TraverseAndCompile(
     const std::vector<at::Tensor>& result_tensors,
     const std::vector<at::Tensor>& argument_tensors,
     const TraverseAndCompileOptions& options = {});

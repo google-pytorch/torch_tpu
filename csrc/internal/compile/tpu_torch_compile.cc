@@ -531,80 +531,141 @@ SharedLoadedExecutableWithMetadata PyCompileMlir(
   return executable;
 }
 
-CompileResult PyTraverseAndCompile(
-    const std::vector<at::Tensor>& result_tensors,
+void ParseTupleLayout(const py::tuple& t, CustomLayout& cl,
+                      std::vector<int64_t>& minor_to_major) {  // INT_VEC_OK
+  if (!t.empty() && !t[0].is_none()) {
+    minor_to_major = t[0].cast<std::vector<int64_t>>();  // INT_VEC_OK
+  }
+  if (t.size() >= 2 && !t[1].is_none()) {
+    auto tiles = t[1].cast<std::vector<std::vector<int64_t>>>();  // INT_VEC_OK
+    for (const auto& tile : tiles) {
+      cl.tiles.push_back(Indices(tile.begin(), tile.end()));
+    }
+  }
+  if (t.size() >= 3 && !t[2].is_none()) {
+    cl.element_size_in_bits = t[2].cast<int64_t>();
+  }
+}
+
+CustomLayout ParseCustomLayout(const py::object& obj, const at::Tensor& tensor,
+                               size_t arg_index) {
+  CustomLayout cl;
+  std::vector<int64_t> minor_to_major;  // INT_VEC_OK
+
+  // Layouts from Python can be specified as:
+  // 1. A tuple: (minor_to_major, tiles, [element_size_in_bits])
+  // 2. A legacy list: [minor_to_major]
+  if (py::isinstance<py::tuple>(obj)) {
+    ParseTupleLayout(obj.cast<py::tuple>(), cl, minor_to_major);
+  } else if (py::isinstance<py::list>(obj)) {
+    minor_to_major = obj.cast<std::vector<int64_t>>();  // INT_VEC_OK
+  }
+
+  if (!minor_to_major.empty()) {
+    int64_t rank = tensor.dim();
+    TT_CHECK_THROW(IsValidLayout(minor_to_major, rank), error::kInvalidArgument)
+        << "expected valid layout for argument " << arg_index << ", got layout "
+        << ToString(minor_to_major) << " for shape "
+        << ToString(tensor.sizes());
+    cl.minor_to_major = Indices(minor_to_major.begin(), minor_to_major.end());
+  }
+
+  return cl;
+}
+
+std::vector<CustomLayout> ConvertArgumentLayouts(
+    const std::vector<at::Tensor>& argument_tensors,
+    std::optional<std::vector<py::object>> argument_layouts_opt) {
+  if (!argument_layouts_opt.has_value() || argument_layouts_opt->empty()) {
+    return {};
+  }
+  const std::vector<py::object>& argument_layouts = *argument_layouts_opt;
+  TT_CHECK_THROW(argument_layouts.size() == argument_tensors.size(),
+                 error::kInvalidArgument)
+      << "expected number of argument_layouts to match the number of "
+         "argument_tensors, got number of argument_layouts "
+      << argument_layouts.size() << " and number of argument_tensors "
+      << argument_tensors.size();
+
+  std::vector<CustomLayout> converted_layouts;
+  converted_layouts.reserve(argument_layouts.size());
+  for (size_t i = 0; i < argument_layouts.size(); ++i) {
+    converted_layouts.push_back(
+        ParseCustomLayout(argument_layouts[i], argument_tensors[i], i));
+  }
+  return converted_layouts;
+}
+
+TraverseAndCompileOptions ConvertTraverseAndCompileOptions(
     const std::vector<at::Tensor>& argument_tensors, bool fast_compile,
     bool build_mlir_module, bool use_stablehlo_bounds,
     std::optional<std::vector<py::object>> argument_layouts_opt = std::nullopt,
     const std::vector<int64_t>& donated_inputs = {},  // INT_VEC_OK
     const std::optional<std::string>& module_name = std::nullopt) {
-  const std::vector<py::object> argument_layouts =
-      std::move(argument_layouts_opt).value_or(std::vector<py::object>{});
-  std::vector<CustomLayout> converted_layouts;
-  if (!argument_layouts.empty()) {
-    TT_CHECK_THROW(argument_layouts.size() == argument_tensors.size(),
-                   error::kInvalidArgument)
-        << "expected number of argument_layouts to match the number of "
-           "argument_tensors, got number of argument_layouts "
-        << argument_layouts.size() << " and number of argument_tensors "
-        << argument_tensors.size();
+  return TraverseAndCompileOptions{
+      .compilation_mode = fast_compile ? CompilationMode::kFastCompile
+                                       : CompilationMode::kFastRuntime,
+      .build_mlir_module = build_mlir_module,
+      .use_stablehlo_bounds = use_stablehlo_bounds,
+      .argument_layouts = ConvertArgumentLayouts(
+          argument_tensors, std::move(argument_layouts_opt)),
+      .donated_inputs = Indices(donated_inputs.begin(), donated_inputs.end()),
+      .module_name = module_name,
+  };
+}
 
-    converted_layouts.reserve(argument_layouts.size());
-    for (size_t i = 0; i < argument_layouts.size(); ++i) {
-      const py::object& obj = argument_layouts[i];
-      CustomLayout cl;
-      std::vector<int64_t> minor_to_major;  // INT_VEC_OK
-      // Layouts from Python can be specified as:
-      // 1. A tuple: (minor_to_major, tiles, [element_size_in_bits])
-      // 2. A legacy list: [minor_to_major]
-      if (py::isinstance<py::tuple>(obj)) {
-        py::tuple t = obj.cast<py::tuple>();
-        if (!t.empty() && !t[0].is_none()) {
-          minor_to_major = t[0].cast<std::vector<int64_t>>();  // INT_VEC_OK
-        }
-        if (t.size() >= 2 && !t[1].is_none()) {
-          std::vector<std::vector<int64_t>> tiles =            // INT_VEC_OK
-              t[1].cast<std::vector<std::vector<int64_t>>>();  // INT_VEC_OK
-          for (const auto& tile : tiles) {
-            cl.tiles.push_back(Indices(tile.begin(), tile.end()));
-          }
-        }
-        if (t.size() >= 3 && !t[2].is_none()) {
-          cl.element_size_in_bits = t[2].cast<int64_t>();
-        }
-      } else if (py::isinstance<py::list>(obj)) {
-        minor_to_major = obj.cast<std::vector<int64_t>>();  // INT_VEC_OK
-      }
+AsyncCompileResult PyAsyncTraverseAndCompile(
+    const std::vector<at::Tensor>& result_tensors,
+    const std::vector<at::Tensor>& argument_tensors, bool fast_compile = false,
+    bool build_mlir_module = false, bool use_stablehlo_bounds = false,
+    std::optional<std::vector<py::object>> argument_layouts_opt = std::nullopt,
+    const std::vector<int64_t>& donated_inputs = {},  // INT_VEC_OK
+    const std::optional<std::string>& module_name = std::nullopt) {
+  // Capture the Python traceback while the GIL is held; symbolization calls
+  // into CPython. Once captured, the context is a pure-C++ snapshot on a
+  // thread-local stack, so the traversal and MLIR lowering below can read it
+  // with the GIL released.
+  ScopedPythonContextCapturer capturer(OpName::kCompileMlir);
+  ScopedPythonContextProvider provider(
+      ScopedPythonContextCapturer::GetContext());
 
-      if (!minor_to_major.empty()) {
-        int64_t rank = argument_tensors[i].dim();
-        TT_CHECK_THROW(IsValidLayout(minor_to_major, rank),
-                       error::kInvalidArgument)
-            << "expected valid layout for argument " << i << ", got layout "
-            << ToString(minor_to_major) << " for shape "
-            << ToString(argument_tensors[i].sizes());
-        cl.minor_to_major =
-            Indices(minor_to_major.begin(), minor_to_major.end());
-      }
-      converted_layouts.push_back(std::move(cl));
-    }
+  auto options = ConvertTraverseAndCompileOptions(
+      argument_tensors, fast_compile, build_mlir_module, use_stablehlo_bounds,
+      std::move(argument_layouts_opt), donated_inputs, module_name);
+
+  absl::StatusOr<AsyncCompileResult> status_or;
+  {
+    // Release the GIL across traversal, MLIR lowering, and the cache query so
+    // multiple Python threads can lower and enqueue compilations in parallel.
+    py::gil_scoped_release release;
+    status_or = TraverseAndCompile(result_tensors, argument_tensors, options);
   }
-
-  TT_ASSIGN_OR_THROW(
-      CompileResult result,
-      TraverseAndCompile(
-          result_tensors, argument_tensors,
-          TraverseAndCompileOptions{
-              .compilation_mode = fast_compile ? CompilationMode::kFastCompile
-                                               : CompilationMode::kFastRuntime,
-              .build_mlir_module = build_mlir_module,
-              .use_stablehlo_bounds = use_stablehlo_bounds,
-              .argument_layouts = std::move(converted_layouts),
-              .donated_inputs =
-                  Indices(donated_inputs.begin(), donated_inputs.end()),
-              .module_name = module_name,
-          }));
+  TT_ASSIGN_OR_THROW(AsyncCompileResult result, std::move(status_or));
   return result;
+}
+
+CompileResult PyTraverseAndCompile(
+    const std::vector<at::Tensor>& result_tensors,
+    const std::vector<at::Tensor>& argument_tensors, bool fast_compile = false,
+    bool build_mlir_module = false, bool use_stablehlo_bounds = false,
+    std::optional<std::vector<py::object>> argument_layouts_opt = std::nullopt,
+    const std::vector<int64_t>& donated_inputs = {},  // INT_VEC_OK
+    const std::optional<std::string>& module_name = std::nullopt) {
+  AsyncCompileResult async_result = PyAsyncTraverseAndCompile(
+      result_tensors, argument_tensors, fast_compile, build_mlir_module,
+      use_stablehlo_bounds, std::move(argument_layouts_opt), donated_inputs,
+      module_name);
+
+  absl::StatusOr<SharedLoadedExecutableWithMetadata> status_or;
+  {
+    py::gil_scoped_release release;
+    status_or = async_result.Get();
+  }
+  TT_ASSIGN_OR_THROW(auto executable, std::move(status_or));
+  return CompileResult{
+      .module = async_result.module(),
+      .executable = std::move(executable),
+  };
 }
 
 void PyPushEnableTracebacks(std::optional<bool> enabled) {
@@ -2014,6 +2075,39 @@ TT_PYBIND11_MODULE(tpu_torch_compile, m) {
       .def_readonly("module", &CompileResult::module)
       .def_readonly("executable", &CompileResult::executable);
 
+  PyBindClass<AsyncCompileResult>(
+      m, "AsyncCompileResult",
+      "Handle to an in-flight compilation started by "
+      "`async_traverse_and_compile`.\n\n"
+      "Thread-safe once constructed: multiple threads may call `is_ready()` "
+      "and `get()` on the same instance concurrently.")
+      .def_property_readonly(
+          "module",
+          [](const AsyncCompileResult& self) { return self.module(); })
+      .def(
+          "is_ready",
+          [](const AsyncCompileResult& self) { return self.IsReady(); },
+          "Returns `True` if compilation has finished, i.e. if a subsequent "
+          "`get()` will not block. Never blocks.")
+      .def(
+          "get",
+          [](AsyncCompileResult& self) -> SharedLoadedExecutableWithMetadata {
+            absl::StatusOr<SharedLoadedExecutableWithMetadata> status_or;
+            {
+              // Release the GIL so that other Python threads, including ones
+              // starting their own compilations, can run while this one waits.
+              py::gil_scoped_release release;
+              status_or = self.Get();
+            }
+            TT_ASSIGN_OR_THROW(auto executable, std::move(status_or));
+            return executable;
+          },
+          "Blocks until compilation finishes and returns the executable, with "
+          "the deduplicated argument indices already applied.\n\n"
+          "Releases the GIL while waiting. May be called repeatedly, and "
+          "concurrently from multiple threads; every call returns the same "
+          "executable. Raises if compilation failed.");
+
   PyBindClass<ContextedModule,  // NOLINT(bugprone-unused-raii)
               std::shared_ptr<ContextedModule>>(m, "ContextedModule");
 
@@ -2119,6 +2213,36 @@ TT_PYBIND11_MODULE(tpu_torch_compile, m) {
         "  module_name: Optional name for the compiled MLIR module.\n"
         "Returns:\n"
         "  CompileResult: The compiled module and executable.");
+
+  m.def("async_traverse_and_compile", PyAsyncTraverseAndCompile,
+        py::arg("result_tensors"), py::arg("argument_tensors"),
+        py::arg("fast_compile") = false, py::arg("build_mlir_module") = false,
+        py::arg("use_stablehlo_bounds") = false,
+        py::arg("argument_layouts") = py::none(),
+        py::arg("donated_inputs") = std::vector<int64_t>{},  // INT_VEC_OK
+        py::arg("module_name") = py::none(),
+        "Traverses the graph from outputs to arguments and starts compiling "
+        "it, without waiting for compilation to finish.\n"
+        "Args:\n"
+        "  result_tensors: The output tensors of the graph.\n"
+        "  argument_tensors: The input tensors of the graph.\n"
+        "  fast_compile: Whether to prioritize compilation latency over "
+        "    runtime performance.\n"
+        "  build_mlir_module: Whether to also build and return the MLIR "
+        "    module.\n"
+        "  use_stablehlo_bounds: Whether to use the StableHLO bounds for\n"
+        "    dynamic inputs.\n"
+        "  argument_layouts: Optional layout of the input arguments. If not"
+        "    empty, the size must match the number of arguments.\n"
+        "  donated_inputs: Optional list of argument indices to donate.\n"
+        "  module_name: Optional name for the compiled MLIR module.\n"
+        "Returns:\n"
+        "  `AsyncCompileResult`: A handle whose `get()` blocks for the "
+        "    executable.\n"
+        "Concurrency:\n"
+        "  Thread-compatible. Calls on graphs that do not share tensors may "
+        "    run concurrently; the caller must not mutate the graph reachable "
+        "    from `result_tensors` while this call is in progress.");
 
   m.def("build_mlir", PyBuildMlir, py::arg("result_tensors"),
         py::arg("argument_tensors"), py::arg("use_stablehlo_bounds") = false,
