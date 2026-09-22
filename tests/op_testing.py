@@ -386,6 +386,7 @@ _OUT_DTYPE_CAST_KNOWN_FAILURES: Final[set[str]] = {
     "linalg.solve_triangular",
     "linalg.vector_norm",
     "log_softmax",
+    # TODO: remove after regen golden.
     "logcumsumexp",
     "logit",
     "lu_unpack",

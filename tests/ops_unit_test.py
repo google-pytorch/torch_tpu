@@ -1513,6 +1513,56 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         out_f64, torch.tensor([5.0], dtype=torch.float64, device=device)
     )
 
+  def test_logcumsumexp_out_dtype(self):
+    device = torch.device("tpu")
+    x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=device)
+    out_f64 = torch.empty(3, dtype=torch.float64, device=device)
+    torch.ops.aten._logcumsumexp.out(x, 0, out=out_f64)
+    expected = torch.logcumsumexp(torch.tensor([1.0, 2.0, 3.0]), dim=0).to(
+        torch.float64
+    )
+    self.assertEqual(out_f64.dtype, torch.float64)
+    utils.assert_close(out_f64.cpu(), expected)
+
+    # 0-D scalar tensor test
+    x0 = torch.tensor(2.5, dtype=torch.float32, device=device)
+    out0 = torch.empty((), dtype=torch.float64, device=device)
+    torch.ops.aten._logcumsumexp.out(x0, 0, out=out0)
+    self.assertEqual(out0.dtype, torch.float64)
+    self.assertEqual(out0.shape, ())
+    utils.assert_close(out0.cpu(), torch.tensor(2.5, dtype=torch.float64))
+
+    # 0-D scalar integer tensor test (matching PyTorch CUDA behavior)
+    x_int = torch.tensor(5, dtype=torch.int32, device=device)
+    out_int = torch.empty((), dtype=torch.int32, device=device)
+    torch.ops.aten._logcumsumexp.out(x_int, 0, out=out_int)
+    self.assertEqual(out_int.dtype, torch.int32)
+    self.assertEqual(out_int.shape, ())
+    utils.assert_close(out_int.cpu(), torch.tensor(5, dtype=torch.int32))
+
+    res_int = torch.logcumsumexp(x_int, 0)
+    self.assertEqual(res_int.dtype, torch.int32)
+    utils.assert_close(res_int.cpu(), torch.tensor(5, dtype=torch.int32))
+
+    # Empty tensor test with shape resizing
+    xe = torch.empty(0, 4, dtype=torch.float32, device=device)
+    oute = torch.empty(2, 3, dtype=torch.float64, device=device)
+    torch.ops.aten._logcumsumexp.out(xe, 1, out=oute)
+    self.assertEqual(oute.shape, (0, 4))
+    self.assertEqual(oute.dtype, torch.float64)
+
+    # Shape resizing from incorrect shape
+    x_matrix = torch.tensor(
+        [[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32, device=device
+    )
+    out_resized = torch.empty(0, dtype=torch.float32, device=device)
+    torch.ops.aten._logcumsumexp.out(x_matrix, 0, out=out_resized)
+    self.assertEqual(out_resized.shape, (2, 2))
+    expected_matrix = torch.logcumsumexp(
+        torch.tensor([[1.0, 2.0], [3.0, 4.0]]), dim=0
+    )
+    utils.assert_close(out_resized.cpu(), expected_matrix)
+
   def test_binary_arithmetic_out_upcast(self):
     device = torch.device("tpu")
     a = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=device)
