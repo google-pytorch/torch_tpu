@@ -32,25 +32,25 @@ Buildbarn. Bazel communicates directly with Buildbarn over gRPC.
 ```mermaid
 flowchart TD
     subgraph CIRunner ["CI Runner (ml-velocity-actions-production)"]
-        BazelCI["Bazel Client<br/>bazel test --config=ci_rbe_presubmit"]
-        PSCEndpoint["PSC Endpoint (default network)<br/>10.202.0.67:8980"]
+        BazelCI["Bazel Client (linux-x86-n4-16 / ml-build)<br/>bazel test --config=ci_rbe_presubmit<br/>(ci_base + rbe_native_tpu)"]
+        PSCEndpoint["PSC Endpoint (default network)<br/>10.202.0.67:8980 (Executor & Cache)"]
         BazelCI --> PSCEndpoint
     end
 
     subgraph DevClient ["Developer Workstation (Cloudtop)"]
         BazelDev["Bazel Client<br/>bazel test --config=rbe_native_tpu"]
-        SSHTunnel["SSH Port Forward<br/>localhost:8980 -> port 22"]
+        SSHTunnel["SSH Port Forward<br/>127.0.0.1:8980 -> port 22"]
         BazelDev --> SSHTunnel
     end
 
     subgraph ProducerVPC ["RBE Producer Network (rbe-tpu-oss / us-east5)"]
-        PSCSA["PSC Service Attachment<br/>rbe-tpu-service-attachment"]
-        ILB["Internal TCP Load Balancer<br/>rbe-internal-ilb:8980"]
-        GW["rbe-tunnel-gateway (10.202.0.13:8980)<br/>HAProxy TCP Forwarder"]
+        PSCSA["PSC Service Attachment<br/>rbe-tpu-service-attachment (NAT 10.0.100.0/24)"]
+        ILB["Internal TCP Load Balancer<br/>rbe-internal-ilb (10.202.0.15:8980)"]
+        GW["rbe-tunnel-gateway<br/>Primary IP: 10.202.0.13 | VPC Alias IP: 10.202.0.3/32<br/>HAProxy (:8980, :30980, :30983) + socat (:8443 HC)"]
 
         PSCEndpoint -->|"Google Backbone"| PSCSA
         PSCSA --> ILB
-        ILB --> GW
+        ILB -->|":8980 data / :8443 HC"| GW
         SSHTunnel -->|"Corp SSH (port 22)"| GW
     end
 
@@ -60,20 +60,21 @@ flowchart TD
         STOR["bb-storage (ClusterIP 8981)<br/>CAS (32 GB) & Action Cache (1 GB)"]
         CPUWorkers["224-CPU Worker Pool (7 Nodes x 32 Slots)<br/>ml-build Image | Standard, 16 GB, 20 GB Queues"]
 
-        GW --> FE
+        GW -->|":8980 / :30980 -> NodePort 30980<br/>(10.202.0.16 + 10.202.0.6..17 failover)"| FE
+        GW -->|":30983 -> NodePort 30983<br/>(10.202.0.16 + 10.202.0.6..17 failover)"| SCHED
         FE --> SCHED
         FE --> STOR
         SCHED --> CPUWorkers
     end
 
-    subgraph Fleet ["Standing Cloud TPU v5e Fleet (28 Nodes Across 4 Zones)"]
+    subgraph Fleet ["Standing Cloud TPU v5e Fleet (28 Single-Chip Nodes Across 4 Zones)"]
         subgraph Node ["Cloud TPU VM (spot-tpu-v5e-*)"]
             Worker["bb_worker daemon<br/>(concurrency: 1, maxCache: 20 GB)"]
             Runner["bb_runner daemon<br/>(unix:///tmp/torch_tpu_rbe/runner.sock)"]
-            Hardware["Physical TPU Chip<br/>(/dev/vfio/0)"]
+            Hardware["Physical TPU v5e Chip<br/>(/dev/vfio/0)"]
 
-            Worker -->|"Outbound gRPC long-poll<br/>10.202.0.3:30983"| SCHED
-            Worker -->|"Fetch inputs / upload results<br/>10.202.0.3:30980"| FE
+            Worker -->|"Outbound gRPC long-poll<br/>10.202.0.3:30983"| GW
+            Worker -->|"Fetch inputs / upload results<br/>10.202.0.3:30980"| GW
             Worker -->|"UNIX Domain Socket"| Runner
             Runner --> Hardware
         end
@@ -93,8 +94,11 @@ two distinct pools:
 #### TPU Worker Pool (Hardware Execution)
 
 Each standing TPU VM runs `bb_worker` as a systemd service. On startup,
-`bb_worker` dials outbound to the Buildbarn scheduler at `10.202.0.3:30983` over
-internal VPC networking and advertises:
+`bb_worker` dials outbound to `10.202.0.3:30983` (scheduler) and
+`10.202.0.3:30980` (frontend CAS/AC). `10.202.0.3/32` is a permanent VPC alias
+IP bound to `rbe-tunnel-gateway`, where HAProxy load-balances across all GKE
+NodePort backends (`10.202.0.16` and `10.202.0.6..17`) so GKE node rotations
+never drop worker connections. Each worker advertises:
 
 ```json
 "platform": {
@@ -329,14 +333,14 @@ revocation at the gRPC layer.
 The GKE control plane lives in `us-east5`. The 28 standing Cloud TPU v5e nodes
 sit across four regions in the GCP VPC network (`default`):
 
-| Region / Zone    | TPU Nodes         | Round-Trip Latency to Scheduler |
-| :--------------- | :---------------- | :------------------------------ |
-| `us-east5-a`     | GKE Control Plane | Local (<1 ms)                   |
-:                  : (`10.202.0.3`)    :                                 :
-| `us-south1-a`    | 8 nodes           | ~32 ms                          |
-| `us-west4-a`     | 4 nodes           | ~55 ms                          |
-| `us-west1-c`     | 8 nodes           | ~68 ms                          |
-| `europe-west4-b` | 8 nodes           | ~95 ms                          |
+| Region / Zone    | TPU Nodes                                     | Round-Trip Latency to Scheduler |
+| :--------------- | :-------------------------------------------- | :------------------------------ |
+| `us-east5-a`     | Gateway (`10.202.0.13` / alias `10.202.0.3`)  | Local (<1 ms)                   |
+:                  : & GKE Control Plane (`10.202.0.16`, `.6..17`) :                                 :
+| `us-south1-a`    | 8 nodes                                       | ~32 ms                          |
+| `us-west4-a`     | 4 nodes                                       | ~55 ms                          |
+| `us-west1-c`     | 8 nodes                                       | ~68 ms                          |
+| `europe-west4-b` | 8 nodes                                       | ~95 ms                          |
 
 ### Runfile Caching
 
@@ -472,8 +476,9 @@ Each TPU node runs two systemd services:
 1.  **`bb_runner.service`**: Listens on UNIX domain socket
     `/tmp/torch_tpu_rbe/runner.sock`. Executes actions delivered by `bb_worker`.
 2.  **`bb_worker.service`**: Maintains the outbound gRPC session to
-    `10.202.0.3:30983`, fetches action inputs, passes execution requests to
-    `bb_runner`, and uploads results.
+    `10.202.0.3:30983` (`rbe-tunnel-gateway` HAProxy alias IP), fetches action
+    inputs via `10.202.0.3:30980`, passes execution requests to `bb_runner`, and
+    uploads results.
 
 ```bash
 # Check worker status on any TPU node:
