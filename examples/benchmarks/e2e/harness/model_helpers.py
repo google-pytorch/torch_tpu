@@ -95,7 +95,14 @@ def load_hf_llm(
       (batch_size, seq_len), device_str
   )
 
+  # Providing an attention mask with a full-length sequence is redundant and
+  # causes extra overhead.
   inputs.pop("attention_mask", None)
+
+  # These inputs are only used for multimodal models. Enable these after
+  # verifying that they work on TPU.
+  inputs.pop("pixel_values", None)
+  inputs.pop("image_position_ids", None)
 
   for k, v in list(inputs.items()):
     if isinstance(v, torch.Tensor) and torch.is_floating_point(v):

@@ -27,6 +27,7 @@ torch_tpu_py_library(
     name = "models",
     srcs = [
         "__init__.py",
+        "gemma.py",
         "gen_benchmarks.py",
         "llama.py",
     ],
