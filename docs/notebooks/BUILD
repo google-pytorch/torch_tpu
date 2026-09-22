@@ -25,9 +25,17 @@ package(
 # plan to run them as part of the build.
 filegroup(
     name = "py_files",
-    srcs = glob(["**/*.py"]),
+    srcs = glob([
+        "**/*.py",
+        "*.ipynb",
+    ]),
     tags = ["ignore_srcs"],
     visibility = ["//visibility:private"],
+)
+
+exports_files(
+    glob(["*.ipynb"]),
+    visibility = ["//:__subpackages__"],
 )
 
 torch_tpu_package_end()
