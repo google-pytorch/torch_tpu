@@ -269,7 +269,7 @@ def run_sync_dtensor() -> None:
   dtensor = dt.DTensor.from_local(shard, device_mesh, [dt.Shard(0)])
   dtensor = dtensor + 1
 
-  torch.tpu.synchronize()
+  torch.accelerator.synchronize()
   assert sync.is_materializing(dtensor), "DTensor not materialized after sync"
   assert sync.is_materialized(dtensor), "Dtensor materialized but not ready"
 

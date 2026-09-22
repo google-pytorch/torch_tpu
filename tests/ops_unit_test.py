@@ -9388,14 +9388,13 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     Checks:
       1. Calling `aten._assert_async` and `aten._assert_async.msg` with a
-      boolean
-         `True` tensor completes successfully and does not latch any sticky
-         error.
+         boolean `True` tensor completes successfully and does not latch any
+         sticky error.
       2. Non-boolean numeric scalar tensors that evaluate to true (e.g. integer
-      1,
-         float 1.0) also evaluate as truthy without raising errors.
-      3. An explicit `torch.tpu.synchronize()` flushes all background assertion
-         workers and confirms that no deferred assertion failures occurred.
+         1, float 1.0) also evaluate as truthy without raising errors.
+      3. An explicit `torch.accelerator.synchronize()` flushes all background
+         assertion workers and confirms that no deferred assertion failures
+         occurred.
     """
     device = torch.device("tpu")
 
@@ -9411,7 +9410,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     torch.ops.aten._assert_async.msg(float_cond, "float true condition")
 
     # Synchronize to drain the background thread pool and verify no errors were set.
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
 
   def test_assert_async_eager_false_msg(self):
     """Tests that _assert_async.msg fails and preserves custom error message.
@@ -9421,9 +9420,9 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
          immediately to host execution without blocking.
       2. The background thread detects the false condition after DtoH copy and
          latches a sticky error containing the specified custom message.
-      3. A subsequent explicit `torch.tpu.synchronize()` drains pending checks
-      and
-         raises a `RuntimeError` matching the user's custom assertion message.
+      3. A subsequent explicit `torch.accelerator.synchronize()` drains pending
+         checks and raises a `RuntimeError` matching the user's custom
+         assertion message.
     """
     import torch_tpu._internal.testing as tpu_testing
 
@@ -9439,7 +9438,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing assert_async failure behavior.
           RuntimeError, "intended failure"
       ):
-        torch.tpu.synchronize()
+        torch.accelerator.synchronize()
     finally:
       # Clear the latched error state so subsequent test cases are not poisoned.
       tpu_testing.clear_sticky_error()
@@ -9449,11 +9448,10 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     Checks:
       1. Calling `aten._assert_async` (no message argument) with a `False`
-      condition
-         delegates to `_assert_async.msg` with the default string "assertion
-         failed".
-      2. Calling `torch.tpu.synchronize()` raises a `RuntimeError` matching the
-         default error message "assertion failed".
+         condition delegates to `_assert_async.msg` with the default string
+         "assertion failed".
+      2. Calling `torch.accelerator.synchronize()` raises a `RuntimeError`
+         matching the default error message "assertion failed".
     """
     import torch_tpu._internal.testing as tpu_testing
 
@@ -9467,7 +9465,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing assert_async failure behavior.
           RuntimeError, "assertion failed"
       ):
-        torch.tpu.synchronize()
+        torch.accelerator.synchronize()
     finally:
       # Reset sticky error state for subsequent tests.
       tpu_testing.clear_sticky_error()
@@ -9564,12 +9562,10 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     Checks:
       1. Calling `_assert_async.msg` with a numeric non-boolean scalar whose
-      value
-         is 0 (e.g., integer 0) evaluates to boolean False on device.
+         value is 0 (e.g., integer 0) evaluates to boolean False on device.
       2. The background worker detects the false evaluation and latches an
-      error,
-         which is subsequently raised as `RuntimeError` upon
-         `torch.tpu.synchronize()`.
+         error, which is subsequently raised as `RuntimeError` upon
+         `torch.accelerator.synchronize()`.
     """
     import torch_tpu._internal.testing as tpu_testing
 
@@ -9583,7 +9579,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing assert_async failure behavior.
           RuntimeError, "zero int failed"
       ):
-        torch.tpu.synchronize()
+        torch.accelerator.synchronize()
     finally:
       # Reset sticky error state for subsequent tests.
       tpu_testing.clear_sticky_error()
@@ -9593,10 +9589,9 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     Checks:
       1. During FX graph compilation (`EagerMode::kInternalCompileFxGraph`),
-      host
-         asynchronous assertion scheduling is skipped because
-         placeholder/symbolic
-         tensors cannot be copied to the host CPU during tracing.
+         host asynchronous assertion scheduling is skipped because
+         placeholder/symbolic tensors cannot be copied to the host CPU during
+         tracing.
       2. The resulting MLIR graph compiles cleanly without inserting unsupported
          or dummy `@shape_assertion` custom calls.
     """
@@ -9623,9 +9618,9 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       1. The higher-level public Python API `torch._assert_async(cond, [msg])`
          correctly routes to the TPU `aten::_assert_async` kernels.
       2. Truthy conditions pass cleanly when flushed via
-      `torch.tpu.synchronize()`.
+         `torch.accelerator.synchronize()`.
       3. Falsy conditions latch a sticky error and raise `RuntimeError` matching
-         the user message upon calling `torch.tpu.synchronize()`.
+         the user message upon calling `torch.accelerator.synchronize()`.
     """
     import torch_tpu._internal.testing as tpu_testing
 
@@ -9635,7 +9630,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     true_cond = torch.tensor(True, device=device)
     torch._assert_async(true_cond)
     torch._assert_async(true_cond, "should not fail")
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
 
     # Test that public torch._assert_async API fails and reports error on synchronize().
     false_cond = torch.tensor(False, device=device)
@@ -9644,7 +9639,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing assert_async failure behavior.
           RuntimeError, "public api failure"
       ):
-        torch.tpu.synchronize()
+        torch.accelerator.synchronize()
     finally:
       # Reset sticky error state for subsequent tests.
       tpu_testing.clear_sticky_error()
@@ -9655,12 +9650,12 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     Checks:
       1. When `_assert_async` is called on a condition produced by deferred ops
          (e.g., `(a + b == 3.0).squeeze()`), `MaterializeAndReturn` forces lazy
-         graph
-         execution and materializes the condition's device buffer on TPU.
-      2. True expressions succeed without error upon `torch.tpu.synchronize()`.
+         graph execution and materializes the condition's device buffer on TPU.
+      2. True expressions succeed without error upon
+         `torch.accelerator.synchronize()`.
       3. False expressions trigger the background failure and raise
-      `RuntimeError`
-         with the custom message upon `torch.tpu.synchronize()`.
+         `RuntimeError` with the custom message upon
+         `torch.accelerator.synchronize()`.
     """
     import torch_tpu._internal.testing as tpu_testing
 
@@ -9671,7 +9666,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     # Test deferred boolean expression that evaluates to True.
     # MaterializeAndReturn triggers lazy execution so the buffer can be copied to host.
     torch._assert_async((a + b == 3.0).squeeze())
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
 
     # Test deferred boolean expression that evaluates to False.
     torch._assert_async((a + b == 4.0).squeeze(), "deferred mismatch")
@@ -9679,7 +9674,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing assert_async failure behavior.
           RuntimeError, "deferred mismatch"
       ):
-        torch.tpu.synchronize()
+        torch.accelerator.synchronize()
     finally:
       # Reset sticky error state for subsequent tests.
       tpu_testing.clear_sticky_error()
@@ -9742,7 +9737,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing assert_async failure behavior.
           RuntimeError, "first error"
       ):
-        torch.tpu.synchronize()
+        torch.accelerator.synchronize()
     finally:
       # Reset sticky error state for subsequent tests.
       tpu_testing.clear_sticky_error()

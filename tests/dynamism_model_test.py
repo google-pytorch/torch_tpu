@@ -181,7 +181,7 @@ class KVCacheDynamismTest(seed_test_utils.RepeatableTest):
     # Run on TPU
     k_tpu = k_cpu.to(self.device)
     new_k_tpu = new_k_cpu.to(self.device)
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
 
     for i in range(3):
       prev_cache_misses = torch.tpu._get_cache_misses()
@@ -213,7 +213,7 @@ class KVCacheDynamismTest(seed_test_utils.RepeatableTest):
     # Run on TPU
     k_tpu = k_cpu.to(self.device)
     new_k_tpu = new_k_cpu.to(self.device)
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
 
     for i in range(3):
       prev_cache_misses = torch.tpu._get_cache_misses()

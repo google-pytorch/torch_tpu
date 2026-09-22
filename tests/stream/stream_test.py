@@ -123,7 +123,7 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
     t_cpu.copy_(t_tpu, non_blocking=True)
 
     # Calling synchronize without arguments should sync the current device
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
 
     # Verify data integrity
     utils.assert_close(t_cpu, torch.ones(size, dtype=torch.float32))
@@ -139,7 +139,7 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
     t_cpu.copy_(t_tpu, non_blocking=True)
 
     def sync_and_check():
-      torch.tpu.synchronize()
+      torch.accelerator.synchronize()
       # Verify data integrity
       utils.assert_close(t_cpu, torch.ones(size, dtype=torch.float32))
 

@@ -23,7 +23,6 @@ from torch import distributed as dist
 from torch.distributed import tensor
 import torch.multiprocessing as mp
 from torch_tpu._internal import compile as tt_compile
-from torch_tpu._internal.device import _device_module as tpu_device
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
@@ -375,7 +374,7 @@ def run_fake_tensor_side_effect_pruning_with_torch_compile() -> None:
 
   output = compiled_func(input_tpu)
 
-  tpu_device.get_device_module("tpu").synchronize()
+  torch.accelerator.synchronize()
 
   expected = torch.tensor(
       [float(i) for i in range(world_size)], dtype=torch.float32

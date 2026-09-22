@@ -43,7 +43,7 @@ namespace torch_tpu {
 // DeviceBufferRef has been created.
 // As long as at least one DataPtr exists, the DeviceBufferList cannot be freed,
 // and if deferred, must be materialized on any global sync
-// (torch.tpu.synchronize()).
+// (torch.accelerator.synchronize()).
 void RecordNewDataPtrCreated(const DeviceBufferRef& device_buffer_ref);
 
 // Records on the events queue that a c10::DataPtr referencing the given
