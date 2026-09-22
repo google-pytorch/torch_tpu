@@ -7817,14 +7817,30 @@ Device-side assertion tracking was not enabled by user.""",
           scale=None,
       )
 
-  def test_tril_indices_unsupported_dtype(self):
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="float32",
+          dtype=torch.float32,
+          tpu_dtype="float32",
+          gpu_dtype="Float",
+      ),
+      dict(
+          testcase_name="bfloat16",
+          dtype=torch.bfloat16,
+          tpu_dtype="bfloat16",
+          gpu_dtype="BFloat16",
+      ),
+  )
+  def test_tril_indices_unsupported_dtype(
+      self, dtype: torch.dtype, tpu_dtype: str, gpu_dtype: str
+  ):
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""tril_indices(): expected the dtype to be either int32 or int64, got float32""",
-        gpu=""""tril_indices_cuda" not implemented for 'Float'""",
+        tpu=f"""tril_indices(): expected the dtype to be either int32 or int64, got {tpu_dtype}""",
+        gpu=f""""tril_indices_cuda" not implemented for '{gpu_dtype}'""",
         message_reviewed_by="wan",
     ):
-      torch.tril_indices(3, 3, dtype=torch.float32, device=et.device())
+      torch.tril_indices(3, 3, dtype=dtype, device=et.device())
 
   @parameterized.named_parameters(
       dict(
