@@ -297,8 +297,17 @@ void PySynchronizeDevice(bool wait) {
   if (wait) {
     impl->synchronizeDevice(device_index);
   } else {
-    TT_THROW_IF_ERROR(
-        MaterializeDevice(device_index, MaterializationReason::kExplicitSync));
+    // Wait until all streams on the device start executing but don't wait for
+    // them to finish.
+    // This is equivalent to using torch.tpu.Event().record() on all streams,
+    // and then throwing away the events.
+    // This ensures that all live nodes reach the is_materializing() state but
+    // does not wait for them to complete (is_materialized()).
+    auto stream_futures =
+        MaterializeDevice(device_index, MaterializationReason::kExplicitSync);
+    for (auto& event_future : stream_futures) {
+      TT_THROW_IF_ERROR(event_future.Await());
+    }
   }
 }
 

@@ -731,7 +731,8 @@ absl::StatusOr<std::vector<SharedDeviceBufferList>> GetUniqueDeferredNodes(
 template <typename T>
 absl::Status MaterializeSpan(absl::Span<const T> items,
                              MaterializationReason reason,
-                             MaterializationMode materialization_mode) {
+                             MaterializationMode materialization_mode,
+                             MaterializationBlockMode block_mode) {
   if (items.empty()) {
     return absl::OkStatus();
   }
@@ -781,9 +782,10 @@ absl::Status MaterializeSpan(absl::Span<const T> items,
     GetMaterializationWorker().EnqueueStream(node->device_index(),
                                              node->stream_id());
 
-    // Make sure that the stream task was enqueued successfully.
-    // TODO(bawilson): remove this await, it shouldn't be necessary.
-    TT_RETURN_IF_ERROR(future.Await());
+    if (block_mode == MaterializationBlockMode::kBlockUntilStarted) {
+      // Make sure that the stream task was enqueued successfully.
+      TT_RETURN_IF_ERROR(future.Await());
+    }
 
     // Record that we enqueued this stream.
     device_stream_ids.push_back(DeviceStreamId{
@@ -798,14 +800,16 @@ void ShutDownMaterializationState() { GetMaterializationWorker().Shutdown(); }
 
 absl::Status Materialize(absl::Span<const SharedDeviceBufferList> nodes,
                          MaterializationReason reason,
-                         MaterializationMode materialization_mode) {
-  return MaterializeSpan(nodes, reason, materialization_mode);
+                         MaterializationMode materialization_mode,
+                         MaterializationBlockMode block_mode) {
+  return MaterializeSpan(nodes, reason, materialization_mode, block_mode);
 }
 
 absl::Status Materialize(absl::Span<const DeviceBufferRef> buffer_refs,
                          MaterializationReason reason,
-                         MaterializationMode materialization_mode) {
-  return MaterializeSpan(buffer_refs, reason, materialization_mode);
+                         MaterializationMode materialization_mode,
+                         MaterializationBlockMode block_mode) {
+  return MaterializeSpan(buffer_refs, reason, materialization_mode, block_mode);
 }
 
 absl::StatusOr<std::vector<DeviceBufferRef>> EnqueueExecutable(
@@ -850,7 +854,7 @@ absl::StatusOr<std::vector<DeviceBufferRef>> EnqueueExecutable(
   return outputs;
 }
 
-absl::StatusOr<std::shared_ptr<EventSnapshot>> MaterializeStream(
+xla::Future<std::shared_ptr<EventSnapshot>> MaterializeStream(
     c10::DeviceIndex device_index, c10::StreamId stream_id,
     MaterializationReason reason, MaterializationMode mode,
     absl::Span<const SharedDeviceBufferList> must_materialize) {
@@ -868,12 +872,10 @@ absl::StatusOr<std::shared_ptr<EventSnapshot>> MaterializeStream(
   auto future = EventSnapshot::Record(
       device_index, stream_id, std::move(must_materialize_vec), reason, mode);
   GetMaterializationWorker().EnqueueStream(device_index, stream_id);
-  // We have to await the future here to ensure that more work is not pushed to
-  // the stream while we are evaluating its current state.
-  return future.Await();
+  return future;
 }
 
-absl::StatusOr<std::vector<std::shared_ptr<EventSnapshot>>> MaterializeDevice(
+std::vector<xla::Future<std::shared_ptr<EventSnapshot>>> MaterializeDevice(
     c10::DeviceIndex device_index, MaterializationReason reason,
     MaterializationMode mode,
     absl::Span<const SharedDeviceBufferList> must_materialize) {
@@ -883,29 +885,31 @@ absl::StatusOr<std::vector<std::shared_ptr<EventSnapshot>>> MaterializeDevice(
                   device_index);
   }
 #endif
-  TT_ASSIGN_OR_RETURN(std::vector<SharedDeviceBufferList> must_materialize_vec,
-                      GetUniqueDeferredNodes(must_materialize, device_index,
-                                             /*stream_id=*/std::nullopt));
+  auto must_materialize_vec_or = GetUniqueDeferredNodes(
+      must_materialize, device_index, /*stream_id=*/std::nullopt);
+  if (!must_materialize_vec_or.ok()) {
+    // Convert from a single error to a single-element vector of a ready, error
+    // future.
+    return {must_materialize_vec_or.status()};
+  }
 
   auto device_snapshot_futures = RecordDeviceSnapshots(
-      device_index, std::move(must_materialize_vec), reason, mode);
+      device_index, std::move(*must_materialize_vec_or), reason, mode);
+
+  std::vector<xla::Future<std::shared_ptr<EventSnapshot>>> snapshot_futures;
+  snapshot_futures.reserve(device_snapshot_futures.size());
 
   auto& materialization_worker = GetMaterializationWorker();
-  for (const auto& pending_stream : device_snapshot_futures) {
+  for (auto& pending_stream : device_snapshot_futures) {
     materialization_worker.EnqueueStream(pending_stream.device_index,
                                          pending_stream.stream_id);
+    snapshot_futures.push_back(std::move(pending_stream.snapshot_future));
   }
 
-  std::vector<std::shared_ptr<EventSnapshot>> snapshots;
-  snapshots.reserve(device_snapshot_futures.size());
-  for (auto& pending_stream : device_snapshot_futures) {
-    TT_ASSIGN_OR_RETURN(auto snapshot, pending_stream.snapshot_future.Await());
-    snapshots.push_back(std::move(snapshot));
-  }
-  return snapshots;
+  return snapshot_futures;
 }
 
-absl::StatusOr<std::shared_ptr<EventSnapshot>> MaterializeCurrentStream(
+xla::Future<std::shared_ptr<EventSnapshot>> MaterializeCurrentStream(
     MaterializationReason reason, MaterializationMode mode,
     absl::Span<const SharedDeviceBufferList> must_materialize) {
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();

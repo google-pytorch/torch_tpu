@@ -201,7 +201,8 @@ c10::Stream TpuDeviceGuardImpl::exchangeStream(c10::Stream s) const {
   // dependencies after this point will have the ability to await the result,
   // even without an explicit wait or sync.
   TT_THROW_IF_ERROR(MaterializeStream(s.device_index(), old_stream_id,
-                                      MaterializationReason::kExplicitSync));
+                                      MaterializationReason::kExplicitSync)
+                        .Await());
   return c10::Stream(c10::Stream::UNSAFE, s.device(), old_stream_id);
 }
 
@@ -227,7 +228,8 @@ void TpuDeviceGuardImpl::record(void** event, const c10::Stream& stream,
   }
   TT_ASSIGN_OR_THROW(auto shared_event,
                      MaterializeStream(stream.device_index(), stream.id(),
-                                       MaterializationReason::kExplicitSync));
+                                       MaterializationReason::kExplicitSync)
+                         .Await());
   *event = new std::shared_ptr<EventSnapshot>(std::move(shared_event));
 }
 void TpuDeviceGuardImpl::block(void* event, const c10::Stream& stream) const {
@@ -246,16 +248,17 @@ bool TpuDeviceGuardImpl::queryStream(const c10::Stream& stream) const {
 void TpuDeviceGuardImpl::synchronizeStream(const c10::Stream& stream) const {
   TT_ASSIGN_OR_THROW(auto event,
                      MaterializeStream(stream.device_index(), stream.id(),
-                                       MaterializationReason::kExplicitSync));
+                                       MaterializationReason::kExplicitSync)
+                         .Await());
   TT_THROW_IF_ERROR(event->Synchronize());
   SyncAndCheckStickyError();
 }
 void TpuDeviceGuardImpl::synchronizeDevice(
     c10::DeviceIndex device_index) const {
-  TT_ASSIGN_OR_THROW(
-      auto events,
-      MaterializeDevice(device_index, MaterializationReason::kExplicitSync));
-  for (const auto& event : events) {
+  auto event_futures =
+      MaterializeDevice(device_index, MaterializationReason::kExplicitSync);
+  for (const auto& event_future : event_futures) {
+    TT_ASSIGN_OR_THROW(auto event, event_future.Await());
     TT_THROW_IF_ERROR(event->Synchronize());
   }
   SyncAndCheckStickyError();

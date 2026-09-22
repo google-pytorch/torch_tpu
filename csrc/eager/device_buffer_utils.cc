@@ -191,7 +191,8 @@ absl::Status DeferAndFuseDispatch(absl::Span<const DeviceBufferRef> results) {
     if (RecordDeferredOpAndDetectRepetition(device_buffer_list)) {
       TT_RETURN_IF_ERROR(
           MaterializeCurrentStream(MaterializationReason::kRepeatedOpDetection,
-                                   GetRepeatedOpsMaterializationMode()));
+                                   GetRepeatedOpsMaterializationMode())
+              .Await());
     }
   } else {
     RecordDeferredOpCreated(device_buffer_list);
