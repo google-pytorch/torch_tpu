@@ -1234,6 +1234,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::gather(
           allgather_outputs = output_tensors[0];
         } else {
           allgather_outputs.reserve(getSize());
+          std::vector<DeviceBufferRef> empty_buffers;
+          empty_buffers.reserve(getSize());
           for (int i = 0; i < getSize(); ++i) {
             auto tensor = at::empty_like(input);
             // Materialize the outputs before the collective to ensure symmetry.
@@ -1241,11 +1243,13 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::gather(
             // have deferred ops. On non-root ranks, the temporary tensors are
             // fresh, which can result in an asymmetry.
             TT_ASSIGN_OR_THROW(auto empty_buffer, GetBaseBuffer(tensor));
-            TT_THROW_IF_ERROR(Materialize(
-                empty_buffer, MaterializationReason::kDistributedOp));
-
+            empty_buffers.push_back(std::move(empty_buffer));
             allgather_outputs.push_back(std::move(tensor));
           }
+          TT_THROW_IF_ERROR(
+              Materialize(empty_buffers, MaterializationReason::kDistributedOp,
+                          MaterializationMode::kSplitGraph,
+                          MaterializationBlockMode::kNonBlocking));
         }
 
         c10d::AllgatherOptions allgather_opts;

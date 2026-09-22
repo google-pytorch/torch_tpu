@@ -956,7 +956,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     # TODO: Error eagerly, i.e. without having to call the op builder.
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""call_custom_kernel(): unknown custom kernel "not_registered_kernel_name" with key "some_kernel_key"; call torch_tpu._internal.pallas.tpu_torch_pallas.register_custom_kernel() to register the kernel before calling it""",
+        tpu="""call_custom_kernel(): transfer to 'cpu' device failed with: unknown custom kernel "not_registered_kernel_name" with key "some_kernel_key"; call torch_tpu._internal.pallas.tpu_torch_pallas.register_custom_kernel() to register the kernel before calling it""",
     ):
       outputs = tpu_torch_pallas.call_custom_kernel(
           name, kernel_key, inputs=inputs, output_shapes=output_shapes
@@ -2803,21 +2803,24 @@ module {
         RuntimeError,
         tpu="""sparse_dense_matmul_grad_with_adagrad(): expected accumulator to be 1D (row-wise) or 2D (standard), got 3D""",
     ):
-      torch.ops.tpu.sparse_dense_matmul_grad_with_adagrad(
-          row_pointers,
-          embedding_ids,
-          sample_ids,
-          gains,
-          embedding_table,
-          accumulator_3d,
-          activations_grad,
-          learning_rate,
-          epsilon,
-          device_batch_size=1,
-          max_ids_per_partition=1,
-          max_unique_ids_per_partition=1,
-          computation_name="test_acc_3d",
-      )
+      with execution_mode.set_eager_mode(
+          _EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
+      ):
+        torch.ops.tpu.sparse_dense_matmul_grad_with_adagrad(
+            row_pointers,
+            embedding_ids,
+            sample_ids,
+            gains,
+            embedding_table,
+            accumulator_3d,
+            activations_grad,
+            learning_rate,
+            epsilon,
+            device_batch_size=1,
+            max_ids_per_partition=1,
+            max_unique_ids_per_partition=1,
+            computation_name="test_acc_3d",
+        )
 
     accumulator_wrong_dim = torch.ones(
         10, 4, dtype=torch.float32, device=device
@@ -2826,21 +2829,24 @@ module {
         RuntimeError,
         tpu="""sparse_dense_matmul_grad_with_adagrad(): expected accumulator dimension 1 to match embedding dimension (8), got 4""",
     ):
-      torch.ops.tpu.sparse_dense_matmul_grad_with_adagrad(
-          row_pointers,
-          embedding_ids,
-          sample_ids,
-          gains,
-          embedding_table,
-          accumulator_wrong_dim,
-          activations_grad,
-          learning_rate,
-          epsilon,
-          device_batch_size=1,
-          max_ids_per_partition=1,
-          max_unique_ids_per_partition=1,
-          computation_name="test_acc_dim",
-      )
+      with execution_mode.set_eager_mode(
+          _EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
+      ):
+        torch.ops.tpu.sparse_dense_matmul_grad_with_adagrad(
+            row_pointers,
+            embedding_ids,
+            sample_ids,
+            gains,
+            embedding_table,
+            accumulator_wrong_dim,
+            activations_grad,
+            learning_rate,
+            epsilon,
+            device_batch_size=1,
+            max_ids_per_partition=1,
+            max_unique_ids_per_partition=1,
+            computation_name="test_acc_dim",
+        )
 
   @et.why_tpu_only(
       "Upstream CUDA crashes with illegal memory access without host check"
@@ -2917,24 +2923,27 @@ module {
         tpu="""sparse_dense_matmul_grad_with_adam(): expected velocity tensor to be 1D or 2D, got rank 3""",
         message_reviewed_by="songbaie",
     ):
-      torch.ops.tpu.sparse_dense_matmul_grad_with_adam(
-          row_pointers,
-          col_indices,
-          values,
-          gains,
-          embedding_table,
-          momentum,
-          velocity_3d,
-          activations_grad,
-          alpha_t,
-          beta_1,
-          beta_2,
-          epsilon,
-          device_batch_size,
-          max_ids_per_partition,
-          max_unique_ids_per_partition,
-          computation_name,
-      )
+      with execution_mode.set_eager_mode(
+          _EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
+      ):
+        torch.ops.tpu.sparse_dense_matmul_grad_with_adam(
+            row_pointers,
+            col_indices,
+            values,
+            gains,
+            embedding_table,
+            momentum,
+            velocity_3d,
+            activations_grad,
+            alpha_t,
+            beta_1,
+            beta_2,
+            epsilon,
+            device_batch_size,
+            max_ids_per_partition,
+            max_unique_ids_per_partition,
+            computation_name,
+        )
 
     # 2D velocity with wrong embedding dim - should trigger Line 94
     velocity_wrong_dim = torch.ones(
@@ -2946,24 +2955,27 @@ module {
         tpu="""sparse_dense_matmul_grad_with_adam(): expected velocity tensor dimension 1 to be 8, got 9""",
         message_reviewed_by="songbaie",
     ):
-      torch.ops.tpu.sparse_dense_matmul_grad_with_adam(
-          row_pointers,
-          col_indices,
-          values,
-          gains,
-          embedding_table,
-          momentum,
-          velocity_wrong_dim,
-          activations_grad,
-          alpha_t,
-          beta_1,
-          beta_2,
-          epsilon,
-          device_batch_size,
-          max_ids_per_partition,
-          max_unique_ids_per_partition,
-          computation_name,
-      )
+      with execution_mode.set_eager_mode(
+          _EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
+      ):
+        torch.ops.tpu.sparse_dense_matmul_grad_with_adam(
+            row_pointers,
+            col_indices,
+            values,
+            gains,
+            embedding_table,
+            momentum,
+            velocity_wrong_dim,
+            activations_grad,
+            alpha_t,
+            beta_1,
+            beta_2,
+            epsilon,
+            device_batch_size,
+            max_ids_per_partition,
+            max_unique_ids_per_partition,
+            computation_name,
+        )
 
   @et.why_tpu_only("Custom op sparse_gather is TPU only.")
   def test_sparse_gather_invalid_row_pointers_dim(self):

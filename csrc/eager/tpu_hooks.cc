@@ -200,6 +200,17 @@ c10::Stream TpuDeviceGuardImpl::exchangeStream(c10::Stream s) const {
   // Defensively materializing on exiting a stream means that any cross-stream
   // dependencies after this point will have the ability to await the result,
   // even without an explicit wait or sync.
+  //
+  // Additionally, we block until materialization starts to prevent a race:
+  //   - Op X is dispatched on stream 1, and a MaterializeStream is queued on 1
+  //   - Op Y is dispatched on stream 2, and a MaterializeStream is queued on 2
+  //   - Op Z, which depends on Y, is dispatched on stream 1, and another
+  //     MaterializeStream is queued on 1
+  //   - The MaterializationWorker wakes up, and sees that stream 1 needs to
+  //     be materialized. It attempts to materialize both X and Z, but fails,
+  //     because Z depends on Y, which has not yet been started.
+  // By blocking on the exit from stream 2 until Y's materialization is queued,
+  // Z's materialization cannot race its inputs, even if Y hasn't finished.
   TT_THROW_IF_ERROR(MaterializeStream(s.device_index(), old_stream_id,
                                       MaterializationReason::kExplicitSync)
                         .Await());
