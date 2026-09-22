@@ -72,6 +72,34 @@ def _register_scan_operator() -> None:
 
 _register_scan_operator()
 
+
+def _patch_flex_attention() -> None:
+  """Patches PyTorch flex_attention to support TPU tensors."""
+  # pylint: disable=g-import-not-at-top,protected-access
+  from torch._higher_order_ops.flex_attention import flex_attention_backward
+  from torch.nn.attention import flex_attention
+
+  original_validate = flex_attention._validate_device
+
+  def _validate_device(query, key, value):
+    if query.device.type != "tpu":
+      original_validate(query, key, value)
+
+  flex_attention._validate_device = _validate_device
+
+  dispatch_key = torch._C.DispatchKey.CompositeExplicitAutograd
+  original_bwd = flex_attention_backward.py_kernels.pop(dispatch_key)
+
+  @flex_attention_backward.py_impl(dispatch_key)
+  def _sdpa_dense_backward(query, key, value, *args, **kwargs):
+    with query.device:
+      return original_bwd(query, key, value, *args, **kwargs)
+
+  # pylint: enable=g-import-not-at-top,protected-access
+
+
+_patch_flex_attention()
+
 # PEP 8 requires this to be a list of strings, not a tuple or a list of objects.
 __all__ = [
     # go/keep-sorted start
