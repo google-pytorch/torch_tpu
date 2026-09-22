@@ -373,6 +373,8 @@ class _SubmodCompiler(torch.fx.interpreter.Interpreter):
       # underlying device buffers.
       with unset_fake_temporarily():
         comp_mod = torch.fx.GraphModule(real_mod, copy.deepcopy(real_mod.graph))
+        # Preserve compiler annotations without deep-copying tensor attributes.
+        comp_mod.meta = copy.copy(real_mod.meta)
       compiled_submod_real = self.compile_submod(
           comp_mod, new_args, kwargs, submod_name=str(n.target)
       )

@@ -162,5 +162,36 @@ class SplitCompileTest(seed_test_utils.RepeatableTest):
     self.assertLess(peak_mem_increase, 5 * 1024 * 1024)  # < 5 MiB
 
 
+class SplitCompileHermeticTest(seed_test_utils.RepeatableTest):
+
+  def test_compiled_submodule_preserves_metadata(self):
+    child = torch.fx.symbolic_trace(torch.nn.Identity())
+    child.meta["compiler_annotation"] = (1, 3)
+
+    parent_graph = torch.fx.Graph()
+    parent_x = parent_graph.placeholder("x")
+    parent_out = parent_graph.call_module("child", (parent_x,))
+    parent_graph.output(parent_out)
+    parent = torch.fx.GraphModule({"child": child}, parent_graph)
+
+    compiled_modules = []
+
+    def compiler_fn(gm, unused_args, module_name=None):
+      del unused_args, module_name
+      compiled_modules.append(gm)
+      return gm
+
+    fake_mode = torch._subclasses.fake_tensor.FakeTensorMode()
+    submod_compiler = split_compiler._SubmodCompiler(
+        parent, compiler_fn, fake_mode
+    )
+    submod_compiler.run(torch.ones((2, 2)))
+
+    self.assertLen(compiled_modules, 1)
+    compiled_child = compiled_modules[0]
+    self.assertEqual(compiled_child.meta["compiler_annotation"], (1, 3))
+    self.assertIsNot(compiled_child.meta, child.meta)
+
+
 if __name__ == "__main__":
   absltest.main()
