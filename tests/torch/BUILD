@@ -12,16 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@rules_python//python:py_binary.bzl", "py_binary")
 load(
     "//build_files:build_defs.bzl",
     "torch_tpu_oss_torch_test",
     "torch_tpu_package_end",
 )
+load("//shims/py_rules:pytype.bzl", "pytype_strict_binary")
 
 package(default_applicable_licenses = ["//:license"])
 
-py_binary(
+pytype_strict_binary(
     name = "torch_test_runner",
     testonly = True,
     srcs = ["torch_test_runner.py"],
