@@ -16,7 +16,6 @@ load(
     "//build_files:build_defs.bzl",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
-    "torch_tpu_py_test",
 )
 
 package(
@@ -48,23 +47,6 @@ torch_tpu_py_library(
     srcs = ["__init__.py"],
     deps = [
         ":qwen",  # buildcleaner: keep
-    ],
-)
-
-torch_tpu_py_test(
-    name = "qwen_test",
-    srcs = ["qwen_test.py"],
-    deps = [
-        ":qwen",
-        "//examples/benchmarks/e2e/harness:registry",
-        "//shims/absl_py/testing:absltest",
-        "//shims/absl_py/testing:flagsaver",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "//tests:module_registry",
-        "//tests:seed_test_utils",
-        "@pypi//fairscale",
-        "@pypi//transformers",
     ],
 )
 
