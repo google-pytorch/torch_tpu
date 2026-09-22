@@ -62,21 +62,11 @@ platform(
     visibility = ["//visibility:public"],
 )
 
-# Splits a native Buildbarn build across two worker pools: compiles, links and
-# genrules run on the x86 CPU pool, test runner actions run on the TPU v5e pool.
-#
-# Unprefixed properties apply to every action. The `test.` prefix scopes a
-# property to Bazel's built-in `test` execution group, so only the test runner
-# action asks for an accelerator. See
-# https://bazel.build/extending/exec-groups#exec-groups-for-native-rules.
-#
-# Two things here are deliberate and easy to get wrong:
-#   - No `parents`. Buildbarn's scheduler keys its worker queues on the exact
-#     set of platform properties, so inheriting the `cache-silo-key` from
-#     `@ml_build_config_platform//:platform` would leave every action matching
-#     no pool at all. The constraints are listed directly instead.
-#   - `test.OSFamily` repeats the default-group value rather than relying on
-#     the two maps being merged, for the same exact-match reason.
+# Routes compilation/link actions to Buildbarn's x86 CPU pool and `test`
+# exec-group actions to the TPU v5e pool. `parents` is omitted and
+# `test.OSFamily` is repeated because Buildbarn's scheduler matches worker
+# queues on the exact set of platform properties without merging or ignoring
+# inherited keys like `cache-silo-key`.
 platform(
     name = "buildbarn_native_tpu_platform",
     constraint_values = [

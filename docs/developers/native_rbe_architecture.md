@@ -218,15 +218,17 @@ execution entirely:
 
 ### Tunnel Gateway (`rbe-tunnel-gateway`)
 
-The `rbe-tunnel-gateway` instance (`10.202.0.13`) is a dedicated Debian 12 GCE
-virtual machine in zone `us-east5-a`. HAProxy listens on port `8980` and
-forwards incoming TCP connections to the GKE NodePort `30980`
-(`10.202.0.3:30980`) serving the Buildbarn frontend (`bb-frontend`). It runs in
-TCP mode with a one hour idle timeout on each side, so a Bazel gRPC stream stays
-up for the length of a build. `option tcplog` only writes its line when a
-session closes, so an in-flight build produces no access log entries at all.
+The `rbe-tunnel-gateway` instance (`10.202.0.13`, with VPC alias IP
+`10.202.0.3/32`) is a dedicated Debian 12 GCE virtual machine in zone
+`us-east5-a`. HAProxy listens on ports `8980` / `30980` (`bb-frontend`) and
+`30983` (`bb-scheduler`), forwarding TCP connections across the GKE NodePort
+backends (`10.202.0.16` primary and `10.202.0.6..17` failover nodes) so GKE node
+rotations never drop client or TPU worker sessions. It runs in TCP mode with a
+one hour idle timeout on each side, so a Bazel gRPC stream stays up for the
+length of a build. `option tcplog` only writes its line when a session closes,
+so an in-flight build produces no access log entries at all.
 
-A `socat` unit listens on `8443` and forwards to the same backend. It exists
+A `socat` unit listens on `8443` and forwards to `127.0.0.1:8980`. It exists
 only so the load balancer health check has a port it can reach: the hierarchical
 firewall policy permits the health check ranges on 80, 443, 8080, 8443, 9230 and
 10402, and a probe to 8980 hits the deny-all rule instead.
@@ -283,7 +285,6 @@ entirely. They communicate directly with the Buildbarn frontend over internal IP
 ```bash
 bazel test --config=rbe_native_tpu \
   --remote_executor=grpc://10.202.0.13:8980 \
-  --remote_cache=grpc://10.202.0.13:8980 \
   //tests/pallas:pallas_test
 ```
 
@@ -357,7 +358,6 @@ GB. To avoid downloading 2.6 GB over cross-region links on every test:
 ```ini
 # Native Remote Build Execution on Cloud TPU v5e hardware via Buildbarn (REAPI v2)
 common:rbe_native_tpu --remote_executor=grpc://127.0.0.1:8980
-common:rbe_native_tpu --remote_cache=grpc://127.0.0.1:8980
 common:rbe_native_tpu --noremote_upload_local_results
 common:rbe_native_tpu --extra_execution_platforms="//bazel/platforms:buildbarn_native_tpu_platform"
 common:rbe_native_tpu --jobs=200
@@ -367,18 +367,12 @@ common:rbe_native_tpu --grpc_keepalive_timeout=15s
 common:rbe_native_tpu --experimental_remote_execution_keepalive=true
 
 # CI config matching .github/workflows/presubmit.yml
+common:ci_rbe_presubmit --config=ci_base
 common:ci_rbe_presubmit --config=rbe_native_tpu
 common:ci_rbe_presubmit --remote_executor=grpc://10.202.0.67:8980
-common:ci_rbe_presubmit --remote_cache=grpc://10.202.0.67:8980
-common:ci_rbe_presubmit --build_tests_only
-common:ci_rbe_presubmit --color=yes
-common:ci_rbe_presubmit --curses=no
-common:ci_rbe_presubmit --keep_going
-common:ci_rbe_presubmit --remote_download_minimal
 common:ci_rbe_presubmit --remote_upload_local_results=true
 common:ci_rbe_presubmit --build_tag_filters=-nobuild,requires-tpu-v5lite,-requires-tpu-v5lite:8
 common:ci_rbe_presubmit --test_tag_filters=presubmit-v5,-fails-on-tpu-v5,-nopresubmit,-notest,-nobuild,-requires-tpu-v5p,-requires-tpu-v6e,-requires-tpu-v7x,-requires-tpu-v5lite:8,-requires-net:external
-test:ci_rbe_presubmit --test_output=errors
 ```
 
 #### Flag and Filter Explanations

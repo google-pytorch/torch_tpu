@@ -286,12 +286,10 @@ common:helion_public_caching_readwrite --remote_upload_local_results=true
 common:helion_public_caching_readwrite --google_default_credentials
 
 # Settings specific to CI runs.
-common:ci --build_tests_only
-common:ci --config=remote_execution_readwrite
-common:ci --config=resultstore_base
-common:ci --remote_download_minimal
-common:ci --keep_going
-test:ci --test_output=errors
+common:ci_base --build_tests_only
+common:ci_base --remote_download_minimal
+common:ci_base --keep_going
+test:ci_base --test_output=errors
 
 # Enable ANSI color in CI logs.
 #
@@ -304,8 +302,12 @@ test:ci --test_output=errors
 # lists, query results, and every other machine-readable payload written to
 # stdout are still uncolored, so analyers like `bazel-diff` and `bazel query`
 # keep parsing clean text.
-common:ci --color=yes
-common:ci --curses=no
+common:ci_base --color=yes
+common:ci_base --curses=no
+
+common:ci --config=ci_base
+common:ci --config=remote_execution_readwrite
+common:ci --config=resultstore_base
 
 # Setting specific to benchmarking runs.
 common:bench --config=ci
@@ -363,69 +365,21 @@ common:ci_tpu_v5_presubmit --test_tag_filters=-notest,-nobuild,-nopresubmit,-fai
 
 # Native Remote Build Execution on Cloud TPU v5e hardware via Buildbarn (REAPI v2)
 common:rbe_native_tpu --remote_executor=grpc://127.0.0.1:8980
-common:rbe_native_tpu --remote_cache=grpc://127.0.0.1:8980
 common:rbe_native_tpu --noremote_upload_local_results
-
-# Compiles, links and genrules run on Buildbarn's x86 CPU pool; test runner
-# actions run on the TPU v5e pool. The split lives in the platform's
-# exec_properties because there is no per-action-type form of
-# --remote_default_exec_properties, and that flag is ignored outright once the
-# execution platform declares properties of its own.
 common:rbe_native_tpu --extra_execution_platforms="//bazel/platforms:buildbarn_native_tpu_platform"
-
-# The CPU pool is 7 nodes x 32 slots. Left at the default, Bazel would size the
-# action graph to the 16 cores of whatever machine invoked it and leave most of
-# the pool idle. Matches the value remote_execution_readonly uses.
 common:rbe_native_tpu --jobs=200
-
-# Per-RPC deadline, not the action's own timeout (the scheduler applies that,
-# defaulting to 1800s). Raised from 600s along with --jobs: 200 concurrent
-# actions pushing inputs through one gRPC channel makes a slow individual call
-# much likelier, and a tripped deadline fails the build outright.
 common:rbe_native_tpu --remote_timeout=3600s
-
 common:rbe_native_tpu --grpc_keepalive_time=15s
 common:rbe_native_tpu --grpc_keepalive_timeout=15s
 common:rbe_native_tpu --experimental_remote_execution_keepalive=true
 
 # CI config matching .github/workflows/presubmit.yml
-# Connects to Buildbarn across projects via Private Service Connect (PSC).
-#
-# The Buildbarn pool is v5e only, so both filters drop v5p, v6e and v7x. When
-# other generations join the pool, widen these two lines - the job, the config
-# name and the workflow stay as they are.
+common:ci_rbe_presubmit --config=ci_base
 common:ci_rbe_presubmit --config=rbe_native_tpu
-# 10.202.0.67 is the PSC endpoint in the runner's VPC, a reserved static
-# internal address. It is an IP and not a name on purpose: the forwarding rule
-# registers no DNS zone, so there is nothing to resolve. If the address ever
-# changes, these two lines are the only place it appears.
 common:ci_rbe_presubmit --remote_executor=grpc://10.202.0.67:8980
-common:ci_rbe_presubmit --remote_cache=grpc://10.202.0.67:8980
-common:ci_rbe_presubmit --build_tests_only
-common:ci_rbe_presubmit --color=yes
-common:ci_rbe_presubmit --curses=no
-
-# Cherry-picked from `ci` rather than inherited. Taking `--config=ci` wholesale
-# would drag in `remote_execution_readwrite`, which repoints `--remote_executor`
-# at Google RBE and adds `--google_default_credentials`. Bazel refuses to attach
-# those credentials to the plaintext `grpc://` channel Buildbarn listens on, so
-# the build would fail outright. `--config=resultstore_base` is excluded for the
-# same reason: its BES upload has no credentials to authenticate with.
-common:ci_rbe_presubmit --keep_going
-common:ci_rbe_presubmit --remote_download_minimal
-
-# `rbe_native_tpu` blocks result uploads so untrusted local builds cannot write
-# to the shared cache, mirroring the readonly / readwrite split the Google RBE
-# configs above use. CI is trusted, so turn uploads back on here.
-#
-# Remotely executed actions are cached by the executor regardless of this flag.
-# What it covers is the remainder that Bazel still runs on the runner: targets
-# tagged `local`, and anything the strategy picker keeps at home. Without it
-# those results are recomputed on every presubmit.
 common:ci_rbe_presubmit --remote_upload_local_results=true
 common:ci_rbe_presubmit --build_tag_filters=-nobuild,requires-tpu-v5lite,-requires-tpu-v5lite:8
 common:ci_rbe_presubmit --test_tag_filters=presubmit-v5,-fails-on-tpu-v5,-nopresubmit,-notest,-nobuild,-requires-tpu-v5p,-requires-tpu-v6e,-requires-tpu-v7x,-requires-tpu-v5lite:8,-requires-net:external
-test:ci_rbe_presubmit --test_output=errors
 
 # Runs on linux-x86-ct6e-180-8tpu.
 common:ci_tpu_v6 --config=ci_tpu_base
