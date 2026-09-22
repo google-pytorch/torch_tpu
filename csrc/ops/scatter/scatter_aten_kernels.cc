@@ -28,6 +28,7 @@
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "c10/util/string_view.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -50,6 +51,8 @@ absl::Status Scatter(const at::Tensor& self, int64_t dim,
                      const at::Tensor& index, const at::Tensor& src,
                      ScatterOp reduction_op, ScatterIncludeSelf include_self,
                      at::Tensor& out) {
+  TT_RETURN_IF_ERROR(ValidateOutDtype(out, self.scalar_type(),
+                                      /*allow_out_dtype_cast=*/false));
   TT_ASSIGN_OR_RETURN(dim, SafeWrapDim(dim, self.dim()));
 
   TT_ASSIGN_OR_RETURN(const auto output_dtype,
@@ -150,7 +153,7 @@ at::Tensor& AtenScatterValueOut(const at::Tensor& self, int64_t dim,
             (self, IgnoreInCacheKey(dim, "delegates to Scatter()"), index,
              promoted_value, out),
             {
-              auto promoted_type = out.scalar_type();
+              auto promoted_type = self.scalar_type();
               TT_ASSIGN_OR_THROW(at::Tensor value_tensor,
                                  promoted_value.GetTensor(promoted_type));
               TT_THROW_IF_ERROR(Scatter(self, dim, index, value_tensor,
@@ -209,7 +212,7 @@ at::Tensor& AtenScatterValueReduceOut(const at::Tensor& self, int64_t dim,
        promoted_value, IgnoreInCacheKey(reduction_op, "delegates to Scatter()"),
        out),
       {
-        auto promoted_type = out.scalar_type();
+        auto promoted_type = self.scalar_type();
         TT_ASSIGN_OR_THROW(at::Tensor value_tensor,
                            promoted_value.GetTensor(promoted_type));
         TT_ASSIGN_OR_THROW(ScatterOp scatter_op, ParseScatterOp(reduction_op));

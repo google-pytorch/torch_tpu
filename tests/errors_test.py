@@ -13001,6 +13001,109 @@ class MaskedSoftmaxErrorTest(et.ErrorTestBase):
     ):
       torch.ops.tpu.sparse_dense_matmul_gradient_stack([g1, g2], 64, 24)
 
+  def test_gather_out_dtype_mismatch(self):
+    inp = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+    index = torch.zeros(2, 2, device=et.device(), dtype=torch.int64)
+    out = torch.empty(2, 2, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gather(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.gather(inp, 0, index, out=out)
+
+  def test_scatter_out_dtype_mismatch(self):
+    self_t = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+    index = torch.zeros(1, 2, device=et.device(), dtype=torch.int64)
+    src = torch.ones(1, 2, device=et.device(), dtype=torch.float32)
+    out = torch.empty(2, 2, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scatter(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.scatter(self_t, 0, index, src, out=out)
+
+  def test_scatter_add_out_dtype_mismatch(self):
+    self_t = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+    index = torch.zeros(1, 2, device=et.device(), dtype=torch.int64)
+    src = torch.ones(1, 2, device=et.device(), dtype=torch.float32)
+    out = torch.empty(2, 2, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scatter_add(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.scatter_add(self_t, 0, index, src, out=out)
+
+  def test_scatter_reduce_out_dtype_mismatch(self):
+    self_t = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+    index = torch.zeros(1, 2, device=et.device(), dtype=torch.int64)
+    src = torch.ones(1, 2, device=et.device(), dtype=torch.float32)
+    out = torch.empty(2, 2, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scatter_reduce(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.scatter_reduce(self_t, 0, index, src, reduce="sum", out=out)
+
+  def test_index_add_out_dtype_mismatch(self):
+    self_t = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+    index = torch.zeros(1, device=et.device(), dtype=torch.int64)
+    source = torch.ones(1, 2, device=et.device(), dtype=torch.float32)
+    out = torch.empty(2, 2, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""index_add(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.index_add(self_t, 0, index, source, out=out)
+
+  def test_index_copy_out_dtype_mismatch(self):
+    self_t = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+    index = torch.zeros(1, device=et.device(), dtype=torch.int64)
+    source = torch.ones(1, 2, device=et.device(), dtype=torch.float32)
+    out = torch.empty(2, 2, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""index_copy(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.index_copy(self_t, 0, index, source, out=out)
+
+  def test_take_out_dtype_mismatch(self):
+    self_t = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+    index = torch.zeros(2, device=et.device(), dtype=torch.int64)
+    out = torch.empty(2, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""take(): expected the output dtype to be float32, got float64""",
+        gpu="""take(): self and out expected to have the same dtype, but got self.dtype = Float and out.dtype = Double""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.take(self_t, index, out=out)
+
+  def test_split_with_sizes_copy_out_dtype_mismatch(self):
+    self_t = torch.ones(4, 2, device=et.device(), dtype=torch.float32)
+    out = [
+        torch.empty(2, 2, device=et.device(), dtype=torch.float32),
+        torch.empty(2, 2, device=et.device(), dtype=torch.float64),
+    ]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""split_with_sizes_copy(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.split_with_sizes_copy(self_t, [2, 2], dim=0, out=out)
+
 
 if __name__ == "__main__":
   multiprocessing.handle_test_main(absltest.main)
