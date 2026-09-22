@@ -444,9 +444,9 @@ def _post_warmup_run(
     )
 
   # Calculate the memory usage after the post warmup run is complete. This
-  # requires the xprof response for TPU and XLA_CUDA devices, which is only
-  # available after the xprof session ends. Memory usage is calculated for TPU
-  # and XLA_CUDA devices only when Xprof is enabled.
+  # requires the xprof response for TPU devices, which is only available after
+  # the xprof session ends. Memory usage is calculated for TPU devices only
+  # when Xprof is enabled.
   session_id = xprof_context.session_id if xprof_context else None
   memory_usage = device_utils.get_peak_memory_hbm(
       device_name, session_id, xprof_client

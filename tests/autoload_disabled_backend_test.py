@@ -22,12 +22,12 @@ from tests import seed_test_utils
 
 class AutoloadDisabledBackendTest(seed_test_utils.RepeatableTest):
 
-  @parameterized.parameters("xla_cuda", "xla_cpu")
+  @parameterized.parameters(("xla_cpu",))
   def test_backend_unavailable(self, module: str) -> None:
     with self.assertRaisesRegex(AttributeError, f".*{module}.*"):
       getattr(torch, module)
 
-  @parameterized.parameters("xla_cuda", "xla_cpu")
+  @parameterized.parameters(("xla_cpu",))
   def test_device_unavailable(self, device_name: str) -> None:
     with self.assertRaisesRegex(RuntimeError, "Expected one of"):
       torch.device(device_name)

@@ -89,7 +89,6 @@ def _get_default_backend_impl(example_inputs) -> backend_registry.CompilerFn:
       if isinstance(x, torch.Tensor) and x.device.type in (
           "tpu",
           "xla_cpu",
-          "xla_cuda",
       ):
         return backend_registry.lookup_backend("tpu")
 
@@ -175,8 +174,7 @@ def _init_device_impl(device: str) -> torch.device:
   eagerly access an attrribute on the device after loading.
 
   Args:
-    device: Name of the device. Currently "tpu", "xla_cuda" and "xla_cpu" are
-      supported.
+    device: Name of the device. Currently "tpu" and "xla_cpu" are supported.
 
   Raises:
     RuntimeError:  if renaming the backend failed
@@ -195,8 +193,8 @@ def _init_device_impl(device: str) -> torch.device:
   import torch_tpu._internal.sync  # pylint: disable=unused-import  # noqa: F401
   # pylint: enable=unused-import,g-import-not-at-top
 
-  # Only "tpu / xla_cuda / xla_cpu" are supported.
-  assert device == "tpu" or device == "xla_cuda" or device == "xla_cpu"
+  # Only "tpu / xla_cpu" are supported.
+  assert device == "tpu" or device == "xla_cpu"
 
   device_module = _device_module.get_device_module(device)
   device_module._init_runtime_options()  # pylint: disable=protected-access
@@ -351,10 +349,10 @@ def load(allow_xla_backend: bool | None = None) -> None:
   `True`.
 
   Args:
-    allow_xla_backend: If `True`, this allows loading the xla_cuda and xla_cpu
-      backends on devices without a TPU. If unspecified, this is determined by
-      the value of the `TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND` environment
-      variable, and if neither is specified this defaults to `False`.
+    allow_xla_backend: If `True`, this allows loading the xla_cpu backend on
+      devices without a TPU. If unspecified, this is determined by the value of
+      the `TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND` environment variable, and if
+      neither is specified this defaults to `False`.
   """
   # On autoload restore the original autoload value
   env_utils.set_str_env(_AUTOLOAD_ENV_VAR, _OLD_AUTOLOAD_ENV)
@@ -371,10 +369,7 @@ def load(allow_xla_backend: bool | None = None) -> None:
     _init_device("tpu")
     _LOADED = True
   elif allow_xla_backend:
-    if hardware.has_nvidia_gpu():
-      _init_device("xla_cuda")
-    else:
-      _init_device("xla_cpu")
+    _init_device("xla_cpu")
     _LOADED = True
 
   # Start the eager-mode trace daemon if TORCH_TRACE was set at process

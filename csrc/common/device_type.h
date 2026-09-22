@@ -31,7 +31,6 @@ namespace torch_tpu {
 enum class PjRtDeviceType {
   kUnknown = 0,
   kCpu,
-  kCuda,
   kTpu,
 };
 

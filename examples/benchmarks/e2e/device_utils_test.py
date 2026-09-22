@@ -358,12 +358,6 @@ class DeviceUtilsTest(seed_test_utils.RepeatableTest):
       self.assertEqual(result, 99.0)
       mock_fallback.assert_called_once()
 
-  def test_get_peak_memory_hbm_xla_cuda(self):
-    with mock.patch.object(
-        torch.accelerator, 'max_memory_allocated', return_value=32 * 1024 * 1024
-    ):
-      self.assertEqual(device_utils.get_peak_memory_hbm('xla_cuda'), 32.0)
-
   def test_get_peak_memory_hbm_cuda(self):
     with mock.patch.object(
         torch.cuda.memory, 'max_memory_allocated', return_value=64 * 1024 * 1024
@@ -425,16 +419,6 @@ class DeviceUtilsTest(seed_test_utils.RepeatableTest):
         torch.cuda.memory, 'reset_max_memory_allocated'
     ) as mock_reset:
       device_utils.reset_peak_memory_stats('cuda')
-      mock_reset.assert_called_once()
-
-  def test_reset_peak_memory_stats_xla_cuda(self):
-    with mock.patch.object(
-        torch.accelerator, 'synchronize'
-    ) as mock_sync, mock.patch.object(
-        torch.accelerator, 'reset_peak_memory_stats'
-    ) as mock_reset:
-      device_utils.reset_peak_memory_stats('xla_cuda')
-      mock_sync.assert_called_once()
       mock_reset.assert_called_once()
 
   def test_reset_peak_memory_stats_xla_cpu_and_jax(self):

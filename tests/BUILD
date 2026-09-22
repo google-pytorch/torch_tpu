@@ -2105,25 +2105,6 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
-    name = "autoload_test_gpu",
-    srcs = ["autoload_gpu_test.py"],
-    env = {
-        "TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND": "1",
-    },
-    main = "autoload_gpu_test.py",
-    tags = [
-        _REQUIRES_GPU_FOR_NON_OPS_TEST,
-    ],
-    deps = [
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "@xla//xla/pjrt/plugin/xla_gpu:gpu_static_registration",
-        "@xla//xla/stream_executor:cuda_platform",
-    ],
-)
-
-torch_tpu_py_test(
     name = "autoload_test_cpu",
     srcs = ["autoload_cpu_test.py"],
     env = {
@@ -2151,25 +2132,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-    ],
-)
-
-torch_tpu_py_test(
-    name = "autoload_disabled_backend_test_gpu",
-    srcs = ["autoload_disabled_backend_test.py"],
-    main = "autoload_disabled_backend_test.py",
-    tags = [
-        "nozapfhahn",  # Requires --config=cuda; excluded from Zapfhahn coverage.
-        _REQUIRES_GPU_FOR_NON_OPS_TEST,
-    ],
-    deps = [
-        ":seed_test_utils",
-        "//shims/absl_py/testing:absltest",
-        "//shims/absl_py/testing:parameterized",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "@xla//xla/pjrt/plugin/xla_gpu:gpu_static_registration",
-        "@xla//xla/stream_executor:cuda_platform",
     ],
 )
 
@@ -2246,9 +2208,7 @@ test_suite(
     name = "autoload_tests",
     tests = [
         "autoload_disabled_backend_test_cpu",
-        "autoload_disabled_backend_test_gpu",
         "autoload_test_cpu",
-        "autoload_test_gpu",
         "autoload_test_tpu",
     ],
 )
@@ -2267,28 +2227,6 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/execution_mode",
         "//src/torch_tpu/_internal/tracing",
-    ],
-)
-
-torch_tpu_py_test(
-    name = "tracing_test_gpu",
-    srcs = ["tracing_test.py"],
-    env = {
-        "TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND": "1",
-    },
-    main = "tracing_test.py",
-    tags = [
-        _REQUIRES_GPU_FOR_NON_OPS_TEST,
-    ],
-    deps = [
-        ":seed_test_utils",
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "//src/torch_tpu/_internal/execution_mode",
-        "//src/torch_tpu/_internal/tracing",
-        "@xla//xla/pjrt/plugin/xla_gpu:gpu_static_registration",
-        "@xla//xla/stream_executor:cuda_platform",
     ],
 )
 
@@ -2313,7 +2251,6 @@ test_suite(
     name = "tracing_tests",
     tests = [
         "tracing_test_cpu",
-        "tracing_test_gpu",
         "tracing_test_tpu",
     ],
 )

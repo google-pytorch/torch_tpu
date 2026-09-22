@@ -4,10 +4,6 @@
     "type": "MODULE"
   },
   {
-    "name": "torch.xla_cuda",
-    "type": "MODULE"
-  },
-  {
     "name": "torch.xla_cpu",
     "type": "MODULE"
   }
