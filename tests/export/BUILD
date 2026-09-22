@@ -22,9 +22,9 @@ package(
 torch_tpu_py_test(
     name = "export_test",
     srcs = ["export_test.py"],
-    env = {
-        "TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND": "1",
-    },
+    tags = [
+        "requires-tpu-v5lite",
+    ],
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",

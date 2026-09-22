@@ -92,7 +92,7 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    requires_libtpu = True,
+    tags = ["requires-tpu-v5lite"],
     deps = [
         ":device_buffer",
         ":device_buffer_utils",
@@ -617,7 +617,6 @@ torch_tpu_cc_library(
         "@stablehlo//:mlir_builder",
         "@tsl//tsl/platform:path",
         "@tsl//tsl/profiler/lib:traceme",
-        "@xla//xla/pjrt/plugin/xla_cpu:xla_cpu_pjrt_client",  # buildcleaner: keep
         "@xla//xla/pjrt/plugin/xla_tpu:xla_tpu_pjrt_client",  # buildcleaner: keep
     ],
 )
@@ -1087,7 +1086,7 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    requires_libtpu = True,
+    tags = ["requires-tpu-v5lite"],
     deps = [
         ":current_stream",
         ":device_buffer",

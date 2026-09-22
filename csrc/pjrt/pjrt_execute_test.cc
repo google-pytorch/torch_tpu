@@ -49,7 +49,7 @@ class PjrtExecuteTest : public testing::Test {
  protected:
   void SetUp() override {
     PjrtBackend::GetInstance().SetPjRtInitializationOptions(
-        {.device_type = "xla_cpu"});
+        {.device_type = "tpu"});
     client_ = PjrtBackend::GetInstance().GetClient();
     ASSERT_NE(client_, nullptr);
     ASSERT_FALSE(client_->addressable_devices().empty());

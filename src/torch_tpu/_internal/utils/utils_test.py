@@ -86,7 +86,7 @@ class AllTest(seed_test_utils.RepeatableTest):
 
   def setUp(self):
     super().setUp()
-    self.device = torch.device("xla_cpu")
+    self.device = torch.device("tpu")
 
   def test_compare_strict_mode(self):
     t_tpu = torch.arange(8).reshape((4, 2)).to(torch.float32)

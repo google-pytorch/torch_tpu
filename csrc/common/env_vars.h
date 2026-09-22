@@ -111,10 +111,6 @@ inline constexpr char kTorchTpuEnableDebugChecksEnvVar[] =
 // Specifies the fixed port number for the handshake server.
 inline constexpr char kTorchTpuHandshakePortEnvVar[] =
     "TORCH_TPU_INTERNAL_HANDSHAKE_PORT";
-// If set to "1" or "true", allows loading the xla_cpu backend on
-// machines without a TPU.
-inline constexpr char kTorchTpuInternalAllowXlaBackendEnvVar[] =
-    "TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND";
 // Specifies the repeated op detection mode. If not set, "safe" mode is used.
 // Supported modes:
 // - "safe": Uses MaterializationMode::kSplitGraph when a repeated sequence is
@@ -318,7 +314,6 @@ inline constexpr auto kEnvVarToStage =
         {kTorchTpuDevicesPerHostEnvVar, std::nullopt},
         {kTorchTpuEnableDebugChecksEnvVar, SymbolStage::Experimental()},
         {kTorchTpuHandshakePortEnvVar, SymbolStage::InternalApi()},
-        {kTorchTpuInternalAllowXlaBackendEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuInternalDetectRepeatedOpsEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuInternalDisableInplaceBufferDonationEnvVar,
          SymbolStage::InternalApi()},

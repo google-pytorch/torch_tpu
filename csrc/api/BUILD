@@ -69,7 +69,7 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    requires_libtpu = True,
+    tags = ["requires-tpu-v5lite"],
     deps = [
         ":tensor_buffer",
         "//csrc/common:cache_key",

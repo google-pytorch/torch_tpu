@@ -30,7 +30,6 @@ namespace torch_tpu {
 // XLA device types.
 enum class PjRtDeviceType {
   kUnknown = 0,
-  kCpu,
   kTpu,
 };
 

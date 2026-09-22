@@ -499,8 +499,6 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
     """
     if cls._device_type == "tpu":
       return cls.device_count() > 0
-    if cls._device_type == "xla_cpu":
-      return True
     return False
 
   @classmethod
@@ -948,32 +946,21 @@ class TpuDeviceModule(_DeviceModule):
     )
 
 
-class XlaCpuDeviceModule(_DeviceModule):
-  _device_type: Final[str] = "xla_cpu"  # pyrefly: ignore[bad-override]
-
-
-_DEVICE_MODULE_MAPPING: Final[Mapping[str, type[_DeviceModule]]] = {
-    "tpu": TpuDeviceModule,
-    "xla_cpu": XlaCpuDeviceModule,
-}
-
-
 def get_device_module(device_type: str) -> type[_DeviceModule]:
   """Retrieves the _DeviceModule module for the specified device.
 
   Args:
-    device_type: A valid device type, one of: {tpu, xla_cpu}
+    device_type: A valid device type, currently only "tpu".
 
   Returns:
     A module that can be passed to torch._register_device_module.
   """
-  if device_type not in _DEVICE_MODULE_MAPPING:
+  if device_type != "tpu":
     raise ValueError(
-        f"Unknown device type {device_type!r}, please choose one of: "
-        + ", ".join(_DEVICE_MODULE_MAPPING.keys())
+        f"Unknown device type {device_type!r}, only 'tpu' is supported."
     )
 
-  return _DEVICE_MODULE_MAPPING[device_type]
+  return TpuDeviceModule
 
 
 class TpuStreamContext:

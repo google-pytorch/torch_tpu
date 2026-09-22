@@ -199,37 +199,12 @@ torch_tpu_py_test(
     ],
 )
 
-torch_tpu_py_test(
-    name = "model_performance_benchmarks_xla_cpu",
-    timeout = "eternal",
-    srcs = ["model_performance_benchmarks.py"],
-    args = ["--platform=xla_cpu"],
-    env = {"TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND": "1"},
-    linking_mode = "static",
-    main = "model_performance_benchmarks.py",
-    notap = "Tested on guitar workflow.",
-    notest_oss = True,  # Benchmarks have a separate workflow.
-    shard_count = 4,
-    strict = True,
-    tags = [
-        "cpu:4",
-        "nofastbuild",  # Benchmark.
-        "requires-net:external",
-    ],
-    deps = [
-        ":model_performance_benchmarks_lib",
-        "//src/torch_tpu",
-        "//tests:seed_test_utils",
-    ],
-)
-
 # TODO(b/327271919): This target is only runnable in OSS.
 torch_tpu_py_test(
     name = "model_performance_benchmarks_torch_cpu",
     timeout = "eternal",
     srcs = ["model_performance_benchmarks.py"],
     args = ["--platform=torch_cpu"],
-    env = {"TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND": "1"},
     linking_mode = "static",
     main = "model_performance_benchmarks.py",
     notap = "Tested on guitar workflow.",
@@ -673,7 +648,6 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "model_utils_test",
     srcs = ["model_utils_test.py"],
-    env = {"TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND": "1"},
     deps = [
         ":benchmark_function_db",
         ":common",
@@ -697,7 +671,6 @@ torch_tpu_py_library(
 torch_tpu_py_test(
     name = "mamba3_test",
     srcs = ["mamba3_test.py"],
-    env = {"TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND": "1"},
     deps = [
         ":mamba3",
         "//shims/absl_py/testing:absltest",

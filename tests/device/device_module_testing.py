@@ -328,8 +328,6 @@ class DeviceModuleBase(
     self.assertIsInstance(is_avail, bool)
     if self.device_module._device_type == "tpu":
       self.assertEqual(is_avail, self.device_module.device_count() > 0)
-    elif self.device_module._device_type == "xla_cpu":
-      self.assertTrue(is_avail)
 
   def test_synchronize(self):
     """Verifies that device_module.synchronize executes cleanly."""

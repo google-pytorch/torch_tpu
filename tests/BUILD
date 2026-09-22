@@ -2105,21 +2105,6 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
-    name = "autoload_test_cpu",
-    srcs = ["autoload_cpu_test.py"],
-    env = {
-        "TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND": "1",
-    },
-    main = "autoload_cpu_test.py",
-    tags = [],
-    deps = [
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-    ],
-)
-
-torch_tpu_py_test(
     name = "import_test",
     size = "medium",
     srcs = ["import_test.py"],
@@ -2136,29 +2121,15 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
-    name = "autoload_disabled_backend_test_cpu",
-    srcs = ["autoload_disabled_backend_test.py"],
-    main = "autoload_disabled_backend_test.py",
-    tags = [],
-    deps = [
-        ":seed_test_utils",
-        "//shims/absl_py/testing:absltest",
-        "//shims/absl_py/testing:parameterized",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-    ],
-)
-
-torch_tpu_py_test(
     name = "tracebacks_precedence_test",
     srcs = ["tracebacks_precedence_test.py"],
     args = [
         "--torch_tpu_internal_mlir_tracebacks=true",
     ],
-    env = {
-        "TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND": "1",
-    },
     notest_oss = True,  # Absl flags don't work in OSS
+    tags = [
+        "requires-tpu-v5lite",
+    ],
     deps = [
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
@@ -2207,26 +2178,7 @@ torch_tpu_py_test(
 test_suite(
     name = "autoload_tests",
     tests = [
-        "autoload_disabled_backend_test_cpu",
-        "autoload_test_cpu",
         "autoload_test_tpu",
-    ],
-)
-
-torch_tpu_py_test(
-    name = "tracing_test_cpu",
-    srcs = ["tracing_test.py"],
-    env = {
-        "TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND": "1",
-    },
-    main = "tracing_test.py",
-    deps = [
-        ":seed_test_utils",
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "//src/torch_tpu/_internal/execution_mode",
-        "//src/torch_tpu/_internal/tracing",
     ],
 )
 
@@ -2250,7 +2202,6 @@ torch_tpu_py_test(
 test_suite(
     name = "tracing_tests",
     tests = [
-        "tracing_test_cpu",
         "tracing_test_tpu",
     ],
 )

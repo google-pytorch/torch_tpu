@@ -350,10 +350,10 @@ def _smoke_test_files(device: str) -> Sequence[str]:
   smoke_test_files: Mapping[str, Sequence[str]] = {
       "common": (
           "tests/import_test.py",
-          f"tests/autoload_{device}_test.py",
           "tests/execution_mode_test.py",
       ),
       "tpu": (
+          "tests/autoload_tpu_test.py",
           # A test that runs quickly and does something useful with a TPU
           "tests/internal_sync_test.py",
       ),
@@ -367,9 +367,6 @@ def _install_and_run_smoke_tests(
 ) -> None:
   """Install the dist/ wheel plus install_args, then run the smoke tests."""
   session.install(str(_dist_wheel(session)), "pytest>=9", *install_args)
-  # Mirrors the env of the corresponding bazel target in tests/BUILD: the
-  # xla_cpu backend only registers when explicitly allowed.
-  env = {"TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND": "1"} if device == "cpu" else {}
   # sys-level capture (not the fd-level default): fd capture swallows
   # C-level stderr, so when a native extension aborts the process at import
   # the abort message is lost with it -- only the faulthandler traceback
@@ -380,5 +377,4 @@ def _install_and_run_smoke_tests(
       "--capture=sys",
       *_smoke_test_files(device),
       *session.posargs,
-      env=env,
   )

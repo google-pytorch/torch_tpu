@@ -223,9 +223,6 @@ absl::Status PjrtBackend::InitializeInternal() {
       TT_RETURN_IF_ERROR(InitializeDistributedEnvironment(config)).SetPrepend()
           << "InitializeDistributedEnvironment failed: ";
     }
-  } else if (options_.device_type == "xla_cpu") {
-    plugin_name = kCpuPjrtName;
-    device_type = PjRtDeviceType::kCpu;
   } else {
     return TT_ERROR(error::kInvalidArgument)
            << "unsupported device type: " << options_.device_type;

@@ -86,15 +86,8 @@ _IS_PATCHED: bool = False
 
 
 def _is_tpu_tensor(tensor: Any) -> bool:
-  """Returns True if the object is a Tensor on a TPU device.
-
-  Checks for both native "tpu" devices and XLA-backed device variants
-  ("xla_cpu") to ensure consistent handling across runtime modes.
-  """
-  return isinstance(tensor, torch.Tensor) and tensor.device.type in (
-      "tpu",
-      "xla_cpu",
-  )
+  """Returns True if the object is a Tensor on a TPU device."""
+  return isinstance(tensor, torch.Tensor) and tensor.device.type == "tpu"
 
 
 # -----------------------------------------------------------------------------

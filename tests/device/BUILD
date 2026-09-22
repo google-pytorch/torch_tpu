@@ -50,26 +50,9 @@ torch_tpu_py_test(
     ],
 )
 
-torch_tpu_py_test(
-    name = "device_module_test_cpu",
-    srcs = ["device_module_cpu_test.py"],
-    env = {
-        "TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND": "1",
-    },
-    main = "device_module_cpu_test.py",
-    tags = [],
-    deps = [
-        ":device_module_testing",
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-    ],
-)
-
 test_suite(
     name = "device_module_tests",
     tests = [
-        "device_module_test_cpu",
         "device_module_test_tpu",
     ],
 )

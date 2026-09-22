@@ -137,7 +137,7 @@ int64_t AtenFusedSdpChoice(const at::Tensor& query, const at::Tensor& key,
         bool has_batch = query.ndimension() >= 4;
         bool has_dropout = dropout_p != 0.0;
 
-        if (flash_enabled && c10::get_privateuse1_backend() != "xla_cpu") {
+        if (flash_enabled) {
           bool supported_flash_dtype =
               (query.scalar_type() == at::ScalarType::Float ||
                query.scalar_type() == at::ScalarType::BFloat16);

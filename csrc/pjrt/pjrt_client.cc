@@ -35,15 +35,6 @@ absl::StatusOr<absl_nonnull std::unique_ptr<xla::PjRtClient>> GetPjRtClient(
     return xla::GetCApiClient(
         "tpu", {{"premapped_buffer_size", tpu_premapped_buffer_size}});
   }
-  if (device_type == "xla_cpu") {
-    int64_t cpu_device_count = 1;
-    if (const auto& world_size_or =
-            GetRequiredIntegerEnvOnce<int, kWorldSizeEnvVar>();
-        world_size_or.ok()) {
-      cpu_device_count = *world_size_or;
-    }
-    return xla::GetCApiClient("cpu", {{"cpu_device_count", cpu_device_count}});
-  }
   return TT_ERROR(error::kInvalidArgument)
          << "unable to get PJRT client for unsupported device type: "
          << device_type;
