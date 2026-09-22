@@ -54,8 +54,10 @@ torch_tpu_cc_library(
     hdrs = ["dropout.h"],
     deps = [
         "//csrc/common:error_utils",
+        "//csrc/ops:binary",
         "//csrc/ops:op_builder_utils",
         "//csrc/ops/uniform",
+        "//csrc/ops/where",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status:statusor",

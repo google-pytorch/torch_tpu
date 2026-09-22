@@ -20,8 +20,10 @@
 #include "absl/log/absl_log.h"
 #include "absl/status/statusor.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/ops/binary.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/uniform/uniform.h"
+#include "csrc/ops/where/where.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Support/DebugStringHelper.h"
@@ -62,15 +64,18 @@ absl::StatusOr<MlirOpResults<2>> BuildDropoutTrainShlo(
       auto rand_op, BuildUniformShlo(rng_input_state, /*from=*/0.0, /*to=*/1.0,
                                      rand_type, input));
 
-  auto p_const = MakeConstantLike(rand_op, p);
-  auto mask_op = mlir::stablehlo::Compare(
-      rand_op, p_const, mlir::stablehlo::ComparisonDirection::GE);
-  auto zero_const = MakeConstantLike(input, 0.0);
-  auto masked_input_op = mlir::stablehlo::Select(mask_op, input, zero_const);
+  auto p_const = MakeScalarConstant(builder, p, GetElementTypeOrDie(rand_op));
+  TT_ASSIGN_OR_RETURN(auto mask_op, BuildGeShlo(rand_op, p_const));
+  auto zero_const =
+      MakeScalarConstant(builder, 0.0, GetElementTypeOrDie(input));
+  TT_ASSIGN_OR_RETURN(
+      auto masked_input_op,
+      BuildWhereShlo(mask_op, input, zero_const, GetElementTypeOrDie(input)));
 
   double scale = 1.0 / (1.0 - p);
-  auto scale_const = MakeConstantLike(input, scale);
-  auto output = mlir::stablehlo::Mul(masked_input_op, scale_const);
+  auto scale_const =
+      MakeScalarConstant(builder, scale, GetElementTypeOrDie(input));
+  TT_ASSIGN_OR_RETURN(auto output, BuildMulShlo(masked_input_op, scale_const));
 
   return {{output, mask_op}};
 }
@@ -97,11 +102,14 @@ absl::StatusOr<MlirOpResults<1>> BuildDropoutBackwardShlo(
   TT_ASSIGN_OR_RETURN((auto [grad_output_bcst, mask_bcst]),
                       ApplyBroadcastIfNeeded(grad_output, mask));
 
-  auto zero_const = MakeConstantLike(grad_output_bcst, 0.0);
-  auto masked_grad_op =
-      mlir::stablehlo::Select(mask_bcst, grad_output_bcst, zero_const);
-  auto scale_const = MakeConstantLike(masked_grad_op, scale);
-  return mlir::stablehlo::Mul(masked_grad_op, scale_const);
+  auto zero_const =
+      MakeScalarConstant(builder, 0.0, GetElementTypeOrDie(grad_output_bcst));
+  TT_ASSIGN_OR_RETURN(auto masked_grad_op,
+                      BuildWhereShlo(mask_bcst, grad_output_bcst, zero_const,
+                                     GetElementTypeOrDie(grad_output_bcst)));
+  auto scale_const =
+      MakeScalarConstant(builder, scale, GetElementTypeOrDie(masked_grad_op));
+  return BuildMulShlo(masked_grad_op, scale_const);
 }
 
 }  // namespace torch_tpu

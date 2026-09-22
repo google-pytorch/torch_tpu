@@ -65,7 +65,8 @@ absl::StatusOr<MlirOpResults<2>> BuildNllLossForwardOutShlo(
   // mask = target != ignore_index
   // mask is of shape [batch] with 0s and 1s.
   // 0s are for ignoring samples with ignore_index.
-  mlir::MlirOp ignore_index_bcast = MakeConstantLike(target, ignore_index);
+  mlir::MlirOp ignore_index_bcast =
+      MakeScalarConstant(builder, ignore_index, GetElementTypeOrDie(target));
   TT_ASSIGN_OR_RETURN(mlir::MlirOp mask,
                       BuildNeShlo(target, ignore_index_bcast));
   mlir::MlirOp mask_float =
@@ -176,7 +177,8 @@ absl::StatusOr<mlir::MlirOp> BuildNllLossBackwardGradInputShlo(
 
   // mask is of shape [batch] with 0s and 1s.
   // 0s are for ignoring samples with ignore_index.
-  mlir::MlirOp ignore_index_bcast = MakeConstantLike(target, ignore_index);
+  mlir::MlirOp ignore_index_bcast =
+      MakeScalarConstant(builder, ignore_index, GetElementTypeOrDie(target));
   TT_ASSIGN_OR_RETURN(mlir::MlirOp mask,
                       BuildNeShlo(target, ignore_index_bcast));
   mask = mlir::stablehlo::ConvertElementType(mask, compute_dtype);
