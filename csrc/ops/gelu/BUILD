@@ -54,6 +54,7 @@ torch_tpu_cc_library(
     deps = [
         "//csrc/common:aten_utils",
         "//csrc/common:error_utils",
+        "//csrc/ops:binary",
         "//csrc/ops:op_builder_utils",
         "//shims/torch:torch_headers",
         "@com_google_absl//absl/log:absl_log",
