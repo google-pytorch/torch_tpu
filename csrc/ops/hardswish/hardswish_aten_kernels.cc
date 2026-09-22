@@ -42,46 +42,98 @@ namespace torch_tpu {
 
 namespace {
 
+absl::StatusOr<mlir::MlirOp> BuildAddShlo(mlir::MlirOp lhs, mlir::MlirOp rhs) {
+  TT_ASSIGN_OR_RETURN((auto [op1, op2]), ApplyBroadcastIfNeeded(lhs, rhs));
+  return mlir::stablehlo::Add(op1, op2);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildMulShlo(mlir::MlirOp lhs, mlir::MlirOp rhs) {
+  TT_ASSIGN_OR_RETURN((auto [op1, op2]), ApplyBroadcastIfNeeded(lhs, rhs));
+  return mlir::stablehlo::Mul(op1, op2);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildLeShlo(mlir::MlirOp lhs, mlir::MlirOp rhs) {
+  TT_ASSIGN_OR_RETURN((auto [op1, op2]), ApplyBroadcastIfNeeded(lhs, rhs));
+  return mlir::stablehlo::Compare(op1, op2,
+                                  mlir::stablehlo::ComparisonDirection::LE);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildGeShlo(mlir::MlirOp lhs, mlir::MlirOp rhs) {
+  TT_ASSIGN_OR_RETURN((auto [op1, op2]), ApplyBroadcastIfNeeded(lhs, rhs));
+  return mlir::stablehlo::Compare(op1, op2,
+                                  mlir::stablehlo::ComparisonDirection::GE);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildWhereShlo(
+    mlir::MlirOp condition, mlir::MlirOp input, mlir::MlirOp other,
+    const mlir::ElementType output_element_type) {
+  mlir::MLIRContext& ctx = condition.getContext();
+  const mlir::RankedTensorType condition_type = GetTensorTypeOrDie(condition);
+  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
+  const mlir::RankedTensorType other_type = GetTensorTypeOrDie(other);
+
+  if (!IsBooleanType(condition_type)) {
+    condition =
+        mlir::stablehlo::ConvertElementType(condition, mlir::ElementType::PRED);
+  }
+  const mlir::Type output_type = mlir::getElementType(ctx, output_element_type);
+  if (input_type.getElementType() != output_type) {
+    input = mlir::stablehlo::ConvertElementType(input, output_type);
+  }
+  if (other_type.getElementType() != output_type) {
+    other = mlir::stablehlo::ConvertElementType(other, output_type);
+  }
+
+  TT_ASSIGN_OR_RETURN((auto [bcast_condition, bcast_input, bcast_other]),
+                      ApplyBroadcastIfNeeded(condition, input, other));
+
+  return mlir::stablehlo::Select(bcast_condition, bcast_input, bcast_other);
+}
+
 absl::StatusOr<mlir::MlirOp> BuildHardswishShlo(mlir::MlirOp input_op) {
-  auto type = GetTensorTypeOrDie(input_op);
-  TT_ASSIGN_OR_RETURN(auto element_type,
+  const auto type = GetTensorTypeOrDie(input_op);
+  TT_ASSIGN_OR_RETURN(const auto element_type,
                       ConvertTo<mlir::ElementType>(type.getElementType()));
 
-  mlir::MlirOp three = MakeConstantLike(input_op, 3.0, element_type);
-  mlir::MlirOp six = MakeConstantLike(input_op, 6.0, element_type);
-  mlir::MlirOp zero = MakeConstantLike(input_op, 0.0, element_type);
+  mlir::MlirBuilder& builder = input_op.getBuilder();
+  mlir::MlirOp zero = MakeScalarConstant(builder, 0.0, element_type);
+  mlir::MlirOp three = MakeScalarConstant(builder, 3.0, element_type);
+  mlir::MlirOp six = MakeScalarConstant(builder, 6.0, element_type);
+  mlir::MlirOp one_sixth = MakeScalarConstant(builder, 1.0 / 6.0, element_type);
 
-  mlir::MlirOp x_plus_3 = mlir::stablehlo::Add(input_op, three);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp x_plus_3, BuildAddShlo(input_op, three));
   mlir::MlirOp relu6 = mlir::stablehlo::Clamp(zero, x_plus_3, six);
   mlir::MlirOp num = mlir::stablehlo::Mul(input_op, relu6);
-  return mlir::stablehlo::Div(num, six);
+  return BuildMulShlo(num, one_sixth);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildHardswishBackwardShlo(
     mlir::MlirOp grad_output, mlir::MlirOp self) {
-  auto type = GetTensorTypeOrDie(self);
-  TT_ASSIGN_OR_RETURN(auto element_type,
+  const auto type = GetTensorTypeOrDie(self);
+  TT_ASSIGN_OR_RETURN(const auto element_type,
                       ConvertTo<mlir::ElementType>(type.getElementType()));
 
-  mlir::MlirOp neg_three = MakeConstantLike(self, -3.0, element_type);
-  mlir::MlirOp three = MakeConstantLike(self, 3.0, element_type);
+  mlir::MlirBuilder& builder = self.getBuilder();
+  mlir::MlirOp neg_three = MakeScalarConstant(builder, -3.0, element_type);
+  mlir::MlirOp three = MakeScalarConstant(builder, 3.0, element_type);
+  mlir::MlirOp zero = MakeScalarConstant(builder, 0.0, element_type);
+  mlir::MlirOp one_third = MakeScalarConstant(builder, 1.0 / 3.0, element_type);
+  mlir::MlirOp half = MakeScalarConstant(builder, 0.5, element_type);
 
-  mlir::MlirOp cond_less = mlir::stablehlo::Compare(
-      self, neg_three, mlir::stablehlo::ComparisonDirection::LE);
-  mlir::MlirOp cond_greater = mlir::stablehlo::Compare(
-      self, three, mlir::stablehlo::ComparisonDirection::GE);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp cond_less, BuildLeShlo(self, neg_three));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp cond_greater, BuildGeShlo(self, three));
 
-  mlir::MlirOp zero = MakeConstantLike(self, 0.0, element_type);
-  mlir::MlirOp one_third = MakeConstantLike(self, 1.0 / 3.0, element_type);
-  mlir::MlirOp half = MakeConstantLike(self, 0.5, element_type);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp self_over_three,
+                      BuildMulShlo(self, one_third));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp mid_grad_factor,
+                      BuildAddShlo(self_over_three, half));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp mid_grad,
+                      BuildMulShlo(grad_output, mid_grad_factor));
 
-  mlir::MlirOp self_over_three = mlir::stablehlo::Mul(self, one_third);
-  mlir::MlirOp mid_grad_factor = mlir::stablehlo::Add(self_over_three, half);
-  mlir::MlirOp mid_grad = mlir::stablehlo::Mul(grad_output, mid_grad_factor);
-
-  mlir::MlirOp res2 =
-      mlir::stablehlo::Select(cond_greater, grad_output, mid_grad);
-  return mlir::stablehlo::Select(cond_less, zero, res2);
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp res2,
+      BuildWhereShlo(cond_greater, grad_output, mid_grad, element_type));
+  return BuildWhereShlo(cond_less, zero, res2, element_type);
 }
 
 }  // namespace

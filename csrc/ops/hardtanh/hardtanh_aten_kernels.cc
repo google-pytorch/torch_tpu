@@ -67,8 +67,15 @@ absl::StatusOr<mlir::MlirOp> BuildHardtanhBackwardShlo(mlir::MlirOp grad_output,
   mlir::MlirOp lt_max = mlir::stablehlo::Compare(
       self, max_val_bcast, mlir::stablehlo::ComparisonDirection::LT);
   mlir::MlirOp in_range = mlir::stablehlo::And(gt_min, lt_max);
-  mlir::MlirOp zero = MakeConstantLike(grad_output, 0.0);
-  return mlir::stablehlo::Select(in_range, grad_output, zero);
+
+  const auto type = GetTensorTypeOrDie(grad_output);
+  TT_ASSIGN_OR_RETURN(const auto element_type,
+                      ConvertTo<mlir::ElementType>(type.getElementType()));
+  mlir::MlirOp zero =
+      MakeScalarConstant(grad_output.getBuilder(), 0.0, element_type);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp zero_bcast,
+                      BroadcastIfNeeded(zero, grad_output));
+  return mlir::stablehlo::Select(in_range, grad_output, zero_bcast);
 }
 
 absl::Status ValidateHardtanhInputs(const at::Tensor& self) {

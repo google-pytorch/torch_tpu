@@ -39,53 +39,106 @@
 namespace torch_tpu {
 namespace {
 
+absl::StatusOr<mlir::MlirOp> BuildAddShlo(mlir::MlirOp lhs, mlir::MlirOp rhs) {
+  TT_ASSIGN_OR_RETURN((auto [op1, op2]), ApplyBroadcastIfNeeded(lhs, rhs));
+  return mlir::stablehlo::Add(op1, op2);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildMulShlo(mlir::MlirOp lhs, mlir::MlirOp rhs) {
+  TT_ASSIGN_OR_RETURN((auto [op1, op2]), ApplyBroadcastIfNeeded(lhs, rhs));
+  return mlir::stablehlo::Mul(op1, op2);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildLeShlo(mlir::MlirOp lhs, mlir::MlirOp rhs) {
+  TT_ASSIGN_OR_RETURN((auto [op1, op2]), ApplyBroadcastIfNeeded(lhs, rhs));
+  return mlir::stablehlo::Compare(op1, op2,
+                                  mlir::stablehlo::ComparisonDirection::LE);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildGeShlo(mlir::MlirOp lhs, mlir::MlirOp rhs) {
+  TT_ASSIGN_OR_RETURN((auto [op1, op2]), ApplyBroadcastIfNeeded(lhs, rhs));
+  return mlir::stablehlo::Compare(op1, op2,
+                                  mlir::stablehlo::ComparisonDirection::GE);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildWhereShlo(
+    mlir::MlirOp condition, mlir::MlirOp input, mlir::MlirOp other,
+    const mlir::ElementType output_element_type) {
+  mlir::MLIRContext& ctx = condition.getContext();
+  const mlir::RankedTensorType condition_type = GetTensorTypeOrDie(condition);
+  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
+  const mlir::RankedTensorType other_type = GetTensorTypeOrDie(other);
+
+  if (!IsBooleanType(condition_type)) {
+    condition =
+        mlir::stablehlo::ConvertElementType(condition, mlir::ElementType::PRED);
+  }
+  const mlir::Type output_type = mlir::getElementType(ctx, output_element_type);
+  if (input_type.getElementType() != output_type) {
+    input = mlir::stablehlo::ConvertElementType(input, output_type);
+  }
+  if (other_type.getElementType() != output_type) {
+    other = mlir::stablehlo::ConvertElementType(other, output_type);
+  }
+
+  TT_ASSIGN_OR_RETURN((auto [bcast_condition, bcast_input, bcast_other]),
+                      ApplyBroadcastIfNeeded(condition, input, other));
+
+  return mlir::stablehlo::Select(bcast_condition, bcast_input, bcast_other);
+}
+
 absl::StatusOr<mlir::MlirOp> BuildHardsigmoidShlo(mlir::MlirOp input_op) {
-  auto type = GetTensorTypeOrDie(input_op);
-  TT_ASSIGN_OR_RETURN(auto element_type,
+  const auto type = GetTensorTypeOrDie(input_op);
+  TT_ASSIGN_OR_RETURN(const auto element_type,
                       ConvertTo<mlir::ElementType>(type.getElementType()));
 
-  TT_ASSIGN_OR_RETURN(auto compute_dtype, InferComputationDtype(element_type));
+  TT_ASSIGN_OR_RETURN(const auto compute_dtype,
+                      InferComputationDtype(element_type));
   TT_ASSIGN_OR_RETURN(mlir::MlirOp x, CastIfNeeded(input_op, compute_dtype));
 
   // hardsigmoid(x) = clamp(0, x + 3, 6) * (1/6)
-  mlir::MlirOp zero = MakeConstantLike(x, 0.0, compute_dtype);
-  mlir::MlirOp three = MakeConstantLike(x, 3.0, compute_dtype);
-  mlir::MlirOp six = MakeConstantLike(x, 6.0, compute_dtype);
-  mlir::MlirOp one_sixth = MakeConstantLike(x, 1.0 / 6.0, compute_dtype);
+  mlir::MlirBuilder& builder = x.getBuilder();
+  mlir::MlirOp zero = MakeScalarConstant(builder, 0.0, compute_dtype);
+  mlir::MlirOp three = MakeScalarConstant(builder, 3.0, compute_dtype);
+  mlir::MlirOp six = MakeScalarConstant(builder, 6.0, compute_dtype);
+  mlir::MlirOp one_sixth =
+      MakeScalarConstant(builder, 1.0 / 6.0, compute_dtype);
 
-  mlir::MlirOp x_shifted = mlir::stablehlo::Add(x, three);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp x_shifted, BuildAddShlo(x, three));
   mlir::MlirOp clamped = mlir::stablehlo::Clamp(zero, x_shifted, six);
-  mlir::MlirOp result = mlir::stablehlo::Mul(clamped, one_sixth);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp result, BuildMulShlo(clamped, one_sixth));
 
   return CastIfNeeded(result, element_type);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildHardsigmoidBackwardShlo(
     mlir::MlirOp grad_output, mlir::MlirOp self) {
-  auto type = GetTensorTypeOrDie(self);
-  TT_ASSIGN_OR_RETURN(auto element_type,
+  const auto type = GetTensorTypeOrDie(self);
+  TT_ASSIGN_OR_RETURN(const auto element_type,
                       ConvertTo<mlir::ElementType>(type.getElementType()));
 
-  TT_ASSIGN_OR_RETURN(auto compute_dtype, InferComputationDtype(element_type));
+  TT_ASSIGN_OR_RETURN(const auto compute_dtype,
+                      InferComputationDtype(element_type));
   TT_ASSIGN_OR_RETURN(mlir::MlirOp g, CastIfNeeded(grad_output, compute_dtype));
   TT_ASSIGN_OR_RETURN(mlir::MlirOp x, CastIfNeeded(self, compute_dtype));
 
   // grad = 1/6 if -3 < x < 3 else 0
-  mlir::MlirOp neg_three = MakeConstantLike(x, -3.0, compute_dtype);
-  mlir::MlirOp three = MakeConstantLike(x, 3.0, compute_dtype);
+  mlir::MlirBuilder& builder = x.getBuilder();
+  mlir::MlirOp neg_three = MakeScalarConstant(builder, -3.0, compute_dtype);
+  mlir::MlirOp three = MakeScalarConstant(builder, 3.0, compute_dtype);
+  mlir::MlirOp zero = MakeScalarConstant(builder, 0.0, compute_dtype);
+  mlir::MlirOp one_sixth =
+      MakeScalarConstant(builder, 1.0 / 6.0, compute_dtype);
 
-  mlir::MlirOp cond_le = mlir::stablehlo::Compare(
-      x, neg_three, mlir::stablehlo::ComparisonDirection::LE);
-  mlir::MlirOp cond_ge = mlir::stablehlo::Compare(
-      x, three, mlir::stablehlo::ComparisonDirection::GE);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp cond_le, BuildLeShlo(x, neg_three));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp cond_ge, BuildGeShlo(x, three));
 
-  mlir::MlirOp zero = MakeConstantLike(x, 0.0, compute_dtype);
-  mlir::MlirOp one_sixth = MakeConstantLike(x, 1.0 / 6.0, compute_dtype);
-
-  mlir::MlirOp mid_grad = mlir::stablehlo::Mul(g, one_sixth);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp mid_grad, BuildMulShlo(g, one_sixth));
 
   mlir::MlirOp out_of_bounds = mlir::stablehlo::Or(cond_le, cond_ge);
-  mlir::MlirOp result = mlir::stablehlo::Select(out_of_bounds, zero, mid_grad);
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp result,
+      BuildWhereShlo(out_of_bounds, zero, mid_grad, compute_dtype));
 
   return CastIfNeeded(result, element_type);
 }
