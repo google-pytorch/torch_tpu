@@ -1814,6 +1814,16 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     self.assertNotEmpty(eager_iterations)
     self.assertGreater(eager_iterations[0], 0)
 
+  def test_traverse_and_compile_duplicate_inputs_deduplicated(self):
+    x = torch.ones(2, 3, device='cpu').to(device=torch.device('tpu'))
+    with eager_mode_compile_fx_graph():
+      z = x + x
+    compile_result = tpu_torch_compile.traverse_and_compile([z], [x, x])
+    self.assertIsNotNone(compile_result.executable)
+    results = tpu_torch_compile.execute(compile_result.executable, [x, x])
+    self.assertLen(results, 1)
+    utils.assert_close(results[0].cpu(), (x + x).cpu())
+
 
 if __name__ == '__main__':
   absltest.main()

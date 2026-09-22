@@ -1610,6 +1610,31 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       tpu_torch_compile.execute(compile_result.executable, [x])
 
+  @et.why_tpu_only("build_mlir() input validation is TPU-only.")
+  def test_build_mlir_duplicate_input(self):
+    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+      x = torch.ones(2, 3, device="cpu").to(device=et.device())
+      z = x + x
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""build_mlir(): failed to validate and reorder inputs: identified a duplicate input: 2x3xfloat32""",
+    ):
+      tpu_torch_compile.build_mlir([z], [x, x])
+
+  @et.why_tpu_only("build_mlir() input validation is TPU-only.")
+  def test_build_mlir_missing_input(self):
+    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+      x = torch.ones(2, 3, device="cpu").to(device=et.device())
+      y = torch.ones(2, 3, device="cpu").to(device=et.device())
+      z = x + y
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""build_mlir(): failed to validate and reorder inputs: identified an argument that was not provided: 2x3xfloat32""",
+    ):
+      tpu_torch_compile.build_mlir([z], [x])
+
   @et.why_tpu_only(
       "Verifies that attempting to materialize a tensor depending on a"
       " placeholder fails gracefully instead of crashing."

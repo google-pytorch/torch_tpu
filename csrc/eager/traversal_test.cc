@@ -21,11 +21,14 @@
 #include <utility>
 #include <vector>
 
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation_spec.h"
+#include "csrc/common/compile_options_key.h"
 #include "csrc/common/dimension_types.h"
+#include "csrc/common/error_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/status_test_utils.h"
 #include "csrc/eager/device_buffer.h"
@@ -308,6 +311,52 @@ TEST_F(TraversalTest, CompileAnnotatesArgumentLayoutsWithTilingAndCaching) {
                       /*donated_inputs=*/{});
   EXPECT_NE(key_untiled, key_tiled8);
   EXPECT_NE(key_tiled8, key_tiled16);
+}
+
+TEST_F(TraversalTest, ValidateAndReorderArgumentsErrorCases) {
+  TT_ASSERT_OK_AND_ASSIGN(
+      const DeviceBufferRef ref_a,
+      DeviceBufferList::CreatePlaceholder(shape_.dimensions(), shape_.dtype()));
+  TT_ASSERT_OK_AND_ASSIGN(
+      const DeviceBufferRef ref_b,
+      DeviceBufferList::CreatePlaceholder(shape_.dimensions(), shape_.dtype()));
+  TT_ASSERT_OK_AND_ASSIGN(const std::vector<DeviceBufferRef> refs_out,
+                          DeviceBufferList::CreateDeferred(
+                              OpName::kAdd, DummyBuilder, {ref_a, ref_b},
+                              OpParamCacheKeys::Empty(), {shape_}));
+  const DeviceBufferRef ref_out = refs_out[0];
+
+  TT_ASSERT_OK_AND_ASSIGN(const std::unique_ptr<Traversal> tr,
+                          Traversal::Create({ref_out}));
+
+  // Case 1: Duplicate input buffer should return kInvalidArgument with shape
+  // string.
+  const absl::Status duplicate_status =
+      tr->ValidateAndReorderArguments({ref_a, ref_a});
+  EXPECT_EQ(duplicate_status.code(), error::kInvalidArgument);
+  EXPECT_THAT(duplicate_status.message(),
+              testing::HasSubstr("identified a duplicate input: 8xfloat32"));
+
+  // Case 2: Missing input buffer should return kInvalidArgument with shape
+  // string.
+  const absl::Status missing_status = tr->ValidateAndReorderArguments({ref_a});
+  EXPECT_EQ(missing_status.code(), error::kInvalidArgument);
+  EXPECT_THAT(missing_status.message(),
+              testing::HasSubstr(
+                  "identified an argument that was not provided: 8xfloat32"));
+
+  // Case 3: Deferred input buffer should return kInvalidArgument with shape
+  // string.
+  const absl::Status deferred_status =
+      tr->ValidateAndReorderArguments({ref_a, ref_out});
+  EXPECT_EQ(deferred_status.code(), error::kInvalidArgument);
+  EXPECT_THAT(
+      deferred_status.message(),
+      testing::HasSubstr(
+          "found a deferred argument, which is not allowed: 8xfloat32"));
+
+  // Case 4: Valid reordered input buffers should succeed.
+  EXPECT_TRUE(tr->ValidateAndReorderArguments({ref_b, ref_a}).ok());
 }
 
 }  // namespace
