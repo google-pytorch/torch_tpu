@@ -32,6 +32,7 @@
 #include "csrc/common/status_builder.h"
 #include "csrc/common/to_string.h"
 #include "csrc/eager/device_buffer.h"
+#include "csrc/eager/materialize.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/pjrt/pjrt_transfer.h"
@@ -90,11 +91,17 @@ absl::Status CopyTpuToCpu(const at::Tensor& src, const at::Tensor& dest,
   // ephemeral view buffer.
   TT_ASSIGN_OR_RETURN(const DeviceBufferRef materialized_src_buf, [&]() {
     tsl::profiler::TraceMe trace_mat("CopyTpuToCpu::MaterializeAndReturn");
-    return MaterializeAndReturn(src, MaterializationReason::kCpuTransfer);
+    const auto block_mode =
+        (non_blocking ? MaterializationBlockMode::kNonBlocking
+                      : MaterializationBlockMode::kBlockUntilStarted);
+    return MaterializeAndReturn(src, MaterializationReason::kCpuTransfer,
+                                block_mode);
   }());
 
-  ABSL_CHECK(materialized_src_buf.is_materializing())  // CRASH_OK
-      << "expected materialized buffer after MaterializeAndReturn";
+  if (!non_blocking) {
+    ABSL_CHECK(materialized_src_buf.is_materializing())  // CRASH_OK
+        << "expected materialized buffer after blocking MaterializeAndReturn";
+  }
 
   // Fast path: if the destination tensor is fully allocated, contiguous, and
   // has the exact same size and dtype as the source, we can copy directly

@@ -358,6 +358,29 @@ absl::StatusOr<at::Tensor> TpuMemcpyDtoH(const DeviceBufferRef& buffer_ref,
   return cpu_tensor_receiver;
 }
 
+namespace {
+
+xla::Future<void> TpyMemcpyDtoHDirectImpl(
+    absl::Span<const int64_t> buffer_expected_dims,
+    mlir::ElementType buffer_element_type, xla::PjRtBuffer* buffer,
+    void* dst_ptr) {
+  xla::Shape xla_shape = xla::ShapeUtil::MakeShapeWithDescendingLayout(
+      ConvertTo<xla::PrimitiveType>(buffer_element_type), buffer_expected_dims);
+
+  auto literal = std::make_unique<xla::MutableBorrowingLiteral>(
+      static_cast<char*>(dst_ptr), xla_shape);
+  xla::Future<> future = buffer->ToLiteral(literal.get());
+
+  future.OnReady([literal = std::move(literal)](absl::Status s) {
+    if (!s.ok()) {
+      ABSL_LOG(ERROR) << "Async D2H ToLiteral transfer failed: " << s;
+    }
+  });
+  return future;
+}
+
+}  // namespace
+
 absl::Status TpuMemcpyDtoHDirect(const DeviceBufferRef& buffer_ref,
                                  void* dst_ptr, bool non_blocking) {
   ABSL_CHECK_NE(buffer_ref.element_type(),  // CRASH_OK
@@ -367,30 +390,58 @@ absl::Status TpuMemcpyDtoHDirect(const DeviceBufferRef& buffer_ref,
   if (buffer_expected_bytes == 0) {
     return absl::OkStatus();
   }
+  if (buffer_ref.is_materialized() || !non_blocking) {
+    // The PjRtBuffer is either already available, or we're safe to block.
+    TT_ASSIGN_OR_RETURN(auto* buffer, buffer_ref.AwaitBuffer());
 
-  TT_ASSIGN_OR_RETURN(auto* buffer, buffer_ref.AwaitBuffer());
-
-  absl::Span<const int64_t> buffer_expected_dims = buffer_ref.dimensions();
-  xla::Shape xla_shape = xla::ShapeUtil::MakeShapeWithDescendingLayout(
-      ConvertTo<xla::PrimitiveType>(buffer_ref.element_type()),
-      buffer_expected_dims);
-
-  auto literal = std::make_unique<xla::MutableBorrowingLiteral>(
-      static_cast<char*>(dst_ptr), xla_shape);
-  xla::Future<> future = buffer->ToLiteral(literal.get());
-
-  if (non_blocking) {
-    future.OnReady([literal = std::move(literal)](absl::Status s) {
-      if (!s.ok()) {
-        ABSL_LOG(ERROR) << "Async D2H ToLiteral transfer failed: " << s;
-      }
-    });
-    RecordAsyncDeviceToHost(std::move(future));
-    return absl::OkStatus();
+    // Start the d2h copy out of the buffer.
+    auto transfer_future = TpyMemcpyDtoHDirectImpl(
+        buffer_ref.dimensions(), buffer_ref.element_type(), buffer, dst_ptr);
+    if (!non_blocking) {
+      // Block until the d2h copy completes.
+      return AdaptXlaError(
+          transfer_future.Await(),
+          /* context= */ "failed to copy buffer from device into host buffer");
+    } else {
+      // Record the async d2h copy so that the event queue will track it.
+      RecordAsyncDeviceToHost(std::move(transfer_future));
+      return absl::OkStatus();
+    }
   }
-  return AdaptXlaError(
-      future.Await(),
-      /* context= */ "failed to copy buffer from device into host buffer");
+
+  // The buffer ref is not materialized yet, and we can't wait for it.
+  // Chain futures so that when it is materialized, we start a copy to host.
+  auto [chained_promise, chained_future] = xla::MakePromise<void>();
+
+  // 1) Wait until the PjRtBuffer* exists
+  buffer_ref.GetMaterializationFuture().OnReady(
+      [buffer_ref, chained_promise = std::move(chained_promise),
+       dst_ptr](absl::Status s) mutable {
+        if (!s.ok()) {
+          chained_promise.Set(s);
+          return;
+        }
+        // Because GetMaterializationFuture() is ready, this will not block.
+        auto pjrt_buffer_or = buffer_ref.AwaitBuffer();
+        if (!pjrt_buffer_or.ok()) {
+          chained_promise.Set(pjrt_buffer_or.status());
+          return;
+        }
+        // 2) Schedule the d2h copy to start as soon as the PjRtBuffer* is ready
+        // using ToLiteral.
+        TpyMemcpyDtoHDirectImpl(buffer_ref.dimensions(),
+                                buffer_ref.element_type(), *pjrt_buffer_or,
+                                dst_ptr)
+            .OnReady([chained_promise =
+                          std::move(chained_promise)](absl::Status s) mutable {
+              // 3) Once the d2h copy is done, set chained_future to its result.
+              chained_promise.Set(s);
+            });
+      });
+
+  // Record the async d2h copy so that the event queue will track it.
+  RecordAsyncDeviceToHost(std::move(chained_future));
+  return absl::OkStatus();
 }
 
 namespace {
