@@ -30,15 +30,14 @@ class GraphTransformationsTest(seed_test_utils.RepeatableTest):
   def test_handle_dynamic_input_tensor_pass(self):
     captured_gm = None
     captured_sm = None
-    captured_bm = None
 
     def fw_compiler(graph_module, example_inputs):
-      nonlocal captured_gm, captured_sm, captured_bm
+      nonlocal captured_gm, captured_sm
       captured_gm = graph_module
+      bm = sym_bounds_manager.SymBoundsManager(example_inputs)
       captured_sm = sym_shape_manager.SymShapeManager(
-          graph_module, example_inputs
+          graph_module, example_inputs, bm.get_symbol_bounds()
       )
-      captured_bm = sym_bounds_manager.SymBoundsManager(example_inputs)
       return graph_module
 
     @torch.compile(backend=aot_autograd(fw_compiler=fw_compiler), dynamic=True)
@@ -52,7 +51,6 @@ class GraphTransformationsTest(seed_test_utils.RepeatableTest):
 
     self.assertIsNotNone(captured_gm)
     self.assertIsNotNone(captured_sm)
-    self.assertIsNotNone(captured_bm)
 
     # Apply the passes
     placeholders = list(
@@ -63,7 +61,7 @@ class GraphTransformationsTest(seed_test_utils.RepeatableTest):
     )(captured_gm)
 
     graph_transformations.HandleDynamicInputTensorPass(
-        captured_sm, placeholders, captured_bm
+        captured_sm, placeholders
     )(captured_gm)
 
     # Verify that a new placeholder was added for the dynamic dimension
@@ -88,8 +86,9 @@ class GraphTransformationsTest(seed_test_utils.RepeatableTest):
     def fw_compiler(graph_module, example_inputs):
       nonlocal captured_gm, captured_sm
       captured_gm = graph_module
+      bm = sym_bounds_manager.SymBoundsManager(example_inputs)
       captured_sm = sym_shape_manager.SymShapeManager(
-          graph_module, example_inputs
+          graph_module, example_inputs, bm.get_symbol_bounds()
       )
       return graph_module
 
@@ -144,8 +143,9 @@ class GraphTransformationsTest(seed_test_utils.RepeatableTest):
     def fw_compiler(graph_module, example_inputs):
       nonlocal captured_gm, captured_sm
       captured_gm = graph_module
+      bm = sym_bounds_manager.SymBoundsManager(example_inputs)
       captured_sm = sym_shape_manager.SymShapeManager(
-          graph_module, example_inputs
+          graph_module, example_inputs, bm.get_symbol_bounds()
       )
       return graph_module
 
@@ -192,15 +192,14 @@ class GraphTransformationsTest(seed_test_utils.RepeatableTest):
   def test_handle_dynamic_input_tensor_pass_reuse_placeholder(self):
     captured_gm = None
     captured_sm = None
-    captured_bm = None
 
     def fw_compiler(graph_module, example_inputs):
-      nonlocal captured_gm, captured_sm, captured_bm
+      nonlocal captured_gm, captured_sm
       captured_gm = graph_module
+      bm = sym_bounds_manager.SymBoundsManager(example_inputs)
       captured_sm = sym_shape_manager.SymShapeManager(
-          graph_module, example_inputs
+          graph_module, example_inputs, bm.get_symbol_bounds()
       )
-      captured_bm = sym_bounds_manager.SymBoundsManager(example_inputs)
       return graph_module
 
     @torch.compile(backend=aot_autograd(fw_compiler=fw_compiler), dynamic=True)
@@ -216,7 +215,6 @@ class GraphTransformationsTest(seed_test_utils.RepeatableTest):
 
     self.assertIsNotNone(captured_gm)
     self.assertIsNotNone(captured_sm)
-    self.assertIsNotNone(captured_bm)
 
     placeholders = list(
         captured_gm.graph.find_nodes(op="placeholder", sort=True)
@@ -240,7 +238,7 @@ class GraphTransformationsTest(seed_test_utils.RepeatableTest):
     )(captured_gm)
 
     graph_transformations.HandleDynamicInputTensorPass(
-        captured_sm, placeholders, captured_bm
+        captured_sm, placeholders
     )(captured_gm)
 
     # Verify that only ONE new placeholder was added
@@ -272,8 +270,9 @@ class GraphTransformationsTest(seed_test_utils.RepeatableTest):
     def fw_compiler(graph_module, example_inputs):
       nonlocal captured_gm, captured_sm
       captured_gm = graph_module
+      bm = sym_bounds_manager.SymBoundsManager(example_inputs)
       captured_sm = sym_shape_manager.SymShapeManager(
-          graph_module, example_inputs
+          graph_module, example_inputs, bm.get_symbol_bounds()
       )
       return graph_module
 
@@ -313,8 +312,9 @@ class GraphTransformationsTest(seed_test_utils.RepeatableTest):
     def fw_compiler(graph_module, example_inputs):
       nonlocal captured_gm, captured_sm
       captured_gm = graph_module
+      bm = sym_bounds_manager.SymBoundsManager(example_inputs)
       captured_sm = sym_shape_manager.SymShapeManager(
-          graph_module, example_inputs
+          graph_module, example_inputs, bm.get_symbol_bounds()
       )
       return graph_module
 

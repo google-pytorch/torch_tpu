@@ -23,7 +23,7 @@ import sympy
 import torch
 from torch.utils import _pytree
 from torch_tpu._internal.compile.dynamic import sym_utils
-from torch_tpu._internal.compile.dynamic.symbol_bounds import get_symint_bounds
+from torch_tpu._internal.compile.dynamic.symbol_bounds import SymbolBounds
 
 
 @dataclasses.dataclass
@@ -178,24 +178,15 @@ class _OutputSymShape:
     return cls(output_sym_shape, is_tensor=is_tensor)
 
 
-@dataclasses.dataclass
-class InputTensorMetadata:
-  """Metadata for an input tensor."""
-
-  static_shape: list[int]
-  dynamic_dims: list[int]
-
-
 class SymShapeManager:
   """Symbolic shape manager for dynamic shape compilation.
 
   This class acts as a central repository for tracking and resolving symbolic
   integers (SymInts) across input and output tensors during FX graph tracing and
-  compilation. It provides access to static shapes, dynamic dimensions, and
-  runtime shape computation logic.
+  compilation. It provides access to symbol bounds, FX node promotion, and
+  runtime output shape computation logic.
 
   Attributes:
-    input_tensors_metadata: Maps input tensor indices to their metadata.
     outputs_sym_shape: Output sym shape needed to compute the runtime shape of
       the output tensor based on input shapes.
     symint_to_placeholder: Maps the string representation of a SymInt to the FX
@@ -208,11 +199,6 @@ class SymShapeManager:
     _symint_output_indices: List of output indices that were originally SymInt
       nodes and promoted to 0D tensors.
   """
-
-  # Tensor idx is its position in the example inputs.
-
-  # Mapping of tensor idx in example inputs to its metadata.
-  input_tensors_metadata: dict[int, InputTensorMetadata]
 
   # List of output shape infos.
   outputs_sym_shape: list[_OutputSymShape]
@@ -235,15 +221,16 @@ class SymShapeManager:
       self,
       graph_module: torch.fx.GraphModule,
       example_inputs: Sequence[torch.Tensor | int],
+      symbol_bounds: SymbolBounds,
   ):
     self._graph_module = graph_module
     self._example_inputs = example_inputs
+    self._symbol_bounds = symbol_bounds
     self.symint_to_placeholder = {}
     self.symint_node_to_tensor_node = {}
     self._sym_str_to_tensor_node = {}
     self._symint_output_indices = []
     self._create_outputs_sym_shape()
-    self._populate_input_tensors_metadata()
 
   def set_symint_output_indices(self, indices: Sequence[int]) -> None:
     """Sets the indices of graph outputs that were originally SymInt nodes."""
@@ -258,28 +245,13 @@ class SymShapeManager:
     """The example inputs used to create the SymShapeManager."""
     return self._example_inputs
 
-  def _populate_input_tensors_metadata(self) -> None:
-    """Populates metadata for input tensors."""
-    self.input_tensors_metadata = {}
-    for idx, arg in enumerate(self._example_inputs):
-      if isinstance(arg, torch.Tensor):
-        static_shape = []
-        dynamic_dims = []
-        for shape_idx, s in enumerate(arg.shape):
-          if isinstance(s, torch.SymInt):
-            lower, upper = get_symint_bounds(s)
-            if lower == upper:
-              static_shape.append(lower)
-            else:
-              static_shape.append(-1)
-              dynamic_dims.append(shape_idx)
-          else:
-            static_shape.append(int(s))
+  def get_symint_bounds(self, sym_int: torch.SymInt) -> tuple[int, int]:
+    """Gets lower and upper bounds for a given SymInt or symbolic expression."""
+    return self._symbol_bounds.get_symint_bounds(sym_int)
 
-        self.input_tensors_metadata[idx] = InputTensorMetadata(
-            static_shape=static_shape,
-            dynamic_dims=dynamic_dims,
-        )
+  def get_upper_bound(self, val: Any) -> int:
+    """Gets the upper bound for an int, SymInt, or SymInt FX node."""
+    return self._symbol_bounds.get_upper_bound(val)
 
   def _get_output_node_meta_val(self) -> list[Any]:
     """Reads output node.meta['val'] from a graph.
@@ -390,20 +362,6 @@ class SymShapeManager:
         list(outputs_sym_shape),
     )
     self.outputs_sym_shape = outputs_sym_shape
-
-  def get_num_dynamic_dims(self, tensor_pos: int) -> int:
-    """Returns the number of dynamic dimensions for the tensor at tensor_pos.
-
-    Args:
-      tensor_pos: The position of the tensor in the example inputs.
-
-    Returns:
-      The number of dynamic dimensions for the tensor at tensor_pos.
-    """
-    metadata = self.input_tensors_metadata.get(tensor_pos)
-    if metadata is None:
-      return 0
-    return len(metadata.dynamic_dims)
 
   def get_dynamic_outputs(self) -> list[bool]:
     """Returns a list of booleans indicating which graph outputs have dynamic dimensions."""

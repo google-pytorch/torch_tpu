@@ -24,6 +24,7 @@ from torch._logging import LazyString
 from torch.fx.passes.graph_transform_observer import GraphTransformObserver
 from torch_tpu._internal.compile import compiler
 from torch_tpu._internal.compile import tpu_torch_compile
+from torch_tpu._internal.compile.dynamic import sym_utils
 from torch_tpu._internal.compile.dynamic import view_decomposition as decompose
 from torch_tpu._internal.compile.dynamic import view_ops_passes
 from torch_tpu._internal.compile.dynamic.graph_transformations import apply_dynamism_transformations
@@ -33,21 +34,12 @@ from torch_tpu._internal.compile.dynamic.sym_bounds_manager import SymBoundsMana
 from torch_tpu._internal.compile.dynamic.sym_shape_manager import SymShapeManager
 
 
-def _get_inputs_dynamic_flag(
-    example_inputs: Sequence[Any], sym_shape_manager: SymShapeManager
-) -> list[bool]:
+def _get_inputs_dynamic_flag(example_inputs: Sequence[Any]) -> list[bool]:
   """Returns a list of booleans indicating which model example inputs are dynamic."""
-  flags = []
-  for index, arg in enumerate(example_inputs):
-    if isinstance(arg, torch.Tensor):
-      flags.append(sym_shape_manager.get_num_dynamic_dims(index) > 0)
-    elif isinstance(arg, torch.SymInt):
-      flags.append(
-          False
-      )  # for scalar tensor as SymInt is replaced by scalar tensor in MLIR
-    else:
-      flags.append(False)
-  return flags
+  return [
+      isinstance(arg, torch.Tensor) and sym_utils.has_dynamic_shape(arg)
+      for arg in example_inputs
+  ]
 
 
 def _extract_minor_to_major(
@@ -202,20 +194,16 @@ class _DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
     tensor_args = []
     tensor_info = []
 
-    for idx, arg in enumerate(args):
-      # Only pass tensors with dynamic dimensions to the pad subgraph.
-      if (
-          isinstance(arg, torch.Tensor)
-          and self.sym_shape_manager.get_num_dynamic_dims(idx) > 0
-      ):
-        if arg.device.type == "cpu":
-          raise ValueError(
-              "CPU tensors are not supported in dynamic shapes compilation,"
-              " please move inputs to TPU."
-          )
-        tensor_args.append(arg)
-        static_shape = list(arg.shape)
-        tensor_info.append(_TensorInfo(shape=static_shape, dtype=arg.dtype))
+    for idx in self._dynamic_input_indices:
+      arg = args[idx]
+      if arg.device.type == "cpu":
+        raise ValueError(
+            "CPU tensors are not supported in dynamic shapes compilation,"
+            " please move inputs to TPU."
+        )
+      tensor_args.append(arg)
+      if self._use_pad_subgraph:
+        tensor_info.append(_TensorInfo(shape=list(arg.shape), dtype=arg.dtype))
 
     return tensor_args, tensor_info
 
@@ -295,19 +283,21 @@ class _DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
     self._dynamic_tensor_map = []
     self._dynamic_scalar_map = []
     self._static_scalar_map = []
+    self._dynamic_input_indices = []
 
     target_idx = 0
     pad_idx = 0
 
-    for idx, arg in enumerate(self.sym_shape_manager.example_inputs):
+    for idx, arg in enumerate(self.example_inputs):
       if arg is None:
         continue
 
       if isinstance(arg, torch.SymInt):
         self._dynamic_scalar_map.append((idx, target_idx))
       elif isinstance(arg, torch.Tensor):
-        if self.sym_shape_manager.get_num_dynamic_dims(idx) > 0:
+        if sym_utils.has_dynamic_shape(arg):
           self._dynamic_tensor_map.append((pad_idx, target_idx))
+          self._dynamic_input_indices.append(idx)
           pad_idx += 1
         else:
           self._static_tensor_map.append((idx, target_idx))
@@ -562,22 +552,18 @@ class DynamicCompiler(compiler.Compiler):
         example_inputs,
     )
 
-    # Create a SymInt bounds manager.
+    # Create a SymInt bounds manager (validates bounds against shape guards).
     sym_bounds_manager = SymBoundsManager(example_inputs)
-
-    # Validate bounds. If the bounds are not valid, this may lead to MLIR error
-    # hence we raise an error here.
-    sym_bounds_manager.validate_bounds()
 
     # Add bound checks on symints. This forces dynamo to trigger a recompilation
     # if the bound constraint isn't satisfied.
     sym_bounds_manager.add_bound_checks()
 
     # Create a SymInt shape manager and transform the graph module.
-    sym_shape_manager = SymShapeManager(graph_module, example_inputs)
-    apply_dynamism_transformations(
-        graph_module, sym_shape_manager, sym_bounds_manager
+    sym_shape_manager = SymShapeManager(
+        graph_module, example_inputs, sym_bounds_manager.get_symbol_bounds()
     )
+    apply_dynamism_transformations(graph_module, sym_shape_manager)
 
     # TODO: Prevent truncation of log lines.
     logging.debug(
@@ -621,9 +607,7 @@ class DynamicCompiler(compiler.Compiler):
         LazyString(lambda: str(getattr(default_executable, "mlir_text", None))),  # pyrefly: ignore[bad-argument-type]
     )
 
-    parameter_dynamic_flags = _get_inputs_dynamic_flag(
-        example_inputs, sym_shape_manager
-    )
+    parameter_dynamic_flags = _get_inputs_dynamic_flag(example_inputs)
     default_layout_key = _extract_minor_to_major(
         default_executable.parameter_layouts,  # type: ignore[attr-defined]
         parameter_dynamic_flags=parameter_dynamic_flags,

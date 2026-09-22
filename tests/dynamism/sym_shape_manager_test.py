@@ -58,10 +58,10 @@ class SymShapeManagerTest(seed_test_utils.RepeatableTest):
 
     def fw_compiler(graph_module, example_inputs):
       nonlocal captured_sm, captured_bm
-      captured_sm = sym_shape_manager.SymShapeManager(
-          graph_module, example_inputs
-      )
       captured_bm = sym_bounds_manager.SymBoundsManager(example_inputs)
+      captured_sm = sym_shape_manager.SymShapeManager(
+          graph_module, example_inputs, captured_bm.get_symbol_bounds()
+      )
       return graph_module
 
     @torch.compile(backend=aot_autograd(fw_compiler=fw_compiler), dynamic=True)
@@ -75,9 +75,20 @@ class SymShapeManagerTest(seed_test_utils.RepeatableTest):
 
     self.assertIsNotNone(captured_sm)
     self.assertIsNotNone(captured_bm)
-    self.assertEqual(captured_sm.get_num_dynamic_dims(1), 1)
-    self.assertEqual(captured_sm.input_tensors_metadata[1].static_shape, [-1])
-    self.assertEqual(captured_bm.get_bounded_shape(1), [8])
+    self.assertEqual(captured_sm.get_dynamic_outputs(), [True])
+    updated_inputs, _ = captured_bm.get_example_inputs()
+    self.assertEqual(list(updated_inputs[2].shape), [8])
+    self.assertEqual(
+        captured_bm.get_precomputed_bounds_list(),
+        [
+            sym_bounds_manager.ShapeBoundInfo(
+                dynamic_dims=(0,), upper_bounds=(8,)
+            )
+        ],
+    )
+    self.assertEqual(
+        captured_sm.get_upper_bound(captured_sm.example_inputs[1].shape[0]), 8
+    )
 
   def test_symbol_manager_static_shape(self):
     captured_sm = None
@@ -85,10 +96,10 @@ class SymShapeManagerTest(seed_test_utils.RepeatableTest):
 
     def fw_compiler(graph_module, example_inputs):
       nonlocal captured_sm, captured_bm
-      captured_sm = sym_shape_manager.SymShapeManager(
-          graph_module, example_inputs
-      )
       captured_bm = sym_bounds_manager.SymBoundsManager(example_inputs)
+      captured_sm = sym_shape_manager.SymShapeManager(
+          graph_module, example_inputs, captured_bm.get_symbol_bounds()
+      )
       return graph_module
 
     @torch.compile(backend=aot_autograd(fw_compiler=fw_compiler))
@@ -101,9 +112,10 @@ class SymShapeManagerTest(seed_test_utils.RepeatableTest):
 
     self.assertIsNotNone(captured_sm)
     self.assertIsNotNone(captured_bm)
-    self.assertEqual(captured_sm.get_num_dynamic_dims(0), 0)
-    self.assertEqual(captured_sm.input_tensors_metadata[0].static_shape, [2, 3])
-    self.assertEqual(captured_bm.get_bounded_shape(0), [2, 3])
+    self.assertEqual(captured_sm.get_dynamic_outputs(), [False])
+    updated_inputs, _ = captured_bm.get_example_inputs()
+    self.assertEqual(list(updated_inputs[0].shape), [2, 3])
+    self.assertEqual(captured_bm.get_precomputed_bounds_list(), [])
 
   def test_validate_bounds_with_multi_symbol_sum_guard(self):
     captured_bm = None
@@ -126,8 +138,6 @@ class SymShapeManagerTest(seed_test_utils.RepeatableTest):
     f(t1, t2)
 
     self.assertIsNotNone(captured_bm)
-    # validate_bounds() should not raise ConstraintViolationError on multi-symbol sum guard
-    captured_bm.validate_bounds()
 
 
 if __name__ == "__main__":

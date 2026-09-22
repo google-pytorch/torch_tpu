@@ -20,6 +20,7 @@ from typing import Any
 from absl import logging
 import sympy
 import torch
+from torch.utils._sympy import value_ranges
 from torch.utils._sympy.functions import Mod as TorchMod, PythonMod
 from torch.utils._sympy.numbers import int_oo
 from torch_tpu._internal.compile.dynamic import sym_utils
@@ -204,13 +205,63 @@ def get_symint_bounds(sym_int: torch.SymInt) -> tuple[int, int]:
   return lower_bound, upper_bound
 
 
-def get_upper_bound(val: Any) -> int:
-  """Extracts concrete integer upper bound for a value, int, or SymInt node."""
-  if sym_utils.is_symint(val):
-    symint = val.meta["val"] if sym_utils.is_symint_node(val) else val
-    _, upper = get_symint_bounds(symint)
-    assert upper is not None, f"Failed to get upper bound for SymInt {symint}"
-    return upper
-  elif isinstance(val, int):
-    return val
-  raise ValueError(f"Unexpected type for upper bound extraction: {type(val)}")
+class SymbolBounds:
+  """Holds lower and upper bounds for atomic symbols and evaluates symbolic expressions."""
+
+  _symbol_ranges: dict[sympy.Symbol, value_ranges.ValueRanges]
+
+  def __init__(
+      self, symbol_ranges: Mapping[sympy.Symbol, value_ranges.ValueRanges]
+  ):
+    self._symbol_ranges = dict(symbol_ranges)
+
+  @property
+  def symbol_ranges(
+      self,
+  ) -> Mapping[sympy.Symbol, value_ranges.ValueRanges]:
+    return self._symbol_ranges
+
+  def with_upper_bounds(self, upper_bounds: Mapping[str, int]) -> SymbolBounds:
+    """Returns a new SymbolBounds with updated upper bounds for specified symbols."""
+    updated = {}
+    for sym, vr in self._symbol_ranges.items():
+      new_upper = upper_bounds.get(str(sym), int(vr.upper))
+      if new_upper < int(vr.lower):
+        raise ValueError(
+            f"New upper bound {new_upper} for symbol {sym} cannot be less than"
+            f" its lower bound {int(vr.lower)}."
+        )
+      updated[sym] = value_ranges.ValueRanges(vr.lower, new_upper)
+    return SymbolBounds(updated)
+
+  def get_symint_bounds(self, sym_int: torch.SymInt) -> tuple[int, int]:
+    """Gets lower and upper bounds for a given SymInt or symbolic expression."""
+    expr = getattr(getattr(sym_int, "node", None), "expr", None)
+    if isinstance(expr, sympy.Symbol) and expr in self._symbol_ranges:
+      vr = self._symbol_ranges[expr]
+      return int(vr.lower), int(vr.upper)
+
+    if expr is not None and expr.free_symbols.issubset(
+        self._symbol_ranges.keys()
+    ):
+      try:
+        vr = value_ranges.bound_sympy(expr, self._symbol_ranges)
+        if _is_valid_bound(vr.lower) and _is_valid_bound(vr.upper):
+          return int(vr.lower), int(vr.upper)
+      except Exception as e:  # pylint: disable=broad-except
+        logging.debug(
+            "Could not evaluate finite int bounds for %s via bound_sympy: %s",
+            expr,
+            e,
+        )
+    raise ValueError(f"No bounds found for SymInt {sym_int}")
+
+  def get_upper_bound(self, val: Any) -> int:
+    """Gets the upper bound for an int, SymInt, or SymInt FX node."""
+    if sym_utils.is_symint(val):
+      symint = val.meta["val"] if sym_utils.is_symint_node(val) else val
+      _, upper = self.get_symint_bounds(symint)
+      return upper
+    if isinstance(val, int):
+      return val
+    raise ValueError(f"Unexpected type for upper bound extraction: {type(val)}")
