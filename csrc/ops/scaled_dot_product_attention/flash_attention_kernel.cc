@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <initializer_list>
+#include <numbers>
 #include <optional>
 
 #include "absl/algorithm/container.h"
@@ -71,7 +72,7 @@ using mlir::arith::MaximumFOp;      // USING_DECL_OK
 using mlir::arith::MulFOp;          // USING_DECL_OK
 using mlir::arith::SubFOp;          // USING_DECL_OK
 using mlir::func::ReturnOp;         // USING_DECL_OK
-using mlir::math::ExpOp;            // USING_DECL_OK
+using mlir::math::Exp2Op;           // USING_DECL_OK
 using mlir::scf::IfOp;              // USING_DECL_OK
 using mlir::scf::YieldOp;           // USING_DECL_OK
 using mlir::vector::CombiningKind;  // USING_DECL_OK
@@ -251,7 +252,11 @@ func::FuncOp buildModule(ImplicitLocOpBuilder& module_builder,
   Value sij =
       CreateMatmul(fn_builder, q, k, MatmulOptions{.transpose_rhs = true});
 
-  sij = ScaleValue(fn_builder, sij, config.scale);
+  // We can fold the exp -> exp2 conversion into the scale factor to reduce the
+  // number of VLP multiplications by one per exp / log.
+  // y = exp(x) <=> y = 2^(x * log2(e))
+  constexpr float kLog2e = std::numbers::log2e_v<float>;
+  sij = ScaleValue(fn_builder, sij, config.scale * kLog2e);
 
   Value row_block_idx = fn.getArgument(2);
   Value col_block_idx = fn.getArgument(3);
@@ -262,6 +267,7 @@ func::FuncOp buildModule(ImplicitLocOpBuilder& module_builder,
   if (mask_arg) {
     Value user_bias = LoadTile(fn_builder, mask_arg);
     user_bias = ConvertElementType(fn_builder, f32, user_bias);
+    user_bias = ScaleValue(fn_builder, user_bias, kLog2e);
     if (bias) {
       bias = AddFOp::create(fn_builder, bias, user_bias);
     } else {
@@ -287,9 +293,9 @@ func::FuncOp buildModule(ImplicitLocOpBuilder& module_builder,
   auto mi_new = MaximumFOp::create(fn_builder, mi_prev, mij);
 
   auto alpha =
-      ExpOp::create(fn_builder, SubFOp::create(fn_builder, mi_prev, mi_new));
+      Exp2Op::create(fn_builder, SubFOp::create(fn_builder, mi_prev, mi_new));
 
-  auto p_tile_scaled = ExpOp::create(
+  auto p_tile_scaled = Exp2Op::create(
       fn_builder, SubFOp::create(fn_builder, sij,
                                  NormalizeLaneDim(fn_builder, mi_new, kt)));
 
@@ -338,8 +344,11 @@ func::FuncOp buildModule(ImplicitLocOpBuilder& module_builder,
                  StoreTile(b, normalized_output, oi_arg);
                  if (config.return_lse) {
                    Value mi = LoadTile(b, mi_arg);
-                   Value lse =
-                       AddFOp::create(b, mi, math::LogOp::create(b, li));
+                   // As LSE is *only* used for the backward pass, we can use
+                   // the more efficient log2 instead of log.
+                   // I.e. this result is actually scaled by log2(e) of the
+                   // natural log version of LSE.
+                   Value lse = AddFOp::create(b, mi, CreateLog2(b, li));
                    Value sliced_lse = NormalizeLaneDim(b, lse, 1);
                    Value transposed_lse =
                        vector::TransposeOp::create(b, sliced_lse, {1, 0});

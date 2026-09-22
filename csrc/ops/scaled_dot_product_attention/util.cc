@@ -17,17 +17,19 @@
 #include "csrc/ops/scaled_dot_product_attention/util.h"
 
 #include <cstdint>
+#include <numbers>
 #include <string>
 
 #include "absl/log/absl_check.h"
 #include "absl/log/log.h"
-#include "csrc/common/error_utils.h"
+#include "csrc/common/libtpu_version.h"
 #include "csrc/internal/mosaic/op_builders.h"
 #include "csrc/ops/scaled_dot_product_attention/flash_attention_config.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/AffineMap.h"
@@ -399,6 +401,17 @@ KVWindowMaps CreateKVWindowMaps(OpBuilder& builder, func::FuncOp fn,
       builder, "kv_transform_indices", {1, 1, tiling.kt, config.vo_head_dim});
 
   return {k_map, v_map};
+}
+
+Value CreateLog2(ImplicitLocOpBuilder& b, Value input) {
+  static bool is_natively_supported =
+      ::torch_tpu::IsLibtpuVersionAtLeast("0.0.48");
+  if (is_natively_supported) {
+    return math::Log2Op::create(b, input);
+  }
+  float log2e = std::numbers::log2e_v<float>;
+  Value natural_log = math::LogOp::create(b, input);
+  return ScaleValue(b, natural_log, log2e);
 }
 
 }  // namespace mlir::torch_tpu

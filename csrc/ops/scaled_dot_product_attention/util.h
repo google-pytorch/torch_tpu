@@ -113,6 +113,11 @@ Value ConvertElementType(ImplicitLocOpBuilder& b, Type target_element_type,
 Value NormalizeLaneDim(ImplicitLocOpBuilder& builder, Value input,
                        int64_t target_lane_size);
 
+// Create a log2 operation.
+// For older versions of libtpu that do not support the log2 op we will use a
+// scaled ln operation.
+Value CreateLog2(ImplicitLocOpBuilder& b, Value input);
+
 // Get the string representation of an operation.
 std::string GetOpString(Operation* op);
 

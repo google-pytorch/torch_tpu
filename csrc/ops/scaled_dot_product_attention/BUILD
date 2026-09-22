@@ -132,7 +132,7 @@ torch_tpu_cc_library(
     hdrs = ["util.h"],
     deps = [
         ":flash_attention_config",
-        "//csrc/common:error_utils",
+        "//csrc/common:libtpu_version",
         "//csrc/internal/mosaic:op_builders",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:absl_check",
@@ -140,6 +140,7 @@ torch_tpu_cc_library(
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:MathDialect",
         "@llvm-project//mlir:SCFDialect",
         "@llvm-project//mlir:Support",
         "@llvm-project//mlir:VectorDialect",

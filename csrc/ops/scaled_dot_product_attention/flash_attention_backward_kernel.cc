@@ -16,6 +16,7 @@
 
 #include <cstdint>
 #include <initializer_list>
+#include <numbers>
 #include <optional>
 
 #include "absl/functional/any_invocable.h"
@@ -64,7 +65,7 @@ using mlir::arith::ConstantOp;     // USING_DECL_OK
 using mlir::arith::MulFOp;         // USING_DECL_OK
 using mlir::arith::SubFOp;         // USING_DECL_OK
 using mlir::func::ReturnOp;        // USING_DECL_OK
-using mlir::math::ExpOp;           // USING_DECL_OK
+using mlir::math::Exp2Op;          // USING_DECL_OK
 using mlir::scf::IfOp;             // USING_DECL_OK
 using mlir::scf::YieldOp;          // USING_DECL_OK
 using mlir::vector::BroadcastOp;   // USING_DECL_OK
@@ -80,11 +81,12 @@ SharedBwdResult ComputeSharedBackwardLogic(
     int64_t kt, Value q_2d, Value k_2d, Value v_2d, Value do_2d, Value lse_tile,
     Value di_tile, Value user_bias, Value row_block_idx, Value col_block_idx,
     Type oty, Type ity, IntegerType i32, MLIRContext* context) {
+  constexpr float kLog2e = std::numbers::log2e_v<float>;
   Type vector_type_qt_kt = VectorType::get({qt, kt}, oty);
   Value unscaled_sij = CreateMatmul(fn_builder, q_2d, k_2d,
                                     MatmulOptions{.transpose_rhs = true});
 
-  Value sij = ScaleValue(fn_builder, unscaled_sij, config.scale);
+  Value sij = ScaleValue(fn_builder, unscaled_sij, config.scale * kLog2e);
 
   Value bias = GetStructuredBias(fn_builder, row_block_idx, col_block_idx, qt,
                                  kt, config.q_sequence_length,
@@ -92,6 +94,7 @@ SharedBwdResult ComputeSharedBackwardLogic(
 
   if (user_bias) {
     user_bias = ConvertElementType(fn_builder, oty, user_bias);
+    user_bias = ScaleValue(fn_builder, user_bias, kLog2e);
     if (bias) {
       bias = AddFOp::create(fn_builder, user_bias, bias);
     } else {
@@ -113,7 +116,7 @@ SharedBwdResult ComputeSharedBackwardLogic(
       BroadcastOp::create(fn_builder, vector_type_qt_kt, lse_tile);
 
   Value sub_op = SubFOp::create(fn_builder, sij, lse_broadcast);
-  Value pij = math::ExpOp::create(fn_builder, sub_op);
+  Value pij = Exp2Op::create(fn_builder, sub_op);
 
   // Compute dP = dO @ V^T!
   Value dpij = CreateMatmul(fn_builder, do_2d, v_2d,
