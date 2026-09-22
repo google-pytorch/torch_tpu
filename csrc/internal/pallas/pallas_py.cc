@@ -131,13 +131,11 @@ std::vector<at::Tensor> PyCallCustomKernel(
     const std::vector<at::Tensor>& inputs,
     const std::vector<at::Tensor>& output_shapes,
     // Use std::vector as pybind has built-in support for it.
-    const std::vector<int64_t>& donate_argnums,     // INT_VEC_OK
-    std::vector<int64_t> device_assignment = {}) {  // INT_VEC_OK
+    const std::vector<int64_t>& donate_argnums  // INT_VEC_OK
+) {
   TT_KERNEL(
       OpName::kCustomKernel, op_param_cache_keys,
-      (name, kernel_key, inputs, output_shapes, donate_argnums,
-       device_assignment),
-      {
+      (name, kernel_key, inputs, output_shapes, donate_argnums), {
         if (output_shapes.empty()) {
           return {};
         }
@@ -169,8 +167,7 @@ std::vector<at::Tensor> PyCallCustomKernel(
             .out_dtypes = output_dtypes,
             .out_dims_list = output_dims_list,
             .computation_dtype = std::nullopt,
-            .op_param_cache_keys = std::move(op_param_cache_keys),
-            .device_assignment = std::move(device_assignment)};
+            .op_param_cache_keys = std::move(op_param_cache_keys)};
 
         // Note that this DeferredOp needs its inputs to be marked with
         // jax.buffer_donor if they are leaf inputs to the MLIR module.
@@ -207,8 +204,7 @@ TT_PYBIND11_MODULE(tpu_torch_pallas, m) {
         py::arg("name"), py::arg("kernel_key"),
         py::kw_only(),  // Everything after this is keyword-only
         py::arg("inputs"), py::arg("output_shapes"),
-        py::arg("donate_argnums") = std::vector<int64_t>{},      // INT_VEC_OK
-        py::arg("device_assignment") = std::vector<int64_t>{});  // INT_VEC_OK
+        py::arg("donate_argnums") = std::vector<int64_t>{});  // INT_VEC_OK
 }
 
 }  // namespace torch_tpu

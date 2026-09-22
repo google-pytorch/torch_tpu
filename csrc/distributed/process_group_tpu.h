@@ -89,14 +89,6 @@ class ProcessGroupTpu : public c10d::Backend {
 
   const std::string getBackendName() const override { return "tpu_dist"; }
 
-  const std::vector<int64_t>& rank_to_device_id() const {  // INT_VEC_OK
-    return rank_to_device_id_;
-  }
-
-  const std::vector<int64_t>& device_assignment() const {  // INT_VEC_OK
-    return rank_to_device_id_;
-  }
-
   // Returns the device ids of all TPUs split into subgroups.
   const DeviceGroupList& GetSubgroupDeviceIds() const;
 
@@ -277,6 +269,13 @@ class ProcessGroupTpu : public c10d::Backend {
 #endif
 
  private:
+  // Differently from PyTorch distributed APIs, XLA requires that all processes
+  // supply *all* the device id subgroups (in replica_groups attribute), even
+  // the subgroups that this process isn't a member of. This helper function
+  // uses the established TPU connectivity within the slice to directly exchange
+  // this information. This is called only once during ProcessGroup constructor.
+  DeviceGroupList GatherAllSubgroups();
+
   // Helper to reduce logging boilerplate. Must use only from implementation
   // methods of collective ops, so we know everything here is initialized.
   std::string OpDebugString(std::string_view method) {
@@ -346,6 +345,8 @@ class ProcessGroupTpu : public c10d::Backend {
   // Monotonic sequence counter for uneven all_to_all and all_to_all_single
   // offset coordination.
   std::atomic<uint64_t> alltoall_seq_{0};
+
+  bool is_world_group_ = false;
 };
 
 }  // namespace torch_tpu

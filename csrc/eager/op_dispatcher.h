@@ -122,7 +122,6 @@ struct DispatchOpOptions {
   OpParamCacheKeys op_param_cache_keys;
   OpSplitMode split_mode = OpSplitMode::kNone;
   Indices donated_indices = {};
-  std::vector<int64_t> device_assignment = {};  // INT_VEC_OK
 };
 
 // Specialization for the case where the number of outputs is unknown at compile
@@ -138,7 +137,6 @@ struct DispatchOpOptions<kDynamicSize> {
   OpParamCacheKeys op_param_cache_keys;
   OpSplitMode split_mode = OpSplitMode::kNone;
   Indices donated_indices = {};
-  std::vector<int64_t> device_assignment = {};  // INT_VEC_OK
 };
 
 // Specialization for the case where the number of outputs is 1.
@@ -153,7 +151,6 @@ struct DispatchOpOptions<1> {
   OpParamCacheKeys op_param_cache_keys;
   OpSplitMode split_mode = OpSplitMode::kNone;
   Indices donated_indices = {};
-  std::vector<int64_t> device_assignment = {};  // INT_VEC_OK
 };
 
 namespace internal {
@@ -362,7 +359,6 @@ absl::StatusOr<DeviceBufferRefArray<kNumOutputs>> DispatchOp(
         .computation_dtype = options.computation_dtype,
         .split_mode = options.split_mode,
         .donated_indices = std::move(options.donated_indices),
-        .device_assignment = std::move(options.device_assignment),
     };
     TT_ASSIGN_OR_RETURN(
         results, internal::CreateDeferredDeviceBufferList(std::move(params)));
@@ -391,7 +387,6 @@ absl::StatusOr<DeviceBufferRefArray<kNumOutputs>> DispatchOp(
         .computation_dtype = options.computation_dtype,
         .split_mode = options.split_mode,
         .donated_indices = std::move(options.donated_indices),
-        .device_assignment = std::move(options.device_assignment),
     };
     TT_ASSIGN_OR_RETURN(
         results, internal::CreateDeferredDeviceBufferList(std::move(params)));
@@ -420,7 +415,6 @@ absl::StatusOr<DeviceBufferRefArray<kNumOutputs>> DispatchOp(
         .computation_dtype = options.computation_dtype,
         .split_mode = options.split_mode,
         .donated_indices = std::move(options.donated_indices),
-        .device_assignment = std::move(options.device_assignment),
     };
     TT_ASSIGN_OR_RETURN(
         results, internal::CreateDeferredDeviceBufferList(std::move(params)));

@@ -15,7 +15,6 @@
  */
 
 #include <chrono>  // NOLINT - needed for pybind11 integration
-#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -48,15 +47,6 @@ c10::intrusive_ptr<c10d::Backend> MakeProcessGroup(
     c10::intrusive_ptr<c10d::Store> store, int rank, int size,
     std::chrono::duration<float>& timeout) {
   return c10::make_intrusive<ProcessGroupTpu>(store, rank, size);
-}
-
-std::vector<int64_t> GetRankToDeviceId(  // INT_VEC_OK
-    c10::intrusive_ptr<c10d::Backend> backend) {
-  auto* pg_tpu = dynamic_cast<ProcessGroupTpu*>(backend.get());
-  if (pg_tpu != nullptr) {
-    return pg_tpu->rank_to_device_id();
-  }
-  return {};
 }
 
 // Global device id of the (single) addressable device this process is using.
@@ -94,7 +84,6 @@ TT_PYBIND11_MODULE(tpu_distributed, m) {
   // Custom distributed backend initialization happens from the Python side,
   // so we need to expose this init function.
   m.def("create_process_group", &MakeProcessGroup);
-  m.def("rank_to_device_id", &GetRankToDeviceId);
 
   // We expose these as helper functions on the Python side
   m.def("global_device_id", &GetGlobalDeviceId);

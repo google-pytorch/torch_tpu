@@ -45,7 +45,6 @@ from absl import logging
 import numpy as np
 import torch
 import torch.distributed as dist
-from torch_tpu._internal.distributed import tpu_distributed
 
 
 @dataclasses.dataclass(frozen=True)
@@ -235,7 +234,7 @@ def _validate_multi_slice(
     )
 
 
-__all__ = ["topology_aware_mesh", "get_device_assignment"]
+__all__ = ["topology_aware_mesh"]
 
 
 def topology_aware_mesh(
@@ -378,29 +377,3 @@ def topology_aware_mesh(
   )
 
   return torch.from_numpy(rank_mesh)
-
-
-def get_device_assignment(
-    pg: Optional[dist.ProcessGroup] = None,
-) -> list[int]:
-  """Returns physical device assignment for the given process group.
-
-  Args:
-    pg: The process group to query. If None or dist.group.WORLD, queries the
-      world process group's rank-to-device mapping.
-
-  Returns:
-    A list of global device IDs corresponding to ranks in the process group.
-  """
-  if not dist.is_initialized():
-    return []
-
-  pg = pg or dist.group.WORLD
-  if pg is None:
-    return []
-
-  try:
-    backend = pg._get_backend(torch.device("tpu"))
-    return [int(x) for x in tpu_distributed.rank_to_device_id(backend)]
-  except Exception:  # pylint: disable=broad-except
-    return []

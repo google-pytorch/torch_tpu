@@ -426,12 +426,13 @@ absl::StatusOr<CompileResult> TraverseAndCompile(
 
   // 2. Compile Traversal and get exec
   auto compilation_spec = GetCompilationSpec(options.compilation_mode);
-  TT_ASSIGN_OR_RETURN(
+  TT_ASSIGN_OR_CRASH(  // CRASH_OK=implies a bug in compile backend if this
+                       // happens
       auto compiled_kernel,
       traversal->Compile(std::move(compilation_spec), nullptr,
                          options.use_stablehlo_bounds, options.argument_layouts,
                          unique_donated_inputs, options.module_name),
-      _.SetPrepend() << "failed to compile traversal: ");
+      _ << "failed to compile traversal");
 
   TT_ASSIGN_OR_RETURN(auto executable, compiled_kernel.fixed_shape_kernel.get(),
                       _.SetPrepend() << "failed to get fixed shape kernel: ");
