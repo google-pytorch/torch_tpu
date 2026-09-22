@@ -29,6 +29,7 @@
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/op_dispatcher.h"
+#include "csrc/ops/binary.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
@@ -45,28 +46,27 @@ absl::StatusOr<mlir::MlirOp> BuildEluShlo(mlir::MlirOp input_op,
                                           mlir::MlirOp alpha_op,
                                           mlir::MlirOp scale_op,
                                           mlir::MlirOp input_scale_op) {
-  TT_ASSIGN_OR_RETURN(
-      (auto [input_bcast, alpha_bcast, scale_bcast, input_scale_bcast]),
-      ApplyBroadcastIfNeeded(input_op, alpha_op, scale_op, input_scale_op));
+  const auto elem_type = GetTensorTypeOrDie(input_op).getElementType();
+  auto zero_op = MakeScalarConstant(input_op.getBuilder(), 0.0, elem_type);
+  auto one_op = MakeScalarConstant(input_op.getBuilder(), 1.0, elem_type);
 
-  auto zero_op = MakeConstantLike(input_bcast, 0.0);
-  auto one = MakeConstantLike(input_bcast, 1.0);
+  // Precompute scalar coefficient: scale * alpha
+  TT_ASSIGN_OR_RETURN(auto alpha_scale, BuildMulShlo(alpha_op, scale_op));
 
-  //  y = self * input_scale
-  auto input_scaled = mlir::stablehlo::Mul(input_bcast, input_scale_bcast);
-  auto pred = mlir::stablehlo::Compare(
-      input_scaled, zero_op, mlir::stablehlo::ComparisonDirection::GT);
+  // Predicate: input > 0
+  TT_ASSIGN_OR_RETURN(auto pred, BuildGtShlo(input_op, zero_op));
 
-  // --- Positive path: scale * input_scaled ---
-  auto positive_val = mlir::stablehlo::Mul(input_scaled, scale_bcast);
+  // --- Positive path: scale * input ---
+  TT_ASSIGN_OR_RETURN(auto positive_val, BuildMulShlo(input_op, scale_op));
 
-  // --- Negative path: scale * alpha * (exp(input_scaled) - 1) ---
+  // --- Negative path: (scale * alpha) * (exp(input * input_scale) - 1) ---
+  TT_ASSIGN_OR_RETURN(auto input_scaled,
+                      BuildMulShlo(input_op, input_scale_op));
   auto exp_input_scaled = mlir::stablehlo::Exp(input_scaled);
-  auto exp_input_scaled_minus_1 =
-      mlir::stablehlo::Subtract(exp_input_scaled, one);
-  auto exp_alpha_scaled =
-      mlir::stablehlo::Mul(alpha_bcast, exp_input_scaled_minus_1);
-  auto negative_val = mlir::stablehlo::Mul(exp_alpha_scaled, scale_bcast);
+  TT_ASSIGN_OR_RETURN(auto exp_input_scaled_minus_1,
+                      BuildSubShlo(exp_input_scaled, one_op));
+  TT_ASSIGN_OR_RETURN(auto negative_val,
+                      BuildMulShlo(exp_input_scaled_minus_1, alpha_scale));
 
   return mlir::stablehlo::Select(pred, /*on_true=*/positive_val,
                                  /*on_false=*/negative_val);
@@ -77,40 +77,47 @@ absl::StatusOr<mlir::MlirOp> BuildEluBackwardGradInputShlo(
     mlir::MlirOp alpha_op, mlir::MlirOp scale_op, mlir::MlirOp input_scale_op,
     bool is_result) {
   TT_ASSIGN_OR_RETURN(
-      (auto [grad_output_bcast, self_or_result_bcast, alpha_bcast, scale_bcast,
-             input_scale_bcast]),
-      ApplyBroadcastIfNeeded(grad_output_op, self_or_result_op, alpha_op,
-                             scale_op, input_scale_op));
+      (auto [grad_output_bcast, self_or_result_bcast]),
+      ApplyBroadcastIfNeeded(grad_output_op, self_or_result_op));
 
-  auto zero_op = MakeConstantLike(grad_output_bcast, 0.0);
+  const auto elem_type = GetTensorTypeOrDie(grad_output_bcast).getElementType();
+  auto zero_op =
+      MakeScalarConstant(grad_output_bcast.getBuilder(), 0.0, elem_type);
 
-  auto negcoef = mlir::stablehlo::Mul(alpha_bcast, scale_bcast);
-  auto poscoef = scale_bcast;
-  auto negiptcoef = input_scale_bcast;
+  // Precompute scalar derivative coefficients:
+  TT_ASSIGN_OR_RETURN(auto negcoef, BuildMulShlo(alpha_op, scale_op));
+  auto poscoef = scale_op;
+  auto negiptcoef = input_scale_op;
+  TT_ASSIGN_OR_RETURN(auto neg_combined_coef,
+                      BuildMulShlo(negiptcoef, negcoef));
 
   // --- Positive path: grad_output * poscoef ---
-  auto positive_val = mlir::stablehlo::Mul(grad_output_bcast, poscoef);
+  TT_ASSIGN_OR_RETURN(auto positive_val,
+                      BuildMulShlo(grad_output_bcast, poscoef));
 
   // --- Negative path: ---
   mlir::MlirOp negative_val;
   if (is_result) {
     // if is_result: grad_output * negiptcoef * (self_or_result + negcoef)
-    auto term_sum = mlir::stablehlo::Add(self_or_result_bcast, negcoef);
-    auto term_mul = mlir::stablehlo::Mul(grad_output_bcast, negiptcoef);
-    negative_val = mlir::stablehlo::Mul(term_sum, term_mul);
+    TT_ASSIGN_OR_RETURN(auto term_sum,
+                        BuildAddShlo(self_or_result_bcast, negcoef));
+    TT_ASSIGN_OR_RETURN(auto term_mul,
+                        BuildMulShlo(grad_output_bcast, negiptcoef));
+    TT_ASSIGN_OR_RETURN(negative_val, BuildMulShlo(term_sum, term_mul));
   } else {
-    // else: grad_output * negiptcoef * negcoef *
+    // else: grad_output * (negiptcoef * negcoef) *
     // torch.exp(self_or_result * negiptcoef)
-    auto inner = mlir::stablehlo::Mul(self_or_result_bcast, negiptcoef);
+    TT_ASSIGN_OR_RETURN(auto inner,
+                        BuildMulShlo(self_or_result_bcast, negiptcoef));
     auto exp_inner = mlir::stablehlo::Exp(inner);
-    auto exp_mul = mlir::stablehlo::Mul(exp_inner, negcoef);
-    auto term_exp_mul = mlir::stablehlo::Mul(exp_mul, negiptcoef);
-    negative_val = mlir::stablehlo::Mul(grad_output_bcast, term_exp_mul);
+    TT_ASSIGN_OR_RETURN(auto grad_exp,
+                        BuildMulShlo(grad_output_bcast, exp_inner));
+    TT_ASSIGN_OR_RETURN(negative_val,
+                        BuildMulShlo(grad_exp, neg_combined_coef));
   }
 
   // Comparison condition: self_or_result <= 0
-  auto pred = mlir::stablehlo::Compare(
-      self_or_result_bcast, zero_op, mlir::stablehlo::ComparisonDirection::LE);
+  TT_ASSIGN_OR_RETURN(auto pred, BuildLeShlo(self_or_result_bcast, zero_op));
 
   return mlir::stablehlo::Select(pred, /*on_true=*/negative_val,
                                  /*on_false=*/positive_val);

@@ -28,6 +28,7 @@
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/op_dispatcher.h"
+#include "csrc/ops/binary.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
@@ -42,39 +43,43 @@ namespace {
 absl::StatusOr<mlir::MlirOp> BuildSoftplusShlo(mlir::MlirOp input_op,
                                                mlir::MlirOp beta_op,
                                                mlir::MlirOp threshold_op) {
-  TT_ASSIGN_OR_RETURN((auto [input_bcast, beta_bcast, threshold_bcast]),
-                      ApplyBroadcastIfNeeded(input_op, beta_op, threshold_op));
+  // Precompute scalar inv_beta = 1.0 / beta to replace vector division with
+  // scalar reciprocal multiplication.
+  auto one = MakeScalarConstant(beta_op.getBuilder(), 1.0,
+                                GetTensorTypeOrDie(beta_op).getElementType());
+  TT_ASSIGN_OR_RETURN(auto inv_beta, BuildDivShlo(one, beta_op));
 
-  auto beta_x = mlir::stablehlo::Mul(input_bcast, beta_bcast);
+  // Avoid full-tensor broadcast of beta and threshold at the outset.
+  TT_ASSIGN_OR_RETURN(auto beta_x, BuildMulShlo(input_op, beta_op));
   auto exp_beta_x = mlir::stablehlo::Exp(beta_x);
   auto log1p_exp_beta_x = mlir::stablehlo::Log1p(exp_beta_x);
-  auto result = mlir::stablehlo::Div(log1p_exp_beta_x, beta_bcast);
+  TT_ASSIGN_OR_RETURN(auto result, BuildMulShlo(log1p_exp_beta_x, inv_beta));
 
   // Threshold judgment: beta * x > threshold
   // If the condition is met, reverts to the linear function
-  mlir::MlirOp compare_gt_threshold = mlir::stablehlo::Compare(
-      beta_x, threshold_bcast, mlir::stablehlo::ComparisonDirection::GT);
+  TT_ASSIGN_OR_RETURN(auto compare_gt_threshold,
+                      BuildGtShlo(beta_x, threshold_op));
 
-  return mlir::stablehlo::Select(compare_gt_threshold, input_bcast, result);
+  return mlir::stablehlo::Select(compare_gt_threshold, input_op, result);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildSoftplusBackwardShlo(
     mlir::MlirOp grad_output_op, mlir::MlirOp input_op, mlir::MlirOp beta_op,
     mlir::MlirOp threshold_op) {
-  TT_ASSIGN_OR_RETURN(
-      (auto [grad_output_bcast, input_bcast, beta_bcast, threshold_bcast]),
-      ApplyBroadcastIfNeeded(grad_output_op, input_op, beta_op, threshold_op));
+  // Broadcast only grad_output and input if needed, avoiding full-tensor
+  // broadcast of scalar beta and threshold.
+  TT_ASSIGN_OR_RETURN((auto [grad_output_bcast, input_bcast]),
+                      ApplyBroadcastIfNeeded(grad_output_op, input_op));
 
   // grad_output * z / (z + 1.0), where z = (x * beta).exp()
   // Here we use StableHLO.LogisticOp, where Logistic(z) = z / (z + 1.0)
-  auto beta_x = mlir::stablehlo::Mul(input_bcast, beta_bcast);
+  TT_ASSIGN_OR_RETURN(auto beta_x, BuildMulShlo(input_bcast, beta_op));
   auto sigmoid_beta_x = mlir::stablehlo::Logistic(beta_x);
   auto grad_scaled = mlir::stablehlo::Mul(grad_output_bcast, sigmoid_beta_x);
 
   // Threshold judgment: beta * x > threshold
   // If the condition is met, reverts to the linear function
-  mlir::MlirOp condition = mlir::stablehlo::Compare(
-      beta_x, threshold_bcast, mlir::stablehlo::ComparisonDirection::GT);
+  TT_ASSIGN_OR_RETURN(auto condition, BuildGtShlo(beta_x, threshold_op));
 
   return mlir::stablehlo::Select(condition, grad_output_bcast, grad_scaled);
 }

@@ -37,9 +37,11 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
+#include "csrc/ops/binary.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
+#include "csrc/ops/where/where.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -67,8 +69,10 @@ absl::StatusOr<mlir::MlirOp> BuildLogitShlo(mlir::MlirOp input_op,
   mlir::MlirOp self_bcst = broadcasted_inputs[0];
   mlir::MlirOp eps_bcst = broadcasted_inputs[1];
 
-  mlir::MlirOp k_zero = MakeConstantLike(self_bcst, 0.0);
-  mlir::MlirOp k_one = MakeConstantLike(self_bcst, 1.0);
+  mlir::MlirOp k_zero =
+      MakeScalarConstant(self_bcst.getBuilder(), 0.0, computation_dtype);
+  mlir::MlirOp k_one =
+      MakeScalarConstant(self_bcst.getBuilder(), 1.0, computation_dtype);
 
   // Formula:
   //   If eps >= 0:
@@ -81,29 +85,30 @@ absl::StatusOr<mlir::MlirOp> BuildLogitShlo(mlir::MlirOp input_op,
   //   logit(y) = log(y / (1 - y))
 
   // 1 - eps
-  mlir::MlirOp one_minus_eps = mlir::stablehlo::Subtract(k_one, eps_bcst);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp one_minus_eps,
+                      BuildSubShlo(k_one, eps_bcst));
   // self > 1 - eps
-  mlir::MlirOp is_greater_than_hi = mlir::stablehlo::Compare(
-      self_bcst, one_minus_eps, mlir::stablehlo::ComparisonDirection::GT);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp is_greater_than_hi,
+                      BuildGtShlo(self_bcst, one_minus_eps));
   // temp_clamped = (self > 1 - eps) ? 1 - eps : self
   mlir::MlirOp temp_clamped =
       mlir::stablehlo::Select(is_greater_than_hi, one_minus_eps, self_bcst);
 
   // self < eps
-  mlir::MlirOp is_less_than_lo = mlir::stablehlo::Compare(
-      self_bcst, eps_bcst, mlir::stablehlo::ComparisonDirection::LT);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp is_less_than_lo,
+                      BuildLtShlo(self_bcst, eps_bcst));
   // clamped_input = (self < eps) ? eps : temp_clamped
   mlir::MlirOp clamped_input =
       mlir::stablehlo::Select(is_less_than_lo, eps_bcst, temp_clamped);
 
   // y = (eps >= 0) ? clamped_input : self
-  mlir::MlirOp compare_ge_zero = mlir::stablehlo::Compare(
-      eps_bcst, k_zero, mlir::stablehlo::ComparisonDirection::GE);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp compare_ge_zero,
+                      BuildGeShlo(eps_bcst, k_zero));
   mlir::MlirOp y =
       mlir::stablehlo::Select(compare_ge_zero, clamped_input, self_bcst);
 
   // logit(y) = log(y / (1 - y))
-  mlir::MlirOp one_minus_y = mlir::stablehlo::Subtract(k_one, y);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp one_minus_y, BuildSubShlo(k_one, y));
   mlir::MlirOp fraction = mlir::stablehlo::Div(y, one_minus_y);
   mlir::MlirOp log_out = mlir::stablehlo::Log(fraction);
 
@@ -199,41 +204,44 @@ absl::StatusOr<mlir::MlirOp> BuildLogitBackwardShlo(
   mlir::MlirOp self_bcst = broadcasted_inputs[1];
   mlir::MlirOp eps_bcst = broadcasted_inputs[2];
 
-  mlir::MlirOp k_zero = MakeConstantLike(self_bcst, 0.0);
-  mlir::MlirOp k_one = MakeConstantLike(self_bcst, 1.0);
-  mlir::MlirOp k_nan =
-      MakeConstantLike(self_bcst, std::numeric_limits<double>::quiet_NaN());
+  mlir::MlirOp k_zero =
+      MakeScalarConstant(self_bcst.getBuilder(), 0.0, computation_dtype);
+  mlir::MlirOp k_one =
+      MakeScalarConstant(self_bcst.getBuilder(), 1.0, computation_dtype);
+  mlir::MlirOp k_nan = MakeScalarConstant(
+      self_bcst.getBuilder(), std::numeric_limits<double>::quiet_NaN(),
+      computation_dtype);
 
   // grad_output / (self * (1 - self))
-  mlir::MlirOp one_minus_self = mlir::stablehlo::Subtract(k_one, self_bcst);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp one_minus_self,
+                      BuildSubShlo(k_one, self_bcst));
   mlir::MlirOp denom = mlir::stablehlo::Mul(self_bcst, one_minus_self);
   mlir::MlirOp div_res = mlir::stablehlo::Div(grad_output_bcst, denom);
 
   // eps >= 0 case
   mlir::MlirOp lo = eps_bcst;
-  mlir::MlirOp hi = mlir::stablehlo::Subtract(k_one, eps_bcst);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp hi, BuildSubShlo(k_one, eps_bcst));
 
   // Check if self is in range: lo <= self <= hi
-  mlir::MlirOp ge_lo = mlir::stablehlo::Compare(
-      self_bcst, lo, mlir::stablehlo::ComparisonDirection::GE);
-  mlir::MlirOp le_hi = mlir::stablehlo::Compare(
-      self_bcst, hi, mlir::stablehlo::ComparisonDirection::LE);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp ge_lo, BuildGeShlo(self_bcst, lo));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp le_hi, BuildLeShlo(self_bcst, hi));
   mlir::MlirOp in_range_eps = mlir::stablehlo::And(ge_lo, le_hi);
 
-  mlir::MlirOp res_eps = mlir::stablehlo::Select(in_range_eps, div_res, k_zero);
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp res_eps,
+      BuildWhereShlo(in_range_eps, div_res, k_zero, computation_dtype));
 
   // eps < 0 case
-  mlir::MlirOp ge_zero = mlir::stablehlo::Compare(
-      self_bcst, k_zero, mlir::stablehlo::ComparisonDirection::GE);
-  mlir::MlirOp le_one = mlir::stablehlo::Compare(
-      self_bcst, k_one, mlir::stablehlo::ComparisonDirection::LE);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp ge_zero, BuildGeShlo(self_bcst, k_zero));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp le_one, BuildLeShlo(self_bcst, k_one));
   mlir::MlirOp in_range_no_eps = mlir::stablehlo::And(ge_zero, le_one);
-  mlir::MlirOp res_no_eps =
-      mlir::stablehlo::Select(in_range_no_eps, div_res, k_nan);
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp res_no_eps,
+      BuildWhereShlo(in_range_no_eps, div_res, k_nan, computation_dtype));
 
   // Select between eps >= 0 and eps < 0
-  mlir::MlirOp compare_ge_zero = mlir::stablehlo::Compare(
-      eps_bcst, k_zero, mlir::stablehlo::ComparisonDirection::GE);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp compare_ge_zero,
+                      BuildGeShlo(eps_bcst, k_zero));
   mlir::MlirOp final_res =
       mlir::stablehlo::Select(compare_ge_zero, res_eps, res_no_eps);
 

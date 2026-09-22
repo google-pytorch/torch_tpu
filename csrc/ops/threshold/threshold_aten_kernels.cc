@@ -53,7 +53,7 @@ absl::StatusOr<mlir::MlirOp> BuildThresholdBackwardShlo(
     mlir::MlirOp grad_output, mlir::MlirOp self, mlir::MlirOp threshold) {
   TT_ASSIGN_OR_RETURN(auto condition, BuildGtShlo(self, threshold));
   TT_ASSIGN_OR_RETURN(auto out_dtype, GetElementType(grad_output));
-  auto zero = MakeConstantLike(grad_output, 0.0, out_dtype);
+  auto zero = MakeScalarConstant(grad_output.getBuilder(), 0.0, out_dtype);
   return BuildWhereShlo(condition, grad_output, zero, out_dtype);
 }
 

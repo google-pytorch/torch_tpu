@@ -375,6 +375,224 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
       self.assert_close_tpu_vs_cpu(compute_nan)
 
+  def test_softplus(self):
+    for beta, threshold in [(1.0, 20.0), (2.0, 4.0), (0.5, 10.0)]:
+      x = torch.tensor([-10.0, -2.0, 0.0, 1.5, 5.0, 25.0], dtype=torch.float32)
+
+      def compute(device, beta=beta, threshold=threshold):
+        return torch.ops.aten.softplus(
+            to(x, device),
+            beta=beta,
+            threshold=threshold,
+        )
+
+      self.assert_close_tpu_vs_cpu(compute, rtol=1e-4, atol=2e-5)
+
+  def test_softplus_backward(self):
+    for beta, threshold in [(1.0, 20.0), (2.0, 4.0), (0.5, 10.0)]:
+      grad_output = torch.tensor(
+          [1.0, -2.0, 0.5, 3.0, -1.0, 2.0], dtype=torch.float32
+      )
+      x = torch.tensor([-10.0, -2.0, 0.0, 1.5, 5.0, 25.0], dtype=torch.float32)
+
+      def compute(device, beta=beta, threshold=threshold):
+        return torch.ops.aten.softplus_backward(
+            to(grad_output, device),
+            to(x, device),
+            beta=beta,
+            threshold=threshold,
+        )
+
+      self.assert_close_tpu_vs_cpu(compute, rtol=1e-3, atol=5e-5)
+
+  def test_elu_custom_scales(self):
+    x = torch.tensor([-3.0, -1.0, 0.0, 0.5, 2.0], dtype=torch.float32)
+
+    def compute(device):
+      return torch.ops.aten.elu(
+          to(x, device),
+          alpha=1.5,
+          scale=1.2,
+          input_scale=0.8,
+      )
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  def test_elu_backward_not_result(self):
+    grad_output = torch.tensor([-1.0, 2.0, -3.0, 0.5, 1.5], dtype=torch.float32)
+    x = torch.tensor([-2.0, -1.5, 0.0, 0.5, 2.0], dtype=torch.float32)
+
+    def compute(device):
+      return torch.ops.aten.elu_backward(
+          to(grad_output, device),
+          alpha=1.5,
+          scale=1.2,
+          input_scale=0.8,
+          is_result=False,
+          self_or_result=to(x, device),
+      )
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  def test_threshold_backward_direct(self):
+    for dtype in (torch.float32, torch.bfloat16, torch.float16):
+      grad_out_0d = torch.randn((), dtype=dtype)
+      self_0d = torch.randn((), dtype=dtype)
+
+      def compute_0d(device, grad_out=grad_out_0d, self_t=self_0d):
+        return torch.ops.aten.threshold_backward(
+            grad_out.to(device), self_t.to(device), 0.0
+        )
+
+      self.assert_close_tpu_vs_cpu(compute_0d)
+
+      grad_out_2d = torch.randn(8, 12, dtype=dtype)
+      self_2d = torch.randn(8, 12, dtype=dtype)
+
+      def compute_2d(device, grad_out=grad_out_2d, self_t=self_2d):
+        return torch.ops.aten.threshold_backward(
+            grad_out.to(device), self_t.to(device), 0.5
+        )
+
+      self.assert_close_tpu_vs_cpu(compute_2d)
+
+  def test_logit_direct(self):
+    for dtype in (torch.float32, torch.bfloat16, torch.float16):
+      x_1d = torch.rand(16, dtype=dtype) * 0.8 + 0.1
+      atol = 1e-2 if dtype == torch.bfloat16 else 2e-3
+      rtol = 1.5e-2 if dtype == torch.bfloat16 else 2e-3
+
+      def compute_fwd(device, x=x_1d):
+        return torch.logit(x.to(device))
+
+      self.assert_close_tpu_vs_cpu(compute_fwd, atol=atol, rtol=rtol)
+
+      def compute_fwd_eps(device, x=x_1d):
+        return torch.logit(x.to(device), eps=1e-5)
+
+      self.assert_close_tpu_vs_cpu(compute_fwd_eps, atol=atol, rtol=rtol)
+
+      grad_out_2d = torch.randn(4, 6, dtype=dtype)
+      x_2d = torch.rand(4, 6, dtype=dtype) * 0.8 + 0.1
+
+      def compute_bwd(device, grad_out=grad_out_2d, x=x_2d):
+        return torch.ops.aten.logit_backward(grad_out.to(device), x.to(device))
+
+      self.assert_close_tpu_vs_cpu(compute_bwd, atol=atol, rtol=rtol)
+
+  def test_activations_constant_elimination(self):
+    """Verifies that Softplus, ELU, Threshold, PReLU, and Logit eliminate full-tensor
+
+    constants and emit 0D scalar constants.
+    """
+    # 1. threshold_backward
+    grad_out = torch.ones(1024, 1024, device="cpu").to("tpu")
+    self_tensor = torch.zeros(1024, 1024, device="cpu").to("tpu")
+    with execution_mode.set_eager_mode(
+        execution_mode._EagerMode.INTERNAL_COMPILE_FX_GRAPH
+    ):
+      res_tb = torch.ops.aten.threshold_backward(grad_out, self_tensor, 0.0)
+    mlir_tb = tpu_torch_compile.build_mlir([res_tb], [grad_out, self_tensor])
+    mlir_tb_text = tpu_torch_compile.serialize_mlir_text(mlir_tb)
+    tb_constants = [
+        line
+        for line in mlir_tb_text.splitlines()
+        if "stablehlo.constant" in line
+    ]
+    self.assertTrue(any("tensor<f32>" in line for line in tb_constants))
+    self.assertFalse(any("tensor<1024x1024" in line for line in tb_constants))
+
+    # 2. prelu_kernel
+    self_p = torch.ones(1024, 1024, device="cpu").to("tpu")
+    weight_p = torch.ones(1024, device="cpu").to("tpu")
+    with execution_mode.set_eager_mode(
+        execution_mode._EagerMode.INTERNAL_COMPILE_FX_GRAPH
+    ):
+      res_prelu = torch.ops.aten._prelu_kernel(self_p, weight_p)
+    mlir_prelu = tpu_torch_compile.build_mlir([res_prelu], [self_p, weight_p])
+    mlir_prelu_text = tpu_torch_compile.serialize_mlir_text(mlir_prelu)
+    prelu_constants = [
+        line
+        for line in mlir_prelu_text.splitlines()
+        if "stablehlo.constant" in line
+    ]
+    self.assertTrue(any("tensor<f32>" in line for line in prelu_constants))
+    self.assertFalse(
+        any("tensor<1024x1024" in line for line in prelu_constants)
+    )
+
+    # 3. logit and logit_backward
+    x_logit = (torch.ones(1024, 1024, device="cpu") * 0.5).to("tpu")
+    with execution_mode.set_eager_mode(
+        execution_mode._EagerMode.INTERNAL_COMPILE_FX_GRAPH
+    ):
+      res_logit = torch.logit(x_logit, eps=1e-5)
+    mlir_logit = tpu_torch_compile.build_mlir([res_logit], [x_logit])
+    mlir_logit_text = tpu_torch_compile.serialize_mlir_text(mlir_logit)
+    logit_constants = [
+        line
+        for line in mlir_logit_text.splitlines()
+        if "stablehlo.constant" in line
+    ]
+    self.assertTrue(any("tensor<f32>" in line for line in logit_constants))
+    self.assertFalse(
+        any("tensor<1024x1024" in line for line in logit_constants)
+    )
+
+    grad_logit = torch.ones(1024, 1024, device="cpu").to("tpu")
+    x_lb = (torch.ones(1024, 1024, device="cpu") * 0.5).to("tpu")
+    with execution_mode.set_eager_mode(
+        execution_mode._EagerMode.INTERNAL_COMPILE_FX_GRAPH
+    ):
+      res_lb = torch.ops.aten.logit_backward(grad_logit, x_lb, eps=1e-5)
+    mlir_lb = tpu_torch_compile.build_mlir([res_lb], [grad_logit, x_lb])
+    mlir_lb_text = tpu_torch_compile.serialize_mlir_text(mlir_lb)
+    lb_constants = [
+        line
+        for line in mlir_lb_text.splitlines()
+        if "stablehlo.constant" in line
+    ]
+    self.assertTrue(any("tensor<f32>" in line for line in lb_constants))
+    self.assertFalse(any("tensor<1024x1024" in line for line in lb_constants))
+
+    # 4. softplus
+    x_sp = torch.ones(1024, 1024, device="cpu").to("tpu")
+    with execution_mode.set_eager_mode(
+        execution_mode._EagerMode.INTERNAL_COMPILE_FX_GRAPH
+    ):
+      res_sp = torch.ops.aten.softplus(x_sp, beta=2.0, threshold=20.0)
+    mlir_sp = tpu_torch_compile.build_mlir([res_sp], [x_sp])
+    mlir_sp_text = tpu_torch_compile.serialize_mlir_text(mlir_sp)
+    sp_constants = [
+        line
+        for line in mlir_sp_text.splitlines()
+        if "stablehlo.constant" in line
+    ]
+    self.assertTrue(any("tensor<f32>" in line for line in sp_constants))
+    self.assertFalse(any("tensor<1024x1024" in line for line in sp_constants))
+    self.assertFalse(
+        any(
+            "stablehlo.divide" in line and "tensor<1024x1024" in line
+            for line in mlir_sp_text.splitlines()
+        )
+    )
+
+    # 5. elu
+    x_elu = torch.ones(1024, 1024, device="cpu").to("tpu")
+    with execution_mode.set_eager_mode(
+        execution_mode._EagerMode.INTERNAL_COMPILE_FX_GRAPH
+    ):
+      res_elu = torch.ops.aten.elu(x_elu, alpha=1.5, scale=1.2, input_scale=0.8)
+    mlir_elu = tpu_torch_compile.build_mlir([res_elu], [x_elu])
+    mlir_elu_text = tpu_torch_compile.serialize_mlir_text(mlir_elu)
+    elu_constants = [
+        line
+        for line in mlir_elu_text.splitlines()
+        if "stablehlo.constant" in line
+    ]
+    self.assertTrue(any("tensor<f32>" in line for line in elu_constants))
+    self.assertFalse(any("tensor<1024x1024" in line for line in elu_constants))
+
   def _run_addmm_activation_test(
       self,
       self_shape,

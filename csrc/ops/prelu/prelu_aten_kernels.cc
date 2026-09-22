@@ -37,11 +37,13 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
+#include "csrc/ops/binary.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/reductions/reductions.h"
 #include "csrc/ops/reductions/sum.h"
+#include "csrc/ops/where/where.h"
 #include "llvm/ADT/SmallVector.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -68,9 +70,9 @@ absl::StatusOr<mlir::MlirOp> BuildPreluKernelShlo(mlir::MlirOp self_op,
   auto self_bcast = broadcasted[0];
   auto weight_bcast = broadcasted[1];
 
-  auto zero = MakeConstantLike(self_bcast, 0.0);
-  auto pred = mlir::stablehlo::Compare(
-      self_bcast, zero, mlir::stablehlo::ComparisonDirection::GT);
+  TT_ASSIGN_OR_RETURN(auto elem_type, GetElementType(self_bcast));
+  auto zero = MakeScalarConstant(self_bcast.getBuilder(), 0.0, elem_type);
+  TT_ASSIGN_OR_RETURN(auto pred, BuildGtShlo(self_bcast, zero));
   auto pos_branch = self_bcast;
   auto neg_branch = mlir::stablehlo::Mul(self_bcast, weight_bcast);
 
@@ -85,19 +87,20 @@ absl::StatusOr<MlirOpResults<2>> BuildPreluKernelBackwardShlo(
   auto self_bcast = broadcasted[0];
   auto weight_bcast = broadcasted[1];
 
-  auto zero = MakeConstantLike(self_bcast, 0.0);
+  TT_ASSIGN_OR_RETURN(auto elem_type, GetElementType(self_bcast));
+  auto zero = MakeScalarConstant(self_bcast.getBuilder(), 0.0, elem_type);
 
   // grad_self = where(self > 0, grad_output, grad_output * weight)
-  auto cond_gt_zero = mlir::stablehlo::Compare(
-      self_bcast, zero, mlir::stablehlo::ComparisonDirection::GT);
+  TT_ASSIGN_OR_RETURN(auto cond_gt_zero, BuildGtShlo(self_bcast, zero));
   auto neg_grad_self = mlir::stablehlo::Mul(grad_output_op, weight_bcast);
   auto grad_self =
       mlir::stablehlo::Select(cond_gt_zero, grad_output_op, neg_grad_self);
 
   // grad_weight_elementwise = where(self > 0, zero, grad_output * self)
   auto neg_grad_weight = mlir::stablehlo::Mul(grad_output_op, self_bcast);
-  auto grad_weight_elem =
-      mlir::stablehlo::Select(cond_gt_zero, zero, neg_grad_weight);
+  TT_ASSIGN_OR_RETURN(
+      auto grad_weight_elem,
+      BuildWhereShlo(cond_gt_zero, zero, neg_grad_weight, elem_type));
 
   // Reduce grad_weight_elem to weight_shape
   int64_t self_rank = self_shape.size();
