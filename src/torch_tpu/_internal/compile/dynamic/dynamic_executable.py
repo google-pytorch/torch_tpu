@@ -26,7 +26,7 @@ from torch_tpu._internal.compile import compiler
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.dynamic import sym_utils
 from torch_tpu._internal.compile.dynamic import view_decomposition as decompose
-from torch_tpu._internal.compile.dynamic.sym_shape_manager import OutputSymShape
+from torch_tpu._internal.compile.dynamic.output_sym_shape import OutputSymShape
 
 
 class _TensorInfo(NamedTuple):
@@ -50,11 +50,9 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
       graph_module: torch.fx.GraphModule,
       example_inputs: Sequence[Any],
       output_sym_shapes: Sequence[OutputSymShape],
-      symint_output_indices: Sequence[int],
       is_fwd: bool,
       default_executable: Any,
       default_layout_key: tuple[tuple[int, ...], ...],
-      dynamic_outputs: Sequence[bool],
       bounded_model_inputs: list[torch.Tensor | int],
       model_input_bounds: list[Any],
       view_arg_indices: set[int],
@@ -71,16 +69,12 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
         packing plan.
       output_sym_shapes: Symbolic shape specs for computing runtime shapes of
         output tensors.
-      symint_output_indices: Output indices promoted to 0D tensors that must be
-        converted back to Python scalars.
       is_fwd: Whether this executable represents a forward pass (True) or
         backward pass (False).
       default_executable: Initial compiled TPU executable for
         `default_layout_key`.
       default_layout_key: Minor-to-major layout key corresponding to
         `default_executable`.
-      dynamic_outputs: Per-output flags indicating which graph outputs have
-        dynamic shapes.
       bounded_model_inputs: Example inputs specialized to static upper bounds
         for compilation.
       model_input_bounds: Per-input TensorBounds (or None for static inputs) for
@@ -94,7 +88,9 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
     self._graph_module = graph_module
     self._example_inputs = example_inputs
     self._output_sym_shapes = output_sym_shapes
-    self._symint_output_indices = symint_output_indices
+    self._promoted_scalar_output_indices = [
+        idx for idx, s in enumerate(output_sym_shapes) if s.is_promoted_scalar
+    ]
     self._is_fwd = is_fwd
     self._view_arg_indices = view_arg_indices
 
@@ -106,7 +102,9 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
     self._bounded_model_inputs = bounded_model_inputs
     self._model_input_bounds = model_input_bounds
 
-    self._dynamic_outputs = dynamic_outputs
+    self._dynamic_outputs = [
+        out_shape.is_dynamic for out_shape in output_sym_shapes
+    ]
     self._unique_output_indices = (
         getattr(default_executable, "unique_output_indices", None)
         if default_executable is not None
@@ -344,15 +342,15 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
     )
     return output_shapes
 
-  def _convert_symint_outputs_to_scalars(self, outputs: Any) -> Any:
-    """Converts output tensors at symint output positions back to Python scalars."""
-    if not self._symint_output_indices or not isinstance(
+  def _convert_promoted_outputs_to_scalars(self, outputs: Any) -> Any:
+    """Converts output tensors at promoted scalar positions back to Python scalars."""
+    if not self._promoted_scalar_output_indices or not isinstance(
         outputs, (list, tuple)
     ):
       return outputs
 
     outputs_list = list(outputs)
-    for idx in self._symint_output_indices:
+    for idx in self._promoted_scalar_output_indices:
       if idx < len(outputs_list) and isinstance(
           outputs_list[idx], torch.Tensor
       ):
@@ -434,7 +432,7 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
 
     # Run model executable with constructed inputs
     outputs = executable(model_inputs, output_shapes=output_shapes)
-    return self._convert_symint_outputs_to_scalars(outputs)
+    return self._convert_promoted_outputs_to_scalars(outputs)
 
   def __reduce__(self) -> tuple[Callable[..., Any], tuple[Any, ...]]:
     # TODO(b/903508278): Add support for pickling to DynamicCompiler.

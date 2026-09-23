@@ -18,6 +18,7 @@ from __future__ import annotations
 from absl.testing import absltest
 import torch
 from torch._dynamo.backends.common import aot_autograd
+from torch_tpu._internal.compile.dynamic import output_sym_shape
 from torch_tpu._internal.compile.dynamic import sym_bounds_manager
 from torch_tpu._internal.compile.dynamic import sym_shape_manager
 from torch_tpu._internal.compile.dynamic import sym_utils
@@ -54,12 +55,16 @@ class SymShapeManagerTest(seed_test_utils.RepeatableTest):
 
   def test_symbol_manager_extraction(self):
     captured_sm = None
+    captured_output_sym_shapes = None
 
     def fw_compiler(graph_module, example_inputs):
-      nonlocal captured_sm
+      nonlocal captured_sm, captured_output_sym_shapes
       bm = sym_bounds_manager.SymBoundsManager(example_inputs)
       captured_sm = sym_shape_manager.SymShapeManager(
           graph_module, example_inputs, bm.get_symbol_bounds()
+      )
+      captured_output_sym_shapes = output_sym_shape.create_output_sym_shapes(
+          graph_module, example_inputs
       )
       return graph_module
 
@@ -73,7 +78,7 @@ class SymShapeManagerTest(seed_test_utils.RepeatableTest):
     f(t)
 
     self.assertIsNotNone(captured_sm)
-    self.assertEqual(captured_sm.get_dynamic_outputs(), [True])
+    self.assertEqual([s.is_dynamic for s in captured_output_sym_shapes], [True])
     self.assertEqual(
         captured_sm.get_symint_bounds(captured_sm.example_inputs[1].shape[0]),
         (2, 8),
@@ -84,12 +89,16 @@ class SymShapeManagerTest(seed_test_utils.RepeatableTest):
 
   def test_symbol_manager_static_shape(self):
     captured_sm = None
+    captured_output_sym_shapes = None
 
     def fw_compiler(graph_module, example_inputs):
-      nonlocal captured_sm
+      nonlocal captured_sm, captured_output_sym_shapes
       bm = sym_bounds_manager.SymBoundsManager(example_inputs)
       captured_sm = sym_shape_manager.SymShapeManager(
           graph_module, example_inputs, bm.get_symbol_bounds()
+      )
+      captured_output_sym_shapes = output_sym_shape.create_output_sym_shapes(
+          graph_module, example_inputs
       )
       return graph_module
 
@@ -102,7 +111,9 @@ class SymShapeManagerTest(seed_test_utils.RepeatableTest):
     f(t)
 
     self.assertIsNotNone(captured_sm)
-    self.assertEqual(captured_sm.get_dynamic_outputs(), [False])
+    self.assertEqual(
+        [s.is_dynamic for s in captured_output_sym_shapes], [False]
+    )
     self.assertEqual(
         captured_sm.get_upper_bound(captured_sm.example_inputs[0].shape[0]), 2
     )

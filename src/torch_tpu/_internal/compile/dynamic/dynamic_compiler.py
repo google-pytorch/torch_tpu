@@ -32,8 +32,9 @@ from torch_tpu._internal.compile.dynamic import view_ops_passes
 from torch_tpu._internal.compile.dynamic.dynamic_executable import DynamicTpuCompiledExecutable
 from torch_tpu._internal.compile.dynamic.graph_transformations import apply_dynamism_transformations
 from torch_tpu._internal.compile.dynamic.graph_transformations import apply_pre_dynamism_transformations
+from torch_tpu._internal.compile.dynamic.output_sym_shape import create_output_sym_shapes
+from torch_tpu._internal.compile.dynamic.output_sym_shape import OutputSymShape
 from torch_tpu._internal.compile.dynamic.sym_bounds_manager import SymBoundsManager
-from torch_tpu._internal.compile.dynamic.sym_shape_manager import SymShapeManager
 from torch_tpu._internal.compile.dynamic.symbol_bounds import SymbolBounds
 from torch_tpu._internal.utils import utils
 
@@ -178,6 +179,7 @@ class DynamicCompiler(compiler.Compiler):
       graph_module: torch.fx.GraphModule,
       example_inputs: Sequence[InputType],
       symbol_bounds: SymbolBounds,
+      output_sym_shapes: Sequence[OutputSymShape],
       is_fwd: bool,
       module_name: str | None,
       use_pad_real_to_static: bool,
@@ -195,13 +197,10 @@ class DynamicCompiler(compiler.Compiler):
     cloned_graph_module.meta = copy.copy(graph_module.meta)
     graph_module = cloned_graph_module
 
-    # Create a SymInt shape manager and transform the graph module.
-    sym_shape_manager = SymShapeManager(
-        graph_module, example_inputs, symbol_bounds
-    )
     apply_dynamism_transformations(
         graph_module,
-        sym_shape_manager,
+        example_inputs,
+        symbol_bounds,
         use_pad_real_to_static=use_pad_real_to_static,
     )
 
@@ -222,7 +221,7 @@ class DynamicCompiler(compiler.Compiler):
         model_input_bounds,
     )
 
-    dynamic_outputs = sym_shape_manager.get_dynamic_outputs()
+    dynamic_outputs = [out_shape.is_dynamic for out_shape in output_sym_shapes]
 
     # Create a model executable using the provided example inputs and bounds.
     try:
@@ -260,12 +259,10 @@ class DynamicCompiler(compiler.Compiler):
         static_compiler=self.static_compiler,
         graph_module=graph_module,
         example_inputs=example_inputs,
-        output_sym_shapes=sym_shape_manager.output_sym_shapes,
-        symint_output_indices=sym_shape_manager.get_symint_output_indices(),
+        output_sym_shapes=output_sym_shapes,
         is_fwd=is_fwd,
         default_executable=default_executable,
         default_layout_key=default_layout_key,
-        dynamic_outputs=dynamic_outputs,
         bounded_model_inputs=bounded_model_inputs,
         model_input_bounds=model_input_bounds,
         view_arg_indices=view_arg_indices,
@@ -326,12 +323,14 @@ class DynamicCompiler(compiler.Compiler):
     # if the bound constraint isn't satisfied.
     sym_bounds_manager.add_bound_checks()
 
+    output_sym_shapes = create_output_sym_shapes(graph_module, example_inputs)
     use_pad_real_to_static = _can_use_pad_real_to_static(example_inputs)
 
     return self._compile_for_symbol_bounds(
         graph_module=graph_module,
         example_inputs=example_inputs,
         symbol_bounds=sym_bounds_manager.get_symbol_bounds(),
+        output_sym_shapes=output_sym_shapes,
         is_fwd=is_fwd,
         module_name=module_name,
         use_pad_real_to_static=use_pad_real_to_static,

@@ -185,9 +185,9 @@ class GraphTransformationsTest(seed_test_utils.RepeatableTest):
     )
     self.assertLen(new_placeholders, len(placeholders) + 1)
 
-    # Verify that it is in symint_to_placeholder
+    # Verify that it is in _symint_to_placeholder
     sym_str = str(symint_ph.meta["val"])
-    self.assertIn(sym_str, captured_sm.symint_to_placeholder)
+    self.assertIn(sym_str, captured_sm._symint_to_placeholder)  # pylint: disable=protected-access
 
   def test_handle_dynamic_input_tensor_pass_reuse_placeholder(self):
     captured_gm = None

@@ -50,6 +50,19 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
+    name = "output_sym_shape",
+    srcs = [
+        "output_sym_shape.py",
+    ],
+    deps = [
+        ":sym_utils",
+        "//shims/absl_py/logging",
+        "//shims/torch:pytorch",
+        "@pypi//sympy",
+    ],
+)
+
+torch_tpu_py_library(
     name = "sym_shape_manager",
     srcs = [
         "sym_shape_manager.py",
@@ -61,9 +74,7 @@ torch_tpu_py_library(
     deps = [
         ":sym_utils",
         ":symbol_bounds",
-        "//shims/absl_py/logging",
         "//shims/torch:pytorch",
-        "@pypi//sympy",
     ],
 )
 
@@ -114,6 +125,7 @@ torch_tpu_py_library(
         ":generative_ops_pass",
         ":sym_shape_manager",
         ":sym_utils",
+        ":symbol_bounds",
         ":view_ops_passes",
         "//shims/torch:pytorch",
     ],
@@ -166,7 +178,7 @@ torch_tpu_py_library(
         "dynamic_executable.py",
     ],
     deps = [
-        ":sym_shape_manager",
+        ":output_sym_shape",
         ":sym_utils",
         ":view_decomposition",
         "//shims/absl_py/logging",
@@ -188,8 +200,8 @@ torch_tpu_py_library(
     deps = [
         ":dynamic_executable",
         ":graph_transformations",
+        ":output_sym_shape",
         ":sym_bounds_manager",
-        ":sym_shape_manager",
         ":sym_utils",
         ":symbol_bounds",
         ":view_ops_passes",

@@ -30,6 +30,7 @@ from torch_tpu._internal.compile.dynamic import generative_ops_pass
 from torch_tpu._internal.compile.dynamic import sym_utils
 from torch_tpu._internal.compile.dynamic import view_ops_passes
 from torch_tpu._internal.compile.dynamic.sym_shape_manager import SymShapeManager
+from torch_tpu._internal.compile.dynamic.symbol_bounds import SymbolBounds
 
 ConvertConstantSymIntsPass = (
     convert_constant_symints_pass.ConvertConstantSymIntsPass
@@ -219,12 +220,9 @@ class ScanInputsCreatePlaceholdersPass:
           )
 
         # Store the first placeholder encountered for this sym_str.
-        first_size_ph = (
-            self._sym_shape_manager.symint_to_placeholder.setdefault(
-                sym_str, size_ph
-            )
+        self._sym_shape_manager.register_symint_placeholder(
+            sym_str, node, size_ph
         )
-        self._sym_shape_manager.symint_node_to_tensor_node[node] = first_size_ph
 
 
 class HandleSymIntUsagesPass:
@@ -265,10 +263,8 @@ class HandleSymIntUsagesPass:
         if node.args and isinstance(node.args[0], (tuple, list)):
           new_ret_args = []
           changed = False
-          symint_output_indices = []
-          for idx, arg in enumerate(node.args[0]):
+          for arg in node.args[0]:
             if sym_utils.is_symint(arg) or sym_utils.is_scalar(arg):
-              symint_output_indices.append(idx)
               val_meta = (
                   arg.meta.get("val")
                   if isinstance(arg, torch.fx.Node) and hasattr(arg, "meta")
@@ -305,9 +301,6 @@ class HandleSymIntUsagesPass:
 
           if changed:
             node.args = (type(node.args[0])(new_ret_args),)
-            self._sym_shape_manager.set_symint_output_indices(
-                symint_output_indices
-            )
 
 
 _PYTHON_COMPARISON_BUILTINS = {
@@ -401,10 +394,14 @@ def apply_pre_dynamism_transformations(
 
 def apply_dynamism_transformations(
     graph_module: torch.fx.GraphModule,
-    sym_shape_manager: SymShapeManager,
+    example_inputs: Sequence[InputType],
+    symbol_bounds: SymbolBounds,
     use_pad_real_to_static: bool = True,
 ) -> None:
   """Runs all FX graph transforms for dynamic shapes."""
+  sym_shape_manager = SymShapeManager(
+      graph_module, example_inputs, symbol_bounds
+  )
 
   # Fetch original placeholders once in argument order
   original_placeholders = list(
