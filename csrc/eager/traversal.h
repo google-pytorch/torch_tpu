@@ -223,9 +223,17 @@ class Traversal {
   absl::StatusOr<std::vector<int64_t>>  // INT_VEC_OK
   ResolveDeviceAssignment() const;
 
+  // Resolves device assignment from ops in this traversal and applies it to
+  // the given CompilationSpec, updating spec.xla_compile_options and
+  // spec.compile_options_key.
+  absl::Status ApplyDeviceAssignmentToCompileSpec(CompilationSpec& spec) const;
+
   // Returns true if any argument to the traversal has bounded dynamic
   // dimensions marked.
   [[nodiscard]] bool IsBoundedDynamic() const;
+
+  // Returns true if the traversal contains any SparseCore custom operations.
+  [[nodiscard]] bool HasSparseCoreOp() const;
 
   // The core components of a Traversal, returned by IntoParts().
   struct Parts {
@@ -301,15 +309,17 @@ class Traversal {
   // Validates that the traversal is sound.
   absl::Status Validate() const;
 
-  // Returns true if the traversal contains any SparseCore custom operations.
-  [[nodiscard]] bool HasSparseCoreOp() const;
+  // Applies a pre-resolved device assignment (and any SparseCore replica
+  // overrides) to the given CompilationSpec, updating
+  // spec.xla_compile_options and spec.compile_options_key.
+  absl::Status ApplyDeviceAssignmentToCompileSpec(
+      CompilationSpec& spec, absl::Span<const int64_t> resolved_da) const;
 
   // Returns an updated CompilationSpec copy if the traversal requires
-  // SparseCore replica overrides or pinned-host placement overrides, or
-  // std::nullopt if no overrides are needed.
+  // SparseCore replica overrides, custom device assignments, or pinned-host
+  // placement overrides, or std::nullopt if no overrides are needed.
   std::optional<CompilationSpec> MaybeUpdateSpecWithLayout(
-      const CompilationSpec& spec) const;
-
+      const CompilationSpec& spec, absl::Span<const int64_t> resolved_da) const;
   // Helper function for BuildMlirFunction.
   // Returns the MLIR op corresponding to the provided buffer ref,
   // the one corresponding to the dynamically redirected buffer ref, or an
@@ -332,6 +342,9 @@ class Traversal {
   // The graph key of the Traversal, without considering the argument layouts
   // and buffer donations; lazily computed.
   mutable std::optional<GraphKey> graph_key_;
+
+  // The resolved device assignment for this Traversal; lazily computed.
+  mutable std::optional<std::vector<int64_t>> resolved_da_;  // INT_VEC_OK
 
   // The acceptable dynamic bounds for each dimension in the traversal's
   // arguments.

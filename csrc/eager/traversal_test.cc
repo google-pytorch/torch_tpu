@@ -33,7 +33,6 @@
 #include "csrc/common/shape.h"
 #include "csrc/common/status_test_utils.h"
 #include "csrc/eager/device_buffer.h"
-#include "csrc/eager/structured_log_buffer.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/python_context.h"
@@ -412,5 +411,139 @@ TEST_F(TraversalTest, CompilePopulatesAndResetsOutCacheKey) {
                    .ok());
   EXPECT_FALSE(out_cache_key.has_value());
 }
+
+TEST_F(TraversalTest, DifferentDeviceAssignmentChangesCacheKey) {
+  TT_ASSERT_OK_AND_ASSIGN(
+      const std::vector<DeviceBufferRef> refs_a,
+      DeviceBufferList::CreateDeferred(
+          OpName::kAdd, DummyBuilder, {}, OpParamCacheKeys::Empty(), {shape_},
+          OpSplitMode::kNone, /*donated_indices=*/{},
+          /*device_assignment=*/{0, 1}));
+  TT_ASSERT_OK_AND_ASSIGN(
+      const std::vector<DeviceBufferRef> refs_b,
+      DeviceBufferList::CreateDeferred(
+          OpName::kAdd, DummyBuilder, {}, OpParamCacheKeys::Empty(), {shape_},
+          OpSplitMode::kNone, /*donated_indices=*/{},
+          /*device_assignment=*/{2, 3}));
+  TT_ASSERT_OK_AND_ASSIGN(
+      const std::vector<DeviceBufferRef> refs_c,
+      DeviceBufferList::CreateDeferred(
+          OpName::kAdd, DummyBuilder, {}, OpParamCacheKeys::Empty(), {shape_},
+          OpSplitMode::kNone, /*donated_indices=*/{},
+          /*device_assignment=*/{0, 1, 2, 3}));
+
+  TT_ASSERT_OK_AND_ASSIGN(const std::unique_ptr<Traversal> traversal_a,
+                          Traversal::Create({refs_a[0]}));
+  TT_ASSERT_OK_AND_ASSIGN(const std::unique_ptr<Traversal> traversal_b,
+                          Traversal::Create({refs_b[0]}));
+  TT_ASSERT_OK_AND_ASSIGN(const std::unique_ptr<Traversal> traversal_c,
+                          Traversal::Create({refs_c[0]}));
+
+  const CompileOptionsKey compile_options_key(12345);
+  const CompilationCacheKey key_a =
+      traversal_a->GetCacheKey(compile_options_key, {}, {});
+  const CompilationCacheKey key_b =
+      traversal_b->GetCacheKey(compile_options_key, {}, {});
+  const CompilationCacheKey key_c =
+      traversal_c->GetCacheKey(compile_options_key, {}, {});
+
+  EXPECT_NE(key_a, key_b);
+  EXPECT_NE(key_a, key_c);
+  EXPECT_NE(key_b, key_c);
+}
+
+TEST_F(TraversalTest, ApplyDeviceAssignmentToCompileSpecUpdatesSpec) {
+  TT_ASSERT_OK_AND_ASSIGN(
+      const std::vector<DeviceBufferRef> refs,
+      DeviceBufferList::CreateDeferred(
+          OpName::kAdd, DummyBuilder, {}, OpParamCacheKeys::Empty(), {shape_},
+          OpSplitMode::kNone, /*donated_indices=*/{},
+          /*device_assignment=*/{2, 3}));
+
+  TT_ASSERT_OK_AND_ASSIGN(const std::unique_ptr<Traversal> traversal,
+                          Traversal::Create({refs[0]}));
+
+  CompilationSpec spec(std::make_unique<xla::CompileOptions>(),
+                       CompileOptionsKey(12345));
+  spec.xla_compile_options->executable_build_options.mutable_debug_options();
+  const CompileOptionsKey initial_key = spec.compile_options_key;
+
+  EXPECT_FALSE(spec.xla_compile_options->executable_build_options
+                   .has_device_assignment());
+
+  EXPECT_TRUE(traversal->ApplyDeviceAssignmentToCompileSpec(spec).ok());
+
+  const auto& exec_options = spec.xla_compile_options->executable_build_options;
+  EXPECT_TRUE(exec_options.has_device_assignment());
+  EXPECT_EQ(exec_options.num_replicas(), 1);
+  EXPECT_EQ(exec_options.num_partitions(), 2);
+  const auto& da = exec_options.device_assignment();
+  EXPECT_EQ(da(0, 0), 2);
+  EXPECT_EQ(da(0, 1), 3);
+  EXPECT_NE(spec.compile_options_key, initial_key);
+}
+
+TEST_F(TraversalTest, PreCompileAndCompileCacheKeyMatch) {
+  TT_ASSERT_OK_AND_ASSIGN(
+      const std::vector<DeviceBufferRef> refs,
+      DeviceBufferList::CreateDeferred(
+          OpName::kAdd, DummyBuilder, {}, OpParamCacheKeys::Empty(), {shape_},
+          OpSplitMode::kNone, /*donated_indices=*/{},
+          /*device_assignment=*/{2, 3}));
+
+  TT_ASSERT_OK_AND_ASSIGN(const std::unique_ptr<Traversal> traversal,
+                          Traversal::Create({refs[0]}));
+
+  CompilationSpec spec(std::make_unique<xla::CompileOptions>(),
+                       CompileOptionsKey(12345));
+  spec.xla_compile_options->executable_build_options.mutable_debug_options();
+  const CompilationCacheKey key_before_da =
+      traversal->GetCacheKey(spec.compile_options_key, {}, {});
+
+  EXPECT_TRUE(traversal->ApplyDeviceAssignmentToCompileSpec(spec).ok());
+
+  const CompilationCacheKey key_after_da =
+      traversal->GetCacheKey(spec.compile_options_key, {}, {});
+
+  EXPECT_NE(key_before_da, key_after_da);
+}
+
+TEST_F(TraversalTest, OpWithPreExistingDeviceAssignmentParamDoesNotCrash) {
+  OpParamCacheKeys op_param_keys = OpParamCacheKeys::Empty();
+  ASSERT_TRUE(op_param_keys
+                  .SetParam("device_assignment",
+                            std::vector<int64_t>{2, 3})  // INT_VEC_OK
+                  .ok());
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      const std::vector<DeviceBufferRef> refs_pre_existing,
+      DeviceBufferList::CreateDeferred(
+          OpName::kAdd, DummyBuilder, {}, std::move(op_param_keys), {shape_},
+          OpSplitMode::kNone, /*donated_indices=*/{},
+          /*device_assignment=*/{2, 3}));
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      const std::unique_ptr<Traversal> traversal_pre_existing,
+      Traversal::Create({refs_pre_existing[0]}));
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      const std::vector<DeviceBufferRef> refs_empty,
+      DeviceBufferList::CreateDeferred(
+          OpName::kAdd, DummyBuilder, {}, OpParamCacheKeys::Empty(), {shape_},
+          OpSplitMode::kNone, /*donated_indices=*/{},
+          /*device_assignment=*/{2, 3}));
+
+  TT_ASSERT_OK_AND_ASSIGN(const std::unique_ptr<Traversal> traversal_empty,
+                          Traversal::Create({refs_empty[0]}));
+
+  const CompileOptionsKey kCompileOptionsKey(12345);
+  const CompilationCacheKey key_pre_existing =
+      traversal_pre_existing->GetCacheKey(kCompileOptionsKey, {}, {});
+  const CompilationCacheKey key_empty =
+      traversal_empty->GetCacheKey(kCompileOptionsKey, {}, {});
+
+  EXPECT_EQ(key_pre_existing, key_empty);
+}
+
 }  // namespace
 }  // namespace torch_tpu
