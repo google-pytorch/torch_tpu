@@ -19,6 +19,7 @@ import torch
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import sync
 from torch_tpu._internal.utils import test_utils as utils
+from tests import oss_utils
 from tests import seed_test_utils
 
 
@@ -274,13 +275,15 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
     self.assertFalse(new_stream.is_sparse)
     self.assertFalse(new_stream.is_dense)
 
+  @oss_utils.skip_in_oss(
+      'OSS libtpu version not high enough to support pinning'
+  )
   def test_stream_pinned_to_sparse_core(self):
     """Tests that a stream can be pinned to a sparse core."""
     new_stream = torch.tpu.Stream(pinned='sparse')
     self.assertTrue(new_stream.is_sparse)
     self.assertFalse(new_stream.is_dense)
 
-    self.skipTest('XLA compiler failure')
     x = torch.ones(1, device='cpu').to('tpu')
     y = torch.ones(1, device='cpu').to('tpu')
     with torch.tpu.stream(new_stream):
