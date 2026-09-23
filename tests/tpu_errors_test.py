@@ -14,6 +14,8 @@
 
 """Tests error handling on TPU only."""
 
+import contextlib
+import os
 import re
 from typing import Any, TypeAlias
 from unittest import mock
@@ -24,12 +26,15 @@ import torch.distributed as dist
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch_tpu._internal import dynamism
 from torch_tpu._internal import env
+from torch_tpu._internal import env_utils
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import pallas
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.compiler import StaticCompiler
+from torch_tpu._internal.distributed.launchers import environment
 from torch_tpu._internal.pallas import tpu_torch_pallas
+from torch_tpu._internal.utils import hardware
 from tests import error_testing as et
 
 _EagerMode: TypeAlias = execution_mode._EagerMode
@@ -4772,6 +4777,87 @@ class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
           tpu=f"""avg_pool1d(): expected input dtype to be none of (bool, uint8, int8, int16, int32, complex64), got {dtype_str}""",
       ):
         torch.ops.aten.avg_pool1d.out(t, [3], out=out)
+
+
+@contextlib.contextmanager
+def _mock_launch_env(values: dict[str, str]):
+  """Makes the environment look like `values` to `environment.set_tpu_launch_env`."""
+
+  def get_str_env_once(name, default_value=None):
+    return values.get(name, default_value)
+
+  def get_int_env_once(name, default_value=None):
+    return int(values[name]) if name in values else default_value
+
+  with contextlib.ExitStack() as stack:
+    stack.enter_context(mock.patch.dict(os.environ, values, clear=True))
+    stack.enter_context(
+        mock.patch.dict(env_utils._resolved_values, {}, clear=True)  # pylint: disable=protected-access
+    )
+    stack.enter_context(
+        mock.patch.object(env, "get_str_env_once", side_effect=get_str_env_once)
+    )
+    stack.enter_context(
+        mock.patch.object(env, "get_int_env_once", side_effect=get_int_env_once)
+    )
+    yield
+
+
+class EnvironmentErrorsTest(et.TpuOnlyErrorTestBase):
+
+  @et.why_tpu_only("Testing TPU distributed launcher environment validation.")
+  def test_nnodes_and_worker_hostnames_mismatch_raises(self):
+    with _mock_launch_env(
+        {"TPU_WORKER_HOSTNAMES": "host1,host2", "JOB_COMPLETION_INDEX": "0"}
+    ):
+      with et.assert_raises_message(
+          ValueError,
+          tpu="""set_tpu_launch_env(): expected nnodes to match the number of hosts in environment variable TPU_WORKER_HOSTNAMES (2: "host1,host2"), got 1""",
+      ):
+        environment.set_tpu_launch_env(nnodes=1)
+      with et.assert_raises_message(
+          ValueError,
+          tpu="""set_tpu_launch_env(): expected nnodes to match the number of hosts in environment variable TPU_WORKER_HOSTNAMES (2: "host1,host2"), got 3""",
+      ):
+        environment.set_tpu_launch_env(nnodes=3)
+
+    with _mock_launch_env({"TPU_WORKER_HOSTNAMES": "host1"}):
+      with et.assert_raises_message(
+          ValueError,
+          tpu="""set_tpu_launch_env(): expected nnodes to match the number of hosts in environment variable TPU_WORKER_HOSTNAMES (1: "host1"), got 2""",
+      ):
+        environment.set_tpu_launch_env(nnodes=2)
+
+  @et.why_tpu_only("Testing TPU distributed launcher environment validation.")
+  def test_multihost_missing_worker_hostnames_raises(self):
+    with _mock_launch_env({"JOB_COMPLETION_INDEX": "0"}):
+      with et.assert_raises_message(
+          ValueError,
+          tpu="""set_tpu_launch_env(): expected environment variable TPU_WORKER_HOSTNAMES to be a comma-separated list of worker hostnames or IP addresses, got it as unset""",
+      ):
+        environment.set_tpu_launch_env(nnodes=2)
+
+  @et.why_tpu_only("Testing TPU distributed launcher environment validation.")
+  def test_multihost_missing_completion_index_raises(self):
+    with _mock_launch_env({"TPU_WORKER_HOSTNAMES": "host1,host2"}):
+      with et.assert_raises_message(
+          ValueError,
+          tpu="""set_tpu_launch_env(): expected environment variable JOB_COMPLETION_INDEX to be a 0-based index of this host (Kubernetes Indexed Jobs set this automatically), got it as unset""",
+      ):
+        environment.set_tpu_launch_env()
+
+  @et.why_tpu_only("Testing TPU distributed launcher environment validation.")
+  def test_singlehost_no_tpu_devices_raises(self):
+    with _mock_launch_env({}):
+      with (
+          mock.patch.object(hardware, "get_tpu_topology", return_value=None),
+          mock.patch.object(hardware, "get_tpu_device_count", return_value=0),
+      ):
+        with et.assert_raises_message(
+            ValueError,
+            tpu="""set_tpu_launch_env(): expected TPU devices, got none""",
+        ):
+          environment.set_tpu_launch_env()
 
 
 if __name__ == "__main__":

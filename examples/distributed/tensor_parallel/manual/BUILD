@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")
+load("//build_files:build_defs.bzl", "if_oss", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -24,13 +24,16 @@ torch_tpu_py_test(
     srcs = ["launch.py"],
     env = {
         "JOB_COMPLETION_INDEX": "0",
-        "TORCH_TPU_TOPOLOGY": "2,2,2",
         "TPU_WORKER_HOSTNAMES": "localhost",
     },
     main = "launch.py",
     nopresubmit = "slow example",
-    notest_oss = True,  # Disabled during switch from opt-in to opt-out
-    tags = [
+    # In OSS CI, tests run on a shared TPU host where only one test can acquire
+    # all 8 TPU chips at a time; in Google3, requires-tpu-v5lite:8 isolates it.
+    tags = if_oss(
+        ["exclusive"],
+        [],
+    ) + [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
@@ -41,7 +44,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:multihost_wrapper",
         "//tests/distributed:distributed_utils",
     ],
 )
