@@ -76,6 +76,7 @@ _GLOBAL_BAZEL_CONFIGS_REGEX: Final[re.Pattern[str]] = re.compile(
 SHARED_CI_PATHS: Final[Sequence[str]] = (
     # go/keep-sorted start
     r"\.github/actions/.*",
+    r"ci/.*",
     # go/keep-sorted end
 )
 _SHARED_CI_PATHS_REGEX: Final[re.Pattern[str]] = re.compile(
