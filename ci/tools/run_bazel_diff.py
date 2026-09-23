@@ -40,6 +40,14 @@ _BAZEL_DIFF_JAR: Final[pathlib.Path] = pathlib.Path("/tmp/bazel-diff.jar")
 # Global Bazel configuration file patterns (one regex per entry). Files matching
 # these patterns represent Bazel configuration; if these change, the whole cache
 # is invalidated.
+#
+# `requirements/` holds the resolved dependency locks that `MODULE.bazel` feeds
+# to `pip.parse`, so a change there moves the inputs of essentially every Python
+# target and selecting targets would cost more than running everything. It is
+# also what makes it safe for a job to repin a lock in its checkout before
+# calling this script: the `git checkout` calls below abort on a dirty file
+# whose content differs between the two commits, and matching here returns
+# before any checkout happens. Narrowing this entry would break such a job.
 GLOBAL_BAZEL_CONFIGS: Final[Sequence[str]] = (
     # go/keep-sorted start
     r"MODULE\.bazel",
@@ -48,10 +56,30 @@ GLOBAL_BAZEL_CONFIGS: Final[Sequence[str]] = (
     r"WORKSPACE\.bzlmod",
     r"\.bazelrc",
     r"\.bazelversion",
+    r"requirements/.*",
     # go/keep-sorted end
 )
 _GLOBAL_BAZEL_CONFIGS_REGEX: Final[re.Pattern[str]] = re.compile(
     r"^(" + "|".join(GLOBAL_BAZEL_CONFIGS) + r")$"
+)
+
+# CI definitions shared by every job (one regex per entry), plus, handled
+# separately below, the workflow file that defines the running job itself.
+#
+# bazel-diff cannot see any of this: these files are not in the build graph, so
+# changing them leaves every target's hash identical and the job reports zero
+# impacted targets and passes without running a single test. That is the worst
+# possible outcome for a change to CI, which is precisely the kind of change
+# that needs its own test suite run to be believed.
+#
+# TODO: make the trigger logic more precise to avoid unnecessary full runs.
+SHARED_CI_PATHS: Final[Sequence[str]] = (
+    # go/keep-sorted start
+    r"\.github/actions/.*",
+    # go/keep-sorted end
+)
+_SHARED_CI_PATHS_REGEX: Final[re.Pattern[str]] = re.compile(
+    r"^(" + "|".join(SHARED_CI_PATHS) + r")$"
 )
 
 # Documentation and repository metadata (one regex per entry). These files don't
@@ -109,6 +137,7 @@ class BazelDiffOptions:
   bazel_config: str
   extra_bazel_flags: str
   test_all: bool
+  workflow_ref: str
 
 
 def parse_args(argv: Sequence[str]) -> BazelDiffOptions:
@@ -148,6 +177,15 @@ def parse_args(argv: Sequence[str]) -> BazelDiffOptions:
           " tests."
       ),
   )
+  parser.add_argument(
+      "--workflow-ref",
+      default=os.environ.get("GITHUB_WORKFLOW_REF", ""),
+      help=(
+          "Ref of the workflow defining the running job, in the form"
+          " '<owner>/<repo>/.github/workflows/<file>@<ref>'. Defaults to"
+          " $GITHUB_WORKFLOW_REF, which GitHub Actions sets automatically."
+      ),
+  )
   ns = parser.parse_args(argv)
   return BazelDiffOptions(
       workspace_dir=pathlib.Path(ns.workspace_dir),
@@ -156,12 +194,59 @@ def parse_args(argv: Sequence[str]) -> BazelDiffOptions:
       bazel_config=ns.bazel_config,
       extra_bazel_flags=ns.extra_bazel_flags,
       test_all=(str(ns.test_all).lower() == "true"),
+      workflow_ref=ns.workflow_ref,
   )
 
 
 def is_global_bazel_config_modified(changed_files: Sequence[str]) -> bool:
   """Returns True if any changed file matches GLOBAL_BAZEL_CONFIGS."""
   return any(_GLOBAL_BAZEL_CONFIGS_REGEX.search(f) for f in changed_files)
+
+
+def workflow_path_from_ref(workflow_ref: str) -> str:
+  """Extracts the repo-relative workflow path from a GITHUB_WORKFLOW_REF value.
+
+  Args:
+    workflow_ref: Value of the form
+      `<owner>/<repo>/.github/workflows/<file>@<git-ref>`, or the empty string
+      when running outside GitHub Actions.
+
+  Returns:
+    The repo-relative path (e.g. `.github/workflows/presubmit.yml`), or the
+    empty string if `workflow_ref` does not contain one. The owner and repo
+    names are stripped by searching for the `.github/` segment rather than by
+    splitting on a fixed number of slashes, since a repo name may itself
+    contain a slash-like structure in forks.
+  """
+  path = workflow_ref.split("@", 1)[0]
+  marker = "/.github/"
+  index = path.find(marker)
+  if index == -1:
+    return ""
+  return path[index + len("/") :]
+
+
+def is_ci_definition_modified(
+    changed_files: Sequence[str], workflow_ref: str
+) -> bool:
+  """Returns True if a changed file defines how the running job tests.
+
+  Args:
+    changed_files: Repo-relative paths changed by the PR.
+    workflow_ref: `GITHUB_WORKFLOW_REF` for the running job, used to identify
+      the job's own workflow file. Workflow files *other* than that one are
+      deliberately ignored: an edit to the nightly workflow says nothing about
+      whether the presubmit jobs still work, and forcing every job to a full run
+      on any workflow edit would be needlessly expensive.
+
+  Returns:
+    True if the job's own definition, or CI infrastructure shared by all jobs,
+    was modified.
+  """
+  if any(_SHARED_CI_PATHS_REGEX.search(f) for f in changed_files):
+    return True
+  workflow_path = workflow_path_from_ref(workflow_ref)
+  return bool(workflow_path) and workflow_path in changed_files
 
 
 def is_doc_or_metadata_file(path: str) -> bool:
@@ -322,6 +407,15 @@ def main(argv: Sequence[str]) -> int:
     if is_global_bazel_config_modified(changed_files):
       print("Global Bazel configurations modified.")
       print("Forcing a full test run to ensure global configuration validity.")
+      test_all = True
+
+    if is_ci_definition_modified(changed_files, opts.workflow_ref):
+      print("CI definitions for this job modified.")
+      print(
+          "Forcing a full test run: bazel-diff sees no impacted targets for a"
+          " CI-only change, so this job would otherwise pass without running"
+          " any tests."
+      )
       test_all = True
 
     # Check if all modified files are documentation, images, or repo metadata.
