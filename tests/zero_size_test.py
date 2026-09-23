@@ -50,6 +50,35 @@ class ZeroSizeTest(seed_test_utils.RepeatableTest):
     self.assertEqual(out.shape, (0, 3))
     self.assertEqual(out.numel(), 0)
 
+  def test_sum_zero_size(self):
+    """Tests that we can sum a zero-size tensor."""
+    tpu_device = torch.device("tpu")
+    x = torch.ones((0,), device=tpu_device)
+    res = x.sum(dim=-1)
+    self.assertEqual(res.device.type, "tpu")
+    self.assertEqual(res.shape, torch.Size([]))
+    self.assertEqual(res.item(), 0)
+
+    res_without_dim = x.sum()
+    self.assertEqual(res_without_dim.device.type, "tpu")
+    self.assertEqual(res_without_dim.shape, torch.Size([]))
+    self.assertEqual(res_without_dim.item(), 0)
+
+    # reducing multi-dimensional zero-size tensor
+    x = torch.ones((3, 0, 4), device=tpu_device)
+    res = x.sum(dim=1)
+    self.assertEqual(res.device.type, "tpu")
+    self.assertTrue(torch.equal(res.cpu(), torch.zeros((3, 4))))
+
+    res_on_nonzero_dim = x.sum(dim=0)
+    self.assertEqual(res_on_nonzero_dim.device.type, "tpu")
+    self.assertTrue(torch.equal(res_on_nonzero_dim.cpu(), torch.zeros((0, 4))))
+
+    # keepdim=True case
+    res = x.sum(dim=1, keepdim=True)
+    self.assertEqual(res.device.type, "tpu")
+    self.assertTrue(torch.equal(res.cpu(), torch.zeros((3, 1, 4))))
+
 
 if __name__ == "__main__":
   absltest.main()
