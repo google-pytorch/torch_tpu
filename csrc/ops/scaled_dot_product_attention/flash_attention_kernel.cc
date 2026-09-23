@@ -227,58 +227,52 @@ func::FuncOp buildModule(ImplicitLocOpBuilder& module_builder,
   Value mi_arg = fn.getArgument(next_index++);
   Value li_arg = fn.getArgument(next_index++);
 
+  const bool is_single_kv_step = config.padded_kv_sequence_length == tiling.kt;
+
   ConstantOp zero = ConstantOp::create(fn_builder, fn_builder.getZeroAttr(i32));
   std::optional<scf::IfOp> causal_if;
-  if (config.is_causal) {
+  if (config.is_causal && !is_single_kv_step) {
     causal_if = CreateCausalIfOp(fn_builder, fn.getArgument(2),
                                  fn.getArgument(3), qt, kt);
     fn_builder.setInsertionPointToStart(causal_if->thenBlock());
   }
 
-  IfOp::create(
-      fn_builder,
-      CmpIOp::create(fn_builder, CmpIPredicate::eq, zero, fn.getArgument(3)),
-      /*thenBuilder=*/
-      [&](OpBuilder& builder, Location loc) -> void {
-        ImplicitLocOpBuilder b(loc, builder);
-        ZeroTile(b, o_scratch_arg);
-        ZeroTile(b, li_arg);
-        NInfTile(b, mi_arg);
-        YieldOp::create(b, loc);
-      });
+  if (!is_single_kv_step) {
+    IfOp::create(
+        fn_builder,
+        CmpIOp::create(fn_builder, CmpIPredicate::eq, zero, fn.getArgument(3)),
+        /*thenBuilder=*/
+        [&](OpBuilder& builder, Location loc) -> void {
+          ImplicitLocOpBuilder b(loc, builder);
+          ZeroTile(b, o_scratch_arg);
+          ZeroTile(b, li_arg);
+          NInfTile(b, mi_arg);
+          YieldOp::create(b, loc);
+        });
+  }
 
-  auto q = LoadTile(fn_builder, q_arg);
-  auto k = LoadTile(fn_builder, k_arg);
-  Value sij =
-      CreateMatmul(fn_builder, q, k, MatmulOptions{.transpose_rhs = true});
-
+  Value q = LoadTile(fn_builder, q_arg);
+  Value k = LoadTile(fn_builder, k_arg);
   // We can fold the exp -> exp2 conversion into the scale factor to reduce the
   // number of VLP multiplications by one per exp / log.
   // y = exp(x) <=> y = 2^(x * log2(e))
   constexpr float kLog2e = std::numbers::log2e_v<float>;
-  sij = ScaleValue(fn_builder, sij, config.scale * kLog2e);
-
-  Value row_block_idx = fn.getArgument(2);
-  Value col_block_idx = fn.getArgument(3);
-  Value bias = GetStructuredBias(fn_builder, row_block_idx, col_block_idx, qt,
-                                 kt, config.q_sequence_length,
-                                 config.kv_sequence_length, config.is_causal);
+  q = ScaleValue(fn_builder, q, config.scale * kLog2e);
+  Value sij =
+      CreateMatmul(fn_builder, q, k, MatmulOptions{.transpose_rhs = true});
 
   if (mask_arg) {
     Value user_bias = LoadTile(fn_builder, mask_arg);
     user_bias = ConvertElementType(fn_builder, f32, user_bias);
     user_bias = ScaleValue(fn_builder, user_bias, kLog2e);
-    if (bias) {
-      bias = AddFOp::create(fn_builder, bias, user_bias);
-    } else {
-      bias = user_bias;
-    }
+    sij = AddFOp::create(fn_builder, sij, user_bias);
   }
 
-  if (bias) {
-    bias = ConvertElementType(fn_builder, f32, bias);
-    sij = AddFOp::create(fn_builder, sij, bias);
-  }
+  Value row_block_idx = fn.getArgument(2);
+  Value col_block_idx = fn.getArgument(3);
+  sij = ApplyStructuredMask(fn_builder, sij, row_block_idx, col_block_idx, qt,
+                            kt, config.q_sequence_length,
+                            config.kv_sequence_length, config.is_causal);
 
   if (mask_arg) {
     // If a user provides a mask we must defend against a row being entirely
@@ -288,6 +282,32 @@ func::FuncOp buildModule(ImplicitLocOpBuilder& module_builder,
   }
 
   auto mij = ReduceBroadcastLane(fn_builder, sij, CombiningKind::MAXIMUMF);
+
+  if (is_single_kv_step) {
+    auto p_tile_scaled = Exp2Op::create(
+        fn_builder,
+        SubFOp::create(fn_builder, sij, NormalizeLaneDim(fn_builder, mij, kt)));
+    auto tile_sum =
+        ReduceBroadcastLane(fn_builder, p_tile_scaled, CombiningKind::ADD);
+    Value lhs = ConvertElementType(fn_builder, ity, p_tile_scaled);
+    auto vj = LoadTile(fn_builder, v_arg);
+    Value unnormalized_output = CreateMatmul(fn_builder, lhs, vj);
+    Value li_recip = CreateReciprocal(fn_builder, tile_sum);
+    Value normalized_output = MulFOp::create(
+        fn_builder, unnormalized_output,
+        NormalizeLaneDim(fn_builder, li_recip, config.vo_head_dim));
+    StoreTile(fn_builder, normalized_output, oi_arg);
+    if (config.return_lse) {
+      Value lse =
+          AddFOp::create(fn_builder, mij, CreateLog2(fn_builder, tile_sum));
+      Value sliced_lse = NormalizeLaneDim(fn_builder, lse, 1);
+      Value transposed_lse =
+          vector::TransposeOp::create(fn_builder, sliced_lse, {1, 0});
+      StoreTile(fn_builder, transposed_lse, lse_arg);
+    }
+    ReturnOp::create(fn_builder);
+    return fn;
+  }
 
   auto mi_prev = LoadTile(fn_builder, mi_arg);
   auto mi_new = MaximumFOp::create(fn_builder, mi_prev, mij);
@@ -311,9 +331,9 @@ func::FuncOp buildModule(ImplicitLocOpBuilder& module_builder,
   auto adjustment = MulFOp::create(
       fn_builder, NormalizeLaneDim(fn_builder, alpha, config.vo_head_dim), oi);
 
-  auto vj = LoadTile(fn_builder, v_arg);
   Value lhs = ConvertElementType(fn_builder, ity, p_tile_scaled);
 
+  auto vj = LoadTile(fn_builder, v_arg);
   Value current = CreateMatmul(fn_builder, lhs, vj);
 
   Value unnormalized_output = AddFOp::create(fn_builder, adjustment, current);

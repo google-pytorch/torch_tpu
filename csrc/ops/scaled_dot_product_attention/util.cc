@@ -160,14 +160,15 @@ void NInfTile(ImplicitLocOpBuilder& b, Value arg) {
   StoreTile(b, ninf_vector, arg);
 }
 
-Value GetStructuredBias(ImplicitLocOpBuilder& b, Value row_block_idx,
-                        Value col_block_idx, int64_t qt, int64_t kt,
-                        int64_t q_seq_len, int64_t kv_seq_len, bool is_causal) {
+Value ApplyStructuredMask(ImplicitLocOpBuilder& b, Value sij,
+                          Value row_block_idx, Value col_block_idx, int64_t qt,
+                          int64_t kt, int64_t q_seq_len, int64_t kv_seq_len,
+                          bool is_causal) {
   bool mask_q_seq_len = (q_seq_len % qt) != 0;
   bool mask_kv_seq_len = (kv_seq_len % kt) != 0;
 
   if (!is_causal && !mask_q_seq_len && !mask_kv_seq_len) {
-    return nullptr;
+    return sij;
   }
 
   Type i32 = b.getI32Type();
@@ -217,11 +218,8 @@ Value GetStructuredBias(ImplicitLocOpBuilder& b, Value row_block_idx,
                             : col_valid;
   }
 
-  VectorType bias_shape = VectorType::get({qt, kt}, b.getF32Type());
-  Value zero_vector = SplatConstant(b, bias_shape, 0.0f);
-  Value masking_vector = SplatConstant(b, bias_shape, kLogitsMin);
-
-  return arith::SelectOp::create(b, valid_mask, zero_vector, masking_vector);
+  Value masking_vector = SplatConstant(b, sij.getType(), kLogitsMin);
+  return arith::SelectOp::create(b, valid_mask, sij, masking_vector);
 }
 
 Value ReduceBroadcastLane(ImplicitLocOpBuilder& b, Value input,

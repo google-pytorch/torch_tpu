@@ -64,14 +64,13 @@ void ZeroTile(ImplicitLocOpBuilder& b, Value arg);
 // Initialize a 2D tile with -inf.
 void NInfTile(ImplicitLocOpBuilder& b, Value arg);
 
-// Get the causal bias for the given block indices.
-Value GetCausalBias(ImplicitLocOpBuilder& b, Value row_block_idx,
-                    Value col_block_idx, int64_t qt, int64_t kt);
-
-// Get the structured bias (causal and/or masking) for the given block indices.
-Value GetStructuredBias(ImplicitLocOpBuilder& b, Value row_block_idx,
-                        Value col_block_idx, int64_t qt, int64_t kt,
-                        int64_t q_seq_len, int64_t kv_seq_len, bool is_causal);
+// Apply structured masking (causal and/or sequence boundary masking) to `sij`.
+// Only executes vector masking operations on tiles that intersect a mask
+// boundary (e.g. diagonal tiles for causal attention).
+Value ApplyStructuredMask(ImplicitLocOpBuilder& b, Value sij,
+                          Value row_block_idx, Value col_block_idx, int64_t qt,
+                          int64_t kt, int64_t q_seq_len, int64_t kv_seq_len,
+                          bool is_causal);
 
 // Reduce the 2D input to a 1D across the lane dimension and then broadcast the
 // results lane dimension to the given size.

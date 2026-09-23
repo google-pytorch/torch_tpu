@@ -88,24 +88,15 @@ SharedBwdResult ComputeSharedBackwardLogic(
 
   Value sij = ScaleValue(fn_builder, unscaled_sij, config.scale * kLog2e);
 
-  Value bias = GetStructuredBias(fn_builder, row_block_idx, col_block_idx, qt,
-                                 kt, config.q_sequence_length,
-                                 config.kv_sequence_length, config.is_causal);
-
   if (user_bias) {
     user_bias = ConvertElementType(fn_builder, oty, user_bias);
     user_bias = ScaleValue(fn_builder, user_bias, kLog2e);
-    if (bias) {
-      bias = AddFOp::create(fn_builder, user_bias, bias);
-    } else {
-      bias = user_bias;
-    }
+    sij = AddFOp::create(fn_builder, sij, user_bias);
   }
 
-  if (bias) {
-    bias = ConvertElementType(fn_builder, oty, bias);
-    sij = AddFOp::create(fn_builder, sij, bias);
-  }
+  sij = ApplyStructuredMask(fn_builder, sij, row_block_idx, col_block_idx, qt,
+                            kt, config.q_sequence_length,
+                            config.kv_sequence_length, config.is_causal);
 
   if (user_bias) {
     // See comment in forward pass for details.
