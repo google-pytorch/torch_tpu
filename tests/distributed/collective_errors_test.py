@@ -185,11 +185,10 @@ def run_all_gather_uneven_output_sizes() -> None:
       torch.empty(i + 1, device="tpu", dtype=torch.float32)
       for i in range(world_size)
   ]
-  expected_msg = (
-      "distributed.all_gather(): expected all input tensors to have the same"
-      " shape, got [1] at index 0 and [2] at index 1"
-  )
-  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
+  with et.assert_raises_message(
+      RuntimeError,
+      tpu="""distributed.all_gather(): failed to validate output tensors: expected all tensors to have the same shape, got [1] at index 0 and [2] at index 1""",
+  ):
     torch.distributed.all_gather(outputs, x)
     [o.to("cpu") for o in outputs]  # pylint: disable=expression-not-assigned
 
@@ -280,7 +279,7 @@ def run_reduce_scatter_errors() -> None:
   output = torch.zeros((2, 3), device="tpu")
   with et.assert_raises_message(
       RuntimeError,
-      tpu=f"""distributed.reduce_scatter(): expected all input tensors to have the same shape, got [2, 3] at index 0 and [3, 3] at index {diff_idx}""",
+      tpu=f"""distributed.reduce_scatter(): failed to validate input tensors: expected all tensors to have the same shape, got [2, 3] at index 0 and [3, 3] at index {diff_idx}""",
   ):
     torch.distributed.reduce_scatter(output, inputs)
 
@@ -387,12 +386,10 @@ def run_gather_non_uniform_output_shapes() -> None:
   if rank == dst:
     gather_list = [torch.zeros(2, device="tpu") for _ in range(world_size)]
     gather_list[1] = torch.zeros(3, device="tpu")
-    expected_msg = (
-        "distributed.gather(): output tensors on the root rank: expected all"
-        " input tensors to have the same shape, got [2] at index 0 and [3] at"
-        " index 1"
-    )
-    with et.assert_raises_message(RuntimeError, tpu=expected_msg):
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""distributed.gather(): failed to validate output tensors on root rank: expected all tensors to have the same shape, got [2] at index 0 and [3] at index 1""",
+    ):
       torch.distributed.gather(tensor, gather_list=gather_list, dst=dst)
   # Intentionally do NOT call gather on non-dst ranks.
   # The rank-specific error will prevent the gather() from actually starting;

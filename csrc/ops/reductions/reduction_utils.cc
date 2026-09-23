@@ -178,9 +178,9 @@ absl::StatusOr<int64_t> GetReductionFactor(const at::Tensor& input_tensor,
     for (int64_t d : canonical_dims) {
       TT_ASSIGN_OR_RETURN(
           reduction_size, SafeMultiply(reduction_size, input_tensor.size(d)),
-          _.SetPrepend()
-              << "overflow calculating reduction factor for tensor of size "
-              << dim.value() << ": ");
+          _.SetPrepend() << "failed to calculate the reduction factor due to "
+                            "overflow for tensor of size "
+                         << dim.value() << ": ");
     }
   } else {
     reduction_size = input_tensor.numel();

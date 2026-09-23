@@ -895,7 +895,7 @@ absl::StatusOr<CompileResult> CompileModuleWithCache(
 
   TT_ASSIGN_OR_RETURN(SharedLoadedExecutableWithMetadata executable,
                       compiled_kernel.fixed_shape_kernel.get(),
-                      _.SetPrepend() << "Failed to get fixed shape kernel: ");
+                      _.SetPrepend() << "failed to get fixed shape kernel: ");
 
   absl_nullable std::shared_ptr<ContextedModule> module = nullptr;
   if (build_mlir_module) {
@@ -1176,7 +1176,7 @@ py::bytes PySerializeExecutable(
     const SharedLoadedExecutableWithMetadata& executable) {
   TT_ASSIGN_OR_THROW(const std::string serialized,
                      executable->GetExecutable()->SerializeExecutable(),
-                     _.SetPrepend() << "Failed to serialize executable: ");
+                     _.SetPrepend() << "failed to serialize executable: ");
   return py::bytes(serialized);
 }
 
@@ -1197,11 +1197,9 @@ absl::StatusOr<SharedLoadedExecutableWithMetadata> LoadSerializedExecutableImpl(
 SharedLoadedExecutableWithMetadata PyLoadSerializedExecutable(
     py::bytes& serialized_bytes) {
   const auto data = py::cast<std::string_view>(serialized_bytes);
-  TT_ASSIGN_OR_THROW(
-      SharedLoadedExecutableWithMetadata executable,
-      LoadSerializedExecutableImpl(data),
-      _.SetPrepend()
-          << "Failed to create SharedLoadedExecutableWithMetadata: ");
+  TT_ASSIGN_OR_THROW(SharedLoadedExecutableWithMetadata executable,
+                     LoadSerializedExecutableImpl(data),
+                     _.SetPrepend() << "failed to load executable: ");
   return executable;
 }
 

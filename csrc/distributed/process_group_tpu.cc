@@ -184,7 +184,7 @@ absl::Status ValidateTensorsUniformShape(
   for (int i = 1; i < tensors.size(); ++i) {
     TT_RET_CHECK(tensors[i].sizes() == first_tensor_size,
                  error::kInvalidArgument)
-        << "expected all input tensors to have the same shape, got "
+        << "expected all tensors to have the same shape, got "
         << first_tensor_size << " at index 0 and " << tensors[i].sizes()
         << " at index " << i;
   }
@@ -980,7 +980,9 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::allgather(
         // NOTE: PyTorch NCCL backend does support non-uniform shapes
         // (implemented as a sequence of broadcasts, one per tensor). We decided
         // not to support this yet. Revisit later if needed.
-        TT_THROW_IF_ERROR(ValidateTensorsUniformShape(output_tensor_list));
+        TT_THROW_IF_ERROR(ValidateTensorsUniformShape(output_tensor_list))
+                .SetPrepend()
+            << "failed to validate output tensors: ";
 
         TT_CHECK_THROW(input_tensor.sizes() == output_tensor_list[0].sizes(),
                        error::kInvalidArgument)
@@ -1206,7 +1208,7 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::gather(
               << " processes";
           TT_THROW_IF_ERROR(ValidateTensorsUniformShape(output_tensor_list))
                   .SetPrepend()
-              << "output tensors on the root rank: ";
+              << "failed to validate output tensors on root rank: ";
           TT_CHECK_THROW(input.sizes() == output_tensor_list[0].sizes(),
                          error::kInvalidArgument)
               << "input tensor shape must match output tensor shape";
@@ -1287,7 +1289,7 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::scatter(
 
           TT_THROW_IF_ERROR(ValidateTensorsUniformShape(input_tensors))
                   .SetPrepend()
-              << "input tensors on the root rank: ";
+              << "failed to validate input tensors on root rank: ";
           TT_CHECK_THROW(output.sizes() == input_tensors[0].sizes(),
                          error::kInvalidArgument)
               << "expected output tensor shape to match input tensor shape, "
@@ -1357,7 +1359,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::reduce_scatter(
         // sequence of world_size separate reduce calls (coalesced). Revisit
         // later if we want to support this case too. It would be very
         // problematic for error handling.
-        TT_THROW_IF_ERROR(ValidateTensorsUniformShape(inputs));
+        TT_THROW_IF_ERROR(ValidateTensorsUniformShape(inputs)).SetPrepend()
+            << "failed to validate input tensors: ";
 
         TT_CHECK_THROW(output.sizes() == inputs[getRank()].sizes(),
                        error::kInvalidArgument)

@@ -221,7 +221,7 @@ absl::Status PjrtBackend::InitializeInternal() {
         world_size_or.ok()) {
       TT_ASSIGN_OR_RETURN(auto config, GetDistributedWorkerConfiguration());
       TT_RETURN_IF_ERROR(InitializeDistributedEnvironment(config)).SetPrepend()
-          << "InitializeDistributedEnvironment failed: ";
+          << "failed to initialize distributed environment: ";
     }
   } else {
     return TT_ERROR(error::kInvalidArgument)
@@ -235,7 +235,7 @@ absl::Status PjrtBackend::InitializeInternal() {
                       pjrt::IsPjrtPluginInitialized(plugin_name));
   if (!is_initialized) {
     TT_RETURN_IF_ERROR(pjrt::InitializePjrtPlugin(plugin_name)).SetPrepend()
-        << "initializing the PjRt plugin failed with: ";
+        << "failed to initialize the PjRt plugin: ";
   }
 
   // Mem tracking note: Background threads in XLA spun up during GetPjRtClient.
@@ -243,7 +243,7 @@ absl::Status PjrtBackend::InitializeInternal() {
       client_,
       torch_tpu::GetPjRtClient(options_.device_type,
                                options_.premapped_buffer_size_bytes),
-      _.SetPrepend() << "retrieving a PjRtClient failed with: ");
+      _.SetPrepend() << "failed to retrieve the PjRt client: ");
 
   ABSL_CHECK_NE(client_, nullptr)  // CRASH_OK
       << "PjRtClient should not be null after initialization.";

@@ -997,8 +997,7 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
     # Check that it successfully reaches XLA and raises an error.
     with self.assertRaisesRegex(
         RuntimeError,
-        "transfer to 'cpu' device failed with: failed to compile MLIR module --"
-        " the XLA compiler failed with: .*test_custom_call.*",
+        expected_regex="""failed to compile MLIR module -- the XLA compiler failed with: custom emitter for test_custom_call not found""",
     ):
       x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
       y = custom_call_op(x)

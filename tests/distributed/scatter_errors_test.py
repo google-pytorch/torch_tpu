@@ -182,9 +182,7 @@ class ScatterErrorsTest(seed_test_utils.MultiProcessRepeatableTest):
     mismatch_shape = [8, 6, 2]
     with et.assert_subprocess_raises_message(
         RuntimeError,
-        "distributed.scatter(): input tensors on the root rank: expected all"
-        " input tensors to have the same shape, got [8, 6, 2] at index 0 and"
-        " [6, 2] at index 1",
+        expected_msg="""distributed.scatter(): failed to validate input tensors on root rank: expected all tensors to have the same shape, got [8, 6, 2] at index 0 and [6, 2] at index 1""",
     ):
       distributed_utils.dist_run(
           nproc_per_node=8,

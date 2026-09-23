@@ -66,8 +66,7 @@ static absl::Status TranslateXlaTensorOomError(absl::Status status,
       << status.message();
 
   // From this point, we know that the given status is not an XLA OOM error.
-  return StatusBuilder(std::move(status)).SetPrepend()
-         << "transfer to 'cpu' device failed with: ";
+  return status;
 }
 
 }  // namespace

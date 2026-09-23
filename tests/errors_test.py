@@ -9040,7 +9040,7 @@ Device-side assertion tracking was not enabled by user.""",
     err_type = RuntimeError if et.is_on_tpu() else Exception
     with et.assert_raises_message(
         err_type,
-        tpu="""scaled_mm_v2(): transfer to 'cpu' device failed with: expected scale buffer to have 512 elements for outer=128 and k_logical=4, got 1 ([1])""",
+        tpu="""scaled_mm_v2(): expected scale buffer to have 512 elements for outer=128 and k_logical=4, got 1 ([1])""",
         gpu=re.compile(
             r".*For Blockwise scaling with SWIZZLE_32_4_4 scale_a should have"
             r" 512 elements, got: 1.*",

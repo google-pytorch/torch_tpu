@@ -158,7 +158,7 @@ absl::Status CopyTpuToTpu(const at::Tensor& src, const at::Tensor& dest) {
                     {.out_dtype = out_dtype,
                      .out_dims = out_dims,
                      .op_param_cache_keys = OpParamCacheKeys::Empty()}),
-      _.SetPrepend() << "copy from 'tpu' to 'tpu' device failed with: ");
+      _.SetPrepend() << "failed to copy from 'tpu' to 'tpu' device: ");
   return AssignBufferToAtTensor(new_buf, dest);
 }
 
