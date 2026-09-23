@@ -161,8 +161,8 @@ def format_model(
     else:
       with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
         results = model(*input_tensors)
+        shlo = sync.computation_mlir(results)  # pyrefly: ignore[bad-assignment]
 
-      shlo = sync.computation_mlir(results)  # pyrefly: ignore[bad-assignment]
       result += shlo + "\n"  # pyrefly: ignore[unsupported-operation]
 
   return result
