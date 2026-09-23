@@ -29,7 +29,6 @@
 #include "c10/core/Stream.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
-#include "csrc/common/compilation_spec.h"
 #include "csrc/common/context_states.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/materialize_common.h"
@@ -143,17 +142,15 @@ struct MaterializationSettings {
       : materialization_mode(materialization_mode),
         reason(reason),
         compilation_mode(GetCompilationMode(eager_mode)),
-        compilation_spec(GetCompilationSpec(compilation_mode)) {
-    if (compilation_mode == CompilationMode::kFastCompile) {
-      fast_runtime_compilation_spec =
-          GetCompilationSpec(CompilationMode::kFastRuntime);
-    }
-  }
+        compilation_context(GetCompilationContext()) {}
   MaterializationMode materialization_mode;
   MaterializationReason reason;
   CompilationMode compilation_mode;
-  CompilationSpec compilation_spec;
-  std::optional<CompilationSpec> fast_runtime_compilation_spec;
+  // Immutable, shared set of pre-resolved CompilationSpecs for every
+  // CompilationMode. Held by shared_ptr so that freezing the settings does not
+  // deep-copy xla::CompileOptions, and so that callers can borrow a spec by
+  // reference for as long as these settings are alive.
+  absl_nonnull std::shared_ptr<const CompilationContext> compilation_context;
 };
 
 // A snapshot to be materialized.

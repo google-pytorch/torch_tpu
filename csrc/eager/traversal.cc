@@ -1024,51 +1024,13 @@ Traversal::ResolveDeviceAssignment() const {
 }
 
 absl::StatusOr<CompiledKernel> Traversal::Compile(
-    CompilationSpec spec, std::string* absl_nullable out_mlir_text,
+    const CompilationSpec& spec, std::string* absl_nullable out_mlir_text,
     bool use_stablehlo_bounds, absl::Span<const CustomLayout> argument_layouts,
     absl::Span<const int64_t> donated_inputs,
     std::optional<std::string_view> module_name) const {
   tsl::profiler::TraceMe trace_await("Traversal::Compile");
   TT_ASSIGN_OR_RETURN(const std::vector<int64_t> resolved_da,  // INT_VEC_OK
                       ResolveDeviceAssignment());
-
-  if (HasSparseCoreOp()) {
-    absl::StatusOr<int> status =
-        PjrtBackend::GetInstance().GetGlobalDeviceCount();
-    if (status.ok() && *status > 1) {
-      const int num_devices = *status;
-      xla::ExecutableBuildOptions& exec_options =
-          spec.xla_compile_options->executable_build_options;
-      exec_options.set_num_replicas(num_devices);
-      exec_options.set_num_partitions(1);
-      xla::DeviceAssignment da(num_devices, 1);
-      for (int idx = 0; idx < num_devices; ++idx) {
-        if (!resolved_da.empty() &&
-            static_cast<int>(resolved_da.size()) == num_devices) {
-          da(idx, 0) = resolved_da[idx];
-        } else {
-          da(idx, 0) = idx;
-        }
-      }
-      exec_options.set_device_assignment(da);
-      exec_options.set_use_spmd_partitioning(false);
-      exec_options.set_use_shardy_partitioner(false);
-      spec.compile_options_key =
-          MakeCompileOptionsKey(*spec.xla_compile_options);
-    }
-  } else if (!resolved_da.empty()) {
-    const int num_partitions = resolved_da.size();
-    xla::ExecutableBuildOptions& exec_options =
-        spec.xla_compile_options->executable_build_options;
-    exec_options.set_num_replicas(1);
-    exec_options.set_num_partitions(num_partitions);
-    xla::DeviceAssignment da(1, num_partitions);
-    for (int p = 0; p < num_partitions; ++p) {
-      da(0, p) = resolved_da[p];
-    }
-    exec_options.set_device_assignment(da);
-    spec.compile_options_key = MakeCompileOptionsKey(*spec.xla_compile_options);
-  }
 
   if (!argument_layouts.empty()) {
     TT_RET_CHECK(arguments_.size() == argument_layouts.size(),
@@ -1096,15 +1058,81 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
   std::vector<Shape> argument_shapes = GetShapes(arguments_);
   std::vector<Shape> output_shapes = GetShapes(outputs_);
 
-  ApplyPlacementsToCompileSpec(spec, outputs_, arguments_);
+  // Only deep-copy CompilationSpec if the traversal requires SparseCore replica
+  // overrides, custom device assignments, or pinned-host placement overrides
+  // that mutate xla::CompileOptions. Capture the global device count in an
+  // optional to avoid a duplicate backend lookup and unchecked dereference.
+  std::optional<int> sparse_core_device_count;
+  if (HasSparseCoreOp()) {
+    if (absl::StatusOr<int> status =
+            PjrtBackend::GetInstance().GetGlobalDeviceCount();
+        status.ok() && *status > 1) {
+      sparse_core_device_count = *status;
+    }
+  }
+  const bool needs_placement_override =
+      HasPinnedHostBuffer(outputs_) || HasPinnedHostBuffer(arguments_);
 
+  if (sparse_core_device_count.has_value() || !resolved_da.empty() ||
+      needs_placement_override) {
+    CompilationSpec mutable_spec = spec.Copy();
+    if (sparse_core_device_count.has_value()) {
+      const int num_devices = *sparse_core_device_count;
+      xla::ExecutableBuildOptions& exec_options =
+          mutable_spec.xla_compile_options->executable_build_options;
+      exec_options.set_num_replicas(num_devices);
+      exec_options.set_num_partitions(1);
+      xla::DeviceAssignment da(num_devices, 1);
+      for (int idx = 0; idx < num_devices; ++idx) {
+        if (!resolved_da.empty() &&
+            static_cast<int>(resolved_da.size()) == num_devices) {
+          da(idx, 0) = resolved_da[idx];
+        } else {
+          da(idx, 0) = idx;
+        }
+      }
+      exec_options.set_device_assignment(da);
+      exec_options.set_use_spmd_partitioning(false);
+      exec_options.set_use_shardy_partitioner(false);
+      mutable_spec.compile_options_key =
+          MakeCompileOptionsKey(*mutable_spec.xla_compile_options);
+    } else if (!resolved_da.empty()) {
+      const int num_partitions = resolved_da.size();
+      xla::ExecutableBuildOptions& exec_options =
+          mutable_spec.xla_compile_options->executable_build_options;
+      exec_options.set_num_replicas(1);
+      exec_options.set_num_partitions(num_partitions);
+      xla::DeviceAssignment da(1, num_partitions);
+      for (int p = 0; p < num_partitions; ++p) {
+        da(0, p) = resolved_da[p];
+      }
+      exec_options.set_device_assignment(da);
+      mutable_spec.compile_options_key =
+          MakeCompileOptionsKey(*mutable_spec.xla_compile_options);
+    }
+    if (needs_placement_override) {
+      ApplyPlacementsToCompileSpec(mutable_spec, outputs_, arguments_);
+    }
+    CompilationCacheKey compilation_cache_key = GetCacheKey(
+        mutable_spec.compile_options_key, argument_layouts, donated_inputs);
+    ABSL_VLOG(1) << "[Compile] compilation cache key: "
+                 << compilation_cache_key;
+    return CompilationCache::GetInstance().GetOrCompile(
+        std::move(compilation_cache_key), argument_shapes, output_shapes,
+        std::move(final_op_builder),
+        std::move(mutable_spec.xla_compile_options),
+        /*use_dynamic_adapters=*/!use_stablehlo_bounds);
+  }
+
+  // Common path: pass the immutable xla::CompileOptions by const reference to
+  // avoid heap allocations and deep copies on cache hits.
   CompilationCacheKey compilation_cache_key =
       GetCacheKey(spec.compile_options_key, argument_layouts, donated_inputs);
   ABSL_VLOG(1) << "[Compile] compilation cache key: " << compilation_cache_key;
 
   return CompilationCache::GetInstance().GetOrCompile(
       std::move(compilation_cache_key), argument_shapes, output_shapes,
-      std::move(final_op_builder), std::move(spec.xla_compile_options),
+      std::move(final_op_builder), *spec.xla_compile_options,
       /*use_dynamic_adapters=*/!use_stablehlo_bounds);
 }
 
