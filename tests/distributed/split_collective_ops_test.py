@@ -241,9 +241,8 @@ def run_compile_no_splits_when_env_zero_test():
 
   wrapper = debugs[0].compiled_executables[0]
   assert isinstance(
-      wrapper, _SplitCompiledExecutable
-  ), f"Expected _SplitCompiledExecutable, got {type(wrapper)}"
-  assert len(wrapper.compiled_executables) == 1
+      wrapper, TorchTpuCompiledExecutable
+  ), f"Expected TorchTpuCompiledExecutable, got {type(wrapper)}"
 
 
 def run_compile_two_collectives_test():
