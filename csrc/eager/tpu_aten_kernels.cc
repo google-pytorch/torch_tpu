@@ -1736,8 +1736,8 @@ TORCH_LIBRARY_IMPL(tpu, PrivateUse1, m) {
   ImplInternal<OpName::kSparseDenseMatmulGradientStack>(
       m, AtenSparseDenseMatmulGradientStack);
   ImplInternal<OpName::kSparseMapRow>(m, AtenSparseMapRow);
-  ImplExperimental<OpName::kExperimentalAllGatherDim>(
-      m, ExperimentalAllGatherDim);
+  ImplExperimental<OpName::kExperimentalAllGatherDim>(m,
+                                                      ExperimentalAllGatherDim);
   ImplExperimental<OpName::kExperimentalReduceScatterDim>(
       m, ExperimentalReduceScatterDim);
 }
