@@ -43,6 +43,7 @@
 #include "csrc/common/excess_precision.h"
 #include "csrc/common/fingerprint_utils.h"
 #include "csrc/common/shape.h"
+#include "csrc/mlir/pipeline.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/pjrt/pjrt_state.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -101,6 +102,7 @@ absl::StatusOr<ContextedModule> ContextedModule::Make(
     const MlirComputationBuilder& computation_builder) {
   auto context = MakeMlirContext();
   TT_ASSIGN_OR_RETURN(auto module, computation_builder(*context));
+  TT_RETURN_IF_ERROR(RunTorchTpuOptimizationPasses(*module, context.get()));
   return ContextedModule(std::move(context), std::move(module));
 }
 

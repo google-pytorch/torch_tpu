@@ -113,13 +113,49 @@ class UnevenShardingTest(seed_test_utils.MultiProcessRepeatableTest):
 
   @parameterized.named_parameters(
       ("1d_compiled_fail_small", 1, True, 4, "Tensor shape mismatch"),
-      ("1d_eager_fail_small", 1, False, 4, "Tensor shape mismatch"),
+      (
+          "1d_eager_fail_small",
+          1,
+          False,
+          4,
+          (
+              "Tensor shape mismatch|dimension size of operand at"
+              " 'all_gather_dim' cannot be zero"
+          ),
+      ),
       ("1d_compiled_fail_uneven", 1, True, 12, "Tensor shape mismatch"),
-      ("1d_eager_fail_uneven", 1, False, 12, "Tensor shape mismatch"),
+      (
+          "1d_eager_fail_uneven",
+          1,
+          False,
+          12,
+          (
+              "Tensor shape mismatch|dimension size of operand at"
+              " 'all_gather_dim' cannot be zero"
+          ),
+      ),
       ("2d_compiled_fail_small", 2, True, 4, "Wait timeout on sflag"),
-      ("2d_eager_fail_small", 2, False, 4, "Wait timeout on sflag"),
+      (
+          "2d_eager_fail_small",
+          2,
+          False,
+          4,
+          (
+              "Wait timeout on sflag|dimension size of operand at"
+              " 'all_gather_dim' cannot be zero"
+          ),
+      ),
       ("2d_compiled_fail_uneven", 2, True, 12, "Wait timeout on sflag"),
-      ("2d_eager_fail_uneven", 2, False, 12, "Wait timeout on sflag"),
+      (
+          "2d_eager_fail_uneven",
+          2,
+          False,
+          12,
+          (
+              "Wait timeout on sflag|dimension size of operand at"
+              " 'all_gather_dim' cannot be zero"
+          ),
+      ),
   )
   def test_replicate_tensor_without_shape(
       self, ndims, compiled, tensor_size, expected_regex

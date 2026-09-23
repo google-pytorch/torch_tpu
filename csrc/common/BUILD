@@ -333,6 +333,7 @@ torch_tpu_cc_library(
         ":excess_precision",
         ":fingerprint_utils",
         ":shape",
+        "//csrc/mlir:pipeline",
         "//csrc/ops:op_builder_utils",
         "//csrc/pjrt:pjrt_state",
         "@com_google_absl//absl/base:no_destructor",

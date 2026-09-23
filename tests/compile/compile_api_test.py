@@ -526,27 +526,13 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     # y is on the TPU.
     self.assertEqual(y.device.type, tpu_device.type)
 
-    # XLA packs booleans into i1s, so we need an extra convert operation to
-    # go from 0x00 or 0x01 to False or True.
-    # Whether or not the initial constant is an i8 or ui8 depends on the
-    # implementation of std::numeric_limits<char>::is_signed in C++.
-    expected_mlir_unsigned = """module @tt_jit_make_constant_tensor_torchtpu_internal_constant {
+    expected_mlir = """module @tt_jit_make_constant_tensor_torchtpu_internal_constant {
   func.func @main() -> tensor<2x2xi1> {
-    %c = stablehlo.constant dense<[[0, 1], [1, 0]]> : tensor<2x2xui8>
-    %0 = stablehlo.convert %c : (tensor<2x2xui8>) -> tensor<2x2xi1>
-    return %0 : tensor<2x2xi1>
+    %c = stablehlo.constant dense<[[false, true], [true, false]]> : tensor<2x2xi1>
+    return %c : tensor<2x2xi1>
   }
 }"""
-    expected_mlir_signed = """module @tt_jit_make_constant_tensor_torchtpu_internal_constant {
-  func.func @main() -> tensor<2x2xi1> {
-    %c = stablehlo.constant dense<[[0, 1], [1, 0]]> : tensor<2x2xi8>
-    %0 = stablehlo.convert %c : (tensor<2x2xi8>) -> tensor<2x2xi1>
-    return %0 : tensor<2x2xi1>
-  }
-}"""
-    unsigned_matches = mlir_text.strip() == expected_mlir_unsigned.strip()
-    signed_matches = mlir_text.strip() == expected_mlir_signed.strip()
-    self.assertTrue(unsigned_matches or signed_matches)
+    self.assertEqual(mlir_text.strip(), expected_mlir.strip())
 
     # The logical values of y should be identical to x.
     utils.assert_close(actual=actual, expected=x)
@@ -1277,7 +1263,6 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
 
     mlir_text = tpu_torch_compile.serialize_mlir_text(compile_result.module)
     self.assertIn('stablehlo.set_dimension_size', mlir_text)
-    self.assertIn('stablehlo.get_dimension_size', mlir_text)
 
     input_tensor = torch.ones(1, 4, dtype=torch.int32, device='tpu')
     result = tpu_torch_compile.execute(

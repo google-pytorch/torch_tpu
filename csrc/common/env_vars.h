@@ -125,6 +125,10 @@ inline constexpr char kTorchTpuInternalDetectRepeatedOpsEnvVar[] =
 // enabled).
 inline constexpr char kTorchTpuInternalDisableInplaceBufferDonationEnvVar[] =
     "TORCH_TPU_INTERNAL_DISABLE_INPLACE_BUFFER_DONATION";
+// Specifies where to dump optimization pass IR artifacts (e.g. "print" or a
+// directory path).
+inline constexpr char kTorchTpuInternalDumpMlirPassesToEnvVar[] =
+    "TORCH_TPU_INTERNAL_DUMP_MLIR_PASSES_TO";
 // If set to "1", enable expensive debug checks in TorchTPU. This catches
 // more bugs in user code, but comes at a significant performance cost for
 // some ops. The debug eager mode enables these checks by default, but can
@@ -317,6 +321,7 @@ inline constexpr auto kEnvVarToStage =
         {kTorchTpuInternalDetectRepeatedOpsEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuInternalDisableInplaceBufferDonationEnvVar,
          SymbolStage::InternalApi()},
+        {kTorchTpuInternalDumpMlirPassesToEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuInternalEnableDebugChecksEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuInternalEnableReassociateNormWeightsEnvVar,
          SymbolStage::InternalApi()},
