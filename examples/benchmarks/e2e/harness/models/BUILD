@@ -29,6 +29,7 @@ torch_tpu_py_library(
         "__init__.py",
         "gemma.py",
         "gen_benchmarks.py",
+        "gpt.py",
         "llama.py",
         "qwen.py",
     ],
