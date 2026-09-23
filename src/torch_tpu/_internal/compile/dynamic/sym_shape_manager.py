@@ -27,7 +27,7 @@ from torch_tpu._internal.compile.dynamic.symbol_bounds import SymbolBounds
 
 
 @dataclasses.dataclass
-class _OutputSymShape:
+class OutputSymShape:
   """Information needed to compute the runtime shape of a dynamic output tensor.
 
   Sym shape for a output tensor. Each dimension is either:
@@ -46,6 +46,12 @@ class _OutputSymShape:
 
   output_sym_shape: list[int | dict[str, Any]]
   is_tensor: bool = True
+  is_dynamic: bool = dataclasses.field(init=False)
+
+  def __post_init__(self) -> None:
+    self.is_dynamic = any(
+        isinstance(dim, dict) for dim in self.output_sym_shape
+    )
 
   def get_output_runtime_shape_from_sym_values(
       self, sym_values: dict[str, int]
@@ -112,7 +118,7 @@ class _OutputSymShape:
       cls,
       output_node_meta_value: Any,
       symint_to_tensor_dim: Mapping[str, tuple[int, int]],
-  ) -> _OutputSymShape:
+  ) -> OutputSymShape:
     """Creates output sym shape from output node's meta value.
 
     Args:
@@ -121,7 +127,7 @@ class _OutputSymShape:
         tuples, indicating which input tensor dimension each symbol represents.
 
     Returns:
-      An _OutputSymShape object containing the sym shape for the output tensor.
+      An OutputSymShape object containing the sym shape for the output tensor.
 
     Raises:
       RuntimeError: If the output shape dimension depends on symbols not derived
@@ -187,7 +193,7 @@ class SymShapeManager:
   runtime output shape computation logic.
 
   Attributes:
-    outputs_sym_shape: Output sym shape needed to compute the runtime shape of
+    output_sym_shapes: Output sym shape needed to compute the runtime shape of
       the output tensor based on input shapes.
     symint_to_placeholder: Maps the string representation of a SymInt to the FX
       placeholder node created to hold its runtime value (used by generative
@@ -201,7 +207,7 @@ class SymShapeManager:
   """
 
   # List of output shape infos.
-  outputs_sym_shape: list[_OutputSymShape]
+  output_sym_shapes: list[OutputSymShape]
 
   # Mapping of SymInt string representation to its corresponding tensor
   # placeholder node that was created for it by generative ops.
@@ -230,7 +236,7 @@ class SymShapeManager:
     self.symint_node_to_tensor_node = {}
     self._sym_str_to_tensor_node = {}
     self._symint_output_indices = []
-    self._create_outputs_sym_shape()
+    self._create_output_sym_shapes()
 
   def set_symint_output_indices(self, indices: Sequence[int]) -> None:
     """Sets the indices of graph outputs that were originally SymInt nodes."""
@@ -306,14 +312,14 @@ class SymShapeManager:
       A list of shapes (each a list of ints) for each output tensor, or None
       if the graph has no symbolic outputs.
     """
-    if not self.outputs_sym_shape:
+    if not self.output_sym_shapes:
       return None
     return [
         output_sym.get_output_runtime_shape_from_sym_values(sym_values)
-        for output_sym in self.outputs_sym_shape
+        for output_sym in self.output_sym_shapes
     ]
 
-  def _create_outputs_sym_shape(self) -> None:
+  def _create_output_sym_shapes(self) -> None:
     """Creates sym shape for the output tensors.
 
     For each dynamic dimension of output tensor, it stores the expression and
@@ -350,25 +356,22 @@ class SymShapeManager:
     logging.debug("symint_to_tensor_dim: %s", symint_to_tensor_dim)
     output_nodes_meta_values = self._get_output_node_meta_val()
 
-    outputs_sym_shape = [
-        _OutputSymShape.from_output_node_meta_value(
+    output_sym_shapes = [
+        OutputSymShape.from_output_node_meta_value(
             output_node_meta_value, symint_to_tensor_dim
         )
         for output_node_meta_value in output_nodes_meta_values
     ]
 
     logging.debug(
-        "outputs_sym_shape: %s",
-        list(outputs_sym_shape),
+        "output_sym_shapes: %s",
+        list(output_sym_shapes),
     )
-    self.outputs_sym_shape = outputs_sym_shape
+    self.output_sym_shapes = output_sym_shapes
 
   def get_dynamic_outputs(self) -> list[bool]:
     """Returns a list of booleans indicating which graph outputs have dynamic dimensions."""
-    return [
-        any(isinstance(dim, dict) for dim in out_shape.output_sym_shape)
-        for out_shape in self.outputs_sym_shape
-    ]
+    return [out_shape.is_dynamic for out_shape in self.output_sym_shapes]
 
   def _get_or_create_tensor_node(
       self,

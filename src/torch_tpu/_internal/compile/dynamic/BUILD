@@ -161,6 +161,22 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
+    name = "dynamic_executable",
+    srcs = [
+        "dynamic_executable.py",
+    ],
+    deps = [
+        ":sym_shape_manager",
+        ":sym_utils",
+        ":view_decomposition",
+        "//shims/absl_py/logging",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal/compile:compiler",
+        "//src/torch_tpu/_internal/compile:tpu_torch_compile",
+    ],
+)
+
+torch_tpu_py_library(
     name = "dynamic_compiler",
     srcs = [
         "dynamic_compiler.py",
@@ -170,12 +186,12 @@ torch_tpu_py_library(
         "//learning/agents/tern/torch_agent:__subpackages__",
     ],
     deps = [
+        ":dynamic_executable",
         ":graph_transformations",
         ":sym_bounds_manager",
         ":sym_shape_manager",
         ":sym_utils",
         ":symbol_bounds",
-        ":view_decomposition",
         ":view_ops_passes",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
