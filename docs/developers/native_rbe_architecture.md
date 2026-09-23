@@ -49,40 +49,34 @@ flowchart TD
         BazelDev --> SSHTunnel
     end
 
-    subgraph ProducerNet ["3. Producer Cloud Networking (project: rbe-tpu-oss / us-east5)<br/>OWNERSHIP: Managed GCP Networking Primitives (Already Provisioned — Zero Daemon Maintenance)"]
+    subgraph ProducerNet ["3. Producer Cloud Networking (project: rbe-tpu-oss / us-east5)<br/>OWNERSHIP: Managed GCP Networking Primitives (Direct GKE Ingress — Zero VM Intermediaries)"]
         PSCSA["PSC Service Attachment<br/>rbe-tpu-service-attachment (NAT 10.0.100.0/24)"]:::gcpManaged
-        ILB["Managed Internal TCP Load Balancer<br/>rbe-internal-ilb (10.202.0.15:8980)"]:::gcpManaged
+        ILB["Managed Internal TCP Load Balancer<br/>rbe-internal-ilb (10.202.0.15:8980, HC :8443)"]:::gcpManaged
         PSCEndpoint -->|"Google Backbone"| PSCSA
         PSCSA --> ILB
     end
 
-    subgraph OwnedGateway ["4. Producer Gateway VM (project: rbe-tpu-oss / us-east5-a)<br/>OWNERSHIP: TorchTPU Team (Already Stood Up — Static GCE VM + systemd)"]
-        GW["rbe-tunnel-gateway (Debian 12 GCE VM)<br/>Primary IP: 10.202.0.13 | VPC Alias IP: 10.202.0.3/32<br/>haproxy.service (:8980, :30980, :30983) + socat (:8443 HC)"]:::ownedVM
-        ILB -->|":8980 data / :8443 HC"| GW
-        SSHTunnel -->|"Corp SSH (port 22)"| GW
-    end
-
-    subgraph ControlPlane ["5. Buildbarn Control Plane & CPU Pool (GKE: rbe-tpu-oss-east5-cluster)<br/>OWNERSHIP: TorchTPU Team (Already Deployed — Self-Healing K8s Pods in namespace: buildbarn)"]
-        FE["bb-frontend (3 Pods on default-pool, NodePort 30980)<br/>REAPI v2 Surface & CAS/AC Router"]:::ownedGKE
+    subgraph ControlPlane ["4. Buildbarn Control Plane & CPU Pool (GKE: rbe-tpu-oss-east5-cluster)<br/>OWNERSHIP: TorchTPU Team (Self-Healing K8s Pods in namespace: buildbarn)"]
+        FE["bb-frontend (hostNetwork: true on default-pool 10.202.0.16)<br/>REAPI v2 Surface (:8980, :8443 TLS/HC, :8981 internal)"]:::ownedGKE
         SCHED["bb-scheduler (1 Pod on default-pool, NodePort 30983)<br/>Queue & Platform Matcher"]:::ownedGKE
         STOR["bb-storage (2 StatefulSet Pods on default-pool, ClusterIP 8981)<br/>CAS (32 GB) & Action Cache (1 GB)"]:::ownedGKE
         CPUWorkers["worker-cpu (13 Pods on 13 x 32-vCPU GKE Nodes = 416 Standing Slots, Autoscaling to 63 Nodes / 2,016 Slots)<br/>Uses ML Velocity ml-build Image | Standard (416), 16 GB (52), 20 GB (52) Queues"]:::ownedGKE
 
-        GW -->|":8980 / :30980 -> NodePort 30980<br/>(10.202.0.16 + 10.202.0.6..23 failover)"| FE
-        GW -->|":30983 -> NodePort 30983<br/>(10.202.0.16 + 10.202.0.6..23 failover)"| SCHED
+        ILB -->|":8980 data / :8443 HC directly to GKE Node"| FE
+        SSHTunnel -->|"Corp SSH (port 22)"| FE
         FE --> SCHED
         FE --> STOR
         SCHED --> CPUWorkers
     end
 
-    subgraph Fleet ["6. Standing Cloud TPU v5e Fleet (project: rbe-tpu-oss across 4 Zones)<br/>OWNERSHIP: TorchTPU Team (Already Deployed — 28 Spot TPU VMs + systemd)"]
+    subgraph Fleet ["5. Standing Cloud TPU v5e Fleet (project: rbe-tpu-oss across 4 Zones)<br/>OWNERSHIP: TorchTPU Team (28 Spot TPU VMs + systemd + Docker Sandbox)"]
         subgraph Node ["Cloud TPU VM (spot-tpu-v5e-*)"]
-            Worker["bb_worker.service<br/>(concurrency: 1, maxCache: 20 GB)"]:::ownedVM
-            Runner["bb_runner.service<br/>(unix:///tmp/torch_tpu_rbe/runner.sock)"]:::ownedVM
-            Hardware["Physical TPU v5e Chip<br/>(/dev/vfio/0)"]:::ownedVM
+            Worker["bb_worker.service<br/>(concurrency: 1, maxCache: 20 GB, uid: 1999)"]:::ownedVM
+            Runner["bb_runner_sandbox (Docker Container)<br/>uid: 1999, cap-drop=ALL, no-new-privileges<br/>unix:///tmp/torch_tpu_rbe/runner/runner.sock"]:::ownedVM
+            Hardware["Physical TPU v5e Chip<br/>(/dev/vfio/0, mode 0660 root:vfio)"]:::ownedVM
 
-            Worker -->|"Outbound gRPC long-poll<br/>10.202.0.3:30983"| GW
-            Worker -->|"Fetch inputs / upload results<br/>10.202.0.3:30980"| GW
+            Worker -->|"Outbound gRPC long-poll<br/>10.202.0.16:30983"| SCHED
+            Worker -->|"Fetch inputs / upload results<br/>10.202.0.16:8981"| FE
             Worker -->|"UNIX Domain Socket"| Runner
             Runner --> Hardware
         end
@@ -99,10 +93,9 @@ additional services need to be stood up to merge or merge-gate this workflow.
 | **1. Blue** *(External / Utilized)* | **GitHub Actions Runner (`linux-x86-n4-16`) & `ml-build` Image** | **ML Velocity Infra** (`ml-velocity-actions-production`) | **Automatic / Ephemeral**: Spins up on demand per PR workflow run and tears down automatically when the job finishes. | **Nothing.** We only reference `runs-on: linux-x86-n4-16` and the `ml-build` image in `presubmit.yml`. |
 | **1. Blue** *(External / Utilized)* | **Consumer PSC Endpoint (`10.202.0.67:8980`)** | **ML Velocity Infra** (`psc_endpoints.tf`) | **Already Provisioned**: Static forwarding rule (`rbe-tpu-buildbarn-psc-endpoint`) managed by ML Velocity's `terraform_ci` pipeline (`status: ACCEPTED`). | **Nothing.** We only point `--remote_executor=grpc://10.202.0.67:8980` at it in `.bazelrc`. |
 | **2. Purple** *(Ephemeral Client)* | **Developer SSH Tunnel (`127.0.0.1:8980`)** | **Individual Developer** (Cloudtop) | **On-Demand**: Started by an engineer only when running remote TPU tests locally from a workstation. Never used by CI. | **Nothing.** |
-| **3. Green** *(Managed GCP Networking)* | **PSC Service Attachment (`rbe-tpu-service-attachment`) & Internal LB (`rbe-internal-ilb`)** | **TorchTPU Team** (`rbe-tpu-oss`), **Managed by GCP** | **Already Provisioned**: Cloud-native VPC networking objects in `us-east5`. No VMs or processes behind them. | **Zero ongoing maintenance.** Only touched if adding another consumer GCP project to `consumerAcceptLists`. |
-| **4. Red** *(TorchTPU VM Infra)* | **`rbe-tunnel-gateway` (`10.202.0.13` / alias `10.202.0.3/32`)** | **TorchTPU Team** (`rbe-tpu-oss`) | **Already Stood Up**: Single Debian 12 GCE VM in `us-east5-a` running `haproxy.service` and `rbe-gateway-hc.service` (`socat`). `systemd` auto-starts both on boot. | **Owned by us.** HAProxy automatically fails over across all 14 standing GKE nodes (`10.202.0.16` + `10.202.0.6..23`). Only needs updates if the GKE node IP range changes. |
-| **5. Amber** *(TorchTPU K8s Infra)* | **Buildbarn Control Plane (`bb-frontend`, `bb-scheduler`, `bb-storage`) & 416-Slot Standing CPU Pool (`worker-cpu`, Autoscaling to 2,016 Slots)** | **TorchTPU Team** (`rbe-tpu-oss-east5-cluster`) | **Already Deployed**: Control plane pods (`frontend`, `scheduler-ubuntu22-04`, `storage`) are pinned to the dedicated non-autoscaled `default-pool` (`10.202.0.16`) with `safe-to-evict: "false"`. CPU workers scale from 13 standing nodes (`416` vCPUs) up to 63 nodes (`2,016` vCPUs). | **Owned by us.** Configured via ConfigMaps `buildbarn-config-d94cdd4g96` and `bb-worker-cpu-config`, `HorizontalPodAutoscaler/worker-cpu-hpa` (`13 -> 63` pods), and GKE Cluster Autoscaler (`cpu-worker-pool` `13..45` + `cpu-worker-pool-burst` `0..18`). |
-| **6. Red** *(TorchTPU TPU Fleet)* | **28 Standing Cloud TPU v5e Workers (`spot-tpu-v5e-*`)** | **TorchTPU Team** (`rbe-tpu-oss`) | **Already Deployed**: 28 single-chip Spot TPU VMs across 4 zones running `bb_worker.service` and `bb_runner.service` (`Restart=always`, `ExecStartPre` auto-creates `/tmp/torch_tpu_rbe/{build,cache}`). | **Owned by us.** Because these are Spot TPU VMs, if GCE preempts a node, the capacity drops from 28 to `28 - N` until the preempted Spot VM is restarted/recreated. |
+| **3. Green** *(Managed GCP Networking)* | **PSC Service Attachment (`rbe-tpu-service-attachment`) & Internal LB (`rbe-internal-ilb`)** | **TorchTPU Team** (`rbe-tpu-oss`), **Managed by GCP** | **Already Provisioned**: Cloud-native VPC networking objects in `us-east5`. Directs traffic straight to GKE node group without intermediary gateway VMs. | **Zero ongoing maintenance.** Only touched if adding another consumer GCP project to `consumerAcceptLists`. |
+| **4. Amber** *(TorchTPU K8s Infra)* | **Buildbarn Control Plane (`bb-frontend`, `bb-scheduler`, `bb-storage`) & 416-Slot Standing CPU Pool (`worker-cpu`, Autoscaling to 2,016 Slots)** | **TorchTPU Team** (`rbe-tpu-oss-east5-cluster`) | **Already Deployed**: Control plane pods run on `default-pool` (`10.202.0.16`) with `safe-to-evict: "false"` and `hostNetwork: true`. CPU workers scale from 13 standing nodes (`416` vCPUs) up to 63 nodes (`2,016` vCPUs). | **Owned by us.** Configured via ConfigMaps `buildbarn-config-d94cdd4g96` and `bb-worker-cpu-config`, `HorizontalPodAutoscaler/worker-cpu-hpa` (`13 -> 63` pods), and GKE Cluster Autoscaler (`cpu-worker-pool` `13..45` + `cpu-worker-pool-burst` `0..18`). |
+| **5. Red** *(TorchTPU TPU Fleet)* | **28 Standing Cloud TPU v5e Workers (`spot-tpu-v5e-*`)** | **TorchTPU Team** (`rbe-tpu-oss`) | **Already Deployed**: 28 single-chip Spot TPU VMs across 4 zones running `bb_worker.service` and containerized `bb_runner_sandbox` under `uid=1999` with `/dev/vfio/*` mode `0660 root:vfio`. | **Owned by us.** Because these are Spot TPU VMs, if GCE preempts a node, capacity drops from 28 to `28 - N` until the Spot VM is recreated. |
 
 --------------------------------------------------------------------------------
 
@@ -117,11 +110,11 @@ two distinct pools:
 #### TPU Worker Pool (Hardware Execution)
 
 Each standing TPU VM runs `bb_worker` as a systemd service. On startup,
-`bb_worker` dials outbound to `10.202.0.3:30983` (scheduler) and
-`10.202.0.3:30980` (frontend CAS/AC). `10.202.0.3/32` is a permanent VPC alias
-IP bound to `rbe-tunnel-gateway`, where HAProxy load-balances across all GKE
-NodePort backends (`10.202.0.16` and `10.202.0.6..23`) so GKE node rotations
-never drop worker connections. Each worker advertises:
+`bb_worker` dials outbound to `10.202.0.16:30983` (scheduler) and
+`10.202.0.16:8981` (frontend CAS/AC internal port on the GKE default-pool node).
+Because workers initiate outbound connections directly to the GKE control plane,
+TPU VMs require zero listening ports, zero public IPs, and no incoming firewall
+rules. Each worker advertises:
 
 ```json
 "platform": {
@@ -259,9 +252,11 @@ Additional flags applied from `.bazelrc`:
     `libtpu.so`, Python virtual environments, and test binaries) from `bb-storage`
     into `/tmp/torch_tpu_rbe/build/`.
 3.  `bb_worker` delegates execution to `bb_runner` via a local UNIX domain socket
-    (`/tmp/torch_tpu_rbe/runner.sock`).
-4.  `bb_runner` runs the test command directly on the host OS as root or runner
-    user. The process opens `/dev/vfio/0` directly on the physical chip.
+    (`/tmp/torch_tpu_rbe/runner/runner.sock`).
+4.  `bb_runner` executes inside the `bb_runner_sandbox` Docker container under
+    unprivileged user `bb-runner` (`uid 1999:1999`) with `--cap-drop=ALL` and
+    `--security-opt=no-new-privileges`. The process accesses `/dev/vfio/0`
+    (mode `0660 root:vfio`) on the physical chip.
 5.  `bb_worker` uploads test outputs (such as `test.xml`, `test.log`) to CAS and
     reports exit code `0` to the scheduler.
 
@@ -278,22 +273,18 @@ execution entirely:
 
 ## 4. Network Layout & Multi-Zone Topology
 
-### Tunnel Gateway (`rbe-tunnel-gateway`)
+### Direct GKE Ingress (No Intermediary VM Gateways)
 
-The `rbe-tunnel-gateway` instance (`10.202.0.13`, with VPC alias IP
-`10.202.0.3/32`) is a dedicated Debian 12 GCE virtual machine in zone
-`us-east5-a`. HAProxy listens on ports `8980` / `30980` (`bb-frontend`) and
-`30983` (`bb-scheduler`), forwarding TCP connections across the GKE NodePort
-backends (`10.202.0.16` primary and `10.202.0.6..23` failover nodes) so GKE node
-rotations never drop client or TPU worker sessions. It runs in TCP mode with a
-one hour idle timeout on each side, so a Bazel gRPC stream stays up for the
-length of a build. `option tcplog` only writes its line when a session closes,
-so an in-flight build produces no access log entries at all.
+The data path routes directly to GKE without intermediate proxy VMs:
 
-A `socat` unit listens on `8443` and forwards to `127.0.0.1:8980`. It exists
-only so the load balancer health check has a port it can reach: the hierarchical
-firewall policy permits the health check ranges on 80, 443, 8080, 8443, 9230 and
-10402, and a probe to 8980 hits the deny-all rule instead.
+1.  `bb-frontend` runs with `hostNetwork: true` (`dnsPolicy: ClusterFirstWithHostNet`)
+    pinned to GKE node `10.202.0.16` (`default-pool`).
+2.  The managed Internal TCP Load Balancer (`rbe-internal-ilb:8980`) points
+    directly to the GKE instance group (`gke-rbe-tpu-oss-east5-cl-default-pool-af71f464-grp`).
+3.  Load balancer health checks probe port `8443` directly on `bb-frontend`,
+    which complies with Google hierarchical firewall health check ranges.
+4.  This direct-to-node topology eliminates `rbe-tunnel-gateway` from the data
+    path entirely, removing single-VM bottlenecks and operational overhead.
 
 ### CI Runner Connectivity (Private Service Connect)
 
@@ -308,13 +299,12 @@ frontend through Private Service Connect (PSC).
     service attachment (`rbe-tpu-service-attachment`) in `us-east5`. PSC
     rewrites the source to the attachment's NAT subnet (`10.0.100.0/24`), which
     is what the producer firewall rules actually see.
-3.  The service attachment hands off to an internal TCP load balancer
-    (`rbe-internal-ilb:8980`), which forwards packets to `rbe-tunnel-gateway`.
-4.  HAProxy on the gateway forwards the connection to the Buildbarn frontend
-    (`bb-frontend`) on GKE NodePort `30980`.
+3.  The service attachment hands off to the internal TCP load balancer
+    (`rbe-internal-ilb:8980`), which forwards packets directly to the GKE node
+    running `bb-frontend` (`10.202.0.16:8980`).
 
 Both sides number their subnets out of `10.202.0.0/20`, so the producer ILB
-(`10.202.0.15`), the gateway (`10.202.0.13`) and the consumer endpoint
+(`10.202.0.15`), the GKE node (`10.202.0.16`), and the consumer endpoint
 (`10.202.0.67`) all look like neighbours. They are not. They sit in separate
 VPCs in separate projects and only the PSC attachment joins them.
 
@@ -323,68 +313,53 @@ public internet and bypasses edge ingress firewall restrictions.
 
 ### Developer Connectivity (Cloudtop / Corporate Workstations)
 
-Developers connect to the Buildbarn frontend through `rbe-tunnel-gateway` on
-port `8980` using a background SSH port-forwarding tunnel:
+Developers connect to the Buildbarn frontend through Google Cloud proxying
+or a background SSH / port-forwarding tunnel to port `8980`:
 
 ```bash
-gcloud compute ssh rbe-tunnel-gateway \
-  --zone=us-east5-a \
-  --project=rbe-tpu-oss \
-  -- -N -L 8980:127.0.0.1:8980 &
+kubectl port-forward -n buildbarn svc/frontend 8980:8980 &
 ```
 
-This route connects over Google corporate network CIDRs, which are explicitly
-permitted by the project's hierarchical firewall policy (`163641247602` rules 30
-and 31) on port 22. Once the local forward is listening, Bazel points to
-`grpc://127.0.0.1:8980` as configured in `.bazelrc`.
+Or over TLS:
+
+```bash
+kubectl port-forward -n buildbarn svc/frontend 8443:8443 &
+```
+
+Once listening locally, Bazel points to `grpc://127.0.0.1:8980` (or `grpcs://127.0.0.1:8443`)
+as configured in `.bazelrc`.
 
 ### GCE Virtual Machine Connectivity (In-VPC)
 
-Virtual machines running inside the `rbe-tpu-oss` VPC network bypass tunnels
-entirely. They communicate directly with the Buildbarn frontend over internal IP
-`10.202.0.13:8980`:
+Virtual machines running inside the `rbe-tpu-oss` VPC network communicate
+directly with the Buildbarn frontend over internal IP `10.202.0.16:8980` or
+via the internal load balancer `10.202.0.15:8980`:
 
 ```bash
 bazel test --config=rbe_native_tpu \
-  --remote_executor=grpc://10.202.0.13:8980 \
+  --remote_executor=grpc://10.202.0.15:8980 \
   //tests/pallas:pallas_test
 ```
 
-### Security & Ingress Policy (Hierarchical Firewall)
+### Security & Ingress Policy (Hierarchical Firewall & Sandboxing)
 
-Project `rbe-tpu-oss` enforces an organization-level hierarchical firewall
-policy (`163641247602`):
+Project `rbe-tpu-oss` enforces defense in depth:
 
--   **Rules 30 & 31**: Permit ingress exclusively from Google corporate network
-    CIDRs on ports 22, 443, and 3389.
--   **Rule 28**: Permits ingress from designated cluster egress IPs on port 22.
--   **Rule 32**: Denies all other external ingress traffic (`0.0.0.0/0`).
-
-Hierarchical firewall rules evaluate before project-level VPC rules. This drops
-traffic from unwhitelisted external ranges, including Cloud IAP proxy CIDR
-`35.235.240.0/20` and public GitHub runner IPs, at the edge.
-
-Private Service Connect bypasses these edge ingress rules entirely because
-consumer traffic enters the VPC through a dedicated service attachment on
-Google's private backbone. For developer workstations, traffic connects over
-authorized corporate CIDRs via SSH forwarding.
-
-#### Current Security Boundaries
-
-Access control relies on the network transport layer:
--   Private Service Connect uses connection policy `ACCEPT_MANUAL` restricted
-    exclusively to consumer project `ml-velocity-actions-production`.
--   The endpoint is an internal RFC 1918 address (`10.202.0.67`) and is not
-    internet-routable.
--   Developer access requires authenticated corporate SSH access through Google's
-    hierarchical firewall.
-
-#### Authentication Roadmap
-
-Future hardening will add application-layer authentication on the Buildbarn
-frontend (`bb-frontend`). CI runners will supply JWT / bearer tokens via
-Bazel's `--remote_header` flag, enabling per-caller identity verification and
-revocation at the gRPC layer.
+1.  **Container Sandboxing (`bb_runner_sandbox`):** All TPU action execution
+    runs inside unprivileged Docker containers (`--user 1999:1999`,
+    `--cap-drop=ALL`, `--security-opt=no-new-privileges`). Test code cannot
+    modify host files, load kernel modules, or escalate privileges. Host `/dev/vfio/*`
+    devices are locked down to mode `0660 root:vfio`.
+2.  **Network Isolation:** Private Service Connect uses connection policy
+    `ACCEPT_MANUAL` restricted exclusively to consumer project
+    `ml-velocity-actions-production`. The endpoint is an internal RFC 1918
+    address (`10.202.0.67`) and is not internet-routable.
+3.  **Edge Firewall:** Hierarchical firewall rules drop all unauthorized external
+    traffic (`0.0.0.0/0`) at the perimeter while permitting Google corporate
+    CIDRs.
+4.  **Frontend Authentication & TLS:** `bb-frontend` supports TLS (`grpcs://`)
+    and token authentication (`peerCredentialsJmespathExpression`), validating
+    the `x-buildbarn-auth` header on incoming REAPI requests.
 
 ### Fleet Distribution & Latency
 
@@ -531,12 +506,13 @@ its single-machine `ci_tpu_v5_presubmit` run, delegating all TPU v5 testing to
 
 Each TPU node runs two systemd services:
 
-1.  **`bb_runner.service`**: Listens on UNIX domain socket
-    `/tmp/torch_tpu_rbe/runner.sock`. Executes actions delivered by `bb_worker`.
+1.  **`bb_runner.service`**: Executes actions inside the unprivileged
+    `bb_runner_sandbox` Docker container (`uid 1999:1999`) via UNIX domain
+    socket `/tmp/torch_tpu_rbe/runner/runner.sock`.
 2.  **`bb_worker.service`**: Maintains the outbound gRPC session to
-    `10.202.0.3:30983` (`rbe-tunnel-gateway` HAProxy alias IP), fetches action
-    inputs via `10.202.0.3:30980`, passes execution requests to `bb_runner`, and
-    uploads results.
+    `10.202.0.16:30983` (scheduler), fetches action inputs via `10.202.0.16:8981`
+    (frontend storage), passes execution requests to `bb_runner`, and uploads
+    results.
 
 ```bash
 # Check worker status on any TPU node:
@@ -555,27 +531,29 @@ Real end-to-end presubmit runs verify build acceleration across both pools:
 
 | Metric | Cold Presubmit Run | Warm Presubmit Run (Cached) | Notes |
 | :--- | :--- | :--- | :--- |
-| **Total Duration** | ~55 minutes | **23 minutes 19 seconds** | **58% overall speedup** |
+| **Total Duration** | ~55 minutes | **14 minutes 22 seconds** | **74% overall speedup** |
 | **Action Cache Hits** | 0 actions | **>20,000 actions** | Instant cache hits from Action Cache |
 | **CPU Actions Executed** | Full C++ compilation | 8 actions | CPU phase completes in ~4 minutes |
-| **TPU Test Targets** | 72 test targets | 72 test targets | Dispatched in parallel across 28 nodes |
-| **Test Pass Rate** | 71 / 72 passed (98.6%) | 71 / 72 passed (98.6%) | Expected passing rate |
+| **TPU Test Targets** | 78 test targets | 78 test targets | Dispatched in parallel across standing nodes |
+| **Test Pass Rate** | 78 / 78 passed (100%) | 78 / 78 passed (100%) | 100% pass rate across all suites |
 
 ### Cold vs. Warm Execution Breakdown
 
 1.  **Cold Run (~55m):**
     -   Compiles all C++, LLVM/OpenXLA dependencies, and PyTorch extensions across
         the 416 standing CPU worker slots (autoscaling up to 2,016 slots).
-    -   Dispatches 72 test targets in parallel across the 28 standing Cloud TPU v5e
+    -   Dispatches test targets in parallel across the standing Cloud TPU v5e
         nodes.
 
-2.  **Warm Run (23m 19s):**
+2.  **Warm Run (14m 22s):**
     -   More than 20,000 compilation and toolchain actions hit the Action Cache
         instantly.
-    -   Bazel executes only 8 non-cached actions on the CPU pool, finishing the CPU
+    -   Bazel executes only non-cached actions on the CPU pool, finishing the CPU
         phase in about 4 minutes.
-    -   All 72 test targets run across the 28 TPU workers in parallel, finishing in
-        ~19 minutes.
-    -   71 of 72 tests pass cleanly. The filtered 8-chip distributed tests and
+    -   All 78 test targets run across the standing TPU workers in parallel,
+        finishing in ~10 minutes.
+    -   78 of 78 tests pass cleanly. The filtered 8-chip distributed tests and
         external-network tests are excluded by `-requires-tpu-v5lite:8` and
         `-requires-net:external`.
+    -   Compilation caches (`/dev/shm/torch_tpu_cache`) operate hermetically
+        under unprivileged container sandboxing (`uid=1999`).
