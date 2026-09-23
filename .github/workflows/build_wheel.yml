@@ -113,7 +113,7 @@ jobs:
             {
               name: "CPU",
               runner: "linux-x86-n4-16",
-              container: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:480f397c57207671315a27173ccec790ea9c66ef030af96cbe6ac9b4a6613996",  # Tag infrastructure-public-image-2c74567ee8e0
+              container: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:30a9cf2ed330736957b3256dd3df69a13a556ae46626e9ad2ba205fa7a3c0051",  # Tag infrastructure-public-image-f0ac56f68949 (built 2026-09-21)
             },
           ]
         python_version: ${{ fromJSON(needs.setup.outputs.cpu_versions) }}
@@ -174,7 +174,7 @@ jobs:
             nox_smoke_test: ${{ github.event_name == 'pull_request' && 'cpu-nightly-pinned' || 'cpu-nightly' }}
     runs-on: ${{ matrix.runner }}
     container:
-      image: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:480f397c57207671315a27173ccec790ea9c66ef030af96cbe6ac9b4a6613996  # Tag infrastructure-public-image-2c74567ee8e0
+      image: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:30a9cf2ed330736957b3256dd3df69a13a556ae46626e9ad2ba205fa7a3c0051  # Tag infrastructure-public-image-f0ac56f68949 (built 2026-09-21)
       options: --privileged
     permissions:
       contents: read
@@ -235,7 +235,7 @@ jobs:
     if: needs.setup.outputs.should_build == 'true'
     runs-on: linux-x86-n4-16
     container:
-      image: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:480f397c57207671315a27173ccec790ea9c66ef030af96cbe6ac9b4a6613996  # Tag infrastructure-public-image-2c74567ee8e0
+      image: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:30a9cf2ed330736957b3256dd3df69a13a556ae46626e9ad2ba205fa7a3c0051  # Tag infrastructure-public-image-f0ac56f68949 (built 2026-09-21)
     permissions:
       contents: read
     steps:
@@ -269,7 +269,7 @@ jobs:
     if: needs.setup.outputs.should_build == 'true'
     runs-on: linux-x86-n4-16
     container:
-      image: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:480f397c57207671315a27173ccec790ea9c66ef030af96cbe6ac9b4a6613996  # Tag infrastructure-public-image-2c74567ee8e0
+      image: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:30a9cf2ed330736957b3256dd3df69a13a556ae46626e9ad2ba205fa7a3c0051  # Tag infrastructure-public-image-f0ac56f68949 (built 2026-09-21)
     permissions:
       contents: read
     steps:
@@ -318,7 +318,7 @@ jobs:
             custom_name: "TPU v7"
     runs-on: ${{ matrix.runner || 'linux-x86-tpu7x-56-1tpu' }}
     container:
-      image: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:480f397c57207671315a27173ccec790ea9c66ef030af96cbe6ac9b4a6613996  # Tag infrastructure-public-image-2c74567ee8e0
+      image: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:30a9cf2ed330736957b3256dd3df69a13a556ae46626e9ad2ba205fa7a3c0051  # Tag infrastructure-public-image-f0ac56f68949 (built 2026-09-21)
       options: --privileged
     permissions:
       contents: read
@@ -384,7 +384,7 @@ jobs:
     if: needs.setup.outputs.should_build == 'true'
     runs-on: linux-x86-tpu7x-56-1tpu
     container:
-      image: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:480f397c57207671315a27173ccec790ea9c66ef030af96cbe6ac9b4a6613996  # Tag infrastructure-public-image-2c74567ee8e0
+      image: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:30a9cf2ed330736957b3256dd3df69a13a556ae46626e9ad2ba205fa7a3c0051  # Tag infrastructure-public-image-f0ac56f68949 (built 2026-09-21)
       options: --privileged
     permissions:
       contents: read
