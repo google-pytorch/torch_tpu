@@ -2864,8 +2864,10 @@ class TransformersProvider(BaseProvider):
     rather than downloading directly from the Hugging Face Hub.
   """
 
-  _FILES = resources.files("examples").joinpath(
-      "benchmarks/huggingface_transformers/model_configs"
+  _FILES = (
+      resources.files("examples").joinpath(
+          "benchmarks/huggingface_transformers/model_configs"
+      ),
   )
 
   def __init__(
@@ -2940,14 +2942,16 @@ class TransformersProvider(BaseProvider):
         )
 
       # Fallback to local resources
-      try:
-        with resources.as_file(
-            self._FILES.joinpath(str(pathlib.Path(name) / "config.json"))
-        ) as f:
-          if f.exists():
-            config = transformers.AutoConfig.from_pretrained(str(f))
-      except Exception:  # pylint: disable=broad-except
-        config = None
+      for files_root in self._FILES:
+        try:
+          with resources.as_file(
+              files_root.joinpath(str(pathlib.Path(name) / "config.json"))
+          ) as f:
+            if f.exists():
+              config = transformers.AutoConfig.from_pretrained(str(f))
+              break
+        except Exception:  # pylint: disable=broad-except
+          config = None
 
     if config is None:  # Fallback to downloading from GCS
       dest_config = self.fetch_gcs_file(f"{name}/config.json")
@@ -2964,9 +2968,13 @@ class TransformersProvider(BaseProvider):
           config = None
 
     if config is None:
+      files_str = ", ".join(
+          str(r.joinpath(str(pathlib.Path(name) / "config.json")))
+          for r in self._FILES
+      )
       raise ValueError(
           f"Model config for '{name}' is missing in local resources"
-          f" ({self._FILES.joinpath(str(pathlib.Path(name) / 'config.json'))})"
+          f" ({files_str})"
           " and could not be loaded from cache or GCS."
       )
 

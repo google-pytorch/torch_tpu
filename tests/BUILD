@@ -192,6 +192,7 @@ torch_tpu_py_library(
     data = [
         "//examples/benchmarks/huggingface_diffusers:model_configs_data",
         "//examples/benchmarks/huggingface_transformers:model_configs_data",
+        "//shims/model_configs:google_model_configs_data",
     ],
     visibility = ["//:__subpackages__"],
     deps = [
