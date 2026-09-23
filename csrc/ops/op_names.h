@@ -216,6 +216,8 @@ enum class OpName {
   kExp2Out,
   kExpM1Out,
   kExpOut,
+  kExperimentalAllGatherDim,
+  kExperimentalReduceScatterDim,
   kExponential_,
   kEyeMOut,
   kEyeOut,
@@ -1246,6 +1248,10 @@ ToString(  // NOLINT(google-readability-function-size)
       return "expm1.out";
     case OpName::kExpOut:
       return "exp.out";
+    case OpName::kExperimentalAllGatherDim:
+      return "experimental_all_gather_dim";
+    case OpName::kExperimentalReduceScatterDim:
+      return "experimental_reduce_scatter_dim";
     case OpName::kExponential_:
       return "exponential_";
     case OpName::kEyeMOut:

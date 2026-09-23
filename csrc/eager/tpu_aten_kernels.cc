@@ -90,6 +90,7 @@
 #include "csrc/ops/elu/elu_aten_kernels.h"
 #include "csrc/ops/embedding/embedding_aten_kernels.h"
 #include "csrc/ops/equal/equal_aten_kernels.h"
+#include "csrc/ops/experimental/dimensional_collectives/dimensional_collectives_aten_kernels.h"
 #include "csrc/ops/experimental/ragged_all_to_all/ragged_all_to_all_aten_kernels.h"
 #include "csrc/ops/experimental/ragged_dot/ragged_dot_aten_kernels.h"
 #include "csrc/ops/experimental/send_recv/send_recv_kernels.h"
@@ -1388,6 +1389,12 @@ TORCH_LIBRARY(tpu, m) {
   m.def("_send(Tensor[] tensors, int dst, int tag) -> Any");
   m.def("_recv(Tensor[] tensors, int src, int tag) -> Any");
   m.def(
+      "experimental_all_gather_dim(Tensor input, int dim, int group_size, "
+      "str process_group_name) -> Tensor");
+  m.def(
+      "experimental_reduce_scatter_dim(Tensor input, int dim, int "
+      "group_size, str process_group_name) -> Tensor");
+  m.def(
       "_sparse_dense_matmul(Tensor row_pointers, Tensor embedding_ids, Tensor "
       "sample_ids, Tensor gains, Tensor embedding_table, int "
       "device_batch_size, int max_ids_per_partition, int "
@@ -1683,6 +1690,10 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
         }
         return outs;
       });
+  ImplExperimental<OpName::kExperimentalAllGatherDim>(
+      m, MetaExperimentalAllGatherDim);
+  ImplExperimental<OpName::kExperimentalReduceScatterDim>(
+      m, MetaExperimentalReduceScatterDim);
 }
 
 // Registers implementations for torch.ops.tpu ops for TPU tensors.
@@ -1725,6 +1736,10 @@ TORCH_LIBRARY_IMPL(tpu, PrivateUse1, m) {
   ImplInternal<OpName::kSparseDenseMatmulGradientStack>(
       m, AtenSparseDenseMatmulGradientStack);
   ImplInternal<OpName::kSparseMapRow>(m, AtenSparseMapRow);
+  ImplExperimental<OpName::kExperimentalAllGatherDim>(
+      m, ExperimentalAllGatherDim);
+  ImplExperimental<OpName::kExperimentalReduceScatterDim>(
+      m, ExperimentalReduceScatterDim);
 }
 
 // Registers custom autograd for torch.ops.tpu ops.
