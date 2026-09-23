@@ -41,33 +41,61 @@ namespace {
 // Currently `stablehlo::Abs(stablehlo::Abs(x))` is not allowed since we use
 // non-const references.
 absl::StatusOr<mlir::MlirOp> BuildGeluApproximateShlo(mlir::MlirOp input_op) {
-  auto k_0_5 = MakeConstantLike(input_op, 0.5);
-  auto k_1_0 = MakeConstantLike(input_op, 1.0);
-  auto k_sqrt_2_div_pi =
-      MakeConstantLike(input_op, std::sqrt(2.0 / std::numbers::pi));
-  auto k_0_044715 = MakeConstantLike(input_op, 0.044715);
-  auto k_3_0 = MakeConstantLike(input_op, 3.0);
+  mlir::MlirBuilder& builder = input_op.getBuilder();
+  const mlir::RankedTensorType type = GetTensorTypeOrDie(input_op);
+  const mlir::Type element_type = type.getElementType();
 
-  mlir::MlirOp x_cubed = stablehlo::Pow(input_op, k_3_0);
-  mlir::MlirOp x_mul = stablehlo::Mul(x_cubed, k_0_044715);
-  mlir::MlirOp inner_term = stablehlo::Add(input_op, x_mul);
-  mlir::MlirOp tanh_arg = stablehlo::Mul(inner_term, k_sqrt_2_div_pi);
+  mlir::MlirOp k_0_5 = MakeScalarConstant(builder, 0.5, element_type);
+  mlir::MlirOp k_1_0 = MakeScalarConstant(builder, 1.0, element_type);
+  mlir::MlirOp k_sqrt_2_div_pi = MakeScalarConstant(
+      builder, std::sqrt(2.0 / std::numbers::pi), element_type);
+  mlir::MlirOp k_kappa = MakeScalarConstant(builder, 0.044715, element_type);
+
+  // Algebraically, inner_term = x + kappa * x^3 = x * (1.0 + kappa * x^2).
+  // Factoring avoids transcendental Pow(x, 3.0), saving an ALU operation and
+  // eliminating exp(3*log(x)) evaluation on TPU.
+  mlir::MlirOp x_sq = stablehlo::Mul(input_op, input_op);
+  TT_ASSIGN_OR_RETURN((auto [x_sq_bcst, kappa_bcst]),
+                      ApplyBroadcastIfNeeded(x_sq, k_kappa));
+  mlir::MlirOp kappa_x_sq = stablehlo::Mul(x_sq_bcst, kappa_bcst);
+  TT_ASSIGN_OR_RETURN((auto [k1_bcst, k_x_sq_bcst]),
+                      ApplyBroadcastIfNeeded(k_1_0, kappa_x_sq));
+  mlir::MlirOp poly = stablehlo::Add(k1_bcst, k_x_sq_bcst);
+  mlir::MlirOp inner_term = stablehlo::Mul(input_op, poly);
+  TT_ASSIGN_OR_RETURN((auto [inner_term_bcst, sqrt_2_div_pi_bcst]),
+                      ApplyBroadcastIfNeeded(inner_term, k_sqrt_2_div_pi));
+  mlir::MlirOp tanh_arg = stablehlo::Mul(inner_term_bcst, sqrt_2_div_pi_bcst);
   mlir::MlirOp tanh_out = stablehlo::Tanh(tanh_arg);
-  mlir::MlirOp y_component = stablehlo::Mul(k_0_5, input_op);
-  mlir::MlirOp tanh_add = stablehlo::Add(k_1_0, tanh_out);
+
+  TT_ASSIGN_OR_RETURN((auto [k_0_5_bcst, input_bcst]),
+                      ApplyBroadcastIfNeeded(k_0_5, input_op));
+  mlir::MlirOp y_component = stablehlo::Mul(k_0_5_bcst, input_bcst);
+  TT_ASSIGN_OR_RETURN((auto [k_1_0_bcst_tanh, tanh_out_bcst]),
+                      ApplyBroadcastIfNeeded(k_1_0, tanh_out));
+  mlir::MlirOp tanh_add = stablehlo::Add(k_1_0_bcst_tanh, tanh_out_bcst);
   return stablehlo::Mul(y_component, tanh_add);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildGeluNoneShlo(mlir::MlirOp input_op) {
-  auto k_0_5 = MakeConstantLike(input_op, 0.5);
-  auto k_1_0 = MakeConstantLike(input_op, 1.0);
-  auto k_alpha = MakeConstantLike(
-      input_op, 0.5 * std::numbers::sqrt2);  // 1/sqrt(2) == sqrt(2)/2
+  mlir::MlirBuilder& builder = input_op.getBuilder();
+  const mlir::RankedTensorType type = GetTensorTypeOrDie(input_op);
+  const mlir::Type element_type = type.getElementType();
 
-  auto self_alpha = stablehlo::Mul(input_op, k_alpha);
-  auto erf_out = chlo::Erf(self_alpha);
-  auto one_plus_erf = stablehlo::Add(k_1_0, erf_out);
-  auto half_x = stablehlo::Mul(k_0_5, input_op);
+  mlir::MlirOp k_0_5 = MakeScalarConstant(builder, 0.5, element_type);
+  mlir::MlirOp k_1_0 = MakeScalarConstant(builder, 1.0, element_type);
+  mlir::MlirOp k_alpha =
+      MakeScalarConstant(builder, 0.5 * std::numbers::sqrt2, element_type);
+
+  TT_ASSIGN_OR_RETURN((auto [input_alpha_bcst, k_alpha_bcst]),
+                      ApplyBroadcastIfNeeded(input_op, k_alpha));
+  mlir::MlirOp self_alpha = stablehlo::Mul(input_alpha_bcst, k_alpha_bcst);
+  mlir::MlirOp erf_out = chlo::Erf(self_alpha);
+  TT_ASSIGN_OR_RETURN((auto [k_1_0_bcst, erf_out_bcst]),
+                      ApplyBroadcastIfNeeded(k_1_0, erf_out));
+  mlir::MlirOp one_plus_erf = stablehlo::Add(k_1_0_bcst, erf_out_bcst);
+  TT_ASSIGN_OR_RETURN((auto [k_0_5_bcst, input_half_bcst]),
+                      ApplyBroadcastIfNeeded(k_0_5, input_op));
+  mlir::MlirOp half_x = stablehlo::Mul(k_0_5_bcst, input_half_bcst);
   return stablehlo::Mul(half_x, one_plus_erf);
 }
 
@@ -86,37 +114,64 @@ absl::StatusOr<mlir::MlirOp> BuildGeluNoneShlo(mlir::MlirOp input_op) {
 //   dk/dx = sqrt(2/pi) * (1 + 3 * 0.044715 * x^2)
 absl::StatusOr<mlir::MlirOp> BuildGeluBackwardGradInputApproximateShlo(
     mlir::MlirOp grad_output_op, mlir::MlirOp input_op) {
-  auto k_0_5 = MakeConstantLike(input_op, 0.5);
-  auto k_1_0 = MakeConstantLike(input_op, 1.0);
-  auto k_3_0 = MakeConstantLike(input_op, 3.0);
-  // kBeta = sqrt(2/pi)
-  auto kBeta = MakeConstantLike(input_op, std::sqrt(2.0 / std::numbers::pi));
-  auto kKappa = MakeConstantLike(input_op, 0.044715);
+  mlir::MlirBuilder& builder = input_op.getBuilder();
+  const mlir::RankedTensorType type = GetTensorTypeOrDie(input_op);
+  const mlir::Type element_type = type.getElementType();
 
-  // 1. Recompute 'k' (inner) and tanh(k) used in the forward pass
+  mlir::MlirOp k_0_5 = MakeScalarConstant(builder, 0.5, element_type);
+  mlir::MlirOp k_1_0 = MakeScalarConstant(builder, 1.0, element_type);
+  mlir::MlirOp k_beta = MakeScalarConstant(
+      builder, std::sqrt(2.0 / std::numbers::pi), element_type);
+  mlir::MlirOp k_kappa = MakeScalarConstant(builder, 0.044715, element_type);
+  // Precompute 3.0 * kappa = 3.0 * 0.044715 = 0.134145 at compile time.
+  mlir::MlirOp k_3_kappa = MakeScalarConstant(builder, 0.134145, element_type);
+
+  // 1. Recompute 'k' (inner) and tanh(k) used in the forward pass.
+  // Factoring: inner_arg = x + kappa * x^3 = x * (1 + kappa * x^2).
   mlir::MlirOp x_sq = stablehlo::Mul(input_op, input_op);
-  mlir::MlirOp x_cube = stablehlo::Mul(x_sq, input_op);
-  mlir::MlirOp kKappa_x_cube = stablehlo::Mul(kKappa, x_cube);
-  // inner_arg = x + kappa * x^3
-  mlir::MlirOp inner_arg = stablehlo::Add(input_op, kKappa_x_cube);
-  mlir::MlirOp inner = stablehlo::Mul(kBeta, inner_arg);  // k
-  mlir::MlirOp tanh_inner = stablehlo::Tanh(inner);       // tanh(k)
+  TT_ASSIGN_OR_RETURN((auto [x_sq_bcst, kappa_bcst]),
+                      ApplyBroadcastIfNeeded(x_sq, k_kappa));
+  mlir::MlirOp kappa_x_sq = stablehlo::Mul(x_sq_bcst, kappa_bcst);
+  TT_ASSIGN_OR_RETURN((auto [k1_bcst, k_x_sq_bcst]),
+                      ApplyBroadcastIfNeeded(k_1_0, kappa_x_sq));
+  mlir::MlirOp poly = stablehlo::Add(k1_bcst, k_x_sq_bcst);
+  mlir::MlirOp inner_arg = stablehlo::Mul(input_op, poly);
+  TT_ASSIGN_OR_RETURN((auto [inner_arg_bcst, beta_bcst]),
+                      ApplyBroadcastIfNeeded(inner_arg, k_beta));
+  mlir::MlirOp inner = stablehlo::Mul(inner_arg_bcst, beta_bcst);  // k
+  mlir::MlirOp tanh_inner = stablehlo::Tanh(inner);                // tanh(k)
 
   // 2. Calculate Term 1: 0.5 * (1 + tanh(k))
-  mlir::MlirOp left = stablehlo::Mul(k_0_5, input_op);
-  mlir::MlirOp right = stablehlo::Add(k_1_0, tanh_inner);
-  mlir::MlirOp left_derivative = stablehlo::Mul(k_0_5, right);
+  TT_ASSIGN_OR_RETURN((auto [k_0_5_bcst, input_bcst]),
+                      ApplyBroadcastIfNeeded(k_0_5, input_op));
+  mlir::MlirOp left = stablehlo::Mul(k_0_5_bcst, input_bcst);
+  TT_ASSIGN_OR_RETURN((auto [k_1_0_bcst_term1, tanh_inner_bcst]),
+                      ApplyBroadcastIfNeeded(k_1_0, tanh_inner));
+  mlir::MlirOp right = stablehlo::Add(k_1_0_bcst_term1, tanh_inner_bcst);
+  TT_ASSIGN_OR_RETURN((auto [k_0_5_bcst_term1, right_bcst]),
+                      ApplyBroadcastIfNeeded(k_0_5, right));
+  mlir::MlirOp left_derivative = stablehlo::Mul(k_0_5_bcst_term1, right_bcst);
 
   // 3. Calculate Term 2: 0.5 * x * sech^2(k) * k'
   // sech^2(k) = 1 - tanh^2(k)
   mlir::MlirOp tanh_inner_sq = stablehlo::Mul(tanh_inner, tanh_inner);
-  mlir::MlirOp tanh_derivative = stablehlo::Subtract(k_1_0, tanh_inner_sq);
+  TT_ASSIGN_OR_RETURN((auto [k_1_0_bcst_term2, tanh_inner_sq_bcst]),
+                      ApplyBroadcastIfNeeded(k_1_0, tanh_inner_sq));
+  mlir::MlirOp tanh_derivative =
+      stablehlo::Subtract(k_1_0_bcst_term2, tanh_inner_sq_bcst);
 
-  // Calculate k' = sqrt(2/pi) * (1 + 3 * kappa * x^2)
-  mlir::MlirOp k3Kappa = stablehlo::Mul(k_3_0, kKappa);
-  mlir::MlirOp k3Kappa_x_sq = stablehlo::Mul(k3Kappa, x_sq);
-  mlir::MlirOp inner_derivative_arg = stablehlo::Add(k_1_0, k3Kappa_x_sq);
-  mlir::MlirOp inner_derivative = stablehlo::Mul(kBeta, inner_derivative_arg);
+  // Calculate k' = sqrt(2/pi) * (1 + 3 * kappa * x^2) using precomputed 3 *
+  // kappa and reusing x_sq cleanly.
+  TT_ASSIGN_OR_RETURN((auto [k_3_kappa_bcst, x_sq_bcst2]),
+                      ApplyBroadcastIfNeeded(k_3_kappa, x_sq));
+  mlir::MlirOp k3_kappa_x_sq = stablehlo::Mul(k_3_kappa_bcst, x_sq_bcst2);
+  TT_ASSIGN_OR_RETURN((auto [k_1_0_bcst_kprime, k3_kappa_x_sq_bcst]),
+                      ApplyBroadcastIfNeeded(k_1_0, k3_kappa_x_sq));
+  mlir::MlirOp inner_derivative_arg =
+      stablehlo::Add(k_1_0_bcst_kprime, k3_kappa_x_sq_bcst);
+  TT_ASSIGN_OR_RETURN((auto [inner_deriv_bcst, beta_bcst2]),
+                      ApplyBroadcastIfNeeded(inner_derivative_arg, k_beta));
+  mlir::MlirOp inner_derivative = stablehlo::Mul(inner_deriv_bcst, beta_bcst2);
 
   mlir::MlirOp inner_tanh_derivative =
       stablehlo::Mul(tanh_derivative, inner_derivative);
@@ -125,7 +180,11 @@ absl::StatusOr<mlir::MlirOp> BuildGeluBackwardGradInputApproximateShlo(
   // 4. Final Gradient: grad_output * (Term 1 + Term 2)
   mlir::MlirOp left_derivative_plus_right_derivative =
       stablehlo::Add(left_derivative, right_derivative);
-  return stablehlo::Mul(grad_output_op, left_derivative_plus_right_derivative);
+  TT_ASSIGN_OR_RETURN(
+      (auto [grad_output_bcst, deriv_bcst]),
+      ApplyBroadcastIfNeeded(grad_output_op,
+                             left_derivative_plus_right_derivative));
+  return stablehlo::Mul(grad_output_bcst, deriv_bcst);
 }
 
 // When approximation_type == "none", we compute the exact gelu formula.
@@ -140,33 +199,49 @@ absl::StatusOr<mlir::MlirOp> BuildGeluBackwardGradInputApproximateShlo(
 //   PDF(x) = (1 / sqrt(2*pi)) * exp(-x^2 / 2)
 absl::StatusOr<mlir::MlirOp> BuildGeluBackwardGradInputNoneShlo(
     mlir::MlirOp grad_output_op, mlir::MlirOp input_op) {
-  auto k_alpha = MakeConstantLike(
-      input_op, 0.5 * std::numbers::sqrt2);  // 1/sqrt(2) == sqrt(2)/2
-  // kBeta = 1 / sqrt(2 * pi)
-  auto k_beta =
-      MakeConstantLike(input_op, 1.0 / std::sqrt(2.0 * std::numbers::pi));
-  auto k_0_5 = MakeConstantLike(input_op, 0.5);
-  auto k_1_0 = MakeConstantLike(input_op, 1.0);
-  auto k_neg_0_5 = MakeConstantLike(input_op, -0.5);
+  mlir::MlirBuilder& builder = input_op.getBuilder();
+  const mlir::RankedTensorType type = GetTensorTypeOrDie(input_op);
+  const mlir::Type element_type = type.getElementType();
+
+  mlir::MlirOp k_alpha =
+      MakeScalarConstant(builder, 0.5 * std::numbers::sqrt2, element_type);
+  mlir::MlirOp k_beta = MakeScalarConstant(
+      builder, 1.0 / std::sqrt(2.0 * std::numbers::pi), element_type);
+  mlir::MlirOp k_0_5 = MakeScalarConstant(builder, 0.5, element_type);
+  mlir::MlirOp k_1_0 = MakeScalarConstant(builder, 1.0, element_type);
+  mlir::MlirOp k_neg_0_5 = MakeScalarConstant(builder, -0.5, element_type);
 
   // 1. Calculate CDF(x) = 0.5 * (1 + erf(x / sqrt(2)))
-  mlir::MlirOp self_alpha = stablehlo::Mul(input_op, k_alpha);
+  TT_ASSIGN_OR_RETURN((auto [input_alpha_bcst, k_alpha_bcst]),
+                      ApplyBroadcastIfNeeded(input_op, k_alpha));
+  mlir::MlirOp self_alpha = stablehlo::Mul(input_alpha_bcst, k_alpha_bcst);
   mlir::MlirOp erf_out = chlo::Erf(self_alpha);
-  mlir::MlirOp one_plus_erf = stablehlo::Add(k_1_0, erf_out);
-  mlir::MlirOp cdf = stablehlo::Mul(k_0_5, one_plus_erf);
+  TT_ASSIGN_OR_RETURN((auto [k_1_0_bcst, erf_out_bcst]),
+                      ApplyBroadcastIfNeeded(k_1_0, erf_out));
+  mlir::MlirOp one_plus_erf = stablehlo::Add(k_1_0_bcst, erf_out_bcst);
+  TT_ASSIGN_OR_RETURN((auto [k_0_5_bcst, one_plus_erf_bcst]),
+                      ApplyBroadcastIfNeeded(k_0_5, one_plus_erf));
+  mlir::MlirOp cdf = stablehlo::Mul(k_0_5_bcst, one_plus_erf_bcst);
 
   // 2. Calculate PDF(x) = (1 / sqrt(2*pi)) * exp(-x^2 / 2)
   mlir::MlirOp self_sq = stablehlo::Mul(input_op, input_op);
-  mlir::MlirOp self_sq_neg_0_5 = stablehlo::Mul(self_sq, k_neg_0_5);
+  TT_ASSIGN_OR_RETURN((auto [self_sq_bcst, k_neg_0_5_bcst]),
+                      ApplyBroadcastIfNeeded(self_sq, k_neg_0_5));
+  mlir::MlirOp self_sq_neg_0_5 = stablehlo::Mul(self_sq_bcst, k_neg_0_5_bcst);
   mlir::MlirOp exp_out = stablehlo::Exp(self_sq_neg_0_5);
-  mlir::MlirOp pdf = stablehlo::Mul(k_beta, exp_out);
+  TT_ASSIGN_OR_RETURN((auto [k_beta_bcst, exp_out_bcst]),
+                      ApplyBroadcastIfNeeded(k_beta, exp_out));
+  mlir::MlirOp pdf = stablehlo::Mul(k_beta_bcst, exp_out_bcst);
 
   // 3. Calculate dy/dx = CDF(x) + x * PDF(x)
   mlir::MlirOp self_pdf = stablehlo::Mul(input_op, pdf);
   mlir::MlirOp self_pdf_plus_cdf = stablehlo::Add(self_pdf, cdf);
 
   // 4. Final Gradient: grad_output * dy/dx
-  return stablehlo::Mul(grad_output_op, self_pdf_plus_cdf);
+  TT_ASSIGN_OR_RETURN(
+      (auto [grad_output_bcst, deriv_bcst]),
+      ApplyBroadcastIfNeeded(grad_output_op, self_pdf_plus_cdf));
+  return stablehlo::Mul(grad_output_bcst, deriv_bcst);
 }
 
 }  // namespace
