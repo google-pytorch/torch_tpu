@@ -37,6 +37,7 @@ EXPECTED_ROOT_DIRS: Final[frozenset[str]] = frozenset([
     "docker",
     "docs",
     "examples",
+    "rbe_tpu",
     "requirements",
     "shims",
     "src",

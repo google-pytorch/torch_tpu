@@ -26,3 +26,8 @@ dist/
 # Vim undo files.
 *.un~
 .*.un~
+
+# Test reports
+relay_reports/
+mailbox_reports/
+test_output*/

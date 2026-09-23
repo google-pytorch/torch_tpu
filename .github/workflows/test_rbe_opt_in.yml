@@ -1,0 +1,222 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Runs the presubmit test suite on TPU hardware that is not the shared
+# self-hosted ct5lp runner. Three paths live here:
+#
+#   mailbox   Bazel dispatches test actions via GCS mailbox protocol to standing
+#             TPU v5e VMs in rbe-tpu-oss. Works from any machine with GCS bucket
+#             access (including external developers on torchtpu-dev@ and GitHub
+#             runners) without SSH or VPC peering.
+#   relay     Bazel keeps test actions local and ships each over SSH to a leased
+#             single-chip Cloud TPU v5e VM. Requires corp-ssh-helper or VPC.
+#   full RBE  Bazel sends test actions directly to RBE workers with TPU chips.
+#
+# Opt in per PR with a label:
+#
+#   ci:mailbox-tpu-v5  Marks PR for an advisory GCS mailbox run. Never blocks.
+#   ci:relay-tpu-v5    Marks PR for an advisory SSH relay run. Never blocks.
+#   ci:replace-tpu-v5  Gates PR on TPU v5 fleet run instead of ct5lp runner.
+#   run-rbe            Runs the full-RBE path. Advisory.
+
+name: RBE Hardware TPU Tests (Opt-In)
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'shadow = advisory, replacement = gates the PR'
+        type: choice
+        default: 'shadow'
+        options:
+          - 'shadow'
+          - 'replacement'
+      hardware_path:
+        description: 'mailbox = GCS mailbox protocol, relay = SSH relay, full-rbe = TPU RBE workers'
+        type: choice
+        default: 'mailbox'
+        options:
+          - 'mailbox'
+          - 'relay'
+          - 'full-rbe'
+      test_suite:
+        description: 'Test suite to execute'
+        type: choice
+        default: 'all'
+        options:
+          - 'all'
+          - 'tpu_v5e_only'
+          - 'cpu_only'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: >-
+    ${{ github.workflow }}-${{ github.head_ref || github.ref }}${{
+    github.event.action == 'labeled'
+    && !contains(fromJSON('["run-rbe", "ci:mailbox-tpu-v5", "ci:relay-tpu-v5", "ci:replace-tpu-v5"]'), github.event.label.name)
+    && format('-ignored-label-{0}', github.run_id) || '' }}
+  cancel-in-progress: true
+
+env:
+  RBE_BAZEL_FLAGS: --bes_backend=
+  RBE_EXCLUDED_TARGETS: >-
+    -//tests:fp4_test
+    -//tests:ops_unit_test
+    -//tests:async_transfer_test
+    -//tests:ops_unit_test_tier3_cache
+    -//tests:ops_unit_test_tier3_cache_no_backup
+    -//tests/compile:activation_checkpointing_mem_test
+    -//tests/distributed:single_tpu_pg_test
+
+jobs:
+  run_tests:
+    name: "${{ matrix.job_info.name }}"
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.hardware_path == 'full-rbe')
+      || contains(github.event.pull_request.labels.*.name, 'run-rbe')
+    continue-on-error: >-
+      ${{ !(github.event_name == 'workflow_dispatch' && inputs.mode == 'replacement') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        job_info:
+          - name: "CPU"
+            runner: "linux-x86-n4-16"
+            machine_type: "CPU"
+            config: "ci_cpu_presubmit"
+            suite: "cpu_only"
+            extra_flags: ""
+          - name: "TPU v5e Tests (Full RBE)"
+            runner: "linux-x86-n4-16"
+            machine_type: "TPU v5e (RBE)"
+            config: "ci_tpu_v5_full_rbe"
+            suite: "tpu_v5e_only"
+            extra_flags: "--test_tag_filters=presubmit-v5,-fails-on-tpu-v5,-nopresubmit,-notest,-nobuild"
+    runs-on: linux-x86-n4-16
+    container:
+      image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:480f397c57207671315a27173ccec790ea9c66ef030af96cbe6ac9b4a6613996"
+      options: --ipc=host
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Fix Git Workspace Ownership
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Run Test Suite
+        if: >-
+          inputs.test_suite == null
+          || inputs.test_suite == 'all'
+          || inputs.test_suite == matrix.job_info.suite
+        env:
+          BAZEL_CONFIG: ${{ matrix.job_info.config }}
+          EXTRA_FLAGS: ${{ matrix.job_info.extra_flags }}
+        run: |
+          bazel test \
+            "--config=${BAZEL_CONFIG}" \
+            --nocache_test_results \
+            --test_output=errors \
+            ${RBE_BAZEL_FLAGS} \
+            ${EXTRA_FLAGS} \
+            -- //tests/... ${RBE_EXCLUDED_TARGETS}
+
+  hardware_handoff:
+    name: "TPU v5e Hardware Runner Handoff"
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (inputs.hardware_path == 'mailbox' || inputs.hardware_path == 'relay'))
+      || contains(github.event.pull_request.labels.*.name, 'ci:mailbox-tpu-v5')
+      || contains(github.event.pull_request.labels.*.name, 'ci:relay-tpu-v5')
+      || contains(github.event.pull_request.labels.*.name, 'ci:replace-tpu-v5')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      IS_REPLACEMENT: >-
+        ${{ contains(github.event.pull_request.labels.*.name, 'ci:replace-tpu-v5')
+        || (github.event_name == 'workflow_dispatch' && inputs.mode == 'replacement') }}
+      IS_INTERNAL: >-
+        ${{ github.event_name == 'workflow_dispatch'
+        || github.event.pull_request.head.repo.full_name == github.repository }}
+      GATING_CONTEXT: "Presubmit on linux-x86-ct5lp-224-8tpu"
+
+    steps:
+      - name: Hold the required check open
+        if: env.IS_REPLACEMENT == 'true' && env.IS_INTERNAL == 'true'
+        run: |
+          existing=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/status" \
+            --jq ".statuses[] | select(.context == \"${GATING_CONTEXT}\") | .state" \
+            2>/dev/null | tail -1)
+          if [[ "${existing}" == "success" || "${existing}" == "failure" ]]; then
+            echo "${GATING_CONTEXT} is already '${existing}' for ${HEAD_SHA}; leaving it alone."
+            exit 0
+          fi
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/statuses/${HEAD_SHA}" \
+            -f "state=pending" \
+            -f "context=${GATING_CONTEXT}" \
+            -f "description=waiting for TPU v5e fleet presubmit execution" \
+            -f "target_url=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            > /dev/null
+          echo "Published a pending ${GATING_CONTEXT} for ${HEAD_SHA}."
+
+      - name: Explain execution instructions
+        run: |
+          if [[ "${IS_REPLACEMENT}" == "true" ]]; then
+            mode="replacement"
+            effect="This PR cannot merge until that command reports green."
+          else
+            mode="shadow"
+            effect="Results are advisory and will not block this PR."
+          fi
+          cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
+          ## TPU v5e: ${mode} run
+
+          The presubmit runs single-chip targets on Cloud TPU v5e VMs in \`rbe-tpu-oss\`.
+
+          ### Recommended: GCS Mailbox Protocol (No SSH or VPC required)
+          Any developer on the \`torchtpu-dev@\` or \`xla-torchtpu-team@\` lists can run from any terminal:
+
+          \`\`\`bash
+          git fetch origin pull/${PR_NUMBER}/head && git checkout ${HEAD_SHA}
+          rbe_tpu/deploy/rbe_tpu_presubmit_pr.sh --pr ${PR_NUMBER} --mode ${mode}
+          \`\`\`
+
+          ### Alternative: SSH Relay (Corp network required)
+          \`\`\`bash
+          git fetch origin pull/${PR_NUMBER}/head && git checkout ${HEAD_SHA}
+          scripts/relay_presubmit_pr.sh --pr ${PR_NUMBER} --mode ${mode} \\
+            --zone europe-west4-b --zone us-south1-a \\
+            --zone us-west1-c --zone us-west4-a
+          \`\`\`
+
+          ${effect}
+          SUMMARY
+
+          if [[ "${IS_INTERNAL}" != "true" ]]; then
+            echo "::warning::This PR is from a fork, so the pending check could" \
+              "not be published. A maintainer has to run the presubmit and report it."
+          fi
