@@ -115,13 +115,12 @@ class RunBazelDiffTest(unittest.TestCase):
         # The job's own workflow file.
         ([".github/workflows/presubmit.yml"], presubmit_ref, True),
         # Shared CI infrastructure affects every job.
-        (["ci/tools/run_bazel_diff.py"], presubmit_ref, True),
         ([".github/actions/bazel-diff/action.yml"], presubmit_ref, True),
         # A different workflow says nothing about this job.
         ([".github/workflows/nightly_tpu.yml"], presubmit_ref, False),
         # Without a ref, only the shared paths can match.
         ([".github/workflows/presubmit.yml"], "", False),
-        (["ci/tools/run_bazel_diff.py"], "", True),
+        ([".github/actions/bazel-diff/action.yml"], "", True),
         # Ordinary source changes are left to bazel-diff.
         (["csrc/ops/add.cc"], presubmit_ref, False),
     ]
