@@ -122,14 +122,15 @@ leverage that instead of exposing a new API.
 Public TorchTPU Python APIs follow this module structure:
 
 ```
-torch.tpu        # TorchTPU root module
- |- compiler     # compiler options and control
- |- distributed  # distributed utilities
- |- exceptions   # exceptions that might be raised by TorchTPU
- |- ops          # custom ops
- |- optimizers   # TorchTPU-optimized optimizers
- |- pallas       # utilities for using pallas kernels
- `- profiler     # utilities for profiling TorchTPU programs
+torch.tpu         # TorchTPU root module
+ |- compiler      # compiler options and control
+ |- distributed   # distributed utilities
+ |- exceptions    # exceptions that might be raised by TorchTPU
+ |- experimental  # experimental APIs; no compatibility guarantee
+ |- ops           # custom ops
+ |- optimizers    # TorchTPU-optimized optimizers
+ |- pallas        # utilities for using pallas kernels
+ `- profiler      # utilities for profiling TorchTPU programs
 ```
 
 Adding any new public module requires approval from the API owners.

@@ -78,7 +78,10 @@ _TEST_MODE = flags.DEFINE_enum_class(
 
 def get_tier2_cache_dir(tier2_cache_name: str) -> pathlib.Path:
   """Returns the Tier-2 cache directory."""
+  # LINT.IfChange(tier2_cache_root_dir)
+  # Must match kTier2CacheRootDir in csrc/common/tier2_compilation_cache.cc.
   return pathlib.Path("/dev/shm/torch_tpu_cache") / tier2_cache_name
+  # LINT.ThenChange()
 
 
 def clear_in_memory_caches() -> None:

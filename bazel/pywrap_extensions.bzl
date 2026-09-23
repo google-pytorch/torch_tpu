@@ -33,6 +33,7 @@ PYWRAP_EXTENSIONS = [
     "//src/torch_tpu/_internal/execution_mode:execution_mode_impl",
     "//src/torch_tpu/_internal/pallas:tpu_torch_pallas",
     "//src/torch_tpu/_internal/precision:precision_impl",
+    "//src/torch_tpu/_internal/precompiled_kernels:_tpu_torch_precompiled_kernels",
     "//src/torch_tpu/_internal/profiler:_profiler_backend",
     "//src/torch_tpu/_internal/sync:_tpu_torch_sync",
     "//src/torch_tpu/_internal/tracing:_tpu_torch_tracing",

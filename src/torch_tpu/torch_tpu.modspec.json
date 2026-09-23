@@ -12,6 +12,14 @@
     "type": "MODULE"
   },
   {
+    "name": "torch.tpu.experimental",
+    "type": "PACKAGE"
+  },
+  {
+    "name": "torch.tpu.experimental.precompiled_kernels",
+    "type": "MODULE"
+  },
+  {
     "name": "torch.tpu.ops",
     "type": "MODULE"
   },

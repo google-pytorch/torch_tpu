@@ -144,6 +144,7 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/execution_mode",
         "//src/torch_tpu/_internal/ops:ops_lib",
         "//src/torch_tpu/_internal/pallas",
+        "//src/torch_tpu/_internal/precompiled_kernels",
         "//src/torch_tpu/_internal/profiler:profiler_config",
         "//src/torch_tpu/_internal/utils:annotations",
     ],

@@ -46,6 +46,7 @@ WHEEL_PY_TARGETS = [
     "//src/torch_tpu/_internal/optimizers:single_trace_trainer",
     "//src/torch_tpu/_internal/pallas",
     "//src/torch_tpu/_internal/performance/micro:utils",
+    "//src/torch_tpu/_internal/precompiled_kernels",
     "//src/torch_tpu/_internal/profiler",
     "//src/torch_tpu/_internal/stream:streams",
     "//src/torch_tpu/_internal/sync",

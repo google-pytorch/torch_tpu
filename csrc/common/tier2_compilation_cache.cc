@@ -47,7 +47,21 @@
 
 namespace torch_tpu {
 
+// LINT.IfChange(tier2_cache_root_dir)
+// Root directory for all named tier-2 caches. This path is duplicated in the
+// tests, tooling, and docs listed below, which must be updated in lockstep.
 constexpr std::string_view kTier2CacheRootDir = "/dev/shm/torch_tpu_cache";
+// LINT.ThenChange(
+//     tier2_compilation_cache_test.cc:tier2_cache_root_dir,
+//     ../../tests/compile/cache_test.py:tier2_cache_root_dir,
+//     ../../tests/experimental/precompiled_kernels_test.py:tier2_cache_root_dir,
+//     ../../perflab/distributed_runner.py:tier2_cache_root_dir,
+//     ../../perflab/tests/distributed_runner_test.py:tier2_cache_root_dir,
+//     ../../oss/.github/workflows/postsubmit.yml:tier2_cache_root_dir,
+//     ../../docs/source/6_reference_4_environment_variables.py:tier2_cache_root_dir,
+//     ../../docs/source/6_reference_4_environment_variables.py:tier2_cache_root_dir_example,
+//     ../../docs/source/6_reference_4_environment_variables.py:tier2_cache_root_dir_summary,
+// )
 constexpr std::string_view kLockFileExtension = ".lock";
 constexpr std::string_view kTier2CacheFileExtension = ".bin";
 
