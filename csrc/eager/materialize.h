@@ -86,9 +86,11 @@ absl::Status Materialize(
 // Errors if any of the buffers are placeholders.
 absl::Status Materialize(
     absl::Span<const DeviceBufferRef> buffer_refs, MaterializationReason reason,
-    MaterializationMode mode = MaterializationMode::kSplitGraph,
-    MaterializationBlockMode block_mode =
-        MaterializationBlockMode::kBlockUntilStarted);
+    MaterializationMode mode = MaterializationMode::kSplitGraph);
+
+absl::Status Materialize(absl::Span<const DeviceBufferRef> buffer_refs,
+                         MaterializationReason reason, MaterializationMode mode,
+                         MaterializationBlockMode block_mode);
 
 // Materializes the given node in-place. Delegates to the span overload.
 inline absl::Status Materialize(
