@@ -39,14 +39,13 @@ from torch_tpu._internal.utils import utils
 from tests import seed_test_utils
 
 EagerMode: TypeAlias = execution_mode.EagerMode
-_EagerMode: TypeAlias = execution_mode._EagerMode
 
 
 def _is_deferred_mode():
   return execution_mode.eager_mode in (
       EagerMode.DEFER_AND_FUSE,
-      _EagerMode.INTERNAL_DEFER_ALL,
-      _EagerMode.INTERNAL_COMPILE_FX_GRAPH,
+      EagerMode.INTERNAL_DEFER_ALL,
+      EagerMode.INTERNAL_COMPILE_FX_GRAPH,
   )
 
 
