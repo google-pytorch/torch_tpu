@@ -18,6 +18,7 @@ load(
     "torch_tpu_package_end",
     "torch_tpu_py_library",
     "torch_tpu_py_test",
+    "tpu_gen",
 )
 
 package(
@@ -271,7 +272,10 @@ torch_tpu_py_test(
         # //tests/pallas:pallas_communication_test.
         "TPU_PREMAPPED_BUFFER_SIZE": "0",
     },
-    notest_oss = True,  # NOTEST_OSS_OK=Disabled in OSS due to multi-process v7x runner hang.
+    oss_presubmit_tpu_generation = tpu_gen(
+        "v7",
+        reason = "Pallas mesh collective device order test for TPU v7",
+    ),
     tags = if_oss(
         ["exclusive"],
         [],
