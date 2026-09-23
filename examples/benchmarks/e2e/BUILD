@@ -165,6 +165,7 @@ torch_tpu_py_test(
         # Needed for getting xprof links
         "requires-net:external",
     ],
+    use_tcmalloc = True,
     deps = [
         ":model_performance_benchmarks_lib",
         "//src/torch_tpu",
@@ -233,6 +234,7 @@ torch_tpu_py_test(
         "requires-net:external",
         "requires-tpu-v7x",
     ],
+    use_tcmalloc = True,
     deps = [
         ":benchmark_utils",
         ":common",
@@ -339,6 +341,7 @@ torch_tpu_py_test(
         # Needed for getting xprof links
         "requires-net:external",
     ],
+    use_tcmalloc = True,
     deps = [
         ":benchmark_function_db",
         ":benchmark_utils",
@@ -392,6 +395,7 @@ torch_tpu_py_test(
         # Needed for getting xprof links
         "requires-net:external",
     ],
+    use_tcmalloc = True,
     deps = [
         ":benchmark_function_db",
         ":benchmark_utils",
@@ -464,6 +468,7 @@ torch_tpu_py_test(
         # Needed for getting xprof links
         "requires-net:external",
     ],
+    use_tcmalloc = True,
     deps = [
         ":model_performance_benchmarks_lib",
         "//src/torch_tpu",
@@ -490,6 +495,7 @@ torch_tpu_py_test(
         "requires-accel-hbm",
         "requires-net:external",
     ],
+    use_tcmalloc = True,
     deps = [
         ":model_performance_benchmarks_lib",
         "//src/torch_tpu",

@@ -215,6 +215,7 @@ torch_tpu_py_test(
         "requires-net:external",
         "requires-tpu-v5lite",
     ],
+    use_tcmalloc = True,
     deps = [
         ":base_test",
         ":cases",
@@ -366,6 +367,7 @@ torch_tpu_py_test(
         "requires-net:external",
         "requires-tpu-v7x",
     ],
+    use_tcmalloc = True,
     deps = [
         ":base_test",
         ":cases",

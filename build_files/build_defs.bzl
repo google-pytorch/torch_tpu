@@ -588,6 +588,7 @@ def torch_tpu_cc_test(
         oss_presubmit_tpu_generation = None,
         tags = None,
         requires_libtpu = None,
+        use_tcmalloc = False,
         **kwargs):
     """Creates a cc_test for torch_tpu.
 
@@ -634,6 +635,7 @@ def torch_tpu_cc_test(
             or CPUs (`False`). Note that requires_libtpu only means the test needs `libtpu` -
             it does NOT imply that the test needs an actual TPU (in fact most such tests run
             on CPU).
+        use_tcmalloc: If True, links against @com_google_tcmalloc//tcmalloc in OSS.
         tags: The tags to add to the test.
         **kwargs: Any additional arguments.
     """
@@ -772,6 +774,15 @@ def torch_tpu_cc_test(
             tags = result.build_test_tags,
         )
 
+    # Link Bazel-built tcmalloc into C++ test binaries when explicitly opted in
+    # via use_tcmalloc = True (falling back to the default allocator under TSAN
+    # to avoid conflicts with ThreadSanitizer's allocator interceptors).
+    if is_oss() and use_tcmalloc and "malloc" not in kwargs:
+        kwargs["malloc"] = select({
+            "//:tsan_build": "@bazel_tools//tools/cpp:malloc",
+            "//conditions:default": "@com_google_tcmalloc//tcmalloc",
+        })
+
     # Define the C++ test target (handles compilation, compilation options, and static linking)
     cc_test(
         # ALLOW_CC_TARGETS=Definition of torch_tpu_cc_test
@@ -868,6 +879,7 @@ def torch_tpu_py_test(
         shuffle_tests = True,
         autoload = True,
         is_wheel_test = False,
+        use_tcmalloc = False,
         extra_pywrap_deps = ["//csrc/common:pywrap_torch_tpu"],
         strict = False,
         size = None,
@@ -946,6 +958,7 @@ def torch_tpu_py_test(
                succeeds on `requires-tpu-v5lite` or `requires-tpu-v5p`, so it is wasteful to test
                for both in presubmit.
         tags: The tags to add to the test.
+        use_tcmalloc: Whether to preload hermetic Bazel-built libtcmalloc.so in OSS runs.
         **kwargs: Any additional arguments.
     """
 
@@ -1054,6 +1067,14 @@ def torch_tpu_py_test(
         asan_opts = [base_env.get("ASAN_OPTIONS", "")]
         asan_opts.append("new_delete_type_mismatch=0")
         base_env["ASAN_OPTIONS"] = ":".join([opt for opt in asan_opts if opt])
+
+        # Preload hermetic Bazel-built tcmalloc into Python test and benchmark runs
+        # when explicitly opted in via use_tcmalloc = True.
+        # //:libtcmalloc.so must be in `data` so $(location //:libtcmalloc.so) resolves.
+        if is_oss() and use_tcmalloc:
+            if "//:libtcmalloc.so" not in data:
+                data.append("//:libtcmalloc.so")
+            _prepend_to_env(base_env, "LD_PRELOAD", "./$(location //:libtcmalloc.so)")
 
         # Prepend standard library paths to base env (required for mp.spawn support)
         _prepend_to_env(base_env, "LD_LIBRARY_PATH", ":".join(std_ld))

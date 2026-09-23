@@ -101,6 +101,20 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "tcmalloc_check_test",
+    srcs = ["tcmalloc_check_test.py"],
+    use_tcmalloc = True,
+    deps = [
+        ":seed_test_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//src/torch_tpu",
+        "//src/torch_tpu:_tcmalloc_check",
+        "//src/torch_tpu:exceptions",
+    ],
+)
+
+torch_tpu_py_test(
     name = "_versioned_so_loader_test",
     srcs = ["_versioned_so_loader_test.py"],
     deps = [

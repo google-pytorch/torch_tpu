@@ -16,11 +16,12 @@
 
 import pathlib
 
+from torch_tpu import _tcmalloc_check
+from torch_tpu import _versioned_so_loader
+
 # Install the version-dispatch import hook before any torch_tpu._internal C++
 # extension is imported, so imports resolve to the glue built for the installed
 # PyTorch. This is a no-op for an unversioned build, which has no bundled glue.
-from torch_tpu import _versioned_so_loader
-
 _versioned_so_loader.install_hook(pathlib.Path(__file__).parent)
 
 try:
@@ -30,6 +31,10 @@ try:
 except ImportError:
   print("libtpu not found.")
   pass
+
+# Warn if tcmalloc is not the allocator of this process. Checked last so the
+# probe sees every library `import torch_tpu` pulls in, libtpu included.
+_tcmalloc_check.check_tcmalloc()
 
 
 # TODO: b/477401982 - Introduce a new flag module to hold all TorchTPU flags.
