@@ -25,6 +25,7 @@ underlying providers (Torchvision, TIMM, and Transformers). It ensures that:
 import json
 import pathlib
 import tempfile
+import types
 from unittest import mock
 
 from absl.testing import absltest
@@ -1481,22 +1482,6 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         module_registry._safe_int(mock.MagicMock(), default=10), 10
     )
 
-  def test_get_config_attr(self):
-    cfg_dict = {"foo": 1, "bar": "val"}
-    self.assertEqual(module_registry._get_config_attr(cfg_dict, "foo"), 1)
-    self.assertEqual(module_registry._get_config_attr(cfg_dict, "bar"), "val")
-    self.assertIsNone(module_registry._get_config_attr(cfg_dict, "baz"))
-    self.assertEqual(
-        module_registry._get_config_attr(cfg_dict, "baz", default=42), 42
-    )
-
-    cfg_obj = mock.MagicMock(foo=2, bar="obj_val")
-    self.assertEqual(module_registry._get_config_attr(cfg_obj, "foo"), 2)
-    self.assertEqual(
-        module_registry._get_config_attr(cfg_obj, "bar"), "obj_val"
-    )
-    self.assertIsNone(module_registry._get_config_attr(None, "foo"))
-
   def test_extract_diffusers_subfolder_candidates(self):
     idx_dict = {
         "_class_name": "StableDiffusionPipeline",
@@ -1580,6 +1565,122 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         }),
         module_registry.Modality.MULTIMODAL,
     )
+
+  def test_sanitize_transformers_config_dict(self):
+    raw_config = {
+        "model_type": "layoutlmv3",
+        "id2label": {"0": 1, "1": 2, "2": 3},
+        "hidden_dropout_prob": 0,
+        "attention_probs_dropout_prob": 0,
+        "classifier_dropout": 0,
+        "use_pretrained_backbone": True,
+        "backbone": "resnet50",
+    }
+    sanitized = module_registry._sanitize_transformers_config_dict(
+        raw_config, load_weights=False
+    )
+    # id2label values must be str
+    self.assertEqual(sanitized["id2label"], {"0": "1", "1": "2", "2": "3"})
+    # dropout probs must be float
+    self.assertIsInstance(sanitized["hidden_dropout_prob"], float)
+    self.assertEqual(sanitized["hidden_dropout_prob"], 0.0)
+    self.assertIsInstance(sanitized["attention_probs_dropout_prob"], float)
+    self.assertIsInstance(sanitized["classifier_dropout"], float)
+    # use_pretrained_backbone must be False when offline
+    self.assertFalse(sanitized["use_pretrained_backbone"])
+    # backbone_config must be synthesized when offline
+    self.assertEqual(
+        sanitized["backbone_config"],
+        {"model_type": "timm_backbone", "backbone": "resnet50"},
+    )
+
+  def test_config_wrapper_dict(self):
+    raw = {
+        "model_type": "bert",
+        "hidden_size": 768,
+        "vision_config": {"image_size": 224, "num_channels": 3},
+        "id2label": {"0": "cat"},
+    }
+    cfg = module_registry._ConfigWrapper(raw)
+
+    # Attribute access
+    self.assertEqual(cfg.model_type, "bert")
+    self.assertEqual(cfg.hidden_size, 768)
+    self.assertEqual(getattr(cfg, "model_type", ""), "bert")
+    self.assertEqual(getattr(cfg, "nonexistent", "fallback"), "fallback")
+    self.assertTrue(hasattr(cfg, "model_type"))
+    self.assertFalse(hasattr(cfg, "nonexistent"))
+
+    # Nested attribute access
+    self.assertIsInstance(cfg.vision_config, module_registry._ConfigWrapper)
+    self.assertEqual(cfg.vision_config.image_size, 224)
+    self.assertEqual(cfg.vision_config.num_channels, 3)
+
+    # Dictionary / Item access
+    self.assertEqual(cfg["model_type"], "bert")
+    self.assertEqual(cfg.get("hidden_size"), 768)
+    self.assertEqual(cfg.get("hidden_size", ""), "768")
+    self.assertEqual(cfg.get("nonexistent", 100), 100)
+    self.assertEqual(cfg.get("nonexistent", ""), "")
+    self.assertEqual(cfg.get("_class_name", "").lower(), "")
+    self.assertEqual(cfg.get("architectures", []), [])
+    self.assertIn("model_type", cfg)
+    self.assertNotIn("nonexistent", cfg)
+
+    # Mutation via attribute
+    cfg.use_pretrained_backbone = False
+    self.assertFalse(cfg.use_pretrained_backbone)
+    self.assertFalse(raw["use_pretrained_backbone"])
+
+    # Unwrap
+    self.assertIs(cfg.unwrap(), raw)
+
+  def test_config_wrapper_object(self):
+    obj = types.SimpleNamespace(
+        model_type="resnet",
+        hidden_size=512,
+        backbone_config={"image_size": 224},
+    )
+    cfg = module_registry._ConfigWrapper(obj)
+
+    # Attribute delegation
+    self.assertEqual(cfg.model_type, "resnet")
+    self.assertEqual(cfg.hidden_size, 512)
+    self.assertEqual(getattr(cfg, "nonexistent", "default"), "default")
+    self.assertTrue(hasattr(cfg, "model_type"))
+    self.assertFalse(hasattr(cfg, "nonexistent"))
+
+    # Nested dict attribute delegation
+    self.assertIsInstance(cfg.backbone_config, module_registry._ConfigWrapper)
+    self.assertEqual(cfg.backbone_config.image_size, 224)
+
+    # Item access delegation
+    self.assertEqual(cfg["model_type"], "resnet")
+    self.assertEqual(cfg.get("hidden_size"), 512)
+    self.assertEqual(cfg.get("nonexistent", 99), 99)
+    self.assertIn("model_type", cfg)
+    self.assertNotIn("nonexistent", cfg)
+
+    # Unwrap
+    self.assertIs(cfg.unwrap(), obj)
+
+  def test_load_transformers_config_with_fallback_returns_wrapper(self):
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      config_path = pathlib.Path(tmp_dir) / "config.json"
+      config_path.write_text(
+          json.dumps({
+              "model_type": "bert",
+              "hidden_size": 768,
+              "vision_config": {"image_size": 224},
+          })
+      )
+      cfg = module_registry._load_transformers_config_with_fallback(
+          config_path, load_weights=False
+      )
+      self.assertIsInstance(cfg, module_registry._ConfigWrapper)
+      self.assertEqual(cfg.model_type, "bert")
+      self.assertEqual(cfg.hidden_size, 768)
+      self.assertEqual(cfg.vision_config.image_size, 224)
 
 
 if __name__ == "__main__":

@@ -29,7 +29,7 @@ inputs.
 # pylint: disable=g-import-not-at-top
 
 import abc
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 import enum
 from importlib import resources
 from importlib.resources import abc as resources_abc
@@ -38,6 +38,7 @@ import json
 import os
 import pathlib
 import tempfile
+import types
 from typing import Any, Iterator, overload
 import uuid
 
@@ -573,6 +574,145 @@ _PROVIDER_ALIASES: dict[str, str] = {
 }
 
 
+class _ConfigWrapper:
+  """Wrapper around HF config dictionaries and objects for consistent attribute and dict access."""
+
+  def __init__(self, data: Any):
+    if isinstance(data, _ConfigWrapper):
+      object.__setattr__(self, "_data", data._data)
+    else:
+      object.__setattr__(self, "_data", data)
+
+  def unwrap(self) -> Any:
+    """Returns the underlying wrapped config object or dictionary."""
+    return self._data
+
+  def __getattr__(self, name: str) -> Any:
+    data = self._data
+    if data is None:
+      raise AttributeError(
+          f"'{type(self).__name__}' object has no attribute '{name}'"
+      )
+    if hasattr(data, "allow_global_per_layer_attribute_access"):
+      try:
+        data.allow_global_per_layer_attribute_access = True
+      except Exception:
+        pass
+    if isinstance(data, (dict, Mapping)):
+      if name in data:
+        return _wrap_config(data[name])
+      raise AttributeError(
+          f"'{type(self).__name__}' object has no attribute '{name}'"
+      )
+    val = getattr(data, name)
+    return _wrap_config(val)
+
+  def __setattr__(self, name: str, value: Any) -> None:
+    if name == "_data":
+      object.__setattr__(self, name, value)
+      return
+    if isinstance(self._data, dict):
+      self._data[name] = value
+    else:
+      setattr(self._data, name, value)
+
+  def get(self, key: str, default: Any = None) -> Any:
+    data = self._data
+    if hasattr(data, "allow_global_per_layer_attribute_access"):
+      try:
+        data.allow_global_per_layer_attribute_access = True
+      except Exception:
+        pass
+    if isinstance(data, (dict, Mapping)):
+      val = data.get(key, default)
+    else:
+      try:
+        val = getattr(data, key, default)
+      except Exception:
+        val = default
+    if val is default:
+      return default
+    if val is not None and default is not None:
+      try:
+        val = type(default)(val)
+      except Exception:
+        pass
+    return _wrap_config(val)
+
+  def __getitem__(self, key: Any) -> Any:
+    data = self._data
+    if isinstance(data, (dict, Mapping)) or hasattr(data, "__getitem__"):
+      return _wrap_config(data[key])
+    if isinstance(key, str):
+      try:
+        return getattr(self, key)
+      except AttributeError as exc:
+        raise KeyError(key) from exc
+    raise KeyError(key)
+
+  def __contains__(self, key: str) -> bool:
+    if isinstance(self._data, (dict, Mapping)):
+      return key in self._data
+    return hasattr(self._data, key)
+
+  def __bool__(self) -> bool:
+    return bool(self._data)
+
+  def __len__(self) -> int:
+    if isinstance(self._data, (dict, Mapping)) or hasattr(
+        self._data, "__len__"
+    ):
+      return len(self._data)
+    return len(dir(self._data))
+
+  def __iter__(self):
+    if isinstance(self._data, (dict, Mapping)) or hasattr(
+        self._data, "__iter__"
+    ):
+      return iter(self._data)
+    return iter(dir(self._data))
+
+  def __call__(self, *args: Any, **kwargs: Any) -> Any:
+    if callable(self._data):
+      return _wrap_config(self._data(*args, **kwargs))
+    raise TypeError(f"'{type(self).__name__}' object is not callable")
+
+  def __str__(self) -> str:
+    return str(self._data)
+
+  def __repr__(self) -> str:
+    return f"{type(self).__name__}({self._data!r})"
+
+
+def _wrap_config(config: Any) -> Any:
+  """Wraps a config dictionary or object in _ConfigWrapper if not already wrapped."""
+  if config is None or isinstance(config, _ConfigWrapper):
+    return config
+  if isinstance(
+      config,
+      (
+          int,
+          float,
+          str,
+          bool,
+          bytes,
+          list,
+          tuple,
+          set,
+          frozenset,
+          type,
+          types.FunctionType,
+          types.BuiltinFunctionType,
+          types.MethodType,
+          torch.dtype,
+          torch.device,
+          torch.Tensor,
+      ),
+  ):
+    return config
+  return _ConfigWrapper(config)
+
+
 def is_supported_transformers_model_type(
     model_type: str, config: Any | None = None
 ) -> bool:
@@ -584,10 +724,8 @@ def is_supported_transformers_model_type(
   ):
     return True
   if config is not None:
-    if isinstance(config, dict):
-      archs = config.get("architectures", []) or []
-    else:
-      archs = getattr(config, "architectures", []) or []
+    cfg = _wrap_config(config)
+    archs = cfg.get("architectures", [])
     for arch in archs:
       arch_lower = arch.lower()
       if (
@@ -990,29 +1128,6 @@ def _safe_int(
     return default
 
 
-def _get_config_attr(config: Any, attr: str, default: Any = None) -> Any:
-  """Extracts attribute or dict key from config object or dictionary."""
-  if config is None:
-    return default
-  if isinstance(config, dict):
-    return config.get(attr, default)
-  try:
-    val = getattr(config, attr, None)
-    if val is not None:
-      return val
-  except Exception:
-    pass
-  if hasattr(config, "allow_global_per_layer_attribute_access"):
-    try:
-      config.allow_global_per_layer_attribute_access = True
-      val = getattr(config, attr, None)
-      if val is not None:
-        return val
-    except Exception:
-      pass
-  return default
-
-
 def _get_max_seq_len(config: Any, default: int = 512) -> int:
   """Heuristically determines the maximum sequence length from a config.
 
@@ -1027,12 +1142,13 @@ def _get_max_seq_len(config: Any, default: int = 512) -> int:
   Returns:
     The determined maximum sequence length.
   """
-  configs_to_check = [config]
-  text_cfg = _get_config_attr(config, "text_config")
+  cfg = _wrap_config(config)
+  configs_to_check = [cfg]
+  text_cfg = cfg.get("text_config")
   if text_cfg is not None:
     configs_to_check.append(text_cfg)
 
-  for cfg in configs_to_check:
+  for c in configs_to_check:
     for attr in (
         "max_text_len",
         "max_position_embeddings",
@@ -1042,7 +1158,7 @@ def _get_max_seq_len(config: Any, default: int = 512) -> int:
         "max_seq_len",
         "model_max_length",
     ):
-      raw_val = _get_config_attr(cfg, attr)
+      raw_val = c.get(attr)
       val = _safe_int(raw_val, default=0, min_val=1)
       if 0 < val < _MAX_SEQ_LEN_HEURISTIC_CAP:
         # Several HuggingFace encoder and seq2seq models offset their learned
@@ -1061,7 +1177,9 @@ def _get_max_seq_len(config: Any, default: int = 512) -> int:
         # `pad_token_id + 1` keeps all generated position IDs within `[0, val)`.
         if attr in ("max_position_embeddings", "max_target_positions"):
           pad_id = _safe_int(
-              _get_config_attr(cfg, "pad_token_id"), default=0, min_val=0
+              c.get("pad_token_id") or cfg.get("pad_token_id"),
+              default=0,
+              min_val=0,
           )
           if pad_id > 0 and val > pad_id + 1:
             val -= pad_id + 1
@@ -1118,6 +1236,19 @@ def _is_diffusion(
 def _is_multimodal(
     model_type: str, arch_name: str, has_text_cfg: bool, has_vision_cfg: bool
 ) -> bool:
+  # Open-vocabulary zero-shot models require text queries (input_ids) along with images
+  if any(
+      k in model_type
+      for k in (
+          "clipseg",
+          "owlv2",
+          "owlvit",
+          "grounding_dino",
+          "groundingdino",
+          "grounding-dino",
+      )
+  ):
+    return True
   if any(
       k in arch_name
       for k in (
@@ -1216,40 +1347,24 @@ def _determine_modality(config: Any) -> Modality:
   is_enc_dec = False
 
   if config is not None:
-    if isinstance(config, dict):
-      class_name = str(config.get("_class_name", "") or "").lower()
-      model_name = str(config.get("_name_or_path", "") or "").lower()
-      model_type = str(config.get("model_type", "") or "").lower()
-      archs = config.get("architectures", []) or []
-      is_enc_dec = bool(config.get("is_encoder_decoder", False))
-      has_text_cfg = config.get("text_config") is not None
-      has_vision_cfg = config.get("vision_config") is not None
-      has_image_size = (
-          config.get("image_size") is not None
-          or config.get("num_channels") is not None
-          or _get_config_attr(
-              _get_config_attr(config, "backbone_config"), "image_size"
-          )
-          is not None
-      )
-      has_vocab_size = config.get("vocab_size") is not None
-    else:
-      class_name = str(getattr(config, "_class_name", "") or "").lower()
-      model_name = str(getattr(config, "_name_or_path", "") or "").lower()
-      model_type = str(getattr(config, "model_type", "") or model_type).lower()
-      archs = getattr(config, "architectures", []) or []
-      is_enc_dec = bool(getattr(config, "is_encoder_decoder", False))
-      has_text_cfg = getattr(config, "text_config", None) is not None
-      has_vision_cfg = getattr(config, "vision_config", None) is not None
-      has_image_size = (
-          getattr(config, "image_size", None) is not None
-          or getattr(config, "num_channels", None) is not None
-          or _get_config_attr(
-              _get_config_attr(config, "backbone_config"), "image_size"
-          )
-          is not None
-      )
-      has_vocab_size = getattr(config, "vocab_size", None) is not None
+    cfg = _wrap_config(config)
+    class_name = cfg.get("_class_name", "").lower()
+    model_name = cfg.get("_name_or_path", "").lower()
+    model_type = cfg.get("model_type", "").lower()
+    archs = cfg.get("architectures", [])
+    is_enc_dec = cfg.get("is_encoder_decoder", False)
+    has_text_cfg = cfg.get("text_config") is not None
+    has_vision_cfg = cfg.get("vision_config") is not None
+    backbone_cfg = cfg.get("backbone_config")
+    has_image_size = (
+        cfg.get("image_size") is not None
+        or cfg.get("num_channels") is not None
+        or (
+            backbone_cfg is not None
+            and backbone_cfg.get("image_size") is not None
+        )
+    )
+    has_vocab_size = cfg.get("vocab_size") is not None
   else:
     has_text_cfg = False
     has_vision_cfg = False
@@ -1293,17 +1408,18 @@ def _determine_modality(config: Any) -> Modality:
 
 def _parse_image_size(config: Any, default_size: int = 224) -> int:
   """Extracts image_size as an integer from config or vision_config or encoder."""
+  cfg = _wrap_config(config)
   vision_config = (
-      _get_config_attr(config, "vision_config")
-      or _get_config_attr(config, "encoder")
-      or _get_config_attr(config, "backbone_config")
+      cfg.get("vision_config")
+      or cfg.get("encoder")
+      or cfg.get("backbone_config")
   )
-  raw_val = _get_config_attr(vision_config, "image_size")
+  raw_val = vision_config.get("image_size") if vision_config else None
   if isinstance(raw_val, (list, tuple)) and raw_val:
     raw_val = raw_val[0]
   val = _safe_int(raw_val, default=None, min_val=1)
   if val is None:
-    raw_val = _get_config_attr(config, "image_size")
+    raw_val = cfg.get("image_size")
     if isinstance(raw_val, (list, tuple)) and raw_val:
       raw_val = raw_val[0]
     val = _safe_int(raw_val, default=default_size, min_val=1)
@@ -1313,17 +1429,20 @@ def _parse_image_size(config: Any, default_size: int = 224) -> int:
 
 def _get_num_channels(config: Any, default_channels: int = 3) -> int:
   """Extracts num_channels from config or vision_config or encoder."""
+  cfg = _wrap_config(config)
   vision_config = (
-      _get_config_attr(config, "vision_config")
-      or _get_config_attr(config, "encoder")
-      or _get_config_attr(config, "backbone_config")
+      cfg.get("vision_config")
+      or cfg.get("encoder")
+      or cfg.get("backbone_config")
   )
   val = _safe_int(
-      _get_config_attr(vision_config, "num_channels"), default=None, min_val=1
+      vision_config.get("num_channels") if vision_config else None,
+      default=None,
+      min_val=1,
   )
   if val is None:
     val = _safe_int(
-        _get_config_attr(config, "num_channels"),
+        cfg.get("num_channels"),
         default=default_channels,
         min_val=1,
     )
@@ -1364,9 +1483,12 @@ def _generate_gemma4_inputs(
     device: The device to place the tensors on.
     input_kwargs: The dictionary to populate with the generated inputs.
   """
-  vision_config = getattr(config, "vision_config", None)
-  patch_size = getattr(vision_config, "patch_size", 16)
-  pooling_kernel_size = getattr(vision_config, "pooling_kernel_size", 3)
+  cfg = _wrap_config(config)
+  vision_config = cfg.get("vision_config")
+  patch_size = vision_config.get("patch_size", 16) if vision_config else 16
+  pooling_kernel_size = (
+      vision_config.get("pooling_kernel_size", 3) if vision_config else 3
+  )
 
   # Default max_soft_tokens from Gemma4ImageProcessor.
   # This is the budget of soft tokens for the model.
@@ -1388,8 +1510,8 @@ def _generate_gemma4_inputs(
   # Unlike standard ViT models that take raw images and do patchification
   # in the model (e.g. via Conv2d), Gemma 4 expects patchified inputs.
   num_channels = (
-      getattr(config, "num_channels", None)
-      or getattr(vision_config, "num_channels", None)
+      cfg.get("num_channels")
+      or (vision_config.get("num_channels") if vision_config else None)
       or 3
   )
   patch_pixels = num_channels * patch_size * patch_size
@@ -1431,30 +1553,27 @@ def _generate_gemma4_inputs(
   # Overwrite input_ids to have num_features copies of image_token_id.
   # The model expects to find these placeholders to merge text and image
   # features.
-  image_token_id = getattr(config, "image_token_id", 258880)
+  image_token_id = cfg.get("image_token_id", 258880)
   input_kwargs["input_ids"][:, :num_features] = image_token_id
 
 
 def _extract_target_dtype(config: Any) -> torch.dtype:
   """Extracts target torch_dtype from root or nested transformer configs."""
-  if getattr(config, "model_type", "") == "gemma2":
+  cfg = _wrap_config(config)
+  if cfg.get("model_type", "") == "gemma2":
     return torch.bfloat16
 
-  dtype = getattr(config, "torch_dtype", None)
+  dtype = cfg.get("torch_dtype") or cfg.get("dtype")
+
   if dtype is None:
-    dtype = getattr(config, "dtype", None)
+    text_config = cfg.get("text_config")
+    if text_config is not None:
+      dtype = text_config.get("torch_dtype") or text_config.get("dtype")
 
-  text_config = getattr(config, "text_config", None)
-  if dtype is None and text_config is not None:
-    dtype = getattr(
-        text_config, "torch_dtype", getattr(text_config, "dtype", None)
-    )
-
-  vision_config = getattr(config, "vision_config", None)
-  if dtype is None and vision_config is not None:
-    dtype = getattr(
-        vision_config, "torch_dtype", getattr(vision_config, "dtype", None)
-    )
+  if dtype is None:
+    vision_config = cfg.get("vision_config")
+    if vision_config is not None:
+      dtype = vision_config.get("torch_dtype") or vision_config.get("dtype")
 
   if isinstance(dtype, str):
     return getattr(torch, dtype, torch.float32)
@@ -1483,10 +1602,11 @@ def _generate_transformers_inputs(
   Returns:
     A dictionary of input tensors.
   """
+  config = _wrap_config(config)
   g = torch.Generator(device="cpu").manual_seed(42)
   input_kwargs = {}
-  model_type = getattr(config, "model_type", "unknown").lower()
-  archs = getattr(config, "architectures", []) or []
+  model_type = config.get("model_type", "unknown").lower()
+  archs = config.get("architectures", [])
   arch_name = archs[0].lower() if archs else ""
   type_str = f"{model_type} {arch_name}"
 
@@ -1507,12 +1627,11 @@ def _generate_transformers_inputs(
     # embedding table (`FSMTEncoder.embed_tokens`) has size `src_vocab_size`
     # (31232). Sampling `input_ids` up to `vocab_size` would otherwise produce
     # out-of-bounds token IDs in `[31232, 31640)` for the encoder on CUDA.
+    text_cfg = config.get("text_config")
     vocab_size = _safe_int(
-        _get_config_attr(config, "src_vocab_size")
-        or _get_config_attr(config, "vocab_size")
-        or _get_config_attr(
-            _get_config_attr(config, "text_config"), "vocab_size"
-        ),
+        config.get("src_vocab_size")
+        or config.get("vocab_size")
+        or (text_cfg.get("vocab_size") if text_cfg else None),
         default=32000,
         min_val=1,
     )
@@ -1533,12 +1652,12 @@ def _generate_transformers_inputs(
       image_size = _parse_image_size(config)
       num_channels = _get_num_channels(config)
       batch_size = shape[0] if shape else 1
-      vision_config = _get_config_attr(config, "vision_config")
+      vision_config = config.get("vision_config")
 
       if "mllama" in model_type:
         num_images = 1
         num_tiles = _safe_int(
-            _get_config_attr(vision_config, "max_num_tiles"),
+            vision_config.get("max_num_tiles") if vision_config else None,
             default=4,
             min_val=1,
         )
@@ -1600,21 +1719,21 @@ def _generate_transformers_inputs(
             )
         ):
           num_image_tokens = _safe_int(
-              _get_config_attr(config, "image_seq_length"),
+              config.get("image_seq_length"),
               default=None,
               min_val=1,
           )
           if num_image_tokens is None:
             patch_size = _safe_int(
-                _get_config_attr(vision_config, "patch_size"),
+                vision_config.get("patch_size") if vision_config else None,
                 default=14,
                 min_val=1,
             )
             num_image_tokens = (image_size // patch_size) ** 2
 
-          image_token_id = _get_config_attr(
-              config, "image_token_id"
-          ) or _get_config_attr(config, "image_token_index")
+          image_token_id = config.get("image_token_id") or config.get(
+              "image_token_index"
+          )
           if image_token_id is not None:
             image_token_id = _safe_int(image_token_id, default=None)
 
@@ -1663,9 +1782,7 @@ def _generate_transformers_inputs(
             )
 
         if any(k in model_type for k in ["videoprism", "videomt"]):
-          num_frames = _safe_int(
-              _get_config_attr(config, "num_frames"), default=8, min_val=1
-          )
+          num_frames = _safe_int(config.get("num_frames"), default=8, min_val=1)
           input_kwargs["pixel_values_videos"] = torch.randn(
               batch_size,
               num_frames,
@@ -1691,12 +1808,12 @@ def _generate_transformers_inputs(
 
         if "qformer" in model_type:
           num_query_tokens = _safe_int(
-              _get_config_attr(config, "num_query_tokens"),
+              config.get("num_query_tokens"),
               default=32,
               min_val=1,
           )
           hidden_size = _safe_int(
-              _get_config_attr(config, "hidden_size"),
+              config.get("hidden_size"),
               default=768,
               min_val=1,
           )
@@ -1745,15 +1862,15 @@ def _generate_transformers_inputs(
         if "pix2struct" in model_type:
           max_patches = min(
               _safe_int(
-                  _get_config_attr(config, "max_patches"),
+                  config.get("max_patches"),
                   default=2048,
                   min_val=1,
               ),
               32,
           )
-          text_cfg = _get_config_attr(config, "text_config", config)
+          text_cfg = config.get("text_config") or config
           patch_hidden_size = _safe_int(
-              _get_config_attr(text_cfg, "hidden_size"),
+              text_cfg.get("hidden_size"),
               default=768,
               min_val=1,
           )
@@ -1786,17 +1903,21 @@ def _generate_transformers_inputs(
             ]
         ):
           patch_size = _safe_int(
-              _get_config_attr(vision_config, "patch_size"),
+              vision_config.get("patch_size") if vision_config else None,
               default=14,
               min_val=1,
           )
           temporal_patch_size = _safe_int(
-              _get_config_attr(vision_config, "temporal_patch_size"),
+              vision_config.get("temporal_patch_size")
+              if vision_config
+              else None,
               default=2,
               min_val=1,
           )
           spatial_merge_size = _safe_int(
-              _get_config_attr(vision_config, "spatial_merge_size"),
+              vision_config.get("spatial_merge_size")
+              if vision_config
+              else None,
               default=2,
               min_val=1,
           )
@@ -1814,9 +1935,7 @@ def _generate_transformers_inputs(
               dtype=torch.long,
           )
 
-          img_token_id = _safe_int(
-              _get_config_attr(config, "image_token_id"), default=151652
-          )
+          img_token_id = _safe_int(config.get("image_token_id"), default=151652)
           needed_len = num_img_tokens + 4
           cur_seq_len = input_kwargs["input_ids"].shape[1]
           if cur_seq_len < needed_len:
@@ -1845,17 +1964,21 @@ def _generate_transformers_inputs(
 
         if any(k in model_type for k in ["glm_ocr", "glm4v"]):
           patch_size = _safe_int(
-              _get_config_attr(vision_config, "patch_size"),
+              vision_config.get("patch_size") if vision_config else None,
               default=14,
               min_val=1,
           )
           temporal_patch_size = _safe_int(
-              _get_config_attr(vision_config, "temporal_patch_size"),
+              vision_config.get("temporal_patch_size")
+              if vision_config
+              else None,
               default=2,
               min_val=1,
           )
           spatial_merge_size = _safe_int(
-              _get_config_attr(vision_config, "spatial_merge_size"),
+              vision_config.get("spatial_merge_size")
+              if vision_config
+              else None,
               default=2,
               min_val=1,
           )
@@ -1874,13 +1997,11 @@ def _generate_transformers_inputs(
           )
 
           img_start_id = _safe_int(
-              _get_config_attr(config, "image_start_token_id"), default=59256
+              config.get("image_start_token_id"), default=59256
           )
-          img_token_id = _safe_int(
-              _get_config_attr(config, "image_token_id"), default=59280
-          )
+          img_token_id = _safe_int(config.get("image_token_id"), default=59280)
           img_end_id = _safe_int(
-              _get_config_attr(config, "image_end_token_id"), default=59257
+              config.get("image_end_token_id"), default=59257
           )
 
           needed_len = num_img_tokens + 4
@@ -1917,7 +2038,7 @@ def _generate_transformers_inputs(
 
         if "kosmos" in model_type:
           latent_query_num = _safe_int(
-              _get_config_attr(config, "latent_query_num"),
+              config.get("latent_query_num"),
               default=64,
               min_val=1,
           )
@@ -1945,7 +2066,7 @@ def _generate_transformers_inputs(
 
           if "kosmos-2.5" in model_type or "kosmos_2_5" in model_type:
             patch_size = _safe_int(
-                _get_config_attr(vision_config, "patch_size"),
+                vision_config.get("patch_size") if vision_config else None,
                 default=16,
                 min_val=1,
             )
@@ -1961,9 +2082,7 @@ def _generate_transformers_inputs(
             input_kwargs.pop("pixel_values", None)
 
         if "xclip" in model_type:
-          num_frames = _safe_int(
-              _get_config_attr(config, "num_frames"), default=8, min_val=1
-          )
+          num_frames = _safe_int(config.get("num_frames"), default=8, min_val=1)
           input_kwargs["pixel_values"] = torch.randn(
               batch_size,
               num_frames,
@@ -2014,9 +2133,7 @@ def _generate_transformers_inputs(
             "xclip",
         ]
     ):
-      num_frames = _safe_int(
-          _get_config_attr(config, "num_frames"), default=8, min_val=1
-      )
+      num_frames = _safe_int(config.get("num_frames"), default=8, min_val=1)
       dummy_video = torch.randn(
           batch_size,
           num_frames,
@@ -2039,7 +2156,7 @@ def _generate_transformers_inputs(
       ).to(device)
       input_kwargs["pixel_values"] = dummy_loftr
     elif "vitpose" in type_str:
-      img_size = _get_config_attr(config, "image_size", [256, 192])
+      img_size = config.get("image_size", [256, 192])
       h, w = (
           (img_size[0], img_size[1])
           if isinstance(img_size, (list, tuple)) and len(img_size) == 2
@@ -2068,14 +2185,12 @@ def _generate_transformers_inputs(
       )
 
     if "qwen3" in type_str and "vision" in type_str:
-      patch_size = _safe_int(
-          _get_config_attr(config, "patch_size"), default=14, min_val=1
-      )
+      patch_size = _safe_int(config.get("patch_size"), default=14, min_val=1)
       grid_h = image_size // patch_size
       grid_w = image_size // patch_size
       num_patches = grid_h * grid_w
       in_channels = _safe_int(
-          _get_config_attr(config, "in_channels"),
+          config.get("in_channels"),
           default=num_channels,
           min_val=1,
       )
@@ -2092,15 +2207,9 @@ def _generate_transformers_inputs(
       input_kwargs.pop("pixel_values", None)
 
     if "videomae" in type_str:
-      patch_size = _safe_int(
-          _get_config_attr(config, "patch_size"), default=16, min_val=1
-      )
-      tubelet_size = _safe_int(
-          _get_config_attr(config, "tubelet_size"), default=2, min_val=1
-      )
-      num_frames = _safe_int(
-          _get_config_attr(config, "num_frames"), default=8, min_val=1
-      )
+      patch_size = _safe_int(config.get("patch_size"), default=16, min_val=1)
+      tubelet_size = _safe_int(config.get("tubelet_size"), default=2, min_val=1)
+      num_frames = _safe_int(config.get("num_frames"), default=8, min_val=1)
       num_patches = ((image_size // patch_size) ** 2) * (
           num_frames // tubelet_size
       )
@@ -2117,9 +2226,7 @@ def _generate_transformers_inputs(
       input_kwargs["pixel_attention_mask"] = torch.ones(
           (batch_size, image_size, image_size), device=device, dtype=torch.bool
       )
-      patch_size = _safe_int(
-          _get_config_attr(config, "patch_size"), default=16, min_val=1
-      )
+      patch_size = _safe_int(config.get("patch_size"), default=16, min_val=1)
       num_patches = image_size // patch_size
       input_kwargs["spatial_shapes"] = torch.tensor(
           [[num_patches, num_patches]], device=device, dtype=torch.long
@@ -2131,9 +2238,7 @@ def _generate_transformers_inputs(
       )
 
     if "gemma4" in type_str and "vision" in type_str:
-      patch_size = _safe_int(
-          _get_config_attr(config, "patch_size"), default=16, min_val=1
-      )
+      patch_size = _safe_int(config.get("patch_size"), default=16, min_val=1)
       num_patches = (image_size // patch_size) ** 2
       input_kwargs["pixel_position_ids"] = torch.arange(
           num_patches, device=device, dtype=torch.long
@@ -2157,9 +2262,9 @@ def _generate_transformers_inputs(
             "visionencoderdecoder",
         ]
     ):
-      decoder_config = _get_config_attr(config, "decoder")
+      decoder_config = config.get("decoder")
       vocab_size = _safe_int(
-          _get_config_attr(decoder_config, "vocab_size"),
+          decoder_config.get("vocab_size") if decoder_config else None,
           default=50265,
           min_val=1,
       )
@@ -2170,16 +2275,12 @@ def _generate_transformers_inputs(
   elif modality == Modality.AUDIO:
     batch_size = shape[0] if shape else 1
     if "whisper" in model_type:
-      num_mel = _safe_int(
-          _get_config_attr(config, "num_mel_bins"), default=80, min_val=1
-      )
+      num_mel = _safe_int(config.get("num_mel_bins"), default=80, min_val=1)
       input_kwargs["input_features"] = torch.randn(
           batch_size, num_mel, 3000, generator=g
       ).to(device)
     elif "clap" in model_type:
-      num_mel = _safe_int(
-          _get_config_attr(config, "num_mel_bins"), default=64, min_val=1
-      )
+      num_mel = _safe_int(config.get("num_mel_bins"), default=64, min_val=1)
       input_kwargs["input_features"] = torch.randn(
           batch_size, 1, 1001, num_mel, generator=g
       ).to(device)
@@ -2188,9 +2289,7 @@ def _generate_transformers_inputs(
       )
       safe_seq_len = min(_get_max_seq_len(config), 512)
       actual_shape = (batch_size, safe_seq_len)
-      vocab_size = _safe_int(
-          _get_config_attr(config, "vocab_size"), default=32000, min_val=1
-      )
+      vocab_size = _safe_int(config.get("vocab_size"), default=32000, min_val=1)
       input_kwargs["input_ids"] = torch.randint(
           0, vocab_size, actual_shape, generator=g, dtype=torch.long
       ).to(device)
@@ -2204,12 +2303,8 @@ def _generate_transformers_inputs(
         model_type in ["ast", "audio-spectrogram-transformer"]
         or "audio-spectrogram-transformer" in model_type
     ):
-      max_length = _safe_int(
-          _get_config_attr(config, "max_length"), default=1024, min_val=1
-      )
-      num_mel = _safe_int(
-          _get_config_attr(config, "num_mel_bins"), default=128, min_val=1
-      )
+      max_length = _safe_int(config.get("max_length"), default=1024, min_val=1)
+      num_mel = _safe_int(config.get("num_mel_bins"), default=128, min_val=1)
       input_kwargs["input_values"] = torch.randn(
           batch_size, max_length, num_mel, generator=g
       ).to(device)
@@ -2227,14 +2322,12 @@ def _generate_transformers_inputs(
             "qwen2a",
         ]
     ):
-      enc_cfg = _get_config_attr(
-          config, "encoder_config", _get_config_attr(config, "encoder", config)
-      )
+      enc_cfg = config.get("encoder_config") or config.get("encoder") or config
       num_mel = _safe_int(
-          _get_config_attr(config, "feature_projection_input_dim")
-          or _get_config_attr(enc_cfg, "num_mel_bins")
-          or _get_config_attr(enc_cfg, "input_feat_per_channel")
-          or _get_config_attr(enc_cfg, "feature_size"),
+          config.get("feature_projection_input_dim")
+          or (enc_cfg.get("num_mel_bins") if enc_cfg else None)
+          or (enc_cfg.get("input_feat_per_channel") if enc_cfg else None)
+          or (enc_cfg.get("feature_size") if enc_cfg else None),
           default=80,
           min_val=1,
       )
@@ -2257,9 +2350,7 @@ def _generate_transformers_inputs(
           batch_size, 80, 128, generator=g
       ).to(device)
     elif any(k in type_str for k in ["s2t", "speech2text", "speech_to_text"]):
-      num_mel = _safe_int(
-          _get_config_attr(config, "num_mel_bins"), default=80, min_val=1
-      )
+      num_mel = _safe_int(config.get("num_mel_bins"), default=80, min_val=1)
       input_kwargs["input_features"] = torch.randn(
           batch_size, 100, num_mel, generator=g
       ).to(device)
@@ -2268,8 +2359,7 @@ def _generate_transformers_inputs(
       )
     elif "univnet" in type_str:
       num_mel = _safe_int(
-          _get_config_attr(config, "num_mel_bins")
-          or _get_config_attr(config, "input_dim"),
+          config.get("num_mel_bins") or config.get("input_dim"),
           default=80,
           min_val=1,
       )
@@ -2296,9 +2386,11 @@ def _generate_transformers_inputs(
       ).to(device)
     elif "musicgen" in type_str:
       safe_seq_len = min(_get_max_seq_len(config), 16)
-      text_cfg = _get_config_attr(config, "text_encoder", config)
+      text_cfg = config.get("text_encoder") or config
       vocab_size = _safe_int(
-          _get_config_attr(text_cfg, "vocab_size"), default=32000, min_val=1
+          text_cfg.get("vocab_size") if text_cfg else None,
+          default=32000,
+          min_val=1,
       )
       input_kwargs["input_ids"] = torch.randint(
           0,
@@ -2310,12 +2402,16 @@ def _generate_transformers_inputs(
       input_kwargs["attention_mask"] = torch.ones(
           (batch_size, safe_seq_len), device=device, dtype=torch.long
       )
-      dec_cfg = _get_config_attr(config, "decoder", config)
+      dec_cfg = config.get("decoder") or config
       num_codebooks = _safe_int(
-          _get_config_attr(dec_cfg, "num_codebooks"), default=4, min_val=1
+          dec_cfg.get("num_codebooks") if dec_cfg else None,
+          default=4,
+          min_val=1,
       )
       audio_vocab_size = _safe_int(
-          _get_config_attr(dec_cfg, "vocab_size"), default=2048, min_val=1
+          dec_cfg.get("vocab_size") if dec_cfg else None,
+          default=2048,
+          min_val=1,
       )
       input_kwargs["decoder_input_ids"] = torch.randint(
           0,
@@ -2327,13 +2423,13 @@ def _generate_transformers_inputs(
     elif "bark" in type_str:
       safe_seq_len = min(_get_max_seq_len(config), 64)
       actual_shape = (batch_size, safe_seq_len)
-      sem_cfg = _get_config_attr(
-          config,
-          "semantic_config",
-          _get_config_attr(config, "text_config", config),
+      sem_cfg = (
+          config.get("semantic_config") or config.get("text_config") or config
       )
       vocab_size = _safe_int(
-          _get_config_attr(sem_cfg, "vocab_size"), default=10048, min_val=1
+          sem_cfg.get("vocab_size") if sem_cfg else None,
+          default=10048,
+          min_val=1,
       )
       input_kwargs["input_ids"] = torch.randint(
           0, vocab_size, actual_shape, generator=g, dtype=torch.long
@@ -2345,9 +2441,7 @@ def _generate_transformers_inputs(
         k in type_str for k in ["csm", "voxtral", "dia", "audio2hero", "higgs"]
     ):
       safe_seq_len = min(_get_max_seq_len(config), 32)
-      vocab_size = _safe_int(
-          _get_config_attr(config, "vocab_size"), default=32000, min_val=1
-      )
+      vocab_size = _safe_int(config.get("vocab_size"), default=32000, min_val=1)
       input_kwargs["input_ids"] = torch.randint(
           0,
           vocab_size,
@@ -2361,13 +2455,9 @@ def _generate_transformers_inputs(
     elif "speecht5" in model_type:
       safe_seq_len = min(_get_max_seq_len(config), 8)
       actual_shape = (batch_size, safe_seq_len)
-      vocab_size = _safe_int(
-          _get_config_attr(config, "vocab_size"), default=81, min_val=4
-      )
+      vocab_size = _safe_int(config.get("vocab_size"), default=81, min_val=4)
       max_vocab = vocab_size - 1
-      num_mel = _safe_int(
-          _get_config_attr(config, "num_mel_bins"), default=80, min_val=1
-      )
+      num_mel = _safe_int(config.get("num_mel_bins"), default=80, min_val=1)
       dec_seq_len = 8
       input_kwargs["input_values"] = torch.randn(
           batch_size, 16000, generator=g
@@ -2397,9 +2487,7 @@ def _generate_transformers_inputs(
     elif "vits" in model_type:
       safe_seq_len = min(_get_max_seq_len(config), 8)
       actual_shape = (batch_size, safe_seq_len)
-      vocab_size = _safe_int(
-          _get_config_attr(config, "vocab_size"), default=38, min_val=4
-      )
+      vocab_size = _safe_int(config.get("vocab_size"), default=38, min_val=4)
       max_vocab = min(vocab_size, 38)
       input_kwargs["input_ids"] = torch.randint(
           2, max_vocab, actual_shape, generator=g, dtype=torch.long
@@ -2411,20 +2499,17 @@ def _generate_transformers_inputs(
       input_kwargs["speaking_rate"] = 1e15
     elif "granite" in model_type:
       batch_size = shape[0] if shape else 1
-      encoder_cfg = _get_config_attr(
-          config, "encoder", _get_config_attr(config, "speech_config")
-      )
+      encoder_cfg = config.get("encoder") or config.get("speech_config")
       num_mel = _safe_int(
-          _get_config_attr(encoder_cfg, "input_dim")
-          or _get_config_attr(encoder_cfg, "num_mel_bins"),
+          (encoder_cfg.get("input_dim") or encoder_cfg.get("num_mel_bins"))
+          if encoder_cfg
+          else None,
           default=160,
           min_val=1,
       )
-      window_size = _safe_int(
-          _get_config_attr(config, "window_size"), default=15, min_val=1
-      )
+      window_size = _safe_int(config.get("window_size"), default=15, min_val=1)
       downsample_rate = _safe_int(
-          _get_config_attr(config, "downsample_rate"), default=5, min_val=1
+          config.get("downsample_rate"), default=5, min_val=1
       )
       audio_len = window_size  # nblocks = 1
 
@@ -2434,8 +2519,7 @@ def _generate_transformers_inputs(
       # Calculate exact number of audio tokens expected by GraniteSpeech
       num_audio_tokens = window_size // downsample_rate
       audio_token_id = _safe_int(
-          _get_config_attr(config, "audio_token_id")
-          or _get_config_attr(config, "audio_token_index"),
+          config.get("audio_token_id") or config.get("audio_token_index"),
           default=49152,
       )
 
@@ -2451,10 +2535,10 @@ def _generate_transformers_inputs(
     elif any(k in type_str for k in ["fastspeech", "fastspeech2"]):
       safe_seq_len = min(_get_max_seq_len(config), 16)
       actual_shape = (batch_size, safe_seq_len)
-      model_cfg = _get_config_attr(config, "model_config")
+      model_cfg = config.get("model_config")
       vocab_size = _safe_int(
-          _get_config_attr(config, "vocab_size")
-          or _get_config_attr(model_cfg, "vocab_size"),
+          config.get("vocab_size")
+          or (model_cfg.get("vocab_size") if model_cfg else None),
           default=38,
           min_val=1,
       )
@@ -2467,20 +2551,22 @@ def _generate_transformers_inputs(
     elif any(k in type_str for k in ["pe_audio", "pe-audio", "pe-a-frame"]):
       safe_seq_len = min(_get_max_seq_len(config), 16)
       actual_shape = (batch_size, safe_seq_len)
-      text_cfg = _get_config_attr(config, "text_config")
+      text_cfg = config.get("text_config")
       vocab_size = _safe_int(
-          _get_config_attr(config, "vocab_size")
-          or _get_config_attr(text_cfg, "vocab_size"),
+          config.get("vocab_size")
+          or (text_cfg.get("vocab_size") if text_cfg else None),
           default=32000,
           min_val=1,
       )
       input_kwargs["input_ids"] = torch.randint(
           0, vocab_size, actual_shape, generator=g, dtype=torch.long
       ).to(device)
-      audio_cfg = _get_config_attr(config, "audio_config")
-      dac_cfg = _get_config_attr(audio_cfg, "dac_config")
+      audio_cfg = config.get("audio_config")
+      dac_cfg = audio_cfg.get("dac_config") if audio_cfg else None
       hop_length = _safe_int(
-          _get_config_attr(dac_cfg, "hop_length"), default=1920, min_val=1
+          dac_cfg.get("hop_length") if dac_cfg else None,
+          default=1920,
+          min_val=1,
       )
       audio_len = safe_seq_len * hop_length
       input_kwargs["input_values"] = torch.randn(
@@ -2503,15 +2589,15 @@ def _generate_transformers_inputs(
     else:
       actual_shape = (1, safe_seq_len)
     batch_size = actual_shape[0]
-    text_cfg = _get_config_attr(config, "text_config")
+    text_cfg = config.get("text_config")
     # Prefer `src_vocab_size` over `vocab_size` for asymmetric encoder-decoder
     # models such as FSMT (`facebook/wmt19-ru-en`), where `config.vocab_size`
     # aliases `tgt_vocab_size` (31640) via `FSMTConfig.attribute_map` while
     # `FSMTEncoder.embed_tokens` only has `src_vocab_size` (31232) rows.
     vocab_size = _safe_int(
-        _get_config_attr(config, "src_vocab_size")
-        or _get_config_attr(config, "vocab_size")
-        or _get_config_attr(text_cfg, "vocab_size"),
+        config.get("src_vocab_size")
+        or config.get("vocab_size")
+        or (text_cfg.get("vocab_size") if text_cfg else None),
         default=32000,
         min_val=1,
     )
@@ -2527,7 +2613,7 @@ def _generate_transformers_inputs(
         actual_shape, device=device, dtype=torch.long
     )
 
-    eos_token_id = _get_config_attr(config, "eos_token_id", 2)
+    eos_token_id = config.get("eos_token_id", 2)
     if isinstance(eos_token_id, (list, tuple)):
       eos_token_id = eos_token_id[0] if eos_token_id else 2
     eos_token_id = _safe_int(eos_token_id, default=2)
@@ -2547,19 +2633,17 @@ def _generate_transformers_inputs(
         ]
     ):
       context_length = _safe_int(
-          _get_config_attr(config, "context_length")
-          or _get_config_attr(config, "seq_length"),
+          config.get("context_length") or config.get("seq_length"),
           default=64,
           min_val=1,
       )
       input_size = _safe_int(
-          _get_config_attr(config, "input_size")
-          or _get_config_attr(config, "num_input_channels"),
+          config.get("input_size") or config.get("num_input_channels"),
           default=1,
           min_val=1,
       )
       num_time_features = _safe_int(
-          _get_config_attr(config, "num_time_features"),
+          config.get("num_time_features"),
           default=4,
           min_val=1,
       )
@@ -2574,9 +2658,7 @@ def _generate_transformers_inputs(
             batch_size, device=device, dtype=torch.long
         )
       else:
-        lags_sequence = _get_config_attr(
-            config, "lags_sequence", [1, 2, 3, 4, 5, 6, 7]
-        )
+        lags_sequence = config.get("lags_sequence", [1, 2, 3, 4, 5, 6, 7])
         max_lag = max(lags_sequence) if lags_sequence else 0
         context_length = max(context_length, max_lag + 1, 64)
         input_kwargs["past_values"] = torch.randn(
@@ -2592,12 +2674,8 @@ def _generate_transformers_inputs(
         )
     elif "decision_transformer" in type_str:
       input_kwargs.pop("input_ids", None)
-      state_dim = _safe_int(
-          _get_config_attr(config, "state_dim"), default=17, min_val=1
-      )
-      act_dim = _safe_int(
-          _get_config_attr(config, "act_dim"), default=4, min_val=1
-      )
+      state_dim = _safe_int(config.get("state_dim"), default=17, min_val=1)
+      act_dim = _safe_int(config.get("act_dim"), default=4, min_val=1)
       seq_len = actual_shape[1]
       input_kwargs["states"] = torch.randn(
           batch_size, seq_len, state_dim, generator=g, device=device
@@ -2630,7 +2708,7 @@ def _generate_transformers_inputs(
       )
     elif "lxmert" in type_str:
       feat_dim = _safe_int(
-          _get_config_attr(config, "visual_feat_dim"), default=2048, min_val=1
+          config.get("visual_feat_dim"), default=2048, min_val=1
       )
       input_kwargs["visual_feats"] = torch.randn(
           actual_shape[0], 36, feat_dim, generator=g
@@ -2660,25 +2738,21 @@ def _generate_transformers_inputs(
       )
 
     elif "rag" in type_str:
-      n_docs = _safe_int(
-          _get_config_attr(config, "n_docs"), default=5, min_val=1
-      )
-      q_cfg = _get_config_attr(
-          config,
-          "question_encoder",
-          _get_config_attr(config, "question_encoder_config"),
+      n_docs = _safe_int(config.get("n_docs"), default=5, min_val=1)
+      q_cfg = config.get("question_encoder") or config.get(
+          "question_encoder_config"
       )
       q_vocab_size = _safe_int(
-          _get_config_attr(q_cfg, "vocab_size"), default=30522, min_val=1
+          q_cfg.get("vocab_size") if q_cfg else None, default=30522, min_val=1
       )
       input_kwargs["input_ids"] = torch.randint(
           0, q_vocab_size, actual_shape, generator=g, dtype=torch.long
       ).to(device)
-      gen_cfg = _get_config_attr(
-          config, "generator", _get_config_attr(config, "generator_config")
-      )
+      gen_cfg = config.get("generator") or config.get("generator_config")
       gen_vocab_size = _safe_int(
-          _get_config_attr(gen_cfg, "vocab_size"), default=50265, min_val=1
+          gen_cfg.get("vocab_size") if gen_cfg else None,
+          default=50265,
+          min_val=1,
       )
       input_kwargs["context_input_ids"] = torch.randint(
           0,
@@ -2699,9 +2773,7 @@ def _generate_transformers_inputs(
       if arch_name == "perceivermodel":
         input_kwargs.pop("input_ids", None)
         input_kwargs.pop("attention_mask", None)
-        d_model = _safe_int(
-            _get_config_attr(config, "d_model"), default=768, min_val=1
-        )
+        d_model = _safe_int(config.get("d_model"), default=768, min_val=1)
         input_kwargs["inputs"] = torch.randn(
             batch_size, actual_shape[1], d_model, generator=g
         ).to(device)
@@ -2710,7 +2782,7 @@ def _generate_transformers_inputs(
         k in type_str for k in ["gemma4_assistant", "gemma4_unified_assistant"]
     ):
       backbone_hidden_size = _safe_int(
-          _get_config_attr(config, "backbone_hidden_size"),
+          config.get("backbone_hidden_size"),
           default=3840 if "unified" in model_type else 1536,
           min_val=1,
       )
@@ -2720,9 +2792,9 @@ def _generate_transformers_inputs(
       input_kwargs["inputs_embeds"] = torch.randn(
           batch_size, seq_len, embed_dim, generator=g
       ).to(device)
-      text_cfg = _get_config_attr(config, "text_config", config)
-      layer_types = _get_config_attr(
-          text_cfg, "layer_types", ["sliding_attention", "full_attention"]
+      text_cfg = config.get("text_config") or config
+      layer_types = text_cfg.get(
+          "layer_types", ["sliding_attention", "full_attention"]
       )
       all_layer_types = set(layer_types) | {
           "sliding_attention",
@@ -2731,9 +2803,10 @@ def _generate_transformers_inputs(
       shared_kv_states = {}
       for layer_key in sorted(all_layer_types):
         layer_cfg = None
-        if hasattr(text_cfg, "per_layer_config"):
+        per_layer_cfg = text_cfg.get("per_layer_config")
+        if per_layer_cfg is not None:
           try:
-            layer_cfg = text_cfg.per_layer_config[layer_key]
+            layer_cfg = per_layer_cfg[layer_key]
           except Exception:
             layer_cfg = None
         if layer_cfg is None:
@@ -2742,35 +2815,35 @@ def _generate_transformers_inputs(
         is_global = "full" in layer_key or "global" in layer_key
         if is_global:
           h_dim = _safe_int(
-              _get_config_attr(layer_cfg, "global_head_dim")
-              or _get_config_attr(layer_cfg, "head_dim")
+              layer_cfg.get("global_head_dim")
+              or layer_cfg.get("head_dim")
               or (
-                  _get_config_attr(layer_cfg, "hidden_size", 1024)
-                  // _get_config_attr(layer_cfg, "num_attention_heads", 16)
+                  layer_cfg.get("hidden_size", 1024)
+                  // layer_cfg.get("num_attention_heads", 16)
               ),
               default=512,
               min_val=1,
           )
           n_kv = _safe_int(
-              _get_config_attr(layer_cfg, "num_global_key_value_heads")
-              or _get_config_attr(layer_cfg, "num_key_value_heads")
-              or _get_config_attr(layer_cfg, "num_attention_heads"),
+              layer_cfg.get("num_global_key_value_heads")
+              or layer_cfg.get("num_key_value_heads")
+              or layer_cfg.get("num_attention_heads"),
               default=8,
               min_val=1,
           )
         else:
           h_dim = _safe_int(
-              _get_config_attr(layer_cfg, "head_dim")
+              layer_cfg.get("head_dim")
               or (
-                  _get_config_attr(layer_cfg, "hidden_size", 1024)
-                  // _get_config_attr(layer_cfg, "num_attention_heads", 16)
+                  layer_cfg.get("hidden_size", 1024)
+                  // layer_cfg.get("num_attention_heads", 16)
               ),
               default=256,
               min_val=1,
           )
           n_kv = _safe_int(
-              _get_config_attr(layer_cfg, "num_key_value_heads")
-              or _get_config_attr(layer_cfg, "num_attention_heads"),
+              layer_cfg.get("num_key_value_heads")
+              or layer_cfg.get("num_attention_heads"),
               default=8,
               min_val=1,
           )
@@ -2791,24 +2864,23 @@ def _generate_transformers_inputs(
         shared_kv_states[layer_key] = (k, v)
       input_kwargs["shared_kv_states"] = shared_kv_states
 
-    if modality == Modality.SEQ2SEQ and _get_config_attr(
-        config, "is_encoder_decoder", False
+    if (
+        modality == Modality.SEQ2SEQ
+        and config.get("is_encoder_decoder", False) is True
     ):
       pass  # Handled below for all modalities
 
-  if _get_config_attr(config, "is_encoder_decoder", False) is True and (
+  if config.get("is_encoder_decoder", False) is True and (
       modality != Modality.VISION and model_type not in ("speecht5", "vits")
   ):
-    text_cfg = _get_config_attr(config, "text_config")
-    gen_cfg = _get_config_attr(
-        config, "generator", _get_config_attr(config, "generator_config")
-    )
+    text_cfg = config.get("text_config")
+    gen_cfg = config.get("generator") or config.get("generator_config")
     vocab_size = _safe_int(
-        _get_config_attr(gen_cfg, "vocab_size")
-        if "rag" in type_str
+        gen_cfg.get("vocab_size")
+        if "rag" in type_str and gen_cfg
         else (
-            _get_config_attr(config, "vocab_size")
-            or _get_config_attr(text_cfg, "vocab_size")
+            config.get("vocab_size")
+            or (text_cfg.get("vocab_size") if text_cfg else None)
         ),
         default=32000,
         min_val=1,
@@ -2818,7 +2890,7 @@ def _generate_transformers_inputs(
     if "whisper" in model_type:
       max_len = min(max_len, 448)
     max_target_pos = _safe_int(
-        _get_config_attr(config, "max_target_positions"),
+        config.get("max_target_positions"),
         default=None,
         min_val=1,
     )
@@ -2854,6 +2926,107 @@ def _generate_transformers_inputs(
     input_kwargs[k] = _cast_floating_point(v)
 
   return input_kwargs
+
+
+def _sanitize_transformers_config_dict(
+    config_dict: dict[str, Any],
+    load_weights: bool = False,
+) -> dict[str, Any]:
+  """Sanitizes HuggingFace config dictionary to fix common schema and offline issues."""
+  config_dict = dict(config_dict)
+
+  # Convert id2label values to strings
+  if "id2label" in config_dict and isinstance(config_dict["id2label"], dict):
+    config_dict["id2label"] = {
+        str(k): str(v) for k, v in config_dict["id2label"].items()
+    }
+
+  # Convert int dropout probabilities to floats
+  for float_key in (
+      "hidden_dropout_prob",
+      "attention_probs_dropout_prob",
+      "classifier_dropout",
+  ):
+    val = config_dict.get(float_key)
+    if isinstance(val, int) and not isinstance(val, bool):
+      config_dict[float_key] = float(val)
+
+  # For offline execution, disable downloading pretrained backbones.
+  if not load_weights and "use_pretrained_backbone" in config_dict:
+    config_dict["use_pretrained_backbone"] = False
+
+  # For offline execution, synthesize backbone_config if missing to prevent network calls.
+  if (
+      not load_weights
+      and config_dict.get("backbone")
+      and not config_dict.get("backbone_config")
+  ):
+    if config_dict.get("use_timm_backbone", True):
+      config_dict["backbone_config"] = {
+          "model_type": "timm_backbone",
+          "backbone": config_dict["backbone"],
+          **(config_dict.get("backbone_kwargs") or {}),
+      }
+    else:
+      config_dict["backbone_config"] = {
+          "model_type": "resnet",
+      }
+
+  return config_dict
+
+
+def _load_transformers_config_with_fallback(
+    model_path_or_file: epath.PathLike | str,
+    load_weights: bool = False,
+) -> Any:
+  """Loads AutoConfig with sanitization fallback for schema inconsistencies and offline constraints."""
+  # 1. Standard AutoConfig.from_pretrained with offline kwargs
+  kwargs = {}
+  if not load_weights:
+    kwargs["use_pretrained_backbone"] = False
+  try:
+    return _wrap_config(
+        transformers.AutoConfig.from_pretrained(
+            str(model_path_or_file), **kwargs
+        )
+    )
+  except Exception:  # pylint: disable=broad-except
+    pass
+
+  # 2. Read config.json, sanitize schema, and instantiate AutoConfig
+  path = epath.Path(model_path_or_file)
+  cfg_file = path / "config.json" if path.is_dir() else path
+  with cfg_file.open("r", encoding="utf-8") as f:
+    config_dict = json.load(f)
+
+  config_dict = _sanitize_transformers_config_dict(
+      config_dict, load_weights=load_weights
+  )
+
+  model_type = config_dict.get("model_type")
+  if not isinstance(model_type, str):
+    raise ValueError(
+        f"Missing or invalid model_type in config for {model_path_or_file}"
+    )
+
+  config_mapping = getattr(
+      getattr(transformers, "models", None)
+      and getattr(transformers.models, "auto", None)
+      and getattr(transformers.models.auto, "configuration_auto", None),
+      "CONFIG_MAPPING",
+      {},
+  )
+  if model_type in config_mapping:
+    try:
+      return _wrap_config(config_mapping[model_type].from_dict(config_dict))
+    except Exception:  # pylint: disable=broad-except
+      pass
+  try:
+    return _wrap_config(
+        transformers.AutoConfig.for_model(model_type, **config_dict)
+    )
+  except Exception:  # pylint: disable=broad-except
+    return _wrap_config(config_dict)
 
 
 class TransformersProvider(BaseProvider):
@@ -2923,8 +3096,8 @@ class TransformersProvider(BaseProvider):
       model_dir_or_repo_id = self._base_path / name  # pyrefly: ignore[unsupported-operation]
       try:
         if model_dir_or_repo_id.exists():
-          config = transformers.AutoConfig.from_pretrained(
-              str(model_dir_or_repo_id)
+          config = _load_transformers_config_with_fallback(
+              str(model_dir_or_repo_id), load_weights=load_weights
           )
       except Exception as exc:  # pylint: disable=broad-except
         logging.warning(
@@ -2948,7 +3121,9 @@ class TransformersProvider(BaseProvider):
               files_root.joinpath(str(pathlib.Path(name) / "config.json"))
           ) as f:
             if f.exists():
-              config = transformers.AutoConfig.from_pretrained(str(f))
+              config = _load_transformers_config_with_fallback(
+                  str(f), load_weights=load_weights
+              )
               break
         except Exception:  # pylint: disable=broad-except
           config = None
@@ -2957,8 +3132,8 @@ class TransformersProvider(BaseProvider):
       dest_config = self.fetch_gcs_file(f"{name}/config.json")
       if dest_config and dest_config.exists():
         try:
-          config = transformers.AutoConfig.from_pretrained(
-              str(dest_config.parent)
+          config = _load_transformers_config_with_fallback(
+              str(dest_config.parent), load_weights=load_weights
           )
           model_dir_or_repo_id = epath.Path(dest_config.parent)
         except Exception as exc:  # pylint: disable=broad-except
@@ -2983,16 +3158,16 @@ class TransformersProvider(BaseProvider):
         raise NotImplementedError(
             "modify_config_hook is not supported when load_weights is True."
         )
-      config = modify_config_hook(config)
+      config = _wrap_config(modify_config_hook(config))
 
     # When loading models offline (load_weights=False), some vision models (like
     # DETR) will still try to download pretrained backbones (e.g. via TIMM)
     # over the network. Disabling this forces offline initialization with
     # random weights, avoiding network errors on Forge.
-    if not load_weights and hasattr(config, "use_pretrained_backbone"):
+    if not load_weights and "use_pretrained_backbone" in config:
       config.use_pretrained_backbone = False
 
-    if not load_weights and getattr(config, "model_type", "") == "vits":
+    if not load_weights and config.get("model_type", "") == "vits":
       config.use_stochastic_duration_prediction = False
 
     modality = _determine_modality(config)
@@ -3001,7 +3176,7 @@ class TransformersProvider(BaseProvider):
       if modality == Modality.CAUSAL_LM:
         model_cls = transformers.AutoModelForCausalLM
       elif modality == Modality.SEQ2SEQ:
-        if "whisper" in getattr(config, "model_type", ""):
+        if "whisper" in config.get("model_type", ""):
           model_cls = getattr(
               transformers, "AutoModelForSpeechSeq2Seq", transformers.AutoModel
           )
@@ -3019,7 +3194,7 @@ class TransformersProvider(BaseProvider):
           str(model_dir_or_repo_id), **kwargs
       )
     else:
-      architectures = getattr(config, "architectures", [])
+      architectures = config.get("architectures", [])
       model_cls = None
 
       if architectures:
@@ -3044,7 +3219,7 @@ class TransformersProvider(BaseProvider):
         if modality == Modality.CAUSAL_LM:
           model_cls = transformers.AutoModelForCausalLM
         elif modality == Modality.SEQ2SEQ:
-          if "whisper" in getattr(config, "model_type", ""):
+          if "whisper" in config.get("model_type", ""):
             model_cls = getattr(
                 transformers,
                 "AutoModelForSpeechSeq2Seq",
@@ -3058,10 +3233,11 @@ class TransformersProvider(BaseProvider):
       target_dtype = _extract_target_dtype(config)
 
       def _create_model():
+        cfg = config.unwrap() if isinstance(config, _ConfigWrapper) else config
         m = None
         if model_cls is not None and hasattr(model_cls, "from_config"):
           try:
-            m = model_cls.from_config(config)
+            m = model_cls.from_config(cfg)
           except Exception as exc:  # pylint: disable=broad-except
             logging.warning(
                 "Failed to instantiate %s with from_config: %s. Falling back to"
@@ -3072,14 +3248,14 @@ class TransformersProvider(BaseProvider):
         if m is None:
           try:
             if callable(model_cls):
-              m = model_cls(config)
+              m = model_cls(cfg)
             else:
-              m = transformers.AutoModel.from_config(config)
+              m = transformers.AutoModel.from_config(cfg)
           except Exception:
-            m = transformers.AutoModel.from_config(config)
+            m = transformers.AutoModel.from_config(cfg)
         if target_dtype != torch.float32:
           m = m.to(dtype=target_dtype)  # pyrefly: ignore[missing-attribute]
-        if getattr(config, "model_type", "") in ("vits", "tapas"):
+        if config.get("model_type", "") in ("vits", "tapas"):
           # Zero TPU float weights before forward pass to prevent uninitialized
           # parameters (from to_empty) causing NaNs/overflows.
           def _zero_weights_pre_hook(module, *_unused_args, **_unused_kwargs):
@@ -3233,6 +3409,17 @@ class DiffusersProvider(BaseProvider):
                 )
             except Exception:  # pylint: disable=broad-except
               pass
+          # Support nested candidate subfolders
+          try:
+            for sub_dir in model_path.iterdir():
+              if sub_dir.is_dir():
+                for sub_target in ("transformer", "unet"):
+                  if (sub_dir / sub_target / "config.json").exists():
+                    nested_cand = f"{sub_dir.name}/{sub_target}"
+                    if nested_cand not in candidate_subfolders:
+                      candidate_subfolders.append(nested_cand)
+          except Exception:  # pylint: disable=broad-except
+            pass
       for cand in _DEFAULT_DIFFUSERS_SUBFOLDERS:
         if cand not in candidate_subfolders:
           candidate_subfolders.append(cand)
@@ -3430,17 +3617,18 @@ class DiffusersProvider(BaseProvider):
         model_cls = diffusers.UNet2DConditionModel
       forward_params = inspect.signature(model_cls.forward).parameters
 
-      # Fallback to text_dim / joint_attention_dim / encoder_hid_dim if
-      # cross_attention_dim is not specified in config
+      # Fallback to encoder_hid_dim / text_dim / joint_attention_dim if
+      # cross_attention_dim is not specified in config.
       cross_attention_dim = (
-          cfg.get("cross_attention_dim")
+          cfg.get("encoder_hid_dim")
+          or cfg.get("cross_attention_dim")
           or cfg.get("joint_attention_dim")
           or cfg.get("text_dim")
-          or cfg.get("encoder_hid_dim")
       )
       if cross_attention_dim is None:
         if (
             class_name == "UNet2DConditionModel"
+            or model_cls == getattr(diffusers, "UNet2DConditionModel", None)
             or "unet" in str(class_name).lower()
         ):
           cross_attention_dim = 1280
@@ -3511,6 +3699,10 @@ class DiffusersProvider(BaseProvider):
         kwargs.pop("added_cond_kwargs", None)
       if "timestep" not in forward_params:
         kwargs.pop("timestep", None)
+      if "class_labels" in forward_params or cfg.get("num_class_embeds"):
+        kwargs["class_labels"] = torch.zeros(
+            (batch_size,), dtype=torch.long, device=device
+        )
 
       return (), kwargs
 
