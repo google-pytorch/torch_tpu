@@ -29,6 +29,7 @@ torch_tpu_cc_library(
         "//csrc/common:fixed_size_span",
         "//csrc/common:utils",
         "//csrc/eager:op_dispatcher",
+        "//csrc/ops:binary",
         "//csrc/ops:op_builder_utils",
         "//csrc/ops:op_names",
         "//csrc/ops:unary",

@@ -25,6 +25,7 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
+#include "csrc/ops/binary.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "llvm/Support/Casting.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -169,15 +170,18 @@ absl::StatusOr<mlir::MlirOp> BuildReciprocalShlo(
     mlir::MlirOp input_op, mlir::ElementType default_mlir_type) {
   TT_ASSIGN_OR_RETURN(mlir::MlirOp converted_input_op,
                       ConvertIfInteger(input_op, default_mlir_type));
-  mlir::MlirOp one_scalar = MakeConstantLike(converted_input_op, 1.0);
-  mlir::MlirOp result_op = stablehlo::Div(one_scalar, converted_input_op);
-  return result_op;
+  auto element_type = GetElementTypeOrDie(converted_input_op);
+  mlir::MlirOp one =
+      MakeScalarConstant(converted_input_op.getBuilder(), 1.0, element_type);
+  return BuildDivShlo(one, converted_input_op);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildReluShlo(mlir::MlirOp input_op) {
-  mlir::MlirOp zero_scalar = MakeConstantLike(input_op, 0.0);
-  mlir::MlirOp result_op = stablehlo::Max(input_op, zero_scalar);
-  return result_op;
+  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op);
+  mlir::Type element_type = input_type.getElementType();
+  mlir::MlirOp zero =
+      MakeScalarConstant(input_op.getBuilder(), 0.0, element_type);
+  return BuildMaximumShlo(input_op, zero);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildSiluShlo(mlir::MlirOp input_op) {

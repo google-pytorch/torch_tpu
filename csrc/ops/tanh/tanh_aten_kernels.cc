@@ -26,6 +26,7 @@
 #include "csrc/common/fixed_size_span.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/op_dispatcher.h"
+#include "csrc/ops/binary.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
@@ -47,9 +48,11 @@ absl::StatusOr<mlir::MlirOp> BuildTanhBackwardGradInputShlo(
   auto output_squared = mlir::stablehlo::Mul(output_op, output_op);
 
   // Calculate 1.0 - output_squared
-  auto one_op = MakeConstantLike(output_op, 1.0);
-  auto one_minus_output_squared =
-      mlir::stablehlo::Subtract(one_op, output_squared);
+  const mlir::RankedTensorType type = GetTensorTypeOrDie(output_op);
+  mlir::Type element_type = type.getElementType();
+  auto one_op = MakeScalarConstant(output_op.getBuilder(), 1.0, element_type);
+  TT_ASSIGN_OR_RETURN(auto one_minus_output_squared,
+                      BuildSubShlo(one_op, output_squared));
 
   // For complex numbers, the gradient is grad_output * conj(1 - output^2)
   TT_ASSIGN_OR_RETURN(auto conj_one_minus_output_squared,

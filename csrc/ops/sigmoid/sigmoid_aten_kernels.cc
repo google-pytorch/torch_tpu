@@ -30,6 +30,7 @@
 #include "csrc/common/to_string.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
+#include "csrc/ops/binary.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
@@ -56,9 +57,8 @@ absl::StatusOr<mlir::MlirOp> BuildSigmoidBackwardShlo(mlir::MlirOp grad_output,
   auto type = GetTensorTypeOrDie(output);
   TT_ASSIGN_OR_RETURN(auto element_type,
                       ConvertTo<mlir::ElementType>(type.getElementType()));
-  auto one =
-      MakeConstant(grad_output.getBuilder(), 1, element_type, type.getShape());
-  auto sub = mlir::stablehlo::Subtract(one, output);
+  auto one = MakeScalarConstant(grad_output.getBuilder(), 1.0, element_type);
+  TT_ASSIGN_OR_RETURN(auto sub, BuildSubShlo(one, output));
   auto mul = mlir::stablehlo::Mul(output, sub);
 
   // For complex numbers, the gradient is grad_output * conj(f'(x))
@@ -84,8 +84,10 @@ absl::Status LogSigmoidForward(const at::Tensor& self, at::Tensor& out,
     // Stable formula for log_sigmoid:
     // log_sigmoid(x) = -softplus(-x) = -(max(-x, 0) + log1p(exp(-|x|)))
     auto neg_self_op = mlir::stablehlo::Neg(self_op);
-    auto zero = MakeConstantLike(self_op, 0.0);
-    auto max_val = mlir::stablehlo::Max(neg_self_op, zero);
+    auto zero =
+        MakeScalarConstant(self_op.getBuilder(), 0.0,
+                           GetTensorTypeOrDie(self_op).getElementType());
+    TT_ASSIGN_OR_RETURN(auto max_val, BuildMaximumShlo(neg_self_op, zero));
 
     auto is_nan = mlir::stablehlo::Compare(
         neg_self_op, neg_self_op, mlir::stablehlo::ComparisonDirection::NE);
@@ -133,17 +135,23 @@ absl::Status LogSigmoidBackward(const at::Tensor& grad_output,
     TT_ASSIGN_OR_RETURN(
         float_self_op, ConvertIfInteger(float_self_op, mlir::ElementType::F32));
 
-    auto zero = MakeConstantLike(float_self_op, 0.0);
-    auto one = MakeConstantLike(float_self_op, 1.0);
-    auto neg_one = MakeConstantLike(float_self_op, -1.0);
+    auto float_type = GetTensorTypeOrDie(float_self_op).getElementType();
+    auto zero = MakeScalarConstant(float_self_op.getBuilder(), 0.0, float_type);
+    auto one = MakeScalarConstant(float_self_op.getBuilder(), 1.0, float_type);
+    auto neg_one =
+        MakeScalarConstant(float_self_op.getBuilder(), -1.0, float_type);
+
+    TT_ASSIGN_OR_RETURN(
+        (auto [float_self_b, zero_b, one_b, neg_one_b]),
+        ApplyBroadcastIfNeeded(float_self_op, zero, one, neg_one));
 
     auto self_lt_zero = mlir::stablehlo::Compare(
-        float_self_op, zero, mlir::stablehlo::ComparisonDirection::LT);
+        float_self_b, zero_b, mlir::stablehlo::ComparisonDirection::LT);
 
-    auto max_deriv = mlir::stablehlo::Select(self_lt_zero, one, zero);
-    auto sign = mlir::stablehlo::Select(self_lt_zero, one, neg_one);
+    auto max_deriv = mlir::stablehlo::Select(self_lt_zero, one_b, zero_b);
+    auto sign = mlir::stablehlo::Select(self_lt_zero, one_b, neg_one_b);
 
-    auto one_plus_buffer = mlir::stablehlo::Add(one, buffer_op);
+    auto one_plus_buffer = mlir::stablehlo::Add(one_b, buffer_op);
     auto buffer_div = mlir::stablehlo::Div(buffer_op, one_plus_buffer);
     auto sign_mul = mlir::stablehlo::Mul(sign, buffer_div);
     auto deriv = mlir::stablehlo::Subtract(max_deriv, sign_mul);

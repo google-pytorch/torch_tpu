@@ -31,6 +31,7 @@ torch_tpu_cc_library(
         "//csrc/common:to_string",
         "//csrc/eager:op_dispatcher",
         "//csrc/eager:tensor_to_buffer",
+        "//csrc/ops:binary",
         "//csrc/ops:op_builder_utils",
         "//csrc/ops:op_names",
         "//csrc/ops:unary",

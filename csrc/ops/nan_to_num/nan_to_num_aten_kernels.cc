@@ -77,35 +77,45 @@ absl::StatusOr<mlir::MlirOp> BuildNanToNumShlo(mlir::MlirOp input,
   double neginf_val =
       neginf.has_value() ? neginf.value() : GetMinFiniteDouble(element_type);
 
-  auto nan_cst = MakeConstantLike(input, nan_val);
-  auto posinf_cst = MakeConstantLike(input, posinf_val);
-  auto neginf_cst = MakeConstantLike(input, neginf_val);
+  auto nan_cst = MakeScalarConstant(input.getBuilder(), nan_val, element_type);
+  auto posinf_cst =
+      MakeScalarConstant(input.getBuilder(), posinf_val, element_type);
+  auto neginf_cst =
+      MakeScalarConstant(input.getBuilder(), neginf_val, element_type);
 
   // Constants for infinite comparisons
   auto inf_cst =
-      MakeConstantLike(input, std::numeric_limits<double>::infinity());
-  auto neginf_cst_comp =
-      MakeConstantLike(input, -std::numeric_limits<double>::infinity());
+      MakeScalarConstant(input.getBuilder(),
+                         std::numeric_limits<double>::infinity(), element_type);
+  auto neginf_cst_comp = MakeScalarConstant(
+      input.getBuilder(), -std::numeric_limits<double>::infinity(),
+      element_type);
+
+  TT_ASSIGN_OR_RETURN(
+      (auto [input_b, nan_cst_b, posinf_cst_b, neginf_cst_b, inf_cst_b,
+             neginf_cst_comp_b]),
+      ApplyBroadcastIfNeeded(input, nan_cst, posinf_cst, neginf_cst, inf_cst,
+                             neginf_cst_comp));
 
   // Detect NaNs: according to IEEE-754, NaN != NaN is the only state where
   // a value is not equal to itself.
   auto is_nan = mlir::stablehlo::Compare(
-      input, input, mlir::stablehlo::ComparisonDirection::NE);
+      input_b, input_b, mlir::stablehlo::ComparisonDirection::NE);
 
   // Detect PosInf: x == +infinity
   auto is_posinf = mlir::stablehlo::Compare(
-      input, inf_cst, mlir::stablehlo::ComparisonDirection::EQ);
+      input_b, inf_cst_b, mlir::stablehlo::ComparisonDirection::EQ);
 
   // Detect NegInf: x == -infinity
   auto is_neginf = mlir::stablehlo::Compare(
-      input, neginf_cst_comp, mlir::stablehlo::ComparisonDirection::EQ);
+      input_b, neginf_cst_comp_b, mlir::stablehlo::ComparisonDirection::EQ);
 
   // Apply the replacements element-wise via nested selects.
   // Note: Since these three states (NaN, +Inf, -Inf) are mutually exclusive,
   // the nesting order has no impact on correctness.
-  auto result = mlir::stablehlo::Select(is_neginf, neginf_cst, input);
-  result = mlir::stablehlo::Select(is_posinf, posinf_cst, result);
-  result = mlir::stablehlo::Select(is_nan, nan_cst, result);
+  auto result = mlir::stablehlo::Select(is_neginf, neginf_cst_b, input_b);
+  result = mlir::stablehlo::Select(is_posinf, posinf_cst_b, result);
+  result = mlir::stablehlo::Select(is_nan, nan_cst_b, result);
 
   return result;
 }

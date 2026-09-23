@@ -48,15 +48,16 @@ absl::StatusOr<mlir::MlirOp> BuildXlogyShlo(
   x = mlir::stablehlo::ConvertElementType(x, computation_dtype);
   y = mlir::stablehlo::ConvertElementType(y, computation_dtype);
 
-  TT_ASSIGN_OR_RETURN((auto [x_bcst, y_bcst]), ApplyBroadcastIfNeeded(x, y));
+  auto zero = MakeScalarConstant(x.getBuilder(), 0.0, computation_dtype);
+  auto one = MakeScalarConstant(x.getBuilder(), 1.0, computation_dtype);
 
-  auto zero = MakeConstantLike(x_bcst, 0.0, computation_dtype);
-  auto one = MakeConstantLike(x_bcst, 1.0, computation_dtype);
+  TT_ASSIGN_OR_RETURN((auto [x_bcst, y_bcst, zero_bcst, one_bcst]),
+                      ApplyBroadcastIfNeeded(x, y, zero, one));
 
   // If x is zero, use 1.0 for y to avoid log(0)
   mlir::MlirOp is_zero_x = mlir::stablehlo::Compare(
-      x_bcst, zero, mlir::stablehlo::ComparisonDirection::EQ);
-  auto safe_y = mlir::stablehlo::Select(is_zero_x, one, y_bcst);
+      x_bcst, zero_bcst, mlir::stablehlo::ComparisonDirection::EQ);
+  auto safe_y = mlir::stablehlo::Select(is_zero_x, one_bcst, y_bcst);
 
   TT_ASSIGN_OR_RETURN(auto log_y, BuildLogShlo(safe_y, computation_dtype));
   TT_ASSIGN_OR_RETURN(auto x_log_y, BuildMulShlo(x_bcst, log_y));
@@ -65,7 +66,7 @@ absl::StatusOr<mlir::MlirOp> BuildXlogyShlo(
   mlir::MlirOp is_nan_y = mlir::stablehlo::Compare(
       y_bcst, y_bcst, mlir::stablehlo::ComparisonDirection::NE);
 
-  auto x_or_zero = mlir::stablehlo::Select(is_zero_x, zero, x_log_y);
+  auto x_or_zero = mlir::stablehlo::Select(is_zero_x, zero_bcst, x_log_y);
   return mlir::stablehlo::Select(is_nan_y, y_bcst, x_or_zero);
 }
 
