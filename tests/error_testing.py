@@ -399,6 +399,8 @@ def assert_subprocess_raises_message(exception_type, expected_msg: str):
           f"Could not find expected message '{expected_full}' in subprocess"
           f" output:\n{msg}"
       ) from e
+  except unittest.SkipTest:
+    raise
   except BaseException as e:
     raise AssertionError(
         "Expected ProcessRaisedException or ChildFailedError but got"

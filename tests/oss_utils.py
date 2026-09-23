@@ -53,33 +53,3 @@ def skip_in_oss(
     return wrapper
 
   return decorator
-
-
-def libtpu_version() -> str:
-  """Returns the libtpu version."""
-  try:
-    import libtpu  # pylint: disable=g-import-not-at-top # pytype: disable=import-error
-
-    return libtpu.__version__
-  except ImportError as e:
-    raise ValueError("libtpu is not available") from e
-
-
-def skip_if_cloud_and_libtpu_older_than(min_version: str):
-  """Decorator to skip test in cloud if libtpu version < min_version."""
-
-  def decorator(func):
-    @functools.wraps(func)
-    def wrapper(self, *args, **kwargs):
-      if running_in_cloud():
-        version = libtpu_version()
-        if version < min_version:
-          self.skipTest(
-              f"{func.__name__} requires libtpu >= {min_version} in cloud, but"
-              f" got {version}"
-          )
-      return func(self, *args, **kwargs)
-
-    return wrapper
-
-  return decorator

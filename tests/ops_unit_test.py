@@ -102,12 +102,15 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
           ("addcmul", lambda s, t1, t2: torch.addcmul(s, t1, t2, value=3.14)),
       ],
   )
-  @oss_utils.skip_if_cloud_and_libtpu_older_than("0.0.47")
   def test_dynamic_float64_elementwise_and_fused_ops(self, dtype, op_fn):
     """Tests dynamic shapes for float64 (and f32 baseline) ops.
 
     Covers add, div, addcdiv, and addcmul ops (X64 split layout handling).
     """
+    # TODO(b/565506249): Remove once the minimum libtpu version is >= 0.0.47.
+    version = utils.libtpu_version()
+    if version is not None and version < (0, 0, 47):
+      self.skipTest(f"Requires libtpu >= 0.0.47, got {version}.")
     torch.manual_seed(42)
 
     # Case 1: 2D tensors (2, 4) with dimension 0 dynamic

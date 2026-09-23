@@ -23,6 +23,23 @@ from torch_tpu._internal.utils import test_utils as utils
 from tests import seed_test_utils
 
 
+def _skip_if_pad_real_to_static_unsupported(test_case):
+  """Skips `test_case` when the pad_real_to_static lowering is known broken.
+
+  graph_transformations.can_use_pad_real_to_static only enables the
+  torch.ops.tpu.pad_real_to_static path at libtpu >= 0.0.48, and the XLA
+  compiler in that released wheel rejects the custom call for carrying a
+  dynamic dimension. In-tree builds report no version and are unaffected.
+
+  TODO(b/565203505): remove once the lowering is fixed.
+  """
+  libtpu = utils.libtpu_version()
+  if libtpu is not None and libtpu >= (0, 0, 48):
+    test_case.skipTest(
+        f"b/565203505: PadRealToStatic fails on libtpu {libtpu}."
+    )
+
+
 class SplitCompileTest(seed_test_utils.RepeatableTest):
 
   def setUp(self):
@@ -38,6 +55,8 @@ class SplitCompileTest(seed_test_utils.RepeatableTest):
       )
 
   def test_split_graph_with_dynamic_tensor(self):
+    _skip_if_pad_real_to_static_unsupported(self)
+
     def f(x):
       y = x * 2
       z = y + 3
@@ -62,6 +81,8 @@ class SplitCompileTest(seed_test_utils.RepeatableTest):
     utils.assert_close(res.cpu(), expected)
 
   def test_split_graph_with_direct_symint_usage(self):
+    _skip_if_pad_real_to_static_unsupported(self)
+
     def f(x):
       s1 = x.shape[0]
       s2 = x.shape[1]

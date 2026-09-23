@@ -273,6 +273,8 @@ torch_tpu_py_library(
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/device:_device_ops_backend",
+        "//src/torch_tpu/_internal/utils:hardware",
+        "//src/torch_tpu/_internal/utils:test_utils",
     ],
 )
 
@@ -1941,7 +1943,6 @@ torch_tpu_py_test(
     shard_count = 4,
     tags = ["requires-tpu-v5lite"],
     deps = [
-        ":oss_utils",
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",

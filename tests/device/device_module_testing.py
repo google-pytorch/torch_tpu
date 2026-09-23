@@ -27,7 +27,7 @@ import torch
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.device import _device_module
 from torch_tpu._internal.device import _device_ops_backend
-from tests import oss_utils
+from torch_tpu._internal.utils import test_utils
 from tests import seed_test_utils
 
 _DEVICE_LOCK: Final[threading.Lock] = threading.Lock()
@@ -112,9 +112,14 @@ class DeviceModuleBase(
     self.assertIn("reserved_bytes.all.current", stats)
     self.assertIn("reserved_bytes.all.peak", stats)
 
-  @oss_utils.skip_if_cloud_and_libtpu_older_than("0.0.42")
   def test_reset_memory_stats(self):
     """Tests that resetting memory stats works correctly."""
+    # TODO(b/565506249): Remove once the minimum libtpu version is >= 0.0.42.
+    version = test_utils.libtpu_version()
+    if version is not None and version < (0, 0, 42):
+      self.skipTest(
+          f"reset_peak_memory_stats() requires libtpu >= 0.0.42, got {version}."
+      )
     # 1. Reset stats to establish a clean baseline where peak == current
     torch.accelerator.reset_peak_memory_stats()
 
@@ -145,9 +150,14 @@ class DeviceModuleBase(
     max_allocated_after_reset = torch.accelerator.max_memory_allocated()
     self.assertEqual(max_allocated_after_reset, allocated_after_free)
 
-  @oss_utils.skip_if_cloud_and_libtpu_older_than("0.0.42")
   def test_memory_allocation(self):
     """Tests that memory allocation works with the device."""
+    # TODO(b/565506249): Remove once the minimum libtpu version is >= 0.0.42.
+    version = test_utils.libtpu_version()
+    if version is not None and version < (0, 0, 42):
+      self.skipTest(
+          f"reset_peak_memory_stats() requires libtpu >= 0.0.42, got {version}."
+      )
     torch.accelerator.reset_peak_memory_stats()
     # Get initial state
     allocated_before = torch.accelerator.memory_allocated()

@@ -1237,6 +1237,15 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     self.assertEqual(minor_to_major, [1, 0])
 
   def test_is_device_shape_dynamic(self):
+    # The dynamic branch below lowers through torch.ops.tpu.pad_real_to_static,
+    # which graph_transformations.can_use_pad_real_to_static only enables at
+    # libtpu >= 0.0.48. The XLA compiler in that released wheel then rejects
+    # the custom call for carrying a dynamic dimension. In-tree builds report
+    # no version and keep running.
+    # TODO(b/565203505): remove once the lowering is fixed.
+    libtpu = utils.libtpu_version()
+    if libtpu is not None and libtpu >= (0, 0, 48):
+      self.skipTest(f'b/565203505: PadRealToStatic fails on libtpu {libtpu}.')
     x_static = torch.ones(2, 3, device='tpu')
     self.assertFalse(tpu_torch_compile.is_device_shape_dynamic(x_static))
 

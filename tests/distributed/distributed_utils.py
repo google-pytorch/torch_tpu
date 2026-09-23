@@ -16,6 +16,7 @@
 
 import os
 from typing import Any, Callable
+import unittest
 
 from absl import logging
 import portpicker
@@ -23,6 +24,7 @@ import torch.multiprocessing as mp
 from torch_tpu._internal import env
 from torch_tpu._internal.distributed.launchers import environment
 from torch_tpu._internal.utils import hardware
+from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
 
@@ -110,6 +112,17 @@ def dist_run(
       hardware.get_tpu_device_count()
       or env.get_str_env_once("JOB_COMPLETION_INDEX") is not None
   ):
+    libtpu = utils.libtpu_version()
+    if (
+        libtpu is not None
+        and libtpu >= (0, 0, 48)
+        and hardware.get_tpu_version() == hardware.TpuVersion.V5E
+    ):
+      raise unittest.SkipTest(
+          "TODO(b/565342785): Re-enable once multi-process SliceBuilder gRPC"
+          " channel initialization timeout on TPU v5e with libtpu >= 0.0.48"
+          " is fixed."
+      )
     environment.set_tpu_launch_env(nproc_per_node=nproc_per_node)
 
   if base_seed is None:

@@ -24,6 +24,16 @@ class SymExprArgTest(seed_test_utils.RepeatableTest):
     super().setUp()
     if not torch.accelerator.is_available():
       self.skipTest("TPU accelerator not available in this test environment.")
+    # Both tests below lower a dynamic input through
+    # torch.ops.tpu.pad_real_to_static, which
+    # graph_transformations.can_use_pad_real_to_static only enables at libtpu
+    # >= 0.0.48. The XLA compiler in that released wheel then rejects the
+    # custom call for carrying a dynamic dimension. In-tree builds report no
+    # version and keep running.
+    # TODO(b/565203505): remove once the lowering is fixed.
+    libtpu = utils.libtpu_version()
+    if libtpu is not None and libtpu >= (0, 0, 48):
+      self.skipTest(f"b/565203505: PadRealToStatic fails on libtpu {libtpu}.")
     self.device = torch.accelerator.current_accelerator()
 
   def test_tpu_backend_execution(self):
