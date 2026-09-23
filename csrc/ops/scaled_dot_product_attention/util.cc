@@ -16,20 +16,25 @@
 
 #include "csrc/ops/scaled_dot_product_attention/util.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <numbers>
 #include <string>
 
+#include "absl/base/casts.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/log.h"
 #include "csrc/common/libtpu_version.h"
 #include "csrc/internal/mosaic/op_builders.h"
 #include "csrc/ops/scaled_dot_product_attention/flash_attention_config.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/Casting.h"
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/AffineMap.h"
@@ -343,6 +348,24 @@ DictionaryAttr CreateSymbolTransformIndicesAttr(
   });
 }
 
+void AppendScalarPrefetchTypes(MLIRContext* context,
+                               const FlashAttnConfig& config,
+                               SmallVectorImpl<Type>& types) {
+  if (config.dropout_rate <= 0.0f) {
+    return;
+  }
+  types.push_back(
+      GetSmemMemRefType(context, {4}, IntegerType::get(context, 32)));
+}
+
+void SetScalarPrefetchAttr(const FlashAttnConfig& config, func::FuncOp fn,
+                           OpBuilder& builder) {
+  if (config.dropout_rate <= 0.0f) {
+    return;
+  }
+  fn->setAttr("scalar_prefetch", builder.getI64IntegerAttr(1));
+}
+
 KVWindowMaps CreateKVWindowMaps(OpBuilder& builder, func::FuncOp fn,
                                 const FlashAttnConfig& config,
                                 const Tiling& tiling) {
@@ -362,6 +385,7 @@ KVWindowMaps CreateKVWindowMaps(OpBuilder& builder, func::FuncOp fn,
     Location loc = fn.getLoc();
     Type i32 = builder.getI32Type();
     SmallVector<Type> input_types(4, i32);
+    AppendScalarPrefetchTypes(builder.getContext(), config, input_types);
     SmallVector<Type> output_types(4, i32);
     FunctionType fn_type = builder.getFunctionType(input_types, output_types);
     kv_transform_fn =
@@ -410,6 +434,94 @@ Value CreateLog2(ImplicitLocOpBuilder& b, Value input) {
   float log2e = std::numbers::log2e_v<float>;
   Value natural_log = math::LogOp::create(b, input);
   return ScaleValue(b, natural_log, log2e);
+}
+
+Value BuildDropoutKeepMask(ImplicitLocOpBuilder& b,
+                           const FlashAttnConfig& config, int64_t qt,
+                           int64_t kt, Value batch_idx, Value head_idx,
+                           Value row_block_idx, Value col_block_idx,
+                           Value seed_smem) {
+  Type i32 = b.getI32Type();
+  VectorType vec_i32 = VectorType::get({qt, kt}, i32);
+
+  // Builds an i32 constant shaped like `type`. `fmix32` below runs on both a
+  // scalar and a tile, and `arith` requires operands to match, so the constants
+  // have to follow whichever it was handed. `SplatConstant` only accepts shaped
+  // types, hence the scalar fallback.
+  auto constant_like = [&](Type type, int64_t value) -> Value {
+    IntegerAttr attr = b.getI32IntegerAttr(
+        absl::bit_cast<int32_t>(static_cast<uint32_t>(value)));
+    if (auto shaped_type = llvm::dyn_cast<ShapedType>(type)) {
+      return SplatConstant(b, shaped_type, attr);
+    }
+    return arith::ConstantOp::create(b, type, attr);
+  };
+
+  // MurmurHash3's fmix32 avalanche; see
+  // https://en.wikipedia.org/wiki/MurmurHash. It is a bijection on uint32, so
+  // the packed key below cannot collide. The `arith` ops are type-polymorphic,
+  // so this runs unchanged on the scalar and vector paths.
+  auto fmix32 = [&](Value h) -> Value {
+    Type type = h.getType();
+    auto k = [&](uint32_t c) { return constant_like(type, c); };
+    h = arith::XOrIOp::create(b, h, arith::ShRUIOp::create(b, h, k(16)));
+    h = arith::MulIOp::create(b, h, k(0x85EBCA6Bu));
+    h = arith::XOrIOp::create(b, h, arith::ShRUIOp::create(b, h, k(13)));
+    h = arith::MulIOp::create(b, h, k(0xC2B2AE35u));
+    h = arith::XOrIOp::create(b, h, arith::ShRUIOp::create(b, h, k(16)));
+    return h;
+  };
+
+  auto c_idx = [&](int64_t idx) -> Value {
+    return arith::ConstantOp::create(b, b.getIndexType(), b.getIndexAttr(idx));
+  };
+
+  // 1. Load the Philox {seed_lo, seed_hi, offset_lo, offset_hi} from the
+  // scalar_prefetch SMEM buffer.
+  Value seed_lo = memref::LoadOp::create(b, seed_smem, ValueRange{c_idx(0)});
+  Value seed_hi = memref::LoadOp::create(b, seed_smem, ValueRange{c_idx(1)});
+  Value offset_lo = memref::LoadOp::create(b, seed_smem, ValueRange{c_idx(2)});
+  Value offset_hi = memref::LoadOp::create(b, seed_smem, ValueRange{c_idx(3)});
+
+  // 2. Fold the stream identity into one word. This is scalar work, so it costs
+  // once per tile rather than once per element, and we can afford to avalanche
+  // after every term.
+  Value stream = seed_lo;
+  for (Value part : {seed_hi, offset_lo, offset_hi, batch_idx, head_idx}) {
+    stream = fmix32(arith::XOrIOp::create(b, stream, part));
+  }
+  Value stream_vec = vector::BroadcastOp::create(b, vec_i32, stream);
+
+  // 3. Absolute (q, kv) coordinates: grid block index * tile size, plus the
+  // within-tile iota.
+  Value q_off = vector::BroadcastOp::create(
+      b, vec_i32,
+      arith::MulIOp::create(b, row_block_idx, constant_like(i32, qt)));
+  Value kv_off = vector::BroadcastOp::create(
+      b, vec_i32,
+      arith::MulIOp::create(b, col_block_idx, constant_like(i32, kt)));
+  Value q_abs = arith::AddIOp::create(b, CreateIotaOp(b, vec_i32, 0), q_off);
+  Value kv_abs = arith::AddIOp::create(b, CreateIotaOp(b, vec_i32, 1), kv_off);
+
+  // 4. Pack the coordinates into a single word, then avalanche. The pack is
+  // exactly injective while padded_q * padded_kv <= 2^32, so within a stream no
+  // two positions can share a hash.
+  Value key = arith::AddIOp::create(
+      b,
+      arith::MulIOp::create(
+          b, q_abs, constant_like(vec_i32, config.padded_kv_sequence_length)),
+      kv_abs);
+  Value hash = fmix32(arith::XOrIOp::create(b, key, stream_vec));
+
+  // 5. Keep iff uint32(hash) >= round(dropout_rate * 2^32). Only a signed
+  // compare is available, so flip the sign bit on both sides.
+  const uint32_t threshold = static_cast<uint32_t>(std::min<double>(
+      std::floor(static_cast<double>(config.dropout_rate) * 4294967296.0),
+      4294967295.0));
+  Value hash_signed =
+      arith::XOrIOp::create(b, hash, constant_like(vec_i32, 0x80000000u));
+  return arith::CmpIOp::create(b, arith::CmpIPredicate::sge, hash_signed,
+                               constant_like(vec_i32, threshold ^ 0x80000000u));
 }
 
 }  // namespace mlir::torch_tpu

@@ -113,6 +113,13 @@ mlir::MemRefType GetVmemMemRefType(MLIRContext* context,
       tpu::MemorySpaceAttr::get(context, tpu::MemorySpace::kVmem));
 }
 
+mlir::MemRefType GetSmemMemRefType(MLIRContext* context,
+                                   ArrayRef<int64_t> shape, Type element_type) {
+  return MemRefType::get(
+      shape, element_type, nullptr,
+      tpu::MemorySpaceAttr::get(context, tpu::MemorySpace::kSmem));
+}
+
 mlir::Attribute GetDimensionSemanticsAttr(MLIRContext* context,
                                           DimensionSemantics semantics) {
   switch (semantics) {

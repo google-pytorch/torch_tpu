@@ -117,6 +117,39 @@ Value NormalizeLaneDim(ImplicitLocOpBuilder& builder, Value input,
 // scaled ln operation.
 Value CreateLog2(ImplicitLocOpBuilder& b, Value input);
 
+// Dropout needs a single Mosaic `scalar_prefetch` operand: a 4-word SMEM buffer
+// holding the Philox {seed_lo, seed_hi, offset_lo, offset_hi}.
+//
+// The two functions below must stay in sync. Mosaic binds scalar-prefetch
+// operands immediately after the grid iteration indices, and requires the
+// `scalar_prefetch` attribute to match the number of operands appended to the
+// kernel signature *and* to every symbol-based `transform_indices` function,
+// which must take exactly `iteration_bounds.size() + scalar_prefetch` args.
+
+// Appends the `scalar_prefetch` operand types for `config` to `types`.
+void AppendScalarPrefetchTypes(MLIRContext* context,
+                               const FlashAttnConfig& config,
+                               SmallVectorImpl<Type>& types);
+
+// Sets the `scalar_prefetch` attribute on `fn`, if `config` needs one.
+void SetScalarPrefetchAttr(const FlashAttnConfig& config, func::FuncOp fn,
+                           OpBuilder& builder);
+
+// Builds a stateless, tile-size-invariant dropout mask of type
+// vector<qt x kt x i1> (true = keep, false = drop).
+//
+// The mask is a pure function of (batch_idx, head_idx, absolute q, absolute
+// kv) and the Philox {seed, offset} in `seed_smem` (memref<4xi32, smem>), so
+// the backward kernel regenerates it rather than storing it. It is keyed on
+// absolute rather than within-tile coordinates so that the forward and
+// backward kernels agree despite their different tilings.
+//
+// `head_idx` must be the *query* head index.
+Value BuildDropoutKeepMask(ImplicitLocOpBuilder& b,
+                           const FlashAttnConfig& config, int64_t qt,
+                           int64_t kt, Value batch_idx, Value head_idx,
+                           Value row_block_idx, Value col_block_idx,
+                           Value seed_smem);
 // Get the string representation of an operation.
 std::string GetOpString(Operation* op);
 

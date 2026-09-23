@@ -84,6 +84,7 @@ void SetKernelAttributes(llvm::ArrayRef<const int64_t> qk_dimensions,
                          func::FuncOp fn, OpBuilder& builder) {
   const int64_t scratch_operands = 3L;
   fn->setAttr("scratch_operands", builder.getI64IntegerAttr(scratch_operands));
+  SetScalarPrefetchAttr(config, fn, builder);
 
   const int64_t num_iteration_indices = absl::c_count_if(
       fn.getArguments(),
@@ -113,11 +114,10 @@ void SetKernelAttributes(llvm::ArrayRef<const int64_t> qk_dimensions,
                   {dimension_semantics.begin(), dimension_semantics.end()}));
 
   // We need transform_indices attribute for q, k, v, any auxiliary arguments,
-  // and output. This boils down to all arguments except iteration indices and
-  // scratch arguments.
-  // The arguments are in the following order: iteration_indices, q, k, v,
-  // auxiliary_parameters, output, li, mi. The iteration_indices and
-  // auxiliary_parameters are possibly empty.
+  // and output. This boils down to all arguments except iteration indices,
+  // scalar_prefetch arguments, and scratch arguments.
+  // The arguments are in the following order: iteration_indices,
+  // [seed_smem], q, k, v, auxiliary_parameters, output, li, mi.
   SmallVector<AffineExpr> dims(num_iteration_indices);
   bindDimsList(context, MutableArrayRef{dims});
   // Auxiliary function for creating transform_indices attribute.
@@ -165,6 +165,30 @@ void SetKernelAttributes(llvm::ArrayRef<const int64_t> qk_dimensions,
               builder.getArrayAttr({window_attrs.begin(), window_attrs.end()}));
 }
 
+// Applies PyTorch's inverted dropout to the softmax probabilities
+// `p_tile_scaled`: kept entries are rescaled by 1 / (1 - dropout_rate) and
+// dropped entries are zeroed. Returns `p_tile_scaled` unchanged when dropout is
+// disabled.
+//
+// Only the probabilities fed into the P @ V matmul are dropped; the softmax
+// statistics (m_i, l_i and hence the LSE) must stay undropped because the
+// backward pass recomputes P from the LSE.
+Value ApplyDropoutToProbabilities(ImplicitLocOpBuilder& b,
+                                  const FlashAttnConfig& config, int64_t qt,
+                                  int64_t kt, func::FuncOp fn, Value seed_arg,
+                                  Value p_tile_scaled) {
+  if (config.dropout_rate <= 0.0f) {
+    return p_tile_scaled;
+  }
+  Value keep = BuildDropoutKeepMask(b, config, qt, kt, fn.getArgument(0),
+                                    fn.getArgument(1), fn.getArgument(2),
+                                    fn.getArgument(3), seed_arg);
+  Value p_rescaled =
+      ScaleValue(b, p_tile_scaled, 1.0f / (1.0f - config.dropout_rate));
+  Value zeros = ConstantOp::create(b, b.getZeroAttr(p_tile_scaled.getType()));
+  return arith::SelectOp::create(b, keep, p_rescaled, zeros);
+}
+
 // q [batch_size, num_heads, q_seq_len, d_model]
 // k [batch_size, num_heads, kv_seq_len, d_model]
 // v [batch_size, num_heads, kv_seq_len, d_model]
@@ -178,6 +202,7 @@ func::FuncOp buildModule(ImplicitLocOpBuilder& module_builder,
   FloatType f32 = module_builder.getF32Type();
   const int64_t qt = tiling.qt;
   const int64_t kt = tiling.kt;
+  const bool has_dropout = config.dropout_rate > 0.0f;
 
   SmallVector<int64_t> q_dims = {1, 1, qt, config.qk_head_dim};
   SmallVector<int64_t> k_dims = {1, 1, kt, config.qk_head_dim};
@@ -189,6 +214,7 @@ func::FuncOp buildModule(ImplicitLocOpBuilder& module_builder,
 
   // We have 4 iteration indices.
   SmallVector<Type> inputs(4, i32);
+  AppendScalarPrefetchTypes(context, config, inputs);
   // Add q, k, v.
   inputs.insert(inputs.end(), {GetVmemMemRefType(context, q_dims, ity),
                                GetVmemMemRefType(context, k_dims, ity),
@@ -217,6 +243,7 @@ func::FuncOp buildModule(ImplicitLocOpBuilder& module_builder,
 
   // There are 4 induction variables.
   unsigned int next_index = 4;
+  Value seed_arg = has_dropout ? fn.getArgument(next_index++) : nullptr;
   Value q_arg = fn.getArgument(next_index++);
   Value k_arg = fn.getArgument(next_index++);
   Value v_arg = fn.getArgument(next_index++);
@@ -289,7 +316,10 @@ func::FuncOp buildModule(ImplicitLocOpBuilder& module_builder,
         SubFOp::create(fn_builder, sij, NormalizeLaneDim(fn_builder, mij, kt)));
     auto tile_sum =
         ReduceBroadcastLane(fn_builder, p_tile_scaled, CombiningKind::ADD);
-    Value lhs = ConvertElementType(fn_builder, ity, p_tile_scaled);
+    Value lhs = ConvertElementType(
+        fn_builder, ity,
+        ApplyDropoutToProbabilities(fn_builder, config, qt, kt, fn, seed_arg,
+                                    p_tile_scaled));
     auto vj = LoadTile(fn_builder, v_arg);
     Value unnormalized_output = CreateMatmul(fn_builder, lhs, vj);
     Value li_recip = CreateReciprocal(fn_builder, tile_sum);
@@ -331,7 +361,10 @@ func::FuncOp buildModule(ImplicitLocOpBuilder& module_builder,
   auto adjustment = MulFOp::create(
       fn_builder, NormalizeLaneDim(fn_builder, alpha, config.vo_head_dim), oi);
 
-  Value lhs = ConvertElementType(fn_builder, ity, p_tile_scaled);
+  Value lhs = ConvertElementType(
+      fn_builder, ity,
+      ApplyDropoutToProbabilities(fn_builder, config, qt, kt, fn, seed_arg,
+                                  p_tile_scaled));
 
   auto vj = LoadTile(fn_builder, v_arg);
   Value current = CreateMatmul(fn_builder, lhs, vj);
@@ -399,6 +432,11 @@ absl::StatusOr<OwningOpRef<ModuleOp>> CreateKernel(
   if (config.num_heads % config.kv_num_heads != 0) {
     return TT_ERROR(::torch_tpu::error::kInvalidArgument)
            << "num_heads must be divisible by kv_num_heads.";
+  }
+
+  if (config.dropout_rate < 0.0f || config.dropout_rate >= 1.0f) {
+    return TT_ERROR(::torch_tpu::error::kInvalidArgument)
+           << "dropout_rate must be in [0.0, 1.0), got " << config.dropout_rate;
   }
 
   auto fn = buildModule(module_builder, config, tiling);
