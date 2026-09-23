@@ -108,14 +108,15 @@ struct MaterializationStages {
 // If the global compilation mode is already FastRuntime (O2), we retain it.
 // Otherwise, if any deferred op in the traversal is an eligible convolution
 // that benefits from O2, we selectively promote it to FastRuntime.
-CompilationSpec GetCompilationSpecForTraversal(
+const CompilationSpec& GetCompilationSpecForTraversal(
     const MaterializationSettings& materialization_settings,
     const Traversal& traversal) {
-  if (materialization_settings.compilation_mode ==
-          CompilationMode::kFastRuntime ||
-      !materialization_settings.fast_runtime_compilation_spec.has_value()) {
-    // Either we're already using O2, or the O2 spec is not available.
-    return materialization_settings.compilation_spec.Copy();
+  const auto& compilation_specs =
+      materialization_settings.compilation_context->compilation_specs();
+  if (materialization_settings.compilation_mode !=
+      CompilationMode::kFastCompile) {
+    // Either we're already using O2, or the O2 spec is not applicable.
+    return compilation_specs.at(materialization_settings.compilation_mode);
   }
 
   const auto& execution_order = traversal.execution_order();
@@ -126,10 +127,10 @@ CompilationSpec GetCompilationSpecForTraversal(
                     return deferred_op != nullptr &&
                            IsFastRuntimeConvolutionCandidate(*deferred_op);
                   })) {
-    return materialization_settings.fast_runtime_compilation_spec->Copy();
+    return compilation_specs.at(CompilationMode::kFastRuntime);
   }
 
-  return materialization_settings.compilation_spec.Copy();
+  return compilation_specs.at(materialization_settings.compilation_mode);
 }
 
 void SplitSingleTraversal(
@@ -329,10 +330,10 @@ MaterializationStages ApplySplitMode(
 
   result.execution_tasks.reserve(traversals.size());
   for (auto& split_traversal : traversals) {
-    CompilationSpec compilation_spec =
+    const CompilationSpec& compilation_spec =
         GetCompilationSpecForTraversal(settings, *split_traversal);
     auto execution_task_or = ExecutionTask::FromTraversalWithLogging(
-        std::move(split_traversal), mlir_context, std::move(compilation_spec),
+        std::move(split_traversal), mlir_context, compilation_spec,
         settings.reason);
     if (execution_task_or.ok()) {
       result.execution_tasks.push_back(std::move(*execution_task_or));

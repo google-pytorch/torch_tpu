@@ -206,7 +206,8 @@ class Traversal {
   // MLIR module is actually built), it is populated with the textual
   // representation of that module.
   absl::StatusOr<CompiledKernel> Compile(
-      CompilationSpec spec, std::string* absl_nullable out_mlir_text = nullptr,
+      const CompilationSpec& spec,
+      std::string* absl_nullable out_mlir_text = nullptr,
       bool use_stablehlo_bounds = false,
       absl::Span<const CustomLayout> argument_layouts = {},
       absl::Span<const int64_t> donated_inputs = {},

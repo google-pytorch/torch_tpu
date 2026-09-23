@@ -56,7 +56,7 @@ class ExecutionTask {
   //   * Log the resulting MLIR to support TORCH_TRACE, if enabled.
   static absl::StatusOr<ExecutionTask> FromTraversalWithLogging(
       absl_nonnull std::unique_ptr<Traversal> traversal,
-      mlir::MLIRContext& mlir_context, CompilationSpec compilation_spec,
+      mlir::MLIRContext& mlir_context, const CompilationSpec& compilation_spec,
       MaterializationReason reason = MaterializationReason::kUnknown);
 
   // Creates an execution task from a traversal.
@@ -68,7 +68,7 @@ class ExecutionTask {
   //   * Set all outputs to the "pending materialization" state
   static absl::StatusOr<ExecutionTask> FromTraversal(
       absl_nonnull std::unique_ptr<Traversal> traversal,
-      mlir::MLIRContext& mlir_context, CompilationSpec compilation_spec,
+      mlir::MLIRContext& mlir_context, const CompilationSpec& compilation_spec,
       std::string* absl_nullable out_mlir_text = nullptr);
 
   // Creates an execution task from a pre-compiled executable.

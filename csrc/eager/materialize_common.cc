@@ -286,7 +286,7 @@ struct CompiledTraversal {
 
 absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
     Traversal& traversal, mlir::MLIRContext& mlir_context,
-    CompilationSpec compilation_spec,
+    const CompilationSpec& compilation_spec,
     std::string* absl_nullable out_mlir_text) {
   // Propagate bounded dynamism annotations if needed.
   if (traversal.IsBoundedDynamic()) {
@@ -347,7 +347,7 @@ absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
     tsl::profiler::TraceMe t("CompileTraversal");
     TT_ASSIGN_OR_RETURN(
         compiled_kernel,
-        traversal.Compile(std::move(compilation_spec), out_mlir_text,
+        traversal.Compile(compilation_spec, out_mlir_text,
                           /*use_stablehlo_bounds=*/false, argument_layouts));
   }
   return CompiledTraversal{
@@ -369,10 +369,10 @@ std::vector<Shape> GetShapesFromDeviceBuffers(
 
 absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversal(
     absl_nonnull std::unique_ptr<Traversal> traversal,
-    mlir::MLIRContext& mlir_context, CompilationSpec compilation_spec,
+    mlir::MLIRContext& mlir_context, const CompilationSpec& compilation_spec,
     std::string* absl_nullable out_mlir_text) {
   auto compiled_traversal_or = VerifyAndCompileTraversal(
-      *traversal, mlir_context, std::move(compilation_spec), out_mlir_text);
+      *traversal, mlir_context, compilation_spec, out_mlir_text);
   if (!compiled_traversal_or.ok()) {
     for (const auto& output : traversal->outputs()) {
       output.device_buffer_list()->SetAsError(compiled_traversal_or.status());
@@ -439,12 +439,12 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromExecutable(
 
 absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversalWithLogging(
     absl_nonnull std::unique_ptr<Traversal> traversal,
-    mlir::MLIRContext& mlir_context, CompilationSpec compilation_spec,
+    mlir::MLIRContext& mlir_context, const CompilationSpec& compilation_spec,
     MaterializationReason reason) {
   auto event = MaybeStartTraceEvent(reason, *traversal);
   if (!event) {
     return ExecutionTask::FromTraversal(std::move(traversal), mlir_context,
-                                        std::move(compilation_spec),
+                                        compilation_spec,
                                         /*out_mlir_text=*/nullptr);
   }
 
@@ -453,9 +453,8 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversalWithLogging(
 
   // Try to build the execution task and capture the MLIR if possible.
   std::string captured_mlir;
-  auto execution_task_or =
-      ExecutionTask::FromTraversal(std::move(traversal), mlir_context,
-                                   std::move(compilation_spec), &captured_mlir);
+  auto execution_task_or = ExecutionTask::FromTraversal(
+      std::move(traversal), mlir_context, compilation_spec, &captured_mlir);
 
   // Whether or not the execution task was created successfully, finish the
   // trace event and return.
