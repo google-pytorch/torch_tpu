@@ -216,6 +216,8 @@ enum class OpName {
   kExp2Out,
   kExpM1Out,
   kExpOut,
+  kExperimentalAllGatherDim,
+  kExperimentalReduceScatterDim,
   kExponential_,
   kEyeMOut,
   kEyeOut,

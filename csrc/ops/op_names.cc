@@ -405,6 +405,10 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "expm1.out";
     case OpName::kExpOut:
       return "exp.out";
+    case OpName::kExperimentalAllGatherDim:
+      return "experimental_all_gather_dim";
+    case OpName::kExperimentalReduceScatterDim:
+      return "experimental_reduce_scatter_dim";
     case OpName::kExponential_:
       return "exponential_";
     case OpName::kEyeMOut:
