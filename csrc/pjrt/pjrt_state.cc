@@ -401,7 +401,6 @@ void PjrtBackend::Shutdown() {
   // re-initialization of the runtime) are not falsely identified as bad forks.
   init_pid_.store(0, std::memory_order_relaxed);
   absl::MutexLock lock(mutex_);
-  world_rank_to_device_id_ = std::nullopt;
   if (!init_attempted_) {
     return;
   }
@@ -414,29 +413,6 @@ void PjrtBackend::Shutdown() {
   init_attempted_ = false;
   init_status_ = absl::OkStatus();
   ABSL_VLOG(1) << "PjRt shut down.";
-}
-
-void PjrtBackend::ResetWorldRankToDeviceId() {
-  absl::MutexLock lock(mutex_);
-  world_rank_to_device_id_ = std::nullopt;
-}
-
-void PjrtBackend::SetWorldRankToDeviceId(
-    std::vector<int64_t> rank_to_device_id) {  // INT_VEC_OK
-  absl::MutexLock lock(mutex_);
-  if (world_rank_to_device_id_.has_value()) {
-    ABSL_CHECK_EQ(*world_rank_to_device_id_, rank_to_device_id)  // CRASH_OK
-        << "World rank to device ID mapping already initialized with different "
-           "values.";
-    return;
-  }
-  world_rank_to_device_id_ = std::move(rank_to_device_id);
-}
-
-std::optional<std::vector<int64_t>>  // INT_VEC_OK
-PjrtBackend::GetWorldRankToDeviceId() const {
-  absl::ReaderMutexLock lock(mutex_);
-  return world_rank_to_device_id_;
 }
 
 }  // namespace torch_tpu

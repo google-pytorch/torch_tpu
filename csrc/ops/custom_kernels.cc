@@ -297,6 +297,14 @@ absl::Status AddTpuPartitioningPasses(xla::HloModule* module,
 absl::Status PartitionGlobalToLocal(
     mlir::MLIRContext* context, mlir::ModuleOp module,
     const xla::PjRtTopologyDescription* client_topology) {
+  int64_t mesh_num_partitions = 0;
+  module.walk([&](mlir::sdy::MeshOp mesh_op) {
+    const int64_t total_size = mesh_op.getMesh().getTotalSize();
+    if (total_size > mesh_num_partitions) {
+      mesh_num_partitions = total_size;
+    }
+  });
+
   //////////////////////////////////////////////////////////////////////////////
   // Perform Shardy StableHLO/MLIR passes.
 
@@ -313,7 +321,9 @@ absl::Status PartitionGlobalToLocal(
   hlo_module->mutable_config().set_use_spmd_partitioning(true);
   hlo_module->mutable_config().set_use_shardy_partitioner(true);
   TT_ASSIGN_OR_RETURN(int chip_count, client_topology->ChipCount());
-  hlo_module->mutable_config().set_num_partitions(chip_count);
+  const int64_t num_partitions =
+      (mesh_num_partitions > 0) ? mesh_num_partitions : chip_count;
+  hlo_module->mutable_config().set_num_partitions(num_partitions);
 
   //////////////////////////////////////////////////////////////////////////////
   // Partition HLO module.

@@ -430,13 +430,12 @@ absl::StatusOr<AsyncCompileResult> TraverseAndCompile(
   }
 
   auto compilation_spec = GetCompilationSpec(options.compilation_mode);
-  TT_ASSIGN_OR_CRASH(  // CRASH_OK=implies a bug in compile backend if this
-                       // happens
+  TT_ASSIGN_OR_RETURN(
       auto compiled_kernel,
       traversal->Compile(std::move(compilation_spec), nullptr,
                          options.use_stablehlo_bounds, options.argument_layouts,
                          unique_donated_inputs, options.module_name),
-      _ << "failed to compile traversal");
+      _.SetPrepend() << "failed to compile traversal: ");
 
   std::shared_ptr<ContextedModule> module = nullptr;
   if (options.build_mlir_module) {

@@ -542,6 +542,138 @@ void AnnotateMlirPlacements(mlir::ModuleOp module,
   }
 }
 
+bool IsCompatibleDeviceAssignmentTile(absl::Span<const int64_t> d_sub,
+                                      absl::Span<const int64_t> d_full) {
+  const size_t m = d_sub.size();
+  const size_t n = d_full.size();
+  if (m == 0 || n == 0 || n % m != 0) {
+    return false;
+  }
+  for (size_t offset = 0; offset < n; offset += m) {
+    if (d_full.subspan(offset, m) == d_sub) {
+      return true;
+    }
+  }
+  return false;
+}
+
+mlir::DenseIntElementsAttr TileReplicaGroupsAttr(
+    mlir::DenseIntElementsAttr attr, int64_t sub_size, int64_t num_tiles) {
+  auto shaped_type = mlir::dyn_cast<mlir::RankedTensorType>(attr.getType());
+  if (!shaped_type || shaped_type.getRank() != 2) {
+    return attr;
+  }
+  const int64_t num_groups = shaped_type.getDimSize(0);
+  const int64_t group_size = shaped_type.getDimSize(1);
+  if (num_groups * group_size != sub_size) {
+    return attr;
+  }
+  std::vector<int64_t> old_vals;  // INT_VEC_OK
+  old_vals.reserve(num_groups * group_size);
+  for (const llvm::APInt& val : attr.getValues<llvm::APInt>()) {
+    old_vals.push_back(val.getSExtValue());
+  }
+  std::vector<int64_t> new_vals;  // INT_VEC_OK
+  new_vals.reserve(num_tiles * num_groups * group_size);
+  for (int64_t t = 0; t < num_tiles; ++t) {
+    const int64_t offset = t * sub_size;
+    for (int64_t v : old_vals) {
+      new_vals.push_back(v + offset);
+    }
+  }
+  auto new_type = mlir::RankedTensorType::get(
+      {num_tiles * num_groups, group_size}, shaped_type.getElementType());
+  return mlir::DenseIntElementsAttr::get(new_type, new_vals);
+}
+
+mlir::DenseIntElementsAttr TileSourceTargetPairsAttr(
+    mlir::DenseIntElementsAttr attr, int64_t sub_size, int64_t num_tiles) {
+  auto shaped_type = mlir::dyn_cast<mlir::RankedTensorType>(attr.getType());
+  if (!shaped_type || shaped_type.getRank() != 2 ||
+      shaped_type.getDimSize(1) != 2) {
+    return attr;
+  }
+  const int64_t num_pairs = shaped_type.getDimSize(0);
+  if (num_pairs == 0 || num_pairs > sub_size) {
+    return attr;
+  }
+  std::vector<int64_t> old_vals;  // INT_VEC_OK
+  old_vals.reserve(num_pairs * 2);
+  for (const llvm::APInt& val : attr.getValues<llvm::APInt>()) {
+    const int64_t v = val.getSExtValue();
+    if (v < 0 || v >= sub_size) {
+      return attr;
+    }
+    old_vals.push_back(v);
+  }
+  std::vector<int64_t> new_vals;  // INT_VEC_OK
+  new_vals.reserve(num_tiles * num_pairs * 2);
+  for (int64_t t = 0; t < num_tiles; ++t) {
+    const int64_t offset = t * sub_size;
+    for (int64_t v : old_vals) {
+      new_vals.push_back(v + offset);
+    }
+  }
+  auto new_type = mlir::RankedTensorType::get({num_tiles * num_pairs, 2},
+                                              shaped_type.getElementType());
+  return mlir::DenseIntElementsAttr::get(new_type, new_vals);
+}
+
+void TileOperationForSubgroup(mlir::Operation* root_op, int64_t sub_size,
+                              int64_t num_tiles) {
+  llvm::SmallVector<mlir::stablehlo::PartitionIdOp> partition_id_ops;
+  root_op->walk([&](mlir::Operation* op) {
+    if (auto rg_attr =
+            op->getAttrOfType<mlir::DenseIntElementsAttr>("replica_groups")) {
+      op->setAttr("replica_groups",
+                  TileReplicaGroupsAttr(rg_attr, sub_size, num_tiles));
+    }
+    if (auto st_attr = op->getAttrOfType<mlir::DenseIntElementsAttr>(
+            "source_target_pairs")) {
+      op->setAttr("source_target_pairs",
+                  TileSourceTargetPairsAttr(st_attr, sub_size, num_tiles));
+    }
+    if (mlir::isa<mlir::stablehlo::CustomCallOp>(op)) {
+      if (auto dict_attr =
+              op->getAttrOfType<mlir::DictionaryAttr>("backend_config")) {
+        if (auto rg_attr = mlir::dyn_cast_or_null<mlir::DenseIntElementsAttr>(
+                dict_attr.get("replica_groups"))) {
+          llvm::SmallVector<mlir::NamedAttribute> new_attrs;
+          for (const mlir::NamedAttribute& named_attr : dict_attr) {
+            if (named_attr.getName() == "replica_groups") {
+              new_attrs.emplace_back(
+                  named_attr.getName(),
+                  TileReplicaGroupsAttr(rg_attr, sub_size, num_tiles));
+            } else {
+              new_attrs.push_back(named_attr);
+            }
+          }
+          op->setAttr("backend_config",
+                      mlir::DictionaryAttr::get(op->getContext(), new_attrs));
+        }
+      }
+    }
+    if (auto pid_op = mlir::dyn_cast<mlir::stablehlo::PartitionIdOp>(op)) {
+      partition_id_ops.push_back(pid_op);
+    }
+  });
+
+  for (mlir::stablehlo::PartitionIdOp pid_op : partition_id_ops) {
+    mlir::Block::iterator next_it(pid_op);
+    ++next_it;
+    mlir::OpBuilder builder(pid_op->getBlock(), next_it);
+    auto pid_type = mlir::cast<mlir::RankedTensorType>(pid_op.getType());
+    auto m_attr = mlir::DenseIntElementsAttr::get(
+        pid_type, llvm::APInt(32, static_cast<uint64_t>(sub_size), false));
+    auto m_const = mlir::stablehlo::ConstantOp::create(builder, pid_op.getLoc(),
+                                                       pid_type, m_attr);
+    auto rem_op =
+        mlir::stablehlo::RemOp::create(builder, pid_op.getLoc(), pid_type,
+                                       pid_op.getResult(), m_const.getResult());
+    pid_op.getResult().replaceAllUsesExcept(rem_op.getResult(), rem_op);
+  }
+}
+
 }  // namespace
 
 const PythonContext* absl_nullable Traversal::GetPythonContext() const {
@@ -558,6 +690,10 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
     mlir::MLIRContext& mlir_context, bool use_stablehlo_bounds,
     absl::Span<const int64_t> donated_inputs,
     std::optional<std::string_view> module_name) const {
+  TT_ASSIGN_OR_RETURN(const std::vector<int64_t> resolved_da,  // INT_VEC_OK
+                      ResolveDeviceAssignment());
+  const int64_t full_da_size = resolved_da.size();
+
   // Read the traversal's values.
   absl::Span<const DeviceBufferRef> arguments = this->arguments();
   absl::Span<const SharedDeviceBufferList> execution_order =
@@ -613,6 +749,23 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
       donated_values.insert(deferred_inputs[donated_input_index].getValue());
     }
 
+    const int64_t op_da_size = deferred_op.device_assignment().size();
+    const bool needs_tiling = (op_da_size > 0 && full_da_size > op_da_size &&
+                               full_da_size % op_da_size == 0);
+    mlir::Block* insertion_block = fb.getOpBuilder().getInsertionBlock();
+    mlir::Operation* prev_last_op =
+        (insertion_block != nullptr && !insertion_block->empty())
+            ? &insertion_block->back()
+            : nullptr;
+    mlir::ModuleOp module_op = GetModuleOp(fb);
+    absl::flat_hash_set<std::string> existing_funcs;
+    if (needs_tiling) {
+      for (mlir::func::FuncOp func_op :
+           module_op.getOps<mlir::func::FuncOp>()) {
+        existing_funcs.insert(func_op.getSymName().str());
+      }
+    }
+
     // Build the MlirOp.
     // While `context` is in scope, all MlirOp objects built by `builder` will
     // be associated with the op's Python context.
@@ -625,6 +778,26 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
     TT_RET_CHECK(results.size() == node->size(), error::kInternal)
         << "deferred op " << deferred_op.op_name() << " returned "
         << results.size() << " results, expected " << node->size();
+
+    if (needs_tiling) {
+      const int64_t num_tiles = full_da_size / op_da_size;
+      if (insertion_block != nullptr && !insertion_block->empty()) {
+        mlir::Operation* start_op = (prev_last_op != nullptr)
+                                        ? prev_last_op->getNextNode()
+                                        : &insertion_block->front();
+        for (mlir::Operation* curr = start_op; curr != nullptr;
+             curr = curr->getNextNode()) {
+          TileOperationForSubgroup(curr, op_da_size, num_tiles);
+        }
+      }
+      for (mlir::func::FuncOp func_op :
+           module_op.getOps<mlir::func::FuncOp>()) {
+        if (!existing_funcs.contains(func_op.getSymName().str())) {
+          TileOperationForSubgroup(func_op.getOperation(), op_da_size,
+                                   num_tiles);
+        }
+      }
+    }
 
     // Cast each output of the deferred op to the expected type.
     for (int64_t index = 0; index < node->size(); ++index) {
@@ -820,12 +993,45 @@ bool Traversal::HasSparseCoreOp() const {
   return false;
 }
 
+absl::StatusOr<std::vector<int64_t>>  // INT_VEC_OK
+Traversal::ResolveDeviceAssignment() const {
+  std::vector<int64_t> resolved_da;  // INT_VEC_OK
+  for (const SharedDeviceBufferList& node : execution_order_) {
+    const auto& op = node->deferred_op();
+    if (!op || op->device_assignment().empty()) continue;
+    if (op->device_assignment().size() > resolved_da.size()) {
+      resolved_da = op->device_assignment();
+    }
+  }
+  if (resolved_da.empty()) {
+    return resolved_da;
+  }
+  for (const SharedDeviceBufferList& node : execution_order_) {
+    const auto& op = node->deferred_op();
+    if (!op || op->device_assignment().empty()) continue;
+    if (!IsCompatibleDeviceAssignmentTile(op->device_assignment(),
+                                          resolved_da)) {
+      return TT_ERROR(error::kInvalidArgument)
+             << "Disjoint or conflicting device assignments detected in the "
+                "same "
+                "compiled module. Operations belonging to different process "
+                "groups or conflicting Pallas meshes cannot be compiled "
+                "together "
+                "into a single XLA executable";
+    }
+  }
+  return resolved_da;
+}
+
 absl::StatusOr<CompiledKernel> Traversal::Compile(
     CompilationSpec spec, std::string* absl_nullable out_mlir_text,
     bool use_stablehlo_bounds, absl::Span<const CustomLayout> argument_layouts,
     absl::Span<const int64_t> donated_inputs,
     std::optional<std::string_view> module_name) const {
   tsl::profiler::TraceMe trace_await("Traversal::Compile");
+  TT_ASSIGN_OR_RETURN(const std::vector<int64_t> resolved_da,  // INT_VEC_OK
+                      ResolveDeviceAssignment());
+
   if (HasSparseCoreOp()) {
     absl::StatusOr<int> status =
         PjrtBackend::GetInstance().GetGlobalDeviceCount();
@@ -837,7 +1043,12 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
       exec_options.set_num_partitions(1);
       xla::DeviceAssignment da(num_devices, 1);
       for (int idx = 0; idx < num_devices; ++idx) {
-        da(idx, 0) = idx;
+        if (!resolved_da.empty() &&
+            static_cast<int>(resolved_da.size()) == num_devices) {
+          da(idx, 0) = resolved_da[idx];
+        } else {
+          da(idx, 0) = idx;
+        }
       }
       exec_options.set_device_assignment(da);
       exec_options.set_use_spmd_partitioning(false);
@@ -845,6 +1056,18 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
       spec.compile_options_key =
           MakeCompileOptionsKey(*spec.xla_compile_options);
     }
+  } else if (!resolved_da.empty()) {
+    const int num_partitions = resolved_da.size();
+    xla::ExecutableBuildOptions& exec_options =
+        spec.xla_compile_options->executable_build_options;
+    exec_options.set_num_replicas(1);
+    exec_options.set_num_partitions(num_partitions);
+    xla::DeviceAssignment da(1, num_partitions);
+    for (int p = 0; p < num_partitions; ++p) {
+      da(0, p) = resolved_da[p];
+    }
+    exec_options.set_device_assignment(da);
+    spec.compile_options_key = MakeCompileOptionsKey(*spec.xla_compile_options);
   }
 
   if (!argument_layouts.empty()) {

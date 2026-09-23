@@ -387,11 +387,13 @@ class DeferredOp {
              OpParamCacheKeys op_param_cache_keys,
              std::vector<Shape> output_shapes,
              OpSplitMode split_mode = OpSplitMode::kNone,
-             Indices donated_indices = {})
+             Indices donated_indices = {},
+             std::vector<int64_t> device_assignment = {})  // INT_VEC_OK
       : op_name_(op_name),
         op_builder_(std::move(op_builder)),
         inputs_(std::move(inputs)),
         donated_indices_(std::move(donated_indices)),
+        device_assignment_(std::move(device_assignment)),
         output_shapes_(std::move(output_shapes)),
         op_param_cache_keys_(std::move(op_param_cache_keys)),
         op_context_(ScopedPythonContextCapturer::GetContext()),
@@ -438,6 +440,11 @@ class DeferredOp {
     return donated_indices_;
   }
 
+  [[nodiscard]] const std::vector<int64_t>&  // INT_VEC_OK
+  device_assignment() const {
+    return device_assignment_;
+  }
+
  private:
   // The name of the deferred op.
   OpName op_name_;
@@ -452,6 +459,10 @@ class DeferredOp {
   // used for custom kernels, and only when the DeferredOp directly depends on
   // an input to the overall MLIR module.
   Indices donated_indices_;
+
+  // Custom device assignment (e.g. rank-to-device mapping for collectives or
+  // Pallas kernels). Empty indicates default device assignment.
+  std::vector<int64_t> device_assignment_;  // INT_VEC_OK
 
   // The shapes of the outputs of the deferred op.
   std::vector<Shape> output_shapes_;
@@ -534,8 +545,8 @@ class DeviceBufferList {
       OpName op_name, MlirOpBuilder op_builder,
       std::vector<DeviceBufferRef> inputs, OpParamCacheKeys op_param_cache_keys,
       std::vector<Shape> output_shapes,
-      OpSplitMode split_mode = OpSplitMode::kNone,
-      Indices donated_indices = {});
+      OpSplitMode split_mode = OpSplitMode::kNone, Indices donated_indices = {},
+      std::vector<int64_t> device_assignment = {});  // INT_VEC_OK
 
   // Creates a DeviceBufferList that represents a compiled-mode placeholder.
   // This is a buffer that is not backed by any data, but is used to represent

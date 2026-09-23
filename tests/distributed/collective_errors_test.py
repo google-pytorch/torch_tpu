@@ -26,16 +26,15 @@ This isn't quite how this will be used in open source, so we should revisit this
 before the open source release.
 """
 
-import datetime
 import os
 
 from absl.testing import absltest
-import portpicker
 import torch
 from torch import distributed as dist
 import torch.multiprocessing as mp
-from torch_tpu._internal.distributed import tpu_distributed
+from torch_tpu._internal.distributed import spmd_util
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
+from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import error_testing as et
 from tests.distributed import distributed_utils
@@ -430,24 +429,55 @@ def run_gather_output_on_non_root() -> None:
       pg.gather([gather_list], [tensor], opts)
 
 
-def run_subgroup_before_world_group_error() -> None:
-  """Tests that creating a subgroup before initializing the world group fails."""
-  _ = torch.empty(0, device="tpu")
+def run_conflicting_device_assignments_error() -> None:
+  """Tests that compatible tiled subgroups fuse cleanly while conflicting device assignments fail."""
+  dist.init_process_group("tpu")
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
+  half = world_size // 2
 
-  store = dist.TCPStore(
-      host_name="localhost",
-      port=portpicker.pick_unused_port(),
-      world_size=1,
-      is_master=True,
-  )
+  low = dist.new_group(ranks=list(range(half)))
+  high = dist.new_group(ranks=list(range(half, world_size)))
+  subgroup = low if rank < half else high
+
+  @torch.compile(backend="tpu", fullgraph=True)
+  @spmd_util.spmd_safe
+  def compatible_tiled_fn(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    dist.all_reduce(a)
+    dist.all_reduce(b, group=subgroup)
+    return a + b
+
+  x = torch.ones(4, device="tpu")
+  y = torch.ones(4, device="tpu")
+  res = compatible_tiled_fn(x, y).cpu()
+  expected = torch.full((4,), float(world_size + half), dtype=torch.float32)
+  utils.assert_close(res, expected)
+
+  unaligned_a = dist.new_group(ranks=[1, 2])
+  unaligned_b = dist.new_group(ranks=[3, 0])
+  unaligned_group = unaligned_a if rank in (1, 2) else unaligned_b
+
+  @torch.compile(backend="tpu", fullgraph=True)
+  @spmd_util.spmd_safe
+  def conflicting_fn(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    dist.all_reduce(a)
+    dist.all_reduce(b, group=unaligned_group)
+    return a + b
+
+  x2 = torch.ones(4, device="tpu")
+  y2 = torch.ones(4, device="tpu")
 
   expected_msg = (
-      "create_process_group(): world group must be initialized before subgroups"
+      "traverse_and_compile(): failed to compile traversal: Disjoint or"
+      " conflicting device assignments detected in the same compiled module."
+      " Operations belonging to different process groups or conflicting Pallas"
+      " meshes cannot be compiled together into a single XLA executable"
   )
   with et.assert_raises_message(RuntimeError, tpu=expected_msg):
-    tpu_distributed.create_process_group(
-        store, 0, 1, datetime.timedelta(seconds=5)
-    )
+    try:
+      _ = conflicting_fn(x2, y2).cpu()
+    except torch._dynamo.exc.BackendCompilerFailed as e:
+      raise RuntimeError(str(e.inner_exception).splitlines()[0]) from None
 
 
 class CollectiveErrorsTest(et.TpuOnlyDistributedErrorTestBase):
@@ -618,11 +648,12 @@ class CollectiveErrorsTest(et.TpuOnlyDistributedErrorTestBase):
           ),
       )
 
-  def test_subgroup_before_world_group_error(self):
+  def test_conflicting_device_assignments_error(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
         fn=singlehost_wrapper.tpu_env_wrapper(
-            run_subgroup_before_world_group_error, world_size=self._world_size
+            run_conflicting_device_assignments_error,
+            world_size=self._world_size,
         ),
     )
 
