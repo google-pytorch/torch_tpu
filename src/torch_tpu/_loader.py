@@ -207,7 +207,8 @@ def _init_device_impl(device: str) -> torch.device:
     get_interface_for_device(device)
   except NotImplementedError:
     pass
-  register_interface_for_device(device, device_module)  # pyrefly: ignore[bad-argument-type]
+  device_interface = _device_module.get_device_interface(device)
+  register_interface_for_device(device, device_interface)
 
   torch.utils.rename_privateuse1_backend(device)
   # Generate `Tensor.is_{device}`, `Tensor.{device}()`, `Module.{device}()`,

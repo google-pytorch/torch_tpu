@@ -24,6 +24,7 @@ from collections.abc import Mapping
 import dataclasses
 from typing import Any, Final, List
 import torch
+from torch._dynamo.device_interface import DeviceInterface
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal.device import _device_ops_backend
 import torch_tpu._internal.precision as _precision_module
@@ -305,9 +306,23 @@ class _DeviceModuleMeta(abc.ABCMeta):
     val = annotations._resolve_module_attribute(
         stages_map, name, "torch.tpu", tt_api_globals=None
     )
-    type.__setattr__(cls, name, val)
-    if hasattr(val, "__get__"):
+    # _DefaultGeneratorsProperty is a dynamic descriptor whose __get__ dynamically
+    # checks execution_mode.eager_mode (e.g. for compile mode generators).
+    # It must be installed on `cls` as a descriptor, not evaluated statically.
+    if isinstance(val, _DefaultGeneratorsProperty):
+      type.__setattr__(cls, name, val)
       return val.__get__(None, cls)
+
+    if hasattr(val, "__get__"):
+      val = val.__get__(None, cls)
+    if name in stages_map:
+      info = stages_map[name]
+      annotations._attach_stage_metadata(
+          val, info.stage.value, info.reason, info.version
+      )
+    # Memoize the resolved and bound attribute directly on `cls` via `type.__setattr__`
+    # so subsequent accesses bypass __getattr__ and avoid re-binding descriptors.
+    type.__setattr__(cls, name, val)
     return val
 
 
@@ -453,7 +468,6 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
   # for torch.tpu to avoid polluting the public module namespace and to stay in
   # line with torch.cuda.
   exchange_device = _exchange_device
-  maybe_exchange_device = _maybe_exchange_device
 
   @classmethod
   @experimental(
@@ -929,6 +943,43 @@ def get_device_module(device_type: str) -> type[_DeviceModule]:
     )
 
   return TpuDeviceModule
+
+
+class TpuDeviceInterface(TpuDeviceModule, DeviceInterface):
+  """Device interface implementation for TPU devices in TorchDynamo."""
+
+  maybe_exchange_device = TpuDeviceModule._maybe_exchange_device
+
+
+def get_device_interface(device_type: str) -> type[DeviceInterface]:
+  """Retrieves the DeviceInterface implementation for the specified device.
+
+  Args:
+    device_type: A valid device type, currently only "tpu".
+
+  Returns:
+    A class that can be passed to
+    torch._dynamo.device_interface.register_interface_for_device.
+  """
+  if device_type != "tpu":
+    raise ValueError(
+        f"Unknown device type {device_type!r}, only 'tpu' is supported."
+    )
+
+  return TpuDeviceInterface
+
+
+# TODO: Remove this backward compatibility shim before launch.
+# Temporary backward compatibility shim for legacy callers accessing TorchDynamo
+# SPIs on torch.tpu.
+__tt_api_stages__["maybe_exchange_device"] = annotations.ApiStageInfo(
+    stage=annotations.Stage.EXPERIMENTAL,
+    reason=(
+        "maybe_exchange_device() is internal to TorchDynamo and subject to"
+        " change or removal."
+    ),
+    value=_DeviceModule._maybe_exchange_device,
+)
 
 
 class TpuStreamContext:
