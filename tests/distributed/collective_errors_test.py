@@ -33,7 +33,6 @@ import torch
 from torch import distributed as dist
 import torch.multiprocessing as mp
 from torch_tpu._internal.distributed import spmd_util
-from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import error_testing as et
@@ -488,151 +487,109 @@ class CollectiveErrorsTest(et.TpuOnlyDistributedErrorTestBase):
   def test_all_gather(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_gather, world_size=self._world_size
-        ),
+        fn=run_all_gather,
     )
 
   def test_all_gather_tensor_wrong_number_output_dimensions(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_gather_tensor_wrong_number_output_dimensions,
-            world_size=self._world_size,
-        ),
+        fn=run_all_gather_tensor_wrong_number_output_dimensions,
     )
 
   def test_all_gather_tensor_wrong_concat_dimension(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_gather_tensor_wrong_concat_dimension,
-            world_size=self._world_size,
-        ),
+        fn=run_all_gather_tensor_wrong_concat_dimension,
     )
 
   def test_all_gather_tensor_wrong_stack_dimension(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_gather_tensor_wrong_stack_dimension,
-            world_size=self._world_size,
-        ),
+        fn=run_all_gather_tensor_wrong_stack_dimension,
     )
 
   def test_all_gather_tensor_stack_mismatched_dim(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_gather_tensor_stack_mismatched_dim,
-            world_size=self._world_size,
-        ),
+        fn=run_all_gather_tensor_stack_mismatched_dim,
     )
 
   def test_all_gather_tensor_concat_mismatched_dim(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_gather_tensor_concat_mismatched_dim,
-            world_size=self._world_size,
-        ),
+        fn=run_all_gather_tensor_concat_mismatched_dim,
     )
 
   def test_all_gather_tensor_wrong_scalar_dimension(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_gather_tensor_wrong_scalar_dimension,
-            world_size=self._world_size,
-        ),
+        fn=run_all_gather_tensor_wrong_scalar_dimension,
     )
 
   def test_all_gather_uneven_output_sizes(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_gather_uneven_output_sizes, world_size=self._world_size
-        ),
+        fn=run_all_gather_uneven_output_sizes,
     )
 
   def test_all_gather_mismatch_input_size(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_gather_mismatch_input_size, world_size=self._world_size
-        ),
+        fn=run_all_gather_mismatch_input_size,
     )
 
   def test_all_gather_mismatch_dtype(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_gather_mismatch_dtype, world_size=self._world_size
-        ),
+        fn=run_all_gather_mismatch_dtype,
     )
 
   def test_reduce_scatter_errors(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_reduce_scatter_errors, world_size=self._world_size
-        ),
+        fn=run_reduce_scatter_errors,
     )
 
   def test_reduce_scatter_tensor_errors(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_reduce_scatter_tensor_errors, world_size=self._world_size
-        ),
+        fn=run_reduce_scatter_tensor_errors,
     )
 
   def test_gather_wrong_input_size(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_gather_wrong_input_size, world_size=self._world_size
-        ),
+        fn=run_gather_wrong_input_size,
     )
 
   def test_gather_wrong_output_list_size(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_gather_wrong_output_list_size, world_size=self._world_size
-        ),
+        fn=run_gather_wrong_output_list_size,
     )
 
   def test_gather_wrong_output_tensor_count(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_gather_wrong_output_tensor_count, world_size=self._world_size
-        ),
+        fn=run_gather_wrong_output_tensor_count,
     )
 
   def test_gather_mismatch_input_size(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_gather_mismatch_input_size, world_size=self._world_size
-        ),
+        fn=run_gather_mismatch_input_size,
     )
 
   def test_gather_non_uniform_output_shapes(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_gather_non_uniform_output_shapes, world_size=self._world_size
-        ),
+        fn=run_gather_non_uniform_output_shapes,
     )
 
   def test_gather_output_on_non_root(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_gather_output_on_non_root, world_size=self._world_size
-        ),
+        fn=run_gather_output_on_non_root,
     )
 
   def test_all_reduce_error(self):
@@ -643,18 +600,13 @@ class CollectiveErrorsTest(et.TpuOnlyDistributedErrorTestBase):
     with et.assert_subprocess_raises_message(RuntimeError, expected_msg):
       distributed_utils.dist_run(
           nproc_per_node=self._world_size,
-          fn=singlehost_wrapper.tpu_env_wrapper(
-              run_all_reduce_error, world_size=self._world_size
-          ),
+          fn=run_all_reduce_error,
       )
 
   def test_conflicting_device_assignments_error(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_conflicting_device_assignments_error,
-            world_size=self._world_size,
-        ),
+        fn=run_conflicting_device_assignments_error,
     )
 
 

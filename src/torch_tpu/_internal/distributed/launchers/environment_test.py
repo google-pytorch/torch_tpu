@@ -15,6 +15,7 @@
 """Tests the unified `environment` module for single-host and multi-host."""
 
 import contextlib
+import io
 import os
 from unittest import mock
 
@@ -31,10 +32,10 @@ def _mock_env(values: dict[str, str]):
   """Makes the environment look exactly like `values` to the launcher."""
 
   def get_str_env_once(name, default_value=None):
-    return values.get(name, default_value)
+    return os.environ.get(name, default_value)
 
   def get_int_env_once(name, default_value=None):
-    return int(values[name]) if name in values else default_value
+    return int(os.environ[name]) if name in os.environ else default_value
 
   with contextlib.ExitStack() as stack:
     stack.enter_context(mock.patch.dict(os.environ, values, clear=True))
@@ -112,6 +113,22 @@ class EnvironmentTest(seed_test_utils.RepeatableTest):
       self.assertEqual(os.environ.get("NODE_RANK"), "0")
       self.assertEqual(os.environ.get("MASTER_ADDR"), "host1")
       self.assertEqual(os.environ.get("MASTER_PORT"), "29500")
+
+  def test_print_launch_env_singlehost(self):
+    with _mock_env({}):
+      with (
+          mock.patch.object(hardware, "get_tpu_topology", return_value="2x2x1"),
+          mock.patch.object(hardware, "get_tpu_device_count", return_value=4),
+      ):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+          environment._print_launch_env()  # pylint: disable=protected-access
+        lines = dict(
+            line.split("=", 1) for line in buf.getvalue().strip().splitlines()
+        )
+        self.assertEqual(lines.get("TORCH_TPU_TOPOLOGY"), '"2x2x1"')
+        self.assertEqual(lines.get("WORLD_SIZE"), "4")
+        self.assertIn("TORCH_TPU_SLICEBUILDER_ADDRESSES", lines)
 
 
 if __name__ == "__main__":

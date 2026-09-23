@@ -29,7 +29,6 @@ import torch
 from torch import distributed as dist
 import torch.multiprocessing as mp
 from torch_tpu._internal.distributed import device_mesh
-from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
@@ -193,21 +192,19 @@ class SubgroupCollectivesTest(seed_test_utils.MultiProcessRepeatableTest):
   def test_manual_2d_mesh(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(run_manual_2d_mesh),
+        fn=run_manual_2d_mesh,
     )
 
   def test_manual_1d_as_2d_mesh(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(run_manual_1d_as_2d_mesh),
+        fn=run_manual_1d_as_2d_mesh,
     )
 
   def test_manual_2d_all_gather_reduce_scatter(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_manual_2d_all_gather_reduce_scatter
-        ),
+        fn=run_manual_2d_all_gather_reduce_scatter,
     )
 
 

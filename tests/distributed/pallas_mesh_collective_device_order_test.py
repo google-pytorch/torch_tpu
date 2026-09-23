@@ -43,7 +43,6 @@ from torch_tpu._internal import pallas
 from torch_tpu._internal.distributed import device_mesh
 from torch_tpu._internal.distributed import spmd_util
 from torch_tpu._internal.distributed import tpu_distributed
-from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
 from tests.distributed import distributed_utils
@@ -791,7 +790,7 @@ class PallasMeshCollectiveDeviceOrderTest(
   def _dist_run(self, fn: Callable[..., None], **kwargs) -> None:
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(fn, world_size=self._world_size),
+        fn=fn,
         **kwargs,
     )
 

@@ -30,13 +30,13 @@ def get_distributed_env():
   """Sets up the environment for distributed TPU training."""
   env = os.environ.copy()
 
-  # Try to use singlehost_wrapper to initialize TPU environment variables
+  # Try to use environment to initialize TPU environment variables
   try:
     # We try to run it using the same executable that is running pytest
     wrapper_cmd = [
         sys.executable,
         "-m",
-        "torch_tpu._internal.distributed.launchers.singlehost_wrapper",
+        "torch_tpu._internal.distributed.launchers.environment",
     ]
     result = subprocess.run(
         wrapper_cmd, capture_output=True, text=True, env=env

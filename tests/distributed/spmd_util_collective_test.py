@@ -24,7 +24,6 @@ import torch
 from torch import distributed as dist
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal.distributed import spmd_util
-from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
 from tests.distributed import distributed_utils
@@ -237,9 +236,7 @@ class SpmdSafeDecoratorTest(seed_test_utils.MultiProcessRepeatableTest):
     ):
       distributed_utils.dist_run(
           nproc_per_node=self._world_size,
-          fn=singlehost_wrapper.tpu_env_wrapper(
-              _test_wrapper, world_size=self._world_size
-          ),
+          fn=_test_wrapper,
           test_fn=run_spmd_safe_decorator_test,
       )
     self._check_fused_mlir(dump_dir)
@@ -258,9 +255,7 @@ class SpmdSafeDecoratorTest(seed_test_utils.MultiProcessRepeatableTest):
     ):
       distributed_utils.dist_run(
           nproc_per_node=self._world_size,
-          fn=singlehost_wrapper.tpu_env_wrapper(
-              _test_wrapper, world_size=self._world_size
-          ),
+          fn=_test_wrapper,
           test_fn=run_spmd_safe_decorator_test,
           compile_test=True,
       )
@@ -280,9 +275,7 @@ class SpmdSafeDecoratorTest(seed_test_utils.MultiProcessRepeatableTest):
     ):
       distributed_utils.dist_run(
           nproc_per_node=self._world_size,
-          fn=singlehost_wrapper.tpu_env_wrapper(
-              _test_wrapper, world_size=self._world_size
-          ),
+          fn=_test_wrapper,
           test_fn=run_spmd_safe_decorator_backward_test,
       )
     self._check_fused_mlir(dump_dir, expected_count=2)
@@ -299,9 +292,7 @@ class SpmdSafeDecoratorTest(seed_test_utils.MultiProcessRepeatableTest):
     ):
       distributed_utils.dist_run(
           nproc_per_node=self._world_size,
-          fn=singlehost_wrapper.tpu_env_wrapper(
-              _test_wrapper, world_size=self._world_size
-          ),
+          fn=_test_wrapper,
           test_fn=run_uncoordinated_op_stream_test,
       )
     self._check_all_reduce_mlir_matching(dump_dir)
@@ -309,18 +300,14 @@ class SpmdSafeDecoratorTest(seed_test_utils.MultiProcessRepeatableTest):
   def test_spmd_safe_dtensor_compile(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            _test_wrapper, world_size=self._world_size
-        ),
+        fn=_test_wrapper,
         test_fn=run_spmd_safe_dtensor_compile_test,
     )
 
   def test_spmd_safe_multi_dtensor_compile(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            _test_wrapper, world_size=self._world_size
-        ),
+        fn=_test_wrapper,
         test_fn=run_spmd_safe_multi_dtensor_compile_test,
     )
 

@@ -22,7 +22,6 @@ import torch
 from torch import distributed as dist
 import torch.multiprocessing as mp
 from torch_tpu._internal import testing as tt_testing
-from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.distributed import multiprocessing
 from tests import error_testing as et
 from tests.distributed import distributed_utils
@@ -81,25 +80,19 @@ class AllGatherErrorsTest(et.TpuOnlyDistributedErrorTestBase):
   def test_invalid_dtype(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_gather_dtype_error, world_size=self._world_size
-        ),
+        fn=run_all_gather_dtype_error,
     )
 
   def test_wrong_num_of_tensors(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_gather_wrong_num_tensors, world_size=self._world_size
-        ),
+        fn=run_all_gather_wrong_num_tensors,
     )
 
   def test_dispatch_failure(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_gather_dispatch_failure, world_size=self._world_size
-        ),
+        fn=run_all_gather_dispatch_failure,
     )
 
 

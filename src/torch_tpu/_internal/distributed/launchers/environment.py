@@ -190,3 +190,33 @@ def set_tpu_launch_env(
         "TORCH_TPU_SLICEBUILDER_ADDRESSES", pick_slicebuilder_addresses
     )
     env_utils.get_and_set_str_env_once("TORCH_TPU_TOPOLOGY", require_topology)
+
+
+def _print_launch_env() -> None:
+  """Bootstraps TPU launch env and prints shell variable assignments to stdout."""
+  logging.get_absl_logger().propagate = False
+  set_tpu_launch_env()
+  host_topology = env.get_str_env_once("TORCH_TPU_TOPOLOGY", default_value="")
+  host_sb_addresses = env.get_str_env_once(
+      "TORCH_TPU_SLICEBUILDER_ADDRESSES", default_value=""
+  )
+  host_xprof_session_id = env.get_str_env_once(
+      "TORCH_TPU_XPROF_SESSION_ID", default_value=""
+  )
+  host_count = (
+      len(host_sb_addresses.split(","))
+      if host_sb_addresses
+      else hardware.get_tpu_device_count()
+  )
+  print(f'TORCH_TPU_TOPOLOGY="{host_topology}"')
+  print(f'TORCH_TPU_SLICEBUILDER_ADDRESSES="{host_sb_addresses}"')
+  print(f'TORCH_TPU_XPROF_SESSION_ID="{host_xprof_session_id}"')
+  print(f"WORLD_SIZE={host_count}")
+  for var in ("NNODES", "NODE_RANK", "MASTER_ADDR", "MASTER_PORT"):
+    val = env.get_str_env_once(var)
+    if val is not None:
+      print(f'{var}="{val}"')
+
+
+if __name__ == "__main__":
+  _print_launch_env()

@@ -23,7 +23,6 @@ from torch import distributed as dist
 from torch.distributed import tensor
 import torch.multiprocessing as mp
 from torch_tpu._internal import compile as tt_compile
-from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import oss_utils
@@ -387,73 +386,55 @@ class MultiTpuTorchCompileTest(seed_test_utils.MultiProcessRepeatableTest):
   def test_fake_tensor_side_effect_pruning_with_torch_compile(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_fake_tensor_side_effect_pruning_with_torch_compile, world_size=8
-        ),
+        fn=run_fake_tensor_side_effect_pruning_with_torch_compile,
     )
 
   def test_all_reduce_with_torch_compile(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_reduce_with_torch_compile, world_size=8
-        ),
+        fn=run_all_reduce_with_torch_compile,
     )
 
   def test_all_gather_into_tensor_with_torch_compile(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_gather_into_tensor_with_torch_compile, world_size=8
-        ),
+        fn=run_all_gather_into_tensor_with_torch_compile,
     )
 
   def test_all_to_all_single_with_torch_compile(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all_single_with_torch_compile, world_size=8
-        ),
+        fn=run_all_to_all_single_with_torch_compile,
     )
 
   def test_all_to_all_with_torch_compile(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all_with_torch_compile, world_size=8
-        ),
+        fn=run_all_to_all_with_torch_compile,
     )
 
   def test_all_gather_with_torch_compile(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_gather_with_torch_compile, world_size=8
-        ),
+        fn=run_all_gather_with_torch_compile,
     )
 
   def test_barrier_with_torch_compile(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_barrier_with_torch_compile, world_size=8
-        ),
+        fn=run_barrier_with_torch_compile,
     )
 
   def test_reduce_scatter_tensor_with_torch_compile(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_reduce_scatter_tensor_with_torch_compile, world_size=8
-        ),
+        fn=run_reduce_scatter_tensor_with_torch_compile,
     )
 
   def test_broadcast_with_torch_compile(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_broadcast_with_torch_compile, world_size=8
-        ),
+        fn=run_broadcast_with_torch_compile,
     )
 
   # TODO(b/493050035): Enable once OSS PyTorch supports functional collective
@@ -466,17 +447,13 @@ class MultiTpuTorchCompileTest(seed_test_utils.MultiProcessRepeatableTest):
   def test_reduce_scatter_with_torch_compile(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_reduce_scatter_with_torch_compile, world_size=8
-        ),
+        fn=run_reduce_scatter_with_torch_compile,
     )
 
   def test_gather_with_torch_compile(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_gather_with_torch_compile, world_size=8
-        ),
+        fn=run_gather_with_torch_compile,
     )
 
 

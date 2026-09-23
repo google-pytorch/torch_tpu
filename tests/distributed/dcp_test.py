@@ -30,7 +30,6 @@ from torch.distributed.checkpoint import staging
 from torch.distributed.checkpoint import state_dict
 import torch.distributed.tensor as dt
 import torch.multiprocessing as mp
-from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
@@ -257,9 +256,7 @@ class DCPTest(seed_test_utils.MultiProcessRepeatableTest):
     checkpoint_dir = self.create_tempdir().full_path
     distributed_utils.dist_run(
         self._world_size,
-        singlehost_wrapper.tpu_env_wrapper(
-            run_dtensor_dcp_save_load, world_size=self._world_size
-        ),
+        run_dtensor_dcp_save_load,
         checkpoint_dir=checkpoint_dir,
     )
 
@@ -267,9 +264,7 @@ class DCPTest(seed_test_utils.MultiProcessRepeatableTest):
     checkpoint_dir = self.create_tempdir().full_path
     distributed_utils.dist_run(
         self._world_size,
-        singlehost_wrapper.tpu_env_wrapper(
-            run_dtensor_dcp_async_save_load, world_size=self._world_size
-        ),
+        run_dtensor_dcp_async_save_load,
         checkpoint_dir=checkpoint_dir,
     )
 
@@ -277,9 +272,7 @@ class DCPTest(seed_test_utils.MultiProcessRepeatableTest):
     checkpoint_dir = self.create_tempdir().full_path
     distributed_utils.dist_run(
         self._world_size,
-        singlehost_wrapper.tpu_env_wrapper(
-            run_dtensor_dcp_state_dict_optimizer, world_size=self._world_size
-        ),
+        run_dtensor_dcp_state_dict_optimizer,
         checkpoint_dir=checkpoint_dir,
     )
 

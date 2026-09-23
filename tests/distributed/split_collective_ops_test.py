@@ -25,7 +25,6 @@ from torch_tpu._internal.compile import split_compiler
 from torch_tpu._internal.compile import torch_tpu_compiled_executable
 from torch_tpu._internal.compile.debug import TpuCompileDebug
 from torch_tpu._internal.distributed import collective_ops
-from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
@@ -597,9 +596,7 @@ class SplitCollectiveOpsTest(seed_test_utils.MultiProcessRepeatableTest):
   def test_compile_all_reduce_and_serdes(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            _test_wrapper, world_size=self._world_size
-        ),
+        fn=_test_wrapper,
         test_fn=run_compile_all_reduce_and_serdes_test,
     )
 
@@ -609,63 +606,49 @@ class SplitCollectiveOpsTest(seed_test_utils.MultiProcessRepeatableTest):
     ):
       distributed_utils.dist_run(
           nproc_per_node=self._world_size,
-          fn=singlehost_wrapper.tpu_env_wrapper(
-              _test_wrapper, world_size=self._world_size
-          ),
+          fn=_test_wrapper,
           test_fn=run_compile_no_splits_when_env_zero_test,
       )
 
   def test_compile_two_collectives(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            _test_wrapper, world_size=self._world_size
-        ),
+        fn=_test_wrapper,
         test_fn=run_compile_two_collectives_test,
     )
 
   def test_torch_compile_fullgraph_no_break(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            _test_wrapper, world_size=self._world_size
-        ),
+        fn=_test_wrapper,
         test_fn=run_torch_compile_fullgraph_no_break_test,
     )
 
   def test_compile_single_tensor_collectives(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            _test_wrapper, world_size=self._world_size
-        ),
+        fn=_test_wrapper,
         test_fn=run_single_tensor_collectives_test,
     )
 
   def test_compile_coalesced_collectives(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            _test_wrapper, world_size=self._world_size
-        ),
+        fn=_test_wrapper,
         test_fn=run_coalesced_collectives_test,
     )
 
   def test_compile_out_collectives(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            _test_wrapper, world_size=self._world_size
-        ),
+        fn=_test_wrapper,
         test_fn=run_out_collectives_test,
     )
 
   def test_compile_all_to_all_collectives(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            _test_wrapper, world_size=self._world_size
-        ),
+        fn=_test_wrapper,
         test_fn=run_all_to_all_collectives_test,
     )
 
@@ -682,9 +665,7 @@ class SplitCollectiveOpsTest(seed_test_utils.MultiProcessRepeatableTest):
   def test_rank_variable_dead_collective(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            _test_wrapper, world_size=self._world_size
-        ),
+        fn=_test_wrapper,
         test_fn=run_rank_variable_dead_collective_test,
     )
 

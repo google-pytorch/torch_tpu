@@ -16,13 +16,13 @@
 
 from torch.google import distributed as gdist
 import torch.multiprocessing as mp
-from torch_tpu._internal.distributed.launchers import singlehost_wrapper
+from torch_tpu._internal.distributed.launchers import environment
 from examples.distributed.tensor_parallel.dtensor_wrapped import dtp_worker
 from torch_tpu._internal.distributed import multiprocessing
 
 
 def main(_):
-  singlehost_wrapper.prepare_tpu_environment()
+  environment.set_tpu_launch_env()
   gdist.torchrun(dtp_worker.worker_fn, nproc_per_node=8)()
 
 

@@ -31,7 +31,7 @@ from fairscale.nn.model_parallel import initialize as fairscale_init
 import torch
 import torch.multiprocessing as mp
 from torch_tpu._internal import testing as tt_testing
-from torch_tpu._internal.distributed.launchers import singlehost_wrapper
+from torch_tpu._internal.distributed.launchers import environment
 from examples.benchmarks.e2e import common
 from examples.benchmarks.e2e.harness import compile as compile_lib
 from examples.benchmarks.e2e.harness import context as context_lib
@@ -360,7 +360,7 @@ def main(argv: Sequence[str]) -> None:
     # Populate TORCH_TPU_SLICEBUILDER_ADDRESSES and TORCH_TPU_TOPOLOGY when
     # running standalone single-host TPU benchmarks (e.g., on GCP or GitHub
     # Actions runners). This is a no-op if already set in os.environ.
-    singlehost_wrapper.prepare_tpu_environment(local_nproc)
+    environment.set_tpu_launch_env(nproc_per_node=local_nproc)
 
   test_filter = os.environ.get("TESTBRIDGE_TEST_ONLY")
   targets_to_run = resolve_benchmark_targets(test_filter)
