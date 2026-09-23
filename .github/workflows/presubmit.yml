@@ -166,6 +166,18 @@ jobs:
         with:
           halt-dispatch-input: ${{ inputs.halt-for-connection }}
 
+      - name: Configure RBE mTLS Credentials
+        env:
+          RBE_CA_CERT: ${{ secrets.RBE_CA_CERT }}
+          RBE_CLIENT_CERT: ${{ secrets.RBE_CLIENT_CERT }}
+          RBE_CLIENT_KEY: ${{ secrets.RBE_CLIENT_KEY }}
+        run: |
+          mkdir -p /tmp/rbe-certs
+          echo "$RBE_CA_CERT" > /tmp/rbe-certs/rbe_ca.crt
+          echo "$RBE_CLIENT_CERT" > /tmp/rbe-certs/rbe_client.crt
+          echo "$RBE_CLIENT_KEY" > /tmp/rbe-certs/rbe_client.key
+          chmod 600 /tmp/rbe-certs/rbe_client.key
+
       - name: Run Impacted Tests via bazel-diff
         uses: ./.github/actions/bazel-diff
         with:

@@ -359,9 +359,13 @@ Project `rbe-tpu-oss` enforces defense in depth:
     CIDRs.
 4.  **Frontend Authentication & TLS:** `bb-frontend` enforces TLS (`grpcs://`)
     and mutual TLS (mTLS) client certificate verification (`tlsClientCertificate`),
-    requiring a valid client certificate (`bazel/certs/rbe_client.crt`) signed
-    by the trusted root CA (`bazel/certs/rbe_ca.crt`) on incoming REAPI requests.
-    Unauthenticated connections without valid certificates fail immediately.
+    requiring a valid client certificate signed by the trusted root CA on
+    incoming REAPI requests. In CI, credentials populate dynamically into
+    `/tmp/rbe-certs/` from GitHub Actions Secrets (or GCP Secret Manager) during
+    runner initialization; local developers keep certificates in
+    `~/.config/torch_tpu/certs/` or `/tmp/rbe-certs/`. No private keys are committed
+    to source control. Unauthenticated connections without valid certificates fail
+    immediately.
 
 ### Fleet Distribution & Latency
 
