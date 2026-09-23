@@ -807,6 +807,13 @@ absl::Status Materialize(absl::Span<const SharedDeviceBufferList> nodes,
 
 absl::Status Materialize(absl::Span<const DeviceBufferRef> buffer_refs,
                          MaterializationReason reason,
+                         MaterializationMode materialization_mode) {
+  return Materialize(buffer_refs, reason, materialization_mode,
+                     MaterializationBlockMode::kBlockUntilStarted);
+}
+
+absl::Status Materialize(absl::Span<const DeviceBufferRef> buffer_refs,
+                         MaterializationReason reason,
                          MaterializationMode materialization_mode,
                          MaterializationBlockMode block_mode) {
   return MaterializeSpan(buffer_refs, reason, materialization_mode, block_mode);
