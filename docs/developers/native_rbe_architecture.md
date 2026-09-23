@@ -91,7 +91,7 @@ additional services need to be stood up to merge or merge-gate this workflow.
 | Diagram Layer | Component | Owner | Current State & Lifecycle | What We Maintain |
 | :--- | :--- | :--- | :--- | :--- |
 | **1. Blue** *(External / Utilized)* | **GitHub Actions Runner (`linux-x86-n4-16`) & `ml-build` Image** | **ML Velocity Infra** (`ml-velocity-actions-production`) | **Automatic / Ephemeral**: Spins up on demand per PR workflow run and tears down automatically when the job finishes. | **Nothing.** We only reference `runs-on: linux-x86-n4-16` and the `ml-build` image in `presubmit.yml`. |
-| **1. Blue** *(External / Utilized)* | **Consumer PSC Endpoint (`10.202.0.67:8980`)** | **ML Velocity Infra** (`psc_endpoints.tf`) | **Already Provisioned**: Static forwarding rule (`rbe-tpu-buildbarn-psc-endpoint`) managed by ML Velocity's `terraform_ci` pipeline (`status: ACCEPTED`). | **Nothing.** We only point `--remote_executor=grpc://10.202.0.67:8980` at it in `.bazelrc`. |
+| **1. Blue** *(External / Utilized)* | **Consumer PSC Endpoint (`10.202.0.67:8980`)** | **ML Velocity Infra** (`psc_endpoints.tf`) | **Already Provisioned**: Static forwarding rule (`rbe-tpu-buildbarn-psc-endpoint`) managed by ML Velocity's `terraform_ci` pipeline (`status: ACCEPTED`). | **Nothing.** We only point `--remote_executor=grpcs://10.202.0.67:8980` with mTLS client certificates at it in `.bazelrc`. |
 | **2. Purple** *(Ephemeral Client)* | **Developer SSH Tunnel (`127.0.0.1:8980`)** | **Individual Developer** (Cloudtop) | **On-Demand**: Started by an engineer only when running remote TPU tests locally from a workstation. Never used by CI. | **Nothing.** |
 | **3. Green** *(Managed GCP Networking)* | **PSC Service Attachment (`rbe-tpu-service-attachment`) & Internal LB (`rbe-internal-ilb`)** | **TorchTPU Team** (`rbe-tpu-oss`), **Managed by GCP** | **Already Provisioned**: Cloud-native VPC networking objects in `us-east5`. Directs traffic straight to GKE node group without intermediary gateway VMs. | **Zero ongoing maintenance.** Only touched if adding another consumer GCP project to `consumerAcceptLists`. |
 | **4. Amber** *(TorchTPU K8s Infra)* | **Buildbarn Control Plane (`bb-frontend`, `bb-scheduler`, `bb-storage`) & 416-Slot Standing CPU Pool (`worker-cpu`, Autoscaling to 2,016 Slots)** | **TorchTPU Team** (`rbe-tpu-oss-east5-cluster`) | **Already Deployed**: Control plane pods run on `default-pool` (`10.202.0.16`) with `safe-to-evict: "false"` and `hostNetwork: true`. CPU workers scale from 13 standing nodes (`416` vCPUs) up to 63 nodes (`2,016` vCPUs). | **Owned by us.** Configured via ConfigMaps `buildbarn-config-d94cdd4g96` and `bb-worker-cpu-config`, `HorizontalPodAutoscaler/worker-cpu-hpa` (`13 -> 63` pods), and GKE Cluster Autoscaler (`cpu-worker-pool` `13..45` + `cpu-worker-pool-burst` `0..18`). |
@@ -357,9 +357,11 @@ Project `rbe-tpu-oss` enforces defense in depth:
 3.  **Edge Firewall:** Hierarchical firewall rules drop all unauthorized external
     traffic (`0.0.0.0/0`) at the perimeter while permitting Google corporate
     CIDRs.
-4.  **Frontend Authentication & TLS:** `bb-frontend` supports TLS (`grpcs://`)
-    and token authentication (`peerCredentialsJmespathExpression`), validating
-    the `x-buildbarn-auth` header on incoming REAPI requests.
+4.  **Frontend Authentication & TLS:** `bb-frontend` enforces TLS (`grpcs://`)
+    and mutual TLS (mTLS) client certificate verification (`tlsClientCertificate`),
+    requiring a valid client certificate (`bazel/certs/rbe_client.crt`) signed
+    by the trusted root CA (`bazel/certs/rbe_ca.crt`) on incoming REAPI requests.
+    Unauthenticated connections without valid certificates fail immediately.
 
 ### Fleet Distribution & Latency
 
@@ -394,7 +396,10 @@ GB. To avoid downloading 2.6 GB over cross-region links on every test:
 
 ```ini
 # Native Remote Build Execution on Cloud TPU v5e hardware via Buildbarn (REAPI v2)
-common:rbe_native_tpu --remote_executor=grpc://127.0.0.1:8980
+common:rbe_native_tpu --remote_executor=grpcs://127.0.0.1:8980
+common:rbe_native_tpu --tls_certificate=bazel/certs/rbe_ca.crt
+common:rbe_native_tpu --tls_client_certificate=bazel/certs/rbe_client.crt
+common:rbe_native_tpu --tls_client_key=bazel/certs/rbe_client.key
 common:rbe_native_tpu --noremote_upload_local_results
 common:rbe_native_tpu --extra_execution_platforms="//bazel/platforms:buildbarn_native_tpu_platform"
 common:rbe_native_tpu --jobs=200
@@ -406,10 +411,11 @@ common:rbe_native_tpu --experimental_remote_execution_keepalive=true
 # CI config matching .github/workflows/presubmit.yml
 common:ci_rbe_presubmit --config=ci_base
 common:ci_rbe_presubmit --config=rbe_native_tpu
-common:ci_rbe_presubmit --remote_executor=grpc://10.202.0.67:8980
+common:ci_rbe_presubmit --remote_executor=grpcs://10.202.0.67:8980
 common:ci_rbe_presubmit --remote_upload_local_results=true
 common:ci_rbe_presubmit --build_tag_filters=-nobuild,requires-tpu-v5lite,-requires-tpu-v5lite:8
 common:ci_rbe_presubmit --test_tag_filters=presubmit-v5,-fails-on-tpu-v5,-nopresubmit,-notest,-nobuild,-requires-tpu-v5p,-requires-tpu-v6e,-requires-tpu-v7x,-requires-tpu-v5lite:8,-requires-net:external
+test:ci_rbe_presubmit --test_output=errors
 ```
 
 #### Flag and Filter Explanations
