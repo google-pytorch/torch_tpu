@@ -215,8 +215,8 @@ torch_tpu_py_test(
     timeout = "long",
     srcs = ["module_registry_test.py"],
     data = ["//tests/compile:data/goldfish.jpg"],
+    # Cannot run in OSS either: no access to the model resources.
     notap = "TODO(b/561614286): Flaky test due to unstable model cache access",
-    notest_oss = True,  # No OSS access to model resources
     shard_count = 6,
     tags = [
         "noasan",  # TODO: fix the test timing out in asan mode.
@@ -1074,8 +1074,8 @@ torch_tpu_py_test(
     name = "sparse_dense_matmul_test",
     srcs = ["sparse_dense_matmul_test.py"],
     main = "sparse_dense_matmul_test.py",
+    # Cannot run in OSS either: TPU v7 is not available in presubmit.
     notap = "Subslicing errors on tpu7x. See b/515767150",
-    notest_oss = True,  # Disabled because of no support for tpu v7 in presubmit
     tags = [
         "requires-tpu-v7x",
     ],

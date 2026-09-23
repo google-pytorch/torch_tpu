@@ -263,8 +263,8 @@ torch_tpu_py_test(
     },
     main = "torch_benchmark_test.py",
     nolocal = "user requested to run this manually",
+    # Cannot run in OSS either: needs HuggingFace configs from internal infra.
     notap = "Development benchmark target; run manually on demand.",
-    notest_oss = True,  # requires huggingface configs from internal infra
     shard_count = 50,
     tags = [
         "nofastbuild",
