@@ -54,13 +54,12 @@ class SymShapeManagerTest(seed_test_utils.RepeatableTest):
 
   def test_symbol_manager_extraction(self):
     captured_sm = None
-    captured_bm = None
 
     def fw_compiler(graph_module, example_inputs):
-      nonlocal captured_sm, captured_bm
-      captured_bm = sym_bounds_manager.SymBoundsManager(example_inputs)
+      nonlocal captured_sm
+      bm = sym_bounds_manager.SymBoundsManager(example_inputs)
       captured_sm = sym_shape_manager.SymShapeManager(
-          graph_module, example_inputs, captured_bm.get_symbol_bounds()
+          graph_module, example_inputs, bm.get_symbol_bounds()
       )
       return graph_module
 
@@ -74,17 +73,10 @@ class SymShapeManagerTest(seed_test_utils.RepeatableTest):
     f(t)
 
     self.assertIsNotNone(captured_sm)
-    self.assertIsNotNone(captured_bm)
     self.assertEqual(captured_sm.get_dynamic_outputs(), [True])
-    updated_inputs, _ = captured_bm.get_example_inputs()
-    self.assertEqual(list(updated_inputs[2].shape), [8])
     self.assertEqual(
-        captured_bm.get_precomputed_bounds_list(),
-        [
-            sym_bounds_manager.ShapeBoundInfo(
-                dynamic_dims=(0,), upper_bounds=(8,)
-            )
-        ],
+        captured_sm.get_symint_bounds(captured_sm.example_inputs[1].shape[0]),
+        (2, 8),
     )
     self.assertEqual(
         captured_sm.get_upper_bound(captured_sm.example_inputs[1].shape[0]), 8
@@ -92,13 +84,12 @@ class SymShapeManagerTest(seed_test_utils.RepeatableTest):
 
   def test_symbol_manager_static_shape(self):
     captured_sm = None
-    captured_bm = None
 
     def fw_compiler(graph_module, example_inputs):
-      nonlocal captured_sm, captured_bm
-      captured_bm = sym_bounds_manager.SymBoundsManager(example_inputs)
+      nonlocal captured_sm
+      bm = sym_bounds_manager.SymBoundsManager(example_inputs)
       captured_sm = sym_shape_manager.SymShapeManager(
-          graph_module, example_inputs, captured_bm.get_symbol_bounds()
+          graph_module, example_inputs, bm.get_symbol_bounds()
       )
       return graph_module
 
@@ -111,11 +102,13 @@ class SymShapeManagerTest(seed_test_utils.RepeatableTest):
     f(t)
 
     self.assertIsNotNone(captured_sm)
-    self.assertIsNotNone(captured_bm)
     self.assertEqual(captured_sm.get_dynamic_outputs(), [False])
-    updated_inputs, _ = captured_bm.get_example_inputs()
-    self.assertEqual(list(updated_inputs[0].shape), [2, 3])
-    self.assertEqual(captured_bm.get_precomputed_bounds_list(), [])
+    self.assertEqual(
+        captured_sm.get_upper_bound(captured_sm.example_inputs[0].shape[0]), 2
+    )
+    self.assertEqual(
+        captured_sm.get_upper_bound(captured_sm.example_inputs[0].shape[1]), 3
+    )
 
   def test_validate_bounds_with_multi_symbol_sum_guard(self):
     captured_bm = None

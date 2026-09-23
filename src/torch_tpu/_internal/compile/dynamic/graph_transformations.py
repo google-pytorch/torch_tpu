@@ -30,7 +30,6 @@ from torch_tpu._internal.compile.dynamic import generative_ops_pass
 from torch_tpu._internal.compile.dynamic import sym_utils
 from torch_tpu._internal.compile.dynamic import view_ops_passes
 from torch_tpu._internal.compile.dynamic.sym_shape_manager import SymShapeManager
-from torch_tpu._internal.utils import utils
 
 ConvertConstantSymIntsPass = (
     convert_constant_symints_pass.ConvertConstantSymIntsPass
@@ -105,24 +104,6 @@ class HandleDynamicInputTensorPass:
     node.replace_all_uses_with(
         pad_node, delete_user_cb=lambda u: u in original_users
     )
-
-
-def can_use_pad_real_to_static(
-    sym_shape_manager: SymShapeManager,
-) -> bool:
-  """Returns True if dynamic input tensors can be lowered to pad_real_to_static."""
-  if not utils.libtpu_at_least((0, 0, 48)):
-    return False
-  for arg in sym_shape_manager.example_inputs:
-    # dtype.itemsize is the element size in bytes (8 bytes = 64-bit,
-    # 16 bytes = 128-bit).
-    if (
-        isinstance(arg, torch.Tensor)
-        and sym_utils.has_dynamic_shape(arg)
-        and arg.dtype.itemsize in (8, 16)
-    ):
-      return False
-  return True
 
 
 class HandleDynamicInputTensorSetDimensionSizePass:
@@ -421,6 +402,7 @@ def apply_pre_dynamism_transformations(
 def apply_dynamism_transformations(
     graph_module: torch.fx.GraphModule,
     sym_shape_manager: SymShapeManager,
+    use_pad_real_to_static: bool = True,
 ) -> None:
   """Runs all FX graph transforms for dynamic shapes."""
 
@@ -437,7 +419,7 @@ def apply_dynamism_transformations(
   )
 
   # Updates ops that have input tensors with dynamic dimensions.
-  if can_use_pad_real_to_static(sym_shape_manager):
+  if use_pad_real_to_static:
     GraphTransformObserver(graph_module, "handle_dynamic_inputs").apply_gm_pass(
         HandleDynamicInputTensorPass(sym_shape_manager, original_placeholders)
     )

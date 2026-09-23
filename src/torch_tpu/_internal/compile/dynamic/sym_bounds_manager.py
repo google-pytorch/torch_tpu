@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, NamedTuple
 
 from absl import logging
 import sympy
@@ -25,36 +24,21 @@ import torch
 from torch._inductor.utils import InputType
 from torch.fx.experimental import symbolic_shapes
 from torch.utils._sympy import value_ranges
-from torch_tpu._internal.compile import tpu_torch_compile
-from torch_tpu._internal.compile.dynamic import sym_utils
 from torch_tpu._internal.compile.dynamic import symbol_bounds
 
 
-class ShapeBoundInfo(NamedTuple):
-  """Shape bound information for dynamic dimensions of a tensor."""
-
-  dynamic_dims: tuple[int, ...]
-  upper_bounds: tuple[int, ...]
-
-
 class SymBoundsManager:
-  """Manages lower and upper bounds for dynamic SymInts and generates bounded inputs."""
+  """Manages lower and upper bounds for dynamic SymInts."""
 
-  _example_inputs: Sequence[InputType]
   _atomic_symints: list[torch.SymInt]
   _user_defined_bound_for_symbols: set[str]
   _symbol_bounds: symbol_bounds.SymbolBounds
 
   def __init__(self, example_inputs: Sequence[InputType]):
-    self._example_inputs = example_inputs
     self._atomic_symints = []
     self._user_defined_bound_for_symbols = set()
-    self._populate_bounds_metadata()
+    self._populate_bounds_metadata(example_inputs)
     self._validate_bounds()
-
-  @property
-  def example_inputs(self) -> Sequence[torch.Tensor | int]:
-    return self._example_inputs
 
   def get_symbol_bounds(self) -> symbol_bounds.SymbolBounds:
     """Returns the SymbolBounds object holding symbol ranges and expression evaluator."""
@@ -77,12 +61,14 @@ class SymBoundsManager:
         symbol_ranges[symbol] = value_ranges.ValueRanges(lower, upper)
         self._atomic_symints.append(s)
 
-  def _populate_bounds_metadata(self) -> None:
+  def _populate_bounds_metadata(
+      self, example_inputs: Sequence[InputType]
+  ) -> None:
     """Populates bounds metadata for input tensors and SymInt scalars."""
     self._atomic_symints = []
     symbol_ranges: dict[sympy.Symbol, value_ranges.ValueRanges] = {}
 
-    for arg in self._example_inputs:
+    for arg in example_inputs:
       if isinstance(arg, torch.Tensor):
         for s in arg.shape:
           if isinstance(s, torch.SymInt):
@@ -162,74 +148,3 @@ class SymBoundsManager:
           f"Upper bounds {upper_bounds} violate active shape guard: "
           f"{still_violated}."
       )
-
-  def get_example_inputs(self) -> tuple[list[torch.Tensor | int], list[Any]]:
-    """Specializes dynamic inputs to their static upper bounds and constructs TensorBounds.
-
-    Returns:
-      A tuple containing:
-        - A list of updated example inputs with SymInts replaced by their upper
-          bounds, and new runtime size placeholders added.
-        - A list of TensorBounds (or None) aligned with the updated example
-          inputs.
-    """
-    updated_example_inputs = []
-    aligned_bounds = []
-    for arg in self._example_inputs:
-      if isinstance(arg, torch.Tensor):
-        dynamic_dims = [
-            dim for dim, d in enumerate(arg.shape) if sym_utils.is_symint(d)
-        ]
-        if not dynamic_dims:
-          updated_example_inputs.append(arg)
-          aligned_bounds.append(None)
-          continue
-        bounded_shape = [
-            self._symbol_bounds.get_upper_bound(d) for d in arg.shape
-        ]
-        updated_example_inputs.append(
-            torch.zeros(
-                bounded_shape,
-                dtype=arg.dtype,
-                requires_grad=arg.requires_grad,
-            )
-        )
-        upper_bounds = [bounded_shape[dim] for dim in dynamic_dims]
-        bounds_obj = tpu_torch_compile.TensorBounds(
-            (dynamic_dims, upper_bounds)
-        )
-        aligned_bounds.append(bounds_obj)
-
-      elif isinstance(arg, torch.SymInt):
-        upper = self._symbol_bounds.get_upper_bound(arg)
-        updated_example_inputs.append(upper)
-        aligned_bounds.append(None)
-        # Add an input for the runtime size placeholder for the symint.
-        updated_example_inputs.append(torch.tensor(upper, dtype=torch.int32))
-        aligned_bounds.append(None)
-      else:
-        updated_example_inputs.append(arg)
-        aligned_bounds.append(None)
-
-    return updated_example_inputs, aligned_bounds
-
-  def get_precomputed_bounds_list(self) -> list[ShapeBoundInfo]:
-    """Precomputes a list of ShapeBoundInfo for dynamic input tensors."""
-    bounds_list = []
-    for arg in self._example_inputs:
-      if isinstance(arg, torch.Tensor):
-        dynamic_dims = tuple(
-            dim for dim, d in enumerate(arg.shape) if sym_utils.is_symint(d)
-        )
-        if dynamic_dims:
-          upper_bounds = tuple(
-              self._symbol_bounds.get_upper_bound(arg.shape[dim])
-              for dim in dynamic_dims
-          )
-          bounds_list.append(
-              ShapeBoundInfo(
-                  dynamic_dims=dynamic_dims,
-                  upper_bounds=upper_bounds,
-              )
-          )
-    return bounds_list

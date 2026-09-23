@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 from collections.abc import Callable, Sequence
+import copy
 from typing import Any, NamedTuple
 from absl import logging
 import torch
@@ -29,9 +30,84 @@ from torch_tpu._internal.compile.dynamic import view_decomposition as decompose
 from torch_tpu._internal.compile.dynamic import view_ops_passes
 from torch_tpu._internal.compile.dynamic.graph_transformations import apply_dynamism_transformations
 from torch_tpu._internal.compile.dynamic.graph_transformations import apply_pre_dynamism_transformations
-from torch_tpu._internal.compile.dynamic.graph_transformations import can_use_pad_real_to_static
 from torch_tpu._internal.compile.dynamic.sym_bounds_manager import SymBoundsManager
 from torch_tpu._internal.compile.dynamic.sym_shape_manager import SymShapeManager
+from torch_tpu._internal.compile.dynamic.symbol_bounds import SymbolBounds
+from torch_tpu._internal.utils import utils
+
+
+def _create_bounded_model_inputs(
+    example_inputs: Sequence[InputType],
+    bounds: SymbolBounds,
+) -> tuple[list[torch.Tensor | int], list[Any]]:
+  """Specializes dynamic inputs to their static upper bounds and constructs TensorBounds.
+
+  Args:
+    example_inputs: Sequence of original example inputs (tensors, SymInts,
+      scalars).
+    bounds: The SymbolBounds object providing upper bounds for symbolic
+      expressions.
+
+  Returns:
+    A tuple containing:
+      - A list of bounded model inputs with SymInts replaced by their upper
+        bounds, and new runtime size placeholders added.
+      - A list of TensorBounds (or None) aligned with the bounded model
+        inputs.
+  """
+  bounded_model_inputs = []
+  model_input_bounds = []
+  for arg in example_inputs:
+    if isinstance(arg, torch.Tensor):
+      dynamic_dims = [
+          dim for dim, d in enumerate(arg.shape) if sym_utils.is_symint(d)
+      ]
+      if not dynamic_dims:
+        bounded_model_inputs.append(arg)
+        model_input_bounds.append(None)
+        continue
+      bounded_shape = [bounds.get_upper_bound(d) for d in arg.shape]
+      bounded_model_inputs.append(
+          torch.zeros(
+              bounded_shape,
+              dtype=arg.dtype,
+              requires_grad=arg.requires_grad,
+          )
+      )
+      upper_bounds = [bounded_shape[dim] for dim in dynamic_dims]
+      bounds_obj = tpu_torch_compile.TensorBounds((dynamic_dims, upper_bounds))
+      model_input_bounds.append(bounds_obj)
+
+    elif isinstance(arg, torch.SymInt):
+      upper = bounds.get_upper_bound(arg)
+      bounded_model_inputs.append(upper)
+      model_input_bounds.append(None)
+      # Add an input for the runtime size placeholder for the symint.
+      bounded_model_inputs.append(torch.tensor(upper, dtype=torch.int32))
+      model_input_bounds.append(None)
+    else:
+      bounded_model_inputs.append(arg)
+      model_input_bounds.append(None)
+
+  return bounded_model_inputs, model_input_bounds
+
+
+def _can_use_pad_real_to_static(
+    example_inputs: Sequence[Any],
+) -> bool:
+  """Returns True if dynamic input tensors can be lowered to pad_real_to_static."""
+  if not utils.libtpu_at_least((0, 0, 48)):
+    return False
+  for arg in example_inputs:
+    # dtype.itemsize is the element size in bytes (8 bytes = 64-bit,
+    # 16 bytes = 128-bit).
+    if (
+        isinstance(arg, torch.Tensor)
+        and sym_utils.has_dynamic_shape(arg)
+        and arg.dtype.itemsize in (8, 16)
+    ):
+      return False
+  return True
 
 
 def _get_inputs_dynamic_flag(example_inputs: Sequence[Any]) -> list[bool]:
@@ -140,18 +216,19 @@ class _DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
       static_compiler: compiler.StaticCompiler,
       graph_module: torch.fx.GraphModule,
       example_inputs: Sequence[Any],
-      sym_bounds_manager: SymBoundsManager,
       sym_shape_manager: SymShapeManager,
       is_fwd: bool,
       default_executable: Any,
       default_layout_key: tuple[tuple[int, ...], ...],
       dynamic_outputs: Sequence[bool],
+      bounded_model_inputs: list[torch.Tensor | int],
+      model_input_bounds: list[Any],
       view_arg_indices: set[int] | None = None,
+      use_pad_real_to_static: bool = True,
   ):
     self.static_compiler = static_compiler
     self.graph_module = graph_module
     self.example_inputs = example_inputs
-    self.sym_bounds_manager = sym_bounds_manager
     self.sym_shape_manager = sym_shape_manager
     self.is_fwd = is_fwd
     self._view_arg_indices = view_arg_indices or set()
@@ -161,10 +238,8 @@ class _DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
         default_layout_key: default_executable
     }
 
-    # Precompute static inputs and bounds for the transformed graph.
-    self.model_example_inputs, self.aligned_bounds = (
-        sym_bounds_manager.get_example_inputs()
-    )
+    self._bounded_model_inputs = bounded_model_inputs
+    self._model_input_bounds = model_input_bounds
 
     self.dynamic_outputs = dynamic_outputs
     self._unique_output_indices = (
@@ -173,10 +248,7 @@ class _DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
         else None
     )
 
-    self._precomputed_bounds_list = (
-        sym_bounds_manager.get_precomputed_bounds_list()
-    )
-    self._use_pad_subgraph = not can_use_pad_real_to_static(sym_shape_manager)
+    self._use_pad_subgraph = not use_pad_real_to_static
     self._default_scalar_tensor_cache = {}
     self._prepare_input_packing_plan()
     self._backend_device = None
@@ -220,7 +292,7 @@ class _DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
         "[DynamicTpuBackend] Compile Pad Subgraph, tensor_info: %s,"
         " bounds_list: %s",
         tensor_info,
-        self._precomputed_bounds_list,
+        self._dynamic_tensor_bounds,
     )
 
     outputs = [None] * len(tensor_args)
@@ -230,7 +302,7 @@ class _DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
     pad_module_bounds = []
 
     for i, (tensor, info) in enumerate(zip(tensor_args, tensor_info)):
-      bounds = self._precomputed_bounds_list[i]
+      bounds = self._dynamic_tensor_bounds[i]
       padded_shape = list(tensor.shape)
       for dim, upper_bound in zip(bounds.dynamic_dims, bounds.upper_bounds):
         padded_shape[dim] = upper_bound
@@ -284,6 +356,9 @@ class _DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
     self._dynamic_scalar_map = []
     self._static_scalar_map = []
     self._dynamic_input_indices = []
+    self._dynamic_tensor_bounds = [
+        b for b in self._model_input_bounds if b is not None
+    ]
 
     target_idx = 0
     pad_idx = 0
@@ -426,9 +501,9 @@ class _DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
       try:
         executable = self.static_compiler(
             self.graph_module,
-            self.model_example_inputs,
+            self._bounded_model_inputs,
             is_fwd=self.is_fwd,
-            bounds=self.aligned_bounds,
+            bounds=self._model_input_bounds,
             argument_layouts=argument_layouts,
             dynamic_outputs=self.dynamic_outputs,
         )
@@ -505,6 +580,104 @@ class DynamicCompiler(compiler.Compiler):
         view_ops_passes.ReplaceDynamicOutputBroadcastOpsPreGradPass()
     )
 
+  def _compile_for_symbol_bounds(
+      self,
+      graph_module: torch.fx.GraphModule,
+      example_inputs: Sequence[InputType],
+      symbol_bounds: SymbolBounds,
+      is_fwd: bool,
+      module_name: str | None,
+      use_pad_real_to_static: bool,
+      view_arg_indices: set[int],
+  ) -> _DynamicTpuCompiledExecutable:
+    """Transforms the FX graph and compiles an executable for the given SymbolBounds.
+
+    Clones `graph_module.graph` before running `apply_dynamism_transformations`
+    so the caller's `graph_module` is not mutated in place and this helper can
+    be called repeatedly for different `SymbolBounds`.
+    """
+    cloned_graph_module = torch.fx.GraphModule(
+        graph_module, copy.deepcopy(graph_module.graph)
+    )
+    cloned_graph_module.meta = copy.copy(graph_module.meta)
+    graph_module = cloned_graph_module
+
+    # Create a SymInt shape manager and transform the graph module.
+    sym_shape_manager = SymShapeManager(
+        graph_module, example_inputs, symbol_bounds
+    )
+    apply_dynamism_transformations(
+        graph_module,
+        sym_shape_manager,
+        use_pad_real_to_static=use_pad_real_to_static,
+    )
+
+    # TODO: Prevent truncation of log lines.
+    logging.debug(
+        "[DynamicTpuBackend] Transformed FX Graph: %s",
+        LazyString(graph_module.print_readable),
+    )
+
+    # Create example inputs for the model executable and construct bounds.
+    bounded_model_inputs, model_input_bounds = _create_bounded_model_inputs(
+        example_inputs, symbol_bounds
+    )
+
+    logging.debug(
+        "[DynamicTpuBackend] Bounded model inputs: %s, model input bounds: %s",
+        bounded_model_inputs,
+        model_input_bounds,
+    )
+
+    dynamic_outputs = sym_shape_manager.get_dynamic_outputs()
+
+    # Create a model executable using the provided example inputs and bounds.
+    try:
+      default_executable = self.static_compiler(
+          graph_module,
+          bounded_model_inputs,
+          is_fwd=is_fwd,
+          bounds=model_input_bounds,
+          dynamic_outputs=dynamic_outputs,
+          module_name=module_name,
+      )
+    except (RuntimeError, ValueError) as e:
+      raise NotImplementedError(
+          "Failed to lower FX graph with dynamic shapes to MLIR with error:"
+          f" {e}. Please set torch.compile(..., dynamic=False, ...) and try"
+          " again."
+      ) from e
+
+    logging.debug(
+        "[DynamicTpuBackend] Static Model Executable MLIR: %s",
+        LazyString(lambda: str(getattr(default_executable, "mlir_text", None))),  # pyrefly: ignore[bad-argument-type]
+    )
+
+    parameter_dynamic_flags = _get_inputs_dynamic_flag(example_inputs)
+    default_layout_key = _extract_minor_to_major(
+        default_executable.parameter_layouts,  # type: ignore[attr-defined]
+        parameter_dynamic_flags=parameter_dynamic_flags,
+    )
+    logging.info(
+        "[DynamicTpuBackend] Compiled default executable with layouts: %s",
+        default_layout_key,
+    )
+
+    return _DynamicTpuCompiledExecutable(
+        static_compiler=self.static_compiler,
+        graph_module=graph_module,
+        example_inputs=example_inputs,
+        sym_shape_manager=sym_shape_manager,
+        is_fwd=is_fwd,
+        default_executable=default_executable,
+        default_layout_key=default_layout_key,
+        dynamic_outputs=dynamic_outputs,
+        bounded_model_inputs=bounded_model_inputs,
+        model_input_bounds=model_input_bounds,
+        view_arg_indices=view_arg_indices,
+        use_pad_real_to_static=use_pad_real_to_static,
+    )
+
   def __call__(
       self,
       graph_module: torch.fx.GraphModule,
@@ -559,73 +732,14 @@ class DynamicCompiler(compiler.Compiler):
     # if the bound constraint isn't satisfied.
     sym_bounds_manager.add_bound_checks()
 
-    # Create a SymInt shape manager and transform the graph module.
-    sym_shape_manager = SymShapeManager(
-        graph_module, example_inputs, sym_bounds_manager.get_symbol_bounds()
-    )
-    apply_dynamism_transformations(graph_module, sym_shape_manager)
+    use_pad_real_to_static = _can_use_pad_real_to_static(example_inputs)
 
-    # TODO: Prevent truncation of log lines.
-    logging.debug(
-        "[DynamicTpuBackend] Transformed FX Graph: %s",
-        LazyString(graph_module.print_readable),
-    )
-
-    # Create example inputs for the model executable and construct aligned
-    # bounds.
-    model_example_inputs, aligned_bounds = (
-        sym_bounds_manager.get_example_inputs()
-    )
-
-    logging.debug(
-        "[DynamicTpuBackend] Example inputs: %s, aligned bounds: %s",
-        model_example_inputs,
-        aligned_bounds,
-    )
-
-    dynamic_outputs = sym_shape_manager.get_dynamic_outputs()
-
-    # Create a model executable using the provided example inputs and bounds.
-    try:
-      default_executable = self.static_compiler(
-          graph_module,
-          model_example_inputs,
-          is_fwd=is_fwd,
-          bounds=aligned_bounds,
-          dynamic_outputs=dynamic_outputs,
-          module_name=module_name,
-      )
-    except (RuntimeError, ValueError) as e:
-      raise NotImplementedError(
-          "Failed to lower FX graph with dynamic shapes to MLIR with error:"
-          f" {e}. Please set torch.compile(..., dynamic=False, ...) and try"
-          " again."
-      ) from e
-
-    logging.debug(
-        "[DynamicTpuBackend] Static Model Executable MLIR: %s",
-        LazyString(lambda: str(getattr(default_executable, "mlir_text", None))),  # pyrefly: ignore[bad-argument-type]
-    )
-
-    parameter_dynamic_flags = _get_inputs_dynamic_flag(example_inputs)
-    default_layout_key = _extract_minor_to_major(
-        default_executable.parameter_layouts,  # type: ignore[attr-defined]
-        parameter_dynamic_flags=parameter_dynamic_flags,
-    )
-    logging.info(
-        "[DynamicTpuBackend] Compiled default executable with layouts: %s",
-        default_layout_key,
-    )
-
-    return _DynamicTpuCompiledExecutable(
-        static_compiler=self.static_compiler,
+    return self._compile_for_symbol_bounds(
         graph_module=graph_module,
         example_inputs=example_inputs,
-        sym_bounds_manager=sym_bounds_manager,
-        sym_shape_manager=sym_shape_manager,
+        symbol_bounds=sym_bounds_manager.get_symbol_bounds(),
         is_fwd=is_fwd,
-        default_executable=default_executable,
-        default_layout_key=default_layout_key,
-        dynamic_outputs=dynamic_outputs,
+        module_name=module_name,
+        use_pad_real_to_static=use_pad_real_to_static,
         view_arg_indices=view_arg_indices,
     )

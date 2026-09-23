@@ -116,7 +116,6 @@ torch_tpu_py_library(
         ":sym_utils",
         ":view_ops_passes",
         "//shims/torch:pytorch",
-        "//src/torch_tpu/_internal/utils",
     ],
 )
 
@@ -154,11 +153,9 @@ torch_tpu_py_library(
         "//learning/agents/tern/torch_agent:__subpackages__",
     ],
     deps = [
-        ":sym_utils",
         ":symbol_bounds",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
-        "//src/torch_tpu/_internal/compile:tpu_torch_compile",
         "@pypi//sympy",
     ],
 )
@@ -177,12 +174,14 @@ torch_tpu_py_library(
         ":sym_bounds_manager",
         ":sym_shape_manager",
         ":sym_utils",
+        ":symbol_bounds",
         ":view_decomposition",
         ":view_ops_passes",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/compile:compiler",
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",
+        "//src/torch_tpu/_internal/utils",
     ],
 )
 
