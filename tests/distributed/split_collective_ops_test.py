@@ -15,6 +15,7 @@ import dataclasses
 import os
 import pickle
 from typing import Any, Callable
+from unittest import mock
 
 from absl.testing import absltest
 import torch
@@ -24,7 +25,6 @@ from torch_tpu._internal.compile import split_compiler
 from torch_tpu._internal.compile import torch_tpu_compiled_executable
 from torch_tpu._internal.compile.debug import TpuCompileDebug
 from torch_tpu._internal.distributed import collective_ops
-from torch_tpu._internal.distributed import spmd_util
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
@@ -210,10 +210,9 @@ def run_compile_all_reduce_and_serdes_test():
   utils.assert_close(res_deserialized.cpu(), expected)
 
 
-def run_compile_no_splits_with_spmd_safe_test():
+def run_compile_no_splits_when_env_zero_test():
   debugs: list[TpuCompileDebug] = []
 
-  @spmd_util.spmd_safe
   def f(x):
     y = x * 2
     y = y + 5
@@ -241,9 +240,8 @@ def run_compile_no_splits_with_spmd_safe_test():
 
   wrapper = debugs[0].compiled_executables[0]
   assert isinstance(
-      wrapper, _SplitCompiledExecutable
-  ), f"Expected _SplitCompiledExecutable, got {type(wrapper)}"
-  assert len(wrapper.compiled_executables) == 1
+      wrapper, TorchTpuCompiledExecutable
+  ), f"Expected TorchTpuCompiledExecutable, got {type(wrapper)}"
 
 
 def run_compile_two_collectives_test():
@@ -601,12 +599,15 @@ class SplitCollectiveOpsTest(seed_test_utils.MultiProcessRepeatableTest):
         test_fn=run_compile_all_reduce_and_serdes_test,
     )
 
-  def test_compile_no_splits_with_spmd_safe(self):
-    distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
-        fn=_test_wrapper,
-        test_fn=run_compile_no_splits_with_spmd_safe_test,
-    )
+  def test_compile_no_splits_when_env_zero(self):
+    with mock.patch.dict(
+        os.environ, {"TORCH_TPU_INTERNAL_MATERIALIZE_COLLECTIVE_TENSORS": "0"}
+    ):
+      distributed_utils.dist_run(
+          nproc_per_node=self._world_size,
+          fn=_test_wrapper,
+          test_fn=run_compile_no_splits_when_env_zero_test,
+      )
 
   def test_compile_two_collectives(self):
     distributed_utils.dist_run(
