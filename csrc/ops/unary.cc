@@ -169,15 +169,21 @@ absl::StatusOr<mlir::MlirOp> BuildReciprocalShlo(
     mlir::MlirOp input_op, mlir::ElementType default_mlir_type) {
   TT_ASSIGN_OR_RETURN(mlir::MlirOp converted_input_op,
                       ConvertIfInteger(input_op, default_mlir_type));
-  mlir::MlirOp one_scalar = MakeConstantLike(converted_input_op, 1.0);
-  mlir::MlirOp result_op = stablehlo::Div(one_scalar, converted_input_op);
-  return result_op;
+  auto type = GetTensorTypeOrDie(converted_input_op);
+  auto one_scalar = MakeScalarConstant(converted_input_op.getBuilder(), 1.0,
+                                       type.getElementType());
+  TT_ASSIGN_OR_RETURN((auto [op1, op2]),
+                      ApplyBroadcastIfNeeded(one_scalar, converted_input_op));
+  return mlir::stablehlo::Div(op1, op2);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildReluShlo(mlir::MlirOp input_op) {
-  mlir::MlirOp zero_scalar = MakeConstantLike(input_op, 0.0);
-  mlir::MlirOp result_op = stablehlo::Max(input_op, zero_scalar);
-  return result_op;
+  auto type = GetTensorTypeOrDie(input_op);
+  auto zero_scalar =
+      MakeScalarConstant(input_op.getBuilder(), 0.0, type.getElementType());
+  TT_ASSIGN_OR_RETURN((auto [op1, op2]),
+                      ApplyBroadcastIfNeeded(input_op, zero_scalar));
+  return mlir::stablehlo::Max(op1, op2);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildSiluShlo(mlir::MlirOp input_op) {

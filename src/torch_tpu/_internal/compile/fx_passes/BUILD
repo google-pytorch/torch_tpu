@@ -20,6 +20,14 @@ package(
 )
 
 torch_tpu_py_library(
+    name = "canonicalize_clamp",
+    srcs = ["canonicalize_clamp.py"],
+    deps = [
+        "//shims/torch:pytorch",
+    ],
+)
+
+torch_tpu_py_library(
     name = "detect_causal_mask",
     srcs = ["detect_causal_mask.py"],
     deps = [

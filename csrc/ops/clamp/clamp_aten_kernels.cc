@@ -41,6 +41,7 @@
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
+#include "csrc/ops/unary.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch/headeronly/core/ScalarType.h"
@@ -230,13 +231,31 @@ at::Tensor& AtenClampOut(const at::Tensor& self,
 
 at::Tensor& AtenClampMinOut(const at::Tensor& self, const at::Scalar& min,
                             at::Tensor& out) {
-  auto promoted_min = PromoteScalar(min);
+  auto promoted_min = PromoteScalar(min).AvoidPromoting(ScalarValue::kZero);
   TT_KERNEL(OpName::kClampMinOut, param_keys, (self, promoted_min, out), {
     TT_THROW_IF_ERROR(ValidateNotBool(self, /*arg_name=*/"self"));
+    if (promoted_min.IsZero()) {
+      auto op_builder = [](mlir::MlirOp input) { return BuildReluShlo(input); };
+      TT_ASSIGN_OR_THROW(const auto output_dtype,
+                         ConvertTo<mlir::ElementType>(out.scalar_type()));
+      TT_ASSIGN_OR_THROW(const auto computation_dtype,
+                         ConvertTo<mlir::ElementType>(self.scalar_type()));
+      DispatchOpOptions<1> options = {
+          .out_dtype = output_dtype,
+          .out_dims = self.sizes(),
+          .computation_dtype = computation_dtype,
+          .op_param_cache_keys = std::move(param_keys),
+      };
+      TT_THROW_IF_ERROR(DispatchOpOut<1>(std::move(op_builder), self, out,
+                                         std::move(options)));
+      return out;
+    }
     const at::ScalarType computation_scalar_type =
         GetComputationType(self, min, std::nullopt);
-    TT_THROW_IF_ERROR(ClampScalarHelper(
-        self, std::move(promoted_min), std::nullopt, computation_scalar_type,
+    TT_ASSIGN_OR_THROW(auto min_tensor,
+                       promoted_min.GetTensor(computation_scalar_type));
+    TT_THROW_IF_ERROR(AtenClampTensorHelper(
+        self, min_tensor, std::nullopt, computation_scalar_type,
         /*allow_out_dtype_cast=*/false, out, std::move(param_keys)));
     return out;
   });
@@ -249,8 +268,10 @@ at::Tensor& AtenClampMaxOut(const at::Tensor& self, const at::Scalar& max,
     TT_THROW_IF_ERROR(ValidateNotBool(self, /*arg_name=*/"self"));
     const at::ScalarType computation_scalar_type =
         GetComputationType(self, std::nullopt, max);
-    TT_THROW_IF_ERROR(ClampScalarHelper(
-        self, std::nullopt, std::move(promoted_max), computation_scalar_type,
+    TT_ASSIGN_OR_THROW(auto max_tensor,
+                       promoted_max.GetTensor(computation_scalar_type));
+    TT_THROW_IF_ERROR(AtenClampTensorHelper(
+        self, std::nullopt, max_tensor, computation_scalar_type,
         /*allow_out_dtype_cast=*/false, out, std::move(param_keys)));
     return out;
   });
