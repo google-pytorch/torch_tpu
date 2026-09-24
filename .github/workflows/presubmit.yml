@@ -137,7 +137,8 @@ jobs:
   rbe_presubmit:
     name: "Presubmit on RBE"
     # Runs when the PR carries an opt-in label. The first clause drops re-runs
-    # triggered by adding some unrelated label to an already opted-in PR.
+    # triggered by adding some unrelated label to an already opted-in PR. The
+    # last clause keeps fork PRs off the TPU workers.
     if: >-
       (
         github.event_name != 'pull_request'
@@ -148,6 +149,9 @@ jobs:
         || contains(github.event.pull_request.labels.*.name, 'ci:replace-tpu-v5')
         || contains(github.event.pull_request.labels.*.name, 'ci:relay-tpu-v5')
         || contains(github.event.pull_request.labels.*.name, 'run-rbe')
+      ) && (
+        github.event_name != 'pull_request'
+        || github.event.pull_request.head.repo.full_name == github.repository
       )
     runs-on: linux-x86-n4-16
     container:
