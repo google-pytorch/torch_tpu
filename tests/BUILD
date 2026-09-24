@@ -314,11 +314,13 @@ torch_tpu_py_library(
     name = "op_testing",
     testonly = True,
     srcs = ["op_testing.py"],
+    data = ["goldens.pin"],
     visibility = ["//:__subpackages__"],
     deps = [
         ":dynamism_test_utils",
         ":quantize_utils",
         ":seed_test_utils",
+        ":test_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
         "//shims/etils/epath",
@@ -987,6 +989,7 @@ torch_tpu_py_test(
 torch_tpu_py_library(
     name = "goldens_pin",
     srcs = ["goldens_pin.py"],
+    data = ["goldens.pin"],
     visibility = ["//:__subpackages__"],
     deps = [
         "@pypi//attrs",
@@ -1007,11 +1010,39 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_library(
+    name = "test_utils",
+    testonly = True,
+    srcs = ["test_utils.py"],
+    data = ["goldens.pin"],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":goldens_pin",
+        "//shims/absl_py/flags",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "test_utils_test",
+    srcs = ["test_utils_test.py"],
+    data = ["goldens.pin"],
+    deps = [
+        ":goldens_pin",
+        ":seed_test_utils",
+        ":test_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//src/torch_tpu",
+    ],
+)
+
 torch_tpu_py_test(
     name = "op_testing_test",
     srcs = ["op_testing_test.py"],
     deps = [
+        ":goldens_pin",
         ":op_testing",
+        ":test_utils",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:flagsaver",
         "//shims/absl_py/testing:parameterized",
