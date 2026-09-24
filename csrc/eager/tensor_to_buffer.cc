@@ -243,6 +243,56 @@ absl::Status AssignBufferToAtTensor(DeviceBufferRef result_buf,
                << "\nstorage offset: " << tensor.storage_offset();
   return absl::OkStatus();
 }
+
+bool IsFullStorageReinterpretView(const at::Tensor& tensor,
+                                  const DeviceBufferRef& base) {
+  if (!tensor.defined() || tensor.is_conj() || !tensor.is_contiguous() ||
+      tensor.storage_offset() != 0) {
+    return false;
+  }
+  if (!base.dynamic_dimensions().empty() || base.on_device_shape_is_dynamic()) {
+    return false;
+  }
+  const size_t base_bytes = base.size_bytes();
+  if (tensor.nbytes() != base_bytes ||
+      tensor.storage().nbytes() != base_bytes) {
+    return false;
+  }
+  const absl::StatusOr<mlir::ElementType> tensor_type =
+      ConvertTo<mlir::ElementType>(tensor.scalar_type());
+  if (!tensor_type.ok()) {
+    return false;
+  }
+  // Only types whose XLA representation is a whole number of bytes can be
+  // reinterpreted byte-for-byte; this excludes PRED (1 bit) and the packed
+  // 4-bit types.
+  return XlaEquivalentBitwidth(*tensor_type) % 8 == 0 &&
+         XlaEquivalentBitwidth(base.element_type()) % 8 == 0;
+}
+
+absl::Status AssignBufferAsStorageBase(DeviceBufferRef new_base,
+                                       const at::Tensor& tensor) {
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Checked by caller.
+      IsFullStorageReinterpretView(tensor, new_base), error::kInvalidArgument)
+      << "tensor of dtype " << ToString(tensor.scalar_type()) << " and shape "
+      << ToString(tensor.sizes()) << " with storage of "
+      << tensor.storage().nbytes()
+      << " bytes is not a full-storage reinterpretation of buffer "
+      << new_base.DebugString();
+  ABSL_VLOG(2) << "[AssignBufferAsStorageBase] Replacing storage base with "
+               << new_base.DebugString() << " for tensor of dtype "
+               << ToString(tensor.scalar_type()) << " and shape "
+               << ToString(tensor.sizes());
+
+  // Overwrite the c10::DataPtr in storage to use the new DeviceBufferRef, so
+  // that all views sharing the storage observe the write.
+  OverwriteDataPtr(tensor.storage().data_ptr(), std::move(new_base));
+
+  // Bump the version to tell PyTorch how to handle functionalization
+  tensor.unsafeGetTensorImpl()->bump_version();
+  return absl::OkStatus();
+}
+
 absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const at::Tensor& tensor) {
   TT_RET_CHECK(tensor.defined(), error::kInvalidArgument)
       << "tensor is undefined";

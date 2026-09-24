@@ -14,6 +14,8 @@
 
 # pylint: disable=g-unsafe-pickle-load
 
+import copy
+import gc
 import pickle
 import random
 import tempfile
@@ -286,6 +288,59 @@ class BackendSerializationTest(seed_test_utils.RepeatableTest):
     pickled = pickle.dumps(torch.tensor(2.0, device="tpu"))
     restored = pickle.loads(pickled).cpu()
     utils.assert_close(restored, torch.tensor(2.0))
+
+  def test_pickle_tensor_does_not_blow_up_memory(self):
+    """Pickling a TPU tensor must not allocate far more HBM than the tensor."""
+    const_bytes = 4096 * 64 * 128 * 4
+
+    gc.collect()
+    torch.accelerator.synchronize()
+    mem_base = torch.accelerator.memory_allocated()
+
+    expected = torch.arange(4096 * 64 * 128, dtype=torch.float32).view(
+        4096, 64, 128
+    )
+    t = expected.to("tpu")
+    torch.accelerator.synchronize()
+    mem_after_alloc = torch.accelerator.memory_allocated() - mem_base
+    self.assertAlmostEqual(mem_after_alloc, const_bytes, delta=1024 * 1024)
+
+    # We look at peak memory because the regression is a transient allocation
+    # that is freed before the next call to memory_allocated().
+    torch.accelerator.reset_peak_memory_stats()
+    payload = pickle.dumps(t)
+    torch.accelerator.synchronize()
+    peak_after_dumps = torch.accelerator.max_memory_allocated()
+    # D2H streams straight out of the existing buffer, so the tensor itself
+    # should be the only live allocation. We leave extra space for staging
+    # buffers.
+    self.assertLess(peak_after_dumps, 1.5 * const_bytes)
+
+    del t
+    gc.collect()
+    torch.accelerator.synchronize()
+
+    torch.accelerator.reset_peak_memory_stats()
+    t_loaded = pickle.loads(payload)
+    torch.accelerator.synchronize()
+    peak_after_loads = torch.accelerator.max_memory_allocated()
+    # H2D may hold a staging buffer alongside the destination.
+    self.assertLess(peak_after_loads, 2.5 * const_bytes)
+
+    torch.accelerator.reset_peak_memory_stats()
+    t_deepcopied = copy.deepcopy(t_loaded)
+    torch.accelerator.synchronize()
+    peak_after_deepcopy = torch.accelerator.max_memory_allocated()
+    # t_loaded stays resident, and a device-to-device copy of a whole buffer
+    # costs at most one more copy on top of it.
+    self.assertLess(peak_after_deepcopy, 2.5 * const_bytes)
+
+    utils.assert_close(t_loaded.cpu(), expected)
+    utils.assert_close(t_deepcopied.cpu(), expected)
+
+    del t_loaded, t_deepcopied
+    gc.collect()
+    torch.accelerator.synchronize()
 
   def test_compile_inside_tracing_context_without_dynamo_source(self):
     def simple(x):

@@ -143,6 +143,20 @@ at::Tensor MakeTensor(DeviceBufferRef device_buffer_ref, int device_idx = 0);
 absl::Status AssignBufferToAtTensor(DeviceBufferRef result_buf,
                                     const at::Tensor& tensor);
 
+// Returns true if `tensor` is a pure reinterpretation of all the bytes of
+// `base` (the base DeviceBufferRef of its storage).
+bool IsFullStorageReinterpretView(const at::Tensor& tensor,
+                                  const DeviceBufferRef& base);
+
+// Replaces the base DeviceBufferRef of `tensor`'s storage with `new_base`,
+// without moving any data.
+//
+// Unlike AssignBufferToAtTensor, `new_base` may have a different element type
+// and shape than `tensor`, as long as `tensor` is a full-storage
+// reinterpretation of `new_base` (see IsFullStorageReinterpretView).
+absl::Status AssignBufferAsStorageBase(DeviceBufferRef new_base,
+                                       const at::Tensor& tensor);
+
 // Returns the C10 allocator singleton for TPU.
 c10::Allocator* GetTpuAllocator();
 

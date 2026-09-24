@@ -85,6 +85,25 @@ absl::Status CopyTpuToCpu(const at::Tensor& src, const at::Tensor& dest,
     return absl::OkStatus();
   }
 
+  // Fast path: if src is a pure reinterpretation of all the bytes of its base
+  // buffer, DMA the base buffer directly.
+  TT_ASSIGN_OR_RETURN(const DeviceBufferRef base_buf, GetBaseBuffer(src));
+  if (dest.is_contiguous() && dest.scalar_type() == src.scalar_type() &&
+      IsFullStorageReinterpretView(src, base_buf) &&
+      dest.nbytes() == base_buf.size_bytes()) {
+    {
+      tsl::profiler::TraceMe trace_mat("CopyTpuToCpu::MaterializeBase");
+      TT_RETURN_IF_ERROR(TranslateXlaTensorOomError(
+          Materialize(base_buf, MaterializationReason::kCpuTransfer),
+          dest.scalar_type(), src.sizes()));
+    }
+    absl::Status status =
+        TpuMemcpyDtoHDirect(base_buf, dest.data_ptr(), non_blocking);
+    TT_RETURN_IF_ERROR(TranslateXlaTensorOomError(
+        std::move(status), dest.scalar_type(), src.sizes()));
+    return absl::OkStatus();
+  }
+
   // Materialize if deferred, no-op if already materialized.
   // If src is a view, this will materialize both the base buffer and the
   // ephemeral view buffer.
