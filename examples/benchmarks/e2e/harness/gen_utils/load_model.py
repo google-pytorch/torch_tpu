@@ -78,6 +78,13 @@ def default_load_model(
   # mask fallback, avoiding control-flow tracing errors.
   inputs.pop("attention_mask", None)
 
+  inputs = torch.utils._pytree.tree_map(
+      lambda v: v.to(dtype=dtype)
+      if isinstance(v, torch.Tensor) and torch.is_floating_point(v)
+      else v,
+      inputs,
+  )
+
   if is_training and "labels" not in inputs:
     num_labels = getattr(model.config, "num_labels", None)
     labels_shape = (
