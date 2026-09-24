@@ -200,6 +200,7 @@ _TORCH_WHL_MODIFICATIONS = {
 EXTRA_PYTORCH_VERSIONS = [
     "2.12.0",
     "2.13.0",
+    "2.14.0",
 ]
 
 # The release version the nightly channel currently leads up to. Its glue's
