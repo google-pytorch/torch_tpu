@@ -183,6 +183,24 @@ class ProcessGroupUtilsTest(seed_test_utils.RepeatableTest):
     pg_id = process_group_utils._extract_process_group_id_from_node(node)
     self.assertEqual(pg_id, ProcessGroupId((0, 1), self.world_size))
 
+  def test_extract_process_group_id_experimental_dim_collectives(self) -> None:
+    for op in (
+        torch.ops.tpu.experimental_all_gather_dim,
+        torch.ops.tpu.experimental_reduce_scatter_dim,
+    ):
+      with self.subTest(op=op):
+        graph = torch.fx.Graph()
+        x = graph.placeholder("x")
+        node = graph.call_function(
+            op,
+            args=(x, 1, self.world_size, dist.group.WORLD.group_name),
+        )
+        self.assertEqual(process_group_utils._get_collective_op(node), op)
+        pg_id = process_group_utils._extract_process_group_id_from_node(node)
+        self.assertEqual(
+            pg_id, ProcessGroupId(range(self.world_size), self.world_size)
+        )
+
   def test_extract_process_group_id_empty_ranks_raises(self) -> None:
     graph = torch.fx.Graph()
     x = graph.placeholder("x")

@@ -22,9 +22,6 @@ import torch
 import torch.distributed as dist
 from torch_tpu._internal.distributed import collective_ops
 
-_COLLECTIVE_OPS = collective_ops.COLLECTIVE_OPS
-
-
 class ProcessGroupId:
   """Identifier for a process group consisting of sorted, unique ranks.
 
@@ -89,7 +86,7 @@ def _get_collective_op(node: torch.fx.Node) -> Any | None:
   In FX graphs, node.target may be an OpOverload (e.g., all_reduce.default) or
   directly an OpOverloadPacket. Checking the `overloadpacket` attribute resolves
   specific overloads back to their base OpOverloadPacket for matching against
-  _COLLECTIVE_OPS.
+  TorchTPU's collective registry.
 
   Args:
     node: An FX Node to inspect.
@@ -101,7 +98,7 @@ def _get_collective_op(node: torch.fx.Node) -> Any | None:
   if node.op != "call_function":
     return None
   target = getattr(node.target, "overloadpacket", node.target)
-  if target in _COLLECTIVE_OPS:
+  if collective_ops.is_collective_op(target):
     return target
   return None
 
@@ -118,14 +115,15 @@ def _extract_process_group_id_from_node(
     The ProcessGroupId associated with the collective operation.
 
   Raises:
-    ValueError: If the node is not a collective operation in _COLLECTIVE_OPS,
+    ValueError: If the node is not a recognized collective operation,
       if the group argument cannot be found, or if the process group cannot be
       resolved.
   """
   collective_op = _get_collective_op(node)
   if collective_op is None:
     raise ValueError(
-        f"expected node target to be in {_COLLECTIVE_OPS}, got {node.target}."
+        f"expected node target to be in the collective registry, got"
+        f" {node.target}."
         " This is a torch_tpu bug."
     )
 
