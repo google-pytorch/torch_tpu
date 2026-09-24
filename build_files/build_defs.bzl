@@ -1313,7 +1313,6 @@ register_extension_info(
 def torch_tpu_oss_torch_test(
         name,
         torch_test_module,
-        extra_deps = [],
         tags = None,
         **kwargs):
     """Creates an OSS-only Python test target to run a upstream PyTorch test suite with TorchTPU.
@@ -1326,8 +1325,6 @@ def torch_tpu_oss_torch_test(
         name: Name of the test target.
         torch_test_module: Name of a test module under https://github.com/pytorch/pytorch/tree/main/test,
             without the .py extension, e.g. "test_torch".
-        extra_deps: Extra dependencies besides testing defaults, e.g. ["@pypi//numpy"]
-            for test modules importing it.
         tags: Optional additional tags.
         **kwargs: Additional arguments passed to `torch_tpu_py_test`.
 
@@ -1365,9 +1362,16 @@ def torch_tpu_oss_torch_test(
         tags = tags,
         timeout = kwargs.pop("timeout", "long"),
         deps = [
+            # go/keep-sorted start
+            "@pypi//dill",
+            "@pypi//jax",
+            "@pypi//packaging",
+            "@pypi//scipy",
             "//shims/torch:testing_internal",
             "//src/torch_tpu",
-        ] + extra_deps,
+            "@pypi//pyyaml",
+            # go/keep-sorted end
+        ],
         **kwargs
     )
 

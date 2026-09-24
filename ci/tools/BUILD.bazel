@@ -13,11 +13,34 @@
 # limitations under the License.
 
 load("@rules_python//python:py_binary.bzl", "py_binary")
+load("@rules_python//python:py_library.bzl", "py_library")
 load("@rules_python//python:py_test.bzl", "py_test")
 
 exports_files(
     ["run_cc_tpu_test.sh"],
     visibility = ["//visibility:public"],
+)
+
+py_library(
+    name = "torch_test_module_utils",
+    testonly = True,
+    srcs = ["torch_test_module_utils.py"],
+)
+
+py_binary(
+    name = "gen_torch_tests",
+    srcs = ["gen_torch_tests.py"],
+    deps = [
+        ":torch_test_module_utils",
+    ],
+)
+
+py_test(
+    name = "gen_torch_tests_test",
+    srcs = ["gen_torch_tests_test.py"],
+    deps = [
+        ":gen_torch_tests",
+    ],
 )
 
 py_binary(

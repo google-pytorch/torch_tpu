@@ -119,7 +119,7 @@ def actionlint(session: nox.Session) -> None:
 # there.
 @nox.session
 def test_ci_tools(session: nox.Session) -> None:
-  """Run unit tests for CI base SHA resolution and diff isolation scripts."""
+  """Run unit tests for CI scripts and test generation tools."""
   session.install("pyyaml")
   session.run(
       "python",
@@ -129,6 +129,7 @@ def test_ci_tools(session: nox.Session) -> None:
       "ci/tools/check_directory_layout_test.py",
       "ci/tools/list_ci_tests_test.py",
       "ci/tools/run_bazel_diff_test.py",
+      "ci/tools/gen_torch_tests_test.py",
   )
 
 
