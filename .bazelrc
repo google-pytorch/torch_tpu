@@ -381,6 +381,7 @@ common:ci_rbe_presubmit --config=ci_base
 common:ci_rbe_presubmit --config=rbe_native_tpu
 common:ci_rbe_presubmit --remote_executor=grpcs://10.202.0.67:8980
 common:ci_rbe_presubmit --remote_upload_local_results=true
+common:ci_rbe_presubmit --nobuild_runfile_links
 common:ci_rbe_presubmit --build_tag_filters=-nobuild,requires-tpu-v5lite,-requires-tpu-v5lite:8
 common:ci_rbe_presubmit --test_tag_filters=presubmit-v5,-fails-on-tpu-v5,-nopresubmit,-notest,-nobuild,-requires-tpu-v5p,-requires-tpu-v6e,-requires-tpu-v7x,-requires-tpu-v5lite:8,-requires-net:external
 test:ci_rbe_presubmit --test_output=errors
