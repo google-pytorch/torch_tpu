@@ -17,6 +17,7 @@
 #include <chrono>  // NOLINT - needed for pybind11 integration
 #include <cstdint>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include "absl/log/absl_check.h"
@@ -70,7 +71,7 @@ int GetGlobalDeviceId() {
 std::vector<int> GetAllGlobalDeviceIds() {
   const auto* pjrt_client = PjrtBackend::GetInstance().GetClient();
   TT_CHECK_THROW(pjrt_client, error::kInternal)
-      << "PjRtClient is not initialized.";
+      << "PjRtClient is not initialized";
 
   const auto& devices = pjrt_client->devices();
   std::vector<int> global_device_ids;
@@ -84,8 +85,28 @@ std::vector<int> GetAllGlobalDeviceIds() {
 
 std::string DeviceDebugString() {
   const auto* pjrtdev = PjrtBackend::GetInstance().GetDevice();
-  TT_CHECK_THROW(pjrtdev, error::kInternal) << "PjRtDevice is not initialized.";
+  TT_CHECK_THROW(pjrtdev, error::kInternal) << "PjRtDevice is not initialized";
   return std::string(pjrtdev->DebugString());
+}
+
+// Returns physical grid coordinates (e.g. [x, y, z]) of the local PJRT device
+// as reported by the PJRT runtime "coords" attribute. Returns an empty vector
+// if coordinates are absent or unavailable.
+std::vector<int64_t> GetLocalDeviceCoords() {  // INT_VEC_OK
+  const auto* pjrtdev = PjrtBackend::GetInstance().GetDevice();
+  TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=PjRtDevice is null only if
+                   // initialization fails
+      pjrtdev != nullptr, error::kInternal)
+      << "PjRtDevice is not initialized";
+  const auto& attrs = pjrtdev->Attributes();
+  auto it = attrs.find("coords");
+  if (it != attrs.end()) {
+    if (const auto* v =
+            std::get_if<std::vector<int64_t>>(&it->second)) {  // INT_VEC_OK
+      return *v;
+    }
+  }
+  return {};
 }
 
 }  // namespace
@@ -100,6 +121,7 @@ TT_PYBIND11_MODULE(tpu_distributed, m) {
   m.def("global_device_id", &GetGlobalDeviceId);
   m.def("all_global_device_ids", &GetAllGlobalDeviceIds);
   m.def("device_debug_string", &DeviceDebugString);
+  m.def("local_device_coords", &GetLocalDeviceCoords);
 
   // Expose this functions to allow entering and exiting the SPMD safe region
   // from python
