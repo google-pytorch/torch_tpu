@@ -2697,6 +2697,10 @@ class GoldenGpuData:
       from the GPU golden files and `get_samples()` reads the results back to
       compare TorchTPU results against the GPU results.
 
+  Merged samples stay in their encoded form until their test case is first
+  accessed. Decoding every sample takes over a minute per process, while a
+  single test shard only needs a few test cases.
+
   This class stores only plain built-in containers (no function objects), so
   instances remain picklable.
   """
@@ -2707,6 +2711,9 @@ class GoldenGpuData:
         str,
         dict[str, dict[str, list[tuple["OpInput", "OpOutput"]]]],
     ] = {}
+    # Maps test_case_name -> encoded variant_to_dt trees not yet decoded into
+    # `_data`, in merge order.
+    self._encoded: dict[str, list[_pytree.PyTree]] = {}
 
   def add(
       self,
@@ -2731,6 +2738,7 @@ class GoldenGpuData:
       out_dtype_override: torch.dtype | None = None,
   ) -> Sequence[tuple["OpInput", "OpOutput"]]:
     """Returns the recorded samples for the key, or an empty list if absent."""
+    self._decode(test_case_name)
     key = _golden_dtype_key(dtype, out_dtype_override)
     return (
         self._data.get(test_case_name, {}).get(variant.value, {}).get(key, [])
@@ -2739,19 +2747,35 @@ class GoldenGpuData:
   def clear(self) -> None:
     """Removes all recorded golden data."""
     self._data.clear()
+    self._encoded.clear()
 
   def _samples_for(
       self, test_case_name: str, variant_name: str, dtype_key: str
   ) -> list[tuple["OpInput", "OpOutput"]]:
     """Returns the mutable sample list for the key, creating it if needed."""
+    self._decode(test_case_name)
     return (
         self._data.setdefault(test_case_name, {})
         .setdefault(variant_name, {})
         .setdefault(dtype_key, [])
     )
 
+  def _decode(self, test_case_name: str) -> None:
+    """Decodes the pending encoded samples of a test case into `_data`."""
+    # Pop before decoding so the `_samples_for()` calls below don't recurse.
+    for variant_to_dt in self._encoded.pop(test_case_name, []):
+      for variant_name, dt_to_encoded_samples in variant_to_dt.items():
+        for dtype_name, encoded_samples in dt_to_encoded_samples.items():
+          samples = self._samples_for(test_case_name, variant_name, dtype_name)
+          for encoded_op_input, encoded_op_output in encoded_samples:
+            op_input = OpInput.from_plistlib_pytree(encoded_op_input)
+            op_output = OpOutput.from_plistlib_pytree(encoded_op_output)
+            samples.append((op_input, op_output))
+
   def to_plistlib_pytree(self) -> _pytree.PyTree:
     """Encodes the golden data into a plistlib-compatible pytree."""
+    for test_case_name in list(self._encoded):
+      self._decode(test_case_name)
 
     def leaf_func(x: "OpInput | OpOutput") -> _pytree.PyTree:
       return x.to_plistlib_pytree()
@@ -2762,15 +2786,12 @@ class GoldenGpuData:
     return _pytree.tree_map(leaf_func, self._data, is_leaf=is_leaf)
 
   def merge_plistlib_pytree(self, encoded_data: _pytree.PyTree) -> None:
-    """Decodes a plistlib-compatible pytree and merges it into this data."""
+    """Merges a plistlib-compatible pytree into this data.
+
+    Decoding is deferred until the test case is accessed.
+    """
     for test_case_name, variant_to_dt in encoded_data.items():
-      for variant_name, dt_to_encoded_samples in variant_to_dt.items():
-        for dtype_name, encoded_samples in dt_to_encoded_samples.items():
-          samples = self._samples_for(test_case_name, variant_name, dtype_name)
-          for encoded_op_input, encoded_op_output in encoded_samples:
-            op_input = OpInput.from_plistlib_pytree(encoded_op_input)
-            op_output = OpOutput.from_plistlib_pytree(encoded_op_output)
-            samples.append((op_input, op_output))
+      self._encoded.setdefault(test_case_name, []).append(variant_to_dt)
 
 
 # Collects the golden GPU results for each op test. See GoldenGpuData for the

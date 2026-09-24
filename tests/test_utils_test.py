@@ -17,6 +17,7 @@
 import gzip
 import hashlib
 import importlib.resources.abc
+import io
 import pathlib
 import plistlib
 from unittest import mock
@@ -104,6 +105,18 @@ class TestUtilsTest(seed_test_utils.RepeatableTest):
     expected = hashlib.sha256(payload).hexdigest()
     test_utils.validate_sha256(payload, expected)
     test_utils.validate_sha256(payload, expected.upper())
+
+  def test_parse_gzipped_plist_matches_streaming_load(self):
+    sample = [{"$$name": "s", "0": b"\x01"}, 1.5]
+    tree = {
+        "test_a": {"base": {"float32": [sample]}},
+        "test_b": {"out": {}},
+    }
+    data = gzip.compress(plistlib.dumps(tree, fmt=plistlib.FMT_BINARY))
+    with gzip.open(io.BytesIO(data)) as f:
+      streamed = plistlib.load(f, fmt=plistlib.FMT_BINARY)
+    self.assertEqual(test_utils._parse_gzipped_plist(data), streamed)
+    self.assertEqual(test_utils._parse_gzipped_plist(data), tree)
 
   def test_validate_sha256_mismatch_raises(self):
     payload = b"actual data"

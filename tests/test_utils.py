@@ -18,12 +18,10 @@ from collections.abc import Sequence
 import gzip
 import hashlib
 import importlib.resources
-import io
 import os
 import pathlib
 import plistlib
-import typing
-from typing import Any, IO
+from typing import Any
 import urllib.request
 
 from absl import flags
@@ -157,6 +155,7 @@ def load_golden_files(
   # Attempt to locate the golden file in the local candidate directories.
   for fname, finfo in sorted(matching_items):
     local_file: pathlib.Path | None = None
+    local_data = b""
     for candidate_dir in candidate_dirs:
       if candidate_dir.is_dir():
         candidate_path = candidate_dir / fname
@@ -166,6 +165,7 @@ def load_golden_files(
           try:
             validate_sha256(data, finfo.sha256, filename=fname)
             local_file = candidate_path
+            local_data = data
           except ValueError:
             # If sha mismatches, do not throw, mark as missing.
             print(
@@ -180,12 +180,7 @@ def load_golden_files(
           f" {local_file}",
           flush=True,
       )
-      with gzip.open(local_file, "rb") as f:
-        # gzip.GzipFile duck types as typing.IO[bytes], but does not inherit
-        # from it, so need to cast.
-        f = typing.cast(IO[bytes], f)
-        plist_ptree = plistlib.load(f, fmt=plistlib.FMT_BINARY)
-      results.append(plist_ptree)
+      results.append(_parse_gzipped_plist(local_data))
     else:
       missing_goldens.append((fname, finfo))
 
@@ -210,10 +205,15 @@ def load_golden_files(
         f" {fname}",
         flush=True,
     )
-    with gzip.GzipFile(fileobj=io.BytesIO(data)) as f:
-      # Cast required: gzip.GzipFile does not inherit from typing.IO[bytes].
-      f = typing.cast(IO[bytes], f)
-      plist_ptree = plistlib.load(f, fmt=plistlib.FMT_BINARY)
-    results.append(plist_ptree)
+    results.append(_parse_gzipped_plist(data))
 
   return results
+
+
+def _parse_gzipped_plist(data: bytes) -> Any:
+  """Parses gzipped binary plist bytes.
+
+  Decompresses up front because plistlib's binary parser seeks once per object,
+  and each backward seek on a gzip.GzipFile restarts decompression.
+  """
+  return plistlib.loads(gzip.decompress(data), fmt=plistlib.FMT_BINARY)

@@ -178,6 +178,148 @@ class OpTestingTest(op_testing.OpInfoTestBase):
         op_testing.CastPairs(illegal_pair=None, allowed_pair=None),
     )
 
+  def _make_golden_data(self) -> op_testing.GoldenGpuData:
+    data = op_testing.GoldenGpuData()
+    for test_name in ("test_a", "test_b"):
+      for i in range(2):
+        data.add(
+            test_name,
+            op_testing.OpVariant.BASE,
+            torch.float32,
+            op_testing.OpInput(
+                FakeSample(f"{test_name}_{i}", torch.randn(3), (i,), {"k": 1})
+            ),
+            op_testing.OpOutput(torch.randn(3)),
+        )
+      data.add(
+          test_name,
+          op_testing.OpVariant.OUT,
+          torch.int32,
+          op_testing.OpInput(
+              FakeSample(f"{test_name}_out", torch.arange(4), (), {})
+          ),
+          op_testing.OpOutput(ValueError("bad")),
+          out_dtype_override=torch.int64,
+      )
+    return data
+
+  def _encode_via_plistlib(self, data: op_testing.GoldenGpuData) -> Any:
+    return plistlib.loads(
+        plistlib.dumps(data.to_plistlib_pytree(), fmt=plistlib.FMT_BINARY)
+    )
+
+  def test_golden_data_merge_defers_decode_until_accessed(self):
+    encoded = self._encode_via_plistlib(self._make_golden_data())
+    lazy = op_testing.GoldenGpuData()
+    with mock.patch.object(
+        op_testing.OpInput,
+        "from_plistlib_pytree",
+        wraps=op_testing.OpInput.from_plistlib_pytree,
+    ) as decode:
+      lazy.merge_plistlib_pytree(encoded)
+      decode.assert_not_called()
+
+      samples = lazy.get_samples(
+          "test_a", op_testing.OpVariant.BASE, torch.float32
+      )
+      self.assertLen(samples, 2)
+      # Only test_a's 3 samples (2 BASE + 1 OUT) are decoded.
+      self.assertEqual(decode.call_count, 3)
+
+      lazy.get_samples("test_a", op_testing.OpVariant.BASE, torch.float32)
+      self.assertEqual(decode.call_count, 3)
+
+  def test_golden_data_lazy_samples_match_eager_decode(self):
+    encoded = self._encode_via_plistlib(self._make_golden_data())
+    lazy = op_testing.GoldenGpuData()
+    lazy.merge_plistlib_pytree(encoded)
+
+    for test_name in ("test_a", "test_b"):
+      for variant, dtype, out_dtype in (
+          (op_testing.OpVariant.BASE, torch.float32, None),
+          (op_testing.OpVariant.OUT, torch.int32, torch.int64),
+      ):
+        key = op_testing._golden_dtype_key(dtype, out_dtype)
+        expected = [
+            (
+                op_testing.OpInput.from_plistlib_pytree(i),
+                op_testing.OpOutput.from_plistlib_pytree(o),
+            )
+            for i, o in encoded[test_name][variant.value][key]
+        ]
+        actual = lazy.get_samples(
+            test_name, variant, dtype, out_dtype_override=out_dtype
+        )
+        self.assertEqual(
+            [(repr(i), repr(o)) for i, o in actual],
+            [(repr(i), repr(o)) for i, o in expected],
+        )
+
+  def test_golden_data_get_samples_missing_returns_empty(self):
+    lazy = op_testing.GoldenGpuData()
+    lazy.merge_plistlib_pytree(
+        self._encode_via_plistlib(self._make_golden_data())
+    )
+    self.assertEmpty(
+        lazy.get_samples("test_c", op_testing.OpVariant.BASE, torch.float32)
+    )
+    self.assertEmpty(
+        lazy.get_samples("test_a", op_testing.OpVariant.BASE, torch.float64)
+    )
+
+  def test_golden_data_to_plistlib_pytree_after_merge_round_trips(self):
+    original = self._make_golden_data()
+    lazy = op_testing.GoldenGpuData()
+    lazy.merge_plistlib_pytree(self._encode_via_plistlib(original))
+    lazy.get_samples("test_a", op_testing.OpVariant.BASE, torch.float32)
+    self.assertEqual(
+        plistlib.dumps(lazy.to_plistlib_pytree(), fmt=plistlib.FMT_BINARY),
+        plistlib.dumps(original.to_plistlib_pytree(), fmt=plistlib.FMT_BINARY),
+    )
+
+  def test_golden_data_add_after_merge_appends_after_merged_samples(self):
+    lazy = op_testing.GoldenGpuData()
+    lazy.merge_plistlib_pytree(
+        self._encode_via_plistlib(self._make_golden_data())
+    )
+    lazy.add(
+        "test_a",
+        op_testing.OpVariant.BASE,
+        torch.float32,
+        op_testing.OpInput(FakeSample("added", torch.zeros(1), (), {})),
+        op_testing.OpOutput(torch.zeros(1)),
+    )
+    samples = lazy.get_samples(
+        "test_a", op_testing.OpVariant.BASE, torch.float32
+    )
+    self.assertEqual(
+        [i.name for i, _ in samples], ["test_a_0", "test_a_1", "added"]
+    )
+
+  def test_golden_data_merge_same_test_from_two_trees_keeps_order(self):
+    encoded = self._encode_via_plistlib(self._make_golden_data())
+    lazy = op_testing.GoldenGpuData()
+    lazy.merge_plistlib_pytree(encoded)
+    lazy.merge_plistlib_pytree(encoded)
+    samples = lazy.get_samples(
+        "test_a", op_testing.OpVariant.BASE, torch.float32
+    )
+    self.assertEqual(
+        [i.name for i, _ in samples],
+        ["test_a_0", "test_a_1", "test_a_0", "test_a_1"],
+    )
+
+  def test_golden_data_clear_drops_undecoded_samples(self):
+    lazy = op_testing.GoldenGpuData()
+    lazy.merge_plistlib_pytree(
+        self._encode_via_plistlib(self._make_golden_data())
+    )
+    lazy.clear()
+    self.assertEmpty(
+        lazy.get_samples("test_a", op_testing.OpVariant.BASE, torch.float32)
+    )
+    self.assertEqual(lazy.to_plistlib_pytree(), {})
+
   @parameterized.parameters(
       ("_main",),
       ("torch_tpu",),
