@@ -25,10 +25,10 @@ Add one of these labels to the PR:
 You can also start it by hand with `workflow_dispatch`.
 
 The `Presubmit on RBE` job writes the repository secrets `RBE_CA_CERT`,
-`RBE_CLIENT_CERT`, and `RBE_CLIENT_KEY` to `/tmp/rbe-certs/`, then runs
-`bazel test --config=ci_rbe_presubmit` against the Private Service Connect
-endpoint `grpcs://10.202.0.67:8980`. The job doesn't run for PRs from forks,
-because forks don't get repository secrets.
+`RBE_CLIENT_CERT`, and `RBE_CLIENT_KEY` to `/tmp/rbe-certs/`, then runs `bazel
+test --config=ci_rbe_presubmit` against the Private Service Connect endpoint
+`grpcs://10.202.0.67:8980`. The job doesn't run for PRs from forks, because
+forks don't get repository secrets.
 
 ## 2. From a GCE VM in the VPC
 
@@ -97,8 +97,8 @@ gcloud container clusters get-credentials rbe-tpu-oss-east5-cluster \
 kubectl port-forward -n buildbarn svc/frontend 8980:8980
 ```
 
-Leave that running, fetch the certs as described in
-[Credentials](#credentials), and in another shell:
+Leave that running, fetch the certs as described in [Credentials](#credentials),
+and in another shell:
 
 ```bash
 bazel test --config=rbe_native_tpu //tests:autoload_test_tpu
@@ -123,8 +123,8 @@ Never commit these files. `bazel/certs/` is in `.gitignore` for that reason.
 
 ## Running any test
 
-Any Bazel test target works with `--config=rbe_native_tpu`, with the usual
-flags (`--test_filter`, `--runs_per_test`, `--test_output=streamed`):
+Any Bazel test target works with `--config=rbe_native_tpu`, with the usual flags
+(`--test_filter`, `--runs_per_test`, `--test_output=streamed`):
 
 ```bash
 bazel test --config=rbe_native_tpu //tests/pallas:pallas_test
@@ -139,8 +139,11 @@ Each TPU worker has one v5e chip. Targets tagged `requires-tpu-v5lite:8` need an
 
 ## Measured times
 
-| What | Time |
-| :--- | :--- |
-| `//tests:autoload_test_tpu` on a v5e worker | ~12s test time |
-| `//csrc/common:flags_test`, build and test from a VM | 8s total |
-| `//tests:ops_test_tpu-v5lite`, 50 shards | 3m 38s on RBE vs 4m 48s on one 8-chip TPU VM |
+| What                                 | Time                                  |
+| :----------------------------------- | :------------------------------------ |
+| `//tests:autoload_test_tpu` on a v5e | ~12s test time                        |
+: worker                               :                                       :
+| `//csrc/common:flags_test`, build    | 8s total                              |
+: and test from a VM                   :                                       :
+| `//tests:ops_test_tpu-v5lite`, 50    | 3m 38s on RBE vs 4m 48s on one 8-chip |
+: shards                               : TPU VM                                :
