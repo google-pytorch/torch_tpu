@@ -39,6 +39,14 @@
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 
 namespace torch_tpu {
+namespace internal {
+template <>
+inline void CheckScalarInput<OpName::kLeakyReluOut, UsesScalarInput::kYes>() {}
+template <>
+inline void
+CheckScalarInput<OpName::kLeakyReluBackward, UsesScalarInput::kYes>() {}
+}  // namespace internal
+
 namespace {
 
 absl::StatusOr<mlir::MlirOp> BuildLeakyReluShlo(mlir::MlirOp self_op,
@@ -148,30 +156,77 @@ absl::Status AtenLeakyReluBackwardTensorHelper(const at::Tensor& grad_output,
 }
 
 absl::Status LeakyReluScalarHelper(const at::Tensor& self,
-                                   PromotedScalar negative_slope,
+                                   const at::Scalar& negative_slope,
                                    at::Tensor& out,
                                    OpParamCacheKeys param_keys) {
-  TT_ASSIGN_OR_RETURN(at::Tensor negative_slope_tensor,
-                      negative_slope.GetTensor(self.scalar_type()));
-  return AtenLeakyReluTensorHelper(self, negative_slope_tensor, out,
-                                   std::move(param_keys));
+  TT_ASSIGN_OR_RETURN(const auto dtype,
+                      ConvertTo<mlir::ElementType>(self.scalar_type()));
+  TT_RET_CHECK(!IsBoolean(dtype), error::kInvalidArgument)
+      << "expected non-bool dtype, got " << self.scalar_type();
+  TT_RET_CHECK(!IsInteger(dtype, /*includeBool=*/false),
+               error::kInvalidArgument)
+      << "expected non-integer dtype, got " << self.scalar_type();
+  TT_RET_CHECK(!IsComplex(dtype), error::kInvalidArgument)
+      << "expected non-complex dtype, got " << self.scalar_type();
+
+  TT_ASSIGN_OR_RETURN(const auto out_dtype,
+                      ConvertTo<mlir::ElementType>(out.scalar_type()));
+
+  auto op_builder = [negative_slope, out_dtype](
+                        mlir::MlirOp self_op) -> absl::StatusOr<mlir::MlirOp> {
+    auto& builder = self_op.getBuilder();
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp negative_slope_op,
+                        MakeConstant(builder, negative_slope, out_dtype));
+    return BuildLeakyReluShlo(self_op, negative_slope_op, out_dtype);
+  };
+
+  return DispatchOpOut<1>(std::move(op_builder), {self}, out,
+                          {.out_dtype = out_dtype,
+                           .out_dims = CopyIntVector(self.sizes()),
+                           .op_param_cache_keys = std::move(param_keys)});
 }
 
 absl::Status LeakyReluBackwardScalarHelper(const at::Tensor& grad_output,
                                            const at::Tensor& self_or_result,
-                                           PromotedScalar negative_slope,
+                                           const at::Scalar& negative_slope,
                                            bool self_is_result,
                                            OpParamCacheKeys param_keys,
                                            at::Tensor& grad_input) {
-  TT_RET_CHECK(!self_is_result || negative_slope.scalar().toDouble() >= 0,
+  TT_RET_CHECK(!self_is_result || negative_slope.toDouble() >= 0,
                error::kInvalidArgument)
       << "expected non-negative slopes for self_is_result=true, got "
-      << negative_slope.scalar().toDouble();
-  TT_ASSIGN_OR_RETURN(at::Tensor negative_slope_tensor,
-                      negative_slope.GetTensor(grad_output.scalar_type()));
-  return AtenLeakyReluBackwardTensorHelper(
-      grad_output, self_or_result, negative_slope_tensor, self_is_result,
-      std::move(param_keys), grad_input);
+      << negative_slope.toDouble();
+  TT_ASSIGN_OR_RETURN(const auto dtype,
+                      ConvertTo<mlir::ElementType>(grad_output.scalar_type()));
+  TT_RET_CHECK(!IsBoolean(dtype), error::kInvalidArgument)
+      << "boolean dtypes are not supported, got " << grad_output.scalar_type();
+  TT_RET_CHECK(!IsInteger(dtype, /*includeBool=*/false),
+               error::kInvalidArgument)
+      << "integer dtypes are not supported, got " << grad_output.scalar_type();
+  TT_RET_CHECK(!IsComplex(dtype), error::kInvalidArgument)
+      << "complex dtypes are not supported, got " << grad_output.scalar_type();
+
+  TT_ASSIGN_OR_RETURN(const auto out_dtype,
+                      ConvertTo<mlir::ElementType>(grad_output.scalar_type()));
+  Dimensions out_dims = CopyIntVector(grad_output.sizes());
+
+  auto op_builder = [negative_slope,
+                     out_dtype](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+      -> absl::StatusOr<mlir::MlirOp> {
+    mlir::MlirOp grad_output_op = inputs[0];
+    mlir::MlirOp self_or_result_op = inputs[1];
+    auto& builder = grad_output_op.getBuilder();
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp negative_slope_op,
+                        MakeConstant(builder, negative_slope, out_dtype));
+    return BuildLeakyReluBackwardShlo(grad_output_op, self_or_result_op,
+                                      negative_slope_op, out_dtype);
+  };
+
+  return DispatchOpOut<2>(std::move(op_builder), {grad_output, self_or_result},
+                          grad_input,
+                          {.out_dtype = out_dtype,
+                           .out_dims = out_dims,
+                           .op_param_cache_keys = std::move(param_keys)});
 }
 
 }  // namespace
@@ -179,14 +234,11 @@ absl::Status LeakyReluBackwardScalarHelper(const at::Tensor& grad_output,
 at::Tensor& AtenLeakyReluOut(const at::Tensor& self,
                              const at::Scalar& negative_slope,
                              at::Tensor& out) {
-  auto promoted_negative_slope = PromoteScalar(negative_slope);
-  TT_KERNEL(
-      OpName::kLeakyReluOut, param_keys, (self, promoted_negative_slope, out), {
-        TT_THROW_IF_ERROR(
-            LeakyReluScalarHelper(self, std::move(promoted_negative_slope), out,
-                                  std::move(param_keys)));
-        return out;
-      });
+  TT_KERNEL(OpName::kLeakyReluOut, param_keys, (self, negative_slope, out), {
+    TT_THROW_IF_ERROR(LeakyReluScalarHelper(self, negative_slope, out,
+                                            std::move(param_keys)));
+    return out;
+  });
 }
 
 at::Tensor& AtenLeakyReluBackwardGradInput(const at::Tensor& grad_output,
@@ -194,15 +246,13 @@ at::Tensor& AtenLeakyReluBackwardGradInput(const at::Tensor& grad_output,
                                            const at::Scalar& negative_slope,
                                            bool self_is_result,
                                            at::Tensor& grad_input) {
-  auto promoted_negative_slope = PromoteScalar(negative_slope);
   TT_KERNEL(
       OpName::kLeakyReluBackward, param_keys,
-      (grad_output, self_or_result, promoted_negative_slope, self_is_result,
-       grad_input),
+      (grad_output, self_or_result, negative_slope, self_is_result, grad_input),
       {
         TT_THROW_IF_ERROR(LeakyReluBackwardScalarHelper(
-            grad_output, self_or_result, std::move(promoted_negative_slope),
-            self_is_result, std::move(param_keys), grad_input));
+            grad_output, self_or_result, negative_slope, self_is_result,
+            std::move(param_keys), grad_input));
         return grad_input;
       });
 }
