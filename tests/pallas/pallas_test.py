@@ -1217,6 +1217,21 @@ class TestPallasCompat(seed_test_utils.RepeatableTest):
         self.assertEqual(str(w[0].message), "test message")
         self.assertIn("pallas_test.py", w[0].filename)
 
+  def test_pallas_jax_op_stablehlo(self):
+    def inc_kernel(x_ref, o_ref):
+      o_ref[...] = x_ref[...] + 1.0
+
+    def jax_fn(x: jax.Array) -> jax.Array:
+      return pl.pallas_call(
+          inc_kernel, out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype)
+      )(x)
+
+    op = pallas.jax_op("test::pallas_inc", jax_fn)
+
+    x = torch.ones(128, dtype=torch.bfloat16, device="tpu")
+    out = op(x)
+    test_utils.assert_close(out, x + 1.0)
+
   def test_fp4_pallas(self):
 
     # Check hardware support
