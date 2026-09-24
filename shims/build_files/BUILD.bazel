@@ -16,12 +16,33 @@ load("//shims/build_defs_testing:bzl_library.bzl", "bzl_library")
 
 exports_files([
     "build_defs.bzl",
+    "py_relocated_extension.bzl",
+    "py_relocated_library.bzl",
+    "py_relocated_pybind_extension.bzl",
     "torch_version.bzl",
 ])
 
 bzl_library(
     name = "build_defs_bzl",
     srcs = ["build_defs.bzl"],
+    visibility = ["//:__subpackages__"],
+)
+
+bzl_library(
+    name = "py_relocated_extension_bzl",
+    srcs = ["py_relocated_extension.bzl"],
+    visibility = ["//:__subpackages__"],
+)
+
+bzl_library(
+    name = "py_relocated_library_bzl",
+    srcs = ["py_relocated_library.bzl"],
+    visibility = ["//:__subpackages__"],
+)
+
+bzl_library(
+    name = "py_relocated_pybind_extension_bzl",
+    srcs = ["py_relocated_pybind_extension.bzl"],
     visibility = ["//:__subpackages__"],
 )
 
