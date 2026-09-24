@@ -73,14 +73,15 @@ _RANK_COLLECTIVE_COUNTS_LOCK = threading.Lock()
 def _submit_handshake(
     executable_fingerprint: str,
     pg_to_num_collectives: dict[ProcessGroupId, int],
-    graph_module: torch.fx.GraphModule | None = None,
+    graph_module_str: str | None = None,
 ) -> bool:
   """Submits a handshake message across participating ranks.
 
   Args:
     executable_fingerprint: The fingerprint of the executable.
     pg_to_num_collectives: The mapping of ProcessGroupId to collective counts.
-    graph_module: The graph module of the executable, for logging purposes.
+    graph_module_str: The graph module string representation, for logging
+      purposes.
 
   Returns True if all ranks match.
   """
@@ -119,7 +120,7 @@ def _submit_handshake(
         executable_fingerprint,
         pg_to_num_collectives,
     )
-    if graph_module:
+    if graph_module_str:
       logging.warning(
           "Handshake failed on rank %d for graph module:\n"
           "--- [BEGIN GRAPH MODULE: %s] ---\n"
@@ -127,7 +128,7 @@ def _submit_handshake(
           "--- [END GRAPH MODULE: %s] ---",
           rank,
           executable_fingerprint,
-          graph_module.print_readable(print_output=False),
+          graph_module_str,
           executable_fingerprint,
       )
 
@@ -402,7 +403,7 @@ class _SplitCompiledExecutable(CompiledArtifact):
       target: torch.fx.GraphModule,
       recompile_fn: Callable[[], "_SplitCompiledExecutable"] | None = None,
       pg_to_num_collectives: dict[ProcessGroupId, int] | None = None,
-      graph_module: torch.fx.GraphModule | None = None,
+      graph_module_str: str | None = None,
   ):
     """Initializes a _SplitCompiledExecutable.
 
@@ -411,14 +412,15 @@ class _SplitCompiledExecutable(CompiledArtifact):
       recompile_fn: Optional callable for recompiling the graph.
       pg_to_num_collectives: Mapping of ProcessGroupId to collective counts for
         this executable.
-      graph_module: The optional unpartitioned graph module for logging.
+      graph_module_str: The optional unpartitioned graph module string for
+        logging.
     """
     super().__init__()
     self.recompile_fn = recompile_fn
     self.pg_to_num_collectives = (
         pg_to_num_collectives if pg_to_num_collectives else {}
     )
-    self._graph_module = graph_module
+    self._graph_module_str = graph_module_str
 
     self._split_gm = target
 
@@ -434,7 +436,7 @@ class _SplitCompiledExecutable(CompiledArtifact):
     fingerprints_match = _submit_handshake(
         executable_fingerprint,
         self.pg_to_num_collectives,
-        self._graph_module,
+        self._graph_module_str,
     )
 
     if not fingerprints_match:
@@ -458,19 +460,20 @@ class _SplitCompiledExecutable(CompiledArtifact):
       1. A callable (_unpickle_split_compiled_executable) that can be called to
          recreate the object.
       2. A tuple of arguments containing target, recompile_fn,
-         pg_to_num_collectives, and graph_module.
+         pg_to_num_collectives, and graph_module_str.
 
     Returns:
       A tuple (callable, args_tuple) used by the pickle module to
       serialize the object.
     """
+    self.resolve()
     return (
         _unpickle_split_compiled_executable,
         (
             self._split_gm,
             self.recompile_fn,
             self.pg_to_num_collectives,
-            self._graph_module,
+            self._graph_module_str,
         ),
     )
 
@@ -530,7 +533,7 @@ def _unpickle_split_compiled_executable(
     target: torch.fx.GraphModule,
     recompile_fn: Callable[[], "_SplitCompiledExecutable"] | None = None,
     pg_to_num_collectives: dict[ProcessGroupId, int] | None = None,
-    graph_module: torch.fx.GraphModule | None = None,
+    graph_module_str: str | None = None,
 ) -> _SplitCompiledExecutable:
   """Reconstructs a _SplitCompiledExecutable from target.
 
@@ -541,7 +544,7 @@ def _unpickle_split_compiled_executable(
     target: The split GraphModule.
     recompile_fn: Callable for recompiling the graph.
     pg_to_num_collectives: The mapping of process groups to collective counts.
-    graph_module: The optional unpartitioned graph module.
+    graph_module_str: The optional unpartitioned graph module string.
 
   Returns:
     A deserialized _SplitCompiledExecutable instance.
@@ -550,7 +553,7 @@ def _unpickle_split_compiled_executable(
       target=target,
       recompile_fn=recompile_fn,
       pg_to_num_collectives=pg_to_num_collectives,
-      graph_module=graph_module,
+      graph_module_str=graph_module_str,
   )
 
 
@@ -701,7 +704,10 @@ class SplitCompiler(compiler.Compiler):
     with torch._dynamo.utils._disable_saved_tensors_hooks_during_tracing():  # pylint: disable=protected-access
       submod_compiler.run(*example_inputs)
     split_gm.recompile()
-    return _SplitCompiledExecutable(target=split_gm, graph_module=graph_module)
+    return _SplitCompiledExecutable(
+        target=split_gm,
+        graph_module_str=graph_module.print_readable(print_output=False),
+    )
 
   def __call__(
       self,
@@ -739,7 +745,9 @@ class SplitCompiler(compiler.Compiler):
     ):
       fingerprint = tpu_torch_compile.fingerprint64(graph_module.code)
       fingerprints_match = _submit_handshake(
-          str(fingerprint), pg_to_num_collectives, graph_module
+          str(fingerprint),
+          pg_to_num_collectives,
+          graph_module.print_readable(print_output=False),
       )
       materialize_collectives = not fingerprints_match
     elif (
