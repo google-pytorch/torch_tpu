@@ -22,6 +22,7 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "torch/csrc/autograd/custom_function.h"
+#include "torch/csrc/autograd/function_hook.h"
 
 namespace torch_tpu {
 

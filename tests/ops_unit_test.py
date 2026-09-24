@@ -2565,6 +2565,165 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     self.assert_close_tpu_vs_cpu(compute, rtol=2e-4, atol=3e-4)
 
   @parameterized.named_parameters(
+      ("mean_reduction", "mean", False),
+      ("sum_reduction", "sum", False),
+      ("none_reduction", "none", False),
+      ("zero_infinity", "mean", True),
+  )
+  def test_ctc_loss_functional_1d_targets(self, reduction, zero_infinity):
+    logits = torch.randn(2, 8, 5)
+    log_probs = torch.nn.functional.log_softmax(
+        logits, dim=-1, dtype=torch.float32
+    ).transpose(0, 1)
+    targets = torch.randint(1, 5, (6,), dtype=torch.long)
+    input_lengths = torch.full((2,), 8, dtype=torch.long)
+    target_lengths = torch.tensor([3, 3], dtype=torch.long)
+
+    def compute(
+        device,
+        log_probs=log_probs,
+        targets=targets,
+        input_lengths=input_lengths,
+        target_lengths=target_lengths,
+    ):
+      lp = log_probs.to(device).detach().requires_grad_(True)
+      loss = torch.nn.functional.ctc_loss(
+          lp,
+          targets.to(device),
+          input_lengths.to(device),
+          target_lengths.to(device),
+          blank=0,
+          reduction=reduction,
+          zero_infinity=zero_infinity,
+      )
+      if reduction == "none":
+        loss.sum().backward()
+      else:
+        loss.backward()
+      return loss, lp.grad
+
+    self.assert_close_tpu_vs_cpu(compute, rtol=1e-3, atol=1e-4)
+
+  def test_ctc_loss_functional_1d_targets_int32_and_cpu_lengths(self):
+    logits = torch.randn(2, 8, 5)
+    log_probs = torch.nn.functional.log_softmax(
+        logits, dim=-1, dtype=torch.float32
+    ).transpose(0, 1)
+    targets = torch.randint(1, 5, (6,), dtype=torch.long)
+    input_lengths_i32 = torch.tensor([8, 8], dtype=torch.int32)
+    target_lengths_i32 = torch.tensor([3, 3], dtype=torch.int32)
+
+    def compute_i32(device):
+      lp = log_probs.to(device).detach().requires_grad_(True)
+      loss = torch.nn.functional.ctc_loss(
+          lp,
+          targets.to(device),
+          input_lengths_i32.to(device),
+          target_lengths_i32.to(device),
+      )
+      loss.backward()
+      return loss, lp.grad
+
+    self.assert_close_tpu_vs_cpu(compute_i32, rtol=1e-3, atol=1e-4)
+
+    def compute_list_lengths(device):
+      lp = log_probs.to(device).detach().requires_grad_(True)
+      loss_list = torch.nn.functional.ctc_loss(
+          lp,
+          targets.to(device),
+          [8, 8],
+          [3, 3],
+      )
+      loss_list.backward()
+      return loss_list, lp.grad
+
+    self.assert_close_tpu_vs_cpu(compute_list_lengths, rtol=1e-3, atol=1e-4)
+
+    def compute_list_lengths_uneven(device):
+      lp = log_probs.to(device).detach().requires_grad_(True)
+      loss_list = torch.nn.functional.ctc_loss(
+          lp,
+          torch.tensor([1, 2, 3, 4, 2], dtype=torch.long).to(device),
+          [8, 8],
+          [4, 1],
+      )
+      loss_list.backward()
+      return loss_list, lp.grad
+
+    self.assert_close_tpu_vs_cpu(
+        compute_list_lengths_uneven, rtol=1e-3, atol=1e-4
+    )
+
+  def test_ctc_loss_functional_1d_targets_uneven_lengths(self):
+    logits = torch.randn(2, 8, 5)
+    log_probs = torch.nn.functional.log_softmax(
+        logits, dim=-1, dtype=torch.float32
+    ).transpose(0, 1)
+    targets = torch.tensor([1, 2, 3, 4, 2], dtype=torch.long)
+    input_lengths = torch.tensor([8, 8], dtype=torch.long)
+    target_lengths = torch.tensor([4, 1], dtype=torch.long)
+
+    def compute(device):
+      lp = log_probs.to(device).detach().requires_grad_(True)
+      loss = torch.nn.functional.ctc_loss(
+          lp,
+          targets.to(device),
+          input_lengths.to(device),
+          target_lengths.to(device),
+          blank=0,
+      )
+      loss.backward()
+      return loss, lp.grad
+
+    self.assert_close_tpu_vs_cpu(compute, rtol=1e-3, atol=1e-4)
+
+  def test_ctc_loss_functional_1d_targets_empty(self):
+    logits = torch.randn(2, 8, 5)
+    log_probs = torch.nn.functional.log_softmax(
+        logits, dim=-1, dtype=torch.float32
+    ).transpose(0, 1)
+    targets = torch.empty((0,), dtype=torch.long)
+    input_lengths = torch.tensor([8, 8], dtype=torch.long)
+    target_lengths = torch.tensor([0, 0], dtype=torch.long)
+
+    def compute(device):
+      lp = log_probs.to(device).detach().requires_grad_(True)
+      loss = torch.nn.functional.ctc_loss(
+          lp,
+          targets.to(device),
+          input_lengths.to(device),
+          target_lengths.to(device),
+          blank=0,
+      )
+      loss.backward()
+      return loss, lp.grad
+
+    self.assert_close_tpu_vs_cpu(compute, rtol=1e-3, atol=1e-4)
+
+  def test_ctc_loss_2d_targets_with_trailing_padding(self):
+    logits = torch.randn(2, 8, 5)
+    log_probs = torch.nn.functional.log_softmax(
+        logits, dim=-1, dtype=torch.float32
+    ).transpose(0, 1)
+    targets = torch.tensor([[1, 2, 0, 0, 0], [2, 3, 1, 0, 0]], dtype=torch.long)
+    input_lengths = torch.tensor([8, 8], dtype=torch.long)
+    target_lengths = torch.tensor([2, 3], dtype=torch.long)
+
+    def compute(device):
+      lp = log_probs.to(device).detach().requires_grad_(True)
+      loss = torch.nn.functional.ctc_loss(
+          lp,
+          targets.to(device),
+          input_lengths.to(device),
+          target_lengths.to(device),
+          blank=0,
+      )
+      loss.backward()
+      return loss, lp.grad
+
+    self.assert_close_tpu_vs_cpu(compute, rtol=1e-3, atol=1e-4)
+
+  @parameterized.named_parameters(
       ("small", 5, 2, 3, 3, [5, 4], [3, 2], torch.int32, False),
       (
           "large",
