@@ -39,7 +39,6 @@ torch_tpu_py_library(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal:env",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:environment",
         "//src/torch_tpu/_internal/utils:hardware",
         "//tests:seed_test_utils",
         "@pypi//portpicker",

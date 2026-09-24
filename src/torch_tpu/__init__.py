@@ -36,5 +36,6 @@ except ImportError:
 # probe sees every library `import torch_tpu` pulls in, libtpu included.
 _tcmalloc_check.check_tcmalloc()
 
+from torch_tpu import _loader as _  # pylint: disable=g-import-not-at-top  # noqa: F401
 
 # TODO: b/477401982 - Introduce a new flag module to hold all TorchTPU flags.

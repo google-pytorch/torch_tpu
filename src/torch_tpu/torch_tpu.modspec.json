@@ -1,6 +1,22 @@
 [
   {
     "name": "torch.tpu",
+    "type": "PACKAGE"
+  },
+  {
+    "name": "torch.tpu.distributed",
+    "type": "PACKAGE"
+  },
+  {
+    "name": "torch.tpu.distributed.environment",
+    "type": "MODULE"
+  },
+  {
+    "name": "torch.tpu.pallas",
+    "type": "MODULE"
+  },
+  {
+    "name": "torch.tpu.profiler",
     "type": "MODULE"
   }
 ]

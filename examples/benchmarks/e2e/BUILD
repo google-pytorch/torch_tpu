@@ -100,7 +100,6 @@ torch_tpu_py_library(
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/distributed:gpu_env",
-        "//src/torch_tpu/_internal/distributed/launchers:environment",
         "//src/torch_tpu/_internal/utils:log_utils",
     ],
 )

@@ -28,7 +28,7 @@ and then gets out of the way, so it composes with `torchrun`, `elastic_launch`,
 `torch.multiprocessing.spawn`, or any other launcher:
 
 ```python
-from torch_tpu._internal.distributed.launchers import environment
+from torch.tpu.distributed import environment
 
 environment.set_tpu_launch_env(nproc_per_node=8)
 torch.multiprocessing.spawn(user_fn, nprocs=8)
@@ -63,9 +63,14 @@ from absl import logging
 import portpicker
 from torch_tpu._internal import env
 from torch_tpu._internal import env_utils
+from torch_tpu._internal.utils import annotations
 from torch_tpu._internal.utils import hardware
 
 
+@annotations.experimental(
+    "torch.tpu.distributed.environment.set_tpu_launch_env is experimental"
+    " and subject to change."
+)
 def set_tpu_launch_env(
     *,
     nnodes: int | None = None,

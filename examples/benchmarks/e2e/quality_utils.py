@@ -20,15 +20,14 @@ from typing import Sequence
 from absl import logging
 from torch import distributed as dist
 from torch.google import distributed as g3_distributed
+from torch.tpu.distributed import environment  # pyrefly: ignore[missing-import]
 from torch_tpu._internal.distributed import gpu_env
-from torch_tpu._internal.distributed.launchers import environment
 from torch_tpu._internal.utils import log_utils
 from examples.benchmarks.e2e import benchmark_utils
 from examples.benchmarks.e2e import common
 from examples.benchmarks.e2e import mlcompass_utils
 from examples.benchmarks.quality_utils import quality_benchmark_model
 from examples.benchmarks.quality_utils.metrics import data_loader
-
 
 log_utils.log_to_stderr()
 

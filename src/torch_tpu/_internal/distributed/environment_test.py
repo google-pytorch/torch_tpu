@@ -20,9 +20,10 @@ import os
 from unittest import mock
 
 from absl.testing import absltest
+from torch.tpu.distributed import environment  # pyrefly: ignore[missing-import]
 from torch_tpu._internal import env
 from torch_tpu._internal import env_utils
-from torch_tpu._internal.distributed.launchers import environment
+from torch_tpu._internal.distributed import environment as internal_environment
 from torch_tpu._internal.utils import hardware
 from tests import seed_test_utils
 
@@ -122,7 +123,7 @@ class EnvironmentTest(seed_test_utils.RepeatableTest):
       ):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-          environment._print_launch_env()  # pylint: disable=protected-access
+          internal_environment._print_launch_env()  # pylint: disable=protected-access
         lines = dict(
             line.split("=", 1) for line in buf.getvalue().strip().splitlines()
         )
