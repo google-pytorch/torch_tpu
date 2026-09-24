@@ -29,6 +29,7 @@ py_library(
 
 py_binary(
     name = "gen_torch_tests",
+    testonly = True,
     srcs = ["gen_torch_tests.py"],
     deps = [
         ":torch_test_module_utils",
