@@ -101,7 +101,7 @@ def is_sparsecore_supported() -> bool:
 
   try:
     attrs = getattr(
-        torch.get_device_module("tpu"), "get_local_device_attributes"
+        torch.get_device_module("tpu"), "_get_local_device_attributes"
     )()
     kind = attrs.get("device_kind")
     return kind is not None and kind not in _SPARSECORE_UNSUPPORTED_DEVICE_KINDS

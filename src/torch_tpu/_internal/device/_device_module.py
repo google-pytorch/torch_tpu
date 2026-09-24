@@ -566,7 +566,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
     return cls.default_generators[idx].initial_seed()
 
   @classmethod
-  def get_local_device_attributes(cls) -> Mapping[str, Any]:
+  def _get_local_device_attributes(cls) -> Mapping[str, Any]:
     """Returns attributes of the local PJRT device, initializing options if needed."""
     cls._init_runtime_options()
     return _device_ops_backend._get_local_device_attributes()  # pylint: disable=protected-access

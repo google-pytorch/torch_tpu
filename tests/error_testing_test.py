@@ -207,7 +207,7 @@ class ErrorTestingTest(seed_test_utils.RepeatableTest):
     self.addCleanup(et.is_sparsecore_supported.cache_clear)
     et.is_sparsecore_supported.cache_clear()
     mock_module = mock.MagicMock()
-    mock_module.get_local_device_attributes.return_value = {
+    mock_module._get_local_device_attributes.return_value = {
         "device_kind": device_kind
     }
     with mock.patch.object(
