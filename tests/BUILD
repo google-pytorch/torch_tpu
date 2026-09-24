@@ -984,6 +984,29 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_library(
+    name = "goldens_pin",
+    srcs = ["goldens_pin.py"],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "@pypi//attrs",
+        "@pypi//cattrs",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "goldens_pin_test",
+    srcs = ["goldens_pin_test.py"],
+    deps = [
+        ":goldens_pin",
+        ":seed_test_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//src/torch_tpu",
+        "@pypi//hypothesis",
+    ],
+)
+
 torch_tpu_py_test(
     name = "op_testing_test",
     srcs = ["op_testing_test.py"],
