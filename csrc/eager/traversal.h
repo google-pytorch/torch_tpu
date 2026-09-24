@@ -205,13 +205,18 @@ class Traversal {
   // If `out_mlir_text` is non-null and Compile is a cache miss (i.e. the
   // MLIR module is actually built), it is populated with the textual
   // representation of that module.
+  //
+  // If `out_cache_key` is non-null, it is reset on entry and populated with the
+  // computed `CompilationCacheKey` for this compilation on success.
   absl::StatusOr<CompiledKernel> Compile(
       const CompilationSpec& spec,
       std::string* absl_nullable out_mlir_text = nullptr,
       bool use_stablehlo_bounds = false,
       absl::Span<const CustomLayout> argument_layouts = {},
       absl::Span<const int64_t> donated_inputs = {},
-      std::optional<std::string_view> module_name = std::nullopt) const;
+      std::optional<std::string_view> module_name = std::nullopt,
+      std::optional<CompilationCacheKey>* absl_nullable out_cache_key =
+          nullptr) const;
 
   // Resolves the device assignment for this graph from deferred ops.
   // Returns an error if conflicting device assignments are found.
@@ -241,7 +246,7 @@ class Traversal {
   const PythonContext* absl_nullable GetPythonContext() const;
 
   // Sorts the Traversal's execution_order by op creation index.
-  inline void SortByCreationOrder() {
+  void SortByCreationOrder() {
     std::sort(
         execution_order_.begin(), execution_order_.end(),
         [](const SharedDeviceBufferList& a, const SharedDeviceBufferList& b) {
@@ -298,6 +303,12 @@ class Traversal {
 
   // Returns true if the traversal contains any SparseCore custom operations.
   [[nodiscard]] bool HasSparseCoreOp() const;
+
+  // Returns an updated CompilationSpec copy if the traversal requires
+  // SparseCore replica overrides or pinned-host placement overrides, or
+  // std::nullopt if no overrides are needed.
+  std::optional<CompilationSpec> MaybeUpdateSpecWithLayout(
+      const CompilationSpec& spec) const;
 
   // Helper function for BuildMlirFunction.
   // Returns the MLIR op corresponding to the provided buffer ref,

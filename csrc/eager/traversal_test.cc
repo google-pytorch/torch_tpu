@@ -17,6 +17,7 @@
 #include "csrc/eager/traversal.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -359,5 +360,57 @@ TEST_F(TraversalTest, ValidateAndReorderArgumentsErrorCases) {
   EXPECT_TRUE(tr->ValidateAndReorderArguments({ref_b, ref_a}).ok());
 }
 
+TEST_F(TraversalTest, CompilePopulatesAndResetsOutCacheKey) {
+  Shape shape_2d(Dimensions{128, 64}, mlir::ElementType::F32);
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::vector<DeviceBufferRef> refs_a,
+      DeviceBufferList::CreateDeferred(OpName::kAdd, DummyBuilder, {},
+                                       OpParamCacheKeys::Empty(), {shape_2d}));
+  DeviceBufferRef ref_a = refs_a[0];
+
+  MlirOpBuilder identity_builder = [](mlir::MlirBuilder& /*builder*/,
+                                      absl::Span<mlir::MlirOp> inputs)
+      -> absl::StatusOr<DynamicMlirOpResults> {
+    return DynamicMlirOpResults{inputs[0]};
+  };
+
+  TT_ASSERT_OK_AND_ASSIGN(std::vector<DeviceBufferRef> refs_b,
+                          DeviceBufferList::CreateDeferred(
+                              OpName::kAdd, std::move(identity_builder),
+                              {ref_a}, OpParamCacheKeys::Empty(), {shape_2d}));
+  DeviceBufferRef ref_b = refs_b[0];
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<Traversal> tr,
+      Traversal::Create({ref_b}, {ref_a.device_buffer_list().get()}));
+
+  CustomLayout tiled_layout{.minor_to_major = {1, 0}, .tiles = {{8}}};
+  // Use a CompileOptionsKey distinct from the other tests in this file. The
+  // CompilationCache is a process-global singleton, so sharing a key here would
+  // let this test prime the entry that
+  // CompileAnnotatesArgumentLayoutsWithTilingAndCaching expects to miss.
+  const CompileOptionsKey kCompileOptionsKey(54321);
+  CompilationSpec spec(std::make_unique<xla::CompileOptions>(),
+                       kCompileOptionsKey);
+  std::optional<CompilationCacheKey> out_cache_key;
+  ASSERT_TRUE(tr->Compile(spec, /*out_mlir_text=*/nullptr,
+                          /*use_stablehlo_bounds=*/false,
+                          /*argument_layouts=*/{tiled_layout},
+                          /*donated_inputs=*/{},
+                          /*module_name=*/std::nullopt, &out_cache_key)
+                  .ok());
+  ASSERT_TRUE(out_cache_key.has_value());
+  EXPECT_EQ(*out_cache_key, tr->GetCacheKey(kCompileOptionsKey, {tiled_layout},
+                                            /*donated_inputs=*/{}));
+
+  // Verify that an early validation failure resets out_cache_key to nullopt.
+  EXPECT_FALSE(tr->Compile(spec, /*out_mlir_text=*/nullptr,
+                           /*use_stablehlo_bounds=*/false,
+                           /*argument_layouts=*/{tiled_layout, tiled_layout},
+                           /*donated_inputs=*/{},
+                           /*module_name=*/std::nullopt, &out_cache_key)
+                   .ok());
+  EXPECT_FALSE(out_cache_key.has_value());
+}
 }  // namespace
 }  // namespace torch_tpu

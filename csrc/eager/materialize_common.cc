@@ -293,10 +293,6 @@ absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
     TT_RETURN_IF_ERROR(PropagateBoundedDynamism(traversal, mlir_context));
   }
 
-  const CompilationCacheKey compilation_cache_key =
-      traversal.GetCacheKey(compilation_spec.compile_options_key,
-                            /*argument_layouts=*/{},
-                            /*donated_inputs=*/{});
   for (const auto& argument : traversal.arguments()) {
     if (argument.is_placeholder()) {
       return TT_ERROR(error::kInternal)
@@ -317,6 +313,10 @@ absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
       // Input isn't ready yet, so we will wait and recheck it during Run().
       continue;
     } else if (const auto deferred_op = argument.deferred_op()) {
+      const CompilationCacheKey compilation_cache_key =
+          traversal.GetCacheKey(compilation_spec.compile_options_key,
+                                /*argument_layouts=*/{},
+                                /*donated_inputs=*/{});
       return TT_ERROR(error::kInternal)
              << "traversal (cache key: " << compilation_cache_key
              << ") has deferred argument " << ToString(deferred_op->op_name())
@@ -343,15 +343,21 @@ absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
   // Start compiling the traversal.
   ABSL_VLOG(1) << "[ExecutionTask] Compiling traversal";
   CompiledKernel compiled_kernel;
+  std::optional<CompilationCacheKey> compilation_cache_key;
   {
     tsl::profiler::TraceMe t("CompileTraversal");
     TT_ASSIGN_OR_RETURN(
         compiled_kernel,
         traversal.Compile(compilation_spec, out_mlir_text,
-                          /*use_stablehlo_bounds=*/false, argument_layouts));
+                          /*use_stablehlo_bounds=*/false, argument_layouts,
+                          /*donated_inputs=*/{}, /*module_name=*/std::nullopt,
+                          &compilation_cache_key));
   }
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Compile guarantees out_cache_key.
+      compilation_cache_key.has_value(), error::kInternal)
+      << "traversal compilation succeeded without populating cache key";
   return CompiledTraversal{
-      .compilation_cache_key = std::move(compilation_cache_key),
+      .compilation_cache_key = std::move(*compilation_cache_key),
       .compiled_kernel = std::move(compiled_kernel)};
 }
 
