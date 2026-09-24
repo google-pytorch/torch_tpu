@@ -1563,6 +1563,132 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     )
     utils.assert_close(out_resized.cpu(), expected_matrix)
 
+  def test_cumsum_out_dtype(self):
+    device = torch.device("tpu")
+    x = torch.tensor([1, 2, 3, 4], dtype=torch.int32, device=device)
+    out_f32 = torch.empty(4, dtype=torch.float32, device=device)
+    torch.cumsum(x, dim=0, out=out_f32)
+    utils.assert_close(
+        out_f32,
+        torch.tensor([1.0, 3.0, 6.0, 10.0], dtype=torch.float32, device=device),
+    )
+
+    # Complex to float out casting
+    xc = torch.tensor(
+        [1.0 + 2.0j, 3.0 + 4.0j], dtype=torch.complex64, device=device
+    )
+    out_f64 = torch.empty(2, dtype=torch.float64, device=device)
+    torch.cumsum(xc, dim=0, out=out_f64)
+    utils.assert_close(
+        out_f64,
+        torch.tensor([1.0, 4.0], dtype=torch.float64, device=device),
+    )
+
+    # 0-D scalar tensor test (including boolean scalar parity with ATen)
+    x0 = torch.tensor(5, dtype=torch.int32, device=device)
+    out0 = torch.empty((), dtype=torch.float32, device=device)
+    torch.cumsum(x0, dim=0, out=out0)
+    utils.assert_close(
+        out0, torch.tensor(5.0, dtype=torch.float32, device=device)
+    )
+    x0_bool = torch.tensor(True, dtype=torch.bool, device=device)
+    out0_bool = torch.empty((), dtype=torch.bool, device=device)
+    torch.cumsum(x0_bool, dim=0, out=out0_bool)
+    self.assertTrue(out0_bool.item())
+
+    # Empty tensor test
+    xe = torch.empty(0, 4, dtype=torch.int32, device=device)
+    oute = torch.empty(0, 4, dtype=torch.float32, device=device)
+    torch.cumsum(xe, dim=1, out=oute)
+    self.assertEqual(oute.shape, (0, 4))
+    self.assertEqual(oute.dtype, torch.float32)
+
+    # Integer default promotion to int64 (functional and out-variant)
+    for int_dtype in [torch.int8, torch.int16, torch.int32]:
+      xi_cpu = torch.tensor([1, 2, 3], dtype=int_dtype, device="cpu")
+      xi_tpu = torch.tensor([1, 2, 3], dtype=int_dtype, device=device)
+
+      # Functional variant
+      res_cpu = torch.cumsum(xi_cpu, dim=0)
+      res_tpu = torch.cumsum(xi_tpu, dim=0)
+      self.assertEqual(res_cpu.dtype, torch.int64)
+      self.assertEqual(res_tpu.dtype, torch.int64)
+      utils.assert_close(res_tpu.cpu(), res_cpu)
+
+      # Out-variant without dtype
+      out_tpu = torch.empty(3, dtype=torch.int64, device=device)
+      out_cpu = torch.empty(3, dtype=torch.int64, device="cpu")
+      torch.cumsum(xi_tpu, dim=0, out=out_tpu)
+      torch.cumsum(xi_cpu, dim=0, out=out_cpu)
+      self.assertEqual(out_tpu.dtype, torch.int64)
+      utils.assert_close(out_tpu.cpu(), out_cpu)
+
+  def test_cumprod_out_dtype(self):
+    device = torch.device("tpu")
+    x = torch.tensor([1, 2, 3, 4], dtype=torch.int32, device=device)
+    out_f32 = torch.empty(4, dtype=torch.float32, device=device)
+    torch.cumprod(x, dim=0, out=out_f32)
+    utils.assert_close(
+        out_f32,
+        torch.tensor([1.0, 2.0, 6.0, 24.0], dtype=torch.float32, device=device),
+    )
+
+    # Complex to float out casting
+    xc = torch.tensor(
+        [2.0 + 3.0j, 4.0 + 5.0j], dtype=torch.complex64, device=device
+    )
+    out_f64 = torch.empty(2, dtype=torch.float64, device=device)
+    torch.cumprod(xc, dim=0, out=out_f64)
+    utils.assert_close(
+        out_f64,
+        torch.tensor([2.0, 8.0], dtype=torch.float64, device=device),
+    )
+
+    # 0-D scalar tensor test (including boolean scalar parity with ATen)
+    x0 = torch.tensor(7, dtype=torch.int32, device=device)
+    out0 = torch.empty((), dtype=torch.float32, device=device)
+    torch.cumprod(x0, dim=0, out=out0)
+    utils.assert_close(
+        out0, torch.tensor(7.0, dtype=torch.float32, device=device)
+    )
+    x0_bool = torch.tensor(False, dtype=torch.bool, device=device)
+    out0_bool = torch.empty((), dtype=torch.bool, device=device)
+    torch.cumprod(x0_bool, dim=0, out=out0_bool)
+    self.assertFalse(out0_bool.item())
+
+    # 0-D complex to float test
+    x0_c = torch.tensor(3.0 + 4.0j, dtype=torch.complex64, device=device)
+    out0_f = torch.empty((), dtype=torch.float32, device=device)
+    torch.cumprod(x0_c, dim=0, out=out0_f)
+    self.assertEqual(out0_f.item(), 3.0)
+
+    # Empty tensor test
+    xe = torch.empty(0, 4, dtype=torch.int32, device=device)
+    oute = torch.empty(0, 4, dtype=torch.float32, device=device)
+    torch.cumprod(xe, dim=1, out=oute)
+    self.assertEqual(oute.shape, (0, 4))
+    self.assertEqual(oute.dtype, torch.float32)
+
+    # Integer default promotion to int64 (functional and out-variant)
+    for int_dtype in [torch.int8, torch.int16, torch.int32]:
+      xi_cpu = torch.tensor([1, 2, 3], dtype=int_dtype, device="cpu")
+      xi_tpu = torch.tensor([1, 2, 3], dtype=int_dtype, device=device)
+
+      # Functional variant
+      res_cpu = torch.cumprod(xi_cpu, dim=0)
+      res_tpu = torch.cumprod(xi_tpu, dim=0)
+      self.assertEqual(res_cpu.dtype, torch.int64)
+      self.assertEqual(res_tpu.dtype, torch.int64)
+      utils.assert_close(res_tpu.cpu(), res_cpu)
+
+      # Out-variant without dtype
+      out_tpu = torch.empty(3, dtype=torch.int64, device=device)
+      out_cpu = torch.empty(3, dtype=torch.int64, device="cpu")
+      torch.cumprod(xi_tpu, dim=0, out=out_tpu)
+      torch.cumprod(xi_cpu, dim=0, out=out_cpu)
+      self.assertEqual(out_tpu.dtype, torch.int64)
+      utils.assert_close(out_tpu.cpu(), out_cpu)
+
   def test_binary_arithmetic_out_upcast(self):
     device = torch.device("tpu")
     a = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=device)
@@ -8233,7 +8359,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     ids = (torch.arange(t * k) % t).to("tpu")
     src = torch.ones(t * k, feat, device="cpu").to("tpu")
     with execution_mode.set_eager_mode(
-        execution_mode._EagerMode.INTERNAL_COMPILE_FX_GRAPH
+        execution_mode.EagerMode.INTERNAL_COMPILE_FX_GRAPH
     ):
       out = torch.zeros(t, feat, device="tpu")
       result = out.scatter_add(0, ids.unsqueeze(-1).expand_as(src), src)
@@ -9388,14 +9514,13 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     Checks:
       1. Calling `aten._assert_async` and `aten._assert_async.msg` with a
-      boolean
-         `True` tensor completes successfully and does not latch any sticky
-         error.
+         boolean `True` tensor completes successfully and does not latch any
+         sticky error.
       2. Non-boolean numeric scalar tensors that evaluate to true (e.g. integer
-      1,
-         float 1.0) also evaluate as truthy without raising errors.
-      3. An explicit `torch.tpu.synchronize()` flushes all background assertion
-         workers and confirms that no deferred assertion failures occurred.
+         1, float 1.0) also evaluate as truthy without raising errors.
+      3. An explicit `torch.accelerator.synchronize()` flushes all background
+         assertion workers and confirms that no deferred assertion failures
+         occurred.
     """
     device = torch.device("tpu")
 
@@ -9411,7 +9536,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     torch.ops.aten._assert_async.msg(float_cond, "float true condition")
 
     # Synchronize to drain the background thread pool and verify no errors were set.
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
 
   def test_assert_async_eager_false_msg(self):
     """Tests that _assert_async.msg fails and preserves custom error message.
@@ -9421,9 +9546,9 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
          immediately to host execution without blocking.
       2. The background thread detects the false condition after DtoH copy and
          latches a sticky error containing the specified custom message.
-      3. A subsequent explicit `torch.tpu.synchronize()` drains pending checks
-      and
-         raises a `RuntimeError` matching the user's custom assertion message.
+      3. A subsequent explicit `torch.accelerator.synchronize()` drains pending
+         checks and raises a `RuntimeError` matching the user's custom
+         assertion message.
     """
     import torch_tpu._internal.testing as tpu_testing
 
@@ -9439,7 +9564,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing assert_async failure behavior.
           RuntimeError, "intended failure"
       ):
-        torch.tpu.synchronize()
+        torch.accelerator.synchronize()
     finally:
       # Clear the latched error state so subsequent test cases are not poisoned.
       tpu_testing.clear_sticky_error()
@@ -9449,11 +9574,10 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     Checks:
       1. Calling `aten._assert_async` (no message argument) with a `False`
-      condition
-         delegates to `_assert_async.msg` with the default string "assertion
-         failed".
-      2. Calling `torch.tpu.synchronize()` raises a `RuntimeError` matching the
-         default error message "assertion failed".
+         condition delegates to `_assert_async.msg` with the default string
+         "assertion failed".
+      2. Calling `torch.accelerator.synchronize()` raises a `RuntimeError`
+         matching the default error message "assertion failed".
     """
     import torch_tpu._internal.testing as tpu_testing
 
@@ -9467,7 +9591,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing assert_async failure behavior.
           RuntimeError, "assertion failed"
       ):
-        torch.tpu.synchronize()
+        torch.accelerator.synchronize()
     finally:
       # Reset sticky error state for subsequent tests.
       tpu_testing.clear_sticky_error()
@@ -9564,12 +9688,10 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     Checks:
       1. Calling `_assert_async.msg` with a numeric non-boolean scalar whose
-      value
-         is 0 (e.g., integer 0) evaluates to boolean False on device.
+         value is 0 (e.g., integer 0) evaluates to boolean False on device.
       2. The background worker detects the false evaluation and latches an
-      error,
-         which is subsequently raised as `RuntimeError` upon
-         `torch.tpu.synchronize()`.
+         error, which is subsequently raised as `RuntimeError` upon
+         `torch.accelerator.synchronize()`.
     """
     import torch_tpu._internal.testing as tpu_testing
 
@@ -9583,7 +9705,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing assert_async failure behavior.
           RuntimeError, "zero int failed"
       ):
-        torch.tpu.synchronize()
+        torch.accelerator.synchronize()
     finally:
       # Reset sticky error state for subsequent tests.
       tpu_testing.clear_sticky_error()
@@ -9593,10 +9715,9 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     Checks:
       1. During FX graph compilation (`EagerMode::kInternalCompileFxGraph`),
-      host
-         asynchronous assertion scheduling is skipped because
-         placeholder/symbolic
-         tensors cannot be copied to the host CPU during tracing.
+         host asynchronous assertion scheduling is skipped because
+         placeholder/symbolic tensors cannot be copied to the host CPU during
+         tracing.
       2. The resulting MLIR graph compiles cleanly without inserting unsupported
          or dummy `@shape_assertion` custom calls.
     """
@@ -9606,7 +9727,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     # In compile mode (FxGraph tracing), host async evaluation is skipped because
     # tensors are symbolic/placeholders and cannot be copied to CPU at trace time.
     with execution_mode.set_eager_mode(
-        execution_mode._EagerMode.INTERNAL_COMPILE_FX_GRAPH
+        execution_mode.EagerMode.INTERNAL_COMPILE_FX_GRAPH
     ):
       torch.ops.aten._assert_async(cond)
       dummy = cond.to(torch.float32) + 1.0
@@ -9623,9 +9744,9 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       1. The higher-level public Python API `torch._assert_async(cond, [msg])`
          correctly routes to the TPU `aten::_assert_async` kernels.
       2. Truthy conditions pass cleanly when flushed via
-      `torch.tpu.synchronize()`.
+         `torch.accelerator.synchronize()`.
       3. Falsy conditions latch a sticky error and raise `RuntimeError` matching
-         the user message upon calling `torch.tpu.synchronize()`.
+         the user message upon calling `torch.accelerator.synchronize()`.
     """
     import torch_tpu._internal.testing as tpu_testing
 
@@ -9635,7 +9756,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     true_cond = torch.tensor(True, device=device)
     torch._assert_async(true_cond)
     torch._assert_async(true_cond, "should not fail")
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
 
     # Test that public torch._assert_async API fails and reports error on synchronize().
     false_cond = torch.tensor(False, device=device)
@@ -9644,7 +9765,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing assert_async failure behavior.
           RuntimeError, "public api failure"
       ):
-        torch.tpu.synchronize()
+        torch.accelerator.synchronize()
     finally:
       # Reset sticky error state for subsequent tests.
       tpu_testing.clear_sticky_error()
@@ -9655,12 +9776,12 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     Checks:
       1. When `_assert_async` is called on a condition produced by deferred ops
          (e.g., `(a + b == 3.0).squeeze()`), `MaterializeAndReturn` forces lazy
-         graph
-         execution and materializes the condition's device buffer on TPU.
-      2. True expressions succeed without error upon `torch.tpu.synchronize()`.
+         graph execution and materializes the condition's device buffer on TPU.
+      2. True expressions succeed without error upon
+         `torch.accelerator.synchronize()`.
       3. False expressions trigger the background failure and raise
-      `RuntimeError`
-         with the custom message upon `torch.tpu.synchronize()`.
+         `RuntimeError` with the custom message upon
+         `torch.accelerator.synchronize()`.
     """
     import torch_tpu._internal.testing as tpu_testing
 
@@ -9671,7 +9792,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     # Test deferred boolean expression that evaluates to True.
     # MaterializeAndReturn triggers lazy execution so the buffer can be copied to host.
     torch._assert_async((a + b == 3.0).squeeze())
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
 
     # Test deferred boolean expression that evaluates to False.
     torch._assert_async((a + b == 4.0).squeeze(), "deferred mismatch")
@@ -9679,7 +9800,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing assert_async failure behavior.
           RuntimeError, "deferred mismatch"
       ):
-        torch.tpu.synchronize()
+        torch.accelerator.synchronize()
     finally:
       # Reset sticky error state for subsequent tests.
       tpu_testing.clear_sticky_error()
@@ -9742,7 +9863,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing assert_async failure behavior.
           RuntimeError, "first error"
       ):
-        torch.tpu.synchronize()
+        torch.accelerator.synchronize()
     finally:
       # Reset sticky error state for subsequent tests.
       tpu_testing.clear_sticky_error()
@@ -11475,7 +11596,7 @@ module {{
     )
 
     with execution_mode.set_eager_mode(
-        execution_mode._EagerMode.INTERNAL_COMPILE_FX_GRAPH
+        execution_mode.EagerMode.INTERNAL_COMPILE_FX_GRAPH
     ):
       out_ph = torch.ops.tpu.pad_real_to_static(
           x_ph,
@@ -14742,7 +14863,7 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
     mask = (torch.arange(2048).reshape(1, 2048, 1) % 2 == 0).to("tpu")
     source = torch.ones(1024, 64, device="cpu").to("tpu")
     with execution_mode.set_eager_mode(
-        execution_mode._EagerMode.INTERNAL_COMPILE_FX_GRAPH
+        execution_mode.EagerMode.INTERNAL_COMPILE_FX_GRAPH
     ):
       base = torch.zeros(1, 2048, 64, device="tpu")
       result = torch.masked_scatter(base, mask, source)
@@ -14764,7 +14885,7 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
     mask = (torch.arange(2048 * 64).reshape(1, 2048, 64) % 2 == 0).to("tpu")
     source = torch.ones(65536, device="cpu").to("tpu")
     with execution_mode.set_eager_mode(
-        execution_mode._EagerMode.INTERNAL_COMPILE_FX_GRAPH
+        execution_mode.EagerMode.INTERNAL_COMPILE_FX_GRAPH
     ):
       base = torch.zeros(1, 2048, 64, device="tpu")
       result = torch.masked_scatter(base, mask, source)

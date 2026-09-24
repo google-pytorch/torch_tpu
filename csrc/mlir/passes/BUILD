@@ -12,23 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for the device module with XLA CUDA backend."""
+load(
+    "//build_files:build_defs.bzl",
+    "torch_tpu_cc_library",
+    "torch_tpu_package_end",
+)
 
-from absl.testing import absltest
-import torch
-from tests.device import device_module_testing
+package(
+    default_applicable_licenses = ["//:license"],
+    default_visibility = ["//:__subpackages__"],
+)
 
+torch_tpu_cc_library(
+    name = "dummy_pass",
+    srcs = ["dummy_pass.cc"],
+    hdrs = ["dummy_pass.h"],
+    deps = [
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:Support",
+    ],
+)
 
-# Test cases are defined in device_module_testing.DeviceModuleBase
-class XlaCudaDeviceModuleTest(
-    device_module_testing.DeviceModuleBase,
-    absltest.TestCase,  # ABSLTEST_OK=Reference to absltest.TestCase
-):
-
-  @property
-  def device_module(self):
-    return torch.xla_cuda
-
-
-if __name__ == "__main__":
-  absltest.main()
+torch_tpu_package_end()

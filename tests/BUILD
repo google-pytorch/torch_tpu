@@ -83,7 +83,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu:_loader",
-        "//src/torch_tpu/_internal/execution_mode",
         "//src/torch_tpu/_internal/pallas",
         "//src/torch_tpu/_internal/profiler:profiler_config",
         "//src/torch_tpu/_internal/utils:annotations",
@@ -98,6 +97,20 @@ torch_tpu_py_test(
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
         "//src/torch_tpu",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "tcmalloc_check_test",
+    srcs = ["tcmalloc_check_test.py"],
+    use_tcmalloc = True,
+    deps = [
+        ":seed_test_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//src/torch_tpu",
+        "//src/torch_tpu:_tcmalloc_check",
+        "//src/torch_tpu:exceptions",
     ],
 )
 
@@ -193,6 +206,7 @@ torch_tpu_py_library(
     data = [
         "//examples/benchmarks/huggingface_diffusers:model_configs_data",
         "//examples/benchmarks/huggingface_transformers:model_configs_data",
+        "//shims/model_configs:google_model_configs_data",
     ],
     visibility = ["//:__subpackages__"],
     deps = [
@@ -215,8 +229,8 @@ torch_tpu_py_test(
     timeout = "long",
     srcs = ["module_registry_test.py"],
     data = ["//tests/compile:data/goldfish.jpg"],
+    # Cannot run in OSS either: no access to the model resources.
     notap = "TODO(b/561614286): Flaky test due to unstable model cache access",
-    notest_oss = True,  # No OSS access to model resources
     shard_count = 6,
     tags = [
         "noasan",  # TODO: fix the test timing out in asan mode.
@@ -300,11 +314,13 @@ torch_tpu_py_library(
     name = "op_testing",
     testonly = True,
     srcs = ["op_testing.py"],
+    data = ["goldens.pin"],
     visibility = ["//:__subpackages__"],
     deps = [
         ":dynamism_test_utils",
         ":quantize_utils",
         ":seed_test_utils",
+        ":test_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
         "//shims/etils/epath",
@@ -361,36 +377,6 @@ torch_tpu_py_library(
 # - The for-loop approach breaks the Cider-torch_tpu_py_test integration (in particular,
 #   it breaks running a single test case directly in the Cider UI).
 
-# In OSS, we have limited TPU v5 chips in presubmit, so we want to move some ops_test
-# variants to TPU v7 in OSS presubmit. We call such variants "OPS_TEST_ON_V7".
-#
-# The following constants define the oss_presubmit_tpu_generation, run_on_accelerators, and
-# tags parameters for the OPS_TEST_ON_V7 variants.
-#
-# oss_presubmit_tpu_generation and run_on_accelerators are mutually exclusive, so we can only
-# set one of them in both internal and OSS.
-
-_OPS_TEST_ON_V7_TPU_GENERATION = if_oss(
-    tpu_gen(
-        "v7",
-        reason = "Load balancing",
-    ),
-    None,
-)
-
-_OPS_TEST_ON_V7_RUN_ON_ACCELERATORS = if_oss(
-    None,
-    [
-        "requires-tpu-v6e",
-        "requires-tpu-v5lite",
-    ],
-)
-
-_OPS_TEST_ON_V7_TAGS = if_oss(
-    ["requires-tpu-v5lite"],
-    [],
-)
-
 torch_tpu_py_test(
     name = "foreach_ops_test_grad",
     timeout = "long",
@@ -411,15 +397,17 @@ torch_tpu_py_test(
         "ops_test_gpu_golden_grad2.gz",
     ],
     main = "ops_test.py",
-    oss_presubmit_tpu_generation = _OPS_TEST_ON_V7_TPU_GENERATION,
-    run_on_accelerators = _OPS_TEST_ON_V7_RUN_ON_ACCELERATORS,
+    run_on_accelerators = [
+        "requires-tpu-v6e",
+        "requires-tpu-v5lite",
+    ],
     shard_count = 15,
     tags = [
         "noasan",  # TODO: fix the test timing out in asan mode.
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.  # This test times out in tsan mode.
         "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
-    ] + _OPS_TEST_ON_V7_TAGS,
+    ],
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -454,15 +442,17 @@ torch_tpu_py_test(
         "ops_test_gpu_golden_grad2.gz",
     ],
     main = "ops_test.py",
-    oss_presubmit_tpu_generation = _OPS_TEST_ON_V7_TPU_GENERATION,
-    run_on_accelerators = _OPS_TEST_ON_V7_RUN_ON_ACCELERATORS,
+    run_on_accelerators = [
+        "requires-tpu-v6e",
+        "requires-tpu-v5lite",
+    ],
     shard_count = 1,
     tags = [
         "noasan",  # TODO: fix the test timing out in asan mode.
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.  # This test times out in tsan mode.
         "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
-    ] + _OPS_TEST_ON_V7_TAGS,
+    ],
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -497,15 +487,17 @@ torch_tpu_py_test(
         "ops_test_gpu_golden_grad2.gz",
     ],
     main = "ops_test.py",
-    oss_presubmit_tpu_generation = _OPS_TEST_ON_V7_TPU_GENERATION,
-    run_on_accelerators = _OPS_TEST_ON_V7_RUN_ON_ACCELERATORS,
+    run_on_accelerators = [
+        "requires-tpu-v6e",
+        "requires-tpu-v5lite",
+    ],
     shard_count = 1,
     tags = [
         "noasan",  # TODO: fix the test timing out in asan mode.
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
         "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
-    ] + _OPS_TEST_ON_V7_TAGS,
+    ],
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -672,15 +664,17 @@ torch_tpu_py_test(
     main = "ops_test.py",
     # Skip this in OSS presubmit when it's overloaded.
     nopresubmit_oss = _WHEN_OSS_PRESUBMIT_OVERLOADED,
-    oss_presubmit_tpu_generation = _OPS_TEST_ON_V7_TPU_GENERATION,
-    run_on_accelerators = _OPS_TEST_ON_V7_RUN_ON_ACCELERATORS,
+    run_on_accelerators = [
+        "requires-tpu-v6e",
+        "requires-tpu-v5lite",
+    ],
     shard_count = 50,
     tags = [
         "noasan",  # This test times out in asan mode.
         "nomsan",  # This test times out in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.  # This test times out in tsan mode.
         "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
-    ] + _OPS_TEST_ON_V7_TAGS,
+    ],
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -992,11 +986,63 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_library(
+    name = "goldens_pin",
+    srcs = ["goldens_pin.py"],
+    data = ["goldens.pin"],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "@pypi//attrs",
+        "@pypi//cattrs",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "goldens_pin_test",
+    srcs = ["goldens_pin_test.py"],
+    deps = [
+        ":goldens_pin",
+        ":seed_test_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//src/torch_tpu",
+        "@pypi//hypothesis",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "test_utils",
+    testonly = True,
+    srcs = ["test_utils.py"],
+    data = ["goldens.pin"],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":goldens_pin",
+        "//shims/absl_py/flags",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "test_utils_test",
+    srcs = ["test_utils_test.py"],
+    data = ["goldens.pin"],
+    deps = [
+        ":goldens_pin",
+        ":seed_test_utils",
+        ":test_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//src/torch_tpu",
+    ],
+)
+
 torch_tpu_py_test(
     name = "op_testing_test",
     srcs = ["op_testing_test.py"],
     deps = [
+        ":goldens_pin",
         ":op_testing",
+        ":test_utils",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:flagsaver",
         "//shims/absl_py/testing:parameterized",
@@ -1074,8 +1120,8 @@ torch_tpu_py_test(
     name = "sparse_dense_matmul_test",
     srcs = ["sparse_dense_matmul_test.py"],
     main = "sparse_dense_matmul_test.py",
+    # Cannot run in OSS either: TPU v7 is not available in presubmit.
     notap = "Subslicing errors on tpu7x. See b/515767150",
-    notest_oss = True,  # Disabled because of no support for tpu v7 in presubmit
     tags = [
         "requires-tpu-v7x",
     ],
@@ -1515,13 +1561,16 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal:env",
+        "//src/torch_tpu/_internal:env_utils",
         "//src/torch_tpu/_internal:testing",
         "//src/torch_tpu/_internal/compile:compiler",
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",
+        "//src/torch_tpu/_internal/distributed/launchers:environment",
         "//src/torch_tpu/_internal/dynamism",
         "//src/torch_tpu/_internal/execution_mode",
         "//src/torch_tpu/_internal/pallas",
         "//src/torch_tpu/_internal/pallas:tpu_torch_pallas",  # build_cleaner: keep
+        "//src/torch_tpu/_internal/utils:hardware",
     ],
 )
 
@@ -1586,13 +1635,16 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal:env",
+        "//src/torch_tpu/_internal:env_utils",
         "//src/torch_tpu/_internal:testing",
         "//src/torch_tpu/_internal/compile:compiler",
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",
+        "//src/torch_tpu/_internal/distributed/launchers:environment",
         "//src/torch_tpu/_internal/dynamism",
         "//src/torch_tpu/_internal/execution_mode",
         "//src/torch_tpu/_internal/pallas",
         "//src/torch_tpu/_internal/pallas:tpu_torch_pallas",  # build_cleaner: keep
+        "//src/torch_tpu/_internal/utils:hardware",
     ],
 )
 
@@ -1819,7 +1871,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//src/torch_tpu/_internal/utils:hardware",
         "//tests/distributed:distributed_utils",
     ],
@@ -1846,7 +1897,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//src/torch_tpu/_internal/utils:hardware",
         "//tests/distributed:distributed_utils",
     ],
@@ -2105,40 +2155,6 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
-    name = "autoload_test_gpu",
-    srcs = ["autoload_gpu_test.py"],
-    env = {
-        "TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND": "1",
-    },
-    main = "autoload_gpu_test.py",
-    tags = [
-        _REQUIRES_GPU_FOR_NON_OPS_TEST,
-    ],
-    deps = [
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "@xla//xla/pjrt/plugin/xla_gpu:gpu_static_registration",
-        "@xla//xla/stream_executor:cuda_platform",
-    ],
-)
-
-torch_tpu_py_test(
-    name = "autoload_test_cpu",
-    srcs = ["autoload_cpu_test.py"],
-    env = {
-        "TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND": "1",
-    },
-    main = "autoload_cpu_test.py",
-    tags = [],
-    deps = [
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-    ],
-)
-
-torch_tpu_py_test(
     name = "import_test",
     size = "medium",
     srcs = ["import_test.py"],
@@ -2155,48 +2171,15 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
-    name = "autoload_disabled_backend_test_gpu",
-    srcs = ["autoload_disabled_backend_test.py"],
-    main = "autoload_disabled_backend_test.py",
-    tags = [
-        "nozapfhahn",  # Requires --config=cuda; excluded from Zapfhahn coverage.
-        _REQUIRES_GPU_FOR_NON_OPS_TEST,
-    ],
-    deps = [
-        ":seed_test_utils",
-        "//shims/absl_py/testing:absltest",
-        "//shims/absl_py/testing:parameterized",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "@xla//xla/pjrt/plugin/xla_gpu:gpu_static_registration",
-        "@xla//xla/stream_executor:cuda_platform",
-    ],
-)
-
-torch_tpu_py_test(
-    name = "autoload_disabled_backend_test_cpu",
-    srcs = ["autoload_disabled_backend_test.py"],
-    main = "autoload_disabled_backend_test.py",
-    tags = [],
-    deps = [
-        ":seed_test_utils",
-        "//shims/absl_py/testing:absltest",
-        "//shims/absl_py/testing:parameterized",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-    ],
-)
-
-torch_tpu_py_test(
     name = "tracebacks_precedence_test",
     srcs = ["tracebacks_precedence_test.py"],
     args = [
         "--torch_tpu_internal_mlir_tracebacks=true",
     ],
-    env = {
-        "TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND": "1",
-    },
     notest_oss = True,  # Absl flags don't work in OSS
+    tags = [
+        "requires-tpu-v5lite",
+    ],
     deps = [
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
@@ -2245,50 +2228,7 @@ torch_tpu_py_test(
 test_suite(
     name = "autoload_tests",
     tests = [
-        "autoload_disabled_backend_test_cpu",
-        "autoload_disabled_backend_test_gpu",
-        "autoload_test_cpu",
-        "autoload_test_gpu",
         "autoload_test_tpu",
-    ],
-)
-
-torch_tpu_py_test(
-    name = "tracing_test_cpu",
-    srcs = ["tracing_test.py"],
-    env = {
-        "TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND": "1",
-    },
-    main = "tracing_test.py",
-    deps = [
-        ":seed_test_utils",
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "//src/torch_tpu/_internal/execution_mode",
-        "//src/torch_tpu/_internal/tracing",
-    ],
-)
-
-torch_tpu_py_test(
-    name = "tracing_test_gpu",
-    srcs = ["tracing_test.py"],
-    env = {
-        "TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND": "1",
-    },
-    main = "tracing_test.py",
-    tags = [
-        _REQUIRES_GPU_FOR_NON_OPS_TEST,
-    ],
-    deps = [
-        ":seed_test_utils",
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "//src/torch_tpu/_internal/execution_mode",
-        "//src/torch_tpu/_internal/tracing",
-        "@xla//xla/pjrt/plugin/xla_gpu:gpu_static_registration",
-        "@xla//xla/stream_executor:cuda_platform",
     ],
 )
 
@@ -2312,8 +2252,6 @@ torch_tpu_py_test(
 test_suite(
     name = "tracing_tests",
     tests = [
-        "tracing_test_cpu",
-        "tracing_test_gpu",
         "tracing_test_tpu",
     ],
 )

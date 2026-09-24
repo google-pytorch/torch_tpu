@@ -21,13 +21,14 @@
 #include <optional>
 
 #include "absl/status/statusor.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
-#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 
 absl::StatusOr<mlir::MlirOp> BuildCumprodShlo(
-    int64_t dim, std::optional<at::ScalarType> scalar_type, mlir::MlirOp input);
+    int64_t normalized_dim, std::optional<mlir::ElementType> out_dtype,
+    mlir::MlirOp input);
 
 }  // namespace torch_tpu
 

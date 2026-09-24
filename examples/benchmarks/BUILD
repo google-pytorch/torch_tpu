@@ -42,6 +42,7 @@ torch_tpu_py_test(
         "nofastbuild",  # Benchmark.
         "requires-net:external",
     ],
+    use_tcmalloc = True,
     deps = [
         "//shims/absl_py/flags",
         "//shims/absl_py/logging",
@@ -75,6 +76,7 @@ torch_tpu_py_test(
         "requires-net:external",
         "requires-tpu-v7x",
     ],
+    use_tcmalloc = True,
     deps = [
         "//shims/absl_py/flags",
         "//shims/absl_py/logging",

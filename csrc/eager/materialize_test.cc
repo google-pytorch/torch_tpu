@@ -55,7 +55,7 @@ namespace {
 class MaterializeTest : public testing::Test {
  protected:
   static void SetUpTestSuite() {
-    const std::string device_type = "xla_cpu";
+    const std::string device_type = "tpu";
     PjrtBackend::GetInstance().SetPjRtInitializationOptions(
         {.device_type = device_type});
     ASSERT_EQ(AddTpuHooks(), absl::OkStatus());

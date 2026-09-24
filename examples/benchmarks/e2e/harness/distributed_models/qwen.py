@@ -14,6 +14,7 @@
 
 """Qwen model benchmark definitions for distributed benchmark harness."""
 
+import math
 import re
 from typing import Any
 
@@ -36,6 +37,10 @@ _SUPPORTED_PLATFORMS: frozenset[target_lib.Platform] = frozenset({
     target_lib.Platform.V7_2X2X2,
     target_lib.Platform.V7_2X2X4,
     target_lib.Platform.V7_2X4X4,
+    # 8x B200 GPUs (178 GiB HBM3e per GPU) run 8-way tensor-parallel
+    # Qwen3.5-397B-A17B (~97 GiB per GPU) using the `F.grouped_mm` fallback in
+    # `RaggedMoeQwen35`.
+    target_lib.Platform.B200_8,
 })
 
 
@@ -144,27 +149,71 @@ def _apply_tensor_parallel_plan(
     _apply_tensor_parallel_plan(child, full_name, tp_plan, world_size, rank)
 
 
-def _initialize_weights_and_biases(model: nn.Module, name: str) -> None:
-  """Initializes weights and biases for a model."""
-  if hasattr(model, "weight") and model.weight is not None:
-    torch.nn.init.normal_(model.weight.data, mean=0.0, std=0.02)
+def _initialize_weights_and_biases(module: nn.Module) -> None:
+  """Initializes weights and biases for a module."""
+  if isinstance(module, modeling_qwen3_5_moe.Qwen3_5MoeRMSNorm):
+    torch.nn.init.zeros_(module.weight)
+    return
+
+  if hasattr(module, "weight") and module.weight is not None:
+    torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
     logging.debug(
-        "Layer: %s, Initializing weight: %s %s",
-        name,
-        model.weight.data.shape,
-        model.weight.data.dtype,
+        "Initializing weight: %s %s",
+        module.weight.shape,
+        module.weight.dtype,
     )
 
-  if hasattr(model, "bias") and model.bias is not None:
-    model.bias.data.fill_(0.0)
+  if hasattr(module, "bias") and module.bias is not None:
+    torch.nn.init.zeros_(module.bias)
     logging.debug(
-        "Layer: %s, Initializing bias: %s %s",
-        name,
-        model.bias.data.shape,
-        model.bias.data.dtype,
+        "Initializing bias: %s %s",
+        module.bias.shape,
+        module.bias.dtype,
     )
 
+  for attr in ("gate_up_proj", "down_proj"):
+    if hasattr(module, attr):
+      param = getattr(module, attr)
+      if isinstance(param, torch.Tensor):
+        torch.nn.init.normal_(param, mean=0.0, std=0.02)
+        logging.debug(
+            "Initializing %s: %s %s",
+            attr,
+            param.shape,
+            param.dtype,
+        )
 
+  # TODO: Remove custom ragged moe implementation. It's not needed now that
+  # torch.grouped_mm lowers to RaggedMoe implementation.
+  if isinstance(module, ragged_moe.RaggedMoeQwen35):
+    with torch.no_grad():
+      hidden_size = module.up.shape[1]
+      torch.nn.init.normal_(module.up, std=1.0 / math.sqrt(hidden_size))
+      torch.nn.init.normal_(module.gate, std=1.0 / math.sqrt(hidden_size))
+      world_size = (
+          torch.distributed.get_world_size()
+          if module.is_tensor_parallel and torch.distributed.is_initialized()
+          else 1
+      )
+      intermediate_dim = module.down.shape[1] * world_size
+      torch.nn.init.normal_(module.down, std=1.0 / math.sqrt(intermediate_dim))
+
+  elif isinstance(module, modeling_qwen3_5_moe.Qwen3_5MoeTextRotaryEmbedding):
+    if module.rope_type is not None and module.rope_type != "default":
+      rope_init_fn = modeling_qwen3_5_moe.ROPE_INIT_FUNCTIONS[module.rope_type]
+    else:
+      rope_init_fn = module.compute_default_rope_parameters
+    inv_freq, attention_scaling = rope_init_fn(
+        module.config, module.inv_freq.device
+    )
+    with torch.no_grad():
+      module.inv_freq.copy_(inv_freq)
+      module.original_inv_freq.copy_(inv_freq)
+      module.attention_scaling = attention_scaling
+
+
+# TODO: Remove custom ragged moe implementation. It's not needed now that
+# torch.grouped_mm lowers to RaggedMoe implementation.
 def _replace_moe_layers_with_ragged_dot_moe(
     model: modeling_qwen3_5_moe.Qwen3_5MoeForCausalLM,
     config: Any,
@@ -215,17 +264,27 @@ def get_qwen3_5_397b_a17b_model(
   config = module_spec.config
   assert config is not None
 
-  with torch.device(device):
-    torch.manual_seed(12345)
+  # 1. Instantiate on meta device without allocating storage
+  with torch.device("meta"):
     torch.set_default_dtype(torch_dtype)
     model = modeling_qwen3_5_moe.Qwen3_5MoeForCausalLM(config)
 
+  with torch.device(device):
+    torch.manual_seed(12345)
+    torch.set_default_dtype(torch_dtype)
+
+    # 2. Shard model / replace MoE layers
     if use_ragged_dot_moe:
       _replace_moe_layers_with_ragged_dot_moe(model, config, world_size)
 
     if world_size > 1:
-      # FairScale library setup for distributed model parallelism.
-      initialize.initialize_model_parallel(world_size)
+      # FairScale library setup for distributed model parallelism. Guard with
+      # `model_parallel_is_initialized()` because `distributed_runner.py` may
+      # execute multiple distributed benchmarks sequentially in the same worker
+      # process (e.g. `meta_llama_8b_forward` followed by `qwen3_5_397b_a17b`),
+      # and FairScale raises an AssertionError if initialized more than once.
+      if not initialize.model_parallel_is_initialized():
+        initialize.initialize_model_parallel(world_size)
 
       _warn_if_attn_dimensions_not_divisible(config, world_size, rank)
       _apply_tensor_parallel_plan(
@@ -236,8 +295,11 @@ def get_qwen3_5_397b_a17b_model(
           rank=rank,
       )
 
-    for name, module in model.named_modules():
-      _initialize_weights_and_biases(module, name)
+    # 3. Materialize on the local device
+    model.to_empty(device=device)
+
+    # 4. Custom initialization handling non-standard layers
+    model.apply(_initialize_weights_and_biases)
 
   logging.info(
       "Rank %d: Successfully initialized Qwen3.5-397B-A17B model.", rank

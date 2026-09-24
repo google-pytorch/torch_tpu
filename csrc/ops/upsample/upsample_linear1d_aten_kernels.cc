@@ -191,6 +191,9 @@ absl::StatusOr<mlir::MlirOp> BuildUpsampleLinear1dShlo(
 
   const int64_t in_width = input_shape[2];
   const int64_t out_width = output_shape[2];
+  if (in_width == out_width) {
+    return input;
+  }
   const auto element_type = GetTensorTypeOrDie(input).getElementType();
 
   TT_ASSIGN_OR_RETURN(
@@ -285,11 +288,6 @@ at::Tensor& AtenUpsampleLinear1dOut(const at::Tensor& self,
                                                   output_size[0]};
         TT_THROW_IF_ERROR(
             ResizeTensorIfShapeDiffers(out, expected_output_shape));
-
-        if (self.size(2) == output_size[0]) {
-          out.copy_(self);
-          return out;
-        }
 
         if (self.numel() == 0) {
           return out;

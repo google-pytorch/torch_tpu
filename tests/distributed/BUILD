@@ -18,6 +18,7 @@ load(
     "torch_tpu_package_end",
     "torch_tpu_py_library",
     "torch_tpu_py_test",
+    "tpu_gen",
 )
 
 package(
@@ -36,6 +37,10 @@ torch_tpu_py_library(
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal:env",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/distributed/launchers:environment",
+        "//src/torch_tpu/_internal/utils:hardware",
         "//tests:seed_test_utils",
         "@pypi//portpicker",
     ],
@@ -122,7 +127,6 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/distributed:torchcomm_tpu",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
     ],
 )
 
@@ -145,7 +149,6 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/distributed:tpu_distributed",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//tests:seed_test_utils",
     ],
 )
@@ -174,7 +177,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:oss_utils",
         "//tests:seed_test_utils",
@@ -213,10 +215,95 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:oss_utils",
         "//tests:seed_test_utils",
+    ],
+)
+
+# The device-order regression test needs a multi-core-per-chip topology (v7x),
+# where rank order and device order differ. It is kept out of
+# `collective_ops_test` so that target can stay on v5e (`requires-tpu-v5lite:8`).
+torch_tpu_py_test(
+    name = "collective_ops_device_order_test",
+    srcs = ["collective_ops_device_order_test.py"],
+    notest_oss = True,  # NOTEST_OSS_OK=Disabled in OSS due to multi-process v7x runner hang.
+    tags = if_oss(
+        ["exclusive"],
+        [],
+    ) + [
+        "fails-on-tpu-v5",
+        "fails-on-tpu-v6",
+        "noasan",  # TODO(b/497035517): fix the test in asan mode.
+        "nomsan",  # TODO(b/497035517): fix the test in msan mode.
+        "notsan",  # TODO(b/497035517): fix the test in tsan mode.
+        "ok-to-wait-for-v7x-in-presubmit",
+        "requires-tpu-v7x:4",
+    ],
+    deps = [
+        ":distributed_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/utils:test_utils",
+        "//tests:seed_test_utils",
+    ],
+)
+
+# Guards the interaction between a Pallas kernel's Mesh and the device
+# addressing of ordinary collectives. Lives here rather than in tests/pallas
+# because the subject is distributed device addressing (the Pallas kernel is
+# only the vehicle that installs a non-default DeviceAssignment), because it
+# shares the multi-core TPU v7x topology and rank-order-vs-device-order thesis
+# with `collective_ops_device_order_test` above, and because tests/pallas
+# already depends on `:distributed_utils` here -- putting it there would add a
+# dependency edge in the opposite direction.
+torch_tpu_py_test(
+    name = "pallas_mesh_collective_device_order_test",
+    timeout = "long",
+    srcs = ["pallas_mesh_collective_device_order_test.py"],
+    env = {
+        # The kernel issues a remote DMA; matches
+        # //tests/pallas:pallas_communication_test.
+        "TPU_PREMAPPED_BUFFER_SIZE": "0",
+    },
+    oss_presubmit_tpu_generation = tpu_gen(
+        "v7",
+        reason = "Pallas mesh collective device order test for TPU v7",
+    ),
+    tags = if_oss(
+        ["exclusive"],
+        [],
+    ) + [
+        "fails-on-tpu-v5",
+        "fails-on-tpu-v6",
+        "noasan",  # TODO(b/497035517): fix the test in asan mode.
+        "nomsan",  # TODO(b/497035517): fix the test in msan mode.
+        "notsan",  # TODO(b/497035517): fix the test in tsan mode.
+        "ok-to-wait-for-v7x-in-presubmit",
+        # On single-core-per-chip parts rank order equals device order, so the
+        # Mesh installs the default DeviceAssignment and nothing here can
+        # detect a device-order fault. `_require_non_identity_device_order`
+        # fails the run there rather than let it go green.
+        "requires-tpu-v7x:4",
+    ],
+    deps = [
+        ":distributed_utils",
+        "//shims/absl_py/logging",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/jax:pallas",
+        "//shims/jax:pallas_tpu",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/distributed:device_mesh",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/distributed:spmd_util",
+        "//src/torch_tpu/_internal/distributed:tpu_distributed",
+        "//src/torch_tpu/_internal/pallas",
+        "//tests:seed_test_utils",
+        "@pypi//jax",
     ],
 )
 
@@ -242,10 +329,9 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed:tpu_distributed",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
+        "//src/torch_tpu/_internal/distributed:spmd_util",
+        "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:error_testing",
-        "@pypi//portpicker",
     ],
 )
 
@@ -272,10 +358,9 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed:tpu_distributed",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
+        "//src/torch_tpu/_internal/distributed:spmd_util",
+        "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:error_testing",
-        "@pypi//portpicker",
     ],
 )
 
@@ -300,7 +385,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
     ],
@@ -327,7 +411,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//tests:error_testing",
         "//tests:seed_test_utils",
     ],
@@ -355,7 +438,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//tests:error_testing",
         "//tests:seed_test_utils",
     ],
@@ -383,7 +465,6 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal:testing",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//tests:error_testing",
     ],
 )
@@ -418,7 +499,6 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal:testing",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//tests:error_testing",
     ],
 )
@@ -441,7 +521,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
     ],
@@ -473,7 +552,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//tests:error_testing",
         "//tests:seed_test_utils",
     ],
@@ -506,7 +584,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//tests:error_testing",
         "//tests:seed_test_utils",
     ],
@@ -515,10 +592,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "subgroup_collectives_test",
     srcs = ["subgroup_collectives_test.py"],
-    env = if_oss(
-        {"TORCH_TPU_TOPOLOGY": "2,4,1"},
-        {},
-    ),
+    notest_oss = True,  # NOTEST_OSS_OK=Disabled in OSS due to multi-process v7x runner hang.
     shard_count = 4,
     tags = if_oss(
         ["exclusive"],
@@ -527,11 +601,12 @@ torch_tpu_py_test(
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
-        "requires-tpu-v5lite:8",
-        # Skip this test on TPU v6 and v7. It was written targeting TPU v5. Running it on v6 and v7
+        "ok-to-wait-for-v7x-in-presubmit",
+        "requires-tpu-v7x:4",
+        # Skip this test on TPU v5 and v6. It was written targeting TPU v7. Running it on v5 and v6
         # will cause issues due to their different topology.
+        "fails-on-tpu-v5",
         "fails-on-tpu-v6",
-        "fails-on-tpu-v7",
     ],
     deps = [
         ":distributed_utils",
@@ -539,8 +614,8 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal/distributed:device_mesh",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
     ],
@@ -565,7 +640,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//src/torch_tpu/_internal/sync",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
@@ -596,7 +670,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
     ],
@@ -636,7 +709,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
         "@pypi//fairscale",
@@ -662,7 +734,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
     ],
@@ -686,7 +757,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
     ],
@@ -715,7 +785,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
     ],
@@ -764,7 +833,6 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/distributed:spmd_util",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//src/torch_tpu/_internal/execution_mode",
         "//tests:seed_test_utils",
     ],
@@ -798,7 +866,7 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/compile:torch_tpu_compiled_executable",
         "//src/torch_tpu/_internal/distributed:collective_ops",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
+        "//src/torch_tpu/_internal/distributed:spmd_util",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
     ],
@@ -864,7 +932,6 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/compile",
         "//src/torch_tpu/_internal/distributed:handshake",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//src/torch_tpu/_internal/utils:test_utils",
         "@pypi//portpicker",
     ],
@@ -931,7 +998,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//src/torch_tpu/_internal/utils:test_utils",
     ],
 )

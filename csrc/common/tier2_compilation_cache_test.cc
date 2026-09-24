@@ -118,11 +118,8 @@ CompilationCacheKey MakeCacheKey(uint64_t shapeless_key, int num_dims) {
 class TpuTestEnvironment : public testing::Environment {
  public:
   void SetUp() override {
-    // This must be done before testing GetFromTier2Cache(),.
-    // Use xla_cpu for testing to allow mocking multiple devices in a single
-    // process without needing real TPU hardware or multiple workers.
     PjrtBackend::GetInstance().SetPjRtInitializationOptions(
-        {.device_type = "xla_cpu"});
+        {.device_type = "tpu"});
     ABSL_CHECK_OK(PjrtBackend::GetInstance().EnsureInitialized());
   }
 };

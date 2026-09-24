@@ -22,7 +22,6 @@
 
 #include "absl/status/statusor.h"
 #include "csrc/common/aten_utils.h"
-#include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/scan_builder.h"
@@ -37,33 +36,29 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
-#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 
 absl::StatusOr<mlir::MlirOp> BuildCumprodShlo(
-    const int64_t dim, const std::optional<at::ScalarType> scalar_type,
-    mlir::MlirOp input) {
+    const int64_t normalized_dim,
+    const std::optional<mlir::ElementType> out_dtype, mlir::MlirOp input) {
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
-  const int64_t rank = input_type.getRank();
-  TT_ASSIGN_OR_RETURN(const int64_t normalized_dim, SafeWrapDim(dim, rank));
-
-  mlir::Type element_type = input_type.getElementType();
+  // PyTorch default promotion: when out_dtype is omitted, integral types
+  // default to int64 (i64) to prevent overflow; float/complex preserve their
+  // input dtype.
+  mlir::ElementType target_element_type = out_dtype.value_or(
+      input_type.getElementType().isInteger() ? mlir::ElementType::I64
+                                              : GetElementTypeOrDie(input));
 
   mlir::MlirBuilder& builder = input.getBuilder();
-  // Respect the dtype if provided, otherwise always convert to int64 for
-  // integer types for accumulation.
-  if (scalar_type.has_value()) {
-    TT_ASSIGN_OR_RETURN(const mlir::ElementType out_mlir_dtype,
-                        ConvertTo<mlir::ElementType>(scalar_type.value()));
-    element_type = getElementType(builder.getContext(), out_mlir_dtype);
-  } else if (input_type.getElementType().isInteger()) {
-    element_type = builder.getOpBuilder().getI64Type();
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(target_element_type));
+  if (GetElementTypeOrDie(input) != compute_dtype) {
+    input = mlir::stablehlo::ConvertElementType(input, compute_dtype);
   }
 
-  if (input_type.getElementType() != element_type) {
-    input = mlir::stablehlo::ConvertElementType(input, element_type);
-  }
+  const mlir::Type compute_element_type =
+      getElementType(builder.getContext(), compute_dtype);
 
   const mlir::RankedTensorType promoted_type = GetTensorTypeOrDie(input);
   // chlo.ScanOp carries are rank-reduced (the scan dimension is erased).
@@ -71,7 +66,8 @@ absl::StatusOr<mlir::MlirOp> BuildCumprodShlo(
                                          promoted_type.getShape().end());
   carry_shape.erase(carry_shape.begin() + normalized_dim);
 
-  const mlir::MlirOp init_value = MakeScalarConstant(builder, 1, element_type);
+  const mlir::MlirOp init_value =
+      MakeScalarConstant(builder, 1, compute_element_type);
   TT_ASSIGN_OR_RETURN(const mlir::MlirOp carry_init,
                       BroadcastIfNeeded(init_value, carry_shape));
 
@@ -96,6 +92,10 @@ absl::StatusOr<mlir::MlirOp> BuildCumprodShlo(
           /*carry_inits=*/{carry_init}, /*output_inits=*/{input},
           std::move(body_builder),
           ScanOptions{.should_squeeze = true, .is_associative = true}));
+  if (GetElementTypeOrDie(results[/*num_carries=*/1]) != target_element_type) {
+    return mlir::stablehlo::ConvertElementType(results[/*num_carries=*/1],
+                                               target_element_type);
+  }
   return results[/*num_carries=*/1];
 }
 

@@ -21,6 +21,7 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "csrc/common/cache_key.h"
@@ -48,8 +49,6 @@ absl::StatusOr<DeviceBufferRef> Gather(const at::Tensor& self, int64_t dim,
                                        const at::Tensor& index,
                                        bool sparse_grad,
                                        OpParamCacheKeys&& param_keys) {
-  TT_RET_CHECK(sparse_grad == false, error::kPythonNotImplementedError)
-      << "sparse_grad is not yet supported";
   TT_ASSIGN_OR_RETURN(dim, SafeWrapDim(dim, self.dim()));
   TT_ASSIGN_OR_RETURN(const auto output_dtype,
                       ConvertTo<mlir::ElementType>(self.scalar_type()));
@@ -75,6 +74,37 @@ absl::StatusOr<DeviceBufferRef> Gather(const at::Tensor& self, int64_t dim,
                         .op_param_cache_keys = std::move(param_keys)});
 }
 
+absl::Status GatherOut(const at::Tensor& self, int64_t dim,
+                       const at::Tensor& index, bool sparse_grad,
+                       OpParamCacheKeys&& param_keys, at::Tensor& out) {
+  TT_RETURN_IF_ERROR(ValidateOutDtype(out, self.scalar_type(),
+                                      /*allow_out_dtype_cast=*/false));
+  TT_ASSIGN_OR_RETURN(dim, SafeWrapDim(dim, self.dim()));
+  TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(out, index.sizes()));
+
+  if (index.numel() == 0) {
+    return absl::OkStatus();
+  }
+
+  TT_RETURN_IF_ERROR(
+      ValidateGatherInputs(self.sizes(), dim, index.sizes(), sparse_grad));
+
+  TT_ASSIGN_OR_RETURN(const auto output_dtype,
+                      ConvertTo<mlir::ElementType>(self.scalar_type()));
+  Dimensions output_dims = CopyIntVector(index.sizes());
+
+  auto gather_op_builder =
+      [dim, sparse_grad, output_dtype](FixedSizeSpan<mlir::MlirOp, 2> inputs) {
+        auto& [self, index] = inputs;
+        return BuildGatherShlo(self, dim, index, sparse_grad, output_dtype);
+      };
+
+  return DispatchOpOut<2, 1>(std::move(gather_op_builder), {self, index}, out,
+                             {.out_dtype = output_dtype,
+                              .out_dims = output_dims,
+                              .op_param_cache_keys = std::move(param_keys)});
+}
+
 }  // namespace
 
 at::Tensor AtenGather(const at::Tensor& self, int64_t dim,
@@ -89,14 +119,12 @@ at::Tensor AtenGather(const at::Tensor& self, int64_t dim,
 at::Tensor& AtenGatherOut(const at::Tensor& self, int64_t dim,
                           const at::Tensor& index, bool sparse_grad,
                           at::Tensor& out) {
-  TT_KERNEL(
-      OpName::kGatherOut, param_keys, (self, dim, index, sparse_grad, out), {
-        TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, index.sizes()));
-        TT_ASSIGN_OR_THROW(auto result, Gather(self, dim, index, sparse_grad,
-                                               std::move(param_keys)));
-        TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result), out));
-        return out;
-      });
+  TT_KERNEL(OpName::kGatherOut, param_keys,
+            (self, dim, index, sparse_grad, out), {
+              TT_THROW_IF_ERROR(GatherOut(self, dim, index, sparse_grad,
+                                          std::move(param_keys), out));
+              return out;
+            });
 }
 
 }  // namespace torch_tpu

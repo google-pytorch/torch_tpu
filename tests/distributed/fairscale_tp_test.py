@@ -26,7 +26,6 @@ import torch
 from torch import distributed as dist
 from torch import nn
 import torch.multiprocessing as mp
-from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
@@ -176,9 +175,7 @@ class FairscaleTest(seed_test_utils.MultiProcessRepeatableTest):
     logging.info("Running test on %d TPUs.", WORLD_SIZE)
     distributed_utils.dist_run(
         nproc_per_node=WORLD_SIZE,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_forward_tp, world_size=WORLD_SIZE
-        ),
+        fn=run_forward_tp,
     )
 
 

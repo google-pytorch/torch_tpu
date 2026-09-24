@@ -162,7 +162,7 @@ absl::StatusOr<std::string> SerializePortableArtifact(mlir::ModuleOp module) {
               .toString(),
           /*inplace=*/false,
           /*allow_mixed_serialization=*/true),
-      _.SetPrepend() << "Failed to serialize MLIR module to StableHLO: ");
+      _.SetPrepend() << "failed to serialize MLIR module to StableHLO: ");
   return serialized;
 }
 

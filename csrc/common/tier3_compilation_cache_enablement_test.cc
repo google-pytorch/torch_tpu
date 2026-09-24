@@ -17,10 +17,8 @@
 #include <string>
 
 #include "absl/flags/flag.h"
-#include "absl/log/absl_check.h"
 #include "csrc/common/compilation_cache_utils.h"
 #include "csrc/common/flags.h"
-#include "csrc/pjrt/pjrt_state.h"
 #include "gtest/gtest.h"
 
 ABSL_FLAG(
@@ -30,23 +28,6 @@ ABSL_FLAG(
 
 namespace torch_tpu {
 namespace {
-
-// A test environment that initializes the PjRt client, which is required for
-// GetFromTier3Cache() to work.
-class TpuTestEnvironment : public testing::Environment {
- public:
-  void SetUp() override {
-    // Use xla_cpu for testing to allow mocking multiple devices in a single
-    // process without needing real TPU hardware or multiple workers.
-    PjrtBackend::GetInstance().SetPjRtInitializationOptions(
-        {.device_type = "xla_cpu"});
-    ABSL_CHECK_OK(PjrtBackend::GetInstance().EnsureInitialized());
-  }
-};
-
-// Installs the test environment.
-auto* const test_env =
-    testing::AddGlobalTestEnvironment(new TpuTestEnvironment);
 
 // Since GetTier3CacheRootDir() is memoized, we can only test one scenario per
 // test program.

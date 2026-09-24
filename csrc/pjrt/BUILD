@@ -42,7 +42,6 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/status:statusor",
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt/c_api_client:pjrt_c_api_client",
-        "@xla//xla/pjrt/plugin/xla_cpu:cpu_static_registration",
         "@xla//xla/pjrt/plugin/xla_tpu:xla_tpu_pjrt_client",  # buildcleaner: keep
     ],
 )
@@ -90,7 +89,7 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    requires_libtpu = True,
+    tags = ["requires-tpu-v5lite"],
     deps = [
         ":pjrt_state",
         "//csrc/common:env_vars",
@@ -203,7 +202,7 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
         "@llvm-project//llvm:Support",
-        "@stablehlo//:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@tsl//tsl/platform:path",
         "@tsl//tsl/profiler/lib:traceme",
         "@xla//xla:future",
@@ -228,7 +227,7 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    requires_libtpu = True,
+    tags = ["requires-tpu-v5lite"],
     deps = [
         ":pjrt_execute",
         ":pjrt_state",
@@ -237,7 +236,7 @@ torch_tpu_cc_test(
         "//csrc/common:shape",
         "//csrc/common:status_test_utils",
         "@com_google_absl//absl/types:span",
-        "@stablehlo//:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@xla//xla:literal",
         "@xla//xla:shape_util",
         "@xla//xla:xla_data_proto_cc",

@@ -31,7 +31,7 @@ from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.utils import log_utils
 from torch_tpu._internal.benchmarks import xprof_adapter
 
-_EagerMode: TypeAlias = execution_mode._EagerMode
+EagerMode: TypeAlias = execution_mode.EagerMode
 
 log_utils.log_to_stderr()
 
@@ -47,7 +47,7 @@ _NUM_STEPS = flags.DEFINE_integer(
 _DEVICE = flags.DEFINE_enum(
     "device",
     None,
-    ["tpu", "cuda", "xla_cuda"],
+    ["tpu", "cuda"],
     required=True,
     help="Accelerator to test.",
 )
@@ -60,7 +60,7 @@ def get_torch_device() -> torch.device:
 def sync_device(
     tensors_to_sync: torch.Tensor | Sequence[torch.Tensor], wait: bool = True
 ) -> None:
-  if _DEVICE.value == "tpu" or _DEVICE.value == "xla_cuda":
+  if _DEVICE.value == "tpu":
     # Wait for the compilation and execution of model output to complete.
     if isinstance(tensors_to_sync, torch.Tensor):
       sync.synchronize(tensors_to_sync, wait=wait)
@@ -80,7 +80,7 @@ class SchedOverheadTest(parameterized.TestCase):
 
     cls.logs = []
 
-    if _DEVICE.value in ("cuda", "xla_cuda") and not torch.cuda.is_available():
+    if _DEVICE.value == "cuda" and not torch.cuda.is_available():
       print(
           f"WARNING: --device={_DEVICE.value} requires compiling the target"
           " with --config=cuda on the blaze command line. Please rerun the"
@@ -167,7 +167,7 @@ class SchedOverheadTest(parameterized.TestCase):
   @parameterized.parameters((1), (16), (1024))
   def test_execute_queueing_overhead_benchmark(self, num_outputs):
     device = get_torch_device()
-    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
       x = torch.ones(10, device="cpu").to(device=device)
       y = torch.ones(10, device="cpu").to(device=device)
       z = x + y

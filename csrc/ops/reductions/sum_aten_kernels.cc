@@ -22,7 +22,6 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
-#include "ATen/ops/zeros.h"
 #include "c10/util/OptionalArrayRef.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/error_utils.h"
@@ -41,10 +40,6 @@ at::Tensor& AtenSumIntListOut(const at::Tensor& self,
   TT_KERNEL(
       OpName::kSumIntListOut, param_keys, (self, dim, keep_dim, dtype, out), {
         c10::ScalarType scalar_dtype = dtype.value_or(out.scalar_type());
-        if (self.numel() == 0) {
-          out = at::zeros({}, at::TensorOptions().dtype(scalar_dtype));
-          return out;
-        }
         TT_THROW_IF_ERROR(ApplySumReductionOut(
             self, out, dim,
             keep_dim ? ReductionMode::kKeepDims : ReductionMode::kDropDims,

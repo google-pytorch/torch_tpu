@@ -107,6 +107,9 @@ def _attach_stage_metadata(
 ) -> None:
   """Attaches stage metadata attributes to a target.
 
+  If the target has a `__func__` attribute (e.g. a bound method), the
+  metadata attributes are also attached to the underlying function object.
+
   Args:
     target: The target object to modify.
     stage: The lifecycle stage of the target.
@@ -118,6 +121,13 @@ def _attach_stage_metadata(
   _safe_setattr(target, TT_API_STAGE_REASON, reason)
   if version:
     _safe_setattr(target, TT_API_DEPRECATED_VERSION, version)
+  # If target is a method (e.g. bound classmethod), also attach metadata to the
+  # underlying function object so it is discoverable when inspecting __func__.
+  if hasattr(target, "__func__"):
+    _safe_setattr(target.__func__, TT_API_STAGE, stage)
+    _safe_setattr(target.__func__, TT_API_STAGE_REASON, reason)
+    if version:
+      _safe_setattr(target.__func__, TT_API_DEPRECATED_VERSION, version)
 
 
 def _create_warning_wrapper(

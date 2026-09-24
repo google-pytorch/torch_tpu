@@ -111,10 +111,6 @@ inline constexpr char kTorchTpuEnableDebugChecksEnvVar[] =
 // Specifies the fixed port number for the handshake server.
 inline constexpr char kTorchTpuHandshakePortEnvVar[] =
     "TORCH_TPU_INTERNAL_HANDSHAKE_PORT";
-// If set to "1" or "true", allows loading the xla_cuda and xla_cpu backends on
-// machines without a TPU.
-inline constexpr char kTorchTpuInternalAllowXlaBackendEnvVar[] =
-    "TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND";
 // Specifies the repeated op detection mode. If not set, "safe" mode is used.
 // Supported modes:
 // - "safe": Uses MaterializationMode::kSplitGraph when a repeated sequence is
@@ -129,6 +125,10 @@ inline constexpr char kTorchTpuInternalDetectRepeatedOpsEnvVar[] =
 // enabled).
 inline constexpr char kTorchTpuInternalDisableInplaceBufferDonationEnvVar[] =
     "TORCH_TPU_INTERNAL_DISABLE_INPLACE_BUFFER_DONATION";
+// Specifies where to dump optimization pass IR artifacts (e.g. "print" or a
+// directory path).
+inline constexpr char kTorchTpuInternalDumpMlirPassesToEnvVar[] =
+    "TORCH_TPU_INTERNAL_DUMP_MLIR_PASSES_TO";
 // If set to "1", enable expensive debug checks in TorchTPU. This catches
 // more bugs in user code, but comes at a significant performance cost for
 // some ops. The debug eager mode enables these checks by default, but can
@@ -318,10 +318,10 @@ inline constexpr auto kEnvVarToStage =
         {kTorchTpuDevicesPerHostEnvVar, std::nullopt},
         {kTorchTpuEnableDebugChecksEnvVar, SymbolStage::Experimental()},
         {kTorchTpuHandshakePortEnvVar, SymbolStage::InternalApi()},
-        {kTorchTpuInternalAllowXlaBackendEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuInternalDetectRepeatedOpsEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuInternalDisableInplaceBufferDonationEnvVar,
          SymbolStage::InternalApi()},
+        {kTorchTpuInternalDumpMlirPassesToEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuInternalEnableDebugChecksEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuInternalEnableReassociateNormWeightsEnvVar,
          SymbolStage::InternalApi()},

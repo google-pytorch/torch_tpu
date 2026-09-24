@@ -21,7 +21,7 @@ from absl import logging
 from torch import distributed as dist
 from torch.google import distributed as g3_distributed
 from torch_tpu._internal.distributed import gpu_env
-from torch_tpu._internal.distributed.launchers import singlehost_wrapper
+from torch_tpu._internal.distributed.launchers import environment
 from torch_tpu._internal.utils import log_utils
 from examples.benchmarks.e2e import benchmark_utils
 from examples.benchmarks.e2e import common
@@ -149,13 +149,11 @@ def _run_distributed_benchmark(
 ) -> None:
   """Runs the benchmark for the given config."""
   if common.PLATFORM.value == common.Platform.GFC_2X2X1:
-    singlehost_wrapper.prepare_tpu_environment()
-    run_worker = singlehost_wrapper.tpu_env_wrapper(
-        _run_torch_tpu_worker,
-        world_size=8,
+    environment.set_tpu_launch_env(
+        nproc_per_node=N_PROC_MAP[common.PLATFORM.value]
     )
     g3_distributed.torchrun(
-        run_worker,
+        _run_torch_tpu_worker,
         nproc_per_node=N_PROC_MAP[common.PLATFORM.value],
     )(
         config,

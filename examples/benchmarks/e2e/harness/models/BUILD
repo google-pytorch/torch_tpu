@@ -29,7 +29,9 @@ torch_tpu_py_library(
         "__init__.py",
         "gemma.py",
         "gen_benchmarks.py",
+        "gpt.py",
         "llama.py",
+        "qwen.py",
     ],
     allow_multiple_srcs = True,
     deps = [
@@ -42,8 +44,6 @@ torch_tpu_py_library(
         "//examples/benchmarks/e2e/harness/gen_utils",
         "//shims/absl_py/flags",
         "//shims/torch:pytorch",
-        "@pypi//fairscale",
-        "@pypi//llama_models",
     ],
 )
 

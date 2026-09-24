@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import gc
+import pickle
 import unittest.mock
 from absl.testing import absltest
 import torch
@@ -160,6 +161,76 @@ class SplitCompileTest(seed_test_utils.RepeatableTest):
     # Assert that the peak memory increase is minimal, i.e. no large tensor
     # copies were made.
     self.assertLess(peak_mem_increase, 5 * 1024 * 1024)  # < 5 MiB
+
+  def test_serializing_executable_does_not_retain_sunk_constants(self):
+    """Verifies a compiled executable does not serialize the constants sunk into its submodules."""
+    const_shape = (4096, 64, 128)
+
+    root = torch.nn.Module()
+    root.const = (
+        torch.arange(4096 * 64 * 128, dtype=torch.float32)
+        .reshape(const_shape)
+        .to("tpu")
+    )
+
+    graph = torch.fx.Graph()
+    p_x = graph.placeholder("x")
+    c = graph.get_attr("const")
+    graph.output(graph.call_function(torch.ops.aten.add.Tensor, (p_x, c)))
+    gm = torch.fx.GraphModule(root, graph)
+
+    x = torch.ones(const_shape, dtype=torch.float32, device="tpu")
+    split_comp = split_compiler.SplitCompiler(compiler.StaticCompiler())
+    executable = split_comp(gm, (x,))
+
+    payload = pickle.dumps(executable)
+
+    gc.collect()
+    torch.accelerator.synchronize()
+    mem_before = torch.accelerator.memory_allocated()
+
+    restored = pickle.loads(payload)
+
+    torch.accelerator.synchronize()
+    mem_increase = torch.accelerator.memory_allocated() - mem_before
+    self.assertLess(mem_increase, 5 * 1024 * 1024)  # < 5 MiB
+
+    # We check that the constant is still present in the serialized executable
+    # by ensuring the result is correct.
+    utils.assert_close(
+        restored(x)[0, 0, :4].cpu(), torch.tensor([1.0, 2.0, 3.0, 4.0])
+    )
+
+
+class SplitCompileHermeticTest(seed_test_utils.RepeatableTest):
+
+  def test_compiled_submodule_preserves_metadata(self):
+    child = torch.fx.symbolic_trace(torch.nn.Identity())
+    child.meta["compiler_annotation"] = (1, 3)
+
+    parent_graph = torch.fx.Graph()
+    parent_x = parent_graph.placeholder("x")
+    parent_out = parent_graph.call_module("child", (parent_x,))
+    parent_graph.output(parent_out)
+    parent = torch.fx.GraphModule({"child": child}, parent_graph)
+
+    compiled_modules = []
+
+    def compiler_fn(gm, unused_args, module_name=None):
+      del unused_args, module_name
+      compiled_modules.append(gm)
+      return gm
+
+    fake_mode = torch._subclasses.fake_tensor.FakeTensorMode()
+    submod_compiler = split_compiler._SubmodCompiler(
+        parent, compiler_fn, fake_mode
+    )
+    submod_compiler.run(torch.ones((2, 2)))
+
+    self.assertLen(compiled_modules, 1)
+    compiled_child = compiled_modules[0]
+    self.assertEqual(compiled_child.meta["compiler_annotation"], (1, 3))
+    self.assertIsNot(compiled_child.meta, child.meta)
 
 
 if __name__ == "__main__":

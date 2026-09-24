@@ -32,6 +32,7 @@ bazel_dep(name = "grpc", version = "1.78.0", repo_name = "com_github_grpc_grpc")
 bazel_dep(name = "googleapis", version = "0.0.0-20240819-fe8ba054a")
 bazel_dep(name = "highway", version = "1.3.0")
 bazel_dep(name = "re2", version = "2025-11-05.bcr.1", repo_name = "com_googlesource_code_re2")
+bazel_dep(name = "tcmalloc", version = "0.0.0-20250927-12f2552", repo_name = "com_google_tcmalloc")
 
 # BCR overrides
 
@@ -73,11 +74,11 @@ bazel_dep(name = "rules_ml_toolchain")
 
 archive_override(
     module_name = "xla",
-    integrity = "sha256-4tVV9h5ob4q2vh571ofIbJFFwiH82ShQjEoSzKIi9d8=",
+    integrity = "sha256-lBRH6Oi44SF/EFVdPV8hdhF14gxLllYCu7nj7NUsucc=",
     patch_strip = 1,
     patches = ["//bazel/patches/xla:remove_stablehlo_source_location.patch"],
-    strip_prefix = "xla-cc39fef7cae080ae61fc66bfe283bb80abcf409b",
-    urls = ["https://github.com/openxla/xla/archive/cc39fef7cae080ae61fc66bfe283bb80abcf409b.tar.gz"],
+    strip_prefix = "xla-fa460271a836e8a0bbccc8c847ceb39ec88fa407",
+    urls = ["https://github.com/openxla/xla/archive/fa460271a836e8a0bbccc8c847ceb39ec88fa407.tar.gz"],
 )
 
 archive_override(

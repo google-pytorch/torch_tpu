@@ -34,6 +34,7 @@
 #include "absl/base/thread_annotations.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/container/inlined_vector.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/log/absl_vlog_is_on.h"
@@ -118,6 +119,43 @@ void PruneCompletedFutures(std::vector<xla::Future<void>>& futures) {
                      }),
       futures.end());
 }
+
+// Lightweight matcher for target DeviceBufferList pointers during
+// materialization. Avoids heap allocation and SwissTable hashing for the common
+// single-node and small-span cases.
+class NodeMatcher {
+ public:
+  explicit NodeMatcher(absl::Span<const SharedDeviceBufferList> nodes) {
+    if (nodes.size() == 1) {
+      single_node_ = nodes[0].get();
+    } else if (nodes.size() <= 8) {
+      for (const auto& node : nodes) {
+        small_nodes_.push_back(node.get());
+      }
+    } else {
+      large_nodes_.reserve(nodes.size());
+      for (const auto& node : nodes) {
+        large_nodes_.insert(node.get());
+      }
+    }
+  }
+
+  bool contains(const DeviceBufferList* absl_nonnull node) const {
+    if (single_node_ != nullptr) {
+      return node == single_node_;
+    }
+    if (!small_nodes_.empty()) {
+      return std::find(small_nodes_.begin(), small_nodes_.end(), node) !=
+             small_nodes_.end();
+    }
+    return !large_nodes_.empty() && large_nodes_.contains(node);
+  }
+
+ private:
+  const DeviceBufferList* absl_nullable single_node_ = nullptr;
+  absl::InlinedVector<const DeviceBufferList* absl_nonnull, 8> small_nodes_;
+  absl::flat_hash_set<const DeviceBufferList* absl_nonnull> large_nodes_;
+};
 
 class StreamState {
  public:
@@ -666,8 +704,7 @@ OpUsage GetOpUsage(
     const DeferredOp& deferred_op,
     const SharedDeviceBufferList& device_buffer_list,
     const absl::flat_hash_map<SharedDeviceBufferList, int64_t>& live_nodes,
-    const absl::flat_hash_set<const DeviceBufferList* absl_nonnull>&
-        nodes_to_materialize_set) {
+    const NodeMatcher& nodes_to_materialize_set) {
   // Explicitly materialized nodes are always outputs, even if they normally
   // wouldn't be (e.g. constants)
   if (nodes_to_materialize_set.contains(device_buffer_list.get())) {
@@ -711,8 +748,7 @@ OpUsage GetOpUsage(
 void ProcessDeferredOpEvent(
     SharedDeviceBufferList&& device_buffer_list, const DeferredOp& deferred_op,
     const absl::flat_hash_map<SharedDeviceBufferList, int64_t>& live_nodes,
-    const absl::flat_hash_set<const DeviceBufferList* absl_nonnull>&
-        nodes_to_materialize_set,
+    const NodeMatcher& nodes_to_materialize_set,
     std::vector<SharedDeviceBufferList>& execution_order,
     DefinedNodeMap& defined_node_map) {
   // Mark all inputs as used, and insert any newly-used empty tensors.
@@ -811,10 +847,46 @@ PrepareTraversals(
     absl::Span<const StreamState::DeferredOpEvent> deferred_op_events,
     const absl::flat_hash_map<SharedDeviceBufferList, int64_t>& live_nodes,
     absl::Span<const SharedDeviceBufferList> nodes_to_materialize,
-    const absl::flat_hash_set<const DeviceBufferList* absl_nonnull>&
-        nodes_to_materialize_set,
+    const NodeMatcher& nodes_to_materialize_set,
     const CorePinningMode core_pinning_mode) {
   std::vector<absl_nonnull std::unique_ptr<Traversal>> traversals;
+
+  if (deferred_op_events.empty() && nodes_to_materialize.empty()) {
+    return traversals;
+  }
+
+  // Single-op fast path (common in Eager Default / DeferNever mode): when a
+  // single deferred op with already-materialized inputs is materialized, avoid
+  // constructing DefinedNodeMap hash tables and intermediate working vectors.
+  if (deferred_op_events.size() == 1) {
+    auto device_buffer_list = deferred_op_events[0].lock();
+    if (device_buffer_list != nullptr) {
+      const auto deferred_op = device_buffer_list->deferred_op();
+      if (deferred_op != nullptr) {
+        const bool has_deferred_input = std::any_of(
+            deferred_op->inputs().begin(), deferred_op->inputs().end(),
+            [](const DeviceBufferRef& input) { return input.is_deferred(); });
+        const bool has_extra_constant = std::any_of(
+            nodes_to_materialize.begin(), nodes_to_materialize.end(),
+            [&device_buffer_list](const SharedDeviceBufferList& node) {
+              return node.get() != device_buffer_list.get() &&
+                     node->is_constant() && node->is_deferred();
+            });
+        if (!has_deferred_input && !has_extra_constant) {
+          std::vector<SharedDeviceBufferList> single_node = {
+              std::move(device_buffer_list)};
+          TT_ASSIGN_OR_RETURN(
+              auto traversal,
+              Traversal::CreateFromExecutionOrder(single_node, single_node));
+          if (core_pinning_mode != CorePinningMode::kUnpinned) {
+            traversal->SetCorePinningMode(core_pinning_mode);
+          }
+          traversals.push_back(std::move(traversal));
+          return traversals;
+        }
+      }
+    }
+  }
 
   // Partition the deferred ops queue into separate traversals with these rules:
   //   - If an op is SplitBefore, it must be first in its execution order.
@@ -1079,7 +1151,6 @@ std::vector<PendingSnapshotMaterialization> PrepareSnapshotMaterializations(
   std::deque<StreamState::StreamEvent> stream_events =
       stream_state->GetSnapshotEvents();
   std::vector<StreamState::DeferredOpEvent> deferred_ops;
-  absl::flat_hash_set<const DeviceBufferList*> must_materialize_node_set;
 
   while (!stream_events.empty()) {
     auto& event = stream_events.front();
@@ -1089,15 +1160,12 @@ std::vector<PendingSnapshotMaterialization> PrepareSnapshotMaterializations(
                    std::unique_ptr<StreamState::EventSnapshotRequest>>(
                    &event)) {
       auto& snapshot_event = **snapshot_event_ptr;
-      must_materialize_node_set.clear();
-      for (const auto& node : snapshot_event.must_materialize) {
-        must_materialize_node_set.insert(node.get());
-      }
 
-      auto snapshot_traversals_or = PrepareTraversals(
-          deferred_ops, snapshot_event.live_nodes,
-          snapshot_event.must_materialize, must_materialize_node_set,
-          stream_state->core_pinning_mode());
+      auto snapshot_traversals_or =
+          PrepareTraversals(deferred_ops, snapshot_event.live_nodes,
+                            snapshot_event.must_materialize,
+                            NodeMatcher(snapshot_event.must_materialize),
+                            stream_state->core_pinning_mode());
 
       if (snapshot_traversals_or.ok()) {
         PruneCompletedFutures(snapshot_event.futures);

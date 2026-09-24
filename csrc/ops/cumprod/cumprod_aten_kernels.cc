@@ -21,9 +21,7 @@
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
-#include "ATen/core/ScalarType.h"
 #include "absl/functional/bind_front.h"
-#include "c10/core/ScalarType.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
@@ -42,30 +40,49 @@ at::Tensor& AtenCumprodOut(const at::Tensor& self, int64_t dim,
                            at::Tensor& out) {
   TT_KERNEL(OpName::kCumprodOut, param_keys, (self, dim, dtype, out), {
     TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, self.sizes()));
+
+    // PyTorch ATen parity: when explicit dtype is provided, out tensor dtype
+    // must strictly match dtype; safe-casting is only allowed when dtype is
+    // omitted.
+    if (dtype.has_value()) {
+      TT_CHECK_THROW(out.scalar_type() == dtype.value(),
+                     error::kInvalidArgument)
+          << "expected the output dtype to be " << ToString(dtype.value())
+          << ", got " << ToString(out.scalar_type());
+    }
+
+    // Dimension must be validated before early returns so that invalid dims
+    // (e.g. dim > 0 on a 0-D scalar or empty tensor) throw IndexError.
+    TT_ASSIGN_OR_THROW(const int64_t normalized_dim,
+                       SafeWrapDim(dim, self.dim()));
+
+    // Fast-path: empty tensors require no computation.
     if (out.numel() == 0) {
       return out;
     }
+
+    // 0-D scalar tensor: cumulative scan along a scalar is an identity copy.
+    // In PyTorch ATen, 0-D scalar tensors (including boolean) succeed via
+    // fill_.
     if (self.dim() == 0) {
       out.copy_(self);
       return out;
     }
 
-    if (dtype.has_value()) {
-      TT_CHECK_THROW(dtype.value() != at::kBool,
-                     error::kPythonNotImplementedError)
-          << "the dtype argument cannot be " << ToString(at::kBool);
-    }
-
+    // PyTorch does not support boolean cumulative scans for non-empty tensors
+    // with dim > 0.
     TT_CHECK_THROW(out.scalar_type() != at::kBool,
                    error::kPythonNotImplementedError)
-        << "cumprod not implemented for " << ToString(at::kBool);
+        << "not implemented for " << ToString(at::kBool);
 
-    TT_ASSIGN_OR_THROW(const auto out_mlir_type,
+    TT_ASSIGN_OR_THROW(const mlir::ElementType out_mlir_type,
                        ConvertTo<mlir::ElementType>(out.scalar_type()));
-    TT_THROW_IF_ERROR(UnaryOpOut(self, out,
-                                 absl::bind_front(BuildCumprodShlo, dim, dtype),
-                                 {.op_param_cache_keys = std::move(param_keys),
-                                  .out_dtype = out_mlir_type}));
+
+    TT_THROW_IF_ERROR(UnaryOpOut(
+        self, out,
+        absl::bind_front(BuildCumprodShlo, normalized_dim, out_mlir_type),
+        {.op_param_cache_keys = std::move(param_keys),
+         .out_dtype = out_mlir_type}));
     return out;
   });
 }

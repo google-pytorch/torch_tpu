@@ -38,12 +38,6 @@ class PatchTest(absltest.TestCase):  # ABSLTEST_OK=deterministic mock test
     self.assertTrue(
         pooling_patch._is_tpu_tensor(self._create_mock_tensor("tpu"))
     )
-    self.assertTrue(
-        pooling_patch._is_tpu_tensor(self._create_mock_tensor("xla_cpu"))
-    )
-    self.assertTrue(
-        pooling_patch._is_tpu_tensor(self._create_mock_tensor("xla_cuda"))
-    )
     self.assertFalse(
         pooling_patch._is_tpu_tensor(self._create_mock_tensor("cpu"))
     )

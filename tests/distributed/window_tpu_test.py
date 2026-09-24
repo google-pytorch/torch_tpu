@@ -21,7 +21,6 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 import torch_tpu  # pylint: disable=unused-import  # noqa: F401
-from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils.test_utils import assert_close
 from torch_tpu._internal.distributed import multiprocessing
 from tests.distributed import distributed_utils
@@ -411,9 +410,7 @@ class WindowTpuTest(
     """Verifies dist._supports_window() and backend.supports_window flags."""
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            _test_wrapper, world_size=self._world_size
-        ),
+        fn=_test_wrapper,
         test_fn=_run_window_backend_support_test,
     )
 
@@ -421,9 +418,7 @@ class WindowTpuTest(
     """Verifies local zero-copy Host-to-Device (H2D) DMA transfers into TPU windows."""
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            _test_wrapper, world_size=self._world_size
-        ),
+        fn=_test_wrapper,
         test_fn=_run_window_local_h2d_dma_test,
     )
 
@@ -431,9 +426,7 @@ class WindowTpuTest(
     """Verifies local zero-copy Device-to-Host (D2H) DMA transfers from TPU to host windows."""
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            _test_wrapper, world_size=self._world_size
-        ),
+        fn=_test_wrapper,
         test_fn=_run_window_local_d2h_dma_test,
     )
 
@@ -441,9 +434,7 @@ class WindowTpuTest(
     """Verifies synchronous (blocking, async_op=False) DMA transfers."""
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            _test_wrapper, world_size=self._world_size
-        ),
+        fn=_test_wrapper,
         test_fn=_run_window_sync_dma_test,
     )
 
@@ -451,9 +442,7 @@ class WindowTpuTest(
     """Verifies non-blocking DMA execution concurrently overlapping with TPU matrix compute."""
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            _test_wrapper, world_size=self._world_size
-        ),
+        fn=_test_wrapper,
         test_fn=_run_window_async_compute_overlap_test,
     )
 
@@ -461,9 +450,7 @@ class WindowTpuTest(
     """Verifies multi-TPU peer RMA transfers across distinct processes over ICI."""
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            _test_wrapper, world_size=self._world_size
-        ),
+        fn=_test_wrapper,
         test_fn=_run_window_multi_tpu_peer_transfer_test,
     )
 
@@ -471,9 +458,7 @@ class WindowTpuTest(
     """Verifies win.map_remote_tensor returns correct tensor view of registered window."""
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            _test_wrapper, world_size=self._world_size
-        ),
+        fn=_test_wrapper,
         test_fn=_run_window_map_remote_tensor_test,
     )
 
@@ -481,9 +466,7 @@ class WindowTpuTest(
     """Verifies win.get_attr returns WindowAttr with UNIFIED memory access type."""
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            _test_wrapper, world_size=self._world_size
-        ),
+        fn=_test_wrapper,
         test_fn=_run_window_attributes_test,
     )
 
@@ -491,9 +474,7 @@ class WindowTpuTest(
     """Verifies win.signal paired with win.wait_signal across peer ranks."""
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            _test_wrapper, world_size=self._world_size
-        ),
+        fn=_test_wrapper,
         test_fn=_run_window_signal_wait_test,
     )
 
@@ -501,9 +482,7 @@ class WindowTpuTest(
     """Verifies two-stage lifecycle: empty new_window, tensor_register, and tensor_deregister."""
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            _test_wrapper, world_size=self._world_size
-        ),
+        fn=_test_wrapper,
         test_fn=_run_window_explicit_register_lifecycle_test,
     )
 

@@ -228,4 +228,18 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_test(
+    name = "distributed_llama_test",
+    srcs = ["distributed_llama_test.py"],
+    deps = [
+        "//examples/benchmarks/e2e/harness:context",
+        "//examples/benchmarks/e2e/harness:registry",
+        "//examples/benchmarks/e2e/harness:target",
+        "//examples/benchmarks/e2e/harness/distributed_models:llama",
+        "//shims/absl_py/testing:absltest",
+        "//src/torch_tpu",
+        "//tests:seed_test_utils",
+    ],
+)
+
 torch_tpu_package_end()

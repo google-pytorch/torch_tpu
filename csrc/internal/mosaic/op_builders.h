@@ -61,6 +61,10 @@ Value CreateReciprocal(ImplicitLocOpBuilder& b, Value input);
 mlir::MemRefType GetVmemMemRefType(MLIRContext* context,
                                    ArrayRef<int64_t> shape, Type element_type);
 
+// Helper to build a memref type with smem tpu::Smem memory space.
+mlir::MemRefType GetSmemMemRefType(MLIRContext* context,
+                                   ArrayRef<int64_t> shape, Type element_type);
+
 // Helper to build a tpu:: dimension semantics attribute.
 mlir::Attribute GetDimensionSemanticsAttr(MLIRContext* context,
                                           DimensionSemantics semantics);

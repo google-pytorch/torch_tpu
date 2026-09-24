@@ -215,6 +215,33 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
 
   @mock.patch.dict(registry_lib.REGISTRY, {})
   @mock.patch.object(target_lib, "make_target")
+  @mock.patch.object(torch.distributed, "init_process_group")
+  def test_run_single_target_task_skips_unsupported_mode_on_cuda(
+      self,
+      mock_init_group,
+      mock_make_target,
+  ):
+    fake_spec = mock.MagicMock(spec=registry_lib.BenchmarkSpec)
+    fake_spec.name = "dummy_gpu"
+    fake_spec.dtype = target_lib.DType.BF16
+    fake_spec.skipped_run_modes = set()
+    registry_lib.REGISTRY["dummy_gpu"] = fake_spec
+
+    fake_target = mock.MagicMock(spec=target_lib.Target)
+    fake_target.device_kind = target_lib.DeviceKind.CUDA
+    fake_target.platform = target_lib.Platform.B200_8
+    fake_target.dtype = target_lib.DType.BF16
+    mock_make_target.return_value = fake_target
+
+    distributed_runner._run_single_target_task(
+        spec_name="dummy_gpu",
+        mode_value="eager_optimized",
+        platform_name="b200_8",
+    )
+    mock_init_group.assert_not_called()
+
+  @mock.patch.dict(registry_lib.REGISTRY, {})
+  @mock.patch.object(target_lib, "make_target")
   @mock.patch.object(torch_device_ops, "TorchDeviceOps")
   @mock.patch.object(
       measure_lib, "measure", side_effect=RuntimeError("Model OOM")
@@ -269,9 +296,12 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     self.assertEqual(mock_barrier.call_count, 1)
 
   @mock.patch.dict(os.environ, {"BENCHMARK_PLATFORM": "v7_2x2x2"})
+  @mock.patch.object(distributed_runner.environment, "set_tpu_launch_env")
   @mock.patch.object(distributed_runner.distributed_utils, "dist_run")
   @mock.patch.object(distributed_runner, "resolve_benchmark_targets")
-  def test_main_successful_dispatch(self, mock_resolve_targets, mock_dist_run):
+  def test_main_successful_dispatch(
+      self, mock_resolve_targets, mock_dist_run, mock_set_tpu_launch_env
+  ):
     dummy_spec = mock.MagicMock(spec=registry_lib.BenchmarkSpec)
     dummy_spec.name = "dummy"
     mock_resolve_targets.return_value = [
@@ -283,12 +313,40 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     ):
       distributed_runner.main(["distributed_runner"])
 
+    mock_set_tpu_launch_env.assert_not_called()
     mock_dist_run.assert_called_once_with(
         8,  # V7_2X2X2 has 8 procs per node
         distributed_runner._run_single_target_task,
         "dummy",
         "eager_default",
         "v7_2x2x2",
+    )
+
+  @mock.patch.dict(os.environ, {"BENCHMARK_PLATFORM": "v7_2x2x1"})
+  @mock.patch.object(distributed_runner.environment, "set_tpu_launch_env")
+  @mock.patch.object(distributed_runner.distributed_utils, "dist_run")
+  @mock.patch.object(distributed_runner, "resolve_benchmark_targets")
+  def test_main_singlehost_tpu_prepares_environment(
+      self, mock_resolve_targets, mock_dist_run, mock_set_tpu_launch_env
+  ):
+    dummy_spec = mock.MagicMock(spec=registry_lib.BenchmarkSpec)
+    dummy_spec.name = "dummy"
+    mock_resolve_targets.return_value = [
+        (dummy_spec, common.RunMode.EAGER_DEFAULT)
+    ]
+
+    with mock.patch.dict(
+        os.environ, {"TESTBRIDGE_TEST_ONLY": "dummy_eager_default"}
+    ):
+      distributed_runner.main(["distributed_runner"])
+
+    mock_set_tpu_launch_env.assert_called_once_with(nproc_per_node=8)
+    mock_dist_run.assert_called_once_with(
+        8,
+        distributed_runner._run_single_target_task,
+        "dummy",
+        "eager_default",
+        "v7_2x2x1",
     )
 
   @mock.patch.object(torch.distributed, "barrier")

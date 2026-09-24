@@ -200,6 +200,7 @@ torch_tpu_py_test(
     ],
     data = [
         "//examples/benchmarks/huggingface_transformers:model_configs_data",
+        "//shims/model_configs:google_model_configs_data",
     ],
     env = {
         "BENCHMARK_PLATFORM": "v5e_1x1",
@@ -214,6 +215,7 @@ torch_tpu_py_test(
         "requires-net:external",
         "requires-tpu-v5lite",
     ],
+    use_tcmalloc = True,
     deps = [
         ":base_test",
         ":cases",
@@ -262,8 +264,8 @@ torch_tpu_py_test(
     },
     main = "torch_benchmark_test.py",
     nolocal = "user requested to run this manually",
+    # Cannot run in OSS either: needs HuggingFace configs from internal infra.
     notap = "Development benchmark target; run manually on demand.",
-    notest_oss = True,  # requires huggingface configs from internal infra
     shard_count = 50,
     tags = [
         "nofastbuild",
@@ -339,6 +341,7 @@ torch_tpu_py_library(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal:testing",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/distributed/launchers:environment",
         "//tests/distributed:distributed_utils",
         "@pypi//fairscale",
     ],
@@ -346,10 +349,11 @@ torch_tpu_py_library(
 
 torch_tpu_py_test(
     name = "torch_benchmark_full",
-    timeout = "long",
+    timeout = "eternal",
     srcs = ["torch_benchmark_test.py"],
     data = [
         "//examples/benchmarks/huggingface_transformers:model_configs_data",
+        "//shims/model_configs:google_model_configs_data",
     ],
     env = {
         "BENCHMARK_PLATFORM": "v7_1x1x1",
@@ -363,6 +367,7 @@ torch_tpu_py_test(
         "requires-net:external",
         "requires-tpu-v7x",
     ],
+    use_tcmalloc = True,
     deps = [
         ":base_test",
         ":cases",
@@ -444,6 +449,7 @@ pytype_strict_binary(
     srcs = ["distributed_runner.py"],
     data = [
         "//examples/benchmarks/huggingface_transformers:model_configs_data",
+        "//shims/model_configs:google_model_configs_data",
     ],
     deps = [
         ":distributed_runner_lib",

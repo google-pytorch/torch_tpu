@@ -27,3 +27,8 @@ Instructions related to Bazel repositories:
 When writing documentation:
 
 * Use the docs-review skill when writing, editing, or reviewing documentation.
+When creating a pull request:
+
+*   Build the body from `.github/pull_request_template.md`. Keep its `##
+    Description` and `## Test Plan` headings and drop the HTML comment
+    placeholders. `gh pr create --body` does not apply the template.

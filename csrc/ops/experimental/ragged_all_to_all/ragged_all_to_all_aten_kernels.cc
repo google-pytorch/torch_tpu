@@ -104,18 +104,17 @@ static absl::StatusOr<DeviceBufferRef> RaggedAllToAllCommon(
   TT_ASSIGN_OR_RETURN(auto out_dtype,
                       ConvertTo<mlir::ElementType>(out_scalar_type));
 
-  std::string process_group_name_str(process_group_name);
+  TT_ASSIGN_OR_RETURN(ProcessGroupTpu * pg,
+                      GetProcessGroupTpu(process_group_name));
 
-  auto op_builder =
-      [process_group_name_str](FixedSizeSpan<mlir::MlirOp, 6> inputs)
+  auto op_builder = [device_groups = pg->GetSubgroupDeviceIds()](
+                        FixedSizeSpan<mlir::MlirOp, 6> inputs)
       -> absl::StatusOr<mlir::MlirOp> {
     auto& [operand, output, input_offsets, send_sizes, output_offsets,
            recv_sizes] = inputs;
     auto& builder = operand.getBuilder();
-    TT_ASSIGN_OR_RETURN(ProcessGroupTpu * pg,
-                        GetProcessGroupTpu(process_group_name_str));
     mlir::DenseIntElementsAttr replica_groups_attr =
-        BuildReplicaGroupsAttr(builder, pg->GetSubgroupDeviceIds());
+        BuildReplicaGroupsAttr(builder, device_groups);
 
     return BuildRaggedAllToAllShlo(operand, output, input_offsets, send_sizes,
                                    output_offsets, recv_sizes,
@@ -127,7 +126,8 @@ static absl::StatusOr<DeviceBufferRef> RaggedAllToAllCommon(
       {operand, output, input_offsets, send_sizes, output_offsets, recv_sizes},
       {.out_dtype = out_dtype,
        .out_dims = CopyIntVector(output.sizes()),
-       .op_param_cache_keys = std::move(param_keys)});
+       .op_param_cache_keys = std::move(param_keys),
+       .device_assignment = pg->device_assignment()});
 }
 
 }  // namespace

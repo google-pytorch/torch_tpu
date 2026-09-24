@@ -44,8 +44,6 @@ std::optional<bool> PyGetBooleanEnvOnce(std::string_view name,
     value = GetBooleanEnvOnce<kSplashUseVmapBwdEnvVar>();
   } else if (name == kTorchTpuDebugEnvVar) {
     value = GetBooleanEnvOnce<kTorchTpuDebugEnvVar>();
-  } else if (name == kTorchTpuInternalAllowXlaBackendEnvVar) {
-    value = GetBooleanEnvOnce<kTorchTpuInternalAllowXlaBackendEnvVar>();
   } else if (name == kTorchTpuInternalEnableDebugChecksEnvVar) {
     value = GetBooleanEnvOnce<kTorchTpuInternalEnableDebugChecksEnvVar>();
   } else if (name == kTorchTpuInternalEnableReassociateNormWeightsEnvVar) {

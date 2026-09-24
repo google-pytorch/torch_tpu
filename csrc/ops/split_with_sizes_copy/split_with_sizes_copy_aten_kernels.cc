@@ -23,6 +23,7 @@
 #include "ATen/core/TensorBody.h"
 #include "ATen/ops/cat.h"
 #include "ATen/ops/split_with_sizes.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
@@ -44,6 +45,8 @@ void AtenSplitWithSizesCopyOut(const at::Tensor& self,
         TT_ASSIGN_OR_THROW(int64_t normalized_dim,
                            SafeWrapDim(dim, self.dim()));
         for (int64_t i = 0; i < out.size(); ++i) {
+          TT_THROW_IF_ERROR(ValidateOutDtype(out[i], self.scalar_type(),
+                                             /*allow_out_dtype_cast=*/false));
           int64_t size = split_sizes[i];
           Dimensions expected_shape = CopyIntVector(self.sizes());
           expected_shape[normalized_dim] = size;

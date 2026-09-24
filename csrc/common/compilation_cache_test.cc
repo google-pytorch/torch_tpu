@@ -180,7 +180,7 @@ class CompilationCacheTest : public testing::Test {
  protected:
   CompilationCacheTest() {
     PjrtBackend::GetInstance().SetPjRtInitializationOptions(
-        {.device_type = "xla_cpu"});
+        {.device_type = "tpu"});
     ABSL_CHECK_OK(PjrtBackend::GetInstance().EnsureInitialized());
     CompilationCacheTestHelper::RestartCompilationCache();
   }

@@ -275,6 +275,17 @@ class CompilationCache {
       UniqueCompileOptions compile_options, bool use_dynamic_adapters = true)
       ABSL_LOCKS_EXCLUDED(cache_mutex_);
 
+  // Zero-copy fast path overload for cache hits: reads `compile_options`
+  // synchronously on the calling thread only when needed, and allocates an
+  // owning `UniqueCompileOptions` copy on cache misses before enqueuing
+  // background compilation on the compilation threadpool.
+  absl::StatusOr<CompiledKernel> GetOrCompile(
+      CompilationCacheKey key, const std::vector<Shape>& input_shapes,
+      const std::vector<Shape>& output_shapes,
+      MlirComputationBuilder computation_builder,
+      const xla::CompileOptions& compile_options,
+      bool use_dynamic_adapters = true) ABSL_LOCKS_EXCLUDED(cache_mutex_);
+
   // Schedules compilation of the given module associated to the key.
   //
   // Parameters:
@@ -393,7 +404,7 @@ class CompilationCache {
   // access count and last accessed time for the cache entry if it is found.
   //
   // Parameters:
-  //  - key: The key to lookup in the cache.
+  //  - key: The key to look up in the cache.
   //  - input_shapes: The input shapes to the computation, in the order given by
   // a Traversal. This is used for checking compatibility with existing bounded
   // dynamic cache entries, or to create metadata for a new one.
@@ -419,6 +430,14 @@ class CompilationCache {
       const std::vector<Shape>& output_shapes,
       CompileOptionsKey compile_options_key,
       UniqueCompileOptions compile_options) ABSL_LOCKS_EXCLUDED(cache_mutex_);
+
+  absl::StatusOr<CompiledKernel> GetOrCompileImpl(
+      CompilationCacheKey key, const std::vector<Shape>& input_shapes,
+      const std::vector<Shape>& output_shapes,
+      MlirComputationBuilder computation_builder,
+      const xla::CompileOptions& compile_options,
+      absl_nullable std::unique_ptr<xla::CompileOptions> owned_compile_options,
+      bool use_dynamic_adapters) ABSL_LOCKS_EXCLUDED(cache_mutex_);
 
   // Creates a padding kernel for the dynamic kernel adapter based on the shape
   // dynamism metadata and resolved dynamic shapes.

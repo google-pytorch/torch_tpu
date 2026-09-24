@@ -64,14 +64,13 @@ void ZeroTile(ImplicitLocOpBuilder& b, Value arg);
 // Initialize a 2D tile with -inf.
 void NInfTile(ImplicitLocOpBuilder& b, Value arg);
 
-// Get the causal bias for the given block indices.
-Value GetCausalBias(ImplicitLocOpBuilder& b, Value row_block_idx,
-                    Value col_block_idx, int64_t qt, int64_t kt);
-
-// Get the structured bias (causal and/or masking) for the given block indices.
-Value GetStructuredBias(ImplicitLocOpBuilder& b, Value row_block_idx,
-                        Value col_block_idx, int64_t qt, int64_t kt,
-                        int64_t q_seq_len, int64_t kv_seq_len, bool is_causal);
+// Apply structured masking (causal and/or sequence boundary masking) to `sij`.
+// Only executes vector masking operations on tiles that intersect a mask
+// boundary (e.g. diagonal tiles for causal attention).
+Value ApplyStructuredMask(ImplicitLocOpBuilder& b, Value sij,
+                          Value row_block_idx, Value col_block_idx, int64_t qt,
+                          int64_t kt, int64_t q_seq_len, int64_t kv_seq_len,
+                          bool is_causal);
 
 // Reduce the 2D input to a 1D across the lane dimension and then broadcast the
 // results lane dimension to the given size.
@@ -113,6 +112,44 @@ Value ConvertElementType(ImplicitLocOpBuilder& b, Type target_element_type,
 Value NormalizeLaneDim(ImplicitLocOpBuilder& builder, Value input,
                        int64_t target_lane_size);
 
+// Create a log2 operation.
+// For older versions of libtpu that do not support the log2 op we will use a
+// scaled ln operation.
+Value CreateLog2(ImplicitLocOpBuilder& b, Value input);
+
+// Dropout needs a single Mosaic `scalar_prefetch` operand: a 4-word SMEM buffer
+// holding the Philox {seed_lo, seed_hi, offset_lo, offset_hi}.
+//
+// The two functions below must stay in sync. Mosaic binds scalar-prefetch
+// operands immediately after the grid iteration indices, and requires the
+// `scalar_prefetch` attribute to match the number of operands appended to the
+// kernel signature *and* to every symbol-based `transform_indices` function,
+// which must take exactly `iteration_bounds.size() + scalar_prefetch` args.
+
+// Appends the `scalar_prefetch` operand types for `config` to `types`.
+void AppendScalarPrefetchTypes(MLIRContext* context,
+                               const FlashAttnConfig& config,
+                               SmallVectorImpl<Type>& types);
+
+// Sets the `scalar_prefetch` attribute on `fn`, if `config` needs one.
+void SetScalarPrefetchAttr(const FlashAttnConfig& config, func::FuncOp fn,
+                           OpBuilder& builder);
+
+// Builds a stateless, tile-size-invariant dropout mask of type
+// vector<qt x kt x i1> (true = keep, false = drop).
+//
+// The mask is a pure function of (batch_idx, head_idx, absolute q, absolute
+// kv) and the Philox {seed, offset} in `seed_smem` (memref<4xi32, smem>), so
+// the backward kernel regenerates it rather than storing it. It is keyed on
+// absolute rather than within-tile coordinates so that the forward and
+// backward kernels agree despite their different tilings.
+//
+// `head_idx` must be the *query* head index.
+Value BuildDropoutKeepMask(ImplicitLocOpBuilder& b,
+                           const FlashAttnConfig& config, int64_t qt,
+                           int64_t kt, Value batch_idx, Value head_idx,
+                           Value row_block_idx, Value col_block_idx,
+                           Value seed_smem);
 // Get the string representation of an operation.
 std::string GetOpString(Operation* op);
 

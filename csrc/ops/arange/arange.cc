@@ -62,10 +62,10 @@ absl::StatusOr<mlir::MlirOp> BuildArangeOp(const int64_t num_elements,
 
   TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=inner checks are all infeasible.
       start, PrepareScalar(start, acc_tensor_type),
-      _.SetPrepend() << "cannot prepare start: ");
+      _.SetPrepend() << "failed to prepare start: ");
   TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=inner checks are all infeasible.
       step, PrepareScalar(step, acc_tensor_type),
-      _.SetPrepend() << "cannot prepare step: ");
+      _.SetPrepend() << "failed to prepare step: ");
 
   auto iota = mlir::stablehlo::Iota(builder, acc_tensor_type, 0);
   auto iota_step = mlir::stablehlo::Mul(iota, step);

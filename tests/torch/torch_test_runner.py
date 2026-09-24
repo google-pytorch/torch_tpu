@@ -74,17 +74,18 @@ def _filter_device_generic_tests() -> None:
   original = unittest.TestLoader.getTestCaseNames
 
   def device_generic_tests(
-      self, test_case_cls: type[unittest.TestCase]  # UNITTEST_OK=torch testing
-  ) -> list[str]:
+      self: unittest.TestLoader,
+      testCaseClass: type[unittest.TestCase],  # UNITTEST_OK=torch testing  # pylint: disable=invalid-name
+  ) -> Sequence[str]:
     """Returns test method names for device-generic test classes only."""
     # Keep classes materialized by `instantiate_device_type_tests` only,
     # i.e. `DeviceTypeTestBase` subclasses.
     if not (
-        isinstance(test_case_cls, type)
-        and issubclass(test_case_cls, common_device_type.DeviceTypeTestBase)
+        isinstance(testCaseClass, type)
+        and issubclass(testCaseClass, common_device_type.DeviceTypeTestBase)
     ):
       return []
-    return original(self, test_case_cls)
+    return original(self, testCaseClass)
 
   unittest.TestLoader.getTestCaseNames = device_generic_tests
 
@@ -145,7 +146,9 @@ def _use_absltest_main() -> None:
     kwargs.setdefault("verbosity", 2)
     absltest.main(*args, **kwargs)
 
-  unittest.main = absltest_main
+  # `unittest.main` is declared as `type[TestProgram]`, so a drop-in function
+  # cannot satisfy the annotation even though it is call-compatible.
+  unittest.main = absltest_main  # pyrefly: ignore[bad-assignment]
 
 
 def main(argv: Sequence[str]) -> None:

@@ -221,14 +221,8 @@ absl::Status PjrtBackend::InitializeInternal() {
         world_size_or.ok()) {
       TT_ASSIGN_OR_RETURN(auto config, GetDistributedWorkerConfiguration());
       TT_RETURN_IF_ERROR(InitializeDistributedEnvironment(config)).SetPrepend()
-          << "InitializeDistributedEnvironment failed: ";
+          << "failed to initialize distributed environment: ";
     }
-  } else if (options_.device_type == "xla_cuda") {
-    plugin_name = kGpuPjrtName;
-    device_type = PjRtDeviceType::kCuda;
-  } else if (options_.device_type == "xla_cpu") {
-    plugin_name = kCpuPjrtName;
-    device_type = PjRtDeviceType::kCpu;
   } else {
     return TT_ERROR(error::kInvalidArgument)
            << "unsupported device type: " << options_.device_type;
@@ -241,7 +235,7 @@ absl::Status PjrtBackend::InitializeInternal() {
                       pjrt::IsPjrtPluginInitialized(plugin_name));
   if (!is_initialized) {
     TT_RETURN_IF_ERROR(pjrt::InitializePjrtPlugin(plugin_name)).SetPrepend()
-        << "initializing the PjRt plugin failed with: ";
+        << "failed to initialize the PjRt plugin: ";
   }
 
   // Mem tracking note: Background threads in XLA spun up during GetPjRtClient.
@@ -249,7 +243,7 @@ absl::Status PjrtBackend::InitializeInternal() {
       client_,
       torch_tpu::GetPjRtClient(options_.device_type,
                                options_.premapped_buffer_size_bytes),
-      _.SetPrepend() << "retrieving a PjRtClient failed with: ");
+      _.SetPrepend() << "failed to retrieve the PjRt client: ");
 
   ABSL_CHECK_NE(client_, nullptr)  // CRASH_OK
       << "PjRtClient should not be null after initialization.";
@@ -407,7 +401,6 @@ void PjrtBackend::Shutdown() {
   // re-initialization of the runtime) are not falsely identified as bad forks.
   init_pid_.store(0, std::memory_order_relaxed);
   absl::MutexLock lock(mutex_);
-  world_rank_to_device_id_ = std::nullopt;
   if (!init_attempted_) {
     return;
   }
@@ -420,29 +413,6 @@ void PjrtBackend::Shutdown() {
   init_attempted_ = false;
   init_status_ = absl::OkStatus();
   ABSL_VLOG(1) << "PjRt shut down.";
-}
-
-void PjrtBackend::ResetWorldRankToDeviceId() {
-  absl::MutexLock lock(mutex_);
-  world_rank_to_device_id_ = std::nullopt;
-}
-
-void PjrtBackend::SetWorldRankToDeviceId(
-    std::vector<int64_t> rank_to_device_id) {  // INT_VEC_OK
-  absl::MutexLock lock(mutex_);
-  if (world_rank_to_device_id_.has_value()) {
-    ABSL_CHECK_EQ(*world_rank_to_device_id_, rank_to_device_id)  // CRASH_OK
-        << "World rank to device ID mapping already initialized with different "
-           "values.";
-    return;
-  }
-  world_rank_to_device_id_ = std::move(rank_to_device_id);
-}
-
-std::optional<std::vector<int64_t>>  // INT_VEC_OK
-PjrtBackend::GetWorldRankToDeviceId() const {
-  absl::ReaderMutexLock lock(mutex_);
-  return world_rank_to_device_id_;
 }
 
 }  // namespace torch_tpu

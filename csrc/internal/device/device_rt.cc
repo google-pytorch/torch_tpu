@@ -129,7 +129,7 @@ PyTpuEventBase PyRecordEvent(std::optional<int> device_index,
 }
 
 void InitRuntimeOptions(const std::string& device_type) {
-  if (device_type == "tpu" || device_type == "xla_cuda") {
+  if (device_type == "tpu") {
     TT_THROW_IF_ERROR(AddTpuHooks()) << "Failed to add TPU hooks.";
     RegisterTpuAllocator();
   }

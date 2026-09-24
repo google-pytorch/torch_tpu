@@ -26,45 +26,27 @@
 namespace torch_tpu {
 namespace {
 
-using testing::ExitedWithCode;
-
 class PjRtInitTest : public testing::Test {
  protected:
   void TearDown() override { PjrtBackend::GetInstance().Shutdown(); }
 };
 
 TEST_F(PjRtInitTest, InitializePjRtIsLazy) {
-  EXPECT_EXIT(
-      {
-        auto check_lazy = []() -> bool {
-          if (PjrtBackend::GetInstance().IsInitialized()) {
-            return false;
-          }
+  ASSERT_FALSE(PjrtBackend::GetInstance().IsInitialized());
 
-          PjrtBackend::GetInstance().SetPjRtInitializationOptions(
-              {.device_type = "xla_cpu"});
-          if (PjrtBackend::GetInstance().IsInitialized()) {
-            return false;
-          }
+  PjrtBackend::GetInstance().SetPjRtInitializationOptions(
+      {.device_type = "tpu"});
+  EXPECT_FALSE(PjrtBackend::GetInstance().IsInitialized());
 
-          if (PjrtBackend::GetInstance().GetClient() == nullptr) {
-            return false;
-          }
-          if (!PjrtBackend::GetInstance().IsInitialized()) {
-            return false;
-          }
-          return true;
-        };
-        std::exit(check_lazy() ? 0 : 1);
-      },
-      ExitedWithCode(0), "");
+  ASSERT_NE(PjrtBackend::GetInstance().GetClient(), nullptr);
+  EXPECT_TRUE(PjrtBackend::GetInstance().IsInitialized());
 }
 
 TEST_F(PjRtInitTest, InitializePjRtSetsCorrectDeviceCount) {
   ASSERT_FALSE(PjrtBackend::GetInstance().IsInitialized());
 
   PjrtBackend::GetInstance().SetPjRtInitializationOptions(
-      {.device_type = "xla_cpu"});
+      {.device_type = "tpu"});
 
   auto* client = PjrtBackend::GetInstance().GetClient();
   ASSERT_NE(client, nullptr);
@@ -88,7 +70,7 @@ TEST_F(PjRtInitTest, InitializeExpandsRankInEnvVars) {
   SetEnv<kRankEnvVar>("1234");
 
   PjrtBackend::GetInstance().SetPjRtInitializationOptions(
-      {.device_type = "xla_cpu"});
+      {.device_type = "tpu"});
   auto* client = PjrtBackend::GetInstance().GetClient();
   ASSERT_NE(client, nullptr);
 

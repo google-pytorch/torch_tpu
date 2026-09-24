@@ -153,11 +153,17 @@ def _sink_constants_for_submodule(
     submod.recompile()
 
 
-def _erase_dead_get_attrs(graph: torch.fx.Graph) -> None:
-  """Removes get_attr nodes that no longer have any users."""
-  for node in list(graph.find_nodes(op="get_attr")):
+def _erase_dead_get_attrs(gm: torch.fx.GraphModule) -> None:
+  """Removes get_attr nodes that no longer have any users and deletes their attributes."""
+  erased_targets = set()
+  for node in list(gm.graph.find_nodes(op="get_attr")):
     if not node.users:
-      graph.erase_node(node)
+      erased_targets.add(node.target)
+      gm.graph.erase_node(node)
+  live_targets = {node.target for node in gm.graph.find_nodes(op="get_attr")}
+  for target in erased_targets - live_targets:
+    # pylint: disable-next=protected-access
+    torch.fx.graph_module._del_attr(gm, str(target))
 
 
 def apply(gm: torch.fx.GraphModule) -> None:
@@ -184,7 +190,7 @@ def apply(gm: torch.fx.GraphModule) -> None:
       continue
     _sink_constants_for_submodule(gm, submod, submod_name, call_site_nodes)
 
-  _erase_dead_get_attrs(gm.graph)
+  _erase_dead_get_attrs(gm)
 
   gm.graph.lint()
   gm.recompile()

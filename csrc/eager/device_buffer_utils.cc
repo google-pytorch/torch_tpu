@@ -220,7 +220,8 @@ absl::StatusOr<std::vector<DeviceBufferRef>> CreateDeferredDeviceBufferList(
           params.op_name, std::move(params.op_builder),
           std::move(params.inputs), std::move(params.op_param_cache_keys),
           std::move(params.output_shapes), params.split_mode,
-          std::move(params.donated_indices)));
+          std::move(params.donated_indices),
+          std::move(params.device_assignment)));
 
   switch (GetEagerMode()) {
     case EagerMode::kDeferNever:

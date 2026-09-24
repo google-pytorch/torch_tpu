@@ -200,7 +200,7 @@ absl::Status AtomicWriteToCacheFile(
                       executable->GetExecutable()->SerializeExecutable(),
                       _.SetPrepend()
                           << "failed to serialize executable for cache file "
-                          << cache_entry_path);
+                          << cache_entry_path << ": ");
   return AtomicWriteToCacheFile(cache_entry_path, serialized);
 }
 

@@ -28,7 +28,7 @@ from absl.testing import absltest
 import torch
 from torch import distributed as dist
 import torch.multiprocessing as mp
-from torch_tpu._internal.distributed.launchers import singlehost_wrapper
+from torch_tpu._internal.distributed import device_mesh
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
@@ -42,7 +42,9 @@ def run_manual_2d_mesh() -> None:
   rank = int(os.environ["RANK"])
   world_size = int(os.environ["WORLD_SIZE"])
   assert world_size == 8
-  mesh = [[0, 5, 3, 4], [7, 6, 1, 2]]  # Subgroups can be arbitrary subsets
+  rank_to_dev = device_mesh.get_device_assignment()
+  dev_to_rank = {dev: r for r, dev in enumerate(rank_to_dev)}
+  mesh = [[dev_to_rank[d] for d in row] for row in [[0, 2, 4, 6], [1, 3, 5, 7]]]
 
   # Initialize all subgroups (even the ones we aren't members of!),
   # and remember the (sub)group we are a member of.
@@ -126,7 +128,11 @@ def run_manual_2d_all_gather_reduce_scatter() -> None:
   rank = int(os.environ["RANK"])
   world_size = int(os.environ["WORLD_SIZE"])
   assert world_size == 8
-  mesh_rows = [[0, 3, 5, 1], [2, 6, 4, 7]]
+  rank_to_dev = device_mesh.get_device_assignment()
+  dev_to_rank = {dev: r for r, dev in enumerate(rank_to_dev)}
+  mesh_rows = [
+      [dev_to_rank[d] for d in row] for row in [[0, 2, 4, 6], [1, 3, 5, 7]]
+  ]
   mesh_cols = [[a, b] for (a, b) in zip(*mesh_rows)]  # transpose
 
   subgroup_ag = None  # Process group for all_gather axis
@@ -186,21 +192,19 @@ class SubgroupCollectivesTest(seed_test_utils.MultiProcessRepeatableTest):
   def test_manual_2d_mesh(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(run_manual_2d_mesh),
+        fn=run_manual_2d_mesh,
     )
 
   def test_manual_1d_as_2d_mesh(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(run_manual_1d_as_2d_mesh),
+        fn=run_manual_1d_as_2d_mesh,
     )
 
   def test_manual_2d_all_gather_reduce_scatter(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_manual_2d_all_gather_reduce_scatter
-        ),
+        fn=run_manual_2d_all_gather_reduce_scatter,
     )
 
 

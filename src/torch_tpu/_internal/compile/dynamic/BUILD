@@ -50,6 +50,19 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
+    name = "output_sym_shape",
+    srcs = [
+        "output_sym_shape.py",
+    ],
+    deps = [
+        ":sym_utils",
+        "//shims/absl_py/logging",
+        "//shims/torch:pytorch",
+        "@pypi//sympy",
+    ],
+)
+
+torch_tpu_py_library(
     name = "sym_shape_manager",
     srcs = [
         "sym_shape_manager.py",
@@ -61,9 +74,7 @@ torch_tpu_py_library(
     deps = [
         ":sym_utils",
         ":symbol_bounds",
-        "//shims/absl_py/logging",
         "//shims/torch:pytorch",
-        "@pypi//sympy",
     ],
 )
 
@@ -75,7 +86,6 @@ torch_tpu_py_library(
     deps = [
         ":sym_shape_manager",
         ":sym_utils",
-        ":symbol_bounds",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
     ],
@@ -89,7 +99,6 @@ torch_tpu_py_library(
     deps = [
         ":sym_shape_manager",
         ":sym_utils",
-        ":symbol_bounds",
         "//shims/torch:pytorch",
     ],
 )
@@ -114,13 +123,11 @@ torch_tpu_py_library(
         ":convert_constant_symints_pass",
         ":dynamic_view_pass",
         ":generative_ops_pass",
-        ":sym_bounds_manager",
         ":sym_shape_manager",
         ":sym_utils",
         ":symbol_bounds",
         ":view_ops_passes",
         "//shims/torch:pytorch",
-        "//src/torch_tpu/_internal/utils",
     ],
 )
 
@@ -161,6 +168,22 @@ torch_tpu_py_library(
         ":symbol_bounds",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
+        "@pypi//sympy",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "dynamic_executable",
+    srcs = [
+        "dynamic_executable.py",
+    ],
+    deps = [
+        ":output_sym_shape",
+        ":sym_utils",
+        ":view_decomposition",
+        "//shims/absl_py/logging",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal/compile:compiler",
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",
     ],
 )
@@ -175,15 +198,18 @@ torch_tpu_py_library(
         "//learning/agents/tern/torch_agent:__subpackages__",
     ],
     deps = [
+        ":dynamic_executable",
         ":graph_transformations",
+        ":output_sym_shape",
         ":sym_bounds_manager",
-        ":sym_shape_manager",
-        ":view_decomposition",
+        ":sym_utils",
+        ":symbol_bounds",
         ":view_ops_passes",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/compile:compiler",
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",
+        "//src/torch_tpu/_internal/utils",
     ],
 )
 

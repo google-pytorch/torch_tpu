@@ -82,6 +82,17 @@ torch_tpu_py_library(
     srcs = ["_versioned_so_loader.py"],
 )
 
+torch_tpu_py_library(
+    name = "exceptions",
+    srcs = ["exceptions.py"],
+)
+
+torch_tpu_py_library(
+    name = "_tcmalloc_check",
+    srcs = ["_tcmalloc_check.py"],
+    deps = [":exceptions"],
+)
+
 py_library_providing_imports_info(
     name = "torch_tpu",
     srcs = [
@@ -106,6 +117,7 @@ py_library_providing_imports_info(
         [],
     ) + [
         ":_loader",
+        ":_tcmalloc_check",
         ":_versioned_so_loader",
         "//src/torch_tpu/_internal:testing",  # buildcleaner: keep
     ],

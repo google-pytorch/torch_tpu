@@ -43,6 +43,7 @@
 #include "csrc/common/excess_precision.h"
 #include "csrc/common/fingerprint_utils.h"
 #include "csrc/common/shape.h"
+#include "csrc/mlir/pipeline.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/pjrt/pjrt_state.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -101,6 +102,7 @@ absl::StatusOr<ContextedModule> ContextedModule::Make(
     const MlirComputationBuilder& computation_builder) {
   auto context = MakeMlirContext();
   TT_ASSIGN_OR_RETURN(auto module, computation_builder(*context));
+  TT_RETURN_IF_ERROR(RunTorchTpuOptimizationPasses(*module, context.get()));
   return ContextedModule(std::move(context), std::move(module));
 }
 
@@ -242,12 +244,7 @@ static absl::Status SetDefaultDeviceAssignment(
   options.set_num_replicas(1);
   options.set_num_partitions(num_devices);
   xla::DeviceAssignment da(1, num_devices);
-  auto world_rank_to_dev = PjrtBackend::GetInstance().GetWorldRankToDeviceId();
-  if (world_rank_to_dev.has_value()) {
-    for (int rank = 0; rank < num_devices; ++rank) {
-      da(0, rank) = (*world_rank_to_dev)[rank];
-    }
-  } else if (num_devices == 1) {
+  if (num_devices == 1) {
     TT_ASSIGN_OR_RETURN(const int global_device_id,
                         PjrtBackend::GetInstance().GetGlobalDeviceId());
     da(0, 0) = global_device_id;
@@ -283,7 +280,7 @@ static absl::Status SetDefaultDeviceAssignment(
       options.debug_options().xla_allow_excess_precision(),
       // LINT.ThenChange()
       // Device assignment related fields (including world-rank-to-device
-      // mapping for subgroups).
+      // mapping and Pallas mesh assignments).
       options.num_replicas(), options.num_partitions(),
       options.use_spmd_partitioning(), options.use_shardy_partitioner(),
       options.has_device_assignment()
@@ -561,9 +558,13 @@ void PopCompilerOptionOverrides() {
   PopContextState<CustomCompilerOptionsContextState>();
 }
 
-CompilationSpec GetCompilationSpec(const CompilationMode mode) {
-  auto current_state = GetContextState<CustomCompilerOptionsContextState>(
+absl_nonnull std::shared_ptr<const CompilationContext> GetCompilationContext() {
+  return GetContextState<CustomCompilerOptionsContextState>(
       GetDefaultCompilationContext);
+}
+
+CompilationSpec GetCompilationSpec(const CompilationMode mode) {
+  auto current_state = GetCompilationContext();
   const CompilationSpec& spec = current_state->compilation_specs().at(mode);
   // Intentionally make a copy as the input `xla::CompileOptions` object is
   // moved into `PjRtClient::CompileAndLoad` for compilation.

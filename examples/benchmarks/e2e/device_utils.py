@@ -301,10 +301,9 @@ def get_peak_memory_hbm(
   """Get peak memory usage for the specified device.
 
   Args:
-    device: The device type ('cuda', 'cpu', 'tpu', 'xla_cuda', 'xla_cpu',
-      'jax').
-    session_id: Optional Xprof session ID to retrieve TPU/XLA_CUDA/JAX peak
-      memory from. This is a no-op for CPU and CUDA.
+    device: The device type ('cuda', 'cpu', 'tpu', 'jax').
+    session_id: Optional Xprof session ID to retrieve TPU/JAX peak memory from.
+      This is a no-op for CPU and CUDA.
     xprof_client: Optional Xprof analysis client to use for retrieving memory
       profile data.
 
@@ -319,7 +318,7 @@ def get_peak_memory_hbm(
     total = psutil.virtual_memory().total
     percentage = psutil.Process(os.getpid()).memory_percent()
     peak_memory_usage_mb = percentage / 100.0 * total / _BYTES_IN_MB
-  elif device in ('tpu', 'xla_cuda'):
+  elif device == 'tpu':
     if hasattr(torch, 'accelerator') and hasattr(
         torch.accelerator, 'max_memory_allocated'
     ):
@@ -335,8 +334,6 @@ def get_peak_memory_hbm(
     if jax_peak_mb is not None:
       return jax_peak_mb
     peak_memory_usage_mb = _get_peak_hbm_memory_mb(session_id, xprof_client)
-  elif device == 'xla_cpu':
-    peak_memory_usage_mb = _get_peak_hbm_memory_mb(session_id, xprof_client)
   else:
     raise ValueError(f'Unsupported device: {device}')
   return peak_memory_usage_mb
@@ -345,7 +342,7 @@ def get_peak_memory_hbm(
 def reset_peak_memory_stats(device):
   if device == 'cuda':
     torch.cuda.memory.reset_max_memory_allocated()
-  elif device in ('tpu', 'xla_cuda'):
+  elif device == 'tpu':
     if hasattr(torch, 'accelerator'):
       if hasattr(torch.accelerator, 'synchronize'):
         torch.accelerator.synchronize()
@@ -360,7 +357,7 @@ def reset_peak_memory_stats(device):
           dev.reset_memory_stats()
     except Exception:  # pylint: disable=broad-except
       pass
-  elif device in ('cpu', 'xla_cpu'):
+  elif device == 'cpu':
     pass
   else:
     raise ValueError(f'Unsupported device: {device}')
@@ -388,14 +385,14 @@ def synchronize(
   """Synchronizes the device with the given tensor(s).
 
   Args:
-    device: The device type ("cuda", "tpu", "xla_cuda").
+    device: The device type ("cuda", "tpu").
     tensor_to_sync: The tensor(s) to synchronize.
   """
   if device == 'cuda':
     torch.cuda.synchronize()
   elif device == 'cpu':
     pass
-  elif device in ('tpu', 'xla_cuda', 'xla_cpu'):
+  elif device == 'tpu':
     if tensor_to_sync is None:
       torch.accelerator.synchronize()
     else:
@@ -413,14 +410,14 @@ def cache_miss_count(device: str) -> int:
   """Get cache miss count for the specified device. Always returns 0 for CUDA.
 
   Args:
-    device: The device type ('cuda', 'tpu', 'xla_cuda', 'xla_cpu').
+    device: The device type ('cuda', 'tpu').
 
   Returns:
     The cache miss count.
   """
   if device in ('cuda', 'cpu'):
     return 0
-  elif device in ('tpu', 'xla_cuda', 'xla_cpu'):
+  elif device == 'tpu':
     # pylint: disable=protected-access
     return getattr(torch, device)._get_cache_misses()
   else:
@@ -434,7 +431,7 @@ def get_peak_host_compilation_memory_mb(device: str) -> float | None:
   underlying infrastructure prevents resetting of this value during eviction.
 
   Args:
-    device: The device type ('cuda', 'tpu', 'xla_cuda').
+    device: The device type ('cuda', 'tpu').
 
   Returns:
     The peak host compilation memory in MB. None if not supported by the
@@ -506,7 +503,7 @@ def torch_compile(
 
   Args:
     func: The callable to be compiled.
-    device: The device type ('cuda', 'tpu', 'xla_cuda', 'xla_cpu').
+    device: The device type ('cuda', 'tpu').
     dynamic: Whether to use dynamic shapes in compilation.
     fullgraph: Whether to require compiling the full graph without breaks.
 
@@ -519,7 +516,7 @@ def torch_compile(
   if device in ('cuda', 'cpu'):
     configure_inductor_for_benchmarks()
     func = torch.compile(func, backend='inductor', fullgraph=fullgraph)
-  elif device in ('tpu', 'xla_cuda', 'xla_cpu'):
+  elif device == 'tpu':
     if dynamic:
       func = torch.compile(
           func,
@@ -547,14 +544,14 @@ def clear_cache(device: str) -> None:
   """Clears the compilation cache for the specified device. No-op for CUDA.
 
   Args:
-    device: The device type ('cuda', 'tpu', 'xla_cuda', 'xla_cpu').
+    device: The device type ('cuda', 'tpu').
 
   Raises:
     ValueError: If the device is not supported.
   """
   if device in ('cuda', 'cpu'):
     pass
-  elif device in ('tpu', 'xla_cuda', 'xla_cpu'):
+  elif device == 'tpu':
     # pylint: disable=protected-access
     getattr(torch, device)._clear_cache()
   else:

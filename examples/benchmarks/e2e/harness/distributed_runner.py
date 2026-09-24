@@ -31,6 +31,7 @@ from fairscale.nn.model_parallel import initialize as fairscale_init
 import torch
 import torch.multiprocessing as mp
 from torch_tpu._internal import testing as tt_testing
+from torch_tpu._internal.distributed.launchers import environment
 from examples.benchmarks.e2e import common
 from examples.benchmarks.e2e.harness import compile as compile_lib
 from examples.benchmarks.e2e.harness import context as context_lib
@@ -129,6 +130,10 @@ def _cleanup_distributed_worker_state(
   tt_testing.reset_eager_state()
   torch.compiler.reset()
 
+  # Run cyclic garbage collection BEFORE flushing the device allocator cache so
+  # any unreachable Python `nn.Module` / tensor objects from the completed
+  # benchmark release their storage back to the caching allocator first.
+  gc.collect()
   if target is not None:
     if target.device_kind == target_lib.DeviceKind.TPU and hasattr(
         torch, "tpu"
@@ -140,7 +145,6 @@ def _cleanup_distributed_worker_state(
     ):
       torch.cuda.empty_cache()
 
-  gc.collect()
   logging.info("Rank %s inter-test state cleanup completed.", rank)
 
 
@@ -170,6 +174,9 @@ def _run_single_target_task(
     platform_name: str,
 ) -> None:
   """Worker task executed on each rank/host for a single benchmark target."""
+  # Required for OSS/GCP: Subprocesses spawned via torch.multiprocessing.spawn
+  # bypass app.run() and start with unparsed absl flags.
+  multiprocessing.parse_absl_flags()
   rank = int(os.environ.get("RANK", "0"))
   exception_raised = False
 
@@ -178,16 +185,22 @@ def _run_single_target_task(
   spec = registry_lib.REGISTRY[spec_name]
   mode = common.RunMode(mode_value)
 
-  if mode.value in spec.skipped_run_modes:
+  # Setup Target for benchmark execution and cleanup
+  target = target_lib.make_target(platform, dtype=spec.dtype)
+  # resolve_benchmark_targets() expands all common.RunMode values when
+  # unfiltered. Filter against mode_lib.modes_for() (matching base_test.py) so
+  # TPU-only modes like eager_optimized or debug modes like
+  # eager_defer_never_and_launch_blocking do not run and export duplicate rows
+  # on CUDA or TPU.
+  if mode.value in spec.skipped_run_modes or mode not in mode_lib.modes_for(
+      _FRAMEWORK, target.device_kind
+  ):
     logging.info(
-        "Skipping benchmark %s on mode %s (skipped_run_modes)",
+        "Skipping benchmark %s on mode %s",
         spec.name,
         mode.value,
     )
     return
-
-  # Setup Target for benchmark execution and cleanup
-  target = target_lib.make_target(platform, dtype=spec.dtype)
   backend = (
       "nccl" if target.device_kind == target_lib.DeviceKind.CUDA else "tpu_dist"
   )
@@ -286,6 +299,11 @@ def _run_single_target_task(
       )
     raise
   finally:
+    # Explicitly drop local references to the model, example inputs, and stepper
+    # before calling `_cleanup_distributed_worker_state` so `gc.collect()` can
+    # reclaim their device memory prior to `empty_cache()`.
+    factory_res = None
+    stepper = None
     barrier_policy = (
         BarrierPolicy.SKIP if exception_raised else BarrierPolicy.SYNCHRONIZE
     )
@@ -337,6 +355,12 @@ def main(argv: Sequence[str]) -> None:
     logging.warning(
         "Running on a single-node single-process platform: %s", platform
     )
+
+  if target.device_kind == target_lib.DeviceKind.TPU and nnodes == 1:
+    # Populate TORCH_TPU_SLICEBUILDER_ADDRESSES and TORCH_TPU_TOPOLOGY when
+    # running standalone single-host TPU benchmarks (e.g., on GCP or GitHub
+    # Actions runners). This is a no-op if already set in os.environ.
+    environment.set_tpu_launch_env(nproc_per_node=local_nproc)
 
   test_filter = os.environ.get("TESTBRIDGE_TEST_ONLY")
   targets_to_run = resolve_benchmark_targets(test_filter)

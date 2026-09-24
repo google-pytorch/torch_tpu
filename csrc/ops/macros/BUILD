@@ -17,7 +17,6 @@ load(
     "torch_tpu_cc_library",
     "torch_tpu_cc_test",
     "torch_tpu_package_end",
-    "tpu_gen",
 )
 
 package(
@@ -53,10 +52,6 @@ torch_tpu_cc_library(
 torch_tpu_cc_test(
     name = "logging_test",
     srcs = ["logging_test.cc"],
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
-        reason = "Load balancing",
-    ),
     tags = [
     ],
     deps = [
@@ -95,10 +90,6 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
-        reason = "Load balancing",
-    ),
     tags = ["requires-tpu-v5lite"],
     deps = [
         ":kernel",

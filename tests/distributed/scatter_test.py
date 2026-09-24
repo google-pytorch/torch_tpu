@@ -17,7 +17,6 @@ from absl.testing import absltest
 import torch
 from torch import distributed as dist
 import torch.multiprocessing as mp
-from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
@@ -68,13 +67,13 @@ class ScatterTest(seed_test_utils.MultiProcessRepeatableTest):
   def test_scatter_tensor(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(run_scatter),
+        fn=run_scatter,
     )
 
   def test_scatter_scalar(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(run_scatter_scalar),
+        fn=run_scatter_scalar,
     )
 
 

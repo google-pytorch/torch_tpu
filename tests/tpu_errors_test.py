@@ -14,6 +14,8 @@
 
 """Tests error handling on TPU only."""
 
+import contextlib
+import os
 import re
 from typing import Any, TypeAlias
 from unittest import mock
@@ -24,15 +26,18 @@ import torch.distributed as dist
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch_tpu._internal import dynamism
 from torch_tpu._internal import env
+from torch_tpu._internal import env_utils
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import pallas
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.compiler import StaticCompiler
+from torch_tpu._internal.distributed.launchers import environment
 from torch_tpu._internal.pallas import tpu_torch_pallas
+from torch_tpu._internal.utils import hardware
 from tests import error_testing as et
 
-_EagerMode: TypeAlias = execution_mode._EagerMode
+EagerMode: TypeAlias = execution_mode.EagerMode
 
 
 def setUpModule():
@@ -956,7 +961,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     # TODO: Error eagerly, i.e. without having to call the op builder.
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""call_custom_kernel(): transfer to 'cpu' device failed with: unknown custom kernel "not_registered_kernel_name" with key "some_kernel_key"; call torch_tpu._internal.pallas.tpu_torch_pallas.register_custom_kernel() to register the kernel before calling it""",
+        tpu="""call_custom_kernel(): unknown custom kernel "not_registered_kernel_name" with key "some_kernel_key"; call torch_tpu._internal.pallas.tpu_torch_pallas.register_custom_kernel() to register the kernel before calling it""",
     ):
       outputs = tpu_torch_pallas.call_custom_kernel(
           name, kernel_key, inputs=inputs, output_shapes=output_shapes
@@ -1576,7 +1581,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_execute_output_shapes_too_many(self):
-    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
       x = torch.ones(10, device="cpu").to(device=et.device())
       y = torch.ones(10, device="cpu").to(device=et.device())
       z = x + y
@@ -1599,7 +1604,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("For testing compiled mode argument count validation.")
   def test_execute_argument_count_mismatch(self):
-    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
       x = torch.ones(10, device="cpu").to(device=et.device())
       z = x + x
 
@@ -1610,12 +1615,37 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       tpu_torch_compile.execute(compile_result.executable, [x])
 
+  @et.why_tpu_only("build_mlir() input validation is TPU-only.")
+  def test_build_mlir_duplicate_input(self):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+      x = torch.ones(2, 3, device="cpu").to(device=et.device())
+      z = x + x
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""build_mlir(): failed to validate and reorder inputs: identified a duplicate input: 2x3xfloat32""",
+    ):
+      tpu_torch_compile.build_mlir([z], [x, x])
+
+  @et.why_tpu_only("build_mlir() input validation is TPU-only.")
+  def test_build_mlir_missing_input(self):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+      x = torch.ones(2, 3, device="cpu").to(device=et.device())
+      y = torch.ones(2, 3, device="cpu").to(device=et.device())
+      z = x + y
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""build_mlir(): failed to validate and reorder inputs: identified an argument that was not provided: 2x3xfloat32""",
+    ):
+      tpu_torch_compile.build_mlir([z], [x])
+
   @et.why_tpu_only(
       "Verifies that attempting to materialize a tensor depending on a"
       " placeholder fails gracefully instead of crashing."
   )
   def test_materialize_tensor_depending_on_placeholder(self):
-    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
       x = tpu_torch_compile.placeholder([4, 4], torch.float32, False)
     with et.assert_raises_message(
         RuntimeError,
@@ -1632,7 +1662,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       " fails gracefully."
   )
   def test_materialize_placeholder_directly(self):
-    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
       x = tpu_torch_compile.placeholder([4, 4], torch.float32, False)
     with et.assert_raises_message(
         RuntimeError,
@@ -1648,7 +1678,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       " gracefully when materialization is attempted."
   )
   def test_materialize_mixed_real_and_placeholder(self):
-    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
       x = tpu_torch_compile.placeholder([4, 4], torch.float32, False)
     real = torch.ones(4, 4, device=et.device())
     with et.assert_raises_message(
@@ -1663,7 +1693,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("Verifies execute() rejects placeholder arguments.")
   def test_execute_placeholder_argument(self):
-    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
       x = torch.ones(4, 4, device="cpu").to(device=et.device())
       z = x + x
       ph = tpu_torch_compile.placeholder([4, 4], torch.float32, False)
@@ -1706,7 +1736,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_execute_output_shapes_rank_mismatch(self):
-    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
       x = torch.ones(10, device="cpu").to(device=et.device())
       y = torch.ones(10, device="cpu").to(device=et.device())
       z = x + y
@@ -1724,7 +1754,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_execute_output_shapes_exceeds_bound(self):
-    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_DEFER_ALL):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_DEFER_ALL):
       x = torch.ones(10, device="cpu").to(device=et.device())
       y = torch.ones(10, device="cpu").to(device=et.device())
       z = x + y
@@ -1742,7 +1772,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("For testing TPU compile API validation.")
   def test_traverse_and_compile_invalid_layout_size(self):
-    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_DEFER_ALL):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_DEFER_ALL):
       x = torch.ones(2, 3, device="cpu").to(device=et.device())
       z = x + x
 
@@ -1757,7 +1787,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("For testing TPU compile API validation.")
   def test_traverse_and_compile_invalid_layout_values(self):
-    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_DEFER_ALL):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_DEFER_ALL):
       x = torch.ones(2, 3, device="cpu").to(device=et.device())
       z = x + x
 
@@ -1788,7 +1818,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("For testing TPU compile API validation.")
   def test_missing_input_to_build_mlir(self):
-    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_DEFER_ALL):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_DEFER_ALL):
       x = torch.ones(10, device="cpu").to(device=et.device())
       y = torch.ones(10, device="cpu").to(device=et.device())
       z = x + y
@@ -1802,7 +1832,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("For testing TPU compile API validation.")
   def test_compile_mlir_invalid_layout_size(self):
-    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_DEFER_ALL):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_DEFER_ALL):
       x = torch.ones(2, 3, device="cpu").to(device=et.device())
       z = x + x
     mlir = tpu_torch_compile.build_mlir([z], [x])
@@ -1816,7 +1846,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("For testing TPU compile API validation.")
   def test_compile_mlir_invalid_layout_values(self):
-    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_DEFER_ALL):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_DEFER_ALL):
       x = torch.ones(2, 3, device="cpu").to(device=et.device())
       z = x + x
     mlir = tpu_torch_compile.build_mlir([z], [x])
@@ -2804,7 +2834,7 @@ module {
         tpu="""sparse_dense_matmul_grad_with_adagrad(): expected accumulator to be 1D (row-wise) or 2D (standard), got 3D""",
     ):
       with execution_mode.set_eager_mode(
-          _EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
+          EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
       ):
         torch.ops.tpu.sparse_dense_matmul_grad_with_adagrad(
             row_pointers,
@@ -2830,7 +2860,7 @@ module {
         tpu="""sparse_dense_matmul_grad_with_adagrad(): expected accumulator dimension 1 to match embedding dimension (8), got 4""",
     ):
       with execution_mode.set_eager_mode(
-          _EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
+          EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
       ):
         torch.ops.tpu.sparse_dense_matmul_grad_with_adagrad(
             row_pointers,
@@ -2924,7 +2954,7 @@ module {
         message_reviewed_by="songbaie",
     ):
       with execution_mode.set_eager_mode(
-          _EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
+          EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
       ):
         torch.ops.tpu.sparse_dense_matmul_grad_with_adam(
             row_pointers,
@@ -2956,7 +2986,7 @@ module {
         message_reviewed_by="songbaie",
     ):
       with execution_mode.set_eager_mode(
-          _EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
+          EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
       ):
         torch.ops.tpu.sparse_dense_matmul_grad_with_adam(
             row_pointers,
@@ -4629,7 +4659,7 @@ module {
         RuntimeError,
         tpu="""uniform_(): expected export mode default generator to be set for device 0, got none""",
     ):
-      with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+      with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
         torch.rand(1, device="tpu")
 
   @et.why_tpu_only("TorchTPU specific eager mode")
@@ -4638,7 +4668,7 @@ module {
         RuntimeError,
         tpu="""cannot record EventSnapshot during an FX trace""",
     ):
-      with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+      with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
         _ = torch.Event(device="tpu").record()
 
 
@@ -4747,6 +4777,87 @@ class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
           tpu=f"""avg_pool1d(): expected input dtype to be none of (bool, uint8, int8, int16, int32, complex64), got {dtype_str}""",
       ):
         torch.ops.aten.avg_pool1d.out(t, [3], out=out)
+
+
+@contextlib.contextmanager
+def _mock_launch_env(values: dict[str, str]):
+  """Makes the environment look like `values` to `environment.set_tpu_launch_env`."""
+
+  def get_str_env_once(name, default_value=None):
+    return values.get(name, default_value)
+
+  def get_int_env_once(name, default_value=None):
+    return int(values[name]) if name in values else default_value
+
+  with contextlib.ExitStack() as stack:
+    stack.enter_context(mock.patch.dict(os.environ, values, clear=True))
+    stack.enter_context(
+        mock.patch.dict(env_utils._resolved_values, {}, clear=True)  # pylint: disable=protected-access
+    )
+    stack.enter_context(
+        mock.patch.object(env, "get_str_env_once", side_effect=get_str_env_once)
+    )
+    stack.enter_context(
+        mock.patch.object(env, "get_int_env_once", side_effect=get_int_env_once)
+    )
+    yield
+
+
+class EnvironmentErrorsTest(et.TpuOnlyErrorTestBase):
+
+  @et.why_tpu_only("Testing TPU distributed launcher environment validation.")
+  def test_nnodes_and_worker_hostnames_mismatch_raises(self):
+    with _mock_launch_env(
+        {"TPU_WORKER_HOSTNAMES": "host1,host2", "JOB_COMPLETION_INDEX": "0"}
+    ):
+      with et.assert_raises_message(
+          ValueError,
+          tpu="""set_tpu_launch_env(): expected nnodes to match the number of hosts in environment variable TPU_WORKER_HOSTNAMES (2: "host1,host2"), got 1""",
+      ):
+        environment.set_tpu_launch_env(nnodes=1)
+      with et.assert_raises_message(
+          ValueError,
+          tpu="""set_tpu_launch_env(): expected nnodes to match the number of hosts in environment variable TPU_WORKER_HOSTNAMES (2: "host1,host2"), got 3""",
+      ):
+        environment.set_tpu_launch_env(nnodes=3)
+
+    with _mock_launch_env({"TPU_WORKER_HOSTNAMES": "host1"}):
+      with et.assert_raises_message(
+          ValueError,
+          tpu="""set_tpu_launch_env(): expected nnodes to match the number of hosts in environment variable TPU_WORKER_HOSTNAMES (1: "host1"), got 2""",
+      ):
+        environment.set_tpu_launch_env(nnodes=2)
+
+  @et.why_tpu_only("Testing TPU distributed launcher environment validation.")
+  def test_multihost_missing_worker_hostnames_raises(self):
+    with _mock_launch_env({"JOB_COMPLETION_INDEX": "0"}):
+      with et.assert_raises_message(
+          ValueError,
+          tpu="""set_tpu_launch_env(): expected environment variable TPU_WORKER_HOSTNAMES to be a comma-separated list of worker hostnames or IP addresses, got it as unset""",
+      ):
+        environment.set_tpu_launch_env(nnodes=2)
+
+  @et.why_tpu_only("Testing TPU distributed launcher environment validation.")
+  def test_multihost_missing_completion_index_raises(self):
+    with _mock_launch_env({"TPU_WORKER_HOSTNAMES": "host1,host2"}):
+      with et.assert_raises_message(
+          ValueError,
+          tpu="""set_tpu_launch_env(): expected environment variable JOB_COMPLETION_INDEX to be a 0-based index of this host (Kubernetes Indexed Jobs set this automatically), got it as unset""",
+      ):
+        environment.set_tpu_launch_env()
+
+  @et.why_tpu_only("Testing TPU distributed launcher environment validation.")
+  def test_singlehost_no_tpu_devices_raises(self):
+    with _mock_launch_env({}):
+      with (
+          mock.patch.object(hardware, "get_tpu_topology", return_value=None),
+          mock.patch.object(hardware, "get_tpu_device_count", return_value=0),
+      ):
+        with et.assert_raises_message(
+            ValueError,
+            tpu="""set_tpu_launch_env(): expected TPU devices, got none""",
+        ):
+          environment.set_tpu_launch_env()
 
 
 if __name__ == "__main__":

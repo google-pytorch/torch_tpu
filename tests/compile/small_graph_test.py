@@ -192,6 +192,19 @@ class FunctionTest(seed_test_utils.RepeatableTest):
     ]
     self._run_and_compare(simple, inputs_val)
 
+  def test_lerp_scalar_weight_does_not_promote_to_float64(self):
+    def fn(a, b):
+      return torch.lerp(a, b, 0.1)
+
+    for dtype in (torch.bfloat16, torch.float16, torch.float32):
+      with self.subTest(dtype=dtype):
+        a = torch.randn(8, 8, dtype=dtype)
+        b = torch.randn(8, 8, dtype=dtype)
+        debugs = self._run_and_compare(fn, [a, b])
+        self.assertLen(debugs, 1)
+        self.assertNotEmpty(debugs[0].stablehlo_forward_text)
+        self.assertNotIn("f64", debugs[0].stablehlo_forward_text[0])
+
   @absltest.skip("b/546708345")
   def test_cpu_tensor_copy_to_tpu(self):
     def fn(x):

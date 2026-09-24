@@ -24,7 +24,6 @@ import torch
 from torch import distributed as dist
 from torch_tpu._internal import compile as tpu_compile
 from torch_tpu._internal.distributed import handshake
-from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests.distributed import distributed_utils
@@ -413,9 +412,7 @@ class HandshakeE2ETest(parameterized.TestCase):  # ABSLTEST_OK=b/550338082
     ):
       distributed_utils.dist_run(
           nproc_per_node=self._world_size,
-          fn=singlehost_wrapper.tpu_env_wrapper(
-              _test_wrapper, world_size=self._world_size
-          ),
+          fn=_test_wrapper,
           test_fn=run_handshake_no_rank_divergence_test,
       )
 
@@ -432,9 +429,7 @@ class HandshakeE2ETest(parameterized.TestCase):  # ABSLTEST_OK=b/550338082
     ):
       distributed_utils.dist_run(
           nproc_per_node=self._world_size,
-          fn=singlehost_wrapper.tpu_env_wrapper(
-              _test_wrapper, world_size=self._world_size
-          ),
+          fn=_test_wrapper,
           test_fn=run_handshake_rank_divergence_test,
       )
 
@@ -451,9 +446,7 @@ class HandshakeE2ETest(parameterized.TestCase):  # ABSLTEST_OK=b/550338082
     ):
       distributed_utils.dist_run(
           nproc_per_node=self._world_size,
-          fn=singlehost_wrapper.tpu_env_wrapper(
-              _test_wrapper, world_size=self._world_size
-          ),
+          fn=_test_wrapper,
           test_fn=run_handshake_divergence_after_iteration_test,
       )
 
@@ -485,9 +478,7 @@ class HandshakeE2ETest(parameterized.TestCase):  # ABSLTEST_OK=b/550338082
 
       distributed_utils.dist_run(
           nproc_per_node=self._world_size,
-          fn=singlehost_wrapper.tpu_env_wrapper(
-              _test_wrapper, world_size=self._world_size
-          ),
+          fn=_test_wrapper,
           test_fn=run_handshake_divergence_after_iteration_on_a_single_rank_test,
           divergent_rank=divergent_rank,
       )
@@ -510,9 +501,7 @@ class HandshakeE2ETest(parameterized.TestCase):  # ABSLTEST_OK=b/550338082
     ):
       distributed_utils.dist_run(
           nproc_per_node=self._world_size,
-          fn=singlehost_wrapper.tpu_env_wrapper(
-              _test_wrapper, world_size=self._world_size
-          ),
+          fn=_test_wrapper,
           test_fn=run_handshake_uneven_executables_between_ranks_test,
           divergent_rank=divergent_rank,
       )
@@ -535,9 +524,7 @@ class HandshakeE2ETest(parameterized.TestCase):  # ABSLTEST_OK=b/550338082
     ):
       distributed_utils.dist_run(
           nproc_per_node=self._world_size,
-          fn=singlehost_wrapper.tpu_env_wrapper(
-              _test_wrapper, world_size=self._world_size
-          ),
+          fn=_test_wrapper,
           test_fn=run_handshake_last_frame_on_divergent_rank_is_not_collective_test,
           divergent_rank=divergent_rank,
       )
@@ -560,9 +547,7 @@ class HandshakeE2ETest(parameterized.TestCase):  # ABSLTEST_OK=b/550338082
     ):
       distributed_utils.dist_run(
           nproc_per_node=self._world_size,
-          fn=singlehost_wrapper.tpu_env_wrapper(
-              _test_wrapper, world_size=self._world_size
-          ),
+          fn=_test_wrapper,
           test_fn=run_handshake_separate_vs_composed_compiled_functions_test,
           divergent_rank=divergent_rank,
       )
@@ -580,9 +565,7 @@ class HandshakeE2ETest(parameterized.TestCase):  # ABSLTEST_OK=b/550338082
     ):
       distributed_utils.dist_run(
           nproc_per_node=self._world_size,
-          fn=singlehost_wrapper.tpu_env_wrapper(
-              _test_wrapper, world_size=self._world_size
-          ),
+          fn=_test_wrapper,
           test_fn=run_handshake_no_rank_divergence_async_compile_test,
       )
 
@@ -601,9 +584,7 @@ class HandshakeE2ETest(parameterized.TestCase):  # ABSLTEST_OK=b/550338082
     ):
       distributed_utils.dist_run(
           nproc_per_node=self._world_size,
-          fn=singlehost_wrapper.tpu_env_wrapper(
-              _test_wrapper, world_size=self._world_size
-          ),
+          fn=_test_wrapper,
           test_fn=run_handshake_divergence_after_iteration_async_compile_test,
       )
 

@@ -604,6 +604,30 @@ def _test_oss_notest_oss_nobuild_oss(env):
     env.expect.that_collection(tags).contains_exactly(["nobuild", "notest"])
     env.expect.that_bool(result.create_build_test).equals(False)
 
+def _test_oss_notap_notest_oss(env):
+    """Tests that notest_oss is a no-op on a target that already sets notap."""
+    notap_only_tags = []
+    notap_only = check_and_adjust_test_tags_for_testing(
+        is_oss = True,
+        notap = "reason",
+        tags = notap_only_tags,
+    )
+
+    both_tags = []
+    both = check_and_adjust_test_tags_for_testing(
+        is_oss = True,
+        notap = "reason",
+        notest_oss = True,  # NOTEST_OSS_OK=for testing notest_oss
+        tags = both_tags,
+    )
+
+    # notap already implies notest, so passing notest_oss as well changes
+    # nothing. BUILD files should therefore not set both.
+    env.expect.that_collection(notap_only_tags).contains_exactly(["manual", "notap", "notest"])  # NOTAP_OK=Testing notap tagging
+    env.expect.that_collection(both_tags).contains_exactly(notap_only_tags)
+    env.expect.that_bool(both.create_build_test).equals(notap_only.create_build_test)
+    env.expect.that_collection(both.build_test_tags).contains_exactly(notap_only.build_test_tags)
+
 def _test_internal_nopresubmit_oss(env):
     """Tests the nopresubmit_oss parameter in internal builds."""
     tags = []
@@ -784,6 +808,7 @@ def build_defs_test_suite(name):
             _test_oss_nobuild_oss,
             _test_oss_nonightly_oss,
             _test_oss_nopresubmit_oss,
+            _test_oss_notap_notest_oss,
             _test_oss_notest_oss,
             _test_oss_notest_oss_nobuild_oss,
             _test_oss_presubmit_tpu_generation_explicit,

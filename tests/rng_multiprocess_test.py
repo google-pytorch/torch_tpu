@@ -25,7 +25,6 @@ from absl import flags
 from absl.testing import absltest
 import torch
 import torch.multiprocessing as mp
-from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import hardware
 from torch_tpu._internal.distributed import multiprocessing
 from tests import accelerator_test_utils
@@ -147,16 +146,9 @@ class MultiProcessTest(seed_test_utils.MultiProcessRepeatableTest):
     ctx = multiprocessing.get_context("spawn")
     results_queue = ctx.Queue()
 
-    if self.backend == "tpu":
-      target_fn = singlehost_wrapper.tpu_env_wrapper(
-          _multiprocess_worker, world_size=num_devices
-      )
-    else:
-      target_fn = _multiprocess_worker
-
     distributed_utils.dist_run(
         num_devices,
-        target_fn,
+        _multiprocess_worker,
         results_queue,
         self.backend,
         seed_fn,

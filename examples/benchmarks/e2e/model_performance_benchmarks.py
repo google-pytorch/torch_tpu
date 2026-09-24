@@ -96,7 +96,6 @@ class BenchmarkTest(test_utils.BenchmarkTest):
             common.Platform.V5E_1X1,
             common.Platform.GFC_1X1X1,
             common.Platform.B200_1,
-            common.Platform.XLA_CPU,
             common.Platform.TORCH_CPU,
         ],
         benchmark_category=benchmark_utils.BenchmarkCategory.HUGGINGFACE_LLM,
@@ -325,7 +324,6 @@ class BenchmarkTest(test_utils.BenchmarkTest):
             common.Platform.V5E_1X1,
             common.Platform.GFC_1X1X1,
             common.Platform.B200_1,
-            common.Platform.XLA_CPU,
             common.Platform.TORCH_CPU,
         ],
         benchmark_category=benchmark_utils.BenchmarkCategory.HUGGINGFACE_LLM,
@@ -1570,7 +1568,6 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         supported_platforms=[
             common.Platform.GFC_1X1X1,
             common.Platform.B200_1,
-            common.Platform.XLA_CPU,
             common.Platform.TORCH_CPU,
         ],
         benchmark_category=benchmark_utils.BenchmarkCategory.TIMM,
@@ -1709,7 +1706,6 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         supported_platforms=[
             common.Platform.GFC_1X1X1,
             common.Platform.B200_1,
-            common.Platform.XLA_CPU,
             common.Platform.TORCH_CPU,
         ],
         benchmark_category=benchmark_utils.BenchmarkCategory.HUGGINGFACE_DIFFUSER,
@@ -1732,7 +1728,6 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         supported_platforms=[
             common.Platform.GFC_1X1X1,
             common.Platform.B200_1,
-            common.Platform.XLA_CPU,
             common.Platform.TORCH_CPU,
         ],
         benchmark_category=benchmark_utils.BenchmarkCategory.HUGGINGFACE_DIFFUSER,

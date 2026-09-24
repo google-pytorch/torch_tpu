@@ -26,7 +26,7 @@ from torch_tpu._internal import execution_mode
 from torch_tpu._internal import sync
 from torch_tpu._internal import testing as tt_testing
 
-_EagerMode: TypeAlias = execution_mode._EagerMode
+EagerMode: TypeAlias = execution_mode.EagerMode
 
 
 class InternalSyncTest(absltest.TestCase):  # ABSLTEST_OK=Internal sync test
@@ -35,7 +35,7 @@ class InternalSyncTest(absltest.TestCase):  # ABSLTEST_OK=Internal sync test
     super().setUp()
     tt_testing.reset_eager_state()
     self.old_eager_mode = execution_mode.eager_mode
-    execution_mode.eager_mode = _EagerMode.INTERNAL_DEFER_ALL
+    execution_mode.eager_mode = EagerMode.INTERNAL_DEFER_ALL
 
   def tearDown(self):
     execution_mode.eager_mode = self.old_eager_mode

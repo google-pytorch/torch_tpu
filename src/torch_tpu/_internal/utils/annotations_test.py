@@ -509,6 +509,40 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
     with self.assertRaises(AttributeError):
       mock_module_getattr("UNKNOWN_CONST")
 
+  def test_attach_stage_metadata_with_func_target(self):
+    """Verifies _attach_stage_metadata propagates attributes to target.__func__."""
+
+    class SampleClass:
+
+      @classmethod
+      def sample_classmethod(cls) -> str:
+        return "sample"
+
+    bound_method = SampleClass.sample_classmethod
+    self.assertTrue(hasattr(bound_method, "__func__"))
+
+    annotations._attach_stage_metadata(
+        bound_method,
+        stage=annotations.Stage.DEPRECATED.value,
+        reason="Testing classmethod func attachment.",
+        version="2.14",
+    )
+
+    self.assertEqual(
+        getattr(bound_method, annotations.TT_API_STAGE), "Deprecated"
+    )
+    self.assertEqual(
+        getattr(bound_method.__func__, annotations.TT_API_STAGE), "Deprecated"
+    )
+    self.assertEqual(
+        getattr(bound_method.__func__, annotations.TT_API_STAGE_REASON),
+        "Testing classmethod func attachment.",
+    )
+    self.assertEqual(
+        getattr(bound_method.__func__, annotations.TT_API_DEPRECATED_VERSION),
+        "2.14",
+    )
+
 
 if __name__ == "__main__":
   absltest.main()

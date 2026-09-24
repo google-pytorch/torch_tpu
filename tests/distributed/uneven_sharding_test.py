@@ -21,7 +21,6 @@ import torch
 from torch import distributed as dist
 import torch.distributed.tensor as dt
 import torch.multiprocessing as mp
-from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
@@ -105,7 +104,7 @@ class UnevenShardingTest(seed_test_utils.MultiProcessRepeatableTest):
   def test_replicate_tensor_with_shape(self, ndims, compiled, tensor_size):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(_replicate_tensor, world_size=8),
+        fn=_replicate_tensor,
         tensor_size=tensor_size,
         compiled=compiled,
         ndims=ndims,
@@ -114,13 +113,49 @@ class UnevenShardingTest(seed_test_utils.MultiProcessRepeatableTest):
 
   @parameterized.named_parameters(
       ("1d_compiled_fail_small", 1, True, 4, "Tensor shape mismatch"),
-      ("1d_eager_fail_small", 1, False, 4, "Tensor shape mismatch"),
+      (
+          "1d_eager_fail_small",
+          1,
+          False,
+          4,
+          (
+              "Tensor shape mismatch|dimension size of operand at"
+              " 'all_gather_dim' cannot be zero"
+          ),
+      ),
       ("1d_compiled_fail_uneven", 1, True, 12, "Tensor shape mismatch"),
-      ("1d_eager_fail_uneven", 1, False, 12, "Tensor shape mismatch"),
+      (
+          "1d_eager_fail_uneven",
+          1,
+          False,
+          12,
+          (
+              "Tensor shape mismatch|dimension size of operand at"
+              " 'all_gather_dim' cannot be zero"
+          ),
+      ),
       ("2d_compiled_fail_small", 2, True, 4, "Wait timeout on sflag"),
-      ("2d_eager_fail_small", 2, False, 4, "Wait timeout on sflag"),
+      (
+          "2d_eager_fail_small",
+          2,
+          False,
+          4,
+          (
+              "Wait timeout on sflag|dimension size of operand at"
+              " 'all_gather_dim' cannot be zero"
+          ),
+      ),
       ("2d_compiled_fail_uneven", 2, True, 12, "Wait timeout on sflag"),
-      ("2d_eager_fail_uneven", 2, False, 12, "Wait timeout on sflag"),
+      (
+          "2d_eager_fail_uneven",
+          2,
+          False,
+          12,
+          (
+              "Wait timeout on sflag|dimension size of operand at"
+              " 'all_gather_dim' cannot be zero"
+          ),
+      ),
   )
   def test_replicate_tensor_without_shape(
       self, ndims, compiled, tensor_size, expected_regex
@@ -128,9 +163,7 @@ class UnevenShardingTest(seed_test_utils.MultiProcessRepeatableTest):
     with self.assertRaisesRegex(Exception, expected_regex):
       distributed_utils.dist_run(
           nproc_per_node=8,
-          fn=singlehost_wrapper.tpu_env_wrapper(
-              _replicate_tensor, world_size=8
-          ),
+          fn=_replicate_tensor,
           tensor_size=tensor_size,
           compiled=compiled,
           ndims=ndims,
@@ -153,9 +186,7 @@ class UnevenShardingTest(seed_test_utils.MultiProcessRepeatableTest):
     def run_fn():
       distributed_utils.dist_run(
           nproc_per_node=8,
-          fn=singlehost_wrapper.tpu_env_wrapper(
-              _replicate_tensor, world_size=8
-          ),
+          fn=_replicate_tensor,
           tensor_size=tensor_size,
           compiled=False,
           ndims=ndims,

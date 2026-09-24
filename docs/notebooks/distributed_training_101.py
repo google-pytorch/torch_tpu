@@ -52,7 +52,7 @@ def _(mo):
   mo.md(r"""
     ## 1. The `torchrun` Orchestrator
 
-    The current best practice for distributed training is to use standard PyTorch `torchrun`. On TPU, this is combined with the `singlehost_wrapper` (which we'll cover in Section 3) to initialize the TPU mesh and slice builder ports before the workers are spawned.
+    The current best practice for distributed training is to use standard PyTorch `torchrun`. On TPU, this is combined with the `environment` (which we'll cover in Section 3) to initialize the TPU mesh and slice builder ports before the workers are spawned.
     """)
   return
 
@@ -139,11 +139,11 @@ def _(mo):
   mo.md(r"""
     ## 3. Launching the Workers
 
-    Finally, we execute the script using `torchrun` and the `singlehost_wrapper` from the command line. This setup is mandatory as it defines the hardware topology before the PyTorch processes start.
+    Finally, we execute the script using `torchrun` and the `environment` from the command line. This setup is mandatory as it defines the hardware topology before the PyTorch processes start.
 
     ```bash
     # Run this in your TPU VM terminal:
-    eval $(python -m torch_tpu._internal.distributed.launchers.singlehost_wrapper | sed 's/^/export /')
+    eval $(python -m torch_tpu._internal.distributed.launchers.environment | sed 's/^/export /')
     torchrun --nproc_per_node=$WORLD_SIZE your_script.py
     ```
     """)

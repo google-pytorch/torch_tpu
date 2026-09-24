@@ -17,10 +17,7 @@
 from typing import Any
 import torch
 from torch_tpu._internal.compile.dynamic import sym_utils
-from torch_tpu._internal.compile.dynamic import symbol_bounds
 from torch_tpu._internal.compile.dynamic.sym_shape_manager import SymShapeManager
-
-get_symint_bounds = symbol_bounds.get_symint_bounds
 
 
 class HandleGenerativeOpsPass:
@@ -295,12 +292,7 @@ class HandleGenerativeOpsPass:
   ) -> None:
     """Handles arange with dynamic sequence length."""
     # Generate max_length from the dynamic length
-    _, upper = get_symint_bounds(length_symint)
-    max_length = upper
-    assert max_length is not None, (
-        "Failed to extract valid upper bound constraint size for dynamic"
-        f" length expression: {length_symint}"
-    )
+    max_length = self._sym_shape_manager.get_upper_bound(length_symint)
 
     # Convert inputs to tensor nodes if needed
     start_tensor = self._sym_shape_manager.ensure_tensor(
@@ -353,7 +345,7 @@ class HandleGenerativeOpsPass:
     for dim, arg in enumerate(sizes_list):
       if sym_utils.is_symint(arg):
         has_symint = True
-        upper = symbol_bounds.get_upper_bound(arg)
+        upper = self._sym_shape_manager.get_upper_bound(arg)
         new_sizes.append(upper)
 
         tensor_node = self._sym_shape_manager.ensure_tensor(
