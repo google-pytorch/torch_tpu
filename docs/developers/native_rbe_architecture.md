@@ -88,6 +88,7 @@ flowchart TD
 Every component in the diagram above is **already deployed and live**. No
 additional services need to be stood up to merge or merge-gate this workflow.
 
+<!-- mdformat off(GitHub renders this file; keep the single-line table) -->
 Diagram Layer                           | Component                                                                                                                                         | Owner                                                    | Current State & Lifecycle                                                                                                                                                                                                    | What We Maintain
 :-------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------ | :------------------------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :---------------
 **1. Blue** *(External / Utilized)*     | **GitHub Actions Runner (`linux-x86-n4-16`) & `ml-build` Image**                                                                                  | **ML Velocity Infra** (`ml-velocity-actions-production`) | **Automatic / Ephemeral**: Spins up on demand per PR workflow run and tears down automatically when the job finishes.                                                                                                        | **Nothing.** We only reference `runs-on: linux-x86-n4-16` and the `ml-build` image in `presubmit.yml`.
@@ -96,6 +97,7 @@ Diagram Layer                           | Component                             
 **3. Green** *(Managed GCP Networking)* | **PSC Service Attachment (`rbe-tpu-service-attachment`) & Internal LB (`rbe-internal-ilb`)**                                                      | **TorchTPU Team** (`rbe-tpu-oss`), **Managed by GCP**    | **Already Provisioned**: Cloud-native VPC networking objects in `us-east5`. Directs traffic straight to GKE node group without intermediary gateway VMs.                                                                     | **Zero ongoing maintenance.** Only touched if adding another consumer GCP project to `consumerAcceptLists`.
 **4. Amber** *(TorchTPU K8s Infra)*     | **Buildbarn Control Plane (`bb-frontend`, `bb-scheduler`, `bb-storage`) & 416-Slot Standing CPU Pool (`worker-cpu`, Autoscaling to 2,016 Slots)** | **TorchTPU Team** (`rbe-tpu-oss-east5-cluster`)          | **Already Deployed**: Control plane pods run on `default-pool` (`10.202.0.16`) with `safe-to-evict: "false"` and `hostNetwork: true`. CPU workers scale from 13 standing nodes (`416` vCPUs) up to 63 nodes (`2,016` vCPUs). | **Owned by us.** Configured via ConfigMaps `buildbarn-config-d94cdd4g96` and `bb-worker-cpu-config`, `HorizontalPodAutoscaler/worker-cpu-hpa` (`13 -> 63` pods), and GKE Cluster Autoscaler (`cpu-worker-pool` `13..45` + `cpu-worker-pool-burst` `0..18`).
 **5. Red** *(TorchTPU TPU Fleet)*       | **32 Standing Cloud TPU v5e Workers (`spot-tpu-v5e-*`, `od-tpu-v5e-*`)**                                                                          | **TorchTPU Team** (`rbe-tpu-oss`)                        | **Already Deployed**: 32 single-chip on-demand TPU VMs across 4 zones running `bb_worker.service` and containerized `bb_runner_sandbox` under `uid=1999` with `/dev/vfio/*` mode `0660 root:vfio`.                           | **Owned by us.** Despite the `spot-` prefix, all 32 are on-demand VMs, so GCE doesn't preempt them. On-demand v5e quota is 8 per zone, and all 4 zones are full.
+<!-- mdformat on -->
 
 --------------------------------------------------------------------------------
 
@@ -484,10 +486,12 @@ The native RBE workflow runs as a first-class job named `rbe_presubmit`
 
 #### Runner Environment
 
-The job executes on a standard CPU runner: - **Runner:** `linux-x86-n4-16` -
-**Container:**
-`us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:480f397c57207671315a27173ccec790ea9c66ef030af96cbe6ac9b4a6613996` -
-**IPC:** `--ipc=host`
+The job executes on a standard CPU runner:
+
+-   **Runner:** `linux-x86-n4-16`
+-   **Container:**
+    `us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:480f397c57207671315a27173ccec790ea9c66ef030af96cbe6ac9b4a6613996`
+-   **IPC:** `--ipc=host`
 
 The runner executes `bazel test --config=ci_rbe_presubmit` directly against
 `10.202.0.67:8980` over Private Service Connect using `bazel-diff`. Because PSC
