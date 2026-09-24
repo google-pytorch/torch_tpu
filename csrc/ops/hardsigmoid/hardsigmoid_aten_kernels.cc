@@ -48,14 +48,21 @@ absl::StatusOr<mlir::MlirOp> BuildHardsigmoidShlo(mlir::MlirOp input_op) {
   TT_ASSIGN_OR_RETURN(mlir::MlirOp x, CastIfNeeded(input_op, compute_dtype));
 
   // hardsigmoid(x) = clamp(0, x + 3, 6) * (1/6)
-  mlir::MlirOp zero = MakeConstantLike(x, 0.0, compute_dtype);
-  mlir::MlirOp three = MakeConstantLike(x, 3.0, compute_dtype);
-  mlir::MlirOp six = MakeConstantLike(x, 6.0, compute_dtype);
-  mlir::MlirOp one_sixth = MakeConstantLike(x, 1.0 / 6.0, compute_dtype);
+  auto& builder = x.getBuilder();
+  mlir::MlirOp zero = MakeScalarConstant(builder, 0.0, compute_dtype);
+  mlir::MlirOp three = MakeScalarConstant(builder, 3.0, compute_dtype);
+  mlir::MlirOp six = MakeScalarConstant(builder, 6.0, compute_dtype);
+  mlir::MlirOp one_sixth =
+      MakeScalarConstant(builder, 1.0 / 6.0, compute_dtype);
 
-  mlir::MlirOp x_shifted = mlir::stablehlo::Add(x, three);
-  mlir::MlirOp clamped = mlir::stablehlo::Clamp(zero, x_shifted, six);
-  mlir::MlirOp result = mlir::stablehlo::Mul(clamped, one_sixth);
+  TT_ASSIGN_OR_RETURN(
+      (auto [x_bcast, zero_bcast, three_bcast, six_bcast, one_sixth_bcast]),
+      ApplyBroadcastIfNeeded(x, zero, three, six, one_sixth));
+
+  mlir::MlirOp x_shifted = mlir::stablehlo::Add(x_bcast, three_bcast);
+  mlir::MlirOp clamped =
+      mlir::stablehlo::Clamp(zero_bcast, x_shifted, six_bcast);
+  mlir::MlirOp result = mlir::stablehlo::Mul(clamped, one_sixth_bcast);
 
   return CastIfNeeded(result, element_type);
 }
@@ -71,21 +78,28 @@ absl::StatusOr<mlir::MlirOp> BuildHardsigmoidBackwardShlo(
   TT_ASSIGN_OR_RETURN(mlir::MlirOp x, CastIfNeeded(self, compute_dtype));
 
   // grad = 1/6 if -3 < x < 3 else 0
-  mlir::MlirOp neg_three = MakeConstantLike(x, -3.0, compute_dtype);
-  mlir::MlirOp three = MakeConstantLike(x, 3.0, compute_dtype);
+  auto& builder = x.getBuilder();
+  mlir::MlirOp neg_three = MakeScalarConstant(builder, -3.0, compute_dtype);
+  mlir::MlirOp three = MakeScalarConstant(builder, 3.0, compute_dtype);
+  mlir::MlirOp zero = MakeScalarConstant(builder, 0.0, compute_dtype);
+  mlir::MlirOp one_sixth =
+      MakeScalarConstant(builder, 1.0 / 6.0, compute_dtype);
+
+  TT_ASSIGN_OR_RETURN(
+      (auto [g_bcast, x_bcast, neg_three_bcast, three_bcast, zero_bcast,
+             one_sixth_bcast]),
+      ApplyBroadcastIfNeeded(g, x, neg_three, three, zero, one_sixth));
 
   mlir::MlirOp cond_le = mlir::stablehlo::Compare(
-      x, neg_three, mlir::stablehlo::ComparisonDirection::LE);
+      x_bcast, neg_three_bcast, mlir::stablehlo::ComparisonDirection::LE);
   mlir::MlirOp cond_ge = mlir::stablehlo::Compare(
-      x, three, mlir::stablehlo::ComparisonDirection::GE);
+      x_bcast, three_bcast, mlir::stablehlo::ComparisonDirection::GE);
 
-  mlir::MlirOp zero = MakeConstantLike(x, 0.0, compute_dtype);
-  mlir::MlirOp one_sixth = MakeConstantLike(x, 1.0 / 6.0, compute_dtype);
-
-  mlir::MlirOp mid_grad = mlir::stablehlo::Mul(g, one_sixth);
+  mlir::MlirOp mid_grad = mlir::stablehlo::Mul(g_bcast, one_sixth_bcast);
 
   mlir::MlirOp out_of_bounds = mlir::stablehlo::Or(cond_le, cond_ge);
-  mlir::MlirOp result = mlir::stablehlo::Select(out_of_bounds, zero, mid_grad);
+  mlir::MlirOp result =
+      mlir::stablehlo::Select(out_of_bounds, zero_bcast, mid_grad);
 
   return CastIfNeeded(result, element_type);
 }

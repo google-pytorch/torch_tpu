@@ -46,29 +46,48 @@
 #include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
+namespace internal {
+template <>
+inline void CheckScalarInput<OpName::kHardtanh, UsesScalarInput::kYes>() {}
+template <>
+inline void CheckScalarInput<OpName::kHardtanhOut, UsesScalarInput::kYes>() {}
+template <>
+inline void
+CheckScalarInput<OpName::kHardtanhBackward, UsesScalarInput::kYes>() {}
+template <>
+inline void
+CheckScalarInput<OpName::kHardtanhBackwardGradInput, UsesScalarInput::kYes>() {}
+}  // namespace internal
+
 namespace {
 absl::StatusOr<mlir::MlirOp> BuildHardtanhShlo(mlir::MlirOp input,
                                                mlir::MlirOp min_val,
                                                mlir::MlirOp max_val) {
-  return mlir::stablehlo::Clamp(min_val, input, max_val);
+  TT_ASSIGN_OR_RETURN((auto [input_bcast, min_bcast, max_bcast]),
+                      ApplyBroadcastIfNeeded(input, min_val, max_val));
+  return mlir::stablehlo::Clamp(min_bcast, input_bcast, max_bcast);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildHardtanhBackwardShlo(mlir::MlirOp grad_output,
                                                        mlir::MlirOp self,
                                                        mlir::MlirOp min_val,
                                                        mlir::MlirOp max_val) {
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp min_val_bcast,
-                      BroadcastIfNeeded(min_val, self));
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp max_val_bcast,
-                      BroadcastIfNeeded(max_val, self));
+  auto& builder = grad_output.getBuilder();
+  auto type = GetTensorTypeOrDie(grad_output);
+  TT_ASSIGN_OR_RETURN(auto element_type,
+                      ConvertTo<mlir::ElementType>(type.getElementType()));
+  mlir::MlirOp zero = MakeScalarConstant(builder, 0.0, element_type);
+
+  TT_ASSIGN_OR_RETURN(
+      (auto [grad_bcast, self_bcast, min_bcast, max_bcast, zero_bcast]),
+      ApplyBroadcastIfNeeded(grad_output, self, min_val, max_val, zero));
 
   mlir::MlirOp gt_min = mlir::stablehlo::Compare(
-      self, min_val_bcast, mlir::stablehlo::ComparisonDirection::GT);
+      self_bcast, min_bcast, mlir::stablehlo::ComparisonDirection::GT);
   mlir::MlirOp lt_max = mlir::stablehlo::Compare(
-      self, max_val_bcast, mlir::stablehlo::ComparisonDirection::LT);
+      self_bcast, max_bcast, mlir::stablehlo::ComparisonDirection::LT);
   mlir::MlirOp in_range = mlir::stablehlo::And(gt_min, lt_max);
-  mlir::MlirOp zero = MakeConstantLike(grad_output, 0.0);
-  return mlir::stablehlo::Select(in_range, grad_output, zero);
+  return mlir::stablehlo::Select(in_range, grad_bcast, zero_bcast);
 }
 
 absl::Status ValidateHardtanhInputs(const at::Tensor& self) {
@@ -151,34 +170,35 @@ absl::StatusOr<HardtanhBounds> ClampHardtanhBounds(at::ScalarType scalar_type,
 
 // Helper to dispatch the hardtanh computation on the device.
 template <typename ReturnType, typename DispatchFn>
-ReturnType DispatchHardtanh(const at::Tensor& self,
-                            PromotedScalar& promoted_min,
-                            PromotedScalar& promoted_max,
+ReturnType DispatchHardtanh(const at::Tensor& self, const at::Scalar& min_val,
+                            const at::Scalar& max_val,
                             OpParamCacheKeys param_keys,
                             DispatchFn&& dispatch_fn) {
   const auto scalar_type = self.scalar_type();
   TT_RETURN_IF_ERROR(ValidateHardtanhInputs(self));
 
-  const at::Scalar min_val = promoted_min.scalar();
-  const at::Scalar max_val = promoted_max.scalar();
   TT_ASSIGN_OR_RETURN(const HardtanhBounds bounds,
                       ClampHardtanhBounds(scalar_type, min_val, max_val));
 
-  TT_ASSIGN_OR_RETURN(at::Tensor min_tensor,
-                      promoted_min.GetTensor(scalar_type));
-  TT_ASSIGN_OR_RETURN(at::Tensor max_tensor,
-                      promoted_max.GetTensor(scalar_type));
-
-  if (bounds.min_val.toDouble() != min_val.toDouble()) {
-    TT_ASSIGN_OR_RETURN(min_tensor, MakeTensor(bounds.min_val, scalar_type));
-  }
-  if (bounds.max_val.toDouble() != max_val.toDouble()) {
-    TT_ASSIGN_OR_RETURN(max_tensor, MakeTensor(bounds.max_val, scalar_type));
-  }
-
-  auto op_builder = [](FixedSizeSpan<mlir::MlirOp, 3> inputs)
-      -> absl::StatusOr<mlir::MlirOp> {
-    auto& [self_op, min_op, max_op] = inputs;
+  auto op_builder = [bounds, scalar_type](
+                        mlir::MlirOp self_op) -> absl::StatusOr<mlir::MlirOp> {
+    auto& builder = self_op.getBuilder();
+    auto type = GetTensorTypeOrDie(self_op);
+    TT_ASSIGN_OR_RETURN(auto element_type,
+                        ConvertTo<mlir::ElementType>(type.getElementType()));
+    mlir::MlirOp min_op;
+    mlir::MlirOp max_op;
+    if (c10::isIntegralType(scalar_type, /*includeBool=*/false)) {
+      min_op =
+          MakeScalarConstant(builder, bounds.min_val.toLong(), element_type);
+      max_op =
+          MakeScalarConstant(builder, bounds.max_val.toLong(), element_type);
+    } else {
+      min_op =
+          MakeScalarConstant(builder, bounds.min_val.toDouble(), element_type);
+      max_op =
+          MakeScalarConstant(builder, bounds.max_val.toDouble(), element_type);
+    }
     return BuildHardtanhShlo(self_op, min_op, max_op);
   };
 
@@ -186,33 +206,33 @@ ReturnType DispatchHardtanh(const at::Tensor& self,
                       ConvertTo<mlir::ElementType>(scalar_type));
 
   return dispatch_fn(
-      op_builder, OpInputs<3>{self, min_tensor, max_tensor},
+      op_builder, OpInputs<1>{self},
       DispatchOpOptions<1>{.out_dtype = output_dtype,
                            .out_dims = CopyIntVector(self.sizes()),
                            .op_param_cache_keys = std::move(param_keys)});
 }
 
 absl::StatusOr<DeviceBufferRef> AtenHardtanhImpl(const at::Tensor& self,
-                                                 PromotedScalar& promoted_min,
-                                                 PromotedScalar& promoted_max,
+                                                 const at::Scalar& min_val,
+                                                 const at::Scalar& max_val,
                                                  OpParamCacheKeys param_keys) {
   return DispatchHardtanh<absl::StatusOr<DeviceBufferRef>>(
-      self, promoted_min, promoted_max, std::move(param_keys),
-      [](auto&& op_builder, const OpInputs<3>& inputs,
+      self, min_val, max_val, std::move(param_keys),
+      [](auto&& op_builder, const OpInputs<1>& inputs,
          DispatchOpOptions<1> options) {
-        return DispatchOp<3>(op_builder, inputs, std::move(options));
+        return DispatchOp<1>(op_builder, inputs, std::move(options));
       });
 }
 
 absl::Status AtenHardtanhOutImpl(const at::Tensor& self,
-                                 PromotedScalar& promoted_min,
-                                 PromotedScalar& promoted_max,
+                                 const at::Scalar& min_val,
+                                 const at::Scalar& max_val,
                                  OpParamCacheKeys param_keys, at::Tensor& out) {
   return DispatchHardtanh<absl::Status>(
-      self, promoted_min, promoted_max, std::move(param_keys),
-      [&out](auto&& op_builder, const OpInputs<3>& inputs,
+      self, min_val, max_val, std::move(param_keys),
+      [&out](auto&& op_builder, const OpInputs<1>& inputs,
              DispatchOpOptions<1> options) {
-        return DispatchOpOut<3>(op_builder, inputs, out, std::move(options));
+        return DispatchOpOut<1>(op_builder, inputs, out, std::move(options));
       });
 }
 
@@ -228,21 +248,27 @@ absl::Status ValidateHardtanhBackwardInputs(const at::Tensor& self) {
 template <typename ReturnType, typename DispatchFn>
 ReturnType DispatchHardtanhBackward(const at::Tensor& grad_output,
                                     const at::Tensor& self,
-                                    PromotedScalar& promoted_min,
-                                    PromotedScalar& promoted_max,
+                                    const at::Scalar& min_val,
+                                    const at::Scalar& max_val,
                                     OpParamCacheKeys param_keys,
                                     DispatchFn&& dispatch_fn) {
   TT_RETURN_IF_ERROR(ValidateHardtanhBackwardInputs(self));
   auto scalar_type = self.scalar_type();
 
-  TT_ASSIGN_OR_RETURN(at::Tensor min_tensor,
-                      promoted_min.GetTensor(scalar_type));
-  TT_ASSIGN_OR_RETURN(at::Tensor max_tensor,
-                      promoted_max.GetTensor(scalar_type));
+  TT_ASSIGN_OR_RETURN(const HardtanhBounds bounds,
+                      ClampHardtanhBounds(scalar_type, min_val, max_val));
 
-  auto op_builder = [](FixedSizeSpan<mlir::MlirOp, 4> inputs)
+  auto op_builder = [bounds](FixedSizeSpan<mlir::MlirOp, 2> inputs)
       -> absl::StatusOr<mlir::MlirOp> {
-    auto& [grad_output_op, self_op, min_op, max_op] = inputs;
+    auto [grad_output_op, self_op] = inputs;
+    auto& builder = grad_output_op.getBuilder();
+    auto type = GetTensorTypeOrDie(self_op);
+    TT_ASSIGN_OR_RETURN(auto element_type,
+                        ConvertTo<mlir::ElementType>(type.getElementType()));
+    mlir::MlirOp min_op =
+        MakeScalarConstant(builder, bounds.min_val.toDouble(), element_type);
+    mlir::MlirOp max_op =
+        MakeScalarConstant(builder, bounds.max_val.toDouble(), element_type);
     return BuildHardtanhBackwardShlo(grad_output_op, self_op, min_op, max_op);
   };
 
@@ -251,7 +277,7 @@ ReturnType DispatchHardtanhBackward(const at::Tensor& grad_output,
   Dimensions out_dims = CopyIntVector(self.sizes());
 
   return dispatch_fn(
-      op_builder, OpInputs<4>{grad_output, self, min_tensor, max_tensor},
+      op_builder, OpInputs<2>{grad_output, self},
       DispatchOpOptions<1>{.out_dtype = output_dtype,
                            .out_dims = std::move(out_dims),
                            .op_param_cache_keys = std::move(param_keys)});
@@ -259,27 +285,27 @@ ReturnType DispatchHardtanhBackward(const at::Tensor& grad_output,
 
 absl::StatusOr<DeviceBufferRef> AtenHardtanhBackwardImpl(
     const at::Tensor& grad_output, const at::Tensor& self,
-    PromotedScalar& promoted_min, PromotedScalar& promoted_max,
+    const at::Scalar& min_val, const at::Scalar& max_val,
     OpParamCacheKeys param_keys) {
   return DispatchHardtanhBackward<absl::StatusOr<DeviceBufferRef>>(
-      grad_output, self, promoted_min, promoted_max, std::move(param_keys),
-      [](auto&& op_builder, const OpInputs<4>& inputs,
+      grad_output, self, min_val, max_val, std::move(param_keys),
+      [](auto&& op_builder, const OpInputs<2>& inputs,
          DispatchOpOptions<1> options) {
-        return DispatchOp<4>(op_builder, inputs, std::move(options));
+        return DispatchOp<2>(op_builder, inputs, std::move(options));
       });
 }
 
 absl::Status AtenHardtanhBackwardOutImpl(const at::Tensor& grad_output,
                                          const at::Tensor& self,
-                                         PromotedScalar& promoted_min,
-                                         PromotedScalar& promoted_max,
+                                         const at::Scalar& min_val,
+                                         const at::Scalar& max_val,
                                          OpParamCacheKeys param_keys,
                                          at::Tensor& grad_input) {
   return DispatchHardtanhBackward<absl::Status>(
-      grad_output, self, promoted_min, promoted_max, std::move(param_keys),
-      [&grad_input](auto&& op_builder, const OpInputs<4>& inputs,
+      grad_output, self, min_val, max_val, std::move(param_keys),
+      [&grad_input](auto&& op_builder, const OpInputs<2>& inputs,
                     DispatchOpOptions<1> options) {
-        return DispatchOpOut<4>(op_builder, inputs, grad_input,
+        return DispatchOpOut<2>(op_builder, inputs, grad_input,
                                 std::move(options));
       });
 }
@@ -287,12 +313,10 @@ absl::Status AtenHardtanhBackwardOutImpl(const at::Tensor& grad_output,
 
 at::Tensor AtenHardtanh(const at::Tensor& self, const at::Scalar& min_val,
                         const at::Scalar& max_val) {
-  PromotedScalar promoted_min = PromoteScalar(min_val);
-  PromotedScalar promoted_max = PromoteScalar(max_val);
-  TT_KERNEL(OpName::kHardtanh, param_keys, (self, promoted_min, promoted_max), {
-    TT_ASSIGN_OR_THROW(auto result_buf,
-                       AtenHardtanhImpl(self, promoted_min, promoted_max,
-                                        std::move(param_keys)));
+  TT_KERNEL(OpName::kHardtanh, param_keys, (self, min_val, max_val), {
+    TT_ASSIGN_OR_THROW(
+        auto result_buf,
+        AtenHardtanhImpl(self, min_val, max_val, std::move(param_keys)));
     return MakeTensor(std::move(result_buf));
   });
 }
@@ -304,29 +328,23 @@ at::Tensor& AtenHardtanh_(at::Tensor& self, const at::Scalar& min_val,
 
 at::Tensor& AtenHardtanhOut(const at::Tensor& self, const at::Scalar& min_val,
                             const at::Scalar& max_val, at::Tensor& out) {
-  PromotedScalar promoted_min = PromoteScalar(min_val);
-  PromotedScalar promoted_max = PromoteScalar(max_val);
-  TT_KERNEL(
-      OpName::kHardtanhOut, param_keys, (self, promoted_min, promoted_max, out),
-      {
-        TT_THROW_IF_ERROR(AtenHardtanhOutImpl(self, promoted_min, promoted_max,
-                                              std::move(param_keys), out));
-        return out;
-      });
+  TT_KERNEL(OpName::kHardtanhOut, param_keys, (self, min_val, max_val, out), {
+    TT_THROW_IF_ERROR(AtenHardtanhOutImpl(self, min_val, max_val,
+                                          std::move(param_keys), out));
+    return out;
+  });
 }
 
 at::Tensor AtenHardtanhBackward(const at::Tensor& grad_output,
                                 const at::Tensor& self,
                                 const at::Scalar& min_val,
                                 const at::Scalar& max_val) {
-  PromotedScalar promoted_min = PromoteScalar(min_val);
-  PromotedScalar promoted_max = PromoteScalar(max_val);
   TT_KERNEL(OpName::kHardtanhBackward, param_keys,
-            (grad_output, self, promoted_min, promoted_max), {
-              TT_ASSIGN_OR_THROW(auto result_buf,
-                                 AtenHardtanhBackwardImpl(
-                                     grad_output, self, promoted_min,
-                                     promoted_max, std::move(param_keys)));
+            (grad_output, self, min_val, max_val), {
+              TT_ASSIGN_OR_THROW(
+                  auto result_buf,
+                  AtenHardtanhBackwardImpl(grad_output, self, min_val, max_val,
+                                           std::move(param_keys)));
               return MakeTensor(std::move(result_buf));
             });
 }
@@ -336,13 +354,11 @@ at::Tensor& AtenHardtanhBackwardGradInput(const at::Tensor& grad_output,
                                           const at::Scalar& min_val,
                                           const at::Scalar& max_val,
                                           at::Tensor& grad_input) {
-  PromotedScalar promoted_min = PromoteScalar(min_val);
-  PromotedScalar promoted_max = PromoteScalar(max_val);
   TT_KERNEL(OpName::kHardtanhBackwardGradInput, param_keys,
-            (grad_output, self, promoted_min, promoted_max, grad_input), {
+            (grad_output, self, min_val, max_val, grad_input), {
               TT_THROW_IF_ERROR(AtenHardtanhBackwardOutImpl(
-                  grad_output, self, promoted_min, promoted_max,
-                  std::move(param_keys), grad_input));
+                  grad_output, self, min_val, max_val, std::move(param_keys),
+                  grad_input));
               return grad_input;
             });
 }

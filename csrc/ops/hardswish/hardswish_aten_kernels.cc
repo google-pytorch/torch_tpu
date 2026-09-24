@@ -47,14 +47,20 @@ absl::StatusOr<mlir::MlirOp> BuildHardswishShlo(mlir::MlirOp input_op) {
   TT_ASSIGN_OR_RETURN(auto element_type,
                       ConvertTo<mlir::ElementType>(type.getElementType()));
 
-  mlir::MlirOp three = MakeConstantLike(input_op, 3.0, element_type);
-  mlir::MlirOp six = MakeConstantLike(input_op, 6.0, element_type);
-  mlir::MlirOp zero = MakeConstantLike(input_op, 0.0, element_type);
+  auto& builder = input_op.getBuilder();
+  mlir::MlirOp zero = MakeScalarConstant(builder, 0.0, element_type);
+  mlir::MlirOp three = MakeScalarConstant(builder, 3.0, element_type);
+  mlir::MlirOp six = MakeScalarConstant(builder, 6.0, element_type);
+  mlir::MlirOp one_sixth = MakeScalarConstant(builder, 1.0 / 6.0, element_type);
 
-  mlir::MlirOp x_plus_3 = mlir::stablehlo::Add(input_op, three);
-  mlir::MlirOp relu6 = mlir::stablehlo::Clamp(zero, x_plus_3, six);
-  mlir::MlirOp num = mlir::stablehlo::Mul(input_op, relu6);
-  return mlir::stablehlo::Div(num, six);
+  TT_ASSIGN_OR_RETURN(
+      (auto [x, zero_bcast, three_bcast, six_bcast, one_sixth_bcast]),
+      ApplyBroadcastIfNeeded(input_op, zero, three, six, one_sixth));
+
+  mlir::MlirOp x_plus_3 = mlir::stablehlo::Add(x, three_bcast);
+  mlir::MlirOp relu6 = mlir::stablehlo::Clamp(zero_bcast, x_plus_3, six_bcast);
+  mlir::MlirOp num = mlir::stablehlo::Mul(x, relu6);
+  return mlir::stablehlo::Mul(num, one_sixth_bcast);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildHardswishBackwardShlo(
@@ -63,25 +69,33 @@ absl::StatusOr<mlir::MlirOp> BuildHardswishBackwardShlo(
   TT_ASSIGN_OR_RETURN(auto element_type,
                       ConvertTo<mlir::ElementType>(type.getElementType()));
 
-  mlir::MlirOp neg_three = MakeConstantLike(self, -3.0, element_type);
-  mlir::MlirOp three = MakeConstantLike(self, 3.0, element_type);
+  auto& builder = self.getBuilder();
+  mlir::MlirOp neg_three = MakeScalarConstant(builder, -3.0, element_type);
+  mlir::MlirOp three = MakeScalarConstant(builder, 3.0, element_type);
+  mlir::MlirOp zero = MakeScalarConstant(builder, 0.0, element_type);
+  mlir::MlirOp one_third = MakeScalarConstant(builder, 1.0 / 3.0, element_type);
+  mlir::MlirOp half = MakeScalarConstant(builder, 0.5, element_type);
+
+  TT_ASSIGN_OR_RETURN(
+      (auto [grad_bcast, self_bcast, neg_three_bcast, three_bcast, zero_bcast,
+             one_third_bcast, half_bcast]),
+      ApplyBroadcastIfNeeded(grad_output, self, neg_three, three, zero,
+                             one_third, half));
 
   mlir::MlirOp cond_less = mlir::stablehlo::Compare(
-      self, neg_three, mlir::stablehlo::ComparisonDirection::LE);
+      self_bcast, neg_three_bcast, mlir::stablehlo::ComparisonDirection::LE);
   mlir::MlirOp cond_greater = mlir::stablehlo::Compare(
-      self, three, mlir::stablehlo::ComparisonDirection::GE);
+      self_bcast, three_bcast, mlir::stablehlo::ComparisonDirection::GE);
 
-  mlir::MlirOp zero = MakeConstantLike(self, 0.0, element_type);
-  mlir::MlirOp one_third = MakeConstantLike(self, 1.0 / 3.0, element_type);
-  mlir::MlirOp half = MakeConstantLike(self, 0.5, element_type);
-
-  mlir::MlirOp self_over_three = mlir::stablehlo::Mul(self, one_third);
-  mlir::MlirOp mid_grad_factor = mlir::stablehlo::Add(self_over_three, half);
-  mlir::MlirOp mid_grad = mlir::stablehlo::Mul(grad_output, mid_grad_factor);
+  mlir::MlirOp self_over_three =
+      mlir::stablehlo::Mul(self_bcast, one_third_bcast);
+  mlir::MlirOp mid_grad_factor =
+      mlir::stablehlo::Add(self_over_three, half_bcast);
+  mlir::MlirOp mid_grad = mlir::stablehlo::Mul(grad_bcast, mid_grad_factor);
 
   mlir::MlirOp res2 =
-      mlir::stablehlo::Select(cond_greater, grad_output, mid_grad);
-  return mlir::stablehlo::Select(cond_less, zero, res2);
+      mlir::stablehlo::Select(cond_greater, grad_bcast, mid_grad);
+  return mlir::stablehlo::Select(cond_less, zero_bcast, res2);
 }
 
 }  // namespace
