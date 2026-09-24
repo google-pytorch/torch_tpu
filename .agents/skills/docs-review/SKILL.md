@@ -1,6 +1,7 @@
 ---
 name: docs-review
-description: > Guide for writing narrative documentation in this repository. Use this when writing, editing, or reviewing any documentation or README content.
+description: >-
+  Guide for writing narrative documentation in this repository. Use this when writing, editing, or reviewing any documentation or README content.
 ---
 
 # Documentation for TorchTPU
