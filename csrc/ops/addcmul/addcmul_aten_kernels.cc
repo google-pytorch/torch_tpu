@@ -37,23 +37,38 @@
 #include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
+namespace internal {
+template <>
+inline void CheckScalarInput<OpName::kAddcmulOut, UsesScalarInput::kYes>() {}
+}  // namespace internal
+
 namespace {
 
-absl::StatusOr<mlir::MlirOp> BuildAddcmulShlo(mlir::MlirOp self,
-                                              mlir::MlirOp tensor1,
-                                              mlir::MlirOp tensor2,
-                                              mlir::MlirOp value) {
-  TT_ASSIGN_OR_RETURN(const mlir::ElementType out_dtype, GetElementType(self));
+absl::StatusOr<mlir::MlirOp> BuildAddcmulScalarShlo(
+    mlir::MlirOp self, mlir::MlirOp tensor1, mlir::MlirOp tensor2,
+    const at::Scalar& value, mlir::ElementType out_dtype) {
   TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
                       InferComputationDtype(out_dtype));
-
   TT_ASSIGN_OR_RETURN(self, CastIfNeeded(self, compute_dtype));
   TT_ASSIGN_OR_RETURN(tensor1, CastIfNeeded(tensor1, compute_dtype));
   TT_ASSIGN_OR_RETURN(tensor2, CastIfNeeded(tensor2, compute_dtype));
-  TT_ASSIGN_OR_RETURN(value, CastIfNeeded(value, compute_dtype));
 
   TT_ASSIGN_OR_RETURN(mlir::MlirOp mul, BuildMulShlo(tensor1, tensor2));
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp value_mul, BuildMulShlo(value, mul));
+
+  double val = value.toDouble();
+  if (val == 1.0) {
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp result, BuildAddShlo(self, mul));
+    return CastIfNeeded(result, out_dtype);
+  }
+  if (val == -1.0) {
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp result, BuildSubShlo(self, mul));
+    return CastIfNeeded(result, out_dtype);
+  }
+
+  auto& builder = self.getBuilder();
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp val_op,
+                      MakeConstant(builder, value, compute_dtype));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp value_mul, BuildMulShlo(val_op, mul));
   TT_ASSIGN_OR_RETURN(mlir::MlirOp result, BuildAddShlo(self, value_mul));
   return CastIfNeeded(result, out_dtype);
 }
@@ -63,15 +78,13 @@ absl::StatusOr<mlir::MlirOp> BuildAddcmulShlo(mlir::MlirOp self,
 at::Tensor& AtenAddcmulOut(const at::Tensor& self, const at::Tensor& tensor1,
                            const at::Tensor& tensor2, const at::Scalar& value,
                            at::Tensor& out) {
-  auto promoted_value = PromoteScalar(value);
   TT_KERNEL(
-      OpName::kAddcmulOut, _, (self, tensor1, tensor2, promoted_value, out), {
+      OpName::kAddcmulOut, param_keys, (self, tensor1, tensor2, value, out), {
         TT_ASSIGN_OR_THROW(auto t1_t2_size,
                            InferSize(tensor1.sizes(), tensor2.sizes()));
         TT_ASSIGN_OR_THROW(auto expected_size,
                            InferSize(self.sizes(), t1_t2_size));
 
-        TT_ASSIGN_OR_THROW(at::Tensor value_tensor, promoted_value.GetTensor());
         TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Bool &&
                            tensor1.scalar_type() != at::ScalarType::Bool &&
                            tensor2.scalar_type() != at::ScalarType::Bool,
@@ -81,21 +94,23 @@ at::Tensor& AtenAddcmulOut(const at::Tensor& self, const at::Tensor& tensor1,
             << ", tensor1: " << ToString(tensor1.scalar_type())
             << ", tensor2: " << ToString(tensor2.scalar_type());
 
-        // Build the op.
-        auto op_builder = [](FixedSizeSpan<mlir::MlirOp, 4> inputs)
-            -> absl::StatusOr<mlir::MlirOp> {
-          auto& [self_op, tensor1_op, tensor2_op, value_op] = inputs;
-          return BuildAddcmulShlo(self_op, tensor1_op, tensor2_op, value_op);
-        };
-
         TT_ASSIGN_OR_THROW(mlir::ElementType out_dtype,
                            ConvertTo<mlir::ElementType>(out.scalar_type()));
 
-        TT_THROW_IF_ERROR(DispatchOpOut<4>(
-            std::move(op_builder), {self, tensor1, tensor2, value_tensor}, out,
+        // Build the op.
+        auto op_builder = [value,
+                           out_dtype](FixedSizeSpan<mlir::MlirOp, 3> inputs)
+            -> absl::StatusOr<mlir::MlirOp> {
+          auto& [self_op, tensor1_op, tensor2_op] = inputs;
+          return BuildAddcmulScalarShlo(self_op, tensor1_op, tensor2_op, value,
+                                        out_dtype);
+        };
+
+        TT_THROW_IF_ERROR(DispatchOpOut<3>(
+            std::move(op_builder), {self, tensor1, tensor2}, out,
             {.out_dtype = out_dtype,
              .out_dims = expected_size,
-             .op_param_cache_keys = OpParamCacheKeys::Empty()}));
+             .op_param_cache_keys = std::move(param_keys)}));
         return out;
       });
 }
