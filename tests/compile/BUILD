@@ -533,6 +533,18 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "force_collectives_output_test",
+    srcs = ["force_collectives_output_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile/fx_passes:force_collectives_output",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "reassociate_norm_weights_test",
     srcs = ["reassociate_norm_weights_test.py"],
     deps = [
