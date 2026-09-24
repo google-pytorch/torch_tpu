@@ -52,9 +52,9 @@ torch_tpu_cc_library(
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Parser",
         "@llvm-project//mlir:Support",
-        "@stablehlo//:attr_type_builder_util",
-        "@stablehlo//:mlir_builder",
         "@stablehlo//:stablehlo_ops",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
     ],
 )
 

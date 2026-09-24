@@ -93,8 +93,8 @@ torch_tpu_cc_test(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
-        "@stablehlo//:attr_type_builder_util",
-        "@stablehlo//:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
         "@xla//xla/pjrt:pjrt_client",
     ],
 )

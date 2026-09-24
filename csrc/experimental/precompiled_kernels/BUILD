@@ -132,7 +132,7 @@ torch_tpu_cc_test(
         "@com_google_absl//absl/time",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
-        "@stablehlo//:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
         "@xla//xla:literal",
         "@xla//xla:literal_util",
         "@xla//xla:shape_layout",

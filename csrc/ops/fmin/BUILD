@@ -32,9 +32,9 @@ torch_tpu_cc_library(
         "//csrc/ops/macros:kernel",
         "//shims/torch:aten_headers",
         "@com_google_absl//absl/status:statusor",
-        "@stablehlo//:mlir_builder",
-        "@stablehlo//:stablehlo_builder",
         "@stablehlo//:stablehlo_ops",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
     ],
 )
 
