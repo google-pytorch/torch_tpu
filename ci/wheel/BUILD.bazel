@@ -97,7 +97,6 @@ torch_tpu_py_library(
     srcs = [
         # go/keep-sorted start
         "//src/torch_tpu",
-        "//src/torch_tpu/_internal/benchmarks:benchmark_adapter",
         "//src/torch_tpu/_internal/benchmarks:export_adapter",
         "//src/torch_tpu/_internal/benchmarks:xprof_adapter",
         "//src/torch_tpu/_internal/compile/dynamic:view_decomposition",
