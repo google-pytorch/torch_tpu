@@ -17,7 +17,6 @@ load(
     "if_oss",
     "torch_tpu_package_end",
     "torch_tpu_py_test",
-    "tpu_gen",
 )
 
 package(
@@ -31,10 +30,6 @@ torch_tpu_py_test(
     args = if_oss(
         [],
         ["--deepsea_chip_config_name=torch"],
-    ),
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
-        reason = "Load balancing",
     ),
     tags = [
         # A device with SparseCore is required to allow for SparseCore pinning.
@@ -55,10 +50,6 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "copy_test",
     srcs = ["copy_test.py"],
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
-        reason = "Load balancing",
-    ),
     tags = [
         "requires-tpu-v5lite",
     ],
