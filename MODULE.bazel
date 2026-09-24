@@ -199,11 +199,12 @@ _TORCH_WHL_MODIFICATIONS = {
 EXTRA_PYTORCH_VERSIONS = [
     "2.12.0",
     "2.13.0",
+    "2.14.0",
 ]
 
 # The release version the nightly channel currently leads up to. Its glue's
 # torch comes from the same machinery as the extra release versions -- hub
-# torch_tpu_pypi_2_14_0 -- except that it resolves from the nightly index and
+# torch_tpu_pypi_2_15_0 -- except that it resolves from the nightly index and
 # its lock is requirements_torch_nightly.txt (a dev-build pin refreshed by
 # re-running requirements/lock_environments.sh). Kept in sync with
 # NIGHTLY_TORCH_VERSION/GLUE_TORCH_VERSIONS in //bazel:pytorch_versions.bzl,
