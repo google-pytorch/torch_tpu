@@ -998,6 +998,95 @@ TEST_F(EventsQueueTest, NotPulledAfterLastSnapshot) {
   EXPECT_EQ(first_snapshot.traversals[0]->outputs()[0], ref_a);
 }
 
+TEST_F(EventsQueueTest, SingleOpFastPathAndExtraConstantFallback) {
+  ClearAllStreams();
+  ScopedPythonContextCapturer capturer(OpName::kEmpty);
+  Shape shape(Dimensions{8}, mlir::ElementType::F32);
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+
+  // 1. Single deferred op with no deferred inputs (exercises the single-op
+  // fast path).
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto refs_single,
+      DeviceBufferList::CreateDeferred(OpName::kAdd, DummyBuilder, {},
+                                       OpParamCacheKeys::Empty(), {shape}));
+  auto ref_single = refs_single[0];
+  auto list_single = ref_single.device_buffer_list();
+  RecordDeferredOpCreated(list_single);
+
+  EventSnapshot::Record(device_index, stream_id, {list_single});
+  auto pending_snapshots =
+      PrepareSnapshotMaterializations(device_index, stream_id);
+  ASSERT_EQ(pending_snapshots.size(), 1);
+  const auto& single_traversals = pending_snapshots[0].traversals;
+  ASSERT_EQ(single_traversals.size(), 1);
+  EXPECT_THAT(single_traversals[0]->execution_order(),
+              testing::ElementsAre(list_single));
+  EXPECT_THAT(single_traversals[0]->outputs(),
+              testing::ElementsAre(ref_single));
+
+  // 2. Single deferred op plus an explicit deferred constant in
+  // must_materialize (must bypass the single-op fast path so the constant is
+  // also materialized).
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto refs_op,
+      DeviceBufferList::CreateDeferred(OpName::kAdd, DummyBuilder, {},
+                                       OpParamCacheKeys::Empty(), {shape}));
+  auto ref_op = refs_op[0];
+  auto list_op = ref_op.device_buffer_list();
+  RecordDeferredOpCreated(list_op);
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto empty_refs,
+      DeviceBufferList::CreateDeferred(OpName::kEmptyMemoryFormat, DummyBuilder,
+                                       {}, OpParamCacheKeys::Empty(), {shape}));
+  auto empty_ref = empty_refs[0];
+  auto empty_list = empty_ref.device_buffer_list();
+  RecordDeferredOpCreated(empty_list);
+
+  EventSnapshot::Record(device_index, stream_id, {list_op, empty_list});
+  pending_snapshots = PrepareSnapshotMaterializations(device_index, stream_id);
+  ASSERT_EQ(pending_snapshots.size(), 1);
+  const auto& combined_traversals = pending_snapshots[0].traversals;
+  ASSERT_EQ(combined_traversals.size(), 1);
+  EXPECT_THAT(combined_traversals[0]->execution_order(),
+              testing::ElementsAre(list_op, empty_list));
+  EXPECT_THAT(combined_traversals[0]->outputs(),
+              testing::ElementsAre(ref_op, empty_ref));
+}
+
+TEST_F(EventsQueueTest, NodeMatcherAcrossSmallAndLargeSpans) {
+  ClearAllStreams();
+  ScopedPythonContextCapturer capturer(OpName::kEmpty);
+  Shape shape(Dimensions{8}, mlir::ElementType::F32);
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+
+  // Test both small span (5 <= 8, InlinedVector) and large span (10 > 8,
+  // flat_hash_set).
+  for (int count : {5, 10}) {
+    std::vector<SharedDeviceBufferList> nodes;
+    std::vector<DeviceBufferRef> expected_outputs;
+    for (int i = 0; i < count; ++i) {
+      TT_ASSERT_OK_AND_ASSIGN(
+          auto refs,
+          DeviceBufferList::CreateDeferred(OpName::kAdd, DummyBuilder, {},
+                                           OpParamCacheKeys::Empty(), {shape}));
+      nodes.push_back(refs[0].device_buffer_list());
+      expected_outputs.push_back(refs[0]);
+      RecordDeferredOpCreated(refs[0].device_buffer_list());
+    }
+    EventSnapshot::Record(device_index, stream_id, nodes);
+    auto pending_snapshots =
+        PrepareSnapshotMaterializations(device_index, stream_id);
+    ASSERT_EQ(pending_snapshots.size(), 1);
+    const auto& traversals = pending_snapshots[0].traversals;
+    ASSERT_EQ(traversals.size(), 1);
+    EXPECT_THAT(traversals[0]->execution_order(),
+                testing::ElementsAreArray(nodes));
+    EXPECT_THAT(traversals[0]->outputs(),
+                testing::ElementsAreArray(expected_outputs));
+  }
+}
 }  // namespace
 
 }  // namespace torch_tpu
