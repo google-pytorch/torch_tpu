@@ -24,9 +24,9 @@ from collections.abc import Mapping
 import dataclasses
 from typing import Any, Final, List
 import torch
+from torch._dynamo.device_interface import DeviceInterface
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal.device import _device_ops_backend
-import torch_tpu._internal.execution_mode as _execution_mode_module
 import torch_tpu._internal.precision as _precision_module
 from torch_tpu._internal.stream import streams
 from torch_tpu._internal.utils import annotations
@@ -88,7 +88,7 @@ class _DefaultGeneratorsProperty:
     owner.current_device()
     if (
         execution_mode.eager_mode
-        == execution_mode._EagerMode.INTERNAL_COMPILE_FX_GRAPH
+        == execution_mode.EagerMode.INTERNAL_COMPILE_FX_GRAPH
     ):
       generators = []
       for i in range(owner.device_count()):
@@ -123,11 +123,6 @@ __tt_api_stages__: dict[str, annotations.ApiStageInfo] = {
         stage=annotations.Stage.EXPERIMENTAL,
         reason="Default generators for TPU devices.",
         value=_DefaultGeneratorsProperty(),
-    ),
-    "EagerMode": annotations.ApiStageInfo(
-        stage=annotations.Stage.EXPERIMENTAL,
-        reason="TPU eager execution mode configuration.",
-        value=_execution_mode_module.EagerMode,
     ),
     "Precision": annotations.ApiStageInfo(
         stage=annotations.Stage.EXPERIMENTAL,
@@ -196,8 +191,15 @@ def _get_device_index(
   )
 
 
+@experimental(
+    "device() context manager is experimental and subject to change without"
+    " notice."
+)
 class _DeviceContext:
   r"""Context-manager that changes the selected device.
+
+  .. warning::
+      This API is experimental and subject to change in future releases.
 
   Args:
     device: device index to select. It's a no-op if this argument is a negative
@@ -216,8 +218,15 @@ class _DeviceContext:
     return False
 
 
+@experimental(
+    "device_of() context manager is experimental and subject to change without"
+    " notice."
+)
 class _DeviceOfContext(_DeviceContext):
   r"""Context-manager that changes the current device to that of given object.
+
+  .. warning::
+      This API is experimental and subject to change in future releases.
 
   You can use both tensors and storages as arguments. If a given object is
   not allocated on a TPU, this is a no-op.
@@ -290,31 +299,6 @@ class _DeviceModuleMeta(abc.ABCMeta):
       raise RuntimeError("TorchTPU device ops backend is not initialized.")
     setter(value)
 
-  @property
-  @annotations.experimental(
-      "eager_mode is experimental and may change or be removed without notice."
-  )
-  def eager_mode(
-      cls,
-  ) -> _execution_mode_module.EagerMode | _execution_mode_module._EagerMode:
-    """Gets the current eager execution mode for TPU."""
-    return _execution_mode_module._wrap_eager_mode(
-        _execution_mode_module.eager_mode
-    )
-
-  @eager_mode.setter
-  @annotations.experimental(
-      "eager_mode is experimental and may change or be removed without notice."
-  )
-  def eager_mode(
-      cls,
-      value: (
-          _execution_mode_module.EagerMode | _execution_mode_module._EagerMode
-      ),
-  ) -> None:
-    """Sets the eager execution mode for TPU."""
-    _execution_mode_module.eager_mode = value
-
   def __getattr__(cls, name: str) -> Any:
     stages_map = getattr(cls, "__tt_api_stages__", {})
     # tt_api_globals is None because resolved attributes are cached directly on
@@ -322,10 +306,10 @@ class _DeviceModuleMeta(abc.ABCMeta):
     val = annotations._resolve_module_attribute(
         stages_map, name, "torch.tpu", tt_api_globals=None
     )
+    # Install the resolved attribute or descriptor directly on `cls`, and return
+    # via getattr so Python's native descriptor protocol handles binding.
     type.__setattr__(cls, name, val)
-    if hasattr(val, "__get__"):
-      return val.__get__(None, cls)
-    return val
+    return getattr(cls, name)
 
 
 class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
@@ -357,7 +341,6 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
   device = _DeviceContext  # pylint: disable=invalid-name
   device_of = _DeviceOfContext  # pylint: disable=invalid-name
   precision = _precision_module.precision
-  set_eager_mode = _execution_mode_module.set_eager_mode
 
   # This method is called when a subclass of this abstract base class is
   # created. As of Python 3.15, there is no obviously supported way of declaring
@@ -369,8 +352,15 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
       raise TypeError(f"Class '{cls.__name__}' must define _device_type")
 
   @classmethod
+  @experimental(
+      "current_device() is experimental and subject to change without notice."
+  )
   def current_device(cls) -> int:  # This is in torch/cuda/__init__.py.
-    """Returns the index of the currently selected device."""
+    """Returns the index of the currently selected device.
+
+    .. warning::
+        This API is experimental and subject to change in future releases.
+    """
     if cls._current_device is None:
       cls._current_device = _device_ops_backend._get_current_device_id()  # pylint: disable=protected-access
 
@@ -395,10 +385,16 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
     return cls.default_generators[idx]
 
   @classmethod
+  @experimental(
+      "set_device() is experimental and subject to change without notice."
+  )
   def set_device(
       cls, device: int | str | torch.device
   ) -> None:  # This is in torch/cuda/__init__.py.
     """Sets the current device.
+
+    .. warning::
+        This API is experimental and subject to change in future releases.
 
     For TPUs, this method primarily validates that the given device index
     matches the device index assigned to the current process. Unlike CUDA,
@@ -458,17 +454,19 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
   # for torch.tpu to avoid polluting the public module namespace and to stay in
   # line with torch.cuda.
   exchange_device = _exchange_device
-  maybe_exchange_device = _maybe_exchange_device
 
   @classmethod
+  @experimental(
+      "is_available() is experimental and subject to change without notice."
+  )
   def is_available(cls) -> bool:  # This is in torch/cuda/__init__.py.
-    """Returns if the TPU backend is currently available."""
+    """Returns if the TPU backend is currently available.
+
+    .. warning::
+        This API is experimental and subject to change in future releases.
+    """
     if cls._device_type == "tpu":
       return cls.device_count() > 0
-    if cls._device_type == "xla_cpu":
-      return True
-    if cls._device_type == "xla_cuda":
-      return hardware.has_nvidia_gpu()
     return False
 
   @classmethod
@@ -519,14 +517,20 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
 
   @classmethod
   def _is_in_bad_fork(cls) -> bool:
-    """Returns whether we are in a bad fork.
+    """Returns whether we are in an unsafe forked child process.
 
-    This is a CUDA specific concept, related to how the CUDA context and runtime
-    interacts with multiprocesses. An implementation is required to support
-    torch.manual_seed(), as it is called in _seed_custom_device() in
-    py/torch/random.py.
+    A bad fork occurs when a child process is forked after PJRT/TPU runtime
+    initialization in the parent process.
+
+    Returns:
+      True if the current process is a forked child process created after the
+      TPU runtime was initialized in the parent process; False if the TPU
+      runtime is uninitialized or running in the original process where it was
+      initialized.
     """
-    # TODO(b/456545545): unda - revisit this.
+    is_in_bad_fork = getattr(_device_ops_backend, "_is_in_bad_fork", None)
+    if is_in_bad_fork is not None:
+      return is_in_bad_fork()
     return False
 
   @classmethod
@@ -593,13 +597,27 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
         cls._atexit_registered = True
 
   @classmethod
+  @experimental(
+      "synchronize() is experimental and subject to change without notice."
+  )
   def synchronize(cls, device: int | None = None) -> None:
-    """Waits for all kernels in all streams on a TPU device to complete."""
+    """Waits for all kernels in all streams on a TPU device to complete.
+
+    .. warning::
+        This API is experimental and subject to change in future releases.
+    """
     streams.synchronize(device)
 
   @classmethod
+  @experimental(
+      "device_count() is experimental and subject to change without notice."
+  )
   def device_count(cls) -> int:  # This is in torch/cuda/__init__.py.
-    """Returns the count of devices. This is implemented for *local* devices."""
+    """Returns the count of devices. This is implemented for *local* devices.
+
+    .. warning::
+        This API is experimental and subject to change in future releases.
+    """
     if cls._device_count is None:
       if cls.is_initialized():
         cls._device_count = _device_ops_backend._get_device_count()  # pylint: disable=protected-access
@@ -613,8 +631,15 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
     return cls._device_count
 
   @classmethod
+  @experimental(
+      "stream() is experimental and subject to change without notice."
+  )
   def stream(cls, stream: streams.TpuStream | None) -> "TpuStreamContext":
-    """Wrapper for a context manager that selects a given TPUStream."""
+    """Wrapper for a context manager that selects a given TPUStream.
+
+    .. warning::
+        This API is experimental and subject to change in future releases.
+    """
     return TpuStreamContext(stream)
 
   @classmethod
@@ -653,16 +678,30 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
     )
 
   @classmethod
+  @experimental(
+      "set_stream() is experimental and subject to change without notice."
+  )
   def set_stream(cls, stream: streams.TpuStream) -> None:
-    """Sets the current stream."""
+    """Sets the current stream.
+
+    .. warning::
+        This API is experimental and subject to change in future releases.
+    """
     # pylint: disable=protected-access
     _device_ops_backend._set_current_stream_id(stream.stream_id)
 
   @classmethod
+  @experimental(
+      "current_stream() is experimental and subject to change without notice."
+  )
   def current_stream(
       cls, device: torch.device | None = None
   ) -> streams.TpuStream:
-    """Returns the active stream for a given device."""
+    """Returns the active stream for a given device.
+
+    .. warning::
+        This API is experimental and subject to change in future releases.
+    """
     if device is None:
       device = torch.device("tpu")
     # pylint: disable=protected-access
@@ -670,10 +709,17 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
     return streams.TpuStream(device=device, stream_id=stream_id)
 
   @classmethod
+  @experimental(
+      "default_stream() is experimental and subject to change without notice."
+  )
   def default_stream(
       cls, device: torch.device | None = None
   ) -> streams.TpuStream:
-    """Returns the default stream for a given device."""
+    """Returns the default stream for a given device.
+
+    .. warning::
+        This API is experimental and subject to change in future releases.
+    """
     if device is None:
       device = torch.device("tpu")
     return streams.TpuStream(device=device, stream_id=0)
@@ -832,27 +878,24 @@ class TpuDeviceModule(_DeviceModule):
       cls,
       mesh_shape: tuple[int, ...],
       *,
-      topology: str = "single_slice",
       dcn_mesh_shape: tuple[int, ...] | None = None,
-      process_is_granule: bool = False,
       allow_split_physical_axes: bool = False,
       contiguous_submeshes: bool = False,
   ) -> torch.Tensor:
     """Computes a topology-aware rank layout tensor.
 
-    Returns an int64 tensor of global torch ranks with shape `mesh_shape` (for
-    topology="multi_slice": elementwise `dcn_mesh_shape * mesh_shape`), mapping
-    logically adjacent coordinate positions to physically adjacent TPU devices
-    on the ICI fabric.
+    Returns an int64 tensor of global torch ranks with shape `mesh_shape`,
+    mapping logically adjacent coordinate positions to physically adjacent TPU
+    devices on the ICI fabric. Whether the job spans one slice or several is
+    read off the devices, so the same call covers both.
 
     Args:
-      mesh_shape: Logical mesh shape, ordered by increasing network intensity.
-      topology: "single_slice" (default) arranges a single slice over ICI;
-        "multi_slice" uses create_hybrid_device_mesh for meshes spanning a
-        slower outer network.
-      dcn_mesh_shape: Outer (slower network) mesh shape for "multi_slice".
-      process_is_granule: Treat processes (hosts) rather than slices as the
-        outer-network granule in "multi_slice" mode.
+      mesh_shape: Full logical mesh shape, ordered by increasing network
+        intensity. Its product must equal the world size, on multi-slice jobs
+        too.
+      dcn_mesh_shape: Which logical axes are split across slices. Same rank as
+        `mesh_shape`, product equal to the number of slices, and must divide
+        `mesh_shape` elementwise. Inferred when None.
       allow_split_physical_axes: Permits splitting a physical axis across
         logical axes when required.
       contiguous_submeshes: Forwards to create_device_mesh.
@@ -865,45 +908,64 @@ class TpuDeviceModule(_DeviceModule):
     return device_mesh.topology_aware_mesh(
         cls._device_type,
         mesh_shape,
-        topology=topology,
         dcn_mesh_shape=dcn_mesh_shape,
-        process_is_granule=process_is_granule,
         allow_split_physical_axes=allow_split_physical_axes,
         contiguous_submeshes=contiguous_submeshes,
     )
-
-
-class XlaCudaDeviceModule(_DeviceModule):
-  _device_type: Final[str] = "xla_cuda"  # pyrefly: ignore[bad-override]
-
-
-class XlaCpuDeviceModule(_DeviceModule):
-  _device_type: Final[str] = "xla_cpu"  # pyrefly: ignore[bad-override]
-
-
-_DEVICE_MODULE_MAPPING: Final[Mapping[str, type[_DeviceModule]]] = {
-    "tpu": TpuDeviceModule,
-    "xla_cuda": XlaCudaDeviceModule,
-    "xla_cpu": XlaCpuDeviceModule,
-}
 
 
 def get_device_module(device_type: str) -> type[_DeviceModule]:
   """Retrieves the _DeviceModule module for the specified device.
 
   Args:
-    device_type: A valid device type, one of: {tpu, xla_cuda, xla_cpu}
+    device_type: A valid device type, currently only "tpu".
 
   Returns:
     A module that can be passed to torch._register_device_module.
   """
-  if device_type not in _DEVICE_MODULE_MAPPING:
+  if device_type != "tpu":
     raise ValueError(
-        f"Unknown device type {device_type!r}, please choose one of: "
-        + ", ".join(_DEVICE_MODULE_MAPPING.keys())
+        f"Unknown device type {device_type!r}, only 'tpu' is supported."
     )
 
-  return _DEVICE_MODULE_MAPPING[device_type]
+  return TpuDeviceModule
+
+
+class TpuDeviceInterface(TpuDeviceModule, DeviceInterface):
+  """Device interface implementation for TPU devices in TorchDynamo."""
+
+  maybe_exchange_device = TpuDeviceModule._maybe_exchange_device
+
+
+def get_device_interface(device_type: str) -> type[DeviceInterface]:
+  """Retrieves the DeviceInterface implementation for the specified device.
+
+  Args:
+    device_type: A valid device type, currently only "tpu".
+
+  Returns:
+    A class that can be passed to
+    torch._dynamo.device_interface.register_interface_for_device.
+  """
+  if device_type != "tpu":
+    raise ValueError(
+        f"Unknown device type {device_type!r}, only 'tpu' is supported."
+    )
+
+  return TpuDeviceInterface
+
+
+# TODO: Remove this backward compatibility shim before launch.
+# Temporary backward compatibility shim for legacy callers accessing TorchDynamo
+# SPIs on torch.tpu.
+__tt_api_stages__["maybe_exchange_device"] = annotations.ApiStageInfo(
+    stage=annotations.Stage.EXPERIMENTAL,
+    reason=(
+        "maybe_exchange_device() is internal to TorchDynamo and subject to"
+        " change or removal."
+    ),
+    value=_DeviceModule._maybe_exchange_device,
+)
 
 
 class TpuStreamContext:

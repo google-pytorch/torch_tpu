@@ -259,6 +259,7 @@ _BUILD_TEST_EXCLUDED_TAGS = (
     "nopresubmit",
     "notest",
     "nonightly",
+    "ops-test",
 )
 
 def _sort_inplace(a_list):
@@ -312,12 +313,10 @@ def _check_and_adjust_test_tags(
             runs. This behavior can be overridden by setting nolocal to a non-empty
             string - that will add a "manual" tag to the test regardless of notap or nopresubmit,
             and the string will be used as the reason.
-        notest_oss: If a string is provided, the test will not be run in OSS,
-            but it will still be built. The string should be a reason explaining
-            why it was disabled.
-        nobuild_oss: If a string is provided, the test will not be built nor
-            run in OSS. The string provided should be a reason explaining why
-            building was disabled. You should strongly prefer notest_oss to
+        notest_oss: If True, the test will not be run in OSS,
+            but it will still be built.
+        nobuild_oss: If True, the test will not be built nor
+            run in OSS. You should strongly prefer notest_oss to
             this!
         nopresubmit_oss: If a string is provided, the test will be built but not run in the
             non-nightly OSS, and it will be built and run in the nightly OSS.
@@ -359,35 +358,22 @@ def _check_and_adjust_test_tags(
                  "should be skipped in build.")
         tags.append("nobuild")  # So that we know that this test shouldn't have a build_test.
 
+    if type(notest_oss) != "bool":
+        fail("notest_oss must be a Boolean.")
+    if type(nobuild_oss) != "bool":
+        fail("nobuild_oss must be a Boolean.")
+
     # Adjust tags for nobuild_oss and notest_oss
     #
     # This must come before the logic adding the build_test
-    if nobuild_oss != None:
-        if type(nobuild_oss) != "string" or not nobuild_oss:
-            fail("nobuild_oss must be a non-empty string documenting why the test " +
-                 "should be skipped in OSS build.")
-
+    if nobuild_oss:
         # nobuild_oss should only affect the OSS build.
         if is_oss and "nobuild" not in tags:
             tags.append("nobuild")
 
-        # We want to allow both notest_oss and nobuild_oss to be set because
-        # sometimes the reason for disabling build is different from the reason
-        # for disabling tests (e.g. build is broken but also the tests are too
-        # slow to run even if the build were working). We will still try to
-        # discourage setting both values for the same root cause.
-        if notest_oss == nobuild_oss:
-            fail("nobuild_oss implies notest_oss, so there is no reason to set both " +
-                 "with the same reason, either set only nobuild_oss or explain " +
-                 "both reasons.")
-        if notest_oss == None:
-            notest_oss = nobuild_oss
+        notest_oss = True
 
-    if notest_oss != None:
-        if type(notest_oss) != "string" or not notest_oss:
-            fail("notest_oss must be a non-empty string documenting why the test " +
-                 "should be skipped in OSS tests.")
-
+    if notest_oss:
         # notest_oss should only affect the OSS build.
         if is_oss:
             tags.append("notest")
@@ -441,7 +427,7 @@ def _check_and_adjust_test_tags(
     create_build_test = False
     build_test_tags = []
     if is_oss:
-        create_build_test = ("notest" in tags or "nonightly" in tags or "nopresubmit" in tags) and "nobuild" not in tags
+        create_build_test = ("notest" in tags or "nonightly" in tags or "nopresubmit" in tags or "ops-test" in tags) and "nobuild" not in tags
     else:
         create_build_test = "notap" in tags and "nobuild" not in tags  # NOTAP_OK=for implementing notap logic
     if create_build_test:
@@ -477,12 +463,6 @@ def _check_and_adjust_test_tags(
         if type(nopresubmit) != "string" or not nopresubmit:
             fail("nopresubmit must be a non-empty string documenting why the test " +
                  "should be skipped in presubmit.")
-
-        # We only have a presubmit build for CUDA tests. Therefore, skipping a CUDA test
-        # in presubmit means it won't run on TAP at all. To make this explicit, we don't
-        # allow nopresubmit for CUDA tests - they must use notap instead.
-        if _is_cuda_test(tags):
-            fail("CUDA tests must use notap instead of nopresubmit, as there's no postsubmit build for CUDA.")
 
         if "nopresubmit" not in tags:
             # This tag causes the test to be skipped in presubmit.
@@ -560,8 +540,8 @@ def check_and_adjust_test_tags_for_testing(
         notap = None,
         nopresubmit = None,
         nolocal = None,
-        notest_oss = None,
-        nobuild_oss = None,
+        notest_oss = False,
+        nobuild_oss = False,
         nopresubmit_oss = None,
         nonightly_oss = None,
         oss_presubmit_tpu_generation = None,
@@ -601,13 +581,14 @@ def torch_tpu_cc_test(
         notap = None,
         nopresubmit = None,
         nolocal = None,
-        notest_oss = None,
-        nobuild_oss = None,
+        notest_oss = False,
+        nobuild_oss = False,
         nopresubmit_oss = None,
         nonightly_oss = None,
         oss_presubmit_tpu_generation = None,
         tags = None,
         requires_libtpu = None,
+        use_tcmalloc = False,
         **kwargs):
     """Creates a cc_test for torch_tpu.
 
@@ -637,12 +618,10 @@ def torch_tpu_cc_test(
             runs. This behavior can be overridden by setting nolocal to a non-empty
             string - that will add a "manual" tag to the test regardless of notap or nopresubmit,
             and the string will be used as the reason.
-        notest_oss: If a string is provided, the test will not be run in OSS,
-            but it will still be built. The string should be a reason explaining
-            why it was disabled.
-        nobuild_oss: If a string is provided, the test will not be built nor
-            run in OSS. The string provided should be a reason explaining why
-            building was disabled. You should strongly prefer notest_oss to
+        notest_oss: If True, the test will not be run in OSS,
+            but it will still be built.
+        nobuild_oss: If True, the test will not be built nor
+            run in OSS. You should strongly prefer notest_oss to
             this!
         nopresubmit_oss: If a string is provided, the test will be built but not run in the
             non-nightly OSS, and it will be built and run in the nightly OSS.
@@ -656,6 +635,7 @@ def torch_tpu_cc_test(
             or CPUs (`False`). Note that requires_libtpu only means the test needs `libtpu` -
             it does NOT imply that the test needs an actual TPU (in fact most such tests run
             on CPU).
+        use_tcmalloc: If True, links against @com_google_tcmalloc//tcmalloc in OSS.
         tags: The tags to add to the test.
         **kwargs: Any additional arguments.
     """
@@ -794,6 +774,15 @@ def torch_tpu_cc_test(
             tags = result.build_test_tags,
         )
 
+    # Link Bazel-built tcmalloc into C++ test binaries when explicitly opted in
+    # via use_tcmalloc = True (falling back to the default allocator under TSAN
+    # to avoid conflicts with ThreadSanitizer's allocator interceptors).
+    if is_oss() and use_tcmalloc and "malloc" not in kwargs:
+        kwargs["malloc"] = select({
+            "//:tsan_build": "@bazel_tools//tools/cpp:malloc",
+            "//conditions:default": "@com_google_tcmalloc//tcmalloc",
+        })
+
     # Define the C++ test target (handles compilation, compilation options, and static linking)
     cc_test(
         # ALLOW_CC_TARGETS=Definition of torch_tpu_cc_test
@@ -890,6 +879,7 @@ def torch_tpu_py_test(
         shuffle_tests = True,
         autoload = True,
         is_wheel_test = False,
+        use_tcmalloc = False,
         extra_pywrap_deps = ["//csrc/common:pywrap_torch_tpu"],
         strict = False,
         size = None,
@@ -899,8 +889,8 @@ def torch_tpu_py_test(
         notap = None,
         nopresubmit = None,
         nolocal = None,
-        notest_oss = None,
-        nobuild_oss = None,
+        notest_oss = False,
+        nobuild_oss = False,
         nopresubmit_oss = None,
         nonightly_oss = None,
         oss_presubmit_tpu_generation = None,
@@ -939,12 +929,10 @@ def torch_tpu_py_test(
             runs. This behavior can be overridden by setting nolocal to a non-empty
             string - that will add a "manual" tag to the test regardless of notap or nopresubmit,
             and the string will be used as the reason.
-        notest_oss: If a string is provided, the test will not be run in OSS,
-            but it will still be built. The string should be a reason explaining
-            why it was disabled.
-        nobuild_oss: If a string is provided, the test will not be built nor
-            run in OSS. The string provided should be a reason explaining why
-            building was disabled. You should strongly prefer notest_oss to
+        notest_oss: If True, the test will not be run in OSS,
+            but it will still be built.
+        nobuild_oss: If True, the test will not be built nor
+            run in OSS. You should strongly prefer notest_oss to
             this!
         nopresubmit_oss: If a string is provided, the test will be built but not run in the
             non-nightly OSS, and it will be built and run in the nightly OSS.
@@ -970,6 +958,7 @@ def torch_tpu_py_test(
                succeeds on `requires-tpu-v5lite` or `requires-tpu-v5p`, so it is wasteful to test
                for both in presubmit.
         tags: The tags to add to the test.
+        use_tcmalloc: Whether to preload hermetic Bazel-built libtcmalloc.so in OSS runs.
         **kwargs: Any additional arguments.
     """
 
@@ -1078,6 +1067,14 @@ def torch_tpu_py_test(
         asan_opts = [base_env.get("ASAN_OPTIONS", "")]
         asan_opts.append("new_delete_type_mismatch=0")
         base_env["ASAN_OPTIONS"] = ":".join([opt for opt in asan_opts if opt])
+
+        # Preload hermetic Bazel-built tcmalloc into Python test and benchmark runs
+        # when explicitly opted in via use_tcmalloc = True.
+        # //:libtcmalloc.so must be in `data` so $(location //:libtcmalloc.so) resolves.
+        if is_oss() and use_tcmalloc:
+            if "//:libtcmalloc.so" not in data:
+                data.append("//:libtcmalloc.so")
+            _prepend_to_env(base_env, "LD_PRELOAD", "./$(location //:libtcmalloc.so)")
 
         # Prepend standard library paths to base env (required for mp.spawn support)
         _prepend_to_env(base_env, "LD_LIBRARY_PATH", ":".join(std_ld))
@@ -1347,7 +1344,6 @@ def torch_tpu_oss_torch_test(
     env.update(kwargs.pop("env", {}))
 
     tags = [
-        # TODO(b/562651857): offload to v7 chips to load balance in OSS CI.
         "requires-tpu-v5lite",
         # Exclude wheel tests due to lack of a PyTorch checkout.
         "wheel_test_excluded",
@@ -1538,7 +1534,10 @@ def _define_py_wheel_test_site_packages(name):
     native.filegroup(
         name = "wheel_test_site_packages",
         srcs = native.glob(
-            ["**/*.py"],
+            [
+                "**/*.py",
+                "**/*.pin",
+            ],
             exclude = [
                 "**/*_test.py",
                 "**/*_tests.py",

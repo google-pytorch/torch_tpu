@@ -258,8 +258,11 @@ absl::StatusOr<MlirOpResults<2>> BuildAdaptiveMaxPool2dShlo(
   mlir::MlirOp batch_val_result;
   mlir::MlirOp batch_idx_result;
 
-  if (in_h >= out_h && in_w >= out_w && in_h % out_h == 0 &&
-      in_w % out_w == 0) {
+  // ReduceWindow does not support 64-bit floating point window reductions on
+  // TPU hardware (triggers SIGILL in libtpu). For f64, bypass the fast path
+  // and use the general Gather + Mask + Variadic Reduce path.
+  if (!element_type.isF64() && in_h >= out_h && in_w >= out_w &&
+      in_h % out_h == 0 && in_w % out_w == 0) {
     // Fast path: standard MaxPool
     const int64_t stride_h = in_h / out_h;
     const int64_t stride_w = in_w / out_w;

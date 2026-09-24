@@ -27,12 +27,16 @@ torch_tpu_py_library(
     name = "models",
     srcs = [
         "__init__.py",
+        "gemma.py",
         "gen_benchmarks.py",
+        "gpt.py",
         "llama.py",
+        "qwen.py",
     ],
     allow_multiple_srcs = True,
     deps = [
         "//examples/benchmarks/e2e/harness:context",
+        "//examples/benchmarks/e2e/harness:model_helpers",
         "//examples/benchmarks/e2e/harness:registry",
         "//examples/benchmarks/e2e/harness:step_lib",
         "//examples/benchmarks/e2e/harness:target",
@@ -40,9 +44,6 @@ torch_tpu_py_library(
         "//examples/benchmarks/e2e/harness/gen_utils",
         "//shims/absl_py/flags",
         "//shims/torch:pytorch",
-        "//tests:module_registry",
-        "@pypi//fairscale",
-        "@pypi//llama_models",
     ],
 )
 

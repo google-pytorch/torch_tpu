@@ -21,6 +21,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "c10/util/Exception.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -114,28 +115,34 @@ absl::Status ValidateIndices(const int64_t num_elements,
   return absl::OkStatus();
 }
 
+absl::Status ValidateTakeInputs(const at::Tensor& self,
+                                const at::Tensor& index) {
+  TT_ASSIGN_OR_RETURN(auto index_dtype,
+                      ConvertTo<mlir::ElementType>(index.scalar_type()));
+  TT_RET_CHECK(index_dtype == mlir::ElementType::I64, error::kInvalidArgument)
+      << "expected index dtype to be int64, got " << ToString(index_dtype);
+
+  TT_ASSIGN_OR_RETURN(const int64_t num_elements, NumElements(self));
+  if (GetEnableDebugChecks()) {
+    TT_RETURN_IF_ERROR(ValidateIndices(num_elements, index));
+  } else {
+    TORCH_WARN_ONCE(
+        "Unlike PyTorch on CUDA or CPU, TorchTPU doesn't by default check "
+        "that the indices for take() are in range. Set the "
+        "TORCH_TPU_ENABLE_DEBUG_CHECKS environment variable to "
+        "\"1\" to enable this check, which incurs a performance penalty.");
+  }
+  return absl::OkStatus();
+}
+
 }  // namespace
 
 at::Tensor AtenTake(const at::Tensor& self, const at::Tensor& index) {
   TT_KERNEL(OpName::kTake, _, (self, index), {
+    TT_THROW_IF_ERROR(ValidateTakeInputs(self, index));
     TT_ASSIGN_OR_THROW(auto out_dtype,
                        ConvertTo<mlir::ElementType>(self.scalar_type()));
-    TT_ASSIGN_OR_THROW(auto index_dtype,
-                       ConvertTo<mlir::ElementType>(index.scalar_type()));
-    TT_CHECK_THROW(index_dtype == mlir::ElementType::I64,
-                   error::kInvalidArgument)
-        << "expected index dtype to be int64, got " << ToString(index_dtype);
-
     TT_ASSIGN_OR_THROW(const int64_t num_elements, NumElements(self));
-    if (GetEnableDebugChecks()) {
-      TT_THROW_IF_ERROR(ValidateIndices(num_elements, index));
-    } else {
-      TORCH_WARN_ONCE(
-          "Unlike PyTorch on CUDA or CPU, TorchTPU doesn't by default check "
-          "that the indices for take() are in range. Set the "
-          "TORCH_TPU_ENABLE_DEBUG_CHECKS environment variable to "
-          "\"1\" to enable this check, which incurs a performance penalty.");
-    }
 
     auto op_builder = [num_elements](FixedSizeSpan<mlir::MlirOp, 2> inputs)
         -> absl::StatusOr<mlir::MlirOp> {
@@ -156,8 +163,26 @@ at::Tensor AtenTake(const at::Tensor& self, const at::Tensor& index) {
 at::Tensor& AtenTakeOut(const at::Tensor& self, const at::Tensor& index,
                         at::Tensor& out) {
   TT_KERNEL(OpName::kTakeOut, _, (self, index, out), {
+    TT_THROW_IF_ERROR(ValidateOutDtype(out, self.scalar_type(),
+                                       /*allow_out_dtype_cast=*/false));
+    TT_THROW_IF_ERROR(ValidateTakeInputs(self, index));
     TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, index.sizes()));
-    out.copy_(AtenTake(self, index));
+
+    TT_ASSIGN_OR_THROW(auto out_dtype,
+                       ConvertTo<mlir::ElementType>(self.scalar_type()));
+    TT_ASSIGN_OR_THROW(const int64_t num_elements, NumElements(self));
+
+    auto op_builder = [num_elements](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+        -> absl::StatusOr<mlir::MlirOp> {
+      auto& [self, index] = inputs;
+      return BuildTakeShlo(num_elements, self, index);
+    };
+    TT_THROW_IF_ERROR((DispatchOpOut<2, 1>(
+        std::move(op_builder),
+        /*inputs=*/{self, index}, out,
+        {.out_dtype = out_dtype,
+         .out_dims = index.sizes(),
+         .op_param_cache_keys = OpParamCacheKeys::Empty()})));
     return out;
   });
 }

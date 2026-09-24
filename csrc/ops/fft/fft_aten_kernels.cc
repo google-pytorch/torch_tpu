@@ -25,9 +25,14 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "ATen/ops/fft_fft_native.h"
+#include "ATen/ops/fft_ifft_native.h"
+#include "ATen/ops/fft_irfft_native.h"
+#include "ATen/ops/fft_rfft_native.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
+#include "c10/util/string_view.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -211,6 +216,12 @@ absl::StatusOr<mlir::MlirOp> BuildFftR2cShlo(
     mlir::MlirOp input, Dimensions dims, const FftNormalization normalization,
     bool onesided) {
   auto input_type = GetTensorTypeOrDie(input);
+
+  if (input_type.getElementType().isBF16()) {
+    mlir::Builder builder(input_type.getContext());
+    input = mlir::stablehlo::ConvertElementType(input, builder.getF32Type());
+    input_type = GetTensorTypeOrDie(input);
+  }
 
   const auto float_type = input_type.getElementType();
 
@@ -404,6 +415,10 @@ absl::Status FFTValidateStaticShape(const at::Tensor& tensor,
   return ValidateStaticShape(tensor, buffer_ref, arg_name);
 }
 
+[[nodiscard]] at::Tensor PromoteToFloatIfBFloat16(const at::Tensor& self) {
+  return self.scalar_type() == at::kBFloat16 ? self.to(at::kFloat) : self;
+}
+
 }  // namespace
 
 at::Tensor AtenFftR2c(const at::Tensor& self, at::IntArrayRef dim,
@@ -425,7 +440,9 @@ at::Tensor AtenFftR2c(const at::Tensor& self, at::IntArrayRef dim,
       out_sizes[last_dim] = self.size(last_dim) / 2 + 1;
     }
 
-    const auto out_scalar_type = c10::toComplexType(self.scalar_type());
+    const auto compute_scalar_type =
+        self.scalar_type() == at::kBFloat16 ? at::kFloat : self.scalar_type();
+    const auto out_scalar_type = c10::toComplexType(compute_scalar_type);
     TT_ASSIGN_OR_THROW(const auto output_dtype,
                        ConvertTo<mlir::ElementType>(out_scalar_type));
 
@@ -509,7 +526,8 @@ at::Tensor AtenFftC2c(const at::Tensor& self, at::IntArrayRef dim,
 
     TT_ASSIGN_OR_THROW(const auto output_dtype,
                        ConvertTo<mlir::ElementType>(self.scalar_type()));
-
+    TT_CHECK_THROW(self.is_complex(), error::kInvalidArgument)
+        << "expected complex input type, got " << ToString(self.scalar_type());
     auto op_builder = [normalized_dims, norm_enum, forward](
                           mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
       return BuildFftC2cShlo(input, normalized_dims, norm_enum, forward);
@@ -547,6 +565,11 @@ at::Tensor& AtenFftC2cOut(const at::Tensor& self, at::IntArrayRef dim,
 
         TT_ASSIGN_OR_THROW(const auto output_dtype,
                            ConvertTo<mlir::ElementType>(out.scalar_type()));
+        TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=torch.aten.ops._fft_c2c_out
+                         // does not exist
+            self.is_complex(), error::kInvalidArgument)
+            << "expected complex input type, got "
+            << ToString(self.scalar_type());
 
         auto op_builder =
             [normalized_dims, norm_enum,
@@ -587,7 +610,9 @@ at::Tensor AtenFftC2r(const at::Tensor& self, at::IntArrayRef dim,
         TT_ASSIGN_OR_THROW(const auto output_dtype,
                            ConvertTo<mlir::ElementType>(
                                c10::toRealValueType(self.scalar_type())));
-
+        TT_CHECK_THROW(self.is_complex(), error::kInvalidArgument)
+            << "expected complex input type, got "
+            << ToString(self.scalar_type());
         auto op_builder =
             [normalized_dims, norm_enum, last_dim_size](
                 mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
@@ -636,6 +661,11 @@ at::Tensor& AtenFftC2rOut(const at::Tensor& self, at::IntArrayRef dim,
 
         TT_ASSIGN_OR_THROW(const auto output_dtype,
                            ConvertTo<mlir::ElementType>(out.scalar_type()));
+        TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=torch.aten.ops._fft_c2r_out
+                         // does not exist
+            self.is_complex(), error::kInvalidArgument)
+            << "expected complex input type, got "
+            << ToString(self.scalar_type());
 
         auto op_builder =
             [normalized_dims, norm_enum, last_dim_size](
@@ -654,6 +684,59 @@ at::Tensor& AtenFftC2rOut(const at::Tensor& self, at::IntArrayRef dim,
         TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result), out));
         return out;
       });
+}
+
+at::Tensor AtenFftFft(const at::Tensor& self, std::optional<c10::SymInt> n,
+                      int64_t dim, std::optional<c10::string_view> norm) {
+  return at::native::fft_fft_symint(PromoteToFloatIfBFloat16(self), n, dim,
+                                    norm);
+}
+
+at::Tensor& AtenFftFftOut(const at::Tensor& self, std::optional<c10::SymInt> n,
+                          int64_t dim, std::optional<c10::string_view> norm,
+                          at::Tensor& out) {
+  return at::native::fft_fft_symint_out(PromoteToFloatIfBFloat16(self), n, dim,
+                                        norm, out);
+}
+
+at::Tensor AtenFftIfft(const at::Tensor& self, std::optional<c10::SymInt> n,
+                       int64_t dim, std::optional<c10::string_view> norm) {
+  return at::native::fft_ifft_symint(PromoteToFloatIfBFloat16(self), n, dim,
+                                     norm);
+}
+
+at::Tensor& AtenFftIfftOut(const at::Tensor& self, std::optional<c10::SymInt> n,
+                           int64_t dim, std::optional<c10::string_view> norm,
+                           at::Tensor& out) {
+  return at::native::fft_ifft_symint_out(PromoteToFloatIfBFloat16(self), n, dim,
+                                         norm, out);
+}
+
+at::Tensor AtenFftRfft(const at::Tensor& self, std::optional<c10::SymInt> n,
+                       int64_t dim, std::optional<c10::string_view> norm) {
+  return at::native::fft_rfft_symint(PromoteToFloatIfBFloat16(self), n, dim,
+                                     norm);
+}
+
+at::Tensor& AtenFftRfftOut(const at::Tensor& self, std::optional<c10::SymInt> n,
+                           int64_t dim, std::optional<c10::string_view> norm,
+                           at::Tensor& out) {
+  return at::native::fft_rfft_symint_out(PromoteToFloatIfBFloat16(self), n, dim,
+                                         norm, out);
+}
+
+at::Tensor AtenFftIrfft(const at::Tensor& self, std::optional<c10::SymInt> n,
+                        int64_t dim, std::optional<c10::string_view> norm) {
+  return at::native::fft_irfft_symint(PromoteToFloatIfBFloat16(self), n, dim,
+                                      norm);
+}
+
+at::Tensor& AtenFftIrfftOut(const at::Tensor& self,
+                            std::optional<c10::SymInt> n, int64_t dim,
+                            std::optional<c10::string_view> norm,
+                            at::Tensor& out) {
+  return at::native::fft_irfft_symint_out(PromoteToFloatIfBFloat16(self), n,
+                                          dim, norm, out);
 }
 
 }  // namespace torch_tpu

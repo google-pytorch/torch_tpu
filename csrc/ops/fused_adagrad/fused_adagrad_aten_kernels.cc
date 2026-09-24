@@ -19,11 +19,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <tuple>
 #include <utility>
 #include <vector>
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "ATen/ops/empty_like.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
@@ -616,6 +618,84 @@ void AtenFusedAdagradTensorLr(at::TensorList self, at::TensorList grads,
                                  : AdagradObjectiveMode::kMinimize,
                         grad_scale, found_inf, std::move(param_keys));
       });
+}
+
+// Meta kernel for in-place `aten::_fused_adagrad_` (scalar `double lr`
+// overload, schema `-> ()`). No-op because Meta kernels only propagate tensor
+// shape/dtype metadata for `FakeTensor` / `torch.compile`, and in-place
+// optimizer updates return `void` without changing input tensor shapes,
+// strides, or dtypes.
+void MetaFusedAdagrad(at::TensorList /*self*/, at::TensorList /*grads*/,
+                      at::TensorList /*state_sums*/,
+                      at::TensorList /*state_steps*/, double /*lr*/,
+                      double /*lr_decay*/, double /*weight_decay*/,
+                      double /*eps*/, bool /*maximize*/,
+                      const std::optional<at::Tensor>& /*grad_scale*/,
+                      const std::optional<at::Tensor>& /*found_inf*/) {}
+
+// Meta kernel for in-place `aten::_fused_adagrad_.tensor_lr` (`const
+// at::Tensor& lr` overload, used when `lr` is a Tensor so `torch.compile` does
+// not recompile on LR schedule steps). Like `MetaFusedAdagrad`, this is a
+// no-op because the in-place op returns `void` and preserves all input tensor
+// shapes/dtypes.
+void MetaFusedAdagradTensorLr(at::TensorList /*self*/, at::TensorList /*grads*/,
+                              at::TensorList /*state_sums*/,
+                              at::TensorList /*state_steps*/,
+                              const at::Tensor& /*lr*/, double /*lr_decay*/,
+                              double /*weight_decay*/, double /*eps*/,
+                              bool /*maximize*/,
+                              const std::optional<at::Tensor>& /*grad_scale*/,
+                              const std::optional<at::Tensor>& /*found_inf*/) {}
+
+// Meta kernel for out-of-place functional `aten::_fused_adagrad` (scalar
+// `double lr` overload). AOTAutograd functionalizes in-place optimizer ops into
+// functional calls during `torch.compile`, so this returns newly allocated
+// `empty_like` Meta tensors matching `(self, grads, state_sums, state_steps)`.
+std::tuple<std::vector<at::Tensor>, std::vector<at::Tensor>,
+           std::vector<at::Tensor>, std::vector<at::Tensor>>
+MetaFusedAdagradFunctional(at::TensorList self, at::TensorList grads,
+                           at::TensorList state_sums,
+                           at::TensorList state_steps, double /*lr*/,
+                           double /*lr_decay*/, double /*weight_decay*/,
+                           double /*eps*/, bool /*maximize*/,
+                           const std::optional<at::Tensor>& /*grad_scale*/,
+                           const std::optional<at::Tensor>& /*found_inf*/) {
+  auto empty_like_list = [](at::TensorList tensors) {
+    std::vector<at::Tensor> outs;
+    outs.reserve(tensors.size());
+    for (const at::Tensor& t : tensors) {
+      outs.push_back(at::empty_like(t));
+    }
+    return outs;
+  };
+  return std::make_tuple(empty_like_list(self), empty_like_list(grads),
+                         empty_like_list(state_sums),
+                         empty_like_list(state_steps));
+}
+
+// Meta kernel for out-of-place functional `aten::_fused_adagrad.tensor_lr`
+// (`const at::Tensor& lr` overload). Note that upstream ATen's `.tensor_lr`
+// functional schema returns a 3-tuple `(self, grads, state_sums)` (omitting
+// `state_steps`), so we return `empty_like` Meta tensor lists for those 3
+// outputs.
+std::tuple<std::vector<at::Tensor>, std::vector<at::Tensor>,
+           std::vector<at::Tensor>>
+MetaFusedAdagradFunctionalTensorLr(
+    at::TensorList self, at::TensorList grads, at::TensorList state_sums,
+    at::TensorList /*state_steps*/, const at::Tensor& /*lr*/,
+    double /*lr_decay*/, double /*weight_decay*/, double /*eps*/,
+    bool /*maximize*/, const std::optional<at::Tensor>& /*grad_scale*/,
+    const std::optional<at::Tensor>& /*found_inf*/) {
+  auto empty_like_list = [](at::TensorList tensors) {
+    std::vector<at::Tensor> outs;
+    outs.reserve(tensors.size());
+    for (const at::Tensor& t : tensors) {
+      outs.push_back(at::empty_like(t));
+    }
+    return outs;
+  };
+  return std::make_tuple(empty_like_list(self), empty_like_list(grads),
+                         empty_like_list(state_sums));
 }
 
 }  // namespace torch_tpu

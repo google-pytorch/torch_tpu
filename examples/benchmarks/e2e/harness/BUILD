@@ -101,6 +101,7 @@ torch_tpu_py_library(
     deps = [
         ":target",
         "//examples/benchmarks/e2e:common",
+        "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/execution_mode",
     ],
@@ -140,8 +141,10 @@ torch_tpu_py_library(
     srcs = ["torch_device_ops.py"],
     deps = [
         ":target",
+        "//examples/benchmarks/e2e:device_utils",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal/benchmarks:xprof_adapter",
     ],
 )
 
@@ -150,6 +153,7 @@ torch_tpu_py_library(
     srcs = ["compile.py"],
     deps = [
         ":target",
+        "//examples/benchmarks/e2e:device_utils",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/compile",
     ],
@@ -175,6 +179,15 @@ torch_tpu_py_library(
     ],
 )
 
+torch_tpu_py_library(
+    name = "model_helpers",
+    srcs = ["model_helpers.py"],
+    deps = [
+        "//shims/torch:pytorch",
+        "//tests:module_registry",
+    ],
+)
+
 torch_tpu_py_test(
     name = "torch_benchmark_test",
     timeout = "long",
@@ -187,17 +200,79 @@ torch_tpu_py_test(
     ],
     data = [
         "//examples/benchmarks/huggingface_transformers:model_configs_data",
+        "//shims/model_configs:google_model_configs_data",
     ],
     env = {
         "BENCHMARK_PLATFORM": "v5e_1x1",
     },
     nolocal = "user requested to run this manually",
-    notest_oss = "requires huggingface configs from internal infra",
+    nopresubmit = "Benchmark.",
+    notest_oss = True,  # requires huggingface configs from internal infra
     shard_count = 50,
     tags = [
+        "nofastbuild",  # Benchmark.
         "nosan",  # *san tests provide no benefit for benchmarks.
         "requires-net:external",
         "requires-tpu-v5lite",
+    ],
+    use_tcmalloc = True,
+    deps = [
+        ":base_test",
+        ":cases",
+        ":compile",
+        ":context",
+        ":discovery",
+        ":flags",
+        ":measure",
+        ":metrics",
+        ":mode",
+        ":registry",
+        ":step_lib",
+        ":target",
+        ":torch_device_ops",
+        "//examples/benchmarks/e2e:common",
+        "//examples/benchmarks/e2e/harness/models",
+        "//examples/benchmarks/e2e/harness/steps",
+        "//shims/absl_py/logging",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
+    ],
+)
+
+# Benchmark target intended for manually running for dev or experimental purposes
+# instead of CI. Sets all the flags for expected use.
+torch_tpu_py_test(
+    name = "dev_benchmarks",
+    timeout = "eternal",
+    srcs = ["torch_benchmark_test.py"],
+    args = [
+        "--run_scope=full",
+        "--min_warmup_steps=3",
+        "--max_warmup_steps=10",
+        "--post_warmup_steps=10",
+        "--xprof_steps=2",
+        "--enable_xprof=true",
+    ],
+    data = [
+        "//examples/benchmarks/huggingface_transformers:model_configs_data",
+    ],
+    env = {
+        "BENCHMARK_PLATFORM": "v7_1x1x1",
+    },
+    main = "torch_benchmark_test.py",
+    nolocal = "user requested to run this manually",
+    # Cannot run in OSS either: needs HuggingFace configs from internal infra.
+    notap = "Development benchmark target; run manually on demand.",
+    shard_count = 50,
+    tags = [
+        "nofastbuild",
+        "nosan",  # *san tests provide no benefit for benchmarks.
+        "requires-accel-hbm",
+        "requires-net:external",
+        "requires-tpu-v7x",
     ],
     deps = [
         ":base_test",
@@ -266,6 +341,7 @@ torch_tpu_py_library(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal:testing",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/distributed/launchers:environment",
         "//tests/distributed:distributed_utils",
         "@pypi//fairscale",
     ],
@@ -273,10 +349,11 @@ torch_tpu_py_library(
 
 torch_tpu_py_test(
     name = "torch_benchmark_full",
-    timeout = "long",
+    timeout = "eternal",
     srcs = ["torch_benchmark_test.py"],
     data = [
         "//examples/benchmarks/huggingface_transformers:model_configs_data",
+        "//shims/model_configs:google_model_configs_data",
     ],
     env = {
         "BENCHMARK_PLATFORM": "v7_1x1x1",
@@ -285,8 +362,60 @@ torch_tpu_py_test(
     notap = "Intended to be run with nightly benchmark suite",
     shard_count = 50,
     tags = [
+        "nofastbuild",  # Benchmark.
+        "requires-accel-hbm",
         "requires-net:external",
         "requires-tpu-v7x",
+    ],
+    use_tcmalloc = True,
+    deps = [
+        ":base_test",
+        ":cases",
+        ":compile",
+        ":context",
+        ":discovery",
+        ":flags",
+        ":measure",
+        ":metrics",
+        ":mode",
+        ":registry",
+        ":step_lib",
+        ":target",
+        ":torch_device_ops",
+        "//examples/benchmarks/e2e:common",
+        "//examples/benchmarks/e2e/harness/models",
+        "//examples/benchmarks/e2e/harness/steps",
+        "//shims/absl_py/logging",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
+    ],
+)
+
+# buildozer: disable=forbidden-tag-requires-gpu
+torch_tpu_py_test(
+    name = "torch_benchmark_full_cuda",
+    timeout = "long",
+    srcs = ["torch_benchmark_test.py"],
+    data = [
+        "//examples/benchmarks/huggingface_transformers:model_configs_data",
+    ],
+    env = {
+        "BENCHMARK_PLATFORM": "b200_1",
+    },
+    exec_properties = {
+        "cpp_link.mem": "16g",
+    },
+    main = "torch_benchmark_test.py",
+    notap = "Intended to be run with nightly benchmark suite",
+    shard_count = 50,
+    tags = [
+        "nofastbuild",  # Benchmark.
+        "requires-accel-hbm",
+        "requires-gpu-sm100-full",
+        "requires-net:external",
     ],
     deps = [
         ":base_test",
@@ -320,6 +449,7 @@ pytype_strict_binary(
     srcs = ["distributed_runner.py"],
     data = [
         "//examples/benchmarks/huggingface_transformers:model_configs_data",
+        "//shims/model_configs:google_model_configs_data",
     ],
     deps = [
         ":distributed_runner_lib",

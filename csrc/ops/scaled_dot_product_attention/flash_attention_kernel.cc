@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <initializer_list>
+#include <numbers>
 #include <optional>
 
 #include "absl/algorithm/container.h"
@@ -71,7 +72,7 @@ using mlir::arith::MaximumFOp;      // USING_DECL_OK
 using mlir::arith::MulFOp;          // USING_DECL_OK
 using mlir::arith::SubFOp;          // USING_DECL_OK
 using mlir::func::ReturnOp;         // USING_DECL_OK
-using mlir::math::ExpOp;            // USING_DECL_OK
+using mlir::math::Exp2Op;           // USING_DECL_OK
 using mlir::scf::IfOp;              // USING_DECL_OK
 using mlir::scf::YieldOp;           // USING_DECL_OK
 using mlir::vector::CombiningKind;  // USING_DECL_OK
@@ -83,6 +84,7 @@ void SetKernelAttributes(llvm::ArrayRef<const int64_t> qk_dimensions,
                          func::FuncOp fn, OpBuilder& builder) {
   const int64_t scratch_operands = 3L;
   fn->setAttr("scratch_operands", builder.getI64IntegerAttr(scratch_operands));
+  SetScalarPrefetchAttr(config, fn, builder);
 
   const int64_t num_iteration_indices = absl::c_count_if(
       fn.getArguments(),
@@ -112,11 +114,10 @@ void SetKernelAttributes(llvm::ArrayRef<const int64_t> qk_dimensions,
                   {dimension_semantics.begin(), dimension_semantics.end()}));
 
   // We need transform_indices attribute for q, k, v, any auxiliary arguments,
-  // and output. This boils down to all arguments except iteration indices and
-  // scratch arguments.
-  // The arguments are in the following order: iteration_indices, q, k, v,
-  // auxiliary_parameters, output, li, mi. The iteration_indices and
-  // auxiliary_parameters are possibly empty.
+  // and output. This boils down to all arguments except iteration indices,
+  // scalar_prefetch arguments, and scratch arguments.
+  // The arguments are in the following order: iteration_indices,
+  // [seed_smem], q, k, v, auxiliary_parameters, output, li, mi.
   SmallVector<AffineExpr> dims(num_iteration_indices);
   bindDimsList(context, MutableArrayRef{dims});
   // Auxiliary function for creating transform_indices attribute.
@@ -164,6 +165,30 @@ void SetKernelAttributes(llvm::ArrayRef<const int64_t> qk_dimensions,
               builder.getArrayAttr({window_attrs.begin(), window_attrs.end()}));
 }
 
+// Applies PyTorch's inverted dropout to the softmax probabilities
+// `p_tile_scaled`: kept entries are rescaled by 1 / (1 - dropout_rate) and
+// dropped entries are zeroed. Returns `p_tile_scaled` unchanged when dropout is
+// disabled.
+//
+// Only the probabilities fed into the P @ V matmul are dropped; the softmax
+// statistics (m_i, l_i and hence the LSE) must stay undropped because the
+// backward pass recomputes P from the LSE.
+Value ApplyDropoutToProbabilities(ImplicitLocOpBuilder& b,
+                                  const FlashAttnConfig& config, int64_t qt,
+                                  int64_t kt, func::FuncOp fn, Value seed_arg,
+                                  Value p_tile_scaled) {
+  if (config.dropout_rate <= 0.0f) {
+    return p_tile_scaled;
+  }
+  Value keep = BuildDropoutKeepMask(b, config, qt, kt, fn.getArgument(0),
+                                    fn.getArgument(1), fn.getArgument(2),
+                                    fn.getArgument(3), seed_arg);
+  Value p_rescaled =
+      ScaleValue(b, p_tile_scaled, 1.0f / (1.0f - config.dropout_rate));
+  Value zeros = ConstantOp::create(b, b.getZeroAttr(p_tile_scaled.getType()));
+  return arith::SelectOp::create(b, keep, p_rescaled, zeros);
+}
+
 // q [batch_size, num_heads, q_seq_len, d_model]
 // k [batch_size, num_heads, kv_seq_len, d_model]
 // v [batch_size, num_heads, kv_seq_len, d_model]
@@ -177,6 +202,7 @@ func::FuncOp buildModule(ImplicitLocOpBuilder& module_builder,
   FloatType f32 = module_builder.getF32Type();
   const int64_t qt = tiling.qt;
   const int64_t kt = tiling.kt;
+  const bool has_dropout = config.dropout_rate > 0.0f;
 
   SmallVector<int64_t> q_dims = {1, 1, qt, config.qk_head_dim};
   SmallVector<int64_t> k_dims = {1, 1, kt, config.qk_head_dim};
@@ -188,6 +214,7 @@ func::FuncOp buildModule(ImplicitLocOpBuilder& module_builder,
 
   // We have 4 iteration indices.
   SmallVector<Type> inputs(4, i32);
+  AppendScalarPrefetchTypes(context, config, inputs);
   // Add q, k, v.
   inputs.insert(inputs.end(), {GetVmemMemRefType(context, q_dims, ity),
                                GetVmemMemRefType(context, k_dims, ity),
@@ -216,6 +243,7 @@ func::FuncOp buildModule(ImplicitLocOpBuilder& module_builder,
 
   // There are 4 induction variables.
   unsigned int next_index = 4;
+  Value seed_arg = has_dropout ? fn.getArgument(next_index++) : nullptr;
   Value q_arg = fn.getArgument(next_index++);
   Value k_arg = fn.getArgument(next_index++);
   Value v_arg = fn.getArgument(next_index++);
@@ -226,53 +254,52 @@ func::FuncOp buildModule(ImplicitLocOpBuilder& module_builder,
   Value mi_arg = fn.getArgument(next_index++);
   Value li_arg = fn.getArgument(next_index++);
 
+  const bool is_single_kv_step = config.padded_kv_sequence_length == tiling.kt;
+
   ConstantOp zero = ConstantOp::create(fn_builder, fn_builder.getZeroAttr(i32));
   std::optional<scf::IfOp> causal_if;
-  if (config.is_causal) {
+  if (config.is_causal && !is_single_kv_step) {
     causal_if = CreateCausalIfOp(fn_builder, fn.getArgument(2),
                                  fn.getArgument(3), qt, kt);
     fn_builder.setInsertionPointToStart(causal_if->thenBlock());
   }
 
-  IfOp::create(
-      fn_builder,
-      CmpIOp::create(fn_builder, CmpIPredicate::eq, zero, fn.getArgument(3)),
-      /*thenBuilder=*/
-      [&](OpBuilder& builder, Location loc) -> void {
-        ImplicitLocOpBuilder b(loc, builder);
-        ZeroTile(b, o_scratch_arg);
-        ZeroTile(b, li_arg);
-        NInfTile(b, mi_arg);
-        YieldOp::create(b, loc);
-      });
+  if (!is_single_kv_step) {
+    IfOp::create(
+        fn_builder,
+        CmpIOp::create(fn_builder, CmpIPredicate::eq, zero, fn.getArgument(3)),
+        /*thenBuilder=*/
+        [&](OpBuilder& builder, Location loc) -> void {
+          ImplicitLocOpBuilder b(loc, builder);
+          ZeroTile(b, o_scratch_arg);
+          ZeroTile(b, li_arg);
+          NInfTile(b, mi_arg);
+          YieldOp::create(b, loc);
+        });
+  }
 
-  auto q = LoadTile(fn_builder, q_arg);
-  auto k = LoadTile(fn_builder, k_arg);
+  Value q = LoadTile(fn_builder, q_arg);
+  Value k = LoadTile(fn_builder, k_arg);
+  // We can fold the exp -> exp2 conversion into the scale factor to reduce the
+  // number of VLP multiplications by one per exp / log.
+  // y = exp(x) <=> y = 2^(x * log2(e))
+  constexpr float kLog2e = std::numbers::log2e_v<float>;
+  q = ScaleValue(fn_builder, q, config.scale * kLog2e);
   Value sij =
       CreateMatmul(fn_builder, q, k, MatmulOptions{.transpose_rhs = true});
-
-  sij = ScaleValue(fn_builder, sij, config.scale);
-
-  Value row_block_idx = fn.getArgument(2);
-  Value col_block_idx = fn.getArgument(3);
-  Value bias = GetStructuredBias(fn_builder, row_block_idx, col_block_idx, qt,
-                                 kt, config.q_sequence_length,
-                                 config.kv_sequence_length, config.is_causal);
 
   if (mask_arg) {
     Value user_bias = LoadTile(fn_builder, mask_arg);
     user_bias = ConvertElementType(fn_builder, f32, user_bias);
-    if (bias) {
-      bias = AddFOp::create(fn_builder, bias, user_bias);
-    } else {
-      bias = user_bias;
-    }
+    user_bias = ScaleValue(fn_builder, user_bias, kLog2e);
+    sij = AddFOp::create(fn_builder, sij, user_bias);
   }
 
-  if (bias) {
-    bias = ConvertElementType(fn_builder, f32, bias);
-    sij = AddFOp::create(fn_builder, sij, bias);
-  }
+  Value row_block_idx = fn.getArgument(2);
+  Value col_block_idx = fn.getArgument(3);
+  sij = ApplyStructuredMask(fn_builder, sij, row_block_idx, col_block_idx, qt,
+                            kt, config.q_sequence_length,
+                            config.kv_sequence_length, config.is_causal);
 
   if (mask_arg) {
     // If a user provides a mask we must defend against a row being entirely
@@ -283,13 +310,42 @@ func::FuncOp buildModule(ImplicitLocOpBuilder& module_builder,
 
   auto mij = ReduceBroadcastLane(fn_builder, sij, CombiningKind::MAXIMUMF);
 
+  if (is_single_kv_step) {
+    auto p_tile_scaled = Exp2Op::create(
+        fn_builder,
+        SubFOp::create(fn_builder, sij, NormalizeLaneDim(fn_builder, mij, kt)));
+    auto tile_sum =
+        ReduceBroadcastLane(fn_builder, p_tile_scaled, CombiningKind::ADD);
+    Value lhs = ConvertElementType(
+        fn_builder, ity,
+        ApplyDropoutToProbabilities(fn_builder, config, qt, kt, fn, seed_arg,
+                                    p_tile_scaled));
+    auto vj = LoadTile(fn_builder, v_arg);
+    Value unnormalized_output = CreateMatmul(fn_builder, lhs, vj);
+    Value li_recip = CreateReciprocal(fn_builder, tile_sum);
+    Value normalized_output = MulFOp::create(
+        fn_builder, unnormalized_output,
+        NormalizeLaneDim(fn_builder, li_recip, config.vo_head_dim));
+    StoreTile(fn_builder, normalized_output, oi_arg);
+    if (config.return_lse) {
+      Value lse =
+          AddFOp::create(fn_builder, mij, CreateLog2(fn_builder, tile_sum));
+      Value sliced_lse = NormalizeLaneDim(fn_builder, lse, 1);
+      Value transposed_lse =
+          vector::TransposeOp::create(fn_builder, sliced_lse, {1, 0});
+      StoreTile(fn_builder, transposed_lse, lse_arg);
+    }
+    ReturnOp::create(fn_builder);
+    return fn;
+  }
+
   auto mi_prev = LoadTile(fn_builder, mi_arg);
   auto mi_new = MaximumFOp::create(fn_builder, mi_prev, mij);
 
   auto alpha =
-      ExpOp::create(fn_builder, SubFOp::create(fn_builder, mi_prev, mi_new));
+      Exp2Op::create(fn_builder, SubFOp::create(fn_builder, mi_prev, mi_new));
 
-  auto p_tile_scaled = ExpOp::create(
+  auto p_tile_scaled = Exp2Op::create(
       fn_builder, SubFOp::create(fn_builder, sij,
                                  NormalizeLaneDim(fn_builder, mi_new, kt)));
 
@@ -305,9 +361,12 @@ func::FuncOp buildModule(ImplicitLocOpBuilder& module_builder,
   auto adjustment = MulFOp::create(
       fn_builder, NormalizeLaneDim(fn_builder, alpha, config.vo_head_dim), oi);
 
-  auto vj = LoadTile(fn_builder, v_arg);
-  Value lhs = ConvertElementType(fn_builder, ity, p_tile_scaled);
+  Value lhs = ConvertElementType(
+      fn_builder, ity,
+      ApplyDropoutToProbabilities(fn_builder, config, qt, kt, fn, seed_arg,
+                                  p_tile_scaled));
 
+  auto vj = LoadTile(fn_builder, v_arg);
   Value current = CreateMatmul(fn_builder, lhs, vj);
 
   Value unnormalized_output = AddFOp::create(fn_builder, adjustment, current);
@@ -338,8 +397,11 @@ func::FuncOp buildModule(ImplicitLocOpBuilder& module_builder,
                  StoreTile(b, normalized_output, oi_arg);
                  if (config.return_lse) {
                    Value mi = LoadTile(b, mi_arg);
-                   Value lse =
-                       AddFOp::create(b, mi, math::LogOp::create(b, li));
+                   // As LSE is *only* used for the backward pass, we can use
+                   // the more efficient log2 instead of log.
+                   // I.e. this result is actually scaled by log2(e) of the
+                   // natural log version of LSE.
+                   Value lse = AddFOp::create(b, mi, CreateLog2(b, li));
                    Value sliced_lse = NormalizeLaneDim(b, lse, 1);
                    Value transposed_lse =
                        vector::TransposeOp::create(b, sliced_lse, {1, 0});
@@ -370,6 +432,11 @@ absl::StatusOr<OwningOpRef<ModuleOp>> CreateKernel(
   if (config.num_heads % config.kv_num_heads != 0) {
     return TT_ERROR(::torch_tpu::error::kInvalidArgument)
            << "num_heads must be divisible by kv_num_heads.";
+  }
+
+  if (config.dropout_rate < 0.0f || config.dropout_rate >= 1.0f) {
+    return TT_ERROR(::torch_tpu::error::kInvalidArgument)
+           << "dropout_rate must be in [0.0, 1.0), got " << config.dropout_rate;
   }
 
   auto fn = buildModule(module_builder, config, tiling);

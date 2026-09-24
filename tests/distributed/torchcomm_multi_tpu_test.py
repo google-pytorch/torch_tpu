@@ -21,7 +21,6 @@ import torch
 from torch import distributed as dist
 import torch.multiprocessing as mp
 from torch_tpu._internal.distributed import torchcomm_tpu
-from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.distributed import multiprocessing
 from tests.distributed import distributed_utils
 import torchcomms
@@ -197,64 +196,43 @@ class TorchCommsMultiTpuTest(
   def test_multi_tpu_attributes(self):
     distributed_utils.dist_run(
         nproc_per_node=self.WORLD_SIZE,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            _run_test_attributes,
-            world_size=self.WORLD_SIZE,
-        ),
+        fn=_run_test_attributes,
     )
 
   def test_multi_tpu_all_reduce(self):
     distributed_utils.dist_run(
         nproc_per_node=self.WORLD_SIZE,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            _run_test_all_reduce,
-            world_size=self.WORLD_SIZE,
-        ),
+        fn=_run_test_all_reduce,
     )
 
   def test_multi_tpu_all_gather(self):
     distributed_utils.dist_run(
         nproc_per_node=self.WORLD_SIZE,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            _run_test_all_gather,
-            world_size=self.WORLD_SIZE,
-        ),
+        fn=_run_test_all_gather,
     )
 
   def test_multi_tpu_all_gather_single(self):
     distributed_utils.dist_run(
         nproc_per_node=self.WORLD_SIZE,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            _run_test_all_gather_single,
-            world_size=self.WORLD_SIZE,
-        ),
+        fn=_run_test_all_gather_single,
     )
 
   def test_multi_tpu_broadcast(self):
     distributed_utils.dist_run(
         nproc_per_node=self.WORLD_SIZE,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            _run_test_broadcast,
-            world_size=self.WORLD_SIZE,
-        ),
+        fn=_run_test_broadcast,
     )
 
   def test_multi_tpu_barrier(self):
     distributed_utils.dist_run(
         nproc_per_node=self.WORLD_SIZE,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            _run_test_barrier,
-            world_size=self.WORLD_SIZE,
-        ),
+        fn=_run_test_barrier,
     )
 
   def test_multi_tpu_finalize(self):
     distributed_utils.dist_run(
         nproc_per_node=self.WORLD_SIZE,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            _run_test_finalize,
-            world_size=self.WORLD_SIZE,
-        ),
+        fn=_run_test_finalize,
     )
 
 

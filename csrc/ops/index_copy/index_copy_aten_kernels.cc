@@ -24,6 +24,7 @@
 #include "absl/log/log.h"
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -47,6 +48,8 @@ namespace {
 absl::Status IndexCopy(const at::Tensor& self, int64_t dim,
                        const at::Tensor& index, const at::Tensor& source,
                        at::Tensor& out, OpParamCacheKeys param_keys) {
+  TT_RETURN_IF_ERROR(ValidateOutDtype(out, self.scalar_type(),
+                                      /*allow_out_dtype_cast=*/false));
   TT_ASSIGN_OR_RETURN(dim,
                       ValidateIndexInputsAndGetDim(self, dim, index, source));
 

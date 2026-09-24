@@ -16,6 +16,7 @@
 
 #include <cstdint>
 #include <initializer_list>
+#include <numbers>
 #include <optional>
 
 #include "absl/functional/any_invocable.h"
@@ -64,7 +65,7 @@ using mlir::arith::ConstantOp;     // USING_DECL_OK
 using mlir::arith::MulFOp;         // USING_DECL_OK
 using mlir::arith::SubFOp;         // USING_DECL_OK
 using mlir::func::ReturnOp;        // USING_DECL_OK
-using mlir::math::ExpOp;           // USING_DECL_OK
+using mlir::math::Exp2Op;          // USING_DECL_OK
 using mlir::scf::IfOp;             // USING_DECL_OK
 using mlir::scf::YieldOp;          // USING_DECL_OK
 using mlir::vector::BroadcastOp;   // USING_DECL_OK
@@ -78,31 +79,25 @@ struct SharedBwdResult {
 SharedBwdResult ComputeSharedBackwardLogic(
     ImplicitLocOpBuilder& fn_builder, const FlashAttnConfig& config, int64_t qt,
     int64_t kt, Value q_2d, Value k_2d, Value v_2d, Value do_2d, Value lse_tile,
-    Value di_tile, Value user_bias, Value row_block_idx, Value col_block_idx,
-    Type oty, Type ity, IntegerType i32, MLIRContext* context) {
+    Value di_tile, Value user_bias, Value batch_idx, Value q_head_idx,
+    Value row_block_idx, Value col_block_idx, Value seed_arg, Type oty,
+    Type ity, IntegerType i32, MLIRContext* context) {
+  constexpr float kLog2e = std::numbers::log2e_v<float>;
   Type vector_type_qt_kt = VectorType::get({qt, kt}, oty);
   Value unscaled_sij = CreateMatmul(fn_builder, q_2d, k_2d,
                                     MatmulOptions{.transpose_rhs = true});
 
-  Value sij = ScaleValue(fn_builder, unscaled_sij, config.scale);
-
-  Value bias = GetStructuredBias(fn_builder, row_block_idx, col_block_idx, qt,
-                                 kt, config.q_sequence_length,
-                                 config.kv_sequence_length, config.is_causal);
+  Value sij = ScaleValue(fn_builder, unscaled_sij, config.scale * kLog2e);
 
   if (user_bias) {
     user_bias = ConvertElementType(fn_builder, oty, user_bias);
-    if (bias) {
-      bias = AddFOp::create(fn_builder, user_bias, bias);
-    } else {
-      bias = user_bias;
-    }
+    user_bias = ScaleValue(fn_builder, user_bias, kLog2e);
+    sij = AddFOp::create(fn_builder, sij, user_bias);
   }
 
-  if (bias) {
-    bias = ConvertElementType(fn_builder, oty, bias);
-    sij = AddFOp::create(fn_builder, sij, bias);
-  }
+  sij = ApplyStructuredMask(fn_builder, sij, row_block_idx, col_block_idx, qt,
+                            kt, config.q_sequence_length,
+                            config.kv_sequence_length, config.is_causal);
 
   if (user_bias) {
     // See comment in forward pass for details.
@@ -113,11 +108,25 @@ SharedBwdResult ComputeSharedBackwardLogic(
       BroadcastOp::create(fn_builder, vector_type_qt_kt, lse_tile);
 
   Value sub_op = SubFOp::create(fn_builder, sij, lse_broadcast);
-  Value pij = math::ExpOp::create(fn_builder, sub_op);
+  Value pij = Exp2Op::create(fn_builder, sub_op);
 
   // Compute dP = dO @ V^T!
   Value dpij = CreateMatmul(fn_builder, do_2d, v_2d,
                             MatmulOptions{.transpose_rhs = true});
+
+  Value p_for_dv = pij;
+  if (config.dropout_rate > 0.0f) {
+    Value keep =
+        BuildDropoutKeepMask(fn_builder, config, qt, kt, batch_idx, q_head_idx,
+                             row_block_idx, col_block_idx, seed_arg);
+    float inv_keep_prob = 1.0f / (1.0f - config.dropout_rate);
+    Value zeros =
+        ConstantOp::create(fn_builder, fn_builder.getZeroAttr(pij.getType()));
+    p_for_dv = arith::SelectOp::create(
+        fn_builder, keep, ScaleValue(fn_builder, pij, inv_keep_prob), zeros);
+    dpij = arith::SelectOp::create(
+        fn_builder, keep, ScaleValue(fn_builder, dpij, inv_keep_prob), zeros);
+  }
 
   // Compute ds = P * (dP - di)!
   Value di_broadcast =
@@ -127,10 +136,11 @@ SharedBwdResult ComputeSharedBackwardLogic(
   Value ds = MulFOp::create(fn_builder, pij, dp_sub_di);
   ds = ConvertElementType(fn_builder, ity, ds);
 
-  return {pij, ds};
+  return {p_for_dv, ds};
 }
 
 struct BwdArgIndices {
+  int seed = -1;
   int q;
   int k;
   int v;
@@ -145,6 +155,9 @@ BwdArgIndices GetBwdArgIndices(const FlashAttnConfig& config,
                                int num_iteration_dims = 4) {
   BwdArgIndices indices;
   int arg_idx = num_iteration_dims;
+  if (config.dropout_rate > 0.0f) {
+    indices.seed = arg_idx++;
+  }
   indices.q = arg_idx++;
   indices.k = arg_idx++;
   indices.v = arg_idx++;
@@ -213,6 +226,7 @@ func::FuncOp buildBackwardDkvModule(ImplicitLocOpBuilder& module_builder,
 
   // Inputs list!
   SmallVector<Type> inputs(5, module_builder.getI32Type());
+  AppendScalarPrefetchTypes(context, config, inputs);
   inputs.push_back(GetVmemMemRefType(context, q_dims, ity));
   inputs.push_back(GetVmemMemRefType(context, k_dims, ity));
   inputs.push_back(GetVmemMemRefType(context, v_dims, ity));
@@ -283,10 +297,27 @@ func::FuncOp buildBackwardDkvModule(ImplicitLocOpBuilder& module_builder,
   LoadedTiles tiles =
       LoadAndCastTiles(fn_builder, fn, config, tiling, oty, arg_indices);
 
+  Value batch_idx = fn.getArgument(0);
+  Value q_head_idx = nullptr;
+  Value seed_arg = nullptr;
+  if (config.dropout_rate > 0.0f) {
+    Value kv_head_idx = fn.getArgument(1);
+    Value head_in_group = fn.getArgument(4);
+    int64_t head_group_size = config.num_heads / config.kv_num_heads;
+    Value group_size_val = arith::ConstantOp::create(
+        fn_builder, fn_builder.getI32IntegerAttr(head_group_size));
+    q_head_idx = arith::AddIOp::create(
+        fn_builder,
+        arith::MulIOp::create(fn_builder, kv_head_idx, group_size_val),
+        head_in_group);
+    seed_arg = fn.getArgument(arg_indices.seed);
+  }
+
   auto shared_result = ComputeSharedBackwardLogic(
       fn_builder, config, qt, kt, tiles.q_tile, tiles.k_tile, tiles.v_tile,
-      tiles.do_2d, tiles.lse_tile, tiles.di_tile, tiles.mask_tile, q_tile_idx,
-      kv_tile_idx, oty, ity, module_builder.getI32Type(), context);
+      tiles.do_2d, tiles.lse_tile, tiles.di_tile, tiles.mask_tile, batch_idx,
+      q_head_idx, q_tile_idx, kv_tile_idx, seed_arg, oty, ity,
+      module_builder.getI32Type(), context);
 
   Value p_contract = ConvertElementType(fn_builder, ity, shared_result.p);
 
@@ -364,7 +395,10 @@ void SetBackwardDkvKernelAttributes(const FlashAttnConfig& config,
   builder.setInsertionPoint(fn);
   Location loc = fn.getLoc();
   Type i32 = builder.getI32Type();
+  // The 5 iteration indices, followed by the scalar_prefetch operands, which
+  // Mosaic requires to be present even though these functions ignore them.
   SmallVector<Type> input_types(5, i32);
+  AppendScalarPrefetchTypes(context, config, input_types);
   SmallVector<Type> output_types(4, i32);
   FunctionType fn_type = builder.getFunctionType(input_types, output_types);
 
@@ -447,6 +481,7 @@ void SetBackwardDkvKernelAttributes(const FlashAttnConfig& config,
 
   fn->setAttr("window_params", builder.getArrayAttr(window_attrs));
   fn->setAttr("scratch_operands", builder.getI64IntegerAttr(2));
+  SetScalarPrefetchAttr(config, fn, builder);
 }
 
 void SetBackwardDqKernelAttributes(const FlashAttnConfig& config,
@@ -518,6 +553,7 @@ void SetBackwardDqKernelAttributes(const FlashAttnConfig& config,
 
   fn->setAttr("window_params", builder.getArrayAttr(window_attrs));
   fn->setAttr("scratch_operands", builder.getI64IntegerAttr(1));
+  SetScalarPrefetchAttr(config, fn, builder);
 }
 
 absl::StatusOr<OwningOpRef<ModuleOp>> CreateBackwardDkvKernel(
@@ -537,6 +573,11 @@ absl::StatusOr<OwningOpRef<ModuleOp>> CreateBackwardDkvKernel(
   if (config.num_heads % config.kv_num_heads != 0) {
     return TT_ERROR(::torch_tpu::error::kInvalidArgument)
            << "num_heads must be divisible by kv_num_heads.";
+  }
+
+  if (config.dropout_rate < 0.0f || config.dropout_rate >= 1.0f) {
+    return TT_ERROR(::torch_tpu::error::kInvalidArgument)
+           << "dropout_rate must be in [0.0, 1.0), got " << config.dropout_rate;
   }
 
   auto fn = buildBackwardDkvModule(module_builder, config, tiling);
@@ -569,6 +610,7 @@ func::FuncOp buildBackwardDqModule(ImplicitLocOpBuilder& module_builder,
 
   // Inputs list!
   SmallVector<Type> inputs(4, module_builder.getI32Type());
+  AppendScalarPrefetchTypes(context, config, inputs);
   inputs.push_back(GetVmemMemRefType(context, q_dims, ity));
   inputs.push_back(GetVmemMemRefType(context, k_dims, ity));
   inputs.push_back(GetVmemMemRefType(context, v_dims, ity));
@@ -623,13 +665,18 @@ func::FuncOp buildBackwardDqModule(ImplicitLocOpBuilder& module_builder,
   LoadedTiles tiles =
       LoadAndCastTiles(fn_builder, fn, config, tiling, oty, arg_indices);
 
+  Value batch_idx = fn.getArgument(0);
+  Value q_head_idx = fn.getArgument(1);
   Value q_tile_idx = fn.getArgument(2);
   Value kv_tile_idx = fn.getArgument(3);
+  Value seed_arg =
+      config.dropout_rate > 0.0f ? fn.getArgument(arg_indices.seed) : nullptr;
 
   auto shared_result = ComputeSharedBackwardLogic(
       fn_builder, config, qt, kt, tiles.q_tile, tiles.k_tile, tiles.v_tile,
-      tiles.do_2d, tiles.lse_tile, tiles.di_tile, tiles.mask_tile, q_tile_idx,
-      kv_tile_idx, oty, ity, module_builder.getI32Type(), context);
+      tiles.do_2d, tiles.lse_tile, tiles.di_tile, tiles.mask_tile, batch_idx,
+      q_head_idx, q_tile_idx, kv_tile_idx, seed_arg, oty, ity,
+      module_builder.getI32Type(), context);
 
   // Compute dQ = dS @ K!
   auto dq_contraction =
@@ -667,6 +714,11 @@ absl::StatusOr<OwningOpRef<ModuleOp>> CreateBackwardDqKernel(
   if (config.num_heads % config.kv_num_heads != 0) {
     return TT_ERROR(::torch_tpu::error::kInvalidArgument)
            << "num_heads must be divisible by kv_num_heads.";
+  }
+
+  if (config.dropout_rate < 0.0f || config.dropout_rate >= 1.0f) {
+    return TT_ERROR(::torch_tpu::error::kInvalidArgument)
+           << "dropout_rate must be in [0.0, 1.0), got " << config.dropout_rate;
   }
 
   auto fn = buildBackwardDqModule(module_builder, config, tiling);

@@ -16,6 +16,9 @@
 
 #include "csrc/pjrt/pjrt_state.h"
 
+#include <unistd.h>
+
+#include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <memory>
@@ -45,7 +48,7 @@
 #include "csrc/pjrt/pjrt_client.h"
 #include "tsl/profiler/lib/profiler_factory.h"
 #include "tsl/profiler/lib/profiler_interface.h"
-#include "xla/backends/profiler/plugin/plugin_tracer.h"
+#include "xla/backends/profiler/plugin/plugin_tracer.h"  // IWYU pragma: keep for xla::profiler::PluginTracer
 #include "xla/backends/profiler/plugin/profiler_c_api.h"
 #include "xla/pjrt/c/pjrt_c_api.h"
 #include "xla/pjrt/c/pjrt_c_api_helpers.h"
@@ -192,6 +195,9 @@ absl::Status PjrtBackend::EnsureInitialized() {
   // errors instead of low-level crashes.
   init_status_ = AdaptVfioDeviceCollisionError(InitializeInternal());
   init_attempted_ = true;
+  if (init_status_.ok()) {
+    init_pid_.store(getpid(), std::memory_order_relaxed);
+  }
   return init_status_;
 }
 
@@ -215,14 +221,8 @@ absl::Status PjrtBackend::InitializeInternal() {
         world_size_or.ok()) {
       TT_ASSIGN_OR_RETURN(auto config, GetDistributedWorkerConfiguration());
       TT_RETURN_IF_ERROR(InitializeDistributedEnvironment(config)).SetPrepend()
-          << "InitializeDistributedEnvironment failed: ";
+          << "failed to initialize distributed environment: ";
     }
-  } else if (options_.device_type == "xla_cuda") {
-    plugin_name = kGpuPjrtName;
-    device_type = PjRtDeviceType::kCuda;
-  } else if (options_.device_type == "xla_cpu") {
-    plugin_name = kCpuPjrtName;
-    device_type = PjRtDeviceType::kCpu;
   } else {
     return TT_ERROR(error::kInvalidArgument)
            << "unsupported device type: " << options_.device_type;
@@ -235,7 +235,7 @@ absl::Status PjrtBackend::InitializeInternal() {
                       pjrt::IsPjrtPluginInitialized(plugin_name));
   if (!is_initialized) {
     TT_RETURN_IF_ERROR(pjrt::InitializePjrtPlugin(plugin_name)).SetPrepend()
-        << "initializing the PjRt plugin failed with: ";
+        << "failed to initialize the PjRt plugin: ";
   }
 
   // Mem tracking note: Background threads in XLA spun up during GetPjRtClient.
@@ -243,7 +243,7 @@ absl::Status PjrtBackend::InitializeInternal() {
       client_,
       torch_tpu::GetPjRtClient(options_.device_type,
                                options_.premapped_buffer_size_bytes),
-      _.SetPrepend() << "retrieving a PjRtClient failed with: ");
+      _.SetPrepend() << "failed to retrieve the PjRt client: ");
 
   ABSL_CHECK_NE(client_, nullptr)  // CRASH_OK
       << "PjRtClient should not be null after initialization.";
@@ -293,9 +293,15 @@ bool PjrtBackend::IsInitialized() const {
   return client_ != nullptr;
 }
 
+bool PjrtBackend::IsInBadFork() const {
+  const pid_t init_pid = init_pid_.load(std::memory_order_relaxed);
+  return init_pid != 0 && getpid() != init_pid;
+}
+
 xla::PjRtClient* absl_nullable PjrtBackend::GetClient() {
   if (const absl::Status s = EnsureInitialized(); !s.ok()) {
-    ABSL_LOG(ERROR) << "PjrtBackend::GetClient failed to initialize: " << s;
+    ABSL_LOG_FIRST_N(ERROR, 1)
+        << "PjrtBackend::GetClient failed to initialize: " << s;
     return nullptr;
   }
   absl::ReaderMutexLock lock(mutex_);
@@ -311,7 +317,8 @@ PjrtBackend::GetSharedClient() {
 
 xla::PjRtDevice* absl_nullable PjrtBackend::GetDevice() {
   if (const absl::Status s = EnsureInitialized(); !s.ok()) {
-    ABSL_LOG(ERROR) << "PjrtBackend::GetDevice failed to initialize: " << s;
+    ABSL_LOG_FIRST_N(ERROR, 1)
+        << "PjrtBackend::GetDevice failed to initialize: " << s;
     return nullptr;
   }
   absl::ReaderMutexLock lock(mutex_);
@@ -390,8 +397,10 @@ absl::StatusOr<xla::HostMemoryAllocator*> PjrtBackend::GetHostAllocator() {
 }
 
 void PjrtBackend::Shutdown() {
+  // Reset the initialization PID so that subsequent forks from this process (or
+  // re-initialization of the runtime) are not falsely identified as bad forks.
+  init_pid_.store(0, std::memory_order_relaxed);
   absl::MutexLock lock(mutex_);
-  world_rank_to_device_id_ = std::nullopt;
   if (!init_attempted_) {
     return;
   }
@@ -404,29 +413,6 @@ void PjrtBackend::Shutdown() {
   init_attempted_ = false;
   init_status_ = absl::OkStatus();
   ABSL_VLOG(1) << "PjRt shut down.";
-}
-
-void PjrtBackend::ResetWorldRankToDeviceId() {
-  absl::MutexLock lock(mutex_);
-  world_rank_to_device_id_ = std::nullopt;
-}
-
-void PjrtBackend::SetWorldRankToDeviceId(
-    std::vector<int64_t> rank_to_device_id) {  // INT_VEC_OK
-  absl::MutexLock lock(mutex_);
-  if (world_rank_to_device_id_.has_value()) {
-    ABSL_CHECK_EQ(*world_rank_to_device_id_, rank_to_device_id)  // CRASH_OK
-        << "World rank to device ID mapping already initialized with different "
-           "values.";
-    return;
-  }
-  world_rank_to_device_id_ = std::move(rank_to_device_id);
-}
-
-std::optional<std::vector<int64_t>>  // INT_VEC_OK
-PjrtBackend::GetWorldRankToDeviceId() const {
-  absl::ReaderMutexLock lock(mutex_);
-  return world_rank_to_device_id_;
 }
 
 }  // namespace torch_tpu

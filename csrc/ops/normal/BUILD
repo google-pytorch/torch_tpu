@@ -46,6 +46,7 @@ torch_tpu_cc_library(
         "//csrc/ops/resize:resize_aten_kernels",
         "//csrc/ops/uniform",
         "//csrc/ops/view:view_aten_kernels",
+        "//csrc/pjrt:pjrt_transfer",
         "//csrc/pjrt:pjrt_utils",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
@@ -58,10 +59,10 @@ torch_tpu_cc_library(
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Support",
-        "@stablehlo//:attr_type_builder_util",
-        "@stablehlo//:chlo_builder",
-        "@stablehlo//:mlir_builder",
-        "@stablehlo//:stablehlo_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:chlo_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
     ],
 )
 

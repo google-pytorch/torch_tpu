@@ -66,9 +66,9 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
-        "@stablehlo//:attr_type_builder_util",
-        "@stablehlo//:mlir_builder",
-        "@stablehlo//:stablehlo_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
     ],
 )
 
@@ -84,7 +84,7 @@ torch_tpu_cc_library(
         "//csrc/eager:device_buffer",
         "//csrc/eager:device_buffer_utils",
         "//csrc/eager:tensor_to_buffer",
-        "//csrc/pjrt:pjrt_utils",
+        "//csrc/pjrt:pjrt_transfer",
         "//shims/torch:aten_headers",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status",
@@ -111,6 +111,7 @@ torch_tpu_cc_library(
         "//csrc/ops:op_names",
         "//csrc/ops:python_context",
         "//csrc/ops:xla_utils",
+        "//csrc/pjrt:pjrt_transfer",
         "//csrc/pjrt:pjrt_utils",
         "//shims/torch:aten_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
@@ -119,7 +120,7 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
-        "@stablehlo//:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@tsl//tsl/profiler/lib:traceme",
     ],
 )

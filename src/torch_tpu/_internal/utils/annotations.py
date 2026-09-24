@@ -25,6 +25,7 @@ inspection by scanner tools, and emit standard Python runtime warnings
 import dataclasses
 import enum
 import functools
+import sys
 from typing import Any, Callable, Mapping, Optional, TypeVar
 import warnings
 
@@ -34,6 +35,24 @@ TT_API_STAGE = "__tt_api_stage__"
 TT_API_STAGE_REASON = "__tt_api_stage_reason__"
 TT_API_DEPRECATED_VERSION = "__tt_api_deprecated_version__"
 TT_API_STAGES_MAP = "__tt_api_stages__"
+_FRAMEWORK_PACKAGES: tuple[str, ...] = ("torch", "torch_tpu")
+
+
+def _is_framework_caller_frame(frame: Any) -> bool:
+  """Checks if a stack frame belongs to torch or torch_tpu framework packages."""
+  if frame is None:
+    return False
+  mod = frame.f_globals.get("__name__") or ""
+  if not isinstance(mod, str):
+    return False
+  # Do not treat tests as framework callers so warnings can be tested and verified.
+  if mod.startswith("torch_tpu.tests.") or mod == "torch_tpu.tests":
+    return False
+  return (
+      mod in _FRAMEWORK_PACKAGES
+      or mod.startswith("torch.")
+      or mod.startswith("torch_tpu.")
+  )
 
 
 class Stage(str, enum.Enum):
@@ -107,6 +126,9 @@ def _attach_stage_metadata(
 ) -> None:
   """Attaches stage metadata attributes to a target.
 
+  If the target has a `__func__` attribute (e.g. a bound method), the
+  metadata attributes are also attached to the underlying function object.
+
   Args:
     target: The target object to modify.
     stage: The lifecycle stage of the target.
@@ -118,6 +140,13 @@ def _attach_stage_metadata(
   _safe_setattr(target, TT_API_STAGE_REASON, reason)
   if version:
     _safe_setattr(target, TT_API_DEPRECATED_VERSION, version)
+  # If target is a method (e.g. bound classmethod), also attach metadata to the
+  # underlying function object so it is discoverable when inspecting __func__.
+  if hasattr(target, "__func__"):
+    _safe_setattr(target.__func__, TT_API_STAGE, stage)
+    _safe_setattr(target.__func__, TT_API_STAGE_REASON, reason)
+    if version:
+      _safe_setattr(target.__func__, TT_API_DEPRECATED_VERSION, version)
 
 
 def _create_warning_wrapper(
@@ -146,12 +175,18 @@ def _create_warning_wrapper(
   def wrapper(*args: Any, **kwargs: Any) -> Any:
     nonlocal _warned
     if not _warned:
-      name = getattr(display_target, "__name__", str(display_target))
-      msg = stage.format_warning_message(name, reason, version)
-      cat = stage.warning_category
-      if cat:
-        warnings.warn(msg, category=cat, stacklevel=2)
-      _warned = True
+      try:
+        caller_frame = sys._getframe(1)
+      except (AttributeError, ValueError):
+        caller_frame = None
+
+      if not _is_framework_caller_frame(caller_frame):
+        name = getattr(display_target, "__name__", str(display_target))
+        msg = stage.format_warning_message(name, reason, version)
+        cat = stage.warning_category
+        if cat:
+          warnings.warn(msg, category=cat, stacklevel=2)
+        _warned = True
     return fn_to_wrap(*args, **kwargs)
 
   return wrapper
@@ -310,11 +345,22 @@ def _resolve_module_attribute(
 
   info = stages_map[name]
   cat = info.stage.warning_category
+  warned = False
   if cat:
-    msg = info.stage.format_warning_message(
-        f"'{name}'", info.reason, info.version
-    )
-    warnings.warn(msg, category=cat, stacklevel=3)
+    try:
+      frame = sys._getframe(1)
+      while frame and frame.f_code.co_name == "__getattr__":
+        frame = frame.f_back
+      caller_frame = frame
+    except (AttributeError, ValueError):
+      caller_frame = None
+
+    if not _is_framework_caller_frame(caller_frame):
+      msg = info.stage.format_warning_message(
+          f"'{name}'", info.reason, info.version
+      )
+      warnings.warn(msg, category=cat, stacklevel=3)
+      warned = True
 
   # Dynamically attach stage metadata to map-registered objects upon resolution.
   if info.value is not None:
@@ -322,7 +368,10 @@ def _resolve_module_attribute(
         info.value, info.stage.value, info.reason, info.version
     )
 
-  if tt_api_globals is not None:
+  # Only cache into tt_api_globals when no warning is required (cat is None) or
+  # after the warning has been emitted to an external caller, so internal calls do
+  # not prematurely cache and suppress warnings for subsequent user calls.
+  if tt_api_globals is not None and (cat is None or warned):
     tt_api_globals[name] = info.value
 
   return info.value

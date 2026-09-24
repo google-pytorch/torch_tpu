@@ -20,6 +20,7 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "ATen/ops/result_type.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
@@ -124,7 +125,14 @@ at::Tensor& AtenLerpScalarOut(const at::Tensor& self, const at::Tensor& end,
                               const at::Scalar& weight, at::Tensor& out) {
   auto promoted_weight = PromoteScalar(weight);
   TT_KERNEL(OpName::kLerpScalarOut, _, (self, end, promoted_weight, out), {
-    TT_ASSIGN_OR_THROW(auto weight_tensor, promoted_weight.GetTensor());
+    // Promote `weight` as a scalar rather than a default-float64 tensor, and
+    // widen to at least F32 to match `AtenLerpTensorOut`'s compute dtype
+    // without quantizing the scalar to F16/BF16.
+    at::ScalarType weight_dtype =
+        at::result_type(self, promoted_weight.scalar());
+    weight_dtype = c10::promoteTypes(weight_dtype, at::ScalarType::Float);
+    TT_ASSIGN_OR_THROW(auto weight_tensor,
+                       promoted_weight.GetTensor(weight_dtype));
     return AtenLerpTensorOut(self, end, weight_tensor, out);
   });
 }

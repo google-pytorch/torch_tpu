@@ -480,6 +480,31 @@ class DynamismTest(seed_test_utils.RepeatableTest):
       res_y.cpu()
     self.assertEqual(counter.num_cache_hits(), 1)
 
+  @parameterized.named_parameters(
+      ("scan_dim", 0),
+      ("non_scan_dim", 1),
+  )
+  def test_cumsum_dynamic_shapes(self, dim: int):
+    """Tests cumsum op with dynamic shapes."""
+
+    def dyn_cumsum(x):
+      dynamism.mark_dynamic(x, 0, 2, 10)
+      return torch.cumsum(x, dim=dim)
+
+    x = torch.randn(8, 17, device="cpu").to(self.device)
+    res_x = dyn_cumsum(x)
+    with CompilationCounter(self.device) as counter:
+      res_x_cpu = res_x.cpu()
+    self.assertEqual(counter.num_cache_hits(), 0)
+    utils.assert_close(res_x_cpu, torch.cumsum(x.cpu(), dim=dim))
+
+    y = torch.randn(4, 17, device="cpu").to(self.device)
+    res_y = dyn_cumsum(y)
+    with CompilationCounter(self.device) as counter:
+      res_y_cpu = res_y.cpu()
+    self.assertEqual(counter.num_cache_hits(), 1)
+    utils.assert_close(res_y_cpu, torch.cumsum(y.cpu(), dim=dim))
+
   def test_same_rank_dynamic_reshape(self):
     # [1, 16, ?, 128] to [16, ?, 128, 1]
     def mark_dynamic(x: torch.Tensor) -> None:

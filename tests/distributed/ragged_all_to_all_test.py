@@ -19,7 +19,6 @@ import os
 from absl.testing import absltest
 import torch
 from torch import distributed as dist
-from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
@@ -856,7 +855,7 @@ class RaggedAllToAllTest(seed_test_utils.MultiProcessRepeatableTest):
     world_size = 8
     distributed_utils.dist_run(
         nproc_per_node=world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(run_ragged_all_to_all_test),
+        fn=run_ragged_all_to_all_test,
     )
 
   def test_ragged_all_to_all_uneven(self):
@@ -864,9 +863,7 @@ class RaggedAllToAllTest(seed_test_utils.MultiProcessRepeatableTest):
     world_size = 8
     distributed_utils.dist_run(
         nproc_per_node=world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_ragged_all_to_all_uneven_test
-        ),
+        fn=run_ragged_all_to_all_uneven_test,
     )
 
   def test_ragged_all_to_all_autograd(self):
@@ -874,9 +871,7 @@ class RaggedAllToAllTest(seed_test_utils.MultiProcessRepeatableTest):
     world_size = 8
     distributed_utils.dist_run(
         nproc_per_node=world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_ragged_all_to_all_autograd_test
-        ),
+        fn=run_ragged_all_to_all_autograd_test,
     )
 
   def test_ragged_all_to_all_autograd_zero_sized_and_padding(self):
@@ -884,9 +879,7 @@ class RaggedAllToAllTest(seed_test_utils.MultiProcessRepeatableTest):
     world_size = 8
     distributed_utils.dist_run(
         nproc_per_node=world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_ragged_all_to_all_autograd_zero_sized_and_padding_test
-        ),
+        fn=run_ragged_all_to_all_autograd_zero_sized_and_padding_test,
     )
 
   def test_ragged_all_to_all_autograd_bfloat16_and_chained(self):
@@ -894,9 +887,7 @@ class RaggedAllToAllTest(seed_test_utils.MultiProcessRepeatableTest):
     world_size = 8
     distributed_utils.dist_run(
         nproc_per_node=world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_ragged_all_to_all_autograd_bfloat16_and_chained_test
-        ),
+        fn=run_ragged_all_to_all_autograd_bfloat16_and_chained_test,
     )
 
   def test_dist_all_to_all_single_uneven(self):
@@ -904,9 +895,7 @@ class RaggedAllToAllTest(seed_test_utils.MultiProcessRepeatableTest):
     world_size = 8
     distributed_utils.dist_run(
         nproc_per_node=world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_dist_all_to_all_single_uneven_test
-        ),
+        fn=run_dist_all_to_all_single_uneven_test,
     )
 
   def test_ragged_all_to_all_autograd_2d(self):
@@ -914,9 +903,7 @@ class RaggedAllToAllTest(seed_test_utils.MultiProcessRepeatableTest):
     world_size = 8
     distributed_utils.dist_run(
         nproc_per_node=world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_ragged_all_to_all_autograd_2d_test
-        ),
+        fn=run_ragged_all_to_all_autograd_2d_test,
     )
 
   def test_ragged_all_to_all_autograd_multiple_iterations(self):
@@ -924,9 +911,7 @@ class RaggedAllToAllTest(seed_test_utils.MultiProcessRepeatableTest):
     world_size = 8
     distributed_utils.dist_run(
         nproc_per_node=world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_ragged_all_to_all_autograd_multiple_iterations_test
-        ),
+        fn=run_ragged_all_to_all_autograd_multiple_iterations_test,
     )
 
   def test_ragged_all_to_all_no_grad(self):
@@ -934,9 +919,7 @@ class RaggedAllToAllTest(seed_test_utils.MultiProcessRepeatableTest):
     world_size = 8
     distributed_utils.dist_run(
         nproc_per_node=world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_ragged_all_to_all_no_grad_test
-        ),
+        fn=run_ragged_all_to_all_no_grad_test,
     )
 
 

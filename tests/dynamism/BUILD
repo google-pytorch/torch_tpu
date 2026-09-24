@@ -27,12 +27,13 @@ package(
 torch_tpu_py_test(
     name = "compile_test",
     srcs = ["compile_test.py"],
-    notest_oss = "OSS needs to be updated with the latest libtpu release that contains cl/904008746.",
+    notest_oss = True,  # OSS needs to be updated with the latest libtpu release that contains cl/904008746.
     tags = [
         "requires-tpu-v5lite",
     ],
     deps = [
         "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/compile:tpu_backend",
@@ -44,7 +45,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "sym_constraint_test",
     srcs = ["sym_constraint_test.py"],
-    notest_oss = "OSS needs to be updated with the latest libtpu release that contains cl/904008746.",
+    notest_oss = True,  # OSS needs to be updated with the latest libtpu release that contains cl/904008746.
     tags = [
         "requires-tpu-v5lite",
     ],
@@ -60,7 +61,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "generative_ops_test",
     srcs = ["generative_ops_test.py"],
-    notest_oss = "OSS needs to be updated with the latest libtpu release for bounded dynamism.",
+    notest_oss = True,  # OSS needs to be updated with the latest libtpu release for bounded dynamism.
     tags = [
         "requires-tpu-v5lite",
     ],
@@ -76,10 +77,12 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "dynamic_view_test",
     srcs = ["dynamic_view_test.py"],
-    notest_oss = "OSS needs to be updated with the latest libtpu release for bounded dynamism.",
+    notest_oss = True,  # OSS needs to be updated with the latest libtpu release for bounded dynamism.
+    # Run on single-chip TPU v7 for faster dynamic shape compilation and
+    # to utilize idle single-chip v7 runner capacity in OSS presubmit.
     oss_presubmit_tpu_generation = tpu_gen(
         "v7",
-        reason = "Faster dynamic shape compilation on TPU v7",
+        reason = "Faster dynamic shape compilation on single-chip TPU v7",
     ),
     tags = ["requires-tpu-v5lite"],
     deps = [
@@ -94,9 +97,11 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "sym_expr_arg_test",
     srcs = ["sym_expr_arg_test.py"],
+    # Run on single-chip TPU v7 for faster symbolic expression evaluation and compilation,
+    # utilizing idle single-chip v7 runner capacity in OSS presubmit.
     oss_presubmit_tpu_generation = tpu_gen(
         "v7",
-        reason = "Faster symbolic expression evaluation on TPU v7",
+        reason = "Faster symbolic expression evaluation on single-chip TPU v7",
     ),
     tags = ["requires-tpu-v5lite"],
     deps = [
@@ -129,6 +134,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile/dynamic:output_sym_shape",
         "//src/torch_tpu/_internal/compile/dynamic:sym_bounds_manager",
         "//src/torch_tpu/_internal/compile/dynamic:sym_shape_manager",
         "//src/torch_tpu/_internal/compile/dynamic:sym_utils",
@@ -155,7 +161,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "jagged_dynamism_test",
     srcs = ["jagged_dynamism_test.py"],
-    notest_oss = "OSS needs to be updated with the latest libtpu release for bounded dynamism.",
+    notest_oss = True,  # OSS needs to be updated with the latest libtpu release for bounded dynamism.
     tags = [
         "requires-tpu-v5lite",
     ],

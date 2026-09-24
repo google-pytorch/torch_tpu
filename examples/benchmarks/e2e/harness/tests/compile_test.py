@@ -28,6 +28,7 @@ from unittest import mock
 
 from absl.testing import absltest
 import torch.nn as nn
+from examples.benchmarks.e2e import device_utils
 from examples.benchmarks.e2e.harness import compile as compile_lib
 from examples.benchmarks.e2e.harness import target as target_lib
 from tests import seed_test_utils
@@ -144,6 +145,15 @@ class CompileConfigTest(seed_test_utils.RepeatableTest):
       compile_lib.CompileConfig(scope=compile_lib.Scope.STEP).apply(obj, target)
       step_kwargs = tc.call_args.kwargs
     self.assertEqual(model_kwargs, step_kwargs)
+
+  def test_cuda_backend_calls_configure_inductor_for_benchmarks(self):
+    target = target_lib.make_target(target_lib.Platform.B200_1)
+    with mock.patch("torch.compile", return_value="X") as tc, mock.patch.object(
+        device_utils, "configure_inductor_for_benchmarks"
+    ) as mock_cfg:
+      compile_lib.CompileConfig().apply(nn.Linear(2, 2), target)
+    mock_cfg.assert_called_once()
+    self.assertEqual(tc.call_args.kwargs["backend"], "inductor")
 
 
 if __name__ == "__main__":

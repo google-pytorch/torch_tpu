@@ -42,6 +42,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
@@ -1357,6 +1358,47 @@ TEST(OpBuilderUtils, SliceBatchDimensions_ZeroDimBatch) {
   const mlir::MlirOp sliced = SliceBatchDimensions(self, /*dim=*/1, index_type);
   const mlir::RankedTensorType sliced_type = GetTensorTypeOrDie(sliced);
   EXPECT_THAT(sliced_type.getShape(), ElementsAre(0, 5));
+}
+
+TEST(OpBuilderUtils, Squeeze_PreservesBoundedDynamism) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::OpBuilder& op_builder = fb.getOpBuilder();
+
+  // Create bounded input tensor of shape [1, 2, ?] with bound 10 on dim 2:
+  // tensor<1x2x?xf32, #stablehlo.type_extensions<bounds = [?, ?, 10]>>
+  const auto bounds_attr = mlir::DenseI64ArrayAttr::get(
+      op_builder.getContext(),
+      {mlir::ShapedType::kDynamic, mlir::ShapedType::kDynamic, int64_t{10}});
+  const auto encoding = mlir::stablehlo::TypeExtensionsAttr::get(
+      op_builder.getContext(), bounds_attr);
+  const auto input_type = mlir::RankedTensorType::get(
+      {1, 2, mlir::ShapedType::kDynamic}, op_builder.getF32Type(), encoding);
+  const auto input = mlir::func::Argument(fb, input_type);
+
+  // Squeeze static dimension 0.
+  TT_ASSERT_OK_AND_ASSIGN(const mlir::MlirOp squeezed, Squeeze(input, {0}));
+
+  const mlir::RankedTensorType result_type = GetTensorTypeOrDie(squeezed);
+  EXPECT_EQ(result_type.getRank(), 2);
+  EXPECT_TRUE(result_type.isDynamicDim(1));
+
+  // Verify that the bounds attribute is preserved on the squeezed output.
+  const auto result_encoding =
+      mlir::dyn_cast_or_null<mlir::stablehlo::TypeExtensionsAttr>(
+          result_type.getEncoding());
+  ASSERT_NE(result_encoding, nullptr);
+  EXPECT_THAT(result_encoding.getBounds(),
+              ElementsAre(mlir::ShapedType::kDynamic, int64_t{10}));
+
+  // Verify that GetDimensions sees the bounded dimension with bound 10.
+  const mlir::stablehlo::Dimensions dims = GetDimensions(squeezed);
+  ASSERT_EQ(dims.size(), 2);
+  EXPECT_EQ(dims[0].size, 2);
+  EXPECT_FALSE(dims[0].boundOp.has_value());
+  EXPECT_EQ(dims[1].size, 10);
+  EXPECT_TRUE(dims[1].boundOp.has_value());
 }
 
 }  // namespace

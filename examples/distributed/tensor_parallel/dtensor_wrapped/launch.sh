@@ -16,7 +16,7 @@
 # A script to run the tensor parallel worker using standard torchrun.
 
 # Detect and export TPU configuration dynamically.
-eval $(python3 -m torch_tpu._internal.distributed.launchers.singlehost_wrapper)
+eval $(python3 -m torch_tpu._internal.distributed.launchers.environment)
 export TORCH_TPU_TOPOLOGY TORCH_TPU_SLICEBUILDER_ADDRESSES WORLD_SIZE
 
 python3 -m torch.distributed.run --nproc_per_node=$WORLD_SIZE ./dtp_worker.py

@@ -31,7 +31,7 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
     )
     with tpu_annotations.LayoutContext(layout):
       x = torch.tensor([[1.0] * 10] * 10).to(device)
-      torch.tpu.synchronize()
+      torch.accelerator.synchronize()
       device_layout_tuple = tpu_torch_compile.get_device_layout_if_materialized(
           x
       )
@@ -47,7 +47,7 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
     )
     with tpu_annotations.LayoutContext(layout):
       x = torch.tensor([[1.0] * 10] * 10, device=device)
-      torch.tpu.synchronize()
+      torch.accelerator.synchronize()
       device_layout_tuple = tpu_torch_compile.get_device_layout_if_materialized(
           x
       )
@@ -71,7 +71,7 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
         y = torch.tensor([[1.0] * 10] * 10, device=device)
       z = torch.tensor([[1.0] * 10] * 10, device=device)
 
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
 
     x_layout_tuple = tpu_torch_compile.get_device_layout_if_materialized(x)
     self.assertIsNotNone(x_layout_tuple)
@@ -93,7 +93,7 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
     )
     with tpu_annotations.LayoutContext(layout):
       x = torch.tensor([[1.0] * 128] * 16, device=device)
-      torch.tpu.synchronize()
+      torch.accelerator.synchronize()
       device_layout_tuple = tpu_torch_compile.get_device_layout_if_materialized(
           x
       )

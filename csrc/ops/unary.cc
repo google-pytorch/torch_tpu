@@ -19,6 +19,7 @@
 #include <cstdint>
 
 #include "ATen/OpMathType.h"
+#include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
 #include "csrc/common/dtype.h"
@@ -186,7 +187,7 @@ absl::StatusOr<mlir::MlirOp> BuildSiluShlo(mlir::MlirOp input_op) {
   TT_ASSIGN_OR_RETURN(const at::ScalarType scalar_type,
                       ConvertTo<c10::ScalarType>(input_type.getElementType()));
 
-  TT_RET_CHECK(IsFloatType(input_type), error::kInvalidArgument)
+  ABSL_CHECK(IsFloatType(input_type))  // CRASH_OK=checked in AtenSiluOut
       << "expected the input dtype to be floating point, got "
       << ToString(scalar_type);
 

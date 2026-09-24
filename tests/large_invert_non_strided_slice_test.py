@@ -43,7 +43,7 @@ class LargeInvertNonStridedSliceTest(seed_test_utils.RepeatableTest):
     # as_strided_scatter is the explicit ATen operator for as_strided's backward
     # pass (as_strided_inverse).
     y = torch.ops.aten.as_strided_scatter.default(x, grad, (10,), (1,), 0)
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
 
     self.assertIsNotNone(y)
     self.assertEqual(y[0].item(), True)

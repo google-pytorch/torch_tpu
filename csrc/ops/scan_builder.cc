@@ -21,6 +21,8 @@
 #include <string_view>
 #include <utility>
 
+#include "ATen/core/ATen_fwd.h"
+#include "ATen/core/Scalar.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "csrc/common/error_utils.h"
@@ -37,6 +39,7 @@
 #include "mlir/IR/ValueRange.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "stablehlo/transforms/StablehloBroadcastLowering.h"
@@ -494,13 +497,14 @@ absl::StatusOr<DynamicMlirOpResults> BuildScanShlo(
     return ScanBodyResults{std::move(new_carries), std::move(new_outputs)};
   };
 
-  // Associative scan -> chlo.ScanOp (native scan emitter). This overload's body
-  // takes size-1 (non-squeezed) slices and returns the outputs only. Falls back
-  // to the while loop below when the compiler (libtpu) is too old to compile
-  // the native scan emitter (b/529376045); the results are identical either
-  // way.
+  // Associative scans go to the native scan emitter via chlo.ScanOp for static
+  // shapes; non-associative scans and dynamic shapes use the StableHLO while
+  // loop below. Falls back to the while loop when the compiler (libtpu) is too
+  // old to compile the native scan emitter (b/529376045) or when inputs are
+  // dynamic since the TPU compiler does not yet support dynamic scans.
+  const bool is_static = type.hasStaticShape();
   if (options.is_associative &&
-      IsLibtpuVersionAtLeast(kMinLibtpuVersionWithNativeScan)) {
+      IsLibtpuVersionAtLeast(kMinLibtpuVersionWithNativeScan) && is_static) {
     const ScanOptions emit_options = {.direction = options.direction,
                                       .should_squeeze = false,
                                       .is_associative = true};
@@ -564,12 +568,16 @@ absl::StatusOr<DynamicMlirOpResults> BuildScanShlo(
     return results;
   }
 
-  // Associative scans go to the native scan emitter via chlo.ScanOp;
-  // non-associative scans use the StableHLO while loop below. When the compiler
-  // (libtpu) is too old to compile the native scan emitter, associative scans
-  // also fall back to the while loop (b/529376045); the results are identical.
+  // Associative scans go to the native scan emitter via chlo.ScanOp for static
+  // shapes; non-associative scans and dynamic shapes use the StableHLO while
+  // loop below. Falls back to the while loop when the compiler (libtpu) is too
+  // old to compile the native scan emitter (b/529376045) or when inputs are
+  // dynamic since the TPU compiler does not yet support dynamic scans.
+  const bool all_static = llvm::all_of(scan_inputs, [](mlir::MlirOp op) {
+    return GetTensorTypeOrDie(op).hasStaticShape();
+  });
   if (options.is_associative &&
-      IsLibtpuVersionAtLeast(kMinLibtpuVersionWithNativeScan)) {
+      IsLibtpuVersionAtLeast(kMinLibtpuVersionWithNativeScan) && all_static) {
     return BuildAssociativeScanChlo(builder, scan_inputs, scan_dim,
                                     num_scan_inputs, carry_inits, output_inits,
                                     body_builder, options);
@@ -601,6 +609,30 @@ absl::StatusOr<DynamicMlirOpResults> BuildScanShlo(
   }
 
   return results;
+}
+
+absl::StatusOr<mlir::MlirOp> CreateRankReducedConstantLike(
+    mlir::MlirOp input, int64_t scan_dim, const at::Scalar& value) {
+  mlir::MlirBuilder& builder = input.getBuilder();
+  const mlir::RankedTensorType type = GetTensorTypeOrDie(input);
+  TT_ASSIGN_OR_RETURN(const int64_t wrapped_dim,
+                      SafeWrapDim(scan_dim, type.getRank()));
+  if (type.hasStaticShape()) {
+    TT_ASSIGN_OR_RETURN(const mlir::ElementType element_type,
+                        GetElementType(input));
+    llvm::SmallVector<int64_t> reduced_shape(type.getShape().begin(),
+                                             type.getShape().end());
+    reduced_shape.erase(reduced_shape.begin() + wrapped_dim);
+    return MakeConstant(builder, value, element_type, reduced_shape);
+  }
+
+  const mlir::IntegerType i64 = builder.getOpBuilder().getI64Type();
+  const mlir::MlirOp zero = MakeScalarConstant(builder, 0, i64);
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp slice,
+      SliceInput(builder, input.getValue().getLoc(), input, zero.getValue(),
+                 wrapped_dim, /*should_squeeze=*/true));
+  return MakeConstantLike(slice, value);
 }
 
 }  // namespace torch_tpu

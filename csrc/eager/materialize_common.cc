@@ -45,7 +45,6 @@
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/compilation_spec.h"
-#include "csrc/common/context_states.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/dynamism_utils.h"
@@ -53,12 +52,11 @@
 #include "csrc/common/shape.h"
 #include "csrc/common/to_string.h"
 #include "csrc/eager/device_buffer.h"
-#include "csrc/eager/events_queue.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/traversal.h"
 #include "csrc/ops/op_names.h"
+#include "csrc/pjrt/pjrt_execute.h"
 #include "csrc/pjrt/pjrt_state.h"
-#include "csrc/pjrt/pjrt_utils.h"
 #include "llvm/ADT/STLExtras.h"
 #include "mlir/IR/MLIRContext.h"
 #include "tsl/profiler/lib/traceme.h"
@@ -288,17 +286,13 @@ struct CompiledTraversal {
 
 absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
     Traversal& traversal, mlir::MLIRContext& mlir_context,
-    CompilationSpec compilation_spec,
+    const CompilationSpec& compilation_spec,
     std::string* absl_nullable out_mlir_text) {
   // Propagate bounded dynamism annotations if needed.
   if (traversal.IsBoundedDynamic()) {
     TT_RETURN_IF_ERROR(PropagateBoundedDynamism(traversal, mlir_context));
   }
 
-  const CompilationCacheKey compilation_cache_key =
-      traversal.GetCacheKey(compilation_spec.compile_options_key,
-                            /*argument_layouts=*/{},
-                            /*donated_inputs=*/{});
   for (const auto& argument : traversal.arguments()) {
     if (argument.is_placeholder()) {
       return TT_ERROR(error::kInternal)
@@ -319,6 +313,10 @@ absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
       // Input isn't ready yet, so we will wait and recheck it during Run().
       continue;
     } else if (const auto deferred_op = argument.deferred_op()) {
+      const CompilationCacheKey compilation_cache_key =
+          traversal.GetCacheKey(compilation_spec.compile_options_key,
+                                /*argument_layouts=*/{},
+                                /*donated_inputs=*/{});
       return TT_ERROR(error::kInternal)
              << "traversal (cache key: " << compilation_cache_key
              << ") has deferred argument " << ToString(deferred_op->op_name())
@@ -345,15 +343,21 @@ absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
   // Start compiling the traversal.
   ABSL_VLOG(1) << "[ExecutionTask] Compiling traversal";
   CompiledKernel compiled_kernel;
+  std::optional<CompilationCacheKey> compilation_cache_key;
   {
     tsl::profiler::TraceMe t("CompileTraversal");
     TT_ASSIGN_OR_RETURN(
         compiled_kernel,
-        traversal.Compile(std::move(compilation_spec), out_mlir_text,
-                          /*use_stablehlo_bounds=*/false, argument_layouts));
+        traversal.Compile(compilation_spec, out_mlir_text,
+                          /*use_stablehlo_bounds=*/false, argument_layouts,
+                          /*donated_inputs=*/{}, /*module_name=*/std::nullopt,
+                          &compilation_cache_key));
   }
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Compile guarantees out_cache_key.
+      compilation_cache_key.has_value(), error::kInternal)
+      << "traversal compilation succeeded without populating cache key";
   return CompiledTraversal{
-      .compilation_cache_key = std::move(compilation_cache_key),
+      .compilation_cache_key = std::move(*compilation_cache_key),
       .compiled_kernel = std::move(compiled_kernel)};
 }
 
@@ -371,10 +375,10 @@ std::vector<Shape> GetShapesFromDeviceBuffers(
 
 absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversal(
     absl_nonnull std::unique_ptr<Traversal> traversal,
-    mlir::MLIRContext& mlir_context, CompilationSpec compilation_spec,
+    mlir::MLIRContext& mlir_context, const CompilationSpec& compilation_spec,
     std::string* absl_nullable out_mlir_text) {
   auto compiled_traversal_or = VerifyAndCompileTraversal(
-      *traversal, mlir_context, std::move(compilation_spec), out_mlir_text);
+      *traversal, mlir_context, compilation_spec, out_mlir_text);
   if (!compiled_traversal_or.ok()) {
     for (const auto& output : traversal->outputs()) {
       output.device_buffer_list()->SetAsError(compiled_traversal_or.status());
@@ -389,7 +393,6 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversal(
     TT_RETURN_IF_ERROR(
         output.device_buffer_list()->SetAsPendingMaterialization());
   }
-  RecordBackgroundMaterialization(traversal->outputs());
 
   std::string task_name;
   if (ABSL_VLOG_IS_ON(1)) {
@@ -442,12 +445,12 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromExecutable(
 
 absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversalWithLogging(
     absl_nonnull std::unique_ptr<Traversal> traversal,
-    mlir::MLIRContext& mlir_context, CompilationSpec compilation_spec,
+    mlir::MLIRContext& mlir_context, const CompilationSpec& compilation_spec,
     MaterializationReason reason) {
   auto event = MaybeStartTraceEvent(reason, *traversal);
   if (!event) {
     return ExecutionTask::FromTraversal(std::move(traversal), mlir_context,
-                                        std::move(compilation_spec),
+                                        compilation_spec,
                                         /*out_mlir_text=*/nullptr);
   }
 
@@ -456,9 +459,8 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversalWithLogging(
 
   // Try to build the execution task and capture the MLIR if possible.
   std::string captured_mlir;
-  auto execution_task_or =
-      ExecutionTask::FromTraversal(std::move(traversal), mlir_context,
-                                   std::move(compilation_spec), &captured_mlir);
+  auto execution_task_or = ExecutionTask::FromTraversal(
+      std::move(traversal), mlir_context, compilation_spec, &captured_mlir);
 
   // Whether or not the execution task was created successfully, finish the
   // trace event and return.
@@ -688,18 +690,6 @@ absl::Status ExecutionTask::Run() {
     SetOutputNodesAsError(status);
   }
   return status;
-}
-
-CompilationMode GetCompilationMode(EagerMode eager_mode) {
-  switch (eager_mode) {
-    case EagerMode::kInternalDeferAll:
-    case EagerMode::kDeferAndFuse:
-    case EagerMode::kInternalCompileFxGraph:
-      return CompilationMode::kFastRuntime;
-    case EagerMode::kDeferNever:
-    case EagerMode::kDeferNeverAndLaunchBlocking:
-      return CompilationMode::kFastCompile;
-  };
 }
 
 }  // namespace torch_tpu

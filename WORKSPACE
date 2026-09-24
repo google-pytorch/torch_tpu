@@ -39,6 +39,16 @@ http_archive(
     ],
 )
 
+# Pinned to google/tcmalloc commit from 2026-06-05.
+http_archive(
+    name = "com_google_tcmalloc",
+    sha256 = "6596bbcefc061afa7b8bf919748eb411ba46ae57aa1f9c943b9e6ee289685de1",
+    strip_prefix = "tcmalloc-add88b498a65e92a30e83dbcd436adf2a91c3cc9",
+    urls = [
+        "https://github.com/google/tcmalloc/archive/add88b498a65e92a30e83dbcd436adf2a91c3cc9.tar.gz",
+    ],
+)
+
 load("//bazel:wheel_deps.bzl", "torch_tpu_deps_repo")
 load("//bazel:wheel_version.bzl", "torch_tpu_version_repo")
 

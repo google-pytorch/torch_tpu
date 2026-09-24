@@ -16,12 +16,60 @@
 """Deletes cancelled GitHub Actions workflow runs for a closed PR once completed."""
 
 import argparse
+from collections.abc import Mapping, Sequence
+import dataclasses
+import enum
+import http
 import json
 import logging  # PYTHON_LOGGING_OK=CI utility script running in standard Python environment
 import subprocess
 import sys
 import time
-from typing import Sequence
+from typing import Final
+import urllib.parse
+
+# GitHub's maximum page size for the workflow runs endpoint.
+_RUNS_PER_PAGE: Final[int] = 100
+
+# Upper bound on pages fetched, to keep a pathological branch from looping
+# forever. 100 pages is far more runs than any real pull request accumulates.
+_MAX_RUN_PAGES: Final[int] = 100
+
+
+class RunStatus(enum.Enum):
+  """Cleanup-relevant state of a workflow run."""
+
+  # The run has finished and is ready to be deleted.
+  COMPLETED = enum.auto()
+  # The run is still queued or executing; it is not deletable yet.
+  IN_FLIGHT = enum.auto()
+  # The run no longer exists, so there is nothing left to clean up.
+  NONEXISTENT = enum.auto()
+  # The status could not be determined; the caller should retry.
+  UNKNOWN = enum.auto()
+
+
+class DeletionResult(enum.Enum):
+  """Outcome of an attempt to delete a workflow run."""
+
+  # The API accepted the deletion.
+  SUCCESS = enum.auto()
+  # The run was not there to delete, so there is nothing left to clean up.
+  NONEXISTENT = enum.auto()
+  # The run is still present and could not be deleted.
+  FAILURE = enum.auto()
+
+
+@dataclasses.dataclass(frozen=True)
+class CleanupSummary:
+  """Per-run outcomes of a cleanup pass."""
+
+  # Runs that are no longer present, whether this pass deleted them or not.
+  deleted: Sequence[int]
+  # Runs that exist but could not be deleted. These are hard errors.
+  failed: Sequence[int]
+  # Runs that never reached a completed status within the polling budget.
+  unfinished: Sequence[int]
 
 
 def parse_args(args: Sequence[str] | None = None) -> argparse.Namespace:
@@ -64,81 +112,178 @@ def parse_args(args: Sequence[str] | None = None) -> argparse.Namespace:
   return parser.parse_args(args)
 
 
-def get_target_run_ids(
-    repository: str, head_ref: str, current_run_id: int
-) -> Sequence[int]:
-  """Queries workflow runs to clean up on the branch (in-flight or cancelled)."""
-  cmd = [
-      "gh",
-      "run",
-      "list",
-      "--repo",
-      repository,
-      "--branch",
-      head_ref,
-      "--limit",
-      "100",
-      "--json",
-      "databaseId,status,conclusion",
-  ]
+@dataclasses.dataclass(frozen=True)
+class _ApiResponse:
+  """Result of a single `gh api` invocation.
+
+  Attributes:
+    status_code: The HTTP status GitHub replied with, or None if `gh` never got
+      a reply (bad credentials, no network, malformed request).
+    body: The response body, empty for a 204 and when there was no reply.
+    error: Whatever `gh` wrote to stderr, empty on success.
+  """
+
+  status_code: int | None
+  body: str
+  error: str
+
+  @property
+  def ok(self) -> bool:
+    """Whether GitHub replied with a 2xx."""
+    return self.status_code is not None and 200 <= self.status_code < 300
+
+  @property
+  def not_found(self) -> bool:
+    """Whether GitHub replied 404, meaning the run is not there."""
+    return self.status_code == http.HTTPStatus.NOT_FOUND
+
+
+def _parse_status_line(headers: str) -> int | None:
+  """Reads the status code out of a status line like `HTTP/2.0 404 Not Found`.
+
+  Args:
+    headers: The header block that `gh api --include` writes ahead of the body,
+      or the empty string if `gh` never got a reply at all.
+
+  Returns:
+    The status code, or None if there was no reply to read one from.
+
+  Raises:
+    ValueError: if `headers` is non-empty but does not begin with a status
+      line. That means `gh` has changed its output format, which we would
+      rather hear about than quietly treat as a request that got no reply.
+  """
+  if not headers.strip():
+    return None
+  fields = headers.split(maxsplit=2)
+  if len(fields) >= 2 and fields[0].startswith("HTTP/") and fields[1].isdigit():
+    return int(fields[1])
+  raise ValueError(
+      f"Could not read an HTTP status line from `gh api --include`: {headers!r}"
+  )
+
+
+def _gh_run_api(
+    repository: str,
+    run_id: int | None = None,
+    *,
+    method: str = "GET",
+    query: Mapping[str, str | int] | None = None,
+) -> _ApiResponse:
+  """Calls the workflow-runs REST API through `gh api`.
+
+  Only the run-scoped endpoints are reachable from here, by construction: the
+  path is always `repos/{repository}/actions/runs`, optionally addressing a
+  single run by ID.
+
+  These are preferred over invocations of `gh run` because `gh run` attempts to
+  resolve the workflow that generated them, which does not work for org-level
+  workflows like `GitHub Actions Scan` (zizmor). Concretely: runs of that
+  workflow carry a `workflow_id` that is not in this repository, so
+  `gh run view <one of those runs>` fails with `HTTP 404` on
+  `/actions/workflows/<workflow_id>`. `gh run list` resolves the parent of every
+  run it lists, so one such run fails the entire listing rather than just
+  itself, and the cleanup job ends up deleting nothing at all.
+
+  Args:
+    repository: Target repository, in `owner/repo` form.
+    run_id: Workflow run to address. If omitted, the call targets the collection
+      of runs rather than an individual one.
+    method: HTTP method to invoke.
+    query: Query-string parameters. Values are URL-encoded.
+
+  Returns:
+    The HTTP status, response body and any `gh` error output. Callers should
+    branch on the status rather than on the error text.
+  """
+  path = f"repos/{repository}/actions/runs"
+  if run_id is not None:
+    path += f"/{run_id}"
+  if query:
+    path += f"?{urllib.parse.urlencode(query)}"
+
+  # `--include` prefixes the body with the response headers. It is the only way
+  # to recover the status code: `gh api` otherwise just exits non-zero, leaving
+  # the stderr text as the sole clue about what went wrong.
   result = subprocess.run(
-      cmd,
-      check=True,
+      ["gh", "api", "--include", "--method", method, path],
       stdout=subprocess.PIPE,
       stderr=subprocess.PIPE,
       text=True,
   )
-  runs = json.loads(result.stdout)
-
-  target_ids = [
-      run["databaseId"]
-      for run in runs
-      if run.get("databaseId") != current_run_id
-      and (
-          run.get("status") != "completed"
-          or run.get("conclusion") == "cancelled"
-      )
-  ]
-  return target_ids
-
-
-def get_run_status(repository: str, run_id: int) -> str:
-  """Fetches the current status of the given run_id."""
-  cmd = [
-      "gh",
-      "run",
-      "view",
-      str(run_id),
-      "--repo",
-      repository,
-      "--json",
-      "status",
-      "-q",
-      ".status",
-  ]
-  result = subprocess.run(
-      cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+  headers, _, body = result.stdout.partition("\n\n")
+  return _ApiResponse(
+      status_code=_parse_status_line(headers),
+      body=body,
+      error=result.stderr.strip(),
   )
-  if result.returncode == 0:
-    return result.stdout.strip()
-  logging.warning(
-      "Failed to get status for run %s: %s", run_id, result.stderr.strip()
-  )
-  return "completed"
 
 
-def delete_run(repository: str, run_id: int) -> bool:
-  """Deletes the specified workflow run."""
-  cmd = ["gh", "run", "delete", str(run_id), "--repo", repository]
-  result = subprocess.run(
-      cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-  )
-  if result.returncode != 0:
-    logging.warning(
-        "Failed to delete run %s: %s", run_id, result.stderr.strip()
+def get_target_run_ids(
+    repository: str, head_ref: str, current_run_id: int
+) -> tuple[int, ...]:
+  """Queries workflow runs to clean up on the branch (in-flight or cancelled).
+
+  Raises:
+    RuntimeError: if the runs for `head_ref` could not be listed.
+  """
+  target_ids: list[int] = []
+  for page in range(1, _MAX_RUN_PAGES + 1):
+    response = _gh_run_api(
+        repository,
+        query={
+            "branch": head_ref,
+            "per_page": _RUNS_PER_PAGE,
+            "page": page,
+        },
     )
-    return False
-  return True
+    if not response.ok:
+      raise RuntimeError(
+          f"Failed to list workflow runs for branch '{head_ref}': "
+          f"{response.error}"
+      )
+    runs = json.loads(response.body).get("workflow_runs", [])
+    target_ids.extend(
+        run["id"]
+        for run in runs
+        if run.get("id") != current_run_id
+        and (
+            run.get("status") != "completed"
+            or run.get("conclusion") == "cancelled"
+        )
+    )
+    if len(runs) < _RUNS_PER_PAGE:
+      break
+
+  return tuple(target_ids)
+
+
+def get_run_status(repository: str, run_id: int) -> RunStatus:
+  """Fetches the current status of the given run_id."""
+  response = _gh_run_api(repository, run_id)
+  if response.not_found:
+    return RunStatus.NONEXISTENT
+  if not response.ok:
+    logging.warning(
+        "Failed to get status for run %s: %s", run_id, response.error
+    )
+    return RunStatus.UNKNOWN
+
+  if json.loads(response.body).get("status") == "completed":
+    return RunStatus.COMPLETED
+  return RunStatus.IN_FLIGHT
+
+
+def delete_run(repository: str, run_id: int) -> DeletionResult:
+  """Deletes the specified workflow run."""
+  response = _gh_run_api(repository, run_id, method="DELETE")
+  if response.ok:
+    return DeletionResult.SUCCESS
+  if response.not_found:
+    return DeletionResult.NONEXISTENT
+
+  logging.error("Failed to delete run %s: %s", run_id, response.error)
+  return DeletionResult.FAILURE
 
 
 def delete_cancelled_pr_runs(
@@ -147,11 +292,11 @@ def delete_cancelled_pr_runs(
     current_run_id: int,
     poll_attempts: int = 8,
     poll_interval_seconds: int = 15,
-) -> None:
+) -> CleanupSummary:
   """Deletes cancelled workflow runs on head_ref once they complete."""
   if not head_ref:
     logging.info("No head_ref specified; nothing to clean up.")
-    return
+    return CleanupSummary((), (), ())
 
   logging.info(
       "Searching for workflow runs to clean up on branch '%s'...", head_ref
@@ -162,45 +307,63 @@ def delete_cancelled_pr_runs(
     logging.info(
         "No workflow runs found to clean up for branch '%s'.", head_ref
     )
-    return
+    return CleanupSummary((), (), ())
 
   logging.info(
       "Found workflow runs to clean up for branch '%s': %s",
       head_ref,
-      list(run_ids),
+      sorted(run_ids),
   )
 
-  remaining_run_ids = set(run_ids)
+  deleted: list[int] = []
+  failed: list[int] = []
+  remaining = set(run_ids)
   for attempt in range(poll_attempts):
-    for run_id in list(remaining_run_ids):
-      status = get_run_status(repository, run_id)
-      if status == "completed":
-        logging.info("Deleting completed run %s...", run_id)
-        delete_run(repository, run_id)
-        remaining_run_ids.remove(run_id)
+    for run_id in sorted(remaining):
+      match get_run_status(repository, run_id):
+        case RunStatus.NONEXISTENT:
+          logging.info("Run %s is already gone.", run_id)
+          deleted.append(run_id)
+          remaining.discard(run_id)
+        case RunStatus.COMPLETED:
+          logging.info("Deleting completed run %s...", run_id)
+          result = delete_run(repository, run_id)
+          if result is DeletionResult.FAILURE:
+            failed.append(run_id)
+          else:
+            deleted.append(run_id)
+          remaining.discard(run_id)
+        case RunStatus.IN_FLIGHT | RunStatus.UNKNOWN:
+          # Not deletable yet (or not queryable right now); retry next pass.
+          pass
 
-    if not remaining_run_ids:
+    if not remaining:
       break
 
     if attempt < poll_attempts - 1:
       logging.info(
           "Waiting for remaining runs %s to reach completed status (attempt"
           " %d/%d, sleeping %ds)...",
-          sorted(remaining_run_ids),
+          sorted(remaining),
           attempt + 1,
           poll_attempts,
           poll_interval_seconds,
       )
       time.sleep(poll_interval_seconds)
 
-  if remaining_run_ids:
+  if remaining:
     logging.warning(
-        "Did not delete the following jobs because they did not finish"
+        "Did not delete the following runs because they did not finish"
         " shutting down in time: %s",
-        sorted(remaining_run_ids),
+        sorted(remaining),
     )
 
   logging.info("Cleanup complete for branch '%s'.", head_ref)
+  return CleanupSummary(
+      deleted=tuple(sorted(deleted)),
+      failed=tuple(sorted(failed)),
+      unfinished=tuple(sorted(remaining)),
+  )
 
 
 def main(args: Sequence[str] | None = None) -> int:

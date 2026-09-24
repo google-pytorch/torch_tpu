@@ -20,6 +20,7 @@ from absl.testing import parameterized
 import sympy
 import torch
 from torch._dynamo.backends.common import aot_autograd
+from torch.utils._sympy import value_ranges
 from torch.utils._sympy.functions import Mod as TorchMod, PythonMod
 from torch_tpu._internal.compile.dynamic import symbol_bounds
 from tests import seed_test_utils
@@ -59,15 +60,6 @@ class SymbolBoundsTest(seed_test_utils.RepeatableTest):
   def test_round_up_bound(self, val: int, expected: int):
     actual = symbol_bounds._round_up_bound(val)
     self.assertEqual(actual, expected)
-
-  def test_get_upper_bound_int(self):
-    self.assertEqual(symbol_bounds.get_upper_bound(42), 42)
-    self.assertEqual(symbol_bounds.get_upper_bound(0), 0)
-    self.assertEqual(symbol_bounds.get_upper_bound(128), 128)
-
-  def test_get_upper_bound_invalid_type(self):
-    with self.assertRaises(ValueError):
-      symbol_bounds.get_upper_bound("not_a_valid_type")
 
   def test_get_symint_bounds_explicit_dynamic_mark(self):
     captured_bounds = None
@@ -182,6 +174,68 @@ class SymbolBoundsTest(seed_test_utils.RepeatableTest):
         shape_env, {"s0": 12, "s1": 12}
     )
     self.assertIsNone(satisfied)
+
+  def test_symbol_bounds_with_upper_bounds_immutability_and_updates(self):
+    s0, s1 = sympy.symbols("s0 s1", integer=True)
+    sb = symbol_bounds.SymbolBounds({
+        s0: value_ranges.ValueRanges(2, 8),
+        s1: value_ranges.ValueRanges(4, 16),
+    })
+
+    updated = sb.with_upper_bounds({"s0": 32})
+
+    # Verify original instance is immutable
+    self.assertEqual(int(sb.symbol_ranges[s0].lower), 2)
+    self.assertEqual(int(sb.symbol_ranges[s0].upper), 8)
+    self.assertEqual(int(sb.symbol_ranges[s1].lower), 4)
+    self.assertEqual(int(sb.symbol_ranges[s1].upper), 16)
+
+    # Verify updated instance reflects new upper bound while preserving lower bound
+    self.assertEqual(int(updated.symbol_ranges[s0].lower), 2)
+    self.assertEqual(int(updated.symbol_ranges[s0].upper), 32)
+    self.assertEqual(int(updated.symbol_ranges[s1].lower), 4)
+    self.assertEqual(int(updated.symbol_ranges[s1].upper), 16)
+
+  def test_symbol_bounds_get_symint_bounds_and_get_upper_bound(self):
+    captured_symint = None
+
+    def fw_compiler(graph_module, example_inputs):
+      nonlocal captured_symint
+      for arg in example_inputs:
+        if isinstance(arg, torch.Tensor) and isinstance(
+            arg.shape[0], torch.SymInt
+        ):
+          captured_symint = arg.shape[0]
+      return graph_module
+
+    @torch.compile(backend=aot_autograd(fw_compiler=fw_compiler), dynamic=True)
+    def f(x):
+      return x + 1
+
+    t = torch.ones(4)
+    torch._dynamo.mark_dynamic(t, 0, min=2, max=8)
+    f(t)
+
+    self.assertIsNotNone(captured_symint)
+    sym_expr = captured_symint.node.expr
+    sb = symbol_bounds.SymbolBounds({sym_expr: value_ranges.ValueRanges(2, 8)})
+
+    # 1. Atomic symbol lookup
+    self.assertEqual(sb.get_symint_bounds(captured_symint), (2, 8))
+    self.assertEqual(sb.get_upper_bound(captured_symint), 8)
+
+    # 2. Compound expression evaluated via bound_sympy: 3 * s0 + 1 -> [7, 25]
+    compound_symint = captured_symint * 3 + 1
+    self.assertEqual(sb.get_symint_bounds(compound_symint), (7, 25))
+    self.assertEqual(sb.get_upper_bound(compound_symint), 25)
+
+    # 3. Updating upper bound via with_upper_bounds updates compound evaluation
+    sb_bucket = sb.with_upper_bounds({str(sym_expr): 10})
+    self.assertEqual(sb_bucket.get_symint_bounds(compound_symint), (7, 31))
+    self.assertEqual(sb_bucket.get_upper_bound(compound_symint), 31)
+
+    # 4. get_upper_bound on concrete int
+    self.assertEqual(sb.get_upper_bound(42), 42)
 
 
 if __name__ == "__main__":

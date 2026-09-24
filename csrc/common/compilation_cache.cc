@@ -44,7 +44,6 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "absl/strings/numbers.h"
 #include "absl/strings/str_cat.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/time/clock.h"
@@ -78,7 +77,6 @@
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_compiler.h"
 #include "xla/pjrt/pjrt_executable.h"
-#include "xla/xla.pb.h"
 
 ABSL_FLAG(int32_t, torch_tpu_internal_num_compilation_threads, 0,
           "The number of threads to use for compilation. If 0, use the default "
@@ -331,10 +329,11 @@ void CompilationCache::EvictAll() {
     // Release the lock here to give in-flight compilations a chance to
     // complete and update the cache.
   }
-  // Clear bounded dynamic cache entries.
+  // Clear bounded and unbounded dynamic cache entries.
   {
     absl::MutexLock lock(cache_mutex_);
     bounded_dynamic_cache_.clear();
+    unbounded_dynamic_cache_.clear();
   }
 
   ABSL_LOG(INFO) << "Compilation cache evicted.";
@@ -434,6 +433,34 @@ CompilationCache::GetBoundedDynamicCacheEntries(ShapelessKey shapeless_key) {
   return std::nullopt;
 }
 
+std::optional<CompilationCache::CacheLookupInternal>
+CompilationCache::GetUnboundedDynamicCacheEntry(
+    const ShapelessKey key, absl::Span<const Shape> shapes) const {
+  const auto it = unbounded_dynamic_cache_.find(key);
+
+  if (it == unbounded_dynamic_cache_.end()) {
+    return std::nullopt;
+  }
+
+  for (const auto& entry : it->second) {
+    if (entry.is_compatible(shapes)) {
+      perf_stats_.num_cache_hits++;
+      entry.cache_entry.stats().read_count++;
+      entry.cache_entry.stats().last_read = absl::Now();
+      ABSL_VLOG(2) << "Compilation cache UNBOUNDED DYNAMIC HIT for key: "
+                   << key;
+      const CacheEntry& cache_entry = entry.cache_entry;
+      return CacheLookupInternal{
+          .executable_promise = cache_entry.executable_promise(),
+          .executable_future = cache_entry.executable_future(),
+          .needs_compilation = false,
+          .dump_on_cache_miss = false,
+      };
+    }
+  }
+  return std::nullopt;
+}
+
 CompilationCache::CacheLookupInternal CompilationCache::AddStaticCacheEntry(
     CompilationCacheKey key) {
   const auto [entry, inserted] = executable_cache_.insert({key, CacheEntry()});
@@ -480,6 +507,19 @@ CompilationCache::AddBoundedDynamicCacheEntry(
   return cache_lookup;
 }
 
+absl::Status CompilationCache::AddUnboundedDynamicCacheEntry(
+    const ShapelessKey key, SharedLoadedExecutableWithMetadata executable,
+    CompatibilityFunc is_compatible) {
+  absl::MutexLock lock(cache_mutex_);
+  auto& entries = unbounded_dynamic_cache_[key];
+  auto& new_entry = entries.emplace_back(UnboundedDynamicCacheEntry{
+      .is_compatible = std::move(is_compatible),
+  });
+
+  new_entry.cache_entry.executable_promise()->set_value(std::move(executable));
+  return absl::OkStatus();
+}
+
 absl::StatusOr<CompilationCache::CacheLookupInternal>
 CompilationCache::GetOrCreateCacheEntry(
     CompilationCacheKey key, const std::vector<Shape>& input_shapes,
@@ -504,8 +544,15 @@ CompilationCache::GetOrCreateCacheEntry(
   ABSL_VLOG(2) << "Compilation cache STATIC MISS #"
                << perf_stats_.num_cache_misses() << " for key: " << key;
 
-  // 2. Try to find a dynamic cache entry. We hold on to the iterator to avoid
-  // having to lookup the shapeless key again later.
+  // 2. Try to find an unbounded dynamic cache entry.
+  if (const auto cache_lookup_or = GetUnboundedDynamicCacheEntry(
+          key.graph_key().shapeless_key(), input_shapes);
+      cache_lookup_or.has_value()) {
+    return *cache_lookup_or;
+  }
+
+  // 3. Try to find a bounded dynamic cache entry. We hold on to the iterator to
+  // avoid having to look up the shapeless key again later.
   std::optional<BoundedDynamicCache::iterator> dynamic_it =
       skip_dynamic_lookup_and_compilation
           ? std::nullopt
@@ -535,7 +582,7 @@ CompilationCache::GetOrCreateCacheEntry(
          "compilation is needed for key: "
       << key;
 
-  // 3. We didn't find a compatible entry, so we need to create a new one.
+  // 4. We didn't find a compatible entry, so we need to create a new one.
   ABSL_VLOG(2) << "[TtPerf] Compilation cache MISS #"
                << perf_stats_.num_cache_misses() << " for key: " << key;
 
@@ -554,7 +601,7 @@ CompilationCache::GetOrCreateCacheEntry(
   }
 
   ABSL_VLOG(2) << "Creating a static cache entry for key: " << key;
-  // 4. Lastly, we create a static cache entry.
+  // 5. Lastly, we create a static cache entry.
   return AddStaticCacheEntry(key);
 }
 
@@ -783,11 +830,13 @@ CompilationCache::CreateDynamicKernelAdapter(
   return adapter;
 }
 
-absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompile(
+absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompileImpl(
     const CompilationCacheKey key, const std::vector<Shape>& input_shapes,
     const std::vector<Shape>& output_shapes,
     MlirComputationBuilder computation_builder,
-    UniqueCompileOptions compile_options, bool use_dynamic_adapters) {
+    const xla::CompileOptions& compile_options,
+    absl_nullable std::unique_ptr<xla::CompileOptions> owned_compile_options,
+    bool use_dynamic_adapters) {
   // Critical section for cache lookups and insertion.
   TT_ASSIGN_OR_RETURN(
       auto cache_lookup, [&]() -> absl::StatusOr<CacheLookupInternal> {
@@ -798,8 +847,17 @@ absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompile(
         lookup.dump_on_cache_miss = dump_on_cache_miss_;
         return lookup;
       }());
+
   // Everything we are recovering from the cache is a shared pointer, so it
   // is safe to access them without the lock.
+
+  // Fast path: for static-shape cache hits (the steady-state case in eager
+  // execution), return immediately without allocating or deep-copying
+  // xla::CompileOptions.
+  if (!cache_lookup.needs_compilation &&
+      !cache_lookup.shape_dynamism_metadata.has_value()) {
+    return CompiledKernel{.fixed_shape_kernel = cache_lookup.executable_future};
+  }
 
   CompiledKernel compiled_kernel{.fixed_shape_kernel =
                                      cache_lookup.executable_future};
@@ -816,7 +874,7 @@ absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompile(
       ABSL_VLOG(1) << "Found shape dynamism metadata for key: " << key;
       // Create a copy of the compile options for the adapter.
       auto adapter_compile_options =
-          std::make_unique<xla::CompileOptions>(*compile_options);
+          std::make_unique<xla::CompileOptions>(compile_options);
       TT_ASSIGN_OR_RETURN(
           compiled_kernel.dynamic_kernel_adapter,
           CreateDynamicKernelAdapter(*cache_lookup.shape_dynamism_metadata,
@@ -841,12 +899,41 @@ absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompile(
           DebugString(contexted_module_or->get(),
                       DebugStringOptions::kEnableDebugInfo)));
     }
+    // Reuse the caller-provided UniqueCompileOptions when available; otherwise
+    // allocate an owning copy on the calling thread before enqueuing background
+    // compilation.
+    UniqueCompileOptions options_for_compilation =
+        owned_compile_options != nullptr
+            ? std::move(owned_compile_options)
+            : std::make_unique<xla::CompileOptions>(compile_options);
     EnqueueCompilation(storage_key, *std::move(contexted_module_or),
-                       std::move(compile_options));
+                       std::move(options_for_compilation));
     ABSL_VLOG(1) << "[TtPerf] Scheduled compilation for key: " << storage_key;
   }
 
   return compiled_kernel;
+}
+
+absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompile(
+    const CompilationCacheKey key, const std::vector<Shape>& input_shapes,
+    const std::vector<Shape>& output_shapes,
+    MlirComputationBuilder computation_builder,
+    const xla::CompileOptions& compile_options, bool use_dynamic_adapters) {
+  return GetOrCompileImpl(key, input_shapes, output_shapes,
+                          std::move(computation_builder), compile_options,
+                          /*owned_compile_options=*/nullptr,
+                          use_dynamic_adapters);
+}
+
+absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompile(
+    const CompilationCacheKey key, const std::vector<Shape>& input_shapes,
+    const std::vector<Shape>& output_shapes,
+    MlirComputationBuilder computation_builder,
+    UniqueCompileOptions compile_options, bool use_dynamic_adapters) {
+  const xla::CompileOptions& compile_options_ref = *compile_options;
+  return GetOrCompileImpl(key, input_shapes, output_shapes,
+                          std::move(computation_builder), compile_options_ref,
+                          std::move(compile_options), use_dynamic_adapters);
 }
 
 void CompilationCache::EnqueueCompilation(
@@ -1160,6 +1247,25 @@ std::string CompilationCache::HbmUsageSummary() const {
     }
     total_size_bytes += memory_stats->generated_code_size_in_bytes;
     num_executables++;
+  }
+  for (const auto& [key, unbounded_caches] : unbounded_dynamic_cache_) {
+    for (const UnboundedDynamicCacheEntry& entry : unbounded_caches) {
+      // No need for future readiness check as unbounded caches are always
+      // ready.
+      const auto& executable = entry.cache_entry.executable_future().get();
+      if (!executable.ok() || *executable == nullptr) {
+        continue;
+      }
+      const auto memory_stats =
+          (*executable)->GetLoadedExecutable()->GetCompiledMemoryStats();
+      if (!memory_stats.ok()) {
+        ABSL_LOG(WARNING) << "Failed to get memory stats for key: " << std::hex
+                          << key << " with status: " << memory_stats.status();
+        continue;
+      }
+      total_size_bytes += memory_stats->generated_code_size_in_bytes;
+      num_executables++;
+    }
   }
   return absl::StrCat("CompilationCache HBM usage: ",
                       tsl::strings::HumanReadableNumBytes(total_size_bytes),

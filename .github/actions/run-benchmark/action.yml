@@ -76,7 +76,7 @@ inputs:
   extra_specs:
     description: >-
       Whitespace-separated additional requirements, for pinning a dependency
-      a benchmark needs at a particular version (e.g. "transformers==5.8.0").
+      a benchmark needs at a particular version (e.g. "transformers==5.16.1").
     required: false
     default: ""
   env_vars:

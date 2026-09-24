@@ -144,6 +144,15 @@ class RunModeContextTest(seed_test_utils.RepeatableTest):
       with mode_lib.run_mode_context("invalid_mode", target):
         pass
 
+  def test_cuda_target_sets_float32_matmul_precision(self):
+    from unittest import mock  # pylint: disable=g-import-not-at-top
+
+    target = target_lib.make_target(target_lib.Platform.B200_1)
+    with mock.patch("torch.set_float32_matmul_precision") as mock_prec:
+      with mode_lib.run_mode_context(common.RunMode.COMPILED, target):
+        pass
+    mock_prec.assert_called_once_with("high")
+
 
 if __name__ == "__main__":
   absltest.main()

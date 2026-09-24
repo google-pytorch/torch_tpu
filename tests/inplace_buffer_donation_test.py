@@ -1682,6 +1682,21 @@ class InplaceBufferDonationTest(seed_test_utils.RepeatableTest):
 
         self.assertTrue(torch.equal(v.cpu(), m2.cpu()))
 
+      with self.subTest(op="avg_pool1d_out"):
+        x = torch.tensor(
+            [[[6.0, 6.0, 12.0, 15.0]]],
+            dtype=torch.float32,
+            device=self.device,
+        )
+        v = x.view_as(x)
+        torch.ops.aten.avg_pool1d.out(x, [3], [1], [1], False, True, out=x)
+        expected = torch.tensor([[[4.0, 8.0, 11.0, 9.0]]])
+        x_cpu = x.cpu()
+
+        test_utils.assert_close(x_cpu, expected)
+
+        self.assertTrue(torch.equal(v.cpu(), x.cpu()))
+
       with self.subTest(op="avg_pool2d_out"):
         x = torch.tensor(
             [[[[1.0, 2.0], [3.0, 4.0]]]],

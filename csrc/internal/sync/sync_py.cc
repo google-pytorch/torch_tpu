@@ -29,6 +29,7 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/common/pybind_error_utils.h"
 #include "csrc/eager/device_buffer.h"
+#include "csrc/eager/events_queue.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
@@ -110,8 +111,13 @@ void PySyncSpanNoWait(absl::Span<const at::Tensor> tensors_span) {
   //      RAII stack unwinding destroys `release` and re-acquires the GIL
   //      before pybind11 catches the exception and converts it to Python.
   py::gil_scoped_release release;
-  TT_THROW_IF_ERROR(
-      Materialize(buffer_refs, MaterializationReason::kExplicitSync));
+  // Even though this is "no wait", we still wait until the execution has
+  // started, so that is_materializing() is true for all buffers. We just don't
+  // wait until they reach the full is_materialized() state.
+  TT_THROW_IF_ERROR(Materialize(buffer_refs,
+                                MaterializationReason::kExplicitSync,
+                                MaterializationMode::kSplitGraph,
+                                MaterializationBlockMode::kBlockUntilStarted));
 }
 
 void PySyncSpan(absl::Span<const at::Tensor> tensors, bool wait) {
@@ -203,8 +209,13 @@ bool TrySyncSingleTensorFast(PyObject* ptr, bool wait) {
   }
   if (node->is_deferred() || node->is_placeholder()) {
     py::gil_scoped_release release;
-    TT_THROW_IF_ERROR(Materialize(absl::MakeConstSpan(&buffer_ref, 1),
-                                  MaterializationReason::kExplicitSync));
+    // Even though this is "no wait", we still wait until the execution has
+    // started, so that is_materializing() is true for the single buffer. We
+    // just don't wait until they reach the full is_materialized() state.
+    TT_THROW_IF_ERROR(Materialize(
+        absl::MakeConstSpan(&buffer_ref, 1),
+        MaterializationReason::kExplicitSync, MaterializationMode::kSplitGraph,
+        MaterializationBlockMode::kBlockUntilStarted));
   }
   return true;
 }
@@ -277,8 +288,13 @@ bool TrySyncTensorArrayFast(PyObject* const* items, Py_ssize_t size,
   }
   if (has_deferred_or_placeholder) {
     py::gil_scoped_release release;
+    // Even though this is "no wait", we still wait until the execution has
+    // started, so that is_materializing() is true for all buffers. We just
+    // don't wait until they reach the full is_materialized() state.
     TT_THROW_IF_ERROR(
-        Materialize(buffer_refs, MaterializationReason::kExplicitSync));
+        Materialize(buffer_refs, MaterializationReason::kExplicitSync,
+                    MaterializationMode::kSplitGraph,
+                    MaterializationBlockMode::kBlockUntilStarted));
   }
   return true;
 }
@@ -297,8 +313,17 @@ void PySynchronizeDevice(bool wait) {
   if (wait) {
     impl->synchronizeDevice(device_index);
   } else {
-    TT_THROW_IF_ERROR(
-        MaterializeDevice(device_index, MaterializationReason::kExplicitSync));
+    // Wait until all streams on the device start executing but don't wait for
+    // them to finish.
+    // This is equivalent to using torch.tpu.Event().record() on all streams,
+    // and then throwing away the events.
+    // This ensures that all live nodes reach the is_materializing() state but
+    // does not wait for them to complete (is_materialized()).
+    auto stream_futures =
+        MaterializeDevice(device_index, MaterializationReason::kExplicitSync);
+    for (auto& event_future : stream_futures) {
+      TT_THROW_IF_ERROR(event_future.Await());
+    }
   }
 }
 

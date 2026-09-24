@@ -23,7 +23,8 @@ torch_tpu_py_test(
     name = "launch",
     srcs = ["launch.py"],
     main = "launch.py",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
+    nopresubmit = "slow example",
+    notest_oss = True,  # Disabled during switch from opt-in to opt-out
     tags = [
         "noasan",  # OOMs even with the highest memory limit.
         "requires-mem:28g",
@@ -34,7 +35,7 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
+        "//src/torch_tpu/_internal/distributed/launchers:environment",
     ],
 )
 

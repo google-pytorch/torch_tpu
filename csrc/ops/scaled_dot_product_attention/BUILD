@@ -71,10 +71,10 @@ torch_tpu_cc_library(
         "@llvm-project//mlir:SCFDialect",
         "@llvm-project//mlir:Support",
         "@llvm-project//mlir:VectorDialect",
-        "@stablehlo//:attr_type_builder_util",
-        "@stablehlo//:mlir_builder",
-        "@stablehlo//:stablehlo_builder",
         "@stablehlo//:stablehlo_ops",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
         "@xla//xla/pjrt:mlir_to_hlo",
     ],
 )
@@ -92,8 +92,8 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/types:span",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Support",
-        "@stablehlo//:mlir_builder",
-        "@stablehlo//:stablehlo_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
     ],
 )
 
@@ -119,10 +119,10 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/types:span",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Support",
-        "@stablehlo//:attr_type_builder_util",
-        "@stablehlo//:mlir_builder",
-        "@stablehlo//:stablehlo_builder",
         "@stablehlo//:stablehlo_ops",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
     ],
 )
 
@@ -132,14 +132,17 @@ torch_tpu_cc_library(
     hdrs = ["util.h"],
     deps = [
         ":flash_attention_config",
-        "//csrc/common:error_utils",
+        "//csrc/common:libtpu_version",
         "//csrc/internal/mosaic:op_builders",
+        "@com_google_absl//absl/base",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:absl_check",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:MathDialect",
+        "@llvm-project//mlir:MemRefDialect",
         "@llvm-project//mlir:SCFDialect",
         "@llvm-project//mlir:Support",
         "@llvm-project//mlir:VectorDialect",
@@ -151,7 +154,7 @@ torch_tpu_cc_library(
     hdrs = ["flash_attention_config.h"],
     deps = [
         "@llvm-project//llvm:Support",
-        "@stablehlo//:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
     ],
 )
 
@@ -181,8 +184,8 @@ torch_tpu_cc_library(
         "@llvm-project//mlir:Support",
         "@llvm-project//mlir:TransformUtils",
         "@llvm-project//mlir:VectorDialect",
-        "@stablehlo//:attr_type_builder_util",
         "@stablehlo//:linalg_passes",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@xla//xla:xla_data_proto_cc",
     ],
 )
@@ -213,8 +216,8 @@ torch_tpu_cc_library(
         "@llvm-project//mlir:Support",
         "@llvm-project//mlir:TransformUtils",
         "@llvm-project//mlir:VectorDialect",
-        "@stablehlo//:attr_type_builder_util",
         "@stablehlo//:linalg_passes",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@xla//xla:xla_data_proto_cc",
     ],
 )
@@ -265,10 +268,10 @@ torch_tpu_cc_library(
         "@llvm-project//mlir:SCFDialect",
         "@llvm-project//mlir:Support",
         "@llvm-project//mlir:VectorDialect",
-        "@stablehlo//:attr_type_builder_util",
-        "@stablehlo//:mlir_builder",
-        "@stablehlo//:stablehlo_builder",
         "@stablehlo//:stablehlo_ops",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
     ],
 )
 

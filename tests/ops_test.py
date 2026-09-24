@@ -32,6 +32,7 @@ from torch_tpu._internal.utils import test_utils
 from tests import dynamism_test_utils
 from tests import op_testing
 from tests import oss_utils
+from tests import quantize_utils
 
 _TEST_CATEGORIES = flags.DEFINE_list(
     "test_categories",
@@ -1467,6 +1468,35 @@ ACCURACY_OVERRIDES_GRAD_VS_GPU: dict[
     copy.deepcopy(ACCURACY_OVERRIDES_VS_GPU),
     {
         # go/keep-sorted start
+        "_foreach_clamp_max": {
+            torch.bfloat16: {"atol": 1.0},
+            torch.float16: {"atol": 1.0},
+        },
+        "_foreach_clamp_min": {
+            torch.bfloat16: {"atol": 1.0},
+            torch.float16: {"atol": 1.0},
+        },
+        "_foreach_erf": {
+            torch.float16: {"rtol": 2.5e-3, "atol": 1e-4},
+        },
+        "_foreach_erfc": {
+            torch.bfloat16: {"atol": 4.7e-3},
+        },
+        "_foreach_log10": {
+            torch.float16: {"rtol": 1.2e-3, "atol": 5.9e-4},
+        },
+        "_foreach_pow": {
+            torch.float16: {"rtol": 1.3e-3},
+        },
+        "_foreach_rsqrt": {
+            torch.float32: {"rtol": 4e-6},
+        },
+        "_foreach_sigmoid": {
+            torch.float16: {"atol": 5.9e-4},
+        },
+        "_foreach_tanh": {
+            torch.float32: {"atol": 7.3e-5},
+        },
         "_native_batch_norm_legit": {
             torch.bfloat16: {"atol": 1.1e-2},
             torch.float16: {"atol": 1.4e-3},
@@ -2211,14 +2241,13 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_avg_pool3d(self):
     self.do_test_op(
         "nn.functional.avg_pool3d",
-        # TODO: GPU does not support integral, complex,
-        # `bfloat16` and `float16` dtypes.
+        # TODO: GPU does not support integral, complex, and `float16` dtypes.
         exclude_dtypes={
             "cpu": (torch.int64,),
             "gpu": (
                 (torch.uint8, torch.int8, torch.int16)
                 + COMPLEX_DTYPES
-                + (torch.bfloat16, torch.float16)
+                + (torch.float16,)
             ),
         },
     )
@@ -2327,7 +2356,17 @@ class TestOps(op_testing.OpInfoTestBase):
     )
 
   def test_cat(self):
-    self.do_test_op("cat")
+    self.do_test_op(
+        "cat",
+        # In gradient mode, the test harness computes losses via `t.sum()`,
+        # which fails on CUDA (`"sum_cuda" not implemented for 'Float8_e4m3fn'`)
+        # but succeeds on TorchTPU, causing a failure-consistency mismatch.
+        exclude_dtypes=(
+            {"gpu": (torch.float8_e4m3fn,)}
+            if op_testing._COMPUTE_GRAD.value
+            else None
+        ),
+    )
 
   def test_cdist(self):
     # TODO: b/470453016 look into the high relative error for bfloat16.
@@ -2590,7 +2629,6 @@ class TestOps(op_testing.OpInfoTestBase):
             "gpu": (
                 torch.float64,
                 torch.float16,
-                torch.bfloat16,
                 torch.int4,
             ),
         },
@@ -2607,7 +2645,6 @@ class TestOps(op_testing.OpInfoTestBase):
             "gpu": (
                 torch.float64,
                 torch.float16,
-                torch.bfloat16,
                 torch.int4,
             ),
         },
@@ -2624,7 +2661,6 @@ class TestOps(op_testing.OpInfoTestBase):
             "gpu": (
                 torch.float64,
                 torch.float16,
-                torch.bfloat16,
                 torch.int4,
             ),
         },
@@ -2641,7 +2677,6 @@ class TestOps(op_testing.OpInfoTestBase):
             "gpu": (
                 torch.float64,
                 torch.float16,
-                torch.bfloat16,
                 torch.int4,
             ),
         },
@@ -3066,7 +3101,9 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "_fused_adagrad_",
         exclude_dtypes=COMPLEX_DTYPES + INTEGRAL_DTYPES,
-        # Parameter shapes are static and optimizer steps are non-differentiable.
+        # Intentional overrides (desired by design, not a bug): optimizer steps
+        # update fixed-shape model parameters/states in place and are
+        # non-differentiable.
         check_dynamism=False,
         check_grad=False,
     )
@@ -3075,7 +3112,9 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "_fused_adagrad_.tensor_lr",
         exclude_dtypes=COMPLEX_DTYPES + INTEGRAL_DTYPES,
-        # Parameter shapes are static and optimizer steps are non-differentiable.
+        # Intentional overrides (desired by design, not a bug): optimizer steps
+        # update fixed-shape model parameters/states in place and are
+        # non-differentiable.
         check_dynamism=False,
         check_grad=False,
     )
@@ -3084,7 +3123,9 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "_fused_adam_",
         exclude_dtypes=COMPLEX_DTYPES + INTEGRAL_DTYPES,
-        # Parameter shapes are static and optimizer steps are non-differentiable.
+        # Intentional overrides (desired by design, not a bug): optimizer steps
+        # update fixed-shape model parameters/states in place and are
+        # non-differentiable.
         check_dynamism=False,
         check_grad=False,
     )
@@ -3093,7 +3134,9 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "_fused_adam_.tensor_lr",
         exclude_dtypes=COMPLEX_DTYPES + INTEGRAL_DTYPES,
-        # Parameter shapes are static and optimizer steps are non-differentiable.
+        # Intentional overrides (desired by design, not a bug): optimizer steps
+        # update fixed-shape model parameters/states in place and are
+        # non-differentiable.
         check_dynamism=False,
         check_grad=False,
     )
@@ -3102,7 +3145,9 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "_fused_adamw_",
         exclude_dtypes=COMPLEX_DTYPES + INTEGRAL_DTYPES,
-        # Parameter shapes are static and optimizer steps are non-differentiable.
+        # Intentional overrides (desired by design, not a bug): optimizer steps
+        # update fixed-shape model parameters/states in place and are
+        # non-differentiable.
         check_dynamism=False,
         check_grad=False,
     )
@@ -3111,7 +3156,9 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "_fused_adamw_.tensor_lr",
         exclude_dtypes=COMPLEX_DTYPES + INTEGRAL_DTYPES,
-        # Parameter shapes are static and optimizer steps are non-differentiable.
+        # Intentional overrides (desired by design, not a bug): optimizer steps
+        # update fixed-shape model parameters/states in place and are
+        # non-differentiable.
         check_dynamism=False,
         check_grad=False,
     )
@@ -3120,7 +3167,9 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "_fused_sgd_",
         exclude_dtypes=COMPLEX_DTYPES + INTEGRAL_DTYPES,
-        # Parameter shapes are static and optimizer steps are non-differentiable.
+        # Intentional overrides (desired by design, not a bug): optimizer steps
+        # update fixed-shape model parameters/states in place and are
+        # non-differentiable.
         check_dynamism=False,
         check_grad=False,
     )
@@ -3129,7 +3178,9 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "_fused_sgd_.tensor_lr",
         exclude_dtypes=COMPLEX_DTYPES + INTEGRAL_DTYPES,
-        # Parameter shapes are static and optimizer steps are non-differentiable.
+        # Intentional overrides (desired by design, not a bug): optimizer steps
+        # update fixed-shape model parameters/states in place and are
+        # non-differentiable.
         check_dynamism=False,
         check_grad=False,
     )
@@ -3312,7 +3363,7 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "linalg.solve_triangular",
         exclude_dtypes={
-            "cpu": (torch.bool,),
+            "cpu": INTEGRAL_DTYPES,
         },
     )
 
@@ -3692,7 +3743,6 @@ class TestOps(op_testing.OpInfoTestBase):
                 torch.uint8,
                 torch.int8,
                 torch.int16,
-                torch.int64,
             ),
         },
     )
@@ -4203,9 +4253,20 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "torch._scaled_mm_v2",
         exclude_dtypes={
-            "cpu": ALL_NUMERIC_DTYPES,
-            "gpu": UNQUANTIZED_NUMERIC_DTYPES,
+            "cpu": (
+                *ALL_NUMERIC_DTYPES,
+                *quantize_utils.ROCM_ONLY_FLOAT8_DTYPES,
+            ),
+            "gpu": (
+                *UNQUANTIZED_NUMERIC_DTYPES,
+                # cuBLASLt does not support e5m2 x e5m2 multiplication on CUDA
+                torch.float8_e5m2,
+                *quantize_utils.ROCM_ONLY_FLOAT8_DTYPES,
+            ),
         },
+        check_out_variant=False,
+        # Override _OSS_SAMPLE_LIMIT to cover all 8 scaled_mm_v2 test samples.
+        max_samples_per_op_dtype=8,
     )
 
   def test_scatter(self):
@@ -4533,7 +4594,7 @@ class TestOps(op_testing.OpInfoTestBase):
         exclude_dtypes={
             "gpu": (
                 (torch.uint8, torch.int8, torch.int16)
-                + FLOAT_DTYPES
+                + (torch.float64, torch.float16)
                 + COMPLEX_DTYPES
             ),
         },

@@ -17,13 +17,13 @@
 import os
 from torch.google import distributed as g3_distributed
 import torch.multiprocessing as mp
-from torch_tpu._internal.distributed.launchers import singlehost_wrapper
+from torch_tpu._internal.distributed.launchers import environment
 from examples.tutorials.distributed import hello_world_distributed
 from torch_tpu._internal.distributed import multiprocessing
 
 
 def main(_):
-  singlehost_wrapper.prepare_tpu_environment()
+  environment.set_tpu_launch_env()
   world_size = int(os.environ["WORLD_SIZE"])
   g3_distributed.torchrun(
       hello_world_distributed.run_all_reduce,

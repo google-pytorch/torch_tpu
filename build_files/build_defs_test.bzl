@@ -466,7 +466,7 @@ def _test_internal_nobuild_oss(env):
     tags = []
     result = check_and_adjust_test_tags_for_testing(
         is_oss = False,
-        nobuild_oss = "reason",
+        nobuild_oss = True,  # reason
         tags = tags,
     )
 
@@ -480,7 +480,7 @@ def _test_oss_nobuild_oss(env):
     tags = []
     result = check_and_adjust_test_tags_for_testing(
         is_oss = True,
-        nobuild_oss = "reason",
+        nobuild_oss = True,  # reason
         tags = tags,
     )
 
@@ -493,7 +493,7 @@ def _test_internal_notest_oss(env):
     tags = []
     result = check_and_adjust_test_tags_for_testing(
         is_oss = False,
-        notest_oss = "reason",
+        notest_oss = True,  # reason
         tags = tags,
     )
 
@@ -507,7 +507,7 @@ def _test_oss_notest_oss(env):
     tags = []
     result = check_and_adjust_test_tags_for_testing(
         is_oss = True,
-        notest_oss = "reason",
+        notest_oss = True,  # reason
         tags = tags,
     )
 
@@ -540,6 +540,17 @@ def _test_build_test_excludes_tpu_tags(env):
     env.expect.that_bool(result.create_build_test).equals(True)
     env.expect.that_collection(result.build_test_tags).contains_exactly(["custom_tag"])
 
+def _test_ops_test_build_test(env):
+    """Tests that ops-test generates a build_test in OSS with ops-test and TPU tags excluded."""
+    tags = ["custom_tag", "ops-test", "requires-tpu-v5lite"]
+    result = check_and_adjust_test_tags_for_testing(
+        is_oss = True,
+        tags = tags,
+    )
+
+    env.expect.that_bool(result.create_build_test).equals(True)
+    env.expect.that_collection(result.build_test_tags).contains_exactly(["custom_tag"])
+
 def _test_cuda_build_test(env):
     """Tests the notap parameter for CUDA tests."""
     tags = ["requires-gpu-sm90"]
@@ -553,6 +564,19 @@ def _test_cuda_build_test(env):
     env.expect.that_collection(tags).contains_exactly(expected_tags)
     env.expect.that_bool(result.create_build_test).equals(True)
     env.expect.that_collection(result.build_test_tags).contains_exactly(["cuda-build-test"])
+
+def _test_cuda_nopresubmit(env):
+    """Tests the nopresubmit parameter for CUDA tests."""
+    tags = ["requires-gpu-sm90"]
+    result = check_and_adjust_test_tags_for_testing(
+        is_oss = False,
+        nopresubmit = "reason",
+        tags = tags,
+    )
+
+    expected_tags = ["manual", "nopresubmit", "requires-gpu", "requires-gpu-sm90"] if is_oss() else ["manual", "nopresubmit", "requires-gpu-sm90"]
+    env.expect.that_collection(tags).contains_exactly(expected_tags)
+    env.expect.that_bool(result.create_build_test).equals(False)
 
 def _test_internal_notap_nobuild(env):
     """Tests using both notap and nobuild in internal builds."""
@@ -572,13 +596,37 @@ def _test_oss_notest_oss_nobuild_oss(env):
     tags = []
     result = check_and_adjust_test_tags_for_testing(
         is_oss = True,
-        notest_oss = "reason1",
-        nobuild_oss = "reason2",
+        notest_oss = True,  # reason1
+        nobuild_oss = True,  # reason2
         tags = tags,
     )
 
     env.expect.that_collection(tags).contains_exactly(["nobuild", "notest"])
     env.expect.that_bool(result.create_build_test).equals(False)
+
+def _test_oss_notap_notest_oss(env):
+    """Tests that notest_oss is a no-op on a target that already sets notap."""
+    notap_only_tags = []
+    notap_only = check_and_adjust_test_tags_for_testing(
+        is_oss = True,
+        notap = "reason",
+        tags = notap_only_tags,
+    )
+
+    both_tags = []
+    both = check_and_adjust_test_tags_for_testing(
+        is_oss = True,
+        notap = "reason",
+        notest_oss = True,  # NOTEST_OSS_OK=for testing notest_oss
+        tags = both_tags,
+    )
+
+    # notap already implies notest, so passing notest_oss as well changes
+    # nothing. BUILD files should therefore not set both.
+    env.expect.that_collection(notap_only_tags).contains_exactly(["manual", "notap", "notest"])  # NOTAP_OK=Testing notap tagging
+    env.expect.that_collection(both_tags).contains_exactly(notap_only_tags)
+    env.expect.that_bool(both.create_build_test).equals(notap_only.create_build_test)
+    env.expect.that_collection(both.build_test_tags).contains_exactly(notap_only.build_test_tags)
 
 def _test_internal_nopresubmit_oss(env):
     """Tests the nopresubmit_oss parameter in internal builds."""
@@ -740,6 +788,7 @@ def build_defs_test_suite(name):
             _test_build_test_excludes_cpu_tags,
             _test_build_test_excludes_tpu_tags,
             _test_cuda_build_test,
+            _test_cuda_nopresubmit,
             _test_get_tpu_version,
             _test_internal_manual_nonightly_oss_tag,
             _test_internal_manual_nopresubmit_oss_tag,
@@ -753,11 +802,13 @@ def build_defs_test_suite(name):
             _test_nolocal,
             _test_nopresubmit,
             _test_notap,
+            _test_ops_test_build_test,
             _test_oss_manual_nonightly_oss_tag,
             _test_oss_manual_nopresubmit_oss_tag,
             _test_oss_nobuild_oss,
             _test_oss_nonightly_oss,
             _test_oss_nopresubmit_oss,
+            _test_oss_notap_notest_oss,
             _test_oss_notest_oss,
             _test_oss_notest_oss_nobuild_oss,
             _test_oss_presubmit_tpu_generation_explicit,

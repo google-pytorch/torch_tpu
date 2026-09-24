@@ -22,7 +22,6 @@ from absl import logging
 import psutil
 import torch
 from torch.utils._pytree import tree_flatten
-from torch_tpu._internal import sync as tpu_sync
 from torch_tpu._internal.benchmarks import xprof_adapter
 
 _BYTES_IN_MB = 1024 * 1024
@@ -94,18 +93,117 @@ def _get_peak_hbm_memory_mb(
     return -1.0
 
 
+def _sum_xla_module_time_s(plane: Any) -> tuple[float, int]:
+  """Sums all 'XLA Modules' event durations on a single device plane.
+
+  Every event is summed. A single step commonly executes several XLA modules
+  (e.g. forward, backward and optimizer modules, or a graph split across
+  several executables), so the event count is not the step count and the
+  events must not be truncated to a step count.
+
+  Args:
+    plane: An XPlane whose name identifies a single device.
+
+  Returns:
+    A tuple of (total seconds, number of events summed).
+  """
+  device_time_ps = 0
+  event_count = 0
+  for line in plane.lines:
+    if not line.name.startswith('XLA Modules'):
+      continue
+    for e in line.events:
+      device_time_ps += e.duration_ps
+      event_count += 1
+  return device_time_ps / 1e12, event_count
+
+
+def get_total_device_time_from_xspace(
+    xspace: Any,
+    expected_steps: int | None = None,
+) -> float:
+  """Gets the max total device time from an in-process XSpace.
+
+  Prefer this over `get_max_total_device_time`. The XSpace produced by the
+  local `XprofSession` covers only this process's own capture window, so it
+  cannot pick up traces belonging to other benchmarks. Re-fetching by uploaded
+  session id is unsafe: xprof may assign one session id to several benchmark
+  processes, in which case each process appears as a separate "host" and the
+  max-across-hosts in `get_max_total_device_time` returns whichever benchmark
+  was slowest.
+
+  Args:
+    xspace: The XSpace returned by `XprofSession.end_session_and_get_xspace*`.
+    expected_steps: Optional step count, used only to sanity check the trace.
+      Event durations are never truncated to this, because a step can execute
+      more than one XLA module.
+
+  Returns:
+    The total device active time in seconds, or -1.0 if not available.
+  """
+  if xspace is None:
+    logging.warning('get_total_device_time_from_xspace: xspace is None')
+    return -1.0
+
+  try:
+    max_device_time_s = 0.0
+    has_any_device = False
+
+    for plane in xspace.planes:
+      if not plane.name.startswith('/device:'):
+        continue
+      device_time_s, event_count = _sum_xla_module_time_s(plane)
+      if event_count == 0:
+        continue
+      if expected_steps and event_count % expected_steps:
+        # Each step should contribute the same set of modules. A mismatch
+        # means the capture window does not line up with the measured steps.
+        logging.warning(
+            'Device %s: %d XLA module events is not a multiple of %d profiled'
+            ' steps; device time may be inaccurate.',
+            plane.name,
+            event_count,
+            expected_steps,
+        )
+      logging.info(
+          'Device %s time: %.6f seconds (events=%d)',
+          plane.name,
+          device_time_s,
+          event_count,
+      )
+      has_any_device = True
+      max_device_time_s = max(max_device_time_s, device_time_s)
+
+    if not has_any_device:
+      logging.warning('No XLA Modules execution events found in XSpace')
+      return -1.0
+
+    logging.info('Calculated max_device_time_s: %s', max_device_time_s)
+    return max_device_time_s
+
+  except Exception:  # pylint: disable=broad-except
+    logging.exception('Failed to parse device time from in-process XSpace')
+    return -1.0
+
+
 def get_max_total_device_time(
     session_id: str | None = None,
     client: xprof_adapter.XprofAnalysisClient | None = None,
 ) -> float:
   """Gets the max total device time across all devices running the model.
 
+  WARNING: prefer `get_total_device_time_from_xspace` when the profiling
+  session is owned by the caller. xprof may assign one session id to several
+  benchmark processes; each then appears as a separate host here, and the
+  max-across-hosts below can return another benchmark's device time. This
+  remains correct for a genuinely distributed, single-workload session.
+
   Args:
     session_id: The session ID to get the profile for.
     client: The xprof client to use.
 
   Returns:
-    The total device active time in seconds, or None if failed or not available.
+    The total device active time in seconds, or -1.0 if failed or not available.
   """
   logging.info(
       'get_total_device_time called with session_id=%s, client=%s',
@@ -138,16 +236,9 @@ def get_max_total_device_time(
       for plane in xspace.planes:
         if plane.name.startswith('/device:'):
           logging.info('Analyzing plane: %s on host: %s', plane.name, host)
-          device_time_ps = 0
-          event_count = 0
-          for line in plane.lines:
-            if line.name.startswith('XLA Modules'):
-              for e in line.events:
-                device_time_ps += e.duration_ps
-                event_count += 1
+          device_time_s, event_count = _sum_xla_module_time_s(plane)
 
           if event_count > 0:
-            device_time_s = device_time_ps / 1e12
             logging.info(
                 'Device %s on host %s time: %.6f seconds (events=%d)',
                 plane.name,
@@ -210,10 +301,9 @@ def get_peak_memory_hbm(
   """Get peak memory usage for the specified device.
 
   Args:
-    device: The device type ('cuda', 'cpu', 'tpu', 'xla_cuda', 'xla_cpu',
-      'jax').
-    session_id: Optional Xprof session ID to retrieve TPU/XLA_CUDA/JAX peak
-      memory from. This is a no-op for CPU and CUDA.
+    device: The device type ('cuda', 'cpu', 'tpu', 'jax').
+    session_id: Optional Xprof session ID to retrieve TPU/JAX peak memory from.
+      This is a no-op for CPU and CUDA.
     xprof_client: Optional Xprof analysis client to use for retrieving memory
       profile data.
 
@@ -228,7 +318,7 @@ def get_peak_memory_hbm(
     total = psutil.virtual_memory().total
     percentage = psutil.Process(os.getpid()).memory_percent()
     peak_memory_usage_mb = percentage / 100.0 * total / _BYTES_IN_MB
-  elif device in ('tpu', 'xla_cuda'):
+  elif device == 'tpu':
     if hasattr(torch, 'accelerator') and hasattr(
         torch.accelerator, 'max_memory_allocated'
     ):
@@ -244,8 +334,6 @@ def get_peak_memory_hbm(
     if jax_peak_mb is not None:
       return jax_peak_mb
     peak_memory_usage_mb = _get_peak_hbm_memory_mb(session_id, xprof_client)
-  elif device == 'xla_cpu':
-    peak_memory_usage_mb = _get_peak_hbm_memory_mb(session_id, xprof_client)
   else:
     raise ValueError(f'Unsupported device: {device}')
   return peak_memory_usage_mb
@@ -254,7 +342,7 @@ def get_peak_memory_hbm(
 def reset_peak_memory_stats(device):
   if device == 'cuda':
     torch.cuda.memory.reset_max_memory_allocated()
-  elif device in ('tpu', 'xla_cuda'):
+  elif device == 'tpu':
     if hasattr(torch, 'accelerator'):
       if hasattr(torch.accelerator, 'synchronize'):
         torch.accelerator.synchronize()
@@ -269,7 +357,7 @@ def reset_peak_memory_stats(device):
           dev.reset_memory_stats()
     except Exception:  # pylint: disable=broad-except
       pass
-  elif device in ('cpu', 'xla_cpu'):
+  elif device == 'cpu':
     pass
   else:
     raise ValueError(f'Unsupported device: {device}')
@@ -297,17 +385,19 @@ def synchronize(
   """Synchronizes the device with the given tensor(s).
 
   Args:
-    device: The device type ("cuda", "tpu", "xla_cuda").
+    device: The device type ("cuda", "tpu").
     tensor_to_sync: The tensor(s) to synchronize.
   """
   if device == 'cuda':
     torch.cuda.synchronize()
   elif device == 'cpu':
     pass
-  elif device in ('tpu', 'xla_cuda', 'xla_cpu'):
+  elif device == 'tpu':
     if tensor_to_sync is None:
       torch.accelerator.synchronize()
     else:
+      from torch_tpu._internal import sync as tpu_sync  # pylint: disable=g-import-not-at-top
+
       # TODO(b/507181043): Investigate why sync(None, wait=True) doesn't work.
       tensors = _collect_tensors(tensor_to_sync)
       # TODO(lukeboyer): Flip to global sync after cl/964180694.
@@ -320,14 +410,14 @@ def cache_miss_count(device: str) -> int:
   """Get cache miss count for the specified device. Always returns 0 for CUDA.
 
   Args:
-    device: The device type ('cuda', 'tpu', 'xla_cuda', 'xla_cpu').
+    device: The device type ('cuda', 'tpu').
 
   Returns:
     The cache miss count.
   """
   if device in ('cuda', 'cpu'):
     return 0
-  elif device in ('tpu', 'xla_cuda', 'xla_cpu'):
+  elif device == 'tpu':
     # pylint: disable=protected-access
     return getattr(torch, device)._get_cache_misses()
   else:
@@ -341,7 +431,7 @@ def get_peak_host_compilation_memory_mb(device: str) -> float | None:
   underlying infrastructure prevents resetting of this value during eviction.
 
   Args:
-    device: The device type ('cuda', 'tpu', 'xla_cuda').
+    device: The device type ('cuda', 'tpu').
 
   Returns:
     The peak host compilation memory in MB. None if not supported by the
@@ -356,6 +446,53 @@ def get_peak_host_compilation_memory_mb(device: str) -> float | None:
   return perf_stats.peak_compilation_host_memory_bytes / _BYTES_IN_MB
 
 
+def configure_inductor_for_benchmarks() -> None:
+  """Configures PyTorch Inductor and Triton overrides for benchmark compilation."""
+  # Spawning multiple worker processes for Inductor compilation
+  # takes several seconds per subprocess and can leave worker processes
+  # initializing during benchmark timing steps.
+  torch._inductor.config.compile_threads = 1
+  if getattr(torch._inductor.config.cpp, 'cxx', (None,))[0] is None:
+    found_cxx = False
+    for cxx_candidate in ('/usr/bin/clang++', '/usr/bin/g++'):
+      if os.path.exists(cxx_candidate):
+        setattr(torch._inductor.config.cpp, 'cxx', (None, cxx_candidate))
+        found_cxx = True
+        break
+    if not found_cxx:
+      setattr(torch._inductor.config.cpp, 'vec_isa_ok', False)
+  try:
+    from torch._inductor.codegen.triton import TritonOverrides  # pylint: disable=g-import-not-at-top
+
+    TritonOverrides.isinf = staticmethod(
+        lambda x: (
+            f'libdevice.isinf(({x}).to(tl.float32) if ({x}).dtype !='
+            f' tl.float64 else ({x})).to(tl.int1)'
+        )
+    )
+    TritonOverrides.isnan = staticmethod(
+        lambda x: (
+            f'libdevice.isnan(({x}).to(tl.float32) if ({x}).dtype !='
+            f' tl.float64 else ({x})).to(tl.int1)'
+        )
+    )
+  except ImportError:
+    pass
+  try:
+    import importlib  # pylint: disable=g-import-not-at-top
+
+    masking_utils = importlib.import_module('transformers.masking_utils')
+    setattr(
+        masking_utils,
+        'is_tracing',
+        lambda tensor=None: (
+            torch.compiler.is_exporting() or torch.jit.is_tracing()
+        ),
+    )
+  except ImportError:
+    pass
+
+
 def torch_compile(
     func: Callable[..., Any],
     device: str,
@@ -366,7 +503,7 @@ def torch_compile(
 
   Args:
     func: The callable to be compiled.
-    device: The device type ('cuda', 'tpu', 'xla_cuda', 'xla_cpu').
+    device: The device type ('cuda', 'tpu').
     dynamic: Whether to use dynamic shapes in compilation.
     fullgraph: Whether to require compiling the full graph without breaks.
 
@@ -377,8 +514,9 @@ def torch_compile(
     ValueError: If the device is not supported.
   """
   if device in ('cuda', 'cpu'):
+    configure_inductor_for_benchmarks()
     func = torch.compile(func, backend='inductor', fullgraph=fullgraph)
-  elif device in ('tpu', 'xla_cuda', 'xla_cpu'):
+  elif device == 'tpu':
     if dynamic:
       func = torch.compile(
           func,
@@ -406,14 +544,14 @@ def clear_cache(device: str) -> None:
   """Clears the compilation cache for the specified device. No-op for CUDA.
 
   Args:
-    device: The device type ('cuda', 'tpu', 'xla_cuda', 'xla_cpu').
+    device: The device type ('cuda', 'tpu').
 
   Raises:
     ValueError: If the device is not supported.
   """
   if device in ('cuda', 'cpu'):
     pass
-  elif device in ('tpu', 'xla_cuda', 'xla_cpu'):
+  elif device == 'tpu':
     # pylint: disable=protected-access
     getattr(torch, device)._clear_cache()
   else:

@@ -17,7 +17,6 @@ from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
   from torch_tpu._internal.pallas.pallas import (
-      PallasMesh as PallasMesh,  # noqa: F401
       custom_jax_kernel as custom_jax_kernel,  # noqa: F401
       get_default_pallas_mesh as get_default_pallas_mesh,  # noqa: F401
       get_pallas_mesh as get_pallas_mesh,  # noqa: F401
@@ -28,7 +27,6 @@ if TYPE_CHECKING:
 # PEP 8 requires this to be a list of strings, not a tuple or a list of objects.
 __all__ = [
     # go/keep-sorted start
-    "PallasMesh",
     "custom_jax_kernel",
     "get_default_pallas_mesh",
     "get_pallas_mesh",
@@ -45,7 +43,6 @@ def __getattr__(name: str) -> Any:
   initialization) until Pallas symbols are actually referenced.
   """
   if name in (
-      "PallasMesh",
       "custom_jax_kernel",
       "get_default_pallas_mesh",
       "get_pallas_mesh",

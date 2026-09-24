@@ -16,6 +16,7 @@
 
 from unittest import mock
 from absl.testing import absltest
+from absl.testing import parameterized
 import torch
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import _backend
@@ -83,6 +84,27 @@ class CompileTest(seed_test_utils.RepeatableTest):
         (torch.arange(6).reshape(1, 6),),  # no compile, [1, 6]
     ]
     metrics = self.call_and_compare(simple, test_inputs, None)
+    self.assertEqual(metrics["bounded_compile_events"], 1)
+
+  @parameterized.named_parameters(
+      ("scan_dim", 0),
+      ("non_scan_dim", 1),
+  )
+  def test_cumsum_dynamic(self, dim: int):
+    def scan_fn(x):
+      return torch.cumsum(x, dim=dim)
+
+    test_inputs = [
+        (torch.randn(8, 17),),
+        (torch.randn(4, 17),),
+    ]
+    mark_dynamic_tests_info = [
+        ((True, [(0, 2, 16)]),),
+        ((True, [(0, 2, 16)]),),
+    ]
+    metrics = self.call_and_compare(
+        scan_fn, test_inputs, mark_dynamic_tests_info
+    )
     self.assertEqual(metrics["bounded_compile_events"], 1)
 
   def test_add_multiple_dynamic_inputs(self):

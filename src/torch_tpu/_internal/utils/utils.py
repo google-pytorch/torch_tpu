@@ -30,7 +30,7 @@ from torch_tpu._internal import export as torch_tpu_export
 from torch_tpu._internal import sync
 from torch_tpu._internal.compile import tpu_torch_compile
 
-_EagerMode: TypeAlias = execution_mode._EagerMode
+EagerMode: TypeAlias = execution_mode.EagerMode
 
 
 def model_memory(
@@ -127,7 +127,7 @@ def format_model(
 
     # Trace the model in INTERNAL_COMPILE_FX_GRAPH mode so that we can capture
     # the full graph.
-    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
       model = torch.fx.experimental.proxy_tensor.make_fx(model)(*placeholders)
 
   if params:
@@ -159,10 +159,10 @@ def format_model(
       mlir_text = torch_tpu_export.exported_to_mlir(exported).serialize_text()
       result += mlir_text + "\n"
     else:
-      with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+      with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
         results = model(*input_tensors)
+        shlo = sync.computation_mlir(results)  # pyrefly: ignore[bad-assignment]
 
-      shlo = sync.computation_mlir(results)  # pyrefly: ignore[bad-assignment]
       result += shlo + "\n"  # pyrefly: ignore[unsupported-operation]
 
   return result
@@ -660,6 +660,9 @@ def get_primary_tensor_output(out: Any) -> torch.Tensor | None:
        - `.audio` / "audio"
        - `.sequences` / "sequences"
        - `.prediction_logits` / "prediction_logits"
+       - `.prediction_scores` / "prediction_scores"
+       - `.scores` / "scores"
+       - `.token_logits` / "token_logits"
        - `.output` / "output"
     3. Sequences (tuple/list): Recursively unwraps the first element (out[0]).
     4. Dictionaries (dict):
@@ -684,6 +687,9 @@ def get_primary_tensor_output(out: Any) -> torch.Tensor | None:
       "audio",
       "sequences",
       "prediction_logits",
+      "prediction_scores",
+      "scores",
+      "token_logits",
       "output",
   )
   for k in priority_keys:

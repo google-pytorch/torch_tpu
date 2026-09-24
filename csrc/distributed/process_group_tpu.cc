@@ -16,6 +16,7 @@
 
 #include "csrc/distributed/process_group_tpu.h"
 
+#include <array>
 #include <atomic>
 #include <chrono>  // NOLINT - needed for PyTorch API
 #include <cstddef>
@@ -53,7 +54,9 @@
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
+#include "c10/core/ScalarType.h"
 #include "c10/core/TensorOptions.h"
+#include "c10/util/ArrayRef.h"
 #include "c10/util/intrusive_ptr.h"
 #include "csrc/common/macro_utils.h"
 #include "torch/csrc/distributed/c10d/Backend.hpp"
@@ -181,7 +184,7 @@ absl::Status ValidateTensorsUniformShape(
   for (int i = 1; i < tensors.size(); ++i) {
     TT_RET_CHECK(tensors[i].sizes() == first_tensor_size,
                  error::kInvalidArgument)
-        << "expected all input tensors to have the same shape, got "
+        << "expected all tensors to have the same shape, got "
         << first_tensor_size << " at index 0 and " << tensors[i].sizes()
         << " at index " << i;
   }
@@ -750,22 +753,11 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
                << "rank=" << rank << ", group_size=" << group_size << ": "
                << ToString(rank_to_device_id_);
 
-  if (group_size == device_ids_.size()) {
-    is_world_group_ = true;
-    PjrtBackend::GetInstance().SetWorldRankToDeviceId(rank_to_device_id_);
-    std::vector<int64_t> rank_to_logical_device_id(group_size);  // INT_VEC_OK
-    std::iota(rank_to_logical_device_id.begin(),
-              rank_to_logical_device_id.end(), 0);
-    subgroup_device_ids_ =
-        DeviceGroupList({std::move(rank_to_logical_device_id)});
-  } else {
-    // This new group is a proper subgroup. The `c10d::Store` allows us to
-    // exchange membership information *within* this subgroup, which is
-    // sufficient for PyTorch.
-    // However, in case of XLA, we need every process to know about *all* the
-    // subgroups, including ones it isn't a member of.
-    subgroup_device_ids_ = GatherAllSubgroups();
-  }
+  std::vector<int64_t> rank_to_logical_device_id(group_size);  // INT_VEC_OK
+  std::iota(rank_to_logical_device_id.begin(), rank_to_logical_device_id.end(),
+            0);
+  subgroup_device_ids_ =
+      DeviceGroupList({std::move(rank_to_logical_device_id)});
 
   ABSL_VLOG(1) << "[ProcessGroupTpu] rank: " << getRank()
                << ", group size: " << getSize()
@@ -774,12 +766,7 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
                << ", all subgroups: " << ToString(subgroup_device_ids_);
 }
 
-void ProcessGroupTpu::shutdown() {
-  if (is_world_group_) {
-    PjrtBackend::GetInstance().ResetWorldRankToDeviceId();
-    is_world_group_ = false;
-  }
-}
+void ProcessGroupTpu::shutdown() {}
 
 ProcessGroupTpu::~ProcessGroupTpu() { shutdown(); }
 
@@ -824,7 +811,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::allreduce(
                       {.out_dtype = output_dtype,
                        .out_dims = tensor.sizes(),
                        .op_param_cache_keys = std::move(param_keys),
-                       .split_mode = GetCollectiveSplitMode()}));
+                       .split_mode = GetCollectiveSplitMode(),
+                       .device_assignment = device_assignment()}));
     // TODO: respect async.
 
     // All-reduce is inplace, assign output buffer ref to input tensors.
@@ -992,7 +980,9 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::allgather(
         // NOTE: PyTorch NCCL backend does support non-uniform shapes
         // (implemented as a sequence of broadcasts, one per tensor). We decided
         // not to support this yet. Revisit later if needed.
-        TT_THROW_IF_ERROR(ValidateTensorsUniformShape(output_tensor_list));
+        TT_THROW_IF_ERROR(ValidateTensorsUniformShape(output_tensor_list))
+                .SetPrepend()
+            << "failed to validate output tensors: ";
 
         TT_CHECK_THROW(input_tensor.sizes() == output_tensor_list[0].sizes(),
                        error::kInvalidArgument)
@@ -1038,7 +1028,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::allgather(
                 {.out_dtypes = output_dtypes,
                  .out_dims_list = output_dims,
                  .op_param_cache_keys = std::move(param_keys),
-                 .split_mode = GetCollectiveSplitMode()})));
+                 .split_mode = GetCollectiveSplitMode(),
+                 .device_assignment = device_assignment()})));
 
         // TODO: respect async.
 
@@ -1147,7 +1138,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::_allgather_base(
                           {.out_dtype = output_dtype,
                            .out_dims = output_tensor.sizes(),
                            .op_param_cache_keys = std::move(param_keys),
-                           .split_mode = GetCollectiveSplitMode()}));
+                           .split_mode = GetCollectiveSplitMode(),
+                           .device_assignment = device_assignment()}));
 
         // TODO: b/443120101 - defer if opts.asyncOp is true.
 
@@ -1216,7 +1208,7 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::gather(
               << " processes";
           TT_THROW_IF_ERROR(ValidateTensorsUniformShape(output_tensor_list))
                   .SetPrepend()
-              << "output tensors on the root rank: ";
+              << "failed to validate output tensors on root rank: ";
           TT_CHECK_THROW(input.sizes() == output_tensor_list[0].sizes(),
                          error::kInvalidArgument)
               << "input tensor shape must match output tensor shape";
@@ -1231,6 +1223,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::gather(
           allgather_outputs = output_tensors[0];
         } else {
           allgather_outputs.reserve(getSize());
+          std::vector<DeviceBufferRef> empty_buffers;
+          empty_buffers.reserve(getSize());
           for (int i = 0; i < getSize(); ++i) {
             auto tensor = at::empty_like(input);
             // Materialize the outputs before the collective to ensure symmetry.
@@ -1238,11 +1232,13 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::gather(
             // have deferred ops. On non-root ranks, the temporary tensors are
             // fresh, which can result in an asymmetry.
             TT_ASSIGN_OR_THROW(auto empty_buffer, GetBaseBuffer(tensor));
-            TT_THROW_IF_ERROR(Materialize(
-                empty_buffer, MaterializationReason::kDistributedOp));
-
+            empty_buffers.push_back(std::move(empty_buffer));
             allgather_outputs.push_back(std::move(tensor));
           }
+          TT_THROW_IF_ERROR(
+              Materialize(empty_buffers, MaterializationReason::kDistributedOp,
+                          MaterializationMode::kSplitGraph,
+                          MaterializationBlockMode::kNonBlocking));
         }
 
         c10d::AllgatherOptions allgather_opts;
@@ -1293,7 +1289,7 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::scatter(
 
           TT_THROW_IF_ERROR(ValidateTensorsUniformShape(input_tensors))
                   .SetPrepend()
-              << "input tensors on the root rank: ";
+              << "failed to validate input tensors on root rank: ";
           TT_CHECK_THROW(output.sizes() == input_tensors[0].sizes(),
                          error::kInvalidArgument)
               << "expected output tensor shape to match input tensor shape, "
@@ -1363,7 +1359,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::reduce_scatter(
         // sequence of world_size separate reduce calls (coalesced). Revisit
         // later if we want to support this case too. It would be very
         // problematic for error handling.
-        TT_THROW_IF_ERROR(ValidateTensorsUniformShape(inputs));
+        TT_THROW_IF_ERROR(ValidateTensorsUniformShape(inputs)).SetPrepend()
+            << "failed to validate input tensors: ";
 
         TT_CHECK_THROW(output.sizes() == inputs[getRank()].sizes(),
                        error::kInvalidArgument)
@@ -1433,7 +1430,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::_reduce_scatter_base(
                           {.out_dtype = out_dtype,
                            .out_dims = std::move(out_dims),
                            .op_param_cache_keys = std::move(param_keys),
-                           .split_mode = GetCollectiveSplitMode()}));
+                           .split_mode = GetCollectiveSplitMode(),
+                           .device_assignment = device_assignment()}));
 
         TT_THROW_IF_ERROR(
             AssignBufferToAtTensor(std::move(result_buffer), output));
@@ -1548,7 +1546,8 @@ absl::StatusOr<DeviceBufferRef> ProcessGroupTpu::AllToAllBaseEqualSplits(
                        {.out_dtype = output_dtype,
                         .out_dims = output.sizes(),
                         .op_param_cache_keys = std::move(param_keys),
-                        .split_mode = GetCollectiveSplitMode()});
+                        .split_mode = GetCollectiveSplitMode(),
+                        .device_assignment = device_assignment()});
 }
 
 absl::StatusOr<DeviceBufferRef> ProcessGroupTpu::AllToAllBaseUnevenSplits(
@@ -1601,7 +1600,27 @@ absl::StatusOr<DeviceBufferRef> ProcessGroupTpu::AllToAllBaseUnevenSplits(
                       TT_MAKE_OP_PARAM_CACHE_KEYS(subgroup_device_ids_));
   TT_RETURN_IF_ERROR(SetRaggedAllToAllParamKeys(param_keys, offsets));
 
-  // 4. Build the MLIR StableHLO custom call with device replica group
+  // 4. Explicitly materialize both input and output before dispatching the
+  // collective.
+  //
+  // Constant/empty tensors (e.g. from `BuildFillUninitialized`,
+  // `torch.empty(..., device="tpu")`, or `torch.zeros(..., device="tpu")`) are
+  // marked `is_constant() == true` in TorchTPU's EventsQueue and are not split
+  // out by `OpSplitMode::kSplitBoth`; instead, `ProcessDeferredOpEvent` inlines
+  // them directly into the `ragged_all_to_all` HLO module. On TPU architectures
+  // with SparseCore (`compute_type = "tpu_embedding"`), XLA hoists
+  // `kSparseCoreBarrierStart` on the SparseCore sequencer while TensorCore
+  // concurrently executes the constant fill into `output` in HBM, racing with
+  // and overwriting incoming peer RDMAs. Materializing both buffers beforehand
+  // ensures the collective HLO module receives pre-allocated HLO parameters
+  // (`%arg0`, `%arg1`) with zero TensorCore constant-fill instructions.
+  TT_ASSIGN_OR_RETURN(std::vector<DeviceBufferRef> input_output_buffers,
+                      GetBuffers(std::array<at::Tensor, 2>{
+                          maybe_materialized_input_tensor, output}));
+  TT_RETURN_IF_ERROR(
+      Materialize(input_output_buffers, MaterializationReason::kDistributedOp));
+
+  // 5. Build the MLIR StableHLO custom call with device replica group
   // attributes and MLIR constant metadata tensors.
   auto op_builder =
       [device_groups = subgroup_device_ids_,
@@ -1615,13 +1634,14 @@ absl::StatusOr<DeviceBufferRef> ProcessGroupTpu::AllToAllBaseUnevenSplits(
   TT_ASSIGN_OR_RETURN(auto output_dtype,
                       ConvertTo<mlir::ElementType>(output.scalar_type()));
 
-  // 5. Dispatch the custom call with input and output buffers.
+  // 6. Dispatch the custom call with input and output buffers.
   return DispatchOp<2>(std::move(op_builder),
                        {maybe_materialized_input_tensor, output},
                        {.out_dtype = output_dtype,
                         .out_dims = output.sizes(),
                         .op_param_cache_keys = std::move(param_keys),
-                        .split_mode = GetCollectiveSplitMode()});
+                        .split_mode = GetCollectiveSplitMode(),
+                        .device_assignment = device_assignment()});
 }
 
 // Dispatches the torch.distributed.all_to_all collective, supporting both
@@ -1670,64 +1690,117 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::alltoall(
           result_dims_list.push_back(output_tensor.sizes());
         }
 
-        NAryMlirOpBuilder<kDynamicSize, kDynamicSize> op_builder;
+        std::vector<DeviceBufferRef> result_buffers;
 
         if (IsUniformAllToAll(output_tensors, input_tensors)) {
-          op_builder = [device_groups = subgroup_device_ids_](
-                           absl::Span<mlir::MlirOp> inputs,
-                           mlir::MlirBuilder& builder) {
-            return BuildDistributedAllToAllShlo(inputs, device_groups);
-          };
+          NAryMlirOpBuilder<kDynamicSize, kDynamicSize> op_builder =
+              [device_groups = subgroup_device_ids_](
+                  absl::Span<mlir::MlirOp> inputs, mlir::MlirBuilder& builder) {
+                return BuildDistributedAllToAllShlo(inputs, device_groups);
+              };
+
+          TT_ASSIGN_OR_THROW(result_buffers,
+                             (DispatchOp<kDynamicSize, kDynamicSize>(
+                                 std::move(op_builder), input_tensors,
+                                 {.out_dtypes = result_dtypes,
+                                  .out_dims_list = result_dims_list,
+                                  .op_param_cache_keys = std::move(param_keys),
+                                  .split_mode = GetCollectiveSplitMode(),
+                                  .device_assignment = device_assignment()})));
         } else {
           // Non-uniform / uneven tensor list shapes across ranks (e.g. for MoE
-          // dynamic token routing). All concatenations along dimension 0,
-          // ragged all-to-all custom call execution, and slicing back into
-          // individual destination tensors are executed directly in MLIR
-          // inside the op builder.
-
-          // 1. Calculate local slice sizes and compute synchronized offsets.
-          int32_t total_input_size = 0;
-          int32_t total_output_size = 0;
-          std::vector<int32_t> send_sizes(group_size);
-          std::vector<int32_t> recv_sizes(group_size);
+          // dynamic token routing).
+          //
+          // We decompose uneven `all_to_all` into three isolated stages:
+          //   1. Pre-collective dimension-0 concatenation
+          //   (`concatenated_input`)
+          //      and uninitialized destination buffer allocation
+          //      (`output_placeholder`).
+          //   2. Isolated `AllToAllBaseUnevenSplits` collective execution on
+          //      the pre-materialized, symmetrically sized buffers.
+          //   3. Post-collective dimension-0 slicing into individual
+          //      destination tensors (`SliceTensorsAlongDim0`).
+          std::vector<int64_t> input_split_sizes(group_size);   // INT_VEC_OK
+          std::vector<int64_t> output_split_sizes(group_size);  // INT_VEC_OK
+          std::vector<int32_t> slice_sizes(group_size);
+          int64_t total_input_size = 0;
+          int64_t total_output_size = 0;
           for (size_t i = 0; i < group_size; ++i) {
-            send_sizes[i] = static_cast<int32_t>(input_tensors[i].size(0));
-            recv_sizes[i] = static_cast<int32_t>(output_tensors[i].size(0));
-            total_input_size += send_sizes[i];
-            total_output_size += recv_sizes[i];
+            input_split_sizes[i] = input_tensors[i].size(0);
+            output_split_sizes[i] = output_tensors[i].size(0);
+            slice_sizes[i] = static_cast<int32_t>(output_split_sizes[i]);
+            total_input_size += input_split_sizes[i];
+            total_output_size += output_split_sizes[i];
           }
 
-          // 2. Synchronize remote destination output offsets across all ranks
-          // via c10d::Store.
-          TT_ASSIGN_OR_THROW(
-              auto offsets,
-              ComputeRaggedAllToAllOffsets(
-                  store_.get(), static_cast<int>(rank),
-                  alltoall_seq_.fetch_add(1), send_sizes, recv_sizes,
-                  total_input_size, total_output_size));
+          Dimensions total_input_shape =
+              CopyIntVector(input_tensors[0].sizes());
+          total_input_shape[0] = total_input_size;
 
-          // 3. Populate kernel parameter cache keys for graph compilation.
-          TT_THROW_IF_ERROR(SetRaggedAllToAllParamKeys(param_keys, offsets));
-
-          // 4. Construct the MLIR op builder lowering to the StableHLO ragged
-          // all-to-all custom call.
-          op_builder = [device_groups = subgroup_device_ids_, output_dtype,
-                        offsets = std::move(offsets)](
-                           absl::Span<mlir::MlirOp> inputs,
-                           mlir::MlirBuilder& builder) {
-            return BuildDistributedAllToAllUnevenSplitsShlo(
-                inputs, output_dtype, offsets.input_offsets, offsets.send_sizes,
-                offsets.output_offsets, offsets.recv_sizes, device_groups);
+          std::vector<at::Tensor> non_empty_inputs;
+          non_empty_inputs.reserve(input_tensors.size());
+          for (const auto& tensor : input_tensors) {
+            if (tensor.size(0) == 0) continue;
+            non_empty_inputs.push_back(tensor);
+          }
+          auto concat_builder = [output_dtype, total_input_shape](
+                                    absl::Span<mlir::MlirOp> inputs,
+                                    mlir::MlirBuilder& builder) {
+            return ConcatenateTensorsAlongDim0(inputs, output_dtype,
+                                               total_input_shape, builder);
           };
-        }
+          TT_ASSIGN_OR_THROW(
+              DeviceBufferRef concatenated_input_buf,
+              DispatchOp<kDynamicSize>(
+                  std::move(concat_builder), non_empty_inputs,
+                  {.out_dtype = output_dtype,
+                   .out_dims = total_input_shape,
+                   .op_param_cache_keys = std::move(param_keys)}));
 
-        TT_ASSIGN_OR_THROW(std::vector<DeviceBufferRef> result_buffers,
-                           (DispatchOp<kDynamicSize, kDynamicSize>(
-                               std::move(op_builder), input_tensors,
-                               {.out_dtypes = result_dtypes,
-                                .out_dims_list = result_dims_list,
-                                .op_param_cache_keys = std::move(param_keys),
-                                .split_mode = GetCollectiveSplitMode()})));
+          Dimensions total_output_shape =
+              CopyIntVector(output_tensors[0].sizes());
+          total_output_shape[0] = total_output_size;
+
+          auto empty_builder =
+              [output_dtype, total_output_shape](
+                  mlir::MlirBuilder& builder) -> absl::StatusOr<mlir::MlirOp> {
+            return BuildFillUninitialized(builder, output_dtype,
+                                          total_output_shape);
+          };
+          TT_ASSIGN_OR_THROW(DeviceBufferRef output_placeholder_buf,
+                             DispatchOp<0>(std::move(empty_builder), {},
+                                           {.out_dtype = output_dtype,
+                                            .out_dims = total_output_shape,
+                                            .op_param_cache_keys =
+                                                OpParamCacheKeys::Empty()}));
+
+          at::Tensor concatenated_input =
+              MakeTensor(std::move(concatenated_input_buf));
+          at::Tensor output_placeholder =
+              MakeTensor(std::move(output_placeholder_buf));
+
+          TT_ASSIGN_OR_THROW(
+              DeviceBufferRef ragged_output_buf,
+              AllToAllBaseUnevenSplits(output_placeholder, concatenated_input,
+                                       output_split_sizes, input_split_sizes));
+
+          at::Tensor ragged_output = MakeTensor(std::move(ragged_output_buf));
+          TT_ASSIGN_OR_THROW(auto slice_param_keys,
+                             TT_MAKE_OP_PARAM_CACHE_KEYS(slice_sizes));
+          auto slice_builder =
+              [slice_sizes = std::move(slice_sizes)](
+                  mlir::MlirOp input) -> absl::StatusOr<DynamicMlirOpResults> {
+            return SliceTensorsAlongDim0(input, slice_sizes);
+          };
+
+          TT_ASSIGN_OR_THROW(
+              result_buffers,
+              (DispatchOp<1, kDynamicSize>(
+                  std::move(slice_builder), ragged_output,
+                  {.out_dtypes = result_dtypes,
+                   .out_dims_list = result_dims_list,
+                   .op_param_cache_keys = std::move(slice_param_keys)})));
+        }
 
         for (int64_t i = 0; i < result_buffers.size(); ++i) {
           TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result_buffers[i]),
@@ -1789,105 +1862,6 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::barrier(
           c10d::OpType::BARRIER;
     }
     return work_ptr;
-  });
-}
-
-DeviceGroupList ProcessGroupTpu::GatherAllSubgroups() {
-  TT_KERNEL(OpName::kTorchTpuInternalGatherAllSubgroups, param_keys, (), {
-    // We do not add subgroup_device_ids_ to param_keys here because this
-    // function computes the subgroup_device_ids_.
-    // Instead, `world_group` is added to param_keys below.
-    TT_THROW_IF_ERROR(param_keys.SetParam("device_ids", device_ids_));
-    int64_t world_size = device_ids_.size();  // All devices in the TPU slice
-    int64_t group_size = getSize();  // Devices in this particular process group
-
-    // We cannot use c10d::Store to exchange information between processes
-    // in different subgroups, so instead we use StableHLO collectives over
-    // the global TPU slice to do that.
-    //
-    // We do this by leveraging the existing DispatchOp machinery, hence
-    // create the data as torch tensors, and use existing all-reduce
-    // builder.
-    //
-    // NOTE: this tensor size is O(device_count^2). We can fix it later, if
-    // still needed after b/445283852 (or if latter cannot be done).
-    at::Tensor subgroups = at::zeros({world_size, group_size},
-                                     at::device(at::kCPU).dtype(at::kLong));
-
-    // This process knows the members of its own subgroup, thanks to
-    // c10d::Store.
-    ABSL_CHECK_EQ(group_size, rank_to_device_id_.size())  // CRASH_OK
-        << "Inconsistent device subgroup. This is a bug.";
-    auto world_rank_to_dev =
-        PjrtBackend::GetInstance().GetWorldRankToDeviceId();
-    TT_CHECK_THROW(world_rank_to_dev.has_value(), error::kFailedPrecondition)
-        << "world group must be initialized before subgroups";
-    ABSL_CHECK_EQ(world_rank_to_dev->size(), world_size)  // CRASH_OK
-        << "Mismatch between TPU slice size (" << world_size
-        << ") and world group size (" << world_rank_to_dev->size() << ")";
-
-    absl::flat_hash_map<int64_t, int64_t> dev_to_world_rank;
-    dev_to_world_rank.reserve(world_rank_to_dev->size());
-    for (int64_t r = 0; r < world_rank_to_dev->size(); ++r) {
-      dev_to_world_rank[(*world_rank_to_dev)[r]] = r;
-    }
-
-    auto self_it = dev_to_world_rank.find(addressable_device_id_);
-    ABSL_CHECK(self_it != dev_to_world_rank.end())  // CRASH_OK
-        << "Could not find current device ID " << addressable_device_id_
-        << " in world rank mapping";
-    int64_t global_rank = self_it->second;
-
-    auto subgroups_accessor = subgroups.accessor<int64_t, 2>();
-    for (int i = 0; i < group_size; ++i) {
-      auto peer_it = dev_to_world_rank.find(rank_to_device_id_[i]);
-      ABSL_CHECK(peer_it != dev_to_world_rank.end())  // CRASH_OK
-          << "Could not find peer device ID " << rank_to_device_id_[i]
-          << " in world rank mapping";
-      subgroups_accessor[global_rank][i] = peer_it->second;
-    }
-    subgroups = subgroups.to(at::device(GetPrivateUse1DeviceType()));
-
-    // Thanks to PJRT, we know all the devices in the TPU slice, so we can
-    // perform a collective, without having to know the "default" process
-    // group. We just need to reshape device list as [1, N] to use as
-    // subgroup list.
-    DeviceGroup logical_device_ids(world_size);
-    std::iota(logical_device_ids.begin(), logical_device_ids.end(), 0);
-    auto world_group = DeviceGroupList({std::move(logical_device_ids)});
-    TT_THROW_IF_ERROR(
-        param_keys.SetParam("subgroups_fingerprint", world_group));
-    auto op_builder = [group = std::move(world_group)](mlir::MlirOp input) {
-      return BuildDistributedAllReduceShlo(input, c10d::ReduceOp::SUM, group);
-    };
-
-    TT_ASSIGN_OR_THROW(auto output_dtype,
-                       ConvertTo<mlir::ElementType>(subgroups.scalar_type()));
-
-    TT_ASSIGN_OR_THROW(
-        auto result_buffer,
-        DispatchOp<1>(std::move(op_builder), subgroups,
-                      {.out_dtype = output_dtype,
-                       .out_dims = subgroups.sizes(),
-                       .op_param_cache_keys = std::move(param_keys)}));
-    TT_THROW_IF_ERROR(
-        AssignBufferToAtTensor(std::move(result_buffer), subgroups));
-    subgroups = subgroups.cpu();
-
-    ABSL_VLOG(1) << "[ProcessGroupTpu::GatherAllSubgroups] "
-                 << "rank: " << getRank() << ", size " << getSize()
-                 << ", subgroups: " << subgroups;
-
-    // Convert from at::Tensor to a non-pytorch type.
-    std::vector<DeviceGroup> result(world_size, DeviceGroup(group_size));
-    auto subgroups_cpu_accessor = subgroups.accessor<int64_t, 2>();
-    for (int i = 0; i < world_size; ++i) {
-      for (int j = 0; j < group_size; ++j) {
-        result[i][j] = subgroups_cpu_accessor[i][j];
-      }
-    }
-
-    return DeviceGroupList(std::move(result));
   });
 }
 

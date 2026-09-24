@@ -103,6 +103,31 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "decode_stepper_coverage_test",
+    srcs = ["decode_stepper_coverage_test.py"],
+    # Resolves model configs from module_registry's weights mirror, which is not
+    # hermetic for TAP.
+    notap = "reads model configs from external storage; run manually",
+    shard_count = 4,
+    tags = [
+        "requires-net:external",
+        "requires-tpu-v5lite",
+    ],
+    deps = [
+        "//examples/benchmarks/e2e/harness:target",
+        "//examples/benchmarks/e2e/harness:torch_device_ops",
+        "//examples/benchmarks/e2e/harness/steps",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//tests:module_registry",
+        "//tests:seed_test_utils",
+        "@pypi//transformers",
+    ],
+)
+
+torch_tpu_py_test(
     name = "target_test",
     srcs = ["target_test.py"],
     deps = [
@@ -132,6 +157,7 @@ torch_tpu_py_test(
     name = "compile_test",
     srcs = ["compile_test.py"],
     deps = [
+        "//examples/benchmarks/e2e:device_utils",
         "//examples/benchmarks/e2e/harness:compile",
         "//examples/benchmarks/e2e/harness:target",
         "//shims/absl_py/testing:absltest",
@@ -198,6 +224,20 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "distributed_llama_test",
+    srcs = ["distributed_llama_test.py"],
+    deps = [
+        "//examples/benchmarks/e2e/harness:context",
+        "//examples/benchmarks/e2e/harness:registry",
+        "//examples/benchmarks/e2e/harness:target",
+        "//examples/benchmarks/e2e/harness/distributed_models:llama",
+        "//shims/absl_py/testing:absltest",
+        "//src/torch_tpu",
         "//tests:seed_test_utils",
     ],
 )

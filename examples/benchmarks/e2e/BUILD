@@ -80,7 +80,6 @@ torch_tpu_py_library(
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/benchmarks:xprof_adapter",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//src/torch_tpu/_internal/execution_mode",
         "//src/torch_tpu/_internal/optim",
         "//tests/distributed:distributed_utils",
@@ -101,7 +100,7 @@ torch_tpu_py_library(
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/distributed:gpu_env",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
+        "//src/torch_tpu/_internal/distributed/launchers:environment",
         "//src/torch_tpu/_internal/utils:log_utils",
     ],
 )
@@ -152,7 +151,6 @@ torch_tpu_py_test(
     linking_mode = "static",
     main = "model_performance_benchmarks.py",
     notap = "Tested on guitar workflow.",
-    notest_oss = "Benchmarks have a separate workflow.",
     shard_count = 50,
     strict = True,
     tags = if_oss(
@@ -167,6 +165,7 @@ torch_tpu_py_test(
         # Needed for getting xprof links
         "requires-net:external",
     ],
+    use_tcmalloc = True,
     deps = [
         ":model_performance_benchmarks_lib",
         "//src/torch_tpu",
@@ -182,38 +181,14 @@ torch_tpu_py_test(
     autoload = False,
     main = "model_performance_benchmarks.py",
     notap = "Tested on guitar workflow.",
-    notest_oss = "Benchmarks have a separate workflow.",
     shard_count = 50,
     strict = True,
     tags = [
         "cpu:4",
+        "nofastbuild",  # Benchmark.
         "requires-accel-hbm",
         "requires-net:external",
         "requires-tpu-v7x",
-    ],
-    deps = [
-        ":model_performance_benchmarks_lib",
-        "//src/torch_tpu",
-        "//tests:seed_test_utils",
-    ],
-)
-
-torch_tpu_py_test(
-    name = "model_performance_benchmarks_xla_cpu",
-    timeout = "eternal",
-    srcs = ["model_performance_benchmarks.py"],
-    args = ["--platform=xla_cpu"],
-    env = {"TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND": "1"},
-    linking_mode = "static",
-    main = "model_performance_benchmarks.py",
-    notap = "Tested on guitar workflow.",
-    notest_oss = "Benchmarks have a separate workflow.",
-    shard_count = 4,
-    strict = True,
-    tags = [
-        "cpu:4",
-        "nofastbuild",  # Benchmark.
-        "requires-net:external",
     ],
     deps = [
         ":model_performance_benchmarks_lib",
@@ -228,11 +203,9 @@ torch_tpu_py_test(
     timeout = "eternal",
     srcs = ["model_performance_benchmarks.py"],
     args = ["--platform=torch_cpu"],
-    env = {"TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND": "1"},
     linking_mode = "static",
     main = "model_performance_benchmarks.py",
     notap = "Tested on guitar workflow.",
-    notest_oss = "Benchmarks have a separate workflow.",
     shard_count = 4,
     strict = True,
     tags = [
@@ -252,8 +225,8 @@ torch_tpu_py_test(
     timeout = "long",
     srcs = ["model_compile_benchmarks.py"],
     main = "model_compile_benchmarks.py",
+    # Cannot run in OSS either: transformers/torch.compile version mismatch.
     notap = "To be tested on guitar workflow.",
-    notest_oss = "transformers version mismatches in oss with torch.compile issues",
     tags = [
         "cpu:4",
         "nofastbuild",  # Measures performance.
@@ -261,6 +234,7 @@ torch_tpu_py_test(
         "requires-net:external",
         "requires-tpu-v7x",
     ],
+    use_tcmalloc = True,
     deps = [
         ":benchmark_utils",
         ":common",
@@ -287,10 +261,10 @@ torch_tpu_py_test(
     linking_mode = "static",
     main = "model_quality_benchmarks.py",
     notap = "Tested on guitar workflow.",
-    notest_oss = "Benchmarks have a separate workflow.",
     shard_count = 4,
     strict = True,
     tags = [
+        "nofastbuild",  # Benchmark.
         # This makes sure that we have enough host RAM to load weights from host to device HBM.
         "requires-accel-hbm",
         "requires-tpu-v7x",
@@ -356,17 +330,18 @@ torch_tpu_py_test(
     srcs = ["layer_performance_benchmarks.py"],
     main = "layer_performance_benchmarks.py",
     notap = "Tested on guitar workflow.",
-    notest_oss = "Benchmarks have a separate workflow.",
     shard_count = 8,
     strict = True,
     tags = [
         "cpu:4",
+        "nofastbuild",  # Benchmark.
         # This makes sure that we have enough host RAM to load weights from host to device HBM.
         "requires-accel-hbm",
         "requires-tpu-v7x",
         # Needed for getting xprof links
         "requires-net:external",
     ],
+    use_tcmalloc = True,
     deps = [
         ":benchmark_function_db",
         ":benchmark_utils",
@@ -409,17 +384,18 @@ torch_tpu_py_test(
     },
     main = "layer_performance_benchmarks.py",
     notap = "Tested on guitar workflow.",
-    notest_oss = "Benchmarks have a separate workflow.",
     platform = "//buildenv/platforms/forge/gpu/b200_full",
     shard_count = 2,
     strict = True,
     tags = [
         "cpu:4",
+        "nofastbuild",  # Benchmark.
         # This makes sure that we have enough host RAM to load weights from host to device HBM.
         "requires-accel-hbm",
         # Needed for getting xprof links
         "requires-net:external",
     ],
+    use_tcmalloc = True,
     deps = [
         ":benchmark_function_db",
         ":benchmark_utils",
@@ -447,11 +423,11 @@ torch_tpu_py_test(
     autoload = False,
     main = "layer_performance_benchmarks.py",
     notap = "Tested on guitar workflow.",
-    notest_oss = "Benchmarks have a separate workflow.",
     shard_count = 9,
     strict = True,
     tags = [
         "cpu:4",
+        "nofastbuild",  # Benchmark.
         "requires-accel-hbm",
         "requires-net:external",
         "requires-tpu-v7x",
@@ -483,15 +459,16 @@ torch_tpu_py_test(
     linking_mode = "static",
     main = "model_performance_benchmarks.py",
     notap = "Tested on guitar workflow.",
-    notest_oss = "Benchmarks have a separate workflow.",
     tags = [
         "cpu:4",
+        "nofastbuild",  # Benchmark.
         # This makes sure that we have enough host RAM to load weights from host to device HBM.
         "requires-accel-hbm",
         "requires-tpu-v7x:4",
         # Needed for getting xprof links
         "requires-net:external",
     ],
+    use_tcmalloc = True,
     deps = [
         ":model_performance_benchmarks_lib",
         "//src/torch_tpu",
@@ -510,7 +487,6 @@ torch_tpu_py_test(
     },
     main = "model_performance_benchmarks.py",
     notap = "Frequently causes Forge OOM.",
-    notest_oss = "Benchmarks have a separate workflow.",
     platform = "//buildenv/platforms/forge/gpu/b200_full",
     shard_count = 2,
     tags = [
@@ -519,6 +495,7 @@ torch_tpu_py_test(
         "requires-accel-hbm",
         "requires-net:external",
     ],
+    use_tcmalloc = True,
     deps = [
         ":model_performance_benchmarks_lib",
         "//src/torch_tpu",
@@ -530,10 +507,13 @@ torch_tpu_py_library(
     name = "single_trace_trainer_adapter",
     srcs = ["single_trace_trainer_adapter.py"],
     deps = [
-        "//examples/tracing:optimizers",
-        "//examples/tracing:single_trace_trainer",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/compile:compiler",
+        "//src/torch_tpu/extras/optimizers:adamw",
+        "//src/torch_tpu/extras/optimizers:muon",
+        "//src/torch_tpu/extras/optimizers:optim",
+        "//src/torch_tpu/extras/optimizers:sgd",
+        "//src/torch_tpu/extras/optimizers:single_trace_trainer",
     ],
 )
 
@@ -542,7 +522,7 @@ torch_tpu_py_test(
     srcs = ["single_trace_trainer_adapter_test.py"],
     main = "single_trace_trainer_adapter_test.py",
     nopresubmit = "slow example",
-    notest_oss = "slow example",
+    notest_oss = True,  # slow example
     tags = [
         "requires-accel-hbm",
         "requires-net:external",
@@ -564,8 +544,8 @@ torch_tpu_py_library(
     deps = [
         ":common",
         ":single_trace_trainer_adapter",
-        "//examples/tracing:optimizers",
         "//shims/torch:pytorch",
+        "//src/torch_tpu/extras/optimizers:adamw",
     ],
 )
 
@@ -614,7 +594,7 @@ torch_tpu_py_test(
     name = "device_utils_test",
     srcs = ["device_utils_test.py"],
     args = ["--torch_tpu_internal_enable_compilation_container=true"],
-    notest_oss = "Flags don't work in OSS.",
+    notest_oss = True,  # Flags don't work in OSS.
     tags = [
         "requires-tpu-v5lite",
     ],
@@ -635,7 +615,6 @@ torch_tpu_py_test(
     args = ["--bounded_dynamic=True"],
     main = "layer_performance_benchmarks.py",
     notap = "disabled until dynamic shape support is added.",
-    notest_oss = "disabled until dynamic shape support is added",
     shard_count = 50,
     strict = True,
     tags = [
@@ -664,10 +643,12 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "model_utils_test",
     srcs = ["model_utils_test.py"],
-    env = {"TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND": "1"},
     deps = [
+        ":benchmark_function_db",
+        ":common",
         ":model_utils",
         "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:flagsaver",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//tests:seed_test_utils",
@@ -685,7 +666,6 @@ torch_tpu_py_library(
 torch_tpu_py_test(
     name = "mamba3_test",
     srcs = ["mamba3_test.py"],
-    env = {"TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND": "1"},
     deps = [
         ":mamba3",
         "//shims/absl_py/testing:absltest",

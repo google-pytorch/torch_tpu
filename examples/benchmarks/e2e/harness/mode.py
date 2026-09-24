@@ -18,6 +18,7 @@ import contextlib
 import enum
 from typing import Iterator
 
+import torch
 from examples.benchmarks.e2e import common
 from examples.benchmarks.e2e.harness import target as target_lib
 
@@ -105,6 +106,8 @@ def run_mode_context(
   # catch invalid values.
   run_mode = common.RunMode(run_mode)
   if target.device_kind is not target_lib.DeviceKind.TPU:
+    if target.device_kind is target_lib.DeviceKind.CUDA:
+      torch.set_float32_matmul_precision("high")
     yield
     return
 

@@ -15,7 +15,6 @@
 """A test runner for the tensor parallel example."""
 
 import torch.multiprocessing as mp
-from torch_tpu._internal.distributed.launchers import multihost_wrapper
 from examples.distributed.tensor_parallel.manual import tp_worker
 from torch_tpu._internal.distributed import multiprocessing
 from tests.distributed import distributed_utils
@@ -23,7 +22,6 @@ from tests.distributed import distributed_utils
 
 def main(_):
   world_size = 8
-  multihost_wrapper.prepare_tpu_environment()
   distributed_utils.dist_run(world_size, tp_worker.worker_fn)
 
 

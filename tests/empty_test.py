@@ -33,32 +33,36 @@ class EmptyTest(seed_test_utils.RepeatableTest):
 
   def setUp(self):
     super().setUp()
-    blocking_mode = execution_mode.EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
-    execution_mode.set_eager_mode(blocking_mode)
+    self.blocking_mode = (
+        execution_mode.EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
+    )
 
   def test_explicit_materialization(self):
     """Tests that empty tensors are materialized when explicitly requested."""
-    empty = torch.empty(128, device="tpu")
+    with execution_mode.set_eager_mode(self.blocking_mode):
+      empty = torch.empty(128, device="tpu")
     self.assertFalse(is_materialized_or_materializing(empty))
     sync.synchronize(empty)
     self.assertTrue(is_materialized_or_materializing(empty))
 
   def test_not_implicitly_materialized(self):
     """Tests that empty tensors are not materialized unless explicitly requested."""
-    empty = torch.empty(128, device="tpu")
-    empty_plus_one = empty + 1
+    with execution_mode.set_eager_mode(self.blocking_mode):
+      empty = torch.empty(128, device="tpu")
+      empty_plus_one = empty + 1
     self.assertFalse(is_materialized_or_materializing(empty))
     self.assertTrue(is_materialized_or_materializing(empty_plus_one))
 
   def test_empty_view_not_implicitly_materialized(self):
     """Tests that transitive views of empty tensors are not materialized."""
-    empty = torch.empty(128, device="tpu")
-
-    empty_view = empty.view(2, 64)
+    with execution_mode.set_eager_mode(self.blocking_mode):
+      empty = torch.empty(128, device="tpu")
+      empty_view = empty.view(2, 64)
     self.assertFalse(is_materialized_or_materializing(empty))
     self.assertFalse(is_materialized_or_materializing(empty_view))
 
-    empty_view_plus_one = empty_view + 1
+    with execution_mode.set_eager_mode(self.blocking_mode):
+      empty_view_plus_one = empty_view + 1
     self.assertFalse(is_materialized_or_materializing(empty))
     self.assertFalse(is_materialized_or_materializing(empty_view))
     self.assertTrue(is_materialized_or_materializing(empty_view_plus_one))
@@ -68,8 +72,9 @@ class EmptyTest(seed_test_utils.RepeatableTest):
 
     This is to test that the empty tensor is not materialized.
     """
-    empty = torch.empty(128, device="tpu")
-    empty[0:64] = 1
+    with execution_mode.set_eager_mode(self.blocking_mode):
+      empty = torch.empty(128, device="tpu")
+      empty[0:64] = 1
     self.assertFalse(is_materialized_or_materializing(empty))
     mlir_str = sync.computation_mlir([empty])
     # Check it returns only a single result, i.e. not the empty tensor.

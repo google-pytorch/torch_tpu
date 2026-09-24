@@ -62,18 +62,20 @@ at::Tensor AtenTrilIndices(int64_t row, int64_t col, int64_t offset,
   TT_KERNEL(
       OpName::kTrilIndices, param_keys,
       (row, col, offset, dtype_opt, layout_opt, device_opt, pin_memory_opt), {
-        at::ScalarType dtype = dtype_opt.value_or(at::ScalarType::Long);
-
-        // PyTorch native devices (CPU and CUDA) only support int32 and int64.
-        TT_CHECK_THROW(
-            dtype == at::ScalarType::Long || dtype == at::ScalarType::Int,
-            error::kInvalidArgument)
-            << "expected the dtype to be either int32 or int64, got "
-            << ToString(dtype);
+        const at::ScalarType dtype = dtype_opt.value_or(at::ScalarType::Long);
 
         at::native::check_args(row, col, layout_opt);
 
-        int64_t tril_size = at::native::get_tril_size(row, col, offset);
+        const int64_t tril_size = at::native::get_tril_size(row, col, offset);
+        if (tril_size > 0) {
+          // PyTorch CUDA only dispatches int32 and int64 when tril_size > 0;
+          // zero-size outputs bypass kernel dispatch on CUDA.
+          TT_CHECK_THROW(
+              dtype == at::ScalarType::Int || dtype == at::ScalarType::Long,
+              error::kInvalidArgument)
+              << "expected the dtype to be either int32 or int64, got "
+              << ToString(dtype);
+        }
         TT_ASSIGN_OR_THROW(
             auto builder,
             GetTrilIndicesFunctional(row, col, offset, tril_size, dtype));

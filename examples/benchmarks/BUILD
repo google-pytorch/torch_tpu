@@ -39,8 +39,10 @@ torch_tpu_py_test(
     strict = True,
     tags = [
         "cpu:4",  # For CUDA, the only choices are 1 or 4.
+        "nofastbuild",  # Benchmark.
         "requires-net:external",
     ],
+    use_tcmalloc = True,
     deps = [
         "//shims/absl_py/flags",
         "//shims/absl_py/logging",
@@ -70,9 +72,11 @@ torch_tpu_py_test(
     strict = True,
     tags = [
         "cpu:4",  # Matches the CUDA version of the test for a fair comparison.
+        "nofastbuild",  # Benchmark.
         "requires-net:external",
         "requires-tpu-v7x",
     ],
+    use_tcmalloc = True,
     deps = [
         "//shims/absl_py/flags",
         "//shims/absl_py/logging",

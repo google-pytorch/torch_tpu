@@ -44,7 +44,6 @@
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/unique_file_descriptor.h"
-#include "csrc/pjrt/pjrt_state.h"
 
 namespace torch_tpu {
 
@@ -75,24 +74,18 @@ const std::string& GetTier2CacheName() {
         return std::string(kDefaultCacheName);
       }
       // Decide whether to use the tier-2 cache based on the world size.
-      const auto world_size_or =
-          PjrtBackend::GetInstance().GetGlobalDeviceCount();
-      if (world_size_or.ok()) {
-        if (*world_size_or <= 1) {
-          ABSL_LOG(INFO) << "Tier-2 compilation cache is disabled for world "
-                            "size 1.";
-          return std::string();
-        } else {
-          ABSL_LOG(INFO) << "Tier-2 compilation cache is enabled with name '"
-                         << kDefaultCacheName << "' for world size "
-                         << *world_size_or << ".";
-          return std::string(kDefaultCacheName);
-        }
+      const int world_size =
+          GetRequiredIntegerEnvOnce<int, kWorldSizeEnvVar>().value_or(1);
+      if (world_size <= 1) {
+        ABSL_LOG(INFO) << "Tier-2 compilation cache is disabled for world "
+                          "size 1.";
+        return std::string();
+      } else {
+        ABSL_LOG(INFO) << "Tier-2 compilation cache is enabled with name '"
+                       << kDefaultCacheName << "' for world size " << world_size
+                       << ".";
+        return std::string(kDefaultCacheName);
       }
-      ABSL_LOG(INFO) << "Tier-2 compilation cache is disabled because we could "
-                        "not get the world size: "
-                     << world_size_or.status();
-      return std::string();
     }
     if (*tier2_cache == kDisabledCacheNameInEnvVar) {
       ABSL_LOG(INFO) << "Tier-2 compilation cache is disabled as requested by "

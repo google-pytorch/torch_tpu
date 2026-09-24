@@ -20,6 +20,28 @@ import torch
 from torch_tpu._internal.distributed import collective_ops
 
 
+def _is_collective_or_wait(node: torch.fx.Node) -> bool:
+  """Returns True if the node is a collective or a wait_tensor."""
+  if node.op != "call_function":
+    return False
+  maybe_collective = getattr(node.target, "overloadpacket", None)
+  return (
+      maybe_collective in collective_ops.COLLECTIVE_OPS
+      or maybe_collective == torch.ops._c10d_functional.wait_tensor  # pylint: disable=protected-access
+  )
+
+
+def _mark_live(node: torch.fx.Node, live: set[torch.fx.Node]) -> None:
+  """Adds the node and everything it transitively depends on to `live`."""
+  stack = [node]
+  while stack:
+    current = stack.pop()
+    if current in live:
+      continue
+    live.add(current)
+    stack.extend(current.all_input_nodes)
+
+
 def apply(gm: torch.fx.GraphModule) -> None:
   """Forces all is_collective submodules to output their collective results."""
   # Filter to only call_module nodes with a submodule target.
@@ -27,33 +49,6 @@ def apply(gm: torch.fx.GraphModule) -> None:
     submod = getattr(gm, call_submodule_node.target)
     if not isinstance(submod, torch.fx.GraphModule):
       continue
-
-    # Keep track of nodes that must be outputs.
-    # Every collective and wait_tensor will be inserted to the list and set
-    # initially, and then we'll remove already-forced nodes later.
-    forced_nodes_set = set()
-    forced_nodes_list = []
-
-    # Get all of the collective ops and wait ops.
-    # Find all nodes with "overloadpacket"; torch uses this to switch between
-    # implementations, like "all_reduce_default" may have an overloadpacket of
-    # all_reduce, all_reduce_, all_reduce_coalesced, or all_reduce_coalesced_.
-    for node in submod.graph.nodes:
-      if node.op != "call_function":
-        continue
-      maybe_collective = getattr(node.target, "overloadpacket", None)
-      if maybe_collective in collective_ops.COLLECTIVE_OPS:
-        # All collectives must be outputs unless used by a wait_tensor.
-        forced_nodes_set.add(node)
-        forced_nodes_list.append(node)
-      elif maybe_collective == torch.ops._c10d_functional.wait_tensor:  # pylint: disable=protected-access
-        # All wait_tensors must be outputs.
-        forced_nodes_set.add(node)
-        forced_nodes_list.append(node)
-        for wait_arg in node.args:
-          # If a wait_tensor node uses a collective, we don't need to force the
-          # collective to be an output directly.
-          forced_nodes_set.discard(wait_arg)
 
     # Get the original outputs (arguments to the output node).
     output_node = submod.graph.find_nodes(op="output")[0]
@@ -63,20 +58,29 @@ def apply(gm: torch.fx.GraphModule) -> None:
     else:
       existing_outputs, was_tuple = [output_arg], False
 
-    # Don't need to force anything that was already an existing output.
-    for e in existing_outputs:
-      forced_nodes_set.discard(e)
+    # A node is live if it (transitively) feeds an existing output.
+    live = set()
+    for existing_output in existing_outputs:
+      if isinstance(existing_output, torch.fx.Node):
+        _mark_live(existing_output, live)
 
-    if not forced_nodes_set:
-      # No new collectives or wait_tensors to promote to outputs.
+    # Walk the graph backwards so that forcing a node also keeps every
+    # collective it depends on alive. This way a chain of dead collectives only
+    # needs its last node to be returned.
+    forced_nodes = []
+    for node in reversed(submod.graph.nodes):
+      if node in live or not _is_collective_or_wait(node):
+        continue
+      forced_nodes.append(node)
+      _mark_live(node, live)
+
+    if not forced_nodes:
+      # Every collective and wait_tensor already reaches an output.
       # No changes needed to this submodule.
       continue
 
-    # Filter down to the nodes that need to be additional outputs.
-    # Append the new outputs to the existing outputs.
-    new_outputs = existing_outputs + [
-        sn for sn in forced_nodes_list if sn in forced_nodes_set
-    ]
+    # Append the new outputs to the existing outputs, in graph order.
+    new_outputs = existing_outputs + forced_nodes[::-1]
     # We always want to output a tuple here:
     #   - If the original output node had no outputs, it would have been an
     #     empty tuple; we replace this with a non-empty tuple.

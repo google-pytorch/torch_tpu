@@ -97,6 +97,15 @@ absl::Status CopyTpuToTpu(const at::Tensor& src, const at::Tensor& dest) {
   if (src.sizes() == dest.sizes() && src.dtype() == dest.dtype()) {
     // Shape and type match, can simply reuse the existing DeviceBufferRef
     // from src for dest.
+    //
+    // If both src and dest are pure reinterpretations of all the bytes of
+    // src's base buffer, dest can share src's base buffer directly, regardless
+    // of its element type.
+    TT_ASSIGN_OR_RETURN(DeviceBufferRef src_base_buf, GetBaseBuffer(src));
+    if (IsFullStorageReinterpretView(src, src_base_buf) &&
+        IsFullStorageReinterpretView(dest, src_base_buf)) {
+      return AssignBufferAsStorageBase(std::move(src_base_buf), dest);
+    }
     TT_ASSIGN_OR_RETURN(const DeviceBufferRef src_buf, GetBuffer(src));
     return AssignBufferToAtTensor(src_buf, dest);
   }
@@ -158,7 +167,7 @@ absl::Status CopyTpuToTpu(const at::Tensor& src, const at::Tensor& dest) {
                     {.out_dtype = out_dtype,
                      .out_dims = out_dims,
                      .op_param_cache_keys = OpParamCacheKeys::Empty()}),
-      _.SetPrepend() << "copy from 'tpu' to 'tpu' device failed with: ");
+      _.SetPrepend() << "failed to copy from 'tpu' to 'tpu' device: ");
   return AssignBufferToAtTensor(new_buf, dest);
 }
 

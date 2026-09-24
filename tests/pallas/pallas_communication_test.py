@@ -25,7 +25,6 @@ import torch
 from torch import distributed as dist
 import torch.multiprocessing as mp
 from torch_tpu._internal import pallas
-from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
@@ -184,7 +183,7 @@ def _run_1d_logical(do_compile):
 
 
 def jax_1d_mesh_kernel(
-    global_input: jax.Array, mesh: pallas.PallasMesh
+    global_input: jax.Array, mesh: jax.sharding.Mesh
 ) -> jax.Array:
   """1D kernel using DeviceIdType.MESH addressing along 'rank' axis."""
 
@@ -260,7 +259,7 @@ def _run_1d_mesh(do_compile):
 
   num_per_rank = 8
   mesh = pallas.get_default_pallas_mesh()
-  assert isinstance(mesh, pallas.PallasMesh)
+  assert isinstance(mesh, jax.sharding.Mesh)
 
   def generate_input(r, num_per_rank):
     return torch.tensor(
@@ -302,7 +301,7 @@ def _run_1d_mesh(do_compile):
 
 
 def jax_2d_rank_dp_mesh_kernel(
-    global_input: jax.Array, mesh: pallas.PallasMesh
+    global_input: jax.Array, mesh: jax.sharding.Mesh
 ) -> jax.Array:
   """2D kernel using DeviceIdType.MESH addressing along 'dp' axis in ('rank', 'dp') mesh."""
 
@@ -384,7 +383,7 @@ def _run_2d_rank_dp_mesh(do_compile):
 
   # Create 2D mesh: ('rank', 'dp') with shape (2, 4), spanning world_size 8.
   mesh = pallas.get_pallas_mesh(axis_names=("rank", "dp"), mesh_shape=(2, 4))
-  assert isinstance(mesh, pallas.PallasMesh)
+  assert isinstance(mesh, jax.sharding.Mesh)
 
   def generate_input(r, num_per_rank):
     return torch.tensor(
@@ -441,7 +440,7 @@ def _run_combined_collective_and_pallas(do_compile: bool = True):
 
   # Create rank-aligned Mesh directly from the default world group.
   mesh = pallas.get_default_pallas_mesh()
-  assert isinstance(mesh, pallas.PallasMesh)
+  assert isinstance(mesh, jax.sharding.Mesh)
 
   def generate_input(r, num_per_rank):
     return torch.tensor(
@@ -542,80 +541,55 @@ class TestPallasCommunicationKernels(
   def test_1d_logical_kernel_communication_eager(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            functools.partial(_run_1d_logical, False),
-            world_size=self._world_size,
-        ),
+        fn=functools.partial(_run_1d_logical, False),
     )
 
   def test_1d_logical_kernel_communication_compiled(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            functools.partial(_run_1d_logical, True),
-            world_size=self._world_size,
-        ),
+        fn=functools.partial(_run_1d_logical, True),
     )
 
   def test_1d_mesh_kernel_communication_eager(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            functools.partial(_run_1d_mesh, False), world_size=self._world_size
-        ),
+        fn=functools.partial(_run_1d_mesh, False),
     )
 
   def test_1d_mesh_kernel_communication_compiled(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            functools.partial(_run_1d_mesh, True), world_size=self._world_size
-        ),
+        fn=functools.partial(_run_1d_mesh, True),
     )
 
   def test_2d_rank_dp_mesh_kernel_communication_eager(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            functools.partial(_run_2d_rank_dp_mesh, False),
-            world_size=self._world_size,
-        ),
+        fn=functools.partial(_run_2d_rank_dp_mesh, False),
     )
 
   def test_2d_rank_dp_mesh_kernel_communication_compiled(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            functools.partial(_run_2d_rank_dp_mesh, True),
-            world_size=self._world_size,
-        ),
+        fn=functools.partial(_run_2d_rank_dp_mesh, True),
     )
 
   def test_combined_collective_and_pallas_eager(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            functools.partial(_run_combined_collective_and_pallas, False),
-            world_size=self._world_size,
-        ),
+        fn=functools.partial(_run_combined_collective_and_pallas, False),
     )
 
   def test_combined_collective_and_pallas_compiled(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            functools.partial(_run_combined_collective_and_pallas, True),
-            world_size=self._world_size,
-        ),
+        fn=functools.partial(_run_combined_collective_and_pallas, True),
     )
 
   def test_pallas_axis_index_rank_equivalence(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            _test_pallas_axis_index_rank_equivalence,
-            world_size=self._world_size,
-        ),
+        fn=_test_pallas_axis_index_rank_equivalence,
     )
 
 

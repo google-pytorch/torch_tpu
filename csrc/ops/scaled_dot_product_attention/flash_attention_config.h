@@ -43,6 +43,7 @@ struct FlashAttnConfig {
   // Whether to return LSE (m and l) tensors.
   bool return_lse;
   bool has_attn_bias;
+  float dropout_rate = 0.0f;
 };
 
 struct Tiling {

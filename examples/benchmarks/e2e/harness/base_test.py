@@ -37,8 +37,8 @@ IPC protocol:
 Why forkserver rather than subprocess or the other start methods:
   1. fork is unsafe once multithreaded C++ runtimes (CUDA, gRPC, logging)
      are loaded: the child deadlocks or crashes.
-  2. spawn (and the resource_tracker thread a Queue starts) fails in
-     self-contained Bazel .par binaries, where sys.executable is None.
+  2. spawn re-execs the binary per case, which costs a full interpreter start
+     and a re-import of torch for every benchmark. forkserver pays that once.
   3. subprocess.run cannot hand a bound (parameterized) test method to the
      child; re-running the same method by name in the child via pickling the
      TestCase class does that without serializing the method's arguments.
@@ -108,6 +108,9 @@ def _run_in_child(
   """
   try:
     flags.FLAGS(list(argv), known_only=True)
+    # Enable logging to stderr in the child process. This is the same as the
+    # default behavior in the parent process.
+    flags.FLAGS.set_default("alsologtostderr", True)
     logging.use_absl_handler()
 
     instance = cls(method_name)

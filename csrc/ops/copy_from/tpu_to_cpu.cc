@@ -32,9 +32,10 @@
 #include "csrc/common/status_builder.h"
 #include "csrc/common/to_string.h"
 #include "csrc/eager/device_buffer.h"
+#include "csrc/eager/materialize.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
-#include "csrc/pjrt/pjrt_utils.h"
+#include "csrc/pjrt/pjrt_transfer.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch/headeronly/core/ScalarType.h"
 #include "tsl/profiler/lib/traceme.h"
@@ -65,8 +66,7 @@ static absl::Status TranslateXlaTensorOomError(absl::Status status,
       << status.message();
 
   // From this point, we know that the given status is not an XLA OOM error.
-  return StatusBuilder(std::move(status)).SetPrepend()
-         << "transfer to 'cpu' device failed with: ";
+  return status;
 }
 
 }  // namespace
@@ -85,16 +85,41 @@ absl::Status CopyTpuToCpu(const at::Tensor& src, const at::Tensor& dest,
     return absl::OkStatus();
   }
 
+  // Fast path: if src is a pure reinterpretation of all the bytes of its base
+  // buffer, DMA the base buffer directly.
+  TT_ASSIGN_OR_RETURN(const DeviceBufferRef base_buf, GetBaseBuffer(src));
+  if (dest.is_contiguous() && dest.scalar_type() == src.scalar_type() &&
+      IsFullStorageReinterpretView(src, base_buf) &&
+      dest.nbytes() == base_buf.size_bytes()) {
+    {
+      tsl::profiler::TraceMe trace_mat("CopyTpuToCpu::MaterializeBase");
+      TT_RETURN_IF_ERROR(TranslateXlaTensorOomError(
+          Materialize(base_buf, MaterializationReason::kCpuTransfer),
+          dest.scalar_type(), src.sizes()));
+    }
+    absl::Status status =
+        TpuMemcpyDtoHDirect(base_buf, dest.data_ptr(), non_blocking);
+    TT_RETURN_IF_ERROR(TranslateXlaTensorOomError(
+        std::move(status), dest.scalar_type(), src.sizes()));
+    return absl::OkStatus();
+  }
+
   // Materialize if deferred, no-op if already materialized.
   // If src is a view, this will materialize both the base buffer and the
   // ephemeral view buffer.
   TT_ASSIGN_OR_RETURN(const DeviceBufferRef materialized_src_buf, [&]() {
     tsl::profiler::TraceMe trace_mat("CopyTpuToCpu::MaterializeAndReturn");
-    return MaterializeAndReturn(src, MaterializationReason::kCpuTransfer);
+    const auto block_mode =
+        (non_blocking ? MaterializationBlockMode::kNonBlocking
+                      : MaterializationBlockMode::kBlockUntilStarted);
+    return MaterializeAndReturn(src, MaterializationReason::kCpuTransfer,
+                                block_mode);
   }());
 
-  ABSL_CHECK(materialized_src_buf.is_materializing())  // CRASH_OK
-      << "expected materialized buffer after MaterializeAndReturn";
+  if (!non_blocking) {
+    ABSL_CHECK(materialized_src_buf.is_materializing())  // CRASH_OK
+        << "expected materialized buffer after blocking MaterializeAndReturn";
+  }
 
   // Fast path: if the destination tensor is fully allocated, contiguous, and
   // has the exact same size and dtype as the source, we can copy directly

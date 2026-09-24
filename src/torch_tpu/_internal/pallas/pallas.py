@@ -33,6 +33,7 @@ from torch._library.custom_ops import CustomOpDef
 import torch.distributed as dist
 import torch.library
 from torch_tpu._internal.device import _device_ops_backend
+from torch_tpu._internal.distributed import device_mesh
 from torch_tpu._internal.pallas import _compat
 from torch_tpu._internal.pallas import tpu_torch_pallas
 from torch_tpu._internal.pallas._mock_device import _PallasDevice
@@ -106,29 +107,9 @@ TORCH_TO_JAX_DTYPE_MAP = frozendict.frozendict({
 JAX_TO_TORCH_DTYPE_MAP = {v: k for k, v in TORCH_TO_JAX_DTYPE_MAP.items()}
 
 
-class PallasMesh(jax.sharding.Mesh):
-  """A JAX Mesh whose devices are ordered strictly by PyTorch rank."""
-
-  @staticmethod
-  def _create(flat_devices_tuple, device_shape, axis_names, axis_types, size):
-    devices = np.array(flat_devices_tuple).reshape(device_shape)
-    devices.flags.writeable = False
-    obj = object.__new__(PallasMesh)
-    object.__setattr__(obj, "devices", devices)
-    object.__setattr__(obj, "axis_names", axis_names)
-    object.__setattr__(obj, "axis_types", axis_types)
-    object.__setattr__(obj, "size", size)
-    return obj
-
-  @property
-  def ranks(self) -> tuple[int, ...]:
-    return tuple(range(self.size))
-
-
 # PEP 8 requires this to be a list of strings, not a tuple or a list of objects.
 __all__ = [
     # go/keep-sorted start
-    "PallasMesh",
     "custom_jax_kernel",
     "get_default_pallas_mesh",
     "get_pallas_mesh",
@@ -752,12 +733,17 @@ class JaxCallable:
         if arg is not None and i not in self.static_argnums
     ]
 
+    device_assignment: list[int] = []
+    if self.mesh is not None:
+      device_assignment = [int(d.id) for d in self.mesh.devices.flat]
+
     results = tpu_torch_pallas.call_custom_kernel(
         self.name,
         mlir_fingerprint,
         inputs=tensor_args,
         output_shapes=output_shapes,
         donate_argnums=self.donate_argnums,
+        device_assignment=device_assignment,
     )
 
     for in_idx, out_idx in self.input_output_aliases.items():
@@ -1048,14 +1034,15 @@ def jax_op(
 def get_pallas_mesh(
     axis_names: Sequence[str] | str,
     mesh_shape: Sequence[int] | None = None,
-) -> PallasMesh:
+    process_group: dist.ProcessGroup | None = None,
+) -> jax.sharding.Mesh:
   """Constructs a rank-aligned JAX Mesh using TPU runtime device metadata."""
   if not dist.is_initialized():
     raise RuntimeError(
         "torch.distributed is not initialized. dist.init_process_group()"
     )
 
-  world_size = dist.get_world_size()
+  world_size = dist.get_world_size(process_group)
 
   if mesh_shape is not None:
     if math.prod(mesh_shape) != world_size:
@@ -1076,8 +1063,14 @@ def get_pallas_mesh(
   attrs = _device_ops_backend._get_local_device_attributes()
   dev_name = attrs.get("device_kind")
 
+  pg_devs = device_mesh.get_device_assignment(process_group)
+
   devices = [
-      _PallasDevice(id=i, process_index=i, device_kind=dev_name)
+      _PallasDevice(
+          id=pg_devs[i] if (pg_devs and i < len(pg_devs)) else i,
+          process_index=i,
+          device_kind=dev_name,
+      )
       for i in range(world_size)
   ]
 
@@ -1086,9 +1079,13 @@ def get_pallas_mesh(
   else:
     mesh_devices = np.array(devices)
 
-  return PallasMesh(mesh_devices, axis_names=axis_names)
+  return jax.sharding.Mesh(mesh_devices, axis_names=axis_names)
 
 
-def get_default_pallas_mesh() -> PallasMesh:
+def get_default_pallas_mesh(
+    process_group: dist.ProcessGroup | None = None,
+) -> jax.sharding.Mesh:
   """Constructs default 1D world rank-aligned JAX Mesh with axis ('rank',)."""
-  return get_pallas_mesh(axis_names=("rank",), mesh_shape=None)
+  return get_pallas_mesh(
+      axis_names=("rank",), mesh_shape=None, process_group=process_group
+  )

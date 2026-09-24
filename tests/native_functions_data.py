@@ -427,9 +427,10 @@ REGISTRATION_OVERRIDES = frozenset([
     '_thnn_fused_gru_cell.out',
     '_thnn_fused_lstm_cell.out',
     '_to_copy',
-    # avg_pool1d is registered to provide a direct 1D pooling lowering on TPU,
-    # overriding the default PyTorch decomposition.
+    # avg_pool1d and avg_pool1d.out are registered to provide a direct 1D
+    # pooling lowering on TPU, overriding the default PyTorch decomposition.
     'avg_pool1d',
+    'avg_pool1d.out',
     # constant_pad_nd is registered to lower directly to StableHLO Concatenate
     # instead of empty + fill_ + slice.copy_ (DynamicUpdateSlice).
     'constant_pad_nd',
@@ -454,6 +455,18 @@ REGISTRATION_OVERRIDES = frozenset([
     'embedding.out',
     'embedding_backward',
     'embedding_sparse_backward',
+    # TODO: b/518595804 - PyTorch's promote_type_fft omits
+    # device.is_privateuseone() from maybe_support_half.
+    # Register FFT ops to allow manually casting BF16 to F32, so that
+    # NotImplementedError is not thrown.
+    'fft_fft',
+    'fft_fft.out',
+    'fft_ifft',
+    'fft_ifft.out',
+    'fft_irfft',
+    'fft_irfft.out',
+    'fft_rfft',
+    'fft_rfft.out',
     'gather',
     # Gelu is registered to handle type promotion for integer and boolean
     # inputs to match PyTorch GPU behavior for functional calls.

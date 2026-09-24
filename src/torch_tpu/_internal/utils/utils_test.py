@@ -86,7 +86,7 @@ class AllTest(seed_test_utils.RepeatableTest):
 
   def setUp(self):
     super().setUp()
-    self.device = torch.device("xla_cpu")
+    self.device = torch.device("tpu")
 
   def test_compare_strict_mode(self):
     t_tpu = torch.arange(8).reshape((4, 2)).to(torch.float32)
@@ -798,6 +798,9 @@ class AllTest(seed_test_utils.RepeatableTest):
         utils.get_primary_tensor_output({"aux_loss": loss_t, "output": t}), t
     )
     self.assertIs(utils.get_primary_tensor_output({"logits": t}), t)
+    self.assertIs(utils.get_primary_tensor_output({"prediction_scores": t}), t)
+    self.assertIs(utils.get_primary_tensor_output({"scores": t}), t)
+    self.assertIs(utils.get_primary_tensor_output({"token_logits": t}), t)
     self.assertIs(utils.get_primary_tensor_output({"waveform": t}), t)
     self.assertIs(utils.get_primary_tensor_output({"audio": t}), t)
     self.assertIs(utils.get_primary_tensor_output({"sequences": t}), t)

@@ -20,7 +20,6 @@ from absl.testing import absltest
 import torch
 from torch import distributed as dist
 import torch.multiprocessing as mp
-from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
@@ -97,14 +96,14 @@ class RaggedDotDistributedTest(seed_test_utils.MultiProcessRepeatableTest):
   def test_ragged_dot_independent_eager(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(run_ragged_dot_local_test),
+        fn=run_ragged_dot_local_test,
         compile_test=False,
     )
 
   def test_ragged_dot_independent_compiled(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(run_ragged_dot_local_test),
+        fn=run_ragged_dot_local_test,
         compile_test=True,
     )
 

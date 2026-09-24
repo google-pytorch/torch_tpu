@@ -39,14 +39,13 @@ from torch_tpu._internal.utils import utils
 from tests import seed_test_utils
 
 EagerMode: TypeAlias = execution_mode.EagerMode
-_EagerMode: TypeAlias = execution_mode._EagerMode
 
 
 def _is_deferred_mode():
   return execution_mode.eager_mode in (
       EagerMode.DEFER_AND_FUSE,
-      _EagerMode.INTERNAL_DEFER_ALL,
-      _EagerMode.INTERNAL_COMPILE_FX_GRAPH,
+      EagerMode.INTERNAL_DEFER_ALL,
+      EagerMode.INTERNAL_COMPILE_FX_GRAPH,
   )
 
 
@@ -998,8 +997,7 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
     # Check that it successfully reaches XLA and raises an error.
     with self.assertRaisesRegex(
         RuntimeError,
-        "transfer to 'cpu' device failed with: failed to compile MLIR module --"
-        " the XLA compiler failed with: .*test_custom_call.*",
+        expected_regex="""failed to compile MLIR module -- the XLA compiler failed with: custom emitter for test_custom_call not found""",
     ):
       x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
       y = custom_call_op(x)
@@ -1219,6 +1217,21 @@ class TestPallasCompat(seed_test_utils.RepeatableTest):
         self.assertEqual(str(w[0].message), "test message")
         self.assertIn("pallas_test.py", w[0].filename)
 
+  def test_pallas_jax_op_stablehlo(self):
+    def inc_kernel(x_ref, o_ref):
+      o_ref[...] = x_ref[...] + 1.0
+
+    def jax_fn(x: jax.Array) -> jax.Array:
+      return pl.pallas_call(
+          inc_kernel, out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype)
+      )(x)
+
+    op = pallas.jax_op("test::pallas_inc", jax_fn)
+
+    x = torch.ones(128, dtype=torch.bfloat16, device="tpu")
+    out = op(x)
+    test_utils.assert_close(out, x + 1.0)
+
   def test_fp4_pallas(self):
 
     # Check hardware support
@@ -1401,10 +1414,9 @@ class TestPallasMesh(seed_test_utils.RepeatableTest):
         dist, "is_initialized", return_value=True
     ), mock.patch.object(dist, "get_world_size", return_value=2):
       mesh = pallas.get_default_pallas_mesh()
-      self.assertIsInstance(mesh, pallas.PallasMesh)
+      self.assertIsInstance(mesh, jax.sharding.Mesh)
       self.assertEqual(mesh.devices.flat[0].id, 0)
       self.assertEqual(mesh.devices.flat[1].id, 1)
-      self.assertEqual(mesh.ranks, (0, 1))
       self.assertEqual(mesh.axis_names, ("rank",))
 
   def test_get_pallas_mesh_1d_model_mesh(self):
@@ -1412,7 +1424,7 @@ class TestPallasMesh(seed_test_utils.RepeatableTest):
         dist, "is_initialized", return_value=True
     ), mock.patch.object(dist, "get_world_size", return_value=4):
       mesh = pallas.get_pallas_mesh(axis_names=("model",))
-      self.assertIsInstance(mesh, pallas.PallasMesh)
+      self.assertIsInstance(mesh, jax.sharding.Mesh)
       self.assertEqual(mesh.axis_names, ("model",))
       self.assertEqual(mesh.devices.shape, (4,))
       self.assertEqual(len(mesh.devices.flat), 4)
@@ -1422,7 +1434,7 @@ class TestPallasMesh(seed_test_utils.RepeatableTest):
         dist, "is_initialized", return_value=True
     ), mock.patch.object(dist, "get_world_size", return_value=8):
       mesh = pallas.get_pallas_mesh(axis_names=("dp", "tp"), mesh_shape=(1, 8))
-      self.assertIsInstance(mesh, pallas.PallasMesh)
+      self.assertIsInstance(mesh, jax.sharding.Mesh)
       self.assertEqual(mesh.axis_names, ("dp", "tp"))
       self.assertEqual(mesh.devices.shape, (1, 8))
       self.assertEqual(len(mesh.devices.flat), 8)
@@ -1434,7 +1446,7 @@ class TestPallasMesh(seed_test_utils.RepeatableTest):
       mesh = pallas.get_pallas_mesh(
           axis_names=("data", "attn_dp", "model"), mesh_shape=(2, 2, 2)
       )
-      self.assertIsInstance(mesh, pallas.PallasMesh)
+      self.assertIsInstance(mesh, jax.sharding.Mesh)
       self.assertEqual(mesh.axis_names, ("data", "attn_dp", "model"))
       self.assertEqual(mesh.devices.shape, (2, 2, 2))
       self.assertEqual(len(mesh.devices.flat), 8)

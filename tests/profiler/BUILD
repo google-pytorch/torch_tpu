@@ -62,7 +62,7 @@ torch_tpu_py_test(
     name = "profiler_backend_test",
     srcs = ["profiler_backend_test.py"],
     main = "profiler_backend_test.py",
-    notest_oss = "has import errors in OSS",
+    notest_oss = True,  # has import errors in OSS
     tags = [
         "requires-tpu-v5lite",
     ],
@@ -165,7 +165,7 @@ torch_tpu_py_test(
     timeout = "long",
     srcs = ["profiler_integration_test.py"],
     main = "profiler_integration_test.py",
-    notest_oss = "Skipped until OSS migrates to torch 2.12 (TODO(b/499296481))",
+    notest_oss = True,  # Skipped until OSS migrates to torch 2.12 (TODO(b/499296481))
     tags = ["requires-tpu-v5lite"],
     deps = [
         "//shims/absl_py/logging",

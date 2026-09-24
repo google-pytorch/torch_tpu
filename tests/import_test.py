@@ -87,20 +87,16 @@ class ImportTest(parameterized.TestCase):  # ABSLTEST_OK=Import test
           _worker_import_torch_tpu_then_torch,
       ),
       disable_autoload=(False, True),
-      enable_xla_backend=(True, False),
   )
   def test_imports(
       self,
       worker_fn,
       disable_autoload: bool,
-      enable_xla_backend: bool,
   ) -> None:
     """Verifies module import resilience under various autoload configurations."""
     env_vars = {}
     if disable_autoload:
       env_vars["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
-    if enable_xla_backend:
-      env_vars["TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND"] = "1"
 
     self._run_in_isolated_process(
         worker_fn,

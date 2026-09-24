@@ -256,9 +256,9 @@ class ZMQServerClientTest(seed_test_utils.RepeatableTest):
 
   def test_zmq_client_invalid_port_number(self) -> None:
     with self.assertRaises(ValueError):
-      _ZMQClient(port=-1)
+      _ZMQClient(port=-1, routing_id=b"rank-1")
     with self.assertRaises(ValueError):
-      _ZMQClient(port=65536)
+      _ZMQClient(port=65536, routing_id=b"rank-1")
 
   def test_zmq_server_invalid_timeout(self) -> None:
     with self.assertRaisesRegex(
@@ -274,11 +274,11 @@ class ZMQServerClientTest(seed_test_utils.RepeatableTest):
     with self.assertRaisesRegex(
         ValueError, "send_timeout_s must be non-negative"
     ):
-      _ZMQClient(port=12345, send_timeout_s=-1)
+      _ZMQClient(port=12345, routing_id=b"rank-1", send_timeout_s=-1)
     with self.assertRaisesRegex(
         ValueError, "recv_timeout_s must be non-negative"
     ):
-      _ZMQClient(port=12345, recv_timeout_s=-1)
+      _ZMQClient(port=12345, routing_id=b"rank-1", recv_timeout_s=-1)
 
   def test_zmq_server_close_idempotent_and_closed_operations(self) -> None:
     port = portpicker.pick_unused_port()
@@ -299,7 +299,7 @@ class ZMQServerClientTest(seed_test_utils.RepeatableTest):
 
   def test_zmq_client_close_idempotent_and_closed_operations(self) -> None:
     port = portpicker.pick_unused_port()
-    client = _ZMQClient(port=port)
+    client = _ZMQClient(port=port, routing_id=b"rank-1")
     client.close()
     # Multiple close calls must be safe and idempotent
     client.close()

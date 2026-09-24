@@ -67,6 +67,14 @@ class SingleTpuPGTest(seed_test_utils.MultiProcessRepeatableTest):
     logging.info("ProcessGroup: %s", pg)
     self.assertEqual(pg._get_backend_name(), "tpu_dist")
 
+  def test_local_device_coords(self):
+    """Test local_device_coords binding returns coordinate list."""
+    device = torch.device("tpu")
+    logging.info("TPU device: %s", device)
+    coords = tpu_distributed.local_device_coords()
+    logging.info("local_device_coords: %s", coords)
+    self.assertIsInstance(coords, list)
+
 
 if __name__ == "__main__":
   absltest.main()

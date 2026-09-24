@@ -20,6 +20,7 @@
 #include <limits>
 #include <optional>
 
+#include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/statusor.h"
 #include "csrc/common/aten_utils.h"
@@ -134,8 +135,8 @@ absl::StatusOr<mlir::MlirOp> BuildSoftmaxBackwardDataShlo(
     return MakeScalarConstant(builder, 0.0, output_type.getElementType());
   }
 
-  TT_RET_CHECK(output_type.getShape() == grad_output_type.getShape(),
-               error::kInvalidArgument)
+  ABSL_CHECK_EQ(  // CRASH_OK=checked in AtenSoftmaxBackwardData
+      output_type.getShape(), grad_output_type.getShape())
       << "expected grad_output and output arguments to have the same shape, "
          "got "
       << ToString(grad_output_type.getShape()) << " vs. "

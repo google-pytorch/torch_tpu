@@ -39,7 +39,7 @@
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/python_context.h"
 #include "csrc/pjrt/pjrt_state.h"
-#include "csrc/pjrt/pjrt_utils.h"
+#include "csrc/pjrt/pjrt_transfer.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -52,7 +52,7 @@ namespace {
 class EventsQueueTest : public testing::Test {
  protected:
   static void SetUpTestSuite() {
-    const std::string device_type = "xla_cpu";
+    const std::string device_type = "tpu";
     PjrtBackend::GetInstance().SetPjRtInitializationOptions(
         {.device_type = device_type});
     RegisterTpuAllocator();
@@ -88,8 +88,13 @@ TEST_F(EventsQueueTest, GetsLiveDeferredBuffers) {
   // Both a and b are live and unsynced and will be materialized on the next
   // stream materialization or device materialization.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-  TT_ASSERT_OK_AND_ASSIGN(auto traversals,
-                          PrepareStreamTraversals(device_index, stream_id, {}));
+  EventSnapshot::Record(device_index, stream_id, {});
+  auto pending_snapshots =
+      PrepareSnapshotMaterializations(device_index, stream_id);
+
+  ASSERT_EQ(pending_snapshots.size(), 1);
+  const auto& traversals = pending_snapshots[0].traversals;
+
   ASSERT_EQ(traversals.size(), 1);
   const Traversal& traversal = *traversals[0];
   EXPECT_THAT(traversal.arguments(), testing::IsEmpty());
@@ -111,8 +116,12 @@ TEST_F(EventsQueueTest, IgnoresPlaceholderBuffers) {
 
   // The placeholder does not need to be synced.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-  TT_ASSERT_OK_AND_ASSIGN(auto traversals,
-                          PrepareStreamTraversals(device_index, stream_id, {}));
+  EventSnapshot::Record(device_index, stream_id, {});
+  auto pending_snapshots =
+      PrepareSnapshotMaterializations(device_index, stream_id);
+
+  ASSERT_EQ(pending_snapshots.size(), 1);
+  const auto& traversals = pending_snapshots[0].traversals;
   EXPECT_THAT(traversals, testing::IsEmpty());
 }
 
@@ -128,8 +137,12 @@ TEST_F(EventsQueueTest, SyncIgnoresEmptyBuffers) {
 
   // The empty buffer does not need to be synced.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-  TT_ASSERT_OK_AND_ASSIGN(auto traversals,
-                          PrepareStreamTraversals(device_index, stream_id, {}));
+  EventSnapshot::Record(device_index, stream_id, {});
+  auto pending_snapshots =
+      PrepareSnapshotMaterializations(device_index, stream_id);
+
+  ASSERT_EQ(pending_snapshots.size(), 1);
+  const auto& traversals = pending_snapshots[0].traversals;
   EXPECT_THAT(traversals, testing::IsEmpty());
 }
 
@@ -147,8 +160,12 @@ TEST_F(EventsQueueTest, IgnoresAlreadyMaterializedBuffers) {
 
   // The placeholder does not need to be synced.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-  TT_ASSERT_OK_AND_ASSIGN(auto traversals,
-                          PrepareStreamTraversals(device_index, stream_id, {}));
+  EventSnapshot::Record(device_index, stream_id, {});
+  auto pending_snapshots =
+      PrepareSnapshotMaterializations(device_index, stream_id);
+
+  ASSERT_EQ(pending_snapshots.size(), 1);
+  const auto& traversals = pending_snapshots[0].traversals;
   EXPECT_THAT(traversals, testing::IsEmpty());
 }
 
@@ -191,8 +208,12 @@ TEST_F(EventsQueueTest, ClearsBuffersAfterMaterialization) {
 
   // We don't need to sync the buffer anymore.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-  TT_ASSERT_OK_AND_ASSIGN(auto traversals,
-                          PrepareStreamTraversals(device_index, stream_id, {}));
+  EventSnapshot::Record(device_index, stream_id, {});
+  auto pending_snapshots =
+      PrepareSnapshotMaterializations(device_index, stream_id);
+
+  ASSERT_EQ(pending_snapshots.size(), 1);
+  const auto& traversals = pending_snapshots[0].traversals;
   EXPECT_THAT(traversals, testing::IsEmpty());
 }
 
@@ -213,99 +234,26 @@ TEST_F(EventsQueueTest, StopsTrackingAfterClearEventsQueue) {
   ClearAllStreams();
 
   // The buffer is no longer tracked.
-  TT_ASSERT_OK_AND_ASSIGN(auto traversals1,
-                          PrepareStreamTraversals(device_index, stream_id, {}));
+  EventSnapshot::Record(device_index, stream_id, {});
+  auto pending_snapshots1 =
+      PrepareSnapshotMaterializations(device_index, stream_id);
+
+  ASSERT_EQ(pending_snapshots1.size(), 1);
+  const auto& traversals1 = pending_snapshots1[0].traversals;
   EXPECT_THAT(traversals1, testing::IsEmpty());
 
   // Create a second data pointer to the same buffer.
   RecordNewDataPtrCreated(ref);
 
+  EventSnapshot::Record(device_index, stream_id, {});
+  auto pending_snapshots2 =
+      PrepareSnapshotMaterializations(device_index, stream_id);
+  ASSERT_EQ(pending_snapshots2.size(), 1);
+  const auto& traversals2 = pending_snapshots2[0].traversals;
+
   // The buffer is live, but the DeferredOp was cleared and so does not need
   // to be materialized.
-  TT_ASSERT_OK_AND_ASSIGN(auto traversals2,
-                          PrepareStreamTraversals(device_index, stream_id, {}));
   EXPECT_THAT(traversals2, testing::IsEmpty());
-}
-
-TEST_F(EventsQueueTest, NoTraversalIfNothingToMaterialize) {
-  ClearAllStreams();
-  ScopedPythonContextCapturer capturer(OpName::kEmpty);
-  Shape shape(Dimensions{8}, mlir::ElementType::F32);
-
-  // Put three deferred ops in the queue.
-  TT_ASSERT_OK_AND_ASSIGN(auto refs_a, DeviceBufferList::CreateDeferred(
-                                           OpName::kAdd, DummyBuilder, {},
-                                           OpParamCacheKeys::Empty(), {shape}));
-  auto list_a = refs_a[0].device_buffer_list();
-  RecordDeferredOpCreated(list_a);
-
-  TT_ASSERT_OK_AND_ASSIGN(auto refs_b, DeviceBufferList::CreateDeferred(
-                                           OpName::kAdd, DummyBuilder, {},
-                                           OpParamCacheKeys::Empty(), {shape}));
-  auto list_b = refs_b[0].device_buffer_list();
-  RecordDeferredOpCreated(list_b);
-
-  TT_ASSERT_OK_AND_ASSIGN(auto refs_c, DeviceBufferList::CreateDeferred(
-                                           OpName::kAdd, DummyBuilder, {},
-                                           OpParamCacheKeys::Empty(), {shape}));
-  auto list_c = refs_c[0].device_buffer_list();
-  RecordDeferredOpCreated(list_c);
-
-  // Ask for a traversal to materialize nothing.
-  TT_ASSERT_OK_AND_ASSIGN(auto traversals,
-                          PrepareMaterializationTraversals({}));
-
-  // Nothing needs to be executed to materialize nothing.
-  EXPECT_THAT(traversals, testing::IsEmpty());
-}
-
-TEST_F(EventsQueueTest, MissingNodesIgnored) {
-  ClearAllStreams();
-  ScopedPythonContextCapturer capturer(OpName::kEmpty);
-  Shape shape(Dimensions{8}, mlir::ElementType::F32);
-
-  // Put three deferred ops in the queue.
-  TT_ASSERT_OK_AND_ASSIGN(auto refs_a, DeviceBufferList::CreateDeferred(
-                                           OpName::kAdd, DummyBuilder, {},
-                                           OpParamCacheKeys::Empty(), {shape}));
-  auto ref_a = refs_a[0];
-  auto list_a = ref_a.device_buffer_list();
-  RecordDeferredOpCreated(list_a);
-
-  TT_ASSERT_OK_AND_ASSIGN(auto refs_b, DeviceBufferList::CreateDeferred(
-                                           OpName::kAdd, DummyBuilder, {},
-                                           OpParamCacheKeys::Empty(), {shape}));
-  auto ref_b = refs_b[0];
-  auto list_b = ref_b.device_buffer_list();
-  RecordDeferredOpCreated(list_b);
-
-  TT_ASSERT_OK_AND_ASSIGN(auto refs_c, DeviceBufferList::CreateDeferred(
-                                           OpName::kAdd, DummyBuilder, {},
-                                           OpParamCacheKeys::Empty(), {shape}));
-  auto list_c = refs_c[0].device_buffer_list();
-  RecordDeferredOpCreated(list_c);
-
-  // Create a fourth node, but don't put it in the queue.
-  TT_ASSERT_OK_AND_ASSIGN(auto refs_d, DeviceBufferList::CreateDeferred(
-                                           OpName::kAdd, DummyBuilder, {},
-                                           OpParamCacheKeys::Empty(), {shape}));
-  auto list_d = refs_d[0].device_buffer_list();
-
-  // Ask for a plan to materialize b and d.
-  TT_ASSERT_OK_AND_ASSIGN(auto traversals,
-                          PrepareMaterializationTraversals({list_b, list_d}));
-
-  // a is included because it's not dead code, and is an unused by b; it needs
-  // to be materialized so that it gets executed.
-  // b needs to be materialized as it was an explicit materialization target.
-  // c is after the last known node (b) so it doesn't need to be executed.
-  // d is not in the queue, so it is ignored.
-  ASSERT_EQ(traversals.size(), 1);
-  const Traversal& traversal = *traversals[0];
-  EXPECT_THAT(traversal.arguments(), testing::IsEmpty());
-  EXPECT_THAT(traversal.execution_order(),
-              testing::ElementsAre(list_a, list_b));
-  EXPECT_THAT(traversal.outputs(), testing::ElementsAre(ref_a, ref_b));
 }
 
 TEST_F(EventsQueueTest, SingleTraversalIfPossible) {
@@ -335,9 +283,15 @@ TEST_F(EventsQueueTest, SingleTraversalIfPossible) {
   auto list_c = ref_c.device_buffer_list();
   RecordDeferredOpCreated(list_c);
 
-  // Ask for a plan to materialize a, b, and c.
-  TT_ASSERT_OK_AND_ASSIGN(auto traversals, PrepareMaterializationTraversals(
-                                               {list_a, list_b, list_c}));
+  // Ask for a plan to materialize the stream.
+  const auto device_index = list_a->device_index();
+  const auto stream_id = list_a->stream_id();
+  EventSnapshot::Record(device_index, stream_id, {list_a, list_b, list_c});
+  auto pending_snapshots =
+      PrepareSnapshotMaterializations(device_index, stream_id);
+
+  ASSERT_EQ(pending_snapshots.size(), 1);
+  const auto& traversals = pending_snapshots[0].traversals;
 
   // There are no required split points, so a single traversal is returned
   // with all required nodes as outputs.
@@ -390,9 +344,15 @@ TEST_F(EventsQueueTest, SplitModeRespected) {
   RecordDeferredOpCreated(list_e);
 
   // Ask for a plan to materialize everything.
-  TT_ASSERT_OK_AND_ASSIGN(auto traversals,
-                          PrepareMaterializationTraversals(
-                              {list_a, list_b, list_c, list_d, list_e}));
+  const auto device_index = list_a->device_index();
+  const auto stream_id = list_a->stream_id();
+  EventSnapshot::Record(device_index, stream_id,
+                        {list_a, list_b, list_c, list_d, list_e});
+  auto pending_snapshots =
+      PrepareSnapshotMaterializations(device_index, stream_id);
+
+  ASSERT_EQ(pending_snapshots.size(), 1);
+  const auto& traversals = pending_snapshots[0].traversals;
 
   // Each op ends up in its own traversal.
   // a is split after, so we must split between a | b.
@@ -443,8 +403,14 @@ TEST_F(EventsQueueTest, DeadCodeEliminated) {
   auto list_d = ref_d.device_buffer_list();
   RecordDeferredOpCreated(list_d);
 
-  TT_ASSERT_OK_AND_ASSIGN(auto traversals,
-                          PrepareMaterializationTraversals({list_d}));
+  const auto device_index = list_d->device_index();
+  const auto stream_id = list_d->stream_id();
+  EventSnapshot::Record(device_index, stream_id, {list_d});
+  auto pending_snapshots =
+      PrepareSnapshotMaterializations(device_index, stream_id);
+
+  ASSERT_EQ(pending_snapshots.size(), 1);
+  const auto& traversals = pending_snapshots[0].traversals;
   ASSERT_EQ(traversals.size(), 1);
 
   // The dead ops should be stripped.
@@ -499,8 +465,13 @@ TEST_F(EventsQueueTest, DeadSideEffectsRetained) {
   auto list_d = ref_d.device_buffer_list();
   RecordDeferredOpCreated(list_d);
 
-  TT_ASSERT_OK_AND_ASSIGN(auto traversals,
-                          PrepareMaterializationTraversals({list_d}));
+  const auto device_index = list_d->device_index();
+  const auto stream_id = list_d->stream_id();
+  EventSnapshot::Record(device_index, stream_id, {list_d});
+  auto pending_snapshots =
+      PrepareSnapshotMaterializations(device_index, stream_id);
+  ASSERT_EQ(pending_snapshots.size(), 1);
+  const auto& traversals = pending_snapshots[0].traversals;
 
   // We get one traversal, as there were no required split points.
   ASSERT_EQ(traversals.size(), 1);
@@ -543,8 +514,13 @@ TEST_F(EventsQueueTest, MaterializationIgnoresUnusedEmptyOps) {
   RecordDeferredOpCreated(non_empty_list);
   RecordNewDataPtrCreated(non_empty_ref);
 
-  TT_ASSERT_OK_AND_ASSIGN(auto traversals,
-                          PrepareMaterializationTraversals({non_empty_list}));
+  const auto device_index = non_empty_list->device_index();
+  const auto stream_id = non_empty_list->stream_id();
+  EventSnapshot::Record(device_index, stream_id, {non_empty_list});
+  auto pending_snapshots =
+      PrepareSnapshotMaterializations(device_index, stream_id);
+  ASSERT_EQ(pending_snapshots.size(), 1);
+  const auto& traversals = pending_snapshots[0].traversals;
 
   // We get one traversal, as there were no required split points.
   ASSERT_EQ(traversals.size(), 1);
@@ -592,9 +568,14 @@ TEST_F(EventsQueueTest, UsedEmptyOpsMaterializedOnFirstUse) {
   RecordNewDataPtrCreated(second_non_empty_ref);
 
   // Prepare traversals for the non-empty tensors only.
-  TT_ASSERT_OK_AND_ASSIGN(auto traversals,
-                          PrepareMaterializationTraversals(
-                              {first_non_empty_list, second_non_empty_list}));
+  const auto device_index = first_non_empty_list->device_index();
+  const auto stream_id = first_non_empty_list->stream_id();
+  EventSnapshot::Record(device_index, stream_id,
+                        {first_non_empty_list, second_non_empty_list});
+  auto pending_snapshots =
+      PrepareSnapshotMaterializations(device_index, stream_id);
+  ASSERT_EQ(pending_snapshots.size(), 1);
+  const auto& traversals = pending_snapshots[0].traversals;
 
   // We get one traversal, as there were no required split points.
   ASSERT_EQ(traversals.size(), 1);
@@ -635,10 +616,15 @@ TEST_F(EventsQueueTest, MaterializationAppendsExplicitEmptyOps) {
   RecordNewDataPtrCreated(non_empty_ref);
 
   // Explicitly mark the empty tensor as an output.
-  TT_ASSERT_OK_AND_ASSIGN(auto traversals, PrepareMaterializationTraversals(
-                                               {empty_list, non_empty_list}));
+  EventSnapshot::Record(non_empty_list->device_index(),
+                        non_empty_list->stream_id(),
+                        {empty_list, non_empty_list});
+  auto pending_snapshots = PrepareSnapshotMaterializations(
+      non_empty_list->device_index(), non_empty_list->stream_id());
 
   // We get one traversal, as there were no required split points.
+  ASSERT_EQ(pending_snapshots.size(), 1);
+  const auto& traversals = pending_snapshots[0].traversals;
   ASSERT_EQ(traversals.size(), 1);
 
   // The empty tensor is appended after the non-empty list as an output.
@@ -687,8 +673,13 @@ TEST_F(EventsQueueTest, PrepareDeviceTraversals) {
   ExchangeCurrentDeviceIndex(device_index);
 
   // Ask for a plan to materialize the device for a and b (but not c).
-  TT_ASSERT_OK_AND_ASSIGN(auto traversals,
-                          PrepareDeviceTraversals(device_index, {}));
+  auto pending_stream_snapshots = RecordDeviceSnapshots(device_index);
+  ASSERT_EQ(pending_stream_snapshots.size(), 1);
+
+  auto pending_event_snapshots = PrepareSnapshotMaterializations(
+      device_index, pending_stream_snapshots[0].stream_id);
+  EXPECT_EQ(pending_event_snapshots.size(), 1);
+  const auto& traversals = pending_event_snapshots[0].traversals;
 
   // The execution will contain a and b but not c. Only b is output as it is
   // the only executed op with a live DataPtr.
@@ -740,9 +731,11 @@ TEST_F(EventsQueueTest, PrepareStreamTraversals) {
   ExchangeCurrentStreamId(device_index, default_stream_id);
 
   // Ask for a plan to materialize the stream for a and b (but not c).
-  TT_ASSERT_OK_AND_ASSIGN(
-      auto traversals,
-      PrepareStreamTraversals(device_index, default_stream_id, {}));
+  EventSnapshot::Record(device_index, default_stream_id, {});
+  auto pending_snapshots =
+      PrepareSnapshotMaterializations(device_index, default_stream_id);
+  ASSERT_EQ(pending_snapshots.size(), 1);
+  const auto& traversals = pending_snapshots[0].traversals;
 
   // The execution will contain a and b but not c. Only b is output as it is
   // the only executed op with a live DataPtr.
@@ -794,9 +787,11 @@ TEST_F(EventsQueueTest, StreamsMaterializeSeparately) {
   ExchangeCurrentStreamId(device_index, default_stream_id);
 
   // Ask for a plan to materialize the stream for c (but not a or b)
-  TT_ASSERT_OK_AND_ASSIGN(
-      auto traversals,
-      PrepareStreamTraversals(device_index, non_default_stream_id, {}));
+  EventSnapshot::Record(device_index, non_default_stream_id, {});
+  auto pending_snapshots =
+      PrepareSnapshotMaterializations(device_index, non_default_stream_id);
+  ASSERT_EQ(pending_snapshots.size(), 1);
+  const auto& traversals = pending_snapshots[0].traversals;
 
   // The execution will contain c, but not a or b, even though they were
   // created first; different streams have no relative order.
@@ -817,10 +812,14 @@ TEST_F(EventsQueueTest, RetainsFailedCompletedFutures) {
 
   RecordAsyncDeviceToHost(std::move(failed_future));
 
-  auto snapshot = EventSnapshot::Record(device_index, stream_id);
-  ASSERT_NE(snapshot, nullptr);
+  EventSnapshot::Record(device_index, stream_id);
+  auto pending_snapshots =
+      PrepareSnapshotMaterializations(device_index, stream_id);
+  ASSERT_EQ(pending_snapshots.size(), 1);
 
-  auto status = snapshot->Synchronize();
+  ASSERT_EQ(pending_snapshots[0].futures.size(), 1);
+
+  auto status = pending_snapshots[0].futures[0].Await();
   EXPECT_EQ(status.code(), error::kInvalidArgument);
 }
 
@@ -833,9 +832,12 @@ TEST_F(EventsQueueTest, PrunesSuccessfulCompletedFutures) {
 
   RecordAsyncDeviceToHost(std::move(ok_future));
 
-  auto snapshot = EventSnapshot::Record(device_index, stream_id);
-  ASSERT_NE(snapshot, nullptr);
-  EXPECT_TRUE(snapshot->Synchronize().ok());
+  EventSnapshot::Record(device_index, stream_id);
+  auto pending_snapshots =
+      PrepareSnapshotMaterializations(device_index, stream_id);
+  ASSERT_EQ(pending_snapshots.size(), 1);
+
+  EXPECT_EQ(pending_snapshots[0].futures.size(), 0);
 }
 
 TEST_F(EventsQueueTest, StreamMustMaterializeEmptyTensors) {
@@ -853,17 +855,21 @@ TEST_F(EventsQueueTest, StreamMustMaterializeEmptyTensors) {
   RecordDeferredOpCreated(empty_list);
   RecordNewDataPtrCreated(empty_ref);
   const auto device_index = empty_list->device_index();
-  const auto stream = empty_list->stream_id();
+  const auto stream_id = empty_list->stream_id();
 
   // A normal stream materialization does not materialize the empty tensor.
-  TT_ASSERT_OK_AND_ASSIGN(
-      auto traversals,
-      PrepareStreamTraversals(device_index, stream, /*must_materialize=*/{}));
-  EXPECT_EQ(traversals.size(), 0);
+  EventSnapshot::Record(device_index, stream_id, {});
+  auto pending_snapshots =
+      PrepareSnapshotMaterializations(device_index, stream_id);
+
+  ASSERT_EQ(pending_snapshots.size(), 1);
+  EXPECT_EQ(pending_snapshots[0].traversals.size(), 0);
 
   // A stream materialization that must materialize the empty tensor does so.
-  TT_ASSERT_OK_AND_ASSIGN(
-      traversals, PrepareStreamTraversals(device_index, stream, {empty_list}));
+  EventSnapshot::Record(device_index, stream_id, {empty_list});
+  pending_snapshots = PrepareSnapshotMaterializations(device_index, stream_id);
+  ASSERT_EQ(pending_snapshots.size(), 1);
+  const auto& traversals = pending_snapshots[0].traversals;
   ASSERT_EQ(traversals.size(), 1);
   ASSERT_EQ(traversals[0]->execution_order().size(), 1);
   EXPECT_EQ(traversals[0]->execution_order()[0], empty_list);
@@ -886,21 +892,200 @@ TEST_F(EventsQueueTest, DeviceMustMaterializeEmptyTensors) {
   RecordDeferredOpCreated(empty_list);
   RecordNewDataPtrCreated(empty_ref);
   const auto device_index = empty_list->device_index();
+  const auto stream_id = empty_list->stream_id();
 
   // A normal device materialization does not materialize the empty tensor.
-  TT_ASSERT_OK_AND_ASSIGN(
-      auto traversals,
-      PrepareDeviceTraversals(device_index, /*must_materialize=*/{}));
-  EXPECT_EQ(traversals.size(), 0);
+  RecordDeviceSnapshots(device_index);
+  auto pending_snapshots =
+      PrepareSnapshotMaterializations(device_index, stream_id);
+  ASSERT_EQ(pending_snapshots.size(), 1);
+  EXPECT_EQ(pending_snapshots[0].traversals.size(), 0);
 
-  // A stream materialization that must materialize the empty tensor does so.
-  TT_ASSERT_OK_AND_ASSIGN(traversals,
-                          PrepareDeviceTraversals(device_index, {empty_list}));
+  // A device materialization that must materialize the empty tensor does so.
+  RecordDeviceSnapshots(device_index, {empty_list});
+  pending_snapshots = PrepareSnapshotMaterializations(device_index, stream_id);
+  ASSERT_EQ(pending_snapshots.size(), 1);
+  const auto& traversals = pending_snapshots[0].traversals;
   ASSERT_EQ(traversals.size(), 1);
   ASSERT_EQ(traversals[0]->execution_order().size(), 1);
   EXPECT_EQ(traversals[0]->execution_order()[0], empty_list);
   ASSERT_EQ(traversals[0]->outputs().size(), 1);
   EXPECT_EQ(traversals[0]->outputs()[0], empty_ref);
+}
+
+TEST_F(EventsQueueTest, MultipleSnapshotsPulled) {
+  ClearAllStreams();
+  ScopedPythonContextCapturer capturer(OpName::kEmpty);
+  Shape shape(Dimensions{8}, mlir::ElementType::F32);
+
+  // Enqueue two snapshots after single ops: [a, snapshot, b, snapshot]
+  TT_ASSERT_OK_AND_ASSIGN(auto refs_a, DeviceBufferList::CreateDeferred(
+                                           OpName::kAdd, DummyBuilder, {},
+                                           OpParamCacheKeys::Empty(), {shape}));
+  auto ref_a = refs_a[0];
+  auto list_a = ref_a.device_buffer_list();
+  RecordDeferredOpCreated(list_a);
+
+  EventSnapshot::Record(list_a->device_index(), list_a->stream_id(), {});
+
+  TT_ASSERT_OK_AND_ASSIGN(auto refs_b, DeviceBufferList::CreateDeferred(
+                                           OpName::kAdd, DummyBuilder, {},
+                                           OpParamCacheKeys::Empty(), {shape}));
+  auto ref_b = refs_b[0];
+  auto list_b = ref_b.device_buffer_list();
+  RecordDeferredOpCreated(list_b);
+
+  EventSnapshot::Record(list_b->device_index(), list_b->stream_id(), {});
+
+  // Get the pending snapshots.
+  auto pending_snapshots = PrepareSnapshotMaterializations(
+      list_a->device_index(), list_a->stream_id());
+
+  // Each snapshot request results in a pending snapshot.
+  ASSERT_EQ(pending_snapshots.size(), 2);
+
+  // The first pending snapshot will materialize a (only).
+  const auto& first_snapshot = pending_snapshots[0];
+  ASSERT_EQ(first_snapshot.traversals.size(), 1);
+  ASSERT_EQ(first_snapshot.traversals[0]->execution_order().size(), 1);
+  EXPECT_EQ(first_snapshot.traversals[0]->execution_order()[0], list_a);
+  ASSERT_EQ(first_snapshot.traversals[0]->outputs().size(), 1);
+  EXPECT_EQ(first_snapshot.traversals[0]->outputs()[0], ref_a);
+
+  // The second pending snapshot will materialize b (only).
+  const auto& second_snapshot = pending_snapshots[1];
+  ASSERT_EQ(second_snapshot.traversals.size(), 1);
+  ASSERT_EQ(second_snapshot.traversals[0]->execution_order().size(), 1);
+  EXPECT_EQ(second_snapshot.traversals[0]->execution_order()[0], list_b);
+  ASSERT_EQ(second_snapshot.traversals[0]->outputs().size(), 1);
+  EXPECT_EQ(second_snapshot.traversals[0]->outputs()[0], ref_b);
+}
+
+TEST_F(EventsQueueTest, NotPulledAfterLastSnapshot) {
+  ClearAllStreams();
+  ScopedPythonContextCapturer capturer(OpName::kEmpty);
+  Shape shape(Dimensions{8}, mlir::ElementType::F32);
+
+  // Enqueue one snapshots after a single op: [a, snapshot]
+  TT_ASSERT_OK_AND_ASSIGN(auto refs_a, DeviceBufferList::CreateDeferred(
+                                           OpName::kAdd, DummyBuilder, {},
+                                           OpParamCacheKeys::Empty(), {shape}));
+  auto ref_a = refs_a[0];
+  auto list_a = ref_a.device_buffer_list();
+  RecordDeferredOpCreated(list_a);
+
+  EventSnapshot::Record(list_a->device_index(), list_a->stream_id(), {});
+
+  // Enqueue an op after the snapshot, but don't request a second snapshot.
+  TT_ASSERT_OK_AND_ASSIGN(auto refs_b, DeviceBufferList::CreateDeferred(
+                                           OpName::kAdd, DummyBuilder, {},
+                                           OpParamCacheKeys::Empty(), {shape}));
+  auto ref_b = refs_b[0];
+  auto list_b = ref_b.device_buffer_list();
+  RecordDeferredOpCreated(list_b);
+
+  // Get the pending snapshots.
+  auto pending_snapshots = PrepareSnapshotMaterializations(
+      list_a->device_index(), list_a->stream_id());
+
+  // List b is left in the queue.
+  ASSERT_EQ(pending_snapshots.size(), 1);
+  const auto& first_snapshot = pending_snapshots[0];
+  ASSERT_EQ(first_snapshot.traversals.size(), 1);
+  ASSERT_EQ(first_snapshot.traversals[0]->execution_order().size(), 1);
+  EXPECT_EQ(first_snapshot.traversals[0]->execution_order()[0], list_a);
+  ASSERT_EQ(first_snapshot.traversals[0]->outputs().size(), 1);
+  EXPECT_EQ(first_snapshot.traversals[0]->outputs()[0], ref_a);
+}
+
+TEST_F(EventsQueueTest, SingleOpFastPathAndExtraConstantFallback) {
+  ClearAllStreams();
+  ScopedPythonContextCapturer capturer(OpName::kEmpty);
+  Shape shape(Dimensions{8}, mlir::ElementType::F32);
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+
+  // 1. Single deferred op with no deferred inputs (exercises the single-op
+  // fast path).
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto refs_single,
+      DeviceBufferList::CreateDeferred(OpName::kAdd, DummyBuilder, {},
+                                       OpParamCacheKeys::Empty(), {shape}));
+  auto ref_single = refs_single[0];
+  auto list_single = ref_single.device_buffer_list();
+  RecordDeferredOpCreated(list_single);
+
+  EventSnapshot::Record(device_index, stream_id, {list_single});
+  auto pending_snapshots =
+      PrepareSnapshotMaterializations(device_index, stream_id);
+  ASSERT_EQ(pending_snapshots.size(), 1);
+  const auto& single_traversals = pending_snapshots[0].traversals;
+  ASSERT_EQ(single_traversals.size(), 1);
+  EXPECT_THAT(single_traversals[0]->execution_order(),
+              testing::ElementsAre(list_single));
+  EXPECT_THAT(single_traversals[0]->outputs(),
+              testing::ElementsAre(ref_single));
+
+  // 2. Single deferred op plus an explicit deferred constant in
+  // must_materialize (must bypass the single-op fast path so the constant is
+  // also materialized).
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto refs_op,
+      DeviceBufferList::CreateDeferred(OpName::kAdd, DummyBuilder, {},
+                                       OpParamCacheKeys::Empty(), {shape}));
+  auto ref_op = refs_op[0];
+  auto list_op = ref_op.device_buffer_list();
+  RecordDeferredOpCreated(list_op);
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto empty_refs,
+      DeviceBufferList::CreateDeferred(OpName::kEmptyMemoryFormat, DummyBuilder,
+                                       {}, OpParamCacheKeys::Empty(), {shape}));
+  auto empty_ref = empty_refs[0];
+  auto empty_list = empty_ref.device_buffer_list();
+  RecordDeferredOpCreated(empty_list);
+
+  EventSnapshot::Record(device_index, stream_id, {list_op, empty_list});
+  pending_snapshots = PrepareSnapshotMaterializations(device_index, stream_id);
+  ASSERT_EQ(pending_snapshots.size(), 1);
+  const auto& combined_traversals = pending_snapshots[0].traversals;
+  ASSERT_EQ(combined_traversals.size(), 1);
+  EXPECT_THAT(combined_traversals[0]->execution_order(),
+              testing::ElementsAre(list_op, empty_list));
+  EXPECT_THAT(combined_traversals[0]->outputs(),
+              testing::ElementsAre(ref_op, empty_ref));
+}
+
+TEST_F(EventsQueueTest, NodeMatcherAcrossSmallAndLargeSpans) {
+  ClearAllStreams();
+  ScopedPythonContextCapturer capturer(OpName::kEmpty);
+  Shape shape(Dimensions{8}, mlir::ElementType::F32);
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+
+  // Test both small span (5 <= 8, InlinedVector) and large span (10 > 8,
+  // flat_hash_set).
+  for (int count : {5, 10}) {
+    std::vector<SharedDeviceBufferList> nodes;
+    std::vector<DeviceBufferRef> expected_outputs;
+    for (int i = 0; i < count; ++i) {
+      TT_ASSERT_OK_AND_ASSIGN(
+          auto refs,
+          DeviceBufferList::CreateDeferred(OpName::kAdd, DummyBuilder, {},
+                                           OpParamCacheKeys::Empty(), {shape}));
+      nodes.push_back(refs[0].device_buffer_list());
+      expected_outputs.push_back(refs[0]);
+      RecordDeferredOpCreated(refs[0].device_buffer_list());
+    }
+    EventSnapshot::Record(device_index, stream_id, nodes);
+    auto pending_snapshots =
+        PrepareSnapshotMaterializations(device_index, stream_id);
+    ASSERT_EQ(pending_snapshots.size(), 1);
+    const auto& traversals = pending_snapshots[0].traversals;
+    ASSERT_EQ(traversals.size(), 1);
+    EXPECT_THAT(traversals[0]->execution_order(),
+                testing::ElementsAreArray(nodes));
+    EXPECT_THAT(traversals[0]->outputs(),
+                testing::ElementsAreArray(expected_outputs));
+  }
 }
 }  // namespace
 

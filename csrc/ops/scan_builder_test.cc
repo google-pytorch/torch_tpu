@@ -25,6 +25,7 @@
 // a namespace collision where both packages attempt to define 'Tuple'.
 // TODO(b/505045588): Remove this workaround after cl/927205178.
 // clang-format off
+#include "llvm/ADT/STLExtras.h"
 #include "stablehlo/reference/Api.h"
 #include "stablehlo/reference/Configuration.h"
 // clang-format on
@@ -179,10 +180,14 @@ class ScanBuilderTest : public testing::TestWithParam<bool> {
 
   bool IsEmitter() const { return GetParam(); }
 
-  // The scan lowering op: chlo.ScanOp on the emitter path, stablehlo.while
-  // otherwise.
-  void ExpectScanLoweringOp(mlir::Operation* op) {
-    if (IsEmitter()) {
+  // Lowers to chlo.ScanOp only for static inputs on the emitter path; falls
+  // back to StableHLO while loop for dynamic inputs or non-emitter path.
+  void ExpectScanLoweringOp(llvm::ArrayRef<mlir::MlirOp> scan_inputs,
+                            mlir::Operation* op) {
+    const bool all_static = llvm::all_of(scan_inputs, [](mlir::MlirOp op) {
+      return GetTensorTypeOrDie(op).hasStaticShape();
+    });
+    if (IsEmitter() && all_static) {
       EXPECT_TRUE(mlir::isa<mlir::chlo::ScanOp>(op));
     } else {
       EXPECT_TRUE(mlir::isa<mlir::stablehlo::WhileOp>(op));
@@ -406,6 +411,7 @@ TEST_P(ScanBuilderTest, StaticShape1D) {
                           Scan(function_builder, input, /*dim=*/0, {carry_init},
                                {output_init}, CreateAddBodyBuilder()));
   ASSERT_EQ(result.size(), 1);
+  ExpectScanLoweringOp(input, result[0].getValue().getDefiningOp());
 
   const mlir::MlirOp out(builder(), result[0].getValue());
   mlir::func::Return(function_builder, out);
@@ -648,7 +654,9 @@ TEST_P(ScanBuilderTest, DynamicShapeScanDim) {
                           Scan(function_builder, input, /*dim=*/0, {carry_init},
                                {output_init}, CreateAddBodyBuilder()));
   ASSERT_EQ(result.size(), 1);
-  ExpectScanLoweringOp(result[0].getValue().getDefiningOp());
+  ASSERT_FALSE(GetTensorTypeOrDie(input).hasStaticShape());
+  ASSERT_TRUE(GetTensorTypeOrDie(input).isDynamicDim(0));
+  ExpectScanLoweringOp(input, result[0].getValue().getDefiningOp());
 }
 
 TEST_P(ScanBuilderTest, DynamicShapeNonScanDim) {
@@ -675,7 +683,9 @@ TEST_P(ScanBuilderTest, DynamicShapeNonScanDim) {
                           Scan(function_builder, input, /*dim=*/0, {carry_init},
                                {output_init}, CreateAddBodyBuilder()));
   ASSERT_EQ(result.size(), 1);
-  ExpectScanLoweringOp(result[0].getValue().getDefiningOp());
+  ASSERT_FALSE(GetTensorTypeOrDie(input).hasStaticShape());
+  ASSERT_TRUE(GetTensorTypeOrDie(input).isDynamicDim(1));
+  ExpectScanLoweringOp(input, result[0].getValue().getDefiningOp());
 }
 
 TEST_P(MultiScanBuilderTest, InvalidDimension) {
@@ -1201,7 +1211,9 @@ TEST_P(MultiScanBuilderTest, DynamicShapeScanDim) {
            /*num_scan_inputs=*/2, {carry1_init, carry2_init},
            {output1_init, output2_init}, CreateIdentityBodyBuilder()));
   ASSERT_EQ(results.size(), 4);
-  ExpectScanLoweringOp(results[2].getValue().getDefiningOp());
+  ASSERT_FALSE(GetTensorTypeOrDie(input1).hasStaticShape());
+  ASSERT_TRUE(GetTensorTypeOrDie(input1).isDynamicDim(0));
+  ExpectScanLoweringOp({input1, input2}, results[2].getValue().getDefiningOp());
 }
 
 TEST_P(MultiScanBuilderTest, DynamicShapeNonScanDim) {
@@ -1238,7 +1250,9 @@ TEST_P(MultiScanBuilderTest, DynamicShapeNonScanDim) {
            /*num_scan_inputs=*/2, {carry1_init, carry2_init},
            {output1_init, output2_init}, CreateIdentityBodyBuilder()));
   ASSERT_EQ(results.size(), 4);
-  ExpectScanLoweringOp(results[2].getValue().getDefiningOp());
+  ASSERT_FALSE(GetTensorTypeOrDie(input1).hasStaticShape());
+  ASSERT_TRUE(GetTensorTypeOrDie(input1).isDynamicDim(1));
+  ExpectScanLoweringOp({input1, input2}, results[2].getValue().getDefiningOp());
 }
 
 TEST_P(MultiScanBuilderTest, MismatchedInputScanDimSizeError) {
@@ -1299,6 +1313,138 @@ TEST_P(MultiScanBuilderTest, Squeeze1DTo0DTensor) {
   const mlir::OwningOpRef<mlir::ModuleOp> module = module_builder().build();
 
   EvaluateAndVerifyOutputs(*module, {11, 13, 16, 20});
+}
+
+class CreateRankReducedConstantLikeTest : public testing::Test {
+ protected:
+  CreateRankReducedConstantLikeTest()
+      : context_(), module_builder_(context_, mlir::unknownLoc(context_)) {
+    mlir::DialectRegistry registry;
+    mlir::stablehlo::registerAllDialects(registry);
+    context_.appendDialectRegistry(registry);
+    context_.loadAllAvailableDialects();
+  }
+
+  mlir::MlirBuilder& builder() { return module_builder_; }
+  mlir::ModuleBuilder& module_builder() { return module_builder_; }
+  mlir::OpBuilder& op_builder() { return module_builder_.getOpBuilder(); }
+  mlir::MLIRContext* context() { return &context_; }
+
+  mlir::MlirOp CreateBoundedTensorArg(
+      mlir::func::FunctionBuilder& function_builder,
+      mlir::ArrayRef<int64_t> shape, mlir::ArrayRef<int64_t> bound_dims,
+      mlir::Type element_type) {
+    mlir::SmallVector<int64_t> bounds_vec;
+    mlir::SmallVector<int64_t> dim_sizes;
+    for (int64_t i = 0; i < shape.size(); ++i) {
+      if (absl::c_find(bound_dims, i) != bound_dims.end()) {
+        bounds_vec.push_back(shape[i]);
+        dim_sizes.push_back(mlir::ShapedType::kDynamic);
+      } else {
+        bounds_vec.push_back(mlir::ShapedType::kDynamic);
+        dim_sizes.push_back(shape[i]);
+      }
+    }
+    const auto bounds_attr =
+        mlir::DenseI64ArrayAttr::get(context(), bounds_vec);
+    const auto encoding =
+        mlir::stablehlo::TypeExtensionsAttr::get(context(), bounds_attr);
+    const auto type =
+        mlir::RankedTensorType::get(dim_sizes, element_type, encoding);
+    return mlir::func::Argument(function_builder, type);
+  }
+
+ private:
+  mlir::MLIRContext context_;
+  mlir::ModuleBuilder module_builder_;
+};
+
+TEST_F(CreateRankReducedConstantLikeTest,
+       StaticShapeDirectConstantWithoutDeadOps) {
+  mlir::func::FunctionBuilder function_builder(module_builder(), "main");
+  const mlir::Type i32 = op_builder().getI32Type();
+  const mlir::MlirOp input = MakeConstant(function_builder, 0, i32, {2, 3, 4});
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      const mlir::MlirOp result,
+      CreateRankReducedConstantLike(input, /*scan_dim=*/1, /*value=*/0));
+
+  const mlir::RankedTensorType result_type = GetTensorTypeOrDie(result);
+  EXPECT_TRUE(result_type.hasStaticShape());
+  EXPECT_EQ(result_type.getShape(), mlir::ArrayRef<int64_t>({2, 4}));
+  EXPECT_TRUE(mlir::isa<mlir::stablehlo::ConstantOp>(
+      result.getValue().getDefiningOp()));
+
+  // Verify no extraneous dead slice or reshape operations were emitted.
+  bool has_dead_op = false;
+  function_builder.build().walk([&](mlir::Operation* op) {
+    if (mlir::isa<mlir::stablehlo::DynamicSliceOp, mlir::stablehlo::ReshapeOp>(
+            op)) {
+      has_dead_op = true;
+    }
+  });
+  EXPECT_FALSE(has_dead_op);
+}
+
+TEST_F(CreateRankReducedConstantLikeTest, StaticShape1DTo0D) {
+  mlir::func::FunctionBuilder function_builder(module_builder(), "main");
+  const mlir::Type i32 = op_builder().getI32Type();
+  const mlir::MlirOp input = MakeConstant(function_builder, 0, i32, {4});
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      const mlir::MlirOp result,
+      CreateRankReducedConstantLike(input, /*scan_dim=*/0, /*value=*/42));
+
+  const mlir::RankedTensorType result_type = GetTensorTypeOrDie(result);
+  EXPECT_TRUE(result_type.hasStaticShape());
+  EXPECT_EQ(result_type.getRank(), 0);
+  auto const_op = mlir::dyn_cast<mlir::stablehlo::ConstantOp>(
+      result.getValue().getDefiningOp());
+  ASSERT_TRUE(const_op != nullptr);
+  EXPECT_EQ(mlir::cast<mlir::DenseElementsAttr>(const_op.getValue())
+                .getValues<int32_t>()[0],
+            42);
+}
+
+TEST_F(CreateRankReducedConstantLikeTest, StaticShapeNegativeScanDim) {
+  mlir::func::FunctionBuilder function_builder(module_builder(), "main");
+  const mlir::Type i32 = op_builder().getI32Type();
+  const mlir::MlirOp input = MakeConstant(function_builder, 0, i32, {2, 3, 4});
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      const mlir::MlirOp result,
+      CreateRankReducedConstantLike(input, /*scan_dim=*/-1, /*value=*/0));
+
+  const mlir::RankedTensorType result_type = GetTensorTypeOrDie(result);
+  EXPECT_TRUE(result_type.hasStaticShape());
+  EXPECT_EQ(result_type.getShape(), mlir::ArrayRef<int64_t>({2, 3}));
+}
+
+TEST_F(CreateRankReducedConstantLikeTest, OutOfBoundsScanDimFails) {
+  mlir::func::FunctionBuilder function_builder(module_builder(), "main");
+  const mlir::Type i32 = op_builder().getI32Type();
+  const mlir::MlirOp input = MakeConstant(function_builder, 0, i32, {2, 3, 4});
+
+  EXPECT_THAT(CreateRankReducedConstantLike(input, /*scan_dim=*/3, /*value=*/0),
+              StatusIs(error::kIndexError));
+}
+
+TEST_F(CreateRankReducedConstantLikeTest, BoundedDynamicShapeUsesConstantLike) {
+  mlir::func::FunctionBuilder function_builder(module_builder(), "main");
+  const mlir::Type i32 = op_builder().getI32Type();
+  const mlir::MlirOp input =
+      CreateBoundedTensorArg(function_builder, {4, 5}, {1}, i32);
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      const mlir::MlirOp result,
+      CreateRankReducedConstantLike(input, /*scan_dim=*/0, /*value=*/0));
+
+  const mlir::RankedTensorType result_type = GetTensorTypeOrDie(result);
+  EXPECT_FALSE(result_type.hasStaticShape());
+  EXPECT_EQ(result_type.getRank(), 1);
+  EXPECT_TRUE(result_type.isDynamicDim(0));
+  EXPECT_TRUE(
+      mlir::isa<mlir::chlo::ConstantLikeOp>(result.getValue().getDefiningOp()));
 }
 
 }  // namespace

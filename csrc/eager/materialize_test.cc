@@ -37,7 +37,6 @@
 #include "csrc/common/status_test_utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/device_buffer_utils.h"
-#include "csrc/eager/events_queue.h"
 #include "csrc/eager/materialize_common.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
@@ -56,7 +55,7 @@ namespace {
 class MaterializeTest : public testing::Test {
  protected:
   static void SetUpTestSuite() {
-    const std::string device_type = "xla_cpu";
+    const std::string device_type = "tpu";
     PjrtBackend::GetInstance().SetPjRtInitializationOptions(
         {.device_type = device_type});
     ASSERT_EQ(AddTpuHooks(), absl::OkStatus());
@@ -94,94 +93,6 @@ TEST_F(MaterializeTest, MaterializedZeroSizeBufferSuccess) {
   EXPECT_EQ(Materialize(ref, MaterializationReason::kExplicitSync),
             absl::OkStatus());
   EXPECT_TRUE(ref.is_materializing());
-}
-
-TEST_F(MaterializeTest, LeafNodeMaterializationPatternSuccess) {
-  ScopedPythonContextCapturer capturer(OpName::kEmpty);
-  const Shape shape(Dimensions{8}, mlir::ElementType::F32);
-
-  auto builder = [shape](mlir::MlirBuilder& builder,
-                         absl::Span<mlir::MlirOp> inputs)
-      -> absl::StatusOr<DynamicMlirOpResults> {
-    if (!inputs.empty()) return DynamicMlirOpResults{inputs[0]};
-    return DynamicMlirOpResults{
-        BuildFillUninitialized(builder, shape.dtype(), shape.dimensions())};
-  };
-
-  // Create a graph (letter indicates creation order):
-  //    / -> b -> c (has Tensor)
-  //  a ---> d -> e (has Tensor)
-  TT_ASSERT_OK_AND_ASSIGN(
-      std::vector<DeviceBufferRef> refs_a,
-      DeviceBufferList::CreateDeferred(OpName::kEmpty, builder,
-                                       /*inputs=*/{}, OpParamCacheKeys::Empty(),
-                                       {shape}));
-  DeviceBufferRef ref_a = refs_a[0];
-  RecordDeferredOpCreated(refs_a[0].device_buffer_list());
-
-  TT_ASSERT_OK_AND_ASSIGN(
-      std::vector<DeviceBufferRef> refs_b,
-      DeviceBufferList::CreateDeferred(OpName::kAdd, builder, {ref_a},
-                                       OpParamCacheKeys::Empty(), {shape}));
-  DeviceBufferRef ref_b = refs_b[0];
-  RecordDeferredOpCreated(refs_b[0].device_buffer_list());
-
-  TT_ASSERT_OK_AND_ASSIGN(
-      std::vector<DeviceBufferRef> refs_c,
-      DeviceBufferList::CreateDeferred(OpName::kAdd, builder, {ref_b},
-                                       OpParamCacheKeys::Empty(), {shape}));
-  DeviceBufferRef ref_c = refs_c[0];
-  RecordDeferredOpCreated(refs_c[0].device_buffer_list());
-
-  // Create a tensor for c to reflect how this would actually be used
-  // (a leaf node with no tensors would ordinarily be dropped immediately).
-  at::Tensor c = MakeTensor(ref_c);
-
-  TT_ASSERT_OK_AND_ASSIGN(
-      std::vector<DeviceBufferRef> refs_d,
-      DeviceBufferList::CreateDeferred(OpName::kAdd, builder, {ref_a},
-                                       OpParamCacheKeys::Empty(), {shape}));
-  DeviceBufferRef ref_d = refs_d[0];
-  RecordDeferredOpCreated(refs_d[0].device_buffer_list());
-
-  TT_ASSERT_OK_AND_ASSIGN(
-      std::vector<DeviceBufferRef> refs_e,
-      DeviceBufferList::CreateDeferred(OpName::kAdd, builder, {ref_d},
-                                       OpParamCacheKeys::Empty(), {shape}));
-  DeviceBufferRef ref_e = refs_e[0];
-  RecordDeferredOpCreated(refs_e[0].device_buffer_list());
-  // Create a tensor for e to reflect how this would actually be used
-  // (a leaf node with no tensors would ordinarily be dropped immediately).
-  at::Tensor e = MakeTensor(ref_e);
-
-  EXPECT_TRUE(ref_a.is_deferred());
-  EXPECT_TRUE(ref_b.is_deferred());
-  EXPECT_TRUE(ref_c.is_deferred());
-  EXPECT_TRUE(ref_d.is_deferred());
-  EXPECT_TRUE(ref_e.is_deferred());
-
-  // Materialize d. This should trace the entire graph from the leaf nodes
-  // c and e.
-  EXPECT_EQ(Materialize(ref_d, MaterializationReason::kExplicitSync),
-            absl::OkStatus());
-
-  // a is materialized as it has fanout > 1.
-  EXPECT_TRUE(ref_a.is_materializing());
-
-  // b is not materialized; it is only internal to the graph of c, and has
-  // neither fanout nor a live Tensor.
-  EXPECT_TRUE(ref_b.is_deferred());
-
-  // c is materialized; it was dispatched before d and has a live Tensor, so it
-  // must be materialized.
-  EXPECT_TRUE(ref_c.is_materializing());
-
-  // d is materialized because it was the explicit target of Materialize().
-  EXPECT_TRUE(ref_d.is_materializing());
-
-  // e is not materialized because it was dispatched after the last required
-  // node (d).
-  EXPECT_TRUE(ref_e.is_deferred());
 }
 
 TEST_F(MaterializeTest, CompilerOptionsPropagateToMaterializeThread) {

@@ -17,7 +17,6 @@ from absl.testing import absltest
 import torch
 from torch import distributed as dist
 import torch.multiprocessing as mp
-from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.distributed import multiprocessing
 from tests import error_testing as et
 from tests import seed_test_utils
@@ -159,9 +158,7 @@ class ScatterErrorsTest(seed_test_utils.MultiProcessRepeatableTest):
     ):
       distributed_utils.dist_run(
           nproc_per_node=8,
-          fn=singlehost_wrapper.tpu_env_wrapper(
-              run_scatter_wrong_number_inputs
-          ),
+          fn=run_scatter_wrong_number_inputs,
           num_inputs=9,
       )
 
@@ -175,7 +172,7 @@ class ScatterErrorsTest(seed_test_utils.MultiProcessRepeatableTest):
     ):
       distributed_utils.dist_run(
           nproc_per_node=8,
-          fn=singlehost_wrapper.tpu_env_wrapper(run_scatter_wrong_shape_output),
+          fn=run_scatter_wrong_shape_output,
           input_shape=input_shape,
           output_shape=output_shape,
       )
@@ -185,15 +182,11 @@ class ScatterErrorsTest(seed_test_utils.MultiProcessRepeatableTest):
     mismatch_shape = [8, 6, 2]
     with et.assert_subprocess_raises_message(
         RuntimeError,
-        "distributed.scatter(): input tensors on the root rank: expected all"
-        " input tensors to have the same shape, got [8, 6, 2] at index 0 and"
-        " [6, 2] at index 1",
+        expected_msg="""distributed.scatter(): failed to validate input tensors on root rank: expected all tensors to have the same shape, got [8, 6, 2] at index 0 and [6, 2] at index 1""",
     ):
       distributed_utils.dist_run(
           nproc_per_node=8,
-          fn=singlehost_wrapper.tpu_env_wrapper(
-              run_scatter_mismatch_input_shapes
-          ),
+          fn=run_scatter_mismatch_input_shapes,
           shape=shape,
           mismatch_shape=mismatch_shape,
       )

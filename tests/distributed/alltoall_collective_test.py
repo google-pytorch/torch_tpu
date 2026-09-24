@@ -33,7 +33,6 @@ from absl.testing import absltest
 import torch
 from torch import distributed as dist
 import torch.multiprocessing as mp
-from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
@@ -319,9 +318,7 @@ class AllToAllSingleCollectiveTest(seed_test_utils.MultiProcessRepeatableTest):
     rank_data = AllToAllSingleTestData()
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all_single, world_size=self._world_size
-        ),
+        fn=run_all_to_all_single,
         test_data=rank_data,
     )
 
@@ -329,9 +326,7 @@ class AllToAllSingleCollectiveTest(seed_test_utils.MultiProcessRepeatableTest):
     rank_data = AllToAllSingleTestData(md_shapes=True)
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all_single, world_size=self._world_size
-        ),
+        fn=run_all_to_all_single,
         test_data=rank_data,
     )
 
@@ -342,9 +337,7 @@ class AllToAllSingleCollectiveTest(seed_test_utils.MultiProcessRepeatableTest):
     )
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all_single, world_size=self._world_size
-        ),
+        fn=run_all_to_all_single,
         test_data=rank_data,
     )
 
@@ -360,9 +353,7 @@ class AllToAllSingleCollectiveTest(seed_test_utils.MultiProcessRepeatableTest):
     rank_data = AllToAllSingleUnevenTestData(matrix, dtype=torch.int32)
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all_single, world_size=self._world_size
-        ),
+        fn=run_all_to_all_single,
         test_data=rank_data,
     )
 
@@ -376,9 +367,7 @@ class AllToAllSingleCollectiveTest(seed_test_utils.MultiProcessRepeatableTest):
     )
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all_single, world_size=self._world_size
-        ),
+        fn=run_all_to_all_single,
         test_data=rank_data,
     )
 
@@ -390,9 +379,7 @@ class AllToAllSingleCollectiveTest(seed_test_utils.MultiProcessRepeatableTest):
     rank_data = AllToAllSingleUnevenTestData(matrix, dtype=torch.float32)
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all_single, world_size=self._world_size
-        ),
+        fn=run_all_to_all_single,
         test_data=rank_data,
     )
 
@@ -407,9 +394,7 @@ class AllToAllSingleCollectiveTest(seed_test_utils.MultiProcessRepeatableTest):
     rank_data = AllToAllSingleUnevenTestData(matrix, dtype=torch.int32)
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all_single, world_size=self._world_size
-        ),
+        fn=run_all_to_all_single,
         test_data=rank_data,
     )
 
@@ -421,9 +406,7 @@ class AllToAllSingleCollectiveTest(seed_test_utils.MultiProcessRepeatableTest):
     rank_data = AllToAllSingleUnevenTestData(matrix, dtype=torch.float32)
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all_single, world_size=self._world_size
-        ),
+        fn=run_all_to_all_single,
         test_data=rank_data,
     )
 
@@ -447,9 +430,7 @@ class AllToAllSingleCollectiveTest(seed_test_utils.MultiProcessRepeatableTest):
     rank_data = AllToAllSingleUnevenTestData(matrix, dtype=torch.int32)
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all_single, world_size=self._world_size
-        ),
+        fn=run_all_to_all_single,
         test_data=rank_data,
     )
 
@@ -464,9 +445,7 @@ class AllToAllSingleCollectiveTest(seed_test_utils.MultiProcessRepeatableTest):
     )
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all_single, world_size=self._world_size
-        ),
+        fn=run_all_to_all_single,
         test_data=rank_data,
     )
 
@@ -619,6 +598,9 @@ def run_all_to_all(
         preamble=f"Rank {rank} failed for output tensor {i}",
     )
 
+  dist.barrier()
+  dist.destroy_process_group()
+
 
 class AllToAllCollectiveTest(seed_test_utils.MultiProcessRepeatableTest):
 
@@ -628,9 +610,7 @@ class AllToAllCollectiveTest(seed_test_utils.MultiProcessRepeatableTest):
     rank_data = AllToAllTestData()
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all, world_size=self._world_size
-        ),
+        fn=run_all_to_all,
         test_data=rank_data,
     )
 
@@ -638,9 +618,7 @@ class AllToAllCollectiveTest(seed_test_utils.MultiProcessRepeatableTest):
     rank_data = AllToAllTestData(md_shapes=True)
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all, world_size=self._world_size
-        ),
+        fn=run_all_to_all,
         test_data=rank_data,
     )
 
@@ -653,9 +631,7 @@ class AllToAllCollectiveTest(seed_test_utils.MultiProcessRepeatableTest):
     rank_data = AllToAllNonUniformTestData(matrix, dtype=torch.int32)
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all, world_size=self._world_size
-        ),
+        fn=run_all_to_all,
         test_data=rank_data,
     )
 
@@ -671,9 +647,7 @@ class AllToAllCollectiveTest(seed_test_utils.MultiProcessRepeatableTest):
     )
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all, world_size=self._world_size
-        ),
+        fn=run_all_to_all,
         test_data=rank_data,
     )
 
@@ -686,9 +660,7 @@ class AllToAllCollectiveTest(seed_test_utils.MultiProcessRepeatableTest):
     rank_data = AllToAllNonUniformTestData(matrix, dtype=torch.float32)
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all, world_size=self._world_size
-        ),
+        fn=run_all_to_all,
         test_data=rank_data,
     )
 
@@ -712,9 +684,7 @@ class AllToAllCollectiveTest(seed_test_utils.MultiProcessRepeatableTest):
     rank_data = AllToAllNonUniformTestData(matrix, dtype=torch.int32)
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all, world_size=self._world_size
-        ),
+        fn=run_all_to_all,
         test_data=rank_data,
     )
 

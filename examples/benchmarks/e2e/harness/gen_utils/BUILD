@@ -42,9 +42,9 @@ torch_tpu_py_library(
     srcs = ["load_model.py"],
     deps = [
         "//examples/benchmarks/e2e/harness:context",
+        "//examples/benchmarks/e2e/harness:model_helpers",
         "//examples/benchmarks/e2e/harness:torch_device_ops",
         "//shims/torch:pytorch",
-        "//tests:module_registry",
     ],
 )
 

@@ -21,6 +21,20 @@ exports_files(
 )
 
 py_binary(
+    name = "delete_cancelled_pr_runs",
+    srcs = ["delete_cancelled_pr_runs.py"],
+)
+
+py_test(
+    name = "delete_cancelled_pr_runs_test",
+    size = "small",
+    srcs = ["delete_cancelled_pr_runs_test.py"],
+    deps = [
+        ":delete_cancelled_pr_runs",
+    ],
+)
+
+py_binary(
     name = "list_ci_tests",
     srcs = ["list_ci_tests.py"],
     data = [

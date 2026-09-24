@@ -152,9 +152,15 @@ absl::Status DeferNeverDispatch(absl::Span<const DeviceBufferRef> results,
   }
   // materialize.cc and events_queue.h will respect OpSplitMode, even with
   // MaterializationMode::kFullGraph.
+  // In DeferNever, we don't block on materialization, we initiate and continue.
+  // In DeferNeverAndLaunchBlocking, we first block until the materialization is
+  // started, and then block on its completion.
+  const MaterializationBlockMode block_mode =
+      block ? MaterializationBlockMode::kBlockUntilStarted
+            : MaterializationBlockMode::kNonBlocking;
   TT_RETURN_IF_ERROR(Materialize(device_buffer_list,
                                  MaterializationReason::kDebugMode,
-                                 MaterializationMode::kFullGraph));
+                                 MaterializationMode::kFullGraph, block_mode));
   if (block) {
     return device_buffer_list->Synchronize();
   }
@@ -187,16 +193,12 @@ absl::Status DeferAndFuseDispatch(absl::Span<const DeviceBufferRef> results) {
 
   if (MustApplyRepeatedOpsHeuristic()) {
     // Record the deferred op and detect any repetitions.
-    auto materialization_nodes =
-        RecordDeferredOpAndDetectRepetition(device_buffer_list);
-    // If the repeated ops heuristic detected a loop, we need to materialize
-    // the endpoints of each of the loops (and any prefix before the first one.)
-    // Materialize these one at a time to ensure that we don't fuse across the
-    // loop boundaries.
-    for (const auto& node : materialization_nodes) {
-      TT_RETURN_IF_ERROR(
-          Materialize(node, MaterializationReason::kRepeatedOpDetection,
-                      GetRepeatedOpsMaterializationMode()));
+    // If a repetition is detected, materialize the current stream.
+    if (RecordDeferredOpAndDetectRepetition(device_buffer_list)) {
+      // Start a background materialization of the current stream; don't
+      // wait for it to complete.
+      MaterializeCurrentStream(MaterializationReason::kRepeatedOpDetection,
+                               GetRepeatedOpsMaterializationMode());
     }
   } else {
     RecordDeferredOpCreated(device_buffer_list);
@@ -218,7 +220,8 @@ absl::StatusOr<std::vector<DeviceBufferRef>> CreateDeferredDeviceBufferList(
           params.op_name, std::move(params.op_builder),
           std::move(params.inputs), std::move(params.op_param_cache_keys),
           std::move(params.output_shapes), params.split_mode,
-          std::move(params.donated_indices)));
+          std::move(params.donated_indices),
+          std::move(params.device_assignment)));
 
   switch (GetEagerMode()) {
     case EagerMode::kDeferNever:

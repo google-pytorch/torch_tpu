@@ -28,9 +28,7 @@ It takes no command-line arguments and requires following environment variables:
   2. TORCH_TPU_INTERNAL_TORCH_TEST_MODULE: The name of the test module to run
      set by the Bazel rule.
 
-The test runner exits with 0 on success, and 1 on failure. For other non-zero
-exit codes, it honors Bazel convention as documented in
-https://bazel.build/run/scripts#exit-codes.
+The test runner exits with 0 on success, and non-zero on failure.
 """
 
 from collections.abc import Sequence
@@ -38,10 +36,11 @@ import os
 import pathlib
 import runpy
 import sys
-from typing import Final
+from typing import Any, Final
 import unittest
 
 from absl import app
+from absl.testing import absltest
 
 import torch
 import torch_tpu  # pylint: disable=unused-import  # noqa: F401
@@ -75,17 +74,18 @@ def _filter_device_generic_tests() -> None:
   original = unittest.TestLoader.getTestCaseNames
 
   def device_generic_tests(
-      self, test_case_cls: type[unittest.TestCase]  # UNITTEST_OK=torch testing
-  ) -> list[str]:
+      self: unittest.TestLoader,
+      testCaseClass: type[unittest.TestCase],  # UNITTEST_OK=torch testing  # pylint: disable=invalid-name
+  ) -> Sequence[str]:
     """Returns test method names for device-generic test classes only."""
     # Keep classes materialized by `instantiate_device_type_tests` only,
     # i.e. `DeviceTypeTestBase` subclasses.
     if not (
-        isinstance(test_case_cls, type)
-        and issubclass(test_case_cls, common_device_type.DeviceTypeTestBase)
+        isinstance(testCaseClass, type)
+        and issubclass(testCaseClass, common_device_type.DeviceTypeTestBase)
     ):
       return []
-    return original(self, test_case_cls)
+    return original(self, testCaseClass)
 
   unittest.TestLoader.getTestCaseNames = device_generic_tests
 
@@ -136,15 +136,19 @@ def _setup_test_args(test_dir: pathlib.Path, test_module: pathlib.Path) -> None:
   #   blaze-bin/tests/torch/test_torch -> <checkout>/test/test_torch.py
   sys.argv[0] = str(test_module)
 
-  # Always run verbose to capture backend C++ failures and surface culprits.
-  # Appending keeps these flags in argv[1:], where upstream expects them.
-  sys.argv.append("-v")
 
-  # Translate Bazel --test_filter (available via TESTBRIDGE_TEST_ONLY) into
-  # unittest dialect.
-  test_filter = os.environ.get("TESTBRIDGE_TEST_ONLY")
-  if test_filter:
-    sys.argv.extend(["-k", test_filter])
+def _use_absltest_main() -> None:
+  """Routes test execution to absltest with better Bazel testing protocol support."""
+
+  def absltest_main(*args: Any, **kwargs: Any) -> None:
+    """Drop-in replacement for unittest.main that delegates to absltest."""
+    # Always run verbose to print progress output.
+    kwargs.setdefault("verbosity", 2)
+    absltest.main(*args, **kwargs)
+
+  # `unittest.main` is declared as `type[TestProgram]`, so a drop-in function
+  # cannot satisfy the annotation even though it is call-compatible.
+  unittest.main = absltest_main  # pyrefly: ignore[bad-assignment]
 
 
 def main(argv: Sequence[str]) -> None:
@@ -170,26 +174,10 @@ def main(argv: Sequence[str]) -> None:
   _set_private_use1_test_configs()
   _filter_device_generic_tests()
 
-  # Execute the test module as a program. Each test module has its own entry
-  # point invoking `run_tests()` from its own namespace.
-  try:
-    runpy.run_path(str(test_module_path), run_name="__main__")
-  except SystemExit as e:
-    # See https://docs.python.org/3/library/unittest.html#unittest.main for
-    # exit codes.
-    if e.code == 5:
-      print(
-          f"INFO: Build succeeded but no tests ran for {test_module_path}.",
-          file=sys.stderr,
-      )
-      # Per https://bazel.build/run/scripts#exit-codes, the exit code 4
-      # indicates successful build but no tests run in Bazel. Intentionally
-      # preserve Bazel convention for tooling consistency.
-      #
-      # Like other non-zero exit codes, this fails the test target and surfaces
-      # zero-device-generic-test targets in CI.
-      sys.exit(4)
-    raise
+  # Execute the test module as a program via absltest. Each test module has its
+  # own entry point invoking `run_tests()` from its own namespace.
+  _use_absltest_main()
+  runpy.run_path(str(test_module_path), run_name="__main__")
 
 
 if __name__ == "__main__":

@@ -162,7 +162,7 @@ absl::StatusOr<std::string> SerializePortableArtifact(mlir::ModuleOp module) {
               .toString(),
           /*inplace=*/false,
           /*allow_mixed_serialization=*/true),
-      _.SetPrepend() << "Failed to serialize MLIR module to StableHLO: ");
+      _.SetPrepend() << "failed to serialize MLIR module to StableHLO: ");
   return serialized;
 }
 
@@ -1052,15 +1052,16 @@ absl::StatusOr<mlir::MlirOp> Squeeze(mlir::MlirOp input,
     return input;
   }
 
-  Dimensions output_dims;
+  mlir::stablehlo::Dimensions input_dims = GetDimensions(input);
+  mlir::stablehlo::Dimensions output_dims;
   for (int64_t i = 0; i < rank; ++i) {
     if (!dim_squeezed[i]) {
-      output_dims.push_back(input_shape[i]);
+      output_dims.push_back(input_dims[i]);
     }
   }
 
   auto result_type =
-      mlir::RankedTensorType::get(output_dims, type.getElementType());
+      mlir::stablehlo::getRankedTensorType(output_dims, type.getElementType());
   return mlir::stablehlo::Reshape(result_type, input);
 }
 

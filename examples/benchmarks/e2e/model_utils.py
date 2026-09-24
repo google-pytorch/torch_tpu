@@ -363,7 +363,7 @@ def _precompute_attention_mask(
           position_ids=position_ids,
           layer_idx=None,
       )
-      if mask is None:
+      if mask is None and device.type != "cuda":
         attn_impl = getattr(effective_config, "_attn_implementation", "sdpa")
         if attn_impl in ALL_MASK_ATTENTION_FUNCTIONS:
           mask_interface = ALL_MASK_ATTENTION_FUNCTIONS[attn_impl]
@@ -390,7 +390,7 @@ def _precompute_attention_mask(
           position_ids=position_ids,
           layer_idx=None,
       )
-      if mask is None:
+      if mask is None and device.type != "cuda":
         sliding_window = getattr(effective_config, "sliding_window", None)
         attn_impl = getattr(effective_config, "_attn_implementation", "sdpa")
         if (
@@ -424,7 +424,7 @@ def _precompute_attention_mask(
         layer_idx=None,
     )
 
-    if precomputed_4d_mask is None:
+    if precomputed_4d_mask is None and device.type != "cuda":
       attn_impl = getattr(config, "_attn_implementation", "sdpa")
       if attn_impl in ALL_MASK_ATTENTION_FUNCTIONS:
         mask_interface = ALL_MASK_ATTENTION_FUNCTIONS[attn_impl]
@@ -509,10 +509,12 @@ def huggingface_llm_model_builder(
   example_inputs.pop("attention_mask", None)
 
   if model_and_input_args.custom_kwargs.get("precompute_attention_mask", False):
-    example_inputs["attention_mask"] = _precompute_attention_mask(
+    attention_mask = _precompute_attention_mask(
         model_cpu.config, example_inputs, device, weights_dtype
     )
-    device_utils.synchronize(device.type, example_inputs["attention_mask"])
+    if attention_mask is not None:
+      device_utils.synchronize(device.type, attention_mask)
+      example_inputs["attention_mask"] = attention_mask
 
   if model_and_input_args.custom_kwargs.get("disable_vision_inputs", False):
     example_inputs.pop("pixel_values", None)
@@ -2963,6 +2965,7 @@ def qwen_ragged_moe_model_builder(
           rank=rank,
       )
     model.apply(_init_model_weights)
+  model = model.to(device)
 
   _, example_inputs = module_spec.sample_inputs_factory(
       (batch_size, sequence_length), str(device)
@@ -3048,6 +3051,7 @@ def gemma_ragged_moe_model_builder(
     _replace_gemma_moe_with_ragged_moe(model, module_config)
 
     model.apply(_init_model_weights)
+  model = model.to(device)
 
   _, example_inputs = module_spec.sample_inputs_factory(
       (batch_size, sequence_length), str(device)
@@ -3056,6 +3060,7 @@ def gemma_ragged_moe_model_builder(
   if model_and_input_args.custom_kwargs.get("disable_vision_inputs", False):
     example_inputs.pop("pixel_values", None)
     example_inputs.pop("image_position_ids", None)
+    example_inputs.pop("mm_token_type_ids", None)
   return ModelAndInput(model=model, example_inputs=example_inputs)
 
 
@@ -3238,8 +3243,9 @@ def muse_glimmer_model_builder(
       attention_mask = _precompute_attention_mask(
           config, {"input_ids": input_ids}, device, weights_dtype
       )
-      device_utils.synchronize(device.type, attention_mask)
-      inp["attention_mask"] = attention_mask
+      if attention_mask is not None:
+        device_utils.synchronize(device.type, attention_mask)
+        inp["attention_mask"] = attention_mask
     return inp
 
   example_inputs = _generate_inputs(bs, seq_len, _create_input)

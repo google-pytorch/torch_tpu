@@ -49,7 +49,7 @@
 #include "csrc/ops/resize/resize_aten_kernels.h"
 #include "csrc/ops/rng_utils.h"
 #include "csrc/ops/uniform/uniform.h"
-#include "csrc/pjrt/pjrt_utils.h"
+#include "csrc/pjrt/pjrt_transfer.h"
 #include "llvm/ADT/APFloat.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"

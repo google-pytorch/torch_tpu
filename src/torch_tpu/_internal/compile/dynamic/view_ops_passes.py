@@ -22,7 +22,6 @@ from absl import logging
 import torch
 import torch.utils._pytree as pytree
 from torch_tpu._internal.compile.dynamic import sym_utils
-from torch_tpu._internal.compile.dynamic import symbol_bounds
 from torch_tpu._internal.compile.dynamic.sym_shape_manager import SymShapeManager
 
 
@@ -47,9 +46,7 @@ def _extract_shape_tensors_and_bounds(
   for arg in target_shape:
     if sym_utils.is_symint(arg):
       is_dynamic.append(True)
-      symint = arg.meta["val"] if sym_utils.is_symint_node(arg) else arg
-      _, upper = symbol_bounds.get_symint_bounds(symint)
-      static_shape.append(upper)
+      static_shape.append(sym_shape_manager.get_upper_bound(arg))
       tensor_node = sym_shape_manager.ensure_tensor(
           graph_module, arg, node, dtype=torch.int32
       )
@@ -364,7 +361,8 @@ class HandleSliceLikeOpsPass:
     ]
 
     slice_sizes = [
-        symbol_bounds.get_upper_bound(out_val.shape[d]) for d in range(rank)
+        self._sym_shape_manager.get_upper_bound(out_val.shape[d])
+        for d in range(rank)
     ]
 
     dynamic_dim_sizes: list[tuple[int, torch.fx.Node]] = []
@@ -409,9 +407,11 @@ class HandleSliceLikeOpsPass:
     if not has_dynamic:
       return
 
-    input_sizes_upper = [symbol_bounds.get_upper_bound(s) for s in input_sizes]  # pyrefly: ignore[not-iterable]
-    end_upper = symbol_bounds.get_upper_bound(end)
-    step_upper = symbol_bounds.get_upper_bound(step)
+    input_sizes_upper = [
+        self._sym_shape_manager.get_upper_bound(s) for s in input_sizes  # pyrefly: ignore[not-iterable]
+    ]
+    end_upper = self._sym_shape_manager.get_upper_bound(end)
+    step_upper = self._sym_shape_manager.get_upper_bound(step)
 
     dynamic_dim_sizes: list[tuple[int, torch.fx.Node]] = []
     for d, s in enumerate(input_sizes):  # pyrefly: ignore[not-iterable, bad-argument-type]
@@ -472,7 +472,9 @@ class HandleSliceLikeOpsPass:
     ]
 
     slice_sizes = [
-        1 if d == dim else symbol_bounds.get_upper_bound(inp_val.shape[d])
+        1
+        if d == dim
+        else self._sym_shape_manager.get_upper_bound(inp_val.shape[d])
         for d in range(rank)
     ]
 

@@ -25,6 +25,7 @@ underlying providers (Torchvision, TIMM, and Transformers). It ensures that:
 import json
 import pathlib
 import tempfile
+import types
 from unittest import mock
 
 from absl.testing import absltest
@@ -266,6 +267,52 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertIsNotNone(module_spec.preprocessor_factory)
     tokenizer = module_spec.preprocessor_factory()
     self.assertIsNotNone(tokenizer)
+
+  def test_transformers_causal_lm_architecture_casing_resolution(self):
+    def modify_config(config):
+      # Simulate AdaptLLM / ChatQA casing: "LLaMAForCausalLM" instead of "LlamaForCausalLM"
+      config.architectures = ["LLaMAForCausalLM"]
+      return config
+
+    module_spec = self.module_registry.get_module_spec(
+        "transformers",
+        "meta-llama/Llama-3.2-tiny",
+        load_weights=False,
+        modify_config_hook=modify_config,
+    )
+    model = module_spec.module_factory()
+    _, kwargs = module_spec.sample_inputs_factory()
+    model.eval()
+    out = model(**kwargs)
+    self.assertTrue(hasattr(out, "logits"))
+    self.assertIsNotNone(out.logits)
+    self.assertEqual(
+        out.logits.shape,
+        (*kwargs["input_ids"].shape, module_spec.config.vocab_size),
+    )
+
+  def test_transformers_causal_lm_missing_architectures_resolution(self):
+    def modify_config(config):
+      # Simulate TheBloke / AntonV missing architectures field
+      config.architectures = []
+      return config
+
+    module_spec = self.module_registry.get_module_spec(
+        "transformers",
+        "meta-llama/Llama-3.2-tiny",
+        load_weights=False,
+        modify_config_hook=modify_config,
+    )
+    model = module_spec.module_factory()
+    _, kwargs = module_spec.sample_inputs_factory()
+    model.eval()
+    out = model(**kwargs)
+    self.assertTrue(hasattr(out, "logits"))
+    self.assertIsNotNone(out.logits)
+    self.assertEqual(
+        out.logits.shape,
+        (*kwargs["input_ids"].shape, module_spec.config.vocab_size),
+    )
 
   def test_transformers_with_modify_config_hook(self):
     def modify_config(config):
@@ -562,6 +609,89 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertLen(kwargs["aspect_ratio_ids"].shape, 2)
     self.assertLen(kwargs["aspect_ratio_mask"].shape, 3)
 
+  def test_transformers_glm_ocr_get_module_spec(self):
+    spec = self.module_registry.get_module_spec(
+        "transformers", "zai-org/GLM-OCR"
+    )
+    self.assertEqual(spec.modality, module_registry.Modality.MULTIMODAL)
+    _, kwargs = spec.sample_inputs_factory((1, 2048), "cpu")
+    self.assertIn("input_ids", kwargs)
+    self.assertIn("pixel_values", kwargs)
+    self.assertIn("image_grid_thw", kwargs)
+    self.assertIn("mm_token_type_ids", kwargs)
+
+  def test_transformers_kosmos2_get_module_spec(self):
+    spec = self.module_registry.get_module_spec(
+        "transformers", "microsoft/kosmos-2-patch14-224"
+    )
+    self.assertEqual(spec.modality, module_registry.Modality.MULTIMODAL)
+    _, kwargs = spec.sample_inputs_factory((1, 2048), "cpu")
+    self.assertIn("input_ids", kwargs)
+    self.assertIn("pixel_values", kwargs)
+    self.assertIn("image_embeds_position_mask", kwargs)
+
+  def test_transformers_glm_ocr_generate_inputs(self):
+    config = mock.MagicMock(
+        model_type="glm_ocr",
+        architectures=["GlmOcrForConditionalGeneration"],
+        vision_config=mock.MagicMock(
+            patch_size=14, temporal_patch_size=2, spatial_merge_size=2
+        ),
+        image_size=336,
+        vocab_size=59281,
+        max_position_embeddings=8192,
+    )
+    kwargs = module_registry._generate_transformers_inputs(
+        config,
+        module_registry.Modality.MULTIMODAL,
+        shape=(1, 2048),
+        device="cpu",
+    )
+    self.assertIn("input_ids", kwargs)
+    self.assertIn("pixel_values", kwargs)
+    self.assertIn("image_grid_thw", kwargs)
+    self.assertIn("mm_token_type_ids", kwargs)
+    self.assertEqual(kwargs["image_grid_thw"].shape, (1, 3))
+    self.assertEqual(kwargs["pixel_values"].dim(), 2)
+    self.assertEqual(kwargs["input_ids"][0, 0].item(), 59256)
+    self.assertEqual(kwargs["input_ids"][0, 145].item(), 59257)
+    self.assertEqual(kwargs["mm_token_type_ids"][0, 1].item(), 1)
+
+  def test_transformers_kosmos2_generate_inputs(self):
+    config = mock.MagicMock(
+        model_type="kosmos-2",
+        architectures=["Kosmos2ForConditionalGeneration"],
+        vision_config=mock.MagicMock(patch_size=14),
+        image_size=224,
+        latent_query_num=64,
+        vocab_size=64007,
+        max_position_embeddings=2048,
+    )
+    kwargs = module_registry._generate_transformers_inputs(
+        config,
+        module_registry.Modality.MULTIMODAL,
+        shape=(1, 2048),
+        device="cpu",
+    )
+    self.assertIn("input_ids", kwargs)
+    self.assertIn("pixel_values", kwargs)
+    self.assertIn("image_embeds_position_mask", kwargs)
+    self.assertEqual(
+        kwargs["image_embeds_position_mask"][:, 1:65].sum().item(), 64
+    )
+
+  def test_transformers_sequence_length_clamping(self):
+    config = mock.MagicMock(
+        model_type="electra",
+        architectures=["ElectraForPreTraining"],
+        max_position_embeddings=512,
+        vocab_size=30522,
+    )
+    kwargs = module_registry._generate_transformers_inputs(
+        config, module_registry.Modality.TEXT, shape=(1, 2048), device="cpu"
+    )
+    self.assertEqual(kwargs["input_ids"].shape, (1, 512))
+
   def test_transformers_segformer_get_module_spec(self):
     module_spec = self.module_registry.get_module_spec(
         "transformers", "nvidia/segformer-b2-finetuned-ade-512-512"
@@ -584,6 +714,66 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertIn("token_type_ids", kwargs)
     self.assertEqual(kwargs["token_type_ids"].shape[-1], 7)
     self.assertLen(kwargs["token_type_ids"].shape, 3)
+
+  def test_transformers_gemma4_unified_assistant_get_module_spec(self):
+    def modify_config(config):
+      # Scale down vocab size for fast unit test execution
+      text_cfg = config.text_config
+      text_cfg.vocab_size = 1000
+      config.vocab_size = 1000
+      return config
+
+    module_spec = self.module_registry.get_module_spec(
+        "transformers",
+        "google/gemma-4-12B-it-assistant",
+        load_weights=False,
+        modify_config_hook=modify_config,
+    )
+    model = module_spec.module_factory()
+    self.assertIsNotNone(model)
+    _, kwargs = module_spec.sample_inputs_factory(shape=(1, 16))
+    self.assertIn("inputs_embeds", kwargs)
+    self.assertIn("shared_kv_states", kwargs)
+    self.assertNotIn("input_ids", kwargs)
+    self.assertIn("sliding_attention", kwargs["shared_kv_states"])
+    self.assertIn("full_attention", kwargs["shared_kv_states"])
+    self.assertEqual(
+        kwargs["inputs_embeds"].shape,
+        (1, 16, 2 * module_spec.config.backbone_hidden_size),
+    )
+    model.eval()
+    out = model(**kwargs)
+    self.assertEqual(out.logits.shape, (1, 16, 1000))
+
+  def test_transformers_gemma4_assistant_get_module_spec(self):
+    def modify_config(config):
+      # Scale down vocab size for fast unit test execution
+      text_cfg = config.text_config
+      text_cfg.vocab_size = 1000
+      config.vocab_size = 1000
+      return config
+
+    module_spec = self.module_registry.get_module_spec(
+        "transformers",
+        "google/gemma-4-31B-it-assistant",
+        load_weights=False,
+        modify_config_hook=modify_config,
+    )
+    model = module_spec.module_factory()
+    self.assertIsNotNone(model)
+    _, kwargs = module_spec.sample_inputs_factory(shape=(1, 16))
+    self.assertIn("inputs_embeds", kwargs)
+    self.assertIn("shared_kv_states", kwargs)
+    self.assertNotIn("input_ids", kwargs)
+    self.assertIn("sliding_attention", kwargs["shared_kv_states"])
+    self.assertIn("full_attention", kwargs["shared_kv_states"])
+    self.assertEqual(
+        kwargs["inputs_embeds"].shape,
+        (1, 16, 2 * module_spec.config.backbone_hidden_size),
+    )
+    model.eval()
+    out = model(**kwargs)
+    self.assertEqual(out.logits.shape, (1, 16, 1000))
 
   def test_transformers_model_and_inputs_dtype_alignment(self):
     def modify_config(config):
@@ -1270,7 +1460,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     cfg_neg = mock.MagicMock(max_position_embeddings=-1)
     self.assertEqual(module_registry._get_max_seq_len(cfg_neg), 512)
 
-    cfg_oversized = mock.MagicMock(max_position_embeddings=100000)
+    cfg_oversized = mock.MagicMock(max_position_embeddings=1000000)
     self.assertEqual(module_registry._get_max_seq_len(cfg_oversized), 512)
 
     cfg_empty = mock.MagicMock(spec=[])
@@ -1291,22 +1481,6 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertEqual(
         module_registry._safe_int(mock.MagicMock(), default=10), 10
     )
-
-  def test_get_config_attr(self):
-    cfg_dict = {"foo": 1, "bar": "val"}
-    self.assertEqual(module_registry._get_config_attr(cfg_dict, "foo"), 1)
-    self.assertEqual(module_registry._get_config_attr(cfg_dict, "bar"), "val")
-    self.assertIsNone(module_registry._get_config_attr(cfg_dict, "baz"))
-    self.assertEqual(
-        module_registry._get_config_attr(cfg_dict, "baz", default=42), 42
-    )
-
-    cfg_obj = mock.MagicMock(foo=2, bar="obj_val")
-    self.assertEqual(module_registry._get_config_attr(cfg_obj, "foo"), 2)
-    self.assertEqual(
-        module_registry._get_config_attr(cfg_obj, "bar"), "obj_val"
-    )
-    self.assertIsNone(module_registry._get_config_attr(None, "foo"))
 
   def test_extract_diffusers_subfolder_candidates(self):
     idx_dict = {
@@ -1391,6 +1565,122 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         }),
         module_registry.Modality.MULTIMODAL,
     )
+
+  def test_sanitize_transformers_config_dict(self):
+    raw_config = {
+        "model_type": "layoutlmv3",
+        "id2label": {"0": 1, "1": 2, "2": 3},
+        "hidden_dropout_prob": 0,
+        "attention_probs_dropout_prob": 0,
+        "classifier_dropout": 0,
+        "use_pretrained_backbone": True,
+        "backbone": "resnet50",
+    }
+    sanitized = module_registry._sanitize_transformers_config_dict(
+        raw_config, load_weights=False
+    )
+    # id2label values must be str
+    self.assertEqual(sanitized["id2label"], {"0": "1", "1": "2", "2": "3"})
+    # dropout probs must be float
+    self.assertIsInstance(sanitized["hidden_dropout_prob"], float)
+    self.assertEqual(sanitized["hidden_dropout_prob"], 0.0)
+    self.assertIsInstance(sanitized["attention_probs_dropout_prob"], float)
+    self.assertIsInstance(sanitized["classifier_dropout"], float)
+    # use_pretrained_backbone must be False when offline
+    self.assertFalse(sanitized["use_pretrained_backbone"])
+    # backbone_config must be synthesized when offline
+    self.assertEqual(
+        sanitized["backbone_config"],
+        {"model_type": "timm_backbone", "backbone": "resnet50"},
+    )
+
+  def test_config_wrapper_dict(self):
+    raw = {
+        "model_type": "bert",
+        "hidden_size": 768,
+        "vision_config": {"image_size": 224, "num_channels": 3},
+        "id2label": {"0": "cat"},
+    }
+    cfg = module_registry._ConfigWrapper(raw)
+
+    # Attribute access
+    self.assertEqual(cfg.model_type, "bert")
+    self.assertEqual(cfg.hidden_size, 768)
+    self.assertEqual(getattr(cfg, "model_type", ""), "bert")
+    self.assertEqual(getattr(cfg, "nonexistent", "fallback"), "fallback")
+    self.assertTrue(hasattr(cfg, "model_type"))
+    self.assertFalse(hasattr(cfg, "nonexistent"))
+
+    # Nested attribute access
+    self.assertIsInstance(cfg.vision_config, module_registry._ConfigWrapper)
+    self.assertEqual(cfg.vision_config.image_size, 224)
+    self.assertEqual(cfg.vision_config.num_channels, 3)
+
+    # Dictionary / Item access
+    self.assertEqual(cfg["model_type"], "bert")
+    self.assertEqual(cfg.get("hidden_size"), 768)
+    self.assertEqual(cfg.get("hidden_size", ""), "768")
+    self.assertEqual(cfg.get("nonexistent", 100), 100)
+    self.assertEqual(cfg.get("nonexistent", ""), "")
+    self.assertEqual(cfg.get("_class_name", "").lower(), "")
+    self.assertEqual(cfg.get("architectures", []), [])
+    self.assertIn("model_type", cfg)
+    self.assertNotIn("nonexistent", cfg)
+
+    # Mutation via attribute
+    cfg.use_pretrained_backbone = False
+    self.assertFalse(cfg.use_pretrained_backbone)
+    self.assertFalse(raw["use_pretrained_backbone"])
+
+    # Unwrap
+    self.assertIs(cfg.unwrap(), raw)
+
+  def test_config_wrapper_object(self):
+    obj = types.SimpleNamespace(
+        model_type="resnet",
+        hidden_size=512,
+        backbone_config={"image_size": 224},
+    )
+    cfg = module_registry._ConfigWrapper(obj)
+
+    # Attribute delegation
+    self.assertEqual(cfg.model_type, "resnet")
+    self.assertEqual(cfg.hidden_size, 512)
+    self.assertEqual(getattr(cfg, "nonexistent", "default"), "default")
+    self.assertTrue(hasattr(cfg, "model_type"))
+    self.assertFalse(hasattr(cfg, "nonexistent"))
+
+    # Nested dict attribute delegation
+    self.assertIsInstance(cfg.backbone_config, module_registry._ConfigWrapper)
+    self.assertEqual(cfg.backbone_config.image_size, 224)
+
+    # Item access delegation
+    self.assertEqual(cfg["model_type"], "resnet")
+    self.assertEqual(cfg.get("hidden_size"), 512)
+    self.assertEqual(cfg.get("nonexistent", 99), 99)
+    self.assertIn("model_type", cfg)
+    self.assertNotIn("nonexistent", cfg)
+
+    # Unwrap
+    self.assertIs(cfg.unwrap(), obj)
+
+  def test_load_transformers_config_with_fallback_returns_wrapper(self):
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      config_path = pathlib.Path(tmp_dir) / "config.json"
+      config_path.write_text(
+          json.dumps({
+              "model_type": "bert",
+              "hidden_size": 768,
+              "vision_config": {"image_size": 224},
+          })
+      )
+      cfg = module_registry._load_transformers_config_with_fallback(
+          config_path, load_weights=False
+      )
+      self.assertIsInstance(cfg, module_registry._ConfigWrapper)
+      self.assertEqual(cfg.model_type, "bert")
+      self.assertEqual(cfg.hidden_size, 768)
+      self.assertEqual(cfg.vision_config.image_size, 224)
 
 
 if __name__ == "__main__":

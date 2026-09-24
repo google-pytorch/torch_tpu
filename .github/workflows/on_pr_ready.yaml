@@ -1,0 +1,56 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: On PR Ready
+
+on:
+  # `pull_request_target` is helpful for automation that responds to
+  # pull requests from forks, such as posting comments. Although it grants
+  # a write token, it is safe because the job never checks out PR code.
+  #
+  # See https://docs.github.com/en/enterprise-cloud@latest/actions/reference/security/securely-using-pull_request_target#deciding-whether-to-use-pull_request_target
+  # for more details.
+  pull_request_target:  # zizmor: ignore[dangerous-triggers]
+    types: [opened, ready_for_review]
+
+permissions: {}
+
+jobs:
+  post_review_process:
+    name: Post Review Process Comment
+    runs-on: ubuntu-latest
+    # Filter out Copybara-generated and draft PRs.
+    if: >-
+      !github.event.pull_request.draft &&
+      github.event.pull_request.user.login != 'copybara-service[bot]'
+    permissions:
+      pull-requests: write  # Comment on the PR.
+    steps:
+      - name: Comment on the PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          # A given PR could become ready more than once, e.g. ready -> draft -> ready,
+          # intentionally do not dedup to remind every time a PR is ready for review.
+          gh pr comment "${PR_NUMBER}" --repo "${REPOSITORY}" --body-file - <<EOF
+          Thanks for contributing to TorchTPU, @${PR_AUTHOR}! :fire:
+
+          To ensure smooth code reviews, we kindly ask authors and reviewers \
+          to follow the process documented in https://github.com/${REPOSITORY}/blob/main/CONTRIBUTING.md#code-reviews.
+
+          Happy hacking!
+          EOF

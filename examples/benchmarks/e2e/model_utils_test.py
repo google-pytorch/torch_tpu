@@ -17,7 +17,10 @@
 from unittest import mock
 
 from absl.testing import absltest
+from absl.testing import flagsaver
 import torch
+from examples.benchmarks.e2e import benchmark_function_db
+from examples.benchmarks.e2e import common
 from examples.benchmarks.e2e import model_utils
 from tests import seed_test_utils
 
@@ -142,6 +145,51 @@ class ModelUtilsTest(seed_test_utils.RepeatableTest):
       )
 
     self.assertIs(result.model, dummy_model)
+
+  def test_precompute_attention_mask_cuda_skips_4d_materialization(self):
+    config = model_utils.transformers.PreTrainedConfig(
+        hidden_size=64, _attn_implementation="sdpa"
+    )
+    example_inputs = {"input_ids": torch.zeros((2, 16), dtype=torch.long)}
+
+    cuda_mask = model_utils._precompute_attention_mask(
+        config=config,
+        example_inputs=example_inputs,
+        device=torch.device("cuda"),
+        weights_dtype=torch.bfloat16,
+        masking_device="cpu",
+    )
+    self.assertIsNone(cuda_mask)
+
+    cpu_mask = model_utils._precompute_attention_mask(
+        config=config,
+        example_inputs=example_inputs,
+        device=torch.device("cpu"),
+        weights_dtype=torch.bfloat16,
+        masking_device="cpu",
+    )
+    self.assertIsNotNone(cpu_mask)
+    self.assertEqual(cpu_mask.shape, (2, 1, 16, 16))
+
+  def test_get_train_factory_compiled_cuda_uses_eager_train_factory(self):
+    with flagsaver.flagsaver((common.PLATFORM, common.Platform.B200_1)):
+      out_cuda = benchmark_function_db.get_train_factory(
+          common.RunMode.COMPILED, benchmark_function_db.simple_train_factory
+      )
+      self.assertIs(out_cuda, benchmark_function_db.simple_train_factory)
+
+    with flagsaver.flagsaver((common.PLATFORM, common.Platform.GFC_1X1X1)):
+      out_tpu = benchmark_function_db.get_train_factory(
+          common.RunMode.COMPILED, benchmark_function_db.simple_train_factory
+      )
+      self.assertIs(
+          out_tpu.func, benchmark_function_db.functional_train_factory
+      )
+
+    model_utils.device_utils.configure_inductor_for_benchmarks()
+    self.assertFalse(
+        model_utils.transformers.masking_utils.is_tracing(torch.zeros(1))
+    )
 
 
 if __name__ == "__main__":

@@ -23,3 +23,9 @@ Instructions related to Bazel repositories:
     being used.
 *   Only define a repository in WORKSPACE if it doesn't exist, or errors
     indicate a newer version must be used.
+
+When creating a pull request:
+
+*   Build the body from `.github/pull_request_template.md`. Keep its `##
+    Description` and `## Test Plan` headings and drop the HTML comment
+    placeholders. `gh pr create --body` does not apply the template.

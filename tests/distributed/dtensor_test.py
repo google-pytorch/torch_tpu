@@ -22,7 +22,6 @@ from torch import distributed as dist
 import torch.distributed.tensor as dt
 import torch.multiprocessing as mp
 from torch_tpu._internal import sync
-from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
@@ -178,57 +177,43 @@ class DTensor1DimTest(seed_test_utils.MultiProcessRepeatableTest):
   def test_apply_op(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_dtensor_1d_apply_op, world_size=8
-        ),
+        fn=run_dtensor_1d_apply_op,
     )
 
   def test_dtensor_1d_distribute_from_src(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_dtensor_1d_distribute_from_src, world_size=8
-        ),
+        fn=run_dtensor_1d_distribute_from_src,
     )
 
   def test_shard_to_replicate(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_dtensor_1d_shard_to_replicate, world_size=8
-        ),
+        fn=run_dtensor_1d_shard_to_replicate,
     )
 
   def test_replicate_to_shard(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_dtensor_1d_replicate_to_shard, world_size=8
-        ),
+        fn=run_dtensor_1d_replicate_to_shard,
     )
 
   def test_shard_to_shard(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_dtensor_1d_shard_to_shard, world_size=8
-        ),
+        fn=run_dtensor_1d_shard_to_shard,
     )
 
   def test_partial_to_replicate(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_dtensor_1d_partial_to_replicate, world_size=8
-        ),
+        fn=run_dtensor_1d_partial_to_replicate,
     )
 
   def test_partial_to_shard(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_dtensor_1d_partial_to_shard, world_size=8
-        ),
+        fn=run_dtensor_1d_partial_to_shard,
     )
 
 
@@ -252,9 +237,7 @@ class DTensor2DimTest(seed_test_utils.MultiProcessRepeatableTest):
   def test_shard_to_shard(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_dtensor_2d_shard_to_shard, world_size=8
-        ),
+        fn=run_dtensor_2d_shard_to_shard,
     )
 
 
@@ -269,7 +252,7 @@ def run_sync_dtensor() -> None:
   dtensor = dt.DTensor.from_local(shard, device_mesh, [dt.Shard(0)])
   dtensor = dtensor + 1
 
-  torch.tpu.synchronize()
+  torch.accelerator.synchronize()
   assert sync.is_materializing(dtensor), "DTensor not materialized after sync"
   assert sync.is_materialized(dtensor), "Dtensor materialized but not ready"
 
@@ -282,7 +265,7 @@ class DTensorSyncTest(seed_test_utils.MultiProcessRepeatableTest):
   def test_sync_dtensor(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(run_sync_dtensor, world_size=8),
+        fn=run_sync_dtensor,
     )
 
 

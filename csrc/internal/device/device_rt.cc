@@ -92,8 +92,13 @@ void PySynchronizeDevice(int device_index, bool wait) {
 
     impl->synchronizeDevice(device_index);
   } else {
-    TT_THROW_IF_ERROR(
-        MaterializeDevice(device_index, MaterializationReason::kExplicitSync));
+    auto stream_futures =
+        MaterializeDevice(device_index, MaterializationReason::kExplicitSync);
+    // Wait until each stream has enqueued its materialization task, but don't
+    // wait for the materialization to complete.
+    for (auto& future : stream_futures) {
+      TT_THROW_IF_ERROR(future.Await().status());
+    }
   }
 }
 
@@ -118,12 +123,13 @@ PyTpuEventBase PyRecordEvent(std::optional<int> device_index,
   }
   TT_ASSIGN_OR_THROW(
       auto event_snapshot,
-      MaterializeStream(index, id, MaterializationReason::kExplicitSync));
+      MaterializeStream(index, id, MaterializationReason::kExplicitSync)
+          .Await());
   return PyTpuEventBase(std::move(event_snapshot));
 }
 
 void InitRuntimeOptions(const std::string& device_type) {
-  if (device_type == "tpu" || device_type == "xla_cuda") {
+  if (device_type == "tpu") {
     TT_THROW_IF_ERROR(AddTpuHooks()) << "Failed to add TPU hooks.";
     RegisterTpuAllocator();
   }
@@ -225,6 +231,12 @@ TT_PYBIND11_MODULE(_device_ops_backend, m) {
       "_is_initialized",
       []() -> bool { return PjrtBackend::GetInstance().IsInitialized(); },
       "Returns whether the PjRt runtime is initialized.");
+
+  m.def(
+      "_is_in_bad_fork",
+      []() -> bool { return PjrtBackend::GetInstance().IsInBadFork(); },
+      "Returns whether the current process is in an unsafe forked child "
+      "state.");
 
   m.def(
       "_shutdown_runtime",

@@ -43,32 +43,22 @@ absl::StatusOr<mlir::MlirOp> BuildCumsumShlo(
     const int64_t normalized_dim,
     const std::optional<mlir::ElementType> out_dtype, mlir::MlirOp input) {
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
-  mlir::ElementType target_element_type = GetElementTypeOrDie(input);
+  // PyTorch default promotion: when out_dtype is omitted, integral types
+  // default to int64 (i64) to prevent overflow; float/complex preserve their
+  // input dtype.
+  mlir::ElementType target_element_type = out_dtype.value_or(
+      input_type.getElementType().isInteger() ? mlir::ElementType::I64
+                                              : GetElementTypeOrDie(input));
 
   mlir::MlirBuilder& builder = input.getBuilder();
-  if (out_dtype.has_value()) {
-    target_element_type = out_dtype.value();
-  } else if (input_type.getElementType().isInteger()) {
-    target_element_type = mlir::ElementType::I64;
-  }
-
   TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
                       InferComputationDtype(target_element_type));
-  TT_ASSIGN_OR_RETURN(input, CastIfNeeded(input, compute_dtype));
+  if (GetElementTypeOrDie(input) != compute_dtype) {
+    input = mlir::stablehlo::ConvertElementType(input, compute_dtype);
+  }
 
-  const mlir::Type compute_element_type =
-      getElementType(builder.getContext(), compute_dtype);
-
-  const mlir::RankedTensorType promoted_type = GetTensorTypeOrDie(input);
-  // chlo.ScanOp carries are rank-reduced (the scan dimension is erased).
-  llvm::SmallVector<int64_t> carry_shape(promoted_type.getShape().begin(),
-                                         promoted_type.getShape().end());
-  carry_shape.erase(carry_shape.begin() + normalized_dim);
-
-  const mlir::MlirOp init_value =
-      MakeScalarConstant(builder, 0, compute_element_type);
   TT_ASSIGN_OR_RETURN(const mlir::MlirOp carry_init,
-                      BroadcastIfNeeded(init_value, carry_shape));
+                      CreateRankReducedConstantLike(input, normalized_dim, 0));
 
   MultiInputScanBodyBuilder body_builder =
       [](mlir::OpBuilder& op_builder, mlir::Location loc,
@@ -91,7 +81,11 @@ absl::StatusOr<mlir::MlirOp> BuildCumsumShlo(
           /*carry_inits=*/{carry_init}, /*output_inits=*/{input},
           std::move(body_builder),
           ScanOptions{.should_squeeze = true, .is_associative = true}));
-  return CastIfNeeded(results[/*num_carries=*/1], target_element_type);
+  if (GetElementTypeOrDie(results[/*num_carries=*/1]) != target_element_type) {
+    return mlir::stablehlo::ConvertElementType(results[/*num_carries=*/1],
+                                               target_element_type);
+  }
+  return results[/*num_carries=*/1];
 }
 
 }  // namespace torch_tpu

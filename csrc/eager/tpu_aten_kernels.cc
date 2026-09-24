@@ -19,6 +19,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -391,6 +392,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kAtanOut>(m, AtenAtanOut);
   ImplStable<OpName::kAtanhOut>(m, AtenAtanhOut);
   ImplStable<OpName::kAvgPool1d>(m, AtenAvgPool1d);
+  ImplStable<OpName::kAvgPool1dOut>(m, AtenAvgPool1dOut);
   ImplStable<OpName::kAvgPool2dBackwardGradInput>(
       m, AtenAvgPool2dBackwardGradInput);
   ImplStable<OpName::kAvgPool2dOut>(m, AtenAvgPool2dOut);
@@ -506,8 +508,16 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kFftC2cOut>(m, AtenFftC2cOut);
   ImplStable<OpName::kFftC2r>(m, AtenFftC2r);
   ImplStable<OpName::kFftC2rOut>(m, AtenFftC2rOut);
+  ImplStable<OpName::kFftFft>(m, AtenFftFft);
+  ImplStable<OpName::kFftFftOut>(m, AtenFftFftOut);
+  ImplStable<OpName::kFftIfft>(m, AtenFftIfft);
+  ImplStable<OpName::kFftIfftOut>(m, AtenFftIfftOut);
+  ImplStable<OpName::kFftIrfft>(m, AtenFftIrfft);
+  ImplStable<OpName::kFftIrfftOut>(m, AtenFftIrfftOut);
   ImplStable<OpName::kFftR2c>(m, AtenFftR2c);
   ImplStable<OpName::kFftR2cOut>(m, AtenFftR2cOut);
+  ImplStable<OpName::kFftRfft>(m, AtenFftRfft);
+  ImplStable<OpName::kFftRfftOut>(m, AtenFftRfftOut);
   ImplStable<OpName::kFill_Scalar>(m, AtenFillScalar_);
   ImplStable<OpName::kFill_Tensor>(m, AtenFillTensor_);
   ImplStable<OpName::kFlip>(m, AtenFlip);
@@ -1179,6 +1189,14 @@ TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
   // ctc_loss to our custom forward/backward autograd implementation.
   ImplStable<OpName::kCtcLossPublic>(m, AtenCtcLossPublicAutograd);
   ImplStable<OpName::kCtcLossPublicTensor>(m, AtenCtcLossPublicTensorAutograd);
+  ImplStable<OpName::kFftFft>(m, AtenFftFft);
+  ImplStable<OpName::kFftFftOut>(m, AtenFftFftOut);
+  ImplStable<OpName::kFftIfft>(m, AtenFftIfft);
+  ImplStable<OpName::kFftIfftOut>(m, AtenFftIfftOut);
+  ImplStable<OpName::kFftIrfft>(m, AtenFftIrfft);
+  ImplStable<OpName::kFftIrfftOut>(m, AtenFftIrfftOut);
+  ImplStable<OpName::kFftRfft>(m, AtenFftRfft);
+  ImplStable<OpName::kFftRfftOut>(m, AtenFftRfftOut);
   ImplStable<OpName::kRepeatInterleaveSelfInt>(
       m, AtenRepeatInterleaveSelfIntAutograd);
   ImplStable<OpName::kRepeatInterleaveSelfTensor>(m,
@@ -1393,6 +1411,29 @@ TORCH_LIBRARY(tpu, m) {
       "dense_args, str body_mlir, Tensor[] dummy_outputs, int "
       "max_non_zeroes_per_row, int pad_value, int max_pad_per_row, float "
       "wait_threshold, int result_row_pointer_op_index) -> Tensor[]");
+}
+
+// Registers missing Meta implementations for upstream `aten::` namespace ops
+// (`torch.ops.aten.*`). Note: this targets the `aten` library namespace, unlike
+// `TORCH_LIBRARY_IMPL(tpu, Meta, m)` below which targets custom `tpu::` ops.
+TORCH_LIBRARY_IMPL(aten, Meta, m) {
+  ImplStable<OpName::kFusedAdamTensorLr>(m, MetaFusedAdamTensorLr);
+  ImplStable<OpName::kFusedAdamFunctionalTensorLr>(
+      m, MetaFusedAdamFunctionalTensorLr);
+  ImplStable<OpName::kFusedAdamwTensorLr>(m, MetaFusedAdamTensorLr);
+  ImplStable<OpName::kFusedAdamwFunctional>(m, MetaFusedAdamFunctional);
+  ImplStable<OpName::kFusedAdamwFunctionalTensorLr>(
+      m, MetaFusedAdamFunctionalTensorLr);
+  ImplStable<OpName::kFusedSgd>(m, MetaFusedSgd);
+  ImplStable<OpName::kFusedSgdTensorLr>(m, MetaFusedSgdTensorLr);
+  ImplStable<OpName::kFusedSgdFunctional>(m, MetaFusedSgdFunctional);
+  ImplStable<OpName::kFusedSgdFunctionalTensorLr>(
+      m, MetaFusedSgdFunctionalTensorLr);
+  ImplStable<OpName::kFusedAdagrad>(m, MetaFusedAdagrad);
+  ImplStable<OpName::kFusedAdagradTensorLr>(m, MetaFusedAdagradTensorLr);
+  ImplStable<OpName::kFusedAdagradFunctional>(m, MetaFusedAdagradFunctional);
+  ImplStable<OpName::kFusedAdagradFunctionalTensorLr>(
+      m, MetaFusedAdagradFunctionalTensorLr);
 }
 
 // Registers meta implementations for torch.ops.tpu ops.

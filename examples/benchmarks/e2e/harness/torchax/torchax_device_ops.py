@@ -15,8 +15,11 @@
 """TorchaxDeviceOps: the TorchAx (torch_xla2 / JAX) implementation of DeviceOps."""
 
 from typing import Any
+
 import jax
+from examples.benchmarks.e2e import device_utils
 from examples.benchmarks.e2e.harness import target as target_lib
+from torch_tpu._internal.benchmarks import xprof_adapter
 
 _MB = 2**20
 
@@ -100,6 +103,26 @@ class TorchaxDeviceOps:
     except Exception:  # pylint: disable=broad-except
       pass
     return None
+
+  def get_device_time(self, session_id: str | None = None) -> float:
+    """Total active device time in seconds across profiling steps from XSpace."""
+    if not session_id:
+      return -1.0
+    try:
+      client = xprof_adapter.XprofAnalysisClient()
+      return device_utils.get_max_total_device_time(session_id, client)
+    except Exception:  # pylint: disable=broad-except
+      return -1.0
+
+  def get_device_time_from_xspace(
+      self,
+      xspace,
+      expected_steps: int | None = None,
+  ) -> float:
+    """Total active device time in seconds from a locally captured XSpace."""
+    return device_utils.get_total_device_time_from_xspace(
+        xspace, expected_steps=expected_steps
+    )
 
   def compile_count(self) -> int:
     """Monotonic count of compilations performed so far."""

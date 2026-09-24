@@ -79,6 +79,7 @@ torch_tpu_py_library(
         "//shims/jax:pallas_tpu",  # build_cleaner: keep
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/device:_device_ops_backend",
+        "//src/torch_tpu/_internal/distributed:device_mesh",
         "//src/torch_tpu/_internal/utils:annotations",
         "@pypi//frozendict",
         "@pypi//jax",
@@ -133,8 +134,8 @@ pybind_extension(
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
-        "@stablehlo//:attr_type_builder_util",
-        "@stablehlo//:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
     ],
 )
 

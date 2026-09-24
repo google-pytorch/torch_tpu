@@ -16,15 +16,18 @@
 
 import abc
 import asyncio
+import atexit
 import collections.abc
 from collections.abc import Collection
 import concurrent.futures
+import contextlib
 import dataclasses
 import functools
 import json
 import queue
 import struct
 import threading
+import time
 from typing import Any, Coroutine, Final, TypeVar, cast
 
 from absl import logging
@@ -38,7 +41,6 @@ from zmq import error
 import zmq.asyncio
 
 ZMQError = error.ZMQError
-Again = error.Again
 
 unset_fake_temporarily = fake_tensor.unset_fake_temporarily
 _T = TypeVar("_T")
@@ -781,7 +783,7 @@ class _HandshakeBackend(abc.ABC):
     server.close()
 
     # Worker rank:
-    client = _HandshakeClient(port=12345)
+    client = _HandshakeClient(port=12345, current_rank=1)
     client.send(request)
     response = client.recv()
     client.close()
@@ -821,6 +823,25 @@ def _validate_port_number(port: int) -> None:
     ) from e
 
 
+@contextlib.contextmanager
+def _log_zmq_duration_if_exception(
+    op_name: str, timeout_s: float | None
+) -> collections.abc.Iterator[None]:
+  """Logs the duration of a ZMQ operation if it raises a ZMQError."""
+  start_time = time.monotonic()
+  try:
+    yield
+  except ZMQError:
+    elapsed_s = time.monotonic() - start_time
+    logging.exception(
+        "%s failed after %.3fs (timeout_s=%s)",
+        op_name,
+        elapsed_s,
+        timeout_s,
+    )
+    raise
+
+
 class _ZMQServer:
   """Handles PyZMQ ROUTER socket network communication for _HandshakeServer.
 
@@ -834,7 +855,7 @@ class _ZMQServer:
     )
 
     # Client (synchronous):
-    client = _ZMQClient(port=12345)
+    client = _ZMQClient(port=12345, routing_id=b"rank-1")
     client.send(request)
     response = client.recv()  # CollectiveHandshakeResponse(success=True)
     client.close()
@@ -870,8 +891,13 @@ class _ZMQServer:
     """
     _validate_port_number(port)
     self._port = port
+    self._send_timeout_s = send_timeout_s
+    self._recv_timeout_s = recv_timeout_s
     self._context = zmq.asyncio.Context()
     self._socket = self._context.socket(zmq.ROUTER)
+    # If a new client connects to the server with the same routing ID we route
+    # our responses to the new client.
+    self._socket.setsockopt(zmq.ROUTER_HANDOVER, 1)
     if send_timeout_s is not None:
       if send_timeout_s < 0:
         raise ValueError(
@@ -889,7 +915,10 @@ class _ZMQServer:
 
   async def recv_request(self) -> _CollectiveHandshakeRequestZMQEnvelope | None:
     """Receives a raw PyZMQ request and returns a _CollectiveHandshakeRequestZMQEnvelope."""
-    frames = await self._socket.recv_multipart()
+    with _log_zmq_duration_if_exception(
+        "ZMQServer.recv_request", self._recv_timeout_s
+    ):
+      frames = await self._socket.recv_multipart()
     if len(frames) != 2:
       logging.warning(
           "ZMQServer expected 2 frames [client_id, payload], got %d frames."
@@ -909,7 +938,10 @@ class _ZMQServer:
       self, client_id: bytes, response: CollectiveHandshakeResponse
   ) -> None:
     """Sends a PyZMQ multipart reply [client_id, serialized_response] to a client rank."""
-    await self._socket.send_multipart([client_id, response.to_bytes()])
+    with _log_zmq_duration_if_exception(
+        "ZMQServer.send_reply", self._send_timeout_s
+    ):
+      await self._socket.send_multipart([client_id, response.to_bytes()])
 
   def close(self) -> None:
     """Closes the server socket and terminates the ZMQ context.
@@ -919,7 +951,9 @@ class _ZMQServer:
     `close` will raise a `zmq.ZMQError` because the underlying socket is closed.
     """
     if not self._socket.closed:
-      self._socket.close(linger=0)
+      # We linger until all replies have been sent out to avoid clients not
+      # receiving responses.
+      self._socket.close()
     if not self._context.closed:
       self._context.term()
 
@@ -1032,7 +1066,6 @@ class _HandshakeServer(_HandshakeBackend):
     """Continuously receives requests and passes them to the consensus queues.
 
     Raises:
-      Again: If socket receive times out while server is active.
       ZMQError: If socket encounters an error while server is active.
     """
     while True:
@@ -1046,11 +1079,6 @@ class _HandshakeServer(_HandshakeBackend):
       except asyncio.CancelledError:
         logging.info("_HandshakeServer _listen_loop cancelled.")
         raise
-      except Again as e:
-        logging.exception(
-            "Socket error in _HandshakeServer _listen_loop: %s", e
-        )
-        raise e
 
   def _check_loop_task_errors(self) -> None:
     """Checks if any background loop task failed and raises the exception.
@@ -1200,11 +1228,6 @@ class _HandshakeServer(_HandshakeBackend):
       except asyncio.CancelledError:
         logging.info("_HandshakeServer _consensus_loop cancelled.")
         raise
-      except Again as e:
-        logging.debug(
-            "Timeout expired in _HandshakeServer _consensus_loop: %s", e
-        )
-        raise e
 
   def close(self) -> None:
     """Closes server sockets, background tasks, and event loop thread.
@@ -1250,7 +1273,9 @@ class _ZMQClient:
 
   def __init__(
       self,
+      *,
       port: int,
+      routing_id: bytes,
       send_timeout_s: int | None = None,
       recv_timeout_s: int | None = None,
       master_addr: str | None = None,
@@ -1259,6 +1284,8 @@ class _ZMQClient:
 
     Args:
       port: TCP port number of the coordinator server.
+      routing_id: Explicit routing identity for the DEALER socket, which
+        persists across reconnects when paired with ROUTER_HANDOVER.
       send_timeout_s: Optional maximum duration in seconds for send operations.
         If None, the send timeout is not set on the socket (PyZMQ default is no
         timeout).
@@ -1274,6 +1301,8 @@ class _ZMQClient:
     """
     _validate_port_number(port)
     self._port = port
+    self._send_timeout_s = send_timeout_s
+    self._recv_timeout_s = recv_timeout_s
     self._master_addr = (
         master_addr
         if master_addr is not None
@@ -1282,6 +1311,7 @@ class _ZMQClient:
 
     self._context = zmq.Context()  # pyrefly: ignore[missing-attribute]
     self._socket = self._context.socket(zmq.DEALER)
+    self._socket.setsockopt(zmq.ROUTING_ID, routing_id)
     if send_timeout_s is not None:
       if send_timeout_s < 0:
         raise ValueError(
@@ -1307,11 +1337,14 @@ class _ZMQClient:
 
   def send(self, request: CollectiveHandshakeRequest) -> None:
     """Sends serialized request synchronously to the server via PyZMQ socket."""
-    self._socket.send(request.to_bytes())
+    with _log_zmq_duration_if_exception("ZMQClient.send", self._send_timeout_s):
+      self._socket.send(request.to_bytes())
 
   def recv(self) -> CollectiveHandshakeResponse:
     """Receives response synchronously from the server via PyZMQ socket."""
-    return CollectiveHandshakeResponse.from_bytes(self._socket.recv())
+    with _log_zmq_duration_if_exception("ZMQClient.recv", self._recv_timeout_s):
+      payload = self._socket.recv()
+    return CollectiveHandshakeResponse.from_bytes(payload)
 
   def close(self) -> None:
     """Closes the client socket and terminates the ZMQ context.
@@ -1350,6 +1383,7 @@ class _HandshakeClient(_HandshakeBackend):
   def __new__(
       cls,
       port: int,
+      current_rank: int,
   ) -> "_HandshakeClient":
     """Creates or returns the singleton _HandshakeClient instance.
 
@@ -1361,6 +1395,8 @@ class _HandshakeClient(_HandshakeBackend):
 
     Args:
       port: TCP port number of the coordinator handshake server.
+      current_rank: Worker rank, used to set a deterministic routing identity
+        across reconnects.
 
     Returns:
       The singleton _HandshakeClient instance for the specified port.
@@ -1369,8 +1405,10 @@ class _HandshakeClient(_HandshakeBackend):
       if cls._instance is None:
         inst = super().__new__(cls)
         timeout_s = _get_handshake_timeout_s()
+        routing_id = f"rank-{current_rank}".encode()
         inst._zmq_client = _ZMQClient(
             port=port,
+            routing_id=routing_id,
             send_timeout_s=timeout_s,
             recv_timeout_s=timeout_s,
         )
@@ -1463,7 +1501,9 @@ class Handshake:
           current_rank=coordinator_rank, port=port, world_size=world_size
       )
     else:
-      self._backend = _HandshakeClient(port=port)
+      self._backend = _HandshakeClient(
+          port=port, current_rank=self._current_rank
+      )
 
   @classmethod
   def _reset_instances(cls) -> None:
@@ -1512,3 +1552,7 @@ class Handshake:
     if hasattr(self, "_backend") and self._backend is not None:
       if hasattr(self._backend, "close"):
         self._backend.close()
+
+
+# Ensure server/client instances are cleanly closed on process exit.
+atexit.register(Handshake._reset_instances)  # pylint: disable=protected-access

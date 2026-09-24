@@ -143,6 +143,8 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "atanh.out";
     case OpName::kAvgPool1d:
       return "avg_pool1d";
+    case OpName::kAvgPool1dOut:
+      return "avg_pool1d.out";
     case OpName::kAvgPool2dBackwardGradInput:
       return "avg_pool2d_backward.grad_input";
     case OpName::kAvgPool2dOut:
@@ -419,10 +421,26 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "_fft_c2r";
     case OpName::kFftC2rOut:
       return "_fft_c2r.out";
+    case OpName::kFftFft:
+      return "fft_fft";
+    case OpName::kFftFftOut:
+      return "fft_fft.out";
+    case OpName::kFftIfft:
+      return "fft_ifft";
+    case OpName::kFftIfftOut:
+      return "fft_ifft.out";
+    case OpName::kFftIrfft:
+      return "fft_irfft";
+    case OpName::kFftIrfftOut:
+      return "fft_irfft.out";
     case OpName::kFftR2c:
       return "_fft_r2c";
     case OpName::kFftR2cOut:
       return "_fft_r2c.out";
+    case OpName::kFftRfft:
+      return "fft_rfft";
+    case OpName::kFftRfftOut:
+      return "fft_rfft.out";
     case OpName::kFill_Scalar:
       return "fill_.Scalar";
     case OpName::kFill_Tensor:
@@ -749,14 +767,24 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "_foreach_zero_";
     case OpName::kFusedAdagrad:
       return "_fused_adagrad_";
+    case OpName::kFusedAdagradFunctional:
+      return "_fused_adagrad";
+    case OpName::kFusedAdagradFunctionalTensorLr:
+      return "_fused_adagrad.tensor_lr";
     case OpName::kFusedAdagradTensorLr:
       return "_fused_adagrad_.tensor_lr";
     case OpName::kFusedAdam:
       return "_fused_adam_";
+    case OpName::kFusedAdamFunctionalTensorLr:
+      return "_fused_adam.tensor_lr";
     case OpName::kFusedAdamTensorLr:
       return "_fused_adam_.tensor_lr";
     case OpName::kFusedAdamw:
       return "_fused_adamw_";
+    case OpName::kFusedAdamwFunctional:
+      return "_fused_adamw";
+    case OpName::kFusedAdamwFunctionalTensorLr:
+      return "_fused_adamw.tensor_lr";
     case OpName::kFusedAdamwTensorLr:
       return "_fused_adamw_.tensor_lr";
     case OpName::kFusedDropout:
@@ -771,6 +799,10 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "_fused_sdp_choice";
     case OpName::kFusedSgd:
       return "_fused_sgd_";
+    case OpName::kFusedSgdFunctional:
+      return "_fused_sgd";
+    case OpName::kFusedSgdFunctionalTensorLr:
+      return "_fused_sgd.tensor_lr";
     case OpName::kFusedSgdTensorLr:
       return "_fused_sgd_.tensor_lr";
     case OpName::kGather:

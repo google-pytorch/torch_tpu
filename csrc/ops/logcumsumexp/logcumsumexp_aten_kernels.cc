@@ -17,17 +17,20 @@
 #include "csrc/ops/logcumsumexp/logcumsumexp_aten_kernels.h"
 
 #include <cstdint>
+#include <optional>
 #include <utility>
 
 #include "ATen/core/TensorBody.h"
 #include "absl/functional/bind_front.h"
 #include "absl/status/statusor.h"
 #include "csrc/common/aten_utils.h"
+#include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
+#include "csrc/ops/resize/resize_aten_kernels.h"
 #include "csrc/ops/scan_builder.h"
 #include "csrc/ops/unary_aten_kernels.h"
 #include "llvm/ADT/APFloat.h"
@@ -94,20 +97,25 @@ absl::StatusOr<ScanBodyResults> LogaddexpScanBody(mlir::OpBuilder& op_builder,
 // Lowers logcumsumexp along 'normalized_dim' to an associative chlo.ScanOp
 // (native scan emitter). The combiner is a numerically stable logaddexp and the
 // scan identity is -inf.
-absl::StatusOr<mlir::MlirOp> BuildLogcumsumexpShlo(const int64_t normalized_dim,
-                                                   mlir::MlirOp input) {
+absl::StatusOr<mlir::MlirOp> BuildLogcumsumexpShlo(
+    const int64_t normalized_dim,
+    const std::optional<mlir::ElementType> out_dtype, mlir::MlirOp input) {
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
+  const mlir::ElementType input_elem_type = GetElementTypeOrDie(input);
+  const mlir::ElementType target_element_type =
+      out_dtype.value_or(input_elem_type);
+
   // logcumsumexp of a 0-dim (scalar) tensor or a 0-element empty tensor is the
   // tensor itself. Return the input directly so the lowering stays pure SHLO;
   // routing the scalar case through an aten clone/copy would trip the
   // composite-op check for this non-whitelisted op.
   if (input_type.getRank() == 0 ||
       (input_type.hasStaticShape() && input_type.getNumElements() == 0)) {
-    return input;
+    return CastIfNeeded(input, target_element_type);
   }
-  const mlir::ElementType input_elem_type = GetElementTypeOrDie(input);
+
   TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
-                      InferComputationDtype(input_elem_type));
+                      InferComputationDtype(target_element_type));
   TT_ASSIGN_OR_RETURN(input, CastIfNeeded(input, compute_dtype));
 
   mlir::MlirBuilder& builder = input.getBuilder();
@@ -142,7 +150,7 @@ absl::StatusOr<mlir::MlirOp> BuildLogcumsumexpShlo(const int64_t normalized_dim,
           /*carry_inits=*/{carry_init}, /*output_inits=*/{input},
           LogaddexpScanBody,
           ScanOptions{.should_squeeze = true, .is_associative = true}));
-  return CastIfNeeded(results[/*num_carries=*/1], input_elem_type);
+  return CastIfNeeded(results[/*num_carries=*/1], target_element_type);
 }
 
 }  // namespace
@@ -154,15 +162,15 @@ at::Tensor AtenLogcumsumexp(const at::Tensor& self, const int64_t dim) {
           << "expected the input dtype to be floating point, got "
           << ToString(self.scalar_type());
     }
-    // SafeWrapDim is only valid for rank >= 1; for a 0-dim scalar the builder
-    // ignores the dim and returns the identity.
-    int64_t normalized_dim = dim;
-    if (self.dim() > 0) {
-      TT_ASSIGN_OR_THROW(normalized_dim, SafeWrapDim(dim, self.dim()));
-    }
+
+    TT_ASSIGN_OR_THROW(const int64_t normalized_dim,
+                       SafeWrapDim(dim, self.dim()));
+
     TT_ASSIGN_OR_THROW(
         at::Tensor result,
-        UnaryOp(self, absl::bind_front(BuildLogcumsumexpShlo, normalized_dim),
+        UnaryOp(self,
+                absl::bind_front(BuildLogcumsumexpShlo, normalized_dim,
+                                 /*out_dtype=*/std::nullopt),
                 {.op_param_cache_keys = std::move(param_keys)}));
     return result;
   });
@@ -171,6 +179,8 @@ at::Tensor AtenLogcumsumexp(const at::Tensor& self, const int64_t dim) {
 at::Tensor& AtenLogcumsumexpOut(const at::Tensor& self, const int64_t dim,
                                 at::Tensor& out) {
   TT_KERNEL(OpName::kLogcumsumexpOut, param_keys, (self, dim, out), {
+    TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, self.sizes()));
+
     // The out variant is unreachable in eager mode: functionalization rewrites
     // _logcumsumexp.out into the functional _logcumsumexp plus a copy, so the
     // identical check in AtenLogcumsumexp fires first. Kept as a defensive
@@ -183,12 +193,15 @@ at::Tensor& AtenLogcumsumexpOut(const at::Tensor& self, const int64_t dim,
           << "expected the input dtype to be floating point, got "
           << ToString(self.scalar_type());
     }
-    int64_t normalized_dim = dim;
-    if (self.dim() > 0) {
-      TT_ASSIGN_OR_THROW(normalized_dim, SafeWrapDim(dim, self.dim()));
-    }
+
+    TT_ASSIGN_OR_THROW(const int64_t normalized_dim,
+                       SafeWrapDim(dim, self.dim()));
+    TT_ASSIGN_OR_THROW(const mlir::ElementType out_mlir_type,
+                       ConvertTo<mlir::ElementType>(out.scalar_type()));
+
     TT_THROW_IF_ERROR(UnaryOpOut(
-        self, out, absl::bind_front(BuildLogcumsumexpShlo, normalized_dim),
+        self, out,
+        absl::bind_front(BuildLogcumsumexpShlo, normalized_dim, out_mlir_type),
         {.op_param_cache_keys = std::move(param_keys)}));
     return out;
   });

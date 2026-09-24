@@ -59,6 +59,12 @@ at::Tensor AtenAvgPool1d(const at::Tensor& self, at::IntArrayRef kernel_size,
                          at::IntArrayRef stride, at::IntArrayRef padding,
                          bool ceil_mode, bool count_include_pad);
 
+at::Tensor& AtenAvgPool1dOut(const at::Tensor& self,
+                             at::IntArrayRef kernel_size,
+                             at::IntArrayRef stride, at::IntArrayRef padding,
+                             bool ceil_mode, bool count_include_pad,
+                             at::Tensor& out);
+
 at::Tensor& AtenAvgPool2dOut(const at::Tensor& self,
                              at::IntArrayRef kernel_size,
                              at::IntArrayRef stride, at::IntArrayRef padding,

@@ -26,7 +26,8 @@ torch_tpu_py_test(
         "--xla_jf_conv_full_precision",  # Use highest precision for matmuls for tests only.
     ],
     main = "launch.py",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
+    nopresubmit = "slow example",
+    notest_oss = True,  # Disabled during switch from opt-in to opt-out
     tags = [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "requires-mem:28g",
@@ -37,7 +38,7 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
+        "//src/torch_tpu/_internal/distributed/launchers:environment",
     ],
 )
 

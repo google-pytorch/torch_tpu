@@ -89,8 +89,7 @@ torch_tpu_py_test(
     name = "pallas_communication_test",
     srcs = ["pallas_communication_test.py"],
     env = {"TPU_PREMAPPED_BUFFER_SIZE": "0"},
-    # TODO(b/497890629): Enable in OSS
-    notest_oss = "fix hang in OSS",  # TODO
+    notest_oss = True,  # TODO(b/497890629): Fix hang in OSS and enable in OSS.
     shard_count = 2,
     tags = [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
@@ -106,7 +105,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//src/torch_tpu/_internal/pallas",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",

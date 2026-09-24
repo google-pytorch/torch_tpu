@@ -23,7 +23,7 @@ from ci.tools import run_bazel_diff
 
 
 class RunBazelDiffTest(unittest.TestCase):
-  """Tests argument parsing and file classification in run_bazel_diff.py."""
+  """Tests argument parsing, file classification, and ops-test filtering."""
 
   def test_parse_args_named_flags(self):
     opts = run_bazel_diff.parse_args([
@@ -69,11 +69,65 @@ class RunBazelDiffTest(unittest.TestCase):
         (["csrc/ops/add.cc", "MODULE.bazel"], True),
         ([".bazelrc"], True),
         (["csrc/ops/BUILD", "src/torch_tpu/__init__.py"], False),
+        # Dependency locks are pip.parse inputs, so they invalidate everything.
+        # Jobs that repin a lock in their checkout also rely on this: matching
+        # here returns before the `git checkout` calls, which would otherwise
+        # abort on the dirty lock.
+        (["requirements/requirements_3_14.txt"], True),
+        (["requirements/lock_environments.sh"], True),
+        # Near-miss: the patterns match whole paths.
+        (["tools/requirements_helper.py"], False),
     ]
     for files, expected in cases:
       with self.subTest(files=files):
         self.assertEqual(
             run_bazel_diff.is_global_bazel_config_modified(files), expected
+        )
+
+  def test_workflow_path_from_ref(self):
+    cases = [
+        (
+            (
+                "google-pytorch/torch_tpu/.github/workflows/presubmit.yml@refs/"
+                "pull/4194/merge"
+            ),
+            ".github/workflows/presubmit.yml",
+        ),
+        # A ref is not guaranteed to carry the `@<git-ref>` suffix.
+        (
+            "google-pytorch/torch_tpu/.github/workflows/nightly_tpu.yml",
+            ".github/workflows/nightly_tpu.yml",
+        ),
+        # Outside GitHub Actions the variable is unset.
+        ("", ""),
+        ("not-a-workflow-ref", ""),
+    ]
+    for ref, expected in cases:
+      with self.subTest(ref=ref):
+        self.assertEqual(run_bazel_diff.workflow_path_from_ref(ref), expected)
+
+  def test_is_ci_definition_modified(self):
+    presubmit_ref = (
+        "google-pytorch/torch_tpu/.github/workflows/presubmit.yml@refs/heads/"
+        "main"
+    )
+    cases = [
+        # The job's own workflow file.
+        ([".github/workflows/presubmit.yml"], presubmit_ref, True),
+        # Shared CI infrastructure affects every job.
+        ([".github/actions/bazel-diff/action.yml"], presubmit_ref, True),
+        # A different workflow says nothing about this job.
+        ([".github/workflows/nightly_tpu.yml"], presubmit_ref, False),
+        # Without a ref, only the shared paths can match.
+        ([".github/workflows/presubmit.yml"], "", False),
+        ([".github/actions/bazel-diff/action.yml"], "", True),
+        # Ordinary source changes are left to bazel-diff.
+        (["csrc/ops/add.cc"], presubmit_ref, False),
+    ]
+    for files, ref, expected in cases:
+      with self.subTest(files=files, ref=ref):
+        self.assertEqual(
+            run_bazel_diff.is_ci_definition_modified(files, ref), expected
         )
 
   def test_are_all_files_doc_or_metadata(self):
@@ -174,6 +228,60 @@ class RunBazelDiffTest(unittest.TestCase):
           ValueError, "Workspace directory does not exist"
       ):
         run_bazel_diff.main([f"--workspace-dir={missing_dir}"])
+
+  def test_should_run_ops_tests(self):
+    opted_in_files = [
+        "csrc/ops/add.cc",
+        "csrc/ops/experimental/foo.h",
+        "src/torch_tpu/ops/custom_op.py",
+        "tests/op_testing.py",
+        "tests/ops_test.py",
+        "tests/ops_test_data.py",
+        "tests/dynamism_test_utils.py",
+        "tests/ops_test_gpu_golden_v1.json.gz",
+    ]
+    for opted_in_file in opted_in_files:
+      with self.subTest(opted_in=opted_in_file):
+        self.assertTrue(
+            run_bazel_diff.should_run_ops_tests(["README.md", opted_in_file])
+        )
+
+    opted_out_files = [
+        "csrc/eager/runtime.cc",
+        "src/torch_tpu/compiler/pass.py",
+        "tests/eager_test.py",
+        # The patterns match whole paths, so these near-misses stay opted out.
+        "tests/other_dynamism_test_utils.py",
+        "tests/ops_test.py.orig",
+        "csrc/ops_fusion/fuse.cc",
+    ]
+    with self.subTest(opted_out=opted_out_files):
+      self.assertFalse(run_bazel_diff.should_run_ops_tests(opted_out_files))
+
+  def test_filter_ops_test_targets(self):
+    impacted = [
+        "@@//tests:eager_test_tpu-v5lite",
+        "@@//tests:ops_test_tpu-v5lite",
+        "@@//tests:ops_test_tpu-v5lite_build_test",
+        "//tests:foreach_ops_test_tpu-v7x",
+        "@@//csrc/eager:traversal_test",
+    ]
+    ops_targets = [
+        "//tests:ops_test_tpu-v5lite",
+        "//tests:foreach_ops_test_tpu-v7x",
+        "//tests:searchsorted_ops_test_tpu-v5lite",
+    ]
+    filtered = list(
+        run_bazel_diff.filter_ops_test_targets(impacted, ops_targets)
+    )
+    self.assertEqual(
+        filtered,
+        [
+            "@@//tests:eager_test_tpu-v5lite",
+            "@@//tests:ops_test_tpu-v5lite_build_test",
+            "@@//csrc/eager:traversal_test",
+        ],
+    )
 
 
 if __name__ == "__main__":

@@ -21,7 +21,6 @@ from absl.testing import absltest
 import torch
 from torch import distributed as dist
 import torch.multiprocessing as mp
-from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.distributed import multiprocessing
 from tests import error_testing as et
 from tests import seed_test_utils
@@ -209,90 +208,61 @@ class AllToAllSingleCollectiveErrorsTest(
   def test_send_recv_mismatch(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all_single_send_recv_mismatch_error,
-            world_size=self._world_size,
-        ),
+        fn=run_all_to_all_single_send_recv_mismatch_error,
     )
 
   def test_asymmetric_cross_rank_buffer(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all_single_asymmetric_cross_rank_buffer_error,
-            world_size=self._world_size,
-        ),
+        fn=run_all_to_all_single_asymmetric_cross_rank_buffer_error,
     )
 
   def test_asymmetric_cross_rank_output_buffer(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all_single_asymmetric_cross_rank_output_buffer_error,
-            world_size=self._world_size,
-        ),
+        fn=run_all_to_all_single_asymmetric_cross_rank_output_buffer_error,
     )
 
   def test_negative_split_size(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all_single_negative_split_size_error,
-            world_size=self._world_size,
-        ),
+        fn=run_all_to_all_single_negative_split_size_error,
     )
 
   def test_invalid_dtype(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all_single_dtype_error, world_size=self._world_size
-        ),
+        fn=run_all_to_all_single_dtype_error,
     )
 
   def test_invalid_tensor_size(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all_single_invalid_tensor_size_error,
-            world_size=self._world_size,
-        ),
+        fn=run_all_to_all_single_invalid_tensor_size_error,
     )
 
   def test_invalid_split_sizes_size(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all_single_invalid_split_sizes_size_error,
-            world_size=self._world_size,
-        ),
+        fn=run_all_to_all_single_invalid_split_sizes_size_error,
     )
 
   def test_invalid_split_sizes_sum(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all_single_invalid_split_sizes_sum_error,
-            world_size=self._world_size,
-        ),
+        fn=run_all_to_all_single_invalid_split_sizes_sum_error,
     )
 
   def test_invalid_trailing_dims(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all_single_uneven_trailing_dims_mismatch_error,
-            world_size=self._world_size,
-        ),
+        fn=run_all_to_all_single_uneven_trailing_dims_mismatch_error,
     )
 
   def test_invalid_dim_count(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all_single_uneven_dim_count_mismatch_error,
-            world_size=self._world_size,
-        ),
+        fn=run_all_to_all_single_uneven_dim_count_mismatch_error,
     )
 
 
@@ -420,55 +390,37 @@ class AllToAllCollectiveErrorsTest(seed_test_utils.MultiProcessRepeatableTest):
   def test_unequal_tensor_list_size(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all_unequal_tensor_list_size_error,
-            world_size=self._world_size,
-        ),
+        fn=run_all_to_all_unequal_tensor_list_size_error,
     )
 
   def test_wrong_num_input_tensors(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all_wrong_num_input_tensors_error,
-            world_size=self._world_size,
-        ),
+        fn=run_all_to_all_wrong_num_input_tensors_error,
     )
 
   def test_unequal_input_tensor_trailing_dims(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all_unequal_input_tensor_trailing_dims_error,
-            world_size=self._world_size,
-        ),
+        fn=run_all_to_all_unequal_input_tensor_trailing_dims_error,
     )
 
   def test_unequal_output_tensor_trailing_dims(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all_unequal_output_tensor_trailing_dims_error,
-            world_size=self._world_size,
-        ),
+        fn=run_all_to_all_unequal_output_tensor_trailing_dims_error,
     )
 
   def test_dim_count_mismatch(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all_dim_count_mismatch_error,
-            world_size=self._world_size,
-        ),
+        fn=run_all_to_all_dim_count_mismatch_error,
     )
 
   def test_dtype_mismatch(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_all_to_all_dtype_mismatch_error,
-            world_size=self._world_size,
-        ),
+        fn=run_all_to_all_dtype_mismatch_error,
     )
 
 
@@ -557,28 +509,19 @@ class RaggedAllToAllErrorsTest(seed_test_utils.MultiProcessRepeatableTest):
   def test_dim_count_mismatch(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_ragged_all_to_all_dim_count_mismatch_error,
-            world_size=self._world_size,
-        ),
+        fn=run_ragged_all_to_all_dim_count_mismatch_error,
     )
 
   def test_trailing_dims_mismatch(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_ragged_all_to_all_trailing_dims_mismatch_error,
-            world_size=self._world_size,
-        ),
+        fn=run_ragged_all_to_all_trailing_dims_mismatch_error,
     )
 
   def test_dtype_mismatch(self):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_ragged_all_to_all_dtype_mismatch_error,
-            world_size=self._world_size,
-        ),
+        fn=run_ragged_all_to_all_dtype_mismatch_error,
     )
 
 

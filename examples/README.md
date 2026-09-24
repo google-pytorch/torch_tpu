@@ -32,6 +32,9 @@ For model inference examples, refer to `examples/`.
 ## Available Models
 
 -   simple_nn
+-   [classical_ml](classical_ml/README.md): Classical ML (MLP) training and
+    full-stack profiling (TensorBoard + XProf) with eager vs. `torch.compile`
+    execution.
 
 ## Benchmarking
 

@@ -22,6 +22,12 @@ from transformers import activations
 
 
 def manual_ragged_dot(x, w, groups):
+  if hasattr(torch, "_grouped_mm") and x.device.type == "cuda":
+    offs = torch.cumsum(groups, dim=0).to(torch.int32)
+    orig_dtype = x.dtype
+    x_bf16 = x.to(torch.bfloat16)
+    w_bf16 = w.to(torch.bfloat16)
+    return torch._grouped_mm(x_bf16, w_bf16, offs=offs).to(orig_dtype)
   out = torch.zeros(x.shape[0], w.shape[-1], device=x.device, dtype=x.dtype)
   idx = 0
   for i, g in enumerate(groups):

@@ -45,10 +45,12 @@
 #include "c10/util/Optional.h"
 #include "c10/util/intrusive_ptr.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/context_states.h"
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/eager_mode.h"
+#include "csrc/eager/events_queue.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/structured_log_buffer.h"
@@ -57,7 +59,7 @@
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/pjrt/pjrt_state.h"
-#include "csrc/pjrt/pjrt_utils.h"
+#include "csrc/pjrt/pjrt_transfer.h"
 #include "llvm/ADT/SmallVector.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -272,8 +274,14 @@ absl::Status DeviceGeneratorState::MaybeMaterializeDeviceStateTensor(
   // Do a materialization, and block on it if we're in launch blocking mode.
   materialize_state_counter_ = 0;
   TT_ASSIGN_OR_RETURN(DeviceBufferRef buf, GetBuffer(device_state_tensor_));
-  TT_RETURN_IF_ERROR(Materialize(buf, MaterializationReason::kExplicitSync));
-  if (eager_mode == EagerMode::kDeferNeverAndLaunchBlocking) {
+  const bool should_block =
+      eager_mode == EagerMode::kDeferNeverAndLaunchBlocking;
+  const MaterializationBlockMode block_mode =
+      should_block ? MaterializationBlockMode::kBlockUntilStarted
+                   : MaterializationBlockMode::kNonBlocking;
+  TT_RETURN_IF_ERROR(Materialize(buf, MaterializationReason::kExplicitSync,
+                                 MaterializationMode::kSplitGraph, block_mode));
+  if (should_block) {
     TT_RETURN_IF_ERROR(buf.Synchronize());
   }
   return absl::OkStatus();

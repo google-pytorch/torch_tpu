@@ -46,6 +46,7 @@
 #include "csrc/common/compilation.h"
 #include "csrc/common/compilation_cache.h"
 #include "csrc/common/compilation_spec.h"
+#include "csrc/common/compile_options_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -62,6 +63,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -85,6 +87,7 @@
 #include "xla/service/device_assignment.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
+#include "xla/side_effect_util.h"
 #include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
@@ -540,6 +543,138 @@ void AnnotateMlirPlacements(mlir::ModuleOp module,
   }
 }
 
+bool IsCompatibleDeviceAssignmentTile(absl::Span<const int64_t> d_sub,
+                                      absl::Span<const int64_t> d_full) {
+  const size_t m = d_sub.size();
+  const size_t n = d_full.size();
+  if (m == 0 || n == 0 || n % m != 0) {
+    return false;
+  }
+  for (size_t offset = 0; offset < n; offset += m) {
+    if (d_full.subspan(offset, m) == d_sub) {
+      return true;
+    }
+  }
+  return false;
+}
+
+mlir::DenseIntElementsAttr TileReplicaGroupsAttr(
+    mlir::DenseIntElementsAttr attr, int64_t sub_size, int64_t num_tiles) {
+  auto shaped_type = mlir::dyn_cast<mlir::RankedTensorType>(attr.getType());
+  if (!shaped_type || shaped_type.getRank() != 2) {
+    return attr;
+  }
+  const int64_t num_groups = shaped_type.getDimSize(0);
+  const int64_t group_size = shaped_type.getDimSize(1);
+  if (num_groups * group_size != sub_size) {
+    return attr;
+  }
+  std::vector<int64_t> old_vals;  // INT_VEC_OK
+  old_vals.reserve(num_groups * group_size);
+  for (const llvm::APInt& val : attr.getValues<llvm::APInt>()) {
+    old_vals.push_back(val.getSExtValue());
+  }
+  std::vector<int64_t> new_vals;  // INT_VEC_OK
+  new_vals.reserve(num_tiles * num_groups * group_size);
+  for (int64_t t = 0; t < num_tiles; ++t) {
+    const int64_t offset = t * sub_size;
+    for (int64_t v : old_vals) {
+      new_vals.push_back(v + offset);
+    }
+  }
+  auto new_type = mlir::RankedTensorType::get(
+      {num_tiles * num_groups, group_size}, shaped_type.getElementType());
+  return mlir::DenseIntElementsAttr::get(new_type, new_vals);
+}
+
+mlir::DenseIntElementsAttr TileSourceTargetPairsAttr(
+    mlir::DenseIntElementsAttr attr, int64_t sub_size, int64_t num_tiles) {
+  auto shaped_type = mlir::dyn_cast<mlir::RankedTensorType>(attr.getType());
+  if (!shaped_type || shaped_type.getRank() != 2 ||
+      shaped_type.getDimSize(1) != 2) {
+    return attr;
+  }
+  const int64_t num_pairs = shaped_type.getDimSize(0);
+  if (num_pairs == 0 || num_pairs > sub_size) {
+    return attr;
+  }
+  std::vector<int64_t> old_vals;  // INT_VEC_OK
+  old_vals.reserve(num_pairs * 2);
+  for (const llvm::APInt& val : attr.getValues<llvm::APInt>()) {
+    const int64_t v = val.getSExtValue();
+    if (v < 0 || v >= sub_size) {
+      return attr;
+    }
+    old_vals.push_back(v);
+  }
+  std::vector<int64_t> new_vals;  // INT_VEC_OK
+  new_vals.reserve(num_tiles * num_pairs * 2);
+  for (int64_t t = 0; t < num_tiles; ++t) {
+    const int64_t offset = t * sub_size;
+    for (int64_t v : old_vals) {
+      new_vals.push_back(v + offset);
+    }
+  }
+  auto new_type = mlir::RankedTensorType::get({num_tiles * num_pairs, 2},
+                                              shaped_type.getElementType());
+  return mlir::DenseIntElementsAttr::get(new_type, new_vals);
+}
+
+void TileOperationForSubgroup(mlir::Operation* root_op, int64_t sub_size,
+                              int64_t num_tiles) {
+  llvm::SmallVector<mlir::stablehlo::PartitionIdOp> partition_id_ops;
+  root_op->walk([&](mlir::Operation* op) {
+    if (auto rg_attr =
+            op->getAttrOfType<mlir::DenseIntElementsAttr>("replica_groups")) {
+      op->setAttr("replica_groups",
+                  TileReplicaGroupsAttr(rg_attr, sub_size, num_tiles));
+    }
+    if (auto st_attr = op->getAttrOfType<mlir::DenseIntElementsAttr>(
+            "source_target_pairs")) {
+      op->setAttr("source_target_pairs",
+                  TileSourceTargetPairsAttr(st_attr, sub_size, num_tiles));
+    }
+    if (mlir::isa<mlir::stablehlo::CustomCallOp>(op)) {
+      if (auto dict_attr =
+              op->getAttrOfType<mlir::DictionaryAttr>("backend_config")) {
+        if (auto rg_attr = mlir::dyn_cast_or_null<mlir::DenseIntElementsAttr>(
+                dict_attr.get("replica_groups"))) {
+          llvm::SmallVector<mlir::NamedAttribute> new_attrs;
+          for (const mlir::NamedAttribute& named_attr : dict_attr) {
+            if (named_attr.getName() == "replica_groups") {
+              new_attrs.emplace_back(
+                  named_attr.getName(),
+                  TileReplicaGroupsAttr(rg_attr, sub_size, num_tiles));
+            } else {
+              new_attrs.push_back(named_attr);
+            }
+          }
+          op->setAttr("backend_config",
+                      mlir::DictionaryAttr::get(op->getContext(), new_attrs));
+        }
+      }
+    }
+    if (auto pid_op = mlir::dyn_cast<mlir::stablehlo::PartitionIdOp>(op)) {
+      partition_id_ops.push_back(pid_op);
+    }
+  });
+
+  for (mlir::stablehlo::PartitionIdOp pid_op : partition_id_ops) {
+    mlir::Block::iterator next_it(pid_op);
+    ++next_it;
+    mlir::OpBuilder builder(pid_op->getBlock(), next_it);
+    auto pid_type = mlir::cast<mlir::RankedTensorType>(pid_op.getType());
+    auto m_attr = mlir::DenseIntElementsAttr::get(
+        pid_type, llvm::APInt(32, static_cast<uint64_t>(sub_size), false));
+    auto m_const = mlir::stablehlo::ConstantOp::create(builder, pid_op.getLoc(),
+                                                       pid_type, m_attr);
+    auto rem_op =
+        mlir::stablehlo::RemOp::create(builder, pid_op.getLoc(), pid_type,
+                                       pid_op.getResult(), m_const.getResult());
+    pid_op.getResult().replaceAllUsesExcept(rem_op.getResult(), rem_op);
+  }
+}
+
 }  // namespace
 
 const PythonContext* absl_nullable Traversal::GetPythonContext() const {
@@ -556,10 +691,10 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
     mlir::MLIRContext& mlir_context, bool use_stablehlo_bounds,
     absl::Span<const int64_t> donated_inputs,
     std::optional<std::string_view> module_name) const {
-  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=temporary
-      core_pinning_mode_ == CorePinningMode::kUnpinned,
-      error::kPythonNotImplementedError)
-      << "MLIR lowering for core pinning is not yet implemented";
+  TT_ASSIGN_OR_RETURN(const std::vector<int64_t> resolved_da,  // INT_VEC_OK
+                      ResolveDeviceAssignment());
+  const int64_t full_da_size = resolved_da.size();
+
   // Read the traversal's values.
   absl::Span<const DeviceBufferRef> arguments = this->arguments();
   absl::Span<const SharedDeviceBufferList> execution_order =
@@ -599,7 +734,7 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
     // Get the deferred op we need to build.
     const auto maybe_deferred_op = node->deferred_op();
     TT_RET_CHECK(maybe_deferred_op, error::kInternal)
-        << "DeviceBufferList in execution_order has no deferred op";
+        << "in execution_order, a DeviceBufferList has no deferred op";
     const DeferredOp& deferred_op = *maybe_deferred_op;
 
     // Get the MlirOps for all inputs.
@@ -615,6 +750,23 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
       donated_values.insert(deferred_inputs[donated_input_index].getValue());
     }
 
+    const int64_t op_da_size = deferred_op.device_assignment().size();
+    const bool needs_tiling = (op_da_size > 0 && full_da_size > op_da_size &&
+                               full_da_size % op_da_size == 0);
+    mlir::Block* insertion_block = fb.getOpBuilder().getInsertionBlock();
+    mlir::Operation* prev_last_op =
+        (insertion_block != nullptr && !insertion_block->empty())
+            ? &insertion_block->back()
+            : nullptr;
+    mlir::ModuleOp module_op = GetModuleOp(fb);
+    absl::flat_hash_set<std::string> existing_funcs;
+    if (needs_tiling) {
+      for (mlir::func::FuncOp func_op :
+           module_op.getOps<mlir::func::FuncOp>()) {
+        existing_funcs.insert(func_op.getSymName().str());
+      }
+    }
+
     // Build the MlirOp.
     // While `context` is in scope, all MlirOp objects built by `builder` will
     // be associated with the op's Python context.
@@ -627,6 +779,26 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
     TT_RET_CHECK(results.size() == node->size(), error::kInternal)
         << "deferred op " << deferred_op.op_name() << " returned "
         << results.size() << " results, expected " << node->size();
+
+    if (needs_tiling) {
+      const int64_t num_tiles = full_da_size / op_da_size;
+      if (insertion_block != nullptr && !insertion_block->empty()) {
+        mlir::Operation* start_op = (prev_last_op != nullptr)
+                                        ? prev_last_op->getNextNode()
+                                        : &insertion_block->front();
+        for (mlir::Operation* curr = start_op; curr != nullptr;
+             curr = curr->getNextNode()) {
+          TileOperationForSubgroup(curr, op_da_size, num_tiles);
+        }
+      }
+      for (mlir::func::FuncOp func_op :
+           module_op.getOps<mlir::func::FuncOp>()) {
+        if (!existing_funcs.contains(func_op.getSymName().str())) {
+          TileOperationForSubgroup(func_op.getOperation(), op_da_size,
+                                   num_tiles);
+        }
+      }
+    }
 
     // Cast each output of the deferred op to the expected type.
     for (int64_t index = 0; index < node->size(); ++index) {
@@ -681,8 +853,21 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
   if (!donated_arguments.empty()) {
     AnnotateBufferDonations(module.get(), donated_arguments);
   }
-
   AnnotateMlirPlacements(module.get(), outputs, arguments);
+  if (core_pinning_mode_ != CorePinningMode::kUnpinned) {
+    auto op_builder = mlir::OpBuilder(module.get());
+    std::vector<mlir::NamedAttribute> frontend_attrs;
+    frontend_attrs.reserve(1);
+    auto string_attr = op_builder.getStringAttr(
+        core_pinning_mode_ == CorePinningMode::kSparseCore
+            ? xla::kXlaComputeTypeSparseOffload
+            : xla::kXlaComputeTypeDense);
+    frontend_attrs.push_back(
+        op_builder.getNamedAttr(xla::kXlaComputeTypeAttr, string_attr));
+
+    module.get()->setAttr("mhlo.frontend_attributes",
+                          op_builder.getDictionaryAttr(frontend_attrs));
+  }
   return module;
 }
 
@@ -729,16 +914,7 @@ void AnnotateArgumentLayouts(mlir::ModuleOp module,
       std::vector<xla::Tile> tiles;
       tiles.reserve(layout.tiles.size());
       for (const Indices& tile_indices : layout.tiles) {
-        Indices tile_dims(tile_indices.begin(), tile_indices.end());
-        // Hardware tiles on TPU are at most 2-dimensional. Pad tile dimensions
-        // up to at most rank 2 to avoid generating unsupported 3D+ tiles.
-        while (tile_dims.size() < std::min<size_t>(dims.size(), 2)) {
-          const int64_t dim_idx = layout.minor_to_major[tile_dims.size()];
-          ABSL_CHECK_GE(dim_idx, 0);            // CRASH_OK
-          ABSL_CHECK_LT(dim_idx, dims.size());  // CRASH_OK
-          tile_dims.push_back(dims[dim_idx]);
-        }
-        tiles.push_back(xla::Tile(tile_dims));
+        tiles.push_back(xla::Tile(tile_indices));
       }
       const xla::Layout xla_layout(layout.minor_to_major, tiles,
                                    layout.element_size_in_bits);
@@ -818,32 +994,87 @@ bool Traversal::HasSparseCoreOp() const {
   return false;
 }
 
-absl::StatusOr<CompiledKernel> Traversal::Compile(
-    CompilationSpec spec, std::string* absl_nullable out_mlir_text,
-    bool use_stablehlo_bounds, absl::Span<const CustomLayout> argument_layouts,
-    absl::Span<const int64_t> donated_inputs,
-    std::optional<std::string_view> module_name) const {
-  tsl::profiler::TraceMe trace_await("Traversal::Compile");
-  if (HasSparseCoreOp()) {
-    absl::StatusOr<int> status =
-        PjrtBackend::GetInstance().GetGlobalDeviceCount();
-    if (status.ok() && *status > 1) {
-      const int num_devices = *status;
-      xla::ExecutableBuildOptions& exec_options =
-          spec.xla_compile_options->executable_build_options;
-      exec_options.set_num_replicas(num_devices);
-      exec_options.set_num_partitions(1);
-      xla::DeviceAssignment da(num_devices, 1);
-      for (int idx = 0; idx < num_devices; ++idx) {
-        da(idx, 0) = idx;
-      }
-      exec_options.set_device_assignment(da);
-      exec_options.set_use_spmd_partitioning(false);
-      exec_options.set_use_shardy_partitioner(false);
-      spec.compile_options_key =
-          MakeCompileOptionsKey(*spec.xla_compile_options);
+absl::StatusOr<std::vector<int64_t>>  // INT_VEC_OK
+Traversal::ResolveDeviceAssignment() const {
+  std::vector<int64_t> resolved_da;  // INT_VEC_OK
+  for (const SharedDeviceBufferList& node : execution_order_) {
+    const auto& op = node->deferred_op();
+    if (!op || op->device_assignment().empty()) continue;
+    if (op->device_assignment().size() > resolved_da.size()) {
+      resolved_da = op->device_assignment();
     }
   }
+  if (resolved_da.empty()) {
+    return resolved_da;
+  }
+  for (const SharedDeviceBufferList& node : execution_order_) {
+    const auto& op = node->deferred_op();
+    if (!op || op->device_assignment().empty()) continue;
+    if (!IsCompatibleDeviceAssignmentTile(op->device_assignment(),
+                                          resolved_da)) {
+      return TT_ERROR(error::kInvalidArgument)
+             << "Disjoint or conflicting device assignments detected in the "
+                "same "
+                "compiled module. Operations belonging to different process "
+                "groups or conflicting Pallas meshes cannot be compiled "
+                "together "
+                "into a single XLA executable";
+    }
+  }
+  return resolved_da;
+}
+
+std::optional<CompilationSpec> Traversal::MaybeUpdateSpecWithLayout(
+    const CompilationSpec& spec) const {
+  std::optional<int> sparse_core_device_count;
+  if (HasSparseCoreOp()) {
+    if (absl::StatusOr<int> status =
+            PjrtBackend::GetInstance().GetGlobalDeviceCount();
+        status.ok() && *status > 1) {
+      sparse_core_device_count = *status;
+    }
+  }
+  const bool needs_placement_override =
+      HasPinnedHostBuffer(outputs_) || HasPinnedHostBuffer(arguments_);
+  if (!sparse_core_device_count.has_value() && !needs_placement_override) {
+    return std::nullopt;
+  }
+
+  CompilationSpec mutable_spec = spec.Copy();
+  if (sparse_core_device_count.has_value()) {
+    const int num_devices = *sparse_core_device_count;
+    xla::ExecutableBuildOptions& exec_options =
+        mutable_spec.xla_compile_options->executable_build_options;
+    exec_options.set_num_replicas(num_devices);
+    exec_options.set_num_partitions(1);
+    xla::DeviceAssignment da(num_devices, 1);
+    for (int idx = 0; idx < num_devices; ++idx) {
+      da(idx, 0) = idx;
+    }
+    exec_options.set_device_assignment(da);
+    exec_options.set_use_spmd_partitioning(false);
+    exec_options.set_use_shardy_partitioner(false);
+    mutable_spec.compile_options_key =
+        MakeCompileOptionsKey(*mutable_spec.xla_compile_options);
+  }
+  if (needs_placement_override) {
+    ApplyPlacementsToCompileSpec(mutable_spec, outputs_, arguments_);
+  }
+  return mutable_spec;
+}
+
+absl::StatusOr<CompiledKernel> Traversal::Compile(
+    const CompilationSpec& spec, std::string* absl_nullable out_mlir_text,
+    bool use_stablehlo_bounds, absl::Span<const CustomLayout> argument_layouts,
+    absl::Span<const int64_t> donated_inputs,
+    std::optional<std::string_view> module_name,
+    std::optional<CompilationCacheKey>* absl_nullable out_cache_key) const {
+  tsl::profiler::TraceMe trace_await("Traversal::Compile");
+  if (out_cache_key != nullptr) {
+    *out_cache_key = std::nullopt;
+  }
+  TT_ASSIGN_OR_RETURN(const std::vector<int64_t> resolved_da,  // INT_VEC_OK
+                      ResolveDeviceAssignment());
 
   if (!argument_layouts.empty()) {
     TT_RET_CHECK(arguments_.size() == argument_layouts.size(),
@@ -871,15 +1102,47 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
   std::vector<Shape> argument_shapes = GetShapes(arguments_);
   std::vector<Shape> output_shapes = GetShapes(outputs_);
 
-  ApplyPlacementsToCompileSpec(spec, outputs_, arguments_);
+  std::optional<CompilationSpec> maybe_new_spec =
+      MaybeUpdateSpecWithLayout(spec);
+  if (!resolved_da.empty()) {
+    if (!maybe_new_spec.has_value()) {
+      maybe_new_spec = spec.Copy();
+    }
+    xla::ExecutableBuildOptions& exec_options =
+        maybe_new_spec->xla_compile_options->executable_build_options;
+    if (HasSparseCoreOp() &&
+        exec_options.num_replicas() == static_cast<int>(resolved_da.size())) {
+      xla::DeviceAssignment da(exec_options.num_replicas(), 1);
+      for (int idx = 0; idx < exec_options.num_replicas(); ++idx) {
+        da(idx, 0) = resolved_da[idx];
+      }
+      exec_options.set_device_assignment(da);
+    } else if (!HasSparseCoreOp()) {
+      const int num_partitions = resolved_da.size();
+      exec_options.set_num_replicas(1);
+      exec_options.set_num_partitions(num_partitions);
+      xla::DeviceAssignment da(1, num_partitions);
+      for (int p = 0; p < num_partitions; ++p) {
+        da(0, p) = resolved_da[p];
+      }
+      exec_options.set_device_assignment(da);
+    }
+    maybe_new_spec->compile_options_key =
+        MakeCompileOptionsKey(*maybe_new_spec->xla_compile_options);
+  }
+  const CompilationSpec& effective_spec =
+      maybe_new_spec.has_value() ? *maybe_new_spec : spec;
 
-  CompilationCacheKey compilation_cache_key =
-      GetCacheKey(spec.compile_options_key, argument_layouts, donated_inputs);
+  CompilationCacheKey compilation_cache_key = GetCacheKey(
+      effective_spec.compile_options_key, argument_layouts, donated_inputs);
+  if (out_cache_key != nullptr) {
+    out_cache_key->emplace(compilation_cache_key);
+  }
   ABSL_VLOG(1) << "[Compile] compilation cache key: " << compilation_cache_key;
 
   return CompilationCache::GetInstance().GetOrCompile(
       std::move(compilation_cache_key), argument_shapes, output_shapes,
-      std::move(final_op_builder), std::move(spec.xla_compile_options),
+      std::move(final_op_builder), *effective_spec.xla_compile_options,
       /*use_dynamic_adapters=*/!use_stablehlo_bounds);
 }
 

@@ -16,8 +16,8 @@
 # A script to run the tensor parallel worker on a single host.
 
 # Detect and export TPU configuration dynamically for a single host.
-echo "Running singlehost_wrapper to detect topology..."
-eval "$(python3 -m torch_tpu._internal.distributed.launchers.singlehost_wrapper)"
+echo "Running environment to detect topology..."
+eval "$(python3 -m torch_tpu._internal.distributed.launchers.environment)"
 export TORCH_TPU_TOPOLOGY TORCH_TPU_SLICEBUILDER_ADDRESSES
 export NNODES=1
 export NODE_RANK=0

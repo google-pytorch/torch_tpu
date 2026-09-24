@@ -67,6 +67,10 @@ class CompileConfig:
       from torch_tpu._internal import compile as torch_tpu_compile  # pylint: disable=g-import-not-at-top
 
       backend = torch_tpu_compile.TpuBackend(dynamism=self.dynamic is not False)
+    else:
+      from examples.benchmarks.e2e import device_utils  # pylint: disable=g-import-not-at-top
+
+      device_utils.configure_inductor_for_benchmarks()
 
     return torch.compile(
         obj,

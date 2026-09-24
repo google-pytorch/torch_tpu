@@ -26,7 +26,7 @@ from torch_tpu._internal import execution_mode
 from torch_tpu._internal import sync
 from torch_tpu._internal import testing as tt_testing
 
-_EagerMode: TypeAlias = execution_mode._EagerMode
+EagerMode: TypeAlias = execution_mode.EagerMode
 
 
 class InternalSyncTest(absltest.TestCase):  # ABSLTEST_OK=Internal sync test
@@ -35,7 +35,7 @@ class InternalSyncTest(absltest.TestCase):  # ABSLTEST_OK=Internal sync test
     super().setUp()
     tt_testing.reset_eager_state()
     self.old_eager_mode = execution_mode.eager_mode
-    execution_mode.eager_mode = _EagerMode.INTERNAL_DEFER_ALL
+    execution_mode.eager_mode = EagerMode.INTERNAL_DEFER_ALL
 
   def tearDown(self):
     execution_mode.eager_mode = self.old_eager_mode
@@ -74,16 +74,10 @@ class InternalSyncTest(absltest.TestCase):  # ABSLTEST_OK=Internal sync test
 
     sync.synchronize(y, wait=False)
 
-    # Strict ordering forces x to be materialized along with y.
-    # But it may not be ready yet.
+    # The entire stream begins materializing, but may not be ready yet.
     self.assertTrue(sync.is_materializing(x))
-
-    # y was materialized, but may not be ready yet.
     self.assertTrue(sync.is_materializing(y))
-
-    # z was not materialized because it was dispatched after the synchronized
-    # tensor.
-    self.assertFalse(sync.is_materializing(z))
+    self.assertTrue(sync.is_materializing(z))
 
   def test_sync_no_wait_list(self):
     x = torch.ones(10, device=torch.device("tpu"))
@@ -113,17 +107,13 @@ class InternalSyncTest(absltest.TestCase):  # ABSLTEST_OK=Internal sync test
 
     sync.synchronize(y, wait=True)
 
-    # Strict ordering forces x to be materialized along with y.
+    # The entire stream is materialized, including the specific target `y`.
     self.assertTrue(sync.is_materializing(x))
     self.assertTrue(sync.is_materialized(x))
-
-    # y was materialized and is ready.
     self.assertTrue(sync.is_materializing(y))
     self.assertTrue(sync.is_materialized(y))
-
-    # z was not materialized because it was dispatched after the synchronized
-    # tensor.
-    self.assertFalse(sync.is_materializing(z))
+    self.assertTrue(sync.is_materializing(z))
+    self.assertTrue(sync.is_materialized(z))
 
   def test_sync_and_wait_list(self):
     x = torch.ones(10, device=torch.device("tpu"))
@@ -310,119 +300,6 @@ class InternalSyncTest(absltest.TestCase):  # ABSLTEST_OK=Internal sync test
       self.assertRegex(s, node_param)
     self.assertLen(s.split("\n"), num_lines)
 
-  def test_computation_graphviz_partially_materialized(self):
-    expected_before = textwrap.dedent("""\
-        Graphviz string: (try pasting in http://graphviz/ to see the graph)
-        digraph {
-          // Vertices:
-          0 [shape="box", label=" float32[2, 4] (materialized)"];
-          1 [shape="box", label=" float32[3, 4] (materialized)"];
-          2 [shape="box", label=" float32[2, 3] (materialized)"];
-          3 [label="scalar_tensor"];
-          4 [shape="box", label=" int64[]"];
-          5 [label="mul.out"];
-          6 [shape="box", label=" float32[2, 4]"];
-          7 [shape="box", label="scalar_tensor"];
-          8 [shape="box", label=" int64[]"];
-          9 [label="mul.out"];
-          10 [shape="box", label="y: float32[3, 4]"];
-          11 [shape="box", label="scalar_tensor"];
-          12 [shape="box", label=" int64[]"];
-          13 [label="mul.out"];
-          14 [shape="box", label="x: float32[2, 3]"];
-          15 [shape="box", label="mm.out"];
-          16 [shape="box", label=" float32[2, 4]"];
-          17 [shape="box", label="add.out"];
-          18 [shape="box", label="w: float32[2, 4]"];
-
-          // Edges:
-          3 -> 4
-          0 -> 5
-          4 -> 5
-          5 -> 6
-          7 -> 8
-          1 -> 9
-          8 -> 9
-          9 -> 10
-          11 -> 12
-          2 -> 13
-          12 -> 13
-          13 -> 14
-          14 -> 15
-          10 -> 15
-          15 -> 16
-          16 -> 17
-          6 -> 17
-          17 -> 18
-        }
-        """)
-
-    expected_after = textwrap.dedent("""\
-        Graphviz string: (try pasting in http://graphviz/ to see the graph)
-        digraph {
-          // Vertices:
-          0 [shape="box", label=" float32[2, 4] (materialized)"];
-          1 [shape="box", label="x: float32[2, 3] (materialized)"];
-          2 [shape="box", label=" float32[3, 4] (materialized)"];
-          3 [label="scalar_tensor"];
-          4 [shape="box", label=" int64[]"];
-          5 [label="mul.out"];
-          6 [shape="box", label=" float32[2, 4]"];
-          7 [label="scalar_tensor"];
-          8 [shape="box", label=" int64[]"];
-          9 [label="mul.out"];
-          10 [shape="box", label="y: float32[3, 4]"];
-          11 [label="mm.out"];
-          12 [shape="box", label=" float32[2, 4]"];
-          13 [shape="box", label="add.out"];
-          14 [shape="box", label="w: float32[2, 4]"];
-
-          // Edges:
-          3 -> 4
-          0 -> 5
-          4 -> 5
-          5 -> 6
-          7 -> 8
-          2 -> 9
-          8 -> 9
-          9 -> 10
-          1 -> 11
-          10 -> 11
-          11 -> 12
-          12 -> 13
-          6 -> 13
-          13 -> 14
-        }
-        """)
-    # Create materialized leaf inputs by doing a host to device copy.
-    x_ones = torch.ones(2, 3, device="cpu").to(torch.device("tpu"))
-    y_ones = torch.ones(3, 4, device="cpu").to(torch.device("tpu"))
-    z_ones = torch.ones(2, 4, device="cpu").to(torch.device("tpu"))
-
-    # Create a graph of deferred operations.
-    x = x_ones * 2
-    y = y_ones * 3
-    z = z_ones * 4
-    w = x @ y + z
-
-    # Drop everything but the final outputs.
-    del x_ones, y_ones, z_ones, z
-
-    node_params, num_lines = self.extract_graphviz_invariants(expected_before)
-    s = sync.computation_graphviz(y, w)
-    for node_param in node_params:
-      self.assertRegex(s, node_param)
-    self.assertLen(s.split("\n"), num_lines)
-
-    print(x.cpu())
-
-    node_params, num_lines = self.extract_graphviz_invariants(expected_after)
-    s = sync.computation_graphviz(y, w)
-
-    for node_param in node_params:
-      self.assertRegex(s, node_param)
-    self.assertLen(s.split("\n"), num_lines)
-
   def test_dump_computation_graphviz(self):
     x = torch.ones(2, 3, device=torch.device("tpu"))
     y = torch.ones(2, 3, device=torch.device("tpu"))
@@ -503,9 +380,11 @@ class InternalSyncTest(absltest.TestCase):  # ABSLTEST_OK=Internal sync test
 
     # Single-tensor synchronize on wrapper subclass
     sync.synchronize(dt_wrapper, wait=False)
+
+    # The entire stream is now materializing.
     self.assertTrue(sync.is_materializing(dt_wrapper))
     self.assertTrue(sync.is_materializing(x))
-    self.assertFalse(sync.is_materializing(elem_wrapper))
+    self.assertTrue(sync.is_materializing(elem_wrapper))
 
     # Sequence synchronize on list of wrapper subclasses
     sync.synchronize([dt_wrapper, elem_wrapper], wait=True)

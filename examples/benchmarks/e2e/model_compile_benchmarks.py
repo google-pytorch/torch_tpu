@@ -115,7 +115,7 @@ class CompileBenchmarkTest(test_utils.BenchmarkTest):
         warmup_func(step)
       if step == 0:
         first_step_time_seconds = time.time() - first_step_start
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
     warmup_time = time.time() - warmup_start_time
 
     with benchmark_utils.XprofContext("Eval", True) as xprof_context:
@@ -123,7 +123,7 @@ class CompileBenchmarkTest(test_utils.BenchmarkTest):
       for step in range(benchmark_utils.POST_WARMUP_STEPS.value):
         with xprof_adapter.TraceMe("Eval", step_num=step):
           benchmark_fn(step)
-      torch.tpu.synchronize()
+      torch.accelerator.synchronize()
       loop_end_time = time.time()
 
     post_warmup_step_time_seconds = (

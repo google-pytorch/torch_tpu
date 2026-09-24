@@ -19,22 +19,12 @@ import torch
 from torch_tpu import _loader
 from torch_tpu._internal.distributed import device_mesh
 from tests import seed_test_utils
+from tests.distributed import device_mesh_test_utils
 
 _loader._init_device("tpu")
 
 
 class DeviceMeshTest(seed_test_utils.MultiProcessRepeatableTest):
-
-  def test_pre_initialization_errors(self):
-    # If the process group is not initialized, topology_aware_mesh should raise a RuntimeError.
-    with mock.patch("torch.distributed.is_initialized", return_value=False):
-      with self.assertRaisesRegex(
-          RuntimeError, "process group must be initialized"
-      ):
-        torch.tpu.topology_aware_mesh(
-            mesh_shape=(8, 8),
-            topology="single_slice",
-        )
 
   def test_v6e_tiled(self):
     # An 8x8 physical grid where IDs (from 0 to 63) are assigned in 2x2 blocks
@@ -74,10 +64,7 @@ class DeviceMeshTest(seed_test_utils.MultiProcessRepeatableTest):
             "torch_tpu._internal.distributed.device_mesh._gather_global_device_info",
             return_value=infos,
         ):
-          rank_mesh = torch.tpu.topology_aware_mesh(
-              mesh_shape=(8, 8),
-              topology="single_slice",
-          )
+          rank_mesh = torch.tpu.topology_aware_mesh(mesh_shape=(8, 8))
 
     # Verify that the rank mesh has the correct shape.
     self.assertEqual(rank_mesh.shape, (8, 8))
@@ -114,6 +101,100 @@ class DeviceMeshTest(seed_test_utils.MultiProcessRepeatableTest):
             [1, dim_y - 1],
             f"Vertical neighbors {r1} and {r2} are not physically adjacent",
         )
+
+  def test_multi_slice_groups_rows_by_slice(self):
+    infos = device_mesh_test_utils.v7x_multislice_infos(num_slices=2)
+
+    rank_mesh = device_mesh_test_utils.patched_call(
+        infos,
+        lambda: torch.tpu.topology_aware_mesh(
+            mesh_shape=(2, 8),
+            dcn_mesh_shape=(2, 1),
+        ),
+    )
+
+    self.assertEqual(tuple(rank_mesh.shape), (2, 8))
+
+    # Each row must be exactly one slice, so the DCN hop lands on axis 0.
+    for row in range(2):
+      slices_in_row = {
+          infos[rank_mesh[row, col].item()].slice_index for col in range(8)
+      }
+      self.assertEqual(slices_in_row, {row})
+
+    # Every rank appears exactly once.
+    self.assertCountEqual(rank_mesh.flatten().tolist(), range(len(infos)))
+
+  def test_multi_slice_infers_dcn_mesh_shape(self):
+    infos = device_mesh_test_utils.v7x_multislice_infos(num_slices=2)
+
+    inferred = device_mesh_test_utils.patched_call(
+        infos,
+        lambda: torch.tpu.topology_aware_mesh(mesh_shape=(2, 8)),
+    )
+    explicit = device_mesh_test_utils.patched_call(
+        infos,
+        lambda: torch.tpu.topology_aware_mesh(
+            mesh_shape=(2, 8),
+            dcn_mesh_shape=(2, 1),
+        ),
+    )
+
+    # Axis 0 is the outermost axis divisible by the slice count, so inference
+    # has to reproduce dcn_mesh_shape=(2, 1).
+    self.assertEqual(inferred.tolist(), explicit.tolist())
+
+  def test_multi_slice_keeps_cores_of_a_chip_adjacent(self):
+    infos = device_mesh_test_utils.v7x_multislice_infos(num_slices=2)
+
+    rank_mesh = device_mesh_test_utils.patched_call(
+        infos,
+        lambda: torch.tpu.topology_aware_mesh(
+            mesh_shape=(2, 8),
+            dcn_mesh_shape=(2, 1),
+        ),
+    )
+
+    # The core axis has the highest bandwidth, so the two cores of a chip
+    # should land on adjacent positions of the innermost axis.
+    for row in range(2):
+      for col in range(0, 8, 2):
+        first = infos[rank_mesh[row, col].item()]
+        second = infos[rank_mesh[row, col + 1].item()]
+        self.assertEqual(
+            first.coords,
+            second.coords,
+            f"positions {col},{col+1} of row {row} are not the same chip",
+        )
+
+  def test_single_slice_accepts_all_ones_dcn_mesh_shape(self):
+    # On one slice no DCN split is needed, so the all-ones shape is
+    # satisfiable and has to keep behaving exactly like omitting it.
+    infos = device_mesh_test_utils.v7x_multislice_infos(num_slices=1)
+
+    explicit = device_mesh_test_utils.patched_call(
+        infos,
+        lambda: torch.tpu.topology_aware_mesh(
+            mesh_shape=(1, 8),
+            dcn_mesh_shape=(1, 1),
+        ),
+    )
+    omitted = device_mesh_test_utils.patched_call(
+        infos,
+        lambda: torch.tpu.topology_aware_mesh(mesh_shape=(1, 8)),
+    )
+
+    self.assertEqual(explicit.tolist(), omitted.tolist())
+
+  def test_infer_dcn_mesh_shape_picks_outermost_divisible_axis(self):
+    # TorchTitan orders its axes (pp, dp_replicate, dp_shard, cp, tp), so the
+    # split lands on dp_replicate and every shard group stays in one slice.
+    self.assertEqual(
+        device_mesh._infer_dcn_mesh_shape((1, 4, 32, 1, 1), 4),
+        (1, 4, 1, 1, 1),
+    )
+    # Pure FSDP only has one axis to give.
+    self.assertEqual(device_mesh._infer_dcn_mesh_shape((128,), 4), (4,))
 
 
 if __name__ == "__main__":

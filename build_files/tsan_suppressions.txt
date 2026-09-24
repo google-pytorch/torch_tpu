@@ -31,3 +31,8 @@ race:aten/src/ATen/native/cpu/CopyKernel
 
 # Data race on a recycled file descriptor inside hwloc topology discovery.
 race:third_party/hwloc/hwloc-master/hwloc/topology-linux.c
+
+# Data race in PyTorch core default dtype setting during Dynamo tracing restoration.
+race:c10::set_default_dtype
+race:DefaultDtype.cpp
+

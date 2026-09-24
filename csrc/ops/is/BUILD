@@ -32,7 +32,7 @@ torch_tpu_cc_library(
         "//csrc/ops/macros:kernel",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
-        "@stablehlo//:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
     ],
 )
 
@@ -45,10 +45,10 @@ torch_tpu_cc_library(
         "//csrc/ops:op_builder_utils",
         "@com_google_absl//absl/status:statusor",
         "@llvm-project//mlir:IR",
-        "@stablehlo//:attr_type_builder_util",
-        "@stablehlo//:chlo_builder",
-        "@stablehlo//:mlir_builder",
-        "@stablehlo//:stablehlo_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:chlo_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
     ],
 )
 

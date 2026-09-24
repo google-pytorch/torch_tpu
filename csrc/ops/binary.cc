@@ -64,7 +64,7 @@ absl::StatusOr<mlir::MlirOp> BuildComplexShlo(mlir::MlirOp real_op,
       << "got value type " << debugString(imag_type);
   TT_ASSIGN_OR_RETURN((auto [broadcasted_real_op, broadcasted_imag_op]),
                       ApplyBroadcastIfNeeded(real_op, imag_op),
-                      _.SetPrepend() << "could not broadcast real and imag: ");
+                      _.SetPrepend() << "failed to broadcast real and imag: ");
   return stablehlo::Complex(broadcasted_real_op, broadcasted_imag_op);
 }
 
@@ -91,7 +91,7 @@ absl::StatusOr<mlir::MlirOp> BuildPolarShlo(mlir::MlirOp abs_op,
       << debugString(angle_type);
   TT_ASSIGN_OR_RETURN((auto [broadcasted_abs_op, broadcasted_angle_op]),
                       ApplyBroadcastIfNeeded(abs_op, angle_op),
-                      _.SetPrepend() << "could not broadcast abs and angle: ");
+                      _.SetPrepend() << "failed to broadcast abs and angle: ");
 
   mlir::MlirOp cos_op = stablehlo::Cosine(broadcasted_angle_op);
   mlir::MlirOp sin_op = stablehlo::Sine(broadcasted_angle_op);
@@ -109,7 +109,7 @@ absl::StatusOr<mlir::MlirOp> BuildPowShlo(mlir::MlirOp base_op,
   const mlir::RankedTensorType exp_type = GetTensorTypeOrDie(exp_op);
   TT_ASSIGN_OR_RETURN((auto [broadcasted_base_op, broadcasted_exp_op]),
                       ApplyBroadcastIfNeeded(base_op, exp_op),
-                      _.SetPrepend() << "could not broadcast base and exp: ");
+                      _.SetPrepend() << "failed to broadcast base and exp: ");
 
   // Treat true as 1 and false as 0 for boolean inputs.
   // Equivalent to base_op or not(exp_op).

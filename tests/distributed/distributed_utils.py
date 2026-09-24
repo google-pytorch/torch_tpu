@@ -17,8 +17,13 @@
 import os
 from typing import Any, Callable
 
+from absl import logging
 import portpicker
 import torch.multiprocessing as mp
+from torch_tpu._internal import env
+from torch_tpu._internal.distributed.launchers import environment
+from torch_tpu._internal.utils import hardware
+from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
 
 
@@ -32,6 +37,12 @@ def _worker_fn(
     kwargs: dict[str, Any],
 ) -> None:
   """Worker function for mp.spawn."""
+  # Parse absl flags inside each mp.spawn child subprocess so tests can pass
+  # `fn` directly to `dist_run` without wrapping `fn` with the legacy
+  # `singlehost_wrapper.tpu_env_wrapper` (whose `WorkerWrapper` previously
+  # called `parse_absl_flags()`).
+  multiprocessing.parse_absl_flags()
+
   node_rank = int(os.environ.get("NODE_RANK", "0"))
   if "WORLD_SIZE" in os.environ:
     world_size = int(os.environ["WORLD_SIZE"])
@@ -72,14 +83,18 @@ def dist_run(
     fn: Callable[..., Any],
     *args: Any,
     base_seed: int | None = None,
+    max_retries: int = 3,
     **kwargs: Any,
 ) -> None:
   """Runs the given function in a distributed environment using mp.spawn.
 
   Think of dist_run(n, foo, *args, **kwargs) as running
   n copies of foo(*args, **kwargs) in parallel, each with a different rank.
-  Preserves multi-host environment variables (MASTER_ADDR, MASTER_PORT,
-  NODE_RANK, WORLD_SIZE) if already present in os.environ.
+  Automatically bootstraps the TPU launch environment (`set_tpu_launch_env`)
+  when TPU hardware or a multi-host TPU job environment is present, while
+  remaining a no-op on CPU-only or GPU-only runners. Preserves multi-host
+  environment variables (MASTER_ADDR, MASTER_PORT, NODE_RANK, WORLD_SIZE) if
+  already present in os.environ.
 
   Args:
     nproc_per_node: The number of processes to spawn on the current node.
@@ -87,18 +102,58 @@ def dist_run(
     *args: Positional arguments to pass to the function.
     base_seed: The base RNG seed for worker processes. Defaults to the seed
       chosen by RepeatableTest.choose_seed().
+    max_retries: Maximum number of attempts if a port collision (EADDRINUSE)
+      occurs when auto-selecting a port.
     **kwargs: Keyword arguments to pass to the function.
   """
+  if (
+      hardware.get_tpu_device_count()
+      or env.get_str_env_once("JOB_COMPLETION_INDEX") is not None
+  ):
+    environment.set_tpu_launch_env(nproc_per_node=nproc_per_node)
+
   if base_seed is None:
     base_seed = seed_test_utils.RepeatableTest.choose_seed()
-  default_master_port = (
-      int(os.environ["MASTER_PORT"])
-      if "MASTER_PORT" in os.environ
-      else portpicker.pick_unused_port()
-  )
-  mp.spawn(
-      _worker_fn,
-      args=(nproc_per_node, default_master_port, base_seed, fn, args, kwargs),
-      nprocs=nproc_per_node,
-      join=True,
-  )
+
+  for attempt in range(max_retries):
+    default_master_port = (
+        int(os.environ["MASTER_PORT"])
+        if "MASTER_PORT" in os.environ
+        else portpicker.pick_unused_port()
+    )
+    try:
+      mp.spawn(
+          _worker_fn,
+          args=(
+              nproc_per_node,
+              default_master_port,
+              base_seed,
+              fn,
+              args,
+              kwargs,
+          ),
+          nprocs=nproc_per_node,
+          join=True,
+      )
+      return
+    except mp.ProcessRaisedException as e:
+      # Only retry if:
+      # 1. The failure was a port collision (EADDRINUSE).
+      # 2. MASTER_PORT was not explicitly set in os.environ (if pinned by the
+      #    caller or a multi-host orchestrator, picking a new port is not
+      #    possible and re-trying the same port would fail).
+      # 3. We have remaining attempts.
+      if (
+          "EADDRINUSE" in str(e)
+          and "MASTER_PORT" not in os.environ
+          and attempt < max_retries - 1
+      ):
+        logging.warning(
+            "Port collision (EADDRINUSE) on port %d on attempt %d/%d; retrying"
+            " with a new port.",
+            default_master_port,
+            attempt + 1,
+            max_retries,
+        )
+        continue
+      raise

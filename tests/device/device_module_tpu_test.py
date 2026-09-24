@@ -14,9 +14,13 @@
 
 """Tests for the device module with TPU backend."""
 
+import tempfile
+import warnings
 from absl.testing import absltest
 import torch
+from torch._dynamo.device_interface import DeviceInterface
 from torch._dynamo.device_interface import get_interface_for_device
+from torch_tpu._internal.device import _device_module
 from tests.device import device_module_testing
 
 
@@ -52,9 +56,24 @@ class TpuDeviceModuleTest(
     self.assertEqual(next(m.parameters()).device.type, "tpu")
 
   def test_device_interface_registration_always_wins(self):
-    """Verifies device_module from _loader.py is registered as device interface."""
+    """Verifies device_interface from _loader.py is registered as device interface."""
     iface = get_interface_for_device("tpu")
-    self.assertEqual(iface, self.device_module)
+    self.assertEqual(iface, _device_module.TpuDeviceInterface)
+    self.assertTrue(issubclass(iface, self.device_module))
+    self.assertTrue(issubclass(iface, DeviceInterface))
+
+  def test_device_interface_maybe_exchange_device(self):
+    """Verifies TpuDeviceInterface implements maybe_exchange_device for Dynamo."""
+    iface = get_interface_for_device("tpu")
+    self.assertTrue(hasattr(iface, "maybe_exchange_device"))
+    self.assertEqual(iface.maybe_exchange_device(0), 0)
+    self.assertEqual(iface.maybe_exchange_device(-1), -1)
+
+  def test_dynamic_attribute_memoization(self):
+    """Verifies attributes resolved via __getattr__ are memoized on subsequent accesses."""
+    fn1 = self.device_module.maybe_exchange_device
+    fn2 = self.device_module.maybe_exchange_device
+    self.assertIs(fn1, fn2)
 
   def test_get_device_properties_multi_processor_count(self):
     props = self.device_module.get_device_properties()
@@ -152,6 +171,19 @@ class TpuDeviceModuleTest(
     finally:
       torch.tpu.window_num_stripes = original_stripes
       torch.tpu.window_stripe_chunk_mb = original_chunk_mb
+
+  def test_torch_save_load_no_warnings(self):
+    """Verifies that torch.save and torch.load do not emit warnings on TPU tensors."""
+    tensor = torch.zeros(10, device="tpu")
+    with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("always")
+      with tempfile.NamedTemporaryFile() as f:
+        torch.save(tensor, f)
+        f.seek(0)
+        _ = torch.load(f)
+      self.assertEmpty(
+          w, msg=f"Expected no warnings but got {[str(x.message) for x in w]}"
+      )
 
 
 if __name__ == "__main__":

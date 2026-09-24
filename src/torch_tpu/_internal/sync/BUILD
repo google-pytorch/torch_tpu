@@ -65,6 +65,7 @@ pybind_extension(
         "//csrc/common:error_utils",
         "//csrc/common:pybind_error_utils",
         "//csrc/eager:device_buffer",
+        "//csrc/eager:events_queue",
         "//csrc/eager:materialize",
         "//csrc/eager:structured_log_buffer",
         "//csrc/eager:tensor_to_buffer",

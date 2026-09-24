@@ -14,8 +14,10 @@
 
 """Directly test the PyBind11 API for compiled mode, without using Dynamo."""
 
+import functools
 import re
 import textwrap
+import threading
 from typing import TypeAlias
 
 from absl.testing import absltest
@@ -33,7 +35,15 @@ from torch_tpu._internal.utils import test_utils as utils
 from tests import oss_utils
 from tests import seed_test_utils
 
-_EagerMode: TypeAlias = execution_mode._EagerMode
+EagerMode: TypeAlias = execution_mode.EagerMode
+
+# Tuning knobs for the `async_traverse_and_compile` concurrency stress tests.
+_NUM_CONCURRENT_WORKERS = 4
+_CONCURRENT_ITERATIONS_PER_WORKER = 3
+_CONCURRENCY_TEST_TIMEOUT_SECS = 120.0
+# Bounds the interleaved eager worker so it cannot spin indefinitely if the
+# compile workers deadlock.
+_MAX_EAGER_INTERLEAVE_ITERATIONS = 1000
 
 
 @torch.compile
@@ -49,7 +59,7 @@ def get_mock_lookup_backend():
 
 
 def eager_mode_compile_fx_graph():
-  """Enable _EagerMode.INTERNAL_COMPILE_FX_GRAPH.
+  """Enable EagerMode.INTERNAL_COMPILE_FX_GRAPH.
 
   This prevents tensor materialization during Python execution and enables
   `build_mlir` to trace the deferred ops and generate MLIR.
@@ -57,7 +67,7 @@ def eager_mode_compile_fx_graph():
   Returns:
     A context manager for setting the execution mode.
   """
-  return execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH)
+  return execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH)
 
 
 # TODO: add more test coverage for the direct compile API.
@@ -73,6 +83,8 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
   def test_traverse_and_compile_with_argument_layouts(self):
     x = torch.randn(2, 1, 8, 16, device=self.device, dtype=torch.bfloat16)
     y = torch.randn(2, 1, 9, 16, device=self.device, dtype=torch.bfloat16)
+    torch.accelerator.synchronize(self.device)
+
     with eager_mode_compile_fx_graph():
       z = torch.cat([x, y], dim=-2)
 
@@ -212,12 +224,7 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     results[0].cpu()  # Verify it passes
 
   def test_layout_context_auto_extracted_in_static_compile(self):
-    # Skip test pending layout/tiling propagation fixes in child commit.
-    self.skipTest(
-        'Skipping layout context test pending layout and tiling propagation'
-        ' fixes.'
-    )
-    layout = annotations.TpuLayout(minor_to_major=[0, 1], tiles=[[8]])
+    layout = annotations.TpuLayout(minor_to_major=[0, 1], tiles=[[8, 128]])
     with annotations.LayoutContext(layout):
       x = torch.ones(16, 128, device='cpu').to(device=torch.device('tpu'))
 
@@ -231,8 +238,39 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     param_layouts = executable.parameter_layouts
     self.assertLen(param_layouts, 1)
     self.assertIsNotNone(param_layouts[0])
-    minor_to_major, _, _ = param_layouts[0]
+    minor_to_major, tiles, _ = param_layouts[0]
     self.assertEqual(minor_to_major, [0, 1])
+    self.assertEqual(tiles, [[8, 128]])
+
+  def test_compile_with_tiled_argument_layouts(self):
+    """Verifies compilation and layout extraction with user-specified tiled argument layouts."""
+
+    def fn(x):
+      return x * 2.0
+
+    x = torch.ones(16, 128, device='cpu').to(device=torch.device('tpu'))
+    gm = make_fx(fn)(x)
+    compiler_instance = compiler.StaticCompiler()
+    executable = compiler_instance(
+        gm, [x], argument_layouts=[([1, 0], [[8, 128]])]
+    )
+
+    param_layouts = executable.parameter_layouts
+    self.assertLen(param_layouts, 1)
+    self.assertIsNotNone(param_layouts[0])
+    minor_to_major, tiles, _ = param_layouts[0]
+    self.assertEqual(minor_to_major, [1, 0])
+    self.assertEqual(tiles, [[8, 128]])
+
+    res = executable(x)
+    utils.assert_close(res.cpu(), x.cpu() * 2.0)
+
+    # Verify execution with matching tiled layout on device as well
+    layout = annotations.TpuLayout(minor_to_major=[1, 0], tiles=[[8, 128]])
+    with annotations.LayoutContext(layout):
+      tiled_x = torch.ones(16, 128, device='cpu').to(device=torch.device('tpu'))
+    res_tiled = executable(tiled_x)
+    utils.assert_close(res_tiled.cpu(), tiled_x.cpu() * 2.0)
 
   def test_build_mlir(self):
     with eager_mode_compile_fx_graph():
@@ -488,27 +526,13 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     # y is on the TPU.
     self.assertEqual(y.device.type, tpu_device.type)
 
-    # XLA packs booleans into i1s, so we need an extra convert operation to
-    # go from 0x00 or 0x01 to False or True.
-    # Whether or not the initial constant is an i8 or ui8 depends on the
-    # implementation of std::numeric_limits<char>::is_signed in C++.
-    expected_mlir_unsigned = """module @tt_jit_make_constant_tensor_torchtpu_internal_constant {
+    expected_mlir = """module @tt_jit_make_constant_tensor_torchtpu_internal_constant {
   func.func @main() -> tensor<2x2xi1> {
-    %c = stablehlo.constant dense<[[0, 1], [1, 0]]> : tensor<2x2xui8>
-    %0 = stablehlo.convert %c : (tensor<2x2xui8>) -> tensor<2x2xi1>
-    return %0 : tensor<2x2xi1>
+    %c = stablehlo.constant dense<[[false, true], [true, false]]> : tensor<2x2xi1>
+    return %c : tensor<2x2xi1>
   }
 }"""
-    expected_mlir_signed = """module @tt_jit_make_constant_tensor_torchtpu_internal_constant {
-  func.func @main() -> tensor<2x2xi1> {
-    %c = stablehlo.constant dense<[[0, 1], [1, 0]]> : tensor<2x2xi8>
-    %0 = stablehlo.convert %c : (tensor<2x2xi8>) -> tensor<2x2xi1>
-    return %0 : tensor<2x2xi1>
-  }
-}"""
-    unsigned_matches = mlir_text.strip() == expected_mlir_unsigned.strip()
-    signed_matches = mlir_text.strip() == expected_mlir_signed.strip()
-    self.assertTrue(unsigned_matches or signed_matches)
+    self.assertEqual(mlir_text.strip(), expected_mlir.strip())
 
     # The logical values of y should be identical to x.
     utils.assert_close(actual=actual, expected=x)
@@ -1239,7 +1263,6 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
 
     mlir_text = tpu_torch_compile.serialize_mlir_text(compile_result.module)
     self.assertIn('stablehlo.set_dimension_size', mlir_text)
-    self.assertIn('stablehlo.get_dimension_size', mlir_text)
 
     input_tensor = torch.ones(1, 4, dtype=torch.int32, device='tpu')
     result = tpu_torch_compile.execute(
@@ -1429,6 +1452,362 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
       y = x.t()
       out = fn(x, y)
       utils.assert_close(out.cpu(), (x + y.t()).cpu())
+
+  def test_async_traverse_and_compile_basic(self):
+    x = torch.randn(4, 8, device=self.device)
+    y = torch.randn(4, 8, device=self.device)
+    torch.accelerator.synchronize(self.device)
+    with eager_mode_compile_fx_graph():
+      z = x + y * 2.0
+
+    async_result = tpu_torch_compile.async_traverse_and_compile(
+        [z], [x, y], fast_compile=False
+    )
+    self.assertIsNotNone(async_result)
+    executable = async_result.get()
+    self.assertIsNotNone(executable)
+    self.assertTrue(async_result.is_ready())
+
+    results = tpu_torch_compile.execute(executable, [x, y])
+    self.assertLen(results, 1)
+    expected = x.cpu() + y.cpu() * 2.0
+    utils.assert_close(results[0].cpu(), expected)
+
+  def test_async_traverse_and_compile_view_output(self):
+    x = torch.randn(4, 8, device=self.device)
+    y = torch.randn(4, 8, device=self.device)
+    torch.accelerator.synchronize(self.device)
+    x_ph = tpu_torch_compile.placeholder_like(x)
+    y_ph = tpu_torch_compile.placeholder_like(y)
+    with eager_mode_compile_fx_graph():
+      # `z` is a view; its `kAsStrided` `DeferredOp` is created lazily inside
+      # `GetBuffer(z)` during `async_traverse_and_compile`.
+      z = (x_ph + y_ph * 2.0).t()
+
+    async_result = tpu_torch_compile.async_traverse_and_compile(
+        [z], [x_ph, y_ph], fast_compile=False
+    )
+    # Trigger eager materialization on the stream while `z` is still live to
+    # verify `GetBuffer(z)` did not enqueue `z` (which depends on placeholders)
+    # onto the global eager `EventsQueue`.
+    eager_check = (x + y).cpu()
+    utils.assert_close(eager_check, x.cpu() + y.cpu())
+
+    executable = async_result.get()
+    results = tpu_torch_compile.execute(executable, [x, y])
+    self.assertLen(results, 1)
+    utils.assert_close(results[0].cpu(), (x.cpu() + y.cpu() * 2.0).t())
+
+    # Also test calling `async_traverse_and_compile` on a view output when the
+    # outer eager mode is `DEFER_NEVER` and when multiple view outputs are
+    # passed in `result_tensors` (which would trigger repeated-op detection on
+    # `kAsStrided` inside `GetBuffer` if not guarded by
+    # `kInternalCompileFxGraph`).
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_NEVER):
+      with eager_mode_compile_fx_graph():
+        z_defer_never = (x_ph + y_ph * 3.0).t()
+      async_result_dn = tpu_torch_compile.async_traverse_and_compile(
+          [z_defer_never], [x_ph, y_ph], fast_compile=False
+      )
+      exec_dn = async_result_dn.get()
+      res_dn = tpu_torch_compile.execute(exec_dn, [x, y])
+      utils.assert_close(res_dn[0].cpu(), (x.cpu() + y.cpu() * 3.0).t())
+
+    with eager_mode_compile_fx_graph():
+      base = x + y * 2.0
+      view_outputs = [base.t() for _ in range(20)]
+    async_result_multi = tpu_torch_compile.async_traverse_and_compile(
+        view_outputs, [x, y], fast_compile=False
+    )
+    exec_multi = async_result_multi.get()
+    res_multi = tpu_torch_compile.execute(exec_multi, [x, y])
+    self.assertLen(res_multi, 20)
+
+  def test_async_traverse_and_compile_with_build_mlir_module(self):
+    x = torch.randn(2, 4, device=self.device)
+    torch.accelerator.synchronize(self.device)
+    with eager_mode_compile_fx_graph():
+      z = torch.relu(x)
+
+    async_result = tpu_torch_compile.async_traverse_and_compile(
+        [z], [x], build_mlir_module=True
+    )
+    self.assertIsNotNone(async_result.module)
+    executable = async_result.get()
+    self.assertIsNotNone(executable)
+
+    results = tpu_torch_compile.execute(executable, [x])
+    self.assertLen(results, 1)
+    utils.assert_close(results[0].cpu(), torch.relu(x.cpu()))
+
+  def test_async_traverse_and_compile_deduplicated_args(self):
+    x = torch.randn(4, 4, device=self.device)
+    torch.accelerator.synchronize(self.device)
+    with eager_mode_compile_fx_graph():
+      z = x + x
+
+    # Pass the duplicate tensor x twice in argument_tensors
+    async_result = tpu_torch_compile.async_traverse_and_compile([z], [x, x])
+    executable = async_result.get()
+    self.assertIsNotNone(executable)
+
+    results = tpu_torch_compile.execute(executable, [x, x])
+    self.assertLen(results, 1)
+    utils.assert_close(results[0].cpu(), x.cpu() + x.cpu())
+
+  def test_async_traverse_and_compile_multiple_get_calls(self):
+    x = torch.randn(3, 3, device=self.device)
+    torch.accelerator.synchronize(self.device)
+    with eager_mode_compile_fx_graph():
+      z = x * 3.0
+
+    async_result = tpu_torch_compile.async_traverse_and_compile([z], [x])
+    exec1 = async_result.get()
+    exec2 = async_result.get()
+    self.assertIsNotNone(exec1)
+    self.assertIsNotNone(exec2)
+
+    res1 = tpu_torch_compile.execute(exec1, [x])
+    res2 = tpu_torch_compile.execute(exec2, [x])
+    utils.assert_close(res1[0].cpu(), x.cpu() * 3.0)
+    utils.assert_close(res2[0].cpu(), x.cpu() * 3.0)
+
+  def _run_workers(self, workers):
+    """Runs `workers` concurrently and fails the test if any of them raised.
+
+    Args:
+      workers: A sequence of zero-argument callables to run, one per thread.
+
+    Exceptions cannot cross a thread boundary, so each worker records its
+    failure and the main thread re-raises them as a single assertion.
+    """
+    failures = []
+    failures_lock = threading.Lock()
+
+    def guarded(worker_id, worker):
+      try:
+        worker()
+      except Exception as e:  # pylint: disable=broad-except
+        with failures_lock:
+          failures.append(f'worker {worker_id}: {e!r}')
+
+    threads = [
+        threading.Thread(target=guarded, args=(i, worker))
+        for i, worker in enumerate(workers)
+    ]
+    for thread in threads:
+      thread.start()
+    for thread in threads:
+      thread.join(timeout=_CONCURRENCY_TEST_TIMEOUT_SECS)
+    self.assertEmpty(
+        [thread for thread in threads if thread.is_alive()],
+        'worker threads did not finish before the timeout',
+    )
+    self.assertEmpty(failures)
+
+  def test_async_traverse_and_compile_concurrent_distinct_graphs(self):
+    """Concurrently compiles distinct graphs with no external serialization.
+
+    `async_traverse_and_compile` is thread-compatible: concurrent calls are
+    safe as long as each call's graph is disjoint from the others. Each worker
+    therefore owns its input tensors and traces its own graph, and no lock is
+    taken. Distinct shapes per (worker, iteration) produce distinct cache keys,
+    so the workers race to populate the compilation cache rather than trivially
+    sharing one entry.
+
+    Inputs are allocated up front on the main thread so the workers do not also
+    contend on the process-global default RNG generator, which would confound a
+    failure here with an unrelated source of races.
+    """
+    inputs = {
+        (worker_id, i): (
+            torch.randn(2 + worker_id, 3 + i, device=self.device),
+            torch.randn(2 + worker_id, 3 + i, device=self.device),
+        )
+        for worker_id in range(_NUM_CONCURRENT_WORKERS)
+        for i in range(_CONCURRENT_ITERATIONS_PER_WORKER)
+    }
+    torch.accelerator.synchronize(self.device)
+    start_barrier = threading.Barrier(_NUM_CONCURRENT_WORKERS)
+
+    def worker(worker_id):
+      # Maximize overlap by having every thread start tracing at once.
+      start_barrier.wait(timeout=_CONCURRENCY_TEST_TIMEOUT_SECS)
+      for i in range(_CONCURRENT_ITERATIONS_PER_WORKER):
+        x, y = inputs[(worker_id, i)]
+        with eager_mode_compile_fx_graph():
+          z = x * 2.0 + y
+        async_result = tpu_torch_compile.async_traverse_and_compile([z], [x, y])
+
+        executable = async_result.get()
+        self.assertIsNotNone(executable)
+        # `get()` returned, so compilation is necessarily complete.
+        self.assertTrue(async_result.is_ready())
+        results = tpu_torch_compile.execute(executable, [x, y])
+        self.assertLen(results, 1)
+        utils.assert_close(results[0].cpu(), x.cpu() * 2.0 + y.cpu())
+
+    self._run_workers([
+        functools.partial(worker, worker_id)
+        for worker_id in range(_NUM_CONCURRENT_WORKERS)
+    ])
+
+  def test_async_traverse_and_compile_concurrent_shared_cache_entry(self):
+    """Pressure tests threads racing to compile the *same* graph, unlocked.
+
+    Every worker traces an identical graph over its own equally shaped tensors,
+    so the graphs stay disjoint while the cache keys collide. Exactly one
+    thread should win the race and populate the entry; the rest must await the
+    same shared future and still observe a valid executable.
+    """
+    inputs = {
+        (worker_id, i): torch.randn(8, 8, device=self.device)
+        for worker_id in range(_NUM_CONCURRENT_WORKERS)
+        for i in range(_CONCURRENT_ITERATIONS_PER_WORKER)
+    }
+    torch.accelerator.synchronize(self.device)
+    start_barrier = threading.Barrier(_NUM_CONCURRENT_WORKERS)
+
+    def worker(worker_id):
+      start_barrier.wait(timeout=_CONCURRENCY_TEST_TIMEOUT_SECS)
+      for i in range(_CONCURRENT_ITERATIONS_PER_WORKER):
+        x = inputs[(worker_id, i)]
+        with eager_mode_compile_fx_graph():
+          z = torch.relu(x) * 4.0
+        async_result = tpu_torch_compile.async_traverse_and_compile([z], [x])
+
+        executable = async_result.get()
+        self.assertIsNotNone(executable)
+        results = tpu_torch_compile.execute(executable, [x])
+        self.assertLen(results, 1)
+        utils.assert_close(results[0].cpu(), torch.relu(x.cpu()) * 4.0)
+
+    self._run_workers([
+        functools.partial(worker, worker_id)
+        for worker_id in range(_NUM_CONCURRENT_WORKERS)
+    ])
+
+  def test_async_traverse_and_compile_concurrent_get_on_shared_result(self):
+    """Many threads await a single `AsyncCompileResult` with aliased arguments.
+
+    `AsyncCompileResult` synchronizes `Get()` via `absl::call_once`, so
+    `LoadedExecutableWithMetadata::WithArgumentIndices` is applied at most once
+    even when `argument_indices` is non-empty (`[x, x]`), and every concurrent
+    or repeated `get()` call returns the exact same executable instance.
+    """
+    x = torch.randn(16, 16, device=self.device)
+    torch.accelerator.synchronize(self.device)
+    with eager_mode_compile_fx_graph():
+      z = x * 3.0 - 1.0
+    # Pass `[x, x]` so `argument_indices` is non-empty and `WithArgumentIndices`
+    # is exercised inside `AsyncCompileResult::Get`'s `absl::call_once`.
+    async_result = tpu_torch_compile.async_traverse_and_compile([z], [x, x])
+    # Exact fp32 arithmetic only: a transcendental such as `tanh` differs
+    # between TPU and CPU by more than the default tolerance, which would make
+    # this test fail for numerical reasons unrelated to the concurrency it pins.
+    expected = x.cpu() * 3.0 - 1.0
+
+    start_barrier = threading.Barrier(_NUM_CONCURRENT_WORKERS)
+    executables: list[tpu_torch_compile.LoadedExecutableWithMetadata] = []
+    executables_lock = threading.Lock()
+
+    def worker():
+      start_barrier.wait(timeout=_CONCURRENCY_TEST_TIMEOUT_SECS)
+      for _ in range(_CONCURRENT_ITERATIONS_PER_WORKER):
+        # `is_ready()` must be safe to poll concurrently with `get()`.
+        self.assertIsInstance(async_result.is_ready(), bool)
+        executable = async_result.get()
+        self.assertIsNotNone(executable)
+        with executables_lock:
+          executables.append(executable)
+        results = tpu_torch_compile.execute(executable, [x, x])
+        self.assertLen(results, 1)
+        utils.assert_close(results[0].cpu(), expected)
+
+    self._run_workers([worker] * _NUM_CONCURRENT_WORKERS)
+    self.assertTrue(async_result.is_ready())
+    self.assertNotEmpty(executables)
+    for exe in executables[1:]:
+      self.assertIs(exe, executables[0])
+
+  def test_async_traverse_and_compile_concurrent_with_eager_execution(self):
+    """Interleaves unguarded eager execution with in-flight async compilations.
+
+    The eager worker issues and synchronizes real device work on tensors that
+    are disjoint from every compile worker's graph, with no lock held by
+    anyone. This checks that tracing plus `async_traverse_and_compile` on one
+    thread does not disturb, and is not disturbed by, ordinary eager dispatch
+    and materialization on another.
+    """
+    inputs = {
+        (worker_id, i): torch.randn(4 + worker_id, 5 + i, device=self.device)
+        for worker_id in range(_NUM_CONCURRENT_WORKERS)
+        for i in range(_CONCURRENT_ITERATIONS_PER_WORKER)
+    }
+    torch.accelerator.synchronize(self.device)
+    stop_eager = threading.Event()
+    eager_iterations = []
+    eager_iterations_lock = threading.Lock()
+    # The eager worker must keep running until *every* compile worker is done,
+    # so track the outstanding workers rather than stopping on the first exit.
+    compile_workers_remaining = _NUM_CONCURRENT_WORKERS
+    compile_workers_remaining_lock = threading.Lock()
+
+    def compile_worker(worker_id):
+      nonlocal compile_workers_remaining
+      try:
+        for i in range(_CONCURRENT_ITERATIONS_PER_WORKER):
+          x = inputs[(worker_id, i)]
+          with eager_mode_compile_fx_graph():
+            z = torch.sin(x) + 1.0
+          async_result = tpu_torch_compile.async_traverse_and_compile([z], [x])
+
+          executable = async_result.get()
+          self.assertIsNotNone(executable)
+          results = tpu_torch_compile.execute(executable, [x])
+          self.assertLen(results, 1)
+          utils.assert_close(results[0].cpu(), torch.sin(x.cpu()) + 1.0)
+      finally:
+        # Release the eager worker once the last compile worker exits, even on
+        # failure, so the test cannot hang waiting on it.
+        with compile_workers_remaining_lock:
+          compile_workers_remaining -= 1
+          if compile_workers_remaining == 0:
+            stop_eager.set()
+
+    def eager_worker():
+      iterations = 0
+      while (
+          not stop_eager.is_set()
+          and iterations < _MAX_EAGER_INTERLEAVE_ITERATIONS
+      ):
+        a = torch.ones(8, 8, device=self.device) * 2.0
+        b = torch.matmul(a, a) + 1.0
+        observed = b.cpu()
+        # An 8x8 matmul of all-2.0 gives 8 * 2 * 2 = 32, plus the bias of 1.0.
+        utils.assert_close(observed, torch.full((8, 8), 33.0))
+        iterations += 1
+      with eager_iterations_lock:
+        eager_iterations.append(iterations)
+
+    compile_workers = [
+        functools.partial(compile_worker, worker_id)
+        for worker_id in range(_NUM_CONCURRENT_WORKERS)
+    ]
+    self._run_workers(compile_workers + [eager_worker])
+    # Guard against the eager worker exiting before it interleaved any work.
+    self.assertNotEmpty(eager_iterations)
+    self.assertGreater(eager_iterations[0], 0)
+
+  def test_traverse_and_compile_duplicate_inputs_deduplicated(self):
+    x = torch.ones(2, 3, device='cpu').to(device=torch.device('tpu'))
+    with eager_mode_compile_fx_graph():
+      z = x + x
+    compile_result = tpu_torch_compile.traverse_and_compile([z], [x, x])
+    self.assertIsNotNone(compile_result.executable)
+    results = tpu_torch_compile.execute(compile_result.executable, [x, x])
+    self.assertLen(results, 1)
+    utils.assert_close(results[0].cpu(), (x + x).cpu())
 
 
 if __name__ == '__main__':

@@ -21,8 +21,7 @@ from typing import Any, Callable
 
 import torch
 from examples.benchmarks.e2e import common
-from examples.benchmarks.e2e import single_trace_trainer_adapter
-from examples.tracing import optimizers
+from torch_tpu.extras.optimizers import adamw
 
 
 @contextlib.contextmanager
@@ -357,6 +356,8 @@ def functional_train_factory(
     with _sdpa_kernel_if_not_cuda():
       del opt_arg  # Ignored; use SingleTraceTrainer's internal optimizer.
       if state["step_fn"] is None:
+        from examples.benchmarks.e2e import single_trace_trainer_adapter  # pylint: disable=g-import-not-at-top
+
         trainer = single_trace_trainer_adapter.SingleTraceTrainerAdapter(
             model=model,
             optimizer=optimizer,
@@ -377,13 +378,14 @@ def get_train_factory(
     **eager_kwargs: Any,
 ) -> Callable[..., Any]:
   """Returns a training step runner factory for the given run mode."""
-  if run_mode == common.RunMode.COMPILED:
+  if (
+      run_mode == common.RunMode.COMPILED
+      and common.PLATFORM_DEVICE_MAP.get(common.PLATFORM.value) == "tpu"
+  ):
     # Layer benchmarks (simple_train_factory) evaluate pure FWD + BWD without
     # an optimizer, while model benchmarks use ReferenceAdamw.
     optim = (
-        None
-        if eager_fact == simple_train_factory
-        else optimizers.ReferenceAdamw()
+        None if eager_fact == simple_train_factory else adamw.ReferenceAdamw()
     )
     return functools.partial(
         functional_train_factory,

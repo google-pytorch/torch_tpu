@@ -26,13 +26,13 @@
 #include "absl/base/nullability.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/compilation_spec.h"
-#include "csrc/common/context_states.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/traversal.h"
-#include "csrc/pjrt/pjrt_utils.h"
+#include "csrc/pjrt/pjrt_execute.h"
 #include "mlir/IR/MLIRContext.h"
 #include "xla/pjrt/pjrt_client.h"
 
@@ -56,7 +56,7 @@ class ExecutionTask {
   //   * Log the resulting MLIR to support TORCH_TRACE, if enabled.
   static absl::StatusOr<ExecutionTask> FromTraversalWithLogging(
       absl_nonnull std::unique_ptr<Traversal> traversal,
-      mlir::MLIRContext& mlir_context, CompilationSpec compilation_spec,
+      mlir::MLIRContext& mlir_context, const CompilationSpec& compilation_spec,
       MaterializationReason reason = MaterializationReason::kUnknown);
 
   // Creates an execution task from a traversal.
@@ -68,7 +68,7 @@ class ExecutionTask {
   //   * Set all outputs to the "pending materialization" state
   static absl::StatusOr<ExecutionTask> FromTraversal(
       absl_nonnull std::unique_ptr<Traversal> traversal,
-      mlir::MLIRContext& mlir_context, CompilationSpec compilation_spec,
+      mlir::MLIRContext& mlir_context, const CompilationSpec& compilation_spec,
       std::string* absl_nullable out_mlir_text = nullptr);
 
   // Creates an execution task from a pre-compiled executable.
@@ -88,6 +88,8 @@ class ExecutionTask {
 
   // Sets all output nodes as having a specified error.
   void SetOutputNodesAsError(absl::Status status);
+
+  absl::Span<const DeviceBufferRef> outputs() const { return outputs_; }
 
  private:
   explicit ExecutionTask(std::string name,
@@ -126,8 +128,6 @@ class ExecutionTask {
   // kernel and any dynamic adapters.
   CompiledKernel compiled_kernel_;
 };
-
-CompilationMode GetCompilationMode(EagerMode eager_mode);
 
 }  // namespace torch_tpu
 

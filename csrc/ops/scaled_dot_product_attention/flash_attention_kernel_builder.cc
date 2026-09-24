@@ -129,10 +129,11 @@ int64_t GetInitialTileSize(int64_t seq_len) {
 int64_t EstimateTileVmemBytes(int64_t qt, int64_t kt, int64_t head_dim,
                               bool is_f32, bool is_backward) {
   int64_t elem_size = is_f32 ? 4 : 2;
-  int64_t linear_bytes = qt * head_dim * (3 * elem_size + 4) +
-                         kt * head_dim * (2 * elem_size) + qt * 1024;
+  // x2 as the inputs / outputs are double buffered.
+  int64_t linear_bytes = 2 * (qt * head_dim * (3 * elem_size + 4) +
+                              kt * head_dim * (2 * elem_size) + qt * 1024);
   int64_t quadratic_bytes = 8 * qt * kt;
-  int64_t total = 2 * (linear_bytes + quadratic_bytes);
+  int64_t total = linear_bytes + quadratic_bytes;
   return is_backward ? 2 * total : total;
 }
 

@@ -1073,6 +1073,12 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
           tpu_dtype="int32",
           gpu_dtype="Int",
       ),
+      dict(
+          testcase_name="int64",
+          dtype=torch.int64,
+          tpu_dtype="int64",
+          gpu_dtype="Long",
+      ),
   )
   def test_mm_unsupported_dtypes(
       self, dtype: torch.dtype, tpu_dtype: str, gpu_dtype: str
@@ -2341,9 +2347,9 @@ Device-side assertion tracking was not enabled by user.""",
 
   def test_cumsum_with_unsupported_dtype(self):
     with et.assert_raises_message(
-        NotImplementedError if et.is_on_tpu() else RuntimeError,
+        RuntimeError,
         gpu="""Expected out tensor to have dtype c10::dummy_int1_7_t<1>, but got float instead""",
-        tpu="""cumsum(): TorchTPU does not yet support dtype int1""",
+        tpu="""cumsum(): expected the output dtype to be int1, got float32""",
         message_reviewed_by="wan",
     ):
       t = torch.ones(2, 2, device=et.device())
@@ -2363,7 +2369,7 @@ Device-side assertion tracking was not enabled by user.""",
     with et.assert_raises_message(
         NotImplementedError,
         gpu=""""cumprod_cuda" not implemented for 'Bool'""",
-        tpu="""cumprod(): the dtype argument cannot be bool""",
+        tpu="""cumprod(): not implemented for bool""",
         message_reviewed_by="wan",
     ):
       x = torch.tensor([1, 2], device=et.device())
@@ -2373,11 +2379,33 @@ Device-side assertion tracking was not enabled by user.""",
     with et.assert_raises_message(
         NotImplementedError,
         gpu=""""cumprod_cuda" not implemented for 'Bool'""",
-        tpu="""cumprod(): cumprod not implemented for bool""",
+        tpu="""cumprod(): not implemented for bool""",
         message_reviewed_by="wan",
     ):
       x = torch.tensor([True, False], device=et.device())
       torch.cumprod(x, dim=0, out=x)
+
+  def test_cumsum_out_dtype_mismatch(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""Expected out tensor to have dtype double, but got float instead""",
+        tpu="""cumsum(): expected the output dtype to be float64, got float32""",
+        message_reviewed_by="wan",
+    ):
+      t = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+      out = torch.empty(2, 2, device=et.device(), dtype=torch.float32)
+      torch.cumsum(t, dim=0, dtype=torch.float64, out=out)
+
+  def test_cumprod_out_dtype_mismatch(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""Expected out tensor to have dtype double, but got float instead""",
+        tpu="""cumprod(): expected the output dtype to be float64, got float32""",
+        message_reviewed_by="wan",
+    ):
+      t = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+      out = torch.empty(2, 2, device=et.device(), dtype=torch.float32)
+      torch.cumprod(t, dim=0, dtype=torch.float64, out=out)
 
   def test_cumsum_dimension_out_of_range(self):
     with et.assert_raises_message(
@@ -2389,6 +2417,28 @@ Device-side assertion tracking was not enabled by user.""",
       t = torch.ones(1, device=et.device())
       output = torch.empty_like(t)
       torch.cumsum(t, dim=1, out=output)
+
+  def test_cumsum_scalar_dimension_out_of_range(self):
+    with et.assert_raises_message(
+        IndexError,
+        gpu="""Dimension out of range (expected to be in range of [-1, 0], but got 1)""",
+        tpu="""cumsum(): expected dimension to be either 0 or -1 for a shape with 0 dimensions, got 1""",
+        message_reviewed_by="wan",
+    ):
+      t = torch.tensor(1.0, device=et.device())
+      output = torch.empty_like(t)
+      torch.cumsum(t, dim=1, out=output)
+
+  def test_cumprod_scalar_dimension_out_of_range(self):
+    with et.assert_raises_message(
+        IndexError,
+        gpu="""Dimension out of range (expected to be in range of [-1, 0], but got 1)""",
+        tpu="""cumprod(): expected dimension to be either 0 or -1 for a shape with 0 dimensions, got 1""",
+        message_reviewed_by="wan",
+    ):
+      t = torch.tensor(1.0, device=et.device())
+      output = torch.empty_like(t)
+      torch.cumprod(t, dim=1, out=output)
 
   def test_prod_out_with_unsupported_dtype(self):
     with et.assert_raises_message(
@@ -3400,6 +3450,21 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       torch.masked_scatter(t, mask, source)
 
+  def test_masked_scatter_mask_not_broadcastable_to_self(self):
+    # In place, so `self` keeps its shape and the mask has to fit it. The out
+    # of place overload broadcasts the two together and cannot reach this.
+    device = et.device()
+    t = torch.randn(2, 3, device=device, dtype=torch.float32)
+    mask = torch.ones(4, 3, device=device, dtype=torch.bool)
+    source = torch.randn(12, device=device, dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""The expanded size of the tensor (2) must match the existing size (4) at non-singleton dimension 0.  Target sizes: [2, 3].  Tensor sizes: [4, 3]""",
+        tpu="""masked_scatter_(): expected mask to be broadcastable to self shape, got [4, 3] vs [2, 3]""",
+    ):
+      t.masked_scatter_(mask, source)
+
   def test_arange_zero_step(self):
     with et.assert_raises_message(
         RuntimeError,
@@ -3779,6 +3844,15 @@ Device-side assertion tracking was not enabled by user.""",
           gpu_op_name="avg_pool2d_out_cuda_frame",
       ),
       dict(
+          testcase_name="avg_pool1d_out",
+          op=lambda t, kernel_size: torch.ops.aten.avg_pool1d.out(
+              t, [kernel_size], out=torch.empty_like(t)
+          ),
+          shape=(1, 1, 4),
+          op_name="avg_pool1d",
+          gpu_op_name="avg_pool2d_out_cuda_frame",
+      ),
+      dict(
           testcase_name="avg_pool2d",
           op=torch.nn.functional.avg_pool2d,
           shape=(1, 1, 4, 4),
@@ -3808,13 +3882,10 @@ Device-side assertion tracking was not enabled by user.""",
   def test_avg_pool3d_unsupported_dtypes(self):
     if et.is_on_gpu():
       # On TPU, avg_pool3d raises RuntimeError for unsupported dtypes
-      # (bool, bfloat16, float16). On GPU, CUDA natively supports 3D
+      # (bool, float16). On GPU, CUDA natively supports 3D
       # average pooling for float16 and bfloat16 without error.
       self.skipTest("GPU behavior difference")
     t_bool = torch.zeros((1, 1, 4, 4, 4), device=et.device(), dtype=torch.bool)
-    t_bf16 = torch.zeros(
-        (1, 1, 4, 4, 4), device=et.device(), dtype=torch.bfloat16
-    )
     t_f16 = torch.zeros(
         (1, 1, 4, 4, 4), device=et.device(), dtype=torch.float16
     )
@@ -3838,13 +3909,6 @@ Device-side assertion tracking was not enabled by user.""",
         gpu=""""avg_pool3d_out_cuda" not implemented for 'Bool'""",
     ):
       torch.nn.functional.avg_pool3d(t_bool, kernel_size=3)
-
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""avg_pool3d(): expected input dtype to be none of (bool, uint8, int8, int16, int32, complex64), got bfloat16""",
-        gpu=""""avg_pool3d_out_cuda" not implemented for 'BFloat16'""",
-    ):
-      torch.nn.functional.avg_pool3d(t_bf16, kernel_size=3)
 
     with et.assert_raises_message(
         RuntimeError,
@@ -6776,13 +6840,12 @@ Supported combinations for non-constant padding:
   def test_bincount_rank_too_high(self):
     t = torch.ones(2, 2, 2, device=et.device(), dtype=torch.int32)
 
-    # TODO: Error eagerly, i.e. without having to call the op builder.
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""bincount(): materialization failed with: Unexpected dimension of input tensor: [2, 2, 2]""",
+        tpu="""bincount(): unexpected dimension of input tensor: [2, 2, 2]""",
         gpu="""bincount only supports 1-d non-negative integral inputs.""",
     ):
-      torch.bincount(t).cpu()
+      torch.bincount(t)
 
   def test_gather_2d_input_on_scalar_index(self):
     inp = torch.ones(2, 2, device=et.device())
@@ -6792,14 +6855,12 @@ Supported combinations for non-constant padding:
     # Call the out overload.
     out = torch.empty(1, 1, device=et.device())
 
-    # TODO: Error eagerly, i.e. without having to call the op builder.
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""gather(): materialization failed with: expected the input to be a 1D tensor with size at most 1 when index is 0D, got 2D with shape {2}""",
+        tpu="""gather(): expected the input to be a 1D tensor with size at most 1 when index is 0D, got 2D with shape {2}""",
         gpu="""Index tensor must have the same number of dimensions as input tensor""",
     ):
-      # cpu() is needed because the error is triggered inside the op builder.
-      torch.gather(inp, dim, index, out=out).cpu()
+      torch.gather(inp, dim, index, out=out)
 
   def test_gather_rank_mismatch(self):
     inp = torch.ones(2, 2, device=et.device())
@@ -6809,40 +6870,36 @@ Supported combinations for non-constant padding:
     # Call the out overload.
     out = torch.empty(1, 1, device=et.device())
 
-    # TODO: Error eagerly, i.e. without having to call the op builder.
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""gather(): materialization failed with: expected the input and the index tensor to have the same number of dimensions, got 2D vs 3D""",
+        tpu="""gather(): expected the input and the index tensor to have the same number of dimensions, got 2D vs 3D""",
         gpu="""Index tensor must have the same number of dimensions as input tensor""",
     ):
-      # cpu() is needed because the error is triggered inside the op builder.
-      torch.gather(inp, dim, index, out=out).cpu()
+      torch.gather(inp, dim, index, out=out)
 
   def test_gather_0d_input_on_2d_index(self):
     inp = torch.tensor(1.0, device=et.device())
     dim = 0
     index = torch.ones(2, 2, device=et.device(), dtype=torch.int64)
 
-    # TODO: Error eagerly, i.e. without having to call the op builder.
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""gather(): materialization failed with: expected the input and the index tensor to have the same number of dimensions, got 0D vs 2D""",
+        tpu="""gather(): expected the input and the index tensor to have the same number of dimensions, got 0D vs 2D""",
         gpu="""Index tensor must have the same number of dimensions as input tensor""",
     ):
-      torch.gather(inp, dim, index).cpu()
+      torch.gather(inp, dim, index)
 
   def test_gather_size_mismatch(self):
     inp = torch.ones(2, 3, device=et.device())
     dim = 0
     index = torch.ones(2, 4, device=et.device(), dtype=torch.int64)
 
-    # TODO: Error eagerly, i.e. without having to call the op builder.
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""gather(): materialization failed with: expected the index tensor to have size less than or equal to the input tensor at dimension 1, got 4 vs 3""",
+        tpu="""gather(): expected the index tensor to have size less than or equal to the input tensor at dimension 1, got 4 vs 3""",
         gpu="""Size does not match at dimension 1 expected index [2, 4] to be no larger than self [2, 3] apart from dimension 0""",
     ):
-      torch.gather(inp, dim, index).cpu()
+      torch.gather(inp, dim, index)
 
   def test_lerp_int(self):
     t = torch.tensor([1, 2], device=et.device(), dtype=torch.int32)
@@ -7662,7 +7719,7 @@ Device-side assertion tracking was not enabled by user.""",
         tpu="""max_pool2d_with_indices(): expected non-empty 3D or 4D (batch mode) tensor for input, got 2D tensor""",
         gpu="""non-empty 3D or 4D (batch mode) tensor expected for input""",
     ):
-      out, indices = torch.ops.aten.max_pool2d_with_indices.out(
+      torch.ops.aten.max_pool2d_with_indices.out(
           inp,
           kernel_size,
           stride,
@@ -7672,9 +7729,6 @@ Device-side assertion tracking was not enabled by user.""",
           out=out,
           indices=indices,
       )
-
-      out.cpu()
-      indices.cpu()
 
   def test_pooling_create_batch_input_invalid_rank(self):
 
@@ -7704,8 +7758,6 @@ Device-side assertion tracking was not enabled by user.""",
           divisor_override,
           out=out,
       )
-
-      out.cpu()
 
   def test_reflection_pad2d_backward_shape_mismatch(self):
     inp = torch.randn(1, 1, 4, 4, device=et.device())
@@ -7833,14 +7885,30 @@ Device-side assertion tracking was not enabled by user.""",
           scale=None,
       )
 
-  def test_tril_indices_unsupported_dtype(self):
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="float32",
+          dtype=torch.float32,
+          tpu_dtype="float32",
+          gpu_dtype="Float",
+      ),
+      dict(
+          testcase_name="bfloat16",
+          dtype=torch.bfloat16,
+          tpu_dtype="bfloat16",
+          gpu_dtype="BFloat16",
+      ),
+  )
+  def test_tril_indices_unsupported_dtype(
+      self, dtype: torch.dtype, tpu_dtype: str, gpu_dtype: str
+  ):
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""tril_indices(): expected the dtype to be either int32 or int64, got float32""",
-        gpu=""""tril_indices_cuda" not implemented for 'Float'""",
+        tpu=f"""tril_indices(): expected the dtype to be either int32 or int64, got {tpu_dtype}""",
+        gpu=f""""tril_indices_cuda" not implemented for '{gpu_dtype}'""",
         message_reviewed_by="wan",
     ):
-      torch.tril_indices(3, 3, dtype=torch.float32, device=et.device())
+      torch.tril_indices(3, 3, dtype=dtype, device=et.device())
 
   @parameterized.named_parameters(
       dict(
@@ -7870,17 +7938,14 @@ Device-side assertion tracking was not enabled by user.""",
       torch.nn.functional.silu(t)
 
   def test_silu_unsupported_dtype_int16(self):
-    # int16 is not rejected up front, so the error comes from the lowering
-    # when the result is materialized.
     t = torch.ones(5, device=et.device(), dtype=torch.int16)
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""silu(): materialization failed with: expected the input dtype to be floating point, got int16""",
+        tpu="""silu(): expected the input dtype to be floating point, got int16""",
         gpu=""""silu_cuda" not implemented for 'Short'""",
     ):
-      out = torch.nn.functional.silu(t)
-      out.cpu()
+      torch.nn.functional.silu(t)
 
   def test_acos_out_dtype_mismatch(self):
     t = torch.ones(5, device=et.device())
@@ -8204,14 +8269,13 @@ Device-side assertion tracking was not enabled by user.""",
     # Call the out overload.
     out = torch.empty(5, 5, device=et.device())
 
-    # TODO: Error eagerly, i.e. without having to call the op builder.
     err_type = RuntimeError if et.is_on_tpu() else IndexError
     with et.assert_raises_message(
         err_type,
-        tpu="""scatter(): materialization failed with: expected the self tensor of shape [5, 5] to have the same rank as the src tensor of shape [5], got 2 vs. 1""",
+        tpu="""scatter(): expected the self tensor of shape [5, 5] to have the same rank as the src tensor of shape [5], got 2 vs. 1""",
         gpu="""Dimension out of range (expected to be in range of [-1, 0], but got 1)""",
     ):
-      torch.scatter(self_t, 0, index, src, out=out).cpu()
+      torch.scatter(self_t, 0, index, src, out=out)
 
   def test_scatter_index_rank_mismatch(self):
     self_t = torch.ones(5, 5, device=et.device())
@@ -8221,13 +8285,12 @@ Device-side assertion tracking was not enabled by user.""",
     # Call the out overload.
     out = torch.empty(5, 5, device=et.device())
 
-    # TODO: Error eagerly, i.e. without having to call the op builder.
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""scatter(): materialization failed with: expected the self tensor of shape [5, 5] to have the same rank as the index tensor of shape [5], got 2 vs. 1""",
+        tpu="""scatter(): expected the self tensor of shape [5, 5] to have the same rank as the index tensor of shape [5], got 2 vs. 1""",
         gpu="""Index tensor must have the same number of dimensions as self tensor""",
     ):
-      torch.scatter(self_t, 0, index, src, out=out).cpu()
+      torch.scatter(self_t, 0, index, src, out=out)
 
   def test_scatter_rank2_self_scalar_src_tensor(self):
     self_t = torch.zeros(5, 5, device=et.device())
@@ -8241,7 +8304,7 @@ Device-side assertion tracking was not enabled by user.""",
         RuntimeError,
         tpu="""Index tensor must have the same number of dimensions as src tensor""",
     ):
-      torch.scatter(self_t, 0, index, src).cpu()
+      torch.scatter(self_t, 0, index, src)
 
   def test_softmax_backward_data_shape_mismatch(self):
     grad_output = torch.ones(5, 5, device=et.device())
@@ -8252,12 +8315,12 @@ Device-side assertion tracking was not enabled by user.""",
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""softmax_backward_data(): materialization failed with: expected grad_output and output arguments to have the same shape, got [5, 5] vs. [5]""",
+        tpu="""softmax_backward_data(): expected grad_output and output arguments to have the same shape, got [5, 5] vs. [5]""",
         gpu="""Expected tensor for argument #1 'grad' to have same size as tensor for argument #2 'output'; but [5, 5] does not equal [5] (while checking arguments for softmax_backward)""",
     ):
       torch.ops.aten._softmax_backward_data(
           grad_output, output, 0, torch.float32, grad_input=grad_input
-      ).cpu()
+      )
 
   def test_as_strided_negative_offset(self):
     t = torch.empty(5, device=et.device())
@@ -8963,6 +9026,42 @@ Device-side assertion tracking was not enabled by user.""",
           None,
       )
 
+  def test_scaled_mm_v2_invalid_swizzled_scale_buffer_size(self):
+    m, n, k = 128, 128, 128
+    dev = et.device()
+    mat1 = (
+        torch.randn(m, k, dtype=torch.float32).to(torch.float8_e4m3fn).to(dev)
+    )
+    mat2 = (
+        torch.randn(k, n, dtype=torch.float32).to(torch.float8_e4m3fn).to(dev)
+    )
+    wrong_scale = [torch.zeros(1, dtype=torch.float8_e8m0fnu, device=dev)]
+    scale_b = [torch.zeros(512, dtype=torch.float8_e8m0fnu, device=dev)]
+    err_type = RuntimeError if et.is_on_tpu() else Exception
+    with et.assert_raises_message(
+        err_type,
+        tpu="""scaled_mm_v2(): expected scale buffer to have 512 elements for outer=128 and k_logical=4, got 1 ([1])""",
+        gpu=re.compile(
+            r".*For Blockwise scaling with SWIZZLE_32_4_4 scale_a should have"
+            r" 512 elements, got: 1.*",
+            re.DOTALL,
+        ),
+        message_reviewed_by="wan",
+    ):
+      # TODO(yangzhouml): error at dispatch time instead of at compile time
+      torch._scaled_mm_v2(
+          mat1,
+          mat2,
+          wrong_scale,
+          [3],  # BlockWise1x32
+          [1],  # SWIZZLE_32_4_4
+          scale_b,
+          [3],  # BlockWise1x32
+          [1],  # SWIZZLE_32_4_4
+          None,
+          None,
+      ).cpu()
+
   def test_scaled_mm_v2_invalid_scale_b_size(self):
     (
         self_tpu,
@@ -9300,7 +9399,7 @@ Device-side assertion tracking was not enabled by user.""",
     t = torch.ones(4, device=et.device(), dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""fft_c2c(): materialization failed with: expected complex input type, got float32""",
+        tpu="""fft_c2c(): expected complex input type, got float32""",
         gpu="""Expected self.is_complex() to be true, but got false.  (Could this error message be improved?  If so, please report an enhancement request to PyTorch.)""",
     ):
       torch.ops.aten._fft_c2c(t, [0], 0, True)
@@ -9309,7 +9408,7 @@ Device-side assertion tracking was not enabled by user.""",
     t = torch.ones(4, device=et.device(), dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""fft_c2r(): materialization failed with: expected complex input type, got float32""",
+        tpu="""fft_c2r(): expected complex input type, got float32""",
         gpu="""Expected self.is_complex() to be true, but got false.  (Could this error message be improved?  If so, please report an enhancement request to PyTorch.)""",
     ):
       torch.ops.aten._fft_c2r(t, [0], 0, 4)
@@ -11391,6 +11490,37 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       torch.logcumsumexp(t, dim=1)
 
+  def test_logcumsumexp_dimension_out_of_range(self):
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""logcumsumexp(): expected dimension to be in range [-1, 0], got 1""",
+        gpu="""Dimension out of range (expected to be in range of [-1, 0], but got 1)""",
+        message_reviewed_by="wan",
+    ):
+      t = torch.ones(1, device=et.device())
+      torch.logcumsumexp(t, dim=1)
+
+  def test_logcumsumexp_scalar_dimension_out_of_range(self):
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""logcumsumexp(): expected dimension to be either 0 or -1 for a shape with 0 dimensions, got 1""",
+        gpu="""Dimension out of range (expected to be in range of [-1, 0], but got 1)""",
+        message_reviewed_by="wan",
+    ):
+      t = torch.tensor(1.0, device=et.device())
+      torch.logcumsumexp(t, dim=1)
+
+  def test_logcumsumexp_out_dtype_mismatch(self):
+    t = torch.ones(5, device=et.device(), dtype=torch.float32)
+    out = torch.ones(5, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""logcumsumexp(): result type float32 can't be cast to the desired output type int32""",
+        gpu="""expected scalar type Float but found Int""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten._logcumsumexp.out(t, 0, out=out)
+
   def test_unsafe_masked_index_error(self):
     with et.assert_raises_message(
         IndexError,
@@ -11541,6 +11671,10 @@ Device-side assertion tracking was not enabled by user.""",
       padding_mode = 3
       torch.grid_sampler_3d(inp, grid, 0, padding_mode, False)
 
+  @et.skip_if(
+      et.is_on_gpu,
+      "GPU supports 3D bicubic interpolation in PyTorch >= 2.15.",
+  )
   def test_grid_sampler_3d_invalid_interpolation_mode(self):
     inp = torch.ones(1, 1, 2, 2, 2, device=et.device())
     grid = torch.zeros(1, 2, 2, 2, 3, device=et.device())
@@ -11554,6 +11688,10 @@ Device-side assertion tracking was not enabled by user.""",
       interpolation_mode = 2
       torch.grid_sampler(inp, grid, interpolation_mode, 0, False)
 
+  @et.skip_if(
+      et.is_on_gpu,
+      "GPU supports 3D bicubic interpolation in PyTorch >= 2.15.",
+  )
   def test_grid_sampler_3d_backward_invalid_interpolation_mode(self):
     grad_output = torch.randn(
         2, 3, 5, 5, 5, device=et.device(), dtype=torch.float32
@@ -11967,7 +12105,10 @@ Device-side assertion tracking was not enabled by user.""",
     with et.assert_raises_message(
         err_type,
         tpu="""scaled_mm_v2(): expected contraction_dim list to contain exactly 2 elements, got 1""",
-        gpu="""contraction_dim must have exactly 2 elements""",
+        gpu=re.compile(
+            r"(contraction_dim must have exactly 2 elements|"
+            r"torch\._scaled_mm_v2 only supports contraction_dim=\(1, 0\))"
+        ),
     ):
       torch._scaled_mm_v2(
           self_tpu,
@@ -12914,6 +13055,109 @@ class MaskedSoftmaxErrorTest(et.ErrorTestBase):
         tpu="""expected unstacked_gradients[1] dim 1 (32) to be at most stacked_feature_dim (24)""",
     ):
       torch.ops.tpu.sparse_dense_matmul_gradient_stack([g1, g2], 64, 24)
+
+  def test_gather_out_dtype_mismatch(self):
+    inp = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+    index = torch.zeros(2, 2, device=et.device(), dtype=torch.int64)
+    out = torch.empty(2, 2, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gather(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.gather(inp, 0, index, out=out)
+
+  def test_scatter_out_dtype_mismatch(self):
+    self_t = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+    index = torch.zeros(1, 2, device=et.device(), dtype=torch.int64)
+    src = torch.ones(1, 2, device=et.device(), dtype=torch.float32)
+    out = torch.empty(2, 2, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scatter(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.scatter(self_t, 0, index, src, out=out)
+
+  def test_scatter_add_out_dtype_mismatch(self):
+    self_t = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+    index = torch.zeros(1, 2, device=et.device(), dtype=torch.int64)
+    src = torch.ones(1, 2, device=et.device(), dtype=torch.float32)
+    out = torch.empty(2, 2, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scatter_add(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.scatter_add(self_t, 0, index, src, out=out)
+
+  def test_scatter_reduce_out_dtype_mismatch(self):
+    self_t = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+    index = torch.zeros(1, 2, device=et.device(), dtype=torch.int64)
+    src = torch.ones(1, 2, device=et.device(), dtype=torch.float32)
+    out = torch.empty(2, 2, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scatter_reduce(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.scatter_reduce(self_t, 0, index, src, reduce="sum", out=out)
+
+  def test_index_add_out_dtype_mismatch(self):
+    self_t = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+    index = torch.zeros(1, device=et.device(), dtype=torch.int64)
+    source = torch.ones(1, 2, device=et.device(), dtype=torch.float32)
+    out = torch.empty(2, 2, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""index_add(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.index_add(self_t, 0, index, source, out=out)
+
+  def test_index_copy_out_dtype_mismatch(self):
+    self_t = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+    index = torch.zeros(1, device=et.device(), dtype=torch.int64)
+    source = torch.ones(1, 2, device=et.device(), dtype=torch.float32)
+    out = torch.empty(2, 2, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""index_copy(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.index_copy(self_t, 0, index, source, out=out)
+
+  def test_take_out_dtype_mismatch(self):
+    self_t = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+    index = torch.zeros(2, device=et.device(), dtype=torch.int64)
+    out = torch.empty(2, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""take(): expected the output dtype to be float32, got float64""",
+        gpu="""take(): self and out expected to have the same dtype, but got self.dtype = Float and out.dtype = Double""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.take(self_t, index, out=out)
+
+  def test_split_with_sizes_copy_out_dtype_mismatch(self):
+    self_t = torch.ones(4, 2, device=et.device(), dtype=torch.float32)
+    out = [
+        torch.empty(2, 2, device=et.device(), dtype=torch.float32),
+        torch.empty(2, 2, device=et.device(), dtype=torch.float64),
+    ]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""split_with_sizes_copy(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.split_with_sizes_copy(self_t, [2, 2], dim=0, out=out)
 
 
 if __name__ == "__main__":

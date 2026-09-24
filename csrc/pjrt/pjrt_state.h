@@ -17,6 +17,9 @@
 #ifndef TORCH_TPU_CSRC_PJRT_PJRT_STATE_H_
 #define TORCH_TPU_CSRC_PJRT_PJRT_STATE_H_
 
+#include <unistd.h>
+
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -80,6 +83,10 @@ class PjrtBackend {
   // Returns whether the PjRt runtime is initialized.
   [[nodiscard]] bool IsInitialized() const ABSL_LOCKS_EXCLUDED(mutex_);
 
+  // Returns whether the current process is in an unsafe forked child state
+  // (i.e. forked after PjRt runtime initialization occurred in the parent).
+  [[nodiscard]] bool IsInBadFork() const;
+
   // Returns the PjRtClient singleton. Triggers lazy initialization if needed.
   [[nodiscard]] xla::PjRtClient* absl_nullable GetClient()
       ABSL_LOCKS_EXCLUDED(mutex_);
@@ -122,20 +129,6 @@ class PjrtBackend {
   // Shuts down the PjRt runtime and resets the global state.
   void Shutdown() ABSL_LOCKS_EXCLUDED(mutex_);
 
-  // Registers the mapping from PyTorch ranks in the WORLD process group to
-  // TPU global device IDs.
-  void SetWorldRankToDeviceId(
-      std::vector<int64_t> rank_to_device_id)  // INT_VEC_OK
-      ABSL_LOCKS_EXCLUDED(mutex_);
-
-  // Resets the world rank to device ID mapping to std::nullopt.
-  void ResetWorldRankToDeviceId() ABSL_LOCKS_EXCLUDED(mutex_);
-
-  // Returns the mapping from PyTorch ranks in the WORLD process group to
-  // TPU global device IDs, if initialized.
-  std::optional<std::vector<int64_t>> GetWorldRankToDeviceId()  // INT_VEC_OK
-      const ABSL_LOCKS_EXCLUDED(mutex_);
-
  private:
   friend class absl::NoDestructor<PjrtBackend>;
 
@@ -155,11 +148,12 @@ class PjrtBackend {
       PjRtDeviceType::kUnknown;
   int global_device_count_ ABSL_GUARDED_BY(mutex_) = 0;
   int global_device_id_ ABSL_GUARDED_BY(mutex_) = -1;
-  std::optional<std::vector<int64_t>> world_rank_to_device_id_  // INT_VEC_OK
-      ABSL_GUARDED_BY(mutex_);
   PjRtInitializationOptions options_ ABSL_GUARDED_BY(mutex_) = {};
   bool init_attempted_ ABSL_GUARDED_BY(mutex_) = false;
   absl::Status init_status_ ABSL_GUARDED_BY(mutex_) = absl::OkStatus();
+  // PID of the process that successfully initialized the PjRt runtime. Stored
+  // atomically so IsInBadFork() can safely check it without acquiring locks.
+  std::atomic<pid_t> init_pid_{0};
 };
 
 }  // namespace torch_tpu

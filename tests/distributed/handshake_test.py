@@ -33,6 +33,7 @@ from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
 from tests.distributed import distributed_utils
 import zmq
+import zmq.utils.monitor
 
 _LoopRunner = handshake._LoopRunner
 
@@ -526,7 +527,9 @@ class ZMQServerClientTest(seed_test_utils.RepeatableTest):
   def test_zmq_server_client_custom_timeouts(self) -> None:
     port = portpicker.pick_unused_port()
     server = _ZMQServer(port=port, send_timeout_s=5, recv_timeout_s=10)
-    client = _ZMQClient(port=port, send_timeout_s=2, recv_timeout_s=3)
+    client = _ZMQClient(
+        port=port, routing_id=b"rank-1", send_timeout_s=2, recv_timeout_s=3
+    )
     try:
       self.assertEqual(server._socket.getsockopt(zmq.SNDTIMEO), 5000)
       self.assertEqual(server._socket.getsockopt(zmq.RCVTIMEO), 10000)
@@ -545,7 +548,7 @@ class ZMQServerClientTest(seed_test_utils.RepeatableTest):
   def test_zmq_server_client_send_recv(self) -> None:
     port = portpicker.pick_unused_port()
     server = _ZMQServer(port=port)
-    client = _ZMQClient(port=port)
+    client = _ZMQClient(port=port, routing_id=b"rank-1")
 
     msg = _make_request(
         rank=1, participating_ranks=[0, 1], fingerprint="fp_comm"
@@ -566,6 +569,51 @@ class ZMQServerClientTest(seed_test_utils.RepeatableTest):
       client.send(msg)
       await server_task
       # Recv reply on client
+      reply = client.recv()
+      self.assertTrue(reply.success)
+
+    try:
+      asyncio.run(_run())
+    finally:
+      client.close()
+      server.close()
+
+  def test_zmq_server_client_reconnect_before_reply(self) -> None:
+    port = portpicker.pick_unused_port()
+    server = _ZMQServer(port=port)
+    client = _ZMQClient(port=port, recv_timeout_s=1, routing_id=b"rank-1")
+
+    msg = _make_request(
+        rank=1, participating_ranks=[0, 1], fingerprint="fp_comm"
+    )
+
+    async def _run() -> None:
+      nonlocal client
+      client.send(msg)
+      envelope = await server.recv_request()
+      self.assertIsNotNone(envelope)
+      assert envelope is not None
+      self.assertEqual(envelope.client_id, b"rank-1")
+
+      # Simulate client connection drop and recreation before server replies.
+      client.close()
+
+      # Monitor server socket to make sure the client reconnected before replying.
+      monitor = server._socket.get_monitor_socket(zmq.EVENT_HANDSHAKE_SUCCEEDED)
+      client = _ZMQClient(port=port, recv_timeout_s=1, routing_id=b"rank-1")
+
+      # Wait until the client reconnects.
+      while True:
+        evt = await zmq.utils.monitor.recv_monitor_message(monitor)
+        if evt["event"] == zmq.EVENT_HANDSHAKE_SUCCEEDED:
+          break
+
+      server._socket.disable_monitor()
+      monitor.close()
+
+      await server.send_reply(
+          envelope.client_id, CollectiveHandshakeResponse(success=True)
+      )
       reply = client.recv()
       self.assertTrue(reply.success)
 
@@ -657,7 +705,7 @@ class HandshakeServerClientBackendTest(seed_test_utils.RepeatableTest):
     port = portpicker.pick_unused_port()
     server = _ZMQServer(port=port)
     self.assertEqual(server._socket.getsockopt(zmq.IPV6), 1)
-    client = _ZMQClient(port=port)
+    client = _ZMQClient(port=port, routing_id=b"rank-1")
     self.assertEqual(client._socket.getsockopt(zmq.IPV6), 1)
     client.close()
     server.close()
@@ -667,7 +715,9 @@ class HandshakeServerClientBackendTest(seed_test_utils.RepeatableTest):
     """Tests communication between _ZMQServer and _ZMQClient with various address formats including IPv6."""
     port = portpicker.pick_unused_port()
     server = _ZMQServer(port=port)
-    client = _ZMQClient(port=port, master_addr=master_addr)
+    client = _ZMQClient(
+        port=port, routing_id=b"rank-1", master_addr=master_addr
+    )
 
     req = _make_request(rank=1, participating_ranks=[0, 1])
     client.send(req)

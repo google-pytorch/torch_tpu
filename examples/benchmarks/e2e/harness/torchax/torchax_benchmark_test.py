@@ -47,6 +47,8 @@ from examples.benchmarks.e2e.harness import target as target_lib
 from examples.benchmarks.e2e.harness.torchax import torchax_device_ops
 from examples.benchmarks.e2e.harness.torchax import torchax_step
 from torch_tpu._internal.distributed import multiprocessing
+# Pre-import module_registry so torchvision initializes before XLADispatchMode is enabled.
+from tests import module_registry  # pylint: disable=unused-import # noqa: F401
 
 # Framework definition for this binary.
 _FRAMEWORK = mode_lib.Framework.TORCHAX

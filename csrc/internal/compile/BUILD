@@ -50,12 +50,12 @@ torch_tpu_cc_library(
         "//csrc/ops/view_decomposition:decomposition",
         "//csrc/ops/view_decomposition:strided_layout",
         "//csrc/pjrt:pjrt_state",
-        "//shims/pybind11",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
         "//shims/torch/c10/core:base_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
         "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/base",
         "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:absl_check",
@@ -66,15 +66,14 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/types:span",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Support",
-        "@stablehlo//:attr_type_builder_util",
         "@stablehlo//:stablehlo_serialization",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@tsl//tsl/platform:path",
         "@tsl//tsl/profiler/lib:traceme",
         "@xla//xla:shape_util",
         "@xla//xla/pjrt:maybe_owning_mlir_module",
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt:pjrt_executable",
-        "@xla//xla/pjrt/plugin/xla_cpu:xla_cpu_pjrt_client",  # buildcleaner: keep
         "@xla//xla/pjrt/plugin/xla_tpu:xla_tpu_pjrt_client",  # buildcleaner: keep
     ],
 )
@@ -135,7 +134,7 @@ torch_tpu_cc_library(
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Parser",
         "@llvm-project//mlir:Support",
-        "@stablehlo//:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@tsl//tsl/platform:fingerprint",
         "@xla//xla:shape_util",
         "@xla//xla/client:executable_build_options",
@@ -145,7 +144,6 @@ torch_tpu_cc_library(
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt:pjrt_executable",
         "@xla//xla/pjrt:pjrt_layout",
-        "@xla//xla/pjrt/plugin/xla_cpu:xla_cpu_pjrt_client",  # buildcleaner: keep
         "@xla//xla/pjrt/plugin/xla_tpu:xla_tpu_pjrt_client",  # buildcleaner: keep
         "@xla//xla/service:device_assignment",
     ],
@@ -180,8 +178,8 @@ torch_tpu_cc_library(
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Parser",
-        "@stablehlo//:attr_type_builder_util",
-        "@stablehlo//:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
     ],
 )
 
@@ -220,9 +218,9 @@ torch_tpu_cc_test(
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Parser",
         "@llvm-project//mlir:Support",
-        "@stablehlo//:attr_type_builder_util",
-        "@stablehlo//:mlir_builder",
         "@stablehlo//:stablehlo_ops",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
         "@xla//xla/mlir/utils:error_util",
     ],
 )

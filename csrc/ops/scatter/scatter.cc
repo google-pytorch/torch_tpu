@@ -21,6 +21,7 @@
 #include <optional>
 #include <vector>
 
+#include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/statusor.h"
 #include "csrc/common/dimension_types.h"
@@ -143,14 +144,14 @@ absl::StatusOr<mlir::MlirOp> BuildScatterShlo(
     }
   }
 
-  TT_RET_CHECK(self_type.getRank() == src_type.getRank(),
-               error::kInvalidArgument)
+  ABSL_CHECK_EQ(self_type.getRank(),  // CRASH_OK=checked in Scatter()
+                src_type.getRank())
       << "expected the self tensor of shape " << ToString(self_type.getShape())
       << " to have the same rank as the src tensor of shape "
       << ToString(src_type.getShape()) << ", got " << self_type.getRank()
       << " vs. " << src_type.getRank();
-  TT_RET_CHECK(self_type.getRank() == index_type.getRank(),
-               error::kInvalidArgument)
+  ABSL_CHECK_EQ(self_type.getRank(),  // CRASH_OK=checked in Scatter()
+                index_type.getRank())
       << "expected the self tensor of shape " << ToString(self_type.getShape())
       << " to have the same rank as the index tensor of shape "
       << ToString(index_type.getShape()) << ", got " << self_type.getRank()

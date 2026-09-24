@@ -17,9 +17,12 @@
 #include "csrc/internal/compile/compiled_mode.h"
 
 #include <algorithm>
+#include <chrono>  // NOLINT(build/c++11): `std::shared_future::wait_for`.
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <future>  // NOLINT(build/c++11): the executable future type is a
+                   // `std::shared_future`.
 #include <iterator>
 #include <memory>
 #include <optional>
@@ -29,6 +32,8 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "absl/algorithm/container.h"
+#include "absl/base/call_once.h"
+#include "absl/base/nullability.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/log/check.h"
@@ -62,7 +67,6 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/Support/LLVM.h"
-#include "pybind11/pybind11.h"
 #include "stablehlo/dialect/Serialization.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch/headeronly/core/ScalarType.h"
@@ -141,9 +145,13 @@ absl::StatusOr<std::vector<DeviceBufferRef>> PrepareCompiledModeArgumentsImpl(
   }
 
   // Materialize the argument buffers if any are still deferred.
+  // This has to block until all buffers start materialization, but not until
+  // they complete, so that the validation in ExecutionTask creation passes.
   if (has_deferred_or_placeholder) {
     TT_RETURN_IF_ERROR(Materialize(
-        argument_buffer_refs, MaterializationReason::kCompileModeExecution));
+        argument_buffer_refs, MaterializationReason::kCompileModeExecution,
+        MaterializationMode::kSplitGraph,
+        MaterializationBlockMode::kBlockUntilStarted));
   }
 
   // After materialization, each argument buffer will be a materialized,
@@ -238,9 +246,14 @@ absl::StatusOr<std::vector<DeviceBufferRef>> PrepareCompiledModeArgumentsImpl(
     }
   }
 
+  // Materialize the argument buffers if any are still deferred.
+  // This has to block until all buffers start materialization, but not until
+  // they complete, so that the validation in ExecutionTask creation passes.
   if (has_deferred_or_placeholder) {
     TT_RETURN_IF_ERROR(Materialize(
-        argument_buffer_refs, MaterializationReason::kCompileModeExecution));
+        argument_buffer_refs, MaterializationReason::kCompileModeExecution,
+        MaterializationMode::kSplitGraph,
+        MaterializationBlockMode::kBlockUntilStarted));
   }
   return argument_buffer_refs;
 }
@@ -340,15 +353,11 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ExtractMlirFromGraph(
   return mlir_module;
 }
 
-absl::StatusOr<CompileResult> TraverseAndCompile(
+absl::StatusOr<AsyncCompileResult> TraverseAndCompile(
     const std::vector<at::Tensor>& result_tensors,
     const std::vector<at::Tensor>& argument_tensors,
     const TraverseAndCompileOptions& options) {
   tsl::profiler::TraceMe trace_await("TraverseAndCompile");
-
-  ScopedPythonContextCapturer capturer(OpName::kCompileMlir);
-  ScopedPythonContextProvider provider(
-      ScopedPythonContextCapturer::GetContext());
 
   ABSL_CHECK(  // CRASH_OK=implies a bug in compile backend if this happens
       !result_tensors.empty())
@@ -370,7 +379,7 @@ absl::StatusOr<CompileResult> TraverseAndCompile(
         << "argument tensor has deferred ops: " << ToString(tensor);
 
     // Using a vector scan instead of a hashset for deduplication
-    // as argument_tensors is expected to have few elements (<100)
+    // as `argument_tensors` is expected to have few elements (<100)
     std::vector<DeviceBufferRef>::const_iterator it =
         absl::c_find(argument_refs, buffer_ref);
     if (it == argument_refs.cend()) {
@@ -420,26 +429,13 @@ absl::StatusOr<CompileResult> TraverseAndCompile(
         unique_donated_inputs.end());
   }
 
-  // Release the Python GIL before XLA compilation to allow multi-threaded
-  // compilation.
-  pybind11::gil_scoped_release release;
-
-  // 2. Compile Traversal and get exec
   auto compilation_spec = GetCompilationSpec(options.compilation_mode);
-  TT_ASSIGN_OR_CRASH(  // CRASH_OK=implies a bug in compile backend if this
-                       // happens
+  TT_ASSIGN_OR_RETURN(
       auto compiled_kernel,
       traversal->Compile(std::move(compilation_spec), nullptr,
                          options.use_stablehlo_bounds, options.argument_layouts,
                          unique_donated_inputs, options.module_name),
-      _ << "failed to compile traversal");
-
-  TT_ASSIGN_OR_RETURN(auto executable, compiled_kernel.fixed_shape_kernel.get(),
-                      _.SetPrepend() << "failed to get fixed shape kernel: ");
-  if (has_duplicates) {
-    executable = LoadedExecutableWithMetadata::WithArgumentIndices(
-        executable, std::move(argument_indices));
-  }
+      _.SetPrepend() << "failed to compile traversal: ");
 
   std::shared_ptr<ContextedModule> module = nullptr;
   if (options.build_mlir_module) {
@@ -459,10 +455,49 @@ absl::StatusOr<CompileResult> TraverseAndCompile(
     module = std::make_shared<ContextedModule>(std::move(contexted_module));
   }
 
-  return CompileResult{
-      .module = std::move(module),
-      .executable = std::move(executable),
-  };
+  return AsyncCompileResult(
+      std::move(module), std::move(compiled_kernel.fixed_shape_kernel),
+      has_duplicates ? std::move(argument_indices) : Indices{});
+}
+
+AsyncCompileResult::AsyncCompileResult(
+    absl_nullable std::shared_ptr<ContextedModule> module,
+    SharedLoadedExecutableWithMetadataFuture executable_future,
+    Indices argument_indices)
+    : module_(std::move(module)),
+      executable_future_(std::move(executable_future)),
+      argument_indices_(std::move(argument_indices)) {
+  ABSL_DCHECK(executable_future_.valid());
+}
+
+bool AsyncCompileResult::IsReady() const {
+  ABSL_DCHECK(executable_future_.valid());
+  return executable_future_.wait_for(std::chrono::seconds(0)) ==
+         std::future_status::ready;
+}
+
+absl::StatusOr<SharedLoadedExecutableWithMetadata> AsyncCompileResult::Get() {
+  ABSL_DCHECK(once_ != nullptr);
+  // What we're really lacking here is the ability to chain continuations to the
+  // existing `executable_future_` which is simply a deficiency with the
+  // `<future>` implementation in the current version of the c++ library used
+  // as of this writing.
+  //
+  // The below acts as a poor-man's solution to this problem in that we want to
+  // apply our deduping argument indices to the generated executable after
+  // fulfillment but before returning to the user.
+  absl::call_once(*once_, [this]() {
+    ABSL_DCHECK(executable_future_.valid());
+    absl::StatusOr<SharedLoadedExecutableWithMetadata> status_or =
+        executable_future_.get();
+    if (status_or.ok() && !argument_indices_.empty()) {
+      resolved_executable_ = LoadedExecutableWithMetadata::WithArgumentIndices(
+          *status_or, std::move(argument_indices_));
+    } else {
+      resolved_executable_ = std::move(status_or);
+    }
+  });
+  return *resolved_executable_;
 }
 
 absl::StatusOr<SharedLoadedExecutableWithMetadata> CompileMlirExecutable(

@@ -25,6 +25,7 @@
 #include "absl/status/status.h"
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -47,18 +48,18 @@ namespace {
 absl::Status IndexAdd(const at::Tensor& self, int64_t dim,
                       const at::Tensor& index, const at::Tensor& source,
                       PromotedScalar& promoted_alpha,
-                      const at::ScalarType& out_scalar_type,
                       OpParamCacheKeys param_keys, at::Tensor& out) {
+  TT_RETURN_IF_ERROR(ValidateOutDtype(out, self.scalar_type(),
+                                      /*allow_out_dtype_cast=*/false));
   TT_ASSIGN_OR_RETURN(dim,
                       ValidateIndexInputsAndGetDim(self, dim, index, source));
 
-  at::ScalarType promoted_scalar_type =
-      c10::promoteTypes(self.scalar_type(), out_scalar_type);
+  at::ScalarType self_scalar_type = self.scalar_type();
   TT_ASSIGN_OR_RETURN(const auto computation_dtype,
-                      ConvertTo<mlir::ElementType>(promoted_scalar_type));
+                      ConvertTo<mlir::ElementType>(self_scalar_type));
 
   TT_ASSIGN_OR_RETURN(const at::Tensor alpha_tensor,
-                      promoted_alpha.GetTensor(promoted_scalar_type));
+                      promoted_alpha.GetTensor(self_scalar_type));
 
   auto index_add_op_builder =
       [dim, computation_dtype](FixedSizeSpan<mlir::MlirOp, 4> inputs) {
@@ -68,7 +69,7 @@ absl::Status IndexAdd(const at::Tensor& self, int64_t dim,
       };
 
   TT_ASSIGN_OR_RETURN(const auto output_dtype,
-                      ConvertTo<mlir::ElementType>(out_scalar_type));
+                      ConvertTo<mlir::ElementType>(self_scalar_type));
   Dimensions output_dims = CopyIntVector(self.sizes());
 
   return DispatchOpOut<4>(std::move(index_add_op_builder),
@@ -85,13 +86,13 @@ at::Tensor& TpuAtenIndexAddOut(const at::Tensor& self, int64_t dim,
                                const at::Tensor& source,
                                const at::Scalar& alpha, at::Tensor& out) {
   PromotedScalar promoted_alpha = PromoteScalar(alpha);
-  TT_KERNEL(OpName::kIndexAddOut, param_keys,
-            (self, dim, index, source, promoted_alpha, out), {
-              TT_THROW_IF_ERROR(IndexAdd(self, dim, index, source,
-                                         promoted_alpha, out.scalar_type(),
-                                         std::move(param_keys), out));
-              return out;
-            });
+  TT_KERNEL(
+      OpName::kIndexAddOut, param_keys,
+      (self, dim, index, source, promoted_alpha, out), {
+        TT_THROW_IF_ERROR(IndexAdd(self, dim, index, source, promoted_alpha,
+                                   std::move(param_keys), out));
+        return out;
+      });
 }
 
 }  // namespace torch_tpu
