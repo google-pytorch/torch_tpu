@@ -9048,7 +9048,6 @@ Device-side assertion tracking was not enabled by user.""",
         ),
         message_reviewed_by="wan",
     ):
-      # TODO(yangzhouml): error at dispatch time instead of at compile time
       torch._scaled_mm_v2(
           mat1,
           mat2,
@@ -9060,7 +9059,7 @@ Device-side assertion tracking was not enabled by user.""",
           [1],  # SWIZZLE_32_4_4
           None,
           None,
-      ).cpu()
+      )
 
   def test_scaled_mm_v2_invalid_scale_b_size(self):
     (
