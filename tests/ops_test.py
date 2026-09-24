@@ -1187,9 +1187,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
     "torch.ops.aten._safe_softmax.default": {
         torch.float16: {"atol": 5.9e-4},
     },
-    "var": {
-        torch.float16: {"rtol": 1.5e-3},
-    },
     "xlogy": {
         torch.float32: {"rtol": 3.2e-4, "atol": 3e-4},
         torch.int16: {"rtol": 6.9e-5},
