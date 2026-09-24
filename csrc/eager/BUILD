@@ -49,9 +49,9 @@ torch_tpu_cc_test(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
         "@llvm-project//mlir:IR",
-        "@stablehlo//:attr_type_builder_util",
-        "@stablehlo//:mlir_builder",
         "@stablehlo//:stablehlo_ops",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
     ],
 )
 
@@ -74,10 +74,10 @@ torch_tpu_cc_test(
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
         "@stablehlo//:stablehlo_ops",
-        "@stablehlo//:attr_type_builder_util",
-        "@stablehlo//:func_builder",
-        "@stablehlo//:mlir_builder",
-        "@stablehlo//:stablehlo_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:func_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
     ],
 )
 
@@ -108,8 +108,8 @@ torch_tpu_cc_test(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
-        "@stablehlo//:attr_type_builder_util",
-        "@stablehlo//:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
         "@xla//xla/pjrt:pjrt_executable",
     ],
 )
@@ -149,8 +149,8 @@ torch_tpu_cc_test(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
-        "@stablehlo//:attr_type_builder_util",
-        "@stablehlo//:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
     ],
 )
 
@@ -174,8 +174,8 @@ torch_tpu_cc_test(
         "//csrc/ops:python_context",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
-        "@stablehlo//:attr_type_builder_util",
-        "@stablehlo//:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
     ],
 )
 
@@ -205,8 +205,8 @@ torch_tpu_cc_test(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
-        "@stablehlo//:attr_type_builder_util",
-        "@stablehlo//:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
         "@xla//xla/pjrt/plugin/xla_tpu:xla_tpu_pjrt_client",  # buildcleaner: keep
     ],
 )
@@ -246,7 +246,7 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/types:span",
-        "@stablehlo//:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@xla//xla:future",
         "@xla//xla:shape_util",
         "@xla//xla:xla_data_proto_cc",
@@ -293,7 +293,7 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/types:span",
-        "@stablehlo//:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@tsl//tsl/profiler/lib:traceme",
         "@xla//xla/pjrt:host_memory_allocator",
     ],
@@ -333,9 +333,9 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/status:statusor",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
-        "@stablehlo//:attr_type_builder_util",
-        "@stablehlo//:mlir_builder",
-        "@stablehlo//:stablehlo_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
     ],
 )
 
@@ -641,8 +641,8 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:string_view",
         "@com_google_absl//absl/types:span",
-        "@stablehlo//:attr_type_builder_util",
-        "@stablehlo//:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
         "@tsl//tsl/platform:path",
         "@tsl//tsl/profiler/lib:traceme",
         "@xla//xla/pjrt/plugin/xla_tpu:xla_tpu_pjrt_client",  # buildcleaner: keep
@@ -918,7 +918,7 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/base:no_destructor",
         "@com_google_absl//absl/status",
-        "@stablehlo//:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
     ],
 )
 
@@ -993,11 +993,11 @@ torch_tpu_cc_library(
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Support",
-        "@stablehlo//:attr_type_builder_util",
-        "@stablehlo//:func_builder",
-        "@stablehlo//:mlir_builder",
-        "@stablehlo//:stablehlo_builder",
         "@stablehlo//:stablehlo_ops",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:func_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
         "@tsl//tsl/platform:path",
         "@tsl//tsl/profiler/lib:traceme",
         "@xla//xla:shape_util",
@@ -1046,8 +1046,8 @@ torch_tpu_cc_test(
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
-        "@stablehlo//:attr_type_builder_util",
-        "@stablehlo//:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
     ],
 )
 
@@ -1091,9 +1091,9 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/types:span",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
-        "@stablehlo//:attr_type_builder_util",
-        "@stablehlo//:mlir_builder",
-        "@stablehlo//:stablehlo_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
     ],
 )
 
@@ -1131,9 +1131,9 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/types:span",
         "@llvm-project//mlir:IR",
-        "@stablehlo//:attr_type_builder_util",
-        "@stablehlo//:mlir_builder",
-        "@stablehlo//:stablehlo_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
         "@xla//xla:future",
     ],
 )
@@ -1168,8 +1168,8 @@ torch_tpu_cc_test(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
-        "@stablehlo//:attr_type_builder_util",
-        "@stablehlo//:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
         "@xla//xla:future",
     ],
 )
@@ -1195,7 +1195,7 @@ torch_tpu_cc_test(
         "//csrc/common:fingerprint_utils",
         "//csrc/common:oss_test_main",
         "//csrc/common:status_test_utils",
-        "@stablehlo//:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
     ],
 )
 

@@ -32,7 +32,7 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/types:span",
-        "@stablehlo//:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
     ],
 )
 
