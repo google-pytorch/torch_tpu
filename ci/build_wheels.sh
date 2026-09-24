@@ -76,9 +76,9 @@ fi
 # same version. Release wheels carry no suffix (the base version comes from
 # pyproject.toml).
 if [[ "${RELEASE}" == "true" ]]; then
-  WHEEL_VERSION_EXTRAS=""
+  WHEEL_VERSION_EXTRAS="${WHEEL_VERSION_EXTRAS:-}"
 else
-  WHEEL_VERSION_EXTRAS=".dev$(date +%Y%m%d%H%M%S)"
+  WHEEL_VERSION_EXTRAS="${WHEEL_VERSION_EXTRAS:-.dev$(date +%Y%m%d%H%M%S)}"
 fi
 echo "===> WHEEL_VERSION_EXTRAS: '${WHEEL_VERSION_EXTRAS}'"
 
