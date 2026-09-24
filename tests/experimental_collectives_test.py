@@ -19,7 +19,7 @@ import torch_tpu  # noqa: F401
 from tests import seed_test_utils
 
 
-class DimensionalCollectivesTest(seed_test_utils.RepeatableTest):
+class ExperimentalCollectivesTest(seed_test_utils.RepeatableTest):
 
   def test_meta_shapes_preserve_collective_dimension(self):
     value = torch.empty((2, 3, 4), device="meta")

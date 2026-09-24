@@ -24,9 +24,9 @@ package(
 )
 
 torch_tpu_cc_library(
-    name = "dimensional_collectives_aten_kernels",
-    srcs = ["dimensional_collectives_aten_kernels.cc"],
-    hdrs = ["dimensional_collectives_aten_kernels.h"],
+    name = "collectives_aten_kernels",
+    srcs = ["collectives_aten_kernels.cc"],
+    hdrs = ["collectives_aten_kernels.h"],
     deps = [
         "//csrc/common:cache_key",
         "//csrc/common:dimension_types",

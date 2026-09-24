@@ -2182,8 +2182,8 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
-    name = "dimensional_collectives_test",
-    srcs = ["dimensional_collectives_test.py"],
+    name = "experimental_collectives_test",
+    srcs = ["experimental_collectives_test.py"],
     deps = [
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
