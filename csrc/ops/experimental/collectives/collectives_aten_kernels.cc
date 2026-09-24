@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "csrc/ops/experimental/dimensional_collectives/dimensional_collectives_aten_kernels.h"
+#include "csrc/ops/experimental/collectives/collectives_aten_kernels.h"
 
 #include <cstdint>
 #include <string>
@@ -53,7 +53,7 @@ namespace {
 
 absl::StatusOr<int64_t> NormalizeDim(int64_t dim, int64_t rank) {
   TT_RET_CHECK(rank > 0, error::kInvalidArgument)
-      << "dimensional collectives require a non-scalar tensor";
+      << "collectives with an explicit dimension require a non-scalar tensor";
   TT_RET_CHECK(dim >= -rank && dim < rank, error::kInvalidArgument)
       << "dimension " << dim << " is invalid for a tensor with rank " << rank;
   return dim < 0 ? dim + rank : dim;
@@ -139,41 +139,21 @@ absl::StatusOr<mlir::MlirOp> BuildReduceScatterDimShlo(
       /*use_global_device_ids=*/true);
 }
 
-// Keep the lowering below the experimental API boundary. The bridge operators
-// currently resolve a process-group name and expose only sum reduce-scatter.
-// Once PyTorch has dimension-aware _c10d_functional operators, their
-// PrivateUse1 adapters can decode the `Any` group representation, parse
-// `reduce_op` for reduce-scatter, and delegate to this lowering without
-// preserving the experimental schema.
-absl::StatusOr<DeviceBufferRef> DimensionalCollective(
+using CollectiveBuilder = absl::StatusOr<mlir::MlirOp> (*)(
+    mlir::MlirOp, int64_t, const DeviceGroupList&);
+
+absl::StatusOr<DeviceBufferRef> DispatchCollectiveWithDim(
     const at::Tensor& input, int64_t dim, int64_t group_size,
-    const ProcessGroupTpu& process_group, bool reduce_scatter,
-    OpParamCacheKeys param_keys) {
-  TT_ASSIGN_OR_RETURN(dim, NormalizeDim(dim, input.dim()));
-  TT_RET_CHECK(group_size > 0, error::kInvalidArgument)
-      << "group_size must be positive, got " << group_size;
-
-  Dimensions output_shape = CopyIntVector(input.sizes());
-  if (reduce_scatter) {
-    TT_RET_CHECK(output_shape[dim] % group_size == 0, error::kInvalidArgument)
-        << "scatter dimension " << dim << " of size " << output_shape[dim]
-        << " is not divisible by group size " << group_size;
-    output_shape[dim] /= group_size;
-  } else {
-    output_shape[dim] *= group_size;
-  }
-
+    Dimensions output_shape, const ProcessGroupTpu& process_group,
+    CollectiveBuilder collective_builder, OpParamCacheKeys param_keys) {
   TT_ASSIGN_OR_RETURN(auto output_dtype,
                       ConvertTo<mlir::ElementType>(input.scalar_type()));
   const DeviceGroupList& device_groups = process_group.GetSubgroupDeviceIds();
   TT_RETURN_IF_ERROR(ValidateGroupSize(device_groups, group_size));
 
-  auto op_builder = [dim, device_groups, reduce_scatter](
-                        mlir::MlirOp input_op) -> absl::StatusOr<mlir::MlirOp> {
-    if (reduce_scatter) {
-      return BuildReduceScatterDimShlo(input_op, dim, device_groups);
-    }
-    return BuildAllGatherDimShlo(input_op, dim, device_groups);
+  auto op_builder = [collective_builder, dim,
+                     device_groups](mlir::MlirOp input_op) {
+    return collective_builder(input_op, dim, device_groups);
   };
 
   return DispatchOp<1>(
@@ -181,25 +161,43 @@ absl::StatusOr<DeviceBufferRef> DimensionalCollective(
       {.out_dtype = output_dtype,
        .out_dims = std::move(output_shape),
        .op_param_cache_keys = std::move(param_keys),
-       .split_mode = GetCollectiveSplitMode(),
+       .split_mode = process_group.collective_split_mode(),
        .device_assignment = process_group.device_assignment()});
 }
 
-at::Tensor MetaDimensionalCollective(const at::Tensor& input, int64_t dim,
-                                     int64_t group_size, bool reduce_scatter) {
-  TT_ASSIGN_OR_THROW(dim, NormalizeDim(dim, input.dim()));
-  TT_CHECK_THROW(group_size > 0, error::kInvalidArgument)
+// Keep these lowerings below the experimental API boundary. The bridge
+// operators currently resolve a process-group name and expose only sum
+// reduce-scatter. Once PyTorch has dimension-aware _c10d_functional operators,
+// their PrivateUse1 adapters can decode the `Any` group representation, parse
+// `reduce_op` for reduce-scatter, and delegate to the corresponding helper
+// without preserving the experimental schema.
+absl::StatusOr<DeviceBufferRef> AllGatherWithDim(
+    const at::Tensor& input, int64_t dim, int64_t group_size,
+    const ProcessGroupTpu& process_group, OpParamCacheKeys param_keys) {
+  TT_ASSIGN_OR_RETURN(dim, NormalizeDim(dim, input.dim()));
+  TT_RET_CHECK(group_size > 0, error::kInvalidArgument)
       << "group_size must be positive, got " << group_size;
   Dimensions output_shape = CopyIntVector(input.sizes());
-  if (reduce_scatter) {
-    TT_CHECK_THROW(output_shape[dim] % group_size == 0, error::kInvalidArgument)
-        << "scatter dimension " << dim << " of size " << output_shape[dim]
-        << " is not divisible by group size " << group_size;
-    output_shape[dim] /= group_size;
-  } else {
-    output_shape[dim] *= group_size;
-  }
-  return at::empty(output_shape, input.options());
+  output_shape[dim] *= group_size;
+  return DispatchCollectiveWithDim(
+      input, dim, group_size, std::move(output_shape), process_group,
+      BuildAllGatherDimShlo, std::move(param_keys));
+}
+
+absl::StatusOr<DeviceBufferRef> ReduceScatterWithDim(
+    const at::Tensor& input, int64_t dim, int64_t group_size,
+    const ProcessGroupTpu& process_group, OpParamCacheKeys param_keys) {
+  TT_ASSIGN_OR_RETURN(dim, NormalizeDim(dim, input.dim()));
+  TT_RET_CHECK(group_size > 0, error::kInvalidArgument)
+      << "group_size must be positive, got " << group_size;
+  Dimensions output_shape = CopyIntVector(input.sizes());
+  TT_RET_CHECK(output_shape[dim] % group_size == 0, error::kInvalidArgument)
+      << "scatter dimension " << dim << " of size " << output_shape[dim]
+      << " is not divisible by group size " << group_size;
+  output_shape[dim] /= group_size;
+  return DispatchCollectiveWithDim(
+      input, dim, group_size, std::move(output_shape), process_group,
+      BuildReduceScatterDimShlo, std::move(param_keys));
 }
 
 }  // namespace
@@ -207,45 +205,56 @@ at::Tensor MetaDimensionalCollective(const at::Tensor& input, int64_t dim,
 at::Tensor ExperimentalAllGatherDim(const at::Tensor& input, int64_t dim,
                                     int64_t group_size,
                                     std::string_view group_name) {
-  TT_KERNEL(
-      OpName::kExperimentalAllGatherDim, param_keys,
-      (input, dim, group_size, group_name), {
-        TT_ASSIGN_OR_THROW(auto process_group, GetProcessGroupTpu(group_name));
-        TT_ASSIGN_OR_THROW(
-            auto result, DimensionalCollective(
-                             input, dim, group_size, *process_group,
-                             /*reduce_scatter=*/false, std::move(param_keys)));
-        return MakeTensor(std::move(result));
-      });
+  TT_KERNEL(OpName::kExperimentalAllGatherDim, param_keys,
+            (input, dim, group_size, group_name), {
+              TT_ASSIGN_OR_THROW(auto process_group,
+                                 GetProcessGroupTpu(group_name));
+              TT_ASSIGN_OR_THROW(
+                  auto result,
+                  AllGatherWithDim(input, dim, group_size, *process_group,
+                                   std::move(param_keys)));
+              return MakeTensor(std::move(result));
+            });
 }
 
 at::Tensor ExperimentalReduceScatterDim(const at::Tensor& input, int64_t dim,
                                         int64_t group_size,
                                         std::string_view group_name) {
-  TT_KERNEL(
-      OpName::kExperimentalReduceScatterDim, param_keys,
-      (input, dim, group_size, group_name), {
-        TT_ASSIGN_OR_THROW(auto process_group, GetProcessGroupTpu(group_name));
-        TT_ASSIGN_OR_THROW(auto result,
-                           DimensionalCollective(
-                               input, dim, group_size, *process_group,
-                               /*reduce_scatter=*/true, std::move(param_keys)));
-        return MakeTensor(std::move(result));
-      });
+  TT_KERNEL(OpName::kExperimentalReduceScatterDim, param_keys,
+            (input, dim, group_size, group_name), {
+              TT_ASSIGN_OR_THROW(auto process_group,
+                                 GetProcessGroupTpu(group_name));
+              TT_ASSIGN_OR_THROW(
+                  auto result,
+                  ReduceScatterWithDim(input, dim, group_size, *process_group,
+                                       std::move(param_keys)));
+              return MakeTensor(std::move(result));
+            });
 }
 
 at::Tensor MetaExperimentalAllGatherDim(const at::Tensor& input, int64_t dim,
                                         int64_t group_size,
                                         std::string_view /*group_name*/) {
-  return MetaDimensionalCollective(input, dim, group_size,
-                                   /*reduce_scatter=*/false);
+  TT_ASSIGN_OR_THROW(dim, NormalizeDim(dim, input.dim()));
+  TT_CHECK_THROW(group_size > 0, error::kInvalidArgument)
+      << "group_size must be positive, got " << group_size;
+  Dimensions output_shape = CopyIntVector(input.sizes());
+  output_shape[dim] *= group_size;
+  return at::empty(output_shape, input.options());
 }
 
 at::Tensor MetaExperimentalReduceScatterDim(const at::Tensor& input,
                                             int64_t dim, int64_t group_size,
                                             std::string_view /*group_name*/) {
-  return MetaDimensionalCollective(input, dim, group_size,
-                                   /*reduce_scatter=*/true);
+  TT_ASSIGN_OR_THROW(dim, NormalizeDim(dim, input.dim()));
+  TT_CHECK_THROW(group_size > 0, error::kInvalidArgument)
+      << "group_size must be positive, got " << group_size;
+  Dimensions output_shape = CopyIntVector(input.sizes());
+  TT_CHECK_THROW(output_shape[dim] % group_size == 0, error::kInvalidArgument)
+      << "scatter dimension " << dim << " of size " << output_shape[dim]
+      << " is not divisible by group size " << group_size;
+  output_shape[dim] /= group_size;
+  return at::empty(output_shape, input.options());
 }
 
 }  // namespace torch_tpu
