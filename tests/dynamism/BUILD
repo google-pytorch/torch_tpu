@@ -128,15 +128,15 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
-    name = "sym_shape_manager_test",
-    srcs = ["sym_shape_manager_test.py"],
+    name = "graph_transform_context_test",
+    srcs = ["graph_transform_context_test.py"],
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile/dynamic:graph_transform_context",
         "//src/torch_tpu/_internal/compile/dynamic:output_sym_shape",
         "//src/torch_tpu/_internal/compile/dynamic:sym_bounds_manager",
-        "//src/torch_tpu/_internal/compile/dynamic:sym_shape_manager",
         "//src/torch_tpu/_internal/compile/dynamic:sym_utils",
         "//tests:seed_test_utils",
     ],
@@ -150,9 +150,9 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile/dynamic:graph_transform_context",
         "//src/torch_tpu/_internal/compile/dynamic:graph_transformations",
         "//src/torch_tpu/_internal/compile/dynamic:sym_bounds_manager",
-        "//src/torch_tpu/_internal/compile/dynamic:sym_shape_manager",
         "//src/torch_tpu/_internal/compile/dynamic:view_ops_passes",
         "//tests:seed_test_utils",
     ],

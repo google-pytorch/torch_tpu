@@ -29,7 +29,7 @@ from torch_tpu._internal.compile.dynamic import dynamic_view_pass
 from torch_tpu._internal.compile.dynamic import generative_ops_pass
 from torch_tpu._internal.compile.dynamic import sym_utils
 from torch_tpu._internal.compile.dynamic import view_ops_passes
-from torch_tpu._internal.compile.dynamic.sym_shape_manager import SymShapeManager
+from torch_tpu._internal.compile.dynamic.graph_transform_context import GraphTransformContext
 from torch_tpu._internal.compile.dynamic.symbol_bounds import SymbolBounds
 
 ConvertConstantSymIntsPass = (
@@ -48,10 +48,10 @@ class HandleDynamicInputTensorPass:
 
   def __init__(
       self,
-      sym_shape_manager: SymShapeManager,
+      transform_context: GraphTransformContext,
       placeholders: list[torch.fx.Node],
   ):
-    self._sym_shape_manager = sym_shape_manager
+    self._transform_context = transform_context
     self._placeholders = placeholders
 
   def __call__(self, graph_module: torch.fx.GraphModule) -> None:
@@ -66,7 +66,7 @@ class HandleDynamicInputTensorPass:
         continue
 
       bounded_shape = [
-          self._sym_shape_manager.get_upper_bound(d) for d in target_shape
+          self._transform_context.get_upper_bound(d) for d in target_shape
       ]
       self._process_node(
           graph_module,
@@ -90,7 +90,7 @@ class HandleDynamicInputTensorPass:
     shape_tensors = []
     for dim in range(rank):
       dim_arg = target_shape[dim]
-      size_tensor_node = self._sym_shape_manager.ensure_tensor(
+      size_tensor_node = self._transform_context.ensure_tensor(
           graph_module, dim_arg, node, dtype=torch.int32
       )
       shape_tensors.append(size_tensor_node)
@@ -117,10 +117,10 @@ class HandleDynamicInputTensorSetDimensionSizePass:
 
   def __init__(
       self,
-      sym_shape_manager: SymShapeManager,
+      transform_context: GraphTransformContext,
       placeholders: list[torch.fx.Node],
   ):
-    self._sym_shape_manager = sym_shape_manager
+    self._transform_context = transform_context
     self._placeholders = placeholders
 
   def __call__(self, graph_module: torch.fx.GraphModule) -> None:
@@ -149,7 +149,7 @@ class HandleDynamicInputTensorSetDimensionSizePass:
 
     for dim in dynamic_dims:
       symint = node.meta["val"].shape[dim]
-      size_tensor_node = self._sym_shape_manager.ensure_tensor(
+      size_tensor_node = self._transform_context.ensure_tensor(
           graph_module, symint, node
       )
       set_dim_size_node = self._insert_set_dimension_logical_size_node(
@@ -188,10 +188,10 @@ class ScanInputsCreatePlaceholdersPass:
 
   def __init__(
       self,
-      sym_shape_manager: SymShapeManager,
+      transform_context: GraphTransformContext,
       placeholders: Sequence[torch.fx.Node],
   ):
-    self._sym_shape_manager = sym_shape_manager
+    self._transform_context = transform_context
     self._placeholders = placeholders
 
   def __call__(self, graph_module: torch.fx.GraphModule) -> None:
@@ -220,7 +220,7 @@ class ScanInputsCreatePlaceholdersPass:
           )
 
         # Store the first placeholder encountered for this sym_str.
-        self._sym_shape_manager.register_symint_placeholder(
+        self._transform_context.register_symint_placeholder(
             sym_str, node, size_ph
         )
 
@@ -234,8 +234,8 @@ class HandleSymIntUsagesPass:
   corresponding runtime size placeholder tensor node or expression tensor node.
   """
 
-  def __init__(self, sym_shape_manager: SymShapeManager):
-    self._sym_shape_manager = sym_shape_manager
+  def __init__(self, transform_context: GraphTransformContext):
+    self._transform_context = transform_context
 
   def __call__(self, graph_module: torch.fx.GraphModule) -> None:
     for node in list(graph_module.graph.nodes):
@@ -249,7 +249,7 @@ class HandleSymIntUsagesPass:
         changed = False
         for arg in node.args:
           if sym_utils.is_symint_node(arg):
-            tensor_node = self._sym_shape_manager.ensure_tensor(
+            tensor_node = self._transform_context.ensure_tensor(
                 graph_module, arg, node
             )
             new_args.append(tensor_node)
@@ -275,7 +275,7 @@ class HandleSymIntUsagesPass:
                   "dtype",
                   torch.int64 if isinstance(val_meta, int) else None,
               )
-              tensor_node = self._sym_shape_manager.ensure_tensor(
+              tensor_node = self._transform_context.ensure_tensor(
                   graph_module, arg, node, dtype=target_dtype
               )
               current_dtype = getattr(
@@ -399,7 +399,7 @@ def apply_dynamism_transformations(
     use_pad_real_to_static: bool = True,
 ) -> None:
   """Runs all FX graph transforms for dynamic shapes."""
-  sym_shape_manager = SymShapeManager(
+  transform_context = GraphTransformContext(
       graph_module, example_inputs, symbol_bounds
   )
 
@@ -412,46 +412,46 @@ def apply_dynamism_transformations(
   GraphTransformObserver(
       graph_module, "scan_inputs_create_placeholders"
   ).apply_gm_pass(
-      ScanInputsCreatePlaceholdersPass(sym_shape_manager, original_placeholders)
+      ScanInputsCreatePlaceholdersPass(transform_context, original_placeholders)
   )
 
   # Updates ops that have input tensors with dynamic dimensions.
   if use_pad_real_to_static:
     GraphTransformObserver(graph_module, "handle_dynamic_inputs").apply_gm_pass(
-        HandleDynamicInputTensorPass(sym_shape_manager, original_placeholders)
+        HandleDynamicInputTensorPass(transform_context, original_placeholders)
     )
   else:
     GraphTransformObserver(
         graph_module, "handle_dynamic_inputs_set_dimension_size"
     ).apply_gm_pass(
         HandleDynamicInputTensorSetDimensionSizePass(
-            sym_shape_manager, original_placeholders
+            transform_context, original_placeholders
         )
     )
 
   # Updates the generative ops that have dynamic scalar inputs.
   GraphTransformObserver(graph_module, "handle_generative_ops").apply_gm_pass(
-      HandleGenerativeOpsPass(sym_shape_manager)
+      HandleGenerativeOpsPass(transform_context)
   )
 
   # Updates view ops that are reshape-like and have dynamic inputs.
   GraphTransformObserver(graph_module, "handle_reshape_like_ops").apply_gm_pass(
-      view_ops_passes.HandleReshapeLikeOpsPass(sym_shape_manager)
+      view_ops_passes.HandleReshapeLikeOpsPass(transform_context)
   )
 
   # Updates broadcast operations that have dynamic inputs.
   GraphTransformObserver(
       graph_module, "handle_broadcast_like_ops"
-  ).apply_gm_pass(view_ops_passes.HandleBroadcastLikeOpsPass(sym_shape_manager))
+  ).apply_gm_pass(view_ops_passes.HandleBroadcastLikeOpsPass(transform_context))
 
   # Updates slice operations that have dynamic inputs.
   GraphTransformObserver(graph_module, "handle_slice_like_ops").apply_gm_pass(
-      view_ops_passes.HandleSliceLikeOpsPass(sym_shape_manager)
+      view_ops_passes.HandleSliceLikeOpsPass(transform_context)
   )
 
   # Replaces remaining usages of SymInt nodes in standard tensor operations.
   GraphTransformObserver(graph_module, "handle_symint_usages").apply_gm_pass(
-      HandleSymIntUsagesPass(sym_shape_manager)
+      HandleSymIntUsagesPass(transform_context)
   )
 
   tools_common.stable_topological_sort(graph_module)

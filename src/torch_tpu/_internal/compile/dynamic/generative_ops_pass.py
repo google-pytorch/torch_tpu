@@ -17,7 +17,7 @@
 from typing import Any
 import torch
 from torch_tpu._internal.compile.dynamic import sym_utils
-from torch_tpu._internal.compile.dynamic.sym_shape_manager import SymShapeManager
+from torch_tpu._internal.compile.dynamic.graph_transform_context import GraphTransformContext
 
 
 class HandleGenerativeOpsPass:
@@ -121,8 +121,8 @@ class HandleGenerativeOpsPass:
           return (ones_bounded,)
   """
 
-  def __init__(self, sym_shape_manager: SymShapeManager):
-    self._sym_shape_manager = sym_shape_manager
+  def __init__(self, transform_context: GraphTransformContext):
+    self._transform_context = transform_context
     self._op_handlers = {
         torch.ops.aten.arange.default: self._process_arange_op,
         torch.ops.aten.arange.start: self._process_arange_op,
@@ -244,10 +244,10 @@ class HandleGenerativeOpsPass:
     kwargs = node.kwargs.copy()
     kwargs["dtype"] = dtype
 
-    start_tensor = self._sym_shape_manager.ensure_tensor(
+    start_tensor = self._transform_context.ensure_tensor(
         graph_module, start, node, dtype=dtype
     )
-    step_tensor = self._sym_shape_manager.ensure_tensor(
+    step_tensor = self._transform_context.ensure_tensor(
         graph_module, step, node, dtype=dtype
     )
 
@@ -292,16 +292,16 @@ class HandleGenerativeOpsPass:
   ) -> None:
     """Handles arange with dynamic sequence length."""
     # Generate max_length from the dynamic length
-    max_length = self._sym_shape_manager.get_upper_bound(length_symint)
+    max_length = self._transform_context.get_upper_bound(length_symint)
 
     # Convert inputs to tensor nodes if needed
-    start_tensor = self._sym_shape_manager.ensure_tensor(
+    start_tensor = self._transform_context.ensure_tensor(
         graph_module, start, node, dtype=dtype
     )
-    end_tensor = self._sym_shape_manager.ensure_tensor(
+    end_tensor = self._transform_context.ensure_tensor(
         graph_module, end, node, dtype=dtype
     )
-    step_tensor = self._sym_shape_manager.ensure_tensor(
+    step_tensor = self._transform_context.ensure_tensor(
         graph_module, step, node, dtype=dtype
     )
 
@@ -345,10 +345,10 @@ class HandleGenerativeOpsPass:
     for dim, arg in enumerate(sizes_list):
       if sym_utils.is_symint(arg):
         has_symint = True
-        upper = self._sym_shape_manager.get_upper_bound(arg)
+        upper = self._transform_context.get_upper_bound(arg)
         new_sizes.append(upper)
 
-        tensor_node = self._sym_shape_manager.ensure_tensor(
+        tensor_node = self._transform_context.ensure_tensor(
             graph_module, arg, node
         )
         current_node = self._insert_set_dimension_logical_size(
@@ -388,7 +388,7 @@ class HandleGenerativeOpsPass:
 
     for dim, s in enumerate(val.shape):
       if sym_utils.is_symint(s):
-        tensor_node = self._sym_shape_manager.ensure_tensor(
+        tensor_node = self._transform_context.ensure_tensor(
             graph_module, s, node
         )
         current_node = self._insert_set_dimension_logical_size(

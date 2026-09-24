@@ -18,9 +18,9 @@ from __future__ import annotations
 from absl.testing import absltest
 import torch
 from torch._dynamo.backends.common import aot_autograd
+from torch_tpu._internal.compile.dynamic import graph_transform_context
 from torch_tpu._internal.compile.dynamic import graph_transformations
 from torch_tpu._internal.compile.dynamic import sym_bounds_manager
-from torch_tpu._internal.compile.dynamic import sym_shape_manager
 from torch_tpu._internal.compile.dynamic import view_ops_passes
 from tests import seed_test_utils
 
@@ -35,7 +35,7 @@ class GraphTransformationsTest(seed_test_utils.RepeatableTest):
       nonlocal captured_gm, captured_sm
       captured_gm = graph_module
       bm = sym_bounds_manager.SymBoundsManager(example_inputs)
-      captured_sm = sym_shape_manager.SymShapeManager(
+      captured_sm = graph_transform_context.GraphTransformContext(
           graph_module, example_inputs, bm.get_symbol_bounds()
       )
       return graph_module
@@ -87,7 +87,7 @@ class GraphTransformationsTest(seed_test_utils.RepeatableTest):
       nonlocal captured_gm, captured_sm
       captured_gm = graph_module
       bm = sym_bounds_manager.SymBoundsManager(example_inputs)
-      captured_sm = sym_shape_manager.SymShapeManager(
+      captured_sm = graph_transform_context.GraphTransformContext(
           graph_module, example_inputs, bm.get_symbol_bounds()
       )
       return graph_module
@@ -144,7 +144,7 @@ class GraphTransformationsTest(seed_test_utils.RepeatableTest):
       nonlocal captured_gm, captured_sm
       captured_gm = graph_module
       bm = sym_bounds_manager.SymBoundsManager(example_inputs)
-      captured_sm = sym_shape_manager.SymShapeManager(
+      captured_sm = graph_transform_context.GraphTransformContext(
           graph_module, example_inputs, bm.get_symbol_bounds()
       )
       return graph_module
@@ -197,7 +197,7 @@ class GraphTransformationsTest(seed_test_utils.RepeatableTest):
       nonlocal captured_gm, captured_sm
       captured_gm = graph_module
       bm = sym_bounds_manager.SymBoundsManager(example_inputs)
-      captured_sm = sym_shape_manager.SymShapeManager(
+      captured_sm = graph_transform_context.GraphTransformContext(
           graph_module, example_inputs, bm.get_symbol_bounds()
       )
       return graph_module
@@ -271,7 +271,7 @@ class GraphTransformationsTest(seed_test_utils.RepeatableTest):
       nonlocal captured_gm, captured_sm
       captured_gm = graph_module
       bm = sym_bounds_manager.SymBoundsManager(example_inputs)
-      captured_sm = sym_shape_manager.SymShapeManager(
+      captured_sm = graph_transform_context.GraphTransformContext(
           graph_module, example_inputs, bm.get_symbol_bounds()
       )
       return graph_module
@@ -313,7 +313,7 @@ class GraphTransformationsTest(seed_test_utils.RepeatableTest):
       nonlocal captured_gm, captured_sm
       captured_gm = graph_module
       bm = sym_bounds_manager.SymBoundsManager(example_inputs)
-      captured_sm = sym_shape_manager.SymShapeManager(
+      captured_sm = graph_transform_context.GraphTransformContext(
           graph_module, example_inputs, bm.get_symbol_bounds()
       )
       return graph_module

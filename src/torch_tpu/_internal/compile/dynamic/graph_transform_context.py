@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Manage symbolic integers and FX graph transformations for dynamic shape support."""
+"""Context shared across FX graph transformation passes for dynamic shapes."""
 
 from __future__ import annotations
 
@@ -24,12 +24,12 @@ from torch_tpu._internal.compile.dynamic import sym_utils
 from torch_tpu._internal.compile.dynamic.symbol_bounds import SymbolBounds
 
 
-class SymShapeManager:
-  """Symbolic shape manager for dynamic shape compilation.
+class GraphTransformContext:
+  """Context shared across FX graph transformation passes for dynamic shapes.
 
-  This class acts as a central repository for tracking and resolving symbolic
-  integers (SymInts) across input and output tensors during FX graph tracing and
-  compilation. It provides access to symbol bounds and FX node promotion.
+  Tracks and resolves symbolic integers (SymInts) during FX graph transformation
+  passes, providing access to symbol bounds, example inputs, and promotion of
+  SymInt/scalar expressions to FX tensor nodes.
 
   Attributes:
     _symint_to_placeholder: Maps the string representation of a SymInt to the FX
@@ -73,7 +73,7 @@ class SymShapeManager:
 
   @property
   def example_inputs(self) -> Sequence[torch.Tensor | int]:
-    """The example inputs used to create the SymShapeManager."""
+    """The example inputs used to create the GraphTransformContext."""
     return self._example_inputs
 
   def get_symint_bounds(self, sym_int: torch.SymInt) -> tuple[int, int]:

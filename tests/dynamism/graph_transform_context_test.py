@@ -12,20 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for SymShapeManager."""
+"""Unit tests for GraphTransformContext."""
 
 from __future__ import annotations
 from absl.testing import absltest
 import torch
 from torch._dynamo.backends.common import aot_autograd
+from torch_tpu._internal.compile.dynamic import graph_transform_context
 from torch_tpu._internal.compile.dynamic import output_sym_shape
 from torch_tpu._internal.compile.dynamic import sym_bounds_manager
-from torch_tpu._internal.compile.dynamic import sym_shape_manager
 from torch_tpu._internal.compile.dynamic import sym_utils
 from tests import seed_test_utils
 
 
-class SymShapeManagerTest(seed_test_utils.RepeatableTest):
+class GraphTransformContextTest(seed_test_utils.RepeatableTest):
 
   def test_has_dynamic_shape(self):
     captured_gm = None
@@ -60,7 +60,7 @@ class SymShapeManagerTest(seed_test_utils.RepeatableTest):
     def fw_compiler(graph_module, example_inputs):
       nonlocal captured_sm, captured_output_sym_shapes
       bm = sym_bounds_manager.SymBoundsManager(example_inputs)
-      captured_sm = sym_shape_manager.SymShapeManager(
+      captured_sm = graph_transform_context.GraphTransformContext(
           graph_module, example_inputs, bm.get_symbol_bounds()
       )
       captured_output_sym_shapes = output_sym_shape.create_output_sym_shapes(
@@ -94,7 +94,7 @@ class SymShapeManagerTest(seed_test_utils.RepeatableTest):
     def fw_compiler(graph_module, example_inputs):
       nonlocal captured_sm, captured_output_sym_shapes
       bm = sym_bounds_manager.SymBoundsManager(example_inputs)
-      captured_sm = sym_shape_manager.SymShapeManager(
+      captured_sm = graph_transform_context.GraphTransformContext(
           graph_module, example_inputs, bm.get_symbol_bounds()
       )
       captured_output_sym_shapes = output_sym_shape.create_output_sym_shapes(
