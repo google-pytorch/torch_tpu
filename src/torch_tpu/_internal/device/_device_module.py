@@ -306,24 +306,10 @@ class _DeviceModuleMeta(abc.ABCMeta):
     val = annotations._resolve_module_attribute(
         stages_map, name, "torch.tpu", tt_api_globals=None
     )
-    # _DefaultGeneratorsProperty is a dynamic descriptor whose __get__ dynamically
-    # checks execution_mode.eager_mode (e.g. for compile mode generators).
-    # It must be installed on `cls` as a descriptor, not evaluated statically.
-    if isinstance(val, _DefaultGeneratorsProperty):
-      type.__setattr__(cls, name, val)
-      return val.__get__(None, cls)
-
-    if hasattr(val, "__get__"):
-      val = val.__get__(None, cls)
-    if name in stages_map:
-      info = stages_map[name]
-      annotations._attach_stage_metadata(
-          val, info.stage.value, info.reason, info.version
-      )
-    # Memoize the resolved and bound attribute directly on `cls` via `type.__setattr__`
-    # so subsequent accesses bypass __getattr__ and avoid re-binding descriptors.
+    # Install the resolved attribute or descriptor directly on `cls`, and return
+    # via getattr so Python's native descriptor protocol handles binding.
     type.__setattr__(cls, name, val)
-    return val
+    return getattr(cls, name)
 
 
 class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
