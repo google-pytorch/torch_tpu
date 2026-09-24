@@ -519,6 +519,70 @@ class RngCudaRefTest(_BaseRngTest):
     actual_out = torch.rand(10, generator=g, device=self.device)
     self.assertTrue(torch.equal(actual_out, expected_out))
 
+  def test_multinomial_reproducible(self):
+    """Verifies torch.multinomial is reproducible across dtypes and parameters."""
+    for dtype in (torch.float32, torch.bfloat16, torch.float16):
+      weights = torch.rand(2, 16, dtype=dtype, device=self.device) + 0.1
+      torch.manual_seed(0)
+      first = torch.multinomial(weights, 4, replacement=True)
+      # Subsequent call without re-seeding advances RNG state.
+      next_draw = torch.multinomial(weights, 4, replacement=True)
+      self.assertFalse(torch.equal(first, next_draw))
+      torch.manual_seed(0)
+      second = torch.multinomial(weights, 4, replacement=True)
+      self.assertTrue(torch.equal(first, second))
+
+      # Without replacement
+      torch.manual_seed(42)
+      first_no_rep = torch.multinomial(weights, 4, replacement=False)
+      torch.manual_seed(42)
+      second_no_rep = torch.multinomial(weights, 4, replacement=False)
+      self.assertTrue(torch.equal(first_no_rep, second_no_rep))
+
+      # 1D weights
+      weights_1d = torch.rand(16, dtype=dtype, device=self.device) + 0.1
+      torch.manual_seed(123)
+      first_1d = torch.multinomial(weights_1d, 4)
+      torch.manual_seed(123)
+      second_1d = torch.multinomial(weights_1d, 4)
+      self.assertTrue(torch.equal(first_1d, second_1d))
+
+    # Zero-weight category in bfloat16 must never be sampled even over 1024 draws.
+    zero_first = torch.tensor(
+        [0.0, 1.0], dtype=torch.bfloat16, device=self.device
+    )
+    torch.manual_seed(7)
+    samples = torch.multinomial(zero_first, 1024, replacement=True)
+    self.assertTrue((samples == 1).all())
+
+  def test_multinomial_generator(self):
+    """Verifies torch.multinomial supports custom generator instances."""
+    weights = torch.rand(2, 16, device=self.device) + 0.1
+    gen1 = torch.Generator(device=self.device).manual_seed(100)
+    first_a = torch.multinomial(weights, 4, generator=gen1)
+    first_b = torch.multinomial(weights, 4, generator=gen1)
+    self.assertFalse(torch.equal(first_a, first_b))
+
+    gen2 = torch.Generator(device=self.device).manual_seed(100)
+    second_a = torch.multinomial(weights, 4, generator=gen2)
+    second_b = torch.multinomial(weights, 4, generator=gen2)
+    self.assertTrue(torch.equal(first_a, second_a))
+    self.assertTrue(torch.equal(first_b, second_b))
+
+  def test_multinomial_out(self):
+    """Verifies torch.multinomial out-variant executes and advances RNG state."""
+    weights = torch.rand(2, 16, device=self.device) + 0.1
+    out = torch.empty(2, 4, dtype=torch.int64, device=self.device)
+    torch.manual_seed(0)
+    res = torch.multinomial(weights, 4, out=out)
+    self.assertIs(res, out)
+    next_after_out = torch.multinomial(weights, 4)
+    torch.manual_seed(0)
+    second = torch.multinomial(weights, 4)
+    next_after_functional = torch.multinomial(weights, 4)
+    self.assertTrue(torch.equal(out, second))
+    self.assertTrue(torch.equal(next_after_out, next_after_functional))
+
 
 class CompiledRngTest(_BaseRngTest):
   """Reference tests comparing compiled RNG behaviors for current device."""

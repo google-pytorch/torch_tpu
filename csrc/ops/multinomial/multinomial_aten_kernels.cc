@@ -14,18 +14,20 @@
 
 #include "csrc/ops/multinomial/multinomial_aten_kernels.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <utility>
+#include <vector>
 
 #include "ATen/core/ATen_fwd.h"
-#include "ATen/native/Resize.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "c10/util/Optional.h"
 #include "csrc/common/aten_utils.h"
-#include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
+#include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/fixed_size_span.h"
 #include "csrc/common/to_string.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
@@ -34,7 +36,7 @@
 #include "csrc/ops/multinomial/multinomial.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
-#include "csrc/ops/resize/resize_aten_kernels.h"
+#include "csrc/ops/rng_utils.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
@@ -47,8 +49,7 @@ Dimensions GetOutputDimensions(const at::Tensor& self, int64_t num_samples) {
 }
 
 absl::Status ValidateInputs(const at::Tensor& self, int64_t num_samples,
-                            bool replacement,
-                            c10::optional<at::Generator> generator) {
+                            bool replacement) {
   TT_RET_CHECK(IsFloatingPoint(self), error::kInvalidArgument)
       << "expected the input dtype to be floating-point, got "
       << ToString(self.scalar_type());
@@ -59,9 +60,6 @@ absl::Status ValidateInputs(const at::Tensor& self, int64_t num_samples,
   TT_RET_CHECK(num_samples > 0, error::kInvalidArgument)
       << "expected the number of samples to be > 0, got " << num_samples;
 
-  TT_RET_CHECK(!generator.has_value(), error::kPythonNotImplementedError)
-      << "generator is not yet supported";
-
   TT_RET_CHECK(replacement || num_samples <= self.size(-1),
                error::kInvalidArgument)
       << "expected the number of samples to be <= " << self.size(-1)
@@ -70,23 +68,25 @@ absl::Status ValidateInputs(const at::Tensor& self, int64_t num_samples,
   return absl::OkStatus();
 }
 
-absl::StatusOr<DeviceBufferRefArray<1>> Multinomial(
-    const at::Tensor& self, int64_t num_samples, bool replacement,
-    c10::optional<at::Generator> generator, OpParamCacheKeys param_keys) {
-  TT_RETURN_IF_ERROR(ValidateInputs(self, num_samples, replacement, generator));
+absl::StatusOr<RngUsage> GetRngUsage(const at::Tensor& self,
+                                     int64_t num_samples, bool replacement) {
+  const int64_t num_rng_elements =
+      replacement ? (self.numel() * num_samples) : self.numel();
+  TT_ASSIGN_OR_RETURN(mlir::ElementType in_elem_type,
+                      ConvertTo<mlir::ElementType>(self.scalar_type()));
+  const int64_t bit_width =
+      std::max<int64_t>(32, TorchEquivalentBitwidth(in_elem_type));
+  return RngUsage{num_rng_elements, bit_width};
+}
 
-  auto op_builder = [num_samples, replacement](
-                        mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
-    return BuildMultinomialShlo(input, num_samples, replacement);
+NAryMlirOpBuilder<2, 1> GetMultinomialFunctional(int64_t num_samples,
+                                                 bool replacement) {
+  return [num_samples, replacement](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+             -> absl::StatusOr<MlirOpResults<1>> {
+    auto [input_op, rng_input_state] = inputs;
+    return BuildMultinomialShlo(input_op, rng_input_state, num_samples,
+                                replacement);
   };
-
-  TT_ASSIGN_OR_RETURN(
-      DeviceBufferRefArray<1> result_buf,
-      DispatchOp<1>(std::move(op_builder), self,
-                    {.out_dtype = mlir::ElementType::I64,
-                     .out_dims = GetOutputDimensions(self, num_samples),
-                     .op_param_cache_keys = std::move(param_keys)}));
-  return result_buf;
 }
 
 }  // namespace
@@ -96,9 +96,27 @@ at::Tensor AtenMultinomial(const at::Tensor& self, int64_t num_samples,
                            c10::optional<at::Generator> generator) {
   TT_KERNEL(OpName::kMultinomial, param_keys,
             (self, num_samples, replacement, generator), {
-              TT_ASSIGN_OR_THROW(DeviceBufferRefArray<1> result_buf,
-                                 Multinomial(self, num_samples, replacement,
-                                             generator, std::move(param_keys)));
+              TT_THROW_IF_ERROR(ValidateInputs(self, num_samples, replacement));
+              TT_ASSIGN_OR_THROW(const RngUsage usage,
+                                 GetRngUsage(self, num_samples, replacement));
+
+              auto* gen = at::get_generator_or_default<DeviceGeneratorImplBase>(
+                  generator, GetDefaultDeviceGenerator());
+              // NOLINTNEXTLINE(build/c++11) - std::mutex required by PyTorch
+              std::scoped_lock<std::mutex> lock(gen->mutex_);
+              const at::Tensor rng_input_state = gen->DeviceStateTensor();
+
+              TT_ASSIGN_OR_THROW(
+                  DeviceBufferRef result_buf,
+                  (DispatchOp<2, 1>(
+                      GetMultinomialFunctional(num_samples, replacement),
+                      {self, rng_input_state},
+                      {.out_dtype = mlir::ElementType::I64,
+                       .out_dims = GetOutputDimensions(self, num_samples),
+                       .op_param_cache_keys = std::move(param_keys)})));
+
+              TT_THROW_IF_ERROR(gen->AdvanceDeviceStateTensor(
+                  usage.num_elements, usage.bit_width));
               return MakeTensor(std::move(result_buf));
             });
 }
@@ -107,18 +125,29 @@ at::Tensor& AtenMultinomialOut(const at::Tensor& self, int64_t num_samples,
                                bool replacement,
                                c10::optional<at::Generator> generator,
                                at::Tensor& out) {
-  TT_KERNEL(
-      OpName::kMultinomialOut, param_keys,
-      (self, num_samples, replacement, generator, out), {
-        TT_ASSIGN_OR_THROW(DeviceBufferRefArray<1> result_buf,
-                           Multinomial(self, num_samples, replacement,
-                                       generator, std::move(param_keys)));
+  TT_KERNEL(OpName::kMultinomialOut, param_keys,
+            (self, num_samples, replacement, generator, out), {
+              TT_THROW_IF_ERROR(ValidateInputs(self, num_samples, replacement));
+              TT_ASSIGN_OR_THROW(const RngUsage usage,
+                                 GetRngUsage(self, num_samples, replacement));
 
-        TT_THROW_IF_ERROR(
-            ResizeTensorIfShapeDiffers(out, result_buf.dimensions()));
-        TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result_buf), out));
-        return out;
-      });
+              auto* gen = at::get_generator_or_default<DeviceGeneratorImplBase>(
+                  generator, GetDefaultDeviceGenerator());
+              // NOLINTNEXTLINE(build/c++11) - std::mutex required by PyTorch
+              std::scoped_lock<std::mutex> lock(gen->mutex_);
+              const at::Tensor rng_input_state = gen->DeviceStateTensor();
+
+              TT_THROW_IF_ERROR((DispatchOpOut<2, 1>(
+                  GetMultinomialFunctional(num_samples, replacement),
+                  {self, rng_input_state}, out,
+                  {.out_dtype = mlir::ElementType::I64,
+                   .out_dims = GetOutputDimensions(self, num_samples),
+                   .op_param_cache_keys = std::move(param_keys)})));
+
+              TT_THROW_IF_ERROR(gen->AdvanceDeviceStateTensor(
+                  usage.num_elements, usage.bit_width));
+              return out;
+            });
 }
 
 }  // namespace torch_tpu

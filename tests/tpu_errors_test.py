@@ -872,18 +872,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       torch.linalg.lu_solve(lu, pivots, b, out=out)
 
-  @et.why_tpu_only("TODO: support generator in multinomial on TPU.")
-  def test_multinomial_generator(self):
-    inp = torch.randn(2, device=et.device())
-    gen = torch.Generator()
-
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""multinomial(): generator is not yet supported""",
-        message_reviewed_by="wan",
-    ):
-      torch.multinomial(inp, num_samples=1, generator=gen)
-
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_index_multiple_bool_indices(self):
     inp = torch.ones(2, 2, device=et.device())

@@ -25,6 +25,7 @@
 namespace torch_tpu {
 
 absl::StatusOr<mlir::MlirOp> BuildMultinomialShlo(mlir::MlirOp input_op,
+                                                  mlir::MlirOp rng_input_state,
                                                   int64_t num_samples,
                                                   bool replacement);
 
