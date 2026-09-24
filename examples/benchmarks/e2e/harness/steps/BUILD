@@ -34,10 +34,12 @@ torch_tpu_py_library(
     ],
     allow_multiple_srcs = True,
     deps = [
+        "//examples/benchmarks/e2e:single_trace_trainer_adapter",
         "//examples/benchmarks/e2e/harness:compile",
         "//examples/benchmarks/e2e/harness:loss",
         "//examples/benchmarks/e2e/harness:step_lib",
         "//examples/benchmarks/e2e/harness:target",
+        "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "@pypi//transformers",
     ],

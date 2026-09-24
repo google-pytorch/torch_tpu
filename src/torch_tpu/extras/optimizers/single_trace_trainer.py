@@ -14,8 +14,10 @@
 
 """Simple trainer library for compiling and running PyTorch training steps on TPU."""
 
+import contextlib
 import dataclasses
 import inspect
+import sys
 import typing
 from typing import Any, Callable, Sequence
 
@@ -41,6 +43,33 @@ ReferenceMuon = muon.ReferenceMuon
 TorchMuon = muon.TorchMuon
 
 
+@contextlib.contextmanager
+def _declare_tracing_to_transformers():
+  """Makes Hugging Face mask creation take its trace-safe path under make_fx.
+
+  `transformers.masking_utils.is_tracing` does not recognize make_fx inside
+  torch.func transforms (tensors are functorch wrappers rather than
+  FakeTensors), so HF evaluates data-dependent checks such as
+  `fast_all(padding_mask)` and `find_packed_sequence_indices` and tracing fails.
+  While active, HF instead builds attention masks in-graph. Masks that do not
+  depend on graph inputs are folded back to `is_causal=True` by the
+  `detect_causal_mask` compiler pass.
+
+  Only `masking_utils` is patched: flipping the global torch.compiler flag also
+  changes HF MoE code paths that are incompatible with torch.func.
+  """
+  masking_utils = sys.modules.get("transformers.masking_utils")
+  if masking_utils is None or not hasattr(masking_utils, "is_tracing"):
+    yield
+    return
+  original = getattr(masking_utils, "is_tracing")
+  setattr(masking_utils, "is_tracing", lambda tensor=None: True)
+  try:
+    yield
+  finally:
+    setattr(masking_utils, "is_tracing", original)
+
+
 def _compute_loss(
     model: torch.nn.Module,
     key_map: dict[str, str],
@@ -60,7 +89,11 @@ def _compute_loss(
   else:
     args, kwargs = (inputs,), {}
 
-  out = func.functional_call(model, (p_orig, b_orig), args, kwargs)
+  with torch.nn.attention.sdpa_kernel([
+      torch.nn.attention.SDPBackend.OVERRIDEABLE,
+      torch.nn.attention.SDPBackend.MATH,
+  ]):
+    out = func.functional_call(model, (p_orig, b_orig), args, kwargs)
 
   loss = None
   if targets is not None:
@@ -367,11 +400,12 @@ class SingleTraceTrainer:
             _decomp_embedding_bag_backward
         ),
     }
-    unified_graph = make_fx(
-        flattened_stateless_train_step,
-        decomposition_table=decomp_table,
-        tracing_mode="fake",
-    )(*flat_inputs)
+    with _declare_tracing_to_transformers():
+      unified_graph = make_fx(
+          flattened_stateless_train_step,
+          decomposition_table=decomp_table,
+          tracing_mode="fake",
+      )(*flat_inputs)
 
     for node in list(unified_graph.graph.nodes):
       if (
