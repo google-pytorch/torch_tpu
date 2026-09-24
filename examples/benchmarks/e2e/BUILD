@@ -65,4 +65,18 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_library(
+    name = "single_trace_trainer_adapter",
+    srcs = ["single_trace_trainer_adapter.py"],
+    deps = [
+        "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal/compile:compiler",
+        "//src/torch_tpu/extras/optimizers:adamw",
+        "//src/torch_tpu/extras/optimizers:muon",
+        "//src/torch_tpu/extras/optimizers:optim",
+        "//src/torch_tpu/extras/optimizers:sgd",
+        "//src/torch_tpu/extras/optimizers:single_trace_trainer",
+    ],
+)
+
 torch_tpu_package_end()
