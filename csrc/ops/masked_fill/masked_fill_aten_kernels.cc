@@ -30,6 +30,7 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
 #include "csrc/common/to_string.h"
+#include "csrc/common/utils.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/ops/copy_from/copy_from_aten_kernels.h"
 #include "csrc/ops/macros/kernel.h"
@@ -43,6 +44,12 @@
 #include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
+
+namespace internal {
+template <>
+inline void
+CheckScalarInput<OpName::kMaskedFill_Scalar, UsesScalarInput::kYes>() {}
+}  // namespace internal
 
 namespace {
 
@@ -103,15 +110,38 @@ absl::Status Dispatch(at::Tensor& self, const at::Tensor& mask,
 // Performs in-place masked fill using a scalar value.
 //
 // Checks that `value` can be safely cast to `self`'s data type without
-// overflow before materializing it as a tensor and executing the fill.
+// overflow before executing the fill using a 0D scalar constant.
 absl::Status DispatchWithScalarValue(at::Tensor& self, const at::Tensor& mask,
-                                     PromotedScalar& value) {
+                                     const at::Scalar& value,
+                                     OpParamCacheKeys param_keys) {
+  TT_RETURN_IF_ERROR(ValidateInferredOutputShapeMatchesSelf(self, mask));
   const at::ScalarType dtype = self.scalar_type();
-  TT_RETURN_IF_ERROR(  //
-      ValidateValueCastableWithoutOverflow(value.scalar(), dtype));
-  TT_ASSIGN_OR_RETURN(  //
-      const at::Tensor value_tensor, value.GetTensor(dtype));
-  return Dispatch(self, mask, std::move(value_tensor));
+  TT_RETURN_IF_ERROR(ValidateValueCastableWithoutOverflow(value, dtype));
+
+  TT_ASSIGN_OR_RETURN(const auto self_mlir_type,
+                      ConvertTo<mlir::ElementType>(dtype));
+
+  auto op_builder = [value, dtype,
+                     self_mlir_type](FixedSizeSpan<mlir::MlirOp, 2> inputs) {
+    auto& [input, mask] = inputs;
+    auto& builder = input.getBuilder();
+    mlir::MlirOp val_op;
+    if (dtype == at::kBool) {
+      val_op = MakeScalarConstant(builder, value.toBool(), self_mlir_type);
+    } else if (value.isFloatingPoint()) {
+      val_op = MakeScalarConstant(builder, value.toDouble(), self_mlir_type);
+    } else if (value.isBoolean()) {
+      val_op = MakeScalarConstant(builder, value.toBool(), self_mlir_type);
+    } else {
+      val_op = MakeScalarConstant(builder, value.toLong(), self_mlir_type);
+    }
+    return BuildWhereShlo(mask, val_op, input, self_mlir_type);
+  };
+
+  return DispatchOpOut<2>(std::move(op_builder), {self, mask}, self,
+                          {.out_dtype = self_mlir_type,
+                           .out_dims = CopyIntVector(self.sizes()),
+                           .op_param_cache_keys = std::move(param_keys)});
 }
 
 // Performs in-place masked fill using a 0D tensor value, on either the TPU or
@@ -129,8 +159,8 @@ absl::Status DispatchWithTensorValue(at::Tensor& self, const at::Tensor& mask,
   // A CPU `value` has no device buffer to feed to the op, but PyTorch permits
   // it anyway. Read it on the host, as the GPU kernel does.
   if (IsCpuDevice(value)) {
-    PromotedScalar promoted_value = PromoteScalar(value.item());
-    return DispatchWithScalarValue(self, mask, promoted_value);
+    return DispatchWithScalarValue(self, mask, value.item(),
+                                   OpParamCacheKeys::Empty());
   }
 
   // Force the materialization of `value` so that we can run the overflow
@@ -149,9 +179,9 @@ absl::Status DispatchWithTensorValue(at::Tensor& self, const at::Tensor& mask,
 
 at::Tensor& AtenMaskedFill_Scalar(at::Tensor& self, const at::Tensor& mask,
                                   const at::Scalar& value) {
-  auto promoted_value = PromoteScalar(value);
-  TT_KERNEL(OpName::kMaskedFill_Scalar, _, (self, mask, promoted_value), {
-    TT_THROW_IF_ERROR(DispatchWithScalarValue(self, mask, promoted_value));
+  TT_KERNEL(OpName::kMaskedFill_Scalar, param_keys, (self, mask, value), {
+    TT_THROW_IF_ERROR(
+        DispatchWithScalarValue(self, mask, value, std::move(param_keys)));
     return self;
   });
 }
