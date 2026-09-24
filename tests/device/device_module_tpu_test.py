@@ -14,6 +14,8 @@
 
 """Tests for the device module with TPU backend."""
 
+import tempfile
+import warnings
 from absl.testing import absltest
 import torch
 from torch._dynamo.device_interface import DeviceInterface
@@ -169,6 +171,19 @@ class TpuDeviceModuleTest(
     finally:
       torch.tpu.window_num_stripes = original_stripes
       torch.tpu.window_stripe_chunk_mb = original_chunk_mb
+
+  def test_torch_save_load_no_warnings(self):
+    """Verifies that torch.save and torch.load do not emit warnings on TPU tensors."""
+    tensor = torch.zeros(10, device="tpu")
+    with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("always")
+      with tempfile.NamedTemporaryFile() as f:
+        torch.save(tensor, f)
+        f.seek(0)
+        _ = torch.load(f)
+      self.assertEmpty(
+          w, msg=f"Expected no warnings but got {[str(x.message) for x in w]}"
+      )
 
 
 if __name__ == "__main__":

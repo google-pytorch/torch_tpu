@@ -15,6 +15,7 @@
 """Unit tests for TorchTPU API lifecycle stage annotations."""
 
 import enum
+import types
 from typing import Any
 from unittest import mock
 import warnings
@@ -542,6 +543,31 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
         getattr(bound_method.__func__, annotations.TT_API_DEPRECATED_VERSION),
         "2.14",
     )
+
+  def test_warning_suppressed_for_framework_callers(self):
+    """Verifies that framework callers in torch/torch_tpu packages do not trigger warnings."""
+
+    @experimental("Testing experimental suppression.")
+    def exp_func(x: int) -> int:
+      return x * 2
+
+    # Simulate a framework caller inside torch or torch_tpu
+    fake_torch_globals = {"__name__": "torch.serialization"}
+    framework_fn = types.FunctionType(
+        (lambda fn: fn(5)).__code__, fake_torch_globals
+    )
+
+    with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("always")
+      res = framework_fn(exp_func)
+      self.assertEqual(res, 10)
+      self.assertEmpty(w)
+
+      # Now, an external user call SHOULD trigger the warning
+      res2 = exp_func(5)
+      self.assertEqual(res2, 10)
+      self.assertLen(w, 1)
+      self.assertIn("exp_func is experimental", str(w[0].message))
 
 
 if __name__ == "__main__":
