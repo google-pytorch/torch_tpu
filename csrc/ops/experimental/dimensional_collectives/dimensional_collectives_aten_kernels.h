@@ -26,19 +26,19 @@ namespace torch_tpu {
 
 at::Tensor ExperimentalAllGatherDim(const at::Tensor& input, int64_t dim,
                                     int64_t group_size,
-                                    std::string_view process_group_name);
+                                    std::string_view group_name);
 
 at::Tensor ExperimentalReduceScatterDim(const at::Tensor& input, int64_t dim,
                                         int64_t group_size,
-                                        std::string_view process_group_name);
+                                        std::string_view group_name);
 
 at::Tensor MetaExperimentalAllGatherDim(const at::Tensor& input, int64_t dim,
                                         int64_t group_size,
-                                        std::string_view process_group_name);
+                                        std::string_view group_name);
 
-at::Tensor MetaExperimentalReduceScatterDim(
-    const at::Tensor& input, int64_t dim, int64_t group_size,
-    std::string_view process_group_name);
+at::Tensor MetaExperimentalReduceScatterDim(const at::Tensor& input,
+                                            int64_t dim, int64_t group_size,
+                                            std::string_view group_name);
 
 }  // namespace torch_tpu
 

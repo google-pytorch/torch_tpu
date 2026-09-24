@@ -303,6 +303,43 @@ def run_all_gather_rank_order() -> None:
   utils.assert_close(recv_new_group.cpu(), expected)
 
 
+def run_experimental_collectives_on_dim() -> None:
+  """Tests the experimental collectives on a non-leading tensor dimension."""
+  rank = int(os.environ["RANK"])
+  world_size = int(os.environ["WORLD_SIZE"])
+  group_name = dist.group.WORLD.group_name
+
+  local_cpu = (
+      torch.arange(6, dtype=torch.float32).reshape(2, 3) + 100 * rank
+  )
+  gathered = torch.ops.tpu.experimental_all_gather_dim(
+      local_cpu.to("tpu"), 1, world_size, group_name
+  )
+  expected_gathered = torch.cat(
+      [
+          torch.arange(6, dtype=torch.float32).reshape(2, 3) + 100 * peer
+          for peer in range(world_size)
+      ],
+      dim=1,
+  )
+  utils.assert_close(gathered.cpu(), expected_gathered)
+
+  scatter_input_cpu = (
+      torch.arange(2 * 3 * world_size, dtype=torch.float32).reshape(
+          2, 3 * world_size
+      )
+      + 1000 * rank
+  )
+  scattered = torch.ops.tpu.experimental_reduce_scatter_dim(
+      scatter_input_cpu.to("tpu"), -1, world_size, group_name
+  )
+  reduced = torch.stack(
+      [scatter_input_cpu + 1000 * (peer - rank) for peer in range(world_size)]
+  ).sum(dim=0)
+  expected_scattered = torch.chunk(reduced, world_size, dim=1)[rank]
+  utils.assert_close(scattered.cpu(), expected_scattered)
+
+
 def run_gather_scalar() -> None:
   """Tests gather on scalar input."""
   rank = int(os.environ["RANK"])
@@ -883,6 +920,13 @@ class CollectiveOpsTest(seed_test_utils.MultiProcessRepeatableTest):
         nproc_per_node=self._world_size,
         fn=_test_wrapper,
         test_fn=run_all_gather_rank_order,
+    )
+
+  def test_experimental_collectives_on_dim(self):
+    distributed_utils.dist_run(
+        nproc_per_node=self._world_size,
+        fn=_test_wrapper,
+        test_fn=run_experimental_collectives_on_dim,
     )
 
   def test_gather_scalar(self):

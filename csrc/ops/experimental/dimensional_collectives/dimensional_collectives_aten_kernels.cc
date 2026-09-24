@@ -22,7 +22,6 @@
 #include <utility>
 
 #include "ATen/ops/empty.h"
-#include "absl/base/nullability.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -60,17 +59,18 @@ absl::StatusOr<int64_t> NormalizeDim(int64_t dim, int64_t rank) {
   return dim < 0 ? dim + rank : dim;
 }
 
-absl::StatusOr<ProcessGroupTpu* absl_nonnull> GetProcessGroupTpu(
-    std::string_view process_group_name) {
+absl::StatusOr<c10::intrusive_ptr<ProcessGroupTpu>> GetProcessGroupTpu(
+    std::string_view group_name) {
   c10::intrusive_ptr<c10d::ProcessGroup> pg =
-      c10d::resolve_process_group(std::string(process_group_name));
+      c10d::resolve_process_group(std::string(group_name));
   TT_RET_CHECK(pg != nullptr, error::kInternal)
       << "failed to resolve given process group";
   c10::intrusive_ptr<c10d::Backend> backend =
       pg->getBackend(c10::DeviceType::PrivateUse1);
   TT_RET_CHECK(backend != nullptr, error::kInternal)
       << "failed to get backend for tpu device";
-  auto* process_group_tpu = dynamic_cast<ProcessGroupTpu*>(backend.get());
+  auto process_group_tpu =
+      c10::dynamic_intrusive_pointer_cast<ProcessGroupTpu>(std::move(backend));
   TT_RET_CHECK(process_group_tpu != nullptr, error::kInternal)
       << "failed to cast c10d::Backend to ProcessGroupTpu";
   return process_group_tpu;
@@ -139,9 +139,15 @@ absl::StatusOr<mlir::MlirOp> BuildReduceScatterDimShlo(
       /*use_global_device_ids=*/true);
 }
 
+// Keep the lowering below the experimental API boundary. The bridge operators
+// currently resolve a process-group name and expose only sum reduce-scatter.
+// Once PyTorch has dimension-aware _c10d_functional operators, their
+// PrivateUse1 adapters can decode the `Any` group representation, parse
+// `reduce_op` for reduce-scatter, and delegate to this lowering without
+// preserving the experimental schema.
 absl::StatusOr<DeviceBufferRef> DimensionalCollective(
     const at::Tensor& input, int64_t dim, int64_t group_size,
-    std::string_view process_group_name, bool reduce_scatter,
+    const ProcessGroupTpu& process_group, bool reduce_scatter,
     OpParamCacheKeys param_keys) {
   TT_ASSIGN_OR_RETURN(dim, NormalizeDim(dim, input.dim()));
   TT_RET_CHECK(group_size > 0, error::kInvalidArgument)
@@ -159,9 +165,7 @@ absl::StatusOr<DeviceBufferRef> DimensionalCollective(
 
   TT_ASSIGN_OR_RETURN(auto output_dtype,
                       ConvertTo<mlir::ElementType>(input.scalar_type()));
-  TT_ASSIGN_OR_RETURN(ProcessGroupTpu * pg,
-                      GetProcessGroupTpu(process_group_name));
-  const DeviceGroupList& device_groups = pg->GetSubgroupDeviceIds();
+  const DeviceGroupList& device_groups = process_group.GetSubgroupDeviceIds();
   TT_RETURN_IF_ERROR(ValidateGroupSize(device_groups, group_size));
 
   auto op_builder = [dim, device_groups, reduce_scatter](
@@ -172,12 +176,13 @@ absl::StatusOr<DeviceBufferRef> DimensionalCollective(
     return BuildAllGatherDimShlo(input_op, dim, device_groups);
   };
 
-  return DispatchOp<1>(std::move(op_builder), input,
-                       {.out_dtype = output_dtype,
-                        .out_dims = std::move(output_shape),
-                        .op_param_cache_keys = std::move(param_keys),
-                        .split_mode = OpSplitMode::kNone,
-                        .device_assignment = pg->device_assignment()});
+  return DispatchOp<1>(
+      std::move(op_builder), input,
+      {.out_dtype = output_dtype,
+       .out_dims = std::move(output_shape),
+       .op_param_cache_keys = std::move(param_keys),
+       .split_mode = GetCollectiveSplitMode(),
+       .device_assignment = process_group.device_assignment()});
 }
 
 at::Tensor MetaDimensionalCollective(const at::Tensor& input, int64_t dim,
@@ -201,42 +206,44 @@ at::Tensor MetaDimensionalCollective(const at::Tensor& input, int64_t dim,
 
 at::Tensor ExperimentalAllGatherDim(const at::Tensor& input, int64_t dim,
                                     int64_t group_size,
-                                    std::string_view process_group_name) {
-  TT_KERNEL(OpName::kExperimentalAllGatherDim, param_keys,
-            (input, dim, group_size, process_group_name), {
-              TT_ASSIGN_OR_THROW(auto result,
-                                 DimensionalCollective(input, dim, group_size,
-                                                       process_group_name,
-                                                       /*reduce_scatter=*/false,
-                                                       std::move(param_keys)));
-              return MakeTensor(std::move(result));
-            });
+                                    std::string_view group_name) {
+  TT_KERNEL(
+      OpName::kExperimentalAllGatherDim, param_keys,
+      (input, dim, group_size, group_name), {
+        TT_ASSIGN_OR_THROW(auto process_group, GetProcessGroupTpu(group_name));
+        TT_ASSIGN_OR_THROW(
+            auto result, DimensionalCollective(
+                             input, dim, group_size, *process_group,
+                             /*reduce_scatter=*/false, std::move(param_keys)));
+        return MakeTensor(std::move(result));
+      });
 }
 
 at::Tensor ExperimentalReduceScatterDim(const at::Tensor& input, int64_t dim,
                                         int64_t group_size,
-                                        std::string_view process_group_name) {
-  TT_KERNEL(OpName::kExperimentalReduceScatterDim, param_keys,
-            (input, dim, group_size, process_group_name), {
-              TT_ASSIGN_OR_THROW(auto result,
-                                 DimensionalCollective(input, dim, group_size,
-                                                       process_group_name,
-                                                       /*reduce_scatter=*/true,
-                                                       std::move(param_keys)));
-              return MakeTensor(std::move(result));
-            });
+                                        std::string_view group_name) {
+  TT_KERNEL(
+      OpName::kExperimentalReduceScatterDim, param_keys,
+      (input, dim, group_size, group_name), {
+        TT_ASSIGN_OR_THROW(auto process_group, GetProcessGroupTpu(group_name));
+        TT_ASSIGN_OR_THROW(auto result,
+                           DimensionalCollective(
+                               input, dim, group_size, *process_group,
+                               /*reduce_scatter=*/true, std::move(param_keys)));
+        return MakeTensor(std::move(result));
+      });
 }
 
 at::Tensor MetaExperimentalAllGatherDim(const at::Tensor& input, int64_t dim,
                                         int64_t group_size,
-                                        std::string_view process_group_name) {
+                                        std::string_view /*group_name*/) {
   return MetaDimensionalCollective(input, dim, group_size,
                                    /*reduce_scatter=*/false);
 }
 
-at::Tensor MetaExperimentalReduceScatterDim(
-    const at::Tensor& input, int64_t dim, int64_t group_size,
-    std::string_view process_group_name) {
+at::Tensor MetaExperimentalReduceScatterDim(const at::Tensor& input,
+                                            int64_t dim, int64_t group_size,
+                                            std::string_view /*group_name*/) {
   return MetaDimensionalCollective(input, dim, group_size,
                                    /*reduce_scatter=*/true);
 }

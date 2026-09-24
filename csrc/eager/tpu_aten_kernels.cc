@@ -1370,10 +1370,10 @@ TORCH_LIBRARY(tpu, m) {
   m.def("experimental_recv(Tensor[] tensors, int src, int tag) -> Any");
   m.def(
       "experimental_all_gather_dim(Tensor input, int dim, int group_size, "
-      "str process_group_name) -> Tensor");
+      "str group_name) -> Tensor");
   m.def(
       "experimental_reduce_scatter_dim(Tensor input, int dim, int "
-      "group_size, str process_group_name) -> Tensor");
+      "group_size, str group_name) -> Tensor");
   m.def(
       "sparse_dense_matmul(Tensor row_pointers, Tensor embedding_ids, Tensor "
       "sample_ids, Tensor gains, Tensor embedding_table, int "

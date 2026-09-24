@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Defines a list of collective ops for use in FX logic."""
+"""Defines the collective-op registry used by TorchTPU FX logic."""
 
 import torch
 
@@ -33,3 +33,23 @@ COLLECTIVE_OPS = (
     torch.ops._c10d_functional.broadcast_,
 )
 # pylint: enable=protected-access
+
+# This module can be imported before TorchTPU's C++ schemas are registered, so
+# match backend-local collectives by schema name instead of resolving
+# torch.ops.tpu attributes at import time.
+_TPU_COLLECTIVE_NAMES = frozenset(
+    {
+        "tpu::experimental_all_gather_dim",
+        "tpu::experimental_reduce_scatter_dim",
+    }
+)
+
+
+def is_collective_op(op: object) -> bool:
+  """Returns whether an operator is a collective recognized by TorchTPU."""
+  op = getattr(op, "overloadpacket", op)
+  if op in COLLECTIVE_OPS:
+    return True
+  default = getattr(op, "default", None)
+  schema = getattr(default, "_schema", None)
+  return schema is not None and schema.name in _TPU_COLLECTIVE_NAMES
