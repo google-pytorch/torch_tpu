@@ -42,32 +42,6 @@ platform(
     visibility = ["//visibility:public"],
 )
 
-# Hardware Cloud TPU v5e platform for RBE dedicated worker pool.
-# Automatically routes regular compile/link actions to the CPU "default" pool
-# and routes test execution actions to the "ci_tpu_v5_full_rbe" TPU pool.
-platform(
-    name = "rbe_tpu_v5e_platform",
-    exec_properties = {
-        "Pool": "default",
-        "test.Pool": "ci_tpu_v5_full_rbe",
-        "cache-silo-key": "FirstCachedBuild",
-    },
-    parents = ["@ml_build_config_platform//:platform"],
-    visibility = ["//visibility:public"],
-)
-
-# Hardware Cloud TPU v5e platform targeting the reserved pool.
-platform(
-    name = "rbe_tpu_v5e_reserved_platform",
-    exec_properties = {
-        "Pool": "default",
-        "test.Pool": "ci_tpu_v5e_reserved",
-        "cache-silo-key": "FirstCachedBuild",
-    },
-    parents = ["@ml_build_config_platform//:platform"],
-    visibility = ["//visibility:public"],
-)
-
 # Isolates nightly wheel build artifacts from PR builds and release builds.
 platform(
     name = "rbe_wheel_nightly_platform",
@@ -89,10 +63,9 @@ platform(
 )
 
 # Routes compilation/link actions to Buildbarn's x86 CPU pool and `test`
-# exec-group actions to the TPU v5e pool. `parents` is omitted and
-# `test.OSFamily` is repeated because Buildbarn's scheduler matches worker
-# queues on the exact set of platform properties without merging or ignoring
-# inherited keys like `cache-silo-key`.
+# exec-group actions to the TPU v5e pool. `parents` is omitted so the platform
+# does not inherit `cache-silo-key`, matching the worker queue's platform
+# definition. `test.OSFamily` is repeated for explicitness.
 platform(
     name = "buildbarn_native_tpu_platform",
     constraint_values = [

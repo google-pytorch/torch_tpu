@@ -16,10 +16,8 @@ You can use it three ways:
 
 ## 1. On a pull request
 
-Add one of these labels to the PR:
+Add this label to the PR:
 
-*   `ci:replace-tpu-v5`: skips the serial v5e runner and sends the v5e tests to
-    RBE.
 *   `run-rbe`: runs the RBE job alongside the normal presubmit.
 
 You can also start it by hand with `workflow_dispatch`.
@@ -83,9 +81,12 @@ bazel test --config=rbe_native_tpu --remote_executor=grpcs://10.202.0.15:8980 \
   //tests:autoload_test_tpu
 ```
 
-Use `10.202.0.15`. The frontend's certificate covers that address, and other
-internal addresses fail the TLS hostname check with `General OpenSslEngine
-problem`.
+Use `10.202.0.15`. The frontend's certificate includes Subject Alternative Names
+(SANs) for `10.202.0.15` (VPC internal load balancer), `10.202.0.16` (GKE node),
+`10.202.0.67` (CI Private Service Connect endpoint), `127.0.0.1` and `localhost`
+(port-forwarding), and `frontend.buildbarn.svc.cluster.local`. Connecting to
+other internal IP addresses will fail the TLS hostname validation with `General
+OpenSslEngine problem`.
 
 ## 3. From a cloudtop
 
@@ -109,9 +110,13 @@ port forward.
 
 ## Credentials
 
-Bazel reads the client certificate from `/tmp/rbe-certs/`:
+Bazel reads the client certificate from `/tmp/rbe-certs/` (or
+`~/.config/torch_tpu/certs/`). On shared VMs or workstations, use `umask 077`
+when creating the certificate directory to prevent other users from reading the
+private key:
 
 ```bash
+umask 077
 mkdir -p /tmp/rbe-certs
 gcloud secrets versions access latest --secret=rbe-ca-cert --project=rbe-tpu-oss > /tmp/rbe-certs/rbe_ca.crt
 gcloud secrets versions access latest --secret=rbe-client-crt --project=rbe-tpu-oss > /tmp/rbe-certs/rbe_client.crt
@@ -119,7 +124,8 @@ gcloud secrets versions access latest --secret=rbe-client-key --project=rbe-tpu-
 chmod 600 /tmp/rbe-certs/rbe_client.key
 ```
 
-Never commit these files. `bazel/certs/` is in `.gitignore` for that reason.
+Never commit these files. `bazel/certs/` and `*.key` are in `.gitignore` as a
+safety net.
 
 ## Running any test
 

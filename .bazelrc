@@ -374,6 +374,8 @@ common:rbe_native_tpu --remote_executor=grpcs://127.0.0.1:8980
 common:rbe_native_tpu --tls_certificate=/tmp/rbe-certs/rbe_ca.crt
 common:rbe_native_tpu --tls_client_certificate=/tmp/rbe-certs/rbe_client.crt
 common:rbe_native_tpu --tls_client_key=/tmp/rbe-certs/rbe_client.key
+# Guard against accidental cache pollution from locally executed actions;
+# remote actions are cached by Buildbarn.
 common:rbe_native_tpu --noremote_upload_local_results
 common:rbe_native_tpu --extra_execution_platforms="//bazel/platforms:buildbarn_native_tpu_platform"
 common:rbe_native_tpu --jobs=200
@@ -382,21 +384,13 @@ common:rbe_native_tpu --grpc_keepalive_time=15s
 common:rbe_native_tpu --grpc_keepalive_timeout=15s
 common:rbe_native_tpu --experimental_remote_execution_keepalive=true
 
-# Dedicated GCP RBE execution in us-west1 (pairing CPU default pool + TPU worker pool)
-common:rbe_tpu_west1 --remote_executor=grpcs://us-west1-remotebuildexecution.googleapis.com
-common:rbe_tpu_west1 --remote_instance_name=projects/rbe-tpu-oss/instances/default_instance_west1
-common:rbe_tpu_west1 --extra_execution_platforms=//bazel/platforms:rbe_tpu_v5e_platform
-common:rbe_tpu_west1 --google_default_credentials
-common:rbe_tpu_west1 --jobs=100
-common:rbe_tpu_west1 --remote_timeout=3600
-common:rbe_tpu_west1 --test_timeout=3600
-
-# CI config matching .github/workflows/presubmit.yml
+# CI config matching .github/workflows/rbe_presubmit.yml
 common:ci_rbe_presubmit --config=ci_base
 common:ci_rbe_presubmit --config=rbe_native_tpu
 common:ci_rbe_presubmit --remote_executor=grpcs://10.202.0.67:8980
 common:ci_rbe_presubmit --remote_upload_local_results=true
 common:ci_rbe_presubmit --nobuild_runfile_links
+common:ci_rbe_presubmit --test_timeout=3600
 common:ci_rbe_presubmit --build_tag_filters=-nobuild,requires-tpu-v5lite,-requires-tpu-v5lite:8
 common:ci_rbe_presubmit --test_tag_filters=presubmit-v5,-fails-on-tpu-v5,-nopresubmit,-notest,-nobuild,-requires-tpu-v5p,-requires-tpu-v6e,-requires-tpu-v7x,-requires-tpu-v5lite:8,-requires-net:external
 test:ci_rbe_presubmit --test_output=errors

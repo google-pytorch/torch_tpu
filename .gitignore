@@ -27,5 +27,6 @@ dist/
 *.un~
 .*.un~
 
-# RBE mTLS certificates and keys (provisioned dynamically in CI / locally)
+# Local RBE credentials.
 bazel/certs/
+*.key
