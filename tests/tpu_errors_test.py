@@ -24,6 +24,7 @@ from absl.testing import parameterized
 import torch
 import torch.distributed as dist
 from torch.fx.experimental.proxy_tensor import make_fx
+from torch.tpu.distributed import environment  # pyrefly: ignore[missing-import]
 from torch_tpu._internal import dynamism
 from torch_tpu._internal import env
 from torch_tpu._internal import env_utils
@@ -32,7 +33,6 @@ from torch_tpu._internal import pallas
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.compiler import StaticCompiler
-from torch_tpu._internal.distributed.launchers import environment
 from torch_tpu._internal.pallas import tpu_torch_pallas
 from torch_tpu._internal.utils import hardware
 from tests import error_testing as et

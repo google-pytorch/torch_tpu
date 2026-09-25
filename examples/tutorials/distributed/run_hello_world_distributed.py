@@ -17,7 +17,7 @@
 import os
 from torch.google import distributed as g3_distributed
 import torch.multiprocessing as mp
-from torch_tpu._internal.distributed.launchers import environment
+from torch.tpu.distributed import environment  # pyrefly: ignore[missing-import]
 from examples.tutorials.distributed import hello_world_distributed
 from torch_tpu._internal.distributed import multiprocessing
 

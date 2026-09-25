@@ -36,7 +36,7 @@ def get_distributed_env():
     wrapper_cmd = [
         sys.executable,
         "-m",
-        "torch_tpu._internal.distributed.launchers.environment",
+        "torch.tpu.distributed.environment",
     ]
     result = subprocess.run(
         wrapper_cmd, capture_output=True, text=True, env=env

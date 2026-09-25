@@ -16,7 +16,7 @@
 
 from torch.google import distributed as gdist
 import torch.multiprocessing as mp
-from torch_tpu._internal.distributed.launchers import environment
+from torch.tpu.distributed import environment  # pyrefly: ignore[missing-import]
 from examples.distributed.data_parallel.manual import dp_worker
 from torch_tpu._internal.distributed import multiprocessing
 

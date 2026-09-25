@@ -63,6 +63,44 @@ _torch_compile = torch.compile
 if not hasattr(torch.backends, "tpu"):
   torch.backends.tpu = _tpu_backend_config._TpuBackendConfig()  # pyrefly: ignore[missing-attribute]
 
+_DEVICE_INITIALIZED: bool = False
+
+
+def _register_public_modules() -> None:
+  """Registers torch.tpu and its public submodules in sys.modules."""
+  device_module = _device_module.get_device_module("tpu")
+  if not hasattr(device_module, "__path__"):
+    setattr(device_module, "__path__", [])
+  if not hasattr(torch, "tpu"):
+    setattr(torch, "tpu", device_module)
+  sys.modules["torch.tpu"] = device_module  # pyrefly: ignore[unsupported-operation]
+
+  # Expose the public profiler module under 'torch.tpu.profiler' in sys.modules
+  # and attach it to the 'torch.tpu' device module for attribute access.
+  from torch_tpu._internal.profiler import api as profiler_api  # pylint: disable=g-import-not-at-top
+
+  sys.modules["torch.tpu.profiler"] = profiler_api
+  setattr(device_module, "profiler", profiler_api)
+
+  # Expose the public pallas module under 'torch.tpu.pallas' in sys.modules
+  # and attach it to the 'torch.tpu' device module for attribute access.
+  from torch_tpu._internal.pallas import api as pallas_api  # pylint: disable=g-import-not-at-top
+
+  sys.modules["torch.tpu.pallas"] = pallas_api
+  setattr(device_module, "pallas", pallas_api)
+
+  # Expose the public distributed module under 'torch.tpu.distributed' and
+  # 'torch.tpu.distributed.environment' in sys.modules and attach it to the
+  # 'torch.tpu' device module for attribute access.
+  from torch_tpu._internal.distributed import api as distributed_api  # pylint: disable=g-import-not-at-top
+
+  sys.modules["torch.tpu.distributed"] = distributed_api
+  sys.modules["torch.tpu.distributed.environment"] = distributed_api.environment
+  setattr(device_module, "distributed", distributed_api)
+
+
+_register_public_modules()
+
 # Enable tracing through recurrent layers (RNN, LSTM, GRU) in Dynamo to avoid
 # graph breaks and leverage TorchTPU's fused StableHLO kernels.
 if hasattr(torch._dynamo.config, "allow_rnn"):
@@ -226,6 +264,8 @@ def _init_device_impl(device: str) -> torch.device:
       file=sys.stderr,
   )
 
+  if hasattr(torch, device):
+    delattr(torch, device)
   # pylint: disable=protected-access
   torch._register_device_module(device, device_module)  # pyrefly: ignore[bad-argument-type]
   print(f"Registered Python module for '{device}'.", file=sys.stderr)
@@ -260,19 +300,7 @@ def _init_device_impl(device: str) -> torch.device:
 
   profiler.register_kineto_backend()
 
-  # Expose the public profiler module under 'torch.tpu.profiler' in sys.modules
-  # and attach it to the 'torch.tpu' device module for attribute access.
-  from torch_tpu._internal.profiler import api as profiler_api  # pylint: disable=g-import-not-at-top
-
-  sys.modules["torch.tpu.profiler"] = profiler_api
-  setattr(device_module, "profiler", profiler_api)
-
-  # Expose the public pallas module under 'torch.tpu.pallas' in sys.modules
-  # and attach it to the 'torch.tpu' device module for attribute access.
-  from torch_tpu._internal.pallas import api as pallas_api  # pylint: disable=g-import-not-at-top
-
-  sys.modules["torch.tpu.pallas"] = pallas_api
-  setattr(device_module, "pallas", pallas_api)
+  _register_public_modules()
 
   # Pass installed libtpu version to C++ runtime if available.
   _set_libtpu_version()
@@ -334,10 +362,13 @@ def _init_device_impl(device: str) -> torch.device:
 
 @functools.cache
 def _init_device(device: str) -> torch.device:
+  global _DEVICE_INITIALIZED
   with _INIT_LOCK:
-    if hasattr(torch, device):
+    if _DEVICE_INITIALIZED:
       return torch.device(device)
-    return _init_device_impl(device)
+    device_d = _init_device_impl(device)
+    _DEVICE_INITIALIZED = True
+    return device_d
 
 
 def load() -> None:
@@ -350,6 +381,8 @@ def load() -> None:
   env_utils.set_str_env(_AUTOLOAD_ENV_VAR, _OLD_AUTOLOAD_ENV)
 
   global _LOADED
+  if _LOADED:
+    return
   if hardware.get_tpu_device_count():
     _init_device("tpu")  # INIT_DEVICE_OK=root usage
     _LOADED = True
@@ -359,3 +392,7 @@ def load() -> None:
   from torch_tpu._internal import tracing  # pylint: disable=g-import-not-at-top
 
   tracing.enable_if_requested()
+
+
+if _OLD_AUTOLOAD_ENV == "1":
+  load()

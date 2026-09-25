@@ -26,18 +26,6 @@ package(
 )
 
 torch_tpu_py_library(
-    name = "environment",
-    srcs = ["environment.py"],
-    deps = [
-        "//shims/absl_py/logging",
-        "//src/torch_tpu/_internal:env",
-        "//src/torch_tpu/_internal:env_utils",
-        "//src/torch_tpu/_internal/utils:hardware",
-        "@pypi//portpicker",
-    ],
-)
-
-torch_tpu_py_library(
     name = "singlehost_wrapper",
     srcs = ["singlehost_wrapper.py"],
     deps = [
@@ -57,21 +45,6 @@ torch_tpu_py_library(
         "//src/torch_tpu/_internal:env",
         "//src/torch_tpu/_internal:env_utils",
         "//src/torch_tpu/_internal/distributed:tpu_distributed",
-    ],
-)
-
-torch_tpu_py_test(
-    name = "environment_test",
-    srcs = ["environment_test.py"],
-    strict = True,
-    deps = [
-        ":environment",
-        "//shims/absl_py/testing:absltest",
-        "//src/torch_tpu",
-        "//src/torch_tpu/_internal:env",
-        "//src/torch_tpu/_internal:env_utils",
-        "//src/torch_tpu/_internal/utils:hardware",
-        "//tests:seed_test_utils",
     ],
 )
 
