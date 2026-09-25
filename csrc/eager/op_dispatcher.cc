@@ -73,13 +73,14 @@ absl::StatusOr<DeviceBufferRef> MakeBuffer(
     scalar_type = at::ScalarType::ComplexFloat;
   }
 
-  // In DeferAll or compiled mode, scalars are assumed to be constants for
-  // optimal performance at the cost of increased specialization.
-  // In other eager modes (DeferNever or DeferAndFuse) scalars are treated as
-  // arguments to increase code reuse.
+  // In compiled mode, variable scalar parameters are identified as FX graph
+  // inputs. All non-variable scalars are therefore constants and can be
+  // specialized to the output program to achieve constant folding.
+  // In eager modes (DeferNever, DeferAndFuse, or DeferAll) scalars are treated
+  // as arguments to increase code reuse, as the benefit of constant folding
+  // is not justified at the risk of over-specialization and recompilation.
   const bool constant_mode =
-      GetEagerMode() == EagerMode::kInternalCompileFxGraph ||
-      GetEagerMode() == EagerMode::kInternalDeferAll;
+      GetEagerMode() == EagerMode::kInternalCompileFxGraph;
 
   if (!constant_mode) {
     // Variable execution mode: materialize the scalar to a DeviceBufferRef.
