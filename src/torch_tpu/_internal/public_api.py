@@ -199,6 +199,9 @@ _PUBLIC_MODULES: Mapping[str, ModuleSpec] = {
             "align_jagged_to_multiple": (
                 "torch_tpu._internal.ops.jagged:align_jagged_to_multiple"
             ),
+            "all_gather_dim": (
+                "torch_tpu._internal.ops.collectives:all_gather_dim"
+            ),
             "max_pool1d": "torch_tpu._internal.ops.ops:max_pool1d",
             "max_pool1d_backward": (
                 "torch_tpu._internal.ops.ops:max_pool1d_backward"
@@ -222,6 +225,9 @@ _PUBLIC_MODULES: Mapping[str, ModuleSpec] = {
                 "torch_tpu._internal.ops.ops:ragged_dot_weight_grad"
             ),
             "recv": "torch_tpu._internal.ops.ops:recv",
+            "reduce_scatter_dim": (
+                "torch_tpu._internal.ops.collectives:reduce_scatter_dim"
+            ),
             "send": "torch_tpu._internal.ops.ops:send",
             "sparse_dense_matmul": (
                 "torch_tpu._internal.ops.ops:sparse_dense_matmul"

@@ -41,6 +41,15 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
+    name = "collectives",
+    srcs = ["collectives.py"],
+    deps = [
+        "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal/utils:annotations",
+    ],
+)
+
+torch_tpu_py_library(
     name = "jagged",
     srcs = ["jagged.py"],
     deps = [

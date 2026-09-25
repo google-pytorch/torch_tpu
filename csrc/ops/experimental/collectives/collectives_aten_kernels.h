@@ -28,7 +28,8 @@ at::Tensor ExperimentalAllGatherDim(const at::Tensor& input, int64_t dim,
                                     int64_t group_size,
                                     std::string_view group_name);
 
-at::Tensor ExperimentalReduceScatterDim(const at::Tensor& input, int64_t dim,
+at::Tensor ExperimentalReduceScatterDim(const at::Tensor& input,
+                                        std::string_view reduce_op, int64_t dim,
                                         int64_t group_size,
                                         std::string_view group_name);
 
@@ -37,6 +38,7 @@ at::Tensor MetaExperimentalAllGatherDim(const at::Tensor& input, int64_t dim,
                                         std::string_view group_name);
 
 at::Tensor MetaExperimentalReduceScatterDim(const at::Tensor& input,
+                                            std::string_view reduce_op,
                                             int64_t dim, int64_t group_size,
                                             std::string_view group_name);
 
