@@ -51,6 +51,7 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/to_string.h"
+#include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/traversal.h"
@@ -366,7 +367,9 @@ std::vector<Shape> GetShapesFromDeviceBuffers(
   std::vector<Shape> shapes;
   shapes.reserve(buffers.size());
   for (const auto& buffer : buffers) {
-    shapes.push_back(buffer.shape());
+    // Only copy the immutable dimensions and element_type needed by Execute().
+    shapes.push_back(
+        Shape(CopyIntVector(buffer.dimensions()), buffer.element_type()));
   }
   return shapes;
 }

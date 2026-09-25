@@ -356,6 +356,7 @@ torch_tpu_cc_library(
         "//csrc/common:error_utils",
         "//csrc/common:shape",
         "//csrc/common:to_string",
+        "//csrc/common:utils",
         "//csrc/ops:op_names",
         "//csrc/pjrt:pjrt_execute",
         "//csrc/pjrt:pjrt_state",

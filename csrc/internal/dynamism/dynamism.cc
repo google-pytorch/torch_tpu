@@ -23,9 +23,14 @@
 #include "absl/log/absl_log.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "csrc/common/context_states.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/eager/device_buffer.h"
+#include "csrc/eager/eager_mode.h"
+#include "csrc/eager/events_queue.h"
+#include "csrc/eager/materialize.h"
+#include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
 
 namespace torch_tpu {
@@ -40,6 +45,16 @@ absl::StatusOr<at::Tensor> MarkDynamic(const at::Tensor& tensor,
   TT_ASSIGN_OR_RETURN(DeviceBufferRef base_buffer_ref, GetBaseBuffer(tensor));
 
   TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref, GetBuffer(tensor));
+
+  // Ensure the buffer has already been traversed before mutating its dynamic
+  // dimensions for subsequent consumers.
+  if (!buffer_ref.is_placeholder() &&
+      GetEagerMode() != EagerMode::kInternalCompileFxGraph) {
+    TT_RETURN_IF_ERROR(
+        Materialize(buffer_ref, MaterializationReason::kExplicitSync,
+                    MaterializationMode::kSplitGraph,
+                    MaterializationBlockMode::kBlockUntilStarted));
+  }
 
   auto dynamic_dimensions = buffer_ref.dynamic_dimensions();
   auto it_find = std::find_if(
@@ -71,6 +86,18 @@ absl::StatusOr<at::Tensor> MarkDynamic(const at::Tensor& tensor,
 absl::StatusOr<absl::Span<const BoundedDynamicDimension>> GetDynamismInfo(
     const at::Tensor& tensor) {
   TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref, GetBaseBuffer(tensor));
+  // We need a materialized buffer to check for dynamism.
+  // However, constants are usually never materialized (or dynamic).
+  // If a constant is not dynamic, we will leave it deferred.
+  // If a constant is dynamic, it will already have been materialized
+  // (see MarkDynamic above).
+  if (!buffer_ref.is_placeholder() && !buffer_ref.is_constant() &&
+      GetEagerMode() != EagerMode::kInternalCompileFxGraph) {
+    TT_RETURN_IF_ERROR(
+        Materialize(buffer_ref, MaterializationReason::kExplicitSync,
+                    MaterializationMode::kSplitGraph,
+                    MaterializationBlockMode::kBlockUntilStarted));
+  }
   return buffer_ref.dynamic_dimensions();
 }
 
