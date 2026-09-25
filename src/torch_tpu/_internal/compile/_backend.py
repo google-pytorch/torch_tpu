@@ -46,6 +46,7 @@ import torch
 from torch._decomp import get_decompositions
 from torch._dynamo import guards as dynamo_guards
 from torch._dynamo import source as dynamo_source
+from torch._dynamo.backends import registry
 from torch._dynamo.backends.common import aot_autograd
 from torch._functorch._aot_autograd import autograd_cache as _autograd_cache
 from torch._functorch._aot_autograd import graph_compile as _graph_compile
@@ -660,9 +661,15 @@ class TpuBackend:
     self._debug = debug
     self._dynamism = dynamism
     self._enable_serialization = False if debug else enable_serialization
-    # Stores information about each compiled executable.
+    # Stores information about each compiled executable when self._debug is enabled.
     # Organized by order of compilation (index 0 is the first compilation, etc.)
     self._compiled_executables: list[compiler.CompiledArtifact] = []
+    self._num_compiled_executables: int = 0
+
+  def clear_cache(self) -> None:
+    """Clears any cached/retained compiled executables and resets counters."""
+    self._compiled_executables.clear()
+    self._num_compiled_executables = 0
 
   def __call__(
       self,
@@ -911,18 +918,29 @@ class TpuBackend:
             graph_module.print_readable(print_output=False)
         )
 
-    split_idx = len(self._compiled_executables)
+    split_idx = self._num_compiled_executables
+    self._num_compiled_executables += 1
     module_name = _get_module_name(custom_module_name, is_fwd, split_idx)
 
     executable = compiler_instance(
         graph_module, example_inputs, is_fwd, module_name=module_name
     )
     compiled_artifacts.append(executable)
-    self._compiled_executables.append(executable)
+    if self._debug:
+      self._compiled_executables.append(executable)
     if debug is not None:
       debug.compiled_executables = list(compiled_artifacts)
 
     return executable
+
+
+def clear_cache() -> None:
+  """Flushes pending AOTAutograd cache saves and clears TpuBackend state."""
+  _cache_saves_manager.flush()
+  if "tpu" in registry.list_backends():
+    backend_fn = registry.lookup_backend("tpu")
+    if isinstance(backend_fn, TpuBackend):
+      backend_fn.clear_cache()
 
 
 def resolve_compilations(artifacts: Sequence[Any]) -> int:

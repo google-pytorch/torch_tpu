@@ -22,6 +22,7 @@ import abc
 import atexit
 from collections.abc import Mapping
 import dataclasses
+import sys
 from typing import Any, Final, List
 import torch
 from torch._dynamo.device_interface import DeviceInterface
@@ -788,6 +789,9 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
 
   @classmethod
   def _clear_cache(cls):
+    backend_mod = sys.modules.get("torch_tpu._internal.compile._backend")
+    if backend_mod is not None and hasattr(backend_mod, "clear_cache"):
+      backend_mod.clear_cache()
     _device_ops_backend._clear_cache()  # pylint: disable=protected-access
 
   @classmethod
