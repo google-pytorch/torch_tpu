@@ -9968,9 +9968,9 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     """Tests that stream-level synchronization catches pending assertion failures.
 
     Checks:
-      1. Synchronizing a stream via `torch.tpu.current_stream().synchronize()`
-      invokes
-         the TPU hook `synchronizeStream`.
+      1. Synchronizing a stream via
+      `torch.accelerator.current_stream().synchronize()`
+         invokes the TPU hook `synchronizeStream`.
       2. `synchronizeStream` calls `SyncAndCheckStickyError()`, ensuring pending
          assertion background checks are drained and any latched sticky error is
          re-thrown as a `RuntimeError`.
@@ -9983,12 +9983,12 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     # Schedule assertion failure.
     torch._assert_async(false_cond, "stream sync failure")
     try:
-      # Stream-level synchronization (torch.tpu.current_stream().synchronize())
+      # Stream-level synchronization (torch.accelerator.current_stream().synchronize())
       # invokes synchronizeStream, which flushes assertion checks and rethrows sticky error.
       with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing assert_async failure behavior.
           RuntimeError, "stream sync failure"
       ):
-        torch.tpu.current_stream().synchronize()
+        torch.accelerator.current_stream().synchronize()
     finally:
       # Reset sticky error state for subsequent tests.
       tpu_testing.clear_sticky_error()

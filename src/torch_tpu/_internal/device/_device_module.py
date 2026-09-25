@@ -963,15 +963,23 @@ class TpuStreamContext:
 
   def __init__(self, stream: streams.TpuStream | None):
     self.stream = stream
-    self.prev_stream = None
+    self.prev_stream_id = None
 
   def __enter__(self):
     if self.stream is None:
       return
-    self.prev_stream = torch.tpu.current_stream()
-    torch.tpu.set_stream(self.stream)
+    # pylint: disable=protected-access
+    self.prev_stream_id = _device_ops_backend._get_current_stream_id(
+        self.stream.device_index
+    )
+    _device_ops_backend._set_current_stream_id(
+        self.stream.stream_id, self.stream.device_index
+    )
 
   def __exit__(self, exc_type: Any, exc_value: Any, exc_traceback: Any):
-    if self.stream is None:
+    if self.stream is None or self.prev_stream_id is None:
       return
-    torch.tpu.set_stream(self.prev_stream)
+    # pylint: disable=protected-access
+    _device_ops_backend._set_current_stream_id(
+        self.prev_stream_id, self.stream.device_index
+    )
