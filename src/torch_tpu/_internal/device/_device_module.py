@@ -955,19 +955,6 @@ def get_device_interface(device_type: str) -> type[DeviceInterface]:
   return TpuDeviceInterface
 
 
-# TODO: Remove this backward compatibility shim before launch.
-# Temporary backward compatibility shim for legacy callers accessing TorchDynamo
-# SPIs on torch.tpu.
-__tt_api_stages__["maybe_exchange_device"] = annotations.ApiStageInfo(
-    stage=annotations.Stage.EXPERIMENTAL,
-    reason=(
-        "maybe_exchange_device() is internal to TorchDynamo and subject to"
-        " change or removal."
-    ),
-    value=_DeviceModule._maybe_exchange_device,
-)
-
-
 class TpuStreamContext:
   """Operations within this context manager are enqueued on the given stream.
 
