@@ -29,7 +29,6 @@ def _():
   # Pre-set environment variables globally for HTML export so that all examples have output
   os.environ["TORCH_SHOW_CPP_STACKTRACES"] = "1"
   os.environ["TORCH_TPU_ENABLE_DEBUG_CHECKS"] = "1"
-  os.environ["TORCH_TPU_INTERNAL_XLA_OPTIONS"] = "xla_optimization_level=O3"
 
   dump_dir = "/tmp/hlo_dump"
   if os.path.exists(dump_dir):
@@ -47,9 +46,6 @@ def _():
 
   os.environ["TORCH_TPU_TIER2_COMPILATION_CACHE"] = tier2_name
   os.environ["TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT"] = tier3_path
-  os.environ["TORCH_TPU_INTERNAL_TIER3_COMPILATION_CACHE_LOCAL_BACKUP_TASK"] = (
-      "1"
-  )
   return mo, os
 
 
@@ -171,41 +167,8 @@ def _(mo):
 
     | Variable | Values | Purpose |
     | :--- | :--- | :--- |
-    | `TORCH_TPU_INTERNAL_XLA_OPTIONS` | `xla_optimization_level=O[0-3]` | Fine-tunes XLA compiler optimization passes. **O0** is fastest to compile, while **O3** is most optimized for execution. O1 is the default for debug/regular eager mode and O2 is the default for optimized eager and compiled. |
     | `XLA_FLAGS` | `--xla_dump_hlo_as_text` etc. | Direct XLA compiler flags. Dumping HLO prints hundreds of lines of intermediate representation for deep performance debugging. |
     """)
-  return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-  mo.md(r"""
-    ### **Snippet: XLA Optimization Level**
-    You can force the XLA compiler to use different optimization levels:
-    - **`O0`**: Fastest compilation, minimal optimization. Best for rapid debugging.
-    - **`O1`**: Basic optimizations.
-    - **`O2`**: Standard optimization (Default).
-    - **`O3`**: Maximum optimization. Slower compilation, but potentially faster execution/step times.
-    """)
-  return
-
-
-@app.cell
-def _(os):
-  def _run():
-    # RESTART KERNEL BEFORE RUNNING
-    import torch
-
-    os.environ["TORCH_TPU_INTERNAL_XLA_OPTIONS"] = "xla_optimization_level=O3"
-    device_xla = torch.device("tpu")
-
-    # Run a complex op
-    x = torch.randn(1024, 1024).to(device_xla)
-    y = x @ x + torch.sin(x)
-    y.cpu()  # Force execution
-    print("Executed complex math with O3 optimization.")
-
-  _run()
   return
 
 
@@ -293,7 +256,6 @@ def _(mo):
     | :--- | :--- |
     | `TORCH_TPU_TIER2_COMPILATION_CACHE` | Path to the tier-2 cache (local within the host). |
     | `TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT` | Path to the tier-3 (shared/persistent) cache. |
-    | `TORCH_TPU_INTERNAL_TIER3_COMPILATION_CACHE_LOCAL_BACKUP_TASK` | Enables local task to back up cache entries to Tier 3. |
 
     ### **Snippet: Multi-tiered Caching (Tier-2 and Tier-3)**
     By pointing to specific directories, compiled binary artifacts are saved to disk and reused in future sessions, dramatically reducing JIT latency on subsequent runs.
@@ -322,9 +284,6 @@ def _(os, safe_init):
     # that will be created inside /dev/shm/
     os.environ["TORCH_TPU_TIER2_COMPILATION_CACHE"] = tier2_name
     os.environ["TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT"] = tier3_path
-    os.environ[
-        "TORCH_TPU_INTERNAL_TIER3_COMPILATION_CACHE_LOCAL_BACKUP_TASK"
-    ] = "1"
 
     device_cache = torch.device("tpu")
 
@@ -382,9 +341,7 @@ def _(mo):
     | `TORCH_SHOW_CPP_STACKTRACES` | Debug | `import torch` | `0` (False), `1` (True) |
     | `TORCH_TPU_ENABLE_DEBUG_CHECKS` | Safety | `import torch` | `0` (False), `1` (True) |
     | `TORCH_TPU_TIER2_COMPILATION_CACHE` | Cache | `torch.device("tpu")` | `/dev/shm/torch_tpu_cache/`, `<local_path>` |
-    | `TORCH_TPU_INTERNAL_TIER3_COMPILATION_CACHE_LOCAL_BACKUP_TASK` | Cache | `torch.device("tpu")` | `0` (False), `1` (True) |
     | `TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT` | Cache | `torch.device("tpu")` | `gs://<bucket_name>/<path_to_cache>` |
-    | `TORCH_TPU_INTERNAL_XLA_OPTIONS` | XLA Tuning | `torch.device("tpu")` | `xla_optimization_level=O[0-3]`, `--xla_tpu_...` |
     | `TORCH_TPU_SLICEBUILDER_ADDRESSES` | Cloud | `import torch` | `10.0.0.1:8471,10.0.0.2:8471` |
     | `TORCH_TPU_TOPOLOGY` | Cloud | `import torch` | `2x2x1`, `2x2x4`, `4x4x4`, etc. |
     | `TPU_CHIPS_PER_HOST_BOUNDS` | Cloud | `N/A` (Set by GCE) | `1,1,1`, `2,2,1`, `2,2,2` |

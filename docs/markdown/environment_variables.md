@@ -10,7 +10,6 @@ import time
 # Pre-set environment variables globally for HTML export so that all examples have output
 os.environ["TORCH_SHOW_CPP_STACKTRACES"] = "1"
 os.environ["TORCH_TPU_ENABLE_DEBUG_CHECKS"] = "1"
-os.environ["TORCH_TPU_INTERNAL_XLA_OPTIONS"] = "xla_optimization_level=O3"
 
 dump_dir = "/tmp/hlo_dump"
 if os.path.exists(dump_dir):
@@ -28,9 +27,6 @@ for p in [tier2_path, tier3_path]:
 
 os.environ["TORCH_TPU_TIER2_COMPILATION_CACHE"] = tier2_name
 os.environ["TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT"] = tier3_path
-os.environ["TORCH_TPU_INTERNAL_TIER3_COMPILATION_CACHE_LOCAL_BACKUP_TASK"] = (
-    "1"
-)
 ```
 
 # **Environment Variables Reference**
@@ -141,65 +137,12 @@ environment.
 
 These variables control how PyTorch graphs are lowered and optimized by XLA.
 
-| Variable                         | Values                          | Purpose        |
-| :------------------------------- | :------------------------------ | :------------- |
-| `TORCH_TPU_INTERNAL_XLA_OPTIONS` | `xla_optimization_level=O[0-3]` | Fine-tunes XLA |
-:                                  :                                 : compiler       :
-:                                  :                                 : optimization   :
-:                                  :                                 : passes. **O0** :
-:                                  :                                 : is fastest to  :
-:                                  :                                 : compile, while :
-:                                  :                                 : **O3** is most :
-:                                  :                                 : optimized for  :
-:                                  :                                 : execution. O1  :
-:                                  :                                 : is the default :
-:                                  :                                 : for            :
-:                                  :                                 : debug/regular  :
-:                                  :                                 : eager mode and :
-:                                  :                                 : O2 is the      :
-:                                  :                                 : default for    :
-:                                  :                                 : optimized      :
-:                                  :                                 : eager and      :
-:                                  :                                 : compiled.      :
-| `XLA_FLAGS`                      | `--xla_dump_hlo_as_text` etc.   | Direct XLA     |
-:                                  :                                 : compiler       :
-:                                  :                                 : flags. Dumping :
-:                                  :                                 : HLO prints     :
-:                                  :                                 : hundreds of    :
-:                                  :                                 : lines of       :
-:                                  :                                 : intermediate   :
-:                                  :                                 : representation :
-:                                  :                                 : for deep       :
-:                                  :                                 : performance    :
-:                                  :                                 : debugging.     :
-
-### **Snippet: XLA Optimization Level**
-
-You can force the XLA compiler to use different optimization levels:
-
--   **`O0`**: Fastest compilation, minimal optimization. Best for rapid
-    debugging.
--   **`O1`**: Basic optimizations.
--   **`O2`**: Standard optimization (Default).
--   **`O3`**: Maximum optimization. Slower compilation, but potentially faster
-    execution/step times.
-
-```python
-def _run():
-  # RESTART KERNEL BEFORE RUNNING
-  import torch
-
-  os.environ["TORCH_TPU_INTERNAL_XLA_OPTIONS"] = "xla_optimization_level=O3"
-  device_xla = torch.device("tpu")
-
-  # Run a complex op
-  x = torch.randn(1024, 1024).to(device_xla)
-  y = x @ x + torch.sin(x)
-  y.cpu()  # Force execution
-  print("Executed complex math with O3 optimization.")
-
-_run()
-```
+| Variable    | Values                   | Purpose                            |
+| :---------- | :----------------------- | :--------------------------------- |
+| `XLA_FLAGS` | `--xla_dump_hlo_as_text` | Direct XLA compiler flags. Dumping |
+:             : etc.                     : HLO prints hundreds of lines of    :
+:             :                          : intermediate representation for    :
+:             :                          : deep performance debugging.        :
 
 ### **Snippet: Dumping XLA IR (HLO)**
 
@@ -280,11 +223,12 @@ and ranks. Tier 2 is stored locally within the host and Tier 3 is a compilation
 cache shared between hosts. While Tier 3 usually uses shared storage (like a
 `gs://` bucket), we use local folders here to demonstrate how they work.
 
-Variable                                                       | Purpose
-:------------------------------------------------------------- | :------
-`TORCH_TPU_TIER2_COMPILATION_CACHE`                            | Path to the tier-2 cache (local within the host).
-`TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT`                       | Path to the tier-3 (shared/persistent) cache.
-`TORCH_TPU_INTERNAL_TIER3_COMPILATION_CACHE_LOCAL_BACKUP_TASK` | Enables local task to back up cache entries to Tier 3.
+| Variable                                 | Purpose                         |
+| :--------------------------------------- | :------------------------------ |
+| `TORCH_TPU_TIER2_COMPILATION_CACHE`      | Path to the tier-2 cache (local |
+:                                          : within the host).               :
+| `TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT` | Path to the tier-3              |
+:                                          : (shared/persistent) cache.      :
 
 ### **Snippet: Multi-tiered Caching (Tier-2 and Tier-3)**
 
@@ -312,9 +256,6 @@ def _run():
   # that will be created inside /dev/shm/
   os.environ["TORCH_TPU_TIER2_COMPILATION_CACHE"] = tier2_name
   os.environ["TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT"] = tier3_path
-  os.environ[
-      "TORCH_TPU_INTERNAL_TIER3_COMPILATION_CACHE_LOCAL_BACKUP_TASK"
-  ] = "1"
 
   device_cache = torch.device("tpu")
 
@@ -359,24 +300,22 @@ _run()
 
 ## **Quick Reference Summary**
 
-Variable                                                       | Scope      | Must Set Before       | Possible Values
-:------------------------------------------------------------- | :--------- | :-------------------- | :--------------
-`CLOUD_TPU_TASK_ID`                                            | Cloud      | `N/A` (Set by GCE)    | `0`, `1`, `2`, ... (integer format)
-`LOCAL_RANK`                                                   | Launcher   | `import torch`        | `0`, `1`, `2`, `3` ... (integer)
-`MASTER_ADDR`                                                  | Launcher   | `import torch`        | `localhost`, `127.0.0.1`, `10.0.0.1`
-`MASTER_PORT`                                                  | Launcher   | `import torch`        | `12355`, `8471`, `<port_number>`
-`RANK`                                                         | Launcher   | `import torch`        | `0`, `1`, `2`, ... (integer)
-`TORCH_SHOW_CPP_STACKTRACES`                                   | Debug      | `import torch`        | `0` (False), `1` (True)
-`TORCH_TPU_ENABLE_DEBUG_CHECKS`                                | Safety     | `import torch`        | `0` (False), `1` (True)
-`TORCH_TPU_TIER2_COMPILATION_CACHE`                            | Cache      | `torch.device("tpu")` | `/dev/shm/torch_tpu_cache/`, `<local_path>`
-`TORCH_TPU_INTERNAL_TIER3_COMPILATION_CACHE_LOCAL_BACKUP_TASK` | Cache      | `torch.device("tpu")` | `0` (False), `1` (True)
-`TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT`                       | Cache      | `torch.device("tpu")` | `gs://<bucket_name>/<path_to_cache>`
-`TORCH_TPU_INTERNAL_XLA_OPTIONS`                               | XLA Tuning | `torch.device("tpu")` | `xla_optimization_level=O[0-3]`, `--xla_tpu_...`
-`TORCH_TPU_SLICEBUILDER_ADDRESSES`                             | Cloud      | `import torch`        | `10.0.0.1:8471,10.0.0.2:8471`
-`TORCH_TPU_TOPOLOGY`                                           | Cloud      | `import torch`        | `2x2x1`, `2x2x4`, `4x4x4`, etc.
-`TPU_CHIPS_PER_HOST_BOUNDS`                                    | Cloud      | `N/A` (Set by GCE)    | `1,1,1`, `2,2,1`, `2,2,2`
-`TPU_HOST_BOUNDS`                                              | Cloud      | `N/A` (Set by GCE)    | `1,1,1`, `2,2,1`, `2,2,2`
-`TPU_PROCESS_ADDRESSES`                                        | Cloud      | `N/A` (Set by GCE)    | `10.0.0.1:8471,10.0.0.2:8471`
-`TPU_PROCESS_PORT`                                             | Cloud      | `N/A` (Set by GCE)    | `8471`, `<port_number>`
-`TPU_VISIBLE_CHIPS`                                            | Cloud      | `N/A` (Set by GCE)    | `0`, `0,1`, `0,1,2,3`
-`WORLD_SIZE`                                                   | Launcher   | `import torch`        | `1`, `2`, `4`, `8`, `16`, ... (integer)
+Variable                                 | Scope    | Must Set Before       | Possible Values
+:--------------------------------------- | :------- | :-------------------- | :--------------
+`CLOUD_TPU_TASK_ID`                      | Cloud    | `N/A` (Set by GCE)    | `0`, `1`, `2`, ... (integer format)
+`LOCAL_RANK`                             | Launcher | `import torch`        | `0`, `1`, `2`, `3` ... (integer)
+`MASTER_ADDR`                            | Launcher | `import torch`        | `localhost`, `127.0.0.1`, `10.0.0.1`
+`MASTER_PORT`                            | Launcher | `import torch`        | `12355`, `8471`, `<port_number>`
+`RANK`                                   | Launcher | `import torch`        | `0`, `1`, `2`, ... (integer)
+`TORCH_SHOW_CPP_STACKTRACES`             | Debug    | `import torch`        | `0` (False), `1` (True)
+`TORCH_TPU_ENABLE_DEBUG_CHECKS`          | Safety   | `import torch`        | `0` (False), `1` (True)
+`TORCH_TPU_TIER2_COMPILATION_CACHE`      | Cache    | `torch.device("tpu")` | `/dev/shm/torch_tpu_cache/`, `<local_path>`
+`TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT` | Cache    | `torch.device("tpu")` | `gs://<bucket_name>/<path_to_cache>`
+`TORCH_TPU_SLICEBUILDER_ADDRESSES`       | Cloud    | `import torch`        | `10.0.0.1:8471,10.0.0.2:8471`
+`TORCH_TPU_TOPOLOGY`                     | Cloud    | `import torch`        | `2x2x1`, `2x2x4`, `4x4x4`, etc.
+`TPU_CHIPS_PER_HOST_BOUNDS`              | Cloud    | `N/A` (Set by GCE)    | `1,1,1`, `2,2,1`, `2,2,2`
+`TPU_HOST_BOUNDS`                        | Cloud    | `N/A` (Set by GCE)    | `1,1,1`, `2,2,1`, `2,2,2`
+`TPU_PROCESS_ADDRESSES`                  | Cloud    | `N/A` (Set by GCE)    | `10.0.0.1:8471,10.0.0.2:8471`
+`TPU_PROCESS_PORT`                       | Cloud    | `N/A` (Set by GCE)    | `8471`, `<port_number>`
+`TPU_VISIBLE_CHIPS`                      | Cloud    | `N/A` (Set by GCE)    | `0`, `0,1`, `0,1,2,3`
+`WORLD_SIZE`                             | Launcher | `import torch`        | `1`, `2`, `4`, `8`, `16`, ... (integer)
