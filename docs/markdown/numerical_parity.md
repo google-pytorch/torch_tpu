@@ -77,7 +77,7 @@ out_tpu = model_tpu(input_tpu)
 
 # 5. Compare results
 # Note: TorchTPU's internal bfloat16 precision drift may exceed default
-# strict tolerances, generating the `assert_close` diagnostic report below.
+# tolerances, generating the `assert_close` diagnostic report below.
 try:
   # Note: we move the TPU result back to CPU for comparison
   torch.testing.assert_close(out_tpu.cpu(), out_cpu)
@@ -89,23 +89,25 @@ except AssertionError as e:
 
 ### **4. Interpreting Detailed Mismatches**
 
-If the tensors exceed tolerances, `utils.assert_close` provides a detailed
-diagnostic report. This identifies if the drift is systematic or an outlier.
+If the tensors exceed tolerances, `torch.testing.assert_close` provides a
+detailed diagnostic report. This identifies if the drift is systematic or an
+outlier.
 
-**Example Failure Output:** ``` Tensor-likes are not close!
+**Example Failure Output:**
 
-Mismatched elements: 1 / 50 (2.0%) Greatest absolute difference: 0.006596 at
-index (3, 9) (strict relative check failure) Greatest relative difference:
-0.165375 at index (3, 9) (up to 0.1 allowed)
+```
+Tensor-likes are not close!
 
-Tolerance Suggestions: Strict check failed. To pass STRICT mode, you need
-BOTH: - rtol >= 0.165375 (1.7e-01) - atol >= 0.006596 (6.6e-03) ```
+Mismatched elements: 1 / 50 (2.0%)
+Greatest absolute difference: 0.006596 at index (3, 9) (up to 1e-05 allowed)
+Greatest relative difference: 0.165375 at index (3, 9) (up to 0.016 allowed)
+```
 
 *   **Mismatched elements**: High percentages (e.g., >70%) typically suggest
     standard precision loss from compiler fusions rather than a logic bug.
-*   **Tolerance Suggestions**: This analyzes the failure and calculates the
-    exact `atol` and `rtol` needed to accommodate the hardware variance. In
-    `STRICT` mode, you need to satisfy both thresholds.
+*   **Greatest absolute / relative difference**: Shows the maximum observed
+    error and the index where it occurred, which you can use to determine
+    appropriate `atol` and `rtol` thresholds if needed.
 
 ### **5. Best Practices for Parity**
 
@@ -116,5 +118,3 @@ BOTH: - rtol >= 0.165375 (1.7e-01) - atol >= 0.006596 (6.6e-03) ```
 *   **Baseline Tolerances**: The recommended baseline tolerances are the default
     ones linked in the
     [PyTorch testing documentation](https://docs.pytorch.org/docs/stable/testing.html).
-    When doing comparisons, you should use the `STRICT` mode in
-    `utils.assert_close` (which is the default).

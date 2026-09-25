@@ -23,10 +23,8 @@ import torch.nn as nn
 
 
 def test_init(device):
-  """Cell: initialize device and import utils."""
-  from torch_tpu._internal.utils import utils
-
-  assert utils is not None
+  """Cell: initialize device."""
+  assert device.type == "tpu"
 
 
 def test_parity_check(device):
@@ -36,8 +34,6 @@ def test_parity_check(device):
   large relative diffs, so we use the notebook's atol=5e-3 with a relaxed
   rtol to accommodate XLA compiler reordering on small magnitudes.
   """
-  from torch_tpu._internal.utils import utils
-
   torch.manual_seed(42)
 
   # Setup identical models
@@ -58,4 +54,4 @@ def test_parity_check(device):
   # Compare — use combined tolerance that handles near-zero values
   # The notebook cell uses atol=5e-3, rtol=1e-3. For near-zero outputs,
   # relative diff can spike, so we relax rtol for robust testing.
-  utils.assert_close(out_tpu.cpu(), out_cpu, atol=5e-3, rtol=1.0)
+  torch.testing.assert_close(out_tpu.cpu(), out_cpu, atol=5e-3, rtol=1.0)
