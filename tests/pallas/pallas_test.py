@@ -1236,7 +1236,7 @@ class TestPallasCompat(seed_test_utils.RepeatableTest):
 
     # Check hardware support
     try:
-      attrs = torch.get_device_module("tpu").get_local_device_attributes()
+      attrs = torch.get_device_module("tpu")._get_local_device_attributes()
       device_kind = attrs.get("device_kind", "")
       if any(old in device_kind for old in ["v2", "v3", "v4"]):
         self.skipTest(f"FP4 not supported on TPU device: {device_kind}")
@@ -1265,7 +1265,7 @@ class TestPallasCompat(seed_test_utils.RepeatableTest):
   def test_fp4_unpack_repro(self):
 
     try:
-      attrs = torch.get_device_module("tpu").get_local_device_attributes()
+      attrs = torch.get_device_module("tpu")._get_local_device_attributes()
       device_kind = attrs.get("device_kind", "")
       if any(old in device_kind for old in ["v2", "v3", "v4"]):
         self.skipTest(f"FP4 not supported on TPU device: {device_kind}")
@@ -1288,7 +1288,7 @@ class TestPallasCompat(seed_test_utils.RepeatableTest):
   def test_fp4_identity_repro(self):
 
     try:
-      attrs = torch.get_device_module("tpu").get_local_device_attributes()
+      attrs = torch.get_device_module("tpu")._get_local_device_attributes()
       device_kind = attrs.get("device_kind", "")
       if any(old in device_kind for old in ["v2", "v3", "v4"]):
         self.skipTest(f"FP4 not supported on TPU device: {device_kind}")
@@ -1332,7 +1332,7 @@ class TestPallasCompat(seed_test_utils.RepeatableTest):
   def test_fp4_outer_non_contiguous_supported(self):
 
     try:
-      attrs = torch.get_device_module("tpu").get_local_device_attributes()
+      attrs = torch.get_device_module("tpu")._get_local_device_attributes()
       device_kind = attrs.get("device_kind", "")
       if any(old in device_kind for old in ["v2", "v3", "v4"]):
         self.skipTest(f"FP4 not supported on TPU device: {device_kind}")
@@ -1366,7 +1366,7 @@ class TestPallasCompat(seed_test_utils.RepeatableTest):
     shape, so that shape invariants with other tensors (like scales) hold.
     """
     try:
-      attrs = torch.get_device_module("tpu").get_local_device_attributes()
+      attrs = torch.get_device_module("tpu")._get_local_device_attributes()
       device_kind = attrs.get("device_kind", "")
       if any(old in device_kind for old in ["v2", "v3", "v4"]):
         self.skipTest(f"FP4 not supported on TPU device: {device_kind}")

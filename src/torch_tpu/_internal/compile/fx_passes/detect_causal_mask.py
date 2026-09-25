@@ -17,6 +17,7 @@
 from typing import Any, Sequence
 import torch
 import torch.fx
+from torch.utils import _pytree
 
 
 def _is_causal_mask(tensor: Any) -> bool:
@@ -86,25 +87,17 @@ def _is_causal_mask(tensor: Any) -> bool:
   return False
 
 
-_EVALUATABLE_OPS = frozenset({
-    torch.ops.aten.slice.Tensor,
-    torch.ops.aten.slice_copy.Tensor,
-    torch.ops.aten.view.default,
-    torch.ops.aten.view_copy.default,
-    torch.ops.aten._unsafe_view.default,
-    torch.ops.aten.reshape.default,
-    torch.ops.aten.clone.default,
-    torch.ops.aten.expand.default,
-    torch.ops.aten.expand_copy.default,
-    torch.ops.aten.squeeze.dim,
-    torch.ops.aten.squeeze.default,
-    torch.ops.aten.squeeze_copy.dim,
-    torch.ops.aten.squeeze_copy.default,
-    torch.ops.aten.unsqueeze.default,
-    torch.ops.aten.unsqueeze_copy.default,
-    torch.ops.aten.to.dtype,
-    torch.ops.aten._to_copy.default,
-})
+# Upper bounds on constant folding work done while evaluating a mask producer.
+# Masks are at most (B, 1, S, S); expand() returns a view so B is free.
+_MAX_FOLD_NUMEL = 1 << 26
+_MAX_FOLD_DEPTH = 64
+
+
+def _is_foldable(target: torch._ops.OpOverload) -> bool:  # pylint: disable=protected-access
+  """Returns True if `target` is a deterministic, non-mutating op."""
+  if torch.Tag.nondeterministic_seeded in target.tags:
+    return False
+  return not target._schema.is_mutable  # pylint: disable=protected-access
 
 
 def _evaluate_node_on_inputs(
@@ -112,54 +105,56 @@ def _evaluate_node_on_inputs(
     placeholder_to_input: dict[torch.fx.Node, Any],
     gm: torch.fx.GraphModule | None,
     cache: dict[torch.fx.Node, Any],
+    depth: int = 0,
 ) -> Any:
-  """Evaluates a node producing a mask tensor using example inputs."""
+  """Evaluates a node producing a mask tensor.
+
+  Placeholders resolve to their example inputs and `get_attr` nodes to module
+  attributes. Any deterministic, non-mutating aten op is then constant folded,
+  including factory ops such as `arange`. This lets masks that are built inside
+  the graph from positions alone (as Hugging Face does when it detects tracing)
+  be proven causal without depending on example input values. Returns None if
+  the value cannot be computed.
+  """
   if not isinstance(node, torch.fx.Node):
     return node
 
   if node in cache:
     return cache[node]
 
+  val = None
+  target = node.target
   if node.op == "placeholder":
     val = placeholder_to_input.get(node)
-    cache[node] = val
-    return val
-
-  if node.op == "get_attr":
-    if gm is not None and isinstance(node.target, str):
+  elif node.op == "get_attr":
+    if gm is not None and isinstance(target, str):
       try:
-        val = torch.fx.graph_module._get_attr(gm, node.target)
-        cache[node] = val
-        return val
+        val = torch.fx.graph_module._get_attr(gm, target)  # pylint: disable=protected-access
       except AttributeError:
-        cache[node] = None
-        return None
-    cache[node] = None
-    return None
-
-  if node.op == "call_function" and node.target in _EVALUATABLE_OPS:
-    args = [
-        _evaluate_node_on_inputs(a, placeholder_to_input, gm, cache)
-        for a in node.args
-    ]
-    kwargs = {
-        k: _evaluate_node_on_inputs(v, placeholder_to_input, gm, cache)
-        for k, v in node.kwargs.items()
-    }
-    if not args or args[0] is None or not isinstance(args[0], torch.Tensor):
-      cache[node] = None
-      return None
-    if callable(node.target):
+        val = None
+  elif (
+      node.op == "call_function"
+      and depth < _MAX_FOLD_DEPTH
+      and isinstance(target, torch._ops.OpOverload)  # pylint: disable=protected-access
+      and _is_foldable(target)
+  ):
+    evaluate = lambda a: _evaluate_node_on_inputs(
+        a, placeholder_to_input, gm, cache, depth + 1
+    )
+    args = _pytree.tree_map_only(torch.fx.Node, evaluate, node.args)
+    kwargs = _pytree.tree_map_only(torch.fx.Node, evaluate, node.kwargs)
+    if all(cache.get(n) is not None for n in node.all_input_nodes):
+      if "device" in kwargs:
+        kwargs = {**kwargs, "device": "cpu"}
       try:
-        res = node.target(*args, **kwargs)
-        cache[node] = res
-        return res
-      except Exception:
-        cache[node] = None
-        return None
+        val = target(*args, **kwargs)
+      except Exception:  # pylint: disable=broad-except
+        val = None
+      if isinstance(val, torch.Tensor) and val.numel() > _MAX_FOLD_NUMEL:
+        val = None
 
-  cache[node] = None
-  return None
+  cache[node] = val
+  return val
 
 
 # Target specifications for SDPA variants: (bias_arg_idx, is_causal_arg_idx, is_backward)

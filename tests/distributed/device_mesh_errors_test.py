@@ -24,10 +24,12 @@ from torch_tpu._internal.distributed import device_mesh
 from tests import seed_test_utils
 from tests.distributed import device_mesh_test_utils
 
-_loader._init_device("tpu")
-
 
 class DeviceMeshErrorsTest(seed_test_utils.MultiProcessRepeatableTest):
+
+  def setUp(self):
+    super().setUp()
+    _loader._init_device("tpu")  # INIT_DEVICE_OK=CPU runner
 
   def test_pre_initialization_errors(self):
     # If the process group is not initialized, topology_aware_mesh should

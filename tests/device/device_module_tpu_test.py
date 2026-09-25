@@ -66,14 +66,15 @@ class TpuDeviceModuleTest(
     """Verifies TpuDeviceInterface implements maybe_exchange_device for Dynamo."""
     iface = get_interface_for_device("tpu")
     self.assertTrue(hasattr(iface, "maybe_exchange_device"))
+    self.assertFalse(hasattr(self.device_module, "maybe_exchange_device"))
     self.assertEqual(iface.maybe_exchange_device(0), 0)
     self.assertEqual(iface.maybe_exchange_device(-1), -1)
 
   def test_dynamic_attribute_memoization(self):
     """Verifies attributes resolved via __getattr__ are memoized on subsequent accesses."""
-    fn1 = self.device_module.maybe_exchange_device
-    fn2 = self.device_module.maybe_exchange_device
-    self.assertIs(fn1, fn2)
+    p1 = self.device_module.Precision
+    p2 = self.device_module.Precision
+    self.assertIs(p1, p2)
 
   def test_get_device_properties_multi_processor_count(self):
     props = self.device_module.get_device_properties()

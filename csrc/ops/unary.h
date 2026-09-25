@@ -90,7 +90,6 @@ absl::StatusOr<mlir::MlirOp> BuildReciprocalShlo(
 absl::StatusOr<mlir::MlirOp> BuildReluShlo(mlir::MlirOp input_op);
 absl::StatusOr<mlir::MlirOp> BuildSgnShlo(mlir::MlirOp input);
 absl::StatusOr<mlir::MlirOp> BuildSignShlo(mlir::MlirOp input_op);
-absl::StatusOr<mlir::MlirOp> BuildSiluShlo(mlir::MlirOp input_op);
 absl::StatusOr<mlir::MlirOp> BuildTruncShlo(mlir::MlirOp input_op);
 absl::StatusOr<mlir::MlirOp> BuildLiftFreshShlo(mlir::MlirOp input_op);
 absl::StatusOr<mlir::MlirOp> BuildExp2Shlo(mlir::MlirOp input_op,

@@ -61,10 +61,14 @@ def _extract_jax_compatible_output(out: Any) -> Any:
     return None
   if isinstance(out, (torch.Tensor, torchax.tensor.Tensor)):
     return out
-  if hasattr(out, "logits") and out.logits is not None:
-    return _extract_jax_compatible_output(out.logits)
+  # Check `loss` before `logits` because training outputs (such as HuggingFace
+  # CausalLMOutputWithPast when `labels` are provided) populate both `.loss` and
+  # `.logits`. Extracting `.logits` first would discard the computed loss and
+  # cause `_default_loss_fn` to fall back to `logits.mean()`.
   if hasattr(out, "loss") and out.loss is not None:
     return _extract_jax_compatible_output(out.loss)
+  if hasattr(out, "logits") and out.logits is not None:
+    return _extract_jax_compatible_output(out.logits)
   if hasattr(out, "to_tuple"):
     res = tuple(
         _extract_jax_compatible_output(x)

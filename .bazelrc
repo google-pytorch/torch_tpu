@@ -291,7 +291,8 @@ common:helion_public_caching_readwrite --config=helion_public_caching_readonly
 common:helion_public_caching_readwrite --remote_upload_local_results=true
 common:helion_public_caching_readwrite --google_default_credentials
 
-# Settings specific to CI runs.
+# Settings shared by all CI configs. `ci` adds Google RBE and ResultStore on
+# top; `ci_rbe_presubmit` uses Buildbarn instead.
 common:ci_base --build_tests_only
 common:ci_base --remote_download_minimal
 common:ci_base --keep_going
@@ -369,6 +370,28 @@ common:ci_tpu_v5 --local_test_jobs=8
 common:ci_tpu_v5_presubmit --config=ci_tpu_v5
 common:ci_tpu_v5_presubmit --test_tag_filters=-notest,-nobuild,-nopresubmit,-fails-on-tpu-v5,presubmit-v5
 
+# Runs on linux-x86-ct6e-180-8tpu.
+common:ci_tpu_v6 --config=ci_tpu_base
+common:ci_tpu_v6 --test_tag_filters=requires-tpu,-notest,-nobuild,-fails-on-tpu-v6
+common:ci_tpu_v6 --local_test_jobs=8
+
+common:ci_tpu_v6_presubmit --config=ci_tpu_v6
+common:ci_tpu_v6_presubmit --test_tag_filters=-notest,-nobuild,-nopresubmit,-fails-on-tpu-v6,presubmit-v6
+
+# Runs on linux-x86-tpu7x-224-4tpu.
+common:ci_tpu_v7 --config=ci_tpu_base
+common:ci_tpu_v7 --test_tag_filters=requires-tpu,-notest,-nobuild,-fails-on-tpu-v7
+common:ci_tpu_v7 --test_env=TORCH_TPU_ACCELERATOR_COUNT="4"
+common:ci_tpu_v7 --test_env=ALLOW_MULTIPLE_LIBTPU_LOAD=true
+common:ci_tpu_v7 --local_test_jobs=4
+
+common:ci_tpu_v7_presubmit --config=ci_tpu_v7
+common:ci_tpu_v7_presubmit --test_tag_filters=-notest,-nobuild,-nopresubmit,-fails-on-tpu-v7,presubmit-v7
+
+common:ci_tpu_v7_nightly --config=ci_tpu_v7
+common:ci_tpu_v7_nightly --test_tag_filters=requires-tpu,-notest,-nobuild,-nonightly,-fails-on-tpu-v7
+common:ci_tpu_v7_nightly --test_timeout=-1,-1,-1,4800
+
 # Native Remote Build Execution on Cloud TPU v5e hardware via Buildbarn (REAPI v2)
 common:rbe_native_tpu --remote_executor=grpcs://127.0.0.1:8980
 common:rbe_native_tpu --tls_certificate=/tmp/rbe-certs/rbe_ca.crt
@@ -393,25 +416,6 @@ common:ci_rbe_presubmit --nobuild_runfile_links
 common:ci_rbe_presubmit --test_timeout=3600
 common:ci_rbe_presubmit --build_tag_filters=-nobuild,requires-tpu-v5lite,-requires-tpu-v5lite:8
 common:ci_rbe_presubmit --test_tag_filters=presubmit-v5,-fails-on-tpu-v5,-nopresubmit,-notest,-nobuild,-requires-tpu-v5p,-requires-tpu-v6e,-requires-tpu-v7x,-requires-tpu-v5lite:8,-requires-net:external
-test:ci_rbe_presubmit --test_output=errors
-
-# Runs on linux-x86-ct6e-180-8tpu.
-common:ci_tpu_v6 --config=ci_tpu_base
-common:ci_tpu_v6 --test_tag_filters=requires-tpu,-notest,-nobuild,-fails-on-tpu-v6
-common:ci_tpu_v6 --local_test_jobs=8
-
-common:ci_tpu_v6_presubmit --config=ci_tpu_v6
-common:ci_tpu_v6_presubmit --test_tag_filters=-notest,-nobuild,-nopresubmit,-fails-on-tpu-v6,presubmit-v6
-
-# Runs on linux-x86-tpu7x-224-4tpu.
-common:ci_tpu_v7 --config=ci_tpu_base
-common:ci_tpu_v7 --test_tag_filters=requires-tpu,-notest,-nobuild,-fails-on-tpu-v7
-common:ci_tpu_v7 --test_env=TORCH_TPU_ACCELERATOR_COUNT="4"
-common:ci_tpu_v7 --test_env=ALLOW_MULTIPLE_LIBTPU_LOAD=true
-common:ci_tpu_v7 --local_test_jobs=4
-
-common:ci_tpu_v7_presubmit --config=ci_tpu_v7
-common:ci_tpu_v7_presubmit --test_tag_filters=-notest,-nobuild,-nopresubmit,-fails-on-tpu-v7,presubmit-v7
 
 # Setting TPU support true for profiler trace.
 build --define=with_tpu_support=true

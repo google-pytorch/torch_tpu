@@ -22,6 +22,8 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import torch
 from torch_tpu._internal.device import _device_ops_backend
+from torch_tpu._internal.utils import hardware
+from tests import oss_utils
 
 DEFAULT_RANDOM_SEED: Final[int] = 1234
 
@@ -109,6 +111,15 @@ class RepeatableTest(SeededTest):
     return DEFAULT_RANDOM_SEED
 
 
+@oss_utils.skip_if_libtpu_version(
+    lambda v: (
+        v >= (0, 0, 48)
+        and hardware.get_tpu_version() == hardware.TpuVersion.V5E
+    ),
+    "TODO(b/565342785): Re-enable once multi-process SliceBuilder gRPC"
+    " channel initialization timeout on TPU v5e with libtpu >= 0.0.48"
+    " is fixed.",
+)
 class MultiProcessRepeatableTest(RepeatableTest):
   """Base class for multi-process TPU tests that launch processes via mp.spawn.
 

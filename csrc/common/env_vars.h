@@ -63,14 +63,6 @@ inline constexpr char kNodeRankEnvVar[] = "NODE_RANK";
 // running on the same host.
 inline constexpr char kNprocEnvVar[] = "NPROC";
 inline constexpr char kRankEnvVar[] = "RANK";  // Set by launchers.
-// Overrides the block sizes used by the splash attention kernel. If unset, the
-// kernel derives them from the sequence length and head count.
-inline constexpr char kSplashBlockDkvEnvVar[] = "SPLASH_BLOCK_DKV";
-inline constexpr char kSplashBlockKvEnvVar[] = "SPLASH_BLOCK_KV";
-inline constexpr char kSplashBlockQEnvVar[] = "SPLASH_BLOCK_Q";
-// If set to "1" or "true", the splash attention backward pass is computed with
-// vmap.
-inline constexpr char kSplashUseVmapBwdEnvVar[] = "SPLASH_USE_VMAP_BWD";
 // Standard temporary directory.
 inline constexpr char kTmpdirEnvVar[] = "TMPDIR";
 // If set to "0", PyTorch skips autoloading out-of-tree device backends.
@@ -88,8 +80,6 @@ inline constexpr char kTorchShowCppStacktracesEnvVar[] =
 // The first port used when deriving slicebuilder addresses for a multi-host
 // job. If not set, 8070 is used.
 inline constexpr char kTorchTpuBasePortEnvVar[] = "TORCH_TPU_BASE_PORT";
-// If set to "1" or "true", enables verbose debug output.
-inline constexpr char kTorchTpuDebugEnvVar[] = "TORCH_TPU_DEBUG";
 // If both TORCH_TPU_DEFER_AND_FUSE and TPU_DEFER_AND_FUSE are set,
 // TORCH_TPU_DEFER_AND_FUSE takes precedence.
 inline constexpr char kTorchTpuDeferAndFuseEnvVar[] =
@@ -166,6 +156,13 @@ inline constexpr char kTorchTpuInternalSkinnyScOffloadEnvVar[] =
 // even in the presence of errors.
 inline constexpr char kTorchTpuInternalSplitRngStateUpdate[] =
     "TORCH_TPU_INTERNAL_SPLIT_RNG_STATE_UPDATE";
+// If set to "1" or "true", StaticCompiler creates one placeholder per shared
+// input storage and rebuilds aliasing inputs as views of it, instead of one
+// independent placeholder per input. Default is "false".
+// TODO(dighamber): Temporary rollout gate; remove once storage-aware
+// placeholders are always enabled.
+inline constexpr char kTorchTpuInternalStorageAwarePlaceholdersEnvVar[] =
+    "TORCH_TPU_INTERNAL_STORAGE_AWARE_PLACEHOLDERS";
 // If unset or set to "1", schedule local compilation right away as a backup to
 // tier-3 compilation cache read (whichever succeeds first will unblock
 // execution). If set to "0", local compilation is done only after tier-3
@@ -218,11 +215,6 @@ inline constexpr char kTorchcommRankEnvVar[] = "TORCHCOMM_RANK";
 // The number of processes as seen by torchcomm. Takes precedence over
 // WORLD_SIZE.
 inline constexpr char kTorchcommSizeEnvVar[] = "TORCHCOMM_SIZE";
-// If set to "1" or "true", the compiler accounts for the storage backing
-// placeholders. Note the missing underscore between TORCH and TPU, which is
-// how this env var has always been spelled.
-inline constexpr char kTorchtpuStorageAwarePlaceholdersEnvVar[] =
-    "TORCHTPU_STORAGE_AWARE_PLACEHOLDERS";
 inline constexpr char kTpuChipsPerHostBoundsEnvVar[] =
     "TPU_CHIPS_PER_HOST_BOUNDS";  // Read by Google Cloud.
 inline constexpr char kTpuChipsPerProcessBoundsEnvVar[] =
@@ -305,17 +297,12 @@ inline constexpr auto kEnvVarToStage =
         // environment variable widely used by production workloads. The
         // TorchTPU team is committed to honor this env var.
         {kRankEnvVar, SymbolStage::Stable()},
-        {kSplashBlockDkvEnvVar, std::nullopt},
-        {kSplashBlockKvEnvVar, std::nullopt},
-        {kSplashBlockQEnvVar, std::nullopt},
-        {kSplashUseVmapBwdEnvVar, std::nullopt},
         {kTmpdirEnvVar, SymbolStage::Stable()},
         {kTorchDeviceBackendAutoloadEnvVar, std::nullopt},
         {kTorchShowCppStacktracesEnvVar, SymbolStage::Experimental()},
-        {kTorchTpuBasePortEnvVar, std::nullopt},
-        {kTorchTpuDebugEnvVar, std::nullopt},
+        {kTorchTpuBasePortEnvVar, SymbolStage::Experimental()},
         {kTorchTpuDeferAndFuseEnvVar, SymbolStage::Experimental()},
-        {kTorchTpuDevicesPerHostEnvVar, std::nullopt},
+        {kTorchTpuDevicesPerHostEnvVar, SymbolStage::Experimental()},
         {kTorchTpuEnableDebugChecksEnvVar, SymbolStage::Experimental()},
         {kTorchTpuHandshakePortEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuInternalDetectRepeatedOpsEnvVar, SymbolStage::InternalApi()},
@@ -331,6 +318,8 @@ inline constexpr auto kEnvVarToStage =
          SymbolStage::InternalApi()},
         {kTorchTpuInternalSkinnyScOffloadEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuInternalSplitRngStateUpdate, SymbolStage::InternalApi()},
+        {kTorchTpuInternalStorageAwarePlaceholdersEnvVar,
+         SymbolStage::InternalApi()},
         {kTorchTpuInternalTier3CompilationCacheLocalBackupTaskEnvVar,
          SymbolStage::InternalApi()},
         {kTorchTpuInternalXlaOptionsEnvVar, SymbolStage::InternalApi()},
@@ -340,11 +329,10 @@ inline constexpr auto kEnvVarToStage =
         {kTorchTpuTier2CompilationCacheEnvVar, SymbolStage::Experimental()},
         {kTorchTpuTier3CompilationCacheRootEnvVar, SymbolStage::Experimental()},
         {kTorchTpuTopologyEnvVar, SymbolStage::Experimental()},
-        {kTorchTpuXprofSessionIdEnvVar, std::nullopt},
+        {kTorchTpuXprofSessionIdEnvVar, SymbolStage::Experimental()},
         {kTorchTraceEnvVar, SymbolStage::Experimental()},
         {kTorchcommRankEnvVar, std::nullopt},
         {kTorchcommSizeEnvVar, std::nullopt},
-        {kTorchtpuStorageAwarePlaceholdersEnvVar, std::nullopt},
         {kTpuChipsPerHostBoundsEnvVar, SymbolStage::InternalImplementation()},
         {kTpuChipsPerProcessBoundsEnvVar,
          SymbolStage::InternalImplementation()},

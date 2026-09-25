@@ -102,7 +102,10 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
           ("addcmul", lambda s, t1, t2: torch.addcmul(s, t1, t2, value=3.14)),
       ],
   )
-  @oss_utils.skip_if_cloud_and_libtpu_older_than("0.0.47")
+  @oss_utils.skip_if_libtpu_version(
+      lambda v: v < (0, 0, 47),
+      "TODO(b/565506249): Requires libtpu >= 0.0.47.",
+  )
   def test_dynamic_float64_elementwise_and_fused_ops(self, dtype, op_fn):
     """Tests dynamic shapes for float64 (and f32 baseline) ops.
 
@@ -2563,6 +2566,165 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       return loss, log_alpha
 
     self.assert_close_tpu_vs_cpu(compute, rtol=2e-4, atol=3e-4)
+
+  @parameterized.named_parameters(
+      ("mean_reduction", "mean", False),
+      ("sum_reduction", "sum", False),
+      ("none_reduction", "none", False),
+      ("zero_infinity", "mean", True),
+  )
+  def test_ctc_loss_functional_1d_targets(self, reduction, zero_infinity):
+    logits = torch.randn(2, 8, 5)
+    log_probs = torch.nn.functional.log_softmax(
+        logits, dim=-1, dtype=torch.float32
+    ).transpose(0, 1)
+    targets = torch.randint(1, 5, (6,), dtype=torch.long)
+    input_lengths = torch.full((2,), 8, dtype=torch.long)
+    target_lengths = torch.tensor([3, 3], dtype=torch.long)
+
+    def compute(
+        device,
+        log_probs=log_probs,
+        targets=targets,
+        input_lengths=input_lengths,
+        target_lengths=target_lengths,
+    ):
+      lp = log_probs.to(device).detach().requires_grad_(True)
+      loss = torch.nn.functional.ctc_loss(
+          lp,
+          targets.to(device),
+          input_lengths.to(device),
+          target_lengths.to(device),
+          blank=0,
+          reduction=reduction,
+          zero_infinity=zero_infinity,
+      )
+      if reduction == "none":
+        loss.sum().backward()
+      else:
+        loss.backward()
+      return loss, lp.grad
+
+    self.assert_close_tpu_vs_cpu(compute, rtol=1e-3, atol=1e-4)
+
+  def test_ctc_loss_functional_1d_targets_int32_and_cpu_lengths(self):
+    logits = torch.randn(2, 8, 5)
+    log_probs = torch.nn.functional.log_softmax(
+        logits, dim=-1, dtype=torch.float32
+    ).transpose(0, 1)
+    targets = torch.randint(1, 5, (6,), dtype=torch.long)
+    input_lengths_i32 = torch.tensor([8, 8], dtype=torch.int32)
+    target_lengths_i32 = torch.tensor([3, 3], dtype=torch.int32)
+
+    def compute_i32(device):
+      lp = log_probs.to(device).detach().requires_grad_(True)
+      loss = torch.nn.functional.ctc_loss(
+          lp,
+          targets.to(device),
+          input_lengths_i32.to(device),
+          target_lengths_i32.to(device),
+      )
+      loss.backward()
+      return loss, lp.grad
+
+    self.assert_close_tpu_vs_cpu(compute_i32, rtol=1e-3, atol=1e-4)
+
+    def compute_list_lengths(device):
+      lp = log_probs.to(device).detach().requires_grad_(True)
+      loss_list = torch.nn.functional.ctc_loss(
+          lp,
+          targets.to(device),
+          [8, 8],
+          [3, 3],
+      )
+      loss_list.backward()
+      return loss_list, lp.grad
+
+    self.assert_close_tpu_vs_cpu(compute_list_lengths, rtol=1e-3, atol=1e-4)
+
+    def compute_list_lengths_uneven(device):
+      lp = log_probs.to(device).detach().requires_grad_(True)
+      loss_list = torch.nn.functional.ctc_loss(
+          lp,
+          torch.tensor([1, 2, 3, 4, 2], dtype=torch.long).to(device),
+          [8, 8],
+          [4, 1],
+      )
+      loss_list.backward()
+      return loss_list, lp.grad
+
+    self.assert_close_tpu_vs_cpu(
+        compute_list_lengths_uneven, rtol=1e-3, atol=1e-4
+    )
+
+  def test_ctc_loss_functional_1d_targets_uneven_lengths(self):
+    logits = torch.randn(2, 8, 5)
+    log_probs = torch.nn.functional.log_softmax(
+        logits, dim=-1, dtype=torch.float32
+    ).transpose(0, 1)
+    targets = torch.tensor([1, 2, 3, 4, 2], dtype=torch.long)
+    input_lengths = torch.tensor([8, 8], dtype=torch.long)
+    target_lengths = torch.tensor([4, 1], dtype=torch.long)
+
+    def compute(device):
+      lp = log_probs.to(device).detach().requires_grad_(True)
+      loss = torch.nn.functional.ctc_loss(
+          lp,
+          targets.to(device),
+          input_lengths.to(device),
+          target_lengths.to(device),
+          blank=0,
+      )
+      loss.backward()
+      return loss, lp.grad
+
+    self.assert_close_tpu_vs_cpu(compute, rtol=1e-3, atol=1e-4)
+
+  def test_ctc_loss_functional_1d_targets_empty(self):
+    logits = torch.randn(2, 8, 5)
+    log_probs = torch.nn.functional.log_softmax(
+        logits, dim=-1, dtype=torch.float32
+    ).transpose(0, 1)
+    targets = torch.empty((0,), dtype=torch.long)
+    input_lengths = torch.tensor([8, 8], dtype=torch.long)
+    target_lengths = torch.tensor([0, 0], dtype=torch.long)
+
+    def compute(device):
+      lp = log_probs.to(device).detach().requires_grad_(True)
+      loss = torch.nn.functional.ctc_loss(
+          lp,
+          targets.to(device),
+          input_lengths.to(device),
+          target_lengths.to(device),
+          blank=0,
+      )
+      loss.backward()
+      return loss, lp.grad
+
+    self.assert_close_tpu_vs_cpu(compute, rtol=1e-3, atol=1e-4)
+
+  def test_ctc_loss_2d_targets_with_trailing_padding(self):
+    logits = torch.randn(2, 8, 5)
+    log_probs = torch.nn.functional.log_softmax(
+        logits, dim=-1, dtype=torch.float32
+    ).transpose(0, 1)
+    targets = torch.tensor([[1, 2, 0, 0, 0], [2, 3, 1, 0, 0]], dtype=torch.long)
+    input_lengths = torch.tensor([8, 8], dtype=torch.long)
+    target_lengths = torch.tensor([2, 3], dtype=torch.long)
+
+    def compute(device):
+      lp = log_probs.to(device).detach().requires_grad_(True)
+      loss = torch.nn.functional.ctc_loss(
+          lp,
+          targets.to(device),
+          input_lengths.to(device),
+          target_lengths.to(device),
+          blank=0,
+      )
+      loss.backward()
+      return loss, lp.grad
+
+    self.assert_close_tpu_vs_cpu(compute, rtol=1e-3, atol=1e-4)
 
   @parameterized.named_parameters(
       ("small", 5, 2, 3, 3, [5, 4], [3, 2], torch.int32, False),
@@ -9809,9 +9971,9 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     """Tests that stream-level synchronization catches pending assertion failures.
 
     Checks:
-      1. Synchronizing a stream via `torch.tpu.current_stream().synchronize()`
-      invokes
-         the TPU hook `synchronizeStream`.
+      1. Synchronizing a stream via
+      `torch.accelerator.current_stream().synchronize()`
+         invokes the TPU hook `synchronizeStream`.
       2. `synchronizeStream` calls `SyncAndCheckStickyError()`, ensuring pending
          assertion background checks are drained and any latched sticky error is
          re-thrown as a `RuntimeError`.
@@ -9824,12 +9986,12 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     # Schedule assertion failure.
     torch._assert_async(false_cond, "stream sync failure")
     try:
-      # Stream-level synchronization (torch.tpu.current_stream().synchronize())
+      # Stream-level synchronization (torch.accelerator.current_stream().synchronize())
       # invokes synchronizeStream, which flushes assertion checks and rethrows sticky error.
       with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing assert_async failure behavior.
           RuntimeError, "stream sync failure"
       ):
-        torch.tpu.current_stream().synchronize()
+        torch.accelerator.current_stream().synchronize()
     finally:
       # Reset sticky error state for subsequent tests.
       tpu_testing.clear_sticky_error()
@@ -10823,6 +10985,276 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       return torch.nn.functional.pad(to(x, device), pad, "constant", 0.0)
 
     self.assert_close_tpu_vs_cpu(compute, allow_failure=allow_failure)
+
+  # ============================================================================
+  # aten::silu_backward and aten::silu_backward.grad_input tests
+  # ============================================================================
+
+  @parameterized.product(
+      dtype=[torch.float32, torch.float64, torch.bfloat16, torch.float16],
+      shapes=[
+          ((2, 3, 4), (2, 3, 4)),  # same shape
+          ((2, 1, 4), (2, 3, 4)),  # grad_output broadcasts
+          ((2, 3, 4), (1, 3, 1)),  # self broadcasts
+          ((), ()),  # 0-d tensors
+          ((), (2, 3)),  # 0-d grad_output broadcasts
+          ((0, 4), (0, 4)),  # zero-sized
+      ],
+  )
+  def test_silu_backward(self, dtype, shapes):
+    grad_shape, self_shape = shapes
+    grad_out = torch.randn(grad_shape, dtype=dtype)
+    x = torch.randn(self_shape, dtype=dtype)
+
+    def compute(device):
+      g = to(grad_out, device)
+      inp = to(x, device)
+      res = torch.ops.aten.silu_backward(g, inp)
+      out = torch.empty_like(res)
+      torch.ops.aten.silu_backward.grad_input(g, inp, grad_input=out)
+      return res, out
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  @parameterized.parameters(torch.float32, torch.bfloat16)
+  def test_silu_backward_extreme_values(self, dtype):
+    """Checks saturation of sigmoid and IEEE special value propagation."""
+    x = torch.tensor(
+        [
+            -float("inf"),
+            -1e4,
+            -100.0,
+            -20.0,
+            -1e-3,
+            -0.0,
+            0.0,
+            1e-3,
+            20.0,
+            100.0,
+            1e4,
+            float("inf"),
+            float("nan"),
+        ],
+        dtype=dtype,
+    )
+    grad_out = torch.ones_like(x)
+
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.ops.aten.silu_backward(
+            to(grad_out, device), to(x, device)
+        )
+    )
+
+  @parameterized.named_parameters(
+      ("float32_grad_bfloat16_self", torch.float32, torch.bfloat16),
+      ("bfloat16_grad_float32_self", torch.bfloat16, torch.float32),
+      ("float16_grad_bfloat16_self", torch.float16, torch.bfloat16),
+      ("int64_grad_float32_self", torch.int64, torch.float32),
+      ("float32_grad_int32_self", torch.float32, torch.int32),
+  )
+  def test_silu_backward_mixed_dtypes(self, grad_dtype, self_dtype):
+    """Inputs are promoted to a common dtype like PyTorch's TensorIterator."""
+    grad_out = torch.randn(2, 3).mul(4).to(grad_dtype)
+    x = torch.randn(2, 3).mul(4).to(self_dtype)
+
+    def compute(device):
+      g = to(grad_out, device)
+      inp = to(x, device)
+      res = torch.ops.aten.silu_backward(g, inp)
+      out = torch.empty_like(res)
+      torch.ops.aten.silu_backward.grad_input(g, inp, grad_input=out)
+      return res, out
+
+    self.assert_close_tpu_vs_cpu(compute, rtol=1e-4, atol=1e-4)
+
+  def test_silu_backward_non_contiguous(self):
+    grad_out = torch.randn(4, 6)
+    x = torch.randn(6, 4)
+
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.ops.aten.silu_backward(
+            to(grad_out, device)[:, ::2], to(x, device).t()[:, ::2]
+        )
+    )
+
+  def test_silu_backward_cpu_scalar(self):
+    """A 0-d CPU tensor is accepted for either operand."""
+    x = torch.randn(2, 3)
+
+    def compute(device):
+      return (
+          torch.ops.aten.silu_backward(torch.tensor(2.0), to(x, device)),
+          torch.ops.aten.silu_backward(to(x, device), torch.tensor(0.5)),
+      )
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  @parameterized.named_parameters(
+      ("empty_out_is_resized", (0,), torch.float32, False),
+      ("wrong_shape_out_is_resized", (5,), torch.float32, False),
+      ("downcast_out_dtype", (2, 3), torch.bfloat16, False),
+      ("upcast_out_dtype", (2, 3), torch.float64, False),
+      ("integral_out_dtype", (2, 3), torch.int32, True),
+  )
+  def test_silu_backward_grad_input_out(
+      self, out_shape, out_dtype, allow_failure
+  ):
+    grad_out = torch.randn(2, 3)
+    x = torch.randn(2, 3)
+
+    def compute(device):
+      out = torch.empty(out_shape, dtype=out_dtype, device=device)
+      torch.ops.aten.silu_backward.grad_input(
+          to(grad_out, device), to(x, device), grad_input=out
+      )
+      return out
+
+    self.assert_close_tpu_vs_cpu(
+        compute, allow_failure=allow_failure, rtol=1e-4, atol=1e-4
+    )
+
+  @parameterized.parameters(
+      (torch.int32, torch.int32),
+      (torch.int64, torch.int64),
+      (torch.bool, torch.bool),
+  )
+  def test_silu_backward_unsupported_dtypes(self, grad_dtype, self_dtype):
+    grad_out = torch.ones(2, 3, dtype=grad_dtype)
+    x = torch.ones(2, 3, dtype=self_dtype)
+
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.ops.aten.silu_backward(
+            to(grad_out, device), to(x, device)
+        ),
+        allow_failure=True,
+    )
+
+  @parameterized.parameters(torch.float32, torch.bfloat16)
+  def test_silu_autograd_backward(self, dtype):
+    """End-to-end `F.silu` backward, which dispatches to `silu_backward`."""
+    x = torch.randn(3, 5, dtype=dtype)
+    grad_out = torch.randn(3, 5, dtype=dtype)
+
+    def compute(device):
+      # Detach to get a fresh leaf per device: `to(x, "cpu")` returns `x`
+      # itself, so otherwise the TPU run would accumulate into the CPU `.grad`.
+      inp = to(x, device).detach().requires_grad_()
+      torch.nn.functional.silu(inp).backward(to(grad_out, device))
+      return inp.grad
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  def test_silu_backward_differentiable(self):
+    """Differentiating through `silu_backward` uses the composite fallback.
+
+    PyTorch's CPU backend has no derivative for `aten::silu_backward`, so the
+    reference evaluates the same closed-form expression on CPU.
+    """
+    x = torch.randn(3, 5, dtype=torch.float32)
+    grad_out = torch.randn(3, 5, dtype=torch.float32)
+
+    def compute(device):
+      inp = to(x, device).detach().requires_grad_()
+      g = to(grad_out, device).detach().requires_grad_()
+      if device == "cpu":
+        sig = torch.sigmoid(inp)
+        res = g * sig * (1 + inp * (1 - sig))
+      else:
+        res = torch.ops.aten.silu_backward(g, inp)
+      res.sum().backward()
+      return res.detach(), inp.grad, g.grad
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  def test_silu_double_backward(self):
+    """Second-order gradients of `F.silu` through autograd."""
+    x = torch.randn(3, 5, dtype=torch.float32)
+    grad_out = torch.randn(3, 5, dtype=torch.float32)
+
+    def compute(device):
+      inp = to(x, device).detach().requires_grad_()
+      g = to(grad_out, device).detach().requires_grad_()
+      (dx,) = torch.autograd.grad(
+          torch.nn.functional.silu(inp), inp, g, create_graph=True
+      )
+      ddx, dg = torch.autograd.grad(dx.sum(), (inp, g))
+      return dx.detach(), ddx, dg
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  def test_silu_backward_grad_input_inplace(self):
+    """Tests in-place `grad_input` aliasing (matching shape and invalid broadcast)."""
+    grad_out = torch.randn(2, 3, dtype=torch.float32)
+    x = torch.randn(2, 3, dtype=torch.float32)
+
+    def compute_valid(device):
+      g1 = to(grad_out, device).clone()
+      x1 = to(x, device).clone()
+      torch.ops.aten.silu_backward.grad_input(g1, x1, grad_input=g1)
+      g2 = to(grad_out, device).clone()
+      x2 = to(x, device).clone()
+      torch.ops.aten.silu_backward.grad_input(g2, x2, grad_input=x2)
+      return g1, x2
+
+    self.assert_close_tpu_vs_cpu(compute_valid)
+
+    small_grad = torch.randn(1, 3, dtype=torch.float32)
+
+    def compute_invalid_broadcast(device):
+      g_small = to(small_grad, device).clone()
+      x_full = to(x, device).clone()
+      torch.ops.aten.silu_backward.grad_input(
+          g_small, x_full, grad_input=g_small
+      )
+      return g_small
+
+    self.assert_close_tpu_vs_cpu(compute_invalid_broadcast, allow_failure=True)
+
+  def test_silu_backward_fake_tensor_and_compile(self):
+    """Tests FakeTensorMode metadata propagation, validation, and torch.compile."""
+    from torch._subclasses.fake_tensor import FakeTensorMode
+
+    with FakeTensorMode():
+      fg = torch.randn(2, 1, 4, dtype=torch.bfloat16, device="tpu")
+      fx = torch.randn(2, 3, 4, dtype=torch.bfloat16, device="tpu")
+      f_out = torch.ops.aten.silu_backward(fg, fx)
+      self.assertEqual(f_out.shape, (2, 3, 4))
+      self.assertEqual(f_out.dtype, torch.bfloat16)
+
+      f_buf = torch.empty(0, dtype=torch.bfloat16, device="tpu")
+      torch.ops.aten.silu_backward.grad_input(fg, fx, grad_input=f_buf)
+      self.assertEqual(f_buf.shape, (2, 3, 4))
+
+      f_int = torch.ones(2, 3, dtype=torch.int32, device="tpu")
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing FakeTensorMode dtype validation.
+          (RuntimeError, NotImplementedError), "not implemented for"
+      ):
+        torch.ops.aten.silu_backward(f_int, f_int)
+
+    from torch.fx.experimental.proxy_tensor import make_fx
+
+    x = torch.randn(3, 4, dtype=torch.bfloat16)
+    grad_out = torch.randn(3, 4, dtype=torch.bfloat16)
+
+    def silu_fwd_bwd(inp, g):
+      out = torch.nn.functional.silu(inp)
+      return torch.autograd.grad(out, inp, g)[0]
+
+    bwd_fx = make_fx(silu_fwd_bwd, tracing_mode="fake")(
+        to(x, "tpu").requires_grad_(True), to(grad_out, "tpu")
+    )
+    bwd_targets = [
+        n.target for n in bwd_fx.graph.nodes if n.op == "call_function"
+    ]
+    self.assertIn(torch.ops.aten.silu_backward.default, bwd_targets)
+
+    @torch.compile(backend="tpu")
+    def compiled_silu_bwd(g, inp):
+      return torch.ops.aten.silu_backward(g, inp)
+
+    res_tpu = compiled_silu_bwd(to(grad_out, "tpu"), to(x, "tpu")).cpu()
+    res_cpu = torch.ops.aten.silu_backward(grad_out, x)
+    utils.assert_close(res_tpu, res_cpu)
 
 
 class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):

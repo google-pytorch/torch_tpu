@@ -15,9 +15,14 @@
 from absl.testing import absltest
 import torch
 from torch_tpu._internal.utils import test_utils as utils
+from tests import oss_utils
 from tests import seed_test_utils
 
 
+@oss_utils.skip_if_libtpu_version(
+    lambda v: v >= (0, 0, 48),
+    "TODO(b/565203505): PadRealToStatic fails on libtpu >= 0.0.48.",
+)
 class SymExprArgTest(seed_test_utils.RepeatableTest):
 
   def setUp(self):

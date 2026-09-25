@@ -15,7 +15,7 @@
 
 # A script to run the distributed example.
 
-eval $(python3 -m torch_tpu._internal.distributed.launchers.environment)
+eval $(python3 -m torch.tpu.distributed.environment)
 export TORCH_TPU_TOPOLOGY TORCH_TPU_SLICEBUILDER_ADDRESSES WORLD_SIZE
 
 torchrun --nproc_per_node=8 ./examples/tutorials/distributed/hello_world_distributed.py

@@ -606,6 +606,36 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
           log_probs, targets, input_lengths, target_lengths, 0, False
       )
 
+  def test_ctc_loss_public_targets_1d_or_2d(self):
+    log_probs = torch.randn(5, 2, 3, device=et.device())
+    targets = torch.randint(
+        1, 3, (2, 3, 4), dtype=torch.int32, device=et.device()
+    )
+    input_lengths = torch.tensor([5, 5], dtype=torch.int32, device=et.device())
+    target_lengths = torch.tensor([3, 3], dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""Expected 1 to 2 dimensions, but got 3-dimensional tensor for argument #2 'targets' (while checking arguments for ctc_loss_gpu)""",
+        tpu="""ctc_loss(): expected targets to be 1-D or 2-D, got 3-D""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ops.aten.ctc_loss.Tensor(
+          log_probs, targets, input_lengths, target_lengths, 0, 0, False
+      )
+
+  def test_ctc_loss_public_intlist_targets_1d_or_2d(self):
+    log_probs = torch.randn(5, 2, 3, device=et.device())
+    targets = torch.randint(
+        1, 3, (2, 3, 4), dtype=torch.int32, device=et.device()
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""Expected 1 to 2 dimensions, but got 3-dimensional tensor for argument #2 'targets' (while checking arguments for ctc_loss_gpu)""",
+        tpu="""ctc_loss(): expected targets to be 1-D or 2-D, got 3-D""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ctc_loss(log_probs, targets, [5, 5], [3, 3], 0, 0, False)
+
   def test_ctc_loss_input_lengths_size_match_batch_size(self):
     log_probs = torch.randn(5, 2, 3, device=et.device())
     targets = torch.randint(1, 3, (2, 3), dtype=torch.int32, device=et.device())
@@ -7947,6 +7977,20 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       torch.nn.functional.silu(t)
 
+  def test_silu_backward_grad_input_unsupported_dtype(self):
+    grad = torch.ones(5, device=et.device(), dtype=torch.int32)
+    self_val = torch.ones(5, device=et.device(), dtype=torch.int32)
+    grad_input = torch.ones(5, device=et.device(), dtype=torch.int32)
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""silu_backward(): not implemented for int32""",
+        gpu=""""silu_backward_cuda" not implemented for 'Int'""",
+    ):
+      torch.ops.aten.silu_backward.grad_input(
+          grad, self_val, grad_input=grad_input
+      )
+
   def test_acos_out_dtype_mismatch(self):
     t = torch.ones(5, device=et.device())
 
@@ -9048,7 +9092,6 @@ Device-side assertion tracking was not enabled by user.""",
         ),
         message_reviewed_by="wan",
     ):
-      # TODO(yangzhouml): error at dispatch time instead of at compile time
       torch._scaled_mm_v2(
           mat1,
           mat2,
@@ -9060,7 +9103,7 @@ Device-side assertion tracking was not enabled by user.""",
           [1],  # SWIZZLE_32_4_4
           None,
           None,
-      ).cpu()
+      )
 
   def test_scaled_mm_v2_invalid_scale_b_size(self):
     (

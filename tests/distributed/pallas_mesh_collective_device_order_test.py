@@ -81,12 +81,6 @@ _FUSED_BROADCAST_SKIP = (
     " construction. Co-located broadcast device order is untestable here."
 )
 
-_SOLO_SUBGROUP_ALL_REDUCE_SKIP = (
-    "TODO: Eager standalone execution of all_reduce on subgroup device"
-    " assignment [6, 7, 2, 3] (origin x=1) triggers PJRT subslice"
-    " coordinate reconstruction overflow (tpu_topology.cc:70 Check failed:"
-    " ValidateIndexForBounds(index, bounds))."
-)
 
 
 # Broadcast roots: first, last, middle.
@@ -800,8 +794,6 @@ class PallasMeshCollectiveDeviceOrderTest(
 
   @parameterized.named_parameters(*_COLLECTIVE_CASES)
   def test_solo(self, case_name: str):
-    if case_name == "all_reduce_subgroup":
-      self.skipTest(_SOLO_SUBGROUP_ALL_REDUCE_SKIP)
     self._dist_run(run_collective_solo, case_name=case_name)
 
   @parameterized.named_parameters(*_COLLECTIVE_CASES)

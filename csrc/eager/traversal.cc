@@ -54,6 +54,7 @@
 #include "csrc/common/shape.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
+#include "csrc/eager/device_assignment_pipeline.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/ops/op_builder_utils.h"
@@ -70,12 +71,10 @@
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
-#include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Support/DebugStringHelper.h"
-#include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/FuncBuilder.h"
@@ -84,6 +83,7 @@
 #include "tsl/profiler/lib/traceme.h"
 #include "xla/client/executable_build_options.h"
 #include "xla/layout.h"
+#include "xla/pjrt/pjrt_client.h"
 #include "xla/service/device_assignment.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
@@ -360,20 +360,40 @@ GraphKey Traversal::BuildGraphKey() const {
                  << absl::StrJoin(deferred_op.op_param_cache_keys(), ", ",
                                   absl::PairFormatter("="))
                  << "}";
-    graph.AddOp(deferred_op.op_name(), deferred_op.op_param_cache_keys(),
-                deferred_op.donated_indices(),
-                [&](GraphSignature::OpSignatureBuilder& op) {
-                  for (const DeviceBufferRef& op_input : deferred_op.inputs()) {
-                    op.AddInput(tensor_index_map.at(op_input));
-                  }
-                  for (int64_t i = 0; i < node->size(); ++i) {
-                    auto output = DeviceBufferRef::Create(node, i);
-                    ABSL_CHECK(output.ok())  // CRASH_OK
-                        << "Failed to create DeviceBufferRef for output: " << i;
-                    tensor_index_map[*output] = op.AddOutput(
-                        output->dimensions(), output->element_type());
-                  }
-                });
+    const auto& orig_param_keys = deferred_op.op_param_cache_keys();
+    std::optional<OpParamCacheKeys> cloned_param_keys;
+    if (!deferred_op.device_assignment().empty()) {
+      // Some ops (e.g. Pallas custom kernels) already record
+      // "device_assignment" in their OpParamCacheKeys at op construction time,
+      // whereas process-group collectives attach device_assignment only on the
+      // DeferredOp. Since OpParamCacheKeys::SetParam CHECK-fails on duplicate
+      // keys, only insert "device_assignment" when it is not already present.
+      const bool has_da = std::any_of(
+          orig_param_keys.begin(), orig_param_keys.end(),
+          [](const auto& param) { return param.first == "device_assignment"; });
+      if (!has_da) {
+        cloned_param_keys = orig_param_keys.Clone();
+        ABSL_CHECK_OK(  // CRASH_OK
+            cloned_param_keys->SetParam("device_assignment",
+                                        deferred_op.device_assignment()));
+      }
+    }
+    const OpParamCacheKeys& op_param_keys =
+        cloned_param_keys.has_value() ? *cloned_param_keys : orig_param_keys;
+    graph.AddOp(
+        deferred_op.op_name(), op_param_keys, deferred_op.donated_indices(),
+        [&](GraphSignature::OpSignatureBuilder& op) {
+          for (const DeviceBufferRef& op_input : deferred_op.inputs()) {
+            op.AddInput(tensor_index_map.at(op_input));
+          }
+          for (int64_t i = 0; i < node->size(); ++i) {
+            auto output = DeviceBufferRef::Create(node, i);
+            ABSL_CHECK(output.ok())  // CRASH_OK
+                << "Failed to create DeviceBufferRef for output: " << i;
+            tensor_index_map[*output] =
+                op.AddOutput(output->dimensions(), output->element_type());
+          }
+        });
   }
 
   for (const DeviceBufferRef& output : outputs()) {
@@ -543,138 +563,6 @@ void AnnotateMlirPlacements(mlir::ModuleOp module,
   }
 }
 
-bool IsCompatibleDeviceAssignmentTile(absl::Span<const int64_t> d_sub,
-                                      absl::Span<const int64_t> d_full) {
-  const size_t m = d_sub.size();
-  const size_t n = d_full.size();
-  if (m == 0 || n == 0 || n % m != 0) {
-    return false;
-  }
-  for (size_t offset = 0; offset < n; offset += m) {
-    if (d_full.subspan(offset, m) == d_sub) {
-      return true;
-    }
-  }
-  return false;
-}
-
-mlir::DenseIntElementsAttr TileReplicaGroupsAttr(
-    mlir::DenseIntElementsAttr attr, int64_t sub_size, int64_t num_tiles) {
-  auto shaped_type = mlir::dyn_cast<mlir::RankedTensorType>(attr.getType());
-  if (!shaped_type || shaped_type.getRank() != 2) {
-    return attr;
-  }
-  const int64_t num_groups = shaped_type.getDimSize(0);
-  const int64_t group_size = shaped_type.getDimSize(1);
-  if (num_groups * group_size != sub_size) {
-    return attr;
-  }
-  std::vector<int64_t> old_vals;  // INT_VEC_OK
-  old_vals.reserve(num_groups * group_size);
-  for (const llvm::APInt& val : attr.getValues<llvm::APInt>()) {
-    old_vals.push_back(val.getSExtValue());
-  }
-  std::vector<int64_t> new_vals;  // INT_VEC_OK
-  new_vals.reserve(num_tiles * num_groups * group_size);
-  for (int64_t t = 0; t < num_tiles; ++t) {
-    const int64_t offset = t * sub_size;
-    for (int64_t v : old_vals) {
-      new_vals.push_back(v + offset);
-    }
-  }
-  auto new_type = mlir::RankedTensorType::get(
-      {num_tiles * num_groups, group_size}, shaped_type.getElementType());
-  return mlir::DenseIntElementsAttr::get(new_type, new_vals);
-}
-
-mlir::DenseIntElementsAttr TileSourceTargetPairsAttr(
-    mlir::DenseIntElementsAttr attr, int64_t sub_size, int64_t num_tiles) {
-  auto shaped_type = mlir::dyn_cast<mlir::RankedTensorType>(attr.getType());
-  if (!shaped_type || shaped_type.getRank() != 2 ||
-      shaped_type.getDimSize(1) != 2) {
-    return attr;
-  }
-  const int64_t num_pairs = shaped_type.getDimSize(0);
-  if (num_pairs == 0 || num_pairs > sub_size) {
-    return attr;
-  }
-  std::vector<int64_t> old_vals;  // INT_VEC_OK
-  old_vals.reserve(num_pairs * 2);
-  for (const llvm::APInt& val : attr.getValues<llvm::APInt>()) {
-    const int64_t v = val.getSExtValue();
-    if (v < 0 || v >= sub_size) {
-      return attr;
-    }
-    old_vals.push_back(v);
-  }
-  std::vector<int64_t> new_vals;  // INT_VEC_OK
-  new_vals.reserve(num_tiles * num_pairs * 2);
-  for (int64_t t = 0; t < num_tiles; ++t) {
-    const int64_t offset = t * sub_size;
-    for (int64_t v : old_vals) {
-      new_vals.push_back(v + offset);
-    }
-  }
-  auto new_type = mlir::RankedTensorType::get({num_tiles * num_pairs, 2},
-                                              shaped_type.getElementType());
-  return mlir::DenseIntElementsAttr::get(new_type, new_vals);
-}
-
-void TileOperationForSubgroup(mlir::Operation* root_op, int64_t sub_size,
-                              int64_t num_tiles) {
-  llvm::SmallVector<mlir::stablehlo::PartitionIdOp> partition_id_ops;
-  root_op->walk([&](mlir::Operation* op) {
-    if (auto rg_attr =
-            op->getAttrOfType<mlir::DenseIntElementsAttr>("replica_groups")) {
-      op->setAttr("replica_groups",
-                  TileReplicaGroupsAttr(rg_attr, sub_size, num_tiles));
-    }
-    if (auto st_attr = op->getAttrOfType<mlir::DenseIntElementsAttr>(
-            "source_target_pairs")) {
-      op->setAttr("source_target_pairs",
-                  TileSourceTargetPairsAttr(st_attr, sub_size, num_tiles));
-    }
-    if (mlir::isa<mlir::stablehlo::CustomCallOp>(op)) {
-      if (auto dict_attr =
-              op->getAttrOfType<mlir::DictionaryAttr>("backend_config")) {
-        if (auto rg_attr = mlir::dyn_cast_or_null<mlir::DenseIntElementsAttr>(
-                dict_attr.get("replica_groups"))) {
-          llvm::SmallVector<mlir::NamedAttribute> new_attrs;
-          for (const mlir::NamedAttribute& named_attr : dict_attr) {
-            if (named_attr.getName() == "replica_groups") {
-              new_attrs.emplace_back(
-                  named_attr.getName(),
-                  TileReplicaGroupsAttr(rg_attr, sub_size, num_tiles));
-            } else {
-              new_attrs.push_back(named_attr);
-            }
-          }
-          op->setAttr("backend_config",
-                      mlir::DictionaryAttr::get(op->getContext(), new_attrs));
-        }
-      }
-    }
-    if (auto pid_op = mlir::dyn_cast<mlir::stablehlo::PartitionIdOp>(op)) {
-      partition_id_ops.push_back(pid_op);
-    }
-  });
-
-  for (mlir::stablehlo::PartitionIdOp pid_op : partition_id_ops) {
-    mlir::Block::iterator next_it(pid_op);
-    ++next_it;
-    mlir::OpBuilder builder(pid_op->getBlock(), next_it);
-    auto pid_type = mlir::cast<mlir::RankedTensorType>(pid_op.getType());
-    auto m_attr = mlir::DenseIntElementsAttr::get(
-        pid_type, llvm::APInt(32, static_cast<uint64_t>(sub_size), false));
-    auto m_const = mlir::stablehlo::ConstantOp::create(builder, pid_op.getLoc(),
-                                                       pid_type, m_attr);
-    auto rem_op =
-        mlir::stablehlo::RemOp::create(builder, pid_op.getLoc(), pid_type,
-                                       pid_op.getResult(), m_const.getResult());
-    pid_op.getResult().replaceAllUsesExcept(rem_op.getResult(), rem_op);
-  }
-}
-
 }  // namespace
 
 const PythonContext* absl_nullable Traversal::GetPythonContext() const {
@@ -693,7 +581,6 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
     std::optional<std::string_view> module_name) const {
   TT_ASSIGN_OR_RETURN(const std::vector<int64_t> resolved_da,  // INT_VEC_OK
                       ResolveDeviceAssignment());
-  const int64_t full_da_size = resolved_da.size();
 
   // Read the traversal's values.
   absl::Span<const DeviceBufferRef> arguments = this->arguments();
@@ -750,9 +637,7 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
       donated_values.insert(deferred_inputs[donated_input_index].getValue());
     }
 
-    const int64_t op_da_size = deferred_op.device_assignment().size();
-    const bool needs_tiling = (op_da_size > 0 && full_da_size > op_da_size &&
-                               full_da_size % op_da_size == 0);
+    const bool has_op_da = !deferred_op.device_assignment().empty();
     mlir::Block* insertion_block = fb.getOpBuilder().getInsertionBlock();
     mlir::Operation* prev_last_op =
         (insertion_block != nullptr && !insertion_block->empty())
@@ -760,7 +645,7 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
             : nullptr;
     mlir::ModuleOp module_op = GetModuleOp(fb);
     absl::flat_hash_set<std::string> existing_funcs;
-    if (needs_tiling) {
+    if (has_op_da) {
       for (mlir::func::FuncOp func_op :
            module_op.getOps<mlir::func::FuncOp>()) {
         existing_funcs.insert(func_op.getSymName().str());
@@ -780,24 +665,21 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
         << "deferred op " << deferred_op.op_name() << " returned "
         << results.size() << " results, expected " << node->size();
 
-    if (needs_tiling) {
-      const int64_t num_tiles = full_da_size / op_da_size;
+    if (has_op_da) {
+      mlir::Operation* first_new_op = nullptr;
       if (insertion_block != nullptr && !insertion_block->empty()) {
-        mlir::Operation* start_op = (prev_last_op != nullptr)
-                                        ? prev_last_op->getNextNode()
-                                        : &insertion_block->front();
-        for (mlir::Operation* curr = start_op; curr != nullptr;
-             curr = curr->getNextNode()) {
-          TileOperationForSubgroup(curr, op_da_size, num_tiles);
-        }
+        first_new_op = (prev_last_op != nullptr) ? prev_last_op->getNextNode()
+                                                 : &insertion_block->front();
       }
+      std::vector<mlir::func::FuncOp> new_func_ops;
       for (mlir::func::FuncOp func_op :
            module_op.getOps<mlir::func::FuncOp>()) {
         if (!existing_funcs.contains(func_op.getSymName().str())) {
-          TileOperationForSubgroup(func_op.getOperation(), op_da_size,
-                                   num_tiles);
+          new_func_ops.push_back(func_op);
         }
       }
+      ApplySubgroupTilingOrReplicaRewriting(first_new_op, new_func_ops,
+                                            deferred_op, resolved_da);
     }
 
     // Cast each output of the deferred op to the expected type.
@@ -885,6 +767,34 @@ std::vector<Shape> GetShapes(absl::Span<const DeviceBufferRef> buffers) {
   return shapes;
 }
 
+bool IsDefaultDeviceLayout(const DeviceBufferRef& buffer,
+                           const CustomLayout& layout) {
+  xla::PjRtClient* const client = PjrtBackend::GetInstance().GetClient();
+  if (client == nullptr) {
+    return false;
+  }
+  const xla::PrimitiveType element_type =
+      ConvertTo<xla::PrimitiveType>(buffer.element_type());
+  const absl::StatusOr<xla::Layout> default_layout_or =
+      client->GetDefaultLayout(element_type, buffer.dimensions());
+  if (!default_layout_or.ok()) {
+    return false;
+  }
+  const xla::Layout& default_layout = *default_layout_or;
+  if (layout.minor_to_major != default_layout.minor_to_major()) {
+    return false;
+  }
+  if (layout.tiles.size() != default_layout.tiles().size()) {
+    return false;
+  }
+  for (size_t i = 0; i < layout.tiles.size(); ++i) {
+    if (layout.tiles[i] != default_layout.tiles()[i].dimensions()) {
+      return false;
+    }
+  }
+  return true;
+}
+
 void AnnotateArgumentLayouts(mlir::ModuleOp module,
                              absl::Span<const DeviceBufferRef> arguments,
                              absl::Span<const CustomLayout> argument_layouts) {
@@ -920,6 +830,34 @@ void AnnotateArgumentLayouts(mlir::ModuleOp module,
                                    layout.element_size_in_bits);
       main.setArgAttr(i, "mhlo.layout_mode",
                       builder.getStringAttr(xla_layout.ToString()));
+    }
+  }
+}
+
+void AnnotateOutputLayouts(mlir::ModuleOp module,
+                           absl::Span<const DeviceBufferRef> outputs) {
+  mlir::func::FuncOp main = module.lookupSymbol<mlir::func::FuncOp>("main");
+  ABSL_CHECK(main)  // CRASH_OK: Should never call API on a malformed module.
+      << "MLIR module does not contain a main function for output layouts.";
+  ABSL_CHECK_LE(outputs.size(), main.getNumResults())  // CRASH_OK
+      << "outputs size (" << outputs.size()
+      << ") exceeds MLIR main result count (" << main.getNumResults() << ")";
+
+  mlir::Builder builder(main.getContext());
+  for (size_t i = 0; i < outputs.size(); ++i) {
+    if (!outputs[i].shape().layout().has_value()) continue;
+    const CustomLayout& layout = *outputs[i].shape().layout();
+    if (!layout.minor_to_major.empty() &&
+        !IsDefaultDeviceLayout(outputs[i], layout)) {
+      std::vector<xla::Tile> tiles;
+      tiles.reserve(layout.tiles.size());
+      for (const Indices& tile_indices : layout.tiles) {
+        tiles.push_back(xla::Tile(tile_indices));
+      }
+      const xla::Layout xla_layout(layout.minor_to_major, tiles,
+                                   layout.element_size_in_bits);
+      main.setResultAttr(i, "mhlo.layout_mode",
+                         builder.getStringAttr(xla_layout.ToString()));
     }
   }
 }
@@ -996,71 +934,110 @@ bool Traversal::HasSparseCoreOp() const {
 
 absl::StatusOr<std::vector<int64_t>>  // INT_VEC_OK
 Traversal::ResolveDeviceAssignment() const {
-  std::vector<int64_t> resolved_da;  // INT_VEC_OK
-  for (const SharedDeviceBufferList& node : execution_order_) {
-    const auto& op = node->deferred_op();
-    if (!op || op->device_assignment().empty()) continue;
-    if (op->device_assignment().size() > resolved_da.size()) {
-      resolved_da = op->device_assignment();
+  if (!resolved_da_.has_value()) {
+    TT_ASSIGN_OR_RETURN(std::vector<int64_t> resolved,  // INT_VEC_OK
+                        ResolveDeviceAssignmentForTraversal(execution_order_));
+    resolved_da_ = std::move(resolved);
+  }
+  return *resolved_da_;
+}
+
+absl::Status Traversal::ApplyDeviceAssignmentToCompileSpec(
+    CompilationSpec& spec, absl::Span<const int64_t> resolved_da) const {
+  // SparseCore offload operations and custom per-op device assignments require
+  // mutating `xla::ExecutableBuildOptions` and recomputing
+  // `spec.compile_options_key` before compilation cache lookup:
+  //   1. SparseCore offload ops do not support XLA SPMD / Shardy partitioning.
+  //      On multi-device systems (`num_devices > 1`), they must be compiled as
+  //      replicated executables (`num_replicas = num_devices`,
+  //      `num_partitions = 1`, `use_spmd_partitioning = false`,
+  //      `use_shardy_partitioner = false`) with a `(num_devices, 1)`
+  //      `xla::DeviceAssignment`.
+  //   2. Non-SparseCore graphs with a non-empty `resolved_da` (e.g. Pallas
+  //      custom kernels or process-group collectives over a mesh or subgroup)
+  //      must override `num_replicas = 1`, `num_partitions =
+  //      resolved_da.size()`, and `device_assignment` to match the resolved
+  //      mesh ordering so the executable is compiled for the exact target
+  //      devices and cached under a distinct `CompileOptionsKey`.
+  if (HasSparseCoreOp()) {
+    absl::StatusOr<int> status =
+        PjrtBackend::GetInstance().GetGlobalDeviceCount();
+    if (status.ok() && *status > 1) {
+      const int num_devices = *status;
+      xla::ExecutableBuildOptions& exec_options =
+          spec.xla_compile_options->executable_build_options;
+      exec_options.set_num_replicas(num_devices);
+      exec_options.set_num_partitions(1);
+      xla::DeviceAssignment da(num_devices, 1);
+      for (int idx = 0; idx < num_devices; ++idx) {
+        if (!resolved_da.empty() &&
+            static_cast<int>(resolved_da.size()) == num_devices) {
+          da(idx, 0) = resolved_da[idx];
+        } else {
+          da(idx, 0) = idx;
+        }
+      }
+      exec_options.set_device_assignment(da);
+      exec_options.set_use_spmd_partitioning(false);
+      exec_options.set_use_shardy_partitioner(false);
+      spec.compile_options_key =
+          MakeCompileOptionsKey(*spec.xla_compile_options);
     }
-  }
-  if (resolved_da.empty()) {
-    return resolved_da;
-  }
-  for (const SharedDeviceBufferList& node : execution_order_) {
-    const auto& op = node->deferred_op();
-    if (!op || op->device_assignment().empty()) continue;
-    if (!IsCompatibleDeviceAssignmentTile(op->device_assignment(),
-                                          resolved_da)) {
-      return TT_ERROR(error::kInvalidArgument)
-             << "Disjoint or conflicting device assignments detected in the "
-                "same "
-                "compiled module. Operations belonging to different process "
-                "groups or conflicting Pallas meshes cannot be compiled "
-                "together "
-                "into a single XLA executable";
+  } else if (!resolved_da.empty()) {
+    const int num_partitions = resolved_da.size();
+    xla::ExecutableBuildOptions& exec_options =
+        spec.xla_compile_options->executable_build_options;
+    exec_options.set_num_replicas(1);
+    exec_options.set_num_partitions(num_partitions);
+    xla::DeviceAssignment da(1, num_partitions);
+    for (int p = 0; p < num_partitions; ++p) {
+      da(0, p) = resolved_da[p];
     }
+    exec_options.set_device_assignment(da);
+    spec.compile_options_key = MakeCompileOptionsKey(*spec.xla_compile_options);
   }
-  return resolved_da;
+  return absl::OkStatus();
+}
+
+absl::Status Traversal::ApplyDeviceAssignmentToCompileSpec(
+    CompilationSpec& spec) const {
+  TT_ASSIGN_OR_RETURN(const std::vector<int64_t> resolved_da,  // INT_VEC_OK
+                      ResolveDeviceAssignment());
+  return ApplyDeviceAssignmentToCompileSpec(spec, resolved_da);
 }
 
 std::optional<CompilationSpec> Traversal::MaybeUpdateSpecWithLayout(
-    const CompilationSpec& spec) const {
-  std::optional<int> sparse_core_device_count;
+    const CompilationSpec& spec, absl::Span<const int64_t> resolved_da) const {
+  // Avoid deep-copying `CompilationSpec` (`xla::CompileOptions` and its
+  // `DebugOptions` protobuf) and re-hashing `CompileOptionsKey` on the common
+  // eager compilation cache-hit fast path unless this traversal requires
+  // SparseCore replication overrides, explicit device assignment overrides, or
+  // pinned-host memory space layout overrides.
+  bool has_sparse_core_override = false;
   if (HasSparseCoreOp()) {
     if (absl::StatusOr<int> status =
             PjrtBackend::GetInstance().GetGlobalDeviceCount();
         status.ok() && *status > 1) {
-      sparse_core_device_count = *status;
+      has_sparse_core_override = true;
     }
   }
   const bool needs_placement_override =
       HasPinnedHostBuffer(outputs_) || HasPinnedHostBuffer(arguments_);
-  if (!sparse_core_device_count.has_value() && !needs_placement_override) {
+  if (!has_sparse_core_override && resolved_da.empty() &&
+      !needs_placement_override) {
     return std::nullopt;
   }
 
-  CompilationSpec mutable_spec = spec.Copy();
-  if (sparse_core_device_count.has_value()) {
-    const int num_devices = *sparse_core_device_count;
-    xla::ExecutableBuildOptions& exec_options =
-        mutable_spec.xla_compile_options->executable_build_options;
-    exec_options.set_num_replicas(num_devices);
-    exec_options.set_num_partitions(1);
-    xla::DeviceAssignment da(num_devices, 1);
-    for (int idx = 0; idx < num_devices; ++idx) {
-      da(idx, 0) = idx;
-    }
-    exec_options.set_device_assignment(da);
-    exec_options.set_use_spmd_partitioning(false);
-    exec_options.set_use_shardy_partitioner(false);
-    mutable_spec.compile_options_key =
-        MakeCompileOptionsKey(*mutable_spec.xla_compile_options);
+  CompilationSpec mutable_compilation_spec = spec.Copy();
+  if (has_sparse_core_override || !resolved_da.empty()) {
+    ABSL_CHECK_OK(ApplyDeviceAssignmentToCompileSpec(  // CRASH_OK
+        mutable_compilation_spec, resolved_da));
   }
   if (needs_placement_override) {
-    ApplyPlacementsToCompileSpec(mutable_spec, outputs_, arguments_);
+    ApplyPlacementsToCompileSpec(mutable_compilation_spec, outputs_,
+                                 arguments_);
   }
-  return mutable_spec;
+  return mutable_compilation_spec;
 }
 
 absl::StatusOr<CompiledKernel> Traversal::Compile(
@@ -1075,7 +1052,6 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
   }
   TT_ASSIGN_OR_RETURN(const std::vector<int64_t> resolved_da,  // INT_VEC_OK
                       ResolveDeviceAssignment());
-
   if (!argument_layouts.empty()) {
     TT_RET_CHECK(arguments_.size() == argument_layouts.size(),
                  error::kInvalidArgument)
@@ -1094,6 +1070,7 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
                         BuildMlirModule(mlir_context, use_stablehlo_bounds,
                                         donated_inputs, module_name));
     AnnotateArgumentLayouts(*module, arguments_, argument_layouts);
+    AnnotateOutputLayouts(*module, outputs_);
     if (out_mlir_text != nullptr) {
       *out_mlir_text = MlirModuleToString(*module);
     }
@@ -1102,47 +1079,30 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
   std::vector<Shape> argument_shapes = GetShapes(arguments_);
   std::vector<Shape> output_shapes = GetShapes(outputs_);
 
-  std::optional<CompilationSpec> maybe_new_spec =
-      MaybeUpdateSpecWithLayout(spec);
-  if (!resolved_da.empty()) {
-    if (!maybe_new_spec.has_value()) {
-      maybe_new_spec = spec.Copy();
-    }
-    xla::ExecutableBuildOptions& exec_options =
-        maybe_new_spec->xla_compile_options->executable_build_options;
-    if (HasSparseCoreOp() &&
-        exec_options.num_replicas() == static_cast<int>(resolved_da.size())) {
-      xla::DeviceAssignment da(exec_options.num_replicas(), 1);
-      for (int idx = 0; idx < exec_options.num_replicas(); ++idx) {
-        da(idx, 0) = resolved_da[idx];
-      }
-      exec_options.set_device_assignment(da);
-    } else if (!HasSparseCoreOp()) {
-      const int num_partitions = resolved_da.size();
-      exec_options.set_num_replicas(1);
-      exec_options.set_num_partitions(num_partitions);
-      xla::DeviceAssignment da(1, num_partitions);
-      for (int p = 0; p < num_partitions; ++p) {
-        da(0, p) = resolved_da[p];
-      }
-      exec_options.set_device_assignment(da);
-    }
-    maybe_new_spec->compile_options_key =
-        MakeCompileOptionsKey(*maybe_new_spec->xla_compile_options);
-  }
-  const CompilationSpec& effective_spec =
-      maybe_new_spec.has_value() ? *maybe_new_spec : spec;
+  std::optional<CompilationSpec> mutable_compilation_spec =
+      MaybeUpdateSpecWithLayout(spec, resolved_da);
+  const CompilationSpec& effective_compilation_spec =
+      mutable_compilation_spec.has_value() ? *mutable_compilation_spec : spec;
 
-  CompilationCacheKey compilation_cache_key = GetCacheKey(
-      effective_spec.compile_options_key, argument_layouts, donated_inputs);
+  CompilationCacheKey compilation_cache_key =
+      GetCacheKey(effective_compilation_spec.compile_options_key,
+                  argument_layouts, donated_inputs);
   if (out_cache_key != nullptr) {
     out_cache_key->emplace(compilation_cache_key);
   }
   ABSL_VLOG(1) << "[Compile] compilation cache key: " << compilation_cache_key;
 
+  if (mutable_compilation_spec.has_value()) {
+    return CompilationCache::GetInstance().GetOrCompile(
+        std::move(compilation_cache_key), argument_shapes, output_shapes,
+        std::move(final_op_builder),
+        std::move(mutable_compilation_spec->xla_compile_options),
+        /*use_dynamic_adapters=*/!use_stablehlo_bounds);
+  }
   return CompilationCache::GetInstance().GetOrCompile(
       std::move(compilation_cache_key), argument_shapes, output_shapes,
-      std::move(final_op_builder), *effective_spec.xla_compile_options,
+      std::move(final_op_builder),
+      *effective_compilation_spec.xla_compile_options,
       /*use_dynamic_adapters=*/!use_stablehlo_bounds);
 }
 

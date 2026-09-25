@@ -289,7 +289,8 @@ def verify_op_supports_dynamism(
     if mode in denied_modes:
       return f"Op {op.name} is not supported in {mode.value} dynamism mode."
 
-  if op.name == "addcdiv" and not utils.libtpu_at_least((0, 0, 47)):
+  libtpu = utils.libtpu_version()
+  if op.name == "addcdiv" and libtpu is not None and libtpu < (0, 0, 47):
     return "addcdiv requires libtpu >= 0.0.47 for dynamism support."
 
   ### [TEST INFRA TASKS] ###

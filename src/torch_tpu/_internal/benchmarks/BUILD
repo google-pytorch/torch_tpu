@@ -29,12 +29,6 @@ package(
 
 oss_target(
     torch_tpu_py_library,
-    name = "benchmark_adapter",
-    srcs = ["benchmark_adapter.py"],
-)
-
-oss_target(
-    torch_tpu_py_library,
     name = "export_adapter",
     srcs = ["export_adapter.py"],
     deps = [

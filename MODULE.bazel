@@ -74,11 +74,11 @@ bazel_dep(name = "rules_ml_toolchain")
 
 archive_override(
     module_name = "xla",
-    integrity = "sha256-lBRH6Oi44SF/EFVdPV8hdhF14gxLllYCu7nj7NUsucc=",
+    integrity = "sha256-cNpCH7QC3Vs0sOvtGuQsDO7zEJoLGhPE+8n0X73F7NM=",
     patch_strip = 1,
     patches = ["//bazel/patches/xla:remove_stablehlo_source_location.patch"],
-    strip_prefix = "xla-fa460271a836e8a0bbccc8c847ceb39ec88fa407",
-    urls = ["https://github.com/openxla/xla/archive/fa460271a836e8a0bbccc8c847ceb39ec88fa407.tar.gz"],
+    strip_prefix = "xla-93ac6858e2d01f5f41f0e932a5433bdd4b57a5bc",
+    urls = ["https://github.com/openxla/xla/archive/93ac6858e2d01f5f41f0e932a5433bdd4b57a5bc.tar.gz"],
 )
 
 archive_override(
@@ -200,11 +200,12 @@ _TORCH_WHL_MODIFICATIONS = {
 EXTRA_PYTORCH_VERSIONS = [
     "2.12.0",
     "2.13.0",
+    "2.14.0",
 ]
 
 # The release version the nightly channel currently leads up to. Its glue's
 # torch comes from the same machinery as the extra release versions -- hub
-# torch_tpu_pypi_2_14_0 -- except that it resolves from the nightly index and
+# torch_tpu_pypi_2_15_0 -- except that it resolves from the nightly index and
 # its lock is requirements_torch_nightly.txt (a dev-build pin refreshed by
 # re-running requirements/lock_environments.sh). Kept in sync with
 # NIGHTLY_TORCH_VERSION/GLUE_TORCH_VERSIONS in //bazel:pytorch_versions.bzl,

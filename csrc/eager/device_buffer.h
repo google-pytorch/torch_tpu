@@ -243,6 +243,7 @@ class DeviceBufferRef {
   [[nodiscard]] bool is_constant() const;
 
   [[nodiscard]] const Shape& shape() const;
+  void set_layout(CustomLayout layout) const;
 
   // The logical dimensions of the referenced buffer.
   [[nodiscard]] absl::Span<const int64_t> dimensions() const;
@@ -609,6 +610,9 @@ class DeviceBufferList {
 
   // Returns a span of all of the buffer shapes in the DeviceBufferList.
   [[nodiscard]] absl::Span<const Shape> shapes() const { return shapes_; }
+  void set_layout(int64_t index, CustomLayout layout) {
+    shapes_.at(index).set_layout(std::move(layout));
+  }
 
   // Note: all methods which take an index will crash if the index is invalid.
 
@@ -1126,6 +1130,10 @@ class DeviceBufferList {
   c10::DeviceIndex device_index_;
   c10::StreamId stream_id_;
 };
+
+inline void DeviceBufferRef::set_layout(CustomLayout layout) const {
+  device_buffer_list_->set_layout(index_, std::move(layout));
+}
 
 }  // namespace torch_tpu
 

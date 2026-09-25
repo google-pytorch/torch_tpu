@@ -784,6 +784,5 @@ def _assert_tensor_close(
     )
 
 
-libtpu_at_least = utils.libtpu_at_least
 libtpu_version = utils.libtpu_version
 parse_version = utils.parse_version

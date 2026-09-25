@@ -100,6 +100,12 @@ inputs:
     description: "If true, removes the virtual environment and the built wheel at the end of the run."
     required: false
     default: "false"
+  use_tcmalloc:
+    description: >-
+      If true (the default), preloads tcmalloc into the benchmark process,
+      matching Bazel-built benchmark targets.
+    required: false
+    default: "true"
 
 runs:
   using: "composite"
@@ -337,6 +343,38 @@ runs:
         PYTHON
         echo "::endgroup::"
 
+    # Bazel-built benchmark targets link tcmalloc (use_tcmalloc = True). Eager
+    # execution allocates and frees runtime objects across threads, which
+    # contends on glibc ptmalloc arenas, so without tcmalloc pip-wheel benchmark
+    # host overhead is not comparable to Bazel runs. The ml-build container
+    # ships no tcmalloc.
+    - name: Set up tcmalloc
+      if: inputs.use_tcmalloc == 'true'
+      shell: bash
+      run: |
+        echo "::group::Set up tcmalloc"
+        set -euo pipefail
+
+        TCMALLOC_LIB="/usr/lib/x86_64-linux-gnu/libtcmalloc.so.4"
+        if [[ ! -f "$TCMALLOC_LIB" ]]; then
+          SUDO=""
+          if [[ "$(id -u)" -ne 0 ]]; then
+            SUDO="sudo"
+          fi
+          $SUDO apt-get update
+          $SUDO apt-get install -y --no-install-recommends libgoogle-perftools4
+        fi
+        if [[ ! -f "$TCMALLOC_LIB" ]]; then
+          echo "error: $TCMALLOC_LIB not found after installing libgoogle-perftools4." >&2
+          exit 1
+        fi
+
+        # Scoped to the benchmark step rather than LD_PRELOAD in GITHUB_ENV so
+        # installer tooling keeps its default allocator.
+        echo "BENCHMARK_LD_PRELOAD=$TCMALLOC_LIB" >> "$GITHUB_ENV"
+        echo "tcmalloc: $TCMALLOC_LIB"
+        echo "::endgroup::"
+
     - name: Run benchmark
       shell: bash
       env:
@@ -352,9 +390,19 @@ runs:
         # Installed packages (torch_tpu) resolve from the virtual environment.
         export PYTHONPATH="$BENCHMARK_REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
+        if [[ -n "${BENCHMARK_LD_PRELOAD:-}" ]]; then
+          export LD_PRELOAD="$BENCHMARK_LD_PRELOAD${LD_PRELOAD:+:$LD_PRELOAD}"
+          # Fail fast if torch_tpu still reports tcmalloc as missing. The
+          # warning fires during `import torch_tpu`, so it must be matched by
+          # message; a category filter cannot be resolved that early.
+          export PYTHONWARNINGS="${PYTHONWARNINGS:+$PYTHONWARNINGS,}error:tcmalloc is not loaded"
+        fi
+
         echo "----------------------------------------------------------------"
-        echo "SCRIPT: $SCRIPT"
-        echo "ARGS:   $ARGS"
+        echo "SCRIPT:         $SCRIPT"
+        echo "ARGS:           $ARGS"
+        echo "LD_PRELOAD:     ${LD_PRELOAD:-(none)}"
+        echo "PYTHONWARNINGS: ${PYTHONWARNINGS:-(none)}"
         echo "----------------------------------------------------------------"
 
         read -ra SCRIPT_ARGS <<< "$ARGS"

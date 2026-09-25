@@ -29,6 +29,7 @@ from examples.benchmarks.e2e.harness import steps
 from examples.benchmarks.e2e.harness import target as target_lib
 from examples.benchmarks.e2e.harness import torch_device_ops
 from examples.benchmarks.e2e.harness.steps import decode
+from torch_tpu.extras.optimizers import single_trace_trainer
 from tests import seed_test_utils
 import transformers
 
@@ -72,6 +73,7 @@ class StepperTypeTest(seed_test_utils.RepeatableTest):
         {
             step_lib.StepperType.FORWARD,
             step_lib.StepperType.TRAINING,
+            step_lib.StepperType.SINGLE_TRACE_TRAINING,
             step_lib.StepperType.DECODER_ONLY_DECODE,
         },
     )
@@ -571,6 +573,123 @@ class StepperTypeTest(seed_test_utils.RepeatableTest):
     self.assertLessEqual(m.num_warmup_steps, 5)
     self.assertGreaterEqual(m.post_warmup_step_time_seconds, 0.0)
     self.assertGreater(m.e2e_wall_time_seconds, 0.0)
+
+  def test_single_trace_training_updates_params(self):
+    ops = self._ops()
+    model = _mlp(seed=99).to(ops.device)
+    opt = single_trace_trainer.ReferenceSgd(lr=0.1)
+    stepper = step_lib.resolve_stepper(
+        step_lib.StepperType.SINGLE_TRACE_TRAINING
+    )
+    before = {
+        name: p.detach().cpu().clone() for name, p in model.named_parameters()
+    }
+    x = torch.randn(4, 4, device=ops.device)
+    stepper.init_with_benchmark_args(model, (x,), {}, opt)
+    stepper.get_step_fn()()
+    after = stepper.get_params()
+    changed = [
+        not torch.equal(before[name], after[name].cpu()) for name in before
+    ]
+    self.assertTrue(
+        all(changed),
+        "Expected training params to change after single trace training step.",
+    )
+
+  def test_training_stepper_composite_dispatch_eager(self):
+    ops = self._ops()
+    model = _mlp(seed=42).to(ops.device)
+    opt = torch.optim.SGD(model.parameters(), lr=0.1)
+    stepper = step_lib.resolve_stepper(
+        step_lib.StepperType.TRAINING, compute_loss=mock_grad_probe
+    )
+    x = torch.randn(4, 4, device=ops.device)
+    stepper.init_with_benchmark_args(model, (x,), {}, opt)
+    self.assertIsNone(stepper._trainer)
+    before = [p.clone() for p in model.parameters()]
+    stepper.get_step_fn()()
+    self.assertIsNone(stepper._trainer)
+    changed = [
+        not torch.equal(b, p) for b, p in zip(before, model.parameters())
+    ]
+    self.assertTrue(all(changed))
+
+  def test_training_stepper_composite_dispatch_compiled(self):
+    ops = self._ops()
+    model = _mlp(seed=42).to(ops.device)
+    opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    stepper = step_lib.resolve_stepper(
+        step_lib.StepperType.TRAINING, compute_loss=mock_grad_probe
+    )
+    x = torch.randn(4, 4, device=ops.device)
+    stepper.init_with_benchmark_args(model, (x,), {}, opt)
+    target = target_lib.make_target(platform=target_lib.Platform.V5E_1X1)
+    compile_config = compile_lib.CompileConfig(
+        scope=compile_lib.Scope.STEP, dynamic=False
+    )
+    stepper.compile(compile_config, target)
+    self.assertIsNotNone(stepper._trainer)
+    before = {
+        name: p.detach().cpu().clone() for name, p in model.named_parameters()
+    }
+    stepper.get_step_fn()()
+    after = stepper.get_params()
+    changed = [
+        not torch.equal(before[name], after[name].cpu()) for name in before
+    ]
+    self.assertTrue(all(changed))
+
+  def test_training_stepper_composite_dispatch_compiled_disabled(self):
+    ops = self._ops()
+    model = _mlp(seed=42).to(ops.device)
+    opt = torch.optim.SGD(model.parameters(), lr=0.1)
+    stepper = step_lib.resolve_stepper(
+        step_lib.StepperType.TRAINING,
+        compute_loss=mock_grad_probe,
+        use_single_trace=False,
+    )
+    x = torch.randn(4, 4, device=ops.device)
+    stepper.init_with_benchmark_args(model, (x,), {}, opt)
+    target = target_lib.make_target(platform=target_lib.Platform.V5E_1X1)
+    compile_config = compile_lib.CompileConfig(
+        scope=compile_lib.Scope.STEP, dynamic=False
+    )
+    stepper.compile(compile_config, target)
+    self.assertIsNone(stepper._trainer)
+
+  def test_training_stepper_uses_standard_stepper_on_gpu(self):
+    ops = self._ops()
+    model = _mlp(seed=42).to(ops.device)
+    opt = torch.optim.SGD(model.parameters(), lr=0.1)
+    stepper = step_lib.resolve_stepper(
+        step_lib.StepperType.TRAINING, compute_loss=mock_grad_probe
+    )
+    x = torch.randn(4, 4, device=ops.device)
+    stepper.init_with_benchmark_args(model, (x,), {}, opt)
+    target = target_lib.make_target(platform=target_lib.Platform.B200_1)
+    compile_config = compile_lib.CompileConfig(
+        scope=compile_lib.Scope.STEP, dynamic=False
+    )
+    stepper.compile(compile_config, target)
+    self.assertIsNone(stepper._trainer)
+
+  def test_training_stepper_composite_dispatch_accum_steps(self):
+    ops = self._ops()
+    model = _mlp(seed=42).to(ops.device)
+    opt = torch.optim.SGD(model.parameters(), lr=0.1)
+    stepper = step_lib.resolve_stepper(
+        step_lib.StepperType.TRAINING,
+        accum_steps=2,
+        compute_loss=mock_grad_probe,
+    )
+    x = torch.randn(4, 4, device=ops.device)
+    stepper.init_with_benchmark_args(model, (x,), {}, opt)
+    target = target_lib.make_target(platform=target_lib.Platform.V5E_1X1)
+    compile_config = compile_lib.CompileConfig(
+        scope=compile_lib.Scope.STEP, dynamic=False
+    )
+    stepper.compile(compile_config, target)
+    self.assertIsNone(stepper._trainer)
 
   def test_decode_safe_get_helper(self):
     # Object with first attribute present

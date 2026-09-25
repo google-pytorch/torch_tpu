@@ -15,18 +15,13 @@
 """Unit tests for in-place buffer donation in DeferNever eager mode."""
 
 import gc
-import unittest
-from unittest import mock
 
 from absl.testing import absltest
 import torch
-from torch_tpu import _loader
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal.utils import test_utils
 from tests import oss_utils
 from tests import seed_test_utils
-
-_loader._init_device("tpu")
 
 EagerMode = execution_mode.EagerMode
 
@@ -43,51 +38,6 @@ class InplaceBufferDonationTest(seed_test_utils.RepeatableTest):
     super().tearDown()
     gc.collect()
     torch.accelerator.synchronize()
-
-  def test_peak_memory_tests_skip_on_cloud_libtpu_older_than_0_0_42(self):
-    """Verifies that all peak memory tests skip on Cloud TPU when libtpu < 0.0.42.
-
-    Why we check for libtpu version:
-    - In OSS Cloud TPU CI environments (e.g. linux-x86-ct5lp-224-8tpu on v5e),
-      libtpu is pinned to 0.0.41.
-    - PJRT_Device_ClearMemoryStats (which powers reset_peak_memory_stats()) was
-      only added in PJRT C API version 0.106 and libtpu 0.0.42 (see CL
-      940717234).
-    - On libtpu < 0.0.42, reset_peak_memory_stats() silently no-ops with
-      absl::UnimplementedError, so max_memory_allocated() never resets and
-      retains the process lifetime peak.
-    - Any subsequent peak memory check (`peak_mem - base_mem < 4 MB`) then
-      fails whenever prior tests have allocated device memory.
-    - All peak memory tests must therefore be decorated with
-      @oss_utils.skip_if_cloud_and_libtpu_older_than("0.0.42") to prevent
-      flakiness in OSS CI on older libtpu versions, while still executing
-      in Google3 and on newer libtpu versions.
-    """
-    peak_memory_test_names = [
-        "test_multi_input_aliasing_peak_memory_no_spike_in_defer_never",
-        "test_inplace_peak_memory_no_spike_in_defer_never",
-        "test_inplace_peak_memory_spikes_without_donation_in_defer_and_fuse",
-        "test_non_zero_offset_inplace_does_not_donate_in_defer_never",
-        "test_non_contiguous_inplace_does_not_donate_in_defer_never",
-        "test_binary_inplace_donates_second_input_peak_memory_in_defer_never",
-        "test_inplace_buffer_donation_disabled_via_python_api",
-    ]
-    for test_name in peak_memory_test_names:
-      method = getattr(self, test_name, None)
-      self.assertIsNotNone(method, f"Method {test_name} not found")
-      with mock.patch.object(oss_utils, "running_in_cloud", return_value=True):
-        with mock.patch.object(
-            oss_utils, "libtpu_version", return_value="0.0.41"
-        ):
-          skipped = False
-          try:
-            method()
-          except unittest.SkipTest:
-            skipped = True
-          self.assertTrue(
-              skipped,
-              f"{test_name} did not skip on cloud with libtpu 0.0.41",
-          )
 
   def test_unary_inplace_donates_buffer_in_defer_never(self):
     with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
@@ -156,7 +106,22 @@ class InplaceBufferDonationTest(seed_test_utils.RepeatableTest):
       self.assertTrue(torch.equal(v1.cpu(), torch.tensor([2.0, 4.0, 6.0])))
       self.assertTrue(torch.equal(v2.cpu(), torch.tensor([2.0, 4.0, 6.0])))
 
-  @oss_utils.skip_if_cloud_and_libtpu_older_than("0.0.42")
+  # Why peak memory tests check for libtpu >= 0.0.42:
+  # - In OSS Cloud TPU CI environments (e.g. linux-x86-ct5lp-224-8tpu on v5e),
+  #   libtpu is pinned to 0.0.41.
+  # - PJRT_Device_ClearMemoryStats (which powers reset_peak_memory_stats()) was
+  #   only added in PJRT C API version 0.106 and libtpu 0.0.42 (see CL
+  #   940717234).
+  # - On libtpu < 0.0.42, reset_peak_memory_stats() silently no-ops with
+  #   absl::UnimplementedError, so max_memory_allocated() never resets and
+  #   retains the process lifetime peak.
+  # - Any subsequent peak memory check (`peak_mem - base_mem < 4 MB`) then
+  #   fails whenever prior tests have allocated device memory.
+  @oss_utils.skip_if_libtpu_version(
+      lambda v: v < (0, 0, 42),
+      "TODO(b/565506249): Requires libtpu >= 0.0.42 for"
+      " reset_peak_memory_stats.",
+  )
   def test_multi_input_aliasing_peak_memory_no_spike_in_defer_never(self):
     with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
       # 16 MB tensor
@@ -183,7 +148,11 @@ class InplaceBufferDonationTest(seed_test_utils.RepeatableTest):
       self.assertLess(extra_mem, 4 * 1024 * 1024)
       self.assertTrue(torch.equal(x.cpu(), torch.full((num_elements,), 4.0)))
 
-  @oss_utils.skip_if_cloud_and_libtpu_older_than("0.0.42")
+  @oss_utils.skip_if_libtpu_version(
+      lambda v: v < (0, 0, 42),
+      "TODO(b/565506249): Requires libtpu >= 0.0.42 for"
+      " reset_peak_memory_stats.",
+  )
   def test_inplace_peak_memory_no_spike_in_defer_never(self):
     with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
       # 16 MB tensor (4M float32 elements = 16,777,216 bytes)
@@ -209,7 +178,11 @@ class InplaceBufferDonationTest(seed_test_utils.RepeatableTest):
       self.assertLess(extra_mem, 4 * 1024 * 1024)
       self.assertTrue(torch.equal(x.cpu(), torch.full((num_elements,), 2.0)))
 
-  @oss_utils.skip_if_cloud_and_libtpu_older_than("0.0.42")
+  @oss_utils.skip_if_libtpu_version(
+      lambda v: v < (0, 0, 42),
+      "TODO(b/565506249): Requires libtpu >= 0.0.42 for"
+      " reset_peak_memory_stats.",
+  )
   def test_inplace_peak_memory_spikes_without_donation_in_defer_and_fuse(self):
     with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
       # 16 MB tensor (4M float32 elements)
@@ -236,7 +209,11 @@ class InplaceBufferDonationTest(seed_test_utils.RepeatableTest):
       # the output.
       self.assertGreaterEqual(extra_mem, 12 * 1024 * 1024)
 
-  @oss_utils.skip_if_cloud_and_libtpu_older_than("0.0.42")
+  @oss_utils.skip_if_libtpu_version(
+      lambda v: v < (0, 0, 42),
+      "TODO(b/565506249): Requires libtpu >= 0.0.42 for"
+      " reset_peak_memory_stats.",
+  )
   def test_non_zero_offset_inplace_does_not_donate_in_defer_never(self):
     """Verifies that non-zero offset slices fall back safely to allocating in DeferNever."""
     with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
@@ -261,7 +238,11 @@ class InplaceBufferDonationTest(seed_test_utils.RepeatableTest):
       delta = peak_mem - base_mem
       self.assertGreaterEqual(delta, 12 * 1024 * 1024)
 
-  @oss_utils.skip_if_cloud_and_libtpu_older_than("0.0.42")
+  @oss_utils.skip_if_libtpu_version(
+      lambda v: v < (0, 0, 42),
+      "TODO(b/565506249): Requires libtpu >= 0.0.42 for"
+      " reset_peak_memory_stats.",
+  )
   def test_non_contiguous_inplace_does_not_donate_in_defer_never(self):
     """Verifies that non-contiguous tensors fall back safely to allocating in DeferNever."""
     with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
@@ -372,7 +353,11 @@ class InplaceBufferDonationTest(seed_test_utils.RepeatableTest):
         gc.collect()
         torch.accelerator.synchronize()
 
-  @oss_utils.skip_if_cloud_and_libtpu_older_than("0.0.42")
+  @oss_utils.skip_if_libtpu_version(
+      lambda v: v < (0, 0, 42),
+      "TODO(b/565506249): Requires libtpu >= 0.0.42 for"
+      " reset_peak_memory_stats.",
+  )
   def test_binary_inplace_donates_second_input_peak_memory_in_defer_never(self):
     """Verifies that operations with out=rhs/other donate the second input buffer without memory spike."""
     with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
@@ -456,7 +441,11 @@ class InplaceBufferDonationTest(seed_test_utils.RepeatableTest):
         gc.collect()
         torch.accelerator.synchronize()
 
-  @oss_utils.skip_if_cloud_and_libtpu_older_than("0.0.42")
+  @oss_utils.skip_if_libtpu_version(
+      lambda v: v < (0, 0, 42),
+      "TODO(b/565506249): Requires libtpu >= 0.0.42 for"
+      " reset_peak_memory_stats.",
+  )
   def test_inplace_buffer_donation_disabled_via_python_api(self):
     """Verifies that disabling donation via Python API causes allocation in DeferNever."""
     with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):

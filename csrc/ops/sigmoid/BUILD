@@ -24,6 +24,7 @@ torch_tpu_cc_library(
     srcs = ["sigmoid_aten_kernels.cc"],
     hdrs = ["sigmoid_aten_kernels.h"],
     deps = [
+        "//csrc/common:aten_utils",
         "//csrc/common:cache_key",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
@@ -43,7 +44,6 @@ torch_tpu_cc_library(
         "//shims/torch/torch/headeronly:torch_headeronly",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
-        "@llvm-project//mlir:IR",
         "@stablehlo//:stablehlo_ops",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",

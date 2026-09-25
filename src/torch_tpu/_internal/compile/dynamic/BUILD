@@ -63,9 +63,9 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
-    name = "sym_shape_manager",
+    name = "graph_transform_context",
     srcs = [
-        "sym_shape_manager.py",
+        "graph_transform_context.py",
     ],
     visibility = [
         "//:__subpackages__",
@@ -84,7 +84,7 @@ torch_tpu_py_library(
         "view_ops_passes.py",
     ],
     deps = [
-        ":sym_shape_manager",
+        ":graph_transform_context",
         ":sym_utils",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
@@ -97,7 +97,7 @@ torch_tpu_py_library(
         "generative_ops_pass.py",
     ],
     deps = [
-        ":sym_shape_manager",
+        ":graph_transform_context",
         ":sym_utils",
         "//shims/torch:pytorch",
     ],
@@ -123,7 +123,7 @@ torch_tpu_py_library(
         ":convert_constant_symints_pass",
         ":dynamic_view_pass",
         ":generative_ops_pass",
-        ":sym_shape_manager",
+        ":graph_transform_context",
         ":sym_utils",
         ":symbol_bounds",
         ":view_ops_passes",

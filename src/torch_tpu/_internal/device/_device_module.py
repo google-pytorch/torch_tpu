@@ -22,6 +22,7 @@ import abc
 import atexit
 from collections.abc import Mapping
 import dataclasses
+import sys
 from typing import Any, Final, List
 import torch
 from torch._dynamo.device_interface import DeviceInterface
@@ -566,7 +567,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
     return cls.default_generators[idx].initial_seed()
 
   @classmethod
-  def get_local_device_attributes(cls) -> Mapping[str, Any]:
+  def _get_local_device_attributes(cls) -> Mapping[str, Any]:
     """Returns attributes of the local PJRT device, initializing options if needed."""
     cls._init_runtime_options()
     return _device_ops_backend._get_local_device_attributes()  # pylint: disable=protected-access
@@ -788,6 +789,9 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
 
   @classmethod
   def _clear_cache(cls):
+    backend_mod = sys.modules.get("torch_tpu._internal.compile._backend")
+    if backend_mod is not None and hasattr(backend_mod, "clear_cache"):
+      backend_mod.clear_cache()
     _device_ops_backend._clear_cache()  # pylint: disable=protected-access
 
   @classmethod
@@ -955,19 +959,6 @@ def get_device_interface(device_type: str) -> type[DeviceInterface]:
   return TpuDeviceInterface
 
 
-# TODO: Remove this backward compatibility shim before launch.
-# Temporary backward compatibility shim for legacy callers accessing TorchDynamo
-# SPIs on torch.tpu.
-__tt_api_stages__["maybe_exchange_device"] = annotations.ApiStageInfo(
-    stage=annotations.Stage.EXPERIMENTAL,
-    reason=(
-        "maybe_exchange_device() is internal to TorchDynamo and subject to"
-        " change or removal."
-    ),
-    value=_DeviceModule._maybe_exchange_device,
-)
-
-
 class TpuStreamContext:
   """Operations within this context manager are enqueued on the given stream.
 
@@ -976,15 +967,23 @@ class TpuStreamContext:
 
   def __init__(self, stream: streams.TpuStream | None):
     self.stream = stream
-    self.prev_stream = None
+    self.prev_stream_id = None
 
   def __enter__(self):
     if self.stream is None:
       return
-    self.prev_stream = torch.tpu.current_stream()
-    torch.tpu.set_stream(self.stream)
+    # pylint: disable=protected-access
+    self.prev_stream_id = _device_ops_backend._get_current_stream_id(
+        self.stream.device_index
+    )
+    _device_ops_backend._set_current_stream_id(
+        self.stream.stream_id, self.stream.device_index
+    )
 
   def __exit__(self, exc_type: Any, exc_value: Any, exc_traceback: Any):
-    if self.stream is None:
+    if self.stream is None or self.prev_stream_id is None:
       return
-    torch.tpu.set_stream(self.prev_stream)
+    # pylint: disable=protected-access
+    _device_ops_backend._set_current_stream_id(
+        self.prev_stream_id, self.stream.device_index
+    )

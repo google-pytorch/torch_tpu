@@ -20,10 +20,11 @@ from typing import Any, Callable
 from absl import logging
 import portpicker
 import torch.multiprocessing as mp
+from torch.tpu.distributed import environment  # pyrefly: ignore[missing-import]
 from torch_tpu._internal import env
-from torch_tpu._internal.distributed.launchers import environment
 from torch_tpu._internal.utils import hardware
 from torch_tpu._internal.distributed import multiprocessing
+from tests import oss_utils
 from tests import seed_test_utils
 
 
@@ -38,9 +39,7 @@ def _worker_fn(
 ) -> None:
   """Worker function for mp.spawn."""
   # Parse absl flags inside each mp.spawn child subprocess so tests can pass
-  # `fn` directly to `dist_run` without wrapping `fn` with the legacy
-  # `singlehost_wrapper.tpu_env_wrapper` (whose `WorkerWrapper` previously
-  # called `parse_absl_flags()`).
+  # `fn` directly to `dist_run`.
   multiprocessing.parse_absl_flags()
 
   node_rank = int(os.environ.get("NODE_RANK", "0"))
@@ -78,6 +77,15 @@ def _worker_fn(
   fn(*args, **kwargs)
 
 
+@oss_utils.skip_if_libtpu_version(
+    lambda v: (
+        v >= (0, 0, 48)
+        and hardware.get_tpu_version() == hardware.TpuVersion.V5E
+    ),
+    "TODO(b/565342785): Re-enable once multi-process SliceBuilder gRPC"
+    " channel initialization timeout on TPU v5e with libtpu >= 0.0.48"
+    " is fixed.",
+)
 def dist_run(
     nproc_per_node: int,
     fn: Callable[..., Any],

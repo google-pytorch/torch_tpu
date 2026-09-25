@@ -19,6 +19,7 @@ from torch._dynamo.backends import registry
 from torch._functorch._aot_autograd import utils as aot_utils
 from torch_tpu._internal.compile._backend import async_compile
 from torch_tpu._internal.compile._backend import AsyncCompilationSubmitted
+from torch_tpu._internal.compile._backend import clear_cache
 from torch_tpu._internal.compile._backend import resolve_compilations
 from torch_tpu._internal.compile._backend import TpuBackend
 from torch_tpu._internal.compile.debug import TpuCompileDebug
@@ -107,6 +108,7 @@ __all__ = [
     "TpuBackend",
     "TpuCompileDebug",
     "async_compile",
+    "clear_cache",
     "resolve_compilations",
     # go/keep-sorted end
 ]

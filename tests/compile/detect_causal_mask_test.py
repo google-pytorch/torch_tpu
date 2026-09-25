@@ -734,5 +734,183 @@ class DetectCausalMaskTest(seed_test_utils.RepeatableTest):
     utils.assert_close(grad_v_transformed, grad_v_ref)
 
 
+def _in_graph_causal_mask(graph, seq_len, batch_size, device="cpu"):
+  """Emits aten ops that build a (B, 1, S, S) causal mask like Hugging Face."""
+  aten = torch.ops.aten
+  q_idx = graph.call_function(
+      aten.arange.default, (seq_len,), {"device": device}
+  )
+  kv_idx = graph.call_function(
+      aten.arange.default, (seq_len,), {"device": device}
+  )
+  kv_row = graph.call_function(aten.unsqueeze.default, (kv_idx, 0))
+  q_col = graph.call_function(aten.unsqueeze.default, (q_idx, 1))
+  causal = graph.call_function(aten.le.Tensor, (kv_row, q_col))
+  causal = graph.call_function(aten.unsqueeze.default, (causal, 0))
+  causal = graph.call_function(aten.unsqueeze.default, (causal, 0))
+  return (
+      graph.call_function(
+          aten.expand.default, (causal, [batch_size, 1, seq_len, seq_len])
+      ),
+      q_col,
+      kv_row,
+  )
+
+
+def _sdpa_graph_with_mask(build_mask, extra_placeholders=()):
+  """Builds q/k/v -> SDPA(mask) where `build_mask(graph, extras)` makes the mask."""
+  graph = fx.Graph()
+  q = graph.placeholder("q")
+  k = graph.placeholder("k")
+  v = graph.placeholder("v")
+  extras = [graph.placeholder(name) for name in extra_placeholders]
+  mask = build_mask(graph, extras)
+  sdpa = graph.call_function(
+      torch.ops.aten.scaled_dot_product_attention.default,
+      (q, k, v, mask, 0.0, False),
+  )
+  graph.output(sdpa)
+  return fx.GraphModule(torch.nn.Module(), graph)
+
+
+def _sdpa_node(gm):
+  nodes = [
+      n
+      for n in gm.graph.nodes
+      if n.target == torch.ops.aten.scaled_dot_product_attention.default
+  ]
+  assert len(nodes) == 1
+  return nodes[0]
+
+
+class DetectInGraphCausalMaskTest(seed_test_utils.RepeatableTest):
+  """Masks built inside the graph, independent of example input values."""
+
+  seq_len = 16
+  batch_size = 2
+
+  def _qkv(self):
+    shape = (self.batch_size, 4, self.seq_len, 32)
+    return [torch.randn(shape, requires_grad=True) for _ in range(3)]
+
+  def _assert_rewritten(self, gm):
+    node = _sdpa_node(gm)
+    self.assertIsNone(node.args[3])
+    self.assertTrue(node.args[5])
+
+  def _assert_preserved(self, gm):
+    node = _sdpa_node(gm)
+    self.assertIsNotNone(node.args[3])
+    self.assertFalse(node.args[5])
+
+  def test_arange_causal_mask_is_rewritten_with_matching_numerics(self):
+    gm = _sdpa_graph_with_mask(
+        lambda g, _: _in_graph_causal_mask(g, self.seq_len, self.batch_size)[0]
+    )
+    q, k, v = self._qkv()
+    out_ref = gm(q, k, v)
+    out_ref.sum().backward()
+    grads_ref = [t.grad.clone() for t in (q, k, v)]
+    for t in (q, k, v):
+      t.grad = None
+
+    # No example inputs at all: the mask must be proven causal purely from the
+    # graph, not from runtime values.
+    detect_causal_mask.apply(gm, example_inputs=None)
+    self._assert_rewritten(gm)
+    self.assertEmpty(
+        [n for n in gm.graph.nodes if n.target == torch.ops.aten.arange.default]
+    )
+
+    out = gm(q, k, v)
+    out.sum().backward()
+    utils.assert_close(out, out_ref)
+    for t, g_ref in zip((q, k, v), grads_ref):
+      utils.assert_close(t.grad, g_ref)
+
+  def test_factory_device_kwarg_is_evaluated_on_cpu(self):
+    gm = _sdpa_graph_with_mask(
+        lambda g, _: _in_graph_causal_mask(
+            g, self.seq_len, self.batch_size, device="meta"
+        )[0]
+    )
+    detect_causal_mask.apply(gm, example_inputs=None)
+    self._assert_rewritten(gm)
+
+  def test_packed_sequence_mask_with_contiguous_positions_is_rewritten(self):
+    aten = torch.ops.aten
+
+    def build(g, _):
+      causal, _, _ = _in_graph_causal_mask(g, self.seq_len, self.batch_size)
+      # Mirrors transformers.masking_utils.find_packed_sequence_indices.
+      pos = g.call_function(aten.arange.default, (self.seq_len,))
+      pos = g.call_function(aten.unsqueeze.default, (pos, 0))
+      first = g.call_function(aten.slice.Tensor, (pos, 1, 0, 1))
+      first = g.call_function(aten.sub.Scalar, (first, 1))
+      padded = g.call_function(aten.cat.default, ([first, pos], 1))
+      hi = g.call_function(aten.slice.Tensor, (padded, 1, 1, self.seq_len + 1))
+      lo = g.call_function(aten.slice.Tensor, (padded, 1, 0, self.seq_len))
+      diff = g.call_function(aten.sub.Tensor, (hi, lo))
+      boundary = g.call_function(aten.ne.Scalar, (diff, 1))
+      seq_ids = g.call_function(aten.cumsum.default, (boundary, -1))
+      q_ids = g.call_function(aten.unsqueeze.default, (seq_ids, 2))
+      kv_ids = g.call_function(aten.unsqueeze.default, (seq_ids, 1))
+      same = g.call_function(aten.eq.Tensor, (q_ids, kv_ids))
+      same = g.call_function(aten.unsqueeze.default, (same, 1))
+      return g.call_function(aten.bitwise_and.Tensor, (causal, same))
+
+    gm = _sdpa_graph_with_mask(build)
+    detect_causal_mask.apply(gm, example_inputs=None)
+    self._assert_rewritten(gm)
+
+  def test_sliding_window_mask_is_preserved(self):
+    aten = torch.ops.aten
+
+    def build(g, _):
+      causal, q_col, kv_row = _in_graph_causal_mask(
+          g, self.seq_len, self.batch_size
+      )
+      dist = g.call_function(aten.sub.Tensor, (q_col, kv_row))
+      in_window = g.call_function(aten.lt.Scalar, (dist, 4))
+      return g.call_function(aten.bitwise_and.Tensor, (causal, in_window))
+
+    gm = _sdpa_graph_with_mask(build)
+    detect_causal_mask.apply(gm, example_inputs=None)
+    self._assert_preserved(gm)
+
+  def test_mask_with_real_padding_input_is_preserved(self):
+    aten = torch.ops.aten
+
+    def build(g, extras):
+      causal, _, _ = _in_graph_causal_mask(g, self.seq_len, self.batch_size)
+      pad = g.call_function(aten.unsqueeze.default, (extras[0], 1))
+      pad = g.call_function(aten.unsqueeze.default, (pad, 1))
+      return g.call_function(aten.bitwise_and.Tensor, (causal, pad))
+
+    gm = _sdpa_graph_with_mask(build, extra_placeholders=("padding",))
+    q, k, v = self._qkv()
+    padding = torch.ones((self.batch_size, self.seq_len), dtype=torch.bool)
+    padding[0, :3] = False
+    detect_causal_mask.apply(gm, [q, k, v, padding])
+    self._assert_preserved(gm)
+
+  def test_nondeterministic_op_in_mask_is_not_folded(self):
+    aten = torch.ops.aten
+
+    def build(g, _):
+      causal, _, _ = _in_graph_causal_mask(g, self.seq_len, self.batch_size)
+      noise = g.call_function(
+          aten.rand.default, ([self.batch_size, 1, self.seq_len, self.seq_len],)
+      )
+      never = g.call_function(aten.lt.Scalar, (noise, 0.0))
+      # Numerically still causal, but depends on a seeded RNG op and so must
+      # not be treated as a compile-time constant.
+      return g.call_function(aten.logical_or.default, (causal, never))
+
+    gm = _sdpa_graph_with_mask(build)
+    detect_causal_mask.apply(gm, example_inputs=None)
+    self._assert_preserved(gm)
+
+
 if __name__ == "__main__":
   absltest.main()

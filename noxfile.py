@@ -119,7 +119,7 @@ def actionlint(session: nox.Session) -> None:
 # there.
 @nox.session
 def test_ci_tools(session: nox.Session) -> None:
-  """Run unit tests for CI base SHA resolution and diff isolation scripts."""
+  """Run unit tests for CI scripts and test generation tools."""
   session.install("pyyaml")
   session.run(
       "python",
@@ -129,6 +129,7 @@ def test_ci_tools(session: nox.Session) -> None:
       "ci/tools/check_directory_layout_test.py",
       "ci/tools/list_ci_tests_test.py",
       "ci/tools/run_bazel_diff_test.py",
+      "ci/tools/gen_torch_tests_test.py",
   )
 
 
@@ -164,9 +165,20 @@ _PYTORCH_VERSIONS: Final[Mapping[str, object]] = _load_pytorch_versions()
 _WHEEL_TORCH_VERSIONS: Final[Sequence[str]] = _PYTORCH_VERSIONS[
     "WHEEL_TORCH_VERSIONS"
 ]
+_EXTRA_PYTORCH_VERSIONS: Final[Sequence[str]] = _PYTORCH_VERSIONS[
+    "EXTRA_PYTORCH_VERSIONS"
+]
 _INTERMEDIATE_PATCH_VERSIONS: Final[Sequence[str]] = _PYTORCH_VERSIONS[
     "INTERMEDIATE_PATCH_VERSIONS"
 ]
+# Every non-default released PyTorch version the wheel supports (both extra
+# versions with their own glue and intermediate patches served by an older
+# glue), so older glues in EXTRA_PYTORCH_VERSIONS keep smoke-test coverage even
+# after _newest_supported_torch() moves to a newer release.
+_TESTED_TORCH_VERSIONS: Final[Sequence[str]] = sorted(
+    {*_EXTRA_PYTORCH_VERSIONS, *_INTERMEDIATE_PATCH_VERSIONS},
+    key=lambda v: tuple(map(int, v.split("."))),
+)
 
 
 def _newest_supported_torch() -> str:
@@ -277,7 +289,7 @@ def smoke_test(session: nox.Session, device: str, torch_variant: str) -> None:
 
 
 @nox.session
-@nox.parametrize("torch_version", _INTERMEDIATE_PATCH_VERSIONS)
+@nox.parametrize("torch_version", _TESTED_TORCH_VERSIONS)
 def intermediate_patch_abi(session: nox.Session, torch_version: str) -> None:
   """Run the smoke tests against an intermediate PyTorch release.
 

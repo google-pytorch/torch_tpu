@@ -29,8 +29,8 @@ namespace torch_tpu {
 inline mlir::MlirOp SigmoidBackward(mlir::MlirOp delta, mlir::MlirOp act,
                                     mlir::MlirOp one) {
   mlir::MlirOp one_minus_act = mlir::stablehlo::Subtract(one, act);
-  mlir::MlirOp act_term = mlir::stablehlo::Mul(act, one_minus_act);
-  return mlir::stablehlo::Mul(delta, act_term);
+  mlir::MlirOp delta_one_minus_act = mlir::stablehlo::Mul(delta, one_minus_act);
+  return mlir::stablehlo::Mul(delta_one_minus_act, act);
 }
 
 // Computes the gradient through a tanh activation using its analytic

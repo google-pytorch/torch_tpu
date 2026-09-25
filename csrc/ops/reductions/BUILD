@@ -173,6 +173,7 @@ torch_tpu_cc_library(
         ":reduction_utils",
         ":reductions",
         ":sum",
+        "//csrc/common:aten_utils",
         "//csrc/common:cache_key",
         "//csrc/common:dimension_types",
         "//csrc/common:dtype",

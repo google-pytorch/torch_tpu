@@ -22,7 +22,7 @@ from absl import logging
 import torch
 import torch.utils._pytree as pytree
 from torch_tpu._internal.compile.dynamic import sym_utils
-from torch_tpu._internal.compile.dynamic.sym_shape_manager import SymShapeManager
+from torch_tpu._internal.compile.dynamic.graph_transform_context import GraphTransformContext
 
 
 def _get_node_val(arg: Any) -> Any:
@@ -36,7 +36,7 @@ def _extract_shape_tensors_and_bounds(
     graph_module: torch.fx.GraphModule,
     node: torch.fx.Node,
     target_shape: Sequence[Any],
-    sym_shape_manager: SymShapeManager,
+    transform_context: GraphTransformContext,
 ) -> tuple[list[torch.fx.Node], list[int], list[bool]]:
   """Extracts shape tensor nodes, static bounds, and dynamic flags for a target shape."""
   shape_tensors = []
@@ -46,8 +46,8 @@ def _extract_shape_tensors_and_bounds(
   for arg in target_shape:
     if sym_utils.is_symint(arg):
       is_dynamic.append(True)
-      static_shape.append(sym_shape_manager.get_upper_bound(arg))
-      tensor_node = sym_shape_manager.ensure_tensor(
+      static_shape.append(transform_context.get_upper_bound(arg))
+      tensor_node = transform_context.ensure_tensor(
           graph_module, arg, node, dtype=torch.int32
       )
       shape_tensors.append(tensor_node)
@@ -62,7 +62,7 @@ def _extract_shape_tensors_and_bounds(
           val, int
       ), f"Expected int for static shape arg, got {val}"
       static_shape.append(val)
-      tensor_node = sym_shape_manager.ensure_tensor(
+      tensor_node = transform_context.ensure_tensor(
           graph_module, arg, node, dtype=torch.int32
       )
       shape_tensors.append(tensor_node)
@@ -78,8 +78,8 @@ class HandleReshapeLikeOpsPass:
   expressions) as input and replaces them with torch.ops.tpu.dynamic_reshape.
   """
 
-  def __init__(self, sym_shape_manager: SymShapeManager):
-    self._sym_shape_manager = sym_shape_manager
+  def __init__(self, transform_context: GraphTransformContext):
+    self._transform_context = transform_context
     self._op_handlers = {
         torch.ops.aten.view.default: self._process_view_op,
         torch.ops.aten._unsafe_view.default: self._process_view_op,
@@ -122,7 +122,7 @@ class HandleReshapeLikeOpsPass:
       return
 
     shape_tensors, static_shape, is_dynamic = _extract_shape_tensors_and_bounds(
-        graph_module, node, target_shape, self._sym_shape_manager
+        graph_module, node, target_shape, self._transform_context
     )
 
     with graph_module.graph.inserting_after(node):
@@ -144,8 +144,8 @@ class HandleBroadcastLikeOpsPass:
   them with torch.ops.tpu.dynamic_broadcast.
   """
 
-  def __init__(self, sym_shape_manager: SymShapeManager):
-    self._sym_shape_manager = sym_shape_manager
+  def __init__(self, transform_context: GraphTransformContext):
+    self._transform_context = transform_context
     self._op_handlers = {
         torch.ops.aten.expand.default: self._process_broadcast_op,
         torch.ops.aten.expand_copy.default: self._process_broadcast_op,
@@ -196,7 +196,7 @@ class HandleBroadcastLikeOpsPass:
     broadcast_dims = list(range(r_out - r_in, r_out))
 
     shape_tensors, static_shape, is_dynamic = _extract_shape_tensors_and_bounds(
-        graph_module, node, target_shape, self._sym_shape_manager
+        graph_module, node, target_shape, self._transform_context
     )
 
     with graph_module.graph.inserting_after(node):
@@ -222,8 +222,8 @@ class HandleSliceLikeOpsPass:
   the operation's output shape metadata.
   """
 
-  def __init__(self, sym_shape_manager: SymShapeManager):
-    self._sym_shape_manager = sym_shape_manager
+  def __init__(self, transform_context: GraphTransformContext):
+    self._transform_context = transform_context
     self._op_handlers = {
         torch.ops.aten.slice.Tensor: self._process_slice_op,
         torch.ops.aten.slice_copy.Tensor: self._process_slice_op,
@@ -354,14 +354,14 @@ class HandleSliceLikeOpsPass:
 
     rank = len(inp_val.shape)
     start_indices = [
-        self._sym_shape_manager.ensure_tensor(
+        self._transform_context.ensure_tensor(
             graph_module, start if d == dim else 0, node, dtype=torch.int32
         )
         for d in range(rank)
     ]
 
     slice_sizes = [
-        self._sym_shape_manager.get_upper_bound(out_val.shape[d])
+        self._transform_context.get_upper_bound(out_val.shape[d])
         for d in range(rank)
     ]
 
@@ -369,7 +369,7 @@ class HandleSliceLikeOpsPass:
     if "val" in node.meta and hasattr(node.meta["val"], "shape"):
       for d, s in enumerate(node.meta["val"].shape):
         if sym_utils.is_symint(s):
-          size_tensor_node = self._sym_shape_manager.ensure_tensor(
+          size_tensor_node = self._transform_context.ensure_tensor(
               graph_module, s, node, dtype=torch.int32
           )
           dynamic_dim_sizes.append((d, size_tensor_node))
@@ -408,15 +408,15 @@ class HandleSliceLikeOpsPass:
       return
 
     input_sizes_upper = [
-        self._sym_shape_manager.get_upper_bound(s) for s in input_sizes  # pyrefly: ignore[not-iterable]
+        self._transform_context.get_upper_bound(s) for s in input_sizes  # pyrefly: ignore[not-iterable]
     ]
-    end_upper = self._sym_shape_manager.get_upper_bound(end)
-    step_upper = self._sym_shape_manager.get_upper_bound(step)
+    end_upper = self._transform_context.get_upper_bound(end)
+    step_upper = self._transform_context.get_upper_bound(step)
 
     dynamic_dim_sizes: list[tuple[int, torch.fx.Node]] = []
     for d, s in enumerate(input_sizes):  # pyrefly: ignore[not-iterable, bad-argument-type]
       if sym_utils.is_symint(s):
-        size_tensor_node = self._sym_shape_manager.ensure_tensor(
+        size_tensor_node = self._transform_context.ensure_tensor(
             graph_module, s, node, dtype=torch.int32
         )
         dynamic_dim_sizes.append((d, size_tensor_node))
@@ -465,7 +465,7 @@ class HandleSliceLikeOpsPass:
 
     rank = len(inp_val.shape)
     start_indices = [
-        self._sym_shape_manager.ensure_tensor(
+        self._transform_context.ensure_tensor(
             graph_module, index if d == dim else 0, node, dtype=torch.int32
         )
         for d in range(rank)
@@ -474,7 +474,7 @@ class HandleSliceLikeOpsPass:
     slice_sizes = [
         1
         if d == dim
-        else self._sym_shape_manager.get_upper_bound(inp_val.shape[d])
+        else self._transform_context.get_upper_bound(inp_val.shape[d])
         for d in range(rank)
     ]
 
@@ -482,7 +482,7 @@ class HandleSliceLikeOpsPass:
     if "val" in node.meta and hasattr(node.meta["val"], "shape"):
       for d, s in enumerate(node.meta["val"].shape):
         if sym_utils.is_symint(s):
-          size_tensor_node = self._sym_shape_manager.ensure_tensor(
+          size_tensor_node = self._transform_context.ensure_tensor(
               graph_module, s, node, dtype=torch.int32
           )
           dynamic_dim_sizes.append((d, size_tensor_node))

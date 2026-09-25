@@ -13,9 +13,11 @@
 # limitations under the License.
 
 import sys
+import unittest
 from unittest import mock
 
 from absl.testing import absltest
+from torch_tpu._internal.utils import utils
 from tests import oss_utils
 from tests import seed_test_utils
 
@@ -35,57 +37,55 @@ class OssUtilsTest(seed_test_utils.RepeatableTest):
     mock_libtpu = mock.MagicMock()
     mock_libtpu.__version__ = '0.4.0'
     with mock.patch.dict(sys.modules, {'libtpu': mock_libtpu}):
-      self.assertEqual(oss_utils.libtpu_version(), '0.4.0')
+      self.assertEqual(utils.libtpu_version(), (0, 4, 0))
 
   def test_libtpu_version_when_libtpu_unavailable(self):
     with mock.patch.dict(sys.modules, {'libtpu': None}):
-      with self.assertRaisesRegex(ValueError, 'libtpu is not available'):
-        oss_utils.libtpu_version()
+      self.assertIsNone(utils.libtpu_version())
 
-  def test_skip_libtpu_older_than_min_version(self):
+  def test_skip_if_libtpu_version_older_than_min_version(self):
     mock_libtpu = mock.MagicMock()
     mock_libtpu.__version__ = '0.0.40'
     with mock.patch.dict(sys.modules, {'libtpu': mock_libtpu}):
 
-      @oss_utils.skip_if_cloud_and_libtpu_older_than('0.0.42')
-      def dummy_test(test_class):  # pylint: disable=unused-argument
+      @oss_utils.skip_if_libtpu_version(
+          lambda v: v < (0, 0, 42),
+          'Requires libtpu >= 0.0.42',
+      )
+      def dummy_test():
         pass
 
-      mock_self = mock.MagicMock(
-          spec=absltest.TestCase  # ABSLTEST_OK=Mock spec for absltest
-      )
-      dummy_test(mock_self)
-      mock_self.skipTest.assert_called_once_with(
-          'dummy_test requires libtpu >= 0.0.42 in cloud, but got 0.0.40'
-      )
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing unittest.SkipTest decorator behavior
+          unittest.SkipTest, 'Requires libtpu >= 0.0.42'
+      ):
+        dummy_test()
 
-  def test_no_skip_libtpu_newer_than_min_version(self):
+  def test_skip_if_libtpu_version_no_skip_newer_than_min_version(self):
     mock_libtpu = mock.MagicMock()
     mock_libtpu.__version__ = '0.0.43'
     with mock.patch.dict(sys.modules, {'libtpu': mock_libtpu}):
 
-      @oss_utils.skip_if_cloud_and_libtpu_older_than('0.0.42')
-      def dummy_test(test_class):  # pylint: disable=unused-argument
-        pass
-
-      mock_self = mock.MagicMock(
-          spec=absltest.TestCase  # ABSLTEST_OK=Mock spec for absltest
+      @oss_utils.skip_if_libtpu_version(
+          lambda v: v < (0, 0, 42),
+          'Requires libtpu >= 0.0.42',
       )
-      dummy_test(mock_self)
-      mock_self.skipTest.assert_not_called()
+      def dummy_test():
+        return 'ok'
 
-  def test_no_skip_outside_cloud(self):
+      self.assertEqual(dummy_test(), 'ok')
+
+  def test_skip_if_libtpu_version_no_skip_outside_oss(self):
     with mock.patch.dict(sys.modules, {'libtpu': None}):
+      with mock.patch.object(oss_utils, 'is_oss', return_value=False):
 
-      @oss_utils.skip_if_cloud_and_libtpu_older_than('0.0.42')
-      def dummy_test(test_class):  # pylint: disable=unused-argument
-        pass
+        @oss_utils.skip_if_libtpu_version(
+            lambda v: v < (0, 0, 42),
+            'Requires libtpu >= 0.0.42',
+        )
+        def dummy_test():
+          return 'ok'
 
-      mock_self = mock.MagicMock(
-          spec=absltest.TestCase  # ABSLTEST_OK=Mock spec for absltest
-      )
-      dummy_test(mock_self)
-      mock_self.skipTest.assert_not_called()
+        self.assertEqual(dummy_test(), 'ok')
 
 
 if __name__ == '__main__':

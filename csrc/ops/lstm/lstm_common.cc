@@ -30,10 +30,11 @@ LstmGateAdjoints ComputeLstmGateAdjoints(mlir::MlirOp delta_h,
   // Output gate adjoint: delta_o = delta_h * tanh(c)
   mlir::MlirOp delta_o = mlir::stablehlo::Mul(delta_h, tanh_c);
 
-  // Cell state adjoint: delta_c = delta_c_next + o * dtanh(c)
-  mlir::MlirOp dtanh_c = TanhBackward(delta_h, tanh_c, one);
-  mlir::MlirOp delta_c_from_h = mlir::stablehlo::Mul(o, dtanh_c);
-  mlir::MlirOp delta_c = mlir::stablehlo::Add(delta_c_next, delta_c_from_h);
+  // Cell state adjoint: delta_c = (delta_h * o) * (1 - tanh(c)^2) +
+  // delta_c_next
+  mlir::MlirOp go_og = mlir::stablehlo::Mul(delta_h, o);
+  mlir::MlirOp delta_c_from_h = TanhBackward(go_og, tanh_c, one);
+  mlir::MlirOp delta_c = mlir::stablehlo::Add(delta_c_from_h, delta_c_next);
 
   // Cell state adjoint propagating to previous step: delta_c_prev = delta_c * f
   mlir::MlirOp delta_c_prev = mlir::stablehlo::Mul(delta_c, f);

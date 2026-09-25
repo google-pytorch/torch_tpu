@@ -26,6 +26,7 @@
 #include "ATen/ceil_div.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
@@ -192,6 +193,13 @@ absl::StatusOr<mlir::MlirOp> BuildScaledMmShlo(
   return scaled_result;
 }
 
+// SWIZZLE_32_4_4 requires fixed 128x4 hardware tiles (interleaving
+// 4 groups of 32 rows). Get the expected element count for the scaler.
+int64_t SwizzledScaleNumel(int64_t outer, int64_t k_logical) {
+  return at::ceil_div(outer, int64_t{128}) * 128 *
+         at::ceil_div(k_logical, int64_t{4}) * 4;
+}
+
 #if TT_TORCH_VERSION_GE(2, 14)  // See scaled_mm_aten_kernels.h.
 absl::Status ValidateScaledMmV2Inputs(
     const at::Tensor& self, const at::Tensor& mat2,
@@ -287,6 +295,26 @@ absl::Status ValidateScaledMmV2Inputs(
   TT_RETURN_IF_ERROR(check_swizzle(swiz_a, "scale_a"));
   TT_RETURN_IF_ERROR(check_swizzle(swiz_b, "scale_b"));
 
+  // A swizzled scale buffer is flat. Checking the element count of the scale
+  // satisfy the need for swizzle and corresponding mat.
+  const auto check_swizzled_scale = [](const at::Tensor& scale, int64_t outer,
+                                       int64_t k_logical) -> absl::Status {
+    const int64_t expected_numel = SwizzledScaleNumel(outer, k_logical);
+    TT_RET_CHECK(scale.numel() == expected_numel, error::kInvalidArgument)
+        << "expected scale buffer to have " << expected_numel
+        << " elements for outer=" << outer << " and k_logical=" << k_logical
+        << ", got " << scale.numel() << " (" << ToString(scale.sizes()) << ")";
+    return absl::OkStatus();
+  };
+  if (swiz_a == at::blas::SwizzleType::SWIZZLE_32_4_4) {
+    TT_RETURN_IF_ERROR(
+        check_swizzled_scale(scale_a.front(), self.size(0), self.size(1) / 32));
+  }
+  if (swiz_b == at::blas::SwizzleType::SWIZZLE_32_4_4) {
+    TT_RETURN_IF_ERROR(
+        check_swizzled_scale(scale_b.front(), mat2.size(1), mat2.size(0) / 32));
+  }
+
   if (bias.has_value()) {
     TT_RET_CHECK(bias->dim() == 1 || bias->dim() == 2, error::kInvalidArgument)
         << "expected bias to be 1D or 2D tensor, got " << bias->dim() << "D";
@@ -344,15 +372,11 @@ absl::StatusOr<mlir::MlirOp> BuildUnswizzle(mlir::MlirOp scale, Operand operand,
   const int64_t padded_k = k_blocks * 4;
   const auto scale_type = GetTensorTypeOrDie(scale);
 
-  // SWIZZLE_32_4_4 requires fixed 128x4 hardware tiles (interleaving
-  // 4 groups of 32 rows). Callers (e.g. PyTorch `to_blocked`) pad unaligned
-  // shapes up to full tiles, so the swizzled buffer has padded dimensions.
-  TT_RET_CHECK(scale_type.getNumElements() == padded_outer * padded_k,
-               error::kInvalidArgument)
-      << "expected scale buffer to have " << padded_outer * padded_k
-      << " elements for outer=" << outer << " and k_logical=" << k_logical
-      << ", got " << scale_type.getNumElements() << " ("
-      << ToString(scale_type.getShape()) << ")";
+  ABSL_CHECK_EQ(  // CRASH_OK=checked in ValidateScaledMmV2Inputs
+      scale_type.getNumElements(), padded_outer * padded_k)
+      << "unexpected scale buffer shape for outer=" << outer
+      << " and k_logical=" << k_logical << ": "
+      << ToString(scale_type.getShape());
 
   // Worked example: outer = 256, K_logical = 8, i.e. a 256x8 logical scale
   // matrix stored as a 2x2 grid of 128x4 swizzled tiles, arriving flat.

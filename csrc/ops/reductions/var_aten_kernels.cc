@@ -24,6 +24,7 @@
 #include <tuple>
 #include <utility>
 
+#include "ATen/OpMathType.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "absl/status/statusor.h"
@@ -31,6 +32,7 @@
 #include "c10/core/ScalarType.h"
 #include "c10/util/Exception.h"
 #include "c10/util/OptionalArrayRef.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -70,11 +72,22 @@ NAryMlirOpBuilder<2, 1> CreateVarBuilder(Dimensions dim_vec,
              -> absl::StatusOr<mlir::MlirOp> {
     auto& [self_op, correction_op] = inputs;
     mlir::MlirBuilder& builder = self_op.getBuilder();
+    const mlir::ElementType self_elem_type = GetElementTypeOrDie(self_op);
+    TT_ASSIGN_OR_RETURN(const mlir::ElementType self_compute_dtype,
+                        InferComputationDtype(self_elem_type));
+    TT_ASSIGN_OR_RETURN(const mlir::ElementType real_compute_dtype,
+                        InferComputationDtype(scalar_dtype_mlir));
+
+    TT_ASSIGN_OR_RETURN(self_op, CastIfNeeded(self_op, self_compute_dtype));
+    TT_ASSIGN_OR_RETURN(correction_op,
+                        CastIfNeeded(correction_op, real_compute_dtype));
     mlir::Type type = GetTensorTypeOrDie(self_op).getElementType();
+    mlir::Type corr_type = GetTensorTypeOrDie(correction_op).getElementType();
 
     // sum_tensor = ReduceSum(self, dim, keep_dims=true)
-    TT_ASSIGN_OR_RETURN(
-        auto sum_op, BuildSumShlo(self_op, dim_vec, ReductionMode::kKeepDims));
+    TT_ASSIGN_OR_RETURN(auto sum_op,
+                        BuildSumShlo(self_op, dim_vec, ReductionMode::kKeepDims,
+                                     self_compute_dtype));
 
     // mean = sum_tensor / reduction_size
     mlir::MlirOp reduction_size_const;
@@ -91,19 +104,23 @@ NAryMlirOpBuilder<2, 1> CreateVarBuilder(Dimensions dim_vec,
     // diff = self - mean
     TT_ASSIGN_OR_RETURN(auto diff, BuildSubShlo(self_op, mean));
 
-    // conj_diff = conj(diff)
-    TT_ASSIGN_OR_RETURN(auto conj_diff, BuildConjPhysicalShlo(diff));
-
-    // squared_diff = diff * conj_diff
-    TT_ASSIGN_OR_RETURN(auto squared_diff, BuildMulShlo(diff, conj_diff));
+    mlir::MlirOp squared_diff;
+    if (llvm::isa<mlir::ComplexType>(type)) {
+      mlir::MlirOp real_diff = mlir::stablehlo::Real(diff);
+      mlir::MlirOp imag_diff = mlir::stablehlo::Imag(diff);
+      TT_ASSIGN_OR_RETURN(auto real_sq, BuildMulShlo(real_diff, real_diff));
+      TT_ASSIGN_OR_RETURN(auto imag_sq, BuildMulShlo(imag_diff, imag_diff));
+      TT_ASSIGN_OR_RETURN(squared_diff, BuildAddShlo(real_sq, imag_sq));
+    } else {
+      TT_ASSIGN_OR_RETURN(squared_diff, BuildMulShlo(diff, diff));
+    }
 
     // sum_sq_tensor = ReduceSum(squared_diff, dim, keep_dims=keep_dim)
-    TT_ASSIGN_OR_RETURN(
-        auto sum_sq_op,
-        BuildSumShlo(squared_diff, dim_vec, reduction_mode, scalar_dtype_mlir));
+    TT_ASSIGN_OR_RETURN(auto sum_sq_op,
+                        BuildSumShlo(squared_diff, dim_vec, reduction_mode,
+                                     real_compute_dtype));
 
     // denom = max(reduction_size - correction, 0)
-    mlir::Type corr_type = GetTensorTypeOrDie(correction_op).getElementType();
     auto reduction_size_const_corr = MakeScalarConstant(
         builder, static_cast<double>(reduction_size), corr_type);
     TT_ASSIGN_OR_RETURN(auto denom_diff,
@@ -112,7 +129,8 @@ NAryMlirOpBuilder<2, 1> CreateVarBuilder(Dimensions dim_vec,
     TT_ASSIGN_OR_RETURN(auto denom, BuildMaximumShlo(denom_diff, zero));
 
     // res = sum_sq_tensor / denom
-    return BuildDivShlo(sum_sq_op, denom);
+    TT_ASSIGN_OR_RETURN(auto res, BuildDivShlo(sum_sq_op, denom));
+    return CastIfNeeded(res, scalar_dtype_mlir);
   };
 }
 
@@ -151,8 +169,9 @@ at::Tensor AtenVar(const at::Tensor& self, c10::OptionalArrayRef<int64_t> dim,
         Dimensions output_dims = GetSizesAfterReduction(
             self.sizes(), reduction_mode, canonicalized_dims);
 
-        TT_ASSIGN_OR_THROW(at::Tensor correction_tensor,
-                           promoted_correction.GetTensor(scalar_dtype));
+        TT_ASSIGN_OR_THROW(
+            at::Tensor correction_tensor,
+            promoted_correction.GetTensor(at::toOpMathType(scalar_dtype)));
         TT_ASSIGN_OR_THROW(int64_t reduction_size,
                            GetReductionFactor(self, dim));
         double correction_val = promoted_correction.scalar().toDouble();
@@ -195,8 +214,9 @@ at::Tensor& AtenVarOut(const at::Tensor& self,
         Dimensions output_dims = GetSizesAfterReduction(
             self.sizes(), reduction_mode, canonicalized_dims);
 
-        TT_ASSIGN_OR_THROW(at::Tensor correction_tensor,
-                           promoted_correction.GetTensor(scalar_dtype));
+        TT_ASSIGN_OR_THROW(
+            at::Tensor correction_tensor,
+            promoted_correction.GetTensor(at::toOpMathType(scalar_dtype)));
         TT_ASSIGN_OR_THROW(const int64_t reduction_size,
                            GetReductionFactor(self, dim));
         double correction_val = promoted_correction.scalar().toDouble();
@@ -256,8 +276,9 @@ std::tuple<at::Tensor, at::Tensor> AtenVarMeanCorrection(
           computation_dtype = mlir::ElementType::F32;
         }
 
-        TT_ASSIGN_OR_THROW(const at::Tensor correction_tensor,
-                           promoted_correction.GetTensor(scalar_dtype));
+        TT_ASSIGN_OR_THROW(
+            const at::Tensor correction_tensor,
+            promoted_correction.GetTensor(at::toOpMathType(scalar_dtype)));
         TT_ASSIGN_OR_THROW(const int64_t reduction_size,
                            GetReductionFactor(self, dim));
         double correction_val = promoted_correction.scalar().toDouble();

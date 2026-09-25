@@ -18,8 +18,8 @@ benchmarks {
     runner_label: "linux-x86-tpu7x-224-4tpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
     workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
-    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.49" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
   }
 
@@ -27,7 +27,7 @@ benchmarks {
     id: "gpu-b200"
     runner_label: "linux-x86-a4-224-b200-8gpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=b200_1,TORCH_DEVICE_BACKEND_AUTOLOAD=0" }
   }
 
@@ -59,8 +59,8 @@ benchmarks {
     runner_label: "linux-x86-tpu7x-224-4tpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
     workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
-    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.49" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
   }
 
@@ -68,7 +68,7 @@ benchmarks {
     id: "gpu-b200"
     runner_label: "linux-x86-a4-224-b200-8gpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=b200_1,TORCH_DEVICE_BACKEND_AUTOLOAD=0" }
   }
 
@@ -100,8 +100,8 @@ benchmarks {
     runner_label: "linux-x86-tpu7x-224-4tpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
     workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
-    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.49" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
   }
 
@@ -109,7 +109,7 @@ benchmarks {
     id: "gpu-b200"
     runner_label: "linux-x86-a4-224-b200-8gpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=b200_1,TORCH_DEVICE_BACKEND_AUTOLOAD=0" }
   }
 
@@ -141,8 +141,8 @@ benchmarks {
     runner_label: "linux-x86-tpu7x-224-4tpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
     workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
-    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.49" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
   }
 
@@ -150,7 +150,7 @@ benchmarks {
     id: "gpu-b200"
     runner_label: "linux-x86-a4-224-b200-8gpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=b200_1,TORCH_DEVICE_BACKEND_AUTOLOAD=0" }
   }
 
@@ -182,8 +182,8 @@ benchmarks {
     runner_label: "linux-x86-tpu7x-224-4tpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
     workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
-    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.49" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
   }
 
@@ -191,7 +191,7 @@ benchmarks {
     id: "gpu-b200"
     runner_label: "linux-x86-a4-224-b200-8gpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=b200_1,TORCH_DEVICE_BACKEND_AUTOLOAD=0" }
   }
 
@@ -223,8 +223,8 @@ benchmarks {
     runner_label: "linux-x86-tpu7x-224-4tpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
     workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
-    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.49" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
   }
 
@@ -232,7 +232,7 @@ benchmarks {
     id: "gpu-b200"
     runner_label: "linux-x86-a4-224-b200-8gpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=b200_1,TORCH_DEVICE_BACKEND_AUTOLOAD=0" }
   }
 
@@ -264,8 +264,8 @@ benchmarks {
     runner_label: "linux-x86-tpu7x-224-4tpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
     workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
-    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.49" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
   }
 
@@ -273,7 +273,7 @@ benchmarks {
     id: "gpu-b200"
     runner_label: "linux-x86-a4-224-b200-8gpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=b200_1,TORCH_DEVICE_BACKEND_AUTOLOAD=0" }
   }
 
@@ -305,8 +305,8 @@ benchmarks {
     runner_label: "linux-x86-tpu7x-224-4tpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
     workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
-    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.49" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
   }
 
@@ -314,7 +314,7 @@ benchmarks {
     id: "gpu-b200"
     runner_label: "linux-x86-a4-224-b200-8gpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=b200_1,TORCH_DEVICE_BACKEND_AUTOLOAD=0" }
   }
 
@@ -346,8 +346,8 @@ benchmarks {
     runner_label: "linux-x86-tpu7x-224-4tpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
     workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
-    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.49" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
   }
 
@@ -355,7 +355,7 @@ benchmarks {
     id: "gpu-b200"
     runner_label: "linux-x86-a4-224-b200-8gpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=b200_1,TORCH_DEVICE_BACKEND_AUTOLOAD=0" }
   }
 
@@ -387,8 +387,8 @@ benchmarks {
     runner_label: "linux-x86-tpu7x-224-4tpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
     workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
-    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.49" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
   }
 
@@ -396,7 +396,7 @@ benchmarks {
     id: "gpu-b200"
     runner_label: "linux-x86-a4-224-b200-8gpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=b200_1,TORCH_DEVICE_BACKEND_AUTOLOAD=0" }
   }
 
@@ -428,8 +428,8 @@ benchmarks {
     runner_label: "linux-x86-tpu7x-224-4tpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
     workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
-    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.49" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
   }
 
@@ -437,7 +437,7 @@ benchmarks {
     id: "gpu-b200"
     runner_label: "linux-x86-a4-224-b200-8gpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=b200_1,TORCH_DEVICE_BACKEND_AUTOLOAD=0" }
   }
 
@@ -469,8 +469,8 @@ benchmarks {
     runner_label: "linux-x86-tpu7x-224-4tpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
     workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
-    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.49" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
   }
 
@@ -478,7 +478,7 @@ benchmarks {
     id: "gpu-b200"
     runner_label: "linux-x86-a4-224-b200-8gpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=b200_1,TORCH_DEVICE_BACKEND_AUTOLOAD=0" }
   }
 
@@ -510,8 +510,8 @@ benchmarks {
     runner_label: "linux-x86-tpu7x-224-4tpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
     workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
-    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.49" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
   }
 
@@ -519,7 +519,7 @@ benchmarks {
     id: "gpu-b200"
     runner_label: "linux-x86-a4-224-b200-8gpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=b200_1,TORCH_DEVICE_BACKEND_AUTOLOAD=0" }
   }
 
@@ -551,8 +551,8 @@ benchmarks {
     runner_label: "linux-x86-tpu7x-224-4tpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
     workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
-    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.49" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
   }
 
@@ -560,7 +560,7 @@ benchmarks {
     id: "gpu-b200"
     runner_label: "linux-x86-a4-224-b200-8gpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=b200_1,TORCH_DEVICE_BACKEND_AUTOLOAD=0" }
   }
 
@@ -592,8 +592,8 @@ benchmarks {
     runner_label: "linux-x86-tpu7x-224-4tpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
     workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
-    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.49" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
   }
 
@@ -601,7 +601,7 @@ benchmarks {
     id: "gpu-b200"
     runner_label: "linux-x86-a4-224-b200-8gpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=b200_1,TORCH_DEVICE_BACKEND_AUTOLOAD=0" }
   }
 
@@ -633,8 +633,8 @@ benchmarks {
     runner_label: "linux-x86-tpu7x-224-4tpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
     workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
-    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.49" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
   }
 
@@ -642,7 +642,7 @@ benchmarks {
     id: "gpu-b200"
     runner_label: "linux-x86-a4-224-b200-8gpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=b200_1,TORCH_DEVICE_BACKEND_AUTOLOAD=0" }
   }
 
@@ -673,8 +673,8 @@ benchmarks {
     runner_label: "linux-x86-tpu7x-224-4tpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
     workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
-    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.49" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_2x2x1" }
   }
 
@@ -682,7 +682,7 @@ benchmarks {
     id: "gpu-b200"
     runner_label: "linux-x86-a4-224-b200-8gpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
-    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.14.0" }
     workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=b200_8,TORCH_DEVICE_BACKEND_AUTOLOAD=0" }
   }
 

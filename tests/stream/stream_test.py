@@ -59,34 +59,36 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
 
     # Initial state: default stream is active
     self.assertEqual(
-        torch.tpu.current_stream().stream_id, default_stream.stream_id
+        torch.accelerator.current_stream().stream_id, default_stream.stream_id
     )
 
     # 1. set_stream updates current_stream
     torch.tpu.set_stream(new_stream)
-    self.assertEqual(torch.tpu.current_stream().stream_id, new_stream.stream_id)
+    self.assertEqual(
+        torch.accelerator.current_stream().stream_id, new_stream.stream_id
+    )
 
     torch.tpu.set_stream(default_stream)
     self.assertEqual(
-        torch.tpu.current_stream().stream_id, default_stream.stream_id
+        torch.accelerator.current_stream().stream_id, default_stream.stream_id
     )
 
     # 2. with stream(s): changes current_stream and restores it upon exit
     with torch.tpu.stream(new_stream):
       self.assertEqual(
-          torch.tpu.current_stream().stream_id, new_stream.stream_id
+          torch.accelerator.current_stream().stream_id, new_stream.stream_id
       )
     self.assertEqual(
-        torch.tpu.current_stream().stream_id, default_stream.stream_id
+        torch.accelerator.current_stream().stream_id, default_stream.stream_id
     )
 
     # 3. with stream(None): is a no-op
     with torch.tpu.stream(None):
       self.assertEqual(
-          torch.tpu.current_stream().stream_id, default_stream.stream_id
+          torch.accelerator.current_stream().stream_id, default_stream.stream_id
       )
     self.assertEqual(
-        torch.tpu.current_stream().stream_id, default_stream.stream_id
+        torch.accelerator.current_stream().stream_id, default_stream.stream_id
     )
 
   def test_stream_unimplemented_method(self):
@@ -208,19 +210,19 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
     t_tpu = torch.ones(size, device='tpu', dtype=torch.float32)
     t_cpu = torch.empty(size, device='cpu', pin_memory=True)
 
-    default_stream = torch.tpu.current_stream()
+    default_stream = torch.accelerator.current_stream()
     transfer_stream = torch.tpu.Stream()
 
     # Start a non-blocking copy on the transfer stream
     with torch.tpu.stream(transfer_stream):
-      current_stream = torch.tpu.current_stream()
+      current_stream = torch.accelerator.current_stream()
       self.assertEqual(current_stream.stream_id, transfer_stream.stream_id)
       t_cpu.copy_(t_tpu, non_blocking=True)
       transfer_event = torch.tpu.Event()
       transfer_event.record()
 
     self.assertEqual(
-        torch.tpu.current_stream().stream_id, default_stream.stream_id
+        torch.accelerator.current_stream().stream_id, default_stream.stream_id
     )
 
     # We should be able to synchronize on the event recorded on the

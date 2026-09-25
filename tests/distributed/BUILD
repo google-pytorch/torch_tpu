@@ -39,8 +39,8 @@ torch_tpu_py_library(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal:env",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:environment",
         "//src/torch_tpu/_internal/utils:hardware",
+        "//tests:oss_utils",
         "//tests:seed_test_utils",
         "@pypi//portpicker",
     ],
@@ -96,7 +96,6 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
-        "//src/torch_tpu:_loader",
         "//src/torch_tpu/_internal/distributed:torchcomm_tpu",
         "//tests:seed_test_utils",
     ],
@@ -343,7 +342,7 @@ torch_tpu_py_test(
     ],
     env = {"TORCH_SHOW_CPP_STACKTRACES": "1"},
     main = "collective_errors_test.py",
-    notest_oss = True,  # fix hang in OSS (TODO)
+    notap = "Run by error_coverage_test in the torch_tpu.error_coverage Guitar workflow.",
     shard_count = 12,
     tags = if_oss(
         ["exclusive"],
@@ -424,6 +423,7 @@ torch_tpu_py_test(
     ],
     env = {"TORCH_SHOW_CPP_STACKTRACES": "1"},
     main = "alltoall_collective_errors_test.py",
+    notap = "Run by error_coverage_test in the torch_tpu.error_coverage Guitar workflow.",
     shard_count = 8,
     tags = if_oss(
         ["exclusive"],
@@ -484,6 +484,7 @@ torch_tpu_py_test(
         "TORCH_DISABLE_ADDR2LINE": "1",
     },
     main = "all_gather_errors_test.py",
+    notap = "Run by error_coverage_test in the torch_tpu.error_coverage Guitar workflow.",
     shard_count = 3,
     tags = if_oss(
         ["exclusive"],
@@ -570,6 +571,7 @@ torch_tpu_py_test(
         "TORCH_DISABLE_ADDR2LINE": "1",
     },
     main = "scatter_errors_test.py",
+    notap = "Run by error_coverage_test in the torch_tpu.error_coverage Guitar workflow.",
     shard_count = 3,
     tags = if_oss(
         ["exclusive"],

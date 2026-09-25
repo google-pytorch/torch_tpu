@@ -18,6 +18,7 @@ load(
     "oss_target",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
+    "torch_tpu_py_test",
 )
 load("//shims/pybind11:pybind.bzl", "pybind_extension")
 
@@ -26,6 +27,43 @@ package(
     default_visibility = [
         "//:__subpackages__",
         "//shims/torchtitan:__subpackages__",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "environment",
+    srcs = ["environment.py"],
+    deps = [
+        ":tpu_distributed",
+        "//shims/absl_py/logging",
+        "//src/torch_tpu/_internal:env",
+        "//src/torch_tpu/_internal:env_utils",
+        "//src/torch_tpu/_internal/utils:annotations",
+        "//src/torch_tpu/_internal/utils:hardware",
+        "@pypi//portpicker",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "api",
+    srcs = ["api.py"],
+    deps = [
+        ":environment",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "environment_test",
+    srcs = ["environment_test.py"],
+    strict = True,
+    deps = [
+        ":environment",
+        "//shims/absl_py/testing:absltest",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal:env",
+        "//src/torch_tpu/_internal:env_utils",
+        "//src/torch_tpu/_internal/utils:hardware",
+        "//tests:seed_test_utils",
     ],
 )
 

@@ -68,7 +68,7 @@ class _DeviceStub:
 
 def _gather_global_device_info(device_type: str) -> list[_DeviceStub]:
   """Each torch rank reports its PJRT device; returns list indexed by rank."""
-  d = torch.get_device_module(device_type).get_local_device_attributes()
+  d = torch.get_device_module(device_type)._get_local_device_attributes()  # pylint: disable=protected-access
 
   payload = torch.tensor(
       [

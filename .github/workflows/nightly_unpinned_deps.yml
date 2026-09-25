@@ -70,6 +70,11 @@ jobs:
             config: "ci_cpu_nightly",
           }
         ]
+        include:
+          - python_version: "3.14"
+            job_info:
+              runner: "linux-x86-tpu7x-224-4tpu"
+              config: "ci_tpu_v7_nightly"
     # Use self-hosted runners. For a Linux runner, a corresponding container image used for the
     # workflow is required.
     # See go/ml-github-actions/getting_started/using_runners.md#supported-runner-scale-set.
@@ -113,10 +118,24 @@ jobs:
 
       # Run the full test suite on CPU with Bazel using unpinned dependencies.
       - name: Run Bazel Tests
+        if: matrix.job_info.config != 'ci_tpu_v7_nightly'
         run: |
           bazel test //... \
             --config=${{ matrix.job_info.config }} \
             --repo_env=HERMETIC_PYTHON_VERSION=${{ matrix.python_version }}
+
+      # Run the full nightly TPU test suite with Bazel using unpinned dependencies.
+      - name: Run Bazel TPU Tests
+        if: matrix.job_info.config == 'ci_tpu_v7_nightly'
+        run: |
+          ALL_TESTS="//""..."
+          TEST_TARGETS=$(bazel query "tests(${ALL_TESTS}) except attr(\"tags\", \"nonightly\", tests(${ALL_TESTS}))" | tr '\n' ' ')
+          # shellcheck disable=SC2086
+          bazel test \
+            --config=${{ matrix.job_info.config }} \
+            --repo_env=HERMETIC_PYTHON_VERSION=${{ matrix.python_version }} \
+            --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" \
+            ${TEST_TARGETS}
 
       # Upload test logs on failure for triage.
       - name: Upload Test Logs on Failure

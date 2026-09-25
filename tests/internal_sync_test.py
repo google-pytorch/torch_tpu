@@ -107,13 +107,17 @@ class InternalSyncTest(absltest.TestCase):  # ABSLTEST_OK=Internal sync test
 
     sync.synchronize(y, wait=True)
 
-    # The entire stream is materialized, including the specific target `y`.
+    # The entire stream starts materializing up to the point in time where the
+    # synchronize call was made, including all of x, y, and z.
+    # We block until y is materialized, and x was dispatched before y, so both
+    # x and y are materialized and ready.
     self.assertTrue(sync.is_materializing(x))
     self.assertTrue(sync.is_materialized(x))
     self.assertTrue(sync.is_materializing(y))
     self.assertTrue(sync.is_materialized(y))
+
+    # z will have started materializing, but may not have finished yet.
     self.assertTrue(sync.is_materializing(z))
-    self.assertTrue(sync.is_materialized(z))
 
   def test_sync_and_wait_list(self):
     x = torch.ones(10, device=torch.device("tpu"))
@@ -271,24 +275,22 @@ class InternalSyncTest(absltest.TestCase):  # ABSLTEST_OK=Internal sync test
         digraph {
           // Vertices:
           0 [shape="box", label=" uint64[2] (materialized)"];
-          1 [label="uniform_"];
-          2 [shape="box", label="x: float32[2, 3]"];
-          3 [label="sum.IntList_out"];
-          4 [shape="box", label="z: float32[]"];
-          5 [label="scalar_tensor"];
-          6 [shape="box", label=" float32[]"];
-          7 [label="pow.out"];
-          8 [shape="box", label="y: float32[2, 3]"];
+          1 [shape="box", label=" float32[] (materialized)"];
+          2 [label="uniform_"];
+          3 [shape="box", label="x: float32[2, 3]"];
+          4 [label="sum.IntList_out"];
+          5 [shape="box", label="z: float32[]"];
+          6 [label="pow.out"];
+          7 [shape="box", label="y: float32[2, 3]"];
 
           // Edges:
-          0 -> 1
-          1 -> 2
+          0 -> 2
           2 -> 3
           3 -> 4
-          5 -> 6
-          2 -> 7
+          4 -> 5
+          3 -> 6
+          1 -> 6
           6 -> 7
-          7 -> 8
         }
         """)
 
@@ -308,27 +310,22 @@ class InternalSyncTest(absltest.TestCase):  # ABSLTEST_OK=Internal sync test
         Graphviz string: (try pasting in http://graphviz/ to see the graph)
         digraph {
           // Vertices:
-          0 [label="scalar_tensor"];
-          1 [shape="box", label=" float32[]"];
-          2 [label="fill_.Scalar"];
-          3 [shape="box", label=" float32[2, 3]"];
-          4 [label="scalar_tensor"];
-          5 [shape="box", label=" float32[]"];
-          6 [label="fill_.Scalar"];
-          7 [shape="box", label=" float32[2, 3]"];
-          8 [label="add.out"];
-          9 [shape="box", label=" float32[2, 3]"];
+          0 [shape="box", label=" float32[] (materialized)"];
+          1 [label="fill_.Scalar"];
+          2 [shape="box", label=" float32[2, 3]"];
+          3 [label="fill_.Scalar"];
+          4 [shape="box", label=" float32[2, 3]"];
+          5 [label="add.out"];
+          6 [shape="box", label=" float32[2, 3]"];
 
           // Edges:
           0 -> 1
           1 -> 2
-          2 -> 3
+          0 -> 3
+          3 -> 4
           4 -> 5
+          2 -> 5
           5 -> 6
-          6 -> 7
-          7 -> 8
-          3 -> 8
-          8 -> 9
         }
         """)
     with self.undeclared_outputs_dir() as output_dir:

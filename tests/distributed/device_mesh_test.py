@@ -21,10 +21,12 @@ from torch_tpu._internal.distributed import device_mesh
 from tests import seed_test_utils
 from tests.distributed import device_mesh_test_utils
 
-_loader._init_device("tpu")
-
 
 class DeviceMeshTest(seed_test_utils.MultiProcessRepeatableTest):
+
+  def setUp(self):
+    super().setUp()
+    _loader._init_device("tpu")  # INIT_DEVICE_OK=CPU runner
 
   def test_v6e_tiled(self):
     # An 8x8 physical grid where IDs (from 0 to 63) are assigned in 2x2 blocks

@@ -71,6 +71,8 @@ class TorchDeviceOps:
 
   def _validate_device_count(self) -> None:
     """The declared-vs-actual check that replaces detection."""
+    if self.target.device_kind == target_lib.DeviceKind.CPU:
+      return
     expected_local_devices = self.target.platform_spec.topology.nprocs_per_node
     actual_local_devices = torch.accelerator.device_count()
     if actual_local_devices < expected_local_devices:
@@ -83,14 +85,18 @@ class TorchDeviceOps:
 
   def await_result(self, out: Any) -> None:  # pylint: disable=unused-argument
     """Block until the work that produced out has completed."""
-    torch.accelerator.synchronize()
+    if self.target.device_kind != target_lib.DeviceKind.CPU:
+      torch.accelerator.synchronize()
 
   def reset_peak_memory(self) -> None:
     """Reset the peak-memory counter."""
-    torch.accelerator.reset_peak_memory_stats(self.device)
+    if self.target.device_kind != target_lib.DeviceKind.CPU:
+      torch.accelerator.reset_peak_memory_stats(self.device)
 
   def peak_memory_mb(self) -> float:
     """Peak device memory in MB since the last reset."""
+    if self.target.device_kind == target_lib.DeviceKind.CPU:
+      return 0.0
     return torch.accelerator.max_memory_allocated(self.device) / _MB
 
   def get_device_time(self, session_id: str | None = None) -> float:

@@ -81,6 +81,20 @@ jobs:
             runner: "linux-x86-tpu7x-224-4tpu",
             bazel_config: "ci_tpu_v7",
             extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
+          },
+          {
+            name: "TPU v5 (newest deps)",
+            runner: "linux-x86-ct5lp-224-8tpu",
+            bazel_config: "ci_tpu_v5",
+            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
+            use_latest_deps: true,
+          },
+          {
+            name: "TPU v7 (newest deps)",
+            runner: "linux-x86-tpu7x-224-4tpu",
+            bazel_config: "ci_tpu_v7",
+            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
+            use_latest_deps: true,
           }
         ]
     # Use self-hosted runners. See go/tt-devguide#test-machines for more details about the runners.
@@ -123,6 +137,9 @@ jobs:
         uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
         with:
           halt-dispatch-input: ${{ inputs.halt-for-connection }}
+      - name: Use newest dependencies lock
+        if: steps.check_superseded.outputs.skip != 'true' && matrix.job_info.use_latest_deps
+        run: cp requirements/requirements_3_14_latest.txt requirements/requirements_3_14.txt
       # Build test targets before running tests on hardware.
       - name: Build Test Targets
         if: steps.check_superseded.outputs.skip != 'true'
@@ -147,7 +164,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         if: failure()
         with:
-          name: bazel-testlogs-${{ matrix.job_info.runner }}
+          name: bazel-testlogs-${{ matrix.job_info.name || matrix.job_info.runner }}
           path: bazel-testlogs/
           retention-days: 7
 

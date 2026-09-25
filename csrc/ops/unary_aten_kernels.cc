@@ -398,22 +398,4 @@ at::Tensor& AtenFloorOut(const at::Tensor& self, at::Tensor& out) {
   });
 }
 
-at::Tensor& AtenSiluOut(const at::Tensor& self, at::Tensor& out) {
-  TT_KERNEL(OpName::kSiluOut, _, (self, out), {
-    TT_CHECK_THROW(self.scalar_type() != at::kBool &&
-                       self.scalar_type() != at::kInt &&
-                       self.scalar_type() != at::kLong,
-                   error::kPythonNotImplementedError)
-        << "not implemented for " << ToString(self.scalar_type());
-    TT_CHECK_THROW(self.is_floating_point(), error::kInvalidArgument)
-        << "expected the input dtype to be floating point, got "
-        << ToString(self.scalar_type());
-    TT_THROW_IF_ERROR(
-        UnaryOpOut(self, out, BuildSiluShlo,
-                   {.op_param_cache_keys = OpParamCacheKeys::Empty(),
-                    .allow_out_dtype_cast = false}));
-    return out;
-  });
-}
-
 }  // namespace torch_tpu

@@ -93,26 +93,6 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_library(
-    name = "shape_utils",
-    srcs = ["shape_utils.py"],
-    deps = [
-        "//shims/torch:pytorch",
-    ],
-)
-
-torch_tpu_py_test(
-    name = "shape_utils_test",
-    srcs = ["shape_utils_test.py"],
-    deps = [
-        ":shape_utils",
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "//tests:seed_test_utils",
-    ],
-)
-
-torch_tpu_py_library(
     name = "init",
     srcs = ["__init__.py"],
 )

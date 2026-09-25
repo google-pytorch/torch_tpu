@@ -3,10 +3,10 @@
 This is the how-to. For how the cluster is built, see
 [native_rbe_architecture.md](native_rbe_architecture.md).
 
-The single-chip v5e presubmit runs one test at a time on the shared `ct5lp`
-runner and takes 54–83 minutes. The `rbe-tpu-oss` Buildbarn cluster spreads the
-same tests across about 30 single-chip Cloud TPU v5e workers and a pool of CPU
-workers for compilation.
+The v5e presubmit runs on the shared 8-chip `ct5lp` runner, at most 8 tests at a
+time, and a full run takes 44–79 minutes. The `rbe-tpu-oss` Buildbarn cluster
+spreads the single-chip tests across 32 Cloud TPU v5e workers (one chip each)
+and a pool of CPU workers for compilation.
 
 You can use it three ways:
 
@@ -25,8 +25,8 @@ You can also start it by hand with `workflow_dispatch`.
 The `Presubmit on RBE` job writes the repository secrets `RBE_CA_CERT`,
 `RBE_CLIENT_CERT`, and `RBE_CLIENT_KEY` to `/tmp/rbe-certs/`, then runs `bazel
 test --config=ci_rbe_presubmit` against the Private Service Connect endpoint
-`grpcs://10.202.0.67:8980`. The job doesn't run for PRs from forks, because
-forks don't get repository secrets.
+`grpcs://10.202.0.67:8980`. The job skips PRs from forks, which keeps fork code
+off the workers. GitHub doesn't give fork PRs the repository secrets either.
 
 ## 2. From a GCE VM in the VPC
 
@@ -41,8 +41,9 @@ gcloud compute instances create <name> --project=rbe-tpu-oss --zone=us-east5-a \
   --boot-disk-size=100GB --boot-disk-type=pd-ssd --scopes=cloud-platform
 ```
 
-The VM's service account needs read access to the three `rbe-*` secrets in
-Secret Manager (see [Credentials](#credentials)).
+The VM runs as the project's default compute service account, which can already
+read the three `rbe-*` secrets in Secret Manager (see
+[Credentials](#credentials)).
 
 ### Install what stock Debian 12 is missing
 
@@ -81,12 +82,12 @@ bazel test --config=rbe_native_tpu --remote_executor=grpcs://10.202.0.15:8980 \
   //tests:autoload_test_tpu
 ```
 
-Use `10.202.0.15`. The frontend's certificate includes Subject Alternative Names
-(SANs) for `10.202.0.15` (VPC internal load balancer), `10.202.0.16` (GKE node),
-`10.202.0.67` (CI Private Service Connect endpoint), `127.0.0.1` and `localhost`
-(port-forwarding), and `frontend.buildbarn.svc.cluster.local`. Connecting to
-other internal IP addresses will fail the TLS hostname validation with `General
-OpenSslEngine problem`.
+Use `10.202.0.15`. The frontend's certificate covers `10.202.0.15` (VPC internal
+load balancer), `10.202.0.67` (CI Private Service Connect endpoint), `127.0.0.1`
+and `localhost` (port-forwarding), and two leftovers from earlier setups,
+`10.202.0.3` and `rbe.torchtpu.internal`. It doesn't cover the GKE node IP
+`10.202.0.16`. Any other address fails TLS hostname validation with `General
+OpenSslEngine problem`. Adding an endpoint means reissuing the cert.
 
 ## 3. From a cloudtop
 
@@ -110,10 +111,11 @@ port forward.
 
 ## Credentials
 
-Bazel reads the client certificate from `/tmp/rbe-certs/` (or
-`~/.config/torch_tpu/certs/`). On shared VMs or workstations, use `umask 077`
-when creating the certificate directory to prevent other users from reading the
-private key:
+Reading the three secrets needs `roles/secretmanager.secretAccessor` on them.
+VMs created as in [section 2](#2-from-a-gce-vm-in-the-vpc) already have it
+through the default compute service account.
+
+`.bazelrc` reads the certs from `/tmp/rbe-certs/`:
 
 ```bash
 umask 077
@@ -121,7 +123,25 @@ mkdir -p /tmp/rbe-certs
 gcloud secrets versions access latest --secret=rbe-ca-cert --project=rbe-tpu-oss > /tmp/rbe-certs/rbe_ca.crt
 gcloud secrets versions access latest --secret=rbe-client-crt --project=rbe-tpu-oss > /tmp/rbe-certs/rbe_client.crt
 gcloud secrets versions access latest --secret=rbe-client-key --project=rbe-tpu-oss > /tmp/rbe-certs/rbe_client.key
-chmod 600 /tmp/rbe-certs/rbe_client.key
+```
+
+On a shared machine, another user can create `/tmp/rbe-certs` before you do.
+Write the certs under your home directory instead, then point Bazel at them from
+`user.bazelrc` in the repo root (gitignored and loaded last). Use absolute
+paths; Bazel doesn't expand `~`. Run this from the repo root:
+
+```bash
+umask 077
+d="$HOME/.config/torch_tpu/certs"
+mkdir -p "$d"
+gcloud secrets versions access latest --secret=rbe-ca-cert --project=rbe-tpu-oss > "$d/rbe_ca.crt"
+gcloud secrets versions access latest --secret=rbe-client-crt --project=rbe-tpu-oss > "$d/rbe_client.crt"
+gcloud secrets versions access latest --secret=rbe-client-key --project=rbe-tpu-oss > "$d/rbe_client.key"
+cat >> user.bazelrc <<EOF
+common:rbe_native_tpu --tls_certificate=$d/rbe_ca.crt
+common:rbe_native_tpu --tls_client_certificate=$d/rbe_client.crt
+common:rbe_native_tpu --tls_client_key=$d/rbe_client.key
+EOF
 ```
 
 Never commit these files. `bazel/certs/` and `*.key` are in `.gitignore` as a
@@ -145,11 +165,10 @@ Each TPU worker has one v5e chip. Targets tagged `requires-tpu-v5lite:8` need an
 
 ## Measured times
 
-| What                                 | Time                                  |
-| :----------------------------------- | :------------------------------------ |
-| `//tests:autoload_test_tpu` on a v5e | ~12s test time                        |
-: worker                               :                                       :
-| `//csrc/common:flags_test`, build    | 8s total                              |
-: and test from a VM                   :                                       :
-| `//tests:ops_test_tpu-v5lite`, 50    | 3m 38s on RBE vs 4m 48s on one 8-chip |
-: shards                               : TPU VM                                :
+<!-- mdformat off(GitHub renders this file; keep the single-line table) -->
+What                                                 | Time
+:--------------------------------------------------- | :-------------------------------------------
+`//tests:autoload_test_tpu` on a v5e worker          | ~12s test time
+`//csrc/common:flags_test`, build and test from a VM | 8s total
+`//tests:ops_test_tpu-v5lite`, 50 shards             | 3m 38s on RBE vs 4m 48s on one 8-chip TPU VM
+<!-- mdformat on -->

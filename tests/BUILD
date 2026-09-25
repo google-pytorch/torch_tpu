@@ -22,6 +22,10 @@ load(
     "torch_tpu_py_test",
     "tpu_gen",
 )
+load(
+    "//shims/py_rules:pytype.bzl",
+    "pytype_strict_library",
+)
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -65,7 +69,9 @@ torch_tpu_py_library(
     testonly = True,
     srcs = ["oss_utils.py"],
     visibility = ["//:__subpackages__"],
-    deps = if_oss(
+    deps = [
+        "//src/torch_tpu/_internal/utils",
+    ] + if_oss(
         ["//shims/libtpu"],
         [],
     ),
@@ -83,6 +89,7 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu:_loader",
+        "//src/torch_tpu/_internal/distributed:environment",
         "//src/torch_tpu/_internal/pallas",
         "//src/torch_tpu/_internal/profiler:profiler_config",
         "//src/torch_tpu/_internal/utils:annotations",
@@ -97,6 +104,7 @@ torch_tpu_py_test(
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils",
     ],
 )
 
@@ -200,7 +208,8 @@ torch_tpu_py_test(
     ],
 )
 
-torch_tpu_py_library(
+pytype_strict_library(
+    # PY_LIBRARY_OK=Decouple from torch_tpu to avoid C++ dependency in coverage tests.
     name = "module_registry",
     srcs = ["module_registry.py"],
     data = [
@@ -269,10 +278,12 @@ torch_tpu_py_library(
     srcs = ["seed_test_utils.py"],
     visibility = ["//:__subpackages__"],
     deps = [
+        ":oss_utils",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/device:_device_ops_backend",
+        "//src/torch_tpu/_internal/utils:hardware",
     ],
 )
 
@@ -1367,7 +1378,6 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
-        "//src/torch_tpu:_loader",
     ],
 )
 
@@ -1381,7 +1391,6 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
-        "//src/torch_tpu:_loader",
         "//src/torch_tpu/_internal/compile",
     ],
 )
@@ -1565,7 +1574,7 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal:testing",
         "//src/torch_tpu/_internal/compile:compiler",
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",
-        "//src/torch_tpu/_internal/distributed/launchers:environment",
+        "//src/torch_tpu/_internal/distributed:environment",
         "//src/torch_tpu/_internal/dynamism",
         "//src/torch_tpu/_internal/execution_mode",
         "//src/torch_tpu/_internal/pallas",
@@ -1586,7 +1595,7 @@ torch_tpu_py_test(
         "TORCH_TPU_ENABLE_DEBUG_CHECKS": "1",
     },
     main = "errors_test.py",
-    notest_oss = True,  # Intended not to run this slow test in OSS. It's low value to test the error messages in both OSS and internal builds.
+    notap = "Run by error_coverage_test in the torch_tpu.error_coverage Guitar workflow.",
     shard_count = 4,
     tags = [
         "nosan",  # *san builds are low-value for error tests.
@@ -1620,7 +1629,7 @@ torch_tpu_py_test(
         "TORCH_TPU_ENABLE_DEBUG_CHECKS": "1",
     },
     main = "tpu_errors_test.py",
-    notest_oss = True,  # Intended not to run this slow test in OSS.
+    notap = "Run by error_coverage_test in the torch_tpu.error_coverage Guitar workflow.",
     shard_count = 4,
     tags = [
         "nosan",  # *san builds are low-value for error tests.
@@ -1639,7 +1648,7 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal:testing",
         "//src/torch_tpu/_internal/compile:compiler",
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",
-        "//src/torch_tpu/_internal/distributed/launchers:environment",
+        "//src/torch_tpu/_internal/distributed:environment",
         "//src/torch_tpu/_internal/dynamism",
         "//src/torch_tpu/_internal/execution_mode",
         "//src/torch_tpu/_internal/pallas",
@@ -1978,7 +1987,6 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
-        "//src/torch_tpu:_loader",
         "//src/torch_tpu/_internal/execution_mode",
         "//src/torch_tpu/_internal/utils:test_utils",
     ],
@@ -2412,7 +2420,6 @@ torch_tpu_py_test(
     srcs = ["scan_test.py"],
     tags = ["requires-tpu-v5lite"],
     deps = [
-        ":oss_utils",
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
@@ -2465,7 +2472,6 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
-        "//src/torch_tpu:_loader",
     ],
 )
 
@@ -2479,7 +2485,6 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
-        "//src/torch_tpu:_loader",
     ],
 )
 
@@ -2506,7 +2511,6 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
-        "//src/torch_tpu:_loader",
     ],
 )
 

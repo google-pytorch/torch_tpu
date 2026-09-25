@@ -21,23 +21,25 @@ from torch_tpu._internal.compile import compiler
 from torch_tpu._internal.compile import split_compiler
 from torch_tpu._internal.distributed import collective_ops
 from torch_tpu._internal.utils import test_utils as utils
+from tests import oss_utils
 from tests import seed_test_utils
 
 
+@oss_utils.skip_if_libtpu_version(
+    lambda v: v < (0, 0, 44),
+    "Dynamic shape buffer relaxation and host DMA require libtpu >= 0.0.44",
+)
 class SplitCompileTest(seed_test_utils.RepeatableTest):
 
   def setUp(self):
     super().setUp()
     if not torch.accelerator.is_available():
       self.skipTest("TPU accelerator not available in this test environment.")
-    # Dynamic shape buffers across partitions and host DMA alignment require
-    # libtpu >= 0.0.44.
-    if not utils.libtpu_at_least((0, 0, 44)):
-      self.skipTest(
-          "Dynamic shape buffer relaxation and host DMA require libtpu >="
-          " 0.0.44"
-      )
 
+  @oss_utils.skip_if_libtpu_version(
+      lambda v: v >= (0, 0, 48),
+      "TODO(b/565203505): PadRealToStatic fails on libtpu >= 0.0.48.",
+  )
   def test_split_graph_with_dynamic_tensor(self):
     def f(x):
       y = x * 2
@@ -62,6 +64,10 @@ class SplitCompileTest(seed_test_utils.RepeatableTest):
     expected = torch.full((2, 2), 9.0, device="cpu")
     utils.assert_close(res.cpu(), expected)
 
+  @oss_utils.skip_if_libtpu_version(
+      lambda v: v >= (0, 0, 48),
+      "TODO(b/565203505): PadRealToStatic fails on libtpu >= 0.0.48.",
+  )
   def test_split_graph_with_direct_symint_usage(self):
     def f(x):
       s1 = x.shape[0]

@@ -29,9 +29,8 @@
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/Reduction.h"
 #include "ATen/ops/empty.h"
-#include "ATen/ops/max.h"
 #include "ATen/ops/tensor.h"
-#include "ATen/ops/zeros.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
@@ -43,8 +42,9 @@
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/binary.h"
+#include "csrc/ops/copy_from/tpu_to_cpu.h"
+#include "csrc/ops/cumsum/cumsum.h"
 #include "csrc/ops/macros/kernel.h"
-#include "csrc/ops/nullary_aten_kernels.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/reductions/reductions.h"
@@ -59,6 +59,8 @@
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch/csrc/autograd/custom_function.h"
+#include "torch/csrc/autograd/function_hook.h"
+#include "torch/headeronly/core/DeviceType.h"
 
 namespace torch_tpu {
 
@@ -68,32 +70,50 @@ namespace {
 // losses/gradients are zeroed out.
 enum class ZeroInfinity { kNo, kYes };
 
-at::Tensor PadTargets(const at::Tensor& targets,
-                      const at::Tensor& target_lengths, int64_t batch_size) {
-  at::Tensor padded_targets = targets;
-  if (targets.dim() == 1) {
-    at::Tensor target_lengths_cpu =
-        target_lengths.to(at::kLong).cpu().contiguous();
-    auto lengths_accessor = target_lengths_cpu.accessor<int64_t, 1>();
-    int64_t max_target_length = 0;
-    for (int64_t i = 0; i < target_lengths_cpu.numel(); ++i) {
-      max_target_length = std::max(max_target_length, lengths_accessor[i]);
-    }
-
-    padded_targets = AtenEfficientZeroTensor(
-        {batch_size, max_target_length}, targets.scalar_type(), std::nullopt,
-        targets.device(), std::nullopt);
-    int64_t offset = 0;
-    for (int64_t i = 0; i < batch_size; ++i) {
-      int64_t len = lengths_accessor[i];
-      if (len > 0) {
-        padded_targets.select(0, i).narrow(0, 0, len).copy_(
-            targets.narrow(0, offset, len));
-      }
-      offset += len;
-    }
+// Returns the maximum target length for CTC loss, either from the 2-D shape
+// or by reading target_lengths from TPU without dispatching through the ATen
+// operator stack.
+absl::StatusOr<int64_t> GetMaxTargetLength(const at::Tensor& targets,
+                                           const at::Tensor& target_lengths) {
+  TT_RET_CHECK(targets.dim() == 1 || targets.dim() == 2,
+               error::kInvalidArgument)
+      << "expected targets to be 1-D or 2-D, got " << targets.dim() << "-D";
+  if (targets.dim() == 2) {
+    return targets.size(1);
   }
-  return padded_targets;
+
+  // target_lengths is on TPU. Use CopyTpuToCpu to avoid ATen dispatcher.
+  const at::Tensor target_lengths_cpu = at::empty(
+      target_lengths.sizes(), target_lengths.options().device(at::kCPU));
+  TT_RETURN_IF_ERROR(CopyTpuToCpu(target_lengths, target_lengths_cpu,
+                                  /*non_blocking=*/false));
+
+  const at::Tensor target_lengths_long =
+      (target_lengths_cpu.scalar_type() == at::kLong)
+          ? target_lengths_cpu.contiguous()
+          : target_lengths_cpu.to(at::kLong).contiguous();
+  const int64_t* data = target_lengths_long.data_ptr<int64_t>();
+  int64_t max_target_length = 0;
+  for (int64_t i = 0; i < target_lengths_long.numel(); ++i) {
+    max_target_length = std::max(max_target_length, data[i]);
+  }
+  return max_target_length;
+}
+
+absl::StatusOr<int64_t> GetMaxTargetLength(const at::Tensor& targets,
+                                           at::IntArrayRef target_lengths) {
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=PyTorch dispatcher decomposes targets
+                 // first
+      targets.dim() == 1 || targets.dim() == 2, error::kInvalidArgument)
+      << "expected targets to be 1-D or 2-D, got " << targets.dim() << "-D";
+  if (targets.dim() == 2) {
+    return targets.size(1);
+  }
+  int64_t max_target_length = 0;
+  for (int64_t len : target_lengths) {
+    max_target_length = std::max(max_target_length, len);
+  }
+  return max_target_length;
 }
 
 // Computes a numerically stable log-sum-exp over a list of MLIR operations.
@@ -138,6 +158,72 @@ mlir::stablehlo::GatherDimensionNumbersAttr GetGatherDimensionNumbers(
   return mlir::stablehlo::GatherDimensionNumbersAttr::get(
       ctx, offset_dims, collapsed_slice_dims, operand_batching_dims,
       start_indices_batching_dims, start_index_map, index_vector_dim);
+}
+
+// Unpacks a 1-D unpadded targets tensor of shape [sum(target_lengths)] into a
+// 2-D padded targets tensor of shape [N, S] using pure StableHLO operations.
+absl::StatusOr<mlir::MlirOp> Unpack1DTargetsTo2DShlo(
+    mlir::MlirBuilder& builder, mlir::MlirOp targets,
+    mlir::MlirOp target_lengths, int64_t N, int64_t S,
+    mlir::Type element_type) {
+  const int64_t K = GetTensorTypeOrDie(targets).getDimSize(0);
+  if (S == 0 || K == 0) {
+    auto zero_scalar = MakeScalarConstant(builder, 0, element_type);
+    return mlir::stablehlo::BroadcastInDim(
+        mlir::RankedTensorType::get({N, S}, element_type), zero_scalar, {});
+  }
+
+  // 1. Exclusive prefix sum of target_lengths to obtain batch offsets:
+  //    batch_offsets[i] = sum_{j=0}^{i-1} target_lengths[j].
+  TT_ASSIGN_OR_RETURN(
+      auto cumsum, BuildCumsumShlo(/*normalized_dim=*/0, mlir::ElementType::I32,
+                                   target_lengths));
+  auto zero_i32 = MakeScalarConstant(builder, 0, element_type);
+  auto padded_cumsum =
+      mlir::stablehlo::Pad(cumsum, zero_i32, /*edge_padding_low=*/{1},
+                           /*edge_padding_high=*/{0}, /*interior_padding=*/{0});
+  auto batch_offsets = mlir::stablehlo::Slice(padded_cumsum, {0}, {N}, {1});
+
+  // 2. Broadcast batch offsets to shape [N, S].
+  const auto type_ns = mlir::RankedTensorType::get({N, S}, element_type);
+  auto batch_offsets_2d =
+      mlir::stablehlo::BroadcastInDim(type_ns, batch_offsets, {0});
+
+  // 3. Generate column indices [0, 1, ..., S-1] for each batch item.
+  auto col_indices = mlir::stablehlo::Iota(builder, type_ns, 1);
+
+  // 4. Compute 1-D target indices: gather_indices = batch_offsets +
+  // col_indices.
+  auto gather_indices = mlir::stablehlo::Add(batch_offsets_2d, col_indices);
+
+  // 5. Mask out padding positions and ensure gather indices are safe.
+  // For valid positions (col_indices < target_lengths[i]), gather_indices is
+  // guaranteed to be within [0, K - 1]. For padding positions,
+  // safe_gather_indices is set to 0.
+  auto zero_const_2d = MakeConstantLike(gather_indices, 0);
+  auto target_lengths_2d =
+      mlir::stablehlo::BroadcastInDim(type_ns, target_lengths, {0});
+  auto is_valid = mlir::stablehlo::Compare(
+      col_indices, target_lengths_2d, mlir::stablehlo::ComparisonDirection::LT);
+  auto safe_gather_indices =
+      mlir::stablehlo::Select(is_valid, gather_indices, zero_const_2d);
+
+  // 6. Gather target tokens from 1-D targets into [N, S].
+  auto gather_dims = mlir::stablehlo::GatherDimensionNumbersAttr::get(
+      &builder.getContext(),
+      /*offset_dims=*/{},
+      /*collapsed_slice_dims=*/{0},
+      /*operand_batching_dims=*/{},
+      /*start_indices_batching_dims=*/{},
+      /*start_index_map=*/{0},
+      /*index_vector_dim=*/2);
+  auto gathered = mlir::stablehlo::Gather(targets, safe_gather_indices,
+                                          gather_dims, /*slice_sizes=*/{1},
+                                          /*indices_are_sorted=*/false);
+
+  // 7. Mask out padding positions where col_indices >= target_lengths[i] with
+  // zero.
+  return mlir::stablehlo::Select(is_valid, gathered, zero_const_2d);
 }
 
 // Expands the targets [N, S] to include blanks for CTC alignment.
@@ -530,7 +616,8 @@ absl::StatusOr<mlir::MlirOp> ComputeFinalLoss(
 absl::StatusOr<std::vector<mlir::MlirOp>> BuildCtcLossShlo(
     mlir::MlirOp log_probs, mlir::MlirOp targets, mlir::MlirOp input_lengths,
     mlir::MlirOp target_lengths, int64_t blank, ZeroInfinity zero_infinity,
-    mlir::MlirBuilder& builder) {
+    mlir::MlirBuilder& builder,
+    std::optional<int64_t> max_target_length = std::nullopt) {
   TT_ASSIGN_OR_RETURN(targets,
                       ConvertIfInteger(targets, mlir::ElementType::I32));
   TT_ASSIGN_OR_RETURN(input_lengths,
@@ -552,6 +639,18 @@ absl::StatusOr<std::vector<mlir::MlirOp>> BuildCtcLossShlo(
   if (target_lengths_type.getRank() != 1) {
     target_lengths = mlir::stablehlo::Reshape(
         target_lengths, {target_lengths_type.getNumElements()});
+  }
+
+  const mlir::RankedTensorType targets_type = GetTensorTypeOrDie(targets);
+  if (targets_type.getRank() == 1) {
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Always provided by callers
+        max_target_length.has_value(), error::kInvalidArgument)
+        << "max_target_length must be provided when targets is 1-D";
+    const int64_t N = target_lengths_type.getNumElements();
+    const int64_t S = *max_target_length;
+    TT_ASSIGN_OR_RETURN(
+        targets, Unpack1DTargetsTo2DShlo(builder, targets, target_lengths, N, S,
+                                         targets_type.getElementType()));
   }
 
   TT_ASSIGN_OR_RETURN(auto init_result,
@@ -810,6 +909,17 @@ absl::StatusOr<mlir::MlirOp> BuildCtcLossBackwardShlo(
         target_lengths, {target_lengths_type.getNumElements()});
   }
 
+  const mlir::RankedTensorType targets_type = GetTensorTypeOrDie(targets);
+  if (targets_type.getRank() == 1) {
+    const mlir::RankedTensorType log_alpha_type = GetTensorTypeOrDie(log_alpha);
+    const int64_t L = log_alpha_type.getDimSize(2);
+    const int64_t S = (L - 1) / 2;
+    const int64_t N = target_lengths_type.getNumElements();
+    TT_ASSIGN_OR_RETURN(
+        targets, Unpack1DTargetsTo2DShlo(builder, targets, target_lengths, N, S,
+                                         targets_type.getElementType()));
+  }
+
   TT_ASSIGN_OR_RETURN(auto init_result,
                       InitializeCtcLoss(log_probs, targets, blank, builder));
   auto neg_inf_const = init_result.neg_inf_const;
@@ -966,11 +1076,12 @@ absl::StatusOr<mlir::MlirOp> BuildCtcLossBackwardShlo(
 absl::StatusOr<std::vector<mlir::MlirOp>> BuildCtcLossPublicShlo(
     mlir::MlirOp log_probs, mlir::MlirOp targets, mlir::MlirOp input_lengths,
     mlir::MlirOp target_lengths, int64_t blank, ZeroInfinity zero_infinity,
-    int64_t reduction, mlir::MlirBuilder& builder) {
+    int64_t reduction, mlir::MlirBuilder& builder,
+    std::optional<int64_t> max_target_length = std::nullopt) {
   TT_ASSIGN_OR_RETURN(
       auto results,
       BuildCtcLossShlo(log_probs, targets, input_lengths, target_lengths, blank,
-                       zero_infinity, builder));
+                       zero_infinity, builder, max_target_length));
   auto loss_unreduced = results[0];  // shape {N}
   auto log_alpha = results[1];       // shape {N, T, L}
 
@@ -1059,27 +1170,33 @@ absl::StatusOr<mlir::MlirOp> BuildCtcLossPublicBackwardShlo(
 absl::StatusOr<MlirOpResults<1>> BuildCtcLossPublicInferenceShlo(
     mlir::MlirOp log_probs, mlir::MlirOp targets, mlir::MlirOp input_lengths,
     mlir::MlirOp target_lengths, int64_t blank, ZeroInfinity zero_infinity,
-    int64_t reduction, mlir::MlirBuilder& builder) {
-  TT_ASSIGN_OR_RETURN(
-      auto results,
-      BuildCtcLossPublicShlo(log_probs, targets, input_lengths, target_lengths,
-                             blank, zero_infinity, reduction, builder));
+    int64_t reduction, mlir::MlirBuilder& builder,
+    std::optional<int64_t> max_target_length = std::nullopt) {
+  TT_ASSIGN_OR_RETURN(auto results, BuildCtcLossPublicShlo(
+                                        log_probs, targets, input_lengths,
+                                        target_lengths, blank, zero_infinity,
+                                        reduction, builder, max_target_length));
   return MlirOpResults<1>{results[0]};
 }
 
 absl::StatusOr<std::tuple<at::Tensor, at::Tensor, at::Tensor>>
-CtcLossForwardInternal(const at::Tensor& log_probs, const at::Tensor& targets,
-                       const at::Tensor& input_lengths,
-                       const at::Tensor& target_lengths, int64_t blank,
-                       int64_t reduction, bool zero_infinity,
-                       OpParamCacheKeys param_keys) {
+CtcLossForwardInternal(
+    const at::Tensor& log_probs, const at::Tensor& targets,
+    const at::Tensor& input_lengths, const at::Tensor& target_lengths,
+    int64_t blank, int64_t reduction, bool zero_infinity,
+    OpParamCacheKeys param_keys,
+    std::optional<int64_t> max_target_length = std::nullopt) {
   bool is_batched = log_probs.dim() == 3;
   const int64_t batch_size = is_batched ? log_probs.size(1) : 1;
   const int64_t t = log_probs.size(0);
 
-  at::Tensor padded_targets = PadTargets(targets, target_lengths, batch_size);
+  int64_t s = 0;
+  if (max_target_length.has_value()) {
+    s = *max_target_length;
+  } else {
+    TT_ASSIGN_OR_RETURN(s, GetMaxTargetLength(targets, target_lengths));
+  }
 
-  const int64_t s = padded_targets.size(1);
   const int64_t l = 2 * s + 1;
 
   TT_ASSIGN_OR_RETURN(mlir::ElementType output_dtype,
@@ -1104,8 +1221,8 @@ CtcLossForwardInternal(const at::Tensor& log_probs, const at::Tensor& targets,
       .op_param_cache_keys = std::move(param_keys),
   };
 
-  auto op_builder = [blank, zero_infinity, reduction,
-                     is_batched](FixedSizeSpan<mlir::MlirOp, 4> inputs)
+  auto op_builder = [blank, zero_infinity, reduction, is_batched,
+                     s](FixedSizeSpan<mlir::MlirOp, 4> inputs)
       -> absl::StatusOr<MlirOpResults<3>> {
     auto& [log_probs_op, targets_op, input_lengths_op, target_lengths_op] =
         inputs;
@@ -1122,7 +1239,7 @@ CtcLossForwardInternal(const at::Tensor& log_probs, const at::Tensor& targets,
             log_probs_batched_op, targets_op, input_lengths_op,
             target_lengths_op, blank,
             zero_infinity ? ZeroInfinity::kYes : ZeroInfinity::kNo, reduction,
-            builder));
+            builder, s));
 
     mlir::MlirOp loss_reduced_op = results[0];
     if (!is_batched && reduction == at::Reduction::None) {
@@ -1132,11 +1249,11 @@ CtcLossForwardInternal(const at::Tensor& log_probs, const at::Tensor& targets,
     return MlirOpResults<3>{loss_reduced_op, results[1], results[2]};
   };
 
-  TT_ASSIGN_OR_RETURN(auto output_bufs,
-                      (DispatchOp<4, 3>(std::move(op_builder),
-                                        {log_probs, padded_targets,
-                                         input_lengths, target_lengths},
-                                        std::move(options))));
+  TT_ASSIGN_OR_RETURN(
+      auto output_bufs,
+      (DispatchOp<4, 3>(std::move(op_builder),
+                        {log_probs, targets, input_lengths, target_lengths},
+                        std::move(options))));
 
   TT_ASSIGN_OR_RETURN(
       at::Tensor loss_reduced,
@@ -1219,15 +1336,12 @@ absl::StatusOr<at::Tensor> CtcLossBackwardInternal(
     return MlirOpResults<1>{grad_input_op};
   };
 
-  at::Tensor padded_targets = PadTargets(targets, target_lengths, batch_size);
-
   TT_ASSIGN_OR_RETURN(
       auto output_bufs,
-      (DispatchOp<7, 1>(
-          std::move(op_builder),
-          {grad_output, log_probs_batched, padded_targets, input_lengths,
-           target_lengths, loss_unreduced, log_alpha},
-          std::move(options))));
+      (DispatchOp<7, 1>(std::move(op_builder),
+                        {grad_output, log_probs_batched, targets, input_lengths,
+                         target_lengths, loss_unreduced, log_alpha},
+                        std::move(options))));
 
   TT_ASSIGN_OR_RETURN(
       at::Tensor grad_input,
@@ -1242,11 +1356,17 @@ absl::StatusOr<at::Tensor> CtcLossPublicInternal(
     const at::Tensor& log_probs, const at::Tensor& targets,
     const at::Tensor& input_lengths, const at::Tensor& target_lengths,
     int64_t blank, int64_t reduction, bool zero_infinity,
-    OpParamCacheKeys param_keys) {
+    OpParamCacheKeys param_keys,
+    std::optional<int64_t> max_target_length = std::nullopt) {
   bool is_batched = log_probs.dim() == 3;
   const int64_t batch_size = is_batched ? log_probs.size(1) : 1;
 
-  at::Tensor padded_targets = PadTargets(targets, target_lengths, batch_size);
+  int64_t s = 0;
+  if (max_target_length.has_value()) {
+    s = *max_target_length;
+  } else {
+    TT_ASSIGN_OR_RETURN(s, GetMaxTargetLength(targets, target_lengths));
+  }
 
   TT_ASSIGN_OR_RETURN(mlir::ElementType output_dtype,
                       ConvertTo<mlir::ElementType>(log_probs.scalar_type()));
@@ -1260,8 +1380,8 @@ absl::StatusOr<at::Tensor> CtcLossPublicInternal(
       .op_param_cache_keys = std::move(param_keys),
   };
 
-  auto op_builder = [blank, zero_infinity, reduction,
-                     is_batched](FixedSizeSpan<mlir::MlirOp, 4> inputs)
+  auto op_builder = [blank, zero_infinity, reduction, is_batched,
+                     s](FixedSizeSpan<mlir::MlirOp, 4> inputs)
       -> absl::StatusOr<MlirOpResults<1>> {
     auto& [log_probs_op, targets_op, input_lengths_op, target_lengths_op] =
         inputs;
@@ -1278,7 +1398,7 @@ absl::StatusOr<at::Tensor> CtcLossPublicInternal(
             log_probs_batched_op, targets_op, input_lengths_op,
             target_lengths_op, blank,
             zero_infinity ? ZeroInfinity::kYes : ZeroInfinity::kNo, reduction,
-            builder));
+            builder, s));
 
     mlir::MlirOp loss_reduced_op = results;
     if (!is_batched && reduction == at::Reduction::None) {
@@ -1288,11 +1408,11 @@ absl::StatusOr<at::Tensor> CtcLossPublicInternal(
     return MlirOpResults<1>{loss_reduced_op};
   };
 
-  TT_ASSIGN_OR_RETURN(auto output_bufs,
-                      (DispatchOp<4, 1>(std::move(op_builder),
-                                        {log_probs, padded_targets,
-                                         input_lengths, target_lengths},
-                                        std::move(options))));
+  TT_ASSIGN_OR_RETURN(
+      auto output_bufs,
+      (DispatchOp<4, 1>(std::move(op_builder),
+                        {log_probs, targets, input_lengths, target_lengths},
+                        std::move(options))));
 
   TT_ASSIGN_OR_RETURN(
       at::Tensor loss_reduced,
@@ -1356,29 +1476,9 @@ std::tuple<at::Tensor, at::Tensor> AtenCtcLossTensor(
         const int64_t n = log_probs.size(1);
         const int64_t t = log_probs.size(0);
 
-        at::Tensor padded_targets = targets;
-        if (targets.dim() == 1) {
-          at::Tensor target_lengths_cpu =
-              target_lengths.to(at::kLong).cpu().contiguous();
-          auto lengths_accessor = target_lengths_cpu.accessor<int64_t, 1>();
-          const int64_t max_target_length =
-              target_lengths_cpu.numel() > 0
-                  ? at::max(target_lengths_cpu).item<int64_t>()
-                  : 0;
+        TT_ASSIGN_OR_THROW(const int64_t s,
+                           GetMaxTargetLength(targets, target_lengths));
 
-          padded_targets = at::zeros({n, max_target_length}, targets.options());
-          int64_t offset = 0;
-          for (int64_t i = 0; i < n; ++i) {
-            int64_t len = lengths_accessor[i];
-            if (len > 0) {
-              padded_targets.select(0, i).narrow(0, 0, len).copy_(
-                  targets.narrow(0, offset, len));
-            }
-            offset += len;
-          }
-        }
-
-        const int64_t s = padded_targets.size(1);
         const int64_t l = 2 * s + 1;
 
         TT_ASSIGN_OR_THROW(
@@ -1400,8 +1500,8 @@ std::tuple<at::Tensor, at::Tensor> AtenCtcLossTensor(
             .op_param_cache_keys = std::move(param_keys),
         };
 
-        auto op_builder = [blank,
-                           zero_infinity](FixedSizeSpan<mlir::MlirOp, 4> inputs)
+        auto op_builder = [blank, zero_infinity,
+                           s](FixedSizeSpan<mlir::MlirOp, 4> inputs)
             -> absl::StatusOr<MlirOpResults<2>> {
           auto& [log_probs_op, targets_op, input_lengths_op,
                  target_lengths_op] = inputs;
@@ -1411,14 +1511,14 @@ std::tuple<at::Tensor, at::Tensor> AtenCtcLossTensor(
               BuildCtcLossShlo(
                   log_probs_op, targets_op, input_lengths_op, target_lengths_op,
                   blank, zero_infinity ? ZeroInfinity::kYes : ZeroInfinity::kNo,
-                  builder));
+                  builder, s));
           return MlirOpResults<2>{results[0], results[1]};
         };
 
         TT_ASSIGN_OR_THROW(auto output_bufs,
                            (DispatchOp<4, 2>(std::move(op_builder),
-                                             {log_probs, padded_targets,
-                                              input_lengths, target_lengths},
+                                             {log_probs, targets, input_lengths,
+                                              target_lengths},
                                              std::move(options))));
 
         at::Tensor loss = at::empty(loss_dims, log_probs.options());
@@ -1440,6 +1540,8 @@ at::Tensor AtenCtcLossAutograd::forward(torch::autograd::AutogradContext* ctx,
                                         at::IntArrayRef target_lengths,
                                         int64_t blank, int64_t reduction,
                                         bool zero_infinity) {
+  TT_ASSIGN_OR_THROW(int64_t max_target_len,
+                     GetMaxTargetLength(targets, target_lengths));
   at::Tensor input_lengths_tensor =
       at::tensor(input_lengths, at::kLong).to(log_probs.device());
   at::Tensor target_lengths_tensor =
@@ -1455,7 +1557,8 @@ at::Tensor AtenCtcLossAutograd::forward(torch::autograd::AutogradContext* ctx,
             auto results,
             CtcLossForwardInternal(log_probs, targets, input_lengths_tensor,
                                    target_lengths_tensor, blank, reduction,
-                                   zero_infinity, std::move(param_keys)));
+                                   zero_infinity, std::move(param_keys),
+                                   max_target_len));
         auto loss_reduced = std::get<0>(results);
         auto log_alpha = std::get<1>(results);
         auto loss_unreduced = std::get<2>(results);
@@ -1631,15 +1734,18 @@ at::Tensor AtenCtcLossPublic(const at::Tensor& log_probs,
             (log_probs, targets, input_lengths, target_lengths, blank,
              reduction, zero_infinity),
             {
+              TT_ASSIGN_OR_THROW(int64_t max_target_len,
+                                 GetMaxTargetLength(targets, target_lengths));
               at::Tensor input_lengths_tensor =
                   at::tensor(input_lengths, at::kLong).to(log_probs.device());
               at::Tensor target_lengths_tensor =
                   at::tensor(target_lengths, at::kLong).to(log_probs.device());
-              TT_ASSIGN_OR_THROW(at::Tensor loss,
-                                 CtcLossPublicInternal(
-                                     log_probs, targets, input_lengths_tensor,
-                                     target_lengths_tensor, blank, reduction,
-                                     zero_infinity, std::move(param_keys)));
+              TT_ASSIGN_OR_THROW(
+                  at::Tensor loss,
+                  CtcLossPublicInternal(
+                      log_probs, targets, input_lengths_tensor,
+                      target_lengths_tensor, blank, reduction, zero_infinity,
+                      std::move(param_keys), max_target_len));
               return loss;
             });
 }
@@ -1697,31 +1803,6 @@ at::Tensor AtenCtcLossBackwardTensor(
             << "expected target_lengths to have batch_size (" << n
             << ") elements, got " << target_lengths.numel();
 
-        at::Tensor padded_targets = targets;
-        if (targets.dim() == 1) {
-          at::Tensor target_lengths_cpu =
-              target_lengths.to(at::kLong).cpu().contiguous();
-          auto lengths_accessor = target_lengths_cpu.accessor<int64_t, 1>();
-          int64_t max_target_length = 0;
-          for (int64_t i = 0; i < target_lengths_cpu.numel(); ++i) {
-            max_target_length =
-                std::max(max_target_length, lengths_accessor[i]);
-          }
-
-          padded_targets = AtenEfficientZeroTensor(
-              {n, max_target_length}, targets.scalar_type(), std::nullopt,
-              targets.device(), std::nullopt);
-          int64_t offset = 0;
-          for (int64_t i = 0; i < n; ++i) {
-            int64_t len = lengths_accessor[i];
-            if (len > 0) {
-              padded_targets.select(0, i).narrow(0, 0, len).copy_(
-                  targets.narrow(0, offset, len));
-            }
-            offset += len;
-          }
-        }
-
         TT_ASSIGN_OR_THROW(
             mlir::ElementType output_dtype,
             ConvertTo<mlir::ElementType>(log_probs.scalar_type()));
@@ -1753,11 +1834,10 @@ at::Tensor AtenCtcLossBackwardTensor(
 
         TT_ASSIGN_OR_THROW(
             auto output_bufs,
-            (DispatchOp<7, 1>(
-                std::move(op_builder),
-                {grad_out, log_probs, padded_targets, input_lengths,
-                 target_lengths, neg_log_likelihood, log_alpha},
-                std::move(options))));
+            (DispatchOp<7, 1>(std::move(op_builder),
+                              {grad_out, log_probs, targets, input_lengths,
+                               target_lengths, neg_log_likelihood, log_alpha},
+                              std::move(options))));
 
         TT_ASSIGN_OR_THROW(
             at::Tensor grad_in,

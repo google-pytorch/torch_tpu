@@ -32,6 +32,9 @@ class StepperType(enum.Enum):
   # Training loop with fwd+bwd+loss+opt.step(). Configurable grad acc & loss function.
   TRAINING = "training"
 
+  # Training loop traced with functorch. Only works with compiled.
+  SINGLE_TRACE_TRAINING = "single_trace_training"
+
   # For decoder-only models (e.g. LLama) that have a distinct prefill and decode step.
   # This stepper facilitates an unmeasured prefill, followed by `n` measured decode steps.
   DECODER_ONLY_DECODE = "decoder_only_decode"

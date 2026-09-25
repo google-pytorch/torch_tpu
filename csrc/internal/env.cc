@@ -40,11 +40,7 @@ namespace {
 std::optional<bool> PyGetBooleanEnvOnce(std::string_view name,
                                         std::optional<bool> default_value) {
   std::optional<bool> value;
-  if (name == kSplashUseVmapBwdEnvVar) {
-    value = GetBooleanEnvOnce<kSplashUseVmapBwdEnvVar>();
-  } else if (name == kTorchTpuDebugEnvVar) {
-    value = GetBooleanEnvOnce<kTorchTpuDebugEnvVar>();
-  } else if (name == kTorchTpuInternalEnableDebugChecksEnvVar) {
+  if (name == kTorchTpuInternalEnableDebugChecksEnvVar) {
     value = GetBooleanEnvOnce<kTorchTpuInternalEnableDebugChecksEnvVar>();
   } else if (name == kTorchTpuInternalEnableReassociateNormWeightsEnvVar) {
     value = GetBooleanEnvOnce<
@@ -52,8 +48,9 @@ std::optional<bool> PyGetBooleanEnvOnce(std::string_view name,
   } else if (name == kTorchTpuInternalMaterializeCollectiveTensorsEnvVar) {
     value = GetBooleanEnvOnce<
         kTorchTpuInternalMaterializeCollectiveTensorsEnvVar>();
-  } else if (name == kTorchtpuStorageAwarePlaceholdersEnvVar) {
-    value = GetBooleanEnvOnce<kTorchtpuStorageAwarePlaceholdersEnvVar>();
+  } else if (name == kTorchTpuInternalStorageAwarePlaceholdersEnvVar) {
+    value =
+        GetBooleanEnvOnce<kTorchTpuInternalStorageAwarePlaceholdersEnvVar>();
   } else {
     ABSL_LOG(FATAL)  // CRASH_OK=TorchTPU bug
         << "Before reading Boolean environment variable " << name
@@ -71,12 +68,6 @@ std::optional<int64_t> PyGetIntegerEnvOnce(
     value = GetIntegerEnvOnce<int64_t, kLocalRankEnvVar>();
   } else if (name == kRankEnvVar) {
     value = GetIntegerEnvOnce<int64_t, kRankEnvVar>();
-  } else if (name == kSplashBlockDkvEnvVar) {
-    value = GetIntegerEnvOnce<int64_t, kSplashBlockDkvEnvVar>();
-  } else if (name == kSplashBlockKvEnvVar) {
-    value = GetIntegerEnvOnce<int64_t, kSplashBlockKvEnvVar>();
-  } else if (name == kSplashBlockQEnvVar) {
-    value = GetIntegerEnvOnce<int64_t, kSplashBlockQEnvVar>();
   } else if (name == kTorchTpuBasePortEnvVar) {
     value = GetIntegerEnvOnce<int64_t, kTorchTpuBasePortEnvVar>();
   } else if (name == kTorchTpuDevicesPerHostEnvVar) {

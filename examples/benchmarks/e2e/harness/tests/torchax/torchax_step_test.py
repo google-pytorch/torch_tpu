@@ -90,6 +90,11 @@ class TorchaxStepTest(seed_test_utils.RepeatableTest):
     out_loss = DummyModelOutput(loss=t2)
     self.assertIs(torchax_step._extract_jax_compatible_output(out_loss), t2)
 
+    # Output with both .loss and .logits attributes (e.g., HF CausalLMOutputWithPast
+    # during training) must prioritize .loss over .logits.
+    out_both = DummyModelOutput(logits=t1, loss=t2)
+    self.assertIs(torchax_step._extract_jax_compatible_output(out_both), t2)
+
     # Output with .to_tuple() returning single element vs multiple
     out_tuple1 = DummyModelOutput(to_tuple_data=(t1, None))
     self.assertIs(torchax_step._extract_jax_compatible_output(out_tuple1), t1)
