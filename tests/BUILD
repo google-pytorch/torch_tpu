@@ -394,7 +394,6 @@ torch_tpu_py_test(
     srcs = ["ops_test.py"],
     args = [
         "--compute_grad=True",
-        "--test_mode=torch_tpu_vs_gpu",
         "--test_categories=foreach",
     ] + if_oss(
         # Reduce samples to avoid timeouts in OSS.
@@ -439,7 +438,6 @@ torch_tpu_py_test(
     srcs = ["ops_test.py"],
     args = [
         "--compute_grad=True",
-        "--test_mode=torch_tpu_vs_gpu",
         "--test_categories=nonzero",
     ] + if_oss(
         # Reduce samples to avoid timeouts in OSS.
@@ -484,7 +482,6 @@ torch_tpu_py_test(
     srcs = ["ops_test.py"],
     args = [
         "--compute_grad=True",
-        "--test_mode=torch_tpu_vs_gpu",
         "--test_categories=searchsorted",
     ] + if_oss(
         # Reduce samples to avoid timeouts in OSS.
@@ -615,7 +612,6 @@ torch_tpu_py_test(
     srcs = ["ops_test.py"],
     args = [
         "--compute_grad=True",
-        "--test_mode=torch_tpu_vs_gpu",
         "--test_categories=-foreach,-nonzero,-searchsorted",
     ] + if_oss(
         # Reduce samples to avoid timeouts in OSS.
