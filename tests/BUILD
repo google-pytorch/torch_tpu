@@ -1595,7 +1595,7 @@ torch_tpu_py_test(
         "TORCH_TPU_ENABLE_DEBUG_CHECKS": "1",
     },
     main = "errors_test.py",
-    notest_oss = True,  # Intended not to run this slow test in OSS. It's low value to test the error messages in both OSS and internal builds.
+    notap = "Run by error_coverage_test in the torch_tpu.error_coverage Guitar workflow.",
     shard_count = 4,
     tags = [
         "nosan",  # *san builds are low-value for error tests.
@@ -1629,7 +1629,7 @@ torch_tpu_py_test(
         "TORCH_TPU_ENABLE_DEBUG_CHECKS": "1",
     },
     main = "tpu_errors_test.py",
-    notest_oss = True,  # Intended not to run this slow test in OSS.
+    notap = "Run by error_coverage_test in the torch_tpu.error_coverage Guitar workflow.",
     shard_count = 4,
     tags = [
         "nosan",  # *san builds are low-value for error tests.
