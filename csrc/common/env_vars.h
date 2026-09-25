@@ -63,14 +63,6 @@ inline constexpr char kNodeRankEnvVar[] = "NODE_RANK";
 // running on the same host.
 inline constexpr char kNprocEnvVar[] = "NPROC";
 inline constexpr char kRankEnvVar[] = "RANK";  // Set by launchers.
-// Overrides the block sizes used by the splash attention kernel. If unset, the
-// kernel derives them from the sequence length and head count.
-inline constexpr char kSplashBlockDkvEnvVar[] = "SPLASH_BLOCK_DKV";
-inline constexpr char kSplashBlockKvEnvVar[] = "SPLASH_BLOCK_KV";
-inline constexpr char kSplashBlockQEnvVar[] = "SPLASH_BLOCK_Q";
-// If set to "1" or "true", the splash attention backward pass is computed with
-// vmap.
-inline constexpr char kSplashUseVmapBwdEnvVar[] = "SPLASH_USE_VMAP_BWD";
 // Standard temporary directory.
 inline constexpr char kTmpdirEnvVar[] = "TMPDIR";
 // If set to "0", PyTorch skips autoloading out-of-tree device backends.
@@ -88,8 +80,6 @@ inline constexpr char kTorchShowCppStacktracesEnvVar[] =
 // The first port used when deriving slicebuilder addresses for a multi-host
 // job. If not set, 8070 is used.
 inline constexpr char kTorchTpuBasePortEnvVar[] = "TORCH_TPU_BASE_PORT";
-// If set to "1" or "true", enables verbose debug output.
-inline constexpr char kTorchTpuDebugEnvVar[] = "TORCH_TPU_DEBUG";
 // If both TORCH_TPU_DEFER_AND_FUSE and TPU_DEFER_AND_FUSE are set,
 // TORCH_TPU_DEFER_AND_FUSE takes precedence.
 inline constexpr char kTorchTpuDeferAndFuseEnvVar[] =
@@ -305,15 +295,10 @@ inline constexpr auto kEnvVarToStage =
         // environment variable widely used by production workloads. The
         // TorchTPU team is committed to honor this env var.
         {kRankEnvVar, SymbolStage::Stable()},
-        {kSplashBlockDkvEnvVar, std::nullopt},
-        {kSplashBlockKvEnvVar, std::nullopt},
-        {kSplashBlockQEnvVar, std::nullopt},
-        {kSplashUseVmapBwdEnvVar, std::nullopt},
         {kTmpdirEnvVar, SymbolStage::Stable()},
         {kTorchDeviceBackendAutoloadEnvVar, std::nullopt},
         {kTorchShowCppStacktracesEnvVar, SymbolStage::Experimental()},
         {kTorchTpuBasePortEnvVar, SymbolStage::Experimental()},
-        {kTorchTpuDebugEnvVar, SymbolStage::Experimental()},
         {kTorchTpuDeferAndFuseEnvVar, SymbolStage::Experimental()},
         {kTorchTpuDevicesPerHostEnvVar, SymbolStage::Experimental()},
         {kTorchTpuEnableDebugChecksEnvVar, SymbolStage::Experimental()},

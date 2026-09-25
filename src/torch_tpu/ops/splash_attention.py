@@ -32,7 +32,6 @@ from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_ma
 from jax.experimental.pallas.ops.tpu.splash_attention.splash_attention_kernel import QKVLayout
 import jax.numpy as jnp
 import torch
-from torch_tpu._internal import env
 
 # torch_tpu Pallas bridge
 from torch_tpu._internal import pallas
@@ -40,7 +39,6 @@ from torch_tpu._internal import pallas
 custom_jax_kernel = pallas.custom_jax_kernel
 
 _DEFAULT_MASK_VALUE = splash_attention_kernel.DEFAULT_MASK_VALUE
-_DEBUG = env.get_bool_env_once("TORCH_TPU_DEBUG", default_value=False)
 
 
 def _make_splash_attention_fn(
@@ -383,9 +381,6 @@ def _get_splash_op_names(**splash_kwargs):
   )
 
   # Register with TorchAX if active
-  if _DEBUG:
-    torch_keys = [k for k in sys.modules.keys() if "torch" in k]
-    logging.debug("Torch keys in sys.modules: %s", torch_keys)
   if "torchax" in sys.modules:
     try:
       torchax_mod = sys.modules["torchax"]
@@ -437,14 +432,6 @@ def _get_splash_op_names(**splash_kwargs):
   # this issue as they are easily guarded by Dynamo.
   _splash_op_name_cache[cache_key] = (op_fwd_name, op_bwd_name)
   return op_fwd_name, op_bwd_name
-
-
-def get_stats_str(t: torch.Tensor) -> str:
-  t_cpu = t.cpu().float()
-  return (
-      f"dtype={t.dtype}, mean={t_cpu.mean().item():.6f},"
-      f" std={t_cpu.std().item():.6f}, max={t_cpu.abs().max().item():.6f}"
-  )
 
 
 def splash_sdpa(
@@ -506,18 +493,9 @@ def splash_sdpa(
     Output tensor of scaled dot-product attention.
   """
 
-  block_q = env.get_int_env_once("SPLASH_BLOCK_Q", default_value=block_q)
-  block_kv = env.get_int_env_once("SPLASH_BLOCK_KV", default_value=block_kv)
-  use_vmap_bwd = env.get_bool_env_once(
-      "SPLASH_USE_VMAP_BWD", default_value=use_vmap_bwd
-  )
   if block_dkv != 512:
     block_q_dkv = block_dkv
     block_kv_dkv = block_dkv
-  block_dkv_override = env.get_int_env_once("SPLASH_BLOCK_DKV")
-  if block_dkv_override is not None:
-    block_q_dkv = block_dkv_override
-    block_kv_dkv = block_dkv_override
 
   _, n_heads, seq_len, _ = q.shape
   n_kv_heads = k.shape[1]
@@ -568,18 +546,6 @@ def splash_sdpa(
   input_dtype = q.dtype
   result = _SplashAttentionFn.apply(q, k, v, torch_fwd_fn, torch_bwd_fn)
   result = typing.cast(torch.Tensor, result)
-
-  if _DEBUG:
-    logging.debug("device: %s | Q: %s", q.device, get_stats_str(q))
-    logging.debug("device: %s | K: %s", q.device, get_stats_str(k))
-    logging.debug("device: %s | V: %s", q.device, get_stats_str(v))
-    logging.debug(
-        "device: %s | local_window_size: %s, scale: %s",
-        q.device,
-        local_window_size,
-        scale,
-    )
-    logging.debug("device: %s | OUT: %s", q.device, get_stats_str(result))
 
   if result.dtype != input_dtype:
     result = result.to(input_dtype)
