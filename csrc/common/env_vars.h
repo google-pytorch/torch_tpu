@@ -159,6 +159,13 @@ inline constexpr char kTorchTpuInternalSkinnyScOffloadEnvVar[] =
 // even in the presence of errors.
 inline constexpr char kTorchTpuInternalSplitRngStateUpdate[] =
     "TORCH_TPU_INTERNAL_SPLIT_RNG_STATE_UPDATE";
+// If set to "1" or "true", StaticCompiler creates one placeholder per shared
+// input storage and rebuilds aliasing inputs as views of it, instead of one
+// independent placeholder per input. Default is "false".
+// TODO(dighamber): Temporary rollout gate; remove once storage-aware
+// placeholders are always enabled.
+inline constexpr char kTorchTpuInternalStorageAwarePlaceholdersEnvVar[] =
+    "TORCH_TPU_INTERNAL_STORAGE_AWARE_PLACEHOLDERS";
 // If unset or set to "1", schedule local compilation right away as a backup to
 // tier-3 compilation cache read (whichever succeeds first will unblock
 // execution). If set to "0", local compilation is done only after tier-3
@@ -211,11 +218,6 @@ inline constexpr char kTorchcommRankEnvVar[] = "TORCHCOMM_RANK";
 // The number of processes as seen by torchcomm. Takes precedence over
 // WORLD_SIZE.
 inline constexpr char kTorchcommSizeEnvVar[] = "TORCHCOMM_SIZE";
-// If set to "1" or "true", the compiler accounts for the storage backing
-// placeholders. Note the missing underscore between TORCH and TPU, which is
-// how this env var has always been spelled.
-inline constexpr char kTorchtpuStorageAwarePlaceholdersEnvVar[] =
-    "TORCHTPU_STORAGE_AWARE_PLACEHOLDERS";
 inline constexpr char kTpuChipsPerHostBoundsEnvVar[] =
     "TPU_CHIPS_PER_HOST_BOUNDS";  // Read by Google Cloud.
 inline constexpr char kTpuChipsPerProcessBoundsEnvVar[] =
@@ -323,6 +325,8 @@ inline constexpr auto kEnvVarToStage =
          SymbolStage::InternalApi()},
         {kTorchTpuInternalSkinnyScOffloadEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuInternalSplitRngStateUpdate, SymbolStage::InternalApi()},
+        {kTorchTpuInternalStorageAwarePlaceholdersEnvVar,
+         SymbolStage::InternalApi()},
         {kTorchTpuInternalTier3CompilationCacheLocalBackupTaskEnvVar,
          SymbolStage::InternalApi()},
         {kTorchTpuInternalXlaOptionsEnvVar, SymbolStage::InternalApi()},
@@ -336,7 +340,6 @@ inline constexpr auto kEnvVarToStage =
         {kTorchTraceEnvVar, SymbolStage::Experimental()},
         {kTorchcommRankEnvVar, std::nullopt},
         {kTorchcommSizeEnvVar, std::nullopt},
-        {kTorchtpuStorageAwarePlaceholdersEnvVar, std::nullopt},
         {kTpuChipsPerHostBoundsEnvVar, SymbolStage::InternalImplementation()},
         {kTpuChipsPerProcessBoundsEnvVar,
          SymbolStage::InternalImplementation()},
