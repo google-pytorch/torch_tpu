@@ -49,13 +49,11 @@ torch_tpu_oss_torch_test(
 
 torch_tpu_oss_torch_test(
     name = "distributed_checkpoint__experimental_staging_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "distributed/checkpoint/_experimental/test_staging",
 )
 
 torch_tpu_oss_torch_test(
     name = "dynamo_activation_checkpointing_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "dynamo/test_activation_checkpointing",
 )
 
@@ -71,7 +69,6 @@ torch_tpu_oss_torch_test(
 
 torch_tpu_oss_torch_test(
     name = "dynamo_ctx_manager_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "dynamo/test_ctx_manager",
 )
 
@@ -104,7 +101,6 @@ torch_tpu_oss_torch_test(
 
 torch_tpu_oss_torch_test(
     name = "dynamo_misc_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     shard_count = 8,
     torch_test_module = "dynamo/test_misc",
 )
@@ -169,7 +165,6 @@ torch_tpu_oss_torch_test(
 
 torch_tpu_oss_torch_test(
     name = "inductor_torchinductor_dynamic_shapes_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     shard_count = 8,
     torch_test_module = "inductor/test_torchinductor_dynamic_shapes",
 )
@@ -183,7 +178,6 @@ torch_tpu_oss_torch_test(
 
 torch_tpu_oss_torch_test(
     name = "inductor_torchinductor_opinfo_properties_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     shard_count = 8,
     torch_test_module = "inductor/test_torchinductor_opinfo_properties",
 )
@@ -233,7 +227,6 @@ torch_tpu_oss_torch_test(
 
 torch_tpu_oss_torch_test(
     name = "nn_parametrization_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "nn/test_parametrization",
 )
 

@@ -167,6 +167,7 @@ def define_torch_local(name, is_source_mode = True):
             "torch/**/*.jinja",
             "torch/bin/*",
             "torch/lib/*.so*",
+            "torch/include/**",
             "torchgen/**/*.pyi",
             "torchgen/**/*.yaml",
             "torchgen/**/*.json",

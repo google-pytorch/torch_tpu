@@ -1438,8 +1438,10 @@ def torch_tpu_oss_torch_test(
         deps = [
             # go/keep-sorted start
             "@pypi//dill",
+            "@pypi//hypothesis",
             "@pypi//jax",
             "@pypi//packaging",
+            "@pypi//pytest",
             "@pypi//scipy",
             "//shims/torch:testing_internal",
             "//src/torch_tpu",
