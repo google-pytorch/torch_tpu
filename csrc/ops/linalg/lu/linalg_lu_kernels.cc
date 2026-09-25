@@ -39,6 +39,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -215,6 +216,13 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLinalgLuFactorExOut(
         Dimensions pivot_dims = batch_dims;
         pivot_dims.push_back(std::min(n, m));
 
+        TT_THROW_IF_ERROR(ValidateOutDtype(lu, a.scalar_type(),
+                                           /*allow_out_dtype_cast=*/false));
+        TT_THROW_IF_ERROR(ValidateOutDtype(pivots, at::kInt,
+                                           /*allow_out_dtype_cast=*/false));
+        TT_THROW_IF_ERROR(ValidateOutDtype(info, at::kInt,
+                                           /*allow_out_dtype_cast=*/false));
+
         if (a.numel() == 0) {
           TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(lu, a.sizes()));
           TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(pivots, pivot_dims));
@@ -270,6 +278,17 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLuUnpackOut(
         Dimensions batch_dims(lu_data.sizes().begin(),
                               lu_data.sizes().end() - 2);
 
+        if (unpack_pivots) {
+          TT_THROW_IF_ERROR(ValidateOutDtype(p, lu_data.scalar_type(),
+                                             /*allow_out_dtype_cast=*/false));
+        }
+        if (unpack_data) {
+          TT_THROW_IF_ERROR(ValidateOutDtype(l, lu_data.scalar_type(),
+                                             /*allow_out_dtype_cast=*/false));
+          TT_THROW_IF_ERROR(ValidateOutDtype(u, lu_data.scalar_type(),
+                                             /*allow_out_dtype_cast=*/false));
+        }
+
         if (unpack_data) {
           Dimensions l_dims = batch_dims;
           l_dims.reserve(l_dims.size() + 2);
@@ -322,6 +341,8 @@ at::Tensor& AtenLinalgLuSolveOut(const at::Tensor& lu, const at::Tensor& pivots,
   TT_KERNEL(
       OpName::kLinalgLuSolveOut, param_keys,
       (lu, pivots, b, left, adjoint, out), {
+        TT_THROW_IF_ERROR(ValidateOutDtype(out, b.scalar_type(),
+                                           /*allow_out_dtype_cast=*/false));
         TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, b.sizes()));
         TT_CHECK_THROW(lu.dim() >= 2, error::kInvalidArgument)
             << "expected lu to have at least 2 dimensions, got " << lu.dim();
@@ -426,6 +447,13 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLinalgLuOut(
       (a, IgnoreInCacheKey(pivot, "Delegates to AtenLinalgLuFactorExOut"), p, l,
        u),
       {
+        TT_THROW_IF_ERROR(ValidateOutDtype(p, a.scalar_type(),
+                                           /*allow_out_dtype_cast=*/false));
+        TT_THROW_IF_ERROR(ValidateOutDtype(l, a.scalar_type(),
+                                           /*allow_out_dtype_cast=*/false));
+        TT_THROW_IF_ERROR(ValidateOutDtype(u, a.scalar_type(),
+                                           /*allow_out_dtype_cast=*/false));
+
         at::Tensor lu = at::empty_like(a);
         Dimensions pivot_dims = CopyIntVector(a.sizes());
         pivot_dims.pop_back();

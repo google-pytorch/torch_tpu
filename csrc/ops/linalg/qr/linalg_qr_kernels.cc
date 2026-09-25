@@ -17,6 +17,7 @@
 #include "csrc/ops/linalg/qr/linalg_qr_kernels.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -43,6 +44,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 namespace {
@@ -72,10 +74,10 @@ absl::Status ValidateGeqrfInputs(const at::Tensor& self) {
 }
 
 template <typename ReturnType, typename DispatchFn>
-ReturnType DispatchGeqrf(const at::Tensor& self, OpParamCacheKeys param_keys,
+ReturnType DispatchGeqrf(const at::Tensor& self,
+                         std::array<mlir::ElementType, 2> out_dtypes,
+                         OpParamCacheKeys param_keys,
                          DispatchFn&& dispatch_fn) {
-  TT_ASSIGN_OR_RETURN(const mlir::ElementType out_dtype, GetOutDtype(self));
-
   // Capture metadata properties (like 'input_is_integer') by copy instead of
   // capturing the 'at::Tensor self' handle. This prevents locking 'self' and
   // its entire autograd graph in memory, avoiding high peak HBM consumption.
@@ -99,15 +101,16 @@ ReturnType DispatchGeqrf(const at::Tensor& self, OpParamCacheKeys param_keys,
 
   return dispatch_fn(
       std::move(op_builder),
-      DispatchOpOptions<2>{.out_dtypes = {out_dtype, out_dtype},
+      DispatchOpOptions<2>{.out_dtypes = out_dtypes,
                            .out_dims_list = {self.sizes(), std::move(tau_dims)},
                            .op_param_cache_keys = std::move(param_keys)});
 }
 
 absl::StatusOr<DeviceBufferRefArray<2>> Geqrf(const at::Tensor& self,
                                               OpParamCacheKeys param_keys) {
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType out_dtype, GetOutDtype(self));
   return DispatchGeqrf<absl::StatusOr<DeviceBufferRefArray<2>>>(
-      self, std::move(param_keys),
+      self, {out_dtype, out_dtype}, std::move(param_keys),
       [&self](auto op_builder, DispatchOpOptions<2> options) {
         return DispatchOp<1, 2>(std::move(op_builder), {self},
                                 std::move(options));
@@ -116,8 +119,22 @@ absl::StatusOr<DeviceBufferRefArray<2>> Geqrf(const at::Tensor& self,
 
 absl::Status GeqrfOut(const at::Tensor& self, OpParamCacheKeys param_keys,
                       at::Tensor& a, at::Tensor& tau) {
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_dtype,
+                      GetOutDtype(self));
+  const at::ScalarType result_scalar_type =
+      ConvertTo<at::ScalarType>(computation_dtype);
+  TT_RETURN_IF_ERROR(
+      ValidateOutDtype(a, result_scalar_type, /*allow_out_dtype_cast=*/true));
+  TT_RETURN_IF_ERROR(
+      ValidateOutDtype(tau, result_scalar_type, /*allow_out_dtype_cast=*/true));
+
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType a_out_dtype,
+                      ConvertTo<mlir::ElementType>(a.scalar_type()));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType tau_out_dtype,
+                      ConvertTo<mlir::ElementType>(tau.scalar_type()));
+
   return DispatchGeqrf<absl::Status>(
-      self, std::move(param_keys),
+      self, {a_out_dtype, tau_out_dtype}, std::move(param_keys),
       [&self, &a, &tau](auto op_builder, DispatchOpOptions<2> options) {
         return DispatchOpOut<1, 2>(std::move(op_builder), self, {a, tau},
                                    std::move(options));
@@ -166,6 +183,11 @@ absl::StatusOr<QrDims> ComputeQrDims(const at::Tensor& self,
 
 absl::Status QrOut(const at::Tensor& self, c10::string_view mode,
                    OpParamCacheKeys param_keys, at::Tensor& q, at::Tensor& r) {
+  TT_RETURN_IF_ERROR(
+      ValidateOutDtype(q, self.scalar_type(), /*allow_out_dtype_cast=*/false));
+  TT_RETURN_IF_ERROR(
+      ValidateOutDtype(r, self.scalar_type(), /*allow_out_dtype_cast=*/false));
+
   TT_ASSIGN_OR_RETURN(const mlir::ElementType out_dtype, GetOutDtype(self));
 
   auto op_builder =

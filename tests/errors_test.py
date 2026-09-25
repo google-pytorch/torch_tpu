@@ -8180,6 +8180,119 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       torch.polar(abs_t, angle_t, out=out)
 
+  def test_geqrf_out_dtype_mismatch(self):
+    a = torch.randn(3, 3, device=et.device(), dtype=torch.float32)
+    out_a = torch.empty(3, 3, device=et.device(), dtype=torch.int32)
+    out_tau = torch.empty(3, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""geqrf(): result type float32 can't be cast to the desired output type int32""",
+        gpu="""torch.geqrf: Expected a to be safely castable from Float dtype, but got a with dtype Int""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.geqrf(a, out=(out_a, out_tau))
+
+  def test_linalg_inv_out_dtype_mismatch(self):
+    a = torch.randn(3, 3, device=et.device(), dtype=torch.float32)
+    out = torch.empty(3, 3, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_inv_ex(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.linalg.inv(a, out=out)
+
+  def test_linalg_lu_out_dtype_mismatch(self):
+    a = torch.randn(3, 3, device=et.device(), dtype=torch.float32)
+    p = torch.empty(3, 3, device=et.device(), dtype=torch.float64)
+    l = torch.empty(3, 3, device=et.device(), dtype=torch.float32)
+    u = torch.empty(3, 3, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_lu(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.linalg.lu(a, out=(p, l, u))
+
+  def test_linalg_lu_factor_ex_out_dtype_mismatch(self):
+    a = torch.randn(3, 3, device=et.device(), dtype=torch.float32)
+    lu = torch.empty(3, 3, device=et.device(), dtype=torch.float64)
+    pivots = torch.empty(3, device=et.device(), dtype=torch.int32)
+    info = torch.empty((), device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_lu_factor_ex(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.linalg.lu_factor_ex(a, out=(lu, pivots, info))
+
+  def test_linalg_lu_solve_out_dtype_mismatch(self):
+    a = torch.randn(3, 3, device=et.device(), dtype=torch.float32)
+    b = torch.randn(3, 1, device=et.device(), dtype=torch.float32)
+    lu, pivots = torch.linalg.lu_factor(a)
+    out = torch.empty(3, 1, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_lu_solve(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.linalg.lu_solve(lu, pivots, b, out=out)
+
+  def test_linalg_qr_out_dtype_mismatch(self):
+    a = torch.randn(3, 3, device=et.device(), dtype=torch.float32)
+    q = torch.empty(3, 3, device=et.device(), dtype=torch.float64)
+    r = torch.empty(3, 3, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_qr(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.linalg.qr(a, out=(q, r))
+
+  def test_linalg_solve_ex_out_dtype_mismatch(self):
+    a = torch.randn(3, 3, device=et.device(), dtype=torch.float32)
+    b = torch.randn(3, 1, device=et.device(), dtype=torch.float32)
+    result = torch.empty(3, 1, device=et.device(), dtype=torch.float64)
+    info = torch.empty((), device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_solve_ex(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.linalg.solve_ex(a, b, out=(result, info))
+
+  def test_linalg_solve_triangular_out_dtype_mismatch(self):
+    a = torch.randn(3, 3, device=et.device(), dtype=torch.float32)
+    b = torch.randn(3, 1, device=et.device(), dtype=torch.float32)
+    out = torch.empty(3, 1, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_solve_triangular(): expected the output dtype to be float32, got float64""",
+        gpu="""expected scalar type Float but found Double""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.linalg.solve_triangular(a, b, upper=True, out=out)
+
+  def test_lu_unpack_out_dtype_mismatch(self):
+    a = torch.randn(3, 3, device=et.device(), dtype=torch.float32)
+    lu, pivots = torch.linalg.lu_factor(a)
+    p = torch.empty(3, 3, device=et.device(), dtype=torch.float64)
+    l = torch.empty(3, 3, device=et.device(), dtype=torch.float32)
+    u = torch.empty(3, 3, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lu_unpack(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.lu_unpack(lu, pivots, out=(p, l, u))
+
   def test_angle_out_dtype_mismatch(self):
     t = torch.tensor([1.0 + 1.0j], device=et.device())
     out_int = torch.empty(1, device=et.device(), dtype=torch.int32)

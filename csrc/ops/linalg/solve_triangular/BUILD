@@ -24,6 +24,7 @@ torch_tpu_cc_library(
     srcs = ["linalg_solve_triangular_kernels.cc"],
     hdrs = ["linalg_solve_triangular_kernels.h"],
     deps = [
+        "//csrc/common:aten_utils",
         "//csrc/common:dimension_types",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",

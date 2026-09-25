@@ -23,6 +23,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -117,6 +118,9 @@ at::Tensor& AtenLinalgSolveTriangularOut(const at::Tensor& a,
 
         at::ScalarType out_scalar_type =
             c10::promoteTypes(a.scalar_type(), b.scalar_type());
+
+        TT_THROW_IF_ERROR(ValidateOutDtype(out, out_scalar_type,
+                                           /*allow_out_dtype_cast=*/false));
 
         TT_ASSIGN_OR_THROW(mlir::ElementType out_dtype,
                            ConvertTo<mlir::ElementType>(out_scalar_type));
