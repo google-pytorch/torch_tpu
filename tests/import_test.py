@@ -15,7 +15,9 @@
 """Tests for TorchTPU module import handling and ordering."""
 
 import os
+import sys
 import traceback
+from unittest import mock
 
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -56,6 +58,25 @@ def _worker_import_torch_tpu_then_torch(q):
     import torch  # pylint: disable=unused-import  # noqa: F401
 
     q.put("OK")
+  except Exception:
+    q.put(traceback.format_exc())
+
+
+def _worker_import_torch_tpu_skips_loader(q):
+  """Checks that `import torch_tpu` doesn't claim PrivateUse1 without autoload."""
+  try:
+    import torch  # pylint: disable=unused-import,g-import-not-at-top  # noqa: F401
+    import torch_tpu  # pylint: disable=unused-import,g-import-not-at-top  # noqa: F401
+
+    loaded = [
+        name
+        for name in (
+            "torch_tpu._loader",
+            "torch_tpu._internal.device._device_ops_backend",
+        )
+        if name in sys.modules
+    ]
+    q.put(f"Unexpectedly imported: {loaded}" if loaded else "OK")
   except Exception:
     q.put(traceback.format_exc())
 
@@ -102,6 +123,11 @@ class ImportTest(parameterized.TestCase):  # ABSLTEST_OK=Import test
         worker_fn,
         env_vars=env_vars,
     )
+
+  def test_import_without_autoload_skips_loader(self) -> None:
+    """Verifies `import torch_tpu` leaves PrivateUse1 free without autoload."""
+    with mock.patch.dict(os.environ, {"TORCH_DEVICE_BACKEND_AUTOLOAD": "0"}):
+      self._run_in_isolated_process(_worker_import_torch_tpu_skips_loader)
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@
 
 """TorchTPU library."""
 
+import os
 import pathlib
 
 from torch_tpu import _tcmalloc_check
@@ -36,6 +37,14 @@ except ImportError:
 # probe sees every library `import torch_tpu` pulls in, libtpu included.
 _tcmalloc_check.check_tcmalloc()
 
-from torch_tpu import _loader as _  # pylint: disable=g-import-not-at-top  # noqa: F401
+# _loader registers the torch.tpu.* public modules. Importing it also statically
+# registers TorchTPU's DeviceGuardImpl for PrivateUse1. When autoload is
+# disabled, skip importing _loader so that importing any torch_tpu module
+# (e.g. from a CUDA benchmark) does not register the TPU backend.
+_AUTOLOAD_ENV: str = os.getenv(  # PY_ENVIRON_OK=pre-torch.
+    "TORCH_DEVICE_BACKEND_AUTOLOAD", "1"
+)
+if _AUTOLOAD_ENV == "1":
+  from torch_tpu import _loader as _  # pylint: disable=g-import-not-at-top  # noqa: F401
 
 # TODO: b/477401982 - Introduce a new flag module to hold all TorchTPU flags.

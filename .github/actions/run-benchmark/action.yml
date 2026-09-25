@@ -386,7 +386,8 @@ runs:
 
         cd "$BENCHMARK_REPO_ROOT"
 
-        # Repo root is needed on PYTHONPATH for 'examples.*' imports.
+        # Repo root is needed on PYTHONPATH for 'perflab.*' and 'examples.*'
+        # imports.
         # Installed packages (torch_tpu) resolve from the virtual environment.
         export PYTHONPATH="$BENCHMARK_REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 

@@ -52,7 +52,7 @@ jobs:
     needs: [build_wheel]
     uses: google-ml-infra/bap/.github/workflows/run-benchmarks.yaml@ff212b97420bf479bd492d64e4b549534c22cd91 # main
     with:
-      registry_file: "examples/benchmarks/e2e/harness/benchmark_registry.pbtxt"
+      registry_file: "perflab/benchmark_registry.pbtxt"
       bap_ref: "ff212b97420bf479bd492d64e4b549534c22cd91"
       publish_metrics: true
       pub_sub_gcp_project_id: "ml-oss-benchmarking-production"
