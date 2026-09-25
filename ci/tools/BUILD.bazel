@@ -59,6 +59,20 @@ py_test(
 )
 
 py_binary(
+    name = "export_bazel_test_results",
+    srcs = ["export_bazel_test_results.py"],
+)
+
+py_test(
+    name = "export_bazel_test_results_test",
+    size = "small",
+    srcs = ["export_bazel_test_results_test.py"],
+    deps = [
+        ":export_bazel_test_results",
+    ],
+)
+
+py_binary(
     name = "list_ci_tests",
     srcs = ["list_ci_tests.py"],
     data = [
