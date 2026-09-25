@@ -28,7 +28,6 @@ torch_tpu_py_library(
     name = "common",
     srcs = ["common.py"],
     deps = [
-        "//shims/absl_py/flags",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
     ],
