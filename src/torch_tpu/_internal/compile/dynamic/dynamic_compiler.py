@@ -99,7 +99,8 @@ def _can_use_pad_real_to_static(
     example_inputs: Sequence[Any],
 ) -> bool:
   """Returns True if dynamic input tensors can be lowered to pad_real_to_static."""
-  if not utils.libtpu_at_least((0, 0, 48)):
+  libtpu = utils.libtpu_version()
+  if libtpu is not None and libtpu < (0, 0, 48):
     return False
   for arg in example_inputs:
     # dtype.itemsize is the element size in bytes (8 bytes = 64-bit,

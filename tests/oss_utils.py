@@ -14,8 +14,15 @@
 
 """Utilities for OSS/GCP environment detection and testing."""
 
+from collections.abc import Callable
 import functools
 import os
+from typing import Any, TypeVar
+import unittest
+
+from torch_tpu._internal.utils import utils
+
+_T = TypeVar("_T", bound=Callable[..., Any])
 
 
 def running_in_cloud() -> bool:
@@ -55,31 +62,12 @@ def skip_in_oss(
   return decorator
 
 
-def libtpu_version() -> str:
-  """Returns the libtpu version."""
-  try:
-    import libtpu  # pylint: disable=g-import-not-at-top # pytype: disable=import-error
-
-    return libtpu.__version__
-  except ImportError as e:
-    raise ValueError("libtpu is not available") from e
-
-
-def skip_if_cloud_and_libtpu_older_than(min_version: str):
-  """Decorator to skip test in cloud if libtpu version < min_version."""
-
-  def decorator(func):
-    @functools.wraps(func)
-    def wrapper(self, *args, **kwargs):
-      if running_in_cloud():
-        version = libtpu_version()
-        if version < min_version:
-          self.skipTest(
-              f"{func.__name__} requires libtpu >= {min_version} in cloud, but"
-              f" got {version}"
-          )
-      return func(self, *args, **kwargs)
-
-    return wrapper
-
-  return decorator
+def skip_if_libtpu_version(
+    pred: Callable[[tuple[int, ...]], bool],
+    message: str,
+) -> Callable[[_T], _T]:
+  """Decorator to skip a test class, method, or function in OSS when `pred(libtpu_version)` is true."""
+  return unittest.skipIf(
+      is_oss() and (ver := utils.libtpu_version()) is not None and pred(ver),
+      message,
+  )

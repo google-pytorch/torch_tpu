@@ -596,6 +596,10 @@ class ActivationTracer(contextlib.ContextDecorator):
     return False
 
 
+# We represent version numbers as `tuple[int, ...]` rather than
+# `packaging.version.Version` to avoid adding an external `packaging`
+# dependency to the `torch_tpu` runtime library and every test `BUILD` target
+# that compares versions.
 def parse_version(version: str) -> tuple[int, ...]:
   """Parses the leading numeric components of a version string into a tuple.
 
@@ -622,7 +626,7 @@ def parse_version(version: str) -> tuple[int, ...]:
 
 
 def libtpu_version() -> tuple[int, ...] | None:
-  """Returns the parsed version of the installed libtpu, or None if unavailable."""
+  """Returns the parsed version tuple of libtpu in OSS, or None in google3."""
   try:
     import libtpu  # pylint: disable=g-import-not-at-top # pytype: disable=import-error
   except ImportError:
@@ -631,14 +635,6 @@ def libtpu_version() -> tuple[int, ...] | None:
   if not version:
     return None
   return parse_version(version)
-
-
-def libtpu_at_least(min_version: tuple[int, ...]) -> bool:
-  """Returns True if libtpu is built from source / in-tree (None) or >= min_version."""
-  ver = libtpu_version()
-  if ver is None:
-    return True  # In-tree / source builds link PJRT directly without a wheel
-  return ver >= min_version
 
 
 def get_primary_tensor_output(out: Any) -> torch.Tensor | None:

@@ -102,7 +102,10 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
           ("addcmul", lambda s, t1, t2: torch.addcmul(s, t1, t2, value=3.14)),
       ],
   )
-  @oss_utils.skip_if_cloud_and_libtpu_older_than("0.0.47")
+  @oss_utils.skip_if_libtpu_version(
+      lambda v: v < (0, 0, 47),
+      "TODO(b/565506249): Requires libtpu >= 0.0.47.",
+  )
   def test_dynamic_float64_elementwise_and_fused_ops(self, dtype, op_fn):
     """Tests dynamic shapes for float64 (and f32 baseline) ops.
 
