@@ -374,6 +374,7 @@ torch_tpu_py_library(
 # We have multiple targets for ops_test.py:
 # * ops_test: TPU vs GPU (by default, we test against GPU).
 # * ops_test_gen_gpu_golden: generates the golden file for the GPU backend.
+# * ops_test_gen_gpu_golden_compiled: generates the golden file under torch.compile.
 # * ops_test_grad_tpu_vs_gpu: gradient on TPU vs GPU.
 # * ops_test_gen_gpu_golden_grad: generates the golden file for gradients.
 # * ops_test_perf: TPU only, for measuring compilation/execution time.
@@ -927,6 +928,35 @@ torch_tpu_py_test(
     #
     # If we adjust this, we must also adjust the data attribute in the
     # ops_test_vs_gpu target.
+    shard_count = 3,
+    deps = [
+        ":dynamism_test_utils",
+        ":op_testing",
+        ":oss_utils",
+        ":quantize_utils",
+        "//csrc/eager:tpu_aten_kernels",
+        "//shims/absl_py/flags",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "ops_test_gen_gpu_golden_compiled",
+    srcs = ["ops_test.py"],
+    args = [
+        "--test_mode=gen_gpu_golden",
+        "--use_compiled=True",
+    ],
+    env = {
+        "TORCHINDUCTOR_COMPILE_THREADS": "0",
+    },
+    main = "ops_test.py",
+    nolocal = "slow test",
+    notap = "slow test - only need to run on demand for updating goldens",
+    platform = _GPU_GOLDEN_PLATFORM,
     shard_count = 3,
     deps = [
         ":dynamism_test_utils",
