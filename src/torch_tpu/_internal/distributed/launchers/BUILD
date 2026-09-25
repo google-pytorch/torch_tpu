@@ -14,7 +14,6 @@
 
 load(
     "//build_files:build_defs.bzl",
-    "if_oss",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
     "torch_tpu_py_test",
@@ -26,18 +25,6 @@ package(
 )
 
 torch_tpu_py_library(
-    name = "singlehost_wrapper",
-    srcs = ["singlehost_wrapper.py"],
-    deps = [
-        "//shims/absl_py/logging",
-        "//src/torch_tpu/_internal:env_utils",
-        "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/utils:hardware",
-        "@pypi//portpicker",
-    ],
-)
-
-torch_tpu_py_library(
     name = "multihost_wrapper",
     srcs = ["multihost_wrapper.py"],
     deps = [
@@ -45,59 +32,6 @@ torch_tpu_py_library(
         "//src/torch_tpu/_internal:env",
         "//src/torch_tpu/_internal:env_utils",
         "//src/torch_tpu/_internal/distributed:tpu_distributed",
-    ],
-)
-
-torch_tpu_py_test(
-    name = "singlehost_wrapper_v7x_test",
-    srcs = ["singlehost_wrapper_test.py"],
-    main = "singlehost_wrapper_test.py",
-    nopresubmit = "long Forge queue",
-    strict = True,
-    tags = if_oss(
-        # The test spawns one worker per device, thus it needs
-        # every accelerator slot.
-        # TODO(b/559173648): revisit exclusive tests after enabling RBE.
-        ["exclusive"],
-        [],
-    ) + [
-        "nosan",  # TODO(b/556238269): OOM
-        "requires-tpu-v7x:4",  # Must use for testing v7x.
-    ],
-    deps = [
-        ":singlehost_wrapper",
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//tests:seed_test_utils",
-        "//tests/distributed:distributed_utils",
-    ],
-)
-
-torch_tpu_py_test(
-    name = "singlehost_wrapper_v5e_test",
-    srcs = ["singlehost_wrapper_test.py"],
-    main = "singlehost_wrapper_test.py",
-    strict = True,
-    tags = if_oss(
-        # The test spawns one worker per device, thus it needs
-        # every accelerator slot.
-        # TODO(b/559173648): revisit exclusive tests after enabling RBE.
-        ["exclusive"],
-        [],
-    ) + [
-        "nosan",  # TODO(b/556238269): OOM
-        "requires-tpu-v5lite:8",
-    ],
-    deps = [
-        ":singlehost_wrapper",
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//tests:seed_test_utils",
-        "//tests/distributed:distributed_utils",
     ],
 )
 

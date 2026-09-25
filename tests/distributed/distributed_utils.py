@@ -38,9 +38,7 @@ def _worker_fn(
 ) -> None:
   """Worker function for mp.spawn."""
   # Parse absl flags inside each mp.spawn child subprocess so tests can pass
-  # `fn` directly to `dist_run` without wrapping `fn` with the legacy
-  # `singlehost_wrapper.tpu_env_wrapper` (whose `WorkerWrapper` previously
-  # called `parse_absl_flags()`).
+  # `fn` directly to `dist_run`.
   multiprocessing.parse_absl_flags()
 
   node_rank = int(os.environ.get("NODE_RANK", "0"))

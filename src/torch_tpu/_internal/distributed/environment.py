@@ -52,9 +52,9 @@ name, and `oss/.bazelrc` forwards whatever it finds into every test, so
 treating its mere presence as multi-host would put a single-host job on the
 rendezvous path and hang it.
 
-This module is meant to take over from `singlehost_wrapper` and
-`multihost_wrapper`. Both are left untouched for now; rewriting them as shims
-over this one and moving their callers across is follow-up work.
+This module is meant to take over from `multihost_wrapper`, which is left
+untouched for now; rewriting it as a shim over this one and moving its callers
+across is follow-up work.
 """
 
 import time
