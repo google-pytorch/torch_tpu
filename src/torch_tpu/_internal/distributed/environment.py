@@ -68,10 +68,6 @@ Topological `NODE_RANK`:
   TPU devices of the process that does it. The query therefore runs in a
   short-lived child process, so that the parent calling `set_tpu_launch_env()`
   leaves the devices free for the workers it is about to spawn.
-
-This module is meant to take over from `multihost_wrapper`, which is left
-untouched for now; rewriting it as a shim over this one and moving its callers
-across is follow-up work.
 """
 
 from collections.abc import Sequence
