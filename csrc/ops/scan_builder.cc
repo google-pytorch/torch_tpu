@@ -99,9 +99,8 @@ absl::StatusOr<ScanLoopState> PrepareScanLoop(
   TT_ASSIGN_OR_RETURN(const int64_t scan_dim,
                       SafeWrapDim(dim, GetTensorTypeOrDie(input).getRank()));
 
-  // A 32-bit counter, like jax.lax.scan's. TPUs emulate s64 as two u32 halves,
-  // which hides the trip count from XLA, and loop passes that need it (e.g.
-  // collective pipelining of host offloads) then skip the loop.
+  // s32, as in jax.lax.scan: TPU splits s64 into two u32, which hides the trip
+  // count from XLA's loop passes.
   const mlir::IntegerType i32 = op_builder.getI32Type();
   const mlir::RankedTensorType index_type =
       mlir::RankedTensorType::get({}, i32);
