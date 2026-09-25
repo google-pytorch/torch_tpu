@@ -12,22 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Documentation for TorchTPU."""
+"""Exported Colab/Jupyter notebooks for TorchTPU."""
 
 load("//build_files:build_defs.bzl", "torch_tpu_package_end")
 
 package(
     default_applicable_licenses = ["//:license"],
-    default_visibility = ["//src/torch_tpu/docs/notebooks:__subpackages__"],
+    default_visibility = ["//:__subpackages__"],
 )
 
-# Make BUILD file maintenance tools ignore all *.py files as we don't
-# plan to run them as part of the build.
-filegroup(
-    name = "py_files",
-    srcs = glob(["**/*.py"]),
-    tags = ["ignore_srcs"],
-    visibility = ["//visibility:private"],
+exports_files(
+    glob(["*.ipynb"]),
+    visibility = ["//:__subpackages__"],
 )
 
 torch_tpu_package_end()
