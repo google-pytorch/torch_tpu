@@ -17,6 +17,8 @@
 #ifndef TORCH_TPU_CSRC_DISTRIBUTED_ALLGATHER_H_
 #define TORCH_TPU_CSRC_DISTRIBUTED_ALLGATHER_H_
 
+#include <cstdint>
+
 #include "absl/status/statusor.h"
 #include "csrc/distributed/types.h"
 #include "mlir/Support/LLVM.h"
@@ -26,13 +28,15 @@ namespace torch_tpu {
 
 enum class AllGatherOutputMode {
   kList,    // Output a list of tensors.
-  kConcat,  // Output a single tensor concatenated along dim 0.
+  kConcat,  // Output a single tensor concatenated along the gather dim.
   kStack    // Output a single tensor stacked along the new dim 0.
 };
 
+// Only kConcat supports a nonzero `gather_dim`.
 absl::StatusOr<mlir::SmallVector<mlir::MlirOp>> BuildDistributedAllGatherShlo(
     mlir::MlirOp input, const DeviceGroupList& device_groups,
-    AllGatherOutputMode output_mode = AllGatherOutputMode::kList);
+    AllGatherOutputMode output_mode = AllGatherOutputMode::kList,
+    int64_t gather_dim = 0);
 
 }  // namespace torch_tpu
 

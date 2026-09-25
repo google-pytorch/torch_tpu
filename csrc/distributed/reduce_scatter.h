@@ -17,6 +17,8 @@
 #ifndef TORCH_TPU_CSRC_DISTRIBUTED_REDUCE_SCATTER_H_
 #define TORCH_TPU_CSRC_DISTRIBUTED_REDUCE_SCATTER_H_
 
+#include <cstdint>
+
 #include "absl/status/statusor.h"
 #include "csrc/distributed/types.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -26,7 +28,7 @@ namespace torch_tpu {
 
 absl::StatusOr<mlir::MlirOp> BuildDistributedReduceScatterShlo(
     mlir::MlirOp input, c10d::ReduceOp::RedOpType reduce_op_type,
-    const DeviceGroupList& device_groups);
+    const DeviceGroupList& device_groups, int64_t scatter_dim = 0);
 
 }  // namespace torch_tpu
 
