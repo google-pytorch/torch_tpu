@@ -44,6 +44,11 @@
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 
 namespace torch_tpu {
+namespace internal {
+template <>
+inline void CheckScalarInput<OpName::kConstantPadNd, UsesScalarInput::kYes>() {}
+}  // namespace internal
+
 namespace {
 
 // Applies constant padding (and/or negative-padding cropping) along a single
@@ -192,34 +197,31 @@ at::Tensor AtenConstantPadNd(const at::Tensor& self, at::IntArrayRef pad,
   }
 
   const Dimensions pad_vec = CopyIntVector(pad);
-  // Promote the scalar padding value so that changes to `value` hit the same
-  // compiled MLIR module cache key (`DispatchOp<2>`) without recompilation.
-  auto promoted_value = PromoteScalar(value);
 
-  TT_KERNEL(
-      OpName::kConstantPadNd, param_keys, (self, pad_vec, promoted_value), {
-        TT_ASSIGN_OR_THROW(const mlir::ElementType element_type,
-                           ConvertTo<mlir::ElementType>(self.scalar_type()));
-        TT_ASSIGN_OR_THROW(const at::Tensor val_tensor,
-                           promoted_value.GetTensor(self.scalar_type()));
+  TT_KERNEL(OpName::kConstantPadNd, param_keys, (self, pad_vec, value), {
+    TT_ASSIGN_OR_THROW(const mlir::ElementType element_type,
+                       ConvertTo<mlir::ElementType>(self.scalar_type()));
 
-        auto op_builder = [pad_vec](FixedSizeSpan<mlir::MlirOp, 2> inputs)
-            -> absl::StatusOr<mlir::MlirOp> {
-          return BuildConstantPadNdShlo(inputs[0], inputs[1], pad_vec);
-        };
+    auto op_builder = [pad_vec, value, element_type](
+                          mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
+      TT_ASSIGN_OR_RETURN(
+          mlir::MlirOp val_scalar,
+          MakeConstant(input.getBuilder(), value, element_type));
+      return BuildConstantPadNdShlo(input, val_scalar, pad_vec);
+    };
 
-        TT_ASSIGN_OR_THROW(
-            auto out_buf,
-            (DispatchOp<2>(std::move(op_builder), {self, val_tensor},
-                           {.out_dtype = element_type,
-                            .out_dims = out_dims,
-                            .op_param_cache_keys = std::move(param_keys)})));
-        TT_ASSIGN_OR_THROW(
-            at::Tensor out,
-            MakeEmptyTensor(out_dims, self.scalar_type(), self.device()));
-        TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(out_buf), out));
-        return out;
-      });
+    TT_ASSIGN_OR_THROW(
+        auto out_buf,
+        (DispatchOp<1>(std::move(op_builder), {self},
+                       {.out_dtype = element_type,
+                        .out_dims = out_dims,
+                        .op_param_cache_keys = std::move(param_keys)})));
+    TT_ASSIGN_OR_THROW(
+        at::Tensor out,
+        MakeEmptyTensor(out_dims, self.scalar_type(), self.device()));
+    TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(out_buf), out));
+    return out;
+  });
 }
 
 }  // namespace torch_tpu

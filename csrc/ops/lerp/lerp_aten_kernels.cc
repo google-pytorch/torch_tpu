@@ -41,6 +41,10 @@
 #include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
+namespace internal {
+template <>
+inline void CheckScalarInput<OpName::kLerpScalarOut, UsesScalarInput::kYes>() {}
+}  // namespace internal
 
 namespace {
 
@@ -85,6 +89,17 @@ NAryMlirOpBuilder<3> GetLerpTensorOutFunctional(mlir::ElementType common_type) {
   };
 }
 
+NAryMlirOpBuilder<2> GetLerpScalarOutFunctional(const at::Scalar& weight,
+                                                mlir::ElementType common_type) {
+  return [weight, common_type](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+             -> absl::StatusOr<MlirOpResults<1>> {
+    auto [self, end] = inputs;
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp weight_op,
+                        MakeConstant(self.getBuilder(), weight, common_type));
+    return BuildLerpShlo(self, end, weight_op, common_type);
+  };
+}
+
 }  // namespace
 
 at::Tensor& AtenLerpTensorOut(const at::Tensor& self, const at::Tensor& end,
@@ -123,17 +138,42 @@ at::Tensor& AtenLerpTensorOut(const at::Tensor& self, const at::Tensor& end,
 
 at::Tensor& AtenLerpScalarOut(const at::Tensor& self, const at::Tensor& end,
                               const at::Scalar& weight, at::Tensor& out) {
-  auto promoted_weight = PromoteScalar(weight);
-  TT_KERNEL(OpName::kLerpScalarOut, _, (self, end, promoted_weight, out), {
-    // Promote `weight` as a scalar rather than a default-float64 tensor, and
-    // widen to at least F32 to match `AtenLerpTensorOut`'s compute dtype
-    // without quantizing the scalar to F16/BF16.
+  TT_KERNEL(OpName::kLerpScalarOut, param_keys, (self, end, weight, out), {
+    TT_ASSIGN_OR_THROW(auto expected_size,
+                       InferSize(self.sizes(), end.sizes()));
+    TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, expected_size));
+    TT_THROW_IF_ERROR(ValidateLerpSelfInput(self));
+
+    if (!weight.isComplex()) {
+      if (weight.toDouble() == 0.0) {
+        out.copy_(self);
+        return out;
+      }
+      if (weight.toDouble() == 1.0) {
+        out.copy_(end);
+        return out;
+      }
+    }
+
+    TT_ASSIGN_OR_THROW(mlir::ElementType output_dtype,
+                       ConvertTo<mlir::ElementType>(out.scalar_type()));
+    auto promoted_dtype =
+        c10::promoteTypes(self.scalar_type(), end.scalar_type());
     at::ScalarType weight_dtype =
-        at::result_type(self, promoted_weight.scalar());
-    weight_dtype = c10::promoteTypes(weight_dtype, at::ScalarType::Float);
-    TT_ASSIGN_OR_THROW(auto weight_tensor,
-                       promoted_weight.GetTensor(weight_dtype));
-    return AtenLerpTensorOut(self, end, weight_tensor, out);
+        c10::promoteTypes(at::result_type(self, weight), at::ScalarType::Float);
+    promoted_dtype = c10::promoteTypes(promoted_dtype, weight_dtype);
+
+    TT_ASSIGN_OR_THROW(mlir::ElementType common_type,
+                       ConvertTo<mlir::ElementType>(promoted_dtype));
+
+    TT_THROW_IF_ERROR(
+        DispatchOpOut<2>(GetLerpScalarOutFunctional(weight, common_type),
+                         /*inputs=*/{self, end}, out,
+                         /*options=*/
+                         {.out_dtype = output_dtype,
+                          .out_dims = out.sizes(),
+                          .op_param_cache_keys = std::move(param_keys)}));
+    return out;
   });
 }
 
