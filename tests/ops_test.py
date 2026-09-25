@@ -847,12 +847,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.bfloat16: {"atol": 5.9e-3},
         torch.float16: {"atol": 5.9e-4},
     },
-    "_thnn_fused_gru_cell": {
-        torch.float32: {"rtol": 1e-4, "atol": 1e-4},
-    },
-    "_thnn_fused_lstm_cell": {
-        torch.float32: {"rtol": 1e-4, "atol": 1e-4},
-    },
     "_transformer_encoder_layer_fwd": {
         torch.bfloat16: {"rtol": 1.1e-1, "atol": 1.6e-1},
         torch.float16: {"rtol": 6.7e-2, "atol": 1.2e-1},
@@ -1236,9 +1230,6 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
     "_softmax_backward_data": {
         torch.bfloat16: {"atol": 5.9e-3},
         torch.float16: {"atol": 5.9e-4},
-    },
-    "_thnn_fused_gru_cell": {
-        torch.float32: {"rtol": 1e-5, "atol": 3e-5},
     },
     "abs": {
         torch.complex64: {"rtol": 2.0e-6, "atol": 2.0e-6},

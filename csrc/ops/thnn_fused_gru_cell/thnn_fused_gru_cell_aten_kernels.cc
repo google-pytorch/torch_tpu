@@ -65,18 +65,52 @@ namespace {
 // dim 1 [B, 5H] holding intermediate tensors for the fused backward pass.
 // Note: All StableHLO builder ops take non-const MlirOp& lvalues, so every
 // intermediate is a named variable.
+inline mlir::MlirOp BuildSigmoidForRnnCell(mlir::MlirOp x,
+                                           mlir::ElementType acc_dtype) {
+  if (acc_dtype != mlir::ElementType::F32) {
+    return mlir::stablehlo::Logistic(x);
+  }
+  mlir::MlirOp one = MakeConstantLike(x, 1.0);
+  mlir::MlirOp neg_x = mlir::stablehlo::Neg(x);
+  mlir::MlirOp exp_neg_x = mlir::stablehlo::Exp(neg_x);
+  mlir::MlirOp denom = mlir::stablehlo::Add(one, exp_neg_x);
+  return mlir::stablehlo::Div(one, denom);
+}
+
+inline mlir::MlirOp BuildTanhForRnnCell(mlir::MlirOp x,
+                                        mlir::ElementType acc_dtype) {
+  if (acc_dtype != mlir::ElementType::F32) {
+    return mlir::stablehlo::Tanh(x);
+  }
+  mlir::MlirOp neg_two = MakeConstantLike(x, -2.0);
+  mlir::MlirOp two = MakeConstantLike(x, 2.0);
+  mlir::MlirOp abs_x = mlir::stablehlo::Abs(x);
+  mlir::MlirOp scaled = mlir::stablehlo::Mul(neg_two, abs_x);
+  mlir::MlirOp u = mlir::stablehlo::Expm1(scaled);
+  mlir::MlirOp neg_u = mlir::stablehlo::Neg(u);
+  mlir::MlirOp denom = mlir::stablehlo::Add(two, u);
+  mlir::MlirOp mag = mlir::stablehlo::Div(neg_u, denom);
+  mlir::MlirOp sign_x = mlir::stablehlo::Sign(x);
+  return mlir::stablehlo::Mul(sign_x, mag);
+}
+
 absl::StatusOr<std::array<mlir::MlirOp, 2>> BuildGruCellShlo(
     mlir::MlirOp ig, mlir::MlirOp hg, mlir::MlirOp hx, int64_t batch,
-    int64_t hidden, mlir::ElementType out_dtype) {
-  const bool needs_upcast = (out_dtype == mlir::ElementType::F16 ||
-                             out_dtype == mlir::ElementType::BF16);
-  const mlir::ElementType acc_dtype =
-      needs_upcast ? mlir::ElementType::F32 : out_dtype;
+    int64_t hidden, mlir::ElementType out_dtype,
+    std::optional<mlir::MlirOp> ib_b = std::nullopt,
+    std::optional<mlir::MlirOp> hb_b = std::nullopt) {
+  TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=unsupported dtypes caught at
+                        // tensor creation
+      const mlir::ElementType acc_dtype, InferComputationDtype(out_dtype));
   auto to_acc = [acc_dtype](mlir::MlirOp op) -> mlir::MlirOp {
-    return mlir::stablehlo::ConvertElementType(op, acc_dtype);
+    return GetElementTypeOrDie(op) == acc_dtype
+               ? op
+               : mlir::stablehlo::ConvertElementType(op, acc_dtype);
   };
   auto to_out = [out_dtype](mlir::MlirOp op) -> mlir::MlirOp {
-    return mlir::stablehlo::ConvertElementType(op, out_dtype);
+    return GetElementTypeOrDie(op) == out_dtype
+               ? op
+               : mlir::stablehlo::ConvertElementType(op, out_dtype);
   };
 
   mlir::MlirOp ig_acc = to_acc(ig);
@@ -97,17 +131,38 @@ absl::StatusOr<std::array<mlir::MlirOp, 2>> BuildGruCellShlo(
                                             {batch, 3 * hidden}, {1, 1});
 
   mlir::MlirOp pre_r = mlir::stablehlo::Add(i_r, h_r);
-  mlir::MlirOp resetgate = mlir::stablehlo::Logistic(pre_r);
   mlir::MlirOp pre_z = mlir::stablehlo::Add(i_z, h_z);
-  mlir::MlirOp updategate = mlir::stablehlo::Logistic(pre_z);
+  if (ib_b.has_value() && hb_b.has_value()) {
+    mlir::MlirOp b1_r =
+        mlir::stablehlo::Slice(*ib_b, {0, 0}, {batch, hidden}, {1, 1});
+    mlir::MlirOp b1_z =
+        mlir::stablehlo::Slice(*ib_b, {0, hidden}, {batch, 2 * hidden}, {1, 1});
+    mlir::MlirOp b1_n = mlir::stablehlo::Slice(*ib_b, {0, 2 * hidden},
+                                               {batch, 3 * hidden}, {1, 1});
+    mlir::MlirOp b2_r =
+        mlir::stablehlo::Slice(*hb_b, {0, 0}, {batch, hidden}, {1, 1});
+    mlir::MlirOp b2_z =
+        mlir::stablehlo::Slice(*hb_b, {0, hidden}, {batch, 2 * hidden}, {1, 1});
+    mlir::MlirOp b2_n = mlir::stablehlo::Slice(*hb_b, {0, 2 * hidden},
+                                               {batch, 3 * hidden}, {1, 1});
+    mlir::MlirOp pre_r_b1 = mlir::stablehlo::Add(pre_r, b1_r);
+    pre_r = mlir::stablehlo::Add(pre_r_b1, b2_r);
+    mlir::MlirOp pre_z_b1 = mlir::stablehlo::Add(pre_z, b1_z);
+    pre_z = mlir::stablehlo::Add(pre_z_b1, b2_z);
+    i_n = mlir::stablehlo::Add(i_n, b1_n);
+    h_n = mlir::stablehlo::Add(h_n, b2_n);
+  }
+
+  mlir::MlirOp resetgate = BuildSigmoidForRnnCell(pre_r, acc_dtype);
+  mlir::MlirOp updategate = BuildSigmoidForRnnCell(pre_z, acc_dtype);
   mlir::MlirOp r_hn = mlir::stablehlo::Mul(resetgate, h_n);
   mlir::MlirOp pre_n = mlir::stablehlo::Add(i_n, r_hn);
-  mlir::MlirOp newgate = mlir::stablehlo::Tanh(pre_n);
+  mlir::MlirOp newgate = BuildTanhForRnnCell(pre_n, acc_dtype);
 
-  // hy = (hx - n) * z + n
+  // hy = n + z * (hx - n)
   mlir::MlirOp hx_minus_n = mlir::stablehlo::Subtract(hx_acc, newgate);
-  mlir::MlirOp scaled = mlir::stablehlo::Mul(hx_minus_n, updategate);
-  mlir::MlirOp hy_acc = mlir::stablehlo::Add(scaled, newgate);
+  mlir::MlirOp scaled = mlir::stablehlo::Mul(updategate, hx_minus_n);
+  mlir::MlirOp hy_acc = mlir::stablehlo::Add(newgate, scaled);
 
   mlir::MlirOp hy = to_out(hy_acc);
   mlir::MlirOp workspace = mlir::stablehlo::Concatenate(
@@ -124,15 +179,18 @@ absl::StatusOr<std::array<mlir::MlirOp, 2>> BuildGruCellShlo(
 absl::StatusOr<std::array<mlir::MlirOp, 3>> BuildGruCellBackwardShlo(
     mlir::MlirOp grad_hy, mlir::MlirOp workspace, int64_t batch, int64_t hidden,
     mlir::ElementType out_dtype) {
-  const bool needs_upcast = (out_dtype == mlir::ElementType::F16 ||
-                             out_dtype == mlir::ElementType::BF16);
-  const mlir::ElementType acc_dtype =
-      needs_upcast ? mlir::ElementType::F32 : out_dtype;
+  TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=unsupported dtypes caught at
+                        // tensor creation
+      const mlir::ElementType acc_dtype, InferComputationDtype(out_dtype));
   auto to_acc = [acc_dtype](mlir::MlirOp op) -> mlir::MlirOp {
-    return mlir::stablehlo::ConvertElementType(op, acc_dtype);
+    return GetElementTypeOrDie(op) == acc_dtype
+               ? op
+               : mlir::stablehlo::ConvertElementType(op, acc_dtype);
   };
   auto to_out = [out_dtype](mlir::MlirOp op) -> mlir::MlirOp {
-    return mlir::stablehlo::ConvertElementType(op, out_dtype);
+    return GetElementTypeOrDie(op) == out_dtype
+               ? op
+               : mlir::stablehlo::ConvertElementType(op, out_dtype);
   };
 
   mlir::MlirOp grad_hy_acc = to_acc(grad_hy);
@@ -209,8 +267,7 @@ ReturnType DispatchThnnFusedGruCellCommon(
       const auto out_dtype, ConvertTo<mlir::ElementType>(hx.scalar_type()));
   TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=unsupported dtypes caught at
                         // tensor creation
-      const auto acc_dtype,
-      ConvertTo<mlir::ElementType>(ToAccumulateType(hx.scalar_type())));
+      const auto acc_dtype, InferComputationDtype(out_dtype));
   const std::array<int64_t, 2> hy_dims = {batch, hidden};
   const std::array<int64_t, 2> ws_dims = {batch, 5 * hidden};
   const std::array<mlir::ElementType, 2> out_dtypes = {out_dtype, out_dtype};
@@ -222,7 +279,9 @@ ReturnType DispatchThnnFusedGruCellCommon(
                        out_dtype](FixedSizeSpan<mlir::MlirOp, 5> inputs)
         -> absl::StatusOr<std::array<mlir::MlirOp, 2>> {
       auto to_acc = [acc_dtype](mlir::MlirOp op) -> mlir::MlirOp {
-        return mlir::stablehlo::ConvertElementType(op, acc_dtype);
+        return GetElementTypeOrDie(op) == acc_dtype
+                   ? op
+                   : mlir::stablehlo::ConvertElementType(op, acc_dtype);
       };
       auto& [ig, hg, hx_op, ib, hb] = inputs;
       mlir::MlirOp ig_acc = to_acc(ig);
@@ -233,9 +292,8 @@ ReturnType DispatchThnnFusedGruCellCommon(
           GetTensorTypeOrDie(ig_acc), ib_acc, {/*broadcast_dimensions=*/1});
       mlir::MlirOp hb_b = mlir::stablehlo::BroadcastInDim(
           GetTensorTypeOrDie(hg_acc), hb_acc, {/*broadcast_dimensions=*/1});
-      mlir::MlirOp ig_b = mlir::stablehlo::Add(ig_acc, ib_b);
-      mlir::MlirOp hg_b = mlir::stablehlo::Add(hg_acc, hb_b);
-      return BuildGruCellShlo(ig_b, hg_b, hx_op, batch, hidden, out_dtype);
+      return BuildGruCellShlo(ig_acc, hg_acc, hx_op, batch, hidden, out_dtype,
+                              ib_b, hb_b);
     };
     return dispatch5(
         std::move(op_builder),
@@ -249,7 +307,9 @@ ReturnType DispatchThnnFusedGruCellCommon(
                        out_dtype](FixedSizeSpan<mlir::MlirOp, 3> inputs)
         -> absl::StatusOr<std::array<mlir::MlirOp, 2>> {
       auto to_acc = [acc_dtype](mlir::MlirOp op) -> mlir::MlirOp {
-        return mlir::stablehlo::ConvertElementType(op, acc_dtype);
+        return GetElementTypeOrDie(op) == acc_dtype
+                   ? op
+                   : mlir::stablehlo::ConvertElementType(op, acc_dtype);
       };
       auto& [ig, hg, hx_op] = inputs;
       mlir::MlirOp ig_acc = to_acc(ig);
