@@ -34,6 +34,7 @@ torch_tpu_py_library(
     name = "environment",
     srcs = ["environment.py"],
     deps = [
+        ":tpu_distributed",
         "//shims/absl_py/logging",
         "//src/torch_tpu/_internal:env",
         "//src/torch_tpu/_internal:env_utils",
