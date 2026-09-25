@@ -1399,13 +1399,14 @@ kiwisolver==1.5.1 \
     --hash=sha256:fc271a6f0a2126958f4090e5507b9da5848927dae331f8f763bd4aa642b3d2cd \
     --hash=sha256:febcce10f2bcdbb80b4ea919238a6a4ac13dbc4c7cadbe8d5d75c3682f8b5404
     # via matplotlib
-libtpu==0.0.41 \
-    --hash=sha256:47feeac3cd4cd88c58342c20f3cb3635d1f2d53f8689aa24bbe9690e664629de \
-    --hash=sha256:49df53647fead6188b7f1a8d3bfc7e0fb664f30b445bba5a672b1e3fff777f02 \
-    --hash=sha256:5c2776bffaac0acd0376e8c4a40981f5fcdbe71da067fe50da150eee51958efc \
-    --hash=sha256:5dd67e594cefb67f4272efb5a3fa38cf9206b7dd1ab5fbd559001809f8b9dddb \
-    --hash=sha256:62dd05e942de8f1379eff9a1b2ada33e1a99d0fbddf52ffce57b18268a0413e6 \
-    --hash=sha256:ca9dd60976c035b071b2d5d61acdd78598f717bba4f277b3708269d05b5c32fb
+libtpu==0.0.49 \
+    --hash=sha256:1ce310e07e78d42d0abca43a5030db4d4241cc92b8d621eb7090d8887b2708fb \
+    --hash=sha256:2b11564737cf49c5b6bb87059ea6b24734d8b0975c970909ffcdf1d4343d4df3 \
+    --hash=sha256:2de54cbbcaf7222f73daa7d4b3a1f1e88a13018b08ceeae5b1a3e7fe3fbb3979 \
+    --hash=sha256:51e772367bbeeaf4c0076f451c0ce647e18034ab623f9dac75f052720dbc3346 \
+    --hash=sha256:6848184691c3580dffd4cad2add3a3c6c2a3a595525546e3d88d911d7198f3b0 \
+    --hash=sha256:75bd06d7213a1bf3b66ae348549b0ee1aa59ff2671142b87ea808a17a1d7df38 \
+    --hash=sha256:f733c77094061fc1054d931b3a118ca63ae5092a8232aa137db40377fb2ac533
     # via torch-tpu (pyproject.toml)
 llama-models==0.3.0 \
     --hash=sha256:6b30bc025ea69021778bc5b5acba1e4b05b47baf4235be284d26b9ea06911f79 \

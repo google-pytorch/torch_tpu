@@ -16,21 +16,137 @@
 
 #include "csrc/common/environment.h"
 
+#include <netdb.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include <cstddef>
 #include <string>
+#include <string_view>
 #include <vector>
 
+#include "absl/algorithm/container.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
-#include "absl/strings/str_replace.h"
+#include "absl/strings/str_join.h"
 #include "absl/strings/str_split.h"
+#include "absl/strings/strip.h"
 #include "csrc/common/device_utils.h"
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/libtpu_version.h"
 #include "csrc/distributed/slicebuilder/discovery.h"
 
 namespace torch_tpu {
+namespace {
+
+constexpr std::string_view kMinLibtpuVersionWithSlicebuilderInsecureGrpc =
+    "0.0.48";
+
+std::string GetSanitizedHostName() {
+  char hostname[1024];
+  if (gethostname(hostname, sizeof(hostname)) != 0) {
+    return "localhost";
+  }
+  hostname[sizeof(hostname) - 1] = '\0';
+  std::string_view host_view(hostname);
+  const size_t strip_from = host_view.find_first_of(".:");
+  if (strip_from != std::string_view::npos) {
+    host_view = host_view.substr(0, strip_from);
+  }
+  if (host_view.empty()) {
+    return "localhost";
+  }
+  const std::string sanitized(host_view);
+  struct addrinfo* res = nullptr;
+  if (getaddrinfo(sanitized.c_str(), nullptr, nullptr, &res) != 0) {
+    return "localhost";
+  }
+  freeaddrinfo(res);
+  return sanitized;
+}
+
+void EnsureLibtpuBoolFlag(std::vector<std::string>& flags,
+                          std::string_view flag_prefix,
+                          std::string_view bad_flag,
+                          std::string_view target_flag,
+                          std::string_view warning_message) {
+  bool found = false;
+  for (std::string& flag : flags) {
+    if (flag == bad_flag) {
+      ABSL_LOG(WARNING) << warning_message;
+      flag = std::string(target_flag);
+      found = true;
+    } else if (absl::StartsWith(flag, flag_prefix)) {
+      found = true;
+    }
+  }
+  if (!found) {
+    flags.emplace_back(target_flag);
+  }
+}
+
+void AppendUndefokItem(std::string& undefok_flag, std::string_view item) {
+  const size_t eq_pos = undefok_flag.find('=');
+  const std::string_view existing =
+      std::string_view(undefok_flag).substr(eq_pos + 1);
+  std::vector<std::string_view> items =
+      absl::StrSplit(existing, ',', absl::SkipEmpty());
+  if (absl::c_find(items, item) == items.end()) {
+    items.push_back(item);
+  }
+  undefok_flag = absl::StrCat("--undefok=", absl::StrJoin(items, ","));
+}
+
+void EnsureUndefokFlag(std::vector<std::string>& flags,
+                       std::string_view flag_name) {
+  for (std::string& flag : flags) {
+    if (absl::StartsWith(flag, "--undefok=") ||
+        absl::StartsWith(flag, "-undefok=")) {
+      AppendUndefokItem(flag, flag_name);
+      return;
+    }
+  }
+  flags.emplace_back(absl::StrCat("--undefok=", flag_name));
+}
+
+std::string ConfigureLibtpuInitArgs(std::string_view raw_args,
+                                    const bool use_slicebuilder_insecure_grpc) {
+  std::vector<std::string> flags =
+      absl::StrSplit(raw_args, absl::ByAsciiWhitespace(), absl::SkipEmpty());
+
+  // Preventing distributed hangs, see b/477673365.
+  EnsureLibtpuBoolFlag(
+      flags, "--xla_tpu_use_enhanced_launch_barrier",
+      "--xla_tpu_use_enhanced_launch_barrier=true",
+      "--xla_tpu_use_enhanced_launch_barrier=false",
+      "libtpu_init_args contains "
+      "--xla_tpu_use_enhanced_launch_barrier=true, "
+      "this can cause distributed hangs. Rewriting environment "
+      "variable to false.");
+
+  if (use_slicebuilder_insecure_grpc) {
+    // Preventing SliceBuilder ALTS gRPC handshake hangs on GKE/GCE, see
+    // b/565342785 and b/526788926.
+    EnsureLibtpuBoolFlag(
+        flags, "--slicebuilder_use_insecure_grpc",
+        "--slicebuilder_use_insecure_grpc=false",
+        "--slicebuilder_use_insecure_grpc=true",
+        "libtpu_init_args contains "
+        "--slicebuilder_use_insecure_grpc=false, "
+        "this can cause SliceBuilder gRPC handshake hangs on GKE/GCE. "
+        "Rewriting environment variable to true.");
+    // `slicebuilder_use_insecure_grpc` was introduced in libtpu 0.0.48; mark
+    // it in `--undefok` so environments where SetLibtpuVersion was not called
+    // (e.g. standalone C++ tests) never fail command line flag parsing.
+    EnsureUndefokFlag(flags, "slicebuilder_use_insecure_grpc");
+  }
+  return absl::StrJoin(flags, " ");
+}
+
+}  // namespace
 
 absl::Status InitializeDistributedEnvironment(
     const DistributedWorkerConfiguration& config) {
@@ -43,7 +159,7 @@ absl::Status InitializeDistributedEnvironment(
            << "RANK " << config.rank << " is out of bounds (negative)";
   }
   std::vector<std::string> addresses = absl::StrSplit(config.sb_addrs, ',');
-  int slice_rank = config.rank % static_cast<int>(addresses.size());
+  const int slice_rank = config.rank % static_cast<int>(addresses.size());
   SetEnv<kCloudTpuTaskIdEnvVar>(absl::StrCat(slice_rank));
 
   // TPU_VISIBLE_DEVICES is our source of truth for device visibility.
@@ -59,8 +175,10 @@ absl::Status InitializeDistributedEnvironment(
   SetEnv<kTpuVisibleDevicesEnvVar>(target_dev);
   SetEnv<kTpuVisibleChipsEnvVar>(target_dev);
 
-  std::vector<std::string> topology_dims = absl::StrSplit(config.topology, ',');
-  std::string chips_bounds = (topology_dims.size() == 4) ? "1,1,1,1" : "1,1,1";
+  const std::vector<std::string> topology_dims =
+      absl::StrSplit(config.topology, ',');
+  const std::string chips_bounds =
+      (topology_dims.size() == 4) ? "1,1,1,1" : "1,1,1";
 
   SetEnv<kTpuHostBoundsEnvVar>(config.topology);
   SetEnv<kTpuChipsPerHostBoundsEnvVar>(chips_bounds);
@@ -70,31 +188,32 @@ absl::Status InitializeDistributedEnvironment(
   // The free slicebuilder port of this process.
   SetEnv<kTpuProcessPortEnvVar>(config.sb_port);
 
+  const bool use_slicebuilder_insecure_grpc =
+      IsLibtpuVersionAtLeast(kMinLibtpuVersionWithSlicebuilderInsecureGrpc);
+  if (use_slicebuilder_insecure_grpc) {
+    // Under LIBTPU_ON_GCE (libtpu >= 0.0.48), SliceBuilder WorkerService binds
+    // to `<GetAndSanitizeHostName()>:<port>` rather than `[::]:<port>`, which
+    // resolves to the host/pod network interface IP rather than loopback
+    // (127.0.0.1). Rewrite `localhost:<port>` addresses to `<hostname>:<port>`
+    // so MasterFactory connects to the exact address WorkerService listens on.
+    const std::string sanitized_hostname = GetSanitizedHostName();
+    for (std::string& addr : addresses) {
+      std::string_view addr_view(addr);
+      if (absl::ConsumePrefix(&addr_view, "localhost:")) {
+        addr = absl::StrCat(sanitized_hostname, ":", addr_view);
+      }
+    }
+  }
+
   // The addresses of all other workers in the slice.
-  SetEnv<kTpuProcessAddressesEnvVar>(config.sb_addrs);
+  SetEnv<kTpuProcessAddressesEnvVar>(absl::StrJoin(addresses, ","));
 
   // Avoid multi-process libtpu lock in GCP init, see b/487769788.
   SetEnv<kAllowMultipleLibtpuLoadEnvVar>("1");
 
-  std::string libtpu_init_args_str =
-      GetEnvOnce<kLibtpuInitArgsEnvVar>().value_or("");
-  if (absl::StrContains(libtpu_init_args_str,
-                        "--xla_tpu_use_enhanced_launch_barrier=true")) {
-    ABSL_LOG(WARNING)
-        << "libtpu_init_args contains "
-           "--xla_tpu_use_enhanced_launch_barrier=true, "
-           "this can cause distributed hangs. Rewriting environment "
-           "variable to false.";
-    libtpu_init_args_str =
-        absl::StrReplaceAll(libtpu_init_args_str,
-                            {{"--xla_tpu_use_enhanced_launch_barrier=true",
-                              "--xla_tpu_use_enhanced_launch_barrier=false"}});
-  } else if (!absl::StrContains(libtpu_init_args_str,
-                                "--xla_tpu_use_enhanced_launch_barrier")) {
-    // Preventing distributed hangs, see b/477673365.
-    absl::StrAppend(&libtpu_init_args_str,
-                    " --xla_tpu_use_enhanced_launch_barrier=false");
-  }
+  const std::string libtpu_init_args_str =
+      ConfigureLibtpuInitArgs(GetEnvOnce<kLibtpuInitArgsEnvVar>().value_or(""),
+                              use_slicebuilder_insecure_grpc);
   SetEnv<kLibtpuInitArgsEnvVar>(libtpu_init_args_str);
   return absl::OkStatus();
 }

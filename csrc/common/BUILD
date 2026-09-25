@@ -936,7 +936,9 @@ oss_target(
         ":device_utils",
         ":env_vars",
         ":error_utils",
+        ":libtpu_version",
         "//csrc/distributed/slicebuilder:discovery",
+        "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
@@ -951,6 +953,7 @@ oss_target(
     deps = [
         ":env_vars",
         ":environment",
+        ":libtpu_version",
         "//csrc/common:oss_test_main",
         "//csrc/distributed/slicebuilder:discovery",
         "@com_google_absl//absl/status",

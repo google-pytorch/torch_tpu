@@ -16,6 +16,8 @@
 
 #include "csrc/common/environment.h"
 
+#include <netdb.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 #include <cstdlib>
@@ -23,6 +25,7 @@
 
 #include "absl/status/status.h"
 #include "csrc/common/env_vars.h"
+#include "csrc/common/libtpu_version.h"
 #include "csrc/distributed/slicebuilder/discovery.h"
 #include "gtest/gtest.h"
 
@@ -151,9 +154,59 @@ TEST(EnvironmentDeathTest,
         EXPECT_TRUE(InitializeDistributedEnvironment(config).ok());
         const char* val = std::getenv(kLibtpuInitArgsEnvVar);
         ASSERT_NE(val, nullptr);
-        EXPECT_NE(std::string(val).find(
-                      "--xla_tpu_use_enhanced_launch_barrier=false"),
-                  std::string::npos);
+        EXPECT_STREQ(val,
+                     "--xla_tpu_use_enhanced_launch_barrier=false "
+                     "--slicebuilder_use_insecure_grpc=true "
+                     "--undefok=slicebuilder_use_insecure_grpc");
+        _exit(0);
+      },
+      ExitedWithCode(0), "");
+}
+
+TEST(EnvironmentDeathTest,
+     InitializeDistributedEnvironment_OverridesSlicebuilderInsecureGrpcFlag) {
+  EXPECT_EXIT(
+      {
+        setenv(kLibtpuInitArgsEnvVar,
+               "--undefok=existing_flag --slicebuilder_use_insecure_grpc=false",
+               1);
+        DistributedWorkerConfiguration config;
+        config.rank = 0;
+        config.local_rank = 0;
+        config.sb_port = "1234";
+        config.sb_addrs = "localhost:1234";
+        config.topology = "1,1,1";
+
+        EXPECT_TRUE(InitializeDistributedEnvironment(config).ok());
+        const char* val = std::getenv(kLibtpuInitArgsEnvVar);
+        ASSERT_NE(val, nullptr);
+        EXPECT_STREQ(val,
+                     "--undefok=existing_flag,slicebuilder_use_insecure_grpc "
+                     "--slicebuilder_use_insecure_grpc=true "
+                     "--xla_tpu_use_enhanced_launch_barrier=false");
+        _exit(0);
+      },
+      ExitedWithCode(0), "");
+}
+
+TEST(EnvironmentDeathTest,
+     InitDistEnv_SkipsSlicebuilderWorkaroundsOnOlderLibtpu) {
+  EXPECT_EXIT(
+      {
+        unsetenv(kLibtpuInitArgsEnvVar);
+        unsetenv(kTpuProcessAddressesEnvVar);
+        SetLibtpuVersion("0.0.41");
+        DistributedWorkerConfiguration config;
+        config.rank = 0;
+        config.local_rank = 0;
+        config.sb_port = "1234";
+        config.sb_addrs = "localhost:1234";
+        config.topology = "1,1,1";
+
+        EXPECT_TRUE(InitializeDistributedEnvironment(config).ok());
+        EXPECT_STREQ(std::getenv(kTpuProcessAddressesEnvVar), "localhost:1234");
+        EXPECT_STREQ(std::getenv(kLibtpuInitArgsEnvVar),
+                     "--xla_tpu_use_enhanced_launch_barrier=false");
         _exit(0);
       },
       ExitedWithCode(0), "");
@@ -176,9 +229,27 @@ TEST(EnvironmentDeathTest,
         config.sb_addrs = "localhost:1234";
         config.topology = "1,1,1";
 
+        char hostname[1024];
+        ASSERT_EQ(gethostname(hostname, sizeof(hostname)), 0);
+        hostname[sizeof(hostname) - 1] = '\0';
+        std::string sanitized_host(hostname);
+        const size_t strip_from = sanitized_host.find_first_of(".:");
+        if (strip_from != std::string::npos) {
+          sanitized_host = sanitized_host.substr(0, strip_from);
+        }
+        struct addrinfo* res = nullptr;
+        if (sanitized_host.empty() ||
+            getaddrinfo(sanitized_host.c_str(), nullptr, nullptr, &res) != 0) {
+          sanitized_host = "localhost";
+        } else {
+          freeaddrinfo(res);
+        }
+        const std::string expected_addr = sanitized_host + ":1234";
+
         EXPECT_TRUE(InitializeDistributedEnvironment(config).ok());
         EXPECT_STREQ(std::getenv(kAllowMultipleLibtpuLoadEnvVar), "1");
-        EXPECT_STREQ(std::getenv(kTpuProcessAddressesEnvVar), "localhost:1234");
+        EXPECT_STREQ(std::getenv(kTpuProcessAddressesEnvVar),
+                     expected_addr.c_str());
         EXPECT_STREQ(std::getenv(kTpuHostBoundsEnvVar), "1,1,1");
         EXPECT_STREQ(std::getenv(kTpuChipsPerHostBoundsEnvVar), "1,1,1");
         EXPECT_STREQ(std::getenv(kTpuProcessBoundsEnvVar), "1,1,1");

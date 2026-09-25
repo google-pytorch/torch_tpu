@@ -27,7 +27,7 @@ dependencies = [
     # leads, as doing so could break partners that are stuck with older
     # versions. If you have code that needs a newer libtpu version, please make
     # it conditioned on the version.
-    "libtpu>=0.0.41",
+    "libtpu>=0.0.49",
     "portpicker>=1.6",
     "tensorboard>=2.20",
     "frozendict>=2",
