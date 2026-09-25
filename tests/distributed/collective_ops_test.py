@@ -57,6 +57,7 @@ from torch import distributed as dist
 import torch.multiprocessing as mp
 
 from torch_tpu._internal.utils import test_utils as utils
+from torch_tpu import ops as tpu_ops
 from tests.distributed import distributed_utils
 
 from torch_tpu._internal.distributed import multiprocessing
@@ -303,12 +304,11 @@ def run_all_gather_rank_order() -> None:
   utils.assert_close(recv_new_group.cpu(), expected)
 
 
-def _dim_collectives(x, y, group_size, group_name):
+def _dim_collectives(x, y, group):
   return (
-      torch.ops.tpu.experimental_all_gather_dim(x, 1, group_size, group_name),
-      torch.ops.tpu.experimental_reduce_scatter_dim(
-          y, -1, group_size, group_name
-      ),
+      tpu_ops.all_gather_dim(x, 1, group),
+      tpu_ops.reduce_scatter_dim(y, -1, group),
+      tpu_ops.reduce_scatter_dim(y, -1, group, reduce_op="avg"),
   )
 
 
@@ -317,11 +317,10 @@ def _check_dim_collectives(fn: Callable[..., Any], group: Any) -> None:
   size = dist.get_world_size(group)
   x = torch.arange(6, dtype=torch.float32).reshape(2, 3)
   y = torch.arange(6 * size, dtype=torch.float32).reshape(2, 3 * size)
-  gathered, scattered = fn(
+  gathered, scattered, averaged = fn(
       (x + 100 * rank).to("tpu"),
       (y + 1000 * rank).to("tpu"),
-      size,
-      group.group_name,
+      group,
   )
   utils.assert_close(
       gathered.cpu(), torch.cat([x + 100 * p for p in range(size)], dim=1)
@@ -329,6 +328,10 @@ def _check_dim_collectives(fn: Callable[..., Any], group: Any) -> None:
   utils.assert_close(
       scattered.cpu(),
       (size * y + 1000 * sum(range(size))).chunk(size, dim=1)[rank],
+  )
+  utils.assert_close(
+      averaged.cpu(),
+      (y + 1000 * sum(range(size)) / size).chunk(size, dim=1)[rank],
   )
 
 
@@ -348,9 +351,10 @@ def run_experimental_collectives_on_dim() -> None:
       dynamic=False,
       options={"serializable": False, "debug_callback": debugs.append},
   )
-  _check_dim_collectives(_dim_collectives, dist.group.WORLD)
-  _check_dim_collectives(_dim_collectives, subgroup)
+  # Compile first so the first call of each public op happens under Dynamo.
   _check_dim_collectives(compiled, subgroup)
+  _check_dim_collectives(_dim_collectives, None)
+  _check_dim_collectives(_dim_collectives, subgroup)
 
   stablehlo = "\n".join(
       text for debug in debugs for text in debug.stablehlo_forward_text

@@ -29,6 +29,8 @@ import sys
 from typing import Any, Callable, Mapping, Optional, TypeVar
 import warnings
 
+import torch
+
 _T = TypeVar("_T")
 
 TT_API_STAGE = "__tt_api_stage__"
@@ -174,7 +176,7 @@ def _create_warning_wrapper(
   @functools.wraps(fn_to_wrap)  # type: ignore[arg-type]
   def wrapper(*args: Any, **kwargs: Any) -> Any:
     nonlocal _warned
-    if not _warned:
+    if not _warned and not torch.compiler.is_compiling():
       try:
         caller_frame = sys._getframe(1)
       except (AttributeError, ValueError):

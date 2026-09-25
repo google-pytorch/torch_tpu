@@ -17,6 +17,7 @@
 #include "csrc/ops/experimental/collectives/collectives_aten_kernels.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -29,11 +30,13 @@
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/distributed/allgather.h"
 #include "csrc/distributed/process_group_tpu.h"
 #include "csrc/distributed/reduce_scatter.h"
 #include "csrc/distributed/types.h"
+#include "csrc/distributed/utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
@@ -89,6 +92,22 @@ absl::StatusOr<CollectiveShape> ReduceScatterShape(const at::Tensor& input,
   return shape;
 }
 
+absl::StatusOr<c10d::ReduceOp::RedOpType> ParseReduceOp(
+    std::string_view reduce_op, c10::ScalarType scalar_type) {
+  std::optional<c10d::ReduceOp::RedOpType> parsed;
+  // PREMUL_SUM and later ops can't be constructed from a bare RedOpType.
+  for (int i = 0; i < c10d::ReduceOp::PREMUL_SUM; ++i) {
+    const auto op = static_cast<c10d::ReduceOp::RedOpType>(i);
+    if (ToString(op) == reduce_op) {
+      parsed = op;
+    }
+  }
+  TT_RET_CHECK(parsed.has_value(), error::kInvalidArgument)
+      << "unsupported reduce_op: " << reduce_op;
+  TT_RETURN_IF_ERROR(ValidateReductionOp(*parsed, scalar_type));
+  return *parsed;
+}
+
 absl::StatusOr<c10::intrusive_ptr<ProcessGroupTpu>> GetProcessGroupTpu(
     std::string_view group_name) {
   c10::intrusive_ptr<c10d::ProcessGroup> pg =
@@ -119,26 +138,9 @@ absl::Status ValidateGroupSize(const DeviceGroupList& device_groups,
   return absl::OkStatus();
 }
 
-absl::StatusOr<mlir::MlirOp> BuildAllGather(
-    mlir::MlirOp input, int64_t dim, const DeviceGroupList& device_groups) {
-  TT_ASSIGN_OR_RETURN(
-      auto outputs,
-      BuildDistributedAllGatherShlo(input, device_groups,
-                                    AllGatherOutputMode::kConcat, dim));
-  return outputs[0];
-}
-
-absl::StatusOr<mlir::MlirOp> BuildReduceScatter(
-    mlir::MlirOp input, int64_t dim, const DeviceGroupList& device_groups) {
-  return BuildDistributedReduceScatterShlo(input, c10d::ReduceOp::SUM,
-                                           device_groups, dim);
-}
-
-using CollectiveBuilder = absl::StatusOr<mlir::MlirOp> (*)(
-    mlir::MlirOp, int64_t, const DeviceGroupList&);
-
+template <typename CollectiveBuilder>
 absl::StatusOr<DeviceBufferRef> DispatchCollectiveWithDim(
-    const at::Tensor& input, int64_t group_size, CollectiveShape shape,
+    const at::Tensor& input, int64_t group_size, Dimensions output_shape,
     std::string_view group_name, CollectiveBuilder collective_builder,
     OpParamCacheKeys param_keys) {
   TT_ASSIGN_OR_RETURN(auto process_group, GetProcessGroupTpu(group_name));
@@ -147,15 +149,14 @@ absl::StatusOr<DeviceBufferRef> DispatchCollectiveWithDim(
   TT_ASSIGN_OR_RETURN(auto output_dtype,
                       ConvertTo<mlir::ElementType>(input.scalar_type()));
 
-  auto op_builder = [collective_builder, dim = shape.dim,
-                     device_groups](mlir::MlirOp input_op) {
-    return collective_builder(input_op, dim, device_groups);
+  auto op_builder = [collective_builder, device_groups](mlir::MlirOp input_op) {
+    return collective_builder(input_op, device_groups);
   };
 
   return DispatchOp<1>(
       std::move(op_builder), input,
       {.out_dtype = output_dtype,
-       .out_dims = std::move(shape.output_shape),
+       .out_dims = std::move(output_shape),
        .op_param_cache_keys = std::move(param_keys),
        .split_mode = GetCollectiveSplitMode(),
        .device_assignment = process_group->device_assignment()});
@@ -170,27 +171,46 @@ at::Tensor ExperimentalAllGatherDim(const at::Tensor& input, int64_t dim,
             (input, dim, group_size, group_name), {
               TT_ASSIGN_OR_THROW(auto shape,
                                  AllGatherShape(input, dim, group_size));
+              auto builder = [dim = shape.dim](
+                                 mlir::MlirOp input_op,
+                                 const DeviceGroupList& device_groups)
+                  -> absl::StatusOr<mlir::MlirOp> {
+                TT_ASSIGN_OR_RETURN(auto outputs,
+                                    BuildDistributedAllGatherShlo(
+                                        input_op, device_groups,
+                                        AllGatherOutputMode::kConcat, dim));
+                return outputs[0];
+              };
               TT_ASSIGN_OR_THROW(
                   auto result,
-                  DispatchCollectiveWithDim(input, group_size, std::move(shape),
-                                            group_name, BuildAllGather,
-                                            std::move(param_keys)));
+                  DispatchCollectiveWithDim(
+                      input, group_size, std::move(shape.output_shape),
+                      group_name, std::move(builder), std::move(param_keys)));
               return MakeTensor(std::move(result));
             });
 }
 
-at::Tensor ExperimentalReduceScatterDim(const at::Tensor& input, int64_t dim,
+at::Tensor ExperimentalReduceScatterDim(const at::Tensor& input,
+                                        std::string_view reduce_op, int64_t dim,
                                         int64_t group_size,
                                         std::string_view group_name) {
   TT_KERNEL(OpName::kExperimentalReduceScatterDim, param_keys,
-            (input, dim, group_size, group_name), {
+            (input, reduce_op, dim, group_size, group_name), {
+              TT_ASSIGN_OR_THROW(auto op,
+                                 ParseReduceOp(reduce_op, input.scalar_type()));
               TT_ASSIGN_OR_THROW(auto shape,
                                  ReduceScatterShape(input, dim, group_size));
+              auto builder = [op, dim = shape.dim](
+                                 mlir::MlirOp input_op,
+                                 const DeviceGroupList& device_groups) {
+                return BuildDistributedReduceScatterShlo(input_op, op,
+                                                         device_groups, dim);
+              };
               TT_ASSIGN_OR_THROW(
                   auto result,
-                  DispatchCollectiveWithDim(input, group_size, std::move(shape),
-                                            group_name, BuildReduceScatter,
-                                            std::move(param_keys)));
+                  DispatchCollectiveWithDim(
+                      input, group_size, std::move(shape.output_shape),
+                      group_name, std::move(builder), std::move(param_keys)));
               return MakeTensor(std::move(result));
             });
 }
@@ -203,8 +223,10 @@ at::Tensor MetaExperimentalAllGatherDim(const at::Tensor& input, int64_t dim,
 }
 
 at::Tensor MetaExperimentalReduceScatterDim(const at::Tensor& input,
+                                            std::string_view reduce_op,
                                             int64_t dim, int64_t group_size,
                                             std::string_view /*group_name*/) {
+  TT_THROW_IF_ERROR(ParseReduceOp(reduce_op, input.scalar_type()).status());
   TT_ASSIGN_OR_THROW(auto shape, ReduceScatterShape(input, dim, group_size));
   return at::empty(shape.output_shape, input.options());
 }

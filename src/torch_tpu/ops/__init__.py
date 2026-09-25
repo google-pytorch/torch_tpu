@@ -14,10 +14,14 @@
 
 """TorchTPU operators package."""
 
+from torch_tpu.ops.collectives import all_gather_dim
+from torch_tpu.ops.collectives import reduce_scatter_dim
 from torch_tpu.ops.jagged import align_jagged_to_multiple
 from torch_tpu.ops.jagged import strip_jagged_padding
 
 __all__ = [
     "align_jagged_to_multiple",
+    "all_gather_dim",
+    "reduce_scatter_dim",
     "strip_jagged_padding",
 ]

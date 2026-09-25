@@ -14,7 +14,9 @@
 
 from absl.testing import absltest
 import torch
-import torch_tpu  # noqa: F401
+import torch.distributed as dist
+from torch.testing._internal.distributed import fake_pg
+from torch_tpu import ops as tpu_ops
 
 from tests import seed_test_utils
 
@@ -25,25 +27,42 @@ class ExperimentalCollectivesTest(seed_test_utils.RepeatableTest):
     value = torch.empty((2, 3, 4), device="meta")
     gathered = torch.ops.tpu.experimental_all_gather_dim(value, 1, 8, "unused")
     scattered = torch.ops.tpu.experimental_reduce_scatter_dim(
-        gathered, -2, 8, "unused"
+        gathered, "avg", -2, 8, "unused"
     )
     self.assertEqual(gathered.shape, (2, 24, 4))
     self.assertEqual(scattered.shape, value.shape)
+
+  def test_public_ops_compile(self):
+    dist.init_process_group(
+        "fake", store=fake_pg.FakeStore(), rank=0, world_size=2
+    )
+    self.addCleanup(dist.destroy_process_group)
+    value = torch.empty((2, 3, 4), device="meta")
+    fn = torch.compile(
+        lambda x: tpu_ops.reduce_scatter_dim(
+            tpu_ops.all_gather_dim(x, 1), -2, dist.group.WORLD, "MAX"
+        ),
+        backend="eager",
+        fullgraph=True,
+    )
+    self.assertEqual(fn(value).shape, value.shape)
 
   def test_meta_errors(self):
     value = torch.empty((2, 3, 4), device="meta")
     all_gather = torch.ops.tpu.experimental_all_gather_dim
     reduce_scatter = torch.ops.tpu.experimental_reduce_scatter_dim
-    for op, x, dim, group_size, error in (
-        (reduce_scatter, value, 1, 2, "not divisible"),
-        (all_gather, value, 3, 2, "invalid"),
-        (reduce_scatter, value, -4, 2, "invalid"),
-        (all_gather, value, 1, 0, "must be positive"),
-        (all_gather, torch.empty((), device="meta"), 0, 2, "non-scalar"),
+    for op, args, error in (
+        (reduce_scatter, (value, "sum", 1, 2), "not divisible"),
+        (all_gather, (value, 3, 2), "invalid"),
+        (reduce_scatter, (value, "sum", -4, 2), "invalid"),
+        (all_gather, (value, 1, 0), "must be positive"),
+        (all_gather, (torch.empty((), device="meta"), 0, 2), "non-scalar"),
+        (reduce_scatter, (value, "premul_sum", 0, 2), "unsupported reduce_op"),
+        (reduce_scatter, (value, "band", 0, 2), "integer"),
     ):
-      with self.subTest(op=op, dim=dim, group_size=group_size):
+      with self.subTest(op=op, args=args[1:]):
         with self.assertRaisesRegex(RuntimeError, error):
-          op(x, dim, group_size, "unused")
+          op(*args, "unused")
 
 
 if __name__ == "__main__":
