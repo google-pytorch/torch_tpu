@@ -70,4 +70,16 @@ torch_tpu_py_library(
     ],
 )
 
+torch_tpu_py_library(
+    name = "optimizers",
+    srcs = ["__init__.py"],
+    deps = [
+        ":adamw",
+        ":muon",
+        ":optim",
+        ":sgd",
+        ":single_trace_trainer",
+    ],
+)
+
 torch_tpu_package_end()

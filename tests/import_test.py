@@ -60,6 +60,28 @@ def _worker_import_torch_tpu_then_torch(q):
     q.put(traceback.format_exc())
 
 
+def _worker_import_torch_tpu_extras(q):
+  try:
+    import torch_tpu.extras  # pylint: disable=unused-import  # noqa: F401
+    import torch_tpu.extras.optimizers  # pylint: disable=unused-import  # noqa: F401
+    from torch_tpu.extras import optimizers  # pylint: disable=unused-import  # noqa: F401
+    from torch_tpu.extras.optimizers import AdamW  # pylint: disable=unused-import  # noqa: F401
+    from torch_tpu.extras.optimizers import Muon  # pylint: disable=unused-import  # noqa: F401
+    from torch_tpu.extras.optimizers import Optimizer  # pylint: disable=unused-import  # noqa: F401
+    from torch_tpu.extras.optimizers import ReferenceAdamw  # pylint: disable=unused-import  # noqa: F401
+    from torch_tpu.extras.optimizers import ReferenceMuon  # pylint: disable=unused-import  # noqa: F401
+    from torch_tpu.extras.optimizers import ReferenceSgd  # pylint: disable=unused-import  # noqa: F401
+    from torch_tpu.extras.optimizers import SGD  # pylint: disable=unused-import  # noqa: F401
+    from torch_tpu.extras.optimizers import SingleTraceTrainer  # pylint: disable=unused-import  # noqa: F401
+    from torch_tpu.extras.optimizers import TorchAdamw  # pylint: disable=unused-import  # noqa: F401
+    from torch_tpu.extras.optimizers import TorchMuon  # pylint: disable=unused-import  # noqa: F401
+    from torch_tpu.extras.optimizers import TorchSgd  # pylint: disable=unused-import  # noqa: F401
+
+    q.put("OK")
+  except Exception:
+    q.put(traceback.format_exc())
+
+
 def _run_worker(target_fn, q, env_vars):
   if env_vars:
     os.environ.update(env_vars)
@@ -100,6 +122,18 @@ class ImportTest(parameterized.TestCase):  # ABSLTEST_OK=Import test
 
     self._run_in_isolated_process(
         worker_fn,
+        env_vars=env_vars,
+    )
+
+  @parameterized.parameters(False, True)
+  def test_extras_optimizers_import(self, disable_autoload: bool) -> None:
+    """Verifies that torch_tpu.extras and optimizers are importable."""
+    env_vars = {}
+    if disable_autoload:
+      env_vars["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
+
+    self._run_in_isolated_process(
+        _worker_import_torch_tpu_extras,
         env_vars=env_vars,
     )
 

@@ -2175,6 +2175,8 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/extras",
+        "//src/torch_tpu/extras/optimizers",
     ],
 )
 

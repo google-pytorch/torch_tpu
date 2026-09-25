@@ -132,6 +132,8 @@ torch_tpu_py_library(
         "//src/torch_tpu/_internal/utils:test_utils",
         "//src/torch_tpu/_internal/utils:tracer_utils",
         "//src/torch_tpu/_internal:env_utils",
+        "//src/torch_tpu/extras",
+        "//src/torch_tpu/extras/optimizers",
         "//src/torch_tpu/extras/optimizers:adamw",
         "//src/torch_tpu/extras/optimizers:muon",
         "//src/torch_tpu/extras/optimizers:optim",
