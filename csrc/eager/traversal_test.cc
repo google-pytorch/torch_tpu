@@ -290,6 +290,7 @@ TEST_F(TraversalTest, CompileAnnotatesArgumentLayoutsWithTilingAndCaching) {
       Traversal::Create({ref_b}, {ref_a.device_buffer_list().get()}));
 
   CustomLayout tiled_layout{.minor_to_major = {1, 0}, .tiles = {{8}}};
+  ref_b.set_layout(tiled_layout);
   CompilationSpec spec(std::make_unique<xla::CompileOptions>(),
                        CompileOptionsKey(12345));
   std::string mlir_text;
@@ -297,8 +298,12 @@ TEST_F(TraversalTest, CompileAnnotatesArgumentLayoutsWithTilingAndCaching) {
                           /*use_stablehlo_bounds=*/false,
                           /*argument_layouts=*/{tiled_layout})
                   .ok());
-  EXPECT_THAT(mlir_text,
-              testing::HasSubstr("mhlo.layout_mode = \"{1,0:T(8)}\""));
+  EXPECT_THAT(
+      mlir_text,
+      testing::HasSubstr(
+          "func.func @main(%arg0: tensor<128x64xf32> {mhlo.layout_mode = "
+          "\"{1,0:T(8)}\"}) -> (tensor<128x64xf32> {mhlo.layout_mode = "
+          "\"{1,0:T(8)}\"})"));
 
   CustomLayout different_tile_layout{.minor_to_major = {1, 0}, .tiles = {{16}}};
   CompilationCacheKey key_untiled = tr->GetCacheKey(

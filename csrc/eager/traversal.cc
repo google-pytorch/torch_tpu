@@ -83,6 +83,7 @@
 #include "tsl/profiler/lib/traceme.h"
 #include "xla/client/executable_build_options.h"
 #include "xla/layout.h"
+#include "xla/pjrt/pjrt_client.h"
 #include "xla/service/device_assignment.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
@@ -766,6 +767,34 @@ std::vector<Shape> GetShapes(absl::Span<const DeviceBufferRef> buffers) {
   return shapes;
 }
 
+bool IsDefaultDeviceLayout(const DeviceBufferRef& buffer,
+                           const CustomLayout& layout) {
+  xla::PjRtClient* const client = PjrtBackend::GetInstance().GetClient();
+  if (client == nullptr) {
+    return false;
+  }
+  const xla::PrimitiveType element_type =
+      ConvertTo<xla::PrimitiveType>(buffer.element_type());
+  const absl::StatusOr<xla::Layout> default_layout_or =
+      client->GetDefaultLayout(element_type, buffer.dimensions());
+  if (!default_layout_or.ok()) {
+    return false;
+  }
+  const xla::Layout& default_layout = *default_layout_or;
+  if (layout.minor_to_major != default_layout.minor_to_major()) {
+    return false;
+  }
+  if (layout.tiles.size() != default_layout.tiles().size()) {
+    return false;
+  }
+  for (size_t i = 0; i < layout.tiles.size(); ++i) {
+    if (layout.tiles[i] != default_layout.tiles()[i].dimensions()) {
+      return false;
+    }
+  }
+  return true;
+}
+
 void AnnotateArgumentLayouts(mlir::ModuleOp module,
                              absl::Span<const DeviceBufferRef> arguments,
                              absl::Span<const CustomLayout> argument_layouts) {
@@ -801,6 +830,34 @@ void AnnotateArgumentLayouts(mlir::ModuleOp module,
                                    layout.element_size_in_bits);
       main.setArgAttr(i, "mhlo.layout_mode",
                       builder.getStringAttr(xla_layout.ToString()));
+    }
+  }
+}
+
+void AnnotateOutputLayouts(mlir::ModuleOp module,
+                           absl::Span<const DeviceBufferRef> outputs) {
+  mlir::func::FuncOp main = module.lookupSymbol<mlir::func::FuncOp>("main");
+  ABSL_CHECK(main)  // CRASH_OK: Should never call API on a malformed module.
+      << "MLIR module does not contain a main function for output layouts.";
+  ABSL_CHECK_LE(outputs.size(), main.getNumResults())  // CRASH_OK
+      << "outputs size (" << outputs.size()
+      << ") exceeds MLIR main result count (" << main.getNumResults() << ")";
+
+  mlir::Builder builder(main.getContext());
+  for (size_t i = 0; i < outputs.size(); ++i) {
+    if (!outputs[i].shape().layout().has_value()) continue;
+    const CustomLayout& layout = *outputs[i].shape().layout();
+    if (!layout.minor_to_major.empty() &&
+        !IsDefaultDeviceLayout(outputs[i], layout)) {
+      std::vector<xla::Tile> tiles;
+      tiles.reserve(layout.tiles.size());
+      for (const Indices& tile_indices : layout.tiles) {
+        tiles.push_back(xla::Tile(tile_indices));
+      }
+      const xla::Layout xla_layout(layout.minor_to_major, tiles,
+                                   layout.element_size_in_bits);
+      main.setResultAttr(i, "mhlo.layout_mode",
+                         builder.getStringAttr(xla_layout.ToString()));
     }
   }
 }
@@ -1013,6 +1070,7 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
                         BuildMlirModule(mlir_context, use_stablehlo_bounds,
                                         donated_inputs, module_name));
     AnnotateArgumentLayouts(*module, arguments_, argument_layouts);
+    AnnotateOutputLayouts(*module, outputs_);
     if (out_mlir_text != nullptr) {
       *out_mlir_text = MlirModuleToString(*module);
     }

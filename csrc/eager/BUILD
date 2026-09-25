@@ -1004,6 +1004,7 @@ torch_tpu_cc_library(
         "@xla//xla:side_effect_util",
         "@xla//xla:xla_data_proto_cc",
         "@xla//xla/client:executable_build_options",
+        "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/service:device_assignment",
     ],
 )
