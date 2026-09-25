@@ -164,10 +164,12 @@ class EnvironmentTest(seed_test_utils.RepeatableTest):
         "TPU_WORKER_HOSTNAMES": "host1,host2",
         "TORCH_TPU_TOPOLOGY": "4x4x4",
         "JOB_COMPLETION_INDEX": "1",
-        "PJRT_DEVICE": "TPU",
     }):
-      with mock.patch.object(
-          subprocess, "run", return_value=_coords_process([2, 0, 0])
+      with (
+          mock.patch.object(hardware, "get_tpu_device_count", return_value=4),
+          mock.patch.object(
+              subprocess, "run", return_value=_coords_process([2, 0, 0])
+          ),
       ):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
@@ -363,12 +365,17 @@ class TopologyTest(seed_test_utils.RepeatableTest):
 
 class TopologicalNodeRankTest(seed_test_utils.RepeatableTest):
 
+  def setUp(self):
+    super().setUp()
+    self.enterContext(
+        mock.patch.object(hardware, "get_tpu_device_count", return_value=4)
+    )
+
   def test_set_tpu_launch_env_with_coordinates(self):
     with _mock_env({
         "TPU_WORKER_HOSTNAMES": "host1,host2",
         "TORCH_TPU_TOPOLOGY": "4x4x4",
         "JOB_COMPLETION_INDEX": "5",
-        "PJRT_DEVICE": "TPU",
     }):
       with mock.patch.object(
           subprocess, "run", return_value=_coords_process([2, 0, 0])
@@ -376,26 +383,12 @@ class TopologicalNodeRankTest(seed_test_utils.RepeatableTest):
         environment.set_tpu_launch_env()
       self.assertEqual(os.environ.get("NODE_RANK"), "1")
 
-  def test_set_tpu_launch_env_with_coordinates_and_tpu_library_path(self):
-    with _mock_env({
-        "TPU_WORKER_HOSTNAMES": "host1,host2",
-        "TORCH_TPU_TOPOLOGY": "4x4x4",
-        "JOB_COMPLETION_INDEX": "5",
-        "TPU_LIBRARY_PATH": "/path/to/libtpu.so",
-    }):
-      with mock.patch.object(
-          subprocess, "run", return_value=_coords_process([0, 0, 1])
-      ):
-        environment.set_tpu_launch_env()
-      self.assertEqual(os.environ.get("NODE_RANK"), "4")
-
   def test_set_tpu_launch_env_with_coordinates_and_no_job_completion_index(
       self,
   ):
     with _mock_env({
         "TPU_WORKER_HOSTNAMES": "host1,host2",
         "TORCH_TPU_TOPOLOGY": "4x4x4",
-        "PJRT_DEVICE": "TPU",
     }):
       with mock.patch.object(
           subprocess, "run", return_value=_coords_process([0, 2, 0])
@@ -408,7 +401,6 @@ class TopologicalNodeRankTest(seed_test_utils.RepeatableTest):
         "TPU_WORKER_HOSTNAMES": "host1,host2",
         "TORCH_TPU_TOPOLOGY": "4x4x4",
         "JOB_COMPLETION_INDEX": "3",
-        "PJRT_DEVICE": "TPU",
     }):
       with mock.patch.object(
           subprocess,
@@ -423,7 +415,6 @@ class TopologicalNodeRankTest(seed_test_utils.RepeatableTest):
         "TPU_WORKER_HOSTNAMES": "host1,host2",
         "TORCH_TPU_TOPOLOGY": "4x4x4",
         "JOB_COMPLETION_INDEX": "3",
-        "PJRT_DEVICE": "TPU",
     }):
       with mock.patch.object(
           subprocess, "run", return_value=_coords_process([])
@@ -436,7 +427,6 @@ class TopologicalNodeRankTest(seed_test_utils.RepeatableTest):
         "TPU_WORKER_HOSTNAMES": "host1,host2",
         "TORCH_TPU_TOPOLOGY": "4x4x4",
         "JOB_COMPLETION_INDEX": "7",
-        "PJRT_DEVICE": "TPU",
     }):
       with mock.patch.object(
           subprocess, "run", return_value=_coords_process([10, 0, 0])
@@ -444,13 +434,16 @@ class TopologicalNodeRankTest(seed_test_utils.RepeatableTest):
         environment.set_tpu_launch_env()
       self.assertEqual(os.environ.get("NODE_RANK"), "7")
 
-  def test_set_tpu_launch_env_without_tpu_runtime_skips_query(self):
+  def test_set_tpu_launch_env_without_tpu_devices_skips_query(self):
     with _mock_env({
         "TPU_WORKER_HOSTNAMES": "host1,host2",
         "TORCH_TPU_TOPOLOGY": "4x4x4",
         "JOB_COMPLETION_INDEX": "3",
     }):
-      with mock.patch.object(subprocess, "run") as run:
+      with (
+          mock.patch.object(hardware, "get_tpu_device_count", return_value=0),
+          mock.patch.object(subprocess, "run") as run,
+      ):
         environment.set_tpu_launch_env()
       run.assert_not_called()
       self.assertEqual(os.environ.get("NODE_RANK"), "3")
@@ -459,7 +452,6 @@ class TopologicalNodeRankTest(seed_test_utils.RepeatableTest):
     with _mock_env({
         "TPU_WORKER_HOSTNAMES": "host1,host2",
         "JOB_COMPLETION_INDEX": "3",
-        "PJRT_DEVICE": "TPU",
     }):
       with mock.patch.object(subprocess, "run") as run:
         environment.set_tpu_launch_env()
@@ -472,7 +464,6 @@ class TopologicalNodeRankTest(seed_test_utils.RepeatableTest):
     with _mock_env({
         "TPU_WORKER_HOSTNAMES": "host1,host2",
         "JOB_COMPLETION_INDEX": "1",
-        "PJRT_DEVICE": "TPU",
     }):
       with (
           mock.patch.object(
@@ -490,7 +481,6 @@ class TopologicalNodeRankTest(seed_test_utils.RepeatableTest):
         "TPU_WORKER_HOSTNAMES": "host1,host2",
         "TORCH_TPU_TOPOLOGY": "4x4x4",
         "NODE_RANK": "1",
-        "PJRT_DEVICE": "TPU",
     }):
       with mock.patch.object(subprocess, "run") as run:
         environment.set_tpu_launch_env()
@@ -500,11 +490,9 @@ class TopologicalNodeRankTest(seed_test_utils.RepeatableTest):
   def test_set_tpu_launch_env_singlehost_skips_query(self):
     with _mock_env({
         "TORCH_TPU_TOPOLOGY": "2,2,1",
-        "PJRT_DEVICE": "TPU",
     }):
       with (
           mock.patch.object(hardware, "get_tpu_topology", return_value="2,2,1"),
-          mock.patch.object(hardware, "get_tpu_device_count", return_value=4),
           mock.patch.object(subprocess, "run") as run,
       ):
         environment.set_tpu_launch_env()
@@ -514,14 +502,23 @@ class TopologicalNodeRankTest(seed_test_utils.RepeatableTest):
 
 class QueryLocalDeviceCoordsTest(seed_test_utils.RepeatableTest):
 
-  def test_without_tpu_runtime_returns_none(self):
+  def setUp(self):
+    super().setUp()
+    self.enterContext(
+        mock.patch.object(hardware, "get_tpu_device_count", return_value=4)
+    )
+
+  def test_without_tpu_devices_returns_none(self):
     with _mock_env({}):
-      with mock.patch.object(subprocess, "run") as run:
+      with (
+          mock.patch.object(hardware, "get_tpu_device_count", return_value=0),
+          mock.patch.object(subprocess, "run") as run,
+      ):
         self.assertIsNone(internal_environment._query_local_device_coords())
       run.assert_not_called()
 
   def test_runs_this_module_in_child_process(self):
-    with _mock_env({"PJRT_DEVICE": "TPU"}):
+    with _mock_env({"FOO": "bar"}):
       with mock.patch.object(
           subprocess, "run", return_value=_coords_process([1, 2, 3, 0])
       ) as run:
@@ -542,14 +539,14 @@ class QueryLocalDeviceCoordsTest(seed_test_utils.RepeatableTest):
       self.assertTrue(kwargs["check"])
       self.assertTrue(kwargs["capture_output"])
       self.assertGreater(kwargs["timeout"], 0)
-      self.assertEqual(kwargs["env"]["PJRT_DEVICE"], "TPU")
+      self.assertEqual(kwargs["env"]["FOO"], "bar")
       self.assertEqual(
           kwargs["env"]["PYTHONPATH"].split(os.pathsep),
           [p for p in sys.path if p],
       )
 
   def test_ignores_other_stdout_lines(self):
-    with _mock_env({"PJRT_DEVICE": "TPU"}):
+    with _mock_env({}):
       with mock.patch.object(
           subprocess,
           "run",
@@ -568,12 +565,12 @@ class QueryLocalDeviceCoordsTest(seed_test_utils.RepeatableTest):
         OSError("no python"),
     ]:
       with self.subTest(error=type(error).__name__):
-        with _mock_env({"PJRT_DEVICE": "TPU"}):
+        with _mock_env({}):
           with mock.patch.object(subprocess, "run", side_effect=error):
             self.assertIsNone(internal_environment._query_local_device_coords())
 
   def test_missing_coordinates_line_returns_none(self):
-    with _mock_env({"PJRT_DEVICE": "TPU"}):
+    with _mock_env({}):
       with mock.patch.object(
           subprocess,
           "run",
@@ -584,7 +581,7 @@ class QueryLocalDeviceCoordsTest(seed_test_utils.RepeatableTest):
         self.assertIsNone(internal_environment._query_local_device_coords())
 
   def test_malformed_coordinates_line_returns_none(self):
-    with _mock_env({"PJRT_DEVICE": "TPU"}):
+    with _mock_env({}):
       with mock.patch.object(
           subprocess,
           "run",

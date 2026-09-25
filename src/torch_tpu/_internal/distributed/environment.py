@@ -270,12 +270,9 @@ def _query_local_device_coords() -> list[int] | None:
 
   Returns:
     The coordinates [X, Y, Z, ...] of the local TPU device, or None if no TPU
-    runtime is configured or the child process fails to report them.
+    devices are present on this host or the child process fails to report them.
   """
-  if (
-      env.get_str_env_once("TPU_LIBRARY_PATH") is None
-      and env.get_str_env_once("PJRT_DEVICE") is None
-  ):
+  if not hardware.get_tpu_device_count():
     return None
 
   child_env = dict(os.environ)  # PY_ENVIRON_OK=inherited by the child.

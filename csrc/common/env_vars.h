@@ -62,9 +62,6 @@ inline constexpr char kNodeRankEnvVar[] = "NODE_RANK";
 // Set by the build system (e.g. bazel) to indicate the number of shards
 // running on the same host.
 inline constexpr char kNprocEnvVar[] = "NPROC";
-// Selects the PJRT device type, e.g. "TPU". Set by users and external
-// launchers; TorchTPU only checks whether it is set.
-inline constexpr char kPjrtDeviceEnvVar[] = "PJRT_DEVICE";
 inline constexpr char kRankEnvVar[] = "RANK";  // Set by launchers.
 // Standard temporary directory.
 inline constexpr char kTmpdirEnvVar[] = "TMPDIR";
@@ -231,9 +228,6 @@ inline constexpr char kTpuLaunchBlocking[] =
     "TPU_LAUNCH_BLOCKING";  // Similar to CUDA_LAUNCH_BLOCKING, used enable
                             // EagerMode::kDeferNeverAndLaunchBlocking by
                             // default.
-// The path of the libtpu shared library. Set by users and external
-// launchers; TorchTPU only checks whether it is set.
-inline constexpr char kTpuLibraryPathEnvVar[] = "TPU_LIBRARY_PATH";
 inline constexpr char kTpuPremappedBufferSizeEnvVar[] =
     "TPU_PREMAPPED_BUFFER_SIZE";  // Premapped buffer size in bytes for PjRt
                                   // client.
@@ -299,7 +293,6 @@ inline constexpr auto kEnvVarToStage =
         // controlling TorchTPU internal behavior rather than serving as a
         // public API contract.
         {kNprocEnvVar, SymbolStage::InternalApi()},
-        {kPjrtDeviceEnvVar, SymbolStage::InternalApi()},
         // Marked as Stable because it is an established distributed launcher
         // environment variable widely used by production workloads. The
         // TorchTPU team is committed to honor this env var.
@@ -346,7 +339,6 @@ inline constexpr auto kEnvVarToStage =
         {kTpuDeferAndFuse, std::nullopt},
         {kTpuHostBoundsEnvVar, SymbolStage::InternalImplementation()},
         {kTpuLaunchBlocking, std::nullopt},
-        {kTpuLibraryPathEnvVar, SymbolStage::InternalApi()},
         // Marked as Stable because it is an established XLA/PJRT runtime
         // configuration knob widely used by production workloads. The TorchTPU
         // team is committed to honor this env var.

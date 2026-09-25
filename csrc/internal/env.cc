@@ -108,16 +108,12 @@ std::optional<std::string> PyGetStringEnvOnce(
     value = GetEnvOnce<kNnodesEnvVar>();
   } else if (name == kNodeRankEnvVar) {
     value = GetEnvOnce<kNodeRankEnvVar>();
-  } else if (name == kPjrtDeviceEnvVar) {
-    value = GetEnvOnce<kPjrtDeviceEnvVar>();
   } else if (name == kTorchTpuSlicebuilderAddressesEnvVar) {
     value = GetEnvOnce<kTorchTpuSlicebuilderAddressesEnvVar>();
   } else if (name == kTorchTpuTopologyEnvVar) {
     value = GetEnvOnce<kTorchTpuTopologyEnvVar>();
   } else if (name == kTorchTpuXprofSessionIdEnvVar) {
     value = GetEnvOnce<kTorchTpuXprofSessionIdEnvVar>();
-  } else if (name == kTpuLibraryPathEnvVar) {
-    value = GetEnvOnce<kTpuLibraryPathEnvVar>();
   } else if (name == kTpuWorkerHostnamesEnvVar) {
     value = GetEnvOnce<kTpuWorkerHostnamesEnvVar>();
   } else {

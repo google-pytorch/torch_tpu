@@ -4840,7 +4840,6 @@ class EnvironmentErrorsTest(et.TpuOnlyErrorTestBase):
     with _mock_launch_env({
         "TPU_WORKER_HOSTNAMES": "host1,host2",
         "TORCH_TPU_TOPOLOGY": "4x4x4",
-        "PJRT_DEVICE": "TPU",
     }):
       with mock.patch.object(
           internal_environment, "_query_local_device_coords", return_value=[]
@@ -4858,7 +4857,6 @@ class EnvironmentErrorsTest(et.TpuOnlyErrorTestBase):
     with _mock_launch_env({
         "TPU_WORKER_HOSTNAMES": "host1,host2",
         "TORCH_TPU_TOPOLOGY": "4x4x4",
-        "PJRT_DEVICE": "TPU",
     }):
       with mock.patch.object(
           internal_environment,
@@ -4878,7 +4876,6 @@ class EnvironmentErrorsTest(et.TpuOnlyErrorTestBase):
     with _mock_launch_env({
         "TPU_WORKER_HOSTNAMES": "host1,host2",
         "TORCH_TPU_TOPOLOGY": "4x4xfour",
-        "PJRT_DEVICE": "TPU",
     }):
       with mock.patch.object(
           internal_environment,
