@@ -385,6 +385,10 @@ common:ci_tpu_v7 --local_test_jobs=4
 common:ci_tpu_v7_presubmit --config=ci_tpu_v7
 common:ci_tpu_v7_presubmit --test_tag_filters=-notest,-nobuild,-nopresubmit,-fails-on-tpu-v7,presubmit-v7
 
+common:ci_tpu_v7_nightly --config=ci_tpu_v7
+common:ci_tpu_v7_nightly --test_tag_filters=requires-tpu,-notest,-nobuild,-nonightly,-fails-on-tpu-v7
+common:ci_tpu_v7_nightly --test_timeout=-1,-1,-1,4800
+
 # Setting TPU support true for profiler trace.
 build --define=with_tpu_support=true
 
