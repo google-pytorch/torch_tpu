@@ -56,6 +56,32 @@ torch_tpu_cc_test(
 )
 
 torch_tpu_cc_test(
+    name = "device_assignment_pipeline_test",
+    srcs = ["device_assignment_pipeline_test.cc"],
+    exec_properties = {
+        "cpp_link.mem": "16g",  # Needed for asan.
+    },
+    requires_libtpu = True,
+    tags = if_oss(["requires-tpu-v5lite"]),
+    deps = [
+        ":device_assignment_pipeline",
+        "//csrc/common:error_utils",
+        "//csrc/common:oss_test_main",
+        "//csrc/common:status_test_utils",
+        "//csrc/ops:op_names",
+        "@com_google_absl//absl/status:statusor",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@stablehlo//:stablehlo_ops",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:func_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
+    ],
+)
+
+torch_tpu_cc_test(
     name = "traversal_test",
     srcs = ["traversal_test.cc"],
     exec_properties = {
@@ -67,7 +93,6 @@ torch_tpu_cc_test(
     tags = if_oss(["requires-tpu-v5lite"]),
     deps = [
         ":device_buffer",
-        ":structured_log_buffer",
         ":traversal",
         "//csrc/common:cache_key",
         "//csrc/common:compilation_spec",
@@ -898,6 +923,34 @@ torch_tpu_cc_library(
 )
 
 torch_tpu_cc_library(
+    name = "device_assignment_pipeline",
+    srcs = [
+        "device_assignment_pipeline.cc",
+    ],
+    hdrs = [
+        "device_assignment_pipeline.h",
+    ],
+    deps = [
+        ":device_buffer",
+        "//csrc/common:error_utils",
+        "//csrc/ops:op_names",
+        "//csrc/pjrt:pjrt_state",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/log:absl_log",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "traversal",
     srcs = [
         "traversal.cc",
@@ -906,6 +959,7 @@ torch_tpu_cc_library(
         "traversal.h",
     ],
     deps = [
+        ":device_assignment_pipeline",
         ":device_buffer",
         ":structured_log_buffer",
         "//csrc/common:cache_key",
