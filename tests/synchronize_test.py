@@ -33,7 +33,8 @@ class SynchronizeTest(seed_test_utils.RepeatableTest):
     super().setUp()
     tt_testing.reset_eager_state()
     self.old_eager_mode = execution_mode.eager_mode
-    execution_mode.eager_mode = EagerMode.DEFER_AND_FUSE
+    # Ensure manual synchronization only.
+    execution_mode.eager_mode = EagerMode.INTERNAL_DEFER_ALL
 
   def tearDown(self):
     execution_mode.eager_mode = self.old_eager_mode

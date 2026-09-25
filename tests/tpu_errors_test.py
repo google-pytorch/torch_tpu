@@ -4679,7 +4679,9 @@ module {
         tpu="""cannot record EventSnapshot during an FX trace""",
     ):
       with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
-        _ = torch.Event(device="tpu").record()
+        event = torch.Event(device="tpu")
+        event.record()
+        event.query()
 
 
 class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):

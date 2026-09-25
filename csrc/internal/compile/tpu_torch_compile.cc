@@ -265,7 +265,10 @@ std::optional<PyLayout> PyGetDeviceLayoutIfMaterialized(
     return std::nullopt;
   }
 
+  // AwaitBuffer is nonblocking after is_materializing() is true, we don't need
+  // to release the GIL.
   auto pjrt_buffer_or = buffer_ref.AwaitBuffer();
+
   if (!pjrt_buffer_or.ok()) {
     TT_THROW_TT_ERROR_(pjrt_buffer_or.status(), TT_SOURCE_LOCATION);
   }

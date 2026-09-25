@@ -246,8 +246,10 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
     """Tests that a stream begins executing when leaving its context."""
     new_stream = torch.tpu.Stream()
 
-    # Use DEFER_AND_FUSE to avoid automatic materialization.
-    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+    # Use INTERNAL_DEFER_ALL to avoid automatic materialization.
+    with execution_mode.set_eager_mode(
+        execution_mode.EagerMode.INTERNAL_DEFER_ALL
+    ):
       # Do some work on the default stream.
       x = torch.ones(1, device='tpu')
       self.assertFalse(sync.is_materializing(x))
@@ -260,20 +262,23 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
   def test_stream_materialize_on_event(self):
     """Tests that streams materialize on event recording."""
     new_stream = torch.tpu.Stream()
-    # Use DEFER_AND_FUSE to avoid automatic materialization.
-    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+    # Use INTERNAL_DEFER_ALL to avoid automatic materialization.
+    with execution_mode.set_eager_mode(
+        execution_mode.EagerMode.INTERNAL_DEFER_ALL
+    ):
       # Do some work on the new stream.
       with torch.tpu.stream(new_stream):
         x = torch.zeros(1, device='tpu')
-        # Since we are in DEFER_AND_FUSE, it should not be materializing.
+        # Since we are in INTERNAL_DEFER_ALL, it should not be materializing.
         self.assertFalse(sync.is_materializing(x))
 
         # Record an event on the stream. This should trigger materialization.
         event = torch.tpu.Event()
         event.record()
 
-        # Verify that the tensor is now materializing.
-        self.assertTrue(sync.is_materializing(x))
+        # x may or may not be materializing yet; recording an event pushes an
+        # async "graph break" but we can only monitor it through querying or
+        # synchronizing the event.
 
     # Wait for the event to complete.
     event.synchronize()
@@ -412,7 +417,9 @@ class TorchStreamsTest(seed_test_utils.RepeatableTest):
     new_stream = torch.Stream(device=dummy.device)
     del dummy
 
-    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+    with execution_mode.set_eager_mode(
+        execution_mode.EagerMode.INTERNAL_DEFER_ALL
+    ):
       # Do some work on the default stream.
       x = torch.ones(1, device='tpu')
       self.assertFalse(sync.is_materializing(x))
@@ -430,19 +437,22 @@ class TorchStreamsTest(seed_test_utils.RepeatableTest):
     new_stream = torch.Stream(device=dummy.device)
     del dummy
 
-    # Use DEFER_AND_FUSE to avoid automatic materialization.
-    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+    # Use INTERNAL_DEFER_ALL to avoid automatic materialization.
+    with execution_mode.set_eager_mode(
+        execution_mode.EagerMode.INTERNAL_DEFER_ALL
+    ):
       # Do some work on the new stream.
       with new_stream:
         x = torch.zeros(1, device='tpu')
-        # Since we are in DEFER_AND_FUSE, it should not be materializing.
+        # Since we are in INTERNAL_DEFER_ALL, it should not be materializing.
         self.assertFalse(sync.is_materializing(x))
 
         # Record an event on the stream. This should trigger materialization.
         event = new_stream.record_event()
 
-        # Verify that the tensor is now materializing.
-        self.assertTrue(sync.is_materializing(x))
+        # x may or may not be materializing yet; recording an event pushes an
+        # async "graph break" but we can only monitor it through querying or
+        # synchronizing the event.
 
     # Wait for the event to complete.
     event.synchronize()

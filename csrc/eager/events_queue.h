@@ -29,6 +29,7 @@
 #include "c10/core/Stream.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
+#include "csrc/common/compilation_spec.h"
 #include "csrc/common/context_states.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/materialize_common.h"
@@ -87,14 +88,26 @@ enum class MaterializationMode { kFullGraph, kSplitGraph };
 // a stream at a particular point in time.
 class EventSnapshot {
  public:
-  explicit EventSnapshot(xla::Future<void> future)
-      : future_(std::move(future)) {}
+  // When the snapshot has finished, this future will be set.
+  using Finished = xla::Future<void>;
+  // When the snapshot has started, this struct will be provided, and can be
+  // used to await the snapshot's completion.
+  struct Started {
+    Finished finished;
+  };
+  // The future that will be set when the snapshot has started.
+  using Queued = xla::Future<Started>;
 
-  static xla::Future<std::shared_ptr<EventSnapshot>> Record(
+  explicit EventSnapshot(Queued queued) : queued_(std::move(queued)) {}
+
+  static std::shared_ptr<EventSnapshot> Record(
       c10::DeviceIndex device_index, c10::StreamId stream_id,
       std::vector<SharedDeviceBufferList> must_materialize = {},
       MaterializationReason reason = MaterializationReason::kUnknown,
       MaterializationMode mode = MaterializationMode::kSplitGraph);
+
+  // Blocks the calling thread until the event snapshot has started.
+  absl::Status BlockUntilStarted() const;
 
   // Blocks the calling thread until the event snapshot is complete.
   absl::Status Synchronize() const;
@@ -102,28 +115,20 @@ class EventSnapshot {
   // Query whether the event snapshot has completed.
   absl::StatusOr<bool> Query() const;
 
-  // Sets the promise to OkStatus as soon as the event snapshot is complete
-  // or fails. The error is not propagated to the promise.
-  void OkCallback(xla::Promise<void>&& chain_promise);
-
  private:
-  // The future backing the event snapshot.
-  xla::Future<void> future_;
+  Queued queued_;
 };
 
-// A future that will resolve to an EventSnapshot during the materialization
-// process (after PrepareSnapshotMaterializations has been called), matched with
-// the device and stream that the snapshot is for.
-struct PendingEventSnapshot {
+// An EventSnapshot paired with the device and stream that it is for.
+struct EventSnapshotByStream {
   // The device and stream that the snapshot is for.
   c10::DeviceIndex device_index;
   c10::StreamId stream_id;
-  // The future that will resolve to the EventSnapshot.
-  xla::Future<std::shared_ptr<EventSnapshot>> snapshot_future;
+  std::shared_ptr<EventSnapshot> snapshot;
 };
 
-// Records one PendingEventSnapshot for each stream on the given device.
-std::vector<PendingEventSnapshot> RecordDeviceSnapshots(
+// Records one EventSnapshotByStream for each stream on the given device.
+std::vector<EventSnapshotByStream> RecordDeviceSnapshots(
     c10::DeviceIndex device_index,
     std::vector<SharedDeviceBufferList> must_materialize = {},
     MaterializationReason reason = MaterializationReason::kUnknown,
@@ -168,9 +173,9 @@ struct PendingSnapshotMaterialization {
   MaterializationSettings settings;
   // Futures that must be completed before the snapshot is reached.
   std::vector<xla::Future<void>> futures;
-  // When the execution for the traversals has started, an EventSnapshot will be
-  // created and provided through this promise.
-  xla::Promise<std::shared_ptr<EventSnapshot>> snapshot_promise;
+  // When the execution for the traversals has started, this promise will be
+  // set to notify the EventSnapshot that it has started.
+  xla::Promise<EventSnapshot::Started> started_promise;
 };
 
 // Returns a sequence of Traversals that, if compiled and executed, would

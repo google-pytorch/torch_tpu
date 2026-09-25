@@ -31,7 +31,6 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/events_queue.h"
 #include "csrc/eager/structured_log_buffer.h"
-#include "xla/future.h"
 
 // When an aten op is dispatched, we always create a DeviceBufferList to contain
 // the result. This DeviceBufferList will contain a DeferredOp, which describes
@@ -127,32 +126,29 @@ absl::StatusOr<std::vector<DeviceBufferRef>> EnqueueExecutable(
 void ShutDownMaterializationState();
 
 // Materializes all live tensors on the given stream.
-// This is an async operation; after the live tensor state has been evaluated,
-// and all work on the stream has been enqueued for materialization, the
-// snapshot is returned and can be queried or awaited to determine when the
-// materialization is complete.
-xla::Future<std::shared_ptr<EventSnapshot>> MaterializeStream(
+// This is an async operation; the event snapshot is returned before any work
+// has yet started on device. It can later be awaited to determine when the
+// materialization has started, and when it has completed.
+std::shared_ptr<EventSnapshot> MaterializeStream(
     c10::DeviceIndex device_index, c10::StreamId stream_id,
     MaterializationReason reason,
     MaterializationMode mode = MaterializationMode::kSplitGraph,
     absl::Span<const SharedDeviceBufferList> must_materialize = {});
 
 // Materializes all live tensors on the current stream.
-// This is an async operation; after the live tensor state has been evaluated,
-// and all work on the stream has been enqueued for materialization, the
-// snapshot is returned and can be queried or awaited to determine when the
-// materialization is complete.
-xla::Future<std::shared_ptr<EventSnapshot>> MaterializeCurrentStream(
+// This is an async operation; the event snapshot is returned before any work
+// has yet started on device. It can later be awaited to determine when the
+// materialization has started, and when it has completed.
+std::shared_ptr<EventSnapshot> MaterializeCurrentStream(
     MaterializationReason reason,
     MaterializationMode mode = MaterializationMode::kSplitGraph,
     absl::Span<const SharedDeviceBufferList> must_materialize = {});
 
 // Materializes all live tensors on the given device.
-// This is an async operation; after the live tensor state has been evaluated,
-// and all work on the device has been enqueued for materialization, one
-// snapshot is returned for each stream on the device, and each stream can be
-// queried or awaited to determine when the materialization is complete.
-std::vector<xla::Future<std::shared_ptr<EventSnapshot>>> MaterializeDevice(
+// This is an async operation; the event snapshots are returned before any work
+// has yet started on device. They can later be awaited to determine when each
+// materialization has started, and when they have completed.
+std::vector<std::shared_ptr<EventSnapshot>> MaterializeDevice(
     c10::DeviceIndex device_index, MaterializationReason reason,
     MaterializationMode mode = MaterializationMode::kSplitGraph,
     absl::Span<const SharedDeviceBufferList> must_materialize = {});

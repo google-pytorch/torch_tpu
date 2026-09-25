@@ -221,7 +221,7 @@ class StreamState {
       events_queue_.pop_front();
       if (auto* snapshot_event =
               std::get_if<std::unique_ptr<EventSnapshotRequest>>(&event)) {
-        (*snapshot_event)->snapshot_promise.Set(cancel_status);
+        (*snapshot_event)->started_promise.Set(cancel_status);
       } else {
         events_queue_.push_back(std::move(event));
       }
@@ -296,7 +296,7 @@ class StreamState {
     size_t deferred_op_hash = 0;
   };
 
-  // A request to create an EventSnapshot at this point in the stream.
+  // A request to start an EventSnapshot at this point in the stream.
   struct EventSnapshotRequest {
     // Futures that must complete before the snapshot is reached.
     std::vector<xla::Future<void>> futures;
@@ -311,8 +311,8 @@ class StreamState {
     // stored here. This is always the last task in the snapshot.
     std::optional<ExecutionTask> execution_task;
     // The promise which can be used to provide the snapshot once is it
-    // defined.
-    xla::Promise<std::shared_ptr<EventSnapshot>> snapshot_promise;
+    // started.
+    xla::Promise<EventSnapshot::Started> started_promise;
   };
 
   // The stream collects a series of DeferredOpEvents in order, with
@@ -378,7 +378,7 @@ class StreamState {
     return true;
   }
 
-  xla::Future<std::shared_ptr<EventSnapshot>> RequestEventSnapshot(
+  EventSnapshot::Queued RequestEventSnapshot(
       std::vector<SharedDeviceBufferList> must_materialize,
       MaterializationReason reason, MaterializationMode mode,
       EagerMode eager_mode) {
@@ -504,33 +504,40 @@ class StreamState {
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
 
   // Common helper for RequestEventSnapshot and RecordCompiledExecutionTask.
-  xla::Future<std::shared_ptr<EventSnapshot>> RequestEventSnapshotLocked(
+  EventSnapshot::Queued RequestEventSnapshotLocked(
       std::vector<SharedDeviceBufferList> must_materialize,
       MaterializationReason reason, MaterializationMode mode,
       EagerMode eager_mode) ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
-    auto [snapshot_promise, snapshot_future] =
-        xla::MakePromise<std::shared_ptr<EventSnapshot>>();
+    auto [started_promise, queued] = xla::MakePromise<EventSnapshot::Started>();
+
     // Explanation: synchronizing the last EventSnapshot should also await all
     // prior EventSnapshots. We achieve this by chaining a promise/future;
     // each event snapshot will have a future that will be set by the prior
     // event snapshot.
     auto [chaining_promise, chaining_future] = xla::MakePromise<void>();
-    snapshot_future.OnReady([chaining_promise = std::move(chaining_promise)](
-                                absl::StatusOr<std::shared_ptr<EventSnapshot>>
-                                    snapshot_or) mutable {
-      if (!snapshot_or.ok()) {
-        chaining_promise.Set(absl::OkStatus());
-      } else {
-        (*snapshot_or)->OkCallback(std::move(chaining_promise));
-      }
-    });
+
+    // If an earlier snapshot fails, later snapshots will ignore the error and
+    // move on. This prevents permanent cascading failures.
+    queued.OnReady(
+        [chaining_promise = std::move(chaining_promise)](
+            absl::StatusOr<EventSnapshot::Started> started_or) mutable {
+          if (!started_or.ok()) {
+            chaining_promise.Set(absl::OkStatus());
+          } else {
+            started_or->finished.OnReady(
+                [chaining_promise = std::move(chaining_promise)](
+                    absl::Status finished_status) mutable {
+                  chaining_promise.Set(absl::OkStatus());
+                });
+          }
+        });
     events_queue_.push_back(std::make_unique<EventSnapshotRequest>(
         std::move(futures_), std::move(must_materialize),
         MaterializationSettings(reason, mode, eager_mode),
-        std::move(live_nodes_), std::nullopt, std::move(snapshot_promise)));
+        std::move(live_nodes_), std::nullopt, std::move(started_promise)));
     futures_.push_back(std::move(chaining_future));
     live_nodes_.clear();
-    return snapshot_future;
+    return queued;
   }
 
   absl::Mutex mu_;
@@ -1175,7 +1182,7 @@ std::vector<PendingSnapshotMaterialization> PrepareSnapshotMaterializations(
              .must_materialize = std::move(snapshot_event.must_materialize),
              .settings = std::move(snapshot_event.materialization_settings),
              .futures = std::move(snapshot_event.futures),
-             .snapshot_promise = std::move(snapshot_event.snapshot_promise)});
+             .started_promise = std::move(snapshot_event.started_promise)});
       } else {
         // If one snapshot fails, later snapshots may succeed only if there are
         // no dependencies on the failed DeferredOpEvents.
@@ -1192,7 +1199,7 @@ std::vector<PendingSnapshotMaterialization> PrepareSnapshotMaterializations(
             node->SetAsError(snapshot_traversals_or.status());
           }
         }
-        snapshot_event.snapshot_promise.Set(snapshot_traversals_or.status());
+        snapshot_event.started_promise.Set(snapshot_traversals_or.status());
       }
       deferred_ops.clear();
     }
@@ -1219,7 +1226,7 @@ void RecordAsyncDeviceToHost(xla::Future<void> to_literal_future) {
   MarkStreamActive(device_index, stream_id, std::move(to_literal_future));
 }
 
-std::vector<PendingEventSnapshot> RecordDeviceSnapshots(
+std::vector<EventSnapshotByStream> RecordDeviceSnapshots(
     c10::DeviceIndex device_index,
     std::vector<SharedDeviceBufferList> must_materialize,
     MaterializationReason reason, MaterializationMode mode) {
@@ -1230,7 +1237,7 @@ std::vector<PendingEventSnapshot> RecordDeviceSnapshots(
     return {};
   }
   auto device_streams = GetDeviceStreamStates(device_index);
-  std::vector<PendingEventSnapshot> snapshots;
+  std::vector<EventSnapshotByStream> snapshots;
   snapshots.reserve(device_streams.size());
   for (c10::StreamId stream_id = 0; stream_id < device_streams.size();
        ++stream_id) {
@@ -1242,40 +1249,50 @@ std::vector<PendingEventSnapshot> RecordDeviceSnapshots(
         stream_must_materialize.push_back(std::move(node));
       }
     }
-    snapshots.push_back({
-        .device_index = device_index,
-        .stream_id = stream_id,
-        .snapshot_future = stream_state->RequestEventSnapshot(
-            std::move(stream_must_materialize), reason, mode, eager_mode),
-    });
+    auto queued = stream_state->RequestEventSnapshot(
+        std::move(stream_must_materialize), reason, mode, eager_mode);
+    snapshots.push_back(
+        {.device_index = device_index,
+         .stream_id = stream_id,
+         .snapshot = std::make_shared<EventSnapshot>(std::move(queued))});
   }
   return snapshots;
 }
 
-xla::Future<std::shared_ptr<EventSnapshot>> EventSnapshot::Record(
+std::shared_ptr<EventSnapshot> EventSnapshot::Record(
     c10::DeviceIndex device_index, c10::StreamId stream_id,
     std::vector<SharedDeviceBufferList> must_materialize,
     MaterializationReason reason, MaterializationMode mode) {
   auto eager_mode = GetEagerMode();
   if (eager_mode == EagerMode::kInternalCompileFxGraph) {
-    return xla::Future<std::shared_ptr<EventSnapshot>>(
+    return std::make_shared<EventSnapshot>(
         TT_ERROR(error::kInvalidArgument)
         << "cannot record EventSnapshot during an FX trace");
   }
-  return GetOrCreateStreamState(device_index, stream_id)
-      ->RequestEventSnapshot(std::move(must_materialize), reason, mode,
-                             eager_mode);
+  auto queued = GetOrCreateStreamState(device_index, stream_id)
+                    ->RequestEventSnapshot(std::move(must_materialize), reason,
+                                           mode, eager_mode);
+  return std::make_shared<EventSnapshot>(std::move(queued));
 }
 
-absl::Status EventSnapshot::Synchronize() const { return future_.Await(); }
+absl::Status EventSnapshot::Synchronize() const {
+  // Wait until the snapshot has started execution...
+  TT_ASSIGN_OR_RETURN(auto started, queued_.Await());
+  // ...and then wait for the execution to finish.
+  return started.finished.Await();
+}
 
-absl::StatusOr<bool> EventSnapshot::Query() const { return future_.IsReady(); }
+absl::Status EventSnapshot::BlockUntilStarted() const {
+  return queued_.Await().status();
+}
 
-void EventSnapshot::OkCallback(xla::Promise<void>&& chain_promise) {
-  future_.OnReady(
-      [chain_promise = std::move(chain_promise)](absl::Status status) mutable {
-        chain_promise.Set(absl::OkStatus());
-      });
+absl::StatusOr<bool> EventSnapshot::Query() const {
+  if (!queued_.IsReady()) {
+    return false;
+  }
+  TT_ASSIGN_OR_RETURN(auto started, queued_.Await());
+
+  return started.finished.IsReady();
 }
 
 void ClearAllStreams() {

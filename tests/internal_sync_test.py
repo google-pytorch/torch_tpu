@@ -74,10 +74,9 @@ class InternalSyncTest(absltest.TestCase):  # ABSLTEST_OK=Internal sync test
 
     sync.synchronize(y, wait=False)
 
-    # The entire stream begins materializing, but may not be ready yet.
-    self.assertTrue(sync.is_materializing(x))
-    self.assertTrue(sync.is_materializing(y))
-    self.assertTrue(sync.is_materializing(z))
+    # The entire stream is enqueued for materialization; however, because this
+    # is non-blocking, we don't know when they will start materializing
+    # (is_materializing()) or finish (is_materialized()).
 
   def test_sync_no_wait_list(self):
     x = torch.ones(10, device=torch.device("tpu"))
@@ -91,9 +90,9 @@ class InternalSyncTest(absltest.TestCase):  # ABSLTEST_OK=Internal sync test
 
     sync.synchronize([x, y, z], wait=False)
 
-    # Everything is materialized, but may or may not be ready.
-    for tensor in [x, y, z]:
-      self.assertTrue(sync.is_materializing(tensor))
+    # The entire stream is enqueued for materialization; however, because this
+    # is non-blocking, we don't know when they will start materializing
+    # (is_materializing()) or finish (is_materialized()).
 
   def test_sync_and_wait_tensor(self):
     x = torch.ones(10, device=torch.device("tpu"))
@@ -157,25 +156,9 @@ class InternalSyncTest(absltest.TestCase):  # ABSLTEST_OK=Internal sync test
 
     sync.synchronize(wait=False)
 
-    # Everything is materialized, but may not be ready.
-    self.assertTrue(sync.is_materializing(x))
-    self.assertTrue(sync.is_materializing(y))
-    self.assertTrue(sync.is_materializing(z))
-
-  def test_sync_and_wait_all_materialized(self):
-    x = torch.ones(10, device=torch.device("tpu"))
-    y = torch.ones(11, device=torch.device("tpu"))
-    z = torch.ones(12, device=torch.device("tpu"))
-
-    self.assertFalse(sync.is_materializing(x))
-    self.assertFalse(sync.is_materializing(y))
-    self.assertFalse(sync.is_materializing(z))
-
-    sync.synchronize(wait=True)
-
-    self.assertTrue(sync.is_materializing(x))
-    self.assertTrue(sync.is_materializing(y))
-    self.assertTrue(sync.is_materializing(z))
+    # The entire stream is enqueued for materialization; however, because this
+    # is non-blocking, we don't know when they will start materializing
+    # (is_materializing()) or finish (is_materialized()).
 
   def test_sync_and_wait_all_ready(self):
     x = torch.ones(10, device=torch.device("tpu"))
@@ -188,6 +171,9 @@ class InternalSyncTest(absltest.TestCase):  # ABSLTEST_OK=Internal sync test
 
     sync.synchronize(wait=True)
 
+    self.assertTrue(sync.is_materializing(x))
+    self.assertTrue(sync.is_materializing(y))
+    self.assertTrue(sync.is_materializing(z))
     self.assertTrue(sync.is_materialized(x))
     self.assertTrue(sync.is_materialized(y))
     self.assertTrue(sync.is_materialized(z))
@@ -378,10 +364,9 @@ class InternalSyncTest(absltest.TestCase):  # ABSLTEST_OK=Internal sync test
     # Single-tensor synchronize on wrapper subclass
     sync.synchronize(dt_wrapper, wait=False)
 
-    # The entire stream is now materializing.
-    self.assertTrue(sync.is_materializing(dt_wrapper))
-    self.assertTrue(sync.is_materializing(x))
-    self.assertTrue(sync.is_materializing(elem_wrapper))
+    # The entire stream is enqueued for materialization; however, because this
+    # is non-blocking, we don't know when they will start materializing
+    # (is_materializing()) or finish (is_materialized()).
 
     # Sequence synchronize on list of wrapper subclasses
     sync.synchronize([dt_wrapper, elem_wrapper], wait=True)

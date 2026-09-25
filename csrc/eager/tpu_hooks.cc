@@ -209,11 +209,11 @@ c10::Stream TpuDeviceGuardImpl::exchangeStream(c10::Stream s) const {
   //   - The MaterializationWorker wakes up, and sees that stream 1 needs to
   //     be materialized. It attempts to materialize both X and Z, but fails,
   //     because Z depends on Y, which has not yet been started.
-  // By blocking on the exit from stream 2 until Y's materialization is queued,
+  // By blocking on the exit from stream 2 until Y's materialization is started,
   // Z's materialization cannot race its inputs, even if Y hasn't finished.
-  TT_THROW_IF_ERROR(MaterializeStream(s.device_index(), old_stream_id,
-                                      MaterializationReason::kExplicitSync)
-                        .Await());
+  auto event = MaterializeStream(s.device_index(), old_stream_id,
+                                 MaterializationReason::kExplicitSync);
+  TT_THROW_IF_ERROR(event->BlockUntilStarted());
   return c10::Stream(c10::Stream::UNSAFE, s.device(), old_stream_id);
 }
 
@@ -237,10 +237,8 @@ void TpuDeviceGuardImpl::record(void** event, const c10::Stream& stream,
   if (*event != nullptr) {
     this->destroyEvent(*event, device_index);
   }
-  TT_ASSIGN_OR_THROW(auto shared_event,
-                     MaterializeStream(stream.device_index(), stream.id(),
-                                       MaterializationReason::kExplicitSync)
-                         .Await());
+  auto shared_event = MaterializeStream(stream.device_index(), stream.id(),
+                                        MaterializationReason::kExplicitSync);
   *event = new std::shared_ptr<EventSnapshot>(std::move(shared_event));
 }
 void TpuDeviceGuardImpl::block(void* event, const c10::Stream& stream) const {
@@ -257,20 +255,17 @@ bool TpuDeviceGuardImpl::queryStream(const c10::Stream& stream) const {
   return true;
 }
 void TpuDeviceGuardImpl::synchronizeStream(const c10::Stream& stream) const {
-  TT_ASSIGN_OR_THROW(auto event,
-                     MaterializeStream(stream.device_index(), stream.id(),
-                                       MaterializationReason::kExplicitSync)
-                         .Await());
+  auto event = MaterializeStream(stream.device_index(), stream.id(),
+                                 MaterializationReason::kExplicitSync);
   TT_THROW_IF_ERROR(event->Synchronize());
   SyncAndCheckStickyError();
 }
 void TpuDeviceGuardImpl::synchronizeDevice(
     c10::DeviceIndex device_index) const {
-  auto event_futures =
+  auto snapshots =
       MaterializeDevice(device_index, MaterializationReason::kExplicitSync);
-  for (const auto& event_future : event_futures) {
-    TT_ASSIGN_OR_THROW(auto event, event_future.Await());
-    TT_THROW_IF_ERROR(event->Synchronize());
+  for (const auto& snapshot : snapshots) {
+    TT_THROW_IF_ERROR(snapshot->Synchronize());
   }
   SyncAndCheckStickyError();
 }
