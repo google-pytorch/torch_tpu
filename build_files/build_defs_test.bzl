@@ -14,6 +14,7 @@
 
 """Unit tests for build_defs.bzl."""
 
+# dummy change
 load("@rules_testing//lib:analysis_test.bzl", "analysis_test")
 load("@rules_testing//lib:test_suite.bzl", "test_suite")
 load(

@@ -23,6 +23,8 @@ load(
     "use_pywrap_rules",
 )
 load("//bazel:supported_python_versions.bzl", "DEFAULT_PYTHON_VERSION", "SUPPORTED_PYTHON_VERSIONS")
+
+# dummy change
 load("//shims/build_cleaner:build_defs.bzl", "register_extension_info")
 load("//shims/build_files:build_defs.bzl", "process_accelerator_tags")
 load("//shims/build_files:torch_version.bzl", "is_backend_dep", "reset_torch_config")
