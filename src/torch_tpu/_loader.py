@@ -351,7 +351,7 @@ def load() -> None:
 
   global _LOADED
   if hardware.get_tpu_device_count():
-    _init_device("tpu")
+    _init_device("tpu")  # INIT_DEVICE_OK=root usage
     _LOADED = True
 
   # Start the eager-mode trace daemon if TORCH_TRACE was set at process

@@ -20,13 +20,10 @@ from unittest import mock
 
 from absl.testing import absltest
 import torch
-from torch_tpu import _loader
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal.utils import test_utils
 from tests import oss_utils
 from tests import seed_test_utils
-
-_loader._init_device("tpu")
 
 EagerMode = execution_mode.EagerMode
 

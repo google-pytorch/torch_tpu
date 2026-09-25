@@ -20,12 +20,9 @@ from absl.testing import absltest
 import torch
 import torch.distributed as dist
 import torch.distributed.distributed_c10d as c10d
-from torch_tpu import _loader
 from torch_tpu._internal.distributed import torchcomm_tpu
 from tests import seed_test_utils
 import torchcomms
-
-_loader._init_device("tpu")
 
 
 def _mock_int_env(values: dict[str, int]):

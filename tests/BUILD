@@ -1372,7 +1372,6 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
-        "//src/torch_tpu:_loader",
     ],
 )
 
@@ -1386,7 +1385,6 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
-        "//src/torch_tpu:_loader",
         "//src/torch_tpu/_internal/compile",
     ],
 )
@@ -1983,7 +1981,6 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
-        "//src/torch_tpu:_loader",
         "//src/torch_tpu/_internal/execution_mode",
         "//src/torch_tpu/_internal/utils:test_utils",
     ],
@@ -2470,7 +2467,6 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
-        "//src/torch_tpu:_loader",
     ],
 )
 
@@ -2484,7 +2480,6 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
-        "//src/torch_tpu:_loader",
     ],
 )
 
@@ -2511,7 +2506,6 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
-        "//src/torch_tpu:_loader",
     ],
 )
 

@@ -17,10 +17,7 @@
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
-from torch_tpu import _loader
 from tests import op_testing
-
-_loader._init_device("tpu")
 
 TorchTpuVsCpuTestBase = op_testing.TorchTpuVsCpuTestBase
 

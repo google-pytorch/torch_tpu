@@ -37,7 +37,7 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
   @classmethod
   def setUpClass(cls):
     super().setUpClass()
-    _loader._init_device("tpu")
+    _loader._init_device("tpu")  # INIT_DEVICE_OK=CPU runner
 
   def test_tpu_profiler_config_accessibility(self):
     """Verifies TpuProfilerConfig is accessible via torch.tpu.profiler."""
