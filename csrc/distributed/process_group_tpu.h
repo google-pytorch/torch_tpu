@@ -64,6 +64,9 @@ namespace torch_tpu {
     int64_t src_device_id, int64_t dst_device_id, int tag,
     size_t tensor_index = 0);
 
+// Returns the OpSplitMode to use for collectives.
+[[nodiscard]] OpSplitMode GetCollectiveSplitMode();
+
 class ProcessGroupTpu : public c10d::Backend {
  public:
   // The standard pattern for PyTorch distributed backend initialization is
@@ -99,10 +102,6 @@ class ProcessGroupTpu : public c10d::Backend {
 
   // Returns the device ids of all TPUs split into subgroups.
   const DeviceGroupList& GetSubgroupDeviceIds() const;
-
-  // Returns the eager graph-splitting policy used by this backend's
-  // collectives.
-  [[nodiscard]] OpSplitMode collective_split_mode() const;
 
   c10::intrusive_ptr<c10d::Work> allreduce(
       std::vector<at::Tensor>& tensors,

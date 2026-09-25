@@ -34,7 +34,7 @@ namespace torch_tpu {
 
 absl::StatusOr<mlir::MlirOp> BuildDistributedReduceScatterShlo(
     mlir::MlirOp input, c10d::ReduceOp::RedOpType reduce_op_type,
-    const DeviceGroupList& device_groups) {
+    const DeviceGroupList& device_groups, int64_t scatter_dim) {
   ABSL_CHECK(!device_groups.empty())  // CRASH_OK
       << "[BuildDistributedReduceScatterShlo]: device_groups is empty";
   const int group_size = device_groups[0].size();
@@ -42,10 +42,13 @@ absl::StatusOr<mlir::MlirOp> BuildDistributedReduceScatterShlo(
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
   auto element_type = input_type.getElementType();
 
-  // Calculate the output shape by splitting on dim=0 (our scatter dimension).
   Dimensions output_shape = CopyIntVector(input_type.getShape());
-  ABSL_CHECK_EQ(output_shape[0] % group_size, 0);  // CRASH_OK
-  output_shape[0] /= group_size;
+  ABSL_CHECK(scatter_dim >= 0 &&  // CRASH_OK
+             scatter_dim < static_cast<int64_t>(output_shape.size()))
+      << "[BuildDistributedReduceScatterShlo]: invalid scatter_dim "
+      << scatter_dim;
+  ABSL_CHECK_EQ(output_shape[scatter_dim] % group_size, 0);  // CRASH_OK
+  output_shape[scatter_dim] /= group_size;
 
   // For AVG, we perform a SUM reduction and then divide by the group size.
   c10d::ReduceOp::RedOpType effective_reduce_op_type =
@@ -68,7 +71,7 @@ absl::StatusOr<mlir::MlirOp> BuildDistributedReduceScatterShlo(
   auto& builder = input.getBuilder();
   auto output = mlir::stablehlo::ReduceScatter(
       output_type, input, reduction_computation,
-      /*scatter_dimension=*/0,
+      /*scatter_dimension=*/scatter_dim,
       /*replica_groups=*/BuildReplicaGroupsAttr(builder, device_groups),
       /*channel_id=*/BuildChannelHandleAttr(builder, /*handle=*/1, /*type=*/0),
       /*use_global_device_ids=*/true);

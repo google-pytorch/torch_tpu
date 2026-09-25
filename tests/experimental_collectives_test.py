@@ -21,36 +21,29 @@ from tests import seed_test_utils
 
 class ExperimentalCollectivesTest(seed_test_utils.RepeatableTest):
 
-  def test_meta_shapes_preserve_collective_dimension(self):
+  def test_meta_shapes(self):
     value = torch.empty((2, 3, 4), device="meta")
-
-    gathered = torch.ops.tpu.experimental_all_gather_dim(
-        value, 1, 8, "unused"
-    )
+    gathered = torch.ops.tpu.experimental_all_gather_dim(value, 1, 8, "unused")
     scattered = torch.ops.tpu.experimental_reduce_scatter_dim(
         gathered, -2, 8, "unused"
     )
-
     self.assertEqual(gathered.shape, (2, 24, 4))
     self.assertEqual(scattered.shape, value.shape)
 
-  def test_meta_reduce_scatter_rejects_an_uneven_dimension(self):
+  def test_meta_errors(self):
     value = torch.empty((2, 3, 4), device="meta")
-
-    with self.assertRaisesRegex(RuntimeError, "not divisible"):
-      torch.ops.tpu.experimental_reduce_scatter_dim(value, 1, 2, "unused")
-
-  def test_meta_rejects_an_invalid_dimension(self):
-    value = torch.empty((2, 3, 4), device="meta")
-
-    with self.assertRaisesRegex(RuntimeError, "invalid"):
-      torch.ops.tpu.experimental_all_gather_dim(value, 3, 2, "unused")
-
-  def test_meta_rejects_a_nonpositive_group_size(self):
-    value = torch.empty((2, 3, 4), device="meta")
-
-    with self.assertRaisesRegex(RuntimeError, "must be positive"):
-      torch.ops.tpu.experimental_all_gather_dim(value, 1, 0, "unused")
+    all_gather = torch.ops.tpu.experimental_all_gather_dim
+    reduce_scatter = torch.ops.tpu.experimental_reduce_scatter_dim
+    for op, x, dim, group_size, error in (
+        (reduce_scatter, value, 1, 2, "not divisible"),
+        (all_gather, value, 3, 2, "invalid"),
+        (reduce_scatter, value, -4, 2, "invalid"),
+        (all_gather, value, 1, 0, "must be positive"),
+        (all_gather, torch.empty((), device="meta"), 0, 2, "non-scalar"),
+    ):
+      with self.subTest(op=op, dim=dim, group_size=group_size):
+        with self.assertRaisesRegex(RuntimeError, error):
+          op(x, dim, group_size, "unused")
 
 
 if __name__ == "__main__":

@@ -303,41 +303,60 @@ def run_all_gather_rank_order() -> None:
   utils.assert_close(recv_new_group.cpu(), expected)
 
 
+def _dim_collectives(x, y, group_size, group_name):
+  return (
+      torch.ops.tpu.experimental_all_gather_dim(x, 1, group_size, group_name),
+      torch.ops.tpu.experimental_reduce_scatter_dim(
+          y, -1, group_size, group_name
+      ),
+  )
+
+
+def _check_dim_collectives(fn: Callable[..., Any], group: Any) -> None:
+  rank = dist.get_rank(group)
+  size = dist.get_world_size(group)
+  x = torch.arange(6, dtype=torch.float32).reshape(2, 3)
+  y = torch.arange(6 * size, dtype=torch.float32).reshape(2, 3 * size)
+  gathered, scattered = fn(
+      (x + 100 * rank).to("tpu"),
+      (y + 1000 * rank).to("tpu"),
+      size,
+      group.group_name,
+  )
+  utils.assert_close(
+      gathered.cpu(), torch.cat([x + 100 * p for p in range(size)], dim=1)
+  )
+  utils.assert_close(
+      scattered.cpu(),
+      (size * y + 1000 * sum(range(size))).chunk(size, dim=1)[rank],
+  )
+
+
 def run_experimental_collectives_on_dim() -> None:
   """Tests the experimental collectives on a non-leading tensor dimension."""
-  rank = int(os.environ["RANK"])
-  world_size = int(os.environ["WORLD_SIZE"])
-  group_name = dist.group.WORLD.group_name
+  rank = dist.get_rank()
+  half = dist.get_world_size() // 2
+  low = dist.new_group(ranks=list(range(half)))
+  high = dist.new_group(ranks=list(range(half, 2 * half)))
+  subgroup = low if rank < half else high
 
-  local_cpu = (
-      torch.arange(6, dtype=torch.float32).reshape(2, 3) + 100 * rank
+  debugs = []
+  compiled = torch.compile(
+      _dim_collectives,
+      backend="tpu",
+      fullgraph=True,
+      dynamic=False,
+      options={"serializable": False, "debug_callback": debugs.append},
   )
-  gathered = torch.ops.tpu.experimental_all_gather_dim(
-      local_cpu.to("tpu"), 1, world_size, group_name
-  )
-  expected_gathered = torch.cat(
-      [
-          torch.arange(6, dtype=torch.float32).reshape(2, 3) + 100 * peer
-          for peer in range(world_size)
-      ],
-      dim=1,
-  )
-  utils.assert_close(gathered.cpu(), expected_gathered)
+  _check_dim_collectives(_dim_collectives, dist.group.WORLD)
+  _check_dim_collectives(_dim_collectives, subgroup)
+  _check_dim_collectives(compiled, subgroup)
 
-  scatter_input_cpu = (
-      torch.arange(2 * 3 * world_size, dtype=torch.float32).reshape(
-          2, 3 * world_size
-      )
-      + 1000 * rank
+  stablehlo = "\n".join(
+      text for debug in debugs for text in debug.stablehlo_forward_text
   )
-  scattered = torch.ops.tpu.experimental_reduce_scatter_dim(
-      scatter_input_cpu.to("tpu"), -1, world_size, group_name
-  )
-  reduced = torch.stack(
-      [scatter_input_cpu + 1000 * (peer - rank) for peer in range(world_size)]
-  ).sum(dim=0)
-  expected_scattered = torch.chunk(reduced, world_size, dim=1)[rank]
-  utils.assert_close(scattered.cpu(), expected_scattered)
+  assert "all_gather_dim = 1" in stablehlo, stablehlo
+  assert "scatter_dimension = 1" in stablehlo, stablehlo
 
 
 def run_gather_scalar() -> None:

@@ -338,19 +338,6 @@ bool IsUniformAllToAll(const std::vector<at::Tensor>& output_tensors,
   return true;
 }
 
-// Returns the OpSplitMode to use for collectives.
-OpSplitMode GetCollectiveSplitMode() {
-  if (IsSpmdSafe()) {
-    return OpSplitMode::kNone;
-  }
-
-  if (GetBooleanEnvOnce<kTorchTpuInternalMaterializeCollectiveTensorsEnvVar>()
-          .value_or(true)) {
-    return OpSplitMode::kSplitBoth;
-  }
-  return OpSplitMode::kNone;
-}
-
 // Offsets and slice sizes required for StableHLO ragged all-to-all custom
 // calls.
 struct RaggedAllToAllOffsets {
@@ -528,8 +515,16 @@ absl::Status SetRaggedAllToAllParamKeys(OpParamCacheKeys& param_keys,
 
 }  // namespace
 
-OpSplitMode ProcessGroupTpu::collective_split_mode() const {
-  return GetCollectiveSplitMode();
+OpSplitMode GetCollectiveSplitMode() {
+  if (IsSpmdSafe()) {
+    return OpSplitMode::kNone;
+  }
+
+  if (GetBooleanEnvOnce<kTorchTpuInternalMaterializeCollectiveTensorsEnvVar>()
+          .value_or(true)) {
+    return OpSplitMode::kSplitBoth;
+  }
+  return OpSplitMode::kNone;
 }
 
 xla::CrossHostTransferKey GetCrossHostTransferKey(int64_t src_device_id,
