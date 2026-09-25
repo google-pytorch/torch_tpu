@@ -1151,15 +1151,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.bfloat16: {"rtol": 1.3, "atol": 4.8e-1},
         torch.float16: {"rtol": 2.4e-3, "atol": 4.4e-3},
     },
-    "sigmoid": {
-        torch.float16: {"atol": 1.5e-5},
-        torch.float32: {"atol": 1.5e-5},
-        torch.int16: {"atol": 1.8e-5},
-        torch.int32: {"atol": 1.8e-5},
-        torch.int64: {"atol": 1.8e-5},
-        torch.int8: {"atol": 1.8e-5},
-        torch.uint8: {"atol": 1.8e-5},
-    },
     "sin": {
         torch.complex64: {"rtol": 4.9e-6},
     },

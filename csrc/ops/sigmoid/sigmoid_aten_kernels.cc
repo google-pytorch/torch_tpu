@@ -23,6 +23,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -36,7 +37,6 @@
 #include "csrc/ops/resize/resize_aten_kernels.h"
 #include "csrc/ops/unary.h"
 #include "csrc/ops/unary_aten_kernels.h"
-#include "mlir/IR/BuiltinTypes.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -53,18 +53,21 @@ namespace {
 // where output = sigmoid(x).
 absl::StatusOr<mlir::MlirOp> BuildSigmoidBackwardShlo(mlir::MlirOp grad_output,
                                                       mlir::MlirOp output) {
-  auto type = GetTensorTypeOrDie(output);
-  TT_ASSIGN_OR_RETURN(auto element_type,
-                      ConvertTo<mlir::ElementType>(type.getElementType()));
-  auto one =
-      MakeConstant(grad_output.getBuilder(), 1, element_type, type.getShape());
+  const mlir::ElementType orig_dtype = GetElementTypeOrDie(output);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(orig_dtype));
+  TT_ASSIGN_OR_RETURN(grad_output, CastIfNeeded(grad_output, compute_dtype));
+  TT_ASSIGN_OR_RETURN(output, CastIfNeeded(output, compute_dtype));
+
+  auto one = MakeConstantLike(output, 1.0);
   auto sub = mlir::stablehlo::Subtract(one, output);
   auto mul = mlir::stablehlo::Mul(output, sub);
 
   // For complex numbers, the gradient is grad_output * conj(f'(x))
   TT_ASSIGN_OR_RETURN(auto conj_mul, BuildConjPhysicalShlo(mul));
 
-  return mlir::stablehlo::Mul(grad_output, conj_mul);
+  auto result = mlir::stablehlo::Mul(grad_output, conj_mul);
+  return CastIfNeeded(result, orig_dtype);
 }
 
 absl::Status LogSigmoidForward(const at::Tensor& self, at::Tensor& out,
@@ -170,10 +173,20 @@ absl::StatusOr<mlir::MlirOp> BuildSigmoidShlo(mlir::MlirOp input_op) {
   // TODO: We should not be converting unsupported dtypes to support certain
   // dtypes. This leads to unexpected precision loss.
   // Convert integral dtypes to float since StableHLO doesn't support
-  // Logistic for integer dtypes.
+  // floating-point ops for integer dtypes.
   TT_ASSIGN_OR_RETURN(input_op,
                       ConvertIfInteger(input_op, mlir::ElementType::F32));
-  return mlir::stablehlo::Logistic(input_op);
+  const mlir::ElementType orig_dtype = GetElementTypeOrDie(input_op);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(orig_dtype));
+  TT_ASSIGN_OR_RETURN(input_op, CastIfNeeded(input_op, compute_dtype));
+
+  mlir::MlirOp one = MakeConstantLike(input_op, 1.0);
+  mlir::MlirOp neg_x = mlir::stablehlo::Neg(input_op);
+  mlir::MlirOp exp_neg_x = mlir::stablehlo::Exp(neg_x);
+  mlir::MlirOp denom = mlir::stablehlo::Add(one, exp_neg_x);
+  mlir::MlirOp result = mlir::stablehlo::Div(one, denom);
+  return CastIfNeeded(result, orig_dtype);
 }
 
 at::Tensor& AtenSigmoidOut(const at::Tensor& self, at::Tensor& out) {
