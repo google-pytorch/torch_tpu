@@ -20,6 +20,8 @@ load(
     "//build_files:build_defs.bzl",
     # go/keep-sorted start
     "check_and_adjust_test_tags_for_testing",
+    "clamp_shard_count_for_testing",
+    "get_tpu_chip_count_for_testing",
     "get_tpu_version_for_testing",
     "is_backend_dep_for_testing",
     "is_oss",
@@ -762,6 +764,62 @@ def _test_get_tpu_version(env):
     env.expect.that_str(get_tpu_version_for_testing("requires-custom_hw:8")).equals("custom_hw_8")
     env.expect.that_str(get_tpu_version_for_testing("requires-accelerator-v1:4")).equals("accelerator-v1_4")
 
+def _test_shard_count_clamping(env):
+    """Tests that shard_count is automatically clamped in OSS to the maximum concurrent shards per test."""
+
+    # 0. _get_tpu_chip_count extracts chip counts from multi-chip TPU tags.
+    env.expect.that_int(get_tpu_chip_count_for_testing("requires-tpu-v5lite:8")).equals(8)
+    env.expect.that_int(get_tpu_chip_count_for_testing("requires-tpu-v7x:4")).equals(4)
+    env.expect.that_bool(get_tpu_chip_count_for_testing("requires-tpu-v5lite") == None).equals(True)
+    env.expect.that_bool(get_tpu_chip_count_for_testing("cpu:8") == None).equals(True)
+
+    # 1. Exclusive tag in OSS clamps shard_count > 1 down to 1.
+    tags_exclusive = ["exclusive", "requires-tpu-v5lite:8"]
+    res_exclusive = check_and_adjust_test_tags_for_testing(
+        is_oss = True,
+        tags = tags_exclusive,
+        shard_count = 8,
+    )
+    env.expect.that_int(res_exclusive.shard_count).equals(1)
+
+    # 2. Multi-chip tag on OSS runner without 'exclusive' clamps to runner_chips // required_chips.
+    clamped_v5_8chips = clamp_shard_count_for_testing(
+        is_oss = True,
+        tags = ["requires-tpu-v5lite:8"],
+        shard_count = 12,
+    )
+    env.expect.that_int(clamped_v5_8chips).equals(1)
+
+    clamped_v5_4chips = clamp_shard_count_for_testing(
+        is_oss = True,
+        tags = ["requires-tpu-v5p:4"],
+        shard_count = 6,
+    )
+    env.expect.that_int(clamped_v5_4chips).equals(2)
+
+    clamped_v7_4chips = clamp_shard_count_for_testing(
+        is_oss = True,
+        tags = ["requires-tpu-v7x:4"],
+        shard_count = 4,
+    )
+    env.expect.that_int(clamped_v7_4chips).equals(1)
+
+    # 3. Single-chip test in OSS preserves shard_count.
+    clamped_single_chip = clamp_shard_count_for_testing(
+        is_oss = True,
+        tags = ["requires-tpu-v5lite"],
+        shard_count = 8,
+    )
+    env.expect.that_int(clamped_single_chip).equals(8)
+
+    # 4. In internal builds (Forge), shard_count is never clamped.
+    clamped_internal_forge = clamp_shard_count_for_testing(
+        is_oss = False,
+        tags = ["exclusive", "requires-tpu-v5lite:8"],
+        shard_count = 12,
+    )
+    env.expect.that_int(clamped_internal_forge).equals(12)
+
 def build_defs_test_suite(name):
     """Creates a test suite for build_defs.bzl, which will run all tests in this file.
 
@@ -815,6 +873,7 @@ def build_defs_test_suite(name):
             _test_oss_presubmit_tpu_generation_implicit,
             _test_oss_presubmit_tpu_generation_implicit_default_v5,
             _test_oss_presubmit_tpu_generation_implicit_v6,
+            _test_shard_count_clamping,
             # go/keep-sorted end
         ],
     )
