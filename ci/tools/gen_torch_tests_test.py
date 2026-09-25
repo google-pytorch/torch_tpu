@@ -82,7 +82,7 @@ class GenTorchTestsTest(unittest.TestCase):  # UNITTEST_OK=testing tools
         frozenset({"dynamo/test_debug_utils", "test_ops"}),
     )
 
-  def test_torch_test_target(self):
+  def test_unsharded_torch_test_target(self):
     target_def = gen_torch_tests.torch_test_target("dynamo/test_debug_utils")
     expected = textwrap.dedent("""\
         torch_tpu_oss_torch_test(
@@ -91,12 +91,17 @@ class GenTorchTestsTest(unittest.TestCase):  # UNITTEST_OK=testing tools
         )""")
     self.assertEqual(target_def, expected)
 
+  def test_sharded_torch_test_target(self):
+    target_def = gen_torch_tests.torch_test_target("test_ops")
+    self.assertIn("shard_count = 50", target_def)
+
   def test_torch_test_target_disabled_module(self):
     target_def = gen_torch_tests.torch_test_target("test_binary_ufuncs")
     expected = textwrap.dedent("""\
         torch_tpu_oss_torch_test(
             name = "binary_ufuncs_test",
             notap = "b/563402379",  # NOTAP_OK=torch tests
+            shard_count = 8,
             torch_test_module = "test_binary_ufuncs",
         )""")
     self.assertEqual(target_def, expected)

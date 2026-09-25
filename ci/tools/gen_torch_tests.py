@@ -105,10 +105,14 @@ def torch_test_target(test_module: str) -> str:
       else ""
   )
 
+  num_shards = torch_test_module_utils.TEST_MODULE_SHARDS.get(test_module)
+  shard_count = f"    shard_count = {num_shards},\n" if num_shards else ""
+
   return (
       "torch_tpu_oss_torch_test(\n"
       f'    name = "{name}",\n'
       f"{notap}"
+      f"{shard_count}"
       f'    torch_test_module = "{test_module}",\n'
       ")"
   )

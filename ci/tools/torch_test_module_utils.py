@@ -14,6 +14,7 @@
 
 """Utilities to work with upstream PyTorch test modules."""
 
+from collections.abc import Mapping
 from typing import Final
 
 # TODO(b/563402379): triage failures and enable all test modules.
@@ -99,6 +100,47 @@ DISABLED_TEST_MODULES: Final[frozenset[str]] = frozenset({
     "test_xpu",
     # go/keep-sorted end
 })
+
+# Mapping from test module names to number of shards.
+# Per https://bazel.build/reference/be/common-definitions#common-attributes-tests,
+# Bazel accepts shard counts in the range of [1, 50].
+TEST_MODULE_SHARDS: Final[Mapping[str, int]] = {
+    # go/keep-sorted start
+    "dynamo/test_misc": 8,
+    "inductor/test_compiled_optimizers": 8,
+    "inductor/test_torchinductor_dynamic_shapes": 8,
+    "inductor/test_torchinductor_opinfo": 16,
+    "inductor/test_torchinductor_opinfo_properties": 8,
+    "nn/test_convolution": 8,
+    "nn/test_embedding": 2,
+    "nn/test_pooling": 4,
+    "profiler/test_profiler": 4,
+    "test_binary_ufuncs": 8,
+    "test_decomp": 50,
+    "test_foreach": 4,
+    "test_indexing": 4,
+    "test_linalg": 4,
+    "test_meta": 30,
+    "test_modules": 2,
+    "test_nestedtensor": 5,
+    "test_nn": 2,
+    "test_ops": 50,
+    "test_ops_fwd_gradients": 5,
+    "test_ops_gradients": 20,
+    "test_ops_jit": 6,
+    "test_optim": 2,
+    "test_overrides": 15,
+    "test_reductions": 2,
+    "test_scatter_gather_ops": 8,
+    "test_sort_and_select": 2,
+    "test_tensor_creation_ops": 8,
+    "test_testing": 4,
+    "test_torch": 8,
+    "test_type_promotion": 4,
+    "test_unary_ufuncs": 50,
+    "test_view_ops": 4,
+    # go/keep-sorted end
+}
 
 # Test modules specific to non-TPU accelerators, e.g. NCCL for Nvidia GPU.
 _ACCELERATOR_SPECIFIC_TEST_MODULES: Final[frozenset[str]] = frozenset({
