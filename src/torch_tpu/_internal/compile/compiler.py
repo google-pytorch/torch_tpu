@@ -42,6 +42,7 @@ from torch_tpu._internal import env
 from torch_tpu._internal import export as torch_tpu_export
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.debug import TpuCompileDebug
+from torch_tpu._internal.compile.fx_passes import canonicalize_clamp
 from torch_tpu._internal.compile.fx_passes import detect_causal_mask
 from torch_tpu._internal.compile.fx_passes import fold_gqa
 from torch_tpu._internal.compile.fx_passes import mark_activation_checkpoints
@@ -498,6 +499,9 @@ class StaticCompiler(Compiler):
     graph_transform_observer.GraphTransformObserver(
         graph_module, "decompose_auto_functionalized"
     ).apply_graph_pass(post_grad.decompose_auto_functionalized)
+    graph_transform_observer.GraphTransformObserver(
+        graph_module, "canonicalize_clamp"
+    ).apply_graph_pass(canonicalize_clamp.apply)
     graph_transform_observer.GraphTransformObserver(
         graph_module, "reassociate_norm_weights"
     ).apply_graph_pass(reassociate_norm_weights.apply)
