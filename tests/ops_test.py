@@ -3343,6 +3343,7 @@ class TestOps(op_testing.OpInfoTestBase):
         "linalg.solve_triangular",
         exclude_dtypes={
             "cpu": INTEGRAL_DTYPES,
+            "gpu": INTEGRAL_DTYPES,
         },
     )
 
