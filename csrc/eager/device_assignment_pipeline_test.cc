@@ -114,6 +114,45 @@ TEST(DeviceAssignmentPipelineTest,
               testing::HasSubstr("pallas_da=[2, 3, 1, 0, 4, 5, 6, 7]"));
 }
 
+TEST(DeviceAssignmentPipelineTest, UnalignedSubgroupReturnsDiagnosticError) {
+  const std::vector<int64_t> world_da = {0, 1, 2, 3};      // INT_VEC_OK
+  const std::vector<int64_t> unaligned_a = {1, 2};         // INT_VEC_OK
+  const std::vector<int64_t> unaligned_b = {3, 0};         // INT_VEC_OK
+  const absl::StatusOr<std::vector<int64_t>> resolved_a =  // INT_VEC_OK
+      ResolveDeviceAssignment({
+          OpDeviceAssignment{OpName::kDistributedAllReduce, world_da},
+          OpDeviceAssignment{OpName::kDistributedAllReduce, unaligned_a},
+      });
+  EXPECT_FALSE(resolved_a.ok());
+  EXPECT_EQ(resolved_a.status().code(), error::kInvalidArgument);
+  EXPECT_THAT(
+      resolved_a.status().message(),
+      testing::HasSubstr(
+          "Disjoint or conflicting device assignments detected in the same "
+          "compiled module. Operations belonging to different process groups "
+          "or conflicting Pallas meshes cannot be compiled together into a "
+          "single XLA executable"));
+  EXPECT_THAT(resolved_a.status().message(),
+              testing::HasSubstr("op_da=[1, 2]"));
+
+  const absl::StatusOr<std::vector<int64_t>> resolved_b =  // INT_VEC_OK
+      ResolveDeviceAssignment({
+          OpDeviceAssignment{OpName::kDistributedAllReduce, world_da},
+          OpDeviceAssignment{OpName::kDistributedAllReduce, unaligned_b},
+      });
+  EXPECT_FALSE(resolved_b.ok());
+  EXPECT_EQ(resolved_b.status().code(), error::kInvalidArgument);
+  EXPECT_THAT(
+      resolved_b.status().message(),
+      testing::HasSubstr(
+          "Disjoint or conflicting device assignments detected in the same "
+          "compiled module. Operations belonging to different process groups "
+          "or conflicting Pallas meshes cannot be compiled together into a "
+          "single XLA executable"));
+  EXPECT_THAT(resolved_b.status().message(),
+              testing::HasSubstr("op_da=[3, 0]"));
+}
+
 TEST(DeviceAssignmentPipelineTest,
      RewriteAndTileOperationForSubgroupRewritesOrthogonalReplicaGroups) {
   mlir::MLIRContext mlir_context;
@@ -196,6 +235,38 @@ TEST(DeviceAssignmentPipelineTest,
               testing::ElementsAre(0, 1, 2, 3, 4, 5, 6, 7));
   EXPECT_THAT(ExtractDenseIntAttrValues(raw_op, "source_target_pairs"),
               testing::ElementsAre(0, 1, 2, 3, 4, 5, 6, 7));
+}
+
+TEST(DeviceAssignmentPipelineTest,
+     RewriteAndTileOperationForSubgroupHandlesReversedPallasWithTailPadding) {
+  mlir::MLIRContext mlir_context;
+  mlir_context.loadDialect<mlir::stablehlo::StablehloDialect>();
+  mlir_context.loadDialect<mlir::func::FuncDialect>();
+
+  mlir::ModuleBuilder mb(mlir_context, "test_hsdp_module");
+  mlir::func::FunctionBuilder fb(mb, "main");
+  auto tensor_type =
+      mlir::makeTensorType(mlir_context, {8}, mlir::ElementType::F32);
+  mlir::MlirOp arg = mlir::func::Argument(fb, tensor_type);
+
+  mlir::MlirOp replicate_op = mlir::stablehlo::Abs(arg);
+  auto rep_rg_type = mlir::RankedTensorType::get(
+      {1, 2}, mlir::IntegerType::get(&mlir_context, 64));
+  replicate_op.getValue().getDefiningOp()->setAttr(
+      "replica_groups", mlir::DenseIntElementsAttr::get(
+                            rep_rg_type, llvm::ArrayRef<int64_t>({0, 1})));
+
+  mlir::func::Return(fb, {replicate_op});
+  auto module = mb.build();
+
+  const std::vector<int64_t> resolved_da = {// INT_VEC_OK
+                                            3, 2, 1, 0, 4, 5, 6, 7};
+  RewriteAndTileOperationForSubgroup(replicate_op.getValue().getDefiningOp(),
+                                     /*op_da=*/{0, 6}, resolved_da);
+
+  EXPECT_THAT(ExtractDenseIntAttrValues(replicate_op.getValue().getDefiningOp(),
+                                        "replica_groups"),
+              testing::ElementsAre(0, 7, 1, 4, 2, 5, 3, 6));
 }
 
 }  // namespace

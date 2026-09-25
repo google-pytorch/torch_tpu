@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -49,6 +50,12 @@
 namespace torch_tpu {
 namespace {
 
+constexpr std::string_view kConflictingDeviceAssignmentsErrorPrefix =
+    "Disjoint or conflicting device assignments detected in the same "
+    "compiled module. Operations belonging to different process groups or "
+    "conflicting Pallas meshes cannot be compiled together into a single "
+    "XLA executable\n";
+
 std::optional<std::vector<int64_t>>  // INT_VEC_OK
 BuildRankToPartition(absl::Span<const int64_t> op_da,
                      absl::Span<const int64_t> resolved_da) {
@@ -65,6 +72,73 @@ BuildRankToPartition(absl::Span<const int64_t> op_da,
     rank_to_partition[r] = it->second;
   }
   return rank_to_partition;
+}
+
+std::vector<int64_t> BuildCosetShifts(  // INT_VEC_OK
+    absl::Span<const int64_t> norm_vals, int64_t full_size) {
+  const int64_t sub_size = norm_vals.size();
+  if (sub_size == 0 || full_size == 0 || full_size % sub_size != 0) {
+    return {};
+  }
+  std::vector<bool> used(full_size, false);
+  std::vector<int64_t> shifts;  // INT_VEC_OK
+  shifts.reserve(full_size / sub_size);
+  for (int64_t shift = 0; shift < full_size; ++shift) {
+    bool can_place = true;
+    for (int64_t p : norm_vals) {
+      if (p < 0 || p + shift >= full_size || used[p + shift]) {
+        can_place = false;
+        break;
+      }
+    }
+    if (can_place) {
+      for (int64_t p : norm_vals) {
+        used[p + shift] = true;
+      }
+      shifts.push_back(shift);
+    }
+  }
+  if (static_cast<int64_t>(shifts.size()) * sub_size != full_size) {
+    return {};
+  }
+  return shifts;
+}
+
+bool IsValidSubgroupCoset(absl::Span<const int64_t> op_da,
+                          absl::Span<const int64_t> pre_padded_resolved_da) {
+  const int64_t full_size = pre_padded_resolved_da.size();
+  if (op_da.empty() || full_size == 0) {
+    return false;
+  }
+  absl::flat_hash_map<int64_t, int64_t> dev_to_partition;
+  for (int64_t p = 0; p < full_size; ++p) {
+    dev_to_partition[pre_padded_resolved_da[p]] = p;
+  }
+  std::vector<int64_t> sub_partitions;  // INT_VEC_OK
+  sub_partitions.reserve(op_da.size());
+  for (int64_t dev_id : op_da) {
+    auto it = dev_to_partition.find(dev_id);
+    if (it != dev_to_partition.end()) {
+      sub_partitions.push_back(it->second);
+    }
+  }
+  if (sub_partitions.empty()) {
+    return true;
+  }
+  std::sort(sub_partitions.begin(), sub_partitions.end());
+  const int64_t sub_size = sub_partitions.size();
+  if (full_size % sub_size != 0) {
+    return false;
+  }
+  const int64_t min_p = sub_partitions[0];
+  std::vector<int64_t> norm_vals(sub_size);  // INT_VEC_OK
+  for (int64_t i = 0; i < sub_size; ++i) {
+    norm_vals[i] = sub_partitions[i] - min_p;
+  }
+  const std::vector<int64_t> shifts =  // INT_VEC_OK
+      BuildCosetShifts(norm_vals, full_size);
+  return !shifts.empty() &&
+         std::find(shifts.begin(), shifts.end(), min_p) != shifts.end();
 }
 
 mlir::DenseIntElementsAttr RewriteAndTileReplicaGroupsAttr(
@@ -321,8 +395,8 @@ ResolveDeviceAssignment(absl::Span<const OpDeviceAssignment> ops) {
           << absl::StrJoin(pallas_da, ", ") << "] (size " << pallas_da.size()
           << ").";
       return TT_ERROR(error::kInvalidArgument)
-             << "Disjoint or conflicting device assignments detected in the "
-                "same compiled module: Pallas kernel op_da=["
+             << kConflictingDeviceAssignmentsErrorPrefix
+             << "Pallas kernel op_da=["
              << absl::StrJoin(op.device_assignment, ", ") << "] vs pallas_da=["
              << absl::StrJoin(pallas_da, ", ") << "]";
     }
@@ -371,46 +445,47 @@ ResolveDeviceAssignment(absl::Span<const OpDeviceAssignment> ops) {
         [&](int64_t dev_id) { return client_device_ids.contains(dev_id); });
   }
 
-  absl::flat_hash_set<int64_t> valid_devices(resolved_da.begin(),
-                                             resolved_da.end());
+  std::vector<int64_t> final_da = resolved_da;  // INT_VEC_OK
   if (should_pad_to_client) {
+    absl::flat_hash_set<int64_t> present(final_da.begin(), final_da.end());
     for (const auto* d : client->devices()) {
-      valid_devices.insert(d->id());
-    }
-  }
-  for (const OpDeviceAssignment& op : ops) {
-    if (op.device_assignment.empty()) continue;
-    if (valid_devices.size() % op.device_assignment.size() != 0) {
-      return TT_ERROR(error::kInvalidArgument)
-             << "Disjoint or conflicting device assignments detected in the "
-                "same compiled module: op_da=["
-             << absl::StrJoin(op.device_assignment, ", ")
-             << "] size does not divide resolved mesh size "
-             << valid_devices.size();
-    }
-    for (int64_t dev_id : op.device_assignment) {
-      if (!valid_devices.contains(dev_id)) {
-        return TT_ERROR(error::kInvalidArgument)
-               << "Disjoint or conflicting device assignments detected in the "
-                  "same compiled module: device ID "
-               << dev_id << " in op_da=["
-               << absl::StrJoin(op.device_assignment, ", ")
-               << "] is not present in resolved_da=["
-               << absl::StrJoin(resolved_da, ", ") << "]";
+      if (present.insert(d->id()).second) {
+        final_da.push_back(d->id());
       }
     }
   }
 
-  // --- STAGE 4: Final Tail Padding to World Size ---
-  if (should_pad_to_client) {
-    absl::flat_hash_set<int64_t> present(resolved_da.begin(),
-                                         resolved_da.end());
-    for (const auto* d : client->devices()) {
-      if (present.insert(d->id()).second) {
-        resolved_da.push_back(d->id());
+  const absl::flat_hash_set<int64_t> valid_devices(final_da.begin(),
+                                                   final_da.end());
+  for (const OpDeviceAssignment& op : ops) {
+    if (op.device_assignment.empty()) continue;
+    if (final_da.size() % op.device_assignment.size() != 0) {
+      return TT_ERROR(error::kInvalidArgument)
+             << kConflictingDeviceAssignmentsErrorPrefix << "op_da=["
+             << absl::StrJoin(op.device_assignment, ", ")
+             << "] size does not divide resolved mesh size " << final_da.size();
+    }
+    for (int64_t dev_id : op.device_assignment) {
+      if (!valid_devices.contains(dev_id)) {
+        return TT_ERROR(error::kInvalidArgument)
+               << kConflictingDeviceAssignmentsErrorPrefix << "device ID "
+               << dev_id << " in op_da=["
+               << absl::StrJoin(op.device_assignment, ", ")
+               << "] is not present in resolved_da=["
+               << absl::StrJoin(final_da, ", ") << "]";
       }
     }
+    if (!IsValidSubgroupCoset(op.device_assignment, resolved_da)) {
+      return TT_ERROR(error::kInvalidArgument)
+             << kConflictingDeviceAssignmentsErrorPrefix << "op_da=["
+             << absl::StrJoin(op.device_assignment, ", ")
+             << "] is not a valid coset of resolved_da=["
+             << absl::StrJoin(resolved_da, ", ") << "]";
+    }
   }
+
+  // --- STAGE 4: Final Tail Padding to World Size ---
+  resolved_da = std::move(final_da);
 
   return resolved_da;
 }
