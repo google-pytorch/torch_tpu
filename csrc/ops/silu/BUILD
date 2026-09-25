@@ -20,17 +20,36 @@ package(
 )
 
 torch_tpu_cc_library(
+    name = "silu",
+    srcs = ["silu.cc"],
+    hdrs = ["silu.h"],
+    deps = [
+        "//csrc/common:dtype",
+        "//csrc/common:error_utils",
+        "//csrc/common:to_string",
+        "//csrc/ops:op_builder_utils",
+        "//shims/torch:aten_headers",
+        "//shims/torch/torch/headeronly:torch_headeronly",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status:statusor",
+        "@llvm-project//mlir:IR",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "silu_aten_kernels",
     srcs = ["silu_aten_kernels.cc"],
     hdrs = ["silu_aten_kernels.h"],
     deps = [
+        ":silu",
         "//csrc/common:aten_utils",
         "//csrc/common:cache_key",
-        "//csrc/common:dtype",
         "//csrc/common:error_utils",
         "//csrc/common:to_string",
         "//csrc/ops:binary_aten_kernels",
-        "//csrc/ops:op_builder_utils",
         "//csrc/ops:op_names",
         "//csrc/ops:unary_aten_kernels",
         "//csrc/ops/macros:kernel",
@@ -38,13 +57,7 @@ torch_tpu_cc_library(
         "//shims/torch:torch_headers",
         "//shims/torch/c10/core:base_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
-        "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
-        "@llvm-project//mlir:IR",
-        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
-        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
-        "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
     ],
 )
 
