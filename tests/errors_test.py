@@ -9456,6 +9456,83 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       torch.ops.aten._fft_c2r(t, [0], 0, 4)
 
+  def test_fft_c2c_out_dtype_mismatch(self):
+    t = torch.ones(4, device=et.device(), dtype=torch.complex64)
+    out = torch.empty(4, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fft_c2c(): result type complex64 can't be cast to the desired output type int32""",
+        gpu="""result type ComplexFloat can't be cast to the desired output type Int""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.ops.aten._fft_c2c.out(t, [0], 0, True, out=out)
+
+  def test_fft_r2c_out_dtype_mismatch(self):
+    t = torch.ones(4, device=et.device(), dtype=torch.float32)
+    out = torch.empty(4, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fft_r2c(): result type complex64 can't be cast to the desired output type int32""",
+        gpu="""result type ComplexFloat can't be cast to the desired output type Int""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.ops.aten._fft_r2c.out(t, [0], 0, True, out=out)
+
+  def test_fft_c2r_out_dtype_mismatch(self):
+    t = torch.ones(4, device=et.device(), dtype=torch.complex64)
+    out = torch.empty(4, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fft_c2r(): result type float32 can't be cast to the desired output type int32""",
+        gpu="""result type Float can't be cast to the desired output type Int""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.ops.aten._fft_c2r.out(t, [0], 0, 4, out=out)
+
+  def test_fft_fft_out_dtype_mismatch(self):
+    t = torch.ones(4, device=et.device(), dtype=torch.complex64)
+    out = torch.empty(4, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fft expects a complex output tensor, but got Int""",
+        gpu="""fft expects a complex output tensor, but got Int""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.fft.fft(t, out=out)
+
+  def test_fft_ifft_out_dtype_mismatch(self):
+    t = torch.ones(4, device=et.device(), dtype=torch.complex64)
+    out = torch.empty(4, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""ifft expects a complex output tensor, but got Int""",
+        gpu="""ifft expects a complex output tensor, but got Int""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.fft.ifft(t, out=out)
+
+  def test_fft_rfft_out_dtype_mismatch(self):
+    t = torch.ones(4, device=et.device(), dtype=torch.float32)
+    out = torch.empty(4, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""rfft expects a complex output tensor, but got Int""",
+        gpu="""rfft expects a complex output tensor, but got Int""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.fft.rfft(t, out=out)
+
+  def test_fft_irfft_out_dtype_mismatch(self):
+    t = torch.ones(4, device=et.device(), dtype=torch.complex64)
+    out = torch.empty(4, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""irfft expects a floating point output tensor, but got Int""",
+        gpu="""irfft expects a floating point output tensor, but got Int""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.fft.irfft(t, out=out)
+
   def test_dunder_lshift_unsupported_dtype(self):
     x = torch.tensor([1.0], device=et.device())
     y = torch.tensor([1.0], device=et.device())

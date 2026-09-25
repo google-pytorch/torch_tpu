@@ -8843,6 +8843,124 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
             torch_tpu_result=tpu_result.cpu(),
         )
 
+  def test_fft_out_resizing(self):
+    device = torch.device("tpu")
+
+    # 1. fft.fft with cfloat input and 0-element / mismatched shape resize
+    x_c64 = torch.randn(8, dtype=torch.complex64, device=device)
+    out_fft_0 = torch.empty(0, dtype=torch.complex64, device=device)
+    res_fft_0 = torch.fft.fft(x_c64, out=out_fft_0)
+    self.assertEqual(res_fft_0.shape, torch.Size([8]))
+    self.assertEqual(res_fft_0.dtype, torch.complex64)
+    expected_fft = torch.fft.fft(x_c64.cpu())
+    self.assert_close(
+        golden_result=expected_fft,
+        torch_tpu_result=res_fft_0.cpu(),
+        rtol=1e-5,
+        atol=1e-5,
+    )
+
+    out_fft_mismatch = torch.empty((2, 3), dtype=torch.complex64, device=device)
+    res_fft_mismatch = torch.fft.fft(x_c64, out=out_fft_mismatch)
+    self.assertEqual(res_fft_mismatch.shape, torch.Size([8]))
+    self.assert_close(
+        golden_result=expected_fft,
+        torch_tpu_result=res_fft_mismatch.cpu(),
+        rtol=1e-5,
+        atol=1e-5,
+    )
+
+    # 2. fft.ifft with cfloat input and 0-element / mismatched shape resize
+    out_ifft_0 = torch.empty(0, dtype=torch.complex64, device=device)
+    res_ifft_0 = torch.fft.ifft(x_c64, out=out_ifft_0)
+    self.assertEqual(res_ifft_0.shape, torch.Size([8]))
+    self.assertEqual(res_ifft_0.dtype, torch.complex64)
+    expected_ifft = torch.fft.ifft(x_c64.cpu())
+    self.assert_close(
+        golden_result=expected_ifft,
+        torch_tpu_result=res_ifft_0.cpu(),
+        rtol=1e-5,
+        atol=1e-5,
+    )
+
+    out_ifft_mismatch = torch.empty(
+        (4, 2), dtype=torch.complex64, device=device
+    )
+    res_ifft_mismatch = torch.fft.ifft(x_c64, out=out_ifft_mismatch)
+    self.assertEqual(res_ifft_mismatch.shape, torch.Size([8]))
+    self.assert_close(
+        golden_result=expected_ifft,
+        torch_tpu_result=res_ifft_mismatch.cpu(),
+        rtol=1e-5,
+        atol=1e-5,
+    )
+
+    # 3. fft.rfft with float32 input and 0-element / mismatched shape resize
+    x_f32 = torch.randn(8, dtype=torch.float32, device=device)
+    out_rfft_0 = torch.empty(0, dtype=torch.complex64, device=device)
+    res_rfft_0 = torch.fft.rfft(x_f32, out=out_rfft_0)
+    self.assertEqual(res_rfft_0.shape, torch.Size([5]))
+    self.assertEqual(res_rfft_0.dtype, torch.complex64)
+    expected_rfft = torch.fft.rfft(x_f32.cpu())
+    self.assert_close(
+        golden_result=expected_rfft,
+        torch_tpu_result=res_rfft_0.cpu(),
+        rtol=1e-5,
+        atol=1e-5,
+    )
+
+    out_rfft_mismatch = torch.empty(
+        (3, 2), dtype=torch.complex64, device=device
+    )
+    res_rfft_mismatch = torch.fft.rfft(x_f32, out=out_rfft_mismatch)
+    self.assertEqual(res_rfft_mismatch.shape, torch.Size([5]))
+    self.assert_close(
+        golden_result=expected_rfft,
+        torch_tpu_result=res_rfft_mismatch.cpu(),
+        rtol=1e-5,
+        atol=1e-5,
+    )
+
+    # 4. fft.irfft with cfloat input and 0-element / mismatched shape resize
+    x_irfft = torch.randn(5, dtype=torch.complex64, device=device)
+    out_irfft_0 = torch.empty(0, dtype=torch.float32, device=device)
+    res_irfft_0 = torch.fft.irfft(x_irfft, n=8, out=out_irfft_0)
+    self.assertEqual(res_irfft_0.shape, torch.Size([8]))
+    self.assertEqual(res_irfft_0.dtype, torch.float32)
+    expected_irfft = torch.fft.irfft(x_irfft.cpu(), n=8)
+    self.assert_close(
+        golden_result=expected_irfft,
+        torch_tpu_result=res_irfft_0.cpu(),
+        rtol=1e-5,
+        atol=1e-5,
+    )
+
+    out_irfft_mismatch = torch.empty((10,), dtype=torch.float32, device=device)
+    res_irfft_mismatch = torch.fft.irfft(x_irfft, n=8, out=out_irfft_mismatch)
+    self.assertEqual(res_irfft_mismatch.shape, torch.Size([8]))
+    self.assert_close(
+        golden_result=expected_irfft,
+        torch_tpu_result=res_irfft_mismatch.cpu(),
+        rtol=1e-5,
+        atol=1e-5,
+    )
+
+    # 5. Direct backend kernels: _fft_c2c.out, _fft_r2c.out, _fft_c2r.out
+    out_c2c = torch.empty(0, dtype=torch.complex64, device=device)
+    res_c2c = torch.ops.aten._fft_c2c.out(x_c64, [0], 0, True, out=out_c2c)
+    self.assertEqual(res_c2c.shape, torch.Size([8]))
+    self.assertEqual(res_c2c.dtype, torch.complex64)
+
+    out_r2c = torch.empty(0, dtype=torch.complex64, device=device)
+    res_r2c = torch.ops.aten._fft_r2c.out(x_f32, [0], 0, True, out=out_r2c)
+    self.assertEqual(res_r2c.shape, torch.Size([5]))
+    self.assertEqual(res_r2c.dtype, torch.complex64)
+
+    out_c2r = torch.empty(0, dtype=torch.float32, device=device)
+    res_c2r = torch.ops.aten._fft_c2r.out(x_irfft, [0], 0, 8, out=out_c2r)
+    self.assertEqual(res_c2r.shape, torch.Size([8]))
+    self.assertEqual(res_c2r.dtype, torch.float32)
+
   def test_fake_quantize_per_tensor_affine_cachemask(self):
     scale = 1 / 255
     zero_point = 10
@@ -11425,6 +11543,7 @@ class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
         atol=5e-2,
         rtol=1e-1,
     )
+
   @absltest.skip("b/498564738")
   def test_set_dimension_logical_size_on_tpu(self):
     """Tests the tpu.set_dimension_logical_size custom op on TPU."""

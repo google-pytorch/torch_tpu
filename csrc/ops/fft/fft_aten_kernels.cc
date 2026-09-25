@@ -33,6 +33,7 @@
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
 #include "c10/util/string_view.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -45,7 +46,6 @@
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
-#include "csrc/ops/resize/resize_aten_kernels.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -487,7 +487,9 @@ at::Tensor& AtenFftR2cOut(const at::Tensor& self, at::IntArrayRef dim,
           out_sizes[last_dim] = self.size(last_dim) / 2 + 1;
         }
 
-        TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, out_sizes));
+        const auto result_dtype = c10::toComplexType(self.scalar_type());
+        TT_THROW_IF_ERROR(ValidateOutDtype(out, result_dtype,
+                                           /*allow_out_dtype_cast=*/true));
 
         TT_ASSIGN_OR_THROW(const auto output_dtype,
                            ConvertTo<mlir::ElementType>(out.scalar_type()));
@@ -498,14 +500,11 @@ at::Tensor& AtenFftR2cOut(const at::Tensor& self, at::IntArrayRef dim,
           return BuildFftR2cShlo(input, normalized_dims, norm_enum, onesided);
         };
 
-        TT_ASSIGN_OR_THROW(
-            auto result,
-            DispatchOp<1>(std::move(op_builder), self,
-                          {.out_dtype = output_dtype,
-                           .out_dims = std::move(out_sizes),
-                           .op_param_cache_keys = std::move(param_keys)}));
-
-        TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result), out));
+        TT_THROW_IF_ERROR(
+            DispatchOpOut<1>(std::move(op_builder), self, out,
+                             {.out_dtype = output_dtype,
+                              .out_dims = out_sizes,
+                              .op_param_cache_keys = std::move(param_keys)}));
         return out;
       });
 }
@@ -560,6 +559,8 @@ at::Tensor& AtenFftC2cOut(const at::Tensor& self, at::IntArrayRef dim,
         // Explicitly check for static shape.
         // Shape introspection is unsafe with dynamism.
         TT_THROW_IF_ERROR(FFTValidateStaticShape(self, "input"));
+        TT_THROW_IF_ERROR(ValidateOutDtype(out, self.scalar_type(),
+                                           /*allow_out_dtype_cast=*/true));
 
         TT_ASSIGN_OR_THROW(auto normalized_dims, GetNormalizedDims(self, dim));
 
@@ -577,13 +578,11 @@ at::Tensor& AtenFftC2cOut(const at::Tensor& self, at::IntArrayRef dim,
           return BuildFftC2cShlo(input, normalized_dims, norm_enum, forward);
         };
 
-        DispatchOpOptions<1> options = {
-            .out_dtype = output_dtype,
-            .out_dims = self.sizes(),
-            .op_param_cache_keys = std::move(param_keys),
-        };
-        TT_THROW_IF_ERROR(DispatchOpOut<1>(std::move(op_builder), self, out,
-                                           std::move(options)));
+        TT_THROW_IF_ERROR(
+            DispatchOpOut<1>(std::move(op_builder), self, out,
+                             {.out_dtype = output_dtype,
+                              .out_dims = self.sizes(),
+                              .op_param_cache_keys = std::move(param_keys)}));
         return out;
       });
 }
@@ -657,7 +656,9 @@ at::Tensor& AtenFftC2rOut(const at::Tensor& self, at::IntArrayRef dim,
         const int64_t last_dim = normalized_dims.back();
         out_sizes[last_dim] = last_dim_size;
 
-        TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, out_sizes));
+        const auto result_dtype = c10::toRealValueType(self.scalar_type());
+        TT_THROW_IF_ERROR(ValidateOutDtype(out, result_dtype,
+                                           /*allow_out_dtype_cast=*/true));
 
         TT_ASSIGN_OR_THROW(const auto output_dtype,
                            ConvertTo<mlir::ElementType>(out.scalar_type()));
@@ -674,14 +675,11 @@ at::Tensor& AtenFftC2rOut(const at::Tensor& self, at::IntArrayRef dim,
                                  last_dim_size);
         };
 
-        TT_ASSIGN_OR_THROW(
-            auto result,
-            DispatchOp<1>(std::move(op_builder), self,
-                          {.out_dtype = output_dtype,
-                           .out_dims = out_sizes,
-                           .op_param_cache_keys = std::move(param_keys)}));
-
-        TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result), out));
+        TT_THROW_IF_ERROR(
+            DispatchOpOut<1>(std::move(op_builder), self, out,
+                             {.out_dtype = output_dtype,
+                              .out_dims = out_sizes,
+                              .op_param_cache_keys = std::move(param_keys)}));
         return out;
       });
 }
