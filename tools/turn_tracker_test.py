@@ -41,6 +41,7 @@ class TurnTrackerTest(unittest.TestCase):  # UNITTEST_OK=standalone
       labels=None,
       state="open",
       is_pr=False,
+      draft=False,
   ):
     issue = {
         "number": number,
@@ -48,6 +49,8 @@ class TurnTrackerTest(unittest.TestCase):  # UNITTEST_OK=standalone
         "user": {"login": author},
         "labels": labels or [],
     }
+    if draft:
+      issue["draft"] = True
     if is_pr:
       issue["pull_request"] = {
           "url": f"https://api.github.com/repos/o/r/pulls/{number}"
@@ -103,15 +106,205 @@ class TurnTrackerTest(unittest.TestCase):  # UNITTEST_OK=standalone
     self.assertEqual(changes.add, ())
     self.assertEqual(changes.remove, ())
 
-  def test_pull_request_ignored(self):
+  def test_pr_opened_adds_assignee_label(self):
+    payload = {
+        "action": "opened",
+        "pull_request": self._make_issue(author="alice", assignee="bob"),
+    }
+    changes = determine_label_changes("pull_request_target", payload)
+    self.assertEqual(changes.add, (ASSIGNEE_LABEL,))
+    self.assertEqual(changes.remove, ())
+
+  def test_draft_pr_opened_ignored(self):
+    payload = {
+        "action": "opened",
+        "pull_request": self._make_issue(
+            author="alice", assignee="bob", draft=True
+        ),
+    }
+    changes = determine_label_changes("pull_request_target", payload)
+    self.assertEqual(changes.add, ())
+    self.assertEqual(changes.remove, ())
+
+  def test_draft_pr_comment_ignored(self):
     payload = {
         "action": "created",
-        "issue": self._make_issue(author="alice", assignee="bob", is_pr=True),
-        "sender": {"login": "alice"},
+        "issue": self._make_issue(
+            author="alice",
+            assignee="bob",
+            is_pr=True,
+            draft=True,
+        ),
+        "sender": {"login": "bob"},
     }
     changes = determine_label_changes("issue_comment", payload)
     self.assertEqual(changes.add, ())
     self.assertEqual(changes.remove, ())
+
+  def test_bot_authored_pr_opened_ignored(self):
+    payload = {
+        "action": "opened",
+        "pull_request": self._make_issue(
+            author="copybara-service[bot]", assignee="bob"
+        ),
+    }
+    changes = determine_label_changes("pull_request_target", payload)
+    self.assertEqual(changes.add, ())
+    self.assertEqual(changes.remove, ())
+
+  def test_pr_reopened_clears_requester_and_adds_assignee(self):
+    payload = {
+        "action": "reopened",
+        "pull_request": self._make_issue(
+            author="alice",
+            assignee="bob",
+            labels=[{"name": REQUESTER_LABEL}],
+        ),
+    }
+    changes = determine_label_changes("pull_request_target", payload)
+    self.assertEqual(changes.add, (ASSIGNEE_LABEL,))
+    self.assertEqual(changes.remove, (REQUESTER_LABEL,))
+
+  def test_pr_ready_for_review_adds_assignee_label(self):
+    payload = {
+        "action": "ready_for_review",
+        "pull_request": self._make_issue(
+            author="alice",
+            assignee="bob",
+            labels=[{"name": REQUESTER_LABEL}],
+        ),
+    }
+    changes = determine_label_changes("pull_request", payload)
+    self.assertEqual(changes.add, (ASSIGNEE_LABEL,))
+    self.assertEqual(changes.remove, (REQUESTER_LABEL,))
+
+  def test_pr_review_requested_by_op_switches_to_assignee(self):
+    payload = {
+        "action": "review_requested",
+        "pull_request": self._make_issue(
+            author="alice",
+            assignee="bob",
+            labels=[{"name": REQUESTER_LABEL}],
+        ),
+        "sender": {"login": "alice"},
+    }
+    changes = determine_label_changes("pull_request_target", payload)
+    self.assertEqual(changes.add, (ASSIGNEE_LABEL,))
+    self.assertEqual(changes.remove, (REQUESTER_LABEL,))
+
+  def test_pr_review_requested_by_assignee_ignored(self):
+    payload = {
+        "action": "review_requested",
+        "pull_request": self._make_issue(
+            author="alice",
+            assignee="bob",
+            labels=[{"name": REQUESTER_LABEL}],
+        ),
+        "sender": {"login": "bob"},
+    }
+    changes = determine_label_changes("pull_request_target", payload)
+    self.assertEqual(changes.add, ())
+    self.assertEqual(changes.remove, ())
+
+  def test_pr_issue_comment_by_assignee_switches_to_requester(self):
+    payload = {
+        "action": "created",
+        "issue": self._make_issue(
+            author="alice",
+            assignee="bob",
+            labels=[{"name": ASSIGNEE_LABEL}],
+            is_pr=True,
+        ),
+        "sender": {"login": "bob"},
+    }
+    changes = determine_label_changes("issue_comment", payload)
+    self.assertEqual(changes.add, (REQUESTER_LABEL,))
+    self.assertEqual(changes.remove, (ASSIGNEE_LABEL,))
+
+  def test_pr_issue_comment_by_op_switches_to_assignee(self):
+    payload = {
+        "action": "created",
+        "issue": self._make_issue(
+            author="alice",
+            assignee="bob",
+            labels=[{"name": REQUESTER_LABEL}],
+            is_pr=True,
+        ),
+        "sender": {"login": "alice"},
+    }
+    changes = determine_label_changes("issue_comment", payload)
+    self.assertEqual(changes.add, (ASSIGNEE_LABEL,))
+    self.assertEqual(changes.remove, (REQUESTER_LABEL,))
+
+  def test_pr_review_submitted_by_assignee_switches_to_requester(self):
+    payload = {
+        "action": "submitted",
+        "pull_request": self._make_issue(
+            author="alice",
+            assignee="bob",
+            labels=[{"name": ASSIGNEE_LABEL}],
+        ),
+        "sender": {"login": "bob"},
+    }
+    changes = determine_label_changes("pull_request_review", payload)
+    self.assertEqual(changes.add, (REQUESTER_LABEL,))
+    self.assertEqual(changes.remove, (ASSIGNEE_LABEL,))
+
+  def test_pr_review_submitted_by_op_switches_to_assignee(self):
+    payload = {
+        "action": "submitted",
+        "pull_request": self._make_issue(
+            author="alice",
+            assignee="bob",
+            labels=[{"name": REQUESTER_LABEL}],
+        ),
+        "sender": {"login": "alice"},
+    }
+    changes = determine_label_changes("pull_request_review", payload)
+    self.assertEqual(changes.add, (ASSIGNEE_LABEL,))
+    self.assertEqual(changes.remove, (REQUESTER_LABEL,))
+
+  def test_pr_review_submitted_by_third_party_ignored(self):
+    payload = {
+        "action": "submitted",
+        "pull_request": self._make_issue(
+            author="alice",
+            assignee="bob",
+            labels=[{"name": ASSIGNEE_LABEL}],
+        ),
+        "sender": {"login": "eve"},
+    }
+    changes = determine_label_changes("pull_request_review", payload)
+    self.assertEqual(changes.add, ())
+    self.assertEqual(changes.remove, ())
+
+  def test_pr_review_comment_by_assignee_switches_to_requester(self):
+    payload = {
+        "action": "created",
+        "pull_request": self._make_issue(
+            author="alice",
+            assignee="bob",
+            labels=[{"name": ASSIGNEE_LABEL}],
+        ),
+        "sender": {"login": "bob"},
+    }
+    changes = determine_label_changes("pull_request_review_comment", payload)
+    self.assertEqual(changes.add, (REQUESTER_LABEL,))
+    self.assertEqual(changes.remove, (ASSIGNEE_LABEL,))
+
+  def test_pr_review_comment_by_op_switches_to_assignee(self):
+    payload = {
+        "action": "created",
+        "pull_request": self._make_issue(
+            author="alice",
+            assignee="bob",
+            labels=[{"name": REQUESTER_LABEL}],
+        ),
+        "sender": {"login": "alice"},
+    }
+    changes = determine_label_changes("pull_request_review_comment", payload)
+    self.assertEqual(changes.add, (ASSIGNEE_LABEL,))
+    self.assertEqual(changes.remove, (REQUESTER_LABEL,))
 
   def test_closed_issue_comment_ignored(self):
     payload = {
@@ -125,6 +318,21 @@ class TurnTrackerTest(unittest.TestCase):  # UNITTEST_OK=standalone
     self.assertEqual(changes.add, ())
     self.assertEqual(changes.remove, ())
 
+  def test_closed_pr_review_ignored(self):
+    payload = {
+        "action": "submitted",
+        "pull_request": self._make_issue(
+            author="alice",
+            assignee="bob",
+            state="closed",
+            labels=[{"name": ASSIGNEE_LABEL}],
+        ),
+        "sender": {"login": "bob"},
+    }
+    changes = determine_label_changes("pull_request_review", payload)
+    self.assertEqual(changes.add, ())
+    self.assertEqual(changes.remove, ())
+
   def test_bot_comment_ignored(self):
     payload = {
         "action": "created",
@@ -132,6 +340,20 @@ class TurnTrackerTest(unittest.TestCase):  # UNITTEST_OK=standalone
         "sender": {"login": "github-actions[bot]", "type": "Bot"},
     }
     changes = determine_label_changes("issue_comment", payload)
+    self.assertEqual(changes.add, ())
+    self.assertEqual(changes.remove, ())
+
+  def test_bot_pr_review_ignored(self):
+    payload = {
+        "action": "submitted",
+        "pull_request": self._make_issue(
+            author="alice",
+            assignee="bob",
+            labels=[{"name": ASSIGNEE_LABEL}],
+        ),
+        "sender": {"login": "gemini-code-assist[bot]", "type": "Bot"},
+    }
+    changes = determine_label_changes("pull_request_review", payload)
     self.assertEqual(changes.add, ())
     self.assertEqual(changes.remove, ())
 
@@ -388,6 +610,45 @@ class MainEntryPointTest(unittest.TestCase):  # UNITTEST_OK=standalone
         123,
         (ASSIGNEE_LABEL,),
         (),
+    )
+    if os.path.exists(tmp_path):
+      os.remove(tmp_path)
+
+  @mock.patch("turn_tracker.apply_label_changes")
+  def test_main_success_flow_pull_request(self, mock_apply):
+    payload = {
+        "action": "submitted",
+        "pull_request": {
+            "number": 456,
+            "state": "open",
+            "user": {"login": "alice"},
+            "assignee": {"login": "bob"},
+            "assignees": [{"login": "bob"}],
+            "labels": [{"name": ASSIGNEE_LABEL}],
+        },
+        "sender": {"login": "bob"},
+    }
+    tmp_path = "/tmp/test_event_pr.json"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+      json.dump(payload, f)
+
+    env = {
+        "GITHUB_TOKEN": "secret",
+        "GITHUB_EVENT_PATH": tmp_path,
+        "GITHUB_REPOSITORY": "google-pytorch/torch_tpu",
+        "GITHUB_EVENT_NAME": "pull_request_review",
+        "GITHUB_API_URL": "https://api.github.com",
+    }
+    with mock.patch.dict(os.environ, env):
+      main()
+
+    mock_apply.assert_called_once_with(
+        "https://api.github.com",
+        "google-pytorch/torch_tpu",
+        "secret",
+        456,
+        (REQUESTER_LABEL,),
+        (ASSIGNEE_LABEL,),
     )
     if os.path.exists(tmp_path):
       os.remove(tmp_path)

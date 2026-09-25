@@ -13,21 +13,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Two-party ping-pong turn tracking for TorchTPU.
+"""Two-party ping-pong turn tracking for TorchTPU issues and pull requests.
 
 Contract:
 - Inputs:
     Environment variables:
       GITHUB_TOKEN: Bearer token for GitHub REST API authentication.
       GITHUB_EVENT_PATH: Path to the JSON event payload file from GitHub
-      Actions.
+        Actions.
       GITHUB_REPOSITORY: Repository name in 'owner/repo' format.
-      GITHUB_EVENT_NAME: Event name ('issues' or 'issue_comment').
+      GITHUB_EVENT_NAME: Event name ('issues', 'issue_comment',
+        'pull_request', 'pull_request_target', 'pull_request_review', or
+        'pull_request_review_comment').
       GITHUB_API_URL: (Optional) Base API URL, defaults to
         'https://api.github.com'.
     Event payloads:
       'issues': Triggered on 'opened', 'reopened', or 'transferred'.
-      'issue_comment': Triggered on 'created'.
+      'issue_comment': Triggered on 'created' (on issues or pull requests).
+      'pull_request' / 'pull_request_target': Triggered on 'opened',
+        'reopened', 'ready_for_review', or 'review_requested'.
+      'pull_request_review': Triggered on 'submitted'.
+      'pull_request_review_comment': Triggered on 'created'.
 
 - Outputs and Return Code:
     Exit 0: Normal completion, whether labels were modified or the event was
@@ -37,19 +43,22 @@ Contract:
 - Side Effects:
     Executes REST API requests (DELETE, POST) against GitHub's issue label
     endpoints:
-      - Adds 'stat:awaiting-assignee' on new, reopened, transferred
-        issues, or when the original poster comments.
-      - Adds 'stat:awaiting-requester' when an assignee comments.
+      - Adds 'stat:awaiting-assignee' on new, reopened, or transferred
+        issues, new, reopened, or ready-for-review pull requests, or when the
+        original poster comments, submits a review, or re-requests review.
+      - Adds 'stat:awaiting-requester' when an assignee comments or submits a
+        review.
       - Deletes conflicting turn labels on turn flips.
 
 - Failure Cases and Ignored Events:
-    - Pull requests: Ignored (no-op in phase 1).
-    - Closed issues: Comments on closed issues are ignored (no-op).
-    - Third-party comments: Comments from users who are neither the original
-      poster nor an assigned engineer are ignored (no-op).
-    - Bot comments: Ignored (no-op).
-    - Self-assigned issues: If the creator is also the assignee, comments are
-      ignored to prevent self-ping-pong (no-op).
+    - Closed or draft items: Activity on closed issues/PRs or draft PRs is
+      ignored (no-op).
+    - Third-party activity: Comments or reviews from users who are neither the
+      original poster nor an assignee are ignored (no-op).
+    - Bot activity: Items authored by bots (e.g. Copybara) and comments or
+      reviews from bots are ignored (no-op).
+    - Self-assigned items: If the creator is also an assignee, comments or
+      reviews are ignored to prevent self-ping-pong (no-op).
     - HTTP 404 on label deletion: Swallowed gracefully (label was already
       absent).
     - Other HTTP errors and network timeouts: Raised as exceptions causing the
@@ -74,56 +83,67 @@ class LabelChanges(NamedTuple):
   remove: Sequence[str] = ()
 
 
+def _is_bot(user: Mapping[str, Any] | None) -> bool:
+  if not user:
+    return False
+  return user.get("type") == "Bot" or (user.get("login") or "").endswith(
+      "[bot]"
+  )
+
+
 def determine_label_changes(
     event_name: str, payload: Mapping[str, Any]
 ) -> LabelChanges:
   """Determines labels to add and remove based on the event."""
-  issue = payload.get("issue")
-  if not issue:
+  target = payload.get("issue") or payload.get("pull_request")
+  if not target:
     return LabelChanges()
 
-  if issue.get("pull_request"):
+  if target.get("state") == "closed" or target.get("draft"):
     return LabelChanges()
 
-  if issue.get("state") == "closed" and event_name != "issues":
+  if _is_bot(target.get("user")) or _is_bot(payload.get("sender")):
     return LabelChanges()
 
   existing_labels: dict[str, str] = {}
-  for item in issue.get("labels", []):
+  for item in target.get("labels", []):
     name = item if isinstance(item, str) else item.get("name")
     if name:
       existing_labels[name.lower()] = name
 
-  if event_name == "issues":
-    action = payload.get("action")
-    if action in ("opened", "reopened", "transferred"):
-      to_add = []
-      to_remove = []
-      if ASSIGNEE_LABEL.lower() not in existing_labels:
-        to_add.append(ASSIGNEE_LABEL)
-      if REQUESTER_LABEL.lower() in existing_labels:
-        to_remove.append(existing_labels[REQUESTER_LABEL.lower()])
-      return LabelChanges(add=tuple(to_add), remove=tuple(to_remove))
-    return LabelChanges()
+  action = payload.get("action")
+  is_opening_event = (
+      event_name == "issues" and action in ("opened", "reopened", "transferred")
+  ) or (
+      event_name in ("pull_request", "pull_request_target")
+      and action in ("opened", "reopened", "ready_for_review")
+  )
+  if is_opening_event:
+    to_add = []
+    to_remove = []
+    if ASSIGNEE_LABEL.lower() not in existing_labels:
+      to_add.append(ASSIGNEE_LABEL)
+    if REQUESTER_LABEL.lower() in existing_labels:
+      to_remove.append(existing_labels[REQUESTER_LABEL.lower()])
+    return LabelChanges(add=tuple(to_add), remove=tuple(to_remove))
 
-  if event_name == "issue_comment":
-    action = payload.get("action")
-    if action != "created":
-      return LabelChanges()
-
+  is_comment_or_review = (
+      event_name in ("issue_comment", "pull_request_review_comment")
+      and action == "created"
+  ) or (event_name == "pull_request_review" and action == "submitted")
+  is_review_requested = (
+      event_name in ("pull_request", "pull_request_target")
+      and action == "review_requested"
+  )
+  if is_comment_or_review or is_review_requested:
     sender = payload.get("sender") or {}
-    if sender.get("type") == "Bot" or (sender.get("login") or "").endswith(
-        "[bot]"
-    ):
-      return LabelChanges()
-
     sender_login = (sender.get("login") or "").lower()
     if not sender_login:
       return LabelChanges()
 
-    op_login = ((issue.get("user") or {}).get("login") or "").lower()
+    op_login = ((target.get("user") or {}).get("login") or "").lower()
 
-    raw_assignees = [issue.get("assignee"), *(issue.get("assignees") or [])]
+    raw_assignees = [target.get("assignee"), *(target.get("assignees") or [])]
     assignees: frozenset[str] = frozenset(
         a["login"].lower() for a in raw_assignees if a and a.get("login")
     )
@@ -137,7 +157,7 @@ def determine_label_changes(
     to_add = []
     to_remove = []
 
-    if is_assignee:
+    if is_assignee and is_comment_or_review:
       if REQUESTER_LABEL.lower() not in existing_labels:
         to_add.append(REQUESTER_LABEL)
       if ASSIGNEE_LABEL.lower() in existing_labels:
@@ -215,7 +235,8 @@ def main() -> None:
   event_payload_path = Path(event_path)
   payload = json.loads(event_payload_path.read_text(encoding="utf-8"))
 
-  issue_number = (payload.get("issue") or {}).get("number")
+  target = payload.get("issue") or payload.get("pull_request") or {}
+  issue_number = target.get("number")
   if not issue_number:
     return
 
