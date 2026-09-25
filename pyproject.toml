@@ -115,6 +115,8 @@ exclude = [
     ".git",
     "build/**",
     "__pycache__",
+    # Root-level perflab benchmarks (not src/torch_tpu/_internal/benchmarks).
+    "perflab/**",
     "docs",
     "examples",
 ]

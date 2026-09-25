@@ -267,6 +267,7 @@ genrule(
     testonly = True,
     srcs = [
         "//examples:wheel_test_site_packages_recursive",
+        "//perflab:wheel_test_site_packages_recursive",
         "//tests:wheel_test_site_packages_recursive",
         "//src/torch_tpu/_internal/distributed:spmd_util",
         "//src/torch_tpu/_internal/utils:test_fixtures",
