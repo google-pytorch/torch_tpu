@@ -737,6 +737,8 @@ enum class OpName {
   kSigmoidOut,
   kSignOut,
   kSignbitOut,
+  kSiluBackward,
+  kSiluBackwardGradInput,
   kSiluOut,
   kSinOut,
   kSinhOut,

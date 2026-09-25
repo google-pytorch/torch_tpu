@@ -337,7 +337,6 @@ UNREGISTERED_OPS = frozenset([
     'rrelu_with_noise',
     'rrelu_with_noise.out',
     'rrelu_with_noise_',
-    'silu_backward.grad_input',
     'sinc.out',
     'slow_conv3d_forward',
     'slow_conv3d_forward.output',
@@ -492,6 +491,9 @@ REGISTRATION_OVERRIDES = frozenset([
     # select_backward is registered to lower directly to a single StableHLO
     # DynamicUpdateSlice operation instead of zeros + select + copy_.
     'select_backward',
+    # silu_backward is registered to lower directly to a single fused StableHLO
+    # kernel (BuildSiluBackwardShlo), overriding the default decomposition.
+    'silu_backward',
     # slice_backward is registered to lower directly to a single StableHLO
     # DynamicUpdateSlice, Concatenate, or Pad operation instead of zeros +
     # slice + copy_.

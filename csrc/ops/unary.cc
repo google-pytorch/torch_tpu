@@ -19,12 +19,10 @@
 #include <cstdint>
 
 #include "ATen/OpMathType.h"
-#include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
-#include "csrc/common/to_string.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "llvm/Support/Casting.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -177,23 +175,6 @@ absl::StatusOr<mlir::MlirOp> BuildReciprocalShlo(
 absl::StatusOr<mlir::MlirOp> BuildReluShlo(mlir::MlirOp input_op) {
   mlir::MlirOp zero_scalar = MakeConstantLike(input_op, 0.0);
   mlir::MlirOp result_op = stablehlo::Max(input_op, zero_scalar);
-  return result_op;
-}
-
-absl::StatusOr<mlir::MlirOp> BuildSiluShlo(mlir::MlirOp input_op) {
-  // Only defined for floating point types
-  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op);
-
-  TT_ASSIGN_OR_RETURN(const at::ScalarType scalar_type,
-                      ConvertTo<c10::ScalarType>(input_type.getElementType()));
-
-  ABSL_CHECK(IsFloatType(input_type))  // CRASH_OK=checked in AtenSiluOut
-      << "expected the input dtype to be floating point, got "
-      << ToString(scalar_type);
-
-  // Defined as silu(x) = x * sigmoid(x):
-  mlir::MlirOp sigmoid_op = stablehlo::Logistic(input_op);
-  mlir::MlirOp result_op = stablehlo::Mul(input_op, sigmoid_op);
   return result_op;
 }
 

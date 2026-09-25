@@ -7977,6 +7977,20 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       torch.nn.functional.silu(t)
 
+  def test_silu_backward_grad_input_unsupported_dtype(self):
+    grad = torch.ones(5, device=et.device(), dtype=torch.int32)
+    self_val = torch.ones(5, device=et.device(), dtype=torch.int32)
+    grad_input = torch.ones(5, device=et.device(), dtype=torch.int32)
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""silu_backward(): not implemented for int32""",
+        gpu=""""silu_backward_cuda" not implemented for 'Int'""",
+    ):
+      torch.ops.aten.silu_backward.grad_input(
+          grad, self_val, grad_input=grad_input
+      )
+
   def test_acos_out_dtype_mismatch(self):
     t = torch.ones(5, device=et.device())
 

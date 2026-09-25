@@ -198,6 +198,7 @@
 #include "csrc/ops/segment_reduce/segment_reduce_aten_kernels.h"
 #include "csrc/ops/set/set_aten_kernels.h"
 #include "csrc/ops/sigmoid/sigmoid_aten_kernels.h"
+#include "csrc/ops/silu/silu_aten_kernels.h"
 #include "csrc/ops/slice_backward/slice_backward_aten_kernels.h"
 #include "csrc/ops/softmax/_masked_softmax_aten_kernels.h"
 #include "csrc/ops/softmax/softmax_aten_kernels.h"
@@ -988,6 +989,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kSigmoidOut>(m, AtenSigmoidOut);
   ImplStable<OpName::kSignOut>(m, AtenSignOut);
   ImplStable<OpName::kSignbitOut>(m, AtenSignbitOut);
+  ImplStable<OpName::kSiluBackward>(m, AtenSiluBackward);
+  ImplStable<OpName::kSiluBackwardGradInput>(m, AtenSiluBackwardGradInput);
   ImplStable<OpName::kSiluOut>(m, AtenSiluOut);
   ImplStable<OpName::kSinOut>(m, AtenSinOut);
   ImplStable<OpName::kSinhOut>(m, AtenSinhOut);
@@ -1201,6 +1204,7 @@ TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
       m, AtenRepeatInterleaveSelfIntAutograd);
   ImplStable<OpName::kRepeatInterleaveSelfTensor>(m,
                                                   AtenRepeatInterleaveAutograd);
+  ImplStable<OpName::kSiluBackward>(m, AtenSiluBackwardAutograd);
   // go/keep-sorted end
 }
 
