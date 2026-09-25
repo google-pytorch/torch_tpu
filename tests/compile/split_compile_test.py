@@ -36,6 +36,10 @@ class SplitCompileTest(seed_test_utils.RepeatableTest):
     if not torch.accelerator.is_available():
       self.skipTest("TPU accelerator not available in this test environment.")
 
+  @oss_utils.skip_if_libtpu_version(
+      lambda v: v >= (0, 0, 48),
+      "TODO(b/565203505): PadRealToStatic fails on libtpu >= 0.0.48.",
+  )
   def test_split_graph_with_dynamic_tensor(self):
     def f(x):
       y = x * 2
@@ -60,6 +64,10 @@ class SplitCompileTest(seed_test_utils.RepeatableTest):
     expected = torch.full((2, 2), 9.0, device="cpu")
     utils.assert_close(res.cpu(), expected)
 
+  @oss_utils.skip_if_libtpu_version(
+      lambda v: v >= (0, 0, 48),
+      "TODO(b/565203505): PadRealToStatic fails on libtpu >= 0.0.48.",
+  )
   def test_split_graph_with_direct_symint_usage(self):
     def f(x):
       s1 = x.shape[0]

@@ -40,6 +40,7 @@ torch_tpu_py_library(
         "//src/torch_tpu/_internal:env",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/utils:hardware",
+        "//tests:oss_utils",
         "//tests:seed_test_utils",
         "@pypi//portpicker",
     ],

@@ -109,6 +109,7 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/utils:test_utils",
+        "//tests:oss_utils",
         "//tests:seed_test_utils",
     ],
 )

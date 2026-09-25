@@ -22,7 +22,6 @@ from torch_tpu._internal.compile import scan as tpu_scan
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.debug import TpuCompileDebug
 from torch_tpu._internal.utils import test_utils as utils
-from tests import oss_utils
 from tests import seed_test_utils
 
 try:
@@ -227,7 +226,9 @@ class ScanOpTest(seed_test_utils.RepeatableTest):
     x = torch.empty(0, 1, device="tpu")
     init = torch.tensor([5.0], device="tpu")
 
-    if oss_utils.is_oss():
+    # PyTorch < 2.14 rejects seq_len == 0 in scan during tracing, whereas
+    # PyTorch >= 2.14 (used in Google3 and newest-deps OSS CI) supports it.
+    if utils.parse_version(torch.__version__) < (2, 14, 0):
       # The wrapper's validation should raise this error during tracing.
       with self.assertRaisesRegex(
           RuntimeError,
