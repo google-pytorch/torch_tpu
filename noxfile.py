@@ -74,6 +74,9 @@ def lint(session: nox.Session) -> None:
   session.run("ci/tools/ruff_lint.sh", "lint", external=True)
   session.run("ci/tools/buildifier_lint.sh", "lint", external=True)
   session.run("python3", "ci/tools/check_directory_layout.py", external=True)
+  session.run(
+      "python3", "ci/tools/sync_benchmark_versions.py", "--check", external=True
+  )
 
 
 @nox.session
@@ -130,6 +133,7 @@ def test_ci_tools(session: nox.Session) -> None:
       "ci/tools/list_ci_tests_test.py",
       "ci/tools/run_bazel_diff_test.py",
       "ci/tools/gen_torch_tests_test.py",
+      "ci/tools/sync_benchmark_versions_test.py",
   )
 
 

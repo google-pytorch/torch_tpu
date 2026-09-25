@@ -92,6 +92,11 @@ uv pip compile pyproject.toml \
   --generate-hashes \
   --output-file "$REQUIREMENTS_FILE"
 
+# Benchmarks run on the newest stable torch and libtpu, so point the benchmark
+# registry's pins at the versions this lock just resolved.
+# ci/tools/sync_benchmark_versions_test.py fails CI if the two drift apart.
+uv run --no-project ci/tools/sync_benchmark_versions.py
+
 # Torch-only locks for the extra PyTorch versions the multi-ABI wheel ships a
 # glue for. The default version's torch is already pinned by the full locks
 # above (it comes from pyproject.toml), so only the extras need a standalone

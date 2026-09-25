@@ -27,6 +27,8 @@ package(
     default_visibility = ["//:__subpackages__"],
 )
 
+exports_files(["benchmark_registry.pbtxt"])
+
 torch_tpu_py_library(
     name = "base_test",
     testonly = True,
