@@ -37,11 +37,51 @@ inputs:
       Set to true to bypass bazel-diff target selection and run all tests
     required: false
     default: 'false'
+  mode:
+    description: >-
+      Execution mode: calculate (compute the diff and report whether
+      bazel_config selects any impacted test), test (only run tests from a
+      precomputed targets file), or all (compute and run in one step).
+    required: false
+    default: 'all'
+  impacted_targets_file:
+    description: 'Path to a precomputed impacted targets file (test mode only)'
+    required: false
+    default: ''
+  download_impacted_targets:
+    description: >-
+      Set to true to download the impacted targets artifact published by an
+      earlier calculate job before running tests.
+    required: false
+    default: 'false'
+  impacted_targets_artifact:
+    description: 'Name of the impacted targets artifact to download'
+    required: false
+    default: 'impacted-targets'
+
+outputs:
+  has_impacted_targets:
+    description: >-
+      True if bazel_config selects at least one impacted test, or a full run is
+      required (calculate mode only).
+    value: ${{ steps.bazel_diff_exec.outputs.has_impacted_targets }}
+  is_full_run:
+    description: >-
+      True if diffing is bypassed and all tests must run (calculate mode only).
+    value: ${{ steps.bazel_diff_exec.outputs.is_full_run }}
 
 runs:
   using: 'composite'
   steps:
+    - name: Download Impacted Targets Artifact
+      if: inputs.download_impacted_targets == 'true'
+      uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
+      with:
+        name: ${{ inputs.impacted_targets_artifact }}
+        path: .
+
     - name: Execute bazel-diff script
+      id: bazel_diff_exec
       run: >-
         uv run "$GITHUB_WORKSPACE/ci/tools/run_bazel_diff.py"
         --workspace-dir="$GITHUB_WORKSPACE"
@@ -50,4 +90,6 @@ runs:
         --bazel-config="${{ inputs.bazel_config }}"
         --extra-bazel-flags="${{ inputs.extra_bazel_flags }}"
         --test-all="${{ inputs.test_all }}"
+        --mode="${{ inputs.mode }}"
+        --impacted-targets-file="${{ inputs.impacted_targets_file }}"
       shell: bash
