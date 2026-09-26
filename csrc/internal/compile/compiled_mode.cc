@@ -42,6 +42,7 @@
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
+#include "c10/core/StorageImpl.h"
 #include "c10/core/TensorImpl.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/compilation_spec.h"
@@ -53,6 +54,7 @@
 #include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/device_buffer_utils.h"
+#include "csrc/eager/events_queue.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
@@ -96,6 +98,116 @@ bool NeedsMaterialize(const DeviceBufferRef& buffer_ref) {
   return node != nullptr && (node->is_deferred() || node->is_placeholder());
 }
 
+// An argument whose buffer is a deferred view. `index` is its position in the
+// argument list, and `tensor` is the tensor its buffer was created from (the
+// argument itself, or its contiguous base from as_strided), which is the pair
+// MaybeCacheFullStorageViewAsBase requires.
+struct DeferredViewTensor {
+  size_t index;
+  at::Tensor tensor;  // UNINITIALIZED_TENSOR_OK
+};
+
+// Returns the sorted storages of arguments that didn't need a deferred view,
+// typically because their buffer is already the storage's base.
+// `deferred_view_tensors` must be sorted by index.
+template <typename TensorSpan>
+std::vector<const c10::StorageImpl*> CollectDirectHitStorages(
+    TensorSpan argument_tensors,
+    absl::Span<const DeferredViewTensor> deferred_view_tensors) {
+  std::vector<const c10::StorageImpl*> direct_hit_storages;
+  direct_hit_storages.reserve(argument_tensors.size());
+  size_t deferred_cursor = 0;
+  for (size_t i = 0; i < argument_tensors.size(); ++i) {
+    if (deferred_cursor < deferred_view_tensors.size() &&
+        deferred_view_tensors[deferred_cursor].index == i) {
+      ++deferred_cursor;
+      continue;
+    }
+    const at::Tensor& tensor = DerefTensor(argument_tensors[i]);
+    if (tensor.defined() && tensor.has_storage()) {
+      direct_hit_storages.push_back(tensor.storage().unsafeGetStorageImpl());
+    }
+  }
+  std::sort(direct_hit_storages.begin(), direct_hit_storages.end());
+  return direct_hit_storages;
+}
+
+// Installs materializing full-storage view buffers as their storage's base (see
+// MaybeCacheFullStorageViewAsBase), so that later calls get them directly from
+// GetBuffer instead of materializing the same view again.
+template <typename TensorSpan>
+void PromoteMaterializedFullStorageViews(
+    TensorSpan argument_tensors,
+    absl::Span<const DeferredViewTensor> deferred_view_tensors,
+    absl::Span<const DeviceBufferRef> argument_buffer_refs) {
+  if (deferred_view_tensors.empty()) {
+    return;
+  }
+  const std::vector<const c10::StorageImpl*> direct_hit_storages =
+      CollectDirectHitStorages(argument_tensors, deferred_view_tensors);
+  for (const auto& [idx, view_tensor] : deferred_view_tensors) {
+    if (!view_tensor.defined() || !view_tensor.has_storage()) {
+      continue;
+    }
+    // If another argument already uses the storage's base directly, promoting
+    // would only turn that argument into a deferred view on the next call.
+    // Views of the same storage need no deduplication: once one is promoted,
+    // the base is N-D and the rest are no-ops.
+    if (std::binary_search(direct_hit_storages.begin(),
+                           direct_hit_storages.end(),
+                           view_tensor.storage().unsafeGetStorageImpl())) {
+      continue;
+    }
+    MaybeCacheFullStorageViewAsBase(view_tensor, argument_buffer_refs[idx]);
+  }
+}
+
+// Returns the buffer to pass to the executable for `argument_tensor`. Deferred
+// view buffers are also recorded in `deferred_view_tensors`, with the tensor
+// each was created from, so that they can be promoted after materialization.
+absl::StatusOr<DeviceBufferRef> GetCompiledArgumentBuffer(
+    const at::Tensor& argument_tensor, size_t index,
+    std::vector<DeferredViewTensor>& deferred_view_tensors,
+    bool& has_deferred_or_placeholder) {
+  // If argument_tensor is contiguous with offset 0, then we know that
+  // base_sizes and base_stride below would be the same as `argument_tensor`,
+  // and skipping GetContiguousBaseShape saves some time.
+  if (TensorHasTrivialLayout(argument_tensor)) {
+    TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref, GetBuffer(argument_tensor),
+                        _.SetPrepend()
+                            << "failed to get buffer from argument tensor: "
+                            << ToString(argument_tensor));
+    if (NeedsMaterialize(buffer_ref)) {
+      if (buffer_ref.is_deferred()) {
+        deferred_view_tensors.push_back({index, argument_tensor});
+      }
+      has_deferred_or_placeholder = true;
+    }
+    return buffer_ref;
+  }
+
+  // Using as_strided, restrict the base tensor to only the minimal contiguous
+  // block of data needed for the view to be valid.
+  TT_ASSIGN_OR_RETURN(
+      Dimensions base_sizes,
+      GetContiguousBaseShape(StridedLayout::FromTensor(argument_tensor)));
+  Strides base_strides = GetStrides(MakeContiguousBaseLayout(base_sizes));
+
+  at::Tensor base_tensor = argument_tensor.as_strided(base_sizes, base_strides,
+                                                      /*storage_offset=*/0);
+  TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref, GetBuffer(base_tensor),
+                      _.SetPrepend()
+                          << "failed to get buffer from argument tensor: "
+                          << ToString(argument_tensor));
+  if (NeedsMaterialize(buffer_ref)) {
+    if (buffer_ref.is_deferred()) {
+      deferred_view_tensors.push_back({index, std::move(base_tensor)});
+    }
+    has_deferred_or_placeholder = true;
+  }
+  return buffer_ref;
+}
+
 // To call a compiled PjRtExecutable, we need to get materialized base buffers
 // for each argument tensor, in the same shape expected by the executable.
 // This **must** match the logic in tpu_torch_compile's PyMakePlaceholderLike.
@@ -105,42 +217,14 @@ absl::StatusOr<std::vector<DeviceBufferRef>> PrepareCompiledModeArgumentsImpl(
   // Get each argument buffer ref's expected contiguous base shape.
   std::vector<DeviceBufferRef> argument_buffer_refs;
   argument_buffer_refs.reserve(argument_tensors.size());
+  std::vector<DeferredViewTensor> deferred_view_tensors;
   bool has_deferred_or_placeholder = false;
-  for (const auto& item : argument_tensors) {
-    const at::Tensor& argument_tensor = DerefTensor(item);
-    // If argument_tensor is contiguous with offset 0, then we know that
-    // base_sizes and base_stride below would be the same as
-    // `argument_tensor`, and skipping GetContiguousBaseShape saves some
-    // time.
-    if (TensorHasTrivialLayout(argument_tensor)) {
-      TT_ASSIGN_OR_RETURN(
-          DeviceBufferRef buffer_ref, GetBuffer(argument_tensor),
-          _.SetPrepend() << "failed to get buffer from argument tensor: "
-                         << ToString(argument_tensor));
-      if (NeedsMaterialize(buffer_ref)) {
-        has_deferred_or_placeholder = true;
-      }
-      argument_buffer_refs.push_back(std::move(buffer_ref));
-      continue;
-    }
-
-    // Using as_strided, restrict the base tensor to only the minimal contiguous
-    // block of data needed for the view to be valid.
+  for (size_t i = 0; i < argument_tensors.size(); ++i) {
     TT_ASSIGN_OR_RETURN(
-        Dimensions base_sizes,
-        GetContiguousBaseShape(StridedLayout::FromTensor(argument_tensor)));
-    Strides base_strides = GetStrides(MakeContiguousBaseLayout(base_sizes));
-
-    at::Tensor base_tensor =
-        argument_tensor.as_strided(base_sizes, base_strides,
-                                   /*storage_offset=*/0);
-    TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref, GetBuffer(base_tensor),
-                        _.SetPrepend()
-                            << "failed to get buffer from argument tensor: "
-                            << ToString(argument_tensor));
-    if (NeedsMaterialize(buffer_ref)) {
-      has_deferred_or_placeholder = true;
-    }
+        DeviceBufferRef buffer_ref,
+        GetCompiledArgumentBuffer(DerefTensor(argument_tensors[i]), i,
+                                  deferred_view_tensors,
+                                  has_deferred_or_placeholder));
     argument_buffer_refs.push_back(std::move(buffer_ref));
   }
 
@@ -152,6 +236,11 @@ absl::StatusOr<std::vector<DeviceBufferRef>> PrepareCompiledModeArgumentsImpl(
         argument_buffer_refs, MaterializationReason::kCompileModeExecution,
         MaterializationMode::kSplitGraph,
         MaterializationBlockMode::kBlockUntilStarted));
+    // Promote only once materialization has started, so that a storage never
+    // points at a still-deferred view buffer, and nothing changes if
+    // materialization fails.
+    PromoteMaterializedFullStorageViews(argument_tensors, deferred_view_tensors,
+                                        argument_buffer_refs);
   }
 
   // After materialization, each argument buffer will be a materialized,

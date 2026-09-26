@@ -458,11 +458,16 @@ mlir::MlirOp SliceOperandIfNeeded(mlir::MlirOp input,
 // update operands down to the target view's static shape if dynamic bounds
 // exceed it.
 //
+// If set, restore_base_dimensions reshapes the result of a partial (binary)
+// write back to the original base shape; see CreateInverseViewDeviceBufferRef.
+// Full (unary) overwrites ignore it.
+//
 // Returns the appropriate builder and inputs for the DeferredOp.
 AsStridedInverseBuilderPair MakeAsStridedInverseBuilder(
     InverseViewOperation inverse_view_operation,
     DeviceBufferRef base_buffer_ref, DeviceBufferRef write_buf,
-    Dimensions view_dimensions) {
+    Dimensions view_dimensions,
+    std::optional<Dimensions> restore_base_dimensions) {
   if (inverse_view_operation.stages.size() == 1) {
     ABSL_VLOG(3)
         << "[MakeAsStridedInverseBuilder] View elements are 1:1 with base, "
@@ -502,10 +507,11 @@ AsStridedInverseBuilderPair MakeAsStridedInverseBuilder(
   // Otherwise, apply the full operation.
   ABSL_VLOG(3) << "[MakeAsStridedInverseBuilder] View is a slice, creating an "
                   "inverse DeferredOp that partially overwrites the base.";
-  auto op_builder = [inverse_view_operation = std::move(inverse_view_operation),
-                     view_dimensions = std::move(view_dimensions)](
-                        mlir::MlirBuilder& builder,
-                        absl::Span<mlir::MlirOp> inputs)
+  auto op_builder =
+      [inverse_view_operation = std::move(inverse_view_operation),
+       view_dimensions = std::move(view_dimensions),
+       restore_base_dimensions = std::move(restore_base_dimensions)](
+          mlir::MlirBuilder& builder, absl::Span<mlir::MlirOp> inputs)
       -> absl::StatusOr<DynamicMlirOpResults> {
     TT_RET_CHECK(inputs.size() == 2, error::kInternal)
         << "expected 2 inputs, got " << inputs.size();
@@ -514,6 +520,11 @@ AsStridedInverseBuilderPair MakeAsStridedInverseBuilder(
     TT_ASSIGN_OR_RETURN(auto output,
                         InverseViewOperationShlo(inputs[0], sliced_input,
                                                  inverse_view_operation));
+    // The result has the layout produced by `base_transform`, which may be the
+    // flattened 1D storage shape rather than the original base shape.
+    if (restore_base_dimensions.has_value()) {
+      output = mlir::stablehlo::Reshape(output, *restore_base_dimensions);
+    }
     return DynamicMlirOpResults{std::move(output)};
   };
   auto inputs = {std::move(base_buffer_ref), std::move(write_buf)};
@@ -659,15 +670,49 @@ absl::StatusOr<DeviceBufferRef> CreateInverseViewDeviceBufferRef(
   const auto op_name = OpName::kAsStridedInverse;
   ScopedPythonContextCapturer capturer(op_name);
 
-  std::vector<Shape> output_shapes = {inverse_view_operation.final_shape};
-
-  Dimensions base_dimensions(base_buffer_ref.dimensions().begin(),
-                             base_buffer_ref.dimensions().end());
+  const Dimensions base_dimensions(base_buffer_ref.dimensions().begin(),
+                                   base_buffer_ref.dimensions().end());
   Dimensions view_dims(view_dimensions.begin(), view_dimensions.end());
+
+  // Decomposing a view of an N-D base starts by flattening the base to 1D
+  // (BuildHeadFlatten), and ComputeInverseViewOperation folds that initial
+  // reshape into `base_transform`. A partial slice write such as
+  // `embedding.weight[padding_idx].fill_(0)` therefore yields a 1D
+  // `final_shape`, which AssignBufferToAtTensor installs as the new storage
+  // base. Since GetBuffer only returns the base buffer directly when the
+  // tensor's sizes match the base's dimensions, every later read of the N-D
+  // tensor would then emit a new as_strided reshape DeferredOp. Reshaping the
+  // result back to `base_dimensions` keeps the storage base N-D.
+  //
+  // The restore must be a pure reshape of the base, so it requires:
+  //  - A partial write (`stages.size() > 1`). Full overwrites discard the old
+  //    base and keep `final_shape` (e.g. upgrading a 1D `empty_strided` buffer
+  //    to N-D on `copy_`); their unary builder ignores
+  //    `restore_base_dimensions`.
+  //  - Static shapes, since the reshape target is static.
+  //  - The base's dtype and element count, since only a reshape is applied and
+  //    `base_transform` may bitcast to a different writable dtype.
+  std::optional<Dimensions> restore_base_dimensions;
+  if (inverse_view_operation.stages.size() > 1 && base_dimensions.size() > 1 &&
+      inverse_view_operation.final_shape.dimensions().size() == 1 &&
+      base_buffer_ref.dynamic_dimensions().empty() &&
+      !base_buffer_ref.on_device_shape_is_dynamic() &&
+      inverse_view_operation.final_shape.dtype() ==
+          base_buffer_ref.element_type() &&
+      c10::multiply_integers(inverse_view_operation.final_shape.dimensions()) ==
+          base_buffer_ref.num_elements() &&
+      inverse_view_operation.final_shape.dimensions() != base_dimensions) {
+    restore_base_dimensions = base_dimensions;
+    inverse_view_operation.final_shape =
+        Shape(base_dimensions, base_buffer_ref.element_type());
+  }
+
+  std::vector<Shape> output_shapes = {inverse_view_operation.final_shape};
 
   auto [op_builder, inputs] = MakeAsStridedInverseBuilder(
       std::move(inverse_view_operation), std::move(base_buffer_ref),
-      std::move(write_buf), std::move(view_dims));
+      std::move(write_buf), std::move(view_dims),
+      std::move(restore_base_dimensions));
 
   TT_ASSIGN_OR_RETURN(OpParamCacheKeys param_keys,
                       TT_MAKE_OP_PARAM_CACHE_KEYS(

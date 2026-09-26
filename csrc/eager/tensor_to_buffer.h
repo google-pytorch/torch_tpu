@@ -28,7 +28,6 @@
 #include "c10/core/Device.h"
 #include "c10/core/Storage.h"
 #include "c10/util/Optional.h"
-#include "csrc/common/error_utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/structured_log_buffer.h"
@@ -156,6 +155,21 @@ bool IsFullStorageReinterpretView(const at::Tensor& tensor,
 // reinterpretation of `new_base` (see IsFullStorageReinterpretView).
 absl::Status AssignBufferAsStorageBase(DeviceBufferRef new_base,
                                        const at::Tensor& tensor);
+
+// If `tensor`'s current storage base buffer is 1D, `view_buffer_ref` is N-D
+// (`dimensions().size() > 1`), and both are full-storage reinterpretations of
+// `tensor`'s storage, replaces the storage's base DeviceBufferRef with
+// `view_buffer_ref` without bumping the autograd version counter. This upgrades
+// 1D flat storage allocations to N-D so subsequent GetBuffer(tensor) calls and
+// compiled steps can reuse `view_buffer_ref` directly as the base buffer once
+// materialized, without overwriting existing N-D base buffers.
+//
+// Requires:
+//    `view_buffer_ref` holds `tensor`'s current contents, e.g. the result of
+//    GetBuffer(tensor). This is not checked: any other buffer would silently
+//    change the tensor's values without a version bump.
+void MaybeCacheFullStorageViewAsBase(const at::Tensor& tensor,
+                                     const DeviceBufferRef& view_buffer_ref);
 
 // Returns the C10 allocator singleton for TPU.
 c10::Allocator* GetTpuAllocator();

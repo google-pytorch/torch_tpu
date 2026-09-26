@@ -1821,6 +1821,196 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     self.assertLen(results, 1)
     utils.assert_close(results[0].cpu(), (x + x).cpu())
 
+  def test_inplace_slice_write_preserves_base_buffer_shape_for_compiled_execution(
+      self,
+  ):
+    w = torch.ones(16, 64, device=self.device)
+    # In-place 1D slice write on a 2D tensor (e.g., nn.Embedding padding_idx).
+    w[0].fill_(0.0)
+
+    # Also test a 3D base tensor with an in-place slice write.
+    w3d = torch.ones(4, 8, 16, device=self.device)
+    w3d[1, 2].fill_(3.0)
+
+    with eager_mode_compile_fx_graph():
+      w_placeholder = tpu_torch_compile.placeholder_like(w)
+      w3d_placeholder = tpu_torch_compile.placeholder_like(w3d)
+      z = w_placeholder + 1.0
+      z3d = w3d_placeholder * 2.0
+
+    compile_result = tpu_torch_compile.traverse_and_compile(
+        [z, z3d], [w_placeholder, w3d_placeholder]
+    )
+    self.assertIsNotNone(compile_result.executable)
+
+    results = tpu_torch_compile.execute(compile_result.executable, [w, w3d])
+    self.assertLen(results, 2)
+    # After the first compiled execution materializes `w` and `w3d`,
+    # `GetBuffer` must return the materialized N-D base buffers directly rather
+    # than creating a fresh `as_strided` DeferredOp on every step.
+    self.assertIsNotNone(tpu_torch_compile.get_device_layout_if_materialized(w))
+    self.assertIsNotNone(
+        tpu_torch_compile.get_device_layout_if_materialized(w3d)
+    )
+    expected = torch.ones(16, 64)
+    expected[0].fill_(0.0)
+    expected3d = torch.ones(4, 8, 16)
+    expected3d[1, 2].fill_(3.0)
+    utils.assert_close(results[0].cpu(), expected + 1.0)
+    utils.assert_close(results[1].cpu(), expected3d * 2.0)
+
+  def test_inplace_slice_write_preserves_base_buffer_shape_in_eager(self):
+    # Compiled execution can re-promote a flattened 1D base to N-D (see
+    # `test_full_storage_view_cached_after_compiled_execution`), so only an
+    # eager read verifies that the slice write itself keeps the N-D base.
+    w = torch.ones(16, 64, device=self.device)
+    w[0].fill_(0.0)
+    w3d = torch.ones(4, 8, 16, device=self.device)
+    w3d[1, 2].fill_(3.0)
+
+    w_cpu = w.cpu()
+    w3d_cpu = w3d.cpu()
+    # If the base had been flattened to 1D, `GetBuffer` would return a new
+    # unmaterialized reshape view instead of the materialized N-D base.
+    self.assertIsNotNone(tpu_torch_compile.get_device_layout_if_materialized(w))
+    self.assertIsNotNone(
+        tpu_torch_compile.get_device_layout_if_materialized(w3d)
+    )
+    expected = torch.ones(16, 64)
+    expected[0].fill_(0.0)
+    expected3d = torch.ones(4, 8, 16)
+    expected3d[1, 2].fill_(3.0)
+    utils.assert_close(w_cpu, expected)
+    utils.assert_close(w3d_cpu, expected3d)
+
+  def test_full_storage_view_cached_after_compiled_execution(self):
+    base = torch.arange(32, dtype=torch.float32, device=self.device)
+    base.cpu()  # Materialize as 1D [32] buffer.
+    v = base.view(4, 8)
+    initial_version = v._version
+
+    # Before compiled execution, `v` (2D) has a different shape from `base`
+    # (1D), so `GetBuffer(v)` creates a deferred `as_strided` op.
+    self.assertIsNone(tpu_torch_compile.get_device_layout_if_materialized(v))
+
+    with eager_mode_compile_fx_graph():
+      v_placeholder = tpu_torch_compile.placeholder_like(v)
+      z = v_placeholder * 2.0
+
+    compile_result = tpu_torch_compile.traverse_and_compile(
+        [z], [v_placeholder]
+    )
+    self.assertIsNotNone(compile_result.executable)
+
+    results = tpu_torch_compile.execute(compile_result.executable, [v])
+    self.assertLen(results, 1)
+    # Caching the full-storage view buffer must not bump the autograd version
+    # counter, and subsequent `GetBuffer(v)` calls must see a materialized 2D
+    # base buffer without re-dispatching `as_strided`.
+    self.assertEqual(v._version, initial_version)
+    self.assertIsNotNone(tpu_torch_compile.get_device_layout_if_materialized(v))
+    expected_v = torch.arange(32, dtype=torch.float32).view(4, 8)
+    utils.assert_close(results[0].cpu(), expected_v * 2.0)
+    utils.assert_close(v.cpu(), expected_v)
+    utils.assert_close(base.cpu(), torch.arange(32, dtype=torch.float32))
+
+  def test_multiple_views_sharing_storage_do_not_ping_pong(self):
+    base = torch.arange(32, dtype=torch.float32, device=self.device)
+    base.cpu()  # Materialize as 1D [32] buffer.
+    v1 = base.view(4, 8)
+    v2 = base.view(2, 16)
+    partial_slice = base[:16]
+
+    with eager_mode_compile_fx_graph():
+      p1 = tpu_torch_compile.placeholder_like(v1)
+      p2 = tpu_torch_compile.placeholder_like(v2)
+      p_slice = tpu_torch_compile.placeholder_like(partial_slice)
+      out = p1.reshape(32) + p2.reshape(32) + p_slice.repeat(2)
+
+    compile_result = tpu_torch_compile.traverse_and_compile(
+        [out], [p1, p2, p_slice]
+    )
+    self.assertIsNotNone(compile_result.executable)
+
+    expected_base = torch.arange(32, dtype=torch.float32)
+    expected_out = expected_base * 2.0 + expected_base[:16].repeat(2)
+
+    # Across consecutive executions, `v1` (the first full-storage view) is
+    # promoted to the storage base on step 1 and remains materialized on step 2+
+    # without `v2` or `partial_slice` overwriting or ping-ponging the storage.
+    for _ in range(3):
+      results = tpu_torch_compile.execute(
+          compile_result.executable, [v1, v2, partial_slice]
+      )
+      self.assertLen(results, 1)
+      self.assertIsNotNone(
+          tpu_torch_compile.get_device_layout_if_materialized(v1)
+      )
+      utils.assert_close(results[0].cpu(), expected_out)
+
+    # Executing a separate compiled graph on `v2` (a different N-D view of the
+    # now-2D storage base) or `base` (a 1D view) must not overwrite `v1`'s 2D
+    # storage base or ping-pong across steps.
+    with eager_mode_compile_fx_graph():
+      p2_only = tpu_torch_compile.placeholder_like(v2)
+      out2 = p2_only * 3.0
+    v2_compile_result = tpu_torch_compile.traverse_and_compile(
+        [out2], [p2_only]
+    )
+    v2_results = tpu_torch_compile.execute(v2_compile_result.executable, [v2])
+    self.assertLen(v2_results, 1)
+    utils.assert_close(v2_results[0].cpu(), expected_base.view(2, 16) * 3.0)
+    self.assertIsNotNone(
+        tpu_torch_compile.get_device_layout_if_materialized(v1)
+    )
+
+  def test_full_storage_view_promoted_after_earlier_partial_view(self):
+    base = torch.arange(32, dtype=torch.float32, device=self.device)
+    base.cpu()  # Materialize as 1D [32] buffer.
+    partial_slice = base[:16]
+    v = base.view(4, 8)
+
+    with eager_mode_compile_fx_graph():
+      p_slice = tpu_torch_compile.placeholder_like(partial_slice)
+      p_v = tpu_torch_compile.placeholder_like(v)
+      out = p_slice.repeat(2) + p_v.reshape(32)
+
+    compile_result = tpu_torch_compile.traverse_and_compile(
+        [out], [p_slice, p_v]
+    )
+    self.assertIsNotNone(compile_result.executable)
+
+    results = tpu_torch_compile.execute(
+        compile_result.executable, [partial_slice, v]
+    )
+    self.assertLen(results, 1)
+    # A partial view of the same storage earlier in the argument list can't be
+    # promoted, but it must not stop `v` from being promoted.
+    self.assertIsNotNone(tpu_torch_compile.get_device_layout_if_materialized(v))
+    expected_base = torch.arange(32, dtype=torch.float32)
+    utils.assert_close(
+        results[0].cpu(), expected_base[:16].repeat(2) + expected_base
+    )
+
+  def test_empty_strided_copy_upgrades_base_shape_to_nd(self):
+    src_cpu = torch.arange(4 * 8 * 16, dtype=torch.float32).reshape(4, 8, 16)
+    src = src_cpu.to(self.device)
+    dst = torch.empty_strided(
+        (4, 8, 16), (128, 1, 8), dtype=torch.float32, device=self.device
+    )
+    dst.copy_(src)
+    utils.assert_close(dst.cpu(), src_cpu)
+
+    # `dst` is a transpose of a contiguous (4, 16, 8) tensor. Full overwrite
+    # via `copy_` must upgrade the 1D `empty_strided` backing buffer to 3D
+    # (4, 16, 8) so `dst.transpose(1, 2)` matches the materialized base shape
+    # directly without emitting a 1D->3D reshape view.
+    contig_view = dst.transpose(1, 2)
+    self.assertTrue(contig_view.is_contiguous())
+    self.assertIsNotNone(
+        tpu_torch_compile.get_device_layout_if_materialized(contig_view)
+    )
+
 
 if __name__ == '__main__':
   absltest.main()

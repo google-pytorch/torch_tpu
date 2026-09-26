@@ -54,7 +54,6 @@
 #include "c10/util/Optional.h"
 #include "c10/util/UniqueVoidPtr.h"
 #include "c10/util/intrusive_ptr.h"
-#include "csrc/common/context_states.h"
 #include "csrc/common/device_type.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -65,7 +64,6 @@
 #include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/device_buffer_utils.h"
-#include "csrc/eager/eager_mode.h"
 #include "csrc/eager/events_queue.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/structured_log_buffer.h"
@@ -291,6 +289,28 @@ absl::Status AssignBufferAsStorageBase(DeviceBufferRef new_base,
   // Bump the version to tell PyTorch how to handle functionalization
   tensor.unsafeGetTensorImpl()->bump_version();
   return absl::OkStatus();
+}
+
+void MaybeCacheFullStorageViewAsBase(const at::Tensor& tensor,
+                                     const DeviceBufferRef& view_buffer_ref) {
+  // Only 1D bases are replaced: once a storage has an N-D base, it is never
+  // swapped for another N-D view of the same bytes, which could otherwise
+  // alternate between views on every call. Both buffers must be byte-for-byte
+  // reinterpretations of the whole storage so that the swap keeps every byte.
+  if (view_buffer_ref.dimensions().size() <= 1 ||
+      !IsFullStorageReinterpretView(tensor, view_buffer_ref)) {
+    return;
+  }
+  const absl::StatusOr<DeviceBufferRef> current_base = GetBaseBuffer(tensor);
+  if (!current_base.ok() || current_base->dimensions().size() != 1 ||
+      !IsFullStorageReinterpretView(tensor, *current_base)) {
+    return;
+  }
+  // This changes how the storage is represented, not its contents, so the
+  // version counter is left unchanged. Bumping it would make autograd reject
+  // tensors saved for backward as modified by an in-place operation.
+  OverwriteDataPtr(tensor.storage().data_ptr(),
+                   DeviceBufferRef(view_buffer_ref));
 }
 
 absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const at::Tensor& tensor) {

@@ -261,11 +261,9 @@ torch_tpu_cc_library(
     deps = [
         ":device_buffer",
         ":device_buffer_utils",
-        ":eager_mode",
         ":events_queue",
         ":materialize",
         ":structured_log_buffer",
-        "//csrc/common:context_states",
         "//csrc/common:device_type",
         "//csrc/common:dimension_types",
         "//csrc/common:dtype",
