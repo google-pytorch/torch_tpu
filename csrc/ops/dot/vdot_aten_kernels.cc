@@ -32,18 +32,11 @@
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/precision_context.h"
 #include "csrc/ops/unary.h"
-#include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
 namespace torch_tpu {
 
 namespace {
-
-absl::StatusOr<mlir::MlirOp> BuildVdotShlo(
-    mlir::MlirOp lhs, mlir::MlirOp rhs, mlir::stablehlo::Precision precision) {
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp conjugated_lhs, BuildConjPhysicalShlo(lhs));
-  return BuildDotShlo(conjugated_lhs, rhs, precision);
-}
 
 absl::Status ValidateInputs(const at::Tensor& lhs, const at::Tensor& rhs) {
   TT_RETURN_IF_ERROR(ValidateIsVector(lhs, "first"));
@@ -69,7 +62,9 @@ absl::StatusOr<DeviceBufferRef> Vdot(const at::Tensor& lhs,
   auto op_builder = [current_precision](FixedSizeSpan<mlir::MlirOp, 2> inputs)
       -> absl::StatusOr<mlir::MlirOp> {
     auto& [lhs_op, rhs_op] = inputs;
-    return BuildVdotShlo(lhs_op, rhs_op, current_precision);
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp conjugated_lhs,
+                        BuildConjPhysicalShlo(lhs_op));
+    return BuildDotShlo(conjugated_lhs, rhs_op, current_precision);
   };
 
   TT_ASSIGN_OR_RETURN(
