@@ -437,6 +437,10 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenNativeBatchNormBackward(
             (grad_out, input, weight, running_mean, running_variance, save_mean,
              save_invstd, training, eps, output_mask),
             {
+              if (!output_mask[0] && !output_mask[1] && !output_mask[2]) {
+                return {at::Tensor(), at::Tensor(), at::Tensor()};
+              }
+
               TT_ASSIGN_OR_THROW(
                   (auto [grad_input_buf, grad_weight_buf, grad_bias_buf]),
                   TpuBatchNormBackward(
