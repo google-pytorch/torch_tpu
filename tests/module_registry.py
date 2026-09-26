@@ -30,6 +30,7 @@ inputs.
 
 import abc
 from collections.abc import Callable, Mapping, Sequence
+import copy
 import enum
 from importlib import resources
 from importlib.resources import abc as resources_abc
@@ -38,8 +39,9 @@ import json
 import os
 import pathlib
 import tempfile
+import threading
 import types
-from typing import Any, Iterator, overload
+from typing import Any, Iterator, NamedTuple, overload
 import uuid
 
 from absl import flags
@@ -574,6 +576,107 @@ _PROVIDER_ALIASES: dict[str, str] = {
 }
 
 
+_CacheKey = tuple[str, str | None, str, str | None, bool]
+
+
+class _ConfigCacheEntry(NamedTuple):
+  config: Any
+  path: epath.Path | None = None
+  subfolder: str | None = None
+
+
+class _ConfigCacheManager:
+  """Thread-safe in-memory cache manager for model configurations across providers."""
+
+  def __init__(self):
+    self._global_lock = threading.Lock()
+    self._key_locks: dict[_CacheKey, threading.Lock] = {}
+    self._cache: dict[_CacheKey, _ConfigCacheEntry] = {}
+
+  def __len__(self) -> int:
+    with self._global_lock:
+      return len(self._cache)
+
+  def _values(self) -> list[_ConfigCacheEntry]:
+    with self._global_lock:
+      return list(self._cache.values())
+
+  def clear(self) -> None:
+    """Clears all cached configurations."""
+    with self._global_lock:
+      self._cache.clear()
+
+  def _make_key(
+      self,
+      provider: str,
+      base_path: epath.Path | str | None,
+      name: str,
+      subfolder: str | None = None,
+      load_weights: bool = False,
+  ) -> _CacheKey:
+    return (
+        provider,
+        str(base_path) if base_path is not None else None,
+        name,
+        subfolder,
+        load_weights,
+    )
+
+  def _get_key_lock(self, key: _CacheKey) -> threading.Lock:
+    with self._global_lock:
+      if key not in self._key_locks:
+        self._key_locks[key] = threading.Lock()
+      return self._key_locks[key]
+
+  def get(
+      self,
+      provider: str,
+      base_path: epath.Path | str | None,
+      name: str,
+      subfolder: str | None = None,
+      *,
+      load_weights: bool = False,
+      loader: Callable[[], _ConfigCacheEntry],
+  ) -> _ConfigCacheEntry:
+    """Gets cached entry or loads and stores it atomically per key."""
+    key = self._make_key(
+        provider, base_path, name, subfolder, load_weights=load_weights
+    )
+
+    # 1. Fast-path lookup
+    with self._global_lock:
+      cached = self._cache.get(key)
+    if cached is not None:
+      return copy.deepcopy(cached)
+
+    # 2. Acquire per-key lock
+    key_lock = self._get_key_lock(key)
+    with key_lock:
+      # 3. Double-check cache inside per-key lock
+      with self._global_lock:
+        cached = self._cache.get(key)
+      if cached is not None:
+        return copy.deepcopy(cached)
+
+      # 4. Load fresh entry outside global lock
+      fresh_entry = loader()
+
+      # 5. Store defensive deep-copy in cache
+      cached_entry = copy.deepcopy(fresh_entry)
+      with self._global_lock:
+        self._cache[key] = cached_entry
+
+      return fresh_entry
+
+
+_CONFIG_CACHE = _ConfigCacheManager()
+
+
+def clear_config_cache() -> None:
+  """Clears the in-memory config cache for all providers."""
+  _CONFIG_CACHE.clear()
+
+
 class _ConfigWrapper:
   """Wrapper around HF config dictionaries and objects for consistent attribute and dict access."""
 
@@ -587,7 +690,23 @@ class _ConfigWrapper:
     """Returns the underlying wrapped config object or dictionary."""
     return self._data
 
+  def __copy__(self) -> "_ConfigWrapper":
+    return _ConfigWrapper(copy.copy(self._data))
+
+  def __deepcopy__(self, memo: dict[int, Any]) -> "_ConfigWrapper":
+    return _ConfigWrapper(copy.deepcopy(self._data, memo))
+
+  def __getstate__(self) -> dict[str, Any]:
+    return {"_data": self._data}
+
+  def __setstate__(self, state: dict[str, Any]) -> None:
+    object.__setattr__(self, "_data", state["_data"])
+
   def __getattr__(self, name: str) -> Any:
+    if name == "_data" or "_data" not in self.__dict__:
+      raise AttributeError(
+          f"'{type(self).__name__}' object has no attribute '{name}'"
+      )
     data = self._data
     if data is None:
       raise AttributeError(
@@ -3064,6 +3183,90 @@ class TransformersProvider(BaseProvider):
       modules.append(p.relative_to(self._base_path).as_posix())
     return modules
 
+  def _load_config_and_model_dir(
+      self, name: str, load_weights: bool = False
+  ) -> tuple[Any, epath.Path | None]:
+    base_path = self._base_path if self.has_cache_dir else None
+
+    def _loader() -> _ConfigCacheEntry:
+      config = None
+      model_dir_or_repo_id: epath.Path | None = None
+
+      if self.has_cache_dir:
+        model_dir_or_repo_id = self._base_path / name  # pyrefly: ignore[unsupported-operation]
+        try:
+          if model_dir_or_repo_id.exists():
+            config = _load_transformers_config_with_fallback(
+                str(model_dir_or_repo_id), load_weights=load_weights
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+          logging.warning(
+              "Failed to access %s in cache, falling back to local resources."
+              " Error: %s",
+              model_dir_or_repo_id,
+              exc,
+          )
+
+      if config is None:
+        if load_weights:
+          raise ValueError(
+              f"load_weights cannot be set to True for {name} when falling back"
+              " to local configuration resources or GCS."
+          )
+
+        # Fallback to local resources
+        for files_root in self._FILES:
+          try:
+            with resources.as_file(
+                files_root.joinpath(str(pathlib.Path(name) / "config.json"))
+            ) as f:
+              if f.exists():
+                config = _load_transformers_config_with_fallback(
+                    str(f), load_weights=load_weights
+                )
+                break
+          except Exception:  # pylint: disable=broad-except
+            config = None
+
+      if config is None:  # Fallback to downloading from GCS
+        dest_config = self.fetch_gcs_file(f"{name}/config.json")
+        if dest_config and dest_config.exists():
+          try:
+            config = _load_transformers_config_with_fallback(
+                str(dest_config.parent), load_weights=load_weights
+            )
+            model_dir_or_repo_id = epath.Path(dest_config.parent)
+          except Exception as exc:  # pylint: disable=broad-except
+            logging.warning(
+                "Failed to load GCS config from %s: %s", dest_config.parent, exc
+            )
+            config = None
+
+      if config is None:
+        files_str = ", ".join(
+            str(r.joinpath(str(pathlib.Path(name) / "config.json")))
+            for r in self._FILES
+        )
+        raise ValueError(
+            f"Model config for '{name}' is missing in local resources"
+            f" ({files_str})"
+            " and could not be loaded from cache or GCS."
+        )
+
+      return _ConfigCacheEntry(
+          config=config,
+          path=model_dir_or_repo_id,
+      )
+
+    entry = _CONFIG_CACHE.get(
+        "transformers",
+        base_path,
+        name,
+        load_weights=load_weights,
+        loader=_loader,
+    )
+    return entry.config, entry.path
+
   def get_module_spec(
       self,
       name: str,
@@ -3089,69 +3292,9 @@ class TransformersProvider(BaseProvider):
       A ModuleSpec containing the model factory and input factory.
     """
     # Load the config first
-    config = None
-    model_dir_or_repo_id: epath.Path | None = None
-
-    if self.has_cache_dir:
-      model_dir_or_repo_id = self._base_path / name  # pyrefly: ignore[unsupported-operation]
-      try:
-        if model_dir_or_repo_id.exists():
-          config = _load_transformers_config_with_fallback(
-              str(model_dir_or_repo_id), load_weights=load_weights
-          )
-      except Exception as exc:  # pylint: disable=broad-except
-        logging.warning(
-            "Failed to access %s in cache, falling back to local resources."
-            " Error: %s",
-            model_dir_or_repo_id,
-            exc,
-        )
-
-    if config is None:
-      if load_weights:
-        raise ValueError(
-            f"load_weights cannot be set to True for {name} when falling back"
-            " to local configuration resources or GCS."
-        )
-
-      # Fallback to local resources
-      for files_root in self._FILES:
-        try:
-          with resources.as_file(
-              files_root.joinpath(str(pathlib.Path(name) / "config.json"))
-          ) as f:
-            if f.exists():
-              config = _load_transformers_config_with_fallback(
-                  str(f), load_weights=load_weights
-              )
-              break
-        except Exception:  # pylint: disable=broad-except
-          config = None
-
-    if config is None:  # Fallback to downloading from GCS
-      dest_config = self.fetch_gcs_file(f"{name}/config.json")
-      if dest_config and dest_config.exists():
-        try:
-          config = _load_transformers_config_with_fallback(
-              str(dest_config.parent), load_weights=load_weights
-          )
-          model_dir_or_repo_id = epath.Path(dest_config.parent)
-        except Exception as exc:  # pylint: disable=broad-except
-          logging.warning(
-              "Failed to load GCS config from %s: %s", dest_config.parent, exc
-          )
-          config = None
-
-    if config is None:
-      files_str = ", ".join(
-          str(r.joinpath(str(pathlib.Path(name) / "config.json")))
-          for r in self._FILES
-      )
-      raise ValueError(
-          f"Model config for '{name}' is missing in local resources"
-          f" ({files_str})"
-          " and could not be loaded from cache or GCS."
-      )
+    config, model_dir_or_repo_id = self._load_config_and_model_dir(
+        name, load_weights=load_weights
+    )
 
     if modify_config_hook is not None:
       if load_weights:
@@ -3365,6 +3508,168 @@ class DiffusersProvider(BaseProvider):
       modules.append(p.relative_to(self._base_path).as_posix())
     return modules
 
+  def _load_config(
+      self,
+      name: str,
+      subfolder: str | None = None,
+      load_weights: bool = False,
+  ) -> tuple[Any, str | None, epath.Path | None]:
+    base_path = self._base_path if self.has_cache_dir else None
+
+    def _loader() -> _ConfigCacheEntry:
+      raw_config = None
+      resolved_subfolder = subfolder
+      model_path = None
+
+      # Candidate subfolders for diffusers pipelines and standalone models
+      if subfolder:
+        candidate_subfolders = [subfolder]
+      else:
+        candidate_subfolders = []
+        if self.has_cache_dir:
+          model_path = self._base_path / name  # pyrefly: ignore[unsupported-operation]
+          if model_path.exists():
+            index_path = model_path / "model_index.json"
+            if index_path.exists():
+              try:
+                with open(index_path, "r") as fp:
+                  candidate_subfolders.extend(
+                      _extract_diffusers_subfolder_candidates(json.load(fp))
+                  )
+              except Exception:  # pylint: disable=broad-except
+                pass
+            # Support nested candidate subfolders
+            try:
+              for sub_dir in model_path.iterdir():
+                if sub_dir.is_dir():
+                  for sub_target in ("transformer", "unet"):
+                    if (sub_dir / sub_target / "config.json").exists():
+                      nested_cand = f"{sub_dir.name}/{sub_target}"
+                      if nested_cand not in candidate_subfolders:
+                        candidate_subfolders.append(nested_cand)
+            except Exception:  # pylint: disable=broad-except
+              pass
+        for cand in _DEFAULT_DIFFUSERS_SUBFOLDERS:
+          if cand not in candidate_subfolders:
+            candidate_subfolders.append(cand)
+
+      if self.has_cache_dir:
+        model_path = self._base_path / name  # pyrefly: ignore[unsupported-operation]
+        try:
+          if model_path.exists():
+            for cand in candidate_subfolders:
+              try:
+                raw_config = auto_model.AutoModel.load_config(
+                    str(model_path), subfolder=cand
+                )
+                resolved_subfolder = cand
+                break
+              except Exception:  # pylint: disable=broad-except
+                pass
+        except Exception as exc:  # pylint: disable=broad-except
+          logging.warning(
+              "Failed to access %s in cache, falling back to local resources."
+              " Error: %s",
+              model_path,
+              exc,
+          )
+
+      if raw_config is None and not load_weights:  # Fallback to local resources
+        model_dir = pathlib.Path(name)
+        local_candidates = list(candidate_subfolders)
+        index_file = self._FILES.joinpath(str(model_dir / "model_index.json"))
+        try:
+          with resources.as_file(index_file) as f:
+            if f.is_file():
+              with open(f, "r") as fp:
+                for key in _extract_diffusers_subfolder_candidates(
+                    json.load(fp)
+                ):
+                  if key not in local_candidates:
+                    local_candidates.insert(0, key)
+        except Exception:  # pylint: disable=broad-except
+          pass
+
+        for cand in local_candidates:
+          target_rel = (
+              model_dir / cand / "config.json"
+              if cand
+              else model_dir / "config.json"
+          )
+          try:
+            with resources.as_file(self._FILES.joinpath(str(target_rel))) as f:
+              if f.is_file():
+                raw_config = auto_model.AutoModel.load_config(str(f.parent))
+                resolved_subfolder = cand
+                break
+          except Exception:  # pylint: disable=broad-except
+            pass
+
+      if (
+          raw_config is None and not load_weights
+      ):  # Fallback to downloading from GCS
+        gcs_candidates = []
+        dest_index = self.fetch_gcs_file(f"{name}/model_index.json")
+        if dest_index and dest_index.exists():
+          try:
+            with open(dest_index, "r") as fp:
+              gcs_candidates.extend(
+                  _extract_diffusers_subfolder_candidates(json.load(fp))
+              )
+          except Exception:  # pylint: disable=broad-except
+            pass
+        for cand in candidate_subfolders:
+          if cand not in gcs_candidates:
+            gcs_candidates.append(cand)
+
+        for cand in gcs_candidates:
+          gcs_rel = (
+              f"{name}/{cand}/config.json" if cand else f"{name}/config.json"
+          )
+          dest_config = self.fetch_gcs_file(gcs_rel)
+          if dest_config and dest_config.exists():
+            try:
+              raw_config = auto_model.AutoModel.load_config(
+                  str(dest_config.parent)
+              )
+              resolved_subfolder = cand
+              break
+            except Exception as exc:  # pylint: disable=broad-except
+              logging.warning(
+                  "Failed to load GCS diffusers config from %s: %s",
+                  dest_config.parent,
+                  exc,
+              )
+
+      if raw_config is None:
+        if load_weights:
+          # Pretrained weights are not available in local resources or GCS.
+          raise ValueError(
+              f"load_weights cannot be set to True for {name} when model is"
+              " not available in cache."
+          )
+        raise ValueError(
+            f"Model config for '{name}' is missing in local resources"
+            f" ({self._FILES.joinpath(str(pathlib.Path(name) / 'config.json'))})"
+            " and could not be loaded from cache or GCS."
+        )
+
+      return _ConfigCacheEntry(
+          config=raw_config,
+          path=model_path,
+          subfolder=resolved_subfolder,
+      )
+
+    entry = _CONFIG_CACHE.get(
+        "diffusers",
+        base_path,
+        name,
+        subfolder,
+        load_weights=load_weights,
+        loader=_loader,
+    )
+    return entry.config, entry.subfolder, entry.path
+
   def get_module_spec(
       self,
       name: str,
@@ -3390,138 +3695,9 @@ class DiffusersProvider(BaseProvider):
     subfolder = kwargs.get("subfolder")
     d_type = torch.bfloat16
 
-    raw_config = None
-
-    # Candidate subfolders for diffusers pipelines and standalone models
-    if subfolder:
-      candidate_subfolders = [subfolder]
-    else:
-      candidate_subfolders = []
-      if self.has_cache_dir:
-        model_path = self._base_path / name  # pyrefly: ignore[unsupported-operation]
-        if model_path.exists():
-          index_path = model_path / "model_index.json"
-          if index_path.exists():
-            try:
-              with open(index_path, "r") as fp:
-                candidate_subfolders.extend(
-                    _extract_diffusers_subfolder_candidates(json.load(fp))
-                )
-            except Exception:  # pylint: disable=broad-except
-              pass
-          # Support nested candidate subfolders
-          try:
-            for sub_dir in model_path.iterdir():
-              if sub_dir.is_dir():
-                for sub_target in ("transformer", "unet"):
-                  if (sub_dir / sub_target / "config.json").exists():
-                    nested_cand = f"{sub_dir.name}/{sub_target}"
-                    if nested_cand not in candidate_subfolders:
-                      candidate_subfolders.append(nested_cand)
-          except Exception:  # pylint: disable=broad-except
-            pass
-      for cand in _DEFAULT_DIFFUSERS_SUBFOLDERS:
-        if cand not in candidate_subfolders:
-          candidate_subfolders.append(cand)
-
-    if self.has_cache_dir:
-      model_path = self._base_path / name  # pyrefly: ignore[unsupported-operation]
-      try:
-        if model_path.exists():
-          for cand in candidate_subfolders:
-            try:
-              raw_config = auto_model.AutoModel.load_config(
-                  str(model_path), subfolder=cand
-              )
-              subfolder = cand
-              break
-            except Exception:  # pylint: disable=broad-except
-              pass
-      except Exception as exc:  # pylint: disable=broad-except
-        logging.warning(
-            "Failed to access %s in cache, falling back to local resources."
-            " Error: %s",
-            model_path,
-            exc,
-        )
-
-    if raw_config is None and not load_weights:  # Fallback to local resources
-      model_dir = pathlib.Path(name)
-      local_candidates = list(candidate_subfolders)
-      index_file = self._FILES.joinpath(str(model_dir / "model_index.json"))
-      try:
-        with resources.as_file(index_file) as f:
-          if f.is_file():
-            with open(f, "r") as fp:
-              for key in _extract_diffusers_subfolder_candidates(json.load(fp)):
-                if key not in local_candidates:
-                  local_candidates.insert(0, key)
-      except Exception:  # pylint: disable=broad-except
-        pass
-
-      for cand in local_candidates:
-        target_rel = (
-            model_dir / cand / "config.json"
-            if cand
-            else model_dir / "config.json"
-        )
-        try:
-          with resources.as_file(self._FILES.joinpath(str(target_rel))) as f:
-            if f.is_file():
-              raw_config = auto_model.AutoModel.load_config(str(f.parent))
-              subfolder = cand
-              break
-        except Exception:  # pylint: disable=broad-except
-          pass
-
-    if (
-        raw_config is None and not load_weights
-    ):  # Fallback to downloading from GCS
-      gcs_candidates = []
-      dest_index = self.fetch_gcs_file(f"{name}/model_index.json")
-      if dest_index and dest_index.exists():
-        try:
-          with open(dest_index, "r") as fp:
-            gcs_candidates.extend(
-                _extract_diffusers_subfolder_candidates(json.load(fp))
-            )
-        except Exception:  # pylint: disable=broad-except
-          pass
-      for cand in candidate_subfolders:
-        if cand not in gcs_candidates:
-          gcs_candidates.append(cand)
-
-      for cand in gcs_candidates:
-        gcs_rel = (
-            f"{name}/{cand}/config.json" if cand else f"{name}/config.json"
-        )
-        dest_config = self.fetch_gcs_file(gcs_rel)
-        if dest_config and dest_config.exists():
-          try:
-            raw_config = auto_model.AutoModel.load_config(
-                str(dest_config.parent)
-            )
-            subfolder = cand
-            break
-          except Exception as exc:  # pylint: disable=broad-except
-            logging.warning(
-                "Failed to load GCS diffusers config from %s: %s",
-                dest_config.parent,
-                exc,
-            )
-
-    if raw_config is None:
-      if load_weights:
-        # Pretrained weights are not available in local resources or GCS.
-        raise ValueError(
-            f"load_weights cannot be set to True for {name} when model is"
-            " not available in cache."
-        )
-      raise ValueError(
-          f"Model config for '{name}' is missing in local resources "
-          f"({self._FILES.joinpath(str(pathlib.Path(name) / 'config.json'))}) "
-          "and could not be loaded from cache or GCS."
-      )
+    raw_config, subfolder, model_path = self._load_config(
+        name, subfolder=subfolder, load_weights=load_weights
+    )
 
     if modify_config_hook is not None:
       if load_weights:

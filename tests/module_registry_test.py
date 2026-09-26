@@ -22,9 +22,12 @@ underlying providers (Torchvision, TIMM, and Transformers). It ensures that:
     successfully with their generated sample inputs.
 """
 
+import copy
 import json
 import pathlib
 import tempfile
+import threading
+import time
 import types
 from unittest import mock
 
@@ -49,6 +52,8 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
   def setUp(self):
     super().setUp()
     tt_testing.reset_eager_state()
+    module_registry.clear_config_cache()
+    self.addCleanup(module_registry.clear_config_cache)
     self.module_registry = module_registry.ModuleRegistry()
 
   def test_non_existent_path(self):
@@ -1635,6 +1640,15 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     # Unwrap
     self.assertIs(cfg.unwrap(), raw)
 
+    # Deepcopy and copy isolation
+    cfg_deep = copy.deepcopy(cfg)
+    self.assertIsInstance(cfg_deep, module_registry._ConfigWrapper)
+    self.assertEqual(cfg_deep.model_type, "bert")
+    self.assertIsNot(cfg_deep.unwrap(), raw)
+    cfg_deep.hidden_size = 1024
+    self.assertEqual(cfg.hidden_size, 768)
+    self.assertEqual(cfg_deep.hidden_size, 1024)
+
   def test_config_wrapper_object(self):
     obj = types.SimpleNamespace(
         model_type="resnet",
@@ -1681,6 +1695,250 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
       self.assertEqual(cfg.model_type, "bert")
       self.assertEqual(cfg.hidden_size, 768)
       self.assertEqual(cfg.vision_config.image_size, 224)
+
+  def test_transformers_config_caching_and_hook_isolation(self):
+    module_registry.clear_config_cache()
+    model_name = "google/gemma-3-270m"
+
+    # First call loads config and caches it
+    spec1 = self.module_registry.get_module_spec("transformers", model_name)
+    orig_vocab = spec1.config.vocab_size
+
+    # Mutating spec1.config directly must not contaminate the cache
+    spec1.config.vocab_size = 777777
+
+    # Second call with modify_config_hook should mutate only the returned config
+    def modify_hook(cfg):
+      cfg.vocab_size = 999999
+      return cfg
+
+    spec2 = self.module_registry.get_module_spec(
+        "transformers", model_name, modify_config_hook=modify_hook
+    )
+    self.assertEqual(spec2.config.vocab_size, 999999)
+
+    # Third call without hook should still see the original cached config
+    spec3 = self.module_registry.get_module_spec("transformers", model_name)
+    self.assertEqual(spec3.config.vocab_size, orig_vocab)
+
+  def test_transformers_config_cache_avoids_repeated_load(self):
+    module_registry.clear_config_cache()
+    model_name = "google/gemma-3-270m"
+
+    spec1 = self.module_registry.get_module_spec("transformers", model_name)
+    self.assertIsNotNone(spec1.config)
+
+    # Mock AutoConfig.from_pretrained to verify cache hit avoids disk/network load
+    with mock.patch.object(
+        module_registry.transformers.AutoConfig, "from_pretrained"
+    ) as mock_load:
+      spec2 = self.module_registry.get_module_spec("transformers", model_name)
+      mock_load.assert_not_called()
+      self.assertEqual(spec1.config.vocab_size, spec2.config.vocab_size)
+
+  def test_diffusers_config_caching_and_hook_isolation(self):
+    module_registry.clear_config_cache()
+    model_name = "stabilityai/stable-diffusion-xl-base-1.0"
+
+    spec1 = self.module_registry.get_module_spec(
+        "diffusers", model_name, subfolder="unet"
+    )
+    orig_sample_size = spec1.config.get("sample_size")
+
+    # Mutating spec1.config directly must not contaminate the cache
+    spec1.config["sample_size"] = 77777
+
+    def modify_hook(cfg):
+      cfg["sample_size"] = 12345
+      return cfg
+
+    spec2 = self.module_registry.get_module_spec(
+        "diffusers",
+        model_name,
+        subfolder="unet",
+        modify_config_hook=modify_hook,
+    )
+    self.assertEqual(spec2.config.get("sample_size"), 12345)
+
+    spec3 = self.module_registry.get_module_spec(
+        "diffusers", model_name, subfolder="unet"
+    )
+    self.assertEqual(spec3.config.get("sample_size"), orig_sample_size)
+
+  def test_diffusers_config_cache_avoids_repeated_load(self):
+    module_registry.clear_config_cache()
+    model_name = "stabilityai/stable-diffusion-xl-base-1.0"
+
+    spec1 = self.module_registry.get_module_spec(
+        "diffusers", model_name, subfolder="unet"
+    )
+    self.assertIsNotNone(spec1.config)
+
+    with mock.patch.object(
+        module_registry.auto_model.AutoModel, "load_config"
+    ) as mock_load:
+      spec2 = self.module_registry.get_module_spec(
+          "diffusers", model_name, subfolder="unet"
+      )
+      mock_load.assert_not_called()
+      self.assertEqual(
+          spec1.config.get("sample_size"), spec2.config.get("sample_size")
+      )
+
+  def test_weights_are_not_cached(self):
+    module_registry.clear_config_cache()
+    model_name = "google/gemma-3-270m"
+
+    spec = self.module_registry.get_module_spec("transformers", model_name)
+
+    # Verify no torch.Tensor or torch.nn.Module stored in config cache
+    for entry in module_registry._CONFIG_CACHE._values():
+      self.assertNotIsInstance(entry.config, torch.nn.Module)
+      self.assertNotIsInstance(entry.config, torch.Tensor)
+
+    # Calling module_factory() must create distinct model instances
+    m1 = spec.module_factory()
+    m2 = spec.module_factory()
+    self.assertIsNot(m1, m2)
+
+  def test_clear_config_cache(self):
+    self.module_registry.get_module_spec("transformers", "google/gemma-3-270m")
+    self.assertNotEmpty(module_registry._CONFIG_CACHE)
+
+    module_registry.clear_config_cache()
+    self.assertEmpty(module_registry._CONFIG_CACHE)
+
+  def test_concurrent_cache_access(self):
+    module_registry.clear_config_cache()
+    model_name = "google/gemma-3-270m"
+    num_threads = 10
+    results: list[module_registry.ModuleSpec | None] = [None] * num_threads
+    errors: list[Exception] = []
+
+    # Mock from_pretrained to count calls and simulate slight loading latency
+    original_from_pretrained = (
+        module_registry.transformers.AutoConfig.from_pretrained
+    )
+    call_count = [0]
+    count_lock = threading.Lock()
+
+    def instrumented_load(*args, **kwargs):
+      with count_lock:
+        call_count[0] += 1
+      time.sleep(0.01)  # Increase likelihood of thread race
+      return original_from_pretrained(*args, **kwargs)
+
+    with mock.patch.object(
+        module_registry.transformers.AutoConfig,
+        "from_pretrained",
+        side_effect=instrumented_load,
+    ):
+
+      def worker(idx):
+        try:
+          results[idx] = self.module_registry.get_module_spec(
+              "transformers", model_name
+          )
+        except Exception as exc:  # pylint: disable=broad-except
+          errors.append(exc)
+
+      threads = [
+          threading.Thread(target=worker, args=(i,)) for i in range(num_threads)
+      ]
+      for t in threads:
+        t.start()
+      for t in threads:
+        t.join()
+
+    self.assertEmpty(errors)
+    # The per-key lock ensures from_pretrained was called exactly once
+    self.assertEqual(call_count[0], 1)
+    self.assertEqual(len(results), num_threads)
+    for res in results:
+      self.assertIsNotNone(res)
+      self.assertIsNotNone(res.config)
+      self.assertEqual(res.config.vocab_size, results[0].config.vocab_size)
+
+    # Mutating one thread's config must not affect another thread's config
+    results[0].config.vocab_size = 123456
+    self.assertNotEqual(
+        results[0].config.vocab_size, results[1].config.vocab_size
+    )
+
+  def test_diffusers_concurrent_cache_access(self):
+    module_registry.clear_config_cache()
+    model_name = "stabilityai/stable-diffusion-xl-base-1.0"
+    num_threads = 10
+    results: list[module_registry.ModuleSpec | None] = [None] * num_threads
+    errors: list[Exception] = []
+
+    original_load_config = module_registry.auto_model.AutoModel.load_config
+    call_count = [0]
+    count_lock = threading.Lock()
+
+    def instrumented_load(*args, **kwargs):
+      with count_lock:
+        call_count[0] += 1
+      time.sleep(0.01)
+      return original_load_config(*args, **kwargs)
+
+    with mock.patch.object(
+        module_registry.auto_model.AutoModel,
+        "load_config",
+        side_effect=instrumented_load,
+    ):
+
+      def worker(idx):
+        try:
+          results[idx] = self.module_registry.get_module_spec(
+              "diffusers", model_name, subfolder="unet"
+          )
+        except Exception as exc:  # pylint: disable=broad-except
+          errors.append(exc)
+
+      threads = [
+          threading.Thread(target=worker, args=(i,)) for i in range(num_threads)
+      ]
+      for t in threads:
+        t.start()
+      for t in threads:
+        t.join()
+
+    self.assertEmpty(errors)
+    self.assertEqual(call_count[0], 1)
+    self.assertEqual(len(results), num_threads)
+    for res in results:
+      self.assertIsNotNone(res)
+      self.assertIsNotNone(res.config)
+      self.assertEqual(
+          res.config.get("sample_size"), results[0].config.get("sample_size")
+      )
+
+    results[0].config["sample_size"] = 99999
+    self.assertNotEqual(
+        results[0].config.get("sample_size"),
+        results[1].config.get("sample_size"),
+    )
+
+  def test_transformers_config_cache_load_weights_true_then_false_backbone(
+      self,
+  ):
+    model_name = "facebook/detr-resnet-50"
+
+    spec_pretrained = self.module_registry.get_module_spec(
+        "transformers", model_name, load_weights=True
+    )
+    self.assertIsNotNone(spec_pretrained.config)
+
+    spec_random = self.module_registry.get_module_spec(
+        "transformers", model_name, load_weights=False
+    )
+    self.assertFalse(
+        getattr(spec_random.config, "use_pretrained_backbone", False)
+    )
+    self.assertIsNotNone(spec_random.config.get("backbone_config"))
+    model = spec_random.module_factory()
+    self.assertIsNotNone(model)
 
 
 if __name__ == "__main__":
