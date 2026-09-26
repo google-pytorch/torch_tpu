@@ -319,26 +319,28 @@ def _resolve_module_attribute(
     stages_map: Mapping[str, ApiStageInfo],
     name: str,
     module_name: str,
-    tt_api_globals: Optional[dict[str, Any]],
+    tt_api_globals: Optional[dict[str, Any] | type],
 ) -> Any:
   """Resolves a dynamic module attribute from a stages map and emits warnings if applicable.
 
-  Optionally caches the resolved value into tt_api_globals dict so that
-  subsequent accesses in the same process hit globals() directly with zero
-  warning overhead.
+  Optionally caches the resolved value into `tt_api_globals` (a module
+  `globals()` dict or a class object) when no warning is required or after a
+  warning has been emitted to an external caller, so subsequent accesses hit
+  the dict/class directly with zero warning overhead while internal accesses
+  do not prematurely suppress warnings for future external callers.
 
   Args:
     stages_map: Dictionary mapping attribute names to ApiStageInfo objects.
     name: The name of the attribute to resolve.
     module_name: The display name of the module for error/warning messages.
-    tt_api_globals: Optional globals() dictionary of the calling module to cache
-      the resolved value.
-
-  Returns:
-    The attribute value stored in stages_map for the given name.
+    tt_api_globals: Optional `globals()` dictionary or class (`type`) on which
+      to cache the resolved value.
 
   Raises:
     AttributeError: If name is not registered in stages_map.
+
+  Returns:
+    The attribute value stored in stages_map for the given name.
   """
   if name not in stages_map:
     raise AttributeError(f"module '{module_name}' has no attribute '{name}'")
@@ -347,10 +349,24 @@ def _resolve_module_attribute(
   cat = info.stage.warning_category
   warned = False
   if cat:
+    # `_resolve_module_attribute` is called from a module's or metaclass's
+    # `__getattr__` (frame 1). When the attribute is accessed through a virtual
+    # public module wrapper (e.g. `torch.tpu.X`), `public_api` frames sit
+    # between that `__getattr__` and the external caller. Walk past any frames
+    # in `torch_tpu._internal.public_api` starting at frame 2 to locate the
+    # real caller frame for `_is_framework_caller_frame` and increment
+    # `stacklevel` for each skipped frame so `warnings.warn` reports the
+    # caller's source line without skipping user `__getattr__` methods.
+    stacklevel = 3
     try:
-      frame = sys._getframe(1)
-      while frame and frame.f_code.co_name == "__getattr__":
+      frame = sys._getframe(2)
+      while (
+          frame is not None
+          and frame.f_globals.get("__name__")
+          == "torch_tpu._internal.public_api"
+      ):
         frame = frame.f_back
+        stacklevel += 1
       caller_frame = frame
     except (AttributeError, ValueError):
       caller_frame = None
@@ -359,7 +375,7 @@ def _resolve_module_attribute(
       msg = info.stage.format_warning_message(
           f"'{name}'", info.reason, info.version
       )
-      warnings.warn(msg, category=cat, stacklevel=3)
+      warnings.warn(msg, category=cat, stacklevel=stacklevel)
       warned = True
 
   # Dynamically attach stage metadata to map-registered objects upon resolution.
@@ -372,6 +388,9 @@ def _resolve_module_attribute(
   # after the warning has been emitted to an external caller, so internal calls do
   # not prematurely cache and suppress warnings for subsequent user calls.
   if tt_api_globals is not None and (cat is None or warned):
-    tt_api_globals[name] = info.value
+    if isinstance(tt_api_globals, type):
+      type.__setattr__(tt_api_globals, name, info.value)
+    else:
+      tt_api_globals[name] = info.value
 
   return info.value

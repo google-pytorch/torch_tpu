@@ -58,19 +58,17 @@ torch_tpu_py_library(
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal:env",
         "//src/torch_tpu/_internal:env_utils",
+        "//src/torch_tpu/_internal:public_api",
         "//src/torch_tpu/_internal/batch_transfer",  # buildcleaner: keep
         "//src/torch_tpu/_internal/compile",
         "//src/torch_tpu/_internal/compile:tpu_backend",
         "//src/torch_tpu/_internal/device:_device_module",
-        "//src/torch_tpu/_internal/distributed:api",
         "//src/torch_tpu/_internal/distributed:from_local",
         "//src/torch_tpu/_internal/distributed:torchcomm_tpu",
         "//src/torch_tpu/_internal/distributed:tpu_distributed",
-        "//src/torch_tpu/_internal/pallas:api",
         "//src/torch_tpu/_internal/pooling:patch",
         "//src/torch_tpu/_internal/precision:precision_impl",
         "//src/torch_tpu/_internal/profiler",
-        "//src/torch_tpu/_internal/profiler:api",
         "//src/torch_tpu/_internal/sync",
         "//src/torch_tpu/_internal/tracing",
         "//src/torch_tpu/_internal/utils:hardware",
@@ -83,14 +81,9 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
-    name = "exceptions",
-    srcs = ["exceptions.py"],
-)
-
-torch_tpu_py_library(
     name = "_tcmalloc_check",
     srcs = ["_tcmalloc_check.py"],
-    deps = [":exceptions"],
+    deps = ["//src/torch_tpu/_internal:exceptions"],
 )
 
 py_library_providing_imports_info(

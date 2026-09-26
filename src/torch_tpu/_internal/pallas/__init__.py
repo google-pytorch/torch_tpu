@@ -39,8 +39,8 @@ def __getattr__(name: str) -> Any:
   """Lazily loads pallas symbols and submodules upon attribute access (PEP 562).
 
   Lazy loading avoids importing JAX/Pallas dependencies when importing
-  submodules (such as `torch_tpu._internal.pallas.api` during backend
-  initialization) until Pallas symbols are actually referenced.
+  submodules (such as `torch_tpu._internal.pallas._compat`) until Pallas
+  symbols are actually referenced.
   """
   if name in (
       "custom_jax_kernel",

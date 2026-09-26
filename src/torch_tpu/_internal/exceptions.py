@@ -12,22 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Exception and warning types raised or emitted by TorchTPU.
+"""Internal exception and warning types raised or emitted by TorchTPU.
 
-Every warning TorchTPU emits derives from `TorchTPUWarning`, so warnings can be
-silenced, escalated, or filtered individually or as a group once TorchTPU has
-been imported:
-
-  import warnings
-
-  import torch_tpu
-  from torch_tpu import exceptions
-
-  warnings.filterwarnings("ignore", category=exceptions.TCMallocWarning)
-
-Warnings emitted while `import torch_tpu` is still running -- `TCMallocWarning`
-is one -- have already fired by the time such a filter can be installed, so
-those must be filtered by message from the environment instead:
+Every warning TorchTPU emits derives from `TorchTPUWarning` (a subclass of
+`UserWarning`). Because these warning classes are internal, users should filter
+warnings by message or by `UserWarning`:
 
   # Silence the tcmalloc warning.
   export PYTHONWARNINGS="ignore:tcmalloc is not loaded"
@@ -35,16 +24,12 @@ those must be filtered by message from the environment instead:
   # Silence every warning TorchTPU emits while importing.
   export PYTHONWARNINGS="ignore::UserWarning"
 
-Note that `PYTHONWARNINGS="ignore::torch_tpu.exceptions.TCMallocWarning"` does
-*not* suppress an import-time warning, even though it looks like it should:
-resolving that category name makes the interpreter import `torch_tpu` in order
-to look the class up, which emits the warning before the filter is installed.
-On a `pip install`ed TorchTPU the name cannot be resolved at that point at all,
-because site-packages is not yet on `sys.path`, and the interpreter reports
-`Invalid -W option ignored: invalid module name: 'torch_tpu.exceptions'` on
-every subsequent Python invocation in that environment.
+Warnings emitted while `import torch_tpu` is still running -- `TCMallocWarning`
+is one -- fire before user code can install a `warnings.filterwarnings` rule by
+class anyway, and resolving a package-qualified category name in
+`PYTHONWARNINGS` would import `torch_tpu` (or fail before `site-packages` is on
+`sys.path`) before the filter is installed.
 """
-
 
 class TorchTPUWarning(UserWarning):
   """Base class for all warnings emitted by TorchTPU.

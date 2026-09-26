@@ -118,7 +118,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:parameterized",
         "//src/torch_tpu",
         "//src/torch_tpu:_tcmalloc_check",
-        "//src/torch_tpu:exceptions",
+        "//src/torch_tpu/_internal:exceptions",
     ],
 )
 

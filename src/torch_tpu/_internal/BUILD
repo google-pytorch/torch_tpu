@@ -16,6 +16,7 @@ load(
     "//build_files:build_defs.bzl",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
+    "torch_tpu_py_test",
 )
 load("//shims/pybind11:pybind.bzl", "pybind_extension")
 
@@ -78,6 +79,39 @@ pybind_extension(
 torch_tpu_py_library(
     name = "env_utils",
     srcs = ["env_utils.py"],
+)
+
+torch_tpu_py_library(
+    name = "exceptions",
+    srcs = ["exceptions.py"],
+)
+
+torch_tpu_py_library(
+    name = "public_api",
+    srcs = ["public_api.py"],
+    # `public_api.py` references these modules as string literals in
+    # `PUBLIC_MODULES` and imports them lazily via `importlib.import_module()`
+    # on first attribute access, so `build_cleaner` cannot see static `import`
+    # statements for them.
+    deps = [
+        "//shims/jax:pallas_tpu",  # build_cleaner: keep
+        "//src/torch_tpu/_internal/device:_device_module",  # build_cleaner: keep
+        "//src/torch_tpu/_internal/distributed:environment",  # build_cleaner: keep
+        "//src/torch_tpu/_internal/pallas:pallas_lib",  # build_cleaner: keep
+        "//src/torch_tpu/_internal/profiler:profiler_config",  # build_cleaner: keep
+    ],
+)
+
+torch_tpu_py_test(
+    name = "public_api_test",
+    srcs = ["public_api_test.py"],
+    strict = True,
+    deps = [
+        ":public_api",
+        "//shims/absl_py/testing:absltest",
+        "//src/torch_tpu",  # build_cleaner: keep
+        "//src/torch_tpu/_internal/utils:annotations",
+    ],
 )
 
 torch_tpu_package_end()

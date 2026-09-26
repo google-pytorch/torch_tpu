@@ -87,12 +87,13 @@ class _DefaultGeneratorsProperty:
     if owner is None:
       return ()
     _device_ops_backend._get_current_device_id()  # pylint: disable=protected-access
+    device_count = owner._public_module().device_count()  # pylint: disable=protected-access
     if (
         execution_mode.eager_mode
         == execution_mode.EagerMode.INTERNAL_COMPILE_FX_GRAPH
     ):
       generators = []
-      for i in range(owner.device_count()):
+      for i in range(device_count):
         try:
           generators.append(_device_ops_backend.get_default_generator(i))
         except RuntimeError:
@@ -102,7 +103,7 @@ class _DefaultGeneratorsProperty:
     if self._cached_default_generators is None:
       self._cached_default_generators = tuple(
           _device_ops_backend.get_default_generator(i)
-          for i in range(owner.device_count())
+          for i in range(device_count)
       )
     return self._cached_default_generators
 
@@ -349,15 +350,17 @@ class _DeviceModuleMeta(abc.ABCMeta):
 
   def __getattr__(cls, name: str) -> Any:
     stages_map = getattr(cls, "__tt_api_stages__", {})
-    # tt_api_globals is None because resolved attributes are cached directly on
-    # `cls` via `type.__setattr__` below, bypassing __getattr__ on 2nd access.
+    # Pass `cls` as `tt_api_globals` so `_resolve_module_attribute` only binds
+    # the resolved attribute onto `cls` via `type.__setattr__` when no warning
+    # category applies or after a warning has been emitted to an external
+    # caller. Internal accesses do not cache onto `cls.__dict__` and therefore
+    # do not suppress warnings for subsequent external callers.
     val = annotations._resolve_module_attribute(
-        stages_map, name, "torch.tpu", tt_api_globals=None
+        stages_map, name, "torch.tpu", tt_api_globals=cls
     )
-    # Install the resolved attribute or descriptor directly on `cls`, and return
-    # via getattr so Python's native descriptor protocol handles binding.
-    type.__setattr__(cls, name, val)
-    return getattr(cls, name)
+    if hasattr(val, "__get__"):
+      return val.__get__(None, cls)
+    return val
 
 
 class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
@@ -400,6 +403,13 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
       raise TypeError(f"Class '{cls.__name__}' must define _device_type")
 
   @classmethod
+  def _public_module(cls) -> Any:
+    """Returns the public device module (`torch.tpu`) if registered, else `cls`."""
+    if getattr(cls, "_device_type", None) == "tpu":
+      return getattr(torch, "tpu", cls)
+    return cls
+
+  @classmethod
   @experimental(
       "current_device() is experimental and subject to change without notice."
   )
@@ -429,7 +439,11 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
     Returns:
       The default torch.Generator for the specified device.
     """
-    idx = device.index if device.index is not None else cls.current_device()
+    idx = (
+        device.index
+        if device.index is not None
+        else cls._public_module().current_device()
+    )
     return cls.default_generators[idx]
 
   @classmethod
@@ -457,7 +471,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
         device index.
       TypeError: If the device type is not recognized.
     """
-    current_idx = cls.current_device()
+    current_idx = cls._public_module().current_device()
     provided_idx = None
     if isinstance(device, str):
       if device != "tpu":
@@ -485,16 +499,18 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
   def _exchange_device(cls, device: int) -> int:
     if device < 0:
       return -1
-    prev_device = cls.current_device()
-    cls.set_device(device)
+    pub = cls._public_module()
+    prev_device = pub.current_device()
+    pub.set_device(device)
     return prev_device
 
   @classmethod
   def _maybe_exchange_device(cls, device: int) -> int:
     if device < 0:
       return -1
-    prev_device = cls.current_device()
-    cls.set_device(device)
+    pub = cls._public_module()
+    prev_device = pub.current_device()
+    pub.set_device(device)
     return prev_device
 
   @classmethod
@@ -508,7 +524,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
         This API is experimental and subject to change in future releases.
     """
     if cls._device_type == "tpu":
-      return cls.device_count() > 0
+      return cls._public_module().device_count() > 0
     return False
 
   @classmethod
@@ -538,7 +554,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
   @classmethod
   def _get_multi_processor_count(cls, device: torch.types.Device = None) -> int:
     """Returns the number of compute units for the device."""
-    get_props = getattr(cls, "get_device_properties", None)
+    get_props = getattr(cls._public_module(), "get_device_properties", None)
     if get_props is not None:
       try:
         props = get_props(device)
@@ -604,7 +620,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
     .. warning::
         This API is experimental and subject to change in future releases.
     """
-    idx = cls.current_device()
+    idx = cls._public_module().current_device()
     return cls.default_generators[idx].initial_seed()
 
   @classmethod
@@ -617,14 +633,14 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
   def get_rng_state(
       cls, device: int | str | torch.device = "tpu"
   ) -> torch.Tensor:
-    _rng_validate_device_index(device, cls.current_device())
+    _rng_validate_device_index(device, cls._public_module().current_device())
     return _device_ops_backend.get_rng_state(-1)
 
   @classmethod
   def set_rng_state(
       cls, new_state: torch.Tensor, device: int | str | torch.device = "tpu"
   ) -> None:
-    _rng_validate_device_index(device, cls.current_device())
+    _rng_validate_device_index(device, cls._public_module().current_device())
     _device_ops_backend.set_rng_state(new_state, -1)
 
   @classmethod
@@ -768,24 +784,31 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
 
   @classmethod
   def _is_autocast_enabled(cls) -> bool:
-    return cls._autocast_enabled
+    return cls._public_module()._autocast_enabled
 
   @classmethod
   def _get_autocast_dtype(cls) -> torch.dtype | None:
-    return cls._autocast_dtype
+    return cls._public_module()._autocast_dtype
 
   @classmethod
   def _set_autocast_enabled(cls, enabled: bool) -> None:
     cls._autocast_enabled = enabled
+    mod = cls._public_module()
+    if mod is not cls:
+      mod.__dict__.pop("_autocast_enabled", None)
 
   @classmethod
   def _set_autocast_dtype(cls, dtype: torch.dtype) -> None:
-    if dtype not in cls.get_amp_supported_dtype():
+    supported = cls._public_module().get_amp_supported_dtype()
+    if dtype not in supported:
       raise ValueError(
           f"Unsupported dtype {dtype} for AMP. Supported dtypes are:"
-          f" {cls.get_amp_supported_dtype()}"
+          f" {supported}"
       )
     cls._autocast_dtype = dtype
+    mod = cls._public_module()
+    if mod is not cls:
+      mod.__dict__.pop("_autocast_dtype", None)
 
   @classmethod
   def _set_allow_cache(cls, allow: bool = True):
@@ -884,13 +907,13 @@ class TpuDeviceModule(_DeviceModule):
         cannot be determined.
     """
     total_memory = hardware.get_hbm_bytes_per_device()
+    name = cls._public_module().get_device_name(device)
     if total_memory is None:
       raise RuntimeError(
-          f"unrecognized TPU {cls.get_device_name(device)!r}; cannot "
-          "determine device memory"
+          f"unrecognized TPU {name!r}; cannot determine device memory"
       )
     return _TpuDeviceProperties(
-        name=cls.get_device_name(device),
+        name=name,
         total_memory=total_memory,
     )
 
@@ -959,13 +982,13 @@ class TpuDeviceModule(_DeviceModule):
 
 
 def get_device_module(device_type: str) -> type[_DeviceModule]:
-  """Retrieves the _DeviceModule module for the specified device.
+  """Retrieves the _DeviceModule class for the specified device.
 
   Args:
     device_type: A valid device type, currently only "tpu".
 
   Returns:
-    A module that can be passed to torch._register_device_module.
+    The _DeviceModule subclass implementing the device's methods.
   """
   if device_type != "tpu":
     raise ValueError(

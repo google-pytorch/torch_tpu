@@ -43,27 +43,42 @@ void ResetEagerState() {
 // Resets default device generators across both C++ and Python.
 // Wipes the C++ DeviceGenerators singleton and clears the Python
 // _DefaultGeneratorsProperty._cached_default_generators on
-// torch.tpu.default_generators so subsequent accesses re-initialize through
-// C++.
+// TpuDeviceModule.default_generators so subsequent accesses re-initialize
+// through C++.
 void ResetDefaultDeviceGenerators() {
   PyResetDefaultDeviceGeneratorsForTesting();
   // Clear the lazily initialized default_generators cached tuple in Python.
+  // Prior to the first external user access to `torch.tpu.default_generators`,
+  // the `_DefaultGeneratorsProperty` descriptor lives only in
+  // `_device_module.__tt_api_stages__["default_generators"].value` (internal
+  // accesses do not cache it into `TpuDeviceModule.__dict__` so they do not
+  // suppress `ExperimentalApiWarning` for subsequent user calls). Once an
+  // external caller accesses `torch.tpu.default_generators`, the descriptor is
+  // also bound into `TpuDeviceModule.__dict__`. Check both locations.
   try {
-    py::module_ torch = py::module_::import("torch");
-    if (py::hasattr(torch, "tpu")) {
-      py::object tpu = torch.attr("tpu");
-      if (py::hasattr(tpu, "__dict__")) {
-        py::object dict_obj = tpu.attr("__dict__");
-        if (dict_obj.contains("default_generators")) {
-          py::object prop = dict_obj["default_generators"];
-          if (py::hasattr(prop, "_cached_default_generators")) {
-            prop.attr("_cached_default_generators") = py::none();
-          }
-        }
+    PyBindModule device_module =
+        PyBindModule::Import("torch_tpu._internal.device._device_module");
+    auto reset_prop = [](const py::handle& prop) {
+      if (py::hasattr(prop, "_cached_default_generators")) {
+        prop.attr("_cached_default_generators") = py::none();
+      }
+    };
+    py::object stages = device_module.attr("__tt_api_stages__");
+    if (stages.contains("default_generators")) {
+      py::object stage_info = stages["default_generators"];
+      if (py::hasattr(stage_info, "value")) {
+        reset_prop(stage_info.attr("value"));
+      }
+    }
+    py::object tpu_cls = device_module.attr("TpuDeviceModule");
+    if (py::hasattr(tpu_cls, "__dict__")) {
+      py::object dict_obj = tpu_cls.attr("__dict__");
+      if (dict_obj.contains("default_generators")) {
+        reset_prop(dict_obj["default_generators"]);
       }
     }
   } catch (const std::exception&) {
-    // Ignore Python errors if torch or torch.tpu is not yet initialized.
+    // Ignore Python errors if torch_tpu is not yet initialized.
   }
 }
 
