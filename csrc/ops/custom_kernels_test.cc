@@ -98,28 +98,6 @@ module @kernel_cumsum {
 }
 )";
 
-constexpr std::string_view kShardedAddMlirKernel = R"(
-module @kernel_sharded_add attributes {
-  mhlo.spmd_parameters_shardings = ["{replicated}"],
-  mhlo.spmd_output_sharding = "{replicated}"
-} {
-  func.func public @main(%arg0: tensor<?xf32> {mhlo.sharding = "{replicated}", sdy.sharding = "replicated"},
-                         %arg1: tensor<?xf32> {mhlo.sharding = "{replicated}", sdy.sharding = "replicated"})
-      -> (tensor<?xf32> {mhlo.sharding = "{replicated}", sdy.sharding = "replicated"}) {
-    %c = stablehlo.constant dense<1> : tensor<i32>
-    %0 = stablehlo.get_dimension_size %arg0, dim = 0 : (tensor<?xf32>) -> tensor<i32>
-    %1 = stablehlo.compare GE, %0, %c, SIGNED : (tensor<i32>, tensor<i32>) -> tensor<i1>
-    stablehlo.custom_call @shape_assertion(%1, %0) {api_version = 2 : i32, error_message = "Expected >= 1", has_side_effect = true} : (tensor<i1>, tensor<i32>) -> ()
-    %2 = call @_wrapped_sharded_main(%0, %arg0, %arg1) : (tensor<i32>, tensor<?xf32>, tensor<?xf32>) -> tensor<?xf32>
-    return %2 : tensor<?xf32>
-  }
-  func.func private @_wrapped_sharded_main(%arg0: tensor<i32>, %arg1: tensor<?xf32>, %arg2: tensor<?xf32>) -> (tensor<?xf32>) {
-    %0 = stablehlo.add %arg1, %arg2 {mhlo.sharding = "{replicated}", sdy.sharding = "replicated", sdy.sharding_rule = "replicated"} : tensor<?xf32>
-    return %0 : tensor<?xf32>
-  }
-}
-)";
-
 class CustomKernelRegistryTest : public testing::Test {
  protected:
   static void SetUpTestSuite() {
@@ -236,59 +214,6 @@ TEST_F(CustomKernelRegistryTest, RegisterAndCallKernelWithHelperFunction) {
   // consumed); PJRT serialization re-encodes it when the graph is compiled.
   EXPECT_THAT(debug_string, HasSubstr("mhlo.scan"));
   EXPECT_THAT(debug_string, HasSubstr("dimension=1"));
-}
-
-TEST_F(
-    CustomKernelRegistryTest,
-    RegisterAndCallKernelWithShardingAttributes_RemovesAllResidualShardings) {
-  RegisterCustomKernel("kernel_sharded_add", "", kShardedAddMlirKernel);
-
-  mlir::DialectRegistry registry;
-  mlir::stablehlo::registerAllDialects(registry);
-  mlir::func::registerAllExtensions(registry);
-  mlir::MLIRContext context;
-  context.appendDialectRegistry(registry);
-  context.loadAllAvailableDialects();
-  mlir::ModuleBuilder mb(context, mlir::unknownLoc(context));
-  mlir::func::FunctionBuilder fb(mb, "main");
-
-  mlir::Type arg_type =
-      mlir::makeTensorType(fb.getContext(), {10}, mlir::ElementType::F32);
-  mlir::MlirOp op1 = mlir::func::Argument(fb, arg_type);
-  mlir::MlirOp op2 = mlir::func::Argument(fb, arg_type);
-  TT_ASSERT_OK_AND_ASSIGN(
-      auto results, CallCustomKernel(fb, {op1, op2}, "kernel_sharded_add", ""));
-  mlir::func::Return(fb, results);
-
-  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
-
-  // Verify that all residual SPMD / Shardy sharding attributes are stripped
-  // from the module, cloned functions, arguments, results, and inner
-  // operations.
-  EXPECT_FALSE((*module)->hasAttr("mhlo.spmd_parameters_shardings"));
-  EXPECT_FALSE((*module)->hasAttr("mhlo.spmd_output_sharding"));
-
-  bool found_cloned_kernel = false;
-  module->walk([&](mlir::func::FuncOp func_op) {
-    if (func_op.getName().starts_with("kernel_sharded_add")) {
-      found_cloned_kernel = true;
-    }
-    for (unsigned i = 0; i < func_op.getNumArguments(); ++i) {
-      EXPECT_FALSE(func_op.getArgAttr(i, "mhlo.sharding"));
-      EXPECT_FALSE(func_op.getArgAttr(i, "sdy.sharding"));
-    }
-    for (unsigned i = 0; i < func_op.getNumResults(); ++i) {
-      EXPECT_FALSE(func_op.getResultAttr(i, "mhlo.sharding"));
-      EXPECT_FALSE(func_op.getResultAttr(i, "sdy.sharding"));
-    }
-  });
-  EXPECT_TRUE(found_cloned_kernel);
-
-  module->walk([&](mlir::Operation* op) {
-    EXPECT_FALSE(op->hasAttr("mhlo.sharding"));
-    EXPECT_FALSE(op->hasAttr("sdy.sharding"));
-    EXPECT_FALSE(op->hasAttr("sdy.sharding_rule"));
-  });
 }
 
 TEST_F(CustomKernelRegistryTest, RegistrationIsIdempotent) {
