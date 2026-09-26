@@ -179,6 +179,26 @@ _SDPA_SPECS: dict[Any, tuple[int, int, bool]] = {
         11,
         True,
     ),
+    torch.ops.aten._scaled_dot_product_cudnn_attention.default: (
+        3,
+        6,
+        False,
+    ),
+    torch.ops.aten._scaled_dot_product_cudnn_attention_backward.default: (
+        8,
+        14,
+        True,
+    ),
+    torch.ops.aten._scaled_dot_product_flash_attention_for_cpu.default: (
+        5,
+        4,
+        False,
+    ),
+    torch.ops.aten._scaled_dot_product_flash_attention_for_cpu_backward.default: (
+        8,
+        7,
+        False,
+    ),
     torch.ops.aten.scaled_dot_product_attention.default: (3, 5, False),
 }
 

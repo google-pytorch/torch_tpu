@@ -31,7 +31,6 @@
 #include "ATen/Context.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBase.h"
-#include "ATen/core/grad_mode.h"
 #include "ATen/ops/empty.h"
 #include "absl/log/check.h"
 #include "absl/status/status.h"
@@ -265,7 +264,7 @@ absl::StatusOr<mlir::stablehlo::CustomCallOp> CreateCustomCallOp(
 }
 
 bool IsDefined(const std::optional<at::Tensor>& tensor) {
-  return tensor.has_value() && tensor->defined();
+  return tensor.has_value() && tensor->defined() && tensor->numel() > 0;
 }
 
 absl::Status ValidateDtype(at::ScalarType dtype) {
@@ -678,11 +677,9 @@ CreateFlashAttentionKernel(const at::Tensor& query, const at::Tensor& key,
                            const std::optional<at::Tensor>& attn_bias,
                            bool is_causal, std::optional<double> scale,
                            double dropout_p, std::optional<bool> return_lse) {
-  const bool should_return_lse = return_lse.value_or(
-      at::GradMode::is_enabled() &&
-      (query.requires_grad() || key.requires_grad() || value.requires_grad()));
   return CreateFlashAttentionKernelImpl(query, key, value, attn_bias, is_causal,
-                                        scale, dropout_p, should_return_lse);
+                                        scale, dropout_p,
+                                        return_lse.value_or(true));
 }
 
 absl::StatusOr<std::tuple<at::Tensor, at::Tensor, at::Tensor>>

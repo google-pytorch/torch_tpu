@@ -475,6 +475,213 @@ class FoldGqaTest(seed_test_utils.RepeatableTest):
     self.assertEmpty(sum_nodes)
     self.assertEqual(add_k.args[0], grad_k)
 
+  def test_fold_gqa_in_flash_attention_for_cpu(self):
+    graph = fx.Graph()
+    q = graph.placeholder("q")
+    k_orig = graph.placeholder("k_orig")
+    v_orig = graph.placeholder("v_orig")
+
+    k_unsq = graph.call_function(torch.ops.aten.unsqueeze.default, (k_orig, 2))
+    k_exp = graph.call_function(
+        torch.ops.aten.expand.default, (k_unsq, [1, 2, 8, 64, 32])
+    )
+    k_reshaped = graph.call_function(
+        torch.ops.aten.reshape.default, (k_exp, [1, 16, 64, 32])
+    )
+
+    v_unsq = graph.call_function(torch.ops.aten.unsqueeze.default, (v_orig, 2))
+    v_exp = graph.call_function(
+        torch.ops.aten.expand.default, (v_unsq, [1, 2, 8, 64, 32])
+    )
+    v_reshaped = graph.call_function(
+        torch.ops.aten.reshape.default, (v_exp, [1, 16, 64, 32])
+    )
+
+    sdpa = graph.call_function(
+        torch.ops.aten._scaled_dot_product_flash_attention_for_cpu.default,
+        (q, k_reshaped, v_reshaped, 0.0, True),
+    )
+    graph.output(sdpa)
+    gm = fx.GraphModule(torch.nn.Module(), graph)
+
+    fold_gqa.apply(gm)
+
+    sdpa_nodes = [
+        n
+        for n in gm.graph.nodes
+        if n.target
+        == torch.ops.aten._scaled_dot_product_flash_attention_for_cpu.default
+    ]
+    self.assertLen(sdpa_nodes, 1)
+    self.assertEqual(sdpa_nodes[0].args[1], k_orig)
+    self.assertEqual(sdpa_nodes[0].args[2], v_orig)
+
+  def test_fold_gqa_in_flash_attention_for_cpu_backward(self):
+    graph = fx.Graph()
+    grad_out = graph.placeholder("grad_out")
+    q = graph.placeholder("q")
+    k_orig = graph.placeholder("k_orig")
+    v_orig = graph.placeholder("v_orig")
+
+    k_unsq = graph.call_function(torch.ops.aten.unsqueeze.default, (k_orig, 2))
+    k_exp = graph.call_function(
+        torch.ops.aten.expand.default, (k_unsq, [1, 2, 8, 64, 32])
+    )
+    k_reshaped = graph.call_function(
+        torch.ops.aten.reshape.default, (k_exp, [1, 16, 64, 32])
+    )
+
+    v_unsq = graph.call_function(torch.ops.aten.unsqueeze.default, (v_orig, 2))
+    v_exp = graph.call_function(
+        torch.ops.aten.expand.default, (v_unsq, [1, 2, 8, 64, 32])
+    )
+    v_reshaped = graph.call_function(
+        torch.ops.aten.reshape.default, (v_exp, [1, 16, 64, 32])
+    )
+
+    logsumexp = graph.placeholder("logsumexp")
+    fwd_out = graph.placeholder("fwd_out")
+
+    sdpa_bwd = graph.call_function(
+        torch.ops.aten._scaled_dot_product_flash_attention_for_cpu_backward.default,
+        (
+            grad_out,
+            q,
+            k_reshaped,
+            v_reshaped,
+            fwd_out,
+            logsumexp,
+            0.0,
+            True,
+        ),
+    )
+    grad_k = graph.call_function(operator.getitem, (sdpa_bwd, 1))
+    grad_k_reshaped = graph.call_function(
+        torch.ops.aten.reshape.default, (grad_k, [1, 2, 8, 64, 32])
+    )
+    grad_k_sum = graph.call_function(
+        torch.ops.aten.sum.dim_IntList, (grad_k_reshaped, [2])
+    )
+    add_k = graph.call_function(torch.ops.aten.add.Tensor, (grad_k_sum, 1.0))
+
+    graph.output(add_k)
+    gm = fx.GraphModule(torch.nn.Module(), graph)
+
+    fold_gqa.apply(gm)
+
+    self.assertEqual(sdpa_bwd.args[2], k_orig)
+    self.assertEqual(sdpa_bwd.args[3], v_orig)
+    self.assertEqual(add_k.args[0], grad_k)
+
+  def test_fold_gqa_in_cudnn_attention(self):
+    graph = fx.Graph()
+    q = graph.placeholder("q")
+    k_orig = graph.placeholder("k_orig")
+    v_orig = graph.placeholder("v_orig")
+
+    k_unsq = graph.call_function(torch.ops.aten.unsqueeze.default, (k_orig, 2))
+    k_exp = graph.call_function(
+        torch.ops.aten.expand.default, (k_unsq, [1, 2, 8, 64, 32])
+    )
+    k_reshaped = graph.call_function(
+        torch.ops.aten.reshape.default, (k_exp, [1, 16, 64, 32])
+    )
+
+    v_unsq = graph.call_function(torch.ops.aten.unsqueeze.default, (v_orig, 2))
+    v_exp = graph.call_function(
+        torch.ops.aten.expand.default, (v_unsq, [1, 2, 8, 64, 32])
+    )
+    v_reshaped = graph.call_function(
+        torch.ops.aten.reshape.default, (v_exp, [1, 16, 64, 32])
+    )
+
+    sdpa = graph.call_function(
+        torch.ops.aten._scaled_dot_product_cudnn_attention.default,
+        (q, k_reshaped, v_reshaped, None, True, 0.0, True, False),
+    )
+    graph.output(sdpa)
+    gm = fx.GraphModule(torch.nn.Module(), graph)
+
+    fold_gqa.apply(gm)
+
+    sdpa_nodes = [
+        n
+        for n in gm.graph.nodes
+        if n.target
+        == torch.ops.aten._scaled_dot_product_cudnn_attention.default
+    ]
+    self.assertLen(sdpa_nodes, 1)
+    self.assertEqual(sdpa_nodes[0].args[1], k_orig)
+    self.assertEqual(sdpa_nodes[0].args[2], v_orig)
+
+  def test_fold_gqa_in_cudnn_attention_backward(self):
+    graph = fx.Graph()
+    grad_out = graph.placeholder("grad_out")
+    q = graph.placeholder("q")
+    k_orig = graph.placeholder("k_orig")
+    v_orig = graph.placeholder("v_orig")
+
+    k_unsq = graph.call_function(torch.ops.aten.unsqueeze.default, (k_orig, 2))
+    k_exp = graph.call_function(
+        torch.ops.aten.expand.default, (k_unsq, [1, 2, 8, 64, 32])
+    )
+    k_reshaped = graph.call_function(
+        torch.ops.aten.reshape.default, (k_exp, [1, 16, 64, 32])
+    )
+
+    v_unsq = graph.call_function(torch.ops.aten.unsqueeze.default, (v_orig, 2))
+    v_exp = graph.call_function(
+        torch.ops.aten.expand.default, (v_unsq, [1, 2, 8, 64, 32])
+    )
+    v_reshaped = graph.call_function(
+        torch.ops.aten.reshape.default, (v_exp, [1, 16, 64, 32])
+    )
+
+    logsumexp = graph.placeholder("logsumexp")
+    fwd_out = graph.placeholder("fwd_out")
+    seed = graph.placeholder("seed")
+    offset = graph.placeholder("offset")
+    bias = graph.placeholder("bias")
+    cum_seq = graph.placeholder("cum_seq")
+
+    sdpa_bwd = graph.call_function(
+        torch.ops.aten._scaled_dot_product_cudnn_attention_backward.default,
+        (
+            grad_out,
+            q,
+            k_reshaped,
+            v_reshaped,
+            fwd_out,
+            logsumexp,
+            seed,
+            offset,
+            bias,
+            cum_seq,
+            cum_seq,
+            64,
+            64,
+            0.0,
+            True,
+        ),
+    )
+    grad_k = graph.call_function(operator.getitem, (sdpa_bwd, 1))
+    grad_k_reshaped = graph.call_function(
+        torch.ops.aten.reshape.default, (grad_k, [1, 2, 8, 64, 32])
+    )
+    grad_k_sum = graph.call_function(
+        torch.ops.aten.sum.dim_IntList, (grad_k_reshaped, [2])
+    )
+    add_k = graph.call_function(torch.ops.aten.add.Tensor, (grad_k_sum, 1.0))
+
+    graph.output(add_k)
+    gm = fx.GraphModule(torch.nn.Module(), graph)
+
+    fold_gqa.apply(gm)
+
+    self.assertEqual(sdpa_bwd.args[2], k_orig)
+    self.assertEqual(sdpa_bwd.args[3], v_orig)
+    self.assertEqual(add_k.args[0], grad_k)
+
 
 if __name__ == "__main__":
   absltest.main()

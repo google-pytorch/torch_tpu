@@ -311,6 +311,148 @@ class DetectCausalMaskTest(seed_test_utils.RepeatableTest):
         bwd_node.args[4].target, torch.ops.aten.empty.memory_format
     )
 
+  def test_detect_and_eliminate_in_flash_for_cpu_fwd_and_bwd(self):
+    seq_len = 16
+    mask = torch.tril(torch.ones((1, 1, seq_len, seq_len), dtype=torch.bool))
+
+    graph = fx.Graph()
+    q = graph.placeholder("q")
+    k = graph.placeholder("k")
+    v = graph.placeholder("v")
+    m = graph.placeholder("mask")
+    grad_out = graph.placeholder("grad_out")
+
+    # Forward Flash for CPU: (query, key, value, dropout_p=0.0, is_causal=False, attn_mask=None, scale=None)
+    fwd = graph.call_function(
+        torch.ops.aten._scaled_dot_product_flash_attention_for_cpu.default,
+        (q, k, v, 0.0, False, m),
+    )
+    out = graph.call_function(torch.ops.aten.select.int, (fwd, 0, 0))
+    lse = graph.call_function(torch.ops.aten.select.int, (fwd, 0, 1))
+
+    # Backward Flash for CPU: (grad_out, query, key, value, out, logsumexp, dropout_p, is_causal, attn_mask=None, scale=None)
+    bwd = graph.call_function(
+        torch.ops.aten._scaled_dot_product_flash_attention_for_cpu_backward.default,
+        (grad_out, q, k, v, out, lse, 0.0, False, m),
+    )
+    graph.output(bwd)
+    gm = fx.GraphModule(torch.nn.Module(), graph)
+
+    example_inputs = [
+        torch.randn(1, 4, seq_len, 32),
+        torch.randn(1, 4, seq_len, 32),
+        torch.randn(1, 4, seq_len, 32),
+        mask,
+        torch.randn(1, 4, seq_len, 32),
+    ]
+
+    detect_causal_mask.apply(gm, example_inputs)
+
+    fwd_nodes = [
+        n
+        for n in gm.graph.nodes
+        if n.target
+        == torch.ops.aten._scaled_dot_product_flash_attention_for_cpu.default
+    ]
+    self.assertLen(fwd_nodes, 1)
+    fwd_node = fwd_nodes[0]
+    self.assertTrue(fwd_node.args[4])
+    self.assertIsNone(fwd_node.args[5])
+
+    bwd_nodes = [
+        n
+        for n in gm.graph.nodes
+        if n.target
+        == torch.ops.aten._scaled_dot_product_flash_attention_for_cpu_backward.default
+    ]
+    self.assertLen(bwd_nodes, 1)
+    bwd_node = bwd_nodes[0]
+    self.assertTrue(bwd_node.args[7])
+    self.assertIsNone(bwd_node.args[8])
+
+  def test_detect_and_eliminate_in_cudnn_fwd_and_bwd(self):
+    seq_len = 16
+    mask = torch.tril(torch.ones((1, 1, seq_len, seq_len), dtype=torch.bool))
+
+    graph = fx.Graph()
+    q = graph.placeholder("q")
+    k = graph.placeholder("k")
+    v = graph.placeholder("v")
+    m = graph.placeholder("mask")
+    grad_out = graph.placeholder("grad_out")
+    cum_seq = graph.placeholder("cum_seq")
+    seed = graph.placeholder("seed")
+    offset = graph.placeholder("offset")
+
+    # Forward cuDNN: (query, key, value, attn_bias, compute_log_sumexp, dropout_p=0.0, is_causal=False, return_debug_mask=False)
+    fwd = graph.call_function(
+        torch.ops.aten._scaled_dot_product_cudnn_attention.default,
+        (q, k, v, m, True, 0.0, False, False),
+    )
+    out = graph.call_function(torch.ops.aten.select.int, (fwd, 0, 0))
+    lse = graph.call_function(torch.ops.aten.select.int, (fwd, 0, 1))
+
+    # Backward cuDNN: (grad_out, query, key, value, out, logsumexp, philox_seed, philox_offset, attn_bias, cum_seq_q, cum_seq_k, max_q, max_k, dropout_p, is_causal)
+    bwd = graph.call_function(
+        torch.ops.aten._scaled_dot_product_cudnn_attention_backward.default,
+        (
+            grad_out,
+            q,
+            k,
+            v,
+            out,
+            lse,
+            seed,
+            offset,
+            m,
+            cum_seq,
+            cum_seq,
+            seq_len,
+            seq_len,
+            0.0,
+            False,
+        ),
+    )
+    graph.output(bwd)
+    gm = fx.GraphModule(torch.nn.Module(), graph)
+
+    example_inputs = [
+        torch.randn(1, 4, seq_len, 32),
+        torch.randn(1, 4, seq_len, 32),
+        torch.randn(1, 4, seq_len, 32),
+        mask,
+        torch.randn(1, 4, seq_len, 32),
+        torch.zeros(2, dtype=torch.int32),
+        torch.zeros(1, dtype=torch.int64),
+        torch.zeros(1, dtype=torch.int64),
+    ]
+
+    detect_causal_mask.apply(gm, example_inputs)
+
+    fwd_nodes = [
+        n
+        for n in gm.graph.nodes
+        if n.target
+        == torch.ops.aten._scaled_dot_product_cudnn_attention.default
+    ]
+    self.assertLen(fwd_nodes, 1)
+    fwd_node = fwd_nodes[0]
+    self.assertIsNone(fwd_node.args[3])
+    self.assertTrue(fwd_node.args[6])
+
+    bwd_nodes = [
+        n
+        for n in gm.graph.nodes
+        if n.target
+        == torch.ops.aten._scaled_dot_product_cudnn_attention_backward.default
+    ]
+    self.assertLen(bwd_nodes, 1)
+    bwd_node = bwd_nodes[0]
+    self.assertTrue(bwd_node.args[14])
+    self.assertEqual(
+        bwd_node.args[8].target, torch.ops.aten.empty.memory_format
+    )
+
   def test_meta_tensor_handled_gracefully(self):
     seq_len = 16
     meta_mask = torch.empty(

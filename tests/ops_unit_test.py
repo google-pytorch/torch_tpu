@@ -15422,6 +15422,517 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
         assert_close(cpu_tensor, tpu_tensor, key)
 
   @parameterized.named_parameters(
+      (
+          "flash_contiguous_bf16",
+          torch.nn.attention.SDPBackend.FLASH_ATTENTION,
+          True,
+          torch.bfloat16,
+      ),
+      (
+          "flash_noncontiguous_bf16",
+          torch.nn.attention.SDPBackend.FLASH_ATTENTION,
+          False,
+          torch.bfloat16,
+      ),
+      (
+          "flash_contiguous_f32",
+          torch.nn.attention.SDPBackend.FLASH_ATTENTION,
+          True,
+          torch.float32,
+      ),
+      (
+          "overrideable_contiguous_bf16",
+          torch.nn.attention.SDPBackend.OVERRIDEABLE,
+          True,
+          torch.bfloat16,
+      ),
+      (
+          "overrideable_noncontiguous_bf16",
+          torch.nn.attention.SDPBackend.OVERRIDEABLE,
+          False,
+          torch.bfloat16,
+      ),
+  )
+  def test_scaled_dot_product_attention_compile(
+      self,
+      backend: torch.nn.attention.SDPBackend,
+      contiguous: bool,
+      dtype: torch.dtype,
+  ):
+    """Tests F.scaled_dot_product_attention forward and backward under torch.compile."""
+    torch.manual_seed(5432)
+    bsz, seq_len, head_dim = 2, 256, 128
+    h_q, h_kv = 8, 2
+    d_model = h_q * head_dim
+
+    h = torch.randn(bsz, seq_len, d_model, dtype=dtype)
+    wq = torch.randn(d_model, h_q * head_dim, dtype=dtype) * (d_model**-0.5)
+    wkv = torch.randn(d_model, h_kv * head_dim, dtype=dtype) * (d_model**-0.5)
+    wo = torch.randn(h_q * head_dim, d_model, dtype=dtype) * (d_model**-0.5)
+    grad_out = torch.randn(bsz, seq_len, d_model, dtype=dtype) * (
+        (bsz * seq_len) ** -0.5
+    )
+
+    def attn_block(h_in, wq_in, wkv_in, wo_in):
+      q = (h_in @ wq_in).view(bsz, seq_len, h_q, head_dim).transpose(1, 2)
+      k = (h_in @ wkv_in).view(bsz, seq_len, h_kv, head_dim).transpose(1, 2)
+      v = (h_in @ wkv_in).view(bsz, seq_len, h_kv, head_dim).transpose(1, 2)
+      if contiguous:
+        q, k, v = q.contiguous(), k.contiguous(), v.contiguous()
+      attn_out = torch.nn.functional.scaled_dot_product_attention(
+          q, k, v, is_causal=True, enable_gqa=True
+      )
+      attn_out = attn_out.transpose(1, 2).contiguous()
+      return attn_out.view(bsz, seq_len, h_q * head_dim) @ wo_in
+
+    def compute(
+        device: str,
+        compute_dtype: torch.dtype,
+        target_backend: torch.nn.attention.SDPBackend,
+        use_compile: bool,
+    ):
+      h_t, wq_t, wkv_t, wo_t = [
+          t.detach()
+          .clone()
+          .to(device=device, dtype=compute_dtype)
+          .requires_grad_(True)
+          for t in (h, wq, wkv, wo)
+      ]
+      grad_out_t = (
+          grad_out.detach().clone().to(device=device, dtype=compute_dtype)
+      )
+      fn = (
+          torch.compile(
+              attn_block, backend="tpu", dynamic=False, fullgraph=True
+          )
+          if use_compile
+          else attn_block
+      )
+      with torch.nn.attention.sdpa_kernel(target_backend):
+        out = fn(h_t, wq_t, wkv_t, wo_t)
+        out.backward(gradient=grad_out_t)
+      return {
+          "out": out.to(dtype).cpu(),
+          "h_grad": h_t.grad.to(dtype).cpu(),
+          "wq_grad": wq_t.grad.to(dtype).cpu(),
+          "wkv_grad": wkv_t.grad.to(dtype).cpu(),
+          "wo_grad": wo_t.grad.to(dtype).cpu(),
+      }
+
+    cpu_results = compute(
+        "cpu", torch.float32, torch.nn.attention.SDPBackend.MATH, False
+    )
+    tpu_eager_results = compute("tpu", dtype, backend, False)
+    tpu_compiled_results = compute("tpu", dtype, backend, True)
+
+    for key in cpu_results:
+      with self.subTest(key):
+        cpu_tensor = cpu_results[key]
+        tpu_eager_tensor = tpu_eager_results[key]
+        tpu_compiled_tensor = tpu_compiled_results[key]
+        self.assert_close(
+            golden_result=tpu_eager_tensor,
+            torch_tpu_result=tpu_compiled_tensor,
+            rtol=1e-2,
+            atol=1e-2,
+            preamble=f"eager vs compiled close check failed for {key}",
+        )
+        sim = torch.nn.functional.cosine_similarity(
+            cpu_tensor.flatten().float(),
+            tpu_compiled_tensor.flatten().float(),
+            dim=0,
+        )
+        self.assertGreater(
+            sim.item(), 0.999, f"similarity check failed for {key}"
+        )
+        self.assert_close(
+            golden_result=cpu_tensor,
+            torch_tpu_result=tpu_compiled_tensor,
+            rtol=5e-2,
+            atol=1e-1,
+            preamble=f"cpu vs compiled close check failed for {key}",
+        )
+
+  def test_scaled_dot_product_attention_aot_eager(self):
+    """Tests SDPA FlashAttention backward under aot_eager."""
+    torch.manual_seed(5432)
+    bsz, n_heads, seq_len, head_dim = 2, 4, 128, 128
+    q = torch.randn(bsz, n_heads, seq_len, head_dim, dtype=torch.float32)
+    k = torch.randn(bsz, n_heads, seq_len, head_dim, dtype=torch.float32)
+    v = torch.randn(bsz, n_heads, seq_len, head_dim, dtype=torch.float32)
+    grad_out = torch.randn(bsz, n_heads, seq_len, head_dim, dtype=torch.float32)
+
+    def fn(q_in, k_in, v_in):
+      return torch.nn.functional.scaled_dot_product_attention(
+          q_in, k_in, v_in, is_causal=True
+      )
+
+    with torch.nn.attention.sdpa_kernel(
+        torch.nn.attention.SDPBackend.FLASH_ATTENTION
+    ):
+      q_eager, k_eager, v_eager = [
+          t.clone().to("tpu").requires_grad_(True) for t in (q, k, v)
+      ]
+      out_eager = fn(q_eager, k_eager, v_eager)
+      out_eager.backward(grad_out.to("tpu"))
+
+      q_aot, k_aot, v_aot = [
+          t.clone().to("tpu").requires_grad_(True) for t in (q, k, v)
+      ]
+      compiled_fn = torch.compile(fn, backend="aot_eager", fullgraph=True)
+      out_aot = compiled_fn(q_aot, k_aot, v_aot)
+      out_aot.backward(grad_out.to("tpu"))
+
+    self.assert_close(
+        golden_result=out_eager.cpu(),
+        torch_tpu_result=out_aot.cpu(),
+        rtol=1e-3,
+        atol=1e-3,
+    )
+    self.assert_close(
+        golden_result=q_eager.grad.cpu(),
+        torch_tpu_result=q_aot.grad.cpu(),
+        rtol=1e-3,
+        atol=1e-3,
+    )
+    self.assert_close(
+        golden_result=k_eager.grad.cpu(),
+        torch_tpu_result=k_aot.grad.cpu(),
+        rtol=1e-3,
+        atol=1e-3,
+    )
+    self.assert_close(
+        golden_result=v_eager.grad.cpu(),
+        torch_tpu_result=v_aot.grad.cpu(),
+        rtol=1e-3,
+        atol=1e-3,
+    )
+
+  @parameterized.named_parameters(
+      ("flash", torch.nn.attention.SDPBackend.FLASH_ATTENTION),
+      ("overrideable", torch.nn.attention.SDPBackend.OVERRIDEABLE),
+  )
+  def test_scaled_dot_product_attention_expanded_query(
+      self, backend: torch.nn.attention.SDPBackend
+  ):
+    """Tests SDPA when query has a broadcasted batch dimension with stride 0."""
+    torch.manual_seed(5432)
+    bsz, n_heads, seq_len, head_dim = 2, 4, 128, 128
+    q_base = torch.randn(1, n_heads, seq_len, head_dim, dtype=torch.float32)
+    k = torch.randn(bsz, n_heads, seq_len, head_dim, dtype=torch.float32)
+    v = torch.randn(bsz, n_heads, seq_len, head_dim, dtype=torch.float32)
+
+    def fn(q_in, k_in, v_in):
+      q_exp = q_in.expand(bsz, n_heads, seq_len, head_dim)
+      return torch.nn.functional.scaled_dot_product_attention(
+          q_exp, k_in, v_in, is_causal=True
+      )
+
+    with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
+      out_cpu = fn(q_base, k, v)
+
+    with torch.nn.attention.sdpa_kernel(backend):
+      out_eager = fn(q_base.to("tpu"), k.to("tpu"), v.to("tpu"))
+      self.assertEqual(out_eager.stride()[-1], 1)
+      self.assert_close(
+          golden_result=out_cpu,
+          torch_tpu_result=out_eager.cpu(),
+          rtol=1e-2,
+          atol=1e-2,
+      )
+
+      compiled_fn = torch.compile(
+          fn, backend="tpu", dynamic=False, fullgraph=True
+      )
+      out_compiled = compiled_fn(q_base.to("tpu"), k.to("tpu"), v.to("tpu"))
+      self.assertEqual(out_compiled.stride()[-1], 1)
+      self.assert_close(
+          golden_result=out_cpu,
+          torch_tpu_result=out_compiled.cpu(),
+          rtol=1e-2,
+          atol=1e-2,
+      )
+
+  @parameterized.named_parameters(
+      (
+          "flash_noncontiguous",
+          torch.nn.attention.SDPBackend.FLASH_ATTENTION,
+          False,
+      ),
+      (
+          "overrideable_noncontiguous",
+          torch.nn.attention.SDPBackend.OVERRIDEABLE,
+          False,
+      ),
+  )
+  def test_scaled_dot_product_attention_compile_v_head_dim_diff(
+      self, backend: torch.nn.attention.SDPBackend, contiguous: bool
+  ):
+    """Tests SDPA under torch.compile when value head_dim != query head_dim."""
+    torch.manual_seed(5432)
+    bsz, seq_len, n_heads = 2, 128, 4
+    qk_dim, v_dim = 128, 64
+    q_raw = torch.randn(bsz, seq_len, n_heads, qk_dim, dtype=torch.float32)
+    k_raw = torch.randn(bsz, seq_len, n_heads, qk_dim, dtype=torch.float32)
+    v_raw = torch.randn(bsz, seq_len, n_heads, v_dim, dtype=torch.float32)
+    grad_out = torch.randn(bsz, seq_len, n_heads * v_dim, dtype=torch.float32)
+
+    def fn(q_in, k_in, v_in):
+      q = q_in.transpose(1, 2)
+      k = k_in.transpose(1, 2)
+      v = v_in.transpose(1, 2)
+      if contiguous:
+        q, k, v = q.contiguous(), k.contiguous(), v.contiguous()
+      out = torch.nn.functional.scaled_dot_product_attention(
+          q, k, v, is_causal=True
+      )
+      out = out.transpose(1, 2)
+      if contiguous or q_in.device.type == "cpu":
+        out = out.contiguous()
+      return out.view(bsz, seq_len, n_heads * v_dim)
+
+    with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
+      q_cpu, k_cpu, v_cpu = [
+          t.clone().requires_grad_(True) for t in (q_raw, k_raw, v_raw)
+      ]
+      out_cpu = fn(q_cpu, k_cpu, v_cpu)
+      out_cpu.backward(grad_out)
+
+    with torch.nn.attention.sdpa_kernel(backend):
+      q_eager, k_eager, v_eager = [
+          t.clone().to("tpu").requires_grad_(True)
+          for t in (q_raw, k_raw, v_raw)
+      ]
+      out_eager = fn(q_eager, k_eager, v_eager)
+      out_eager.backward(grad_out.to("tpu"))
+
+      q_tpu, k_tpu, v_tpu = [
+          t.clone().to("tpu").requires_grad_(True)
+          for t in (q_raw, k_raw, v_raw)
+      ]
+      compiled_fn = torch.compile(
+          fn, backend="tpu", dynamic=False, fullgraph=True
+      )
+      out_tpu = compiled_fn(q_tpu, k_tpu, v_tpu)
+      out_tpu.backward(grad_out.to("tpu"))
+
+    self.assert_close(
+        golden_result=out_cpu,
+        torch_tpu_result=out_eager.cpu(),
+        rtol=1e-2,
+        atol=1e-2,
+    )
+    self.assert_close(
+        golden_result=out_cpu,
+        torch_tpu_result=out_tpu.cpu(),
+        rtol=1e-2,
+        atol=1e-2,
+    )
+    self.assert_close(
+        golden_result=q_cpu.grad,
+        torch_tpu_result=q_tpu.grad.cpu(),
+        rtol=1e-2,
+        atol=1e-2,
+    )
+    self.assert_close(
+        golden_result=k_cpu.grad,
+        torch_tpu_result=k_tpu.grad.cpu(),
+        rtol=1e-2,
+        atol=1e-2,
+    )
+    self.assert_close(
+        golden_result=v_cpu.grad,
+        torch_tpu_result=v_tpu.grad.cpu(),
+        rtol=1e-2,
+        atol=1e-2,
+    )
+
+  @parameterized.named_parameters(
+      ("flash", torch.nn.attention.SDPBackend.FLASH_ATTENTION),
+      ("overrideable", torch.nn.attention.SDPBackend.OVERRIDEABLE),
+  )
+  def test_scaled_dot_product_attention_compile_fused_qkv(
+      self, backend: torch.nn.attention.SDPBackend
+  ):
+    """Tests SDPA under torch.compile with sliced+transposed fused QKV views."""
+    torch.manual_seed(5432)
+    bsz, seq_len, n_heads, head_dim = 2, 128, 4, 128
+    d_model = n_heads * head_dim
+    qkv_raw = torch.randn(bsz, seq_len, 3 * d_model, dtype=torch.bfloat16)
+    grad_out = torch.randn(bsz, seq_len, d_model, dtype=torch.bfloat16)
+
+    def fn(qkv_in):
+      q, k, v = qkv_in.chunk(3, dim=-1)
+      q = q.view(bsz, seq_len, n_heads, head_dim).transpose(1, 2)
+      k = k.view(bsz, seq_len, n_heads, head_dim).transpose(1, 2)
+      v = v.view(bsz, seq_len, n_heads, head_dim).transpose(1, 2)
+      out = torch.nn.functional.scaled_dot_product_attention(
+          q, k, v, is_causal=True
+      )
+      out = out.transpose(1, 2)
+      if qkv_in.device.type == "cpu":
+        out = out.contiguous()
+      return out.view(bsz, seq_len, d_model)
+
+    with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
+      qkv_cpu = qkv_raw.clone().float().requires_grad_(True)
+      out_cpu = fn(qkv_cpu)
+      out_cpu.backward(grad_out.float())
+
+    with torch.nn.attention.sdpa_kernel(backend):
+      qkv_tpu = qkv_raw.clone().to("tpu").requires_grad_(True)
+      compiled_fn = torch.compile(
+          fn, backend="tpu", dynamic=False, fullgraph=True
+      )
+      out_tpu = compiled_fn(qkv_tpu)
+      out_tpu.backward(grad_out.to("tpu"))
+
+    self.assert_close(
+        golden_result=out_cpu.to(torch.bfloat16),
+        torch_tpu_result=out_tpu.cpu(),
+        rtol=5e-2,
+        atol=1e-1,
+    )
+    self.assert_close(
+        golden_result=qkv_cpu.grad.to(torch.bfloat16),
+        torch_tpu_result=qkv_tpu.grad.cpu(),
+        rtol=5e-2,
+        atol=1e-1,
+    )
+
+  def test_scaled_dot_product_cudnn_attention_compile(self):
+    """Tests aten._scaled_dot_product_cudnn_attention under torch.compile."""
+    torch.manual_seed(5432)
+    bsz, n_heads, seq_len, head_dim = 2, 4, 128, 128
+    q_raw = torch.randn(bsz, n_heads, seq_len, head_dim, dtype=torch.bfloat16)
+    k_raw = torch.randn(bsz, n_heads, seq_len, head_dim, dtype=torch.bfloat16)
+    v_raw = torch.randn(bsz, n_heads, seq_len, head_dim, dtype=torch.bfloat16)
+    grad_out = torch.randn(
+        bsz, n_heads, seq_len, head_dim, dtype=torch.bfloat16
+    )
+
+    def fn(q_in, k_in, v_in):
+      out = torch.ops.aten._scaled_dot_product_cudnn_attention(
+          q_in, k_in, v_in, None, True, 0.0, True, False
+      )[0]
+      return out
+
+    q_eager, k_eager, v_eager = [
+        t.clone().to("tpu").requires_grad_(True) for t in (q_raw, k_raw, v_raw)
+    ]
+    out_eager = fn(q_eager, k_eager, v_eager)
+    out_eager.backward(grad_out.to("tpu"))
+
+    q_comp, k_comp, v_comp = [
+        t.clone().to("tpu").requires_grad_(True) for t in (q_raw, k_raw, v_raw)
+    ]
+    compiled_fn = torch.compile(fn, backend="tpu", dynamic=False)
+    out_comp = compiled_fn(q_comp, k_comp, v_comp)
+    out_comp.backward(grad_out.to("tpu"))
+
+    self.assert_close(
+        golden_result=out_eager.cpu(),
+        torch_tpu_result=out_comp.cpu(),
+        rtol=1e-2,
+        atol=1e-2,
+    )
+    self.assert_close(
+        golden_result=q_eager.grad.cpu(),
+        torch_tpu_result=q_comp.grad.cpu(),
+        rtol=1e-2,
+        atol=1e-2,
+    )
+    self.assert_close(
+        golden_result=k_eager.grad.cpu(),
+        torch_tpu_result=k_comp.grad.cpu(),
+        rtol=1e-2,
+        atol=1e-2,
+    )
+    self.assert_close(
+        golden_result=v_eager.grad.cpu(),
+        torch_tpu_result=v_comp.grad.cpu(),
+        rtol=1e-2,
+        atol=1e-2,
+    )
+
+  @parameterized.named_parameters(
+      ("flash", torch.nn.attention.SDPBackend.FLASH_ATTENTION),
+      ("overrideable", torch.nn.attention.SDPBackend.OVERRIDEABLE),
+  )
+  def test_scaled_dot_product_attention_compile_causal_mask_and_repeat_kv(
+      self, backend: torch.nn.attention.SDPBackend
+  ):
+    """Tests compiled SDPA with explicit causal mask and repeat_kv expansion."""
+    torch.manual_seed(5432)
+    bsz, h_q, h_kv, seq_len, head_dim = 2, 8, 2, 128, 128
+    group_size = h_q // h_kv
+    q_raw = torch.randn(bsz, h_q, seq_len, head_dim, dtype=torch.bfloat16)
+    k_raw = torch.randn(bsz, h_kv, seq_len, head_dim, dtype=torch.bfloat16)
+    v_raw = torch.randn(bsz, h_kv, seq_len, head_dim, dtype=torch.bfloat16)
+    grad_out = torch.randn(bsz, h_q, seq_len, head_dim, dtype=torch.bfloat16)
+    causal_mask = torch.tril(
+        torch.ones((1, 1, seq_len, seq_len), dtype=torch.bool)
+    )
+
+    def fn(q_in, k_in, v_in, mask_in):
+      k_rep = (
+          k_in[:, :, None, :, :]
+          .expand(bsz, h_kv, group_size, seq_len, head_dim)
+          .reshape(bsz, h_q, seq_len, head_dim)
+      )
+      v_rep = (
+          v_in[:, :, None, :, :]
+          .expand(bsz, h_kv, group_size, seq_len, head_dim)
+          .reshape(bsz, h_q, seq_len, head_dim)
+      )
+      return torch.nn.functional.scaled_dot_product_attention(
+          q_in, k_rep, v_rep, attn_mask=mask_in, is_causal=False
+      )
+
+    with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
+      q_cpu, k_cpu, v_cpu = [
+          t.clone().float().requires_grad_(True) for t in (q_raw, k_raw, v_raw)
+      ]
+      out_cpu = fn(q_cpu, k_cpu, v_cpu, causal_mask)
+      out_cpu.backward(grad_out.float())
+
+    with torch.nn.attention.sdpa_kernel(backend):
+      q_tpu, k_tpu, v_tpu = [
+          t.clone().to("tpu").requires_grad_(True)
+          for t in (q_raw, k_raw, v_raw)
+      ]
+      compiled_fn = torch.compile(
+          fn, backend="tpu", dynamic=False, fullgraph=True
+      )
+      out_tpu = compiled_fn(q_tpu, k_tpu, v_tpu, causal_mask.to("tpu"))
+      out_tpu.backward(grad_out.to("tpu"))
+
+    self.assert_close(
+        golden_result=out_cpu.to(torch.bfloat16),
+        torch_tpu_result=out_tpu.cpu(),
+        rtol=5e-2,
+        atol=1e-1,
+    )
+    self.assert_close(
+        golden_result=q_cpu.grad.to(torch.bfloat16),
+        torch_tpu_result=q_tpu.grad.cpu(),
+        rtol=5e-2,
+        atol=1e-1,
+    )
+    self.assert_close(
+        golden_result=k_cpu.grad.to(torch.bfloat16),
+        torch_tpu_result=k_tpu.grad.cpu(),
+        rtol=5e-2,
+        atol=1e-1,
+    )
+    self.assert_close(
+        golden_result=v_cpu.grad.to(torch.bfloat16),
+        torch_tpu_result=v_tpu.grad.cpu(),
+        rtol=5e-2,
+        atol=1e-1,
+    )
+
+  @parameterized.named_parameters(
       ("flash", torch.nn.attention.SDPBackend.FLASH_ATTENTION),
       ("overrideable", torch.nn.attention.SDPBackend.OVERRIDEABLE),
   )
