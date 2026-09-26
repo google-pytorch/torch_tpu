@@ -24,24 +24,42 @@ package(
 )
 
 torch_tpu_py_library(
+    name = "common",
+    srcs = ["common.py"],
+    deps = [
+        "//perflab:target",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "decode",
+    srcs = ["decode.py"],
+    deps = [
+        ":common",
+        "//perflab:step_lib",
+        "//perflab:target",
+        "//shims/torch:pytorch",
+        "@pypi//transformers",
+    ],
+)
+
+torch_tpu_py_library(
     name = "steps",
     srcs = [
         "__init__.py",
-        "common.py",
-        "decode.py",
         "forward.py",
         "train.py",
     ],
     allow_multiple_srcs = True,
     deps = [
-        "//perflab:compile",
+        ":common",
+        ":decode",  # build_cleaner: keep
         "//perflab:loss",
         "//perflab:single_trace_trainer_adapter",
         "//perflab:step_lib",
         "//perflab:target",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
-        "@pypi//transformers",
     ],
 )
 

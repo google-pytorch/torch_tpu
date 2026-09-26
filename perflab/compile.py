@@ -28,17 +28,12 @@ Supports two compilation scopes:
 """
 
 import dataclasses
-import enum
 from typing import Any, Callable
 import torch
 from perflab import target as target_lib
+from perflab.steps import common
 
-
-class Scope(enum.Enum):
-  """Compilation scope for a compiled mode benchmark."""
-
-  MODEL = "model"
-  STEP = "step"
+Scope = common.Scope
 
 
 @dataclasses.dataclass(frozen=True)
