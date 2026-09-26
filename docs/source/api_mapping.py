@@ -131,32 +131,5 @@ def _(mo):
   return
 
 
-@app.cell(hide_code=True)
-def _(mo):
-  mo.md(r"""
-    ## **Cache and HBM Telemetry**
-
-    TorchTPU exposes specialized methods for auditing the Compilation Cache and hardware memory (HBM). These have **no CUDA equivalent**.
-
-    | TPU API | Description |
-    | :--- | :--- |
-    | `torch.tpu._hbm_usage_summary()` | HBM usage by compiled binaries. |
-    | `torch.tpu._get_cache_stats()` | Detailed cache hit/miss ratios and compilation latencies. |
-    """)
-  return
-
-
-@app.cell
-def cache_telemetry(torch):
-  # HBM usage summary (this is not a stable API, use with caution)
-  print(torch.tpu._hbm_usage_summary())
-
-  # Cache statistics (this is not a stable API, use with caution)
-  stats = torch.tpu._get_cache_stats()
-  print(f"\nCache Requests: {stats.num_cache_reqs}")
-  print(f"Cache Hits:     {stats.num_cache_hits}")
-  return
-
-
 if __name__ == "__main__":
   app.run()

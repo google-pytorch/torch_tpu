@@ -77,24 +77,3 @@ parity with CUDA.
 > [!NOTE] In TorchTPU's deferred execution model, the XLA compiler and PjRt
 > runtime manage execution ordering and hardware concurrency automatically.
 > Streams are not needed.
-
-## **Cache and HBM Telemetry**
-
-TorchTPU exposes specialized methods for auditing the Compilation Cache and
-hardware memory (HBM). These have **no CUDA equivalent**.
-
-| TPU API                          | Description                        |
-| :------------------------------- | :--------------------------------- |
-| `torch.tpu._hbm_usage_summary()` | HBM usage by compiled binaries.    |
-| `torch.tpu._get_cache_stats()`   | Detailed cache hit/miss ratios and |
-:                                  : compilation latencies.             :
-
-```python
-# HBM usage summary (this is not a stable API, use with caution)
-print(torch.tpu._hbm_usage_summary())
-
-# Cache statistics (this is not a stable API, use with caution)
-stats = torch.tpu._get_cache_stats()
-print(f"\nCache Requests: {stats.num_cache_reqs}")
-print(f"Cache Hits:     {stats.num_cache_hits}")
-```

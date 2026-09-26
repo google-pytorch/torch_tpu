@@ -45,11 +45,6 @@ The backend generates a **fingerprint** for each computation graph based on:
 If **any** of these change, the fingerprint most likely changes, and the cache
 produces a **miss** — triggering a full compilation.
 
-## **Monitoring Cache Performance**
-
-You can audit your cache performance directly from Python to ensure your
-training loop is hitting the "Warm" path.
-
 ```python
 import torch
 
@@ -64,22 +59,6 @@ _ = y.cpu()  # Trigger materialization → compilation
 x2 = torch.randn(32, 128, device="tpu")
 y2 = x2 @ x2.T
 _ = y2.cpu()
-
-# Fetch cache statistics
-cache_stats = torch.tpu._get_cache_stats()
-print(f"Total Requests: {cache_stats.num_cache_reqs}")
-print(f"Total Hits:     {cache_stats.num_cache_hits}")
-print(
-    "Hit Rate:      "
-    f" {cache_stats.num_cache_hits / max(cache_stats.num_cache_reqs, 1) * 100:.1f}%"
-)
-
-# Inspect individual cache entries
-for i, entry in enumerate(cache_stats.per_entry_stats):
-  print(f"\nEntry {i}:")
-  print(f"  Read Count: {entry.read_count}")
-  print(f"  Compilation Duration (us): {entry.compilation_duration}")
-  print(f"  Last Read: {entry.last_read}")
 ```
 
 ## **Avoiding Unnecessary Recompilations**
@@ -146,8 +125,4 @@ start_time = time.time()
 # ... actual training loop ...
 ```
 
-Use the above compilation cache statistics API after a handful of steps to
-ensure there are no more recompilations.
-
-> [!TIP] Use `torch.tpu._hbm_usage_summary()` to check how much HBM is consumed
-> by cached compiled binaries.
+> [!TIP] Use the TPU profiler (`torch.profiler`) to check HBM usage.

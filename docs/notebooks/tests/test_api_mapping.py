@@ -36,17 +36,3 @@ def test_amp_supported_dtypes(device):
   supported_dtypes = torch.tpu.get_amp_supported_dtype()
   assert isinstance(supported_dtypes, list)
   assert len(supported_dtypes) > 0
-
-
-def test_cache_telemetry(device):
-  """Cell: cache_telemetry — checks HBM usage and cache stats."""
-  # Run an op to ensure cache has entries
-  x = torch.randn(32, 32, device=device)
-  _ = (x @ x.T).cpu()
-
-  hbm = torch.tpu._hbm_usage_summary()
-  assert hbm is not None
-
-  stats = torch.tpu._get_cache_stats()
-  assert hasattr(stats, "num_cache_reqs")
-  assert hasattr(stats, "num_cache_hits")
