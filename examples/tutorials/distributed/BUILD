@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")
+load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -23,25 +23,6 @@ torch_tpu_py_library(
     name = "hello_world_distributed",
     srcs = ["hello_world_distributed.py"],
     deps = ["//shims/torch:pytorch"],
-)
-
-torch_tpu_py_test(
-    name = "run_hello_world_distributed",
-    srcs = ["run_hello_world_distributed.py"],
-    env = {
-        "WORLD_SIZE": "8",
-    },
-    notap = "this is a manual test",
-    tags = [
-        "requires-net:external",
-        "requires-tpu-v5lite:8",
-    ],
-    deps = [
-        ":hello_world_distributed",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "//src/torch_tpu/_internal/distributed:multiprocessing",
-    ],
 )
 
 torch_tpu_package_end()

@@ -14,9 +14,8 @@
 
 """Tests torch_tpu distributed example.
 
-NOTE: You should not be running this script directly. Instead, run via:
-  - `run_script.sh` or
-  - `run_script.py` if using Bazel.
+NOTE: You should not be running this script directly. Instead, run via
+`run_hello_world_distributed.sh`.
 """
 
 import torch
