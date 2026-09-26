@@ -1,0 +1,1529 @@
+# TorchTPU custom lint rules (check_contents), shared with the OSS repo.
+#
+# Included from the sibling presubmit.METADATA via `include_presubmit`, so
+# presubmit evaluates these checks exactly as if they were defined there.
+# The same file is exported to GitHub (as ci/custom_lint_rules.textproto)
+# and read by the OSS custom_linter, which keeps both rule sets in sync.
+#
+# Paths keep their internal (absolute) form here; Copybara rewrites the
+# `path_*` fields to the OSS layout on export (see copy.bara.sky).
+#
+# proto-file: devtools/metadata/metadata.proto
+# proto-message: MetaData
+# proto-import: devtools/copybara/proto/copybara_presubmit_extension.proto
+# proto-import: apps/presubmits/config/apps_presubmit_extension.proto
+
+# Check that license headers have been added to all files.
+presubmit {
+  # Only check code files: Update this list if an `addlicense` check fails.
+  # go/keep-sorted start
+  path_regexp: "torch_tpu.*/BUILD"
+  path_regexp: "torch_tpu/.*\\.(h|hpp|c|cc|cpp|py|sh|bzl)"
+  # go/keep-sorted end
+
+  # Anything in google/ is not going into open source.
+  path_expression_exclusion: "torch_tpu/google/..."
+
+  check_contents {
+    base {
+      id: "CheckLicenseHeader"
+      disable_tags: "SKIP_LICENSE_HEADER_CHECK"
+    }
+    failure_status: ERROR
+    failure_message:
+      "All source files must include a license header. "
+      "Please ensure the file has the appropriate copyright and license information. "
+      "See go/thirdparty/licenses and go/copyright for details. "
+      "Add SKIP_LICENSE_HEADER_CHECK=<reason> to the CL description to disable this check."
+
+    # Check that it has something that at least looks like the Apache license.
+    # By default, . does not match newlines, so we need to include (.|\\n)* to
+    # make it match across multiple lines.
+    required_regexp: "Copyright \\d{4} Google LLC(.|\\n)*Licensed under the Apache License"
+
+    # Use match_entire_file to allow the regex to match across multiple lines
+    # if your header spans multiple lines.
+    match_entire_file: true
+  }
+}
+
+# Checks for irreversible Copybara tags.
+# TODO(ecalubaquib): Remove this check once copybara enables reversible mode.
+presubmit {
+  path_expression: "torch_tpu/..."
+  path_expression_exclusion: "torch_tpu/copy.bara.sky"
+
+  check_contents {
+    base {
+      id: "CheckCopybaraTags"
+      disable_tags: "ALLOW_IRREVERSIBLE_TRANSFORM"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    failure_status: ERROR
+    failure_message:
+      "Found irreversible 'copybara:' tags (strip or insert). "
+      "Please use reversible alternatives instead. "
+      "See go/ml-velocity-copybara#reversibility for instructions on how to use reversible alternatives. "
+      "If you must use these tags, add ALLOW_IRREVERSIBLE_TRANSFORM=<reason> to the CL description."
+    prohibited_regexp: "\\bcopybara:(strip|strip_begin|insert|insert_begin)\\b"
+    check_delta_only: true
+  }
+}
+
+# Prevent reading or writing environment variables directly from Python code
+# that is linked into the torch_tpu library.
+presubmit {
+  path_regexp: "torch_tpu/.*\\.py"
+
+  # Tests, notebooks, benchmarks, examples and developer tooling are not linked
+  # into the library, and legitimately manipulate their own environment.
+  #
+  # Only the non-library parts of `oss/` are excluded: the rest of
+  # `oss/torch_tpu/...` is the OSS build of library code and must stay covered.
+  path_regexp_exclusion: ".*/(benchmarks|examples)/.*"
+  # go/keep-sorted start
+  path_expression_exclusion: ".../*_test.py"
+  path_expression_exclusion: "torch_tpu/docs/..."
+  path_expression_exclusion: "torch_tpu/examples/..."
+  path_expression_exclusion: "torch_tpu/google/prototypes/..."
+  path_expression_exclusion: "torch_tpu/google/tools/..."
+  path_expression_exclusion: "torch_tpu/oss/bazel/..."
+  path_expression_exclusion: "torch_tpu/oss/ci/..."
+  path_expression_exclusion: "torch_tpu/oss/noxfile.py"
+  path_expression_exclusion: "torch_tpu/oss/tools/..."
+  path_expression_exclusion: "torch_tpu/prototypes/..."
+  path_expression_exclusion: "torch_tpu/tests/..."
+  # go/keep-sorted end
+
+  check_contents {
+    base {
+      id: "CheckPythonEnvAccess"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    # The unescaped regex is:
+    #   \bos\.(environ|getenv|putenv|unsetenv)\b
+    prohibited_regexp: "\\bos\\.(environ|getenv|putenv|unsetenv)\\b"
+    suppression_regexp:
+      # Allow suppression with this marker.
+      "\\bPY_ENVIRON_OK=.+|"
+      # Ignore occurrences in comments.
+      "#.*\\bos\\.(environ|getenv|putenv|unsetenv)\\b|"
+      # Ignore prose in docstrings, which names the module in backticks.
+      "`os\\.(environ|getenv|putenv|unsetenv)`"
+    failure_message:
+      "Please do not read or write environment variables directly from "
+      "Python code that is linked into the torch_tpu library. Use "
+      "torch_tpu._internal.env, whose get_*_env_once() readers are bound to "
+      "the C++ GetEnvOnce() family: they check the env var against the "
+      "registry in "
+      "csrc/common/env_vars.h and memoize "
+      "it, so that no one can change a global knob in the middle of a "
+      "program. For writes, which have no C++ equivalent, use "
+      "torch_tpu._internal.env_utils.set_str_env(). If you have a legitimate "
+      "reason to use os.environ, add a "
+      "`# PY_ENVIRON_OK=<reason>` comment on the same line."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+}
+
+# Ensures that all *kernels.cc files must use TT_KERNEL.
+presubmit {
+  path_regexp: "torch_tpu/csrc/ops/.*kernels.cc"
+  # This contains imported kernels, which are not defined by us and thus can't
+  # use TT_KERNEL.
+  path_expression_exclusion: "torch_tpu/csrc/ops/custom_kernels.cc"
+
+  check_contents {
+    base {
+      id: "CheckKernelMacro"
+      disable_tags: "ROLLBACK_OF"
+      disable_tags: "NO_TT_KERNEL_OK"
+    }
+    required_regexp: "\\bTT_KERNEL\\b"
+    failure_message:
+      "All *kernels.cc files must use TT_KERNEL() to implement a kernel (see "
+      "go/torch-tpu-op-easy for the rationale and more details. If you have "
+      "a legitimate reason to not use TT_KERNEL(), add a comment in the file "
+      "to explain why TT_KERNEL is not used (as long as the comment mentions "
+      "TT_KERNEL, this check passes). You can also suppress this check for all "
+      "files in the CL by adding NO_TT_KERNEL_OK=<reason> to the CL "
+      "description."
+    # As long as the file contains TT_KERNEL, this check passes. We don't need
+    # the changed lines to use TT_KERNEL.
+    check_delta_only: false
+  }
+}
+
+# Checks for C++ source files.
+presubmit {
+  path_regexp: "torch_tpu/.*\\.(cc|cpp|h)"
+
+  # Check for TF_ASSERT_OK_AND_ASSIGN and ASSERT_OK_AND_ASSIGN.
+  check_contents {
+    base {
+      id: "CheckAssertOkAndAssign"
+      disable_tags: "ROLLBACK_OF"
+    }
+    prohibited_regexp: "\\b(TF_ASSERT_OK_AND_ASSIGN|ASSERT_OK_AND_ASSIGN)\\b"
+    # Suppress occurrences in comments.
+    suppression_regexp: "//.*ASSERT_OK_AND_ASSIGN\\b"
+    failure_message:
+      "Please use TT_ASSERT_OK_AND_ASSIGN instead of TF_ASSERT_OK_AND_ASSIGN "
+      "(deprecated) or ASSERT_OK_AND_ASSIGN (not available in the OSS build)."
+    check_delta_only: true
+  }
+
+  # Check for c10::toString.
+  check_contents {
+    base {
+      id: "CheckC10ToStringUsage"
+      disable_tags: "C10_TOSTRING_OK"
+      disable_tags: "ROLLBACK_OF"
+    }
+    prohibited_regexp: "\\bc10::toString\\b"
+    suppression_regexp: "\\bC10_TOSTRING_OK\\b"
+    failure_message:
+      "Please do not use c10::toString in torch_tpu codebase. "
+      "Instead, use torch_tpu::ToString (defined in common/to_string.h). "
+      "If you have a legitimate reason to use it, add C10_TOSTRING_OK=<reason> "
+      "to the same line."
+    check_delta_only: true
+  }
+
+  # Check for MutexLock lock(&mutex).
+  check_contents {
+    base {
+      id: "CheckDeprecatedMutexLock"
+      disable_tags: "ROLLBACK_OF"
+      disable_tags: "DEPRECATED_MUTEX_LOCK_OK"
+    }
+    prohibited_regexp: "\\b(MutexLock|ReaderMutexLock|WriterMutexLock)\\b.*&"
+    failure_message:
+      "Please use `absl::MutexLock lock(mutex)` instead of `absl::MutexLock "
+      "lock(&mutex)`. The latter is deprecated. If you have a legitimate "
+      "reason to use the deprecated syntax, add "
+      "DEPRECATED_MUTEX_LOCK_OK=<reason> to the same line as the MutexLock call."
+    check_delta_only: true
+  }
+
+  # Check for `IgnoreInCacheKey(..., ...Legacy...)`.
+  check_contents {
+    base {
+      id: "CheckIgnoreInCacheKeyLegacy"
+      disable_tags: "IGNORE_IN_CACHE_KEY_LEGACY_OK"
+      disable_tags: "ROLLBACK_OF"
+    }
+    prohibited_regexp: "\\bIgnoreInCacheKey\\([^,]+,.*\\b(Legacy|legacy)\\b"
+    failure_message:
+      "Please do not use \"Legacy usage\" as the reason for IgnoreInCacheKey() "
+      "in *new* code. This reason is only used to get old code to compile. "
+      "Instead, state the actual reason this parameter should be excluded "
+      "from the cache key computation. If this is a false alarm (e.g. you are "
+      "moving or reformatting existing code), add "
+      "IGNORE_IN_CACHE_KEY_LEGACY_OK=<reason> to the CL description to "
+      "suppress this check."
+    check_delta_only: true
+  }
+
+  # Check for #include before the copyright notice. Some tools like ClangTidy
+  # insert #includes before the copyright notice, so we need to check for this.
+  check_contents {
+    base {
+      id: "CheckIncludeBeforeCopyright"
+      disable_tags: "ROLLBACK_OF"
+    }
+    # ^ matches the beginning of the file.
+    prohibited_regexp: "^(\\s|\\n)*#include"
+    failure_message: "Please ensure that all #includes are after the copyright notice."
+    check_delta_only: false
+    match_entire_file: true
+  }
+
+  # Check for thread_local absl::NoDestructor<> variables.
+  check_contents {
+    base {
+      id: "CheckThreadLocalNoDestructor"
+      disable_tags: "ROLLBACK_OF"
+    }
+    # The unescaped regex is: \bthread_local\s+.*\babsl::NoDestructor\b
+    prohibited_regexp: "\\bthread_local\\s+.*\\babsl::NoDestructor\\b"
+    suppression_regexp: "\\bTHREAD_LOCAL_NO_DESTRUCTOR_OK=.+"
+    failure_message:
+      "Do not use `thread_local` with `absl::NoDestructor<>` variables as the "
+      "combination leads to leaked memory when a thread finishes. If you have a "
+      "legitimate reason to use them, add a comment "
+      "`// THREAD_LOCAL_NO_DESTRUCTOR_OK=<reason> ` to the same line as the "
+      "variable declaration."
+    check_delta_only: true
+  }
+
+  # Check for thread_local variables without the CPP_THREAD_LOCAL_OK or TODO tag.
+  check_contents {
+    base {
+      id: "CheckThreadLocalNoTag"
+      disable_tags: "ROLLBACK_OF"
+    }
+    prohibited_regexp: "\\bthread_local\\b"
+    # Exclude occurrences with CPP_THREAD_LOCAL_OK=<reason> or in comments.
+    suppression_regexp: "\\bCPP_THREAD_LOCAL_OK=.+|//.*\\bthread_local\\b"
+    failure_message:
+      "C++ threads and user Python threads are not 1:1 (see "
+      "go/tt-context-managers). If you need per-python-thread state, use the "
+      "ThreadLocalDebugInfo API described in the doc above. Use thread_local "
+      "only if the state should be per-C++-thread.\n\nIf thread_local is the "
+      "right choice, add a comment `// CPP_THREAD_LOCAL_OK=<reason>` to the "
+      "same line as the `thread_local`."
+    check_delta_only: true
+  }
+
+  # Check for at::maybe_wrap_dim.
+  check_contents {
+    base {
+      id: "CheckMaybeWrapDim"
+      disable_tags: "ROLLBACK_OF"
+    }
+    prohibited_regexp: "\\bat::maybe_wrap_dim\\b"
+    suppression_regexp: "\\bMAYBE_WRAP_DIM_OK=.+"
+    failure_message:
+      "Please use SafeWrapDim() instead of at::maybe_wrap_dim(..., 0) "
+      "as the latter may throw. If you have a legitimate reason to use "
+      "the latter, add a comment `// MAYBE_WRAP_DIM_OK=<reason> ` to the "
+      "same line as the at::maybe_wrap_dim call."
+    check_delta_only: true
+  }
+
+  # Check for disallowed log macros in C++ files. We want to use the ABSL_*
+  # version to avoid macro clashes between libraries like absl, glogs, and
+  # TensorFlow.
+  check_contents {
+    base {
+      id: "CheckDisallowedLogMacros"
+      disable_tags: "ALLOW_LOG_MACROS"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    prohibited_regexp:
+      # Disallow log macros defined in:
+      # absl/log/log.h
+      # absl/log/check.h
+      "\\b("
+      "LOG|PLOG|DLOG|VLOG|DVLOG|LOG_IF|PLOG_IF|DLOG_IF|"
+      "LOG_EVERY_N|LOG_FIRST_N|LOG_EVERY_POW_2|LOG_EVERY_N_SEC|"
+      "PLOG_EVERY_N|PLOG_FIRST_N|PLOG_EVERY_POW_2|PLOG_EVERY_N_SEC|"
+      "DLOG_EVERY_N|DLOG_FIRST_N|DLOG_EVERY_POW_2|DLOG_EVERY_N_SEC|"
+      "VLOG_EVERY_N|VLOG_FIRST_N|VLOG_EVERY_POW_2|VLOG_EVERY_N_SEC|"
+      "LOG_IF_EVERY_N|LOG_IF_FIRST_N|LOG_IF_EVERY_POW_2|LOG_IF_EVERY_N_SEC|"
+      "PLOG_IF_EVERY_N|PLOG_IF_FIRST_N|PLOG_IF_EVERY_POW_2|PLOG_IF_EVERY_N_SEC|"
+      "DLOG_IF_EVERY_N|DLOG_IF_FIRST_N|DLOG_IF_EVERY_POW_2|DLOG_IF_EVERY_N_SEC|"
+      "CHECK|QCHECK|PCHECK|DCHECK|"
+      "CHECK_EQ|CHECK_NE|CHECK_LE|CHECK_LT|CHECK_GE|CHECK_GT|"
+      "QCHECK_EQ|QCHECK_NE|QCHECK_LE|QCHECK_LT|QCHECK_GE|QCHECK_GT|"
+      "DCHECK_EQ|DCHECK_NE|DCHECK_LE|DCHECK_LT|DCHECK_GE|DCHECK_GT|"
+      "CHECK_OK|QCHECK_OK|DCHECK_OK|"
+      "CHECK_STREQ|CHECK_STRNE|CHECK_STRCASEEQ|CHECK_STRCASENE|"
+      "QCHECK_STREQ|QCHECK_STRNE|QCHECK_STRCASEEQ|QCHECK_STRCASENE|"
+      "DCHECK_STREQ|DCHECK_STRNE|DCHECK_STRCASEEQ|DCHECK_STRCASENE"
+      ")\\("
+    suppression_regexp: "\\bALLOW_LOG_MACROS=.+"
+    failure_message:
+      "Please use the ABSL_* version of the macro for logging/checking "
+      "to avoid macro clashes between libraries like absl, glogs, and "
+      "TensorFlow. If you have a legitimate reason to bypass this check, "
+      "add ALLOW_LOG_MACROS=<reason> to the CL description or (preferably) "
+      "a comment `// ALLOW_LOG_MACROS=<reason>` on the same line as the macro."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
+  # Check for std::endl in C++ files.
+  check_contents {
+    base {
+      id: "CheckStdEndl"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    prohibited_regexp: "<<\\s*std::endl;"
+    suppression_regexp: "\\bENDL_OK\\b"
+    failure_message:
+      "You can remove an std::endl streamed to the end of a log message as the "
+      "logging library already adds that automatically. If you have a "
+      "legitimate reason to use std::endl, add a `// ENDL_OK` comment on the "
+      "same line as the std::endl."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
+  # Check for uninitialized at::Tensor variables.
+  check_contents {
+    base {
+      id: "CheckUninitializedTensor"
+      disable_tags: "ROLLBACK_OF"
+    }
+    prohibited_regexp: "\\bat::Tensor\\s+\\w+;"
+    suppression_regexp: "\\bUNINITIALIZED_TENSOR_OK\\b"
+    failure_message:
+      "Please avoid declaring uninitialized at::Tensor variables like "
+      "`at::Tensor foo;`. An uninitialized tensor can cause errors if passed "
+      "as an out parameter to another function. Instead, initialize it using "
+      "MakeEmptyTensor (e.g., `TT_ASSIGN_OR_THROW(at::Tensor foo, "
+      "MakeEmptyTensor(sizes, dtype, device))`), or by calling "
+      "a function that returns an at::Tensor (e.g. at::sub(...) instead of "
+      "AtenSubOut(..., uninitialized_tensor)). Otherwise, you will get errors "
+      "like `RuntimeError: tensor does not have a device` or "
+      "`RuntimeError: sym_strides() called on an undefined Tensor`. If you "
+      "have a legitimate reason to use an uninitialized tensor, add a "
+      "`// UNINITIALIZED_TENSOR_OK` comment on the same line."
+    check_delta_only: true
+  }
+
+  # Check for disallowed error-handling APIs.
+  check_contents {
+    base {
+      id: "CheckErrorApi"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    prohibited_regexp:
+      "\\b("
+      # go/keep-sorted start
+      "ASSIGN_OR_RETURN|"  # Use TT_ASSIGN_OR_RETURN instead.
+      "RETURN_IF_ERROR|"  # Use TT_RETURN_IF_ERROR instead.
+      "RET_CHECK.*|"  # Use TT_RET_CHECK for user-facing errors, or ABSL_CHECK for bugs.
+      "TF_ASSIGN_OR_RETURN|"  # Use TT_ASSIGN_OR_RETURN instead.
+      "TF_RETURN_IF_ERROR|"  # Use TT_RETURN_IF_ERROR instead.
+      "TF_RET_CHECK.*|"  # Use TT_RET_CHECK for user-facing errors, or ABSL_CHECK for bugs.
+      "TORCH_CHECK.*|"  # Use TT_CHECK_THROW instead.
+      "absl::\\w+Error|"  # Use TT_ERROR instead of absl error factories.
+      "throw"  # Use TT_CHECK_THROW, TT_THROW_IF_ERROR, or TT_ASSIGN_OR_THROW instead.
+      # go/keep-sorted end
+      ")\\b"
+    # Ignore violations in comments or with a comment.
+    suppression_regexp: "//|/\\*"
+    failure_message:
+      "This construct is not allowed in torch_tpu. See go/torch-tpu-error-api for "
+      "which alternatives are allowed. If you have a legimitate reason to use "
+      "it, add a comment on the same line as the construct name to explain why."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
+  # Ensure that macro names start with TT_.
+  check_contents {
+    base {
+      id: "CheckMacroNamePrefix"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    # Don't allow any macro definitions...
+    prohibited_regexp: "^\\s*#define\\s"
+    # ... except for TT_* or header guards starting with TORCH_TPU_.
+    suppression_regexp:
+      "^\\s*#define\\s+(TT_|TORCH_TPU_)|"
+      # Allow suppression with this marker.
+      "\\bNON_TT_MACRO_OK\\b"
+    failure_message:
+      "Macros defined in torch_tpu must either be a header guard or start "
+      "with TT_. This reduces the risk of macro name collisions. Please rename "
+      "the macro to follow this convention. If you have a legitimate reason to "
+      "suppress this check, add a `NON_TT_MACRO_OK=<reason>` comment on the "
+      "same line as the #define line. E.g.\n"
+      "  #define FOO_BAR /* NON_TT_MACRO_OK=name required by the xyz library. */ \\\n"
+      "    ..."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
+  # Prefer type aliases to std::vector<int64_t>.
+  check_contents {
+    base {
+      id: "CheckIntVec"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    prohibited_regexp: "\\bstd::vector<int64_t>"
+    suppression_regexp:
+      # Allow suppression with this marker.
+      "\\bINT_VEC_OK\\b|"
+      # Ignore occurrences in comments.
+      "//.*\\bstd::vector<int64_t>"
+    failure_message:
+      "Please use `Dimensions`, `Strides`, or `Indices` instead of "
+      "std::vector<int64_t> for tensor dimensions, strides, or indices. "
+      "The former is more efficient for the common case of <= 6 "
+      "elements. If you have a legitimate reason to use the latter, add a "
+      "`// INT_VEC_OK` comment on the same line as the std::vector<int64_t>."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
+  # Prefer CopyIntVector() to .vec() for tensor shapes.
+  check_contents {
+    base {
+      id: "CheckVecMethod"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    prohibited_regexp: "\\bvec\\(\\)"
+    suppression_regexp:
+      # Allow suppression with this marker.
+      "\\bVEC_OK\\b|"
+      # Ignore occurrences in comments.
+      "//.*\\bvec\\(\\)"
+    failure_message:
+      "Please use CopyIntVector() instead of .vec() for creating a vector of "
+      "tensor dimensions. The former is more efficient for the common case of "
+      "<= 6 dimensions. If you have a legitimate reason to use .vec(), add a "
+      "`// VEC_OK` comment on the same line as the .vec()."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
+  # Prefer error::kFoo over absl::StatusCode::kFoo.
+  check_contents {
+    base {
+      id: "CheckErrorSpace"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    prohibited_regexp: "\\babsl::StatusCode::"
+    match_multi_line: true  # Allow multi-line strings.
+    suppression_regexp:
+      # Allow suppression with this marker.
+      "\\bSTATUS_CODE_OK\\b|"
+      # Ignore occurrences in comments.
+      "//.*\\babsl::StatusCode::"
+    failure_message:
+      "Please use error::kFoo instead of absl::StatusCode::kFoo. The former "
+      "is more consistent with the rest of the torch_tpu error handling "
+      "library, and is more readable. "
+      "If you have a legitimate reason to use absl::StatusCode, add a "
+      "`// STATUS_CODE_OK` comment on the same line as the absl::StatusCode."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
+  # Prefer omitting leading :: in well-known top-level namespaces
+  # (e.g. absl, absl_testing, std, proto2, testing, llvm, mlir, etc.).
+  check_contents {
+    base {
+      id: "CheckLeadingColons"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    # The leading :: must either start the line or be preceded by a
+    # non-alphanumeric character. This prevents false positives for
+    # "foo::testing::bar", for example.
+    prohibited_regexp: "(^|[^\\w])::(absl|absl_testing|std|proto2|testing|llvm|mlir|pjrt|xla)::"
+    suppression_regexp:
+      # Allow suppression with this marker.
+      "\\bLEADING_COLONS_OK\\b|"
+      # Ignore occurrences in comments.
+      "//.*::(absl|absl_testing|std|proto2|testing|llvm|mlir|pjrt|xla)::"
+    failure_message:
+      "Please omit the leading :: in well-known top-level namespaces (e.g. "
+      "absl, absl_testing, std, proto2, testing, llvm, mlir, pjrt, xla, etc.)."
+      "See go/totw/151 for the latest recommendation. If you have a legitimate "
+      "reason to suppress this check, add a `// LEADING_COLONS_OK` comment on the"
+      "same line as the leading ::."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
+  # Avoid using declarations for common libraries
+  # (e.g. absl, std, testing, llvm, mlir, etc.).
+  check_contents {
+    base {
+      id: "CheckUsingDecls"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    prohibited_regexp: "^\\s*using\\s+(absl|std|llvm|mlir|stablehlo|xla)::"
+    suppression_regexp:
+      # Allow suppression with this marker.
+      "\\bUSING_DECL_OK\\b"
+    failure_message:
+      "Please don't add using declarations for symbols in common/standard "
+      "packages. It's clearer to use the qualified names (e.g. "
+      "`mlir::ElementType` as opposed to `ElementType`) at all places. "
+      "If you have a legitimate reason to suppress this check, add a "
+      "`// USING_DECL_OK` comment on the same line as the using declaration."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
+  # Prevent using parameterized tests.
+  check_contents {
+    base {
+      id: "CheckMlirSignedInt"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    prohibited_regexp: "\\b(isSigned|isSignedInteger)"
+    suppression_regexp:
+      # Allow suppression with this marker.
+      "\\bMLIR_SIGNED_INT_OK\\b|"
+      # Ignore occurrences in comments // and /* */.
+      "//.*\\b(isSigned|isSignedInteger)|"
+      "\\/\\*.*\\b(isSigned|isSignedInteger)"
+    failure_message:
+      "Please use `isSignless` methods instead of `isSigned` methods. "
+      "For historic reasons most MLIR dialects including StableHLO use signless"
+      "integers types to represent signed values. If this call is needed, "
+      "add a comment `// MLIR_SIGNED_INT_OK=<reason>` on the same line as "
+      "the `isSigned` call."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
+  # Avoid [=] and [=, ...] captures in lambdas.
+  check_contents {
+    base {
+      id: "CheckLambdaCapture"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    prohibited_regexp: "\\[=(\\]|,)"
+    suppression_regexp:
+      # Allow suppression with this marker.
+      "\\bDEFAULT_CAPTURE_OK\\b|"
+      # Ignore occurrences in comments.
+      "//.*\\[=(\\]|,)"
+    failure_message:
+      "Please avoid [=] and [=, ...] captures in lambdas. It's clearer "
+      "and safer to explicitly list the captured variables one-by-one. "
+      "This reduces bugs where one accidentally captures a "
+      "reference-semantics variable (e.g. a string_view or ArrayRef) "
+      "and the lambda outlives the original object. "
+      "E.g. if the lambda needs to be called after the current function "
+      "returns, [=]{ ... sizes ...} would be an undefined behavior bug "
+      "when `sizes` is an ArrayRef of a temporary object, and the fix is to "
+      "write [sizes = MakeIntVec(sizes)]{ ... sizes ... }, which captures "
+      "a copy of the array by value. "
+      "If you have a legitimate reason to use them, add a "
+      "`// DEFAULT_CAPTURE_OK` comment on the same line as the capture list."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
+  check_contents {
+    base {
+      id: "CheckAtInferSize"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    prohibited_regexp: "\\bat::infer_size"
+    suppression_regexp:
+      # Allow suppression with this marker.
+      "\\bAT_INFER_SIZE_OK\\b|"
+      # Ignore occurrences in comments.
+      "//.*\\bat::infer_size"
+    failure_message:
+      "Please use `InferSize()` instead of `at::infer_size()`. `InferSize()`"
+      " is an efficiency wrapper that avoids heap allocations for small "
+      "vectors, which is a common case for tensor dimensions. "
+      "If you have a legitimate reason to use `at::infer_size()`, add a "
+      "`// AT_INFER_SIZE_OK` comment on the same line as the call."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
+  # Prevent using std::function in new code.
+  check_contents {
+    base {
+      id: "CheckStdFunction"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    prohibited_regexp: "\\bstd::function<"
+    suppression_regexp:
+      # Allow suppression with this marker.
+      "\\bSTD_FUNCTION_OK\\b|"
+      # Ignore occurrences in comments.
+      "//.*\\bstd::function<"
+    failure_message:
+      "Please use absl::AnyInvocable instead of std::function. "
+      "See go/totw/191 for the rationale. "
+      "If you have a legitimate reason to use std::function, add a "
+      "`// STD_FUNCTION_OK` comment on the same line as the std::function."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
+  # Prefer std::string_view over absl::string_view.
+  check_contents {
+    base {
+      id: "CheckStringView"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    prohibited_regexp: "\\babsl::string_view\\b"
+    suppression_regexp:
+      # Allow suppression with this marker.
+      "\\bABSL_STRING_VIEW_OK\\b|"
+      # Ignore occurrences in comments.
+      "//.*\\babsl::string_view"
+    failure_message:
+      "Please use std::string_view instead of absl::string_view for "
+      "consistency. If you have a legitimate reason to use absl::string_view, "
+      "add a `// ABSL_STRING_VIEW_OK` comment on the same line as the "
+      "absl::string_view."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+}
+
+# Checks for non-test C++ source files.
+presubmit {
+  path_regexp: "torch_tpu/.*\\.(cc|cpp|h)"
+  path_regexp_exclusion: "torch_tpu/.*_test\\.(cc|cpp|h)"
+
+  # Catch functions named `Check*` that return a Status or StatusOr.
+  check_contents {
+    base {
+      id: "CheckCheckFunctionName"
+      disable_tags: "ROLLBACK_OF"
+    }
+    # This regex allows matching function declarations that have modifiers
+    # before the function name, e.g. `static absl::Status CheckFoo()`.
+    prohibited_regexp: "\\babsl::(Status|StatusOr<.*?>)\\s+Check\\w*\\("
+    suppression_regexp: "//.*\\bCHECK_NAME_OK=.+"
+    failure_message:
+      "Function name starting with `Check` should be used only if it crashes "
+      "when the condition is not met. Otherwise, please use a different name, "
+      "e.g. `Validate*`. If you have a legitimate reason to use the `Check` "
+      "prefix, add a `// CHECK_NAME_OK=<reason>` comment on the same line as "
+      "the function name."
+    check_delta_only: true
+  }
+
+  # Catch uses of hash functions and prompt the author to consider fingerprinting.
+  # See go/hash-vs-fingerprint.
+  check_contents {
+    base {
+      id: "CheckHashVsFingerprint"
+      disable_tags: "ROLLBACK_OF"
+    }
+    # We deliberately do not include \\b at the end of the regexps because we
+    # want to match things like absl::HashOf and potential variants of the
+    # hash APIs.
+    prohibited_regexp: "\\b(std::hash|absl::Hash)"
+    suppression_regexp:
+      "\\bHASH_OK=\\S|"  # Allow suppression with this marker.
+      "//.*\\b(std::hash|absl::Hash)"  # Ignore occurrences in comments.
+    failure_message:
+      "Hash functions (like std::hash, absl::Hash) are not guaranteed to be "
+      "stable across processes, runs, or library versions. If this hash value "
+      "is used for persistence, cache keys, or inter-process communication, "
+      "please use fingerprinting instead to ensure stability and prevent "
+      "correctness bugs.\n\n"
+      "See go/hash-vs-fingerprint for a detailed explanation on the rationale "
+      "of this check. If you have a legitimate reason to use a hash function, "
+      "add a comment `// HASH_OK=<reason>` on the same line."
+    check_delta_only: true
+  }
+
+  # Prevent casting an expression to void.
+  check_contents {
+    base {
+      id: "CheckNoVoidCast"
+      disable_tags: "ROLLBACK_OF"
+      disable_tags: "VOID_CAST_OK"
+    }
+    prohibited_regexp: "\\(void\\)|\\bstatic_cast<void>"
+    suppression_regexp:
+      # Allow suppression with this marker.
+      "\\bVOID_CAST_OK\\b|"
+      # Ignore occurrences in comments.
+      "//.*(\\(void\\)|\\bstatic_cast<void>)"
+    failure_message:
+      "Please do not cast an expression or variable to void to suppress "
+      "'unused result' or 'unused variable' compiler errors - these "
+      "compiler checks catch real bugs.\n\n"
+      "For example, if an expression returns a Status, make sure the "
+      "result is checked and handled. For another example, if a param_keys "
+      "variable is created, make sure it's used to call DispatchOp "
+      "instead of dropped.\n\n"
+      "If you have a legitimate reason to cast to void, add a comment "
+      "`// VOID_CAST_OK=<reason>` on the same line."
+    check_delta_only: true
+  }
+
+  # Prevent .IgnoreError() on StatusOr
+  check_contents {
+    base {
+      id: "CheckIgnoreError"
+      disable_tags: "ROLLBACK_OF"
+    }
+    prohibited_regexp: "(\\.|->)IgnoreError\\("
+    suppression_regexp:
+      # Allow suppression with this marker.
+      "\\bIGNORE_ERROR_OK\\b|"
+      # Ignore occurrences in comments.
+      "(//|/\\*).*(\\.|->)IgnoreError\\("
+    failure_message:
+      "Please do not call .IgnoreError() on StatusOr objects. Usually "
+      "you should handle the error. "
+      "If you have a legitimate reason to ignore the error, add a "
+      "`// IGNORE_ERROR_OK=<reason>` comment on the same line."
+    check_delta_only: true
+  }
+
+  # Check for flag names that don't start with `torch_tpu_internal_`.
+  check_contents {
+    base {
+      id: "CheckCppFlagNames"
+      disable_tags: "ROLLBACK_OF"
+    }
+    prohibited_regexp: "\\bABSL_FLAG\\("
+    suppression_regexp: "(\\btorch_tpu_internal_|\\bNONSTANDARD_FLAG_NAME_OK=.+)"
+    failure_message:
+      "Please prefix all TorchTPU C++ flag names with `torch_tpu_internal_` "
+      "as they are not meant for the users (they have no easy ways to pass "
+      "flags to TorchTPU and shouldn't depend on TorchTPU internals anyway).\n\n"
+      "Make sure the flag name is on the same line as the ABSL_FLAG call.\n\n"
+      "If you have a legitimate reason to not follow this rule, add a "
+      "NONSTANDARD_FLAG_NAME_OK=<reason> comment on the same line as the "
+      "ABSL_FLAG call."
+    check_delta_only: true
+  }
+
+  # Prevent using setenv with a C-string literal env var name.
+  check_contents {
+    base {
+      id: "CheckEnvVarName"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    # The unescaped regex is:
+    #   \bsetenv\(\"
+    prohibited_regexp: "\\bsetenv\\(\\\""
+    suppression_regexp:
+      # Allow suppression with this marker.
+      "\\bSTRING_LITERAL_ENV_VAR_NAME_OK=.+"
+    failure_message:
+      "Please do not use a string literal as the env var name. All env vars "
+      "used by TorchTPU must be defined in "
+      "csrc/common/env_vars.h and documented if "
+      "they are not introduced by TorchTPU. If you have a legitimate reason "
+      "to suppress this check, add a "
+      "`// STRING_LITERAL_ENV_VAR_NAME_OK=<reason>` comment on the same line."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
+  # Prevent using getenv.
+  check_contents {
+    base {
+      id: "CheckGetenv"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    prohibited_regexp: "\\bgetenv\\("
+    suppression_regexp:
+      # Allow suppression with this marker.
+      "\\bGETENV_OK=.+|"
+      # Ignore occurrences in comments.
+      "//.*\\bgetenv\\("
+    failure_message:
+      "Please do not use getenv. Use GetEnvOnce<>() instead to read an env "
+      "var once and memoize it. This ensures that no one can change a global "
+      "knob in the middle of a program (this is consistent with PyTorch). "
+      "If you have a legitimate reason to use getenv, add a "
+      "`// GETENV_OK=<reason>` comment on the same line as getenv()."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
+  # Prevent using absl::GetFlag.
+  check_contents {
+    base {
+      id: "CheckGetFlag"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    prohibited_regexp: "\\babsl::GetFlag\\("
+    suppression_regexp:
+      # Allow suppression with this marker.
+      "\\bGET_FLAG_OK=.+|"
+      # Ignore occurrences in comments.
+      "//.*\\babsl::GetFlag\\("
+    failure_message:
+      "Please use GetFlagOnce<>() instead of absl::GetFlag. "
+      "This ensures that no one can change a global flag in the middle of a "
+      "program (this is consistent with PyTorch). "
+      "If you have a legitimate reason to use absl::GetFlag, add a "
+      "`// GET_FLAG_OK=<reason>` comment on the same line as absl::GetFlag()."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
+  # Check for crashing macros in non-test C++ files.
+  check_contents {
+    base {
+      id: "CheckCrashingMacros"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    prohibited_regexp:
+      # Warn on macros that may crash.
+      "\\b("
+      "FATAL|"
+      "ABSL_CHECK|ABSL_QCHECK|ABSL_PCHECK|"
+      "ABSL_CHECK_EQ|ABSL_CHECK_NE|ABSL_CHECK_LE|ABSL_CHECK_LT|ABSL_CHECK_GE|ABSL_CHECK_GT|"
+      "ABSL_QCHECK_EQ|ABSL_QCHECK_NE|ABSL_QCHECK_LE|ABSL_QCHECK_LT|ABSL_QCHECK_GE|ABSL_QCHECK_GT|"
+      "ABSL_CHECK_OK|ABSL_QCHECK_OK|"
+      "ABSL_CHECK_STREQ|ABSL_CHECK_STRNE|ABSL_CHECK_STRCASEEQ|ABSL_CHECK_STRCASENE|"
+      "ABSL_QCHECK_STREQ|ABSL_QCHECK_STRNE|ABSL_QCHECK_STRCASEEQ|ABSL_QCHECK_STRCASENE|"
+      "TT_ASSIGN_OR_CRASH"
+      ")\\b"
+    suppression_regexp:
+      # Allow suppression with this marker.
+      "\\bCRASH_OK\\b|"
+      # Ignore occurrences in comments // and /* */.
+      "((//|/\\*).*\\b("
+      "FATAL|"
+      "ABSL_CHECK|ABSL_QCHECK|ABSL_PCHECK|"
+      "ABSL_CHECK_EQ|ABSL_CHECK_NE|ABSL_CHECK_LE|ABSL_CHECK_LT|ABSL_CHECK_GE|ABSL_CHECK_GT|"
+      "ABSL_QCHECK_EQ|ABSL_QCHECK_NE|ABSL_QCHECK_LE|ABSL_QCHECK_LT|ABSL_QCHECK_GE|ABSL_QCHECK_GT|"
+      "ABSL_CHECK_OK|ABSL_QCHECK_OK|"
+      "ABSL_CHECK_STREQ|ABSL_CHECK_STRNE|ABSL_CHECK_STRCASEEQ|ABSL_CHECK_STRCASENE|"
+      "ABSL_QCHECK_STREQ|ABSL_QCHECK_STRNE|ABSL_QCHECK_STRCASEEQ|ABSL_QCHECK_STRCASENE|"
+      "TT_ASSIGN_OR_CRASH"
+      ")\\b)"
+    failure_message:
+      "A crashing macro should be used for validating critical invariants only. "
+      "See go/when-to-die-torch-tpu for when this is allowed. "
+      "If this is a legitimate use of the macro, add a comment "
+      "`// CRASH_OK=<reason>` on the same line as the macro to document why "
+      "this is for catching torch_tpu bugs instead of user errors. E.g.\n"
+      "  ABSL_CHECK_EQ(  // CRASH_OK=If the sizes don't match, the object state is messed up.\n"
+      "      x.size(), y.size()) << ...;\n\n"
+      "If it's self-evident why the macro is appropriate, you can omit the "
+      "reason in the comment. E.g.\n"
+      "  ABSL_CHECK(  // CRASH_OK\n"
+      "      IsGlobalRegistryValid()) << ...;\n"
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
+  # Prevent using raw op names in error messages.
+  check_contents {
+    base {
+      id: "CheckRawOpName"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    # Match the string literal of the raw op name used at the beginning of
+    # an error message, e.g. `"add(): `.
+    #
+    # The unescaped regex is:
+    #   \"[\w\.]+\(\):\s
+    prohibited_regexp: "\\\"[\\w\\.]+\\(\\):\\s"
+    suppression_regexp:
+      # Allow suppression with this marker.
+      "\\bRAW_OP_NAME_OK\\b|"
+      # Ignore occurrences in comments.
+      "//.*\\\"[\\w\\.]+\\(\\):\\s"
+    failure_message:
+      "Please do not include the op name when constructing end-user error "
+      "messages. Instead, let TT_KERNEL add that automatically. "
+      "See go/torch-tpu-error-guide for more details."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
+  # Prevent using m.impl(...) direct registration.
+  check_contents {
+    base {
+      id: "CheckMImpl"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    prohibited_regexp: "\\bm\\.impl\\("
+    suppression_regexp:
+      # Allow suppression with this marker.
+      "\\bM_IMPL_OK=.+|"
+      # Ignore occurrences in comments.
+      "//.*\\bm\\.impl\\("
+    failure_message:
+      "Please do not use `m.impl(...)` directly in C++ source files. "
+      "Use ImplExperimental, ImplStable, or ImplDeprecated instead. "
+      "If you have a legitimate reason to use m.impl(...) directly, "
+      "add a comment `// M_IMPL_OK=<reason>` on the same line as the "
+      "`m.impl(...)` call."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
+  # Prevent using std::pair in non-test C++ code.
+  check_contents {
+    base {
+      id: "CheckStdPair"
+      disable_tags: "ROLLBACK_OF"
+    }
+    prohibited_regexp: "\\bstd::pair\\b"
+    suppression_regexp:
+      # Allow suppression with this marker.
+      "\\bSTD_PAIR_OK=.+|"
+      # Ignore occurrences in comments.
+      "//.*\\bstd::pair\\b"
+    failure_message:
+      "Please avoid using std::pair in non-test C++ code. Use custom structs with "
+      "descriptive field names instead to improve code readability and prevent "
+      "subtle bugs caused by using .first and .second "
+      "(see go/cstyle#Structs_vs._Tuples).\n\n"
+      "If you have a legitimate reason to use std::pair (e.g. you're writing "
+      "generic code or interfacing with APIs that dictate std::pair), add "
+      "a `// STD_PAIR_OK=<reason>` comment on the same line."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
+  # Check for functions ending with "Py" (case-sensitive)
+  check_contents {
+    base {
+      id: "CheckPyFunctionSuffix"
+      disable_tags: "ROLLBACK_OF"
+    }
+    prohibited_regexp: "\\w*Py\\("
+    suppression_regexp:
+      # Allow suppression with this marker.
+      "\\bPY_SUFFIX_OK=.+|"
+      # Ignore occurrences in comments.
+      "//.*\\w*Py\\("
+    failure_message:
+      "For consistency, functions whose name ends with 'Py' (case-sensitive) "
+      "are prohibited in non-test C++ code. "
+      "Please use 'Py' as a prefix of the function name instead (e.g. `PyFunctionName` "
+      "instead of `FunctionNamePy`) to indicate that the function is a Python binding.\n\n"
+      "If you have a legitimate reason to use the *Py suffix, add a "
+      "`// PY_SUFFIX_OK=<reason>` comment on the same line."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
+  # Prevent using PyTorch thread-local state guards.
+  check_contents {
+    base {
+      id: "CheckTorchThreadLocalStateGuards"
+      disable_tags: "ROLLBACK_OF"
+    }
+    prohibited_regexp: "\\b(c10::DebugInfoGuard|at::ThreadLocalStateGuard)\\b"
+    suppression_regexp:
+      # Allow suppression with this marker.
+      "\\bTORCH_THREAD_LOCAL_STATE_GUARD_OK=.+|"
+      # Ignore occurrences in comments.
+      "//.*\\b(c10::DebugInfoGuard|at::ThreadLocalStateGuard)\\b"
+    failure_message:
+      "Please do not use c10::DebugInfoGuard or at::ThreadLocalStateGuard in "
+      "non-test C++ code. In general, TorchTPU marks a clear boundary between "
+      "the dispatch thread and background worker threads, such that only the "
+      "former is aware of user Python logic.\n\n"
+      "Worker threads should not access or mutate Python thread-local states directly. "
+      "Instead, the dispatch thread is responsible for resolving any necessary "
+      "states or configurations and explicitly passing them down to worker threads.\n\n"
+      "If you have a legitimate reason to use these guards, add a "
+      "`// TORCH_THREAD_LOCAL_STATE_GUARD_OK=<reason>` comment on the same line."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
+  # Prevent using pybind11 raw module_ and class_ classes, so that we make sure
+  # all errors go through our error messages check.
+  check_contents {
+    base {
+      id: "CheckRawPyBindUsage"
+      disable_tags: "ROLLBACK_OF"
+    }
+    prohibited_regexp: "(\\bPYBIND11_MODULE\\b|\\b(py|pybind11)::(class_|module|module_)\\b)"
+    suppression_regexp: "\\bRAW_PYBIND_OK=.+"
+    failure_message:
+      "Please do not use raw pybind11 module or class registrations directly. "
+      "Instead, use the error-handling wrappers from pybind_error_utils.h:\n"
+      "\n"
+      "  - For modules: TT_PYBIND11_MODULE(name, m) { ... }\n"
+      "  - For classes: PyBindClass<T>(m, \"ClassName\").def(...)\n"
+      "\n"
+      "This ensures that errors are properly formatted and translated to PyTorch "
+      "c10::Error. If you have a legitimate reason to use raw pybind11, add a "
+      "comment `// RAW_PYBIND_OK=<reason>` on the same line."
+    check_delta_only: true
+  }
+}
+
+# Checks for explicit use of Precision::DEFAULT, Precision::HIGH or
+# Precision::HIGHEST.
+presubmit {
+  path_regexp: "torch_tpu/.*\\.(cc|h)"
+  path_regexp_exclusion: "torch_tpu/oss/shims/.*"
+
+  check_contents {
+    base {
+      id: "CheckExplicitPrecisionUsage"
+      disable_tags: "ROLLBACK_OF"
+    }
+    prohibited_regexp: "\\bPrecision::(DEFAULT|HIGH|HIGHEST)\\b"
+    suppression_regexp:
+      # Allow suppression with this marker.
+      "\\bEXPLICIT_PRECISION_OK\\b|"
+      # Ignore occurrences in comments.
+      "//.*\\bPrecision::(DEFAULT|HIGH|HIGHEST)"
+    failure_message:
+      "Please avoid using Precision::DEFAULT, Precision::HIGH or "
+      "Precision::HIGHEST as this should be set by the framework user. "
+      "Explicitly setting this may be detrimental to compilation performance. "
+      "If you have a legitimate reason to use it, please add a "
+      "`// EXPLICIT_PRECISION_OK=<reason>` comment on the same line."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+}
+
+# Checks for BUILD and .bzl files.
+presubmit {
+  path_regexp: "torch_tpu/.*(BUILD|\\.bzl)"
+
+  # Prevent new uses of notest_oss.
+  check_contents {
+    base {
+      id: "CheckNotestOss"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    prohibited_regexp: "\\bnotest_oss\\s*="
+    suppression_regexp:
+      # Ignore occurrences in comments.
+      "#.*\\bnotest_oss\\s*=|"
+      # Ignore if suppressed with a marker.
+      "\\bNOTEST_OSS_OK=.+"
+    failure_message:
+      "It's important to test TorchTPU thoroughly in OSS builds. "
+      "Please do not use notest_oss unless there's a good reason. "
+      "If you have a legitimate reason to use notest_oss, add "
+      "a comment `# NOTEST_OSS_OK=<reason>` on the same line."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
+  # Prevent new uses of nobuild_oss.
+  check_contents {
+    base {
+      id: "CheckNobuildOss"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    prohibited_regexp: "\\bnobuild_oss\\s*="
+    suppression_regexp:
+      # Ignore occurrences in comments.
+      "#.*\\bnobuild_oss\\s*=|"
+      # Ignore if suppressed with a marker.
+      "\\bNOBUILD_OSS_OK=.+"
+    failure_message:
+      "It's important to build and test TorchTPU thoroughly in OSS builds. "
+      "Please do not use nobuild_oss unless there's a good reason (and prefer "
+      "notest_oss if the target can still be built). "
+      "If you have a legitimate reason to use nobuild_oss, add "
+      "a comment `# NOBUILD_OSS_OK=<reason>` on the same line."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
+  # Prevent any new dependencies on torch_tpu/api.
+  check_contents {
+    base {
+      id: "CheckBannedApiDependency"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    prohibited_regexp: "\"//api"
+    failure_message:
+      "Please do not depend on //api. The api package "
+      "has been removed."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
+  # Require "no*san" tags to have a comment on the reason.
+  check_contents {
+    base {
+      id: "CheckNoSan"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    prohibited_regexp: "\\b(nomsan|notsan|noasan|nosan)\\b"
+    suppression_regexp:
+      # Allow suppression with a comment on the same line.
+      "#\\s[^\\s]+"
+    failure_message:
+      "Please document the reason for skipping the *san build by appending "
+      "a comment on the same line as the no*san tag."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
+  # Prevent uses of "notap" tag.
+  check_contents {
+    base {
+      id: "CheckNoTapTag"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    prohibited_regexp: "\"notap\""
+    suppression_regexp:
+      # Allow suppression with this marker.
+      "\\bNOTAP_OK=.+"
+    failure_message:
+      "Please try to avoid the \"notap\" tag as it leads to bit rot. If the "
+      "test fails in a particular build mode and a fix is not trivial, just "
+      "disable it in that build mode (e.g. by adding a \"nofastbuild\" or "
+      "\"noopt\" tag). If you have a legitimate reason to use \"notap\", add "
+      "a `# NOTAP_OK=<reason>` comment on the same line as the \"notap\" tag, "
+      "and add a build_test to ensure that the test is at least buildable."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
+  # Prevent direct use of cc_* targets.
+  check_contents {
+    base {
+      id: "CheckCcTargetUsage"
+      disable_tags: "ALLOW_CC_TARGETS"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    # For now, we only disallow cc_library and cc_test. We will also disallow
+    # cc_binary after we define a wrapper for it.
+    prohibited_regexp: "\\b(cc_library|cc_test)\\("
+    suppression_regexp: "\\bALLOW_CC_TARGETS=.+"
+    failure_message:
+      "Please use torch_tpu_cc_library instead of "
+      "cc_library, and use torch_tpu_cc_test instead of cc_test. This enforces "
+      "that the code follows best practices consistently. "
+      "If you have a legitimate reason to bypass this check, add "
+      "ALLOW_CC_TARGETS=<reason> to the CL description or (preferably) "
+      "a comment `# ALLOW_CC_TARGETS=<reason>` on the same line as "
+      "the `cc_library` or `cc_test`."
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
+  # Prevent direct use of py_library, pytype_library, or pytype_strict_library.
+  check_contents {
+    base {
+      id: "CheckPyLibraryUsage"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    prohibited_regexp: "\\b(py_library|pytype_library|pytype_strict_library)\\("
+    match_multi_line: true
+    suppression_regexp: "\\b(py_library|pytype_library|pytype_strict_library)\\(\\n\\s*# PY_LIBRARY_OK=.+"
+    failure_message:
+      "Please use torch_tpu_py_library instead of py_library, pytype_library, "
+      "or pytype_strict_library. For example:\n"
+      "  load(\"//build_files:build_defs.bzl\", \"torch_tpu_py_library\")\n"
+      "\n"
+      "  torch_tpu_py_library(\n"
+      "      name = \"foo\",\n"
+      "      ...\n"
+      "  )\n"
+      "\n"
+      "This enforces best practices. "
+      "If you have a legitimate reason to bypass this check, add "
+      "a comment `# PY_LIBRARY_OK=<reason>` on the first line "
+      "after the `py_library(`, etc, line, e.g.\n"
+      "  py_library(\n"
+      "    # PY_LIBRARY_OK=<reason>\n"
+      "    name = \"foo\",\n"
+      "    ...\n"
+      "  )\n"
+    check_delta_only: true  # Only check new/changed lines.
+  }
+
+  # Prevent direct use of py_test, py_strict_test, or py_platform_test.
+  check_contents {
+    base {
+      id: "CheckPyTestUsage"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    prohibited_regexp: "\\b(py_test|py_strict_test|py_platform_test)\\(\\n"
+    match_multi_line: true
+    suppression_regexp: "\\b(py_test|py_strict_test|py_platform_test)\\(\\n\\s*# PY_TEST_OK=.+"
+    failure_message:
+      "Please use torch_tpu_py_test instead of py_test, py_strict_test, or "
+      "py_platform_test. This enforces that the code follows best practices "
+      "consistently. If you have a legitimate reason to bypass this check, add "
+      "a comment `# PY_TEST_OK=<reason>` on the first line "
+      "after the `py_test(` or `py_strict_test(` line, e.g.\n"
+      "  py_test(\n"
+      "    # PY_TEST_OK=<reason>\n"
+      "    name = \"foo\",\n"
+      "    ...\n"
+      "  )\n"
+    check_delta_only: true  # Only check new/changed lines.
+  }
+}
+
+presubmit {
+  path_expression: "torch_tpu/...BUILD"
+  path_expression_exclusion: "torch_tpu/oss/..."
+
+  # Enforce that all BUILD files include the torch_tpu_package_end macro at
+  # the end.
+  check_contents {
+    base {
+      id: "CheckTorchTpuPackageEnd"
+      disable_tags: "ROLLBACK_OF"
+      disable_tags: "NO_TORCH_TPU_PACKAGE_END_OK"
+    }
+    required_regexp: "\\btorch_tpu_package_end\\(\\)[\\s|\\n]*$"
+    match_entire_file: true
+    failure_message:
+      "All BUILD files must include the following lines to define some "
+      "special build targets needed by TorchTPU.\n"
+      "Add this to your BUILD file:\n\n"
+      "load(\"//build_files:build_defs.bzl\", "
+      "\"torch_tpu_package_end\")\n"
+      "...\n"
+      "# This must be the last line in the BUILD file.\n"
+      "torch_tpu_package_end()\n\n"
+      "If you have a legitimate reason to not include them, "
+      "add NO_TORCH_TPU_PACKAGE_END_OK=<reason> to the CL description."
+  }
+}
+
+presubmit {
+  path_regexp: "torch_tpu/.*error.*test.*\\.py"
+
+  # Check for tpu="..." and gpu="..." arguments in Python error tests.
+  # Push for tpu="""...""" and gpu="""...""".
+  check_contents {
+    base {
+      id: "CheckPythonErrorTestArgs"
+      disable_tags: "ROLLBACK_OF"
+    }
+    prohibited_regexp: "\\b(tpu|gpu)\\s*=\\s*(\"[^\"]|'[^'])"
+    failure_message:
+      "Please use triple-quoted strings for TPU and GPU error messages in "
+      "Python error tests. This makes the error messages easier to read and "
+      "update via copy-n-paste."
+    check_delta_only: true
+  }
+
+  # Check for `tpu=(` and `gpu=(` arguments in Python error tests.
+  check_contents {
+    base {
+      id: "CheckPythonErrorTestArgsParentheses"
+      disable_tags: "ROLLBACK_OF"
+    }
+    prohibited_regexp: "\\b(tpu|gpu)\\s*=\\s*\\("
+    failure_message:
+      "Please avoid using parentheses around TPU and CPU error messages in "
+      "Python error tests. This makes the error assertion formats more "
+      "consistent and easier to update by agents."
+    check_delta_only: true
+  }
+
+  # Check for backslashes in TPU and GPU error messages in Python error tests.
+  check_contents {
+    base {
+      id: "CheckPythonErrorTestBackslashes"
+      disable_tags: "ROLLBACK_OF"
+    }
+    # The "\\\\" becomes "\\" after unescaping, which is the regex for matching
+    # a single backslash.
+    prohibited_regexp: "\\b(tpu|gpu)=.*\\\\.*"
+    # Allow backslashes in raw strings, e.g. `r"size \[3\]"`.
+    suppression_regexp: "\\br\""
+    failure_message:
+      "Please avoid using backslashes in TPU and GPU error messages in "
+      "error tests. They are unnecessary in triple-quoted strings and "
+      "make the error messages harder to read and update by agents."
+    check_delta_only: true
+  }
+}
+
+# Check for assert on exception in Python non-error tests.
+presubmit {
+  # Include all Python tests.
+  path_regexp: ".*_test\\.py$"
+  # But exclude error tests and OSS tooling tests.
+  path_expression_exclusion: "torch_tpu/oss/..."
+  # go/keep-sorted start
+  path_regexp_exclusion: ".*/error_testing_test\\.py$"
+  path_regexp_exclusion: ".*errors_test\\.py$"
+  # go/keep-sorted end
+  check_contents {
+    base {
+      id: "CheckAssertRaises"
+      disable_tags: "ROLLBACK_OF"
+    }
+    prohibited_regexp: "\\b(assertRaises\\w*|assert_raises_message)\\b"
+    suppression_regexp: "\\bASSERT_RAISES_OK=.+"
+    failure_message:
+      "Please move tests for error handling to a *errors_test.py file so that "
+      "error coverage can be computed correctly. Most of such tests should be "
+      "in tests/errors_test.py. If they are TPU-specific (uncommon), they "
+      "should be in tests/tpu_errors_test.py. Error tests for distributed "
+      "programs should be in one of the other *_errors_test.py files.\n\n"
+      "If you have a legitimate reason to bypass this check, add "
+      "ASSERT_RAISES_OK=<reason> to the same line as the assert call."
+    check_delta_only: true
+  }
+}
+
+# Check for relative imports in non-example Python files.
+presubmit {
+  path_expression: "....py"
+  path_expression_exclusion: "torch_tpu/examples/..."
+  path_expression_exclusion: "torch_tpu/google/prototypes/..."
+  check_contents {
+    base {
+      id: "CheckRelativeImports"
+      disable_tags: "ROLLBACK_OF"
+    }
+    prohibited_regexp: "^\\s*from \\."
+    suppression_regexp: "\\bRELATIVE_IMPORT_OK=.+"
+    failure_message:
+      "Please use absolute imports instead of relative imports in non-example "
+      "Python files. Relative imports are banned by go/pythonstyle and break "
+      "tools like build_cleaner. They can be useful in the examples/ and "
+      "prototypes/ directories, which may need to run in a user's environment, "
+      "but not in other directories.\n\n"
+      "If you have a legitimate reason to use relative imports, add a "
+      "RELATIVE_IMPORT_OK=<reason> comment on the same line as the import."
+    check_delta_only: true
+  }
+}
+
+# Check for flags in Python files that are not tests, benchmarks, or examples.
+presubmit {
+  path_expression: "....py"
+  # go/keep-sorted start
+  path_expression_exclusion: "torch_tpu/_internal/performance/micro/..."
+  path_expression_exclusion: "torch_tpu/google/..."
+  path_regexp_exclusion: ".*benchmark.*"
+  path_regexp_exclusion: ".*example.*"
+  path_regexp_exclusion: ".*test.*"
+  # go/keep-sorted end
+  check_contents {
+    base {
+      id: "CheckPythonFlags"
+      disable_tags: "ROLLBACK_OF"
+    }
+    prohibited_regexp: "\\bflags\\.DEFINE_"
+    suppression_regexp: "\\bPYTHON_FLAG_OK=.+"
+    failure_message:
+      "Please do not define Python flags in torch_tpu except in tests, "
+      "benchmarks, and examples. They lead to crashes when client programs "
+      "skip flag parsing (many of them do).\n\n"
+      "If you have a legitimate reason to not follow this rule, add a "
+      "PYTHON_FLAG_OK=<reason> comment on the same line as the "
+      "flags.DEFINE_* call."
+    check_delta_only: true
+  }
+}
+
+# Check for use of absltest.TestCase, unittest.TestCase, or
+# parameterized.TestCase - prefer RepeatableTest or
+# VaryingSeedInPostsubmitTest.
+presubmit {
+  # go/keep-sorted start
+  path_expression: "....ipynb"
+  path_expression: "....py"
+  # go/keep-sorted end
+  path_expression_exclusion: "torch_tpu/oss/ci/..."
+  check_contents {
+    base {
+      id: "CheckAbslTestCase"
+      disable_tags: "ROLLBACK_OF"
+    }
+    prohibited_regexp: "\\b(absltest|unittest|parameterized)\\.TestCase"
+    suppression_regexp: "\\b(ABSLTEST_OK|UNITTEST_OK)=.+"
+    failure_message:
+      "Instead of absltest.TestCase, unittest.TestCase, or "
+      "parameterized.TestCase, please use "
+      "RepeatableTest or VaryingSeedInPostsubmitTest defined in "
+      "seed_test_utils (or one of their subclasses) to ensure that tests "
+      "have reproducible RNG seeds.\n\n"
+      "If you have a legitimate reason to use it, add a "
+      "`ABSLTEST_OK=<reason>` or `UNITTEST_OK=<reason>` comment on the "
+      "same line as it."
+    check_delta_only: true
+  }
+}
+
+# Prefer our enhanced utils.assert_close for more detailed failure information.
+presubmit {
+  path_expression: "....ipynb"
+  path_expression: "....py"
+  path_expression_exclusion: "torch_tpu/docs/..."
+  path_expression_exclusion: "torch_tpu/examples/..."
+  check_contents {
+    base {
+      id: "CheckAssertClose"
+      disable_tags: "ROLLBACK_OF"  # Don't require for rollback CLs.
+    }
+    prohibited_regexp: "\\b(testing\\.assert_close|assert torch\\.allclose|assertTrue\\(torch\\.allclose)\\("
+    suppression_regexp: "\\bTORCH_ASSERT_CLOSE_OK\\b"
+    failure_message:
+      "For internal torch_tpu tests, please prefer assert_close implemented "
+      "in _internal/utils/utils.py over torch.testing.assert_close or "
+      "asserting `torch.allclose()`. The internal implementation provides "
+      "more detailed information on failure. Examples and tutorials are "
+      "exempt from this check and should use torch.testing.assert_close "
+      "for consistency with PyTorch. If you have a legitimate reason to use "
+      "one of the prohibited patterns in internal tests, add a comment "
+      "`TORCH_ASSERT_CLOSE_OK=<reason>` on the same line."
+  }
+}
+
+# Prevent direct import of logging in core libraries.
+presubmit {
+  # go/keep-sorted start
+  path_expression: "....ipynb"
+  path_expression: "....py"
+  # go/keep-sorted end
+  path_expression_exclusion: "torch_tpu/examples/..."
+  path_expression_exclusion: "torch_tpu/google/prototypes/..."
+  check_contents {
+    base {
+      id: "CheckPythonLogging"
+      disable_tags: "ROLLBACK_OF"
+    }
+    prohibited_regexp: "^\\s*(import\\s+logging|from\\s+logging\\s+import)\\b"
+    suppression_regexp:
+      "\\bPYTHON_LOGGING_OK\\b|"
+      "#.*\\b(import\\s+logging|from\\s+logging\\s+import)\\b"
+    failure_message:
+      "Please use `from absl import logging` instead of the standard "
+      "`logging` module to avoid configuration clashes, swallowing of flags "
+      "like --verbosity, and inconsistent log formatting across the codebase. "
+      "If you have a legitimate reason to use the standard `logging` module, "
+      "add a `# PYTHON_LOGGING_OK=<reason>` comment on the same line."
+    check_delta_only: true
+  }
+}
+
+# Prevent usages of the legacy _init_device API.
+presubmit {
+  # go/keep-sorted start
+  path_expression: "....ipynb"
+  path_expression: "....py"
+  # go/keep-sorted end
+  check_contents {
+    base {
+      id: "CheckInitDeviceUsage"
+      disable_tags: "ROLLBACK_OF"
+    }
+    prohibited_regexp: "\\b_init_device\\b"
+    suppression_regexp:
+      "\\bdef _init_device\\b|"
+      "\\bINIT_DEVICE_OK\\b|"
+      "#.*\\b_init_device\\b|"
+      "`_init_device`"
+    failure_message:
+      "`_init_device` is a legacy API that is no longer needed because the "
+      "TPU backend is automatically initialized when PyTorch loads "
+      "torch_tpu. Please remove calls to `_init_device`. If you have a "
+      "legitimate reason to call it, add an `# INIT_DEVICE_OK=<reason>` "
+      "comment on the same line."
+    check_delta_only: true
+  }
+}
+
+# Catch updating the copyright year in existing files.
+# The year is supposed to be when the file was first published.
+presubmit {
+  # Match common source files and BUILD files.
+  path_regexp: "torch_tpu/.*\\.(h|hpp|c|cc|cpp|py|sh|bzl)"
+  path_regexp: "torch_tpu.*/BUILD"
+
+  check_contents {
+    base {
+      id: "CheckCopyrightYearUpdate"
+      disable_tags: "ALLOW_COPYRIGHT_YEAR_UPDATE"
+    }
+    # EDIT is for existing files.
+    # Unfortunately, check_contents cannot distinguish between new and branched
+    # files (see yaqs/6698737526243328)
+    # Therefore we cannot enforce this check for branched files despite
+    # wanting to do so.
+    operation: EDIT
+    check_delta_only: true
+    prohibited_regexp: "Copyright \\d{4}"
+    failure_status: ERROR
+    failure_message:
+      "Copyright year should be the year the file was first published. "
+      "Please do not update the copyright year in existing files. "
+      "See go/copyright#the-year for more details.\n"
+      "\n"
+      "If you have a legitimate reason to update the year, add "
+      "ALLOW_COPYRIGHT_YEAR_UPDATE=<reason> to your CL description."
+  }
+}
+
+# Check that at::toAccumulateType is not used directly.
+presubmit {
+  path_regexp: "torch_tpu/.*\\.(cc|cpp|h)"
+
+  check_contents {
+    base {
+      id: "CheckToAccumulateTypeUsage"
+      disable_tags: "ROLLBACK_OF"
+    }
+    prohibited_regexp: "\\bat::toAccumulateType\\b"
+    suppression_regexp: "AT_TO_ACCUMULATE_TYPE_OK"
+    failure_message:
+      "Please do not use at::toAccumulateType directly. "
+      "Instead, use ToAccumulateType (defined in common/dtype.h) and set "
+      "options.computation_dtype in DispatchOp, or explicitly cast to the "
+      "proper dtype inside StableHLO op builders."
+      "\n"
+      "If you have a legitimate reason to use it, add a comment "
+      "`// AT_TO_ACCUMULATE_TYPE_OK=<reason>` on the same line."
+    check_delta_only: true
+  }
+}
