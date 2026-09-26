@@ -22,7 +22,7 @@ import torch_tpu
 from torch_tpu._internal.utils import log_utils
 from torch_tpu._internal.utils import test_utils as utils
 from examples import paths
-from examples.benchmarks.huggingface_transformers import model_configs
+from torch_tpu.perflab.huggingface_transformers import model_configs
 import transformers
 
 log_utils.log_to_stderr()

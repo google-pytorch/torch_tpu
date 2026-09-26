@@ -12,24 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for model_configs.py."""
+load("//build_files:build_defs.bzl", "torch_tpu_package_end")
 
-from absl.testing import absltest
-from examples.benchmarks.huggingface_transformers import model_configs
-from tests import seed_test_utils
+package(
+    default_applicable_licenses = ["//:license"],
+    default_visibility = ["//:__subpackages__"],
+)
 
+filegroup(
+    name = "model_configs_data",
+    srcs = glob(["model_configs/**"]),
+)
 
-class ModelConfigsErrorsTest(seed_test_utils.RepeatableTest):
-
-  def test_invalid_model_id(self):
-    # Arrange
-    model_id = "invalid_model_id"
-
-    # Assert
-    with self.assertRaises(ValueError):
-      # Act
-      model_configs.create_config_loader(model_id)()
-
-
-if __name__ == "__main__":
-  absltest.main()
+torch_tpu_package_end()

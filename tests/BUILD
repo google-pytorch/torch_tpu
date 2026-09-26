@@ -213,8 +213,8 @@ pytype_strict_library(
     name = "module_registry",
     srcs = ["module_registry.py"],
     data = [
-        "//examples/benchmarks/huggingface_diffusers:model_configs_data",
-        "//examples/benchmarks/huggingface_transformers:model_configs_data",
+        "//perflab/huggingface_diffusers:model_configs_data",
+        "//perflab/huggingface_transformers:model_configs_data",
         "//shims/model_configs:google_model_configs_data",
     ],
     visibility = ["//:__subpackages__"],

@@ -253,7 +253,7 @@ torch_tpu_py_test(
         "--post_warmup_steps=0",
     ],
     data = [
-        "//examples/benchmarks/huggingface_transformers:model_configs_data",
+        "//perflab/huggingface_transformers:model_configs_data",
         "//shims/model_configs:google_model_configs_data",
     ],
     env = {
@@ -311,7 +311,7 @@ torch_tpu_py_test(
         "--enable_xprof=true",
     ],
     data = [
-        "//examples/benchmarks/huggingface_transformers:model_configs_data",
+        "//perflab/huggingface_transformers:model_configs_data",
     ],
     env = {
         "BENCHMARK_PLATFORM": "v7_1x1x1",
@@ -405,7 +405,7 @@ torch_tpu_py_test(
     timeout = "eternal",
     srcs = ["torch_benchmark_test.py"],
     data = [
-        "//examples/benchmarks/huggingface_transformers:model_configs_data",
+        "//perflab/huggingface_transformers:model_configs_data",
         "//shims/model_configs:google_model_configs_data",
     ],
     env = {
@@ -453,7 +453,7 @@ torch_tpu_py_test(
     timeout = "long",
     srcs = ["torch_benchmark_test.py"],
     data = [
-        "//examples/benchmarks/huggingface_transformers:model_configs_data",
+        "//perflab/huggingface_transformers:model_configs_data",
     ],
     env = {
         "BENCHMARK_PLATFORM": "b200_1",
@@ -501,7 +501,7 @@ pytype_strict_binary(
     testonly = 1,
     srcs = ["distributed_runner.py"],
     data = [
-        "//examples/benchmarks/huggingface_transformers:model_configs_data",
+        "//perflab/huggingface_transformers:model_configs_data",
         "//shims/model_configs:google_model_configs_data",
     ],
     deps = [

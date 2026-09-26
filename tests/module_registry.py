@@ -3157,8 +3157,8 @@ class TransformersProvider(BaseProvider):
   """
 
   _FILES = (
-      resources.files("examples").joinpath(
-          "benchmarks/huggingface_transformers/model_configs"
+      resources.files("perflab").joinpath(
+          "huggingface_transformers/model_configs"
       ),
   )
 
@@ -3485,8 +3485,8 @@ class DiffusersProvider(BaseProvider):
     rather than downloading directly from the Hugging Face Hub.
   """
 
-  _FILES = resources.files("examples").joinpath(
-      "benchmarks/huggingface_diffusers/model_configs"
+  _FILES = resources.files("perflab").joinpath(
+      "huggingface_diffusers/model_configs"
   )
 
   def __init__(self, base_path: str | None = None):
