@@ -4146,9 +4146,7 @@ class TorchTpuTestBase(seed_test_utils.RepeatableTest, common_utils.TestCase):
   dynamism_filter_fn: FilterFn
   dynamism_mark_dynamic_fn: MarkDynamicFn
 
-  tpu_cpu_accuracy_overrides: AccuracyOverrides
   tpu_gpu_accuracy_overrides: AccuracyOverrides
-  grad_accuracy_overrides: AccuracyOverrides
   grad_gpu_accuracy_overrides: AccuracyOverrides
 
   def _skip_if_sparsecore_unsupported(self) -> None:
@@ -4193,13 +4191,7 @@ class TorchTpuTestBase(seed_test_utils.RepeatableTest, common_utils.TestCase):
   def set_accuracy_overrides(
       self,
       *,
-      tpu_cpu_overrides: Mapping[
-          str, Mapping[torch.dtype, Mapping[str, Tolerance]]
-      ],
       tpu_gpu_overrides: Mapping[
-          str, Mapping[torch.dtype, Mapping[str, Tolerance]]
-      ],
-      grad_overrides: Mapping[
           str, Mapping[torch.dtype, Mapping[str, Tolerance]]
       ],
       grad_gpu_overrides: Mapping[
@@ -4209,20 +4201,14 @@ class TorchTpuTestBase(seed_test_utils.RepeatableTest, common_utils.TestCase):
     """Sets the accuracy overrides for the test.
 
     Args:
-      tpu_cpu_overrides: Accuracy overrides for TorchTPU vs CPU.
       tpu_gpu_overrides: Accuracy overrides for TorchTPU vs GPU.
-      grad_overrides: Accuracy overrides for gradients vs CPU.
       grad_gpu_overrides: Accuracy overrides for gradients vs GPU.
 
     To be called by a subclass's setUp() method.
     """
-    _validate_accuracy_overrides(tpu_cpu_overrides)
     _validate_accuracy_overrides(tpu_gpu_overrides)
-    _validate_accuracy_overrides(grad_overrides)
     _validate_accuracy_overrides(grad_gpu_overrides)
-    self.tpu_cpu_accuracy_overrides = tpu_cpu_overrides
     self.tpu_gpu_accuracy_overrides = tpu_gpu_overrides
-    self.grad_accuracy_overrides = grad_overrides
     self.grad_gpu_accuracy_overrides = grad_gpu_overrides
 
   def set_dynamism_handlers(
@@ -5079,13 +5065,7 @@ class OpInfoTestBase(
     if _IGNORE_ACCURACY_OVERRIDES.value:
       accuracy_overrides = {}
     elif compute_grad:
-      accuracy_overrides = (
-          self.grad_gpu_accuracy_overrides
-          if _torch_tpu_vs_gpu_mode()
-          else self.grad_accuracy_overrides
-      )
-    elif _torch_tpu_vs_cpu_mode():
-      accuracy_overrides = self.tpu_cpu_accuracy_overrides
+      accuracy_overrides = self.grad_gpu_accuracy_overrides
     else:
       accuracy_overrides = self.tpu_gpu_accuracy_overrides
 

@@ -1200,16 +1200,12 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     with self.assertRaisesRegex(ValueError, "rtol must be > 0"):
       self.set_accuracy_overrides(
-          tpu_cpu_overrides={"op": {torch.float32: {"rtol": 0}}},
-          tpu_gpu_overrides={},
-          grad_overrides={},
+          tpu_gpu_overrides={"op": {torch.float32: {"rtol": 0}}},
           grad_gpu_overrides={},
       )
     with self.assertRaisesRegex(ValueError, "atol must be > 0"):
       self.set_accuracy_overrides(
-          tpu_cpu_overrides={"op": {torch.float32: {"atol": 0}}},
-          tpu_gpu_overrides={},
-          grad_overrides={},
+          tpu_gpu_overrides={"op": {torch.float32: {"atol": 0}}},
           grad_gpu_overrides={},
       )
 
