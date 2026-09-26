@@ -8555,6 +8555,81 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(test_fn, rtol=rtol, atol=atol)
 
+  @parameterized.product(
+      dim=[0, 1, -1],
+      dtype=[torch.float32, torch.int32, torch.bfloat16],
+  )
+  def test_slice_scatter(self, dim: int, dtype: torch.dtype):
+    """Tests torch.slice_scatter with various dimensions and slice ranges."""
+
+    def test_fn(device: torch.device) -> torch.Tensor:
+      self_tensor = torch.arange(24, dtype=dtype, device=device).reshape(
+          2, 3, 4
+      )
+      if dim in (0, -3):
+        src = torch.ones(1, 3, 4, dtype=dtype, device=device) * 99
+        return torch.slice_scatter(self_tensor, src, dim=dim, start=1, end=2)
+      elif dim in (1, -2):
+        src = torch.ones(2, 2, 4, dtype=dtype, device=device) * 99
+        return torch.slice_scatter(self_tensor, src, dim=dim, start=0, end=2)
+      else:
+        src = torch.ones(2, 3, 2, dtype=dtype, device=device) * 99
+        return torch.slice_scatter(self_tensor, src, dim=dim, start=1, end=3)
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
+  def test_slice_scatter_edge_cases(self):
+    """Tests torch.slice_scatter edge cases (empty slice, negative indices)."""
+
+    def test_empty_slice(device: torch.device) -> torch.Tensor:
+      self_tensor = torch.arange(
+          12, dtype=torch.float32, device=device
+      ).reshape(3, 4)
+      src = torch.empty(0, 4, dtype=torch.float32, device=device)
+      return torch.slice_scatter(self_tensor, src, dim=0, start=2, end=2)
+
+    self.assert_close_tpu_vs_cpu(test_empty_slice)
+
+    def test_negative_indices(device: torch.device) -> torch.Tensor:
+      self_tensor = torch.arange(
+          12, dtype=torch.float32, device=device
+      ).reshape(3, 4)
+      src = torch.ones(2, 4, dtype=torch.float32, device=device) * -5
+      return torch.slice_scatter(self_tensor, src, dim=0, start=-2, end=3)
+
+    self.assert_close_tpu_vs_cpu(test_negative_indices)
+
+  @parameterized.product(
+      dim=[0, 1, -1],
+      index=[0, -1],
+      dtype=[torch.float32, torch.int32, torch.bfloat16],
+  )
+  def test_select_scatter(self, dim: int, index: int, dtype: torch.dtype):
+    """Tests torch.select_scatter with various dimensions and index positions."""
+
+    def test_fn(device: torch.device) -> torch.Tensor:
+      self_tensor = torch.arange(24, dtype=dtype, device=device).reshape(
+          2, 3, 4
+      )
+      target_dim = dim if dim >= 0 else dim + self_tensor.dim()
+      slice_shape = [
+          s for i, s in enumerate(self_tensor.shape) if i != target_dim
+      ]
+      src = torch.ones(slice_shape, dtype=dtype, device=device) * 42
+      return torch.select_scatter(self_tensor, src, dim=dim, index=index)
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
+  def test_select_scatter_1d(self):
+    """Tests torch.select_scatter on 1D tensor with scalar src."""
+
+    def test_fn(device: torch.device) -> torch.Tensor:
+      self_tensor = torch.arange(5, dtype=torch.float32, device=device)
+      src = torch.tensor(100.0, dtype=torch.float32, device=device)
+      return torch.select_scatter(self_tensor, src, dim=0, index=2)
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
   def test_foreach_add_different_dtypes_with_alpha(self):
     """Tests _foreach_add with different dtypes and an alpha parameter."""
 

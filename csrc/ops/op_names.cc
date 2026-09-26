@@ -1431,6 +1431,8 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "segment_reduce";
     case OpName::kSelectBackward:
       return "select_backward";
+    case OpName::kSelectScatter:
+      return "select_scatter";
     case OpName::kSetDimensionLogicalSize:
       return "set_dimension_logical_size";
     case OpName::kSet_:
@@ -1465,6 +1467,8 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "slice";
     case OpName::kSliceBackward:
       return "slice_backward";
+    case OpName::kSliceScatter:
+      return "slice_scatter";
     case OpName::kSoftmaxBackwardDataOut:
       return "_softmax_backward_data.out";
     case OpName::kSoftmaxOut:
