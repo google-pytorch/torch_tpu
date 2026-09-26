@@ -18,6 +18,8 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import numpy as np
 import torch
+from torch_tpu._internal.compile import tpu_torch_compile
+import torch_tpu._internal.device_utils.annotations as tpu_annotations
 from torch_tpu._internal.utils.hardware import get_tpu_version
 from torch_tpu._internal.utils.hardware import TpuVersion
 from tests import op_testing
@@ -1559,6 +1561,98 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
               f" Expected: {expected_vel_np[r]}"
           ),
       )
+
+  def test_sparse_dense_matmul_grad_preserves_t8_layout_on_tpu(self):
+    device = torch.device("tpu")
+    row_pointers, embedding_ids, sample_ids, gains, embedding_table = (
+        self._get_inputs(device)
+    )
+    t8_layout = tpu_annotations.TpuLayout(minor_to_major=[1, 0], tiles=[[8]])
+    with tpu_annotations.LayoutContext(t8_layout):
+      table_t8 = embedding_table.cpu().to(device)
+      acc_t8 = torch.zeros_like(embedding_table.cpu()).to(device)
+      mom_t8 = torch.zeros_like(embedding_table.cpu()).to(device)
+      vel_t8 = torch.zeros_like(embedding_table.cpu()).to(device)
+
+    batch_size = 16
+    embedding_dim = embedding_table.shape[1]
+    activations_grad = (
+        torch.ones(
+            batch_size, embedding_dim, dtype=torch.float32, device=device
+        )
+        * 0.01
+    )
+    lr = torch.tensor(0.01, dtype=torch.float32, device=device)
+
+    for step in range(2):
+      table_t8 = torch.ops.tpu.sparse_dense_matmul_grad_with_sgd(
+          row_pointers,
+          embedding_ids,
+          sample_ids,
+          gains,
+          table_t8,
+          activations_grad,
+          lr,
+          device_batch_size=batch_size,
+          max_ids_per_partition=16,
+          max_unique_ids_per_partition=16,
+          computation_name="t8_sgd_table",
+      )
+      _ = table_t8.cpu()
+      layout_tuple = tpu_torch_compile.get_device_layout_if_materialized(
+          table_t8
+      )
+      self.assertIsNotNone(
+          layout_tuple, msg=f"Step {step}: layout should exist"
+      )
+      self.assertEqual(tpu_annotations.TpuLayout(*layout_tuple), t8_layout)
+
+    upd_table, upd_acc = torch.ops.tpu.sparse_dense_matmul_grad_with_adagrad(
+        row_pointers,
+        embedding_ids,
+        sample_ids,
+        gains,
+        table_t8,
+        acc_t8,
+        activations_grad,
+        lr,
+        epsilon=1e-8,
+        device_batch_size=batch_size,
+        max_ids_per_partition=16,
+        max_unique_ids_per_partition=16,
+        computation_name="t8_adagrad_table",
+    )
+    _ = upd_table.cpu(), upd_acc.cpu()
+    for t in (upd_table, upd_acc):
+      layout_tuple = tpu_torch_compile.get_device_layout_if_materialized(t)
+      self.assertIsNotNone(layout_tuple)
+      self.assertEqual(tpu_annotations.TpuLayout(*layout_tuple), t8_layout)
+
+    upd_table, upd_mom, upd_vel = (
+        torch.ops.tpu.sparse_dense_matmul_grad_with_adam(
+            row_pointers,
+            embedding_ids,
+            sample_ids,
+            gains,
+            table_t8,
+            mom_t8,
+            vel_t8,
+            activations_grad,
+            lr,
+            beta_1=0.9,
+            beta_2=0.999,
+            epsilon=1e-8,
+            device_batch_size=batch_size,
+            max_ids_per_partition=16,
+            max_unique_ids_per_partition=16,
+            computation_name="t8_adam_table",
+        )
+    )
+    _ = upd_table.cpu(), upd_mom.cpu(), upd_vel.cpu()
+    for t in (upd_table, upd_mom, upd_vel):
+      layout_tuple = tpu_torch_compile.get_device_layout_if_materialized(t)
+      self.assertIsNotNone(layout_tuple)
+      self.assertEqual(tpu_annotations.TpuLayout(*layout_tuple), t8_layout)
 
 
 if __name__ == "__main__":

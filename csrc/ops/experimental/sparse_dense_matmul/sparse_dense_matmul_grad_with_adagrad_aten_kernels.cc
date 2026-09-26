@@ -287,6 +287,16 @@ std::tuple<at::Tensor, at::Tensor> AtenSparseDenseMatmulGradWithAdagrad(
                               {.out_dtypes = {out_dtype, acc_dtype},
                                .out_dims_list = {out_dims, acc_dims},
                                .op_param_cache_keys = std::move(param_keys)})));
+        TT_ASSIGN_OR_THROW(const auto table_buf,
+                           torch_tpu::GetBuffer(embedding_table));
+        if (table_buf.shape().layout().has_value()) {
+          results[0].set_layout(*table_buf.shape().layout());
+        }
+        TT_ASSIGN_OR_THROW(const torch_tpu::DeviceBufferRef acc_buf,
+                           torch_tpu::GetBuffer(accumulator));
+        if (acc_buf.shape().layout().has_value()) {
+          results[1].set_layout(*acc_buf.shape().layout());
+        }
 
         return std::make_tuple(torch_tpu::MakeTensor(std::move(results[0])),
                                torch_tpu::MakeTensor(std::move(results[1])));

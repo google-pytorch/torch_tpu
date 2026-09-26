@@ -1168,6 +1168,8 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile:tpu_torch_compile",
+        "//src/torch_tpu/_internal/device_utils:annotations",
         "//src/torch_tpu/_internal/utils:hardware",
         "@pypi//numpy",
     ],

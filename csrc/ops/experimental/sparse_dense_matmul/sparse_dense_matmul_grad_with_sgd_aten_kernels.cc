@@ -217,6 +217,11 @@ at::Tensor AtenSparseDenseMatmulGradWithSgd(
                               {.out_dtype = out_dtype,
                                .out_dims = out_dims,
                                .op_param_cache_keys = std::move(param_keys)})));
+        TT_ASSIGN_OR_THROW(const torch_tpu::DeviceBufferRef table_buf,
+                           torch_tpu::GetBuffer(embedding_table));
+        if (table_buf.shape().layout().has_value()) {
+          results.set_layout(*table_buf.shape().layout());
+        }
 
         return torch_tpu::MakeTensor(results);
       });
