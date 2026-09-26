@@ -20,8 +20,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <tuple>
-#include <type_traits>
 #include <vector>
 
 #include "ATen/core/Dict.h"
@@ -33,7 +31,6 @@
 #include "ATen/ops/zeros.h"
 #include "Eigen/Core"
 #include "absl/container/flat_hash_map.h"
-#include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
@@ -117,7 +114,7 @@ TORCH_LIBRARY_FRAGMENT(tpu, m) {
         .num_sc_per_device = static_cast<int>(num_sc_per_device),
         .sharding_strategy = sc_preprocessing::ShardingStrategy::kMod,
         .allow_id_dropping = allow_id_dropping,
-        .enable_minibatching = false,
+        .minibatching_mode = sc_preprocessing::MinibatchingMode::kDisabled,
     };
     const int row_pointers_size_per_device =
         sc_options.GetRowPointersSizePerDevice();
