@@ -271,7 +271,6 @@ torch_tpu_py_test(
         # //tests/pallas:pallas_communication_test.
         "TPU_PREMAPPED_BUFFER_SIZE": "0",
     },
-    notest_oss = True,  # NOTEST_OSS_OK=Disabled in OSS due to multi-process v7x runner hang.
     tags = if_oss(
         ["exclusive"],
         [],
