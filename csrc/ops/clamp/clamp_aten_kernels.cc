@@ -102,26 +102,27 @@ absl::StatusOr<Dimensions> ComputeOutputShape(
 absl::Status AtenClampTensorHelper(const at::Tensor& self,
                                    const c10::optional<at::Tensor>& min_,
                                    const c10::optional<at::Tensor>& max_,
-                                   at::ScalarType computation_scalar_type,
-                                   bool allow_out_dtype_cast, at::Tensor& out,
+                                   const at::ScalarType computation_scalar_type,
+                                   const bool allow_out_dtype_cast,
+                                   at::Tensor& out,
                                    OpParamCacheKeys param_keys) {
-  auto min = SanitizeOptionalTensor(min_);
-  auto max = SanitizeOptionalTensor(max_);
+  const auto min = SanitizeOptionalTensor(min_);
+  const auto max = SanitizeOptionalTensor(max_);
 
   TT_RETURN_IF_ERROR(
       ValidateOutDtype(out, computation_scalar_type, allow_out_dtype_cast));
 
   TT_ASSIGN_OR_RETURN(const auto output_dtype,
                       ConvertTo<mlir::ElementType>(out.scalar_type()));
-  TT_ASSIGN_OR_RETURN(Dimensions output_dims,
+  TT_ASSIGN_OR_RETURN(const Dimensions output_dims,
                       ComputeOutputShape(self, min, max));
 
   TT_ASSIGN_OR_RETURN(const auto computation_dtype,
                       ConvertTo<mlir::ElementType>(computation_scalar_type));
 
   if (min && max) {
-    auto op_builder = [](FixedSizeSpan<mlir::MlirOp, 3> inputs) {
-      auto& [self, min, max] = inputs;
+    const auto op_builder = [](FixedSizeSpan<mlir::MlirOp, 3> inputs) {
+      const auto& [self, min, max] = inputs;
       return BuildClampShlo(self, min, max);
     };
 
@@ -135,8 +136,8 @@ absl::Status AtenClampTensorHelper(const at::Tensor& self,
                             std::move(options));
 
   } else if (min) {
-    auto op_builder = [](FixedSizeSpan<mlir::MlirOp, 2> inputs) {
-      auto& [self, min] = inputs;
+    const auto op_builder = [](FixedSizeSpan<mlir::MlirOp, 2> inputs) {
+      const auto& [self, min] = inputs;
       return BuildClampShlo(self, min, std::nullopt);
     };
     DispatchOpOptions<1> options = {
@@ -149,8 +150,8 @@ absl::Status AtenClampTensorHelper(const at::Tensor& self,
                             std::move(options));
 
   } else if (max) {
-    auto op_builder = [](FixedSizeSpan<mlir::MlirOp, 2> inputs) {
-      auto& [input, max] = inputs;
+    const auto op_builder = [](FixedSizeSpan<mlir::MlirOp, 2> inputs) {
+      const auto& [input, max] = inputs;
       return BuildClampShlo(input, std::nullopt, max);
     };
     DispatchOpOptions<1> options = {
@@ -163,7 +164,8 @@ absl::Status AtenClampTensorHelper(const at::Tensor& self,
                             std::move(options));
 
   } else {
-    auto op_builder = [](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
+    const auto op_builder =
+        [](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
       return BuildClampShlo(input, std::nullopt, std::nullopt);
     };
 
@@ -182,8 +184,8 @@ absl::Status AtenClampTensorHelper(const at::Tensor& self,
 absl::Status ClampScalarHelper(const at::Tensor& self,
                                std::optional<PromotedScalar> min,
                                std::optional<PromotedScalar> max,
-                               at::ScalarType computation_scalar_type,
-                               bool allow_out_dtype_cast, at::Tensor& out,
+                               const at::ScalarType computation_scalar_type,
+                               const bool allow_out_dtype_cast, at::Tensor& out,
                                OpParamCacheKeys param_keys) {
   std::optional<at::Tensor> min_tensor;
   if (min.has_value()) {
