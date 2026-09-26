@@ -89,13 +89,18 @@ torch_tpu_py_test(
     name = "pallas_communication_test",
     srcs = ["pallas_communication_test.py"],
     env = {"TPU_PREMAPPED_BUFFER_SIZE": "0"},
-    notest_oss = True,  # TODO(b/497890629): Fix hang in OSS and enable in OSS.
     shard_count = 2,
-    tags = [
+    tags = if_oss(
+        ["exclusive"],
+        [],
+    ) + [
+        "fails-on-tpu-v5",
+        "fails-on-tpu-v6",
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
-        "requires-tpu-v5lite:8",
+        "ok-to-wait-for-v7x-in-presubmit",
+        "requires-tpu-v7x:4",
     ],
     deps = [
         "//shims/absl_py/logging",

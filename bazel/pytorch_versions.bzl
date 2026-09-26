@@ -44,6 +44,7 @@ DEFAULT_TORCH_VERSION = "2.11.0"
 EXTRA_PYTORCH_VERSIONS = [
     "2.12.0",
     "2.13.0",
+    "2.14.0",
 ]
 
 # Every released PyTorch version the wheel is built against -- the default plus
@@ -52,8 +53,8 @@ WHEEL_TORCH_VERSIONS = [DEFAULT_TORCH_VERSION] + EXTRA_PYTORCH_VERSIONS
 
 # The release version the PyTorch nightly channel currently leads up to. The
 # nightly glue is one more glue like any other -- named by this version (glue
-# package glue_2_14_0, config setting //:torch_2_14_0, artifacts like
-# env_2_14_0.so), and served by the runtime dispatch through the ordinary
+# package glue_2_15_0, config setting //:torch_2_15_0, artifacts like
+# env_2_15_0.so), and served by the runtime dispatch through the ordinary
 # newest-at-or-below rule (a dev build's version triple is the release it
 # precedes). Only its torch differs: it is built against the dev snapshot
 # pinned in requirements/requirements_torch_nightly.txt, so this constant must
