@@ -234,7 +234,6 @@ def excess_precision_verification(torch):
 
   # The 13th bit will not be allowed because of the flag.
   print("=== TPU values: compiled with allow_excess_precision = False ===")
-  torch.tpu._clear_cache()
   torch.compiler.reset()
   torch.backends.tpu.allow_excess_precision = False
   mul_add_compiled_false = torch.compile(mul_add, backend="tpu")
@@ -255,7 +254,6 @@ def excess_precision_verification(torch):
 
   # The 13th bit might be flipped because of the flag.
   print("=== TPU values: compiled with allow_excess_precision = True ===")
-  torch.tpu._clear_cache()
   torch.compiler.reset()
   torch.backends.tpu.allow_excess_precision = True
   mul_add_compiled_true = torch.compile(mul_add, backend="tpu")
