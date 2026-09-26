@@ -262,6 +262,47 @@ untriaged_ops_deny_list: dict[
     "zeros_like": {COMPILE},  # buffer dimension mismatch
 }
 
+# Mode-aware deny lists of triaged ops, keyed by the reason for the skip. Add
+# newly triaged ops here instead of to `untriaged_ops_deny_list`.
+# TODO: b/449736443 - Support bounded dimensions in these lowerings.
+triaged_ops_deny_lists: dict[
+    str, dict[str, set[DynamismMode] | frozenset[DynamismMode]]
+] = {
+    "the lowering broadcasts a bounded input to a static shape": {
+        "baddbmm": {EAGER},
+        "bernoulli": {EAGER},
+        # These abort the test process with a CHECK failure.
+        "linalg.lu_solve": {EAGER},
+        "linalg.qr": {EAGER},
+        "linalg.solve_triangular": {EAGER},
+    },
+    "the lowering emits an op without bounded shape support": {
+        "sort": {EAGER},  # stablehlo.iota must be static
+        # stablehlo.reshape allows at most one bounded dimension. This fails
+        # when dims 0 and 2 are both dynamic, which happens in compile mode
+        # because dims marked in earlier subtests stay dynamic.
+        # TODO: b/566327707 - Remove once marked dims no longer carry over.
+        "torch.ops.aten._safe_softmax.default": {COMPILE},
+    },
+    "convolutions do not support bounded dimensions": {
+        "nn.functional.conv1d": ALL_MODES,
+        "nn.functional.conv2d": ALL_MODES,
+        "nn.functional.conv_transpose1d": ALL_MODES,
+        "nn.functional.conv_transpose2d": ALL_MODES,
+    },
+    "linalg decompositions do not support bounded dimensions": {
+        "geqrf": {EAGER},  # Aborts the test process with a CHECK failure.
+        "linalg.inv": {EAGER},
+        "linalg.lu": {EAGER},
+        "linalg.solve_ex": {EAGER},
+    },
+    "the result has wrong values": {
+        # TODO: b/566327914 - With dim 0 bounded, the result matches the
+        # transposed golden output.
+        "nn.functional.hardtanh": {EAGER},
+    },
+}
+
 
 def verify_op_supports_dynamism(
     op_info: core.OpInfo,
@@ -288,6 +329,12 @@ def verify_op_supports_dynamism(
     denied_modes = untriaged_ops_deny_list[op.name]
     if mode in denied_modes:
       return f"Op {op.name} is not supported in {mode.value} dynamism mode."
+  for reason, deny_list in triaged_ops_deny_lists.items():
+    if mode in deny_list.get(op.name, ()):
+      return (
+          f"Op {op.name} is not supported in {mode.value} dynamism mode:"
+          f" {reason}."
+      )
 
   libtpu = utils.libtpu_version()
   if op.name == "addcdiv" and libtpu is not None and libtpu < (0, 0, 47):
@@ -304,6 +351,13 @@ def verify_op_supports_dynamism(
     skip_input = _should_skip_input_marking(op, value)
     if skip_input:
       return skip_input
+
+  # The loop above sees no values in an empty input, e.g. the shape `()` passed
+  # to `torch.empty`, so also check the input that `mark_dynamic` will mark.
+  canonical_input = _get_canonical_input_value(op, input_value)
+  skip_input = _should_skip_input_marking(op, canonical_input)
+  if skip_input:
+    return skip_input
 
   require_mark_dynamic_support = [
       # Needs matmul-style marking
@@ -335,6 +389,22 @@ def verify_op_supports_dynamism(
   reduction_deny_list = ["all", "any"]
   if op.name in reduction_deny_list:
     return f"reduction op {op.name} is not supported with dynamism."
+
+  ### [OSS BUGS] ###
+  # In OSS (libtpu 0.0.41 in CI), eager ops sometimes return wrong values for
+  # float64 and int64 inputs with a bounded dim, e.g. int64 results that lose
+  # their upper 32 bits. The bounded dim is chosen at random, so the ops that
+  # fail can change between runs. Skip these dtypes for all ops.
+  # TODO: b/449736443 - Re-enable once these dtypes pass in OSS.
+  if (
+      mode == EAGER
+      and libtpu is not None
+      and canonical_input.dtype in (torch.float64, torch.int64)
+  ):
+    return (
+        f"{canonical_input.dtype} is not supported in eager dynamism mode in"
+        " OSS."
+    )
 
   # Valid testcase!
   return None

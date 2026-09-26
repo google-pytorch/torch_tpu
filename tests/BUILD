@@ -378,8 +378,8 @@ torch_tpu_py_library(
 # * ops_test_grad_tpu_vs_gpu: gradient on TPU vs GPU.
 # * ops_test_gen_gpu_golden_grad: generates the golden file for gradients.
 # * ops_test_perf: TPU only, for measuring compilation/execution time.
-# * ops_test_dynamic_vs_cpu: TPU vs GPU, bounds a dimension.
-# * ops_test_dynamic_compiled_vs_cpu: TPU vs GPU, bounds a dimension under torch.compile.
+# * ops_test_dynamic: TPU vs GPU, bounds a dimension.
+# * ops_test_dynamic_compiled: TPU vs GPU, bounds a dimension under torch.compile.
 # * ops_test_compiled: TPU vs GPU (torch.compile TpuBackend vs GPU inductor backend).
 
 # We chose to manually maintain the duplicate tests instead of using a for-loop to generate the
@@ -834,15 +834,18 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
-    # TODO: switch to TPU-vs-GPU mode.
-    name = "ops_test_dynamic_vs_cpu",
+    name = "ops_test_dynamic",
     timeout = "long",  # Needed for asan.
     srcs = ["ops_test.py"],
     args = [
         "--check_dynamism_using_seed=-1",
-        "--test_mode=torch_tpu_vs_cpu",
         "--print_op_inputs=1",
         "--max_samples_per_op_dtype=1",  # No need to test many samples to catch dynamism bugs.
+    ],
+    data = [
+        "ops_test_gpu_golden0.gz",
+        "ops_test_gpu_golden1.gz",
+        "ops_test_gpu_golden2.gz",
     ],
     main = "ops_test.py",
     run_on_accelerators = [
@@ -870,18 +873,22 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
-    name = "ops_test_dynamic_compiled_vs_cpu",
+    name = "ops_test_dynamic_compiled",
     timeout = "long",  # Needed for asan.
     srcs = ["ops_test.py"],
     args = [
         "--check_dynamism_using_seed=-1",
         "--use_compiled=True",
-        "--test_mode=torch_tpu_vs_cpu",
         "--print_op_inputs=1",
         "--max_samples_per_op_dtype=1",  # No need to test many samples to catch dynamism bugs.
     ],
+    data = [
+        "ops_test_gpu_golden_compiled0.gz",
+        "ops_test_gpu_golden_compiled1.gz",
+        "ops_test_gpu_golden_compiled2.gz",
+    ],
     main = "ops_test.py",
-    nopresubmit = "Dynamic compile tests are run in postsubmit.",
+    nopresubmit = "Dynamic compile tests are run in postsubmit to avoid overloading the presubmit.",
     run_on_accelerators = [
         "requires-tpu-v6e",
         "requires-tpu-v5lite",
