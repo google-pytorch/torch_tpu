@@ -73,6 +73,7 @@
 #include "mlir/IR/MLIRContext.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "tsl/platform/numbers.h"
+#include "xla/client/executable_build_options.h"
 #include "xla/hlo/utils/concurrency/concurrency_utils.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_compiler.h"
@@ -1016,10 +1017,27 @@ bool CompilationCache::ShouldUseTier2Cache() const {
   return allow_cache && UsesTier2CompilationCache();
 }
 
+bool BuildsForDeviceSubgroup(const xla::CompileOptions& compile_options,
+                             int num_devices) {
+  const xla::ExecutableBuildOptions& build_options =
+      compile_options.executable_build_options;
+  if (!build_options.has_device_assignment()) {
+    return false;
+  }
+  const xla::DeviceAssignment& assignment = build_options.device_assignment();
+  return assignment.replica_count() * assignment.computation_count() <
+         num_devices;
+}
+
 void CompilationCache::GetFromTier2OrCompile(
     CompilationCacheKey key, LoadedExecutableBuilder executable_builder,
     UniqueCompileOptions compile_options) {
-  const bool uses_tier2 = ShouldUseTier2Cache();
+  const xla::PjRtClient* const client = PjrtBackend::GetInstance().GetClient();
+  const bool builds_for_device_subgroup =
+      client != nullptr &&
+      BuildsForDeviceSubgroup(*compile_options,
+                              static_cast<int>(client->devices().size()));
+  const bool uses_tier2 = !builds_for_device_subgroup && ShouldUseTier2Cache();
   ABSL_VLOG(1) << "Compiling executable for key: " << key
                << (uses_tier2 ? absl::StrCat(" with tier-2 cache at ",
                                              GetTier2CompilationCachePath())

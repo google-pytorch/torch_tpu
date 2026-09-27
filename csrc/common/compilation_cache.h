@@ -489,7 +489,9 @@ class CompilationCache {
 
   // Tries to get the compilation result from the tier-2 cache; if not
   // found, compiles the graph and stores the executable in the tier-1/2/3
-  // caches.
+  // caches. An executable built for a device subgroup (see
+  // `BuildsForDeviceSubgroup()`) is compiled and stored in the tier-1 cache
+  // only.
   //
   // Precondition:
   //  - `key` is already in `executable_cache_` but the executable is not set.
@@ -560,6 +562,11 @@ class CompilationCache {
   // Whether the cache has been fully initialized (thread pools started).
   bool initialized_ ABSL_GUARDED_BY(cache_mutex_) = false;
 };
+
+// Returns true if `compile_options` build an executable for fewer devices than
+// the `num_devices` of the client, i.e. for a proper subgroup of the devices.
+[[nodiscard]] bool BuildsForDeviceSubgroup(
+    const xla::CompileOptions& compile_options, int num_devices);
 
 // Returns the number of threads to use for compilation based on the flag value,
 // the NPROC environment variable, or the hardware concurrency. Guaranteed to be

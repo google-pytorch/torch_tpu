@@ -60,6 +60,7 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "xla/client/executable_build_options.h"
 #include "xla/hlo/builder/xla_builder.h"
 #include "xla/hlo/builder/xla_computation.h"
 #include "xla/layout_util.h"
@@ -126,6 +127,27 @@ SharedLoadedExecutableWithMetadata CreateDummyLoadedExecutable() {
 
 bool IsCompatible(absl::Span<const Shape> shapes) {
   return shapes.size() == 1 && shapes[0].dimensions().size() == 2;
+}
+
+TEST(BuildsForDeviceSubgroupTest, ComparesAssignedDevicesToClientDevices) {
+  xla::CompileOptions compile_options;
+  xla::ExecutableBuildOptions& build_options =
+      compile_options.executable_build_options;
+  EXPECT_FALSE(BuildsForDeviceSubgroup(compile_options, /*num_devices=*/8));
+
+  // One replica with a partition per device of a pair.
+  xla::DeviceAssignment pair(/*replica_count=*/1, /*computation_count=*/2);
+  pair(0, 0) = 6;
+  pair(0, 1) = 7;
+  build_options.set_device_assignment(pair);
+  EXPECT_TRUE(BuildsForDeviceSubgroup(compile_options, /*num_devices=*/8));
+  EXPECT_FALSE(BuildsForDeviceSubgroup(compile_options, /*num_devices=*/2));
+
+  // One replica per device of the client.
+  xla::DeviceAssignment replicated(/*replica_count=*/8,
+                                   /*computation_count=*/1);
+  build_options.set_device_assignment(replicated);
+  EXPECT_FALSE(BuildsForDeviceSubgroup(compile_options, /*num_devices=*/8));
 }
 
 TEST(PerfStatsPrinterTest, EmptyPerEntry) {
