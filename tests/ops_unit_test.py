@@ -2287,6 +2287,45 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     # Relax tolerances because we are running in BF16 on TPU for performance.
     self.assert_close_tpu_vs_cpu(run_backward, rtol=6e-2, atol=4e-2)
 
+  @parameterized.product(
+      shape=[(2, 4, 8, 8), (4, 3, 16), (2, 5, 4, 4, 4)],
+      dtype=[torch.float32, torch.bfloat16],
+      mask=[
+          [True, True, True],
+          [True, False, False],
+          [False, True, False],
+          [False, False, True],
+          [True, True, False],
+      ],
+  )
+  def test_native_batch_norm_backward_comprehensive(self, shape, dtype, mask):
+    """Tests training batch_norm_backward across shapes, dtypes, and output masks."""
+    c = shape[1]
+    stats_dtype = torch.float32
+    grad_out = torch.randn(*shape, dtype=dtype)
+    input_val = torch.randn(*shape, dtype=dtype)
+    weight = torch.randn(c, dtype=stats_dtype)
+    save_mean = torch.randn(c, dtype=stats_dtype)
+    save_invstd = torch.rand(c, dtype=stats_dtype) + 0.1
+
+    def run_backward(device):
+      return torch.ops.aten.native_batch_norm_backward(
+          grad_out.to(device),
+          input_val.to(device),
+          weight.to(device),
+          None,
+          None,
+          save_mean.to(device),
+          save_invstd.to(device),
+          True,  # training
+          1e-5,  # eps
+          mask,
+      )
+
+    rtol = 5e-2 if dtype == torch.bfloat16 else 1e-4
+    atol = 5e-2 if dtype == torch.bfloat16 else 1e-4
+    self.assert_close_tpu_vs_cpu(run_backward, rtol=rtol, atol=atol)
+
   def test_native_batch_norm_legit_out(self):
     input_dtype = torch.float32
     stats_dtype = torch.float32
