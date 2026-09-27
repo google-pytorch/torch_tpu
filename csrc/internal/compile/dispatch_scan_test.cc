@@ -664,8 +664,8 @@ TEST_F(DispatchScanTest, DtypeMismatchError) {
       StatusIs(
           error::kPythonRuntimeError,
           HasSubstr("expect operands to be compatible with body block return "
-                    "types but got 'tensor<i64>', 'tensor<1xf32>', "
-                    "'tensor<4x1xi32>' vs 'tensor<i64>', 'tensor<1xi32>', "
+                    "types but got 'tensor<i32>', 'tensor<1xf32>', "
+                    "'tensor<4x1xi32>' vs 'tensor<i32>', 'tensor<1xi32>', "
                     "'tensor<4x1xi32>'")));
 }
 

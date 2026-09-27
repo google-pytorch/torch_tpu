@@ -53,14 +53,14 @@ constexpr std::string_view kMinLibtpuVersionWithNativeScan = "0.0.44";
 mlir::Value GetScanDimSize(mlir::MlirBuilder& builder, mlir::MlirOp input,
                            const int64_t scan_dim) {
   const mlir::RankedTensorType type = GetTensorTypeOrDie(input);
-  const mlir::IntegerType i64 = builder.getOpBuilder().getI64Type();
+  const mlir::IntegerType i32 = builder.getOpBuilder().getI32Type();
   if (!type.isDynamicDim(scan_dim)) {
-    return MakeScalarConstant(builder, type.getShape()[scan_dim], i64)
+    return MakeScalarConstant(builder, type.getShape()[scan_dim], i32)
         .getValue();
   }
   mlir::MlirOp size = mlir::stablehlo::GetDimensionSize(input, scan_dim);
-  if (!size.getType().isInteger(64)) {
-    size = mlir::stablehlo::ConvertElementType(size, i64);
+  if (!size.getType().isInteger(32)) {
+    size = mlir::stablehlo::ConvertElementType(size, i32);
   }
   return size.getValue();
 }
@@ -68,9 +68,9 @@ mlir::Value GetScanDimSize(mlir::MlirBuilder& builder, mlir::MlirOp input,
 llvm::SmallVector<mlir::MlirOp, 4> CreateStartIndices(
     mlir::MlirBuilder& builder, const mlir::Value index, const int64_t rank,
     const int64_t scan_dim) {
-  const mlir::IntegerType i64 = builder.getOpBuilder().getI64Type();
+  const mlir::IntegerType i32 = builder.getOpBuilder().getI32Type();
   llvm::SmallVector<mlir::MlirOp, 4> indices(
-      rank, MakeScalarConstant(builder, 0, i64));
+      rank, MakeScalarConstant(builder, 0, i32));
   indices[scan_dim] = mlir::MlirOp(builder, index);
   return indices;
 }
@@ -78,9 +78,9 @@ llvm::SmallVector<mlir::MlirOp, 4> CreateStartIndices(
 mlir::Value IncrementLoopIndex(mlir::MlirBuilder& builder,
                                const mlir::Location loc,
                                const mlir::Value index) {
-  const mlir::IntegerType i64 = builder.getOpBuilder().getI64Type();
+  const mlir::IntegerType i32 = builder.getOpBuilder().getI32Type();
   mlir::MlirOp index_op(builder, index);
-  mlir::MlirOp one = MakeScalarConstant(builder, 1, i64);
+  mlir::MlirOp one = MakeScalarConstant(builder, 1, i32);
   return mlir::stablehlo::Add(index_op, one).getValue();
 }
 
@@ -99,13 +99,15 @@ absl::StatusOr<ScanLoopState> PrepareScanLoop(
   TT_ASSIGN_OR_RETURN(const int64_t scan_dim,
                       SafeWrapDim(dim, GetTensorTypeOrDie(input).getRank()));
 
-  const mlir::IntegerType i64 = op_builder.getI64Type();
+  // s32, as in jax.lax.scan: TPU splits s64 into two u32, which hides the trip
+  // count from XLA's loop passes.
+  const mlir::IntegerType i32 = op_builder.getI32Type();
   const mlir::RankedTensorType index_type =
-      mlir::RankedTensorType::get({}, i64);
+      mlir::RankedTensorType::get({}, i32);
 
   llvm::SmallVector<mlir::Type> loop_types = {index_type};
   llvm::SmallVector<mlir::Value> loop_inits = {
-      MakeScalarConstant(builder, 0, i64).getValue()};
+      MakeScalarConstant(builder, 0, i32).getValue()};
 
   for (mlir::MlirOp c : carry_inits) {
     loop_types.push_back(c.getType());
@@ -129,7 +131,7 @@ mlir::Value GetSequenceIndex(mlir::MlirBuilder& builder,
 
   mlir::MlirOp seq_len_op(builder, seq_len);
   mlir::MlirOp one =
-      MakeScalarConstant(builder, 1, builder.getOpBuilder().getI64Type());
+      MakeScalarConstant(builder, 1, builder.getOpBuilder().getI32Type());
   mlir::MlirOp seq_len_minus_1 = mlir::stablehlo::Subtract(seq_len_op, one);
 
   mlir::MlirOp index_op(builder, index);
@@ -626,8 +628,8 @@ absl::StatusOr<mlir::MlirOp> CreateRankReducedConstantLike(
     return MakeConstant(builder, value, element_type, reduced_shape);
   }
 
-  const mlir::IntegerType i64 = builder.getOpBuilder().getI64Type();
-  const mlir::MlirOp zero = MakeScalarConstant(builder, 0, i64);
+  const mlir::IntegerType i32 = builder.getOpBuilder().getI32Type();
+  const mlir::MlirOp zero = MakeScalarConstant(builder, 0, i32);
   TT_ASSIGN_OR_RETURN(
       mlir::MlirOp slice,
       SliceInput(builder, input.getValue().getLoc(), input, zero.getValue(),
