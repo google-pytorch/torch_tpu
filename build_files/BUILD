@@ -65,6 +65,15 @@ bzl_library(
     visibility = ["//visibility:private"],
 )
 
+# This library just holds the WHEEL_PY_TARGETS variable, so this target is
+# unused; it only exists because cclean wants something to point to wheel.bzl
+bzl_library(
+    name = "wheel_bzl",
+    srcs = ["wheel.bzl"],
+    parse_tests = False,
+    visibility = ["//visibility:private"],
+)
+
 bzl_library(
     name = "build_defs_test_bzl",
     srcs = ["build_defs_test.bzl"],

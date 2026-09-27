@@ -26,6 +26,7 @@ package(
 torch_tpu_py_library(
     name = "utils",
     srcs = ["utils.py"],
+    visibility = ["//:__subpackages__"],
     deps = [
         "//shims/absl_py/flags",
         "//shims/torch:pytorch",
