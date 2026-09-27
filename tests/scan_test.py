@@ -17,6 +17,7 @@ from absl.testing import parameterized
 import torch
 from torch._higher_order_ops import scan
 import torch.fx
+import torch.fx.traceback
 import torch.utils._pytree as pytree
 from torch_tpu._internal.compile import scan as tpu_scan
 from torch_tpu._internal.compile import tpu_torch_compile
@@ -91,6 +92,28 @@ class ScanOpTest(seed_test_utils.RepeatableTest):
 
     utils.assert_close(out_carry.cpu(), expected_carry)
     utils.assert_close(out_ys.cpu(), expected_ys)
+
+  def test_annotated_body_scans_in_reverse(self):
+    # The annotation has to survive Dynamo and the `scan` HOP re-tracing the
+    # body, so this matches the "reverse" case of `test_basic_scan` without
+    # passing `reverse=True`.
+    def fn(carry, x):
+      with torch.fx.traceback.annotate(
+          {tpu_scan.SCAN_REVERSE_ANNOTATION: True}
+      ):
+        return carry + x, carry + x
+
+    x = torch.tensor([1.0, 2.0, 3.0, 4.0], device="tpu")
+    init = torch.tensor([0.0], device="tpu")
+
+    out_carry, out_ys = _compile_and_run(
+        scan, fn, init, x, dim=0, reverse=False
+    )
+
+    utils.assert_close(out_carry.cpu(), torch.tensor([10.0]))
+    utils.assert_close(
+        out_ys.cpu(), torch.tensor([[10.0], [9.0], [7.0], [4.0]])
+    )
 
   def test_scan_with_nested_pytree(self):
     def fn(carry, x):
@@ -406,6 +429,40 @@ class ScanLoweringTest(seed_test_utils.RepeatableTest):
         hlo,
         msg="scan was unexpectedly unrolled: stablehlo.while not found",
     )
+
+
+def _body_with_custom_meta(custom=None):
+  """Builds a one-op scan body, optionally with `custom` node metadata."""
+  graph = torch.fx.Graph()
+  x = graph.placeholder("x")
+  y = graph.call_function(torch.ops.aten.neg.default, (x,))
+  if custom is not None:
+    y.meta["custom"] = custom
+  graph.output((y,))
+  return torch.fx.GraphModule(torch.nn.Module(), graph)
+
+
+class BodyAsksForReverseTest(seed_test_utils.RepeatableTest):
+  """Tests detection of the reverse-scan annotation on body nodes."""
+
+  def test_annotated_body_asks_for_reverse(self):
+    body = _body_with_custom_meta({tpu_scan.SCAN_REVERSE_ANNOTATION: True})
+    self.assertTrue(tpu_scan._body_asks_for_reverse(body))
+
+  def test_unannotated_body_does_not_ask_for_reverse(self):
+    self.assertFalse(tpu_scan._body_asks_for_reverse(_body_with_custom_meta()))
+
+  def test_annotation_set_to_false_does_not_ask_for_reverse(self):
+    body = _body_with_custom_meta({tpu_scan.SCAN_REVERSE_ANNOTATION: False})
+    self.assertFalse(tpu_scan._body_asks_for_reverse(body))
+
+  def test_other_custom_keys_do_not_ask_for_reverse(self):
+    body = _body_with_custom_meta({"some_other_key": True})
+    self.assertFalse(tpu_scan._body_asks_for_reverse(body))
+
+  def test_eager_body_does_not_ask_for_reverse(self):
+    # An eager combine_fn exposes no graph to inspect.
+    self.assertFalse(tpu_scan._body_asks_for_reverse(lambda *a: a))
 
 
 def _offloaded_body(*, reload_slice=True):
