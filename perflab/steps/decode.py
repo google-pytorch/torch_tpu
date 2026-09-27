@@ -17,7 +17,6 @@ import functools
 import inspect
 from typing import Any
 import torch
-from perflab import compile as compile_lib
 from perflab import step_lib
 from perflab import target as target_lib
 from perflab.steps import common
@@ -535,7 +534,7 @@ class DecodeStepper(common.BaseStepper):
   # Compiles only the inner model used for decode.
   def compile(
       self,
-      compile_config: compile_lib.CompileConfig,
+      compile_config: common.CompileConfig,
       target: target_lib.Target,
   ) -> None:
     # We ignore compile_config.scope and always compile the model for decoding

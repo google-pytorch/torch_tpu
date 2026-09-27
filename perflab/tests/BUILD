@@ -92,6 +92,7 @@ torch_tpu_py_test(
         "//perflab:target",
         "//perflab:torch_device_ops",
         "//perflab/steps",
+        "//perflab/steps:decode",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:flagsaver",
         "//shims/torch:pytorch",
@@ -117,7 +118,7 @@ torch_tpu_py_test(
     deps = [
         "//perflab:target",
         "//perflab:torch_device_ops",
-        "//perflab/steps",
+        "//perflab/steps:decode",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",

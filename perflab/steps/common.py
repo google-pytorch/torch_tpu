@@ -13,9 +13,26 @@
 # limitations under the License.
 
 import abc
+import enum
+import typing
 from typing import Any
-from perflab import compile as compile_lib
 from perflab import target as target_lib
+
+
+class Scope(enum.Enum):
+  """Compilation scope for a compiled mode benchmark."""
+
+  MODEL = "model"
+  STEP = "step"
+
+
+class CompileConfig(typing.Protocol):
+  """Protocol representing the compile configuration interface."""
+
+  scope: Scope
+
+  def apply(self, obj: Any, target: target_lib.Target) -> Any:
+    ...
 
 
 class BaseStepper(abc.ABC):
@@ -39,13 +56,11 @@ class BaseStepper(abc.ABC):
     """The actual step function to be executed."""
     pass
 
-  def compile(
-      self, compile_config: compile_lib.CompileConfig, target: target_lib.Target
-  ):
+  def compile(self, compile_config: CompileConfig, target: target_lib.Target):
     """Default trivial compile application"""
-    if compile_config.scope == compile_lib.Scope.MODEL:
+    if compile_config.scope == Scope.MODEL:
       self._model = compile_config.apply(self._model, target)
-    elif compile_config.scope == compile_lib.Scope.STEP:
+    elif compile_config.scope == Scope.STEP:
       self._inner_stepper = compile_config.apply(self._inner_stepper, target)
     else:
       raise ValueError(f"Unsupported compile scope: {compile_config.scope}")
