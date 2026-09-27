@@ -4795,6 +4795,40 @@ Supported combinations for non-constant padding:
     ):
       op(lhs, 1j)
 
+  @parameterized.named_parameters(
+      {"testcase_name": "eq", "op_name": "eq", "op": torch.eq},
+      {"testcase_name": "ne", "op_name": "ne", "op": torch.ne},
+  )
+  def test_comparison_ops_float4_with_other_dtype(self, op_name: str, op: Any):
+    """Tests that comparing float4_e2m1fn_x2 with another dtype fails."""
+    fp4 = (
+        torch.tensor([[0x11, 0x22]], dtype=torch.uint8)
+        .view(torch.float4_e2m1fn_x2)
+        .to(et.device())
+    )
+    f32 = torch.ones(fp4.shape, device=et.device())
+    out = torch.empty(fp4.shape, dtype=torch.bool, device=et.device())
+
+    # Only the out= overloads reach the TPU kernel: the functional overloads
+    # fail in PyTorch's type promotion first.
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{op_name}(): expected both self and other to be float4_e2m1fn_x2, got float4_e2m1fn_x2 and float32""",
+        gpu=re.compile(
+            r"""ix_a != -1 INTERNAL ASSERT FAILED at.*ScalarType\.cpp.*please report a bug to PyTorch\.\s*"""
+        ),
+    ):
+      op(fp4, f32, out=out)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{op_name}(): expected both self and other to be float4_e2m1fn_x2, got float32 and float4_e2m1fn_x2""",
+        gpu=re.compile(
+            r"""ix_b != -1 INTERNAL ASSERT FAILED at.*ScalarType\.cpp.*please report a bug to PyTorch\.\s*"""
+        ),
+    ):
+      op(f32, fp4, out=out)
+
   def test_remainder_complex(self):
     c64 = torch.tensor([1 + 1j], device=et.device(), dtype=torch.complex64)
     f32 = torch.tensor([1.0], device=et.device())

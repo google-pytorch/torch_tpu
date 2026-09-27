@@ -370,6 +370,27 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       torch.empty_strided((2,), (1,), dtype=torch.complex32, device="tpu")
 
+  @parameterized.named_parameters(
+      {"testcase_name": "eq", "op_name": "eq", "op": torch.eq},
+      {"testcase_name": "ne", "op_name": "ne", "op": torch.ne},
+  )
+  @et.why_tpu_only(
+      "TODO: support comparing float4_e2m1fn_x2 with a scalar on TPU; GPU"
+      " supports it."
+  )
+  def test_comparison_ops_float4_with_scalar(self, op_name: str, op: Any):
+    """Tests that comparing a float4_e2m1fn_x2 tensor with a scalar fails."""
+    fp4 = (
+        torch.tensor([[0x11, 0x22]], dtype=torch.uint8)
+        .view(torch.float4_e2m1fn_x2)
+        .to(et.device())
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{op_name}(): scalar comparison is not supported for float4_e2m1fn_x2""",
+    ):
+      op(fp4, 1)
+
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_histc_bounds_unsupported_dtype(self):
     """Tests that torch.histc() fails when the bounds have an unsupported dtype."""
