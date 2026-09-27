@@ -115,7 +115,12 @@ class TpuDeviceModuleTest(
     self.assertFalse(torch.tpu.is_triton_capable(device=None))
 
   def test_is_gpu(self):
-    self.assertFalse(torch.tpu.is_gpu())
+    """Verifies TpuDeviceInterface implements is_gpu and not exposed on torch.tpu."""
+    iface = get_interface_for_device("tpu")
+    self.assertTrue(hasattr(iface, "is_gpu"))
+    self.assertFalse(hasattr(self.device_module, "is_gpu"))
+    self.assertFalse(iface.is_gpu())
+    self.assertFalse(self.device_module._is_gpu())
 
   def test_window_num_stripes(self):
     """Tests torch.tpu.window_num_stripes property."""

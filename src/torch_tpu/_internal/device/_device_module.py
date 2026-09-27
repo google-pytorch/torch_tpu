@@ -479,7 +479,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
     return False
 
   @classmethod
-  def is_gpu(cls) -> bool:
+  def _is_gpu(cls) -> bool:
     """Returns True if Inductor should treat this device as a GPU-class accelerator.
 
     Returns:
@@ -933,6 +933,7 @@ class TpuDeviceInterface(TpuDeviceModule, DeviceInterface):
   """Device interface implementation for TPU devices in TorchDynamo."""
 
   exchange_device = TpuDeviceModule._exchange_device
+  is_gpu = TpuDeviceModule._is_gpu
   maybe_exchange_device = TpuDeviceModule._maybe_exchange_device
 
 
