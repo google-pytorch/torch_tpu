@@ -349,7 +349,6 @@ class DeviceModuleBase(
       self.assertEqual(self.device_module._exchange_device(-1), -1)
       self.assertEqual(self.device_module._maybe_exchange_device(0), 0)
       self.assertEqual(self.device_module._maybe_exchange_device(-1), -1)
-      self.assertEqual(self.device_module.exchange_device(0), 0)
 
   def test_get_multi_processor_count(self):
     self.assertEqual(self.device_module.get_multi_processor_count(), 1)

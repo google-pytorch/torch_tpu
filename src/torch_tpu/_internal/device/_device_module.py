@@ -450,12 +450,6 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
     cls.set_device(device)
     return prev_device
 
-  # Alias without leading underscore to satisfy
-  # torch._dynamo.device_interface.DeviceInterface while keeping private names
-  # for torch.tpu to avoid polluting the public module namespace and to stay in
-  # line with torch.cuda.
-  exchange_device = _exchange_device
-
   @classmethod
   @experimental(
       "is_available() is experimental and subject to change without notice."
@@ -938,6 +932,7 @@ def get_device_module(device_type: str) -> type[_DeviceModule]:
 class TpuDeviceInterface(TpuDeviceModule, DeviceInterface):
   """Device interface implementation for TPU devices in TorchDynamo."""
 
+  exchange_device = TpuDeviceModule._exchange_device
   maybe_exchange_device = TpuDeviceModule._maybe_exchange_device
 
 
