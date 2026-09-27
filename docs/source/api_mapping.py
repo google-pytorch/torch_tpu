@@ -117,13 +117,13 @@ def _(mo):
   mo.md(r"""
     ## **Streams and Events**
 
-    The `torch.tpu` module provides `Stream` and `Event` objects to maintain API parity with CUDA.
+    For streams and events, prefer standard `torch.accelerator` APIs. Use `torch.tpu` only for TPU-specific features.
 
-    | CUDA API | TPU API | Status |
+    | CUDA API | TPU / Accelerator API | Description |
     | :--- | :--- | :--- |
-    | `torch.cuda.current_stream()` | `torch.tpu.current_stream()` | **Placeholder (dummy)** |
-    | `torch.cuda.default_stream()` | `torch.tpu.default_stream()` | **Placeholder (dummy)** |
-    | `torch.cuda.set_stream()` | `torch.tpu.set_stream()` | **Placeholder (dummy)** |
+    | `torch.cuda.current_stream()` | `torch.accelerator.current_stream()` | Returns the active stream. |
+    | `torch.cuda.set_stream()` | `torch.accelerator.set_stream()` | Sets the active stream. |
+    | `torch.cuda.default_stream()` | `torch.tpu.default_stream()` | Returns the default stream. |
 
     > [!NOTE]
     > In TorchTPU's deferred execution model, the XLA compiler and PjRt runtime manage execution ordering and hardware concurrency automatically. Streams are not needed.

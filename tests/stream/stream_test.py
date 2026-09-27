@@ -39,10 +39,16 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
     default_stream = torch.tpu.default_stream()
     new_stream = torch.tpu.Stream(priority=-1)
 
-    torch.tpu.set_stream(new_stream)
+    default_acc_stream = torch.accelerator.current_stream()
+    new_acc_stream = torch.Stream(
+        stream_id=new_stream.stream_id,
+        device_index=new_stream.device_index,
+        device_type=default_acc_stream.device_type,
+    )
+    torch.accelerator.set_stream(new_acc_stream)
     x = torch.ones((8, 8), device='tpu')
     event = new_stream.record_event()
-    torch.tpu.set_stream(default_stream)
+    torch.accelerator.set_stream(default_acc_stream)
 
     with torch.tpu.stream(new_stream):
       y = x + x
@@ -58,17 +64,21 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
     new_stream = torch.tpu.Stream()
 
     # Initial state: default stream is active
-    self.assertEqual(
-        torch.accelerator.current_stream().stream_id, default_stream.stream_id
-    )
+    default_acc_stream = torch.accelerator.current_stream()
+    self.assertEqual(default_acc_stream.stream_id, default_stream.stream_id)
 
     # 1. set_stream updates current_stream
-    torch.tpu.set_stream(new_stream)
+    new_acc_stream = torch.Stream(
+        stream_id=new_stream.stream_id,
+        device_index=new_stream.device_index,
+        device_type=default_acc_stream.device_type,
+    )
+    torch.accelerator.set_stream(new_acc_stream)
     self.assertEqual(
         torch.accelerator.current_stream().stream_id, new_stream.stream_id
     )
 
-    torch.tpu.set_stream(default_stream)
+    torch.accelerator.set_stream(default_acc_stream)
     self.assertEqual(
         torch.accelerator.current_stream().stream_id, default_stream.stream_id
     )

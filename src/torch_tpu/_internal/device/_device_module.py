@@ -674,19 +674,6 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
 
   @classmethod
   @experimental(
-      "set_stream() is experimental and subject to change without notice."
-  )
-  def set_stream(cls, stream: streams.TpuStream) -> None:
-    """Sets the current stream.
-
-    .. warning::
-        This API is experimental and subject to change in future releases.
-    """
-    # pylint: disable=protected-access
-    _device_ops_backend._set_current_stream_id(stream.stream_id)
-
-  @classmethod
-  @experimental(
       "current_stream() is experimental and subject to change without notice."
   )
   def current_stream(
