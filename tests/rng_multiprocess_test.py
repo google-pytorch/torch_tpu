@@ -45,8 +45,9 @@ def _set_different_seeds(backend_mod: Any, rank: int) -> None:
 
 
 def _get_initial_seed(backend_mod: Any, dev: torch.device, rank: int) -> int:
-  """Retrieves backend module initial seed."""
-  return backend_mod.initial_seed()
+  """Retrieves accelerator random initial seed."""
+  del backend_mod, dev, rank  # Unused.
+  return torch.accelerator.random.initial_seed()
 
 
 def _set_same_seed(backend_mod: Any, rank: int) -> None:

@@ -193,17 +193,18 @@ class RngCudaRefTest(_BaseRngTest):
   """Reference tests comparing default TPU and GPU RNG behaviors for current device."""
 
   def test_initial_seed_return_current_device_seed(self):
-    """Verifies backend_mod.initial_seed returns current device seed."""
+    """Verifies torch.accelerator.random.initial_seed returns current device seed."""
     torch.manual_seed(42)
+    self.assertEqual(torch.accelerator.random.initial_seed(), 42)
     self.assertEqual(self.backend_mod.initial_seed(), 42)
 
   def test_manual_seed_sets_current_device_seed(self):
     """Verifies torch.manual_seed sets initial seed on device backend."""
     torch.manual_seed(1)
-    self.assertEqual(self.backend_mod.initial_seed(), 1)
+    self.assertEqual(torch.accelerator.random.initial_seed(), 1)
 
     torch.manual_seed(42)
-    self.assertEqual(self.backend_mod.initial_seed(), 42)
+    self.assertEqual(torch.accelerator.random.initial_seed(), 42)
 
   def test_torch_manual_seed_different_seeds_produce_different_tensors(self):
     """Verifies different seeds produce distinct random tensors."""
@@ -228,12 +229,12 @@ class RngCudaRefTest(_BaseRngTest):
   def test_backend_manual_seed_sets_current_device_seed(self):
     """Verifies backend_mod.manual_seed sets initial seed on current device."""
     self.backend_mod.manual_seed(1)
-    self.assertEqual(self.backend_mod.initial_seed(), 1)
+    self.assertEqual(torch.accelerator.random.initial_seed(), 1)
     self.assertEqual(self._get_device_rng_seed(), 1)
     self.assertEqual(self._get_device_rng_offset(), 0)
 
     self.backend_mod.manual_seed(42)
-    self.assertEqual(self.backend_mod.initial_seed(), 42)
+    self.assertEqual(torch.accelerator.random.initial_seed(), 42)
     self.assertEqual(self._get_device_rng_seed(), 42)
     self.assertEqual(self._get_device_rng_offset(), 0)
 
@@ -292,7 +293,7 @@ class RngCudaRefTest(_BaseRngTest):
     """Verifies torch.rand on device does not change initial_seed."""
     torch.manual_seed(42)
     _ = torch.rand(100, device=self.device)
-    self.assertEqual(self.backend_mod.initial_seed(), 42)
+    self.assertEqual(torch.accelerator.random.initial_seed(), 42)
 
   def test_rand_advances_offset(self):
     """Verifies torch.rand on device advances the offset."""
@@ -1233,7 +1234,10 @@ class MultiThreadRngTest(_BaseRngTest):
     """Verifies threads on single device share global and device seeds."""
     outs = self._run_concurrent_threads(
         seed_fn=lambda idx: torch.manual_seed(42 + idx),
-        fn=lambda idx: (torch.initial_seed(), self.backend_mod.initial_seed()),
+        fn=lambda idx: (
+            torch.initial_seed(),
+            torch.accelerator.random.initial_seed(),
+        ),
         num_threads=2,
     )
     self.assertEqual(outs[0], outs[1])
