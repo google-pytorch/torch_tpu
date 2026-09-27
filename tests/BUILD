@@ -278,12 +278,10 @@ torch_tpu_py_library(
     srcs = ["seed_test_utils.py"],
     visibility = ["//:__subpackages__"],
     deps = [
-        ":oss_utils",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/device:_device_ops_backend",
-        "//src/torch_tpu/_internal/utils:hardware",
     ],
 )
 
