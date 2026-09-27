@@ -95,6 +95,46 @@ TEST(DeviceAssignmentPipelineTest,
   EXPECT_THAT(resolved, testing::ElementsAre(2, 3));
 }
 
+TEST(DeviceAssignmentPipelineTest, RunsOnOneDeviceGroup) {
+  const std::vector<int64_t> pair = {6, 7};           // INT_VEC_OK
+  const std::vector<int64_t> reversed_pair = {7, 6};  // INT_VEC_OK
+  const std::vector<int64_t> other_pair = {2, 3};     // INT_VEC_OK
+  const std::vector<int64_t> block = {6, 7, 2, 3};    // INT_VEC_OK
+  const std::vector<int64_t> no_assignment;           // INT_VEC_OK
+
+  // Collectives and a kernel of the same devices, with ops that carry no
+  // device assignment in between.
+  EXPECT_TRUE(RunsOnOneDeviceGroup(
+      {
+          OpDeviceAssignment{OpName::kDistributedAllReduce, pair},
+          OpDeviceAssignment{OpName::kAdd, no_assignment},
+          OpDeviceAssignment{OpName::kCustomKernel, reversed_pair},
+      },
+      pair));
+
+  // A second device group, of the same or of another size.
+  EXPECT_FALSE(RunsOnOneDeviceGroup(
+      {
+          OpDeviceAssignment{OpName::kDistributedAllReduce, pair},
+          OpDeviceAssignment{OpName::kDistributedAllReduce, other_pair},
+      },
+      pair));
+  EXPECT_FALSE(RunsOnOneDeviceGroup(
+      {
+          OpDeviceAssignment{OpName::kDistributedAllReduce, block},
+          OpDeviceAssignment{OpName::kDistributedAllReduce, pair},
+      },
+      block));
+
+  // A SparseCore program is replicated over all devices.
+  EXPECT_FALSE(RunsOnOneDeviceGroup(
+      {
+          OpDeviceAssignment{OpName::kDistributedAllReduce, pair},
+          OpDeviceAssignment{OpName::kSparseGather, no_assignment},
+      },
+      pair));
+}
+
 TEST(DeviceAssignmentPipelineTest,
      IncompatiblePallasKernelsReturnDiagnosticError) {
   const std::vector<int64_t> da_a = {2, 3, 1, 0, 4, 5, 6, 7};  // INT_VEC_OK

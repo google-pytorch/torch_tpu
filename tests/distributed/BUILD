@@ -623,6 +623,38 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "subgroup_launch_order_test",
+    srcs = ["subgroup_launch_order_test.py"],
+    notest_oss = True,  # NOTEST_OSS_OK=Disabled in OSS due to multi-process v7x runner hang.
+    shard_count = 3,
+    tags = if_oss(
+        ["exclusive"],
+        [],
+    ) + [
+        # Sanitizers and TPU generations as for subgroup_collectives_test.
+        "noasan",
+        "nomsan",
+        "notsan",
+        "ok-to-wait-for-v7x-in-presubmit",
+        "requires-tpu-v7x:4",
+        "fails-on-tpu-v5",
+        "fails-on-tpu-v6",
+    ],
+    deps = [
+        ":distributed_utils",
+        "//shims/absl_py/logging",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/pallas",
+        "//src/torch_tpu/_internal/utils:test_utils",
+        "//tests:seed_test_utils",
+        "@pypi//jax",
+    ],
+)
+
+torch_tpu_py_test(
     name = "dtensor_test",
     srcs = ["dtensor_test.py"],
     shard_count = 10,

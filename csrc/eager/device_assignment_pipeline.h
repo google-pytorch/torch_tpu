@@ -40,6 +40,13 @@ struct OpDeviceAssignment {
 bool IsCompatibleDeviceAssignmentTile(absl::Span<const int64_t> d_sub,
                                       absl::Span<const int64_t> d_full);
 
+// Returns true if `ops` form a program of one device group: every non-empty
+// device assignment names exactly the devices of `resolved_da`, in any order,
+// and no op is a SparseCore op. Only the devices of that group launch such a
+// program, so device groups run their programs independently of each other.
+bool RunsOnOneDeviceGroup(absl::Span<const OpDeviceAssignment> ops,
+                          absl::Span<const int64_t> resolved_da);
+
 // Resolves a single target device assignment across `ops` using a 4-stage
 // pipeline:
 //   1. Merge compatible Pallas custom kernel device assignments and reject
@@ -48,7 +55,7 @@ bool IsCompatibleDeviceAssignmentTile(absl::Span<const int64_t> d_sub,
 //   3. Validate that all remaining smaller/orthogonal StableHLO collective
 //      device assignments are valid subgroups of the resolved mesh.
 //   4. Tail-pad the resolved device assignment to the global PjRt device count
-//      if smaller than world size.
+//      if smaller than world size, unless `ops` run on one device group.
 absl::StatusOr<std::vector<int64_t>>  // INT_VEC_OK
 ResolveDeviceAssignment(absl::Span<const OpDeviceAssignment> ops);
 

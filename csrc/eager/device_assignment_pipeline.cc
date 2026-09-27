@@ -367,6 +367,20 @@ bool IsCompatibleDeviceAssignmentTile(absl::Span<const int64_t> d_sub,
   return false;
 }
 
+bool RunsOnOneDeviceGroup(absl::Span<const OpDeviceAssignment> ops,
+                          absl::Span<const int64_t> resolved_da) {
+  return std::all_of(ops.begin(), ops.end(), [&](const OpDeviceAssignment& op) {
+    if (IsSparseCoreOp(op.op_name)) {
+      return false;
+    }
+    return op.device_assignment.empty() ||
+           (op.device_assignment.size() == resolved_da.size() &&
+            std::is_permutation(op.device_assignment.begin(),
+                                op.device_assignment.end(),
+                                resolved_da.begin()));
+  });
+}
+
 absl::StatusOr<std::vector<int64_t>>  // INT_VEC_OK
 ResolveDeviceAssignment(absl::Span<const OpDeviceAssignment> ops) {
   // --- STAGE 1: Merge Compatible Pallas Kernels (OpName::kCustomKernel) ---
@@ -434,7 +448,8 @@ ResolveDeviceAssignment(absl::Span<const OpDeviceAssignment> ops) {
   // --- STAGE 3: Validate Smaller / Orthogonal StableHLO Collectives ---
   const auto* const client = PjrtBackend::GetInstance().GetClient();
   bool should_pad_to_client = false;
-  if (client != nullptr && resolved_da.size() < client->devices().size()) {
+  if (client != nullptr && resolved_da.size() < client->devices().size() &&
+      !RunsOnOneDeviceGroup(ops, resolved_da)) {
     absl::flat_hash_set<int64_t> client_device_ids;
     client_device_ids.reserve(client->devices().size());
     for (const auto* d : client->devices()) {
