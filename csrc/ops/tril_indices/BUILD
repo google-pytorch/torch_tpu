@@ -55,7 +55,6 @@ torch_tpu_cc_library(
         "@llvm-project//mlir:IR",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
-        "@xla//xla:xla_data_proto_cc",
     ],
 )
 
