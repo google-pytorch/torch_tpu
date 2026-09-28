@@ -97,7 +97,7 @@ def _(mo):
     How does **Fused Eager** (`TORCH_TPU_DEFER_AND_FUSE="1"`) work on TPU silicon?
 
     1. **Deferred Queueing**: When element-wise or arithmetic operations are called, TorchTPU records them in an internal deferred execution buffer rather than launching individual device kernels immediately.
-    2. **Multi-Op Fusion**: When execution is forced by a **materialization trigger** (such as transferring data to CPU via `.cpu()`, inspecting values via `.item()`, or calling `torch.tpu.synchronize()`), XLA compiles the accumulated operations into a single fused hardware cluster.
+    2. **Multi-Op Fusion**: When execution is forced by a **materialization trigger** (such as transferring data to CPU via `.cpu()`, inspecting values via `.item()`, or calling `torch.accelerator.synchronize()`), XLA compiles the accumulated operations into a single fused hardware cluster.
     3. **Hardware Efficiency**: Intermediate tensors stay resident in fast on-chip Vector Memory (VMEM) or VPU registers instead of suffering multiple High-Bandwidth Memory (HBM) round-trips.
 
     We can observe this deferred queueing and materialization behavior directly:
@@ -119,7 +119,7 @@ def _(os, torch):
   _x = torch.randn(2048, 2048, device="tpu", dtype=torch.bfloat16)
 
   # Queue operations into the deferred execution buffer
-  torch.tpu.synchronize()
+  torch.accelerator.synchronize()
   _t0 = _time.perf_counter()
   _y = _x + 1.0
   _z = _y * 2.0 - 0.5
@@ -132,7 +132,7 @@ def _(os, torch):
 
   # Explicit device synchronization
   _t_sync = _time.perf_counter()
-  torch.tpu.synchronize()
+  torch.accelerator.synchronize()
   _sync_ms = (_time.perf_counter() - _t_sync) * 1000
 
   print(
@@ -179,27 +179,27 @@ def _(torch):
   # --- Warmup ---
   for _ in range(3):
     _ = _run_chain(_x)
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
     _ = _compiled_chain(_x)
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
 
   # --- Benchmark ---
   _num_trials = 20
 
   # Fused Eager benchmark
-  torch.tpu.synchronize()
+  torch.accelerator.synchronize()
   _t0 = _time.perf_counter()
   for _ in range(_num_trials):
     _ = _run_chain(_x)
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
   _time_fused = (_time.perf_counter() - _t0) / _num_trials
 
   # torch.compile benchmark
-  torch.tpu.synchronize()
+  torch.accelerator.synchronize()
   _t0 = _time.perf_counter()
   for _ in range(_num_trials):
     _ = _compiled_chain(_x)
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
   _time_compiled = (_time.perf_counter() - _t0) / _num_trials
 
   print(
@@ -226,7 +226,7 @@ def _(mo):
     In **Fused Eager** mode, operations remain queued in the deferred buffer until a materialization trigger forces execution:
 
     *   **Host Transfers**: `.cpu()`, `.item()`, `.tolist()`, `.numpy()`.
-    *   **Explicit Synchronization**: `torch.tpu.synchronize()`.
+    *   **Explicit Synchronization**: `torch.accelerator.synchronize()`.
     *   **Value Inspection / Printing**: `print(tensor)` or `repr(tensor)` forces materializing values to display text.
     *   **Data-Dependent Control Flow**: Python conditional checks (e.g., `if (tensor > 0).all():`) require host evaluation.
     *   **Buffer Thresholds**: TorchTPU automatically flushes and compiles when operation queues reach internal memory or node limits.

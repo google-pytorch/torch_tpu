@@ -68,7 +68,7 @@ def worker_fn() -> None:
         in_features=in_features, out_features=out_features
     )
 
-  torch.tpu.synchronize()
+  torch.accelerator.synchronize()
 
   # Creates a CPU copy of the initial model on rank 0. This is used for
   # verifying the results of the FSDP model. It is not necessary for FSDP.

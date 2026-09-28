@@ -27,7 +27,7 @@ from tests.distributed import distributed_utils
 def _warmup_then_init_pg(test_fn, *args, **kwargs):
   warmup = torch.zeros(1, device="tpu")
   _ = warmup.cpu()
-  torch.tpu.synchronize()
+  torch.accelerator.synchronize()
 
   dist.init_process_group(backend="tpu_dist")
   try:

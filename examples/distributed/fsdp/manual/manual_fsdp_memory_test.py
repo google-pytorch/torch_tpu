@@ -61,13 +61,13 @@ def memory_worker_fn() -> None:
   step_stats = []
   for step in range(NUM_STEPS):
     sharded_model.zero_grad(set_to_none=True)
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
     torch.accelerator.reset_peak_memory_stats()
     mem_before_fwd = torch.accelerator.memory_allocated()
 
     y_pred = compiled_model(x)
 
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
     mem_after_fwd = torch.accelerator.memory_allocated()
     fwd_retained_bytes = mem_after_fwd - mem_before_fwd
     fwd_peak_bytes = torch.accelerator.max_memory_allocated() - mem_before_fwd
