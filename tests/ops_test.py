@@ -2809,7 +2809,6 @@ class TestOps(op_testing.OpInfoTestBase):
             "cpu": (torch.float64,),
             "gpu": (
                 torch.float64,
-                torch.float4_e2m1fn_x2,
                 torch.int4,
             ),
         },
@@ -3768,6 +3767,9 @@ class TestOps(op_testing.OpInfoTestBase):
         "to",
         exclude_dtypes={
             "gpu": (
+                # CPU and CUDA don't support casting to/from float4_e2m1fn_x2,
+                # but TorchTPU intentionally does to support data sampling via
+                # cross-dtype casts.
                 torch.float4_e2m1fn_x2,
                 torch.int4,
             ),

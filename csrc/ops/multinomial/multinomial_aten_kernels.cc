@@ -39,6 +39,7 @@
 #include "csrc/ops/rng_utils.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 namespace {
@@ -50,6 +51,9 @@ Dimensions GetOutputDimensions(const at::Tensor& self, int64_t num_samples) {
 
 absl::Status ValidateInputs(const at::Tensor& self, int64_t num_samples,
                             bool replacement) {
+  TT_RET_CHECK(self.scalar_type() != at::ScalarType::Float4_e2m1fn_x2,
+               error::kPythonNotImplementedError)
+      << "not implemented for " << ToString(self.scalar_type());
   TT_RET_CHECK(IsFloatingPoint(self), error::kInvalidArgument)
       << "expected the input dtype to be floating-point, got "
       << ToString(self.scalar_type());

@@ -329,6 +329,15 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     ):
       torch.matmul(a, b)
 
+  def test_multinomial_float4_e2m1fn_x2_unsupported(self):
+    t = torch.empty((2, 4), dtype=torch.float4_e2m1fn_x2, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""multinomial(): not implemented for float4_e2m1fn_x2""",
+        gpu=""""multinomial_kernel_cuda" not implemented for 'Float4_e2m1fn_x2'""",
+    ):
+      torch.multinomial(t, 2, replacement=True)
+
   def test_triu_insufficient_dims(self):
     """Tests that triu with insufficient dims fails with expected error."""
     t = torch.ones(1, device=et.device(), dtype=torch.float32)
