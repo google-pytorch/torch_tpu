@@ -1635,7 +1635,17 @@ class TestOps(op_testing.OpInfoTestBase):
     )
 
   def test_constant_pad_nd(self):
-    self.do_test_op("constant_pad_nd")
+    self.do_test_op(
+        "constant_pad_nd",
+        # In gradient mode, the test harness computes losses via `t.sum()`,
+        # which fails on CUDA (`"sum_cuda" not implemented for 'Float8_e4m3fn'`)
+        # but succeeds on TorchTPU, causing a failure-consistency mismatch.
+        exclude_dtypes=(
+            {"gpu": (torch.float8_e4m3fn,)}
+            if op_testing._COMPUTE_GRAD.value
+            else None
+        ),
+    )
 
   def test_cos(self):
     self.do_test_op("cos")
