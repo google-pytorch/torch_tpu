@@ -123,7 +123,7 @@ class TracingTest(seed_test_utils.RepeatableTest):
     a = torch.randn(4, 8, device=self._dev, dtype=torch.bfloat16)
     b = torch.randn(8, 16, device=self._dev, dtype=torch.bfloat16)
     # Keep referenced: synchronize() only materializes live tensors.
-    _out = torch.mm(a, b)
+    _ = torch.mm(a, b)
     torch.accelerator.synchronize()
     tracing._flush()
 
@@ -162,7 +162,7 @@ class TracingTest(seed_test_utils.RepeatableTest):
     # Renders as "%a, %b: ..., ... = topk(...)".
     a = torch.randn(64, 64, device=self._dev, dtype=torch.bfloat16)
     # Keep referenced: synchronize() only materializes live tensors.
-    _out = torch.topk(a, k=5)
+    _ = torch.topk(a, k=5)
     torch.accelerator.synchronize()
     tracing._flush()
 
@@ -180,7 +180,7 @@ class TracingTest(seed_test_utils.RepeatableTest):
     b = torch.ones(64, 64, device=self._dev)
     (a + b).cpu()  # should tag .cpu()
     # Keep referenced: synchronize() only materializes live tensors.
-    _out = a + b
+    _ = a + b
     torch.accelerator.synchronize()  # should tag synchronize()
     tracing._flush()
 
@@ -199,7 +199,7 @@ class TracingTest(seed_test_utils.RepeatableTest):
     a = torch.ones(32, 32, device=self._dev)
     b = torch.ones(32, 32, device=self._dev)
     # Keep referenced: synchronize() only materializes live tensors.
-    _out = a + b
+    _ = a + b
     torch.accelerator.synchronize()
     tracing._flush()
 

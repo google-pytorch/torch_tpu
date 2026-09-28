@@ -240,7 +240,7 @@ class JaggedCompileTest(seed_test_utils.RepeatableTest):
         eager_model.gate.weight.grad.cpu(),
     )
     for c_expert, e_expert in zip(compiled_model.experts, eager_model.experts):
-      for (c_name, c_param), (e_name, e_param) in zip(
+      for (_, c_param), (_, e_param) in zip(
           c_expert.named_parameters(), e_expert.named_parameters()
       ):
         utils.assert_close(c_param.grad.cpu(), e_param.grad.cpu())

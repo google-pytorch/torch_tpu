@@ -1683,7 +1683,7 @@ class JaggedTensorTest(seed_test_utils.RepeatableTest):
         # Attention projection & residual
         residual = x
         qkv = self.qkv(x)
-        q, k, v = torch.chunk(qkv, 3, dim=-1)
+        q, _, _ = torch.chunk(qkv, 3, dim=-1)
         attn_out = self.proj(q)
         x = self.norm1(residual + attn_out)
 

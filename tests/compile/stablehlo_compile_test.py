@@ -139,6 +139,7 @@ class StableHloCompileTimeTest(sct.StableHloCompileTimeTestBase):
     """
 
     def make_shlo(i: int) -> str:
+      del i  # Unused.
       # This is the SHLO for torch.randint().
       return """
 module {
@@ -163,6 +164,7 @@ module {
     """Tests compilation time for randint with dtype float32."""
 
     def make_shlo(i: int) -> str:
+      del i  # Unused.
       # This is the SHLO for torch.randint().
       return """
 module {
@@ -192,6 +194,7 @@ module {
     """
 
     def make_shlo(i: int) -> str:
+      del i  # Unused.
       # This is the SHLO for torch.randint().
       return """
 module {

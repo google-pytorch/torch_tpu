@@ -125,6 +125,7 @@ def _worker_test_all_gather_single(
 def _worker_test_broadcast(
     comm: torchcomms.TorchComm, rank: int, world_size: int
 ) -> None:
+  del world_size  # Unused.
   if rank == 0:
     tensor = torch.tensor([123.456, 789.0], dtype=torch.float32, device="tpu")
   else:
@@ -142,6 +143,7 @@ def _worker_test_broadcast(
 def _worker_test_barrier(
     comm: torchcomms.TorchComm, rank: int, world_size: int
 ) -> None:
+  del world_size  # Unused.
   work = comm.barrier(async_op=False)
   work.wait()
   assert work.is_completed()
@@ -151,6 +153,7 @@ def _worker_test_barrier(
 def _worker_test_finalize(
     comm: torchcomms.TorchComm, rank: int, world_size: int
 ) -> None:
+  del world_size  # Unused.
   backend_impl = comm.get_backend_impl()
   assert not backend_impl.is_finalized()
   comm.finalize()

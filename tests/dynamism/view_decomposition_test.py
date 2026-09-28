@@ -87,6 +87,7 @@ class ViewDecompositionTest(seed_test_utils.RepeatableTest):
     self.guards_after = []
 
     def fw_compiler(graph_module, example_inputs):
+      del example_inputs
       nonlocal captured_node, captured_decomp
       # The argument to add is the result of view_fn
       for node in reversed(list(graph_module.graph.nodes)):
@@ -191,7 +192,7 @@ class ViewDecompositionTest(seed_test_utils.RepeatableTest):
     self.assertIsNotNone(node_decomp)
     self.assertIsNotNone(tensor_decomp)
 
-    node_base_shape, node_view_ops = node_decomp
+    node_base_shape, _ = node_decomp
     tensor_base_shape, tensor_view_ops = tensor_decomp
 
     # Verify base shape matches ignoring symint dimension

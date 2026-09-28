@@ -79,14 +79,11 @@ class SparseIotaTest(op_testing.TorchTpuTestBase):
   def test_sparse_iota_on_tpu(self, compile_op: bool):
     self._skip_if_sparsecore_unsupported()
     device = torch.device("tpu")
-    (
-        row_pointers,
-        max_non_zeroes,
-        max_non_zeroes_per_row,
-        pad_value,
-        pad_size,
-        expected,
-    ) = self._get_inputs(device)
+    inputs = self._get_inputs(device)
+    row_pointers = inputs[0]
+    max_non_zeroes = inputs[1]
+    max_non_zeroes_per_row = inputs[2]
+    expected = inputs[5]
 
     def iota_fn(rp):
       return torch.ops.tpu.sparse_iota(
