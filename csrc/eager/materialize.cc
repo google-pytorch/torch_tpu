@@ -135,32 +135,23 @@ const CompilationSpec& GetCompilationSpecForTraversal(
 
 void SplitSingleTraversal(
     absl_nonnull std::unique_ptr<Traversal> pre_split_traversal,
-    absl::flat_hash_set<const DeviceBufferList*>& required_outputs,
-    std::vector<absl_nonnull std::unique_ptr<Traversal>>& post_split_traversals,
-    absl::Status& first_error) {
+    absl::flat_hash_set<const DeviceBufferList*>& scratch_set,
+    std::vector<absl_nonnull std::unique_ptr<Traversal>>&
+        post_split_traversals) {
   const auto core_pinning_mode = pre_split_traversal->core_pinning_mode();
-  for (const auto& output : pre_split_traversal->outputs()) {
-    required_outputs.insert(output.device_buffer_list().get());
-  }
-  auto split_traversals_or =
-      SplitTraversal(std::move(pre_split_traversal), required_outputs);
-  required_outputs.clear();
-  if (!split_traversals_or.ok()) {
-    if (first_error.ok()) {
-      first_error = split_traversals_or.status();
-    }
-    return;
-  }
+  auto split_traversals =
+      SplitTraversal(std::move(pre_split_traversal), scratch_set);
+
   // Retain the core pinning mode when splitting traversals.
   if (core_pinning_mode != CorePinningMode::kUnpinned) {
-    for (auto& split_traversal : *split_traversals_or) {
+    for (auto& split_traversal : split_traversals) {
       split_traversal->SetCorePinningMode(core_pinning_mode);
     }
   }
   post_split_traversals.insert(
       post_split_traversals.end(),
-      std::make_move_iterator(split_traversals_or->begin()),
-      std::make_move_iterator(split_traversals_or->end()));
+      std::make_move_iterator(split_traversals.begin()),
+      std::make_move_iterator(split_traversals.end()));
 }
 
 bool DependsOnPlaceholder(
@@ -307,10 +298,10 @@ MaterializationStages ApplySplitMode(
   if (settings.materialization_mode == MaterializationMode::kSplitGraph) {
     tsl::profiler::TraceMe t("SplitTraversal");
     std::vector<absl_nonnull std::unique_ptr<Traversal>> post_split_traversals;
-    absl::flat_hash_set<const DeviceBufferList*> required_outputs;
+    absl::flat_hash_set<const DeviceBufferList*> scratch_set;
     for (auto& pre_split_traversal : traversals) {
-      SplitSingleTraversal(std::move(pre_split_traversal), required_outputs,
-                           post_split_traversals, result.first_error);
+      SplitSingleTraversal(std::move(pre_split_traversal), scratch_set,
+                           post_split_traversals);
     }
     std::swap(traversals, post_split_traversals);
   }

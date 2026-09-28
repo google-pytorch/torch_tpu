@@ -656,17 +656,14 @@ torch_tpu_cc_library(
     hdrs = ["split_traversal.h"],
     deps = [
         ":device_buffer",
-        ":split_utils",
         ":traversal",
         "//shims/torch:torch_headers",
         "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/container:flat_hash_set",
-        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/log:absl_log",
-        "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
         "@tsl//tsl/profiler/lib:traceme",
-        "@xla//xla:xla_data_proto_cc",
     ],
 )
 
@@ -1010,31 +1007,16 @@ torch_tpu_cc_library(
     ],
 )
 
-torch_tpu_cc_library(
-    name = "split_utils",
-    srcs = ["split_utils.cc"],
-    hdrs = ["split_utils.h"],
-    deps = [
-        ":device_buffer",
-        ":traversal",
-        "//csrc/common:error_utils",
-        "@com_google_absl//absl/base:nullability",
-        "@com_google_absl//absl/container:flat_hash_set",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/types:span",
-    ],
-)
-
 torch_tpu_cc_test(
-    name = "split_utils_test",
-    srcs = ["split_utils_test.cc"],
+    name = "split_traversal_test",
+    srcs = ["split_traversal_test.cc"],
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
     requires_libtpu = True,
     deps = [
         ":device_buffer",
-        ":split_utils",
+        ":split_traversal",
         ":traversal",
         "//csrc/common:cache_key",
         "//csrc/common:dimension_types",
@@ -1044,7 +1026,6 @@ torch_tpu_cc_test(
         "//csrc/ops:op_builder_utils",
         "//csrc/ops:op_names",
         "//csrc/ops:python_context",
-        "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
