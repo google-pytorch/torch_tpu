@@ -75,13 +75,6 @@ TPU_VERSION_TO_GENERATION = {
     "requires-tpu-v7x": "v7",
 }
 
-# Number of TPU chips available on a single OSS CI runner VM per generation.
-OSS_TPU_RUNNER_CHIPS = {
-    "v5": 8,
-    "v6": 8,
-    "v7": 4,
-}
-
 def _get_tpu_generation(tag):
     """Returns the TPU generation for a `requires-tpu-<version>[:<chips>]` tag."""
     return TPU_VERSION_TO_GENERATION.get(tag.split(":")[0])
@@ -93,44 +86,29 @@ def _get_tpu_chip_count(tag):
     _, chips_str = tag.split(":", 1)
     return int(chips_str) if chips_str.isdigit() else None
 
-def _clamp_shard_count(is_oss, tags, shard_count):
-    """Clamps shard_count in OSS to the maximum number of concurrent shards per test.
+# TPU generation -> OSS RBE pool for single-chip tests.
+# TODO: b/567928058 - Add v6e, v7x and multi-chip pools as they come online.
+_RBE_TPU_POOLS = {"v5": "ci_tpu_v5_full_rbe"}
 
-    In OSS CI, all test shards execute locally on a single runner VM rather than
-    across independent Forge hosts:
-    - When `"exclusive"` is in `tags`, Bazel schedules every shard strictly
-      sequentially (concurrency = 1) and `parallel_accelerator_execute.sh` locks
-      all TPU chips on the runner, so `shard_count` is clamped to 1 to avoid
-      paying per-shard startup/teardown overhead N times serially.
-    - When a multi-chip tag (`requires-tpu-<version>:<chips>`) is present,
-      `shard_count` is clamped to `max(1, runner_chips // required_chips)`.
-    In internal Google3 builds (`is_oss = False`), `shard_count` is left
-    unchanged so Forge can run shards in parallel across multiple hosts.
+def _add_rbe_exec_properties(kwargs, tags, tpu_generation):
+    """Sends a single-chip TPU test to its OSS RBE pool; only RBE reads these.
 
-    Args:
-        is_oss: Whether the build is for OSS.
-        tags: The list of tags on the test target.
-        shard_count: The configured shard_count (or None).
-
-    Returns:
-        The clamped shard_count (or None if shard_count was None).
+    A TPU test with no pool gets nothing, so if the RBE filters let one
+    through it fails on the CPU pool instead of running on the wrong TPU.
     """
-    if not is_oss or shard_count == None or shard_count <= 1:
-        return shard_count
-
-    if "exclusive" in tags:
-        return 1
-
+    pool = _RBE_TPU_POOLS.get(tpu_generation)
+    if pool == None:
+        return
     for tag in tags:
-        required_chips = _get_tpu_chip_count(tag)
-        if required_chips != None and required_chips > 0:
-            gen = _get_tpu_generation(tag)
-            runner_chips = OSS_TPU_RUNNER_CHIPS.get(gen)
-            if runner_chips != None:
-                available_slots = max(1, runner_chips // required_chips)
-                shard_count = min(shard_count, available_slots)
-
-    return shard_count
+        chips = _get_tpu_chip_count(tag)
+        if chips != None and chips > 1:
+            return
+    kwargs["exec_properties"] = {
+        "test.Pool": pool,
+        "test.dockerPrivileged": "true",  # The TPU is /dev/vfio.
+        # TODO: b/567928058 - Try running tests as a non-root user.
+        "test.dockerRunAsRoot": "true",
+    } | (kwargs.get("exec_properties") or {})
 
 def tpu_gen(generation, reason = None):
     """Helper to configure explicit TPU generation requirements.
@@ -248,7 +226,7 @@ def _fail_on_generic_requires_tpu_tag(tags):
 is_backend_dep_for_testing = is_backend_dep
 get_tpu_version_for_testing = _get_tpu_version
 get_tpu_chip_count_for_testing = _get_tpu_chip_count
-clamp_shard_count_for_testing = _clamp_shard_count
+add_rbe_exec_properties_for_testing = _add_rbe_exec_properties
 
 def torch_tpu_cc_library(name, srcs = [], hdrs = [], copts = None, features = None, **kwargs):
     """Creates a C++ library for torch_tpu.
@@ -345,8 +323,7 @@ def _check_and_adjust_test_tags(
         nopresubmit_oss,
         nonightly_oss,
         oss_presubmit_tpu_generation,
-        tags,
-        shard_count = None):
+        tags):
     """Validates and adjusts the test tags and calculates build test requirements.
 
     Args:
@@ -381,12 +358,12 @@ def _check_and_adjust_test_tags(
         oss_presubmit_tpu_generation: Optional integer specifying the TPU generation to run this
             test on in OSS presubmit.
         tags: The tags to add to the test.
-        shard_count: Optional integer specifying the number of test shards.
 
     Returns:
         A struct with fields:
             create_build_test: Boolean, whether to create a build test.
             build_test_tags: List of tags for the build test.
+            tpu_generation: The TPU generation ("v5", "v6", "v7") in OSS, or None.
 
     Side effects:
         Updates the `tags` list with desired tags and sorts it. The sorting is just to
@@ -477,12 +454,6 @@ def _check_and_adjust_test_tags(
         fail("Tests with size 'enormous' or timeout 'eternal' are always skipped by TAP. " +
              "Please add a 'notap' argument to torch_tpu_*_test() to make the fact explicit.")
 
-    clamped_shard_count = _clamp_shard_count(
-        is_oss = is_oss,
-        tags = tags,
-        shard_count = shard_count,
-    )
-
     # Add a build_test for notap and notest_oss test unless nobuild is set.
     # Targets with notest_oss cannot be built in OSS because flag `--build_tests_only` is active.
     # Instead of removing `--build_tests_only` to include all unused binaries/libraries in OSS
@@ -563,28 +534,26 @@ def _check_and_adjust_test_tags(
         if has_tpu_tag or oss_presubmit_tpu_generation != None:
             fail("Test '%s' has both TPU requirements and GPU tags (%s). A test cannot require both TPU and GPU." % (name, gpu_tags))
 
+    tpu_generation = None
     if is_oss:
         if oss_presubmit_tpu_generation != None:
             if type(oss_presubmit_tpu_generation) != "dict" or "generation" not in oss_presubmit_tpu_generation or "reason" not in oss_presubmit_tpu_generation:
                 fail("oss_presubmit_tpu_generation must be a dict generated by tpu_gen().")
             if not oss_presubmit_tpu_generation["reason"]:
                 fail("A reason must be provided when explicitly specifying an oss_presubmit_tpu_generation.")
-            gen = oss_presubmit_tpu_generation["generation"]
-            if ("fails-on-tpu-" + gen) in tags:
-                fail("Test cannot specify oss_presubmit_tpu_generation generation=\"%s\" and fails-on-tpu-%s." % (gen, gen))
-            tags.append("presubmit-" + gen)
-        else:
-            has_tpu = any([t.startswith("requires-tpu") for t in tags])
-            if has_tpu:
-                allocated = False
-                for gen in TPU_GENERATION_PREFERENCES:
-                    if ("fails-on-tpu-" + gen) not in tags:
-                        tags.append("presubmit-" + gen)
-                        allocated = True
-                        break
+            tpu_generation = oss_presubmit_tpu_generation["generation"]
+            if ("fails-on-tpu-" + tpu_generation) in tags:
+                fail("Test cannot specify oss_presubmit_tpu_generation generation=\"%s\" and fails-on-tpu-%s." % (tpu_generation, tpu_generation))
+            tags.append("presubmit-" + tpu_generation)
+        elif any([t.startswith("requires-tpu") for t in tags]):
+            for gen in TPU_GENERATION_PREFERENCES:
+                if ("fails-on-tpu-" + gen) not in tags:
+                    tpu_generation = gen
+                    tags.append("presubmit-" + gen)
+                    break
 
-                if not allocated:
-                    fail("TPU tests failing on all generations in OSS should use notest_oss instead.")
+            if not tpu_generation:
+                fail("TPU tests failing on all generations in OSS should use notest_oss instead.")
 
     process_accelerator_tags(tags)
     _sort_inplace(tags)
@@ -592,7 +561,7 @@ def _check_and_adjust_test_tags(
     return struct(
         create_build_test = create_build_test,
         build_test_tags = build_test_tags,
-        shard_count = clamped_shard_count,
+        tpu_generation = tpu_generation,
     )
 
 def check_and_adjust_test_tags_for_testing(
@@ -609,8 +578,7 @@ def check_and_adjust_test_tags_for_testing(
         nopresubmit_oss = None,
         nonightly_oss = None,
         oss_presubmit_tpu_generation = None,
-        tags = None,
-        shard_count = None):
+        tags = None):
     """Public wrapper for testing."""
     if tags == None:
         tags = []
@@ -629,7 +597,6 @@ def check_and_adjust_test_tags_for_testing(
         nonightly_oss = nonightly_oss,
         oss_presubmit_tpu_generation = oss_presubmit_tpu_generation,
         tags = tags,
-        shard_count = shard_count,
     )
 
 def torch_tpu_cc_test(
@@ -759,10 +726,7 @@ def torch_tpu_cc_test(
         nonightly_oss = nonightly_oss,
         oss_presubmit_tpu_generation = oss_presubmit_tpu_generation,
         tags = effective_tags,
-        shard_count = kwargs.get("shard_count", None),
     )
-    if result.shard_count != None:
-        kwargs["shard_count"] = result.shard_count
 
     if requires_libtpu == None:
         # requires-tpu is a generic tag automatically applied whenever at least
@@ -819,6 +783,8 @@ def torch_tpu_cc_test(
             if filtered_exec_properties:
                 sh_test_kwargs["exec_properties"] = filtered_exec_properties
 
+        _add_rbe_exec_properties(sh_test_kwargs, effective_tags, result.tpu_generation)
+
         # buildifier: disable=native-sh-test
         native.sh_test(
             name = name,
@@ -835,6 +801,7 @@ def torch_tpu_cc_test(
         )
     else:
         cc_test_tags = effective_tags
+        _add_rbe_exec_properties(kwargs, effective_tags, result.tpu_generation)
 
     if result.create_build_test:
         build_test(
@@ -1287,7 +1254,6 @@ def torch_tpu_py_test(
             nonightly_oss = nonightly_oss,
             oss_presubmit_tpu_generation = target_tpu_generation,
             tags = target_tags,
-            shard_count = kwargs.get("shard_count", None),
         )
         if result.create_build_test:
             build_test(
@@ -1297,8 +1263,7 @@ def torch_tpu_py_test(
             )
 
         target_kwargs = dict(kwargs)
-        if result.shard_count != None:
-            target_kwargs["shard_count"] = result.shard_count
+        _add_rbe_exec_properties(target_kwargs, target_tags, result.tpu_generation)
 
         rule(
             name = target_name,

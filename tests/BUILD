@@ -1690,7 +1690,12 @@ torch_tpu_py_test(
     tags = [
         "nosan",  # *san builds are low-value for error tests.
         "requires-tpu-v5lite",
-    ],
+    ] + if_oss(
+        # TODO: b/567928058 - test_mm_with_oom_result fails on the RBE v5e
+        # workers, so run it on the self-hosted runners until that's fixed.
+        ["no-remote-exec"],
+        [],
+    ),
     deps = [
         ":error_testing",
         "//csrc/eager:tpu_aten_kernels",

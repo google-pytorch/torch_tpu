@@ -61,3 +61,16 @@ platform(
     parents = ["@ml_build_config_platform//:platform"],
     visibility = ["//visibility:public"],
 )
+
+# Sends build actions and CPU tests to the CPU worker pool of the rbe-tpu-oss
+# RBE instance. TPU tests set their own `test.Pool` per target (see
+# build_files/build_defs.bzl).
+platform(
+    name = "rbe_platform",
+    exec_properties = {
+        "Pool": "default",
+        "cache-silo-key": "FirstCachedBuild",
+    },
+    parents = ["@ml_build_config_platform//:platform"],
+    visibility = ["//visibility:public"],
+)
