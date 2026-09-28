@@ -21,6 +21,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "gmock/gmock.h"
@@ -38,6 +39,8 @@
 namespace torch_tpu {
 
 namespace {
+
+using testing::HasSubstr;
 
 TEST(TpuProfilerPluginTest, BasicSanity) {
   TpuProfiler profiler;
@@ -362,6 +365,68 @@ TEST(TpuProfilerPluginTest, UpdateProfileOptionsWorkerRank) {
   EXPECT_TRUE(worker_rank.has_value());
   EXPECT_EQ(*worker_rank, "abc");
 }
+
+TEST(TpuProfilerPluginTest, UpdateProfileOptionsSessionId) {
+  tensorflow::ProfileOptions opts;
+  std::string run_dir;
+
+  EXPECT_TRUE(UpdateProfileOptions(
+                  "device_tracer_level:3,session_id:\"2026_09_28_06_00_00\"",
+                  opts, run_dir)
+                  .ok());
+  EXPECT_EQ(opts.device_tracer_level(), 3);
+  EXPECT_EQ(opts.session_id(), "2026_09_28_06_00_00");
+  EXPECT_FALSE(opts.advanced_configuration().contains("session_id"));
+}
+
+TEST(TpuProfilerPluginTest, UpdateProfileOptionsSessionIdUnquoted) {
+  tensorflow::ProfileOptions opts;
+  std::string run_dir;
+
+  EXPECT_TRUE(UpdateProfileOptions("session_id:my_run", opts, run_dir).ok());
+  EXPECT_EQ(opts.session_id(), "my_run");
+}
+
+TEST(TpuProfilerPluginTest, UpdateProfileOptionsSessionIdMissing) {
+  tensorflow::ProfileOptions opts;
+  std::string run_dir;
+
+  EXPECT_TRUE(
+      UpdateProfileOptions("device_tracer_level:1", opts, run_dir).ok());
+  EXPECT_TRUE(opts.session_id().empty());
+}
+
+TEST(TpuProfilerPluginTest, UpdateProfileOptionsSessionIdEscapedQuotes) {
+  tensorflow::ProfileOptions opts;
+  std::string run_dir;
+
+  EXPECT_TRUE(
+      UpdateProfileOptions(R"(session_id:"a \"b\" c")", opts, run_dir).ok());
+  EXPECT_EQ(opts.session_id(), R"(a "b" c)");
+}
+
+class UpdateProfileOptionsInvalidSessionIdTest
+    : public testing::TestWithParam<std::string_view> {};
+
+TEST_P(UpdateProfileOptionsInvalidSessionIdTest, ReturnsInvalidArgument) {
+  tensorflow::ProfileOptions opts;
+  std::string run_dir;
+
+  const absl::Status status = UpdateProfileOptions(GetParam(), opts, run_dir);
+
+  EXPECT_EQ(status.code(), error::kInvalidArgument);
+  EXPECT_THAT(status.message(),
+              HasSubstr("expected session_id to be a non-empty single path "
+                        "component"));
+  EXPECT_TRUE(opts.session_id().empty());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    TpuProfilerPluginTest, UpdateProfileOptionsInvalidSessionIdTest,
+    testing::Values(R"(session_id:"")", R"(session_id:".")",
+                    R"(session_id:"..")", R"(session_id:"a/b")",
+                    R"(session_id:"../escape")", R"(session_id:"a\\b")",
+                    "session_id:"));
 
 TEST(TpuProfilerPluginTest, SanitizeStatString) {
   EXPECT_EQ(SanitizeStatString("plain_stat_value"), "plain_stat_value");

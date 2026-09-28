@@ -35,6 +35,7 @@ from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.compiler import StaticCompiler
 from torch_tpu._internal.distributed import environment as internal_environment
 from torch_tpu._internal.pallas import tpu_torch_pallas
+from torch_tpu._internal.profiler.profiler_config import TpuProfilerConfig
 from torch_tpu._internal.utils import hardware
 from tests import error_testing as et
 
@@ -5008,6 +5009,57 @@ class ForkErrorsTest(et.TpuOnlyErrorTestBase):
         torch.tpu._init_runtime_options()
       torch.tpu._shutdown_runtime()
     self.assertFalse(torch.tpu._is_in_bad_fork())
+
+
+class ProfilerConfigErrorsTest(et.TpuOnlyErrorTestBase):
+
+  @et.why_tpu_only("TpuProfilerConfig is a TPU-specific profiler config.")
+  def test_session_id_non_string_raises(self):
+    with et.assert_raises_message(
+        TypeError,
+        tpu="""session_id must be a string, got <class 'int'>""",
+    ):
+      TpuProfilerConfig(session_id=123)
+
+  @et.why_tpu_only("TpuProfilerConfig is a TPU-specific profiler config.")
+  def test_session_id_invalid_directory_name_raises(self):
+    for session_id in ["", ".", ".."]:
+      with self.subTest(session_id=session_id):
+        with et.assert_raises_message(
+            ValueError,
+            tpu=f"""session_id must be a non-empty directory name: {session_id!r}""",
+        ):
+          TpuProfilerConfig(session_id=session_id)
+
+  @et.why_tpu_only("TpuProfilerConfig is a TPU-specific profiler config.")
+  def test_session_id_in_experimental_options_raises(self):
+    with et.assert_raises_message(
+        ValueError,
+        tpu="""Experimental option key cannot clash with stable option: 'session_id'""",
+    ):
+      TpuProfilerConfig(experimental_options={"session_id": "x"})
+
+  @et.why_tpu_only("The TPU profiler plugin only runs on TPU.")
+  def test_plugin_rejects_invalid_session_id(self):
+    # A failed profiler start leaves PyTorch's Python-side enabled flag set,
+    # which would leak into later tests in this process.
+    self.addCleanup(
+        torch.autograd.profiler._set_is_profiler_enabled, False  # pylint: disable=protected-access
+    )
+    # Bypasses TpuProfilerConfig validation to reach the plugin's own check,
+    # which guards config strings built without TpuProfilerConfig.
+    config = torch.profiler._ExperimentalConfig(  # pylint: disable=protected-access
+        custom_profiler_config="session_id:a/b"
+    )  # pytype: disable=wrong-keyword-args
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected session_id to be a non-empty single path component, got 'a/b'""",
+    ):
+      with torch.profiler.profile(
+          activities=[torch.profiler.ProfilerActivity.PrivateUse1],
+          experimental_config=config,
+      ):
+        pass
 
 
 if __name__ == "__main__":

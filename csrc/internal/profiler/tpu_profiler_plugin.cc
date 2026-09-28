@@ -90,6 +90,7 @@ constexpr std::string_view kDeviceTracerLevel = "device_tracer_level";
 constexpr std::string_view kHostTracerLevel = "host_tracer_level";
 constexpr std::string_view kPythonTracerLevel = "python_tracer_level";
 constexpr std::string_view kRunDir = "run_dir";
+constexpr std::string_view kSessionId = "session_id";
 constexpr std::string_view kWorkerRank = "worker_rank";
 
 // Represents a parsed custom configuration option.
@@ -271,12 +272,35 @@ absl::StatusOr<ProfilerOption> SplitConfigItem(std::string_view item) {
   return ProfilerOption{key, val};
 }
 
+// Parses a string option value. Values wrapped in double quotes are stripped of
+// the quotes and unescaped; unquoted values are returned verbatim.
+absl::StatusOr<std::string> ParseStringOptionValue(std::string_view value) {
+  if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
+    return UnescapeString(value.substr(1, value.size() - 2));
+  }
+  return std::string(value);
+}
+
+// Validates that `session_id` can be used as a single path component, so that
+// it cannot escape the `<run_dir>/plugins/profile/` directory.
+absl::Status ValidateSessionId(std::string_view session_id) {
+  if (session_id.empty() || session_id == "." || session_id == ".." ||
+      absl::StrContains(session_id, '/') ||
+      absl::StrContains(session_id, '\\')) {
+    return TT_ERROR(error::kInvalidArgument)
+           << "expected session_id to be a non-empty single path component, "
+              "got '"
+           << session_id << "'";
+  }
+  return absl::OkStatus();
+}
+
 // Parses the custom configuration string from Kineto. Leading and trailing
 // whitespace is ignored around keys and values. The configuration string is
 // expected to be a comma-separated list of key-value pairs, where keys and
 // values are separated by ':' (e.g., "host_tracer_level:3"). If a valid
 // "run_dir" is found, it is written to out_run_dir; all other valid profiler
-// options update the ProfileOptions object in place.
+// options (including "session_id") update the ProfileOptions object in place.
 absl::Status UpdateProfileOptions(std::string_view custom_config,
                                   tensorflow::ProfileOptions& opts,
                                   std::string& out_run_dir,
@@ -302,17 +326,13 @@ absl::Status UpdateProfileOptions(std::string_view custom_config,
       continue;
     }
     if (name == kWorkerRank) {
-      if (val.size() >= 2 && val.front() == '"' && val.back() == '"') {
-        // Strip outer quotes and unescape internal characters.
-        absl::StatusOr<std::string> unescaped =
-            UnescapeString(val.substr(1, val.size() - 2));
-        if (!unescaped.ok()) {
-          return unescaped.status();
-        }
-        out_worker_rank = *std::move(unescaped);
-      } else {
-        out_worker_rank = std::string(val);
-      }
+      TT_ASSIGN_OR_RETURN(out_worker_rank, ParseStringOptionValue(val));
+      continue;
+    }
+    if (name == kSessionId) {
+      TT_ASSIGN_OR_RETURN(std::string session_id, ParseStringOptionValue(val));
+      TT_RETURN_IF_ERROR(ValidateSessionId(session_id));
+      opts.set_session_id(std::move(session_id));
       continue;
     }
     TT_RETURN_IF_ERROR(UpdateProfileOption(opts, name, val));
@@ -357,9 +377,11 @@ namespace {
 
 // Helper to determine the output path for the XPlane file.
 // It follows the TensorBoard XProf convention used in TensorFlow/XLA to save
-// data under <run_dir>/plugins/profile/<timestamp>/<hostname>.xplane.pb.
-// The <timestamp> format is YYYY_MM_DD_HH_MM_SS in the local time zone,
-// matching XLA's behavior.
+// data under <run_dir>/plugins/profile/<session>/<hostname>.xplane.pb.
+// <session> is `session_id` if non-empty. Otherwise it is a timestamp in the
+// YYYY_MM_DD_HH_MM_SS format in the local time zone, matching XLA's behavior.
+// Multi-rank workloads should pass the same `session_id` on every rank, since
+// per-rank timestamps can differ and split the ranks into separate sessions.
 //
 // The base directory is determined in order of priority:
 // 1. TORCH_TPU_PROFILER_OUTPUT_DIR environment variable (if set and non-empty)
@@ -367,14 +389,16 @@ namespace {
 // 3. TMPDIR environment variable (if set).
 // 4. Default to "/tmp".
 absl::StatusOr<std::string> GetXPlaneOutputPath(
-    std::string_view run_dir, std::optional<std::string_view> worker_rank) {
+    std::string_view run_dir, std::optional<std::string_view> worker_rank,
+    std::string_view session_id) {
   std::string base_dir = GetProfilerBaseOutputDir(run_dir);
 
-  absl::Time now = absl::Now();
   // Match %E4Y format used in
   // tensorflow/compiler/xla/tsl/profiler/rpc/client/save_profile.cc
-  std::string timestamp =
-      absl::FormatTime("%E4Y_%m_%d_%H_%M_%S", now, absl::LocalTimeZone());
+  const std::string session_dir_name =
+      !session_id.empty() ? std::string(session_id)
+                          : absl::FormatTime("%E4Y_%m_%d_%H_%M_%S", absl::Now(),
+                                             absl::LocalTimeZone());
 
   char hostname[1024];
   if (gethostname(hostname, sizeof(hostname)) != 0) {
@@ -383,7 +407,7 @@ absl::StatusOr<std::string> GetXPlaneOutputPath(
   hostname[sizeof(hostname) - 1] = '\0';
 
   std::string profile_dir =
-      tsl::io::JoinPath(base_dir, "plugins", "profile", timestamp);
+      tsl::io::JoinPath(base_dir, "plugins", "profile", session_dir_name);
 
   tsl::Env* env = tsl::Env::Default();
   absl::Status status = env->RecursivelyCreateDir(profile_dir);
@@ -432,6 +456,7 @@ void TpuKinetoProfilerSession::start() {
 
   TT_THROW_IF_ERROR(UpdateProfileOptions(config_.getCustomConfig(), opts,
                                          run_dir_, worker_rank_));
+  session_id_ = opts.session_id();
 
   start_time_ns_ = absl::GetCurrentTimeNanos();
 
@@ -527,7 +552,7 @@ void TpuKinetoProfilerSession::stop() {
             : std::string(tsl::io::Dirname(config_.activitiesLogFile()));
 
     absl::StatusOr<std::string> resolved_path =
-        GetXPlaneOutputPath(run_dir, worker_rank_);
+        GetXPlaneOutputPath(run_dir, worker_rank_, session_id_);
     if (!resolved_path.ok()) {
       errors_.push_back(absl::StrCat("Failed to get XPlane output path: ",
                                      resolved_path.status().ToString()));

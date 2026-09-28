@@ -79,6 +79,9 @@ class TpuKinetoProfilerSession : public libkineto::IActivityProfilerSession {
   std::unique_ptr<XProfCallbackHandler> callback_handler_;
   std::string run_dir_ ABSL_GUARDED_BY(mutex_);
   std::optional<std::string> worker_rank_ ABSL_GUARDED_BY(mutex_);
+  // Subdirectory under `<run_dir>/plugins/profile/` for the XPlane file. When
+  // empty, a timestamp taken at stop time is used instead.
+  std::string session_id_ ABSL_GUARDED_BY(mutex_);
   uint64_t start_time_ns_ = 0;
   std::vector<libkineto::ResourceInfo> resource_infos_;
 };

@@ -1707,6 +1707,7 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/execution_mode",
         "//src/torch_tpu/_internal/pallas",
         "//src/torch_tpu/_internal/pallas:tpu_torch_pallas",  # build_cleaner: keep
+        "//src/torch_tpu/_internal/profiler:profiler_config",
         "//src/torch_tpu/_internal/utils:hardware",
     ],
 )
@@ -1781,6 +1782,7 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/execution_mode",
         "//src/torch_tpu/_internal/pallas",
         "//src/torch_tpu/_internal/pallas:tpu_torch_pallas",  # build_cleaner: keep
+        "//src/torch_tpu/_internal/profiler:profiler_config",
         "//src/torch_tpu/_internal/utils:hardware",
     ],
 )

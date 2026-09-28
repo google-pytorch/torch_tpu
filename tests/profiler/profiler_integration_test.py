@@ -928,6 +928,86 @@ class ProfilerIntegrationTest(seed_test_utils.RepeatableTest):
     with self.assertRaises(ValueError):
       TpuProfilerConfig(worker_rank="worker,1")
 
+  def test_tpu_profiler_config_session_id(self):
+    device = torch.device("tpu")
+    custom_run_dir = self.create_tempdir("custom_run_dir_session_id").full_path
+    session_id = "shared_session"
+
+    _cleanup_profile_dir()
+
+    config = TpuProfilerConfig(
+        run_dir=pathlib.Path(custom_run_dir), session_id=session_id
+    )
+
+    with torch.profiler.profile(
+        activities=[
+            torch.profiler.ProfilerActivity.CPU,
+            torch.profiler.ProfilerActivity.TPU,  # type: ignore
+        ],
+        on_trace_ready=torch.profiler.tensorboard_trace_handler(custom_run_dir),
+        experimental_config=config,
+    ):
+      a = torch.ones((16, 16)).to(device)
+      b = torch.ones((16, 16)).to(device)
+      c = a @ b
+      tpu_sync.synchronize(c)
+
+    expected_profile_dir = pathlib.Path(custom_run_dir) / "plugins" / "profile"
+    self.assertTrue(
+        expected_profile_dir.exists(),
+        "plugins/profile directory should exist under the configured run_dir",
+    )
+
+    session_dirs = list(expected_profile_dir.glob("*"))
+    self.assertLen(session_dirs, 1)
+
+    (session_dir,) = session_dirs
+    self.assertEqual(session_dir.name, session_id)
+    xplane_files = list(session_dir.glob("*.xplane.pb"))
+    self.assertNotEmpty(
+        xplane_files,
+        "Should have a .xplane.pb file in the session_id directory",
+    )
+
+  def test_tpu_profiler_config_session_id_none(self):
+    device = torch.device("tpu")
+    custom_run_dir = self.create_tempdir("session_id_none").full_path
+
+    _cleanup_profile_dir()
+
+    config = TpuProfilerConfig(
+        run_dir=pathlib.Path(custom_run_dir), session_id=None
+    )
+
+    with torch.profiler.profile(
+        activities=[
+            torch.profiler.ProfilerActivity.CPU,
+            torch.profiler.ProfilerActivity.TPU,  # type: ignore
+        ],
+        on_trace_ready=torch.profiler.tensorboard_trace_handler(custom_run_dir),
+        experimental_config=config,
+    ):
+      a = torch.ones((16, 16)).to(device)
+      b = torch.ones((16, 16)).to(device)
+      c = a @ b
+      tpu_sync.synchronize(c)
+
+    expected_profile_dir = pathlib.Path(custom_run_dir) / "plugins" / "profile"
+    self.assertTrue(
+        expected_profile_dir.exists(),
+        "plugins/profile directory should exist under the configured run_dir",
+    )
+
+    timestamp_dirs = list(expected_profile_dir.glob("*"))
+    self.assertLen(timestamp_dirs, 1)
+
+    (timestamp_dir,) = timestamp_dirs
+    self.assertRegex(timestamp_dir.name, r"^\d{4}(_\d{2}){5}$")
+    xplane_files = list(timestamp_dir.glob("*.xplane.pb"))
+    self.assertNotEmpty(
+        xplane_files, "Should have a .xplane.pb file in the timestamp directory"
+    )
+
 
 if __name__ == "__main__":
   absltest.main()

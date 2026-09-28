@@ -33,6 +33,7 @@ _PK_DEVICE_TRACER_LEVEL = "device_tracer_level"
 _PK_HOST_TRACER_LEVEL = "host_tracer_level"
 _PK_PYTHON_TRACER_LEVEL = "python_tracer_level"
 _PK_RUN_DIR = "run_dir"
+_PK_SESSION_ID = "session_id"
 _PK_WORKER_RANK = "worker_rank"
 # go/keep-sorted end
 # LINT.ThenChange(profiler_config.py:stable_keys_set)
@@ -47,6 +48,7 @@ _STABLE_KEYS = frozenset({
     _PK_HOST_TRACER_LEVEL,
     _PK_PYTHON_TRACER_LEVEL,
     _PK_RUN_DIR,
+    _PK_SESSION_ID,
     _PK_WORKER_RANK,
     # go/keep-sorted end
 })
@@ -97,6 +99,7 @@ class TpuProfilerConfig(torch.profiler._ExperimentalConfig):  # pylint: disable=
       python_tracer_level: int = 0,
       run_dir: os.PathLike[str] | str | None = None,
       worker_rank: str | None = None,
+      session_id: str | None = None,
       experimental_options: Mapping[str, _ExperimentalValue] | None = None,
       check_experimental_options: bool = True,
   ):
@@ -120,11 +123,21 @@ class TpuProfilerConfig(torch.profiler._ExperimentalConfig):  # pylint: disable=
       run_dir: The directory path to save the profiler trace to. If None
         (default), falls back to Kineto's `activitiesLogFile` directory (which
         defaults to "/tmp" if no handler is provided). This ensures TPU and CPU
-        traces are co-located in the same directory.
+        traces are co-located in the same directory. The XPlane file is written
+        to `<run_dir>/plugins/profile/<session>/`, where `<session>` is
+        `session_id` if provided, or a timestamp otherwise.
       worker_rank: The rank of the worker. If provided, the generated XPlane
         filename will include the rank as a suffix (e.g.,
         `<hostname>_<rank>.xplane.pb` instead of `<hostname>.xplane.pb`). Must
         be a string.
+      session_id: Name of the session subdirectory under
+        `<run_dir>/plugins/profile/`. If None (default), a timestamp taken when
+        the trace is stopped is used. In multi-rank workloads, pass the same
+        value on every rank (e.g., generated on rank 0 and broadcast) so that
+        all traces land in one XProf session; per-rank timestamps can differ and
+        split the ranks into separate sessions. Must be a non-empty string that
+        is not "." or "..", and must not contain '/', '\\', ':' or ','. Reusing
+        a `session_id` overwrites trace files with the same name.
       experimental_options: Dictionary of experimental profiler options where
         supported value types are int, bool, and str. Strings will be
         automatically quoted and escaped, and keys must not contain colons or
@@ -141,6 +154,18 @@ class TpuProfilerConfig(torch.profiler._ExperimentalConfig):  # pylint: disable=
       if ":" in worker_rank or "," in worker_rank:
         raise ValueError(
             f"worker_rank string cannot contain ':' or ',': {worker_rank!r}"
+        )
+
+    if session_id is not None:
+      if not isinstance(session_id, str):
+        raise TypeError(f"session_id must be a string, got {type(session_id)}")
+      if session_id in ("", ".", ".."):
+        raise ValueError(
+            f"session_id must be a non-empty directory name: {session_id!r}"
+        )
+      if any(char in session_id for char in "/\\:,"):
+        raise ValueError(
+            f"session_id cannot contain '/', '\\', ':' or ',': {session_id!r}"
         )
 
     run_dir_posix = os.fspath(run_dir) if run_dir is not None else None
@@ -162,6 +187,8 @@ class TpuProfilerConfig(torch.profiler._ExperimentalConfig):  # pylint: disable=
         yield f"{_PK_RUN_DIR}:{run_dir_posix}"
       if worker_rank is not None:
         yield f"{_PK_WORKER_RANK}:{_format_experimental_value(worker_rank)}"
+      if session_id is not None:
+        yield f"{_PK_SESSION_ID}:{_format_experimental_value(session_id)}"
       if experimental_options:
         for key, value in experimental_options.items():
           yield f"{key}:{_format_experimental_value(value)}"

@@ -246,6 +246,37 @@ class ProfilerApiTest(seed_test_utils.RepeatableTest):
       custom_config = called_kwargs.get('custom_profiler_config', '')
       self.assertIn(f'run_dir:{local_path}', custom_config)
 
+  def test_tpu_profiler_config_session_id(self):
+    # See test_tpu_profiler_config_run_dir for why the original __init__ must
+    # still be invoked.
+    original_init = torch.profiler._ExperimentalConfig.__init__
+    called_kwargs = {}
+
+    def fake_init(self, *args, **kwargs):
+      called_kwargs.clear()
+      called_kwargs.update(kwargs)
+      original_init(self, *args, **kwargs)
+
+    with mock.patch.object(
+        torch.profiler._ExperimentalConfig, '__init__', new=fake_init
+    ):
+      TpuProfilerConfig(session_id='2026_09_28_06_00_00')
+      custom_config = called_kwargs.get('custom_profiler_config', '')
+      self.assertIn('session_id:"2026_09_28_06_00_00"', custom_config)
+
+      TpuProfilerConfig(session_id='a "b" c')
+      custom_config = called_kwargs.get('custom_profiler_config', '')
+      self.assertIn(r'session_id:"a \"b\" c"', custom_config)
+
+      TpuProfilerConfig()
+      custom_config = called_kwargs.get('custom_profiler_config', '')
+      self.assertNotIn('session_id', custom_config)
+
+  def test_tpu_profiler_config_session_id_valid_values(self):
+    _ = TpuProfilerConfig(session_id='2026_09_28_06_00_00')
+    _ = TpuProfilerConfig(session_id='run-1.step_2')
+    _ = TpuProfilerConfig(session_id=None)
+
   def test_exported_start_and_stop_server(self):
     """Tests start_server and stop_server at exported module paths."""
     # Test from torch_tpu._internal.profiler
