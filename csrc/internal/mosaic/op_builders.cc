@@ -66,9 +66,11 @@ Value CreateMatmul(ImplicitLocOpBuilder& builder, Value lhs, Value rhs,
       arith::ConstantOp::create(builder, accumulator_type,
                                 DenseElementsAttr::get(accumulator_type, 0.0f));
 
-  // We may want to consider setting this based on input types.
-  // We leave it to the default for now to keep numerical compatibility.
-  tpu::ContractPrecisionAttr precision_attr = nullptr;
+  tpu::ContractPrecisionAttr precision_attr =
+      options.precision.has_value()
+          ? tpu::ContractPrecisionAttr::get(builder.getContext(),
+                                            *options.precision)
+          : nullptr;
 
   // Hard-set transpose_<lhs/rhs> as they are ignored when dimension_numbers is
   // provided.

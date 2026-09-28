@@ -84,8 +84,9 @@ SharedBwdResult ComputeSharedBackwardLogic(
     Type ity, IntegerType i32, MLIRContext* context) {
   constexpr float kLog2e = std::numbers::log2e_v<float>;
   Type vector_type_qt_kt = VectorType::get({qt, kt}, oty);
-  Value unscaled_sij = CreateMatmul(fn_builder, q_2d, k_2d,
-                                    MatmulOptions{.transpose_rhs = true});
+  Value unscaled_sij = CreateMatmul(
+      fn_builder, q_2d, k_2d,
+      MatmulOptions{.transpose_rhs = true, .precision = config.precision});
 
   Value sij = ScaleValue(fn_builder, unscaled_sij, config.scale * kLog2e);
 
@@ -111,8 +112,9 @@ SharedBwdResult ComputeSharedBackwardLogic(
   Value pij = Exp2Op::create(fn_builder, sub_op);
 
   // Compute dP = dO @ V^T!
-  Value dpij = CreateMatmul(fn_builder, do_2d, v_2d,
-                            MatmulOptions{.transpose_rhs = true});
+  Value dpij = CreateMatmul(
+      fn_builder, do_2d, v_2d,
+      MatmulOptions{.transpose_rhs = true, .precision = config.precision});
 
   Value p_for_dv = pij;
   if (config.dropout_rate > 0.0f) {
@@ -321,12 +323,13 @@ func::FuncOp buildBackwardDkvModule(ImplicitLocOpBuilder& module_builder,
 
   Value p_contract = ConvertElementType(fn_builder, ity, shared_result.p);
 
-  auto dv_contraction = CreateMatmul(fn_builder, p_contract, tiles.do_2d,
-                                     MatmulOptions{.transpose_lhs = true});
+  auto dv_contraction = CreateMatmul(
+      fn_builder, p_contract, tiles.do_2d,
+      MatmulOptions{.transpose_lhs = true, .precision = config.precision});
 
-  auto dk_contraction =
-      CreateMatmul(fn_builder, shared_result.ds_trunc, tiles.q_tile,
-                   MatmulOptions{.transpose_lhs = true});
+  auto dk_contraction = CreateMatmul(
+      fn_builder, shared_result.ds_trunc, tiles.q_tile,
+      MatmulOptions{.transpose_lhs = true, .precision = config.precision});
 
   Value scaled_dk = ScaleValue(fn_builder, dk_contraction, config.scale);
 
@@ -680,7 +683,8 @@ func::FuncOp buildBackwardDqModule(ImplicitLocOpBuilder& module_builder,
 
   // Compute dQ = dS @ K!
   auto dq_contraction =
-      CreateMatmul(fn_builder, shared_result.ds_trunc, tiles.k_tile);
+      CreateMatmul(fn_builder, shared_result.ds_trunc, tiles.k_tile,
+                   MatmulOptions{.precision = config.precision});
 
   Value scaled_dq = ScaleValue(fn_builder, dq_contraction, config.scale);
 

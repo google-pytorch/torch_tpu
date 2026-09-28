@@ -19,6 +19,8 @@ import warnings
 
 from absl.testing import absltest
 import torch
+from torch.nn.attention import sdpa_kernel
+from torch.nn.attention import SDPBackend
 import torch_tpu._internal.precision as p
 from torch_tpu._internal.precision import precision_impl as p_impl
 from torch_tpu._internal.utils import utils
@@ -519,6 +521,31 @@ class PrecisionTest(seed_test_utils.RepeatableTest):
 
     finally:
       torch.set_float32_matmul_precision("medium")
+
+  def test_flash_sdpa_precision(self):
+    q, k, v = (torch.randn(1, 4, 256, 64) for _ in range(3))
+
+    def run(device, dtype, mode=None):
+      tensors = [t.to(device=device, dtype=dtype) for t in (q, k, v)]
+      if mode is None:
+        out = torch.nn.functional.scaled_dot_product_attention(*tensors)
+      else:
+        with precision(mode), sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+          out = torch.nn.functional.scaled_dot_product_attention(*tensors)
+      return out.detach().cpu()
+
+    def rel_err(a, b):
+      return ((a.double() - b).norm() / b.norm()).item()
+
+    ref_out = run("cpu", torch.float64)
+    fwd_err = {}
+    # HIGH (bf16x3) requires OSS libtpu >= 0.0.48.
+    for mode in (Precision.DEFAULT, Precision.HIGHEST):
+      out = run("tpu", torch.float32, mode)
+      fwd_err[mode] = rel_err(out, ref_out)
+
+    self.assertLess(fwd_err[Precision.HIGHEST], 1e-4)
+    self.assertLess(fwd_err[Precision.HIGHEST], fwd_err[Precision.DEFAULT])
 
 
 if __name__ == "__main__":

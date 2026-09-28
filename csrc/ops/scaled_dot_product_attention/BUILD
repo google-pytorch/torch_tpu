@@ -155,6 +155,7 @@ torch_tpu_cc_library(
     deps = [
         "@llvm-project//llvm:Support",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@xla//xla/mosaic:tpu_dialect",
     ],
 )
 
@@ -245,6 +246,7 @@ torch_tpu_cc_library(
         "//csrc/ops:nullary_aten_kernels",
         "//csrc/ops:op_builder_utils",
         "//csrc/ops:op_names",
+        "//csrc/ops:precision_context",
         "//csrc/ops/macros:kernel",
         "//csrc/ops/reductions",
         "//csrc/ops/reductions:sum",
@@ -272,6 +274,7 @@ torch_tpu_cc_library(
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
         "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
+        "@xla//xla/mosaic:tpu_dialect",
     ],
 )
 

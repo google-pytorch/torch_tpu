@@ -19,6 +19,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
@@ -29,6 +30,7 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Support/LLVM.h"
+#include "xla/mosaic/dialect/tpu/tpu_dialect.h"
 
 namespace mlir::torch_tpu {
 
@@ -42,6 +44,8 @@ enum class DimensionSemantics {
 struct MatmulOptions {
   bool transpose_lhs = false;
   bool transpose_rhs = false;
+  // MXU contraction precision (`nullopt` defaults to 1-pass kBF16).
+  std::optional<tpu::ContractPrecision> precision = std::nullopt;
 };
 
 // Creates a matmul for two 2D vectors.

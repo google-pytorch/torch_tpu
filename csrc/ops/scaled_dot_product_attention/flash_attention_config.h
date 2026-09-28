@@ -18,9 +18,11 @@
 #define TORCH_TPU_CSRC_OPS_SCALED_DOT_PRODUCT_ATTENTION_FLASH_ATTENTION_CONFIG_H_
 
 #include <cstdint>
+#include <optional>
 
 #include "llvm/ADT/SmallVector.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "xla/mosaic/dialect/tpu/tpu_dialect.h"
 
 namespace mlir::torch_tpu {
 
@@ -44,6 +46,7 @@ struct FlashAttnConfig {
   bool return_lse;
   bool has_attn_bias;
   float dropout_rate = 0.0f;
+  std::optional<tpu::ContractPrecision> precision = std::nullopt;
 };
 
 struct Tiling {

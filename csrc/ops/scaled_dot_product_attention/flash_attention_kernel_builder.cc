@@ -50,6 +50,7 @@
 #include "csrc/internal/mosaic/op_builders.h"
 #include "csrc/ops/binary.h"
 #include "csrc/ops/op_builder_utils.h"
+#include "csrc/ops/precision_context.h"
 #include "csrc/ops/reductions/reductions.h"
 #include "csrc/ops/reductions/sum.h"
 #include "csrc/ops/scaled_dot_product_attention/flash_attention_config.h"
@@ -77,6 +78,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch/headeronly/core/ScalarType.h"
+#include "xla/mosaic/dialect/tpu/tpu_dialect.h"
 
 namespace torch_tpu {
 namespace {
@@ -307,7 +309,8 @@ absl::StatusOr<mlir::torch_tpu::FlashAttnConfig> CreateFlashAttnConfig(
     mlir::MlirOp query, mlir::MlirOp key, mlir::MlirOp value,
     const std::optional<mlir::MlirOp>& attn_bias, bool is_causal,
     std::optional<double> scale, bool return_lse,
-    const mlir::torch_tpu::Tiling& tiling) {
+    const mlir::torch_tpu::Tiling& tiling,
+    mlir::stablehlo::Precision precision) {
   if (is_causal && attn_bias.has_value()) {
     return TT_ERROR(error::kInvalidArgument)
            << "Causal mask and attn bias are mutually exclusive.";
@@ -341,6 +344,12 @@ absl::StatusOr<mlir::torch_tpu::FlashAttnConfig> CreateFlashAttnConfig(
   mlir::torch_tpu::FlashAttnConfig config;
   config.return_lse = return_lse;
   TT_ASSIGN_OR_RETURN(config.element_type, GetElementType(query));
+  // HIGH (kBF16x3) requires OSS libtpu >= 0.0.48.
+  if (config.element_type == mlir::ElementType::F32 &&
+      precision ==
+          mlir::stablehlo::Precision::HIGHEST) {  // EXPLICIT_PRECISION_OK=sdpa
+    config.precision = mlir::tpu::ContractPrecision::kFP32;
+  }
   config.batch_size = batch_size;
   config.num_heads = num_heads;
   config.kv_num_heads = kv_num_heads;
@@ -404,8 +413,16 @@ CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
   Dimensions out_dims(query.sizes().begin(), query.sizes().end());
   out_dims[rank - 1] = value.size(rank - 1);
 
+  TT_ASSIGN_OR_RETURN(auto param_keys,
+                      *OpParamCacheKeysBuilder()
+                           .SetParam("is_causal", is_causal)
+                           .SetParam("scale", scale)
+                           .SetParam("attn_bias", attn_bias)
+                           .SetParam("return_lse", return_lse));
+  const mlir::stablehlo::Precision precision = GetAndAddPrecisionTo(param_keys);
+
   auto op_builder =
-      [rank, out_dims, is_causal, scale, return_lse](
+      [rank, out_dims, is_causal, scale, return_lse, precision](
           absl::Span<mlir::MlirOp> inputs,
           mlir::MlirBuilder& builder) -> absl::StatusOr<DynamicMlirOpResults> {
     mlir::MlirOp query_mlir = inputs[0];
@@ -419,7 +436,7 @@ CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
     TT_ASSIGN_OR_RETURN(
         mlir::torch_tpu::FlashAttnConfig config,
         CreateFlashAttnConfig(query_mlir, key_mlir, value_mlir, attn_bias_mlir,
-                              is_causal, scale, return_lse, tiling));
+                              is_causal, scale, return_lse, tiling, precision));
 
     mlir::MlirOp mask_mlir =
         attn_bias_mlir.has_value()
@@ -496,13 +513,6 @@ CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
     return results;
   };
 
-  TT_ASSIGN_OR_RETURN(auto param_keys,
-                      *OpParamCacheKeysBuilder()
-                           .SetParam("is_causal", is_causal)
-                           .SetParam("scale", scale)
-                           .SetParam("attn_bias", attn_bias)
-                           .SetParam("return_lse", return_lse));
-
   std::vector<at::Tensor> dispatch_inputs = {query, key, value};
 
   if (IsDefined(attn_bias)) {
@@ -570,8 +580,14 @@ CreateFlashAttentionBackwardKernel(
   TT_ASSIGN_OR_RETURN(const auto out_dtype,
                       ConvertTo<mlir::ElementType>(query.scalar_type()));
 
+  TT_ASSIGN_OR_RETURN(auto param_keys, *OpParamCacheKeysBuilder()
+                                            .SetParam("is_causal", is_causal)
+                                            .SetParam("scale", scale)
+                                            .SetParam("attn_bias", attn_bias));
+  const mlir::stablehlo::Precision precision = GetAndAddPrecisionTo(param_keys);
+
   auto op_builder =
-      [rank, is_causal, scale](
+      [rank, is_causal, scale, precision](
           absl::Span<mlir::MlirOp> inputs,
           mlir::MlirBuilder& builder) -> absl::StatusOr<MlirOpResults<3>> {
     mlir::MlirOp grad_out_mlir = inputs[0];
@@ -588,7 +604,8 @@ CreateFlashAttentionBackwardKernel(
     TT_ASSIGN_OR_RETURN(
         mlir::torch_tpu::FlashAttnConfig config,
         CreateFlashAttnConfig(query_mlir, key_mlir, value_mlir, attn_bias_mlir,
-                              is_causal, scale, /*return_lse=*/false, tiling));
+                              is_causal, scale, /*return_lse=*/false, tiling,
+                              precision));
 
     // Compute di in SHLO
     mlir::Type f32_type = builder.getOpBuilder().getF32Type();
@@ -706,11 +723,6 @@ CreateFlashAttentionBackwardKernel(
 
     return {{grad_query, grad_key, grad_value}};
   };
-
-  TT_ASSIGN_OR_RETURN(auto param_keys, *OpParamCacheKeysBuilder()
-                                            .SetParam("is_causal", is_causal)
-                                            .SetParam("scale", scale)
-                                            .SetParam("attn_bias", attn_bias));
 
   std::vector<at::Tensor> dispatch_inputs = {grad_out, query,     key,
                                              value,    logsumexp, out};

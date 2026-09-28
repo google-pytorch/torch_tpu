@@ -285,8 +285,9 @@ func::FuncOp buildModule(ImplicitLocOpBuilder& module_builder,
   // y = exp(x) <=> y = 2^(x * log2(e))
   constexpr float kLog2e = std::numbers::log2e_v<float>;
   q = ScaleValue(fn_builder, q, config.scale * kLog2e);
-  Value sij =
-      CreateMatmul(fn_builder, q, k, MatmulOptions{.transpose_rhs = true});
+  Value sij = CreateMatmul(
+      fn_builder, q, k,
+      MatmulOptions{.transpose_rhs = true, .precision = config.precision});
 
   if (mask_arg) {
     Value user_bias = LoadTile(fn_builder, mask_arg);
@@ -321,7 +322,8 @@ func::FuncOp buildModule(ImplicitLocOpBuilder& module_builder,
         ApplyDropoutToProbabilities(fn_builder, config, qt, kt, fn, seed_arg,
                                     p_tile_scaled));
     auto vj = LoadTile(fn_builder, v_arg);
-    Value unnormalized_output = CreateMatmul(fn_builder, lhs, vj);
+    Value unnormalized_output = CreateMatmul(
+        fn_builder, lhs, vj, MatmulOptions{.precision = config.precision});
     Value li_recip = CreateReciprocal(fn_builder, tile_sum);
     Value normalized_output = MulFOp::create(
         fn_builder, unnormalized_output,
@@ -367,7 +369,8 @@ func::FuncOp buildModule(ImplicitLocOpBuilder& module_builder,
                                   p_tile_scaled));
 
   auto vj = LoadTile(fn_builder, v_arg);
-  Value current = CreateMatmul(fn_builder, lhs, vj);
+  Value current = CreateMatmul(fn_builder, lhs, vj,
+                               MatmulOptions{.precision = config.precision});
 
   Value unnormalized_output = AddFOp::create(fn_builder, adjustment, current);
 
