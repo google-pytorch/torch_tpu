@@ -795,7 +795,7 @@ void ProcessDeferredOpEvent(
 // Helper function for PrepareMaterializationTraversals.
 // Takes an execution_order, a map defining the usage of each node, and returns
 // a traversal (unless the execution order and output nodes are empty).
-absl::StatusOr<absl_nullable std::unique_ptr<Traversal>> FinishTraversal(
+absl_nullable std::unique_ptr<Traversal> FinishTraversal(
     std::vector<SharedDeviceBufferList>& execution_order,
     DefinedNodeMap& defined_node_map,
     std::vector<SharedDeviceBufferList>& output_nodes,
@@ -829,8 +829,10 @@ absl::StatusOr<absl_nullable std::unique_ptr<Traversal>> FinishTraversal(
   }
   absl_nullable std::unique_ptr<Traversal> traversal = nullptr;
   if (!output_nodes.empty()) {
-    TT_ASSIGN_OR_RETURN(traversal, Traversal::CreateFromExecutionOrder(
-                                       execution_order, output_nodes));
+    auto traversal_or =
+        Traversal::CreateFromExecutionOrder(execution_order, output_nodes);
+    ABSL_CHECK_OK(traversal_or);  // CRASH_OK=internal logic error
+    traversal = std::move(*traversal_or);
   }
   execution_order.clear();
   defined_node_map.clear();
@@ -842,8 +844,7 @@ absl::StatusOr<absl_nullable std::unique_ptr<Traversal>> FinishTraversal(
   return traversal;
 }
 
-absl::StatusOr<std::vector<absl_nonnull std::unique_ptr<Traversal>>>
-PrepareTraversals(
+std::vector<absl_nonnull std::unique_ptr<Traversal>> PrepareTraversals(
     absl::Span<const StreamState::DeferredOpEvent> deferred_op_events,
     const absl::flat_hash_map<SharedDeviceBufferList, int64_t>& live_nodes,
     absl::Span<const SharedDeviceBufferList> nodes_to_materialize,
@@ -875,9 +876,10 @@ PrepareTraversals(
         if (!has_deferred_input && !has_extra_constant) {
           std::vector<SharedDeviceBufferList> single_node = {
               std::move(device_buffer_list)};
-          TT_ASSIGN_OR_RETURN(
-              auto traversal,
-              Traversal::CreateFromExecutionOrder(single_node, single_node));
+          auto traversal_or =
+              Traversal::CreateFromExecutionOrder(single_node, single_node);
+          ABSL_CHECK_OK(traversal_or);  // CRASH_OK=internal logic error
+          auto traversal = std::move(*traversal_or);
           if (core_pinning_mode != CorePinningMode::kUnpinned) {
             traversal->SetCorePinningMode(core_pinning_mode);
           }
@@ -913,9 +915,8 @@ PrepareTraversals(
     const auto split_mode = deferred_op->split_mode();
 
     if (IsSplitBefore(split_mode)) {
-      TT_ASSIGN_OR_RETURN(auto maybe_traversal,
-                          FinishTraversal(execution_order, defined_node_map,
-                                          output_nodes, core_pinning_mode));
+      auto maybe_traversal = FinishTraversal(execution_order, defined_node_map,
+                                             output_nodes, core_pinning_mode);
       if (maybe_traversal != nullptr) {
         ABSL_VLOG(2) << "[PrepareTraversals] Split out "
                      << maybe_traversal->execution_order().size()
@@ -931,9 +932,8 @@ PrepareTraversals(
                            execution_order, defined_node_map);
 
     if (IsSplitAfter(split_mode)) {
-      TT_ASSIGN_OR_RETURN(auto maybe_traversal,
-                          FinishTraversal(execution_order, defined_node_map,
-                                          output_nodes, core_pinning_mode));
+      auto maybe_traversal = FinishTraversal(execution_order, defined_node_map,
+                                             output_nodes, core_pinning_mode);
       if (maybe_traversal != nullptr) {
         ABSL_VLOG(2) << "[PrepareTraversals] Split out "
                      << maybe_traversal->execution_order().size()
@@ -963,9 +963,8 @@ PrepareTraversals(
     }
   }
 
-  TT_ASSIGN_OR_RETURN(auto maybe_traversal,
-                      FinishTraversal(execution_order, defined_node_map,
-                                      output_nodes, core_pinning_mode));
+  auto maybe_traversal = FinishTraversal(execution_order, defined_node_map,
+                                         output_nodes, core_pinning_mode);
   if (maybe_traversal != nullptr) {
     ABSL_VLOG(2) << "[PrepareTraversals] Final traversal has size "
                  << maybe_traversal->execution_order().size()
@@ -1161,39 +1160,19 @@ std::vector<PendingSnapshotMaterialization> PrepareSnapshotMaterializations(
                    &event)) {
       auto& snapshot_event = **snapshot_event_ptr;
 
-      auto snapshot_traversals_or =
+      auto snapshot_traversals =
           PrepareTraversals(deferred_ops, snapshot_event.live_nodes,
                             snapshot_event.must_materialize,
                             NodeMatcher(snapshot_event.must_materialize),
                             stream_state->core_pinning_mode());
-
-      if (snapshot_traversals_or.ok()) {
-        PruneCompletedFutures(snapshot_event.futures);
-        snapshots_to_materialize.push_back(
-            {.traversals = std::move(*snapshot_traversals_or),
-             .execution_task = std::move(snapshot_event.execution_task),
-             .must_materialize = std::move(snapshot_event.must_materialize),
-             .settings = std::move(snapshot_event.materialization_settings),
-             .futures = std::move(snapshot_event.futures),
-             .snapshot_promise = std::move(snapshot_event.snapshot_promise)});
-      } else {
-        // If one snapshot fails, later snapshots may succeed only if there are
-        // no dependencies on the failed DeferredOpEvents.
-        // Mark all the failed ops as failed so that errors propagate and
-        // unblock any threads waiting on the failed ops.
-        for (const auto& deferred_op_event : deferred_ops) {
-          if (auto node = deferred_op_event.lock();
-              node != nullptr && !node->is_constant()) {
-            node->SetAsError(snapshot_traversals_or.status());
-          }
-        }
-        for (const auto& node : snapshot_event.must_materialize) {
-          if (!node->is_materialized()) {
-            node->SetAsError(snapshot_traversals_or.status());
-          }
-        }
-        snapshot_event.snapshot_promise.Set(snapshot_traversals_or.status());
-      }
+      PruneCompletedFutures(snapshot_event.futures);
+      snapshots_to_materialize.push_back(
+          {.traversals = std::move(snapshot_traversals),
+           .execution_task = std::move(snapshot_event.execution_task),
+           .must_materialize = std::move(snapshot_event.must_materialize),
+           .settings = std::move(snapshot_event.materialization_settings),
+           .futures = std::move(snapshot_event.futures),
+           .snapshot_promise = std::move(snapshot_event.snapshot_promise)});
       deferred_ops.clear();
     }
     stream_events.pop_front();
