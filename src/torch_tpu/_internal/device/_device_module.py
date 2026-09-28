@@ -465,7 +465,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
     return False
 
   @classmethod
-  def is_triton_capable(cls, device: torch.types.Device = None) -> bool:
+  def _is_triton_capable(cls, device: torch.types.Device = None) -> bool:
     """Returns if the device has Triton support.
 
     Args:
@@ -921,6 +921,7 @@ class TpuDeviceInterface(TpuDeviceModule, DeviceInterface):
 
   exchange_device = TpuDeviceModule._exchange_device
   is_gpu = TpuDeviceModule._is_gpu
+  is_triton_capable = TpuDeviceModule._is_triton_capable
   maybe_exchange_device = TpuDeviceModule._maybe_exchange_device
 
 

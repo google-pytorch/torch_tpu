@@ -111,8 +111,11 @@ class TpuDeviceModuleTest(
     self.assertIsInstance(iface_cap, str)
 
   def test_is_triton_capable(self):
-    self.assertFalse(torch.tpu.is_triton_capable())
-    self.assertFalse(torch.tpu.is_triton_capable(device=None))
+    """Verifies TpuDeviceInterface implements is_triton_capable and not exposed on torch.tpu."""
+    iface = get_interface_for_device("tpu")
+    self.assertFalse(hasattr(self.device_module, "is_triton_capable"))
+    self.assertFalse(iface.is_triton_capable())
+    self.assertFalse(iface.is_triton_capable(device=None))
 
   def test_is_gpu(self):
     """Verifies TpuDeviceInterface implements is_gpu and not exposed on torch.tpu."""
