@@ -44,9 +44,6 @@ WHEEL_PY_TARGETS = [
     "//src/torch_tpu/_internal/utils",
     "//src/torch_tpu/_internal/utils:hardware",
     "//src/torch_tpu/_internal/utils:log_utils",
-    # TODO(wan): Remove test_utils from the wheel. Currently, some tests
-    # fail without this in the wheel build.
-    "//src/torch_tpu/_internal/utils:test_utils",
     "//src/torch_tpu/_internal/utils:tracer_utils",
     "//src/torch_tpu/_internal:env_utils",
     "//src/torch_tpu/extras/optimizers:adamw",

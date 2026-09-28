@@ -43,10 +43,8 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
-    # TODO(wan): mark this target as testonly. We cannot do it today as it's
-    # included in the wheel, which is not testonly. We need to figure out a
-    # way to move this target out of the wheel.
     name = "test_utils",
+    testonly = True,
     srcs = ["test_utils.py"],
     deps = [
         ":utils",

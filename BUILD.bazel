@@ -271,6 +271,7 @@ genrule(
         "//tests:wheel_test_site_packages_recursive",
         "//src/torch_tpu/_internal/distributed:spmd_util",
         "//src/torch_tpu/_internal/utils:test_fixtures",
+        "//src/torch_tpu/_internal/utils:test_utils",
     ] + select({
         "//ci/wheel:use_local_torch": [
             ":torch_libs_mapped",
