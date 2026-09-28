@@ -257,7 +257,7 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
 
     num_sc = _get_num_sc_per_device()
     self.assert_close(
-        golden_result=torch.tensor([12], dtype=torch.int32),
+        golden_result=torch.tensor([0], dtype=torch.int32),
         torch_tpu_result=table_0_outputs["dropped_id_count"],
     )
     self.assert_close(
@@ -422,23 +422,23 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
             16,
             16,
             16,
-            16,  # input for SC 0
-            3,
-            9,
-            16,
-            16,
-            16,
-            16,
-            16,
-            16,
-            16,
-            16,
-            16,
-            16,
-            16,
-            16,
-            16,
-            16,  # input for SC 1
+            16,  # input for SC 0 (bucket 0)
+            19,
+            25,
+            32,
+            32,
+            32,
+            32,
+            32,
+            32,
+            32,
+            32,
+            32,
+            32,
+            32,
+            32,
+            32,
+            32,  # input for SC 1 (bucket 0, cumulative)
         ],
         dtype=torch.int32,
         device=device,

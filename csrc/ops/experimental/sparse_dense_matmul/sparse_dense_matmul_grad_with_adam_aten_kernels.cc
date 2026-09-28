@@ -250,7 +250,8 @@ auto SparseDenseMatmulGradWithAdamBuilder(int64_t device_batch_size,
     frontend_attrs.push_back(op_builder.getNamedAttr(
         xla::kNumHyperparameters, op_builder.getStringAttr("4")));
 
-    std::string_view call_target = "SparseDenseMatmulGradOpWithOptimizerUpdate";
+    std::string_view call_target =
+        "SparseDenseMatmulGradOptimizerUpdateWithMinibatchingOp";
 
     mlir::NamedAttribute call_target_attr = op_builder.getNamedAttr(
         "call_target_name", op_builder.getStringAttr(call_target));
@@ -271,14 +272,18 @@ auto SparseDenseMatmulGradWithAdamBuilder(int64_t device_batch_size,
         op_builder.getArrayAttr({mlir::SymbolRefAttr::get(
             op_builder.getContext(), computation_name)}));
 
+    auto num_minibatches =
+        torch_tpu::MakeScalarConstant(builder, 1, op_builder.getI32Type());
+
     std::vector<mlir::Value> operands = {row_pointers.getValue(),
                                          embedding_ids.getValue(),
                                          sample_ids.getValue(),
                                          gains.getValue(),
-                                         activations_grad.getValue(),
+                                         num_minibatches.getValue(),
                                          embedding_table.getValue(),
                                          momentum.getValue(),
                                          velocity.getValue(),
+                                         activations_grad.getValue(),
                                          alpha_t.getValue(),
                                          one_minus_beta_1_const.getValue(),
                                          one_minus_beta_2_const.getValue(),

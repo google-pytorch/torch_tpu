@@ -139,7 +139,8 @@ auto SparseDenseMatmulGradWithSgdBuilder(int64_t device_batch_size,
         op_builder.getNamedAttr("mhlo.frontend_attributes",
                                 op_builder.getDictionaryAttr(frontend_attrs));
 
-    std::string call_target = "SparseDenseMatmulGradOpWithOptimizerUpdate";
+    std::string call_target =
+        "SparseDenseMatmulGradOptimizerUpdateWithMinibatchingOp";
 
     mlir::NamedAttribute call_target_attr = op_builder.getNamedAttr(
         "call_target_name", op_builder.getStringAttr(call_target));
@@ -157,12 +158,15 @@ auto SparseDenseMatmulGradWithSgdBuilder(int64_t device_batch_size,
         op_builder.getArrayAttr({mlir::SymbolRefAttr::get(
             op_builder.getContext(), computation_name)}));
 
+    auto num_minibatches =
+        torch_tpu::MakeScalarConstant(builder, 1, op_builder.getI32Type());
+
     // Operands
     std::vector<mlir::Value> operands = {
         row_pointers.getValue(),     embedding_ids.getValue(),
         sample_ids.getValue(),       gains.getValue(),
-        activations_grad.getValue(), embedding_table.getValue(),
-        learning_rate.getValue()};
+        num_minibatches.getValue(),  embedding_table.getValue(),
+        activations_grad.getValue(), learning_rate.getValue()};
 
     auto out_type =
         mlir::TupleType::get(op_builder.getContext(), {embedding_table_type});

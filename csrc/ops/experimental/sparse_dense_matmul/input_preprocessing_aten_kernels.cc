@@ -114,7 +114,7 @@ TORCH_LIBRARY_FRAGMENT(tpu, m) {
         .num_sc_per_device = static_cast<int>(num_sc_per_device),
         .sharding_strategy = sc_preprocessing::ShardingStrategy::kMod,
         .allow_id_dropping = allow_id_dropping,
-        .minibatching_mode = sc_preprocessing::MinibatchingMode::kDisabled,
+        .minibatching_mode = sc_preprocessing::MinibatchingMode::kDevice,
     };
     const int row_pointers_size_per_device =
         sc_options.GetRowPointersSizePerDevice();

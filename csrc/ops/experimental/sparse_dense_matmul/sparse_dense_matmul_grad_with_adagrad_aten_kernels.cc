@@ -197,7 +197,8 @@ auto SparseDenseMatmulGradWithAdagradBuilder(
     frontend_attrs.push_back(op_builder.getNamedAttr(
         xla::kNumHyperparameters, op_builder.getStringAttr("2")));
 
-    std::string call_target = "SparseDenseMatmulGradOpWithOptimizerUpdate";
+    std::string call_target =
+        "SparseDenseMatmulGradOptimizerUpdateWithMinibatchingOp";
 
     mlir::NamedAttribute call_target_attr = op_builder.getNamedAttr(
         "call_target_name", op_builder.getStringAttr(call_target));
@@ -218,12 +219,15 @@ auto SparseDenseMatmulGradWithAdagradBuilder(
         op_builder.getArrayAttr({mlir::SymbolRefAttr::get(
             op_builder.getContext(), computation_name)}));
 
+    auto num_minibatches =
+        torch_tpu::MakeScalarConstant(builder, 1, op_builder.getI32Type());
+
     std::vector<mlir::Value> operands = {
-        row_pointers.getValue(),     embedding_ids.getValue(),
-        sample_ids.getValue(),       gains.getValue(),
-        activations_grad.getValue(), embedding_table.getValue(),
-        accumulator.getValue(),      learning_rate.getValue(),
-        epsilon_const.getValue()};
+        row_pointers.getValue(),    embedding_ids.getValue(),
+        sample_ids.getValue(),      gains.getValue(),
+        num_minibatches.getValue(), embedding_table.getValue(),
+        accumulator.getValue(),     activations_grad.getValue(),
+        learning_rate.getValue(),   epsilon_const.getValue()};
 
     auto out_type = mlir::TupleType::get(
         op_builder.getContext(), {embedding_table_type, accumulator_type});

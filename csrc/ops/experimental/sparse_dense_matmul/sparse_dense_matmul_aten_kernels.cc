@@ -86,7 +86,7 @@ auto SparseDenseMatmulBuilder(int64_t device_batch_size,
         op_builder.getNamedAttr("mhlo.frontend_attributes",
                                 op_builder.getDictionaryAttr(frontend_attrs));
 
-    std::string call_target = "SparseDenseMatmulOp";
+    std::string call_target = "SparseDenseMatmulWithMinibatchingOp";
 
     mlir::NamedAttribute call_target_attr = op_builder.getNamedAttr(
         "call_target_name", op_builder.getStringAttr(call_target));
@@ -101,10 +101,14 @@ auto SparseDenseMatmulBuilder(int64_t device_batch_size,
     auto embedding_table_type = torch_tpu::GetTensorTypeOrDie(embedding_table);
     int64_t embedding_dim = embedding_table_type.getShape()[1];
 
+    auto num_minibatches =
+        torch_tpu::MakeScalarConstant(builder, 1, op_builder.getI32Type());
+
     // Operands
     std::vector<mlir::Value> operands = {
-        row_pointers.getValue(), embedding_ids.getValue(),
-        sample_ids.getValue(), gains.getValue(), embedding_table.getValue()};
+        row_pointers.getValue(),    embedding_ids.getValue(),
+        sample_ids.getValue(),      gains.getValue(),
+        num_minibatches.getValue(), embedding_table.getValue()};
 
     // Create activation_init operand (zero tensor of shape [device_batch_size,
     // embedding_dim])
