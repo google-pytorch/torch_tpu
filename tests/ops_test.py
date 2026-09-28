@@ -3509,7 +3509,10 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "_segment_reduce",
         variant_test_name="lengths",
-        exclude_dtypes=INTEGRAL_DTYPES + COMPLEX_DTYPES,
+        exclude_dtypes={
+            "cpu": INTEGRAL_DTYPES + COMPLEX_DTYPES,
+            "gpu": COMPLEX_DTYPES,
+        },
         # TODO: _segment_reduce_backward is not implemented on TPU.
         check_grad=False,
         # TODO: segment_reduce requires length/offset dimension matching under
@@ -3521,7 +3524,10 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "_segment_reduce",
         variant_test_name="offsets",
-        exclude_dtypes=INTEGRAL_DTYPES + COMPLEX_DTYPES,
+        exclude_dtypes={
+            "cpu": INTEGRAL_DTYPES + COMPLEX_DTYPES,
+            "gpu": COMPLEX_DTYPES,
+        },
         # TODO: _segment_reduce_backward is not implemented on TPU.
         check_grad=False,
         # TODO: segment_reduce requires length/offset dimension matching under

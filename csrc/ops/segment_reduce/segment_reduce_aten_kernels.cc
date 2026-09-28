@@ -29,11 +29,13 @@
 #include "ATen/core/TensorBody.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "c10/core/ScalarType.h"
 #include "c10/util/string_view.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
@@ -477,6 +479,11 @@ at::Tensor AtenSegmentReduce(const at::Tensor& data, c10::string_view reduce,
         TT_CHECK_THROW(lengths.has_value() || offsets.has_value(),
                        error::kInvalidArgument)
             << "expected lengths or offsets to be defined, got neither";
+
+        TT_CHECK_THROW(!at::isIntegralType(data.scalar_type(),
+                                           /*includeBool=*/true),
+                       error::kPythonNotImplementedError)
+            << "not implemented for " << ToString(data.scalar_type());
 
         TT_ASSIGN_OR_THROW(const SegmentReduceOp reduce_op,
                            ParseSegmentReduceOp(reduce));

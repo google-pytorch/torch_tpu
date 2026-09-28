@@ -348,6 +348,39 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     ):
       torch.ops.aten.col2im(t, (2, 2), (2, 2), (1, 1), (0, 0), (1, 1))
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="bool",
+          dtype=torch.bool,
+          tpu_dtype="bool",
+          gpu_dtype="Bool",
+      ),
+      dict(
+          testcase_name="int32",
+          dtype=torch.int32,
+          tpu_dtype="int32",
+          gpu_dtype="Int",
+      ),
+      dict(
+          testcase_name="int64",
+          dtype=torch.int64,
+          tpu_dtype="int64",
+          gpu_dtype="Long",
+      ),
+  )
+  def test_segment_reduce_unsupported_integral_dtype(
+      self, dtype: torch.dtype, tpu_dtype: str, gpu_dtype: str
+  ):
+    """Tests that segment_reduce with integral dtype raises expected error."""
+    t = torch.ones(5, device=et.device(), dtype=dtype)
+    lengths = torch.tensor([2, 3], device=et.device(), dtype=torch.long)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""segment_reduce(): not implemented for {tpu_dtype}""",
+        gpu=f""""segment_reduce_cuda" not implemented for '{gpu_dtype}'""",
+    ):
+      torch.segment_reduce(t, "sum", lengths=lengths)
+
   def test_segment_reduce_indices_not_supported(self):
     """Tests that segment_reduce with indices raises expected error."""
     t = torch.ones(5, device=et.device(), dtype=torch.float32)
