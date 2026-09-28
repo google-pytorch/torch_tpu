@@ -1324,8 +1324,8 @@ torch_tpu_py_test(
     srcs = ["ops_unit_test.py"],
     args = ["--test_mode=torch_tpu_vs_cpu"],
     env = {
-        "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT": "/tmp/my_cache",
         "TORCH_TPU_INTERNAL_TIER3_COMPILATION_CACHE_LOCAL_BACKUP_TASK": "0",
+        "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT": "/tmp/my_cache",
     },
     main = "ops_unit_test.py",
     shard_count = 30,
@@ -1697,10 +1697,10 @@ torch_tpu_py_test(
     srcs = ["errors_test.py"],
     args = ["--test_mode=gpu"],
     env = {
-        "TORCH_SHOW_CPP_STACKTRACES": "0",
         # Force synchronous CUDA kernel launches so device-side errors trigger
         # immediately at the exact Python op call instead of asynchronously.
         "CUDA_LAUNCH_BLOCKING": "1",
+        "TORCH_SHOW_CPP_STACKTRACES": "0",
     },
     main = "errors_test.py",
     nolocal = "Skipping in local runs by default as it requires --config=cuda.",

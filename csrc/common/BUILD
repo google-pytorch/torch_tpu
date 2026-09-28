@@ -494,8 +494,8 @@ torch_tpu_cc_test(
         "--expected_tier2_cache_name=default",
     ],
     env = {
-        "WORLD_SIZE": "4",
         "TORCH_TPU_TOPOLOGY": "2,2,1",
+        "WORLD_SIZE": "4",
     },
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
@@ -540,8 +540,8 @@ torch_tpu_cc_test(
     ],
     env = {
         "TORCH_TPU_TIER2_COMPILATION_CACHE": "disabled",
-        "WORLD_SIZE": "4",
         "TORCH_TPU_TOPOLOGY": "2,2,1",
+        "WORLD_SIZE": "4",
     },
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
@@ -586,8 +586,8 @@ torch_tpu_cc_test(
     ],
     env = {
         "TORCH_TPU_TIER2_COMPILATION_CACHE": "my_cache2",
-        "WORLD_SIZE": "4",
         "TORCH_TPU_TOPOLOGY": "2,2,1",
+        "WORLD_SIZE": "4",
     },
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.

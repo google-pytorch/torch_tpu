@@ -29,8 +29,8 @@ torch_tpu_py_test(
     srcs = ["pallas_test.py"],
     # Not supported on vl chips.
     env = {
-        "TPU_PREMAPPED_BUFFER_SIZE": "0",
         "IS_OSS": if_oss("1", "0"),
+        "TPU_PREMAPPED_BUFFER_SIZE": "0",
     },
     shard_count = 4,
     tags = ["requires-tpu-v5lite"],
@@ -55,8 +55,8 @@ torch_tpu_py_test(
     name = "pallas_signature_test",
     srcs = ["pallas_signature_test.py"],
     env = {
-        "TPU_PREMAPPED_BUFFER_SIZE": "0",
         "IS_OSS": if_oss("1", "0"),
+        "TPU_PREMAPPED_BUFFER_SIZE": "0",
     },
     tags = ["requires-tpu-v5lite"],
     deps = [

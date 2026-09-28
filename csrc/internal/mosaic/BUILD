@@ -49,8 +49,8 @@ td_library(
 gentbl_cc_library(
     name = "torch_tpu_mosaic_dialect_inc_gen",
     tbl_outs = {
-        "dialect/torch_tpu_mosaic_dialect.h.inc": ["-gen-dialect-decls"],
         "dialect/torch_tpu_mosaic_dialect.cc.inc": ["-gen-dialect-defs"],
+        "dialect/torch_tpu_mosaic_dialect.h.inc": ["-gen-dialect-decls"],
     },
     tblgen = "@llvm-project//mlir:mlir-tblgen",
     td_file = "dialect/torch_tpu_mosaic_dialect.td",
@@ -60,8 +60,8 @@ gentbl_cc_library(
 gentbl_cc_library(
     name = "torch_tpu_mosaic_attrs_inc_gen",
     tbl_outs = {
-        "dialect/torch_tpu_mosaic_attrs.h.inc": ["-gen-attrdef-decls"],
         "dialect/torch_tpu_mosaic_attrs.cc.inc": ["-gen-attrdef-defs"],
+        "dialect/torch_tpu_mosaic_attrs.h.inc": ["-gen-attrdef-decls"],
     },
     tblgen = "@llvm-project//mlir:mlir-tblgen",
     td_file = "dialect/torch_tpu_mosaic_attrs.td",
@@ -71,8 +71,8 @@ gentbl_cc_library(
 gentbl_cc_library(
     name = "torch_tpu_mosaic_ops_inc_gen",
     tbl_outs = {
-        "dialect/torch_tpu_mosaic_ops.h.inc": ["-gen-op-decls"],
         "dialect/torch_tpu_mosaic_ops.cc.inc": ["-gen-op-defs"],
+        "dialect/torch_tpu_mosaic_ops.h.inc": ["-gen-op-decls"],
     },
     tblgen = "@llvm-project//mlir:mlir-tblgen",
     td_file = "dialect/torch_tpu_mosaic_ops.td",

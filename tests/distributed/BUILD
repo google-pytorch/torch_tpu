@@ -475,12 +475,12 @@ torch_tpu_py_test(
         "--test_mode=cov",
     ],
     env = {
-        "TORCH_SHOW_CPP_STACKTRACES": "1",
         # TODO(b/493050035): Use a centralized location to set this flag.
         # Required in OSS: In OSS CI with multiprocess spawn, PyTorch's addr2line symbolizer can
         # crash or hang during exception unwinding and TPU driver cleanup. Disabling addr2line
         # prevents SIGSEGV crashes while still capturing traces.
         "TORCH_DISABLE_ADDR2LINE": "1",
+        "TORCH_SHOW_CPP_STACKTRACES": "1",
     },
     main = "all_gather_errors_test.py",
     notap = "Run by error_coverage_test in the torch_tpu.error_coverage Guitar workflow.",
@@ -533,10 +533,10 @@ torch_tpu_py_test(
         "--test_mode=tpu",
     ],
     env = {
-        "TORCH_SHOW_CPP_STACKTRACES": "0",
         # Disables addr2line C++ stack trace symbolization to prevent deadlocks/hangs during
         # exception construction in multi-process distributed tests in OSS CI.
         "TORCH_DISABLE_ADDR2LINE": "1",
+        "TORCH_SHOW_CPP_STACKTRACES": "0",
     },
     shard_count = 3,
     tags = if_oss(
@@ -564,10 +564,10 @@ torch_tpu_py_test(
         "--test_mode=cov",
     ],
     env = {
-        "TORCH_SHOW_CPP_STACKTRACES": "1",
         # Disables addr2line C++ stack trace symbolization to prevent deadlocks/hangs during
         # exception construction in multi-process distributed tests in OSS CI.
         "TORCH_DISABLE_ADDR2LINE": "1",
+        "TORCH_SHOW_CPP_STACKTRACES": "1",
     },
     main = "scatter_errors_test.py",
     notap = "Run by error_coverage_test in the torch_tpu.error_coverage Guitar workflow.",
