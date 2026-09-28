@@ -34,16 +34,13 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
-#include "csrc/common/to_string.h"
 #include "csrc/eager/op_dispatcher.h"
-#include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/linalg/vector_norm/pnorm.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/reductions/reduction_utils.h"
 #include "csrc/ops/reductions/reductions.h"
-#include "csrc/ops/resize/resize_aten_kernels.h"
 #include "mlir/IR/Types.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -55,18 +52,15 @@ namespace torch_tpu {
 
 namespace {
 
-absl::Status ValidateOutDtype(const at::Tensor& self, const at::Tensor& out,
-                              std::optional<at::ScalarType> dtype) {
+absl::Status ValidateNormOutDtype(const at::Tensor& self, const at::Tensor& out,
+                                  std::optional<at::ScalarType> dtype) {
   at::ScalarType expected_dtype =
       dtype.value_or(c10::toRealValueType(self.scalar_type()));
   if (!dtype.has_value() &&
       c10::isIntegralType(expected_dtype, /*includeBool=*/true)) {
     expected_dtype = c10::get_default_dtype_as_scalartype();
   }
-  TT_RET_CHECK(out.scalar_type() == expected_dtype, error::kInvalidArgument)
-      << "expected the output dtype to be " << ToString(expected_dtype)
-      << ", got " << ToString(out.scalar_type());
-  return absl::OkStatus();
+  return ValidateOutDtype(out, expected_dtype, /*allow_out_dtype_cast=*/false);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildZeroNormShlo(
@@ -105,7 +99,7 @@ absl::Status PNormOut(const at::Tensor& self, PromotedScalar& promoted_ord,
                       double ord, at::IntArrayRef dim, bool keepdim,
                       std::optional<at::ScalarType> dtype, at::Tensor& out,
                       OpParamCacheKeys op_cache_keys) {
-  TT_RETURN_IF_ERROR(ValidateOutDtype(self, out, dtype));
+  TT_RETURN_IF_ERROR(ValidateNormOutDtype(self, out, dtype));
 
   const at::ScalarType out_dtype = out.scalar_type();
   const ReductionMode reduction_mode =
@@ -131,15 +125,10 @@ absl::Status PNormOut(const at::Tensor& self, PromotedScalar& promoted_ord,
                                element_type);
     };
 
-    TT_ASSIGN_OR_RETURN(
-        auto result_buf,
-        DispatchOp<1>(std::move(op_builder), self,
-                      {.out_dtype = element_type,
-                       .out_dims = output_dims,
-                       .op_param_cache_keys = std::move(op_cache_keys)}));
-
-    TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(out, output_dims));
-    return AssignBufferToAtTensor(std::move(result_buf), out);
+    return DispatchOpOut<1>(std::move(op_builder), self, {out},
+                            {.out_dtype = element_type,
+                             .out_dims = output_dims,
+                             .op_param_cache_keys = std::move(op_cache_keys)});
   }
 
   const auto op_builder = [ord, canonical_dims, reduction_mode,
@@ -150,15 +139,10 @@ absl::Status PNormOut(const at::Tensor& self, PromotedScalar& promoted_ord,
                           element_type);
   };
 
-  TT_ASSIGN_OR_RETURN(
-      auto result_buf,
-      DispatchOp<2>(std::move(op_builder), {self, ord_tensor},
-                    {.out_dtype = element_type,
-                     .out_dims = output_dims,
-                     .op_param_cache_keys = std::move(op_cache_keys)}));
-
-  TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(out, output_dims));
-  return AssignBufferToAtTensor(std::move(result_buf), out);
+  return DispatchOpOut<2>(std::move(op_builder), {self, ord_tensor}, {out},
+                          {.out_dtype = element_type,
+                           .out_dims = output_dims,
+                           .op_param_cache_keys = std::move(op_cache_keys)});
 }
 
 }  // namespace

@@ -24,7 +24,6 @@
 #include "ATen/core/TensorBody.h"
 #include "ATen/native/Fill.h"
 #include "ATen/native/ReduceOpsUtils.h"
-#include "ATen/native/Resize.h"
 #include "absl/functional/bind_front.h"
 #include "absl/status/status.h"
 #include "c10/util/DimVector.h"
@@ -36,15 +35,13 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
-#include "csrc/eager/device_buffer.h"
+#include "csrc/common/utils.h"
 #include "csrc/eager/op_dispatcher.h"
-#include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/a_min_max/a_min_max.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/reductions/reductions.h"
-#include "csrc/ops/resize/resize_aten_kernels.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 
 namespace torch_tpu {
@@ -93,20 +90,15 @@ absl::Status AMinMax(const at::Tensor& self, const at::IntArrayRef dims,
       keep_dim ? ReductionMode::kKeepDims : ReductionMode::kDropDims;
 
   Dimensions reduction_dims = CopyIntVector(dim_vec);
-  TT_ASSIGN_OR_RETURN(
-      auto result_buf,
-      DispatchOp<1>(absl::bind_front(BuildAMinMaxShlo, reduction_dims, mode,
-                                     a_min_max_op),
-                    self,
-                    // Override the op name as opposed to using the one passed
-                    // to TT_KERNEL, as this is a shared utility function.
-                    {.op_name = GetOpName(a_min_max_op),
-                     .out_dtype = out_dtype,
-                     .out_dims = std::move(out_dims),
-                     .op_param_cache_keys = std::move(param_keys)}));
-
-  TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(out, out_shape));
-  return AssignBufferToAtTensor(std::move(result_buf), out);
+  return DispatchOpOut<1>(
+      absl::bind_front(BuildAMinMaxShlo, reduction_dims, mode, a_min_max_op),
+      self, {out},
+      // Override the op name as opposed to using the one passed
+      // to TT_KERNEL, as this is a shared utility function.
+      {.op_name = GetOpName(a_min_max_op),
+       .out_dtype = out_dtype,
+       .out_dims = std::move(out_dims),
+       .op_param_cache_keys = std::move(param_keys)});
 }
 
 }  // namespace
@@ -160,18 +152,13 @@ std::tuple<at::Tensor&, at::Tensor&> AtenAminmaxOut(
 
     Dimensions reduction_dims = CopyIntVector(dim_vec);
 
-    TT_ASSIGN_OR_THROW(
-        auto result_bufs,
-        (DispatchOp<1, 2>(
-            absl::bind_front(BuildFusedAMinMaxShlo, reduction_dims, mode), self,
-            {.out_dtypes = {out_dtype, out_dtype},
-             .out_dims_list = {out_dims, out_dims},
-             .op_param_cache_keys = std::move(param_keys)})));
+    TT_THROW_IF_ERROR((DispatchOpOut<1, 2>(
+        absl::bind_front(BuildFusedAMinMaxShlo, reduction_dims, mode), self,
+        {min, max},
+        {.out_dtypes = {out_dtype, out_dtype},
+         .out_dims_list = {out_dims, out_dims},
+         .op_param_cache_keys = std::move(param_keys)})));
 
-    TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(min, out_shape));
-    TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(max, out_shape));
-    TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result_bufs[0]), min));
-    TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result_bufs[1]), max));
     return std::forward_as_tuple(min, max);
   });
 }

@@ -26,6 +26,7 @@
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "c10/core/ScalarType.h"
 #include "c10/util/DimVector.h"
 #include "c10/util/Optional.h"
 #include "csrc/common/aten_utils.h"
@@ -44,7 +45,6 @@
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/reductions/reductions.h"
-#include "csrc/ops/resize/resize_aten_kernels.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
@@ -80,14 +80,16 @@ absl::StatusOr<std::tuple<at::Tensor, at::Tensor>> AtenMinMaxDim(
     at::Tensor& indices) {
   ABSL_VLOG(3) << "[AtenMinMaxDim] start";
 
+  TT_RETURN_IF_ERROR(ValidateOutDtype(value, self.scalar_type(),
+                                      /*allow_out_dtype_cast=*/false));
+  TT_RETURN_IF_ERROR(ValidateOutDtype(indices, at::kLong,
+                                      /*allow_out_dtype_cast=*/false));
+
   TT_ASSIGN_OR_RETURN(const int64_t normalized_dim,
                       SafeWrapDim(dim, self.dim()));
 
-  Dimensions output_dims;
-  at::Tensor input = self;
-  auto tensor_shape = at::meta::get_reduction_shape(self, {dim}, keep_dim,
-                                                    /*allow_empty_dims=*/false);
-  output_dims = CopyIntVector(tensor_shape);
+  Dimensions output_dims = CopyIntVector(at::meta::get_reduction_shape(
+      self, {dim}, keep_dim, /*allow_empty_dims=*/false));
 
   TT_ASSIGN_OR_RETURN(mlir::ElementType output_dtype,
                       ConvertTo<mlir::ElementType>(self.scalar_type()));
@@ -103,20 +105,14 @@ absl::StatusOr<std::tuple<at::Tensor, at::Tensor>> AtenMinMaxDim(
     return {{min_max_shlo_outputs.values, min_max_shlo_outputs.indices}};
   };
 
-  TT_ASSIGN_OR_RETURN(
-      (auto [values_buf, indices_buf]),
-      (DispatchOp<1, 2>(
-          std::move(op_builder), input,
-          {
-              .out_dtypes = {output_dtype, mlir::ElementType::I64},
-              .out_dims_list = {output_dims, output_dims},
-              .op_param_cache_keys = std::move(op_param_cache_keys),
-          })));
+  TT_RETURN_IF_ERROR((DispatchOpOut<1, 2>(
+      std::move(op_builder), self, {value, indices},
+      {
+          .out_dtypes = {output_dtype, mlir::ElementType::I64},
+          .out_dims_list = {output_dims, output_dims},
+          .op_param_cache_keys = std::move(op_param_cache_keys),
+      })));
 
-  TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(value, tensor_shape));
-  TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(indices, tensor_shape));
-  TT_RETURN_IF_ERROR(AssignBufferToAtTensor(std::move(values_buf), value));
-  TT_RETURN_IF_ERROR(AssignBufferToAtTensor(std::move(indices_buf), indices));
   return {{value, indices}};
 }
 
@@ -133,10 +129,27 @@ absl::Status UnaryMinMax(const at::Tensor& self, MinMaxOp op, at::Tensor& out) {
       << "expected output tensor to be on " << GetPrivateUse1DeviceDebugName()
       << ", got " << out.device();
 
-  TT_ASSIGN_OR_RETURN(auto result_buf, DispatchUnaryMinMax(self, op));
+  TT_RETURN_IF_ERROR(
+      ValidateOutDtype(out, self.scalar_type(), /*allow_out_dtype_cast=*/true));
 
-  TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(out, {}));
-  return AssignBufferToAtTensor(std::move(result_buf), out);
+  TT_ASSIGN_OR_RETURN(mlir::ElementType computation_dtype,
+                      ConvertTo<mlir::ElementType>(self.scalar_type()));
+  TT_ASSIGN_OR_RETURN(mlir::ElementType out_dtype,
+                      ConvertTo<mlir::ElementType>(out.scalar_type()));
+
+  auto op_builder =
+      [op](mlir::MlirOp input) -> absl::StatusOr<MlirOpResults<1>> {
+    TT_ASSIGN_OR_RETURN(auto min_max_outputs,
+                        BuildMinMaxShlo(/*dim=*/c10::nullopt, op,
+                                        ReductionMode::kDropDims, input));
+    return {min_max_outputs.values};
+  };
+
+  return DispatchOpOut<1>(std::move(op_builder), self, {out},
+                          {.out_dtype = out_dtype,
+                           .out_dims = {},
+                           .computation_dtype = computation_dtype,
+                           .op_param_cache_keys = OpParamCacheKeys::Empty()});
 }
 
 }  // namespace
@@ -147,9 +160,8 @@ absl::Status ArgMinMax(const at::Tensor& self, c10::optional<int64_t> dim,
   TT_RET_CHECK(IsPrivateUse1Device(out), error::kInvalidArgument)
       << "expected output tensor to be on " << GetPrivateUse1DeviceDebugName()
       << ", got " << out.device();
-  TT_RET_CHECK(IsLong(out), error::kInvalidArgument)
-      << "expected the output dtype to be int64, got "
-      << ToString(out.scalar_type());
+  TT_RETURN_IF_ERROR(
+      ValidateOutDtype(out, at::kLong, /*allow_out_dtype_cast=*/false));
 
   at::Tensor input_tensor = self;
   c10::optional<int64_t> wrapped_dim_opt;
@@ -185,15 +197,10 @@ absl::Status ArgMinMax(const at::Tensor& self, c10::optional<int64_t> dim,
     return {min_max_outputs.indices};
   };
 
-  TT_ASSIGN_OR_RETURN(
-      auto result_buf,
-      DispatchOp<1>(std::move(op_builder), input_tensor,
-                    {.out_dtype = mlir::ElementType::I64,
-                     .out_dims = std::move(out_dims),
-                     .op_param_cache_keys = std::move(param_keys)}));
-
-  TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(out, out_shape));
-  return AssignBufferToAtTensor(std::move(result_buf), out);
+  return DispatchOpOut<1>(std::move(op_builder), input_tensor, {out},
+                          {.out_dtype = mlir::ElementType::I64,
+                           .out_dims = std::move(out_dims),
+                           .op_param_cache_keys = std::move(param_keys)});
 }
 
 at::Tensor& AtenArgmaxOut(const at::Tensor& self, c10::optional<int64_t> dim,

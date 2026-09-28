@@ -27,14 +27,13 @@
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
 #include "c10/util/OptionalArrayRef.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
-#include "csrc/common/to_string.h"
 #include "csrc/eager/op_dispatcher.h"
-#include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/linalg/vector_norm/pnorm.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
@@ -52,9 +51,8 @@ namespace {
 
 absl::Status PNormOut(const at::Tensor& self, MaybePromotedScalar& promoted_ord,
                       double ord, at::OptionalIntArrayRef dim, bool keepdim,
-                      std::optional<at::ScalarType> dtype, at::Tensor& out,
+                      at::ScalarType expected_dtype, at::Tensor& out,
                       OpParamCacheKeys op_cache_keys) {
-  c10::ScalarType out_dtype = dtype.value_or(out.scalar_type());
   ReductionMode reduction_mode =
       keepdim ? ReductionMode::kKeepDims : ReductionMode::kDropDims;
   TT_ASSIGN_OR_RETURN(Dimensions canonical_dims, CanonicalizeDims(self, dim));
@@ -63,12 +61,7 @@ absl::Status PNormOut(const at::Tensor& self, MaybePromotedScalar& promoted_ord,
       GetSizesAfterReduction(self.sizes(), reduction_mode, canonical_dims);
 
   TT_ASSIGN_OR_RETURN(mlir::ElementType element_type,
-                      ConvertTo<mlir::ElementType>(out_dtype));
-
-  const at::ScalarType expected_dtype = ConvertTo<at::ScalarType>(element_type);
-  TT_RET_CHECK(out.scalar_type() == expected_dtype, error::kInvalidArgument)
-      << "expected the output dtype to be " << ToString(expected_dtype)
-      << ", got " << ToString(out.scalar_type());
+                      ConvertTo<mlir::ElementType>(expected_dtype));
 
   TT_ASSIGN_OR_RETURN(
       at::Tensor ord_tensor,
@@ -82,15 +75,10 @@ absl::Status PNormOut(const at::Tensor& self, MaybePromotedScalar& promoted_ord,
                           element_type);
   };
 
-  TT_ASSIGN_OR_RETURN(
-      auto result_buf,
-      DispatchOp<2>(std::move(op_builder), {self, ord_tensor},
-                    {.out_dtype = element_type,
-                     .out_dims = output_dims,
-                     .op_param_cache_keys = std::move(op_cache_keys)}));
-
-  TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(out, output_dims));
-  return AssignBufferToAtTensor(std::move(result_buf), out);
+  return DispatchOpOut<2>(std::move(op_builder), {self, ord_tensor}, {out},
+                          {.out_dtype = element_type,
+                           .out_dims = output_dims,
+                           .op_param_cache_keys = std::move(op_cache_keys)});
 }
 
 }  // namespace
@@ -110,16 +98,20 @@ at::Tensor& AtenLinalgVectorNormOut(const at::Tensor& self,
         // ord == 0, sum(x != 0), count nonzero
         // ord == int or float, sum(abs(x)^{ord})^{(1 / ord)}
 
+        const at::ScalarType expected_dtype =
+            c10::toRealValueType(dtype.value_or(self.scalar_type()));
+        TT_THROW_IF_ERROR(ValidateOutDtype(out, expected_dtype,
+                                           /*allow_out_dtype_cast=*/false));
+
         if (promoted_ord.IsZero()) {
           // TODO: maybe convert to StableHLO, if more efficient.
-          auto temp = at::sum(self.ne(0), dim, keepdim,
-                              dtype.value_or(out.scalar_type()));
+          auto temp = at::sum(self.ne(0), dim, keepdim, expected_dtype);
           TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, temp.sizes()));
           out.copy_(temp);
         } else {
           TT_THROW_IF_ERROR(op_cache_keys.SetParam("ord", ord));
           TT_THROW_IF_ERROR(PNormOut(self, promoted_ord, ord.toDouble(), dim,
-                                     keepdim, dtype, out,
+                                     keepdim, expected_dtype, out,
                                      std::move(op_cache_keys)));
         }
         return out;

@@ -28,12 +28,12 @@
 #include "c10/core/ScalarType.h"
 #include "c10/util/Exception.h"
 #include "c10/util/OptionalArrayRef.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
-#include "csrc/common/to_string.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/binary.h"
@@ -205,10 +205,8 @@ at::Tensor& AtenStdOut(const at::Tensor& self,
         const c10::ScalarType real_out_dtype =
             c10::toRealValueType(scalar_dtype);
 
-        TT_CHECK_THROW(at::canCast(expected_dtype, scalar_dtype),
-                       error::kInvalidArgument)
-            << "expected floating point output dtype, got "
-            << ToString(scalar_dtype);
+        TT_THROW_IF_ERROR(ValidateOutDtype(out, expected_dtype,
+                                           /*allow_out_dtype_cast=*/true));
 
         const ReductionMode reduction_mode =
             keep_dim ? ReductionMode::kKeepDims : ReductionMode::kDropDims;

@@ -1903,7 +1903,7 @@ Device-side assertion tracking was not enabled by user.""",
     out = torch.empty(3, device=et.device(), dtype=torch.int32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""std(): expected floating point output dtype, got int32""",
+        tpu="""std(): result type float32 can't be cast to the desired output type int32""",
         gpu="""result type Float can't be cast to the desired output type Int""",
     ):
       torch.std(t, dim=0, out=out)
@@ -1937,6 +1937,19 @@ Device-side assertion tracking was not enabled by user.""",
         tpu="""unfold(): expected step > 0, got 0""",
     ):
       t.unfold(0, 2, 0)
+
+  def test_std_out_dtype_mismatch(self):
+    """Verifies that std raises RuntimeError when downcasting out tensor."""
+    t = torch.ones(5, device=et.device(), dtype=torch.float32)
+    out = torch.empty(5, dtype=torch.int32, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""std(): result type float32 can't be cast to the desired output type int32""",
+        gpu="""result type Float can't be cast to the desired output type Int""",
+        message_reviewed_by="wan",
+    ):
+      torch.std(t, out=out)
 
   def test_std_negative_reduction_factor(self):
     """A warning is issued and nan returned when degrees of freedom <= 0."""
@@ -6077,6 +6090,59 @@ Supported combinations for non-constant padding:
       op(inp)
 
   @parameterized.named_parameters(
+      {"testcase_name": "min", "op": torch.min, "op_name": "min"},
+      {"testcase_name": "max", "op": torch.max, "op_name": "max"},
+  )
+  def test_min_max_unary_out_dtype_mismatch(self, op, op_name: str):
+    """Verifies that unary min/max disallows invalid downcasting to out tensor."""
+    inp = torch.ones(5, device=et.device(), dtype=torch.float32)
+    out = torch.empty(5, device=et.device(), dtype=torch.int32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{op_name}(): result type float32 can't be cast to the desired output type int32""",
+        gpu="""Expected canCast( typeMetaToScalarType(self.dtype()), typeMetaToScalarType(out.dtype())) to be true, but got false.  (Could this error message be improved?  If so, please report an enhancement request to PyTorch.)""",
+        message_reviewed_by="wan",
+    ):
+      op(inp, out=out)
+
+  @parameterized.named_parameters(
+      {"testcase_name": "min", "op": torch.min, "op_name": "min"},
+      {"testcase_name": "max", "op": torch.max, "op_name": "max"},
+  )
+  def test_min_max_dim_values_dtype_mismatch(self, op, op_name: str):
+    """Verifies that min/max dim disallows out values tensor dtype mismatch."""
+    inp = torch.ones(5, device=et.device(), dtype=torch.float32)
+    values = torch.empty(5, device=et.device(), dtype=torch.float64)
+    indices = torch.empty(5, device=et.device(), dtype=torch.int64)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{op_name}(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+        message_reviewed_by="wan",
+    ):
+      op(inp, 0, out=(values, indices))
+
+  @parameterized.named_parameters(
+      {"testcase_name": "min", "op": torch.min, "op_name": "min"},
+      {"testcase_name": "max", "op": torch.max, "op_name": "max"},
+  )
+  def test_min_max_dim_indices_dtype_mismatch(self, op, op_name: str):
+    """Verifies that min/max dim disallows non-int64 out indices tensor."""
+    inp = torch.ones(5, device=et.device(), dtype=torch.float32)
+    values = torch.empty(5, device=et.device(), dtype=torch.float32)
+    indices = torch.empty(5, device=et.device(), dtype=torch.int32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{op_name}(): expected the output dtype to be int64, got int32""",
+        gpu="""Expected out tensor to have dtype long, but got int instead""",
+        message_reviewed_by="wan",
+    ):
+      op(inp, 0, out=(values, indices))
+
+  @parameterized.named_parameters(
       {"testcase_name": "argmin", "op": torch.argmin, "op_name": "argmin"},
       {"testcase_name": "argmax", "op": torch.argmax, "op_name": "argmax"},
   )
@@ -6736,6 +6802,18 @@ Supported combinations for non-constant padding:
         message_reviewed_by="gunhyun",
     ):
       torch.linalg.vector_norm(x, dtype=torch.float32, out=out)
+
+  def test_linalg_vector_norm_default_dtype_mismatch(self):
+    """Verifies that linalg.vector_norm without dtype arg disallows downcasting out tensor."""
+    x = torch.ones(5, device=et.device(), dtype=torch.complex64)
+    out = torch.empty(5, dtype=torch.float64, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_vector_norm(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+        message_reviewed_by="wan",
+    ):
+      torch.linalg.vector_norm(x, out=out)
 
   def test_norm_out_dtype_mismatch(self):
     x = torch.ones(5, device=et.device(), dtype=torch.float32)
