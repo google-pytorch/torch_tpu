@@ -48,8 +48,8 @@ namespace torch_tpu {
 namespace {
 
 absl::StatusOr<mlir::MlirOp> BuildUnfoldBackwardShlo(
-    mlir::MlirOp grad_in, SmallInt64Vector input_sizes, int64_t dimension,
-    int64_t size, int64_t step) {
+    mlir::MlirOp grad_in, const SmallInt64Vector& input_sizes,
+    int64_t dimension, int64_t size, int64_t step) {
   auto& builder = grad_in.getBuilder();
   auto& op_builder = builder.getOpBuilder();
 
