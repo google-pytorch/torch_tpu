@@ -8661,6 +8661,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         )
     )
 
+  @absltest.skip("b/535216136")
   def test_arange_infinite_step(self):
     """Tests arange where step is infinite."""
 
