@@ -367,7 +367,10 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
       "torch_tpu._internal.device._device_ops_backend.get_default_generator",
       return_value="mock_generator",
   )
-  @mock.patch.object(torch.tpu, "current_device", return_value=0)
+  @mock.patch(
+      "torch_tpu._internal.device._device_ops_backend._get_current_device_id",
+      return_value=0,
+  )
   @mock.patch.object(torch.tpu, "device_count", return_value=1)
   def test_annotated_real_api_property_default_generators(
       self, _mock_count, _mock_current, _mock_gen
@@ -394,8 +397,7 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
       warnings.simplefilter("always")
 
       # Accessing static attributes physically defined in _DeviceModule class body
-      _ = torch.tpu.current_device
-      _ = torch.tpu._autocast_enabled
+      _ = torch.tpu.precision
       # 0 warnings emitted, proving __getattr__ was bypassed completely
       self.assertEmpty(w)
 

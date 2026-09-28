@@ -86,7 +86,7 @@ class _DefaultGeneratorsProperty:
   def __get__(self, instance, owner):
     if owner is None:
       return ()
-    owner.current_device()
+    _device_ops_backend._get_current_device_id()  # pylint: disable=protected-access
     if (
         execution_mode.eager_mode
         == execution_mode.EagerMode.INTERNAL_COMPILE_FX_GRAPH

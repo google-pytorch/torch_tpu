@@ -2079,7 +2079,7 @@ module {
 
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_rng_validate_device_index_error(self):
-    self.assertEqual(torch.tpu.current_device(), 0)
+    self.assertEqual(torch.accelerator.current_device_index(), 0)
 
     with et.assert_raises_message(
         ValueError,

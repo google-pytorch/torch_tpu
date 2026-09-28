@@ -259,7 +259,7 @@ def run_all_gather_rank_order() -> None:
   """
   rank = int(os.environ["RANK"])
   world_size = int(os.environ["WORLD_SIZE"])
-  device = torch.device("tpu", torch.tpu.current_device())
+  device = torch.device("tpu", torch.accelerator.current_device_index())
   expected = torch.arange(world_size, dtype=torch.float32)
 
   # 1. all_reduce (permutation invariant check matching reproducer)
@@ -658,7 +658,7 @@ def run_barrier(async_op: bool) -> None:
 def run_barrier_with_device_ids(async_op: bool) -> None:
   """Tests barrier accepts device_ids naming this process's own device."""
   torch.distributed.barrier(
-      device_ids=[torch.tpu.current_device()], async_op=async_op
+      device_ids=[torch.accelerator.current_device_index()], async_op=async_op
   )
 
 

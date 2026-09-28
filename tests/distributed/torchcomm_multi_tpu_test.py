@@ -34,7 +34,7 @@ def _run_with_torchcomms(
   dist.init_process_group(backend="tpu_dist")
   rank = dist.get_rank()
   world_size = dist.get_world_size()
-  dev = torch.device("tpu", torch.tpu.current_device())
+  dev = torch.device("tpu", torch.accelerator.current_device_index())
 
   comm = torchcomms.new_comm(
       "tpu",

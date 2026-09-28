@@ -1824,8 +1824,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::barrier(
     // is 0 (client->addressable_devices()). Accept that id as a no-op --
     // the barrier below always runs on this process's own device -- so that
     // device-agnostic callers such as
-    // torch.distributed.barrier(device_ids=[torch.tpu.current_device()]) work
-    // unchanged. Any other id names a device this process does not own.
+    // torch.distributed.barrier(device_ids=[torch.accelerator.current_device_index()])
+    // work unchanged. Any other id names a device this process does not own.
     TT_CHECK_THROW(opts.device_ids.empty() ||
                        (opts.device_ids.size() == 1 && opts.device_ids[0] == 0),
                    error::kPythonNotImplementedError)
