@@ -16,19 +16,24 @@
 
 #include "csrc/ops/copy_from/cpu_to_tpu.h"
 
+#include <cstddef>
+#include <cstring>
 #include <optional>
 #include <utility>
+#include <vector>
 
 #include "ATen/core/TensorBody.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "csrc/common/context_states.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/layout_utils.h"
 #include "csrc/common/to_string.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/device_buffer_utils.h"
+#include "csrc/eager/eager_mode.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/pjrt/pjrt_transfer.h"
 #include "xla/xla_data.pb.h"
@@ -49,6 +54,20 @@ absl::StatusOr<DeviceBufferRef> CopyCpuToTpuBuffer(const at::Tensor& src,
     // If there's no data to actually copy, then we can just create a zero-sized
     // buffer directly and avoid blocking on host/device synchronization.
     return CreateZeroSizeDeviceBufferRef(std::move(tpu_layout.sizes),
+                                         tpu_layout.element_type);
+  }
+
+  if (GetEagerMode() == EagerMode::kInternalCompileFxGraph) {
+    // During FX graph compilation, emit a deferred constant op instead of
+    // performing an eager host-to-device transfer, which would produce a
+    // materialized buffer that Traversal mistakes for an unprovided graph
+    // argument.
+    const size_t num_bytes = contiguous_src_for_tpu.nbytes();
+    std::vector<char> cpu_bytes_copy(num_bytes);
+    std::memcpy(cpu_bytes_copy.data(), contiguous_src_for_tpu.data_ptr(),
+                num_bytes);
+    return CreateConstantDeviceBufferRef(std::move(cpu_bytes_copy),
+                                         std::move(tpu_layout.sizes),
                                          tpu_layout.element_type);
   }
 

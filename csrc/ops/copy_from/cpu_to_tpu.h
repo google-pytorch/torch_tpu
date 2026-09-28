@@ -24,8 +24,9 @@
 
 namespace torch_tpu {
 
-// Copies the value out of the source CPU tensor to a materialized
-// DeviceBufferRef.
+// Copies the value out of the source CPU tensor to a DeviceBufferRef (either
+// materialized via host-to-device transfer, or a deferred constant when
+// zero-sized or in EagerMode::kInternalCompileFxGraph).
 absl::StatusOr<DeviceBufferRef> CopyCpuToTpuBuffer(const at::Tensor& src,
                                                    bool non_blocking);
 

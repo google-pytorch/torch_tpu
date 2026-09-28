@@ -1617,9 +1617,9 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_execute_output_shapes_too_many(self):
+    x = torch.ones(10, device="cpu").to(device=et.device())
+    y = torch.ones(10, device="cpu").to(device=et.device())
     with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
-      x = torch.ones(10, device="cpu").to(device=et.device())
-      y = torch.ones(10, device="cpu").to(device=et.device())
       z = x + y
 
     mlir = tpu_torch_compile.build_mlir([z], [x, y])
@@ -1640,8 +1640,8 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("For testing compiled mode argument count validation.")
   def test_execute_argument_count_mismatch(self):
+    x = torch.ones(10, device="cpu").to(device=et.device())
     with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
-      x = torch.ones(10, device="cpu").to(device=et.device())
       z = x + x
 
     compile_result = tpu_torch_compile.traverse_and_compile([z], [x, x])
@@ -1653,8 +1653,8 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("build_mlir() input validation is TPU-only.")
   def test_build_mlir_duplicate_input(self):
+    x = torch.ones(2, 3, device="cpu").to(device=et.device())
     with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
-      x = torch.ones(2, 3, device="cpu").to(device=et.device())
       z = x + x
 
     with et.assert_raises_message(
@@ -1665,9 +1665,9 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("build_mlir() input validation is TPU-only.")
   def test_build_mlir_missing_input(self):
+    x = torch.ones(2, 3, device="cpu").to(device=et.device())
+    y = torch.ones(2, 3, device="cpu").to(device=et.device())
     with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
-      x = torch.ones(2, 3, device="cpu").to(device=et.device())
-      y = torch.ones(2, 3, device="cpu").to(device=et.device())
       z = x + y
 
     with et.assert_raises_message(
@@ -1729,8 +1729,8 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("Verifies execute() rejects placeholder arguments.")
   def test_execute_placeholder_argument(self):
+    x = torch.ones(4, 4, device="cpu").to(device=et.device())
     with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
-      x = torch.ones(4, 4, device="cpu").to(device=et.device())
       z = x + x
       ph = tpu_torch_compile.placeholder([4, 4], torch.float32, False)
 
@@ -1772,9 +1772,9 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_execute_output_shapes_rank_mismatch(self):
+    x = torch.ones(10, device="cpu").to(device=et.device())
+    y = torch.ones(10, device="cpu").to(device=et.device())
     with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
-      x = torch.ones(10, device="cpu").to(device=et.device())
-      y = torch.ones(10, device="cpu").to(device=et.device())
       z = x + y
 
     mlir = tpu_torch_compile.build_mlir([z], [x, y])

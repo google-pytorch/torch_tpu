@@ -31,7 +31,6 @@ from torch_tpu._internal.utils import test_utils as utils
 from tests import seed_test_utils
 
 
-
 class FunctionTest(seed_test_utils.RepeatableTest):
 
   def setUp(self):
@@ -167,7 +166,6 @@ class FunctionTest(seed_test_utils.RepeatableTest):
         self.assertNotEmpty(debugs[0].stablehlo_forward_text)
         self.assertNotIn("f64", debugs[0].stablehlo_forward_text[0])
 
-  @absltest.skip("b/546708345")
   def test_cpu_tensor_copy_to_tpu(self):
     def fn(x):
       cpu_tensor = torch.zeros((1, 10), dtype=x.dtype)
@@ -177,7 +175,6 @@ class FunctionTest(seed_test_utils.RepeatableTest):
     x = torch.randn(1, 10, dtype=torch.float32)
     self._run_and_compare(fn, [x])
 
-  @absltest.skip("b/546708345")
   def test_swin_cpu_attention_mask_pattern(self):
     def fn(x):
       mask = torch.zeros((1, 4, 4, 1), dtype=x.dtype)
@@ -192,6 +189,19 @@ class FunctionTest(seed_test_utils.RepeatableTest):
 
     x = torch.randn(1, 16, 16, dtype=torch.float32)
     self._run_and_compare(fn, [x])
+
+  def test_wavlm_cpu_bucket_indexing_to_tpu(self):
+    def fn(weight, x):
+      q_pos = torch.arange(8, dtype=torch.long)[None, :]
+      k_pos = torch.arange(8, dtype=torch.long)[:, None]
+      rel_pos = k_pos - q_pos
+      buckets = torch.clamp(rel_pos + 8, 0, 15).to(x.device)
+      values = torch.nn.functional.embedding(buckets, weight)
+      return x + values
+
+    weight = torch.randn(16, 4, dtype=torch.float32)
+    x = torch.randn(8, 8, 4, dtype=torch.float32)
+    self._run_and_compare(fn, [weight, x])
 
   def test_to_copy(self):
     """Test that we can handle to_copy ops in compiled mode.
@@ -1223,7 +1233,6 @@ class ModuleTest(seed_test_utils.RepeatableTest):
             torch.allclose(p_before, p_after, rtol=1e-4, atol=1e-4),
             "Parameters did not change after optimizer.step()",
         )
-
 
   def test_geqrf_empty(self):
     # geqrf under torch.compile with empty inputs is not tested in the standard
