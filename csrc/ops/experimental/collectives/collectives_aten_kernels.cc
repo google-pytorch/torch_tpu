@@ -167,27 +167,26 @@ absl::StatusOr<DeviceBufferRef> DispatchCollectiveWithDim(
 at::Tensor ExperimentalAllGatherDim(const at::Tensor& input, int64_t dim,
                                     int64_t group_size,
                                     std::string_view group_name) {
-  TT_KERNEL(OpName::kExperimentalAllGatherDim, param_keys,
-            (input, dim, group_size, group_name), {
-              TT_ASSIGN_OR_THROW(auto shape,
-                                 AllGatherShape(input, dim, group_size));
-              auto builder = [dim = shape.dim](
-                                 mlir::MlirOp input_op,
-                                 const DeviceGroupList& device_groups)
-                  -> absl::StatusOr<mlir::MlirOp> {
-                TT_ASSIGN_OR_RETURN(auto outputs,
-                                    BuildDistributedAllGatherShlo(
-                                        input_op, device_groups,
-                                        AllGatherOutputMode::kConcat, dim));
-                return outputs[0];
-              };
-              TT_ASSIGN_OR_THROW(
-                  auto result,
-                  DispatchCollectiveWithDim(
-                      input, group_size, std::move(shape.output_shape),
-                      group_name, std::move(builder), std::move(param_keys)));
-              return MakeTensor(std::move(result));
-            });
+  TT_KERNEL(
+      OpName::kExperimentalAllGatherDim, param_keys,
+      (input, dim, group_size, group_name), {
+        TT_ASSIGN_OR_THROW(auto shape, AllGatherShape(input, dim, group_size));
+        auto builder = [dim = shape.dim](mlir::MlirOp input_op,
+                                         const DeviceGroupList& device_groups)
+            -> absl::StatusOr<mlir::MlirOp> {
+          TT_ASSIGN_OR_RETURN(
+              auto outputs,
+              BuildDistributedAllGatherShlo(input_op, device_groups,
+                                            AllGatherOutputMode::kConcat, dim));
+          return outputs[0];
+        };
+        TT_ASSIGN_OR_THROW(
+            auto result,
+            DispatchCollectiveWithDim(
+                input, group_size, std::move(shape.output_shape), group_name,
+                std::move(builder), std::move(param_keys)));
+        return MakeTensor(std::move(result));
+      });
 }
 
 at::Tensor ExperimentalReduceScatterDim(const at::Tensor& input,
