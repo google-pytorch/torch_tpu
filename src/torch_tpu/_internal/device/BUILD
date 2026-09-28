@@ -41,15 +41,6 @@ torch_tpu_py_library(
     ],
 )
 
-torch_tpu_py_library(
-    name = "_tpu_backend_config",
-    srcs = ["_tpu_backend_config.py"],
-    deps = [
-        ":_device_ops_backend",
-        "//src/torch_tpu/_internal/utils:annotations",
-    ],
-)
-
 pybind_extension(
     name = "_device_ops_backend",
     srcs = ["//csrc/internal/device:device_rt.cc"],

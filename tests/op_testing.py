@@ -5879,7 +5879,7 @@ def set_up_test_module() -> None:
   # the globally shared default compilation context.
   if _torch_tpu_vs_gpu_mode() or _gen_gpu_golden_mode():
     if is_compiled_mode():
-      torch.backends.tpu.allow_excess_precision = True  # pytype: disable=module-attr
+      torch.tpu.allow_excess_precision = True  # pytype: disable=module-attr
 
   # Assert that `torch.get_default_dtype()` returns `torch.float` when `setUp`
   # and `tearDown` are called.

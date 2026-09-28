@@ -136,7 +136,7 @@ class TraceAutogradOpsTest(seed_test_utils.RepeatableTest):
     super().setUpClass()
     cls.tpu_device = torch.device('tpu')
     # Turn on excess precision to match users' optimal setting for performance.
-    torch.backends.tpu.allow_excess_precision = True  # pytype: disable=module-attr
+    torch.tpu.allow_excess_precision = True  # pytype: disable=module-attr
     cls.base_model, cls.inputs = create_model_and_input()
     # Establish a 'Ground Truth' on CPU to compare TPU results against
     cls.cpu_config = RunConfig(

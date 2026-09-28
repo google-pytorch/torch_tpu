@@ -62,7 +62,6 @@ torch_tpu_py_library(
         "//src/torch_tpu/_internal/compile",
         "//src/torch_tpu/_internal/compile:tpu_backend",
         "//src/torch_tpu/_internal/device:_device_module",
-        "//src/torch_tpu/_internal/device:_tpu_backend_config",
         "//src/torch_tpu/_internal/distributed:api",
         "//src/torch_tpu/_internal/distributed:from_local",
         "//src/torch_tpu/_internal/distributed:torchcomm_tpu",

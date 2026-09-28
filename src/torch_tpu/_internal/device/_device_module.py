@@ -254,6 +254,53 @@ class _DeviceModuleMeta(abc.ABCMeta):
 
   @property
   @annotations.experimental(
+      "allow_excess_precision is experimental and may change or be removed "
+      "without notice."
+  )
+  def allow_excess_precision(cls) -> bool:
+    """Whether XLA is allowed to use excess precision.
+
+    This property reflects the effective setting used by the XLA compiler even
+    when not explicitly set. First time calling this property triggers parsing
+    and memoization of the XLA_FLAGS environment variable.
+
+    .. warning::
+        This API is experimental and subject to change in future releases.
+    """
+    getter = getattr(_device_ops_backend, "_get_allow_excess_precision", None)
+    if getter is None:
+      raise RuntimeError("TorchTPU device ops backend is not initialized.")
+    return getter()
+
+  @allow_excess_precision.setter
+  @annotations.experimental(
+      "allow_excess_precision is experimental and may change or be removed "
+      "without notice."
+  )
+  def allow_excess_precision(cls, value: bool):
+    """Sets whether XLA is allowed to use excess precision.
+
+    It sets the XLA flag of --allow_excess_precision globally for all future
+    compilations. Changing its value frequently is not recommended as it will
+    trigger recompilation for the new setting.
+    File a feature request for a context manager for this flag if needed.
+
+    The flag defaults to False if not set in the XLA_FLAGS environment variable
+    nor explicitly set by this property.
+
+    .. warning::
+        This API is experimental and subject to change in future releases.
+
+    Args:
+      value: Whether to allow excess precision. Can be True or False.
+    """
+    setter = getattr(_device_ops_backend, "_set_allow_excess_precision", None)
+    if setter is None:
+      raise RuntimeError("TorchTPU device ops backend is not initialized.")
+    setter(value)
+
+  @property
+  @annotations.experimental(
       "window_num_stripes is experimental and may change or be removed "
       "without notice."
   )

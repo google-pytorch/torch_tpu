@@ -39,13 +39,13 @@ def _(mo):
     When running PyTorch on TPUs with the TorchTPU backend, to force the compiler to retain intermediate down casts, which prevents excess precision, use:
 
     ```py
-    torch.backends.tpu.allow_excess_precision = False
+    torch.tpu.allow_excess_precision = False
     ```
 
     To give the compiler the option, but not the obligation, to remove intermediate downcasts, possibly resulting in excess precision, use:
 
     ```py
-    torch.backends.tpu.allow_excess_precision = True
+    torch.tpu.allow_excess_precision = True
     ```
     """)
   return
@@ -235,9 +235,9 @@ def excess_precision_verification(torch):
   # The 13th bit will not be allowed because of the flag.
   print("=== TPU values: compiled with allow_excess_precision = False ===")
   torch.compiler.reset()
-  torch.backends.tpu.allow_excess_precision = False
+  torch.tpu.allow_excess_precision = False
   mul_add_compiled_false = torch.compile(mul_add, backend="tpu")
-  print(f"{torch.backends.tpu.allow_excess_precision=}")
+  print(f"{torch.tpu.allow_excess_precision=}")
   res_false = mul_add_compiled_false(bit_6_tensor, bit_7_tensor, one_float32)[
       0, 0
   ]
@@ -255,9 +255,9 @@ def excess_precision_verification(torch):
   # The 13th bit might be flipped because of the flag.
   print("=== TPU values: compiled with allow_excess_precision = True ===")
   torch.compiler.reset()
-  torch.backends.tpu.allow_excess_precision = True
+  torch.tpu.allow_excess_precision = True
   mul_add_compiled_true = torch.compile(mul_add, backend="tpu")
-  print(f"{torch.backends.tpu.allow_excess_precision=}")
+  print(f"{torch.tpu.allow_excess_precision=}")
   res_true = mul_add_compiled_true(bit_6_tensor, bit_7_tensor, one_float32)[
       0, 0
   ]

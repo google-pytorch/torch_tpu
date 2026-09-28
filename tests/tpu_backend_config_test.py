@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for torch.backends.tpu related configs."""
+"""Tests for torch.tpu excess precision and verification that torch.backends.tpu is removed."""
 
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -22,7 +22,7 @@ from tests import seed_test_utils
 
 
 class TpuBackendConfigTest(seed_test_utils.RepeatableTest):
-  """Tests for torch.backends.tpu related configs."""
+  """Tests for torch.tpu related configs."""
 
   @parameterized.named_parameters(
       dict(
@@ -33,15 +33,14 @@ class TpuBackendConfigTest(seed_test_utils.RepeatableTest):
       dict(testcase_name="false", allow=False, expected_value=1.015625),
   )
   def test_allow_excess_precision(self, allow: bool, expected_value: float):
-    """Tests global torch.backends.tpu.allow_excess_precision API."""
-    # pytype: disable=module-attr
-    original_allow = torch.backends.tpu.allow_excess_precision
+    """Tests global torch.tpu.allow_excess_precision API."""
+    original_allow = torch.tpu.allow_excess_precision
     try:
       # Default value is False.
-      self.assertIs(torch.backends.tpu.allow_excess_precision, False)
+      self.assertIs(torch.tpu.allow_excess_precision, False)
 
-      torch.backends.tpu.allow_excess_precision = allow
-      self.assertIs(torch.backends.tpu.allow_excess_precision, allow)
+      torch.tpu.allow_excess_precision = allow
+      self.assertIs(torch.tpu.allow_excess_precision, allow)
 
       device = torch.device("tpu")
       eps: float = torch.finfo(torch.bfloat16).eps
@@ -62,8 +61,7 @@ class TpuBackendConfigTest(seed_test_utils.RepeatableTest):
 
       self.assertEqual(run_compute().cpu().item(), expected_value)
     finally:
-      torch.backends.tpu.allow_excess_precision = original_allow
-      # pytype: enable=module-attr
+      torch.tpu.allow_excess_precision = original_allow
 
 
 if __name__ == "__main__":

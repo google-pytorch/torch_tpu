@@ -441,13 +441,13 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
       warnings.simplefilter("always")
 
       # 1st access: emits 1 UserWarning
-      _ = torch.backends.tpu.allow_excess_precision
+      _ = torch.tpu.allow_excess_precision
       self.assertLen(w, 1)
       self.assertTrue(issubclass(w[0].category, UserWarning))
       self.assertIn("allow_excess_precision is experimental", str(w[0].message))
 
       # 2nd access: emits 0 additional warnings
-      _ = torch.backends.tpu.allow_excess_precision
+      _ = torch.tpu.allow_excess_precision
       self.assertLen(w, 1)
 
   def test_pep562_module_getattr_resolution_and_suppression(self):

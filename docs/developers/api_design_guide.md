@@ -26,7 +26,7 @@ follow them in new code and migrate the existing APIs to conform to them.
 *   Design choices
     *   For **global** APIs:
         *   Global knobs should always have a Python API, e.g.
-            `torch.backends.tpu.allow_excess_precision = True` and
+            `torch.tpu.allow_excess_precision = True` and
             `torch.set_float32_matmul_precision("highest")`.
             *   Prefer properties to getters/setters.
             *   A user can change the state of a global knob multiple times. In
