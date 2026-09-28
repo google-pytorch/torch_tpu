@@ -181,21 +181,21 @@ absl::Status TpuProfilerSession::Stop(const std::string& filename) {
   };
 
   tensorflow::profiler::XSpace xspace;
-  TT_RETURN_IF_ERROR(session_->CollectData(&xspace))
-      << "failed to collect trace data";
+  TT_RETURN_IF_ERROR(session_->CollectData(&xspace)).SetPrepend()
+      << "failed to collect trace data: ";
   ABSL_LOG(INFO) << "Collected " << xspace.planes_size() << " planes.";
   tsl::Env* env = tsl::Env::Default();
 
   // Ensure the parent directory exists
   std::string dirname(tsl::io::Dirname(filename));
   if (!dirname.empty()) {
-    TT_RETURN_IF_ERROR(env->RecursivelyCreateDir(dirname))
-        << "failed to create directory: " << dirname;
+    TT_RETURN_IF_ERROR(env->RecursivelyCreateDir(dirname)).SetPrepend()
+        << "failed to create directory '" << dirname << "': ";
   }
 
   std::unique_ptr<tsl::WritableFile> outfile;
-  TT_RETURN_IF_ERROR(env->NewWritableFile(filename, &outfile))
-      << "failed to create file: " << filename;
+  TT_RETURN_IF_ERROR(env->NewWritableFile(filename, &outfile)).SetPrepend()
+      << "failed to create file '" << filename << "': ";
 
   // Serialize the collected XSpace data to a string.
   std::string serialized_proto;
@@ -205,9 +205,10 @@ absl::Status TpuProfilerSession::Stop(const std::string& filename) {
                  << filename;
 
   // Write the serialized XSpace to the file.
-  TT_RETURN_IF_ERROR(outfile->Append(serialized_proto))
-      << "failed to write data to " << filename;
-  TT_RETURN_IF_ERROR(outfile->Close()) << "failed to close file: " << filename;
+  TT_RETURN_IF_ERROR(outfile->Append(serialized_proto)).SetPrepend()
+      << "failed to write data to '" << filename << "': ";
+  TT_RETURN_IF_ERROR(outfile->Close()).SetPrepend()
+      << "failed to close file '" << filename << "': ";
 
   return absl::OkStatus();
 }
