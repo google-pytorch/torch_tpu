@@ -33,6 +33,7 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
+#include "csrc/common/to_string.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
@@ -182,6 +183,9 @@ at::Tensor& AtenArangeStartOut(const at::Scalar& start, const at::Scalar& end,
       OpName::kArangeStartOut, param_keys,
       (start_promoted, end_promoted, step_promoted, out), {
         const at::ScalarType output_dtype = out.scalar_type();
+        TT_CHECK_THROW(output_dtype != at::kBool,
+                       error::kPythonNotImplementedError)
+            << "not implemented for " << ToString(output_dtype);
         const at::ScalarType acc_dtype = ToAccumulateType(output_dtype);
 
         TT_ASSIGN_OR_THROW(

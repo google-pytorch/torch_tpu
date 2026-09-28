@@ -287,6 +287,9 @@ at::Tensor& AtenNegOut(const at::Tensor& self, at::Tensor& out) {
 
 at::Tensor AtenRelu(const at::Tensor& self) {
   TT_KERNEL(OpName::kRelu, _, (self), {
+    TT_CHECK_THROW(self.scalar_type() != at::kBool,
+                   error::kPythonNotImplementedError)
+        << "not implemented for " << ToString(self.scalar_type());
     TT_ASSIGN_OR_THROW(
         at::Tensor result,
         UnaryOp(self, BuildReluShlo,
@@ -297,6 +300,9 @@ at::Tensor AtenRelu(const at::Tensor& self) {
 
 at::Tensor& AtenRelu_(at::Tensor& self) {
   TT_KERNEL(OpName::kRelu_, _, (self), {
+    TT_CHECK_THROW(self.scalar_type() != at::kBool,
+                   error::kPythonNotImplementedError)
+        << "not implemented for " << ToString(self.scalar_type());
     TT_THROW_IF_ERROR(
         UnaryOpInPlace(self, BuildReluShlo,
                        {.op_param_cache_keys = OpParamCacheKeys::Empty()}));

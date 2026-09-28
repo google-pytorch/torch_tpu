@@ -3536,6 +3536,31 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       torch.arange(1, 10, 0, device=et.device())
 
+  def test_arange_bool_error(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""arange(): not implemented for bool""",
+        gpu=""""arange_cuda" not implemented for 'Bool'""",
+    ):
+      torch.arange(1, 10, dtype=torch.bool, device=et.device())
+
+  def test_relu_bool_error(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""relu(): not implemented for bool""",
+        gpu="""Boolean inputs not supported for relu""",
+    ):
+      torch.nn.functional.relu(torch.tensor([True, False], device=et.device()))
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""relu_(): not implemented for bool""",
+        gpu="""Boolean inputs not supported for relu""",
+    ):
+      torch.nn.functional.relu(
+          torch.tensor([True, False], device=et.device()), inplace=True
+      )
+
   def test_linspace_negative_steps(self):
     out = torch.empty(5, device=et.device())
 

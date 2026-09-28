@@ -1392,10 +1392,13 @@ class TestOps(op_testing.OpInfoTestBase):
         "arange",
         # TODO: fix arange(out=...) failing.
         check_out_variant=False,
-        # TODO: fix arange() succeeding for bool and complex types (it should
+        # TODO: fix arange() succeeding for complex types (it should
         # fail).
         # TODO: fix arange() returning wrong results for uint8.
-        exclude_dtypes=(torch.bool, torch.uint8) + COMPLEX_DTYPES,
+        exclude_dtypes={
+            "cpu": (torch.bool, torch.uint8) + COMPLEX_DTYPES,
+            "gpu": (torch.uint8,) + COMPLEX_DTYPES,
+        },
         # NOTE: the test sample contains torch.arange(5), which *should*
         # return a tensor on CPU. Therefore we don't check that the result
         # is on TPU.
@@ -3200,11 +3203,16 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_nn_functional_relu(self):
     self.do_test_op(
         "nn.functional.relu",
-        # TODO: fix relu() succeeding with integral dtypes (it
-        # should fail).  xla_cuda has no support for complex64::min()
-        # xla_cuda: https://github.com/openxla/stablehlo/issues/560
-        exclude_dtypes=(torch.uint8, torch.int8, torch.int16, torch.bool)
-        + COMPLEX_DTYPES,
+        # TODO: fix relu() with uint8/int8/int16 dtypes.
+        # xla_cuda has no support for complex64::min():
+        # https://github.com/openxla/stablehlo/issues/560
+        exclude_dtypes={
+            "cpu": (
+                (torch.uint8, torch.int8, torch.int16, torch.bool)
+                + COMPLEX_DTYPES
+            ),
+            "gpu": (torch.uint8, torch.int8, torch.int16) + COMPLEX_DTYPES,
+        },
     )
 
   def test_nn_functional_rms_norm(self):
