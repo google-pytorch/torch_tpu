@@ -21,7 +21,7 @@ been imported:
   import warnings
 
   import torch_tpu
-  from torch_tpu import exceptions
+  from torch_tpu._internal import exceptions
 
   warnings.filterwarnings("ignore", category=exceptions.TCMallocWarning)
 
@@ -35,16 +35,17 @@ those must be filtered by message from the environment instead:
   # Silence every warning TorchTPU emits while importing.
   export PYTHONWARNINGS="ignore::UserWarning"
 
-Note that `PYTHONWARNINGS="ignore::torch_tpu.exceptions.TCMallocWarning"` does
+Note that
+`PYTHONWARNINGS="ignore::torch_tpu._internal.exceptions.TCMallocWarning"` does
 *not* suppress an import-time warning, even though it looks like it should:
 resolving that category name makes the interpreter import `torch_tpu` in order
 to look the class up, which emits the warning before the filter is installed.
 On a `pip install`ed TorchTPU the name cannot be resolved at that point at all,
 because site-packages is not yet on `sys.path`, and the interpreter reports
-`Invalid -W option ignored: invalid module name: 'torch_tpu.exceptions'` on
-every subsequent Python invocation in that environment.
+`Invalid -W option ignored: invalid module name:
+'torch_tpu._internal.exceptions'` on every subsequent Python invocation in that
+environment.
 """
-
 
 class TorchTPUWarning(UserWarning):
   """Base class for all warnings emitted by TorchTPU.
