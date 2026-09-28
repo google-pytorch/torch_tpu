@@ -103,11 +103,13 @@ class TpuDeviceModuleTest(
     self.assertEqual(iface.get_multi_processor_count("tpu"), 1)
 
   def test_get_compute_capability(self):
-    capability = self.device_module.get_compute_capability()
-    self.assertIsInstance(capability, str)
-
-    iface_cap = get_interface_for_device("tpu").get_compute_capability("tpu")
-    self.assertIsInstance(iface_cap, str)
+    """Verifies TpuDeviceInterface implements get_compute_capability and not exposed on torch.tpu."""
+    iface = get_interface_for_device("tpu")
+    self.assertFalse(hasattr(self.device_module, "get_compute_capability"))
+    self.assertIsInstance(iface.get_compute_capability(), str)
+    self.assertIsInstance(iface.get_compute_capability("tpu"), str)
+    self.assertEqual(iface.get_compute_capability(), "")
+    self.assertEqual(iface.get_compute_capability("tpu"), "")
 
   def test_is_triton_capable(self):
     """Verifies TpuDeviceInterface implements is_triton_capable and not exposed on torch.tpu."""

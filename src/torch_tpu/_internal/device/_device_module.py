@@ -848,10 +848,22 @@ class TpuDeviceModule(_DeviceModule):
     )
 
   @classmethod
-  def get_compute_capability(
+  def _get_compute_capability(
       cls,
       device: int | str | torch.device | None = None,
   ) -> str:
+    """Returns the compute capability for the TPU device.
+
+    TPUs do not have a CUDA-style compute capability version, so this returns
+    an empty string to satisfy TorchDynamo's DeviceInterface contract.
+
+    Args:
+      device: Optional device identifier (unused, present for API
+        compatibility).
+
+    Returns:
+      An empty string.
+    """
     del device  # Unused.
     return ""
 
@@ -920,6 +932,7 @@ class TpuDeviceInterface(TpuDeviceModule, DeviceInterface):
   """Device interface implementation for TPU devices in TorchDynamo."""
 
   exchange_device = TpuDeviceModule._exchange_device
+  get_compute_capability = TpuDeviceModule._get_compute_capability
   get_multi_processor_count = TpuDeviceModule._get_multi_processor_count
   is_gpu = TpuDeviceModule._is_gpu
   is_triton_capable = TpuDeviceModule._is_triton_capable
