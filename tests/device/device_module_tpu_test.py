@@ -96,12 +96,11 @@ class TpuDeviceModuleTest(
     self.assertGreaterEqual(iface_props.multi_processor_count, 1)
 
   def test_get_multi_processor_count(self):
-    self.assertEqual(self.device_module.get_multi_processor_count(), 1)
-    self.assertEqual(self.device_module.get_multi_processor_count("tpu"), 1)
-
+    """Verifies TpuDeviceInterface implements get_multi_processor_count and not exposed on torch.tpu."""
     iface = get_interface_for_device("tpu")
-    self.assertEqual(iface.get_multi_processor_count("tpu"), 1)
+    self.assertFalse(hasattr(self.device_module, "get_multi_processor_count"))
     self.assertEqual(iface.get_multi_processor_count(), 1)
+    self.assertEqual(iface.get_multi_processor_count("tpu"), 1)
 
   def test_get_compute_capability(self):
     capability = self.device_module.get_compute_capability()

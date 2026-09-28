@@ -489,7 +489,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
     return False
 
   @classmethod
-  def get_multi_processor_count(cls, device: torch.types.Device = None) -> int:
+  def _get_multi_processor_count(cls, device: torch.types.Device = None) -> int:
     """Returns the number of compute units for the device."""
     get_props = getattr(cls, "get_device_properties", None)
     if get_props is not None:
@@ -920,6 +920,7 @@ class TpuDeviceInterface(TpuDeviceModule, DeviceInterface):
   """Device interface implementation for TPU devices in TorchDynamo."""
 
   exchange_device = TpuDeviceModule._exchange_device
+  get_multi_processor_count = TpuDeviceModule._get_multi_processor_count
   is_gpu = TpuDeviceModule._is_gpu
   is_triton_capable = TpuDeviceModule._is_triton_capable
   maybe_exchange_device = TpuDeviceModule._maybe_exchange_device
