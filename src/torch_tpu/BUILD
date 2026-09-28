@@ -41,6 +41,15 @@ license(
 
 exports_files(["LICENSE"])
 
+# Parsed by custom_linter's golden test.
+exports_files(
+    [
+        "custom_lint_rules.METADATA",
+        "presubmit.METADATA",
+    ],
+    visibility = ["//ci/tools/custom_linter:__pkg__"],
+)
+
 py_dist_info(
     name = "torch_tpu_dist_info",
     package_name = "torch_tpu",

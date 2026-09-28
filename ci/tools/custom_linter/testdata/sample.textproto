@@ -1,0 +1,65 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Sample rules for custom_linter's CLI tests.
+# proto-file: devtools/metadata/metadata.proto
+# proto-message: MetaData
+
+presubmit {
+  path_regexp: ".*\\.py"
+  path_expression_exclusion: "tests/..."
+
+  check_contents {
+    base {
+      id: "CheckNoPrint"
+      disable_tags: "ROLLBACK_OF"
+    }
+    failure_status: WARNING
+    failure_message: "Use logging instead of print()."
+    prohibited_regexp: "\\bprint\\("
+    suppression_regexp: "\\bPRINT_OK=.+"
+    check_delta_only: true
+  }
+}
+
+presubmit {
+  path_regexp: ".*\\.(cc|h)"
+
+  check_contents {
+    base {
+      id: "CheckLicense"
+    }
+    failure_message: "Missing license header."
+    required_regexp: "Copyright \\d{4}"
+    match_entire_file: true
+  }
+
+  check_contents {
+    base {
+      id: "CheckYear"
+    }
+    # Only for existing files: new files may carry any year.
+    operation: EDIT
+    check_delta_only: true
+    failure_message: "Do not update the copyright year."
+    prohibited_regexp: "Copyright \\d{4}"
+  }
+
+  check_description {
+    base {
+      id: "CheckDescription"
+    }
+    required_regexp: "BUG="
+  }
+}
