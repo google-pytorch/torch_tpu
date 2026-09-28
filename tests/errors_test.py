@@ -616,6 +616,38 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
           grad_input=grad_input,
       )
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="bfloat16",
+          dtype=torch.bfloat16,
+          gpu_dtype="BFloat16",
+          tpu_dtype="bfloat16",
+      ),
+      dict(
+          testcase_name="float16",
+          dtype=torch.float16,
+          gpu_dtype="Half",
+          tpu_dtype="float16",
+      ),
+  )
+  def test_ctc_loss_reduced_precision_unsupported(
+      self, dtype: torch.dtype, gpu_dtype: str, tpu_dtype: str
+  ):
+    log_probs = torch.randn(
+        2, 3, 4, device=et.device(), dtype=torch.float32
+    ).to(dtype)
+    targets = torch.randint(1, 4, (3, 2), dtype=torch.int32, device=et.device())
+    input_lengths = [2, 2, 2]
+    target_lengths = [2, 2, 2]
+    with et.assert_raises_message(
+        NotImplementedError,
+        gpu=f""""ctc_loss_cuda" not implemented for '{gpu_dtype}'""",
+        tpu=f"""ctc_loss(): not implemented for {tpu_dtype}""",
+    ):
+      torch.nn.functional.ctc_loss(
+          log_probs, targets, input_lengths, target_lengths
+      )
+
   def test_ctc_loss_log_probs_3d(self):
     log_probs = torch.randn(2, 3, device=et.device())
     targets = torch.randint(1, 3, (2, 3), dtype=torch.int32, device=et.device())

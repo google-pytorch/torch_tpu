@@ -39,6 +39,7 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
+#include "csrc/common/to_string.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/binary.h"
@@ -61,10 +62,18 @@
 #include "torch/csrc/autograd/custom_function.h"
 #include "torch/csrc/autograd/function_hook.h"
 #include "torch/headeronly/core/DeviceType.h"
+#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 
 namespace {
+
+void ValidateLogProbsDtype(const at::Tensor& log_probs) {
+  const c10::ScalarType dtype = log_probs.scalar_type();
+  TT_CHECK_THROW(dtype == at::kFloat || dtype == at::kDouble,
+                 error::kPythonNotImplementedError)
+      << "not implemented for " << ToString(dtype);
+}
 
 // Whether to zero infinite losses and gradients. If kYes, infinite
 // losses/gradients are zeroed out.
@@ -1438,6 +1447,7 @@ std::tuple<at::Tensor, at::Tensor> AtenCtcLoss(const at::Tensor& log_probs,
              IgnoreInCacheKey(blank, "delegates to AtenCtcLossTensor"),
              IgnoreInCacheKey(zero_infinity, "delegates to AtenCtcLossTensor")),
             {
+              ValidateLogProbsDtype(log_probs);
               at::Tensor input_lengths_tensor =
                   at::tensor(input_lengths, at::kLong).to(log_probs.device());
               at::Tensor target_lengths_tensor =
@@ -1456,6 +1466,7 @@ std::tuple<at::Tensor, at::Tensor> AtenCtcLossTensor(
       OpName::kCtcLossTensor, param_keys,
       (log_probs, targets, input_lengths, target_lengths, blank, zero_infinity),
       {
+        ValidateLogProbsDtype(log_probs);
         TT_CHECK_THROW(log_probs.dim() == 3, error::kInvalidArgument)
             << "expected log_probs to be 3-D, got " << log_probs.dim() << "-D";
         TT_CHECK_THROW(targets.dim() == 1 || targets.dim() == 2,
@@ -1553,6 +1564,7 @@ at::Tensor AtenCtcLossAutograd::forward(torch::autograd::AutogradContext* ctx,
        input_lengths_tensor, target_lengths_tensor, blank, reduction,
        zero_infinity),
       {
+        ValidateLogProbsDtype(log_probs);
         TT_ASSIGN_OR_THROW(
             auto results,
             CtcLossForwardInternal(log_probs, targets, input_lengths_tensor,
@@ -1624,6 +1636,7 @@ at::Tensor AtenCtcLossTensorAutograd::forward(
       (IgnoreInCacheKey(ctx, "autograd context"), log_probs, targets,
        input_lengths, target_lengths, blank, reduction, zero_infinity),
       {
+        ValidateLogProbsDtype(log_probs);
         TT_ASSIGN_OR_THROW(
             auto results,
             CtcLossForwardInternal(log_probs, targets, input_lengths,
@@ -1716,6 +1729,7 @@ at::Tensor AtenCtcLossPublicTensor(const at::Tensor& log_probs,
             (log_probs, targets, input_lengths, target_lengths, blank,
              reduction, zero_infinity),
             {
+              ValidateLogProbsDtype(log_probs);
               TT_ASSIGN_OR_THROW(
                   at::Tensor loss,
                   CtcLossPublicInternal(log_probs, targets, input_lengths,
@@ -1734,6 +1748,7 @@ at::Tensor AtenCtcLossPublic(const at::Tensor& log_probs,
             (log_probs, targets, input_lengths, target_lengths, blank,
              reduction, zero_infinity),
             {
+              ValidateLogProbsDtype(log_probs);
               TT_ASSIGN_OR_THROW(int64_t max_target_len,
                                  GetMaxTargetLength(targets, target_lengths));
               at::Tensor input_lengths_tensor =
@@ -1766,6 +1781,7 @@ at::Tensor AtenCtcLossBackward(
              IgnoreInCacheKey(zero_infinity,
                               "delegates to AtenCtcLossBackwardTensor")),
             {
+              ValidateLogProbsDtype(log_probs);
               at::Tensor input_lengths_tensor =
                   at::tensor(input_lengths, at::kLong).to(log_probs.device());
               at::Tensor target_lengths_tensor =
@@ -1787,6 +1803,7 @@ at::Tensor AtenCtcLossBackwardTensor(
       (grad_out, log_probs, targets, input_lengths, target_lengths,
        neg_log_likelihood, log_alpha, blank, zero_infinity),
       {
+        ValidateLogProbsDtype(log_probs);
         const int64_t n = log_probs.size(1);
 
         TT_CHECK_THROW(log_probs.dim() == 3, error::kInvalidArgument)

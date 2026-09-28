@@ -1659,8 +1659,7 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_ctc_loss(self):
     self.do_test_op(
         "nn.functional.ctc_loss",
-        # TODO(b/557286629): support data sampling for other dtypes than
-        # full-precision floating-point dtypes.
+        # TODO(b/557286629): support data sampling for integral dtypes.
         exclude_dtypes={
             "cpu": (
                 INTEGRAL_DTYPES
@@ -1670,7 +1669,6 @@ class TestOps(op_testing.OpInfoTestBase):
             "gpu": (
                 INTEGRAL_DTYPES
                 + COMPLEX_DTYPES
-                + (torch.bfloat16, torch.float16)
                 # PyTorch's native CUDA kernel (LossCTC.cu) dynamic shared
                 # memory allocation per thread block exceeds hardware limits
                 # for float64 on long target sequence lengths, leading to
