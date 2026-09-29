@@ -1639,6 +1639,58 @@ def _define_py_wheel_test_site_packages(name):
         tags = ["no-ide"],
     )
 
+def _define_ipynb_filegroup(name):
+    """Defines filegroups for all Jupyter notebooks in the current package and subpackages.
+
+    The filegroups created are:
+    - "all_ipynb_files": All Jupyter notebook files in the current package.
+    - "all_ipynb_files_recursive": All Jupyter notebook files in the current package and
+      subpackages recursively.
+
+    Args:
+        name: The name of the filegroup. It has to be "all_ipynb_files_recursive"
+            to collect files from subpackages recursively.
+    """
+    if name != "all_ipynb_files_recursive":
+        fail("The name must be 'all_ipynb_files_recursive' to collect files recursively.")
+    native.filegroup(
+        name = "all_ipynb_files",
+        srcs = native.glob(["**/*.ipynb"]),
+        visibility = ["//:__subpackages__"],
+        # See the comment on no-ide above.
+        tags = ["no-ide"],
+    )
+    native.filegroup(
+        name = name,
+        srcs = [":all_ipynb_files"] + _get_subpackage_targets_named(
+            name = name,
+        ),
+        visibility = ["//:__subpackages__"],
+        # See the comment on no-ide above.
+        tags = ["no-ide"],
+    )
+
+def _define_doc_filegroup(name):
+    """Defines filegroups for all Markdown and Shell files in the current package and subpackages."""
+    if name != "all_doc_files_recursive":
+        fail("The name must be 'all_doc_files_recursive' to collect files recursively.")
+    native.filegroup(
+        name = "all_doc_files",
+        srcs = native.glob(["**/*.md", "**/*.sh"]),
+        visibility = ["//:__subpackages__"],
+        # See the comment on no-ide above.
+        tags = ["no-ide"],
+    )
+    native.filegroup(
+        name = name,
+        srcs = [":all_doc_files"] + _get_subpackage_targets_named(
+            name = name,
+        ),
+        visibility = ["//:__subpackages__"],
+        # See the comment on no-ide above.
+        tags = ["no-ide"],
+    )
+
 # buildifier: disable=unnamed-macro
 def torch_tpu_package_end():
     """Marks the end of a standard package for torch_tpu.
@@ -1655,6 +1707,8 @@ def torch_tpu_package_end():
 
     _define_cpp_filegroup(name = "all_cpp_files_recursive")
     _define_py_filegroup(name = "all_py_files_recursive")
+    _define_ipynb_filegroup(name = "all_ipynb_files_recursive")
+    _define_doc_filegroup(name = "all_doc_files_recursive")
     _define_py_wheel_test_site_packages(
         name = "wheel_test_site_packages_recursive",
     )
