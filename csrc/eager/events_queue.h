@@ -25,6 +25,8 @@
 #include "absl/base/nullability.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/time/clock.h"
+#include "absl/time/time.h"
 #include "c10/core/Device.h"
 #include "c10/core/Stream.h"
 #include "csrc/common/cache_key.h"
@@ -88,7 +90,8 @@ enum class MaterializationMode { kFullGraph, kSplitGraph };
 class EventSnapshot {
  public:
   explicit EventSnapshot(xla::Future<void> future)
-      : future_(std::move(future)) {}
+      : future_(std::move(future)),
+        completion_time_(future_.Map([] { return absl::Now(); })) {}
 
   static xla::Future<std::shared_ptr<EventSnapshot>> Record(
       c10::DeviceIndex device_index, c10::StreamId stream_id,
@@ -102,6 +105,11 @@ class EventSnapshot {
   // Query whether the event snapshot has completed.
   absl::StatusOr<bool> Query() const;
 
+  // Returns the milliseconds from the completion of this event snapshot to the
+  // completion of `end`, as observed by the host. Both snapshots must have
+  // completed.
+  absl::StatusOr<double> ElapsedTime(const EventSnapshot& end) const;
+
   // Sets the promise to OkStatus as soon as the event snapshot is complete
   // or fails. The error is not propagated to the promise.
   void OkCallback(xla::Promise<void>&& chain_promise);
@@ -109,6 +117,8 @@ class EventSnapshot {
  private:
   // The future backing the event snapshot.
   xla::Future<void> future_;
+  // Resolves to the host time at which `future_` completed.
+  xla::Future<absl::Time> completion_time_;
 };
 
 // A future that will resolve to an EventSnapshot during the materialization

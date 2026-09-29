@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import concurrent.futures
+import time
 
 from absl.testing import absltest
 import torch
@@ -217,7 +218,7 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
     self.assertEqual(event_device_idx.device, torch.device('tpu'))
 
   def test_event_partially_implemented(self):
-    """Tests that timing/ipc event methods remain unimplemented."""
+    """Tests that ipc event methods remain unimplemented."""
 
     e = torch.tpu.Event()
     expected_msg = (
@@ -225,9 +226,60 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
         ' a feature request describing your use case.'
     )
     with self.assertRaisesWithLiteralMatch(NotImplementedError, expected_msg):
-      e.elapsed_time(e)
-    with self.assertRaisesWithLiteralMatch(NotImplementedError, expected_msg):
       e.ipc_handle()
+
+  def test_event_elapsed_time(self):
+    """Tests that elapsed_time() lies within the host-observed interval."""
+    x = torch.full((2048, 2048), 1 / 2048, device='tpu')
+    (x @ x).to('cpu')
+
+    start = torch.tpu.Event(enable_timing=True)
+    end = torch.tpu.Event(enable_timing=True)
+    host_start = time.time()
+    start.record()
+    y = x
+    for _ in range(10):
+      y = y @ x
+    end.record()
+    end.synchronize()
+    elapsed_ms = start.elapsed_time(end)
+    host_elapsed_ms = (time.time() - host_start) * 1000
+
+    self.assertGreater(elapsed_ms, 0.0)
+    self.assertLessEqual(elapsed_ms, host_elapsed_ms)
+    self.assertEqual(end.elapsed_time(end), 0.0)
+
+  def test_event_elapsed_time_ends_when_work_completes(self):
+    """Tests that the end time is taken when the work completes.
+
+    The host sleeps before it synchronizes, which must not count.
+    """
+    x = torch.ones((8, 8), device='tpu')
+    start = torch.tpu.Event(enable_timing=True)
+    end = torch.tpu.Event(enable_timing=True)
+    # The first round compiles the work; the second one is measured.
+    for _ in range(2):
+      start.record()
+      y = x + x
+      end.record()
+      time.sleep(1.0)
+      end.synchronize()
+
+    self.assertLess(start.elapsed_time(end), 1000.0)
+    utils.assert_close(y.to('cpu'), torch.full((8, 8), 2.0))
+
+  def test_event_elapsed_time_errors(self):
+    """Tests the errors of elapsed_time() for unusable events."""
+    timed = torch.tpu.Event(enable_timing=True)
+    untimed = torch.tpu.Event()
+    timed.record()
+    untimed.record()
+    with self.assertRaisesRegex(ValueError, 'enable_timing=True'):
+      timed.elapsed_time(untimed)
+
+    unrecorded = torch.tpu.Event(enable_timing=True)
+    with self.assertRaisesRegex(ValueError, 'must be recorded'):
+      timed.elapsed_time(unrecorded)
 
   def test_event_records_nonblocking_copy(self):
 
@@ -432,6 +484,26 @@ class TorchStreamsTest(seed_test_utils.RepeatableTest):
     utils.assert_close(
         second_t_cpu, torch.full((size,), 2.0, dtype=torch.float32)
     )
+
+  def test_event_elapsed_time(self):
+    """Tests that elapsed_time() lies within the host-observed interval."""
+    x = torch.full((2048, 2048), 1 / 2048, device='tpu')
+    (x @ x).to('cpu')
+
+    start = torch.Event(device='tpu', enable_timing=True)
+    end = torch.Event(device='tpu', enable_timing=True)
+    host_start = time.time()
+    start.record()
+    y = x
+    for _ in range(10):
+      y = y @ x
+    end.record()
+    end.synchronize()
+    elapsed_ms = start.elapsed_time(end)
+    host_elapsed_ms = (time.time() - host_start) * 1000
+
+    self.assertGreater(elapsed_ms, 0.0)
+    self.assertLessEqual(elapsed_ms, host_elapsed_ms)
 
   def test_async_transfer_on_separate_stream(self):
     """Tests async transfers on a separate stream."""

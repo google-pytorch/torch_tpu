@@ -22,6 +22,8 @@
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/time/clock.h"
+#include "absl/time/time.h"
 #include "absl/types/span.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
@@ -1086,6 +1088,32 @@ TEST_F(EventsQueueTest, NodeMatcherAcrossSmallAndLargeSpans) {
     EXPECT_THAT(traversals[0]->outputs(),
                 testing::ElementsAreArray(expected_outputs));
   }
+}
+
+TEST(EventSnapshotTest, ElapsedTimeMeasuresCompletionTimes) {
+  auto [start_promise, start_future] = xla::MakePromise<void>();
+  auto [end_promise, end_future] = xla::MakePromise<void>();
+  EventSnapshot start(std::move(start_future));
+  EventSnapshot end(std::move(end_future));
+  EXPECT_EQ(start.ElapsedTime(end).status().code(), error::kFailedPrecondition);
+
+  start_promise.Set();
+  absl::SleepFor(absl::Milliseconds(20));
+  EXPECT_EQ(start.ElapsedTime(end).status().code(), error::kFailedPrecondition);
+  end_promise.Set();
+
+  TT_ASSERT_OK_AND_ASSIGN(double elapsed_ms, start.ElapsedTime(end));
+  EXPECT_GE(elapsed_ms, 20.0);
+  TT_ASSERT_OK_AND_ASSIGN(double reverse_ms, end.ElapsedTime(start));
+  EXPECT_EQ(reverse_ms, -elapsed_ms);
+}
+
+TEST(EventSnapshotTest, ElapsedTimeReturnsEventError) {
+  EventSnapshot ok_event{xla::Future<void>(absl::OkStatus())};
+  EventSnapshot failed_event{
+      xla::Future<void>(TT_ERROR(error::kInvalidArgument) << "fake error")};
+  EXPECT_EQ(ok_event.ElapsedTime(failed_event).status().code(),
+            error::kInvalidArgument);
 }
 }  // namespace
 

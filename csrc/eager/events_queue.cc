@@ -41,6 +41,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/synchronization/mutex.h"
+#include "absl/time/time.h"
 #include "absl/types/span.h"
 #include "c10/core/Device.h"
 #include "c10/core/Stream.h"
@@ -1249,6 +1250,17 @@ xla::Future<std::shared_ptr<EventSnapshot>> EventSnapshot::Record(
 absl::Status EventSnapshot::Synchronize() const { return future_.Await(); }
 
 absl::StatusOr<bool> EventSnapshot::Query() const { return future_.IsReady(); }
+
+absl::StatusOr<double> EventSnapshot::ElapsedTime(
+    const EventSnapshot& end) const {
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=c10::Event::elapsedTime() raises its
+                 // own error unless both events have completed.
+      future_.IsReady() && end.future_.IsReady(), error::kFailedPrecondition)
+      << "both events must be completed before calculating elapsed time";
+  TT_ASSIGN_OR_RETURN(absl::Time start_time, completion_time_.Await());
+  TT_ASSIGN_OR_RETURN(absl::Time end_time, end.completion_time_.Await());
+  return absl::ToDoubleMilliseconds(end_time - start_time);
+}
 
 void EventSnapshot::OkCallback(xla::Promise<void>&& chain_promise) {
   future_.OnReady(
