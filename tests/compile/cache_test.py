@@ -26,10 +26,10 @@ isolated subprocesses:
      `multiprocessing` to execute `sub_test_worker_entry`.
 
 2. Worker Stage (`CacheTest` in subprocess):
-   - In each worker subprocess, `sub_test_worker_entry` sets the `--test_mode`
-     flag (e.g., `tier2` or `tier3`), configures cache environment variables,
-     and modifies `sys.argv` so that `absltest.main()` runs only the target
-     `CacheTest` method.
+   - Each worker subprocess starts with the cache environment variables that
+     the parent requested. `sub_test_worker_entry` sets the `--test_mode` flag
+     (e.g., `tier2` or `tier3`) and modifies `sys.argv` so that
+     `absltest.main()` runs only the target `CacheTest` method.
    - When `absltest` runs in the worker subprocess, `ParentCacheTest` skips
      itself because `_TEST_MODE` is now set, while `CacheTest` executes the
      requested test method.
@@ -49,6 +49,7 @@ import enum
 import os
 import pathlib
 import shutil
+import uuid
 
 from absl import flags
 from absl import logging
@@ -225,25 +226,44 @@ class ParentCacheTest(
     if _TEST_MODE.value is not None:
       self.skipTest("Skipping parent test in sub-test mode.")
 
+  def _create_tier2_cache_name(self) -> str:
+    """Returns a tier-2 cache name that no other process uses.
+
+    The tier-2 cache lives in /dev/shm and outlives the test. A shared name
+    such as "default" can already hold the compiled program, and concurrent
+    runs of this test would empty each other's cache.
+    """
+    name = f"compile_cache_test_{uuid.uuid4().hex}"
+    self.addCleanup(
+        shutil.rmtree, get_tier2_cache_dir(name), ignore_errors=True
+    )
+    return name
+
   def test_cache_tier2(self) -> None:
     """Spawns an isolated worker subprocess to run the Tier-2 cache test."""
     self.run_sub_test(
         TestMode.TIER2,
         env_updates={
-            "TORCH_TPU_TIER2_COMPILATION_CACHE": "compile_cache_test_tier2",
+            # Disable PyTorch AOTAutograd cache because it persists TorchTPU executables
+            # under /tmp across runs. A hit there bypasses TorchTPU compilation cache.
+            "TORCHINDUCTOR_AUTOGRAD_CACHE": "0",
+            "TORCH_TPU_TIER2_COMPILATION_CACHE": (
+                self._create_tier2_cache_name()
+            ),
         },
     )
 
-  @absltest.skip(
-      "b/567323733 - Fails if run second: the AOTAutograd cache written by the"
-      " first child skips the TorchTPU cache write."
-  )
   def test_cache_tier3(self) -> None:
     """Spawns an isolated worker subprocess to run the Tier-3 cache test."""
     self.run_sub_test(
         TestMode.TIER3,
         env_updates={
-            "TORCH_TPU_TIER2_COMPILATION_CACHE": "default",
+            # Disable PyTorch AOTAutograd cache because it persists TorchTPU executables
+            # under /tmp across runs. A hit there bypasses TorchTPU compilation cache.
+            "TORCHINDUCTOR_AUTOGRAD_CACHE": "0",
+            "TORCH_TPU_TIER2_COMPILATION_CACHE": (
+                self._create_tier2_cache_name()
+            ),
             "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT": str(
                 self.create_tempdir().full_path
             ),
