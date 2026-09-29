@@ -580,6 +580,40 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertIn("input_ids", kwargs)
     self.assertIn("pixel_values", kwargs)
 
+  def test_transformers_clip_input_shape_bounded_by_max_seq_len(self):
+    module_spec = self.module_registry.get_module_spec(
+        "transformers", "openai/clip-vit-base-patch16", load_weights=False
+    )
+    model = module_spec.module_factory()
+    _, kwargs = module_spec.sample_inputs_factory((1, 2048))
+    self.assertLessEqual(kwargs["input_ids"].shape[1], 77)
+    model(**kwargs)
+
+  def test_transformers_clipseg_input_shape_bounded_by_max_seq_len(self):
+    module_spec = self.module_registry.get_module_spec(
+        "transformers", "CIDAS/clipseg-rd64-refined", load_weights=False
+    )
+    self.assertEqual(module_spec.modality, module_registry.Modality.MULTIMODAL)
+    model = module_spec.module_factory()
+    _, kwargs = module_spec.sample_inputs_factory((1, 2048))
+    self.assertIn("input_ids", kwargs)
+    self.assertIn("pixel_values", kwargs)
+    self.assertLessEqual(kwargs["input_ids"].shape[1], 77)
+    model(**kwargs)
+
+  def test_transformers_metaclip2_input_shape_bounded_by_max_seq_len(self):
+    module_spec = self.module_registry.get_module_spec(
+        "transformers",
+        "facebook/metaclip-2-worldwide-giant-378",
+        load_weights=False,
+    )
+    self.assertEqual(module_spec.modality, module_registry.Modality.MULTIMODAL)
+    # Skip instantiating giant model to avoid OOM in unit tests
+    _, kwargs = module_spec.sample_inputs_factory((1, 2048))
+    self.assertIn("input_ids", kwargs)
+    self.assertIn("pixel_values", kwargs)
+    self.assertLessEqual(kwargs["input_ids"].shape[1], 77)
+
   def test_transformers_llava_get_module_spec(self):
     module_spec = self.module_registry.get_module_spec(
         "transformers", "liuhaotian/llava-v1.5-7b"
