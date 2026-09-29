@@ -291,8 +291,10 @@ torch_tpu_py_library(
     srcs = ["subprocess_test_utils.py"],
     visibility = ["//:__subpackages__"],
     deps = [
+        "//shims/absl_py/flags",
         "//shims/absl_py/logging",
         "//shims/absl_py/testing:absltest",
+        "//src/torch_tpu/_internal/device:_device_ops_backend",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
     ],
 )

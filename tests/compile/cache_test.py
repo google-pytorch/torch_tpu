@@ -108,12 +108,12 @@ class CacheTest(seed_test_utils.RepeatableTest):
   """
 
   def setUp(self) -> None:
-    super().setUp()
-    tt_testing.reset_eager_state()
     # When running in the parent process, --test_mode is None. Skip these tests
     # so that only ParentCacheTest executes in the parent process.
     if _TEST_MODE.value is None:
       self.skipTest("test_mode flag not provided.")
+    super().setUp()
+    tt_testing.reset_eager_state()
 
   def _run_persistent_cache_logic(self, cache_dir: pathlib.Path | str):
     """Verifies that compilation artifacts persist to disk and hit on reload.
@@ -205,7 +205,7 @@ class CacheTest(seed_test_utils.RepeatableTest):
 
 class ParentCacheTest(
     subprocess_test_utils.SubprocessTestMixin,
-    seed_test_utils.RepeatableTest,
+    seed_test_utils.MultiProcessRepeatableTest,
 ):
   """A parent test that spawns subprocesses for isolation.
 
@@ -234,6 +234,10 @@ class ParentCacheTest(
         },
     )
 
+  @absltest.skip(
+      "b/567323733 - Fails if run second: the AOTAutograd cache written by the"
+      " first child skips the TorchTPU cache write."
+  )
   def test_cache_tier3(self) -> None:
     """Spawns an isolated worker subprocess to run the Tier-3 cache test."""
     self.run_sub_test(

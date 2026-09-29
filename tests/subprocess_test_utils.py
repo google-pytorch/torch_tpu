@@ -26,12 +26,13 @@ This module extracts the common scaffolding shared by those test files:
   `multiprocessing.Queue`, used to redirect child stdout/stderr back to the
   parent process for logging.
 
-* `sub_test_worker_entry` — the generic child-process entry point that applies
-  environment mutations, installs `QueueWriter`, rewrites `sys.argv` to target
-  a single test method, and calls `absltest.main()`.
+* `sub_test_worker_entry` — the generic child-process entry point that
+  installs `QueueWriter`, rewrites `sys.argv` to target a single test method,
+  and calls `absltest.main()`.
 
 * `SubprocessTestMixin` — a mixin providing `run_sub_test()`, which spawns an
-  isolated child process, drains its output queue, and asserts a zero exit code.
+  isolated child process with the requested environment, drains its output
+  queue, and asserts a zero exit code.
 
 Execution Model:
 ----------------
@@ -45,6 +46,10 @@ Execution Model:
    In the worker subprocess (or when manually specifying `--test_mode`), the
    parent test class skips itself because `_TEST_MODE.value` is set, and only
    the target worker test method runs.
+
+The parent process must not initialize the TPU runtime. A TPU device accepts one
+process at a time, so a parent that holds it leaves the child unable to
+initialize.
 
 Examples:
 ---------
@@ -94,9 +99,12 @@ import os
 import queue
 import sys
 from typing import Mapping, Sequence
+from unittest import mock
 
+from absl import flags
 from absl import logging
 from absl.testing import absltest
+from torch_tpu._internal.device import _device_ops_backend
 from torch_tpu._internal.distributed import multiprocessing
 
 
@@ -125,15 +133,13 @@ def sub_test_worker_entry(
     q: queue.Queue[str],
     mode: enum.Enum,
     test_method_template: str,
-    env_updates: Mapping[str, str] | None = None,
-    env_removals: Sequence[str] | None = None,
 ) -> None:
   """Generic child-process entry point for two-stage subprocess tests.
 
-  This function executes inside a newly spawned child process. It applies the
-  requested environment mutations, redirects stdout/stderr to the parent via
-  `q`, and rewrites `sys.argv` so that `absltest.main()` runs only the
-  single test method identified by `test_method_template`.
+  This function executes inside a newly spawned child process. It redirects
+  stdout/stderr to the parent via `q`, and rewrites `sys.argv` so that
+  `absltest.main()` runs only the single test method identified by
+  `test_method_template`.
 
   Args:
     q: A multiprocessing queue for forwarding stdout/stderr to the parent.
@@ -143,15 +149,7 @@ def sub_test_worker_entry(
       `{mode.name}` or `{mode.value}` placeholders. For example:
       `"EnvVarsTest.test_{mode.value}"` or
       `"CacheTest.test_persistent_cache_{mode.value}"`.
-    env_updates: Environment variables to set in the child process.
-    env_removals: Environment variable keys to remove in the child process.
   """
-  if env_removals:
-    for key in env_removals:
-      os.environ.pop(key, None)
-  if env_updates:
-    os.environ.update(env_updates)
-
   qw = QueueWriter(q)
   sys.stdout = qw
   sys.stderr = qw
@@ -161,6 +159,20 @@ def sub_test_worker_entry(
       f"--test_mode={mode.name}",
       test_method_template.format(mode=mode),
   ]
+  # Flags must be parsed from the rewritten argv exactly once, but whether that
+  # happens depends on the context:
+  #
+  # In OSS testing, flags are still unparsed at this point. `absltest.main()`
+  # below will invoke `app.run()`, which parses the rewritten argv. Avoid
+  # parsing argv here to prevent duplicates in multi-value flags.
+  #
+  # In Google-internal testing, this function already runs inside `app.run()`,
+  # which parsed the argv inherited from the parent. Inside `app.run()`,
+  # `absltest.main()` only strips flags from argv and does not parse them.
+  # Without the re-parse below, flags passed to the child will be silently
+  # dropped, causing the worker tests to skip.
+  if flags.FLAGS.is_parsed():
+    flags.FLAGS(sys.argv)
 
   absltest.main()
 
@@ -179,7 +191,7 @@ class SubprocessTestMixin:
 
       class ParentCacheTest(
           subprocess_test_utils.SubprocessTestMixin,
-          seed_test_utils.RepeatableTest,
+          seed_test_utils.MultiProcessRepeatableTest,
       ):
         WORKER_TEST_METHOD_TEMPLATE = (
             "CacheTest.test_persistent_cache_{mode.value}"
@@ -189,10 +201,6 @@ class SubprocessTestMixin:
   # Subclasses must override with a format string, e.g.
   # "CacheTest.test_persistent_cache_{mode.value}"
   WORKER_TEST_METHOD_TEMPLATE: str
-
-  def fail(self, msg: str) -> None:
-    # Provided by the concrete test class.
-    ...  # pragma: no cover
 
   def run_sub_test(
       self,
@@ -207,20 +215,29 @@ class SubprocessTestMixin:
       env_updates: Environment variables to set in the child process.
       env_removals: Environment variable keys to remove in the child process.
     """
+    if _device_ops_backend._is_initialized():  # pylint: disable=protected-access
+      raise AssertionError(
+          "The parent process initialized the TPU runtime, so the child process"
+          " cannot. To fix the test setup, make sure to\n"
+          "  1. Derive the parent test class from seed_test_utils.MultiProcessRepeatableTest,\n"  # pylint: disable=line-too-long
+          "  2. Skip worker tests before calling super().setUp()."
+      )
+
     logging.info("Running subtest %s in subprocess for isolation.", mode.name)
     ctx = multiprocessing.get_context("spawn")
     q = ctx.Queue()
     p = ctx.Process(
         target=sub_test_worker_entry,
-        args=(
-            q,
-            mode,
-            self.WORKER_TEST_METHOD_TEMPLATE,
-            env_updates,
-            env_removals,
-        ),
+        args=(q, mode, self.WORKER_TEST_METHOD_TEMPLATE),
     )
-    p.start()
+    # Apply requested environment mutations before the child process, which
+    # copies `os.environ`, starts. It ensures environment variables take effect
+    # at import time.
+    with mock.patch.dict(os.environ):
+      for key in env_removals or ():
+        os.environ.pop(key, None)
+      os.environ.update(env_updates or {})
+      p.start()
 
     while p.is_alive() or not q.empty():
       try:
@@ -231,5 +248,11 @@ class SubprocessTestMixin:
         continue
 
     p.join()
+    # Prefer raising an exception over providing a fail() stub: if the concrete
+    # test class does not override `fail()`, the default stub on this mixin
+    # would shadow TestCase.fail() in MRO and silently pass the test even
+    # when the child process aborts.
     if p.exitcode != 0:
-      self.fail(f"Subtest {mode.name} failed with exit code {p.exitcode}")
+      raise AssertionError(
+          f"Subtest {mode.name} failed with exit code {p.exitcode}."
+      )

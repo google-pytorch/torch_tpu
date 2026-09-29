@@ -55,9 +55,9 @@ class EnvTest(seed_test_utils.RepeatableTest):
   """Worker test class running individual test cases in isolated subprocesses."""
 
   def setUp(self) -> None:
-    super().setUp()
     if _TEST_MODE.value is None:
       self.skipTest("test_mode flag not provided.")
+    super().setUp()
 
   def test_libtpu_version(self) -> None:
     _loader.load()
@@ -187,7 +187,7 @@ class EnvTest(seed_test_utils.RepeatableTest):
 
 class ParentEnvTest(
     subprocess_test_utils.SubprocessTestMixin,
-    seed_test_utils.RepeatableTest,
+    seed_test_utils.MultiProcessRepeatableTest,
 ):
   """Parent test running isolated worker subprocesses for each test case."""
 
@@ -202,7 +202,12 @@ class ParentEnvTest(
     self.run_sub_test(TestMode.LIBTPU_VERSION)
 
   def test_libtpu_version_not_loaded(self) -> None:
-    self.run_sub_test(TestMode.LIBTPU_VERSION_NOT_LOADED)
+    # `import torch_tpu` loads the backend, which sets the libtpu version,
+    # unless autoload is off.
+    self.run_sub_test(
+        TestMode.LIBTPU_VERSION_NOT_LOADED,
+        env_updates={"TORCH_DEVICE_BACKEND_AUTOLOAD": "0"},
+    )
 
   def test_get_bool_env_once_unset(self) -> None:
     self.run_sub_test(
