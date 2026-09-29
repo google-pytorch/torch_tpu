@@ -1247,7 +1247,9 @@ xla::Future<std::shared_ptr<EventSnapshot>> EventSnapshot::Record(
                              eager_mode);
 }
 
-absl::Status EventSnapshot::Synchronize() const { return future_.Await(); }
+absl::Status EventSnapshot::Synchronize() const {
+  return future_.Await().status();
+}
 
 absl::StatusOr<bool> EventSnapshot::Query() const { return future_.IsReady(); }
 
@@ -1258,15 +1260,15 @@ absl::StatusOr<double> EventSnapshot::ElapsedTime(
       future_.IsReady() && end.future_.IsReady(), error::kFailedPrecondition)
       << "both events must be completed before calculating elapsed time";
   TT_ASSIGN_OR_RETURN(std::chrono::steady_clock::time_point start_time,
-                      completion_time_.Await());
+                      future_.Await());
   TT_ASSIGN_OR_RETURN(std::chrono::steady_clock::time_point end_time,
-                      end.completion_time_.Await());
+                      end.future_.Await());
   return std::chrono::duration<double, std::milli>(end_time - start_time)
       .count();
 }
 
 void EventSnapshot::OkCallback(xla::Promise<void>&& chain_promise) {
-  completion_time_.OnReady(
+  future_.OnReady(
       [chain_promise = std::move(chain_promise)](
           const absl::StatusOr<std::chrono::steady_clock::time_point>&
               completion_time) mutable {

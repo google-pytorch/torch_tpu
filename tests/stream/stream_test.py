@@ -287,6 +287,33 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
       end.synchronize()
       self.assertGreaterEqual(start.elapsed_time(end), 0.0)
 
+  def test_event_elapsed_time_excludes_earlier_pending_work(self):
+    """Tests that work pending when the start event is recorded is not timed.
+
+    Like a CUDA event, the start event marks the point where the copy already
+    running completes, so only the work between the events is measured.
+    """
+    size = 8192 * 8192
+    t_tpu = torch.ones(size, device='tpu', dtype=torch.float32)
+    t_cpu = torch.empty(size, device='cpu', pin_memory=True)
+    x = torch.ones((8, 8), device='tpu')
+    (x + x).to('cpu')
+
+    host_start = time.time()
+    t_cpu.copy_(t_tpu, non_blocking=True)
+    start = torch.tpu.Event(enable_timing=True)
+    end = torch.tpu.Event(enable_timing=True)
+    start.record()
+    y = x + x
+    end.record()
+    torch.accelerator.synchronize()
+    copy_ms = (time.time() - host_start) * 1000
+    elapsed_ms = start.elapsed_time(end)
+
+    self.assertGreaterEqual(elapsed_ms, 0.0)
+    self.assertLess(elapsed_ms, copy_ms / 2)
+    utils.assert_close(y.to('cpu'), torch.full((8, 8), 2.0))
+
   def test_event_elapsed_time_errors(self):
     """Tests the errors of elapsed_time() for unusable events."""
     timed = torch.tpu.Event(enable_timing=True)

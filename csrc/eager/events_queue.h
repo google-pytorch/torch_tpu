@@ -89,9 +89,7 @@ enum class MaterializationMode { kFullGraph, kSplitGraph };
 class EventSnapshot {
  public:
   explicit EventSnapshot(xla::Future<void> future)
-      : future_(std::move(future)),
-        completion_time_(
-            future_.Map([] { return std::chrono::steady_clock::now(); })) {}
+      : future_(future.Map([] { return std::chrono::steady_clock::now(); })) {}
 
   static xla::Future<std::shared_ptr<EventSnapshot>> Record(
       c10::DeviceIndex device_index, c10::StreamId stream_id,
@@ -115,12 +113,10 @@ class EventSnapshot {
   void OkCallback(xla::Promise<void>&& chain_promise);
 
  private:
-  // The future backing the event snapshot.
-  xla::Future<void> future_;
-  // Resolves to the host time at which `future_` completed. Callbacks that
-  // release later snapshots wait on this rather than on `future_`, so a
-  // snapshot is stamped before any snapshot depending on it can complete.
-  xla::Future<std::chrono::steady_clock::time_point> completion_time_;
+  // The future backing the event snapshot. It resolves to the host time at
+  // which the snapshot completed, so anything waiting on it, such as the
+  // callback releasing the next snapshot, runs after the stamp exists.
+  xla::Future<std::chrono::steady_clock::time_point> future_;
 };
 
 // A future that will resolve to an EventSnapshot during the materialization
