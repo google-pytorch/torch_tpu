@@ -48,6 +48,7 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
 #include "csrc/eager/device_buffer.h"
+#include "csrc/eager/events_queue.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/internal/mosaic/op_builders.h"
@@ -641,6 +642,21 @@ CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
     TT_ASSIGN_OR_RETURN(results, dispatch());
   }
 
+  // If LSE or dropout return tensors are necessary, construct them **before**
+  // calling ContiguousToView. This ensures that if ContiguousToView
+  // materializes the stream, the result DeviceBufferRefs are not dropped.
+  // TODO(bawilson): this is clunky. A better way is to only do background
+  // materializations after returning from this function, immediately before
+  // returning to Python, so that the Tensor state has stabilized.
+  size_t res_idx = 1;
+  at::Tensor lse_tensor =
+      return_lse ? MakeTensor(std::move(results[res_idx++]))
+                 : at::empty(lse_dims, query.options().dtype(at::kFloat));
+  at::Tensor philox_seed =
+      has_dropout ? MakeTensor(std::move(results[res_idx++])) : at::Tensor();
+  at::Tensor philox_offset =
+      has_dropout ? MakeTensor(std::move(results[res_idx++])) : at::Tensor();
+
   // We return a view with dense strides that preserves the layout permutation
   // of the query. This ensures subsequent view operations (e.g., merging heads)
   // do not crash due to unexpected non-contiguity, while avoiding the memory
@@ -652,15 +668,6 @@ CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
   Strides dense_strides = DenseStrides(query.strides(), out_dims);
   TT_ASSIGN_OR_RETURN(at::Tensor strided_result,
                       ContiguousToView(results[0], dense_strides, 0));
-
-  size_t res_idx = 1;
-  at::Tensor lse_tensor =
-      return_lse ? MakeTensor(std::move(results[res_idx++]))
-                 : at::empty(lse_dims, query.options().dtype(at::kFloat));
-  at::Tensor philox_seed =
-      has_dropout ? MakeTensor(std::move(results[res_idx++])) : at::Tensor();
-  at::Tensor philox_offset =
-      has_dropout ? MakeTensor(std::move(results[res_idx++])) : at::Tensor();
 
   return std::make_tuple(std::move(strided_result), std::move(lse_tensor),
                          std::move(philox_seed), std::move(philox_offset));
@@ -887,12 +894,26 @@ CreateFlashAttentionBackwardKernel(
            .out_dims_list = {query.sizes(), key.sizes(), value.sizes()},
            .op_param_cache_keys = std::move(param_keys)})));
 
+  // Artificially create a simulated DataPtr to prevent the result node from
+  // being flushed during the first or second ContiguousToView if there is an
+  // early materialization.
+  // TODO(bawilson): this is clunky. A better way is to only do background
+  // materializations after returning from this function, immediately before
+  // returning to Python, so that the Tensor state has stabilized.
+  RecordNewDataPtrCreated(results[0]);
+
   TT_ASSIGN_OR_RETURN(
       at::Tensor strided_grad_query,
       ContiguousToView(results[0], query.strides(), query.storage_offset()));
   TT_ASSIGN_OR_RETURN(
       at::Tensor strided_grad_key,
       ContiguousToView(results[1], key.strides(), key.storage_offset()));
+
+  // It's okay if the materialization happens during the third ContiguousToView;
+  // all other necessary tensors have already been created, so nothing can be
+  // invalidated.
+  RecordDataPtrDestroyed(results[0]);
+
   TT_ASSIGN_OR_RETURN(
       at::Tensor strided_grad_value,
       ContiguousToView(results[2], value.strides(), value.storage_offset()));
