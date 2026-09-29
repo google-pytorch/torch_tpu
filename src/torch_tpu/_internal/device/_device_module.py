@@ -548,8 +548,15 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
     return 1
 
   @classmethod
+  @experimental(
+      "is_initialized() is experimental and subject to change without notice."
+  )
   def is_initialized(cls) -> bool:  # This is in torch/cuda/__init__.py.
-    """Returns whether PyTorch's TPU state has been initialized."""
+    """Returns whether PyTorch's TPU state has been initialized.
+
+    .. warning::
+        This API is experimental and subject to change in future releases.
+    """
     return _device_ops_backend._is_initialized()  # pylint: disable=protected-access
 
   @classmethod
@@ -589,8 +596,19 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
     _device_ops_backend.manual_seed(seed)
 
   @classmethod
+  @experimental(
+      "manual_seed_all() is experimental and may change or be removed without"
+      " notice."
+  )
   def manual_seed_all(cls, seed: int) -> None:
-    """Sets the seed for generating random numbers on all devices."""
+    """Sets the seed for generating random numbers on all devices.
+
+    .. warning::
+        This API is experimental and subject to change in future releases.
+
+    Args:
+      seed: The desired seed.
+    """
     _device_ops_backend.manual_seed_all(seed)
 
   @classmethod
@@ -614,16 +632,44 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
     return _device_ops_backend._get_local_device_attributes()  # pylint: disable=protected-access
 
   @classmethod
+  @experimental(
+      "get_rng_state() is experimental and subject to change without notice."
+  )
   def get_rng_state(
       cls, device: int | str | torch.device = "tpu"
   ) -> torch.Tensor:
+    """Returns the random number generator state of the specified TPU device.
+
+    .. warning::
+        This API is experimental and subject to change in future releases.
+
+    Args:
+      device: The device to return the RNG state of. Can be an int (device
+        index), "tpu", or a `torch.device("tpu")` object.
+
+    Returns:
+      A `torch.Tensor` representing the RNG state of the default generator.
+    """
     _rng_validate_device_index(device, cls.current_device())
     return _device_ops_backend.get_rng_state(-1)
 
   @classmethod
+  @experimental(
+      "set_rng_state() is experimental and subject to change without notice."
+  )
   def set_rng_state(
       cls, new_state: torch.Tensor, device: int | str | torch.device = "tpu"
   ) -> None:
+    """Sets the random number generator state of the specified TPU device.
+
+    .. warning::
+        This API is experimental and subject to change in future releases.
+
+    Args:
+      new_state: A `torch.Tensor` containing the desired RNG state.
+      device: The device to set the RNG state on. Can be an int (device index),
+        "tpu", or a `torch.device("tpu")` object.
+    """
     _rng_validate_device_index(device, cls.current_device())
     _device_ops_backend.set_rng_state(new_state, -1)
 
@@ -839,9 +885,15 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
       _device_ops_backend._shutdown_runtime()  # pylint: disable=protected-access
 
 
+@experimental(
+    "_TpuDeviceProperties is experimental and subject to change without notice."
+)
 @dataclasses.dataclass(frozen=True)
 class _TpuDeviceProperties:
   """Static TPU device properties, analog of _CudaDeviceProperties.
+
+  .. warning::
+      This API is experimental and subject to change in future releases.
 
   ``total_memory`` is HBM visible to a single device, in bytes. Peak FLOP/s
   is intentionally absent: it is a dtype-dependent published constant, not a
@@ -852,6 +904,13 @@ class _TpuDeviceProperties:
   total_memory: int
   multi_processor_count: int = 1
 
+  __tt_api_stages__ = {
+      "multi_processor_count": annotations.ApiStageInfo(
+          stage=annotations.Stage.EXPERIMENTAL,
+          reason="multi_processor_count is experimental and subject to change.",
+      ),
+  }
+
 
 class TpuDeviceModule(_DeviceModule):
   """Device module implementation for TPU devices."""
@@ -859,18 +918,36 @@ class TpuDeviceModule(_DeviceModule):
   _device_type: Final[str] = "tpu"  # pyrefly: ignore[bad-override]
 
   @classmethod
+  @experimental(
+      "get_device_name() is experimental and subject to change without notice."
+  )
   def get_device_name(
       cls, device: int | str | torch.device | None = None
   ) -> str:
-    """Human-readable name of the attached TPU, e.g. "TPU v7"."""
+    """Human-readable name of the attached TPU, e.g. "TPU v7".
+
+    .. warning::
+        This API is experimental and subject to change in future releases.
+
+    Args:
+      device: Optional device index, string, or torch.device to query properties
+        for.
+    """
     del device  # Unused
     return hardware.get_tpu_device_name()
 
   @classmethod
+  @experimental(
+      "get_device_properties() is experimental and subject to change without"
+      " notice."
+  )
   def get_device_properties(
       cls, device: int | str | torch.device | None = None
   ) -> _TpuDeviceProperties:
     """Static device properties, mirroring torch.cuda.get_device_properties.
+
+    .. warning::
+        This API is experimental and subject to change in future releases.
 
     Args:
       device: Optional device index, string, or torch.device to query properties
