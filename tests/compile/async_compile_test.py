@@ -87,8 +87,6 @@ class StochasticModel(nn.Module):
 class PrematureResolutionError(AssertionError):
   """Raised when an AsyncCompiledArtifact is resolved before the explicit barrier."""
 
-  pass
-
 
 class CompileBarrier:
   """Deterministic synchronization controller for compiler unit tests."""
