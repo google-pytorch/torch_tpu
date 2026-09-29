@@ -269,6 +269,25 @@ SDPA_CONFIGS = (
         is_causal=False,
         attn_bias_type=torch.bfloat16,
     ),
+    # Non-square configs
+    SdpaConfig(
+        q_seq_len=128,
+        kv_seq_len=256,
+        q_num_heads=8,
+        kv_num_heads=8,
+        qk_head_dim=128,
+        v_head_dim=128,
+        is_causal=True,
+    ),
+    SdpaConfig(
+        q_seq_len=256,
+        kv_seq_len=128,
+        q_num_heads=8,
+        kv_num_heads=8,
+        qk_head_dim=128,
+        v_head_dim=128,
+        is_causal=True,
+    ),
 )
 
 

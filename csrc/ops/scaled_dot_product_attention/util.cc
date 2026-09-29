@@ -101,48 +101,83 @@ std::string GetOpString(Operation* op) {
   return op_string;
 }
 
-TypedValue<VectorType> LoadTile(ImplicitLocOpBuilder& b, Value arg) {
-  MemRefType arg_type = cast<MemRefType>(arg.getType());
+namespace {
+
+// Returns the indices for a load / store of the trailing 2D tile of `arg`
+// starting at (row_offset, col_offset).
+SmallVector<Value> TileIndices(ImplicitLocOpBuilder& b, MemRefType arg_type,
+                               int64_t row_offset, int64_t col_offset) {
   // The batch and head dimensions are simply 1 in the current implementation.
   ABSL_CHECK(  // CRASH_OK
       llvm::all_of(arg_type.getShape().drop_back(2),
                    [](int64_t dim) { return dim == 1; }));
-  ArrayRef<int64_t> tile_shape = arg_type.getShape().take_back(2);
-  VectorType tile_type = VectorType::get(tile_shape, arg_type.getElementType());
-
+  const int64_t rank = arg_type.getRank();
   Value i0 = arith::ConstantOp::create(b, b.getIndexAttr(0));
-  SmallVector<Value> indices(arg_type.getRank(), i0);
+  SmallVector<Value> indices(rank, i0);
+  if (row_offset != 0) {
+    indices[rank - 2] =
+        arith::ConstantOp::create(b, b.getIndexAttr(row_offset));
+  }
+  if (col_offset != 0) {
+    indices[rank - 1] =
+        arith::ConstantOp::create(b, b.getIndexAttr(col_offset));
+  }
+  return indices;
+}
+
+}  // namespace
+
+TypedValue<VectorType> LoadTileSlice(ImplicitLocOpBuilder& b, Value arg,
+                                     int64_t row_offset, int64_t num_rows,
+                                     int64_t col_offset, int64_t num_cols) {
+  MemRefType arg_type = cast<MemRefType>(arg.getType());
+  SmallVector<Value> indices = TileIndices(b, arg_type, row_offset, col_offset);
 
   // Newer versions of LibTPU support sub-rank loads, but until we update in
   // OSS we must do it manually.
+  SmallVector<int64_t> full_shape(arg_type.getRank(), 1);
+  full_shape[full_shape.size() - 2] = num_rows;
+  full_shape[full_shape.size() - 1] = num_cols;
   VectorType full_tile_type =
-      VectorType::get(arg_type.getShape(), arg_type.getElementType());
+      VectorType::get(full_shape, arg_type.getElementType());
   Value full_tile = vector::LoadOp::create(b, full_tile_type, arg, indices);
 
+  VectorType tile_type =
+      VectorType::get({num_rows, num_cols}, arg_type.getElementType());
   return vector::ShapeCastOp::create(b, tile_type, full_tile);
 }
 
-void StoreTile(ImplicitLocOpBuilder& b, Value value, Value arg) {
-  MemRefType arg_type = cast<MemRefType>(arg.getType());
+TypedValue<VectorType> LoadTile(ImplicitLocOpBuilder& b, Value arg) {
+  ArrayRef<int64_t> shape = cast<MemRefType>(arg.getType()).getShape();
+  return LoadTileSlice(b, arg, /*row_offset=*/0, shape[shape.size() - 2],
+                       /*col_offset=*/0, shape[shape.size() - 1]);
+}
 
-  // The batch and head dimensions are simply 1 in the current implementation.
-  ABSL_CHECK(  // CRASH_OK
-      llvm::all_of(arg_type.getShape().drop_back(2),
-                   [](int64_t dim) { return dim == 1; }));
-  Value i0 = arith::ConstantOp::create(b, b.getIndexAttr(0));
-  SmallVector<Value> indices(arg_type.getRank(), i0);
+void StoreTileSlice(ImplicitLocOpBuilder& b, Value value, Value arg,
+                    int64_t row_offset, int64_t col_offset) {
+  MemRefType arg_type = cast<MemRefType>(arg.getType());
+  SmallVector<Value> indices = TileIndices(b, arg_type, row_offset, col_offset);
 
   Value converted_value =
       ConvertElementType(b, arg_type.getElementType(), value);
+  ArrayRef<int64_t> value_shape =
+      cast<VectorType>(converted_value.getType()).getShape();
 
   // Newer versions of LibTPU support sub-rank stores, but until we update in
   // OSS we must do it manually.
+  SmallVector<int64_t> full_shape(arg_type.getRank(), 1);
+  full_shape[full_shape.size() - 2] = value_shape[0];
+  full_shape[full_shape.size() - 1] = value_shape[1];
   VectorType full_tile_type =
-      VectorType::get(arg_type.getShape(), arg_type.getElementType());
+      VectorType::get(full_shape, arg_type.getElementType());
   Value full_tile =
       vector::ShapeCastOp::create(b, full_tile_type, converted_value);
 
   vector::StoreOp::create(b, full_tile, arg, indices);
+}
+
+void StoreTile(ImplicitLocOpBuilder& b, Value value, Value arg) {
+  StoreTileSlice(b, value, arg, /*row_offset=*/0, /*col_offset=*/0);
 }
 
 void ZeroTile(ImplicitLocOpBuilder& b, Value arg) {
@@ -165,10 +200,16 @@ void NInfTile(ImplicitLocOpBuilder& b, Value arg) {
   StoreTile(b, ninf_vector, arg);
 }
 
+bool NeedsPadMask(int64_t qt, int64_t kt, int64_t q_seq_len,
+                  int64_t kv_seq_len) {
+  return (q_seq_len % qt) != 0 || (kv_seq_len % kt) != 0;
+}
+
 Value ApplyStructuredMask(ImplicitLocOpBuilder& b, Value sij,
                           Value row_block_idx, Value col_block_idx, int64_t qt,
                           int64_t kt, int64_t q_seq_len, int64_t kv_seq_len,
-                          bool is_causal) {
+                          bool is_causal, int64_t row_offset,
+                          int64_t col_offset) {
   bool mask_q_seq_len = (q_seq_len % qt) != 0;
   bool mask_kv_seq_len = (kv_seq_len % kt) != 0;
 
@@ -177,23 +218,35 @@ Value ApplyStructuredMask(ImplicitLocOpBuilder& b, Value sij,
   }
 
   Type i32 = b.getI32Type();
-  VectorType mask_shape_i32 = VectorType::get({qt, kt}, i32);
+  VectorType mask_shape_i32 = cast<VectorType>(sij.getType()).clone(i32);
 
   Value row_iota = CreateIotaOp(b, mask_shape_i32, 0);
   Value col_iota = CreateIotaOp(b, mask_shape_i32, 1);
 
+  // Global index of the first row / column of this sub-block:
+  //   block_idx * block_size + static offset within the block.
   auto qt_const = arith::ConstantOp::create(b, b.getI32IntegerAttr(qt));
-  Value row_offset = arith::MulIOp::create(b, row_block_idx, qt_const);
-  Value row_offset_vec =
-      vector::BroadcastOp::create(b, mask_shape_i32, row_offset);
+  Value row_start = arith::MulIOp::create(b, row_block_idx, qt_const);
+  if (row_offset != 0) {
+    row_start = arith::AddIOp::create(
+        b, row_start,
+        arith::ConstantOp::create(b, b.getI32IntegerAttr(row_offset)));
+  }
+  Value row_start_vec =
+      vector::BroadcastOp::create(b, mask_shape_i32, row_start);
 
   auto kt_const = arith::ConstantOp::create(b, b.getI32IntegerAttr(kt));
-  Value col_offset = arith::MulIOp::create(b, col_block_idx, kt_const);
-  Value col_offset_vec =
-      vector::BroadcastOp::create(b, mask_shape_i32, col_offset);
+  Value col_start = arith::MulIOp::create(b, col_block_idx, kt_const);
+  if (col_offset != 0) {
+    col_start = arith::AddIOp::create(
+        b, col_start,
+        arith::ConstantOp::create(b, b.getI32IntegerAttr(col_offset)));
+  }
+  Value col_start_vec =
+      vector::BroadcastOp::create(b, mask_shape_i32, col_start);
 
-  Value row_indices = arith::AddIOp::create(b, row_iota, row_offset_vec);
-  Value col_indices = arith::AddIOp::create(b, col_iota, col_offset_vec);
+  Value row_indices = arith::AddIOp::create(b, row_iota, row_start_vec);
+  Value col_indices = arith::AddIOp::create(b, col_iota, col_start_vec);
 
   Value valid_mask = nullptr;
   if (is_causal) {
@@ -225,6 +278,26 @@ Value ApplyStructuredMask(ImplicitLocOpBuilder& b, Value sij,
 
   Value masking_vector = SplatConstant(b, sij.getType(), kLogitsMin);
   return arith::SelectOp::create(b, valid_mask, sij, masking_vector);
+}
+
+Value CreateIntersectsDiagCondition(ImplicitLocOpBuilder& b, Value row_idx,
+                                    Value col_idx, int64_t row_block_size,
+                                    int64_t col_block_size) {
+  // The tile contains a masked element iff its last column index is greater
+  // than its first row index:
+  //   (col_idx + 1) * col_block_size - 1 > row_idx * row_block_size.
+  auto row_size_value =
+      arith::ConstantOp::create(b, b.getI32IntegerAttr(row_block_size));
+  auto col_size_value =
+      arith::ConstantOp::create(b, b.getI32IntegerAttr(col_block_size));
+  auto c1 = arith::ConstantOp::create(b, b.getI32IntegerAttr(1));
+
+  Value col_idx_plus_1 = arith::AddIOp::create(b, col_idx, c1);
+  Value last_col = arith::SubIOp::create(
+      b, arith::MulIOp::create(b, col_idx_plus_1, col_size_value), c1);
+  Value first_row = arith::MulIOp::create(b, row_idx, row_size_value);
+  return arith::CmpIOp::create(b, arith::CmpIPredicate::sgt, last_col,
+                               first_row);
 }
 
 Value ReduceBroadcastLane(ImplicitLocOpBuilder& b, Value input,
@@ -440,9 +513,12 @@ Value BuildDropoutKeepMask(ImplicitLocOpBuilder& b,
                            const FlashAttnConfig& config, int64_t qt,
                            int64_t kt, Value batch_idx, Value head_idx,
                            Value row_block_idx, Value col_block_idx,
-                           Value seed_smem) {
+                           Value seed_smem, int64_t row_offset,
+                           int64_t col_offset, int64_t rows, int64_t cols) {
+  const int64_t mask_rows = rows > 0 ? rows : qt;
+  const int64_t mask_cols = cols > 0 ? cols : kt;
   Type i32 = b.getI32Type();
-  VectorType vec_i32 = VectorType::get({qt, kt}, i32);
+  VectorType vec_i32 = VectorType::get({mask_rows, mask_cols}, i32);
 
   // Builds an i32 constant shaped like `type`. `fmix32` below runs on both a
   // scalar and a tile, and `arith` requires operands to match, so the constants
@@ -492,14 +568,21 @@ Value BuildDropoutKeepMask(ImplicitLocOpBuilder& b,
   }
   Value stream_vec = vector::BroadcastOp::create(b, vec_i32, stream);
 
-  // 3. Absolute (q, kv) coordinates: grid block index * tile size, plus the
-  // within-tile iota.
-  Value q_off = vector::BroadcastOp::create(
-      b, vec_i32,
-      arith::MulIOp::create(b, row_block_idx, constant_like(i32, qt)));
-  Value kv_off = vector::BroadcastOp::create(
-      b, vec_i32,
-      arith::MulIOp::create(b, col_block_idx, constant_like(i32, kt)));
+  // 3. Absolute (q, kv) coordinates: grid block index * tile size + static
+  // sub-block offset, plus the within-tile iota.
+  Value q_start =
+      arith::MulIOp::create(b, row_block_idx, constant_like(i32, qt));
+  if (row_offset != 0) {
+    q_start = arith::AddIOp::create(b, q_start, constant_like(i32, row_offset));
+  }
+  Value q_off = vector::BroadcastOp::create(b, vec_i32, q_start);
+  Value kv_start =
+      arith::MulIOp::create(b, col_block_idx, constant_like(i32, kt));
+  if (col_offset != 0) {
+    kv_start =
+        arith::AddIOp::create(b, kv_start, constant_like(i32, col_offset));
+  }
+  Value kv_off = vector::BroadcastOp::create(b, vec_i32, kv_start);
   Value q_abs = arith::AddIOp::create(b, CreateIotaOp(b, vec_i32, 0), q_off);
   Value kv_abs = arith::AddIOp::create(b, CreateIotaOp(b, vec_i32, 1), kv_off);
 

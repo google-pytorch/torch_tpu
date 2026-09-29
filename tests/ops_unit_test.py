@@ -15038,6 +15038,17 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
       cpu_results["q_grad"] = cpu_results["q_grad"][..., 1:, :]
       tpu_results["q_grad"] = tpu_results["q_grad"][..., 1:, :]
 
+      # KV tokens beyond q_seq_len are completely masked out in causal
+      # attention, so their gradients are zero.
+      if config.kv_seq_len > config.q_seq_len:
+        for key in ("k_grad", "v_grad"):
+          with self.subTest(f"causal_{key}_masked_tokens_grad_is_zero"):
+            self.assertTrue(
+                (tpu_results[key][..., config.q_seq_len :, :] == 0.0).all()
+            )
+          cpu_results[key] = cpu_results[key][..., : config.q_seq_len, :]
+          tpu_results[key] = tpu_results[key][..., : config.q_seq_len, :]
+
     def check_sim(cpu, tpu, key):
       # TODO(willfroom): We should also check the min similarity but currently
       # the flash implementation has a few outliers that we need to investigate

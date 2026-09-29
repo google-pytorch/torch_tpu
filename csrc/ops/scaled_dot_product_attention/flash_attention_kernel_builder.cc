@@ -129,19 +129,42 @@ int64_t GetInitialTileSize(int64_t seq_len) {
 }
 
 int64_t EstimateTileVmemBytes(int64_t qt, int64_t kt, int64_t head_dim,
-                              bool is_f32, bool is_backward) {
+                              bool is_f32, bool has_mask, bool is_backward) {
   int64_t elem_size = is_f32 ? 4 : 2;
   // x2 as the inputs / outputs are double buffered.
   int64_t linear_bytes = 2 * (qt * head_dim * (3 * elem_size + 4) +
                               kt * head_dim * (2 * elem_size) + qt * 1024);
-  int64_t quadratic_bytes = 8 * qt * kt;
+  // 4 bytes for float32.
+  int64_t logits_bytes = 4 * qt * kt;
+  int64_t mask_bytes = has_mask ? elem_size * qt * kt : 0;
+  // 2x for intermediate and final result.
+  int64_t quadratic_bytes = 2 * logits_bytes + mask_bytes;
   int64_t total = linear_bytes + quadratic_bytes;
   return is_backward ? 2 * total : total;
 }
 
+// Heuristic to determine the KV compute sub-tile size.
+int64_t GetKvComputeTileSize(int64_t kt) {
+  // Chosen such that the sub-tiles are not too big.
+  int64_t target_kc = 1024;
+  // If the KV tile size is smaller than the target, don't split it.
+  if (kt < target_kc) {
+    return kt;
+  }
+  while (target_kc >= kMinHeuristicTileSize) {
+    if (kt % target_kc == 0) {
+      return target_kc;
+    }
+
+    target_kc -= kMinHeuristicTileSize;
+  }
+
+  return kMinHardwareTileSize;
+}
+
 mlir::torch_tpu::Tiling CreateTiling(
     int64_t q_seq_len, int64_t k_seq_len, int64_t head_dim, bool is_f32,
-    bool is_backward,
+    bool has_mask, bool is_backward,
     std::optional<int64_t> vmem_limit_override = std::nullopt) {
   const int64_t vmem_limit =
       vmem_limit_override.value_or(GetDeviceVmemLimitBytes());
@@ -149,8 +172,8 @@ mlir::torch_tpu::Tiling CreateTiling(
   int64_t qt = GetInitialTileSize(q_seq_len);
   int64_t kt = GetInitialTileSize(k_seq_len);
 
-  while (EstimateTileVmemBytes(qt, kt, head_dim, is_f32, is_backward) >
-             vmem_limit &&
+  while (EstimateTileVmemBytes(qt, kt, head_dim, is_f32, has_mask,
+                               is_backward) > vmem_limit &&
          (qt > kMinHeuristicTileSize || kt > kMinHeuristicTileSize)) {
     if (qt > kt && qt > kMinHeuristicTileSize) {
       qt = std::max(kMinHeuristicTileSize,
@@ -167,6 +190,7 @@ mlir::torch_tpu::Tiling CreateTiling(
   return {
       .qt = qt,
       .kt = kt,
+      .kc = GetKvComputeTileSize(kt),
   };
 }
 
@@ -295,14 +319,15 @@ mlir::MlirOp PadBias(mlir::MlirOp bias, int64_t padded_q_len,
 }
 
 mlir::torch_tpu::Tiling CreateTiling(mlir::MlirOp query, mlir::MlirOp key,
-                                     bool is_backward = false) {
+                                     bool has_mask, bool is_backward = false) {
   auto query_type = GetTensorTypeOrDie(query);
   auto key_type = GetTensorTypeOrDie(key);
   int64_t q_seq_len = query_type.getShape()[query_type.getRank() - 2];
   int64_t k_seq_len = key_type.getShape()[key_type.getRank() - 2];
   int64_t head_dim = query_type.getShape()[query_type.getRank() - 1];
   bool is_f32 = query_type.getElementType().isF32();
-  return CreateTiling(q_seq_len, k_seq_len, head_dim, is_f32, is_backward);
+  return CreateTiling(q_seq_len, k_seq_len, head_dim, is_f32, has_mask,
+                      is_backward);
 }
 
 absl::StatusOr<mlir::torch_tpu::FlashAttnConfig> CreateFlashAttnConfig(
@@ -431,8 +456,9 @@ CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
     std::optional<mlir::MlirOp> attn_bias_mlir =
         inputs.size() == 4 ? std::make_optional(inputs[3]) : std::nullopt;
 
-    const auto tiling =
-        CreateTiling(query_mlir, key_mlir, /*is_backward=*/false);
+    const auto tiling = CreateTiling(query_mlir, key_mlir,
+                                     /*has_mask=*/attn_bias_mlir.has_value(),
+                                     /*is_backward=*/false);
     TT_ASSIGN_OR_RETURN(
         mlir::torch_tpu::FlashAttnConfig config,
         CreateFlashAttnConfig(query_mlir, key_mlir, value_mlir, attn_bias_mlir,
@@ -599,8 +625,9 @@ CreateFlashAttentionBackwardKernel(
     std::optional<mlir::MlirOp> attn_bias_mlir =
         inputs.size() == 7 ? std::make_optional(inputs[6]) : std::nullopt;
 
-    const auto tiling =
-        CreateTiling(query_mlir, key_mlir, /*is_backward=*/true);
+    const auto tiling = CreateTiling(query_mlir, key_mlir,
+                                     /*has_mask=*/attn_bias_mlir.has_value(),
+                                     /*is_backward=*/true);
     TT_ASSIGN_OR_RETURN(
         mlir::torch_tpu::FlashAttnConfig config,
         CreateFlashAttnConfig(query_mlir, key_mlir, value_mlir, attn_bias_mlir,

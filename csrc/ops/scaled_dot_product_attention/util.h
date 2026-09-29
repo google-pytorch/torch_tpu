@@ -54,9 +54,18 @@ KVWindowMaps CreateKVWindowMaps(OpBuilder& builder, func::FuncOp fn,
 
 // Load a 2D tile from the given argument.
 TypedValue<VectorType> LoadTile(ImplicitLocOpBuilder& b, Value arg);
+// Load the [num_rows, num_cols] sub-tile of the given argument starting at
+// (row_offset, col_offset) of its trailing 2D tile.
+TypedValue<VectorType> LoadTileSlice(ImplicitLocOpBuilder& b, Value arg,
+                                     int64_t row_offset, int64_t num_rows,
+                                     int64_t col_offset, int64_t num_cols);
 // Store a 2D tile to the given argument.
 // If the value is not the same type as the argument, it will be converted.
 void StoreTile(ImplicitLocOpBuilder& b, Value value, Value arg);
+// Store a 2D value at (row_offset, col_offset) of the trailing 2D tile of the
+// given argument.
+void StoreTileSlice(ImplicitLocOpBuilder& b, Value value, Value arg,
+                    int64_t row_offset, int64_t col_offset);
 
 // Initialize a 2D tile with zeros.
 void ZeroTile(ImplicitLocOpBuilder& b, Value arg);
@@ -64,13 +73,21 @@ void ZeroTile(ImplicitLocOpBuilder& b, Value arg);
 // Initialize a 2D tile with -inf.
 void NInfTile(ImplicitLocOpBuilder& b, Value arg);
 
+// Whether any sequence boundary masking is required for the given
+// configuration.
+bool NeedsPadMask(int64_t qt, int64_t kt, int64_t q_seq_len,
+                  int64_t kv_seq_len);
+
 // Apply structured masking (causal and/or sequence boundary masking) to `sij`.
-// Only executes vector masking operations on tiles that intersect a mask
-// boundary (e.g. diagonal tiles for causal attention).
+// `sij` is the sub-block of the (row_block_idx, col_block_idx) grid tile that
+// starts at the static (row_offset, col_offset) within the tile; the tile
+// itself is [qt, kt]. Callers should skip calling this on sub-blocks known not
+// to intersect a mask boundary (see CreateIntersectsDiagCondition).
 Value ApplyStructuredMask(ImplicitLocOpBuilder& b, Value sij,
                           Value row_block_idx, Value col_block_idx, int64_t qt,
                           int64_t kt, int64_t q_seq_len, int64_t kv_seq_len,
-                          bool is_causal);
+                          bool is_causal, int64_t row_offset = 0,
+                          int64_t col_offset = 0);
 
 // Reduce the 2D input to a 1D across the lane dimension and then broadcast the
 // results lane dimension to the given size.
@@ -86,6 +103,14 @@ Value ClampLogits(ImplicitLocOpBuilder& b, Value input);
 Value CreateBelowOrOnDiagCondition(ImplicitLocOpBuilder& b, Value row_idx,
                                    Value col_idx, int64_t row_block_size,
                                    int64_t col_block_size);
+
+// Returns an i1 condition indicating whether the tile at (row_idx, col_idx)
+// contains at least one element strictly above the diagonal, i.e. whether a
+// causal mask needs to be applied to it. Tiles strictly below the diagonal
+// need no masking.
+Value CreateIntersectsDiagCondition(ImplicitLocOpBuilder& b, Value row_idx,
+                                    Value col_idx, int64_t row_block_size,
+                                    int64_t col_block_size);
 
 // Create an scf.IfOp where the then block will be executed when
 // row_idx >= col_idx.
@@ -136,7 +161,10 @@ void SetScalarPrefetchAttr(const FlashAttnConfig& config, func::FuncOp fn,
                            OpBuilder& builder);
 
 // Builds a stateless, tile-size-invariant dropout mask of type
-// vector<qt x kt x i1> (true = keep, false = drop).
+// vector<rows x cols x i1> (true = keep, false = drop) for the sub-block of
+// the (row_block_idx, col_block_idx) grid tile that starts at the static
+// (row_offset, col_offset) within the [qt, kt] tile. When `rows` or `cols` are
+// <= 0 they default to `qt` and `kt` respectively.
 //
 // The mask is a pure function of (batch_idx, head_idx, absolute q, absolute
 // kv) and the Philox {seed, offset} in `seed_smem` (memref<4xi32, smem>), so
@@ -149,7 +177,9 @@ Value BuildDropoutKeepMask(ImplicitLocOpBuilder& b,
                            const FlashAttnConfig& config, int64_t qt,
                            int64_t kt, Value batch_idx, Value head_idx,
                            Value row_block_idx, Value col_block_idx,
-                           Value seed_smem);
+                           Value seed_smem, int64_t row_offset = 0,
+                           int64_t col_offset = 0, int64_t rows = 0,
+                           int64_t cols = 0);
 // Get the string representation of an operation.
 std::string GetOpString(Operation* op);
 
