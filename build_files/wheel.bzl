@@ -46,6 +46,7 @@ WHEEL_PY_TARGETS = [
     "//src/torch_tpu/_internal/utils:log_utils",
     "//src/torch_tpu/_internal/utils:tracer_utils",
     "//src/torch_tpu/_internal:env_utils",
+    "//src/torch_tpu/_internal:exceptions",
     "//src/torch_tpu/extras/optimizers:adamw",
     "//src/torch_tpu/extras/optimizers:muon",
     "//src/torch_tpu/extras/optimizers:optim",

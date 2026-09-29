@@ -80,4 +80,9 @@ torch_tpu_py_library(
     srcs = ["env_utils.py"],
 )
 
+torch_tpu_py_library(
+    name = "exceptions",
+    srcs = ["exceptions.py"],
+)
+
 torch_tpu_package_end()

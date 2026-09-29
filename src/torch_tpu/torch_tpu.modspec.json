@@ -12,6 +12,10 @@
     "type": "MODULE"
   },
   {
+    "name": "torch.tpu.exceptions",
+    "type": "MODULE"
+  },
+  {
     "name": "torch.tpu.pallas",
     "type": "MODULE"
   },

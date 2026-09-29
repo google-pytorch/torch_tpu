@@ -127,8 +127,8 @@ torch_tpu_py_library(
     srcs = ["from_local.py"],
     deps = [
         "//shims/torch:pytorch",
-        "//src/torch_tpu:exceptions",
         "//src/torch_tpu/_internal:env",
+        "//src/torch_tpu/_internal:exceptions",
     ],
 )
 

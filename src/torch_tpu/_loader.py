@@ -92,6 +92,14 @@ def _register_public_modules() -> None:
   sys.modules["torch.tpu.distributed.environment"] = distributed_api.environment
   setattr(device_module, "distributed", distributed_api)
 
+  # Expose the public exceptions module under 'torch.tpu.exceptions' in
+  # sys.modules and attach it to the 'torch.tpu' device module for attribute
+  # access.
+  from torch_tpu._internal import exceptions  # pylint: disable=g-import-not-at-top
+
+  sys.modules["torch.tpu.exceptions"] = exceptions
+  setattr(device_module, "exceptions", exceptions)
+
 
 _register_public_modules()
 
@@ -168,7 +176,7 @@ def _warn_if_unoptimized() -> None:
 
   if not env.IS_INTERNAL_TORCH_TPU and not env.TORCH_TPU_IS_OPTIMIZED_BUILD:
     import warnings  # pylint: disable=g-import-not-at-top
-    from torch_tpu import exceptions  # pylint: disable=g-import-not-at-top
+    from torch_tpu._internal import exceptions  # pylint: disable=g-import-not-at-top
 
     warnings.warn(
         "[UNOPTIMIZED BUILD] TorchTPU was compiled in an unoptimized mode."

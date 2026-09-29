@@ -24,8 +24,8 @@ import warnings
 
 from absl.testing import absltest
 from absl.testing import parameterized
+from torch.tpu import exceptions  # pyrefly: ignore[missing-import]
 from torch_tpu import _tcmalloc_check
-from torch_tpu import exceptions
 from tests import seed_test_utils
 
 # The prefix users are told to filter on, via
@@ -100,7 +100,7 @@ class CheckTcmallocTest(seed_test_utils.RepeatableTest):
   def test_user_filter_takes_precedence_over_default_filters(self) -> None:
     with _no_tcmalloc(), warnings.catch_warnings(record=True) as caught:
       warnings.resetwarnings()
-      # Simulates PYTHONWARNINGS="always::torch_tpu.exceptions.TcMallocWarning".
+      # Simulates PYTHONWARNINGS="always::torch.tpu.exceptions.TcMallocWarning".
       warnings.filterwarnings("always", category=exceptions.TcMallocWarning)
       _tcmalloc_check.install_default_filters()
       _tcmalloc_check.check_tcmalloc()

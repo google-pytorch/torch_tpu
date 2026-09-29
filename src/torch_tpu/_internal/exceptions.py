@@ -20,8 +20,7 @@ been imported:
 
   import warnings
 
-  import torch_tpu
-  from torch_tpu import exceptions
+  from torch.tpu import exceptions
 
   warnings.filterwarnings("ignore", category=exceptions.TcMallocWarning)
 
@@ -35,15 +34,29 @@ those must be filtered by message from the environment instead:
   # Silence every warning TorchTPU emits while importing.
   export PYTHONWARNINGS="ignore::UserWarning"
 
-Note that `PYTHONWARNINGS="ignore::torch_tpu.exceptions.TcMallocWarning"` does
+Note that `PYTHONWARNINGS="ignore::torch.tpu.exceptions.TcMallocWarning"` does
 *not* suppress an import-time warning, even though it looks like it should:
-resolving that category name makes the interpreter import `torch_tpu` in order
-to look the class up, which emits the warning before the filter is installed.
-On a `pip install`ed TorchTPU the name cannot be resolved at that point at all,
-because site-packages is not yet on `sys.path`, and the interpreter reports
-`Invalid -W option ignored: invalid module name: 'torch_tpu.exceptions'` on
+resolving that category name makes the interpreter import `torch` (and thus
+`torch_tpu`) in order to look the class up, which emits the warning before the
+filter is installed. On a `pip install`ed TorchTPU the name cannot be resolved
+at that point at all, because site-packages is not yet on `sys.path`, and the
+interpreter reports
+`Invalid -W option ignored: invalid module name: 'torch.tpu.exceptions'` on
 every subsequent Python invocation in that environment.
 """
+
+__all__ = [
+    # go/keep-sorted start
+    "ApiStageWarning",
+    "CorrectnessWarning",
+    "DeprecatedApiWarning",
+    "ExperimentalApiWarning",
+    "PerformanceWarning",
+    "TcMallocWarning",
+    "TorchTpuWarning",
+    "UnoptimizedBuildWarning",
+    # go/keep-sorted end
+]
 
 
 class TorchTpuWarning(UserWarning):
@@ -90,3 +103,7 @@ class TcMallocWarning(PerformanceWarning):
   Emitted at most once per process by default; see
   `torch_tpu._tcmalloc_check.install_default_filters`.
   """
+
+
+def __dir__() -> list[str]:
+  return __all__

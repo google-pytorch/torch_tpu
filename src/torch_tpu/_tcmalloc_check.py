@@ -15,7 +15,7 @@
 """Startup check that warns when tcmalloc is not the process allocator.
 
 Importing this module installs TorchTPU's default filter for
-`torch_tpu.exceptions.TcMallocWarning` as a side effect; see
+`torch.tpu.exceptions.TcMallocWarning` as a side effect; see
 `install_default_filters`. The check itself only runs when `check_tcmalloc` is
 called, which `torch_tpu/__init__.py` does once at import time.
 """
@@ -25,7 +25,7 @@ import re
 from typing import Final
 import warnings
 
-from torch_tpu import exceptions
+from torch_tpu._internal import exceptions
 
 # Matches e.g. libtcmalloc.so.4, libtcmalloc_minimal.so.4, libtsan.so.0 and
 # libclang_rt.asan-x86_64.so. The trailing separator class is deliberate: a

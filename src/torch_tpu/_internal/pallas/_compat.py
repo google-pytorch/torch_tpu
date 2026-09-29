@@ -18,7 +18,7 @@ import pathlib
 import sys
 import warnings
 
-from torch_tpu import exceptions
+from torch_tpu._internal import exceptions
 
 
 def warn_deprecation_with_skip(message: str, skip_dir: pathlib.Path):

@@ -21,6 +21,7 @@ import warnings
 from absl.testing import absltest
 import torch
 import torch_tpu
+from torch_tpu._internal import exceptions as internal_exceptions
 from torch_tpu._internal.distributed.environment import (
     set_tpu_launch_env as internal_set_tpu_launch_env,
 )
@@ -174,6 +175,37 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
         ModuleNotFoundError
     ):
       importlib.import_module("torch_tpu.distributed.environment")
+
+  def test_exceptions_api_registry(self):
+    """Verifies public exposure, identity, and module behavior for exceptions."""
+    expected_names = [
+        "ApiStageWarning",
+        "CorrectnessWarning",
+        "DeprecatedApiWarning",
+        "ExperimentalApiWarning",
+        "PerformanceWarning",
+        "TcMallocWarning",
+        "TorchTpuWarning",
+        "UnoptimizedBuildWarning",
+    ]
+    self.assertIs(torch.tpu.exceptions, internal_exceptions)
+    self.assertEqual(dir(torch.tpu.exceptions), expected_names)
+    for name in expected_names:
+      self.assertIs(
+          getattr(torch.tpu.exceptions, name),
+          getattr(internal_exceptions, name),
+      )
+    with self.assertRaises(  # ASSERT_RAISES_OK=Verifies non-existent attributes raise AttributeError
+        AttributeError
+    ):
+      _ = getattr(torch.tpu.exceptions, "non_existent_attribute")
+
+    self.assertFalse(hasattr(torch_tpu, "exceptions"))
+    self.assertNotIn("torch_tpu.exceptions", sys.modules)
+    with self.assertRaises(  # ASSERT_RAISES_OK=Verifies torch_tpu.exceptions cannot be imported
+        ModuleNotFoundError
+    ):
+      importlib.import_module("torch_tpu.exceptions")
 
 
 if __name__ == "__main__":

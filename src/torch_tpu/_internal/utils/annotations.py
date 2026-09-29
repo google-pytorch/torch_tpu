@@ -29,7 +29,7 @@ import sys
 from typing import Any, Callable, Mapping, Optional, TypeVar
 import warnings
 
-from torch_tpu import exceptions as _exceptions
+from torch_tpu._internal import exceptions as _exceptions
 
 _T = TypeVar("_T")
 

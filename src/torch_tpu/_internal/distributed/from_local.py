@@ -20,8 +20,8 @@ import warnings
 
 import torch
 import torch.distributed.tensor as dt
-from torch_tpu import exceptions
 from torch_tpu._internal import env
+from torch_tpu._internal import exceptions
 
 _UNEVEN_SHARDING_WARNING: Final[str] = (
     "`DTensor.from_local` called without `shape` and `stride`. Unevenly"
