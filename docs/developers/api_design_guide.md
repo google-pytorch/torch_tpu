@@ -84,8 +84,8 @@ follow them in new code and migrate the existing APIs to conform to them.
 *   Python API paths
     *   A **public path** is a dotted name that reaches an object and has no
         component starting with `_`, e.g.
-        `torch_tpu.ops.jagged.align_jagged_to_multiple`. **Every public path to
-        a TorchTPU object is an API**, even if it exists only because a public
+        `torch.tpu.ops.align_jagged_to_multiple`. **Every public path to a
+        TorchTPU object is an API**, even if it exists only because a public
         module imports the object. Adding, removing, or changing a public path
         needs approval from the API owners.
         *   Objects that other libraries own (e.g. `typing.Optional` or `torch`)
@@ -104,7 +104,63 @@ follow them in new code and migrate the existing APIs to conform to them.
             `numpy._core`.
     *   To keep the other paths internal, give them a component that starts with
         `_`. Prefer putting the implementation in a private module (e.g.
-        `torch_tpu/ops/_jagged.py`) and having the public module import that
-        module and assign only the public names (e.g.
+        `torch_tpu/_internal/ops/_jagged.py`) and having the public module
+        import that module and assign only the public names (e.g.
         `align_jagged_to_multiple = _jagged.align_jagged_to_multiple`), so that
         the implementation's own imports don't become public paths.
+
+## Python API Module Structure
+
+While TorchTPU is developed out of the PyTorch source tree today, we want users
+to think of it as logically part of PyTorch. Therefore, our public Python APIs
+must be exposed under `torch.tpu.*` (as opposed to `torch_tpu`), the same way
+CUDA's live under `torch.cuda`. One exception is that if a functionality can be
+served via an existing `torch` or
+[torch.accelerator](https://docs.pytorch.org/docs/2.13/accelerator.html) API, we
+leverage that instead of exposing a new API.
+
+Public TorchTPU Python APIs follow this module structure:
+
+```
+torch.tpu        # TorchTPU root module
+ |- distributed  # distributed utilities
+ |- exceptions   # exceptions that might be raised by TorchTPU
+ |- ops          # custom ops
+ |- optimizers   # TorchTPU-optimized optimizers
+ |- pallas       # utilities for using pallas kernels
+ `- profiler     # utilities for profiling TorchTPU programs
+```
+
+Adding any new public module requires approval from the API owners.
+
+*   **No public APIs in `torch_tpu` or `torch.backends.tpu`**: The `torch_tpu`
+    package has no public APIs; its implementation lives under
+    `torch_tpu._internal`. Likewise, we do not expose APIs under
+    `torch.backends.tpu`; global knobs such as
+    `torch.tpu.allow_excess_precision` live directly on `torch.tpu`.
+*   **One canonical path per API**: As described under
+    [Principles](#principles), each public TorchTPU API is exposed at only one
+    canonical location. Allowing multiple public paths to the same API (for
+    example, by accidentally re-exporting an imported symbol in another public
+    module) is unnecessary, creates inconsistency, and makes it hard for
+    TorchTPU to evolve.
+*   **Custom ops in `torch.tpu.ops`**: All custom ops live in `torch.tpu.ops`,
+    regardless of whether they are implemented in C++ or Python. Keeping all
+    custom ops in one module gives users a consistent interface and lets us
+    change an op's implementation between C++ and Python without changing its
+    public path.
+
+    *   PyTorch's dispatcher design requires all custom ops implemented in C++
+        to be registered in a submodule of `torch.ops` (`torch.ops.tpu`). To
+        work around this constraint and expose each C++ custom op `foo` only at
+        `torch.tpu.ops.foo`:
+
+        1.  Register the op in C++ with a leading underscore as
+            `torch.ops.tpu._foo`, so that its path in `torch.ops.tpu` is
+            internal.
+
+        2.  In the `torch.tpu.ops` module, re-export `_foo` as `foo`:
+
+            ```python
+            foo = torch.ops.tpu._foo
+            ```
