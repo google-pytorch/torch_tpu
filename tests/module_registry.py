@@ -429,6 +429,7 @@ _VISION_LANGUAGE_MODEL_TYPES = (
     "chameleon_vqgan",
     "chmv2",
     "clip",
+    "clipseg",
     "clvp",
     "colpali",
     "cosmos3",
@@ -465,6 +466,8 @@ _VISION_LANGUAGE_MODEL_TYPES = (
     "llmdet-swin",
     "llmdet_swin",
     "lxmert",
+    "metaclip",
+    "metaclip_2",
     "mimo_v2_flash",
     "minicpmv4_6",
     "mllama",
@@ -1377,7 +1380,7 @@ def _is_multimodal(
   # Open-vocabulary zero-shot models require text queries (input_ids) along
   # with images.
   if any(
-      k in model_type
+      k in model_type or k in arch_name
       for k in (
           "clipseg",
           "owlv2",
@@ -3795,17 +3798,6 @@ class DiffusersProvider(BaseProvider):
         ):
           latent_dims = (2,) + latent_dims  # Default 2 frames
 
-      noisy_latents = torch.randn(
-          (batch_size, latent_channels, *latent_dims),
-          generator=g,
-          dtype=d_type,
-      ).to(device)
-
-      # standard num_train_timesteps for diffusion models is typically 1000
-      timesteps = torch.randint(
-          0, 1000, (batch_size,), generator=g, dtype=torch.long
-      ).to(device)
-
       # Dynamically get the model class to inspect its signature
       class_name = cfg.get("_class_name")
       if not class_name:
@@ -3821,12 +3813,69 @@ class DiffusersProvider(BaseProvider):
             class_name,
         )
         model_cls = diffusers.UNet2DConditionModel
+      if hasattr(diffusers, "models") and hasattr(
+          diffusers.models, "model_loading_utils"
+      ):
+        remapping_dict = getattr(
+            diffusers.models.model_loading_utils, "_CLASS_REMAPPING_DICT", {}
+        )
+        if class_name in remapping_dict:
+          norm_type = cfg.get("norm_type")
+          remapped = remapping_dict[class_name].get(norm_type)
+          if remapped and hasattr(diffusers, remapped):
+            model_cls = getattr(diffusers, remapped)
       forward_params = inspect.signature(model_cls.forward).parameters
+
+      rope_kwargs = {}
+      if "img_ids" in forward_params and "txt_ids" in forward_params:
+        # Transformer-based diffusion models (e.g. Flux, Chroma, Bria) expect
+        # 3D flattened patch token sequence [batch_size, seq_len_img, in_channels]
+        # rather than 4D spatial tensors [batch_size, in_channels, height, width].
+        latent_h = 4
+        latent_w = 4
+        seq_len_img = latent_h * latent_w
+        noisy_latents = torch.randn(
+            (batch_size, seq_len_img, latent_channels),
+            generator=g,
+            dtype=d_type,
+        ).to(device)
+
+        axes_dims_rope = cfg.get("axes_dims_rope")
+        num_axes = len(axes_dims_rope) if axes_dims_rope else 3
+        img_ids = torch.zeros(
+            (seq_len_img, num_axes), device=device, dtype=d_type
+        )
+        txt_ids = torch.zeros((seq_len, num_axes), device=device, dtype=d_type)
+        rope_kwargs["img_ids"] = img_ids
+        rope_kwargs["txt_ids"] = txt_ids
+      elif "img_shapes" in forward_params:
+        # Transformer-based diffusion models with image shape tuples (e.g. QwenImage)
+        latent_h = 4
+        latent_w = 4
+        seq_len_img = latent_h * latent_w
+        noisy_latents = torch.randn(
+            (batch_size, seq_len_img, latent_channels),
+            generator=g,
+            dtype=d_type,
+        ).to(device)
+        rope_kwargs["img_shapes"] = [[(1, latent_h, latent_w)]] * batch_size
+      else:
+        noisy_latents = torch.randn(
+            (batch_size, latent_channels, *latent_dims),
+            generator=g,
+            dtype=d_type,
+        ).to(device)
+
+      # standard num_train_timesteps for diffusion models is typically 1000
+      timesteps = torch.randint(
+          0, 1000, (batch_size,), generator=g, dtype=torch.long
+      ).to(device)
 
       # Fallback to encoder_hid_dim / text_dim / joint_attention_dim if
       # cross_attention_dim is not specified in config.
       cross_attention_dim = (
-          cfg.get("encoder_hid_dim")
+          cfg.get("caption_channels")
+          or cfg.get("encoder_hid_dim")
           or cfg.get("cross_attention_dim")
           or cfg.get("joint_attention_dim")
           or cfg.get("text_dim")
@@ -3867,11 +3916,62 @@ class DiffusersProvider(BaseProvider):
               " parameter found in forward signature."
           )
 
-      kwargs = {
-          primary_input_key: noisy_latents,
-          "timestep": timesteps,
-          "encoder_hidden_states": dummy_encoder_hidden_states,
-      }
+      if "cap_feats" in forward_params and "t" in forward_params:
+        cap_feat_dim = (
+            cfg.get("cap_feat_dim") or cfg.get("joint_attention_dim") or 2560
+        )
+        h, w = 16, 16
+        z_x = [
+            torch.randn(
+                (latent_channels, 1, h, w),
+                generator=g,
+                dtype=d_type,
+            ).to(device)
+            for _ in range(batch_size)
+        ]
+        z_cap_feats = [
+            torch.randn(
+                (seq_len, cap_feat_dim),
+                generator=g,
+                dtype=d_type,
+            ).to(device)
+            for _ in range(batch_size)
+        ]
+        z_t = torch.tensor([0.0], device=device, dtype=d_type).expand(
+            batch_size
+        )
+        kwargs = {
+            "x": z_x,
+            "t": z_t,
+            "cap_feats": z_cap_feats,
+        }
+      else:
+        kwargs = {
+            primary_input_key: noisy_latents,
+            "timestep": timesteps,
+            "encoder_hidden_states": dummy_encoder_hidden_states,
+        }
+        kwargs.update(rope_kwargs)
+
+      if "guidance" in forward_params and cfg.get("guidance_embeds", False):
+        kwargs["guidance"] = torch.tensor(
+            [1.0], device=device, dtype=d_type
+        ).expand(batch_size)
+
+      if "pooled_projections" in forward_params:
+        proj_dim = (
+            cfg.get("pooled_projection_dim")
+            or cfg.get("projection_class_embeddings_input_dim")
+            or 32
+        )
+        kwargs["pooled_projections"] = torch.randn(
+            (batch_size, proj_dim), generator=g, dtype=d_type
+        ).to(device)
+
+      if "additional_t_cond" in forward_params:
+        kwargs["additional_t_cond"] = torch.zeros(
+            (batch_size,), device=device, dtype=torch.long
+        )
 
       # Create dummy additional conditioning inputs which would be expected in
       # an SDXL pipeline.
@@ -3898,6 +3998,27 @@ class DiffusersProvider(BaseProvider):
             "text_embeds": dummy_pooled_embeds,
             "time_ids": dummy_time_ids,
         }
+      elif "added_cond_kwargs" in forward_params:
+        if cfg.get("sample_size") == 128 or cfg.get(
+            "use_additional_conditions"
+        ):
+          h = latent_dims[0] if len(latent_dims) >= 2 else 128
+          w = latent_dims[1] if len(latent_dims) >= 2 else 128
+          resolution = torch.tensor(
+              [float(h), float(w)], device=device, dtype=d_type
+          ).repeat(batch_size, 1)
+          aspect_ratio = torch.tensor(
+              [float(h / w)], device=device, dtype=d_type
+          ).repeat(batch_size, 1)
+          kwargs["added_cond_kwargs"] = {
+              "resolution": resolution,
+              "aspect_ratio": aspect_ratio,
+          }
+        else:
+          kwargs["added_cond_kwargs"] = {
+              "resolution": None,
+              "aspect_ratio": None,
+          }
 
       if "encoder_hidden_states" not in forward_params:
         kwargs.pop("encoder_hidden_states", None)
@@ -3905,10 +4026,130 @@ class DiffusersProvider(BaseProvider):
         kwargs.pop("added_cond_kwargs", None)
       if "timestep" not in forward_params:
         kwargs.pop("timestep", None)
-      if "class_labels" in forward_params or cfg.get("num_class_embeds"):
+      if "class_labels" in forward_params:
         kwargs["class_labels"] = torch.zeros(
             (batch_size,), dtype=torch.long, device=device
         )
+
+      if "controlnet_cond" in forward_params:
+        if "img_shapes" in forward_params:
+          latent_h, latent_w = 4, 4
+          seq_len_img = latent_h * latent_w
+          extra_channels = cfg.get("extra_condition_channels", 0)
+          kwargs["controlnet_cond"] = torch.randn(
+              (batch_size, seq_len_img, latent_channels + extra_channels),
+              generator=g,
+              dtype=d_type,
+          ).to(device)
+        elif (
+            "img_ids" in forward_params
+            and "txt_ids" in forward_params
+            and cfg.get("conditioning_embedding_channels") is None
+        ):
+          latent_h, latent_w = 4, 4
+          seq_len_img = latent_h * latent_w
+          kwargs["controlnet_cond"] = torch.randn(
+              (batch_size, seq_len_img, latent_channels),
+              generator=g,
+              dtype=d_type,
+          ).to(device)
+        else:
+          cond_channels = cfg.get("conditioning_channels", 3)
+          out_channels = cfg.get("conditioning_embedding_out_channels") or (
+              16,
+              32,
+              96,
+              256,
+          )
+          factor = 2 ** (len(out_channels) - 1)
+          if len(latent_dims) == 2:
+            cond_h = latent_dims[0] * factor
+            cond_w = latent_dims[1] * factor
+          else:
+            cond_h, cond_w = 64 * factor, 64 * factor
+          kwargs["controlnet_cond"] = torch.randn(
+              (batch_size, cond_channels, cond_h, cond_w),
+              generator=g,
+              dtype=d_type,
+          ).to(device)
+
+      if "controlnet_mode" in forward_params:
+        kwargs["controlnet_mode"] = torch.zeros(
+            (batch_size, 1), dtype=torch.long, device=device
+        )
+
+      if (
+          "encoder_hidden_states_t5" in forward_params
+          and "encoder_hidden_states_llama3" in forward_params
+      ):
+        caption_channels = cfg.get("caption_channels") or [4096, 2048]
+        t5_dim = caption_channels[0]
+        llama_dim = (
+            caption_channels[1]
+            if len(caption_channels) > 1
+            else caption_channels[0]
+        )
+        llama_layers = cfg.get("llama_layers") or [0, 1]
+        num_llama_layers = max(llama_layers) + 1
+        text_emb_dim = cfg.get("text_emb_dim") or 2048
+
+        kwargs["encoder_hidden_states_t5"] = torch.randn(
+            (batch_size, seq_len, t5_dim), generator=g, dtype=d_type
+        ).to(device)
+        kwargs["encoder_hidden_states_llama3"] = torch.randn(
+            (num_llama_layers, batch_size, seq_len, llama_dim),
+            generator=g,
+            dtype=d_type,
+        ).to(device)
+        kwargs["pooled_embeds"] = torch.randn(
+            (batch_size, text_emb_dim), generator=g, dtype=d_type
+        ).to(device)
+        if "timesteps" in forward_params:
+          kwargs["timesteps"] = timesteps
+        kwargs.pop("encoder_hidden_states", None)
+
+      if (
+          "encoder_hidden_states_t5" in forward_params
+          and "image_meta_size" in forward_params
+      ):
+        text_len = cfg.get("text_len", 77)
+        text_len_t5 = cfg.get("text_len_t5", 256)
+        cross_attention_dim = cfg.get("cross_attention_dim", 1024)
+        cross_attention_dim_t5 = cfg.get("cross_attention_dim_t5", 2048)
+
+        kwargs["encoder_hidden_states"] = torch.randn(
+            (batch_size, text_len, cross_attention_dim),
+            generator=g,
+            dtype=d_type,
+        ).to(device)
+        kwargs["text_embedding_mask"] = torch.ones(
+            (batch_size, text_len), device=device, dtype=torch.bool
+        )
+        kwargs["encoder_hidden_states_t5"] = torch.randn(
+            (batch_size, text_len_t5, cross_attention_dim_t5),
+            generator=g,
+            dtype=d_type,
+        ).to(device)
+        kwargs["text_embedding_mask_t5"] = torch.ones(
+            (batch_size, text_len_t5), device=device, dtype=torch.bool
+        )
+        kwargs["image_meta_size"] = torch.tensor(
+            [[1024.0, 1024.0, 1024.0, 1024.0, 0.0, 0.0]],
+            device=device,
+            dtype=d_type,
+        ).repeat(batch_size, 1)
+        if "style" in forward_params:
+          kwargs["style"] = torch.zeros(
+              (batch_size,), device=device, dtype=torch.long
+          )
+        if "timestep" in forward_params:
+          kwargs["timestep"] = timesteps.to(dtype=d_type)
+        if "controlnet_cond" in forward_params:
+          kwargs["controlnet_cond"] = torch.randn(
+              (batch_size, latent_channels, *latent_dims),
+              generator=g,
+              dtype=d_type,
+          ).to(device)
 
       return (), kwargs
 
