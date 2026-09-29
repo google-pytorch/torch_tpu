@@ -223,6 +223,44 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     self.assertLen(results, 1)
     results[0].cpu()  # Verify it passes
 
+  def test_traverse_and_compile_shared_base_takes_full_view_layout(self):
+    x = torch.randn(8, 8, device=self.device, dtype=torch.bfloat16)
+    torch.accelerator.synchronize(self.device)
+    x_t = x.t()
+
+    with eager_mode_compile_fx_graph():
+      z = x_t + x
+
+    # Both arguments share x's base buffer. The [0, 1] layout belongs to the
+    # transposed view, so only x's [1, 0] layout may be applied to the base.
+    compile_result = tpu_torch_compile.traverse_and_compile(
+        [z], [x_t, x], argument_layouts=[[0, 1], [1, 0]]
+    )
+    self.assertIsNotNone(compile_result.executable)
+
+    results = tpu_torch_compile.execute(compile_result.executable, [x_t, x])
+    self.assertLen(results, 1)
+    utils.assert_close(results[0].cpu(), x.cpu().t() + x.cpu())
+
+  def test_traverse_and_compile_shared_base_conflicting_layouts_ignored(self):
+    x = torch.randn(8, 8, device=self.device, dtype=torch.bfloat16)
+    torch.accelerator.synchronize(self.device)
+    x_view = x[:]
+
+    with eager_mode_compile_fx_graph():
+      z = x + x_view
+
+    # Both arguments are full views of x's base buffer but request different
+    # layouts, so the base buffer gets no layout.
+    compile_result = tpu_torch_compile.traverse_and_compile(
+        [z], [x, x_view], argument_layouts=[[1, 0], [0, 1]]
+    )
+    self.assertIsNotNone(compile_result.executable)
+
+    results = tpu_torch_compile.execute(compile_result.executable, [x, x_view])
+    self.assertLen(results, 1)
+    utils.assert_close(results[0].cpu(), x.cpu() + x.cpu())
+
   def test_layout_context_auto_extracted_in_static_compile(self):
     layout = annotations.TpuLayout(minor_to_major=[0, 1], tiles=[[8, 128]])
     with annotations.LayoutContext(layout):

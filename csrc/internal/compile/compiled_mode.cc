@@ -429,11 +429,54 @@ absl::StatusOr<AsyncCompileResult> TraverseAndCompile(
         unique_donated_inputs.end());
   }
 
-  auto compilation_spec = GetCompilationSpec(options.compilation_mode);
+  // Map argument layouts onto the deduplicated base buffers. A base buffer
+  // takes its layout from an argument that covers the whole buffer unchanged:
+  // same sizes, contiguous, and zero storage offset. Layouts of partial or
+  // permuted views, such as slices and transposes, describe the view rather
+  // than the base buffer, so they are ignored. If two such arguments request
+  // different layouts, the base buffer gets no layout.
+  std::vector<CustomLayout> base_argument_layouts;
+  if (has_duplicates && !options.argument_layouts.empty()) {
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Checked by caller.
+        options.argument_layouts.size() == argument_tensors.size(),
+        error::kInvalidArgument)
+        << "expected one layout per argument, got "
+        << options.argument_layouts.size() << " layouts for "
+        << argument_tensors.size() << " arguments";
+    absl::Span<const DeviceBufferRef> bases = traversal->arguments();
+    base_argument_layouts.assign(bases.size(), CustomLayout{});
+    Indices conflicting_bases;
+    for (int64_t i = 0; i < argument_tensors.size(); ++i) {
+      const at::Tensor& tensor = argument_tensors[i];
+      const CustomLayout& layout = options.argument_layouts[i];
+      const int64_t base_idx = argument_indices[i];
+      if (layout.minor_to_major.empty() || tensor.storage_offset() != 0 ||
+          !tensor.is_contiguous() ||
+          !absl::c_equal(tensor.sizes(), bases[base_idx].dimensions()) ||
+          absl::c_linear_search(conflicting_bases, base_idx)) {
+        continue;
+      }
+      CustomLayout& base_layout = base_argument_layouts[base_idx];
+      if (!base_layout.minor_to_major.empty() && !(base_layout == layout)) {
+        ABSL_LOG(WARNING) << "Ignoring conflicting layouts for arguments "
+                             "sharing base buffer "
+                          << base_idx;
+        base_layout = CustomLayout{};
+        conflicting_bases.push_back(base_idx);
+        continue;
+      }
+      base_layout = layout;
+    }
+  } else {
+    base_argument_layouts = options.argument_layouts;
+  }
+
+  const CompilationSpec compilation_spec =
+      GetCompilationSpec(options.compilation_mode);
   TT_ASSIGN_OR_RETURN(
       auto compiled_kernel,
-      traversal->Compile(std::move(compilation_spec), nullptr,
-                         options.use_stablehlo_bounds, options.argument_layouts,
+      traversal->Compile(compilation_spec, nullptr,
+                         options.use_stablehlo_bounds, base_argument_layouts,
                          unique_donated_inputs, options.module_name),
       _.SetPrepend() << "failed to compile traversal: ");
 
