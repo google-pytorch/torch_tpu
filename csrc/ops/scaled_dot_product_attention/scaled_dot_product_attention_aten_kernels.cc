@@ -41,7 +41,6 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/macros/kernel.h"
-#include "csrc/ops/nullary_aten_kernels.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/scaled_dot_product_attention/flash_attention_kernel_builder.h"
 #include "csrc/ops/scaled_dot_product_attention/helpers.h"
@@ -136,6 +135,7 @@ int64_t AtenFusedSdpChoice(const at::Tensor& query, const at::Tensor& key,
                                 query.ndimension() == value.ndimension();
         bool has_batch = query.ndimension() >= 4;
         bool has_dropout = dropout_p != 0.0;
+        bool valid_flash_dropout = dropout_p >= 0.0 && dropout_p < 1.0;
 
         if (flash_enabled) {
           bool supported_flash_dtype =
@@ -143,8 +143,12 @@ int64_t AtenFusedSdpChoice(const at::Tensor& query, const at::Tensor& key,
                query.scalar_type() == at::ScalarType::BFloat16);
           if (supported_flash_dtype &&
               IsSupportedFlashAttentionShape(query, key, value, attn_mask) &&
-              consistent_ranks && !has_dropout) {
-            return static_cast<int64_t>(at::SDPBackend::flash_attention);
+              consistent_ranks && valid_flash_dropout) {
+            // Both backends lower to the same Mosaic FlashAttention kernel, but
+            // only efficient_attention's ATen schema passes `philox_seed` /
+            // `philox_offset` from forward to backward, which dropout needs to
+            // regenerate the same mask.
+            return static_cast<int64_t>(at::SDPBackend::efficient_attention);
           } else {
             // Use c10::str rather than absl::StrCat as it will convert enums
             // into their string representation.
@@ -153,7 +157,7 @@ int64_t AtenFusedSdpChoice(const at::Tensor& query, const at::Tensor& key,
                 "for scaled_dot_product_attention when these conditions are "
                 "met:\n"
                 "- inputs have static shapes\n"
-                "- dropout_p is 0.0 (current: ",
+                "- dropout_p is in [0.0, 1.0) (current: ",
                 dropout_p,
                 ")\n"
                 "- inputs are float32 or bfloat16 (current: ",
@@ -297,30 +301,29 @@ AtenScaledDotProductEfficientAttention(
     const at::Tensor& query, const at::Tensor& key, const at::Tensor& value,
     const std::optional<at::Tensor>& attn_bias, bool compute_log_sumexp,
     double dropout_p, bool is_causal, std::optional<double> scale) {
-  TT_KERNEL(OpName::kScaledDotProductEfficientAttention, _,
-            (query, key, value,
-             IgnoreInCacheKey(attn_bias, "Delegates to implementation"),
-             IgnoreInCacheKey(compute_log_sumexp,
-                              "Delegates to CreateFlashAttentionKernel"),
-             IgnoreInCacheKey(dropout_p, "Unused"),
-             IgnoreInCacheKey(is_causal, "Delegates to implementation"),
-             IgnoreInCacheKey(scale, "Delegates to implementation")),
-            {
-              // Unused arguments: dropout_p.
-              TT_ASSIGN_OR_THROW(auto results,
-                                 CreateFlashAttentionKernel(
-                                     query, key, value, attn_bias, is_causal,
-                                     scale, compute_log_sumexp));
-              auto [out, logsumexp] = std::move(results);
-              at::Tensor philox_seed =
-                  at::zeros({1}, query.options().dtype(at::kLong));
-              at::Tensor philox_offset =
-                  at::zeros({1}, query.options().dtype(at::kLong));
-
-              return std::make_tuple(std::move(out), std::move(logsumexp),
-                                     std::move(philox_seed),
-                                     std::move(philox_offset));
-            });
+  TT_KERNEL(
+      OpName::kScaledDotProductEfficientAttention, _,
+      (query, key, value,
+       IgnoreInCacheKey(attn_bias, "Delegates to implementation"),
+       IgnoreInCacheKey(compute_log_sumexp,
+                        "Delegates to CreateFlashAttentionKernel"),
+       IgnoreInCacheKey(dropout_p, "Delegates to implementation"),
+       IgnoreInCacheKey(is_causal, "Delegates to implementation"),
+       IgnoreInCacheKey(scale, "Delegates to implementation")),
+      {
+        TT_ASSIGN_OR_THROW(
+            auto results,
+            CreateFlashAttentionKernel(query, key, value, attn_bias, is_causal,
+                                       scale, dropout_p, compute_log_sumexp));
+        auto [out, logsumexp, philox_seed, philox_offset] = std::move(results);
+        if (!philox_seed.defined()) {
+          philox_seed = at::zeros({1}, query.options().dtype(at::kLong));
+          philox_offset = at::zeros({1}, query.options().dtype(at::kLong));
+        }
+        return std::make_tuple(std::move(out), std::move(logsumexp),
+                               std::move(philox_seed),
+                               std::move(philox_offset));
+      });
 }
 
 std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor>
@@ -334,19 +337,21 @@ AtenScaledDotProductEfficientAttentionBackward(
   TT_KERNEL(  // Comment to stop copybara failing :(
       OpName::kScaledDotProductEfficientAttentionBackward, _,
       (grad_out, query, key, value, attn_bias, out, logsumexp, philox_seed,
-       philox_offset, IgnoreInCacheKey(dropout_p, "Unused"),
+       philox_offset,
+       IgnoreInCacheKey(dropout_p, "Delegates to implementation"),
        IgnoreInCacheKey(grad_input_mask, "Doesn't affect SHLO"),
        IgnoreInCacheKey(is_causal, "Delegates to implementation"),
        IgnoreInCacheKey(scale, "Delegates to implementation")),
       {
-        TT_ASSIGN_OR_THROW(auto result,  // Comment to stop copybara failing :(
-                           CreateFlashAttentionBackwardKernel(
-                               grad_out, query, key, value, out, logsumexp,
-                               attn_bias, scale, is_causal));
+        TT_ASSIGN_OR_THROW(
+            auto result,  // Comment to stop copybara failing :(
+            CreateFlashAttentionBackwardKernel(
+                grad_out, query, key, value, out, logsumexp, attn_bias, scale,
+                is_causal, dropout_p, philox_seed, philox_offset));
 
-        const at::Tensor zero = AtenEfficientZeroTensor(
-            {0}, grad_out.scalar_type(), /*layout_opt=*/c10::nullopt,
-            grad_out.device(), /*pin_memory_opt=*/c10::nullopt);
+        // Autograd treats an undefined tensor as "no gradient". Calling
+        // AtenEfficientZeroTensor here would nest a TT_KERNEL call.
+        const at::Tensor zero;  // UNINITIALIZED_TENSOR_OK
 
         return std::make_tuple(grad_input_mask[0] ? std::get<0>(result) : zero,
                                grad_input_mask[1] ? std::get<1>(result) : zero,
@@ -359,17 +364,19 @@ std::tuple<at::Tensor, at::Tensor> AtenScaledDotProductFlashAttention(
     const at::Tensor& query, const at::Tensor& key, const at::Tensor& value,
     double dropout_p, bool is_causal,
     const std::optional<at::Tensor>& attn_mask, std::optional<double> scale) {
-  TT_KERNEL(OpName::kScaledDotProductFlashAttention, _,
-            (query, key, value, IgnoreInCacheKey(dropout_p, "Unused"),
-             IgnoreInCacheKey(is_causal, "Delegates to implementation"),
-             IgnoreInCacheKey(attn_mask, "Delegates to implementation"),
-             IgnoreInCacheKey(scale, "Delegates to implementation")),
-            {
-              TT_ASSIGN_OR_THROW(auto out, CreateFlashAttentionKernel(
-                                               query, key, value, attn_mask,
-                                               is_causal, scale));
-              return out;
-            });
+  TT_KERNEL(
+      OpName::kScaledDotProductFlashAttention, _,
+      (query, key, value, IgnoreInCacheKey(dropout_p, "Unused"),
+       IgnoreInCacheKey(is_causal, "Delegates to implementation"),
+       IgnoreInCacheKey(attn_mask, "Delegates to implementation"),
+       IgnoreInCacheKey(scale, "Delegates to implementation")),
+      {
+        TT_ASSIGN_OR_THROW(auto results,
+                           CreateFlashAttentionKernel(
+                               query, key, value, attn_mask, is_causal, scale));
+        auto [out, logsumexp, philox_seed, philox_offset] = std::move(results);
+        return std::make_tuple(std::move(out), std::move(logsumexp));
+      });
 }
 
 std::tuple<at::Tensor, at::Tensor, at::Tensor>

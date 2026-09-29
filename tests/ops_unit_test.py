@@ -15144,6 +15144,53 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
     self.assertFalse(torch.isnan(out_no_lse).any())
     utils.assert_close(out, out_no_lse, atol=1e-2, rtol=1e-2)
 
+  def test_scaled_dot_product_attention_dropout(self):
+    """Verifies FlashAttention dropout rate and 1/(1-p) scaling."""
+    batch_size, num_heads, seq_len, head_dim = 2, 4, 128, 128
+    dropout_p = 0.25
+    device = torch.device("tpu")
+
+    q = torch.zeros(
+        batch_size,
+        num_heads,
+        seq_len,
+        head_dim,
+        device=device,
+        requires_grad=True,
+    )
+    k = torch.zeros(
+        batch_size,
+        num_heads,
+        seq_len,
+        head_dim,
+        device=device,
+        requires_grad=True,
+    )
+    v = (
+        torch.eye(seq_len, device=device)
+        .expand(batch_size, num_heads, seq_len, head_dim)
+        .clone()
+        .requires_grad_(True)
+    )
+
+    torch.manual_seed(42)
+    with torch.nn.attention.sdpa_kernel(
+        torch.nn.attention.SDPBackend.FLASH_ATTENTION
+    ):
+      out = torch.nn.functional.scaled_dot_product_attention(
+          q, k, v, dropout_p=dropout_p
+      )
+      out.backward(torch.ones_like(out))
+
+    # With Q=0, K=0, and V=I, out equals the dropped attention weight matrix P.
+    out_cpu = out.detach().cpu()
+    drop_rate = (out_cpu == 0).to(torch.float32).mean().item()
+    row_sum_mean = out_cpu.sum(dim=-1).mean().item()
+
+    self.assertAlmostEqual(drop_rate, dropout_p, delta=0.05)
+    self.assertAlmostEqual(row_sum_mean, 1.0, delta=0.05)
+    self.assertIsNotNone(v.grad)
+
   def test_pointwise_op_dtype_promotion(self):
     """Ensure that pointwise ops promote as expected.
 
