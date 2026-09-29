@@ -414,3 +414,61 @@ jobs:
           NOX_SMOKE_TEST: ${{ github.event_name == 'pull_request' && 'tpu-nightly-pinned' || 'tpu-nightly' }}
         run: uvx nox --force-python "${PYTHON_VERSION}" -s "smoke_test(${NOX_SMOKE_TEST})"
 
+  # Aggregator job checked by Copybara. When `should_build` is false (e.g. on
+  # documentation-only PRs), GitHub Actions skips the downstream jobs above
+  # before expanding `strategy.matrix` or interpolating `needs.*` in job names,
+  # so the per-slice check run names are never created. Centralizing the check
+  # in a single always-run job ensures Copybara always observes a concrete
+  # result while gating on every wheel build and test job when `should_build`
+  # is true.
+  wheel_tests_passed:
+    name: "Build and Test Wheels"
+    needs:
+      - setup
+      - build_wheels
+      - test_wheels_cpu
+      - test_wheel_intermediate_patches
+      - test_wheel_dep_upper_bounds
+      - test_wheels_tpu
+      - test_wheel_tpu_nightly
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check wheel workflow results
+        env:
+          SETUP_RESULT: ${{ needs.setup.result }}
+          SHOULD_BUILD: ${{ needs.setup.outputs.should_build }}
+          BUILD_WHEELS_RESULT: ${{ needs.build_wheels.result }}
+          TEST_WHEELS_CPU_RESULT: ${{ needs.test_wheels_cpu.result }}
+          TEST_INTERMEDIATE_PATCHES_RESULT: ${{ needs.test_wheel_intermediate_patches.result }}
+          TEST_DEP_UPPER_BOUNDS_RESULT: ${{ needs.test_wheel_dep_upper_bounds.result }}
+          TEST_WHEELS_TPU_RESULT: ${{ needs.test_wheels_tpu.result }}
+          TEST_TPU_NIGHTLY_RESULT: ${{ needs.test_wheel_tpu_nightly.result }}
+        run: |
+          if [[ "${SETUP_RESULT}" != "success" ]]; then
+            echo "::error::setup job did not succeed (result: ${SETUP_RESULT})"
+            exit 1
+          fi
+
+          if [[ "${SHOULD_BUILD}" == "false" ]]; then
+            echo "Wheel build and tests skipped for documentation/metadata-only change."
+            exit 0
+          fi
+
+          FAILED=0
+          for entry in \
+            "build_wheels:${BUILD_WHEELS_RESULT}" \
+            "test_wheels_cpu:${TEST_WHEELS_CPU_RESULT}" \
+            "test_wheel_intermediate_patches:${TEST_INTERMEDIATE_PATCHES_RESULT}" \
+            "test_wheel_dep_upper_bounds:${TEST_DEP_UPPER_BOUNDS_RESULT}" \
+            "test_wheels_tpu:${TEST_WHEELS_TPU_RESULT}" \
+            "test_wheel_tpu_nightly:${TEST_TPU_NIGHTLY_RESULT}"; do
+            job_name="${entry%%:*}"
+            result="${entry#*:}"
+            echo "${job_name}: ${result}"
+            if [[ "${result}" != "success" ]]; then
+              echo "::error::${job_name} did not succeed (result: ${result})"
+              FAILED=1
+            fi
+          done
+          exit "${FAILED}"
