@@ -508,9 +508,7 @@ absl::StatusOr<DeviceBufferRef> ScaledGroupedMm(
     const std::optional<at::Tensor>& scale_result,
     std::optional<at::ScalarType> out_dtype, bool use_fast_accum,
     OpParamCacheKeys& param_keys) {
-  TT_RET_CHECK(!use_fast_accum, error::kPythonNotImplementedError)
-      << "use_fast_accum=true is not supported yet";
-
+  // use_fast_accum is accepted and ignored: the MXU always accumulates in F32.
   const bool has_offs = offs.has_value() && offs->defined();
   const bool has_bias = bias.has_value() && bias->defined();
   const bool has_scale_result =

@@ -586,10 +586,7 @@ absl::StatusOr<mlir::MlirOp> BuildScaledMmV2Shlo(
 absl::Status ValidateScaledMmInputs(
     const at::Tensor& self, const at::Tensor& mat2, const at::Tensor& scale_a,
     const at::Tensor& scale_b, const std::optional<at::Tensor>& bias,
-    const std::optional<at::Tensor>& scale_result, bool use_fast_accum) {
-  TT_RET_CHECK(!use_fast_accum, error::kPythonNotImplementedError)
-      << "use_fast_accum=true is not supported yet on TPU";
-
+    const std::optional<at::Tensor>& scale_result) {
   TT_RETURN_IF_ERROR(ValidateIsMatrix(self, "self"));
   TT_RETURN_IF_ERROR(ValidateIsMatrix(mat2, "mat2"));
 
@@ -687,10 +684,9 @@ absl::Status ScaledMmOut(const at::Tensor& self, const at::Tensor& mat2,
                          std::optional<at::Tensor> bias,
                          std::optional<at::Tensor> scale_result,
                          std::optional<at::ScalarType> out_dtype,
-                         bool use_fast_accum, OpParamCacheKeys param_keys,
-                         at::Tensor& out) {
-  TT_RETURN_IF_ERROR(ValidateScaledMmInputs(self, mat2, scale_a, scale_b, bias,
-                                            scale_result, use_fast_accum));
+                         OpParamCacheKeys param_keys, at::Tensor& out) {
+  TT_RETURN_IF_ERROR(
+      ValidateScaledMmInputs(self, mat2, scale_a, scale_b, bias, scale_result));
 
   Dimensions output_dims = {self.size(0), mat2.size(1)};
   at::ScalarType target_scalar_type =
@@ -733,22 +729,24 @@ at::Tensor AtenScaledMm(const at::Tensor& self, const at::Tensor& mat2,
                         const std::optional<at::Tensor>& scale_result,
                         std::optional<at::ScalarType> out_dtype,
                         bool use_fast_accum) {
-  TT_KERNEL(
-      OpName::kScaledMm, param_keys,
-      (self, mat2, scale_a, scale_b, bias, scale_result, out_dtype,
-       use_fast_accum),
-      {
-        at::ScalarType target_scalar_type =
-            out_dtype.has_value() ? *out_dtype : self.scalar_type();
-        const int64_t n = mat2.size(1);
-        TT_ASSIGN_OR_THROW(at::Tensor out,
-                           MakeEmptyTensor({self.size(0), n},
-                                           target_scalar_type, self.device()));
-        TT_THROW_IF_ERROR(ScaledMmOut(self, mat2, scale_a, scale_b, bias,
-                                      scale_result, out_dtype, use_fast_accum,
-                                      std::move(param_keys), out));
-        return out;
-      });
+  TT_KERNEL(OpName::kScaledMm, param_keys,
+            (self, mat2, scale_a, scale_b, bias, scale_result, out_dtype,
+             use_fast_accum),
+            {
+              at::ScalarType target_scalar_type =
+                  out_dtype.has_value() ? *out_dtype : self.scalar_type();
+              const int64_t n = mat2.size(1);
+              TT_ASSIGN_OR_THROW(
+                  at::Tensor out,
+                  MakeEmptyTensor({self.size(0), n}, target_scalar_type,
+                                  self.device()));
+              // use_fast_accum is accepted and ignored: the MXU always
+              // accumulates in F32.
+              TT_THROW_IF_ERROR(ScaledMmOut(self, mat2, scale_a, scale_b, bias,
+                                            scale_result, out_dtype,
+                                            std::move(param_keys), out));
+              return out;
+            });
 }
 
 at::Tensor& AtenScaledMmOut(const at::Tensor& self, const at::Tensor& mat2,
@@ -762,9 +760,11 @@ at::Tensor& AtenScaledMmOut(const at::Tensor& self, const at::Tensor& mat2,
             (self, mat2, scale_a, scale_b, bias, scale_result, out_dtype,
              use_fast_accum, out),
             {
-              TT_THROW_IF_ERROR(ScaledMmOut(
-                  self, mat2, scale_a, scale_b, bias, scale_result, out_dtype,
-                  use_fast_accum, std::move(param_keys), out));
+              // use_fast_accum is accepted and ignored: the MXU always
+              // accumulates in F32.
+              TT_THROW_IF_ERROR(ScaledMmOut(self, mat2, scale_a, scale_b, bias,
+                                            scale_result, out_dtype,
+                                            std::move(param_keys), out));
               return out;
             });
 }

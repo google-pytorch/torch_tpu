@@ -2996,6 +2996,36 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     )
     self.assertEqual(out.shape, (16, 16))
 
+  @parameterized.parameters("tensorwise", "rowwise")
+  def test_scaled_mm_use_fast_accum_matches_default(self, scale_kind):
+    """Tests that use_fast_accum=True gives the same result as the default."""
+    m, k, n = 32, 64, 48
+    device = "tpu"
+    self_fp8 = torch.randn(m, k).to(torch.float8_e4m3fn).to(device)
+    mat2_fp8 = torch.randn(k, n).to(torch.float8_e4m3fn).to(device)
+    if scale_kind == "tensorwise":
+      scale_a = torch.tensor(1.5, dtype=torch.float32)
+      scale_b = torch.tensor(0.5, dtype=torch.float32)
+    else:
+      scale_a = torch.rand(m, 1, dtype=torch.float32) + 0.5
+      scale_b = torch.rand(1, n, dtype=torch.float32) + 0.5
+    scale_a = scale_a.to(device)
+    scale_b = scale_b.to(device)
+
+    outs = [
+        torch._scaled_mm(
+            self_fp8,
+            mat2_fp8,
+            scale_a,
+            scale_b,
+            out_dtype=torch.bfloat16,
+            use_fast_accum=use_fast_accum,
+        ).cpu()
+        for use_fast_accum in (False, True)
+    ]
+
+    utils.assert_close(outs[1], outs[0], rtol=0, atol=0)
+
   def test_swizzle_math(self):
     # More than one tile in each direction, so that the ordering of the tile
     # grid is exercised and not just the layout within a single tile.
@@ -12633,6 +12663,30 @@ module {{
         rtol=2e-1,
         atol=2e-1,
     )
+
+  def test_scaled_grouped_mm_use_fast_accum_matches_default(self):
+    """Tests that use_fast_accum=True gives the same result as the default."""
+    device = "tpu"
+    t1_fp8 = torch.randn(32, 16).to(torch.float8_e4m3fn).to(device)
+    t2_fp8 = torch.randn(2, 16, 32).to(torch.float8_e4m3fn).to(device)
+    offs = torch.tensor([16, 32], dtype=torch.int32).to(device)
+    scale_a = torch.tensor(1.5, dtype=torch.float32).to(device)
+    scale_b = torch.tensor(0.5, dtype=torch.float32).to(device)
+
+    outs = [
+        torch._scaled_grouped_mm(
+            t1_fp8,
+            t2_fp8,
+            scale_a,
+            scale_b,
+            offs=offs,
+            out_dtype=torch.bfloat16,
+            use_fast_accum=use_fast_accum,
+        ).cpu()
+        for use_fast_accum in (False, True)
+    ]
+
+    utils.assert_close(outs[1], outs[0], rtol=0, atol=0)
 
   def test_optimization_barrier_meta_non_contiguous_eager(self):
     x = torch.empty((16, 2, 256, 256), device="meta")

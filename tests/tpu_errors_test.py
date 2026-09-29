@@ -2225,28 +2225,6 @@ module {
     ):
       torch._scaled_mm(mat1, mat2, scale_a, scale_b)
 
-  # TODO(marcosyukio): check if this test passes on CUDA with CC >= 8.9.
-  @et.why_tpu_only("TODO: investigate why this is TPU-only.")
-  def test_scaled_mm_use_fast_accum_unsupported(self):
-    """Tests that scaled_mm fails if use_fast_accum is True."""
-    # Note: use_fast_accum=true is not supported yet on TPU.
-    # TPU and GPU match on this.
-    device = et.device()
-    mat1 = torch.randn(16, 16, dtype=torch.float32, device=device).to(
-        torch.float8_e4m3fn
-    )
-    mat2 = torch.randn(16, 16, dtype=torch.float32, device=device).to(
-        torch.float8_e4m3fn
-    )
-    scale_a = torch.tensor([1.0], dtype=torch.float32, device=device)
-    scale_b = torch.tensor([1.0], dtype=torch.float32, device=device)
-
-    with et.assert_raises_message(
-        NotImplementedError,
-        tpu="""scaled_mm(): use_fast_accum=true is not supported yet on TPU""",
-    ):
-      torch._scaled_mm(mat1, mat2, scale_a, scale_b, use_fast_accum=True)
-
   @et.why_tpu_only("TODO: make the behavior consistent with CPU.")
   def test_pdist_backward_negative_p(self):
     grad = torch.randn(1, device=et.device())
@@ -3764,21 +3742,6 @@ module {
         tpu="""prelu_kernel_backward(): expected weight tensor shape to be broadcastable to self shape [2, 3], got [1, 2, 3]""",
     ):
       torch.ops.aten._prelu_kernel_backward(grad_output, self_tensor, weight)
-
-  @et.why_tpu_only("torch._scaled_grouped_mm is not supported on GPU.")
-  def test_scaled_grouped_mm_fast_accum_unsupported(self):
-    a = torch.randn(3, 4, device=et.device())
-    b = torch.randn(3, 4, 8, device=et.device())
-    scale_a = torch.tensor(1.0, device=et.device())
-    scale_b = torch.tensor(1.0, device=et.device())
-    offs = torch.tensor([1, 2, 3], dtype=torch.int32, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""scaled_grouped_mm(): use_fast_accum=true is not supported yet""",
-    ):
-      torch._scaled_grouped_mm(
-          a, b, scale_a, scale_b, offs=offs, use_fast_accum=True
-      )
 
   @et.why_tpu_only("torch._scaled_grouped_mm is not supported on GPU.")
   def test_scaled_grouped_mm_invalid_scale_a_dim(self):
