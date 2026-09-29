@@ -24,9 +24,9 @@
 #include <cstring>
 #include <exception>
 #include <memory>
-#include <numeric>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -43,8 +43,9 @@
 #include "ATen/ops/stack.h"
 #include "ATen/ops/zeros.h"
 #include "absl/algorithm/container.h"
+#include "absl/base/no_destructor.h"
 #include "absl/base/nullability.h"
-#include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
@@ -52,7 +53,8 @@
 #include "absl/strings/numbers.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
-#include "absl/strings/string_view.h"
+#include "absl/strings/str_join.h"
+#include "absl/strings/str_split.h"
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
 #include "c10/core/TensorOptions.h"
@@ -60,6 +62,7 @@
 #include "c10/util/intrusive_ptr.h"
 #include "csrc/common/macro_utils.h"
 #include "torch/csrc/distributed/c10d/Backend.hpp"
+#include "torch/csrc/distributed/c10d/PrefixStore.hpp"
 #include "torch/csrc/distributed/c10d/Store.hpp"
 #include "torch/csrc/distributed/c10d/Types.hpp"
 #if TT_TORCH_VERSION_GE(2, 14)
@@ -83,6 +86,7 @@
 #include "csrc/distributed/utils.h"
 #include "csrc/distributed/window_tpu.h"
 #include "csrc/eager/device_buffer.h"
+#include "csrc/eager/events_queue.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/structured_log_buffer.h"
@@ -94,7 +98,6 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch/csrc/distributed/c10d/Work.hpp"
-#include "torch/headeronly/core/DeviceType.h"
 #include "torch/headeronly/core/ScalarType.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/runtime/device_id.h"
@@ -546,6 +549,47 @@ std::string GetCrossHostTransferDescriptorStoreKey(
   return absl::StrCat(kKeyPrefix, key.value());
 }
 
+std::string SerializeDeviceAttributes(const PjRtDeviceAttributes& attrs) {
+  const absl::Span<const int64_t> coords =
+      attrs.coords.has_value() ? absl::MakeConstSpan(*attrs.coords)
+                               : absl::Span<const int64_t>();
+  int64_t x = !coords.empty() ? coords[0] : 0;
+  int64_t y = coords.size() > 1 ? coords[1] : 0;
+  int64_t z = coords.size() > 2 ? coords[2] : 0;
+  return absl::StrFormat("%d,%d,%d,%d,%d,%d,%d,%s", attrs.id,
+                         attrs.process_index, x, y, z,
+                         attrs.core_on_chip.value_or(0),
+                         attrs.slice_index.value_or(-1), attrs.device_kind);
+}
+
+absl::StatusOr<PjRtDeviceAttributes> DeserializeDeviceAttributes(
+    std::string_view payload) {
+  std::vector<std::string_view> parts =
+      absl::StrSplit(payload, absl::MaxSplits(',', 7));
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=defensive check on internally
+                 // serialized store payload
+      parts.size() == 8, error::kInternal)
+      << "cannot parse device attributes: " << payload;
+  PjRtDeviceAttributes attrs;
+  int64_t x = 0, y = 0, z = 0, core = 0, slice = -1;
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=defensive check on internally
+                 // serialized store payload
+      absl::SimpleAtoi(parts[0], &attrs.id) &&
+          absl::SimpleAtoi(parts[1], &attrs.process_index) &&
+          absl::SimpleAtoi(parts[2], &x) && absl::SimpleAtoi(parts[3], &y) &&
+          absl::SimpleAtoi(parts[4], &z) && absl::SimpleAtoi(parts[5], &core) &&
+          absl::SimpleAtoi(parts[6], &slice),
+      error::kInternal)
+      << "cannot parse integer fields in device attributes: " << payload;
+  attrs.coords = {x, y, z};
+  attrs.core_on_chip = core;
+  if (slice >= 0) {
+    attrs.slice_index = slice;
+  }
+  attrs.device_kind = std::string(parts[7]);
+  return attrs;
+}
+
 }  // namespace
 
 absl::StatusOr<c10::intrusive_ptr<c10::ivalue::Future>>
@@ -693,6 +737,151 @@ ProcessGroupTpu::CrossHostReceiveBuffers(
   return buffers;
 }
 
+namespace {
+
+struct WorldTopologyState {
+  std::vector<PjRtDeviceAttributes> device_attrs;
+  std::vector<int64_t> rank_to_device_id;  // INT_VEC_OK
+  int64_t world_rank = -1;
+};
+
+WorldTopologyState& WorldTopology() {
+  static absl::NoDestructor<WorldTopologyState> state;
+  return *state;
+}
+
+}  // namespace
+
+const std::vector<PjRtDeviceAttributes>& GetGlobalDeviceAttributes() {
+  return WorldTopology().device_attrs;
+}
+
+const std::vector<int64_t>& GetGlobalRankToDeviceId() {  // INT_VEC_OK
+  return WorldTopology().rank_to_device_id;
+}
+
+absl::Status ProcessGroupTpu::InitializeRankToDeviceMappings(
+    int64_t world_size) {
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=singleton topology initialization
+                 // invariant
+      size_ == world_size, error::kInvalidArgument)
+      << absl::StrFormat(
+             "the first initialized ProcessGroupTpu "
+             "must be of size WORLD_SIZE "
+             "(expected size %d, got %d)",
+             world_size, size_);
+
+  TT_ASSIGN_OR_RETURN(PjRtDeviceAttributes local_attrs,
+                      PjrtBackend::GetInstance().GetDeviceAttributes());
+
+  store_->set(absl::StrFormat("world_topo:%d", rank_),
+              SerializeDeviceAttributes(local_attrs));
+  std::vector<std::string> peer_keys(world_size);
+  for (int64_t r = 0; r < world_size; ++r) {
+    peer_keys[r] = absl::StrFormat("world_topo:%d", r);
+  }
+  auto peer_values = store_->multiGet(peer_keys);
+
+  std::vector<PjRtDeviceAttributes> device_attrs(world_size);
+  std::vector<int64_t> rank_to_device_id(world_size);  // INT_VEC_OK
+  for (int64_t r = 0; r < world_size; ++r) {
+    TT_ASSIGN_OR_RETURN(
+        device_attrs[r],
+        DeserializeDeviceAttributes(std::string_view(
+            reinterpret_cast<const char*>(peer_values[r].data()),
+            peer_values[r].size())));
+    rank_to_device_id[r] = device_attrs[r].id;
+  }
+
+  // World ranks are defined by the rank order of the first world-sized
+  // ProcessGroupTpu (the default WORLD group in practice). The global state is
+  // only updated once all peers' attributes have been parsed successfully.
+  auto& topo = WorldTopology();
+  topo.world_rank = rank_;
+  topo.device_attrs = std::move(device_attrs);
+  topo.rank_to_device_id = std::move(rank_to_device_id);
+  return absl::OkStatus();
+}
+
+absl::StatusOr<DeviceGroup> ProcessGroupTpu::GatherLocalSubgroupRanks() {
+  const auto& topo = WorldTopology();
+  store_->set(absl::StrFormat("local_rank:%d", rank_),
+              std::to_string(topo.world_rank));
+  std::vector<std::string> keys(size_);
+  for (int64_t i = 0; i < size_; ++i) {
+    keys[i] = absl::StrFormat("local_rank:%d", i);
+  }
+  auto values = store_->multiGet(keys);
+
+  const int64_t world_size = topo.rank_to_device_id.size();
+  DeviceGroup local_subgroup_ranks(size_);
+  for (int64_t i = 0; i < size_; ++i) {
+    const std::string_view value(
+        reinterpret_cast<const char*>(values[i].data()), values[i].size());
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=defensive check on internally
+                   // serialized store payload
+        absl::SimpleAtoi(value, &local_subgroup_ranks[i]), error::kInternal)
+        << "Failed to parse world rank from store: " << value;
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal rank range invariant
+        local_subgroup_ranks[i] >= 0 && local_subgroup_ranks[i] < world_size,
+        error::kInternal)
+        << "World rank " << local_subgroup_ranks[i]
+        << " out of range for world size " << world_size;
+  }
+  return local_subgroup_ranks;
+}
+
+absl::StatusOr<DeviceGroupList> ProcessGroupTpu::GatherAllSubgroups(
+    const DeviceGroup& local_subgroup_ranks, int64_t world_size) {
+  c10::intrusive_ptr<c10d::Store> root_store = store_;
+  if (auto* prefix_store = dynamic_cast<c10d::PrefixStore*>(root_store.get())) {
+    root_store = prefix_store->getUnderlyingNonPrefixStore();
+  }
+
+  static int64_t subgroup_gather_id = 0;
+  const int64_t gather_id = subgroup_gather_id++;
+  root_store->set(
+      absl::StrFormat("subgroup:%d:%d", gather_id, WorldTopology().world_rank),
+      absl::StrJoin(local_subgroup_ranks, ","));
+
+  std::vector<std::string> peer_keys(world_size);
+  for (int64_t r = 0; r < world_size; ++r) {
+    peer_keys[r] = absl::StrFormat("subgroup:%d:%d", gather_id, r);
+  }
+  auto peer_values = root_store->multiGet(peer_keys);
+
+  std::vector<DeviceGroup> unique_subgroups;
+  absl::flat_hash_set<int64_t> seen_ranks;
+  for (const auto& bytes : peer_values) {
+    DeviceGroup group;
+    for (std::string_view p : absl::StrSplit(
+             std::string_view(reinterpret_cast<const char*>(bytes.data()),
+                              bytes.size()),
+             ',')) {
+      int64_t r = 0;
+      TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=defensive check on internally
+                     // serialized store payload
+          absl::SimpleAtoi(p, &r), error::kInternal)
+          << "Failed to parse subgroup world rank from store: " << p;
+      group.push_back(r);
+    }
+    if (!group.empty() && !seen_ranks.contains(group[0])) {
+      for (int64_t r : group) {
+        TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal partition invariant
+            seen_ranks.insert(r).second, error::kInvalidArgument)
+            << "Overlapping subgroups are not supported in SPMD.";
+      }
+      unique_subgroups.push_back(std::move(group));
+    }
+  }
+
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal partition invariant
+      static_cast<int64_t>(unique_subgroups.size()) * size_ == world_size,
+      error::kInvalidArgument)
+      << "Incomplete or overlapping subgroups are not supported in SPMD.";
+  return DeviceGroupList(unique_subgroups);
+}
+
 ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
                                  int rank, int group_size)
     : c10d::Backend(rank, group_size), store_(std::move(store)) {
@@ -704,11 +893,7 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
       << "PjRtClient is not initialized.";
   ABSL_CHECK(pjrt_client != nullptr);  // CRASH_OK
 
-  // All devices in the slice:
-  for (const auto* dev : pjrt_client->devices()) {
-    ABSL_CHECK(dev != nullptr) << "Got a nullptr PjRtDevice.";  // CRASH_OK
-    device_ids_.push_back(dev->global_device_id().value());
-  }
+  const int64_t world_size = pjrt_client->devices().size();
 
   // Addressable device "assigned" to this process/rank:
   TT_CHECK_THROW(pjrt_client && pjrt_client->addressable_devices().size() == 1,
@@ -720,50 +905,37 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
   // We support creating "flat" process groups, as well as "2D+ mesh" process
   // (sub)groups. The (sub)group size must evenly divide the world size, i.e.
   // the total number of devices.
-  TT_CHECK_THROW(device_ids_.size() % group_size == 0, error::kInternal)
-      << "TPU slice size (" << device_ids_.size() << ") must be divisible by "
+  TT_CHECK_THROW(world_size % group_size == 0, error::kInternal)
+      << "TPU slice size (" << world_size << ") must be divisible by "
       << "process group size (" << group_size << ")";
 
-  // Use the distributed KV-store (c10d::Store) to exchange rank-to-device-id
-  // mappings. The end-result is that every PyTorch rank/process within the
-  // same group sees the same device ids membership, and in the same order.
-  store_->set(absl::StrFormat("rank_to_dev_id:%d", rank),
-              std::to_string(addressable_device_id_));
-
-  std::vector<std::string> peer_keys;
-  peer_keys.reserve(group_size);
-  for (int64_t peer_rank = 0; peer_rank < group_size; ++peer_rank) {
-    peer_keys.push_back(absl::StrFormat("rank_to_dev_id:%d", peer_rank));
+  if (WorldTopology().rank_to_device_id.empty()) {
+    TT_THROW_IF_ERROR(InitializeRankToDeviceMappings(world_size));
   }
-  std::vector<std::vector<uint8_t>> peer_values = store_->multiGet(peer_keys);
-
-  rank_to_device_id_.resize(group_size);
-  for (int64_t peer_rank = 0; peer_rank < group_size; ++peer_rank) {
-    const auto& peer_value = peer_values[peer_rank];
-    const std::string value_str(peer_value.begin(), peer_value.end());
-    int64_t peer_dev_id;
-    TT_CHECK_THROW(absl::SimpleAtoi(value_str, &peer_dev_id), error::kInternal)
-        << "cannot parse device id value: " << value_str;
-    rank_to_device_id_[peer_rank] = peer_dev_id;
+  const auto& topo = WorldTopology();
+  // Groups may be created with sort_ranks=False (even world-sized ones), so
+  // always exchange member world ranks to capture subgroup rank order.
+  TT_ASSIGN_OR_THROW(local_subgroup_ranks_, GatherLocalSubgroupRanks());
+  rank_to_device_id_.resize(size_);
+  for (int64_t i = 0; i < size_; ++i) {
+    rank_to_device_id_[i] = topo.rank_to_device_id[local_subgroup_ranks_[i]];
   }
-  ABSL_CHECK_EQ(rank_to_device_id_[rank], addressable_device_id_)  // CRASH_OK
-      << "Inconsistent rank-to-device-id mapping. This is a bug.";
+  if (size_ == world_size) {
+    subgroup_ranks_ = DeviceGroupList({local_subgroup_ranks_});
+  } else {
+    TT_ASSIGN_OR_THROW(subgroup_ranks_,
+                       GatherAllSubgroups(local_subgroup_ranks_, world_size));
+  }
 
   ABSL_VLOG(1) << "[ProcessGroupTpu] Rank-to-device-id mapping for "
                << "rank=" << rank << ", group_size=" << group_size << ": "
                << ToString(rank_to_device_id_);
 
-  std::vector<int64_t> rank_to_logical_device_id(group_size);  // INT_VEC_OK
-  std::iota(rank_to_logical_device_id.begin(), rank_to_logical_device_id.end(),
-            0);
-  subgroup_device_ids_ =
-      DeviceGroupList({std::move(rank_to_logical_device_id)});
-
   ABSL_VLOG(1) << "[ProcessGroupTpu] rank: " << getRank()
                << ", group size: " << getSize()
                << ", device id: " << addressable_device_id_
                << ", group device ids: " << ToString(rank_to_device_id_)
-               << ", all subgroups: " << ToString(subgroup_device_ids_);
+               << ", all subgroups: " << ToString(subgroup_ranks_);
 }
 
 void ProcessGroupTpu::shutdown() {}
@@ -773,10 +945,10 @@ ProcessGroupTpu::~ProcessGroupTpu() { shutdown(); }
 // Sets the subgroups fingerprint in the given param cache keys.
 #define TT_SET_SUBGROUPS_FINGERPRINT(param_keys) \
   TT_THROW_IF_ERROR(                             \
-      param_keys.SetParam("subgroups_fingerprint", subgroup_device_ids_))
+      param_keys.SetParam("subgroups_fingerprint", subgroup_ranks_))
 
-const DeviceGroupList& ProcessGroupTpu::GetSubgroupDeviceIds() const {
-  return subgroup_device_ids_;
+const DeviceGroupList& ProcessGroupTpu::GetSubgroupRanks() const {
+  return subgroup_ranks_;
 }
 
 c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::allreduce(
@@ -797,7 +969,7 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::allreduce(
 
     auto& maybe_materialized_input_tensor = tensor;
 
-    auto op_builder = [subgroups = subgroup_device_ids_,
+    auto op_builder = [subgroups = subgroup_ranks_,
                        reduce_op = opts.reduceOp](mlir::MlirOp input) {
       return BuildDistributedAllReduceShlo(input, reduce_op, subgroups);
     };
@@ -994,7 +1166,7 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::allgather(
         auto& maybe_materialized_input_tensor = input_tensor;
 
         auto op_builder =
-            [device_ids = rank_to_device_id_, subgroups = subgroup_device_ids_](
+            [subgroups = subgroup_ranks_](
                 mlir::MlirOp input) -> absl::StatusOr<DynamicMlirOpResults> {
           return BuildDistributedAllGatherShlo(input, subgroups,
                                                AllGatherOutputMode::kList);
@@ -1116,7 +1288,7 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::_allgather_base(
         auto& maybe_materialized_input_tensor = input_tensor;
 
         auto op_builder =
-            [device_ids = rank_to_device_id_, subgroups = subgroup_device_ids_,
+            [subgroups = subgroup_ranks_,
              output_mode](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
           TT_ASSIGN_OR_RETURN(auto results, BuildDistributedAllGatherShlo(
                                                 input, subgroups, output_mode));
@@ -1405,8 +1577,7 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::_reduce_scatter_base(
         auto& maybe_materialized_input_concat_tensor = input_concat;
 
         auto op_builder = [reduce_op = opts.reduceOp,
-                           subgroups =
-                               subgroup_device_ids_](mlir::MlirOp input) {
+                           subgroups = subgroup_ranks_](mlir::MlirOp input) {
           return BuildDistributedReduceScatterShlo(input, reduce_op, subgroups);
         };
 
@@ -1416,7 +1587,7 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::_reduce_scatter_base(
         // dimension).
         Dimensions out_dims =
             CopyIntVector(maybe_materialized_input_concat_tensor.sizes());
-        size_t group_size = subgroup_device_ids_[0].size();
+        size_t group_size = subgroup_ranks_[0].size();
         ABSL_CHECK_EQ(out_dims[0] % group_size, 0);  // CRASH_OK
         out_dims[0] /= group_size;
 
@@ -1482,7 +1653,7 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::alltoall_base(
             {
               const int64_t rank = getRank();
               const bool async = opts.asyncOp;
-              const int64_t group_size = subgroup_device_ids_[0].size();
+              const int64_t group_size = subgroup_ranks_[0].size();
 
               // Check on input and output dtypes already done in the
               // PyTorch layer. Hence, we do not need to check for dtypes
@@ -1528,9 +1699,9 @@ absl::StatusOr<DeviceBufferRef> ProcessGroupTpu::AllToAllBaseEqualSplits(
       << "got " << input.sizes() << " and " << output.sizes();
 
   TT_ASSIGN_OR_RETURN(auto param_keys,
-                      TT_MAKE_OP_PARAM_CACHE_KEYS(subgroup_device_ids_));
+                      TT_MAKE_OP_PARAM_CACHE_KEYS(subgroup_ranks_));
 
-  auto op_builder = [device_groups = subgroup_device_ids_](mlir::MlirOp input) {
+  auto op_builder = [device_groups = subgroup_ranks_](mlir::MlirOp input) {
     return BuildDistributedAllToAllBaseShlo(input, device_groups);
   };
 
@@ -1562,7 +1733,7 @@ absl::StatusOr<DeviceBufferRef> ProcessGroupTpu::AllToAllBaseUnevenSplits(
       << "expected trailing dimensions of input and output to match, got "
       << input.sizes() << " and " << output.sizes();
 
-  const size_t group_size = subgroup_device_ids_[0].size();
+  const size_t group_size = subgroup_ranks_[0].size();
 
   // 2. Compute slice sizes for sending and receiving.
   const bool uniform_input = input_split_sizes.empty();
@@ -1594,7 +1765,7 @@ absl::StatusOr<DeviceBufferRef> ProcessGroupTpu::AllToAllBaseUnevenSplits(
           recv_sizes, input_buffer_size, output_buffer_size));
 
   TT_ASSIGN_OR_RETURN(auto param_keys,
-                      TT_MAKE_OP_PARAM_CACHE_KEYS(subgroup_device_ids_));
+                      TT_MAKE_OP_PARAM_CACHE_KEYS(subgroup_ranks_));
   TT_RETURN_IF_ERROR(SetRaggedAllToAllParamKeys(param_keys, offsets));
 
   // 4. Explicitly materialize both input and output before dispatching the
@@ -1620,7 +1791,7 @@ absl::StatusOr<DeviceBufferRef> ProcessGroupTpu::AllToAllBaseUnevenSplits(
   // 5. Build the MLIR StableHLO custom call with device replica group
   // attributes and MLIR constant metadata tensors.
   auto op_builder =
-      [device_groups = subgroup_device_ids_,
+      [device_groups = subgroup_ranks_,
        offsets = std::move(offsets)](FixedSizeSpan<mlir::MlirOp, 2> inputs) {
         auto& [input, output] = inputs;
         return BuildDistributedAllToAllBaseUnevenSplitsShlo(
@@ -1691,8 +1862,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::alltoall(
 
         if (IsUniformAllToAll(output_tensors, input_tensors)) {
           NAryMlirOpBuilder<kDynamicSize, kDynamicSize> op_builder =
-              [device_groups = subgroup_device_ids_](
-                  absl::Span<mlir::MlirOp> inputs, mlir::MlirBuilder& builder) {
+              [device_groups = subgroup_ranks_](absl::Span<mlir::MlirOp> inputs,
+                                                mlir::MlirBuilder& builder) {
                 return BuildDistributedAllToAllShlo(inputs, device_groups);
               };
 

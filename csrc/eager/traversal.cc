@@ -677,8 +677,8 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
           new_func_ops.push_back(func_op);
         }
       }
-      ApplySubgroupTilingOrReplicaRewriting(first_new_op, new_func_ops,
-                                            deferred_op, resolved_da);
+      TT_RETURN_IF_ERROR(ApplySubgroupTilingOrReplicaRewriting(
+          first_new_op, new_func_ops, deferred_op, resolved_da));
     }
 
     // Cast each output of the deferred op to the expected type.
