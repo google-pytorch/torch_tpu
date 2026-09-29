@@ -90,6 +90,14 @@ namespace torch_tpu {
 absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const at::Tensor& tensor);
 absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const c10::Storage& storage);
 
+// Like GetBaseBuffer, but may run while another thread writes `tensor`'s
+// storage in place (AssignBufferToAtTensor, AssignBufferAsStorageBase). This is
+// for readers outside TorchTPU's op paths, such as GetBaseTensorBuffer.
+// TorchTPU's own readers use GetBaseBuffer, because PyTorch does not support
+// reading a tensor while another thread writes it.
+absl::StatusOr<DeviceBufferRef> GetBaseBufferForExternalReader(
+    const at::Tensor& tensor);
+
 // Extracts the DeviceBufferRef from the given ATen tensor.
 //
 // If the tensor is a view, the buffer will be a view of the base buffer.

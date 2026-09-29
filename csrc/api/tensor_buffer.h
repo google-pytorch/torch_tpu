@@ -92,6 +92,14 @@ class TensorBufferHandle final {
 
 // Extracts the TensorBufferHandle for the given tensor's base buffer.
 // Returns an error if the tensor is not a valid TPU tensor.
+//
+// This call may run on any thread while TorchTPU ops write `tensor`, or another
+// tensor sharing its storage, in place or via out=. The handle then refers to
+// the buffer bound before or after that write; if the write donated it, later
+// use of the handle can fail. The guarantee covers only this call, not the
+// handle's methods or destructor. The caller must keep `tensor` alive, and
+// nothing may resize or replace the storage (resize_, set_, .data assignment,
+// swap_tensors) concurrently.
 absl::StatusOr<TensorBufferHandle> GetBaseTensorBuffer(
     const at::Tensor& tensor);
 

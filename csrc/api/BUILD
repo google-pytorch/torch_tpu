@@ -99,5 +99,28 @@ torch_tpu_cc_test(
     ],
 )
 
+torch_tpu_cc_test(
+    name = "tensor_buffer_concurrency_test",
+    srcs = ["tensor_buffer_concurrency_test.cc"],
+    exec_properties = {
+        "cpp_link.mem": "16g",  # Needed for asan.
+    },
+    requires_libtpu = True,
+    deps = [
+        ":tensor_buffer",
+        "//csrc/common:dimension_types",
+        "//csrc/common:oss_test_main",
+        "//csrc/common:status_test_utils",
+        "//csrc/eager:device_buffer",
+        "//csrc/eager:tensor_to_buffer",
+        "//shims/torch:aten_headers",
+        "//shims/torch/c10/core:base_headers",
+        "//shims/torch/c10/util:base_headers",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+    ],
+)
+
 # This must be the last line in the BUILD file.
 torch_tpu_package_end()

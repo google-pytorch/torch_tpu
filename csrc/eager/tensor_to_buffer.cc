@@ -32,6 +32,7 @@
 #include "absl/base/thread_annotations.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/hash/hash.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
@@ -100,6 +101,21 @@ void RemoveDataPtrAlias(const DeviceBufferRef& ref) {
   RecordDataPtrDestroyed(ref);
 }
 
+constexpr size_t kNumDataPtrRefMutexes = 64;
+
+struct alignas(64) DataPtrRefMutexStripe {
+  absl::Mutex mutex{absl::kConstInit};
+};
+
+DataPtrRefMutexStripe g_data_ptr_ref_mutexes[kNumDataPtrRefMutexes];
+
+// Returns the mutex that serializes OverwriteDataPtr's swap of the
+// DeviceBufferRef at `ref_ptr` with GetBaseBufferForExternalReader's copy.
+absl::Mutex& DataPtrRefMutex(const DeviceBufferRef* ref_ptr) {
+  return g_data_ptr_ref_mutexes[absl::HashOf(ref_ptr) % kNumDataPtrRefMutexes]
+      .mutex;
+}
+
 // Delegate responsibility for deleting the DeviceBufferRef to the
 // c10::DataPtr.
 // The DeviceBufferRef* is used as both the "data" and "context" of the
@@ -131,7 +147,13 @@ void OverwriteDataPtr(const c10::DataPtr& data_ptr,
   RemoveDataPtrAlias(*old_ref_ptr);
   AddDataPtrAlias(buffer_ref);
 
-  *old_ref_ptr = std::move(buffer_ref);
+  // `ref` ends up holding the previous DeviceBufferRef, which is released
+  // after unlocking because that may destroy its DeviceBufferList.
+  DeviceBufferRef ref = std::move(buffer_ref);
+  {
+    absl::MutexLock lock(DataPtrRefMutex(old_ref_ptr));
+    std::swap(*old_ref_ptr, ref);
+  }
 }
 
 }  // namespace
@@ -293,7 +315,10 @@ absl::Status AssignBufferAsStorageBase(DeviceBufferRef new_base,
   return absl::OkStatus();
 }
 
-absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const at::Tensor& tensor) {
+namespace {
+
+// The argument checks of GetBaseBuffer(tensor).
+absl::Status CheckBaseBufferTensor(const at::Tensor& tensor) {
   TT_RET_CHECK(tensor.defined(), error::kInvalidArgument)
       << "tensor is undefined";
 
@@ -311,6 +336,13 @@ absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const at::Tensor& tensor) {
              tensor.storage().allocator() == GetTpuAllocator())
       << "If tensor storage is owning, it must be allocated by g_tpu_allocator";
 
+  return absl::OkStatus();
+}
+
+}  // namespace
+
+absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const at::Tensor& tensor) {
+  TT_RETURN_IF_ERROR(CheckBaseBufferTensor(tensor));
   return GetBaseBuffer(tensor.storage());
 }
 
@@ -323,6 +355,18 @@ absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const c10::Storage& storage) {
       static_cast<const DeviceBufferRef*>(storage.data_ptr().get());
   ABSL_CHECK(base_buffer_ref)  // CRASH_OK
       << "tensor storage has a null DeviceBufferRef* via c10::DataPtr::get()";
+  return *base_buffer_ref;
+}
+
+absl::StatusOr<DeviceBufferRef> GetBaseBufferForExternalReader(
+    const at::Tensor& tensor) {
+  // Checked outside the lock: tensor.device() can call into Python.
+  TT_RETURN_IF_ERROR(CheckBaseBufferTensor(tensor));
+  const DeviceBufferRef* const base_buffer_ref =
+      static_cast<const DeviceBufferRef*>(tensor.storage().data_ptr().get());
+  ABSL_CHECK(base_buffer_ref)  // CRASH_OK
+      << "tensor storage has a null DeviceBufferRef* via c10::DataPtr::get()";
+  absl::MutexLock lock(DataPtrRefMutex(base_buffer_ref));
   return *base_buffer_ref;
 }
 

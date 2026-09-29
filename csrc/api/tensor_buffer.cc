@@ -104,7 +104,7 @@ absl::Status TensorBufferHandle::Synchronize() {
 
 absl::StatusOr<TensorBufferHandle> GetBaseTensorBuffer(
     const at::Tensor& tensor) {
-  auto buffer_ref_or = GetBaseBuffer(tensor);
+  auto buffer_ref_or = GetBaseBufferForExternalReader(tensor);
   if (!buffer_ref_or.ok()) {
     return buffer_ref_or.status();
   }
