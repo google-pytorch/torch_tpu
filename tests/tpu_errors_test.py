@@ -4987,5 +4987,28 @@ class EnvironmentErrorsTest(et.TpuOnlyErrorTestBase):
           environment.set_tpu_launch_env()
 
 
+class ForkErrorsTest(et.TpuOnlyErrorTestBase):
+
+  @et.why_tpu_only("Testing bad fork fail-fast RuntimeError on TPU.")
+  def test_bad_fork_lazy_init_error(self):
+    msg = (
+        "cannot access or re-initialize TPU in a forked subprocess. To use"
+        " TPU with multiprocessing, you must use the 'spawn' start method"
+    )
+    self.assertFalse(torch.tpu._is_in_bad_fork())
+    with mock.patch.object(torch.tpu, "_is_in_bad_fork", return_value=True):
+      self.assertTrue(torch.tpu._is_in_bad_fork())
+      self.assertFalse(torch.tpu.is_initialized())
+      # In PyTorch, torch.manual_seed() calls _is_in_bad_fork() and skips
+      # TPU device seeding when in a bad fork (resolving DataLoader deadlock).
+      torch.manual_seed(42)
+      with et.assert_raises_message(RuntimeError, tpu=msg):
+        torch.tpu._lazy_init()
+      with et.assert_raises_message(RuntimeError, tpu=msg):
+        torch.tpu._init_runtime_options()
+      torch.tpu._shutdown_runtime()
+    self.assertFalse(torch.tpu._is_in_bad_fork())
+
+
 if __name__ == "__main__":
   absltest.main()

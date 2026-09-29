@@ -19,16 +19,28 @@
 
 #include "absl/cleanup/cleanup.h"
 #include "absl/status/status.h"
+#include "absl/status/status_matchers.h"
 #include "csrc/common/env_vars.h"
+#include "csrc/common/error_utils.h"
+#include "csrc/common/status_test_utils.h"
 #include "csrc/pjrt/pjrt_state.h"
+#include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
 namespace torch_tpu {
 namespace {
 
+using absl_testing::StatusIs;
+using testing::HasSubstr;
+
 class PjRtInitTest : public testing::Test {
  protected:
-  void TearDown() override { PjrtBackend::GetInstance().Shutdown(); }
+  void TearDown() override {
+    // Hooks outlive Shutdown(), and Shutdown() is a no-op in a "bad fork";
+    // clear them first.
+    PjrtBackend::GetInstance().SetPjRtInitializationOptions({});
+    PjrtBackend::GetInstance().Shutdown();
+  }
 };
 
 TEST_F(PjRtInitTest, InitializePjRtIsLazy) {
@@ -52,9 +64,9 @@ TEST_F(PjRtInitTest, InitializePjRtSetsCorrectDeviceCount) {
   ASSERT_NE(client, nullptr);
   EXPECT_TRUE(PjrtBackend::GetInstance().IsInitialized());
 
-  auto device_count_or = PjrtBackend::GetInstance().GetGlobalDeviceCount();
-  ASSERT_EQ(device_count_or.status(), absl::OkStatus());
-  EXPECT_EQ(device_count_or.value(), 1);
+  TT_ASSERT_OK_AND_ASSIGN(int device_count,
+                          PjrtBackend::GetInstance().GetGlobalDeviceCount());
+  EXPECT_EQ(device_count, 1);
 }
 
 TEST_F(PjRtInitTest, InitializeExpandsRankInEnvVars) {
@@ -81,6 +93,44 @@ TEST_F(PjRtInitTest, InitializeExpandsRankInEnvVars) {
   const char* libtpu_args = std::getenv(kLibtpuInitArgsEnvVar);
   EXPECT_NE(libtpu_args, nullptr);
   EXPECT_STREQ(libtpu_args, "some_args_1234");
+}
+
+TEST_F(PjRtInitTest, BadForkCheckerPreventsAccessAfterInit) {
+  ASSERT_FALSE(PjrtBackend::GetInstance().IsInitialized());
+
+  static bool in_bad_fork = false;
+  in_bad_fork = false;
+  PjrtBackend::GetInstance().SetPjRtInitializationOptions(
+      {.device_type = "tpu", .bad_fork_checker = []() { return in_bad_fork; }});
+
+  ASSERT_EQ(PjrtBackend::GetInstance().EnsureInitialized(), absl::OkStatus());
+  EXPECT_TRUE(PjrtBackend::GetInstance().IsInitialized());
+
+  // Simulate fork in child after parent already initialized.
+  in_bad_fork = true;
+  EXPECT_TRUE(PjrtBackend::GetInstance().IsInBadFork());
+  EXPECT_FALSE(PjrtBackend::GetInstance().IsInitialized());
+  EXPECT_EQ(PjrtBackend::GetInstance().GetClient(), nullptr);
+  EXPECT_THAT(
+      PjrtBackend::GetInstance().EnsureInitialized(),
+      StatusIs(error::kFailedPrecondition, HasSubstr("forked subprocess")));
+}
+
+TEST_F(PjRtInitTest, OnInitializedHookIsInvoked) {
+  ASSERT_FALSE(PjrtBackend::GetInstance().IsInitialized());
+
+  static bool hook_called = false;
+  hook_called = false;
+  PjrtBackend::GetInstance().SetPjRtInitializationOptions(
+      {.device_type = "tpu",
+       .bad_fork_checker = nullptr,
+       .on_initialized_hook = []() { hook_called = true; }});
+
+  EXPECT_FALSE(hook_called);
+  auto* client = PjrtBackend::GetInstance().GetClient();
+  ASSERT_NE(client, nullptr);
+  EXPECT_TRUE(hook_called);
+  EXPECT_TRUE(PjrtBackend::GetInstance().IsInitialized());
 }
 
 }  // namespace

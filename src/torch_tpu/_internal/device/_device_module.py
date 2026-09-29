@@ -557,24 +557,23 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
     .. warning::
         This API is experimental and subject to change in future releases.
     """
-    return _device_ops_backend._is_initialized()  # pylint: disable=protected-access
+    return not cls._is_in_bad_fork() and _device_ops_backend._is_initialized()  # pylint: disable=protected-access
 
   @classmethod
   def _lazy_init(cls) -> None:
-    """No-op initialization method to satisfy PyTorch's PrivateUse1 requirements."""
-    pass
+    """Initialization method to satisfy PyTorch's PrivateUse1 requirements."""
+    if cls._is_in_bad_fork():
+      raise RuntimeError(
+          "cannot access or re-initialize TPU in a forked subprocess. "
+          "To use TPU with multiprocessing, you must use the 'spawn' start"
+          " method"
+      )
+    _device_ops_backend._register_fork_handler()  # pylint: disable=protected-access
 
   @classmethod
   def _is_in_bad_fork(cls) -> bool:
-    """Returns whether we are in a bad fork.
-
-    This is a CUDA specific concept, related to how the CUDA context and runtime
-    interacts with multiprocesses. An implementation is required to support
-    torch.manual_seed(), as it is called in _seed_custom_device() in
-    py/torch/random.py.
-    """
-    # TODO(b/456545545): unda - revisit this.
-    return False
+    """Returns whether the current process is in an unsafe forked child state."""
+    return _device_ops_backend._is_in_bad_fork()  # pylint: disable=protected-access
 
   @classmethod
   @experimental(
@@ -672,6 +671,12 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
       cls,
   ):
     """Initializes the TPU runtime options."""
+    if cls._is_in_bad_fork():
+      raise RuntimeError(
+          "cannot access or re-initialize TPU in a forked subprocess. "
+          "To use TPU with multiprocessing, you must use the 'spawn' start"
+          " method"
+      )
     if not cls.is_initialized():
       _device_ops_backend._init_runtime_options(cls._device_type)  # pylint: disable=protected-access
       if not hasattr(cls, "_atexit_registered"):
@@ -845,7 +850,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
 
   @classmethod
   def _get_cache_requests(cls):
-    return _device_ops_backend._get_cache_requests()  # pylint: disable=protected-accessœ
+    return _device_ops_backend._get_cache_requests()  # pylint: disable=protected-access
 
   @classmethod
   def _get_cache_hits(cls):

@@ -16,6 +16,7 @@
 
 #include "csrc/pjrt/pjrt_state.h"
 
+#include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <memory>
@@ -171,11 +172,22 @@ PjrtBackend& PjrtBackend::GetInstance() {
 
 void PjrtBackend::SetPjRtInitializationOptions(
     const PjRtInitializationOptions& options) {
+  bad_fork_checker_.store(options.bad_fork_checker, std::memory_order_relaxed);
+  on_initialized_hook_.store(options.on_initialized_hook,
+                             std::memory_order_relaxed);
   absl::MutexLock lock(mutex_);
   options_ = options;
 }
 
 absl::Status PjrtBackend::EnsureInitialized() {
+  if (IsInBadFork()) {
+    return TT_ERROR(  // ERROR_COV_INFEASIBLE=covered in C++ pjrt_init_test.
+               error::kFailedPrecondition)
+           << "cannot access or re-initialize TPU in a forked subprocess. "
+           << "To use TPU with multiprocessing, you must use the 'spawn' "
+           << "start method";
+  }
+
   {
     absl::ReaderMutexLock lock(mutex_);
     if (init_attempted_) {
@@ -184,14 +196,19 @@ absl::Status PjrtBackend::EnsureInitialized() {
   }
 
   absl::MutexLock lock(mutex_);
-  if (init_attempted_) {
-    return init_status_;
+  if (!init_attempted_) {
+    // Early check for VFIO collisions during initialization to yield
+    // actionable errors instead of low-level crashes.
+    init_status_ = AdaptVfioDeviceCollisionError(InitializeInternal());
+    init_attempted_ = true;
+    if (init_status_.ok()) {
+      if (const auto hook =
+              on_initialized_hook_.load(std::memory_order_relaxed);
+          hook != nullptr) {
+        hook();
+      }
+    }
   }
-
-  // Early check for VFIO collisions during initialization to yield actionable
-  // errors instead of low-level crashes.
-  init_status_ = AdaptVfioDeviceCollisionError(InitializeInternal());
-  init_attempted_ = true;
   return init_status_;
 }
 
@@ -283,10 +300,18 @@ absl::Status PjrtBackend::InitializeInternal() {
 }
 
 bool PjrtBackend::IsInitialized() const {
+  if (IsInBadFork()) {
+    return false;
+  }
   absl::ReaderMutexLock lock(mutex_);
   return client_ != nullptr;
 }
 
+bool PjrtBackend::IsInBadFork() const {
+  const BadForkChecker checker =
+      bad_fork_checker_.load(std::memory_order_relaxed);
+  return checker != nullptr && checker();
+}
 xla::PjRtClient* absl_nullable PjrtBackend::GetClient() {
   if (const absl::Status s = EnsureInitialized(); !s.ok()) {
     ABSL_LOG_FIRST_N(ERROR, 1)
@@ -386,6 +411,9 @@ absl::StatusOr<xla::HostMemoryAllocator*> PjrtBackend::GetHostAllocator() {
 }
 
 void PjrtBackend::Shutdown() {
+  if (IsInBadFork()) {
+    return;
+  }
   absl::MutexLock lock(mutex_);
   if (!init_attempted_) {
     return;

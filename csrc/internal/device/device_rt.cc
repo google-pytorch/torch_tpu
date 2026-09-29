@@ -51,6 +51,7 @@
 #include "pybind11/gil.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
+#include "torch/csrc/utils/device_lazy_init.h"
 #include "torch/csrc/utils/pybind.h"  // IWYU pragma: keep, needed for at::Tensor mapping
 #include "xla/pjrt/pjrt_client.h"
 
@@ -128,6 +129,14 @@ PyTpuEventBase PyRecordEvent(std::optional<int> device_index,
   return PyTpuEventBase(std::move(event_snapshot));
 }
 
+bool CheckIsInBadFork() {
+  return torch::utils::is_device_in_bad_fork(at::kPrivateUse1);
+}
+
+void RegisterForkHandler() {
+  torch::utils::register_fork_handler_for_device_init(at::kPrivateUse1);
+}
+
 void InitRuntimeOptions(const std::string& device_type) {
   if (device_type == "tpu") {
     TT_THROW_IF_ERROR(AddTpuHooks()) << "Failed to add TPU hooks.";
@@ -136,7 +145,9 @@ void InitRuntimeOptions(const std::string& device_type) {
   PjrtBackend::GetInstance().SetPjRtInitializationOptions(
       {.device_type = device_type,
        .premapped_buffer_size_bytes =
-           GetPremappedBufferSizeFromEnvOnce().value_or(0)});
+           GetPremappedBufferSizeFromEnvOnce().value_or(0),
+       .bad_fork_checker = &CheckIsInBadFork,
+       .on_initialized_hook = &RegisterForkHandler});
   ABSL_LOG(INFO) << "PjRt runtime initialization deferred for " << device_type;
   CompilationCache::GetInstance().SetOptions({});
 }
@@ -233,8 +244,20 @@ TT_PYBIND11_MODULE(_device_ops_backend, m) {
       "Returns whether the PjRt runtime is initialized.");
 
   m.def(
+      "_is_in_bad_fork",
+      []() -> bool { return PjrtBackend::GetInstance().IsInBadFork(); },
+      "Returns whether the current process is in an unsafe forked child "
+      "state.");
+
+  m.def("_register_fork_handler", &RegisterForkHandler,
+        "Registers PyTorch fork handlers for device initialization.");
+
+  m.def(
       "_shutdown_runtime",
       []() {
+        if (PjrtBackend::GetInstance().IsInBadFork()) {
+          return;
+        }
         ShutDownMaterializationState();
         CompilationCache::ShutDown();
         PjrtBackend::GetInstance().Shutdown();
@@ -285,6 +308,7 @@ TT_PYBIND11_MODULE(_device_ops_backend, m) {
   m.def(
       "_get_current_device_id",
       []() -> int {
+        TT_THROW_IF_ERROR(PjrtBackend::GetInstance().EnsureInitialized());
         xla::PjRtClient* client = PjrtBackend::GetInstance().GetClient();
         ABSL_CHECK(client != nullptr)  // CRASH_OK
             << "PjRtClient is null after initialization.";
@@ -307,6 +331,7 @@ TT_PYBIND11_MODULE(_device_ops_backend, m) {
   m.def(
       "_get_device_count",
       []() -> int {
+        TT_THROW_IF_ERROR(PjrtBackend::GetInstance().EnsureInitialized());
         xla::PjRtClient* client = PjrtBackend::GetInstance().GetClient();
         TT_CHECK_THROW(client != nullptr, error::kInternal)
             << "PjRtClient is null after initialization.";

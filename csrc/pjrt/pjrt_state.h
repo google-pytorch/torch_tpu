@@ -17,6 +17,7 @@
 #ifndef TORCH_TPU_CSRC_PJRT_PJRT_STATE_H_
 #define TORCH_TPU_CSRC_PJRT_PJRT_STATE_H_
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -36,10 +37,16 @@
 
 namespace torch_tpu {
 
+// Function pointer hooks for fork detection and runtime initialization.
+using BadForkChecker = bool (*)();
+using OnInitializedHook = void (*)();
+
 // PjRt initialization options. Defaults to TPU, no pre-mapped buffer.
 struct PjRtInitializationOptions {
   std::string device_type = "tpu";
   int64_t premapped_buffer_size_bytes = 0;
+  BadForkChecker bad_fork_checker = nullptr;
+  OnInitializedHook on_initialized_hook = nullptr;
 };
 
 // PJRT device attributes populated from the PJRT runtime.
@@ -79,6 +86,10 @@ class PjrtBackend {
 
   // Returns whether the PjRt runtime is initialized.
   [[nodiscard]] bool IsInitialized() const ABSL_LOCKS_EXCLUDED(mutex_);
+
+  // Returns whether the current process is in an unsafe forked child state
+  // (i.e. forked after PjRt runtime initialization occurred in the parent).
+  [[nodiscard]] bool IsInBadFork() const;
 
   // Returns the PjRtClient singleton. Triggers lazy initialization if needed.
   [[nodiscard]] xla::PjRtClient* absl_nullable GetClient()
@@ -144,6 +155,8 @@ class PjrtBackend {
   PjRtInitializationOptions options_ ABSL_GUARDED_BY(mutex_) = {};
   bool init_attempted_ ABSL_GUARDED_BY(mutex_) = false;
   absl::Status init_status_ ABSL_GUARDED_BY(mutex_) = absl::OkStatus();
+  std::atomic<BadForkChecker> bad_fork_checker_{nullptr};
+  std::atomic<OnInitializedHook> on_initialized_hook_{nullptr};
 };
 
 }  // namespace torch_tpu
