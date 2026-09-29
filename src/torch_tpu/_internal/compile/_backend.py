@@ -454,6 +454,7 @@ def make_backend_compiler(
     example_inputs: Sequence[Any],
     async_compile: bool = False,
     debug: TpuCompileDebug | None = None,
+    num_dynamic_buckets: int = 1,
 ) -> compiler.Compiler:
   """Creates a compiler configured for static or dynamic compilation.
 
@@ -462,6 +463,8 @@ def make_backend_compiler(
     async_compile: If True, executes XLA compilation asynchronously.
     debug: Optional TpuCompileDebug container for recording compilation debug
       artifacts.
+    num_dynamic_buckets: Number of 128-aligned dynamic shape buckets to generate
+      when compiling with dynamic shapes.
 
   Returns:
     A SplitCompiler instance wrapping either DynamicCompiler or StaticCompiler,
@@ -469,7 +472,9 @@ def make_backend_compiler(
   """
   has_dynamic_symints = compiler.has_dynamic_symints(example_inputs)
   if has_dynamic_symints:
-    base_compiler = dynamic_compiler.DynamicCompiler(debug=debug)
+    base_compiler = dynamic_compiler.DynamicCompiler(
+        debug=debug, num_buckets=num_dynamic_buckets
+    )
   else:
     base_compiler = compiler.StaticCompiler(
         async_compile=async_compile, debug=debug
@@ -688,6 +693,8 @@ class TpuBackend:
         async_compile: Default False. If True, executes XLA compilation
           asynchronously.
         bounded_dynamism: Default False. If True, allows bounded dynamic shapes.
+        num_dynamic_buckets: Default 1. Number of 128-aligned dynamic shape
+          buckets to generate when `bounded_dynamism=True`.
         serializable: Default True. If True, uses
           SerializableAOTDispatchCompiler so that .serialize() is attached to
           compiled functions, which enables PyTorch's AOTAutogradCache to
@@ -714,6 +721,7 @@ class TpuBackend:
 
     async_compile = options.get("async_compile", False)
     bounded_dynamism = options.get("bounded_dynamism", False)
+    num_dynamic_buckets = options.get("num_dynamic_buckets", 1)
     # DynamicCompiler artifacts are not pickleable yet, so only static
     # compilations can participate in AOTAutogradCache.
     serializable = cast(
@@ -763,7 +771,10 @@ class TpuBackend:
       )
 
     compiler_instance = make_backend_compiler(
-        example_inputs, async_compile=async_compile, debug=debug
+        example_inputs,
+        async_compile=async_compile,
+        debug=debug,
+        num_dynamic_buckets=num_dynamic_buckets,
     )
     compiler_instance.execute_pre_grad_passes(graph_module)
 

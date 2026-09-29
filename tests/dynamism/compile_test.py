@@ -177,14 +177,14 @@ class CompileTest(seed_test_utils.RepeatableTest):
         [
             input_2,
             input_0,
-        ],  # bounded compile, [1, 6(6<=b<=12)] + [1, 1] -> [1, 7]
+        ],  # bounded compile, [1, 6(2<=b<=127)] + [1, 1] -> [1, 7]
         [
             input_3,
             input_0,
-        ],  # bounded compile, [1, 4(4<=b<=8)] + [1, 1] -> [1, 5]
+        ],  # no compile, [1, 4] + [1, 1] -> [1, 5]
     ]
     metrics = self.call_and_compare(simple_cat, test_inputs, None)
-    self.assertEqual(metrics["bounded_compile_events"], 2)
+    self.assertEqual(metrics["bounded_compile_events"], 1)
 
   def test_squeeze(self):
     def simple_squeeze(x):
@@ -255,13 +255,13 @@ class CompileTest(seed_test_utils.RepeatableTest):
 
     test_inputs = [
         (torch.ones(1, 2, 4),),  # static
-        (torch.ones(1, 8, 4),),  # bounded compile (1, 8<=16, 4)
-        (torch.ones(1, 4, 4),),  # bounded compile, (1, 4<=8, 4)
+        (torch.ones(1, 8, 4),),  # bounded compile (1, 2<=b<=128, 4)
+        (torch.ones(1, 4, 4),),  # no compile
         (torch.ones(1, 6, 4),),  # no compile
         (torch.ones(1, 12, 4),),  # no compile
     ]
     metrics = self.call_and_compare(reduction_func, test_inputs, None)
-    self.assertEqual(metrics["bounded_compile_events"], 2)
+    self.assertEqual(metrics["bounded_compile_events"], 1)
 
   def test_matmul(self):
     def simple_matmul(x, y):

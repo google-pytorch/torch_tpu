@@ -122,6 +122,8 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile/dynamic:output_sym_shape",
+        "//src/torch_tpu/_internal/compile/dynamic:sym_bounds_manager",
         "//src/torch_tpu/_internal/compile/dynamic:symbol_bounds",
         "//tests:seed_test_utils",
         "@pypi//sympy",

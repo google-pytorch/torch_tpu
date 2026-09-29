@@ -61,7 +61,7 @@ class GraphTransformContextTest(seed_test_utils.RepeatableTest):
       nonlocal captured_sm, captured_output_sym_shapes
       bm = sym_bounds_manager.SymBoundsManager(example_inputs)
       captured_sm = graph_transform_context.GraphTransformContext(
-          graph_module, example_inputs, bm.get_symbol_bounds()
+          graph_module, example_inputs, bm.get_fallback_symbol_bounds()
       )
       captured_output_sym_shapes = output_sym_shape.create_output_sym_shapes(
           graph_module, example_inputs
@@ -95,7 +95,7 @@ class GraphTransformContextTest(seed_test_utils.RepeatableTest):
       nonlocal captured_sm, captured_output_sym_shapes
       bm = sym_bounds_manager.SymBoundsManager(example_inputs)
       captured_sm = graph_transform_context.GraphTransformContext(
-          graph_module, example_inputs, bm.get_symbol_bounds()
+          graph_module, example_inputs, bm.get_fallback_symbol_bounds()
       )
       captured_output_sym_shapes = output_sym_shape.create_output_sym_shapes(
           graph_module, example_inputs
@@ -127,6 +127,7 @@ class GraphTransformContextTest(seed_test_utils.RepeatableTest):
     def fw_compiler(graph_module, example_inputs):
       nonlocal captured_bm
       captured_bm = sym_bounds_manager.SymBoundsManager(example_inputs)
+      captured_bm.get_fallback_symbol_bounds()
       return graph_module
 
     @torch.compile(backend=aot_autograd(fw_compiler=fw_compiler), dynamic=True)

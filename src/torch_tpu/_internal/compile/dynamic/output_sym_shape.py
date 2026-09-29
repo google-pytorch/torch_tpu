@@ -34,12 +34,14 @@ class OutputSymShape:
   Sym shape for an output tensor. Each dimension is either:
     (1) an integer for a static dimension, or
     (2) a dictionary for a dynamic dimension with the following keys:
+        "expr" (sympy.Expr for the symbolic dimension),
         "deps" (dict mapping symbol strings to (tensor_idx, dim_idx)),
         "compiled_fn" (callable evaluating the symbolic dimension expression).
 
   Example:[
             1,  # static dim
-            {"deps": {"sym_int_1": (tensor_idx, dim_idx),
+            {"expr": sym_int_1 + sym_int_2,
+             "deps": {"sym_int_1": (tensor_idx, dim_idx),
                       "sym_int_2": (tensor_idx, dim_idx)},
              "compiled_fn": <callable>} # dynamic dim
           ]
@@ -93,6 +95,57 @@ class OutputSymShape:
       runtime_size = dim["compiled_fn"](**kwargs)
       new_shape.append(runtime_size)
     return new_shape
+
+  def extract_symbol_offsets(self) -> dict[str, int]:
+    """Extracts non-negative constant offsets `c` from `s` or `s + c` output shape expressions.
+
+    For each dynamic dimension with an atomic symbol `s` (`c = 0`) or an
+    additive expression `s + c` (where `s` is an atomic symbol and `c` is a
+    positive integer constant), records `c` as the offset for `str(s)`.
+
+    Note: Negative offsets (e.g. `s - c` from sliced or trimmed outputs) are
+    intentionally ignored. This offset adjustment specifically targets the
+    autoregressive decoding case (such as KV-cache concatenation) that
+    increments a dynamic sequence dimension by a positive constant (e.g.
+    `s + 1`).
+
+    Returns:
+      Mapping from symbol name (str) to non-negative integer offset `c`.
+    """
+    offsets: dict[str, int] = {}
+    for dim in self.output_sym_shape:
+      if not isinstance(dim, dict):
+        continue
+      expr = dim.get("expr")
+      if expr is None:
+        continue
+      if expr.is_Symbol:
+        sym = expr
+        offset = 0
+      elif expr.is_Add and len(expr.free_symbols) == 1:
+        sym = next(iter(expr.free_symbols))
+        diff = expr - sym
+        if not (diff.is_number and diff.is_integer):
+          continue
+        offset = int(diff)
+        if offset <= 0:
+          continue
+      else:
+        continue
+
+      sym_name = str(sym)
+      if sym_name in offsets and offsets[sym_name] != offset:
+        logging.warning(
+            "Conflicting output shape offsets for symbol %s: %d vs %d;"
+            " keeping %d.",
+            sym_name,
+            offsets[sym_name],
+            offset,
+            offsets[sym_name],
+        )
+      else:
+        offsets[sym_name] = offset
+    return offsets
 
   @classmethod
   def from_output_node_meta_value(
@@ -148,7 +201,9 @@ class OutputSymShape:
             )
 
             compiled_fn = _make_compiled_fn(base_fn, param_names)
-            output_sym_shape.append({"deps": deps, "compiled_fn": compiled_fn})
+            output_sym_shape.append(
+                {"expr": expr, "deps": deps, "compiled_fn": compiled_fn}
+            )
           else:
             raise RuntimeError(
                 f"Output shape dimension '{dim}' depends on symbols not derived"

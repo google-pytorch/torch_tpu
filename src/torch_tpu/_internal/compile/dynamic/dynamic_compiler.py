@@ -146,6 +146,7 @@ class DynamicCompiler(compiler.Compiler):
       compilation_context: compiler.CompilationContext | None = None,
       *,
       debug: bool | compiler.TpuCompileDebug | None = None,
+      num_buckets: int = 1,
   ):
     """Initializes the DynamicCompiler instance.
 
@@ -155,10 +156,12 @@ class DynamicCompiler(compiler.Compiler):
       debug: Optional TpuCompileDebug container or bool for recording
         compilation debug artifacts. Note: Passing a bool is deprecated; pass a
         TpuCompileDebug container instead.
+      num_buckets: Number of 128-aligned dynamic shape buckets to generate.
     """
     if compilation_context is None:
       compilation_context = compiler.CompilationContext()
     super().__init__(compilation_context, debug=debug)
+    self._num_buckets = num_buckets
     self.static_compiler = compiler.StaticCompiler(
         compilation_context, debug=debug, use_stablehlo_bounds=True
     )
@@ -317,20 +320,44 @@ class DynamicCompiler(compiler.Compiler):
         example_inputs,
     )
 
-    # Create a SymInt bounds manager (validates bounds against shape guards).
+    # Create a SymInt bounds manager.
     sym_bounds_manager = SymBoundsManager(example_inputs)
+
+    output_sym_shapes = create_output_sym_shapes(graph_module, example_inputs)
+    # Create symbol bound buckets at consecutive multiples of 128 (adjusted for
+    # constant output offsets).
+    bucketed_symbol_bounds = sym_bounds_manager.get_bucketed_symbol_bounds(
+        output_sym_shapes, num_buckets=self._num_buckets
+    )
+    if not bucketed_symbol_bounds:
+      # If bucketed bounds violate shape guards (e.g. divisibility constraints),
+      # fall back to a single bound using 2x lower-bound sizing.
+      bucketed_symbol_bounds = [sym_bounds_manager.get_fallback_symbol_bounds()]
+
+    merged_symbol_bounds = SymbolBounds.merge_bounds(bucketed_symbol_bounds)
+
+    logging.debug(
+        "[DynamicTpuBackend] Merged SymbolBounds: %s\nBucketed"
+        " SymbolBounds:\n%s",
+        merged_symbol_bounds,
+        LazyString(
+            lambda: "\n".join(
+                f"  Bucket {i}: {bounds}"
+                for i, bounds in enumerate(bucketed_symbol_bounds)
+            )
+        ),
+    )
 
     # Add bound checks on symints. This forces dynamo to trigger a recompilation
     # if the bound constraint isn't satisfied.
-    sym_bounds_manager.add_bound_checks()
+    sym_bounds_manager.add_bound_checks(merged_symbol_bounds)
 
-    output_sym_shapes = create_output_sym_shapes(graph_module, example_inputs)
     use_pad_real_to_static = _can_use_pad_real_to_static(example_inputs)
 
     return self._compile_for_symbol_bounds(
         graph_module=graph_module,
         example_inputs=example_inputs,
-        symbol_bounds=sym_bounds_manager.get_symbol_bounds(),
+        symbol_bounds=merged_symbol_bounds,
         output_sym_shapes=output_sym_shapes,
         is_fwd=is_fwd,
         module_name=module_name,

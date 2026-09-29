@@ -165,6 +165,7 @@ torch_tpu_py_library(
         "//learning/agents/tern/torch_agent:__subpackages__",
     ],
     deps = [
+        ":output_sym_shape",
         ":symbol_bounds",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",

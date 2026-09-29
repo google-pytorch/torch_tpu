@@ -15,7 +15,7 @@
 """Determine bounds of symbolic integers."""
 
 from __future__ import annotations
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 from absl import logging
 import sympy
@@ -32,50 +32,59 @@ def _is_valid_bound(s: sympy.Expr) -> bool:
 
 def _lookup_bounds_in_shape_env(
     expr: sympy.Expr, shape_env
-) -> tuple[int, int] | None:
+) -> tuple[int, int | sympy.Expr] | None:
   """Queries the shape environment using all available lookups and math solvers."""
   # When expr is a symbol.
   if isinstance(expr, sympy.Symbol):
     vr = shape_env.var_to_range.get(expr, None)
-    if vr and _is_valid_bound(vr.lower) and _is_valid_bound(vr.upper):
-      logging.debug(
-          "shape_env.var_to_range bounds: %s -> [%s, %s]",
-          expr,
-          vr.lower,
-          vr.upper,
-      )
-      return int(vr.lower), int(vr.upper)
+    if vr and _is_valid_bound(vr.lower):
+      if _is_valid_bound(vr.upper):
+        logging.debug(
+            "shape_env.var_to_range bounds: %s -> [%s, %s]",
+            expr,
+            vr.lower,
+            vr.upper,
+        )
+        return int(vr.lower), int(vr.upper)
+      if vr.upper in (int_oo, sympy.oo):
+        logging.debug(
+            "shape_env.var_to_range bounds: %s -> [%s, %s]",
+            expr,
+            vr.lower,
+            int_oo,
+        )
+        return int(vr.lower), int_oo
     return None
 
   # When expr is an arithmetic expression, try bound_sympy.
   if hasattr(shape_env, "bound_sympy"):
     try:
       vr = shape_env.bound_sympy(expr)
-      if _is_valid_bound(vr.lower) and _is_valid_bound(vr.upper):
+      if _is_valid_bound(vr.lower):
         min_val = int(vr.lower)
-        max_val = int(vr.upper)
-        logging.debug(
-            "shape_env.bound_sympy bounds: %s -> [%d, %d]",
-            expr,
-            min_val,
-            max_val,
-        )
-        return min_val, max_val
+        if _is_valid_bound(vr.upper):
+          max_val = int(vr.upper)
+          logging.debug(
+              "shape_env.bound_sympy bounds: %s -> [%d, %d]",
+              expr,
+              min_val,
+              max_val,
+          )
+          return min_val, max_val
+        if vr.upper in (int_oo, sympy.oo):
+          logging.debug(
+              "shape_env.bound_sympy bounds: %s -> [%d, %s]",
+              expr,
+              min_val,
+              int_oo,
+          )
+          return min_val, int_oo
     except Exception as e:  # pylint: disable=broad-except
       logging.warning(
           "Failed to get bounds from shape_env.bound_sympy for %s: %s", expr, e
       )
 
   return None
-
-
-def _round_up_bound(val: int) -> int:
-  """Rounds up to next power of 2 (for values <= 128) or multiple of 128."""
-  if val <= 2:
-    return 2
-  if val <= 128:
-    return 1 << (val - 1).bit_length()
-  return ((val + 127) // 128) * 128
 
 
 def get_fallback_upper_bound(lower_bound: int) -> int:
@@ -154,28 +163,20 @@ def find_violated_guard(
   return None
 
 
-def is_user_defined_bound(sym_int: torch.SymInt) -> bool:
-  """Checks whether bounds for the SymInt were explicitly defined in shape_env."""
-  node = getattr(sym_int, "node", None)
-  if node is None or getattr(node, "expr", None) is None:
-    return False
-  shape_env = getattr(node, "shape_env", None)
-  if shape_env is None:
-    return False
-  return (
-      _lookup_bounds_in_shape_env(node.expr, shape_env)  # pyrefly: ignore[bad-argument-type]
-      is not None
-  )
-
-
-def get_symint_bounds(sym_int: torch.SymInt) -> tuple[int, int]:
+def get_symint_bounds(
+    sym_int: torch.SymInt,
+) -> tuple[int, int | sympy.Expr]:
   """Gets lower and upper bounds for a given SymInt, evaluating expressions if needed.
+
+  If explicit finite bounds are not found in `shape_env`, returns
+  `(int(hint), int_oo)` to indicate an unbounded upper bound.
 
   Args:
     sym_int: The SymInt to get the bounds for.
 
   Returns:
-    A tuple of (lower_bound, upper_bound) for the SymInt.
+    A tuple of (lower_bound, upper_bound) for the SymInt, where `upper_bound`
+    is `int_oo` when no upper bound is set in `shape_env`.
 
   Raises:
     RuntimeError: If bounds are not found via shape_env and no hint is provided
@@ -186,7 +187,8 @@ def get_symint_bounds(sym_int: torch.SymInt) -> tuple[int, int]:
   ):
     return vr
 
-  # Fallback: resolve using concrete runtime profiling tracing hints
+  # Unbounded in shape_env: resolve lower bound from concrete tracing hint and
+  # return int_oo as upper bound.
   hint = sym_int.node.hint
   if hint is None:
     raise RuntimeError(
@@ -194,15 +196,13 @@ def get_symint_bounds(sym_int: torch.SymInt) -> tuple[int, int]:
     )
 
   lower_bound = int(hint)
-  upper_bound = _round_up_bound(get_fallback_upper_bound(lower_bound))
-
   logging.debug(
-      "Fallback hint bounds: %s, lb: %s, ub: %s",
+      "Unbounded hint bounds: %s, lb: %s, ub: %s",
       sym_int,
       lower_bound,
-      upper_bound,
+      int_oo,
   )
-  return lower_bound, upper_bound
+  return lower_bound, int_oo
 
 
 class SymbolBounds:
@@ -221,18 +221,45 @@ class SymbolBounds:
   ) -> Mapping[sympy.Symbol, value_ranges.ValueRanges]:
     return self._symbol_ranges
 
-  def with_upper_bounds(self, upper_bounds: Mapping[str, int]) -> SymbolBounds:
-    """Returns a new SymbolBounds with updated upper bounds for specified symbols."""
-    updated = {}
-    for sym, vr in self._symbol_ranges.items():
-      new_upper = upper_bounds.get(str(sym), int(vr.upper))
-      if new_upper < int(vr.lower):
-        raise ValueError(
-            f"New upper bound {new_upper} for symbol {sym} cannot be less than"
-            f" its lower bound {int(vr.lower)}."
-        )
-      updated[sym] = value_ranges.ValueRanges(vr.lower, new_upper)
-    return SymbolBounds(updated)
+  def __repr__(self) -> str:
+    def _sym_sort_key(sym: sympy.Symbol) -> tuple[str, int]:
+      name = str(sym)
+      for i, ch in enumerate(name):
+        if ch.isdigit() and name[i:].isdigit():
+          return (name[:i], int(name[i:]))
+      return (name, -1)
+
+    grouped: dict[tuple[int | str, int | str], list[str]] = {}
+    for sym in sorted(self._symbol_ranges, key=_sym_sort_key):
+      vr = self._symbol_ranges[sym]
+      bounds = (
+          int(vr.lower) if _is_valid_bound(vr.lower) else str(vr.lower),
+          int(vr.upper) if _is_valid_bound(vr.upper) else str(vr.upper),
+      )
+      grouped.setdefault(bounds, []).append(str(sym))
+
+    parts = []
+    for (lower, upper), syms in grouped.items():
+      key_str = syms[0] if len(syms) == 1 else f"({', '.join(syms)})"
+      parts.append(f"{key_str}: [{lower}, {upper}]")
+    return f"SymbolBounds({{{', '.join(parts)}}})"
+
+  @classmethod
+  def merge_bounds(cls, bounds_seq: Sequence[SymbolBounds]) -> SymbolBounds:
+    """Returns a SymbolBounds spanning the union of ranges across `bounds_seq`."""
+    if not bounds_seq:
+      raise ValueError("Cannot merge an empty sequence of SymbolBounds.")
+    merged_ranges: dict[sympy.Symbol, value_ranges.ValueRanges] = {}
+    for bounds in bounds_seq:
+      for sym, vr in bounds.symbol_ranges.items():
+        if sym not in merged_ranges:
+          merged_ranges[sym] = vr
+        else:
+          merged_ranges[sym] = value_ranges.ValueRanges(
+              min(merged_ranges[sym].lower, vr.lower),
+              max(merged_ranges[sym].upper, vr.upper),
+          )
+    return cls(merged_ranges)
 
   def get_symint_bounds(self, sym_int: torch.SymInt) -> tuple[int, int]:
     """Gets lower and upper bounds for a given SymInt or symbolic expression."""

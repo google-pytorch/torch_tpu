@@ -36,7 +36,7 @@ class GraphTransformationsTest(seed_test_utils.RepeatableTest):
       captured_gm = graph_module
       bm = sym_bounds_manager.SymBoundsManager(example_inputs)
       captured_sm = graph_transform_context.GraphTransformContext(
-          graph_module, example_inputs, bm.get_symbol_bounds()
+          graph_module, example_inputs, bm.get_fallback_symbol_bounds()
       )
       return graph_module
 
@@ -88,7 +88,7 @@ class GraphTransformationsTest(seed_test_utils.RepeatableTest):
       captured_gm = graph_module
       bm = sym_bounds_manager.SymBoundsManager(example_inputs)
       captured_sm = graph_transform_context.GraphTransformContext(
-          graph_module, example_inputs, bm.get_symbol_bounds()
+          graph_module, example_inputs, bm.get_fallback_symbol_bounds()
       )
       return graph_module
 
@@ -145,7 +145,7 @@ class GraphTransformationsTest(seed_test_utils.RepeatableTest):
       captured_gm = graph_module
       bm = sym_bounds_manager.SymBoundsManager(example_inputs)
       captured_sm = graph_transform_context.GraphTransformContext(
-          graph_module, example_inputs, bm.get_symbol_bounds()
+          graph_module, example_inputs, bm.get_fallback_symbol_bounds()
       )
       return graph_module
 
@@ -198,7 +198,7 @@ class GraphTransformationsTest(seed_test_utils.RepeatableTest):
       captured_gm = graph_module
       bm = sym_bounds_manager.SymBoundsManager(example_inputs)
       captured_sm = graph_transform_context.GraphTransformContext(
-          graph_module, example_inputs, bm.get_symbol_bounds()
+          graph_module, example_inputs, bm.get_fallback_symbol_bounds()
       )
       return graph_module
 
@@ -272,7 +272,7 @@ class GraphTransformationsTest(seed_test_utils.RepeatableTest):
       captured_gm = graph_module
       bm = sym_bounds_manager.SymBoundsManager(example_inputs)
       captured_sm = graph_transform_context.GraphTransformContext(
-          graph_module, example_inputs, bm.get_symbol_bounds()
+          graph_module, example_inputs, bm.get_fallback_symbol_bounds()
       )
       return graph_module
 
@@ -314,7 +314,7 @@ class GraphTransformationsTest(seed_test_utils.RepeatableTest):
       captured_gm = graph_module
       bm = sym_bounds_manager.SymBoundsManager(example_inputs)
       captured_sm = graph_transform_context.GraphTransformContext(
-          graph_module, example_inputs, bm.get_symbol_bounds()
+          graph_module, example_inputs, bm.get_fallback_symbol_bounds()
       )
       return graph_module
 
