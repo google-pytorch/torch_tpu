@@ -3109,11 +3109,21 @@ Device-side assertion tracking was not enabled by user.""",
     t = torch.ones(2, device=et.device(), dtype=torch.float32)
     out = torch.ones(2, device=et.device(), dtype=torch.int64)
     with et.assert_raises_message(
-        Exception,
-        tpu="""gelu(): unsupported output dtype: 'int64'""",
+        RuntimeError,
+        tpu="""gelu(): expected the output dtype to be float32, got int64""",
         gpu="""Found dtype Long but expected Float""",
+        message_reviewed_by="jihonggan",
     ):
       torch.nn.functional.gelu(t, out=out)  # pylint: disable=unexpected-keyword-arg
+
+    out_f64 = torch.ones(2, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gelu(): expected the output dtype to be float32, got float64""",
+        gpu="""Found dtype Double but expected Float""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.nn.functional.gelu(t, out=out_f64)  # pylint: disable=unexpected-keyword-arg
 
   def test_gelu_unsupported_approximation_type(self):
     t = torch.randn(2, 3, device=et.device(), dtype=torch.float32)
@@ -8614,6 +8624,119 @@ Device-side assertion tracking was not enabled by user.""",
         message_reviewed_by="wan",
     ):
       torch.clamp(t, min_t, max_t, out=out_i32)
+
+  def test_sigmoid_out_dtype_mismatch(self):
+    t = torch.ones(5, device=et.device(), dtype=torch.float32)
+    out = torch.empty(5, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""sigmoid(): result type float32 can't be cast to the desired output type int32""",
+        gpu="""result type Float can't be cast to the desired output type Int""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.sigmoid(t, out=out)
+
+  def test_logit_out_dtype_mismatch(self):
+    t = torch.ones(5, device=et.device(), dtype=torch.float32)
+    out = torch.empty(5, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""logit(): result type float32 can't be cast to the desired output type int32""",
+        gpu="""result type Float can't be cast to the desired output type Int""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.logit(t, out=out)
+
+  def test_nan_to_num_out_dtype_mismatch(self):
+    t = torch.ones(5, device=et.device(), dtype=torch.float32)
+    out = torch.empty(5, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""nan_to_num(): expected the output dtype to be float32, got int32""",
+        gpu="""nan_to_num: dtype of out: Int should be same as input: Float""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.nan_to_num(t, out=out)
+
+  def test_softmax_out_dtype_mismatch(self):
+    t = torch.ones(5, device=et.device(), dtype=torch.float32)
+    out_int = torch.empty(5, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""softmax(): expected the output dtype to be float32, got int32""",
+        gpu="""Expected out tensor to have dtype float, but got int instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.softmax(t, 0, out=out_int)
+
+    out_f64 = torch.empty(5, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""softmax(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.softmax(t, 0, out=out_f64)
+
+  def test_log_softmax_out_dtype_mismatch(self):
+    t = torch.ones(5, device=et.device(), dtype=torch.float32)
+    out_int = torch.empty(5, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""log_softmax(): expected the output dtype to be float32, got int32""",
+        gpu="""Expected out tensor to have dtype float, but got int instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.log_softmax(t, 0, out=out_int)
+
+    out_f64 = torch.empty(5, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""log_softmax(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.log_softmax(t, 0, out=out_f64)
+
+  def test_log_sigmoid_out_dtype_mismatch(self):
+    t = torch.ones(5, device=et.device(), dtype=torch.float32)
+    out_int = torch.empty(5, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""log_sigmoid_forward(): expected the output dtype to be float32, got int32""",
+        gpu="""Found dtype Int but expected Float""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.nn.functional.logsigmoid(t, out=out_int)
+
+    out_f64 = torch.empty(5, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""log_sigmoid_forward(): expected the output dtype to be float32, got float64""",
+        gpu="""Found dtype Double but expected Float""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.nn.functional.logsigmoid(t, out=out_f64)
+
+  def test_softplus_out_dtype_mismatch(self):
+    t = torch.ones(5, device=et.device(), dtype=torch.float32)
+    out_int = torch.empty(5, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""softplus(): expected the output dtype to be float32, got int32""",
+        gpu="""Found dtype Int but expected Float""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.nn.functional.softplus(t, out=out_int)
+
+    out_f64 = torch.empty(5, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""softplus(): expected the output dtype to be float32, got float64""",
+        gpu="""Found dtype Double but expected Float""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.nn.functional.softplus(t, out=out_f64)
 
   def test_sign_unsupported_dtype_complex(self):
     t = torch.tensor([1 + 1j], device=et.device())

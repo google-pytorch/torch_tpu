@@ -25,6 +25,7 @@ torch_tpu_cc_library(
     hdrs = ["softmax_aten_kernels.h"],
     deps = [
         ":softmax",
+        "//csrc/common:aten_utils",
         "//csrc/common:cache_key",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",

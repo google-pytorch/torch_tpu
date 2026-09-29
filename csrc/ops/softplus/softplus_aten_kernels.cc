@@ -94,6 +94,9 @@ at::Tensor& AtenSoftplusOut(const at::Tensor& self, const at::Scalar& beta,
             << "expected the input dtype to be floating-point, "
             << "got " << ToString(self.scalar_type());
 
+        TT_THROW_IF_ERROR(ValidateOutDtype(out, self.scalar_type(),
+                                           /*allow_out_dtype_cast=*/false));
+
         TT_ASSIGN_OR_THROW(const at::Tensor beta_tensor,
                            promoted_beta.GetTensor(self.scalar_type()));
         TT_ASSIGN_OR_THROW(const at::Tensor threshold_tensor,

@@ -52,8 +52,11 @@ namespace {
 absl::StatusOr<mlir::MlirOp> BuildLogitShlo(mlir::MlirOp input_op,
                                             mlir::MlirOp eps_op,
                                             mlir::ElementType output_dtype) {
-  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_dtype,
-                      InferComputationDtype(output_dtype));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType input_dtype,
+                      GetElementType(input_op));
+  const mlir::ElementType computation_dtype =
+      (input_dtype == mlir::ElementType::F64) ? mlir::ElementType::F64
+                                              : mlir::ElementType::F32;
 
   TT_ASSIGN_OR_RETURN(const mlir::MlirOp computation_input_op,
                       CastIfNeeded(input_op, computation_dtype));
@@ -127,7 +130,9 @@ ReturnType DispatchLogit(const at::Tensor& self, PromotedScalar& promoted_eps,
   TT_ASSIGN_OR_RETURN(const auto out_dtype,
                       ConvertTo<mlir::ElementType>(out_type));
 
-  TT_ASSIGN_OR_RETURN(at::Tensor eps_tensor, promoted_eps.GetTensor(out_type));
+  const c10::ScalarType comp_scalar_type = InferOutputDtype(self);
+  TT_ASSIGN_OR_RETURN(at::Tensor eps_tensor,
+                      promoted_eps.GetTensor(comp_scalar_type));
 
   auto op_builder = [out_dtype](FixedSizeSpan<mlir::MlirOp, 2> inputs)
       -> absl::StatusOr<mlir::MlirOp> {
@@ -181,8 +186,15 @@ absl::StatusOr<mlir::MlirOp> BuildLogitBackwardShlo(
   //   Else:
   //     If self >= 0 and self <= 1, return grad
   //     Else return NaN
-  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_dtype,
-                      InferComputationDtype(output_dtype));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType self_dtype,
+                      GetElementType(self_op));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType grad_dtype,
+                      GetElementType(grad_output_op));
+  const mlir::ElementType computation_dtype =
+      (self_dtype == mlir::ElementType::F64 ||
+       grad_dtype == mlir::ElementType::F64)
+          ? mlir::ElementType::F64
+          : mlir::ElementType::F32;
   TT_ASSIGN_OR_RETURN(const mlir::MlirOp computation_grad_output_op,
                       CastIfNeeded(grad_output_op, computation_dtype));
   TT_ASSIGN_OR_RETURN(const mlir::MlirOp computation_self_op,
@@ -258,6 +270,7 @@ at::Tensor& AtenLogitOut(const at::Tensor& self, std::optional<double> eps,
                          at::Tensor& out) {
   PromotedScalar promoted_eps = PromoteScalar(at::Scalar(eps.value_or(-1.0)));
   TT_KERNEL(OpName::kLogitOut, param_keys, (self, promoted_eps, out), {
+    TT_THROW_IF_ERROR(ValidateOutDtype(out, InferOutputDtype(self)));
     const c10::ScalarType out_type = out.scalar_type();
     TT_THROW_IF_ERROR(BuildLogitBufferOut(self, promoted_eps, out_type,
                                           std::move(param_keys), out));
@@ -267,6 +280,7 @@ at::Tensor& AtenLogitOut(const at::Tensor& self, std::optional<double> eps,
 at::Tensor& AtenLogit_(at::Tensor& self, std::optional<double> eps) {
   PromotedScalar promoted_eps = PromoteScalar(at::Scalar(eps.value_or(-1.0)));
   TT_KERNEL(OpName::kLogit_, param_keys, (self, promoted_eps), {
+    TT_THROW_IF_ERROR(ValidateOutDtype(self, InferOutputDtype(self)));
     const c10::ScalarType out_type = self.scalar_type();
     TT_THROW_IF_ERROR(BuildLogitBufferOut(self, promoted_eps, out_type,
                                           std::move(param_keys), self));
@@ -282,17 +296,19 @@ at::Tensor& AtenLogitBackwardGradInput(const at::Tensor& grad_output,
   TT_KERNEL(
       OpName::kLogitBackwardGradInput, param_keys,
       (grad_output, self, promoted_eps, grad_input), {
-        const c10::ScalarType out_type = grad_input.scalar_type();
         const c10::ScalarType self_dtype = self.scalar_type();
         TT_CHECK_THROW(!c10::isComplexType(self_dtype),
                        error::kPythonNotImplementedError)
             << "expected non-complex dtype, got " << ToString(self_dtype);
+        TT_THROW_IF_ERROR(ValidateOutDtype(grad_input, InferOutputDtype(self)));
+        const c10::ScalarType out_type = grad_input.scalar_type();
 
         TT_ASSIGN_OR_THROW(const auto out_dtype,
                            ConvertTo<mlir::ElementType>(out_type));
 
+        const c10::ScalarType comp_scalar_type = InferOutputDtype(self);
         TT_ASSIGN_OR_THROW(const at::Tensor eps_tensor,
-                           promoted_eps.GetTensor(out_type));
+                           promoted_eps.GetTensor(comp_scalar_type));
 
         auto op_builder = [out_dtype](FixedSizeSpan<mlir::MlirOp, 3> inputs)
             -> absl::StatusOr<mlir::MlirOp> {

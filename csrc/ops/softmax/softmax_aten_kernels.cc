@@ -24,6 +24,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -75,6 +76,11 @@ absl::StatusOr<mlir::ElementType> GetComputationDType(const at::Tensor& self,
 absl::Status SoftmaxInternalOut(const at::Tensor& self, int64_t dim,
                                 bool half_to_float, SoftmaxMode softmax_mode,
                                 at::Tensor& out, OpParamCacheKeys param_keys) {
+  const at::ScalarType expected_dtype =
+      half_to_float ? at::kFloat : self.scalar_type();
+  TT_RETURN_IF_ERROR(ValidateOutDtype(out, expected_dtype,
+                                      /*allow_out_dtype_cast=*/false));
+
   if (self.numel() == 0) {
     TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(out, self.sizes()));
     return absl::OkStatus();
@@ -90,15 +96,22 @@ absl::Status SoftmaxInternalOut(const at::Tensor& self, int64_t dim,
   TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=all dtypes are supported.
       const mlir::ElementType computation_dtype,
       GetComputationDType(self, half_to_float));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType out_dtype,
+                      ConvertTo<mlir::ElementType>(expected_dtype));
   return UnaryOpOut(self, out, GetSoftmaxFunctional(dim, softmax_mode),
                     {.op_param_cache_keys = std::move(param_keys),
-                     .computation_dtype = computation_dtype});
+                     .out_dtype = out_dtype,
+                     .computation_dtype = computation_dtype,
+                     .allow_out_dtype_cast = false});
 }
 
 absl::Status SoftmaxBackwardDataInternalOut(
     const at::Tensor& grad_output, const at::Tensor& output, int64_t dim,
     at::ScalarType input_dtype, SoftmaxMode softmax_mode,
     at::Tensor& grad_input, OpParamCacheKeys param_keys) {
+  TT_RETURN_IF_ERROR(ValidateOutDtype(grad_input, input_dtype,
+                                      /*allow_out_dtype_cast=*/false));
+
   const auto precision = GetAndAddPrecisionTo(param_keys);
 
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=input checked during forward

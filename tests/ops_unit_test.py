@@ -1753,6 +1753,28 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         torch.tensor([8.0, 24.0], dtype=torch.float64, device=device),
     )
 
+  def test_sigmoid_out_upcast(self):
+    device = torch.device("tpu")
+    x = torch.tensor([0.0, 1.0], dtype=torch.float32, device=device)
+    out = torch.empty(2, dtype=torch.float64, device=device)
+    torch.sigmoid(x, out=out)
+    self.assertEqual(out.dtype, torch.float64)
+    utils.assert_close(
+        out,
+        torch.sigmoid(x).to(torch.float64),
+    )
+
+  def test_logit_out_upcast(self):
+    device = torch.device("tpu")
+    x = torch.tensor([0.2, 0.8], dtype=torch.float32, device=device)
+    out = torch.empty(2, dtype=torch.float64, device=device)
+    torch.logit(x, out=out)
+    self.assertEqual(out.dtype, torch.float64)
+    utils.assert_close(
+        out,
+        torch.logit(x).to(torch.float64),
+    )
+
   def test_complex_and_polar_out(self):
     device = torch.device("tpu")
     # complex: float32 -> complex64 out

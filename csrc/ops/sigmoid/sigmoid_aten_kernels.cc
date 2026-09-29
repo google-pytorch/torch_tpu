@@ -76,6 +76,11 @@ absl::Status LogSigmoidForward(const at::Tensor& self, at::Tensor& out,
       << "expected the input dtype to be floating point, got "
       << ToString(self.scalar_type());
 
+  TT_RETURN_IF_ERROR(ValidateOutDtype(out, self.scalar_type(),
+                                      /*allow_out_dtype_cast=*/false));
+  TT_RETURN_IF_ERROR(ValidateOutDtype(buffer, self.scalar_type(),
+                                      /*allow_out_dtype_cast=*/false));
+
   TT_RETURN_IF_ERROR(ResizeTensor(out, self.sizes()));
   TT_RETURN_IF_ERROR(ResizeTensor(buffer, self.sizes()));
 
@@ -194,9 +199,12 @@ at::Tensor& AtenSigmoidOut(const at::Tensor& self, at::Tensor& out) {
     const auto comp_type = ToAccumulateType(self.scalar_type());
     TT_ASSIGN_OR_THROW(const auto computation_dtype,
                        ConvertTo<mlir::ElementType>(comp_type));
+    TT_ASSIGN_OR_THROW(const auto out_dtype,
+                       ConvertTo<mlir::ElementType>(InferOutputDtype(self)));
     TT_THROW_IF_ERROR(
         UnaryOpOut(self, out, BuildSigmoidShlo,
                    {.op_param_cache_keys = OpParamCacheKeys::Empty(),
+                    .out_dtype = out_dtype,
                     .computation_dtype = computation_dtype}));
     return out;
   });
