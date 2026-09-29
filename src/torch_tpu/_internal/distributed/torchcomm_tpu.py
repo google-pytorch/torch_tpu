@@ -655,7 +655,7 @@ class TorchCommsTPU(_TorchCommBackendBase):  # pyrefly: ignore[invalid-inheritan
   def all_reduce_coalesced(
       self,
       tensors: list[torch.Tensor],
-      op: dist.ReduceOp = dist.ReduceOp.SUM,
+      op: dist.ReduceOp = dist.ReduceOp.SUM,  # pyrefly: ignore[bad-function-definition]
       async_op: bool = False,
   ) -> Any:
     """Coalesced all-reduce across a list of tensors."""
@@ -680,7 +680,7 @@ class TorchCommsTPU(_TorchCommBackendBase):  # pyrefly: ignore[invalid-inheritan
       self,
       output_list: list[torch.Tensor],
       input_lists: list[list[torch.Tensor]],
-      op: dist.ReduceOp = dist.ReduceOp.SUM,
+      op: dist.ReduceOp = dist.ReduceOp.SUM,  # pyrefly: ignore[bad-function-definition]
       async_op: bool = False,
   ) -> Any:
     """Coalesced reduce-scatter across lists of tensors."""
@@ -705,7 +705,7 @@ class TorchCommsTPU(_TorchCommBackendBase):  # pyrefly: ignore[invalid-inheritan
       self,
       tensor: torch.Tensor,
       dst: int = 0,
-      op: dist.ReduceOp = dist.ReduceOp.SUM,
+      op: dist.ReduceOp = dist.ReduceOp.SUM,  # pyrefly: ignore[bad-function-definition]
       async_op: bool = False,
   ) -> Any:
     """Reduces a tensor to a single destination root rank."""

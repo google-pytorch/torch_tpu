@@ -118,7 +118,7 @@ class Compiler(abc.ABC, AOTDispatchCompiler):
     fold_gqa.apply(graph_module)
 
   @abc.abstractmethod
-  def __call__(
+  def __call__(  # pyrefly: ignore[bad-override]
       self,
       graph_module: torch.fx.GraphModule,
       example_inputs: Sequence[InputType],
