@@ -268,6 +268,25 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
     self.assertLess(start.elapsed_time(end), 1000.0)
     utils.assert_close(y.to('cpu'), torch.full((8, 8), 2.0))
 
+  def test_event_elapsed_time_chained_pending_events(self):
+    """Tests events recorded back to back while earlier work is pending.
+
+    The end event completes right after the start event does, so the start
+    event must be stamped before the end event is released.
+    """
+    size = 8192 * 8192
+    t_tpu = torch.ones(size, device='tpu', dtype=torch.float32)
+    t_cpu = torch.empty(size, device='cpu', pin_memory=True)
+
+    for _ in range(20):
+      t_cpu.copy_(t_tpu, non_blocking=True)
+      start = torch.tpu.Event(enable_timing=True)
+      end = torch.tpu.Event(enable_timing=True)
+      start.record()
+      end.record()
+      end.synchronize()
+      self.assertGreaterEqual(start.elapsed_time(end), 0.0)
+
   def test_event_elapsed_time_errors(self):
     """Tests the errors of elapsed_time() for unusable events."""
     timed = torch.tpu.Event(enable_timing=True)

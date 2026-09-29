@@ -16,14 +16,14 @@
 
 #include "csrc/eager/events_queue.h"
 
+#include <chrono>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "absl/time/clock.h"
-#include "absl/time/time.h"
 #include "absl/types/span.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
@@ -1098,7 +1098,7 @@ TEST(EventSnapshotTest, ElapsedTimeMeasuresCompletionTimes) {
   EXPECT_EQ(start.ElapsedTime(end).status().code(), error::kFailedPrecondition);
 
   start_promise.Set();
-  absl::SleepFor(absl::Milliseconds(20));
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
   EXPECT_EQ(start.ElapsedTime(end).status().code(), error::kFailedPrecondition);
   end_promise.Set();
 
@@ -1106,6 +1106,25 @@ TEST(EventSnapshotTest, ElapsedTimeMeasuresCompletionTimes) {
   EXPECT_GE(elapsed_ms, 20.0);
   TT_ASSERT_OK_AND_ASSIGN(double reverse_ms, end.ElapsedTime(start));
   EXPECT_EQ(reverse_ms, -elapsed_ms);
+}
+
+TEST(EventSnapshotTest, ElapsedTimeIsNonNegativeForChainedPendingEvents) {
+  // Two events recorded back to back while earlier work is pending: the second
+  // event completes when the first event's completion callback releases it, so
+  // the first event must be stamped before that callback runs.
+  auto [work_promise, work_future] = xla::MakePromise<void>();
+  EventSnapshot start(std::move(work_future));
+  auto [chain_promise, chain_future] = xla::MakePromise<void>();
+  start.OkCallback(std::move(chain_promise));
+  EventSnapshot end(std::move(chain_future));
+  TT_ASSERT_OK_AND_ASSIGN(bool end_ready, end.Query());
+  ASSERT_FALSE(end_ready);
+
+  work_promise.Set();
+  TT_ASSERT_OK_AND_ASSIGN(end_ready, end.Query());
+  ASSERT_TRUE(end_ready);
+  TT_ASSERT_OK_AND_ASSIGN(double elapsed_ms, start.ElapsedTime(end));
+  EXPECT_GE(elapsed_ms, 0.0);
 }
 
 TEST(EventSnapshotTest, ElapsedTimeReturnsEventError) {

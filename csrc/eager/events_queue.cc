@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -41,7 +42,6 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/synchronization/mutex.h"
-#include "absl/time/time.h"
 #include "absl/types/span.h"
 #include "c10/core/Device.h"
 #include "c10/core/Stream.h"
@@ -1257,14 +1257,19 @@ absl::StatusOr<double> EventSnapshot::ElapsedTime(
                  // own error unless both events have completed.
       future_.IsReady() && end.future_.IsReady(), error::kFailedPrecondition)
       << "both events must be completed before calculating elapsed time";
-  TT_ASSIGN_OR_RETURN(absl::Time start_time, completion_time_.Await());
-  TT_ASSIGN_OR_RETURN(absl::Time end_time, end.completion_time_.Await());
-  return absl::ToDoubleMilliseconds(end_time - start_time);
+  TT_ASSIGN_OR_RETURN(std::chrono::steady_clock::time_point start_time,
+                      completion_time_.Await());
+  TT_ASSIGN_OR_RETURN(std::chrono::steady_clock::time_point end_time,
+                      end.completion_time_.Await());
+  return std::chrono::duration<double, std::milli>(end_time - start_time)
+      .count();
 }
 
 void EventSnapshot::OkCallback(xla::Promise<void>&& chain_promise) {
-  future_.OnReady(
-      [chain_promise = std::move(chain_promise)](absl::Status status) mutable {
+  completion_time_.OnReady(
+      [chain_promise = std::move(chain_promise)](
+          const absl::StatusOr<std::chrono::steady_clock::time_point>&
+              completion_time) mutable {
         chain_promise.Set(absl::OkStatus());
       });
 }
