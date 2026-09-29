@@ -87,6 +87,26 @@ def _pin_offloaded_body_args(combine_fn, body_args):
   return pinned
 
 
+# `torch.fx.traceback.annotate` key that asks for a reverse scan.
+#
+# Torch's `scan` HOP has no direction argument: it reverses by flipping its
+# inputs and outputs, and on TPU each flip is a full copy. A caller that traces
+# a body under `annotate({SCAN_REVERSE_ANNOTATION: True})` gets a reverse loop
+# instead: step i reads and writes row `len - 1 - i`, so neither flip is needed.
+# The key rides on the body's own nodes because the body is re-traced into a
+# fresh GraphModule on its way here, which drops any attribute set on it.
+SCAN_REVERSE_ANNOTATION = "torch_tpu_scan_reverse"
+
+
+def _body_asks_for_reverse(combine_fn) -> bool:
+  if not isinstance(combine_fn, torch.fx.GraphModule):
+    return False
+  return any(
+      node.meta.get("custom", {}).get(SCAN_REVERSE_ANNOTATION, False)
+      for node in combine_fn.graph.nodes
+  )
+
+
 def _handle_scan_impl(combine_fn, init, xs, additional_inputs, reverse=False):
   """TPU implementation for scan higher-order op.
 
@@ -120,6 +140,7 @@ def _handle_scan_impl(combine_fn, init, xs, additional_inputs, reverse=False):
   actual_combine_fn = combine_fn
   if isinstance(combine_fn, torch.export.ExportedProgram):
     actual_combine_fn = combine_fn.module
+  reverse = reverse or _body_asks_for_reverse(actual_combine_fn)
 
   # Perform a meta-run to infer the output shapes and dtypes.
   # pylint: disable=protected-access
