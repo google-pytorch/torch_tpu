@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+from unittest import mock
+
 from absl.testing import absltest
 from absl.testing import parameterized
 import sympy
@@ -320,6 +322,46 @@ class SymbolBoundsTest(seed_test_utils.RepeatableTest):
         ValueError
     ):
       symbol_bounds.SymbolBounds.merge_bounds([])
+
+  def test_missing_atomic_symint_raises_value_error(self):
+    shape_env = FakeShapeEnv()
+    s0_symint, s0 = _make_symint(
+        "s0", hint=16, lower=16, upper=int_oo, shape_env=shape_env
+    )
+    compound_symint = torch.SymInt(
+        sym_node.SymNode(s0 + 1, shape_env, int, hint=17)
+    )
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Cannot happen from user end
+        ValueError, "depends on symbols"
+    ):
+      sym_bounds_manager.SymBoundsManager([compound_symint])
+
+    # Succeeds when the atomic symbol s0_symint is also present.
+    bm = sym_bounds_manager.SymBoundsManager([s0_symint, compound_symint])
+    self.assertEqual(
+        bm.get_fallback_symbol_bounds().get_symint_bounds(s0_symint), (16, 32)
+    )
+
+    def _make_mock_tensor(shape, stride, storage_offset=0):
+      t = mock.MagicMock(spec=torch.Tensor)
+      t.shape = shape
+      t.stride.return_value = stride
+      t.storage_offset.return_value = storage_offset
+      return t
+
+    for tensor_arg in (
+        _make_mock_tensor(shape=(s0_symint, 4), stride=(4, 1)),
+        _make_mock_tensor(shape=(2, 4), stride=(s0_symint, 1)),
+        _make_mock_tensor(shape=(4,), stride=(1,), storage_offset=s0_symint),
+    ):
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Cannot happen from user end
+          ValueError, "depends on symbols"
+      ):
+        sym_bounds_manager.SymBoundsManager([tensor_arg])
+      bm = sym_bounds_manager.SymBoundsManager([s0_symint, tensor_arg])
+      self.assertEqual(
+          bm.get_fallback_symbol_bounds().get_symint_bounds(s0_symint), (16, 32)
+      )
 
 
 if __name__ == "__main__":

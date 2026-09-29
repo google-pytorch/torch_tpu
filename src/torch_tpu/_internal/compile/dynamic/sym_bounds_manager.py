@@ -225,17 +225,6 @@ class SymBoundsManager:
 
     return buckets
 
-  def _register_atomic_symbol(
-      self,
-      s: torch.SymInt,
-      seen_symbols: set[sympy.Symbol],
-  ) -> None:
-    """Registers atomic symbol if not already registered."""
-    sym_expr = getattr(getattr(s, "node", None), "expr", None)
-    if isinstance(sym_expr, sympy.Symbol) and sym_expr not in seen_symbols:
-      seen_symbols.add(sym_expr)
-      self._atomic_symints.append(s)
-
   def _populate_atomic_symbols(
       self, example_inputs: Sequence[InputType]
   ) -> None:
@@ -244,12 +233,34 @@ class SymBoundsManager:
     seen_symbols: set[sympy.Symbol] = set()
 
     for arg in example_inputs:
-      if isinstance(arg, torch.Tensor):
-        for s in arg.shape:
-          if isinstance(s, torch.SymInt):
-            self._register_atomic_symbol(s, seen_symbols)
-      elif isinstance(arg, torch.SymInt):
-        self._register_atomic_symbol(arg, seen_symbols)
+      if isinstance(arg, torch.SymInt):
+        sym_expr = getattr(getattr(arg, "node", None), "expr", None)
+        if isinstance(sym_expr, sympy.Symbol) and sym_expr not in seen_symbols:
+          seen_symbols.add(sym_expr)
+          self._atomic_symints.append(arg)
+
+    for arg in example_inputs:
+      if isinstance(arg, torch.SymInt):
+        symints = [arg]
+      elif isinstance(arg, torch.Tensor):
+        symints = [
+            s
+            for s in (*arg.shape, *arg.stride(), arg.storage_offset())
+            if isinstance(s, torch.SymInt)
+        ]
+      else:
+        continue
+
+      for s in symints:
+        sym_expr = getattr(getattr(s, "node", None), "expr", None)
+        if sym_expr is not None:
+          missing = sym_expr.free_symbols - seen_symbols
+          if missing:
+            raise ValueError(
+                f"Input SymInt {s} depends on symbols {missing} that are not"
+                " present as standalone atomic SymInt inputs in"
+                f" example_inputs: {seen_symbols}"
+            )
 
   def add_bound_checks(
       self,
