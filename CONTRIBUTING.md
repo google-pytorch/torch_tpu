@@ -68,6 +68,11 @@ use
 [GitHub pull requests](https://help.github.com/articles/about-pull-requests/)
 for this purpose.
 
+Approved Pull Requests (PRs) are then copied to Google's internal repository via
+a tool called Copybara. For this reason, Copybara won't mark the PR as merged,
+it will close the PR and separately apply a commit to the `main` branch with the
+same changes proposed in the PR.
+
 1.  When a PR is created, the **Google oncall** triages it and adds a **Google
     domain expert** as its **reviewer**.
 1.  The **domain expert** reviews the PR, approves it, and then adds a **Google
@@ -86,12 +91,13 @@ for this purpose.
         <img src="docs/developers/images/pr_roles.png" alt="PR Roles" width="400px">
 1.  The **Google quality champion** reviews the PR, focusing on style and
     quality, approves it, and then applies the `pull ready` label to the PR.
-1.  The `pull ready` label triggers the bot to generate a CL from the PR:
+1.  The `pull ready` label triggers the bot to generate a contribution (called a
+    changelist, CL in short) to the internal Google repository from the PR.
 
     *   The **author** will be the bot.
     *   The **original author** will be the (external) PR author.
-    *   The **reviewer** will be the Googler assigned the PR (the quality
-        champion), who's responsible for approving the CL
+    *   The **reviewer** will be the Googler assigned to the PR (the quality
+        champion), who's responsible for approving the Google-internal CL.
     *   The Google domain expert and all other reviewers will be **CC**-ed.
     *   As long as the quality champion has approved the PR, anyone is allowed
         to apply the `pull ready` label in case the quality champion forgets to
