@@ -1570,6 +1570,46 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         }),
         module_registry.Modality.MULTIMODAL,
     )
+    # GitForCausalLM (vision_config + vocab_size) is MULTIMODAL
+    self.assertEqual(
+        module_registry._determine_modality({
+            "model_type": "git",
+            "architectures": ["GitForCausalLM"],
+            "vision_config": {"image_size": 224},
+            "vocab_size": 30522,
+        }),
+        module_registry.Modality.MULTIMODAL,
+    )
+    # Omni models with audio_config + text_config are MULTIMODAL
+    self.assertEqual(
+        module_registry._determine_modality({
+            "model_type": "qwen2_5_omni_thinker",
+            "architectures": ["Qwen2_5OmniThinkerForConditionalGeneration"],
+            "audio_config": {"num_mel_bins": 128},
+            "text_config": {"vocab_size": 152064},
+        }),
+        module_registry.Modality.MULTIMODAL,
+    )
+    # Gemma4 text models with audio_config and text_config but
+    # vision_config=None are CAUSAL_LM.
+    self.assertEqual(
+        module_registry._determine_modality({
+            "model_type": "gemma4",
+            "architectures": ["Gemma4ForConditionalGeneration"],
+            "audio_config": {"model_type": "gemma4_audio"},
+            "text_config": {"model_type": "gemma4_text"},
+            "vision_config": None,
+        }),
+        module_registry.Modality.CAUSAL_LM,
+    )
+    # MusicGen Melody CausalLM is AUDIO, not CAUSAL_LM
+    self.assertEqual(
+        module_registry._determine_modality({
+            "model_type": "musicgen_melody_decoder",
+            "architectures": ["MusicgenMelodyForCausalLM"],
+        }),
+        module_registry.Modality.AUDIO,
+    )
 
   def test_sanitize_transformers_config_dict(self):
     raw_config = {

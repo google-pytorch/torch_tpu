@@ -304,7 +304,6 @@ _CAUSAL_LM_MODEL_TYPES = (
     "falcon_h1",
     "falcon_mamba",
     "flex_olmo",
-    "fuyu",
     "gemma",
     "gemma2",
     "gemma3",
@@ -438,6 +437,7 @@ _VISION_LANGUAGE_MODEL_TYPES = (
     "fast_vlm",
     "flava",
     "florence2",
+    "fuyu",
     "git",
     "glm4v",
     "glm_ocr",
@@ -723,6 +723,12 @@ class _ConfigWrapper:
       raise AttributeError(
           f"'{type(self).__name__}' object has no attribute '{name}'"
       )
+    if hasattr(data, "_mock_name") and name not in getattr(
+        data, "__dict__", {}
+    ):
+      raise AttributeError(
+          f"'{type(self).__name__}' mock has no attribute '{name}'"
+      )
     val = getattr(data, name)
     return _wrap_config(val)
 
@@ -744,6 +750,10 @@ class _ConfigWrapper:
         pass
     if isinstance(data, (dict, Mapping)):
       val = data.get(key, default)
+    elif hasattr(data, "_mock_name") and key not in getattr(
+        data, "__dict__", {}
+    ):
+      val = default
     else:
       try:
         val = getattr(data, key, default)
@@ -772,6 +782,10 @@ class _ConfigWrapper:
   def __contains__(self, key: str) -> bool:
     if isinstance(self._data, (dict, Mapping)):
       return key in self._data
+    if hasattr(self._data, "_mock_name") and key not in getattr(
+        self._data, "__dict__", {}
+    ):
+      return False
     return hasattr(self._data, key)
 
   def __bool__(self) -> bool:
@@ -1353,9 +1367,15 @@ def _is_diffusion(
 
 
 def _is_multimodal(
-    model_type: str, arch_name: str, has_text_cfg: bool, has_vision_cfg: bool
+    model_type: str,
+    arch_name: str,
+    has_text_cfg: bool,
+    has_vision_cfg: bool,
+    has_vocab_size: bool = False,
 ) -> bool:
-  # Open-vocabulary zero-shot models require text queries (input_ids) along with images
+  """Returns True if the model config represents a multimodal architecture."""
+  # Open-vocabulary zero-shot models require text queries (input_ids) along
+  # with images.
   if any(
       k in model_type
       for k in (
@@ -1384,7 +1404,11 @@ def _is_multimodal(
       or "llava" in arch_name
       or "paligemma" in arch_name
       or "blip" in arch_name
-      or (has_text_cfg and has_vision_cfg)
+      or (has_vision_cfg and (has_text_cfg or has_vocab_size))
+      or (
+          not _is_audio(model_type, arch_name)
+          and ("omni" in model_type or "omni" in arch_name)
+      )
   )
 
 
@@ -1507,7 +1531,13 @@ def _determine_modality(config: Any) -> Modality:
 
   if _is_diffusion(model_type, class_name, arch_name, model_name):
     return Modality.DIFFUSION
-  if _is_multimodal(model_type, arch_name, has_text_cfg, has_vision_cfg):
+  if _is_multimodal(
+      model_type,
+      arch_name,
+      has_text_cfg,
+      has_vision_cfg,
+      has_vocab_size,
+  ):
     return Modality.MULTIMODAL
   if _is_audio(model_type, arch_name):
     return Modality.AUDIO
