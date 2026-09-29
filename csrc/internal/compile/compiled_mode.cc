@@ -152,6 +152,34 @@ absl::StatusOr<std::vector<DeviceBufferRef>> PrepareCompiledModeArgumentsImpl(
         argument_buffer_refs, MaterializationReason::kCompileModeExecution,
         MaterializationMode::kSplitGraph,
         MaterializationBlockMode::kBlockUntilStarted));
+
+    // Cache materialized full-storage reinterpret views back into the
+    // argument tensor's storage. If an argument tensor (e.g. weights or
+    // full-storage reshapes) has trivial contiguous layout but was backed
+    // by a storage buffer with a different shape, Materialize generated a
+    // new contiguous DeviceBufferRef matching the tensor's dimensions.
+    // By updating the tensor's storage base with this materialized buffer,
+    // subsequent compiled steps can return the base buffer directly with zero
+    // ephemeral tt_jit_execute_as_strided materializations.
+    for (size_t i = 0; i < argument_tensors.size(); ++i) {
+      const at::Tensor& tensor = DerefTensor(argument_tensors[i]);
+      if (TensorHasTrivialLayout(tensor) &&
+          IsFullStorageReinterpretView(tensor, argument_buffer_refs[i])) {
+        const auto base_buffer = GetBaseBuffer(tensor);
+        if (base_buffer.ok() &&
+            base_buffer->dimensions() != argument_buffer_refs[i].dimensions()) {
+          ABSL_VLOG(2) << "[PrepareCompiledModeArgumentsImpl] Caching "
+                          "materialized base buffer back to tensor storage to "
+                          "eliminate per-step as_strided execution.";
+          const auto status =
+              AssignBufferAsStorageBase(argument_buffer_refs[i], tensor);
+          if (!status.ok()) {
+            ABSL_VLOG(2) << "Failed to assign buffer as storage base: "
+                         << status;
+          }
+        }
+      }
+    }
   }
 
   // After materialization, each argument buffer will be a materialized,
