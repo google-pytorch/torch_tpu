@@ -233,12 +233,6 @@ TT_PYBIND11_MODULE(_device_ops_backend, m) {
       "Returns whether the PjRt runtime is initialized.");
 
   m.def(
-      "_is_in_bad_fork",
-      []() -> bool { return PjrtBackend::GetInstance().IsInBadFork(); },
-      "Returns whether the current process is in an unsafe forked child "
-      "state.");
-
-  m.def(
       "_shutdown_runtime",
       []() {
         ShutDownMaterializationState();

@@ -16,9 +16,6 @@
 
 #include "csrc/pjrt/pjrt_state.h"
 
-#include <unistd.h>
-
-#include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <memory>
@@ -195,9 +192,6 @@ absl::Status PjrtBackend::EnsureInitialized() {
   // errors instead of low-level crashes.
   init_status_ = AdaptVfioDeviceCollisionError(InitializeInternal());
   init_attempted_ = true;
-  if (init_status_.ok()) {
-    init_pid_.store(getpid(), std::memory_order_relaxed);
-  }
   return init_status_;
 }
 
@@ -291,11 +285,6 @@ absl::Status PjrtBackend::InitializeInternal() {
 bool PjrtBackend::IsInitialized() const {
   absl::ReaderMutexLock lock(mutex_);
   return client_ != nullptr;
-}
-
-bool PjrtBackend::IsInBadFork() const {
-  const pid_t init_pid = init_pid_.load(std::memory_order_relaxed);
-  return init_pid != 0 && getpid() != init_pid;
 }
 
 xla::PjRtClient* absl_nullable PjrtBackend::GetClient() {
@@ -397,9 +386,6 @@ absl::StatusOr<xla::HostMemoryAllocator*> PjrtBackend::GetHostAllocator() {
 }
 
 void PjrtBackend::Shutdown() {
-  // Reset the initialization PID so that subsequent forks from this process (or
-  // re-initialization of the runtime) are not falsely identified as bad forks.
-  init_pid_.store(0, std::memory_order_relaxed);
   absl::MutexLock lock(mutex_);
   if (!init_attempted_) {
     return;

@@ -17,7 +17,6 @@
 import abc
 import contextlib
 import gc
-import os
 import threading
 from typing import Final
 from unittest import mock
@@ -366,43 +365,6 @@ class DeviceModuleBase(
       self.assertIsInstance(attrs["core_on_chip"], int)
     if "slice_index" in attrs:
       self.assertIsInstance(attrs["slice_index"], int)
-
-  def test_is_in_bad_fork_in_parent(self):
-    """Verifies that the parent process is never in a bad fork."""
-    self.assertFalse(self.device_module._is_in_bad_fork())
-
-  def test_is_in_bad_fork_in_child(self):
-    """Verifies that a forked child process detects a bad fork."""
-    # Ensure initialized in the parent process
-    tensor = torch.zeros(1, device=torch.accelerator.current_accelerator())
-    _ = tensor.item()
-    self.assertFalse(self.device_module._is_in_bad_fork())
-
-    r_fd, w_fd = os.pipe()
-    pid = os.fork()
-    # In UNIX, os.fork() returns 0 in the child process.
-    if pid == 0:
-      os.close(r_fd)
-      in_bad_fork = self.device_module._is_in_bad_fork()
-      # In PyTorch, torch.manual_seed() calls _is_in_bad_fork() and skips
-      # manual_seed_all() when in_bad_fork is True. Verify that calling
-      # torch.manual_seed() in the forked child executes safely without
-      # hanging.
-      torch.manual_seed(42)
-      with os.fdopen(w_fd, "w") as w:
-        w.write(f"{in_bad_fork}\n")
-      # The child process exits here and never reaches the parent code below.
-      os._exit(0)
-
-    # The following code runs only in the parent process (pid > 0).
-    os.close(w_fd)
-    with os.fdopen(r_fd, "r") as r:
-      child_output = r.read().strip()
-    _, status = os.waitpid(pid, 0)
-    self.assertEqual(
-        status, 0, f"Child process failed with status {status}: {child_output}"
-    )
-    self.assertEqual(child_output, "True")
 
 
 # pylint: enable=protected-access
