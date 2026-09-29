@@ -64,3 +64,9 @@ runs:
         gcloud storage cp "$WHEEL_PATH" "$GCS_PATH"
         echo "gcs_wheel_path=$GCS_PATH" >> $GITHUB_OUTPUT
         echo "gcs_wheel_dir=gs://torch-tpu-ci-transient/artifacts/${{ github.workflow }}/${{ github.run_number }}/${{ github.run_attempt }}/" >> $GITHUB_OUTPUT
+    - name: Export wheel as workflow artifact
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      with:
+        name: torch-tpu-wheel-${{ inputs.python_version }}
+        path: dist/*.whl
+        if-no-files-found: error
