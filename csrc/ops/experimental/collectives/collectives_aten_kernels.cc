@@ -21,10 +21,13 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "ATen/ops/empty.h"
+#include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_join.h"
 #include "c10/util/intrusive_ptr.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
@@ -52,8 +55,10 @@
 namespace torch_tpu {
 namespace {
 
+// The validated collective dimension and the resulting output shape.
 struct CollectiveShape {
-  int64_t dim;
+  // The collective dimension, normalized to [0, input.dim()).
+  int64_t dim = 0;
   Dimensions output_shape;
 };
 
@@ -61,12 +66,11 @@ absl::StatusOr<CollectiveShape> ValidateArgs(const at::Tensor& input,
                                              int64_t dim, int64_t group_size) {
   const int64_t rank = input.dim();
   TT_RET_CHECK(rank > 0, error::kInvalidArgument)
-      << "collectives with an explicit dimension require a non-scalar tensor";
-  TT_RET_CHECK(dim >= -rank && dim < rank, error::kInvalidArgument)
-      << "dimension " << dim << " is invalid for a tensor with rank " << rank;
+      << "expected input to have at least 1 dimension, got 0";
+  TT_ASSIGN_OR_RETURN(const int64_t wrapped_dim, SafeWrapDim(dim, rank));
   TT_RET_CHECK(group_size > 0, error::kInvalidArgument)
-      << "group_size must be positive, got " << group_size;
-  return CollectiveShape{.dim = dim < 0 ? dim + rank : dim,
+      << "expected group_size to be > 0, got " << group_size;
+  return CollectiveShape{.dim = wrapped_dim,
                          .output_shape = CopyIntVector(input.sizes())};
 }
 
@@ -86,8 +90,8 @@ absl::StatusOr<CollectiveShape> ReduceScatterShape(const at::Tensor& input,
                       ValidateArgs(input, dim, group_size));
   int64_t& size = shape.output_shape[shape.dim];
   TT_RET_CHECK(size % group_size == 0, error::kInvalidArgument)
-      << "scatter dimension " << shape.dim << " of size " << size
-      << " is not divisible by group size " << group_size;
+      << "expected the size of dim " << shape.dim
+      << " to be divisible by group_size " << group_size << ", got " << size;
   size /= group_size;
   return shape;
 }
@@ -95,45 +99,46 @@ absl::StatusOr<CollectiveShape> ReduceScatterShape(const at::Tensor& input,
 absl::StatusOr<c10d::ReduceOp::RedOpType> ParseReduceOp(
     std::string_view reduce_op, c10::ScalarType scalar_type) {
   std::optional<c10d::ReduceOp::RedOpType> parsed;
+  std::vector<std::string> supported;
   // PREMUL_SUM and later ops can't be constructed from a bare RedOpType.
   for (int i = 0; i < c10d::ReduceOp::PREMUL_SUM; ++i) {
     const auto op = static_cast<c10d::ReduceOp::RedOpType>(i);
-    if (ToString(op) == reduce_op) {
+    if (supported.emplace_back(ToString(op)) == reduce_op) {
       parsed = op;
     }
   }
   TT_RET_CHECK(parsed.has_value(), error::kInvalidArgument)
-      << "unsupported reduce_op: " << reduce_op;
+      << "expected reduce_op to be one of " << absl::StrJoin(supported, ", ")
+      << ", got " << reduce_op;
   TT_RETURN_IF_ERROR(ValidateReductionOp(*parsed, scalar_type));
   return *parsed;
 }
 
-absl::StatusOr<c10::intrusive_ptr<ProcessGroupTpu>> GetProcessGroupTpu(
+// resolve_process_group() and getBackend() throw on user errors (an unknown
+// or destroyed group, or a group without a TPU backend), so the checks below
+// only fail on TorchTPU bugs.
+c10::intrusive_ptr<ProcessGroupTpu> GetProcessGroupTpu(
     std::string_view group_name) {
   c10::intrusive_ptr<c10d::ProcessGroup> pg =
       c10d::resolve_process_group(std::string(group_name));
-  TT_RET_CHECK(pg != nullptr, error::kInternal)
-      << "failed to resolve given process group";
+  ABSL_CHECK(pg != nullptr);  // CRASH_OK
   c10::intrusive_ptr<c10d::Backend> backend =
       pg->getBackend(c10::DeviceType::PrivateUse1);
-  TT_RET_CHECK(backend != nullptr, error::kInternal)
-      << "failed to get backend for tpu device";
+  ABSL_CHECK(backend != nullptr);  // CRASH_OK
   auto process_group_tpu =
       c10::dynamic_intrusive_pointer_cast<ProcessGroupTpu>(std::move(backend));
-  TT_RET_CHECK(process_group_tpu != nullptr, error::kInternal)
-      << "failed to cast c10d::Backend to ProcessGroupTpu";
+  ABSL_CHECK(process_group_tpu != nullptr);  // CRASH_OK
   return process_group_tpu;
 }
 
 absl::Status ValidateGroupSize(const DeviceGroupList& device_groups,
                                int64_t group_size) {
-  TT_RET_CHECK(!device_groups.empty(), error::kInternal)
-      << "process group has no device groups";
+  ABSL_CHECK(!device_groups.empty());  // CRASH_OK
   for (const DeviceGroup& device_group : device_groups) {
     TT_RET_CHECK(static_cast<int64_t>(device_group.size()) == group_size,
                  error::kInvalidArgument)
-        << "group_size " << group_size << " does not match process group size "
-        << device_group.size();
+        << "expected group_size to match process group size, got " << group_size
+        << " vs " << device_group.size();
   }
   return absl::OkStatus();
 }
@@ -143,7 +148,7 @@ absl::StatusOr<DeviceBufferRef> DispatchCollectiveWithDim(
     const at::Tensor& input, int64_t group_size, Dimensions output_shape,
     std::string_view group_name, CollectiveBuilder collective_builder,
     OpParamCacheKeys param_keys) {
-  TT_ASSIGN_OR_RETURN(auto process_group, GetProcessGroupTpu(group_name));
+  auto process_group = GetProcessGroupTpu(group_name);
   const DeviceGroupList& device_groups = process_group->GetSubgroupDeviceIds();
   TT_RETURN_IF_ERROR(ValidateGroupSize(device_groups, group_size));
   TT_ASSIGN_OR_RETURN(auto output_dtype,
@@ -164,12 +169,10 @@ absl::StatusOr<DeviceBufferRef> DispatchCollectiveWithDim(
 
 }  // namespace
 
-at::Tensor ExperimentalAllGatherDim(const at::Tensor& input, int64_t dim,
-                                    int64_t group_size,
-                                    std::string_view group_name) {
+at::Tensor AllGatherDim(const at::Tensor& input, int64_t dim,
+                        int64_t group_size, std::string_view group_name) {
   TT_KERNEL(
-      OpName::kExperimentalAllGatherDim, param_keys,
-      (input, dim, group_size, group_name), {
+      OpName::kAllGatherDim, param_keys, (input, dim, group_size, group_name), {
         TT_ASSIGN_OR_THROW(auto shape, AllGatherShape(input, dim, group_size));
         auto builder = [dim = shape.dim](mlir::MlirOp input_op,
                                          const DeviceGroupList& device_groups)
@@ -189,11 +192,10 @@ at::Tensor ExperimentalAllGatherDim(const at::Tensor& input, int64_t dim,
       });
 }
 
-at::Tensor ExperimentalReduceScatterDim(const at::Tensor& input,
-                                        std::string_view reduce_op, int64_t dim,
-                                        int64_t group_size,
-                                        std::string_view group_name) {
-  TT_KERNEL(OpName::kExperimentalReduceScatterDim, param_keys,
+at::Tensor ReduceScatterDim(const at::Tensor& input, std::string_view reduce_op,
+                            int64_t dim, int64_t group_size,
+                            std::string_view group_name) {
+  TT_KERNEL(OpName::kReduceScatterDim, param_keys,
             (input, reduce_op, dim, group_size, group_name), {
               TT_ASSIGN_OR_THROW(auto op,
                                  ParseReduceOp(reduce_op, input.scalar_type()));
@@ -214,17 +216,17 @@ at::Tensor ExperimentalReduceScatterDim(const at::Tensor& input,
             });
 }
 
-at::Tensor MetaExperimentalAllGatherDim(const at::Tensor& input, int64_t dim,
-                                        int64_t group_size,
-                                        std::string_view /*group_name*/) {
+at::Tensor MetaAllGatherDim(const at::Tensor& input, int64_t dim,
+                            int64_t group_size,
+                            std::string_view /*group_name*/) {
   TT_ASSIGN_OR_THROW(auto shape, AllGatherShape(input, dim, group_size));
   return at::empty(shape.output_shape, input.options());
 }
 
-at::Tensor MetaExperimentalReduceScatterDim(const at::Tensor& input,
-                                            std::string_view reduce_op,
-                                            int64_t dim, int64_t group_size,
-                                            std::string_view /*group_name*/) {
+at::Tensor MetaReduceScatterDim(const at::Tensor& input,
+                                std::string_view reduce_op, int64_t dim,
+                                int64_t group_size,
+                                std::string_view /*group_name*/) {
   TT_THROW_IF_ERROR(ParseReduceOp(reduce_op, input.scalar_type()).status());
   TT_ASSIGN_OR_THROW(auto shape, ReduceScatterShape(input, dim, group_size));
   return at::empty(shape.output_shape, input.options());

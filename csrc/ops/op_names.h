@@ -59,6 +59,7 @@ enum class OpName {
   kAddmvOut,
   kAlias,
   kAllAllOut,
+  kAllGatherDim,
   kAllOut,
   kAmax,
   kAmaxOut,
@@ -216,8 +217,6 @@ enum class OpName {
   kExp2Out,
   kExpM1Out,
   kExpOut,
-  kExperimentalAllGatherDim,
-  kExperimentalReduceScatterDim,
   kExponential_,
   kEyeMOut,
   kEyeOut,
@@ -661,6 +660,7 @@ enum class OpName {
   kRandom_To,
   kRandpermGeneratorOut,
   kReciprocalOut,
+  kReduceScatterDim,
   kReflectionPad1dBackwardGradInput,
   kReflectionPad1dOut,
   kReflectionPad2d,
@@ -934,6 +934,8 @@ ToString(  // NOLINT(google-readability-function-size)
       return "alias";
     case OpName::kAllAllOut:
       return "all.all_out";
+    case OpName::kAllGatherDim:
+      return "_all_gather_dim";
     case OpName::kAllOut:
       return "all.out";
     case OpName::kAmax:
@@ -1248,10 +1250,6 @@ ToString(  // NOLINT(google-readability-function-size)
       return "expm1.out";
     case OpName::kExpOut:
       return "exp.out";
-    case OpName::kExperimentalAllGatherDim:
-      return "experimental_all_gather_dim";
-    case OpName::kExperimentalReduceScatterDim:
-      return "experimental_reduce_scatter_dim";
     case OpName::kExponential_:
       return "exponential_";
     case OpName::kEyeMOut:
@@ -2138,6 +2136,8 @@ ToString(  // NOLINT(google-readability-function-size)
       return "randperm.generator_out";
     case OpName::kReciprocalOut:
       return "reciprocal.out";
+    case OpName::kReduceScatterDim:
+      return "_reduce_scatter_dim";
     case OpName::kReflectionPad1dBackwardGradInput:
       return "reflection_pad1d_backward.grad_input";
     case OpName::kReflectionPad1dOut:

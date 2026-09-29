@@ -15,7 +15,8 @@
 """Experimental collectives that gather or scatter along any tensor dimension.
 
 These functions accept a `ProcessGroup` and call the registered
-`torch.ops.tpu.experimental_*_dim` ops, which identify the group by name.
+`torch.ops.tpu._all_gather_dim` and `torch.ops.tpu._reduce_scatter_dim` ops,
+which identify the group by name.
 Under `torch.compile` the group size and name are traced as constants, so the
 compiled graph contains only the registered ops. Autograd is not supported.
 """
@@ -57,7 +58,7 @@ def all_gather_dim(
     A tensor whose size along `dim` is `input.size(dim) * group.size()`.
   """
   group_size, group_name = _resolve_group(group)
-  return torch.ops.tpu.experimental_all_gather_dim(
+  return torch.ops.tpu._all_gather_dim(  # pylint: disable=protected-access
       input, dim, group_size, group_name
   )
 
@@ -83,6 +84,6 @@ def reduce_scatter_dim(
     A tensor whose size along `dim` is `input.size(dim) // group.size()`.
   """
   group_size, group_name = _resolve_group(group)
-  return torch.ops.tpu.experimental_reduce_scatter_dim(
-      input, reduce_op.lower(), dim, group_size, group_name
+  return torch.ops.tpu._reduce_scatter_dim(  # pylint: disable=protected-access
+      input, reduce_op, dim, group_size, group_name
   )

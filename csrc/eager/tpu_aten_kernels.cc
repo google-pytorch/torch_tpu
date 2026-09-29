@@ -1389,11 +1389,11 @@ TORCH_LIBRARY(tpu, m) {
   m.def("_send(Tensor[] tensors, int dst, int tag) -> Any");
   m.def("_recv(Tensor[] tensors, int src, int tag) -> Any");
   m.def(
-      "experimental_all_gather_dim(Tensor input, int dim, int group_size, "
-      "str group_name) -> Tensor");
+      "_all_gather_dim(Tensor input, int dim, int group_size, str "
+      "group_name) -> Tensor");
   m.def(
-      "experimental_reduce_scatter_dim(Tensor input, str reduce_op, int dim, "
-      "int group_size, str group_name) -> Tensor");
+      "_reduce_scatter_dim(Tensor input, str reduce_op, int dim, int "
+      "group_size, str group_name) -> Tensor");
   m.def(
       "_sparse_dense_matmul(Tensor row_pointers, Tensor embedding_ids, Tensor "
       "sample_ids, Tensor gains, Tensor embedding_table, int "
@@ -1690,10 +1690,8 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
         }
         return outs;
       });
-  ImplExperimental<OpName::kExperimentalAllGatherDim>(
-      m, MetaExperimentalAllGatherDim);
-  ImplExperimental<OpName::kExperimentalReduceScatterDim>(
-      m, MetaExperimentalReduceScatterDim);
+  ImplInternal<OpName::kAllGatherDim>(m, MetaAllGatherDim);
+  ImplInternal<OpName::kReduceScatterDim>(m, MetaReduceScatterDim);
 }
 
 // Registers implementations for torch.ops.tpu ops for TPU tensors.
@@ -1736,10 +1734,8 @@ TORCH_LIBRARY_IMPL(tpu, PrivateUse1, m) {
   ImplInternal<OpName::kSparseDenseMatmulGradientStack>(
       m, AtenSparseDenseMatmulGradientStack);
   ImplInternal<OpName::kSparseMapRow>(m, AtenSparseMapRow);
-  ImplExperimental<OpName::kExperimentalAllGatherDim>(m,
-                                                      ExperimentalAllGatherDim);
-  ImplExperimental<OpName::kExperimentalReduceScatterDim>(
-      m, ExperimentalReduceScatterDim);
+  ImplInternal<OpName::kAllGatherDim>(m, AllGatherDim);
+  ImplInternal<OpName::kReduceScatterDim>(m, ReduceScatterDim);
 }
 
 // Registers custom autograd for torch.ops.tpu ops.

@@ -24,8 +24,8 @@ class ExperimentalCollectivesTest(seed_test_utils.RepeatableTest):
 
   def test_meta_shapes(self):
     value = torch.empty((2, 3, 4), device="meta")
-    gathered = torch.ops.tpu.experimental_all_gather_dim(value, 1, 8, "unused")
-    scattered = torch.ops.tpu.experimental_reduce_scatter_dim(
+    gathered = torch.ops.tpu._all_gather_dim(value, 1, 8, "unused")
+    scattered = torch.ops.tpu._reduce_scatter_dim(
         gathered, "avg", -2, 8, "unused"
     )
     self.assertEqual(gathered.shape, (2, 24, 4))
@@ -39,7 +39,7 @@ class ExperimentalCollectivesTest(seed_test_utils.RepeatableTest):
     value = torch.empty((2, 3, 4), device="meta")
     fn = torch.compile(
         lambda x: torch.tpu.ops.reduce_scatter_dim(
-            torch.tpu.ops.all_gather_dim(x, 1), -2, dist.group.WORLD, "MAX"
+            torch.tpu.ops.all_gather_dim(x, 1), -2, dist.group.WORLD, "max"
         ),
         backend="eager",
         fullgraph=True,
@@ -48,19 +48,23 @@ class ExperimentalCollectivesTest(seed_test_utils.RepeatableTest):
 
   def test_meta_errors(self):
     value = torch.empty((2, 3, 4), device="meta")
-    all_gather = torch.ops.tpu.experimental_all_gather_dim
-    reduce_scatter = torch.ops.tpu.experimental_reduce_scatter_dim
+    all_gather = torch.ops.tpu._all_gather_dim
+    reduce_scatter = torch.ops.tpu._reduce_scatter_dim
     for op, args, error in (
-        (reduce_scatter, (value, "sum", 1, 2), "not divisible"),
-        (all_gather, (value, 3, 2), "invalid"),
-        (reduce_scatter, (value, "sum", -4, 2), "invalid"),
-        (all_gather, (value, 1, 0), "must be positive"),
-        (all_gather, (torch.empty((), device="meta"), 0, 2), "non-scalar"),
-        (reduce_scatter, (value, "premul_sum", 0, 2), "unsupported reduce_op"),
+        (reduce_scatter, (value, "sum", 1, 2), "divisible"),
+        (all_gather, (value, 3, 2), r"in range \[-3, 2\]"),
+        (reduce_scatter, (value, "sum", -4, 2), "got -4"),
+        (all_gather, (value, 1, 0), "group_size to be > 0"),
+        (
+            all_gather,
+            (torch.empty((), device="meta"), 0, 2),
+            "at least 1 dimension",
+        ),
+        (reduce_scatter, (value, "premul_sum", 0, 2), "reduce_op to be one of"),
         (reduce_scatter, (value, "band", 0, 2), "integer"),
     ):
       with self.subTest(op=op, args=args[1:]):
-        with self.assertRaisesRegex(RuntimeError, error):
+        with self.assertRaisesRegex((RuntimeError, IndexError), error):
           op(*args, "unused")
 
 

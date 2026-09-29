@@ -4677,6 +4677,59 @@ module {
     ):
       torch.tpu.ops.ragged_dot_weight_grad(lhs, grad_output, group_sizes)
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="all_gather_scalar",
+          op="_all_gather_dim",
+          shape=(),
+          args=(0, 2),
+          expected_error="""_all_gather_dim(): expected input to have at least 1 dimension, got 0""",
+      ),
+      dict(
+          testcase_name="all_gather_dim_out_of_range",
+          op="_all_gather_dim",
+          shape=(2, 4),
+          args=(2, 2),
+          exception=IndexError,
+          expected_error="""_all_gather_dim(): expected dimension to be in range [-2, 1], got 2""",
+      ),
+      dict(
+          testcase_name="all_gather_nonpositive_group_size",
+          op="_all_gather_dim",
+          shape=(2, 4),
+          args=(0, 0),
+          expected_error="""_all_gather_dim(): expected group_size to be > 0, got 0""",
+      ),
+      dict(
+          testcase_name="reduce_scatter_not_divisible",
+          op="_reduce_scatter_dim",
+          shape=(2, 3),
+          args=("sum", -1, 2),
+          expected_error="""_reduce_scatter_dim(): expected the size of dim 1 to be divisible by group_size 2, got 3""",
+      ),
+      dict(
+          testcase_name="reduce_scatter_unknown_reduce_op",
+          op="_reduce_scatter_dim",
+          shape=(2, 4),
+          args=("premul_sum", 0, 2),
+          expected_error="""_reduce_scatter_dim(): expected reduce_op to be one of sum, avg, product, min, max, band, bor, bxor, got premul_sum""",
+      ),
+      dict(
+          testcase_name="reduce_scatter_bitwise_float",
+          op="_reduce_scatter_dim",
+          shape=(2, 4),
+          args=("band", 0, 2),
+          expected_error="""_reduce_scatter_dim(): expected the tensors dtype to be integer on bitwise reduction ops (BAND, BOR, BXOR), got float32""",
+      ),
+  )
+  @et.why_tpu_only("torch.ops.tpu dimensional collectives are TPU-specific ops")
+  def test_dimensional_collectives(
+      self, op, shape, args, expected_error, exception=RuntimeError
+  ):
+    x = torch.ones(shape, device=et.device())
+    with et.assert_raises_message(exception, tpu=expected_error):
+      getattr(torch.ops.tpu, op)(x, *args, "unused")
+
   def _default_lstm_input_args(self):
     device = et.device()
     x = torch.randn(10, 3, 16, device=device)

@@ -186,8 +186,8 @@ class ProcessGroupUtilsTest(seed_test_utils.RepeatableTest):
   def test_extract_process_group_id_experimental_dim_collectives(self) -> None:
     group_args = (1, self.world_size, dist.group.WORLD.group_name)
     for op, op_args in (
-        (torch.ops.tpu.experimental_all_gather_dim, group_args),
-        (torch.ops.tpu.experimental_reduce_scatter_dim, ("sum", *group_args)),
+        (torch.ops.tpu._all_gather_dim, group_args),
+        (torch.ops.tpu._reduce_scatter_dim, ("sum", *group_args)),
     ):
       with self.subTest(op=op):
         graph = torch.fx.Graph()
