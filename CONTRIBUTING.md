@@ -70,8 +70,8 @@ for this purpose.
 
 Approved Pull Requests (PRs) are then copied to Google's internal
 repository via a tool called Copybara. For this reason, Copybara won't mark the
-PR as merged, it will close the PR and separately apply a commit that should map
-very closely to the PR.
+PR as merged, it will close the PR and separately apply a commit to the `main`
+branch with the same changes proposed in the PR.
 
 1.  When a PR is created, the **Google oncall** triages it and adds a **Google
     domain expert** as its **reviewer**.
