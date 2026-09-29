@@ -51,12 +51,11 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
       example_inputs: Sequence[Any],
       output_sym_shapes: Sequence[OutputSymShape],
       is_fwd: bool,
-      default_executable: Any,
-      default_layout_key: tuple[tuple[int, ...], ...],
       bounded_model_inputs: list[torch.Tensor | int],
       model_input_bounds: list[Any],
       view_arg_indices: set[int],
       use_pad_real_to_static: bool = True,
+      module_name: str | None = None,
   ):
     """Initializes DynamicTpuCompiledExecutable.
 
@@ -71,10 +70,6 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
         output tensors.
       is_fwd: Whether this executable represents a forward pass (True) or
         backward pass (False).
-      default_executable: Initial compiled TPU executable for
-        `default_layout_key`.
-      default_layout_key: Minor-to-major layout key corresponding to
-        `default_executable`.
       bounded_model_inputs: Example inputs specialized to static upper bounds
         for compilation.
       model_input_bounds: Per-input TensorBounds (or None for static inputs) for
@@ -83,6 +78,7 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
         decomposed into base tensors.
       use_pad_real_to_static: Whether inputs are padded in-graph via
         pad_real_to_static instead of a pad subgraph.
+      module_name: Optional custom name for the compiled MLIR module.
     """
     self._static_compiler = static_compiler
     self._graph_module = graph_module
@@ -93,11 +89,10 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
     ]
     self._is_fwd = is_fwd
     self._view_arg_indices = view_arg_indices
+    self._module_name = module_name
 
     # Cache for compiled executables: layout_key -> executable.
-    self._model_executables: dict[tuple[tuple[int, ...], ...], Any] = {
-        default_layout_key: default_executable
-    }
+    self._model_executables: dict[tuple[tuple[int, ...], ...], Any] = {}
 
     self._bounded_model_inputs = bounded_model_inputs
     self._model_input_bounds = model_input_bounds
@@ -105,11 +100,7 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
     self._dynamic_outputs = [
         out_shape.is_dynamic for out_shape in output_sym_shapes
     ]
-    self._unique_output_indices = (
-        getattr(default_executable, "unique_output_indices", None)
-        if default_executable is not None
-        else None
-    )
+    self._unique_output_indices: Sequence[int] | None = None
 
     self._use_pad_subgraph = not use_pad_real_to_static
     self._default_scalar_tensor_cache = {}
@@ -358,14 +349,59 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
 
     return tuple(outputs_list) if isinstance(outputs, tuple) else outputs_list
 
+  def get_executable(
+      self,
+      layout_key: tuple[tuple[int, ...], ...],
+      argument_layouts: Sequence[Sequence[int]] | None = None,
+  ) -> Any:
+    """Returns the resolved compiled executable for `layout_key`, compiling if needed."""
+    if layout_key not in self._model_executables:
+      logging.debug(
+          "[DynamicTpuBackend] Compilation cache miss for layouts: %s."
+          " Compiling new executable.",
+          layout_key,
+      )
+      try:
+        executable = self._static_compiler(
+            self._graph_module,
+            self._bounded_model_inputs,
+            is_fwd=self._is_fwd,
+            bounds=self._model_input_bounds,
+            argument_layouts=argument_layouts,
+            dynamic_outputs=self._dynamic_outputs,
+            module_name=self._module_name,
+        )
+        if hasattr(executable, "resolve"):
+          executable.resolve()
+      except (RuntimeError, ValueError) as e:
+        raise NotImplementedError(
+            "Failed to lower FX graph with dynamic shapes to MLIR with error:"
+            f" {e}. Please set torch.compile(..., dynamic=False, ...) and try"
+            " again."
+        ) from e
+
+      logging.debug(
+          "[DynamicTpuBackend] Static Model Executable MLIR: %s",
+          LazyString(lambda: str(getattr(executable, "mlir_text", None))),
+      )
+      logging.debug(
+          "[DynamicTpuBackend] Compiled model executable layouts %s",
+          getattr(executable, "parameter_layouts", None),
+      )
+      self._unique_output_indices = getattr(
+          executable, "unique_output_indices", None
+      )
+      self._model_executables[layout_key] = executable
+
+    return self._model_executables[layout_key]
+
   def __call__(self, *args: Any) -> Any:
     logging.debug("[DynamicTpuBackend] Execute Model")
 
     if not args:
       # If no args are passed, we assume there is no dynamic shape and we can
       # directly execute the model executable.
-      # Since we compile it at compile time, it is guaranteed to be in cache.
-      return self._model_executables[()](list(args))
+      return self.get_executable(())(list(args))
 
     # Resolve base tensor for arguments that were decomposed views at compile time.
     if self._view_arg_indices:
@@ -397,36 +433,7 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
         argument_layouts,
     )
 
-    # Check cache, compile if miss
-    if layout_key not in self._model_executables:
-      logging.debug(
-          "[DynamicTpuBackend] Compilation cache miss for layouts: %s."
-          " Compiling new executable.",
-          layout_key,
-      )
-      try:
-        executable = self._static_compiler(
-            self._graph_module,
-            self._bounded_model_inputs,
-            is_fwd=self._is_fwd,
-            bounds=self._model_input_bounds,
-            argument_layouts=argument_layouts,
-            dynamic_outputs=self._dynamic_outputs,
-        )
-      except (RuntimeError, ValueError) as e:
-        raise NotImplementedError(
-            "Failed to lower FX graph with dynamic shapes to MLIR with error:"
-            f" {e}. Please set torch.compile(..., dynamic=False, ...) and try"
-            " again."
-        ) from e
-
-      logging.debug(
-          "[DynamicTpuBackend] Compiled model executable layouts %s",
-          executable.parameter_layouts,  # type: ignore[attr-defined]
-      )
-      self._model_executables[layout_key] = executable
-
-    executable = self._model_executables[layout_key]
+    executable = self.get_executable(layout_key, argument_layouts)
 
     output_shapes = self._compute_output_shapes(args)
 

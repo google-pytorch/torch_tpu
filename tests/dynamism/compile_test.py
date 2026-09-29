@@ -1434,6 +1434,28 @@ class DynamicErrorHandlingTest(seed_test_utils.RepeatableTest):
       )
       self.assertIn("MLIR lowering failed", str(ctx.exception))
 
+  def test_dynamic_async_compile_disabled_option(self):
+    def simple(x):
+      return x + 1.0
+
+    with mock.patch.object(
+        _backend.dynamic_compiler,
+        "DynamicCompiler",
+        wraps=_backend.dynamic_compiler.DynamicCompiler,
+    ) as mock_dyn_compiler:
+      compiled = torch.compile(
+          simple,
+          backend="tpu",
+          options={"bounded_dynamism": True, "dynamic_async_compile": False},
+      )
+      device = torch.accelerator.current_accelerator()
+      t = torch.ones(4, device=device)
+      torch._dynamo.mark_dynamic(t, 0, min=2, max=8)
+      out = compiled(t)
+      utils.assert_close(out, simple(t))
+      mock_dyn_compiler.assert_called_once()
+      self.assertFalse(mock_dyn_compiler.call_args.kwargs["async_compile"])
+
 
 class SymMaxMinTest(seed_test_utils.RepeatableTest):
 

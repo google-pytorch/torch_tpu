@@ -114,30 +114,6 @@ def _can_use_pad_real_to_static(
   return True
 
 
-def _get_inputs_dynamic_flag(example_inputs: Sequence[Any]) -> list[bool]:
-  """Returns a list of booleans indicating which model example inputs are dynamic."""
-  return [
-      isinstance(arg, torch.Tensor) and sym_utils.has_dynamic_shape(arg)
-      for arg in example_inputs
-  ]
-
-
-def _extract_minor_to_major(
-    parameter_layouts: Sequence[Any] | None,
-    parameter_dynamic_flags: Sequence[bool],
-) -> tuple[tuple[int, ...], ...]:
-  """Extracts minor_to_major layouts from XLA parameter layouts for dynamic inputs."""
-  if parameter_layouts is None:
-    return ()
-  layouts = []
-  for is_dynamic, layout in zip(parameter_dynamic_flags, parameter_layouts):
-    if is_dynamic and layout is not None:
-      layouts.append(tuple(layout[0]))
-    else:
-      layouts.append(())
-  return tuple(layouts)
-
-
 class DynamicCompiler(compiler.Compiler):
   """Compiler for handling dynamic shapes in torch.compile()."""
 
@@ -145,6 +121,7 @@ class DynamicCompiler(compiler.Compiler):
       self,
       compilation_context: compiler.CompilationContext | None = None,
       *,
+      async_compile: bool = True,
       debug: bool | compiler.TpuCompileDebug | None = None,
       num_buckets: int = 1,
   ):
@@ -153,6 +130,8 @@ class DynamicCompiler(compiler.Compiler):
     Args:
       compilation_context: A `compiler.CompilationContext` instance used for
         maintaining compilation state.
+      async_compile: If True, executes underlying static XLA compilation
+        asynchronously.
       debug: Optional TpuCompileDebug container or bool for recording
         compilation debug artifacts. Note: Passing a bool is deprecated; pass a
         TpuCompileDebug container instead.
@@ -163,7 +142,10 @@ class DynamicCompiler(compiler.Compiler):
     super().__init__(compilation_context, debug=debug)
     self._num_buckets = num_buckets
     self.static_compiler = compiler.StaticCompiler(
-        compilation_context, debug=debug, use_stablehlo_bounds=True
+        compilation_context,
+        async_compile=async_compile,
+        debug=debug,
+        use_stablehlo_bounds=True,
     )
 
   def execute_pre_grad_passes(
@@ -189,7 +171,7 @@ class DynamicCompiler(compiler.Compiler):
       use_pad_real_to_static: bool,
       view_arg_indices: set[int],
   ) -> DynamicTpuCompiledExecutable:
-    """Transforms the FX graph and compiles an executable for the given SymbolBounds.
+    """Transforms the FX graph and creates an executable for the given SymbolBounds.
 
     Clones `graph_module.graph` before running `apply_dynamism_transformations`
     so the caller's `graph_module` is not mutated in place and this helper can
@@ -225,52 +207,17 @@ class DynamicCompiler(compiler.Compiler):
         model_input_bounds,
     )
 
-    dynamic_outputs = [out_shape.is_dynamic for out_shape in output_sym_shapes]
-
-    # Create a model executable using the provided example inputs and bounds.
-    try:
-      default_executable = self.static_compiler(
-          graph_module,
-          bounded_model_inputs,
-          is_fwd=is_fwd,
-          bounds=model_input_bounds,
-          dynamic_outputs=dynamic_outputs,
-          module_name=module_name,
-      )
-    except (RuntimeError, ValueError) as e:
-      raise NotImplementedError(
-          "Failed to lower FX graph with dynamic shapes to MLIR with error:"
-          f" {e}. Please set torch.compile(..., dynamic=False, ...) and try"
-          " again."
-      ) from e
-
-    logging.debug(
-        "[DynamicTpuBackend] Static Model Executable MLIR: %s",
-        LazyString(lambda: str(getattr(default_executable, "mlir_text", None))),  # pyrefly: ignore[bad-argument-type]
-    )
-
-    parameter_dynamic_flags = _get_inputs_dynamic_flag(example_inputs)
-    default_layout_key = _extract_minor_to_major(
-        default_executable.parameter_layouts,  # type: ignore[attr-defined]
-        parameter_dynamic_flags=parameter_dynamic_flags,
-    )
-    logging.info(
-        "[DynamicTpuBackend] Compiled default executable with layouts: %s",
-        default_layout_key,
-    )
-
     return DynamicTpuCompiledExecutable(
         static_compiler=self.static_compiler,
         graph_module=graph_module,
         example_inputs=example_inputs,
         output_sym_shapes=output_sym_shapes,
         is_fwd=is_fwd,
-        default_executable=default_executable,
-        default_layout_key=default_layout_key,
         bounded_model_inputs=bounded_model_inputs,
         model_input_bounds=model_input_bounds,
         view_arg_indices=view_arg_indices,
         use_pad_real_to_static=use_pad_real_to_static,
+        module_name=module_name,
     )
 
   def __call__(

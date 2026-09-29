@@ -455,6 +455,7 @@ def make_backend_compiler(
     async_compile: bool = False,
     debug: TpuCompileDebug | None = None,
     num_dynamic_buckets: int = 1,
+    dynamic_async_compile: bool = True,
 ) -> compiler.Compiler:
   """Creates a compiler configured for static or dynamic compilation.
 
@@ -465,6 +466,8 @@ def make_backend_compiler(
       artifacts.
     num_dynamic_buckets: Number of 128-aligned dynamic shape buckets to generate
       when compiling with dynamic shapes.
+    dynamic_async_compile: If True, executes underlying static XLA compilation
+      asynchronously within DynamicCompiler.
 
   Returns:
     A SplitCompiler instance wrapping either DynamicCompiler or StaticCompiler,
@@ -473,7 +476,9 @@ def make_backend_compiler(
   has_dynamic_symints = compiler.has_dynamic_symints(example_inputs)
   if has_dynamic_symints:
     base_compiler = dynamic_compiler.DynamicCompiler(
-        debug=debug, num_buckets=num_dynamic_buckets
+        async_compile=dynamic_async_compile,
+        debug=debug,
+        num_buckets=num_dynamic_buckets,
     )
   else:
     base_compiler = compiler.StaticCompiler(
@@ -695,6 +700,9 @@ class TpuBackend:
         bounded_dynamism: Default False. If True, allows bounded dynamic shapes.
         num_dynamic_buckets: Default 1. Number of 128-aligned dynamic shape
           buckets to generate when `bounded_dynamism=True`.
+        dynamic_async_compile: Default True. If True, executes underlying static
+          XLA compilation asynchronously within `DynamicCompiler` when
+          `bounded_dynamism=True`.
         serializable: Default True. If True, uses
           SerializableAOTDispatchCompiler so that .serialize() is attached to
           compiled functions, which enables PyTorch's AOTAutogradCache to
@@ -722,6 +730,7 @@ class TpuBackend:
     async_compile = options.get("async_compile", False)
     bounded_dynamism = options.get("bounded_dynamism", False)
     num_dynamic_buckets = options.get("num_dynamic_buckets", 1)
+    dynamic_async_compile = options.get("dynamic_async_compile", True)
     # DynamicCompiler artifacts are not pickleable yet, so only static
     # compilations can participate in AOTAutogradCache.
     serializable = cast(
@@ -775,6 +784,7 @@ class TpuBackend:
         async_compile=async_compile,
         debug=debug,
         num_dynamic_buckets=num_dynamic_buckets,
+        dynamic_async_compile=dynamic_async_compile,
     )
     compiler_instance.execute_pre_grad_passes(graph_module)
 
