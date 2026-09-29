@@ -29,17 +29,17 @@ def _():
 @app.cell(hide_code=True)
 def _(mo):
   mo.md(r"""
-    # Get Started with TorchTPU
+    # Get started with TorchTPU
 
     This tutorial will guide you through your first successful computation on Google TPU hardware using the `torch_tpu` backend.
 
-    ## 1. Installation and Setup
+    ## 1. Install and set up
 
     Before running this notebook, ensure you are running on a [Google Cloud TPU VM](https://docs.cloud.google.com/tpu/docs/intro-to-tpu?hl=en) (e.g., v6e).
 
     Install TorchTPU and its dependencies on your TPU VM. Components must be installed in this order to ensure the PyTorch dispatcher and TPU drivers align correctly.
 
-    #### Step 1: Initialize Python 3.12
+    ### Step 1: Initialize Python 3.12
 
     ```bash
     sudo apt update && sudo apt install -y python3.12 python3.12-venv
@@ -47,10 +47,10 @@ def _(mo):
     source env/bin/activate
     ```
 
-    #### Step 2: Install TorchTPU & Dependencies
+    ### Step 2: Install TorchTPU and dependencies
 
     ```bash
-    # 1. Authenticate to get access to whl
+    # 1. Authenticate to get access to wheel files
     pip install keyrings.google-artifactregistry-auth
     gcloud auth login
     gcloud auth application-default login
@@ -74,7 +74,7 @@ def _(mo):
 @app.cell(hide_code=True)
 def _(mo):
   mo.md(r"""
-    ## 2. Hardware Initialization
+    ## 2. Initialize the hardware
 
     Similar to a CPU or GPU, the TPU backend must be explicitly initialized. This registers the "tpu" device string with PyTorch.
 
@@ -96,12 +96,12 @@ def _():
 @app.cell(hide_code=True)
 def _(mo):
   mo.md(r"""
-    ## 3. Working with Tensors
+    ## 3. Work with tensors
 
     Once initialized, you can interact with the TPU much like you would with a GPU. You can move existing CPU tensors to the TPU or create new tensors directly on the hardware.
 
     You have two standard ways to specify the TPU device:
-    1. Using the `device` object returned by the API.
+    1. Using the `device` object returned by `torch.device()`.
     2. Using the `"tpu"` string identifier.
     """)
   return
@@ -129,7 +129,7 @@ def _(device, torch):
 @app.cell(hide_code=True)
 def _(mo):
   mo.md(r"""
-    ## 4. Computation and Materialization
+    ## 4. Compute and materialize results
 
     Performing math on the TPU is seamless. When you perform operations on TPU tensors, the computation happens on the hardware. To retrieve the data back to the CPU for printing or interaction with standard Python libraries, use the `.cpu()` method.
     """)
