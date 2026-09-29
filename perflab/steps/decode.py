@@ -413,6 +413,20 @@ class DecodeStepper(common.BaseStepper):
     self._prefill_cache_snapshot = None
     self._prefill_linear_states = None
     self._prefill_module_states = None
+    # Teacher forcing. When `_forced_tokens` is set, each decode step consumes
+    # the caller-supplied token for its position instead of its own argmax.
+    # Two steppers on different devices otherwise diverge irrecoverably the
+    # first time a near-tie in the logits resolves differently, after which a
+    # cross-device logit comparison measures trajectory divergence rather than
+    # arithmetic accuracy. `decode_input_tokens` records what was actually fed
+    # so a baseline run can be replayed onto another device.
+    self._forced_tokens: list[torch.Tensor] | None = None
+    self.decode_input_tokens: list[torch.Tensor] = []
+    # The stepper's own argmax at each position. Under teacher forcing this is
+    # discarded rather than fed forward, so it is recorded separately: it is
+    # the only remaining way to see whether two devices actually agreed on what
+    # to generate.
+    self.decode_predicted_tokens: list[torch.Tensor] = []
 
   def init_with_benchmark_args(
       self, model, input_args, input_kwargs, *args, **kwargs
@@ -530,6 +544,10 @@ class DecodeStepper(common.BaseStepper):
     self._prefill_cache_snapshot = None
     self._prefill_linear_states = None
     self._prefill_module_states = None
+    # Per-run state only: `_forced_tokens` is caller configuration and must
+    # survive re-initialization.
+    self.decode_input_tokens = []
+    self.decode_predicted_tokens = []
 
   # Compiles only the inner model used for decode.
   def compile(
@@ -790,9 +808,34 @@ class DecodeStepper(common.BaseStepper):
     _restore_module_recurrent_states(self._prefill_module_states)
 
     self.current_pos = self.prompt_len
+    # Warmup ran the decode loop, so drop the tokens it consumed. Forced-token
+    # indices are derived from `current_pos - prompt_len`, which this rewind
+    # resets; leaving warmup entries here would offset the recorded baseline
+    # sequence by `warmup_steps` and misalign every measured step.
+    self.decode_input_tokens = []
+    self.decode_predicted_tokens = []
 
   def get_cache(self):
     return self.cache
+
+  def set_forced_tokens(self, tokens: list[torch.Tensor] | None) -> None:
+    """Pins the decode trajectory to a caller-supplied token sequence.
+
+    Without this, every stepper feeds itself its own `argmax`. `argmax` is
+    discontinuous, so two steppers running identical weights on different
+    devices produce identical tokens only while the gap between the top two
+    logits exceeds the arithmetic difference between the devices. The first
+    time it does not, the two runs decode different sequences and any
+    subsequent logit comparison comes out uncorrelated regardless of how
+    accurate the backend is.
+
+    Args:
+      tokens: Input tokens indexed by decode position, i.e. `tokens[i]` is fed
+        to decode step `i`. Position 0 overrides the token derived from prefill.
+        Positions beyond the end of the list, or `None`, leave the stepper
+        free-running.
+    """
+    self._forced_tokens = tokens
 
   def get_step_fn(self) -> step_lib.StepFn:
 
@@ -800,6 +843,24 @@ class DecodeStepper(common.BaseStepper):
       with torch.no_grad():
         decode_output = None
         for _ in range(self.output_tokens):
+          assert self.current_pos is not None
+          assert self.prompt_len is not None
+          # Apply forcing before the forward pass, not after: position 0 is the
+          # token produced by prefill, which is itself an argmax and can differ
+          # across devices. Overriding only subsequent inputs would leave that
+          # first divergence in place.
+          forced_idx = self.current_pos - self.prompt_len
+          if (
+              self._forced_tokens is not None
+              and 0 <= forced_idx < len(self._forced_tokens)
+              and self.next_token is not None
+          ):
+            self.next_token = self._forced_tokens[forced_idx].to(
+                self.next_token.device
+            )
+          if self.next_token is not None:
+            self.decode_input_tokens.append(self.next_token.detach().cpu())
+
           cache_position = torch.tensor([self.current_pos], device=self.device)
           decode_output = self._inner_stepper(
               self._decode_model,
@@ -809,7 +870,7 @@ class DecodeStepper(common.BaseStepper):
           )
           logits = self._unpack_output_and_update_cache(decode_output)
           self.next_token = torch.argmax(logits[:, -1, :], dim=-1).unsqueeze(-1)
-          assert self.current_pos is not None
+          self.decode_predicted_tokens.append(self.next_token.detach().cpu())
           self.current_pos += 1
         return decode_output
 
