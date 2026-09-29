@@ -12396,6 +12396,203 @@ module {{
     ):
       compiled_fn(a, b, offs)
 
+  def _ragged_k_group_sizes(
+      self, num_tokens: int, num_groups: int, layout: str
+  ) -> list[int]:
+    """Returns per-group token counts for a ragged-K grouped_mm test."""
+    if layout == "uneven":
+      gen = torch.Generator().manual_seed(num_tokens + num_groups)
+      weights = torch.rand(num_groups, generator=gen) + 0.05
+      sizes = (weights / weights.sum() * num_tokens).floor().long().tolist()
+      sizes[-1] += num_tokens - sum(sizes)
+      return sizes
+    # "tail" leaves trailing tokens outside every group.
+    used = num_tokens - 13 if layout == "tail" else num_tokens
+    base, rem = divmod(used, num_groups)
+    sizes = [base + (1 if i < rem else 0) for i in range(num_groups)]
+    if layout == "one_empty":
+      empty = num_groups // 2
+      sizes[empty + 1] += sizes[empty]
+      sizes[empty] = 0
+    elif layout == "trailing_empty":
+      # The last group is empty: offs[-1] == offs[-2].
+      sizes[-2] += sizes[-1]
+      sizes[-1] = 0
+    return sizes
+
+  def _assert_ragged_k_close(
+      self,
+      out: torch.Tensor,
+      lhs_ref: torch.Tensor,
+      rhs_ref: torch.Tensor,
+      group_sizes: list[int],
+  ) -> None:
+    """Compares a Case 3 result with a CPU fp32 per-group reference.
+
+    Each group g uses rtol=2e-2 and atol=2e-2 * max|ref_g|, so an empty group
+    must come back exactly zero.
+
+    Args:
+      out: The [g, m, n] TPU result.
+      lhs_ref: The [m, T] fp32 CPU lhs (dequantized for FP8).
+      rhs_ref: The [T, n] fp32 CPU rhs (dequantized for FP8).
+      group_sizes: Tokens per group along T.
+    """
+    out = out.cpu().float()
+    self.assertEqual(
+        out.shape, (len(group_sizes), lhs_ref.shape[0], rhs_ref.shape[1])
+    )
+    start = 0
+    for g, size in enumerate(group_sizes):
+      end = start + size
+      ref = lhs_ref[:, start:end] @ rhs_ref[start:end]
+      ref_norm = ref.norm().item()
+      err_norm = (out[g] - ref).norm().item()
+      rel_fro = err_norm / ref_norm if ref_norm > 0 else err_norm
+      utils.assert_close(
+          out[g],
+          ref,
+          rtol=2e-2,
+          atol=2e-2 * ref.abs().max().item(),
+          preamble=(
+              f"group {g} (size {size}, relative Frobenius error {rel_fro:.3g})"
+          ),
+      )
+      start = end
+
+  @parameterized.product(
+      num_tokens=[4096, 4104],
+      num_groups=[8, 128],
+      layout=["even", "uneven", "one_empty", "trailing_empty", "tail"],
+      mn=[(256, 128), (128, 256)],
+  )
+  def test_grouped_mm_2d_2d_ragged_k_wgrad(
+      self, num_tokens, num_groups, layout, mn
+  ):
+    """Tests _grouped_mm Case 3 as a MoE weight gradient (x.t() @ dy).
+
+    Regression test for github.com/google-pytorch/torch_tpu/issues/2668, where
+    groups inside the first contracting tile came back wrong. 4104 is not a
+    multiple of 256 and exercises the padding in the lowering.
+
+    Args:
+      num_tokens: Total tokens T (the ragged contracting dimension).
+      num_groups: Number of groups (experts).
+      layout: How tokens are distributed across groups.
+      mn: The (m, n) output dimensions per group.
+    """
+    m, n = mn
+    device = torch.device("tpu")
+    group_sizes = self._ragged_k_group_sizes(num_tokens, num_groups, layout)
+    offs = torch.tensor(group_sizes).cumsum(0).to(torch.int32)
+    x = torch.randn(num_tokens, m, dtype=torch.bfloat16)
+    dy = torch.randn(num_tokens, n, dtype=torch.bfloat16)
+
+    with torch.tpu.precision(torch.tpu.Precision.DEFAULT):
+      out = torch._grouped_mm(
+          x.to(device).t(), dy.to(device), offs=offs.to(device)
+      )
+
+    self._assert_ragged_k_close(out, x.float().t(), dy.float(), group_sizes)
+
+  @parameterized.product(
+      num_tokens=[4096, 4104],
+      num_groups=[8, 128],
+      layout=["even", "uneven", "one_empty", "trailing_empty", "tail"],
+      mn=[(256, 128), (128, 256)],
+  )
+  def test_scaled_grouped_mm_2d_2d_ragged_k_wgrad(
+      self, num_tokens, num_groups, layout, mn
+  ):
+    """Tests _scaled_grouped_mm Case 3 in FP8 with tensorwise scales (#2668).
+
+    Args:
+      num_tokens: Total tokens T (the ragged contracting dimension).
+      num_groups: Number of groups (experts).
+      layout: How tokens are distributed across groups.
+      mn: The (m, n) output dimensions per group.
+    """
+    m, n = mn
+    device = torch.device("tpu")
+    group_sizes = self._ragged_k_group_sizes(num_tokens, num_groups, layout)
+    offs = torch.tensor(group_sizes).cumsum(0).to(torch.int32)
+    fp8 = torch.float8_e4m3fn
+    fp8_max = torch.finfo(fp8).max
+    x = torch.randn(num_tokens, m)
+    dy = torch.randn(num_tokens, n)
+    scale_x = (x.abs().max() / fp8_max).reshape(1)
+    scale_dy = (dy.abs().max() / fp8_max).reshape(1)
+    x_fp8 = (x / scale_x).to(fp8)
+    dy_fp8 = (dy / scale_dy).to(fp8)
+
+    with torch.tpu.precision(torch.tpu.Precision.DEFAULT):
+      out = torch._scaled_grouped_mm(
+          x_fp8.to(device).t(),
+          dy_fp8.to(device),
+          scale_x.to(device),
+          scale_dy.to(device),
+          offs=offs.to(device),
+          out_dtype=torch.bfloat16,
+      )
+
+    self._assert_ragged_k_close(
+        out,
+        (x_fp8.float() * scale_x).t(),
+        dy_fp8.float() * scale_dy,
+        group_sizes,
+    )
+
+  @parameterized.named_parameters(
+      dict(testcase_name="aligned", num_tokens=4096, num_pad_rows=0),
+      dict(testcase_name="padded", num_tokens=4104, num_pad_rows=248),
+  )
+  def test_grouped_mm_2d_2d_ragged_k_stablehlo(self, num_tokens, num_pad_rows):
+    """Pins the Case 3 lowering to the form XLA:TPU maps to its Gmm kernel.
+
+    The numeric ragged-K tests reproduce #2668 only on TPU v7x. This test
+    checks the emitted StableHLO, so it guards the lowering on every chip: the
+    ragged dimension must be dim 0 of both operands, and T must be zero-padded
+    to a multiple of 256.
+
+    Args:
+      num_tokens: Total tokens T (the ragged contracting dimension).
+      num_pad_rows: Expected zero rows appended to T.
+    """
+    m, n, num_groups = 256, 128, 8
+    device = torch.device("tpu")
+    group_sizes = self._ragged_k_group_sizes(num_tokens, num_groups, "even")
+    offs = torch.tensor(group_sizes).cumsum(0).to(torch.int32).to(device)
+    x = torch.randn(num_tokens, m, dtype=torch.bfloat16, device=device)
+    dy = torch.randn(num_tokens, n, dtype=torch.bfloat16, device=device)
+
+    torch.compiler.reset()
+    debugs = []
+    compiled = torch.compile(
+        lambda x, dy, offs: torch._grouped_mm(x.t(), dy, offs=offs),
+        backend="tpu",
+        dynamic=False,
+        options={"serializable": False, "debug_callback": debugs.append},
+    )
+    compiled(x, dy, offs)
+    text = "\n".join(
+        t for debug in debugs for t in debug.stablehlo_forward_text
+    )
+
+    self.assertIn("chlo.ragged_dot", text)
+    for attr in (
+        "lhs_contracting_dimensions = [0]",
+        "rhs_contracting_dimensions = [0]",
+        "lhs_ragged_dimensions = [0]",
+    ):
+      self.assertIn(attr, text)
+    self.assertNotIn("rhs_group_dimensions", text)
+    if num_pad_rows:
+      self.assertIn("stablehlo.pad", text)
+      self.assertIn(f"high = [{num_pad_rows}, 0]", text)
+      self.assertIn(f"tensor<{num_tokens + num_pad_rows}x{m}xbf16>", text)
+    else:
+      self.assertNotIn("stablehlo.pad", text)
+
   def _apply_group_scales(
       self, tensor, scale_a, scale_b, offs=None, is_3d_2d=False
   ):
