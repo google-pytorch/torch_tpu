@@ -114,10 +114,11 @@ absl::StatusOr<c10d::ReduceOp::RedOpType> ParseReduceOp(
   return *parsed;
 }
 
-// resolve_process_group() and getBackend() throw on user errors (an unknown
-// or destroyed group, or a group without a TPU backend), so the checks below
-// only fail on TorchTPU bugs.
-c10::intrusive_ptr<ProcessGroupTpu> GetProcessGroupTpu(
+// resolve_process_group() and getBackend() throw on an unknown or destroyed
+// group or a group without a TPU backend, so they never return null. The TPU
+// backend can still be a wrapper around ProcessGroupTpu, e.g. under
+// TORCH_DISTRIBUTED_DEBUG=DETAIL or TorchComms.
+absl::StatusOr<c10::intrusive_ptr<ProcessGroupTpu>> GetProcessGroupTpu(
     std::string_view group_name) {
   c10::intrusive_ptr<c10d::ProcessGroup> pg =
       c10d::resolve_process_group(std::string(group_name));
@@ -127,7 +128,10 @@ c10::intrusive_ptr<ProcessGroupTpu> GetProcessGroupTpu(
   ABSL_CHECK(backend != nullptr);  // CRASH_OK
   auto process_group_tpu =
       c10::dynamic_intrusive_pointer_cast<ProcessGroupTpu>(std::move(backend));
-  ABSL_CHECK(process_group_tpu != nullptr);  // CRASH_OK
+  TT_RET_CHECK(process_group_tpu != nullptr, error::kInvalidArgument)
+      << "expected the TPU backend of process group " << group_name
+      << " to be an unwrapped ProcessGroupTpu, got a wrapped or non-TPU "
+         "backend";
   return process_group_tpu;
 }
 
@@ -148,7 +152,7 @@ absl::StatusOr<DeviceBufferRef> DispatchCollectiveWithDim(
     const at::Tensor& input, int64_t group_size, Dimensions output_shape,
     std::string_view group_name, CollectiveBuilder collective_builder,
     OpParamCacheKeys param_keys) {
-  auto process_group = GetProcessGroupTpu(group_name);
+  TT_ASSIGN_OR_RETURN(auto process_group, GetProcessGroupTpu(group_name));
   const DeviceGroupList& device_groups = process_group->GetSubgroupDeviceIds();
   TT_RETURN_IF_ERROR(ValidateGroupSize(device_groups, group_size));
   TT_ASSIGN_OR_RETURN(auto output_dtype,
