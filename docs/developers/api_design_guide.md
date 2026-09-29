@@ -81,3 +81,30 @@ follow them in new code and migrate the existing APIs to conform to them.
         *   It's important to follow TorchTPU Context Manager design pattern to
             implement a context manager (TODO: publish the context manager
             design guide). Otherwise its behavior may be incorrect.
+*   Python API paths
+    *   A **public path** is a dotted name that reaches an object and has no
+        component starting with `_`, e.g.
+        `torch_tpu.ops.jagged.align_jagged_to_multiple`. **Every public path to
+        a TorchTPU object is an API**, even if it exists only because a public
+        module imports the object. Adding, removing, or changing a public path
+        needs approval from the API owners.
+        *   Objects that other libraries own (e.g. `typing.Optional` or `torch`)
+            aren't TorchTPU APIs, even when a TorchTPU module imports them.
+    *   Each TorchTPU module, class, and function should have **at most one
+        public module-level path** that isn't deprecated. Every extra path is
+        another API that users may depend on, and each one must go through
+        deprecation before we can move or remove the object.
+        *   Class members don't count: a method that a subclass inherits is
+            reachable through both classes, which is fine.
+        *   When we move an API, the old path may stay as a deprecated alias
+            during the deprecation period.
+        *   This is stricter than PyTorch, where both `torch.nn.Linear` and
+            `torch.nn.modules.linear.Linear` are public, and similar to how JAX
+            and NumPy keep their implementations in `jax._src` and
+            `numpy._core`.
+    *   To keep the other paths internal, give them a component that starts with
+        `_`. Prefer putting the implementation in a private module (e.g.
+        `torch_tpu/ops/_jagged.py`) and having the public module import that
+        module and assign only the public names (e.g.
+        `align_jagged_to_multiple = _jagged.align_jagged_to_multiple`), so that
+        the implementation's own imports don't become public paths.
