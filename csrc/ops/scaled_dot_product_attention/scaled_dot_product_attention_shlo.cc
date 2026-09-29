@@ -425,8 +425,7 @@ absl::StatusOr<MlirOpResults<2>> BuildScaledDotProductFusedAttentionShloOp(
   mlir::MlirOp exp_val = mlir::stablehlo::Exp(logits);
   mlir::MlirOp sum_exp = SumReduce(builder, exp_val, /*dimension=*/3);
   mlir::MlirOp softmax;
-  if (IsSdpaSequenceAlignedAndLarge(query_mlir, key_mlir) &&
-      !CanUseXlaOnlineSoftmax(query_mlir, key_mlir)) {
+  if (!CanUseXlaOnlineSoftmax(query_mlir, key_mlir)) {
     auto one = MakeConstantLike(sum_exp, 1.0);
     mlir::MlirOp inv_sum_exp = mlir::stablehlo::Div(one, sum_exp);
     TT_ASSIGN_OR_RETURN(mlir::MlirOp inv_sum_exp_broadcasted,
@@ -676,28 +675,19 @@ BuildScaledDotProductAttentionBackward(
   }
   const auto softmax_calc_type = GetTensorTypeOrDie(logits).getElementType();
 
-  // Softmax using previously computed sum_exp. Use 3D reciprocal multiplication
-  // when sequence dimensions are aligned to TPU tiles and outside the
-  // online-softmax regime (avoiding multi-output convolution fusion buffer
-  // materialization of 4D FP32 softmax tensors across GQA backward layers).
+  // Softmax using previously computed sum_exp. Evaluate reciprocal on the 3D
+  // sum_exp prior to broadcast rather than full 4D elementwise division.
+  // This eliminates Lk-fold vector divisions and intermediate 4D broadcast
+  // tensor materialization across all attention backward layers.
   mlir::MlirOp sum_exp_converted =
       ConvertElementTypeIfNeeded(sum_exp_3d, softmax_calc_type);
   mlir::MlirOp exp_val = mlir::stablehlo::Exp(logits);
-  mlir::MlirOp softmax;
-  if (IsSdpaSequenceAlignedAndLarge(query_mlir, key_mlir) &&
-      !CanUseXlaOnlineSoftmax(query_mlir, key_mlir)) {
-    auto one = MakeConstantLike(sum_exp_converted, 1.0);
-    mlir::MlirOp inv_sum_exp = mlir::stablehlo::Div(one, sum_exp_converted);
-    TT_ASSIGN_OR_RETURN(mlir::MlirOp inv_sum_exp_broadcasted,
-                        BroadcastIfNeeded(inv_sum_exp, logits,
-                                          /*broadcast_dimensions=*/{0, 1, 2}));
-    softmax = mlir::stablehlo::Mul(exp_val, inv_sum_exp_broadcasted);
-  } else {
-    TT_ASSIGN_OR_RETURN(mlir::MlirOp sum_exp_broadcasted,
-                        BroadcastIfNeeded(sum_exp_converted, logits,
-                                          /*broadcast_dimensions=*/{0, 1, 2}));
-    softmax = mlir::stablehlo::Div(exp_val, sum_exp_broadcasted);
-  }
+  auto one = MakeConstantLike(sum_exp_converted, 1.0);
+  mlir::MlirOp inv_sum_exp = mlir::stablehlo::Div(one, sum_exp_converted);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp inv_sum_exp_broadcasted,
+                      BroadcastIfNeeded(inv_sum_exp, logits,
+                                        /*broadcast_dimensions=*/{0, 1, 2}));
+  mlir::MlirOp softmax = mlir::stablehlo::Mul(exp_val, inv_sum_exp_broadcasted);
 
   // Compute backward gradients for Q, K, V
   BackwardGradients4D grads;
