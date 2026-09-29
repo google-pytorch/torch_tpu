@@ -49,6 +49,9 @@ def all_gather_dim(
 ) -> torch.Tensor:
   """All-gathers `input` from every rank and concatenates along `dim`.
 
+  Autograd is not supported: no backward is registered for this op, so
+  gradients do not flow back to `input`.
+
   Args:
     input: The local TPU tensor. Must have at least one dimension.
     dim: The dimension to concatenate along. May be negative.
@@ -71,6 +74,9 @@ def reduce_scatter_dim(
     reduce_op: str = "sum",
 ) -> torch.Tensor:
   """Reduces `input` across ranks and returns this rank's chunk along `dim`.
+
+  Autograd is not supported: no backward is registered for this op, so
+  gradients do not flow back to `input`.
 
   Args:
     input: The local TPU tensor. `input.size(dim)` must be divisible by the

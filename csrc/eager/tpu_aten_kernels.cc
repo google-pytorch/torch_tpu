@@ -1690,8 +1690,8 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
         }
         return outs;
       });
-  ImplInternal<OpName::kAllGatherDim>(m, MetaAllGatherDim);
-  ImplInternal<OpName::kReduceScatterDim>(m, MetaReduceScatterDim);
+  ImplInternal<OpName::kDistributedAllGatherDim>(m, MetaAllGatherDim);
+  ImplInternal<OpName::kDistributedReduceScatterDim>(m, MetaReduceScatterDim);
 }
 
 // Registers implementations for torch.ops.tpu ops for TPU tensors.
@@ -1734,8 +1734,8 @@ TORCH_LIBRARY_IMPL(tpu, PrivateUse1, m) {
   ImplInternal<OpName::kSparseDenseMatmulGradientStack>(
       m, AtenSparseDenseMatmulGradientStack);
   ImplInternal<OpName::kSparseMapRow>(m, AtenSparseMapRow);
-  ImplInternal<OpName::kAllGatherDim>(m, AllGatherDim);
-  ImplInternal<OpName::kReduceScatterDim>(m, ReduceScatterDim);
+  ImplInternal<OpName::kDistributedAllGatherDim>(m, AllGatherDim);
+  ImplInternal<OpName::kDistributedReduceScatterDim>(m, ReduceScatterDim);
 }
 
 // Registers custom autograd for torch.ops.tpu ops.

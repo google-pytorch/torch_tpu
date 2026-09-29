@@ -287,20 +287,12 @@ def run_all_gather_rank_order() -> None:
   utils.assert_close(recv_new_group.cpu(), expected)
 
 
-def _dim_collectives(x, y, group):
-  return (
-      torch.tpu.ops.all_gather_dim(x, 1, group),
-      torch.tpu.ops.reduce_scatter_dim(y, -1, group),
-      torch.tpu.ops.reduce_scatter_dim(y, -1, group, reduce_op="avg"),
-  )
-
-
 def _check_dim_collectives(fn: Callable[..., Any], group: Any) -> None:
   rank = dist.get_rank(group)
   size = dist.get_world_size(group)
   x = torch.arange(6, dtype=torch.float32).reshape(2, 3)
   y = torch.arange(6 * size, dtype=torch.float32).reshape(2, 3 * size)
-  gathered, scattered, averaged = fn(
+  gathered, scattered_sum, scattered_avg = fn(
       (x + 100 * rank).to("tpu"),
       (y + 1000 * rank).to("tpu"),
       group,
@@ -309,11 +301,11 @@ def _check_dim_collectives(fn: Callable[..., Any], group: Any) -> None:
       gathered.cpu(), torch.cat([x + 100 * p for p in range(size)], dim=1)
   )
   utils.assert_close(
-      scattered.cpu(),
+      scattered_sum.cpu(),
       (size * y + 1000 * sum(range(size))).chunk(size, dim=1)[rank],
   )
   utils.assert_close(
-      averaged.cpu(),
+      scattered_avg.cpu(),
       (y + 1000 * sum(range(size)) / size).chunk(size, dim=1)[rank],
   )
 
@@ -325,6 +317,13 @@ def run_experimental_collectives_on_dim() -> None:
   low = dist.new_group(ranks=list(range(half)))
   high = dist.new_group(ranks=list(range(half, 2 * half)))
   subgroup = low if rank < half else high
+
+  def _dim_collectives(x, y, group):
+    return (
+        torch.tpu.ops.all_gather_dim(x, 1, group),
+        torch.tpu.ops.reduce_scatter_dim(y, -1, group),
+        torch.tpu.ops.reduce_scatter_dim(y, -1, group, reduce_op="avg"),
+    )
 
   debugs = []
   compiled = torch.compile(

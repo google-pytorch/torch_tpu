@@ -135,26 +135,18 @@ absl::StatusOr<c10::intrusive_ptr<ProcessGroupTpu>> GetProcessGroupTpu(
   return process_group_tpu;
 }
 
-absl::Status ValidateGroupSize(const DeviceGroupList& device_groups,
-                               int64_t group_size) {
-  ABSL_CHECK(!device_groups.empty());  // CRASH_OK
-  for (const DeviceGroup& device_group : device_groups) {
-    TT_RET_CHECK(static_cast<int64_t>(device_group.size()) == group_size,
-                 error::kInvalidArgument)
-        << "expected group_size to match process group size, got " << group_size
-        << " vs " << device_group.size();
-  }
-  return absl::OkStatus();
-}
-
 template <typename CollectiveBuilder>
 absl::StatusOr<DeviceBufferRef> DispatchCollectiveWithDim(
     const at::Tensor& input, int64_t group_size, Dimensions output_shape,
     std::string_view group_name, CollectiveBuilder collective_builder,
     OpParamCacheKeys param_keys) {
   TT_ASSIGN_OR_RETURN(auto process_group, GetProcessGroupTpu(group_name));
+  // The output shape comes from group_size, while the lowered collective's
+  // shape comes from the process group.
+  TT_RET_CHECK(group_size == process_group->getSize(), error::kInvalidArgument)
+      << "expected group_size to match process group size, got " << group_size
+      << " vs " << process_group->getSize();
   const DeviceGroupList& device_groups = process_group->GetSubgroupDeviceIds();
-  TT_RETURN_IF_ERROR(ValidateGroupSize(device_groups, group_size));
   TT_ASSIGN_OR_RETURN(auto output_dtype,
                       ConvertTo<mlir::ElementType>(input.scalar_type()));
 
@@ -176,7 +168,8 @@ absl::StatusOr<DeviceBufferRef> DispatchCollectiveWithDim(
 at::Tensor AllGatherDim(const at::Tensor& input, int64_t dim,
                         int64_t group_size, std::string_view group_name) {
   TT_KERNEL(
-      OpName::kAllGatherDim, param_keys, (input, dim, group_size, group_name), {
+      OpName::kDistributedAllGatherDim, param_keys,
+      (input, dim, group_size, group_name), {
         TT_ASSIGN_OR_THROW(auto shape, AllGatherShape(input, dim, group_size));
         auto builder = [dim = shape.dim](mlir::MlirOp input_op,
                                          const DeviceGroupList& device_groups)
@@ -199,7 +192,7 @@ at::Tensor AllGatherDim(const at::Tensor& input, int64_t dim,
 at::Tensor ReduceScatterDim(const at::Tensor& input, std::string_view reduce_op,
                             int64_t dim, int64_t group_size,
                             std::string_view group_name) {
-  TT_KERNEL(OpName::kReduceScatterDim, param_keys,
+  TT_KERNEL(OpName::kDistributedReduceScatterDim, param_keys,
             (input, reduce_op, dim, group_size, group_name), {
               TT_ASSIGN_OR_THROW(auto op,
                                  ParseReduceOp(reduce_op, input.scalar_type()));

@@ -184,6 +184,9 @@ class ProcessGroupUtilsTest(seed_test_utils.RepeatableTest):
     self.assertEqual(pg_id, ProcessGroupId((0, 1), self.world_size))
 
   def test_extract_process_group_id_experimental_dim_collectives(self) -> None:
+    # The tpu:: dim collectives are recognized as collectives, and their group
+    # is found from the positional group_name argument, which sits at a
+    # different index in each op's schema.
     group_args = (1, self.world_size, dist.group.WORLD.group_name)
     for op, op_args in (
         (torch.ops.tpu._all_gather_dim, group_args),

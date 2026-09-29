@@ -57,10 +57,6 @@ absl::StatusOr<mlir::SmallVector<mlir::MlirOp>> BuildDistributedAllGatherShlo(
   ABSL_CHECK(gather_dim >= 0 &&  // CRASH_OK
              gather_dim < static_cast<int64_t>(input_shape.size()))
       << "[BuildDistributedAllGatherShlo]: invalid gather_dim " << gather_dim;
-  ABSL_CHECK(gather_dim == 0 ||  // CRASH_OK
-             output_mode == AllGatherOutputMode::kConcat)
-      << "[BuildDistributedAllGatherShlo]: only kConcat supports gather_dim "
-      << gather_dim;
   Dimensions output_shape = CopyIntVector(input_shape);
   output_shape[gather_dim] *= group_size;
   auto output_type =
@@ -82,6 +78,9 @@ absl::StatusOr<mlir::SmallVector<mlir::MlirOp>> BuildDistributedAllGatherShlo(
     case AllGatherOutputMode::kConcat:
       return mlir::SmallVector<mlir::MlirOp>{gather_output};
     case AllGatherOutputMode::kStack: {
+      ABSL_CHECK_EQ(gather_dim, 0)  // CRASH_OK
+          << "[BuildDistributedAllGatherShlo]: only kConcat supports a nonzero "
+             "gather_dim";
       Dimensions stacked_shape;
       stacked_shape.reserve(input_shape.size() + 1);
       stacked_shape.push_back(group_size);
@@ -92,6 +91,9 @@ absl::StatusOr<mlir::SmallVector<mlir::MlirOp>> BuildDistributedAllGatherShlo(
           mlir::stablehlo::Reshape(gather_output, stacked_shape)};
     }
     case AllGatherOutputMode::kList: {
+      ABSL_CHECK_EQ(gather_dim, 0)  // CRASH_OK
+          << "[BuildDistributedAllGatherShlo]: only kConcat supports a nonzero "
+             "gather_dim";
       mlir::SmallVector<mlir::MlirOp> results;
       results.reserve(group_size);
 
