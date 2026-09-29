@@ -1613,9 +1613,13 @@ def _generate_gemma4_inputs(
   pre-patchified images from the image processor.
 
   Specifically:
-  - pixel_values: Shape (B, max_patches, patch_pixels) where patch_pixels is
-    C * patch_size * patch_size (e.g., 3 * 16 * 16 = 768). Each patch is
-    flattened.
+  - pixel_values: Shape (B, max_patches, patch_pixels).
+    For standard Gemma 4, patch_pixels is C * patch_size * patch_size (e.g.,
+    768),
+    and max_patches is max_soft_tokens * pooling_kernel_size**2 (e.g., 2520).
+    For Gemma 4 Unified (encoder-free), patches are pre-merged to model patches
+    of size (patch_size * pooling_kernel_size)**2 * C (e.g., 48*48*3 = 6912),
+    with max_patches equal to max_soft_tokens (e.g., 280).
   - image_position_ids: Shape (B, max_patches, 2) containing the (x, y) grid
     coordinates of each patch in the original image. This is needed because
     the flattened patch sequence loses spatial structure. Padding patches
@@ -1631,6 +1635,7 @@ def _generate_gemma4_inputs(
     image_size: The size of the input image.
     device: The device to place the tensors on.
     input_kwargs: The dictionary to populate with the generated inputs.
+    generator: Optional PyTorch random generator.
   """
   cfg = _wrap_config(config)
   vision_config = cfg.get("vision_config")
@@ -1638,70 +1643,65 @@ def _generate_gemma4_inputs(
   pooling_kernel_size = (
       vision_config.get("pooling_kernel_size", 3) if vision_config else 3
   )
+  model_type = cfg.get("model_type", "").lower()
+  is_unified = "unified" in model_type
 
-  # Default max_soft_tokens from Gemma4ImageProcessor.
+  # Default max_soft_tokens from Gemma4ImageProcessor / Gemma4UnifiedImageProcessor.
   # This is the budget of soft tokens for the model.
   max_soft_tokens = 280
-  max_patches = max_soft_tokens * pooling_kernel_size**2
 
-  # Determine real patches based on image_size.
-  grid_size = image_size // patch_size
-  num_real_patches = grid_size * grid_size
-
-  # If the dummy image size results in more patches than the budget,
-  # we cap it to the budget to simulate the image processor behavior.
-  if num_real_patches > max_patches:
-    num_real_patches = max_patches
-    grid_size = int(num_real_patches**0.5)
-    num_real_patches = grid_size * grid_size
-
-  # Generate pixel_values: (batch_size, max_patches, patch_pixels).
-  # Unlike standard ViT models that take raw images and do patchification
-  # in the model (e.g. via Conv2d), Gemma 4 expects patchified inputs.
   num_channels = (
       cfg.get("num_channels")
       or (vision_config.get("num_channels") if vision_config else None)
       or 3
   )
-  patch_pixels = num_channels * patch_size * patch_size
+
+  if is_unified:
+    # Gemma 4 Unified models have no vision encoder; patches are pre-merged into
+    # model patches of size (patch_size * pooling_kernel_size) with 6912 channels.
+    model_patch_size = patch_size * pooling_kernel_size
+    patch_pixels = num_channels * model_patch_size * model_patch_size
+    max_patches = max_soft_tokens
+    grid_size = image_size // model_patch_size
+    num_real_patches = grid_size * grid_size
+    if num_real_patches > max_patches:
+      num_real_patches = max_patches
+      grid_size = int(num_real_patches**0.5)
+      num_real_patches = grid_size * grid_size
+    num_features = num_real_patches
+  else:
+    max_patches = max_soft_tokens * pooling_kernel_size**2
+    grid_size = image_size // patch_size
+    num_real_patches = grid_size * grid_size
+    if num_real_patches > max_patches:
+      num_real_patches = max_patches
+      grid_size = int(num_real_patches**0.5)
+      num_real_patches = grid_size * grid_size
+    patch_pixels = num_channels * patch_size * patch_size
+    pooled_dim = grid_size // pooling_kernel_size
+    num_features = pooled_dim * pooled_dim
 
   input_kwargs["pixel_values"] = torch.randn(
       batch_size, max_patches, patch_pixels, generator=generator
   ).to(device)
 
-  # Generate image_position_ids: (batch_size, max_patches, 2).
-  # We initialize with -1 (padding).
   image_position_ids = torch.full(
       (batch_size, max_patches, 2), -1, device=device, dtype=torch.long
   )
 
-  # Fill in real positions (grid coordinates).
   grid_x, grid_y = torch.meshgrid(
       torch.arange(grid_size, device=device),
       torch.arange(grid_size, device=device),
-      indexing="ij",
+      indexing="xy" if is_unified else "ij",
   )
-  coords = torch.stack([grid_x, grid_y], dim=-1)  # (grid_size, grid_size, 2)
-  coords = coords.view(-1, 2)  # (grid_size^2, 2)
+  coords = torch.stack([grid_x, grid_y], dim=-1).view(-1, 2)
 
-  # Copy coordinates to the valid part of image_position_ids.
   image_position_ids[:, :num_real_patches, :] = coords.unsqueeze(0).expand(
       batch_size, -1, -1
   )
 
   input_kwargs["image_position_ids"] = image_position_ids
 
-  # Calculate number of pooled features mathematically.
-  # The model pools patches using avg pooling with kernel size
-  # pooling_kernel_size.
-  # We need to know how many valid features will remain after pooling to
-  # insert the correct number of placeholders in input_ids.
-  pooled_dim = grid_size // pooling_kernel_size
-  num_features = pooled_dim * pooled_dim
-
-  # Overwrite input_ids to have num_features copies of image_token_id.
-  # The model expects to find these placeholders to merge text and image
-  # features.
   image_token_id = cfg.get("image_token_id", 258880)
   input_kwargs["input_ids"][:, :num_features] = image_token_id
 
@@ -3736,6 +3736,8 @@ class DiffusersProvider(BaseProvider):
         )
       raw_config = modify_config_hook(raw_config)
     config_dict = dict(raw_config)  # pyrefly: ignore[no-matching-overload]
+    if config_dict.get("encoder_hid_dim_type") == "ip_image_proj":
+      config_dict["encoder_hid_dim_type"] = None
 
     def _module_factory():
       if load_weights:
@@ -3759,6 +3761,35 @@ class DiffusersProvider(BaseProvider):
               class_name,
           )
           model_cls = diffusers.UNet2DConditionModel
+        if class_name == "ErnieImageTransformer2DModel":
+          try:
+            import diffusers.models.transformers.transformer_ernie_image as ernie_module  # pylint: disable=g-import-not-at-top
+
+            if not getattr(ernie_module, "_torch_tpu_patched", False):
+              _orig_rope = ernie_module.rope
+
+              def _safe_rope(
+                  pos: torch.Tensor, dim: int, theta: int
+              ) -> torch.Tensor:
+                if pos.device.type == "meta" or not getattr(
+                    torch.amp, "is_autocast_available", lambda dt: False
+                )(pos.device.type):
+                  assert dim % 2 == 0
+                  scale = (
+                      torch.arange(
+                          0, dim, 2, dtype=torch.float32, device=pos.device
+                      )
+                      / dim
+                  )
+                  omega = 1.0 / (theta**scale)
+                  out = torch.einsum("...n,d->...nd", pos, omega)
+                  return out.float()
+                return _orig_rope(pos, dim, theta)
+
+              setattr(ernie_module, "rope", _safe_rope)
+              setattr(ernie_module, "_torch_tpu_patched", True)
+          except (ImportError, AttributeError):
+            pass
         model = model_cls.from_config(config_dict)
         if isinstance(model, tuple):
           model = model[0]
@@ -3795,17 +3826,6 @@ class DiffusersProvider(BaseProvider):
         ):
           latent_dims = (2,) + latent_dims  # Default 2 frames
 
-      noisy_latents = torch.randn(
-          (batch_size, latent_channels, *latent_dims),
-          generator=g,
-          dtype=d_type,
-      ).to(device)
-
-      # standard num_train_timesteps for diffusion models is typically 1000
-      timesteps = torch.randint(
-          0, 1000, (batch_size,), generator=g, dtype=torch.long
-      ).to(device)
-
       # Dynamically get the model class to inspect its signature
       class_name = cfg.get("_class_name")
       if not class_name:
@@ -3821,14 +3841,82 @@ class DiffusersProvider(BaseProvider):
             class_name,
         )
         model_cls = diffusers.UNet2DConditionModel
+      if hasattr(diffusers, "models") and hasattr(
+          diffusers.models, "model_loading_utils"
+      ):
+        remapping_dict = getattr(
+            diffusers.models.model_loading_utils, "_CLASS_REMAPPING_DICT", {}
+        )
+        if class_name in remapping_dict:
+          norm_type = cfg.get("norm_type")
+          remapped = remapping_dict[class_name].get(norm_type)
+          if remapped and hasattr(diffusers, remapped):
+            model_cls = getattr(diffusers, remapped)
       forward_params = inspect.signature(model_cls.forward).parameters
+
+      if len(latent_dims) == 2 and (
+          class_name in ("UNet3DConditionModel", "I2VGenXLUNet")
+          or "3D" in str(class_name)
+          or "fps" in forward_params
+          or any(
+              "3d" in str(b).lower() for b in cfg.get("down_block_types") or []
+          )
+      ):
+        latent_dims = (2,) + latent_dims  # Default 2 frames
+
+      rope_kwargs = {}
+      if "img_ids" in forward_params and "txt_ids" in forward_params:
+        # Transformer-based diffusion models (e.g. Flux, Chroma, Bria) expect
+        # 3D flattened patch token sequence [batch_size, seq_len_img, in_channels]
+        # rather than 4D spatial tensors [batch_size, in_channels, height, width].
+        latent_h = 4
+        latent_w = 4
+        seq_len_img = latent_h * latent_w
+        noisy_latents = torch.randn(
+            (batch_size, seq_len_img, latent_channels),
+            generator=g,
+            dtype=d_type,
+        ).to(device)
+
+        axes_dims_rope = cfg.get("axes_dims_rope")
+        num_axes = len(axes_dims_rope) if axes_dims_rope else 3
+        img_ids = torch.zeros(
+            (seq_len_img, num_axes), device=device, dtype=d_type
+        )
+        txt_ids = torch.zeros((seq_len, num_axes), device=device, dtype=d_type)
+        rope_kwargs["img_ids"] = img_ids
+        rope_kwargs["txt_ids"] = txt_ids
+      elif "img_shapes" in forward_params:
+        # Transformer-based diffusion models with image shape tuples (e.g. QwenImage)
+        latent_h = 4
+        latent_w = 4
+        seq_len_img = latent_h * latent_w
+        noisy_latents = torch.randn(
+            (batch_size, seq_len_img, latent_channels),
+            generator=g,
+            dtype=d_type,
+        ).to(device)
+        rope_kwargs["img_shapes"] = [[(1, latent_h, latent_w)]] * batch_size
+      else:
+        noisy_latents = torch.randn(
+            (batch_size, latent_channels, *latent_dims),
+            generator=g,
+            dtype=d_type,
+        ).to(device)
+
+      # standard num_train_timesteps for diffusion models is typically 1000
+      timesteps = torch.randint(
+          0, 1000, (batch_size,), generator=g, dtype=torch.long
+      ).to(device)
 
       # Fallback to encoder_hid_dim / text_dim / joint_attention_dim if
       # cross_attention_dim is not specified in config.
       cross_attention_dim = (
-          cfg.get("encoder_hid_dim")
+          cfg.get("caption_channels")
+          or cfg.get("encoder_hid_dim")
           or cfg.get("cross_attention_dim")
           or cfg.get("joint_attention_dim")
+          or cfg.get("text_embed_dim")
           or cfg.get("text_dim")
       )
       if cross_attention_dim is None:
@@ -3842,6 +3930,17 @@ class DiffusersProvider(BaseProvider):
           cross_attention_dim = 2048
       if isinstance(cross_attention_dim, (list, tuple)):
         cross_attention_dim = cross_attention_dim[0]
+
+      if class_name == "CogVideoXTransformer3DModel":
+        seq_len = cfg.get("max_text_seq_length", 226)
+        num_frames = 2
+        h = cfg.get("sample_height", 60)
+        w = cfg.get("sample_width", 90)
+        noisy_latents = torch.randn(
+            (batch_size, num_frames, latent_channels, h, w),
+            generator=g,
+            dtype=d_type,
+        ).to(device)
 
       # Encoder hidden states - These would be per token text embeddings
       # returned by CLIP-ViT/L text encoder
@@ -3867,11 +3966,76 @@ class DiffusersProvider(BaseProvider):
               " parameter found in forward signature."
           )
 
-      kwargs = {
-          primary_input_key: noisy_latents,
-          "timestep": timesteps,
-          "encoder_hidden_states": dummy_encoder_hidden_states,
-      }
+      if "cap_feats" in forward_params and "t" in forward_params:
+        cap_feat_dim = (
+            cfg.get("cap_feat_dim") or cfg.get("joint_attention_dim") or 2560
+        )
+        h, w = 16, 16
+        z_x = [
+            torch.randn(
+                (latent_channels, 1, h, w),
+                generator=g,
+                dtype=d_type,
+            ).to(device)
+            for _ in range(batch_size)
+        ]
+        z_cap_feats = [
+            torch.randn(
+                (seq_len, cap_feat_dim),
+                generator=g,
+                dtype=d_type,
+            ).to(device)
+            for _ in range(batch_size)
+        ]
+        z_t = torch.tensor([0.0], device=device, dtype=d_type).expand(
+            batch_size
+        )
+        kwargs = {
+            "x": z_x,
+            "t": z_t,
+            "cap_feats": z_cap_feats,
+        }
+      else:
+        kwargs = {
+            primary_input_key: noisy_latents,
+            "timestep": timesteps,
+            "encoder_hidden_states": dummy_encoder_hidden_states,
+        }
+        kwargs.update(rope_kwargs)
+
+      if "guidance" in forward_params and cfg.get("guidance_embeds", False):
+        kwargs["guidance"] = torch.tensor(
+            [1.0], device=device, dtype=d_type
+        ).expand(batch_size)
+
+      if "pooled_projections" in forward_params:
+        proj_dim = (
+            cfg.get("pooled_projection_dim")
+            or cfg.get("projection_class_embeddings_input_dim")
+            or 32
+        )
+        kwargs["pooled_projections"] = torch.randn(
+            (batch_size, proj_dim), generator=g, dtype=d_type
+        ).to(device)
+
+      if "additional_t_cond" in forward_params:
+        kwargs["additional_t_cond"] = torch.zeros(
+            (batch_size,), device=device, dtype=torch.long
+        )
+
+      if "prior_token_id" in forward_params:
+        kwargs["prior_token_id"] = torch.zeros(
+            (batch_size,), device=device, dtype=torch.long
+        )
+        kwargs["prior_token_drop"] = torch.zeros(
+            (batch_size,), device=device, dtype=torch.bool
+        )
+        kwargs["target_size"] = torch.tensor(
+            [[1024, 1024]] * batch_size, dtype=torch.float32, device=device
+        )
+        kwargs["crop_coords"] = torch.tensor(
+            [[0, 0]] * batch_size, dtype=torch.float32, device=device
+        )
 
       # Create dummy additional conditioning inputs which would be expected in
       # an SDXL pipeline.
@@ -3898,6 +4062,80 @@ class DiffusersProvider(BaseProvider):
             "text_embeds": dummy_pooled_embeds,
             "time_ids": dummy_time_ids,
         }
+      elif cfg.get("addition_embed_type") == "text_image":
+        img_dim = cfg.get("cross_attention_dim") or cross_attention_dim
+        if isinstance(img_dim, (list, tuple)):
+          img_dim = img_dim[0]
+        kwargs["added_cond_kwargs"] = {
+            "text_embeds": (
+                torch.randn(
+                    (batch_size, img_dim), generator=g, dtype=d_type
+                ).to(device)
+            ),
+            "image_embeds": (
+                torch.randn(
+                    (batch_size, img_dim), generator=g, dtype=d_type
+                ).to(device)
+            ),
+        }
+      elif cfg.get("addition_embed_type") == "image":
+        img_dim = (
+            cfg.get("encoder_hid_dim")
+            or cfg.get("cross_attention_dim")
+            or cross_attention_dim
+        )
+        if isinstance(img_dim, (list, tuple)):
+          img_dim = img_dim[0]
+        kwargs["added_cond_kwargs"] = {
+            "image_embeds": (
+                torch.randn(
+                    (batch_size, img_dim), generator=g, dtype=d_type
+                ).to(device)
+            ),
+        }
+      elif cfg.get("addition_embed_type") == "image_hint":
+        img_dim = (
+            cfg.get("encoder_hid_dim")
+            or cfg.get("cross_attention_dim")
+            or cross_attention_dim
+        )
+        if isinstance(img_dim, (list, tuple)):
+          img_dim = img_dim[0]
+        hint_h = latent_dims[0] * 8 if len(latent_dims) >= 1 else 512
+        hint_w = latent_dims[1] * 8 if len(latent_dims) >= 2 else 512
+        kwargs["added_cond_kwargs"] = {
+            "image_embeds": (
+                torch.randn(
+                    (batch_size, img_dim), generator=g, dtype=d_type
+                ).to(device)
+            ),
+            "hint": (
+                torch.randn(
+                    (batch_size, 3, hint_h, hint_w), generator=g, dtype=d_type
+                ).to(device)
+            ),
+        }
+      elif "added_cond_kwargs" in forward_params:
+        if cfg.get("sample_size") == 128 or cfg.get(
+            "use_additional_conditions"
+        ):
+          h = latent_dims[0] if len(latent_dims) >= 2 else 128
+          w = latent_dims[1] if len(latent_dims) >= 2 else 128
+          resolution = torch.tensor(
+              [float(h), float(w)], device=device, dtype=d_type
+          ).repeat(batch_size, 1)
+          aspect_ratio = torch.tensor(
+              [float(h / w)], device=device, dtype=d_type
+          ).repeat(batch_size, 1)
+          kwargs["added_cond_kwargs"] = {
+              "resolution": resolution,
+              "aspect_ratio": aspect_ratio,
+          }
+        else:
+          kwargs["added_cond_kwargs"] = {
+              "resolution": None,
+              "aspect_ratio": None,
+          }
 
       if "encoder_hidden_states" not in forward_params:
         kwargs.pop("encoder_hidden_states", None)
@@ -3905,10 +4143,207 @@ class DiffusersProvider(BaseProvider):
         kwargs.pop("added_cond_kwargs", None)
       if "timestep" not in forward_params:
         kwargs.pop("timestep", None)
-      if "class_labels" in forward_params or cfg.get("num_class_embeds"):
+      if "class_labels" in forward_params:
         kwargs["class_labels"] = torch.zeros(
             (batch_size,), dtype=torch.long, device=device
         )
+
+      if "controlnet_cond" in forward_params:
+        if "img_shapes" in forward_params:
+          latent_h, latent_w = 4, 4
+          seq_len_img = latent_h * latent_w
+          extra_channels = cfg.get("extra_condition_channels", 0)
+          kwargs["controlnet_cond"] = torch.randn(
+              (batch_size, seq_len_img, latent_channels + extra_channels),
+              generator=g,
+              dtype=d_type,
+          ).to(device)
+        elif (
+            "img_ids" in forward_params
+            and "txt_ids" in forward_params
+            and cfg.get("conditioning_embedding_channels") is None
+        ):
+          latent_h, latent_w = 4, 4
+          seq_len_img = latent_h * latent_w
+          kwargs["controlnet_cond"] = torch.randn(
+              (batch_size, seq_len_img, latent_channels),
+              generator=g,
+              dtype=d_type,
+          ).to(device)
+        elif class_name == "SD3ControlNetModel":
+          patch_size = cfg.get("patch_size", 2)
+          latent_h = 16
+          latent_w = 16
+          cond_channels = cfg.get("in_channels", 16) + cfg.get(
+              "extra_conditioning_channels", 0
+          )
+          kwargs["controlnet_cond"] = torch.randn(
+              (batch_size, cond_channels, latent_h, latent_w),
+              generator=g,
+              dtype=d_type,
+          ).to(device)
+          if not cfg.get("use_pos_embed", True):
+            inner_dim = cfg.get("num_attention_heads", 18) * cfg.get(
+                "attention_head_dim", 64
+            )
+            num_patches = (latent_h // patch_size) * (latent_w // patch_size)
+            kwargs[primary_input_key] = torch.randn(
+                (batch_size, num_patches, inner_dim),
+                generator=g,
+                dtype=d_type,
+            ).to(device)
+          else:
+            kwargs[primary_input_key] = torch.randn(
+                (batch_size, latent_channels, latent_h, latent_w),
+                generator=g,
+                dtype=d_type,
+            ).to(device)
+          if cfg.get("joint_attention_dim") is None:
+            kwargs.pop("encoder_hidden_states", None)
+        else:
+          cond_channels = cfg.get("conditioning_channels", 3)
+          out_channels = cfg.get("conditioning_embedding_out_channels") or (
+              16,
+              32,
+              96,
+              256,
+          )
+          factor = 2 ** (len(out_channels) - 1)
+          if len(latent_dims) == 2:
+            cond_h = latent_dims[0] * factor
+            cond_w = latent_dims[1] * factor
+          else:
+            cond_h, cond_w = 64 * factor, 64 * factor
+          kwargs["controlnet_cond"] = torch.randn(
+              (batch_size, cond_channels, cond_h, cond_w),
+              generator=g,
+              dtype=d_type,
+          ).to(device)
+
+      if "controlnet_mode" in forward_params:
+        kwargs["controlnet_mode"] = torch.zeros(
+            (batch_size, 1), dtype=torch.long, device=device
+        )
+
+      if "fps" in forward_params:
+        kwargs["fps"] = torch.tensor(
+            [16], device=device, dtype=torch.long
+        ).expand(batch_size)
+      if "image_latents" in forward_params:
+        kwargs["image_latents"] = torch.randn(
+            (batch_size, latent_channels, *latent_dims),
+            generator=g,
+            dtype=d_type,
+        ).to(device)
+      if "image_embeddings" in forward_params:
+        kwargs["image_embeddings"] = torch.randn(
+            (batch_size, cross_attention_dim),
+            generator=g,
+            dtype=d_type,
+        ).to(device)
+
+      if (
+          "encoder_hidden_states_t5" in forward_params
+          and "encoder_hidden_states_llama3" in forward_params
+      ):
+        caption_channels = cfg.get("caption_channels") or [4096, 2048]
+        t5_dim = caption_channels[0]
+        llama_dim = (
+            caption_channels[1]
+            if len(caption_channels) > 1
+            else caption_channels[0]
+        )
+        llama_layers = cfg.get("llama_layers") or [0, 1]
+        num_llama_layers = max(llama_layers) + 1
+        text_emb_dim = cfg.get("text_emb_dim") or 2048
+
+        kwargs["encoder_hidden_states_t5"] = torch.randn(
+            (batch_size, seq_len, t5_dim), generator=g, dtype=d_type
+        ).to(device)
+        kwargs["encoder_hidden_states_llama3"] = torch.randn(
+            (num_llama_layers, batch_size, seq_len, llama_dim),
+            generator=g,
+            dtype=d_type,
+        ).to(device)
+        kwargs["pooled_embeds"] = torch.randn(
+            (batch_size, text_emb_dim), generator=g, dtype=d_type
+        ).to(device)
+        if "timesteps" in forward_params:
+          kwargs["timesteps"] = timesteps
+        kwargs.pop("encoder_hidden_states", None)
+
+      if (
+          "encoder_hidden_states_t5" in forward_params
+          and "image_meta_size" in forward_params
+      ):
+        text_len = cfg.get("text_len", 77)
+        text_len_t5 = cfg.get("text_len_t5", 256)
+        cross_attention_dim = cfg.get("cross_attention_dim", 1024)
+        cross_attention_dim_t5 = cfg.get("cross_attention_dim_t5", 2048)
+
+        kwargs["encoder_hidden_states"] = torch.randn(
+            (batch_size, text_len, cross_attention_dim),
+            generator=g,
+            dtype=d_type,
+        ).to(device)
+        kwargs["text_embedding_mask"] = torch.ones(
+            (batch_size, text_len), device=device, dtype=torch.bool
+        )
+        kwargs["encoder_hidden_states_t5"] = torch.randn(
+            (batch_size, text_len_t5, cross_attention_dim_t5),
+            generator=g,
+            dtype=d_type,
+        ).to(device)
+        kwargs["text_embedding_mask_t5"] = torch.ones(
+            (batch_size, text_len_t5), device=device, dtype=torch.bool
+        )
+        kwargs["image_meta_size"] = torch.tensor(
+            [[1024.0, 1024.0, 1024.0, 1024.0, 0.0, 0.0]],
+            device=device,
+            dtype=d_type,
+        ).repeat(batch_size, 1)
+        if "style" in forward_params:
+          kwargs["style"] = torch.zeros(
+              (batch_size,), device=device, dtype=torch.long
+          )
+        if "timestep" in forward_params:
+          kwargs["timestep"] = timesteps.to(dtype=d_type)
+        if "controlnet_cond" in forward_params:
+          kwargs["controlnet_cond"] = torch.randn(
+              (batch_size, latent_channels, *latent_dims),
+              generator=g,
+              dtype=d_type,
+          ).to(device)
+
+      if "text_bth" in forward_params and "text_lens" in forward_params:
+        text_in_dim = (
+            cfg.get("text_in_dim")
+            or cfg.get("hidden_size")
+            or cross_attention_dim
+        )
+        kwargs["text_bth"] = torch.randn(
+            (batch_size, seq_len, text_in_dim),
+            generator=g,
+            dtype=d_type,
+        ).to(device)
+        kwargs["text_lens"] = torch.tensor(
+            [seq_len] * batch_size, device=device, dtype=torch.long
+        )
+        kwargs.pop("encoder_hidden_states", None)
+
+      if "text_encoder_layers" in forward_params:
+        num_layers = (cfg.get("num_layers") or 19) + (
+            cfg.get("num_single_layers") or 38
+        )
+        text_encoder_dim = cfg.get("text_encoder_dim") or 2048
+        kwargs["text_encoder_layers"] = [
+            torch.randn(
+                (batch_size, seq_len, text_encoder_dim),
+                generator=g,
+                dtype=d_type,
+            ).to(device)
+            for _ in range(num_layers)
+        ]
 
       return (), kwargs
 
