@@ -15,12 +15,14 @@
 #include "csrc/ops/repeat_interleave/repeat_interleave_aten_kernels.h"
 
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <utility>
 #include <vector>
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "ATen/ops/empty.h"
 #include "ATen/ops/repeat_interleave.h"
 #include "ATen/ops/zeros.h"
 #include "absl/status/statusor.h"
@@ -37,6 +39,7 @@
 #include "csrc/common/utils.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
+#include "csrc/ops/copy_from/tpu_to_cpu.h"
 #include "csrc/ops/cumsum/cumsum.h"
 #include "csrc/ops/index_select/index_select.h"
 #include "csrc/ops/macros/kernel.h"
@@ -153,30 +156,22 @@ namespace {
 //        `indices = sum_indices - 1 = [0, 0, 1, 2, 2, 2]`
 //   5. Gather along `dim_val` using `BuildIndexSelectShlo`:
 //        `output = self.index_select(dim_val, indices) = [A, A, B, C, C, C]`
-absl::StatusOr<mlir::MlirOp> BuildRepeatInterleaveShlo(
-    mlir::MlirOp self, mlir::MlirOp repeats, std::optional<int64_t> dim,
-    int64_t output_size) {
-  auto& builder = self.getBuilder();
+//
+// Steps 1-4 live in `BuildRepeatInterleaveIndicesShlo`, which also lowers
+// `aten::repeat_interleave.Tensor` (the index vector alone, with no gather).
+absl::StatusOr<mlir::MlirOp> BuildRepeatInterleaveIndicesShlo(
+    mlir::MlirOp repeats, int64_t output_size) {
+  auto& builder = repeats.getBuilder();
   auto& op_builder = builder.getOpBuilder();
   auto i64_type = op_builder.getI64Type();
 
-  mlir::MlirOp self_op = self;
-  mlir::MlirOp repeats_op = repeats;
-  int64_t dim_val = dim.value_or(0);
-
-  // PyTorch semantics: when `dim` is omitted (`None`), both `self` and
-  // `repeats` are flattened to 1D prior to repeating along dimension 0.
-  if (!dim.has_value()) {
-    self_op = Flatten(self);
-    repeats_op = Flatten(repeats);
-  }
-
-  const mlir::RankedTensorType repeats_type = GetTensorTypeOrDie(repeats_op);
+  const mlir::RankedTensorType repeats_type = GetTensorTypeOrDie(repeats);
   const int64_t r_size = repeats_type.getDimSize(0);
 
   // Ensure `repeats` is i64 so cumulative sums and index arithmetic do not
   // overflow int32 on large tensors.
-  repeats_op = mlir::stablehlo::ConvertElementType(repeats_op, i64_type);
+  mlir::MlirOp repeats_op =
+      mlir::stablehlo::ConvertElementType(repeats, i64_type);
 
   // Step 1: Compute inclusive cumulative sum of `repeats` along axis 0.
   TT_ASSIGN_OR_RETURN(auto cumsum,
@@ -224,7 +219,26 @@ absl::StatusOr<mlir::MlirOp> BuildRepeatInterleaveShlo(
 
   // Convert 1-based counts to 0-based gather indices.
   auto one_cst = MakeConstantLike(sum_indices, 1LL);
-  auto indices = mlir::stablehlo::Subtract(sum_indices, one_cst);
+  return mlir::stablehlo::Subtract(sum_indices, one_cst);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildRepeatInterleaveShlo(
+    mlir::MlirOp self, mlir::MlirOp repeats, std::optional<int64_t> dim,
+    int64_t output_size) {
+  mlir::MlirOp self_op = self;
+  mlir::MlirOp repeats_op = repeats;
+  int64_t dim_val = dim.value_or(0);
+
+  // PyTorch semantics: when `dim` is omitted (`None`), both `self` and
+  // `repeats` are flattened to 1D prior to repeating along dimension 0.
+  if (!dim.has_value()) {
+    self_op = Flatten(self);
+    repeats_op = Flatten(repeats);
+  }
+
+  // Steps 1-4: Build the 0-based source index for every output position.
+  TT_ASSIGN_OR_RETURN(auto indices,
+                      BuildRepeatInterleaveIndicesShlo(repeats_op, output_size));
 
   // Step 5: Select elements from `self_op` along `dim_val` using `indices`.
   return BuildIndexSelectShlo(self_op, dim_val, indices);
@@ -615,6 +629,112 @@ at::Tensor AtenRepeatInterleave(const at::Tensor& self,
             (DispatchOp<2>(std::move(shlo_builder), {self, resolved_repeats},
                            {.out_dtype = out_dtype,
                             .out_dims = out_dims,
+                            .op_param_cache_keys = std::move(param_keys)})));
+        return MakeTensor(result);
+      });
+}
+
+namespace {
+
+// Reduces 1D `repeats` to the i64 vector `[sum(repeats), min(repeats)]`, so the
+// output size and the non-negative check need a single device-to-host copy.
+absl::StatusOr<mlir::MlirOp> BuildRepeatsSumAndMinShlo(mlir::MlirOp repeats) {
+  auto& builder = repeats.getBuilder();
+  auto i64_type = builder.getOpBuilder().getI64Type();
+  mlir::MlirOp repeats_i64 =
+      mlir::stablehlo::ConvertElementType(repeats, i64_type);
+  auto reduce = [&](int64_t init, auto body_tag) {
+    using BodyOp = decltype(body_tag);
+    auto result = mlir::stablehlo::Reduce(
+        builder, {repeats_i64}, {MakeScalarConstant(builder, init, i64_type)},
+        [](mlir::RegionBuilder& rb) {
+          auto& body_builder = rb.getOpBuilder();
+          mlir::stablehlo::buildReduceBody<BodyOp>(
+              body_builder.getI64Type(), rb.getRegion(), body_builder);
+        },
+        {0})[0];
+    return mlir::stablehlo::Reshape(result, {1});
+  };
+  mlir::MlirOp sum = reduce(0, mlir::stablehlo::AddOp());
+  mlir::MlirOp min =
+      reduce(std::numeric_limits<int64_t>::max(), mlir::stablehlo::MinOp());
+  return mlir::stablehlo::Concatenate(builder, {sum, min}, 0);
+}
+
+}  // namespace
+
+// Eager `PrivateUse1` kernel for `aten::repeat_interleave.Tensor`.
+//
+// Returns the 1D index vector `[0] * repeats[0] + [1] * repeats[1] + ...` in
+// the dtype of `repeats`. This is the index tensor that the variable-length
+// `self_Tensor` path gathers with, so it reuses
+// `BuildRepeatInterleaveIndicesShlo` and skips the gather.
+//
+// When `output_size` is omitted, `BuildRepeatsSumAndMinShlo` computes the total
+// and the minimum (for the non-negative check), and both are copied to the host
+// in one transfer, so the op costs a single host sync.
+at::Tensor AtenRepeatInterleaveTensor(const at::Tensor& repeats,
+                                      std::optional<c10::SymInt> output_size) {
+  const int64_t output_size_val =
+      output_size.has_value() ? output_size->guard_int(__FILE__, __LINE__) : -1;
+  TT_KERNEL(
+      OpName::kRepeatInterleaveTensor, param_keys, (repeats, output_size_val), {
+        TT_CHECK_THROW(repeats.dim() == 1, error::kInvalidArgument)
+            << "repeat_interleave only accept 1D vector as repeat";
+        TT_CHECK_THROW(repeats.scalar_type() == at::kLong ||
+                           repeats.scalar_type() == at::kInt,
+                       error::kInvalidArgument)
+            << "repeats has to be Long or Int tensor";
+
+        int64_t total = 0;
+        if (repeats.size(0) > 0) {
+          if (output_size.has_value()) {
+            total = output_size_val;
+            TT_CHECK_THROW(total >= 0, error::kInvalidArgument)
+                << "Trying to create tensor with negative dimension " << total;
+          } else {
+            TT_ASSIGN_OR_THROW(
+                auto stats_buffer,
+                (DispatchOp<1>(BuildRepeatsSumAndMinShlo, repeats,
+                               {.op_name = OpName::kRepeatInterleaveTensorStats,
+                                .out_dtype = mlir::ElementType::I64,
+                                .out_dims = Dimensions({2}),
+                                .op_param_cache_keys =
+                                    OpParamCacheKeys::Empty()})));
+            const at::Tensor host_stats =
+                at::empty({2}, at::TensorOptions()
+                                   .dtype(at::kLong)
+                                   .device(at::kCPU));
+            TT_THROW_IF_ERROR(CopyTpuToCpu(MakeTensor(std::move(stats_buffer)),
+                                           host_stats,
+                                           /*non_blocking=*/false));
+            const auto stats = host_stats.accessor<int64_t, 1>();
+            total = stats[0];
+            TT_CHECK_THROW(stats[1] >= 0, error::kInvalidArgument)
+                << "repeats can not be negative";
+          }
+        }
+        if (total == 0) {
+          TT_ASSIGN_OR_THROW(
+              at::Tensor empty,
+              MakeEmptyTensor({0}, repeats.scalar_type(), repeats.device()));
+          return empty;
+        }
+
+        TT_ASSIGN_OR_THROW(const mlir::ElementType out_dtype,
+                           ConvertTo<mlir::ElementType>(repeats.scalar_type()));
+        auto shlo_builder =
+            [total](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
+          TT_ASSIGN_OR_RETURN(auto indices,
+                              BuildRepeatInterleaveIndicesShlo(input, total));
+          return mlir::stablehlo::ConvertElementType(
+              indices, GetTensorTypeOrDie(input).getElementType());
+        };
+        TT_ASSIGN_OR_THROW(
+            auto result,
+            (DispatchOp<1>(std::move(shlo_builder), repeats,
+                           {.out_dtype = out_dtype,
+                            .out_dims = Dimensions({total}),
                             .op_param_cache_keys = std::move(param_keys)})));
         return MakeTensor(result);
       });

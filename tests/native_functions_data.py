@@ -332,7 +332,6 @@ UNREGISTERED_OPS = frozenset([
     'range.out',
     'record_stream',
     'renorm.out',
-    'repeat_interleave.Tensor',
     'resize_as_sparse_',
     'rrelu_with_noise',
     'rrelu_with_noise.out',

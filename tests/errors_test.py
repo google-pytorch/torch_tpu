@@ -13083,6 +13083,33 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       torch.repeat_interleave(t, 2, output_size=10)
 
+  def test_repeat_interleave_repeats_only_not_1d(self):
+    repeats = torch.tensor([[1, 2]], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""repeat_interleave(): repeat_interleave only accept 1D vector as repeat""",
+        gpu="""repeat_interleave only accept 1D vector as repeat""",
+    ):
+      torch.repeat_interleave(repeats)
+
+  def test_repeat_interleave_repeats_only_float(self):
+    repeats = torch.tensor([1.0, 2.0], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""repeat_interleave(): repeats has to be Long or Int tensor""",
+        gpu="""repeats has to be Long or Int tensor""",
+    ):
+      torch.repeat_interleave(repeats)
+
+  def test_repeat_interleave_repeats_only_negative(self):
+    repeats = torch.tensor([3, -1], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""repeat_interleave(): repeats can not be negative""",
+        gpu="""repeats can not be negative""",
+    ):
+      torch.repeat_interleave(repeats)
+
   def test_constant_pad_nd_odd_pad_length(self):
     t = torch.ones(2, 2, device=et.device())
     with et.assert_raises_message(

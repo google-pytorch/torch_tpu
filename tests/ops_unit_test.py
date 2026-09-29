@@ -6194,6 +6194,45 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         ),
     )
 
+  def test_repeat_interleave_repeats_only(self):
+    # `torch.repeat_interleave(repeats)` returns the index vector.
+    for dtype in [torch.int64, torch.int32]:
+      for repeats in [[2, 1, 3], [2, 0, 1], [0, 0, 0], [5], []]:
+        r = torch.tensor(repeats, dtype=dtype)
+        self.assert_close_tpu_vs_cpu(
+            lambda device, r=r: torch.repeat_interleave(to(r, device=device)),
+        )
+
+    # Explicit output_size skips the host sync.
+    r = torch.tensor([2, 1, 3])
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.repeat_interleave(
+            to(r, device=device), output_size=6
+        ),
+    )
+
+    # Same repeats shape, different totals: each total gets its own output.
+    for repeats in [[1, 1, 1], [4, 4, 4]]:
+      r = torch.tensor(repeats)
+      self.assert_close_tpu_vs_cpu(
+          lambda device, r=r: torch.repeat_interleave(to(r, device=device)),
+      )
+
+  def test_repeat_interleave_tensor_backward_variable_repeats(self):
+    # Variable repeats with autograd go through
+    # `repeat_interleave(repeats) -> index_select`.
+    t = torch.randn(3, 4, dtype=torch.float32)
+    repeats = torch.tensor([2, 1, 3])
+    grad = torch.randn(6, 4, dtype=torch.float32)
+
+    def _backward(device):
+      x = to(t.clone(), device=device).requires_grad_(True)
+      out = torch.repeat_interleave(x, to(repeats, device=device), dim=0)
+      out.backward(to(grad, device=device))
+      return x.grad
+
+    self.assert_close_tpu_vs_cpu(_backward)
+
   def test_tensor_to_tpu_with_default_device(self):
     """Tests that a tensor can be moved to TPU with a default device set."""
     device = torch.device("tpu")
