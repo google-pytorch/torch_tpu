@@ -173,7 +173,9 @@ class NonzeroBuilder {
   void Copy(mlir::Value src, mlir::Value dst) {
     tpu::EnqueueDMAOp::create(b_, src, mlir::Value(), dst, sem_, mlir::Value(),
                               mlir::Value(), mlir::Value());
-    tpu::SemaphoreWaitOp::create(b_, sem_, Const(1));
+    tpu::WaitDMAOp::create(b_, src, mlir::Value(), dst, sem_, mlir::Value(),
+                           mlir::Value(), mlir::Value(), /*priority=*/0,
+                           /*strict_ordering=*/false, /*wait_target=*/true);
   }
 
   // Local IR arithmetic helpers; Const emits an S32 constant, Index an MLIR
@@ -258,7 +260,7 @@ class NonzeroBuilder {
         b_, Ref({}, b_.getI32Type(), tpu::MemorySpace::kSmem));
     mlir::memref::StoreOp::create(b_, Const(0), count_, mlir::ValueRange{});
     sem_ = tpu::AllocaSemaphoreOp::create(
-        b_, Ref({}, tpu::SemaphoreType::get(b_.getContext()),
+        b_, Ref({}, tpu::DMASemaphoreType::get(b_.getContext()),
                 tpu::MemorySpace::kSemaphoreMem));
     auto type = mlir::VectorType::get({1, 128}, b_.getI32Type());
     position_ = tpu::IotaOp::create(b_, type, 1);

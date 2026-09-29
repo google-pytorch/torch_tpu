@@ -148,6 +148,7 @@ torch_tpu_cc_test(
     ],
 ) for gen, chip, nopresubmit in [
     ("v5", "requires-tpu-v5p", None),
+    ("v5e", "requires-tpu-v5lite", None),
     ("v6", "requires-tpu-v6e", "Avoid long Forge queue."),
     ("v7", "requires-tpu-v7x", "Avoid long Forge queue."),
 ]]
