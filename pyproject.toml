@@ -18,6 +18,13 @@ name = "torch_tpu"
 version = "0.1.1"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
+# LINT.IfChange(requires_python)
+requires-python = ">=3.11"
+# LINT.ThenChange(
+#     bazel/supported_python_versions.bzl:supported_python_versions,
+#     README.md:python_version_support,
+#     ../docs/developers/python_support_policy.md:python_version_support,
+# )
 
 dependencies = [
     "torch>=2.11.0",

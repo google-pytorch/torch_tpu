@@ -19,12 +19,18 @@
 # - .github/workflows/nightly_unpinned_deps.yml
 # - noxfile.py
 # - requirements/lock_environments.sh
+# LINT.IfChange(supported_python_versions)
 SUPPORTED_PYTHON_VERSIONS = [
     "3.11",
     "3.12",
     "3.13",
     "3.14",
 ]
+# LINT.ThenChange(
+#     ../pyproject.toml:requires_python,
+#     ../README.md:python_version_support,
+#     ../../docs/developers/python_support_policy.md:python_version_support,
+# )
 
 # The Python version the standard build defaults to (python.defaults in
 # MODULE.bazel). The extra PyTorch versions' torch wheels currently resolve

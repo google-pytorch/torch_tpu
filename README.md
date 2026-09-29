@@ -31,6 +31,20 @@ running this from a TPU VM, a v6e GCE instance is easiest.
 
 The same instructions are available in the user guide linked above.
 
+<!-- LINT.IfChange(python_version_support) -->
+
+TorchTPU's Python version support policy matches
+[PyTorch's Release Compatibility Matrix](https://github.com/pytorch/pytorch/blob/main/RELEASE.md#release-compatibility-matrix).
+Currently, **Python 3.11+** is supported. See the
+[Python Version Support Policy](docs/developers/python_support_policy.md) for
+more details.
+
+<!-- LINT.ThenChange(
+    pyproject.toml:requires_python,
+    bazel/supported_python_versions.bzl:supported_python_versions,
+    ../docs/developers/python_support_policy.md:python_version_support,
+) -->
+
 First create a Python virtual environment:
 
 ```bash
