@@ -88,10 +88,17 @@ torch_tpu_py_library(
     ],
     deps = [
         ":debug",
+        ":grouped_mm_meta",
         ":scan",
         ":tpu_backend",
         "//shims/torch:pytorch",
     ],
+)
+
+torch_tpu_py_library(
+    name = "grouped_mm_meta",
+    srcs = ["grouped_mm_meta.py"],
+    deps = ["//shims/torch:pytorch"],
 )
 
 torch_tpu_py_library(

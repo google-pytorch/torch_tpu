@@ -739,6 +739,32 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       torch.addmm(input_, mat1, mat2)
 
+  @et.why_tpu_only(
+      "CUDA validates operand dtypes separately but its kernels need them to"
+      " match; TPU rejects the mismatch up front."
+  )
+  def test_grouped_mm_mismatched_operand_dtypes(self):
+    """Tests _grouped_mm rejects self and mat2 with different dtypes."""
+    a = torch.randn(3, 4, device=et.device(), dtype=torch.float32)
+    b = torch.randn(3, 4, 8, device=et.device(), dtype=torch.bfloat16)
+    offs = torch.tensor([1, 2, 3], dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grouped_mm(): expected self and mat2 to have the same dtype, got float32 and bfloat16""",
+    ):
+      torch._grouped_mm(a, b, offs=offs)
+
+  @et.why_tpu_only("CUDA doesn't check K for 2D x 2D (ragged K).")
+  def test_grouped_mm_2d_2d_mismatch_contraction_dimension(self):
+    a = torch.randn(4, 8, device=et.device())
+    b = torch.randn(6, 5, device=et.device())
+    offs = torch.tensor([4, 8], dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grouped_mm(): expected the contraction dimension of self and mat2 to match, got 8 and 6""",
+    ):
+      torch._grouped_mm(a, b, offs=offs)
+
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_cummax_dimension_size_limit(self):
     """Tests cummax fails if dimension size has > 2^31-1 elements."""

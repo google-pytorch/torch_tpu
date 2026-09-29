@@ -5772,6 +5772,79 @@ Supported combinations for non-constant padding:
     ):
       torch._grouped_mm(a, b)
 
+  def test_grouped_mm_mismatch_contraction_dimension(self):
+    # Batch sizes agree (offs has 2 entries and self has 2 groups), so the
+    # failure isolates the contraction dimension: self is (..., 8) but mat2 is
+    # (5, ...).
+    a = torch.randn(2, 4, 8, device=et.device())
+    b = torch.randn(5, 8, device=et.device())
+    offs = torch.tensor([2, 4], dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grouped_mm(): expected the contraction dimension of self and mat2 to match, got 8 and 5""",
+        gpu="""contraction dimension of mat_a and mat_b must match""",
+    ):
+      torch._grouped_mm(a, b, offs=offs)
+
+  def test_grouped_mm_out_dtype_mismatch(self):
+    # 16-byte aligned bf16 strides so CUDA reaches its out_dtype check.
+    a = torch.randn(3, 8, device=et.device(), dtype=torch.bfloat16)
+    b = torch.randn(3, 8, 8, device=et.device(), dtype=torch.bfloat16)
+    offs = torch.tensor([1, 2, 3], dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grouped_mm(): expected out_dtype to match self dtype bfloat16, got float32""",
+        gpu="""Grouped gemm output dtype must match `mat_a` dtype""",
+    ):
+      torch._grouped_mm(a, b, offs=offs, out_dtype=torch.float32)
+
+  def test_grouped_mm_unsupported_dtype(self):
+    a = torch.randn(3, 4, device=et.device(), dtype=torch.float64)
+    b = torch.randn(3, 4, 8, device=et.device(), dtype=torch.float64)
+    offs = torch.tensor([1, 2, 3], dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grouped_mm(): expected self to be float32, float16, or bfloat16, got float64""",
+        gpu="""Expected mat_a to be Float32, BFloat16 or Float16 matrix, got Double""",
+    ):
+      torch._grouped_mm(a, b, offs=offs)
+
+  def test_grouped_mm_invalid_offs_dim(self):
+    a = torch.randn(3, 4, device=et.device())
+    b = torch.randn(3, 4, 8, device=et.device())
+    offs = torch.tensor([[1, 2, 3]], dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grouped_mm(): expected offs to be 1D, got 2D""",
+        gpu="""offs has to be 1D""",
+    ):
+      torch._grouped_mm(a, b, offs=offs)
+
+  def test_grouped_mm_invalid_offs_dtype(self):
+    a = torch.randn(3, 4, device=et.device())
+    b = torch.randn(3, 4, 8, device=et.device())
+    offs = torch.tensor([1, 2, 3], dtype=torch.int16, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grouped_mm(): expected offs to be int32 or int64, got int16""",
+        gpu="""Offsets have to be int32""",
+    ):
+      torch._grouped_mm(a, b, offs=offs)
+
+  def test_grouped_mm_invalid_offs_stride(self):
+    a = torch.randn(3, 4, device=et.device())
+    b = torch.randn(3, 4, 8, device=et.device())
+    # Slicing with a step of 2 produces a 1D view with stride 2.
+    offs = torch.tensor(
+        [1, 0, 2, 0, 3, 0], dtype=torch.int32, device=et.device()
+    )[::2]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""grouped_mm(): expected offs to have stride 1 along dim 0, got 2""",
+        gpu="""Offsets must have stride (1,)""",
+    ):
+      torch._grouped_mm(a, b, offs=offs)
+
   def test_baddbmm_unsupported_bool(self):
     input_tensor = torch.ones(1, 2, 2, device=et.device())
     batch1 = torch.ones(1, 2, 3, device=et.device())

@@ -34,6 +34,7 @@
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/to_string.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
@@ -107,10 +108,20 @@ absl::StatusOr<mlir::MlirOp> BuildGroupedMmShlo(
   // Upcast input tensors to the computation precision (e.g., F32 or BF16)
   // prior to RaggedDot/DotGeneral because CHLO RaggedDot does not natively
   // handle sub-byte types like FP4/MXFP8 or mixed precision without explicit
-  // casts. For standard types (e.g., BF16→BF16), this is a no-op that the
-  // MLIR canonicalizer eliminates.
-  self_op = mlir::stablehlo::ConvertElementType(self_op, out_dtype);
-  mat2_op = mlir::stablehlo::ConvertElementType(mat2_op, out_dtype);
+  // casts, and TPU Mosaic RaggedDot fails to legalize F16 pack_subelements.
+  const mlir::ElementType comp_dtype = (out_dtype == mlir::ElementType::F16)
+                                           ? mlir::ElementType::F32
+                                           : out_dtype;
+  self_op = mlir::stablehlo::ConvertElementType(self_op, comp_dtype);
+  mat2_op = mlir::stablehlo::ConvertElementType(mat2_op, comp_dtype);
+
+  if (offs_op.has_value()) {
+    const mlir::RankedTensorType offs_type = GetTensorTypeOrDie(*offs_op);
+    if (!offs_type.getElementType().isInteger(32)) {
+      *offs_op = mlir::stablehlo::ConvertElementType(
+          *offs_op, builder.getOpBuilder().getI32Type());
+    }
+  }
 
   const bool a_is_2d = self_type.getRank() == 2;
   const bool b_is_2d = mat2_type.getRank() == 2;
@@ -122,6 +133,7 @@ absl::StatusOr<mlir::MlirOp> BuildGroupedMmShlo(
   auto precision_config = mlir::ArrayAttr::get(
       &self_op.getContext(), {precision_attr, precision_attr});
 
+  mlir::MlirOp result;
   if (a_is_2d && !b_is_2d) {
     // Case 1 (2D x 3D with offs): lhs first dimension is ragged (Mode 1).
     ABSL_CHECK(offs_op.has_value());  // CRASH_OK
@@ -150,9 +162,9 @@ absl::StatusOr<mlir::MlirOp> BuildGroupedMmShlo(
 
     const mlir::Type out_type = mlir::makeTensorType(
         self_op.getContext(),
-        {self_type.getShape()[0], mat2_type.getShape()[2]}, out_dtype);
-    return mlir::chlo::RaggedDot(out_type, self_op, mat2_op, group_sizes,
-                                 dimension_numbers, precision_config);
+        {self_type.getShape()[0], mat2_type.getShape()[2]}, comp_dtype);
+    result = mlir::chlo::RaggedDot(out_type, self_op, mat2_op, group_sizes,
+                                   dimension_numbers, precision_config);
   } else if (!a_is_2d && b_is_2d) {
     // Case 2 (3D x 2D with offs): rhs tailing dimension is ragged (Mode 1).
     ABSL_CHECK(offs_op.has_value());  // CRASH_OK
@@ -185,11 +197,11 @@ absl::StatusOr<mlir::MlirOp> BuildGroupedMmShlo(
 
     const mlir::Type ragged_out_type = mlir::makeTensorType(
         self_op.getContext(),
-        {mat2_type.getShape()[1], self_type.getShape()[1]}, out_dtype);
+        {mat2_type.getShape()[1], self_type.getShape()[1]}, comp_dtype);
     mlir::MlirOp ragged_dot =
         mlir::chlo::RaggedDot(ragged_out_type, mat2_transposed, self_transposed,
                               group_sizes, dimension_numbers, precision_config);
-    return mlir::stablehlo::Transpose(ragged_dot, {1, 0});
+    result = mlir::stablehlo::Transpose(ragged_dot, {1, 0});
   } else if (a_is_2d && b_is_2d) {
     // Case 3 (2D x 2D with offs): contracting dimension is ragged (Mode 2).
     // The trailing dimension of lhs and the leading dimension of rhs are
@@ -221,9 +233,9 @@ absl::StatusOr<mlir::MlirOp> BuildGroupedMmShlo(
     const auto out_type = mlir::makeTensorType(
         self_op.getContext(),
         {num_groups, self_type.getShape()[0], mat2_type.getShape()[1]},
-        out_dtype);
-    return mlir::chlo::RaggedDot(out_type, self_op, mat2_op, group_sizes,
-                                 dimension_numbers, precision_config);
+        comp_dtype);
+    result = mlir::chlo::RaggedDot(out_type, self_op, mat2_op, group_sizes,
+                                   dimension_numbers, precision_config);
   } else {
     // Case 4 (3D x 3D without offs): fallback to standard batched matrix
     // multiplication (DotGeneral).
@@ -236,9 +248,13 @@ absl::StatusOr<mlir::MlirOp> BuildGroupedMmShlo(
             /*rhs_batch_dimensions=*/{0},
             /*lhs_contracting_dimensions=*/{2},
             /*rhs_contracting_dimensions=*/{1});
-    return mlir::stablehlo::DotGeneral(self_op, mat2_op, dot_dimension_numbers,
-                                       precision_config);
+    result = mlir::stablehlo::DotGeneral(
+        self_op, mat2_op, dot_dimension_numbers, precision_config);
   }
+  if (comp_dtype != out_dtype) {
+    result = mlir::stablehlo::ConvertElementType(result, out_dtype);
+  }
+  return result;
 }
 
 absl::StatusOr<mlir::MlirOp> BuildScaledGroupedMmShlo(
@@ -329,6 +345,59 @@ absl::StatusOr<mlir::MlirOp> BuildScaledGroupedMmShlo(
   return scaled_result;
 }
 
+// Validates the `_grouped_mm` inputs that can be checked without looking at
+// the tensor data. Keep in sync with the TPU Meta kernel in
+// _internal/compile/grouped_mm_meta.py so eager and compile agree.
+absl::Status ValidateGroupedMmInputs(const at::Tensor& self,
+                                     const at::Tensor& mat2,
+                                     const std::optional<at::Tensor>& offs,
+                                     const std::optional<at::Tensor>& bias,
+                                     std::optional<at::ScalarType> out_dtype) {
+  // In ragged grouped GEMM, adding bias inside the kernel requires
+  // expensive dynamic indexing because each expert group has an irregular
+  // token count. To optimize performance, PyTorch CUDA/CPU kernels
+  // explicitly reject bias.
+  // Eager models also perform out.add_(bias) externally.
+  TT_RET_CHECK(!bias.has_value() || !bias->defined(),
+               error::kPythonNotImplementedError)
+      << "expected bias to be undefined, got defined tensor";
+
+  TT_RET_CHECK(self.scalar_type() == mat2.scalar_type(),
+               error::kInvalidArgument)
+      << "expected self and mat2 to have the same dtype, got "
+      << ToString(self.scalar_type()) << " and "
+      << ToString(mat2.scalar_type());
+
+  TT_RET_CHECK(self.scalar_type() == at::ScalarType::Float ||
+                   self.scalar_type() == at::ScalarType::Half ||
+                   self.scalar_type() == at::ScalarType::BFloat16,
+               error::kInvalidArgument)
+      << "expected self to be float32, float16, or bfloat16, got "
+      << ToString(self.scalar_type());
+
+  // Matches CUDA: output dtype must match `self`.
+  const at::ScalarType target_dtype = out_dtype.value_or(self.scalar_type());
+  TT_RET_CHECK(target_dtype == self.scalar_type(), error::kInvalidArgument)
+      << "expected out_dtype to match self dtype "
+      << ToString(self.scalar_type()) << ", got " << ToString(target_dtype);
+
+  if (offs.has_value() && offs->defined()) {
+    TT_RET_CHECK(offs->dim() == 1, error::kInvalidArgument)
+        << "expected offs to be 1D, got " << offs->dim() << "D";
+    // Unlike upstream (int32 only), int64 is accepted since `cumsum` of int
+    // counts defaults to int64; the lowering narrows it to int32.
+    TT_RET_CHECK(offs->scalar_type() == at::ScalarType::Int ||
+                     offs->scalar_type() == at::ScalarType::Long,
+                 error::kInvalidArgument)
+        << "expected offs to be int32 or int64, got "
+        << ToString(offs->scalar_type());
+    TT_RET_CHECK(offs->stride(0) == 1, error::kInvalidArgument)
+        << "expected offs to have stride 1 along dim 0, got "
+        << offs->stride(0);
+  }
+  return absl::OkStatus();
+}
+
 absl::StatusOr<c10::SmallVector<int64_t, 3>> GetGroupedMmOutputSize(
     const at::Tensor& self, const at::Tensor& mat2,
     const std::optional<at::Tensor>& offs) {
@@ -374,6 +443,13 @@ absl::StatusOr<c10::SmallVector<int64_t, 3>> GetGroupedMmOutputSize(
       out_size = {self.size(0), self.size(1), mat2.size(-1)};
     }
   }
+
+  // Checked after batch sizes (upstream checks it first) so existing batch
+  // errors are unchanged. Without it, a bad K crashes the lowering. Unlike
+  // upstream, 2D x 2D (ragged K) is checked too.
+  TT_RET_CHECK(self.size(-1) == mat2.size(-2), error::kInvalidArgument)
+      << "expected the contraction dimension of self and mat2 to match, got "
+      << self.size(-1) << " and " << mat2.size(-2);
   return out_size;
 }
 
@@ -382,14 +458,8 @@ absl::StatusOr<DeviceBufferRef> GroupedMm(
     const std::optional<at::Tensor>& offs,
     const std::optional<at::Tensor>& bias,
     std::optional<at::ScalarType> out_dtype, OpParamCacheKeys& param_keys) {
-  // In ragged grouped GEMM, adding bias inside the kernel requires
-  // expensive dynamic indexing because each expert group has an irregular
-  // token count. To optimize performance, PyTorch CUDA/CPU kernels
-  // explicitly reject bias.
-  // Eager models also perform out.add_(bias) externally.
-  TT_RET_CHECK(!bias.has_value() || !bias->defined(),
-               error::kPythonNotImplementedError)
-      << "expected bias to be undefined, got defined tensor";
+  TT_RETURN_IF_ERROR(
+      ValidateGroupedMmInputs(self, mat2, offs, bias, out_dtype));
 
   const bool has_offs = offs.has_value() && offs->defined();
 

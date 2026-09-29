@@ -35,6 +35,8 @@ from absl.testing import flagsaver
 from absl.testing import parameterized
 from scipy import stats
 import torch
+from torch._subclasses import fake_tensor
+from torch.fx.experimental import symbolic_shapes
 from torch.testing._internal import common_methods_invocations
 from torch_tpu._internal import dynamism
 from torch_tpu._internal import execution_mode
@@ -12202,7 +12204,7 @@ module {{
     )
 
   @parameterized.product(
-      dtype=[torch.float32, torch.bfloat16],
+      dtype=[torch.float32, torch.bfloat16, torch.float16],
   )
   def test_grouped_mm_2d_3d(self, dtype):
     """Tests torch.ops.aten._grouped_mm: Case 1 (2D x 3D with offs)."""
@@ -12218,7 +12220,7 @@ module {{
     )
 
   @parameterized.product(
-      dtype=[torch.float32, torch.bfloat16],
+      dtype=[torch.float32, torch.bfloat16, torch.float16],
   )
   def test_grouped_mm_3d_2d(self, dtype):
     """Tests torch.ops.aten._grouped_mm: Case 2 (3D x 2D with offs)."""
@@ -12234,7 +12236,7 @@ module {{
     )
 
   @parameterized.product(
-      dtype=[torch.float32, torch.bfloat16],
+      dtype=[torch.float32, torch.bfloat16, torch.float16],
   )
   def test_grouped_mm_2d_2d(self, dtype):
     """Tests torch.ops.aten._grouped_mm: Case 3 (2D x 2D with offs)."""
@@ -12250,7 +12252,7 @@ module {{
     )
 
   @parameterized.product(
-      dtype=[torch.float32, torch.bfloat16],
+      dtype=[torch.float32, torch.bfloat16, torch.float16],
   )
   def test_grouped_mm_3d_3d(self, dtype):
     """Tests torch.ops.aten._grouped_mm: Case 4 (3D x 3D without offs)."""
@@ -12263,6 +12265,127 @@ module {{
         rtol=2e-1,
         atol=2e-1,
     )
+
+  def test_aten_grouped_mm_int64_offs_eager_and_compiled(self):
+    """Tests that eager and compiled execution of aten._grouped_mm on TPU handles int64 offsets."""
+    device = torch.device("tpu")
+    t1_cpu = torch.randn(16, 8, dtype=torch.bfloat16)
+    t2_cpu = torch.randn(2, 8, 8, dtype=torch.bfloat16)
+    offs_i32_cpu = torch.tensor([8, 16], dtype=torch.int32)
+    offs_i64_cpu = torch.tensor([8, 16], dtype=torch.int64)
+
+    out_i32 = torch.ops.aten._grouped_mm(
+        t1_cpu.to(device), t2_cpu.to(device), offs_i32_cpu.to(device)
+    )
+    out_i64_eager = torch.ops.aten._grouped_mm(
+        t1_cpu.to(device), t2_cpu.to(device), offs_i64_cpu.to(device)
+    )
+    utils.assert_close(out_i64_eager.cpu(), out_i32.cpu(), rtol=1e-3, atol=1e-3)
+
+    compiled_fn = torch.compile(
+        lambda a, b, offs: torch.ops.aten._grouped_mm(a, b, offs),
+        backend="tpu",
+        fullgraph=True,
+    )
+    out_i64_compiled = compiled_fn(
+        t1_cpu.to(device), t2_cpu.to(device), offs_i64_cpu.to(device)
+    )
+    utils.assert_close(
+        out_i64_compiled.cpu(), out_i32.cpu(), rtol=1e-3, atol=1e-3
+    )
+
+  def test_aten_grouped_mm_meta_symbolic_shapes(self):
+    """Tests the TPU meta preserves SymInt shapes without guarding."""
+    shape_env = symbolic_shapes.ShapeEnv()
+    with fake_tensor.FakeTensorMode(shape_env=shape_env):
+      s0 = shape_env.create_symintnode(
+          shape_env.create_symbol(
+              16, source=torch._dynamo.source.LocalSource("m")
+          ),
+          hint=16,
+      )
+      s1 = shape_env.create_symintnode(
+          shape_env.create_symbol(
+              2, source=torch._dynamo.source.LocalSource("g")
+          ),
+          hint=2,
+      )
+      # Symbolic M and group count; the batch check sees `s1 == s1`.
+      a_sym = torch.empty((s0, 8), dtype=torch.bfloat16, device="tpu")
+      b = torch.empty((s1, 8, 4), dtype=torch.bfloat16, device="tpu")
+      offs = torch.empty((s1,), dtype=torch.int64, device="tpu")
+      out = torch.ops.aten._grouped_mm(a_sym, b, offs)
+      self.assertIsInstance(out.shape[0], torch.SymInt)
+      self.assertEqual(out.shape[1], 4)
+      self.assertEqual(len(shape_env.guards), 0)
+
+  @parameterized.named_parameters(
+      ("2d_3d", False, True),
+      ("3d_2d", True, False),
+      ("3d_3d", True, True),
+  )
+  def test_aten_grouped_mm_meta_unbacked_symbolic_shapes(
+      self, a_is_3d, b_is_3d
+  ):
+    """Tests the TPU meta defers data-dependent batch checks, not guards."""
+    shape_env = symbolic_shapes.ShapeEnv()
+    with fake_tensor.FakeTensorMode(shape_env=shape_env):
+      # Two distinct unbacked symints make the batch-size check data
+      # dependent; guarding on it would raise GuardOnDataDependentSymNode.
+      u0 = shape_env.create_unbacked_symint()
+      u1 = shape_env.create_unbacked_symint()
+      torch._check_is_size(u0)
+      torch._check_is_size(u1)
+      a_shape = (u0, 16, 8) if a_is_3d else (16, 8)
+      b_shape = ((u1 if a_is_3d else u0), 8, 4) if b_is_3d else (8, 4)
+      a = torch.empty(a_shape, dtype=torch.bfloat16, device="tpu")
+      b = torch.empty(b_shape, dtype=torch.bfloat16, device="tpu")
+      offs = None
+      if not (a_is_3d and b_is_3d):
+        offs = torch.empty((u1,), dtype=torch.int64, device="tpu")
+      out = torch.ops.aten._grouped_mm(a, b, offs)
+      self.assertEqual(tuple(out.shape[-2:]), (16, 4))
+      self.assertEqual(out.dtype, torch.bfloat16)
+
+  def test_aten_grouped_mm_meta_non_tpu_uses_upstream(self):
+    """Tests the TPU Meta override leaves other devices on upstream's meta."""
+    with fake_tensor.FakeTensorMode():
+      a = torch.empty((16, 8), dtype=torch.bfloat16, device="cpu")
+      # 16-byte aligned so upstream reaches its int32-only offs check.
+      b = torch.empty((2, 8, 8), dtype=torch.bfloat16, device="cpu")
+      offs = torch.empty((2,), dtype=torch.int64, device="cpu")
+      # Upstream only accepts int32 offsets; the TPU override accepts int64.
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Upstream meta fallback.
+          RuntimeError, "int32"
+      ):
+        torch.ops.aten._grouped_mm(a, b, offs)
+      # Upstream's 16-byte stride check still applies off TPU.
+      b_unaligned = torch.empty((2, 8, 4), dtype=torch.bfloat16, device="cpu")
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Upstream meta fallback.
+          RuntimeError, "16 bytes"
+      ):
+        torch.ops.aten._grouped_mm(a, b_unaligned, offs.int())
+      out = torch.ops.aten._grouped_mm(a.to("tpu"), b.to("tpu"), offs.to("tpu"))
+      self.assertEqual(out.shape, (16, 8))
+      self.assertEqual(out.dtype, torch.bfloat16)
+
+  def test_aten_grouped_mm_compiled_rejects_invalid_inputs(self):
+    """Tests compile raises the same contraction error as eager."""
+    device = torch.device("tpu")
+    a = torch.randn(2, 4, 8, device=device)
+    b = torch.randn(5, 8, device=device)
+    offs = torch.tensor([2, 4], dtype=torch.int32, device=device)
+    compiled_fn = torch.compile(
+        lambda a, b, offs: torch.ops.aten._grouped_mm(a, b, offs),
+        backend="tpu",
+        fullgraph=True,
+    )
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing compile parity.
+        RuntimeError,
+        "expected the contraction dimension of self and mat2 to match, got 8"
+        " and 5",
+    ):
+      compiled_fn(a, b, offs)
 
   def _apply_group_scales(
       self, tensor, scale_a, scale_b, offs=None, is_3d_2d=False
