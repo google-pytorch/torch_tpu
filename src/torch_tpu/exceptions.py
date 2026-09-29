@@ -14,7 +14,7 @@
 
 """Exception and warning types raised or emitted by TorchTPU.
 
-Every warning TorchTPU emits derives from `TorchTPUWarning`, so warnings can be
+Every warning TorchTPU emits derives from `TorchTpuWarning`, so warnings can be
 silenced, escalated, or filtered individually or as a group once TorchTPU has
 been imported:
 
@@ -23,9 +23,9 @@ been imported:
   import torch_tpu
   from torch_tpu import exceptions
 
-  warnings.filterwarnings("ignore", category=exceptions.TCMallocWarning)
+  warnings.filterwarnings("ignore", category=exceptions.TcMallocWarning)
 
-Warnings emitted while `import torch_tpu` is still running -- `TCMallocWarning`
+Warnings emitted while `import torch_tpu` is still running -- `TcMallocWarning`
 is one -- have already fired by the time such a filter can be installed, so
 those must be filtered by message from the environment instead:
 
@@ -35,7 +35,7 @@ those must be filtered by message from the environment instead:
   # Silence every warning TorchTPU emits while importing.
   export PYTHONWARNINGS="ignore::UserWarning"
 
-Note that `PYTHONWARNINGS="ignore::torch_tpu.exceptions.TCMallocWarning"` does
+Note that `PYTHONWARNINGS="ignore::torch_tpu.exceptions.TcMallocWarning"` does
 *not* suppress an import-time warning, even though it looks like it should:
 resolving that category name makes the interpreter import `torch_tpu` in order
 to look the class up, which emits the warning before the filter is installed.
@@ -46,7 +46,7 @@ every subsequent Python invocation in that environment.
 """
 
 
-class TorchTPUWarning(UserWarning):
+class TorchTpuWarning(UserWarning):
   """Base class for all warnings emitted by TorchTPU.
 
   Derives from `UserWarning` rather than `RuntimeWarning` because `UserWarning`
@@ -56,7 +56,31 @@ class TorchTPUWarning(UserWarning):
   """
 
 
-class TCMallocWarning(TorchTPUWarning):
+class PerformanceWarning(TorchTpuWarning):
+  """Warns about potential performance issues."""
+
+
+class CorrectnessWarning(TorchTpuWarning):
+  """Warns about potential correctness issues."""
+
+
+class ApiStageWarning(TorchTpuWarning):
+  """Warns about APIs that are not in the STABLE stage."""
+
+
+class ExperimentalApiWarning(ApiStageWarning):
+  """Warns about APIs that are in the EXPERIMENTAL stage."""
+
+
+class DeprecatedApiWarning(ApiStageWarning, DeprecationWarning):
+  """Warns about APIs that are in the DEPRECATED stage."""
+
+
+class UnoptimizedBuildWarning(PerformanceWarning):
+  """Warns that TorchTPU was compiled in an unoptimized mode."""
+
+
+class TcMallocWarning(PerformanceWarning):
   """Warns that tcmalloc is not the allocator of the current process.
 
   TorchTPU host performance degrades measurably under the default glibc

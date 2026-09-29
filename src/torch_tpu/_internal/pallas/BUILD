@@ -57,6 +57,9 @@ py_library_providing_imports_info(
 torch_tpu_py_library(
     name = "pallas_compat",
     srcs = ["_compat.py"],
+    deps = [
+        "//src/torch_tpu:exceptions",
+    ],
 )
 
 torch_tpu_py_library(

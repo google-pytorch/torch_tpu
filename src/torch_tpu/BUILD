@@ -55,6 +55,7 @@ torch_tpu_py_library(
         ":torch_tpu_dist_info",
     ],
     deps = [
+        ":exceptions",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal:env",
         "//src/torch_tpu/_internal:env_utils",

@@ -15,7 +15,7 @@
 """Startup check that warns when tcmalloc is not the process allocator.
 
 Importing this module installs TorchTPU's default filter for
-`torch_tpu.exceptions.TCMallocWarning` as a side effect; see
+`torch_tpu.exceptions.TcMallocWarning` as a side effect; see
 `install_default_filters`. The check itself only runs when `check_tcmalloc` is
 called, which `torch_tpu/__init__.py` does once at import time.
 """
@@ -37,14 +37,14 @@ _TCMALLOC_OR_SANITIZER_RE: Final[re.Pattern[str]] = re.compile(
 
 
 def install_default_filters() -> None:
-  """Installs TorchTPU's default warning filter for `TCMallocWarning`.
+  """Installs TorchTPU's default warning filter for `TcMallocWarning`.
 
   The warning is emitted at most once per process. `append=True` keeps this
   filter behind any user-supplied filter, so PYTHONWARNINGS, `python -W`, and
   `warnings.filterwarnings` still take precedence.
   """
   warnings.filterwarnings(
-      "once", category=exceptions.TCMallocWarning, append=True
+      "once", category=exceptions.TcMallocWarning, append=True
   )
 
 
@@ -56,7 +56,7 @@ def check_tcmalloc() -> None:
   arena lock contention under the default glibc ptmalloc2. In Bazel
   tests/benchmarks and the standard TorchTPU Docker image, tcmalloc is linked or
   preloaded automatically. On bare-metal environments where tcmalloc is not
-  active, this emits a `TCMallocWarning`.
+  active, this emits a `TcMallocWarning`.
 
   Detection uses the process' global symbol table and, where available,
   `/proc/self/maps`. Neither probe is assumed to succeed: if a platform offers
@@ -96,7 +96,7 @@ def check_tcmalloc() -> None:
       " LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libtcmalloc_minimal.so.4), or set"
       ' PYTHONWARNINGS="ignore:tcmalloc is not loaded" to suppress this'
       " warning.",
-      exceptions.TCMallocWarning,
+      exceptions.TcMallocWarning,
       stacklevel=2,
   )
 

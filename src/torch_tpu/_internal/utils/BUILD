@@ -166,6 +166,9 @@ torch_tpu_py_library(
 torch_tpu_py_library(
     name = "annotations",
     srcs = ["annotations.py"],
+    deps = [
+        "//src/torch_tpu:exceptions",
+    ],
 )
 
 torch_tpu_py_test(

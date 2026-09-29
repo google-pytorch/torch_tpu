@@ -60,8 +60,8 @@ class CheckTcmallocTest(seed_test_utils.RepeatableTest):
       _tcmalloc_check.check_tcmalloc()
 
     self.assertLen(caught, 1)
-    self.assertIsInstance(caught[0].message, exceptions.TCMallocWarning)
-    self.assertIsInstance(caught[0].message, exceptions.TorchTPUWarning)
+    self.assertIsInstance(caught[0].message, exceptions.TcMallocWarning)
+    self.assertIsInstance(caught[0].message, exceptions.TorchTpuWarning)
     self.assertIn("LD_PRELOAD", str(caught[0].message))
 
   def test_message_starts_with_the_documented_filter_prefix(self) -> None:
@@ -100,8 +100,8 @@ class CheckTcmallocTest(seed_test_utils.RepeatableTest):
   def test_user_filter_takes_precedence_over_default_filters(self) -> None:
     with _no_tcmalloc(), warnings.catch_warnings(record=True) as caught:
       warnings.resetwarnings()
-      # Simulates PYTHONWARNINGS="always::torch_tpu.exceptions.TCMallocWarning".
-      warnings.filterwarnings("always", category=exceptions.TCMallocWarning)
+      # Simulates PYTHONWARNINGS="always::torch_tpu.exceptions.TcMallocWarning".
+      warnings.filterwarnings("always", category=exceptions.TcMallocWarning)
       _tcmalloc_check.install_default_filters()
       _tcmalloc_check.check_tcmalloc()
       _tcmalloc_check.check_tcmalloc()
@@ -109,8 +109,8 @@ class CheckTcmallocTest(seed_test_utils.RepeatableTest):
     self.assertLen(caught, 2)
 
   @parameterized.named_parameters(
-      ("tcmalloc_warning", exceptions.TCMallocWarning),
-      ("torch_tpu_warning", exceptions.TorchTPUWarning),
+      ("tcmalloc_warning", exceptions.TcMallocWarning),
+      ("torch_tpu_warning", exceptions.TorchTpuWarning),
   )
   def test_warning_is_suppressed_by_ignore_filter(
       self, category: type[Warning]
@@ -124,9 +124,9 @@ class CheckTcmallocTest(seed_test_utils.RepeatableTest):
 
   def test_warning_is_escalated_by_error_filter(self) -> None:
     with _no_tcmalloc(), warnings.catch_warnings():
-      warnings.simplefilter("error", exceptions.TCMallocWarning)
+      warnings.simplefilter("error", exceptions.TcMallocWarning)
       with self.assertRaises(  # ASSERT_RAISES_OK=Verifies the error:: filter.
-          exceptions.TCMallocWarning
+          exceptions.TcMallocWarning
       ):
         _tcmalloc_check.check_tcmalloc()
 

@@ -20,6 +20,7 @@ import warnings
 
 import torch
 import torch.distributed.tensor as dt
+from torch_tpu import exceptions
 from torch_tpu._internal import env
 
 _UNEVEN_SHARDING_WARNING: Final[str] = (
@@ -52,7 +53,9 @@ def from_local(
   `run_check=True` in debug eager mode unless explicitly set.
   """
   if shape is None or stride is None:
-    warnings.warn(_UNEVEN_SHARDING_WARNING, UserWarning, stacklevel=2)
+    warnings.warn(
+        _UNEVEN_SHARDING_WARNING, exceptions.CorrectnessWarning, stacklevel=2
+    )
 
   if run_check is None:
     run_check = _is_debug_eager_mode()

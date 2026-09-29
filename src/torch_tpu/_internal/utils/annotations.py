@@ -29,6 +29,8 @@ import sys
 from typing import Any, Callable, Mapping, Optional, TypeVar
 import warnings
 
+from torch_tpu import exceptions as _exceptions
+
 _T = TypeVar("_T")
 
 TT_API_STAGE = "__tt_api_stage__"
@@ -66,9 +68,9 @@ class Stage(str, enum.Enum):
   def warning_category(self) -> Optional[type[Warning]]:
     """The Warning category for this stage."""
     if self == Stage.EXPERIMENTAL:
-      return UserWarning
+      return _exceptions.ExperimentalApiWarning
     if self == Stage.DEPRECATED:
-      return DeprecationWarning
+      return _exceptions.DeprecatedApiWarning
     return None
 
   def format_warning_message(
@@ -185,6 +187,7 @@ def _create_warning_wrapper(
         msg = stage.format_warning_message(name, reason, version)
         cat = stage.warning_category
         if cat:
+          assert issubclass(cat, _exceptions.ApiStageWarning)
           warnings.warn(msg, category=cat, stacklevel=2)
         _warned = True
     return fn_to_wrap(*args, **kwargs)
@@ -359,6 +362,7 @@ def _resolve_module_attribute(
       msg = info.stage.format_warning_message(
           f"'{name}'", info.reason, info.version
       )
+      assert issubclass(cat, _exceptions.ApiStageWarning)
       warnings.warn(msg, category=cat, stacklevel=3)
       warned = True
 

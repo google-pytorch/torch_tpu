@@ -19,7 +19,6 @@ import contextlib
 import enum
 import os
 from typing import Any
-import warnings
 
 from torch_tpu._internal.profiler import _profiler_backend
 import torch_tpu._internal.profiler._impl as profiler
@@ -139,10 +138,6 @@ def profile(
     raise ValueError("on_trace_ready must be provided for profiler.profile.")
 
   if activities is None:
-    warnings.warn(
-        "No activities provided to profiler.profile. Defaulting to CPU and TPU"
-        " profiling."
-    )
     activities = [ProfilerActivity.CPU, ProfilerActivity.TPU]
 
   options = _get_profile_options(activities)
