@@ -1274,10 +1274,6 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     self.assertIsInstance(element_size_in_bits, int)
     self.assertEqual(minor_to_major, [1, 0])
 
-  @oss_utils.skip_if_libtpu_version(
-      lambda v: v >= (0, 0, 48),
-      'TODO(b/565203505): PadRealToStatic fails on libtpu >= 0.0.48.',
-  )
   def test_is_device_shape_dynamic(self):
     x_static = torch.ones(2, 3, device='tpu')
     self.assertFalse(tpu_torch_compile.is_device_shape_dynamic(x_static))

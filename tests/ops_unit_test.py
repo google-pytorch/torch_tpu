@@ -11966,7 +11966,10 @@ module {
     expected = x.cpu()[1:3, 2:5]
     self.assert_close(golden_result=expected, torch_tpu_result=out.cpu())
 
-  @oss_utils.skip_in_oss("PadRealToStatic is not supported in OSS libtpu.")
+  @oss_utils.skip_if_libtpu_version(
+      lambda v: v < (0, 0, 49),
+      "PadRealToStatic with dynamic dimensions requires libtpu >= 0.0.49.",
+  )
   def test_pad_real_to_static_with_mlir_on_tpu(self):
     """Tests the PadRealToStatic custom call on TPU using direct MLIR."""
 
@@ -12036,7 +12039,10 @@ module {
     )
 
   @parameterized.parameters(64, 128)
-  @oss_utils.skip_in_oss("PadRealToStatic is not supported in OSS libtpu.")
+  @oss_utils.skip_if_libtpu_version(
+      lambda v: v < (0, 0, 49),
+      "PadRealToStatic with dynamic dimensions requires libtpu >= 0.0.49.",
+  )
   def test_pad_real_to_static_kv_cache_multi_layout_execution_on_tpu(
       self, head_dim
   ):
@@ -12145,7 +12151,10 @@ module {{
           torch_tpu_result=current_key.cpu(),
       )
 
-  @oss_utils.skip_in_oss("PadRealToStatic is not supported in OSS libtpu.")
+  @oss_utils.skip_if_libtpu_version(
+      lambda v: v < (0, 0, 49),
+      "PadRealToStatic with dynamic dimensions requires libtpu >= 0.0.49.",
+  )
   def test_pad_real_to_static_dynamic_dimension(self):
     """Tests torch.ops.tpu.pad_real_to_static with a dynamic dimension."""
     device = torch.device("tpu")

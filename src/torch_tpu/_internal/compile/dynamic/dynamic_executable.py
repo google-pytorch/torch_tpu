@@ -413,7 +413,7 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
 
     tensor_args = self._get_dynamic_input_tensors(args)
 
-    # Run pad subgraph first if needed (for libtpu < 0.0.48 or 64-bit/128-bit
+    # Run pad subgraph first if needed (for libtpu < 0.0.49 or 64-bit/128-bit
     # tensors)
     if self._use_pad_subgraph:
       pad_outputs = self._compile_and_execute_pad_subgraph(tensor_args)

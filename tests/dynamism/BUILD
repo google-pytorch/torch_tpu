@@ -109,7 +109,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/utils:test_utils",
-        "//tests:oss_utils",
         "//tests:seed_test_utils",
     ],
 )
@@ -153,10 +152,12 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile/dynamic:dynamic_compiler",
         "//src/torch_tpu/_internal/compile/dynamic:graph_transform_context",
         "//src/torch_tpu/_internal/compile/dynamic:graph_transformations",
         "//src/torch_tpu/_internal/compile/dynamic:sym_bounds_manager",
         "//src/torch_tpu/_internal/compile/dynamic:view_ops_passes",
+        "//src/torch_tpu/_internal/utils",
         "//tests:seed_test_utils",
     ],
 )
