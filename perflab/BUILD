@@ -20,7 +20,11 @@ load(
 )
 load("//shims/mpm:genmpm.bzl", "genmpm")
 load("//shims/pkg:pkg.bzl", "pkg_binary_with_runfiles")
-load("//shims/py_rules:pytype.bzl", "pytype_strict_binary")
+load(
+    "//shims/py_rules:pytype.bzl",
+    "pytype_strict_binary",
+    "pytype_strict_library",
+)
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -161,7 +165,8 @@ torch_tpu_py_library(
     ],
 )
 
-torch_tpu_py_library(
+pytype_strict_library(
+    # PY_LIBRARY_OK=Decouple from torch_tpu to avoid C++ dependency in coverage tests.
     name = "step_lib",
     srcs = ["step_lib.py"],
 )
@@ -185,7 +190,8 @@ torch_tpu_py_library(
     ],
 )
 
-torch_tpu_py_library(
+pytype_strict_library(
+    # PY_LIBRARY_OK=Decouple from torch_tpu to avoid C++ dependency in coverage tests.
     name = "target",
     srcs = ["target.py"],
 )

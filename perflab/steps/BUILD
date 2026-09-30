@@ -17,13 +17,15 @@ load(
     "torch_tpu_package_end",
     "torch_tpu_py_library",
 )
+load("//shims/py_rules:pytype.bzl", "pytype_strict_library")
 
 package(
     default_applicable_licenses = ["//:license"],
     default_visibility = ["//:__subpackages__"],
 )
 
-torch_tpu_py_library(
+pytype_strict_library(
+    # PY_LIBRARY_OK=Decouple from torch_tpu to avoid C++ dependency in coverage tests.
     name = "common",
     srcs = ["common.py"],
     deps = [
@@ -31,7 +33,8 @@ torch_tpu_py_library(
     ],
 )
 
-torch_tpu_py_library(
+pytype_strict_library(
+    # PY_LIBRARY_OK=Decouple from torch_tpu to avoid C++ dependency in coverage tests.
     name = "decode",
     srcs = ["decode.py"],
     deps = [
