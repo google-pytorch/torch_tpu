@@ -86,6 +86,41 @@ class CompileTest(seed_test_utils.RepeatableTest):
     metrics = self.call_and_compare(simple, test_inputs, None)
     self.assertEqual(metrics["bounded_compile_events"], 1)
 
+  def test_boxed_call_does_not_mutate_caller_list(self):
+    def simple(x):
+      return x + 3.0
+
+    executables = []
+    orig_call = _backend.dynamic_compiler.DynamicCompiler.__call__
+
+    def capture_executable(dc_self, *args, **kwargs):
+      exe = orig_call(dc_self, *args, **kwargs)
+      executables.append(exe)
+      return exe
+
+    with mock.patch.object(
+        _backend.dynamic_compiler.DynamicCompiler,
+        "__call__",
+        autospec=True,
+        side_effect=capture_executable,
+    ):
+      compiled = torch.compile(
+          simple, backend="tpu", options={"bounded_dynamism": True}
+      )
+      x = torch.arange(4, dtype=torch.float32, device=self.device).reshape(1, 4)
+      torch._dynamo.mark_dynamic(x, 1, min=2, max=8)
+      utils.assert_close(compiled(x).to("cpu"), simple(x).to("cpu"))
+
+    self.assertLen(executables, 1)
+    dyn_exec = executables[0]
+    self.assertTrue(dyn_exec._boxed_call)
+    boxed_inputs = [4, x]
+    (out,) = dyn_exec(boxed_inputs)
+    self.assertLen(boxed_inputs, 2)
+    self.assertEqual(boxed_inputs[0], 4)
+    self.assertIs(boxed_inputs[1], x)
+    utils.assert_close(out.to("cpu"), simple(x).to("cpu"))
+
   @parameterized.named_parameters(
       ("scan_dim", 0),
       ("non_scan_dim", 1),

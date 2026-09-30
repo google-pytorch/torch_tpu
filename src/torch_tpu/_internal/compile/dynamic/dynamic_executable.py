@@ -80,6 +80,7 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
         pad_real_to_static instead of a pad subgraph.
       module_name: Optional custom name for the compiled MLIR module.
     """
+    super().__init__()
     self._static_compiler = static_compiler
     self._graph_module = graph_module
     self._example_inputs = example_inputs
@@ -397,6 +398,8 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
 
   def __call__(self, *args: Any) -> Any:
     logging.debug("[DynamicTpuBackend] Execute Model")
+    if len(args) == 1 and isinstance(args[0], (list, tuple)):
+      args = tuple(args[0])
 
     if not args:
       # If no args are passed, we assume there is no dynamic shape and we can

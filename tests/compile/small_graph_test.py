@@ -19,6 +19,7 @@ import pickle
 import re
 from typing import List
 from unittest import mock
+import warnings
 
 from absl.testing import absltest
 import torch
@@ -29,7 +30,6 @@ from torch_tpu._internal.compile import compiler
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import NoOpCompiledArtifact
 from torch_tpu._internal.utils import test_utils as utils
 from tests import seed_test_utils
-
 
 
 class FunctionTest(seed_test_utils.RepeatableTest):
@@ -321,6 +321,25 @@ class FunctionTest(seed_test_utils.RepeatableTest):
         debugs[0].stablehlo_backward_text[0],
         r"module\s+@custom_opt_split\d+_bwd",
     )
+
+  def test_compiled_backward_uses_boxed_calling_convention(self):
+    # AOT Autograd wraps the compiled backward in `torch._dynamo.disable` and
+    # warns when it has to fall back to calling it with unboxed arguments.
+    def func(a, b):
+      return (a * b).sum()
+
+    a = torch.tensor([1.0, 2.0, 3.0], device="tpu", requires_grad=True)
+    b = torch.tensor([4.0, 5.0, 6.0], device="tpu", requires_grad=True)
+    compiled = torch.compile(
+        func, backend="tpu", options={"serializable": False}
+    )
+    with warnings.catch_warnings(record=True) as caught:
+      warnings.simplefilter("always")
+      compiled(a, b).backward()
+
+    self.assertEmpty([w for w in caught if "boxed arguments" in str(w.message)])
+    utils.assert_close(a.grad.cpu(), b.detach().cpu())
+    utils.assert_close(b.grad.cpu(), a.detach().cpu())
 
   def test_hlo_naming_with_graph_break_custom_name(self):
     def func(a, b):
@@ -1316,6 +1335,15 @@ class NoOpCompiledArtifactTest(seed_test_utils.RepeatableTest):
     restored = pickle.loads(pickle.dumps(artifact))
     self.assertIsInstance(restored, NoOpCompiledArtifact)
     self.assertEqual(restored([]), (None,))
+
+  def test_boxed_call_survives_dynamo_disable(self):
+    # AOT Autograd wraps compiled backward callables in `torch._dynamo.disable`,
+    # which only copies instance attributes onto its wrapper function.
+    wrapped = torch._dynamo.disable(
+        NoOpCompiledArtifact(_reconstruct_none_tuple)
+    )
+    self.assertTrue(getattr(wrapped, "_boxed_call", False))
+    self.assertEqual(wrapped([torch.randn(4)]), (None,))
 
 
 if __name__ == "__main__":

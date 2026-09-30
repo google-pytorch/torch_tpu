@@ -101,8 +101,18 @@ class CompiledArtifact(abc.ABC, OutputCode):
     """
     pass
 
+  # Tells AOT Autograd to pass inputs as a single list (the boxed calling
+  # convention) instead of wrapping this callable in `make_boxed_func`.
+  _boxed_call: bool = True
   _mlir_text: str | None = None
   _graph_module_debug_str: str | None = None
+
+  def __init__(self) -> None:
+    super().__init__()
+    # `functools.wraps`-based wrappers, such as the `torch._dynamo.disable`
+    # wrapper that the `aot_autograd` backend puts around compiled backward
+    # callables, only copy the instance `__dict__`.
+    self._boxed_call = True
 
   def resolve(self) -> None:
     """Waits for any pending background compilation to complete."""
@@ -248,6 +258,7 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
       unique_output_indices: Optional sequence of original output indices
         corresponding to deduplicated outputs.
     """  # fmt: skip
+    super().__init__()
     self._executable = executable
     self._reconstruct_fx_outputs_fn = reconstruct_fx_outputs_fn
     self._tensor_arg_indices = None
@@ -675,6 +686,7 @@ class NoOpCompiledArtifact(CompiledArtifact):
       self,
       reconstruct_fx_outputs_fn: _ReconstructFxOutputsFn | None,
   ) -> None:
+    super().__init__()
     self._reconstruct_fx_outputs_fn = reconstruct_fx_outputs_fn
 
   def __call__(
