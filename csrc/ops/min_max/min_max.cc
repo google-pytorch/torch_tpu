@@ -38,6 +38,33 @@ namespace stablehlo = mlir::stablehlo;
 
 namespace {
 
+// For floating-point types, updates `comparison_value` and `is_equal` so that
+// index selection matches CPU/CUDA and Max/Min NaN propagation.
+// Because ordered/equality comparisons (`GE`/`LE`, `EQ`) with NaN always
+// evaluate to false, `comparison_value` and `is_equal` are false whenever
+// either input is NaN. Updating them handles all NaN cases:
+//   - Only rhs is NaN: `comparison_value` and `is_equal` remain false ->
+//     `Select(comparison_value, index0, index1)` selects `index_value1` (rhs).
+//   - Only lhs is NaN: `lhs_only_nan` sets `comparison_value` to true ->
+//     `Select(comparison_value, index0, index1)` selects `index_value0` (lhs).
+//   - Both lhs and rhs are NaN: `both_nan` sets `is_equal` to true ->
+//     `Select(is_equal, smaller_index, ...)` selects `Min(index0, index1)`.
+void UpdateComparisonsForNaN(mlir::MlirOp& input_value0,
+                             mlir::MlirOp& input_value1,
+                             mlir::MlirOp& comparison_value,
+                             mlir::MlirOp& is_equal) {
+  auto lhs_is_nan = stablehlo::Compare(input_value0, input_value0,
+                                       stablehlo::ComparisonDirection::NE);
+  auto rhs_is_nan = stablehlo::Compare(input_value1, input_value1,
+                                       stablehlo::ComparisonDirection::NE);
+  auto rhs_not_nan = stablehlo::Compare(input_value1, input_value1,
+                                        stablehlo::ComparisonDirection::EQ);
+  auto lhs_only_nan = stablehlo::And(lhs_is_nan, rhs_not_nan);
+  auto both_nan = stablehlo::And(lhs_is_nan, rhs_is_nan);
+  comparison_value = stablehlo::Or(comparison_value, lhs_only_nan);
+  is_equal = stablehlo::Or(is_equal, both_nan);
+}
+
 void BuildReduceBody(MinMaxOp op, mlir::Type value_type, mlir::Type index_type,
                      mlir::RegionBuilder& rb) {
   mlir::Type ranked_value_type =
@@ -53,18 +80,24 @@ void BuildReduceBody(MinMaxOp op, mlir::Type value_type, mlir::Type index_type,
   auto comparison_direction = op == MinMaxOp::kMax
                                   ? stablehlo::ComparisonDirection::GE
                                   : stablehlo::ComparisonDirection::LE;
-  // Use compare instead of min / max op since we need to select the indices
-  // corresponding to the min / max value.
+  // Use compare to select the indices corresponding to the min / max value.
   auto comparison_value =
       stablehlo::Compare(input_value0, input_value1, comparison_direction);
-  auto min_max_value =
-      stablehlo::Select(comparison_value, input_value0, input_value1);
-  // Select the index corresponding to the max value.
-  auto arg_min_max_value =
-      stablehlo::Select(comparison_value, index_value0, index_value1);
+  // Use Max/Min for the value so that NaNs propagate properly and unused-index
+  // reductions simplify to kMaximum/kMinimum (required for RWB fusion).
+  auto min_max_value = op == MinMaxOp::kMax
+                           ? stablehlo::Max(input_value0, input_value1)
+                           : stablehlo::Min(input_value0, input_value1);
   // If the values are equal, select the minimum index.
   auto is_equal = stablehlo::Compare(input_value0, input_value1,
                                      stablehlo::ComparisonDirection::EQ);
+  if (mlir::isa<mlir::FloatType>(value_type)) {
+    UpdateComparisonsForNaN(input_value0, input_value1, comparison_value,
+                            is_equal);
+  }
+  // Select the index corresponding to the max value.
+  auto arg_min_max_value =
+      stablehlo::Select(comparison_value, index_value0, index_value1);
   auto smaller_index = stablehlo::Min(index_value0, index_value1);
   auto final_argmax_value =
       stablehlo::Select(is_equal, smaller_index, arg_min_max_value);

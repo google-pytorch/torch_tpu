@@ -11395,6 +11395,115 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     res_cpu = torch.ops.aten.silu_backward(grad_out, x)
     utils.assert_close(res_tpu, res_cpu)
 
+  def test_min_max_rwb_fusion(self):
+    # Lowering min/max value outputs to MaxOp/MinOp (instead of SelectOp)
+    # ensures XLA DCE simplifies unused-index reductions to kMaximum/kMinimum
+    # required by TPU Reduce-Broadcast-into-ReduceWindow (RWB) fusion.
+    # Quantize float32 inputs to bfloat16 mantissas so TPU v5e MXU bmm matches CPU fp32.
+    q_val = torch.randn(4, 1045, 64, dtype=torch.bfloat16).float() * 0.125
+    k_val = torch.randn(4, 256, 64, dtype=torch.bfloat16).float() * 0.125
+
+    def rwb_fn(device):
+      q = to(q_val, device)
+      k = to(k_val, device)
+      attn = torch.clamp(
+          torch.bmm(q, k.transpose(1, 2)), min=-50000.0, max=50000.0
+      )
+      attn_t = attn.transpose(1, 2)
+      text_attn = (
+          attn_t
+          - torch.max(attn_t, dim=-1, keepdim=True)[0]
+          + torch.min(attn_t, dim=-1, keepdim=True)[0]
+      )
+      return text_attn.softmax(dim=-1)
+
+    self.assert_close_tpu_vs_cpu(rwb_fn, rtol=1e-4, atol=1e-4)
+
+  def test_min_max_nan_propagation(self):
+    # Verify torch.max and torch.min (which use BuildReduceBody) propagate NaNs
+    # matching PyTorch CPU regardless of whether NaN is in lhs or rhs.
+    lhs_cpu = torch.tensor([float("nan"), 5.0])
+    rhs_cpu = torch.tensor([5.0, float("nan")])
+    stacked_cpu = torch.stack([lhs_cpu, rhs_cpu], dim=0)
+    stacked_tpu = to(stacked_cpu, "tpu")
+    utils.assert_close(
+        torch.max(stacked_tpu, dim=0)[0], torch.max(stacked_cpu, dim=0)[0]
+    )
+    utils.assert_close(
+        torch.min(stacked_tpu, dim=0)[0], torch.min(stacked_cpu, dim=0)[0]
+    )
+
+  def test_max_pool2d_with_indices_nan_propagation(self):
+    # Verify max_pool2d_with_indices (which uses buildMaxAndArgmaxBody) propagates
+    # NaNs matching PyTorch CPU regardless of whether NaN is first or last in the window.
+    pool_in = torch.tensor(
+        [[[[float("nan"), 1.0], [2.0, 3.0]], [[1.0, 2.0], [3.0, float("nan")]]]]
+    )
+    tpu_pool_in = to(pool_in, "tpu")
+    utils.assert_close(
+        torch.nn.functional.max_pool2d(
+            tpu_pool_in, kernel_size=2, return_indices=True
+        )[0],
+        torch.nn.functional.max_pool2d(
+            pool_in, kernel_size=2, return_indices=True
+        )[0],
+    )
+
+  def test_adaptive_max_pool2d_nan_propagation(self):
+    # Verify adaptive_max_pool2d (which uses buildMaxAndArgmaxBody) propagates
+    # NaNs matching PyTorch CPU regardless of whether NaN is first or last in the window.
+    pool_in = torch.tensor(
+        [[[[float("nan"), 1.0], [2.0, 3.0]], [[1.0, 2.0], [3.0, float("nan")]]]]
+    )
+    tpu_pool_in = to(pool_in, "tpu")
+    utils.assert_close(
+        torch.nn.functional.adaptive_max_pool2d(tpu_pool_in, (1, 1))[0],
+        torch.nn.functional.adaptive_max_pool2d(pool_in, (1, 1))[0],
+    )
+
+  def test_min_max_nan_selected_index(self):
+    # Verify selected_index (indices) and values for torch.max/min and argmax/argmin
+    # when NaN is first, last, or tied (both NaN), matching CPU.
+    x_cpu = torch.tensor(
+        [[float("nan"), 5.0, float("nan")], [5.0, float("nan"), float("nan")]],
+        dtype=torch.float32,
+    )
+    x_tpu = to(x_cpu, "tpu")
+    utils.assert_close(torch.max(x_tpu, dim=0), torch.max(x_cpu, dim=0))
+    utils.assert_close(torch.min(x_tpu, dim=0), torch.min(x_cpu, dim=0))
+    utils.assert_close(torch.argmax(x_tpu, dim=0), torch.argmax(x_cpu, dim=0))
+    utils.assert_close(torch.argmin(x_tpu, dim=0), torch.argmin(x_cpu, dim=0))
+
+  def test_max_pool2d_with_indices_nan_selected_index(self):
+    # Verify both values and selected_index for max_pool2d_with_indices on NaN windows.
+    pool_in = torch.tensor(
+        [[[[float("nan"), 1.0], [2.0, 3.0]], [[1.0, 2.0], [3.0, float("nan")]]]]
+    )
+    tpu_pool_in = to(pool_in, "tpu")
+    utils.assert_close(
+        torch.nn.functional.max_pool2d(
+            tpu_pool_in, kernel_size=2, return_indices=True
+        ),
+        torch.nn.functional.max_pool2d(
+            pool_in, kernel_size=2, return_indices=True
+        ),
+    )
+
+  def test_adaptive_max_pool2d_nan_selected_index(self):
+    # Verify both values and selected_index for adaptive_max_pool2d on NaN windows.
+    pool_in = torch.tensor(
+        [[[[float("nan"), 1.0], [2.0, 3.0]], [[1.0, 2.0], [3.0, float("nan")]]]]
+    )
+    tpu_pool_in = to(pool_in, "tpu")
+    utils.assert_close(
+        torch.nn.functional.adaptive_max_pool2d(
+            tpu_pool_in, (1, 1), return_indices=True
+        ),
+        torch.nn.functional.adaptive_max_pool2d(
+            pool_in, (1, 1), return_indices=True
+        ),
+    )
+
 
 class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
   """Tests for custom ops."""
