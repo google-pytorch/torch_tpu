@@ -580,17 +580,18 @@ def fx_to_mlir(
       finally:
         tpu_torch_compile.clear_export_mode_default_device_generators()
 
-    compile_result = tpu_torch_compile.traverse_and_compile(
-        result_tensors=result_tensors,
-        argument_tensors=argument_tensors,
-        build_mlir_module=build_mlir_module,
-        use_stablehlo_bounds=use_stablehlo_bounds,
-        argument_layouts=internal_layouts,
-        donated_inputs=list(donated_inputs)
-        if donated_inputs is not None
-        else [],
-        module_name=module_name,
-    )
+    with execution_mode.set_eager_mode(EagerMode._INTERNAL_COMPILE_FX_GRAPH):
+      compile_result = tpu_torch_compile.traverse_and_compile(
+          result_tensors=result_tensors,
+          argument_tensors=argument_tensors,
+          build_mlir_module=build_mlir_module,
+          use_stablehlo_bounds=use_stablehlo_bounds,
+          argument_layouts=internal_layouts,
+          donated_inputs=list(donated_inputs)
+          if donated_inputs is not None
+          else [],
+          module_name=module_name,
+      )
 
     return ExportedMlir(
         module=compile_result.module,
