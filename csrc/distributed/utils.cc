@@ -17,10 +17,8 @@
 #include "csrc/distributed/utils.h"
 
 #include <cstdint>
-#include <vector>
 
 #include "absl/status/status.h"
-#include "c10/core/ScalarType.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/context_manager.h"
 #include "csrc/common/context_states.h"

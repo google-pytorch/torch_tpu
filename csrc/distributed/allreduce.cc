@@ -25,7 +25,7 @@
 #include "csrc/distributed/types.h"
 #include "csrc/distributed/utils.h"
 #include "csrc/ops/op_builder_utils.h"
-#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"

@@ -51,5 +51,13 @@ TEST(DeviceGroupListTest, Normalization) {
   EXPECT_NE(dgl4, dgl1);
 }
 
+TEST(DeviceGroupListTest, EqualityAndInequality) {
+  DeviceGroupList dgl1({{0, 1}, {2, 3}});
+  DeviceGroupList dgl2({{0, 1}, {2, 3}});
+  DeviceGroupList dgl3({{0, 2}, {1, 3}});
+  EXPECT_EQ(dgl1, dgl2);
+  EXPECT_NE(dgl1, dgl3);
+}
+
 }  // namespace
 }  // namespace torch_tpu

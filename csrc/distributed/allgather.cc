@@ -20,8 +20,8 @@
 
 #include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
-#include "csrc/common/aten_utils.h"
 #include "csrc/common/dimension_types.h"
+#include "csrc/common/utils.h"
 #include "csrc/distributed/types.h"
 #include "csrc/distributed/utils.h"
 #include "csrc/ops/op_builder_utils.h"

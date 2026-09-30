@@ -158,7 +158,6 @@ torch_tpu_cc_library(
         "//shims/torch",
         "//shims/torch:aten",
         "//shims/torch:torch_headers",
-        "//shims/torch/c10/core:base_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
         "@com_google_absl//absl/status",
         "@llvm-project//llvm:Support",
@@ -180,8 +179,8 @@ torch_tpu_cc_library(
     deps = [
         ":types",
         ":utils",
-        "//csrc/common:aten_utils",
         "//csrc/common:dimension_types",
+        "//csrc/common:utils",
         "//csrc/ops:op_builder_utils",
         "//shims/torch",
         "//shims/torch:aten",
@@ -232,8 +231,8 @@ torch_tpu_cc_library(
     deps = [
         ":types",
         ":utils",
-        "//csrc/common:aten_utils",
         "//csrc/common:dimension_types",
+        "//csrc/common:utils",
         "//csrc/ops:op_builder_utils",
         "//shims/torch",
         "//shims/torch:aten",

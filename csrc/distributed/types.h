@@ -69,15 +69,7 @@ class DeviceGroupList {
   auto cbegin() const { return groups_.cbegin(); }
   auto cend() const { return groups_.cend(); }
 
-  bool operator==(const DeviceGroupList& other) const {
-    return groups_ == other.groups_;
-  }
-  bool operator!=(const DeviceGroupList& other) const {
-    return groups_ != other.groups_;
-  }
-  bool operator<(const DeviceGroupList& other) const {
-    return groups_ < other.groups_;
-  }
+  auto operator<=>(const DeviceGroupList&) const = default;
 
  private:
   // Invariant:
