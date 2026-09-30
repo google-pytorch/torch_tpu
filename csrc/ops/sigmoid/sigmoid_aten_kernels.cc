@@ -101,7 +101,39 @@ absl::Status LogSigmoidForward(const at::Tensor& self, at::Tensor& out,
     auto abs_val = mlir::stablehlo::Abs(self_op);
     auto neg_abs = mlir::stablehlo::Neg(abs_val);
     auto exp_val = mlir::stablehlo::Exp(neg_abs);
-    auto log1p_val = mlir::stablehlo::Log1p(exp_val);
+
+    mlir::MlirOp log1p_val;
+    if (GetElementTypeOrDie(self_op) == mlir::ElementType::F32) {
+      // Evaluate log1p(z) = 2 * artanh(s)
+      // = s * (2 + 2/3*s^2 + 2/5*s^4 + ... + 2/13*s^12)
+      // via Horner's scheme, where z = exp(-|x|) in [0, 1] and
+      // s = z / (2 + z) in [0, 1/3].
+      auto two = MakeConstantLike(self_op, 2.0);
+      auto c1 = MakeConstantLike(self_op, 2.0 / 3.0);
+      auto c2 = MakeConstantLike(self_op, 2.0 / 5.0);
+      auto c3 = MakeConstantLike(self_op, 2.0 / 7.0);
+      auto c4 = MakeConstantLike(self_op, 2.0 / 9.0);
+      auto c5 = MakeConstantLike(self_op, 2.0 / 11.0);
+      auto c6 = MakeConstantLike(self_op, 2.0 / 13.0);
+
+      auto two_plus_z = mlir::stablehlo::Add(two, exp_val);
+      auto s = mlir::stablehlo::Div(exp_val, two_plus_z);
+      auto s2 = mlir::stablehlo::Mul(s, s);
+      auto MulAdd = [](mlir::MlirOp a, mlir::MlirOp b, mlir::MlirOp c) {
+        auto mul_res = mlir::stablehlo::Mul(a, b);
+        return mlir::stablehlo::Add(mul_res, c);
+      };
+
+      auto p = MulAdd(c6, s2, c5);
+      p = MulAdd(p, s2, c4);
+      p = MulAdd(p, s2, c3);
+      p = MulAdd(p, s2, c2);
+      p = MulAdd(p, s2, c1);
+      p = MulAdd(p, s2, two);
+      log1p_val = mlir::stablehlo::Mul(s, p);
+    } else {
+      log1p_val = mlir::stablehlo::Log1p(exp_val);
+    }
 
     auto sum_val = mlir::stablehlo::Add(max_val, log1p_val);
 

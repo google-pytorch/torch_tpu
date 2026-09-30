@@ -7242,6 +7242,7 @@ Supported combinations for non-constant padding:
     int32 = torch.ones(2, 2, device=et.device(), dtype=torch.int32)
     int64 = torch.ones(2, 2, device=et.device(), dtype=torch.int64)
     complex64 = torch.ones(2, 2, device=et.device(), dtype=torch.complex64)
+    bool_t = torch.ones(2, 2, device=et.device(), dtype=torch.bool)
 
     with et.assert_raises_message(
         RuntimeError,
@@ -7290,6 +7291,31 @@ Supported combinations for non-constant padding:
         message_reviewed_by="yilingyuan",
     ):
       torch.nn.functional.mse_loss(complex64, complex64, reduction="sum")
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""mse_loss(): expected the input dtype to be a floating-point type, got bool""",
+        gpu=""""mse_cuda" not implemented for 'Bool'""",
+    ):
+      torch.nn.functional.mse_loss(bool_t, bool_t, reduction="sum")
+
+  def test_mse_loss_backward_invalid_dtypes(self):
+    int32 = torch.ones(2, 2, device=et.device(), dtype=torch.int32)
+    bool_t = torch.ones(2, 2, device=et.device(), dtype=torch.bool)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""mse_loss_backward(): expected the input dtype to be a floating-point type, got int32""",
+        gpu=""""mse_backward_cuda" not implemented for 'Int'""",
+    ):
+      torch.ops.aten.mse_loss_backward(int32, int32, int32, 1)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""mse_loss_backward(): expected the input dtype to be a floating-point type, got bool""",
+        gpu=""""mse_backward_cuda" not implemented for 'Bool'""",
+    ):
+      torch.ops.aten.mse_loss_backward(bool_t, bool_t, bool_t, 1)
 
   def test_embedding_renorm_float(self):
     inp = torch.ones(3, 2, device=et.device(), dtype=torch.int64)

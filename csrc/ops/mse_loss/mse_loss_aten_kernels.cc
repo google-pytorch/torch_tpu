@@ -17,98 +17,189 @@
 #include "csrc/ops/mse_loss/mse_loss_aten_kernels.h"
 
 #include <cstdint>
+#include <utility>
 
 #include "ATen/core/ATen_fwd.h"
-#include "ATen/core/LegacyTypeDispatch.h"
 #include "ATen/core/Reduction.h"
-#include "ATen/native/Resize.h"
-#include "ATen/ops/div.h"
-#include "ATen/ops/mean.h"
-#include "ATen/ops/mul.h"
-#include "ATen/ops/pow.h"
-#include "ATen/ops/sub.h"
-#include "ATen/ops/sum.h"
-#include "csrc/common/cache_key.h"
+#include "ATen/core/TensorBody.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "csrc/common/dimension_types.h"
+#include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/fixed_size_span.h"
 #include "csrc/common/to_string.h"
+#include "csrc/eager/op_dispatcher.h"
+#include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/macros/kernel.h"
+#include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
+#include "csrc/ops/reductions/sum.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Types.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
+namespace {
+
+absl::StatusOr<mlir::MlirOp> BuildMseLossShlo(mlir::MlirOp self_op,
+                                              mlir::MlirOp target_op,
+                                              int64_t reduction) {
+  TT_ASSIGN_OR_RETURN((auto [self_b, target_b]),
+                      ApplyBroadcastIfNeeded(self_op, target_op));
+  mlir::MlirOp diff = mlir::stablehlo::Subtract(self_b, target_b);
+  mlir::MlirOp sq_diff = mlir::stablehlo::Mul(diff, diff);
+
+  if (reduction == at::Reduction::None) {
+    return sq_diff;
+  }
+
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp reduced_loss,
+                      BuildSumShlo(sq_diff, GetAllDimensions(sq_diff)));
+
+  if (reduction == at::Reduction::Sum) {
+    return reduced_loss;
+  }
+
+  const mlir::RankedTensorType sq_type = GetTensorTypeOrDie(sq_diff);
+  mlir::MlirOp numel = GetNumElements(sq_diff, sq_type.getElementType());
+  TT_ASSIGN_OR_RETURN((auto [reduced_b, numel_b]),
+                      ApplyBroadcastIfNeeded(reduced_loss, numel));
+  return mlir::stablehlo::Div(reduced_b, numel_b);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildMseLossBackwardShlo(
+    mlir::MlirOp grad_output_op, mlir::MlirOp self_op, mlir::MlirOp target_op,
+    int64_t reduction) {
+  const mlir::RankedTensorType self_type = GetTensorTypeOrDie(self_op);
+  const mlir::Type mlir_type = self_type.getElementType();
+  mlir::MlirBuilder& builder = self_op.getBuilder();
+
+  mlir::MlirOp alpha = MakeScalarConstant(builder, 2.0, mlir_type);
+  if (reduction == at::Reduction::Mean) {
+    // Compute the scalar norm (2.0 / numel) in at least F32 before casting to
+    // `mlir_type` (e.g., bf16/f16) to avoid integer precision loss for large
+    // element counts while supporting dynamic shapes via `GetNumElements`.
+    const mlir::Type norm_type =
+        mlir_type.isF64() ? mlir_type : builder.getOpBuilder().getF32Type();
+    mlir::MlirOp two = MakeScalarConstant(builder, 2.0, norm_type);
+    mlir::MlirOp numel = GetNumElements(self_op, norm_type);
+    mlir::MlirOp norm = mlir::stablehlo::Div(two, numel);
+    alpha = (norm_type == mlir_type)
+                ? norm
+                : mlir::stablehlo::ConvertElementType(norm, mlir_type);
+  }
+
+  TT_ASSIGN_OR_RETURN((auto [self_b, target_b]),
+                      ApplyBroadcastIfNeeded(self_op, target_op));
+  mlir::MlirOp diff = mlir::stablehlo::Subtract(self_b, target_b);
+  TT_ASSIGN_OR_RETURN((auto [alpha_b, diff_b]),
+                      ApplyBroadcastIfNeeded(alpha, diff));
+  mlir::MlirOp grad_raw = mlir::stablehlo::Mul(alpha_b, diff_b);
+  TT_ASSIGN_OR_RETURN((auto [grad_raw_b, grad_out_b]),
+                      ApplyBroadcastIfNeeded(grad_raw, grad_output_op));
+  return mlir::stablehlo::Mul(grad_raw_b, grad_out_b);
+}
+
+}  // namespace
 
 at::Tensor& AtenMseLossOut(const at::Tensor& self, const at::Tensor& target,
                            int64_t reduction, at::Tensor& out) {
-  TT_KERNEL(
-      OpName::kMseLossOut, _,
-      (self, target, IgnoreInCacheKey(reduction, "Doesn't affect SHLO"), out), {
-        TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Byte &&
-                           self.scalar_type() != at::ScalarType::Char &&
-                           self.scalar_type() != at::ScalarType::Short &&
-                           self.scalar_type() != at::ScalarType::Int &&
-                           self.scalar_type() != at::ScalarType::Long &&
-                           self.scalar_type() != at::ScalarType::ComplexFloat,
-                       error::kInvalidArgument)
-            << "expected the input dtype to be none of (uint8, int8, int16, "
-               "int32, int64, complex64), got "
-            << torch_tpu::ToString(self.scalar_type());
-        TT_CHECK_THROW(self.scalar_type() == target.scalar_type(),
-                       error::kInvalidArgument)
-            << "expected input and target to have the same dtype, got "
-            << torch_tpu::ToString(self.scalar_type()) << " and "
-            << torch_tpu::ToString(target.scalar_type());
+  TT_KERNEL(OpName::kMseLossOut, param_keys, (self, target, reduction, out), {
+    TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Byte &&
+                       self.scalar_type() != at::ScalarType::Char &&
+                       self.scalar_type() != at::ScalarType::Short &&
+                       self.scalar_type() != at::ScalarType::Int &&
+                       self.scalar_type() != at::ScalarType::Long &&
+                       self.scalar_type() != at::ScalarType::ComplexFloat,
+                   error::kInvalidArgument)
+        << "expected the input dtype to be none of (uint8, int8, int16, "
+           "int32, int64, complex64), got "
+        << torch_tpu::ToString(self.scalar_type());
+    TT_CHECK_THROW(self.is_floating_point(), error::kInvalidArgument)
+        << "expected the input dtype to be a floating-point type, got "
+        << torch_tpu::ToString(self.scalar_type());
+    TT_CHECK_THROW(self.scalar_type() == target.scalar_type(),
+                   error::kInvalidArgument)
+        << "expected input and target to have the same dtype, got "
+        << torch_tpu::ToString(self.scalar_type()) << " and "
+        << torch_tpu::ToString(target.scalar_type());
+    TT_CHECK_THROW(reduction == at::Reduction::None ||
+                       reduction == at::Reduction::Mean ||
+                       reduction == at::Reduction::Sum,
+                   error::kInvalidArgument)
+        << "unrecognized reduction mode " << reduction;
 
-        {
-          // All compositional ATen calls must be within a guard to prevent
-          // re-dispatching to the Autograd layer, which would cause infinite
-          // recursion. This ensures we are calling the primitive PrivateUse1
-          // kernels.
-          at::AutoDispatchBelowAutograd guard;
+    TT_ASSIGN_OR_THROW(Dimensions bcast_shape, InferSize(self, target));
+    Dimensions out_dims = (reduction == at::Reduction::None)
+                              ? std::move(bcast_shape)
+                              : Dimensions();
 
-          at::Tensor squared_error = at::pow(at::sub(self, target), 2);
-          at::Tensor
-              result;  // UNINITIALIZED_TENSOR_OK=initialized in the if-else
-          if (reduction == at::Reduction::None) {
-            result = squared_error;
-          } else if (reduction == at::Reduction::Mean) {
-            result = at::mean(squared_error);
-          } else if (reduction == at::Reduction::Sum) {
-            result = at::sum(squared_error);
-          } else {
-            TT_CHECK_THROW(false, error::kInvalidArgument)
-                << "unrecognized reduction mode " << reduction;
-          }
+    TT_ASSIGN_OR_THROW(const mlir::ElementType out_dtype,
+                       ConvertTo<mlir::ElementType>(out.scalar_type()));
+    const auto comp_type = ToAccumulateType(self.scalar_type());
+    TT_ASSIGN_OR_THROW(const mlir::ElementType computation_dtype,
+                       ConvertTo<mlir::ElementType>(comp_type));
 
-          // Resize the output tensor and copy the result into it.
-          // This is the standard way to handle `out=` variants.
-          at::native::resize_output(out, result.sizes());
-          out.copy_(result);
-        }
-        return out;
-      });
+    auto op_builder = [reduction](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+        -> absl::StatusOr<mlir::MlirOp> {
+      auto& [self_op, target_op] = inputs;
+      return BuildMseLossShlo(self_op, target_op, reduction);
+    };
+
+    DispatchOpOptions<1> options = {
+        .out_dtype = out_dtype,
+        .out_dims = out_dims,
+        .computation_dtype = computation_dtype,
+        .op_param_cache_keys = std::move(param_keys),
+    };
+    TT_THROW_IF_ERROR(DispatchOpOut<2>(std::move(op_builder), {self, target},
+                                       out, std::move(options)));
+    return out;
+  });
 }
 
 at::Tensor AtenMseLossBackward(const at::Tensor& grad_output,
                                const at::Tensor& self, const at::Tensor& target,
                                int64_t reduction) {
   TT_KERNEL(
-      OpName::kMseLossBackward, _,
-      (grad_output, self, target,
-       IgnoreInCacheKey(reduction, "Doesn't affect SHLO")),
-      {
-        at::Tensor grad_input;  // UNINITIALIZED_TENSOR_OK=initialized below
-        {
-          at::AutoDispatchBelowAutograd guard;
-          at::Tensor grad_raw = at::mul(at::sub(self, target), 2);
-          if (reduction == at::Reduction::None) {
-            grad_input = at::mul(grad_raw, grad_output);
-          } else {
-            grad_input = at::mul(grad_raw, grad_output);
-            if (reduction == at::Reduction::Mean) {
-              grad_input = at::div(grad_input, self.numel());
-            }
-          }
-        }
+      OpName::kMseLossBackward, param_keys,
+      (grad_output, self, target, reduction), {
+        TT_CHECK_THROW(self.is_floating_point(), error::kInvalidArgument)
+            << "expected the input dtype to be a floating-point type, got "
+            << torch_tpu::ToString(self.scalar_type());
+
+        TT_ASSIGN_OR_THROW(Dimensions out_dims,
+                           InferSize(self, target, grad_output));
+
+        TT_ASSIGN_OR_THROW(
+            at::Tensor grad_input,
+            MakeEmptyTensor(out_dims, self.scalar_type(), self.device()));
+        TT_ASSIGN_OR_THROW(const mlir::ElementType out_dtype,
+                           ConvertTo<mlir::ElementType>(self.scalar_type()));
+
+        auto op_builder = [reduction](FixedSizeSpan<mlir::MlirOp, 3> inputs)
+            -> absl::StatusOr<mlir::MlirOp> {
+          auto& [grad_output_op, self_op, target_op] = inputs;
+          return BuildMseLossBackwardShlo(grad_output_op, self_op, target_op,
+                                          reduction);
+        };
+
+        // `.computation_dtype` is intentionally omitted here because backward
+        // `mse_loss` is a pointwise operation (`alpha * (self - target) *
+        // grad_output`) rather than a reduction, so it executes in the input
+        // dtype.
+        DispatchOpOptions<1> options = {
+            .out_dtype = out_dtype,
+            .out_dims = out_dims,
+            .op_param_cache_keys = std::move(param_keys),
+        };
+        TT_THROW_IF_ERROR(DispatchOpOut<3>(std::move(op_builder),
+                                           {grad_output, self, target},
+                                           grad_input, std::move(options)));
         return grad_input;
       });
 }
