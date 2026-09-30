@@ -16,6 +16,8 @@
 
 #include "csrc/common/compilation_cache.h"
 
+#include <unistd.h>
+
 #include <memory>
 #include <optional>
 #include <string>
@@ -43,11 +45,14 @@
 #include "csrc/common/compile_options_key.h"
 #include "csrc/common/contain.h"
 #include "csrc/common/dtype.h"
+#include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fingerprint_utils.h"
 #include "csrc/common/flags.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/status_test_utils.h"
+#include "csrc/common/tier2_compilation_cache.h"
+#include "csrc/common/tier3_compilation_cache.h"
 #include "csrc/common/utils.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/pjrt/pjrt_state.h"
@@ -67,7 +72,6 @@
 #include "xla/pjrt/pjrt_executable.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
-#include "xla/xla.pb.h"
 #include "xla/xla_data.pb.h"
 
 ABSL_DECLARE_FLAG(bool, torch_tpu_internal_enable_compilation_container);
@@ -80,13 +84,19 @@ class CompilationCacheTestHelper {
   static void RestartCompilationCache() { CompilationCache::Restart(); }
 
   static std::optional<CacheEntryStats> GetUnboundedDynamicCacheEntryStats(
-      CompilationCache& cache, ShapelessKey key) {
+      CompilationCache& cache, const CompilationCacheKey& key) {
     absl::MutexLock lock(cache.cache_mutex_);
-    auto it = cache.unbounded_dynamic_cache_.find(key);
+    auto it =
+        cache.unbounded_dynamic_cache_.find(key.graph_key().shapeless_key());
     if (it == cache.unbounded_dynamic_cache_.end()) {
       return std::nullopt;
     }
-    return it->second[0].cache_entry.stats();
+    for (auto& entry : it->second) {
+      if (key == entry.key) {
+        return entry.cache_entry.stats();
+      }
+    }
+    return std::nullopt;
   }
 };
 
@@ -99,7 +109,18 @@ CompilationCacheKey DummyKey(int key = 0) {
                              CompileOptionsKey(0));
 }
 
-SharedLoadedExecutableWithMetadata CreateDummyLoadedExecutable() {
+bool IsCompatible(absl::Span<const Shape> shapes) {
+  return shapes.size() == 1 && shapes[0].dimensions().size() == 2;
+}
+
+UnboundedDynamicExecutionMetadata MakeDummyDynamicMetadata() {
+  UnboundedDynamicExecutionMetadata dynamic_meta;
+  dynamic_meta.is_compatible = IsCompatible;
+  return dynamic_meta;
+}
+
+SharedLoadedExecutableWithMetadata CreateDummyExecutable(
+    xla::PjRtClient& client) {
   xla::XlaBuilder builder("dynamic_metadata_test");
   xla::Shape data_shape =
       xla::ShapeUtil::MakeShape(xla::F32, /*dimensions=*/{1});
@@ -111,36 +132,34 @@ SharedLoadedExecutableWithMetadata CreateDummyLoadedExecutable() {
   ABSL_CHECK_OK(computation);
 
   absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>> loaded_exec =
-      PjrtBackend::GetInstance().GetClient()->CompileAndLoad(
-          *computation, xla::CompileOptions());
+      client.CompileAndLoad(*computation, xla::CompileOptions());
   ABSL_CHECK_OK(loaded_exec);
+  UnboundedDynamicExecutionMetadata dynamic_meta = MakeDummyDynamicMetadata();
 
   absl::StatusOr<SharedLoadedExecutableWithMetadata> executable =
-      LoadedExecutableWithMetadata::MakeShared(
-          *std::move(loaded_exec),
-          /*argument_indices=*/{},
-          /*unbounded_dynamic_execution_metadata=*/{});
+      LoadedExecutableWithMetadata::MakeShared(*std::move(loaded_exec),
+                                               /*argument_indices=*/{},
+                                               std::move(dynamic_meta));
   ABSL_CHECK_OK(executable);
   return *std::move(executable);
-}
-
-bool IsCompatible(absl::Span<const Shape> shapes) {
-  return shapes.size() == 1 && shapes[0].dimensions().size() == 2;
 }
 
 TEST(PerfStatsPrinterTest, EmptyPerEntry) {
   PerfStats stats;
   stats.num_cache_reqs = 10;
   stats.num_cache_hits = 5;
+  stats.num_compilations = 3;
   EXPECT_EQ(absl::StrCat(stats),
             "num_cache_reqs=10\nnum_cache_hits=5 "
-            "{50.0%}\npeak_compilation_memory_bytes=unknown\n");
+            "{50.0%}\nnum_compilations=3\n"
+            "peak_compilation_memory_bytes=unknown\n");
 }
 
 TEST(PerfStatsPrinterTest, WithPerEntry) {
   PerfStats stats;
   stats.num_cache_reqs = 10;
   stats.num_cache_hits = 5;
+  stats.num_compilations = 2;
   stats.per_entry_stats.push_back({
       {.compilation_duration = absl::Milliseconds(100),
        .last_read = absl::FromUnixMillis(1000),
@@ -156,6 +175,7 @@ TEST(PerfStatsPrinterTest, WithPerEntry) {
   // NOLINTBEGIN
   static constexpr std::string_view kExpected = R"(num_cache_reqs=10
 num_cache_hits=5 {50.0%}
+num_compilations=2
 peak_compilation_memory_bytes=unknown
 num_compilation_events=2
 sum_compilation_time=150ms
@@ -244,12 +264,13 @@ TEST_F(CompilationCacheInitTest, LazyInitialization) {
 
   // Trigger lazy initialization via EnqueueCompilation.
   auto key = DummyKey();
-  auto contexted_module_or = ContextedModule::Make([](mlir::MLIRContext& ctx) {
-    return mlir::OwningOpRef<mlir::ModuleOp>(
-        mlir::ModuleOp::create(mlir::UnknownLoc::get(&ctx)));
-  });
-  ASSERT_TRUE(contexted_module_or.ok());
-  cache.EnqueueCompilation(key, *std::move(contexted_module_or),
+  TT_ASSERT_OK_AND_ASSIGN(
+      ContextedModule contexted_module,
+      ContextedModule::Make([](mlir::MLIRContext& ctx) {
+        return mlir::OwningOpRef<mlir::ModuleOp>(
+            mlir::ModuleOp::create(mlir::UnknownLoc::get(&ctx)));
+      }));
+  cache.EnqueueCompilation(key, std::move(contexted_module),
                            std::make_unique<xla::CompileOptions>());
   EXPECT_TRUE(CompilationCache::GetInstance().IsInitialized());
 
@@ -337,6 +358,7 @@ TEST_F(CompilationCacheTest, AllowCacheModeDisabled) {
   // If cache is disabled, we shouldn't have any hits.
   PerfStats stats = cache.GetCacheStats();
   EXPECT_EQ(stats.num_cache_hits, 0);
+  EXPECT_EQ(stats.num_compilations, 2);
 
   // Clean up.
   cache.SetAllowCacheMode(true);
@@ -481,11 +503,15 @@ TEST_F(CompilationCacheTest, DynamicCacheLayoutMismatch) {
 TEST_F(CompilationCacheTest, UnboundedDynamicCache) {
   CompilationCache& cache = CompilationCache::GetInstance();
 
-  ShapelessKey key(Fingerprint(std::string_view("dummykey")));
-  SharedLoadedExecutableWithMetadata executable = CreateDummyLoadedExecutable();
+  CompilationCacheKey key(
+      GraphKey(ShapelessKey(Fingerprint(std::string_view("dummykey"))),
+               DimensionsKey({})),
+      CompileOptionsKey({}));
 
-  ASSERT_TRUE(
-      cache.AddUnboundedDynamicCacheEntry(key, executable, IsCompatible).ok());
+  ASSERT_TRUE(cache
+                  .AddUnboundedDynamicCacheEntry(key, CreateDummyExecutable,
+                                                 MakeDummyDynamicMetadata())
+                  .ok());
 
   auto initial_stats =
       CompilationCacheTestHelper::GetUnboundedDynamicCacheEntryStats(cache,
@@ -494,8 +520,9 @@ TEST_F(CompilationCacheTest, UnboundedDynamicCache) {
   EXPECT_EQ(initial_stats->read_count, 1);
   const absl::Time before_hit = absl::Now();
 
-  CompilationCacheKey test_key(GraphKey(key, DimensionsKey({})),
-                               CompileOptionsKey({}));
+  CompilationCacheKey test_key(
+      GraphKey(key.graph_key().shapeless_key(), DimensionsKey({1, 2, 3})),
+      CompileOptionsKey({}));
   TT_ASSERT_OK_AND_ASSIGN(
       CompiledKernel result,
       cache.GetOrCompile(
@@ -509,8 +536,8 @@ TEST_F(CompilationCacheTest, UnboundedDynamicCache) {
           std::make_unique<xla::CompileOptions>()));
 
   TT_ASSERT_OK_AND_ASSIGN(auto actual_exec, result.fixed_shape_kernel.get());
-  EXPECT_EQ(actual_exec, executable);
   EXPECT_EQ(cache.GetCacheHits(), 1);
+  EXPECT_EQ(cache.GetCacheStats().num_compilations, 1);
 
   auto updated_stats =
       CompilationCacheTestHelper::GetUnboundedDynamicCacheEntryStats(cache,
@@ -525,16 +552,19 @@ TEST_F(CompilationCacheTest, UnboundedDynamicCache) {
 TEST_F(CompilationCacheTest, UnboundedDynamicCacheShapeMismatch) {
   CompilationCache& cache = CompilationCache::GetInstance();
 
-  ShapelessKey key(Fingerprint(std::string_view("dummykey")));
-  SharedLoadedExecutableWithMetadata executable = CreateDummyLoadedExecutable();
+  CompilationCacheKey key(
+      GraphKey(ShapelessKey(Fingerprint(std::string_view("dummykey"))),
+               DimensionsKey({})),
+      CompileOptionsKey({}));
 
   ASSERT_TRUE(cache
-                  .AddUnboundedDynamicCacheEntry(key, std::move(executable),
-                                                 IsCompatible)
+                  .AddUnboundedDynamicCacheEntry(key, CreateDummyExecutable,
+                                                 MakeDummyDynamicMetadata())
                   .ok());
 
-  CompilationCacheKey test_key(GraphKey(key, DimensionsKey({})),
-                               CompileOptionsKey({}));
+  CompilationCacheKey test_key(
+      GraphKey(key.graph_key().shapeless_key(), DimensionsKey({1, 2, 3})),
+      CompileOptionsKey({}));
   TT_ASSERT_OK_AND_ASSIGN(
       CompiledKernel result,
       cache.GetOrCompile(
@@ -555,10 +585,14 @@ TEST_F(CompilationCacheTest, UnboundedDynamicCacheShapeMismatch) {
 TEST_F(CompilationCacheTest, UnboundedDynamicCacheMiss) {
   CompilationCache& cache = CompilationCache::GetInstance();
 
-  ShapelessKey key(Fingerprint(std::string_view("dummykey")));
+  CompilationCacheKey key(
+      GraphKey(ShapelessKey(Fingerprint(std::string_view("dummykey"))),
+               DimensionsKey({})),
+      CompileOptionsKey({}));
 
-  CompilationCacheKey test_key(GraphKey(key, DimensionsKey({})),
-                               CompileOptionsKey({}));
+  CompilationCacheKey test_key(
+      GraphKey(key.graph_key().shapeless_key(), DimensionsKey({1, 2, 3})),
+      CompileOptionsKey({}));
   TT_ASSERT_OK_AND_ASSIGN(
       CompiledKernel result,
       cache.GetOrCompile(
@@ -575,72 +609,22 @@ TEST_F(CompilationCacheTest, UnboundedDynamicCacheMiss) {
   CompilationCache::ShutDown();
 }
 
-TEST_F(CompilationCacheTest, UnboundedDynamicCacheMultipleEntries) {
-  CompilationCache& cache = CompilationCache::GetInstance();
-
-  ShapelessKey key(Fingerprint(std::string_view("dummykey")));
-  SharedLoadedExecutableWithMetadata executable_2d =
-      CreateDummyLoadedExecutable();
-  SharedLoadedExecutableWithMetadata executable_3d =
-      CreateDummyLoadedExecutable();
-  ASSERT_NE(executable_2d, executable_3d);
-
-  auto is_compatible_3d = [](absl::Span<const Shape> shapes) {
-    return shapes.size() == 1 && shapes[0].dimensions().size() == 3;
-  };
-
-  ASSERT_TRUE(
-      cache.AddUnboundedDynamicCacheEntry(key, executable_2d, IsCompatible)
-          .ok());
-  ASSERT_TRUE(
-      cache.AddUnboundedDynamicCacheEntry(key, executable_3d, is_compatible_3d)
-          .ok());
-
-  CompilationCacheKey test_key(GraphKey(key, DimensionsKey({})),
-                               CompileOptionsKey({}));
-
-  TT_ASSERT_OK_AND_ASSIGN(
-      CompiledKernel result_2d,
-      cache.GetOrCompile(
-          test_key, {Shape(Dimensions({128, 128}), mlir::ElementType::F32)},
-          {Shape(Dimensions({128, 128}), mlir::ElementType::F32)},
-          [](mlir::MLIRContext& context) {
-            return mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
-          },
-          std::make_unique<xla::CompileOptions>()));
-  TT_ASSERT_OK_AND_ASSIGN(auto actual_exec_2d,
-                          result_2d.fixed_shape_kernel.get());
-  EXPECT_EQ(actual_exec_2d, executable_2d);
-
-  TT_ASSERT_OK_AND_ASSIGN(
-      CompiledKernel result_3d,
-      cache.GetOrCompile(
-          test_key, {Shape(Dimensions({128, 128, 64}), mlir::ElementType::F32)},
-          {Shape(Dimensions({128, 128, 64}), mlir::ElementType::F32)},
-          [](mlir::MLIRContext& context) {
-            return mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
-          },
-          std::make_unique<xla::CompileOptions>()));
-  TT_ASSERT_OK_AND_ASSIGN(auto actual_exec_3d,
-                          result_3d.fixed_shape_kernel.get());
-  EXPECT_EQ(actual_exec_3d, executable_3d);
-
-  EXPECT_EQ(cache.GetCacheHits(), 2);
-
-  CompilationCache::ShutDown();
-}
-
 TEST_F(CompilationCacheTest, UnboundedDynamicCacheEvictAll) {
   CompilationCache& cache = CompilationCache::GetInstance();
 
-  ShapelessKey key(Fingerprint(std::string_view("dummykey")));
-  SharedLoadedExecutableWithMetadata executable = CreateDummyLoadedExecutable();
+  CompilationCacheKey key(
+      GraphKey(ShapelessKey(Fingerprint(std::string_view("dummykey"))),
+               DimensionsKey({})),
+      CompileOptionsKey({}));
 
-  ASSERT_TRUE(
-      cache.AddUnboundedDynamicCacheEntry(key, executable, IsCompatible).ok());
+  ASSERT_TRUE(cache
+                  .AddUnboundedDynamicCacheEntry(key, CreateDummyExecutable,
+                                                 MakeDummyDynamicMetadata())
+                  .ok());
 
-  CompilationCacheKey test_key(GraphKey(key, DimensionsKey({})),
-                               CompileOptionsKey({}));
+  CompilationCacheKey test_key(
+      GraphKey(key.graph_key().shapeless_key(), DimensionsKey({1, 2, 3})),
+      CompileOptionsKey({}));
 
   // First lookup hits the unbounded dynamic cache.
   TT_ASSERT_OK_AND_ASSIGN(
@@ -654,7 +638,6 @@ TEST_F(CompilationCacheTest, UnboundedDynamicCacheEvictAll) {
           std::make_unique<xla::CompileOptions>()));
   TT_ASSERT_OK_AND_ASSIGN(auto actual_exec,
                           result_hit.fixed_shape_kernel.get());
-  EXPECT_EQ(actual_exec, executable);
   EXPECT_EQ(cache.GetCacheHits(), 1);
 
   // Evict all cache entries (including unbounded dynamic cache).
@@ -677,6 +660,99 @@ TEST_F(CompilationCacheTest, UnboundedDynamicCacheEvictAll) {
   EXPECT_EQ(cache.GetCacheHits(), 1);
   EXPECT_EQ(cache.GetCacheMisses(), 1);
   CompilationCache::ShutDown();
+}
+
+TEST_F(CompilationCacheTest, UnboundedDynamicCacheBackendNotInitialized) {
+  PjrtBackend::GetInstance().Shutdown();
+  PjrtBackend::GetInstance().SetPjRtInitializationOptions(
+      {.device_type = "invalid"});
+  CompilationCache& cache = CompilationCache::GetInstance();
+
+  CompilationCacheKey key(
+      GraphKey(ShapelessKey(Fingerprint(std::string_view("dummykey"))),
+               DimensionsKey({})),
+      CompileOptionsKey({}));
+
+  const absl::Status status = cache.AddUnboundedDynamicCacheEntry(
+      key, CreateDummyExecutable, MakeDummyDynamicMetadata());
+  EXPECT_EQ(status.code(), error::kFailedPrecondition);
+  EXPECT_THAT(status.message(),
+              testing::HasSubstr(
+                  "PjrtBackend must be initialized before adding unbounded "
+                  "dynamic cache entries."));
+
+  PjrtBackend::GetInstance().Shutdown();
+  CompilationCache::ShutDown();
+}
+
+// Enables the tier-2 and tier-3 caches. Their env vars are read once per
+// process, so these tests run in their own target (see BUILD).
+class TieredCompilationCacheTest : public CompilationCacheTest {
+ protected:
+  static void SetUpTestSuite() {
+    // Use a unique name so that entries from previous runs can't be hit.
+    const std::string name =
+        absl::StrCat("compilation_cache_test_", absl::ToUnixNanos(absl::Now()));
+    SetEnv<kTorchTpuTier2CompilationCacheEnvVar>(name);
+    SetEnv<kTorchTpuTier3CompilationCacheRootEnvVar>(
+        absl::StrCat(testing::TempDir(), "/", name));
+  }
+};
+
+TEST_F(TieredCompilationCacheTest, UnboundedDynamicCacheTier2Hit) {
+  CompilationCache& cache = CompilationCache::GetInstance();
+  const CompilationCacheKey key(GraphKey(ShapelessKey(2), DimensionsKey({})),
+                                CompileOptionsKey({}), "tier2");
+  ASSERT_TRUE(cache
+                  .AddUnboundedDynamicCacheEntry(key, CreateDummyExecutable,
+                                                 MakeDummyDynamicMetadata())
+                  .ok());
+  EXPECT_EQ(cache.GetCacheStats().num_compilations, 1);
+
+  // Evict the in-memory cache, and remove the tier-3 entry so that only a
+  // tier-2 hit can avoid recompilation.
+  CompilationCache::GetInstance().EvictAll();
+  ASSERT_EQ(unlink(GetTier3CacheEntryPath(key).c_str()), 0);
+
+  ASSERT_TRUE(cache
+                  .AddUnboundedDynamicCacheEntry(key, CreateDummyExecutable,
+                                                 MakeDummyDynamicMetadata())
+                  .ok());
+  EXPECT_EQ(cache.GetCacheStats().num_compilations, 1);
+}
+
+TEST_F(TieredCompilationCacheTest, UnboundedDynamicCacheTier3Hit) {
+  CompilationCache& cache = CompilationCache::GetInstance();
+  const CompilationCacheKey key(GraphKey(ShapelessKey(3), DimensionsKey({})),
+                                CompileOptionsKey({}), "tier3");
+  ASSERT_TRUE(cache
+                  .AddUnboundedDynamicCacheEntry(key, CreateDummyExecutable,
+                                                 MakeDummyDynamicMetadata())
+                  .ok());
+  EXPECT_EQ(cache.GetCacheStats().num_compilations, 1);
+
+  // Evict the in-memory cache, and remove the tier-2 entry so that only a
+  // tier-3 hit can avoid recompilation.
+  cache.EvictAll();
+  ASSERT_EQ(unlink(GetTier2CacheEntryPath(key).c_str()), 0);
+
+  ASSERT_TRUE(cache
+                  .AddUnboundedDynamicCacheEntry(key, CreateDummyExecutable,
+                                                 MakeDummyDynamicMetadata())
+                  .ok());
+  EXPECT_EQ(cache.GetCacheStats().num_compilations, 1);
+
+  // The tier-3 hit should have backfilled the tier-2 entry. Evict the in-memory
+  // cache again and remove the tier-3 entry so that only the backfilled tier-2
+  // entry can avoid recompilation.
+  cache.EvictAll();
+  ASSERT_EQ(unlink(GetTier3CacheEntryPath(key).c_str()), 0);
+
+  ASSERT_TRUE(cache
+                  .AddUnboundedDynamicCacheEntry(key, CreateDummyExecutable,
+                                                 MakeDummyDynamicMetadata())
+                  .ok());
+  EXPECT_EQ(cache.GetCacheStats().num_compilations, 1);
 }
 
 }  // namespace

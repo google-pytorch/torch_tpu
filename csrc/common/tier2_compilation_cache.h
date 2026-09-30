@@ -70,17 +70,18 @@ struct Tier2CacheEntryStats {
 // made. Populates the output parameter `stats` with the cache entry
 // statistics.
 absl::StatusOr<SharedLoadedExecutableWithMetadata> GetFromTier2Cache(
-    CompilationCacheKey key, absl::Time request_start,
+    const CompilationCacheKey& key, absl::Time request_start,
     Tier2CacheEntryStats& stats);
 
 // Returns the path to the tier-2 cache file for the given key.
-[[nodiscard]] std::string GetTier2CacheEntryPath(CompilationCacheKey key);
+[[nodiscard]] std::string GetTier2CacheEntryPath(
+    const CompilationCacheKey& key);
 
 // RAII class for locking and unlocking a tier-2 cache entry.
 class Tier2CacheEntryLock {
  public:
   // Acquires the lock for the given key. This is a blocking call.
-  explicit Tier2CacheEntryLock(CompilationCacheKey key);
+  explicit Tier2CacheEntryLock(const CompilationCacheKey& key);
 
   // Releases the lock for the key specified in the constructor.
   ~Tier2CacheEntryLock();

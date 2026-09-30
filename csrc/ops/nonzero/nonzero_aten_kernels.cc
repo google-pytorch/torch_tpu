@@ -33,7 +33,6 @@
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/unary_aten_kernels.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 
@@ -56,15 +55,11 @@ absl::StatusOr<at::Tensor> GetNumNonZeroElements(const at::Tensor& self) {
 
 absl::StatusOr<at::Tensor> Nonzero(const at::Tensor& self,
                                    const int64_t num_non_zero_elements) {
-  TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=the op creates cache keys
-                        // successfully.
-      auto param_keys, TT_MAKE_OP_PARAM_CACHE_KEYS(num_non_zero_elements));
-
   Dimensions out_dims = {num_non_zero_elements, self.dim()};
   TT_ASSIGN_OR_RETURN(
       auto result,
       UnaryOp(self, absl::bind_front(BuildNonzeroShlo, num_non_zero_elements),
-              {.op_param_cache_keys = std::move(param_keys),
+              {.op_param_cache_keys = OpParamCacheKeys::Empty(),
                .out_dtype = mlir::ElementType::I64,
                .out_dims = std::move(out_dims)}));
   return result;
@@ -72,14 +67,10 @@ absl::StatusOr<at::Tensor> Nonzero(const at::Tensor& self,
 
 absl::Status NonzeroOut(const at::Tensor& self, at::Tensor& out,
                         const int64_t num_non_zero_elements) {
-  TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=the op creates cache keys
-                        // successfully.
-      auto param_keys, TT_MAKE_OP_PARAM_CACHE_KEYS(num_non_zero_elements));
-
   Dimensions out_dims = {num_non_zero_elements, self.dim()};
   return UnaryOpOut(self, out,
                     absl::bind_front(BuildNonzeroShlo, num_non_zero_elements),
-                    {.op_param_cache_keys = std::move(param_keys),
+                    {.op_param_cache_keys = OpParamCacheKeys::Empty(),
                      .out_dtype = mlir::ElementType::I64,
                      .out_dims = std::move(out_dims)});
 }

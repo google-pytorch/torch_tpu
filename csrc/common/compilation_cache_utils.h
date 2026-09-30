@@ -58,7 +58,7 @@ absl::Status EnsureDirExistsRecursively(const std::string& path);
 
 // Loads a serialized executable read from the given cache.
 absl::StatusOr<SharedLoadedExecutableWithMetadata> LoadSerializedExecutable(
-    CacheTier tier, CompilationCacheKey key, std::string_view data);
+    CacheTier tier, const CompilationCacheKey& key, std::string_view data);
 
 // Writes a compiled executable to the given tier-2 or tier-3 cache file. This
 // is best effort.

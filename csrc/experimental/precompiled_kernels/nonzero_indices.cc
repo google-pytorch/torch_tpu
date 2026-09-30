@@ -24,15 +24,18 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/experimental/precompiled_kernels/mosaic_custom_call.h"
 #include "csrc/internal/mosaic/op_builders.h"
+#include "csrc/ops/op_names.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Arith/IR/ArithAttributes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -48,6 +51,7 @@
 #include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/ValueRange.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "xla/client/executable_build_options.h"
 #include "xla/hlo/builder/xla_computation.h"
 #include "xla/hlo/ir/hlo_module.h"
@@ -357,35 +361,18 @@ BitcastToLogicalIndices(std::vector<std::unique_ptr<xla::PjRtBuffer>> results,
   return results;
 }
 
-}  // namespace
-
-absl::StatusOr<SharedLoadedExecutableWithMetadata>
-BuildNonzeroIndicesExecutable(xla::PjRtClient& client) {
+// Returns the parameters for the nonzero indices kernel.
+std::vector<xla::Shape> NonzeroParameters() {
   const xla::Shape input = MakeUnbounded(xla::F32, xla::Tile({8, 128}));
   const xla::Shape output_view = MakeUnbounded(xla::S32, xla::Tile({1, 128}));
   xla::Shape dims = xla::ShapeUtil::MakeShape(xla::S32, {2});
   *dims.mutable_layout() = xla::Layout({0}, {xla::Tile({128})});
-  std::vector<xla::Shape> parameters = {input, output_view, dims, dims};
+  return {input, output_view, dims, dims};
+}
 
-  const std::unique_ptr<mlir::MLIRContext> context =
-      mlir::torch_tpu::CreateMlirContextWithDialects();
-  mlir::OwningOpRef<mlir::ModuleOp> module = BuildNonzeroIndices(*context);
-  TT_ASSIGN_OR_RETURN(
-      const std::unique_ptr<xla::HloModule> hlo,
-      BuildMosaicCustomCall(*module, parameters, output_view, {2, 3, -1, -1},
-                            /*aliased_parameter=*/1));
-  xla::CompileOptions compile_options;
-  xla::ExecutableBuildOptions& build = compile_options.executable_build_options;
-  build.set_run_backend_only(true);
-  build.set_result_layout(hlo->entry_computation_layout().result_shape());
-  compile_options.argument_layouts = parameters;
-  const xla::XlaComputation computation(hlo->ToProto());
-  TT_ASSIGN_OR_RETURN(
-      std::unique_ptr<xla::PjRtLoadedExecutable> loaded,
-      AdaptXlaError(
-          client.CompileAndLoad(computation, std::move(compile_options)),
-          /*context=*/"failed to compile the nonzero indices kernel"));
+}  // namespace
 
+UnboundedDynamicExecutionMetadata MakeNonzeroDynamicMetadata() {
   // One logical input, the F32[M,N] payload. The S64[K,2] destination is a
   // donated output: `Execute` allocates it directly in the S32[R,128] view the
   // kernel was compiled against, so callers never see the physical view.
@@ -410,15 +397,69 @@ BuildNonzeroIndicesExecutable(xla::PjRtClient& client) {
                   .shape_pjrt_idx = 3,
               },
           },
-      .pjrt_param_shapes = std::move(parameters),
+      .pjrt_param_shapes = NonzeroParameters(),
       .output_transform = BitcastToLogicalIndices,
+      .is_compatible =
+          [](absl::Span<const Shape> input_shapes) {
+            return input_shapes.size() == 1 &&
+                   input_shapes[0].dimensions().size() == 2 &&
+                   input_shapes[0].dtype() == mlir::ElementType::F32;
+          },
   };
+  return dynamic_meta;
+}
+
+absl::StatusOr<SharedLoadedExecutableWithMetadata>
+BuildNonzeroIndicesExecutable(xla::PjRtClient& client) {
+  const xla::Shape output_view = MakeUnbounded(xla::S32, xla::Tile({1, 128}));
+  const std::vector<xla::Shape> parameters = NonzeroParameters();
+  const std::unique_ptr<mlir::MLIRContext> context =
+      mlir::torch_tpu::CreateMlirContextWithDialects();
+  mlir::OwningOpRef<mlir::ModuleOp> module = BuildNonzeroIndices(*context);
+  TT_ASSIGN_OR_RETURN(
+      const std::unique_ptr<xla::HloModule> hlo,
+      BuildMosaicCustomCall(*module, parameters, output_view, {2, 3, -1, -1},
+                            /*aliased_parameter=*/1));
+  xla::CompileOptions compile_options;
+  xla::ExecutableBuildOptions& build = compile_options.executable_build_options;
+  build.set_run_backend_only(true);
+  build.set_result_layout(hlo->entry_computation_layout().result_shape());
+  compile_options.argument_layouts = parameters;
+  const xla::XlaComputation computation(hlo->ToProto());
+  TT_ASSIGN_OR_RETURN(
+      std::unique_ptr<xla::PjRtLoadedExecutable> loaded,
+      AdaptXlaError(
+          client.CompileAndLoad(computation, std::move(compile_options)),
+          /*context=*/"failed to compile the nonzero indices kernel"));
+
+  UnboundedDynamicExecutionMetadata dynamic_meta = MakeNonzeroDynamicMetadata();
 
   TT_ASSIGN_OR_RETURN(SharedLoadedExecutableWithMetadata executable,
                       LoadedExecutableWithMetadata::MakeShared(
                           std::move(loaded),
                           /*argument_indices=*/{}, std::move(dynamic_meta)));
   return executable;
+}
+
+CompilationCacheKey NonZeroCacheKey() {
+  // Only ranks and dtypes reach the shapeless key, so these extents are
+  // placeholders. The rank must be 2: the kernel only accepts F32[M,N].
+  const Dimensions input_dims = {-1, -1};
+  const Dimensions out_dims = {-1, static_cast<int64_t>(input_dims.size())};
+
+  GraphSignature graph;
+  graph.SetCorePinningMode(CorePinningMode::kUnpinned);
+  const int in = graph.AddInput(input_dims, mlir::ElementType::F32);
+  int out = -1;
+  graph.AddOp(OpName::kNonzero, OpParamCacheKeys::Empty(),
+              /*donated_inputs=*/{},
+              [&](GraphSignature::OpSignatureBuilder& op) {
+                op.AddInput(in);
+                out = op.AddOutput(out_dims, mlir::ElementType::I64);
+              });
+  graph.AddGraphOutput(out);
+  return CompilationCacheKey(graph.GetKey(), CompileOptionsKey({}),
+                             "nonzero_2d");
 }
 
 }  // namespace torch_tpu

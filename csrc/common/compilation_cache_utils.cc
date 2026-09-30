@@ -107,7 +107,8 @@ FingerprintType GetTorchTpuBinaryFingerprint() {
 }
 
 absl::StatusOr<SharedLoadedExecutableWithMetadata> LoadSerializedExecutable(
-    CacheTier tier, CompilationCacheKey key, const std::string_view data) {
+    CacheTier tier, const CompilationCacheKey& key,
+    const std::string_view data) {
   xla::PjRtClient* const client = PjrtBackend::GetInstance().GetClient();
   TT_RET_CHECK(client, error::kFailedPrecondition)
       << "PjRtClient must be initialized before accessing the " << tier
