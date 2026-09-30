@@ -33,6 +33,20 @@ stable = annotations.stable
 deprecated = annotations.deprecated
 
 
+def _reset_warn_once(api: Any) -> None:
+  """Resets the per-process one-time warning flag of an annotated API.
+
+  Other tests in the same process may have already consumed the one-time
+  warning, so reset it to make warning-count assertions order-independent.
+
+  Args:
+    api: The annotated function or bound classmethod.
+  """
+  fn = getattr(api, "__func__", api)
+  idx = fn.__code__.co_freevars.index("_warned")
+  fn.__closure__[idx].cell_contents = False
+
+
 class AnnotationsTest(seed_test_utils.RepeatableTest):
 
   # ---------------------------------------------------------------------------
@@ -449,6 +463,26 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
       # 2nd access: emits 0 additional warnings
       _ = torch.tpu.allow_excess_precision
       self.assertLen(w, 1)
+
+  def test_real_api_stream_context_warns_once_without_internal_warnings(self):
+    """Verifies repeated `with torch.tpu.stream(s)` warns once, only for `stream`.
+
+    TpuStreamContext must not leak warnings from internal calls (e.g.
+    current_stream) to the user.
+    """
+    _reset_warn_once(torch.tpu.stream)
+    _reset_warn_once(torch.tpu.current_stream)
+    new_stream = torch.tpu.Stream()
+
+    with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("always")
+      for _ in range(3):
+        with torch.tpu.stream(new_stream):
+          pass
+
+    self.assertLen(w, 1, msg=[str(x.message) for x in w])
+    self.assertTrue(issubclass(w[0].category, UserWarning))
+    self.assertIn("stream is experimental", str(w[0].message))
 
   def test_pep562_module_getattr_resolution_and_suppression(self):
     """Verifies PEP 562 __getattr__ module attribute resolution, warnings, caching, and AttributeError."""
