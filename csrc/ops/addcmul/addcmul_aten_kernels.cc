@@ -20,7 +20,6 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "absl/status/statusor.h"
-#include "absl/types/span.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dtype.h"
@@ -43,8 +42,8 @@ absl::StatusOr<mlir::MlirOp> BuildAddcmulShlo(mlir::MlirOp self,
                                               mlir::MlirOp tensor1,
                                               mlir::MlirOp tensor2,
                                               mlir::MlirOp value) {
-  TT_ASSIGN_OR_RETURN(const mlir::ElementType out_dtype, GetElementType(self));
-  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+  TT_ASSIGN_OR_RETURN(mlir::ElementType out_dtype, GetElementType(self));
+  TT_ASSIGN_OR_RETURN(mlir::ElementType compute_dtype,
                       InferComputationDtype(out_dtype));
 
   TT_ASSIGN_OR_RETURN(self, CastIfNeeded(self, compute_dtype));
