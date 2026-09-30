@@ -408,12 +408,15 @@ torch_tpu_py_test(
         # Forge has more resources, allowing a larger sample size.
         ["--max_samples_per_op_dtype=20"],
     ),
-    data = [
-        "ops_test_gpu_golden_grad0.gz",
-        "ops_test_gpu_golden_grad1.gz",
-        "ops_test_gpu_golden_grad2.gz",
-        "ops_test_gpu_golden_grad_hopper0.gz",
-    ],
+    data = if_oss(
+        [],
+        [
+            "ops_test_gpu_golden_grad0.gz",
+            "ops_test_gpu_golden_grad1.gz",
+            "ops_test_gpu_golden_grad2.gz",
+            "ops_test_gpu_golden_grad_hopper0.gz",
+        ],
+    ),
     main = "ops_test.py",
     run_on_accelerators = [
         "requires-tpu-v6e",
@@ -453,12 +456,15 @@ torch_tpu_py_test(
         # Forge has more resources, allowing a larger sample size.
         ["--max_samples_per_op_dtype=20"],
     ),
-    data = [
-        "ops_test_gpu_golden_grad0.gz",
-        "ops_test_gpu_golden_grad1.gz",
-        "ops_test_gpu_golden_grad2.gz",
-        "ops_test_gpu_golden_grad_hopper0.gz",
-    ],
+    data = if_oss(
+        [],
+        [
+            "ops_test_gpu_golden_grad0.gz",
+            "ops_test_gpu_golden_grad1.gz",
+            "ops_test_gpu_golden_grad2.gz",
+            "ops_test_gpu_golden_grad_hopper0.gz",
+        ],
+    ),
     main = "ops_test.py",
     run_on_accelerators = [
         "requires-tpu-v6e",
@@ -498,12 +504,15 @@ torch_tpu_py_test(
         # Forge has more resources, allowing a larger sample size.
         ["--max_samples_per_op_dtype=20"],
     ),
-    data = [
-        "ops_test_gpu_golden_grad0.gz",
-        "ops_test_gpu_golden_grad1.gz",
-        "ops_test_gpu_golden_grad2.gz",
-        "ops_test_gpu_golden_grad_hopper0.gz",
-    ],
+    data = if_oss(
+        [],
+        [
+            "ops_test_gpu_golden_grad0.gz",
+            "ops_test_gpu_golden_grad1.gz",
+            "ops_test_gpu_golden_grad2.gz",
+            "ops_test_gpu_golden_grad_hopper0.gz",
+        ],
+    ),
     main = "ops_test.py",
     run_on_accelerators = [
         "requires-tpu-v6e",
@@ -541,12 +550,15 @@ torch_tpu_py_test(
         # Forge has more resources, allowing a larger sample size.
         ["--max_samples_per_op_dtype=20"],
     ),
-    data = [
-        "ops_test_gpu_golden_compiled0.gz",
-        "ops_test_gpu_golden_compiled1.gz",
-        "ops_test_gpu_golden_compiled2.gz",
-        "ops_test_gpu_golden_compiled_hopper0.gz",
-    ],
+    data = if_oss(
+        [],
+        [
+            "ops_test_gpu_golden_compiled0.gz",
+            "ops_test_gpu_golden_compiled1.gz",
+            "ops_test_gpu_golden_compiled2.gz",
+            "ops_test_gpu_golden_compiled_hopper0.gz",
+        ],
+    ),
     main = "ops_test.py",
     nopresubmit_oss = "This slow test is enabled in postsubmit and nightly.",
     run_on_accelerators = [
@@ -586,12 +598,15 @@ torch_tpu_py_test(
         # Forge has more resources, allowing a larger sample size.
         ["--max_samples_per_op_dtype=20"],
     ),
-    data = [
-        "ops_test_gpu_golden0.gz",
-        "ops_test_gpu_golden1.gz",
-        "ops_test_gpu_golden2.gz",
-        "ops_test_gpu_golden_hopper0.gz",
-    ],
+    data = if_oss(
+        [],
+        [
+            "ops_test_gpu_golden0.gz",
+            "ops_test_gpu_golden1.gz",
+            "ops_test_gpu_golden2.gz",
+            "ops_test_gpu_golden_hopper0.gz",
+        ],
+    ),
     main = "ops_test.py",
     run_on_accelerators = [
         "requires-tpu-v6e",
@@ -631,12 +646,15 @@ torch_tpu_py_test(
         # Forge has more resources, allowing a larger sample size.
         ["--max_samples_per_op_dtype=20"],
     ),
-    data = [
-        "ops_test_gpu_golden_grad0.gz",
-        "ops_test_gpu_golden_grad1.gz",
-        "ops_test_gpu_golden_grad2.gz",
-        "ops_test_gpu_golden_grad_hopper0.gz",
-    ],
+    data = if_oss(
+        [],
+        [
+            "ops_test_gpu_golden_grad0.gz",
+            "ops_test_gpu_golden_grad1.gz",
+            "ops_test_gpu_golden_grad2.gz",
+            "ops_test_gpu_golden_grad_hopper0.gz",
+        ],
+    ),
     main = "ops_test.py",
     # Skip this in OSS presubmit when it's overloaded.
     nopresubmit_oss = _WHEN_OSS_PRESUBMIT_OVERLOADED,
@@ -676,12 +694,15 @@ torch_tpu_py_test(
         # Forge has more resources, allowing a larger sample size.
         ["--max_samples_per_op_dtype=20"],
     ),
-    data = [
-        "ops_test_gpu_golden0.gz",
-        "ops_test_gpu_golden1.gz",
-        "ops_test_gpu_golden2.gz",
-        "ops_test_gpu_golden_hopper0.gz",
-    ],
+    data = if_oss(
+        [],
+        [
+            "ops_test_gpu_golden0.gz",
+            "ops_test_gpu_golden1.gz",
+            "ops_test_gpu_golden2.gz",
+            "ops_test_gpu_golden_hopper0.gz",
+        ],
+    ),
     main = "ops_test.py",
     # Skip this in OSS presubmit when it's overloaded.
     nopresubmit_oss = _WHEN_OSS_PRESUBMIT_OVERLOADED,
@@ -718,12 +739,15 @@ torch_tpu_py_test(
         "--test_categories=nonzero",
         "--max_samples_per_op_dtype=10",  # To avoid timeout.
     ],
-    data = [
-        "ops_test_gpu_golden0.gz",
-        "ops_test_gpu_golden1.gz",
-        "ops_test_gpu_golden2.gz",
-        "ops_test_gpu_golden_hopper0.gz",
-    ],
+    data = if_oss(
+        [],
+        [
+            "ops_test_gpu_golden0.gz",
+            "ops_test_gpu_golden1.gz",
+            "ops_test_gpu_golden2.gz",
+            "ops_test_gpu_golden_hopper0.gz",
+        ],
+    ),
     main = "ops_test.py",
     # Skip this in OSS presubmit when it's overloaded.
     nopresubmit_oss = _WHEN_OSS_PRESUBMIT_OVERLOADED,
@@ -764,12 +788,15 @@ torch_tpu_py_test(
         # Forge has more resources, allowing a larger sample size.
         ["--max_samples_per_op_dtype=20"],
     ),
-    data = [
-        "ops_test_gpu_golden0.gz",
-        "ops_test_gpu_golden1.gz",
-        "ops_test_gpu_golden2.gz",
-        "ops_test_gpu_golden_hopper0.gz",
-    ],
+    data = if_oss(
+        [],
+        [
+            "ops_test_gpu_golden0.gz",
+            "ops_test_gpu_golden1.gz",
+            "ops_test_gpu_golden2.gz",
+            "ops_test_gpu_golden_hopper0.gz",
+        ],
+    ),
     main = "ops_test.py",
     # Skip this in OSS presubmit when it's overloaded.
     nopresubmit_oss = _WHEN_OSS_PRESUBMIT_OVERLOADED,
@@ -857,12 +884,15 @@ torch_tpu_py_test(
         "--print_op_inputs=1",
         "--max_samples_per_op_dtype=1",  # No need to test many samples to catch dynamism bugs.
     ],
-    data = [
-        "ops_test_gpu_golden0.gz",
-        "ops_test_gpu_golden1.gz",
-        "ops_test_gpu_golden2.gz",
-        "ops_test_gpu_golden_hopper0.gz",
-    ],
+    data = if_oss(
+        [],
+        [
+            "ops_test_gpu_golden0.gz",
+            "ops_test_gpu_golden1.gz",
+            "ops_test_gpu_golden2.gz",
+            "ops_test_gpu_golden_hopper0.gz",
+        ],
+    ),
     main = "ops_test.py",
     run_on_accelerators = [
         "requires-tpu-v6e",
@@ -898,12 +928,15 @@ torch_tpu_py_test(
         "--print_op_inputs=1",
         "--max_samples_per_op_dtype=1",  # No need to test many samples to catch dynamism bugs.
     ],
-    data = [
-        "ops_test_gpu_golden_compiled0.gz",
-        "ops_test_gpu_golden_compiled1.gz",
-        "ops_test_gpu_golden_compiled2.gz",
-        "ops_test_gpu_golden_compiled_hopper0.gz",
-    ],
+    data = if_oss(
+        [],
+        [
+            "ops_test_gpu_golden_compiled0.gz",
+            "ops_test_gpu_golden_compiled1.gz",
+            "ops_test_gpu_golden_compiled2.gz",
+            "ops_test_gpu_golden_compiled_hopper0.gz",
+        ],
+    ),
     main = "ops_test.py",
     nopresubmit = "Dynamic compile tests are run in postsubmit to avoid overloading the presubmit.",
     run_on_accelerators = [
