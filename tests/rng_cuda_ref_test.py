@@ -969,7 +969,7 @@ class SingleProcessMultiDeviceTest(_BaseRngTest):
 
   def setUp(self):
     super().setUp()
-    self.device_idx = self.backend_mod.current_device()
+    self.device_idx = torch.accelerator.current_device_index()
 
   @_fail_on_tpu(
       "TPU backend does not support querying non-current device RNG state."

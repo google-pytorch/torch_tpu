@@ -61,11 +61,9 @@ class DeviceModuleBase(
 
   @contextlib.contextmanager
   def patch_current_device(self, device_id: int = 0):
-    patch = mock.patch.object(
-        self.device_module,
-        "current_device",
+    patch = mock.patch(
+        "torch.accelerator.current_device_index",
         return_value=device_id,
-        autospec=True,
     )
     with patch:
       yield patch
@@ -241,17 +239,21 @@ class DeviceModuleBase(
     with self.patch_current_device(device_id=0):
       # Test valid integer index
       self.device_module.set_device(0)
+      self.assertEqual(torch.accelerator.current_device_index(), 0)
       self.assertEqual(self.device_module.current_device(), 0)
 
       # Test valid string and torch.device
       if self.device_module._device_type == "tpu":
         self.device_module.set_device("tpu")
+        self.assertEqual(torch.accelerator.current_device_index(), 0)
         self.assertEqual(self.device_module.current_device(), 0)
 
         self.device_module.set_device(torch.device("tpu"))
+        self.assertEqual(torch.accelerator.current_device_index(), 0)
         self.assertEqual(self.device_module.current_device(), 0)
 
         self.device_module.set_device(torch.device("tpu:0"))
+        self.assertEqual(torch.accelerator.current_device_index(), 0)
         self.assertEqual(self.device_module.current_device(), 0)
 
   def test_set_device_invalid_index(self):
@@ -288,9 +290,11 @@ class DeviceModuleBase(
       # Valid string and torch.device if registered
       if self.device_module._device_type == "tpu":
         with self.device_module.device("tpu"):
+          self.assertEqual(torch.accelerator.current_device_index(), 0)
           self.assertEqual(self.device_module.current_device(), 0)
 
         with self.device_module.device(torch.device("tpu:0")):
+          self.assertEqual(torch.accelerator.current_device_index(), 0)
           self.assertEqual(self.device_module.current_device(), 0)
 
       # None resolves to current device (0), keeping the active device context

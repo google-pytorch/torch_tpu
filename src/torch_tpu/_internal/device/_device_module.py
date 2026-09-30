@@ -408,10 +408,8 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
   # _DeviceModuleMeta.__getattr__ can access stage metadata on the class.
   __tt_api_stages__ = __tt_api_stages__
 
-  # device_count and current_device are None until device_count() and
-  # current_device() are called.
+  # _device_count is None until device_count() is called.
   _device_count: int | None = None
-  _current_device: int | None = None
   _autocast_enabled: bool = False
   _autocast_dtype: torch.dtype | None = torch.bfloat16
 
@@ -441,13 +439,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
     .. warning::
         This API is experimental and subject to change in future releases.
     """
-    if cls._current_device is None:
-      cls._current_device = _device_ops_backend._get_current_device_id()  # pylint: disable=protected-access
-
-    assert (
-        cls._current_device is not None
-    ), "_DeviceModule is initialized but has no current device."
-    return cls._current_device
+    return torch.accelerator.current_device_index()
 
   @classmethod
   def _get_generator(cls, device: torch.device) -> torch.Generator:
@@ -461,7 +453,11 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
     Returns:
       The default torch.Generator for the specified device.
     """
-    idx = device.index if device.index is not None else cls.current_device()
+    idx = (
+        device.index
+        if device.index is not None
+        else torch.accelerator.current_device_index()
+    )
     return cls.default_generators[idx]
 
   @classmethod
@@ -489,7 +485,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
         device index.
       TypeError: If the device type is not recognized.
     """
-    current_idx = cls.current_device()
+    current_idx = torch.accelerator.current_device_index()
     provided_idx = None
     if isinstance(device, str):
       if device != "tpu":
@@ -517,7 +513,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
   def _exchange_device(cls, device: int) -> int:
     if device < 0:
       return -1
-    prev_device = cls.current_device()
+    prev_device = torch.accelerator.current_device_index()
     cls.set_device(device)
     return prev_device
 
@@ -525,7 +521,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
   def _maybe_exchange_device(cls, device: int) -> int:
     if device < 0:
       return -1
-    prev_device = cls.current_device()
+    prev_device = torch.accelerator.current_device_index()
     cls.set_device(device)
     return prev_device
 
@@ -647,7 +643,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
     .. warning::
         This API is experimental and subject to change in future releases.
     """
-    idx = cls.current_device()
+    idx = torch.accelerator.current_device_index()
     return cls.default_generators[idx].initial_seed()
 
   @classmethod
@@ -675,7 +671,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
     Returns:
       A `torch.Tensor` representing the RNG state of the default generator.
     """
-    _rng_validate_device_index(device, cls.current_device())
+    _rng_validate_device_index(device, torch.accelerator.current_device_index())
     return _device_ops_backend.get_rng_state(-1)
 
   @classmethod
@@ -695,7 +691,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
       device: The device to set the RNG state on. Can be an int (device index),
         "tpu", or a `torch.device("tpu")` object.
     """
-    _rng_validate_device_index(device, cls.current_device())
+    _rng_validate_device_index(device, torch.accelerator.current_device_index())
     _device_ops_backend.set_rng_state(new_state, -1)
 
   @classmethod
