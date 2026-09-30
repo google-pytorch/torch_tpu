@@ -728,36 +728,40 @@ def _test_oss_manual_nonightly_oss_tag(env):
 
 def _test_oss_presubmit_tpu_generation_explicit(env):
     tags = []
-    check_and_adjust_test_tags_for_testing(
+    result = check_and_adjust_test_tags_for_testing(
         is_oss = True,
         oss_presubmit_tpu_generation = tpu_gen("v7", reason = "Requires specific hardware for feature testing"),
         tags = tags,
     )
     env.expect.that_collection(tags).contains("presubmit-v7")
+    env.expect.that_str(result.tpu_generation).equals("v7")
 
 def _test_oss_presubmit_tpu_generation_implicit(env):
     tags = ["requires-tpu", "fails-on-tpu-v5"]
-    check_and_adjust_test_tags_for_testing(
+    result = check_and_adjust_test_tags_for_testing(
         is_oss = True,
         tags = tags,
     )
     env.expect.that_collection(tags).contains("presubmit-v7")
+    env.expect.that_str(result.tpu_generation).equals("v7")
 
 def _test_oss_presubmit_tpu_generation_implicit_v6(env):
     tags = ["requires-tpu", "fails-on-tpu-v5", "fails-on-tpu-v7"]
-    check_and_adjust_test_tags_for_testing(
+    result = check_and_adjust_test_tags_for_testing(
         is_oss = True,
         tags = tags,
     )
     env.expect.that_collection(tags).contains("presubmit-v6")
+    env.expect.that_str(result.tpu_generation).equals("v6")
 
 def _test_oss_presubmit_tpu_generation_implicit_default_v5(env):
     tags = ["requires-tpu"]
-    check_and_adjust_test_tags_for_testing(
+    result = check_and_adjust_test_tags_for_testing(
         is_oss = True,
         tags = tags,
     )
     env.expect.that_collection(tags).contains("presubmit-v5")
+    env.expect.that_str(result.tpu_generation).equals("v5")
 
 def _test_get_tpu_version(env):
     env.expect.that_str(get_tpu_version_for_testing("requires-custom_hw")).equals("custom_hw")
