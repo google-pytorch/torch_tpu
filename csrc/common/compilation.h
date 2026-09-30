@@ -30,6 +30,7 @@
 #include "absl/functional/any_invocable.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/compile_options_key.h"
 #include "csrc/common/dimension_types.h"
@@ -55,31 +56,57 @@ using SharedLoadedExecutableWithMetadata =
 // PjRt executable parameters for precompiled unbounded-dynamic kernels
 // (using disjoint S32[rank] runtime shape metadata parameters).
 struct UnboundedDynamicExecutionMetadata {
+  // The hooks below are plain function pointers because this metadata is
+  // cached with the executable: a hook must not refer to a callable that can be
+  // destroyed first.
+
+  // Maps a logical output shape to the physical shape the executable's
+  // parameter was compiled against, given that parameter's layout (e.g. a
+  // differently-typed tiled view of the same bytes). If null, the donated
+  // buffer is allocated with the logical shape and the parameter's layout.
+  using PhysicalOutputShapeFunc =
+      absl::StatusOr<xla::Shape> (*)(const Shape&, const xla::Layout&);
+
   // For dynamic outputs that do not alias an existing logical input,
   // specifies which logical output needs a pre-allocated device buffer passed
   // as a donated PjRt input parameter.
   struct DonatedOutputParam {
     int64_t logical_output_idx = 0;
     int64_t pjrt_param_idx = 0;
+    PhysicalOutputShapeFunc absl_nullable physical_shape_fn = nullptr;
   };
 
   // Binds a physical PjRt parameter index for a disjoint S32[rank] metadata
-  // buffer to the combined logical tensor index ([inputs..., outputs...]) whose
-  // runtime shape it describes (corresponding to operand_to_metadata).
-  // Specifically, for N logical inputs:
-  //   - 0 <= logical_idx < N refers to logical input `logical_idx`.
-  //   - logical_idx >= N refers to logical output `logical_idx - N`.
-  // Multiple payload operands sharing the same metadata parameter require only
-  // a single binding entry.
+  // buffer to the physical PjRt parameter index of the payload whose runtime
+  // shape it describes (corresponding to operand_to_metadata). The payload may
+  // be a logical input or a pre-allocated donated output; either way the
+  // metadata reports the shape the executable actually receives, after any
+  // physical shape mapping. Multiple payload operands sharing the same metadata
+  // parameter require only a single binding entry.
   struct MetadataParamBinding {
-    int64_t logical_idx = 0;
-    int64_t pjrt_param_idx = 0;
+    int64_t buffer_pjrt_idx = 0;
+    int64_t shape_pjrt_idx = 0;
   };
+
+  // Transforms the executable's results back into their logical representation
+  // (e.g. bitcasts a differently-typed tiled view back to the logical type),
+  // given the logical output shapes the caller passed to `Execute`. If null,
+  // `Execute` returns the results unchanged.
+  //
+  // The shapes are required because a physical view is generally not
+  // invertible from the result buffer alone: tile padding means several
+  // logical extents map to the same physical one.
+  using OutputTransform = absl::StatusOr<
+      std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>>> (*)(
+      std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>>,
+      absl::Span<const Shape>);
 
   Indices logical_input_to_pjrt_param;
   std::vector<DonatedOutputParam> donated_output_params;
   std::vector<MetadataParamBinding> metadata_params;
   std::vector<xla::Shape> pjrt_param_shapes;
+
+  OutputTransform absl_nullable output_transform = nullptr;
 };
 
 class LoadedExecutableWithMetadata {

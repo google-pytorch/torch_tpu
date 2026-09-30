@@ -139,8 +139,10 @@ struct DynamicExecutionArguments {
 
 // Routes logical argument buffers, pre-allocated donated dynamic output
 // buffers, and disjoint S32[rank] runtime shape metadata buffers into their
-// physical PjRt parameter positions according to
-// `executable->dynamic_execution_metadata()`.
+// physical PjRt parameter positions according to `meta`. A donated output
+// buffer is allocated in the shape its `physical_shape_fn` hook returns, if
+// set, and each metadata buffer reports the on-device shape of the payload
+// routed to the parameter it describes.
 absl::StatusOr<DynamicExecutionArguments> PrepareDynamicExecutionArguments(
     const UnboundedDynamicExecutionMetadata& meta,
     absl::Span<xla::PjRtBuffer* const> argument_buffers,
@@ -176,7 +178,13 @@ absl::StatusOr<DynamicExecutionArguments> PrepareDynamicExecutionArguments(
     const xla::Layout& layout =
         meta.pjrt_param_shapes[donated_spec.pjrt_param_idx].layout();
 
-    xla::Shape xla_out_shape = MakeXlaShape(out_shape, layout);
+    xla::Shape xla_out_shape;
+    if (donated_spec.physical_shape_fn) {
+      TT_ASSIGN_OR_RETURN(xla_out_shape,
+                          (*donated_spec.physical_shape_fn)(out_shape, layout));
+    } else {
+      xla_out_shape = MakeXlaShape(out_shape, layout);
+    }
     TT_ASSIGN_OR_RETURN(
         std::unique_ptr<xla::PjRtBuffer> donated_buf,
         AdaptXlaError(
@@ -187,23 +195,24 @@ absl::StatusOr<DynamicExecutionArguments> PrepareDynamicExecutionArguments(
   }
 
   // 3. Create and route disjoint S32[rank] runtime shape metadata buffers.
-  const int64_t num_inputs = argument_buffers.size();
-  for (const auto& binding : meta.metadata_params) {
-    absl::Span<const int64_t> dims;
-    if (binding.logical_idx < num_inputs) {
-      xla::PjRtBuffer* const in_buf = argument_buffers[binding.logical_idx];
-      dims = in_buf->on_device_shape().dimensions();
-    } else {
-      const int64_t output_idx = binding.logical_idx - num_inputs;
-      dims = logical_output_shapes[output_idx].dimensions();
-    }
+  // Steps 1 and 2 have routed every payload, so each buffer already carries the
+  // physical shape the executable will see.
+  for (int i = 0; i < meta.metadata_params.size(); ++i) {
+    const auto& binding = meta.metadata_params[i];
+    xla::PjRtBuffer* const payload = result.full_args[binding.buffer_pjrt_idx];
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=enforced by high level contract.
+        payload != nullptr, error::kInternal)
+        << "Metadata parameter at idx " << i << " describes PjRt parameter "
+        << binding.buffer_pjrt_idx << ", which no payload was routed to.";
+    const absl::Span<const int64_t> dims =
+        payload->on_device_shape().dimensions();
 
     const xla::Layout& layout =
-        meta.pjrt_param_shapes[binding.pjrt_param_idx].layout();
+        meta.pjrt_param_shapes[binding.shape_pjrt_idx].layout();
     TT_ASSIGN_OR_RETURN(
         std::unique_ptr<xla::PjRtBuffer> meta_buf,
         CreateRuntimeShapeMetadataBuffer(dims, layout, client, memory_space));
-    result.full_args[binding.pjrt_param_idx] = meta_buf.get();
+    result.full_args[binding.shape_pjrt_idx] = meta_buf.get();
     result.ephemeral_buffers.push_back(std::move(meta_buf));
   }
 
@@ -235,11 +244,14 @@ absl::StatusOr<PjRtBufferPointers> Execute(
   // buffers) must outlive device execution.
   std::vector<std::unique_ptr<xla::PjRtBuffer>> ephemeral_buffers;
 
-  if (executable->unbounded_dynamic_execution_metadata().has_value()) {
-    TT_ASSIGN_OR_RETURN(DynamicExecutionArguments dynamic_args,
-                        PrepareDynamicExecutionArguments(
-                            *executable->unbounded_dynamic_execution_metadata(),
-                            argument_buffers, logical_output_shapes));
+  const std::optional<UnboundedDynamicExecutionMetadata>&
+      unbounded_dynamic_meta =
+          executable->unbounded_dynamic_execution_metadata();
+  if (unbounded_dynamic_meta) {
+    TT_ASSIGN_OR_RETURN(
+        DynamicExecutionArguments dynamic_args,
+        PrepareDynamicExecutionArguments(
+            *unbounded_dynamic_meta, argument_buffers, logical_output_shapes));
     argument_buffers = std::move(dynamic_args.full_args);
     ephemeral_buffers = std::move(dynamic_args.ephemeral_buffers);
   }
@@ -300,6 +312,12 @@ absl::StatusOr<PjRtBufferPointers> Execute(
   result_pointers.reserve(results_per_device[0].size());
   for (auto&& [i, result] : llvm::enumerate(results_per_device[0])) {
     result_pointers.push_back(std::move(result));
+  }
+
+  if (unbounded_dynamic_meta && unbounded_dynamic_meta->output_transform) {
+    TT_ASSIGN_OR_RETURN(result_pointers,
+                        (*unbounded_dynamic_meta->output_transform)(
+                            std::move(result_pointers), logical_output_shapes));
   }
 
   return result_pointers;

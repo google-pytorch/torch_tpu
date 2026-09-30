@@ -68,10 +68,10 @@ TEST_F(PjrtExecuteTest,
        Execute_WithDynamicExecutionMetadata_RoutesInputsOutputsAndMetadata) {
   // Build a 4-parameter XLA computation with 1 logical input (N = 1) and
   // 1 logical output (M = 1):
-  //   param 0: f32[2, 3] (logical input 0, logical_idx = 0)
-  //   param 1: f32[2, 3] (pre-allocated donated output 0, logical_idx = 1)
-  //   param 2: s32[2]    (disjoint metadata for logical_idx = 0 -> input 0)
-  //   param 3: s32[2]    (disjoint metadata for logical_idx = 1 -> output 0)
+  //   param 0: f32[2, 3] (logical input 0)
+  //   param 1: f32[2, 3] (pre-allocated donated output 0)
+  //   param 2: s32[2]    (disjoint metadata for param 0)
+  //   param 3: s32[2]    (disjoint metadata for param 1)
   // Computation returns:
   //   param 0 + dim0(param 2) + dim1(param 3)
   xla::XlaBuilder builder("dynamic_metadata_test");
@@ -107,19 +107,19 @@ TEST_F(PjrtExecuteTest,
 
   UnboundedDynamicExecutionMetadata dynamic_meta;
   dynamic_meta.logical_input_to_pjrt_param = {0};
-  dynamic_meta.donated_output_params = {
+  dynamic_meta.donated_output_params.push_back(
       UnboundedDynamicExecutionMetadata::DonatedOutputParam{
           .logical_output_idx = 0,
           .pjrt_param_idx = 1,
-      }};
+      });
   dynamic_meta.metadata_params = {
       UnboundedDynamicExecutionMetadata::MetadataParamBinding{
-          .logical_idx = 0,  // logical input 0
-          .pjrt_param_idx = 2,
+          .buffer_pjrt_idx = 0,  // logical input 0
+          .shape_pjrt_idx = 2,
       },
       UnboundedDynamicExecutionMetadata::MetadataParamBinding{
-          .logical_idx = 1,  // logical output 0 (num_inputs + 0)
-          .pjrt_param_idx = 3,
+          .buffer_pjrt_idx = 1,  // donated output 0
+          .shape_pjrt_idx = 3,
       }};
   dynamic_meta.pjrt_param_shapes = {
       data_shape,

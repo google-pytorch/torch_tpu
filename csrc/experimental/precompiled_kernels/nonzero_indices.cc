@@ -17,7 +17,19 @@
 #include "csrc/experimental/precompiled_kernels/nonzero_indices.h"
 
 #include <cstdint>
+#include <memory>
+#include <utility>
+#include <vector>
 
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "absl/types/span.h"
+#include "csrc/common/compilation.h"
+#include "csrc/common/dimension_types.h"
+#include "csrc/common/error_utils.h"
+#include "csrc/common/shape.h"
+#include "csrc/experimental/precompiled_kernels/mosaic_custom_call.h"
+#include "csrc/internal/mosaic/op_builders.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -36,7 +48,16 @@
 #include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/ValueRange.h"
+#include "xla/client/executable_build_options.h"
+#include "xla/hlo/builder/xla_computation.h"
+#include "xla/hlo/ir/hlo_module.h"
+#include "xla/layout.h"
 #include "xla/mosaic/dialect/tpu/tpu_dialect.h"
+#include "xla/pjrt/pjrt_client.h"
+#include "xla/pjrt/pjrt_executable.h"
+#include "xla/shape.h"
+#include "xla/shape_util.h"
+#include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
 namespace {
@@ -293,11 +314,111 @@ class NonzeroBuilder {
   mlir::Value input_, output_, tile_, stage_[2], count_, sem_, position_;
 };
 
-}  // namespace
-
 mlir::OwningOpRef<mlir::ModuleOp> BuildNonzeroIndices(
     mlir::MLIRContext& context) {
   return NonzeroBuilder(context).Build();
+}
+
+// Returns a rank-2 unbounded-dynamic shape with a row-major tiled layout.
+xla::Shape MakeUnbounded(const xla::PrimitiveType type, const xla::Tile& tile) {
+  xla::Shape shape = xla::ShapeUtil::MakeShape(
+      type, {xla::Shape::kUnboundedSize, xla::Shape::kUnboundedSize},
+      {true, true});
+  *shape.mutable_layout() = xla::Layout({1, 0}, {tile});
+  return shape;
+}
+
+// Maps the logical S64[K,2] destination onto the S32[R,128] view the Mosaic
+// kernel was compiled against; see the buffer contract in the header. Both
+// occupy 2048 * ceil(K/128) bytes.
+absl::StatusOr<xla::Shape> DestinationPhysicalShape(const Shape& logical,
+                                                    const xla::Layout& layout) {
+  const int64_t rows = 4 * ((logical.dimensions()[0] + 127) / 128);
+  xla::Shape shape = xla::ShapeUtil::MakeShape(xla::S32, {rows, 128});
+  *shape.mutable_layout() = layout;
+  return shape;
+}
+
+// Bitcasts the kernel's only result, the S32[R,128] destination, back to the
+// logical S64[K,2]{0,1:T(2,128)} output; see the buffer contract in the header.
+absl::StatusOr<std::vector<std::unique_ptr<xla::PjRtBuffer>>>
+BitcastToLogicalIndices(std::vector<std::unique_ptr<xla::PjRtBuffer>> results,
+                        const absl::Span<const Shape> logical_output_shapes) {
+  const Shape& logical = logical_output_shapes[0];
+  // The kernel's documented destination layout; see the buffer contract in
+  // the header. K > 2 keeps XLA's default S64[K,2] layout at {0,1:T(2,128)}.
+  const xla::Layout layout({0, 1}, {xla::Tile({2, 128})});
+  const Dimensions dims = logical.dimensions();
+  TT_ASSIGN_OR_RETURN(
+      results[0],
+      AdaptXlaError(
+          results[0]->Bitcast(xla::S64, dims, &layout),
+          /*context=*/"failed to bitcast the nonzero indices to S64"));
+  return results;
+}
+
+}  // namespace
+
+absl::StatusOr<SharedLoadedExecutableWithMetadata>
+BuildNonzeroIndicesExecutable(xla::PjRtClient& client) {
+  const xla::Shape input = MakeUnbounded(xla::F32, xla::Tile({8, 128}));
+  const xla::Shape output_view = MakeUnbounded(xla::S32, xla::Tile({1, 128}));
+  xla::Shape dims = xla::ShapeUtil::MakeShape(xla::S32, {2});
+  *dims.mutable_layout() = xla::Layout({0}, {xla::Tile({128})});
+  std::vector<xla::Shape> parameters = {input, output_view, dims, dims};
+
+  const std::unique_ptr<mlir::MLIRContext> context =
+      mlir::torch_tpu::CreateMlirContextWithDialects();
+  mlir::OwningOpRef<mlir::ModuleOp> module = BuildNonzeroIndices(*context);
+  TT_ASSIGN_OR_RETURN(
+      const std::unique_ptr<xla::HloModule> hlo,
+      BuildMosaicCustomCall(*module, parameters, output_view, {2, 3, -1, -1},
+                            /*aliased_parameter=*/1));
+  xla::CompileOptions compile_options;
+  xla::ExecutableBuildOptions& build = compile_options.executable_build_options;
+  build.set_run_backend_only(true);
+  build.set_result_layout(hlo->entry_computation_layout().result_shape());
+  compile_options.argument_layouts = parameters;
+  const xla::XlaComputation computation(hlo->ToProto());
+  TT_ASSIGN_OR_RETURN(
+      std::unique_ptr<xla::PjRtLoadedExecutable> loaded,
+      AdaptXlaError(
+          client.CompileAndLoad(computation, std::move(compile_options)),
+          /*context=*/"failed to compile the nonzero indices kernel"));
+
+  // One logical input, the F32[M,N] payload. The S64[K,2] destination is a
+  // donated output: `Execute` allocates it directly in the S32[R,128] view the
+  // kernel was compiled against, so callers never see the physical view.
+  UnboundedDynamicExecutionMetadata dynamic_meta{
+      .logical_input_to_pjrt_param = {0},
+      .donated_output_params =
+          {
+              UnboundedDynamicExecutionMetadata::DonatedOutputParam{
+                  .logical_output_idx = 0,
+                  .pjrt_param_idx = 1,
+                  .physical_shape_fn = DestinationPhysicalShape,
+              },
+          },
+      .metadata_params =
+          {
+              UnboundedDynamicExecutionMetadata::MetadataParamBinding{
+                  .buffer_pjrt_idx = 0,  // F32[M,N] input -> [M,N]
+                  .shape_pjrt_idx = 2,
+              },
+              UnboundedDynamicExecutionMetadata::MetadataParamBinding{
+                  .buffer_pjrt_idx = 1,  // S32[R,128] destination -> [R,128]
+                  .shape_pjrt_idx = 3,
+              },
+          },
+      .pjrt_param_shapes = std::move(parameters),
+      .output_transform = BitcastToLogicalIndices,
+  };
+
+  TT_ASSIGN_OR_RETURN(SharedLoadedExecutableWithMetadata executable,
+                      LoadedExecutableWithMetadata::MakeShared(
+                          std::move(loaded),
+                          /*argument_indices=*/{}, std::move(dynamic_meta)));
+  return executable;
 }
 
 }  // namespace torch_tpu

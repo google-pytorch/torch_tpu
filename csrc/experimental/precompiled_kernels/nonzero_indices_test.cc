@@ -23,6 +23,7 @@
 #include <iostream>
 #include <map>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -39,12 +40,13 @@
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
 #include "csrc/common/compilation.h"
+#include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/shape.h"
 #include "csrc/common/status_test_utils.h"
-#include "csrc/experimental/precompiled_kernels/kernel_test_utils.h"
-#include "csrc/experimental/precompiled_kernels/mosaic_custom_call.h"
-#include "csrc/internal/mosaic/op_builders.h"
 #include "csrc/ops/nonzero/nonzero.h"
+#include "csrc/pjrt/pjrt_execute.h"
+#include "csrc/pjrt/pjrt_state.h"
 #include "gtest/gtest.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
@@ -52,17 +54,16 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "xla/hlo/builder/xla_computation.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/translate/mhlo_to_hlo/mlir_hlo_to_hlo.h"
 #include "xla/layout.h"
 #include "xla/literal.h"
-#include "xla/literal_util.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
 #include "xla/service/computation_layout.h"
-#include "xla/service/hlo_runner.h"
-#include "xla/service/hlo_runner_interface.h"
 #include "xla/shape.h"
 #include "xla/shape_layout.h"
 #include "xla/shape_util.h"
@@ -122,72 +123,52 @@ xla::Literal ReferenceIndices(const xla::Literal& input) {
 class NonzeroIndicesTest : public testing::Test {
  protected:
   static void SetUpTestSuite() {
-    if (runner_ != nullptr) return;
-    TT_ASSERT_OK_AND_ASSIGN(auto owned_client, CreateKernelTestClient());
-    client_ = owned_client.get();
-    runner_ = new xla::HloRunner(std::move(owned_client));
+    if (client_ != nullptr) return;
 
-    auto make_unbounded = [](xla::PrimitiveType type, xla::Tile tile) {
-      xla::Shape s = xla::ShapeUtil::MakeShape(
-          type, {xla::Shape::kUnboundedSize, xla::Shape::kUnboundedSize},
-          {true, true});
-      *s.mutable_layout() = xla::Layout({1, 0}, {tile});
-      return s;
-    };
-    xla::Shape input = make_unbounded(xla::F32, xla::Tile({8, 128}));
-    xla::Shape output_view = make_unbounded(xla::S32, xla::Tile({1, 128}));
-    xla::Shape dims = xla::ShapeUtil::MakeShape(xla::S32, {2});
-    *dims.mutable_layout() = xla::Layout({0}, {xla::Tile({128})});
-    parameters_ = new std::vector<xla::Shape>{input, output_view, dims, dims};
+    client_ = PjrtBackend::GetInstance().GetClient();
+    ASSERT_NE(client_, nullptr);
+    ASSERT_FALSE(client_->addressable_devices().empty());
+    TT_ASSERT_OK_AND_ASSIGN(
+        memory_space_,
+        client_->addressable_devices()[0]->default_memory_space());
 
     const auto start = absl::Now();
-    auto context = mlir::torch_tpu::CreateMlirContextWithDialects();
-    auto module = BuildNonzeroIndices(*context);
-    TT_ASSERT_OK_AND_ASSIGN(
-        auto hlo,
-        BuildMosaicCustomCall(*module, *parameters_, output_view,
-                              {2, 3, -1, -1}, /*aliased_parameter=*/1));
-    TT_ASSERT_OK_AND_ASSIGN(
-        auto exec,
-        runner_->CreateExecutable(std::move(hlo), /*run_hlo_passes=*/false));
-    executable_ = exec.release();
+    TT_ASSERT_OK_AND_ASSIGN(auto executable,
+                            BuildNonzeroIndicesExecutable(*client_));
+    executable_ = new SharedLoadedExecutableWithMetadata(std::move(executable));
     compile_ms_ = absl::ToDoubleMilliseconds(absl::Now() - start);
   }
 
-  static absl::StatusOr<std::unique_ptr<xla::PjRtBuffer>> AllocateIndexOutput(
-      const xla::Shape& output) {
+  // Returns the single logical input, the F32[M,N] payload. The S64[K,2]
+  // destination and the S32[2] runtime shape metadata operands are synthesized
+  // by torch_tpu::Execute from the metadata bindings, not supplied here.
+  static absl::StatusOr<std::vector<std::unique_ptr<xla::PjRtBuffer>>>
+  PrepareOperands(const xla::Literal& input) {
+    const xla::Layout input_layout({1, 0}, {xla::Tile({8, 128})});
     TT_ASSIGN_OR_RETURN(
-        auto* memory,
-        client_->addressable_devices()[0]->default_memory_space());
-    TT_ASSIGN_OR_RETURN(auto buffer,
-                        client_->CreateUninitializedBuffer(output, memory));
-    TT_ASSIGN_OR_RETURN(auto bytes, buffer->GetOnDeviceSizeInBytes());
-    return buffer->Bitcast(
-        xla::S32, {static_cast<int64_t>(bytes / (128 * sizeof(int32_t))), 128},
-        &(*parameters_)[1].layout());
+        auto input_buffer,
+        client_->BufferFromHostBuffer(
+            input.untyped_data(), xla::F32, input.shape().dimensions(),
+            /*byte_strides=*/std::nullopt,
+            xla::PjRtClient::HostBufferSemantics::kImmutableOnlyDuringCall,
+            /*on_done_with_host_buffer=*/nullptr, memory_space_,
+            &input_layout));
+    TT_RETURN_IF_ERROR(input_buffer->GetReadyFuture().Await());
+    std::vector<std::unique_ptr<xla::PjRtBuffer>> operands;
+    operands.push_back(std::move(input_buffer));
+    return operands;
   }
 
-  static absl::StatusOr<std::vector<std::unique_ptr<xla::PjRtBuffer>>>
-  PrepareOperands(const xla::Literal& input, const xla::Shape& output) {
-    TT_ASSIGN_OR_RETURN(auto destination, AllocateIndexOutput(output));
-    auto input_dims = xla::LiteralUtil::CreateR1<int32_t>(
-        {static_cast<int32_t>(input.shape().dimensions(0)),
-         static_cast<int32_t>(input.shape().dimensions(1))});
-    auto output_dims = xla::LiteralUtil::CreateR1<int32_t>(
-        {static_cast<int32_t>(destination->on_device_shape().dimensions(0)),
-         128});
-    auto concrete = input.shape();
-    *concrete.mutable_layout() = (*parameters_)[0].layout();
-    TT_ASSIGN_OR_RETURN(auto buffers, runner_->TransferLiteralsToDefaultDevice(
-                                          {xla::ShapeLayout(concrete),
-                                           xla::ShapeLayout((*parameters_)[2]),
-                                           xla::ShapeLayout((*parameters_)[3])},
-                                          {&input, &input_dims, &output_dims}));
-    for (const auto& buffer : buffers) {
-      TT_RETURN_IF_ERROR(buffer->GetReadyFuture().Await());
+  static absl::StatusOr<PjRtBufferPointers> ExecuteKernel(
+      const std::vector<std::unique_ptr<xla::PjRtBuffer>>& operands,
+      const Shape& logical_output_shape) {
+    std::vector<xla::PjRtBuffer*> argument_ptrs;
+    argument_ptrs.reserve(operands.size());
+    for (const std::unique_ptr<xla::PjRtBuffer>& operand : operands) {
+      argument_ptrs.push_back(operand.get());
     }
-    buffers.insert(buffers.begin() + 1, std::move(destination));
-    return buffers;
+    return Execute(*executable_, std::move(argument_ptrs),
+                   {logical_output_shape});
   }
 
   void CheckMosaicKernelCorrectness(int64_t rows, int64_t cols, int64_t k) {
@@ -195,23 +176,19 @@ class NonzeroIndicesTest : public testing::Test {
     ASSERT_GT(k, 2);
     auto input = MakeInput(rows, cols, k);
     auto expected = ReferenceIndices(input);
-    auto output_shape = expected.shape();
-    TT_ASSERT_OK_AND_ASSIGN(auto layout,
+    TT_ASSERT_OK_AND_ASSIGN(const xla::Layout layout,
                             client_->GetDefaultLayout(xla::S64, {k, 2}));
-    // XLA default layout for S64[K,2] is {0,1:T(2,128)} only when K > 2
-    // (for K <= 2 it is {1,0:T(2,128)}, which the kernel does not support).
+    // The layout the kernel bitcasts its result to. XLA's default layout for
+    // S64[K,2] is {0,1:T(2,128)} only when K > 2 (for K <= 2 it is
+    // {1,0:T(2,128)}, which the kernel does not support).
     EXPECT_EQ(layout, xla::Layout({0, 1}, {xla::Tile({2, 128})}));
-    *output_shape.mutable_layout() = layout;
-    TT_ASSERT_OK_AND_ASSIGN(auto buffers, PrepareOperands(input, output_shape));
+    TT_ASSERT_OK_AND_ASSIGN(auto buffers, PrepareOperands(input));
 
-    xla::ExecuteOptions options;
-    options.strict_shape_checking = false;
-    TT_ASSERT_OK_AND_ASSIGN(auto outputs, runner_->ExecuteWithDeviceBuffers(
-                                              executable_, buffers, &options));
-    TT_ASSERT_OK_AND_ASSIGN(
-        auto native,
-        outputs[0]->Bitcast(xla::S64, {k, 2}, &output_shape.layout()));
-    TT_ASSERT_OK_AND_ASSIGN(auto actual, native->ToLiteral().Await());
+    const Shape logical_output({k, 2}, mlir::ElementType::I64);
+    TT_ASSERT_OK_AND_ASSIGN(const auto outputs,
+                            ExecuteKernel(buffers, logical_output));
+    ASSERT_EQ(outputs.size(), 1);
+    TT_ASSERT_OK_AND_ASSIGN(auto actual, outputs[0]->ToLiteral().Await());
     EXPECT_EQ(*actual, expected);
     TT_ASSERT_OK_AND_ASSIGN(auto unchanged, buffers[0]->ToLiteral().Await());
     if (input.element_count()) {
@@ -222,9 +199,8 @@ class NonzeroIndicesTest : public testing::Test {
   }
 
   static inline xla::PjRtClient* client_ = nullptr;
-  static inline xla::HloRunner* runner_ = nullptr;
-  static inline xla::OpaqueExecutable* executable_ = nullptr;
-  static inline std::vector<xla::Shape>* parameters_ = nullptr;
+  static inline xla::PjRtMemorySpace* memory_space_ = nullptr;
+  static inline SharedLoadedExecutableWithMetadata* executable_ = nullptr;
   static inline double compile_ms_ = 0.0;
 };
 
@@ -272,26 +248,37 @@ absl::StatusOr<std::unique_ptr<xla::HloModule>> BuildReference(
 // the reference module must take. Kept out of CompileShlo so that the measured
 // compile time excludes host-to-device transfers.
 absl::StatusOr<xla::Shape> TransferShloInput(
-    xla::HloRunner& runner, xla::PjRtClient& client, const xla::Literal& input,
+    xla::PjRtClient& client, xla::PjRtMemorySpace* memory_space,
+    const xla::Literal& input,
     std::vector<std::unique_ptr<xla::PjRtBuffer>>& operands) {
   auto concrete = input.shape();
   TT_ASSIGN_OR_RETURN(*concrete.mutable_layout(),
                       client.GetDefaultLayout(xla::F32, concrete.dimensions()));
-  TT_ASSIGN_OR_RETURN(operands, runner.TransferLiteralsToDefaultDevice(
-                                    {xla::ShapeLayout(concrete)}, {&input}));
-  for (const auto& op : operands) {
-    TT_RETURN_IF_ERROR(op->GetReadyFuture().Await());
-  }
+  TT_ASSIGN_OR_RETURN(
+      auto buffer,
+      client.BufferFromHostBuffer(
+          input.untyped_data(), xla::F32, concrete.dimensions(),
+          /*byte_strides=*/std::nullopt,
+          xla::PjRtClient::HostBufferSemantics::kImmutableOnlyDuringCall,
+          /*on_done_with_host_buffer=*/nullptr, memory_space,
+          &concrete.layout()));
+  TT_RETURN_IF_ERROR(buffer->GetReadyFuture().Await());
+  operands.clear();
+  operands.push_back(std::move(buffer));
   return concrete;
 }
 
 // Module building plus executable compilation, the counterpart of what
 // SetUpTestSuite times for Mosaic.
-absl::StatusOr<std::unique_ptr<xla::OpaqueExecutable>> CompileShlo(
-    xla::HloRunner& runner, const xla::Shape& input,
+absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>> CompileShlo(
+    xla::PjRtClient& client, const xla::Shape& input,
     const xla::Shape& output_shape) {
   TT_ASSIGN_OR_RETURN(auto hlo, BuildReference(input, output_shape));
-  return runner.CreateExecutable(std::move(hlo), /*run_hlo_passes=*/true);
+  xla::CompileOptions options;
+  options.argument_layouts = std::vector<xla::Shape>{input};
+  options.executable_build_options.set_result_layout(output_shape);
+  const xla::XlaComputation computation(hlo->ToProto());
+  return client.CompileAndLoad(computation, std::move(options));
 }
 
 struct BenchmarkCase {
@@ -387,17 +374,13 @@ TEST_F(NonzeroIndicesTest, Benchmark) {
     auto output_shape = xla::ShapeUtil::MakeShape(xla::S64, {s.k, 2});
     TT_ASSERT_OK_AND_ASSIGN(*output_shape.mutable_layout(),
                             client_->GetDefaultLayout(xla::S64, {s.k, 2}));
-    TT_ASSERT_OK_AND_ASSIGN(auto operands,
-                            PrepareOperands(input, output_shape));
+    TT_ASSERT_OK_AND_ASSIGN(const auto operands, PrepareOperands(input));
 
-    xla::ExecuteOptions options;
-    options.strict_shape_checking = false;
-
+    const Shape logical_output({s.k, 2}, mlir::ElementType::I64);
     TT_ASSERT_OK_AND_ASSIGN(
         const double mosaic_us, time_us([&]() -> absl::Status {
-          TT_ASSIGN_OR_RETURN(operands[1], AllocateIndexOutput(output_shape));
-          TT_ASSIGN_OR_RETURN(auto res, runner_->ExecuteWithDeviceBuffers(
-                                            executable_, operands, &options));
+          TT_ASSIGN_OR_RETURN(auto res,
+                              ExecuteKernel(operands, logical_output));
           return res[0]->GetReadyFuture().Await();
         }));
 
@@ -410,19 +393,21 @@ TEST_F(NonzeroIndicesTest, Benchmark) {
       std::vector<std::unique_ptr<xla::PjRtBuffer>> xla_ops;
       TT_ASSERT_OK_AND_ASSIGN(
           const xla::Shape concrete,
-          TransferShloInput(*runner_, *client_, input, xla_ops));
+          TransferShloInput(*client_, memory_space_, input, xla_ops));
       const auto compile_start = absl::Now();
       TT_ASSERT_OK_AND_ASSIGN(auto xla_exec,
-                              CompileShlo(*runner_, concrete, output_shape));
+                              CompileShlo(*client_, concrete, output_shape));
       xla_compile_ms = absl::ToDoubleMilliseconds(absl::Now() - compile_start);
 
-      TT_ASSERT_OK_AND_ASSIGN(xla_exec_us, time_us([&]() -> absl::Status {
-                                TT_ASSIGN_OR_RETURN(
-                                    auto res, runner_->ExecuteWithDeviceBuffers(
-                                                  xla_exec.get(), xla_ops,
-                                                  /*execute_options=*/nullptr));
-                                return res[0]->GetReadyFuture().Await();
-                              }));
+      const xla::ExecuteOptions xla_options;
+      TT_ASSERT_OK_AND_ASSIGN(
+          xla_exec_us, time_us([&]() -> absl::Status {
+            TT_ASSIGN_OR_RETURN(
+                auto res, xla_exec->ExecuteSharded(
+                              {xla_ops[0].get()},
+                              client_->addressable_devices()[0], xla_options));
+            return res[0]->GetReadyFuture().Await();
+          }));
     }
 
     updated_csv << absl::StreamFormat("%d,%d,%d,%.1f,%.1f\n", s.rows, s.cols,

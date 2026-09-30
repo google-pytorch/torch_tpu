@@ -17,34 +17,33 @@
 #ifndef TORCH_TPU_CSRC_EXPERIMENTAL_PRECOMPILED_KERNELS_NONZERO_INDICES_H_
 #define TORCH_TPU_CSRC_EXPERIMENTAL_PRECOMPILED_KERNELS_NONZERO_INDICES_H_
 
-#include "mlir/IR/BuiltinOps.h"
-#include "mlir/IR/MLIRContext.h"
-#include "mlir/IR/OwningOpRef.h"
+#include "absl/status/statusor.h"
+#include "csrc/common/compilation.h"
+#include "xla/pjrt/pjrt_client.h"
 
 namespace torch_tpu {
 
-// Builds indices for F32 input[M,N], returning logical S64[K,2] coordinates
-// ordered by row, then column. The caller must know the exact K.
-// The predicate excludes only +0.0 and -0.0, matching torch.nonzero.
+// Builds and compiles the Mosaic nonzero kernel. Run through `Execute` with the
+// F32[M,N] input and the logical output shape S64[K,2], the executable returns
+// the (row, column) coordinates of the input's nonzero elements, ordered by
+// row, then column. The predicate excludes only +0.0 and -0.0, matching
+// torch.nonzero.
 //
 // Buffer contract (all payloads have no dynamic-metadata prefix):
-// - Input: F32[M,N]{1,0:T(8,128)}.
-// - Destination: S32[R,128]{1,0:T(1,128)}, where R = 4 * ceil(K/128)
-//   (rows [0, R/2) hold interleaved row/col low words; [R/2, R) hold zeroed
-//   high words).
-//   Note: Because Mosaic does not support S64 memrefs, the caller bitcasts the
-//   S64[K,2]{0,1:T(2,128)} PJRT buffer to/from this S32 view before and after
-//   execution. NB: requires K > 2 because XLA default layout for S64[K,2]
-//   switches to {1,0:T(2,128)} when K <= 2.
-// - Metadata: two S32[2]{0:T(128)} operands supplying [M,N] and [R,128]. The
-//   HLO result must alias the destination; input and metadata are not donated.
+// - Input: F32[M,N]{1,0:T(8,128)}, the only buffer the caller supplies.
+// - Output: S64[K,2]{0,1:T(2,128)}. `Execute` allocates the destination itself
+//   as the S32[R,128]{1,0:T(1,128)} view the Mosaic kernel was compiled against
+//   (R = 4 * ceil(K/128); rows [0, R/2) hold interleaved row/col low words,
+//   [R/2, R) hold zeroed high words), donates it, and bitcasts the result back
+//   to S64[K,2]. The detour exists only because Mosaic does not support S64
+//   memrefs; callers never see it.
+//   NB: requires K > 2 because the XLA default layout for S64[K,2] switches to
+//   {1,0:T(2,128)} when K <= 2.
 //
 // Caller-checked arithmetic bounds: 1 <= M <= INT32_MAX,
 // 1 <= N <= INT32_MAX - 127, and 3 <= K <= min(M*N, INT32_MAX).
-
-// Create the context with mlir::torch_tpu::CreateMlirContextWithDialects().
-mlir::OwningOpRef<mlir::ModuleOp> BuildNonzeroIndices(
-    mlir::MLIRContext& context);
+absl::StatusOr<SharedLoadedExecutableWithMetadata>
+BuildNonzeroIndicesExecutable(xla::PjRtClient& client);
 
 }  // namespace torch_tpu
 
