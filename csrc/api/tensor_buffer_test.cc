@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "ATen/core/TensorBody.h"
+#include "ATen/ops/zeros.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
@@ -55,9 +56,8 @@ namespace {
 class TensorBufferTest : public testing::Test {
  protected:
   static void SetUpTestSuite() {
-    const std::string device_type = "tpu";
     PjrtBackend::GetInstance().SetPjRtInitializationOptions(
-        {.device_type = device_type});
+        {.device_type = "tpu"});
     ASSERT_EQ(AddTpuHooks(), absl::OkStatus());
     RegisterTpuAllocator();
     CompilationCache::GetInstance().SetOptions({});
@@ -88,14 +88,12 @@ class TensorBufferTest : public testing::Test {
 
 TEST_F(TensorBufferTest, UndefinedTensorRejection) {
   at::Tensor undefined_tensor;  // UNINITIALIZED_TENSOR_OK
-  auto handle_or = GetBaseTensorBuffer(undefined_tensor);
-  EXPECT_FALSE(handle_or.ok());
+  EXPECT_FALSE(GetBaseTensorBuffer(undefined_tensor).ok());
 }
 
 TEST_F(TensorBufferTest, CpuTensorRejection) {
   at::Tensor cpu_tensor = at::zeros({2, 3}, at::kFloat);
-  auto handle_or = GetBaseTensorBuffer(cpu_tensor);
-  EXPECT_FALSE(handle_or.ok());
+  EXPECT_FALSE(GetBaseTensorBuffer(cpu_tensor).ok());
 }
 
 TEST_F(TensorBufferTest, TpuTensorBufferExtraction) {
@@ -238,14 +236,12 @@ TEST_F(TensorBufferTest, DeletedBufferRejection) {
           /*device_layout=*/nullptr));
 
   pjrt_buf->Delete();
-  auto status_or = MakeTensorBuffer(std::move(pjrt_buf));
-  EXPECT_FALSE(status_or.ok());
+  EXPECT_FALSE(MakeTensorBuffer(std::move(pjrt_buf)).ok());
 }
 
 TEST_F(TensorBufferTest, NullBufferRejection) {
   std::unique_ptr<xla::PjRtBuffer> null_buf;
-  auto status_or = MakeTensorBuffer(std::move(null_buf));
-  EXPECT_FALSE(status_or.ok());
+  EXPECT_FALSE(MakeTensorBuffer(std::move(null_buf)).ok());
 }
 
 }  // namespace
