@@ -15226,55 +15226,52 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
       ).cpu()
       self.assertFalse(torch.isnan(result).any())
 
-  def test_scaled_dot_product_efficient_attention_compute_log_sumexp(self):
-    """Tests torch.ops.aten._scaled_dot_product_efficient_attention with compute_log_sumexp."""
-    batch_size, num_heads, seq_len, head_dim = 2, 4, 16, 32
-    device = torch.device("tpu")
-    q = torch.randn(
-        batch_size,
-        num_heads,
-        seq_len,
-        head_dim,
-        dtype=torch.bfloat16,
-        device=device,
-    )
-    k = torch.randn(
-        batch_size,
-        num_heads,
-        seq_len,
-        head_dim,
-        dtype=torch.bfloat16,
-        device=device,
-    )
-    v = torch.randn(
-        batch_size,
-        num_heads,
-        seq_len,
-        head_dim,
-        dtype=torch.bfloat16,
-        device=device,
-    )
+  @parameterized.product(
+      backend=[
+          torch.nn.attention.SDPBackend.FLASH_ATTENTION,
+          torch.nn.attention.SDPBackend.OVERRIDEABLE,
+      ],
+      contiguous=[True, False],
+  )
+  def test_sdpa_view(
+      self, backend: torch.nn.attention.SDPBackend, contiguous: bool
+  ):
+    """Test that SDPA with view works.
 
-    # Test with compute_log_sumexp=True
-    out, lse, _, _ = torch.ops.aten._scaled_dot_product_efficient_attention(
-        q, k, v, None, True, 0.0, False
-    )
-    self.assertEqual(out.shape, q.shape)
-    self.assertEqual(lse.shape, (batch_size, num_heads, seq_len))
-    self.assertEqual(lse.dtype, torch.float32)
-    self.assertFalse(torch.isnan(out).any())
-    self.assertFalse(torch.isnan(lse).any())
+    This is not trying to check numerics, just that it actually runs.
+    """
+    dh = 128
+    h_q = 32
+    h_kv = 2
 
-    # Test with compute_log_sumexp=False
-    out_no_lse, lse_empty, _, _ = (
-        torch.ops.aten._scaled_dot_product_efficient_attention(
-            q, k, v, None, False, 0.0, False
+    def run_sdpa(h, wq, wkv, wo):
+      bsz, n, dm = h.shape
+
+      def maybe_contiguous(t):
+        return t.contiguous() if contiguous else t
+
+      q = maybe_contiguous((h @ wq).view(bsz, n, h_q, dh).transpose(1, 2))
+      k = maybe_contiguous((h @ wkv).view(bsz, n, h_kv, dh).transpose(1, 2))
+      v = maybe_contiguous((h @ wkv).view(bsz, n, h_kv, dh).transpose(1, 2))
+      with torch.nn.attention.sdpa_kernel(backend):
+        attn_out = torch.nn.functional.scaled_dot_product_attention(
+            q, k, v, is_causal=True, enable_gqa=True
         )
-    )
-    self.assertEqual(out_no_lse.shape, q.shape)
-    self.assertEqual(lse_empty.shape, (batch_size, num_heads, seq_len))
-    self.assertFalse(torch.isnan(out_no_lse).any())
-    utils.assert_close(out, out_no_lse, atol=1e-2, rtol=1e-2)
+      attn_out = maybe_contiguous(attn_out.transpose(1, 2))
+      attn_out = attn_out.view(bsz, n, h_q * dh)
+      out = attn_out @ wo
+
+      return out
+
+    h = torch.randn(2, 128, 256, device="tpu", requires_grad=True)
+    wq = torch.randn(256, h_q * dh, device="tpu", requires_grad=True)
+    wkv = torch.randn(256, h_kv * dh, device="tpu", requires_grad=True)
+    wo = torch.randn(h_q * dh, 256, device="tpu", requires_grad=True)
+
+    compiled_sdpa = torch.compile(run_sdpa, dynamic=False, backend="tpu")
+    out = compiled_sdpa(h, wq, wkv, wo)
+    out.backward(gradient=torch.randn_like(out))
+    torch.accelerator.synchronize()
 
   def test_scaled_dot_product_attention_dropout(self):
     """Verifies FlashAttention dropout rate and 1/(1-p) scaling."""

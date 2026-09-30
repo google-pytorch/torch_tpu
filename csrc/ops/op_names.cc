@@ -1381,18 +1381,14 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "rsub.Tensor";
     case OpName::kScalarTensor:
       return "scalar_tensor";
-    case OpName::kScaledDotProductEfficientAttention:
-      return "_scaled_dot_product_efficient_attention";
-    case OpName::kScaledDotProductEfficientAttentionBackward:
-      return "_scaled_dot_product_efficient_attention_backward";
     case OpName::kScaledDotProductFlashAttention:
-      // We use the CPU name as the pytorch logic calls the CPU version for
-      // non-CUDA devices, see
+      // We use the cudnn name as the pytorch logic calls the CPU version for
+      // flash_attention rather than our implementation on non-CUDA devices, see
       // torch/aten/src/ATen/native/transformers/attention.cpp.
       // TODO(willfroom): Fix this upstream in pytorch.
-      return "_scaled_dot_product_flash_attention_for_cpu";
+      return "_scaled_dot_product_cudnn_attention";
     case OpName::kScaledDotProductFlashAttentionBackward:
-      return "_scaled_dot_product_flash_attention_for_cpu_backward";
+      return "_scaled_dot_product_cudnn_attention_backward";
     case OpName::kScaledDotProductFusedAttentionOverrideable:
       return "_scaled_dot_product_fused_attention_overrideable";
     case OpName::kScaledDotProductFusedAttentionOverrideableBackward:

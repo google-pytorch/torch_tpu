@@ -8175,40 +8175,6 @@ Device-side assertion tracking was not enabled by user.""",
       ):
         torch.nn.functional.scaled_dot_product_attention(query, key, value)
 
-  def test_scaled_dot_product_attention_backward_unsupported_dtype(self):
-    grad_output = torch.randn(
-        1, 1, 512, 128, device=et.device(), dtype=torch.float64
-    )
-    query = torch.randn(1, 1, 512, 128, device=et.device(), dtype=torch.float64)
-    key = torch.randn(1, 1, 512, 128, device=et.device(), dtype=torch.float64)
-    value = torch.randn(1, 1, 512, 128, device=et.device(), dtype=torch.float64)
-    out = torch.randn(1, 1, 512, 128, device=et.device(), dtype=torch.float64)
-    logsumexp = torch.randn(1, 1, 512, device=et.device(), dtype=torch.float32)
-    philox_seed = torch.zeros(1, device=et.device(), dtype=torch.int64)
-    philox_offset = torch.zeros(1, device=et.device(), dtype=torch.int64)
-
-    with et.assert_raises_message(
-        NotImplementedError if et.is_on_tpu() else RuntimeError,
-        tpu="""scaled_dot_product_efficient_attention_backward(): unsupported dtype for sdpa custom kernel""",
-        gpu="""Only fp32, half & bf16 supported at the moment""",
-        message_reviewed_by="gunhyun",
-    ):
-      torch.ops.aten._scaled_dot_product_efficient_attention_backward(
-          grad_output,
-          query,
-          key,
-          value,
-          None,
-          out,
-          logsumexp,
-          philox_seed,
-          philox_offset,
-          0.0,
-          [True, True, True, False],
-          False,
-          scale=None,
-      )
-
   @parameterized.named_parameters(
       dict(
           testcase_name="float32",

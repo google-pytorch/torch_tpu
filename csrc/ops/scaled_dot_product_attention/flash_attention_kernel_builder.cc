@@ -472,6 +472,8 @@ CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
 
   Dimensions out_dims(query.sizes().begin(), query.sizes().end());
   out_dims[rank - 1] = value.size(rank - 1);
+  Dimensions lse_dims(query.sizes().begin(), query.sizes().end() - 1);
+  lse_dims.push_back(1);
 
   TT_ASSIGN_OR_RETURN(auto param_keys,
                       *OpParamCacheKeysBuilder()
@@ -483,8 +485,8 @@ CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
   const mlir::stablehlo::Precision precision = GetAndAddPrecisionTo(param_keys);
 
   auto op_builder =
-      [rank, out_dims, is_causal, scale, dropout_p, return_lse, has_attn_bias,
-       has_dropout, precision](
+      [rank, out_dims, lse_dims, is_causal, scale, dropout_p, return_lse,
+       has_attn_bias, has_dropout, precision](
           absl::Span<mlir::MlirOp> inputs,
           mlir::MlirBuilder& builder) -> absl::StatusOr<DynamicMlirOpResults> {
     size_t idx = 0;
@@ -556,9 +558,6 @@ CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
     }
 
     mlir::SmallVector<mlir::Type, 2> result_types = {out_type};
-    auto query_type = GetTensorTypeOrDie(query_mlir);
-    Dimensions lse_dims(query_type.getShape().begin(),
-                        query_type.getShape().end() - 1);
     Dimensions lse_dims_4d = {config.batch_size, config.num_heads, 1,
                               config.padded_q_sequence_length};
 
@@ -590,7 +589,11 @@ CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
       mlir::MlirOp lse_padded(builder, custom_call.getResult(1));
       mlir::MlirOp lse_sliced =
           SliceSequenceDim(lse_padded, 3, config.q_sequence_length);
-      results.push_back(unflatten_batch_dims(lse_sliced, lse_dims));
+      // The cuddnn implementation requires that the LSE is [B, N, S, 1]
+      // TODO(willfroom): fold this into the kernel.
+      mlir::MlirOp lse_transposed =
+          mlir::stablehlo::Transpose(lse_sliced, {0, 1, 3, 2});
+      results.push_back(unflatten_batch_dims(lse_transposed, lse_dims));
     }
 
     if (has_dropout) {
@@ -607,7 +610,6 @@ CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
     dispatch_inputs.push_back(*attn_bias);
   }
 
-  Dimensions lse_dims(query.sizes().begin(), query.sizes().end() - 1);
   const Dimensions seed_dims = {1};
   std::vector<mlir::ElementType> out_dtypes = {out_dtype};
   std::vector<absl::Span<const int64_t>> out_dims_list = {out_dims};
@@ -774,9 +776,12 @@ CreateFlashAttentionBackwardKernel(
     mlir::MlirOp value_batch =
         flatten_batch_dims(value_mlir, config.batch_size, rank - 3);
 
-    // Reshape logsumexp to 4D [B_flat, N, 1, S]
+    // Reshape logsumexp to 4D [B_flat, N, S, 1]
     mlir::MlirOp logsumexp_4d =
-        mlir::stablehlo::Reshape(logsumexp_mlir, aux_dims_4d);
+        flatten_batch_dims(logsumexp_mlir, config.batch_size, rank - 3);
+    // TODO(willfroom): fold this into the kernel.
+    mlir::MlirOp logsumexp_transposed =
+        mlir::stablehlo::Transpose(logsumexp_4d, {0, 1, 3, 2});
 
     query_batch =
         PadSequenceDim(query_batch, 2, config.padded_q_sequence_length);
@@ -785,8 +790,8 @@ CreateFlashAttentionBackwardKernel(
     key_batch = PadSequenceDim(key_batch, 2, config.padded_kv_sequence_length);
     value_batch =
         PadSequenceDim(value_batch, 2, config.padded_kv_sequence_length);
-    logsumexp_4d =
-        PadSequenceDim(logsumexp_4d, 3, config.padded_q_sequence_length);
+    logsumexp_transposed = PadSequenceDim(logsumexp_transposed, 3,
+                                          config.padded_q_sequence_length);
     di_4d = PadSequenceDim(di_4d, 3, config.padded_q_sequence_length);
 
     if (mask_mlir.isValid()) {
@@ -805,10 +810,10 @@ CreateFlashAttentionBackwardKernel(
     if (seed_4xi32_val.has_value()) {
       dkv_inputs.push_back(*seed_4xi32_val);
     }
-    dkv_inputs.insert(
-        dkv_inputs.end(),
-        {query_batch.getValue(), key_batch.getValue(), value_batch.getValue(),
-         grad_out_batch.getValue(), logsumexp_4d.getValue(), di_4d.getValue()});
+    dkv_inputs.insert(dkv_inputs.end(),
+                      {query_batch.getValue(), key_batch.getValue(),
+                       value_batch.getValue(), grad_out_batch.getValue(),
+                       logsumexp_transposed.getValue(), di_4d.getValue()});
 
     if (mask_mlir.isValid()) {
       dkv_inputs.push_back(mask_mlir.getValue());
@@ -836,10 +841,10 @@ CreateFlashAttentionBackwardKernel(
     if (seed_4xi32_val.has_value()) {
       dq_inputs.push_back(*seed_4xi32_val);
     }
-    dq_inputs.insert(
-        dq_inputs.end(),
-        {query_batch.getValue(), key_batch.getValue(), value_batch.getValue(),
-         grad_out_batch.getValue(), logsumexp_4d.getValue(), di_4d.getValue()});
+    dq_inputs.insert(dq_inputs.end(),
+                     {query_batch.getValue(), key_batch.getValue(),
+                      value_batch.getValue(), grad_out_batch.getValue(),
+                      logsumexp_transposed.getValue(), di_4d.getValue()});
 
     if (mask_mlir.isValid()) {
       dq_inputs.push_back(mask_mlir.getValue());
@@ -904,10 +909,12 @@ CreateFlashAttentionBackwardKernel(
 
   TT_ASSIGN_OR_RETURN(
       at::Tensor strided_grad_query,
-      ContiguousToView(results[0], query.strides(), query.storage_offset()));
+      ContiguousToView(results[0], DenseStrides(query.strides(), query.sizes()),
+                       0));
   TT_ASSIGN_OR_RETURN(
       at::Tensor strided_grad_key,
-      ContiguousToView(results[1], key.strides(), key.storage_offset()));
+      ContiguousToView(results[1], DenseStrides(key.strides(), key.sizes()),
+                       0));
 
   // It's okay if the materialization happens during the third ContiguousToView;
   // all other necessary tensors have already been created, so nothing can be
@@ -916,7 +923,8 @@ CreateFlashAttentionBackwardKernel(
 
   TT_ASSIGN_OR_RETURN(
       at::Tensor strided_grad_value,
-      ContiguousToView(results[2], value.strides(), value.storage_offset()));
+      ContiguousToView(results[2], DenseStrides(value.strides(), value.sizes()),
+                       0));
   return std::make_tuple(strided_grad_query, strided_grad_key,
                          strided_grad_value);
 }
