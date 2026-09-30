@@ -59,7 +59,7 @@ EagerMode GetEagerMode() {
       [] { return GetMutableGlobalEagerMode().load(); });
 }
 
-void SetEagerMode(const EagerMode mode) {
+void SetEagerMode(EagerMode mode) {
   ABSL_VLOG(1) << "SetEagerMode " << static_cast<int>(mode);
   GetMutableGlobalEagerMode() = mode;
 }
@@ -84,7 +84,7 @@ bool IsInplaceBufferDonationEnabled() {
   return GetMutableGlobalInplaceBufferDonation().load();
 }
 
-void EnableInplaceBufferDonation(const bool enabled) {
+void EnableInplaceBufferDonation(bool enabled) {
   ABSL_VLOG(1) << "EnableInplaceBufferDonation " << enabled;
   GetMutableGlobalInplaceBufferDonation().store(enabled);
 }

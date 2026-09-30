@@ -749,6 +749,17 @@ absl::StatusOr<InverseViewOperation> ComputeInverseViewOperation(
     if (i == 0 && std::holds_alternative<ReshapePrimitive>(base_to_view[i])) {
       // An initial reshape can be folded into the base transform, since it
       // retains contiguity. This also changes the expected final shape.
+      const auto& reshape = std::get<ReshapePrimitive>(base_to_view[i]);
+      const bool is_flatten =
+          reshape.base_sizes.size() > 1 && reshape.new_sizes.size() == 1;
+      if (is_flatten) {
+        // However, we don't do this if the reshape is a flatten operation,
+        // since this would change the physical layout of the tensor,
+        // potentially forcing a copy on all subsequent operations.
+        stages.back().forward.push_back(std::move(base_to_view[i]));
+        continue;
+      }
+
       UpdateLayout(layout, base_to_view[i]);
       final_shape.dimensions().clear();
       for (const auto& dim : layout.strided_dims) {

@@ -28,7 +28,6 @@
 #include "c10/core/Device.h"
 #include "c10/core/Storage.h"
 #include "c10/util/Optional.h"
-#include "csrc/common/error_utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/structured_log_buffer.h"

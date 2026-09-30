@@ -54,7 +54,6 @@
 #include "c10/util/Optional.h"
 #include "c10/util/UniqueVoidPtr.h"
 #include "c10/util/intrusive_ptr.h"
-#include "csrc/common/context_states.h"
 #include "csrc/common/device_type.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -65,7 +64,6 @@
 #include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/device_buffer_utils.h"
-#include "csrc/eager/eager_mode.h"
 #include "csrc/eager/events_queue.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/structured_log_buffer.h"
@@ -185,15 +183,28 @@ absl::Status AssignBufferToAtTensor(DeviceBufferRef result_buf,
     return absl::OkStatus();
   }
 
+  TT_ASSIGN_OR_RETURN(DeviceBufferRef base_buffer_ref, GetBaseBuffer(tensor));
+  // For the purposes of avoiding flattening, scalars are treated as 1D, meaning
+  // that we allow 0->1 or 1->0 dimensional changes on write-back.
+  const bool was_multi_dimensional = base_buffer_ref.dimensions().size() > 1;
+  const bool is_multi_dimensional = result_buf.dimensions().size() > 1;
+  const bool is_flatten = was_multi_dimensional && !is_multi_dimensional;
+
   // We must skip this optimization for Conj tensors because their storage
   // contains the *original* values, not the conjugated values. Direct storage
   // assignment would lose the conjugation bit, resulting in incorrect values.
   // By falling through to ComputeInverseViewOperation, we ensure the proper
   // view inversion (which includes conjugation) is applied during the
   // write-back.
+  //
+  // We also avoid flattening an N-dimensional tensor on a write-back. Due to
+  // the physically 2-dimensional nature of TPU registers, reshaping between
+  // 1D and N-D (where N > 1) is expensive, requiring a full copy. If a write
+  // would flatten an N-D buffer to 1D, we instead preserve the original N-D
+  // shape to avoid this copy on future reads.
   if (tensor.is_contiguous() && !tensor.is_conj() &&
       tensor.storage_offset() == 0 &&
-      tensor.storage().nbytes() == result_buf.size_bytes()) {
+      tensor.storage().nbytes() == result_buf.size_bytes() && !is_flatten) {
     // The result_buf can be used directly as the new storage buffer; even if
     // it is a different shape, any contiguous view can be the base.
     //
@@ -216,7 +227,6 @@ absl::Status AssignBufferToAtTensor(DeviceBufferRef result_buf,
     // will be updated by the write.
     OverwriteDataPtr(tensor.storage().data_ptr(), std::move(result_buf));
   } else {
-    TT_ASSIGN_OR_RETURN(DeviceBufferRef base_buffer_ref, GetBaseBuffer(tensor));
     TT_ASSIGN_OR_RETURN(DeviceBufferRef new_base_buffer_ref,
                         CreateInverseViewDeviceBufferRef(
                             std::move(base_buffer_ref), std::move(result_buf),

@@ -104,12 +104,9 @@ absl::Status TensorBufferHandle::Synchronize() {
 
 absl::StatusOr<TensorBufferHandle> GetBaseTensorBuffer(
     const at::Tensor& tensor) {
-  auto buffer_ref_or = GetBaseBuffer(tensor);
-  if (!buffer_ref_or.ok()) {
-    return buffer_ref_or.status();
-  }
+  TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref, GetBaseBuffer(tensor));
   return TensorBufferHandle(
-      std::make_unique<TensorBufferHandle::Impl>(std::move(*buffer_ref_or)));
+      std::make_unique<TensorBufferHandle::Impl>(std::move(buffer_ref)));
 }
 
 absl::StatusOr<at::Tensor> TensorBufferHandle::ToTensor() const {

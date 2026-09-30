@@ -34,7 +34,7 @@ namespace torch_tpu {
 // This function returns traversals in topological order.
 std::vector<absl_nonnull std::unique_ptr<Traversal>> SplitTraversal(
     absl_nonnull std::unique_ptr<Traversal> traversal,
-    absl::flat_hash_set<const DeviceBufferList*>& scratch_set);
+    absl::flat_hash_set<const DeviceBufferList*>& required_outputs);
 
 }  // namespace torch_tpu
 
