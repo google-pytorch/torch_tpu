@@ -84,6 +84,20 @@ AccuracyOverrides = Mapping[str, Mapping[torch.dtype, Mapping[str, Tolerance]]]
 FilterFn = Callable[..., str | None]
 MarkDynamicFn = Callable[..., None]
 
+GPU_SM90: Final[str] = "gpu_sm90"
+GPU_SM100: Final[str] = "gpu_sm100"
+
+# GPU architecture that records the goldens of tests not tagged with
+# @record_gpu_goldens_on.
+_DEFAULT_GPU_GOLDEN_ARCH: Final[str] = GPU_SM100
+# Test method attribute set by @record_gpu_goldens_on.
+_GPU_GOLDEN_ARCH_ATTR: Final[str] = "gpu_golden_arch"
+
+_GPU_GOLDEN_HOPPER_SUFFIX: Final[str] = "_hopper"
+
+# Identifies a list of golden samples: (test case name, op variant, dtype key).
+_GoldenKey = tuple[str, str, str]
+
 
 def _validate_tolerances(
     rtol: Tolerance | None = None,
@@ -3438,6 +3452,62 @@ def _gen_gpu_golden_mode() -> bool:
   return _TEST_MODE.value == TestMode.GEN_GPU_GOLDEN
 
 
+def golden_target_gpu_arch() -> str:
+  """Returns the architecture of the GPU that golden generation runs on.
+
+  Used in gen_gpu_golden mode to decide which tests to run and which golden
+  files to write (e.g. `ops_test_gpu_golden_hopper0.gz` on Hopper).
+
+  Returns:
+    `GPU_SM90` on Hopper or `GPU_SM100` on Blackwell.
+
+  Raises:
+    RuntimeError: If CUDA is unavailable or the GPU is neither Hopper nor
+      Blackwell.
+  """
+  if not torch.cuda.is_available():
+    raise RuntimeError("CUDA is not available for GPU golden generation.")
+  major = torch.cuda.get_device_properties(0).major
+  if major == 9:
+    return GPU_SM90
+  elif major == 10:
+    return GPU_SM100
+  raise RuntimeError(
+      f"Unsupported GPU compute capability {major} for golden generation: "
+      "requires Hopper (SM90, major=9) or Blackwell (SM100, major=10)."
+  )
+
+
+def record_gpu_goldens_on(arch: str):
+  """Decorator that records a test method's GPU goldens on `arch`.
+
+  Untagged test methods record their goldens on the default GPU (Blackwell).
+  Only affects gen_gpu_golden mode: `OpInfoTestBase.setUp` runs the test on the
+  generators for `arch` and skips it on every other architecture. Other modes
+  run the test as usual.
+
+  Example:
+
+    class TestOps(op_testing.OpInfoTestBase):
+
+      @op_testing.record_gpu_goldens_on(op_testing.GPU_SM90)
+      def test_asinh(self):
+        ...
+
+  Args:
+    arch: The architecture to record goldens on, e.g. `GPU_SM90`.
+
+  Returns:
+    A decorator that tags the test method with `arch` and returns it unchanged.
+  """
+
+  def decorator(func):
+    setattr(func, _GPU_GOLDEN_ARCH_ATTR, arch)
+    return func
+
+  return decorator
+
+
 def _dump_dtype_exclusions_mode() -> bool:
   """Returns true if the test is running in dump_dtype_exclusions mode."""
   return _TEST_MODE.value == TestMode.DUMP_DTYPE_EXCLUSIONS
@@ -4423,6 +4493,18 @@ class OpInfoTestBase(
   Extends TorchTpuTestBase with do_test_op() and OpInfo sample generation/golden
   logic.
   """
+
+  def setUp(self) -> None:
+    super().setUp()
+    # Each test records its goldens on one GPU: the one set by
+    # @record_gpu_goldens_on, or the default GPU if untagged.
+    if _gen_gpu_golden_mode():
+      method = getattr(self, self._testMethodName, None)
+      arch = getattr(method, _GPU_GOLDEN_ARCH_ATTR, _DEFAULT_GPU_GOLDEN_ARCH)
+      if golden_target_gpu_arch() != arch:
+        self.skipTest(
+            f"GPU goldens for {self._testMethodName} are recorded on {arch}."
+        )
 
   @classmethod
   def varies_seed_in_postsubmit(cls) -> bool:
@@ -5614,6 +5696,13 @@ def _golden_file_prefix() -> str:
   )
 
 
+def _golden_file_basename(shard: int) -> str:
+  """Returns the golden file name for `shard` on the current GPU."""
+  if golden_target_gpu_arch() == GPU_SM90:
+    return f"{_golden_file_prefix()}{_GPU_GOLDEN_HOPPER_SUFFIX}{shard}.gz"
+  return f"{_golden_file_prefix()}{shard}.gz"
+
+
 def _save_golden_file() -> None:
   """Saves the golden data to the undeclared outputs directory on Forge.
 
@@ -5630,10 +5719,9 @@ def _save_golden_file() -> None:
      is then gzipped to further reduce its size.
   """
 
-  test_shard = _get_test_shard()
-  golden_file = (
-      os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR", "/tmp")
-      + f"/{_golden_file_prefix()}{test_shard}.gz"
+  golden_file = os.path.join(
+      os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR", "/tmp"),
+      _golden_file_basename(_get_test_shard()),
   )
   print(
       f"Dumping the collected input/output pairs for each op to {golden_file}",
@@ -5656,19 +5744,58 @@ def _save_golden_file() -> None:
     f.write(bin_data)
 
 
+def _golden_keys(encoded_data: _pytree.PyTree) -> set[_GoldenKey]:
+  """Returns the golden keys `encoded_data` holds samples for."""
+  return {
+      (test_case_name, variant_name, dtype_name)
+      for test_case_name, variant_to_dt in encoded_data.items()
+      for variant_name, dt_to_encoded_samples in variant_to_dt.items()
+      for dtype_name in dt_to_encoded_samples
+  }
+
+
+def _check_no_cross_arch_overlap(
+    filename: str,
+    encoded_data: _pytree.PyTree,
+    hopper_sources: Mapping[_GoldenKey, str],
+) -> None:
+  """Fails if `encoded_data` holds a golden key a Hopper file also holds."""
+  overlap = sorted(_golden_keys(encoded_data) & set(hopper_sources))
+  if not overlap:
+    return
+  test_case_name, variant_name, dtype_name = overlap[0]
+  raise ValueError(
+      f"{filename} and {hopper_sources[overlap[0]]} both hold goldens for"
+      f" {len(overlap)} key(s), including {test_case_name} (variant"
+      f" {variant_name}, dtype {dtype_name}), so it is ambiguous which one"
+      " applies. Each test method must record its goldens on exactly one GPU"
+      f" architecture; check whether {test_case_name} is tagged with"
+      " @op_testing.record_gpu_goldens_on(op_testing.GPU_SM90)."
+  )
+
+
 def _load_golden_files() -> None:
-  """Loads the checked in golden files into _GOLDEN_GPU_DATA."""
+  """Loads the pinned Blackwell and Hopper goldens into _GOLDEN_GPU_DATA."""
   prefix = _golden_file_prefix()
   candidate_dirs = tests_test_utils.goldens_candidate_local_dirs(
       base_dir=_GOLDEN_DATA_BASE_DIR.value
   )
-  plist_ptrees = tests_test_utils.load_golden_files(
-      prefix=prefix,
-      candidate_dirs=candidate_dirs,
+  goldens = tests_test_utils.load_golden_files(
+      prefix=prefix, candidate_dirs=candidate_dirs
   )
+  hopper_prefix = f"{prefix}{_GPU_GOLDEN_HOPPER_SUFFIX}"
+  hopper = [g for g in goldens if g.filename.startswith(hopper_prefix)]
+  base = [g for g in goldens if not g.filename.startswith(hopper_prefix)]
+  hopper_sources = {
+      key: golden.filename
+      for golden in hopper
+      for key in _golden_keys(golden.tree)
+  }
   _GOLDEN_GPU_DATA.clear()
-  for plist_ptree in plist_ptrees:
-    _GOLDEN_GPU_DATA.merge_plistlib_pytree(plist_ptree)
+  for golden in base:
+    _check_no_cross_arch_overlap(golden.filename, golden.tree, hopper_sources)
+  for golden in goldens:
+    _GOLDEN_GPU_DATA.merge_plistlib_pytree(golden.tree)
 
 
 def _get_dtype_exclusions(

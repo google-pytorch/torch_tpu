@@ -35,15 +35,18 @@ exports_files([
     "cpp_style_test_data.cc",
 ])
 
-# ops_test records its GPU goldens on Blackwell (B200). The MXFP8 BlockWise1x32
-# scaling recipes of torch._scaled_mm_v2 need compute capability >= 10.0; on
-# sm90 cuBLAS rejects them with CUBLAS_STATUS_NOT_SUPPORTED.
+# ops_test records its GPU goldens on two architectures, because neither one
+# covers every op. Blackwell (SM100) is the default and holds the bulk of the
+# data. Hopper (SM90) holds the test case for ops such as _scaled_mm_v2 with
+# recipes that only cuBLAS on Hopper implements.
 #
 # Per go/forge-for-ml, Blackwell and later are requested with a platform rather
 # than a requires-gpu-* tag. These GPUs are hosted on both x86 and Arm, and only
 # a platform also tells blaze which architecture to build the test for. The
 # partitioned (1/7 MiG) variant suffices, as golden generation uses one GPU.
 _GPU_GOLDEN_PLATFORM = "//buildenv/platforms/forge/gpu/b200"
+
+_GPU_GOLDEN_TAG_SM90 = "requires-gpu-sm90"
 
 # Hopper is the default Forge GPU pool, so they request it by tag and stay off
 # scarce Blackwell capacity.
@@ -377,6 +380,8 @@ torch_tpu_py_library(
 # * ops_test_gen_gpu_golden_compiled: generates the golden file under torch.compile.
 # * ops_test_grad_tpu_vs_gpu: gradient on TPU vs GPU.
 # * ops_test_gen_gpu_golden_grad: generates the golden file for gradients.
+# * ops_test_gen_gpu_golden*_hopper: the same, on Hopper, for tests tagged
+#   @op_testing.record_gpu_goldens_on(op_testing.GPU_SM90).
 # * ops_test_perf: TPU only, for measuring compilation/execution time.
 # * ops_test_dynamic: TPU vs GPU, bounds a dimension.
 # * ops_test_dynamic_compiled: TPU vs GPU, bounds a dimension under torch.compile.
@@ -406,6 +411,7 @@ torch_tpu_py_test(
         "ops_test_gpu_golden_grad0.gz",
         "ops_test_gpu_golden_grad1.gz",
         "ops_test_gpu_golden_grad2.gz",
+        "ops_test_gpu_golden_grad_hopper0.gz",
     ],
     main = "ops_test.py",
     run_on_accelerators = [
@@ -450,6 +456,7 @@ torch_tpu_py_test(
         "ops_test_gpu_golden_grad0.gz",
         "ops_test_gpu_golden_grad1.gz",
         "ops_test_gpu_golden_grad2.gz",
+        "ops_test_gpu_golden_grad_hopper0.gz",
     ],
     main = "ops_test.py",
     run_on_accelerators = [
@@ -494,6 +501,7 @@ torch_tpu_py_test(
         "ops_test_gpu_golden_grad0.gz",
         "ops_test_gpu_golden_grad1.gz",
         "ops_test_gpu_golden_grad2.gz",
+        "ops_test_gpu_golden_grad_hopper0.gz",
     ],
     main = "ops_test.py",
     run_on_accelerators = [
@@ -536,6 +544,7 @@ torch_tpu_py_test(
         "ops_test_gpu_golden_compiled0.gz",
         "ops_test_gpu_golden_compiled1.gz",
         "ops_test_gpu_golden_compiled2.gz",
+        "ops_test_gpu_golden_compiled_hopper0.gz",
     ],
     main = "ops_test.py",
     nopresubmit_oss = "This slow test is enabled in postsubmit and nightly.",
@@ -580,6 +589,7 @@ torch_tpu_py_test(
         "ops_test_gpu_golden0.gz",
         "ops_test_gpu_golden1.gz",
         "ops_test_gpu_golden2.gz",
+        "ops_test_gpu_golden_hopper0.gz",
     ],
     main = "ops_test.py",
     run_on_accelerators = [
@@ -624,6 +634,7 @@ torch_tpu_py_test(
         "ops_test_gpu_golden_grad0.gz",
         "ops_test_gpu_golden_grad1.gz",
         "ops_test_gpu_golden_grad2.gz",
+        "ops_test_gpu_golden_grad_hopper0.gz",
     ],
     main = "ops_test.py",
     # Skip this in OSS presubmit when it's overloaded.
@@ -668,6 +679,7 @@ torch_tpu_py_test(
         "ops_test_gpu_golden0.gz",
         "ops_test_gpu_golden1.gz",
         "ops_test_gpu_golden2.gz",
+        "ops_test_gpu_golden_hopper0.gz",
     ],
     main = "ops_test.py",
     # Skip this in OSS presubmit when it's overloaded.
@@ -709,6 +721,7 @@ torch_tpu_py_test(
         "ops_test_gpu_golden0.gz",
         "ops_test_gpu_golden1.gz",
         "ops_test_gpu_golden2.gz",
+        "ops_test_gpu_golden_hopper0.gz",
     ],
     main = "ops_test.py",
     # Skip this in OSS presubmit when it's overloaded.
@@ -754,6 +767,7 @@ torch_tpu_py_test(
         "ops_test_gpu_golden0.gz",
         "ops_test_gpu_golden1.gz",
         "ops_test_gpu_golden2.gz",
+        "ops_test_gpu_golden_hopper0.gz",
     ],
     main = "ops_test.py",
     # Skip this in OSS presubmit when it's overloaded.
@@ -846,6 +860,7 @@ torch_tpu_py_test(
         "ops_test_gpu_golden0.gz",
         "ops_test_gpu_golden1.gz",
         "ops_test_gpu_golden2.gz",
+        "ops_test_gpu_golden_hopper0.gz",
     ],
     main = "ops_test.py",
     run_on_accelerators = [
@@ -886,6 +901,7 @@ torch_tpu_py_test(
         "ops_test_gpu_golden_compiled0.gz",
         "ops_test_gpu_golden_compiled1.gz",
         "ops_test_gpu_golden_compiled2.gz",
+        "ops_test_gpu_golden_compiled_hopper0.gz",
     ],
     main = "ops_test.py",
     nopresubmit = "Dynamic compile tests are run in postsubmit to avoid overloading the presubmit.",
@@ -965,6 +981,32 @@ torch_tpu_py_test(
     notap = "slow test - only need to run on demand for updating goldens",
     platform = _GPU_GOLDEN_PLATFORM,
     shard_count = 3,
+    deps = [
+        ":dynamism_test_utils",
+        ":op_testing",
+        ":oss_utils",
+        ":quantize_utils",
+        "//csrc/eager:tpu_aten_kernels",
+        "//shims/absl_py/flags",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
+# Few tests record their goldens on Hopper, so one shard is enough and the
+# Hopper generators are fast enough to run on TAP.
+torch_tpu_py_test(
+    name = "ops_test_gen_gpu_golden_hopper",
+    srcs = ["ops_test.py"],
+    args = [
+        "--test_mode=gen_gpu_golden",
+    ],
+    main = "ops_test.py",
+    nolocal = "slow test",
+    shard_count = 1,
+    tags = [_GPU_GOLDEN_TAG_SM90],
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -1109,6 +1151,57 @@ torch_tpu_py_test(
     notap = "slow test - only need to run on demand for updating goldens",
     platform = _GPU_GOLDEN_PLATFORM,
     shard_count = 3,
+    deps = [
+        ":dynamism_test_utils",
+        ":op_testing",
+        ":oss_utils",
+        ":quantize_utils",
+        "//csrc/eager:tpu_aten_kernels",
+        "//shims/absl_py/flags",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "ops_test_gen_gpu_golden_grad_hopper",
+    srcs = ["ops_test.py"],
+    args = [
+        "--test_mode=gen_gpu_golden",
+        "--compute_grad=True",
+    ],
+    main = "ops_test.py",
+    nolocal = "slow test",
+    shard_count = 1,
+    tags = [_GPU_GOLDEN_TAG_SM90],
+    deps = [
+        ":dynamism_test_utils",
+        ":op_testing",
+        ":oss_utils",
+        ":quantize_utils",
+        "//csrc/eager:tpu_aten_kernels",
+        "//shims/absl_py/flags",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "ops_test_gen_gpu_golden_compiled_hopper",
+    srcs = ["ops_test.py"],
+    args = [
+        "--test_mode=gen_gpu_golden",
+        "--use_compiled=True",
+    ],
+    env = {"TORCHINDUCTOR_COMPILE_THREADS": "0"},
+    main = "ops_test.py",
+    nolocal = "slow test",
+    shard_count = 1,
+    tags = [_GPU_GOLDEN_TAG_SM90],
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
