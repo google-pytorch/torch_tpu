@@ -1,0 +1,139 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Presubmit Runner
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: 'Runner label for runs-on'
+        required: true
+        type: string
+      bazel_config:
+        description: 'Bazel --config name'
+        required: true
+        type: string
+      extra_bazel_flags:
+        description: 'Extra flags for bazel test'
+        required: false
+        default: ''
+        type: string
+      test_all:
+        description: 'Whether to bypass bazel-diff and run all tests'
+        required: false
+        default: false
+        type: boolean
+      halt_for_connection:
+        description: 'Value for the remote connection waiting step'
+        required: false
+        default: ''
+        type: string
+      base_sha:
+        description: 'Override Base SHA for bazel-diff'
+        required: false
+        default: ''
+        type: string
+      current_sha:
+        description: 'Override Current SHA for bazel-diff'
+        required: false
+        default: ''
+        type: string
+jobs:
+  # Runs the same bazel-diff invocation the accelerator runner used to run, with
+  # the same config, but on a cheap CPU runner. Bazel itself decides whether the
+  # config selects any impacted test. Outputs of a reusable workflow call are
+  # scoped to that call, so each matrix entry only sees its own result.
+  compute:
+    name: "Compute impacted tests on CPU"
+    runs-on: linux-x86-n4-16
+    container:
+      image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:30a9cf2ed330736957b3256dd3df69a13a556ae46626e9ad2ba205fa7a3c0051"  # Tag infrastructure-public-image-f0ac56f68949 (built 2026-09-21)
+      options: --ipc=host
+    outputs:
+      has_impacted_targets: ${{ steps.bazel_diff.outputs.has_impacted_targets }}
+      is_full_run: ${{ steps.bazel_diff.outputs.is_full_run }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # Keep the current commit's first parent fetchable to resolve the
+          # bazel-diff base SHA.
+          fetch-depth: 2
+      # Git security patch (CVE-2022-24765) blocks root from operating on runner-owned directories:
+      # https://github.blog/open-source/git/git-security-vulnerability-announced/#cve-2022-24765.
+      # Tell Git explicitly to trust the workspace inside this ephemeral container.
+      - name: Fix Git Workspace Ownership
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Calculate Impacted Targets via bazel-diff
+        id: bazel_diff
+        uses: ./.github/actions/bazel-diff
+        with:
+          mode: calculate
+          base_sha: ${{ inputs.base_sha }}
+          current_sha: ${{ inputs.current_sha || github.sha }}
+          bazel_config: ${{ inputs.bazel_config }}
+          extra_bazel_flags: ${{ inputs.extra_bazel_flags }}
+          test_all: ${{ inputs.test_all }}
+      # All calls share one workflow run, so the artifact is named per config.
+      - name: Upload Impacted Targets Artifact
+        if: steps.bazel_diff.outputs.has_impacted_targets == 'true' && steps.bazel_diff.outputs.is_full_run != 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: impacted-targets-${{ inputs.bazel_config }}
+          path: impacted_targets.txt
+          # Long enough for "Re-run failed jobs", which reruns only `test` and
+          # reuses this job's outputs, to still find the artifact.
+          retention-days: 7
+
+  test:
+    name: "Run tests on ${{ contains(inputs.runner, 'tpu') && 'TPU' || 'CPU' }}"
+    needs: compute
+    # Only run when the diff succeeded and found tests for this config. If
+    # `compute` fails or is cancelled this job is skipped too; the `Presubmit
+    # Tests` aggregator in presubmit.yml turns that into a red check instead of
+    # letting it read as an allowed skip.
+    if: ${{ needs.compute.result == 'success' && needs.compute.outputs.has_impacted_targets == 'true' }}
+    # Use self-hosted runners. For a Linux runner, a corresponding container image used for the
+    # workflow is required.
+    # See go/ml-github-actions/getting_started/using_runners.md#supported-runner-scale-set.
+    runs-on: ${{ inputs.runner }}
+    container:
+      image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:30a9cf2ed330736957b3256dd3df69a13a556ae46626e9ad2ba205fa7a3c0051"  # Tag infrastructure-public-image-f0ac56f68949 (built 2026-09-21)
+      # Disable ipc isolation to prevent shm limit issues.
+      options: --ipc=host
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 2
+      # Git security patch (CVE-2022-24765) blocks root from operating on runner-owned directories:
+      # https://github.blog/open-source/git/git-security-vulnerability-announced/#cve-2022-24765.
+      # Tell Git explicitly to trust the workspace inside this ephemeral container.
+      - name: Fix Git Workspace Ownership
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      # Enable remote connections. Add a waiting step.
+      # See go/ml-github-actions:connect#add-waiting-step.
+      - name: Wait For Connection
+        uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
+        with:
+          halt-dispatch-input: ${{ inputs.halt_for_connection }}
+      - name: Run Impacted Tests via bazel-diff
+        uses: ./.github/actions/bazel-diff
+        with:
+          mode: test
+          current_sha: ${{ inputs.current_sha || github.sha }}
+          bazel_config: ${{ inputs.bazel_config }}
+          extra_bazel_flags: ${{ inputs.extra_bazel_flags }}
+          test_all: ${{ needs.compute.outputs.is_full_run }}
+          download_impacted_targets: ${{ needs.compute.outputs.is_full_run != 'true' }}
+          impacted_targets_artifact: impacted-targets-${{ inputs.bazel_config }}
+          impacted_targets_file: ${{ needs.compute.outputs.is_full_run != 'true' && 'impacted_targets.txt' || '' }}

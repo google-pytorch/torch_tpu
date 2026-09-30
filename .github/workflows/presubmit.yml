@@ -58,67 +58,51 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        job_info: [
-          {
-            name: "CPU",
-            runner: "linux-x86-n4-16",
-            config: "ci_cpu_presubmit",
-            extra_flags: "",
-          },
-          {
-            runner: "linux-x86-ct5lp-224-8tpu",
-            config: "ci_tpu_v5_presubmit",
-            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
-          },
+        job_info:
+          - name: CPU
+            runner: linux-x86-n4-16
+            config: ci_cpu_presubmit
+            extra_flags: ''
+          - runner: linux-x86-ct5lp-224-8tpu
+            config: ci_tpu_v5_presubmit
+            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"'
           # TODO(gunhyun): Re-enable once we have more quota.
-          # {
-          #   runner: "linux-x86-ct6e-180-8tpu",
-          #   config: "ci_tpu_v6_presubmit",
-          #   extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
-          # },
-          {
-            runner: "linux-x86-tpu7x-224-4tpu",
-            config: "ci_tpu_v7_presubmit",
-            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
-          }
-        ]
-    # Use self-hosted runners. For a Linux runner, a corresponding container image used for the
-    # workflow is required.
-    # See go/ml-github-actions/getting_started/using_runners.md#supported-runner-scale-set.
-    runs-on: ${{ matrix.job_info.runner }}
-    container:
-      image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:30a9cf2ed330736957b3256dd3df69a13a556ae46626e9ad2ba205fa7a3c0051"  # Tag infrastructure-public-image-f0ac56f68949 (built 2026-09-21)
-      # Disable ipc isolation to prevent shm limit issues.
-      options: --ipc=host
+          # - runner: linux-x86-ct6e-180-8tpu
+          #   config: ci_tpu_v6_presubmit
+          #   extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"'
+          - runner: linux-x86-tpu7x-224-4tpu
+            config: ci_tpu_v7_presubmit
+            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"'
+    # Each call computes the diff for its own config on a CPU runner, then claims
+    # `runner` only if that config selects an impacted test.
+    uses: ./.github/workflows/presubmit_runner.yml
+    with:
+      runner: ${{ matrix.job_info.runner }}
+      bazel_config: ${{ matrix.job_info.config }}
+      extra_bazel_flags: ${{ matrix.job_info.extra_flags }}
+      test_all: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
+      halt_for_connection: ${{ inputs.halt-for-connection }}
+      base_sha: ${{ inputs.override_base_sha }}
+      current_sha: ${{ inputs.override_current_sha || github.sha }}
 
+  # Aggregator job checked by Copybara. `test` jobs are skipped on purpose when
+  # a config selects no impacted test, and a skipped job cannot be told apart
+  # from one skipped because `compute` failed or was cancelled. A reusable
+  # workflow call, however, only ends in `success` when every job inside it
+  # either succeeded or was skipped by its own `if:`, so gating on the calls'
+  # aggregate result fails presubmit on any error without claiming a runner.
+  presubmit_tests_passed:
+    name: "Presubmit"
+    needs: run_tests
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
     steps:
-      # Clone the GitHub repository to runner's environment $GITHUB_WORKSPACE, making its files
-      # accessible for workflow to use. Otherwise, the workflow cannot find the files (e.g. ls -lR
-      # will return "total 0").
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          # Keep the current commit's first parent fetchable
-          # to resolve bazel-diff base SHA below.
-          fetch-depth: 2
-
-      # Git security patch (CVE-2022-24765) blocks root from operating on runner-owned directories:
-      # https://github.blog/open-source/git/git-security-vulnerability-announced/#cve-2022-24765.
-      # Tell Git explicitly to trust the workspace `/__w/torch_tpu/torch_tpu` inside this ephemeral
-      # container.
-      - name: Fix Git Workspace Ownership
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-
-      # Enable remote connections. Add a waiting step.
-      # See go/ml-github-actions:connect#add-waiting-step.
-      - name: Wait For Connection
-        uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
-        with:
-          halt-dispatch-input: ${{ inputs.halt-for-connection }}
-      - name: Run Impacted Tests via bazel-diff
-        uses: ./.github/actions/bazel-diff
-        with:
-          base_sha: ${{ inputs.override_base_sha }}
-          current_sha: ${{ inputs.override_current_sha || github.sha }}
-          bazel_config: ${{ matrix.job_info.config }}
-          extra_bazel_flags: ${{ matrix.job_info.extra_flags }}
-          test_all: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
+      - name: Check presubmit results
+        env:
+          RUN_TESTS_RESULT: ${{ needs.run_tests.result }}
+        run: |
+          echo "run_tests: ${RUN_TESTS_RESULT}"
+          if [[ "${RUN_TESTS_RESULT}" != "success" ]]; then
+            echo "::error::Presubmit did not succeed (result: ${RUN_TESTS_RESULT})"
+            exit 1
+          fi
