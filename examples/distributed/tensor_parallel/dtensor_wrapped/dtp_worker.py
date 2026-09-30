@@ -30,7 +30,6 @@ from torch.distributed import tensor
 from torch.distributed.tensor import parallel
 # Direct all logs to stdout so kubectl logs can see them
 from torch_tpu._internal.utils import log_utils
-from torch_tpu._internal.utils import test_utils as utils
 from examples.distributed.tensor_parallel.dtensor_wrapped import model
 
 
@@ -119,7 +118,7 @@ def worker_fn() -> None:
 
   # Assert TPU outputs on rank=0 match the reference outputs.
   if rank == 0:
-    utils.assert_close(
+    torch.testing.assert_close(
         actual=tpu_tp_output,
         expected=reference_output,
         rtol=1e-4,

@@ -16,7 +16,6 @@
 
 from absl.testing import absltest
 import torch
-from torch_tpu._internal.utils import test_utils as utils
 from examples.gemma4 import model
 from tests import seed_test_utils
 from transformers.models.gemma4.configuration_gemma4 import Gemma4Config
@@ -92,7 +91,7 @@ class Gemma4CorrectnessTest(seed_test_utils.RepeatableTest):
     else:
       hf_hidden = hf_output
 
-    utils.assert_close(hf_hidden, custom_output)
+    torch.testing.assert_close(hf_hidden, custom_output)
 
 
 if __name__ == '__main__':

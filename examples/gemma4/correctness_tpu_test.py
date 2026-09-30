@@ -16,7 +16,6 @@
 
 from absl.testing import absltest
 import torch
-from torch_tpu._internal.utils import test_utils as utils
 from examples.gemma4 import model
 from tests import seed_test_utils
 
@@ -87,7 +86,7 @@ class Gemma4SWACorrectnessTPUTest(seed_test_utils.RepeatableTest):
     # For bfloat16 or float32, we should use appropriate tolerances.
     # Splash attention usually runs in the precision of inputs.
     # Gemma4Attention weights and inputs are float32 here by default.
-    utils.assert_close(cpu_out, tpu_out.cpu(), rtol=5e-2, atol=5e-2)
+    torch.testing.assert_close(cpu_out, tpu_out.cpu(), rtol=5e-2, atol=5e-2)
 
   def test_swa_attention_backward_parity(self):
     # Setup configs
@@ -141,7 +140,7 @@ class Gemma4SWACorrectnessTPUTest(seed_test_utils.RepeatableTest):
     tpu_loss.backward()
 
     # Compare gradients of inputs
-    utils.assert_close(
+    torch.testing.assert_close(
         hidden_states_tpu.grad.cpu(),
         hidden_states_cpu.grad,
         rtol=5.0e-2,
@@ -153,7 +152,7 @@ class Gemma4SWACorrectnessTPUTest(seed_test_utils.RepeatableTest):
       tpu_param = dict(tpu_layer.named_parameters())[name]
       if param.grad is not None:
         self.assertIsNotNone(tpu_param.grad, f'TPU grad for {name} is None')
-        utils.assert_close(
+        torch.testing.assert_close(
             tpu_param.grad.cpu(),
             param.grad,
             rtol=5.0e-2,
@@ -198,7 +197,7 @@ class Gemma4SWACorrectnessTPUTest(seed_test_utils.RepeatableTest):
       cpu_out, _ = cpu_layer(hidden_states_cpu, position_ids)
       tpu_out, _ = tpu_layer(hidden_states_tpu, position_ids_tpu)
 
-    utils.assert_close(cpu_out, tpu_out.cpu(), rtol=5e-2, atol=5e-2)
+    torch.testing.assert_close(cpu_out, tpu_out.cpu(), rtol=5e-2, atol=5e-2)
 
   def test_skip_sliding_mask_parity(self):
     # Test that skip_sliding_mask=True correctly falls back to naive global attention.
@@ -246,7 +245,7 @@ class Gemma4SWACorrectnessTPUTest(seed_test_utils.RepeatableTest):
 
     # Since skip_sliding_mask=True, SWA mask is skipped.
     # CPU should match TPU (both are now global causal attention).
-    utils.assert_close(cpu_out, tpu_out.cpu(), rtol=5e-2, atol=5e-2)
+    torch.testing.assert_close(cpu_out, tpu_out.cpu(), rtol=5e-2, atol=5e-2)
 
   def test_splash_sdpa_direct_call_backward(self):
     device = torch.device('tpu')

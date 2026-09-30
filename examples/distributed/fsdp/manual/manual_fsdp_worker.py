@@ -27,13 +27,10 @@ from torch import nn
 from torch import optim
 import torch.distributed._functional_collectives as _func_col
 from torch_tpu._internal.utils import log_utils
-from torch_tpu._internal.utils import test_utils as utils
 from examples.distributed.fsdp.manual import model
 from examples.distributed.fsdp.manual import simple_model as simple_model_lib
 
 log_utils.log_to_stderr()
-
-CheckValueMode = utils.CheckValueMode
 
 BATCH_SIZE = 16  # Per-device batch size.
 LR = 0.01
@@ -145,20 +142,20 @@ def worker_fn() -> None:
           single_device_model.parameters(), grad_history[i]
       ):
         assert p_ref.grad is not None
-        utils.assert_close(
+        torch.testing.assert_close(
             actual=p_ref.grad[: g_local.shape[0]],
             expected=g_local.to(torch.float32),
             rtol=1e-2,
             atol=2e-2,
-            preamble=f"step {i} grad",
+            msg=f"step {i} grad",
         )
       optimizer.step()
-      utils.assert_close(
+      torch.testing.assert_close(
           actual=y_pred_ref[:BATCH_SIZE],
           expected=y_pred_history[i].to(torch.float32),
           rtol=1e-2,
           atol=2e-2,
-          preamble=f"step {i} y_pred",
+          msg=f"step {i} y_pred",
       )
     logging.info("rank: %d, tpu_tp_output: %s", rank, y_pred_ref)
   dist.destroy_process_group()

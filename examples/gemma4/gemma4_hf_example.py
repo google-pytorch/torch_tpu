@@ -20,7 +20,6 @@ from absl import logging
 import torch
 import torch_tpu
 from torch_tpu._internal.utils import log_utils
-from torch_tpu._internal.utils import test_utils as utils
 from examples import paths
 from torch_tpu.perflab.huggingface_transformers import model_configs
 import transformers
@@ -124,7 +123,9 @@ def main(argv):
   ), f"Shape mismatch: {hf_hidden_tpu.shape} vs {hf_hidden_cpu.shape}"
   assert not torch.isnan(hf_hidden_tpu).any(), "TPU output contains NaN"
   assert not torch.isinf(hf_hidden_tpu).any(), "TPU output contains Inf"
-  utils.assert_close(hf_hidden_tpu.cpu(), hf_hidden_cpu, rtol=5e-2, atol=3.0)
+  torch.testing.assert_close(
+      hf_hidden_tpu.cpu(), hf_hidden_cpu, rtol=5e-2, atol=3.0
+  )
 
   logging.info(
       "HuggingFace Gemma-4-E2B full config baseline model test passed"

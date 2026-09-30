@@ -73,7 +73,6 @@ torch_tpu_py_library(
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/utils:log_utils",
-        "//src/torch_tpu/_internal/utils:test_utils",
     ],
 )
 
