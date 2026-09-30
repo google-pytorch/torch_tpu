@@ -16,8 +16,11 @@
 
 import sys
 
-if sys.version_info >= (3, 14):
-  # Torchax is not supported on Python 3.14+.
+from tests import oss_utils
+
+if oss_utils.is_oss() and sys.version_info >= (3, 14):
+  # `torchax` imports `flax`, and the `flax` version pinned for OSS fails to
+  # import on Python 3.14+ with `KeyError: '__annotations__'`.
   sys.exit(0)
 
 from unittest import mock
@@ -57,6 +60,14 @@ class DummyModule(nn.Module):
 
 
 class TorchaxStepTest(seed_test_utils.RepeatableTest):
+
+  def __init__(self, *args, **kwargs):
+    super().__init__(*args, **kwargs)
+    # This test runs TorchAX on the JAX CPU backend on machines without a TPU.
+    # `torch.accelerator.is_available()` still returns true there, so the
+    # `torch.accelerator.synchronize()` call in `tearDown()` would try to
+    # initialize the TPU and abort the test process.
+    self.synchronize_tensors_in_tear_down = False
 
   @classmethod
   def setUpClass(cls):
