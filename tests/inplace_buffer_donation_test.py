@@ -2078,6 +2078,14 @@ class InplaceBufferDonationTest(seed_test_utils.RepeatableTest):
       self.assertTrue(torch.equal(v1.cpu(), torch.tensor([-11.0, -22.0])))
       self.assertTrue(torch.equal(v2.cpu(), torch.tensor([-33.0, -44.0])))
 
+      # Verify shallow .clone() on one multi-output tensor is preserved across
+      # subsequent multi-output in-place steps (_foreach_add_ and _fused_adamw_).
+      t1_clone = t1.clone()
+      torch._foreach_add_([t1, t2], [o1, o2])
+      self.assertTrue(torch.equal(t1_clone.cpu(), torch.tensor([-11.0, -22.0])))
+      self.assertTrue(torch.equal(t1.cpu(), torch.tensor([-1.0, -2.0])))
+      self.assertTrue(torch.equal(t2.cpu(), torch.tensor([-3.0, -4.0])))
+
 
 if __name__ == "__main__":
   absltest.main()

@@ -54,7 +54,6 @@
 #include "c10/util/Optional.h"
 #include "c10/util/UniqueVoidPtr.h"
 #include "c10/util/intrusive_ptr.h"
-#include "csrc/common/context_states.h"
 #include "csrc/common/device_type.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -65,7 +64,6 @@
 #include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/device_buffer_utils.h"
-#include "csrc/eager/eager_mode.h"
 #include "csrc/eager/events_queue.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/structured_log_buffer.h"
@@ -88,7 +86,7 @@ constexpr std::string_view kMinLibtpuVersionWithPeakAllocatedBytes = "0.0.43";
 
 // Records that a DeviceBufferRef has one more c10::DataPtr using it.
 void AddDataPtrAlias(const DeviceBufferRef& buffer_ref) {
-  buffer_ref.device_buffer_list()->IncrementLiveDataPtrs();
+  buffer_ref.device_buffer_list()->IncrementLiveDataPtrs(buffer_ref.index());
   RecordNewDataPtrCreated(buffer_ref);
 }
 
@@ -96,7 +94,7 @@ void AddDataPtrAlias(const DeviceBufferRef& buffer_ref) {
 void RemoveDataPtrAlias(const DeviceBufferRef& ref) {
   ABSL_VLOG(3) << "[RemoveDataPtrAlias] Cleaning up DataPtr usage for "
                << ref.DebugString();
-  ref.device_buffer_list()->DecrementLiveDataPtrs();
+  ref.device_buffer_list()->DecrementLiveDataPtrs(ref.index());
   RecordDataPtrDestroyed(ref);
 }
 

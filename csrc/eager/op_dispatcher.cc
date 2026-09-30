@@ -182,7 +182,7 @@ bool IsEligibleDonor(const at::Tensor& in, const at::Tensor& out,
   // ownership for real TPU tensors in production.
   if (in.device().type() == GetPrivateUse1DeviceType()) {
     const auto in_buf = GetBaseBuffer(in);
-    return in_buf.ok() && in_buf->device_buffer_list()->live_data_ptrs() <= 1;
+    return in_buf.ok() && in_buf->live_data_ptrs() <= 1;
   }
   return true;
 }

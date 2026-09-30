@@ -362,6 +362,99 @@ TEST(AutoDonateInPlaceBuffers,
   SetEagerMode(EagerMode::kDeferAndFuse);
 }
 
+TEST(AutoDonateInPlaceBuffers,
+     MultiOutputDeviceBufferListTracksPerSlotLiveDataPtrs) {
+  constexpr auto f32_type = mlir::ElementType::F32;
+  SetEagerMode(EagerMode::kDeferNever);
+  ScopedPythonContextCapturer capturer(OpName::kAdd);
+
+  auto dummy_builder = [](mlir::MlirBuilder& b, absl::Span<mlir::MlirOp> inputs)
+      -> absl::StatusOr<DynamicMlirOpResults> {
+    return DynamicMlirOpResults(inputs.begin(), inputs.end());
+  };
+
+  TT_ASSERT_OK_AND_ASSIGN(auto in0,
+                          CreateEmptyDeviceBufferRef({2, 3}, f32_type));
+  TT_ASSERT_OK_AND_ASSIGN(auto in1,
+                          CreateEmptyDeviceBufferRef({2, 3}, f32_type));
+  TT_ASSERT_OK_AND_ASSIGN(auto in2,
+                          CreateEmptyDeviceBufferRef({2, 3}, f32_type));
+
+  std::vector<Shape> out_shapes = {
+      Shape(Dimensions{2, 3}, f32_type),
+      Shape(Dimensions{2, 3}, f32_type),
+      Shape(Dimensions{2, 3}, f32_type),
+  };
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto multi_refs, DeviceBufferList::CreateDeferred(
+                           OpName::kFusedAdamw, dummy_builder, {in0, in1, in2},
+                           OpParamCacheKeys::Empty(), out_shapes));
+  ASSERT_EQ(multi_refs.size(), 3);
+
+  at::Tensor t0 = MakeTensor(multi_refs[0]);
+  at::Tensor t1 = MakeTensor(multi_refs[1]);
+  at::Tensor t2 = MakeTensor(multi_refs[2]);
+
+  // List-wide live_data_ptrs is 3, while each output slot has live_data_ptrs 1.
+  EXPECT_EQ(multi_refs[0].device_buffer_list()->live_data_ptrs(), 3);
+  EXPECT_EQ(multi_refs[0].live_data_ptrs(), 1);
+  EXPECT_EQ(multi_refs[1].live_data_ptrs(), 1);
+  EXPECT_EQ(multi_refs[2].live_data_ptrs(), 1);
+
+  const std::array<int64_t, 2> dims = {2, 3};
+  const std::array<absl::Span<const int64_t>, 3> out_dims_list = {dims, dims,
+                                                                  dims};
+  const std::array<mlir::ElementType, 3> out_dtypes = {f32_type, f32_type,
+                                                       f32_type};
+
+  // All 3 slots are eligible for donation on subsequent steps.
+  Indices donated_all;
+  internal::AutoDonateInPlaceBuffers({t0, t1, t2}, out_dtypes, out_dims_list,
+                                     {t0, t1, t2}, donated_all);
+  EXPECT_EQ(donated_all, (Indices{0, 1, 2}));
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto step2_refs,
+      DeviceBufferList::CreateDeferred(OpName::kFusedAdamw, dummy_builder,
+                                       multi_refs, OpParamCacheKeys::Empty(),
+                                       out_shapes, OpSplitMode::kNone,
+                                       /*donated_indices=*/Indices{0, 1, 2}));
+  ASSERT_TRUE(step2_refs[0].deferred_op() != nullptr);
+  EXPECT_EQ(step2_refs[0].deferred_op()->donated_indices(),
+            (absl::Span<const int64_t>({0, 1, 2})));
+
+  // Shallow clone on slot 1 increments only slot 1's count to 2.
+  {
+    at::Tensor t1_clone = MakeTensor(multi_refs[1]);
+    EXPECT_EQ(multi_refs[0].device_buffer_list()->live_data_ptrs(), 4);
+    EXPECT_EQ(multi_refs[0].live_data_ptrs(), 1);
+    EXPECT_EQ(multi_refs[1].live_data_ptrs(), 2);
+    EXPECT_EQ(multi_refs[2].live_data_ptrs(), 1);
+
+    // Slots 0 and 2 still donate; slot 1 is blocked because it has a live
+    // clone.
+    Indices donated_with_clone;
+    internal::AutoDonateInPlaceBuffers({t0, t1, t2}, out_dtypes, out_dims_list,
+                                       {t0, t1, t2}, donated_with_clone);
+    EXPECT_EQ(donated_with_clone, (Indices{0, 2}));
+
+    TT_ASSERT_OK_AND_ASSIGN(
+        auto step3_refs,
+        DeviceBufferList::CreateDeferred(OpName::kFusedAdamw, dummy_builder,
+                                         multi_refs, OpParamCacheKeys::Empty(),
+                                         out_shapes, OpSplitMode::kNone,
+                                         /*donated_indices=*/Indices{0, 1, 2}));
+    ASSERT_TRUE(step3_refs[0].deferred_op() != nullptr);
+    EXPECT_EQ(step3_refs[0].deferred_op()->donated_indices(),
+              (absl::Span<const int64_t>({0, 2})));
+  }
+
+  // Once t1_clone is destroyed, slot 1 returns to live_data_ptrs == 1.
+  EXPECT_EQ(multi_refs[1].live_data_ptrs(), 1);
+
+  SetEagerMode(EagerMode::kDeferAndFuse);
+}
+
 TEST(AssignBufferToOutput, ErrorOnUndefinedOutput) {
   ScopedPythonContextCapturer capturer(OpName::kAdd);
   at::Tensor undefined_output;  // UNINITIALIZED_TENSOR_OK

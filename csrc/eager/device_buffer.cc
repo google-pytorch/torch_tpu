@@ -388,8 +388,8 @@ absl::StatusOr<std::vector<DeviceBufferRef>> DeviceBufferList::CreateDeferred(
   // aliases its input (e.g., `a.add_(1)`), the dispatch kernel only inspects
   // local arguments and cannot know if other references share the storage.
   // We therefore verify that a valid underlying buffer exists (`dbl !=
-  // nullptr`) and has exclusive ownership (`dbl->live_data_ptrs() == 1`) as a
-  // final safety check:
+  // nullptr`) and that the specific referenced buffer slot has exclusive
+  // ownership (`input_ref.live_data_ptrs() == 1`) as a final safety check:
   //
   // 1. Storage Aliasing & Views:
   //    Consider the following Python example:
@@ -404,8 +404,11 @@ absl::StatusOr<std::vector<DeviceBufferRef>> DeviceBufferList::CreateDeferred(
   //    produced buffer, `b` (or `v`) would still point to the old, invalidated
   //    buffer. Subsequent accesses (e.g., `b.cpu()`) would cause
   //    use-after-free, memory corruption, or PjRt runtime crashes. Because
-  //    `live_data_ptrs() >= 2` when multiple references or views exist,
-  //    requiring `live_data_ptrs() == 1` prevents this.
+  //    `input_ref.live_data_ptrs() >= 2` when multiple references or views
+  //    exist on that buffer slot, requiring `input_ref.live_data_ptrs() == 1`
+  //    prevents this while still allowing buffers from multi-output ops (e.g.
+  //    fused optimizers, `_foreach_*_`, normalization ops) to donate their
+  //    individual output slots when each slot has a single live reference.
   //
   // 2. Autograd Saved Tensors (`ctx.save_for_backward`):
   //    If an activation was saved for backward, its storage reference count
@@ -413,8 +416,8 @@ absl::StatusOr<std::vector<DeviceBufferRef>> DeviceBufferList::CreateDeferred(
   //    the buffer needed for gradient computation.
   //
   // We only donate an input buffer if it exists (`dbl != nullptr`) and
-  // satisfies the exclusivity check (`dbl->live_data_ptrs() == 1`), falling
-  // back safely to normal allocation otherwise.
+  // satisfies the per-slot exclusivity check (`input_ref.live_data_ptrs() ==
+  // 1`), falling back safely to normal allocation otherwise.
   //
   // Note: We bypass this check for custom kernels (Pallas), which manage buffer
   // donation explicitly through their compiler/runtime signatures, and for
@@ -426,7 +429,7 @@ absl::StatusOr<std::vector<DeviceBufferRef>> DeviceBufferList::CreateDeferred(
     for (int64_t idx : donated_indices) {
       const auto& input_ref = inputs[idx];
       const auto& dbl = input_ref.device_buffer_list();
-      if (dbl != nullptr && dbl->live_data_ptrs() == 1) {
+      if (dbl != nullptr && input_ref.live_data_ptrs() == 1) {
         safe_donated_indices.push_back(idx);
       }
     }
@@ -813,6 +816,10 @@ c10::DeviceIndex DeviceBufferRef::device_index() const {
 
 c10::StreamId DeviceBufferRef::stream_id() const {
   return device_buffer_list_->stream_id();
+}
+
+[[nodiscard]] int64_t DeviceBufferRef::live_data_ptrs() const {
+  return device_buffer_list_->live_data_ptrs(index_);
 }
 
 FingerprintType Fingerprint(const Shape& shape) {

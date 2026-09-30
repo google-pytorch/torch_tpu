@@ -288,6 +288,10 @@ class DeviceBufferRef {
   // The index of the referenced buffer within the DeviceBufferList.
   [[nodiscard]] int64_t index() const { return index_; }
 
+  // The number of live c10::DataPtrs referencing this specific buffer slot
+  // within the DeviceBufferList.
+  [[nodiscard]] int64_t live_data_ptrs() const;
+
   // Marks a dimension of the given DeviceBufferRef as dynamic.
   // The dimension must be in bounds for the DeviceBufferRef.
   // The lower and upper bounds must be in bounds for the dimension as well.
@@ -702,6 +706,16 @@ class DeviceBufferList {
   [[nodiscard]] bool is_stale() const { return live_data_ptrs_ == 0; }
   [[nodiscard]] int64_t live_data_ptrs() const { return live_data_ptrs_; }
 
+  // Returns the number of live c10::DataPtrs referencing the specific buffer
+  // slot `index` within this DeviceBufferList.
+  [[nodiscard]] int64_t live_data_ptrs(int64_t index) const {
+    ABSL_CHECK(index >= 0 && index < shapes_.size());  // CRASH_OK
+    if (live_data_ptrs_per_buffer_ != nullptr) {
+      return live_data_ptrs_per_buffer_[index];
+    }
+    return live_data_ptrs_;
+  }
+
   // Returns the global index of the creation of this DeviceBufferList.  Lower
   // means earlier.
   [[nodiscard]] uint64_t creation_index() const { return creation_index_; }
@@ -724,9 +738,22 @@ class DeviceBufferList {
 
   std::ostream& DebugData(std::ostream& os) const;
 
-  // Increments or decrements the live data pointer count.
-  void IncrementLiveDataPtrs() { live_data_ptrs_++; }
-  void DecrementLiveDataPtrs() { live_data_ptrs_--; }
+  // Increments or decrements the live data pointer count for the buffer at
+  // `index` (and the list-wide total).
+  void IncrementLiveDataPtrs(int64_t index) {
+    ABSL_CHECK(index >= 0 && index < shapes_.size());  // CRASH_OK
+    if (live_data_ptrs_per_buffer_ != nullptr) {
+      live_data_ptrs_per_buffer_[index]++;
+    }
+    live_data_ptrs_++;
+  }
+  void DecrementLiveDataPtrs(int64_t index) {
+    ABSL_CHECK(index >= 0 && index < shapes_.size());  // CRASH_OK
+    if (live_data_ptrs_per_buffer_ != nullptr) {
+      live_data_ptrs_per_buffer_[index]--;
+    }
+    live_data_ptrs_--;
+  }
 
   // The index of the device that this DeviceBufferList was created on.
   [[nodiscard]] c10::DeviceIndex device_index() const { return device_index_; }
@@ -791,7 +818,12 @@ class DeviceBufferList {
   // failures.
   DeviceBufferList(std::unique_ptr<DeferredOp> absl_nonnull deferred_op,
                    std::vector<Shape> shapes)
-      : shapes_(std::move(shapes)), data_(std::move(deferred_op)) {
+      : shapes_(std::move(shapes)),
+        live_data_ptrs_per_buffer_(
+            shapes_.size() > 1
+                ? std::make_unique<std::atomic_int64_t[]>(shapes_.size())
+                : nullptr),
+        data_(std::move(deferred_op)) {
     const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
     device_index_ = device_index;
     stream_id_ = stream_id;
@@ -904,10 +936,15 @@ class DeviceBufferList {
   // Will be 0 if no child ops have been created.
   mutable std::atomic_uint64_t last_child_index_ = 0;
 
-  // The number of live c10::DataPtrs to this DeviceBufferList.
-  // This is incremented by MakeDataPtr and decremented by
-  // DeleteDeviceBufferRef, and nowhere else.
+  // The total number of live c10::DataPtrs to this DeviceBufferList across all
+  // output buffer slots. This is incremented by AddDataPtrAlias and decremented
+  // by RemoveDataPtrAlias.
   std::atomic_int64_t live_data_ptrs_ = 0;
+
+  // Per-slot live c10::DataPtr counts for multi-output DeviceBufferLists
+  // (`shapes_.size() > 1`). Null for single-output DeviceBufferLists, where
+  // `live_data_ptrs_` is exact for slot 0.
+  std::unique_ptr<std::atomic_int64_t[]> live_data_ptrs_per_buffer_;
 
   // Tracks whether all buffers in this DeviceBufferList have already been
   // awaited to completion via Synchronize(). Once set to true (with release
