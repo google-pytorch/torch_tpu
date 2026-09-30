@@ -36,6 +36,7 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
 #include "csrc/common/to_string.h"
+#include "csrc/common/warnings.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
@@ -208,14 +209,12 @@ absl::Status HistcHelperOut(const at::Tensor& self, const int64_t bins,
       TT_RETURN_IF_ERROR(
           ValidateBounds(min_val.cpu().item(), max_val.cpu().item(), min, max));
     } else {
-      TORCH_WARN_ONCE(
-          "Bounds computed from input data are not validated by default "
-          "on "
-          "TorchTPU (unlike CUDA/CPU) to prevent an expensive CPU "
-          "transfer. "
-          "Set the TORCH_TPU_ENABLE_DEBUG_CHECKS environment "
-          "variable to \"1\" to enable this check, which incurs a "
-          "performance penalty.");
+      TT_WARN_ONCE(
+          WarningCategory::kCorrectnessWarning,
+          "Bounds computed from input data are not validated by default on "
+          "TorchTPU (unlike CUDA/CPU) to prevent an expensive CPU transfer. "
+          "Set the TORCH_TPU_ENABLE_DEBUG_CHECKS environment variable to \"1\" "
+          "to enable this check, which incurs a performance penalty.");
     }
   }
 

@@ -43,6 +43,7 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
+#include "csrc/common/warnings.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/events_queue.h"
 #include "csrc/pjrt/pjrt_utils.h"
@@ -300,7 +301,8 @@ absl::StatusOr<at::Tensor> TpuMemcpyDtoH(const DeviceBufferRef& buffer_ref,
                << buffer_ref.DebugString();
 
   if (non_blocking) {
-    TORCH_WARN_ONCE(
+    TT_WARN_ONCE(
+        WarningCategory::kPerformanceWarning,
         "non_blocking=True in .cpu() or .to('cpu') only works if the "
         "destination is already a pinned tensor. This will block until all "
         "pending d2h copies on the device complete.");

@@ -26,6 +26,7 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
+#include "csrc/common/warnings.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
@@ -126,7 +127,8 @@ absl::Status ValidateTakeInputs(const at::Tensor& self,
   if (GetEnableDebugChecks()) {
     TT_RETURN_IF_ERROR(ValidateIndices(num_elements, index));
   } else {
-    TORCH_WARN_ONCE(
+    TT_WARN_ONCE(
+        WarningCategory::kCorrectnessWarning,
         "Unlike PyTorch on CUDA or CPU, TorchTPU doesn't by default check "
         "that the indices for take() are in range. Set the "
         "TORCH_TPU_ENABLE_DEBUG_CHECKS environment variable to "

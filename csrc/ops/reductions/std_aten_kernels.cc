@@ -34,6 +34,7 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
+#include "csrc/common/warnings.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/binary.h"
@@ -122,12 +123,11 @@ void WarnIfInvalidCorrection(OpName op_name, double correction_val,
                              int64_t reduction_size) {
   const double denom = reduction_size - correction_val;
   if (denom <= 0) {
-    TORCH_WARN(GetRootOpName(op_name),
-               "(): degrees of freedom (i.e., reduction "
-               "size - correction) should "
-               "be positive, got reduction size = ",
-               reduction_size, ", correction = ", correction_val,
-               ", and degrees of freedom = ", denom);
+    TT_WARN(WarningCategory::kCorrectnessWarning, GetRootOpName(op_name),
+            "(): degrees of freedom (i.e., reduction size - correction) should "
+            "be positive, got reduction size = ",
+            reduction_size, ", correction = ", correction_val,
+            ", and degrees of freedom = ", denom);
   }
 }
 

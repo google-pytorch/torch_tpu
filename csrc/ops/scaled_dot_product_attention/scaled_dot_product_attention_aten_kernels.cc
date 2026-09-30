@@ -35,6 +35,7 @@
 #include "c10/util/Exception.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/warnings.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/scaled_dot_product_attention/flash_attention_kernel_builder.h"
@@ -143,10 +144,10 @@ int64_t AtenFusedSdpChoice(const at::Tensor& query, const at::Tensor& key,
           } else {
             // Use c10::str rather than absl::StrCat as it will convert enums
             // into their string representation.
-            TORCH_WARN_ONCE(
-                "TorchTPU only supports FLASH_ATTENTION SDPBackend "
-                "for scaled_dot_product_attention when these conditions are "
-                "met:\n"
+            TT_WARN_ONCE(
+                WarningCategory::kPerformanceWarning,
+                "TorchTPU only supports FLASH_ATTENTION SDPBackend for "
+                "scaled_dot_product_attention when these conditions are met:\n"
                 "- inputs have static shapes\n"
                 "- dropout_p is in [0.0, 1.0) (current: ",
                 dropout_p,
@@ -165,8 +166,7 @@ int64_t AtenFusedSdpChoice(const at::Tensor& query, const at::Tensor& key,
                 get_batch_size(query.sizes()),
                 ")\n"
                 "- Head dimension (dim - 1) is less than 128 or divisible by "
-                "128 "
-                "(query: ",
+                "128 (query: ",
                 query.size(query.ndimension() - 1), ")");
           }
         }
@@ -179,10 +179,10 @@ int64_t AtenFusedSdpChoice(const at::Tensor& query, const at::Tensor& key,
               is_floating_type) {
             return static_cast<int64_t>(at::SDPBackend::overrideable);
           } else {
-            TORCH_WARN_ONCE(
+            TT_WARN_ONCE(
+                WarningCategory::kPerformanceWarning,
                 "TorchTPU only supports SHLO optimized MATH SDPBackend when "
-                "these conditions "
-                "are met:\n"
+                "these conditions are met:\n"
                 "- dropout_p is 0.0 (current: ",
                 dropout_p,
                 ")\n"

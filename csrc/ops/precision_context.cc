@@ -27,6 +27,7 @@
 #include "csrc/common/context_manager.h"
 #include "csrc/common/context_states.h"
 #include "csrc/common/to_string.h"
+#include "csrc/common/warnings.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
 namespace torch_tpu {
@@ -61,7 +62,8 @@ void PyPopPrecision() { PopContextState<PrecisionContextState>(); }
   if (current_global_precision !=
       mlir::stablehlo::Precision::DEFAULT) {  // EXPLICIT_PRECISION_OK=root
                                               // usage
-    TORCH_WARN_ONCE(
+    TT_WARN_ONCE(
+        WarningCategory::kPerformanceWarning,
         absl::StrCat("TPU is using ", ToString(current_global_precision),
                      " precision as requested, but performance may be "
                      "significantly lower. Consider using ",

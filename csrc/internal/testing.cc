@@ -15,11 +15,14 @@
  */
 
 #include <exception>
+#include <string>
 #include <string_view>
 
 #include "ATen/core/ATen_fwd.h"
+#include "c10/util/Exception.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/pybind_error_utils.h"
+#include "csrc/common/warnings.h"
 #include "csrc/eager/device_gen_impl.h"
 #include "csrc/eager/events_queue.h"
 #include "csrc/eager/op_dispatcher.h"
@@ -27,6 +30,7 @@
 #include "csrc/eager/tensor_to_buffer.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
+#include "torch/csrc/Exceptions.h"
 #include "torch/csrc/utils/pybind.h"  // IWYU pragma: keep, for at::Tensor mapping
 #include "xla/pjrt/pjrt_client.h"
 
@@ -107,6 +111,36 @@ struct TestMembersClass {
   int read_write_field = 42;
 };
 
+void EmitTorchWarn(const std::string& msg) {
+  HANDLE_TH_ERRORS
+  TORCH_WARN(msg);
+  END_HANDLE_TH_ERRORS_PYBIND
+}
+
+void EmitTorchWarnOnce(const std::string& msg) {
+  HANDLE_TH_ERRORS
+  TORCH_WARN_ONCE(msg);
+  END_HANDLE_TH_ERRORS_PYBIND
+}
+
+void EmitTorchWarnDeprecation(const std::string& msg) {
+  HANDLE_TH_ERRORS
+  TORCH_WARN_DEPRECATION(msg);
+  END_HANDLE_TH_ERRORS_PYBIND
+}
+
+void EmitTtWarn(WarningCategory category, const std::string& msg) {
+  HANDLE_TH_ERRORS
+  TT_WARN(category, msg);
+  END_HANDLE_TH_ERRORS_PYBIND
+}
+
+void EmitTtWarnOnce(WarningCategory category, const std::string& msg) {
+  HANDLE_TH_ERRORS
+  TT_WARN_ONCE(category, msg);
+  END_HANDLE_TH_ERRORS_PYBIND
+}
+
 }  // namespace
 
 // Internal testing utilities.
@@ -158,6 +192,23 @@ TT_PYBIND11_MODULE(testing, m) {
         "Clears the global sticky error state.");
   m.def("has_sticky_error", HasStickyError,
         "Returns whether the global sticky error state is set.");
+  m.def("emit_torch_warn", &EmitTorchWarn, py::arg("msg"),
+        "Emits a TORCH_WARN warning from C++.");
+  m.def("emit_torch_warn_once", &EmitTorchWarnOnce, py::arg("msg"),
+        "Emits a TORCH_WARN_ONCE warning from C++.");
+  m.def("emit_torch_warn_deprecation", &EmitTorchWarnDeprecation,
+        py::arg("msg"), "Emits a TORCH_WARN_DEPRECATION warning from C++.");
+  py::enum_<WarningCategory>(GetPyBindHandle(m), "WarningCategory")
+      .value("TorchTpuWarning", WarningCategory::kTorchTpuWarning)
+      .value("ExperimentalApiWarning", WarningCategory::kExperimentalApiWarning)
+      .value("DeprecatedApiWarning", WarningCategory::kDeprecatedApiWarning)
+      .value("PerformanceWarning", WarningCategory::kPerformanceWarning)
+      .value("CorrectnessWarning", WarningCategory::kCorrectnessWarning)
+      .export_values();
+  m.def("emit_tt_warn", &EmitTtWarn, py::arg("category"), py::arg("msg"),
+        "Emits a TT_WARN warning from C++.");
+  m.def("emit_tt_warn_once", &EmitTtWarnOnce, py::arg("category"),
+        py::arg("msg"), "Emits a TT_WARN_ONCE warning from C++.");
 }
 
 }  // namespace torch_tpu

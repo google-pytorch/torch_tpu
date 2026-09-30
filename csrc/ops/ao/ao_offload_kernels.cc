@@ -31,6 +31,7 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/utils.h"
+#include "csrc/common/warnings.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
@@ -174,9 +175,9 @@ at::Tensor AtenAoWaitTensor(
       {
         // wait_tensor is an identity pass-through; XLA manages transfer
         // scheduling.
-        TORCH_WARN_ONCE(
-            "ao.wait_tensor is a no-op on TPU. XLA manages transfer "
-            "scheduling.");
+        TT_WARN_ONCE(WarningCategory::kTorchTpuWarning,
+                     "ao.wait_tensor is a no-op on TPU. XLA manages transfer "
+                     "scheduling.");
 
         return tensor;
       });

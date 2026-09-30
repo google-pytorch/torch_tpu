@@ -18,6 +18,7 @@ import pathlib
 
 from torch_tpu import _tcmalloc_check
 from torch_tpu import _versioned_so_loader
+from torch_tpu._internal import warnings_bridge as _warnings_bridge
 
 # Install the version-dispatch import hook before any torch_tpu._internal C++
 # extension is imported, so imports resolve to the glue built for the installed
@@ -35,6 +36,8 @@ except ImportError:
 # Warn if tcmalloc is not the allocator of this process. Checked last so the
 # probe sees every library `import torch_tpu` pulls in, libtpu included.
 _tcmalloc_check.check_tcmalloc()
+
+_warnings_bridge.install_warning_bridge()
 
 from torch_tpu import _loader as _  # pylint: disable=g-import-not-at-top  # noqa: F401
 

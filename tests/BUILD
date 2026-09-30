@@ -208,8 +208,21 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal:exceptions",
         "//src/torch_tpu/_internal:testing",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "cpp_warnings_test",
+    srcs = ["cpp_warnings_test.py"],
+    deps = [
+        ":seed_test_utils",
+        "//shims/absl_py/testing:absltest",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal:exceptions",
+        "//src/torch_tpu/_internal:testing",
     ],
 )
 

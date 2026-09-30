@@ -184,6 +184,7 @@ torch_tpu_cc_library(
         "//csrc/common:error_utils",
         "//csrc/common:shape",
         "//csrc/common:to_string",
+        "//csrc/common:warnings",
         "//csrc/eager:device_buffer",
         "//csrc/eager:events_queue",
         "//shims/torch:aten_headers",

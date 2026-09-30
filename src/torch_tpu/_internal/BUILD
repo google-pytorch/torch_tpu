@@ -61,6 +61,7 @@ pybind_extension(
     deps = [
         "//csrc/common:error_utils",
         "//csrc/common:pybind_error_utils",
+        "//csrc/common:warnings",
         "//csrc/eager:device_gen_impl",
         "//csrc/eager:events_queue",
         "//csrc/eager:op_dispatcher",
@@ -70,6 +71,7 @@ pybind_extension(
         "//shims/torch:aten",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
+        "//shims/torch/c10/util:base_headers",
         "@com_google_absl//absl/flags:flag",
         "@xla//xla/pjrt:pjrt_client",
     ],
@@ -83,6 +85,14 @@ torch_tpu_py_library(
 torch_tpu_py_library(
     name = "exceptions",
     srcs = ["exceptions.py"],
+)
+
+torch_tpu_py_library(
+    name = "warnings_bridge",
+    srcs = ["warnings_bridge.py"],
+    deps = [
+        ":exceptions",
+    ],
 )
 
 torch_tpu_package_end()

@@ -272,6 +272,7 @@ torch_tpu_cc_library(
         "//csrc/common:libtpu_version",
         "//csrc/common:to_string",
         "//csrc/common:utils",
+        "//csrc/common:warnings",
         "//csrc/ops:op_names",
         "//csrc/ops:python_context",
         "//csrc/pjrt:pjrt_state",
@@ -676,6 +677,7 @@ torch_tpu_cc_library(
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
         "//csrc/common:error_utils",
+        "//csrc/common:warnings",
         # Ensure that both TORCH_LIBRARY_IMPL values get built together always.
         ":amp_policies",  # buildcleaner: keep
         "//csrc/common:to_string",
@@ -901,6 +903,7 @@ torch_tpu_cc_library(
         "//csrc/common:device_type",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
+        "//csrc/common:warnings",
         "//csrc/internal/sync:sync_cc",
         "//csrc/ops:op_names",
         "//csrc/ops/macros:kernel",

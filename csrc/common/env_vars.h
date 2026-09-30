@@ -28,6 +28,7 @@
 #include "c10/util/Exception.h"
 #include "csrc/common/constexpr_map.h"
 #include "csrc/common/symbol_stage.h"
+#include "csrc/common/warnings.h"
 
 namespace torch_tpu {
 
@@ -373,7 +374,7 @@ void SetEnv(const std::string& value) {
 // This function is memoized, so the environment variable is only read once.
 //
 // We make the name a template parameter so that different env vars are
-// memoized separately and the TORCH_WARN_ONCE() call works for each env var
+// memoized separately and the TT_WARN_ONCE() call works for each env var
 // individually. The name must be one of the kFooEnvVar variables defined in
 // this file.
 template <const char* name>
@@ -400,15 +401,15 @@ template <const char* name>
         // var is experimental or deprecated.
         if (maybe_stage.has_value()) {
           if (maybe_stage->is_experimental()) {
-            TORCH_WARN_ONCE("the ", name,
-                            " environment variable is an experimental feature "
-                            "and may change or be removed without notice.");
+            TT_WARN_ONCE(WarningCategory::kExperimentalApiWarning, "the ", name,
+                         " environment variable is an experimental feature "
+                         "and may change or be removed without notice.");
           } else if (maybe_stage->is_deprecated()) {
             const auto deprecated_since = maybe_stage->version();
-            TORCH_WARN_ONCE(
-                "the ", name,
-                " environment variable is deprecated since TorchTPU v",
-                deprecated_since, " and will be removed in a future release.");
+            TT_WARN_ONCE(WarningCategory::kDeprecatedApiWarning, "the ", name,
+                         " environment variable is deprecated since TorchTPU v",
+                         deprecated_since,
+                         " and will be removed in a future release.");
           }
         }
         return std::string(env_var);
@@ -433,9 +434,10 @@ template <const char* name>
     if (absl::SimpleAtob(*env_var, &result)) {
       return result;
     }
-    TORCH_WARN_ONCE("expected environment variable ", name,
-                    " to be a Boolean (e.g., '1', '0', 'true', 'false'), got '",
-                    *env_var, "'");
+    TT_WARN_ONCE(WarningCategory::kCorrectnessWarning,
+                 "expected environment variable ", name,
+                 " to be a Boolean (e.g., '1', '0', 'true', 'false'), got '",
+                 *env_var, "'");
     return std::nullopt;
   }();
   return value;
@@ -460,8 +462,9 @@ template <typename IntType, const char* name>
     if (absl::SimpleAtoi(*env_var, &result)) {
       return result;
     }
-    TORCH_WARN_ONCE("expected environment variable ", name,
-                    " to be an integer, got '", *env_var, "'");
+    TT_WARN_ONCE(WarningCategory::kCorrectnessWarning,
+                 "expected environment variable ", name,
+                 " to be an integer, got '", *env_var, "'");
     return std::nullopt;
   }();
   return value;

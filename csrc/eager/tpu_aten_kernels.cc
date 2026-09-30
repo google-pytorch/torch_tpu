@@ -44,6 +44,7 @@
 #include "c10/util/Exception.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
+#include "csrc/common/warnings.h"
 #include "csrc/ops/a_min_max/a_min_max_aten_kernels.h"
 #include "csrc/ops/addcdiv/addcdiv_aten_kernels.h"
 #include "csrc/ops/addcmul/addcmul_aten_kernels.h"
@@ -290,7 +291,7 @@ struct ImplWrapperHelper<Ret (*)(Args...)> {
 // and injects a user-visible warning that the operator is experimental.
 //
 // NOTE: It is critical that `op_name` is a compile-time template parameter
-// rather than a runtime parameter. `TORCH_WARN_ONCE` dedupes warnings by its
+// rather than a runtime parameter. `TT_WARN_ONCE` dedupes warnings by its
 // macro expansion site using a local `static` flag.
 //
 // If `op_name` were a runtime parameter, the macro would be expanded in a
@@ -301,16 +302,17 @@ struct ImplWrapperHelper<Ret (*)(Args...)> {
 // By making `op_name` a template parameter, `ImplExperimental<OpName::kFoo>`
 // and `ImplExperimental<OpName::kBar>` become distinct function template
 // instantiations. This forces the compiler to instantiate a unique lambda and
-// a unique `TORCH_WARN_ONCE` static flag for each operator, achieving the
+// a unique `TT_WARN_ONCE` static flag for each operator, achieving the
 // desired "once-per-operator" warning semantics with zero runtime overhead
 // (no mutexes or registries required).
 template <OpName op_name, typename KernelFn>
 void ImplExperimental(torch::Library& m, KernelFn kernel_fn) {
   ImplWrapperHelper<KernelFn>::template RegisterOp<op_name>(
       m, std::move(kernel_fn), []() {
-        TORCH_WARN_ONCE("operator ", ToString(op_name),
-                        " is experimental; its name, signature, and behavior "
-                        "may change without notice; use at your own risk");
+        TT_WARN_ONCE(WarningCategory::kExperimentalApiWarning, "operator ",
+                     ToString(op_name),
+                     " is experimental; its name, signature, and behavior "
+                     "may change without notice; use at your own risk");
       });
 }
 
@@ -319,17 +321,17 @@ void ImplExperimental(torch::Library& m, KernelFn kernel_fn) {
 // be removed in the given TorchTPU version.
 //
 // NOTE: Like `ImplExperimental`, `op_name` must be a compile-time template
-// parameter to ensure `TORCH_WARN_ONCE` generates a unique static flag per
+// parameter to ensure `TT_WARN_ONCE` generates a unique static flag per
 // operator, guaranteeing correct "once-per-operator" warning semantics.
 template <OpName op_name, typename KernelFn>
 void ImplDeprecated(torch::Library& m, KernelFn kernel_fn, int major_version,
                     int minor_version) {
   ImplWrapperHelper<KernelFn>::template RegisterOp<op_name>(
       m, std::move(kernel_fn), [major_version, minor_version]() {
-        TORCH_WARN_ONCE(
-            "operator ", ToString(op_name),
-            " is deprecated and will be removed in TorchTPU version ",
-            major_version, ".", minor_version);
+        TT_WARN_ONCE(WarningCategory::kDeprecatedApiWarning, "operator ",
+                     ToString(op_name),
+                     " is deprecated and will be removed in TorchTPU version ",
+                     major_version, ".", minor_version);
       });
 }
 

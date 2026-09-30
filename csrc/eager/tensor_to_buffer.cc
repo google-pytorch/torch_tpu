@@ -62,6 +62,7 @@
 #include "csrc/common/libtpu_version.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
+#include "csrc/common/warnings.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/device_buffer_utils.h"
 #include "csrc/eager/events_queue.h"
@@ -468,7 +469,8 @@ class TpuAllocator final : public c10::DeviceAllocator {
     c10::CachingDeviceAllocator::DeviceStats stats;
     auto pjrt_stats_or = PjrtBackend::GetInstance().GetAllocatorStats();
     if (!pjrt_stats_or.ok()) {
-      TORCH_WARN("Failed to get allocator stats: ", pjrt_stats_or.status());
+      TT_WARN(WarningCategory::kPerformanceWarning,
+              "Failed to get allocator stats: ", pjrt_stats_or.status());
       return stats;
     }
     const auto& pjrt_stats = pjrt_stats_or.value();
@@ -510,7 +512,8 @@ class TpuAllocator final : public c10::DeviceAllocator {
   }
 
   void resetAccumulatedStats(c10::DeviceIndex device) override {
-    TORCH_WARN_ONCE(
+    TT_WARN_ONCE(
+        WarningCategory::kTorchTpuWarning,
         "torch.accelerator.memory.reset_accumulated_memory_stats is not "
         "implemented for TPU.");
   }
@@ -518,7 +521,8 @@ class TpuAllocator final : public c10::DeviceAllocator {
   void resetPeakStats(c10::DeviceIndex device) override {
     auto status = PjrtBackend::GetInstance().ClearAllocatorStats();
     if (!status.ok()) {
-      TORCH_WARN("Failed to reset peak memory stats: ", status.ToString());
+      TT_WARN(WarningCategory::kPerformanceWarning,
+              "Failed to reset peak memory stats: ", status.ToString());
     }
   }
 
@@ -526,7 +530,8 @@ class TpuAllocator final : public c10::DeviceAllocator {
   getMemoryInfo(c10::DeviceIndex device) override {
     auto pjrt_stats_or = PjrtBackend::GetInstance().GetAllocatorStats();
     if (!pjrt_stats_or.ok()) {
-      TORCH_WARN("Failed to get allocator stats: ", pjrt_stats_or.status());
+      TT_WARN(WarningCategory::kPerformanceWarning,
+              "Failed to get allocator stats: ", pjrt_stats_or.status());
       return {0, 0};
     }
     const auto& pjrt_stats = pjrt_stats_or.value();
@@ -578,8 +583,8 @@ class TpuPinnedAllocator final : public at::HostAllocator {
 
   // This allocator does not cache allocations, so there is nothing to do here.
   void empty_cache() override {
-    TORCH_WARN_ONCE(
-        "TpuPinnedAllocator::empty_cache is not implemented for TPU.");
+    TT_WARN_ONCE(WarningCategory::kTorchTpuWarning,
+                 "TpuPinnedAllocator::empty_cache is not implemented for TPU.");
   }
 
   at::HostStats get_stats() override { return {}; }

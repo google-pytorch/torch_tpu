@@ -51,6 +51,7 @@ import warnings
 from absl import flags
 from absl.testing import absltest
 import torch
+from torch_tpu._internal import exceptions
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
@@ -108,7 +109,15 @@ class EnvVarsTest(seed_test_utils.RepeatableTest):
           f" {[str(w.message) for w in recorded_warnings]}",
       )
       warning_obj = matching_warnings[0]
-      self.assertTrue(issubclass(warning_obj.category, UserWarning))
+      self.assertTrue(
+          issubclass(warning_obj.category, exceptions.TorchTpuWarning)
+      )
+      self.assertTrue(
+          issubclass(warning_obj.category, exceptions.ExperimentalApiWarning)
+      )
+      self.assertIsInstance(
+          warning_obj.message, exceptions.ExperimentalApiWarning
+      )
       self.assertIn(
           "the TORCH_TPU_TIER2_COMPILATION_CACHE environment variable is an"
           " experimental feature and may change or be removed without notice.",
@@ -146,6 +155,17 @@ class EnvVarsTest(seed_test_utils.RepeatableTest):
           if "TORCH_TPU_TIER2_COMPILATION_CACHE" in str(w.message)
       ]
       self.assertLen(matching_warnings, 1)
+      self.assertTrue(
+          issubclass(matching_warnings[0].category, exceptions.TorchTpuWarning)
+      )
+      self.assertTrue(
+          issubclass(
+              matching_warnings[0].category, exceptions.ExperimentalApiWarning
+          )
+      )
+      self.assertIsInstance(
+          matching_warnings[0].message, exceptions.ExperimentalApiWarning
+      )
       self.assertIn(
           "TORCH_TPU_TIER2_COMPILATION_CACHE environment variable is an"
           " experimental feature",

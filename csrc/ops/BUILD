@@ -262,6 +262,7 @@ torch_tpu_cc_library(
         "//csrc/common:context_manager",
         "//csrc/common:context_states",
         "//csrc/common:to_string",
+        "//csrc/common:warnings",
         "//shims/torch",
         "//shims/torch:torch_headers",
         "//shims/torch/c10/util:base",
