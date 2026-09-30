@@ -24,9 +24,6 @@
 #include <vector>
 
 #include "ATen/core/ATen_fwd.h"
-#include "ATen/core/TensorBody.h"
-#include "ATen/ops/zeros.h"
-#include "ATen/ops/zeros_like.h"
 #include "absl/log/log.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
@@ -35,7 +32,9 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
+#include "csrc/common/to_string.h"
 #include "csrc/eager/device_buffer.h"
+#include "csrc/eager/device_buffer_utils.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/macros/kernel.h"
@@ -50,6 +49,12 @@
 
 namespace torch_tpu {
 
+struct GroupNormForwardShloResults {
+  mlir::MlirOp output;
+  mlir::MlirOp mean;
+  mlir::MlirOp rstd;
+};
+
 struct GroupNormBackwardShloResults {
   mlir::MlirOp grad_input;
   mlir::MlirOp grad_weight;
@@ -57,6 +62,89 @@ struct GroupNormBackwardShloResults {
 };
 
 namespace {
+
+absl::StatusOr<GroupNormForwardShloResults> BuildGroupNormForwardShlo(
+    mlir::MlirOp input_op, std::optional<mlir::MlirOp> weight_op,
+    std::optional<mlir::MlirOp> bias_op, int64_t n, int64_t c, int64_t h_w,
+    int64_t group, double eps, mlir::ElementType stat_elem_type) {
+  mlir::MlirBuilder& builder = input_op.getBuilder();
+  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op);
+  const mlir::ElementType input_elem_type = GetElementTypeOrDie(input_op);
+
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType comp_elem_type,
+                      InferComputationDtype(input_elem_type));
+
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp input_comp,
+                      CastIfNeeded(input_op, comp_elem_type));
+
+  const mlir::Type comp_type = GetTensorTypeOrDie(input_comp).getElementType();
+
+  const int64_t cpg = c / group;
+  const int64_t group_size = cpg * h_w;
+
+  Dimensions n_g_size_shape = {n, group, group_size};
+  auto input_reshaped = mlir::stablehlo::Reshape(input_comp, n_g_size_shape);
+
+  const auto zeros = MakeScalarConstant(builder, 0.0, comp_type);
+  const auto sum_reduce_builder = [comp_type](mlir::RegionBuilder& rb) {
+    mlir::stablehlo::buildReduceBody<mlir::stablehlo::AddOp>(
+        comp_type, rb.getRegion(), rb.getOpBuilder());
+  };
+
+  auto sum_x = mlir::stablehlo::Reduce(builder, input_reshaped, zeros,
+                                       sum_reduce_builder, {2})[0];
+  auto inv_group_size =
+      MakeConstantLike(sum_x, 1.0 / static_cast<double>(group_size));
+  auto mean = mlir::stablehlo::Mul(sum_x, inv_group_size);
+
+  auto type_ng_size = mlir::RankedTensorType::get(n_g_size_shape, comp_type);
+  auto mean_bcast = mlir::stablehlo::BroadcastInDim(
+      type_ng_size, mean, /*broadcast_dimensions=*/{0, 1});
+
+  auto diff = mlir::stablehlo::Subtract(input_reshaped, mean_bcast);
+  auto diff_sq = mlir::stablehlo::Mul(diff, diff);
+  auto sum_diff_sq = mlir::stablehlo::Reduce(builder, diff_sq, zeros,
+                                             sum_reduce_builder, {2})[0];
+  auto variance = mlir::stablehlo::Mul(sum_diff_sq, inv_group_size);
+  auto zero_var = MakeConstantLike(variance, 0.0);
+  variance = mlir::stablehlo::Max(variance, zero_var);
+
+  auto eps_op = MakeConstantLike(variance, eps);
+  auto variance_plus_eps = mlir::stablehlo::Add(variance, eps_op);
+  auto rstd = mlir::stablehlo::Rsqrt(variance_plus_eps);
+
+  auto rstd_bcast = mlir::stablehlo::BroadcastInDim(
+      type_ng_size, rstd, /*broadcast_dimensions=*/{0, 1});
+
+  auto norm = mlir::stablehlo::Mul(diff, rstd_bcast);
+  norm = mlir::stablehlo::Reshape(norm, input_type.getShape());
+  TT_ASSIGN_OR_RETURN(norm, CastIfNeeded(norm, input_elem_type));
+
+  if (weight_op.has_value()) {
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp weight_casted,
+                        CastIfNeeded(weight_op.value(), input_elem_type));
+    auto weight_bcast = mlir::stablehlo::BroadcastInDim(
+        input_type, weight_casted, /*broadcast_dimensions=*/{1});
+    norm = mlir::stablehlo::Mul(norm, weight_bcast);
+  }
+
+  if (bias_op.has_value()) {
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp bias_casted,
+                        CastIfNeeded(bias_op.value(), input_elem_type));
+    auto bias_bcast = mlir::stablehlo::BroadcastInDim(
+        input_type, bias_casted, /*broadcast_dimensions=*/{1});
+    norm = mlir::stablehlo::Add(norm, bias_bcast);
+  }
+
+  TT_ASSIGN_OR_RETURN(mean, CastIfNeeded(mean, stat_elem_type));
+  TT_ASSIGN_OR_RETURN(rstd, CastIfNeeded(rstd, stat_elem_type));
+
+  return GroupNormForwardShloResults{
+      .output = norm,
+      .mean = mean,
+      .rstd = rstd,
+  };
+}
 
 // Math pseudo code, referencing pytorch decomposition:
 // py/torch/_decomp/decompositions.py;l=1512
@@ -313,6 +401,118 @@ absl::StatusOr<GroupNormBackwardShloResults> BuildGroupNormBackwardShlo(
                                       .grad_bias = d_bias_op};
 }
 }  // namespace
+
+std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenNativeGroupNorm(
+    const at::Tensor& input, const std::optional<at::Tensor>& weight,
+    const std::optional<at::Tensor>& bias, int64_t n, int64_t c, int64_t h_w,
+    int64_t group, double eps) {
+  TT_KERNEL(
+      OpName::kNativeGroupNorm, param_keys,
+      (input, weight, bias, n, c, h_w, group, eps), {
+        TT_CHECK_THROW(IsFloatingPoint(input), error::kInvalidArgument)
+            << "expected input to have floating point dtype, got "
+            << ToString(input.scalar_type());
+        TT_CHECK_THROW(group > 0, error::kInvalidArgument)
+            << "expected group to be greater than 0, got " << group;
+        TT_CHECK_THROW(c % group == 0, error::kInvalidArgument)
+            << "expected number of channels to be divisible by group, got "
+               "channels "
+            << c << " and group " << group;
+        TT_CHECK_THROW(input.numel() == n * c * h_w, error::kInvalidArgument)
+            << "expected input to have " << n * c * h_w << " elements, got "
+            << input.numel();
+
+        const bool has_weight = weight.has_value() && weight->defined();
+        if (has_weight) {
+          TT_CHECK_THROW(weight->numel() == c, error::kInvalidArgument)
+              << "expected weight to have " << c << " elements, got "
+              << weight->numel();
+        }
+
+        const bool has_bias = bias.has_value() && bias->defined();
+        if (has_bias) {
+          TT_CHECK_THROW(bias->numel() == c, error::kInvalidArgument)
+              << "expected bias to have " << c << " elements, got "
+              << bias->numel();
+        }
+
+        const bool is_mixed_type =
+            (has_weight && weight->scalar_type() != input.scalar_type()) ||
+            (has_bias && bias->scalar_type() != input.scalar_type());
+        const at::ScalarType stat_scalar_type =
+            is_mixed_type ? at::kFloat : input.scalar_type();
+
+        TT_ASSIGN_OR_THROW(const auto input_dtype,
+                           ConvertTo<mlir::ElementType>(input.scalar_type()));
+        TT_ASSIGN_OR_THROW(const auto stat_dtype,
+                           ConvertTo<mlir::ElementType>(stat_scalar_type));
+        Dimensions input_dims = CopyIntVector(input.sizes());
+
+        if (n == 0) {
+          TT_ASSIGN_OR_THROW(
+              DeviceBufferRef out_buf,
+              CreateZeroSizeDeviceBufferRef(input_dims, input_dtype));
+          TT_ASSIGN_OR_THROW(
+              DeviceBufferRef mean_buf,
+              CreateZeroSizeDeviceBufferRef({n, group}, stat_dtype));
+          TT_ASSIGN_OR_THROW(
+              DeviceBufferRef rstd_buf,
+              CreateZeroSizeDeviceBufferRef({n, group}, stat_dtype));
+          return {MakeTensor(std::move(out_buf)),
+                  MakeTensor(std::move(mean_buf)),
+                  MakeTensor(std::move(rstd_buf))};
+        }
+
+        auto op_builder = [n, c, h_w, group, eps, has_weight, has_bias,
+                           stat_dtype](absl::Span<const mlir::MlirOp> inputs,
+                                       mlir::MlirBuilder& builder)
+            -> absl::StatusOr<MlirOpResults<3>> {
+          auto input_op = inputs[0];
+          std::optional<mlir::MlirOp> weight_op;
+          std::optional<mlir::MlirOp> bias_op;
+          if (has_weight && has_bias) {
+            ABSL_CHECK_EQ(inputs.size(), 3);  // CRASH_OK
+            weight_op = inputs[1];
+            bias_op = inputs[2];
+          } else if (has_weight) {
+            ABSL_CHECK_EQ(inputs.size(), 2);  // CRASH_OK
+            weight_op = inputs[1];
+          } else if (has_bias) {
+            ABSL_CHECK_EQ(inputs.size(), 2);  // CRASH_OK
+            bias_op = inputs[1];
+          } else {
+            ABSL_CHECK_EQ(inputs.size(), 1);  // CRASH_OK
+          }
+
+          TT_ASSIGN_OR_RETURN(
+              GroupNormForwardShloResults results,
+              BuildGroupNormForwardShlo(input_op, weight_op, bias_op, n, c, h_w,
+                                        group, eps, stat_dtype));
+
+          return {{results.output, results.mean, results.rstd}};
+        };
+
+        std::vector<at::Tensor> inputs = {input};
+        if (has_weight) {
+          inputs.push_back(weight.value());
+        }
+        if (has_bias) {
+          inputs.push_back(bias.value());
+        }
+
+        TT_ASSIGN_OR_THROW(
+            (auto [out_buf, mean_buf, rstd_buf]),
+            (DispatchOp<kDynamicSize, 3>(
+                std::move(op_builder),
+                /*inputs=*/inputs,
+                {.out_dtypes = {input_dtype, stat_dtype, stat_dtype},
+                 .out_dims_list = {input_dims, {n, group}, {n, group}},
+                 .op_param_cache_keys = std::move(param_keys)})));
+
+        return {MakeTensor(std::move(out_buf)), MakeTensor(std::move(mean_buf)),
+                MakeTensor(std::move(rstd_buf))};
+      });
+}
 
 std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenNativeGroupNormBackward(
     const at::Tensor& grad_out, const at::Tensor& input, const at::Tensor& mean,

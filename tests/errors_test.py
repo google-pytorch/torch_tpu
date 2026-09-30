@@ -3418,6 +3418,91 @@ Device-side assertion tracking was not enabled by user.""",
           [True, True, True],
       )
 
+  def test_native_group_norm_group_zero(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""Expected num groups to be greater than 0, got 0""",
+        tpu="""native_group_norm(): expected group to be greater than 0, got 0""",
+    ):
+      torch.ops.aten.native_group_norm(
+          torch.ones(1, 6, 4, device=et.device()),
+          None,
+          None,
+          1,
+          6,
+          4,
+          0,
+          1e-5,
+      )
+
+  def test_native_group_norm_channels_not_divisible_by_group(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""Expected number of channels in input to be divisible by num_groups, but got input of shape [1, 5, 4] and num_groups=2""",
+        tpu="""native_group_norm(): expected number of channels to be divisible by group, got channels 5 and group 2""",
+    ):
+      torch.ops.aten.native_group_norm(
+          torch.ones(1, 5, 4, device=et.device()),
+          None,
+          None,
+          1,
+          5,
+          4,
+          2,
+          1e-5,
+      )
+
+  def test_native_group_norm_input_numel_mismatch(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""Expected X.numel() == N * C * HxW to be true, but got false.""",
+        tpu="""native_group_norm(): expected input to have 24 elements, got 18""",
+    ):
+      torch.ops.aten.native_group_norm(
+          torch.ones(1, 6, 3, device=et.device()),
+          None,
+          None,
+          1,
+          6,
+          4,
+          2,
+          1e-5,
+      )
+
+  def test_native_group_norm_weight_numel_mismatch(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""Expected !gamma.defined() || gamma.numel() == C to be true, but got false.""",
+        tpu="""native_group_norm(): expected weight to have 6 elements, got 5""",
+    ):
+      torch.ops.aten.native_group_norm(
+          torch.ones(1, 6, 4, device=et.device()),
+          torch.ones(5, device=et.device()),
+          None,
+          1,
+          6,
+          4,
+          2,
+          1e-5,
+      )
+
+  def test_native_group_norm_bias_numel_mismatch(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""Expected !beta.defined() || beta.numel() == C to be true, but got false.""",
+        tpu="""native_group_norm(): expected bias to have 6 elements, got 5""",
+    ):
+      torch.ops.aten.native_group_norm(
+          torch.ones(1, 6, 4, device=et.device()),
+          None,
+          torch.ones(5, device=et.device()),
+          1,
+          6,
+          4,
+          2,
+          1e-5,
+      )
+
   @parameterized.named_parameters(
       dict(
           testcase_name="invalid_lhs_shape",

@@ -591,6 +591,7 @@ enum class OpName {
   kNativeBatchNormOut,
   kNativeDropout,
   kNativeDropoutBackward,
+  kNativeGroupNorm,
   kNativeGroupNormBackward,
   kNativeLayerNorm,
   kNativeLayerNormBackward,

@@ -13265,6 +13265,76 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(fn, rtol=1e-5, atol=1e-5)
 
+  @parameterized.product(
+      shape=[(2, 6), (2, 6, 8), (2, 6, 4, 4), (2, 6, 2, 3, 4)],
+      group=[1, 2, 6],
+      dtype=[torch.float32, torch.bfloat16, torch.float16],
+      has_weight=[False, True],
+      has_bias=[False, True],
+  )
+  def test_native_group_norm(self, shape, group, dtype, has_weight, has_bias):
+    """Tests torch.ops.aten.native_group_norm across shapes, dtypes, groups, affine."""
+    torch.manual_seed(42)
+    n = shape[0]
+    c = shape[1]
+    h_w = 1
+    for dim_size in shape[2:]:
+      h_w *= dim_size
+
+    x = torch.randn(shape, dtype=dtype)
+    weight = torch.randn(c, dtype=dtype) if has_weight else None
+    bias = torch.randn(c, dtype=dtype) if has_bias else None
+    eps = 1e-5
+
+    def fn(device):
+      w = weight.to(device) if weight is not None else None
+      b = bias.to(device) if bias is not None else None
+      return torch.ops.aten.native_group_norm(
+          x.to(device), w, b, n, c, h_w, group, eps
+      )
+
+    tol = 2e-2 if dtype in (torch.bfloat16, torch.float16) else 1e-4
+    self.assert_close_tpu_vs_cpu(fn, rtol=tol, atol=tol)
+
+  @parameterized.product(
+      shape=[(2, 6), (2, 6, 8), (2, 6, 4, 4), (2, 6, 2, 3, 4)],
+      group=[1, 2, 6],
+      dtype=[torch.float32, torch.bfloat16, torch.float16],
+      has_weight=[False, True],
+      has_bias=[False, True],
+  )
+  def test_nn_functional_group_norm(
+      self, shape, group, dtype, has_weight, has_bias
+  ):
+    """Tests torch.nn.functional.group_norm across shapes, dtypes, groups, affine."""
+    torch.manual_seed(42)
+    c = shape[1]
+    x = torch.randn(shape, dtype=dtype)
+    weight = torch.randn(c, dtype=dtype) if has_weight else None
+    bias = torch.randn(c, dtype=dtype) if has_bias else None
+    eps = 1e-5
+
+    def fn(device):
+      w = weight.to(device) if weight is not None else None
+      b = bias.to(device) if bias is not None else None
+      return torch.nn.functional.group_norm(
+          x.to(device), group, weight=w, bias=b, eps=eps
+      )
+
+    tol = 2e-2 if dtype in (torch.bfloat16, torch.float16) else 1e-4
+    self.assert_close_tpu_vs_cpu(fn, rtol=tol, atol=tol)
+
+  def test_native_group_norm_zero_batch(self):
+    """Verifies native_group_norm with zero batch size."""
+    x = torch.empty(0, 6, 4, 4, dtype=torch.float32)
+
+    def fn(device):
+      return torch.ops.aten.native_group_norm(
+          x.to(device), None, None, 0, 6, 16, 2, 1e-5
+      )
+
+    self.assert_close_tpu_vs_cpu(fn)
+
   def test_rms_norm_no_weight(self):
     """Tests nn.functional.rms_norm forward and backward without weight tensor."""
 
