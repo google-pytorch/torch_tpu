@@ -26,11 +26,12 @@ import torch  # pylint: disable=unused-import  # noqa: F401
 from torch_tpu._internal import execution_mode
 
 EagerMode: TypeAlias = execution_mode.EagerMode
+_EagerMode: TypeAlias = execution_mode._EagerMode
 
 _EAGER_MODES = [
     EagerMode.DEFER_AND_FUSE,
     EagerMode.DEFER_NEVER,
-    EagerMode.INTERNAL_DEFER_ALL,
+    _EagerMode.INTERNAL_DEFER_ALL,
 ]
 
 
@@ -53,10 +54,10 @@ class ExecutionModeTest(absltest.TestCase):  # ABSLTEST_OK=Execution mode test
             EagerMode.DEFER_NEVER,
         )
 
-        with execution_mode.set_eager_mode(EagerMode.INTERNAL_DEFER_ALL):
+        with execution_mode.set_eager_mode(_EagerMode.INTERNAL_DEFER_ALL):
           self.assertEqual(
               execution_mode.eager_mode,
-              EagerMode.INTERNAL_DEFER_ALL,
+              _EagerMode.INTERNAL_DEFER_ALL,
           )
 
         self.assertEqual(
@@ -84,7 +85,7 @@ class ExecutionModeTest(absltest.TestCase):  # ABSLTEST_OK=Execution mode test
         # Changing global setting should not affect the current state, which is
         # determined once at the time of context entry and remains unchanged
         # within the context.
-        execution_mode.eager_mode = EagerMode.INTERNAL_DEFER_ALL
+        execution_mode.eager_mode = _EagerMode.INTERNAL_DEFER_ALL
         self.assertEqual(
             execution_mode.eager_mode,
             EagerMode.DEFER_NEVER,
@@ -93,7 +94,7 @@ class ExecutionModeTest(absltest.TestCase):  # ABSLTEST_OK=Execution mode test
       # Upon exiting the context, the updated global setting takes effect.
       self.assertEqual(
           execution_mode.eager_mode,
-          EagerMode.INTERNAL_DEFER_ALL,
+          _EagerMode.INTERNAL_DEFER_ALL,
       )
     finally:
       execution_mode.eager_mode = prev_mode

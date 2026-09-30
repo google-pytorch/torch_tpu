@@ -26,7 +26,7 @@ namespace torch_tpu {
 namespace py = pybind11;
 
 TT_PYBIND11_MODULE(execution_mode_impl, m) {
-  py::enum_<EagerMode>(GetPyBindHandle(m), "EagerMode")
+  py::enum_<EagerMode>(GetPyBindHandle(m), "_EagerMode")
       .value("DEFER_AND_FUSE", EagerMode::kDeferAndFuse)
       .value("DEFER_NEVER", EagerMode::kDeferNever)
       .value("DEFER_NEVER_AND_LAUNCH_BLOCKING",

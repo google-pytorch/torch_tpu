@@ -437,7 +437,7 @@ def fx_to_mlir(
 
   This function traces the given FX graph module by running it with an
   EagerLikeFxInterpreter in compilation mode.
-  (`EagerMode.INTERNAL_COMPILE_FX_GRAPH`).
+  (`EagerMode._INTERNAL_COMPILE_FX_GRAPH`).
   The resulting deferred graph is then converted to MLIR bytes.
 
   Args:
@@ -512,7 +512,9 @@ def fx_to_mlir(
           internal_layouts.append([])
 
       try:
-        with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+        with execution_mode.set_eager_mode(
+            EagerMode._INTERNAL_COMPILE_FX_GRAPH
+        ):
           # We clone the args so that inplace updates do not overwrite the
           # placeholder args. These copies will be removed in the compiled code so
           # there is no performance impact.

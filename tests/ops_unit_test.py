@@ -8541,7 +8541,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     ids = (torch.arange(t * k) % t).to("tpu")
     src = torch.ones(t * k, feat, device="cpu").to("tpu")
     with execution_mode.set_eager_mode(
-        execution_mode.EagerMode.INTERNAL_COMPILE_FX_GRAPH
+        execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
     ):
       out = torch.zeros(t, feat, device="tpu")
       result = out.scatter_add(0, ids.unsqueeze(-1).expand_as(src), src)
@@ -10028,7 +10028,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     # In compile mode (FxGraph tracing), host async evaluation is skipped because
     # tensors are symbolic/placeholders and cannot be copied to CPU at trace time.
     with execution_mode.set_eager_mode(
-        execution_mode.EagerMode.INTERNAL_COMPILE_FX_GRAPH
+        execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
     ):
       torch.ops.aten._assert_async(cond)
       dummy = cond.to(torch.float32) + 1.0
@@ -12177,7 +12177,7 @@ module {{
     )
 
     with execution_mode.set_eager_mode(
-        execution_mode.EagerMode.INTERNAL_COMPILE_FX_GRAPH
+        execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
     ):
       out_ph = torch.ops.tpu.pad_real_to_static(
           x_ph,
@@ -15623,7 +15623,7 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
     mask = (torch.arange(2048).reshape(1, 2048, 1) % 2 == 0).to("tpu")
     source = torch.ones(1024, 64, device="cpu").to("tpu")
     with execution_mode.set_eager_mode(
-        execution_mode.EagerMode.INTERNAL_COMPILE_FX_GRAPH
+        execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
     ):
       base = torch.zeros(1, 2048, 64, device="tpu")
       result = torch.masked_scatter(base, mask, source)
@@ -15645,7 +15645,7 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
     mask = (torch.arange(2048 * 64).reshape(1, 2048, 64) % 2 == 0).to("tpu")
     source = torch.ones(65536, device="cpu").to("tpu")
     with execution_mode.set_eager_mode(
-        execution_mode.EagerMode.INTERNAL_COMPILE_FX_GRAPH
+        execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
     ):
       base = torch.zeros(1, 2048, 64, device="tpu")
       result = torch.masked_scatter(base, mask, source)

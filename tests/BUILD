@@ -94,6 +94,7 @@ torch_tpu_py_test(
         "//src/torch_tpu:_loader",
         "//src/torch_tpu/_internal:exceptions",
         "//src/torch_tpu/_internal/distributed:environment",
+        "//src/torch_tpu/_internal/execution_mode",
         "//src/torch_tpu/_internal/pallas",
         "//src/torch_tpu/_internal/profiler:profiler_config",
         "//src/torch_tpu/_internal/utils:annotations",

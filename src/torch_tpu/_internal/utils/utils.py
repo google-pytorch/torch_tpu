@@ -125,9 +125,9 @@ def format_model(
           torch.Tensor, to_placeholder, input_tensors
       )
 
-    # Trace the model in INTERNAL_COMPILE_FX_GRAPH mode so that we can capture
+    # Trace the model in _INTERNAL_COMPILE_FX_GRAPH mode so that we can capture
     # the full graph.
-    with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+    with execution_mode.set_eager_mode(EagerMode._INTERNAL_COMPILE_FX_GRAPH):
       model = torch.fx.experimental.proxy_tensor.make_fx(model)(*placeholders)
 
   if params:
@@ -159,7 +159,7 @@ def format_model(
       mlir_text = torch_tpu_export.exported_to_mlir(exported).serialize_text()
       result += mlir_text + "\n"
     else:
-      with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+      with execution_mode.set_eager_mode(EagerMode._INTERNAL_COMPILE_FX_GRAPH):
         results = model(*input_tensors)
         shlo = sync.computation_mlir(results)  # pyrefly: ignore[bad-assignment]
 
