@@ -306,6 +306,11 @@ TT_PYBIND11_MODULE(_device_ops_backend, m) {
         "Returns the next available stream ID for the given device.");
 
   m.def(
+      "_get_device_type",
+      []() -> int { return static_cast<int>(GetPrivateUse1DeviceType()); },
+      "Returns the integer c10::DeviceType enum value for the TPU backend.");
+
+  m.def(
       "_get_current_device_id",
       []() -> int {
         TT_THROW_IF_ERROR(PjrtBackend::GetInstance().EnsureInitialized());

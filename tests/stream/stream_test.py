@@ -30,6 +30,25 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
   functionality beyond the torch.Stream and torch.Event specification.
   """
 
+  def test_tpu_stream_inherits_from_torch_stream(self):
+    """TpuStream can be used wherever a torch.Stream is expected."""
+    default_acc_stream = torch.accelerator.current_stream()
+    new_stream = torch.tpu.Stream()
+
+    self.assertIsInstance(new_stream, torch.Stream)
+    self.assertIsInstance(torch.tpu.current_stream(), torch.Stream)
+    self.assertIsInstance(torch.tpu.default_stream(), torch.Stream)
+    self.assertEqual(new_stream.device_type, default_acc_stream.device_type)
+    self.assertEqual(new_stream.device, torch.device('tpu', 0))
+
+    torch.accelerator.set_stream(new_stream)
+    try:
+      self.assertEqual(torch.accelerator.current_stream(), new_stream)
+      self.assertEqual(torch.tpu.current_stream(), new_stream)
+    finally:
+      torch.accelerator.set_stream(default_acc_stream)
+    self.assertEqual(torch.accelerator.current_stream(), default_acc_stream)
+
   def test_stream(self):
     """Tests basic usage of streams and events.
 
@@ -40,12 +59,7 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
     new_stream = torch.tpu.Stream(priority=-1)
 
     default_acc_stream = torch.accelerator.current_stream()
-    new_acc_stream = torch.Stream(
-        stream_id=new_stream.stream_id,
-        device_index=new_stream.device_index,
-        device_type=default_acc_stream.device_type,
-    )
-    torch.accelerator.set_stream(new_acc_stream)
+    torch.accelerator.set_stream(new_stream)
     x = torch.ones((8, 8), device='tpu')
     event = new_stream.record_event()
     torch.accelerator.set_stream(default_acc_stream)
@@ -68,12 +82,7 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
     self.assertEqual(default_acc_stream.stream_id, default_stream.stream_id)
 
     # 1. set_stream updates current_stream
-    new_acc_stream = torch.Stream(
-        stream_id=new_stream.stream_id,
-        device_index=new_stream.device_index,
-        device_type=default_acc_stream.device_type,
-    )
-    torch.accelerator.set_stream(new_acc_stream)
+    torch.accelerator.set_stream(new_stream)
     self.assertEqual(
         torch.accelerator.current_stream().stream_id, new_stream.stream_id
     )

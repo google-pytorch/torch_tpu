@@ -83,7 +83,7 @@ def _parse_pinned(pinned: CorePinningMode | str | None) -> CorePinningMode:
   )
 
 
-class TpuStream:
+class TpuStream(torch.Stream):
   """A stream of operations on a TPU device.
 
   Streams are a CUDA concept with no clear analog in XLA.
@@ -100,8 +100,36 @@ class TpuStream:
   to help identify new use cases. The CUDA Stream class on which this is
   based can be found in torch/cuda/streams.py.
 
+  TpuStream subclasses torch.Stream so that it can be passed to device-generic
+  APIs such as torch.accelerator.set_stream().
+
   TODO: b/452051142 - Explore if and how to make better use of streams.
   """
+
+  def __new__(
+      cls,
+      device=None,
+      priority: int = 0,
+      stream_id: Optional[int] = None,
+      *,
+      pinned: CorePinningMode | str | None = None,
+      **kwargs,
+  ):
+    # pylint: disable=unused-argument
+    # stream_id, device_index and device_type are read-only members of
+    # torch.Stream, so they must be set here rather than in __init__.
+    device_index = _get_device_index(device)
+    if stream_id is None:
+      # pylint: disable=protected-access
+      stream_id = _device_ops_backend._get_next_stream_id(device_index)
+    return super().__new__(
+        cls,
+        stream_id=stream_id,
+        device_index=device_index,
+        # pylint: disable=protected-access
+        device_type=_device_ops_backend._get_device_type(),
+        priority=priority,
+    )
 
   def __init__(
       self,
@@ -113,18 +141,10 @@ class TpuStream:
       **kwargs,
   ):
     # pylint: disable=unused-argument
-    self.device_index = _get_device_index(device)
-
     self.pinned: CorePinningMode = _parse_pinned(pinned)
 
-    if stream_id is not None:
-      self.stream_id = stream_id
-    else:
-      self.stream_id = _device_ops_backend._get_next_stream_id(
-          self.device_index
-      )
-
     if self.pinned != CorePinningMode.UNPINNED:
+      # pylint: disable=protected-access
       _device_ops_backend._set_core_pinning_mode(
           self.device_index, self.stream_id, self.pinned
       )
