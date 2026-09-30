@@ -99,6 +99,8 @@ def _can_use_pad_real_to_static(
     example_inputs: Sequence[Any],
 ) -> bool:
   """Returns True if dynamic input tensors can be lowered to pad_real_to_static."""
+  # b/568002478 - Re-enable once failing test `ops_test_dynamic_compiled` is fixed.
+  return False
   libtpu = utils.libtpu_version()
   if libtpu is not None and libtpu < (0, 0, 49):
     return False

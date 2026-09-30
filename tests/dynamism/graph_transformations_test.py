@@ -15,6 +15,7 @@
 """Unit tests for graph transformations."""
 
 from __future__ import annotations
+import unittest
 from unittest import mock
 from absl.testing import absltest
 import torch
@@ -350,6 +351,10 @@ class GraphTransformationsTest(seed_test_utils.RepeatableTest):
     )
     self.assertLen(dynamic_reshape_nodes, 1)
 
+  @unittest.skip(
+      "b/568002478 - Re-enable once failing test"
+      " `ops_test_dynamic_compiled` is fixed."
+  )
   def test_can_use_pad_real_to_static_libtpu_version(self):
     t = torch.ones(4, dtype=torch.float32)
     with mock.patch.object(utils, "libtpu_version", return_value=(0, 0, 48)):
