@@ -67,12 +67,11 @@ def test_item_demo():
 
 def test_modes_demo():
   import torch
-  from torch_tpu._internal import execution_mode as em
   from torch_tpu._internal.sync import sync
 
   def check_fusion(mode_name, mode):
     print(f"--- Mode: {mode_name} ---")
-    with em.set_eager_mode(mode):
+    with torch.tpu.set_eager_mode(mode):
       x = torch.ones((2, 2), device="tpu")
       y = x + 1
       z = y * 2
@@ -91,6 +90,8 @@ def test_modes_demo():
         print("  Result: Operations were EXECUTED immediately (not fused).")
     print()
 
-  check_fusion("Fused Eager (DEFER_AND_FUSE)", em.EagerMode.DEFER_AND_FUSE)
-  check_fusion("Strict Eager (DEFER_NEVER)", em.EagerMode.DEFER_NEVER)
+  check_fusion(
+      "Fused Eager (DEFER_AND_FUSE)", torch.tpu.EagerMode.DEFER_AND_FUSE
+  )
+  check_fusion("Strict Eager (DEFER_NEVER)", torch.tpu.EagerMode.DEFER_NEVER)
   return

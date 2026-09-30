@@ -118,9 +118,7 @@ def test_optracer_diagnostic(device):
 
 def test_eager_mode_never(device):
   """Cell: run operations in EagerMode.DEFER_NEVER (eager mode)."""
-  from torch_tpu._internal import execution_mode as em
-
-  with em.eager_mode(em.EagerMode.DEFER_NEVER):
+  with torch.tpu.set_eager_mode(torch.tpu.EagerMode.DEFER_NEVER):
     p = torch.randn(4, 4, device=device, dtype=torch.bfloat16)
     q = torch.randn(4, 4, device=device, dtype=torch.bfloat16)
     r = p + q
