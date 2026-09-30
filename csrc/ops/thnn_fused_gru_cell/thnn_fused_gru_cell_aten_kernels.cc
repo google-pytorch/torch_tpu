@@ -347,6 +347,12 @@ absl::Status ThnnFusedGruCellOutImpl(
     const at::Tensor& hx, const std::optional<at::Tensor>& input_bias,
     const std::optional<at::Tensor>& hidden_bias, OpParamCacheKeys param_keys,
     at::Tensor& out0, at::Tensor& out1) {
+  TT_RETURN_IF_ERROR(
+      ValidateThnnFusedGruCellInputs(input_gates, hidden_gates, hx));
+  TT_RETURN_IF_ERROR(
+      ValidateOutDtype(out0, hx.scalar_type(), /*allow_out_dtype_cast=*/false));
+  TT_RETURN_IF_ERROR(
+      ValidateOutDtype(out1, hx.scalar_type(), /*allow_out_dtype_cast=*/false));
   return DispatchThnnFusedGruCellCommon<absl::Status>(
       input_gates, hidden_gates, hx, input_bias, hidden_bias,
       std::move(param_keys),

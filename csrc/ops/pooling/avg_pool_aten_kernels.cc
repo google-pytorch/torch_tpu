@@ -28,6 +28,7 @@
 #include "ATen/core/TensorBody.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -557,6 +558,8 @@ absl::StatusOr<at::Tensor> BuildAvgPoolOutNd(
       const Dimensions output_size,
       GetPoolingOutputSize(self.sizes(), kernel_size, stride, padding,
                            at::IntArrayRef({1}), ceil_mode, spatial_dim_count));
+  TT_RETURN_IF_ERROR(ValidateOutDtype(out, self.scalar_type(),
+                                      /*allow_out_dtype_cast=*/false));
   TT_ASSIGN_OR_RETURN(auto out_type,
                       ConvertTo<mlir::ElementType>(out.scalar_type()));
   auto op_builder = GetAvgPoolOpBuilder(kernel_size, stride, padding, ceil_mode,
@@ -578,6 +581,8 @@ absl::StatusOr<at::Tensor> BuildAvgPoolBackwardGradInputNd(
     at::IntArrayRef padding, bool ceil_mode, bool count_include_pad,
     std::optional<int64_t> divisor_override, at::Tensor& grad_input,
     int64_t spatial_dim_count, OpParamCacheKeys param_keys) {
+  TT_RETURN_IF_ERROR(ValidateOutDtype(grad_input, self.scalar_type(),
+                                      /*allow_out_dtype_cast=*/false));
   TT_ASSIGN_OR_RETURN(const auto output_dtype,
                       ConvertTo<mlir::ElementType>(grad_input.scalar_type()));
 
@@ -594,7 +599,7 @@ absl::StatusOr<at::Tensor> BuildAvgPoolBackwardGradInputNd(
 
   DispatchOpOptions<1> options = {
       .out_dtype = output_dtype,
-      .out_dims = grad_input.sizes(),
+      .out_dims = self.sizes(),
       .op_param_cache_keys = std::move(param_keys),
   };
   TT_RETURN_IF_ERROR(DispatchOpOut<2>(std::move(op_builder),

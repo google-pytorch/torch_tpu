@@ -369,22 +369,15 @@ def find_cast_pairs(
 # out-kernels are updated with proper ATen type checking.
 _OUT_DTYPE_CAST_KNOWN_FAILURES: Final[set[str]] = {
     # go/keep-sorted start
-    "_thnn_fused_gru_cell",
-    "_thnn_fused_lstm_cell",
     "addcdiv",
     "addcmul",
     "addmv",
-    "bernoulli",
     "bitwise_not",
     "bucketize",
-    "histc",
     "isin",
     "lerp",
     # TODO: remove after regen golden.
     "logcumsumexp",
-    "multinomial",
-    "nn.functional.avg_pool2d",
-    "nn.functional.avg_pool3d",
     "searchsorted",
     "sort",
     "sparse_coo_mul",

@@ -3884,6 +3884,41 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       t.bernoulli(p=1.5)
 
+  def test_bernoulli_complex_out_dtype(self):
+    device = et.device()
+    t = torch.rand((2, 2), device=device, dtype=torch.float32)
+    out = torch.empty((2, 2), device=device, dtype=torch.complex64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""bernoulli(): expected the output dtype not to be complex, got complex64""",
+        gpu=""""bernoulli_tensor_cuda_self_" not implemented for 'ComplexFloat'""",
+        message_reviewed_by="wan",
+    ):
+      torch.bernoulli(t, out=out)
+
+  def test_bernoulli_non_floating_p_dtype(self):
+    device = et.device()
+    t = torch.ones((2, 2), device=device, dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""bernoulli_(): expected probabilities tensor to have floating type, got int32""",
+        gpu="""expected probabilities tensor to have floating type, got Int""",
+        message_reviewed_by="wan",
+    ):
+      torch.bernoulli(t)
+
+  def test_bernoulli_out_non_floating_p_dtype(self):
+    device = et.device()
+    t = torch.ones((2, 2), device=device, dtype=torch.int32)
+    out = torch.empty((2, 2), device=device, dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""bernoulli(): expected probabilities tensor to have floating type, got int32""",
+        gpu="""expected probabilities tensor to have floating type, got Int""",
+        message_reviewed_by="wan",
+    ):
+      torch.bernoulli(t, out=out)
+
   def test_add_smaller_out_alias(self):
     """Tests that add fails when the out tensor is a smaller alias of an input."""
     a = torch.ones(4, device=et.device())
@@ -3938,6 +3973,19 @@ Device-side assertion tracking was not enabled by user.""",
         gpu=""""avg_pool2d_out_cuda_frame" not implemented for 'Int'""",
     ):
       torch.nn.functional.avg_pool2d(t_int32, kernel_size=3)
+
+  def test_avg_pool2d_out_dtype_mismatch(self):
+    inp = torch.randn(1, 1, 4, 4, device=et.device(), dtype=torch.float32)
+    out = torch.empty(1, 1, 2, 2, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""avg_pool2d(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.avg_pool2d.out(
+          inp, [2, 2], [2, 2], [0, 0], False, True, None, out=out
+      )
 
   def test_avg_pool1d_unsupported_dtypes(self):
     if et.is_on_gpu():
@@ -4103,6 +4151,19 @@ Device-side assertion tracking was not enabled by user.""",
         gpu=""""avg_pool3d_out_cuda" not implemented for 'Int'""",
     ):
       torch.nn.functional.avg_pool3d(t_int32, kernel_size=3)
+
+  def test_avg_pool3d_out_dtype_mismatch(self):
+    inp = torch.randn(1, 1, 4, 4, 4, device=et.device(), dtype=torch.float32)
+    out = torch.empty(1, 1, 2, 2, 2, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""avg_pool3d(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.avg_pool3d.out(
+          inp, [2, 2, 2], [2, 2, 2], [0, 0, 0], False, True, None, out=out
+      )
 
   @parameterized.named_parameters(
       ("bfloat16", torch.bfloat16, "bfloat16", "BFloat16"),
@@ -6598,6 +6659,17 @@ Supported combinations for non-constant padding:
     ):
       torch.multinomial(inp, num_samples=3, replacement=False)
 
+  def test_multinomial_out_dtype_mismatch(self):
+    inp = torch.tensor([0.1, 0.9], device=et.device(), dtype=torch.float32)
+    out = torch.empty(1, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""multinomial(): expected the output dtype to be int64, got float32""",
+        gpu="""multinomial expects Long tensor out, got: Float""",
+        message_reviewed_by="wan",
+    ):
+      torch.multinomial(inp, num_samples=1, out=out)
+
   def test_index_too_many_indices(self):
     t = torch.ones(2, 2, device=et.device())
     indices = [
@@ -7940,6 +8012,21 @@ Device-side assertion tracking was not enabled by user.""",
         message_reviewed_by="wan",
     ):
       torch.histc(t, bins=bins, min=min_val, max=max_val, out=out)
+
+  def test_histc_out_dtype_mismatch(self):
+    if et.is_on_gpu():
+      # PyTorch CUDA copy_ allows cross-type assignment into int32 output
+      # without checking safe promotional casting, so no exception is raised.
+      self.skipTest("GPU behavior difference")
+    inp = torch.tensor([1.0, 2.0, 3.0], device=et.device(), dtype=torch.float32)
+    out = torch.empty(4, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""histc(): result type float32 can't be cast to the desired output type int32""",
+        gpu="""result type Float can't be cast to the desired output type Int""",
+        message_reviewed_by="wan",
+    ):
+      torch.histc(inp, bins=4, min=0, max=4, out=out)
 
   def test_linalg_solve_triangular_dim_mismatch(self):
     a = torch.ones(3, 3, device=et.device())
@@ -10416,6 +10503,41 @@ Device-side assertion tracking was not enabled by user.""",
         gpu="""Expected tensor for argument #5 'prev_hidden' to have 13 elements; but it actually has 32 elements (while checking arguments for _thnn_fused_gru_cell_cuda)""",
     ):
       torch.ops.aten._thnn_fused_gru_cell(ig, hg, hx)
+
+  def test_thnn_fused_gru_cell_out_dtype_mismatch(self):
+    device = et.device()
+    ig = torch.randn(2, 6, device=device, dtype=torch.float32)
+    hg = torch.randn(2, 6, device=device, dtype=torch.float32)
+    hx = torch.randn(2, 2, device=device, dtype=torch.float32)
+    out0 = torch.empty(2, 2, device=device, dtype=torch.float64)
+    out1 = torch.empty(2, 10, device=device, dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""thnn_fused_gru_cell(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten._thnn_fused_gru_cell.out(
+          ig, hg, hx, None, None, out0=out0, out1=out1
+      )
+
+  def test_thnn_fused_lstm_cell_out_dtype_mismatch(self):
+    device = et.device()
+    ig = torch.randn(2, 8, device=device, dtype=torch.float32)
+    hg = torch.randn(2, 8, device=device, dtype=torch.float32)
+    cx = torch.randn(2, 2, device=device, dtype=torch.float32)
+    out0 = torch.empty(2, 2, device=device, dtype=torch.float64)
+    out1 = torch.empty(2, 2, device=device, dtype=torch.float32)
+    out2 = torch.empty(2, 8, device=device, dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""thnn_fused_lstm_cell(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten._thnn_fused_lstm_cell.out(
+          ig, hg, cx, None, None, out0=out0, out1=out1, out2=out2
+      )
 
   def test_fused_moving_avg_obs_fq_helper_non_floating(self):
     dev = et.device()

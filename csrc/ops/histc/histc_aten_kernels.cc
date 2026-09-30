@@ -142,11 +142,6 @@ absl::Status HistcHelperOut(const at::Tensor& self, const int64_t bins,
                             PromotedScalar& promoted_min,
                             PromotedScalar& promoted_max, at::Tensor& out,
                             OpParamCacheKeys param_keys) {
-  TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(out, {bins}));
-  const c10::ScalarType out_dtype = self.scalar_type();
-  TT_ASSIGN_OR_RETURN(at::Tensor min_val, promoted_min.GetTensor(out_dtype));
-  TT_ASSIGN_OR_RETURN(at::Tensor max_val, promoted_max.GetTensor(out_dtype));
-
   TT_RET_CHECK(!IsComplex(self), error::kInvalidArgument)
       << "expected the first argument not to be complex, got "
       << ToString(self.scalar_type());
@@ -156,16 +151,23 @@ absl::Status HistcHelperOut(const at::Tensor& self, const int64_t bins,
       error::kPythonNotImplementedError)
       << "not implemented for " << ToString(self.scalar_type());
 
+  TT_RETURN_IF_ERROR(
+      ValidateOutDtype(out, self.scalar_type(), /*allow_out_dtype_cast=*/true));
+  const c10::ScalarType input_dtype = self.scalar_type();
+  TT_ASSIGN_OR_RETURN(at::Tensor min_val, promoted_min.GetTensor(input_dtype));
+  TT_ASSIGN_OR_RETURN(at::Tensor max_val, promoted_max.GetTensor(input_dtype));
+
   const int64_t numel = self.numel();
 
   // If input is empty, return tensor of zeros.
   if (numel == 0) {
+    TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(out, {bins}));
     out.zero_();
     return absl::OkStatus();
   }
 
-  TT_ASSIGN_OR_RETURN(auto mlir_out_dtype,
-                      ConvertTo<mlir::ElementType>(out_dtype));
+  TT_ASSIGN_OR_RETURN(auto mlir_input_dtype,
+                      ConvertTo<mlir::ElementType>(input_dtype));
 
   TT_ASSIGN_OR_RETURN(const bool min_eq_max, eq(min, max));
   if (!(min_eq_max && numel > 0)) {
@@ -193,15 +195,11 @@ absl::Status HistcHelperOut(const at::Tensor& self, const int64_t bins,
     TT_ASSIGN_OR_RETURN(auto compute_bounds_param_keys,
                         TT_MAKE_OP_PARAM_CACHE_KEYS(compute_bounds));
 
-    TT_ASSIGN_OR_RETURN(
-        (auto [input_min, input_max]),
-        (DispatchOp<1, 2>(
-            std::move(op_builder), self,
-            {.out_dtypes = {mlir_out_dtype, mlir_out_dtype},
-             .out_dims_list = {Dimensions(), Dimensions()},
-             .op_param_cache_keys = std::move(compute_bounds_param_keys)})));
-    TT_RETURN_IF_ERROR(AssignBufferToAtTensor(std::move(input_min), min_val));
-    TT_RETURN_IF_ERROR(AssignBufferToAtTensor(std::move(input_max), max_val));
+    TT_RETURN_IF_ERROR((DispatchOpOut<1, 2>(
+        std::move(op_builder), self, {min_val, max_val},
+        {.out_dtypes = {mlir_input_dtype, mlir_input_dtype},
+         .out_dims_list = {Dimensions(), Dimensions()},
+         .op_param_cache_keys = std::move(compute_bounds_param_keys)})));
 
     // Validate computed bounds, as they may be invalid due to underflow
     // and overflow. Because this needs an expensive transfer to CPU, this
@@ -222,19 +220,19 @@ absl::Status HistcHelperOut(const at::Tensor& self, const int64_t bins,
   }
 
   // Perform the actual histogram computation.
+  TT_ASSIGN_OR_RETURN(auto mlir_out_dtype,
+                      ConvertTo<mlir::ElementType>(out.scalar_type()));
   auto op_builder = [bins](FixedSizeSpan<mlir::MlirOp, 3> inputs)
       -> absl::StatusOr<mlir::MlirOp> {
     auto& [input, min, max] = inputs;
     return BuildHistcShlo(input, bins, min, max);
   };
-  TT_ASSIGN_OR_RETURN(
-      auto result_buf,
-      DispatchOp<3>(std::move(op_builder), {self, min_val, max_val},
-                    {.out_dtype = mlir_out_dtype,
-                     .out_dims = {bins},
-                     .op_param_cache_keys = std::move(param_keys)}));
+  TT_RETURN_IF_ERROR(
+      DispatchOpOut<3>(std::move(op_builder), {self, min_val, max_val}, out,
+                       {.out_dtype = mlir_out_dtype,
+                        .out_dims = {bins},
+                        .op_param_cache_keys = std::move(param_keys)}));
 
-  TT_RETURN_IF_ERROR(AssignBufferToAtTensor(std::move(result_buf), out));
   return absl::OkStatus();
 }
 

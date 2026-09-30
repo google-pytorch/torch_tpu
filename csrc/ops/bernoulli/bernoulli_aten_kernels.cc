@@ -25,11 +25,14 @@
 #include "ATen/core/Generator.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "c10/core/ScalarType.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
+#include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
@@ -55,10 +58,17 @@ namespace {
 absl::StatusOr<MlirOpResults<1>> BuildBernoulliShlo(
     mlir::MlirOp rng_input_state, mlir::MlirOp p_op,
     const llvm::ArrayRef<int64_t> sizes, const mlir::ElementType mlir_type) {
+  // Determine floating point element type for uniform sampling.
+  mlir::ElementType p_dtype = GetElementTypeOrDie(p_op);
+  mlir::ElementType uniform_elem_type =
+      mlir::IsFloat(p_dtype)
+          ? p_dtype
+          : (mlir::IsFloat(mlir_type) ? mlir_type : mlir::ElementType::F32);
+
   // Generate uniform distribution in [0, 1).
   TT_ASSIGN_OR_RETURN(
       auto uniform_results,
-      BuildUniformShlo(rng_input_state, 0.0, 1.0, sizes, mlir_type));
+      BuildUniformShlo(rng_input_state, 0.0, 1.0, sizes, uniform_elem_type));
 
   mlir::MlirOp u = uniform_results;
 
@@ -83,7 +93,9 @@ NAryMlirOpBuilder<1, 1> GetBernoulliFloatFunctional(
   return [dims, output_dtype,
           p](mlir::MlirOp rng_input_state) -> absl::StatusOr<MlirOpResults<1>> {
     auto& builder = rng_input_state.getBuilder();
-    mlir::MlirOp p_op = MakeScalarConstant(builder, p, output_dtype);
+    mlir::ElementType p_dtype =
+        mlir::IsFloat(output_dtype) ? output_dtype : mlir::ElementType::F32;
+    mlir::MlirOp p_op = MakeScalarConstant(builder, p, p_dtype);
     return BuildBernoulliShlo(rng_input_state, p_op, dims, output_dtype);
   };
 }
@@ -124,6 +136,13 @@ at::Tensor& AtenBernoulliOut(const at::Tensor& self,
     if (self.numel() == 0) {
       return out;
     }
+    TT_CHECK_THROW(at::isFloatingType(self.scalar_type()),
+                   error::kInvalidArgument)
+        << "expected probabilities tensor to have floating type, got "
+        << ToString(self.scalar_type());
+    TT_CHECK_THROW(!IsComplex(out), error::kInvalidArgument)
+        << "expected the output dtype not to be complex, got "
+        << ToString(out.scalar_type());
 
     TT_ASSIGN_OR_THROW(mlir::ElementType output_dtype,
                        ConvertTo<mlir::ElementType>(out.scalar_type()));
@@ -173,6 +192,9 @@ at::Tensor& AtenBernoulli_Tensor(at::Tensor& self, const at::Tensor& p,
     if (self.numel() == 0) {
       return self;
     }
+    TT_CHECK_THROW(at::isFloatingType(p.scalar_type()), error::kInvalidArgument)
+        << "expected probabilities tensor to have floating type, got "
+        << ToString(p.scalar_type());
 
     TT_ASSIGN_OR_THROW(mlir::ElementType output_dtype,
                        ConvertTo<mlir::ElementType>(self.scalar_type()));

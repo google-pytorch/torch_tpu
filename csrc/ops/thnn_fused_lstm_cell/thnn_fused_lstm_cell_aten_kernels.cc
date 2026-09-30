@@ -324,6 +324,14 @@ absl::Status ThnnFusedLstmCellOutImpl(
     const at::Tensor& cx, const std::optional<at::Tensor>& input_bias,
     const std::optional<at::Tensor>& hidden_bias, OpParamCacheKeys param_keys,
     at::Tensor& out0, at::Tensor& out1, at::Tensor& out2) {
+  TT_RETURN_IF_ERROR(
+      ValidateThnnFusedLstmCellInputs(input_gates, hidden_gates, cx));
+  TT_RETURN_IF_ERROR(
+      ValidateOutDtype(out0, cx.scalar_type(), /*allow_out_dtype_cast=*/false));
+  TT_RETURN_IF_ERROR(
+      ValidateOutDtype(out1, cx.scalar_type(), /*allow_out_dtype_cast=*/false));
+  TT_RETURN_IF_ERROR(
+      ValidateOutDtype(out2, cx.scalar_type(), /*allow_out_dtype_cast=*/false));
   return DispatchThnnFusedLstmCellCommon<absl::Status>(
       input_gates, hidden_gates, cx, input_bias, hidden_bias,
       std::move(param_keys),

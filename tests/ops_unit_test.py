@@ -14704,6 +14704,108 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(compute)
 
+  def test_bernoulli_out_dtypes(self):
+    device = torch.device("tpu")
+    p = torch.full((4, 4), 0.5, device=device)
+    for out_dtype in [torch.int32, torch.int64, torch.float32, torch.bool]:
+      out = torch.empty((0,), device=device, dtype=out_dtype)
+      res = torch.bernoulli(p, out=out)
+      self.assertEqual(res.shape, (4, 4))
+      self.assertEqual(res.dtype, out_dtype)
+      self.assertIs(res, out)
+
+  def test_multinomial_out_resizing(self):
+    device = torch.device("tpu")
+    weights = torch.tensor([[0.1, 0.9], [0.8, 0.2]], device=device)
+    out = torch.empty((0,), device=device, dtype=torch.int64)
+    res = torch.multinomial(weights, num_samples=2, replacement=True, out=out)
+    self.assertEqual(res.shape, (2, 2))
+    self.assertEqual(res.dtype, torch.int64)
+    self.assertIs(res, out)
+
+  def test_histc_out_upcast_and_resizing(self):
+    device = torch.device("tpu")
+    x = torch.tensor([1.0, 2.0, 2.5, 3.0], dtype=torch.float32)
+    bins = 4
+    min_val = 0.0
+    max_val = 4.0
+    expected = torch.histc(x, bins=bins, min=min_val, max=max_val).to(
+        torch.float64
+    )
+    inp = x.to(device)
+    out = torch.empty((0,), device=device, dtype=torch.float64)
+    res = torch.histc(inp, bins=bins, min=min_val, max=max_val, out=out)
+    self.assertEqual(out.shape, (bins,))
+    self.assertEqual(out.dtype, torch.float64)
+    utils.assert_close(res.cpu(), expected)
+    self.assertEqual(res.data_ptr(), out.data_ptr())
+
+  def test_avg_pool2d_out_resizing(self):
+    x = torch.randn(2, 3, 8, 8)
+
+    def compute(device):
+      inp = x.to(device)
+      out = torch.empty((0,), device=device, dtype=torch.float32)
+      return torch.ops.aten.avg_pool2d.out(
+          inp, [2, 2], [2, 2], [0, 0], False, True, None, out=out
+      )
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  def test_avg_pool3d_out_resizing(self):
+    x = torch.randn(2, 3, 6, 6, 6)
+
+    def compute(device):
+      inp = x.to(device)
+      out = torch.empty((0,), device=device, dtype=torch.float32)
+      return torch.ops.aten.avg_pool3d.out(
+          inp, [2, 2, 2], [2, 2, 2], [0, 0, 0], False, True, None, out=out
+      )
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  def test_thnn_fused_gru_cell_out_resizing(self):
+    device = torch.device("tpu")
+    ig = torch.randn(2, 6, device=device)
+    hg = torch.randn(2, 6, device=device)
+    hx = torch.randn(2, 2, device=device)
+    expected0, expected1 = torch.ops.aten._thnn_fused_gru_cell(ig, hg, hx)
+    out0 = torch.empty((0,), device=device, dtype=torch.float32)
+    out1 = torch.empty((0,), device=device, dtype=torch.float32)
+    res0, res1 = torch.ops.aten._thnn_fused_gru_cell.out(
+        ig, hg, hx, None, None, out0=out0, out1=out1
+    )
+    self.assertEqual(out0.shape, (2, 2))
+    self.assertEqual(out1.shape, (2, 10))
+    utils.assert_close(res0, expected0)
+    utils.assert_close(res1, expected1)
+    self.assertEqual(res0.data_ptr(), out0.data_ptr())
+    self.assertEqual(res1.data_ptr(), out1.data_ptr())
+
+  def test_thnn_fused_lstm_cell_out_resizing(self):
+    device = torch.device("tpu")
+    ig = torch.randn(2, 8, device=device)
+    hg = torch.randn(2, 8, device=device)
+    cx = torch.randn(2, 2, device=device)
+    expected0, expected1, expected2 = torch.ops.aten._thnn_fused_lstm_cell(
+        ig, hg, cx
+    )
+    out0 = torch.empty((0,), device=device, dtype=torch.float32)
+    out1 = torch.empty((0,), device=device, dtype=torch.float32)
+    out2 = torch.empty((0,), device=device, dtype=torch.float32)
+    res0, res1, res2 = torch.ops.aten._thnn_fused_lstm_cell.out(
+        ig, hg, cx, None, None, out0=out0, out1=out1, out2=out2
+    )
+    self.assertEqual(out0.shape, (2, 2))
+    self.assertEqual(out1.shape, (2, 2))
+    self.assertEqual(out2.shape, (2, 8))
+    utils.assert_close(res0, expected0)
+    utils.assert_close(res1, expected1)
+    utils.assert_close(res2, expected2)
+    self.assertEqual(res0.data_ptr(), out0.data_ptr())
+    self.assertEqual(res1.data_ptr(), out1.data_ptr())
+    self.assertEqual(res2.data_ptr(), out2.data_ptr())
+
   @parameterized.product(
       shape=[(2, 3, 16), (3, 20)],
       kernel_size=[2, 3],

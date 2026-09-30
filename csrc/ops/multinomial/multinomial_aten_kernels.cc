@@ -129,29 +129,32 @@ at::Tensor& AtenMultinomialOut(const at::Tensor& self, int64_t num_samples,
                                bool replacement,
                                c10::optional<at::Generator> generator,
                                at::Tensor& out) {
-  TT_KERNEL(OpName::kMultinomialOut, param_keys,
-            (self, num_samples, replacement, generator, out), {
-              TT_THROW_IF_ERROR(ValidateInputs(self, num_samples, replacement));
-              TT_ASSIGN_OR_THROW(const RngUsage usage,
-                                 GetRngUsage(self, num_samples, replacement));
+  TT_KERNEL(
+      OpName::kMultinomialOut, param_keys,
+      (self, num_samples, replacement, generator, out), {
+        TT_THROW_IF_ERROR(ValidateInputs(self, num_samples, replacement));
+        TT_THROW_IF_ERROR(ValidateOutDtype(out, at::ScalarType::Long,
+                                           /*allow_out_dtype_cast=*/false));
+        TT_ASSIGN_OR_THROW(const RngUsage usage,
+                           GetRngUsage(self, num_samples, replacement));
 
-              auto* gen = at::get_generator_or_default<DeviceGeneratorImplBase>(
-                  generator, GetDefaultDeviceGenerator());
-              // NOLINTNEXTLINE(build/c++11) - std::mutex required by PyTorch
-              std::scoped_lock<std::mutex> lock(gen->mutex_);
-              const at::Tensor rng_input_state = gen->DeviceStateTensor();
+        auto* gen = at::get_generator_or_default<DeviceGeneratorImplBase>(
+            generator, GetDefaultDeviceGenerator());
+        // NOLINTNEXTLINE(build/c++11) - std::mutex required by PyTorch
+        std::scoped_lock<std::mutex> lock(gen->mutex_);
+        const at::Tensor rng_input_state = gen->DeviceStateTensor();
 
-              TT_THROW_IF_ERROR((DispatchOpOut<2, 1>(
-                  GetMultinomialFunctional(num_samples, replacement),
-                  {self, rng_input_state}, out,
-                  {.out_dtype = mlir::ElementType::I64,
-                   .out_dims = GetOutputDimensions(self, num_samples),
-                   .op_param_cache_keys = std::move(param_keys)})));
+        TT_THROW_IF_ERROR((DispatchOpOut<2, 1>(
+            GetMultinomialFunctional(num_samples, replacement),
+            {self, rng_input_state}, out,
+            {.out_dtype = mlir::ElementType::I64,
+             .out_dims = GetOutputDimensions(self, num_samples),
+             .op_param_cache_keys = std::move(param_keys)})));
 
-              TT_THROW_IF_ERROR(gen->AdvanceDeviceStateTensor(
-                  usage.num_elements, usage.bit_width));
-              return out;
-            });
+        TT_THROW_IF_ERROR(
+            gen->AdvanceDeviceStateTensor(usage.num_elements, usage.bit_width));
+        return out;
+      });
 }
 
 }  // namespace torch_tpu
