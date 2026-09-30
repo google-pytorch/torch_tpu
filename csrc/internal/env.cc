@@ -48,6 +48,9 @@ std::optional<bool> PyGetBooleanEnvOnce(std::string_view name,
   } else if (name == kTorchTpuInternalMaterializeCollectiveTensorsEnvVar) {
     value = GetBooleanEnvOnce<
         kTorchTpuInternalMaterializeCollectiveTensorsEnvVar>();
+  } else if (name == kTorchTpuInternalStorageAwarePlaceholdersEnvVar) {
+    value =
+        GetBooleanEnvOnce<kTorchTpuInternalStorageAwarePlaceholdersEnvVar>();
   } else {
     ABSL_LOG(FATAL)  // CRASH_OK=TorchTPU bug
         << "Before reading Boolean environment variable " << name

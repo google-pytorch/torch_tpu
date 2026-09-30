@@ -1461,16 +1461,35 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     self.assertEqual(ph_x.shape, x.shape)
     self.assertEqual(ph_y.shape, y.shape)
 
-  def test_traverse_and_compile_shared_storage_deduplication(self):
-
-    @torch.compile
-    def fn(a, b):
-      return a + b.t()
-
-    x = torch.randn(16, 32, device='tpu')
+  def test_storage_aware_placeholders_disabled_fallback(self):
+    x = torch.randn(16, 32)
     y = x.t()
-    out = fn(x, y)
-    utils.assert_close(out.cpu(), (x + y.t()).cpu())
+    placeholders = compiler._create_storage_aware_placeholders(
+        [x, y], enabled=False
+    )
+    ph_x, ph_y = placeholders[0], placeholders[1]
+    self.assertEqual(ph_x.shape, x.shape)
+    self.assertEqual(ph_y.shape, y.shape)
+    self.assertNotEqual(
+        ph_x.untyped_storage().data_ptr(),
+        ph_y.untyped_storage().data_ptr(),
+    )
+
+  def test_traverse_and_compile_shared_storage_deduplication(self):
+    # The knob is read through the memoizing env getter, which cannot observe a
+    # mutation of os.environ made after the first read.
+    with absltest.mock.patch.object(
+        compiler.env, 'get_bool_env_once', return_value=True
+    ):
+
+      @torch.compile
+      def fn(a, b):
+        return a + b.t()
+
+      x = torch.randn(16, 32, device='tpu')
+      y = x.t()
+      out = fn(x, y)
+      utils.assert_close(out.cpu(), (x + y.t()).cpu())
 
   def test_async_traverse_and_compile_basic(self):
     x = torch.randn(4, 8, device=self.device)

@@ -156,6 +156,13 @@ inline constexpr char kTorchTpuInternalSkinnyScOffloadEnvVar[] =
 // even in the presence of errors.
 inline constexpr char kTorchTpuInternalSplitRngStateUpdate[] =
     "TORCH_TPU_INTERNAL_SPLIT_RNG_STATE_UPDATE";
+// If set to "1" or "true", StaticCompiler creates one placeholder per shared
+// input storage and rebuilds aliasing inputs as views of it, instead of one
+// independent placeholder per input. Default is "false".
+// TODO(dighamber): Temporary rollout gate; remove once storage-aware
+// placeholders are always enabled.
+inline constexpr char kTorchTpuInternalStorageAwarePlaceholdersEnvVar[] =
+    "TORCH_TPU_INTERNAL_STORAGE_AWARE_PLACEHOLDERS";
 // If unset or set to "1", schedule local compilation right away as a backup to
 // tier-3 compilation cache read (whichever succeeds first will unblock
 // execution). If set to "0", local compilation is done only after tier-3
@@ -311,6 +318,8 @@ inline constexpr auto kEnvVarToStage =
          SymbolStage::InternalApi()},
         {kTorchTpuInternalSkinnyScOffloadEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuInternalSplitRngStateUpdate, SymbolStage::InternalApi()},
+        {kTorchTpuInternalStorageAwarePlaceholdersEnvVar,
+         SymbolStage::InternalApi()},
         {kTorchTpuInternalTier3CompilationCacheLocalBackupTaskEnvVar,
          SymbolStage::InternalApi()},
         {kTorchTpuInternalXlaOptionsEnvVar, SymbolStage::InternalApi()},
