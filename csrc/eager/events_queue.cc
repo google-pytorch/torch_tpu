@@ -849,7 +849,7 @@ std::vector<absl_nonnull std::unique_ptr<Traversal>> PrepareTraversals(
     const absl::flat_hash_map<SharedDeviceBufferList, int64_t>& live_nodes,
     absl::Span<const SharedDeviceBufferList> nodes_to_materialize,
     const NodeMatcher& nodes_to_materialize_set,
-    const CorePinningMode core_pinning_mode) {
+    CorePinningMode core_pinning_mode) {
   std::vector<absl_nonnull std::unique_ptr<Traversal>> traversals;
 
   if (deferred_op_events.empty() && nodes_to_materialize.empty()) {
@@ -1134,7 +1134,7 @@ void RecordDeferredOpCreated(const SharedDeviceBufferList& device_buffer_list) {
 void RecordCompiledExecutionTask(ExecutionTask&& execution_task,
                                  c10::DeviceIndex device_index,
                                  c10::StreamId stream_id,
-                                 const EagerMode eager_mode) {
+                                 EagerMode eager_mode) {
   ABSL_CHECK_NE(  // CRASH_OK=Must exit trace before executing
       eager_mode, EagerMode::kInternalCompileFxGraph);
   GetOrCreateStreamState(device_index, stream_id)
