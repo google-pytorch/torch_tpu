@@ -29,6 +29,7 @@ import unittest
 from absl import logging
 from absl.testing import absltest
 from absl.testing import parameterized
+import immutabledict
 import jax
 from perflab import common
 from perflab import base_test
@@ -64,6 +65,18 @@ torchax.enable_performance_mode()
 
 
 _CASES = list(cases.get_cases(_PLATFORM, _FRAMEWORK))
+
+# TODO(b/568037427): remove entries when underlying issues are fixed.
+# Benchmarks that are known to fail under TorchAx, keyed by benchmark name.
+_TORCHAX_KNOWN_FAILURES = immutabledict.immutabledict({
+    "qwen3_coder_30b_moe_forward": "aten::_grouped_mm has no lowering",
+    "gemma_4_26b_a4b_6_layers_forward": (
+        "HBM OOM on v5e_1x1 while moving the model to the device"
+    ),
+    "gemma_4_31b_6_layers_forward": (
+        "host OOM while moving the model to the device"
+    ),
+})
 
 
 def _make_run_step(
@@ -112,6 +125,12 @@ class TorchaxBenchmarkTest(
     if spec.stepper == step_lib.StepperType.DECODER_ONLY_DECODE:
       self.skipTest(
           f"TorchAx benchmark does not support stepper {spec.stepper}"
+      )
+
+    if spec.name in _TORCHAX_KNOWN_FAILURES:
+      self.skipTest(
+          f"Benchmark {spec.name} is known to fail in TorchAx due to"
+          f" {_TORCHAX_KNOWN_FAILURES[spec.name]}."
       )
 
     is_skipped = mode.value in spec.skipped_run_modes
