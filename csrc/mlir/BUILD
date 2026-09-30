@@ -48,7 +48,6 @@ torch_tpu_cc_library(
         ":instrumentation",
         "//csrc/common:error_utils",
         "@com_google_absl//absl/status",
-        "@llvm-project//llvm:Support",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",

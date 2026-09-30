@@ -19,7 +19,6 @@
 
 #include <memory>
 #include <optional>
-#include <string>
 
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/IR/BuiltinOps.h"

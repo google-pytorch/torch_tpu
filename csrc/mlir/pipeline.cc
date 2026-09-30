@@ -21,7 +21,6 @@
 #include "absl/status/status.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/mlir/instrumentation.h"
-#include "llvm/Support/LogicalResult.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
