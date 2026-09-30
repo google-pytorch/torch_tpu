@@ -22,6 +22,7 @@ from typing import Optional, Tuple, TypeAlias
 from unittest import mock
 import warnings
 from absl.testing import absltest
+from absl.testing import parameterized
 import jax
 from jax.experimental import pallas as pl
 import jax.numpy as jnp
@@ -34,6 +35,7 @@ from torch_tpu._internal import execution_mode
 from torch_tpu._internal import pallas
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.pallas import _compat
+from torch_tpu._internal.pallas import pallas as pallas_impl
 from torch_tpu._internal.utils import test_utils
 from torch_tpu._internal.utils import utils
 from tests import seed_test_utils
@@ -1451,6 +1453,73 @@ class TestPallasMesh(seed_test_utils.RepeatableTest):
       self.assertEqual(mesh.axis_names, ("data", "attn_dp", "model"))
       self.assertEqual(mesh.devices.shape, (2, 2, 2))
       self.assertEqual(len(mesh.devices.flat), 8)
+
+
+class TestPallasShape(seed_test_utils.RepeatableTest):
+
+  def setUp(self):
+    super().setUp()
+    with mock.patch.object(
+        dist, "is_initialized", return_value=True
+    ), mock.patch.object(dist, "get_world_size", return_value=8):
+      self.mesh = pallas.get_pallas_mesh(
+          axis_names=("chip", "core"), mesh_shape=(4, 2)
+      )
+
+  @parameterized.named_parameters(
+      ("grouped_first", (("chip", "core"), None), (128, 32, 7)),
+      ("grouped_last", (None, ("chip", "core")), (16, 256, 7)),
+      ("separate_axes", ("chip", "core"), (64, 64, 7)),
+      ("single_axis", ("chip",), (64, 32, 7)),
+      ("replicated", (None, None), (16, 32, 7)),
+      ("empty_group", ((), None), (16, 32, 7)),
+      ("empty_spec", (), (16, 32, 7)),
+  )
+  def test_shape_round_trip(self, axes, global_shape):
+    spec = jax.sharding.PartitionSpec(*axes)
+    local_shape = (16, 32, 7)
+    self.assertEqual(
+        pallas_impl.get_global_shape(local_shape, self.mesh, spec), global_shape
+    )
+    self.assertEqual(
+        pallas_impl.get_local_shape(global_shape, self.mesh, spec), local_shape
+    )
+
+  def test_missing_mesh_or_spec_preserves_shape(self):
+    shape = (16, 32)
+    spec = jax.sharding.PartitionSpec(("chip", "core"), None)
+    for mesh, partition_spec in ((None, spec), (self.mesh, None)):
+      with self.subTest(mesh=mesh, partition_spec=partition_spec):
+        self.assertEqual(
+            pallas_impl.get_global_shape(shape, mesh, partition_spec), shape
+        )
+        self.assertEqual(
+            pallas_impl.get_local_shape(shape, mesh, partition_spec), shape
+        )
+
+  def test_non_string_axis_names(self):
+    mesh = jax.sharding.Mesh(self.mesh.devices, (2, 3))
+    spec = jax.sharding.PartitionSpec(2, 3)
+    self.assertEqual(pallas_impl.get_global_shape((16, 32), mesh, spec), (64, 64))
+    self.assertEqual(pallas_impl.get_local_shape((64, 64), mesh, spec), (16, 32))
+
+  @parameterized.named_parameters(
+      ("fp32_first", torch.float32, (("chip", "core"), None), (128, 32)),
+      ("fp32_last", torch.float32, (None, ("chip", "core")), (16, 256)),
+      ("fp4_first", torch.float4_e2m1fn_x2, (("chip", "core"), None), (128, 64)),
+      ("fp4_last", torch.float4_e2m1fn_x2, (None, ("chip", "core")), (16, 512)),
+  )
+  def test_placeholder_round_trip(self, dtype, axes, global_shape):
+    spec = jax.sharding.PartitionSpec(*axes)
+    value = torch.empty((16, 32), dtype=dtype, device="tpu")
+    placeholder = pallas_impl.jax_placeholder(value, self.mesh, spec)
+    self.assertEqual(placeholder.shape, global_shape)
+    self.assertEqual(placeholder.sharding.spec, spec)
+    aval = jax.core.ShapedArray(placeholder.shape, placeholder.dtype)
+    output = pallas_impl.torch_placeholder(aval, self.mesh, spec)
+    self.assertEqual(output.shape, value.shape)
+    self.assertEqual(output.dtype, dtype)
+    self.assertEqual(output.device.type, "tpu")
 
 
 if __name__ == "__main__":

@@ -121,10 +121,17 @@ __all__ = [
 def _convert_shape(shape, mesh, partition_spec, op):
   """Converts a shape based on a mesh and partition specification."""
   if mesh is not None and partition_spec is not None:
-    axis_to_index = {axis: index for index, axis in enumerate(mesh.axis_names)}
     ans = tuple(
         [
-            op(s, mesh.devices.shape[axis_to_index[name]])
+            op(
+                s,
+                math.prod(
+                    mesh.shape[axis]
+                    for axis in (
+                        name if isinstance(name, (tuple, list)) else (name,)
+                    )
+                ),
+            )
             if name is not None
             else s
             for s, name in zip(shape, partition_spec)
