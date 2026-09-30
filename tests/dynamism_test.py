@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections.abc import Callable, Sequence
 from typing import TypeAlias
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -643,6 +644,83 @@ class DynamismTest(seed_test_utils.RepeatableTest):
     self.assertEqual(act_dynamism_info[0].dimension, 0)
     self.assertEqual(act_dynamism_info[0].lower_bound, 2)
     self.assertEqual(act_dynamism_info[0].upper_bound, 10)
+
+  # `x + 1` leaves nonzero values past the runtime size of the bounded input,
+  # which the convolution must ignore.
+  @parameterized.named_parameters(
+      dict(
+          # Causal depthwise convolution of LFM2 and Mamba models.
+          testcase_name="conv1d_causal_depthwise",
+          conv_fn=lambda x, w: torch.nn.functional.conv1d(
+              x + 1, w, padding=2, groups=4
+          ),
+          shapes=[(2, 4, 10), (4, 1, 3)],
+          dim=2,
+          upper_bound=20,
+          expected_upper_bound=22,
+      ),
+      dict(
+          testcase_name="conv1d_batch_with_bias",
+          conv_fn=lambda x, w, b: torch.nn.functional.conv1d(
+              x + 1, w, b, padding=1
+          ),
+          shapes=[(3, 4, 10), (6, 4, 3), (6,)],
+          dim=0,
+          upper_bound=8,
+          expected_upper_bound=8,
+      ),
+      dict(
+          testcase_name="conv1d_strided_dilated",
+          conv_fn=lambda x, w: torch.nn.functional.conv1d(
+              x + 1, w, stride=3, padding=1, dilation=2
+          ),
+          shapes=[(2, 3, 17), (4, 3, 3)],
+          dim=2,
+          upper_bound=25,
+          expected_upper_bound=8,
+      ),
+      dict(
+          testcase_name="conv2d_strided_with_bias",
+          conv_fn=lambda x, w, b: torch.nn.functional.conv2d(
+              x + 1, w, b, stride=2, padding=1
+          ),
+          shapes=[(1, 3, 9, 8), (5, 3, 3, 3), (5,)],
+          dim=2,
+          upper_bound=16,
+          expected_upper_bound=8,
+      ),
+      dict(
+          testcase_name="conv_transpose1d_strided_with_bias",
+          conv_fn=lambda x, w, b: torch.nn.functional.conv_transpose1d(
+              x + 1, w, b, stride=2, padding=1, output_padding=1
+          ),
+          shapes=[(2, 3, 6), (3, 4, 3), (4,)],
+          dim=2,
+          upper_bound=12,
+          expected_upper_bound=24,
+      ),
+  )
+  def test_convolution_dynamic_input(
+      self,
+      conv_fn: Callable[..., torch.Tensor],
+      shapes: Sequence[tuple[int, ...]],
+      dim: int,
+      upper_bound: int,
+      expected_upper_bound: int,
+  ):
+    def mark_dynamic(x: torch.Tensor, *unused_args: torch.Tensor) -> None:
+      dynamism.mark_dynamic(x, dim, 2, upper_bound)
+
+    # Integer values keep the convolution exact on TPU.
+    args = [
+        torch.randint(-3, 4, shape, dtype=torch.float32) for shape in shapes
+    ]
+    act = self._run_bounded_dynamism_test(conv_fn, mark_dynamic, *args)
+    act_dynamism_info = dynamism.get_dynamism_info(act)
+    self.assertLen(act_dynamism_info, 1)
+    self.assertEqual(act_dynamism_info[0].dimension, dim)
+    self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+    self.assertEqual(act_dynamism_info[0].upper_bound, expected_upper_bound)
 
 
 if __name__ == "__main__":

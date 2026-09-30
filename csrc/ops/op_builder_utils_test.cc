@@ -37,6 +37,7 @@
 #include "csrc/eager/eager_mode.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
@@ -48,6 +49,7 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Value.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/Register.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -57,7 +59,6 @@
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "stablehlo/transforms/StablehloBroadcastLowering.h"
 #include "torch/headeronly/core/ScalarType.h"
-#include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
 namespace {
@@ -1400,6 +1401,282 @@ TEST(OpBuilderUtils, Squeeze_PreservesBoundedDynamism) {
   EXPECT_EQ(dims[1].size, 10);
   EXPECT_TRUE(dims[1].boundOp.has_value());
 }
+
+// Returns an f32 function argument of the given shape, where `bounded_dims`
+// are made bounded dynamic by set_dimension_size with runtime size arguments.
+mlir::MlirOp MakeBoundedArgument(mlir::func::FunctionBuilder& fb,
+                                 const Dimensions& shape,
+                                 const Dimensions& bounded_dims) {
+  mlir::OpBuilder& op_builder = fb.getOpBuilder();
+  mlir::MlirOp arg = mlir::func::Argument(
+      fb, mlir::RankedTensorType::get(shape, op_builder.getF32Type()));
+  for (int64_t dim : bounded_dims) {
+    mlir::MlirOp size = mlir::func::Argument(
+        fb, mlir::RankedTensorType::get({}, op_builder.getI32Type()));
+    arg = mlir::stablehlo::SetDimensionSize(arg, size, dim);
+  }
+  return arg;
+}
+
+// A convolution of NC(spatial) operands and result, with a (C_out, C_in,
+// spatial) kernel. Operand shapes are the bounds of their bounded dimensions.
+struct ConvolutionLikeParams {
+  std::string test_name;
+  Dimensions lhs_shape;
+  Dimensions lhs_bounded_dims;
+  Dimensions rhs_shape;
+  Dimensions rhs_bounded_dims;
+  // Window attributes, absent if empty.
+  Dimensions strides;
+  // Low and high padding of each spatial dimension.
+  Dimensions padding;
+  Dimensions lhs_dilation;
+  Dimensions rhs_dilation;
+  bool window_reversal = false;
+  int64_t feature_group_count = 1;
+  int64_t batch_group_count = 1;
+  // Result shape, with bounds for bounded dimensions.
+  Dimensions expected_result_shape;
+  std::vector<bool> expected_result_bounded;
+};
+
+absl::StatusOr<mlir::MlirOp> CallConvolutionLike(
+    const ConvolutionLikeParams& params, mlir::RankedTensorType result_type,
+    mlir::MlirOp lhs, mlir::MlirOp rhs) {
+  mlir::MlirBuilder& builder = lhs.getBuilder();
+  mlir::MLIRContext& ctx = builder.getContext();
+  const int64_t num_spatial_dims = params.lhs_shape.size() - 2;
+  Dimensions spatial_dims;
+  for (int64_t i = 0; i < num_spatial_dims; ++i) {
+    spatial_dims.push_back(i + 2);
+  }
+  const auto dimension_numbers = mlir::stablehlo::ConvDimensionNumbersAttr::get(
+      &ctx, /*inputBatchDimension=*/0, /*inputFeatureDimension=*/1,
+      spatial_dims, /*kernelInputFeatureDimension=*/1,
+      /*kernelOutputFeatureDimension=*/0, spatial_dims,
+      /*outputBatchDimension=*/0, /*outputFeatureDimension=*/1, spatial_dims);
+
+  auto array_attr = [&](const Dimensions& values) {
+    return values.empty() ? mlir::DenseI64ArrayAttr()
+                          : mlir::DenseI64ArrayAttr::get(&ctx, values);
+  };
+  mlir::DenseIntElementsAttr padding;
+  if (!params.padding.empty()) {
+    padding = mlir::DenseIntElementsAttr::get(
+        mlir::RankedTensorType::get({num_spatial_dims, 2},
+                                    builder.getOpBuilder().getI64Type()),
+        mlir::ArrayRef<int64_t>(params.padding));
+  }
+  mlir::DenseBoolArrayAttr window_reversal;
+  if (params.window_reversal) {
+    window_reversal = mlir::DenseBoolArrayAttr::get(
+        &ctx, llvm::SmallVector<bool>(num_spatial_dims, true));
+  }
+  return ConvolutionLike(
+      result_type, lhs, rhs, dimension_numbers, params.feature_group_count,
+      params.batch_group_count, array_attr(params.strides), padding,
+      array_attr(params.lhs_dilation), array_attr(params.rhs_dilation),
+      window_reversal, /*precision_config=*/mlir::ArrayAttr());
+}
+
+TEST(ConvolutionLike, StaticOperandsUseResultType) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  const ConvolutionLikeParams params = {
+      .lhs_shape = {1, 4, 8},
+      .rhs_shape = {4, 1, 3},
+      .padding = {2, 2},
+      .feature_group_count = 4,
+  };
+  const mlir::MlirOp lhs = MakeBoundedArgument(fb, params.lhs_shape, {});
+  const mlir::MlirOp rhs = MakeBoundedArgument(fb, params.rhs_shape, {});
+  const auto result_type =
+      mlir::RankedTensorType::get({1, 4, 10}, fb.getOpBuilder().getF32Type());
+
+  TT_ASSERT_OK_AND_ASSIGN(const mlir::MlirOp result,
+                          CallConvolutionLike(params, result_type, lhs, rhs));
+
+  EXPECT_TRUE(mlir::isa<mlir::stablehlo::ConvolutionOp>(
+      result.getValue().getDefiningOp()));
+  EXPECT_EQ(result.getType(), result_type);
+}
+
+class ConvolutionLikeBoundedTest
+    : public testing::TestWithParam<ConvolutionLikeParams> {};
+
+TEST_P(ConvolutionLikeBoundedTest, BoundsResultOfStaticConvolution) {
+  const ConvolutionLikeParams& params = GetParam();
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  const mlir::MlirOp lhs =
+      MakeBoundedArgument(fb, params.lhs_shape, params.lhs_bounded_dims);
+  const mlir::MlirOp rhs =
+      MakeBoundedArgument(fb, params.rhs_shape, params.rhs_bounded_dims);
+  // Only the element type of the result type is used for bounded operands.
+  const auto result_type = mlir::RankedTensorType::get(
+      Dimensions(params.lhs_shape.size(), 1), fb.getOpBuilder().getF32Type());
+
+  TT_ASSERT_OK_AND_ASSIGN(const mlir::MlirOp result,
+                          CallConvolutionLike(params, result_type, lhs, rhs));
+  mlir::func::Return(fb, result);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+
+  // XLA only sees a static convolution.
+  int num_convolutions = 0;
+  module->walk([&](mlir::stablehlo::ConvolutionOp convolution) {
+    ++num_convolutions;
+    EXPECT_TRUE(convolution.getLhs().getType().hasStaticShape())
+        << DebugString(convolution);
+    EXPECT_TRUE(convolution.getType().hasStaticShape())
+        << DebugString(convolution);
+  });
+  EXPECT_EQ(num_convolutions, 1);
+
+  EXPECT_EQ(GetElementTypeOrSelf(result), fb.getOpBuilder().getF32Type());
+  const mlir::stablehlo::Dimensions result_dims = GetDimensions(result);
+  ASSERT_EQ(result_dims.size(), params.expected_result_shape.size());
+  for (int i = 0; i < result_dims.size(); ++i) {
+    EXPECT_EQ(result_dims[i].size, params.expected_result_shape[i])
+        << "dimension " << i;
+    EXPECT_EQ(result_dims[i].boundOp.has_value(),
+              params.expected_result_bounded[i])
+        << "dimension " << i;
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ConvolutionLikeBoundedTests, ConvolutionLikeBoundedTest,
+    testing::ValuesIn<ConvolutionLikeParams>({
+        {
+            // Causal depthwise convolution of LFM2 and Mamba models.
+            .test_name = "CausalDepthwiseBoundedLength",
+            .lhs_shape = {1, 4, 68},
+            .lhs_bounded_dims = {2},
+            .rhs_shape = {4, 1, 3},
+            .padding = {2, 2},
+            .feature_group_count = 4,
+            .expected_result_shape = {1, 4, 70},
+            .expected_result_bounded = {false, false, true},
+        },
+        {
+            .test_name = "StridedBoundedBatch",
+            .lhs_shape = {8, 3, 10},
+            .lhs_bounded_dims = {0},
+            .rhs_shape = {5, 3, 3},
+            .strides = {2},
+            .padding = {1, 1},
+            .expected_result_shape = {8, 5, 5},
+            .expected_result_bounded = {true, false, false},
+        },
+        {
+            .test_name = "StridedBoundedBatchAndLength",
+            .lhs_shape = {4, 2, 9},
+            .lhs_bounded_dims = {0, 2},
+            .rhs_shape = {3, 2, 2},
+            .strides = {3},
+            .expected_result_shape = {4, 3, 3},
+            .expected_result_bounded = {true, false, true},
+        },
+        {
+            .test_name = "StridedDilatedBoundedLength",
+            .lhs_shape = {2, 3, 17},
+            .lhs_bounded_dims = {2},
+            .rhs_shape = {4, 3, 3},
+            .strides = {2},
+            .padding = {1, 0},
+            .rhs_dilation = {2},
+            .expected_result_shape = {2, 4, 7},
+            .expected_result_bounded = {false, false, true},
+        },
+        {
+            .test_name = "NegativePaddingBoundedLength",
+            .lhs_shape = {1, 1, 10},
+            .lhs_bounded_dims = {2},
+            .rhs_shape = {1, 1, 3},
+            .padding = {-2, 1},
+            .expected_result_shape = {1, 1, 7},
+            .expected_result_bounded = {false, false, true},
+        },
+        {
+            // Transposed convolution with stride 3.
+            .test_name = "LhsDilatedBoundedLength",
+            .lhs_shape = {1, 2, 10},
+            .lhs_bounded_dims = {2},
+            .rhs_shape = {5, 2, 4},
+            .padding = {2, 3},
+            .lhs_dilation = {3},
+            .window_reversal = true,
+            .expected_result_shape = {1, 5, 30},
+            .expected_result_bounded = {false, false, true},
+        },
+        {
+            .test_name = "BoundedHeightAndWidth",
+            .lhs_shape = {1, 2, 6, 7},
+            .lhs_bounded_dims = {2, 3},
+            .rhs_shape = {3, 2, 3, 3},
+            .padding = {1, 1, 1, 1},
+            .expected_result_shape = {1, 3, 6, 7},
+            .expected_result_bounded = {false, false, true, true},
+        },
+    }),
+    [](const testing::TestParamInfo<ConvolutionLikeBoundedTest::ParamType>&
+           info) { return info.param.test_name; });
+
+class ConvolutionLikeUnsupportedTest
+    : public testing::TestWithParam<ConvolutionLikeParams> {};
+
+TEST_P(ConvolutionLikeUnsupportedTest, ReturnsNotImplementedError) {
+  const ConvolutionLikeParams& params = GetParam();
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  const mlir::MlirOp lhs =
+      MakeBoundedArgument(fb, params.lhs_shape, params.lhs_bounded_dims);
+  const mlir::MlirOp rhs =
+      MakeBoundedArgument(fb, params.rhs_shape, params.rhs_bounded_dims);
+  const auto result_type = mlir::RankedTensorType::get(
+      Dimensions(params.lhs_shape.size(), 1), fb.getOpBuilder().getF32Type());
+
+  const absl::StatusOr<mlir::MlirOp> result =
+      CallConvolutionLike(params, result_type, lhs, rhs);
+
+  ASSERT_FALSE(result.ok());
+  EXPECT_EQ(result.status().code(), error::kPythonNotImplementedError);
+  EXPECT_THAT(result.status().message(),
+              testing::HasSubstr("expected bounded dynamic dimensions of a "
+                                 "convolution only in the input spatial "
+                                 "dimensions"));
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ConvolutionLikeUnsupportedTests, ConvolutionLikeUnsupportedTest,
+    testing::ValuesIn<ConvolutionLikeParams>({
+        {
+            .test_name = "BoundedInputFeature",
+            .lhs_shape = {1, 4, 8},
+            .lhs_bounded_dims = {1},
+            .rhs_shape = {4, 4, 3},
+        },
+        {
+            .test_name = "BoundedKernel",
+            .lhs_shape = {1, 4, 8},
+            .rhs_shape = {4, 4, 3},
+            .rhs_bounded_dims = {2},
+        },
+        {
+            .test_name = "BoundedBatchWithBatchGroups",
+            .lhs_shape = {8, 4, 8},
+            .lhs_bounded_dims = {0},
+            .rhs_shape = {4, 4, 3},
+            .batch_group_count = 2,
+        },
+    }),
+    [](const testing::TestParamInfo<ConvolutionLikeUnsupportedTest::ParamType>&
+           info) { return info.param.test_name; });
 
 }  // namespace
 }  // namespace torch_tpu

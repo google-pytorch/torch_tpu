@@ -436,6 +436,31 @@ RngBitGeneratorResults RngBitGeneratorLike(
     mlir::stablehlo::RngAlgorithmAttr rng_alg,
     std::optional<mlir::MlirOp> shape_reference = std::nullopt);
 
+// Builds a stablehlo.convolution that also supports bounded dynamic lhs batch
+// and spatial dimensions. Takes the same arguments as
+// mlir::stablehlo::Convolution.
+//
+// If lhs and rhs have static shapes, emits stablehlo.convolution with
+// result_type.
+//
+// Otherwise, only the element type of result_type is used. XLA rejects bounded
+// dynamic spatial dimensions on convolutions, so the convolution runs on the
+// static upper-bound shape of lhs, with the elements past the runtime sizes of
+// its bounded spatial dimensions zeroed so that they act like zero padding. The
+// result dimensions that depend on bounded lhs dimensions are then bounded,
+// with their runtime sizes computed in-graph.
+//
+// Returns a kPythonNotImplementedError if rhs or the lhs feature dimension is
+// bounded dynamic, or if the lhs batch dimension is bounded dynamic and
+// batch_group_count is not 1.
+absl::StatusOr<mlir::MlirOp> ConvolutionLike(
+    mlir::RankedTensorType result_type, mlir::MlirOp lhs, mlir::MlirOp rhs,
+    mlir::stablehlo::ConvDimensionNumbersAttr dimension_numbers,
+    int64_t feature_group_count, int64_t batch_group_count,
+    mlir::DenseI64ArrayAttr window_strides, mlir::DenseIntElementsAttr padding,
+    mlir::DenseI64ArrayAttr lhs_dilation, mlir::DenseI64ArrayAttr rhs_dilation,
+    mlir::DenseBoolArrayAttr window_reversal, mlir::ArrayAttr precision_config);
+
 // Returns an mlir::MlirOp representing the number of elements in the input
 // tensor with the given element type, only counting the dimensions specified.
 // If dims is empty, all dimensions are counted.

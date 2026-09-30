@@ -284,12 +284,6 @@ triaged_ops_deny_lists: dict[
         # TODO: b/566327707 - Remove once marked dims no longer carry over.
         "torch.ops.aten._safe_softmax.default": {COMPILE},
     },
-    "convolutions do not support bounded dimensions": {
-        "nn.functional.conv1d": ALL_MODES,
-        "nn.functional.conv2d": ALL_MODES,
-        "nn.functional.conv_transpose1d": ALL_MODES,
-        "nn.functional.conv_transpose2d": ALL_MODES,
-    },
     "linalg decompositions do not support bounded dimensions": {
         "geqrf": {EAGER},  # Aborts the test process with a CHECK failure.
         "linalg.inv": {EAGER},
@@ -358,6 +352,10 @@ def verify_op_supports_dynamism(
   skip_input = _should_skip_input_marking(op, canonical_input)
   if skip_input:
     return skip_input
+  if not DynamicOpInfo.get(op).dynamic_dimension_candidates(
+      canonical_input, args
+  ):
+    return "No valid input dimensions to mark dynamic."
 
   require_mark_dynamic_support = [
       # Needs matmul-style marking
@@ -481,11 +479,19 @@ class DynamicOpInfo:
         MatmulDynamicOpInfo,
         BinaryElementwiseDynamicOpInfo,
         TernaryElementwiseDynamicOpInfo,
+        ConvolutionDynamicOpInfo,
     ]
     for adapter in adapters:
       if adapter.adapter_supports_op(op_info):
         return adapter(op_info)
     return DynamicOpInfo(op_info)
+
+  def dynamic_dimension_candidates(
+      self, input_value: torch.Tensor, args: Sequence[Any]
+  ) -> Sequence[int]:
+    """Returns the dimensions of input_value that can be marked dynamic."""
+    del args  # Unused.
+    return _get_dynamic_dimension_candidates(input_value)
 
   def mark_dynamic(
       self,
@@ -506,7 +512,7 @@ class DynamicOpInfo:
 
     # Allow picking a list value from input_value for ops like cat, etc.
     input_value = _get_canonical_input_value(self.op_info, input_value)
-    candidates = _get_dynamic_dimension_candidates(input_value)
+    candidates = self.dynamic_dimension_candidates(input_value, args)
     random.seed(seed)
     idx = random.choice(candidates)
     input_value_str = utils.get_tensor_summary(input_value, data=False)
@@ -725,6 +731,39 @@ class MatmulDynamicOpInfo(DynamicOpInfo):
       elif idx < lhs_ndim - 2:
         _mark_numpy_broadcastable_arg_dynamic(rhs, like, idx, ub, mode=mode)
     return
+
+
+class ConvolutionDynamicOpInfo(DynamicOpInfo):
+  """A wrapper around convolution OpInfos that keeps input channels static."""
+
+  convolution_ops = {
+      "nn.functional.conv1d",
+      "nn.functional.conv2d",
+      "nn.functional.conv_transpose1d",
+      "nn.functional.conv_transpose2d",
+  }
+
+  @staticmethod
+  def adapter_supports_op(op_info: core.OpInfo) -> bool:
+    """Method to declare ops supported by this adapter."""
+
+    return op_info.name in ConvolutionDynamicOpInfo.convolution_ops
+
+  def dynamic_dimension_candidates(
+      self, input_value: torch.Tensor, args: Sequence[Any]
+  ) -> Sequence[int]:
+    """Returns the batch and spatial dimensions of the convolution input.
+
+    The input channels must match the static weight, so convolutions don't
+    support bounded channel dimensions.
+    """
+    # An unbatched input has one dimension less than the weight in args[0].
+    channel_dim = 1 if input_value.ndim == args[0].ndim else 0
+    return [
+        dim
+        for dim in super().dynamic_dimension_candidates(input_value, args)
+        if dim != channel_dim
+    ]
 
 
 def mark_input_dynamic(

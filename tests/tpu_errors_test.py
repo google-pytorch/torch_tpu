@@ -1008,6 +1008,53 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       outputs[0].cpu()
 
   @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_convolution_dynamic_kernel(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      inp = torch.ones(1, 2, 8, device=et.device())
+      weight = torch.ones(3, 2, 4, device=et.device())
+
+      # Mark the kernel spatial dimension of `weight` as dynamic.
+      dynamism.mark_dynamic(weight, 2, 2, 6)
+
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""convolution(): expected bounded dynamic dimensions of a convolution only in the input spatial dimensions, or in the input batch dimension if batch_group_count is 1, got input type tensor<1x2x8xf32>, kernel type tensor<3x2x?xf32, #stablehlo.bounds<?, ?, 6>> and batch_group_count 1""",
+      ):
+        # cpu() is needed because the error is triggered inside the op builder.
+        torch.nn.functional.conv1d(inp, weight).cpu()
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_convolution_backward_dynamic_spatial_dimension(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      grad_output = torch.ones(1, 3, 6, device=et.device())
+      inp = torch.ones(1, 2, 8, device=et.device())
+      weight = torch.ones(3, 2, 3, device=et.device())
+
+      # Mark the spatial dimensions of `grad_output` and `inp` as dynamic.
+      dynamism.mark_dynamic(grad_output, 2, 2, 14)
+      dynamism.mark_dynamic(inp, 2, 2, 16)
+
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""convolution_backward(): expected static spatial dimensions of the grad_output tensor in the convolution backward, got bounded dynamic dimension 2""",
+      ):
+        grad_input, _, _ = torch.ops.aten.convolution_backward(
+            grad_output,
+            inp,
+            weight,
+            bias_sizes=None,
+            stride=[1],
+            padding=[0],
+            dilation=[1],
+            transposed=False,
+            output_padding=[0],
+            groups=1,
+            output_mask=[True, True, False],
+        )
+        # cpu() is needed because the error is triggered inside the op builder.
+        grad_input.cpu()
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
   def test_embedding_bag_dynamic_shape_arg(self):
     with self.subTest(arg="indices"):
       indices = torch.ones(10, 10, device=et.device())

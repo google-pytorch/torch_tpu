@@ -14,6 +14,7 @@
 
 """Test demonstrating dynamic execution through torch.compile()."""
 
+from collections.abc import Callable, Sequence
 from unittest import mock
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -1258,6 +1259,93 @@ class DynamicSliceTest(seed_test_utils.RepeatableTest):
       out = compiled(x)
       expected = model(x)
       utils.assert_close(out, expected)
+
+
+class DynamicConvolutionTest(seed_test_utils.RepeatableTest):
+
+  def setUp(self):
+    super().setUp()
+    tt_testing.reset_eager_state()
+    self.device = torch.accelerator.current_accelerator()
+
+  # `x + 1` leaves nonzero values past the runtime size of the bounded input,
+  # which the convolution must ignore.
+  @parameterized.named_parameters(
+      dict(
+          # Causal depthwise convolution of LFM2 and Mamba models.
+          testcase_name="conv1d_causal_depthwise",
+          conv_fn=lambda x, w: torch.nn.functional.conv1d(
+              x + 1, w, padding=2, groups=4
+          )[..., : x.shape[-1]],
+          input_shape=(2, 4, 10),
+          other_shapes=[(4, 1, 3)],
+          dim=2,
+      ),
+      dict(
+          # Cached decode of LFM2 and Mamba models, which convolves the
+          # concatenation of the cached convolution state and the new tokens.
+          testcase_name="conv1d_causal_depthwise_with_state",
+          conv_fn=lambda x, state, w: torch.nn.functional.conv1d(
+              torch.cat([state, x], dim=-1), w, padding=2, groups=4
+          ),
+          input_shape=(2, 4, 10),
+          other_shapes=[(2, 4, 3), (4, 1, 3)],
+          dim=2,
+      ),
+      dict(
+          testcase_name="conv1d_batch_with_bias",
+          conv_fn=lambda x, w, b: torch.nn.functional.conv1d(
+              x + 1, w, b, padding=1
+          ),
+          input_shape=(5, 4, 10),
+          other_shapes=[(6, 4, 3), (6,)],
+          dim=0,
+      ),
+      dict(
+          testcase_name="conv2d_strided_with_bias",
+          conv_fn=lambda x, w, b: torch.nn.functional.conv2d(
+              x + 1, w, b, stride=2, padding=1
+          ),
+          input_shape=(1, 3, 9, 8),
+          other_shapes=[(5, 3, 3, 3), (5,)],
+          dim=2,
+      ),
+      dict(
+          testcase_name="conv_transpose1d_strided_with_bias",
+          conv_fn=lambda x, w, b: torch.nn.functional.conv_transpose1d(
+              x + 1, w, b, stride=2, padding=1, output_padding=1
+          ),
+          input_shape=(2, 3, 6),
+          other_shapes=[(3, 4, 3), (4,)],
+          dim=2,
+      ),
+  )
+  def test_convolution_dynamic_input(
+      self,
+      conv_fn: Callable[..., torch.Tensor],
+      input_shape: tuple[int, ...],
+      other_shapes: Sequence[tuple[int, ...]],
+      dim: int,
+  ):
+    compiled = torch.compile(
+        conv_fn, backend="tpu", options={"bounded_dynamism": True}
+    )
+    # Integer values keep the convolution exact on TPU.
+    others = [
+        torch.randint(-3, 4, shape, dtype=torch.float32)
+        for shape in other_shapes
+    ]
+    for size in (input_shape[dim], input_shape[dim] - 2):
+      shape = list(input_shape)
+      shape[dim] = size
+      x = torch.randint(-3, 4, shape, dtype=torch.float32)
+      device_args = [arg.to(self.device) for arg in (x, *others)]
+      # min=3 keeps the strided output sizes above 1, which PyTorch
+      # specializes on.
+      torch._dynamo.mark_dynamic(device_args[0], dim, min=3, max=32)
+
+      out = compiled(*device_args)
+      utils.assert_close(out.cpu(), conv_fn(x, *others))
 
 
 class DynamicDropoutTest(seed_test_utils.RepeatableTest):

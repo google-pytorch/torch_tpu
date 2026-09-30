@@ -90,6 +90,22 @@ SpatialPadding CalculateBackwardWeightPadding(int64_t input_dim,
   return {padding, padding - overhang};
 }
 
+// Most convolution gradients compute their padding from the spatial sizes of
+// their operands, so the gradients don't support bounded dynamic spatial
+// dimensions yet.
+absl::Status ValidateStaticSpatialDimensions(mlir::MlirOp op,
+                                             const std::string_view arg_name) {
+  const mlir::RankedTensorType type = GetTensorTypeOrDie(op);
+  for (int64_t dim = 2; dim < type.getRank(); ++dim) {
+    TT_RET_CHECK(!type.isDynamicDim(dim), error::kPythonNotImplementedError)
+        << "expected static spatial dimensions of the " << arg_name
+        << " tensor in the convolution backward, got bounded dynamic "
+           "dimension "
+        << dim;
+  }
+  return absl::OkStatus();
+}
+
 absl::StatusOr<mlir::MlirOp> BuildTransposedConvolution(
     mlir::MlirOp input, mlir::MlirOp weight, std::optional<mlir::MlirOp> bias,
     absl::Span<const int64_t> stride, absl::Span<const int64_t> padding,
@@ -101,7 +117,6 @@ absl::StatusOr<mlir::MlirOp> BuildTransposedConvolution(
   mlir::MLIRContext& ctx = builder.getContext();
   const int num_spatial_dims = stride.size();
 
-  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
   const mlir::RankedTensorType weight_type = GetTensorTypeOrDie(weight);
 
   // Dimension numbers for transposed convolution. We transform the weight
@@ -183,15 +198,15 @@ absl::StatusOr<mlir::MlirOp> BuildTransposedConvolution(
   Dimensions symmetric_padding_dims;
   symmetric_padding_dims.reserve(num_spatial_dims * 2);
   for (int i = 0; i < num_spatial_dims; ++i) {
-    int64_t k = weight_type.getDimSize(2 + i);
-    int64_t d = dilation[i];
-    int64_t s = stride[i];
-    int64_t p = padding[i];
-    int64_t in_dim = input_type.getDimSize(2 + i);
-    int64_t out_dim = output_dims[2 + i];
-
-    auto [pad_lo, pad_hi] =
-        CalculateAdjointPadding(in_dim, out_dim, k, s, p, d);
+    // The adjoint padding only depends on the kernel, so it also holds for
+    // bounded dynamic input spatial dimensions. It gives the output size
+    // (input - 1) * stride - 2 * padding + dilation * (kernel - 1) +
+    // output_padding + 1.
+    const int64_t dilated_kernel =
+        (weight_type.getDimSize(2 + i) - 1) * dilation[i] + 1;
+    const int64_t pad_lo = dilated_kernel - 1 - padding[i];
+    const int64_t pad_hi =
+        pad_lo + (output_padding.empty() ? 0 : output_padding[i]);
     symmetric_padding_dims.push_back(pad_lo);
     symmetric_padding_dims.push_back(pad_hi);
   }
@@ -212,18 +227,21 @@ absl::StatusOr<mlir::MlirOp> BuildTransposedConvolution(
   transformed_weight =
       stablehlo::ConvertElementType(transformed_weight, output_dtype);
 
-  mlir::MlirOp conv_op = stablehlo::Convolution(
-      result_type, conv_input, transformed_weight, dimension_numbers, groups,
-      /*batch_group_count=*/1, window_strides, dims_padding, lhs_dilation,
-      rhs_dilation, window_reversal, precision_config);
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp conv_op,
+      ConvolutionLike(result_type, conv_input, transformed_weight,
+                      dimension_numbers, groups, /*batch_group_count=*/1,
+                      window_strides, dims_padding, lhs_dilation, rhs_dilation,
+                      window_reversal, precision_config));
 
   if (!bias.has_value()) {
     return conv_op;
   }
 
   bias = stablehlo::ConvertElementType(*bias, output_dtype);
-  mlir::MlirOp shaped_bias = stablehlo::BroadcastInDim(
-      result_type, bias.value(), /*broadcast_dimensions=*/{1});
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp shaped_bias,
+      BroadcastIfNeeded(*bias, conv_op, /*broadcast_dimensions=*/{1}));
   return stablehlo::Add(conv_op, shaped_bias);
 }
 
@@ -255,7 +273,7 @@ absl::StatusOr<mlir::MlirOp> BuildConvolution(
   //   C_in = in_channels
   TT_RETURN_IF_ERROR(ValidateConvolutionInput(input_type.getShape()));
 
-  const int64_t in_channels = input_type.getDimSize(1);
+  const int64_t in_channels = GetDimensions(input)[1].size;
   const mlir::RankedTensorType weight_type = GetTensorTypeOrDie(weight);
 
   // Weight should be shaped as (C_out, C_in / groups, *spatial_dims)
@@ -283,9 +301,9 @@ absl::StatusOr<mlir::MlirOp> BuildConvolution(
       /*outputBatchDimension*/ 0,
       /*outputFeatureDimension*/ 1, output_spatial_dims);
 
-  const uint64_t feature_group_count = groups;
+  const int64_t feature_group_count = groups;
   // Torch does not group over batch, only over features.
-  const uint64_t batch_group_count = 1;
+  const int64_t batch_group_count = 1;
   const auto window_strides = mlir::DenseI64ArrayAttr::get(&ctx, stride);
 
   const mlir::RankedTensorType padding_type = mlir::RankedTensorType::get(
@@ -309,10 +327,12 @@ absl::StatusOr<mlir::MlirOp> BuildConvolution(
   input = stablehlo::ConvertElementType(input, output_dtype);
   weight = stablehlo::ConvertElementType(weight, output_dtype);
 
-  auto conv_op = stablehlo::Convolution(
-      result_type, input, weight, dimension_numbers, feature_group_count,
-      batch_group_count, window_strides, dims_padding, lhs_dilation,
-      rhs_dilation, window_reversal, precision_config);
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp conv_op,
+      ConvolutionLike(result_type, input, weight, dimension_numbers,
+                      feature_group_count, batch_group_count, window_strides,
+                      dims_padding, lhs_dilation, rhs_dilation, window_reversal,
+                      precision_config));
 
   if (!bias.has_value()) {
     return conv_op;
@@ -327,8 +347,9 @@ absl::StatusOr<mlir::MlirOp> BuildConvolution(
 
   bias = stablehlo::ConvertElementType(*bias, output_dtype);
   // Broadcast bias from shape (C_out,) to (B, C_out, *result_spatial_dims)...
-  mlir::MlirOp shaped_bias = stablehlo::BroadcastInDim(
-      result_type, bias.value(), /*broadcast_dimensions=*/{1});
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp shaped_bias,
+      BroadcastIfNeeded(*bias, conv_op, /*broadcast_dimensions=*/{1}));
   return stablehlo::Add(conv_op, shaped_bias);
 }
 
@@ -371,6 +392,8 @@ absl::StatusOr<mlir::MlirOp> BuildConvolutionBackwardInput(
     absl::Span<const int64_t> padding, absl::Span<const int64_t> dilation,
     int64_t groups, bool transposed, absl::Span<const int64_t> output_padding,
     mlir::ElementType output_dtype, mlir::stablehlo::Precision precision) {
+  TT_RETURN_IF_ERROR(
+      ValidateStaticSpatialDimensions(grad_output, "grad_output"));
   if (transposed) {
     // When computing the gradient w.r.t. input for a transposed convolution,
     // we perform a standard convolution.
@@ -568,6 +591,9 @@ absl::StatusOr<mlir::MlirOp> BuildConvolutionBackwardWeight(
     absl::Span<const int64_t> padding, absl::Span<const int64_t> dilation,
     int64_t groups, bool transposed, absl::Span<const int64_t> output_padding,
     mlir::ElementType output_dtype, mlir::stablehlo::Precision precision) {
+  TT_RETURN_IF_ERROR(ValidateStaticSpatialDimensions(input, "input"));
+  TT_RETURN_IF_ERROR(
+      ValidateStaticSpatialDimensions(grad_output, "grad_output"));
   if (transposed) {
     std::swap(input, grad_output);
   }
