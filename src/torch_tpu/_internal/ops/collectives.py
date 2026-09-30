@@ -25,9 +25,8 @@ from typing import Optional
 
 import torch
 import torch.distributed as dist
-from torch_tpu._internal.utils import annotations
+from torch_tpu._internal.utils import annotations as _annotations
 
-experimental = annotations.experimental
 __all__ = [
     "all_gather_dim",
     "reduce_scatter_dim",
@@ -41,7 +40,9 @@ def _resolve_group(
   return group.size(), group.group_name
 
 
-@experimental("all_gather_dim is experimental and subject to change.")
+@_annotations.experimental(
+    "all_gather_dim is experimental and subject to change."
+)
 def all_gather_dim(
     input: torch.Tensor,  # pylint: disable=redefined-builtin
     dim: int,
@@ -66,7 +67,9 @@ def all_gather_dim(
   )
 
 
-@experimental("reduce_scatter_dim is experimental and subject to change.")
+@_annotations.experimental(
+    "reduce_scatter_dim is experimental and subject to change."
+)
 def reduce_scatter_dim(
     input: torch.Tensor,  # pylint: disable=redefined-builtin
     dim: int,
