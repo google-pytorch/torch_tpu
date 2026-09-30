@@ -64,7 +64,9 @@ class ExperimentalCollectivesTest(seed_test_utils.RepeatableTest):
         (reduce_scatter, (value, "band", 0, 2), "integer"),
     ):
       with self.subTest(op=op, args=args[1:]):
-        with self.assertRaisesRegex((RuntimeError, IndexError), error):
+        with self.assertRaisesRegex(  # ASSERT_RAISES_OK=testing meta op
+            (RuntimeError, IndexError), error
+        ):
           op(*args, "unused")
 
 
