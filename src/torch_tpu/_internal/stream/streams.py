@@ -306,10 +306,13 @@ class TpuEvent(torch.Event):
   def elapsed_time(self, end_event: Self) -> float:
     """Returns the milliseconds between this event and ``end_event`` completing.
 
-    An event completes when all work captured by :meth:`record` has finished,
-    and the host takes its completion time at that moment. Both events must be
-    created with ``enable_timing=True``, recorded and completed, for example by
-    calling :meth:`synchronize` on ``end_event``.
+    An event completes when all work captured by :meth:`record` has finished.
+    The result is measured on the host, not on the device: it is the interval
+    between the moments the host is notified that the work of each event has
+    completed, so it can include gaps for dispatch and compilation and the
+    delay in delivering those notifications. Both events must be created with
+    ``enable_timing=True``, recorded and completed, for example by calling
+    :meth:`synchronize` on ``end_event``.
 
     Args:
       end_event: The event recorded after this one.
