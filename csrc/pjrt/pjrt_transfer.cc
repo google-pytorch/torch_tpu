@@ -30,7 +30,6 @@
 #include "absl/base/nullability.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
-#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
@@ -360,7 +359,7 @@ absl::StatusOr<at::Tensor> TpuMemcpyDtoH(const DeviceBufferRef& buffer_ref,
 
 namespace {
 
-xla::Future<void> TpyMemcpyDtoHDirectImpl(
+xla::Future<void> TpuMemcpyDtoHDirectImpl(
     absl::Span<const int64_t> buffer_expected_dims,
     mlir::ElementType buffer_element_type, xla::PjRtBuffer* buffer,
     void* dst_ptr) {
@@ -395,7 +394,7 @@ absl::Status TpuMemcpyDtoHDirect(const DeviceBufferRef& buffer_ref,
     TT_ASSIGN_OR_RETURN(auto* buffer, buffer_ref.AwaitBuffer());
 
     // Start the d2h copy out of the buffer.
-    auto transfer_future = TpyMemcpyDtoHDirectImpl(
+    auto transfer_future = TpuMemcpyDtoHDirectImpl(
         buffer_ref.dimensions(), buffer_ref.element_type(), buffer, dst_ptr);
     if (!non_blocking) {
       // Block until the d2h copy completes.
@@ -429,7 +428,7 @@ absl::Status TpuMemcpyDtoHDirect(const DeviceBufferRef& buffer_ref,
         }
         // 2) Schedule the d2h copy to start as soon as the PjRtBuffer* is ready
         // using ToLiteral.
-        TpyMemcpyDtoHDirectImpl(buffer_ref.dimensions(),
+        TpuMemcpyDtoHDirectImpl(buffer_ref.dimensions(),
                                 buffer_ref.element_type(), *pjrt_buffer_or,
                                 dst_ptr)
             .OnReady([chained_promise =

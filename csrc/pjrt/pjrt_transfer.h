@@ -26,7 +26,6 @@
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "csrc/eager/device_buffer.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "xla/future.h"
 #include "xla/xla_data.pb.h"
 

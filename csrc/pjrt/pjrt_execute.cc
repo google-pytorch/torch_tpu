@@ -43,7 +43,7 @@
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/shape.h"
-#include "csrc/pjrt/pjrt_state.h"
+#include "csrc/pjrt/pjrt_utils.h"
 #include "llvm/ADT/STLExtras.h"
 #include "tsl/profiler/lib/traceme.h"
 #include "xla/future.h"
@@ -60,35 +60,6 @@
 
 namespace torch_tpu {
 namespace {
-
-absl::StatusOr<xla::PjRtClient*> GetPjRtClient() {
-  xla::PjRtClient* const client = PjrtBackend::GetInstance().GetClient();
-  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=XLA PjRt client invariants ensure
-                 // PjRtClient is always initialized during runtime.
-      client != nullptr, error::kFailedPrecondition)
-      << "pjrt client not initialized";
-  return client;
-}
-
-absl::StatusOr<xla::PjRtDevice*> GetPjRtDevice() {
-  xla::PjRtDevice* const device = PjrtBackend::GetInstance().GetDevice();
-  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=XLA PjRt device invariants ensure
-                 // PjRtDevice is always initialized during runtime.
-      device != nullptr, error::kFailedPrecondition)
-      << "pjrt device not initialized";
-  return device;
-}
-
-absl::StatusOr<xla::PjRtMemorySpace*> GetDefaultMemorySpace(
-    xla::PjRtDevice* const device) {
-  TT_ASSIGN_OR_RETURN(xla::PjRtMemorySpace* const memory_space,
-                      device->default_memory_space());
-  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=XLA PjRt memory space invariants ensure
-                 // default memory space is always non-null.
-      memory_space != nullptr, error::kInternal)
-      << "default memory space is null";
-  return memory_space;
-}
 
 xla::Shape MakeXlaShape(const Shape& shape, const xla::Layout& layout) {
   const xla::PrimitiveType xla_type =

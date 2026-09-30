@@ -113,11 +113,9 @@ torch_tpu_cc_library(
     deps = [
         ":pjrt_state",
         "//csrc/common:error_utils",
-        "//shims/torch:torch_headers",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
-        "@tsl//tsl/platform:path",
         "@xla//xla:shape_util",
         "@xla//xla:xla_data_proto_cc",
         "@xla//xla/pjrt:pjrt_client",
@@ -134,7 +132,7 @@ torch_tpu_cc_library(
         "pjrt_execute.h",
     ],
     deps = [
-        ":pjrt_state",
+        ":pjrt_utils",
         "//csrc/common:compilation",
         "//csrc/common:dimension_types",
         "//csrc/common:dtype",
