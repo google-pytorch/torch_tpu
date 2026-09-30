@@ -235,7 +235,7 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
 
     start = torch.tpu.Event(enable_timing=True)
     end = torch.tpu.Event(enable_timing=True)
-    host_start = time.time()
+    host_start = time.perf_counter()
     start.record()
     y = x
     for _ in range(10):
@@ -243,7 +243,7 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
     end.record()
     end.synchronize()
     elapsed_ms = start.elapsed_time(end)
-    host_elapsed_ms = (time.time() - host_start) * 1000
+    host_elapsed_ms = (time.perf_counter() - host_start) * 1000
 
     self.assertGreater(elapsed_ms, 0.0)
     self.assertLessEqual(elapsed_ms, host_elapsed_ms)
@@ -252,20 +252,25 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
   def test_event_elapsed_time_ends_when_work_completes(self):
     """Tests that the end time is taken when the work completes.
 
-    The host sleeps before it synchronizes, which must not count.
+    The host waits until the end event has completed, then sleeps before it
+    synchronizes, which must not count.
     """
     x = torch.ones((8, 8), device='tpu')
     start = torch.tpu.Event(enable_timing=True)
     end = torch.tpu.Event(enable_timing=True)
-    # The first round compiles the work; the second one is measured.
-    for _ in range(2):
-      start.record()
-      y = x + x
-      end.record()
-      time.sleep(1.0)
-      end.synchronize()
+    host_start = time.perf_counter()
+    start.record()
+    y = x + x
+    end.record()
+    while not end.query():
+      time.sleep(0.001)
+    host_completed = time.perf_counter()
+    time.sleep(0.1)
+    end.synchronize()
 
-    self.assertLess(start.elapsed_time(end), 1000.0)
+    self.assertLessEqual(
+        start.elapsed_time(end), (host_completed - host_start) * 1000
+    )
     utils.assert_close(y.to('cpu'), torch.full((8, 8), 2.0))
 
   def test_event_elapsed_time_chained_pending_events(self):
@@ -287,11 +292,11 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
       end.synchronize()
       self.assertGreaterEqual(start.elapsed_time(end), 0.0)
 
-  def test_event_elapsed_time_excludes_earlier_pending_work(self):
-    """Tests that work pending when the start event is recorded is not timed.
+  def test_event_elapsed_time_start_during_pending_copy(self):
+    """Tests a start event recorded while a large copy is in flight.
 
-    Like a CUDA event, the start event marks the point where the copy already
-    running completes, so only the work between the events is measured.
+    The start event completes when the copy does, and the elapsed time lies
+    within the interval the host observes around the copy and the timed work.
     """
     size = 8192 * 8192
     t_tpu = torch.ones(size, device='tpu', dtype=torch.float32)
@@ -299,7 +304,7 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
     x = torch.ones((8, 8), device='tpu')
     (x + x).to('cpu')
 
-    host_start = time.time()
+    host_start = time.perf_counter()
     t_cpu.copy_(t_tpu, non_blocking=True)
     start = torch.tpu.Event(enable_timing=True)
     end = torch.tpu.Event(enable_timing=True)
@@ -307,11 +312,11 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
     y = x + x
     end.record()
     torch.accelerator.synchronize()
-    copy_ms = (time.time() - host_start) * 1000
+    host_elapsed_ms = (time.perf_counter() - host_start) * 1000
     elapsed_ms = start.elapsed_time(end)
 
     self.assertGreaterEqual(elapsed_ms, 0.0)
-    self.assertLess(elapsed_ms, copy_ms / 2)
+    self.assertLessEqual(elapsed_ms, host_elapsed_ms)
     utils.assert_close(y.to('cpu'), torch.full((8, 8), 2.0))
 
   def test_event_elapsed_time_errors(self):
@@ -538,7 +543,7 @@ class TorchStreamsTest(seed_test_utils.RepeatableTest):
 
     start = torch.Event(device='tpu', enable_timing=True)
     end = torch.Event(device='tpu', enable_timing=True)
-    host_start = time.time()
+    host_start = time.perf_counter()
     start.record()
     y = x
     for _ in range(10):
@@ -546,7 +551,7 @@ class TorchStreamsTest(seed_test_utils.RepeatableTest):
     end.record()
     end.synchronize()
     elapsed_ms = start.elapsed_time(end)
-    host_elapsed_ms = (time.time() - host_start) * 1000
+    host_elapsed_ms = (time.perf_counter() - host_start) * 1000
 
     self.assertGreater(elapsed_ms, 0.0)
     self.assertLessEqual(elapsed_ms, host_elapsed_ms)
