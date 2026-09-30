@@ -38,7 +38,6 @@ from torch._subclasses.fake_tensor import FakeTensor
 from torch._subclasses.fake_tensor import unset_fake_temporarily
 from torch.fx.passes import graph_transform_observer
 from torch.utils import _pytree
-from torch_tpu._internal import env
 from torch_tpu._internal import export as torch_tpu_export
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.debug import TpuCompileDebug
@@ -205,7 +204,6 @@ def is_pinned_host_tensor(t: Any) -> bool:
 def _create_storage_aware_placeholders(
     example_inputs: Sequence[Any],
     bounds: Sequence[Any] | None = None,
-    enabled: bool = True,
 ) -> list[Any]:
   """Creates placeholder arguments preserving shared storage and view relationships."""
   # Group tensor inputs by their underlying UntypedStorage identity.
@@ -219,21 +217,15 @@ def _create_storage_aware_placeholders(
 
   for storage, entries in storage_groups.items():
     # Fall back to 1:1 placeholders if:
-    # 1. Storage-aware placeholders are disabled.
-    # 2. Only a single tensor references this storage.
-    # 3. Mixed dtypes exist in the storage group (reinterpreted views).
-    # 4. Any tensor has dynamic bounds (dynamic views on shared storage not yet supported).
+    # 1. Only a single tensor references this storage.
+    # 2. Mixed dtypes exist in the storage group (reinterpreted views).
+    # 3. Any tensor has dynamic bounds (dynamic views on shared storage not yet supported).
     has_mixed_dtypes = len({arg.dtype for _, arg in entries}) > 1
     has_dynamic_bounds = bounds is not None and any(
         bounds[i] is not None for i, _ in entries
     )
 
-    if (
-        not enabled
-        or len(entries) == 1
-        or has_mixed_dtypes
-        or has_dynamic_bounds
-    ):
+    if len(entries) == 1 or has_mixed_dtypes or has_dynamic_bounds:
       for i, arg in entries:
         is_pinned_host = is_pinned_host_tensor(arg)
         arg_bounds = bounds[i] if bounds is not None else None
@@ -350,12 +342,7 @@ class StaticCompiler(Compiler):
         # (2) Act as TPU-compatible FakeTensors, so that tracing does not depend
         #     on tensor data.
         placeholder_args = _create_storage_aware_placeholders(
-            example_inputs,
-            bounds,
-            enabled=env.get_bool_env_once(
-                "TORCH_TPU_INTERNAL_STORAGE_AWARE_PLACEHOLDERS",
-                default_value=False,
-            ),
+            example_inputs, bounds
         )
 
         if argument_layouts is None:
