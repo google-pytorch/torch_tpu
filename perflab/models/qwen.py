@@ -37,6 +37,7 @@ def _load_hf_qwen(
     setattr(config, "use_cache", False)
     if hasattr(config, "get_text_config"):
       text_config = config.get_text_config()
+      setattr(text_config, "use_cache", False)
     else:
       text_config = config
 
