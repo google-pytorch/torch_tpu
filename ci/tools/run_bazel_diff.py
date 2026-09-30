@@ -20,15 +20,18 @@
 """Calculates impacted Bazel tests using bazel-diff and runs them."""
 
 import argparse
-from collections.abc import Sequence
+from collections.abc import Collection, Mapping, Sequence
 import dataclasses
+import json
 import os
 import pathlib
 import re
 import shlex
 import subprocess
 import sys
+import tempfile
 from typing import Final
+import xml.etree.ElementTree
 
 _BAZEL_DIFF_VERSION: Final[str] = "v46.1.0"
 _BAZEL_DIFF_URL: Final[str] = (
@@ -126,6 +129,20 @@ _OPS_TEST_PATHS_REGEX: Final[re.Pattern[str]] = re.compile(
     r"^(" + "|".join(OPS_TEST_PATHS) + r")$"
 )
 
+# Seconds of test work per target (summed over its Bazel shards) on the 8-chip
+# v5e runner, used to split a job's tests across several runners. Taken from
+# the test summary of a full ci_tpu_v5_presubmit run: a sharded test's total is
+# its "Stats over N runs" count times the average. The numbers only steer the
+# split, so a stale table makes shards uneven but never drops a test.
+_TEST_DURATIONS_FILE: Final[pathlib.Path] = (
+    pathlib.Path(__file__).parent / "test_durations.json"
+)
+_DEFAULT_TEST_SECONDS: Final[float] = 30.0
+
+_BAZELRC_LINE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:common|build|test)(?::(?P<config>[\w.-]+))?\s+(?P<flags>.*)$"
+)
+
 
 @dataclasses.dataclass(frozen=True)
 class BazelDiffOptions:
@@ -138,6 +155,8 @@ class BazelDiffOptions:
   extra_bazel_flags: str
   test_all: bool
   workflow_ref: str
+  shard_index: int = 0
+  shard_count: int = 1
 
 
 def parse_args(argv: Sequence[str]) -> BazelDiffOptions:
@@ -186,7 +205,27 @@ def parse_args(argv: Sequence[str]) -> BazelDiffOptions:
           " $GITHUB_WORKFLOW_REF, which GitHub Actions sets automatically."
       ),
   )
+  parser.add_argument(
+      "--shard-index",
+      type=int,
+      default=0,
+      help="Zero-based index of this job among --shard-count jobs.",
+  )
+  parser.add_argument(
+      "--shard-count",
+      type=int,
+      default=1,
+      help=(
+          "Number of jobs splitting the selected tests. Each job runs the"
+          " tests assigned to --shard-index."
+      ),
+  )
   ns = parser.parse_args(argv)
+  if ns.shard_count < 1 or not 0 <= ns.shard_index < ns.shard_count:
+    parser.error(
+        f"--shard-index={ns.shard_index} must be in [0, --shard-count) and"
+        f" --shard-count={ns.shard_count} must be at least 1."
+    )
   return BazelDiffOptions(
       workspace_dir=pathlib.Path(ns.workspace_dir),
       base_sha=ns.base_sha,
@@ -195,6 +234,8 @@ def parse_args(argv: Sequence[str]) -> BazelDiffOptions:
       extra_bazel_flags=ns.extra_bazel_flags,
       test_all=(str(ns.test_all).lower() == "true"),
       workflow_ref=ns.workflow_ref,
+      shard_index=ns.shard_index,
+      shard_count=ns.shard_count,
   )
 
 
@@ -346,6 +387,238 @@ def run_bazel_diff(
   return subprocess.run(cmd, check=True)
 
 
+def effective_flag(
+    bazelrc_text: str, command_line: Sequence[str], flag: str
+) -> str | None:
+  """Returns the last value `--<flag>` takes once --config flags are expanded.
+
+  Applies the config-less `common`, `build` and `test` lines of `.bazelrc`,
+  then the command line, expanding each `--config=<name>` in place with the
+  flags from its `common:`, `build:` and `test:` lines, in file order and
+  recursively, the way `bazel test` does. Later values win.
+
+  Args:
+    bazelrc_text: Contents of the repository `.bazelrc`.
+    command_line: Flags as passed to `bazel test`, e.g. `["--config=ci"]`.
+    flag: Flag name without dashes, e.g. `test_tag_filters`.
+
+  Returns:
+    The flag's final value, or None if nothing sets it.
+  """
+  config_flags: dict[str, list[str]] = {}
+  for line in bazelrc_text.splitlines():
+    m = _BAZELRC_LINE_RE.match(line.strip())
+    if not m:
+      continue
+    try:
+      flags = shlex.split(m.group("flags"), comments=True)
+    except ValueError:
+      flags = m.group("flags").split()
+    config_flags.setdefault(m.group("config") or "", []).extend(flags)
+
+  prefix = f"--{flag}="
+  value = None
+
+  def expand(flags: Sequence[str], active: tuple[str, ...]) -> None:
+    nonlocal value
+    for f in flags:
+      if f.startswith("--config="):
+        name = f.removeprefix("--config=")
+        if name and name not in active:
+          expand(config_flags.get(name, []), active + (name,))
+      elif f.startswith(prefix):
+        value = f.removeprefix(prefix)
+
+  expand([*config_flags.get("", []), *command_line], ())
+  return value
+
+
+def matches_tag_filters(tags: Collection[str], filters: Sequence[str]) -> bool:
+  """Returns True if a test with `tags` passes Bazel's --test_tag_filters.
+
+  A test passes if it has none of the `-tag` entries and, when there are
+  positive entries, at least one of them.
+  """
+  positive = [f for f in filters if not f.startswith("-")]
+  if any(f.removeprefix("-") in tags for f in filters if f.startswith("-")):
+    return False
+  return not positive or any(f in tags for f in positive)
+
+
+@dataclasses.dataclass(frozen=True)
+class QueriedTest:
+  """A test target and its tags, as reported by `bazel query`."""
+
+  label: str
+  tags: frozenset[str]
+
+
+def tests_query_expression(patterns: Sequence[str]) -> str:
+  """Returns a `bazel query` expression for the tests `patterns` would run.
+
+  Wildcard patterns such as `//...` skip `manual` targets in `bazel test`, so
+  those are subtracted; explicitly listed labels are kept either way.
+  """
+  labels = [p.removeprefix("@@") for p in patterns]
+  wildcards = [p for p in labels if p.endswith("...") or p.endswith(":all")]
+  expression = f"tests(set({' '.join(labels)}))"
+  if wildcards:
+    expression += (
+        f' except attr(tags, "\\bmanual\\b", set({" ".join(wildcards)}))'
+    )
+  return expression
+
+
+def parse_query_xml(xml_text: str) -> list[QueriedTest]:
+  """Returns the label and tags of each rule in `bazel query --output=xml`."""
+  tests = []
+  for rule in xml.etree.ElementTree.fromstring(xml_text).iter("rule"):
+    tags = frozenset(
+        s.get("value", "")
+        for lst in rule.findall("list")
+        if lst.get("name") == "tags"
+        for s in lst.findall("string")
+    )
+    tests.append(QueriedTest(rule.get("name", ""), tags))
+  return tests
+
+
+def load_test_durations(path: pathlib.Path) -> dict[str, float]:
+  """Reads per-test seconds from `path`, keyed by full `//` label.
+
+  The file leaves off the leading `//` because Copybara rewrites labels under
+  examples/ and perflab/ on export and can't map them back.
+  """
+  raw = json.loads(path.read_text(encoding="utf-8"))
+  return {f"//{label.removeprefix('//')}": secs for label, secs in raw.items()}
+
+
+def estimated_seconds(
+    test: QueriedTest, durations: Mapping[str, float], local_test_jobs: int
+) -> float:
+  """Returns the seconds `test` adds to a runner's wall time.
+
+  An `exclusive` test runs alone, so it costs its full duration. Other tests
+  share the runner's `local_test_jobs` accelerators, so they cost a fraction.
+  """
+  seconds = durations.get(test.label, _DEFAULT_TEST_SECONDS)
+  if "exclusive" in test.tags:
+    return seconds
+  return seconds / max(local_test_jobs, 1)
+
+
+def partition_tests(
+    tests: Sequence[QueriedTest],
+    shard_count: int,
+    durations: Mapping[str, float],
+    local_test_jobs: int,
+) -> list[list[str]]:
+  """Splits tests into `shard_count` groups with similar estimated run time.
+
+  Greedy longest-first: each test goes to the group with the least estimated
+  time so far. Ties break on label so every shard computes the same split.
+
+  Args:
+    tests: Tests the job would run.
+    shard_count: Number of groups.
+    durations: Seconds of test work per label; missing labels get
+      `_DEFAULT_TEST_SECONDS`.
+    local_test_jobs: Tests Bazel runs at once on one runner.
+
+  Returns:
+    For each shard, its sorted test labels.
+  """
+  loads = [0.0] * shard_count
+  shards: list[list[str]] = [[] for _ in range(shard_count)]
+  costs = {
+      t.label: estimated_seconds(t, durations, local_test_jobs) for t in tests
+  }
+  for label in sorted(costs, key=lambda label: (-costs[label], label)):
+    i = min(range(shard_count), key=lambda i: (loads[i], i))
+    loads[i] += costs[label]
+    shards[i].append(label)
+  return [sorted(s) for s in shards]
+
+
+def shard_target_patterns(
+    patterns: Sequence[str], shards: Sequence[Sequence[str]], shard_index: int
+) -> list[str]:
+  """Returns the target patterns shard `shard_index` should pass to Bazel.
+
+  Shard 0 keeps the original patterns minus the tests the other shards took,
+  so anything the split missed (e.g. a test the query didn't see) still runs
+  somewhere. The other shards run only their own tests.
+  """
+  if shard_index > 0:
+    return list(shards[shard_index])
+  moved = sorted(label for shard in shards[1:] for label in shard)
+  return list(patterns) + [f"-{label}" for label in moved]
+
+
+def _query_tests(patterns: Sequence[str]) -> list[QueriedTest] | None:
+  """Runs `bazel query` for the tests in `patterns`, or None on failure."""
+  with tempfile.NamedTemporaryFile(
+      "w", suffix=".query", encoding="utf-8", delete=False
+  ) as f:
+    f.write(tests_query_expression(patterns))
+  res = subprocess.run(
+      [
+          "bazel",
+          "query",
+          "--keep_going",
+          "--output=xml",
+          f"--query_file={f.name}",
+      ],
+      capture_output=True,
+      text=True,
+      check=False,
+  )
+  os.unlink(f.name)
+  # Exit code 3 means some patterns failed to load; the rest are still listed,
+  # and shard 0 runs anything missing.
+  if res.returncode not in (0, 3):
+    print(res.stderr)
+    return None
+  return parse_query_xml(res.stdout)
+
+
+def select_shard_patterns(
+    opts: BazelDiffOptions, patterns: Sequence[str]
+) -> list[str]:
+  """Returns the target patterns for this job's shard of `patterns`."""
+  command_line = [f"--config={opts.bazel_config}"] if opts.bazel_config else []
+  command_line += shlex.split(opts.extra_bazel_flags)
+  bazelrc = (opts.workspace_dir / ".bazelrc").read_text(encoding="utf-8")
+  tag_filters = effective_flag(bazelrc, command_line, "test_tag_filters")
+  local_test_jobs = effective_flag(bazelrc, command_line, "local_test_jobs")
+
+  tests = _query_tests(patterns)
+  if tests is None:
+    print(
+        "WARNING: could not list tests to split them. Shard 0 runs everything"
+        " and the other shards run nothing."
+    )
+    return list(patterns) if opts.shard_index == 0 else []
+
+  filters = [f for f in (tag_filters or "").split(",") if f]
+  tests = [t for t in tests if matches_tag_filters(t.tags, filters)]
+  durations = load_test_durations(_TEST_DURATIONS_FILE)
+  jobs = int(local_test_jobs) if (local_test_jobs or "").isdigit() else 1
+  shards = partition_tests(tests, opts.shard_count, durations, jobs)
+
+  by_label = {t.label: t for t in tests}
+  print(f"--- Test split across {opts.shard_count} shards ---")
+  for i, shard in enumerate(shards):
+    seconds = sum(
+        estimated_seconds(by_label[l], durations, jobs) for l in shard
+    )
+    marker = " (this job)" if i == opts.shard_index else ""
+    print(f"Shard {i}: {len(shard)} test(s), ~{seconds / 60:.1f} min{marker}")
+  for label in shards[opts.shard_index]:
+    print(f"  {label}")
+  return shard_target_patterns(patterns, shards, opts.shard_index)
+
+
 def _run_bazel_test(
     bazel_config: str,
     extra_bazel_flags: str,
@@ -375,6 +648,45 @@ def _run_bazel_test(
   return res.returncode
 
 
+def _run_tests(
+    opts: BazelDiffOptions,
+    patterns: Sequence[str],
+    patterns_file: pathlib.Path | None = None,
+) -> int:
+  """Runs `patterns`, or only this job's share of them when sharded.
+
+  Args:
+    opts: Parsed options, with `workspace_dir` resolved.
+    patterns: Target patterns to test.
+    patterns_file: A file already holding `patterns`, if there is one.
+
+  Returns:
+    The exit code of the Bazel test command.
+  """
+  if opts.shard_count > 1:
+    patterns = select_shard_patterns(opts, patterns)
+    if not patterns:
+      print("No tests assigned to this shard. Skipping Bazel entirely!")
+      return 0
+    patterns_file = opts.workspace_dir / "shard_targets.txt"
+    patterns_file.write_text("\n".join(patterns) + "\n", encoding="utf-8")
+  if patterns_file is None:
+    return _run_bazel_test(opts.bazel_config, opts.extra_bazel_flags, patterns)
+  # bazel-diff and the shard split feed explicit labels, and Bazel treats an
+  # explicitly requested target whose target_compatible_with is unsatisfied as
+  # a hard error -- unlike the wildcard //... runs everywhere else, which skip
+  # it. --skip_incompatible_explicit_targets restores the wildcard behavior, so
+  # config-gated tests are skipped rather than failing presubmit.
+  return _run_bazel_test(
+      opts.bazel_config,
+      opts.extra_bazel_flags,
+      [
+          "--skip_incompatible_explicit_targets",
+          f"--target_pattern_file={os.fspath(patterns_file)}",
+      ],
+  )
+
+
 def main(argv: Sequence[str]) -> int:
   sys.stdout.reconfigure(line_buffering=True)
   opts = parse_args(argv)
@@ -383,6 +695,7 @@ def main(argv: Sequence[str]) -> int:
   if not workspace_dir.is_dir():
     raise ValueError(f"Workspace directory does not exist: {workspace_dir}")
   workspace_dir = workspace_dir.resolve()
+  opts = dataclasses.replace(opts, workspace_dir=workspace_dir)
   os.chdir(workspace_dir)
 
   # Resolve effective base SHA via centralized helper. If CURRENT_SHA is a merge
@@ -441,7 +754,7 @@ def main(argv: Sequence[str]) -> int:
         " global configuration files modified. Skipping bazel-diff and running"
         " all tests."
     )
-    return _run_bazel_test(opts.bazel_config, opts.extra_bazel_flags, ["//..."])
+    return _run_tests(opts, ["//..."])
 
   print("Downloading bazel-diff...")
   subprocess.run(
@@ -546,20 +859,7 @@ def main(argv: Sequence[str]) -> int:
     for target in sorted(impacted_targets):
       print(target)
     print("-----------------------------")
-
-    # bazel-diff feeds the impacted targets as explicit labels, and Bazel treats
-    # an explicitly requested target whose target_compatible_with is unsatisfied
-    # as a hard error -- unlike the wildcard //... runs everywhere else, which
-    # skip it. --skip_incompatible_explicit_targets restores the wildcard
-    # behavior, so config-gated tests are skipped rather than failing presubmit.
-    return _run_bazel_test(
-        opts.bazel_config,
-        opts.extra_bazel_flags,
-        [
-            "--skip_incompatible_explicit_targets",
-            f"--target_pattern_file={os.fspath(impacted_targets_file)}",
-        ],
-    )
+    return _run_tests(opts, impacted_targets, impacted_targets_file)
   else:
     print("No tests impacted by these changes. Skipping Bazel entirely!")
     return 0

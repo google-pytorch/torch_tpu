@@ -34,6 +34,11 @@ on:
         description: 'Override Current SHA for bazel-diff (optional)'
         required: false
         type: string
+      run_rbe_presubmit:
+        description: 'Run the presubmit on RBE'
+        required: false
+        type: boolean
+        default: false
   pull_request:
     branches:
       - main
@@ -54,6 +59,7 @@ concurrency:
 jobs:
   run_tests:
     name: "Presubmit on ${{ matrix.job_info.name || matrix.job_info.runner }}"
+    needs: decide
     # Available self-hosted runners.
     strategy:
       fail-fast: false
@@ -65,10 +71,35 @@ jobs:
             config: "ci_cpu_presubmit",
             extra_flags: "",
           },
+          # The 8-chip v5e tests take over an hour on one runner, mostly
+          # because multi-chip tests hold all 8 chips and run one at a time.
+          # Split them across three runners; run_bazel_diff.py gives each
+          # shard about a third of the estimated test time. The first shard
+          # keeps the unsuffixed name because Copybara reads the checks to
+          # wait for from the submitted copy.bara.sky, so renaming it would
+          # block the presubmit of the change that renames it.
           {
             runner: "linux-x86-ct5lp-224-8tpu",
             config: "ci_tpu_v5_presubmit",
             extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
+            shard_index: 0,
+            shard_count: 3,
+          },
+          {
+            name: "linux-x86-ct5lp-224-8tpu (2/3)",
+            runner: "linux-x86-ct5lp-224-8tpu",
+            config: "ci_tpu_v5_presubmit",
+            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
+            shard_index: 1,
+            shard_count: 3,
+          },
+          {
+            name: "linux-x86-ct5lp-224-8tpu (3/3)",
+            runner: "linux-x86-ct5lp-224-8tpu",
+            config: "ci_tpu_v5_presubmit",
+            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
+            shard_index: 2,
+            shard_count: 3,
           },
           # TODO(gunhyun): Re-enable once we have more quota.
           # {
@@ -120,5 +151,82 @@ jobs:
           base_sha: ${{ inputs.override_base_sha }}
           current_sha: ${{ inputs.override_current_sha || github.sha }}
           bazel_config: ${{ matrix.job_info.config }}
-          extra_bazel_flags: ${{ matrix.job_info.extra_flags }}
+          # When RBE runs the single-chip v5e tests, narrow the 8-chip v5e job
+          # to multi-chip and no-remote-exec tests.
+          extra_bazel_flags: >-
+            ${{ matrix.job_info.extra_flags }}
+            ${{
+              matrix.job_info.config == 'ci_tpu_v5_presubmit' &&
+              needs.decide.outputs.rbe == 'true' &&
+              '--config=ci_tpu_v5_multichip_presubmit' || ''
+            }}
+          test_all: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
+          shard_index: ${{ matrix.job_info.shard_index || 0 }}
+          shard_count: ${{ matrix.job_info.shard_count || 1 }}
+
+  # Reads the RBE opt-in once so every job that needs it gets the same answer.
+  # A PR opts in with the `ci:rbe-presubmit` label or an `RBE_PRESUBMIT=1` line
+  # in its head commit message, which Copybara adds from the CL tag (see
+  # _forward_rbe_presubmit_tag in copy.bara.sky). Labels are read when the event
+  # fires, so a label added after the push needs a new push or a dispatch with
+  # `run_rbe_presubmit`.
+  decide:
+    name: "Decide RBE opt-in"
+    runs-on: ubuntu-latest
+    outputs:
+      rbe: ${{ steps.decide.outputs.rbe }}
+    steps:
+      - name: Check RBE opt-in
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_OPT_IN: ${{ inputs.run_rbe_presubmit }}
+          SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+          HAS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'ci:rbe-presubmit') }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          rbe=false
+          if [[ "$DISPATCH_OPT_IN" == "true" ]]; then
+            rbe=true
+          elif [[ "$SAME_REPO" == "true" ]]; then
+            if [[ "$HAS_LABEL" == "true" ]]; then
+              rbe=true
+            else
+              msg="$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA" --jq .commit.message)"
+              if grep -qx 'RBE_PRESUBMIT=1' <<< "$msg"; then
+                rbe=true
+              fi
+            fi
+          fi
+          echo "rbe=$rbe" | tee -a "$GITHUB_OUTPUT"
+
+  rbe_presubmit:
+    name: "Presubmit on RBE"
+    timeout-minutes: 120
+    needs: decide
+    if: needs.decide.outputs.rbe == 'true'
+    runs-on: linux-x86-n4-16
+    container:
+      image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:30a9cf2ed330736957b3256dd3df69a13a556ae46626e9ad2ba205fa7a3c0051"  # Tag infrastructure-public-image-f0ac56f68949 (built 2026-09-21)
+      options: --ipc=host
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 2
+
+      - name: Fix Git Workspace Ownership
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Wait For Connection
+        uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
+        with:
+          halt-dispatch-input: ${{ inputs.halt-for-connection }}
+
+      - name: Run Impacted Tests via bazel-diff
+        uses: ./.github/actions/bazel-diff
+        with:
+          base_sha: ${{ inputs.override_base_sha }}
+          current_sha: ${{ inputs.override_current_sha || github.sha }}
+          bazel_config: "ci_rbe_presubmit"
           test_all: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}

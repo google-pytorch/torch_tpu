@@ -14,6 +14,7 @@
 
 """Unit tests for ci/tools/run_bazel_diff.py."""
 
+import json
 import pathlib
 import tempfile
 import unittest
@@ -59,6 +60,8 @@ class RunBazelDiffTest(unittest.TestCase):
         "bazel_config": "",
         "extra_bazel_flags": "",
         "test_all": False,
+        "shard_index": 0,
+        "shard_count": 1,
     }
     for field, expected_val in expected.items():
       with self.subTest(field=field):
@@ -282,6 +285,319 @@ class RunBazelDiffTest(unittest.TestCase):
             "@@//csrc/eager:traversal_test",
         ],
     )
+
+
+_BAZELRC = """\
+common --announce_rc
+common:base --test_tag_filters=-notest
+common:base --local_test_jobs=2
+common:v5 --config=base
+common:v5 --test_tag_filters=presubmit-v5,-notest  # trailing comment
+common:v5 --local_test_jobs=8
+common:multichip --test_tag_filters="requires-tpu-v5lite:8,-notest"
+common:loop --config=loop
+test:loop --test_tag_filters=looped
+"""
+
+
+def _test(label, *tags):
+  return run_bazel_diff.QueriedTest(label, frozenset(tags))
+
+
+class ShardSplitTest(unittest.TestCase):
+  """Tests splitting a job's tests across several runners."""
+
+  def test_parse_args_shard_flags(self):
+    opts = run_bazel_diff.parse_args(["--shard-index=2", "--shard-count=3"])
+    self.assertEqual((opts.shard_index, opts.shard_count), (2, 3))
+
+  def test_parse_args_rejects_bad_shard_flags(self):
+    for argv in (
+        ["--shard-index=3", "--shard-count=3"],
+        ["--shard-index=-1", "--shard-count=3"],
+        ["--shard-count=0"],
+    ):
+      with self.subTest(argv=argv):
+        with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
+          run_bazel_diff.parse_args(argv)
+
+  def test_effective_flag(self):
+    cases = [
+        # A nested config's value is overridden by a later line of the parent.
+        (["--config=v5"], "test_tag_filters", "presubmit-v5,-notest"),
+        (["--config=v5"], "local_test_jobs", "8"),
+        # Later --config flags win, and quotes are stripped.
+        (
+            ["--config=v5", "--config=multichip"],
+            "test_tag_filters",
+            "requires-tpu-v5lite:8,-notest",
+        ),
+        # A plain flag on the command line wins over an earlier config.
+        (["--config=v5", "--local_test_jobs=4"], "local_test_jobs", "4"),
+        (["--config=base"], "local_test_jobs", "2"),
+        (["--config=missing"], "test_tag_filters", None),
+        # A config that includes itself doesn't recurse forever.
+        (["--config=loop"], "test_tag_filters", "looped"),
+    ]
+    for command_line, flag, expected in cases:
+      with self.subTest(command_line=command_line, flag=flag):
+        self.assertEqual(
+            run_bazel_diff.effective_flag(_BAZELRC, command_line, flag),
+            expected,
+        )
+
+  def test_effective_flag_reads_config_less_lines(self):
+    bazelrc = "test --test_tag_filters=a\ncommon:x --test_tag_filters=b\n"
+    self.assertEqual(
+        run_bazel_diff.effective_flag(bazelrc, [], "test_tag_filters"), "a"
+    )
+    self.assertEqual(
+        run_bazel_diff.effective_flag(
+            bazelrc, ["--config=x"], "test_tag_filters"
+        ),
+        "b",
+    )
+
+  def test_matches_tag_filters(self):
+    cases = [
+        ({"a"}, [], True),
+        ({"a"}, ["-b"], True),
+        ({"a", "b"}, ["-b"], False),
+        ({"a"}, ["a", "c"], True),
+        ({"b"}, ["a", "c"], False),
+        # Negative filters win over positive ones.
+        ({"a", "notest"}, ["a", "-notest"], False),
+    ]
+    for tags, filters, expected in cases:
+      with self.subTest(tags=tags, filters=filters):
+        self.assertEqual(
+            run_bazel_diff.matches_tag_filters(tags, filters), expected
+        )
+
+  def test_tests_query_expression(self):
+    with self.subTest("wildcard"):
+      self.assertEqual(
+          run_bazel_diff.tests_query_expression(["//..."]),
+          'tests(set(//...)) except attr(tags, "\\bmanual\\b", set(//...))',
+      )
+    with self.subTest("explicit_labels"):
+      self.assertEqual(
+          run_bazel_diff.tests_query_expression(
+              ["@@//tests:a_test", "//tests:b_test"]
+          ),
+          "tests(set(//tests:a_test //tests:b_test))",
+      )
+
+  def test_parse_query_xml(self):
+    xml_text = """<?xml version="1.1" encoding="UTF-8"?>
+<query version="2">
+  <rule class="py_test" location="/w/tests/BUILD:1:1" name="//tests:a_test">
+    <string name="name" value="a_test"/>
+    <list name="tags">
+      <string value="exclusive"/>
+      <string value="requires-tpu"/>
+    </list>
+  </rule>
+  <rule class="sh_test" location="/w/tests/BUILD:9:1" name="//tests:b_test">
+    <string name="name" value="b_test"/>
+  </rule>
+</query>
+"""
+    self.assertEqual(
+        run_bazel_diff.parse_query_xml(xml_text),
+        [
+            _test("//tests:a_test", "exclusive", "requires-tpu"),
+            _test("//tests:b_test"),
+        ],
+    )
+
+  def test_load_test_durations_adds_label_prefix(self):
+    with tempfile.TemporaryDirectory() as td:
+      path = pathlib.Path(td) / "durations.json"
+      path.write_text(
+          '{"tests/a:b_test": 22, "//tests:c_test": 7}', encoding="utf-8"
+      )
+      self.assertEqual(
+          run_bazel_diff.load_test_durations(path),
+          {"//tests/a:b_test": 22, "//tests:c_test": 7},
+      )
+
+  def test_checked_in_durations_skip_label_prefix(self):
+    raw = json.loads(
+        run_bazel_diff._TEST_DURATIONS_FILE.read_text(encoding="utf-8")
+    )
+    self.assertTrue(raw)
+    self.assertEqual([k for k in raw if k.startswith("//")], [])
+
+  def test_estimated_seconds(self):
+    durations = {"//t:excl": 80.0, "//t:shared": 80.0}
+    cases = [
+        (_test("//t:excl", "exclusive"), 80.0),
+        (_test("//t:shared"), 10.0),
+        (_test("//t:unknown"), run_bazel_diff._DEFAULT_TEST_SECONDS / 8),
+    ]
+    for test, expected in cases:
+      with self.subTest(label=test.label):
+        self.assertEqual(
+            run_bazel_diff.estimated_seconds(test, durations, 8), expected
+        )
+
+  def test_partition_tests_balances_estimated_time(self):
+    durations = {"//t:a": 300, "//t:b": 200, "//t:c": 150, "//t:d": 100}
+    tests = [_test(label, "exclusive") for label in durations]
+    shards = run_bazel_diff.partition_tests(tests, 2, durations, 8)
+    self.assertEqual(shards, [["//t:a", "//t:d"], ["//t:b", "//t:c"]])
+
+  def test_partition_tests_is_order_independent(self):
+    durations = {"//t:a": 50, "//t:b": 50, "//t:c": 50}
+    tests = [_test(label, "exclusive") for label in durations]
+    self.assertEqual(
+        run_bazel_diff.partition_tests(tests, 2, durations, 8),
+        run_bazel_diff.partition_tests(tests[::-1], 2, durations, 8),
+    )
+
+  def test_partition_tests_more_shards_than_tests(self):
+    shards = run_bazel_diff.partition_tests([_test("//t:a")], 3, {}, 8)
+    self.assertEqual(shards, [["//t:a"], [], []])
+
+  def test_shard_target_patterns(self):
+    shards = [["//t:a"], ["//t:b", "//t:c"], ["//t:d"]]
+    with self.subTest("shard_0_keeps_patterns_minus_other_shards"):
+      self.assertEqual(
+          run_bazel_diff.shard_target_patterns(["//..."], shards, 0),
+          ["//...", "-//t:b", "-//t:c", "-//t:d"],
+      )
+    with self.subTest("other_shards_run_their_own_tests"):
+      self.assertEqual(
+          run_bazel_diff.shard_target_patterns(["//..."], shards, 1),
+          ["//t:b", "//t:c"],
+      )
+
+  def _select(self, shard_index, extra_flags, queried):
+    with tempfile.TemporaryDirectory() as td:
+      workspace = pathlib.Path(td)
+      (workspace / ".bazelrc").write_text(_BAZELRC, encoding="utf-8")
+      durations = workspace / "durations.json"
+      durations.write_text(
+          '{"t:big": 600, "t:mid": 300, "t:ops": 800}', encoding="utf-8"
+      )
+      opts = run_bazel_diff.BazelDiffOptions(
+          workspace_dir=workspace,
+          base_sha="",
+          current_sha="HEAD",
+          bazel_config="v5",
+          extra_bazel_flags=extra_flags,
+          test_all=True,
+          workflow_ref="",
+          shard_index=shard_index,
+          shard_count=2,
+      )
+      with (
+          mock.patch.object(
+              run_bazel_diff, "_query_tests", return_value=queried
+          ),
+          mock.patch.object(run_bazel_diff, "_TEST_DURATIONS_FILE", durations),
+          mock.patch("builtins.print"),
+      ):
+        return run_bazel_diff.select_shard_patterns(opts, ["//..."])
+
+  def test_select_shard_patterns_applies_the_job_tag_filters(self):
+    queried = [
+        _test("//t:big", "exclusive", "presubmit-v5", "requires-tpu-v5lite:8"),
+        _test("//t:mid", "exclusive", "presubmit-v5", "requires-tpu-v5lite:8"),
+        # Filtered out by the multichip overlay, so it must not take a shard.
+        _test("//t:ops", "presubmit-v5"),
+    ]
+    flags = '--run_under="$(pwd)/wrapper.sh" --config=multichip'
+    self.assertEqual(self._select(0, flags, queried), ["//...", "-//t:mid"])
+    self.assertEqual(self._select(1, flags, queried), ["//t:mid"])
+
+  def test_select_shard_patterns_falls_back_to_shard_0(self):
+    self.assertEqual(self._select(0, "", None), ["//..."])
+    self.assertEqual(self._select(1, "", None), [])
+
+
+class RunTestsTest(unittest.TestCase):
+  """Tests how _run_tests hands targets to Bazel."""
+
+  def _opts(self, workspace, shard_index=0, shard_count=1):
+    return run_bazel_diff.BazelDiffOptions(
+        workspace_dir=workspace,
+        base_sha="",
+        current_sha="HEAD",
+        bazel_config="ci",
+        extra_bazel_flags="",
+        test_all=True,
+        workflow_ref="",
+        shard_index=shard_index,
+        shard_count=shard_count,
+    )
+
+  def test_unsharded_passes_patterns_through(self):
+    with mock.patch.object(
+        run_bazel_diff, "_run_bazel_test", return_value=0
+    ) as run:
+      run_bazel_diff._run_tests(self._opts(pathlib.Path("/w")), ["//..."])
+      run.assert_called_once_with("ci", "", ["//..."])
+
+  def test_unsharded_uses_existing_patterns_file(self):
+    with mock.patch.object(
+        run_bazel_diff, "_run_bazel_test", return_value=0
+    ) as run:
+      run_bazel_diff._run_tests(
+          self._opts(pathlib.Path("/w")),
+          ["//t:a"],
+          pathlib.Path("/w/impacted_targets.txt"),
+      )
+      run.assert_called_once_with(
+          "ci",
+          "",
+          [
+              "--skip_incompatible_explicit_targets",
+              "--target_pattern_file=/w/impacted_targets.txt",
+          ],
+      )
+
+  def test_sharded_writes_this_shards_patterns(self):
+    with tempfile.TemporaryDirectory() as td:
+      workspace = pathlib.Path(td)
+      with (
+          mock.patch.object(
+              run_bazel_diff,
+              "select_shard_patterns",
+              return_value=["//t:b", "//t:c"],
+          ),
+          mock.patch.object(
+              run_bazel_diff, "_run_bazel_test", return_value=0
+          ) as run,
+      ):
+        run_bazel_diff._run_tests(self._opts(workspace, 1, 2), ["//..."])
+      patterns_file = workspace / "shard_targets.txt"
+      self.assertEqual(
+          patterns_file.read_text(encoding="utf-8"), "//t:b\n//t:c\n"
+      )
+      run.assert_called_once_with(
+          "ci",
+          "",
+          [
+              "--skip_incompatible_explicit_targets",
+              f"--target_pattern_file={patterns_file}",
+          ],
+      )
+
+  def test_sharded_with_no_tests_skips_bazel(self):
+    with (
+        mock.patch.object(
+            run_bazel_diff, "select_shard_patterns", return_value=[]
+        ),
+        mock.patch.object(run_bazel_diff, "_run_bazel_test") as run,
+        mock.patch("builtins.print"),
+    ):
+      rc = run_bazel_diff._run_tests(
+          self._opts(pathlib.Path("/w"), 1, 2), ["//..."]
+      )
+    self.assertEqual(rc, 0)
+    run.assert_not_called()
 
 
 if __name__ == "__main__":

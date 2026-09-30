@@ -267,7 +267,6 @@ common:remote_caching_readonly --google_default_credentials
 common:resultstore_base --bes_backend=buildeventservice.googleapis.com
 common:resultstore_base --bes_timeout=600s
 common:resultstore_base --bes_results_url="https://source.cloud.google.com/results/invocations"
-common:resultstore_base --bes_instance_name="ml-oss-rbe-testing"
 
 common:remote_caching_readwrite --config=remote_caching_readonly
 common:remote_caching_readwrite --remote_upload_local_results=true
@@ -292,12 +291,11 @@ common:helion_public_caching_readwrite --remote_upload_local_results=true
 common:helion_public_caching_readwrite --google_default_credentials
 
 # Settings specific to CI runs.
-common:ci --build_tests_only
-common:ci --config=remote_execution_readwrite
-common:ci --config=resultstore_base
-common:ci --remote_download_minimal
-common:ci --keep_going
-test:ci --test_output=errors
+common:ci_base --build_tests_only
+common:ci_base --remote_download_minimal
+common:ci_base --keep_going
+common:ci_base --config=resultstore_base
+test:ci_base --test_output=errors
 
 # Enable ANSI color in CI logs.
 #
@@ -310,8 +308,12 @@ test:ci --test_output=errors
 # lists, query results, and every other machine-readable payload written to
 # stdout are still uncolored, so analyers like `bazel-diff` and `bazel query`
 # keep parsing clean text.
-common:ci --color=yes
-common:ci --curses=no
+common:ci_base --color=yes
+common:ci_base --curses=no
+
+common:ci --config=ci_base
+common:ci --config=remote_execution_readwrite
+common:ci --bes_instance_name="ml-oss-rbe-testing"
 
 # Setting specific to benchmarking runs.
 common:bench --config=ci
@@ -367,6 +369,15 @@ common:ci_tpu_v5 --local_test_jobs=8
 common:ci_tpu_v5_presubmit --config=ci_tpu_v5
 common:ci_tpu_v5_presubmit --test_tag_filters=-notest,-nobuild,-nopresubmit,-fails-on-tpu-v5,presubmit-v5
 
+# Add on top of ci_tpu_v5_presubmit when a PR opts into RBE: the RBE job runs
+# the single-chip tests, and this narrows the 8-chip job to the tests RBE
+# can't run: multi-chip and no-remote-exec. Keep the tags in sync with
+# ci_tpu_v5_presubmit and ci_rbe_presubmit.
+common:ci_tpu_v5_multichip_presubmit --test_tag_filters=requires-tpu-v5lite:8,requires-tpu-v5p:4,no-remote-exec,-notest,-nobuild,-nopresubmit,-fails-on-tpu-v5
+# The multi-chip tests are `exclusive`, so their shards run one at a time and
+# each shard pays test startup again. Run each test as a single process.
+common:ci_tpu_v5_multichip_presubmit --test_sharding_strategy=disabled
+
 # Runs on linux-x86-ct6e-180-8tpu.
 common:ci_tpu_v6 --config=ci_tpu_base
 common:ci_tpu_v6 --test_tag_filters=requires-tpu,-notest,-nobuild,-fails-on-tpu-v6
@@ -409,6 +420,52 @@ common:remote_execution_readonly --remote_executor=grpcs://remotebuildexecution.
 # --remote_default_exec_properties to prevent ImmutableMap duplicate-key crashes
 # when configs are chained.
 common:remote_execution_readonly --extra_execution_platforms="//bazel/platforms:rbe_default_platform"
+
+# Dedicated Google Cloud RBE execution in us-west1. Build actions and CPU tests
+# run on the default CPU pool. TPU tests pick their own pool per target (see
+# build_files/build_defs.bzl).
+common:rbe_test_execution --remote_executor=grpcs://us-west1-remotebuildexecution.googleapis.com
+common:rbe_test_execution --remote_instance_name=projects/rbe-tpu-oss/instances/default_instance_west1
+common:rbe_test_execution --bes_instance_name=rbe-tpu-oss
+common:rbe_test_execution --extra_execution_platforms="//bazel/platforms:rbe_platform"
+common:rbe_test_execution --google_default_credentials
+common:rbe_test_execution --remote_upload_local_results=false
+# Tests run remotely on RBE, not locally on the client, so skip building local
+# .runfiles symlink trees across ~1,000 test targets (~4 min of local disk I/O).
+common:rbe_test_execution --nobuild_runfile_links
+common:rbe_test_execution --jobs=200
+common:rbe_test_execution --remote_timeout=3600
+# A hung test holds a TPU worker until it times out. The slowest test takes
+# about 5 minutes on RBE, so 15 minutes fails hangs fast with plenty of margin.
+common:rbe_test_execution --test_timeout=900
+# TODO: b/567928058 - Move these per target when a second TPU generation gets a pool.
+common:rbe_test_execution --test_env=TPU_SKIP_MDS_QUERY=1
+common:rbe_test_execution --test_env=TPU_ACCELERATOR_TYPE=v5e-1
+common:rbe_test_execution --test_env=TPU_WORKER_HOSTNAMES=127.0.0.1
+common:rbe_test_execution --test_env=TPU_WORKER_ID=0
+# Override the rest of `tpu_envvars` so the client's TPU settings don't reach
+# the workers or change the cache key. Bazel 8 can't unset a test_env, and
+# libtpu treats an empty value as unset.
+common:rbe_test_execution --test_env=TPU_TOPOLOGY=
+common:rbe_test_execution --test_env=TPU_TOPOLOGY_WRAP=
+common:rbe_test_execution --test_env=TPU_CHIPS_PER_HOST_BOUNDS=
+common:rbe_test_execution --test_env=TPU_RUNTIME_METRICS_PORTS=
+common:rbe_test_execution --test_env=TPU_TOPOLOGY_ALT=
+common:rbe_test_execution --test_env=TPU_HOST_BOUNDS=
+common:rbe_test_execution --test_env=CHIPS_PER_HOST_BOUNDS=
+common:rbe_test_execution --test_env=HOST_BOUNDS=
+common:rbe_test_execution --test_env=VBAR_CONTROL_SERVICE_URL=
+
+# CI presubmit on Google Cloud RBE: CPU tests plus TPU tests that have an RBE
+# pool. Today that's single-chip v5e (ct5lp-hightpu-1t). A test's pool follows
+# its presubmit-v<N> tag, not its requires-tpu-* tags, so v6/v7 tests are left
+# out by that tag and multi-chip v5 tests by their `:8`/`:4` tags. Test
+# containers run with --network=none, so tests that need the network are
+# tagged no-remote-exec.
+common:ci_rbe_presubmit --config=ci_base
+common:ci_rbe_presubmit --config=rbe_test_execution
+common:ci_rbe_presubmit --build_tag_filters=-nobuild,-requires-gpu,-cuda-build-test
+common:ci_rbe_presubmit --test_tag_filters=-nobuild,-notest,-nopresubmit,-requires-gpu,-cuda-build-test,-presubmit-v6,-presubmit-v7,-requires-tpu-v5lite:8,-requires-tpu-v5p:4,-no-remote-exec
 
 # TPU wheel version extras for local default builds.
 build --define WHEEL_VERSION_EXTRAS=

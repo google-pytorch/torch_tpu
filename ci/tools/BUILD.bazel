@@ -85,6 +85,7 @@ py_test(
 py_binary(
     name = "run_bazel_diff",
     srcs = ["run_bazel_diff.py"],
+    data = ["test_durations.json"],
 )
 
 py_test(

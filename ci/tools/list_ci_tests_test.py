@@ -663,6 +663,14 @@ jobs:
       - name: Run Bazel tests
         run: |
           bazel test --config=ci_tpu_nightly //tests:my_test
+  rbe:
+    name: "Presubmit on RBE"
+    runs-on: linux-x86-n4-16
+    steps:
+      - name: Run Impacted Tests via bazel-diff
+        uses: ./.github/actions/bazel-diff
+        with:
+          bazel_config: "ci_rbe_presubmit"
 """,
           encoding="utf-8",
       )
@@ -672,6 +680,59 @@ jobs:
       self.assertEqual(
           parsed["ci_tpu_nightly"].runner, "linux-x86-ct6e-180-8tpu"
       )
+      self.assertIn("ci_rbe_presubmit", parsed)
+      self.assertEqual(parsed["ci_rbe_presubmit"].machine_type, "CPU")
+      self.assertEqual(parsed["ci_rbe_presubmit"].runner, "linux-x86-n4-16")
+
+  def test_resolve_machine_type(self):
+    """Verifies the declared type wins, then the runner label decides."""
+    resolve = list_ci_tests._resolve_machine_type
+    cases = [
+        # (declared, runner, expected)
+        ("TPU v6e", "linux-x86-n4-16", "TPU v6e"),
+        ("", "linux-x86-ct6e-180-8tpu", "TPU v6e"),
+        ("", "linux-x86-n4-16", "CPU"),
+        ("", "custom-runner", "Unknown"),
+        ("", "ubuntu-latest", "Ubuntu (GitHub-hosted)"),
+    ]
+    for declared, runner, expected in cases:
+      with self.subTest(declared=declared, runner=runner):
+        self.assertEqual(resolve(declared, runner), expected)
+
+  def test_parse_workflow_machine_types_ignores_misleading_names(self):
+    """Verifies a TPU runner wins over a job name that decodes to another type."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = pathlib.Path(temp_dir)
+      (temp_path / "names.yml").write_text(
+          textwrap.dedent("""\
+              jobs:
+                matrix_job:
+                  strategy:
+                    matrix:
+                      job_info:
+                        - name: "TPU v7 1-Chip"
+                          runner: "linux-x86-tpu7x-56-1tpu"
+                          config: "ci_single_chip"
+                        - name: "Nightly v6 vs v5 compare"
+                          runner: "linux-x86-ct6e-180-8tpu"
+                          config: "ci_compare"
+                qwen2_eval:
+                  name: "Qwen2 eval"
+                  runs-on: linux-x86-tpu7x-224-4tpu
+                  steps:
+                    - run: bazel test --config=ci_eval //tests:eval_test
+              """),
+          encoding="utf-8",
+      )
+      parsed = list_ci_tests.parse_workflow_machine_types(temp_path)
+      cases = [
+          ("ci_single_chip", "TPU v7x 1-Chip"),
+          ("ci_compare", "TPU v6e"),
+          ("ci_eval", "TPU v7x"),
+      ]
+      for config, expected in cases:
+        with self.subTest(config=config):
+          self.assertEqual(parsed[config].machine_type, expected)
 
   def test_find_workflows_dir(self):
     """Verifies that get_workflows_dir locates .github/workflows."""
@@ -693,6 +754,7 @@ jobs:
     expected_machines = {
         "ci_cpu_presubmit": ("CPU", "linux-x86-n4-16"),
         "ci_tpu_v5_presubmit": ("TPU v5e", "linux-x86-ct5lp-224-8tpu"),
+        "ci_rbe_presubmit": ("CPU", "linux-x86-n4-16"),
         "ci_tpu_v7_presubmit": ("TPU v7x", "linux-x86-tpu7x-224-4tpu"),
         "ci_cpu_nightly": ("CPU", "linux-x86-n4-16"),
         "ci_tpu_nightly": ("TPU v6e", "linux-x86-ct6e-180-8tpu"),
@@ -720,6 +782,14 @@ jobs:
     # `ci_tpu_v6_presubmit` is commented out in presubmit.yml until more quota
     # is available, so it must not be reported as a job that runs tests.
     self.assertNotIn("ci_tpu_v6_presubmit", job_machines)
+
+  def test_real_bazelrc_rbe_configs(self):
+    """Verifies that ci_rbe_presubmit is the only RBE job in the real .bazelrc."""
+    bazelrc_path = list_ci_tests.get_bazelrc_path(self.repo_root)
+    rbe_configs = list_ci_tests.parse_bazelrc_rbe_configs(bazelrc_path)
+    ci_configs = list_ci_tests.parse_bazelrc_tag_filters(bazelrc_path)
+
+    self.assertEqual(rbe_configs & ci_configs.keys(), {"ci_rbe_presubmit"})
 
   def test_format_output_with_machine_info(self):
     """Verifies output formatters incorporate machine type details."""
@@ -834,6 +904,68 @@ jobs:
       if "ci_long_machine_job" in line:
         self.assertTrue(line.endswith("1"))
         self.assertIn(expected_desc, line)
+
+  def test_parse_bazelrc_rbe_configs(self):
+    """Verifies rbe_test_execution and configs that include it directly are RBE."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      path = pathlib.Path(temp_dir) / ".bazelrc"
+      path.write_text(
+          textwrap.dedent("""\
+              common:rbe_test_execution --remote_executor=grpcs://example
+              common:ci_rbe --config=ci_base --config=rbe_test_execution
+              common:ci_cpu --config=ci_base
+              common:ci_other --config=rbe_test_execution_other
+              # common:ci_commented_out --config=rbe_test_execution
+              """),
+          encoding="utf-8",
+      )
+
+      self.assertEqual(
+          list_ci_tests.parse_bazelrc_rbe_configs(path),
+          {"rbe_test_execution", "ci_rbe"},
+      )
+
+  def test_resolve_rbe_target_machine_type(self):
+    """Verifies RBE tests map to CPU or their presubmit-v<N> TPU."""
+    resolve = list_ci_tests.resolve_rbe_target_machine_type
+    cases = [
+        (set(), "CPU"),
+        ({"presubmit-v5"}, "CPU"),
+        ({"requires-tpu", "presubmit-v5"}, "TPU v5e"),
+        ({"requires-tpu", "presubmit-v6"}, "TPU v6e"),
+        ({"requires-tpu"}, "Unknown"),
+    ]
+    for tags, expected in cases:
+      with self.subTest(tags=sorted(tags)):
+        self.assertEqual(resolve(tags), expected)
+
+  def _target(self, name: str, tags: set[str]) -> list_ci_tests.TestTarget:
+    return list_ci_tests.TestTarget(
+        name=name, package="tests", tags=tags, source_file="BUILD"
+    )
+
+  def test_format_text_output_rbe_and_non_rbe_jobs(self):
+    """Verifies only RBE jobs show the machine type of each test."""
+    v5 = self._target("v5", {"requires-tpu", "presubmit-v5"})
+    job_to_targets = {
+        "ci_rbe": [
+            self._target("cpu", set()),
+            v5,
+            self._target("v6", {"requires-tpu", "presubmit-v6"}),
+        ],
+        "ci_tpu_v5": [v5],
+    }
+
+    text_out = list_ci_tests.format_text_output(
+        job_to_targets, rbe_jobs=frozenset({"ci_rbe"})
+    )
+
+    self.assertIn("  //tests:cpu [CPU]\n", text_out)
+    self.assertIn("  //tests:v5 [TPU v5e]\n", text_out)
+    self.assertIn("  //tests:v6 [TPU v6e]\n", text_out)
+    self.assertTrue(
+        text_out.endswith("CI Job: ci_tpu_v5 (1 tests)\n  //tests:v5")
+    )
 
 
 if __name__ == "__main__":

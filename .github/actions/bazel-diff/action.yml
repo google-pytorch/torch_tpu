@@ -37,6 +37,14 @@ inputs:
       Set to true to bypass bazel-diff target selection and run all tests
     required: false
     default: 'false'
+  shard_index:
+    description: 'Zero-based index of this job when shard_count splits the tests'
+    required: false
+    default: '0'
+  shard_count:
+    description: 'Number of jobs splitting the selected tests by estimated time'
+    required: false
+    default: '1'
 
 runs:
   using: 'composite'
@@ -50,4 +58,6 @@ runs:
         --bazel-config="${{ inputs.bazel_config }}"
         --extra-bazel-flags="${{ inputs.extra_bazel_flags }}"
         --test-all="${{ inputs.test_all }}"
+        --shard-index="${{ inputs.shard_index }}"
+        --shard-count="${{ inputs.shard_count }}"
       shell: bash
