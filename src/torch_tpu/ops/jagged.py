@@ -48,16 +48,17 @@ aligning flat values buffers to hardware microarchitectural boundaries:
 import typing
 import torch
 from torch.nested._internal import nested_tensor as nt_internal
-from torch_tpu._internal.utils import annotations
+from torch_tpu._internal.utils import annotations as _annotations
 
-experimental = annotations.experimental
 __all__ = [
     "align_jagged_to_multiple",
     "strip_jagged_padding",
 ]
 
 
-@experimental("align_jagged_to_multiple is experimental and subject to change.")
+@_annotations.experimental(
+    "align_jagged_to_multiple is experimental and subject to change."
+)
 def align_jagged_to_multiple(
     nt: torch.Tensor,
     multiple: int = 128,
@@ -98,7 +99,9 @@ def align_jagged_to_multiple(
   )
 
 
-@experimental("strip_jagged_padding is experimental and subject to change.")
+@_annotations.experimental(
+    "strip_jagged_padding is experimental and subject to change."
+)
 def strip_jagged_padding(
     nt: torch.Tensor,
     valid_tokens: typing.Optional[int] = None,
