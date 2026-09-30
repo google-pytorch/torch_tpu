@@ -4,6 +4,10 @@
     "type": "PACKAGE"
   },
   {
+    "name": "torch.tpu.compiler",
+    "type": "MODULE"
+  },
+  {
     "name": "torch.tpu.distributed",
     "type": "PACKAGE"
   },

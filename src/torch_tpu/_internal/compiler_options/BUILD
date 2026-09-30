@@ -27,11 +27,22 @@ package(
 )
 
 torch_tpu_py_library(
+    name = "api",
+    srcs = ["api.py"],
+    deps = [
+        ":compiler_options",
+    ],
+)
+
+torch_tpu_py_library(
     name = "compiler_options",
     srcs = [
         "__init__.py",
     ],
-    deps = [":compiler_options_impl"],
+    deps = [
+        ":compiler_options_impl",
+        "//src/torch_tpu/_internal/utils:annotations",
+    ],
 )
 
 pybind_extension(

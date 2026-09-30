@@ -15,11 +15,19 @@
 import contextlib
 
 from torch_tpu._internal.compiler_options import compiler_options_impl as compiler
+from torch_tpu._internal.utils import annotations
 
 
+@annotations.experimental(
+    "torch.tpu.compiler.custom_compiler_options is experimental and subject to"
+    " change."
+)
 @contextlib.contextmanager
 def custom_compiler_options(options: dict[str, str]):
   """Context manager for setting the XLA compiler options.
+
+  .. warning::
+      This API is experimental and subject to change in future releases.
 
   Args:
     options: A dictionary of XLA compiler options. The key is the option name,

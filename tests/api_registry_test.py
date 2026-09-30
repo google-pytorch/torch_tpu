@@ -21,6 +21,7 @@ import warnings
 from absl.testing import absltest
 import torch
 import torch_tpu
+from torch_tpu._internal import compiler_options as internal_compiler_options
 from torch_tpu._internal import exceptions as internal_exceptions
 from torch_tpu._internal import execution_mode as _internal_execution_mode
 from torch_tpu._internal.distributed.environment import (
@@ -282,6 +283,41 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
       )
     finally:
       torch.tpu.eager_mode = prev_mode
+
+  def test_compiler_api_registry(self):
+    """Verifies public exposure, identity, metadata, and proxy behavior for compiler."""
+    # 1. Symbol identity
+    self.assertIs(
+        torch.tpu.compiler.custom_compiler_options,
+        internal_compiler_options.custom_compiler_options,
+    )
+
+    # 2. Lifecycle stage metadata
+    fn = torch.tpu.compiler.custom_compiler_options
+    self.assertEqual(
+        getattr(fn, annotations.TT_API_STAGE, None),
+        annotations.Stage.EXPERIMENTAL.value,
+    )
+    self.assertEqual(
+        getattr(fn, annotations.TT_API_STAGE_REASON, None),
+        "torch.tpu.compiler.custom_compiler_options is experimental and subject"
+        " to change.",
+    )
+
+    # 3. Proxy dir and invalid attribute handling
+    self.assertEqual(dir(torch.tpu.compiler), ["custom_compiler_options"])
+    with self.assertRaises(  # ASSERT_RAISES_OK=Verifies proxy module raises AttributeError for non-existent attributes
+        AttributeError
+    ):
+      _ = getattr(torch.tpu.compiler, "non_existent_attribute")
+
+    # 4. Verify torch_tpu does not expose compiler
+    self.assertFalse(hasattr(torch_tpu, "compiler"))
+    self.assertNotIn("torch_tpu.compiler", sys.modules)
+    with self.assertRaises(  # ASSERT_RAISES_OK=Verifies torch_tpu.compiler cannot be imported
+        ModuleNotFoundError
+    ):
+      importlib.import_module("torch_tpu.compiler")
 
 
 if __name__ == "__main__":

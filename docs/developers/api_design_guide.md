@@ -123,6 +123,7 @@ Public TorchTPU Python APIs follow this module structure:
 
 ```
 torch.tpu        # TorchTPU root module
+ |- compiler     # compiler options and control
  |- distributed  # distributed utilities
  |- exceptions   # exceptions that might be raised by TorchTPU
  |- ops          # custom ops
