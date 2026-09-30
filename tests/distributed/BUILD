@@ -312,7 +312,6 @@ torch_tpu_py_test(
         "--test_mode=tpu",
     ],
     env = {"TORCH_SHOW_CPP_STACKTRACES": "0"},
-    notest_oss = True,  # fix hang in OSS (TODO)
     shard_count = 12,
     tags = if_oss(
         ["exclusive"],
@@ -916,9 +915,18 @@ torch_tpu_py_library(
 torch_tpu_py_test(
     name = "handshake_e2e_test",
     srcs = ["handshake_e2e_test.py"],
-    notest_oss = True,  # TODO(b/537411907): Re-enable in OSS once fixed.
+    # TODO(b/567669731): Remove once _ZMQClient falls back from an unusable ::1.
+    # In OSS Docker runners, `localhost` resolves to ::1 first but IPv6 loopback
+    # is unusable, and libzmq never falls back to 127.0.0.1.
+    env = if_oss(
+        {"MASTER_ADDR": "127.0.0.1"},
+        {},
+    ),
     shard_count = 8,
-    tags = [
+    tags = if_oss(
+        ["exclusive"],
+        [],
+    ) + [
         "noasan",  # TODO(b/497035517)
         "nomsan",  # TODO(b/497035517)
         "notsan",  # TODO(b/497035517)

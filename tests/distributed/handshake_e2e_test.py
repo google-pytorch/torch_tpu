@@ -295,7 +295,10 @@ def run_handshake_separate_vs_composed_compiled_functions_test(
     )
     res = compiled_foo(x, y)
 
-  utils.assert_close(res, torch.ones(4, device="tpu") * 144.0)
+  world_size = dist.get_world_size()
+  foo1_expected = sum((r + 1) + 2 for r in range(world_size))
+  foo2_expected = (foo1_expected * 2) * world_size
+  utils.assert_close(res, torch.ones(4, device="tpu") * foo2_expected)
 
   compiled_executables = [e for x in debugs for e in x.compiled_executables]
   if rank == divergent_rank:
@@ -310,6 +313,7 @@ def run_handshake_separate_vs_composed_compiled_functions_test(
 
 def run_handshake_no_rank_divergence_async_compile_test():
   rank = dist.get_rank()
+  world_size = dist.get_world_size()
   debugs: list[tpu_compile.TpuCompileDebug] = []
   x = torch.ones(4, device="tpu") * (rank + 1)
   y = torch.ones(4, device="tpu") * 2
@@ -340,7 +344,8 @@ def run_handshake_no_rank_divergence_async_compile_test():
     assert art is not None
 
   res = compiled_fn(x, y)
-  utils.assert_close(res, torch.ones(4, device="tpu") * 18.0)
+  expected = sum((r + 1) + 2 for r in range(world_size))
+  utils.assert_close(res, torch.ones(4, device="tpu") * expected)
   compiled_executables = [e for x in debugs for e in x.compiled_executables]
   assert len(compiled_executables) > 0
   assert len(debugs[0].stablehlo_forward_text) == 1, (
@@ -351,6 +356,7 @@ def run_handshake_no_rank_divergence_async_compile_test():
 
 def run_handshake_divergence_after_iteration_async_compile_test():
   rank = dist.get_rank()
+  world_size = dist.get_world_size()
   x = torch.ones(4, device="tpu") * (rank + 1)
   y = torch.ones(4, device="tpu") * 2
 
@@ -378,7 +384,8 @@ def run_handshake_divergence_after_iteration_async_compile_test():
     art = cm.artifact
     assert art is not None
   res0 = compiled_fn(x, y)
-  utils.assert_close(res0, torch.ones(4, device="tpu") * 18.0)
+  expected_iter0 = sum((r + 1) + 2 for r in range(world_size))
+  utils.assert_close(res0, torch.ones(4, device="tpu") * expected_iter0)
 
   iteration += 1
   try:
@@ -391,11 +398,12 @@ def run_handshake_divergence_after_iteration_async_compile_test():
     art = cm.artifact
     assert art is not None
   res1 = compiled_fn(x, y)
-  utils.assert_close(res1, torch.ones(4, device="tpu") * 90.0)
+  expected_iter1 = expected_iter0 * 5.0
+  utils.assert_close(res1, torch.ones(4, device="tpu") * expected_iter1)
 
 
 class HandshakeE2ETest(parameterized.TestCase):  # ABSLTEST_OK=b/550338082
-  _world_size = 4
+  _world_size = 8
 
   @parameterized.parameters("COMPILE_STAGE", "DISPATCH_STAGE")
   def test_handshake_no_rank_divergence(self, handshake_stage):

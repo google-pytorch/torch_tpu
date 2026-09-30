@@ -449,9 +449,11 @@ def run_conflicting_device_assignments_error() -> None:
   expected = torch.full((4,), float(world_size + half), dtype=torch.float32)
   utils.assert_close(res, expected)
 
-  unaligned_a = dist.new_group(ranks=[1, 2])
-  unaligned_b = dist.new_group(ranks=[3, 0])
-  unaligned_group = unaligned_a if rank in (1, 2) else unaligned_b
+  unaligned_a_ranks = list(range(1, half + 1))
+  unaligned_b_ranks = list(range(half + 1, world_size)) + [0]
+  unaligned_a = dist.new_group(ranks=unaligned_a_ranks)
+  unaligned_b = dist.new_group(ranks=unaligned_b_ranks)
+  unaligned_group = unaligned_a if rank in unaligned_a_ranks else unaligned_b
 
   @torch.compile(backend="tpu", fullgraph=True)
   @spmd_util.spmd_safe
@@ -477,9 +479,7 @@ def run_conflicting_device_assignments_error() -> None:
 
 
 class CollectiveErrorsTest(et.TpuOnlyDistributedErrorTestBase):
-  # Running with world_size = 4 (topology "2,2,1") satisfies all error test
-  # requirements while halving worker process count and startup overhead.
-  _world_size = 4
+  _world_size = 8
 
   def test_all_gather(self):
     distributed_utils.dist_run(
