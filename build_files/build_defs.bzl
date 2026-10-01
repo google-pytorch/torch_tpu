@@ -132,6 +132,54 @@ def _clamp_shard_count(is_oss, tags, shard_count):
 
     return shard_count
 
+def _select_shard_count(raw_shard_count, clamped_shard_count):
+    if clamped_shard_count == raw_shard_count:
+        return clamped_shard_count
+    return select({
+        "//:rbe_test_execution": raw_shard_count,
+        "//conditions:default": clamped_shard_count,
+    })
+
+# TPU generation -> OSS RBE pool and test env for single-chip tests.
+# TODO: b/567928058 - Add v6e, v7x and multi-chip pools as they come online.
+_RBE_TPU_POOLS = {"v5": "ci_tpu_v5_full_rbe"}
+_RBE_TPU_ENV = {
+    "v5": {
+        "TPU_ACCELERATOR_TYPE": "v5e-1",
+        "TPU_SKIP_MDS_QUERY": "1",
+        "TPU_WORKER_HOSTNAMES": "127.0.0.1",
+        "TPU_WORKER_ID": "0",
+    },
+}
+
+def _add_rbe_exec_properties(kwargs, tags, tpu_generation):
+    """Configures OSS RBE pool and TPU environment for a single-chip TPU test.
+
+    A TPU test with no pool gets nothing, so if the RBE filters let one
+    through it fails on the CPU pool instead of running on the wrong TPU.
+    """
+    pool = _RBE_TPU_POOLS.get(tpu_generation)
+    if pool == None:
+        return
+    for tag in tags:
+        chips = _get_tpu_chip_count(tag)
+        if chips != None and chips > 1:
+            return
+    kwargs["exec_properties"] = {
+        "test.Pool": pool,
+        "test.dockerPrivileged": "true",  # The TPU is /dev/vfio.
+        # TODO: b/567928058 - Try running tests as a non-root user.
+        "test.dockerRunAsRoot": "true",
+    } | (kwargs.get("exec_properties") or {})
+    rbe_env = _RBE_TPU_ENV.get(tpu_generation)
+    if rbe_env:
+        rbe_env_select = select({
+            "//:rbe_test_execution": rbe_env,
+            "//conditions:default": {},
+        })
+        existing_env = kwargs.get("env")
+        kwargs["env"] = (rbe_env_select | existing_env) if existing_env else rbe_env_select
+
 def tpu_gen(generation, reason = None):
     """Helper to configure explicit TPU generation requirements.
 
@@ -249,6 +297,7 @@ is_backend_dep_for_testing = is_backend_dep
 get_tpu_version_for_testing = _get_tpu_version
 get_tpu_chip_count_for_testing = _get_tpu_chip_count
 clamp_shard_count_for_testing = _clamp_shard_count
+add_rbe_exec_properties_for_testing = _add_rbe_exec_properties
 
 def torch_tpu_cc_library(name, srcs = [], hdrs = [], copts = None, features = None, **kwargs):
     """Creates a C++ library for torch_tpu.
@@ -745,6 +794,7 @@ def torch_tpu_cc_test(
     cc_test_tags = tags
     effective_tags = list(tags)
 
+    raw_shard_count = kwargs.get("shard_count", None)
     result = _check_and_adjust_test_tags(
         name = name,
         is_oss = is_oss(),
@@ -760,10 +810,10 @@ def torch_tpu_cc_test(
         nonightly_oss = nonightly_oss,
         oss_presubmit_tpu_generation = oss_presubmit_tpu_generation,
         tags = effective_tags,
-        shard_count = kwargs.get("shard_count", None),
+        shard_count = raw_shard_count,
     )
     if result.shard_count != None:
-        kwargs["shard_count"] = result.shard_count
+        kwargs["shard_count"] = _select_shard_count(raw_shard_count, result.shard_count)
 
     if requires_libtpu == None:
         # requires-tpu is a generic tag automatically applied whenever at least
@@ -820,6 +870,8 @@ def torch_tpu_cc_test(
             if filtered_exec_properties:
                 sh_test_kwargs["exec_properties"] = filtered_exec_properties
 
+        _add_rbe_exec_properties(sh_test_kwargs, effective_tags, result.tpu_generation)
+
         # buildifier: disable=native-sh-test
         native.sh_test(
             name = name,
@@ -836,6 +888,7 @@ def torch_tpu_cc_test(
         )
     else:
         cc_test_tags = effective_tags
+        _add_rbe_exec_properties(kwargs, effective_tags, result.tpu_generation)
 
     if result.create_build_test:
         build_test(
@@ -1271,6 +1324,7 @@ def torch_tpu_py_test(
     else:
         target_specs = [(name, [], oss_presubmit_tpu_generation, nopresubmit)]
 
+    raw_shard_count = kwargs.get("shard_count", None)
     for target_name, additional_tags, target_tpu_generation, target_nopresubmit in target_specs:
         target_tags = tags + additional_tags
         result = _check_and_adjust_test_tags(
@@ -1288,7 +1342,7 @@ def torch_tpu_py_test(
             nonightly_oss = nonightly_oss,
             oss_presubmit_tpu_generation = target_tpu_generation,
             tags = target_tags,
-            shard_count = kwargs.get("shard_count", None),
+            shard_count = raw_shard_count,
         )
         if result.create_build_test:
             build_test(
@@ -1299,7 +1353,9 @@ def torch_tpu_py_test(
 
         target_kwargs = dict(kwargs)
         if result.shard_count != None:
-            target_kwargs["shard_count"] = result.shard_count
+            target_kwargs["shard_count"] = _select_shard_count(raw_shard_count, result.shard_count)
+        target_kwargs["env"] = test_env
+        _add_rbe_exec_properties(target_kwargs, target_tags, result.tpu_generation)
 
         rule(
             name = target_name,
@@ -1308,7 +1364,6 @@ def torch_tpu_py_test(
             size = size,
             timeout = timeout,
             deps = all_deps,
-            env = test_env,
             tags = target_tags,
             **target_kwargs
         )

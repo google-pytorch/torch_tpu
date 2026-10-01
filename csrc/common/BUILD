@@ -23,6 +23,7 @@ load(
 load("//bazel:pywrap_extensions.bzl", "PYWRAP_EXTENSIONS")
 load(
     "//build_files:build_defs.bzl",
+    "if_oss",
     "oss_target",
     "torch_tpu_cc_library",
     "torch_tpu_cc_test",
@@ -1444,7 +1445,12 @@ torch_tpu_cc_test(
     tags = [
         "requires-net:external",  # Requires remote file access.
         "requires-tpu-v5lite",
-    ],
+    ] + if_oss(
+        # TODO: b/567928058 - OSS RBE test containers have no network, so the
+        # test can't reach its GCS cache root there.
+        ["no-remote-exec"],
+        [],
+    ),
     deps = [
         ":cache_key",
         ":compilation",

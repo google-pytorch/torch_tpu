@@ -303,24 +303,45 @@ def decode_runner_machine_type(runner: str) -> str:
   return "Unknown"
 
 
-def _resolve_machine_type(machine_type: str, name: str, runner: str) -> str:
-  """Resolves the machine type from metadata or infers from runner label.
+# The .bazelrc config that sends a build to RBE.
+_RBE_CONFIG = "rbe_test_execution"
 
-  Args:
-    machine_type: Machine type explicitly declared by the workflow definition
-      (e.g. 'TPU v6e'), or the empty string if it declares none.
-    name: Display name of the job or matrix entry (e.g. 'CPU'), or the empty
-      string if it has none.
-    runner: Runner label string (e.g. 'linux-x86-ct5lp-224-8tpu').
+# Matches any .bazelrc config line, e.g.
+#   common:ci_rbe_presubmit --config=rbe_test_execution
+_BAZELRC_CONFIG_LINE_RE = re.compile(
+    r"^(?:common|test|build):(?P<job>[a-zA-Z0-9_-]+)\s+(?P<flags>.*)$"
+)
 
-  Returns:
-    The canonical human-readable machine type string (e.g. 'TPU v5e', 'CPU').
-  """
-  if machine_type:
-    return machine_type
-  if name.upper() == "CPU":
-    return name
-  return decode_runner_machine_type(runner)
+
+def parse_bazelrc_rbe_configs(bazelrc_path: pathlib.Path) -> frozenset[str]:
+  """Returns `rbe_test_execution` and the .bazelrc configs that include it directly."""
+  rbe_configs = set()
+  with open(bazelrc_path, "r", encoding="utf-8") as f:
+    for line in f:
+      m = _BAZELRC_CONFIG_LINE_RE.match(line.strip())
+      if m and (
+          m.group("job") == _RBE_CONFIG
+          or f"--config={_RBE_CONFIG}" in m.group("flags").split()
+      ):
+        rbe_configs.add(m.group("job"))
+  return frozenset(rbe_configs)
+
+
+_PRESUBMIT_TAG_MACHINE_TYPES = {
+    "presubmit-v5": "TPU v5e",
+    "presubmit-v6": "TPU v6e",
+    "presubmit-v7": "TPU v7x",
+}
+
+
+def resolve_rbe_target_machine_type(tags: set[str]) -> str:
+  """Returns 'CPU', or the TPU an RBE test runs on from its presubmit-v<N> tag."""
+  if "requires-tpu" not in tags:
+    return "CPU"
+  for tag, machine_type in _PRESUBMIT_TAG_MACHINE_TYPES.items():
+    if tag in tags:
+      return machine_type
+  return "Unknown"
 
 
 def get_workflows_dir(repo_root: pathlib.Path) -> pathlib.Path | None:
@@ -435,7 +456,7 @@ def _get_job_runner(job: Mapping[str, Any]) -> str:
 
 
 def _get_step_configs(job: Mapping[str, Any]) -> list[str]:
-  """Returns the Bazel configs selected by the job's `run` step commands."""
+  """Returns the Bazel configs selected by the job's steps."""
   steps = job.get("steps")
   if not isinstance(steps, list):
     return []
@@ -446,6 +467,12 @@ def _get_step_configs(job: Mapping[str, Any]) -> list[str]:
     command = step.get("run")
     if isinstance(command, str):
       configs.extend(_BAZEL_TEST_CONFIG_RE.findall(command))
+    with_args = step.get("with")
+    if isinstance(with_args, dict):
+      for key in _CONFIG_KEYS:
+        config = _get_literal(with_args, key)
+        if config:
+          configs.append(config)
   return configs
 
 
@@ -475,18 +502,17 @@ def parse_workflow_machine_types(
     for job in jobs:
       for entry in _get_matrix_entries(job):
         runner = _get_literal(entry, "runner")
-        machine_type = _resolve_machine_type(
-            _get_literal(entry, "machine_type"),
-            _get_literal(entry, "name"),
-            runner,
-        )
+        machine_type = _get_literal(
+            entry, "machine_type"
+        ) or decode_runner_machine_type(runner)
         for key in _CONFIG_KEYS:
           config = _get_literal(entry, key)
           if config:
             job_machines[config] = JobMachineInfo(machine_type, runner)
 
-    # A config hardcoded in a step command only tells us which job runs it, so
-    # it falls back to the job's runner and never overrides a matrix entry.
+    # A config hardcoded in a step command or action input only tells us which
+    # job runs it, so it falls back to the job's runner and never overrides a
+    # matrix entry.
     for job in jobs:
       runner = _get_job_runner(job)
       if not runner:
@@ -925,8 +951,12 @@ def map_test_to_jobs(
 def format_text_output(
     job_to_targets: Mapping[str, Sequence[TestTarget]],
     job_machines: Mapping[str, JobMachineInfo] | None = None,
+    rbe_jobs: frozenset[str] = frozenset(),
 ) -> str:
-  """Formats test targets grouped by CI job in human-readable text."""
+  """Formats test targets grouped by CI job in human-readable text.
+
+  Tests in an RBE job also show the machine type each one runs on.
+  """
   job_machines = job_machines or {}
   lines = []
   for job, targets in sorted(job_to_targets.items()):
@@ -936,7 +966,10 @@ def format_text_output(
     lines.append(f"CI Job: {job}{machine_desc} ({len(targets)} tests)")
     if targets:
       for t in targets:
-        lines.append(f"  {t.label}")
+        machine = ""
+        if job in rbe_jobs:
+          machine = f" [{resolve_rbe_target_machine_type(t.tags)}]"
+        lines.append(f"  {t.label}{machine}")
     else:
       lines.append("  (No tests match this job's filter)")
     lines.append("")
@@ -1047,6 +1080,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
   workflows_dir = get_workflows_dir(repo_root)
   job_machines = parse_workflow_machine_types(workflows_dir)
+  rbe_jobs = parse_bazelrc_rbe_configs(bazelrc_path)
+  for job in rbe_jobs:
+    job_machines[job] = JobMachineInfo("RBE (per test)")
 
   if args.list_jobs:
     print(f"Available CI jobs from {bazelrc_path}:")
@@ -1112,7 +1148,7 @@ def main(argv: Sequence[str] | None = None) -> int:
   if args.format == "count":
     print(format_count_output(job_to_targets, job_machines))
   else:
-    print(format_text_output(job_to_targets, job_machines))
+    print(format_text_output(job_to_targets, job_machines, rbe_jobs))
 
   return 0
 

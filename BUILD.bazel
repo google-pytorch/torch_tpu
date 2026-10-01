@@ -102,6 +102,18 @@ config_setting(
     visibility = ["//visibility:public"],
 )
 
+bool_flag(
+    name = "_rbe_test_execution",
+    build_setting_default = False,
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "rbe_test_execution",
+    flag_values = {":_rbe_test_execution": "True"},
+    visibility = ["//visibility:public"],
+)
+
 # Hermetic TCMalloc shared library built from @com_google_tcmalloc//tcmalloc
 # for preloading into Python test and benchmark processes via LD_PRELOAD.
 # Under TSan (:tsan_build), builds an empty stub library so

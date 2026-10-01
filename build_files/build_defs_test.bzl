@@ -19,6 +19,7 @@ load("@rules_testing//lib:test_suite.bzl", "test_suite")
 load(
     "//build_files:build_defs.bzl",
     # go/keep-sorted start
+    "add_rbe_exec_properties_for_testing",
     "check_and_adjust_test_tags_for_testing",
     "clamp_shard_count_for_testing",
     "get_tpu_chip_count_for_testing",
@@ -33,7 +34,7 @@ load(
 
 _TagsInfo = provider(
     "Provider for extracting rule attributes during analysis tests.",
-    fields = ["tags", "rule_kind", "env", "exec_properties"],
+    fields = ["tags", "rule_kind", "env", "exec_properties", "shard_count"],
 )
 
 def _tags_aspect_impl(_target, ctx):
@@ -42,6 +43,7 @@ def _tags_aspect_impl(_target, ctx):
         rule_kind = ctx.rule.kind,
         env = getattr(ctx.rule.attr, "env", {}),
         exec_properties = getattr(ctx.rule.attr, "exec_properties", {}),
+        shard_count = getattr(ctx.rule.attr, "shard_count", -1),
     )]
 
 tags_aspect = aspect(
@@ -146,6 +148,15 @@ def _test_py_test_multi_tpu_targets_impl(env, targets):
         env.expect.that_collection(target_v7_tags).contains("presubmit-v7")
         env.expect.that_collection(target_v7_tags).not_contains("presubmit-v5")
         env.expect.that_collection(target_v7_tags).not_contains("presubmit-v6")
+
+        env.expect.that_dict(targets.target_v5[_TagsInfo].exec_properties).contains_exactly(
+            _V5_RBE_EXEC_PROPERTIES,
+        )
+
+        # TODO: b/567928058 - Expect `ci_tpu_v6_full_rbe` and `ci_tpu_v7_full_rbe`
+        # once those RBE pools are added to _RBE_TPU_POOLS.
+        env.expect.that_dict(targets.target_v6[_TagsInfo].exec_properties).contains_exactly({})
+        env.expect.that_dict(targets.target_v7[_TagsInfo].exec_properties).contains_exactly({})
 
 def _test_py_test_multi_tpu_targets(name):
     torch_tpu_py_test(
@@ -824,6 +835,214 @@ def _test_shard_count_clamping(env):
     )
     env.expect.that_int(clamped_internal_forge).equals(12)
 
+# --- OSS RBE routing tests ---
+
+_V5_RBE_TAGS = ["requires-tpu"]
+
+_V5_RBE_EXEC_PROPERTIES = {
+    "test.Pool": "ci_tpu_v5_full_rbe",
+    "test.dockerPrivileged": "true",
+    "test.dockerRunAsRoot": "true",
+}
+
+_V5_RBE_ENV = {
+    "TPU_ACCELERATOR_TYPE": "v5e-1",
+    "TPU_SKIP_MDS_QUERY": "1",
+    "TPU_WORKER_HOSTNAMES": "127.0.0.1",
+    "TPU_WORKER_ID": "0",
+}
+
+def _rbe_exec_properties(tpu_generation, tags = _V5_RBE_TAGS, exec_properties = None):
+    kwargs = {} if exec_properties == None else {"exec_properties": exec_properties}
+    add_rbe_exec_properties_for_testing(kwargs, tags, tpu_generation)
+    return kwargs.get("exec_properties", {})
+
+def _test_rbe_oss_v5_test_gets_pool(env):
+    """Tests that an OSS single-chip v5 test goes to the v5e RBE pool."""
+    env.expect.that_dict(_rbe_exec_properties("v5")).contains_exactly(
+        _V5_RBE_EXEC_PROPERTIES,
+    )
+
+def _test_rbe_internal_test_gets_nothing(env):
+    """Tests that internal builds (tpu_generation = None) never get RBE exec_properties."""
+    env.expect.that_dict(_rbe_exec_properties(None)).contains_exactly({})
+
+def _test_rbe_test_without_pool_gets_nothing(env):
+    """Tests that CPU, v7 and multi-chip v5 tests don't get a TPU pool."""
+    for tpu_generation, tags in [
+        (None, []),
+        # TODO: b/567928058 - Once v7x and 8-chip v5e RBE worker pools are added
+        # to _RBE_TPU_POOLS, move these two cases into positive pool tests
+        # expecting `_V5_RBE_EXEC_PROPERTIES | {"test.Pool": "ci_tpu_v7_full_rbe"}`
+        # and `_V5_RBE_EXEC_PROPERTIES | {"test.Pool": "ci_tpu_v5_8chip_full_rbe"}`.
+        ("v7", ["requires-tpu-v7x", "requires-tpu"]),
+        ("v5", ["requires-tpu", "requires-tpu-v5lite:8"]),
+    ]:
+        env.expect.where(tpu_generation = tpu_generation, tags = tags).that_dict(
+            _rbe_exec_properties(tpu_generation, tags),
+        ).contains_exactly({})
+
+def _test_rbe_caller_exec_properties_win(env):
+    """Tests that exec_properties the caller set win over the RBE ones."""
+    exec_properties = _rbe_exec_properties(
+        "v5",
+        exec_properties = {"test.Pool": "custom_pool", "test.mem": "32g"},
+    )
+
+    env.expect.that_dict(exec_properties).contains_exactly({
+        "test.Pool": "custom_pool",
+        "test.dockerPrivileged": "true",
+        "test.dockerRunAsRoot": "true",
+        "test.mem": "32g",
+    })
+
+def _test_rbe_macro_exec_properties_impl(env, targets):
+    """Verifies exec_properties, env, and shard_count emitted by torch_tpu_py_test and torch_tpu_cc_test."""
+    expected_v5 = _V5_RBE_EXEC_PROPERTIES if is_oss() else {}
+    expected_override = (
+        _V5_RBE_EXEC_PROPERTIES | {"test.Pool": "custom_pool", "test.mem": "32g"}
+    ) if is_oss() else {"test.Pool": "custom_pool", "test.mem": "32g"}
+    expected_cc_override = (
+        _V5_RBE_EXEC_PROPERTIES | {"test.Pool": "custom_pool", "test.mem": "32g"}
+    ) if is_oss() else {"cpp_link.mem": "20g", "test.Pool": "custom_pool", "test.mem": "32g"}
+    caller_env = {"CUSTOM_VAR": "1", "TPU_ACCELERATOR_TYPE": "custom"}
+
+    env.expect.that_dict(targets.py_v5[_TagsInfo].exec_properties).contains_exactly(expected_v5)
+    env.expect.that_dict(targets.py_v5[_TagsInfo].env).contains_exactly({})
+    env.expect.that_int(targets.py_v5[_TagsInfo].shard_count).equals(1 if is_oss() else 8)
+
+    env.expect.that_dict(targets.py_override[_TagsInfo].exec_properties).contains_exactly(
+        expected_override,
+    )
+    env.expect.that_dict(targets.py_override[_TagsInfo].env).contains_exactly(caller_env)
+
+    env.expect.that_dict(targets.py_cpu[_TagsInfo].exec_properties).contains_exactly({})
+    env.expect.that_dict(targets.py_cpu[_TagsInfo].env).contains_exactly({})
+
+    # TODO: b/567928058 - Expect `_V5_RBE_EXEC_PROPERTIES | {"test.Pool": "ci_tpu_v5_8chip_full_rbe"}`
+    # in OSS once the 8-chip v5e RBE pool is added to _RBE_TPU_POOLS.
+    env.expect.that_dict(targets.py_multichip[_TagsInfo].exec_properties).contains_exactly({})
+    env.expect.that_dict(targets.py_multichip[_TagsInfo].env).contains_exactly({})
+    env.expect.that_int(targets.py_multichip[_TagsInfo].shard_count).equals(1 if is_oss() else 8)
+
+    # TODO: b/567928058 - Expect `_V5_RBE_EXEC_PROPERTIES | {"test.Pool": "ci_tpu_v7_full_rbe"}`
+    # in OSS once the v7x RBE pool is added to _RBE_TPU_POOLS.
+    env.expect.that_dict(targets.py_v7[_TagsInfo].exec_properties).contains_exactly({})
+    env.expect.that_dict(targets.py_v7[_TagsInfo].env).contains_exactly({})
+
+    env.expect.that_dict(targets.cc_v5[_TagsInfo].exec_properties).contains_exactly(expected_v5)
+    env.expect.that_dict(targets.cc_v5[_TagsInfo].env).contains_exactly({})
+    env.expect.that_int(targets.cc_v5[_TagsInfo].shard_count).equals(1 if is_oss() else 4)
+
+    env.expect.that_dict(targets.cc_override[_TagsInfo].exec_properties).contains_exactly(
+        expected_cc_override,
+    )
+    env.expect.that_dict(targets.cc_override[_TagsInfo].env).contains_exactly(caller_env)
+
+    if is_oss():
+        env.expect.that_dict(targets.rbe_py_v5[_TagsInfo].env).contains_exactly(_V5_RBE_ENV)
+        env.expect.that_int(targets.rbe_py_v5[_TagsInfo].shard_count).equals(8)
+        env.expect.that_dict(targets.rbe_py_override[_TagsInfo].env).contains_exactly(
+            _V5_RBE_ENV | caller_env,
+        )
+        env.expect.that_dict(targets.rbe_py_cpu[_TagsInfo].env).contains_exactly({})
+        env.expect.that_dict(targets.rbe_py_multichip[_TagsInfo].env).contains_exactly({})
+        env.expect.that_int(targets.rbe_py_multichip[_TagsInfo].shard_count).equals(8)
+        env.expect.that_dict(targets.rbe_py_v7[_TagsInfo].env).contains_exactly({})
+        env.expect.that_dict(targets.rbe_cc_v5[_TagsInfo].env).contains_exactly(_V5_RBE_ENV)
+        env.expect.that_int(targets.rbe_cc_v5[_TagsInfo].shard_count).equals(4)
+        env.expect.that_dict(targets.rbe_cc_override[_TagsInfo].env).contains_exactly(
+            _V5_RBE_ENV | caller_env,
+        )
+
+def _test_rbe_macro_exec_properties(name):
+    common_py_kwargs = {
+        "srcs": ["build_defs_test.py"],
+        "main": "build_defs_test.py",
+        "is_wheel_test": True,
+        "nobuild": "Analysis test subject",
+        "nolocal": "Analysis test subject",
+        "notap": "Analysis test subject",  # NOTAP_OK=Analysis test subject
+    }
+    caller_env = {"CUSTOM_VAR": "1", "TPU_ACCELERATOR_TYPE": "custom"}
+    torch_tpu_py_test(
+        name = name + "_py_v5",
+        tags = ["exclusive", "requires-tpu-v5lite"],
+        shard_count = 8,
+        **common_py_kwargs
+    )
+    torch_tpu_py_test(
+        name = name + "_py_override",
+        tags = ["requires-tpu-v5lite"],
+        env = select({"//conditions:default": caller_env}),
+        exec_properties = {"test.Pool": "custom_pool", "test.mem": "32g"},
+        **common_py_kwargs
+    )
+    torch_tpu_py_test(
+        name = name + "_py_cpu",
+        **common_py_kwargs
+    )
+    torch_tpu_py_test(
+        name = name + "_py_multichip",
+        tags = ["requires-tpu-v5lite:8"],
+        shard_count = 8,
+        **common_py_kwargs
+    )
+    torch_tpu_py_test(
+        name = name + "_py_v7",
+        tags = ["requires-tpu-v7x"],
+        oss_presubmit_tpu_generation = tpu_gen("v7", reason = "Analysis test subject"),
+        **common_py_kwargs
+    )
+    torch_tpu_cc_test(
+        name = name + "_cc_v5",
+        srcs = [],
+        tags = ["exclusive", "requires-tpu-v5lite"],
+        shard_count = 4,
+        nobuild = "Analysis test subject",
+        nolocal = "Analysis test subject",
+        notap = "Analysis test subject",
+    )
+    torch_tpu_cc_test(
+        name = name + "_cc_override",
+        srcs = [],
+        tags = ["requires-tpu-v5lite"],
+        env = caller_env,
+        exec_properties = {"cpp_link.mem": "20g", "test.Pool": "custom_pool", "test.mem": "32g"},
+        nobuild = "Analysis test subject",
+        nolocal = "Analysis test subject",
+        notap = "Analysis test subject",
+    )
+    subject_names = [
+        "py_v5",
+        "py_override",
+        "py_cpu",
+        "py_multichip",
+        "py_v7",
+        "cc_v5",
+        "cc_override",
+    ]
+    targets = {k: name + "_" + k for k in subject_names}
+    attrs = {k: {"aspects": [tags_aspect]} for k in subject_names}
+    if is_oss():
+        rbe_flag = str(Label("//:_rbe_test_execution"))
+        for k in subject_names:
+            attrs[k] = {
+                "aspects": [tags_aspect],
+                "@config_settings": {rbe_flag: False},
+            }
+            targets["rbe_" + k] = name + "_" + k
+            attrs["rbe_" + k] = {
+                "aspects": [tags_aspect],
+                "@config_settings": {rbe_flag: True},
+            }
+    analysis_test(
+        name = name,
+        impl = _test_rbe_macro_exec_properties_impl,
+        targets = targets,
+        attrs = attrs,
+    )
+
 def build_defs_test_suite(name):
     """Creates a test suite for build_defs.bzl, which will run all tests in this file.
 
@@ -840,6 +1059,7 @@ def build_defs_test_suite(name):
             _test_py_test_non_tpu_requires_tags,
             _test_py_test_select_env,
             _test_py_test_single_tpu_target,
+            _test_rbe_macro_exec_properties,
             _test_requires_libtpu_explicit_false,
             _test_requires_libtpu_explicit_true,
             _test_requires_libtpu_inferred,
@@ -877,6 +1097,10 @@ def build_defs_test_suite(name):
             _test_oss_presubmit_tpu_generation_implicit,
             _test_oss_presubmit_tpu_generation_implicit_default_v5,
             _test_oss_presubmit_tpu_generation_implicit_v6,
+            _test_rbe_caller_exec_properties_win,
+            _test_rbe_internal_test_gets_nothing,
+            _test_rbe_oss_v5_test_gets_pool,
+            _test_rbe_test_without_pool_gets_nothing,
             _test_shard_count_clamping,
             # go/keep-sorted end
         ],
