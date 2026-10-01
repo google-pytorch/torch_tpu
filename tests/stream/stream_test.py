@@ -174,6 +174,48 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
       for future in concurrent.futures.as_completed(futures):
         future.result()
 
+  def test_tpu_event_inherits_from_torch_event(self):
+    """TpuEvent can be used wherever a torch.Event is expected."""
+    event = torch.tpu.Event()
+
+    self.assertIsInstance(event, torch.Event)
+    self.assertEqual(event.device, torch.device('tpu'))
+    # An unrecorded event should return True for query and no-op on synchronize.
+    self.assertTrue(event.query())
+    event.synchronize()
+
+    # Verify CUDA-compatible external keyword argument is accepted.
+    event_with_external = torch.tpu.Event(
+        enable_timing=False, blocking=False, interprocess=False, external=False
+    )
+    self.assertIsInstance(event_with_external, torch.Event)
+
+    # Record on specific stream and default accelerator stream.
+    s = torch.tpu.Stream()
+    recorded_event = event.record(s)
+    self.assertIs(recorded_event, event)  # verify chaining: returns self
+    s.wait_event(event)
+    event.wait(s)
+    event.synchronize()
+    self.assertTrue(event.query())
+
+    # Verify stream.record_event() returns a torch.Event.
+    stream_event = s.record_event()
+    self.assertIsInstance(stream_event, torch.Event)
+    stream_event.synchronize()
+    self.assertTrue(stream_event.query())
+
+    # Verify TypeError is raised when a non-Stream object is passed to record.
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Python argument type check
+        TypeError, 'expected torch.Stream, but got str'
+    ):
+      event.record('invalid')
+
+    # Verify integer device index like 0 is correctly handled.
+    event_device_idx = torch.tpu.Event(device=0)
+    self.assertIsInstance(event_device_idx, torch.Event)
+    self.assertEqual(event_device_idx.device, torch.device('tpu'))
+
   def test_event_partially_implemented(self):
     """Tests that timing/ipc event methods remain unimplemented."""
 

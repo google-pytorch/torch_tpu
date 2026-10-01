@@ -806,6 +806,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
       blocking: bool = False,
       interprocess: bool = False,
       external: bool = False,
+      device=None,
   ) -> streams.TpuEvent:
     """Device-level wrapper for TpuEvent object.
 
@@ -817,6 +818,7 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
         blocking=blocking,
         interprocess=interprocess,
         external=external,
+        device=device,
     )
 
   @classmethod

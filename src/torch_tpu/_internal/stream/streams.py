@@ -218,13 +218,16 @@ class TpuStream(torch.Stream):
     return self.pinned == CorePinningMode.TENSOR_CORE
 
 
-class TpuEvent:
+class TpuEvent(torch.Event):
   """Scoped completion marker for async TPU operations.
 
   Implements the ``torch.tpu.Event`` interface for TPU. Because torch_tpu has
   a single implicit stream per device, events function as point-in-time
   snapshots of pending async futures rather than positional markers in a stream
   timeline.
+
+  TpuEvent subclasses torch.Event so that it can be passed to device-generic
+  APIs and conforms to PyTorch's event specification.
 
   Supported operations:
     - ``record()`` snapshots pending async D2H copy futures.
@@ -239,31 +242,43 @@ class TpuEvent:
   TODO: b/452051142 - Explore if and how to make better use of streams.
   """
 
-  def __init__(
-      self,
-      enable_timing: bool = False,  # pylint: disable=unused-argument
-      blocking: bool = False,  # pylint: disable=unused-argument
-      interprocess: bool = False,  # pylint: disable=unused-argument
-      external: bool = False,  # pylint: disable=unused-argument
+  def __new__(
+      cls,
+      enable_timing: bool = False,
+      blocking: bool = False,
+      interprocess: bool = False,
+      external: bool = False,
+      device=None,
   ):
-    # Accepted for CUDA API compatibility; TPU currently ignores these flags.
-    self._base_event: _device_ops_backend.TpuEventBase | None = None
+    # pylint: disable=unused-argument
+    # external is accepted for CUDA API compatibility; torch.Event does not
+    # accept it.
+    if device is None:
+      device = torch.device('tpu')
+    return super().__new__(
+        cls,
+        device=device,
+        enable_timing=enable_timing,
+        blocking=blocking,
+        interprocess=interprocess,
+    )
 
   @experimental(
       'record() is experimental and may change or be removed without notice.'
   )
-  def record(self, stream: TpuStream | None = None):
+  def record(self, stream: torch.Stream | None = None) -> Self:
     """Snapshot all pending async futures on the current device."""
-    if self._base_event is not None:
-      del self._base_event
-    stream_id = stream.stream_id if stream is not None else None
-    self._base_event = _device_ops_backend._record_event(stream_id=stream_id)  # pylint: disable=protected-access
+    if stream is None:
+      stream = torch.tpu.current_stream()
+    elif not isinstance(stream, torch.Stream):
+      raise TypeError(f'expected torch.Stream, but got {type(stream).__name__}')
+    super().record(stream)
     return self
 
   @experimental(
       'wait() is experimental and may change or be removed without notice.'
   )
-  def wait(self, stream: TpuStream | None = None) -> None:  # pylint: disable=unused-argument
+  def wait(self, stream: torch.Stream | None = None) -> None:  # pylint: disable=unused-argument
     """No-op placeholder for CUDA stream-wait semantics.
 
     In CUDA, this inserts a device-side dependency so future work on ``stream``
@@ -282,9 +297,7 @@ class TpuEvent:
   )
   def query(self) -> bool:
     """Checks if all work currently captured by this event has completed."""
-    if self._base_event is None:
-      return True
-    return self._base_event.query()
+    return super().query()
 
   @experimental(
       'elapsed_time() is experimental and may change or be removed without'
@@ -306,9 +319,7 @@ class TpuEvent:
     :meth:`record` was called. If ``record()`` was never called, this returns
     immediately.
     """
-    if self._base_event is None:
-      return
-    self._base_event.synchronize()
+    super().synchronize()
 
   @classmethod
   @experimental(
