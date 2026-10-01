@@ -659,17 +659,12 @@ CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
   at::Tensor philox_offset =
       has_dropout ? MakeTensor(std::move(results[res_idx++])) : at::Tensor();
 
-  // We return a view with dense strides that preserves the layout permutation
-  // of the query. This ensures subsequent view operations (e.g., merging heads)
-  // do not crash due to unexpected non-contiguity, while avoiding the memory
-  // bloat and performance cost of matching exact CUDA strides (which may have
-  // gaps if the query was sliced).
-  // Note: This does not preserve the exact strides/offset for explicit
-  // `as_strided` calls, which is considered an acceptable trade-off.
-  // See: https://pytorch.org/docs/stable/generated/torch.as_strided.html
-  Strides dense_strides = DenseStrides(query.strides(), out_dims);
-  TT_ASSIGN_OR_RETURN(at::Tensor strided_result,
-                      ContiguousToView(results[0], dense_strides, 0));
+  // Return the output with the strides of the meta function, so that views
+  // traced by torch.compile (e.g. merging heads) are also valid in eager mode.
+  TT_ASSIGN_OR_RETURN(
+      at::Tensor strided_result,
+      ContiguousToView(results[0], MatchingLayoutStrides(query, out_dims),
+                       /*target_storage_offset=*/0));
 
   return std::make_tuple(std::move(strided_result), std::move(lse_tensor),
                          std::move(philox_seed), std::move(philox_offset));
@@ -907,24 +902,23 @@ CreateFlashAttentionBackwardKernel(
   // returning to Python, so that the Tensor state has stabilized.
   RecordNewDataPtrCreated(results[0]);
 
-  TT_ASSIGN_OR_RETURN(
-      at::Tensor strided_grad_query,
-      ContiguousToView(results[0], DenseStrides(query.strides(), query.sizes()),
-                       0));
-  TT_ASSIGN_OR_RETURN(
-      at::Tensor strided_grad_key,
-      ContiguousToView(results[1], DenseStrides(key.strides(), key.sizes()),
-                       0));
+  // Return the gradients with the strides of the meta function, which
+  // allocates them with `torch.empty_like`.
+  TT_ASSIGN_OR_RETURN(at::Tensor strided_grad_query,
+                      ContiguousToView(results[0], EmptyLikeStrides(query),
+                                       /*target_storage_offset=*/0));
+  TT_ASSIGN_OR_RETURN(at::Tensor strided_grad_key,
+                      ContiguousToView(results[1], EmptyLikeStrides(key),
+                                       /*target_storage_offset=*/0));
 
   // It's okay if the materialization happens during the third ContiguousToView;
   // all other necessary tensors have already been created, so nothing can be
   // invalidated.
   RecordDataPtrDestroyed(results[0]);
 
-  TT_ASSIGN_OR_RETURN(
-      at::Tensor strided_grad_value,
-      ContiguousToView(results[2], DenseStrides(value.strides(), value.sizes()),
-                       0));
+  TT_ASSIGN_OR_RETURN(at::Tensor strided_grad_value,
+                      ContiguousToView(results[2], EmptyLikeStrides(value),
+                                       /*target_storage_offset=*/0));
   return std::make_tuple(strided_grad_query, strided_grad_key,
                          strided_grad_value);
 }

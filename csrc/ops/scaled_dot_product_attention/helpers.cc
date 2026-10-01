@@ -18,12 +18,17 @@
 
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <vector>
 
+#include "ATen/ExpandUtils.h"
+#include "ATen/core/ATen_fwd.h"
+#include "ATen/core/TensorBase.h"
 #include "absl/algorithm/container.h"
 #include "absl/log/absl_check.h"
 #include "absl/types/span.h"
+#include "c10/util/ArrayRef.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -81,29 +86,44 @@ mlir::MlirOp GetScaleDefaulted(mlir::MlirBuilder& builder,
   return MakeScalarConstant(builder, scale, element_type);
 }
 
-Strides DenseStrides(absl::Span<const int64_t> template_strides,
-                     absl::Span<const int64_t> target_sizes) {
-  int rank = template_strides.size();
-  Strides target_strides(rank, 0);
+Strides EmptyLikeStrides(const at::TensorBase& tensor) {
+  if (tensor.is_non_overlapping_and_dense()) {
+    return Strides(tensor.strides().begin(), tensor.strides().end());
+  }
+  // `at::infer_dense_strides` returns a `std::vector`.
+  const std::vector<int64_t> strides =  // INT_VEC_OK
+      at::infer_dense_strides(tensor.sizes(), tensor.strides());
+  return Strides(strides.begin(), strides.end());
+}
 
-  struct Dim {
-    int index;
-    int64_t stride;
+Strides MatchingLayoutStrides(const at::TensorBase& query,
+                              absl::Span<const int64_t> result_sizes) {
+  const at::IntArrayRef query_strides = query.strides();
+  ABSL_DCHECK_EQ(query_strides.size(), result_sizes.size());
+  if (absl::c_equal(query.sizes(), result_sizes)) {
+    return EmptyLikeStrides(query);
+  }
+
+  // Fill the dims from innermost to outermost in ascending order of query
+  // stride. Zero-stride (expanded) dims go last, i.e. outermost, and the stable
+  // sort makes the lower dim innermost on ties.
+  const auto fill_key = [&query_strides](int dim) {
+    return query_strides[dim] == 0 ? std::numeric_limits<int64_t>::max()
+                                   : query_strides[dim];
   };
-  std::vector<Dim> dims(rank);
-  for (int i = 0; i < rank; ++i) {
-    dims[i] = {i, template_strides[i]};
-  }
-  absl::c_stable_sort(
-      dims, [](const Dim& a, const Dim& b) { return a.stride > b.stride; });
+  std::vector<int> fill_order(result_sizes.size());
+  absl::c_iota(fill_order, 0);
+  absl::c_stable_sort(fill_order, [&fill_key](int a, int b) {
+    return fill_key(a) < fill_key(b);
+  });
 
-  int64_t current_stride = 1;
-  for (auto it = dims.rbegin(); it != dims.rend(); ++it) {
-    target_strides[it->index] = current_stride;
-    current_stride *= target_sizes[it->index];
+  Strides result_strides(result_sizes.size());
+  int64_t stride = 1;
+  for (const int dim : fill_order) {
+    result_strides[dim] = stride;
+    stride *= result_sizes[dim];
   }
-
-  return target_strides;
+  return result_strides;
 }
 
 }  // namespace torch_tpu

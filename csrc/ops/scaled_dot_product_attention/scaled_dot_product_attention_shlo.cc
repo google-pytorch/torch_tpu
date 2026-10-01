@@ -27,6 +27,7 @@
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBase.h"
 #include "absl/algorithm/container.h"
+#include "absl/cleanup/cleanup.h"
 #include "absl/log/check.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
@@ -35,6 +36,7 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
+#include "csrc/eager/events_queue.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/op_builder_utils.h"
@@ -349,10 +351,10 @@ mlir::MlirOp ComputeAttentionOutput(mlir::MLIRContext* context,
     const int64_t batch_size = query_shape[0];
     const int64_t num_head_q = query_shape[1];
     const int64_t seq_len_q = query_shape[2];
-    const int64_t head_dim = query_shape[3];
     const auto value_shape = GetTensorTypeOrDie(value_4d).getShape();
     const int64_t num_head_kv = value_shape[1];
     const int64_t seq_len_kv = value_shape[2];
+    const int64_t value_head_dim = value_shape[3];
     mlir::MlirOp softmax_5d = mlir::stablehlo::Reshape(
         softmax,
         {batch_size, num_head_kv, head_count_ratio, seq_len_q, seq_len_kv});
@@ -363,7 +365,7 @@ mlir::MlirOp ComputeAttentionOutput(mlir::MLIRContext* context,
     mlir::MlirOp out_5d =
         mlir::stablehlo::DotGeneral(softmax_5d, value_4d, output_dot_dims);
     return mlir::stablehlo::Reshape(
-        out_5d, {batch_size, num_head_q, seq_len_q, head_dim});
+        out_5d, {batch_size, num_head_q, seq_len_q, value_head_dim});
   }
   const auto output_dot_dims = mlir::stablehlo::DotDimensionNumbersAttr::get(
       context, /*lhs_batching_dimensions=*/{0, 1},
@@ -490,6 +492,7 @@ absl::StatusOr<BackwardGradients4D> ComputeGqaBackwardGradients(
     mlir::Type softmax_calc_type, int64_t head_count_ratio, int64_t batch_size,
     int64_t num_head_q, int64_t num_head_kv, int64_t seq_len_q,
     int64_t seq_len_kv, int64_t head_dim) {
+  const int64_t value_head_dim = GetTensorTypeOrDie(value_4d).getDimSize(3);
   mlir::MlirOp softmax_for_dv =
       ConvertElementTypeIfNeeded(softmax, element_type);
   mlir::MlirOp softmax_5d = mlir::stablehlo::Reshape(
@@ -497,7 +500,7 @@ absl::StatusOr<BackwardGradients4D> ComputeGqaBackwardGradients(
       {batch_size, num_head_kv, head_count_ratio, seq_len_q, seq_len_kv});
   mlir::MlirOp grad_out_5d = mlir::stablehlo::Reshape(
       grad_out_4d,
-      {batch_size, num_head_kv, head_count_ratio, seq_len_q, head_dim});
+      {batch_size, num_head_kv, head_count_ratio, seq_len_q, value_head_dim});
   mlir::MlirOp query_5d = mlir::stablehlo::Reshape(
       query_4d,
       {batch_size, num_head_kv, head_count_ratio, seq_len_q, head_dim});
@@ -779,30 +782,19 @@ absl::StatusOr<FusedAttentionResults> ScaledDotProductFusedAttentionShlo(
                            .out_dims_list = {out_dims, lse_dims},
                            .op_param_cache_keys = std::move(param_keys)})));
 
-  // We return a view with dense strides that preserves the layout permutation
-  // of the query. This ensures subsequent view operations (e.g., merging heads)
-  // do not crash due to unexpected non-contiguity, while avoiding the memory
-  // bloat and performance cost of matching exact CUDA strides (which may have
-  // gaps if the query was sliced).
-  // Note: This does not preserve the exact strides/offset for explicit
-  // `as_strided` calls, which is considered an acceptable trade-off.
-  // See: https://pytorch.org/docs/stable/generated/torch.as_strided.html
-  if (query.sizes().back() == value.sizes().back()) {
-    // We can only do this simple when the query and value have the same head
-    // dimension.
-    // TODO(willfroom): Check if we need to handle the general case.
-    Strides dense_strides = DenseStrides(query.strides(), out_dims);
-    TT_ASSIGN_OR_RETURN(at::Tensor view_out,
-                        ContiguousToView(std::move(results[0]), dense_strides,
-                                         /*target_storage_offset=*/0));
-    return FusedAttentionResults{
-        .output = std::move(view_out),
-        .logsumexp = MakeTensor(std::move(results[1]))};
-  } else {
-    return FusedAttentionResults{
-        .output = MakeTensor(std::move(results[0])),
-        .logsumexp = MakeTensor(std::move(results[1]))};
-  }
+  // Construct the LSE tensor before calling ContiguousToView so that if
+  // ContiguousToView materializes the stream, the LSE DeviceBufferRef is not
+  // dropped.
+  at::Tensor logsumexp = MakeTensor(std::move(results[1]));
+
+  // Return the output with the strides of the meta function, so that views
+  // traced by torch.compile (e.g. merging heads) are also valid in eager mode.
+  TT_ASSIGN_OR_RETURN(at::Tensor view_out,
+                      ContiguousToView(std::move(results[0]),
+                                       MatchingLayoutStrides(query, out_dims),
+                                       /*target_storage_offset=*/0));
+  return FusedAttentionResults{.output = std::move(view_out),
+                               .logsumexp = std::move(logsumexp)};
 }
 
 absl::StatusOr<std::tuple<at::Tensor, at::Tensor, at::Tensor>>
@@ -845,15 +837,29 @@ ScaledDotProductFusedAttentionShloBackward(
            .out_dims_list = {query.sizes(), key.sizes(), value.sizes()},
            .op_param_cache_keys = std::move(param_keys)})));
 
-  TT_ASSIGN_OR_RETURN(
-      at::Tensor strided_grad_query,
-      ContiguousToView(results[0], query.strides(), query.storage_offset()));
-  TT_ASSIGN_OR_RETURN(
-      at::Tensor strided_grad_key,
-      ContiguousToView(results[1], key.strides(), key.storage_offset()));
-  TT_ASSIGN_OR_RETURN(
-      at::Tensor strided_grad_value,
-      ContiguousToView(results[2], value.strides(), value.storage_offset()));
+  // Artificially create a simulated DataPtr to prevent the result node from
+  // being flushed during the first or second ContiguousToView if there is an
+  // early materialization.
+  RecordNewDataPtrCreated(results[0]);
+  absl::Cleanup cleanup = [&results] { RecordDataPtrDestroyed(results[0]); };
+
+  // Return the gradients with the strides of the meta function, which
+  // allocates them with `torch.empty_like`.
+  TT_ASSIGN_OR_RETURN(at::Tensor strided_grad_query,
+                      ContiguousToView(results[0], EmptyLikeStrides(query),
+                                       /*target_storage_offset=*/0));
+  TT_ASSIGN_OR_RETURN(at::Tensor strided_grad_key,
+                      ContiguousToView(results[1], EmptyLikeStrides(key),
+                                       /*target_storage_offset=*/0));
+
+  // It's okay if the materialization happens during the third
+  // ContiguousToView; all other necessary tensors have already been created, so
+  // nothing can be invalidated.
+  std::move(cleanup).Invoke();
+
+  TT_ASSIGN_OR_RETURN(at::Tensor strided_grad_value,
+                      ContiguousToView(results[2], EmptyLikeStrides(value),
+                                       /*target_storage_offset=*/0));
   return std::make_tuple(strided_grad_query, strided_grad_key,
                          strided_grad_value);
 }

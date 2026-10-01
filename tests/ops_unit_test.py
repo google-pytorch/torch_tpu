@@ -15484,6 +15484,171 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
     out.backward(gradient=torch.randn_like(out))
     torch.accelerator.synchronize()
 
+  @parameterized.product(
+      h_kv=[1, 2],
+      backend=[
+          torch.nn.attention.SDPBackend.FLASH_ATTENTION,
+          torch.nn.attention.SDPBackend.OVERRIDEABLE,
+      ],
+  )
+  def test_sdpa_view_sliced_and_size_one_head(
+      self, h_kv: int, backend: torch.nn.attention.SDPBackend
+  ):
+    """Tests compiled SDPA views with sliced inputs, GQA/MQA and dv != dqk.
+
+    torch.compile traces with the strides of the meta functions, so if the
+    kernel returns different strides, views traced on the attention output (e.g.
+    merging the heads) can fail at runtime.
+    """
+    dh = 128
+    h_q = 4
+    dv = 64
+
+    def run_sdpa(h, wq_gate, wk, wv, wo):
+      bsz, n, _ = h.shape
+      q_raw, gate = torch.chunk(
+          (h @ wq_gate).view(bsz, n, h_q, dh * 2), 2, dim=-1
+      )
+      q = q_raw.transpose(1, 2)
+      k = (h @ wk).view(bsz, n, h_kv, dh).transpose(1, 2)
+      v = (h @ wv).view(bsz, n, h_kv, dv).transpose(1, 2)
+      with torch.nn.attention.sdpa_kernel(backend):
+        attn_out = torch.nn.functional.scaled_dot_product_attention(
+            q, k, v, is_causal=True, enable_gqa=True
+        )
+      attn_out = attn_out.transpose(1, 2).contiguous().reshape(bsz, n, h_q * dv)
+      gate_flat = gate.reshape(bsz, n, h_q * dh)[..., : h_q * dv]
+      return (attn_out * torch.sigmoid(gate_flat)) @ wo
+
+    h = torch.randn(1, 128, 256, device="tpu", requires_grad=True)
+    wq_gate = torch.randn(256, h_q * dh * 2, device="tpu", requires_grad=True)
+    wk = torch.randn(256, h_kv * dh, device="tpu", requires_grad=True)
+    wv = torch.randn(256, h_kv * dv, device="tpu", requires_grad=True)
+    wo = torch.randn(h_q * dv, 256, device="tpu", requires_grad=True)
+
+    compiled_sdpa = torch.compile(run_sdpa, dynamic=False, backend="tpu")
+    out = compiled_sdpa(h, wq_gate, wk, wv, wo)
+    out.backward(gradient=torch.randn_like(out))
+    torch.accelerator.synchronize()
+
+    self.assertEqual(out.shape, (1, 128, 256))
+    self.assertFalse(torch.isnan(out).any())
+    self.assertIsNotNone(h.grad)
+    self.assertFalse(torch.isnan(h.grad).any())
+
+  @parameterized.product(
+      backend=[
+          torch.nn.attention.SDPBackend.FLASH_ATTENTION,
+          torch.nn.attention.SDPBackend.OVERRIDEABLE,
+      ],
+      layout=["sliced", "size_one_head", "expanded_batch"],
+  )
+  def test_sdpa_strides_match_meta(
+      self, backend: torch.nn.attention.SDPBackend, layout: str
+  ):
+    """Tests eager SDPA output and grad strides and values for strided inputs.
+
+    torch.compile traces with the strides of the meta functions, so any
+    mismatch can make views that are valid in compiled mode fail in eager mode.
+    The values are also compared against CPU, since the numerical SDPA test
+    only uses contiguous inputs, for which the results need no relayout.
+
+    Args:
+      backend: The SDPA backend to test (`FLASH_ATTENTION` or `OVERRIDEABLE`).
+      layout: "sliced" slices q/k/v out of fused projections, so they have gaps;
+        "size_one_head" has a single head, so the head and sequence dims have
+        equal strides; "expanded_batch" broadcasts the query over the batch, so
+        it has a zero stride.
+    """
+    bsz, seq, d_qk, d_v = 2, 128, 128, 64
+    h_q, h_kv = (1, 1) if layout == "size_one_head" else (4, 2)
+
+    torch.manual_seed(0)
+    if layout == "sliced":
+      leaves = {
+          "query": torch.randn(bsz, seq, h_q, 2 * d_qk),
+          "key": torch.randn(bsz, seq, h_kv, 2 * d_qk),
+          "value": torch.randn(bsz, seq, h_kv, 2 * d_v),
+      }
+    else:
+      leaves = {
+          "query": torch.randn(
+              *(
+                  (1, h_q, seq)
+                  if layout == "expanded_batch"
+                  else (bsz, seq, h_q)
+              ),
+              d_qk,
+          ),
+          "key": torch.randn(bsz, seq, h_kv, d_qk),
+          "value": torch.randn(bsz, seq, h_kv, d_v),
+      }
+    grad_out = torch.randn(bsz, h_q, seq, d_v)
+
+    def make_inputs(device):
+      inputs = {}
+      for name, leaf in leaves.items():
+        x = leaf.to(device).requires_grad_()
+        if layout == "sliced":
+          x = torch.chunk(x, 2, dim=-1)[0].transpose(1, 2)
+        elif layout == "expanded_batch" and name == "query":
+          x = x.expand(bsz, -1, -1, -1)
+        else:
+          x = x.transpose(1, 2)
+        inputs[name] = x
+      return inputs
+
+    def run_sdpa(q, k, v):
+      active_backend = (
+          torch.nn.attention.SDPBackend.MATH
+          if q.device.type == "cpu"
+          else backend
+      )
+      with torch.nn.attention.sdpa_kernel(active_backend):
+        return torch.nn.functional.scaled_dot_product_attention(
+            q, k, v, enable_gqa=True
+        )
+
+    def compute(device):
+      inputs = make_inputs(device)
+      grads = {}
+      for name, x in inputs.items():
+        x.register_hook(functools.partial(grads.__setitem__, name))
+      out = run_sdpa(*inputs.values())
+      out.backward(grad_out.to(device))
+      return inputs, out, grads
+
+    inputs, out, grads = compute("tpu")
+    with fake_tensor.FakeTensorMode(allow_non_fake_inputs=True):
+      _, meta_out, meta_grads = compute("tpu")
+    expected_out_stride = meta_out.stride()
+    if layout != "sliced" and utils.parse_version(torch.__version__) < (
+        2,
+        15,
+        0,
+    ):
+      # PyTorch PR #193039 (torch 2.15) changed how `alloc_with_matching_layout`
+      # orders dims with equal or zero strides when the value head dim differs
+      # from the query head dim. The kernels follow the new order, so compare
+      # against the strides of the new meta function on older versions.
+      expected_out_stride = {
+          "size_one_head": (8192, 64, 64, 1),
+          "expanded_batch": (32768, 8192, 64, 1),
+      }[layout]
+    self.assertEqual(out.stride(), expected_out_stride)
+    for name in inputs:
+      with self.subTest(f"{name}_grad_stride"):
+        self.assertEqual(grads[name].stride(), meta_grads[name].stride())
+
+    _, cpu_out, cpu_grads = compute("cpu")
+    for name, cpu, tpu in [
+        ("out", cpu_out, out),
+        *((f"{n}_grad", cpu_grads[n], grads[n]) for n in inputs),
+    ]:
+      with self.subTest(f"{name}_values"):
+        sim = torch.nn.functional.cosine_similarity(cpu, tpu.cpu(), dim=-1)
+        self.assertGreater(sim.mean().item(), 0.9999)
+
   def test_scaled_dot_product_attention_dropout(self):
     """Verifies FlashAttention dropout rate and 1/(1-p) scaling."""
     batch_size, num_heads, seq_len, head_dim = 2, 4, 128, 128

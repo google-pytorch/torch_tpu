@@ -288,6 +288,26 @@ SDPA_CONFIGS = (
         v_head_dim=128,
         is_causal=True,
     ),
+    # Configs with different QK and V head dims (e.g. MLA in DeepSeek-V3).
+    SdpaConfig(
+        batch_size=2,
+        q_seq_len=256,
+        kv_seq_len=256,
+        q_num_heads=8,
+        kv_num_heads=2,
+        qk_head_dim=128,
+        v_head_dim=64,
+        is_causal=True,
+    ),
+    SdpaConfig(
+        q_seq_len=256,
+        kv_seq_len=256,
+        q_num_heads=8,
+        kv_num_heads=1,
+        qk_head_dim=256,
+        v_head_dim=128,
+        is_causal=False,
+    ),
 )
 
 
