@@ -346,6 +346,40 @@ def run_bazel_diff(
   return subprocess.run(cmd, check=True)
 
 
+def _run_bazel_analysis_check(bazel_config: str) -> int:
+  """Analyzes every target the way bazel-diff's `generate-hashes` does.
+
+  A full `bazel test` run is not a substitute for this check: the CI configs
+  set `--build_tests_only` and, for the wheel tests, `--test_lang_filters`,
+  which drop non-matching targets, such as Starlark analysis tests, before they
+  are analyzed. bazel-diff's cquery applies no such filters, so a target that
+  fails analysis would pass the PR that introduced it and then break
+  bazel-diff's base hash generation for every later PR.
+
+  Args:
+    bazel_config: Bazel --config name to pass (or empty string for none). As
+      with bazel-diff's `--cqueryCommandOptions`, no other flags are passed.
+
+  Returns:
+    The exit code of the `bazel cquery` command.
+  """
+  cmd = ["bazel", "cquery"]
+  if bazel_config:
+    cmd.append(f"--config={bazel_config}")
+  cmd.extend(["--output=label", "//..."])
+  print("--- Analyzing All Targets (as bazel-diff does) ---")
+  sys.stdout.flush()
+  # Only failures matter; the label of every configured target is noise.
+  res = subprocess.run(cmd, stdout=subprocess.DEVNULL, check=False)
+  if res.returncode != 0:
+    print(
+        f"Bazel analysis failed with exit code {res.returncode}. bazel-diff"
+        " analyzes every target when computing hashes, so merging this change"
+        " would break bazel-diff for all subsequent PRs."
+    )
+  return res.returncode
+
+
 def _run_bazel_test(
     bazel_config: str,
     extra_bazel_flags: str,
@@ -441,6 +475,12 @@ def main(argv: Sequence[str]) -> int:
         " global configuration files modified. Skipping bazel-diff and running"
         " all tests."
     )
+    # bazel-diff is skipped here, so nothing else would analyze the targets
+    # that `bazel test` filters out. Catch analysis failures now rather than
+    # in the base hash generation of the next PR.
+    analysis_rc = _run_bazel_analysis_check(opts.bazel_config)
+    if analysis_rc != 0:
+      return analysis_rc
     return _run_bazel_test(opts.bazel_config, opts.extra_bazel_flags, ["//..."])
 
   print("Downloading bazel-diff...")

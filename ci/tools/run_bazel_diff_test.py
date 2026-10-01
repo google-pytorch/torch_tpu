@@ -15,6 +15,7 @@
 """Unit tests for ci/tools/run_bazel_diff.py."""
 
 import pathlib
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -210,6 +211,56 @@ class RunBazelDiffTest(unittest.TestCase):
             ["bash", "-c", "bazel test --keep_going //..."],
             check=False,
         )
+
+  def test_run_bazel_analysis_check_config_flag(self):
+    with mock.patch("subprocess.run") as mock_run:
+      mock_run.return_value.returncode = 0
+      with self.subTest("with_config"):
+        rc = run_bazel_diff._run_bazel_analysis_check("wheel_test_cpu")
+        self.assertEqual(rc, 0)
+        mock_run.assert_called_with(
+            [
+                "bazel",
+                "cquery",
+                "--config=wheel_test_cpu",
+                "--output=label",
+                "//...",
+            ],
+            stdout=subprocess.DEVNULL,
+            check=False,
+        )
+      with self.subTest("empty_config"):
+        run_bazel_diff._run_bazel_analysis_check("")
+        mock_run.assert_called_with(
+            ["bazel", "cquery", "--output=label", "//..."],
+            stdout=subprocess.DEVNULL,
+            check=False,
+        )
+
+  def test_main_test_all_analyzes_before_testing(self):
+    with (
+        tempfile.TemporaryDirectory() as td,
+        mock.patch.object(run_bazel_diff, "resolve_base_sha", return_value=""),
+        mock.patch.object(
+            run_bazel_diff, "_run_bazel_analysis_check"
+        ) as mock_analysis,
+        mock.patch.object(run_bazel_diff, "_run_bazel_test") as mock_test,
+        mock.patch("os.chdir"),
+    ):
+      args = [f"--workspace-dir={td}", "--bazel-config=wheel_test_cpu"]
+      with self.subTest("analysis_passes"):
+        mock_analysis.return_value = 0
+        mock_test.return_value = 0
+        self.assertEqual(run_bazel_diff.main(args), 0)
+        mock_analysis.assert_called_once_with("wheel_test_cpu")
+        mock_test.assert_called_once_with("wheel_test_cpu", "", ["//..."])
+      mock_analysis.reset_mock()
+      mock_test.reset_mock()
+      with self.subTest("analysis_fails"):
+        mock_analysis.return_value = 1
+        self.assertEqual(run_bazel_diff.main(args), 1)
+        mock_analysis.assert_called_once_with("wheel_test_cpu")
+        mock_test.assert_not_called()
 
   def test_get_changed_files_normalizes_paths(self):
     with (
