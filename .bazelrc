@@ -455,9 +455,8 @@ common:rbe_test_execution --test_env=VBAR_CONTROL_SERVICE_URL=
 # CI presubmit on Google Cloud RBE: CPU tests plus TPU tests that have an RBE
 # pool. Today that's single-chip v5e (ct5lp-hightpu-1t). A test's pool follows
 # its presubmit-v<N> tag, not its requires-tpu-* tags, so v6/v7 tests are left
-# out by that tag and multi-chip v5 tests by their `:8`/`:4` tags. Test
-# containers run with --network=none, so tests that need the network are
-# tagged no-remote-exec.
+# out by that tag and multi-chip v5 tests by their `:8`/`:4` tags. Tests that
+# cannot run in the RBE container environment are tagged no-remote-exec.
 #
 # This repeats `ci` minus remote_execution_readwrite, whose platform would
 # otherwise come ahead of rbe_platform in --extra_execution_platforms.

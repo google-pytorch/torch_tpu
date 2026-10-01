@@ -1446,8 +1446,8 @@ torch_tpu_cc_test(
         "requires-net:external",  # Requires remote file access.
         "requires-tpu-v5lite",
     ] + if_oss(
-        # TODO: b/567928058 - OSS RBE test containers have no network, so the
-        # test can't reach its GCS cache root there.
+        # TODO: b/567928058 - RBE workers lack write access to the
+        # gs://torchtpu-shared cache root used by this test.
         ["no-remote-exec"],
         [],
     ),

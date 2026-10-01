@@ -863,6 +863,17 @@ def _test_rbe_oss_v5_test_gets_pool(env):
         _V5_RBE_EXEC_PROPERTIES,
     )
 
+def _test_rbe_oss_network_tag_sets_docker_network(env):
+    """Tests that requires-net:external sets test.dockerNetwork=standard on OSS RBE TPU tests."""
+    env.expect.that_dict(
+        _rbe_exec_properties("v5", tags = ["requires-net:external", "requires-tpu"]),
+    ).contains_exactly(
+        _V5_RBE_EXEC_PROPERTIES | {"test.dockerNetwork": "standard"},
+    )
+    env.expect.that_dict(
+        _rbe_exec_properties(None, tags = ["requires-net:external"]),
+    ).contains_exactly({})
+
 def _test_rbe_internal_test_gets_nothing(env):
     """Tests that internal builds (tpu_generation = None) never get RBE exec_properties."""
     env.expect.that_dict(_rbe_exec_properties(None)).contains_exactly({})
@@ -899,6 +910,9 @@ def _test_rbe_caller_exec_properties_win(env):
 def _test_rbe_macro_exec_properties_impl(env, targets):
     """Verifies exec_properties, env, and shard_count emitted by torch_tpu_py_test and torch_tpu_cc_test."""
     expected_v5 = _V5_RBE_EXEC_PROPERTIES if is_oss() else {}
+    expected_v5_net = (
+        _V5_RBE_EXEC_PROPERTIES | {"test.dockerNetwork": "standard"}
+    ) if is_oss() else {}
     expected_override = (
         _V5_RBE_EXEC_PROPERTIES | {"test.Pool": "custom_pool", "test.mem": "32g"}
     ) if is_oss() else {"test.Pool": "custom_pool", "test.mem": "32g"}
@@ -910,6 +924,8 @@ def _test_rbe_macro_exec_properties_impl(env, targets):
     env.expect.that_dict(targets.py_v5[_TagsInfo].exec_properties).contains_exactly(expected_v5)
     env.expect.that_dict(targets.py_v5[_TagsInfo].env).contains_exactly({})
     env.expect.that_int(targets.py_v5[_TagsInfo].shard_count).equals(1 if is_oss() else 8)
+
+    env.expect.that_dict(targets.py_v5_net[_TagsInfo].exec_properties).contains_exactly(expected_v5_net)
 
     env.expect.that_dict(targets.py_override[_TagsInfo].exec_properties).contains_exactly(
         expected_override,
@@ -942,6 +958,7 @@ def _test_rbe_macro_exec_properties_impl(env, targets):
     if is_oss():
         env.expect.that_dict(targets.rbe_py_v5[_TagsInfo].env).contains_exactly(_V5_RBE_ENV)
         env.expect.that_int(targets.rbe_py_v5[_TagsInfo].shard_count).equals(8)
+        env.expect.that_dict(targets.rbe_py_v5_net[_TagsInfo].env).contains_exactly(_V5_RBE_ENV)
         env.expect.that_dict(targets.rbe_py_override[_TagsInfo].env).contains_exactly(
             _V5_RBE_ENV | caller_env,
         )
@@ -969,6 +986,11 @@ def _test_rbe_macro_exec_properties(name):
         name = name + "_py_v5",
         tags = ["exclusive", "requires-tpu-v5lite"],
         shard_count = 8,
+        **common_py_kwargs
+    )
+    torch_tpu_py_test(
+        name = name + "_py_v5_net",
+        tags = ["requires-net:external", "requires-tpu-v5lite"],
         **common_py_kwargs
     )
     torch_tpu_py_test(
@@ -1015,6 +1037,7 @@ def _test_rbe_macro_exec_properties(name):
     )
     subject_names = [
         "py_v5",
+        "py_v5_net",
         "py_override",
         "py_cpu",
         "py_multichip",
@@ -1099,6 +1122,7 @@ def build_defs_test_suite(name):
             _test_oss_presubmit_tpu_generation_implicit_v6,
             _test_rbe_caller_exec_properties_win,
             _test_rbe_internal_test_gets_nothing,
+            _test_rbe_oss_network_tag_sets_docker_network,
             _test_rbe_oss_v5_test_gets_pool,
             _test_rbe_test_without_pool_gets_nothing,
             _test_shard_count_clamping,

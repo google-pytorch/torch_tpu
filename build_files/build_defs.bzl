@@ -165,12 +165,15 @@ def _add_rbe_exec_properties(kwargs, tags, tpu_generation):
         chips = _get_tpu_chip_count(tag)
         if chips != None and chips > 1:
             return
-    kwargs["exec_properties"] = {
+    exec_properties = {
         "test.Pool": pool,
         "test.dockerPrivileged": "true",  # The TPU is /dev/vfio.
         # TODO: b/567928058 - Try running tests as a non-root user.
         "test.dockerRunAsRoot": "true",
-    } | (kwargs.get("exec_properties") or {})
+    }
+    if "requires-net:external" in tags:
+        exec_properties["test.dockerNetwork"] = "standard"
+    kwargs["exec_properties"] = exec_properties | (kwargs.get("exec_properties") or {})
     rbe_env = _RBE_TPU_ENV.get(tpu_generation)
     if rbe_env:
         rbe_env_select = select({

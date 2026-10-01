@@ -67,6 +67,12 @@ _WHEN_OSS_PRESUBMIT_OVERLOADED = (
     "This test is lower-priority and thus skipped in presubmit." if _OSS_PRESUBMIT_OVERLOADED else None
 )
 
+# Ops tests download GPU goldens from GCS in OSS; internally they read them from runfiles.
+_OSS_GOLDEN_TAGS = if_oss(
+    ["requires-net:external"],
+    [],
+)
+
 torch_tpu_py_library(
     name = "oss_utils",
     testonly = True,
@@ -442,7 +448,7 @@ torch_tpu_py_test(
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.  # This test times out in tsan mode.
         "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
-    ],
+    ] + _OSS_GOLDEN_TAGS,
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -490,7 +496,7 @@ torch_tpu_py_test(
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.  # This test times out in tsan mode.
         "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
-    ],
+    ] + _OSS_GOLDEN_TAGS,
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -538,7 +544,7 @@ torch_tpu_py_test(
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
         "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
-    ],
+    ] + _OSS_GOLDEN_TAGS,
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -585,7 +591,7 @@ torch_tpu_py_test(
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the timeout of test_grid_sampler in tsan mode.
         "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
-    ],
+    ] + _OSS_GOLDEN_TAGS,
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -632,7 +638,7 @@ torch_tpu_py_test(
         "nomsan",  # This test times out in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.  # This test times out in tsan mode.
         "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
-    ],
+    ] + _OSS_GOLDEN_TAGS,
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -681,7 +687,7 @@ torch_tpu_py_test(
         "nosan",  # Rely on ops_test_grad for *san coverage.
         "ok-to-wait-for-v6e-in-presubmit",
         "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
-    ],
+    ] + _OSS_GOLDEN_TAGS,
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -730,7 +736,7 @@ torch_tpu_py_test(
         "nomsan",  # This test times out in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.  # This test times out in tsan mode.
         "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
-    ],
+    ] + _OSS_GOLDEN_TAGS,
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -775,7 +781,7 @@ torch_tpu_py_test(
         "nomsan",  # This test times out in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.  # This test times out in tsan mode.
         "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
-    ],
+    ] + _OSS_GOLDEN_TAGS,
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -824,7 +830,7 @@ torch_tpu_py_test(
         "nomsan",  # This test times out in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
         "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
-    ],
+    ] + _OSS_GOLDEN_TAGS,
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -917,7 +923,7 @@ torch_tpu_py_test(
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
         "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
-    ],
+    ] + _OSS_GOLDEN_TAGS,
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -963,7 +969,7 @@ torch_tpu_py_test(
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
         "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
-    ],
+    ] + _OSS_GOLDEN_TAGS,
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
