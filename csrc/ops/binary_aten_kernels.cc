@@ -309,8 +309,10 @@ absl::Status TernaryOpOut(const at::Tensor& self, const at::Tensor& other,
       promoted_scalar_type = c10::get_default_dtype_as_scalartype();
     }
   }
-  TT_ASSIGN_OR_RETURN(mlir::ElementType computation_dtype,
+  TT_ASSIGN_OR_RETURN(mlir::ElementType promoted_element_type,
                       internal::ToElementType(promoted_scalar_type));
+  TT_ASSIGN_OR_RETURN(mlir::ElementType computation_dtype,
+                      InferComputationDtype(promoted_element_type));
   TT_ASSIGN_OR_RETURN(const auto out_element_type,
                       ConvertTo<mlir::ElementType>(out.scalar_type()));
 
@@ -346,6 +348,16 @@ absl::Status ValidateAlphaTypeSupported(const at::Scalar& alpha) {
            << ToString(alpha_element_type)
            << " alpha value is not yet supported";
   }
+  return absl::OkStatus();
+}
+
+absl::Status ValidateAlphaCastableWithoutOverflow(const at::Scalar& alpha,
+                                                  at::ScalarType dtype) {
+  TT_ASSIGN_OR_RETURN(bool can_cast_without_overflow,
+                      CanCastScalarWithoutOverflow(alpha, dtype));
+  TT_RET_CHECK(can_cast_without_overflow, error::kInvalidArgument)
+      << "expected alpha to be representable as " << ToString(dtype) << ", got "
+      << ToString(alpha);
   return absl::OkStatus();
 }
 
@@ -1054,6 +1066,14 @@ at::Tensor& AtenAddOut(const at::Tensor& self, const at::Tensor& other,
     TT_THROW_IF_ERROR(ValidateAlphaTypeSupported(alpha));
 
     const at::ScalarType promoted_scalar_type = at::result_type(self, other);
+    TT_ASSIGN_OR_THROW(mlir::ElementType promoted_element_type,
+                       internal::ToElementType(promoted_scalar_type));
+    TT_ASSIGN_OR_THROW(mlir::ElementType computation_element_type,
+                       InferComputationDtype(promoted_element_type));
+    const at::ScalarType opmath_scalar_type =
+        ConvertTo<at::ScalarType>(computation_element_type);
+    TT_THROW_IF_ERROR(
+        ValidateAlphaCastableWithoutOverflow(alpha, opmath_scalar_type));
 
     // As an optimization, skip the scaling if alpha is 1.
     if (promoted_alpha.IsOne()) {
@@ -1064,7 +1084,7 @@ at::Tensor& AtenAddOut(const at::Tensor& self, const at::Tensor& other,
     }
 
     TT_ASSIGN_OR_THROW(const at::Tensor alpha_tensor,
-                       promoted_alpha.GetTensor(promoted_scalar_type));
+                       promoted_alpha.GetTensor(opmath_scalar_type));
 
     auto op_builder =
         [](mlir::MlirOp self_op, mlir::MlirOp other_op,

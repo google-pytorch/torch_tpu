@@ -14237,6 +14237,34 @@ class MaskedSoftmaxErrorTest(et.ErrorTestBase):
     ):
       torch.split_with_sizes_copy(self_t, [2, 2], dim=0, out=out)
 
+  def test_add_alpha_overflow(self):
+    a_i8 = torch.ones(2, device=et.device(), dtype=torch.int8)
+    b_i8 = torch.ones(2, device=et.device(), dtype=torch.int8)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""add(): expected alpha to be representable as int8, got 1000""",
+        gpu="""value cannot be converted to type int8_t without overflow""",
+    ):
+      torch.add(a_i8, b_i8, alpha=1000)
+
+    a_f32 = torch.ones(2, device=et.device(), dtype=torch.float32)
+    b_f32 = torch.ones(2, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""add(): expected alpha to be representable as float32, got 1e+40""",
+        gpu="""value cannot be converted to type float without overflow""",
+    ):
+      torch.add(a_f32, b_f32, alpha=1e40)
+
+    a_f16 = torch.ones(2, device=et.device(), dtype=torch.float16)
+    b_f16 = torch.ones(2, device=et.device(), dtype=torch.float16)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""add(): expected alpha to be representable as float32, got 1e+40""",
+        gpu="""value cannot be converted to type float without overflow""",
+    ):
+      torch.add(a_f16, b_f16, alpha=1e40)
+
 
 if __name__ == "__main__":
   multiprocessing.handle_test_main(absltest.main)
