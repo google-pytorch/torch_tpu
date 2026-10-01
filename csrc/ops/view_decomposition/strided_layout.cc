@@ -16,6 +16,7 @@
 
 #include "csrc/ops/view_decomposition/strided_layout.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <ostream>
@@ -113,6 +114,42 @@ Strides GetStrides(const StridedLayout& layout) {
   absl::c_transform(layout.strided_dims, strides.begin(),
                     [](const auto& dim) { return dim.stride; });
   return strides;
+}
+
+bool StridedLayout::IsNonOverlappingRowMajor() const {
+  if (strided_dims.empty()) {
+    // Scalars are trivially non-overlapping and row-major.
+    return true;
+  }
+  if (std::any_of(
+          strided_dims.begin(), strided_dims.end(),
+          [](const StridedDimension& dim) { return dim.stride == 0; })) {
+    // Stride logic is not well-defined for zero-sized tensors.
+    return false;
+  }
+  int last_nontrivial_dim = strided_dims.size() - 1;
+  while (last_nontrivial_dim >= 0 &&
+         strided_dims[last_nontrivial_dim].size == 1) {
+    --last_nontrivial_dim;
+  }
+  if (last_nontrivial_dim < 0) {
+    // All dimensions are size 1, so the tensor is effectively a scalar.
+    return true;
+  }
+
+  // Check that, for each dimension i, stride[i] >= size[i+1] * stride[i+1].
+  // Size-1 dimensions are treated as though they are not present.
+  int64_t min_stride = strided_dims[last_nontrivial_dim].stride *
+                       strided_dims[last_nontrivial_dim].size;
+  for (int i = last_nontrivial_dim - 1; i >= 0; --i) {
+    const auto& dim = strided_dims[i];
+    if (dim.stride < min_stride) {
+      // This is either an overlapping or non-row-major dimension.
+      return false;
+    }
+    min_stride = dim.stride * dim.size;
+  }
+  return true;
 }
 
 }  // namespace torch_tpu

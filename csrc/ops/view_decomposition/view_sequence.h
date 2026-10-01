@@ -90,10 +90,12 @@ using ViewSequenceSpan = absl::Span<const ViewPrimitive>;
 bool UpdateLayout(StridedLayout& layout, ViewSequenceSpan view_sequence);
 
 // Simplifies a sequence of view primitives by removing no-ops and merging
-// sequentially-applied primitives.
+// sequentially-applied primitives, and by reordering slices and reshapes.
+// Reordering can be disabled by allow_reorder=false.
 // The sequence is modified in-place.
 void Simplify(ViewSequence& view_sequence,
-              absl::Span<const int64_t> contiguous_base_shape);
+              absl::Span<const int64_t> contiguous_base_shape,
+              bool allow_reorder = true);
 
 // An MlirOpBuilder to apply the given view sequence to the input.
 absl::StatusOr<mlir::MlirOp> ViewSequenceShlo(mlir::MlirOp input,

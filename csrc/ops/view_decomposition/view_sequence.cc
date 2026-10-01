@@ -181,6 +181,140 @@ bool MergeAllSequential(ViewSequence& sequence) {
   return any_merges;
 }
 
+SlicePrimitive MakeNoOpSlice(const StridedLayout& layout) {
+  SlicePrimitive no_op_slice;
+  no_op_slice.slice_dims.resize(layout.strided_dims.size());
+  for (int i = 0; i < layout.strided_dims.size(); ++i) {
+    no_op_slice.slice_dims[i] = {
+        .start_index = 0,
+        .limit_index = layout.strided_dims[i].size,
+        .stride = 1,
+    };
+  }
+  return no_op_slice;
+}
+
+int64_t CalcMaxElement(const StridedLayout& layout) {
+  int64_t max_element = layout.storage_offset;
+  for (const auto& dim : layout.strided_dims) {
+    max_element += (dim.size - 1) * dim.stride;
+  }
+  return max_element;
+}
+
+bool ComputeStartAndLimit(const StridedLayout& layout_before_reshape,
+                          const StridedLayout& desired_layout,
+                          SlicePrimitive& out_slice) {
+  int i = 0;
+  ABSL_CHECK_EQ(  // CRASH_OK=Internal error on view decomposition.
+      layout_before_reshape.strided_dims.size(), out_slice.slice_dims.size());
+  int64_t offset_increase =
+      desired_layout.storage_offset - layout_before_reshape.storage_offset;
+  int64_t max_element_decrease =
+      CalcMaxElement(layout_before_reshape) - CalcMaxElement(desired_layout);
+
+  while (i < layout_before_reshape.strided_dims.size() &&
+         (offset_increase > 0 || max_element_decrease > 0)) {
+    int64_t start_index =
+        offset_increase / layout_before_reshape.strided_dims[i].stride;
+    int64_t high_shift =
+        max_element_decrease / layout_before_reshape.strided_dims[i].stride;
+    int64_t limit_index =
+        layout_before_reshape.strided_dims[i].size - high_shift;
+    if (limit_index < start_index) {
+      return false;
+    }
+    offset_increase -=
+        start_index * layout_before_reshape.strided_dims[i].stride;
+    max_element_decrease -=
+        high_shift * layout_before_reshape.strided_dims[i].stride;
+    out_slice.slice_dims[i].start_index = start_index;
+    out_slice.slice_dims[i].limit_index = limit_index;
+    ++i;
+  }
+  if (offset_increase > 0 || max_element_decrease > 0) {
+    // There is no linear combination of start and limit indices that can be
+    // applied to layout_before to produce the same result as original_slice
+    // without a strided slice.
+    return false;
+  }
+  return true;
+}
+
+// Suppose we have a non-overlapping, row-major layout, to which we apply a
+// reshape, and then a slice. Ideally, we would like to apply the slice
+// before the reshape, for several reasons:
+//  * Reshapes may involve a relayout/copy; slicing first minimizes copied size
+//  * On view inversion, any operations before a slice must be performed twice;
+//    moving the slice earlier means less duplicated work
+//  * Reordering reshape/slice/reshape/slice to slice/slice/reshape/reshape
+//    allows a merge into just slice/reshape, reducing the number of steps
+//
+// This is not always possible; doing the slice first may reduce contiguous-ness
+// in a way that the subsequent reshape would be invalid.
+//
+// Additionally, we don't want to apply the slice first if doing so would
+// necessitate a strided slice, due to negative effects on view inversion
+// (strided slices require an expensive interior-pad operation to invert).
+bool ApplySliceBeforeReshape(const StridedLayout& layout_before,
+                             ViewPrimitive& first, ViewPrimitive& second) {
+  auto* reshape_ptr = std::get_if<ReshapePrimitive>(&first);
+  if (reshape_ptr == nullptr) {
+    return false;
+  }
+  auto& reshape = *reshape_ptr;
+
+  auto* slice_ptr = std::get_if<SlicePrimitive>(&second);
+  if (slice_ptr == nullptr) {
+    return false;
+  }
+  auto& slice = *slice_ptr;
+
+  if (!layout_before.IsNonOverlappingRowMajor()) {
+    return false;
+  }
+
+  StridedLayout desired_layout = layout_before;
+  UpdateLayout(desired_layout, reshape);
+  UpdateLayout(desired_layout, slice);
+
+  SlicePrimitive out_slice = MakeNoOpSlice(layout_before);
+  if (!ComputeStartAndLimit(layout_before, desired_layout, out_slice)) {
+    return false;
+  }
+
+  StridedLayout actual_layout = layout_before;
+  UpdateLayout(actual_layout, out_slice);
+
+  ReshapePrimitive post_slice_reshape = {
+      .base_sizes = GetSizes(actual_layout),
+      .new_sizes = GetSizes(desired_layout),
+  };
+  if (!ValidateReshape(actual_layout, post_slice_reshape)) {
+    return false;
+  }
+
+  first = std::move(out_slice);
+  second = std::move(post_slice_reshape);
+  return true;
+}
+
+bool MoveSlicesBeforeReshapes(ViewSequence& view_sequence,
+                              absl::Span<const int64_t> contiguous_base_shape) {
+  if (view_sequence.size() < 2) {
+    return false;
+  }
+
+  StridedLayout layout = MakeContiguousBaseLayout(contiguous_base_shape);
+  bool any_changes = false;
+  for (int i = 0; i < view_sequence.size() - 1; ++i) {
+    any_changes |=
+        ApplySliceBeforeReshape(layout, view_sequence[i], view_sequence[i + 1]);
+    UpdateLayout(layout, view_sequence[i]);
+  }
+  return any_changes;
+}
+
 }  // namespace
 
 bool operator==(const ViewPrimitive& lhs, const ViewPrimitive& rhs) {
@@ -318,14 +452,18 @@ bool UpdateLayout(StridedLayout& layout, ViewSequenceSpan view_sequence) {
 }
 
 void Simplify(ViewSequence& sequence,
-              absl::Span<const int64_t> contiguous_base_shape) {
+              absl::Span<const int64_t> contiguous_base_shape,
+              bool allow_reorder) {
   ABSL_VLOG(3) << "[Simplify] Pre-simplified view sequence: "
                << ToString(sequence);
   bool any_changes = false;
   do {
     const bool any_no_ops = RemoveNoOps(sequence, contiguous_base_shape);
+    const bool any_reorders =
+        allow_reorder &&
+        MoveSlicesBeforeReshapes(sequence, contiguous_base_shape);
     const bool any_merges = MergeAllSequential(sequence);
-    any_changes = any_no_ops || any_merges;
+    any_changes = any_no_ops || any_reorders || any_merges;
   } while (any_changes);
   ABSL_VLOG(3) << "[Simplify] Simplified view sequence: " << ToString(sequence);
 }

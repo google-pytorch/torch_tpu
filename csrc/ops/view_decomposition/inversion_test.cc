@@ -228,22 +228,20 @@ TEST(ComputeInverseViewOperation, SliceTensorHigh) {
       ComputeInverseViewOperation(contiguous_base_shape, contiguous_base_dtype,
                                   view_layout, view_dtype));
   InverseViewOperation expected = {
-      .base_transform = {ReshapePrimitive{.base_sizes = {2, 3, 4},
-                                          .new_sizes = {6, 4}}},
+      .base_transform = {},
       .bitcast_view = {},
       .stages = {InverseViewStage{
                      .slice = SlicePrimitive{.slice_dims = {{.start_index = 0,
+                                                             .limit_index = 1,
+                                                             .stride = 1},
+                                                            {.start_index = 0,
                                                              .limit_index = 2,
                                                              .stride = 1},
                                                             {.start_index = 0,
                                                              .limit_index = 3,
                                                              .stride = 1}}}},
-                 InverseViewStage{
-                     .forward = {ReshapePrimitive{.base_sizes = {2, 3},
-                                                  .new_sizes = {1, 2, 3}}},
-                     .inverse = {ReshapePrimitive{.base_sizes = {1, 2, 3},
-                                                  .new_sizes = {2, 3}}}}},
-      .final_shape = Shape({6, 4}, mlir::ElementType::F32)};
+                 InverseViewStage()},
+      .final_shape = Shape({2, 3, 4}, mlir::ElementType::F32)};
   EXPECT_EQ(inverse_view_operation.base_transform, expected.base_transform);
   EXPECT_EQ(inverse_view_operation.bitcast_view, expected.bitcast_view);
   EXPECT_EQ(inverse_view_operation.stages, expected.stages);

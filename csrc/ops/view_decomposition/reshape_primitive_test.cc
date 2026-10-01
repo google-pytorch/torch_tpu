@@ -18,7 +18,6 @@
 
 #include <utility>
 
-#include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/ops/view_decomposition/strided_layout.h"
@@ -149,6 +148,75 @@ TEST(MergeSequentialReshape, ValidMerge) {
   UpdateLayout(actual_layout, merged);
 
   EXPECT_EQ(actual_layout, expected_layout);
+}
+
+TEST(ValidateReshape, NoOpReshape) {
+  StridedLayout layout = {
+      .strided_dims = {{.size = 6, .stride = 9},
+                       {.size = 4, .stride = 2},
+                       {.size = 2, .stride = 1}},
+      .storage_offset = 0,
+  };
+  ReshapePrimitive reshape = {.base_sizes = {6, 4, 2}, .new_sizes = {6, 4, 2}};
+  EXPECT_TRUE(ValidateReshape(layout, reshape));
+}
+
+TEST(ValidateReshape, InconsistentBaseSizes) {
+  StridedLayout layout = {
+      .strided_dims = {{.size = 6, .stride = 9},
+                       {.size = 4, .stride = 2},
+                       {.size = 2, .stride = 1}},
+      .storage_offset = 0,
+  };
+  ReshapePrimitive reshape = {.base_sizes = {6, 4}, .new_sizes = {6, 4}};
+  EXPECT_FALSE(ValidateReshape(layout, reshape));
+}
+
+TEST(ValidateReshape, ElementCountMismatch) {
+  StridedLayout layout = {
+      .strided_dims = {{.size = 6, .stride = 9},
+                       {.size = 4, .stride = 2},
+                       {.size = 2, .stride = 1}},
+      .storage_offset = 0,
+  };
+  ReshapePrimitive reshape = {.base_sizes = {6, 4, 2}, .new_sizes = {57}};
+  EXPECT_FALSE(ValidateReshape(layout, reshape));
+}
+
+TEST(ValidateReshape, ViolatesContiguity) {
+  StridedLayout layout = {
+      .strided_dims = {{.size = 2, .stride = 3}, {.size = 2, .stride = 1}},
+      .storage_offset = 0,
+  };
+  ReshapePrimitive reshape = {.base_sizes = {2, 2}, .new_sizes = {4}};
+  EXPECT_FALSE(ValidateReshape(layout, reshape));
+}
+
+TEST(ValidateReshape, ValidFlatten) {
+  StridedLayout layout = {
+      .strided_dims = {{.size = 7, .stride = 5}, {.size = 5, .stride = 1}},
+      .storage_offset = 0,
+  };
+  ReshapePrimitive reshape = {.base_sizes = {7, 5}, .new_sizes = {35}};
+  EXPECT_TRUE(ValidateReshape(layout, reshape));
+}
+
+TEST(ValidateReshape, ValidUnflatten) {
+  StridedLayout layout = {
+      .strided_dims = {{.size = 35, .stride = 1}},
+      .storage_offset = 0,
+  };
+  ReshapePrimitive reshape = {.base_sizes = {35}, .new_sizes = {7, 5}};
+  EXPECT_TRUE(ValidateReshape(layout, reshape));
+}
+
+TEST(ValidateReshape, ValidComplexReshape) {
+  StridedLayout layout = {
+      .strided_dims = {{.size = 6, .stride = 5}, {.size = 5, .stride = 1}},
+      .storage_offset = 0,
+  };
+  ReshapePrimitive reshape = {.base_sizes = {6, 5}, .new_sizes = {3, 10}};
+  EXPECT_TRUE(ValidateReshape(layout, reshape));
 }
 
 }  // namespace

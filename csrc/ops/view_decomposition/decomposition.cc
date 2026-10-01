@@ -1361,7 +1361,9 @@ absl::StatusOr<Dimensions> GetContiguousBaseShape(
       DecomposeIntoViewSequence({min_numel}, mlir::ElementType::BF16,
                                 view_layout, mlir::ElementType::BF16,
                                 /*is_conj=*/false));
-  Simplify(one_d_view_sequence, {min_numel});
+  // Disable reordering to allow a reshape to be the first operation.
+  // TODO: is this optimal? Is there a better way to optimize slice bases?
+  Simplify(one_d_view_sequence, {min_numel}, /*allow_reorder=*/false);
 
   if (one_d_view_sequence.empty()) {
     // The view was exactly the 1D contiguous base we started with.

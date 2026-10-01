@@ -562,6 +562,76 @@ TEST(DecomposeIntoViewSequence, Conjugate_RealBase_RealView) {
                     mlir::ElementType::F32, /*is_conj=*/true);
 }
 
+TEST(DecomposeIntoViewSequence, SelectMajorAxis2D) {
+  // torch.ones(3, 4)[1, :]
+  Dimensions contiguous_base_shape = {3, 4};
+  StridedLayout view_layout = {
+      .strided_dims = {{.size = 4, .stride = 1}},
+      .storage_offset = 4,
+  };
+  DecompositionTest(contiguous_base_shape, view_layout);
+}
+
+TEST(DecomposeIntoViewSequence, SelectMinorAxis2D) {
+  // torch.ones(3, 4)[:, 1]
+  Dimensions contiguous_base_shape = {3, 4};
+  StridedLayout view_layout = {
+      .strided_dims = {{.size = 3, .stride = 4}},
+      .storage_offset = 1,
+  };
+  DecompositionTest(contiguous_base_shape, view_layout);
+}
+
+TEST(DecomposeIntoViewSequence, SelectMajorAxis3D) {
+  // torch.ones(3, 4, 5)[1, :, :]
+  Dimensions contiguous_base_shape = {3, 4, 5};
+  StridedLayout view_layout = {
+      .strided_dims = {{.size = 4, .stride = 5}, {.size = 5, .stride = 1}},
+      .storage_offset = 20,
+  };
+  DecompositionTest(contiguous_base_shape, view_layout);
+}
+
+TEST(DecomposeIntoViewSequence, SelectMiddleAxis3D) {
+  // torch.ones(3, 4, 5)[:, 1, :]
+  Dimensions contiguous_base_shape = {3, 4, 5};
+  StridedLayout view_layout = {
+      .strided_dims = {{.size = 3, .stride = 20}, {.size = 5, .stride = 1}},
+      .storage_offset = 5,
+  };
+  DecompositionTest(contiguous_base_shape, view_layout);
+}
+
+TEST(DecomposeIntoViewSequence, SelectMinorAxis3D) {
+  // torch.ones(3, 4, 5)[:, :, 1]
+  Dimensions contiguous_base_shape = {3, 4, 5};
+  StridedLayout view_layout = {
+      .strided_dims = {{.size = 3, .stride = 20}, {.size = 4, .stride = 5}},
+      .storage_offset = 1,
+  };
+  DecompositionTest(contiguous_base_shape, view_layout);
+}
+
+TEST(DecomposeIntoViewSequence, SelectTwoAxes) {
+  // torch.ones(3, 4, 5)[1, :, 1]
+  Dimensions contiguous_base_shape = {3, 4, 5};
+  StridedLayout view_layout = {
+      .strided_dims = {{.size = 4, .stride = 5}},
+      .storage_offset = 21,
+  };
+  DecompositionTest(contiguous_base_shape, view_layout);
+}
+
+TEST(DecomposeIntoViewSequence, SelectSingleElement) {
+  // torch.ones(3, 4, 5)[1, 1, 1]
+  Dimensions contiguous_base_shape = {3, 4, 5};
+  StridedLayout view_layout = {
+      .strided_dims = {},
+      .storage_offset = 26,
+  };
+  DecompositionTest(contiguous_base_shape, view_layout);
+}
+
 void GetContiguousBaseShapeTest(const StridedLayout& view_layout,
                                 absl::Span<const int64_t> expected_base_shape) {
   TT_ASSERT_OK_AND_ASSIGN(Dimensions base_shape,

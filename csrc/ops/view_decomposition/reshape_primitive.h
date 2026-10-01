@@ -61,6 +61,11 @@ static_assert(sizeof(ReshapePrimitive) == 112, "");
 // Formats the reshape like "reshape[1, 2, 3]".
 std::ostream& operator<<(std::ostream& os, const ReshapePrimitive& reshape);
 
+// Returns true if the given reshape primitive is valid for the given layout.
+// If it is invalid, an error message is written to the error stream.
+bool ValidateReshape(const StridedLayout& layout,
+                     const ReshapePrimitive& reshape);
+
 // Updates the layout to reflect the effect of applying the given reshape
 // primitive.
 //

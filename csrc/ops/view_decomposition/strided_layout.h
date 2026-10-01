@@ -66,6 +66,16 @@ struct StridedLayout {
   // Constructs a StridedLayout from a PyTorch tensor.
   static StridedLayout FromTensor(const at::Tensor& tensor);
 
+  // Checks if the given layout is non-overlapping and row-major.
+  // This permits a storage offset greater than 0, and allows for size-1
+  // dimensions, but disallows transposed or broadcasted dimensions.
+  //
+  // This property is useful because if it is true, then any increase in the
+  // storage offset or reduction in the maximum element index is achievable by
+  // at most one possible slice; i.e. if a solution exists, it is unique, and
+  // can be found greedily.
+  bool IsNonOverlappingRowMajor() const;
+
   // The dimensions of the tensor in strided layout.
   absl::InlinedVector<StridedDimension, 3> strided_dims;
   // The offset of the first element in the tensor in the 1D storage array.

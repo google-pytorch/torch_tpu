@@ -94,8 +94,10 @@ torch_tpu_cc_library(
         "//csrc/ops:op_builder_utils",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
         "@llvm-project//mlir:IR",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
     ],
@@ -109,7 +111,6 @@ torch_tpu_cc_test(
         ":strided_layout",
         "//csrc/common:dimension_types",
         "//csrc/common:oss_test_main",
-        "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
     ],
 )

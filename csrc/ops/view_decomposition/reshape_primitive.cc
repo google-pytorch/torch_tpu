@@ -24,8 +24,10 @@
 
 #include "absl/log/absl_check.h"
 #include "absl/log/check.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_join.h"
+#include "absl/types/span.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
 #include "csrc/ops/op_builder_utils.h"
@@ -109,17 +111,20 @@ bool IsNoOpReshape(const ReshapePrimitive& reshape,
   return true;
 }
 
-void CheckNumberOfElements(const ReshapePrimitive& reshape,
-                           const StridedLayout& layout) {
-  ABSL_CHECK_EQ(  // CRASH_OK=Internal error on view decomposition.
-      layout.strided_dims.size(), reshape.base_sizes.size())
+absl::Status ValidateNumberOfElements(const ReshapePrimitive& reshape,
+                                      const StridedLayout& layout) {
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=always handled by caller before Python
+      layout.strided_dims.size() == reshape.base_sizes.size(),
+      error::kInvalidArgument)
       << "expected ReshapePrimitive base shape size to be "
       << layout.strided_dims.size() << ", which is the input rank, got "
       << reshape.base_sizes.size() << GetUpdateLayoutBugSuffix(reshape, layout);
 
   for (int i = 0; i < layout.strided_dims.size(); ++i) {
-    ABSL_CHECK_EQ(  // CRASH_OK=Internal error on view decomposition.
-        layout.strided_dims[i].size, reshape.base_sizes[i])
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=always handled by caller before
+                   // Python
+        layout.strided_dims[i].size == reshape.base_sizes[i],
+        error::kInvalidArgument)
         << "expected ReshapePrimitive base size at index " << i << " to be "
         << layout.strided_dims[i].size
         << ", which is the input size at that dimension, got "
@@ -133,16 +138,71 @@ void CheckNumberOfElements(const ReshapePrimitive& reshape,
   for (const auto& size : reshape.new_sizes) {
     reshape_num_elements *= size;
   }
-  ABSL_CHECK_EQ(  // CRASH_OK=Internal error on view decomposition.
-      layout_num_elements, reshape_num_elements)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=always handled by caller before Python
+      layout_num_elements == reshape_num_elements, error::kInvalidArgument)
       << "expected ReshapePrimitive total number of elements to be "
       << layout_num_elements
       << ", which is the input total number of elements, got "
       << reshape_num_elements << GetUpdateLayoutBugSuffix(reshape, layout);
-  ABSL_CHECK_GT(  // CRASH_OK=Internal error on view decomposition.
-      reshape_num_elements, 0)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=always handled by caller before Python
+      reshape_num_elements > 0, error::kInvalidArgument)
       << "expected ReshapePrimitive total number of elements to be > 0, got "
       << reshape_num_elements << GetUpdateLayoutBugSuffix(reshape, layout);
+  return absl::OkStatus();
+}
+
+absl::StatusOr<int64_t> ValidateReshapeDimensionAndComputeStride(
+    const ReshapePrimitive& reshape, const StridedLayout& layout,
+    absl::Span<ContiguityBlock> blocks, const int64_t dim_index,
+    size_t& block_index) {
+  const int64_t new_dim_size = reshape.new_sizes[dim_index];
+  if (new_dim_size == 1) {
+    // Size-1 dimensions have arbitrary strides, and we can have as many
+    // trailing size-1 dimensions as necessary.
+    while (block_index < blocks.size() &&
+           blocks[block_index].num_elements == 1) {
+      ++block_index;
+    }
+    return 1;
+  }
+
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=always handled by caller before Python
+      block_index < blocks.size(), error::kInvalidArgument)
+      << "expected the ReshapePrimitive the output of sizes "
+      << ToString(reshape.new_sizes)
+      << " to have only size 1 dimensions after reaching the end of the "
+         "input contiguity blocks, got output size "
+      << new_dim_size << " at index " << dim_index
+      << GetUpdateLayoutBugSuffix(reshape, layout);
+
+  auto& current_block = blocks[block_index];
+  if (new_dim_size == current_block.num_elements) {
+    // Used up the elements in the current block.
+    ++block_index;
+    return current_block.minor_stride;
+  }
+
+  TT_RET_CHECK(  // CRASH_OK=Internal error on view decomposition.
+      current_block.num_elements >= new_dim_size, error::kInvalidArgument)
+      << "expected ReshapePrimitive output dimension size at index "
+      << dim_index << " to be < " << current_block.num_elements
+      << ", which is the number of elements in the current contiguity "
+         "block, got "
+      << new_dim_size << GetUpdateLayoutBugSuffix(reshape, layout);
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=always handled by caller before Python
+      current_block.num_elements % new_dim_size == 0, error::kInvalidArgument)
+      << "expected ReshapePrimitive the output dimension size " << new_dim_size
+      << " to divide " << current_block.num_elements
+      << ", which is the contiguity block number of elements, got "
+      << new_dim_size << " does not divide " << current_block.num_elements
+      << GetUpdateLayoutBugSuffix(reshape, layout);
+
+  // Split the current block into two blocks to satisfy new_dim.size.
+  // This converts a block with A*B elements and stride S into two blocks:
+  //   1. A elements, stride B*S
+  //   2. B elements, stride S
+  current_block.num_elements /= new_dim_size;
+  return current_block.num_elements * current_block.minor_stride;
 }
 
 }  // namespace
@@ -153,6 +213,33 @@ std::ostream& operator<<(std::ostream& os, const ReshapePrimitive& reshape) {
   return os;
 }
 
+bool ValidateReshape(const StridedLayout& layout,
+                     const ReshapePrimitive& reshape) {
+  // Check for a no-op reshape
+  if (IsNoOpReshape(reshape, layout)) {
+    return true;
+  }
+
+  // Validate element count matches and is non-zero.
+  if (!ValidateNumberOfElements(reshape, layout).ok()) {
+    return false;
+  }
+
+  // Check that each dimension is valid.
+  auto blocks = GetContiguityBlocks(layout);
+  auto block_span = absl::MakeSpan(blocks);
+  size_t block_index = 0;
+  for (int64_t dim_index = 0; dim_index < reshape.new_sizes.size();
+       ++dim_index) {
+    if (!ValidateReshapeDimensionAndComputeStride(reshape, layout, block_span,
+                                                  dim_index, block_index)
+             .ok()) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool UpdateLayout(StridedLayout& layout, const ReshapePrimitive& reshape) {
   // Check for a no-op reshape
   if (IsNoOpReshape(reshape, layout)) {
@@ -160,13 +247,15 @@ bool UpdateLayout(StridedLayout& layout, const ReshapePrimitive& reshape) {
   }
 
   // Validate element count matches and is non-zero.
-  CheckNumberOfElements(reshape, layout);
+  ABSL_CHECK_OK(  // CRASH_OK=Internal error on
+                  // view decomposition.
+      ValidateNumberOfElements(reshape, layout));
 
   // Not a no-op, actually need to do the reshape
   // Storage offset is unchanged.
   StridedLayout new_layout{.storage_offset = layout.storage_offset};
 
-  // New sizes are given by the reshape reshape.
+  // New sizes are given by the reshape.
   new_layout.strided_dims.reserve(reshape.new_sizes.size());
   for (int i = 0; i < reshape.new_sizes.size(); ++i) {
     new_layout.strided_dims.push_back(
@@ -175,59 +264,15 @@ bool UpdateLayout(StridedLayout& layout, const ReshapePrimitive& reshape) {
 
   // Solving for the new strides requires tracking the contiguity-like blocks.
   auto blocks = GetContiguityBlocks(layout);
+  auto block_span = absl::MakeSpan(blocks);
   size_t block_index = 0;
-  for (int64_t i = 0; i < new_layout.strided_dims.size(); ++i) {
-    auto& new_dim = new_layout.strided_dims[i];
-
-    if (new_dim.size == 1) {
-      // Size-1 dimensions have arbitrary strides, and we can have as many
-      // trailing size-1 dimensions as necessary.
-      while (block_index < blocks.size() &&
-             blocks[block_index].num_elements == 1) {
-        ++block_index;
-      }
-      new_dim.stride = 1;
-      continue;
-    }
-
-    ABSL_CHECK_LT(  // CRASH_OK=Internal error on view decomposition.
-        block_index, blocks.size())
-        << "expected the ReshapePrimitive the output of sizes "
-        << ToString(reshape.new_sizes)
-        << " to have only size 1 dimensions after reaching the end of the "
-           "input contiguity blocks, got output size "
-        << new_dim.size << " at index " << i
-        << GetUpdateLayoutBugSuffix(reshape, layout);
-
-    auto& current_block = blocks[block_index];
-    if (new_dim.size == current_block.num_elements) {
-      // Used up the elements in the current block.
-      new_dim.stride = current_block.minor_stride;
-      ++block_index;
-      continue;
-    }
-
-    ABSL_CHECK_GT(  // CRASH_OK=Internal error on view decomposition.
-        current_block.num_elements, new_dim.size)
-        << "expected ReshapePrimitive output dimension size at index " << i
-        << " to be < " << current_block.num_elements
-        << ", which is the number of elements in the current contiguity block, "
-           "got "
-        << new_dim.size << GetUpdateLayoutBugSuffix(reshape, layout);
-    ABSL_CHECK_EQ(  // CRASH_OK=Internal error on view decomposition.
-        current_block.num_elements % new_dim.size, 0)
-        << "expected ReshapePrimitive the output dimension size "
-        << new_dim.size << " to divide " << current_block.num_elements
-        << ", which is the contiguity block number of elements, got "
-        << new_dim.size << " does not divide " << current_block.num_elements
-        << GetUpdateLayoutBugSuffix(reshape, layout);
-
-    // Split the current block into two blocks to satisfy new_dim.size.
-    // This converts a block with A*B elements and stride S into two blocks:
-    //   1. A elements, stride B*S
-    //   2. B elements, stride S
-    current_block.num_elements /= new_dim.size;
-    new_dim.stride = current_block.num_elements * current_block.minor_stride;
+  for (int64_t dim_index = 0; dim_index < new_layout.strided_dims.size();
+       ++dim_index) {
+    auto new_stride_or = ValidateReshapeDimensionAndComputeStride(
+        reshape, layout, block_span, dim_index, block_index);
+    ABSL_CHECK_OK(  // CRASH_OK=Internal error on view decomposition.
+        new_stride_or);
+    new_layout.strided_dims[dim_index].stride = *new_stride_or;
   }
   layout = std::move(new_layout);
   return true;
