@@ -1452,6 +1452,19 @@ class TestPallasMesh(seed_test_utils.RepeatableTest):
       self.assertEqual(mesh.devices.shape, (2, 2, 2))
       self.assertEqual(len(mesh.devices.flat), 8)
 
+  def test_get_pallas_mesh_custom_process_group_world_size(self):
+    custom_pg = mock.MagicMock(spec=dist.ProcessGroup)
+    with mock.patch.object(
+        dist, "is_initialized", return_value=True
+    ), mock.patch.object(dist, "get_world_size", return_value=8):
+      mesh = pallas.get_pallas_mesh(
+          axis_names=("rank",), process_group=custom_pg
+      )
+      self.assertIsInstance(mesh, jax.sharding.Mesh)
+      self.assertEqual(mesh.axis_names, ("rank",))
+      self.assertEqual(mesh.devices.shape, (8,))
+      self.assertEqual(len(mesh.devices.flat), 8)
+
 
 if __name__ == "__main__":
   absltest.main()

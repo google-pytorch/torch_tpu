@@ -36,6 +36,7 @@
 
 #include "ATen/core/TensorBody.h"
 #include "ATen/core/ivalue_inl.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_format.h"
 #include "absl/types/span.h"
@@ -51,11 +52,16 @@
 #include "csrc/distributed/types.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/ops/op_names.h"
+#include "csrc/pjrt/pjrt_state.h"
 #include "torch/csrc/distributed/c10d/Work.hpp"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/shape.h"
 
 namespace torch_tpu {
+
+// Returns global device attributes and rank-to-device-id mapping.
+const std::vector<PjRtDeviceAttributes>& GetGlobalDeviceAttributes();
+const std::vector<int64_t>& GetGlobalRankToDeviceId();  // INT_VEC_OK
 
 // Returns a cross-host transfer key computed deterministically and stably
 // using FingerprintCat from the source/destination device IDs, communication
@@ -94,11 +100,11 @@ class ProcessGroupTpu : public c10d::Backend {
   }
 
   const std::vector<int64_t>& device_assignment() const {  // INT_VEC_OK
-    return rank_to_device_id_;
+    return GetGlobalRankToDeviceId();
   }
 
-  // Returns the device ids of all TPUs split into subgroups.
-  const DeviceGroupList& GetSubgroupDeviceIds() const;
+  // Returns the global ranks of all processes split into subgroups.
+  const DeviceGroupList& GetSubgroupRanks() const;
 
   c10::intrusive_ptr<c10d::Work> allreduce(
       std::vector<at::Tensor>& tensors,
@@ -284,7 +290,7 @@ class ProcessGroupTpu : public c10d::Backend {
         "[ProcessGroupTpu::%s] rank=%d, device=%d, group_devices=%s "
         "(world_size=%d): ",
         method, getRank(), addressable_device_id_, ToString(rank_to_device_id_),
-        device_ids_.size());
+        GetGlobalRankToDeviceId().size());
   }
 
   std::string OpDebugString(OpName method) {
@@ -328,20 +334,40 @@ class ProcessGroupTpu : public c10d::Backend {
       absl::Span<const xla::Shape> shapes,
       absl::Span<const xla::CrossHostTransferKey> transfer_keys);
 
+  // Exchanges world ranks among the members of this process group. Returns the
+  // world rank of each member, ordered by subgroup rank.
+  absl::StatusOr<DeviceGroup> GatherLocalSubgroupRanks();
+
+  // Exchanges `local_subgroup_ranks` across all world ranks and returns the
+  // unique, non-overlapping subgroups that partition the world. Returns an
+  // error if the subgroups overlap or do not cover the world.
+  absl::StatusOr<DeviceGroupList> GatherAllSubgroups(
+      const DeviceGroup& local_subgroup_ranks, int64_t world_size);
+
+  // Exchanges device attributes across all world ranks and populates the
+  // process-wide world topology. Must be called by a world-sized group.
+  absl::Status InitializeRankToDeviceMappings(int64_t world_size);
+
   c10::intrusive_ptr<c10d::Store> store_;
 
-  std::vector<int64_t> device_ids_;  // All the TPUs in the slice. INT_VEC_OK
-  int64_t addressable_device_id_;    // The TPU 'assigned' to this process.
+  int64_t addressable_device_id_;  // The TPU 'assigned' to this process.
 
-  // List of TPU device ids in this process group (which could be a subgroup),
-  // ordered by the corresponding PyTorch rank value.
+  // World ranks of this process group's members, ordered by subgroup rank, i.e.
+  // local_subgroup_ranks_[i] is the world rank of subgroup rank i. Order is
+  // preserved for groups created with sort_ranks=False.
+  DeviceGroup local_subgroup_ranks_;
+
+  // Device id of each member, indexed by subgroup rank
+  // (rank_to_device_id_[i] == device of world rank local_subgroup_ranks_[i]).
   DeviceGroup rank_to_device_id_;
 
-  // All the TPU device ids, split into subgroups (including the trivial world
-  // group). This includes subgroups this process isn't a member of, but which
-  // are required to be known by XLA. This effectively becomes our
-  // replica_groups attribute in StableHLO collectives.
-  DeviceGroupList subgroup_device_ids_;
+  // All subgroups of world ranks split the same way as this process group,
+  // including subgroups this process is not a member of (XLA requires the full
+  // partition). Each subgroup's internal order (by subgroup rank) is preserved.
+  // Entries index into device_assignment() (the world rank-to-device-id
+  // mapping) and become the replica_groups attribute of StableHLO collectives.
+  // For a world-sized group: {local_subgroup_ranks_}.
+  DeviceGroupList subgroup_ranks_;
 
   // Monotonic sequence counter for uneven all_to_all and all_to_all_single
   // offset coordination.

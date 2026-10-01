@@ -122,6 +122,14 @@ TT_PYBIND11_MODULE(tpu_distributed, m) {
   m.def("all_global_device_ids", &GetAllGlobalDeviceIds);
   m.def("device_debug_string", &DeviceDebugString);
   m.def("local_device_coords", &GetLocalDeviceCoords);
+  PyBindClass<PjRtDeviceAttributes>(m, "PjRtDeviceAttributes")
+      .def_readonly("id", &PjRtDeviceAttributes::id)
+      .def_readonly("coords", &PjRtDeviceAttributes::coords)
+      .def_readonly("core_on_chip", &PjRtDeviceAttributes::core_on_chip)
+      .def_readonly("process_index", &PjRtDeviceAttributes::process_index)
+      .def_readonly("slice_index", &PjRtDeviceAttributes::slice_index)
+      .def_readonly("device_kind", &PjRtDeviceAttributes::device_kind);
+  m.def("global_device_attributes", &GetGlobalDeviceAttributes);
 
   // Expose this functions to allow entering and exiting the SPMD safe region
   // from python

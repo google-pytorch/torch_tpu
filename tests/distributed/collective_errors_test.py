@@ -27,11 +27,15 @@ before the open source release.
 """
 
 import os
+import re
 
 from absl.testing import absltest
+import jax
+from jax.sharding import PartitionSpec as P
 import torch
 from torch import distributed as dist
 import torch.multiprocessing as mp
+from torch_tpu._internal import pallas
 from torch_tpu._internal.distributed import spmd_util
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
@@ -449,30 +453,40 @@ def run_conflicting_device_assignments_error() -> None:
   expected = torch.full((4,), float(world_size + half), dtype=torch.float32)
   utils.assert_close(res, expected)
 
-  unaligned_a_ranks = list(range(1, half + 1))
-  unaligned_b_ranks = list(range(half + 1, world_size)) + [0]
-  unaligned_a = dist.new_group(ranks=unaligned_a_ranks)
-  unaligned_b = dist.new_group(ranks=unaligned_b_ranks)
-  unaligned_group = unaligned_a if rank in unaligned_a_ranks else unaligned_b
+  mesh1 = pallas.get_pallas_mesh(axis_names=("x",))
+  mesh2 = jax.sharding.Mesh(mesh1.devices[::-1], axis_names=mesh1.axis_names)
+
+  def add_one(x: jax.Array) -> jax.Array:
+    return x + 1.0
+
+  kernel1 = pallas.jax_op(
+      "custom::k1",
+      add_one,
+      mesh=mesh1,
+      input_partition_specs=[P("x")],
+      output_partition_specs=[P("x")],
+  )
+  kernel2 = pallas.jax_op(
+      "custom::k2",
+      add_one,
+      mesh=mesh2,
+      input_partition_specs=[P("x")],
+      output_partition_specs=[P("x")],
+  )
 
   @torch.compile(backend="tpu", fullgraph=True)
   @spmd_util.spmd_safe
-  def conflicting_fn(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+  def conflicting_fn(a: torch.Tensor) -> torch.Tensor:
     dist.all_reduce(a)
-    dist.all_reduce(b, group=unaligned_group)
-    return a + b
+    return kernel2(kernel1(a))
 
-  x2 = torch.ones(4, device="tpu")
-  y2 = torch.ones(4, device="tpu")
-
-  with et.assert_raises_message(
-      RuntimeError,
-      tpu="""traverse_and_compile(): failed to compile traversal: disjoint or conflicting device assignments detected in the same compiled module. Operations belonging to different process groups or conflicting Pallas meshes cannot be compiled together into a single XLA executable""",
-  ):
-    try:
-      _ = conflicting_fn(x2, y2).cpu()
-    except torch._dynamo.exc.BackendCompilerFailed as e:
-      raise RuntimeError(str(e.inner_exception).splitlines()[0]) from None
+  expected_msg = re.compile(
+      r".*conflicting device assignments detected: differing Pallas mesh device"
+      r" assignments in the same compilation traversal.*",
+      re.DOTALL,
+  )
+  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
+    _ = conflicting_fn(x).cpu()
 
 
 class CollectiveErrorsTest(et.TpuOnlyDistributedErrorTestBase):
