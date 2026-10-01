@@ -2357,6 +2357,52 @@ module {
     ):
       torch.ops.aten._pdist_backward(grad, self_tensor, -1.0, pdist)
 
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""pdist_forward(): expected the p value to be >= 0, got -1""",
+    ):
+      torch.ops.aten._pdist_forward(self_tensor, -1.0)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""pdist_forward(): expected the input to be a 2-D tensor, got 3-D""",
+    ):
+      torch.ops.aten._pdist_forward(
+          torch.ones(2, 2, 2, device=et.device()), 2.0
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""pdist_backward(): expected the input to be a 2-D tensor, got 1-D""",
+    ):
+      torch.ops.aten._pdist_backward(
+          grad, torch.ones(2, device=et.device()), 2.0, pdist
+      )
+
+    x1_1d = torch.ones(2, device=et.device())
+    x2_2d = torch.ones(2, 2, device=et.device())
+    grad_2d = torch.ones(2, 2, device=et.device())
+    cdist_2d = torch.ones(2, 2, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""cdist_backward(): expected the first argument to be at least 2-D, got 1-D""",
+    ):
+      torch.ops.aten._cdist_backward(grad_2d, x1_1d, x2_2d, 1.0, cdist_2d)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""cdist_backward(): expected the second argument to be at least 2-D, got 1-D""",
+    ):
+      torch.ops.aten._cdist_backward(grad_2d, x2_2d, x1_1d, 1.0, cdist_2d)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""cdist_backward(): expected the first and second arguments to have the same number of columns, got 2 and 3""",
+    ):
+      torch.ops.aten._cdist_backward(
+          grad_2d, x2_2d, torch.ones(2, 3, device=et.device()), 1.0, cdist_2d
+      )
+
   @et.why_tpu_only("Testing TPU device generator initialization failure.")
   def test_default_generator_init_failure(self):
     tt_testing.reset_default_device_generators()

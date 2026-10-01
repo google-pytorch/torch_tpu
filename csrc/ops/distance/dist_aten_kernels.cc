@@ -39,7 +39,6 @@
 #include "csrc/ops/index_select/index_select.h"
 #include "csrc/ops/linalg/vector_norm/pnorm.h"
 #include "csrc/ops/macros/kernel.h"
-#include "csrc/ops/nullary_aten_kernels.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/reductions/reductions.h"
@@ -566,28 +565,57 @@ absl::Status ValidateNotBFloatOrHalf(const at::Tensor& tensor,
   return absl::OkStatus();
 }
 
+absl::Status ValidateCdistCommonInputs(const at::Tensor& x1,
+                                       const at::Tensor& x2, const double p) {
+  TT_RETURN_IF_ERROR(ValidateIsFloatingPoint(x1, "first argument's"));
+  TT_RETURN_IF_ERROR(ValidateIsFloatingPoint(x2, "second argument's"));
+  TT_RET_CHECK(p >= 0, error::kInvalidArgument)
+      << "expected the p value to be >= 0, got " << p;
+  TT_RET_CHECK(x1.dim() >= 2, error::kInvalidArgument)
+      << "expected the first argument to be at least 2-D, got " << x1.dim()
+      << "-D";
+  TT_RET_CHECK(x2.dim() >= 2, error::kInvalidArgument)
+      << "expected the second argument to be at least 2-D, got " << x2.dim()
+      << "-D";
+  TT_RET_CHECK(x1.size(-1) == x2.size(-1), error::kInvalidArgument)
+      << "expected the first and second arguments to have the same number of "
+         "columns, got "
+      << x1.size(-1) << " and " << x2.size(-1);
+  return absl::OkStatus();
+}
+
+absl::Status ValidatePdistCommonInputs(const at::Tensor& self, const double p) {
+  TT_RETURN_IF_ERROR(ValidateIsFloatingPoint(self, "input"));
+  TT_RET_CHECK(p >= 0, error::kInvalidArgument)
+      << "expected the p value to be >= 0, got " << p;
+  TT_RET_CHECK(self.dim() == 2, error::kInvalidArgument)
+      << "expected the input to be a 2-D tensor, got " << self.dim() << "-D";
+  TT_RET_CHECK(self.is_contiguous(), error::kInvalidArgument)
+      << "expected the input to be contiguous, got non-contiguous";
+  return absl::OkStatus();
+}
+
 }  // namespace
 
 at::Tensor AtenCdistForward(const at::Tensor& x1, const at::Tensor& x2,
                             double p, std::optional<int64_t> compute_mode) {
   TT_KERNEL(OpName::kCdistForward, param_keys, (x1, x2, p, compute_mode), {
-    TT_ASSIGN_OR_THROW(auto out_dtype,
+    TT_ASSIGN_OR_THROW(const auto out_dtype,
                        ConvertTo<mlir::ElementType>(x1.scalar_type()));
 
-    TT_THROW_IF_ERROR(ValidateIsFloatingPoint(x1, "first argument's"));
-    TT_THROW_IF_ERROR(ValidateIsFloatingPoint(x2, "second argument's"));
-
-    TT_CHECK_THROW(p >= 0, error::kInvalidArgument)
-        << "expected the p value to be >= 0, got " << p;
+    TT_THROW_IF_ERROR(ValidateCdistCommonInputs(x1, x2, p));
 
     const int64_t mode = compute_mode.value_or(0);
+    TT_CHECK_THROW(mode >= 0 && mode <= 2, error::kInvalidArgument)
+        << "expected compute_mode to be 0, 1, or 2, got " << mode;
+
     const int64_t c = x1.size(-1);
     const int64_t r1 = x1.size(-2);
     const int64_t r2 = x2.size(-2);
 
-    Dimensions batch_tensor1(x1.sizes().begin(), x1.sizes().end() - 2);
-    Dimensions batch_tensor2(x2.sizes().begin(), x2.sizes().end() - 2);
-    TT_ASSIGN_OR_THROW(Dimensions common_batch_shape,
+    const Dimensions batch_tensor1(x1.sizes().begin(), x1.sizes().end() - 2);
+    const Dimensions batch_tensor2(x2.sizes().begin(), x2.sizes().end() - 2);
+    TT_ASSIGN_OR_THROW(const Dimensions common_batch_shape,
                        InferSize(batch_tensor1, batch_tensor2));
 
     // Output shape: (B_common..., R1, R2)
@@ -595,7 +623,7 @@ at::Tensor AtenCdistForward(const at::Tensor& x1, const at::Tensor& x2,
     output_shape.insert(output_shape.end(), {r1, r2});
 
     // If the output shape contains a 0 dimension, return an empty tensor
-    for (int64_t dim : output_shape) {
+    for (const int64_t dim : output_shape) {
       if (dim == 0) {
         TT_ASSIGN_OR_THROW(
             at::Tensor out,
@@ -608,6 +636,11 @@ at::Tensor AtenCdistForward(const at::Tensor& x1, const at::Tensor& x2,
     // because they are supported for empty tensors but not for non-empty ones.
     TT_THROW_IF_ERROR(ValidateNotBFloatOrHalf(x1, "first argument's"));
     TT_THROW_IF_ERROR(ValidateNotBFloatOrHalf(x2, "second argument's"));
+    TT_CHECK_THROW(x1.scalar_type() == x2.scalar_type(),
+                   error::kInvalidArgument)
+        << "expected the first and second arguments to have the same dtype, "
+           "got "
+        << ToString(x1.scalar_type()) << " and " << ToString(x2.scalar_type());
 
     auto op_builder = [p, mode, common_batch_shape, r1, r2,
                        c](FixedSizeSpan<mlir::MlirOp, 2> inputs)
@@ -632,29 +665,25 @@ at::Tensor AtenCdistBackward(const at::Tensor& grad, const at::Tensor& x1,
                              const at::Tensor& x2, double p,
                              const at::Tensor& cdist) {
   TT_KERNEL(OpName::kCdistBackward, param_keys, (grad, x1, x2, p, cdist), {
-    TT_ASSIGN_OR_THROW(auto out_dtype,
+    TT_ASSIGN_OR_THROW(const auto out_dtype,
                        ConvertTo<mlir::ElementType>(x1.scalar_type()));
 
-    TT_THROW_IF_ERROR(ValidateIsFloatingPoint(x1, "first argument's"));
-    TT_THROW_IF_ERROR(ValidateIsFloatingPoint(x2, "second argument's"));
+    TT_THROW_IF_ERROR(ValidateCdistCommonInputs(x1, x2, p));
     TT_THROW_IF_ERROR(ValidateIsFloatingPoint(grad, "gradient"));
     TT_THROW_IF_ERROR(ValidateIsFloatingPoint(cdist, "cdist"));
-
-    TT_CHECK_THROW(p >= 0, error::kInvalidArgument)
-        << "expected the p value to be >= 0, got " << p;
 
     const int64_t r1 = x1.size(-2);
     const int64_t c = x1.size(-1);
     const int64_t r2 = x2.size(-2);
-    Dimensions batch_tensor1(x1.sizes().begin(), x1.sizes().end() - 2);
-    Dimensions batch_tensor2(x2.sizes().begin(), x2.sizes().end() - 2);
-    TT_ASSIGN_OR_THROW(Dimensions common_batch_shape,
+    const Dimensions batch_tensor1(x1.sizes().begin(), x1.sizes().end() - 2);
+    const Dimensions batch_tensor2(x2.sizes().begin(), x2.sizes().end() - 2);
+    TT_ASSIGN_OR_THROW(const Dimensions common_batch_shape,
                        InferSize(batch_tensor1, batch_tensor2));
 
     Dimensions out_shape(common_batch_shape);
     out_shape.insert(out_shape.end(), {r1, c});
 
-    for (int64_t dim : out_shape) {
+    for (const int64_t dim : out_shape) {
       if (dim == 0) {
         TT_ASSIGN_OR_THROW(
             at::Tensor out,
@@ -665,6 +694,14 @@ at::Tensor AtenCdistBackward(const at::Tensor& grad, const at::Tensor& x1,
 
     TT_THROW_IF_ERROR(ValidateNotBFloatOrHalf(x1, "first argument's"));
     TT_THROW_IF_ERROR(ValidateNotBFloatOrHalf(x2, "second argument's"));
+    TT_CHECK_THROW(x1.scalar_type() == x2.scalar_type() &&
+                       x1.scalar_type() == grad.scalar_type() &&
+                       x1.scalar_type() == cdist.scalar_type(),
+                   error::kInvalidArgument)
+        << "expected grad, x1, x2, and cdist to have the same dtype, got "
+        << ToString(grad.scalar_type()) << ", " << ToString(x1.scalar_type())
+        << ", " << ToString(x2.scalar_type()) << ", and "
+        << ToString(cdist.scalar_type());
 
     auto op_builder = [p, common_batch_shape, r1, r2,
                        c](FixedSizeSpan<mlir::MlirOp, 4> inputs)
@@ -687,13 +724,15 @@ at::Tensor AtenCdistBackward(const at::Tensor& grad, const at::Tensor& x1,
 
 at::Tensor AtenPdistForward(const at::Tensor& self, double p) {
   TT_KERNEL(OpName::kPdistForward, param_keys, (self, p), {
-    TT_ASSIGN_OR_THROW(auto out_dtype,
+    TT_ASSIGN_OR_THROW(const auto out_dtype,
                        ConvertTo<mlir::ElementType>(self.scalar_type()));
+
+    TT_THROW_IF_ERROR(ValidatePdistCommonInputs(self, p));
 
     // If input has shape (n, m), output will have shape n(n-1)/2.
     const int64_t n = self.size(0);
     const int64_t num_pairs = n * (n - 1) / 2;
-    Dimensions output_shape = {num_pairs};
+    const Dimensions output_shape = {num_pairs};
 
     // If there are no pairs to compute the distance for, return an empty tensor
     if (num_pairs == 0) {
@@ -725,19 +764,18 @@ at::Tensor AtenPdistForward(const at::Tensor& self, double p) {
 at::Tensor AtenPdistBackward(const at::Tensor& grad, const at::Tensor& self,
                              double p, const at::Tensor& pdist) {
   TT_KERNEL(OpName::kPdistBackward, param_keys, (grad, self, p, pdist), {
-    TT_ASSIGN_OR_THROW(auto out_dtype,
+    TT_ASSIGN_OR_THROW(const auto out_dtype,
                        ConvertTo<mlir::ElementType>(self.scalar_type()));
 
-    TT_THROW_IF_ERROR(ValidateIsFloatingPoint(self, "input"));
+    TT_THROW_IF_ERROR(ValidatePdistCommonInputs(self, p));
     TT_THROW_IF_ERROR(ValidateIsFloatingPoint(grad, "gradient"));
     TT_THROW_IF_ERROR(ValidateIsFloatingPoint(pdist, "pdist"));
-
-    TT_CHECK_THROW(p >= 0, error::kInvalidArgument)
-        << "expected the p value to be >= 0, got " << p;
+    TT_CHECK_THROW(pdist.is_contiguous(), error::kInvalidArgument)
+        << "expected pdist to be contiguous, got non-contiguous";
 
     const int64_t n = self.size(0);
     const int64_t m = self.size(1);
-    Dimensions output_shape = {n, m};
+    const Dimensions output_shape = {n, m};
 
     // Handle empty inputs
     if (n <= 1 || m == 0) {
@@ -750,6 +788,12 @@ at::Tensor AtenPdistBackward(const at::Tensor& grad, const at::Tensor& self,
     TT_THROW_IF_ERROR(ValidateNotBFloatOrHalf(self, "input"));
     TT_THROW_IF_ERROR(ValidateNotBFloatOrHalf(grad, "gradient"));
     TT_THROW_IF_ERROR(ValidateNotBFloatOrHalf(pdist, "pdist"));
+    TT_CHECK_THROW(self.scalar_type() == grad.scalar_type() &&
+                       self.scalar_type() == pdist.scalar_type(),
+                   error::kInvalidArgument)
+        << "expected grad, input, and pdist to have the same dtype, got "
+        << ToString(grad.scalar_type()) << ", " << ToString(self.scalar_type())
+        << ", and " << ToString(pdist.scalar_type());
 
     auto op_builder = [p](FixedSizeSpan<mlir::MlirOp, 3> inputs)
         -> absl::StatusOr<mlir::MlirOp> {

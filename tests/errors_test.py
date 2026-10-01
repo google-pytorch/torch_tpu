@@ -4244,6 +4244,119 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       torch.ops.aten._pdist_backward(grad, self_tensor, 2.0, pdist)
 
+  def test_cdist_forward_invalid_inputs(self):
+    x1_1d = torch.ones(3, device=et.device())
+    x2_2d = torch.ones(2, 3, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""cdist_forward(): expected the first argument to be at least 2-D, got 1-D""",
+        gpu="""cdist only supports at least 2D tensors, X1 got: 1D""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.ops.aten._cdist_forward(x1_1d, x2_2d, 2.0, None)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""cdist_forward(): expected the second argument to be at least 2-D, got 1-D""",
+        gpu="""cdist only supports at least 2D tensors, X2 got: 1D""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.ops.aten._cdist_forward(x2_2d, x1_1d, 2.0, None)
+
+    x1_col3 = torch.ones(2, 3, device=et.device())
+    x2_col4 = torch.ones(2, 4, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""cdist_forward(): expected the first and second arguments to have the same number of columns, got 3 and 4""",
+        gpu="""X1 and X2 must have the same number of columns. X1: 3 X2: 4""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.ops.aten._cdist_forward(x1_col3, x2_col4, 2.0, None)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""cdist_forward(): expected compute_mode to be 0, 1, or 2, got 99""",
+        gpu="""possible modes: 0, 1, 2, but was: 99""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.ops.aten._cdist_forward(x1_col3, x1_col3, 1.0, 99)
+
+    x2_f64 = torch.ones(2, 3, dtype=torch.float64, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""cdist_forward(): expected the first and second arguments to have the same dtype, got float32 and float64""",
+        gpu="""expected scalar type Float but found Double""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.cdist(x1_col3, x2_f64, p=1.0)
+
+  def test_cdist_backward_mismatched_dtype(self):
+    grad = torch.ones(2, 2, dtype=torch.float32, device=et.device())
+    x1 = torch.ones(2, 2, dtype=torch.float32, device=et.device())
+    x2 = torch.ones(2, 2, dtype=torch.float64, device=et.device())
+    cdist = torch.ones(2, 2, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""cdist_backward(): expected grad, x1, x2, and cdist to have the same dtype, got float32, float32, float64, and float32""",
+        gpu="""expected scalar type Float but found Double""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.ops.aten._cdist_backward(grad, x1, x2, 1.0, cdist)
+
+  def test_pdist_forward_invalid_inputs(self):
+    inp_int = torch.ones(3, 3, dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""pdist_forward(): expected the input dtype to be floating point, got int32""",
+        gpu=""""pdist_cuda" not implemented for 'Int'""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.ops.aten._pdist_forward(inp_int, 2.0)
+
+    inp_non_contig = torch.ones(
+        3, 4, dtype=torch.float32, device=et.device()
+    ).t()
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""pdist_forward(): expected the input to be contiguous, got non-contiguous""",
+        gpu="""_pdist_forward requires contiguous input""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.ops.aten._pdist_forward(inp_non_contig, 2.0)
+
+  def test_pdist_backward_invalid_inputs(self):
+    grad = torch.ones(3, dtype=torch.float32, device=et.device())
+    self_tensor = torch.ones(3, 4, dtype=torch.float32, device=et.device())
+    pdist = torch.ones(3, dtype=torch.float32, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""pdist_backward(): expected the input to be contiguous, got non-contiguous""",
+        gpu="""_pdist_backward requires self to be contiguous""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.ops.aten._pdist_backward(grad, self_tensor.t(), 2.0, pdist)
+
+    pdist_non_contig = torch.ones(6, dtype=torch.float32, device=et.device())[
+        ::2
+    ]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""pdist_backward(): expected pdist to be contiguous, got non-contiguous""",
+        gpu="""_pdist_backward requires pdist to be contiguous""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.ops.aten._pdist_backward(grad, self_tensor, 2.0, pdist_non_contig)
+
+    grad_f64 = torch.ones(3, dtype=torch.float64, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""pdist_backward(): expected grad, input, and pdist to have the same dtype, got float64, float32, and float32""",
+        gpu="""expected scalar type Float but found Double""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.ops.aten._pdist_backward(grad_f64, self_tensor, 2.0, pdist)
+
   # TODO(lwh): fix this test once G3 pytorch version is updated
   @unittest.skip("Disabled due to pytorch version mismatch")
   def test_replication_pad_backward(self):
