@@ -82,7 +82,7 @@ constexpr std::array<std::string_view, 3> kAllowedStartingWords{"TorchTPU",
                                                                 "PjRt", "XLA"};
 
 // Helper to check if a message starts with any of the allowed words.
-bool StartsWithAllowedWord(const std::string_view message) {
+[[nodiscard]] bool StartsWithAllowedWord(const std::string_view message) {
   return absl::c_any_of(
       kAllowedStartingWords,
       [&](const std::string_view word) { return message.starts_with(word); });
@@ -140,6 +140,7 @@ constexpr std::array<TypeNamePair, 19> type_name_pairs{{
     {.torch = "float64", .stablehlo = "f64"},
 }};
 
+// Default message for checks' pre-condition violations.
 constexpr std::string_view kPreconditionViolatedError =
     "Error message check pre-condition violated.";
 
@@ -297,6 +298,7 @@ absl::Status EndsWithAlphaNumAndAllowedCharacters(
 
 // Check: if it states the expected condition first, then it should state what
 // is wrong afterwards.
+//
 // Pre-conditions: The error message must not be empty.
 //
 // This function is composed of 2 steps:
@@ -304,7 +306,7 @@ absl::Status EndsWithAlphaNumAndAllowedCharacters(
 //     1. Identify whether the error message states the expected condition or
 //        actual value. We do that by looking for the presence of the following
 //        words:
-//         - "expected ..."
+//         - "... expected ..."
 //         - "..., got ..." (or ". Got")
 //         - "..., but got ..." (or ". But got")
 //
@@ -317,7 +319,7 @@ absl::Status HasValidFormat(const std::string_view message) {
 
   static LazyRE2 kExpectedConditionOrActualValuePattern = {
       R"((.*\bexpected\b.*|.*[.,]\s*\b(?i:got|but got)\b.*))"};
-  static LazyRE2 kExpectedGotPattern = {R"(.*\bexpected\b.*, got\b.*)"};
+  static LazyRE2 kExpectedGotPattern = {R"(^expected\b.*, got\b.*)"};
 
   if (RE2::FullMatch(message, *kExpectedConditionOrActualValuePattern)) {
     TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Error message checks crash and are
@@ -341,24 +343,11 @@ absl::Status HasValidFormat(const std::string_view message) {
 //     - "int64" vs. "si64"
 //     - "bool" vs. "pred"
 //     - "bfloat16" vs. "bf16".
-//
-// Exception: XLA errors.
-//   XLA errors are not checked. In order to do this, we look for the sentinel
-//   kXlaCompilerFailedWith, and ignore everything after it.
-absl::Status DoesNotContainStableHloTypeName(std::string_view message,
+absl::Status DoesNotContainStableHloTypeName(const std::string_view message,
                                              const TypeNamePair& pair) {
   ABSL_CHECK(  // CRASH_OK
       !message.empty())
       << kPreconditionViolatedError;
-
-  // Find the XLA compiler error sentinel string position.
-  //
-  // If it's found, update the message being checked, so that it ignores
-  // whatever comes after it.
-  const size_t pos = message.find(kXlaCompilerFailedWith);
-  if (pos != std::string_view::npos) {
-    message = message.substr(0, pos);
-  }
 
   const std::string type_name_regex =
       absl::StrCat("\\b", pair.stablehlo, "\\b");
@@ -420,6 +409,97 @@ absl::Status HasNoSpacesSurroundingSentinel(const std::string_view message) {
   return absl::OkStatus();
 }
 
+// Returns whether `message` has whitespace at the start, at the end, or at
+// both ends.
+//
+// Pre-conditions:
+//   - `message` must not be empty.
+//
+// Examples:
+//   HasSurroundingWhitespaces(" foo")  -> true  (leading whitespace)
+//   HasSurroundingWhitespaces("foo ")  -> true  (trailing whitespace)
+//   HasSurroundingWhitespaces(" foo ") -> true  (leading and trailing)
+//   HasSurroundingWhitespaces("foo")   -> false (trimmed)
+//   HasSurroundingWhitespaces("f oo")  -> false (internal whitespace only)
+[[nodiscard]] bool HasSurroundingWhitespaces(const std::string_view message) {
+  ABSL_CHECK(!message.empty())  // CRASH_OK
+      << kPreconditionViolatedError;
+
+  return absl::ascii_isspace(message.front()) ||
+         absl::ascii_isspace(message.back());
+}
+
+// Result of splitting an error message after leading context prefixes.
+struct ContextPrefixSplit {
+  std::optional<std::string_view> context_prefix;
+  std::string_view remaining;
+};
+
+// Splits an error message after any leading context prefixes.
+//
+// Identifies leading context prefixes of the form "failed to ...: " and splits
+// the message after the last prefix.
+//
+// Returns:
+//   A ContextPrefixSplit, where:
+//     - context_prefix: The last matched context prefix (e.g.,
+//       "failed to materialize: "), or std::nullopt if no prefix is present.
+//     - remaining: The substring of `message` after all context prefixes.
+[[nodiscard]] ContextPrefixSplit SplitAfterContextPrefixes(
+    const std::string_view message) {
+  // Matches any string and splits it into two parts: zero or more leading
+  // context prefixes of the form "failed to ...: ", and the remaining message.
+  static const LazyRE2 kMaybeContextPrefixPattern = {
+      R"(^(failed to .*?: )*(?s:(.*)))"};
+
+  std::optional<std::string_view> context_prefix;
+  std::string_view remaining;
+
+  ABSL_CHECK(  // CRASH_OK=Full match should always work, since we can always
+               // fallback to '.*'.
+      RE2::FullMatch(message, *kMaybeContextPrefixPattern, &context_prefix,
+                     &remaining))
+      << "Could not match regex for detecting context prefixes '"
+      << kMaybeContextPrefixPattern->pattern()
+      << "' against message: " << message;
+
+  return {context_prefix, remaining};
+}
+
+// Returns whether `message` starts with a context prefix.
+[[nodiscard]] bool StartsWithContextPrefix(const std::string_view message) {
+  return SplitAfterContextPrefixes(message).context_prefix.has_value();
+}
+
+// Removes all context prefixes from an error message.
+//
+// Strips all leading context prefixes of the form "failed to ...: " from the
+// error message.
+//
+// Returns:
+//   The substring of `message` after all leading context prefixes, or `message`
+//   unchanged if no context prefixes are present.
+[[nodiscard]] std::string_view RemoveAllContextPrefixes(
+    const std::string_view message) {
+  return SplitAfterContextPrefixes(message).remaining;
+}
+
+// Returns whether `message` contains an XLA compiler error by looking for the
+// sentinel string `kXlaCompilerFailedWith`.
+[[nodiscard]] bool HasXlaCompilerError(const std::string_view message) {
+  return absl::StrContains(message, kXlaCompilerFailedWith);
+}
+
+// Strips the XLA compiler error sentinel and anything after it.
+//
+// Returns the substring before `kXlaCompilerFailedWith`, or the original
+// message if the sentinel is not present.
+[[nodiscard]] std::string_view RemoveXlaCompilerError(
+    const std::string_view message) {
+  const size_t pos = message.find(kXlaCompilerFailedWith);
+  return pos != std::string_view::npos ? message.substr(0, pos) : message;
+}
+
 // Enum specifying whether a check should be enforced or logged as warning.
 //
 // Checks marked as kWarn that fail are logged as warning messages. Enforced
@@ -438,77 +518,223 @@ struct ErrorMessageChecksResult {
   std::vector<std::string> failure_reasons;
 };
 
-// Calls all checks, and returns their failure reasons, if any has failed. If
-// there are no check failures, return a default constructed
-// `ErrorMessageChecksResult{}`.
-ErrorMessageChecksResult GetErrorMessageChecksResult(
-    const std::string_view message) {
-  ErrorMessageChecksResult result;
+// Populates the given `ErrorMessageChecksResult` if the given `status` is an
+// error status.
+//
+// Does nothing if `status` is not an error status.
+// Otherwise, propagate its error by setting the `result` appropriately.
+//
+// Before appending the error status to the list of failures of `r`, we prepend:
+//   - The Enforced Prefix: only if this check is being enforced.
+//   - The given `context`: e.g. specifying the group this check belonged to.
+//
+// Returns whether `r` was modified or not, i.e. status is an error status.
+bool PopulateResultIfError(ErrorMessageChecksResult& r,
+                           const absl::Status& status, const CheckKind kind,
+                           const std::string_view context = "") {
+  constexpr std::string_view kEnforcedPrefix = "(enforced) ";
 
-  // Handles the result of an error message check.
-  //
-  // Does nothing if the check was successful.
-  // Otherwise, propagate its status by setting the `result` appropriately.
-  const auto handle_check = [&result](
-                                const absl::Status& status,
-                                const CheckKind kind = CheckKind::kEnforce) {
-    constexpr std::string_view kEnforcedPrefix = "(enforced)";
+  if (!status.ok()) {
+    const bool should_enforce_check = kind == CheckKind::kEnforce;
 
-    if (!status.ok()) {
-      const bool should_enforce_check = kind == CheckKind::kEnforce;
+    // Given that this check has failed, set `success` depending on the value
+    // of `should_enforce_check`:
+    //
+    //   - If it's `false` (i.e. should NOT be enforced), `success` should not
+    //     change
+    //
+    //   - Otherwise, `success` should be false
+    r.success = r.success && !should_enforce_check;
 
-      // Given that this check has failed, set `success` depending on the value
-      // of `should_enforce_check`:
-      //
-      //   - If it's `false` (i.e. should NOT be enforced), `success` should not
-      //     change
-      //
-      //   - Otherwise, `success` should be false
-      result.success = result.success && !should_enforce_check;
+    const std::string_view enforced_prefix =
+        should_enforce_check ? kEnforcedPrefix : "";
 
-      if (should_enforce_check) {
-        result.failure_reasons.push_back(
-            absl::StrCat(kEnforcedPrefix, " ", status.message()));
-      } else {
-        result.failure_reasons.push_back(std::string(status.message()));
-      }
-    }
-  };
-
-  // In order to enforce vs. warn on a check, change the second argument of the
-  // `handle_check`.
-
-  const absl::Status status_not_empty = TrimmedErrorMessageIsNotEmpty(message);
-  handle_check(status_not_empty, CheckKind::kEnforce);
-
-  if (!status_not_empty.ok()) {
-    return result;
+    r.failure_reasons.push_back(
+        absl::StrCat(enforced_prefix, context, status.message()));
   }
 
-  handle_check(HasNoLeadingWhitespace(message), CheckKind::kEnforce);
-  handle_check(HasNoTrailingWhitespace(message), CheckKind::kEnforce);
-  handle_check(HasNoSpacesSurroundingSentinel(message), CheckKind::kEnforce);
-  handle_check(HasValidFormat(message), CheckKind::kEnforce);
+  return !status.ok();
+}
+
+// Trims whitespace from the error message and checks whitespace guidelines.
+//
+// Performs the following checks and appends any violation status to `r`:
+//   - Trimmed error message is not empty.
+//   - Error message has no leading whitespace.
+//   - Error message has no trailing whitespace.
+//
+// The leading and trailing whitespace checks are only run if the trimmed
+// message is not empty.
+//
+// Returns the trimmed message if non-empty; otherwise returns `std::nullopt`.
+[[nodiscard]] std::optional<std::string_view> TrimAndCheckMessage(
+    ErrorMessageChecksResult& r, const std::string_view message,
+    const std::string_view context = "") {
+  const bool is_trimmed_error_empty = PopulateResultIfError(
+      r, TrimmedErrorMessageIsNotEmpty(message), CheckKind::kEnforce, context);
+
+  if (is_trimmed_error_empty) {
+    return std::nullopt;
+  }
+
+  PopulateResultIfError(r, HasNoLeadingWhitespace(message), CheckKind::kEnforce,
+                        context);
+  PopulateResultIfError(r, HasNoTrailingWhitespace(message),
+                        CheckKind::kEnforce, context);
+
+  return absl::StripAsciiWhitespace(message);
+}
+
+// Runs checks on the entire error message.
+//
+// Pre-conditions:
+//   - The error message should be trimmed (i.e. no surrounding whitespace).
+//
+// Populates `r` on any check failure.
+void CheckFullMessage(ErrorMessageChecksResult& r,
+                      const std::string_view message) {
+  ABSL_CHECK(!HasSurroundingWhitespaces(message))  // CRASH_OK
+      << kPreconditionViolatedError;
+
+  PopulateResultIfError(r, EndsWithAlphaNumAndAllowedCharacters(message),
+                        CheckKind::kEnforce);
+  PopulateResultIfError(r, HasNoSpacesSurroundingSentinel(message),
+                        CheckKind::kEnforce);
+}
+
+// Runs checks on the error message without any XLA compiler error.
+//
+// Pre-conditions:
+//   - The error message should be trimmed (i.e. no surrounding whitespace).
+//   - The XLA compiler error message has been removed.
+//
+// This function applies TorchTPU error guidelines on errors that we control.
+// That is the reason for running them only after the XLA compiler error is
+// removed.
+//
+// Populates `r` on any check failure.
+void CheckMessageWithoutXlaCompilerError(ErrorMessageChecksResult& r,
+                                         const std::string_view message,
+                                         const std::string_view context) {
+  ABSL_CHECK(!HasSurroundingWhitespaces(message))  // CRASH_OK
+      << kPreconditionViolatedError;
+  ABSL_CHECK(!HasXlaCompilerError(message))  // CRASH_OK
+      << kPreconditionViolatedError;
 
   for (const auto& pair : type_name_pairs) {
-    handle_check(DoesNotContainStableHloTypeName(message, pair),
-                 CheckKind::kEnforce);
+    // Error messages coming from the OpenXLA project might contain StableHLO
+    // type names, but we don't have control over it.
+    PopulateResultIfError(r, DoesNotContainStableHloTypeName(message, pair),
+                          CheckKind::kEnforce, context);
+  }
+}
+
+// Checks the TorchTPU core error message formatting guidelines.
+//
+// Pre-conditions:
+//   - The error message should be trimmed (no leading/trailing whitespace).
+//   - The XLA compiler error message has been removed.
+//   - Context prefixes ("failed to ...: ") should already be stripped.
+//
+// This function applies TorchTPU error guidelines on the core error message,
+// after removing external errors and context prefixes.
+//
+// Populates `r` on any check failure.
+void CheckTorchTpuCoreMessage(ErrorMessageChecksResult& r,
+                              const std::string_view message,
+                              const std::string_view context) {
+  ABSL_CHECK(!HasSurroundingWhitespaces(message))  // CRASH_OK
+      << kPreconditionViolatedError;
+  ABSL_CHECK(!HasXlaCompilerError(message))  // CRASH_OK
+      << kPreconditionViolatedError;
+  ABSL_CHECK(!StartsWithContextPrefix(message))  // CRASH_OK
+      << kPreconditionViolatedError;
+
+  // Makes sure the error message after the context prefixes doesn't start with
+  // an upper case letter.
+  //
+  // Example:
+  //   failed to materialize: Expected tensor to be a 1D tensor, got 2D
+  //                          |
+  //                          |__ upper case letter not allowed.
+  PopulateResultIfError(r, StartsWithNonUppercaseLetter(message),
+                        CheckKind::kEnforce, context);
+
+  // Only relevant on TorchTPU error messages.
+  // - False positives might come from XLA compiler errors.
+  // - Context prefixes should be removed so that we can enforce that it starts
+  //   with `expected` if applicable.
+  PopulateResultIfError(r, HasValidFormat(message), CheckKind::kEnforce,
+                        context);
+}
+
+// Runs all checks, and returns their failure reasons.
+//
+// This function splits the error message checks into 3 groups, depending on
+// their needed scope:
+//   1. Full Error Message
+//   2. No XLA Compiler Error Message: (1), but without the XLA compiler error.
+//   3. TorchTPU Core Error Message: (2), but without the context prefixes.
+//
+// Returns the collected failures, or a default constructed
+// `ErrorMessageChecksResult{}` if there are no check failures.
+[[nodiscard]] ErrorMessageChecksResult GetErrorMessageChecksResult(
+    const std::string_view message) {
+  ErrorMessageChecksResult r;
+
+  constexpr std::string_view kNoXlaErrorContext =
+      "After removing the XLA compiler error: ";
+  constexpr std::string_view kTorchTpuCoreContext =
+      "On TorchTPU core error message: ";
+
+  // Trimmed error message.
+  //
+  // It's reset at the start of each group, where the current error message gets
+  // updated and trimmed with a call to `TrimAndCheckMessage()`.
+  //
+  // If `nullopt` gets assigned to variable `trimmed`, it means that the
+  // processed error message is empty after trimming. Meaning that we should
+  // stop running the checks.
+  std::optional<std::string_view> trimmed;
+
+  // Full Error Message
+  // Following checks assume there are no leading or trailing whitespaces.
+  trimmed = TrimAndCheckMessage(r, message);
+
+  if (!trimmed.has_value()) {
+    return r;
   }
 
-  // The subsequent checks require, as pre-condition, the message to be trimmed.
-  const std::string_view trimmed_message = absl::StripAsciiWhitespace(message);
+  CheckFullMessage(r, *trimmed);
 
-  handle_check(EndsWithAlphaNumAndAllowedCharacters(trimmed_message),
-               CheckKind::kEnforce);
-  handle_check(StartsWithNonUppercaseLetter(trimmed_message),
-               CheckKind::kEnforce);
+  // No XLA Compiler Error Message
+  // Following checks assume that there is no XLA compiler error.
+  trimmed = TrimAndCheckMessage(r, RemoveXlaCompilerError(*trimmed),
+                                kNoXlaErrorContext);
 
-  return result;
+  if (!trimmed.has_value()) {
+    return r;
+  }
+
+  CheckMessageWithoutXlaCompilerError(r, *trimmed, kNoXlaErrorContext);
+
+  // TorchTPU Core Error Message
+  // Following checks assume that there are no context prefixes.
+  trimmed = TrimAndCheckMessage(r, RemoveAllContextPrefixes(*trimmed),
+                                kTorchTpuCoreContext);
+
+  if (!trimmed.has_value()) {
+    return r;
+  }
+
+  CheckTorchTpuCoreMessage(r, *trimmed, kTorchTpuCoreContext);
+
+  return r;
 }
 
 // Formats a detailed log message explaining guideline violations.
-std::string GetLogMessage(const TtError& error,
-                          const std::vector<std::string>& failure_reasons) {
+[[nodiscard]] std::string GetLogMessage(
+    const TtError& error, const std::vector<std::string>& failure_reasons) {
   const auto& source = error.thrown_from();
 
   return absl::StrCat(

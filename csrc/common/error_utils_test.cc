@@ -32,11 +32,7 @@
 #include <utility>
 #include <vector>
 
-#include "absl/base/log_severity.h"
 #include "absl/log/absl_check.h"
-#include "absl/log/log_entry.h"
-#include "absl/log/log_sink.h"
-#include "absl/log/log_sink_registry.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
@@ -1546,6 +1542,10 @@ void ThrowWithMessage(const std::string_view message) {
 TEST(ErrorMessageGuidelinesDeathTest, LeadingWhitespace) {
   EXPECT_DEATH(ThrowWithMessage("  dimension size negative"),
                HasSubstr("start with whitespace"));
+  // After context prefix.
+  EXPECT_DEATH(
+      ThrowWithMessage("failed to materialize:  dimension size negative"),
+      HasSubstr("should not start with whitespace"));
 }
 
 TEST(ErrorMessageGuidelinesDeathTest, TrailingWhitespace) {
@@ -1560,6 +1560,10 @@ TEST(ErrorMessageGuidelinesDeathTest, MessageContainsOnlyWhitespace) {
 TEST(ErrorMessageGuidelinesDeathTest, StartsWithUppercaseLetter) {
   EXPECT_DEATH(ThrowWithMessage("Dimension size negative"),
                HasSubstr("start with a lowercase character"));
+  // After context prefix.
+  EXPECT_DEATH(
+      ThrowWithMessage("failed to materialize: Dimension size negative"),
+      HasSubstr("start with a lowercase character"));
 }
 
 TEST(ErrorMessageGuidelinesDeathTest, NoSpaceSurroundingXlaErrorSentinel) {
@@ -1576,42 +1580,49 @@ TEST(ErrorMessageGuidelinesDeathTest, NoSpaceSurroundingXlaErrorSentinel) {
 TEST(ErrorMessageGuidelinesDeathTest, ContainsStableHloTypeName) {
   EXPECT_DEATH(ThrowWithMessage("unsupported type f32"),
                HasSubstr("StableHLO type names"));
+  // On context prefix.
+  EXPECT_DEATH(ThrowWithMessage("failed to copy f32[5] tensor: expected input "
+                                "tensor of shape [1, 5], got [5]"),
+               HasSubstr("StableHLO type names"));
 }
-
-struct TestLogSink : public absl::LogSink {
-  void Send(const absl::LogEntry& entry) override {
-    if (entry.log_severity() == absl::LogSeverity::kWarning) {
-      warnings.push_back(std::string(entry.text_message()));
-    }
-  }
-
-  std::vector<std::string> warnings;
-};
-
-class ScopedLogSink {
- public:
-  explicit ScopedLogSink(absl::LogSink* sink) : sink_(sink) {
-    absl::AddLogSink(sink_);
-  }
-  ~ScopedLogSink() { absl::RemoveLogSink(sink_); }
-
- private:
-  absl::LogSink* sink_;
-};
 
 TEST(ErrorMessageGuidelinesDeathTest, NonAlphaNumTrailingChar) {
   EXPECT_DEATH(ThrowWithMessage("dimension size negative."),
                HasSubstr("end with either an alpha-numeric"));
-}
-
-TEST(ErrorMessageGuidelinesDeathTest, NonAlphaNumTrailingMultiChar) {
+  // Multiple non-alphanumeric characters.
   EXPECT_DEATH(ThrowWithMessage("dimension size negative..."),
                HasSubstr("end with either an alpha-numeric"));
 }
 
 TEST(ErrorMessageGuidelinesDeathTest, InvalidExpectedGotFormat) {
+  // Missing ", got" part.
   EXPECT_DEATH(ThrowWithMessage("expected a 3D tensor"),
                HasSubstr("expected ..., got ..."));
+  EXPECT_DEATH(ThrowWithMessage("failed to materialize: expected a 3D tensor"),
+               HasSubstr("expected ..., got ..."));
+
+  // Does not start with "expected".
+  EXPECT_DEATH(ThrowWithMessage("tensor was expected to be 3D, got 2D"),
+               HasSubstr("expected ..., got ..."));
+  EXPECT_DEATH(
+      ThrowWithMessage(
+          "failed to materialize: tensor was expected to be 3D, got 2D"),
+      HasSubstr("expected ..., got ..."));
+
+  // Contains "got" or "but got" without starting with "expected".
+  EXPECT_DEATH(ThrowWithMessage("must be 1D, got 2D tensor"),
+               HasSubstr("expected ..., got ..."));
+  EXPECT_DEATH(ThrowWithMessage("input size is 4, but got 2"),
+               HasSubstr("expected ..., got ..."));
+  EXPECT_DEATH(
+      ThrowWithMessage("failed to create tensor: input size is 4, but got 2"),
+      HasSubstr("expected ..., got ..."));
+}
+
+TEST(ErrorMessageGuidelinesDeathTest, MultipleViolationsIncludingEnforced) {
+  EXPECT_DEATH(ThrowWithMessage("Dimension size negative with f32"),
+               AllOf(HasSubstr("start with a lowercase"),
+                     HasSubstr("StableHLO type names")));
 }
 
 void ThrowWithContextForXlaError(const std::string_view context,
@@ -1629,40 +1640,57 @@ void ThrowWithContextForXlaError(const std::string_view context,
             });
 }
 
-TEST(ErrorMessageGuidelinesWarningTest, NoWarningAfterXlaErrorSentinel) {
-  TestLogSink sink;
-  ScopedLogSink scoped_sink(&sink);
-
+TEST(ErrorMessageGuidelinesPassTest, StableHloTypeNameOnXlaError) {
   EXPECT_THROW(ThrowWithContextForXlaError(
                    /* context= */ "the task has failed",
                    /* xla_error_message= */ "the dtype cannot be f32"),
                c10::Error);
-  EXPECT_TRUE(sink.warnings.empty());
 }
 
-TEST(ErrorMessageGuidelinesWarningTest, NoWarningOnValidFormat) {
-  TestLogSink sink;
-  ScopedLogSink scoped_sink(&sink);
-
+TEST(ErrorMessageGuidelinesPassTest, ExpectedGotFormat) {
   EXPECT_THROW(ThrowWithMessage("expected 3D tensor, got 2D"), c10::Error);
+  // Valid format after a single context prefix.
+  EXPECT_THROW(
+      ThrowWithMessage("failed to materialize: expected 3D tensor, got 2D"),
+      c10::Error);
 
-  EXPECT_TRUE(sink.warnings.empty());
+  // Valid format after multiple context prefixes.
+  EXPECT_THROW(
+      ThrowWithMessage(
+          "failed to materialize: failed to run executable: expected 3D "
+          "tensor, got 2D"),
+      c10::Error);
 }
 
-TEST(ErrorMessageGuidelinesWarningTest, NoWarningOnStartsWithNonLetter) {
-  TestLogSink sink;
-  ScopedLogSink scoped_sink(&sink);
-
+TEST(ErrorMessageGuidelinesPassTest, StartsWithNonLetter) {
   EXPECT_THROW(ThrowWithMessage("1D tensor is not supported"), c10::Error);
   EXPECT_THROW(ThrowWithMessage("-1 is not a valid dimension"), c10::Error);
-
-  EXPECT_TRUE(sink.warnings.empty());
 }
 
-TEST(ErrorMessageGuidelinesDeathTest, MultipleViolationsIncludingEnforced) {
-  EXPECT_DEATH(ThrowWithMessage("Dimension size negative with f32"),
-               AllOf(HasSubstr("start with a lowercase"),
-                     HasSubstr("StableHLO type names")));
+TEST(ErrorMessageGuidelinesPassTest, ArbitraryAllowedFormats) {
+  // Has 'must', but no 'got'.
+  EXPECT_THROW(ThrowWithMessage("the dtype must not be float32"), c10::Error);
+  EXPECT_THROW(ThrowWithMessage("PjRtClient must be initialized"), c10::Error);
+  // Starts with 'failed to', but no following ': '.
+  EXPECT_THROW(ThrowWithMessage("failed to compile MLIR module"), c10::Error);
+  EXPECT_THROW(ThrowWithMessage("failed to match label:Torch"), c10::Error);
+}
+
+TEST(ErrorMessageGuidelinesPassTest, MultilineErrorMessage) {
+  EXPECT_THROW(ThrowWithMessage("multiline error message\nwith a second line"),
+               c10::Error);
+  // Multiline message after a single context prefix.
+  EXPECT_THROW(
+      ThrowWithMessage(
+          "failed to materialize: multiline error message\nwith a second "
+          "line"),
+      c10::Error);
+  // Multiline message after multiple context prefixes.
+  EXPECT_THROW(
+      ThrowWithMessage(
+          "failed to materialize: failed to run executable: multiline error "
+          "message\nwith a second line"),
+      c10::Error);
 }
 
 #endif  // TT_CHECKS_ERROR_FORMAT
