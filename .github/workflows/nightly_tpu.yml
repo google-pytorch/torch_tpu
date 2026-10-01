@@ -92,6 +92,12 @@ jobs:
             python_version: "3.14",
             container: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:dddf008479144c57182b56a6d00bfc1f38f8f2ef206e2bc26ff6c0a401ded47e",  # Tag infrastructure-public-image-083516c6af6a (built 2026-10-13)
           },
+          {
+            runner: "linux-x86-ct5lp-224-8tpu",
+            config: "ci_tpu_v5_nightly",
+            python_version: "3.15",
+            container: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:dddf008479144c57182b56a6d00bfc1f38f8f2ef206e2bc26ff6c0a401ded47e",  # Tag infrastructure-public-image-083516c6af6a (built 2026-10-13)
+          },
         ]
     # Use self-hosted runners. For a Linux runner, a corresponding container image used for the
     # workflow is required.

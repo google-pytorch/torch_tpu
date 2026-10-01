@@ -64,7 +64,7 @@ jobs:
       cpu_versions: ${{ steps.set.outputs.cpu_versions }}
       tpu_versions: ${{ steps.set.outputs.tpu_versions }}
       default_python_version: "3.14"
-      latest_python_version: "3.14"
+      latest_python_version: "3.15"
       should_build: ${{ steps.check_diff.outputs.should_build }}
       is_release_branch: ${{ startsWith(github.base_ref, 'release/') || startsWith(github.ref_name, 'release/') }}
     steps:
@@ -96,8 +96,8 @@ jobs:
              [[ "${HAS_TPU_NIGHTLY_LABEL}" == "true" ]] || \
              [[ "${HAS_RUN_ALL_VERSIONS_LABEL}" == "true" ]] || \
              [[ "${HAS_POSTSUBMIT_LABEL}" == "true" ]]; then
-            CPU_VERS='["3.11", "3.12", "3.13", "3.14", "3.14t"]'
-            TPU_VERS='["3.11", "3.12", "3.13", "3.14", "3.14t"]'
+            CPU_VERS='["3.11", "3.12", "3.13", "3.14", "3.15", "3.14t", "3.15t"]'
+            TPU_VERS='["3.11", "3.12", "3.13", "3.14", "3.15", "3.14t", "3.15t"]'
           fi
           echo "cpu_versions=${CPU_VERS}" >> "$GITHUB_OUTPUT"
           echo "tpu_versions=${TPU_VERS}" >> "$GITHUB_OUTPUT"
