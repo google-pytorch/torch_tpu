@@ -25,8 +25,8 @@ set -exu -o history -o allexport
 
 echo "===> Starting Python wheel build in Kokoro..."
 
-# Prepare wheel version string with metadata date suffix (similar to GitHub)
-WHEEL_VERSION_EXTRAS="${WHEEL_VERSION_EXTRAS:-.dev$(date +%Y%m%d%H%M%S)}"
+# Prepare wheel version string with UTC metadata date suffix (similar to GitHub)
+WHEEL_VERSION_EXTRAS="${WHEEL_VERSION_EXTRAS:-.dev$(date -u +%Y%m%d%H%M%S)}"
 export WHEEL_VERSION_EXTRAS
 echo "WHEEL_VERSION_EXTRAS: ${WHEEL_VERSION_EXTRAS}"
 

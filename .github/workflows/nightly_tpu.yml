@@ -98,5 +98,19 @@ jobs:
           # shellcheck disable=SC2086
           bazel test --config=ci_tpu_nightly --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" ${TEST_TARGETS}
 
+  check_nightly_wheel:
+    name: "Verify nightly wheel freshness"
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:tpu-nightly')
+    runs-on: linux-x86-n4-16
+    container:
+      image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:30a9cf2ed330736957b3256dd3df69a13a556ae46626e9ad2ba205fa7a3c0051"  # Tag infrastructure-public-image-f0ac56f68949 (built 2026-09-21)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Check nightly wheel resolution and freshness
+        run: python3 ./ci/tools/check_nightly_wheel.py
+
 # TODO(b/558939987): consider re-enabling failure notifications
 # once OSS builds stabilize.
+

@@ -1,0 +1,175 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Unit tests for check_nightly_wheel.py."""
+
+import datetime
+import subprocess
+import unittest
+from unittest import mock
+
+from ci.tools import check_nightly_wheel
+
+
+class CheckNightlyWheelTest(unittest.TestCase):
+
+  def test_build_authenticated_index_url_injects_token(self):
+    url = check_nightly_wheel.build_authenticated_index_url(
+        "https://packages.example.org:8443/custom/simple/?prerelease=1",
+        "secret_token",
+    )
+    self.assertEqual(
+        url,
+        "https://oauth2accesstoken:secret_token@packages.example.org:8443/custom/simple/?prerelease=1",
+    )
+
+  def test_build_authenticated_index_url_preserves_existing_credentials(self):
+    existing = (
+        "https://oauth2accesstoken:existing@packages.example.org/custom/simple/"
+    )
+    url = check_nightly_wheel.build_authenticated_index_url(
+        existing, "new_token"
+    )
+    self.assertEqual(url, existing)
+
+  def test_build_authenticated_index_url_no_token(self):
+    raw = "https://packages.example.org/custom/simple/"
+    self.assertEqual(
+        check_nightly_wheel.build_authenticated_index_url(raw, None),
+        raw,
+    )
+
+  def test_parse_nightly_version_timestamp_valid(self):
+    dt = check_nightly_wheel.parse_nightly_version_timestamp(
+        "0.1.2.dev20261001100321"
+    )
+    self.assertEqual(
+        dt,
+        datetime.datetime(2026, 10, 1, 10, 3, 21, tzinfo=datetime.timezone.utc),
+    )
+
+  def test_parse_nightly_version_timestamp_rejects_local_release_version(self):
+    with self.assertRaisesRegex(ValueError, "not a nightly dev wheel"):
+      check_nightly_wheel.parse_nightly_version_timestamp(
+          "0.1.1+release.2026.9.22.20261001000231"
+      )
+
+  def test_parse_nightly_version_timestamp_rejects_final_release(self):
+    with self.assertRaises(ValueError):
+      check_nightly_wheel.parse_nightly_version_timestamp("0.1.2")
+
+  def test_compute_freshness_cutoff_afternoon_uses_midnight(self):
+    # At 18:00 UTC, midnight (00:00 UTC) is 18h ago and 8h ago is 10:00 UTC;
+    # the earlier of the two is midnight (00:00 UTC).
+    now = datetime.datetime(2026, 10, 1, 18, 0, 0, tzinfo=datetime.timezone.utc)
+    cutoff = check_nightly_wheel.compute_freshness_cutoff(now, max_age_hours=8)
+    self.assertEqual(
+        cutoff,
+        datetime.datetime(2026, 10, 1, 0, 0, 0, tzinfo=datetime.timezone.utc),
+    )
+
+  def test_compute_freshness_cutoff_early_morning_uses_eight_hours_ago(self):
+    # At 03:00 UTC, midnight (00:00 UTC) is 3h ago and 8h ago is 19:00 UTC the
+    # previous day; the earlier of the two is 8h ago (19:00 UTC yesterday).
+    now = datetime.datetime(2026, 10, 1, 3, 0, 0, tzinfo=datetime.timezone.utc)
+    cutoff = check_nightly_wheel.compute_freshness_cutoff(now, max_age_hours=8)
+    self.assertEqual(
+        cutoff,
+        datetime.datetime(2026, 9, 30, 19, 0, 0, tzinfo=datetime.timezone.utc),
+    )
+
+  def test_check_wheel_freshness_passes_same_day_over_eight_hours_old(self):
+    now = datetime.datetime(2026, 10, 1, 18, 0, 0, tzinfo=datetime.timezone.utc)
+    msg = check_nightly_wheel.check_wheel_freshness(
+        "0.1.2.dev20261001020000", now_utc=now, max_age_hours=8
+    )
+    self.assertIn("Resolved fresh nightly wheel", msg)
+
+  def test_check_wheel_freshness_passes_within_eight_hours_across_midnight(
+      self,
+  ):
+    now = datetime.datetime(2026, 10, 1, 2, 0, 0, tzinfo=datetime.timezone.utc)
+    msg = check_nightly_wheel.check_wheel_freshness(
+        "0.1.2.dev20260930200000", now_utc=now, max_age_hours=8
+    )
+    self.assertIn("Resolved fresh nightly wheel", msg)
+
+  def test_check_wheel_freshness_fails_stale_wheel(self):
+    now = datetime.datetime(2026, 10, 1, 18, 0, 0, tzinfo=datetime.timezone.utc)
+    with self.assertRaisesRegex(ValueError, "is stale"):
+      check_nightly_wheel.check_wheel_freshness(
+          "0.1.2.dev20260930220000", now_utc=now, max_age_hours=8
+      )
+
+  def test_check_wheel_freshness_fails_malformed_version(self):
+    now = datetime.datetime(2026, 10, 1, 18, 0, 0, tzinfo=datetime.timezone.utc)
+    with self.assertRaisesRegex(ValueError, "not a nightly dev wheel"):
+      check_nightly_wheel.check_wheel_freshness(
+          "0.1.1+release.2026.9.22.20261001000231", now_utc=now, max_age_hours=8
+      )
+
+  def test_resolve_latest_wheel_version_parses_uv_output(self):
+    sample_stdout = (
+        "# This file was autogenerated by uv via the following command:\n"
+        "#    uv pip compile - --no-deps\n"
+        "torch-tpu==0.1.2.dev20261001100321\n"
+    )
+    completed = subprocess.CompletedProcess(
+        args=["uv"], returncode=0, stdout=sample_stdout, stderr=""
+    )
+    with mock.patch.object(subprocess, "run", return_value=completed):
+      version = check_nightly_wheel.resolve_latest_wheel_version(
+          "https://example.com/simple/"
+      )
+    self.assertEqual(version, "0.1.2.dev20261001100321")
+
+  def test_resolve_latest_wheel_version_redacts_token_on_error(self):
+    completed = subprocess.CompletedProcess(
+        args=["uv"],
+        returncode=1,
+        stdout="",
+        stderr=(
+            "error: Failed to fetch"
+            " https://oauth2accesstoken:super_secret_token@us-python.pkg.dev/simple/"
+        ),
+    )
+    with mock.patch.object(subprocess, "run", return_value=completed):
+      with self.assertRaises(RuntimeError) as ctx:
+        check_nightly_wheel.resolve_latest_wheel_version(
+            "https://oauth2accesstoken:super_secret_token@us-python.pkg.dev/simple/"
+        )
+    self.assertNotIn("super_secret_token", str(ctx.exception))
+    self.assertIn("oauth2accesstoken:***@us-python.pkg.dev", str(ctx.exception))
+
+  def test_main_cli_success_and_failure(self):
+    fresh_ts = datetime.datetime.now(datetime.timezone.utc).strftime(
+        "%Y%m%d%H%M%S"
+    )
+    with mock.patch.object(
+        check_nightly_wheel,
+        "resolve_latest_wheel_version",
+        return_value=f"0.1.2.dev{fresh_ts}",
+    ):
+      self.assertEqual(check_nightly_wheel.main(["--no-gcloud-auth"]), 0)
+
+    with mock.patch.object(
+        check_nightly_wheel,
+        "resolve_latest_wheel_version",
+        return_value="0.1.1+release.2026.9.22.20261001000231",
+    ):
+      self.assertEqual(check_nightly_wheel.main(["--no-gcloud-auth"]), 1)
+
+
+if __name__ == "__main__":
+  unittest.main()

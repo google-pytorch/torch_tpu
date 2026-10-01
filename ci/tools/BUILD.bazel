@@ -94,3 +94,17 @@ py_test(
         ":run_bazel_diff",
     ],
 )
+
+py_binary(
+    name = "check_nightly_wheel",
+    srcs = ["check_nightly_wheel.py"],
+)
+
+py_test(
+    name = "check_nightly_wheel_test",
+    size = "small",
+    srcs = ["check_nightly_wheel_test.py"],
+    deps = [
+        ":check_nightly_wheel",
+    ],
+)
