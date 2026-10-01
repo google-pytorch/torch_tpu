@@ -41,6 +41,12 @@ license(
 
 exports_files(["LICENSE"])
 
+# The list of public APIs, whose generated parts `tt_apis_test` checks.
+exports_files(
+    ["docs/markdown/public_apis.md"],
+    visibility = ["//src/torch_tpu/google/tools:__pkg__"],
+)
+
 py_dist_info(
     name = "torch_tpu_dist_info",
     package_name = "torch_tpu",

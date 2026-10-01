@@ -123,6 +123,10 @@ User-facing documentation should not mention internal APIs. It should describe
 experimental, stable, and deprecated APIs and make it clear which stage each of
 them is in.
 
+[TorchTPU Public APIs](../markdown/public_apis.md) lists all experimental,
+stable, and deprecated APIs. It's generated from the API stage annotations, and
+a test fails when it's out of date.
+
 ## References
 
 *   PyTorch Core's public API policy:

@@ -133,6 +133,7 @@ Some pointers to get you started:
 *   [PyTorch: Official PyTorch documentation](https://github.com/pytorch/pytorch)
 *   [Tutorials: easy to understand PyTorch code using TorchTPU](./examples/tutorials)
 *   [Examples: get you started with sample PyTorch models on TPU](./examples/README.md)
+*   [Public APIs: the TorchTPU APIs that you can use](./docs/markdown/public_apis.md)
 
 ## Dependencies
 
