@@ -208,18 +208,15 @@ _PUBLIC_MODULES: Mapping[str, ModuleSpec] = {
         doc="Public compiler API for TorchTPU (`torch.tpu.compiler`).",
     ),
     "torch.tpu.distributed": ModuleSpec(
-        doc="Public TorchTPU distributed namespace (`torch.tpu.distributed`).",
-    ),
-    "torch.tpu.distributed.environment": ModuleSpec(
         exports={
             # go/keep-sorted start
             "set_tpu_launch_env": (
-                "torch_tpu._internal.distributed.environment:set_tpu_launch_env"
+                "torch_tpu._internal.distributed.distributed:set_tpu_launch_env"
             ),
             # go/keep-sorted end
         },
-        main="torch_tpu._internal.distributed.environment",
-        doc="Public TorchTPU distributed environment utilities.",
+        main="torch_tpu._internal.distributed.distributed",
+        doc="Public TorchTPU distributed namespace (`torch.tpu.distributed`).",
     ),
     "torch.tpu.exceptions": ModuleSpec(
         exports={

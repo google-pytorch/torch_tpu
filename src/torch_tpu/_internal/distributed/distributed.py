@@ -28,9 +28,9 @@ and then gets out of the way, so it composes with `torchrun`, `elastic_launch`,
 `torch.multiprocessing.spawn`, or any other launcher:
 
 ```python
-from torch.tpu.distributed import environment
+from torch.tpu import distributed
 
-environment.set_tpu_launch_env(nproc_per_node=8)
+distributed.set_tpu_launch_env(nproc_per_node=8)
 torch.multiprocessing.spawn(user_fn, nprocs=8)
 ```
 
@@ -91,7 +91,7 @@ _CHIPS_PER_HOST: tuple[int, int, int] = (2, 2, 1)
 
 # Module to run with `python -m` in the child process. Spelled out, because
 # `__name__` is "__main__" when this module is itself run with `python -m`.
-_MODULE_NAME = "torch_tpu._internal.distributed.environment"
+_MODULE_NAME = "torch_tpu._internal.distributed.distributed"
 
 # Command-line flag that makes `python -m` of this module print the physical
 # coordinates of the local TPU device instead of the launch environment.
@@ -321,7 +321,7 @@ def _print_local_device_coords() -> None:
 
 
 @annotations.experimental(
-    "torch.tpu.distributed.environment.set_tpu_launch_env is experimental"
+    "torch.tpu.distributed.set_tpu_launch_env is experimental"
     " and subject to change."
 )
 def set_tpu_launch_env(

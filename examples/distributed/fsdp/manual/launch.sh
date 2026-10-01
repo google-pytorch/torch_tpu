@@ -16,7 +16,7 @@
 # A script to run the manual FSDP worker using standard torchrun.
 
 # Detect and export TPU configuration dynamically.
-eval $(python3 -m torch.tpu.distributed.environment)
+eval $(python3 -m torch.tpu.distributed)
 export TORCH_TPU_TOPOLOGY TORCH_TPU_SLICEBUILDER_ADDRESSES WORLD_SIZE
 
 python3 -m torch.distributed.run --nproc_per_node=$WORLD_SIZE ./manual_fsdp_worker.py

@@ -294,7 +294,7 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     self.assertEqual(mock_barrier.call_count, 1)
 
   @mock.patch.dict(os.environ, {"BENCHMARK_PLATFORM": "v7_2x2x2"})
-  @mock.patch.object(distributed_runner.environment, "set_tpu_launch_env")
+  @mock.patch.object(distributed_runner.distributed, "set_tpu_launch_env")
   @mock.patch.object(distributed_runner.distributed_utils, "dist_run")
   @mock.patch.object(distributed_runner, "resolve_benchmark_targets")
   def test_main_successful_dispatch(
@@ -321,7 +321,7 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     )
 
   @mock.patch.dict(os.environ, {"BENCHMARK_PLATFORM": "v7_2x2x1"})
-  @mock.patch.object(distributed_runner.environment, "set_tpu_launch_env")
+  @mock.patch.object(distributed_runner.distributed, "set_tpu_launch_env")
   @mock.patch.object(distributed_runner.distributed_utils, "dist_run")
   @mock.patch.object(distributed_runner, "resolve_benchmark_targets")
   def test_main_singlehost_tpu_prepares_environment(

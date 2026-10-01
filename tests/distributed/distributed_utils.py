@@ -20,7 +20,7 @@ from typing import Any, Callable
 from absl import logging
 import portpicker
 import torch.multiprocessing as mp
-from torch.tpu.distributed import environment  # pyrefly: ignore[missing-import]
+from torch.tpu import distributed  # pyrefly: ignore[missing-import]
 from torch_tpu._internal import env
 from torch_tpu._internal.utils import hardware
 from torch_tpu._internal.distributed import multiprocessing
@@ -108,7 +108,7 @@ def dist_run(
       hardware.get_tpu_device_count()
       or env.get_str_env_once("JOB_COMPLETION_INDEX") is not None
   ):
-    environment.set_tpu_launch_env(nproc_per_node=nproc_per_node)
+    distributed.set_tpu_launch_env(nproc_per_node=nproc_per_node)
 
   if base_seed is None:
     base_seed = seed_test_utils.RepeatableTest.choose_seed()

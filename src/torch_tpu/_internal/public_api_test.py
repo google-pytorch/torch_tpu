@@ -120,8 +120,7 @@ class PublicApiTest(absltest.TestCase):  # ABSLTEST_OK=pure Python; no RNG
             stages="fake_impl:__tt_api_stages__",
             doc="Fake TPU module.",
         ),
-        "fake_root.tpu.distributed": public_api.ModuleSpec(),
-        "fake_root.tpu.distributed.environment": public_api.ModuleSpec(
+        "fake_root.tpu.distributed": public_api.ModuleSpec(
             exports={"exported_fn": "fake_impl:exported_fn"},
             main=annotations.__name__,
         ),
@@ -201,9 +200,8 @@ class PublicApiTest(absltest.TestCase):  # ABSLTEST_OK=pure Python; no RNG
     ]
     self.assertEqual(tpu_mod.__all__, expected)
     self.assertEqual(dir(tpu_mod), expected)
-    self.assertEqual(dir(tpu_mod.distributed), ["environment"])
     self.assertEqual(
-        dir(tpu_mod.distributed.environment),
+        dir(tpu_mod.distributed),
         ["exported_fn"],
     )
 
@@ -241,32 +239,28 @@ class PublicApiTest(absltest.TestCase):  # ABSLTEST_OK=pure Python; no RNG
     self.assertIsNotNone(tpu_mod.__spec__)
     self.assertIs(tpu_mod.__tt_api_stages__, self.impl_mod.__tt_api_stages__)
 
-    self.assertNotIn("fake_root.tpu.distributed.environment", sys.modules)
+    self.assertNotIn("fake_root.tpu.distributed", sys.modules)
     get_module_details = getattr(runpy, "_get_module_details")
     with warnings.catch_warnings():
       warnings.simplefilter("error", RuntimeWarning)
-      _, mod_spec, code = get_module_details(
-          "fake_root.tpu.distributed.environment"
-      )
-    self.assertEqual(mod_spec.name, "fake_root.tpu.distributed.environment")
+      _, mod_spec, code = get_module_details("fake_root.tpu.distributed")
+    self.assertEqual(mod_spec.name, "fake_root.tpu.distributed")
     self.assertIsInstance(code, types.CodeType)
 
-    env_mod = importlib.import_module("fake_root.tpu.distributed.environment")
-    self.assertIs(env_mod, self.root_mod.tpu.distributed.environment)
-    self.assertEqual(env_mod.__package__, "fake_root.tpu.distributed")
-    self.assertIsNotNone(env_mod.__spec__)
-    self.assertIsNotNone(env_mod.__spec__.loader)
+    dist_mod = importlib.import_module("fake_root.tpu.distributed")
+    self.assertIs(dist_mod, self.root_mod.tpu.distributed)
+    self.assertEqual(dist_mod.__package__, "fake_root.tpu")
+    self.assertIsNotNone(dist_mod.__spec__)
+    self.assertIsNotNone(dist_mod.__spec__.loader)
     self.assertTrue(
-        env_mod.__spec__.loader.get_filename(
-            "fake_root.tpu.distributed.environment"
+        dist_mod.__spec__.loader.get_filename(
+            "fake_root.tpu.distributed"
         ).endswith("annotations.py")
     )
     self.assertIsNotNone(
-        env_mod.__spec__.loader.get_source(
-            "fake_root.tpu.distributed.environment"
-        )
+        dist_mod.__spec__.loader.get_source("fake_root.tpu.distributed")
     )
-    self.assertEqual(env_mod.exported_fn(), "ok")
+    self.assertEqual(dist_mod.exported_fn(), "ok")
 
     with self.assertRaises(ModuleNotFoundError):  # ASSERT_RAISES_OK=import
       importlib.import_module("fake_root.tpu.non_existent")

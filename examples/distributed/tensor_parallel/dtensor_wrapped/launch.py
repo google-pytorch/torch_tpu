@@ -16,13 +16,13 @@
 
 from torch.google import distributed as gdist
 import torch.multiprocessing as mp
-from torch.tpu.distributed import environment  # pyrefly: ignore[missing-import]
+from torch.tpu import distributed  # pyrefly: ignore[missing-import]
 from examples.distributed.tensor_parallel.dtensor_wrapped import dtp_worker
 from torch_tpu._internal.distributed import multiprocessing
 
 
 def main(_):
-  environment.set_tpu_launch_env()
+  distributed.set_tpu_launch_env()
   gdist.torchrun(dtp_worker.worker_fn, nproc_per_node=8)()
 
 

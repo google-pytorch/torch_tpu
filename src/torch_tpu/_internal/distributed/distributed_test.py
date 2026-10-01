@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests the unified `environment` module for single-host and multi-host."""
+"""Tests the unified `distributed` module for single-host and multi-host."""
 
 # pylint: disable=protected-access
 
@@ -24,10 +24,10 @@ import sys
 from unittest import mock
 
 from absl.testing import absltest
-from torch.tpu.distributed import environment  # pyrefly: ignore[missing-import]
+from torch.tpu import distributed  # pyrefly: ignore[missing-import]
 from torch_tpu._internal import env
 from torch_tpu._internal import env_utils
-from torch_tpu._internal.distributed import environment as internal_environment
+from torch_tpu._internal.distributed import distributed as internal_distributed
 from torch_tpu._internal.utils import hardware
 from tests import seed_test_utils
 
@@ -76,7 +76,7 @@ class EnvironmentTest(seed_test_utils.RepeatableTest):
           mock.patch.object(hardware, "get_tpu_topology", return_value="2x2x1"),
           mock.patch.object(hardware, "get_tpu_device_count", return_value=4),
       ):
-        environment.set_tpu_launch_env()
+        distributed.set_tpu_launch_env()
         self.assertEqual(os.environ.get("TORCH_TPU_TOPOLOGY"), "2x2x1")
         addresses = os.environ.get("TORCH_TPU_SLICEBUILDER_ADDRESSES", "")
         self.assertLen(addresses.split(","), 4)
@@ -90,7 +90,7 @@ class EnvironmentTest(seed_test_utils.RepeatableTest):
           mock.patch.object(hardware, "get_tpu_topology", return_value="2x2x2"),
           mock.patch.object(hardware, "get_tpu_device_count", return_value=8),
       ):
-        environment.set_tpu_launch_env()
+        distributed.set_tpu_launch_env()
         self.assertEqual(os.environ.get("TORCH_TPU_TOPOLOGY"), "2x2x2")
         self.assertIsNone(os.environ.get("NNODES"))
         addresses = os.environ.get("TORCH_TPU_SLICEBUILDER_ADDRESSES", "")
@@ -105,7 +105,7 @@ class EnvironmentTest(seed_test_utils.RepeatableTest):
     with _mock_env(
         {"TPU_WORKER_HOSTNAMES": "localhost", "JOB_COMPLETION_INDEX": "0"}
     ):
-      environment.set_tpu_launch_env(nproc_per_node=8)
+      distributed.set_tpu_launch_env(nproc_per_node=8)
       self.assertEqual(os.environ.get("NNODES"), "1")
       self.assertEqual(os.environ.get("NODE_RANK"), "0")
       self.assertEqual(os.environ.get("MASTER_ADDR"), "localhost")
@@ -120,7 +120,7 @@ class EnvironmentTest(seed_test_utils.RepeatableTest):
     with _mock_env(
         {"TPU_WORKER_HOSTNAMES": "host1,host2", "JOB_COMPLETION_INDEX": "0"}
     ):
-      environment.set_tpu_launch_env()
+      distributed.set_tpu_launch_env()
 
       addresses = os.environ.get("TORCH_TPU_SLICEBUILDER_ADDRESSES")
       self.assertIsNotNone(addresses)
@@ -139,7 +139,7 @@ class EnvironmentTest(seed_test_utils.RepeatableTest):
       ):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-          internal_environment._print_launch_env()
+          internal_distributed._print_launch_env()
         lines = dict(
             line.split("=", 1) for line in buf.getvalue().strip().splitlines()
         )
@@ -156,7 +156,7 @@ class EnvironmentTest(seed_test_utils.RepeatableTest):
       ):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-          internal_environment._print_launch_env()
+          internal_distributed._print_launch_env()
         self.assertIn('NODE_RANK="3"\n', buf.getvalue())
 
   def test_print_launch_env_multihost_with_coordinates(self):
@@ -173,7 +173,7 @@ class EnvironmentTest(seed_test_utils.RepeatableTest):
       ):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-          internal_environment._print_launch_env()
+          internal_distributed._print_launch_env()
       output = buf.getvalue()
       self.assertIn('TORCH_TPU_TOPOLOGY="4x4x4"\n', output)
       self.assertIn('NODE_RANK="1"\n', output)
@@ -187,30 +187,30 @@ class EnvironmentTest(seed_test_utils.RepeatableTest):
 class TopologyTest(seed_test_utils.RepeatableTest):
 
   def test_parse_topology(self):
-    self.assertEqual(internal_environment._parse_topology("4x4x4"), (4, 4, 4))
-    self.assertEqual(internal_environment._parse_topology("2,2,1"), (2, 2, 1))
-    self.assertEqual(internal_environment._parse_topology("2,2,1,2"), (2, 2, 1))
-    self.assertEqual(internal_environment._parse_topology("2x4"), (2, 4, 1))
-    self.assertEqual(internal_environment._parse_topology("2X4"), (2, 4, 1))
-    self.assertEqual(internal_environment._parse_topology("4"), (4, 1, 1))
+    self.assertEqual(internal_distributed._parse_topology("4x4x4"), (4, 4, 4))
+    self.assertEqual(internal_distributed._parse_topology("2,2,1"), (2, 2, 1))
+    self.assertEqual(internal_distributed._parse_topology("2,2,1,2"), (2, 2, 1))
+    self.assertEqual(internal_distributed._parse_topology("2x4"), (2, 4, 1))
+    self.assertEqual(internal_distributed._parse_topology("2X4"), (2, 4, 1))
+    self.assertEqual(internal_distributed._parse_topology("4"), (4, 1, 1))
 
   def test_get_slice_host_coordinates_1d(self):
     # 1D topology "4" -> (4, 1, 1), with (2, 2, 1) chips_per_host:
     # Bx = 4 // 2 = 2, By = 1, Bz = 1 -> 2 hosts along X.
-    hosts = internal_environment._get_slice_host_coordinates("4")
+    hosts = internal_distributed._get_slice_host_coordinates("4")
     self.assertEqual(hosts, [(0, 0, 0), (1, 0, 0)])
 
   def test_get_slice_host_coordinates_2d(self):
     # 2D topology "2x4" -> (2, 4, 1), with (2, 2, 1) chips_per_host:
     # Bx = 1, By = 2, Bz = 1 -> 2 hosts along Y.
-    hosts = internal_environment._get_slice_host_coordinates("2x4")
+    hosts = internal_distributed._get_slice_host_coordinates("2x4")
     self.assertEqual(hosts, [(0, 0, 0), (0, 1, 0)])
 
   def test_get_slice_host_coordinates_3d(self):
     # 3D topology "4x4x4" -> (4, 4, 4), with (2, 2, 1) chips_per_host:
     # Bx = 2, By = 2, Bz = 4 -> 16 hosts.
     # Sorted reverse-lexicographically: Z-major, Y-intermediate, X-minor.
-    hosts = internal_environment._get_slice_host_coordinates("4x4x4")
+    hosts = internal_distributed._get_slice_host_coordinates("4x4x4")
     self.assertLen(hosts, 16)
     expected = [
         (0, 0, 0),
@@ -234,17 +234,17 @@ class TopologyTest(seed_test_utils.RepeatableTest):
 
   def test_get_slice_host_coordinates_3d_single_host(self):
     # 3D topology "2,2,1" -> 1 host (0, 0, 0).
-    hosts = internal_environment._get_slice_host_coordinates("2,2,1")
+    hosts = internal_distributed._get_slice_host_coordinates("2,2,1")
     self.assertEqual(hosts, [(0, 0, 0)])
 
   def test_get_slice_host_coordinates_4d(self):
     # 4D topology "4,4,4,2" -> parsed to (4, 4, 4), 16 hosts.
-    hosts_4d = internal_environment._get_slice_host_coordinates("4,4,4,2")
-    hosts_3d = internal_environment._get_slice_host_coordinates("4x4x4")
+    hosts_4d = internal_distributed._get_slice_host_coordinates("4,4,4,2")
+    hosts_3d = internal_distributed._get_slice_host_coordinates("4x4x4")
     self.assertEqual(hosts_4d, hosts_3d)
 
     # 4D topology "2,2,1,2" -> parsed to (2, 2, 1), 1 host.
-    hosts_single = internal_environment._get_slice_host_coordinates("2,2,1,2")
+    hosts_single = internal_distributed._get_slice_host_coordinates("2,2,1,2")
     self.assertEqual(hosts_single, [(0, 0, 0)])
 
   def test_calculate_topological_node_rank_linearization_3d(self):
@@ -264,62 +264,62 @@ class TopologyTest(seed_test_utils.RepeatableTest):
     ]:
       with self.subTest(coords=coords):
         self.assertEqual(
-            internal_environment._calculate_topological_node_rank(coords, topo),
+            internal_distributed._calculate_topological_node_rank(coords, topo),
             expected_rank,
         )
 
   def test_calculate_topological_node_rank_various_topologies(self):
     self.assertEqual(
-        internal_environment._calculate_topological_node_rank(
+        internal_distributed._calculate_topological_node_rank(
             [0, 0, 0], "2,2,1"
         ),
         0,
     )
     self.assertEqual(
-        internal_environment._calculate_topological_node_rank(
+        internal_distributed._calculate_topological_node_rank(
             [1, 1, 0], "2,2,1"
         ),
         0,
     )
     self.assertEqual(
-        internal_environment._calculate_topological_node_rank(
+        internal_distributed._calculate_topological_node_rank(
             [2, 2, 0, 1], "4,4,4,2"
         ),
         3,
     )
     self.assertEqual(
-        internal_environment._calculate_topological_node_rank(
+        internal_distributed._calculate_topological_node_rank(
             [0, 2, 0], "2x4x1"
         ),
         1,
     )
     # Missing trailing coordinates default to 0.
     self.assertEqual(
-        internal_environment._calculate_topological_node_rank([2, 2], "4x4x4"),
+        internal_distributed._calculate_topological_node_rank([2, 2], "4x4x4"),
         3,
     )
 
   def test_calculate_topological_node_rank_fallback(self):
     self.assertEqual(
-        internal_environment._calculate_topological_node_rank(
+        internal_distributed._calculate_topological_node_rank(
             [], "4x4x4", fallback_index="2"
         ),
         2,
     )
     self.assertEqual(
-        internal_environment._calculate_topological_node_rank(
+        internal_distributed._calculate_topological_node_rank(
             None, "4x4x4", fallback_index=3
         ),
         3,
     )
     self.assertEqual(
-        internal_environment._calculate_topological_node_rank(
+        internal_distributed._calculate_topological_node_rank(
             [0, 0, 0], "", fallback_index="1"
         ),
         1,
     )
     self.assertEqual(
-        internal_environment._calculate_topological_node_rank(
+        internal_distributed._calculate_topological_node_rank(
             [0, 0, 0], None, fallback_index="1"
         ),
         1,
@@ -328,13 +328,13 @@ class TopologyTest(seed_test_utils.RepeatableTest):
   def test_calculate_topological_node_rank_out_of_bounds_fallback(self):
     # Chip coordinates out of bounds: host (5, 0, 0) does not exist in 4x4x4.
     self.assertEqual(
-        internal_environment._calculate_topological_node_rank(
+        internal_distributed._calculate_topological_node_rank(
             [10, 0, 0], "4x4x4", fallback_index="7"
         ),
         7,
     )
     self.assertEqual(
-        internal_environment._calculate_topological_node_rank(
+        internal_distributed._calculate_topological_node_rank(
             [10, 0, 0], "4x4x4", fallback_index=8
         ),
         8,
@@ -342,7 +342,7 @@ class TopologyTest(seed_test_utils.RepeatableTest):
 
     # Negative coordinates out of bounds
     self.assertEqual(
-        internal_environment._calculate_topological_node_rank(
+        internal_distributed._calculate_topological_node_rank(
             [-1, 0, 0], "4x4x4", fallback_index="4"
         ),
         4,
@@ -350,13 +350,13 @@ class TopologyTest(seed_test_utils.RepeatableTest):
 
   def test_calculate_topological_node_rank_invalid_topology_fallback(self):
     self.assertEqual(
-        internal_environment._calculate_topological_node_rank(
+        internal_distributed._calculate_topological_node_rank(
             [0, 0, 0], "4x4xfour", fallback_index="6"
         ),
         6,
     )
     self.assertEqual(
-        internal_environment._calculate_topological_node_rank(
+        internal_distributed._calculate_topological_node_rank(
             [0, 0, 0], ",", fallback_index="6"
         ),
         6,
@@ -380,7 +380,7 @@ class TopologicalNodeRankTest(seed_test_utils.RepeatableTest):
       with mock.patch.object(
           subprocess, "run", return_value=_coords_process([2, 0, 0])
       ):
-        environment.set_tpu_launch_env()
+        distributed.set_tpu_launch_env()
       self.assertEqual(os.environ.get("NODE_RANK"), "1")
 
   def test_set_tpu_launch_env_with_coordinates_and_no_job_completion_index(
@@ -393,7 +393,7 @@ class TopologicalNodeRankTest(seed_test_utils.RepeatableTest):
       with mock.patch.object(
           subprocess, "run", return_value=_coords_process([0, 2, 0])
       ):
-        environment.set_tpu_launch_env()
+        distributed.set_tpu_launch_env()
       self.assertEqual(os.environ.get("NODE_RANK"), "2")
 
   def test_set_tpu_launch_env_coordinate_lookup_failure_fallback(self):
@@ -407,7 +407,7 @@ class TopologicalNodeRankTest(seed_test_utils.RepeatableTest):
           "run",
           side_effect=subprocess.CalledProcessError(1, "python"),
       ):
-        environment.set_tpu_launch_env()
+        distributed.set_tpu_launch_env()
       self.assertEqual(os.environ.get("NODE_RANK"), "3")
 
   def test_set_tpu_launch_env_empty_coordinates_fallback(self):
@@ -419,7 +419,7 @@ class TopologicalNodeRankTest(seed_test_utils.RepeatableTest):
       with mock.patch.object(
           subprocess, "run", return_value=_coords_process([])
       ):
-        environment.set_tpu_launch_env()
+        distributed.set_tpu_launch_env()
       self.assertEqual(os.environ.get("NODE_RANK"), "3")
 
   def test_set_tpu_launch_env_out_of_bounds_coordinates_fallback(self):
@@ -431,7 +431,7 @@ class TopologicalNodeRankTest(seed_test_utils.RepeatableTest):
       with mock.patch.object(
           subprocess, "run", return_value=_coords_process([10, 0, 0])
       ):
-        environment.set_tpu_launch_env()
+        distributed.set_tpu_launch_env()
       self.assertEqual(os.environ.get("NODE_RANK"), "7")
 
   def test_set_tpu_launch_env_without_tpu_devices_skips_query(self):
@@ -444,7 +444,7 @@ class TopologicalNodeRankTest(seed_test_utils.RepeatableTest):
           mock.patch.object(hardware, "get_tpu_device_count", return_value=0),
           mock.patch.object(subprocess, "run") as run,
       ):
-        environment.set_tpu_launch_env()
+        distributed.set_tpu_launch_env()
       run.assert_not_called()
       self.assertEqual(os.environ.get("NODE_RANK"), "3")
 
@@ -454,7 +454,7 @@ class TopologicalNodeRankTest(seed_test_utils.RepeatableTest):
         "JOB_COMPLETION_INDEX": "3",
     }):
       with mock.patch.object(subprocess, "run") as run:
-        environment.set_tpu_launch_env()
+        distributed.set_tpu_launch_env()
       run.assert_not_called()
       self.assertEqual(os.environ.get("NODE_RANK"), "3")
 
@@ -471,7 +471,7 @@ class TopologicalNodeRankTest(seed_test_utils.RepeatableTest):
           ),
           mock.patch.object(subprocess, "run") as run,
       ):
-        environment.set_tpu_launch_env()
+        distributed.set_tpu_launch_env()
       run.assert_not_called()
       self.assertEqual(os.environ.get("NODE_RANK"), "1")
       self.assertEqual(os.environ.get("TORCH_TPU_TOPOLOGY"), "2,2,1,2")
@@ -483,7 +483,7 @@ class TopologicalNodeRankTest(seed_test_utils.RepeatableTest):
         "NODE_RANK": "1",
     }):
       with mock.patch.object(subprocess, "run") as run:
-        environment.set_tpu_launch_env()
+        distributed.set_tpu_launch_env()
       run.assert_not_called()
       self.assertEqual(os.environ.get("NODE_RANK"), "1")
 
@@ -495,7 +495,7 @@ class TopologicalNodeRankTest(seed_test_utils.RepeatableTest):
           mock.patch.object(hardware, "get_tpu_topology", return_value="2,2,1"),
           mock.patch.object(subprocess, "run") as run,
       ):
-        environment.set_tpu_launch_env()
+        distributed.set_tpu_launch_env()
       run.assert_not_called()
       self.assertIsNone(os.environ.get("NODE_RANK"))
 
@@ -514,7 +514,7 @@ class QueryLocalDeviceCoordsTest(seed_test_utils.RepeatableTest):
           mock.patch.object(hardware, "get_tpu_device_count", return_value=0),
           mock.patch.object(subprocess, "run") as run,
       ):
-        self.assertIsNone(internal_environment._query_local_device_coords())
+        self.assertIsNone(internal_distributed._query_local_device_coords())
       run.assert_not_called()
 
   def test_runs_this_module_in_child_process(self):
@@ -523,7 +523,7 @@ class QueryLocalDeviceCoordsTest(seed_test_utils.RepeatableTest):
           subprocess, "run", return_value=_coords_process([1, 2, 3, 0])
       ) as run:
         self.assertEqual(
-            internal_environment._query_local_device_coords(), [1, 2, 3, 0]
+            internal_distributed._query_local_device_coords(), [1, 2, 3, 0]
         )
       run.assert_called_once()
       (cmd,), kwargs = run.call_args
@@ -532,7 +532,7 @@ class QueryLocalDeviceCoordsTest(seed_test_utils.RepeatableTest):
           [
               sys.executable,
               "-m",
-              "torch_tpu._internal.distributed.environment",
+              "torch_tpu._internal.distributed.distributed",
               "--print_local_device_coords",
           ],
       )
@@ -555,7 +555,7 @@ class QueryLocalDeviceCoordsTest(seed_test_utils.RepeatableTest):
           ),
       ):
         self.assertEqual(
-            internal_environment._query_local_device_coords(), [2, 0, 1]
+            internal_distributed._query_local_device_coords(), [2, 0, 1]
         )
 
   def test_child_failure_returns_none(self):
@@ -567,7 +567,7 @@ class QueryLocalDeviceCoordsTest(seed_test_utils.RepeatableTest):
       with self.subTest(error=type(error).__name__):
         with _mock_env({}):
           with mock.patch.object(subprocess, "run", side_effect=error):
-            self.assertIsNone(internal_environment._query_local_device_coords())
+            self.assertIsNone(internal_distributed._query_local_device_coords())
 
   def test_missing_coordinates_line_returns_none(self):
     with _mock_env({}):
@@ -578,7 +578,7 @@ class QueryLocalDeviceCoordsTest(seed_test_utils.RepeatableTest):
               args=[], returncode=0, stdout="unrelated\n", stderr=""
           ),
       ):
-        self.assertIsNone(internal_environment._query_local_device_coords())
+        self.assertIsNone(internal_distributed._query_local_device_coords())
 
   def test_malformed_coordinates_line_returns_none(self):
     with _mock_env({}):
@@ -592,7 +592,7 @@ class QueryLocalDeviceCoordsTest(seed_test_utils.RepeatableTest):
               stderr="",
           ),
       ):
-        self.assertIsNone(internal_environment._query_local_device_coords())
+        self.assertIsNone(internal_distributed._query_local_device_coords())
 
   def test_print_local_device_coords(self):
     with mock.patch(
@@ -601,7 +601,7 @@ class QueryLocalDeviceCoordsTest(seed_test_utils.RepeatableTest):
     ):
       buf = io.StringIO()
       with contextlib.redirect_stdout(buf):
-        internal_environment._print_local_device_coords()
+        internal_distributed._print_local_device_coords()
     self.assertEqual(
         buf.getvalue(), "TORCH_TPU_LOCAL_DEVICE_COORDS=[2, 0, 1]\n"
     )

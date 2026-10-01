@@ -26,7 +26,7 @@ import torch_tpu
 from torch_tpu._internal import compiler_options as internal_compiler_options
 from torch_tpu._internal import exceptions as internal_exceptions
 from torch_tpu._internal import execution_mode as _internal_execution_mode
-from torch_tpu._internal.distributed.environment import (
+from torch_tpu._internal.distributed.distributed import (
     set_tpu_launch_env as internal_set_tpu_launch_env,
 )
 from torch_tpu._internal.pallas.pallas import (
@@ -161,64 +161,65 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
     ):
       _ = getattr(internal_pallas, "non_existent_attribute")
 
-  def test_distributed_environment_api_registry(self):
-    """Verifies public exposure, identity, metadata, and proxy behavior for distributed.environment."""
-    # 1. Verify python -m torch.tpu.distributed.environment resolves code cleanly
-    # without RuntimeWarning before the submodule is imported into sys.modules.
-    self.assertNotIn("torch.tpu.distributed.environment", sys.modules)
+  def test_distributed_api_registry(self):
+    """Verifies public exposure, identity, metadata, and proxy behavior for distributed."""
+    # 1. Verify python -m torch.tpu.distributed resolves code cleanly without
+    # RuntimeWarning before the submodule is imported into sys.modules.
+    self.assertNotIn("torch.tpu.distributed", sys.modules)
     with warnings.catch_warnings():
       warnings.simplefilter("error", RuntimeWarning)
-      _, mod_spec, code = runpy._get_module_details(
-          "torch.tpu.distributed.environment"
-      )
-    self.assertEqual(mod_spec.name, "torch.tpu.distributed.environment")
+      _, mod_spec, code = runpy._get_module_details("torch.tpu.distributed")
+    self.assertEqual(mod_spec.name, "torch.tpu.distributed")
     self.assertIsNotNone(code)
 
     # 2. Submodule import and symbol identity
-    env_mod = importlib.import_module("torch.tpu.distributed.environment")
-    from torch.tpu.distributed import environment as from_imported_env  # pylint: disable=g-import-not-at-top
+    dist_mod = importlib.import_module("torch.tpu.distributed")
+    from torch.tpu import distributed as from_imported_dist  # pylint: disable=g-import-not-at-top
 
-    self.assertIs(env_mod, torch.tpu.distributed.environment)
-    self.assertIs(from_imported_env, torch.tpu.distributed.environment)
+    self.assertIs(dist_mod, torch.tpu.distributed)
+    self.assertIs(from_imported_dist, torch.tpu.distributed)
     self.assertIs(
-        torch.tpu.distributed.environment.set_tpu_launch_env,
+        torch.tpu.distributed.set_tpu_launch_env,
         internal_set_tpu_launch_env,
     )
 
     # 3. Lifecycle stage metadata
-    fn = torch.tpu.distributed.environment.set_tpu_launch_env
+    fn = torch.tpu.distributed.set_tpu_launch_env
     self.assertEqual(
         getattr(fn, annotations.TT_API_STAGE, None),
         annotations.Stage.EXPERIMENTAL.value,
     )
     self.assertEqual(
         getattr(fn, annotations.TT_API_STAGE_REASON, None),
-        "torch.tpu.distributed.environment.set_tpu_launch_env is experimental"
+        "torch.tpu.distributed.set_tpu_launch_env is experimental"
         " and subject to change.",
     )
 
     # 4. Proxy dir and invalid attribute handling
-    self.assertEqual(dir(torch.tpu.distributed), ["environment"])
-    self.assertEqual(
-        dir(torch.tpu.distributed.environment), ["set_tpu_launch_env"]
-    )
+    self.assertEqual(dir(torch.tpu.distributed), ["set_tpu_launch_env"])
     with self.assertRaises(  # ASSERT_RAISES_OK=Verifies proxy module raises AttributeError for non-existent attributes
         AttributeError
     ):
       _ = getattr(torch.tpu.distributed, "non_existent_attribute")
-    with self.assertRaises(  # ASSERT_RAISES_OK=Verifies proxy module raises AttributeError for non-existent attributes
+    with self.assertRaises(  # ASSERT_RAISES_OK=Verifies removed environment submodule raises AttributeError
         AttributeError
     ):
-      _ = getattr(torch.tpu.distributed.environment, "non_existent_attribute")
+      _ = getattr(torch.tpu.distributed, "environment")
 
-    # 5. Verify torch_tpu does not expose distributed or distributed.environment
+    # 5. Verify neither torch.tpu.distributed.environment nor torch_tpu.distributed exists
     self.assertFalse(hasattr(torch_tpu, "distributed"))
+    self.assertNotIn("torch.tpu.distributed.environment", sys.modules)
     self.assertNotIn("torch_tpu.distributed", sys.modules)
     self.assertNotIn("torch_tpu.distributed.environment", sys.modules)
-    with self.assertRaises(  # ASSERT_RAISES_OK=Verifies torch_tpu.distributed.environment cannot be imported
-        ModuleNotFoundError
+    for bad_mod in (
+        "torch.tpu.distributed.environment",
+        "torch_tpu.distributed",
+        "torch_tpu.distributed.environment",
     ):
-      importlib.import_module("torch_tpu.distributed.environment")
+      with self.assertRaises(  # ASSERT_RAISES_OK=Verifies removed/non-public distributed modules cannot be imported
+          ModuleNotFoundError
+      ):
+        importlib.import_module(bad_mod)
 
   def test_exceptions_api_registry(self):
     """Verifies public exposure, identity, and module behavior for exceptions."""

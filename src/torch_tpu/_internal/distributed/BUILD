@@ -31,8 +31,8 @@ package(
 )
 
 torch_tpu_py_library(
-    name = "environment",
-    srcs = ["environment.py"],
+    name = "distributed",
+    srcs = ["distributed.py"],
     deps = [
         ":tpu_distributed",
         "//shims/absl_py/logging",
@@ -45,11 +45,11 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_test(
-    name = "environment_test",
-    srcs = ["environment_test.py"],
+    name = "distributed_test",
+    srcs = ["distributed_test.py"],
     strict = True,
     deps = [
-        ":environment",
+        ":distributed",
         "//shims/absl_py/testing:absltest",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal:env",

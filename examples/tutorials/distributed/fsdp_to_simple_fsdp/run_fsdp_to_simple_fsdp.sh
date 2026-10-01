@@ -17,7 +17,7 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-eval $(python3 -m torch.tpu.distributed.environment)
+eval $(python3 -m torch.tpu.distributed)
 export TORCH_TPU_TOPOLOGY TORCH_TPU_SLICEBUILDER_ADDRESSES WORLD_SIZE
 
 torchrun --nproc_per_node=${WORLD_SIZE:-8} "${SCRIPT_DIR}/fsdp_to_simple_fsdp_worker.py"

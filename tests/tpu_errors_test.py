@@ -25,7 +25,7 @@ from absl.testing import parameterized
 import torch
 import torch.distributed as dist
 from torch.fx.experimental.proxy_tensor import make_fx
-from torch.tpu.distributed import environment  # pyrefly: ignore[missing-import]
+from torch.tpu import distributed  # pyrefly: ignore[missing-import]
 from torch.utils import _pytree as pytree
 from torch_tpu._internal import dynamism
 from torch_tpu._internal import env
@@ -35,7 +35,7 @@ from torch_tpu._internal import pallas
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.compiler import StaticCompiler
-from torch_tpu._internal.distributed import environment as internal_environment
+from torch_tpu._internal.distributed import distributed as internal_distributed
 from torch_tpu._internal.export import export as torch_tpu_export
 from torch_tpu._internal.pallas import tpu_torch_pallas
 from torch_tpu._internal.utils import hardware
@@ -4785,7 +4785,7 @@ class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
 
 @contextlib.contextmanager
 def _mock_launch_env(values: dict[str, str]):
-  """Makes the environment look like `values` to `environment.set_tpu_launch_env`."""
+  """Makes the environment look like `values` to `distributed.set_tpu_launch_env`."""
 
   def get_str_env_once(name, default_value=None):
     return values.get(name, default_value)
@@ -4818,19 +4818,19 @@ class EnvironmentErrorsTest(et.TpuOnlyErrorTestBase):
           ValueError,
           tpu="""set_tpu_launch_env(): expected nnodes to match the number of hosts in environment variable TPU_WORKER_HOSTNAMES (2: "host1,host2"), got 1""",
       ):
-        environment.set_tpu_launch_env(nnodes=1)
+        distributed.set_tpu_launch_env(nnodes=1)
       with et.assert_raises_message(
           ValueError,
           tpu="""set_tpu_launch_env(): expected nnodes to match the number of hosts in environment variable TPU_WORKER_HOSTNAMES (2: "host1,host2"), got 3""",
       ):
-        environment.set_tpu_launch_env(nnodes=3)
+        distributed.set_tpu_launch_env(nnodes=3)
 
     with _mock_launch_env({"TPU_WORKER_HOSTNAMES": "host1"}):
       with et.assert_raises_message(
           ValueError,
           tpu="""set_tpu_launch_env(): expected nnodes to match the number of hosts in environment variable TPU_WORKER_HOSTNAMES (1: "host1"), got 2""",
       ):
-        environment.set_tpu_launch_env(nnodes=2)
+        distributed.set_tpu_launch_env(nnodes=2)
 
   @et.why_tpu_only("Testing TPU distributed launcher environment validation.")
   def test_multihost_missing_worker_hostnames_raises(self):
@@ -4839,7 +4839,7 @@ class EnvironmentErrorsTest(et.TpuOnlyErrorTestBase):
           ValueError,
           tpu="""set_tpu_launch_env(): expected environment variable TPU_WORKER_HOSTNAMES to be a comma-separated list of worker hostnames or IP addresses, got it as unset""",
       ):
-        environment.set_tpu_launch_env(nnodes=2)
+        distributed.set_tpu_launch_env(nnodes=2)
 
   @et.why_tpu_only("Testing TPU distributed launcher environment validation.")
   def test_multihost_missing_node_rank_source_raises(self):
@@ -4848,7 +4848,7 @@ class EnvironmentErrorsTest(et.TpuOnlyErrorTestBase):
           ValueError,
           tpu="""set_tpu_launch_env(): expected either TPU device coordinates together with environment variable TORCH_TPU_TOPOLOGY, or environment variable JOB_COMPLETION_INDEX to be a 0-based index of this host (Kubernetes Indexed Jobs set this automatically), to determine NODE_RANK, got neither""",
       ):
-        environment.set_tpu_launch_env()
+        distributed.set_tpu_launch_env()
 
   @et.why_tpu_only("Testing TPU distributed launcher environment validation.")
   def test_multihost_empty_coords_and_missing_completion_index_raises(self):
@@ -4857,13 +4857,13 @@ class EnvironmentErrorsTest(et.TpuOnlyErrorTestBase):
         "TORCH_TPU_TOPOLOGY": "4x4x4",
     }):
       with mock.patch.object(
-          internal_environment, "_query_local_device_coords", return_value=[]
+          internal_distributed, "_query_local_device_coords", return_value=[]
       ):
         with et.assert_raises_message(
             ValueError,
             tpu="""set_tpu_launch_env(): expected either TPU device coordinates together with environment variable TORCH_TPU_TOPOLOGY, or environment variable JOB_COMPLETION_INDEX to be a 0-based index of this host (Kubernetes Indexed Jobs set this automatically), to determine NODE_RANK, got neither""",
         ):
-          environment.set_tpu_launch_env()
+          distributed.set_tpu_launch_env()
 
   @et.why_tpu_only("Testing TPU distributed launcher environment validation.")
   def test_multihost_out_of_bounds_coords_and_missing_completion_index_raises(
@@ -4874,7 +4874,7 @@ class EnvironmentErrorsTest(et.TpuOnlyErrorTestBase):
         "TORCH_TPU_TOPOLOGY": "4x4x4",
     }):
       with mock.patch.object(
-          internal_environment,
+          internal_distributed,
           "_query_local_device_coords",
           return_value=[10, 0, 0],
       ):
@@ -4882,7 +4882,7 @@ class EnvironmentErrorsTest(et.TpuOnlyErrorTestBase):
             ValueError,
             tpu="""set_tpu_launch_env(): expected TPU device coordinates within the slice described by environment variable TORCH_TPU_TOPOLOGY ("4x4x4"), got [10, 0, 0]""",
         ):
-          environment.set_tpu_launch_env()
+          distributed.set_tpu_launch_env()
 
   @et.why_tpu_only("Testing TPU distributed launcher environment validation.")
   def test_multihost_invalid_topology_and_missing_completion_index_raises(
@@ -4893,7 +4893,7 @@ class EnvironmentErrorsTest(et.TpuOnlyErrorTestBase):
         "TORCH_TPU_TOPOLOGY": "4x4xfour",
     }):
       with mock.patch.object(
-          internal_environment,
+          internal_distributed,
           "_query_local_device_coords",
           return_value=[0, 0, 0],
       ):
@@ -4901,7 +4901,7 @@ class EnvironmentErrorsTest(et.TpuOnlyErrorTestBase):
             ValueError,
             tpu="""set_tpu_launch_env(): expected environment variable TORCH_TPU_TOPOLOGY to be integer mesh dimensions separated by 'x' or ',', e.g. '4x4x4' or '2,2,1', got '4x4xfour'""",
         ):
-          environment.set_tpu_launch_env()
+          distributed.set_tpu_launch_env()
 
   @et.why_tpu_only("Testing TPU distributed launcher environment validation.")
   def test_parse_topology_invalid_raises(self):
@@ -4911,7 +4911,7 @@ class EnvironmentErrorsTest(et.TpuOnlyErrorTestBase):
             ValueError,
             tpu=f"""set_tpu_launch_env(): expected environment variable TORCH_TPU_TOPOLOGY to be integer mesh dimensions separated by 'x' or ',', e.g. '4x4x4' or '2,2,1', got '{topology}'""",
         ):
-          internal_environment._parse_topology(topology)  # pylint: disable=protected-access
+          internal_distributed._parse_topology(topology)  # pylint: disable=protected-access
 
   @et.why_tpu_only("Testing TPU distributed launcher environment validation.")
   def test_calculate_topological_node_rank_without_coords_or_fallback_raises(
@@ -4927,7 +4927,7 @@ class EnvironmentErrorsTest(et.TpuOnlyErrorTestBase):
             ValueError,
             tpu="""set_tpu_launch_env(): expected either TPU device coordinates together with environment variable TORCH_TPU_TOPOLOGY, or environment variable JOB_COMPLETION_INDEX to be a 0-based index of this host (Kubernetes Indexed Jobs set this automatically), to determine NODE_RANK, got neither""",
         ):
-          internal_environment._calculate_topological_node_rank(coords, topology)  # pylint: disable=protected-access
+          internal_distributed._calculate_topological_node_rank(coords, topology)  # pylint: disable=protected-access
 
   @et.why_tpu_only("Testing TPU distributed launcher environment validation.")
   def test_calculate_topological_node_rank_out_of_bounds_raises(self):
@@ -4937,7 +4937,7 @@ class EnvironmentErrorsTest(et.TpuOnlyErrorTestBase):
             ValueError,
             tpu=f"""set_tpu_launch_env(): expected TPU device coordinates within the slice described by environment variable TORCH_TPU_TOPOLOGY ("4x4x4"), got {coords}""",
         ):
-          internal_environment._calculate_topological_node_rank(  # pylint: disable=protected-access
+          internal_distributed._calculate_topological_node_rank(  # pylint: disable=protected-access
               coords, "4x4x4", fallback_index=None
           )
 
@@ -4952,7 +4952,7 @@ class EnvironmentErrorsTest(et.TpuOnlyErrorTestBase):
             ValueError,
             tpu="""set_tpu_launch_env(): expected TPU devices, got none""",
         ):
-          environment.set_tpu_launch_env()
+          distributed.set_tpu_launch_env()
 
 
 class ForkErrorsTest(et.TpuOnlyErrorTestBase):

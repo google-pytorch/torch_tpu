@@ -103,7 +103,7 @@ the PyTorch processes start.
 
 ```bash
 # Run this in your TPU VM terminal:
-eval $(python -m torch.tpu.distributed.environment | sed 's/^/export /')
+eval $(python -m torch.tpu.distributed | sed 's/^/export /')
 torchrun --nproc_per_node=$WORLD_SIZE your_script.py
 ```
 

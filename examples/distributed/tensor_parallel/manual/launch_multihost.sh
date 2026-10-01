@@ -29,7 +29,7 @@ export WORLD_SIZE=256
 
 # Detect and export TPU configuration dynamically.
 echo "Running environment to detect topology..."
-eval "$(python3 -m torch.tpu.distributed.environment)"
+eval "$(python3 -m torch.tpu.distributed)"
 export TORCH_TPU_TOPOLOGY TORCH_TPU_SLICEBUILDER_ADDRESSES
 export TORCH_TPU_XPROF_SESSION_ID
 export NNODES NODE_RANK MASTER_ADDR MASTER_PORT

@@ -22,13 +22,13 @@ command line, use `../run_fsdp_to_simple_fsdp.sh` instead.
 import os
 from torch.google import distributed as g3_distributed
 import torch.multiprocessing as mp
-from torch.tpu.distributed import environment  # pyrefly: ignore[missing-import]
+from torch.tpu import distributed  # pyrefly: ignore[missing-import]
 from examples.tutorials.distributed.fsdp_to_simple_fsdp import fsdp_to_simple_fsdp_worker
 from torch_tpu._internal.distributed import multiprocessing
 
 
 def main(_):
-  environment.set_tpu_launch_env()
+  distributed.set_tpu_launch_env()
   world_size = int(os.environ.get("WORLD_SIZE", "8"))
   g3_distributed.torchrun(
       fsdp_to_simple_fsdp_worker.worker_fn,

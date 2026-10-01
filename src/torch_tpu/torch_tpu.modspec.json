@@ -9,10 +9,6 @@
   },
   {
     "name": "torch.tpu.distributed",
-    "type": "PACKAGE"
-  },
-  {
-    "name": "torch.tpu.distributed.environment",
     "type": "MODULE"
   },
   {
