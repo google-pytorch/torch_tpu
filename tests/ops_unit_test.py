@@ -12372,6 +12372,40 @@ module {{
   @parameterized.product(
       dtype=[torch.float32, torch.bfloat16, torch.float16],
   )
+  def test_grouped_mm_2d_2d_empty_groups(self, dtype):
+    """Tests torch.ops.aten._grouped_mm: Case 3 with empty groups.
+
+    A group with no rows contracts over nothing, so its output slice must be
+    zero. This is the MoE expert weight gradient for an expert that received
+    no tokens.
+    """
+    # Groups 0, 2 and 4-7 are empty.
+    offs = torch.tensor(
+        [0, 128, 128, 256, 256, 256, 256, 256], dtype=torch.int32
+    )
+    empty = torch.tensor([True, False, True, False, True, True, True, True])
+    # Uninitialized memory can happen to read as zero, so check several inputs.
+    for seed in range(5):
+      torch.manual_seed(seed)
+      t1 = torch.randn(128, 256, dtype=dtype)
+      t2 = torch.randn(256, 128, dtype=dtype)
+      out = torch.ops.aten._grouped_mm(
+          t1.to("tpu"), t2.to("tpu"), offs=offs.to("tpu")
+      ).cpu()
+      self.assertTrue(
+          torch.equal(out[empty], torch.zeros_like(out[empty])),
+          f"seed {seed}: empty groups have non-zero output",
+      )
+      self.assert_close(
+          golden_result=torch.ops.aten._grouped_mm(t1, t2, offs=offs),
+          torch_tpu_result=out,
+          rtol=2e-1,
+          atol=2e-1,
+      )
+
+  @parameterized.product(
+      dtype=[torch.float32, torch.bfloat16, torch.float16],
+  )
   def test_grouped_mm_3d_3d(self, dtype):
     """Tests torch.ops.aten._grouped_mm: Case 4 (3D x 3D without offs)."""
     t1 = torch.randn(2, 8, 8, dtype=dtype)

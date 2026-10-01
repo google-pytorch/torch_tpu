@@ -234,8 +234,25 @@ absl::StatusOr<mlir::MlirOp> BuildGroupedMmShlo(
         self_op.getContext(),
         {num_groups, self_type.getShape()[0], mat2_type.getShape()[1]},
         comp_dtype);
-    result = mlir::chlo::RaggedDot(out_type, self_op, mat2_op, group_sizes,
-                                   dimension_numbers, precision_config);
+    mlir::MlirOp ragged_dot =
+        mlir::chlo::RaggedDot(out_type, self_op, mat2_op, group_sizes,
+                              dimension_numbers, precision_config);
+
+    // An empty group contracts over no elements, so its output must be zero,
+    // but the TPU lowering leaves that slice uninitialized. This is the MoE
+    // expert weight gradient for an expert that received no tokens. Select
+    // rather than multiply by a mask: the garbage can be NaN.
+    mlir::MlirOp no_rows = MakeConstantLike(group_sizes, 0);
+    mlir::MlirOp nonempty = mlir::stablehlo::Compare(
+        group_sizes, no_rows, mlir::stablehlo::ComparisonDirection::GT);
+    const auto mask_type = mlir::makeTensorType(
+        self_op.getContext(),
+        {num_groups, self_type.getShape()[0], mat2_type.getShape()[1]},
+        mlir::ElementType::PRED);
+    mlir::MlirOp mask =
+        mlir::stablehlo::BroadcastInDim(mask_type, nonempty, {0});
+    mlir::MlirOp zeros = MakeConstantLike(ragged_dot, 0.0);
+    result = mlir::stablehlo::Select(mask, ragged_dot, zeros);
   } else {
     // Case 4 (3D x 3D without offs): fallback to standard batched matrix
     // multiplication (DotGeneral).
