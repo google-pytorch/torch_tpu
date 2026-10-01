@@ -17,7 +17,7 @@
 import torch
 from torch._dynamo.backends import registry
 from torch._functorch._aot_autograd import utils as aot_utils
-from torch_tpu._internal.compile import grouped_mm_meta
+from torch_tpu._internal.compile import meta_registration_overrides
 from torch_tpu._internal.compile._backend import async_compile
 from torch_tpu._internal.compile._backend import AsyncCompilationSubmitted
 from torch_tpu._internal.compile._backend import clear_cache
@@ -74,130 +74,7 @@ def _register_scan_operator() -> None:
 
 _register_scan_operator()
 
-
-def _patch_flex_attention() -> None:
-  """Patches PyTorch flex_attention to support TPU tensors."""
-  # pylint: disable=g-import-not-at-top,protected-access
-  from torch._higher_order_ops.flex_attention import flex_attention_backward
-  from torch.nn.attention import flex_attention
-  import torch.nn.functional as F
-
-  original_validate = flex_attention._validate_device
-
-  def _validate_device(query, key, value):
-    if query.device.type != "tpu":
-      original_validate(query, key, value)
-
-  flex_attention._validate_device = _validate_device
-
-  dispatch_key = torch._C.DispatchKey.CompositeExplicitAutograd
-  original_bwd = flex_attention_backward.py_kernels.pop(dispatch_key)
-
-  @flex_attention_backward.py_impl(dispatch_key)
-  def _sdpa_dense_backward(query, key, value, *args, **kwargs):
-    with query.device:
-      return original_bwd(query, key, value, *args, **kwargs)
-
-  original_flex_attention = flex_attention.flex_attention
-
-  def _get_sdpa_attn_bias(
-      block_mask: flex_attention.BlockMask,
-      q_len: int,
-      kv_len: int,
-      dtype: torch.dtype,
-      device: torch.device,
-  ) -> torch.Tensor:
-    cache = getattr(block_mask, "_tpu_sdpa_mask_cache", None)
-    if cache is None:
-      cache = {}
-      setattr(block_mask, "_tpu_sdpa_mask_cache", cache)
-    key = (q_len, kv_len, dtype, device)
-    if key not in cache:
-      b_mask, h_mask = block_mask.kv_num_blocks.shape[:2]
-      with torch.no_grad():
-        bool_mask = flex_attention.create_mask(
-            block_mask.mask_mod,
-            b_mask,
-            h_mask,
-            q_len,
-            kv_len,
-            device=device,
-        )
-        attn_bias = torch.zeros(
-            bool_mask.shape, dtype=dtype, device=device
-        ).masked_fill_(~bool_mask, float("-inf"))
-      cache[key] = attn_bias
-    return cache[key]
-
-  def _flex_attention_tpu(
-      query: torch.Tensor,
-      key: torch.Tensor,
-      value: torch.Tensor,
-      score_mod=None,
-      block_mask=None,
-      scale=None,
-      enable_gqa: bool = False,
-      return_lse: bool = False,
-      kernel_options=None,
-      *,
-      return_aux=None,
-  ):
-    need_aux = return_lse or (
-        return_aux is not None
-        and (
-            getattr(return_aux, "lse", False)
-            or getattr(return_aux, "max_scores", False)
-        )
-    )
-    if (
-        query.device.type == "tpu"
-        and score_mod is None
-        and not need_aux
-        and query.dtype in (torch.bfloat16, torch.float32)
-    ):
-      q_len = query.shape[-2]
-      kv_len = key.shape[-2]
-      attn_bias = (
-          _get_sdpa_attn_bias(
-              block_mask, q_len, kv_len, query.dtype, query.device
-          )
-          if block_mask is not None
-          else None
-      )
-      out = F.scaled_dot_product_attention(
-          query,
-          key,
-          value,
-          attn_mask=attn_bias,
-          dropout_p=0.0,
-          is_causal=False,
-          scale=scale,
-          enable_gqa=enable_gqa,
-      )
-      if return_aux is not None:
-        return out, flex_attention.AuxOutput()
-      return out
-    return original_flex_attention(
-        query,
-        key,
-        value,
-        score_mod=score_mod,
-        block_mask=block_mask,
-        scale=scale,
-        enable_gqa=enable_gqa,
-        return_lse=return_lse,
-        kernel_options=kernel_options,
-        return_aux=return_aux,
-    )
-
-  flex_attention.flex_attention = _flex_attention_tpu
-
-  # pylint: enable=g-import-not-at-top,protected-access
-
-
-_patch_flex_attention()
-
-grouped_mm_meta.register()
+meta_registration_overrides.register()
 
 # PEP 8 requires this to be a list of strings, not a tuple or a list of objects.
 __all__ = [

@@ -88,7 +88,7 @@ torch_tpu_py_library(
     ],
     deps = [
         ":debug",
-        ":grouped_mm_meta",
+        ":meta_registration_overrides",
         ":scan",
         ":tpu_backend",
         "//shims/torch:pytorch",
@@ -96,8 +96,8 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
-    name = "grouped_mm_meta",
-    srcs = ["grouped_mm_meta.py"],
+    name = "meta_registration_overrides",
+    srcs = ["meta_registration_overrides.py"],
     deps = ["//shims/torch:pytorch"],
 )
 

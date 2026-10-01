@@ -15696,6 +15696,49 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
     self.assertAlmostEqual(row_sum_mean, 1.0, delta=0.05)
     self.assertIsNotNone(v.grad)
 
+  def test_sdpa_overrideable_meta_checks_kv_seq_len(self):
+    """Tests SDPA overrideable meta checks and guards key/value sequence lengths."""
+    shape_env = symbolic_shapes.ShapeEnv()
+    with fake_tensor.FakeTensorMode(shape_env=shape_env):
+      s_k = shape_env.create_symintnode(
+          shape_env.create_symbol(
+              8, source=torch._dynamo.source.LocalSource("s_k")
+          ),
+          hint=8,
+      )
+      s_v = shape_env.create_symintnode(
+          shape_env.create_symbol(
+              8, source=torch._dynamo.source.LocalSource("s_v")
+          ),
+          hint=8,
+      )
+      q = torch.empty((2, 4, 8, 16), dtype=torch.bfloat16, device="tpu")
+      k = torch.empty((2, 4, s_k, 16), dtype=torch.bfloat16, device="tpu")
+      v = torch.empty((2, 4, s_v, 16), dtype=torch.bfloat16, device="tpu")
+      res = torch.ops.aten._scaled_dot_product_fused_attention_overrideable(
+          q, k, v
+      )
+      self.assertEqual(res[0].shape, (2, 4, 8, 16))
+      self.assertTrue(
+          any(
+              "s_k == s_v" in str(g.expr) or "Eq(" in str(g.expr)
+              for g in shape_env.guards
+          )
+      )
+
+      v_mismatched = torch.empty(
+          (2, 4, 10, 16), dtype=torch.bfloat16, device="tpu"
+      )
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Meta shape validation.
+          RuntimeError,
+          r"key sequence length \(8\) must match value sequence length \(10\)",
+      ):
+        torch.ops.aten._scaled_dot_product_fused_attention_overrideable(
+            q,
+            torch.empty((2, 4, 8, 16), dtype=torch.bfloat16, device="tpu"),
+            v_mismatched,
+        )
+
   def test_pointwise_op_dtype_promotion(self):
     """Ensure that pointwise ops promote as expected.
 

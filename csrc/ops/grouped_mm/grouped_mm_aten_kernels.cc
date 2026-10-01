@@ -347,7 +347,7 @@ absl::StatusOr<mlir::MlirOp> BuildScaledGroupedMmShlo(
 
 // Validates the `_grouped_mm` inputs that can be checked without looking at
 // the tensor data. Keep in sync with the TPU Meta kernel in
-// _internal/compile/grouped_mm_meta.py so eager and compile agree.
+// _internal/compile/meta_registration_overrides.py so eager and compile agree.
 absl::Status ValidateGroupedMmInputs(const at::Tensor& self,
                                      const at::Tensor& mat2,
                                      const std::optional<at::Tensor>& offs,
