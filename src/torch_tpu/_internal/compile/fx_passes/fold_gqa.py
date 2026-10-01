@@ -38,11 +38,15 @@ _SDPA_FORWARD_TARGETS = {
     torch.ops.aten.scaled_dot_product_attention.default,
     torch.ops.aten._scaled_dot_product_fused_attention_overrideable.default,
     torch.ops.aten._scaled_dot_product_efficient_attention.default,
+    torch.ops.aten._scaled_dot_product_cudnn_attention.default,
+    torch.ops.aten._scaled_dot_product_flash_attention.default,
 }
 
 _SDPA_BACKWARD_TARGETS = {
     torch.ops.aten._scaled_dot_product_fused_attention_overrideable_backward.default,
     torch.ops.aten._scaled_dot_product_efficient_attention_backward.default,
+    torch.ops.aten._scaled_dot_product_cudnn_attention_backward.default,
+    torch.ops.aten._scaled_dot_product_flash_attention_backward.default,
 }
 
 _RESHAPE_TARGETS = {
