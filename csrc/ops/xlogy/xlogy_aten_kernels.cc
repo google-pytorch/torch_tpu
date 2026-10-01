@@ -23,7 +23,9 @@
 #include "absl/status/statusor.h"
 #include "c10/core/DefaultDtype.h"
 #include "c10/core/ScalarType.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/device_type.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
@@ -74,6 +76,10 @@ absl::StatusOr<mlir::MlirOp> BuildXlogyShlo(
 at::Tensor& AtenXlogyOutTensor(const at::Tensor& self, const at::Tensor& other,
                                at::Tensor& out) {
   TT_KERNEL(OpName::kXlogyOutTensor, _, (self, other, out), {
+    TT_CHECK_THROW(IsPrivateUse1Device(out), error::kInvalidArgument)
+        << "expected out tensor to be on " << GetPrivateUse1DeviceDebugName()
+        << ", got " << out.device();
+
     TT_CHECK_THROW(!self.is_complex() && !other.is_complex(),
                    error::kInvalidArgument)
         << "expected non-complex dtypes, got x dtype "

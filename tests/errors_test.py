@@ -9365,6 +9365,18 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       torch.ops.aten.xlogy.OutTensor(x, y, out=out)
 
+  def test_xlogy_cpu_out_tensor(self):
+    x = torch.tensor([1.0, 2.0], device=et.device())
+    y = torch.tensor([2.0, 3.0], device=et.device())
+    out_cpu = torch.empty(2, device="cpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""xlogy(): expected out tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.xlogy(x, y, out=out_cpu)
+
   def test_linalg_qr_insufficient_dims(self):
     input_tensor = torch.ones(1, device=et.device(), dtype=torch.float32)
     with et.assert_raises_message(
