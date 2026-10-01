@@ -113,13 +113,13 @@ struct TestMembersClass {
 
 void EmitTorchWarn(const std::string& msg) {
   HANDLE_TH_ERRORS
-  TORCH_WARN(msg);
+  TORCH_WARN(msg);  // TORCH_WARN_OK=test_utility
   END_HANDLE_TH_ERRORS_PYBIND
 }
 
 void EmitTorchWarnOnce(const std::string& msg) {
   HANDLE_TH_ERRORS
-  TORCH_WARN_ONCE(msg);
+  TORCH_WARN_ONCE(msg);  // TORCH_WARN_OK=test_utility
   END_HANDLE_TH_ERRORS_PYBIND
 }
 

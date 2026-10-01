@@ -86,10 +86,12 @@ constexpr std::string_view GetWarningToken(WarningCategory category) {
 // 4. `torch_tpu._internal.warnings_bridge` intercepts the warning, parses the
 //    token prefix, strips it from the message, and remaps the warning category
 //    to the corresponding `TorchTpuWarning` subclass before showing it.
-#define TT_WARN(category, ...) \
-  TORCH_WARN(::torch_tpu::GetWarningToken(category), __VA_ARGS__)
+#define TT_WARN(category, ...)                          \
+  TORCH_WARN(/* TORCH_WARN_OK=implementating TT_WARN */ \
+             ::torch_tpu::GetWarningToken(category), __VA_ARGS__)
 
-#define TT_WARN_ONCE(category, ...) \
-  TORCH_WARN_ONCE(::torch_tpu::GetWarningToken(category), __VA_ARGS__)
+#define TT_WARN_ONCE(category, ...)                               \
+  TORCH_WARN_ONCE(/* TORCH_WARN_OK=implementating TT_WARN_ONCE */ \
+                  ::torch_tpu::GetWarningToken(category), __VA_ARGS__)
 
 #endif  // TORCH_TPU_CSRC_COMMON_WARNINGS_H_
