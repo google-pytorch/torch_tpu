@@ -16,23 +16,23 @@
 
 #include "csrc/ops/tanh/tanh_aten_kernels.h"
 
-#include <utility>
-
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "ATen/ops/result_type.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "csrc/common/dtype.h"
+#include "c10/core/ScalarType.h"
+#include "csrc/common/cache_key.h"
 #include "csrc/common/error_utils.h"
-#include "csrc/common/fixed_size_span.h"
-#include "csrc/common/utils.h"
-#include "csrc/eager/op_dispatcher.h"
+#include "csrc/common/to_string.h"
+#include "csrc/ops/binary_aten_kernels.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/unary.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 
@@ -55,33 +55,36 @@ absl::StatusOr<mlir::MlirOp> BuildTanhBackwardGradInputShlo(
   TT_ASSIGN_OR_RETURN(auto conj_one_minus_output_squared,
                       BuildConjPhysicalShlo(one_minus_output_squared));
 
+  TT_ASSIGN_OR_RETURN(
+      (auto [bcast_grad_output, bcast_conj_one_minus_output_squared]),
+      ApplyBroadcastIfNeeded(grad_output_op, conj_one_minus_output_squared));
+
   // Calculate grad_output * conj(1.0 - output_squared)
-  return mlir::stablehlo::Mul(grad_output_op, conj_one_minus_output_squared);
+  return mlir::stablehlo::Mul(bcast_grad_output,
+                              bcast_conj_one_minus_output_squared);
 }
+
+absl::Status ValidateTanhBackwardInputs(const at::Tensor& grad_output,
+                                        const at::Tensor& output) {
+  const c10::ScalarType promoted_type = at::result_type(grad_output, output);
+  TT_RET_CHECK(
+      at::isFloatingType(promoted_type) || at::isComplexType(promoted_type),
+      error::kPythonNotImplementedError)
+      << "not implemented for " << ToString(promoted_type);
+  return absl::OkStatus();
+}
+
 }  // namespace
 
 at::Tensor& AtenTanhBackwardGradInput(const at::Tensor& grad_output,
                                       const at::Tensor& output,
                                       at::Tensor& grad_input) {
   TT_KERNEL(
-      OpName::kTanhBackwardGradInput, param_keys,
-      (grad_output, output, grad_input), {
-        TT_ASSIGN_OR_THROW(const auto out_dtype,
-                           ConvertTo<mlir::ElementType>(output.scalar_type()));
-        auto output_shape = CopyIntVector(output.sizes());
-
-        auto op_builder = [](FixedSizeSpan<mlir::MlirOp, 2> inputs)
-            -> absl::StatusOr<mlir::MlirOp> {
-          auto& [grad_output_op, output_op] = inputs;
-          return BuildTanhBackwardGradInputShlo(grad_output_op, output_op);
-        };
-
-        TT_THROW_IF_ERROR(DispatchOpOut<2>(
-            std::move(op_builder), {grad_output, output}, grad_input,
-            /*options=*/
-            {.out_dtype = out_dtype,
-             .out_dims = output_shape,
-             .op_param_cache_keys = std::move(param_keys)}));
+      OpName::kTanhBackwardGradInput, _, (grad_output, output, grad_input), {
+        TT_THROW_IF_ERROR(ValidateTanhBackwardInputs(grad_output, output));
+        TT_THROW_IF_ERROR(BinaryOpOut(
+            grad_output, output, grad_input, BuildTanhBackwardGradInputShlo,
+            {.op_param_cache_keys = OpParamCacheKeys::Empty()}));
         return grad_input;
       });
 }

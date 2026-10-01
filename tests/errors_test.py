@@ -8391,6 +8391,49 @@ Device-side assertion tracking was not enabled by user.""",
           grad, self_val, grad_input=grad_input
       )
 
+  def test_tanh_backward_grad_input_unsupported_dtype(self):
+    for dtype, tpu_str, gpu_str in [
+        (torch.int32, "int32", "Int"),
+        (torch.bool, "bool", "Bool"),
+    ]:
+      grad = torch.ones(5, device=et.device(), dtype=dtype)
+      output = torch.ones(5, device=et.device(), dtype=dtype)
+      grad_input = torch.ones(5, device=et.device(), dtype=dtype)
+
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu=f"tanh_backward(): not implemented for {tpu_str}",
+          gpu=f""""tanh_backward_cuda" not implemented for '{gpu_str}'""",
+      ):
+        torch.ops.aten.tanh_backward.grad_input(
+            grad, output, grad_input=grad_input
+        )
+
+  def test_tanh_backward_grad_input_smaller_out_alias(self):
+    grad = torch.ones((2, 3), device=et.device(), dtype=torch.float32)
+    output = torch.full((1, 3), 0.5, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""tanh_backward(): output with shape [2, 3] doesn't match the broadcast shape of the tensor being operated on in-place, which has shape [1, 3]""",
+        gpu="""output with shape [1, 3] doesn't match the broadcast shape [2, 3]""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.ops.aten.tanh_backward.grad_input(grad, output, grad_input=output)
+
+  def test_tanh_backward_grad_input_cpu_out_tensor(self):
+    grad = torch.ones(5, device=et.device(), dtype=torch.float32)
+    output = torch.ones(5, device=et.device(), dtype=torch.float32)
+    grad_input = torch.ones(5, device="cpu", dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""tanh_backward(): expected out tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.ops.aten.tanh_backward.grad_input(
+          grad, output, grad_input=grad_input
+      )
+
   def test_acos_out_dtype_mismatch(self):
     t = torch.ones(5, device=et.device())
 
