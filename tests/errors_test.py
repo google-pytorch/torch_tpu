@@ -3726,14 +3726,14 @@ Device-side assertion tracking was not enabled by user.""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""arange(): expected step to be positive since start (0) < end (10), got step=-inf""",
-        gpu="""upper bound and lower bound inconsistent with step sign""",
+        gpu="""step must be finite but got -inf""",
     ):
       torch.arange(0, 10, float("-inf"), device=et.device())
 
     with et.assert_raises_message(
         RuntimeError,
         tpu="""arange(): expected step to be negative since start (10) > end (0), got step=inf""",
-        gpu="""upper bound and lower bound inconsistent with step sign""",
+        gpu="""step must be finite but got inf""",
     ):
       torch.arange(10, 0, float("inf"), device=et.device())
 
@@ -8035,7 +8035,7 @@ Device-side assertion tracking was not enabled by user.""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""histc(): expected the first argument not to be complex, got complex64""",
-        gpu=""""histc" not implemented for 'ComplexFloat'""",
+        gpu="""torch.histogram: input tensor and hist tensor should have the same dtype, but got input c10::complex<float> and hist float""",
         message_reviewed_by="wan",
     ):
       torch.histc(t, bins=bins, min=min_val, max=max_val, out=out)
@@ -11230,7 +11230,7 @@ Device-side assertion tracking was not enabled by user.""",
       with et.assert_raises_message(
           NotImplementedError,
           tpu=f"""upsample_linear1d(): not implemented for {tpu_dtype}""",
-          gpu=f""""upsample_linear1d_out_frame" not implemented for '{gpu_dtype}'""",
+          gpu=f""""upsample_linear1d_out_frame_unrolled" not implemented for '{gpu_dtype}'""",
           message_reviewed_by="gunhyun",
       ):
         torch.nn.functional.interpolate(t, scale_factor=2, mode="linear")
