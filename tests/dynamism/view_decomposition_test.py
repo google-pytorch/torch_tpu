@@ -660,6 +660,152 @@ class ViewDecompositionTest(seed_test_utils.RepeatableTest):
     base = view_decomposition.get_base_tensor(orig)
     self.assertIs(base, orig)
 
+  def _assert_view_replay(
+      self,
+      view: torch.Tensor,
+      expected_base_shape: list[int],
+      expected_view_ops: list[tuple[str, tuple[Any, ...]]],
+  ) -> None:
+    """Checks decomposition and that replaying it on the runtime base matches."""
+    base_shape, view_ops = view_decomposition.decompose_into_view_sequence(view)
+    self.assertEqual(base_shape, expected_base_shape)
+    self.assertEqual(view_ops, expected_view_ops)
+
+    base = view_decomposition.get_base_tensor(view)
+    self.assertEqual(list(base.shape), expected_base_shape)
+    self.assertTrue(base.is_contiguous())
+    self.assertLessEqual(base.numel(), _storage_numel(view))
+    replayed = base
+    for op_type, op_args in view_ops:
+      if op_type == "slice":
+        dim_idx, start, end, step = op_args
+        replayed = replayed.narrow(dim_idx, start, end - start)
+        self.assertEqual(step, 1)
+      else:
+        replayed = replayed.permute(*op_args[0])
+    self.assertEqual(replayed.shape, view.shape)
+    self.assertEqual(replayed.data_ptr(), view.data_ptr())
+    # Strides of size-1 dims are layout-irrelevant and may differ.
+    for size, replayed_st, view_st in zip(
+        view.shape, replayed.stride(), view.stride()
+    ):
+      if size != 1:
+        self.assertEqual(replayed_st, view_st)
+    utils.assert_close(replayed, view)
+
+  def test_unit_dim_arbitrary_stride_is_contiguous(self):
+    """Tests that strides of size-1 dims are ignored (c10 contiguity)."""
+    # torch.zeros_like() copies the stride of a size-1 batch dim verbatim, e.g.
+    # HF linear-attention recurrent states: storage holds 8 * 4 * 64 elements.
+    shape, stride = (1, 8, 4, 64), (4096, 256, 64, 1)
+    state = torch.zeros_like(torch.empty_strided(shape, stride))
+    self.assertEqual(state.stride(), stride)
+    self.assertTrue(state.is_contiguous())
+
+    self.assertTrue(view_decomposition._is_contiguous_tensor(state))
+    self.assertFalse(view_decomposition.needs_view_decomposition(state))
+    self.assertIsNone(view_decomposition.decompose_into_view_sequence(state))
+    self.assertIs(view_decomposition.get_base_tensor(state), state)
+
+    # Stride-0 size-1 dims (expand to size 1) are not broadcasts either.
+    self.assertTrue(
+        view_decomposition._is_contiguous_tensor(torch.randn(8).expand(1, 8))
+    )
+    # Empty tensors are contiguous regardless of strides.
+    self.assertTrue(
+        view_decomposition._is_contiguous_tensor(
+            torch.empty_strided((0, 4), (1, 0))
+        )
+    )
+
+  def test_unit_dim_arbitrary_stride_transposed(self):
+    """Tests a transposed view of a state whose size-1 dim has a bogus stride."""
+    shape, stride = (1, 8, 4, 64), (4096, 256, 64, 1)
+    state = torch.empty_strided(shape, stride).copy_(torch.randn(shape))
+    view = state.transpose(1, 2)  # [1, 4, 8, 64], strides [4096, 64, 256, 1]
+
+    # Sorting by stride would imply a [1, 16, 4, 64] base, twice the storage, so
+    # the size-1 dim is ordered innermost; base covers exactly the 2048 elements.
+    self._assert_view_replay(
+        view,
+        expected_base_shape=[8, 4, 64, 1],
+        expected_view_ops=[("permute", ([3, 1, 0, 2],))],
+    )
+
+  def test_unit_dim_sliced_views(self):
+    """Tests genuine views whose size-1 dims come from slicing or select."""
+    orig = torch.randn(4, 8)
+
+    # Column slice: size-1 inner dim.
+    self._assert_view_replay(
+        orig[:, 3:4],
+        expected_base_shape=[4, 8],
+        expected_view_ops=[("slice", (1, 3, 4, 1))],
+    )
+    # Row slice: size-1 outer dim keeps its slot.
+    self._assert_view_replay(
+        orig[2:3, 1:5],
+        expected_base_shape=[3, 8],
+        expected_view_ops=[("slice", (0, 2, 3, 1)), ("slice", (1, 1, 5, 1))],
+    )
+
+  def test_decompose_dynamic_unit_dim_transpose(self):
+    """Tests a dynamic transposed view with a size-1 dim adds no guards."""
+    base_dyn = torch.randn(1, 20, 8, 64)
+    torch._dynamo.mark_dynamic(base_dyn, 1, min=10, max=100)
+
+    view_node, node_decomp = self._capture_view_node(
+        base_dyn, lambda x: x.transpose(1, 2)
+    )
+    self._print_decomposition(view_node, node_decomp)
+    self._print_guards()
+
+    self.assertIsNotNone(node_decomp)
+    node_base_shape, node_view_ops = node_decomp
+    # The stride-sorted base fits the storage, so the size-1 dim keeps its slot.
+    self.assertIsInstance(node_base_shape[1], torch.SymInt)
+    self._assert_base_shapes_match(node_base_shape, [1, 20, 8, 64])
+    self.assertEqual(node_view_ops, [("permute", ([0, 2, 1, 3],))])
+    self.assertEqual(self.guards_after, self.guards_before)
+
+  def test_decompose_dynamic_unit_dim_slices_keep_layout(self):
+    """Tests size-1 slices of dynamic tensors keep the base dims, one slice."""
+    # (base shape, dynamic dim, view fn, slice op on the static base).
+    cases = [
+        ((1, 20, 64), 1, lambda x: x[:, -1:, :], (1, 19, 20, 1)),
+        ((2, 20, 64), 1, lambda x: x[:, -1:, :], (1, 19, 20, 1)),
+        ((1, 20, 64), 1, lambda x: x[:, 3:4, :], (1, 3, 4, 1)),
+        ((1, 20), 1, lambda x: x[:, -1:], (1, 19, 20, 1)),
+        ((2, 4, 20, 8), 2, lambda x: x[:, :, -1:, :], (2, 19, 20, 1)),
+        ((1, 4, 20, 8), 2, lambda x: x[:, :, :1, :], (2, 0, 1, 1)),
+    ]
+    for base_shape, dyn_dim, view_fn, slice_op in cases:
+      with self.subTest(base_shape=base_shape, slice_op=slice_op):
+        self._assert_view_replay(
+            view_fn(torch.randn(base_shape)),
+            expected_base_shape=list(base_shape),
+            expected_view_ops=[("slice", slice_op)],
+        )
+
+        base_dyn = torch.randn(base_shape)
+        torch._dynamo.mark_dynamic(base_dyn, dyn_dim, min=10, max=100)
+        view_node, node_decomp = self._capture_view_node(base_dyn, view_fn)
+        self._print_decomposition(view_node, node_decomp)
+        self._print_guards()
+
+        self.assertIsNotNone(node_decomp)
+        node_base_shape, node_view_ops = node_decomp
+        self._assert_base_shapes_match(node_base_shape, list(base_shape))
+        self.assertIsInstance(node_base_shape[dyn_dim], torch.SymInt)
+        self.assertLen(node_view_ops, 1)
+        self.assertEqual(node_view_ops[0][0], "slice")
+        self.assertEqual(node_view_ops[0][1][0], slice_op[0])
+        self.assertEqual(self.guards_after, self.guards_before)
+
+
+def _storage_numel(tensor: torch.Tensor) -> int:
+  return tensor.untyped_storage().nbytes() // tensor.element_size()
+
 
 if __name__ == "__main__":
   absltest.main()

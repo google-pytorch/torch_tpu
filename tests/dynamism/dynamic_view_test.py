@@ -14,9 +14,12 @@
 
 """Test demonstrating dynamic execution through torch.compile() with input/output as dynamic views."""
 
+from collections.abc import Callable
+
 from absl.testing import absltest
 import torch
 from torch_tpu._internal import testing as tt_testing
+from torch_tpu._internal.compile.dynamic import view_decomposition
 from torch_tpu._internal.utils import test_utils as utils
 from tests import oss_utils
 from tests import seed_test_utils
@@ -154,6 +157,173 @@ class DynamicViewTest(seed_test_utils.RepeatableTest):
       out_3_cpu = model_cpu(view_3_cpu)
       out_3_tpu = compiled_model(view_3_tpu)
       utils.assert_close(out_3_tpu.cpu(), out_3_cpu)
+
+  def test_unit_dim_arbitrary_stride_state_input(self):
+    """Tests a state input whose size-1 batch dim has an arbitrary stride.
+
+    torch.zeros_like() copies such strides verbatim (e.g. HF linear-attention
+    recurrent states). The input is contiguous and must not be reconstructed
+    as a view with a larger base than its storage.
+    """
+
+    class RecurrentStateUpdate(torch.nn.Module):
+
+      def forward(self, x, state):
+        # x: [1, seq, 64], state: [1, 8, 4, 64] (updated in place).
+        new_state = state * 0.5 + x.sum(dim=1)[:, None, None, :]
+        state.copy_(new_state)
+        return x + new_state.mean(dim=(1, 2)).unsqueeze(1)
+
+    model_cpu = RecurrentStateUpdate()
+    compiled_model = torch.compile(
+        RecurrentStateUpdate(),
+        backend="tpu",
+        options={"bounded_dynamism": True},
+    )
+
+    shape, stride = (1, 8, 4, 64), (4096, 256, 64, 1)
+    state_cpu = torch.empty_strided(shape, stride).copy_(torch.randn(shape))
+    state_tpu = torch.empty_strided(shape, stride, device=self.device)
+    state_tpu.copy_(state_cpu.to(self.device))
+    self.assertEqual(state_tpu.stride(), stride)
+    # The reconstructed base must cover exactly the state's storage.
+    self.assertEqual(
+        view_decomposition.get_base_tensor(state_tpu).numel(),
+        _storage_numel(state_tpu),
+    )
+
+    with torch.no_grad():
+      # The second and third steps run the bounded-dynamic executable.
+      for seq_len in (5, 9, 13):
+        x_cpu = torch.randn(1, seq_len, 64)
+        out_cpu = model_cpu(x_cpu, state_cpu)
+        out_tpu = compiled_model(x_cpu.to(self.device), state_tpu)
+        utils.assert_close(out_tpu.cpu(), out_cpu)
+        utils.assert_close(state_tpu.cpu(), state_cpu)
+
+  def test_unit_dim_arbitrary_stride_transposed_state_input(self):
+    """Tests a transposed view of a state whose size-1 dim has a bogus stride."""
+
+    class TransposedStateRead(torch.nn.Module):
+
+      def forward(self, x, state_t):
+        # x: [1, seq, 64], state_t: [1, 4, 8, 64] (transposed view).
+        return x + state_t.amax(dim=2).sum(dim=1, keepdim=True)
+
+    model_cpu = TransposedStateRead()
+    compiled_model = torch.compile(
+        TransposedStateRead(),
+        backend="tpu",
+        options={"bounded_dynamism": True},
+    )
+
+    shape, stride = (1, 8, 4, 64), (4096, 256, 64, 1)
+    state_cpu = torch.empty_strided(shape, stride).copy_(torch.randn(shape))
+    state_tpu = torch.empty_strided(shape, stride, device=self.device)
+    state_tpu.copy_(state_cpu.to(self.device))
+    state_t_cpu = state_cpu.transpose(1, 2)
+    state_t_tpu = state_tpu.transpose(1, 2)
+    # The reconstructed base must not exceed the state's storage.
+    self.assertLessEqual(
+        view_decomposition.get_base_tensor(state_t_tpu).numel(),
+        _storage_numel(state_t_tpu),
+    )
+
+    with torch.no_grad():
+      # The second and third steps run the bounded-dynamic executable.
+      for seq_len in (5, 9, 13):
+        x_cpu = torch.randn(1, seq_len, 64)
+        out_cpu = model_cpu(x_cpu, state_t_cpu)
+        out_tpu = compiled_model(x_cpu.to(self.device), state_t_tpu)
+        utils.assert_close(out_tpu.cpu(), out_cpu)
+
+  def _check_dynamic_unit_slice_input(
+      self,
+      base_shape: tuple[int, ...],
+      seq_dim: int,
+      view_fn: Callable[[torch.Tensor], torch.Tensor],
+      slice_dim: int,
+  ) -> None:
+    """Runs a size-1 slice of a growing base, which has dynamic strides.
+
+    The decomposition must rebuild the original base dims with a single slice
+    (no permute or flattened dims).
+
+    Args:
+      base_shape: Shape of the sliced base; `seq_dim` grows across steps.
+      seq_dim: Dimension of the base that grows across steps.
+      view_fn: Takes the base and returns the size-1 slice passed as input.
+      slice_dim: Base dimension sliced by `view_fn`.
+    """
+
+    class AddOne(torch.nn.Module):
+
+      def forward(self, x):
+        return x + 1
+
+    torch._dynamo.reset()
+    model_cpu = AddOne()
+    compiled_model = torch.compile(
+        AddOne(), backend="tpu", options={"bounded_dynamism": True}
+    )
+
+    with torch.no_grad():
+      # The second and third steps run the bounded-dynamic executable.
+      for seq_len in (20, 30, 40):
+        shape = list(base_shape)
+        shape[seq_dim] = seq_len
+        base_cpu = torch.randn(shape)
+        view_cpu = view_fn(base_cpu)
+        view_tpu = view_fn(base_cpu.to(self.device))
+
+        decomp = view_decomposition.decompose_into_view_sequence(view_tpu)
+        self.assertIsNotNone(decomp)
+        decomp_base_shape, view_ops = decomp
+        self.assertEqual(decomp_base_shape, shape)
+        self.assertLen(view_ops, 1)
+        self.assertEqual(view_ops[0][0], "slice")
+        self.assertEqual(view_ops[0][1][0], slice_dim)
+        base_tpu = view_decomposition.get_base_tensor(view_tpu)
+        self.assertEqual(list(base_tpu.shape), shape)
+
+        out_tpu = compiled_model(view_tpu)
+        utils.assert_close(out_tpu.cpu(), model_cpu(view_cpu))
+
+  def test_dynamic_last_token_slice_input(self):
+    """Tests `hidden[:, -1:, :]` for batch sizes 1 and 2."""
+    for batch in (1, 2):
+      with self.subTest(batch=batch):
+        self._check_dynamic_unit_slice_input(
+            (batch, 20, 64), 1, lambda x: x[:, -1:, :], slice_dim=1
+        )
+
+  def test_dynamic_last_input_id_slice_input(self):
+    """Tests `input_ids[:, -1:]`, where every dim has size 1."""
+    self._check_dynamic_unit_slice_input(
+        (1, 20), 1, lambda x: x[:, -1:], slice_dim=1
+    )
+
+  def test_dynamic_middle_token_slice_input(self):
+    """Tests `hidden[:, 3:4, :]` with batch size 1 (constant storage offset)."""
+    self._check_dynamic_unit_slice_input(
+        (1, 20, 64), 1, lambda x: x[:, 3:4, :], slice_dim=1
+    )
+
+  def test_dynamic_last_position_slice_input(self):
+    """Tests `cache[:, :, -1:, :]`."""
+    self._check_dynamic_unit_slice_input(
+        (2, 4, 20, 8), 2, lambda x: x[:, :, -1:, :], slice_dim=2
+    )
+
+  def test_dynamic_first_position_slice_input(self):
+    """Tests `cache[:, :, :1, :]` with batch size 1 (zero storage offset)."""
+    self._check_dynamic_unit_slice_input(
+        (1, 4, 20, 8), 2, lambda x: x[:, :, :1, :], slice_dim=2
+    )
+
+
+def _storage_numel(tensor: torch.Tensor) -> int:
+  return tensor.untyped_storage().nbytes() // tensor.element_size()
 
 
 if __name__ == "__main__":

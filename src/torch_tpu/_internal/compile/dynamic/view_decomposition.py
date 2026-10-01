@@ -18,11 +18,13 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 import functools
+import math
 from typing import Any
 
 from absl import logging
 import sympy
 import torch
+from torch.fx.experimental import symbolic_shapes
 
 
 def _fmt_sym(val: Any) -> str:
@@ -99,8 +101,26 @@ def _div_expr(curr_expr: Any, st_expr: Any) -> tuple[Any, Any]:
     ) from e
 
 
+def _is_unit_dim(size: Any) -> bool:
+  """Returns whether a dimension is statically known to have size 1.
+
+  Size-1 dimensions never advance through storage, so their strides carry no
+  layout information (e.g. `torch.zeros_like` may copy an arbitrary stride for
+  them). The check is guard-free: backed dynamic dimensions are specialized
+  away from 0/1 and are never treated as unit dimensions.
+
+  Args:
+    size: Dimension size as a Python int or torch.SymInt.
+  """
+  return symbolic_shapes.statically_known_true(size == 1)
+
+
 def _is_contiguous_tensor(val: Any) -> bool:
-  """Checks if a tensor or FakeTensor metadata represents a standard contiguous layout."""
+  """Checks if a tensor or FakeTensor metadata represents a standard contiguous layout.
+
+  Mirrors c10 `_compute_contiguous`: empty tensors are contiguous and strides of
+  size-1 dimensions are ignored. Additionally requires a zero storage offset.
+  """
   assert (
       val is not None and hasattr(val, "shape") and hasattr(val, "stride")
   ), f"Expected tensor or FakeTensor with shape and stride, got {type(val)}"
@@ -109,17 +129,18 @@ def _is_contiguous_tensor(val: Any) -> bool:
   strides = list(val.stride())
   storage_offset = val.storage_offset()
 
+  if any(symbolic_shapes.statically_known_true(d == 0) for d in shape):
+    return True
+
   # Non-zero storage offset is not standard contiguous
   if storage_offset != 0:
     return False
 
-  num_dims = len(shape)
-  if num_dims == 0:
-    return True
-
   # Check if standard contiguous row-major strides match current strides
   expected_st = 1
   for d, st in zip(reversed(shape), reversed(strides)):
+    if _is_unit_dim(d):
+      continue
     if st != expected_st:
       return False
     expected_st = expected_st * d
@@ -195,6 +216,21 @@ def _build_tail(
       phys_strides,
       perm_list,
   )
+  return phys_shape, phys_strides, perm_list
+
+
+def _build_unit_free_tail(
+    shape: Sequence[Any], strides: Sequence[Any]
+) -> tuple[list[Any], list[Any], list[int] | None]:
+  """Like `_build_tail`, but orders size-1 dims innermost with stride 1."""
+  is_unit = [_is_unit_dim(d) for d in shape]
+  # Stride 0 sorts size-1 dims last (stably); they then get the stride 1.
+  phys_shape, phys_strides, perm_list = _build_tail(
+      shape, [0 if unit else st for unit, st in zip(is_unit, strides)]
+  )
+  phys_strides = [
+      1 if _is_unit_dim(d) else st for d, st in zip(phys_shape, phys_strides)
+  ]
   return phys_shape, phys_strides, perm_list
 
 
@@ -572,6 +608,62 @@ def _assemble_canonical_view_ops(
   return view_ops
 
 
+def _hint(val: Any) -> int:
+  """Returns the concrete value of an int or the traced example value of a SymInt."""
+  if not isinstance(val, torch.SymInt):
+    return int(val)
+  hint = val.node.hint
+  assert isinstance(
+      hint, int
+  ), f"Expected a backed SymInt with a hint, got {val}"
+  return hint
+
+
+def _decompose_layout(
+    val: torch.Tensor, compute_slice_ops: bool = True
+) -> tuple[list[Any], list[tuple[int, Any, Any, Any]], list[int] | None]:
+  """Computes the base shape, slice ops and permutation of a non-contiguous view.
+
+  Uses the stride-sorted layout unless its base exceeds the view's storage.
+  That happens when a size-1 dim has an arbitrary stride, e.g. a transposed
+  `torch.zeros_like` state that copied the stride of its size-1 batch dim.
+  Size-1 dims never advance through storage, so the fallback moves them
+  innermost with stride 1. The storage check is guard-free and evaluated on
+  the traced example values: a guard would relate dynamic strides to the
+  storage size through divisibility constraints that conflict with bounded
+  ranges. At runtime all values are concrete, so `get_base_tensor` takes the
+  same branch as the trace unless the overflow outcome itself changes between
+  calls of one compiled graph.
+
+  Args:
+    val: Non-contiguous tensor or FakeTensor.
+    compute_slice_ops: Whether to construct and return the slice ops.
+
+  Returns:
+    A tuple of (base_shape, slice_ops, perm_list).
+  """
+  shape = list(val.shape)
+  strides = list(val.stride())
+  storage_offset = val.storage_offset()
+  storage_numel = val.untyped_storage().nbytes() // val.element_size()
+  phys_shape, phys_strides, perm_list = _build_tail(shape, strides)
+  base_shape, slice_ops = _build_body(
+      phys_shape, phys_strides, storage_offset, compute_slice_ops
+  )
+  if math.prod(_hint(d) for d in base_shape) <= _hint(storage_numel):
+    return base_shape, slice_ops, perm_list
+  logging.debug(
+      "_decompose_layout: base_shape=%s exceeds storage numel %s",
+      base_shape,
+      storage_numel,
+  )
+  phys_shape, phys_strides, perm_list = _build_unit_free_tail(shape, strides)
+  base_shape, slice_ops = _build_body(
+      phys_shape, phys_strides, storage_offset, compute_slice_ops
+  )
+  return base_shape, slice_ops, perm_list
+
+
 def decompose_into_view_sequence(
     node_or_val: torch.fx.Node | torch.Tensor,
 ) -> tuple[list[Any], list[tuple[str, tuple[Any, ...]]]] | None:
@@ -608,8 +700,7 @@ def decompose_into_view_sequence(
       _fmt_sym(storage_offset),
   )
 
-  phys_shape, phys_strides, perm_list = _build_tail(shape, strides)
-  base_shape, slice_ops = _build_body(phys_shape, phys_strides, storage_offset)
+  base_shape, slice_ops, perm_list = _decompose_layout(val)
   view_ops = _assemble_canonical_view_ops(slice_ops, perm_list)
 
   logging.debug(
@@ -628,14 +719,7 @@ def get_base_tensor(tensor: torch.Tensor) -> torch.Tensor:
   if _is_contiguous_tensor(tensor):
     return tensor
 
-  shape = list(tensor.shape)
-  strides = list(tensor.stride())
-  storage_offset = tensor.storage_offset()
-
-  phys_shape, phys_strides, _ = _build_tail(shape, strides)
-  base_shape, _ = _build_body(
-      phys_shape, phys_strides, storage_offset, compute_slice_ops=False
-  )
+  base_shape, _, _ = _decompose_layout(tensor, compute_slice_ops=False)
   base_strides = [1] * len(base_shape)
   for i in reversed(range(len(base_shape) - 1)):
     base_strides[i] = base_strides[i + 1] * base_shape[i + 1]
