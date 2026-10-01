@@ -146,6 +146,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           DISPATCH_OPT_IN: ${{ inputs.run_rbe_presubmit }}
           SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           HAS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'ci:rbe-presubmit') }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
@@ -153,7 +154,7 @@ jobs:
           if [[ "$DISPATCH_OPT_IN" == "true" ]]; then
             rbe=true
           elif [[ "$SAME_REPO" == "true" ]]; then
-            if [[ "$HAS_LABEL" == "true" ]]; then
+            if [[ "$HAS_LABEL" == "true" ]] || (( ${PR_NUMBER:-1} % 10 == 0 )); then
               rbe=true
             else
               msg="$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA" --jq .commit.message)"
