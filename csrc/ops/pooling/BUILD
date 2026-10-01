@@ -127,6 +127,7 @@ torch_tpu_cc_library(
         "//csrc/common:to_string",
         "//csrc/common:utils",
         "//csrc/eager:device_buffer",
+        "//csrc/eager:device_buffer_utils",
         "//csrc/eager:op_dispatcher",
         "//csrc/eager:tensor_to_buffer",
         "//csrc/ops:op_builder_utils",

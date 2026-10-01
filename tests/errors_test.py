@@ -8166,6 +8166,31 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       torch.ops.aten.adaptive_avg_pool3d(inp, tuple(out.shape))
 
+  def test_adaptive_avg_pool_backward_empty_grad_output(self):
+    x2 = torch.ones(2, 3, 4, 4, device=et.device())
+    grad_out2 = torch.zeros(2, 3, 0, 0, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""adaptive_avg_pool2d_backward(): expected grad_output to have non-zero size for non-batch dimensions, got [2, 3, 0, 0] with dimension 2 being empty""",
+        gpu="""adaptive_avg_pool2d_backward(): Expected grad_output to have non-zero size for non-batch dimensions, but grad_output has sizes [2, 3, 0, 0] with dimension 2 being empty""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.ops.aten._adaptive_avg_pool2d_backward(grad_out2, x2)
+
+    x3 = torch.ones(2, 3, 4, 4, 4, device=et.device(), requires_grad=True)
+    out3 = torch.nn.functional.adaptive_avg_pool3d(x3, (0, 0, 0))
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r"adaptive_avg_pool3d_backward(\.grad_input)?\(\):"
+            r" expected grad_output to have non-zero size for non-batch"
+            r" dimensions, got \[2, 3, 0, 0, 0\] with dimension 2 being empty"
+        ),
+        gpu="""adaptive_avg_pool3d_backward(): Expected grad_output to have non-zero size for non-batch dimensions, but grad_output has sizes [2, 3, 0, 0, 0] with dimension 2 being empty""",
+        message_reviewed_by="adivinpatel",
+    ):
+      out3.backward(torch.zeros_like(out3))
+
   def test_max_pool2d_with_indices_invalid_rank(self):
     inp = torch.ones(10, 10, device=et.device())
 

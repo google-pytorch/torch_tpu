@@ -15034,6 +15034,31 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(run_nondivisible_3d)
 
+  def test_adaptive_avg_pool_zero_output_size(self):
+    x_2d_init = torch.randn(2, 3, 4, 4, dtype=torch.float32)
+    for out_size_2d in [(0, 0), (0, 2), (3, 0)]:
+
+      def run_2d_zero_out(dev, out_size=out_size_2d):
+        x = x_2d_init.detach().clone().to(dev)
+        out = torch.nn.functional.adaptive_avg_pool2d(x, out_size)
+        out_buf = torch.empty((2, 3, 2, 2), dtype=torch.float32, device=dev)
+        torch.ops.aten.adaptive_avg_pool2d.out(x, out_size, out=out_buf)
+        return out, out_buf
+
+      self.assert_close_tpu_vs_cpu(run_2d_zero_out)
+
+    x_3d_init = torch.randn(2, 3, 4, 4, 4, dtype=torch.float32)
+    for out_size_3d in [(0, 0, 0), (0, 2, 2), (2, 0, 3)]:
+
+      def run_3d_zero_out(dev, out_size=out_size_3d):
+        x = x_3d_init.detach().clone().to(dev)
+        out = torch.nn.functional.adaptive_avg_pool3d(x, out_size)
+        out_buf = torch.empty((2, 3, 2, 2, 2), dtype=torch.float32, device=dev)
+        torch.ops.aten.adaptive_avg_pool3d.out(x, out_size, out=out_buf)
+        return out, out_buf
+
+      self.assert_close_tpu_vs_cpu(run_3d_zero_out)
+
   def test_ldexp_large_exponent(self):
     def compute(device):
       exponent = 127

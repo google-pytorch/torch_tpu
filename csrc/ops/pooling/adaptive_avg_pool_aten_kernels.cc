@@ -30,7 +30,6 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "c10/core/SymIntArrayRef.h"
-#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -39,6 +38,7 @@
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
+#include "csrc/eager/device_buffer_utils.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/macros/kernel.h"
@@ -618,10 +618,26 @@ absl::StatusOr<at::Tensor> AdaptiveAvgPool2dHelper(
   if (output_size.size() > 1) {
     out_w = output_size[1].expect_int();
   }
+  TT_RET_CHECK(out_h >= 0 && out_w >= 0, error::kInvalidArgument)
+      << "expected output size to be non-negative, got [" << out_h << ", "
+      << out_w << "]";
 
   auto out_dims = CopyIntVector(self.sizes());
   out_dims[num_dims - 2] = out_h;
   out_dims[num_dims - 1] = out_w;
+
+  if (out_h == 0 || out_w == 0 || self.numel() == 0) {
+    TT_ASSIGN_OR_RETURN(
+        DeviceBufferRef out_buf,
+        CreateZeroSizeDeviceBufferRef(out_dims, output_mlir_dtype));
+    if (out.has_value()) {
+      TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(out->get(), out_dims));
+      TT_RETURN_IF_ERROR(
+          AssignBufferToAtTensor(std::move(out_buf), out->get()));
+      return out->get();
+    }
+    return MakeTensor(std::move(out_buf));
+  }
 
   if (in_h >= out_h && in_w >= out_w && in_h % out_h == 0 &&
       in_w % out_w == 0) {
@@ -724,14 +740,16 @@ at::Tensor& AtenAdaptiveAvgPool3dOut(const at::Tensor& self,
           out_h = output_size[1].expect_int();
           out_w = output_size[2].expect_int();
         }
+        TT_CHECK_THROW(out_d >= 0 && out_h >= 0 && out_w >= 0,
+                       error::kInvalidArgument)
+            << "expected output size to be non-negative, got [" << out_d << ", "
+            << out_h << ", " << out_w << "]";
 
         SmallInt64Vector expected_out_shape = CopyIntVector(self.sizes());
         expected_out_shape[num_dims - 3] = out_d;
         expected_out_shape[num_dims - 2] = out_h;
         expected_out_shape[num_dims - 1] = out_w;
-        if (out.sizes() != expected_out_shape) {
-          AtenResize_(out, expected_out_shape, std::nullopt);
-        }
+        TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, expected_out_shape));
 
         if (out.numel() == 0) {
           return out;
@@ -831,6 +849,10 @@ at::Tensor AtenAdaptiveAvgPool3d(const at::Tensor& self,
                 out_h = output_size[1].expect_int();
                 out_w = output_size[2].expect_int();
               }
+              TT_CHECK_THROW(out_d >= 0 && out_h >= 0 && out_w >= 0,
+                             error::kInvalidArgument)
+                  << "expected output size to be non-negative, got [" << out_d
+                  << ", " << out_h << ", " << out_w << "]";
 
               auto out_shape = CopyIntVector(self.sizes());
               out_shape[num_dims - 3] = out_d;
@@ -849,6 +871,13 @@ at::Tensor AtenAdaptiveAvgPool2dBackward(const at::Tensor& grad_output,
   TT_KERNEL(
       OpName::kAdaptiveAvgPool2dBackward, param_keys, (grad_output, self), {
         TT_THROW_IF_ERROR(ValidateAdaptiveAvgPool2dInputs(self));
+        for (int64_t i = 1; i < grad_output.dim(); ++i) {
+          TT_CHECK_THROW(grad_output.size(i) > 0, error::kInvalidArgument)
+              << "expected grad_output to have non-zero size for non-batch "
+                 "dimensions, got "
+              << grad_output.sizes() << " with dimension " << i
+              << " being empty";
+        }
 
         const int64_t spatial_dim_count = 2;
         const auto num_dims = self.dim();
@@ -910,6 +939,13 @@ at::Tensor& AtenAdaptiveAvgPool3dBackwardGradInput(
   TT_KERNEL(
       OpName::kAdaptiveAvgPool3dBackwardGradInput, param_keys,
       (grad_output, self, grad_input), {
+        for (int64_t i = 1; i < grad_output.dim(); ++i) {
+          TT_CHECK_THROW(grad_output.size(i) > 0, error::kInvalidArgument)
+              << "expected grad_output to have non-zero size for non-batch "
+                 "dimensions, got "
+              << grad_output.sizes() << " with dimension " << i
+              << " being empty";
+        }
         const int64_t spatial_dim_count = 3;
         const auto num_dims = self.dim();
         const int64_t in_d = self.size(num_dims - 3);
