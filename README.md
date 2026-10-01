@@ -69,10 +69,24 @@ gcloud auth login
 gcloud auth application-default login
 ```
 
-Install from latest nightly:
+Then install from **one** of these two channels:
+
+*   **Nightly** is built from `main` every day. It has the newest changes but
+    can break between builds.
+*   **Stable** is built from the current `release/*` branch, so it tracks the
+    code for the next release instead of everything landing on `main`. These
+    wheels are versioned `X.Y.Z.dev<timestamp>+stable_<branch>`.
+
+Nightly:
 
 ```bash
 pip install --pre --index-url "https://oauth2accesstoken:$(gcloud auth print-access-token)@us-python.pkg.dev/ml-oss-artifacts-transient/torch-tpu-virtual-registry/simple/" torch_tpu
+```
+
+Stable:
+
+```bash
+pip install --pre --index-url "https://oauth2accesstoken:$(gcloud auth print-access-token)@us-python.pkg.dev/ml-oss-artifacts-transient/torch-tpu-stable-virtual-registry/simple/" torch_tpu
 ```
 
 ### Build from source

@@ -27,6 +27,8 @@
 #                       Defaults to "true". Set to "false" to skip upload.
 #   KOKORO_ARTIFACTS_DIR: Optional. Base directory containing the dist/ folder.
 #                         Defaults to "$(pwd)/../../artifacts".
+#   AR_REPOSITORY_URL: Optional. Artifact Registry repository to upload to.
+#                      Defaults to the torch-tpu-testing-registry nightly channel.
 #
 # Examples:
 #   ./upload_wheel.sh "torch_tpu-*.whl"
@@ -49,11 +51,12 @@ KOKORO_ARTIFACTS_DIR="${KOKORO_ARTIFACTS_DIR:-$(pwd)/../../artifacts}"
 WHEEL_DIR="${KOKORO_ARTIFACTS_DIR}/dist"
 
 CONTAINER_IMAGE="us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest"
+AR_REPOSITORY_URL="${AR_REPOSITORY_URL:-https://us-python.pkg.dev/ml-oss-artifacts-transient/torch-tpu-testing-registry/}"
 
 # Upload to Google Artifact Registry via Twine and keyring auth, mirroring the GitHub action process.
 export UPLOAD_WHEEL_TO_AR=${UPLOAD_WHEEL_TO_AR:-true}
 if [[ "${UPLOAD_WHEEL_TO_AR}" == "true" ]]; then
-  echo "===> Uploading wheels matching '${WHEEL_PATTERN}' to internal Artifact Registry..."
+  echo "===> Uploading wheels matching '${WHEEL_PATTERN}' to ${AR_REPOSITORY_URL}..."
   docker run --rm \
     -v "${WHEEL_DIR}:/dist" \
     "${CONTAINER_IMAGE}" \
@@ -61,7 +64,7 @@ if [[ "${UPLOAD_WHEEL_TO_AR}" == "true" ]]; then
       uv run --isolated \
         --with twine \
         --with keyrings.google-artifactregistry-auth \
-        twine upload --repository-url https://us-python.pkg.dev/ml-oss-artifacts-transient/torch-tpu-testing-registry/ /dist/${WHEEL_PATTERN}
+        twine upload --repository-url ${AR_REPOSITORY_URL} /dist/${WHEEL_PATTERN}
     "
   echo "===> Wheels uploaded successfully to Artifact Registry!"
 fi
