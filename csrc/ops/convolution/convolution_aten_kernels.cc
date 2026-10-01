@@ -99,6 +99,27 @@ absl::Status ValidateConvolutionInputs(
   TT_RETURN_IF_ERROR(ValidateConvolutionSpatialDimensionsMatch(
       num_spatial_dims, output_padding, "output_padding"));
 
+  for (int64_t i = 0; i < num_spatial_dims; ++i) {
+    TT_RET_CHECK(stride[i] > 0, error::kInvalidArgument)
+        << "expected stride to be positive, got " << ToString(stride);
+    TT_RET_CHECK(padding[i] >= 0, error::kInvalidArgument)
+        << "expected padding to be non-negative, got " << ToString(padding);
+    TT_RET_CHECK(dilation[i] > 0, error::kInvalidArgument)
+        << "expected dilation to be positive, got " << ToString(dilation);
+    TT_RET_CHECK(output_padding[i] >= 0, error::kInvalidArgument)
+        << "expected output_padding to be non-negative, got "
+        << ToString(output_padding);
+    if (transposed) {
+      TT_RET_CHECK(
+          output_padding[i] < stride[i] || output_padding[i] < dilation[i],
+          error::kInvalidArgument)
+          << "expected output_padding to be smaller than either stride or "
+             "dilation, got output_padding="
+          << ToString(output_padding) << ", stride=" << ToString(stride)
+          << ", dilation=" << ToString(dilation);
+    }
+  }
+
   TT_RETURN_IF_ERROR(ValidateConvolutionWeight(
       weight.sizes(), num_spatial_dims, in_channels, groups, transposed));
 

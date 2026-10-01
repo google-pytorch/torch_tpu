@@ -6277,6 +6277,81 @@ Supported combinations for non-constant padding:
     ):
       _run_convolution_backward(grad, inp, w)
 
+  def test_convolution_invalid_parameters(self):
+    inp = torch.ones(2, 3, 8, 8, device=et.device())
+    w = torch.ones(4, 3, 3, 3, device=et.device())
+    w_t = torch.ones(3, 4, 3, 3, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""convolution(): expected padding to be non-negative, got [-1, -1]""",
+        gpu="""negative padding is not supported""",
+    ):
+      torch.nn.functional.conv2d(inp, w, padding=-1)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""convolution(): expected output_padding to be non-negative, got [-1, -1]""",
+        gpu="""negative output_padding is not supported""",
+    ):
+      torch.nn.functional.conv_transpose2d(inp, w_t, output_padding=-1)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""convolution(): expected output_padding to be smaller than either stride or dilation, got output_padding=[1, 1], stride=[1, 1], dilation=[1, 1]""",
+        gpu="""output padding must be smaller than either stride or dilation, but got output_padding=[1, 1] stride=[1, 1] dilation=[1, 1]""",
+    ):
+      torch.nn.functional.conv_transpose2d(
+          inp, w_t, stride=1, dilation=1, output_padding=1
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""convolution(): expected stride to be positive, got [-1, -1]""",
+        gpu="""non-positive stride is not supported""",
+    ):
+      torch.nn.functional.conv2d(
+          torch.ones(2, 3, 2, 2, device=et.device()),
+          torch.ones(4, 3, 5, 5, device=et.device()),
+          stride=-1,
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""convolution(): expected dilation to be positive, got [0, 0]""",
+        gpu="""non-positive dilation is not supported""",
+    ):
+      torch.nn.functional.conv2d(inp, w, dilation=0)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""convolution(): expected groups to be positive, got 0""",
+        gpu="""non-positive groups is not supported""",
+    ):
+      torch.nn.functional.conv2d(inp, w, groups=0)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""convolution(): expected out_channels (3) to be divisible by groups (2), got remainder 1""",
+        gpu="""Given groups=2, expected weight to be divisible by 2 at dimension 0, but got weight of size [3, 2, 3, 3] instead""",
+    ):
+      torch.nn.functional.conv2d(
+          torch.ones(2, 4, 8, 8, device=et.device()),
+          torch.ones(3, 2, 3, 3, device=et.device()),
+          groups=2,
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""convolution(): expected in_channels (3) to be divisible by groups (2), got remainder 1""",
+        gpu="""Given groups=2, expected weight to be divisible by 2 at dimension 0, but got weight of size [3, 2, 3, 3] instead""",
+    ):
+      torch.nn.functional.conv_transpose2d(
+          torch.ones(2, 3, 8, 8, device=et.device()),
+          torch.ones(3, 2, 3, 3, device=et.device()),
+          groups=2,
+      )
+
   @parameterized.named_parameters(
       {"testcase_name": "min", "op": torch.min, "op_name": "min"},
       {"testcase_name": "max", "op": torch.max, "op_name": "max"},

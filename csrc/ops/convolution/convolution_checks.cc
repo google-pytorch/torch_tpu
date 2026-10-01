@@ -16,6 +16,7 @@
 
 #include "csrc/ops/convolution/convolution_checks.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <string_view>
 
@@ -52,6 +53,9 @@ absl::Status ValidateConvolutionWeight(absl::Span<const int64_t> weight,
                                        const int64_t in_channels,
                                        const int64_t groups,
                                        const bool transposed) {
+  TT_RET_CHECK(groups > 0, error::kInvalidArgument)
+      << "expected groups to be positive, got " << groups;
+
   if (transposed) {
     TT_RET_CHECK(weight.size() == num_spatial_dims + 2, error::kInvalidArgument)
         << "expected the weight tensor to have " << num_spatial_dims + 2
@@ -63,6 +67,11 @@ absl::Status ValidateConvolutionWeight(absl::Span<const int64_t> weight,
         << "expected the first dimension of the weight tensor of shape "
         << ToString(weight) << " to be " << in_channels
         << " (number of in channels), got " << weight[0];
+
+    TT_RET_CHECK(in_channels % groups == 0, error::kInvalidArgument)
+        << "expected in_channels (" << in_channels
+        << ") to be divisible by groups (" << groups << "), got remainder "
+        << in_channels % groups;
   } else {
     TT_RET_CHECK(weight.size() == num_spatial_dims + 2, error::kInvalidArgument)
         << "expected the weight tensor to have " << num_spatial_dims + 2
@@ -75,6 +84,17 @@ absl::Status ValidateConvolutionWeight(absl::Span<const int64_t> weight,
         << ToString(weight) << " to be " << in_channels / groups << " ("
         << in_channels << " in channels divided by " << groups
         << " groups), got " << weight[1];
+
+    TT_RET_CHECK(weight[0] % groups == 0, error::kInvalidArgument)
+        << "expected out_channels (" << weight[0]
+        << ") to be divisible by groups (" << groups << "), got remainder "
+        << weight[0] % groups;
+  }
+
+  for (size_t d = 0; d < weight.size(); ++d) {
+    TT_RET_CHECK(weight[d] != 0, error::kInvalidArgument)
+        << "expected weight dimensions to be non-zero, got shape "
+        << ToString(weight);
   }
 
   return absl::OkStatus();
