@@ -85,6 +85,7 @@ benchmark = [
 
 examples = [
     "datasets>=4.8",
+    "einops>=0.8.2",
     "pillow>=11",
     "tqdm>=4",
     "huggingface-hub>=0.34",

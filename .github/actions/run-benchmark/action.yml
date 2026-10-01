@@ -283,6 +283,17 @@ runs:
           INSTALL_ARGS+=(--index-strategy unsafe-best-match)
         fi
 
+        OVERRIDES_FILE=""
+        if [[ "$BENCHMARK_PYTHON_VERSION" == "3.15" ]]; then
+          # Neither grain nor array-record (a required Linux dependency of
+          # tensorflow-datasets) currently publishes source distributions or
+          # Python 3.15 wheels on PyPI. Override them during environment setup
+          # so benchmarks that do not import them can still run on Python 3.15.
+          OVERRIDES_FILE="$(mktemp)"
+          printf "grain ; python_version < '3.15'\ntensorflow-datasets ; python_version < '3.15'\n" > "$OVERRIDES_FILE"
+          INSTALL_ARGS+=(--overrides "$OVERRIDES_FILE")
+        fi
+
         SPECS=("$BENCHMARK_WHEEL")
         if [[ -n "$TORCH_SPEC" ]]; then
           SPECS+=("$TORCH_SPEC")
@@ -299,6 +310,7 @@ runs:
         echo "Installing: ${SPECS[*]}"
         uv pip install --python "$VENV_PYTHON" \
           ${INSTALL_ARGS[@]+"${INSTALL_ARGS[@]}"} "${SPECS[@]}"
+        rm -f "$OVERRIDES_FILE"
 
         echo "BENCHMARK_PYTHON=$VENV_PYTHON" >> "$GITHUB_ENV"
         echo "::endgroup::"

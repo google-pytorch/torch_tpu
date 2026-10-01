@@ -45,6 +45,20 @@ py_test(
 )
 
 py_binary(
+    name = "check_dependency_caveats",
+    srcs = ["check_dependency_caveats.py"],
+)
+
+py_test(
+    name = "check_dependency_caveats_test",
+    size = "small",
+    srcs = ["check_dependency_caveats_test.py"],
+    deps = [
+        ":check_dependency_caveats",
+    ],
+)
+
+py_binary(
     name = "delete_cancelled_pr_runs",
     srcs = ["delete_cancelled_pr_runs.py"],
 )

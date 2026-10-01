@@ -47,10 +47,10 @@ torch_tpu_py_test(
         "//perflab/torchax:torchax_step",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
+        "//shims/flax_nnx",  # buildcleaner: keep
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//tests:seed_test_utils",
-        "@pypi//flax",  # buildcleaner: keep
         "@pypi//numpy",
         "@pypi//torchax",
     ],

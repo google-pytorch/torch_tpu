@@ -1222,11 +1222,12 @@ def torch_tpu_py_test(
         env_wheel_versions = {}
         for v in SUPPORTED_PYTHON_VERSIONS:
             env_v = dict(env_wheel)
+            v_minor = v.removesuffix("t").replace(".", "")
             std_ld_v = [
-                "../pypi_torch_{}/site-packages/torch/lib".format(v.replace(".", "")),
-                "../rules_python++pip+torch_tpu_pypi_{}_torch/site-packages/torch/lib".format(v.replace(".", "")),
-                "../pypi_libtpu_{}/site-packages/libtpu".format(v.replace(".", "")),
-                "../rules_python++pip+torch_tpu_pypi_{}_libtpu_nightly/site-packages/libtpu".format(v.replace(".", "")),
+                "../pypi_torch_{}/site-packages/torch/lib".format(v_minor),
+                "../rules_python++pip+torch_tpu_pypi_{}_torch/site-packages/torch/lib".format(v_minor),
+                "../pypi_libtpu_{}/site-packages/libtpu".format(v_minor),
+                "../rules_python++pip+torch_tpu_pypi_{}_libtpu_nightly/site-packages/libtpu".format(v_minor),
                 "../torch_tpu_py_import_unpacked_wheel/torch_tpu/_internal",
                 "../torch_tpu_py_import_unpacked_wheel/torch_tpu/csrc/common",
                 "torch_tpu_py_import_unpacked_wheel/torch_tpu/csrc/common",

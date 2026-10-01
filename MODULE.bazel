@@ -8,6 +8,22 @@ SUPPORTED_PYTHON_VERSIONS = [
     "3.12",
     "3.13",
     "3.14",
+    "3.15",
+    "3.14t",
+    "3.15t",
+]
+
+# rules_python's python.toolchain and pip.parse key off the major.minor CPython
+# version; free-threaded variants (e.g. "3.14t") share the same minor-version
+# toolchain registration and select the free-threaded build via
+# --@rules_python//python/config_settings:py_freethreaded=yes.
+# See https://github.com/google-pytorch/torch_tpu/issues/4647 for upgrading
+# rules_python to >=2.2.0 and switching pip.parse to pure-Starlark wheel
+# downloads.
+_CPYTHON_MINOR_VERSIONS = [
+    v
+    for v in SUPPORTED_PYTHON_VERSIONS
+    if not v.endswith("t")
 ]
 
 # The Python version the standard build defaults to. Like the list above, the
@@ -132,12 +148,12 @@ python.defaults(
 
 [python.toolchain(
     python_version = v,
-) for v in SUPPORTED_PYTHON_VERSIONS]
+) for v in _CPYTHON_MINOR_VERSIONS]
 
 [use_repo(
     python,
     "python_" + v.replace(".", "_"),
-) for v in SUPPORTED_PYTHON_VERSIONS]
+) for v in _CPYTHON_MINOR_VERSIONS]
 
 # Pip extension
 pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
@@ -173,18 +189,26 @@ _TORCH_EXTRA_PIP_ARGS = _TORCH_BASE_PIP_ARGS + [
     "https://download.pytorch.org/whl/cpu",
 ]
 
+_TORCH_NIGHTLY_EXTRA_PIP_ARGS = _TORCH_BASE_PIP_ARGS + [
+    "--extra-index-url",
+    "https://download.pytorch.org/whl/nightly/cpu",
+]
+
 _TORCH_WHL_MODIFICATIONS = {
     "//bazel:torch_wheel.json": "torch",
 }
 
+# PyTorch < 2.15 blocks torch.compile on Python 3.15, so requirements_3_15.txt
+# pins torch and torchvision from the 2.15 nightly CPU index until 2.15 is
+# released.
 [pip.parse(
     extra_hub_aliases = _TORCH_HUB_ALIASES,
-    extra_pip_args = _TORCH_EXTRA_PIP_ARGS,
+    extra_pip_args = _TORCH_NIGHTLY_EXTRA_PIP_ARGS if python_version == "3.15" else _TORCH_EXTRA_PIP_ARGS,
     hub_name = "torch_tpu_pypi",
     python_version = python_version,
     requirements_lock = "//requirements:requirements_{}.txt".format(python_version.replace(".", "_")),
     whl_modifications = _TORCH_WHL_MODIFICATIONS,
-) for python_version in SUPPORTED_PYTHON_VERSIONS]
+) for python_version in _CPYTHON_MINOR_VERSIONS]
 
 # Additional PyTorch versions for the multi-ABI wheel. The default hub above
 # provides the default torch version (via requirements_{py}.txt) plus the whole
@@ -214,11 +238,6 @@ NIGHTLY_TORCH_VERSION = "2.15.0"
 
 EXTRA_GLUE_TORCH_VERSIONS = EXTRA_PYTORCH_VERSIONS + [NIGHTLY_TORCH_VERSION]
 
-_TORCH_NIGHTLY_EXTRA_PIP_ARGS = _TORCH_BASE_PIP_ARGS + [
-    "--extra-index-url",
-    "https://download.pytorch.org/whl/nightly/cpu",
-]
-
 [pip.parse(
     extra_hub_aliases = _TORCH_HUB_ALIASES,
     extra_pip_args = _TORCH_NIGHTLY_EXTRA_PIP_ARGS if torch_version == NIGHTLY_TORCH_VERSION else _TORCH_EXTRA_PIP_ARGS,
@@ -232,10 +251,11 @@ _TORCH_NIGHTLY_EXTRA_PIP_ARGS = _TORCH_BASE_PIP_ARGS + [
         "nightly" if torch_version == NIGHTLY_TORCH_VERSION else torch_version.replace(".", "_"),
     ),
     whl_modifications = _TORCH_WHL_MODIFICATIONS,
-) for torch_version in EXTRA_GLUE_TORCH_VERSIONS for python_version in SUPPORTED_PYTHON_VERSIONS]
+) for torch_version in EXTRA_GLUE_TORCH_VERSIONS for python_version in _CPYTHON_MINOR_VERSIONS]
 
 _TORCH_CUDA_EXTRA_PIP_ARGS = _TORCH_BASE_PIP_ARGS
 
+# PyTorch does not yet publish Python 3.15 CUDA wheels on PyPI.
 [pip.parse(
     extra_hub_aliases = _TORCH_HUB_ALIASES,
     extra_pip_args = _TORCH_CUDA_EXTRA_PIP_ARGS,
@@ -243,7 +263,7 @@ _TORCH_CUDA_EXTRA_PIP_ARGS = _TORCH_BASE_PIP_ARGS
     python_version = python_version,
     requirements_lock = "//requirements:requirements_cuda_{}.txt".format(python_version.replace(".", "_")),
     whl_modifications = _TORCH_WHL_MODIFICATIONS,
-) for python_version in SUPPORTED_PYTHON_VERSIONS]
+) for python_version in _CPYTHON_MINOR_VERSIONS if python_version != "3.15"]
 
 # Expose the pip repositories using the names your BUILD files expect
 use_repo(pip, pypi = "torch_tpu_pypi")
@@ -255,7 +275,7 @@ use_repo(pip, pypi_cuda = "torch_tpu_cuda_pypi")
         "pypi_libtpu_" + v.replace(".", ""): "torch_tpu_pypi_" + v.replace(".", "") + "_libtpu",
         "pypi_torch_" + v.replace(".", ""): "torch_tpu_pypi_" + v.replace(".", "") + "_torch",
     }
-) for v in SUPPORTED_PYTHON_VERSIONS]
+) for v in _CPYTHON_MINOR_VERSIONS]
 
 # Only each extra hub's default-Python spoke is referenced from the main repo:
 # every extra torch version currently resolves to the default Python's wheel

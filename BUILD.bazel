@@ -204,9 +204,12 @@ config_setting(
     visibility = ["//visibility:public"],
 ) for v in SUPPORTED_PYTHON_VERSIONS]
 
+# Match on the second tag (the ABI tag, e.g. `-cp314-` vs `-cp314t-`) rather
+# than an unanchored `*cp314*` substring so `local_wheel_file_314` does not also
+# match the free-threaded `torch_tpu-...-cp314-cp314t-...whl` wheel.
 [filegroup(
     name = "local_wheel_file_" + v.replace(".", ""),
-    srcs = glob(["dist/torch_tpu*cp" + v.replace(".", "") + "*.whl"]),
+    srcs = glob(["dist/torch_tpu*-cp*-cp" + v.replace(".", "") + "-*.whl"]),
 ) for v in SUPPORTED_PYTHON_VERSIONS]
 
 [genrule(
