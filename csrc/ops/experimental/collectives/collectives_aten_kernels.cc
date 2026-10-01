@@ -146,7 +146,7 @@ absl::StatusOr<DeviceBufferRef> DispatchCollectiveWithDim(
   TT_RET_CHECK(group_size == process_group->getSize(), error::kInvalidArgument)
       << "expected group_size to match process group size, got " << group_size
       << " vs " << process_group->getSize();
-  const DeviceGroupList& device_groups = process_group->GetSubgroupDeviceIds();
+  const DeviceGroupList& device_groups = process_group->GetSubgroupRanks();
   TT_ASSIGN_OR_RETURN(auto output_dtype,
                       ConvertTo<mlir::ElementType>(input.scalar_type()));
 
