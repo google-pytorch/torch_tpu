@@ -289,7 +289,7 @@ class RunBazelDiffTest(unittest.TestCase):
         "tests/ops_test.py",
         "tests/ops_test_data.py",
         "tests/dynamism_test_utils.py",
-        "tests/ops_test_gpu_golden_v1.json.gz",
+        "tests/goldens.pin",
     ]
     for opted_in_file in opted_in_files:
       with self.subTest(opted_in=opted_in_file):

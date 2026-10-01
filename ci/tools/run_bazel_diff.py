@@ -111,15 +111,17 @@ _DOC_OR_METADATA_REGEX: Final[re.Pattern[str]] = re.compile(
 # marks them impacted by almost any change. Run them only for changes to the
 # operator lowerings and the harness they actually exercise.
 # One regex per entry.
+# TODO(b/568391187): add a unit test to ensure every entry must match at least
+# one file.
 OPS_TEST_PATHS: Final[Sequence[str]] = (
     # go/keep-sorted start
     r"csrc/ops/.*",
     r"src/torch_tpu/ops/.*",
     r"tests/dynamism_test_utils\.py",
+    r"tests/goldens\.pin",
     r"tests/op_testing\.py",
     r"tests/ops_test\.py",
     r"tests/ops_test_data\.py",
-    r"tests/ops_test_gpu_golden.*",
     # go/keep-sorted end
 )
 _OPS_TEST_PATHS_REGEX: Final[re.Pattern[str]] = re.compile(
