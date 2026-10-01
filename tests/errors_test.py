@@ -5268,6 +5268,37 @@ Supported combinations for non-constant padding:
     ):
       torch._foreach_addcdiv(self_list, tensor1_list, tensor2_list)
 
+  def test_foreach_pow_list_length_mismatch(self):
+    t = torch.tensor([2.0], dtype=torch.float32, device=et.device())
+    with torch.inference_mode():
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""foreach_pow(): expected tensor lists to have the same number of tensors, got 1 and 2""",
+          gpu="""Tensor lists must have the same number of tensors, got 1 and 2""",
+      ):
+        torch._foreach_pow([t], [t, t])
+
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""foreach_pow_(): expected tensor lists to have the same number of tensors, got 1 and 2""",
+          gpu="""Tensor lists must have the same number of tensors, got 1 and 2""",
+      ):
+        torch._foreach_pow_([t], [t, t])
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""foreach_pow(): expected tensor list to have the same number of elements as scalar list, got 1 and 2""",
+        gpu="""Tensor list must have same number of elements as scalar list.""",
+    ):
+      torch._foreach_pow([t], [2.0, 3.0])
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""foreach_pow_(): expected tensor list to have the same number of elements as scalar list, got 1 and 2""",
+        gpu="""Tensor list must have same number of elements as scalar list.""",
+    ):
+      torch._foreach_pow_([t], [2.0, 3.0])
+
   def test_foreach_unary_ops_complex(self):
     for dtype in [torch.complex64, torch.complex128]:
       t = torch.randn(2, 2, dtype=dtype, device=et.device())

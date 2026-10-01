@@ -3224,6 +3224,9 @@ absl::StatusOr<at::Tensor> AtenPow(const at::Scalar& self,
 std::vector<at::Tensor> AtenForeachPowList(at::TensorList self,
                                            at::TensorList exponent) {
   TT_KERNEL(OpName::kForeachPowList, _, (self, exponent), {
+    TT_CHECK_THROW(self.size() == exponent.size(), error::kInvalidArgument)
+        << "expected tensor lists to have the same number of tensors, got "
+        << self.size() << " and " << exponent.size();
     std::vector<at::Tensor> result;
     result.reserve(self.size());
     for (size_t i = 0; i < self.size(); ++i) {
@@ -3236,6 +3239,9 @@ std::vector<at::Tensor> AtenForeachPowList(at::TensorList self,
 
 void AtenForeachPow_List(at::TensorList self, at::TensorList exponent) {
   TT_KERNEL(OpName::kForeachPow_List, _, (self, exponent), {
+    TT_CHECK_THROW(self.size() == exponent.size(), error::kInvalidArgument)
+        << "expected tensor lists to have the same number of tensors, got "
+        << self.size() << " and " << exponent.size();
     for (size_t i = 0; i < self.size(); ++i) {
       AtenPowTensorTensorOut(self[i], exponent[i],
                              const_cast<at::Tensor&>(self[i]));
@@ -3286,6 +3292,10 @@ std::vector<at::Tensor> AtenForeachPowScalarList(
     at::TensorList self, at::ArrayRef<at::Scalar> exponent) {
   auto promoted_exponent = PromoteScalar(exponent);
   TT_KERNEL(OpName::kForeachPowScalarList, _, (self, promoted_exponent), {
+    TT_CHECK_THROW(self.size() == exponent.size(), error::kInvalidArgument)
+        << "expected tensor list to have the same number of elements as scalar "
+           "list, got "
+        << self.size() << " and " << exponent.size();
     std::vector<at::Tensor> result;
     result.reserve(self.size());
     for (size_t i = 0; i < self.size(); ++i) {
@@ -3310,6 +3320,10 @@ void AtenForeachPow_ScalarList(at::TensorList self,
                                at::ArrayRef<at::Scalar> exponent) {
   auto promoted_exponent = PromoteScalar(exponent);
   TT_KERNEL(OpName::kForeachPow_ScalarList, _, (self, promoted_exponent), {
+    TT_CHECK_THROW(self.size() == exponent.size(), error::kInvalidArgument)
+        << "expected tensor list to have the same number of elements as scalar "
+           "list, got "
+        << self.size() << " and " << exponent.size();
     TT_THROW_IF_ERROR(ValidateInplaceScalarType(self, exponent));
     for (size_t i = 0; i < self.size(); ++i) {
       TT_ASSIGN_OR_THROW(at::Tensor scalar_tensor,
