@@ -30,6 +30,7 @@ torch_tpu_cc_library(
         "//csrc/common:error_utils",
         "//csrc/common:to_string",
         "//csrc/common:utils",
+        "//csrc/ops:op_builder_utils",
         "//csrc/ops:op_names",
         "//csrc/ops/linalg/lu:linalg_lu_kernels",
         "//csrc/ops/macros:kernel",

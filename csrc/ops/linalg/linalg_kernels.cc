@@ -33,10 +33,20 @@
 #include "csrc/common/utils.h"
 #include "csrc/ops/linalg/lu/linalg_lu_kernels.h"
 #include "csrc/ops/macros/kernel.h"
+#include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/resize/resize_aten_kernels.h"
 
 namespace torch_tpu {
+
+namespace {
+
+bool IsSolveVectorRhs(const at::Tensor& a, const at::Tensor& b) {
+  return b.dim() == 1 || (a.dim() - 1 == b.dim() &&
+                          b.sizes().equals(a.sizes().slice(0, a.dim() - 1)));
+}
+
+}  // namespace
 
 std::tuple<at::Tensor&, at::Tensor&, at::Tensor&, at::Tensor&>
 AtenLinalgSolveExOut(const at::Tensor& a, const at::Tensor& b, bool left,
@@ -57,7 +67,21 @@ AtenLinalgSolveExOut(const at::Tensor& a, const at::Tensor& b, bool left,
         TT_THROW_IF_ERROR(ValidateOutDtype(info, at::kInt,
                                            /*allow_out_dtype_cast=*/false));
 
-        TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(result, b.sizes()));
+        const bool is_vector_rhs = IsSolveVectorRhs(a, b);
+        const at::Tensor b_matrix = is_vector_rhs ? b.unsqueeze(-1) : b;
+        TT_ASSIGN_OR_THROW(
+            const Dimensions batch_dims,
+            InferSize(a.sizes().slice(0, a.dim() - 2),
+                      b_matrix.sizes().slice(0, b_matrix.dim() - 2)));
+        Dimensions b_broad_dims = batch_dims;
+        b_broad_dims.push_back(b_matrix.size(-2));
+        b_broad_dims.push_back(b_matrix.size(-1));
+        Dimensions result_dims = b_broad_dims;
+        if (is_vector_rhs) {
+          result_dims.pop_back();
+        }
+
+        TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(result, result_dims));
         TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(lu, a.sizes()));
 
         TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(
@@ -75,15 +99,29 @@ AtenLinalgSolveExOut(const at::Tensor& a, const at::Tensor& b, bool left,
         if (check_errors) {
           at::_linalg_check_errors(info, "solve", a.dim() == 2);
         }
-        if (b.dim() < a.dim()) {
-          at::Tensor b_expanded =
-              left ? b.unsqueeze(b.dim()) : b.unsqueeze(b.dim() - 1);
-          at::Tensor expanded_result = at::empty_like(b_expanded);
-          AtenLinalgLuSolveOut(lu, pivots, b_expanded, left,
+
+        Dimensions a_broad_dims = batch_dims;
+        a_broad_dims.push_back(a.size(-2));
+        a_broad_dims.push_back(a.size(-1));
+        Dimensions pivots_broad_dims = batch_dims;
+        pivots_broad_dims.push_back(pivots.size(-1));
+        const at::Tensor lu_broad =
+            lu.sizes().equals(a_broad_dims) ? lu : lu.expand(a_broad_dims);
+        const at::Tensor pivots_broad = pivots.sizes().equals(pivots_broad_dims)
+                                            ? pivots
+                                            : pivots.expand(pivots_broad_dims);
+        const at::Tensor b_broad = b_matrix.sizes().equals(b_broad_dims)
+                                       ? b_matrix
+                                       : b_matrix.expand(b_broad_dims);
+        if (is_vector_rhs) {
+          at::Tensor expanded_result =
+              at::empty(b_broad_dims, result.options());
+          AtenLinalgLuSolveOut(lu_broad, pivots_broad, b_broad, left,
                                /*adjoint=*/false, expanded_result);
           result.copy_(expanded_result.reshape(result.sizes()));
         } else {
-          AtenLinalgLuSolveOut(lu, pivots, b, left, /*adjoint=*/false, result);
+          AtenLinalgLuSolveOut(lu_broad, pivots_broad, b_broad, left,
+                               /*adjoint=*/false, result);
         }
 
         return {result, lu, pivots, info};

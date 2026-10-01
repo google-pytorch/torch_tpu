@@ -5018,6 +5018,16 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(fn)
 
+  def test_solve_ex_batched_a_unbatched_matrix_b(self):
+    a = torch.eye(3).unsqueeze(0).expand(2, 3, 3).contiguous()
+    for b_shape, left in (((3, 4), True), ((1, 3), False), ((3,), True)):
+      b = torch.ones(b_shape)
+
+      def fn(device, b=b, left=left):
+        return torch.linalg.solve_ex(a.to(device), b.to(device), left=left)
+
+      self.assert_close_tpu_vs_cpu(fn)
+
   def test_fill_tensor(self):
     self.assert_close_tpu_vs_cpu(
         lambda device: torch.fill(
