@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <string_view>
 #include <tuple>
 #include <utility>
 
@@ -203,8 +204,6 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLinalgLuFactorExOut(
       (a, pivot, IgnoreInCacheKey(check_errors, "Doesn't affect SHLO"), lu,
        pivots, info),
       {
-        TT_CHECK_THROW(pivot, error::kInvalidArgument)
-            << "non-pivoting decomposition is not supported";
         TT_CHECK_THROW(a.dim() >= 2, error::kInvalidArgument)
             << "expected input tensor to have at least 2 dimensions, got "
             << a.dim();
@@ -230,6 +229,9 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLinalgLuFactorExOut(
           info.zero_();
           return std::forward_as_tuple(lu, pivots, info);
         }
+
+        TT_CHECK_THROW(pivot, error::kInvalidArgument)
+            << "non-pivoting decomposition is not supported";
 
         TT_THROW_IF_ERROR(ValidateLuSupportedDtype(a));
 

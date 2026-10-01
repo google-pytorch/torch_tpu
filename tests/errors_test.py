@@ -6499,12 +6499,13 @@ Supported combinations for non-constant padding:
         torch.empty(4, device=et.device()),
     )
 
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""linalg_lu_factor_ex(): expected input tensor to have at least 2 dimensions, got 1""",
-        gpu="""torch.lu_factor: Expected tensor with 2 or more dimensions. Got size: [4] instead""",
-    ):
-      torch.linalg.lu_factor_ex(a, out=out)
+    for pivot in [True, False]:
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linalg_lu_factor_ex(): expected input tensor to have at least 2 dimensions, got 1""",
+          gpu="""torch.lu_factor: Expected tensor with 2 or more dimensions. Got size: [4] instead""",
+      ):
+        torch.linalg.lu_factor_ex(a, pivot=pivot, out=out)
 
   def test_lu_unpack_data_rank_too_low(self):
     data = torch.ones(4, device=et.device())

@@ -1146,13 +1146,18 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         *op_testing.FLOAT_DTYPES,
     ]
     for dtype in dtypes:
-      t_tpu = torch.empty(0, 3, 5, dtype=dtype, device="tpu")
-      t_cpu = t_tpu.cpu()
-      lu_tpu, pivots_tpu, info_tpu = torch.ops.aten.linalg_lu_factor_ex(t_tpu)
-      lu_cpu, pivots_cpu, info_cpu = torch.ops.aten.linalg_lu_factor_ex(t_cpu)
-      self.assertEqual(lu_tpu, lu_cpu)
-      self.assertEqual(pivots_tpu, pivots_cpu)
-      self.assertEqual(info_tpu, info_cpu)
+      for pivot in [True, False]:
+        t_tpu = torch.empty(0, 3, 5, dtype=dtype, device="tpu")
+        t_cpu = t_tpu.cpu()
+        lu_tpu, pivots_tpu, info_tpu = torch.ops.aten.linalg_lu_factor_ex(
+            t_tpu, pivot=pivot
+        )
+        lu_cpu, pivots_cpu, info_cpu = torch.ops.aten.linalg_lu_factor_ex(
+            t_cpu, pivot=pivot
+        )
+        self.assertEqual(lu_tpu, lu_cpu)
+        self.assertEqual(pivots_tpu, pivots_cpu)
+        self.assertEqual(info_tpu, info_cpu)
 
   def test_assert_close_partial_override(self):
     """Tests that utils.assert_close works with partial numeric overrides.
