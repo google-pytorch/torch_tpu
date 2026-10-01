@@ -5748,6 +5748,24 @@ Supported combinations for non-constant padding:
     ):
       torch.bmm(b, a, out=out)
 
+  def test_bmm_invalid_out_dtype(self):
+    a = torch.ones(1, 2, 2, dtype=torch.float32, device=et.device())
+    b = torch.ones(1, 2, 2, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""bmm(): expected out_dtype to be the same as input dtype or float32 for float16/bfloat16 inputs, got int32""",
+        gpu="""out_dtype must be the same as input dtype or fp32 for fp16/bf16 inputs""",
+    ):
+      torch.bmm(a, b, out_dtype=torch.int32)
+
+    out = torch.empty(1, 2, 2, dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""bmm(): expected out_dtype to be the same as input dtype or float32 for float16/bfloat16 inputs, got int32""",
+        gpu="""out_dtype must be the same as input dtype or fp32 for fp16/bf16 inputs""",
+    ):
+      torch.bmm(a, b, out_dtype=torch.int32, out=out)
+
   def test_bmm_mismatch_batch_dimensions(self):
     a = torch.ones(1, 2, 3, device=et.device())
     b = torch.ones(2, 3, 2, device=et.device())

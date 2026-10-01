@@ -93,11 +93,24 @@ absl::Status ValidateBmmInputs(const at::Tensor& self, const at::Tensor& mat2) {
   return absl::OkStatus();
 }
 
+absl::Status ValidateBmmOutDtype(const at::ScalarType input_dtype,
+                                 const at::ScalarType out_dtype) {
+  TT_RET_CHECK(out_dtype == input_dtype ||
+                   (out_dtype == at::kFloat &&
+                    (input_dtype == at::kHalf || input_dtype == at::kBFloat16)),
+               error::kInvalidArgument)
+      << "expected out_dtype to be the same as input dtype or float32 for "
+         "float16/bfloat16 inputs, got "
+      << ToString(out_dtype);
+  return absl::OkStatus();
+}
+
 template <typename ReturnType, typename DispatchFn>
 ReturnType DispatchBmm(const at::Tensor& self, const at::Tensor& mat2,
                        at::ScalarType out_dtype, OpParamCacheKeys param_keys,
                        DispatchFn&& dispatch_fn) {
   TT_RETURN_IF_ERROR(ValidateBmmInputs(self, mat2));
+  TT_RETURN_IF_ERROR(ValidateBmmOutDtype(self.scalar_type(), out_dtype));
   TT_ASSIGN_OR_RETURN(mlir::ElementType output_dtype_mlir,
                       ConvertTo<mlir::ElementType>(out_dtype));
   Dimensions output_dims_vec = {self.size(0), self.size(1), mat2.size(2)};
