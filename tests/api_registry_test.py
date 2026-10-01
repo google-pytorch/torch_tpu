@@ -15,6 +15,7 @@
 """Unit tests for public TorchTPU API exposure and registration."""
 
 import importlib
+import runpy
 import sys
 import types
 import warnings
@@ -46,6 +47,30 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
   def setUpClass(cls):
     super().setUpClass()
     _loader._init_device("tpu")  # INIT_DEVICE_OK=CPU runner
+
+  def test_torch_tpu_module_identity_and_dir(self):
+    """Verifies torch.tpu is a real ModuleType with expected submodules and dir()."""
+    self.assertIsInstance(torch.tpu, types.ModuleType)
+    self.assertEqual(torch.tpu.__name__, "torch.tpu")
+    self.assertIs(sys.modules["torch.tpu"], torch.tpu)
+    self.assertIs(torch.get_device_module("tpu"), torch.tpu)
+
+    tpu_dir = dir(torch.tpu)
+    self.assertEmpty([name for name in tpu_dir if name.startswith("_")])
+    for submod in (
+        "compiler",
+        "distributed",
+        "exceptions",
+        "pallas",
+        "profiler",
+    ):
+      self.assertIn(submod, tpu_dir)
+
+    for bad_attr in ("non_existent_attribute", "__mro__"):
+      with self.assertRaises(  # ASSERT_RAISES_OK=Verifies torch.tpu raises AttributeError for unknown/dunder attributes
+          AttributeError
+      ):
+        _ = getattr(torch.tpu, bad_attr)
 
   def test_tpu_profiler_config_accessibility(self):
     """Verifies TpuProfilerConfig is accessible via torch.tpu.profiler."""
@@ -138,13 +163,29 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
 
   def test_distributed_environment_api_registry(self):
     """Verifies public exposure, identity, metadata, and proxy behavior for distributed.environment."""
-    # 1. Symbol identity
+    # 1. Verify python -m torch.tpu.distributed.environment resolves code cleanly
+    # without RuntimeWarning before the submodule is imported into sys.modules.
+    self.assertNotIn("torch.tpu.distributed.environment", sys.modules)
+    with warnings.catch_warnings():
+      warnings.simplefilter("error", RuntimeWarning)
+      _, mod_spec, code = runpy._get_module_details(
+          "torch.tpu.distributed.environment"
+      )
+    self.assertEqual(mod_spec.name, "torch.tpu.distributed.environment")
+    self.assertIsNotNone(code)
+
+    # 2. Submodule import and symbol identity
+    env_mod = importlib.import_module("torch.tpu.distributed.environment")
+    from torch.tpu.distributed import environment as from_imported_env  # pylint: disable=g-import-not-at-top
+
+    self.assertIs(env_mod, torch.tpu.distributed.environment)
+    self.assertIs(from_imported_env, torch.tpu.distributed.environment)
     self.assertIs(
         torch.tpu.distributed.environment.set_tpu_launch_env,
         internal_set_tpu_launch_env,
     )
 
-    # 2. Lifecycle stage metadata
+    # 3. Lifecycle stage metadata
     fn = torch.tpu.distributed.environment.set_tpu_launch_env
     self.assertEqual(
         getattr(fn, annotations.TT_API_STAGE, None),
@@ -156,7 +197,7 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
         " and subject to change.",
     )
 
-    # 3. Proxy dir and invalid attribute handling
+    # 4. Proxy dir and invalid attribute handling
     self.assertEqual(dir(torch.tpu.distributed), ["environment"])
     self.assertEqual(
         dir(torch.tpu.distributed.environment), ["set_tpu_launch_env"]
@@ -170,7 +211,7 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
     ):
       _ = getattr(torch.tpu.distributed.environment, "non_existent_attribute")
 
-    # 4. Verify torch_tpu does not expose distributed or distributed.environment
+    # 5. Verify torch_tpu does not expose distributed or distributed.environment
     self.assertFalse(hasattr(torch_tpu, "distributed"))
     self.assertNotIn("torch_tpu.distributed", sys.modules)
     self.assertNotIn("torch_tpu.distributed.environment", sys.modules)
@@ -191,6 +232,8 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
         "TorchTpuWarning",
         "UnoptimizedBuildWarning",
     ]
+    exc_mod = importlib.import_module("torch.tpu.exceptions")
+    self.assertIs(exc_mod, torch.tpu.exceptions)
     self.assertEqual(dir(torch.tpu.exceptions), expected_names)
     # Simulate a caller inside the `torch_tpu` package to test internal usage.
     framework_globals = {

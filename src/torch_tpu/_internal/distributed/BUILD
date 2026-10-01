@@ -44,14 +44,6 @@ torch_tpu_py_library(
     ],
 )
 
-torch_tpu_py_library(
-    name = "api",
-    srcs = ["api.py"],
-    deps = [
-        ":environment",
-    ],
-)
-
 torch_tpu_py_test(
     name = "environment_test",
     srcs = ["environment_test.py"],

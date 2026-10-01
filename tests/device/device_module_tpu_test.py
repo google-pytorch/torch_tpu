@@ -17,6 +17,7 @@
 import tempfile
 import warnings
 from absl.testing import absltest
+from absl.testing import parameterized
 import torch
 from torch._dynamo.device_interface import DeviceInterface
 from torch._dynamo.device_interface import get_interface_for_device
@@ -59,8 +60,79 @@ class TpuDeviceModuleTest(
     """Verifies device_interface from _loader.py is registered as device interface."""
     iface = get_interface_for_device("tpu")
     self.assertEqual(iface, _device_module.TpuDeviceInterface)
-    self.assertTrue(issubclass(iface, self.device_module))
+    self.assertTrue(issubclass(iface, _device_module.TpuDeviceModule))
     self.assertTrue(issubclass(iface, DeviceInterface))
+
+  def test_torch_tpu_exports_match_device_class_surface(self):
+    """Verifies torch.tpu.__all__ stays in sync with TpuDeviceModule."""
+    expected_exports = (
+        {
+            name
+            for name in dir(_device_module.TpuDeviceModule)
+            if not name.startswith("_")
+        }
+        | {
+            name
+            for name in _device_module._DeviceModuleMeta.__dict__
+            if not name.startswith("_")
+        }
+        | set(_device_module.__tt_api_stages__.keys())
+    )
+    actual_exports = set(torch.tpu.__all__) - {
+        "compiler",
+        "distributed",
+        "exceptions",
+        "pallas",
+        "profiler",
+    }
+    self.assertEqual(actual_exports, expected_exports)
+
+  @parameterized.parameters(
+      "_is_in_bad_fork",
+      "_get_generator",
+      "_get_local_device_attributes",
+  )
+  def test_private_hooks_accessible(self, hook: str):
+    """Verifies private hooks remain reachable on torch.tpu."""
+    self.assertTrue(callable(getattr(torch.tpu, hook)))
+
+  def test_hidden_attributes_not_in_dir(self):
+    """Verifies private attributes do not appear in dir(torch.tpu)."""
+    self.assertEmpty([name for name in dir(torch.tpu) if name.startswith("_")])
+
+  def test_dynamo_traces_torch_tpu_without_recompilation(self):
+    """Verifies Dynamo traces torch.tpu calls without graph breaks or recompiles."""
+    # Warm up @experimental once-per-process warnings outside Dynamo so the
+    # test does not depend on whether another test ran first and triggered
+    # `sys._getframe` in `annotations._create_warning_wrapper`.
+    _ = (
+        torch.tpu.device_count(),
+        torch.tpu.is_available(),
+    )
+    compile_count = 0
+
+    def counting_backend(gm, example_inputs):
+      del example_inputs
+      nonlocal compile_count
+      compile_count += 1
+      return gm.forward
+
+    @torch.compile(fullgraph=True, backend=counting_backend)
+    def fn(x):
+      dev_mod = torch.get_device_module("tpu")
+      if (
+          torch.accelerator.current_accelerator().type == "tpu"
+          and torch.tpu.device_count() > 0
+          and dev_mod.is_available()
+          and torch.accelerator.current_device_index() >= 0
+      ):
+        return x + 1
+      return x
+
+    x = torch.ones(2)
+    self.assertTrue(torch.equal(fn(x), x + 1))
+    self.assertTrue(torch.equal(fn(x), x + 1))
+    self.assertEqual(compile_count, 1)
 
   def test_device_interface_maybe_exchange_device(self):
     """Verifies TpuDeviceInterface implements maybe_exchange_device for Dynamo."""

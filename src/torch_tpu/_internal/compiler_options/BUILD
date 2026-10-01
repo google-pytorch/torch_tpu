@@ -27,14 +27,6 @@ package(
 )
 
 torch_tpu_py_library(
-    name = "api",
-    srcs = ["api.py"],
-    deps = [
-        ":compiler_options",
-    ],
-)
-
-torch_tpu_py_library(
     name = "compiler_options",
     srcs = [
         "__init__.py",

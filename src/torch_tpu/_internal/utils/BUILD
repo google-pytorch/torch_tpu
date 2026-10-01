@@ -180,6 +180,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal/device:_device_module",
         "//src/torch_tpu/_internal/precision:precision_impl",
         "//tests:seed_test_utils",
     ],

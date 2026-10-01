@@ -42,6 +42,7 @@ import torch._dynamo.backends.registry as backend_registry
 from torch._dynamo.device_interface import get_interface_for_device
 from torch._dynamo.device_interface import register_interface_for_device
 from torch.utils import _pytree as pytree
+from torch_tpu._internal import public_api
 from torch_tpu._internal.compile import _backend
 from torch_tpu._internal.device import _device_module
 from torch_tpu._internal.distributed import tpu_distributed
@@ -59,56 +60,7 @@ _torch_compile = torch.compile
 
 _DEVICE_INITIALIZED: bool = False
 
-
-def _register_public_modules() -> None:
-  """Registers torch.tpu and its public submodules in sys.modules."""
-  device_module = _device_module.get_device_module("tpu")
-  if not hasattr(device_module, "__path__"):
-    setattr(device_module, "__path__", [])
-  if not hasattr(torch, "tpu"):
-    setattr(torch, "tpu", device_module)
-  sys.modules["torch.tpu"] = device_module  # pyrefly: ignore[unsupported-operation]
-
-  # Expose the public profiler module under 'torch.tpu.profiler' in sys.modules
-  # and attach it to the 'torch.tpu' device module for attribute access.
-  from torch_tpu._internal.profiler import api as profiler_api  # pylint: disable=g-import-not-at-top
-
-  sys.modules["torch.tpu.profiler"] = profiler_api
-  setattr(device_module, "profiler", profiler_api)
-
-  # Expose the public pallas module under 'torch.tpu.pallas' in sys.modules
-  # and attach it to the 'torch.tpu' device module for attribute access.
-  from torch_tpu._internal.pallas import api as pallas_api  # pylint: disable=g-import-not-at-top
-
-  sys.modules["torch.tpu.pallas"] = pallas_api
-  setattr(device_module, "pallas", pallas_api)
-
-  # Expose the public distributed module under 'torch.tpu.distributed' and
-  # 'torch.tpu.distributed.environment' in sys.modules and attach it to the
-  # 'torch.tpu' device module for attribute access.
-  from torch_tpu._internal.distributed import api as distributed_api  # pylint: disable=g-import-not-at-top
-
-  sys.modules["torch.tpu.distributed"] = distributed_api
-  sys.modules["torch.tpu.distributed.environment"] = distributed_api.environment
-  setattr(device_module, "distributed", distributed_api)
-
-  # Expose the public exceptions module under 'torch.tpu.exceptions' in
-  # sys.modules and attach it to the 'torch.tpu' device module for attribute
-  # access.
-  from torch_tpu._internal import exceptions_api  # pylint: disable=g-import-not-at-top
-
-  sys.modules["torch.tpu.exceptions"] = exceptions_api
-  setattr(device_module, "exceptions", exceptions_api)
-
-  # Expose the public compiler module under 'torch.tpu.compiler' in sys.modules
-  # and attach it to the 'torch.tpu' device module for attribute access.
-  from torch_tpu._internal.compiler_options import api as compiler_api  # pylint: disable=g-import-not-at-top
-
-  sys.modules["torch.tpu.compiler"] = compiler_api
-  setattr(device_module, "compiler", compiler_api)
-
-
-_register_public_modules()
+public_api.install()
 
 # Enable tracing through recurrent layers (RNN, LSTM, GRU) in Dynamo to avoid
 # graph breaks and leverage TorchTPU's fused StableHLO kernels.
@@ -277,7 +229,7 @@ def _init_device_impl(device: str) -> torch.device:
   if hasattr(torch, device):
     delattr(torch, device)
   # pylint: disable=protected-access
-  torch._register_device_module(device, device_module)  # pyrefly: ignore[bad-argument-type]
+  torch._register_device_module(device, sys.modules[f"torch.{device}"])
   print(f"Registered Python module for '{device}'.", file=sys.stderr)
 
   print(
@@ -309,8 +261,6 @@ def _init_device_impl(device: str) -> torch.device:
   from torch_tpu._internal import profiler  # pylint: disable=g-import-not-at-top
 
   profiler.register_kineto_backend()
-
-  _register_public_modules()
 
   # Pass installed libtpu version to C++ runtime if available.
   _set_libtpu_version()

@@ -44,6 +44,7 @@ torch_tpu_py_test(
     deps = [
         ":device_module_testing",
         "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/device:_device_module",

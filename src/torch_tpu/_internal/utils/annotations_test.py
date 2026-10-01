@@ -23,6 +23,7 @@ import warnings
 from absl.testing import absltest
 import torch
 import torch_tpu  # pylint: disable=unused-import  # noqa: F401
+from torch_tpu._internal.device import _device_module
 from torch_tpu._internal.precision.precision_impl import Precision
 from torch_tpu._internal.utils import annotations
 from tests import seed_test_utils
@@ -389,34 +390,49 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
   def test_annotated_real_api_property_default_generators(
       self, _mock_count, _mock_current, _mock_gen
   ):
-    """Verifies default_generators emits UserWarning on 1st access and no additional warnings on 2nd access."""
+    """Verifies default_generators emits UserWarning on 1st external access even after internal access."""
+    if "default_generators" in _device_module.TpuDeviceModule.__dict__:
+      delattr(_device_module.TpuDeviceModule, "default_generators")
     with warnings.catch_warnings(record=True) as w:
       warnings.simplefilter("always")
 
-      # 1st access: emits 1 UserWarning and returns default generators
+      # Internal access via _get_generator must not emit a warning or cache
+      # default_generators onto TpuDeviceModule.__dict__.
+      gen = _device_module.TpuDeviceModule._get_generator(  # pylint: disable=protected-access
+          torch.device("tpu", 0)
+      )
+      self.assertEqual(gen, "mock_generator")
+      self.assertEmpty(w)
+      self.assertNotIn(
+          "default_generators", _device_module.TpuDeviceModule.__dict__
+      )
+
+      # 1st external access: emits 1 UserWarning and returns default generators
       gens1 = torch.tpu.default_generators
       self.assertEqual(gens1, ("mock_generator",))
       self.assertLen(w, 1)
       self.assertTrue(issubclass(w[0].category, UserWarning))
       self.assertIn("'default_generators' is experimental", str(w[0].message))
 
-      # 2nd access: cached on class, emits 0 additional warnings
+      # 2nd external access: cached on class, emits 0 additional warnings
       gens2 = torch.tpu.default_generators
       self.assertEqual(gens1, gens2)
       self.assertLen(w, 1)
 
   def test_static_class_attributes_bypass_getattr_and_warnings(self):
-    """Verifies accessing static class attributes defined on torch.tpu does not trigger __getattr__ or warnings."""
+    """Verifies accessing static class attributes via torch.tpu does not trigger stage warnings."""
     with warnings.catch_warnings(record=True) as w:
       warnings.simplefilter("always")
 
       # Accessing static attributes physically defined in _DeviceModule class body
       _ = torch.tpu.precision
-      # 0 warnings emitted, proving __getattr__ was bypassed completely
+      # 0 warnings emitted, proving _DeviceModuleMeta.__getattr__ was bypassed
       self.assertEmpty(w)
 
   def test_annotated_real_api_enum_class_precision(self):
     """Verifies Precision Enum class emits UserWarning on 1st access and no additional warnings on 2nd access."""
+    if "Precision" in _device_module.TpuDeviceModule.__dict__:
+      delattr(_device_module.TpuDeviceModule, "Precision")
     with warnings.catch_warnings(record=True) as w:
       warnings.simplefilter("always")
 
@@ -448,6 +464,37 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
       )
 
       self.assertLen(w, 1)
+
+  def test_stage_warning_from_user_getattr(self):
+    """Verifies accessing a staged torch.tpu attribute inside a user __getattr__ emits a warning at the user line."""
+    if "Precision" in _device_module.TpuDeviceModule.__dict__:
+      delattr(_device_module.TpuDeviceModule, "Precision")
+
+    class UserModule(torch.nn.Module):
+
+      def __getattr__(self, name: str) -> Any:
+        if name == "tpu_precision":
+          return torch.tpu.Precision
+        return super().__getattr__(name)
+
+    # Trigger attribute lookup from a simulated `torch.*` frame to ensure user
+    # `__getattr__` frames are not skipped onto an outer `torch.*` frame.
+    torch_caller = types.FunctionType(
+        (lambda m: m.tpu_precision).__code__,
+        {"__name__": "torch.nn.modules.module"},
+    )
+    mod = UserModule()
+    with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("always")
+      val = torch_caller(mod)
+    self.assertIs(val, Precision)
+    self.assertLen(w, 1)
+    self.assertTrue(issubclass(w[0].category, UserWarning))
+    self.assertIn("'Precision' is experimental", str(w[0].message))
+    self.assertEqual(w[0].filename, __file__)
+    self.assertEqual(
+        w[0].lineno, UserModule.__getattr__.__code__.co_firstlineno + 2
+    )
 
   def test_annotated_real_api_property_allow_excess_precision(self):
     """Verifies allow_excess_precision property emits UserWarning on 1st access and no additional warnings on 2nd access."""

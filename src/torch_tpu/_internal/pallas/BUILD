@@ -90,15 +90,6 @@ torch_tpu_py_library(
     ],
 )
 
-torch_tpu_py_library(
-    name = "api",
-    srcs = ["api.py"],
-    deps = [
-        ":pallas_lib",
-        "//shims/jax:pallas_tpu",  # build_cleaner: keep
-    ],
-)
-
 # NOTE: We use pytype_strict_library here instead of torch_tpu_py_library to break a circular
 # dependency cycle where torch_tpu_py_library automatically injects a dependency on
 # //src/torch_tpu/_internal:testing.
