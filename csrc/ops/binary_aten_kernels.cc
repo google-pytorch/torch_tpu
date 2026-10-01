@@ -633,6 +633,13 @@ absl::Status ValidatePowInputs(const T& self, const U& exponent) {
     TT_RET_CHECK(!IsBool(result_type), error::kInvalidArgument)
         << "expected non-boolean first argument, got "
         << ToString(GetScalarType(self));
+  } else if constexpr (std::is_same_v<T, at::Tensor> &&
+                       std::is_same_v<U, at::Scalar>) {
+    TT_RET_CHECK(
+        !(c10::isIntegralType(self.scalar_type(), /*includeBool=*/true) &&
+          exponent.isIntegral(/*includeBool=*/true) && exponent.toLong() < 0),
+        error::kInvalidArgument)
+        << "integers to negative integer powers are not allowed";
   }
   return absl::OkStatus();
 }

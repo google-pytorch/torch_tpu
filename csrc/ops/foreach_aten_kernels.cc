@@ -3250,6 +3250,11 @@ std::vector<at::Tensor> AtenForeachPowScalar(at::TensorList self,
     std::vector<at::Tensor> result;
     result.reserve(self.size());
     for (const auto& tensor : self) {
+      TT_CHECK_THROW(
+          !(c10::isIntegralType(tensor.scalar_type(), /*includeBool=*/true) &&
+            exponent.isIntegral(/*includeBool=*/true) && exponent.toLong() < 0),
+          error::kInvalidArgument)
+          << "integers to negative integer powers are not allowed";
       const at::ScalarType out_dtype =
           at::result_type(tensor, promoted_exponent.scalar());
       TT_ASSIGN_OR_THROW(at::Tensor scalar_tensor,
@@ -3272,6 +3277,13 @@ void AtenForeachPow_Scalar(at::TensorList self, const at::Scalar& exponent) {
   TT_KERNEL(OpName::kForeachPow_Scalar, _, (self, promoted_exponent), {
     TT_THROW_IF_ERROR(ValidateInplaceScalarType(self, exponent));
     for (const auto& tensor : self) {
+      TT_CHECK_THROW(
+          !(c10::isIntegralType(tensor.scalar_type(), /*includeBool=*/true) &&
+            exponent.isIntegral(/*includeBool=*/true) && exponent.toLong() < 0),
+          error::kInvalidArgument)
+          << "integers to negative integer powers are not allowed";
+    }
+    for (const auto& tensor : self) {
       TT_ASSIGN_OR_THROW(at::Tensor scalar_tensor,
                          promoted_exponent.GetTensor(tensor.scalar_type()));
       TT_THROW_IF_ERROR(BinaryOpOut(
@@ -3289,6 +3301,12 @@ std::vector<at::Tensor> AtenForeachPowScalarList(
     std::vector<at::Tensor> result;
     result.reserve(self.size());
     for (size_t i = 0; i < self.size(); ++i) {
+      TT_CHECK_THROW(
+          !(c10::isIntegralType(self[i].scalar_type(), /*includeBool=*/true) &&
+            exponent[i].isIntegral(/*includeBool=*/true) &&
+            exponent[i].toLong() < 0),
+          error::kInvalidArgument)
+          << "integers to negative integer powers are not allowed";
       const at::ScalarType out_dtype =
           at::result_type(self[i], promoted_exponent[i].scalar());
       TT_ASSIGN_OR_THROW(at::Tensor scalar_tensor,
@@ -3311,6 +3329,14 @@ void AtenForeachPow_ScalarList(at::TensorList self,
   auto promoted_exponent = PromoteScalar(exponent);
   TT_KERNEL(OpName::kForeachPow_ScalarList, _, (self, promoted_exponent), {
     TT_THROW_IF_ERROR(ValidateInplaceScalarType(self, exponent));
+    for (size_t i = 0; i < self.size(); ++i) {
+      TT_CHECK_THROW(
+          !(c10::isIntegralType(self[i].scalar_type(), /*includeBool=*/true) &&
+            exponent[i].isIntegral(/*includeBool=*/true) &&
+            exponent[i].toLong() < 0),
+          error::kInvalidArgument)
+          << "integers to negative integer powers are not allowed";
+    }
     for (size_t i = 0; i < self.size(); ++i) {
       TT_ASSIGN_OR_THROW(at::Tensor scalar_tensor,
                          promoted_exponent[i].GetTensor(self[i].scalar_type()));

@@ -13993,6 +13993,44 @@ class MaskedSoftmaxErrorTest(et.ErrorTestBase):
     ):
       torch.pow(base, exp)
 
+  def test_pow_negative_integer_scalar_exponent(self):
+    x = torch.tensor([2, 3], dtype=torch.int32, device=et.device())
+    out = torch.empty(2, dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""pow(): integers to negative integer powers are not allowed""",
+        gpu="""Integers to negative integer powers are not allowed.""",
+    ):
+      torch.pow(x, -2, out=out)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""foreach_pow(): integers to negative integer powers are not allowed""",
+        gpu="""Integers to negative integer powers are not allowed.""",
+    ):
+      torch._foreach_pow([x], -2)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""foreach_pow_(): integers to negative integer powers are not allowed""",
+        gpu="""Integers to negative integer powers are not allowed.""",
+    ):
+      torch._foreach_pow_([x.clone()], -2)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""foreach_pow(): integers to negative integer powers are not allowed""",
+        gpu="""Integers to negative integer powers are not allowed.""",
+    ):
+      torch._foreach_pow([x], [-2])
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""foreach_pow_(): integers to negative integer powers are not allowed""",
+        gpu="""Integers to negative integer powers are not allowed.""",
+    ):
+      torch._foreach_pow_([x.clone()], [-2])
+
   def test_sparse_dense_matmul_activation_unstack_meta_invalid_dim(self):
     stacked_1d = torch.empty(64, device="meta", dtype=torch.float32)
     with et.assert_raises_message(
