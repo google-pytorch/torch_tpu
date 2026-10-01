@@ -14237,6 +14237,27 @@ class MaskedSoftmaxErrorTest(et.ErrorTestBase):
     ):
       torch.split_with_sizes_copy(self_t, [2, 2], dim=0, out=out)
 
+  def test_add_out_invalid_alpha_dtype(self):
+    a_i32 = torch.ones(2, device=et.device(), dtype=torch.int32)
+    b_i32 = torch.ones(2, device=et.device(), dtype=torch.int32)
+    out_i32 = torch.empty(2, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""add(): expected alpha to be integral for integral input tensors, got float64""",
+        gpu="""For integral input tensors, argument alpha must not be a floating point number.""",
+    ):
+      torch.add(a_i32, b_i32, alpha=2.5, out=out_i32)
+
+    a_f32 = torch.ones(2, device=et.device(), dtype=torch.float32)
+    b_f32 = torch.ones(2, device=et.device(), dtype=torch.float32)
+    out_f32 = torch.empty(2, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""add(): expected result dtype to be bool when alpha dtype is bool, got float32""",
+        gpu="""Boolean alpha only supported for Boolean results.""",
+    ):
+      torch.add(a_f32, b_f32, alpha=True, out=out_f32)
+
 
 if __name__ == "__main__":
   multiprocessing.handle_test_main(absltest.main)

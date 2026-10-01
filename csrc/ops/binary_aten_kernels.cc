@@ -349,6 +349,19 @@ absl::Status ValidateAlphaTypeSupported(const at::Scalar& alpha) {
   return absl::OkStatus();
 }
 
+absl::Status ValidateAlphaDtype(at::ScalarType dtype, const at::Scalar& alpha) {
+  TT_RET_CHECK(!alpha.isBoolean() || dtype == at::ScalarType::Bool,
+               error::kInvalidArgument)
+      << "expected result dtype to be bool when alpha dtype is bool, got "
+      << ToString(dtype);
+  TT_RET_CHECK(at::isFloatingType(dtype) || at::isComplexType(dtype) ||
+                   alpha.isIntegral(/*include_bool=*/true),
+               error::kInvalidArgument)
+      << "expected alpha to be integral for integral input tensors, got "
+      << ToString(alpha.type());
+  return absl::OkStatus();
+}
+
 absl::StatusOr<mlir::MlirOp> BuildAlphaMulShlo(mlir::MlirOp other_op,
                                                mlir::MlirOp alpha_op) {
   const mlir::RankedTensorType other_type = GetTensorTypeOrDie(other_op);
@@ -1054,6 +1067,7 @@ at::Tensor& AtenAddOut(const at::Tensor& self, const at::Tensor& other,
     TT_THROW_IF_ERROR(ValidateAlphaTypeSupported(alpha));
 
     const at::ScalarType promoted_scalar_type = at::result_type(self, other);
+    TT_THROW_IF_ERROR(ValidateAlphaDtype(promoted_scalar_type, alpha));
 
     // As an optimization, skip the scaling if alpha is 1.
     if (promoted_alpha.IsOne()) {
