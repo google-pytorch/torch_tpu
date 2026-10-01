@@ -7053,6 +7053,27 @@ Supported combinations for non-constant padding:
           x, 2.0, [0], False, dtype=torch.float64, out=out
       )
 
+  def test_norm_out_integral_input(self):
+    x = torch.tensor([1, 2, 3], dtype=torch.int32, device=et.device())
+    out = torch.empty((), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""norm(): expected the input dtype to be floating point or complex, got int32""",
+        gpu="""norm(): input dtype should be either floating point or complex. Got Int instead.""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ops.aten.norm.out(x, 1.5, [0], False, out=out)
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""norm(): expected the input dtype to be floating point or complex, got int32""",
+        gpu="""linalg.vector_norm: Expected a floating point or complex tensor as input. Got Int""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ops.aten.norm.dtype_out(
+          x, 1.5, [0], False, dtype=torch.float32, out=out
+      )
+
   def test_norm_dim_out_of_bounds(self):
     t = torch.ones(2, 3, device=et.device(), dtype=torch.float32)
     for dim in [-3, 3]:

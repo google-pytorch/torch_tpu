@@ -26,7 +26,6 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
-#include "c10/core/DefaultDtype.h"
 #include "c10/core/ScalarType.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
@@ -34,6 +33,7 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
+#include "csrc/common/to_string.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/ops/linalg/vector_norm/pnorm.h"
 #include "csrc/ops/macros/kernel.h"
@@ -54,12 +54,13 @@ namespace {
 
 absl::Status ValidateNormOutDtype(const at::Tensor& self, const at::Tensor& out,
                                   std::optional<at::ScalarType> dtype) {
+  TT_RET_CHECK(c10::isFloatingType(self.scalar_type()) ||
+                   c10::isComplexType(self.scalar_type()),
+               error::kPythonNotImplementedError)
+      << "expected the input dtype to be floating point or complex, got "
+      << ToString(self.scalar_type());
   at::ScalarType expected_dtype =
       dtype.value_or(c10::toRealValueType(self.scalar_type()));
-  if (!dtype.has_value() &&
-      c10::isIntegralType(expected_dtype, /*includeBool=*/true)) {
-    expected_dtype = c10::get_default_dtype_as_scalartype();
-  }
   return ValidateOutDtype(out, expected_dtype, /*allow_out_dtype_cast=*/false);
 }
 
