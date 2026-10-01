@@ -18,6 +18,7 @@ import torch
 from torch._dynamo.backends import registry
 from torch._functorch._aot_autograd import utils as aot_utils
 from torch_tpu._internal.compile import grouped_mm_meta
+from torch_tpu._internal.compile import meta_registration_overrides
 from torch_tpu._internal.compile._backend import async_compile
 from torch_tpu._internal.compile._backend import AsyncCompilationSubmitted
 from torch_tpu._internal.compile._backend import clear_cache
@@ -198,6 +199,7 @@ def _patch_flex_attention() -> None:
 _patch_flex_attention()
 
 grouped_mm_meta.register()
+meta_registration_overrides.register()
 
 # PEP 8 requires this to be a list of strings, not a tuple or a list of objects.
 __all__ = [
