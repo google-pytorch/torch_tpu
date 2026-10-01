@@ -210,8 +210,6 @@ TT_DEFINE_FP_ONLY_ATEN_UNARY_OUT(OpName::kCoshOut, AtenCosh, BuildCoshShlo);
 TT_DEFINE_FP_ONLY_ATEN_UNARY_OUT(OpName::kExp2Out, AtenExp2, BuildExp2Shlo);
 TT_DEFINE_FP_ONLY_ATEN_UNARY_OUT(OpName::kExpM1Out, AtenExpm1, BuildExpm1Shlo);
 TT_DEFINE_FP_ONLY_ATEN_UNARY_OUT(OpName::kExpOut, AtenExp, BuildExpShlo);
-TT_DEFINE_FP_ONLY_ATEN_UNARY_OUT(OpName::kLgammaOut, AtenLgamma,
-                                 BuildLgammaShlo);
 TT_DEFINE_FP_ONLY_ATEN_UNARY_OUT(OpName::kLog10Out, AtenLog10, BuildLog10Shlo);
 TT_DEFINE_FP_ONLY_ATEN_UNARY_OUT(OpName::kLog1pOut, AtenLog1p, BuildLog1pShlo);
 TT_DEFINE_FP_ONLY_ATEN_UNARY_OUT(OpName::kLog2Out, AtenLog2, BuildLog2Shlo);
@@ -267,6 +265,22 @@ at::Tensor& AtenErfInvOut(const at::Tensor& self, at::Tensor& out) {
     auto op_builder =
         [out_dtype](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
       return BuildErfInvShlo(input, out_dtype);
+    };
+    TT_THROW_IF_ERROR(UnaryOpOut(self, out, std::move(op_builder),
+                                 {.op_param_cache_keys = std::move(param_keys),
+                                  .out_dtype = out_dtype}));
+    return out;
+  });
+}
+
+at::Tensor& AtenLgammaOut(const at::Tensor& self, at::Tensor& out) {
+  TT_KERNEL(OpName::kLgammaOut, param_keys, (self, out), {
+    TT_THROW_IF_ERROR(ValidateNotComplex(self, /*arg_name=*/"self"));
+    TT_ASSIGN_OR_THROW(const auto out_dtype,
+                       ConvertTo<mlir::ElementType>(InferOutputDtype(self)));
+    auto op_builder =
+        [out_dtype](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
+      return BuildLgammaShlo(input, out_dtype);
     };
     TT_THROW_IF_ERROR(UnaryOpOut(self, out, std::move(op_builder),
                                  {.op_param_cache_keys = std::move(param_keys),

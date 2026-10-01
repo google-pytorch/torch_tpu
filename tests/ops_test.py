@@ -2516,12 +2516,7 @@ class TestOps(op_testing.OpInfoTestBase):
     )
 
   def test_lgamma(self):
-    self.do_test_op(
-        "lgamma",
-        # TODO: fix lgamma() failing for complex.
-        exclude_dtypes=(torch.complex64,),
-        exclude_inplace_dtypes=(torch.complex64,),
-    )
+    self.do_test_op("lgamma")
 
   def test_linalg_lu_factor_ex(self):
     self.do_test_op(
