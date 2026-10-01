@@ -3332,6 +3332,9 @@ std::vector<at::Tensor> AtenForeachPowScalarAndTensor(const at::Scalar& self,
     for (const auto& tensor : exponent) {
       const at::ScalarType out_dtype =
           at::result_type(promoted_self.scalar(), tensor);
+      TT_CHECK_THROW(out_dtype != at::ScalarType::Bool,
+                     error::kPythonNotImplementedError)
+          << "not implemented for " << ToString(out_dtype);
       TT_ASSIGN_OR_THROW(at::Tensor scalar_tensor,
                          promoted_self.GetTensor(out_dtype));
       TT_ASSIGN_OR_THROW(

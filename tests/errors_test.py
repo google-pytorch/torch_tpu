@@ -5268,6 +5268,15 @@ Supported combinations for non-constant padding:
     ):
       torch._foreach_addcdiv(self_list, tensor1_list, tensor2_list)
 
+  def test_foreach_pow_scalar_and_tensor_bool_rejected(self):
+    t = torch.tensor([True, False], dtype=torch.bool, device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""foreach_pow(): not implemented for bool""",
+        gpu=""""foreach_binary_op_scalar_cuda" not implemented for 'Bool'""",
+    ):
+      torch._foreach_pow(True, [t])
+
   def test_foreach_unary_ops_complex(self):
     for dtype in [torch.complex64, torch.complex128]:
       t = torch.randn(2, 2, dtype=dtype, device=et.device())
