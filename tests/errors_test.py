@@ -8667,6 +8667,30 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       torch.linalg.solve_ex(a, b, out=(result, info))
 
+  def test_linalg_solve_ex_invalid_input_a(self):
+    res = torch.empty(0, device=et.device(), dtype=torch.float32)
+    info = torch.empty(0, device=et.device(), dtype=torch.int32)
+
+    a_1d = torch.ones(3, device=et.device(), dtype=torch.float32)
+    b_1d = torch.ones(3, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_solve_ex(): expected the input tensor to have at least 2 dimensions, got shape [3]""",
+        gpu="""linalg.solve: The input tensor A must have at least 2 dimensions.""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.linalg.solve_ex(a_1d, b_1d, out=(res, info))
+
+    a_non_square = torch.ones(3, 2, device=et.device(), dtype=torch.float32)
+    b_non_square = torch.ones(3, 2, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_solve_ex(): expected the input tensor's last 2 dimensions to be equal, got [3, 2]""",
+        gpu="""linalg.solve: A must be batches of square matrices, but they are 3 by 2 matrices""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.linalg.solve_ex(a_non_square, b_non_square, out=(res, info))
+
   def test_linalg_solve_triangular_out_dtype_mismatch(self):
     a = torch.randn(3, 3, device=et.device(), dtype=torch.float32)
     b = torch.randn(3, 1, device=et.device(), dtype=torch.float32)

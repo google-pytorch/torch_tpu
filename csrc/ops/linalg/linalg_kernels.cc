@@ -48,6 +48,13 @@ AtenLinalgSolveExOut(const at::Tensor& a, const at::Tensor& b, bool left,
        IgnoreInCacheKey(check_errors, "Doesn't affect SHLO"), result, lu,
        pivots, info),
       {
+        TT_CHECK_THROW(a.dim() >= 2, error::kInvalidArgument)
+            << "expected the input tensor to have at least 2 dimensions, got "
+               "shape "
+            << ToString(a.sizes());
+        TT_CHECK_THROW(a.size(-1) == a.size(-2), error::kInvalidArgument)
+            << "expected the input tensor's last 2 dimensions to be equal, got "
+            << ToString(a.sizes());
         TT_THROW_IF_ERROR(ValidateOutDtype(result, b.scalar_type(),
                                            /*allow_out_dtype_cast=*/false));
         TT_THROW_IF_ERROR(ValidateOutDtype(lu, a.scalar_type(),
