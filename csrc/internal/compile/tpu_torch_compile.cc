@@ -30,6 +30,7 @@
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/Generator.h"
 #include "ATen/core/TensorBody.h"
+#include "absl/algorithm/container.h"
 #include "absl/base/nullability.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
@@ -1227,16 +1228,20 @@ bool PyIsConstantTensor(const at::Tensor& tensor) {
          deferred_op->op_name() == OpName::kTorchTpuInternalConstant;
 }
 
+// Returns whether `storage_offset` is zero and every element of a tensor with
+// the given layout maps to the same memory offset as in the standard contiguous
+// layout of `shape`, i.e. the strides differ at most along size-1 dimensions
+// (or `shape` has no elements).
 bool IsPhysicallyContiguousLayout(at::IntArrayRef shape, at::IntArrayRef stride,
                                   int64_t storage_offset) {
   if (storage_offset != 0 || shape.size() != stride.size()) {
     return false;
   }
+  if (absl::c_linear_search(shape, 0)) {
+    return true;
+  }
   int64_t expected_stride = 1;
   for (int i = static_cast<int>(shape.size()) - 1; i >= 0; --i) {
-    if (shape[i] == 0) {
-      return true;
-    }
     if (shape[i] > 1 && stride[i] != expected_stride) {
       return false;
     }
@@ -1373,6 +1378,21 @@ class MultiGeneratorLocker {
 // the output schema at compile time so that runtime execution can reconstruct
 // the FX output structure in C++ without PyTree/Python overhead.
 using RawPyObjPtr = std::decay_t<decltype(py::handle().ptr())>;
+
+// Returns `seq_ptr` directly when it is already an exact `tuple` or `list`, or
+// materializes any other iterable into `fast_holder` via `PySequence_Fast` so
+// callers can uniformly use `PySequence_Fast_*` macros.
+RawPyObjPtr AsFastSequence(RawPyObjPtr seq_ptr, py::object* fast_holder) {
+  if (PyTuple_CheckExact(seq_ptr) || PyList_CheckExact(seq_ptr)) {
+    return seq_ptr;
+  }
+  RawPyObjPtr fast = PySequence_Fast(seq_ptr, "expected a sequence");
+  if (!fast) {
+    throw py::error_already_set();  // Propagate Python C-API error.
+  }
+  *fast_holder = py::reinterpret_steal<py::object>(fast);
+  return fast;
+}
 
 class FxOutputReconstructor {
  public:
@@ -1536,22 +1556,30 @@ class FxOutputReconstructor {
       ++idx;
     }
 
-    // Precompute whether each deduplicated output requires a runtime
-    // stride/layout verification. Fresh PJRT buffers returned by
-    // ExecuteCompiledModel are allocated by the runtime with standard
-    // contiguous row-major strides and zero storage offset. When
-    // `outputs_are_fresh_pjrt` is true (the hot path in
+    // Validate that each `kDedupedTensor` entry indexes a valid layout and
+    // precompute whether it requires a runtime stride/layout verification.
+    // Fresh PJRT buffers returned by ExecuteCompiledModel are allocated by the
+    // runtime with standard contiguous row-major strides and zero storage
+    // offset. When `outputs_are_fresh_pjrt` is true (the hot path in
     // CompiledExecutableRunner::RunFast), we skip `layout.MatchesTensor()`
     // completely unless the expected FX output explicitly specified a
     // non-standard strided/transposed layout
     // (`!layout.is_standard_contiguous`).
     for (Entry& entry : entries_) {
-      if (entry.type == EntryType::kDedupedTensor && entry.index >= 0 &&
-          static_cast<size_t>(entry.index) < layouts_.size()) {
-        const ExpectedTensorLayout& layout = layouts_[entry.index];
-        entry.needs_layout_check =
-            !layout.is_dynamic && !layout.is_standard_contiguous;
+      if (entry.type != EntryType::kDedupedTensor) {
+        continue;
       }
+      if (entry.index < 0 ||
+          static_cast<size_t>(entry.index) >= layouts_.size()) {
+        throw py::index_error(  // For pybind11.
+            absl::StrCat("expected output tensor index to be in [0, ",
+                         layouts_.size(), "), got ", entry.index));
+      }
+      num_output_tensors_ =
+          std::max(num_output_tensors_, static_cast<size_t>(entry.index) + 1);
+      const ExpectedTensorLayout& layout = layouts_[entry.index];
+      entry.needs_layout_check =
+          !layout.is_dynamic && !layout.is_standard_contiguous;
     }
   }
 
@@ -1567,36 +1595,44 @@ class FxOutputReconstructor {
   py::object Reconstruct(py::handle inputs_handle,
                          absl::Span<at::Tensor> deduped_outputs,
                          bool outputs_are_fresh_pjrt = false) const {
-    RawPyObjPtr inputs_ptr = inputs_handle.ptr();
+    TT_CHECK_THROW(deduped_outputs.size() >= num_output_tensors_,
+                   error::kPythonIndexError)
+        << "expected the number of output tensors to be at least "
+        << num_output_tensors_ << ", got " << deduped_outputs.size();
+    const RawPyObjPtr inputs_ptr = inputs_handle.ptr();
     if (spec_kind_ == SpecKind::kLeaf && entries_.size() == 1) {
       return py::reinterpret_steal<py::object>(GetReconstructedLeafNewRef(
           0, inputs_ptr, deduped_outputs, outputs_are_fresh_pjrt));
     }
 
+    // The containers are owned before being filled so that they are released
+    // if `GetReconstructedLeafNewRef` throws; CPython deallocates the
+    // not-yet-set (null) items safely.
     if (spec_kind_ == SpecKind::kFlatTuple) {
-      RawPyObjPtr tuple_ptr = PyTuple_New(entries_.size());
-      if (!tuple_ptr) {
+      py::object tuple =
+          py::reinterpret_steal<py::object>(PyTuple_New(entries_.size()));
+      if (!tuple) {
         throw py::error_already_set();  // Propagate Python C-API error.
       }
       for (size_t i = 0; i < entries_.size(); ++i) {
         PyTuple_SET_ITEM(
-            tuple_ptr, i,
+            tuple.ptr(), i,
             GetReconstructedLeafNewRef(i, inputs_ptr, deduped_outputs,
                                        outputs_are_fresh_pjrt));
       }
-      return py::reinterpret_steal<py::object>(tuple_ptr);
+      return tuple;
     }
 
-    RawPyObjPtr list_ptr = PyList_New(entries_.size());
-    if (!list_ptr) {
+    py::object list =
+        py::reinterpret_steal<py::object>(PyList_New(entries_.size()));
+    if (!list) {
       throw py::error_already_set();  // Propagate Python C-API error.
     }
     for (size_t i = 0; i < entries_.size(); ++i) {
-      PyList_SET_ITEM(list_ptr, i,
+      PyList_SET_ITEM(list.ptr(), i,
                       GetReconstructedLeafNewRef(i, inputs_ptr, deduped_outputs,
                                                  outputs_are_fresh_pjrt));
     }
-    py::object list = py::reinterpret_steal<py::object>(list_ptr);
     if (spec_kind_ == SpecKind::kFlatList) {
       return list;
     }
@@ -1620,21 +1656,20 @@ class FxOutputReconstructor {
   }
 
  private:
-  static RawPyObjPtr GetInputItemNewRef(RawPyObjPtr inputs_ptr, int index) {
-    if (PyTuple_CheckExact(inputs_ptr)) {
-      RawPyObjPtr item = PyTuple_GET_ITEM(inputs_ptr, index);
-      Py_INCREF(item);
-      return item;
-    }
-    if (PyList_CheckExact(inputs_ptr)) {
-      RawPyObjPtr item = PyList_GET_ITEM(inputs_ptr, index);
-      Py_INCREF(item);
-      return item;
-    }
-    RawPyObjPtr item = PySequence_GetItem(inputs_ptr, index);
-    if (!item) {
-      throw py::error_already_set();  // Propagate Python C-API error.
-    }
+  static void CheckInputIndex(const Py_ssize_t size, const int index) {
+    TT_CHECK_THROW(index >= 0 && index < size, error::kPythonIndexError)
+        << "expected input index to be in [0, " << size << "), got " << index;
+  }
+
+  // Returns a new reference to `inputs_ptr[index]`, or throws a Python
+  // `IndexError` if `index` is out of bounds.
+  static RawPyObjPtr GetInputItemNewRef(RawPyObjPtr inputs_ptr,
+                                        const int index) {
+    py::object fast_holder;
+    const RawPyObjPtr fast_inputs = AsFastSequence(inputs_ptr, &fast_holder);
+    CheckInputIndex(PySequence_Fast_GET_SIZE(fast_inputs), index);
+    RawPyObjPtr item = PySequence_Fast_GET_ITEM(fast_inputs, index);
+    Py_INCREF(item);
     return item;
   }
 
@@ -1677,6 +1712,8 @@ class FxOutputReconstructor {
 
   std::vector<Entry> entries_;
   std::vector<ExpectedTensorLayout> layouts_;
+  // The number of deduplicated outputs that `entries_` read.
+  size_t num_output_tensors_ = 0;
   SpecKind spec_kind_;
   py::object output_map_py_;
   py::object expected_layouts_py_;
@@ -1687,45 +1724,40 @@ class FxOutputReconstructor {
 // Dynamo's boxed calling convention passes compiled graph inputs as either
 // `*args` (a tuple of arguments) or a single boxed `[arg0, arg1, ...]` list
 // inside a 1-element tuple `(boxed_list,)`. UnboxSingleSequenceArg unwraps
-// that outer 1-element tuple/list without allocating a new Python container.
+// that outer 1-element tuple/list without allocating a new Python container,
+// and ensures the returned pointer is an exact tuple or list
+// (`AsFastSequence`).
 RawPyObjPtr UnboxSingleSequenceArg(RawPyObjPtr args_ptr,
-                                   py::object* unboxed_holder) {
-  if (PyTuple_CheckExact(args_ptr) && PyTuple_GET_SIZE(args_ptr) == 1) {
-    RawPyObjPtr first = PyTuple_GET_ITEM(args_ptr, 0);
+                                   py::object* fast_holder) {
+  const RawPyObjPtr fast_args = AsFastSequence(args_ptr, fast_holder);
+  if (PySequence_Fast_GET_SIZE(fast_args) == 1) {
+    RawPyObjPtr first = PySequence_Fast_GET_ITEM(fast_args, 0);
     if (PyList_CheckExact(first) || PyTuple_CheckExact(first)) {
       return first;
-    }
-  } else if (PyList_CheckExact(args_ptr) && PyList_GET_SIZE(args_ptr) == 1) {
-    RawPyObjPtr first = PyList_GET_ITEM(args_ptr, 0);
-    if (PyList_CheckExact(first) || PyTuple_CheckExact(first)) {
-      return first;
-    }
-  } else if (PySequence_Check(args_ptr) && PySequence_Size(args_ptr) == 1) {
-    *unboxed_holder =
-        py::reinterpret_steal<py::object>(PySequence_GetItem(args_ptr, 0));
-    if (py::isinstance<py::list>(*unboxed_holder) ||
-        py::isinstance<py::tuple>(*unboxed_holder)) {
-      return unboxed_holder->ptr();
     }
   }
-  return args_ptr;
+  return fast_args;
 }
 
 // Fast-path argument unpacker that traverses the contiguous internal
-// `PyObject*` array of a `PyTupleObject` or `PyListObject`.
+// `PyObject*` array of the exact `PyTupleObject` or `PyListObject` returned by
+// `UnboxSingleSequenceArg`.
 //
 // Why pointers (`const at::Tensor*`) instead of value copies (`at::Tensor`)?
 // Copying an `at::Tensor` increments the atomic reference count of its
 // `c10::TensorImpl`. For a model with 100+ parameters/inputs, copying tensors
 // into a `std::vector<at::Tensor>` on every step incurs 200+ atomic
 // increment/decrement operations on the hot path. Because the caller holds the
-// Python GIL and the input container (`args_ptr`) remains alive throughout the
-// call, taking raw pointers directly to `THPVariable_Unpack(item)` is 100%
-// zero-copy and requires zero atomic reference count operations.
-void UnpackInputTensorsAndGeneratorsFromFastArray(
-    const RawPyObjPtr* items, Py_ssize_t n,
+// Python GIL and the input container (`args_ptr` or `fast_holder`) remains
+// alive throughout the call, taking raw pointers directly to
+// `THPVariable_Unpack(item)` is 100% zero-copy and requires zero atomic
+// reference count operations.
+void UnpackInputTensorPointers(
+    RawPyObjPtr fast_args_ptr,
     absl::InlinedVector<const at::Tensor*, 128>* argument_tensor_ptrs,
-    absl::InlinedVector<at::Generator, 2>* generators) {
+    absl::InlinedVector<at::Generator, 2>* generators = nullptr) {
+  const Py_ssize_t n = PySequence_Fast_GET_SIZE(fast_args_ptr);
+  const RawPyObjPtr* const items = PySequence_Fast_ITEMS(fast_args_ptr);
   argument_tensor_ptrs->reserve(n);
   for (Py_ssize_t i = 0; i < n; ++i) {
     RawPyObjPtr item = items[i];
@@ -1735,43 +1767,6 @@ void UnpackInputTensorsAndGeneratorsFromFastArray(
       at::Generator gen = THPGenerator_Unwrap(item);
       generators->push_back(GetDefaultDeviceGenerator(gen.device().index()));
     }
-  }
-}
-
-void UnpackInputTensorPointers(
-    RawPyObjPtr args_ptr,
-    absl::InlinedVector<const at::Tensor*, 128>* argument_tensor_ptrs,
-    std::vector<at::Tensor>* fallback_tensors,
-    absl::InlinedVector<at::Generator, 2>* generators = nullptr) {
-  if (PyList_CheckExact(args_ptr)) {
-    const Py_ssize_t n = PyList_GET_SIZE(args_ptr);
-    if (n > 0) {
-      UnpackInputTensorsAndGeneratorsFromFastArray(
-          &PyList_GET_ITEM(args_ptr, 0), n, argument_tensor_ptrs, generators);
-    }
-    return;
-  }
-  if (PyTuple_CheckExact(args_ptr)) {
-    const Py_ssize_t n = PyTuple_GET_SIZE(args_ptr);
-    if (n > 0) {
-      UnpackInputTensorsAndGeneratorsFromFastArray(
-          &PyTuple_GET_ITEM(args_ptr, 0), n, argument_tensor_ptrs, generators);
-    }
-    return;
-  }
-  py::sequence seq = py::reinterpret_borrow<py::sequence>(args_ptr);
-  fallback_tensors->reserve(seq.size());
-  for (py::handle item : seq) {
-    if (THPVariable_Check(item.ptr())) {
-      fallback_tensors->push_back(THPVariable_Unpack(item.ptr()));
-    } else if (generators != nullptr && THPGenerator_Check(item.ptr())) {
-      at::Generator gen = THPGenerator_Unwrap(item.ptr());
-      generators->push_back(GetDefaultDeviceGenerator(gen.device().index()));
-    }
-  }
-  argument_tensor_ptrs->reserve(fallback_tensors->size());
-  for (const at::Tensor& t : *fallback_tensors) {
-    argument_tensor_ptrs->push_back(&t);
   }
 }
 
@@ -1794,12 +1789,12 @@ py::object PyExecuteCompiledModel(
     const SharedLoadedExecutableWithMetadata& executable, py::handle py_args,
     py::handle output_shapes_obj = py::none(),
     py::handle reconstruct_fn = py::none()) {
-  py::object unboxed_holder;
-  RawPyObjPtr args_ptr = UnboxSingleSequenceArg(py_args.ptr(), &unboxed_holder);
+  py::object fast_args_holder;
+  RawPyObjPtr args_ptr =
+      UnboxSingleSequenceArg(py_args.ptr(), &fast_args_holder);
 
   absl::InlinedVector<const at::Tensor*, 128> argument_tensor_ptrs;
-  std::vector<at::Tensor> fallback_tensors;
-  UnpackInputTensorPointers(args_ptr, &argument_tensor_ptrs, &fallback_tensors);
+  UnpackInputTensorPointers(args_ptr, &argument_tensor_ptrs);
 
   std::vector<OutputShape> parsed_output_shapes =
       ParseOutputShapes(output_shapes_obj);
@@ -1913,15 +1908,13 @@ class CompiledExecutableRunner {
   }
 
   py::object RunFast(py::handle py_args) const {
-    py::object unboxed_holder;
+    py::object fast_args_holder;
     RawPyObjPtr args_ptr =
-        UnboxSingleSequenceArg(py_args.ptr(), &unboxed_holder);
+        UnboxSingleSequenceArg(py_args.ptr(), &fast_args_holder);
 
     absl::InlinedVector<const at::Tensor*, 128> argument_tensor_ptrs;
-    std::vector<at::Tensor> fallback_tensors;
     absl::InlinedVector<at::Generator, 2> generators;
-    UnpackInputTensorPointers(args_ptr, &argument_tensor_ptrs,
-                              &fallback_tensors, &generators);
+    UnpackInputTensorPointers(args_ptr, &argument_tensor_ptrs, &generators);
     if (updates_default_generator_state_) {
       generators.push_back(GetDefaultDeviceGenerator(-1));
     }

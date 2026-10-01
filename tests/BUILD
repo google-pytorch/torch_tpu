@@ -1759,6 +1759,7 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/distributed:environment",
         "//src/torch_tpu/_internal/dynamism",
         "//src/torch_tpu/_internal/execution_mode",
+        "//src/torch_tpu/_internal/export",
         "//src/torch_tpu/_internal/pallas",
         "//src/torch_tpu/_internal/pallas:tpu_torch_pallas",  # build_cleaner: keep
         "//src/torch_tpu/_internal/utils:hardware",
@@ -1833,6 +1834,7 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/distributed:environment",
         "//src/torch_tpu/_internal/dynamism",
         "//src/torch_tpu/_internal/execution_mode",
+        "//src/torch_tpu/_internal/export",
         "//src/torch_tpu/_internal/pallas",
         "//src/torch_tpu/_internal/pallas:tpu_torch_pallas",  # build_cleaner: keep
         "//src/torch_tpu/_internal/utils:hardware",

@@ -14,6 +14,7 @@
 
 """Tests error handling on TPU only."""
 
+import collections
 import contextlib
 import os
 import re
@@ -25,6 +26,7 @@ import torch
 import torch.distributed as dist
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch.tpu.distributed import environment  # pyrefly: ignore[missing-import]
+from torch.utils import _pytree as pytree
 from torch_tpu._internal import dynamism
 from torch_tpu._internal import env
 from torch_tpu._internal import env_utils
@@ -34,6 +36,7 @@ from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.compiler import StaticCompiler
 from torch_tpu._internal.distributed import environment as internal_environment
+from torch_tpu._internal.export import export as torch_tpu_export
 from torch_tpu._internal.pallas import tpu_torch_pallas
 from torch_tpu._internal.utils import hardware
 from tests import error_testing as et
@@ -1698,6 +1701,100 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         tpu="""execute(): failed to prepare compiled mode arguments: number of argument tensors (1) does not match compiled argument indices (2)""",
     ):
       tpu_torch_compile.execute(compile_result.executable, [x])
+
+  @et.why_tpu_only("For testing compiled runner argument unpacking.")
+  def test_compiled_runner_non_sequence_argument(self):
+    with execution_mode.set_eager_mode(EagerMode._INTERNAL_COMPILE_FX_GRAPH):
+      x = torch.ones(10, device="cpu").to(device=et.device())
+      z = x + x
+
+    compile_result = tpu_torch_compile.traverse_and_compile([z], [x])
+    runner = tpu_torch_compile.make_compiled_runner(compile_result.executable)
+    with et.assert_raises_message(
+        TypeError,
+        tpu="""expected a sequence""",
+    ):
+      runner(None)
+
+  def _make_fx_output_reconstructor(
+      self, input_idx: int
+  ) -> tpu_torch_compile.FxOutputReconstructor:
+    """Returns a reconstructor of `[output_tensor, inputs[input_idx]]`."""
+    _, spec = pytree.tree_flatten([0, "meta"])
+    return tpu_torch_compile.FxOutputReconstructor(
+        [
+            torch_tpu_export._DedupedTensorOutput(tensor_idx=0),  # pylint: disable=protected-access
+            torch_tpu_export._NonTensorPassthrough(input_idx=input_idx),  # pylint: disable=protected-access
+        ],
+        [
+            torch_tpu_export._TensorLayout(  # pylint: disable=protected-access
+                dtype=torch.float32,
+                shape=torch.Size((4,)),
+                stride=(1,),
+                storage_offset=0,
+            )
+        ],
+        spec,
+    )
+
+  @parameterized.named_parameters(
+      ("too_large", 1),
+      ("negative", -1),
+  )
+  @et.why_tpu_only("For testing FxOutputReconstructor output validation.")
+  def test_fx_output_reconstructor_tensor_index_out_of_bounds(
+      self, tensor_idx: int
+  ):
+    _, spec = pytree.tree_flatten(0)
+
+    with et.assert_raises_message(
+        IndexError,
+        tpu=f"""expected output tensor index to be in [0, 1), got {tensor_idx}""",
+    ):
+      tpu_torch_compile.FxOutputReconstructor(
+          [torch_tpu_export._DedupedTensorOutput(tensor_idx=tensor_idx)],  # pylint: disable=protected-access
+          [
+              torch_tpu_export._TensorLayout(  # pylint: disable=protected-access
+                  dtype=torch.float32,
+                  shape=torch.Size((4,)),
+                  stride=(1,),
+                  storage_offset=0,
+              )
+          ],
+          spec,
+      )
+
+  @et.why_tpu_only("For testing FxOutputReconstructor output validation.")
+  def test_fx_output_reconstructor_too_few_output_tensors(self):
+    reconstructor = self._make_fx_output_reconstructor(input_idx=0)
+
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""FxOutputReconstructor.__call__(): expected the number of output tensors to be at least 1, got 0""",
+    ):
+      reconstructor(inputs=["a"], deduped_outputs=[])
+
+  @parameterized.named_parameters(
+      ("list_too_large", ["a", "b"], 2),
+      ("list_negative", ["a", "b"], -1),
+      ("tuple_too_large", ("a", "b"), 2),
+      ("tuple_negative", ("a", "b"), -1),
+      ("user_list_too_large", collections.UserList(["a", "b"]), 2),
+      ("user_list_negative", collections.UserList(["a", "b"]), -1),
+  )
+  @et.why_tpu_only("For testing FxOutputReconstructor passthrough validation.")
+  def test_fx_output_reconstructor_passthrough_index_out_of_bounds(
+      self, inputs: Any, input_idx: int
+  ):
+    reconstructor = self._make_fx_output_reconstructor(input_idx)
+
+    with et.assert_raises_message(
+        IndexError,
+        tpu=f"""FxOutputReconstructor.__call__(): expected input index to be in [0, 2), got {input_idx}""",
+    ):
+      reconstructor(
+          inputs=inputs, deduped_outputs=[torch.ones(4, device=et.device())]
+      )
 
   @et.why_tpu_only("build_mlir() input validation is TPU-only.")
   def test_build_mlir_duplicate_input(self):
@@ -4299,7 +4396,6 @@ module {
           x, hx, params[:3], True, 1, 0.0, False, False, False
       )
 
-
   def _default_gru_input_args(self):
     device = et.device()
     x = torch.randn(10, 3, 16, device=device)
@@ -4488,7 +4584,6 @@ module {
       torch.ops.aten.gru.input(
           x, hx, params[:3], True, 1, 0.0, False, False, False
       )
-
 
   @et.why_tpu_only("ao.reload is implemented for device=tpu.")
   def test_reload_invalid_device(self):

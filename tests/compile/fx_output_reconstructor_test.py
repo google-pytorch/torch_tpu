@@ -14,9 +14,11 @@
 
 """Unit tests for C++ FxOutputReconstructor."""
 
+import collections
 import pickle
 
 from absl.testing import absltest
+from absl.testing import parameterized
 import torch
 from torch.utils import _pytree as pytree
 import torch_tpu._internal.compile.tpu_torch_compile as tpu_torch_compile
@@ -184,6 +186,96 @@ class FxOutputReconstructorTest(seed_test_utils.RepeatableTest):
     self.assertEqual(out.stride(), (8, 8, 1))
     self.assertEqual(out.storage_offset(), 0)
     self.assertTrue(torch.equal(out.cpu(), base.cpu()))
+
+  @parameterized.named_parameters(
+      ("cpu_trailing_zero", "cpu", lambda x: x[:, ::2][:, :0]),
+      ("cpu_leading_zero", "cpu", lambda x: x[:, ::2][:0, :]),
+      ("tpu_trailing_zero", "tpu", lambda x: x[:, ::2][:, :0]),
+      ("tpu_leading_zero", "tpu", lambda x: x[:, ::2][:0, :]),
+  )
+  def test_zero_size_dimension_stride_fast_path(
+      self,
+      device: str,
+      slice_fn,
+  ):
+    # Slicing every 2nd column gives shape (4, 3) with stride (6, 2); taking an
+    # empty slice along dim 0 or dim 1 produces a 0-element view of shape (0, 3)
+    # or (4, 0) that retains the non-standard stride (6, 2). Testing on CPU also
+    # verifies that ForceStrides takes the metadata-only fast path rather than
+    # falling through to TPU-only ContiguousToView.
+    full = torch.empty((4, 6), dtype=torch.float32, device=device)
+    expected_view = slice_fn(full)
+    base = torch.empty_like(
+        expected_view, memory_format=torch.contiguous_format
+    )
+    _, spec = pytree.tree_flatten(expected_view)
+    output_map = [
+        torch_tpu_export._DedupedTensorOutput(tensor_idx=0)  # pylint: disable=protected-access
+    ]
+    expected_layout = self._make_layout(
+        dtype=expected_view.dtype,
+        shape=expected_view.shape,
+        stride=expected_view.stride(),
+        storage_offset=expected_view.storage_offset(),
+    )
+    reconstructor = tpu_torch_compile.FxOutputReconstructor(
+        output_map, [expected_layout], spec, dynamic_outputs=[False]
+    )
+    out = reconstructor(inputs=[], deduped_outputs=[base])
+    self.assertEqual(out.shape, expected_view.shape)
+    self.assertEqual(out.stride(), expected_view.stride())
+    self.assertEqual(out.storage_offset(), 0)
+
+  @parameterized.named_parameters(
+      (
+          "namedtuple",
+          collections.namedtuple("Inputs", ["first", "second"])("a", "meta"),
+      ),
+      ("user_list", collections.UserList(["a", "meta"])),
+  )
+  def test_passthrough_from_non_exact_sequence(self, inputs):
+    t0 = torch.tensor([1.0, 2.0, 3.0, 4.0])
+    _, spec = pytree.tree_flatten([t0, "meta"])
+    reconstructor = tpu_torch_compile.FxOutputReconstructor(
+        [
+            torch_tpu_export._DedupedTensorOutput(tensor_idx=0),  # pylint: disable=protected-access
+            torch_tpu_export._NonTensorPassthrough(input_idx=1),  # pylint: disable=protected-access
+        ],
+        [self._make_layout()],
+        spec,
+    )
+
+    out = reconstructor(inputs=inputs, deduped_outputs=[t0])
+
+    self.assertIsInstance(out, list)
+    self.assertLen(out, 2)
+    self.assertIs(out[0], t0)
+    self.assertEqual(out[1], "meta")
+
+  @parameterized.named_parameters(
+      (
+          "namedtuple",
+          lambda x, y: collections.namedtuple("Inputs", ["x", "y"])(x, y),
+      ),
+      ("generator_of_views", lambda x, y: (t.detach() for t in (x, y))),
+  )
+  def test_compiled_runner_unpacks_non_exact_sequence_inputs(self, make_inputs):
+    module = tpu_torch_compile.parse_mlir_text("""
+module {
+  func.func @main(%arg0: tensor<4xf32>, %arg1: tensor<4xf32>) -> tensor<4xf32> {
+    return %arg0 : tensor<4xf32>
+  }
+}
+""")
+    executable = tpu_torch_compile.compile_mlir(module)
+    runner = tpu_torch_compile.make_compiled_runner(executable)
+
+    x = torch.arange(4, dtype=torch.float32, device="tpu")
+    y = torch.ones(4, dtype=torch.float32, device="tpu")
+    outputs = runner(make_inputs(x, y))
+
+    self.assertLen(outputs, 1)
+    self.assertTrue(torch.equal(outputs[0].cpu(), x.cpu()))
 
 
 if __name__ == "__main__":
