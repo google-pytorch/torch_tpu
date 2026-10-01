@@ -59,6 +59,7 @@ torch_tpu_py_library(
         "//src/torch_tpu/_internal:env",
         "//src/torch_tpu/_internal:env_utils",
         "//src/torch_tpu/_internal:exceptions",
+        "//src/torch_tpu/_internal:exceptions_api",
         "//src/torch_tpu/_internal/batch_transfer",  # buildcleaner: keep
         "//src/torch_tpu/_internal/compile",
         "//src/torch_tpu/_internal/compile:tpu_backend",

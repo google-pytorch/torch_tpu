@@ -95,10 +95,10 @@ def _register_public_modules() -> None:
   # Expose the public exceptions module under 'torch.tpu.exceptions' in
   # sys.modules and attach it to the 'torch.tpu' device module for attribute
   # access.
-  from torch_tpu._internal import exceptions  # pylint: disable=g-import-not-at-top
+  from torch_tpu._internal import exceptions_api  # pylint: disable=g-import-not-at-top
 
-  sys.modules["torch.tpu.exceptions"] = exceptions
-  setattr(device_module, "exceptions", exceptions)
+  sys.modules["torch.tpu.exceptions"] = exceptions_api
+  setattr(device_module, "exceptions", exceptions_api)
 
   # Expose the public compiler module under 'torch.tpu.compiler' in sys.modules
   # and attach it to the 'torch.tpu' device module for attribute access.

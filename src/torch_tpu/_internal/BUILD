@@ -95,4 +95,13 @@ torch_tpu_py_library(
     ],
 )
 
+torch_tpu_py_library(
+    name = "exceptions_api",
+    srcs = ["exceptions_api.py"],
+    deps = [
+        ":exceptions",
+        "//src/torch_tpu/_internal/utils:annotations",
+    ],
+)
+
 torch_tpu_package_end()
