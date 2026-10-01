@@ -199,3 +199,67 @@ transformers,answerdotai/ModernBERT-base,modernbert,Natural Language Processing,
 transformers,google/gemma-3-1b-it,gemma3_text,Natural Language Processing,text-generation,4507610,46156279,1079,2025-03-10T12:09:00+00:00,10,999885952,True,google/gemma-3-1b-pt,Tier 3
 transformers,facebook/w2v-bert-2.0,wav2vec2-bert,Natural Language Processing,feature-extraction,1429466,37092286,224,2023-12-19T07:41:49+00:00,0,580493120,False,,Tier 3
 transformers,CompVis/stable-diffusion-safety-checker,clip,Other,unknown,1116425,108153419,141,2022-08-22T10:22:34+00:00,2,0,False,,Tier 3
+transformers,dslim/bert-base-NER,bert,Natural Language Processing,token-classification,1618082,93334782,722,2022-03-02T23:29:05+00:00,1,108317193,False,,Tier 3
+transformers,IDEA-Research/grounding-dino-tiny,grounding-dino,Computer Vision,zero-shot-object-detection,1597284,20754514,107,2023-09-25T00:59:34+00:00,0,172277902,False,,Tier 3
+transformers,facebook/wav2vec2-base-960h,wav2vec2,Audio,automatic-speech-recognition,1461778,114328495,399,2022-03-02T23:29:05+00:00,1,94395552,False,,Tier 3
+transformers,Davlan/xlm-roberta-large-ner-hrl,xlm-roberta,Natural Language Processing,token-classification,492865,3290185,15,2022-03-02T23:29:04+00:00,0,558850571,False,,Tier 3
+transformers,google-bert/bert-large-uncased-whole-word-masking-finetuned-squad,bert,Natural Language Processing,question-answering,55994,37238348,188,2022-03-02T23:29:04+00:00,0,335143938,True,,Tier 3
+transformers,JazibEijaz/bert-base-uncased-finetuned-swag-e1-b16-l5e5,bert,Other,multiple-choice,15,657,0,2022-03-02T23:29:04+00:00,0,0,True,,Tier 3
+transformers,Qwen/Qwen3-ASR-1.7B,qwen3_asr,Other,automatic-speech-recognition,1490625,8540359,934,2026-01-28T03:22:40+00:00,9,2349217408,False,,Tier 3
+transformers,KheireddineDaouadi/ZeroAraElectra,electra,Other,zero-shot-classification,9,2316,0,2022-03-02T23:29:04+00:00,0,0,False,,Tier 3
+transformers,jetjodh/sam3,sam3_video,Computer Vision,mask-generation,23159,42871,12,2025-11-25T01:57:48+00:00,0,859922360,False,,Tier 3
+transformers,tau/splinter-base,splinter,Natural Language Processing,question-answering,75824,754336,1,2022-03-02T23:29:05+00:00,0,0,False,,Tier 3
+transformers,facebook/sapiens2-pose-0.4b,sapiens2,Other,keypoint-detection,9163,20464,9,2026-04-23T17:37:48+00:00,2,425677380,True,facebook/sapiens2-pretrain-0.4b,Tier 3
+transformers,IlyaGusev/rut5_base_sum_gazeta,t5,Natural Language Processing,summarization,7818,168013,19,2022-03-02T23:29:04+00:00,0,0,False,,Tier 3
+transformers,microsoft/git-large-vqav2,git,Multimodal,visual-question-answering,723,39600,22,2023-01-02T11:07:38+00:00,1,394857407,False,,Tier 3
+diffusers,Disty0/GLM-Image-SDNQ-4bit-dynamic,GlmImagePipeline,Computer Vision,text-to-image,124,2106,16,2026-01-14T12:34:23+00:00,0,3846494272,True,zai-org/GLM-Image,Tier 3
+transformers,LIAMF-USP/aristo-roberta,roberta,Other,multiple-choice,13,17775,1,2022-03-02T23:29:04+00:00,0,0,False,,Tier 3
+transformers,pkshatech/GLuCoSE-base-ja-v2,luke,Natural Language Processing,sentence-similarity,211882,1039064,24,2024-08-22T03:16:48+00:00,0,133067008,True,pkshatech/GLuCoSE-base-ja,Tier 3
+transformers,K024/mt5-zh-ja-en-trimmed,mt5,Other,translation,125,68205,57,2022-03-02T23:29:04+00:00,0,0,False,,Tier 3
+transformers,SamLowe/roberta-base-go_emotions,roberta,Natural Language Processing,text-classification,1008926,97137977,682,2022-09-15T13:04:21+00:00,2,124667678,False,,Tier 3
+transformers,microsoft/swinv2-tiny-patch4-window16-256,swinv2,Computer Vision,image-classification,402280,10057500,14,2022-06-14T06:17:52+00:00,0,0,False,,Tier 3
+transformers,ehcalabres/wav2vec2-lg-xlsr-en-speech-emotion-recognition,wav2vec2,Audio,audio-classification,15265,3304096,251,2022-03-02T23:29:05+00:00,1,316496520,False,,Tier 3
+transformers,Davlan/distilbert-base-multilingual-cased-ner-hrl,distilbert,Natural Language Processing,token-classification,160666,46446324,83,2022-03-02T23:29:04+00:00,0,134741001,False,,Tier 3
+transformers,ClaudeYang/awesome_fb_model,bart,Other,zero-shot-classification,14,3821,1,2022-03-02T23:29:04+00:00,0,0,False,,Tier 3
+transformers,shi-labs/oneformer_ade20k_swin_large,oneformer,Computer Vision,image-segmentation,108276,2620525,35,2022-11-15T19:00:56+00:00,0,0,False,,Tier 3
+transformers,AmazonScience/qanlu,roberta,Other,question-answering,113,14942,13,2022-03-02T23:29:04+00:00,0,0,False,,Tier 3
+transformers,IlyaGusev/mbart_ru_sum_gazeta,mbart,Other,summarization,440,1107969,66,2022-03-02T23:29:04+00:00,0,867129515,False,,Tier 3
+transformers,JazibEijaz/bert-base-uncased-finetuned-semeval2020-task4a-append-e2-b32-l5e5,bert,Other,multiple-choice,14,614,0,2022-03-02T23:29:04+00:00,0,0,True,,Tier 3
+transformers,Alibaba-NLP/gte-modernbert-base,modernbert,Natural Language Processing,sentence-similarity,134084,2000580,200,2025-01-20T03:03:48+00:00,1,149014272,True,answerdotai/ModernBERT-base,Tier 3
+transformers,Qwen/Qwen2.5-1.5B-Instruct,qwen2,Other,text-generation,13154575,199101877,776,2024-09-17T14:10:29+00:00,1.5,1543714304,True,Qwen/Qwen2.5-1.5B,Tier 3
+transformers,BAAI/bge-multilingual-gemma2,gemma2,Natural Language Processing,feature-extraction,1280305,10343439,203,2024-07-25T16:55:46+00:00,0,9241713152,False,,Tier 3
+transformers,google/flan-t5-base,t5,Other,unknown,1825955,62183671,1087,2022-10-21T10:02:31+00:00,1,247577856,False,,Tier 3
+transformers,Qwen/Qwen2-VL-2B-Instruct,qwen2_vl,Multimodal,image-text-to-text,3293639,44421803,516,2024-08-28T09:02:15+00:00,1,2208985600,True,Qwen/Qwen2-VL-2B,Tier 3
+transformers,Thalesian/cuneiformBase-400m,umt5,Other,translation,103,6508,4,2026-02-19T23:51:30+00:00,0,395678976,True,google/umt5-base,Tier 3
+transformers,cardiffnlp/twitter-xlm-roberta-base-sentiment,xlm-roberta,Natural Language Processing,text-classification,1030352,53302622,271,2022-03-02T23:29:05+00:00,1,0,False,,Tier 3
+transformers,facebook/convnextv2-tiny-1k-224,convnextv2,Computer Vision,image-classification,188340,2412617,6,2023-02-17T14:03:53+00:00,0,28635496,False,,Tier 3
+transformers,Bagus/wav2vec2-xlsr-japanese-speech-emotion-recognition,wav2vec2,Audio,audio-classification,489,18471,5,2022-03-02T23:29:04+00:00,0,316492420,False,,Tier 3
+transformers,deepseek-community/Janus-Pro-1B,janus,Multimodal,any-to-any,52756,673211,16,2025-03-01T14:42:15+00:00,0,2076636811,False,,Tier 3
+transformers,Jean-Baptiste/camembert-ner,camembert,Natural Language Processing,token-classification,117596,89994386,121,2022-03-02T23:29:04+00:00,0,110035719,False,,Tier 3
+transformers,Jiva/xlm-roberta-large-it-mnli,xlm-roberta,Other,zero-shot-classification,31,65416,8,2022-03-02T23:29:04+00:00,0,559894021,True,,Tier 3
+transformers,AlexKay/xlm-roberta-large-qa-multilingual-finedtuned-ru,xlm-roberta,Other,question-answering,110,420241,50,2022-03-02T23:29:04+00:00,0,0,False,,Tier 3
+transformers,Callidior/bert2bert-base-arxiv-titlegen,encoder-decoder,Other,summarization,227,46481,13,2022-03-02T23:29:04+00:00,0,247364410,False,,Tier 3
+transformers,Junmai/klue-roberta-large-copa-finetuned-v1,roberta,Other,multiple-choice,11,1420,0,2022-03-02T23:29:04+00:00,0,0,True,,Tier 3
+transformers,shibing624/text2vec-base-chinese-paraphrase,ernie,Natural Language Processing,sentence-similarity,111034,1917697,78,2023-06-19T12:48:16+00:00,0,117946880,False,,Tier 3
+transformers,microsoft/deberta-v3-base,deberta-v2,Natural Language Processing,fill-mask,2616606,67953290,430,2022-03-02T23:29:05+00:00,0,0,False,,Tier 3
+transformers,docling-project/docling-layout-heron,rt_detr_v2,Other,unknown,1852403,10210586,45,2025-04-15T12:36:48+00:00,0,42889979,False,,Tier 3
+transformers,datnth1709/VietAI-NLP-ITN,encoder-decoder,Other,translation,6,516,1,2022-09-22T19:22:12+00:00,1,0,True,,Tier 3
+transformers,ibm-granite/granite-speech-3.3-2b,granite_speech,Audio,automatic-speech-recognition,513572,2639660,55,2025-04-28T15:25:29+00:00,0,3009285376,True,ibm-granite/granite-3.3-2b-instruct,Tier 3
+transformers,BAAI/AltCLIP,altclip,Computer Vision,zero-shot-image-classification,49160,1114918,32,2022-11-15T03:22:10+00:00,0,0,False,,Tier 3
+transformers,microsoft/deberta-base-mnli,deberta,Natural Language Processing,text-classification,72087,2303223,9,2022-03-02T23:29:05+00:00,1,0,False,,Tier 3
+transformers,Organika/sdxl-detector,swin,Computer Vision,image-classification,133803,715251,57,2023-12-31T04:54:35+00:00,0,86802898,False,,Tier 3
+transformers,Bagus/wav2vec2-xlsr-greek-speech-emotion-recognition,wav2vec2,Other,audio-classification,32,1805,1,2022-03-02T23:29:04+00:00,0,0,False,,Tier 3
+transformers,czczup/textnet-base,textnet,Computer Vision,image-feature-extraction,2666,16663,4,2024-12-24T10:10:58+00:00,0,13552064,False,,Tier 3
+transformers,Aryn/deformable-detr-DocLayNet,deformable_detr,Computer Vision,object-detection,16423,1019281,51,2024-03-19T00:46:32+00:00,0,41145648,False,,Tier 3
+transformers,Jean-Baptiste/roberta-large-ner-english,roberta,Natural Language Processing,token-classification,34006,13154413,79,2022-03-02T23:29:04+00:00,0,354315783,False,,Tier 3
+transformers,microsoft/git-base,git,Computer Vision,image-to-text,11764,13312001,111,2022-12-06T09:22:35+00:00,0,176620287,False,,Tier 3
+transformers,microsoft/beit-base-finetuned-ade-640-640,beit,Computer Vision,image-segmentation,37971,135110,13,2022-03-02T23:29:05+00:00,0,0,True,,Tier 3
+transformers,facebook/musicgen-small,musicgen,Audio,text-to-audio,208481,11080579,498,2023-06-08T17:28:01+00:00,2,591087174,False,,Tier 3
+transformers,depth-anything/prompt-depth-anything-vits-hf,prompt_depth_anything,Computer Vision,depth-estimation,651,27311,5,2024-12-23T05:53:53+00:00,0,25083073,False,,Tier 3
+transformers,nineninesix/gepard-1.0,qwen3_5_text,Audio,text-to-speech,8524,8524,117,2026-06-22T06:34:26+00:00,30,555694169,True,nineninesix/qwen3_5-full-attn-only-14,Tier 3
+transformers,MCG-NJU/videomae-base-finetuned-kinetics,videomae,Computer Vision,video-classification,42390,3937777,52,2022-07-08T15:01:34+00:00,1,86534800,True,,Tier 3
+transformers,Akari/albert-base-v2-finetuned-squad,albert,Other,question-answering,28,1756,1,2022-03-02T23:29:04+00:00,0,0,True,,Tier 3
+transformers,ELiRF/NASES,bart,Other,summarization,90,12968,3,2022-03-02T23:29:04+00:00,0,415271520,False,,Tier 3
+transformers,JazibEijaz/bert-base-uncased-finetuned-semeval2020-task4b-base-e2-b32-l3e5,bert,Other,multiple-choice,13,449,0,2022-03-02T23:29:04+00:00,0,0,True,,Tier 3
+transformers,nvidia/Nemotron-3-Embed-1B-BF16,ministral3,Natural Language Processing,sentence-similarity,61708,61708,70,2026-07-14T07:32:18+00:00,69,1140918272,True,mistralai/Ministral-3-3B-Instruct-2512,Tier 3
+transformers,facebook/esm2_t33_650M_UR50D,esm,Natural Language Processing,fill-mask,1148942,46742498,86,2022-09-27T14:36:16+00:00,1,652358616,False,,Tier 3
