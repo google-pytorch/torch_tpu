@@ -474,7 +474,7 @@ def main():
   try:
     torchtpu_ver = importlib.metadata.version("torch_tpu")
   except importlib.metadata.PackageNotFoundError:
-    torchtpu_ver = getattr(torch_tpu, "__version__", "installed")
+    torchtpu_ver = "installed"
   print(
       f" Python: {sys.version.split()[0]} | PyTorch: {torch.__version__} |"
       f" TorchTPU: {torchtpu_ver}",
