@@ -6,6 +6,14 @@ common --announce_rc
 # As a work around, disable visibility checking.
 common --check_visibility=false
 
+# `//build_files:test_rbe_macro_exec_properties` analyzes its `torch_tpu_py_test`
+# subjects under both values of `//:_rbe_test_execution`, and each subject pulls
+# in `:torch_tpu_wheel`. Under the wheel test configs this exceeds Bazel's
+# default limit of 2000 dependency edges for analysis tests that use
+# configuration transitions (6596 edges as of 2026-09-30), which breaks
+# analyzing all targets, as `bazel-diff generate-hashes` does in CI.
+common --analysis_testing_deps_limit=16000
+
 # The default comes form XLA's setup, which is 3.13,
 # while we have 3.14 configured.
 common --repo_env=HERMETIC_PYTHON_VERSION=3.14
