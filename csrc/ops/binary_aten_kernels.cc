@@ -23,6 +23,7 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/ops/result_type.h"
+#include "absl/algorithm/container.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -68,15 +69,18 @@ namespace internal {
 
 // When PyTorch executes mixed-device operations (e.g., `tpu_tensor +
 // cpu_scalar`), the dispatcher bypasses the standard backend device guards. We
-// must manually move 1-element CPU tensors to the TPU to avoid crashes when we
+// must manually move 0-D CPU scalar tensors to the TPU to avoid crashes when we
 // later try to extract their TPU buffers.
 absl::StatusOr<std::vector<at::Tensor>> MoveCpuScalarsToTpu(
     absl::Span<const at::Tensor> tensors) {
+  const bool has_tpu_tensor = absl::c_any_of(
+      tensors, [](const at::Tensor& t) { return IsPrivateUse1Device(t); });
   std::vector<at::Tensor> tpu_tensors;
   tpu_tensors.reserve(tensors.size());
   for (const auto& tensor : tensors) {
     // MakeTensor uses a cache to deduplicate scalar tensors.
-    if (tensor.device().type() == c10::DeviceType::CPU && tensor.numel() == 1) {
+    if (has_tpu_tensor && tensor.device().type() == c10::DeviceType::CPU &&
+        tensor.dim() == 0) {
       TT_ASSIGN_OR_RETURN(at::Tensor tpu_tensor, MakeTensor(tensor.item()));
       tpu_tensors.push_back(std::move(tpu_tensor));
     } else {
@@ -291,10 +295,12 @@ absl::Status TernaryOpOut(const at::Tensor& self, const at::Tensor& other,
       ValidateOutDtype(out, expected_result_type, opts.allow_out_dtype_cast));
 
   TT_ASSIGN_OR_RETURN(auto tpu_tensors,
-                      internal::MoveCpuScalarsToTpu({self, other, third}));
+                      internal::MoveCpuScalarsToTpu({self, other}));
   const at::Tensor& self_tpu = tpu_tensors[0];
   const at::Tensor& other_tpu = tpu_tensors[1];
-  const at::Tensor& third_tpu = tpu_tensors[2];
+  TT_ASSIGN_OR_RETURN(auto third_tpu_vec,
+                      internal::MoveCpuScalarsToTpu({self_tpu, third}));
+  const at::Tensor& third_tpu = third_tpu_vec[1];
 
   TT_ASSIGN_OR_RETURN(
       const Dimensions output_dims,

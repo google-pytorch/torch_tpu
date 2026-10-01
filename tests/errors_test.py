@@ -14237,6 +14237,27 @@ class MaskedSoftmaxErrorTest(et.ErrorTestBase):
     ):
       torch.split_with_sizes_copy(self_t, [2, 2], dim=0, out=out)
 
+  def test_add_out_cpu_non_scalar_and_both_cpu_scalars(self):
+    tpu_0d = torch.tensor(1.0, device=et.device(), dtype=torch.float32)
+    cpu_2d = torch.ones(1, 1, device="cpu", dtype=torch.float32)
+    out = torch.empty(0, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""add(): expected tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!""",
+    ):
+      torch.add(tpu_0d, cpu_2d, out=out)
+
+    cpu_0d_a = torch.tensor(1.0, device="cpu", dtype=torch.float32)
+    cpu_0d_b = torch.tensor(2.0, device="cpu", dtype=torch.float32)
+    out2 = torch.empty((), device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""add(): expected tensor to be on tpu, got cpu""",
+        gpu="""Trying to pass too many CPU scalars to non-CPU kernel!""",
+    ):
+      torch.add(cpu_0d_a, cpu_0d_b, out=out2)
+
 
 if __name__ == "__main__":
   multiprocessing.handle_test_main(absltest.main)
