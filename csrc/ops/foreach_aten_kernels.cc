@@ -18,6 +18,7 @@
 
 #include <array>
 #include <cassert>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -2976,12 +2977,23 @@ std::vector<at::Tensor> AtenForeachNormScalar(
               at::toRealValueType(dtype.value_or(tensor.scalar_type()));
           TT_ASSIGN_OR_THROW(auto out,
                              MakeEmptyTensor({}, out_dtype, tensor.device()));
-          // If the tensor is empty, return zero scalar.
+          const double ord_val = promoted_ord.scalar().to<double>();
+          if (tensor.numel() == 0) {
+            TT_CHECK_THROW(ord_val != INFINITY, error::kInvalidArgument)
+                << "cannot compute the infinity norm on an empty tensor "
+                   "because the operation does not have an identity";
+            TT_CHECK_THROW(ord_val >= 0.0, error::kInvalidArgument)
+                << "cannot compute the " << ord_val
+                << " norm on an empty tensor because the operation does not "
+                   "have an identity";
+            out.fill_(0);
+            result.push_back(out);
+            continue;
+          }
           // If ord < 0, to avoid inf caused by pow(0, ord), check for 0s
           // in the tensor and return zero directly, which is the correct
           // result.
-          if (tensor.numel() == 0 || (promoted_ord.scalar().to<double>() < 0 &&
-                                      tensor.eq(0).any().item<bool>())) {
+          if (ord_val < 0 && tensor.eq(0).any().item<bool>()) {
             out.fill_(0);
             result.push_back(out);
             continue;

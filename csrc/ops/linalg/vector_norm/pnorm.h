@@ -19,6 +19,9 @@
 
 #include <cstdint>
 
+#include "ATen/core/ATen_fwd.h"
+#include "ATen/core/TensorBody.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "csrc/ops/reductions/reductions.h"
@@ -26,6 +29,9 @@
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
 namespace torch_tpu {
+
+absl::Status ValidateNormNonEmptyReduction(const at::Tensor& self, double ord,
+                                           at::OptionalIntArrayRef opt_dim);
 
 absl::StatusOr<mlir::MlirOp> BuildPNormShlo(
     mlir::MlirOp input_op, double ord, absl::Span<const int64_t> reduce_dims,

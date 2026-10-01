@@ -7077,6 +7077,44 @@ Supported combinations for non-constant padding:
     ):
       torch.norm(t, p=2, dim=[0, 0])
 
+  def test_norm_empty_reduction_error(self):
+    x_empty = torch.empty(0, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""foreach_norm(): cannot compute the infinity norm on an empty tensor because the operation does not have an identity""",
+        gpu="""_foreach_norm cannot compute the infinity norm on an empty tensor because the operation does not have an identity""",
+    ):
+      torch._foreach_norm([x_empty], ord=float("inf"))
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""foreach_norm(): cannot compute the -1 norm on an empty tensor because the operation does not have an identity""",
+        gpu="""linalg.vector_norm cannot compute the -1 norm on an empty tensor because the operation does not have an identity""",
+    ):
+      torch._foreach_norm([x_empty], ord=-1.0)
+
+    x_2d = torch.empty((2, 0), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""norm(): cannot compute the inf norm on the dimension 1 because this dimension is empty and the operation does not have an identity""",
+        gpu="""linalg.vector_norm cannot compute the inf norm on the dimension 1because this dimension is empty and the operation does not have an identity""",
+    ):
+      torch.ops.aten.norm.ScalarOpt_dim(x_2d, float("inf"), [1], False)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""norm(): cannot compute the -1 norm on the dimension 1 because this dimension is empty and the operation does not have an identity""",
+        gpu="""linalg.vector_norm cannot compute the -1 norm on the dimension 1because this dimension is empty and the operation does not have an identity""",
+    ):
+      torch.ops.aten.norm.ScalarOpt_dim(x_2d, -1.0, [1], False)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_norm(): cannot compute the inf norm on an empty tensor because the operation does not have an identity""",
+        gpu="""linalg.vector_norm cannot compute the inf norm on an empty tensor because the operation does not have an identity""",
+    ):
+      torch.ops.aten.native_norm.default(x_empty, float("inf"))
+
   def test_rms_norm_int(self):
     inp = torch.ones(5, 5, device=et.device(), dtype=torch.int32)
     normalized_shape = (5,)

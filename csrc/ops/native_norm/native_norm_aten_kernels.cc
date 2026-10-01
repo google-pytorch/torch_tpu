@@ -63,6 +63,7 @@ absl::StatusOr<at::Tensor> PNorm(const at::Tensor& self,
   }
 
   TT_ASSIGN_OR_RETURN(Dimensions canonical_dims, CanonicalizeDims(self, dim));
+  TT_RETURN_IF_ERROR(ValidateNormNonEmptyReduction(self, ord, dim));
 
   const Dimensions output_dims =
       GetSizesAfterReduction(self.sizes(), reduction_mode, canonical_dims);

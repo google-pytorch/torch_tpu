@@ -19,7 +19,10 @@
 #include <cmath>
 #include <cstdint>
 
+#include "ATen/core/ATen_fwd.h"
+#include "ATen/core/TensorBody.h"
 #include "absl/log/absl_check.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "csrc/common/aten_utils.h"
@@ -34,6 +37,25 @@
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 
 namespace torch_tpu {
+
+absl::Status ValidateNormNonEmptyReduction(const at::Tensor& self, double ord,
+                                           at::OptionalIntArrayRef opt_dim) {
+  if (self.numel() == 0 && (ord < 0.0 || ord == INFINITY)) {
+    TT_RET_CHECK(opt_dim.has_value() && !opt_dim->empty(),
+                 error::kInvalidArgument)
+        << "cannot compute the " << ord
+        << " norm on an empty tensor because the operation does not have an "
+           "identity";
+    for (const int64_t dim_num : *opt_dim) {
+      TT_RET_CHECK(self.size(dim_num) != 0, error::kInvalidArgument)
+          << "cannot compute the " << ord << " norm on the dimension "
+          << dim_num
+          << " because this dimension is empty and the operation does not have "
+             "an identity";
+    }
+  }
+  return absl::OkStatus();
+}
 
 absl::StatusOr<mlir::MlirOp> BuildPNormShlo(
     mlir::MlirOp input_op, double ord, absl::Span<const int64_t> reduce_dims,

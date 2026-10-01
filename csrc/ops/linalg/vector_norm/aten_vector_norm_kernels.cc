@@ -56,6 +56,7 @@ absl::Status PNormOut(const at::Tensor& self, MaybePromotedScalar& promoted_ord,
   ReductionMode reduction_mode =
       keepdim ? ReductionMode::kKeepDims : ReductionMode::kDropDims;
   TT_ASSIGN_OR_RETURN(Dimensions canonical_dims, CanonicalizeDims(self, dim));
+  TT_RETURN_IF_ERROR(ValidateNormNonEmptyReduction(self, ord, dim));
 
   Dimensions output_dims =
       GetSizesAfterReduction(self.sizes(), reduction_mode, canonical_dims);
