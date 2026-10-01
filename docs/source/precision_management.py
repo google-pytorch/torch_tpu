@@ -30,81 +30,103 @@ def _():
 @app.cell(hide_code=True)
 def _(mo):
   mo.md(r"""
-    # Precision Management
+    # Manage numerical precision in TorchTPU
 
-    # **APIs and Usage**
+    Google TPUs accelerate matrix multiplication using a dedicated Matrix Multiply Unit (MXU) that natively multiplies `bfloat16` inputs and accumulates results in `float32`. If you are training or running inference on PyTorch models with TorchTPU, understanding this hardware behavior helps you balance execution speed against numerical accuracy. In this guide, you learn how to configure `float32` matrix multiplication precision modes, control excess precision and output accumulator data types, and verify bitwise precision on TPUs.
 
-    ## **Excess Precision**
+    ## Specify precision modes
 
-    When running PyTorch on TPUs with the TorchTPU backend, to force the compiler to retain intermediate down casts, which prevents excess precision, use:
+    Specify the precision modes using the `torch.tpu.Precision` enum:
 
-    ```py
-    torch.tpu.allow_excess_precision = False
-    ```
+    * `Precision.DEFAULT` (1-pass): The default precision. This is the fastest available precision that maintains reasonable accuracy (often `bfloat16` for the compute, but `float32` for accumulation). Multiplies only the first 8 bits.
+    * `Precision.HIGH` (3-pass): Uses multiple `bfloat16` passes or hardware features to approximate `float32` precision, providing higher accuracy than `Precision.DEFAULT` at the cost of slower execution. Multiplies the first 16 bits.
+    * `Precision.HIGHEST` (6-pass): Uses multiple `bfloat16` passes or hardware features to approximate or compute full `float32` precision. This is the slowest, most accurate mode. Multiplies all 24 bits, achieving full `float32` precision.
 
-    To give the compiler the option, but not the obligation, to remove intermediate downcasts, possibly resulting in excess precision, use:
-
-    ```py
-    torch.tpu.allow_excess_precision = True
-    ```
+    Use `torch.tpu.precision` as a context manager to compare compilation and execution time across the three modes:
     """)
   return
 
 
 @app.cell
 def init():
+  import time
   import torch
 
   # Standard hardware initialization
-  device = torch.device("tpu")
-  return (torch,)
+  torch.device("tpu")
+
+  precision = torch.tpu.precision  # Context manager
+  Precision = torch.tpu.Precision  # Enum class
+
+  def run_matmul():
+    size = (8, 2048, 2048)
+    a = torch.zeros(size, device="tpu")
+    b = torch.zeros(size, device="tpu")
+    return torch.matmul(a, b).cpu()
+
+  for mode in [Precision.DEFAULT, Precision.HIGH, Precision.HIGHEST]:
+    with precision(mode):
+      start = time.time()
+      run_matmul()
+      print(f"{mode} time: {time.time() - start:.4f}s")
+  return Precision, precision, torch
 
 
 @app.cell(hide_code=True)
 def _(mo):
   mo.md(r"""
-    ## **Float32 Matmul Precision**
+    ### Compare accuracy across precision modes
 
-    You can control the algorithm used by the tpu backend for float32 matrix multiplications via the `torch.tpu.precision` context manager. Rather than a global flag, this context manager allows fine-grained control of matmul precisions.
-
-    ```py
-    with torch.tpu.precision(torch.tpu.Precision.HIGHEST):
-      c = a @ b # float32 mat mul operation on all 23 bits of mantissa
-    ```
-
-    In TPU backends, these correspond to three modes of operation:
-
-    * **DEFAULT (1-pass):** Multiplies only the first 8 bits
-    * **HIGH (3-pass):** Multiplies the first 16 bits
-    * **HIGHEST (6-pass):** Multiplies all 24 bits, achieving full float32 precision.
+    Compare the TPU results against a CPU reference to see how each precision mode affects accuracy:
     """)
   return
 
 
 @app.cell
-def matmul_precision_demo(torch):
-  # Example float32 tensors
-  a_matmul = torch.randn((128, 128), dtype=torch.float32, device="tpu")
-  b_matmul = torch.randn((128, 128), dtype=torch.float32, device="tpu")
+def _(Precision, precision, torch):
+  size = (8, 2048, 2048)
+  rand_a = torch.randn(size, device="tpu")
+  rand_b = torch.randn(size, device="tpu")
 
-  with torch.tpu.precision(torch.tpu.Precision.HIGHEST):
-    c_matmul = (
-        a_matmul @ b_matmul
-    )  # float32 mat mul operation on all 23 bits of mantissa
+  # CPU reference result
+  c_ref = torch.matmul(rand_a.cpu(), rand_b.cpu())
+
+  for mode in [Precision.DEFAULT, Precision.HIGH, Precision.HIGHEST]:
+    with precision(mode):
+      res = torch.matmul(rand_a, rand_b)
+      diff = res.cpu() - c_ref
+      print(f"Mode: {mode}")
+      print(f"  Max Absolute Error: {diff.abs().max():.6e}")
+      print(
+          "  Mean Relative Error: "
+          f" {(diff.abs() / (c_ref.abs() + 1e-8)).mean():.6e}\n"
+      )
   return
 
 
 @app.cell(hide_code=True)
 def _(mo):
   mo.md(r"""
-    ## **Output Precision**
+    ## Control excess precision
 
-    Unlike the excess precision flag, which grants the compiler the right but not the obligation to allow more precision in the outputs than the inputs, the out\_dtype arg on torch ops forces the compiler to return a value with more bits of precision.
+    Because the TPU MXU accumulates `bfloat16` matrix multiplications in `float32`, the XLA compiler can optimize fused operations by keeping intermediate values in `float32` instead of rounding them down to `bfloat16` between steps. Retaining these extra intermediate bits is called *excess precision*.
 
-    ```py
-    a = torch.randn((256,256), dtype=torch.bfloat16)
-    torch.bmm(a, a, out_dtype=torch.float32)
-    ```
+    You can control this behavior globally using `torch.tpu.allow_excess_precision` (which sets the underlying `--xla_allow_excess_precision` compiler flag and defaults to `False`):
+
+    * **Disable excess precision (`False`):** Set `torch.tpu.allow_excess_precision = False` to force the compiler to retain intermediate downcasts to `bfloat16`.
+    * **Allow excess precision (`True`):** Set `torch.tpu.allow_excess_precision = True` to allow the compiler to elide intermediate downcasts and keep intermediate results in `float32`.
+
+    Set `torch.tpu.allow_excess_precision` at the beginning of your script before running or compiling operations. Changing this flag mid-session forces recompilation, and the TPU XLA runtime can latch the compiler option on the first compilation in a session, ignoring subsequent changes.
+    """)
+  return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+  mo.md(r"""
+    ## Specify output precision
+
+    While `torch.tpu.allow_excess_precision` only permits the compiler to retain higher intermediate precision, the `out_dtype` argument on PyTorch ops forces the compiler to return a value with more bits of precision:
     """)
   return
 
@@ -114,54 +136,59 @@ def output_precision_demo(torch):
   a_bmm = torch.randn((2, 256, 256), dtype=torch.bfloat16, device="tpu")
   # Using out_dtype to force float32 output accumulator precision
   res_bmm = torch.bmm(a_bmm, a_bmm, out_dtype=torch.float32)
+  print(f"Input dtype: {a_bmm.dtype}")
+  print(f"Output dtype: {res_bmm.dtype}")
   return
 
 
 @app.cell(hide_code=True)
 def _(mo):
   mo.md(r"""
-    # **In-Depth Explanation of the TPU MXU**
+    ## Understand TPU MXU precision
 
-    Google TPUs are built with matrix multiplication optimized on silicon in a physical module called a Matrix Multiply Unit or MXU.
+    Google TPUs accelerate matrix multiplication in hardware using a physical module called a Matrix Multiply Unit (MXU).
 
-    To achieve maximum speed, researchers identified an inexpensive tradeoff. [The research](https://cloud.google.com/blog/products/ai-machine-learning/bfloat16-the-secret-to-high-performance-on-cloud-tpus) showed that neural networks were able to train with less precision than float32  “without having any noticeable impact on model accuracy”. The same was not true for range. Due to operations like norms, float32’s range was important to keep. The solution was brain float 16 (bfloat16): the same range as float32, with less precision: only seven bits of mantissa for a machine epsilon of approximately 0.78%.
+    To achieve maximum speed, researchers identified an inexpensive tradeoff. [Google Cloud research on bfloat16](https://cloud.google.com/blog/products/ai-machine-learning/bfloat16-the-secret-to-high-performance-on-cloud-tpus) showed that neural networks can train with less precision than `float32` "without having any noticeable impact on model accuracy." The same was not true for range. Due to operations like norms, keeping the range of `float32` was important. The solution was brain float 16 (`bfloat16`): the same range as `float32`, with less precision: only 7 bits of mantissa for a machine epsilon of approximately 0.78%.
 
-    Two related but distinct concepts in floating point math are **interchange formats** (how floating point numbers are stored) and **arithmetic formats** (the formats in which operations are performed). An example of an arithmetic format is the use of 3 extra bits beyond the significand to handle rounding accurately during multiplication, addition, and subtraction. These three extra bits are known as the guard, round, and sticky bits.
+    Two related but distinct concepts in floating-point math are **interchange formats** (how memory stores floating-point numbers) and **arithmetic formats** (the formats in which hardware performs operations). An example of an arithmetic format is the use of 3 extra bits beyond the significand to handle rounding accurately during multiplication, addition, and subtraction. These three extra bits are the guard, round, and sticky bits.
 
-    Confusingly, bfloat16 can refer to both interchange format and arithmetic format.
+    The term `bfloat16` can refer to both an interchange format and an arithmetic format.
 
-    Float32 has 23 bits of mantissa (plus the implicit leading bit, creating a significand with 24 bits of precision). Bfloat16 only has 7 bits of mantissa, leading to 8 bits of precision.
+    `float32` has 23 bits of mantissa (plus the implicit leading bit, creating a significand with 24 bits of precision). `bfloat16` only has 7 bits of mantissa, leading to 8 bits of precision.
 
-    In its most native state, an MXU accepts matrices of dtype bfloat16 (newer generations like the v7x also support fp8). However, they do not output bfloat16: because the machine epsilon from 7 bits is literally 2\*\*-7 or roughly 0.008, the rounding errors per matrix multiplication along the contracting dimension would be unacceptably high if accumulation were in bfloat16. For that reason, the intermediate accumulation values on an MXU are actually float32. These extra bits play the same role as the guard, round, and sticky bits in an ALU: they are there to attempt to live up to the IEEE 754 standard’s goal (in the case of accumulating many values together): arithmetic should round as if the intermediate ops were performed in infinite precision and then rounded to the output format.
+    In its most native state, an MXU accepts matrices of `dtype` `bfloat16` (newer generations like the v7x also support `fp8`). However, it does not output `bfloat16`: because the machine epsilon from 7 bits is `2**-7` or roughly `0.008`, the rounding errors per matrix multiplication along the contracting dimension would be unacceptably high if accumulation were in `bfloat16`. For that reason, the intermediate accumulation values on an MXU are `float32`. These extra bits play the same role as the guard, round, and sticky bits in an ALU: they attempt to meet the IEEE 754 standard's goal (when accumulating many values together) that arithmetic should round as if the intermediate ops were performed in infinite precision and then rounded to the output format.
 
-    Note on contracting dimensions: When multiplying two matrices of shape [I,J] @ [J,K], a mathematically equivalent and in this case useful equivalence is to view the matrix multiplication as two dimensional grid of inner products of shape [1,J] @ [J,1]. And of course, the inner product is equivalent to a dot product of two vectors of length J. For each of these inner / dot products, the systolic array will perform J multiplications and accumulation. Hence, J is the contracting dimension since the dimension gets summed up and contracted away by the inner / dot product.
+    When multiplying two matrices of shape `[I, J] @ [J, K]`, a mathematically equivalent view is to treat the matrix multiplication as a two-dimensional grid of inner products of shape `[1, J] @ [J, 1]`. Each inner product is equivalent to a dot product of two vectors of length `J`. For each of these inner or dot products, the systolic array performs `J` multiplications and accumulations. Hence, `J` is the contracting dimension because the dot product sums up and contracts away that dimension.
 
     **However, notice that the input and output formats are different.** This mismatch is the root of two confusing elements of modern ML frameworks: excess precision and less-than-expected precision.
 
-    Note that MXU precision issues do not apply to vector math units on a TPU: those do operate on full 23 bits of mantissa for float32 (though not always strictly adhering to IEEE 754 standards for example in the case of subnormals).
+    MXU precision behavior does not apply to vector math units on a TPU: those operate on all 23 bits of mantissa for `float32` (though not always strictly adhering to IEEE 754 standards, for example in the case of subnormals).
 
-    Reiterating the on-silicon mixed precision behavior of the TPU MXU, MXUs only accept bfloat16 inputs (8 bits of precision) but accumulate in float32. When attempting to do matrix multiplications of float32 numbers, it is not possible for an MXU to calculate the full 24 bits of arithmetic precision (at least in one pass). In practice, this is not an issue for a couple of reasons.
+    Because MXUs only accept `bfloat16` inputs (8 bits of precision) and accumulate in `float32`, an MXU cannot calculate the full 24 bits of arithmetic precision for `float32` matrix multiplications in a single pass. In practice, this is not an issue for two reasons.
 
-    First, models in the past few years generally hold weights in bfloat16 format. This goes back to the original research: deep learning is very robust to rounding, and 24 bits of precision is more than enough. So for inferencing recent models, float32 matrix multiplications simply do not happen.
+    First, recent models generally hold weights in `bfloat16` format. Deep learning is robust to rounding, and 24 bits of precision is more than enough. When running inference on recent models, `float32` matrix multiplications rarely occur.
 
-    Finally, it is actually possible to do math on the full 23 bits of mantissa through an algorithm described in the precisely-named paper [Leveraging the bfloat16 Artificial Intelligence Datatype For Higher-Precision Computations](https://arxiv.org/pdf/1904.06376) by Greg Henry, Ping Tak Peter Tang, and  Alexander Heinecke. The intuition is that the higher precision number can be expressed as a sum of numbers in the lower precision format. Then, the product of sums can be converted to a sum of products via polynomial expansion.
+    Second, you can compute math on all 23 bits of mantissa through an algorithm described in the paper [Leveraging the bfloat16 Artificial Intelligence Datatype For Higher-Precision Computations](https://arxiv.org/pdf/1904.06376) by Greg Henry, Ping Tak Peter Tang, and Alexander Heinecke. You can express a higher-precision number as a sum of numbers in a lower-precision format, and then expand the product of sums into a sum of products via polynomial expansion:
 
-    (a \+ b \+ c)  (d \+ e \+ f) \= ad \+ ae \+ af \+ bd \+ be \+ bf \+ cd \+ ce \+ cf
+    ```text
+    (a + b + c)(d + e + f) = ad + ae + af + bd + be + bf + cd + ce + cf
+    ```
 
-    This is exactly how MXUs that can only handle bfloat16 multiplication can implement float32 math. Because the 8 bits of a bfloat16’s significand are a third of a fp32’s, 3 bfloat16s are needed. A multiplication of a sum of triples is converted to a sum of nine elements. Upon closer analysis, the cells in red will always underflow in fp32, so will rarely affect the output.
+    This is how MXUs that natively handle `bfloat16` multiplication implement `float32` math. Because the 8 bits of a `bfloat16` significand are one-third of a `float32` significand, representing one `float32` value requires three `bfloat16` values. Multiplying two sums of three terms expands into a sum of nine products. Upon closer analysis, the three lowest-order products always underflow in `float32`, so they rarely affect the output:
 
-    | High x High | High x Med | High x Low |
+    | High | Med | Low |
     | :---- | :---- | :---- |
-    | Med x High | Med x Med | Med x low |
-    | Low x High | Low x Med | Low x Low |
+    | High x High | High x Med | High x Low |
+    | Med x High | Med x Med | Med x Low *(underflows)* |
+    | Low x High | Low x Med *(underflows)* | Low x Low *(underflows)* |
 
-    ## **Performance considerations of 3-pass and 6-pass**
+    ### Evaluate 3-pass and 6-pass performance
 
-    In theory, the 6-pass technique will require 6 times more passes on the MXU, so a program could slow down by a factor of 6\. In other words, an op that used to take one second will now take six seconds. Similar math applies to the 3 pass technique. But this does not happen in practice for a few reasons.
+    In theory, the 6-pass technique requires 6 times more passes on the MXU, so a program could slow down by a factor of 6. In other words, an op that used to take one second would take six seconds. Similar math applies to the 3-pass technique. However, this slowdown rarely happens in practice for two reasons.
 
-    First, modern models trained with float32 accumulation like DeepSeek v3 have large contracting dimensions where the noise and non-determinism of accumulation dominates the contribution from the product of rightward mantissa bits.
+    First, modern models trained with `float32` accumulation like DeepSeek-V3 have large contracting dimensions where the noise and non-determinism of accumulation dominates the contribution from the product of rightward mantissa bits.
 
-    Second, older models trained with float32 are generally not optimized for modern TPUs (or GPUs). A simplified model of a TPU is a big arithmetic engine and limited bandwidth to memory (HBM). Older models simply don’t do enough arithmetic with their data to saturate their MXUs (or in the case of GPUs, TensorCores). So the additional MXU passes for the 3-pass and 6-pass technique are simply making use of otherwise idle MXU time.
+    Second, older models trained with `float32` are generally not optimized for modern TPUs (or GPUs). A simplified model of a TPU is a large arithmetic engine with limited bandwidth to High Bandwidth Memory (HBM). Older models do not perform enough arithmetic with their data to saturate their MXUs (or in the case of GPUs, TensorCores). As a result, the additional MXU passes for the 3-pass and 6-pass techniques use otherwise idle MXU cycles.
     """)
   return
 
@@ -169,18 +196,18 @@ def _(mo):
 @app.cell(hide_code=True)
 def _(mo):
   mo.md(r"""
-    # **Advanced Techniques: validating bitwise behavior easily**
+    ## Validate bitwise precision behavior
 
-    To verify the behavior, recall that mantissa bits are easily manipulated by two rules:
+    To verify the behavior, you can manipulate mantissa bits using two rules:
 
-    1. `1 + 2**-n` creates a number that looks like 1.000...1000... where the fractional 1 is in the nth position of the mantissa
-    2. `(1+m) * (1+n) = 1 + m + n + mn`. In other words, multiplying two numbers with bits flipped at mantissa positions 6 and 7 creates a number with mantissa positions  6, 7 and 5+6==13 flipped. This is useful to force overflow bits.
+    * `1 + 2**-n` creates a number that looks like `1.000...1000...`, where the fractional `1` is in the `n`th position of the mantissa.
+    * `(1 + m) * (1 + n) = 1 + m + n + mn`. Multiplying two numbers with bits flipped at mantissa positions 6 and 7 creates a number with mantissa positions 6, 7, and `6 + 7 = 13` flipped. This is useful to force overflow bits.
 
     ```py
-    value = (1  + 2**-6) @ (1 + 2**-7) # 1.0000_01 * 1.0000_001 = 1.0000_0110_0000_1
+    value = (1 + 2**-6) * (1 + 2**-7)  # 1.0000_01 * 1.0000_001 = 1.0000_0110_0000_1
     ```
 
-    Wrapping these in matrices will trigger execution on the MXU. To ensure reproducible results, you can use the following verification pattern to validate the current behavior of your environment:
+    Wrapping these in matrices triggers execution on the MXU. To ensure reproducible results, you can use the following verification pattern to validate the current behavior of your environment:
     """)
   return
 
@@ -211,7 +238,7 @@ def excess_precision_verification(torch):
 
   # This must be a vector of length one rather than a
   # scalar due to PyTorch's unique dtype promotion rules.
-  # TLDR: scalar dtypes are often ignored.
+  # PyTorch often ignores scalar dtypes during type promotion.
   one_float32 = torch.tensor([1.0], dtype=torch.float32, device="tpu")
 
   print(f"{bit_6_tensor[0,0]=:.20f}")
