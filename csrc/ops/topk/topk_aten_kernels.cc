@@ -22,6 +22,7 @@
 
 #include "ATen/core/TensorBase.h"
 #include "absl/status/statusor.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -34,6 +35,7 @@
 #include "csrc/ops/topk/topk.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "torch/headeronly/core/ScalarType.h"
 #include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
@@ -47,6 +49,10 @@ std::tuple<at::Tensor&, at::Tensor&> AtenTopKValues(
        IgnoreInCacheKey(sorted, "Does not affect SHLO lowering"), values,
        indices),
       {
+        TT_THROW_IF_ERROR(ValidateOutDtype(values, self.scalar_type(),
+                                           /*allow_out_dtype_cast=*/false));
+        TT_THROW_IF_ERROR(ValidateOutDtype(indices, at::ScalarType::Long,
+                                           /*allow_out_dtype_cast=*/false));
         int64_t wrapped_dim = 0;
         if (self.dim() > 0) {
           TT_ASSIGN_OR_THROW(wrapped_dim, SafeWrapDim(dim, self.dim()));

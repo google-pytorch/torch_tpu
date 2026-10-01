@@ -23,6 +23,7 @@
 
 #include "ATen/core/TensorBase.h"
 #include "absl/status/statusor.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -34,6 +35,7 @@
 #include "csrc/ops/sort/sort.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "torch/headeronly/core/ScalarType.h"
 #include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
@@ -44,12 +46,16 @@ std::tuple<at::Tensor&, at::Tensor&> AtenSortValuesStable(
   TT_KERNEL(
       OpName::kSortValuesStable, param_keys,
       (self, stable_opt, dim, descending, values, indices), {
-        bool stable = stable_opt.value_or(false);
+        TT_THROW_IF_ERROR(ValidateOutDtype(values, self.scalar_type(),
+                                           /*allow_out_dtype_cast=*/false));
+        TT_THROW_IF_ERROR(ValidateOutDtype(indices, at::ScalarType::Long,
+                                           /*allow_out_dtype_cast=*/false));
+        const bool stable = stable_opt.value_or(false);
         int64_t normalized_dim = 0;
         if (self.dim() > 0) {
           TT_ASSIGN_OR_THROW(normalized_dim, SafeWrapDim(dim, self.dim()));
         }
-        Dimensions output_dims = CopyIntVector(self.sizes());
+        const Dimensions output_dims = CopyIntVector(self.sizes());
         TT_ASSIGN_OR_THROW(const auto elem_type,
                            ConvertTo<mlir::ElementType>(self.scalar_type()));
         auto op_builder =

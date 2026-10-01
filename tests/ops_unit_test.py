@@ -16242,6 +16242,56 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
 
     self.assert_close_tpu_vs_cpu(test_fn)
 
+  def test_bucketize_out_resize(self):
+    def test_fn(device):
+      inp = torch.tensor([[0.0, 2.0, 3.0], [3.0, 4.0, 6.0]], device=device)
+      boundaries = torch.tensor([1.0, 3.0, 5.0], device=device)
+      out = torch.empty(0, dtype=torch.int64, device=device)
+      torch.bucketize(inp, boundaries, out=out)
+      return out
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
+  def test_searchsorted_out_resize(self):
+    def test_fn(device):
+      seq = torch.tensor([[1.0, 3.0, 5.0], [2.0, 4.0, 6.0]], device=device)
+      values = torch.tensor([[0.0, 2.0, 4.0], [3.0, 5.0, 7.0]], device=device)
+      out = torch.empty(0, dtype=torch.int64, device=device)
+      torch.searchsorted(seq, values, out=out)
+      return out
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
+  def test_isin_out_resize(self):
+    def test_fn(device):
+      elements = torch.tensor([[1, 2, 3], [4, 5, 6]], device=device)
+      test_elements = torch.tensor([2, 4, 6], device=device)
+      out = torch.empty(0, dtype=torch.bool, device=device)
+      torch.isin(elements, test_elements, out=out)
+      return out
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
+  def test_sort_out_resize(self):
+    def test_fn(device):
+      t = torch.tensor([[3.0, 1.0, 2.0], [6.0, 4.0, 5.0]], device=device)
+      values = torch.empty(0, dtype=torch.float32, device=device)
+      indices = torch.empty(0, dtype=torch.int64, device=device)
+      torch.sort(t, out=(values, indices))
+      return values, indices
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
+  def test_topk_out_resize(self):
+    def test_fn(device):
+      t = torch.tensor([[3.0, 1.0, 2.0], [6.0, 4.0, 5.0]], device=device)
+      values = torch.empty(0, dtype=torch.float32, device=device)
+      indices = torch.empty(0, dtype=torch.int64, device=device)
+      torch.topk(t, 2, out=(values, indices))
+      return values, indices
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
   @parameterized.named_parameters(
       dict(
           testcase_name="float4_e2m1fn_x2",

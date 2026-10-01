@@ -8693,6 +8693,126 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       torch.lu_unpack(lu, pivots, out=(p, l, u))
 
+  def test_bucketize_out_dtype_mismatch(self):
+    input_tensor = torch.tensor([1.0, 2.0, 3.0], device=et.device())
+    boundaries = torch.tensor([0.5, 1.5, 2.5], device=et.device())
+    out = torch.empty(3, device=et.device(), dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""bucketize(): expected the output dtype to be int64, got float32""",
+        gpu="""torch.searchsorted(): output tensor's dtype is wrong, it can only be Int(int32) or Long(int64) depending on whether out_int32 flag is True, but we got output tensor's dtype Float and out_int32 flag is False""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.bucketize(input_tensor, boundaries, out=out)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""bucketize(): expected the output dtype to be int32, got float32""",
+        gpu="""torch.searchsorted(): output tensor's dtype is wrong, it can only be Int(int32) or Long(int64) depending on whether out_int32 flag is True, but we got output tensor's dtype Float and out_int32 flag is True""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.bucketize(input_tensor, boundaries, out_int32=True, out=out)
+
+  def test_searchsorted_out_dtype_mismatch(self):
+    sorted_sequence = torch.tensor([1.0, 2.0, 3.0], device=et.device())
+    values = torch.tensor([0.5, 1.5, 2.5], device=et.device())
+    out = torch.empty(3, device=et.device(), dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""searchsorted(): expected the output dtype to be int64, got float32""",
+        gpu="""torch.searchsorted(): output tensor's dtype is wrong, it can only be Int(int32) or Long(int64) depending on whether out_int32 flag is True, but we got output tensor's dtype Float and out_int32 flag is False""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.searchsorted(sorted_sequence, values, out=out)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""searchsorted(): expected the output dtype to be int32, got float32""",
+        gpu="""torch.searchsorted(): output tensor's dtype is wrong, it can only be Int(int32) or Long(int64) depending on whether out_int32 flag is True, but we got output tensor's dtype Float and out_int32 flag is True""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.searchsorted(sorted_sequence, values, out_int32=True, out=out)
+
+  def test_isin_out_dtype_mismatch(self):
+    elements = torch.tensor([1, 2, 3], device=et.device())
+    test_elements = torch.tensor([2, 4], device=et.device())
+    out = torch.empty(3, device=et.device(), dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""isin(): expected the output dtype to be bool, got float32""",
+        gpu="""Expected out tensor to have dtype bool, but got float instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.isin(elements, test_elements, out=out)
+
+    out_scalar = torch.empty((), device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""isin(): expected the output dtype to be bool, got float32""",
+        gpu="""Expected out tensor to have dtype bool, but got float instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.isin(1, test_elements, out=out_scalar)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""isin(): expected the output dtype to be bool, got float32""",
+        gpu="""Expected out tensor to have dtype bool, but got float instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.isin(elements, 2, out=out)
+
+  def test_sort_out_dtype_mismatch(self):
+    t = torch.tensor([3.0, 1.0, 2.0], device=et.device(), dtype=torch.float32)
+    bad_values = torch.empty(3, device=et.device(), dtype=torch.int32)
+    indices = torch.empty(3, device=et.device(), dtype=torch.int64)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""sort(): expected the output dtype to be float32, got int32""",
+        gpu="""Expected out tensor to have dtype float, but got int instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.sort(t, out=(bad_values, indices))
+
+    values = torch.empty(3, device=et.device(), dtype=torch.float32)
+    bad_indices = torch.empty(3, device=et.device(), dtype=torch.int32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""sort(): expected the output dtype to be int64, got int32""",
+        gpu="""Expected out tensor to have dtype long, but got int instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.sort(t, out=(values, bad_indices))
+
+  def test_topk_out_dtype_mismatch(self):
+    t = torch.tensor([3.0, 1.0, 2.0], device=et.device(), dtype=torch.float32)
+    bad_values = torch.empty(2, device=et.device(), dtype=torch.int32)
+    indices = torch.empty(2, device=et.device(), dtype=torch.int64)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""topk(): expected the output dtype to be float32, got int32""",
+        gpu="""Expected out tensor to have dtype float, but got int instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.topk(t, 2, out=(bad_values, indices))
+
+    values = torch.empty(2, device=et.device(), dtype=torch.float32)
+    bad_indices = torch.empty(2, device=et.device(), dtype=torch.int32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""topk(): expected the output dtype to be int64, got int32""",
+        gpu="""Expected out tensor to have dtype long, but got int instead""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.topk(t, 2, out=(values, bad_indices))
+
   def test_angle_out_dtype_mismatch(self):
     t = torch.tensor([1.0 + 1.0j], device=et.device())
     out_int = torch.empty(1, device=et.device(), dtype=torch.int32)

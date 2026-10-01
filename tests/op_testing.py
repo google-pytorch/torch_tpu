@@ -373,18 +373,13 @@ _OUT_DTYPE_CAST_KNOWN_FAILURES: Final[set[str]] = {
     "addcmul",
     "addmv",
     "bitwise_not",
-    "bucketize",
-    "isin",
     "lerp",
     # TODO: remove after regen golden.
     "logcumsumexp",
-    "searchsorted",
-    "sort",
     "sparse_coo_mul",
     "sparse_coo_neg",
     # TODO: Remove "std" once find_cast_pairs avoids real->complex pairs.
     "std",
-    "topk",
     "var",
     # go/keep-sorted end
 }

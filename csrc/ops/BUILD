@@ -624,6 +624,7 @@ torch_tpu_cc_library(
     deps = [
         ":op_builder_utils",
         ":op_names",
+        "//csrc/common:aten_utils",
         "//csrc/common:cache_key",
         "//csrc/common:device_type",
         "//csrc/common:dimension_types",

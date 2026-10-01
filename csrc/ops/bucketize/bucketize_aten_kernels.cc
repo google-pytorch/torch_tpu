@@ -24,7 +24,7 @@
 #include "ATen/ops/result_type.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "c10/core/ScalarType.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -44,6 +44,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 namespace {
@@ -192,6 +193,9 @@ absl::StatusOr<DeviceBufferRef> Bucketize(const at::Tensor& self,
 absl::Status BucketizeOut(const at::Tensor& self, const at::Tensor& boundaries,
                           bool out_int32, bool right, at::Tensor& out,
                           OpParamCacheKeys param_keys) {
+  TT_RETURN_IF_ERROR(ValidateOutDtype(
+      out, out_int32 ? at::ScalarType::Int : at::ScalarType::Long,
+      /*allow_out_dtype_cast=*/false));
   return DispatchBucketize<absl::Status>(
       self, boundaries, out_int32, right, std::move(param_keys),
       [&](auto op_builder, mlir::ElementType out_dtype,

@@ -29,6 +29,7 @@
 #include "c10/core/ScalarType.h"
 #include "c10/util/Optional.h"
 #include "c10/util/string_view.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/device_type.h"
 #include "csrc/common/dimension_types.h"
@@ -375,6 +376,9 @@ absl::Status SearchsortedTensorOut(const at::Tensor& sorted_sequence,
                                    const c10::optional<at::Tensor>& sorter,
                                    at::Tensor& out,
                                    OpParamCacheKeys&& param_keys) {
+  TT_RETURN_IF_ERROR(ValidateOutDtype(
+      out, out_int32 ? at::ScalarType::Int : at::ScalarType::Long,
+      /*allow_out_dtype_cast=*/false));
   return SearchsortedTensorCommon<absl::Status>(
       sorted_sequence, values, out_int32, right, side, sorter,
       std::move(param_keys),
