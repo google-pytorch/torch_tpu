@@ -15659,6 +15659,65 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
           atol=2e-2,
       )
 
+  @parameterized.named_parameters(
+      # (q_seq, kv_seq, head_dim) -> expected backend with default settings.
+      (
+          "short_q_and_kv",
+          (50, 50, 64),
+          torch.nn.attention.SDPBackend.OVERRIDEABLE,
+      ),
+      (
+          "below_tile_boundary",
+          (127, 127, 64),
+          torch.nn.attention.SDPBackend.OVERRIDEABLE,
+      ),
+      (
+          "short_q_only",
+          (1, 1024, 128),
+          torch.nn.attention.SDPBackend.CUDNN_ATTENTION,
+      ),
+      (
+          "short_kv_only",
+          (256, 64, 64),
+          torch.nn.attention.SDPBackend.CUDNN_ATTENTION,
+      ),
+      (
+          "at_tile_boundary",
+          (128, 128, 64),
+          torch.nn.attention.SDPBackend.CUDNN_ATTENTION,
+      ),
+      (
+          "long",
+          (1024, 1024, 128),
+          torch.nn.attention.SDPBackend.CUDNN_ATTENTION,
+      ),
+  )
+  def test_sdpa_backend_choice_short_sequences(
+      self,
+      shape: tuple[int, int, int],
+      expected: torch.nn.attention.SDPBackend,
+  ):
+    """Test that short query and key sequences prefer the OVERRIDEABLE backend.
+
+    TorchTPU reports its flash attention kernel as CUDNN_ATTENTION.
+    """
+    q_seq, kv_seq, head_dim = shape
+    q = torch.randn(2, 4, q_seq, head_dim, dtype=torch.bfloat16, device="tpu")
+    k = torch.randn(2, 4, kv_seq, head_dim, dtype=torch.bfloat16, device="tpu")
+    v = torch.randn(2, 4, kv_seq, head_dim, dtype=torch.bfloat16, device="tpu")
+
+    # Default: all backends enabled.
+    self.assertEqual(torch._fused_sdp_choice(q, k, v), expected.value)
+
+    # An explicit flash-only request must still be honored.
+    with torch.nn.attention.sdpa_kernel(
+        torch.nn.attention.SDPBackend.FLASH_ATTENTION
+    ):
+      self.assertEqual(
+          torch._fused_sdp_choice(q, k, v),
+          torch.nn.attention.SDPBackend.CUDNN_ATTENTION.value,
+      )
+
   @parameterized.product(
       backend=[
           torch.nn.attention.SDPBackend.FLASH_ATTENTION,

@@ -67,7 +67,6 @@ UNREGISTERED_OPS = frozenset([
     '_flash_attention_forward.quantized',
     '_flash_attention_forward_no_dropout_inplace',
     '_functional_assert_async.msg',
-    '_fused_sdp_choice',
     '_histogramdd_bin_edges',
     '_histogramdd_from_bin_cts',
     '_histogramdd_from_bin_tensors',

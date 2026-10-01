@@ -41,7 +41,6 @@
 #include "absl/log/absl_log.h"
 #include "absl/log/log.h"
 #include "c10/core/ScalarType.h"
-#include "c10/util/Exception.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/warnings.h"
@@ -711,6 +710,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kFusedMovingAvgObsFqHelper>(m, FusedMovingAvgObsFqHelper);
   ImplStable<OpName::kFusedRmsNorm>(m, AtenFusedRmsNorm);
   ImplStable<OpName::kFusedRmsNormBackward>(m, AtenFusedRmsNormBackward);
+  ImplStable<OpName::kFusedSdpChoice>(m, AtenFusedSdpChoice);
   ImplStable<OpName::kFusedSgd>(m, AtenFusedSgd);
   ImplStable<OpName::kFusedSgdTensorLr>(m, AtenFusedSgdTensorLr);
   ImplStable<OpName::kGather>(m, AtenGather);
