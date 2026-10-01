@@ -1524,7 +1524,7 @@ class TestOps(op_testing.OpInfoTestBase):
         "bmm",
         # GPU (CUDA) does not support integral dtypes for bmm.
         exclude_dtypes={
-            "cpu": (torch.int32, torch.int64),
+            "cpu": INTEGRAL_DTYPES,
             "gpu": (
                 torch.uint8,
                 torch.int8,
