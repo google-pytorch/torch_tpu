@@ -9365,6 +9365,18 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       torch.ops.aten.xlogy.OutTensor(x, y, out=out)
 
+  def test_xlogy_out_unsupported_int_dtype(self):
+    x = torch.tensor([1.0, 2.0], device=et.device())
+    y = torch.tensor([2.0, 3.0], device=et.device())
+    out = torch.empty(2, dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""xlogy(): result type float32 can't be cast to the desired output type int32""",
+        gpu="""result type Float can't be cast to the desired output type Int""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.xlogy(x, y, out=out)
+
   def test_linalg_qr_insufficient_dims(self):
     input_tensor = torch.ones(1, device=et.device(), dtype=torch.float32)
     with et.assert_raises_message(

@@ -23,6 +23,7 @@
 #include "absl/status/statusor.h"
 #include "c10/core/DefaultDtype.h"
 #include "c10/core/ScalarType.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -85,6 +86,8 @@ at::Tensor& AtenXlogyOutTensor(const at::Tensor& self, const at::Tensor& other,
     if (c10::isIntegralType(promoted_scalar_type, /*includeBool=*/true)) {
       promoted_scalar_type = c10::get_default_dtype_as_scalartype();
     }
+    TT_THROW_IF_ERROR(ValidateOutDtype(out, promoted_scalar_type,
+                                       /*allow_out_dtype_cast=*/true));
     TT_ASSIGN_OR_THROW(auto computation_dtype,
                        ConvertTo<mlir::ElementType>(promoted_scalar_type));
 
