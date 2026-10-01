@@ -438,10 +438,8 @@ class Gemma4MoERagged(nn.Module):
     )
 
     self.act_fn = GELUTanh()
-    if hasattr(torch.ops, 'torch_tpu') and hasattr(
-        torch.ops.torch_tpu, 'ragged_dot'
-    ):
-      self.ragged_dot_impl = torch.ops.torch_tpu.ragged_dot
+    if hasattr(torch.ops, 'tpu') and hasattr(torch.ops.tpu, 'ragged_dot'):
+      self.ragged_dot_impl = torch.ops.tpu.ragged_dot
     else:
       self.ragged_dot_impl = _cpu_ragged_dot
     self.per_expert_scale = nn.Parameter(torch.ones(config.num_experts))
