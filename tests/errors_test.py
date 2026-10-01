@@ -6456,6 +6456,29 @@ Supported combinations for non-constant padding:
     ):
       torch.mm(matrix_tensor, not_a_matrix_tensor, out=out)
 
+    scalar = torch.ones((), device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""mm(): expected the first argument to be a 2D tensor (matrix), got 0D of shape []""",
+        gpu="""self must be a matrix""",
+    ):
+      torch.mm(scalar, matrix_tensor, out_dtype=torch.float32)
+
+    vec = torch.ones(4, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""mm(): expected the first argument to be a 2D tensor (matrix), got 1D of shape [4]""",
+        gpu="""self must be a matrix""",
+    ):
+      torch.mm(vec, matrix_tensor, out_dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""mm(): expected the second argument to be a 2D tensor (matrix), got 1D of shape [4]""",
+        gpu="""mat2 must be a matrix""",
+    ):
+      torch.mm(matrix_tensor, vec, out_dtype=torch.float32)
+
   def test_mm_inputs_dimension_mismatch(self):
     lhs = torch.ones(3, 4, device=et.device())
     rhs = torch.ones(5, 6, device=et.device())
