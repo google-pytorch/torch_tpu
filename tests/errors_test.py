@@ -5529,6 +5529,24 @@ Supported combinations for non-constant padding:
 
   @parameterized.named_parameters(
       dict(
+          testcase_name="uint8",
+          dtype=torch.uint8,
+          tpu_dtype="uint8",
+          gpu_dtype="Byte",
+      ),
+      dict(
+          testcase_name="int8",
+          dtype=torch.int8,
+          tpu_dtype="int8",
+          gpu_dtype="Char",
+      ),
+      dict(
+          testcase_name="int16",
+          dtype=torch.int16,
+          tpu_dtype="int16",
+          gpu_dtype="Short",
+      ),
+      dict(
           testcase_name="int32",
           dtype=torch.int32,
           tpu_dtype="int32",
@@ -6777,6 +6795,24 @@ Supported combinations for non-constant padding:
 
   @parameterized.named_parameters(
       dict(
+          testcase_name="uint8",
+          dtype=torch.uint8,
+          tpu_dtype="uint8",
+          gpu_dtype="Byte",
+      ),
+      dict(
+          testcase_name="int8",
+          dtype=torch.int8,
+          tpu_dtype="int8",
+          gpu_dtype="Char",
+      ),
+      dict(
+          testcase_name="int16",
+          dtype=torch.int16,
+          tpu_dtype="int16",
+          gpu_dtype="Short",
+      ),
+      dict(
           testcase_name="int32",
           dtype=torch.int32,
           tpu_dtype="int32",
@@ -6805,6 +6841,24 @@ Supported combinations for non-constant padding:
 
   @parameterized.named_parameters(
       dict(
+          testcase_name="uint8",
+          dtype=torch.uint8,
+          tpu_dtype="uint8",
+          gpu_dtype="Byte",
+      ),
+      dict(
+          testcase_name="int8",
+          dtype=torch.int8,
+          tpu_dtype="int8",
+          gpu_dtype="Char",
+      ),
+      dict(
+          testcase_name="int16",
+          dtype=torch.int16,
+          tpu_dtype="int16",
+          gpu_dtype="Short",
+      ),
+      dict(
           testcase_name="int32",
           dtype=torch.int32,
           tpu_dtype="int32",
@@ -6830,6 +6884,54 @@ Supported combinations for non-constant padding:
         message_reviewed_by="wan",
     ):
       torch.vdot(lhs, rhs)
+
+  def test_dot_mismatched_dtypes(self):
+    lhs = torch.ones(2, dtype=torch.float16, device=et.device())
+    rhs = torch.ones(2, dtype=torch.float32, device=et.device())
+
+    for op in (torch.dot, torch.matmul):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""dot(): expected both vectors to have the same dtype, got float16 and float32""",
+          gpu="""dot : expected both vectors to have same dtype, but found Half and Float""",
+      ):
+        op(lhs, rhs)
+
+  def test_dot_matmul_empty_bool(self):
+    a_2d = torch.zeros(2, 0, dtype=torch.bool, device=et.device())
+    b_2d = torch.zeros(0, 2, dtype=torch.bool, device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""mm(): not implemented for bool""",
+        gpu=""""addmm_cuda" not implemented for 'Bool'""",
+    ):
+      torch.matmul(a_2d, b_2d)
+
+    a_3d = torch.zeros(1, 2, 0, dtype=torch.bool, device=et.device())
+    b_3d = torch.zeros(1, 0, 2, dtype=torch.bool, device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""bmm(): not implemented for bool""",
+        gpu=""""baddbmm_cuda" not implemented for 'Bool'""",
+    ):
+      torch.matmul(a_3d, b_3d)
+
+    mat_u8 = torch.ones(2, 2, dtype=torch.uint8, device=et.device())
+    vec_u8 = torch.ones(2, dtype=torch.uint8, device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""addmv(): not implemented for uint8""",
+        gpu=""""addmv_impl_cuda" not implemented for 'Byte'""",
+    ):
+      torch.matmul(mat_u8, vec_u8)
+
+    bmm_u8 = torch.ones(1, 2, 2, dtype=torch.uint8, device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""bmm(): not implemented for uint8""",
+        gpu=""""baddbmm_cuda" not implemented for 'Byte'""",
+    ):
+      torch.matmul(bmm_u8, bmm_u8)
 
   def test_vdot_size_mismatch(self):
     lhs = torch.ones(2, device=et.device())

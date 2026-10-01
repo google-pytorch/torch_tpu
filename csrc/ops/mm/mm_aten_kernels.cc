@@ -82,9 +82,9 @@ absl::Status ValidateMmOutInputs(const at::Tensor& lhs, const at::Tensor& rhs,
 
   // Must come after the dtype and shape checks. CUDA validates those criteria
   // before reaching the dispatch that reports the dtype as unimplemented.
-  TT_RET_CHECK(lhs.numel() == 0 || rhs.numel() == 0 ||
-                   c10::isFloatingType(lhs.scalar_type()) ||
-                   c10::isComplexType(lhs.scalar_type()),
+  TT_RET_CHECK(!IsBool(lhs) && (lhs.numel() == 0 || rhs.numel() == 0 ||
+                                c10::isFloatingType(lhs.scalar_type()) ||
+                                c10::isComplexType(lhs.scalar_type())),
                error::kPythonNotImplementedError)
       << "not implemented for " << ToString(lhs.scalar_type());
 

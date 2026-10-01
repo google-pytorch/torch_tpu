@@ -158,8 +158,8 @@ absl::Status ValidateAddmvInputs(const at::Tensor& self, const at::Tensor& mat,
   TT_RET_CHECK(!IsBool(self), error::kInvalidArgument)
       << "the dtype of the first argument cannot be bool";
 
-  TT_RET_CHECK(mat.numel() == 0 || (mat.scalar_type() != at::kInt &&
-                                    mat.scalar_type() != at::kLong),
+  TT_RET_CHECK(mat.numel() == 0 || c10::isFloatingType(mat.scalar_type()) ||
+                   c10::isComplexType(mat.scalar_type()),
                error::kPythonNotImplementedError)
       << "not implemented for " << ToString(mat.scalar_type());
 
@@ -194,6 +194,13 @@ absl::Status ValidateAddmvInputs(const at::Tensor& self, const at::Tensor& mat,
          "size ["
       << absl::StrJoin(vec.sizes(), /* separator= */ ", ") << "]), got "
       << mat.size(1) << " vs " << vec.size(0);
+
+  TT_RET_CHECK(self.scalar_type() == mat.scalar_type() &&
+                   mat.scalar_type() == vec.scalar_type(),
+               error::kInvalidArgument)
+      << "expected input tensors to have the same dtype, got "
+      << ToString(self.scalar_type()) << ", " << ToString(mat.scalar_type())
+      << ", and " << ToString(vec.scalar_type());
 
   return absl::OkStatus();
 }

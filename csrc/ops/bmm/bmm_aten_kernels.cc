@@ -83,11 +83,11 @@ absl::Status ValidateBmmInputs(const at::Tensor& self, const at::Tensor& mat2) {
 
   // Must come after the dtype and shape checks. CUDA validates those criteria
   // before reaching the dispatch that reports the dtype as unimplemented.
-  TT_RET_CHECK(
-      self.numel() == 0 || mat2.numel() == 0 ||
-          (self.scalar_type() != at::kBool && self.scalar_type() != at::kInt &&
-           self.scalar_type() != at::kLong),
-      error::kPythonNotImplementedError)
+  TT_RET_CHECK(self.scalar_type() != at::kBool &&
+                   (self.numel() == 0 || mat2.numel() == 0 ||
+                    c10::isFloatingType(self.scalar_type()) ||
+                    c10::isComplexType(self.scalar_type())),
+               error::kPythonNotImplementedError)
       << "not implemented for " << ToString(self.scalar_type());
 
   return absl::OkStatus();

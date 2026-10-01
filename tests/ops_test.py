@@ -1296,25 +1296,16 @@ class TestOps(op_testing.OpInfoTestBase):
     )
 
   def test_addmv(self):
-    # TODO: make addmv fail for integral dtypes to match GPU.
     self.do_test_op(
         "addmv",
         # GPU (CUDA) does not support integral dtypes for addmv.
         exclude_dtypes={
-            "cpu": (torch.int32, torch.int64, torch.complex64),
-            "gpu": (
-                torch.uint8,
-                torch.int8,
-                torch.int16,
-                torch.complex64,
-            ),
+            "cpu": (*INTEGRAL_DTYPES, torch.complex64),
+            "gpu": (torch.complex64,),
         },
         exclude_inplace_dtypes={
-            "cpu": (torch.int32, torch.int64, torch.complex64),
+            "cpu": (*INTEGRAL_DTYPES, torch.complex64),
             "gpu": (
-                torch.uint8,
-                torch.int8,
-                torch.int16,
                 torch.float64,
                 torch.complex64,
             ),
@@ -1524,12 +1515,7 @@ class TestOps(op_testing.OpInfoTestBase):
         "bmm",
         # GPU (CUDA) does not support integral dtypes for bmm.
         exclude_dtypes={
-            "cpu": (torch.int32, torch.int64),
-            "gpu": (
-                torch.uint8,
-                torch.int8,
-                torch.int16,
-            ),
+            "cpu": INTEGRAL_DTYPES,
         },
     )
 
@@ -1691,12 +1677,7 @@ class TestOps(op_testing.OpInfoTestBase):
         # 1e-05.
         # GPU (CUDA) does not support integral dtypes for dot.
         exclude_dtypes={
-            "cpu": (torch.int32, torch.int64),
-            "gpu": (
-                torch.uint8,
-                torch.int8,
-                torch.int16,
-            ),
+            "cpu": INTEGRAL_DTYPES,
         },
     )
 
@@ -2765,23 +2746,11 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_matmul(self):
     self.do_test_op(
         "matmul",
-        # TODO: TPU supports bool dtypes but not all CPU and GPU lowerings do.
-        # Due to how PyTorch decomposes this op, some cases bool dtype is
-        # supported and other cases it's not. This op is supposed to be
-        # delegated, but due to the same reason above, there are some funky
-        # lowering causing delegation to fail for us. This requires additional
-        # work to fix. For now, we just exclude bool dtypes.
+        # GPU (CUDA) does not support bool or integral dtypes for matmul.
         exclude_dtypes={
             "cpu": (
                 torch.bool,
-                torch.int32,
-                torch.int64,
-            ),
-            # TODO: make matmul fail for integral dtypes to match GPU.
-            "gpu": (
-                torch.uint8,
-                torch.int8,
-                torch.int16,
+                *INTEGRAL_DTYPES,
             ),
         },
     )
@@ -3916,12 +3885,7 @@ class TestOps(op_testing.OpInfoTestBase):
         "vdot",
         # GPU (CUDA) does not support integral dtypes for vdot.
         exclude_dtypes={
-            "cpu": (torch.int32, torch.int64),
-            "gpu": (
-                torch.uint8,
-                torch.int8,
-                torch.int16,
-            ),
+            "cpu": INTEGRAL_DTYPES,
         },
     )
 
