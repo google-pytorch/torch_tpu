@@ -33,9 +33,14 @@ from absl.testing import absltest
 import torch
 from torch_tpu._internal.compile import _backend
 from torch_tpu._internal.utils import test_utils as utils
+from tests import oss_utils
 from tests import seed_test_utils
 
 
+@oss_utils.skip_if_libtpu_version(
+    lambda v: v < (0, 0, 47),
+    "Bounded dynamism requires libtpu >= 0.0.47",
+)
 class JaggedDynamismTest(seed_test_utils.RepeatableTest):
 
   def setUp(self):
