@@ -8667,6 +8667,30 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       torch.linalg.solve_ex(a, b, out=(result, info))
 
+  def test_linalg_solve_ex_vector_rhs_left_false(self):
+    res = torch.empty(0, device=et.device(), dtype=torch.float32)
+    info = torch.empty(0, device=et.device(), dtype=torch.int32)
+
+    a = torch.eye(3, device=et.device(), dtype=torch.float32)
+    b = torch.ones(3, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_solve_ex(): expected b and a to have compatible matrix dimensions, got [3, 1] and [3, 3]""",
+        gpu="""linalg.solve: Incompatible shapes of A and B for the equation XA = B (3x3 and 3x1)""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.linalg.solve_ex(a, b, left=False, out=(res, info))
+
+    a1 = torch.ones(1, 1, device=et.device(), dtype=torch.float32)
+    b1 = torch.ones(1, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_solve_ex(): vector broadcasting of the left hand side is not supported for left=False""",
+        gpu="""linalg.solve: Vector broadcasting of the left hand side is not supported for left=False. In this case linalg.solve is equivalent to B / A.squeeze(-1)""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.linalg.solve_ex(a1, b1, left=False, out=(res, info))
+
   def test_linalg_solve_triangular_out_dtype_mismatch(self):
     a = torch.randn(3, 3, device=et.device(), dtype=torch.float32)
     b = torch.randn(3, 1, device=et.device(), dtype=torch.float32)

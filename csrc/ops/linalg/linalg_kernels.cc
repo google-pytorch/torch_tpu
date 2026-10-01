@@ -15,6 +15,7 @@
  */
 #include "csrc/ops/linalg/linalg_kernels.h"
 
+#include <cstdint>
 #include <tuple>
 
 #include "ATen/core/ATen_fwd.h"
@@ -57,6 +58,20 @@ AtenLinalgSolveExOut(const at::Tensor& a, const at::Tensor& b, bool left,
         TT_THROW_IF_ERROR(ValidateOutDtype(info, at::kInt,
                                            /*allow_out_dtype_cast=*/false));
 
+        const bool is_vector_rhs =
+            b.dim() == 1 || (a.dim() - 1 == b.dim() &&
+                             b.sizes().equals(a.sizes().slice(0, a.dim() - 1)));
+        const at::Tensor b_expanded = is_vector_rhs ? b.unsqueeze(-1) : b;
+        const int64_t expected_b_dim = left ? a.size(-2) : a.size(-1);
+        const int64_t actual_b_dim =
+            left ? b_expanded.size(-2) : b_expanded.size(-1);
+        TT_CHECK_THROW(actual_b_dim == expected_b_dim, error::kInvalidArgument)
+            << "expected b and a to have compatible matrix dimensions, got "
+            << ToString(b_expanded.sizes()) << " and " << ToString(a.sizes());
+        TT_CHECK_THROW(left || !is_vector_rhs, error::kInvalidArgument)
+            << "vector broadcasting of the left hand side is not supported for "
+               "left=False";
+
         TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(result, b.sizes()));
         TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(lu, a.sizes()));
 
@@ -75,9 +90,7 @@ AtenLinalgSolveExOut(const at::Tensor& a, const at::Tensor& b, bool left,
         if (check_errors) {
           at::_linalg_check_errors(info, "solve", a.dim() == 2);
         }
-        if (b.dim() < a.dim()) {
-          at::Tensor b_expanded =
-              left ? b.unsqueeze(b.dim()) : b.unsqueeze(b.dim() - 1);
+        if (is_vector_rhs) {
           at::Tensor expanded_result = at::empty_like(b_expanded);
           AtenLinalgLuSolveOut(lu, pivots, b_expanded, left,
                                /*adjoint=*/false, expanded_result);
