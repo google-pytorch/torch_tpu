@@ -141,8 +141,9 @@ def _tpu_attr(name: str) -> str:
 #    `_internal/BUILD` (with `# build_cleaner: keep`, since imports happen
 #    dynamically via string targets) and to `WHEEL_PY_TARGETS` in
 #    `build_files/wheel.bzl`.
-# 4. Regenerate `google/tools/tt_apis.yaml` (via `google/tools:scan_tt_apis`)
-#    and add unit tests in `tests/api_registry_test.py`.
+# 4. Regenerate `google/tools/tt_apis.yaml` (from the artifacts of
+#    `google/tools:tt_apis_test`) and add unit tests in
+#    `tests/api_registry_test.py`.
 #
 # TODO(wan): Consider a more local registration mechanism (e.g. a decorator in
 # each internal module) so public symbols do not all need to be enumerated in
