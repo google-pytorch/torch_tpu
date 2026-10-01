@@ -12422,6 +12422,17 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       torch.ops.aten._logcumsumexp.out(t, 0, out=out)
 
+  def test_logcumsumexp_out_dimension_out_of_range(self):
+    t = torch.ones((3, 4), device=et.device(), dtype=torch.float32)
+    out = torch.empty((1,), device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""logcumsumexp(): expected dimension to be in range [-2, 1], got 5""",
+        gpu="""Dimension out of range (expected to be in range of [-2, 1], but got 5)""",
+    ):
+      torch.logcumsumexp(t, dim=5, out=out)
+    self.assertEqual(out.shape, (1,))
+
   def test_unsafe_masked_index_error(self):
     with et.assert_raises_message(
         IndexError,

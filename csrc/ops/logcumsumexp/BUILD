@@ -33,7 +33,6 @@ torch_tpu_cc_library(
         "//csrc/ops:scan_builder",
         "//csrc/ops:unary_aten_kernels",
         "//csrc/ops/macros:kernel",
-        "//csrc/ops/resize:resize_aten_kernels",
         "//shims/torch:aten_headers",
         "@com_google_absl//absl/functional:bind_front",
         "@com_google_absl//absl/status:statusor",
