@@ -354,7 +354,7 @@ mlir::MlirOp ComputeAttentionOutput(mlir::MLIRContext* context,
     const auto value_shape = GetTensorTypeOrDie(value_4d).getShape();
     const int64_t num_head_kv = value_shape[1];
     const int64_t seq_len_kv = value_shape[2];
-    const int64_t value_head_dim = value_shape[3];
+    const int64_t v_head_dim = value_shape[3];
     mlir::MlirOp softmax_5d = mlir::stablehlo::Reshape(
         softmax,
         {batch_size, num_head_kv, head_count_ratio, seq_len_q, seq_len_kv});
@@ -365,7 +365,7 @@ mlir::MlirOp ComputeAttentionOutput(mlir::MLIRContext* context,
     mlir::MlirOp out_5d =
         mlir::stablehlo::DotGeneral(softmax_5d, value_4d, output_dot_dims);
     return mlir::stablehlo::Reshape(
-        out_5d, {batch_size, num_head_q, seq_len_q, value_head_dim});
+        out_5d, {batch_size, num_head_q, seq_len_q, v_head_dim});
   }
   const auto output_dot_dims = mlir::stablehlo::DotDimensionNumbersAttr::get(
       context, /*lhs_batching_dimensions=*/{0, 1},
@@ -492,15 +492,15 @@ absl::StatusOr<BackwardGradients4D> ComputeGqaBackwardGradients(
     mlir::Type softmax_calc_type, int64_t head_count_ratio, int64_t batch_size,
     int64_t num_head_q, int64_t num_head_kv, int64_t seq_len_q,
     int64_t seq_len_kv, int64_t head_dim) {
-  const int64_t value_head_dim = GetTensorTypeOrDie(value_4d).getDimSize(3);
   mlir::MlirOp softmax_for_dv =
       ConvertElementTypeIfNeeded(softmax, element_type);
   mlir::MlirOp softmax_5d = mlir::stablehlo::Reshape(
       softmax_for_dv,
       {batch_size, num_head_kv, head_count_ratio, seq_len_q, seq_len_kv});
+  const int64_t v_head_dim = GetTensorTypeOrDie(grad_out_4d).getDimSize(3);
   mlir::MlirOp grad_out_5d = mlir::stablehlo::Reshape(
       grad_out_4d,
-      {batch_size, num_head_kv, head_count_ratio, seq_len_q, value_head_dim});
+      {batch_size, num_head_kv, head_count_ratio, seq_len_q, v_head_dim});
   mlir::MlirOp query_5d = mlir::stablehlo::Reshape(
       query_4d,
       {batch_size, num_head_kv, head_count_ratio, seq_len_q, head_dim});

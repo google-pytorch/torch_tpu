@@ -15437,6 +15437,48 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
       ).cpu()
       self.assertFalse(torch.isnan(result).any())
 
+  @parameterized.named_parameters(
+      ("flash", torch.nn.attention.SDPBackend.FLASH_ATTENTION),
+      ("overrideable", torch.nn.attention.SDPBackend.OVERRIDEABLE),
+  )
+  def test_sdpa_gqa_different_v_head_dim(
+      self, backend: torch.nn.attention.SDPBackend
+  ):
+    """Test SDPA GQA with v_head_dim != qk_head_dim against CPU golden."""
+    torch.manual_seed(42)
+    q_cpu = torch.randn(2, 8, 16, 32, dtype=torch.float32, requires_grad=True)
+    k_cpu = torch.randn(2, 2, 16, 32, dtype=torch.float32, requires_grad=True)
+    v_cpu = torch.randn(2, 2, 16, 16, dtype=torch.float32, requires_grad=True)
+
+    q_tpu = q_cpu.detach().clone().tpu().requires_grad_(True)
+    k_tpu = k_cpu.detach().clone().tpu().requires_grad_(True)
+    v_tpu = v_cpu.detach().clone().tpu().requires_grad_(True)
+
+    with torch.nn.attention.sdpa_kernel(backend):
+      out_tpu = torch.nn.functional.scaled_dot_product_attention(
+          q_tpu, k_tpu, v_tpu, is_causal=True, enable_gqa=True
+      )
+      out_tpu.sum().backward()
+
+    with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
+      out_cpu = torch.nn.functional.scaled_dot_product_attention(
+          q_cpu, k_cpu, v_cpu, is_causal=True, enable_gqa=True
+      )
+      out_cpu.sum().backward()
+
+    for golden, actual in (
+        (out_cpu, out_tpu),
+        (q_cpu.grad, q_tpu.grad),
+        (k_cpu.grad, k_tpu.grad),
+        (v_cpu.grad, v_tpu.grad),
+    ):
+      self.assert_close(
+          golden_result=golden,
+          torch_tpu_result=actual.cpu(),
+          rtol=2e-2,
+          atol=2e-2,
+      )
+
   @parameterized.product(
       backend=[
           torch.nn.attention.SDPBackend.FLASH_ATTENTION,
