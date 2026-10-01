@@ -44,10 +44,10 @@ from typing import Dict, Optional, Tuple, cast
 
 import torch
 from torch import nn
+from torch.tpu.profiler import TpuProfilerConfig  # pyrefly: ignore[missing-import]
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 import torch_tpu
-from torch_tpu._internal import profiler as tpu_profiler
 from torchvision import datasets
 from torchvision import transforms
 
@@ -437,15 +437,9 @@ def main():
       "--enable_profiler",
       action="store_true",
       help=(
-          "Start the embedded TorchTPU XLA profiler server & capture XProf"
-          " trace"
+          "Capture step-scheduled TPU XProf hardware traces (*.xplane.pb) into"
+          " log_dir."
       ),
-  )
-  parser.add_argument(
-      "--profiler_port",
-      type=int,
-      default=9012,
-      help="Port for the TorchTPU profiler server",
   )
   parser.add_argument(
       "--profile_wait",
@@ -491,21 +485,7 @@ def main():
       flush=True,
   )
 
-  # 1. Start TPU Profiler Server if requested
-  if args.enable_profiler:
-    try:
-      server_port = tpu_profiler.start_server(args.profiler_port)
-      print(
-          f"[Profiler] TorchTPU Profiler Server active on port {server_port}.",
-          flush=True,
-      )
-    except (RuntimeError, OSError) as e:
-      print(
-          f"[Profiler] Notice: Could not start profiler server: {e}",
-          flush=True,
-      )
-
-  # 2. Setup TensorBoard writers
+  # 1. Setup TensorBoard writers
   eager_writer: Optional[SummaryWriter] = None
   compiled_writer: Optional[SummaryWriter] = None
   if resolved_log_dir:
@@ -522,7 +502,7 @@ def main():
         flush=True,
     )
 
-  # 3. Setup TPU Device and Data Loaders
+  # 2. Setup TPU Device and Data Loaders
   device = torch.accelerator.current_accelerator() or torch.device("tpu")
   print(f"\n[Hardware] Target Device: {device}", flush=True)
   train_loader, test_loader = get_data_loaders(
@@ -591,9 +571,7 @@ def main():
           on_trace_ready=torch.profiler.tensorboard_trace_handler(
               resolved_log_dir
           ),
-          experimental_config=tpu_profiler.TpuProfilerConfig(
-              run_dir=resolved_log_dir
-          ),
+          experimental_config=TpuProfilerConfig(run_dir=resolved_log_dir),
       ) as prof:
         compiled_metrics = run_training_loop(
             compiled_model,

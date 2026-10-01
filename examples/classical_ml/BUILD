@@ -29,7 +29,6 @@ torch_tpu_py_library(
     deps = [
         "//shims/torch:pytorch",
         "//src/torch_tpu",
-        "//src/torch_tpu/_internal/profiler",
         "@pypi//torchvision",
     ],
 )
