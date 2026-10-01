@@ -12199,7 +12199,7 @@ Device-side assertion tracking was not enabled by user.""",
     out = torch.empty(4, device="cpu")
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""add(): expected output tensor to be on 'tpu' device, got 'cpu'""",
+        tpu="""add(): expected out tensor to be on tpu, got cpu""",
         gpu="""Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!""",
         message_reviewed_by="wan",
     ):

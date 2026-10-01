@@ -264,8 +264,8 @@ absl::Status TernaryOpOut(const at::Tensor& self, const at::Tensor& other,
                           MlirTernaryOpBuilder op_builder,
                           TernaryOpOptions opts) {
   TT_RET_CHECK(IsPrivateUse1Device(out), error::kInvalidArgument)
-      << "expected output tensor to be on 'tpu' device, got '" << out.device()
-      << "'";
+      << "expected out tensor to be on " << GetPrivateUse1DeviceDebugName()
+      << ", got " << out.device();
 
   at::ScalarType expected_result_type;
   if (opts.result_dtype.has_value()) {
