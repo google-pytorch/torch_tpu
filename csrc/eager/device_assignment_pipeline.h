@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "absl/base/nullability.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "csrc/eager/device_buffer.h"
@@ -35,42 +36,39 @@ struct OpDeviceAssignment {
   absl::Span<const int64_t> device_assignment;
 };
 
-// Returns true if `d_sub` is a contiguous tile of `d_full` aligned to a
-// multiple of `d_sub.size()`.
-bool IsCompatibleDeviceAssignmentTile(absl::Span<const int64_t> d_sub,
-                                      absl::Span<const int64_t> d_full);
+struct PallasDeviceAssignment {
+  absl::Span<const int64_t> device_assignment;
+};
 
-// Resolves a single target device assignment across `ops` using a 4-stage
-// pipeline:
-//   1. Merge compatible Pallas custom kernel device assignments and reject
-//      conflicting Pallas meshes.
-//   2. Promote to larger compatible StableHLO collective device assignments.
-//   3. Validate that all remaining smaller/orthogonal StableHLO collective
-//      device assignments are valid subgroups of the resolved mesh.
-//   4. Tail-pad the resolved device assignment to the global PjRt device count
-//      if smaller than world size.
+// Resolves a single target device assignment across `ops` and `pallas_ops`.
+// If `pallas_ops` is non-empty, its device assignment serves as the
+// authoritative anchor. Differing device assignments emit an explicit
+// diagnostic warning and return an error (or throw if Pallas DAs conflict).
 absl::StatusOr<std::vector<int64_t>>  // INT_VEC_OK
-ResolveDeviceAssignment(absl::Span<const OpDeviceAssignment> ops);
+ResolveDeviceAssignment(
+    absl::Span<const OpDeviceAssignment> ops,
+    absl::Span<const PallasDeviceAssignment> pallas_ops = {});
 
 // Resolves a single target device assignment across all deferred operations in
 // `execution_order` by delegating to `ResolveDeviceAssignment`.
 absl::StatusOr<std::vector<int64_t>>  // INT_VEC_OK
 ResolveDeviceAssignmentForTraversal(
-    absl::Span<const SharedDeviceBufferList> execution_order);
+    absl::Span<const SharedDeviceBufferList> execution_order,
+    absl::Span<const int64_t> pallas_device_assignment = {});
 
 // Rewrites rank-local collective attributes (`replica_groups`,
 // `source_target_pairs`, and CustomCall `backend_config` replica groups) from
-// `op_da` into partition indices of `resolved_da`, tiles non-wrapping cosets
-// across the full resolved mesh, and wraps `PartitionIdOp` results with
-// `rem(partition_id, sub_size)` when `resolved_da.size() > op_da.size()`.
-void RewriteAndTileOperationForSubgroup(mlir::Operation* absl_nonnull root_op,
-                                        absl::Span<const int64_t> op_da,
-                                        absl::Span<const int64_t> resolved_da);
+// `op_da` into partition indices of `resolved_da` using 1-to-1 index
+// permutation.
+absl::Status RewriteAndTileOperationForSubgroup(
+    mlir::Operation* absl_nonnull root_op, absl::Span<const int64_t> op_da,
+    absl::Span<const int64_t> resolved_da);
 
-// Applies subgroup tiling and partition-index replica rewriting to all MLIR
-// operations emitted for `deferred_op` (starting at `first_new_op` in the
-// current block, plus any newly added functions in `new_func_ops`).
-void ApplySubgroupTilingOrReplicaRewriting(
+// Applies partition-index replica rewriting to all MLIR operations emitted for
+// `deferred_op` (starting at `first_new_op` in the current block, plus any
+// newly added functions in `new_func_ops`). Returns an error if any rewrite
+// fails.
+absl::Status ApplySubgroupTilingOrReplicaRewriting(
     mlir::Operation* absl_nullable first_new_op,
     absl::Span<const mlir::func::FuncOp> new_func_ops,
     const DeferredOp& deferred_op, absl::Span<const int64_t> resolved_da);

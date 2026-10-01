@@ -29,7 +29,7 @@ import torch
 from torch import distributed as dist
 import torch.multiprocessing as mp
 from torch_tpu._internal.distributed import device_mesh
-from torch_tpu._internal.distributed.launchers import singlehost_wrapper
+from torch_tpu._internal.distributed import spmd_util
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
@@ -188,26 +188,109 @@ def run_manual_2d_all_gather_reduce_scatter() -> None:
   utils.assert_close(y.cpu(), expected)
 
 
+def _check_group_rank_order(
+    group: dist.ProcessGroup, ranks: list[int], world_rank_to_dev: list[int]
+) -> None:
+  """Checks that `group` follows the (unsorted) order of world `ranks`."""
+  rank = int(os.environ["RANK"])
+  assert dist.get_rank(group=group) == ranks.index(rank)
+
+  # Group rank 0 is world rank ranks[0].
+  x = torch.tensor([float(rank)], device="tpu")
+  dist.broadcast(x, group_src=0, group=group)
+  utils.assert_close(x.cpu(), torch.tensor([float(ranks[0])]))
+
+  # Output chunk i comes from group rank i, i.e. world rank ranks[i].
+  x = torch.tensor([float(rank)], device="tpu")
+  y = torch.empty(len(ranks), device="tpu")
+  dist.all_gather_into_tensor(y, x, group=group)
+  utils.assert_close(y.cpu(), torch.tensor([float(r) for r in ranks]))
+
+  assert device_mesh.get_device_assignment(group) == [
+      world_rank_to_dev[r] for r in ranks
+  ]
+
+
+def run_unsorted_subgroups() -> None:
+  """Test process groups created with sort_ranks=False."""
+  dist.init_process_group(backend="tpu_dist")
+
+  rank = int(os.environ["RANK"])
+  world_size = int(os.environ["WORLD_SIZE"])
+  assert world_size == 8
+  world_rank_to_dev = device_mesh.get_device_assignment()
+
+  # World-sized group with reversed rank order.
+  reversed_ranks = list(reversed(range(world_size)))
+  reversed_group = dist.new_group(ranks=reversed_ranks, sort_ranks=False)
+  _check_group_rank_order(reversed_group, reversed_ranks, world_rank_to_dev)
+
+  # Sub-world groups with non-sorted rank order.
+  my_subgroup = None
+  my_subgroup_ranks = None
+  for subgroup_ranks in [[3, 1, 2, 0], [7, 5, 6, 4]]:
+    new_group = dist.new_group(ranks=subgroup_ranks, sort_ranks=False)
+    if rank in subgroup_ranks:
+      my_subgroup = new_group
+      my_subgroup_ranks = subgroup_ranks
+  _check_group_rank_order(my_subgroup, my_subgroup_ranks, world_rank_to_dev)
+
+
+def run_unaligned_subgroups() -> None:
+  """Test unaligned subgroup partitioning across 4 devices."""
+  dist.init_process_group("tpu")
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
+  half = world_size // 2
+
+  unaligned_a = dist.new_group(ranks=[1, 2])
+  unaligned_b = dist.new_group(ranks=[3, 0])
+  unaligned_group = unaligned_a if rank in (1, 2) else unaligned_b
+
+  @torch.compile(backend="tpu", fullgraph=True)
+  @spmd_util.spmd_safe
+  def unaligned_fn(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    dist.all_reduce(a)
+    dist.all_reduce(b, group=unaligned_group)
+    return a + b
+
+  x = torch.ones(4, device="tpu")
+  y = torch.ones(4, device="tpu")
+  res = unaligned_fn(x, y).cpu()
+  expected = torch.full((4,), float(world_size + half), dtype=torch.float32)
+  utils.assert_close(res, expected)
+
+
 class SubgroupCollectivesTest(seed_test_utils.MultiProcessRepeatableTest):
 
   def test_manual_2d_mesh(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(run_manual_2d_mesh),
+        fn=run_manual_2d_mesh,
     )
 
   def test_manual_1d_as_2d_mesh(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(run_manual_1d_as_2d_mesh),
+        fn=run_manual_1d_as_2d_mesh,
     )
 
   def test_manual_2d_all_gather_reduce_scatter(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_manual_2d_all_gather_reduce_scatter
-        ),
+        fn=run_manual_2d_all_gather_reduce_scatter,
+    )
+
+  def test_unsorted_subgroups(self):
+    distributed_utils.dist_run(
+        nproc_per_node=8,
+        fn=run_unsorted_subgroups,
+    )
+
+  def test_unaligned_subgroups(self):
+    distributed_utils.dist_run(
+        nproc_per_node=4,
+        fn=run_unaligned_subgroups,
     )
 
 

@@ -18,6 +18,7 @@ load(
     "torch_tpu_package_end",
     "torch_tpu_py_library",
     "torch_tpu_py_test",
+    "tpu_gen",
 )
 
 package(
@@ -38,7 +39,6 @@ torch_tpu_py_library(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal:env",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:environment",
         "//src/torch_tpu/_internal/utils:hardware",
         "//tests:seed_test_utils",
         "@pypi//portpicker",
@@ -95,7 +95,6 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
-        "//src/torch_tpu:_loader",
         "//src/torch_tpu/_internal/distributed:torchcomm_tpu",
         "//tests:seed_test_utils",
     ],
@@ -126,7 +125,6 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/distributed:torchcomm_tpu",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
     ],
 )
 
@@ -177,7 +175,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:oss_utils",
         "//tests:seed_test_utils",
@@ -216,7 +213,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:oss_utils",
         "//tests:seed_test_utils",
@@ -248,7 +244,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
     ],
@@ -271,6 +266,11 @@ torch_tpu_py_test(
         # //tests/pallas:pallas_communication_test.
         "TPU_PREMAPPED_BUFFER_SIZE": "0",
     },
+    nopresubmit_oss = "TODO(b/568095515): Flaking in GitHub TPU v7 presubmit with START_SESSION failed.",
+    oss_presubmit_tpu_generation = tpu_gen(
+        "v7",
+        reason = "Pallas mesh collective device order test for TPU v7",
+    ),
     tags = if_oss(
         ["exclusive"],
         [],
@@ -300,7 +300,6 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/distributed:spmd_util",
         "//src/torch_tpu/_internal/distributed:tpu_distributed",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//src/torch_tpu/_internal/pallas",
         "//tests:seed_test_utils",
         "@pypi//jax",
@@ -314,7 +313,6 @@ torch_tpu_py_test(
         "--test_mode=tpu",
     ],
     env = {"TORCH_SHOW_CPP_STACKTRACES": "0"},
-    notest_oss = True,  # fix hang in OSS (TODO)
     shard_count = 12,
     tags = if_oss(
         ["exclusive"],
@@ -330,9 +328,10 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/distributed:spmd_util",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
+        "//src/torch_tpu/_internal/pallas",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:error_testing",
+        "@pypi//jax",
     ],
 )
 
@@ -344,7 +343,7 @@ torch_tpu_py_test(
     ],
     env = {"TORCH_SHOW_CPP_STACKTRACES": "1"},
     main = "collective_errors_test.py",
-    notest_oss = True,  # fix hang in OSS (TODO)
+    notap = "Run by error_coverage_test in the torch_tpu.error_coverage Guitar workflow.",
     shard_count = 12,
     tags = if_oss(
         ["exclusive"],
@@ -360,9 +359,10 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/distributed:spmd_util",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
+        "//src/torch_tpu/_internal/pallas",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:error_testing",
+        "@pypi//jax",
     ],
 )
 
@@ -387,7 +387,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
     ],
@@ -414,7 +413,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//tests:error_testing",
         "//tests:seed_test_utils",
     ],
@@ -428,6 +426,7 @@ torch_tpu_py_test(
     ],
     env = {"TORCH_SHOW_CPP_STACKTRACES": "1"},
     main = "alltoall_collective_errors_test.py",
+    notap = "Run by error_coverage_test in the torch_tpu.error_coverage Guitar workflow.",
     shard_count = 8,
     tags = if_oss(
         ["exclusive"],
@@ -442,7 +441,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//tests:error_testing",
         "//tests:seed_test_utils",
     ],
@@ -470,7 +468,6 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal:testing",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//tests:error_testing",
     ],
 )
@@ -482,14 +479,15 @@ torch_tpu_py_test(
         "--test_mode=cov",
     ],
     env = {
-        "TORCH_SHOW_CPP_STACKTRACES": "1",
         # TODO(b/493050035): Use a centralized location to set this flag.
         # Required in OSS: In OSS CI with multiprocess spawn, PyTorch's addr2line symbolizer can
         # crash or hang during exception unwinding and TPU driver cleanup. Disabling addr2line
         # prevents SIGSEGV crashes while still capturing traces.
         "TORCH_DISABLE_ADDR2LINE": "1",
+        "TORCH_SHOW_CPP_STACKTRACES": "1",
     },
     main = "all_gather_errors_test.py",
+    notap = "Run by error_coverage_test in the torch_tpu.error_coverage Guitar workflow.",
     shard_count = 3,
     tags = if_oss(
         ["exclusive"],
@@ -505,7 +503,6 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal:testing",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//tests:error_testing",
     ],
 )
@@ -540,10 +537,10 @@ torch_tpu_py_test(
         "--test_mode=tpu",
     ],
     env = {
-        "TORCH_SHOW_CPP_STACKTRACES": "0",
         # Disables addr2line C++ stack trace symbolization to prevent deadlocks/hangs during
         # exception construction in multi-process distributed tests in OSS CI.
         "TORCH_DISABLE_ADDR2LINE": "1",
+        "TORCH_SHOW_CPP_STACKTRACES": "0",
     },
     shard_count = 3,
     tags = if_oss(
@@ -559,7 +556,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//tests:error_testing",
         "//tests:seed_test_utils",
     ],
@@ -572,12 +568,13 @@ torch_tpu_py_test(
         "--test_mode=cov",
     ],
     env = {
-        "TORCH_SHOW_CPP_STACKTRACES": "1",
         # Disables addr2line C++ stack trace symbolization to prevent deadlocks/hangs during
         # exception construction in multi-process distributed tests in OSS CI.
         "TORCH_DISABLE_ADDR2LINE": "1",
+        "TORCH_SHOW_CPP_STACKTRACES": "1",
     },
     main = "scatter_errors_test.py",
+    notap = "Run by error_coverage_test in the torch_tpu.error_coverage Guitar workflow.",
     shard_count = 3,
     tags = if_oss(
         ["exclusive"],
@@ -592,7 +589,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//tests:error_testing",
         "//tests:seed_test_utils",
     ],
@@ -625,7 +621,7 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:device_mesh",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
+        "//src/torch_tpu/_internal/distributed:spmd_util",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
     ],
@@ -650,7 +646,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//src/torch_tpu/_internal/sync",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
@@ -681,7 +676,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
     ],
@@ -721,7 +715,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
         "@pypi//fairscale",
@@ -747,7 +740,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
     ],
@@ -771,7 +763,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
     ],
@@ -800,7 +791,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
     ],
@@ -849,7 +839,6 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/distributed:spmd_util",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//src/torch_tpu/_internal/execution_mode",
         "//tests:seed_test_utils",
     ],
@@ -883,7 +872,7 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/compile:torch_tpu_compiled_executable",
         "//src/torch_tpu/_internal/distributed:collective_ops",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
+        "//src/torch_tpu/_internal/distributed:spmd_util",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
     ],
@@ -932,9 +921,18 @@ torch_tpu_py_library(
 torch_tpu_py_test(
     name = "handshake_e2e_test",
     srcs = ["handshake_e2e_test.py"],
-    notest_oss = True,  # TODO(b/537411907): Re-enable in OSS once fixed.
+    # TODO(b/567669731): Remove once _ZMQClient falls back from an unusable ::1.
+    # In OSS Docker runners, `localhost` resolves to ::1 first but IPv6 loopback
+    # is unusable, and libzmq never falls back to 127.0.0.1.
+    env = if_oss(
+        {"MASTER_ADDR": "127.0.0.1"},
+        {},
+    ),
     shard_count = 8,
-    tags = [
+    tags = if_oss(
+        ["exclusive"],
+        [],
+    ) + [
         "noasan",  # TODO(b/497035517)
         "nomsan",  # TODO(b/497035517)
         "notsan",  # TODO(b/497035517)
@@ -949,7 +947,6 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/compile",
         "//src/torch_tpu/_internal/distributed:handshake",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//src/torch_tpu/_internal/utils:test_utils",
         "@pypi//portpicker",
     ],
@@ -1016,7 +1013,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//src/torch_tpu/_internal/utils:test_utils",
     ],
 )

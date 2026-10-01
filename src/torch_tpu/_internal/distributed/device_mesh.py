@@ -68,41 +68,24 @@ class _DeviceStub:
 
 def _gather_global_device_info(device_type: str) -> list[_DeviceStub]:
   """Each torch rank reports its PJRT device; returns list indexed by rank."""
-  d = torch.get_device_module(device_type).get_local_device_attributes()
-
-  payload = torch.tensor(
-      [
-          d["id"],
-          *d.get("coords", (0, 0, 0)),
-          d.get("core_on_chip", 0),
-          d["process_index"],
-          int("slice_index" in d),
-          d.get("slice_index", 0),
-      ],
-      dtype=torch.int64,
-      device=device_type,
-  )
-
-  world_size = dist.get_world_size()
-  gathered = [torch.zeros_like(payload) for _ in range(world_size)]
-  dist.all_gather(gathered, payload)
-
-  infos = []
-  for t in gathered:
-    g_dev_id, x, y, z, core, proc, has_slc, slc = t.tolist()
-    infos.append(
-        _DeviceStub(
-            id=g_dev_id,
-            coords=(x, y, z),
-            core_on_chip=core,
-            device_kind=d["device_kind"],
-            platform=device_type,
-            process_index=proc,
-            slice_index=slc,
-            has_slice_index=bool(has_slc),
-        )
-    )
-  return infos
+  attrs = tpu_distributed.global_device_attributes()
+  return [
+      _DeviceStub(
+          id=d.id,
+          coords=(
+              int(d.coords[0]) if d.coords and len(d.coords) > 0 else 0,
+              int(d.coords[1]) if d.coords and len(d.coords) > 1 else 0,
+              int(d.coords[2]) if d.coords and len(d.coords) > 2 else 0,
+          ),
+          core_on_chip=d.core_on_chip if d.core_on_chip is not None else 0,
+          device_kind=d.device_kind,
+          platform=device_type,
+          process_index=d.process_index,
+          slice_index=d.slice_index if d.slice_index is not None else 0,
+          has_slice_index=d.slice_index is not None,
+      )
+      for d in attrs
+  ]
 
 
 def _infer_dcn_mesh_shape(
@@ -394,13 +377,11 @@ def get_device_assignment(
   """
   if not dist.is_initialized():
     return []
-
   pg = pg or dist.group.WORLD
   if pg is None:
     return []
-
   try:
     backend = pg._get_backend(torch.device("tpu"))
     return [int(x) for x in tpu_distributed.rank_to_device_id(backend)]
-  except Exception:  # pylint: disable=broad-except
+  except (RuntimeError, TypeError):
     return []

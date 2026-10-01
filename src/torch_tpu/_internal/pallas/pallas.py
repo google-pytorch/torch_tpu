@@ -735,6 +735,7 @@ class JaxCallable:
 
     device_assignment: list[int] = []
     if self.mesh is not None:
+      _validate_pallas_mesh_world_size(mesh=self.mesh)
       device_assignment = [int(d.id) for d in self.mesh.devices.flat]
 
     results = tpu_torch_pallas.call_custom_kernel(
@@ -750,6 +751,38 @@ class JaxCallable:
       tensor_args[in_idx].copy_(results[out_idx])
 
     return out_tree.unflatten(results)
+
+
+def _validate_pallas_mesh_world_size(
+    *,
+    mesh: jax.sharding.Mesh | None = None,
+    mesh_shape: Sequence[int] | None = None,
+    process_group: dist.ProcessGroup | None = None,
+) -> None:
+  """Validates that Pallas mesh, mesh_shape, and process_group match world size."""
+  if not dist.is_initialized():
+    return
+  world_size = dist.get_world_size()
+  if process_group is not None:
+    pg_size = dist.get_world_size(process_group)
+    if pg_size != world_size:
+      raise ValueError(
+          "torch_tpu pallas kernels currently require full world-size meshes"
+          f" only. Got process_group with size {pg_size}, expected"
+          f" {world_size}."
+      )
+  if mesh_shape is not None:
+    mesh_size = math.prod(mesh_shape)
+    if mesh_size != world_size:
+      raise ValueError(
+          f"Pallas mesh shape {mesh_shape} product ({mesh_size}) must match"
+          f" world size ({world_size})."
+      )
+  if mesh is not None and mesh.size != world_size:
+    raise ValueError(
+        f"Pallas kernel mesh size ({mesh.size}) must match world size"
+        f" ({world_size})."
+    )
 
 
 @overload
@@ -850,6 +883,8 @@ def custom_jax_kernel(
         " Please use `jax_op` instead.",
         pathlib.Path(__file__).parent,
     )
+
+  _validate_pallas_mesh_world_size(mesh=mesh)
 
   def decorator(jax_fn: Callable[..., Any]) -> JaxCallable:
     nonlocal name
@@ -1042,11 +1077,10 @@ def get_pallas_mesh(
         "torch.distributed is not initialized. dist.init_process_group()"
     )
 
-  world_size = dist.get_world_size(process_group)
-
-  if mesh_shape is not None:
-    if math.prod(mesh_shape) != world_size:
-      raise ValueError(f"must equal world_size {world_size}")
+  world_size = dist.get_world_size()
+  _validate_pallas_mesh_world_size(
+      mesh_shape=mesh_shape, process_group=process_group
+  )
   if (
       mesh_shape is not None
       and not isinstance(axis_names, str)
