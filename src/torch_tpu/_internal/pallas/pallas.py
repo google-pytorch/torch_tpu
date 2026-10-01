@@ -18,8 +18,12 @@ This module provides APIs to call Pallas kernels from PyTorch. Note that use
 of these APIs requires that your environment also has JAX/Pallas installed.
 """
 
+import collections.abc
+import enum
+import functools
 import hashlib
 import inspect
+import itertools
 import math
 import pathlib
 import types
@@ -145,9 +149,16 @@ def get_local_shape(global_shape, mesh, partition_spec):
 
 
 def jax_placeholder(
-    tensor: torch.Tensor, mesh=None, partition_spec=None
-) -> jax.ShapeDtypeStruct:
-  """Converts a torch tensor to a jax placeholder for tracing."""
+    tensor: torch.Tensor | Sequence[torch.Tensor],
+    mesh=None,
+    partition_spec=None,
+) -> Any:
+  """Converts a torch tensor (or sequence of tensors) to a jax placeholder for tracing."""
+  if isinstance(tensor, (tuple, list)):
+    return type(tensor)(
+        jax_placeholder(t, mesh=mesh, partition_spec=partition_spec)
+        for t in tensor
+    )
   if not isinstance(tensor, torch.Tensor):
     # Preserve POD constants / None types
     return tensor
@@ -170,17 +181,22 @@ def jax_placeholder(
     jax_shape = jax_shape[:-1] + (jax_shape[-1] * 2,)
 
   if mesh is not None:
+    spec = (
+        partition_spec
+        if partition_spec is not None
+        else jax.sharding.PartitionSpec()
+    )
     return jax.ShapeDtypeStruct(
-        get_global_shape(jax_shape, mesh, partition_spec),
+        get_global_shape(jax_shape, mesh, spec),
         jax_dtype,
-        sharding=jax.sharding.NamedSharding(mesh, partition_spec),  # pyrefly: ignore[bad-argument-type]
+        sharding=jax.sharding.NamedSharding(mesh, spec),
     )
   else:
     return jax.ShapeDtypeStruct(jax_shape, jax_dtype)
 
 
 def jax_placeholders(
-    tensors: Sequence[torch.Tensor] | torch.Tensor,
+    tensors: Sequence[Any] | torch.Tensor,
     mesh=None,
     partition_specs=None,
 ):
@@ -188,9 +204,14 @@ def jax_placeholders(
   if isinstance(tensors, torch.Tensor):
     return jax_placeholder(tensors, mesh, partition_specs)
   if mesh is not None:
+    specs = (
+        partition_specs
+        if partition_specs is not None
+        else [None] * len(tensors)
+    )
     return [
         jax_placeholder(tensor, mesh, partition_spec)
-        for tensor, partition_spec in zip(tensors, partition_specs)  # pyrefly: ignore[bad-argument-type]
+        for tensor, partition_spec in zip(tensors, specs)
     ]
   else:
     return [jax_placeholder(tensor) for tensor in tensors]
@@ -200,6 +221,7 @@ def torch_placeholder(
     array: jax.core.ShapedArray | None,
     mesh: jax.sharding.Mesh | None = None,
     partition_spec: tuple[str | None, ...] | None = None,
+    device: torch.device | str = "tpu",
 ) -> torch.Tensor | None:
   """Converts a jax output to a torch tensor for return type.
 
@@ -210,6 +232,7 @@ def torch_placeholder(
     array: The JAX array to convert.
     mesh: Optional physical mesh.
     partition_spec: Optional partition spec for this output.
+    device: The target torch device.
 
   Returns:
     The converted PyTorch tensor, or None.
@@ -244,7 +267,7 @@ def torch_placeholder(
   return torch.empty(
       torch_shape,
       dtype=torch_dtype,
-      device="tpu",
+      device=device,
   )
 
 
@@ -293,11 +316,14 @@ def _get_kernel_invocation_key(
       return f"static_{get_hash(-1, item)}"
     if isinstance(item, torch.Tensor):
       return f"{item.shape}x{item.dtype}"
+    if isinstance(item, (tuple, list)):
+      elem_hashes = ",".join(get_hash(-1, x) for x in item)
+      return f"[{elem_hashes}]"
     return str(item)
 
   input_kwargs_str = ";".join(
-      f"{get_hash(-1, key)}:{get_hash(-1, value)}"
-      for key, value in input_kwargs.items()
+      f"{key}:{get_hash(-1, value)}"
+      for key, value in sorted(input_kwargs.items())
   )
 
   inputs_shapes = [get_hash(i, arg) for i, arg in enumerate(input_args)]
@@ -305,73 +331,179 @@ def _get_kernel_invocation_key(
   return ";".join([trace_key, inputs_shapes_str, input_kwargs_str])
 
 
-def _is_valid_base_type(annotation: type[Any]) -> bool:
-  return annotation in (
-      jax.Array,
-      int,
-      float,
-      bool,
-      str,
-  )
+def _unwrap_annotated(typ: Any) -> Any:
+  """Unwraps typing.Annotated wrappers to get the underlying type."""
+  while typing.get_origin(typ) is typing.Annotated:
+    typ = typing.get_args(typ)[0]
+  return typ
 
 
-def _get_underlying_type_from_optional(typ: type[Any]) -> type[Any] | None:
-  """Returns the underlying type of an optional type, or None if not optional."""
-  # Optional types are simply a union of the underlying type and None.
-  # get_origin gets the base type of subscripted types
-  # e.g. get_origin(Union[T, NoneType]) => Union
+def _strip_optional(typ: Any) -> tuple[Any, bool]:
+  """Splits an annotation into (non_optional_type, is_optional)."""
+  typ = _unwrap_annotated(typ)
   if typing.get_origin(typ) not in (Union, types.UnionType):
-    return None
-  # get_args gets the subscripted type arguments
-  # e.g. get_args(Union[T, NoneType]) => (T, NoneType)
-  union_types = typing.get_args(typ)
+    return typ, False
+  union_types = [_unwrap_annotated(t) for t in typing.get_args(typ)]
+  has_none = types.NoneType in union_types
   concrete_args = [t for t in union_types if t is not types.NoneType]
+  if not concrete_args:
+    return types.NoneType, True
+  if len(concrete_args) == 1:
+    return concrete_args[0], has_none
+  reconstructed = concrete_args[0]
+  for t in concrete_args[1:]:
+    reconstructed = reconstructed | t
+  return reconstructed, has_none
 
-  # If there is more than one concrete type, then this is not a simple optional
-  # type.
-  if len(concrete_args) != 1:
+
+def _get_enum_type(typ: Any) -> type[enum.Enum] | None:
+  """Returns the Enum subclass if typ is or contains an Enum in a Union."""
+  underlying, _ = _strip_optional(typ)
+  if isinstance(underlying, type) and issubclass(underlying, enum.Enum):
+    return underlying
+  if typing.get_origin(underlying) in (Union, types.UnionType):
+    for arg in typing.get_args(underlying):
+      arg_unwrapped = _unwrap_annotated(arg)
+      if isinstance(arg_unwrapped, type) and issubclass(
+          arg_unwrapped, enum.Enum
+      ):
+        return arg_unwrapped
+  return None
+
+
+def _get_sequence_element_type(typ: Any) -> Any | None:
+  """If typ is a homogeneous Sequence/list/tuple, returns its element type."""
+  origin = typing.get_origin(typ)
+  if origin in (list, collections.abc.Sequence):
+    args = typing.get_args(typ)
+    if len(args) == 1:
+      return args[0]
     return None
-  return concrete_args[0]
+  if origin is tuple:
+    args = typing.get_args(typ)
+    if not args:
+      return None
+    if len(args) == 2 and args[1] is Ellipsis:
+      return args[0]
+    if all(a == args[0] for a in args):
+      return args[0]
+    return None
+  return None
 
 
-def _is_valid_argument_type(annotation: type[Any]) -> bool:
-  """Returns True if the argument type is valid for a wrapped JAX function."""
-  if (underling := _get_underlying_type_from_optional(annotation)) is not None:
-    return _is_valid_base_type(underling)
-  return _is_valid_base_type(annotation)
-
-
-def _is_valid_argument(param: inspect.Parameter) -> bool:
-  """Returns True if the argument is valid for a wrapped JAX function.
-
-  Note this includes and defaulted kw only arguments such as those produces by
-  `functools.partial`.
-
-  Args:
-    param: The function parameter to validate.
-  """
-  # Defaulted keyword only arguments are allowed as they will be simply bound to
-  # the jax.jit call, we must support this as it is how functools.partial works.
-  if (
-      param.kind is inspect.Parameter.KEYWORD_ONLY
-      and param.default is not inspect.Parameter.empty
+def _is_valid_base_type(annotation: Any) -> bool:
+  annotation = _unwrap_annotated(annotation)
+  if annotation in (
+      bool,
+      float,
+      int,
+      jax.Array,
+      jax.Device,
+      np.dtype,
+      str,
+      torch.Tensor,
+      torch.device,
+      torch.dtype,
+      torch.types.Number,
   ):
+    return True
+  if isinstance(annotation, type):
+    if issubclass(annotation, (np.dtype, np.generic, enum.Enum)):
+      return True
+  origin = typing.get_origin(annotation)
+  if origin is typing.Literal:
+    args = typing.get_args(annotation)
+    return bool(args) and all(
+        isinstance(a, (int, float, bool, str, enum.Enum)) for a in args
+    )
+  if origin in (Union, types.UnionType):
+    args = typing.get_args(annotation)
+    if set(args) <= {int, float, bool}:
+      return True
+    if all(isinstance(t, type) and issubclass(t, str) for t in args):
+      return True
+    if all(
+        isinstance(t, type) and issubclass(t, int) and not issubclass(t, bool)
+        for t in args
+    ):
+      return True
+    if all(
+        t in (torch.dtype, np.dtype)
+        or (isinstance(t, type) and issubclass(t, (np.dtype, np.generic)))
+        for t in args
+    ):
+      return True
+    if all(t in (torch.device, jax.Device) for t in args):
+      return True
+  return False
+
+
+def _is_valid_sequence_element_type(elem_type: Any) -> bool:
+  underlying, is_optional = _strip_optional(elem_type)
+  if underlying in (jax.Array, torch.Tensor):
+    return True
+  if is_optional:
+    return False
+  if underlying in (int, float, bool) or underlying == torch.types.Number:
+    return True
+  if (
+      isinstance(underlying, type)
+      and issubclass(underlying, int)
+      and not issubclass(underlying, (bool, enum.Enum))
+  ):
+    return True
+  if typing.get_origin(underlying) in (Union, types.UnionType):
+    if set(typing.get_args(underlying)) <= {int, float, bool}:
+      return True
+  return False
+
+
+def _is_valid_argument_type(annotation: Any) -> bool:
+  """Returns True if the argument type is valid for a wrapped JAX function."""
+  underlying, is_optional = _strip_optional(annotation)
+  if _is_valid_base_type(underlying):
+    return True
+  elem_type = _get_sequence_element_type(underlying)
+  if elem_type is not None and _is_valid_sequence_element_type(elem_type):
+    return True
+  return False
+
+
+def _get_bound_names(fn: Any) -> set[str]:
+  """Returns the set of parameter names bound by functools.partial."""
+  bound_names = set()
+  cur = fn
+  while True:
+    if isinstance(cur, functools.partial):
+      if cur.keywords:
+        bound_names.update(cur.keywords.keys())
+      cur = cur.func
+    elif hasattr(cur, "__wrapped__"):
+      cur = cur.__wrapped__
+    else:
+      break
+  return bound_names
+
+
+def _is_valid_argument(
+    param: inspect.Parameter,
+    bound_names: collections.abc.Set[str] = frozenset(),
+) -> bool:
+  """Returns True if the argument is valid for a wrapped JAX function."""
+  if param.name in bound_names:
     return True
   return _is_valid_argument_type(param.annotation)
 
 
-def _verify_signature(signature: inspect.Signature):
-  """verify that the signature contains only the allowed types.
-
-  Allowed types are, where arguments can be optional:
-    - jax.Array
-    - int
-    - float
-    - bool
-    - str
+def _verify_signature(
+    signature: inspect.Signature,
+    bound_names: collections.abc.Set[str] = frozenset(),
+):
+  """Verify that the signature contains only types supported by PyTorch custom_op.
 
   Args:
     signature: The signature of the function to verify.
+    bound_names: Parameter names already bound (e.g. via functools.partial).
 
   Returns:
     True if the signature arguments are valid.
@@ -383,23 +515,45 @@ def _verify_signature(signature: inspect.Signature):
           f"Missing argument type annotation for JAX function: {signature}."
       )
 
+  def is_valid_return_base_type(typ: Any) -> bool:
+    if typ in (jax.Array, torch.Tensor, int, float, bool, torch.types.Number):
+      return True
+    if (
+        isinstance(typ, type)
+        and issubclass(typ, int)
+        and not issubclass(typ, (bool, enum.Enum))
+    ):
+      return True
+    if typing.get_origin(typ) in (Union, types.UnionType):
+      args = set(typing.get_args(typ))
+      if args <= {int, float, bool}:
+        return True
+    return False
+
   def is_valid_result(result: Any):
     if result is None or result is types.NoneType:
       return True
-    if result in (dict, list, tuple, set):
-      return True
+    underlying, is_opt = _strip_optional(result)
+    if is_opt:
+      return is_valid_result(underlying)
     origin = typing.get_origin(result)
-    if origin is None:
-      return _is_valid_base_type(result)
+    if origin is None or origin in (Union, types.UnionType):
+      return is_valid_return_base_type(result)
     args = typing.get_args(result)
-    if origin in (tuple, list, set, dict, Union, types.UnionType):
+    if origin is tuple and len(args) == 2 and args[1] is Ellipsis:
+      return is_valid_result(args[0])
+    if origin in (
+        tuple,
+        list,
+        collections.abc.Sequence,
+    ):
       return all(is_valid_result(arg) for arg in args)
     return False
 
   invalid_arg_indices = [
       idx
       for idx, param in enumerate(signature.parameters.values())
-      if not _is_valid_argument(param)
+      if not _is_valid_argument(param, bound_names=bound_names)
   ]
   result_valid = signature.return_annotation is None or is_valid_result(
       signature.return_annotation
@@ -422,7 +576,19 @@ def _verify_signature(signature: inspect.Signature):
   )
 
 
-def _infer_static_argnums(signature: inspect.Signature):
+def _is_tensor_annotation(annotation: Any) -> bool:
+  """Returns True if the annotation represents a tensor or sequence of tensors."""
+  underlying, _ = _strip_optional(annotation)
+  if underlying in (jax.Array, torch.Tensor):
+    return True
+  elem_type = _get_sequence_element_type(underlying)
+  if elem_type is not None:
+    elem_underlying, _ = _strip_optional(elem_type)
+    return elem_underlying in (jax.Array, torch.Tensor)
+  return False
+
+
+def _infer_static_argnums(signature: inspect.Signature) -> tuple[int, ...]:
   """Infers the static_argnums for a JAX function.
 
   All non-tensor arguments are considered static.
@@ -435,56 +601,339 @@ def _infer_static_argnums(signature: inspect.Signature):
   """
   static_argnums = []
   for idx, (_, param) in enumerate(signature.parameters.items()):
-    annotation = param.annotation
     if param.kind is inspect.Parameter.KEYWORD_ONLY:
       continue
-    if annotation is jax.Array:
-      continue
-    if _get_underlying_type_from_optional(annotation) is jax.Array:
+    if _is_tensor_annotation(param.annotation):
       continue
     static_argnums.append(idx)
   return tuple(static_argnums)
 
 
-def _get_torch_signature(signature: inspect.Signature):
-  """Converts a JAX signature to a Torch signature."""
+def _infer_static_argnames(signature: inspect.Signature) -> tuple[str, ...]:
+  """Infers the static_argnames for keyword-only parameters of a JAX function."""
+  static_argnames = []
+  for name, param in signature.parameters.items():
+    if param.kind is inspect.Parameter.KEYWORD_ONLY:
+      if not _is_tensor_annotation(param.annotation):
+        static_argnames.append(name)
+  return tuple(static_argnames)
 
-  new_parameters = []
 
-  def _map_jax_to_torch(typ):
-    if typ is jax.Array:
-      return torch.Tensor
-    if (underling := _get_underlying_type_from_optional(typ)) is not None:
-      return _map_jax_to_torch(underling) | types.NoneType
-    origin = typing.get_origin(typ)
-    if origin is not None:
-      mapped_args = (_map_jax_to_torch(arg) for arg in typing.get_args(typ))
-      return origin[*mapped_args]  # pyrefly: ignore[not-a-type]
+def _map_jax_base_to_torch(typ: Any) -> Any:
+  if typ in ("int", int):
+    return int
+  if typ in ("float", float):
+    return float
+  if typ in ("bool", bool):
+    return bool
+  if typ in ("str", str):
+    return str
+  if typ in (
+      "Tensor",
+      "torch.Tensor",
+      "Array",
+      "jax.Array",
+      jax.Array,
+      torch.Tensor,
+  ):
+    return torch.Tensor
+  if typ in (torch.dtype, np.dtype) or (
+      isinstance(typ, type) and issubclass(typ, (np.dtype, np.generic))
+  ):
+    return torch.dtype
+  if typ in (torch.device, jax.Device):
+    return torch.device
+  if typ == torch.types.Number:
+    return torch.types.Number
+  if isinstance(typ, type) and issubclass(typ, enum.Enum):
+    if issubclass(typ, str):
+      return str
+    if issubclass(typ, int) and not issubclass(typ, bool):
+      return int
+    members = list(typ.__members__.values())
+    if members:
+      if all(isinstance(m.value, str) for m in members):
+        return str
+      if all(
+          isinstance(m.value, int) and not isinstance(m.value, bool)
+          for m in members
+      ):
+        return int
+      if all(isinstance(m.value, float) for m in members):
+        return float
+      if all(isinstance(m.value, bool) for m in members):
+        return bool
+    return str
+  origin = typing.get_origin(typ)
+  if origin is typing.Literal:
+    args = typing.get_args(typ)
+    for candidate in (bool, int, float, str):
+      if all(isinstance(a, candidate) for a in args):
+        return candidate
+    return str
+  if origin in (Union, types.UnionType):
+    args = typing.get_args(typ)
+    if set(args) <= {int, float, bool}:
+      return torch.types.Number
+    if all(isinstance(t, type) and issubclass(t, str) for t in args):
+      return str
+    if all(
+        isinstance(t, type) and issubclass(t, int) and not issubclass(t, bool)
+        for t in args
+    ):
+      return int
+    if all(
+        t in (torch.dtype, np.dtype)
+        or (isinstance(t, type) and issubclass(t, (np.dtype, np.generic)))
+        for t in args
+    ):
+      return torch.dtype
+    if all(t in (torch.device, jax.Device) for t in args):
+      return torch.device
+  return typ
 
-    return typ
 
-  for param in signature.parameters.values():
-    # Skip invalid argument types, these should already have been verified
-    # to have a default value.
-    if not _is_valid_argument_type(param.annotation):
-      continue
-    new_parameters.append(
-        param.replace(annotation=_map_jax_to_torch(param.annotation))
+def _map_jax_param_to_torch(typ: Any) -> Any:
+  underlying, is_optional = _strip_optional(typ)
+  elem_type = _get_sequence_element_type(underlying)
+  if elem_type is not None:
+    mapped_elem = _map_jax_param_to_torch(elem_type)
+    if typing.get_origin(underlying) is list:
+      seq_type = list[mapped_elem]  # pyrefly: ignore[not-a-type]
+    else:
+      seq_type = collections.abc.Sequence[mapped_elem]  # pyrefly: ignore[not-a-type]
+    return (seq_type | types.NoneType) if is_optional else seq_type
+  mapped = _map_jax_base_to_torch(underlying)
+  return (mapped | types.NoneType) if is_optional else mapped
+
+
+def _map_jax_return_to_torch(typ: Any) -> Any:
+  if typ is None or typ is types.NoneType:
+    return None
+  if typ in (jax.Array, torch.Tensor):
+    return torch.Tensor
+  underlying, is_opt = _strip_optional(typ)
+  if is_opt:
+    mapped = _map_jax_return_to_torch(underlying)
+    return mapped | types.NoneType
+  origin = typing.get_origin(typ)
+  if origin is tuple:
+    args = typing.get_args(typ)
+    if not args:
+      return tuple[()]
+    if len(args) == 2 and args[1] is Ellipsis:
+      mapped_elem = _map_jax_return_to_torch(args[0])
+      return tuple[mapped_elem, ...]  # pyrefly: ignore[not-a-type]
+    mapped_args = tuple(_map_jax_return_to_torch(arg) for arg in args)
+    return tuple[mapped_args]  # pyrefly: ignore[not-a-type]
+  elem_type = _get_sequence_element_type(typ)
+  if elem_type is not None:
+    mapped_elem = _map_jax_return_to_torch(elem_type)
+    if origin is list:
+      return list[mapped_elem]  # pyrefly: ignore[not-a-type]
+    return collections.abc.Sequence[mapped_elem]  # pyrefly: ignore[not-a-type]
+  if (
+      isinstance(typ, type)
+      and issubclass(typ, int)
+      and not issubclass(typ, (bool, enum.Enum))
+  ):
+    return int
+  if typ == torch.types.Number or (
+      origin in (Union, types.UnionType)
+      and set(typing.get_args(typ)) <= {int, float, bool}
+  ):
+    return torch.types.Number
+  return typ
+
+
+def _map_jax_return_to_schema_str(typ: Any) -> str:
+  """Converts a JAX return type annotation to a PyTorch C++ schema return string."""
+  if typ is None or typ is types.NoneType:
+    return "()"
+  if typ in (jax.Array, torch.Tensor):
+    return "Tensor"
+  underlying, is_opt = _strip_optional(typ)
+  if is_opt:
+    base_str = _map_jax_return_to_schema_str(underlying)
+    return f"{base_str}?"
+  origin = typing.get_origin(typ)
+  if origin is tuple:
+    args = typing.get_args(typ)
+    if not args:
+      return "()"
+    if len(args) == 2 and args[1] is Ellipsis:
+      elem_str = _map_jax_return_to_schema_str(args[0])
+      return f"{elem_str}[]"
+    output_tys = [_map_jax_return_to_schema_str(arg) for arg in args]
+    inner = ", ".join(output_tys)
+    return f"({inner})"
+  elem_type = _get_sequence_element_type(typ)
+  if elem_type is not None:
+    elem_str = _map_jax_return_to_schema_str(elem_type)
+    return f"{elem_str}[]"
+  if typ in (int, float, bool):
+    return {"int": "SymInt", "float": "float", "bool": "bool"}[typ.__name__]
+  if (
+      isinstance(typ, type)
+      and issubclass(typ, int)
+      and not issubclass(typ, (bool, enum.Enum))
+  ):
+    return "SymInt"
+  if typ == torch.types.Number or (
+      origin in (Union, types.UnionType)
+      and set(typing.get_args(typ)) <= {int, float, bool}
+  ):
+    return "Scalar"
+  raise ValueError(f"Unsupported return type annotation: {typ}")
+
+
+def _is_torch_supported_default(val: Any) -> bool:
+  return val is None or isinstance(
+      val, (int, float, bool, str, torch.device, torch.dtype)
+  )
+
+
+def _normalize_caller_arg(val: Any) -> Any:
+  """Normalizes JAX values passed by caller into PyTorch custom_op types."""
+  if val is None or isinstance(
+      val, (torch.Tensor, int, float, bool, torch.dtype, torch.device)
+  ):
+    return val
+  if isinstance(val, tuple):
+    return tuple(_normalize_caller_arg(x) for x in val)
+  if isinstance(val, list):
+    return [_normalize_caller_arg(x) for x in val]
+  if isinstance(val, enum.Enum):
+    if isinstance(val.value, str):
+      return str(val.value)
+    if isinstance(val.value, int) and not isinstance(val.value, bool):
+      return int(val.value)
+    return val.value
+  if isinstance(val, str):
+    return val
+  if val not in (int, float, bool, str, list, tuple, dict, set) and (
+      isinstance(val, (np.dtype, np.generic))
+      or hasattr(val, "dtype")
+      or (isinstance(val, type) and issubclass(val, (np.generic, np.dtype)))
+  ):
+    try:
+      jax_dt = np.dtype(val)
+      if jax_dt in JAX_TO_TORCH_DTYPE_MAP:
+        return JAX_TO_TORCH_DTYPE_MAP[jax_dt]
+    except (TypeError, ValueError):
+      pass
+  if isinstance(val, jax.Device):
+    return torch.device("tpu")
+  return val
+
+
+def _to_hashable_jax_static_arg(val: Any, orig_annotation: Any = None) -> Any:
+  """Converts a PyTorch-dispatched static argument to a hashable JAX value."""
+  if val is None:
+    return None
+  if orig_annotation is not None:
+    enum_cls = _get_enum_type(orig_annotation)
+    if enum_cls is not None and not isinstance(val, enum_cls):
+      try:
+        return enum_cls(val)
+      except ValueError:
+        if isinstance(val, str) and val in enum_cls.__members__:
+          return enum_cls[val]
+        raise ValueError(
+            f"Value '{val}' is not a valid member of enum {enum_cls.__name__}"
+        )
+  if isinstance(val, (list, tuple)):
+    elem_ann = (
+        _get_sequence_element_type(_strip_optional(orig_annotation)[0])
+        if orig_annotation is not None
+        else None
     )
-  new_return_annotation = _map_jax_to_torch(signature.return_annotation)
+    return tuple(_to_hashable_jax_static_arg(x, elem_ann) for x in val)
+  if isinstance(val, torch.dtype):
+    if val not in TORCH_TO_JAX_DTYPE_MAP:
+      raise NotImplementedError(f"Unsupported dtype for pallas kernels: {val}")
+    return TORCH_TO_JAX_DTYPE_MAP[val]
+  return val
+
+
+def _get_torch_signature(
+    signature: inspect.Signature,
+    bound_names: collections.abc.Set[str] = frozenset(),
+) -> inspect.Signature:
+  """Converts a JAX signature to a Torch signature for custom_op schema."""
+  pos_params = []
+  kw_params = []
+
+  for name, param in signature.parameters.items():
+    if name in bound_names or not _is_valid_argument_type(param.annotation):
+      continue
+
+    mapped_annotation = _map_jax_param_to_torch(param.annotation)
+    if param.default is not inspect.Parameter.empty:
+      normalized_default = _normalize_caller_arg(param.default)
+      if not _is_torch_supported_default(normalized_default):
+        normalized_default = None
+        _, is_opt = _strip_optional(mapped_annotation)
+        if not is_opt:
+          mapped_annotation = mapped_annotation | types.NoneType
+      new_param = param.replace(
+          annotation=mapped_annotation, default=normalized_default
+      )
+    else:
+      new_param = param.replace(annotation=mapped_annotation)
+
+    if new_param.kind is inspect.Parameter.KEYWORD_ONLY:
+      kw_params.append(new_param)
+    else:
+      pos_params.append(new_param)
+
+  new_parameters = pos_params + kw_params
+  new_return_annotation = _map_jax_return_to_torch(signature.return_annotation)
   return inspect.Signature(
       new_parameters, return_annotation=new_return_annotation
   )
 
 
+def _generate_torch_schema(
+    torch_signature: inspect.Signature,
+    ret_schema_str: str,
+    mutates_args: tuple[str, ...] = (),
+) -> str:
+  """Generates an explicit PyTorch custom_op schema string."""
+
+  def dummy_fn(*args, **kwargs):
+    del args, kwargs
+
+  dummy_params = list(torch_signature.parameters.values())
+  dummy_sig = inspect.Signature(dummy_params, return_annotation=torch.Tensor)
+  setattr(dummy_fn, "__signature__", dummy_sig)
+  inferred = torch.library.infer_schema(dummy_fn, mutates_args=mutates_args)
+  params_part = inferred.rsplit(" -> ", 1)[0]
+  return f"{params_part} -> {ret_schema_str}"
+
+
 _KernelResultT = Sequence[torch.Tensor] | torch.Tensor | None
+
+
+class _JaxCustomOpDef(CustomOpDef):
+  """CustomOpDef subclass that normalizes caller arguments for Torch schema."""
+
+  def __call__(self, *args, **kwargs):
+    norm_args = tuple(_normalize_caller_arg(a) for a in args)
+    if kwargs:
+      norm_kwargs = {k: _normalize_caller_arg(v) for k, v in kwargs.items()}
+    else:
+      norm_kwargs = {}
+    return self._opoverload(*norm_args, **norm_kwargs)
 
 
 class JaxCallable:
   """A torch callable function that wraps a JAX function.
 
-  Supports static_argnums to allow passing non-tensor arguments directly.
+  Supports static_argnums and static_argnames to allow passing non-tensor
+  arguments directly.
   """
+
   name: str
   trace_key: str
   jit_fn: Any
@@ -492,6 +941,7 @@ class JaxCallable:
   input_partition_specs: Any
   output_partition_specs: Any
   static_argnums: tuple[int, ...]
+  static_argnames: tuple[str, ...]
   donate_argnums: list[int]
   input_output_aliases: dict[int, int]
   exported: Any
@@ -509,6 +959,7 @@ class JaxCallable:
       static_argnums: tuple[int, ...] = (),
       donate_argnums: list[int] | None = None,
       input_output_aliases: dict[int, int] | None = None,
+      static_argnames: tuple[str, ...] = (),
   ):
     """Initializes a JaxCallable, a cached callable for custom kernels.
 
@@ -537,6 +988,7 @@ class JaxCallable:
       donate_argnums: Indices of arguments to donate. See `jax.jit`.
       input_output_aliases: Indices of arguments to alias. This is deprecated
         and will be removed soon.
+      static_argnames: Tuple of argument names that are compile-time constants.
     """
 
     self.name = name
@@ -556,6 +1008,7 @@ class JaxCallable:
     self.input_partition_specs = input_partition_specs
     self.output_partition_specs = output_partition_specs
     self.static_argnums = static_argnums
+    self.static_argnames = static_argnames
     # Ignore forward compatibility as we are directly using the exported
     # StableHLO. Without this flag we can be missing the latest optimizations.
     with jax._src.config.export_ignore_forward_compatibility(True):
@@ -587,10 +1040,32 @@ class JaxCallable:
     # Unwrap jax.jit and other wrappers to get the original function for its
     # __globals__.
     sig_source = inspect.unwrap(jit_fn)
+    self._orig_signature = inspect.signature(sig_source, eval_str=True)
+    self._orig_params = list(self._orig_signature.parameters.values())
+    self._orig_params_by_name = self._orig_signature.parameters
+    bound_names = _get_bound_names(sig_source)
     self.__signature__ = _get_torch_signature(
-        inspect.signature(sig_source, eval_str=True)
+        self._orig_signature, bound_names=bound_names
     )
     self.__globals__ = None
+
+    self._param_is_tensor = {
+        name: (
+            p.annotation is inspect.Parameter.empty
+            or _is_tensor_annotation(p.annotation)
+        )
+        for name, p in self._orig_params_by_name.items()
+    }
+    self._static_param_names = set(self.static_argnames) | {
+        self._orig_params[i].name
+        for i in self.static_argnums
+        if i < len(self._orig_params)
+        and self._orig_params[i].kind != inspect.Parameter.VAR_POSITIONAL
+    }
+    self._param_name_to_idx = {
+        p.name: idx for idx, p in enumerate(self._orig_params)
+    }
+    self._donate_argnums_set = set(self.donate_argnums)
 
     logging.debug("Creating JAX callable: %s", self)
 
@@ -610,49 +1085,147 @@ class JaxCallable:
               " torch.Tensor. Tensors cannot be static arguments."
           )
         continue
-      if arg is not None and not isinstance(arg, torch.Tensor):
-        raise TypeError(
-            "custom kernels only support torch.Tensor and None inputs, but"
-            f" input {i} was of type {type(arg)}. Use static_argnums or"
-            " functools.partial for non-tensor args."
+      if arg is None or isinstance(arg, torch.Tensor):
+        continue
+      if isinstance(arg, (list, tuple)) and all(
+          x is None or isinstance(x, torch.Tensor) for x in arg
+      ):
+        continue
+      raise TypeError(
+          "custom kernels only support torch.Tensor and None inputs, but"
+          f" input {i} was of type {type(arg)}. Use static_argnums or"
+          " functools.partial for non-tensor args."
+      )
+
+  def _normalize_invocation_args(
+      self, args: Sequence[Any], kwargs: dict[str, Any]
+  ) -> tuple[list[Any], dict[str, Any]]:
+    """Binds arguments to signature and normalizes static arguments."""
+    try:
+      bound = self._orig_signature.bind(*args, **kwargs)
+    except TypeError:
+      bound = None
+
+    if bound is not None:
+      bound.apply_defaults()
+      for name, val in bound.arguments.items():
+        param = self._orig_params_by_name.get(name)
+        if param is None or param.kind in (
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        ):
+          continue
+        is_tensor = self._param_is_tensor.get(name, False)
+        is_static = name in self._static_param_names or not is_tensor
+
+        # If schema defaulted non-optional container to None, restore original default.
+        if val is None and param.default is not inspect.Parameter.empty:
+          _, is_optional = _strip_optional(param.annotation)
+          if not is_optional:
+            val = param.default
+            bound.arguments[name] = val
+
+        if is_static:
+          bound.arguments[name] = _to_hashable_jax_static_arg(
+              val, param.annotation
+          )
+
+      norm_args = list(bound.args)
+      for i in self.static_argnums:
+        if i < len(norm_args) and (
+            i >= len(self._orig_params)
+            or self._orig_params[i].kind == inspect.Parameter.VAR_POSITIONAL
+        ):
+          norm_args[i] = _to_hashable_jax_static_arg(norm_args[i], None)
+      return norm_args, dict(bound.kwargs)
+
+    norm_args = []
+    for i, arg in enumerate(args):
+      param = self._orig_params[i] if i < len(self._orig_params) else None
+      if i in self.static_argnums:
+        ann = param.annotation if param is not None else None
+        norm_args.append(_to_hashable_jax_static_arg(arg, ann))
+      else:
+        norm_args.append(arg)
+
+    norm_kwargs = {}
+    for k, v in kwargs.items():
+      param = self._orig_params_by_name.get(k)
+      ann = param.annotation if param is not None else None
+      is_static = k in self._static_param_names or (
+          param is not None and not self._param_is_tensor.get(k, False)
+      )
+      if is_static:
+        norm_kwargs[k] = _to_hashable_jax_static_arg(v, ann)
+      else:
+        norm_kwargs[k] = v
+    return norm_args, norm_kwargs
+
+  def _get_jax_placeholders(
+      self, norm_args: Sequence[Any], norm_kwargs: dict[str, Any] | None = None
+  ) -> tuple[list[Any], dict[str, Any]]:
+    """Converts normalized args and kwargs into JAX placeholders for tracing."""
+    jax_args = jax_placeholders(
+        norm_args, mesh=self.mesh, partition_specs=self.input_partition_specs
+    )
+    for i, ph in enumerate(jax_args):
+      if isinstance(ph, list) and i not in self.static_argnums:
+        param = self._orig_params[i] if i < len(self._orig_params) else None
+        if param is not None:
+          underlying, _ = _strip_optional(param.annotation)
+          if typing.get_origin(underlying) is tuple:
+            jax_args[i] = tuple(ph)
+
+    jax_kwargs = {}
+    if norm_kwargs:
+      for k, v in norm_kwargs.items():
+        param = self._orig_params_by_name.get(k)
+        is_static = k in self._static_param_names or (
+            param is not None and not self._param_is_tensor.get(k, False)
         )
+        if is_static or not isinstance(v, (torch.Tensor, list, tuple)):
+          jax_kwargs[k] = v
+        else:
+          ph = jax_placeholders(v, mesh=self.mesh)
+          if isinstance(ph, list):
+            if param is not None:
+              underlying, _ = _strip_optional(param.annotation)
+              if typing.get_origin(underlying) is tuple:
+                ph = tuple(ph)
+          jax_kwargs[k] = ph
+    return jax_args, jax_kwargs
 
   def __call__(self, *args, **kwargs) -> _KernelResultT:
     self._validate_args(*args)
+    norm_args, norm_kwargs = self._normalize_invocation_args(args, kwargs)
 
     # Check if we are running with wrapper tensors
     wrapper_arg = None
-    for arg in args:
-      if hasattr(arg, "_elem") and hasattr(arg, "_env"):
-        wrapper_arg = arg
-        break
-    if wrapper_arg is None:
-      for arg in kwargs.values():
-        if hasattr(arg, "_elem") and hasattr(arg, "_env"):
-          wrapper_arg = arg
+    for arg in itertools.chain(norm_args, norm_kwargs.values()):
+      elems = arg if isinstance(arg, (list, tuple)) else (arg,)
+      for x in elems:
+        if hasattr(x, "_elem") and hasattr(x, "_env"):
+          wrapper_arg = x
           break
+      if wrapper_arg is not None:
+        break
 
     if wrapper_arg is not None:
       env = wrapper_arg._env
       tensor_cls = type(wrapper_arg)
 
-      jax_args = []
-      for i, arg in enumerate(args):
-        if i in self.static_argnums:
-          jax_args.append(arg)
-        elif arg is None:
-          jax_args.append(None)
-        elif hasattr(arg, "_elem"):
-          jax_args.append(arg._elem)
-        else:
-          jax_args.append(arg)
+      def unwrap_elem(x):
+        if hasattr(x, "_elem"):
+          return x._elem
+        if isinstance(x, (list, tuple)):
+          return type(x)(unwrap_elem(e) for e in x)
+        return x
 
-      jax_kwargs = {}
-      for k, v in kwargs.items():
-        if hasattr(v, "_elem"):
-          jax_kwargs[k] = v._elem
-        else:
-          jax_kwargs[k] = v
+      jax_args = [
+          arg if i in self.static_argnums else unwrap_elem(arg)
+          for i, arg in enumerate(norm_args)
+      ]
+      jax_kwargs = {k: unwrap_elem(v) for k, v in norm_kwargs.items()}
 
       jax_results = self.jit_fn(*jax_args, **jax_kwargs)
 
@@ -664,7 +1237,7 @@ class JaxCallable:
       return jax.tree_util.tree_map(wrap, jax_results)
 
     kernel_key = _get_kernel_invocation_key(
-        self.trace_key, args, kwargs, self.static_argnums
+        self.trace_key, norm_args, norm_kwargs, self.static_argnums
     )
     output_shapes, out_tree = self.output_shapes.get(kernel_key, (None, None))
     mlir_fingerprint = self.kernel_key_to_mlir_fingerprint.get(kernel_key)
@@ -673,11 +1246,9 @@ class JaxCallable:
         and tpu_torch_pallas.lookup_custom_kernel(self.name, mlir_fingerprint)
     )
     if not output_shapes or not kernel_exists:
-      jax_args = jax_placeholders(
-          args, mesh=self.mesh, partition_specs=self.input_partition_specs
-      )
+      jax_args, jax_kwargs = self._get_jax_placeholders(norm_args, norm_kwargs)
       with jax._src.config.export_ignore_forward_compatibility(True):
-        lowered = self.exported(*jax_args, **kwargs)
+        lowered = self.exported(*jax_args, **jax_kwargs)
       # Normalize the MLIR module without location debug info so that
       # differing caller stack frames produce the same deterministic fingerprint
       # and reuse the compiled executable cache.
@@ -727,11 +1298,49 @@ class JaxCallable:
       out_tree = lowered.out_tree
       self.output_shapes[kernel_key] = (output_shapes, out_tree)
 
-    tensor_args = [
-        arg
-        for i, arg in enumerate(args)
-        if arg is not None and i not in self.static_argnums
-    ]
+    tensor_args: list[torch.Tensor] = []
+    tensor_donate_argnums: list[int] = []
+    tensor_io_aliases: dict[int, int] = {}
+
+    def _add_tensor_arg(arg: Any, param_idx: int | None) -> None:
+      if arg is None:
+        return
+      start_idx = len(tensor_args)
+      if isinstance(arg, (list, tuple)):
+        tensor_args.extend(t for t in arg if isinstance(t, torch.Tensor))
+      elif isinstance(arg, torch.Tensor):
+        tensor_args.append(arg)
+      end_idx = len(tensor_args)
+      if param_idx is not None and start_idx < end_idx:
+        if param_idx in self._donate_argnums_set:
+          tensor_donate_argnums.extend(range(start_idx, end_idx))
+        if param_idx in self.input_output_aliases:
+          tensor_io_aliases[start_idx] = self.input_output_aliases[param_idx]
+
+    for i, arg in enumerate(norm_args):
+      param = (
+          self._orig_params[i]
+          if i < len(self._orig_params)
+          and self._orig_params[i].kind != inspect.Parameter.VAR_POSITIONAL
+          else None
+      )
+      is_static = i in self.static_argnums or (
+          param is not None
+          and (
+              param.name in self._static_param_names
+              or not self._param_is_tensor.get(param.name, False)
+          )
+      )
+      if not is_static:
+        _add_tensor_arg(arg, i)
+
+    for k, arg in norm_kwargs.items():
+      param = self._orig_params_by_name.get(k)
+      is_static = k in self._static_param_names or (
+          param is not None and not self._param_is_tensor.get(k, False)
+      )
+      if not is_static:
+        _add_tensor_arg(arg, self._param_name_to_idx.get(k))
 
     device_assignment: list[int] = []
     if self.mesh is not None:
@@ -743,14 +1352,15 @@ class JaxCallable:
         mlir_fingerprint,
         inputs=tensor_args,
         output_shapes=output_shapes,
-        donate_argnums=self.donate_argnums,
+        donate_argnums=tensor_donate_argnums,
         device_assignment=device_assignment,
     )
 
-    for in_idx, out_idx in self.input_output_aliases.items():
+    for in_idx, out_idx in tensor_io_aliases.items():
       tensor_args[in_idx].copy_(results[out_idx])
 
-    return out_tree.unflatten(results)
+    unflattened = out_tree.unflatten(results)
+    return unflattened
 
 
 def _validate_pallas_mesh_world_size(
@@ -796,6 +1406,7 @@ def custom_jax_kernel(
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
     output_partition_specs: tuple[tuple[str, ...], ...] | None = None,
     *,
+    static_argnames: tuple[str, ...] = (),
     warn_deprecated: bool = True,
 ) -> Callable[[Callable[..., Any]], JaxCallable]:
   ...  # Overload stub
@@ -812,6 +1423,7 @@ def custom_jax_kernel(
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
     output_partition_specs: tuple[tuple[str, ...], ...] | None = None,
     *,
+    static_argnames: tuple[str, ...] = (),
     warn_deprecated: bool = True,
 ) -> JaxCallable:
   ...  # Overload stub
@@ -827,6 +1439,7 @@ def custom_jax_kernel(
     input_partition_specs=None,
     output_partition_specs=None,
     *,
+    static_argnames=(),
     warn_deprecated: bool = True,
 ):
   """Deprecated: Please use `jax_op` instead.
@@ -871,6 +1484,7 @@ def custom_jax_kernel(
       partition specs for each input tensor.
     output_partition_specs: If using a distributed kernel, provide the output
       partition specs for each output tensor.
+    static_argnames: Tuple of argument names that are compile-time constants.
     warn_deprecated: If True, issue a deprecation warning.
 
   Returns:
@@ -895,15 +1509,22 @@ def custom_jax_kernel(
     trace_key = _get_kernel_invocation_key(
         name_key,
         [],
-        {"static_argnums": static_argnums, "donate_argnums": donate_argnums},
+        {
+            "static_argnums": static_argnums,
+            "static_argnames": static_argnames,
+            "donate_argnums": donate_argnums,
+        },
     )
 
-    jit_fn = jax.jit(
-        jax_fn,
-        static_argnums=static_argnums,
-        donate_argnums=donate_argnums,
-        keep_unused=True,
-    )
+    jit_kwargs: dict[str, Any] = {
+        "static_argnums": static_argnums,
+        "donate_argnums": donate_argnums,
+        "keep_unused": True,
+    }
+    if static_argnames:
+      jit_kwargs["static_argnames"] = static_argnames
+
+    jit_fn = jax.jit(jax_fn, **jit_kwargs)
     return JaxCallable(
         name=name,
         jit_fn=jit_fn,
@@ -914,6 +1535,7 @@ def custom_jax_kernel(
         static_argnums=static_argnums,
         donate_argnums=donate_argnums,
         input_output_aliases=input_output_aliases,
+        static_argnames=static_argnames,
     )
 
   if jax_fn is None:
@@ -997,11 +1619,13 @@ def jax_op(
   def dec(fn: Callable[..., object]) -> CustomOpDef:
     nonlocal name
 
+    bound_names = _get_bound_names(fn)
     # Unwrap any jax.jit or decorators before getting signature to preserve
     # globals.
     signature = inspect.signature(inspect.unwrap(fn), eval_str=True)
-    _verify_signature(signature)
+    _verify_signature(signature, bound_names=bound_names)
     static_argnums = _infer_static_argnums(signature)
+    static_argnames = _infer_static_argnames(signature)
     wrapped_fn = custom_jax_kernel(
         fn,
         name,
@@ -1010,9 +1634,9 @@ def jax_op(
         input_partition_specs=input_partition_specs,
         output_partition_specs=output_partition_specs,
         static_argnums=static_argnums,
+        static_argnames=static_argnames,
         warn_deprecated=False,
     )
-
     # Jax functions are inherently immutable, even donated args are immutable in
     # that they are in an invalid state rather than mutated state, users can
     # copy back if they require.
@@ -1026,35 +1650,49 @@ def jax_op(
     def fake_fn(*args, **kwargs):
       # Symbolic dimensions can implicitly convert to int which then creates a
       # very confusing error message, so we check for them explicitly here.
-      for arg in args:
-        if isinstance(arg, torch.Tensor) and any(
-            isinstance(d, torch.SymInt) for d in arg.shape
-        ):
-          raise RuntimeError(
-              "Symbolic dimensions are not supported in the default fake"
-              " kernel. Either remove symbolic dimensions or override this"
-              " default implementation."
-          )
-      jax_args = jax_placeholders(
-          args, mesh=mesh, partition_specs=input_partition_specs
-      )
+      dev: torch.device | str = "meta"
+      for arg in itertools.chain(args, kwargs.values()):
+        tensors_to_check = arg if isinstance(arg, (list, tuple)) else (arg,)
+        for t in tensors_to_check:
+          if isinstance(t, torch.Tensor):
+            dev = t.device
+            if any(isinstance(d, torch.SymInt) for d in t.shape):
+              raise RuntimeError(
+                  "Symbolic dimensions are not supported in the default fake"
+                  " kernel. Either remove symbolic dimensions or override this"
+                  " default implementation."
+              )
       # pylint: disable=protected-access
+      norm_args, norm_kwargs = wrapped_fn._normalize_invocation_args(
+          args, kwargs
+      )
+      jax_args, jax_kwargs = wrapped_fn._get_jax_placeholders(
+          norm_args, norm_kwargs
+      )
       with jax._src.config.export_ignore_forward_compatibility(True):
-        lowered = wrapped_fn.exported(*jax_args, **kwargs)
-      # pylint: enable=protected-access
+        lowered = wrapped_fn.exported(*jax_args, **jax_kwargs)
       specs = _normalize_output_partition_specs(
           output_partition_specs, len(lowered.out_avals)
       ) or [None] * len(lowered.out_avals)
-      return lowered.out_tree.unflatten(
-          torch_placeholder(aval, mesh=mesh, partition_spec=spec)
+      unflattened = lowered.out_tree.unflatten(
+          torch_placeholder(aval, mesh=mesh, partition_spec=spec, device=dev)
           for aval, spec in zip(lowered.out_avals, specs)
       )
+      # pylint: enable=protected-access
+      return unflattened
+
+    ret_schema_str = _map_jax_return_to_schema_str(signature.return_annotation)
+    schema_str = _generate_torch_schema(
+        wrapped_fn.__signature__, ret_schema_str, mutates_args=mutates_args
+    )
 
     result = torch.library.custom_op(
         name,
         wrapped_fn,
         mutates_args=mutates_args,
+        schema=schema_str,
     )
+    result.__class__ = _JaxCustomOpDef
 
     result.register_fake(fake_fn)
 

@@ -14,11 +14,12 @@
 
 """Tests for Pallas custom kernels."""
 
+import enum
 import functools
 import os
 import pathlib
 import sys
-from typing import Optional, Tuple, TypeAlias
+from typing import Optional, Sequence, Tuple, TypeAlias
 from unittest import mock
 import warnings
 from absl.testing import absltest
@@ -1190,6 +1191,12 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
 
 class TestPallasCompat(seed_test_utils.RepeatableTest):
 
+  def _assert_donated(self, x: torch.Tensor):
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing buffer donation
+        RuntimeError, "INVALID_ARGUMENT: Buffer has been deleted or donated"
+    ):
+      x.cpu()
+
   def test_warn_deprecation_with_skip(self):
     if sys.version_info >= (3, 12):
       with warnings.catch_warnings(record=True) as w:
@@ -1406,6 +1413,321 @@ class TestPallasCompat(seed_test_utils.RepeatableTest):
       return op(a, b)
 
     f(w, s)
+
+  def test_container_enum_and_dtype_contract(self):
+    """Tests jax_op with container, enum, and dtype arguments under eager and torch.compile."""
+
+    class ExecutionMode(enum.StrEnum):
+      FAST = "FAST"
+      ACCURATE = "ACCURATE"
+
+    def custom_fused_kernel(
+        x: jax.Array,
+        y: jax.Array,
+        bias: jax.Array | None = None,
+        *,
+        out_dtype: jnp.dtype = jnp.float32,
+        window_sizes: tuple[int, int] = (64, 64),
+        strides: Sequence[int] = (128, 128, 128),
+        mode: ExecutionMode | str = ExecutionMode.FAST,
+        return_aux: bool = False,
+    ) -> tuple[jax.Array, jax.Array | None]:
+      self.assertIsInstance(window_sizes, tuple)
+      self.assertIsInstance(strides, tuple)
+      self.assertIsInstance(mode, ExecutionMode)
+      scale = float(window_sizes[0] + strides[0])
+      if mode == ExecutionMode.ACCURATE:
+        scale *= 2.0
+      out = (x + y) * scale
+      if bias is not None:
+        out = out + bias
+      out = out.astype(out_dtype)
+      aux = jnp.sum(out, axis=-1) if return_aux else None
+      return out, aux
+
+    op = pallas.jax_op("test::custom_fused_kernel", custom_fused_kernel)
+
+    x = torch.ones((4, 8), dtype=torch.bfloat16, device="tpu")
+    y = torch.full((4, 8), 2.0, dtype=torch.bfloat16, device="tpu")
+
+    # 1. Eager invocation with tuple, list, StrEnum, jnp.dtype, and return_aux=False
+    out_eager, aux_eager = op(
+        x,
+        y,
+        None,
+        out_dtype=jnp.float32,
+        window_sizes=(16, 32),
+        strides=[64, 64, 64],
+        mode=ExecutionMode.ACCURATE,
+        return_aux=False,
+    )
+    self.assertEqual(out_eager.dtype, torch.float32)
+    self.assertIsNone(aux_eager)
+    # scale = (16 + 64) * 2 = 160; (1 + 2) * 160 = 480
+    test_utils.assert_close(
+        out_eager.cpu(), torch.full((4, 8), 480.0, dtype=torch.float32)
+    )
+
+    # 2. Positional static arguments passed by keyword in eager mode
+    out_kwargs, _ = op(
+        x,
+        y,
+        out_dtype=jnp.float32,
+        window_sizes=(16, 32),
+        strides=(64, 64, 64),
+        mode=ExecutionMode.ACCURATE,
+        return_aux=False,
+    )
+    test_utils.assert_close(out_kwargs.cpu(), out_eager.cpu())
+
+    # 3. Keyword tensor argument passing (bias as kwarg)
+    bias = torch.full((4, 8), 16.0, dtype=torch.bfloat16, device="tpu")
+    out_bias, _ = op(
+        x,
+        y,
+        bias=bias,
+        out_dtype=jnp.float32,
+        window_sizes=(16, 32),
+        strides=[64, 64, 64],
+        mode=ExecutionMode.ACCURATE,
+        return_aux=False,
+    )
+    test_utils.assert_close(
+        out_bias.cpu(), torch.full((4, 8), 496.0, dtype=torch.float32)
+    )
+
+    # 4. Invalid enum value rejection
+    with self.assertRaises(  # ASSERT_RAISES_OK=Testing enum validation
+        ValueError
+    ):
+      op(
+          x,
+          y,
+          mode="INVALID_MODE",
+      )
+
+    # 5. Fullgraph torch.compile invocation with return_aux=True and torch.dtype
+    @torch.compile(backend="tpu", fullgraph=True)
+    def compiled_fn(a, b):
+      return op(
+          a,
+          b,
+          None,
+          out_dtype=torch.float32,
+          window_sizes=(16, 32),
+          strides=(64, 64, 64),
+          mode="ACCURATE",
+          return_aux=True,
+      )
+
+    out_compiled, aux_compiled = compiled_fn(x, y)
+    self.assertEqual(out_compiled.dtype, torch.float32)
+    self.assertIsNotNone(aux_compiled)
+    test_utils.assert_close(out_compiled.cpu(), out_eager.cpu())
+    test_utils.assert_close(
+        aux_compiled.cpu(), torch.full((4,), 480.0 * 8, dtype=torch.float32)
+    )
+
+    # 6. Fullgraph torch.compile invocation with return_aux=False
+    @torch.compile(backend="tpu", fullgraph=True)
+    def compiled_fn_no_aux(a, b):
+      return op(
+          a,
+          b,
+          None,
+          out_dtype=torch.float32,
+          window_sizes=(16, 32),
+          strides=(64, 64, 64),
+          mode="ACCURATE",
+          return_aux=False,
+      )
+
+    out_compiled_no_aux, aux_compiled_no_aux = compiled_fn_no_aux(x, y)
+    self.assertEqual(out_compiled_no_aux.dtype, torch.float32)
+    self.assertIsNone(aux_compiled_no_aux)
+    test_utils.assert_close(out_compiled_no_aux.cpu(), out_eager.cpu())
+
+    # 7. Omitted container default arguments: should use default window_sizes=(64, 64) and strides=(128, 128, 128)
+    out_default, aux_default = op(x, y)
+    self.assertEqual(out_default.dtype, torch.float32)
+    self.assertIsNone(aux_default)
+    test_utils.assert_close(
+        out_default.cpu(), torch.full((4, 8), 576.0, dtype=torch.float32)
+    )
+
+  def test_keyword_tensor_arguments_permutation_order(self):
+    """Verifies that passing keyword tensor arguments in permuted order does not swap inputs."""
+
+    def sub_kernel(a: jax.Array, b: jax.Array) -> jax.Array:
+      return a - b
+
+    sub_op = pallas.jax_op("test::sub_kernel", sub_kernel)
+    t1 = torch.tensor([10.0, 20.0], device="tpu")
+    t2 = torch.tensor([1.0, 2.0], device="tpu")
+
+    res_pos = sub_op(t1, t2)
+    res_kw1 = sub_op(a=t1, b=t2)
+    res_kw2 = sub_op(b=t2, a=t1)
+
+    test_utils.assert_close(res_pos.cpu(), torch.tensor([9.0, 18.0]))
+    test_utils.assert_close(res_kw1.cpu(), torch.tensor([9.0, 18.0]))
+    test_utils.assert_close(res_kw2.cpu(), torch.tensor([9.0, 18.0]))
+
+    # Test direct JaxCallable invocation with permuted keyword arguments
+    custom_sub = pallas.custom_jax_kernel(sub_kernel)
+    res_custom_kw2 = custom_sub(b=t2, a=t1)
+    test_utils.assert_close(res_custom_kw2.cpu(), torch.tensor([9.0, 18.0]))
+
+    # Test unannotated function with custom_jax_kernel
+    def unannotated_sub(a, b):
+      return a - b
+
+    custom_unannotated_sub = pallas.custom_jax_kernel(unannotated_sub)
+    res_unannotated = custom_unannotated_sub(t1, t2)
+    test_utils.assert_close(res_unannotated.cpu(), torch.tensor([9.0, 18.0]))
+
+  def test_omitted_positional_container_default(self):
+    """Verifies that omitting container default arguments works in eager and compile."""
+
+    def kernel_with_default(
+        x: jax.Array,
+        window_sizes: tuple[int, int] = (64, 64),
+    ) -> jax.Array:
+      self.assertEqual(window_sizes, (64, 64))
+      return x * float(window_sizes[0])
+
+    op = pallas.jax_op("test::kernel_with_default", kernel_with_default)
+    t = torch.ones((2, 2), dtype=torch.float32, device="tpu")
+
+    # Eager invocation with omitted default
+    res = op(t)
+    test_utils.assert_close(res.cpu(), torch.full((2, 2), 64.0))
+
+    # Eager invocation with explicit None for non-optional container default
+    res_none = op(t, None)
+    test_utils.assert_close(res_none.cpu(), torch.full((2, 2), 64.0))
+
+    # Eager invocation with keyword None for non-optional container default
+    res_kw_none = op(t, window_sizes=None)
+    test_utils.assert_close(res_kw_none.cpu(), torch.full((2, 2), 64.0))
+
+    # torch.compile invocation with omitted default
+    @torch.compile(backend="tpu", fullgraph=True)
+    def compiled_fn(x):
+      return op(x, None)
+
+    res_compiled = compiled_fn(t)
+    test_utils.assert_close(res_compiled.cpu(), torch.full((2, 2), 64.0))
+
+  def test_donate_argnums_with_static_arguments(self):
+    """Verifies donate_argnums properly maps when static arguments precede tensors."""
+
+    def kernel_donate_with_static(
+        scale: int,
+        x: jax.Array,
+        y: jax.Array,
+    ) -> jax.Array:
+      return (x + y) * scale
+
+    op = pallas.jax_op(
+        "test::kernel_donate_with_static",
+        kernel_donate_with_static,
+        donate_argnums=(
+            2,
+        ),  # donate y (argument 2 in signature, index 1 in tensors)
+    )
+    t1 = torch.ones((2, 2), dtype=torch.float32, device="tpu")
+    t2 = torch.full((2, 2), 2.0, dtype=torch.float32, device="tpu")
+    res = op(3, t1, t2)
+    test_utils.assert_close(res.cpu(), torch.full((2, 2), 9.0))
+    self._assert_donated(t2)
+
+  def test_donate_argnums_with_optional_and_sequence_tensors(self):
+    """Verifies donate_argnums and input_output_aliases with optional None and sequence tensors."""
+
+    # 1. Optional tensor passed as None or Tensor preceding a donated tensor
+    def kernel_donate_with_optional(
+        opt: jax.Array | None,
+        x: jax.Array,
+    ) -> jax.Array:
+      return x * 2.0 if opt is None else x + opt
+
+    op_opt = pallas.jax_op(
+        "test::kernel_donate_with_optional",
+        kernel_donate_with_optional,
+        donate_argnums=(1,),
+    )
+    t_donated_none = torch.full((2, 2), 3.0, dtype=torch.float32, device="tpu")
+    res_none = op_opt(None, t_donated_none)
+    test_utils.assert_close(res_none.cpu(), torch.full((2, 2), 6.0))
+    self._assert_donated(t_donated_none)
+
+    t_opt = torch.ones((2, 2), dtype=torch.float32, device="tpu")
+    t_donated_some = torch.full((2, 2), 3.0, dtype=torch.float32, device="tpu")
+    res_some = op_opt(t_opt, t_donated_some)
+    test_utils.assert_close(res_some.cpu(), torch.full((2, 2), 4.0))
+    test_utils.assert_close(t_opt.cpu(), torch.ones((2, 2)))
+    self._assert_donated(t_donated_some)
+
+    # 2. Sequence of tensors preceding a donated tensor
+    def kernel_donate_after_seq(
+        xs: Sequence[jax.Array],
+        y: jax.Array,
+    ) -> jax.Array:
+      return xs[0] + xs[1] + y
+
+    op_seq_after = pallas.jax_op(
+        "test::kernel_donate_after_seq",
+        kernel_donate_after_seq,
+        donate_argnums=(1,),
+    )
+    s0 = torch.ones((2, 2), dtype=torch.float32, device="tpu")
+    s1 = torch.full((2, 2), 2.0, dtype=torch.float32, device="tpu")
+    y_donated = torch.full((2, 2), 4.0, dtype=torch.float32, device="tpu")
+    res_seq_after = op_seq_after([s0, s1], y_donated)
+    test_utils.assert_close(res_seq_after.cpu(), torch.full((2, 2), 7.0))
+    test_utils.assert_close(s0.cpu(), torch.ones((2, 2)))
+    test_utils.assert_close(s1.cpu(), torch.full((2, 2), 2.0))
+    self._assert_donated(y_donated)
+
+    # 3. Donating a sequence of tensors itself (requires matching output buffers for XLA aliasing)
+    def kernel_donate_seq(
+        xs: Sequence[jax.Array],
+        y: jax.Array,
+    ) -> list[jax.Array]:
+      return [xs[0] + y, xs[1] * y]
+
+    op_seq_donate = pallas.jax_op(
+        "test::kernel_donate_seq",
+        kernel_donate_seq,
+        donate_argnums=(0,),
+    )
+    d0 = torch.ones((2, 2), dtype=torch.float32, device="tpu")
+    d1 = torch.full((2, 2), 2.0, dtype=torch.float32, device="tpu")
+    y_kept = torch.full((2, 2), 4.0, dtype=torch.float32, device="tpu")
+    res_seq_donate = op_seq_donate([d0, d1], y_kept)
+    test_utils.assert_close(res_seq_donate[0].cpu(), torch.full((2, 2), 5.0))
+    test_utils.assert_close(res_seq_donate[1].cpu(), torch.full((2, 2), 8.0))
+    test_utils.assert_close(y_kept.cpu(), torch.full((2, 2), 4.0))
+    self._assert_donated(d0)
+    self._assert_donated(d1)
+
+    # 4. input_output_aliases when an optional None tensor precedes the aliased tensor
+    aliased_opt_kernel = pallas.custom_jax_kernel(
+        kernel_donate_with_optional,
+        input_output_aliases={1: 0},
+    )
+    t_aliased = torch.full((2, 2), 5.0, dtype=torch.float32, device="tpu")
+    res_aliased = aliased_opt_kernel(None, t_aliased)
+    test_utils.assert_close(res_aliased.cpu(), torch.full((2, 2), 10.0))
+    test_utils.assert_close(t_aliased.cpu(), torch.full((2, 2), 10.0))
+
+  def test_jax_placeholders_mesh_tensor_sequence(self):
+    """Verifies jax_placeholders does not crash when called with a mesh and tensor sequence."""
+    mesh = jax.sharding.Mesh(jax.numpy.arange(1), "x")
+    tensors = [torch.zeros((2, 2)), torch.ones((2, 2))]
+    phs = pallas.pallas.jax_placeholders(tensors, mesh=mesh)
+    self.assertEqual(len(phs), 2)
 
 
 class TestPallasMesh(seed_test_utils.RepeatableTest):
