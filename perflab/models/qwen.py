@@ -20,6 +20,7 @@ from perflab import context as context_lib
 from perflab import model_helpers
 from perflab import registry as registry_lib
 from perflab import step_lib
+from perflab import target as target_lib
 from perflab import torch_device_ops
 
 
@@ -265,24 +266,15 @@ def qwen3_coder_30b_moe_forward(ctx: context_lib.Context):
 # --- Qwen3.5-397B MoE (4 Layers) ---
 
 
-@registry_lib.register_benchmark(
-    stepper=step_lib.StepperType.FORWARD,
-    # TODO(b/567589153): Re-enable once OOM on TPU v5e and view decomposition
-    # error in compiled mode are resolved.
-    skipped_run_modes={
-        "compiled",
-        "eager_default",
-        "eager_optimized",
-    },
-)
+@registry_lib.register_benchmark(stepper=step_lib.StepperType.FORWARD)
 def qwen3_5_397b_4_layers_forward(ctx: context_lib.Context):
   """Benchmark factory for Qwen3.5-397B-A17B (4 Layers) MoE forward."""
   if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    batch_size = 1
-    seq_len = 128
-  else:
-    batch_size = 1
-    seq_len = 2048
+    raise target_lib.UnsupportedBenchmark(
+        "Qwen3.5-397B uses too much memory to run on TPUs with smaller memory."
+    )
+  batch_size = 1
+  seq_len = 2048
 
   model, inputs = _load_hf_qwen(
       ctx,

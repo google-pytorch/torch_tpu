@@ -70,6 +70,7 @@ _CASES = list(cases.get_cases(_PLATFORM, _FRAMEWORK))
 # Benchmarks that are known to fail under TorchAx, keyed by benchmark name.
 _TORCHAX_KNOWN_FAILURES = immutabledict.immutabledict({
     "qwen3_coder_30b_moe_forward": "aten::_grouped_mm has no lowering",
+    "qwen3_5_397b_4_layers_forward": "aten::_grouped_mm has no lowering",
     "gemma_4_26b_a4b_6_layers_forward": (
         "HBM OOM on v5e_1x1 while moving the model to the device"
     ),
