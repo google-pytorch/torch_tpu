@@ -25,6 +25,7 @@ SUPPORTED_PYTHON_VERSIONS = [
     "3.12",
     "3.13",
     "3.14",
+    "3.14t",
 ]
 # LINT.ThenChange(
 #     ../pyproject.toml:requires_python,

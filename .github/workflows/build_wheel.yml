@@ -95,8 +95,8 @@ jobs:
              [[ "${HAS_TPU_NIGHTLY_LABEL}" == "true" ]] || \
              [[ "${HAS_RUN_ALL_VERSIONS_LABEL}" == "true" ]] || \
              [[ "${HAS_POSTSUBMIT_LABEL}" == "true" ]]; then
-            CPU_VERS='["3.11", "3.12", "3.13", "3.14"]'
-            TPU_VERS='["3.11", "3.12", "3.13", "3.14"]'
+            CPU_VERS='["3.11", "3.12", "3.13", "3.14", "3.14t"]'
+            TPU_VERS='["3.11", "3.12", "3.13", "3.14", "3.14t"]'
           fi
           echo "cpu_versions=${CPU_VERS}" >> "$GITHUB_OUTPUT"
           echo "tpu_versions=${TPU_VERS}" >> "$GITHUB_OUTPUT"
@@ -199,23 +199,23 @@ jobs:
         run: |
           mkdir dist
           PYTHON_VER_CLEAN=$(echo "${PYTHON_VERSION}" | tr -d '.')
-          gcloud storage cp "${GCS_WHEEL_DIR}*cp${PYTHON_VER_CLEAN}*.whl" dist/
+          gcloud storage cp "${GCS_WHEEL_DIR}*-cp*-cp${PYTHON_VER_CLEAN}-*.whl" dist/
       - name: Wait For Connection
         uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
         with:
           halt-dispatch-input: ${{ inputs.halt-for-connection }}
-      # For the alternate-torch wheel variants (CUDA, nightly), run a trimmed-
-      # down smoke test instead of the bazel test suite: nox installs the built
-      # wheel and the torch variant in a single uv resolution, then checks that
-      # the backend autoloads.
+      # For the alternate-torch wheel variants (CUDA, nightly) and free-threaded
+      # Python builds (3.14t), run a trimmed-down smoke test instead of
+      # the bazel test suite: nox installs the built wheel and the torch variant
+      # in a single uv resolution, then checks that the backend autoloads.
       - name: Run smoke tests via nox
-        if: matrix.nox_smoke_test
+        if: ${{ matrix.nox_smoke_test || endsWith(matrix.python_version, 't') }}
         env:
           PYTHON_VERSION: ${{ matrix.python_version }}
-          NOX_SMOKE_TEST: ${{ matrix.nox_smoke_test }}
+          NOX_SMOKE_TEST: ${{ matrix.nox_smoke_test || 'cpu-cpu' }}
         run: uvx nox --force-python "${PYTHON_VERSION}" -s "smoke_test(${NOX_SMOKE_TEST})"
       - name: Run Impacted Tests via bazel-diff
-        if: ${{ !matrix.nox_smoke_test }}
+        if: ${{ !matrix.nox_smoke_test && !endsWith(matrix.python_version, 't') }}
         uses: ./.github/actions/bazel-diff
         with:
           base_sha: ${{ inputs.override_base_sha }}
@@ -253,7 +253,7 @@ jobs:
         run: |
           mkdir dist
           PYTHON_VER_CLEAN=$(echo "${PYTHON_VERSION}" | tr -d '.')
-          gcloud storage cp "${GCS_WHEEL_DIR}*cp${PYTHON_VER_CLEAN}*.whl" dist/
+          gcloud storage cp "${GCS_WHEEL_DIR}*-cp*-cp${PYTHON_VER_CLEAN}-*.whl" dist/
       - name: Wait For Connection
         uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
         with:
@@ -287,7 +287,7 @@ jobs:
         run: |
           mkdir dist
           PYTHON_VER_CLEAN=$(echo "${PYTHON_VERSION}" | tr -d '.')
-          gcloud storage cp "${GCS_WHEEL_DIR}*cp${PYTHON_VER_CLEAN}*.whl" dist/
+          gcloud storage cp "${GCS_WHEEL_DIR}*-cp*-cp${PYTHON_VER_CLEAN}-*.whl" dist/
       - name: Wait For Connection
         uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
         with:
@@ -305,6 +305,9 @@ jobs:
       matrix:
         python_version: ${{ fromJSON(needs.setup.outputs.tpu_versions) }}
         wheel_version: ["standard", "v7"]
+        exclude:
+          - python_version: "3.14t"
+            wheel_version: "v7"
         include:
           # v7 1-Chip: Run Nox smoke tests on single-chip v7 and skip Bazel test suite.
           # v7 4-Chip: Run Nox smoke tests and full Bazel test suite.
@@ -343,7 +346,7 @@ jobs:
         run: |
           mkdir dist
           PYTHON_VER_CLEAN=$(echo "${PYTHON_VERSION}" | tr -d '.')
-          gcloud storage cp "${GCS_WHEEL_DIR}*cp${PYTHON_VER_CLEAN}*.whl" dist/
+          gcloud storage cp "${GCS_WHEEL_DIR}*-cp*-cp${PYTHON_VER_CLEAN}-*.whl" dist/
       - name: Wait For Connection
         uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
         with:
@@ -403,7 +406,7 @@ jobs:
         run: |
           mkdir dist
           PYTHON_VER_CLEAN=$(echo "${PYTHON_VERSION}" | tr -d '.')
-          gcloud storage cp "${GCS_WHEEL_DIR}*cp${PYTHON_VER_CLEAN}*.whl" dist/
+          gcloud storage cp "${GCS_WHEEL_DIR}*-cp*-cp${PYTHON_VER_CLEAN}-*.whl" dist/
       - name: Wait For Connection
         uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
         with:

@@ -86,6 +86,12 @@ mkdir -p "${OUTPUT_DIR}"
 
 for py_ver in "${PY_VERSIONS[@]}"; do
   echo "===> Building wheel for Python ${py_ver}"
+  hermetic_py_ver="${py_ver%t}"
+  if [[ "${py_ver}" == *t ]]; then
+    freethreaded="yes"
+  else
+    freethreaded="no"
+  fi
   # --config=wheel_common is REQUIRED for a working wheel: it sets
   # --//:wheel_build=True, which routes the shared XLA/MLIR backend through
   # the torch_version-reset transition so pywrap factors it into the single
@@ -96,8 +102,9 @@ for py_ver in "${PY_VERSIONS[@]}"; do
   # --config=no_rbe to strip RBE flags in environments without RBE credentials.
   bazel build -c opt --config=wheel_common //ci/wheel:torch_tpu_wheel \
     --repo_env=WHEEL_VERSION_EXTRAS="${WHEEL_VERSION_EXTRAS}" \
-    --repo_env=HERMETIC_PYTHON_VERSION="${py_ver}" \
+    --repo_env=HERMETIC_PYTHON_VERSION="${hermetic_py_ver}" \
     --define PYTHON_VERSION="${py_ver}" \
+    --@rules_python//python/config_settings:py_freethreaded="${freethreaded}" \
     ${EXTRA_BAZEL_ARGS[@]+"${EXTRA_BAZEL_ARGS[@]}"}
   cp bazel-bin/ci/wheel/*.whl "${OUTPUT_DIR}/"
 done

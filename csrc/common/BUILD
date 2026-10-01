@@ -876,6 +876,32 @@ torch_tpu_cc_test(
 )
 
 torch_tpu_cc_library(
+    name = "reroute_warnings",
+    srcs = ["reroute_warnings.cc"],
+    hdrs = ["reroute_warnings.h"],
+    deps = [
+        "//shims/torch:torch_headers",
+        "//shims/torch/c10/util:base",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/base:no_destructor",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/synchronization",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "reroute_warnings_test",
+    srcs = ["reroute_warnings_test.cc"],
+    deps = [
+        ":reroute_warnings",
+        "//csrc/common:oss_test_main",
+        "//shims/torch:torch_headers",
+        "//shims/torch/c10/util:base",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "flags",
     hdrs = ["flags.h"],
     deps = [
