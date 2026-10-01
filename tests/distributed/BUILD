@@ -266,6 +266,7 @@ torch_tpu_py_test(
         # //tests/pallas:pallas_communication_test.
         "TPU_PREMAPPED_BUFFER_SIZE": "0",
     },
+    nopresubmit_oss = "TODO(b/568095515): Flaking in GitHub TPU v7 presubmit with START_SESSION failed.",
     oss_presubmit_tpu_generation = tpu_gen(
         "v7",
         reason = "Pallas mesh collective device order test for TPU v7",
