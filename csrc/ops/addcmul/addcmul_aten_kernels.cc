@@ -19,7 +19,9 @@
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
+#include "ATen/core/TensorBody.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dtype.h"
@@ -69,6 +71,18 @@ at::Tensor& AtenAddcmulOut(const at::Tensor& self, const at::Tensor& tensor1,
                            InferSize(tensor1.sizes(), tensor2.sizes()));
         TT_ASSIGN_OR_THROW(auto expected_size,
                            InferSize(self.sizes(), t1_t2_size));
+
+        for (const at::Tensor& input : {self, tensor1, tensor2}) {
+          if (out.is_alias_of(input)) {
+            TT_CHECK_THROW(absl::MakeConstSpan(out.sizes()) == expected_size,
+                           error::kInvalidArgument)
+                << "output with shape " << ToString(expected_size)
+                << " doesn't match the broadcast shape of the tensor being "
+                   "operated on in-place, which has shape "
+                << ToString(out.sizes());
+            break;
+          }
+        }
 
         TT_ASSIGN_OR_THROW(at::Tensor value_tensor, promoted_value.GetTensor());
         TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Bool &&

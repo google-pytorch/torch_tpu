@@ -2285,6 +2285,18 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       torch.addcmul(self_tensor, tensor1, tensor2, value=value)
 
+  def test_addcmul_smaller_out_alias(self):
+    """Tests that addcmul fails when out is a smaller alias of an input."""
+    s = torch.ones(1, 4, dtype=torch.float32, device=et.device())
+    t1 = torch.ones(3, 4, dtype=torch.float32, device=et.device())
+    t2 = torch.ones(3, 4, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""addcmul(): output with shape [3, 4] doesn't match the broadcast shape of the tensor being operated on in-place, which has shape [1, 4]""",
+        gpu="""output with shape [1, 4] doesn't match the broadcast shape [3, 4]""",
+    ):
+      torch.addcmul(s, t1, t2, out=s)
+
   def test_index_put_too_many_indices_error(self):
     # TODO(mkkhanna): Fix exception type for TPU.
     err_type = RuntimeError if et.is_on_tpu() else IndexError
