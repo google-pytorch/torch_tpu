@@ -7077,6 +7077,36 @@ Supported combinations for non-constant padding:
     ):
       torch.norm(t, p=2, dim=[0, 0])
 
+  def test_foreach_norm_invalid_ord_and_dtype(self):
+    x = torch.tensor([1.0, 2.0], dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""foreach_norm(): expected ord to be integer or float, got bool""",
+        gpu=re.compile(
+            r"foreach_tensor_norm_.* expects ord to be integer or float"
+        ),
+    ):
+      torch._foreach_norm([x], ord=True)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""foreach_norm(): the dtype of the input (float32) should be convertible without narrowing to the specified dtype (float16)""",
+        gpu=re.compile(
+            r".*the dtype of the input \(Float\) should be convertible without"
+            r" narrowing to the specified dtype \(Half\)"
+        ),
+    ):
+      torch._foreach_norm([x], ord=2, dtype=torch.float16)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""foreach_norm(): expected dtype to be floating point or complex, got int32""",
+        gpu=re.compile(
+            r".*dtype should be floating point or complex, but got Int"
+        ),
+    ):
+      torch._foreach_norm([x], ord=2, dtype=torch.int32)
+
   def test_rms_norm_int(self):
     inp = torch.ones(5, 5, device=et.device(), dtype=torch.int32)
     normalized_shape = (5,)

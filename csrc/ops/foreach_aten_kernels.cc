@@ -606,6 +606,32 @@ absl::StatusOr<at::ScalarType> ForeachScalarResultType(
   return out_dtype;
 }
 
+absl::Status ValidateForeachNormDtype(c10::ScalarType self_dtype,
+                                      std::optional<c10::ScalarType> dtype) {
+  if (!dtype.has_value()) {
+    return absl::OkStatus();
+  }
+  const c10::ScalarType target_dtype = *dtype;
+  TT_RET_CHECK(
+      c10::isFloatingType(target_dtype) || c10::isComplexType(target_dtype),
+      error::kInvalidArgument)
+      << "expected dtype to be floating point or complex, got "
+      << ToString(target_dtype);
+  TT_RET_CHECK(
+      c10::isComplexType(self_dtype) == c10::isComplexType(target_dtype),
+      error::kInvalidArgument)
+      << "expected dtype to be "
+      << (c10::isComplexType(self_dtype) ? "complex" : "real") << " for "
+      << (c10::isComplexType(self_dtype) ? "complex" : "real")
+      << " inputs, got " << ToString(target_dtype);
+  TT_RET_CHECK(c10::promoteTypes(self_dtype, target_dtype) == target_dtype,
+               error::kInvalidArgument)
+      << "the dtype of the input (" << ToString(self_dtype)
+      << ") should be convertible without narrowing to the specified dtype ("
+      << ToString(target_dtype) << ")";
+  return absl::OkStatus();
+}
+
 absl::Status ValidatePairwiseAddcdivAtLeastOneNotIntegral(
     at::TensorList tensors1, at::TensorList tensors2) {
   const Indices& bad_indices =
@@ -2967,11 +2993,16 @@ std::vector<at::Tensor> AtenForeachNormScalar(
       (self, promoted_ord,
        IgnoreInCacheKey(dtype, "Delegates to AtenLinalgVectorNormOut")),
       {
+        TT_CHECK_THROW(ord.isIntegral(false) || ord.isFloatingPoint(),
+                       error::kInvalidArgument)
+            << "expected ord to be integer or float, got "
+            << ToString(ord.type());
         TT_THROW_IF_ERROR(ValidateNotIntegral(self, /* arg_name= */ "self"));
-        TT_ASSIGN_OR_THROW(at::Tensor ord_tensor, promoted_ord.GetTensor());
         std::vector<at::Tensor> result;
         result.reserve(self.size());
         for (const auto& tensor : self) {
+          TT_THROW_IF_ERROR(
+              ValidateForeachNormDtype(tensor.scalar_type(), dtype));
           auto out_dtype =
               at::toRealValueType(dtype.value_or(tensor.scalar_type()));
           TT_ASSIGN_OR_THROW(auto out,
