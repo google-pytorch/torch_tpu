@@ -16,6 +16,7 @@
 
 import collections
 import pickle
+from typing import Any, Callable
 
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -24,6 +25,21 @@ from torch.utils import _pytree as pytree
 import torch_tpu._internal.compile.tpu_torch_compile as tpu_torch_compile
 from torch_tpu._internal.export import export as torch_tpu_export
 from tests import seed_test_utils
+
+
+def _compile_double_executable(shape: tuple[int, ...]):
+  """Compiles a PJRT executable computing `2 * x` for a float32 `shape`."""
+  tensor_type = f"tensor<{'x'.join(map(str, shape))}xf32>"
+  module = tpu_torch_compile.parse_mlir_text(f"""
+module {{
+  func.func @main(%arg0: {tensor_type}) -> {tensor_type} {{
+    %two = stablehlo.constant dense<2.0> : {tensor_type}
+    %0 = stablehlo.multiply %arg0, %two : {tensor_type}
+    return %0 : {tensor_type}
+  }}
+}}
+""")
+  return tpu_torch_compile.compile_mlir(module)
 
 
 class FxOutputReconstructorTest(seed_test_utils.RepeatableTest):
@@ -276,6 +292,67 @@ module {
 
     self.assertLen(outputs, 1)
     self.assertTrue(torch.equal(outputs[0].cpu(), x.cpu()))
+
+  def test_compiled_runner_without_reconstruct_fn_returns_output_list(self):
+    x = torch.randn(4, 4, device="tpu")
+    runner = tpu_torch_compile.make_compiled_runner(
+        _compile_double_executable(x.shape)
+    )
+
+    outputs = runner([x])
+
+    self.assertIsInstance(outputs, list)
+    self.assertLen(outputs, 1)
+    self.assertTrue(torch.equal(outputs[0].cpu(), (x * 2.0).cpu()))
+
+  @parameterized.named_parameters(
+      ("list", list),
+      ("tuple", tuple),
+      ("generic_sequence", collections.UserList),
+  )
+  def test_compiled_runner_does_not_unbox_single_tensor_argument(
+      self, make_args: Callable[[list[Any]], Any]
+  ):
+    x = torch.randn(4, 4, device="tpu")
+    runner = tpu_torch_compile.make_compiled_runner(
+        _compile_double_executable(x.shape)
+    )
+
+    # The sole element is a tensor argument rather than a boxed argument list,
+    # so the 1-element sequence itself holds the arguments.
+    (out,) = runner(make_args([x]))
+
+    self.assertTrue(torch.equal(out.cpu(), (x * 2.0).cpu()))
+
+  def test_compiled_runner_reconstructs_duplicate_size_one_strided_outputs(
+      self,
+  ):
+    x = torch.randn(1, 4, 4, device="tpu")
+    _, spec = pytree.tree_flatten((x, x))
+    reconstructor = tpu_torch_compile.FxOutputReconstructor(
+        [
+            torch_tpu_export._DedupedTensorOutput(tensor_idx=0),  # pylint: disable=protected-access
+            torch_tpu_export._DedupedTensorOutput(tensor_idx=0),  # pylint: disable=protected-access
+        ],
+        [self._make_layout(shape=(1, 4, 4), stride=(4, 4, 1))],
+        spec,
+    )
+    runner = tpu_torch_compile.make_compiled_runner(
+        _compile_double_executable(x.shape), reconstruct_fn=reconstructor
+    )
+
+    out0, out1 = runner([x])
+
+    expected = (x * 2.0).cpu()
+    for out in (out0, out1):
+      self.assertEqual(out.shape, torch.Size((1, 4, 4)))
+      self.assertEqual(out.stride(), (4, 4, 1))
+      self.assertTrue(torch.equal(out.cpu(), expected))
+    # The duplicate output must be cloned so in-place mutation of one does not
+    # affect the other.
+    self.assertIsNot(out0, out1)
+    out1.add_(10.0)
+    self.assertTrue(torch.equal(out0.cpu(), expected))
 
 
 if __name__ == "__main__":

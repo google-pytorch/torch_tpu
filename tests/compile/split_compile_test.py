@@ -12,10 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import collections
 import gc
 import pickle
 import unittest.mock
 from absl.testing import absltest
+from absl.testing import parameterized
 import torch
 from torch_tpu._internal.compile import compiler
 from torch_tpu._internal.compile import split_compiler
@@ -198,6 +200,36 @@ class SplitCompileTest(seed_test_utils.RepeatableTest):
     utils.assert_close(
         restored(x)[0, 0, :4].cpu(), torch.tensor([1.0, 2.0, 3.0, 4.0])
     )
+
+  @parameterized.named_parameters(
+      ("single_field", 1),
+      ("two_fields", 2),
+  )
+  def test_split_compile_preserves_namedtuple_output(self, num_fields: int):
+    x = torch.randn(4, 4, device="tpu")
+    y = torch.randn(4, 4, device="tpu")
+    graph = torch.fx.Graph()
+    px = graph.placeholder("x")
+    py_node = graph.placeholder("y")
+    sum_node = graph.call_function(torch.ops.aten.add.Tensor, (px, py_node))
+    if num_fields == 1:
+      out_type = collections.namedtuple("Single", ["sum"])
+      graph.output(out_type(sum_node))
+    else:
+      out_type = collections.namedtuple("Pair", ["sum", "diff"])
+      diff_node = graph.call_function(torch.ops.aten.sub.Tensor, (px, py_node))
+      graph.output(out_type(sum_node, diff_node))
+    gm = torch.fx.GraphModule(torch.nn.Module(), graph)
+
+    executable = split_compiler.SplitCompiler(compiler.StaticCompiler())(
+        gm, (x, y)
+    )
+    out = executable(x, y)
+
+    self.assertIs(type(out), out_type)
+    utils.assert_close(out.sum.cpu(), (x + y).cpu())
+    if num_fields == 2:
+      utils.assert_close(out.diff.cpu(), (x - y).cpu())
 
 
 class SplitCompileHermeticTest(seed_test_utils.RepeatableTest):
