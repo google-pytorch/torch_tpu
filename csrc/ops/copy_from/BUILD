@@ -103,6 +103,7 @@ torch_tpu_cc_library(
         "//csrc/common:status_builder",
         "//csrc/common:to_string",
         "//csrc/eager:device_buffer",
+        "//csrc/eager:events_queue",
         "//csrc/eager:materialize",
         "//csrc/eager:op_dispatcher",
         "//csrc/eager:structured_log_buffer",

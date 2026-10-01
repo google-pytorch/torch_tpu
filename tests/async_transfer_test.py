@@ -16,6 +16,8 @@ import time
 
 from absl.testing import absltest
 import torch
+from torch_tpu._internal import execution_mode
+from torch_tpu._internal import sync
 from torch_tpu._internal.utils import test_utils as utils
 from tests import seed_test_utils
 
@@ -159,8 +161,12 @@ class AsyncTransferTest(seed_test_utils.RepeatableTest):
     # Non-blocking transfer to CPU. With our custom _to_copy implementation,
     # this will now use pinned memory and the fast async DMA path.
     cpu_tensor = c.to('cpu', non_blocking=True)
+    cpu_view_tensor = c.view(-1).to('cpu', non_blocking=True)
 
     self.assertEqual(cpu_tensor.device.type, 'cpu')
+    self.assertTrue(cpu_tensor.is_pinned())
+    self.assertEqual(cpu_view_tensor.device.type, 'cpu')
+    self.assertTrue(cpu_view_tensor.is_pinned())
 
     torch.tpu.synchronize()
 
@@ -168,6 +174,7 @@ class AsyncTransferTest(seed_test_utils.RepeatableTest):
     expected_cpu_tensor = a_cpu * 2 + b_cpu
 
     utils.assert_close(cpu_tensor, expected_cpu_tensor)
+    utils.assert_close(cpu_view_tensor, expected_cpu_tensor.view(-1))
 
   def test_to_cpu_non_blocking_accelerator(self):
     device = torch.device('tpu')
@@ -183,11 +190,182 @@ class AsyncTransferTest(seed_test_utils.RepeatableTest):
     cpu_tensor = c.to('cpu', non_blocking=True)
 
     self.assertEqual(cpu_tensor.device.type, 'cpu')
+    self.assertTrue(cpu_tensor.is_pinned())
 
     torch.accelerator.synchronize()
 
     expected_cpu_tensor = a_cpu * 2 + b_cpu
     utils.assert_close(cpu_tensor, expected_cpu_tensor)
+
+  def test_to_cpu_non_blocking_avoids_pin_memory_copy(self):
+    """Verifies non_blocking .to('cpu') allocates pinned memory directly."""
+    device = torch.device('tpu')
+    size = 64
+    a_cpu = torch.randint(1, 10, (size, size), dtype=torch.int32)
+    b_cpu = torch.randint(1, 10, (size, size), dtype=torch.int32)
+    a = a_cpu.to(device)
+    b = b_cpu.to(device)
+    c = a + b
+
+    with torch.profiler.profile(
+        activities=[torch.profiler.ProfilerActivity.CPU]
+    ) as prof:
+      cpu_dst = c.to('cpu', non_blocking=True)
+
+    op_names = [evt.key for evt in prof.key_averages()]
+    self.assertNotIn('aten::pin_memory', op_names)
+    self.assertNotIn('aten::_pin_memory', op_names)
+    self.assertTrue(cpu_dst.is_pinned())
+    torch.accelerator.synchronize()
+    utils.assert_close(cpu_dst, a_cpu + b_cpu)
+
+  def test_non_blocking_d2h_does_not_wait_for_materialization_start(self):
+    """Verifies non_blocking D2H uses kNonBlocking instead of kBlockUntilStarted.
+
+    When a deep deferred DAG is materialized by a non_blocking D2H copy,
+    kBlockUntilStarted blocks the host thread until the background
+    materialize_thread_ lowers the DAG to MLIR and marks the source tensor as
+    pending materialization (sync.is_materializing(c) == True). With
+    kNonBlocking, the D2H call enqueues the snapshot request and returns
+    before materialize_thread_ finishes lowering the DAG.
+    """
+    device = torch.device('tpu')
+    size = 256
+    half = size // 2
+    a_cpu = torch.ones((size, size), dtype=torch.int32)
+    b_cpu = torch.ones((size, size), dtype=torch.int32)
+    a = a_cpu.to(device)
+    b = b_cpu.to(device)
+    cpu_dst = torch.empty((size, size), dtype=torch.int32, pin_memory=True)
+    # Warm up the pinned allocator for both full and slice sizes.
+    _ = torch.empty((size, half), dtype=torch.int32, pin_memory=True)
+    torch.tpu.synchronize()
+
+    # TODO(anuragprakash): There is a theoretical race with the background
+    # materialize_thread_ that could flake if it finishes lowering the 200-op
+    # DAG before the host thread reaches the assertFalse(is_materializing)
+    # checks below. Add a test-only hook to pause materialization so this test
+    # is completely deterministic.
+    with execution_mode.set_eager_mode(
+        execution_mode._EagerMode.INTERNAL_DEFER_ALL
+    ):
+      # 1. Full-storage path (CopyTpuToCpu::MaterializeBase) via .to('cpu').
+      num_ops_1 = 200
+      c = a
+      for _ in range(num_ops_1):
+        c = c + b
+      self.assertFalse(sync.is_materializing(c))
+      cpu_c = c.to('cpu', non_blocking=True)
+      self.assertFalse(sync.is_materializing(c))
+      self.assertTrue(cpu_c.is_pinned())
+      torch.tpu.synchronize()
+      utils.assert_close(cpu_c, a_cpu + num_ops_1 * b_cpu)
+
+      # 2. Full-storage path via copy_(non_blocking=True).
+      num_ops_2 = 201
+      c2 = a
+      for _ in range(num_ops_2):
+        c2 = c2 + b
+      self.assertFalse(sync.is_materializing(c2))
+      cpu_dst.copy_(c2, non_blocking=True)
+      self.assertFalse(sync.is_materializing(c2))
+      torch.tpu.synchronize()
+      utils.assert_close(cpu_dst, a_cpu + num_ops_2 * b_cpu)
+
+      # 3. Non-reinterpret view path (CopyTpuToCpu::MaterializeAndReturn).
+      num_ops_3 = 202
+      c3 = a
+      for _ in range(num_ops_3):
+        c3 = c3 + b
+      self.assertFalse(sync.is_materializing(c3))
+      cpu_slice = c3[:, :half].to('cpu', non_blocking=True)
+      self.assertFalse(sync.is_materializing(c3))
+      self.assertTrue(cpu_slice.is_pinned())
+      torch.tpu.synchronize()
+      utils.assert_close(cpu_slice, (a_cpu + num_ops_3 * b_cpu)[:, :half])
+
+  def test_to_cpu_non_blocking_non_reinterpret_views(self):
+    """Tests non_blocking .to('cpu') on non-reinterpret views (slice, transpose)."""
+    device = torch.device('tpu')
+    rows, cols = 512, 256
+    a_cpu = torch.randint(1, 10, (rows, cols), dtype=torch.int32)
+    b_cpu = torch.randint(1, 10, (rows, cols), dtype=torch.int32)
+    a = a_cpu.to(device)
+    b = b_cpu.to(device)
+
+    c = a * 3 + b
+    half_cols = cols // 2
+    cpu_slice = c[:, :half_cols].to('cpu', non_blocking=True)
+    cpu_transposed = c.t().to('cpu', non_blocking=True)
+
+    self.assertEqual(cpu_slice.device.type, 'cpu')
+    self.assertTrue(cpu_slice.is_pinned())
+    self.assertEqual(cpu_transposed.device.type, 'cpu')
+    self.assertTrue(cpu_transposed.is_pinned())
+
+    torch.tpu.synchronize()
+
+    expected = a_cpu * 3 + b_cpu
+    utils.assert_close(cpu_slice, expected[:, :half_cols])
+    utils.assert_close(cpu_transposed, expected.t())
+
+  def test_to_cpu_non_blocking_with_stream_and_event(self):
+    """Tests SGLang's async D2H pattern using a secondary Stream and Event."""
+    device = torch.device('tpu')
+    size = 1024
+    a_cpu = torch.randint(1, 10, (size, size), dtype=torch.int32)
+    b_cpu = torch.randint(1, 10, (size, size), dtype=torch.int32)
+    a = a_cpu.to(device)
+    b = b_cpu.to(device)
+
+    # Compute on the default stream.
+    c = a * 2 + b
+
+    copy_stream = torch.tpu.Stream()
+    copy_event = torch.tpu.Event()
+    with torch.tpu.stream(copy_stream):
+      cpu_c = c.to('cpu', non_blocking=True)
+      copy_event.record(copy_stream)
+
+    self.assertEqual(cpu_c.device.type, 'cpu')
+    self.assertTrue(cpu_c.is_pinned())
+
+    # Synchronize only via the recorded event (without full device synchronize).
+    copy_event.synchronize()
+    self.assertTrue(copy_event.query())
+    utils.assert_close(cpu_c, a_cpu * 2 + b_cpu)
+
+  def test_to_cpu_non_blocking_with_dtype_conversion(self):
+    """Tests D2H transfer with dtype conversion and non_blocking=True.
+
+    Because the source (float32) and destination (float16 / bfloat16) dtypes
+    differ, CopyTpuToCpu cannot DMA directly into the destination buffer and
+    takes the synchronous TpuMemcpyDtoH fallback followed by a CPU dtype
+    conversion.
+    """
+    device = torch.device('tpu')
+    size = 512
+    a_cpu = torch.randn((size, size), dtype=torch.float32)
+    b_cpu = torch.randn((size, size), dtype=torch.float32)
+    a = a_cpu.to(device)
+    b = b_cpu.to(device)
+
+    c = a + b
+    cpu_fp16 = c.to('cpu', dtype=torch.float16, non_blocking=True)
+    cpu_bf16 = c.to('cpu', dtype=torch.bfloat16, non_blocking=True)
+
+    self.assertEqual(cpu_fp16.device.type, 'cpu')
+    self.assertEqual(cpu_fp16.dtype, torch.float16)
+    self.assertTrue(cpu_fp16.is_pinned())
+    self.assertEqual(cpu_bf16.device.type, 'cpu')
+    self.assertEqual(cpu_bf16.dtype, torch.bfloat16)
+    self.assertTrue(cpu_bf16.is_pinned())
+
+    torch.tpu.synchronize()
+
+    expected = a_cpu + b_cpu
+    utils.assert_close(cpu_fp16, expected.to(torch.float16))
+    utils.assert_close(cpu_bf16, expected.to(torch.bfloat16))
 
   def test_pin_memory(self):
     device = torch.device('tpu')

@@ -71,11 +71,11 @@ at::Tensor AtenToCopy(const at::Tensor& self,
         // we want to ensure the destination is allocated in pinned memory.
         // This allows CopyTpuToCpu to use the fast async DMA path.
         if (target_device.is_cpu() && non_blocking) {
-          at::TensorOptions options =
-              at::TensorOptions().dtype(target_dtype).device(at::kCPU);
-          // Explicitly use our pinned allocator for the intermediate.
-          at::Tensor dest = at::empty(self.sizes(), options, resolved_format)
-                                .pin_memory(at::Device(at::kPrivateUse1));
+          at::TensorOptions options = at::TensorOptions()
+                                          .dtype(target_dtype)
+                                          .device(at::kCPU)
+                                          .pinned_memory(true);
+          at::Tensor dest = at::empty(self.sizes(), options, resolved_format);
           // Call our TPU-specific copy_ implementation directly to avoid
           // redispatching back to this _to_copy implementation.
           ::torch_tpu::AtenCopy_(dest, self, non_blocking);

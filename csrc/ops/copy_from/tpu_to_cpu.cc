@@ -32,6 +32,7 @@
 #include "csrc/common/status_builder.h"
 #include "csrc/common/to_string.h"
 #include "csrc/eager/device_buffer.h"
+#include "csrc/eager/events_queue.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
@@ -85,6 +86,10 @@ absl::Status CopyTpuToCpu(const at::Tensor& src, const at::Tensor& dest,
     return absl::OkStatus();
   }
 
+  const MaterializationBlockMode block_mode =
+      non_blocking ? MaterializationBlockMode::kNonBlocking
+                   : MaterializationBlockMode::kBlockUntilStarted;
+
   // Fast path: if src is a pure reinterpretation of all the bytes of its base
   // buffer, DMA the base buffer directly.
   TT_ASSIGN_OR_RETURN(const DeviceBufferRef base_buf, GetBaseBuffer(src));
@@ -94,7 +99,8 @@ absl::Status CopyTpuToCpu(const at::Tensor& src, const at::Tensor& dest,
     {
       tsl::profiler::TraceMe trace_mat("CopyTpuToCpu::MaterializeBase");
       TT_RETURN_IF_ERROR(TranslateXlaTensorOomError(
-          Materialize(base_buf, MaterializationReason::kCpuTransfer),
+          Materialize(base_buf, MaterializationReason::kCpuTransfer,
+                      MaterializationMode::kSplitGraph, block_mode),
           dest.scalar_type(), src.sizes()));
     }
     absl::Status status =
@@ -109,9 +115,6 @@ absl::Status CopyTpuToCpu(const at::Tensor& src, const at::Tensor& dest,
   // ephemeral view buffer.
   TT_ASSIGN_OR_RETURN(const DeviceBufferRef materialized_src_buf, [&]() {
     tsl::profiler::TraceMe trace_mat("CopyTpuToCpu::MaterializeAndReturn");
-    const auto block_mode =
-        (non_blocking ? MaterializationBlockMode::kNonBlocking
-                      : MaterializationBlockMode::kBlockUntilStarted);
     return MaterializeAndReturn(src, MaterializationReason::kCpuTransfer,
                                 block_mode);
   }());
