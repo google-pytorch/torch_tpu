@@ -28,12 +28,10 @@ from torch import distributed as dist
 from torch.distributed import device_mesh
 from torch.distributed import tensor
 from torch.distributed.tensor import parallel
-# Direct all logs to stdout so kubectl logs can see them
-from torch_tpu._internal.utils import log_utils
 from examples.distributed.tensor_parallel.dtensor_wrapped import model
 
 
-log_utils.log_to_stderr()
+logging.set_verbosity(logging.INFO)
 
 BATCH_SIZE = 64
 MODEL_DIM = 128

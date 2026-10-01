@@ -26,11 +26,10 @@ from torch import distributed as dist
 from torch import nn
 from torch import optim
 import torch.distributed._functional_collectives as _func_col
-from torch_tpu._internal.utils import log_utils
 from examples.distributed.fsdp.manual import model
 from examples.distributed.fsdp.manual import simple_model as simple_model_lib
 
-log_utils.log_to_stderr()
+logging.set_verbosity(logging.INFO)
 
 BATCH_SIZE = 16  # Per-device batch size.
 LR = 0.01

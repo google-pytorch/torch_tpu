@@ -14,18 +14,13 @@
 
 """A test runner for the tensor parallel wrappers example."""
 
-from torch.google import distributed as gdist
-import torch.multiprocessing as mp
-from torch.tpu import distributed  # pyrefly: ignore[missing-import]
 from examples.distributed.tensor_parallel.dtensor_wrapped import dtp_worker
-from torch_tpu._internal.distributed import multiprocessing
+from tests.distributed import distributed_utils
 
 
-def main(_):
-  distributed.set_tpu_launch_env()
-  gdist.torchrun(dtp_worker.worker_fn, nproc_per_node=8)()
+def main():
+  distributed_utils.dist_run(8, dtp_worker.worker_fn)
 
 
 if __name__ == "__main__":
-  mp.set_start_method("spawn")
-  multiprocessing.handle_main(main)
+  main()

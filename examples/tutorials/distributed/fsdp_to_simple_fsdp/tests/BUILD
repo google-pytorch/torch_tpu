@@ -32,9 +32,8 @@ torch_tpu_py_test(
     ],
     deps = [
         "//examples/tutorials/distributed/fsdp_to_simple_fsdp:fsdp_to_simple_fsdp_worker",
-        "//shims/torch:pytorch",
         "//src/torch_tpu",
-        "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//tests/distributed:distributed_utils",
     ],
 )
 

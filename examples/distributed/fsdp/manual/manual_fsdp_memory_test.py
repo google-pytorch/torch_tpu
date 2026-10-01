@@ -23,13 +23,10 @@ from absl import logging
 import torch
 from torch import distributed as dist
 from torch import nn
-import torch.multiprocessing as mp
-from torch_tpu._internal.utils import log_utils
 from examples.distributed.fsdp.manual import model
-from torch_tpu._internal.distributed import multiprocessing
 from tests.distributed import distributed_utils
 
-log_utils.log_to_stderr()
+logging.set_verbosity(logging.INFO)
 
 BATCH_SIZE = 16
 IN_FEATURES = 4096
@@ -84,7 +81,6 @@ def memory_worker_fn() -> None:
     del y_pred, loss
 
   if rank == 0:
-    log_utils.log_to_stderr()
     lines = ["Memory summary across steps:"]
     for (
         step,
@@ -115,11 +111,10 @@ def memory_worker_fn() -> None:
   dist.destroy_process_group()
 
 
-def main(_):
+def main():
   world_size = 8
   distributed_utils.dist_run(world_size, memory_worker_fn)
 
 
 if __name__ == "__main__":
-  mp.set_start_method("spawn")
-  multiprocessing.handle_main(main)
+  main()

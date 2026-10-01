@@ -33,9 +33,7 @@ torch_tpu_py_test(
     ],
     deps = [
         ":manual_fsdp_worker",
-        "//shims/torch:pytorch",
         "//src/torch_tpu",
-        "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//tests/distributed:distributed_utils",
     ],
 )
@@ -57,8 +55,6 @@ torch_tpu_py_test(
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
-        "//src/torch_tpu/_internal/distributed:multiprocessing",
-        "//src/torch_tpu/_internal/utils:log_utils",
         "//tests/distributed:distributed_utils",
     ],
 )
@@ -72,7 +68,6 @@ torch_tpu_py_library(
         ":simple_model",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
-        "//src/torch_tpu/_internal/utils:log_utils",
     ],
 )
 
