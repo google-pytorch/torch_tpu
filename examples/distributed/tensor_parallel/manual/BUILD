@@ -41,9 +41,7 @@ torch_tpu_py_test(
     ],
     deps = [
         ":tp_worker",
-        "//shims/torch:pytorch",
         "//src/torch_tpu",
-        "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//tests/distributed:distributed_utils",
     ],
 )
@@ -56,7 +54,6 @@ torch_tpu_py_library(
         ":model",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
-        "//src/torch_tpu/_internal/utils:log_utils",
     ],
 )
 

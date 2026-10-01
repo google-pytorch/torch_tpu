@@ -104,6 +104,8 @@ def dist_run(
       occurs when auto-selecting a port.
     **kwargs: Keyword arguments to pass to the function.
   """
+  multiprocessing.init_spawn()
+
   if (
       hardware.get_tpu_device_count()
       or env.get_str_env_once("JOB_COMPLETION_INDEX") is not None

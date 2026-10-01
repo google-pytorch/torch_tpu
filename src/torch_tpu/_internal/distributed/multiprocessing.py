@@ -32,6 +32,11 @@ def handle_test_main(main, *args, **kwargs):
   return main(*args, **kwargs)
 
 
+def init_spawn() -> None:
+  """Initializes multiprocessing spawn support in OSS."""
+  parse_absl_flags()
+
+
 def get_context(method=None) -> Any:
   """Returns a multiprocessing context."""
   return multiprocessing.get_context(method)

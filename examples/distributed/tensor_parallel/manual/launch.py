@@ -14,17 +14,14 @@
 
 """A test runner for the tensor parallel example."""
 
-import torch.multiprocessing as mp
 from examples.distributed.tensor_parallel.manual import tp_worker
-from torch_tpu._internal.distributed import multiprocessing
 from tests.distributed import distributed_utils
 
 
-def main(_):
+def main():
   world_size = 8
   distributed_utils.dist_run(world_size, tp_worker.worker_fn)
 
 
 if __name__ == "__main__":
-  mp.set_start_method("spawn")
-  multiprocessing.handle_main(main)
+  main()

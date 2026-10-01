@@ -23,12 +23,10 @@ import os
 from absl import logging
 import torch
 from torch import distributed as dist
-# Direct all logs to stdout so kubectl logs can see them
-from torch_tpu._internal.utils import log_utils
 from examples.distributed.tensor_parallel.manual import model
 
 
-log_utils.log_to_stderr()
+logging.set_verbosity(logging.INFO)
 
 BATCH_SIZE = 64
 MODEL_DIM = 256
