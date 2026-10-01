@@ -94,6 +94,15 @@ def _new_xprof_session_id() -> int:
   return random.SystemRandom().randrange(1, _MAX_UINT64)
 
 
+# External background profilers or concurrent profiling sessions may collect
+# traces for up to 10 seconds while holding the process-wide
+# tsl::profiler::ProfilerLock. Retrying with a fresh XprofSession instance
+# allows the benchmark to wait out any transient lock contention and still
+# capture its own XSpace, device time, and XProf URL.
+_XPROF_START_MAX_ATTEMPTS = 15
+_XPROF_START_RETRY_DELAY_SECONDS = 1.0
+
+
 class XprofContext:
   """A context manager for Xprof sessions that logs the session URL.
 
@@ -122,9 +131,44 @@ class XprofContext:
     self.session_id = None
     self.xspace = None
 
+  def _start_session(
+      self,
+      *,
+      host_trace_level: int,
+      enable_python_tracer: bool,
+      kwargs: dict[str, str],
+  ):
+    """Creates and starts a new XprofSession."""
+    session = xprof_adapter.XprofSession()
+    try:
+      session.start_session(
+          host_trace_level=host_trace_level,
+          enable_python_tracer=enable_python_tracer,
+          host_cpu_profile=True,
+          response_max_bytes=_PROFILE_MAX_BYTES,
+          session_id=_new_xprof_session_id(),
+          **kwargs,
+      )
+    except TypeError:
+      # Older xprof builds do not accept an explicit session id. Sessions
+      # may then be shared between benchmarks, which affects only the URLs;
+      # the reported device time still comes from this process's own XSpace.
+      logging.warning(
+          "xprof start_session does not accept session_id; xprof links may"
+          " be shared between benchmarks.",
+          exc_info=True,
+      )
+      session.start_session(
+          host_trace_level=host_trace_level,
+          enable_python_tracer=enable_python_tracer,
+          host_cpu_profile=True,
+          response_max_bytes=_PROFILE_MAX_BYTES,
+          **kwargs,
+      )
+    return session
+
   def __enter__(self):
     if self.enable_xprof:
-      self.session = xprof_adapter.XprofSession()
       kwargs = {}
       host_trace_level = 3
       enable_python_tracer = True
@@ -132,31 +176,31 @@ class XprofContext:
         kwargs["trace_mode"] = "TRACE_ONLY_HOST"
         host_trace_level = 1
         enable_python_tracer = False
-      try:
-        self.session.start_session(
-            host_trace_level=host_trace_level,
-            enable_python_tracer=enable_python_tracer,
-            host_cpu_profile=True,
-            response_max_bytes=_PROFILE_MAX_BYTES,
-            session_id=_new_xprof_session_id(),
-            **kwargs,
-        )
-      except TypeError:
-        # Older xprof builds do not accept an explicit session id. Sessions may
-        # then be shared between benchmarks, which affects only the URLs; the
-        # reported device time still comes from this process's own XSpace.
-        logging.warning(
-            "xprof start_session does not accept session_id; xprof links may"
-            " be shared between benchmarks.",
-            exc_info=True,
-        )
-        self.session.start_session(
-            host_trace_level=host_trace_level,
-            enable_python_tracer=enable_python_tracer,
-            host_cpu_profile=True,
-            response_max_bytes=_PROFILE_MAX_BYTES,
-            **kwargs,
-        )
+      for attempt in range(1, _XPROF_START_MAX_ATTEMPTS + 1):
+        try:
+          self.session = self._start_session(
+              host_trace_level=host_trace_level,
+              enable_python_tracer=enable_python_tracer,
+              kwargs=kwargs,
+          )
+          break
+        except Exception as e:  # pylint: disable=broad-except
+          if (
+              "Another profiling session active" in str(e)
+              and attempt < _XPROF_START_MAX_ATTEMPTS
+          ):
+            logging.warning(
+                "xprof session for %s blocked by another active profiling"
+                " session (attempt %d/%d); retrying in %.1fs: %s",
+                self.name,
+                attempt,
+                _XPROF_START_MAX_ATTEMPTS,
+                _XPROF_START_RETRY_DELAY_SECONDS,
+                e,
+            )
+            time.sleep(_XPROF_START_RETRY_DELAY_SECONDS)
+          else:
+            raise
     return self
 
   def __exit__(self, exc_type, exc_val, exc_tb):

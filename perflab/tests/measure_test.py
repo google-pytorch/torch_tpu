@@ -500,6 +500,64 @@ class XprofContextTest(seed_test_utils.RepeatableTest):
       )
       self.assertEqual(ctx.session_id, "legacy")
 
+  def test_start_session_retries_with_fresh_session_when_another_session_active(
+      self,
+  ):
+    contended_session = mock.MagicMock()
+    contended_session.start_session.side_effect = RuntimeError(
+        "UNAVAILABLE: Another profiling session active."
+    )
+    active_session = mock.MagicMock()
+    sentinel_xspace = mock.MagicMock()
+    active_session.end_session_and_get_xspace_and_url.return_value = (
+        sentinel_xspace,
+        "http://xprof/?session_id=recovered_id",
+    )
+
+    with (
+        mock.patch.object(
+            measure_lib.xprof_adapter,
+            "XprofSession",
+            side_effect=[contended_session, active_session],
+        ) as mock_session_cls,
+        mock.patch.object(measure_lib.time, "sleep") as mock_sleep,
+    ):
+      with measure_lib.XprofContext(name="contended", enable_xprof=True) as ctx:
+        self.assertIs(ctx.session, active_session)
+
+      self.assertEqual(mock_session_cls.call_count, 2)
+      mock_sleep.assert_called_once_with(
+          measure_lib._XPROF_START_RETRY_DELAY_SECONDS
+      )
+      contended_session.end_session_and_get_xspace_and_url.assert_not_called()
+      active_session.end_session_and_get_xspace_and_url.assert_called_once()
+      self.assertEqual(ctx.session_id, "recovered_id")
+      self.assertIs(ctx.xspace, sentinel_xspace)
+
+  def test_start_session_raises_after_exhausting_retries(self):
+    with (
+        mock.patch.object(
+            measure_lib.xprof_adapter, "XprofSession"
+        ) as mock_session_cls,
+        mock.patch.object(measure_lib.time, "sleep") as mock_sleep,
+    ):
+      mock_session_cls.return_value.start_session.side_effect = RuntimeError(
+          "UNAVAILABLE: Another profiling session active."
+      )
+
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=benchmark
+          RuntimeError, "Another profiling session active"
+      ):
+        with measure_lib.XprofContext(name="contended", enable_xprof=True):
+          pass
+
+      self.assertEqual(
+          mock_session_cls.call_count, measure_lib._XPROF_START_MAX_ATTEMPTS
+      )
+      self.assertEqual(
+          mock_sleep.call_count, measure_lib._XPROF_START_MAX_ATTEMPTS - 1
+      )
+
 
 class MeasureWarmupXprofTest(seed_test_utils.RepeatableTest):
 
