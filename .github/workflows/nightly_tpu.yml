@@ -32,9 +32,10 @@ on:
       - main
     types: [opened, synchronize, reopened, labeled]
   schedule:
-    # Stagger schedule to 45 past the hour to avoid contention with other 4-hour workflows.
-    # Run every 4 hours every day. Scheduled workflows run in UTC by default.
-    - cron: "45 */4 * * *"
+    # Stagger schedule to 15 past the hour to avoid contention with other nightly workflows.
+    # Run once daily at 22:15 America/Los_Angeles.
+    - cron: "15 22 * * *"
+      timezone: "America/Los_Angeles"
 
 permissions:
   contents: read
