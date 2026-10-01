@@ -6075,6 +6075,21 @@ Supported combinations for non-constant padding:
     ):
       torch.baddbmm(input_tensor, batch1, batch2, out=out)
 
+  def test_baddbmm_input_not_broadcastable(self):
+    input_tensor = torch.ones(5, 5, device=et.device())
+    batch1 = torch.ones(2, 3, 4, device=et.device())
+    batch2 = torch.ones(2, 4, 6, device=et.device())
+    out = torch.empty(2, 3, 6, device=et.device())
+
+    for beta in [0.0, 1.0]:
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""baddbmm(): input tensor shape [5, 5] cannot be broadcasted to matmul result shape [2, 3, 6]""",
+          gpu="""The expanded size of the tensor (6) must match the existing size (5) at non-singleton dimension 2.  Target sizes: [2, 3, 6].  Tensor sizes: [5, 5]""",
+          message_reviewed_by="adivinpatel",
+      ):
+        torch.baddbmm(input_tensor, batch1, batch2, beta=beta, out=out)
+
   @_parameterize_convolution_fwd_bwd(
       forward={
           "tpu_fn": "convolution",

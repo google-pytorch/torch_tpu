@@ -93,6 +93,15 @@ absl::Status ValidateBaddbmmInputs(const at::Tensor& self,
       << ToString(batch2.sizes()) << "), got " << batch1.size(2) << " vs "
       << batch2.size(1);
 
+  Dimensions output_dims = {batch1.size(0), batch1.size(1), batch2.size(2)};
+  absl::StatusOr<Dimensions> broadcast_shape =
+      InferSize(self.sizes(), output_dims);
+  TT_RET_CHECK(broadcast_shape.ok() && *broadcast_shape == output_dims,
+               error::kInvalidArgument)
+      << "input tensor shape " << ToString(self.sizes())
+      << " cannot be broadcasted to matmul result shape "
+      << ToString(output_dims);
+
   return absl::OkStatus();
 }
 
