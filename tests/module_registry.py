@@ -2356,15 +2356,21 @@ def _generate_transformers_inputs(
       input_kwargs.pop("pixel_values", None)
 
     if "videomae" in type_str:
-      patch_size = _safe_int(config.get("patch_size"), default=16, min_val=1)
-      tubelet_size = _safe_int(config.get("tubelet_size"), default=2, min_val=1)
-      num_frames = _safe_int(config.get("num_frames"), default=8, min_val=1)
-      num_patches = ((image_size // patch_size) ** 2) * (
-          num_frames // tubelet_size
-      )
-      input_kwargs["bool_masked_pos"] = torch.zeros(
-          (batch_size, num_patches), device=device, dtype=torch.bool
-      )
+      if "videoclassification" not in type_str:
+        patch_size = _safe_int(config.get("patch_size"), default=16, min_val=1)
+        tubelet_size = _safe_int(
+            config.get("tubelet_size"), default=2, min_val=1
+        )
+        num_frames = _safe_int(config.get("num_frames"), default=8, min_val=1)
+        num_patches = ((image_size // patch_size) ** 2) * (
+            num_frames // tubelet_size
+        )
+        num_masked = max(1, num_patches // 2)
+        mask = torch.zeros(
+            (batch_size, num_patches), device=device, dtype=torch.bool
+        )
+        mask[:, :num_masked] = True
+        input_kwargs["bool_masked_pos"] = mask
 
     if "vitpose" in type_str:
       input_kwargs["dataset_index"] = torch.tensor(

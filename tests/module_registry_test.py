@@ -1278,6 +1278,22 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         self.assertIn("bool_masked_pos", inputs)
         expected_patches = ((224 // 16) ** 2) * (16 // 2)
         self.assertEqual(inputs["bool_masked_pos"].shape, (1, expected_patches))
+        self.assertTrue(torch.any(inputs["bool_masked_pos"]))
+        self.assertFalse(torch.all(inputs["bool_masked_pos"]))
+
+  def test_transformers_videomae_classification_no_mask(self):
+    mock_cfg = mock.MagicMock()
+    mock_cfg.model_type = "videomae"
+    mock_cfg.architectures = ["VideoMAEForVideoClassification"]
+    mock_cfg.num_frames = 16
+    mock_cfg.image_size = 224
+    mock_cfg.patch_size = 16
+    mock_cfg.tubelet_size = 2
+    inputs = module_registry._generate_transformers_inputs(
+        mock_cfg, module_registry.Modality.VISION
+    )
+    self.assertIn("pixel_values", inputs)
+    self.assertNotIn("bool_masked_pos", inputs)
 
   def test_transformers_audio_3d_codecs_tensor_generation(self):
     codecs = [
