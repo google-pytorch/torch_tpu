@@ -511,6 +511,11 @@ ACCURACY_OVERRIDES_VS_GPU = {
     "nn.functional.group_norm": {
         torch.bfloat16: {"rtol": 3.3e-2, "atol": 8e-2},
     },
+    "nn.functional.scaled_dot_product_attention": {
+        torch.bfloat16: {"rtol": 3.3e-1, "atol": 4e-1},
+        torch.float16: {"rtol": 5e-1, "atol": 5.4e-1},
+        torch.float32: {"rtol": 5.6e-1, "atol": 5.6e-1},
+    },
     "norm": {
         torch.complex64: {"rtol": 5.7e-6},
         torch.float32: {"rtol": 5.7e-6},
@@ -985,6 +990,12 @@ ACCURACY_OVERRIDES_GRAD_VS_GPU: dict[
         },
         "nn.functional.pdist": {
             torch.float32: {"rtol": 1.5e-5, "atol": 2.6e-5},
+        },
+        "nn.functional.scaled_dot_product_attention": {
+            torch.bfloat16: {"rtol": 8.1e-1, "atol": 1.8},
+            torch.float16: {"rtol": 2.7e-1, "atol": 2.5e-1},
+            torch.float32: {"rtol": 6.2e-1, "atol": 3.2},
+            torch.float64: {"rtol": 6e-6, "atol": 7.7e-6},
         },
         "nn.functional.softplus": {
             torch.float16: {"rtol": 1.5e-3, "atol": 1.3e-4},
@@ -3203,11 +3214,6 @@ class TestOps(op_testing.OpInfoTestBase):
         + COMPLEX_DTYPES,
     )
 
-  # TODO(b/535650392): Re-enable this testin OS once the bug is fixed.
-  # TODO: b/476147793 association of (inputs, outputs) pairs with the op name
-  # and dtype only causes comparison of outputs of different tests.
-  @op_testing.skip_if_torch_tpu_vs_gpu_mode
-  @oss_utils.skip_in_oss()
   def test_nn_functional_scaled_dot_product_attention_math(self):
     # Force the MATH backend for both CPU and TPU.
     with attention.sdpa_kernel(attention.SDPBackend.MATH):
@@ -3216,49 +3222,33 @@ class TestOps(op_testing.OpInfoTestBase):
           exclude_dtypes=(torch.uint8, torch.int8, torch.int16),
       )
 
-  # TODO(b/535650392): Re-enable this testin OS once the bug is fixed.
-  # TODO: b/476147793 association of (inputs, outputs) pairs with the op name
-  # and dtype only causes comparison of outputs of different tests.
-  @op_testing.skip_if_torch_tpu_vs_gpu_mode
-  @oss_utils.skip_in_oss()
   def test_nn_functional_scaled_dot_product_attention_overrideable(self):
-    # TODO: b/476166586 change the SDP backend for GPU device. It doesn't
-    # support `OVERRIDEABLE`, so it fails unconditionally.
-    #
-    # Use OVERRIDEABLE backend for TPU, MATH for CPU.
+    # b/476166586: GPU device doesn't support `OVERRIDEABLE`, so use `MATH` on
+    # GPU when generating goldens. On TPU, use `OVERRIDEABLE`.
     # Only do the forward pass (backward is not implemented yet)
+    backends = (
+        [attention.SDPBackend.MATH]
+        if op_testing._gen_gpu_golden_mode()
+        else [attention.SDPBackend.OVERRIDEABLE, attention.SDPBackend.MATH]
+    )
     with attention.sdpa_kernel(
-        [attention.SDPBackend.OVERRIDEABLE, attention.SDPBackend.MATH],
+        backends,
         set_priority=True,
     ):
       self.do_test_op(
           "nn.functional.scaled_dot_product_attention",
       )
 
-  # TODO(b/535650392): Re-enable this testin OS once the bug is fixed.
-  # TODO: b/476147793 association of (inputs, outputs) pairs with the op name
-  # and dtype only causes comparison of outputs of different tests.
-  @op_testing.skip_if_torch_tpu_vs_gpu_mode
-  @oss_utils.skip_in_oss()
-  def test_nn_functional_scaled_dot_product_attention_efficient(self):
-    # Use EFFICIENT_ATTENTION backend for TPU, and MATH for CPU.
-    with attention.sdpa_kernel(
-        [attention.SDPBackend.EFFICIENT_ATTENTION, attention.SDPBackend.MATH],
-        set_priority=True,
-    ):
-      self.do_test_op(
-          "nn.functional.scaled_dot_product_attention",
-      )
-
-  # TODO(b/535650392): Re-enable this testin OS once the bug is fixed.
-  # TODO: b/476147793 association of (inputs, outputs) pairs with the op name
-  # and dtype only causes comparison of outputs of different tests.
-  @op_testing.skip_if_torch_tpu_vs_gpu_mode
-  @oss_utils.skip_in_oss()
   def test_nn_functional_scaled_dot_product_attention_flash(self):
-    # Use FLASH_ATTENTION backend for TPU, and MATH for CPU.
+    # Use CUDNN_ATTENTION on GPU when generating goldens, and FLASH_ATTENTION
+    # for TPU (with MATH fallback).
+    backends = (
+        [attention.SDPBackend.CUDNN_ATTENTION, attention.SDPBackend.MATH]
+        if op_testing._gen_gpu_golden_mode()
+        else [attention.SDPBackend.FLASH_ATTENTION, attention.SDPBackend.MATH]
+    )
     with attention.sdpa_kernel(
-        [attention.SDPBackend.FLASH_ATTENTION, attention.SDPBackend.MATH],
+        backends,
         set_priority=True,
     ):
       self.do_test_op(
