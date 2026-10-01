@@ -41,7 +41,7 @@ Hugging Face `transformers` implementation
 
 ```python
 # Instantiate Hugging Face Gemma4 reference model (transformers v5.10)
-config_path = model_configs.create_path_for_model_id("google/gemma-4-e2b")
+config_path = os.path.join(os.path.dirname(__file__), "config.json")
 config = transformers.AutoConfig.from_pretrained(config_path)
 model_hf = transformers.AutoModelForCausalLM.from_config(config)
 ```

@@ -97,6 +97,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "gemma4_hf_example",
     srcs = ["gemma4_hf_example.py"],
+    data = ["config.json"],
     nopresubmit = "slow example",
     shuffle_tests = False,  # This script doesn't understand --test_randomize_ordering_seed.
     tags = [
@@ -107,7 +108,6 @@ torch_tpu_py_test(
     ],
     deps = [
         "//examples:paths",
-        "//perflab/huggingface_transformers:model_configs",
         "//shims/absl_py:app",
         "//shims/absl_py/flags",
         "//shims/absl_py/logging",

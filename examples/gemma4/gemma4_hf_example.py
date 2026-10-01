@@ -14,6 +14,8 @@
 
 """Example use of HuggingFace Gemma4 E2B model baseline on TorchTPU."""
 
+import os
+
 from absl import app
 from absl import flags
 from absl import logging
@@ -21,13 +23,13 @@ import torch
 import torch_tpu
 from torch_tpu._internal.utils import log_utils
 from examples import paths
-from torch_tpu.perflab.huggingface_transformers import model_configs
 import transformers
 
 log_utils.log_to_stderr()
 
 MODEL_ID = "google/gemma-4-e2b"
 MODEL_PATH = f"{paths.XM_HOME}weights/huggingface/{MODEL_ID}"
+CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.json")
 
 _LOAD_PRETRAINED_WEIGHTS = flags.DEFINE_bool(
     "load_pretrained_weights",
@@ -39,7 +41,7 @@ _LOAD_PRETRAINED_WEIGHTS = flags.DEFINE_bool(
 
 def create_gemma4_e2b_hf_model():
   """Creates a HuggingFace Gemma-4-E2B baseline model from the full model config."""
-  config_path = model_configs.create_path_for_model_id(MODEL_ID)
+  config_path = CONFIG_PATH if os.path.exists(CONFIG_PATH) else MODEL_ID
   config = transformers.AutoConfig.from_pretrained(config_path)
   model = transformers.AutoModelForCausalLM.from_config(config)
   return config, model
