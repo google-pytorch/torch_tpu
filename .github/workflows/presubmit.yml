@@ -128,48 +128,12 @@ jobs:
           extra_bazel_flags: ${{ matrix.job_info.extra_flags }}
           test_all: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
 
-  # Reads the RBE opt-in once so every job that needs it gets the same answer.
-  # A PR opts in with the `ci:rbe-presubmit` label or an `RBE_PRESUBMIT=1` line
-  # in its head commit message, which Copybara adds from the CL tag (see
-  # _forward_rbe_presubmit_tag in copy.bara.sky). Labels are read when the event
-  # fires, so a label added after the push needs a new push or a dispatch with
-  # `run_rbe_presubmit`.
-  decide:
-    name: "Decide RBE opt-in"
-    runs-on: ubuntu-latest
-    outputs:
-      rbe: ${{ steps.decide.outputs.rbe }}
-    steps:
-      - name: Check RBE opt-in
-        id: decide
-        env:
-          GH_TOKEN: ${{ github.token }}
-          DISPATCH_OPT_IN: ${{ inputs.run_rbe_presubmit }}
-          SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          HAS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'ci:rbe-presubmit') }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          rbe=false
-          if [[ "$DISPATCH_OPT_IN" == "true" ]]; then
-            rbe=true
-          elif [[ "$SAME_REPO" == "true" ]]; then
-            if [[ "$HAS_LABEL" == "true" ]] || (( ${PR_NUMBER:-1} % 10 == 0 )); then
-              rbe=true
-            else
-              msg="$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA" --jq .commit.message)"
-              if grep -qx 'RBE_PRESUBMIT=1' <<< "$msg"; then
-                rbe=true
-              fi
-            fi
-          fi
-          echo "rbe=$rbe" | tee -a "$GITHUB_OUTPUT"
-
+  # Shadow run that doesn't gate submit. Runs on every same-repo PR, never on
+  # fork PRs, and on workflow_dispatch only when `run_rbe_presubmit` is set.
   rbe_presubmit:
     name: "Presubmit on RBE"
     timeout-minutes: 120
-    needs: decide
-    if: needs.decide.outputs.rbe == 'true'
+    if: inputs.run_rbe_presubmit || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: linux-x86-n4-16
     container:
       image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:30a9cf2ed330736957b3256dd3df69a13a556ae46626e9ad2ba205fa7a3c0051"  # Tag infrastructure-public-image-f0ac56f68949 (built 2026-09-21)
