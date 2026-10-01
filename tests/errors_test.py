@@ -13153,9 +13153,13 @@ Device-side assertion tracking was not enabled by user.""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""_get_next_stream_id(): expected device index to be in range [0, 8), got 8""",
-        gpu="""CUDA error: invalid device ordinal
-GPU device may be out of range, do you have enough GPUs?
-Device-side assertion tracking was not enabled by user.""",
+        # When built with CUDA 12.9 or newer, PyTorch appends the CUDA driver's
+        # log, which mentions the number of GPUs on the machine.
+        gpu=re.compile(
+            r"CUDA error: invalid device ordinal\n"
+            r"GPU device may be out of range,.*",
+            re.DOTALL,
+        ),
         message_reviewed_by="wan",
     ):
       Stream(8)
