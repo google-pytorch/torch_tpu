@@ -8629,6 +8629,19 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       torch.linalg.lu_factor_ex(a, out=(lu, pivots, info))
 
+  def test_linalg_lu_factor_ex_cpu_out_tensor(self):
+    a = torch.eye(3, device=et.device(), dtype=torch.float32)
+    lu_cpu = torch.zeros(3, 3, device="cpu", dtype=torch.float32)
+    pivots_cpu = torch.zeros(3, device="cpu", dtype=torch.int32)
+    info_cpu = torch.zeros((), device="cpu", dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_lu_factor_ex(): expected all tensors to be on tpu, got cpu""",
+        gpu="""Expected out tensor to have device cuda:0, but got cpu instead""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.linalg.lu_factor_ex(a, out=(lu_cpu, pivots_cpu, info_cpu))
+
   def test_linalg_lu_solve_out_dtype_mismatch(self):
     a = torch.randn(3, 3, device=et.device(), dtype=torch.float32)
     b = torch.randn(3, 1, device=et.device(), dtype=torch.float32)

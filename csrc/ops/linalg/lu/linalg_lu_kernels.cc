@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <string_view>
 #include <tuple>
 #include <utility>
 
@@ -41,6 +42,7 @@
 #include "c10/core/ScalarType.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/device_type.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -193,6 +195,13 @@ absl::Status ApplyPivotsInPlace(at::Tensor& tensor, const at::Tensor& pivots,
   return absl::OkStatus();
 }
 
+absl::Status ValidateLuDevice(const at::Tensor& tensor) {
+  TT_RET_CHECK(IsPrivateUse1Device(tensor), error::kInvalidArgument)
+      << "expected all tensors to be on " << GetPrivateUse1DeviceDebugName()
+      << ", got " << tensor.device();
+  return absl::OkStatus();
+}
+
 }  // namespace
 
 std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLinalgLuFactorExOut(
@@ -203,6 +212,10 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLinalgLuFactorExOut(
       (a, pivot, IgnoreInCacheKey(check_errors, "Doesn't affect SHLO"), lu,
        pivots, info),
       {
+        TT_THROW_IF_ERROR(ValidateLuDevice(a));
+        TT_THROW_IF_ERROR(ValidateLuDevice(lu));
+        TT_THROW_IF_ERROR(ValidateLuDevice(pivots));
+        TT_THROW_IF_ERROR(ValidateLuDevice(info));
         TT_CHECK_THROW(pivot, error::kInvalidArgument)
             << "non-pivoting decomposition is not supported";
         TT_CHECK_THROW(a.dim() >= 2, error::kInvalidArgument)
