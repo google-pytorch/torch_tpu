@@ -2837,6 +2837,18 @@ Device-side assertion tracking was not enabled by user.""",
     with et.assert_raises_message(RuntimeError, gpu=gpu_msg, tpu=tpu_msg):
       torch.addmm(input_, mat1, mat2, out=out)
 
+  def test_addmm_mismatched_input_dtypes(self):
+    input_ = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+    mat1 = torch.ones(2, 2, device=et.device(), dtype=torch.bfloat16)
+    mat2 = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+    out = torch.empty(2, 2, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""mat1 and mat2 must have the same dtype, but got BFloat16 and Float""",
+        tpu="""addmm(): expected input dtypes to be the same, got: self=float32, mat1=bfloat16, mat2=float32""",
+    ):
+      torch.addmm(input_, mat1, mat2, out=out)
+
   def test_addmm_outdtype_must_match_out_dtype(self):
     input_ = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
     out = torch.empty(2, 2, device=et.device(), dtype=torch.float32)

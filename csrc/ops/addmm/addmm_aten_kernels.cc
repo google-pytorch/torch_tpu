@@ -141,6 +141,13 @@ absl::StatusOr<mlir::ElementType> ValidateAddmmInputsAndGetOutputDtype(
                    alpha.scalar().type() != at::kComplexDouble,
                error::kPythonNotImplementedError)
       << "complex dtypes are not yet supported";
+  TT_RET_CHECK(self.scalar_type() == mat1.scalar_type() &&
+                   mat1.scalar_type() == mat2.scalar_type(),
+               error::kInvalidArgument)
+      << "expected input dtypes to be the same, got: self="
+      << ToString(self.scalar_type())
+      << ", mat1=" << ToString(mat1.scalar_type())
+      << ", mat2=" << ToString(mat2.scalar_type());
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=PyTorch prevents non-matrix mat1.
       mat1.dim() == 2, error::kInvalidArgument)
       << "expected mat1 to be a matrix, got " << mat1.dim() << "-D tensor";
