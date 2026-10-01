@@ -14,7 +14,10 @@
  * limitations under the License.
  */
 
+#include <cstdint>
+#include <limits>
 #include <optional>
+#include <string_view>
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
@@ -29,10 +32,12 @@
 #include "c10/util/OptionalArrayRef.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/device_type.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
+#include "csrc/common/to_string.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/ops/linalg/vector_norm/pnorm.h"
 #include "csrc/ops/macros/kernel.h"
@@ -48,6 +53,52 @@
 namespace torch_tpu {
 
 namespace {
+
+absl::Status ValidateLinalgVectorNormInputs(const at::Tensor& self,
+                                            const at::Scalar& ord,
+                                            at::OptionalIntArrayRef dim,
+                                            std::optional<at::ScalarType> dtype,
+                                            const at::Tensor& out) {
+  TT_RET_CHECK(IsPrivateUse1Device(self) && IsPrivateUse1Device(out),
+               error::kInvalidArgument)
+      << "expected self and out tensors to be on "
+      << GetPrivateUse1DeviceDebugName() << ", got " << self.device() << " and "
+      << out.device();
+  TT_RET_CHECK(IsFloatingPoint(self) || IsComplex(self),
+               error::kInvalidArgument)
+      << "expected self dtype to be floating point or complex, got "
+      << ToString(self.scalar_type());
+  TT_RET_CHECK(!ord.isComplex(), error::kInvalidArgument)
+      << "expected a non-complex scalar as the order of norm, got "
+      << ToString(ord.type());
+
+  if (dtype.has_value()) {
+    const at::ScalarType target_dtype = *dtype;
+    const bool valid_target_dtype =
+        (c10::isFloatingType(target_dtype) || IsComplex(target_dtype)) &&
+        IsComplex(self) == IsComplex(target_dtype) &&
+        c10::promoteTypes(self.scalar_type(), target_dtype) == target_dtype;
+    TT_RET_CHECK(valid_target_dtype, error::kInvalidArgument)
+        << "expected input dtype " << ToString(self.scalar_type())
+        << " to be convertible without narrowing to matching real/complex "
+           "floating-point dtype, got "
+        << ToString(target_dtype);
+  }
+
+  const double ord_val = ord.toDouble();
+  if (self.numel() == 0 &&
+      (ord_val < 0.0 || ord_val == std::numeric_limits<double>::infinity())) {
+    TT_ASSIGN_OR_RETURN(const Dimensions canonical_dims,
+                        CanonicalizeDims(self, dim));
+    for (const int64_t d : canonical_dims) {
+      TT_RET_CHECK(self.size(d) != 0, error::kInvalidArgument)
+          << "cannot compute the " << ord_val
+          << " norm on an empty tensor or dimension because the operation "
+             "does not have an identity";
+    }
+  }
+  return absl::OkStatus();
+}
 
 absl::Status PNormOut(const at::Tensor& self, MaybePromotedScalar& promoted_ord,
                       double ord, at::OptionalIntArrayRef dim, bool keepdim,
@@ -97,6 +148,8 @@ at::Tensor& AtenLinalgVectorNormOut(const at::Tensor& self,
         // ord == -inf, min(abs(x))
         // ord == 0, sum(x != 0), count nonzero
         // ord == int or float, sum(abs(x)^{ord})^{(1 / ord)}
+        TT_THROW_IF_ERROR(
+            ValidateLinalgVectorNormInputs(self, ord, dim, dtype, out));
 
         const at::ScalarType expected_dtype =
             c10::toRealValueType(dtype.value_or(self.scalar_type()));

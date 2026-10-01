@@ -7029,6 +7029,55 @@ Supported combinations for non-constant padding:
     ):
       torch.linalg.vector_norm(x, out=out)
 
+  def test_linalg_vector_norm_out_invalid_inputs(self):
+    x_f32 = torch.ones(3, device=et.device(), dtype=torch.float32)
+    out_f32 = torch.empty((), device=et.device(), dtype=torch.float32)
+
+    out_cpu = torch.empty((), device="cpu", dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_vector_norm(): expected self and out tensors to be on tpu, got tpu:0 and cpu""",
+        gpu="""Expected out tensor to have device cuda:0, but got cpu instead""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.linalg.vector_norm(x_f32, ord=0, out=out_cpu)
+
+    x_i32 = torch.ones(3, device=et.device(), dtype=torch.int32)
+    out_i32 = torch.empty((), device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_vector_norm(): expected self dtype to be floating point or complex, got int32""",
+        gpu="""linalg.vector_norm: Expected a floating point or complex tensor as input. Got Int""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.linalg.vector_norm(x_i32, ord=0, out=out_i32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_vector_norm(): expected a non-complex scalar as the order of norm, got complex128""",
+        gpu="""linalg.vector_norm: Expected a non-complex scalar as the order of norm.""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.linalg.vector_norm(x_f32, ord=complex(0, 0), out=out_f32)
+
+    out_bf16 = torch.empty((), device=et.device(), dtype=torch.bfloat16)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_vector_norm(): expected input dtype float32 to be convertible without narrowing to matching real/complex floating-point dtype, got bfloat16""",
+        gpu="""linalg.vector_norm: the dtype of the input (Float) should be convertible without narrowing to the specified dtype (BFloat16)""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.linalg.vector_norm(x_f32, ord=2, dtype=torch.bfloat16, out=out_bf16)
+
+    x_empty = torch.empty((0,), device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_vector_norm(): cannot compute the inf norm on an empty tensor or dimension because the operation does not have an identity""",
+        gpu="""linalg.vector_norm cannot compute the inf norm on an empty tensor because the operation does not have an identity""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.linalg.vector_norm(x_empty, ord=float("inf"), out=out_f32)
+
   def test_norm_out_dtype_mismatch(self):
     x = torch.ones(5, device=et.device(), dtype=torch.float32)
     out = torch.empty(5, dtype=torch.float64, device=et.device())
