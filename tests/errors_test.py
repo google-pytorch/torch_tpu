@@ -6277,6 +6277,48 @@ Supported combinations for non-constant padding:
     ):
       _run_convolution_backward(grad, inp, w)
 
+  def test_convolution_zero_dimensions(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""convolution(): expected input channels to be non-zero, got shape [2, 0, 8, 8]""",
+        gpu="""Given groups=1, expected weight to be at least 1 at dimension 0, but got weight of size [0, 4, 3, 3] instead""",
+    ):
+      torch.nn.functional.conv_transpose2d(
+          torch.ones(2, 0, 8, 8, device=et.device()),
+          torch.ones(0, 4, 3, 3, device=et.device()),
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""convolution(): expected input spatial dimensions to be non-zero, got shape [2, 3, 0, 8]""",
+        gpu="""Only zero batch or zero channel inputs are supported, but got input shape: [2, 3, 0, 8]""",
+    ):
+      torch.nn.functional.conv2d(
+          torch.ones(2, 3, 0, 8, device=et.device()),
+          torch.ones(4, 3, 3, 3, device=et.device()),
+          padding=2,
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""convolution(): expected weight dimensions to be non-zero, got shape [0, 3, 3, 3]""",
+        gpu="""Given groups=1, expected weight to be at least 1 at dimension 0, but got weight of size [0, 3, 3, 3] instead""",
+    ):
+      torch.nn.functional.conv2d(
+          torch.ones(2, 3, 8, 8, device=et.device()),
+          torch.ones(0, 3, 3, 3, device=et.device()),
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""convolution(): expected weight dimensions to be non-zero, got shape [3, 0, 3, 3]""",
+        gpu="""non-empty 2D or 4D weight tensor expected, but got: [3, 0, 3, 3]""",
+    ):
+      torch.nn.functional.conv_transpose2d(
+          torch.ones(2, 3, 8, 8, device=et.device()),
+          torch.ones(3, 0, 3, 3, device=et.device()),
+      )
+
   @parameterized.named_parameters(
       {"testcase_name": "min", "op": torch.min, "op_name": "min"},
       {"testcase_name": "max", "op": torch.max, "op_name": "max"},

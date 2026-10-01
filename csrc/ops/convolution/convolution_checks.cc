@@ -16,6 +16,7 @@
 
 #include "csrc/ops/convolution/convolution_checks.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <string_view>
 
@@ -31,6 +32,14 @@ absl::Status ValidateConvolutionInput(absl::Span<const int64_t> input) {
       << "expected the input to have >= 3 dimensions of shape [batch, in "
          "channels, ... spatial dimensions ...], got shape "
       << ToString(input);
+  TT_RET_CHECK(input[1] != 0, error::kInvalidArgument)
+      << "expected input channels to be non-zero, got shape "
+      << ToString(input);
+  for (size_t i = 2; i < input.size(); ++i) {
+    TT_RET_CHECK(input[i] != 0, error::kInvalidArgument)
+        << "expected input spatial dimensions to be non-zero, got shape "
+        << ToString(input);
+  }
 
   return absl::OkStatus();
 }
@@ -75,6 +84,12 @@ absl::Status ValidateConvolutionWeight(absl::Span<const int64_t> weight,
         << ToString(weight) << " to be " << in_channels / groups << " ("
         << in_channels << " in channels divided by " << groups
         << " groups), got " << weight[1];
+  }
+
+  for (size_t d = 0; d < weight.size(); ++d) {
+    TT_RET_CHECK(weight[d] != 0, error::kInvalidArgument)
+        << "expected weight dimensions to be non-zero, got shape "
+        << ToString(weight);
   }
 
   return absl::OkStatus();
