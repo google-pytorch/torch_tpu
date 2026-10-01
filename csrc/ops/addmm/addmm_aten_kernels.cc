@@ -131,7 +131,7 @@ absl::StatusOr<mlir::ElementType> ValidateAddmmInputsAndGetOutputDtype(
       << "boolean dtypes are not supported";
   TT_RET_CHECK(
       mat1.numel() == 0 || mat2.numel() == 0 ||
-          (mat1.scalar_type() != at::kInt && mat1.scalar_type() != at::kLong),
+          !c10::isIntegralType(mat1.scalar_type(), /*includeBool=*/false),
       error::kPythonNotImplementedError)
       << "not implemented for " << ToString(mat1.scalar_type());
   TT_RET_CHECK(!self.is_complex() && !mat1.is_complex() && !mat2.is_complex() &&

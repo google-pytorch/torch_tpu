@@ -1267,31 +1267,16 @@ class TestOps(op_testing.OpInfoTestBase):
         # is OK (UNIMPLEMENTED: Converting from type C128 to type F32 is not
         # implemented.
         exclude_dtypes={
-            "cpu": COMPLEX_DTYPES + (torch.int32, torch.int64),
-            # TODO: make addmm fail for integral dtypes to match GPU.
-            "gpu": (
-                COMPLEX_DTYPES
-                + (
-                    torch.uint8,
-                    torch.int8,
-                    torch.int16,
-                )
-            ),
+            "cpu": COMPLEX_DTYPES + INTEGRAL_DTYPES,
+            "gpu": COMPLEX_DTYPES,
         },
         # TODO: XLA doesn't support complex dtypes currently. Fails with:
         # algebraic_simplifier.cc:584] Check failed: computation->Accept(this)
         # is OK (UNIMPLEMENTED: Converting from type C128 to type F32 is not
         # implemented.
         exclude_inplace_dtypes={
-            "cpu": COMPLEX_DTYPES + (torch.int32, torch.int64),
-            "gpu": (
-                COMPLEX_DTYPES
-                + (
-                    torch.uint8,
-                    torch.int8,
-                    torch.int16,
-                )
-            ),
+            "cpu": COMPLEX_DTYPES + INTEGRAL_DTYPES,
+            "gpu": COMPLEX_DTYPES,
         },
     )
 
