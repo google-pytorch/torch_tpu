@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -270,36 +271,43 @@ absl::Status ValidateLstmWeights(const at::TensorList params,
     for (int64_t d_dir = 0; d_dir < num_directions; ++d_dir) {
       const size_t p_offset =
           (l * num_directions + d_dir) * params_per_direction;
+      const std::string_view dir_str = (d_dir == 0) ? "forward" : "reverse";
+
       TT_RET_CHECK(
           params[p_offset].sizes() == at::IntArrayRef({4 * hidden, in_dim}),
           error::kInvalidArgument)
-          << "w_ih layer " << l << " dir " << d_dir << " expected shape ["
-          << 4 * hidden << ", " << in_dim << "], got "
-          << ToString(params[p_offset].sizes());
+          << "expected the input-hidden weight tensor of layer " << l << " ("
+          << dir_str << " direction) to have shape [" << 4 * hidden << ", "
+          << in_dim << "], got " << ToString(params[p_offset].sizes());
+
       TT_RET_CHECK(
           params[p_offset + 1].sizes() == at::IntArrayRef({4 * hidden, out_h}),
           error::kInvalidArgument)
-          << "w_hh layer " << l << " dir " << d_dir << " expected shape ["
-          << 4 * hidden << ", " << out_h << "], got "
-          << ToString(params[p_offset + 1].sizes());
+          << "expected the hidden-hidden weight tensor of layer " << l << " ("
+          << dir_str << " direction) to have shape [" << 4 * hidden << ", "
+          << out_h << "], got " << ToString(params[p_offset + 1].sizes());
+
       if (has_biases) {
         TT_RET_CHECK(
             params[p_offset + 2].sizes() == at::IntArrayRef({4 * hidden}),
             error::kInvalidArgument)
-            << "b_ih layer " << l << " dir " << d_dir << " expected shape ["
-            << 4 * hidden << "], got "
-            << ToString(params[p_offset + 2].sizes());
+            << "expected the input-hidden bias tensor of layer " << l << " ("
+            << dir_str << " direction) to have shape [" << 4 * hidden
+            << "], got " << ToString(params[p_offset + 2].sizes());
+
         TT_RET_CHECK(
             params[p_offset + 3].sizes() == at::IntArrayRef({4 * hidden}),
             error::kInvalidArgument)
-            << "b_hh layer " << l << " dir " << d_dir << " expected shape ["
-            << 4 * hidden << "], got "
-            << ToString(params[p_offset + 3].sizes());
+            << "expected the hidden-hidden bias tensor of layer " << l << " ("
+            << dir_str << " direction) to have shape [" << 4 * hidden
+            << "], got " << ToString(params[p_offset + 3].sizes());
+
         if (proj_size > 0) {
           TT_RET_CHECK(params[p_offset + 4].sizes() ==
                            at::IntArrayRef({proj_size, hidden}),
                        error::kInvalidArgument)
-              << "w_hr layer " << l << " dir " << d_dir << " expected shape ["
+              << "expected the recurrent projection weight tensor of layer "
+              << l << " (" << dir_str << " direction) to have shape ["
               << proj_size << ", " << hidden << "], got "
               << ToString(params[p_offset + 4].sizes());
         }
@@ -308,7 +316,8 @@ absl::Status ValidateLstmWeights(const at::TensorList params,
           TT_RET_CHECK(params[p_offset + 2].sizes() ==
                            at::IntArrayRef({proj_size, hidden}),
                        error::kInvalidArgument)
-              << "w_hr layer " << l << " dir " << d_dir << " expected shape ["
+              << "expected the recurrent projection weight tensor of layer "
+              << l << " (" << dir_str << " direction) to have shape ["
               << proj_size << ", " << hidden << "], got "
               << ToString(params[p_offset + 2].sizes());
         }

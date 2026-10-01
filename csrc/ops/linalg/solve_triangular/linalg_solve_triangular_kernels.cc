@@ -54,12 +54,12 @@ absl::Status ValidateDimensions(const at::Tensor& a, const at::Tensor& b,
       << "expected the two inputs to have the same number of dimensions, got "
       << a.dim() << " and " << b.dim();
   TT_RET_CHECK(left || a.size(-1) == b.size(-1), error::kInvalidArgument)
-      << "left == False means we are solving X * A = B; expected the two "
-         "inputs to have matching last dimension, got "
+      << "expected the two inputs to have matching last dimension (left == "
+         "False means we are solving X * A = B), got "
       << a.size(-1) << " and " << b.size(-1);
   TT_RET_CHECK(!left || a.size(-2) == b.size(-2), error::kInvalidArgument)
-      << "left == True means we are solving A * X = B; expected the two "
-         "inputs to have matching second to last dimension, got "
+      << "expected the two inputs to have matching second to last dimension "
+         "(left == True means we are solving A * X = B), got "
       << a.size(-2) << " and " << b.size(-2);
   return absl::OkStatus();
 }

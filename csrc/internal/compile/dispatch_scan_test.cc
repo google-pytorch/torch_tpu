@@ -528,8 +528,8 @@ TEST_F(DispatchScanTest, CpuTensorInputsError) {
                    {dummy_output}, /*num_scan_inputs=*/1);
   };
   EXPECT_THAT(create_scan_op,
-              Throws<TtError>(Property(
-                  &TtError::what, HasSubstr("tensor is expected to be on"))));
+              Throws<TtError>(Property(&TtError::what,
+                                       HasSubstr("expected tensor to be on"))));
 }
 
 TEST_F(DispatchScanTest, InvalidMlirModuleError) {

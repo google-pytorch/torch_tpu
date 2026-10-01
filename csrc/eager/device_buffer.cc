@@ -132,7 +132,7 @@ absl::Status DeviceBufferList::Data::SetAsPendingMaterialization() {
 absl::Status DeviceBufferList::Data::SetMaterializationError(
     absl::Status status) {
   TT_RET_CHECK(!status.ok(), error::kInvalidArgument)
-      << "can only set a materialization error with a non-OK status. Got: "
+      << "expected non-OK status when setting a materialization error, got "
       << status;
 
   TT_RETURN_IF_ERROR(SetAsPendingMaterialization());

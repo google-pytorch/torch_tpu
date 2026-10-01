@@ -315,6 +315,33 @@ def _get_grid_sampler_inputs(dims: int) -> tuple[torch.Tensor, torch.Tensor]:
   return (inp, grid)
 
 
+def _get_lstm_inputs():
+  """Creates the inputs for the PyTorch LSTM native function."""
+  device = et.device()
+  x = torch.randn(10, 3, 16, device=device)
+  h0 = torch.randn(1, 3, 32, device=device)
+  c0 = torch.randn(1, 3, 32, device=device)
+  w_ih = torch.randn(128, 16, device=device)
+  w_hh = torch.randn(128, 32, device=device)
+  b_ih = torch.randn(128, device=device)
+  b_hh = torch.randn(128, device=device)
+  params = [w_ih, w_hh, b_ih, b_hh]
+  return x, [h0, c0], params
+
+
+def _get_gru_inputs():
+  """Creates the inputs for the PyTorch GRU native function."""
+  device = et.device()
+  x = torch.randn(10, 3, 16, device=device)
+  h0 = torch.randn(1, 3, 32, device=device)
+  w_ih = torch.randn(96, 16, device=device)
+  w_hh = torch.randn(96, 32, device=device)
+  b_ih = torch.randn(96, device=device)
+  b_hh = torch.randn(96, device=device)
+  params = [w_ih, w_hh, b_ih, b_hh]
+  return x, h0, params
+
+
 class TpuVsGpuErrorTest(et.ErrorTestBase):
   """Tests error messages on TPU vs on GPU."""
 
@@ -799,7 +826,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     b = torch.ones(2, 2, 3, device=et.device(), dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""linalg_solve_triangular(): left == False means we are solving X * A = B; expected the two inputs to have matching last dimension, got 2 and 3""",
+        tpu="""linalg_solve_triangular(): expected the two inputs to have matching last dimension (left == False means we are solving X * A = B), got 2 and 3""",
         gpu="""linalg.solve_triangular: Incompatible shapes of A and B for the equation XA = B (2x2 and 2x3)""",
     ):
       torch.linalg.solve_triangular(
@@ -812,7 +839,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     b = torch.ones(2, 3, 2, device=et.device(), dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""linalg_solve_triangular(): left == True means we are solving A * X = B; expected the two inputs to have matching second to last dimension, got 2 and 3""",
+        tpu="""linalg_solve_triangular(): expected the two inputs to have matching second to last dimension (left == True means we are solving A * X = B), got 2 and 3""",
         gpu="""linalg.solve_triangular: Incompatible shapes of A and B for the equation AX = B (2x2 and 3x2)""",
     ):
       torch.linalg.solve_triangular(
@@ -6474,7 +6501,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""linalg_lu_factor_ex(): input tensor expected to have at least 2 dimensions, got 1""",
+        tpu="""linalg_lu_factor_ex(): expected input tensor to have at least 2 dimensions, got 1""",
         gpu="""torch.lu_factor: Expected tensor with 2 or more dimensions. Got size: [4] instead""",
     ):
       torch.linalg.lu_factor_ex(a, out=out)
@@ -12068,7 +12095,7 @@ Device-side assertion tracking was not enabled by user.""",
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""add(): the out tensor is expected to be on tpu, got cpu""",
+        tpu="""add(): expected out tensor to be on tpu, got cpu""",
         gpu="""Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!""",
         message_reviewed_by="wan",
     ):
@@ -12153,7 +12180,7 @@ Device-side assertion tracking was not enabled by user.""",
     out = torch.ones(5, device=et.device(), dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""masked_select(): tensor is expected to be on tpu, got cpu""",
+        tpu="""masked_select(): expected tensor to be on tpu, got cpu""",
         gpu="""Expected all tensors to be on the same device, but got self is on cpu, different from other tensors on cuda:0 (when checking argument in method wrapper_CUDA_out_masked_select_out)""",
         message_reviewed_by="wan",
     ):
@@ -13242,6 +13269,179 @@ Device-side assertion tracking was not enabled by user.""",
         gpu="""slice step must be positive""",
     ):
       torch.ops.aten.slice_backward(grad, [4], 0, 0, 2, 0)
+
+  def test_gru_input_w_ih_shape_mismatch(self):
+    """Verifies that mismatched w_ih shape raises RuntimeError.
+
+    What is being tested:
+      - Providing w_ih with shape [95, 16] instead of expected [96, 16] (3 *
+      hidden).
+    """
+    x, hx, params = _get_gru_inputs()
+    w_ih_bad = torch.randn(95, 16, device=et.device())
+    bad_params = [w_ih_bad, params[1], params[2], params[3]]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gru(): expected the input-hidden weight tensor of layer 0 (forward direction) to have shape [96, 16], got [95, 16]""",
+        gpu="""shape '[1536, 1]' is invalid for input of size 1520""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.gru.input(
+          x, hx, bad_params, True, 1, 0.0, False, False, False
+      )
+
+  def test_gru_input_w_hh_shape_mismatch(self):
+    """Verifies that mismatched w_hh shape raises RuntimeError.
+
+    What is being tested:
+      - Providing w_hh with shape [96, 31] instead of expected [96, 32].
+    """
+    x, hx, params = _get_gru_inputs()
+    w_hh_bad = torch.randn(96, 31, device=et.device())
+    bad_params = [params[0], w_hh_bad, params[2], params[3]]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gru(): expected the hidden-hidden weight tensor of layer 0 (forward direction) to have shape [96, 32], got [96, 31]""",
+        gpu="""shape '[3072, 1]' is invalid for input of size 2976""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.gru.input(
+          x, hx, bad_params, True, 1, 0.0, False, False, False
+      )
+
+  def test_gru_input_b_ih_shape_mismatch(self):
+    """Verifies that mismatched b_ih shape raises RuntimeError.
+
+    What is being tested:
+      - Providing b_ih with shape [95] instead of expected [96].
+    """
+    x, hx, params = _get_gru_inputs()
+    b_ih_bad = torch.randn(95, device=et.device())
+    bad_params = [params[0], params[1], b_ih_bad, params[3]]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gru(): expected the input-hidden bias tensor of layer 0 (forward direction) to have shape [96], got [95]""",
+        gpu="""shape '[96, 1]' is invalid for input of size 95""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.gru.input(
+          x, hx, bad_params, True, 1, 0.0, False, False, False
+      )
+
+  def test_gru_input_b_hh_shape_mismatch(self):
+    """Verifies that mismatched b_hh shape raises RuntimeError.
+
+    What is being tested:
+      - Providing b_hh with shape [95] instead of expected [96].
+    """
+    x, hx, params = _get_gru_inputs()
+    b_hh_bad = torch.randn(95, device=et.device())
+    bad_params = [params[0], params[1], params[2], b_hh_bad]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gru(): expected the hidden-hidden bias tensor of layer 0 (forward direction) to have shape [96], got [95]""",
+        gpu="""shape '[96, 1]' is invalid for input of size 95""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.gru.input(
+          x, hx, bad_params, True, 1, 0.0, False, False, False
+      )
+
+  def test_lstm_input_w_ih_shape_mismatch(self):
+    x, hx, params = _get_lstm_inputs()
+    w_ih_bad = torch.randn(127, 16, device=et.device())
+    bad_params = [w_ih_bad, params[1], params[2], params[3]]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): expected the input-hidden weight tensor of layer 0 (forward direction) to have shape [128, 16], got [127, 16]""",
+        gpu="""shape '[2048, 1]' is invalid for input of size 2032""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.lstm.input(
+          x, hx, bad_params, True, 1, 0.0, False, False, False
+      )
+
+  def test_lstm_input_w_hh_shape_mismatch(self):
+    x, hx, params = _get_lstm_inputs()
+    w_hh_bad = torch.randn(128, 31, device=et.device())
+    bad_params = [params[0], w_hh_bad, params[2], params[3]]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): expected the hidden-hidden weight tensor of layer 0 (forward direction) to have shape [128, 32], got [128, 31]""",
+        gpu="""shape '[4096, 1]' is invalid for input of size 3968""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.lstm.input(
+          x, hx, bad_params, True, 1, 0.0, False, False, False
+      )
+
+  def test_lstm_input_b_ih_shape_mismatch(self):
+    x, hx, params = _get_lstm_inputs()
+    b_ih_bad = torch.randn(127, device=et.device())
+    bad_params = [params[0], params[1], b_ih_bad, params[3]]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): expected the input-hidden bias tensor of layer 0 (forward direction) to have shape [128], got [127]""",
+        gpu="""shape '[128, 1]' is invalid for input of size 127""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.lstm.input(
+          x, hx, bad_params, True, 1, 0.0, False, False, False
+      )
+
+  def test_lstm_input_b_hh_shape_mismatch(self):
+    x, hx, params = _get_lstm_inputs()
+    b_hh_bad = torch.randn(127, device=et.device())
+    bad_params = [params[0], params[1], params[2], b_hh_bad]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): expected the hidden-hidden bias tensor of layer 0 (forward direction) to have shape [128], got [127]""",
+        gpu="""shape '[128, 1]' is invalid for input of size 127""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.lstm.input(
+          x, hx, bad_params, True, 1, 0.0, False, False, False
+      )
+
+  def test_lstm_input_w_hr_shape_mismatch_with_bias(self):
+    device = et.device()
+    x = torch.randn(10, 3, 16, device=device)
+    h0 = torch.randn(1, 3, 16, device=device)
+    c0 = torch.randn(1, 3, 32, device=device)
+    w_ih = torch.randn(128, 16, device=device)
+    w_hh = torch.randn(128, 16, device=device)
+    b_ih = torch.randn(128, device=device)
+    b_hh = torch.randn(128, device=device)
+    w_hr_bad = torch.randn(15, 32, device=device)
+    params = [w_ih, w_hh, b_ih, b_hh, w_hr_bad]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): expected the recurrent projection weight tensor of layer 0 (forward direction) to have shape [16, 32], got [15, 32]""",
+        gpu="""shape '[512, 1]' is invalid for input of size 480""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.lstm.input(
+          x, [h0, c0], params, True, 1, 0.0, False, False, False
+      )
+
+  def test_lstm_input_w_hr_shape_mismatch_without_bias(self):
+    device = et.device()
+    x = torch.randn(10, 3, 16, device=device)
+    h0 = torch.randn(1, 3, 16, device=device)
+    c0 = torch.randn(1, 3, 32, device=device)
+    w_ih = torch.randn(128, 16, device=device)
+    w_hh = torch.randn(128, 16, device=device)
+    w_hr_bad = torch.randn(15, 32, device=device)
+    params = [w_ih, w_hh, w_hr_bad]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): expected the recurrent projection weight tensor of layer 0 (forward direction) to have shape [16, 32], got [15, 32]""",
+        gpu="""shape '[512, 1]' is invalid for input of size 480""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.lstm.input(
+          x, [h0, c0], params, False, 1, 0.0, False, False, False
+      )
 
 
 class InputPreprocessingErrorTest(et.ErrorTestBase):

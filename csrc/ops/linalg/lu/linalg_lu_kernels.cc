@@ -90,7 +90,7 @@ absl::StatusOr<MlirOpResults<2>> LuDecompositionBuilder(mlir::MlirOp input) {
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Dimensions constraints are checked
                  // before Mlir lowering.
       rank >= 2, error::kInvalidArgument)
-      << "input tensor expected to have at least 2 dimensions, got " << rank;
+      << "expected input tensor to have at least 2 dimensions, got " << rank;
 
   const int n = a_shape[rank - 2];
   const int m = a_shape[rank - 1];
@@ -206,7 +206,7 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLinalgLuFactorExOut(
         TT_CHECK_THROW(pivot, error::kInvalidArgument)
             << "non-pivoting decomposition is not supported";
         TT_CHECK_THROW(a.dim() >= 2, error::kInvalidArgument)
-            << "input tensor expected to have at least 2 dimensions, got "
+            << "expected input tensor to have at least 2 dimensions, got "
             << a.dim();
         const int n = a.size(a.dim() - 2);
         const int m = a.size(a.dim() - 1);

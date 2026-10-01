@@ -107,7 +107,7 @@ TEST(DeviceAssignmentPipelineTest,
   EXPECT_FALSE(resolved.ok());
   EXPECT_EQ(resolved.status().code(), error::kInvalidArgument);
   EXPECT_THAT(resolved.status().message(),
-              testing::HasSubstr("Disjoint or conflicting device assignments"));
+              testing::HasSubstr("disjoint or conflicting device assignments"));
   EXPECT_THAT(resolved.status().message(),
               testing::HasSubstr("op_da=[7, 6, 5, 4, 0, 1, 3, 2]"));
   EXPECT_THAT(resolved.status().message(),
@@ -128,7 +128,7 @@ TEST(DeviceAssignmentPipelineTest, UnalignedSubgroupReturnsDiagnosticError) {
   EXPECT_THAT(
       resolved_a.status().message(),
       testing::HasSubstr(
-          "Disjoint or conflicting device assignments detected in the same "
+          "disjoint or conflicting device assignments detected in the same "
           "compiled module. Operations belonging to different process groups "
           "or conflicting Pallas meshes cannot be compiled together into a "
           "single XLA executable"));
@@ -145,7 +145,7 @@ TEST(DeviceAssignmentPipelineTest, UnalignedSubgroupReturnsDiagnosticError) {
   EXPECT_THAT(
       resolved_b.status().message(),
       testing::HasSubstr(
-          "Disjoint or conflicting device assignments detected in the same "
+          "disjoint or conflicting device assignments detected in the same "
           "compiled module. Operations belonging to different process groups "
           "or conflicting Pallas meshes cannot be compiled together into a "
           "single XLA executable"));

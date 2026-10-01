@@ -298,8 +298,8 @@ absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const at::Tensor& tensor) {
 
   TT_RET_CHECK(tensor.device().type() == GetPrivateUse1DeviceType(),
                error::kInvalidArgument)
-      << "tensor is expected to be on " << GetPrivateUse1DeviceDebugName()
-      << ", got " << tensor.device().str();
+      << "expected tensor to be on " << GetPrivateUse1DeviceDebugName()
+      << ", got " << tensor.device();
 
   TT_RET_CHECK(tensor.storage().data_ptr(), error::kPythonNotImplementedError)
       << "tensor is on the custom PrivateUse1 device. But its storage data_ptr "

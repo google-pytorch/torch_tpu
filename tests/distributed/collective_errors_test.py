@@ -465,13 +465,10 @@ def run_conflicting_device_assignments_error() -> None:
   x2 = torch.ones(4, device="tpu")
   y2 = torch.ones(4, device="tpu")
 
-  expected_msg = (
-      "traverse_and_compile(): failed to compile traversal: Disjoint or"
-      " conflicting device assignments detected in the same compiled module."
-      " Operations belonging to different process groups or conflicting Pallas"
-      " meshes cannot be compiled together into a single XLA executable"
-  )
-  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
+  with et.assert_raises_message(
+      RuntimeError,
+      tpu="""traverse_and_compile(): failed to compile traversal: disjoint or conflicting device assignments detected in the same compiled module. Operations belonging to different process groups or conflicting Pallas meshes cannot be compiled together into a single XLA executable""",
+  ):
     try:
       _ = conflicting_fn(x2, y2).cpu()
     except torch._dynamo.exc.BackendCompilerFailed as e:

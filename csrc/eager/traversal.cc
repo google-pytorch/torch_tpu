@@ -1055,8 +1055,9 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
   if (!argument_layouts.empty()) {
     TT_RET_CHECK(arguments_.size() == argument_layouts.size(),
                  error::kInvalidArgument)
-        << "argument layouts size must match, got " << arguments_.size()
-        << " arguments and " << argument_layouts.size() << " layouts";
+        << "expected the size of argument layouts to be equal to "
+        << arguments_.size() << " (number of arguments), got "
+        << argument_layouts.size();
   }
 
   // Prepare a computation builder closure to be called on a cache miss.  Okay

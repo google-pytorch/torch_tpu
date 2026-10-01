@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -234,35 +235,40 @@ absl::Status ValidateGruWeights(const at::TensorList params,
     for (int64_t d_dir = 0; d_dir < num_directions; ++d_dir) {
       const size_t p_offset =
           (l * num_directions + d_dir) * params_per_direction;
+      const std::string_view dir_str = (d_dir == 0) ? "forward" : "reverse";
+
       // w_ih shape check: [3 * hidden, in_dim]
       TT_RET_CHECK(
           params[p_offset].sizes() == at::IntArrayRef({3 * hidden, in_dim}),
           error::kInvalidArgument)
-          << "w_ih layer " << l << " dir " << d_dir << " expected shape ["
-          << 3 * hidden << ", " << in_dim << "], got "
-          << ToString(params[p_offset].sizes());
+          << "expected the input-hidden weight tensor of layer " << l << " ("
+          << dir_str << " direction) to have shape [" << 3 * hidden << ", "
+          << in_dim << "], got " << ToString(params[p_offset].sizes());
+
       // w_hh shape check: [3 * hidden, hidden]
       TT_RET_CHECK(
           params[p_offset + 1].sizes() == at::IntArrayRef({3 * hidden, hidden}),
           error::kInvalidArgument)
-          << "w_hh layer " << l << " dir " << d_dir << " expected shape ["
-          << 3 * hidden << ", " << hidden << "], got "
-          << ToString(params[p_offset + 1].sizes());
+          << "expected the hidden-hidden weight tensor of layer " << l << " ("
+          << dir_str << " direction) to have shape [" << 3 * hidden << ", "
+          << hidden << "], got " << ToString(params[p_offset + 1].sizes());
+
       if (has_biases) {
         // b_ih shape check: [3 * hidden]
         TT_RET_CHECK(
             params[p_offset + 2].sizes() == at::IntArrayRef({3 * hidden}),
             error::kInvalidArgument)
-            << "b_ih layer " << l << " dir " << d_dir << " expected shape ["
-            << 3 * hidden << "], got "
-            << ToString(params[p_offset + 2].sizes());
+            << "expected the input-hidden bias tensor of layer " << l << " ("
+            << dir_str << " direction) to have shape [" << 3 * hidden
+            << "], got " << ToString(params[p_offset + 2].sizes());
+
         // b_hh shape check: [3 * hidden]
         TT_RET_CHECK(
             params[p_offset + 3].sizes() == at::IntArrayRef({3 * hidden}),
             error::kInvalidArgument)
-            << "b_hh layer " << l << " dir " << d_dir << " expected shape ["
-            << 3 * hidden << "], got "
-            << ToString(params[p_offset + 3].sizes());
+            << "expected the hidden-hidden bias tensor of layer " << l << " ("
+            << dir_str << " direction) to have shape [" << 3 * hidden
+            << "], got " << ToString(params[p_offset + 3].sizes());
       }
     }
   }

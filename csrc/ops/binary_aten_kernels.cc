@@ -212,9 +212,9 @@ absl::Status DispatchBinaryOpOut(const at::Tensor& self,
                                  const at::Tensor& other, at::Tensor& out,
                                  MlirBinaryOpBuilder bin_op_builder,
                                  BinaryOpOptions opts) {
-  TT_RET_CHECK(out.device().type() == GetPrivateUse1DeviceType(),
-               error::kInvalidArgument)
-      << "the out tensor is expected to be on tpu, got " << out.device().str();
+  TT_RET_CHECK(IsPrivateUse1Device(out), error::kInvalidArgument)
+      << "expected out tensor to be on " << GetPrivateUse1DeviceDebugName()
+      << ", got " << out.device();
 
   TT_ASSIGN_OR_RETURN(auto tpu_tensors, MoveCpuScalarsToTpu({self, other}));
   const at::Tensor& self_tpu = tpu_tensors[0];

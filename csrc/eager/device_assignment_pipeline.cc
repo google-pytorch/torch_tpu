@@ -51,7 +51,7 @@ namespace torch_tpu {
 namespace {
 
 constexpr std::string_view kConflictingDeviceAssignmentsErrorPrefix =
-    "Disjoint or conflicting device assignments detected in the same "
+    "disjoint or conflicting device assignments detected in the same "
     "compiled module. Operations belonging to different process groups or "
     "conflicting Pallas meshes cannot be compiled together into a single "
     "XLA executable\n";
