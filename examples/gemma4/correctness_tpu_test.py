@@ -17,7 +17,6 @@
 from absl.testing import absltest
 import torch
 from examples.gemma4 import model
-from tests import seed_test_utils
 
 try:
   from torch_tpu.ops import splash_attention
@@ -25,16 +24,22 @@ except (ImportError, ModuleNotFoundError):
   splash_attention = None
 
 
-class Gemma4SWACorrectnessTPUTest(seed_test_utils.RepeatableTest):
+class Gemma4SWACorrectnessTPUTest(absltest.TestCase):
 
   def setUp(self):
     super().setUp()
+    torch.manual_seed(1234)
     if splash_attention is None:
       self.skipTest('splash_attention module is not available')
     try:
       torch.tensor([1.0]).to('tpu')
     except RuntimeError:
       self.skipTest('TPU device not available')
+
+  def tearDown(self):
+    if torch.accelerator.is_available():
+      torch.accelerator.synchronize()
+    super().tearDown()
 
   def test_swa_attention_parity(self):
     # Setup configs

@@ -19,10 +19,18 @@ from absl.testing import absltest
 import torch
 import torch_tpu
 from examples.gemma4 import model
-from tests import seed_test_utils
 
 
-class Gemma4ModelTest(seed_test_utils.RepeatableTest):
+class Gemma4ModelTest(absltest.TestCase):
+
+  def setUp(self):
+    super().setUp()
+    torch.manual_seed(1234)
+
+  def tearDown(self):
+    if torch.accelerator.is_available():
+      torch.accelerator.synchronize()
+    super().tearDown()
 
   def test_dense_model_forward(self):
     config = model.Gemma4Config(
