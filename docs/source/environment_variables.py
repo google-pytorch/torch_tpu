@@ -333,7 +333,6 @@ def _(mo):
     ## **Quick Reference Summary**
     | Variable | Scope | Must Set Before | Possible Values |
     | :--- | :--- | :--- | :--- |
-    | `CLOUD_TPU_TASK_ID` | Cloud | `N/A` (Set by GCE) | `0`, `1`, `2`, ... (integer format) |
     | `LOCAL_RANK` | Launcher | `import torch` | `0`, `1`, `2`, `3` ... (integer) |
     | `MASTER_ADDR` | Launcher | `import torch` | `localhost`, `127.0.0.1`, `10.0.0.1` |
     | `MASTER_PORT` | Launcher | `import torch` | `12355`, `8471`, `<port_number>` |
