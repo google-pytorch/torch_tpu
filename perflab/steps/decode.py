@@ -753,8 +753,8 @@ class DecodeStepper(common.BaseStepper):
           **prefill_kwargs,
       )
     prefill_logits = self._unpack_output_and_update_cache(prefill_output)
-    self.next_token = torch.argmax(prefill_logits[:, -1, :], dim=-1).unsqueeze(
-        -1
+    self.next_token = torch.argmax(
+        prefill_logits[:, -1, :], dim=-1, keepdim=True
     )
     self.prefill_next_token = self.next_token.clone()
     self.current_pos = self.prompt_len
@@ -808,7 +808,10 @@ class DecodeStepper(common.BaseStepper):
               self.cache,
           )
           logits = self._unpack_output_and_update_cache(decode_output)
-          self.next_token = torch.argmax(logits[:, -1, :], dim=-1).unsqueeze(-1)
+          # keepdim=True rather than .unsqueeze(-1): on TPU the unsqueeze is a
+          # pending view, which the next compiled forward must first build
+          # with an extra eager as_strided program (compiled on first use).
+          self.next_token = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)
           assert self.current_pos is not None
           self.current_pos += 1
         return decode_output
