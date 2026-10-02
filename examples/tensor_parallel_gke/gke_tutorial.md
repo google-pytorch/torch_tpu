@@ -8,60 +8,37 @@ All of the steps in this tutorial rely on the following variables, set them
 accordingly.
 
 ```bash
-export CLUSTER=
-export ZONE_NAME=
-export PROJECT=
-export ARTIFACT_REGISTRY_URL=us-pkg.docker.dev/...
-export DOCKER_IMAGE=test-docker-image:latest
-export TPU_TYPE=
+export CLUSTER=<YOUR_CLUSTER_NAME>
+export ZONE_NAME=<YOUR_ZONE_NAME>
+export PROJECT=<YOUR_PROJECT_ID>
+export ARTIFACT_REGISTRY_URL=<YOUR_ARTIFACT_REGISTRY_URL>
+export DOCKER_IMAGE=torch-tpu-local-$USER
+export TPU_TYPE=tpu7x-8
 ```
 
 If using a fuse bucket, also setup:
 
 ```bash
-export BUCKET=
+export BUCKET=<YOUR_BUCKET_NAME>
 ```
 
-### Setup XPK
+### Cluster Credentials Setup
 
-XPK makes the process of setting up your TPUv7 cluster quite simple, setting up
-coordination and job queue management out of the box.
-
-See https://github.com/AI-Hypercomputer/xpk/tree/main
-
-`pip install xpk`
-
-### Create XPK enabled cluster
-
-This step is optional *if* you already have an active cluster. XPK initialized
-clusters manage queuing for jobs automatically, so there's no need to have
-unique clusters per user.
+Get cluster credentials to interact with the GKE TPU cluster using `kubectl`:
 
 ```bash
-xpk cluster create \
-  --cluster=${CLUSTER} \
-  --tpu-type=${TPU_TYPE} \
-  --num-slices=1 \
-  --zone=${ZONE_NAME} \
-  --project=${PROJECT} \
-  --spot # this sets up your cluster as a spot instance. Not best for long-running jobs.
+gcloud container clusters get-credentials ${CLUSTER} --zone=${ZONE_NAME} --project=${PROJECT}
 ```
-
-#### Set-up fuse bucket
-
-For examples that require model weights, you may want to refer to
-[xpk/docs/usage/storage.md](https://github.com/AI-Hypercomputer/xpk/blob/main/docs/usage/storage.md)
-on how to set-up a cluster with storage bucket.
 
 ### GCloud and docker setup
 
-You need to login to GCloud CLI for XPK, and we also need to set up our docker
-credentials so we can push to artifact registry for GKE to consume.
+Configure docker credentials so we can push to artifact registry for GKE to
+consume.
 
 ```bash
 gcloud auth login
 gcloud auth application-default login
-gcloud auth configure-docker
+gcloud auth configure-docker ${ZONE_NAME}-docker.pkg.dev
 sudo usermod -aG docker $USER # relaunch the terminal and activate venv
 docker run hello-world # Test Docker
 ```
@@ -80,45 +57,66 @@ docker tag torch-tpu:latest ${ARTIFACT_REGISTRY_URL}/${DOCKER_IMAGE}
 docker push ${ARTIFACT_REGISTRY_URL}/${DOCKER_IMAGE}
 ```
 
-### Enqueuing a workload to the new cluster
+### Submitting Workloads via Kubectl
+
+Workloads are submitted to GKE and managed via Kueue queue admission using
+standard Kubernetes `Job` or `JobSet` manifests.
+
+Reference manifests are located at `third_party/py/torch_tpu/examples/gke/`.
+
+#### Kueue Cohort Setup
+
+Before submitting workloads to Kueue queues, ensure Kueue ClusterQueues and
+LocalQueues are applied:
 
 ```bash
-xpk workload create \
-  --workload=unique-worker-name-1 \
-  --cluster=${CLUSTER} \
-  --zone=${ZONE_NAME} \
-  --project=${PROJECT} \
-  --tpu-type=tpu7x-8 \
-  --docker-image=${ARTIFACT_REGISTRY_URL}/${DOCKER_IMAGE} \
-  --command="cd /workspace/examples/distributed/manual/tensor_parallel/ && ./launch.sh"
+kubectl apply -f third_party/py/torch_tpu/examples/gke/torchtpu_kueue_cohort_setup.yaml
 ```
 
-If the example contains a requirements file, you will need to install them:
+#### Universal Queue `lq` and Automatic Topology Routing
+
+For seamless compatibility with XPK tools and standard Kubernetes jobs, our
+setup provides a universal default queue named `LocalQueue: lq`.
+
+When you specify `kueue.x-k8s.io/queue-name: lq` in your workload labels:
+
+1.  **Universal Queue**: Workloads are admitted through `LocalQueue lq` into
+    `ClusterQueue tpu-cluster-queue` within `cohort: tpu-shared-reservation`.
+2.  **Automatic Flavor Routing**: Kueue automatically matches your workload's
+    `nodeSelector` topology labels (`cloud.google.com/gke-tpu-topology`) and
+    assigns the correct `ResourceFlavor` (`rf-4chip`, `rf-8chip`, `rf-16chip`,
+    `rf-32chip`, or `rf-64chip`).
+3.  **Automatic Suspension**: Kueue injects `spec.suspend: true` upon submission
+    and removes it (`spec.suspend: false`) once shared cohort quota is reserved.
+
+#### Single-Host Workload Execution (4-chip / 8-device slice)
+
+Submit a single-host Kubernetes Job:
 
 ```bash
-xpk workload create \
-  --workload=unique-worker-name-1 \
-  --cluster=${CLUSTER} \
-  --zone=${ZONE_NAME} \
-  --project=${PROJECT} \
-  --tpu-type=tpu7x-8 \
-  --docker-image=${ARTIFACT_REGISTRY_URL}/${DOCKER_IMAGE} \
-  --command="cd /workspace/examples/distributed/fsdp/lora/ && pip install -r requirements.txt && ./launch.sh"
+kubectl apply -f third_party/py/torch_tpu/examples/gke/torchtpu_singlehost_slice_job.yaml
 ```
 
-If the example needs to leverage model weights or data, you may set them up in a
-fuse bucket and. Your new command may look something like this:
+Check workload and pod status:
 
 ```bash
-xpk workload create \
-  --workload=unique-worker-name-1 \
-  --cluster=${CLUSTER} \
-  --zone=${ZONE_NAME} \
-  --project=${PROJECT} \
-  --tpu-type=tpu7x-8 \
-  --storage=${BUCKET} \
-  --docker-image=${ARTIFACT_REGISTRY_URL}/${DOCKER_IMAGE} \
-  --command="cd /workspace/examples/distributed/manual/tensor_parallel/ && ./launch.sh"
+kubectl get job -n default
+kubectl get pods -n default
+```
+
+#### Multi-Host Workload Execution (64-chip / 128-device slice)
+
+Submit a multi-host JobSet:
+
+```bash
+kubectl apply -f third_party/py/torch_tpu/examples/gke/torchtpu_multihost_slice_jobset.yaml
+```
+
+Check JobSet status:
+
+```bash
+kubectl get jobset -n default
+kubectl get pods -n default
 ```
 
 <!-- LINT.ThenChange($INTERNAL_DOCS/gke.md) -->

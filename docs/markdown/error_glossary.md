@@ -94,7 +94,6 @@ except RuntimeError as shape_err:
 --------------------------------------------------------------------------------
 
 ### **3b. dtype Mismatch**
-
 Mixing `float32` and `int64` in operations that require matching types.
 
 ```python
@@ -228,7 +227,8 @@ print("PyTorch Profiler Report:")
 print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=10))
 
 print(
-    "💡 Look for aten::copy_ or aten::_to_copy — those indicate CPU fallbacks."
+    "💡 Look for aten::copy_ or aten::_to_copy — those indicate CPU"
+    " fallbacks."
 )
 ```
 
@@ -261,8 +261,8 @@ print(f"r @ q completed: shape={s.shape}")
 
 print(
     "\n✅ Synchronous dispatch (TORCH_TPU_LAUNCH_BLOCKING=1 or explicit"
-    " torch.accelerator.synchronize()) forces immediate execution — useful for"
-    " NaN/Inf debugging."
+    " torch.accelerator.synchronize()) forces immediate execution — useful"
+    " for NaN/Inf debugging."
 )
 print("⚠️  Much slower than deferred mode. Use only for debugging.")
 ```
