@@ -880,6 +880,16 @@ absl::StatusOr<ScaleStepResult> ScaleStep(mlir::MlirOp self,
   return ScaleStepResult{result, remaining_exponent};
 }
 
+absl::Status ValidateLdexpInputs(const at::Tensor& self,
+                                 const at::Tensor& other) {
+  TT_RET_CHECK(!(IsFloatingPoint(self) && IsBool(other)),
+               error::kInvalidArgument)
+      << "expected the dtype of the second argument not to be bool when the "
+         "first argument is floating-point, got "
+      << ToString(other.scalar_type());
+  return absl::OkStatus();
+}
+
 absl::Status ValidateLdexpOutput(const at::Tensor& out) {
   TT_RET_CHECK(IsFloatingPoint(out) || IsComplex(out), error::kInvalidArgument)
       << "ldexp can't be cast to the desired output type "
@@ -1483,6 +1493,7 @@ at::Tensor& AtenLdexpOut(const at::Tensor& self, const at::Tensor& other,
                          at::Tensor& out) {
   TT_KERNEL(OpName::kLdexpOut, _, (self, other, out), {
     TT_THROW_IF_ERROR(ValidateLdexpOutput(out));
+    TT_THROW_IF_ERROR(ValidateLdexpInputs(self, other));
     const at::ScalarType expected_result_type =
         c10::isIntegralType(self.scalar_type(), /*includeBool=*/true)
             ? c10::get_default_dtype_as_scalartype()
@@ -1500,6 +1511,7 @@ at::Tensor& AtenLdexpOut(const at::Tensor& self, const at::Tensor& other,
 
 at::Tensor AtenLdexpTensor(const at::Tensor& self, const at::Tensor& other) {
   TT_KERNEL(OpName::kLdexpTensor, _, (self, other), {
+    TT_THROW_IF_ERROR(ValidateLdexpInputs(self, other));
     TT_ASSIGN_OR_THROW(
         at::Tensor out,
         BinaryOp(self, other, BuildLdexpShlo,
@@ -1512,6 +1524,7 @@ at::Tensor AtenLdexpTensor(const at::Tensor& self, const at::Tensor& other) {
 at::Tensor& AtenLdexp_(at::Tensor& self, const at::Tensor& other) {
   TT_KERNEL(OpName::kLdexp_, _, (self, other), {
     TT_THROW_IF_ERROR(ValidateLdexpOutput(self));
+    TT_THROW_IF_ERROR(ValidateLdexpInputs(self, other));
     const at::ScalarType expected_result_type =
         c10::isIntegralType(self.scalar_type(), /*includeBool=*/true)
             ? c10::get_default_dtype_as_scalartype()

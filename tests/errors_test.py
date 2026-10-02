@@ -10602,6 +10602,39 @@ Device-side assertion tracking was not enabled by user.""",
           out=out,
       )
 
+  def test_ldexp_bool_exponent(self):
+    if et.is_on_gpu():
+      # On TPU and CPU, a boolean exponent tensor with a floating-point base
+      # tensor raises an error. On GPU, CUDA dynamically casts the boolean
+      # exponent tensor to int without raising an error.
+      self.skipTest("GPU behavior difference")
+
+    x = torch.tensor([1.0, 2.0], dtype=torch.bfloat16, device=et.device())
+    exp_bool = torch.tensor([True, True], dtype=torch.bool, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""ldexp(): expected the dtype of the second argument not to be bool when the first argument is floating-point, got bool""",
+        gpu=""""ldexp_cuda" not implemented for 'Bool'""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ldexp(x, exp_bool)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""ldexp(): expected the dtype of the second argument not to be bool when the first argument is floating-point, got bool""",
+        gpu=""""ldexp_cuda" not implemented for 'Bool'""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ldexp(x, exp_bool, out=torch.empty_like(x))
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""ldexp_(): expected the dtype of the second argument not to be bool when the first argument is floating-point, got bool""",
+        gpu=""""ldexp_cuda" not implemented for 'Bool'""",
+        message_reviewed_by="gunhyun",
+    ):
+      x.clone().ldexp_(exp_bool)
+
   def test_searchsorted_invalid_side(self):
     a = torch.tensor([1, 2, 3])
     v = torch.tensor([2])
