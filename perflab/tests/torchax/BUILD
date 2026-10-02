@@ -48,6 +48,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//tests:oss_utils",
         "//tests:seed_test_utils",
         "@pypi//flax",  # buildcleaner: keep
         "@pypi//torchax",
