@@ -199,7 +199,7 @@ def apply_label_changes(
       pass
 
 
-def main() -> None:
+def main(opener: Callable[..., Any] = urllib.request.urlopen) -> None:
   token = os.environ.get("GITHUB_TOKEN")  # PY_ENVIRON_OK=ci
   event_path = os.environ.get("GITHUB_EVENT_PATH")  # PY_ENVIRON_OK=ci
   repo = os.environ.get("GITHUB_REPOSITORY")  # PY_ENVIRON_OK=ci
@@ -224,7 +224,13 @@ def main() -> None:
     return
 
   apply_label_changes(
-      api_url, repo, token, issue_number, changes.add, changes.remove
+      api_url,
+      repo,
+      token,
+      issue_number,
+      changes.add,
+      changes.remove,
+      opener=opener,
   )
 
 

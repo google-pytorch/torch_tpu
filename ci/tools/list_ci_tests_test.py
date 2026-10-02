@@ -27,8 +27,10 @@ from unittest import mock
 
 try:
   from ci.tools import list_ci_tests  # pylint: disable=g-import-not-at-top
+  from ci.tools.testing import fakes  # pylint: disable=g-import-not-at-top
 except ImportError:
   import list_ci_tests  # pylint: disable=g-import-not-at-top
+  from testing import fakes  # pylint: disable=g-import-not-at-top
 
 _SAMPLE_BAZELRC = textwrap.dedent("""\
     # Sample CI test filter definitions
@@ -298,27 +300,25 @@ class ListCiTestsTest(unittest.TestCase):  # UNITTEST_OK=testing tools
 
   def test_discover_test_targets_executes_query(self):
     """Verifies discover_test_targets executes Bazel query and parses XML."""
-    mock_proc = mock.Mock(returncode=0, stdout=_SAMPLE_BAZEL_XML, stderr="")
-    with mock.patch("subprocess.run", return_value=mock_proc) as mock_run:
+    runner = fakes.FakeSubprocessRunner()
+    runner.on(
+        ["/bin/bazel", "query"],
+        returncode=0,
+        stdout=_SAMPLE_BAZEL_XML,
+    )
+    with mock.patch("subprocess.run", side_effect=runner):
       with mock.patch.object(
           list_ci_tests,
           "find_bazel_binary",
           return_value=pathlib.Path("/bin/bazel"),
       ):
         targets = list_ci_tests.discover_test_targets(self.repo_root)
-        self.assertEqual(len(targets), 2)
-        mock_run.assert_called_once_with(
-            [
-                "/bin/bazel",
-                "query",
-                'kind(".*_test rule", //...)',
-                "--output=xml",
-            ],
-            cwd=self.repo_root,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+    self.assertEqual(
+        [t.label for t in targets],
+        ["//csrc/ops:kernel_test", "//tests:ops_test_tpu-v5lite"],
+    )
+    self.assertEqual(len(runner.calls), 1)
+    self.assertEqual(runner.calls[0].cwd, os.fspath(self.repo_root))
 
   def test_map_jobs_to_tests(self):
     """Verifies mapping of test targets to CI jobs with tag filters."""

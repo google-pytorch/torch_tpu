@@ -15,8 +15,10 @@
 
 """Unit tests for turn_tracker.py."""
 
+import io
 import json
 import os
+import tempfile
 import unittest
 from unittest import mock
 import urllib.error
@@ -279,72 +281,102 @@ class TurnTrackerTest(unittest.TestCase):  # UNITTEST_OK=standalone
     self.assertEqual(changes.remove, ())
 
 
+class _FakeResponse:
+
+  def __enter__(self):
+    return self
+
+  def __exit__(self, *unused_exc):
+    return None
+
+
+class _FakeOpener:
+  """Records urllib.request.Request calls and optionally raises an error."""
+
+  def __init__(self, error: Exception | None = None):
+    self.calls: list[tuple[str, str, dict[str, str], bytes | None, float]] = []
+    self._error = error
+
+  def __call__(self, req, timeout: float = 30.0):
+    self.calls.append((
+        req.get_method(),
+        req.full_url,
+        dict(req.header_items()),
+        req.data,
+        timeout,
+    ))
+    if self._error is not None:
+      raise self._error
+    return _FakeResponse()
+
+
 class RestApiExecutionTest(unittest.TestCase):  # UNITTEST_OK=standalone
 
   def test_apply_label_changes_calls(self):
-    mock_opener = mock.MagicMock()
-    mock_opener.return_value.__enter__.return_value = None
+    opener = _FakeOpener()
 
     apply_label_changes(
         api_url="https://api.github.com",
         repo="google-pytorch/torch_tpu",
-        token="mock-token",
+        token="test-token",
         issue_number=42,
         to_add=[REQUESTER_LABEL],
         to_remove=[ASSIGNEE_LABEL],
         timeout=15.0,
-        opener=mock_opener,
+        opener=opener,
     )
 
-    self.assertEqual(mock_opener.call_count, 2)
+    self.assertEqual(len(opener.calls), 2)
     # First call: DELETE assignee label with timeout
-    delete_call = mock_opener.call_args_list[0]
-    req = delete_call[0][0]
-    self.assertEqual(req.get_method(), "DELETE")
-    self.assertIn("stat%3Aawaiting-assignee", req.full_url)
-    self.assertEqual(req.headers["Authorization"], "Bearer mock-token")
-    self.assertEqual(delete_call[1]["timeout"], 15.0)
+    method, url, headers, _, timeout = opener.calls[0]
+    self.assertEqual(method, "DELETE")
+    self.assertIn("stat%3Aawaiting-assignee", url)
+    self.assertEqual(headers["Authorization"], "Bearer test-token")
+    self.assertEqual(timeout, 15.0)
 
     # Second call: POST requester label with timeout
-    post_call = mock_opener.call_args_list[1]
-    req = post_call[0][0]
-    self.assertEqual(req.get_method(), "POST")
-    self.assertIn("/issues/42/labels", req.full_url)
+    method, url, _, data, timeout = opener.calls[1]
+    self.assertEqual(method, "POST")
+    self.assertIn("/issues/42/labels", url)
+    self.assertIsNotNone(data)
     self.assertEqual(
-        json.loads(req.data.decode("utf-8")), {"labels": [REQUESTER_LABEL]}
+        json.loads(data.decode("utf-8")), {"labels": [REQUESTER_LABEL]}
     )
-    self.assertEqual(post_call[1]["timeout"], 15.0)
+    self.assertEqual(timeout, 15.0)
 
   def test_apply_label_changes_swallows_404_on_delete(self):
-    fp = mock.MagicMock()
-    err = urllib.error.HTTPError("https://url", 404, "Not Found", {}, fp)
-    mock_opener = mock.MagicMock(side_effect=err)
+    err = urllib.error.HTTPError(
+        "https://url", 404, "Not Found", {}, fp=io.BytesIO()
+    )
+    opener = _FakeOpener(error=err)
 
     # Should not raise
     apply_label_changes(
         api_url="https://api.github.com",
         repo="google-pytorch/torch_tpu",
-        token="mock-token",
+        token="test-token",
         issue_number=42,
         to_add=[],
         to_remove=["non-existent-label"],
-        opener=mock_opener,
+        opener=opener,
     )
+    self.assertEqual(len(opener.calls), 1)
 
   def test_apply_label_changes_raises_non_404(self):
-    fp = mock.MagicMock()
-    err = urllib.error.HTTPError("https://url", 403, "Forbidden", {}, fp)
-    mock_opener = mock.MagicMock(side_effect=err)
+    err = urllib.error.HTTPError(
+        "https://url", 403, "Forbidden", {}, fp=io.BytesIO()
+    )
+    opener = _FakeOpener(error=err)
 
     with self.assertRaises(urllib.error.HTTPError):  # ASSERT_RAISES_OK=err
       apply_label_changes(
           api_url="https://api.github.com",
           repo="google-pytorch/torch_tpu",
-          token="mock-token",
+          token="test-token",
           issue_number=42,
           to_add=[],
           to_remove=["label"],
-          opener=mock_opener,
+          opener=opener,
       )
 
 
@@ -352,13 +384,12 @@ class MainEntryPointTest(unittest.TestCase):  # UNITTEST_OK=standalone
 
   def test_main_exits_on_missing_env(self):
     with mock.patch.dict(os.environ, {}, clear=True):
-      with mock.patch("sys.stderr"):
+      with mock.patch("sys.stderr", new_callable=io.StringIO):
         with self.assertRaises(SystemExit) as ctx:  # ASSERT_RAISES_OK=exit
           main()
         self.assertEqual(ctx.exception.code, 1)
 
-  @mock.patch("turn_tracker.apply_label_changes")
-  def test_main_success_flow(self, mock_apply):
+  def test_main_success_flow(self):
     payload = {
         "action": "opened",
         "issue": {
@@ -367,30 +398,33 @@ class MainEntryPointTest(unittest.TestCase):  # UNITTEST_OK=standalone
             "labels": [],
         },
     }
-    tmp_path = "/tmp/test_event.json"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-      json.dump(payload, f)
+    opener = _FakeOpener()
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      tmp_path = os.path.join(tmp_dir, "test_event.json")
+      with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f)
 
-    env = {
-        "GITHUB_TOKEN": "secret",
-        "GITHUB_EVENT_PATH": tmp_path,
-        "GITHUB_REPOSITORY": "google-pytorch/torch_tpu",
-        "GITHUB_EVENT_NAME": "issues",
-        "GITHUB_API_URL": "https://api.github.com",
-    }
-    with mock.patch.dict(os.environ, env):
-      main()
+      env = {
+          "GITHUB_TOKEN": "secret",
+          "GITHUB_EVENT_PATH": tmp_path,
+          "GITHUB_REPOSITORY": "google-pytorch/torch_tpu",
+          "GITHUB_EVENT_NAME": "issues",
+          "GITHUB_API_URL": "https://api.github.com",
+      }
+      with mock.patch.dict(os.environ, env):
+        main(opener=opener)
 
-    mock_apply.assert_called_once_with(
-        "https://api.github.com",
-        "google-pytorch/torch_tpu",
-        "secret",
-        123,
-        (ASSIGNEE_LABEL,),
-        (),
+    self.assertEqual(len(opener.calls), 1)
+    method, url, headers, data, _ = opener.calls[0]
+    self.assertEqual(method, "POST")
+    self.assertEqual(
+        url,
+        "https://api.github.com/repos/google-pytorch/torch_tpu/issues/123/labels",
     )
-    if os.path.exists(tmp_path):
-      os.remove(tmp_path)
+    self.assertEqual(headers["Authorization"], "Bearer secret")
+    self.assertEqual(
+        json.loads(data.decode("utf-8")), {"labels": [ASSIGNEE_LABEL]}
+    )
 
 
 if __name__ == "__main__":
