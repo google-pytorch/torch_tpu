@@ -15,6 +15,7 @@
 """TorchAx stepper wrapper and conversion utilities for benchmarking."""
 
 import functools
+import inspect
 from typing import Any, Tuple
 import jax
 import optax
@@ -46,6 +47,43 @@ def _prepare_inputs_for_torchax(inputs: Any) -> Any:
 
     inputs_jax = jax.tree_util.tree_map(_move_tensor, inputs)
   return inputs_jax
+
+
+# TODO(b/568763915): Remove once `JittableModule` stops collecting property
+# values as buffers.
+def _drop_property_buffers(
+    model: torch.nn.Module, buffers: dict[str, Any]
+) -> dict[str, Any]:
+  """Returns `buffers` without the tensors that are computed by properties.
+
+  `JittableModule` collects buffers by calling `getattr()` on every name in
+  `dir(module)`, so it also records tensors returned by properties. For
+  example, `torch.nn.utils.parametrizations.weight_norm` (used by the
+  positional convolution of Wav2Vec2 and HuBERT) turns `weight` into a property
+  that recomputes it from `parametrizations.weight.original0` and `original1`.
+  These tensors are derived values, not module state. Passing them to
+  `functional_call()` as buffers makes `_reparametrize_module()` assign to the
+  property, which for a parametrization calls `right_inverse()` and
+  `Tensor.set_()`, an op that TorchAX does not implement. Leaving them out lets
+  the property recompute them from the swapped-in parametrization inputs.
+
+  Args:
+    model: The module that `buffers` was extracted from.
+    buffers: Buffers keyed by fully qualified attribute name.
+
+  Returns:
+    A new dict with every entry that names a property on its owning module's
+    class removed.
+  """
+  result = {}
+  for name, value in buffers.items():
+    module_path, _, attr_name = name.rpartition(".")
+    owner = model.get_submodule(module_path)
+    if not isinstance(
+        inspect.getattr_static(type(owner), attr_name, None), property
+    ):
+      result[name] = value
+  return result
 
 
 def _extract_jax_compatible_output(out: Any) -> Any:
@@ -248,9 +286,10 @@ class _BaseTorchaxStepper:
         k: v.data if isinstance(v, torch.nn.Parameter) else v
         for k, v in model_jittable.params.items()
     }
+    buffers = _drop_property_buffers(model, model_jittable.buffers)
     self._buffers = {
         k: v.data if isinstance(v, torch.nn.Parameter) else v
-        for k, v in model_jittable.buffers.items()
+        for k, v in buffers.items()
     }
     return model_jittable
 

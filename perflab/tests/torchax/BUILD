@@ -52,6 +52,7 @@ torch_tpu_py_test(
         "//tests:oss_utils",
         "//tests:seed_test_utils",
         "@pypi//flax",  # buildcleaner: keep
+        "@pypi//numpy",
         "@pypi//torchax",
     ],
 )

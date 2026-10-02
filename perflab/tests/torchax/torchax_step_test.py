@@ -27,6 +27,7 @@ from unittest import mock
 
 from absl.testing import absltest
 from absl.testing import parameterized
+import numpy as np
 from tests import seed_test_utils
 import torch
 import torch.nn as nn
@@ -416,6 +417,94 @@ class TorchaxStepTest(seed_test_utils.RepeatableTest):
     with self.assertRaisesRegex(ValueError, "factory failed"):
       wrapper.init_with_benchmark_args(spec, ctx)
     self.assertIsInstance(torch.randn(2, device="jax"), torchax.tensor.Tensor)
+
+  def test_parametrized_module_forward(self):
+    target = target_lib.make_target(platform=target_lib.Platform.CPU)
+    ctx = context_lib.Context(
+        target=target, run_scope=context_lib.RUN_SCOPE.value
+    )
+
+    class ParametrizedModule(nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.linear = nn.utils.parametrizations.weight_norm(nn.Linear(4, 2))
+
+      def forward(self, x):
+        return self.linear(x)
+
+    expected = []
+
+    def factory(factory_ctx):
+      del factory_ctx  # unused
+      model = ParametrizedModule()
+      x = torch.randn(2, 4)
+      with torch.no_grad():
+        expected.append(model(x).tolist())
+      return model, (x,), {}
+
+    spec = registry_lib.BenchmarkSpec(
+        name="test_parametrized",
+        factory=factory,
+        stepper=step_lib.StepperType.FORWARD,
+    )
+
+    wrapper = torchax_step.TorchaxForwardStepper()
+    wrapper.init_with_benchmark_args(spec, ctx)
+    wrapper.compile(compile_lib.CompileConfig(scope=compile_lib.Scope.STEP))
+    out = wrapper.get_step_fn()()
+
+    self.assertNotIn("linear.weight", wrapper._buffers)
+    self.assertIn("linear.parametrizations.weight.original0", wrapper._weights)
+    self.assertIn("linear.parametrizations.weight.original1", wrapper._weights)
+    np.testing.assert_allclose(out.numpy(), expected[0], rtol=1e-5, atol=1e-6)
+
+  def test_parametrized_module_training(self):
+    target = target_lib.make_target(platform=target_lib.Platform.CPU)
+    ctx = context_lib.Context(
+        target=target, run_scope=context_lib.RUN_SCOPE.value
+    )
+
+    class ParametrizedModule(nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.linear = nn.utils.parametrizations.weight_norm(nn.Linear(4, 2))
+
+      def forward(self, x):
+        return self.linear(x)
+
+    def factory(factory_ctx):
+      del factory_ctx  # unused
+      model = ParametrizedModule()
+      optimizer = torch.optim.Adam(model.parameters(), lr=0.1)
+      return model, (torch.randn(2, 4),), {}, optimizer
+
+    spec = registry_lib.BenchmarkSpec(
+        name="test_parametrized_training",
+        factory=factory,
+        stepper=step_lib.StepperType.TRAINING,
+    )
+
+    wrapper = torchax_step.TorchaxBackwardStepper()
+    wrapper.init_with_benchmark_args(spec, ctx)
+    wrapper.compile(compile_lib.CompileConfig(scope=compile_lib.Scope.STEP))
+    parametrization_inputs = (
+        "linear.parametrizations.weight.original0",
+        "linear.parametrizations.weight.original1",
+    )
+    # Copy to host memory because the step donates the weight buffers.
+    weights_before = {
+        k: wrapper._weights[k].numpy() for k in parametrization_inputs
+    }
+    _, new_weights, _ = wrapper.get_step_fn()()
+
+    self.assertNotIn("linear.weight", wrapper._buffers)
+    for k in parametrization_inputs:
+      self.assertFalse(
+          np.allclose(new_weights[k].numpy(), weights_before[k]),
+          msg=f"{k} was not updated",
+      )
 
 
 if __name__ == "__main__":
