@@ -14,103 +14,193 @@
 
 from __future__ import annotations
 
-import dataclasses
-from typing import Any
-from unittest import mock
-
 from absl.testing import absltest
 import jax
 from jax.experimental import pallas as pl
 import torch
 from torch_tpu._internal import pallas
 from torch_tpu._internal import testing as tt_testing
+from torch_tpu._internal.pallas import pallas as pallas_impl
 from torch_tpu._internal.pallas import tpu_torch_pallas
+from torch_tpu._internal.utils import test_utils
 from tests import seed_test_utils
 
-_MOCK_MLIR_MODULE_SERIALIZED = b"mock_mlir_module_serialized"
-_MOCK_MLIR_MODULE = "module {}"
-_EXPECTED_FINGERPRINT = "610b806f2760cd2f9744abe7dfcab222"
+# pylint: disable=line-too-long
+_ADD_MODULE = """
+module @jit_f {
+  func.func public @main(%arg0: tensor<3xf32>, %arg1: tensor<3xf32>) -> tensor<3xf32> {
+    %0 = stablehlo.add %arg0, %arg1 : tensor<3xf32>
+    return %0 : tensor<3xf32>
+  }
+}
+"""
+
+# Same program as `_ADD_MODULE`, annotated with caller location debug info.
+_ADD_MODULE_WITH_LOCS_TEMPLATE = """
+#loc1 = loc("{path}":{line}:4)
+module @jit_f {{
+  func.func public @main(%arg0: tensor<3xf32> loc("x"), %arg1: tensor<3xf32> loc("y")) -> tensor<3xf32> {{
+    %0 = stablehlo.add %arg0, %arg1 : tensor<3xf32> loc(#loc1)
+    return %0 : tensor<3xf32> loc(#loc1)
+  }} loc(#loc1)
+}} loc(#loc1)
+"""
+
+# Differs from `_ADD_MODULE` only in the op inside the function body.
+_MUL_MODULE = """
+module @jit_f {
+  func.func public @main(%arg0: tensor<3xf32>, %arg1: tensor<3xf32>) -> tensor<3xf32> {
+    %0 = stablehlo.multiply %arg0, %arg1 : tensor<3xf32>
+    return %0 : tensor<3xf32>
+  }
+}
+"""
+
+# Mimics a Pallas kernel whose Mosaic payload lives in an opaque attribute.
+_CUSTOM_CALL_MODULE_TEMPLATE = """
+module @jit_f {{
+  func.func public @main(%arg0: tensor<3xf32>) -> tensor<3xf32> {{
+    %0 = stablehlo.custom_call @tpu_custom_call(%arg0) {{backend_config = "{payload}"}} : (tensor<3xf32>) -> tensor<3xf32>
+    return %0 : tensor<3xf32>
+  }}
+}}
+"""
+# pylint: enable=line-too-long
 
 
-@dataclasses.dataclass
-class _MockExported:
-  mlir_module_serialized: bytes
-  out_avals: Any
-  out_tree: Any
-  mlir_module_text: str = _MOCK_MLIR_MODULE
-
-  def mlir_module(self) -> str:
-    return self.mlir_module_text
+def _fingerprint(mlir_module_text: str) -> str:
+  # The helpers are private implementation details tested directly here.
+  # pylint: disable=protected-access
+  return pallas_impl._fingerprint_normalized_mlir(
+      pallas_impl._normalize_mlir_module(mlir_module_text)
+  )
+  # pylint: enable=protected-access
 
 
-def fingerprint_test_kernel_body(x_ref, y_ref, o_ref):
-  x, y = x_ref[...], y_ref[...]
-  o_ref[...] = x + y
+def fingerprint_test_add_kernel(x_ref, y_ref, o_ref):
+  o_ref[...] = x_ref[...] + y_ref[...]
 
 
-def fingerprint_test_jax(x: jax.Array, y: jax.Array) -> jax.Array:
+def fingerprint_test_mul_kernel(x_ref, y_ref, o_ref):
+  o_ref[...] = x_ref[...] * y_ref[...]
+
+
+def fingerprint_test_add(x: jax.Array, y: jax.Array) -> jax.Array:
   dt = jax.ShapeDtypeStruct(x.shape, x.dtype)
-  pallas_call = pl.pallas_call(fingerprint_test_kernel_body, out_shape=dt)
-  return pallas_call(x, y)
+  return pl.pallas_call(fingerprint_test_add_kernel, out_shape=dt)(x, y)
+
+
+def fingerprint_test_mul(x: jax.Array, y: jax.Array) -> jax.Array:
+  dt = jax.ShapeDtypeStruct(x.shape, x.dtype)
+  return pl.pallas_call(fingerprint_test_mul_kernel, out_shape=dt)(x, y)
+
+
+class MlirFingerprintTest(seed_test_utils.RepeatableTest):
+  """Tests the pure MLIR normalization and fingerprinting helpers."""
+
+  def test_fingerprint_is_deterministic_hex_digest(self):
+    fingerprint = _fingerprint(_ADD_MODULE)
+
+    self.assertEqual(fingerprint, _fingerprint(_ADD_MODULE))
+    self.assertRegex(fingerprint, r"^[0-9a-f]{32}$")
+
+  def test_fingerprint_ignores_outer_location_info(self):
+    with_locs_a = _ADD_MODULE_WITH_LOCS_TEMPLATE.format(
+        path="/src/caller_a.py", line=10
+    )
+    with_locs_b = _ADD_MODULE_WITH_LOCS_TEMPLATE.format(
+        path="/src/caller_b.py", line=99
+    )
+
+    self.assertEqual(_fingerprint(with_locs_a), _fingerprint(_ADD_MODULE))
+    self.assertEqual(_fingerprint(with_locs_b), _fingerprint(_ADD_MODULE))
+
+  def test_fingerprint_differs_for_different_ops(self):
+    self.assertNotEqual(_fingerprint(_ADD_MODULE), _fingerprint(_MUL_MODULE))
+
+  def test_fingerprint_differs_for_different_shapes(self):
+    add_module_4 = _ADD_MODULE.replace("tensor<3xf32>", "tensor<4xf32>")
+
+    self.assertNotEqual(_fingerprint(_ADD_MODULE), _fingerprint(add_module_4))
+
+  def test_fingerprint_differs_for_different_kernel_payloads(self):
+    # The embedded kernel body is opaque to normalization, so any change to it
+    # (including its inner debug info) must produce a different fingerprint.
+    module_a = _CUSTOM_CALL_MODULE_TEMPLATE.format(payload="kernel_a")
+    module_b = _CUSTOM_CALL_MODULE_TEMPLATE.format(payload="kernel_b")
+
+    self.assertNotEqual(_fingerprint(module_a), _fingerprint(module_b))
 
 
 class PallasFingerprintTest(seed_test_utils.RepeatableTest):
+  """Tests the fingerprints that real Pallas ops register on TPU."""
 
   def setUp(self):
     super().setUp()
     tt_testing.reset_eager_state()
     self.device = torch.device("tpu:0")
 
-  def test_kernel_key_fingerprint_stability(self):
-    x = torch.tensor([0.1, 0.2, 0.3], dtype=torch.float32, device=self.device)
-    y = torch.tensor([0.4, 0.5, 0.6], dtype=torch.float32, device=self.device)
-    op = pallas.jax_op("pallas::test_add_1", fingerprint_test_jax)
+  def _inputs(self, n: int) -> tuple[torch.Tensor, torch.Tensor]:
+    x = torch.arange(n, dtype=torch.float32, device=self.device)
+    y = torch.full((n,), 2.0, dtype=torch.float32, device=self.device)
+    return x, y
 
-    real_exported = op._init_fn.exported
+  def _fingerprints(self, op) -> list[str]:
+    # The registered fingerprints are only exposed on the op's JaxCallable.
+    return list(
+        op._init_fn.kernel_key_to_mlir_fingerprint.values()  # pylint: disable=protected-access
+    )
 
-    # Override `op._init_fn.exported` to return a fixed constant MLIR module
-    # and serialized payload. Although outer module `#loc` debug info is
-    # stripped during normalization, the embedded Pallas kernel MLIR inside
-    # `custom_call_config.body` still contains `#loc` and source paths.
-    def mock_exported(*args, **kwargs):
-      lowered = real_exported(*args, **kwargs)
-      return _MockExported(
-          mlir_module_serialized=_MOCK_MLIR_MODULE_SERIALIZED,
-          out_avals=lowered.out_avals,
-          out_tree=lowered.out_tree,
-          mlir_module_text=_MOCK_MLIR_MODULE,
-      )
+  def test_repeated_invocations_reuse_registered_fingerprint(self):
+    op = pallas.jax_op("pallas::fp_test_repeat", fingerprint_test_add)
+    x, y = self._inputs(3)
 
-    op._init_fn.exported = mock_exported
+    first = op(x, y)
+    second = op(x, y)
 
-    # Mock custom kernel registration and execution to verify the computed
-    # fingerprint is passed correctly to the backend without relying on TPU
-    # hardware kernel execution.
-    with (
-        mock.patch.object(
-            tpu_torch_pallas, "register_custom_kernel"
-        ) as mock_register,
-        mock.patch.object(
-            tpu_torch_pallas,
-            "call_custom_kernel",
-            return_value=[torch.zeros_like(x)],
-        ) as mock_call,
-    ):
-      _ = op(x, y)
+    test_utils.assert_close(first.cpu(), (x + y).cpu())
+    test_utils.assert_close(second.cpu(), (x + y).cpu())
+    fingerprints = self._fingerprints(op)
+    self.assertLen(fingerprints, 1)
+    self.assertTrue(
+        tpu_torch_pallas.lookup_custom_kernel(
+            "pallas::fp_test_repeat", fingerprints[0]
+        )
+    )
 
-      mock_register.assert_called_once_with(
-          "pallas::test_add_1",
-          _EXPECTED_FINGERPRINT,
-          serialized_mlir_module=_MOCK_MLIR_MODULE_SERIALIZED,
-      )
-      mock_call.assert_called_once_with(
-          "pallas::test_add_1",
-          _EXPECTED_FINGERPRINT,
-          inputs=mock.ANY,
-          output_shapes=mock.ANY,
-          donate_argnums=mock.ANY,
-          device_assignment=mock.ANY,
-      )
+  def test_different_input_shapes_get_different_fingerprints(self):
+    op = pallas.jax_op("pallas::fp_test_shapes", fingerprint_test_add)
+
+    op(*self._inputs(8))
+    op(*self._inputs(16))
+
+    fingerprints = self._fingerprints(op)
+    self.assertLen(fingerprints, 2)
+    self.assertNotEqual(fingerprints[0], fingerprints[1])
+
+  def test_different_kernels_get_different_fingerprints(self):
+    add_op = pallas.jax_op("pallas::fp_test_add", fingerprint_test_add)
+    mul_op = pallas.jax_op("pallas::fp_test_mul", fingerprint_test_mul)
+    x, y = self._inputs(3)
+
+    test_utils.assert_close(add_op(x, y).cpu(), (x + y).cpu())
+    test_utils.assert_close(mul_op(x, y).cpu(), (x * y).cpu())
+
+    (add_fingerprint,) = self._fingerprints(add_op)
+    (mul_fingerprint,) = self._fingerprints(mul_op)
+    self.assertNotEqual(add_fingerprint, mul_fingerprint)
+
+  def test_same_kernel_registered_twice_gets_same_fingerprint(self):
+    # Two ops wrapping the same kernel must share a fingerprint; it depends only
+    # on the lowered program.
+    op_a = pallas.jax_op("pallas::fp_test_same_a", fingerprint_test_add)
+    op_b = pallas.jax_op("pallas::fp_test_same_b", fingerprint_test_add)
+    x, y = self._inputs(3)
+
+    op_a(x, y)
+    op_b(x, y)
+
+    self.assertEqual(self._fingerprints(op_a), self._fingerprints(op_b))
 
 
 if __name__ == "__main__":

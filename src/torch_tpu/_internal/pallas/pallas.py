@@ -927,6 +927,39 @@ class _JaxCustomOpDef(CustomOpDef):
     return self._opoverload(*norm_args, **norm_kwargs)
 
 
+def _normalize_mlir_module(mlir_module_text: str) -> str:
+  """Returns the MLIR module re-printed without location debug info.
+
+  Stripping locations lets differing caller stack frames produce the same
+  deterministic fingerprint and reuse the compiled executable cache.
+
+  Note that this only removes the outer module's debug information (#loc), not
+  the inner debug info embedded inside the base64-encoded kernel
+  (custom_call_config.body), which contains the Mosaic MLIR debug info that is
+  more useful for debugging / profiling than the outer tracing call stack. The
+  exact outer tracing call stack is deterministic but unstable, depending on
+  which layer/callsite happens to trace first.
+
+  Args:
+    mlir_module_text: The textual MLIR module, e.g. from
+      `jax.export.Exported.mlir_module()`.
+  """
+  with jax.interpreters.mlir.make_ir_context():
+    ir_module = jax.interpreters.mlir.ir.Module.parse(mlir_module_text)
+    return str(ir_module.operation.get_asm(enable_debug_info=False))
+
+
+def _fingerprint_normalized_mlir(normalized_mlir: str) -> str:
+  """Returns a content-addressable fingerprint of a normalized MLIR module."""
+  # BLAKE2 is significantly faster than SHA-256, and 128 bits (16 bytes)
+  # provides enough collision resistance before being fingerprinted down to
+  # 64 bits in lower layers.
+  return hashlib.blake2b(
+      normalized_mlir.encode("utf-8"),
+      digest_size=16,
+  ).hexdigest()
+
+
 class JaxCallable:
   """A torch callable function that wraps a JAX function.
 
@@ -1249,27 +1282,8 @@ class JaxCallable:
       jax_args, jax_kwargs = self._get_jax_placeholders(norm_args, norm_kwargs)
       with jax._src.config.export_ignore_forward_compatibility(True):
         lowered = self.exported(*jax_args, **jax_kwargs)
-      # Normalize the MLIR module without location debug info so that
-      # differing caller stack frames produce the same deterministic fingerprint
-      # and reuse the compiled executable cache.
-      # Note that this only removes the outer module's debug information (#loc),
-      # not the inner debug info embedded inside the base64-encoded kernel
-      # (custom_call_config.body), which contains the Mosaic MLIR debug info
-      # that is more useful for debugging / profiling than the outer tracing
-      # call stack. The exact outer tracing call stack is deterministic but
-      # unstable, depending on which layer/callsite happens to trace first.
-      with jax.interpreters.mlir.make_ir_context():
-        ir_module = jax.interpreters.mlir.ir.Module.parse(lowered.mlir_module())
-        normalized_mlir = str(
-            ir_module.operation.get_asm(enable_debug_info=False)
-        )
-      # BLAKE2 is significantly faster than SHA-256, and 128 bits (16 bytes)
-      # provides enough collision resistance before being fingerprinted down to
-      # 64 bits in lower layers.
-      mlir_fingerprint = hashlib.blake2b(
-          normalized_mlir.encode("utf-8"),
-          digest_size=16,
-      ).hexdigest()
+      normalized_mlir = _normalize_mlir_module(lowered.mlir_module())
+      mlir_fingerprint = _fingerprint_normalized_mlir(normalized_mlir)
       self.kernel_key_to_mlir_fingerprint[kernel_key] = mlir_fingerprint
 
       logging.debug(
