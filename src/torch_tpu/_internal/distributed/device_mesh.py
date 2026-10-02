@@ -278,11 +278,47 @@ def topology_aware_mesh(
         "PyTorch distributed process group must be initialized before calling "
         "topology_aware_mesh."
     )
-  world_size = dist.get_world_size()
+
+  return _rank_mesh_from_infos(
+      _gather_global_device_info(device_type),
+      mesh_shape,
+      dcn_mesh_shape=dcn_mesh_shape,
+      allow_split_physical_axes=allow_split_physical_axes,
+      contiguous_submeshes=contiguous_submeshes,
+  )
+
+
+def _rank_mesh_from_infos(
+    infos: list[_DeviceStub],
+    mesh_shape: Tuple[int, ...],
+    *,
+    dcn_mesh_shape: Optional[Tuple[int, ...]] = None,
+    allow_split_physical_axes: bool = False,
+    contiguous_submeshes: bool = False,
+) -> torch.Tensor:
+  """Computes the rank layout for an already-gathered device table.
+
+  This is the pure part of `topology_aware_mesh`: it does no communication, so
+  it can be driven directly with a synthesized device table.
+
+  Args:
+    infos: Device stubs, indexed by torch rank.
+    mesh_shape: See `topology_aware_mesh`.
+    dcn_mesh_shape: See `topology_aware_mesh`.
+    allow_split_physical_axes: See `topology_aware_mesh`.
+    contiguous_submeshes: See `topology_aware_mesh`.
+
+  Returns:
+    An int64 tensor of global torch ranks with shape `mesh_shape`.
+
+  Raises:
+    RuntimeError: See `topology_aware_mesh`.
+    ValueError: See `topology_aware_mesh`.
+  """
+  world_size = len(infos)
 
   from torch_tpu._internal.distributed import device_utils as mesh_utils  # pylint: disable=g-import-not-at-top
 
-  infos = _gather_global_device_info(device_type)
   if len({i.id for i in infos}) != world_size:
     raise RuntimeError(
         "Duplicate pjrt device ids across torch ranks — expected exactly one "

@@ -16,6 +16,7 @@
 
 import asyncio
 import json
+import socket
 from unittest import mock
 
 from absl.testing import absltest
@@ -237,7 +238,16 @@ class GetValidatedHandshakePortTest(seed_test_utils.RepeatableTest):
 
   def test_get_validated_port_in_use_raises_error_for_coordinator(self) -> None:
     """Tests that an exception is raised when the handshake port is in use."""
-    with mock.patch.object(portpicker, "is_port_free", return_value=False):
+    # Non-coordinators skip the availability check, which reveals the port the
+    # coordinator would bind without depending on how it was configured.
+    port = handshake._get_validated_port(is_coordinator=False)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as busy_sock:
+      try:
+        busy_sock.bind(("", port))
+        busy_sock.listen(1)
+      except OSError:
+        # Something else already holds the port, which is just as busy.
+        pass
       with self.assertRaisesRegex(
           RuntimeError, "TORCH_TPU_INTERNAL_HANDSHAKE_PORT"
       ):

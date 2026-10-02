@@ -12,10 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from unittest import mock
-
 from absl.testing import absltest
-import torch
 from torch_tpu import _loader
 from torch_tpu._internal.distributed import device_mesh
 from tests import seed_test_utils
@@ -59,14 +56,7 @@ class DeviceMeshTest(seed_test_utils.MultiProcessRepeatableTest):
             slice_index=0,
         )
 
-    # Call topology_aware_mesh with mocked torch.dist.
-    with mock.patch("torch.distributed.is_initialized", return_value=True):
-      with mock.patch("torch.distributed.get_world_size", return_value=64):
-        with mock.patch(
-            "torch_tpu._internal.distributed.device_mesh._gather_global_device_info",
-            return_value=infos,
-        ):
-          rank_mesh = torch.tpu.topology_aware_mesh(mesh_shape=(8, 8))
+    rank_mesh = device_mesh._rank_mesh_from_infos(infos, mesh_shape=(8, 8))
 
     # Verify that the rank mesh has the correct shape.
     self.assertEqual(rank_mesh.shape, (8, 8))
@@ -107,12 +97,10 @@ class DeviceMeshTest(seed_test_utils.MultiProcessRepeatableTest):
   def test_multi_slice_groups_rows_by_slice(self):
     infos = device_mesh_test_utils.v7x_multislice_infos(num_slices=2)
 
-    rank_mesh = device_mesh_test_utils.patched_call(
+    rank_mesh = device_mesh._rank_mesh_from_infos(
         infos,
-        lambda: torch.tpu.topology_aware_mesh(
-            mesh_shape=(2, 8),
-            dcn_mesh_shape=(2, 1),
-        ),
+        mesh_shape=(2, 8),
+        dcn_mesh_shape=(2, 1),
     )
 
     self.assertEqual(tuple(rank_mesh.shape), (2, 8))
@@ -130,16 +118,11 @@ class DeviceMeshTest(seed_test_utils.MultiProcessRepeatableTest):
   def test_multi_slice_infers_dcn_mesh_shape(self):
     infos = device_mesh_test_utils.v7x_multislice_infos(num_slices=2)
 
-    inferred = device_mesh_test_utils.patched_call(
+    inferred = device_mesh._rank_mesh_from_infos(infos, mesh_shape=(2, 8))
+    explicit = device_mesh._rank_mesh_from_infos(
         infos,
-        lambda: torch.tpu.topology_aware_mesh(mesh_shape=(2, 8)),
-    )
-    explicit = device_mesh_test_utils.patched_call(
-        infos,
-        lambda: torch.tpu.topology_aware_mesh(
-            mesh_shape=(2, 8),
-            dcn_mesh_shape=(2, 1),
-        ),
+        mesh_shape=(2, 8),
+        dcn_mesh_shape=(2, 1),
     )
 
     # Axis 0 is the outermost axis divisible by the slice count, so inference
@@ -149,12 +132,10 @@ class DeviceMeshTest(seed_test_utils.MultiProcessRepeatableTest):
   def test_multi_slice_keeps_cores_of_a_chip_adjacent(self):
     infos = device_mesh_test_utils.v7x_multislice_infos(num_slices=2)
 
-    rank_mesh = device_mesh_test_utils.patched_call(
+    rank_mesh = device_mesh._rank_mesh_from_infos(
         infos,
-        lambda: torch.tpu.topology_aware_mesh(
-            mesh_shape=(2, 8),
-            dcn_mesh_shape=(2, 1),
-        ),
+        mesh_shape=(2, 8),
+        dcn_mesh_shape=(2, 1),
     )
 
     # The core axis has the highest bandwidth, so the two cores of a chip
@@ -174,17 +155,12 @@ class DeviceMeshTest(seed_test_utils.MultiProcessRepeatableTest):
     # satisfiable and has to keep behaving exactly like omitting it.
     infos = device_mesh_test_utils.v7x_multislice_infos(num_slices=1)
 
-    explicit = device_mesh_test_utils.patched_call(
+    explicit = device_mesh._rank_mesh_from_infos(
         infos,
-        lambda: torch.tpu.topology_aware_mesh(
-            mesh_shape=(1, 8),
-            dcn_mesh_shape=(1, 1),
-        ),
+        mesh_shape=(1, 8),
+        dcn_mesh_shape=(1, 1),
     )
-    omitted = device_mesh_test_utils.patched_call(
-        infos,
-        lambda: torch.tpu.topology_aware_mesh(mesh_shape=(1, 8)),
-    )
+    omitted = device_mesh._rank_mesh_from_infos(infos, mesh_shape=(1, 8))
 
     self.assertEqual(explicit.tolist(), omitted.tolist())
 

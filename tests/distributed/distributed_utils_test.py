@@ -84,6 +84,22 @@ def _worker_init_process_group() -> None:
   torch.distributed.destroy_process_group()
 
 
+def _worker_gloo_all_reduce(world_size: int) -> None:
+  assert torch.distributed.is_initialized()
+  assert torch.distributed.get_backend() == "gloo"
+  assert torch.distributed.get_world_size() == world_size
+  rank = torch.distributed.get_rank()
+  tensor = torch.tensor([float(rank + 1)])
+  torch.distributed.all_reduce(tensor)
+  expected = float(world_size * (world_size + 1) // 2)
+  assert tensor.item() == expected, f"rank {rank}: got {tensor.item()}"
+
+
+def _worker_fail_on_rank_one() -> None:
+  if torch.distributed.get_rank() == 1:
+    raise AssertionError("rank 1 failed on purpose")
+
+
 class DistributedUtilsTest(seed_test_utils.MultiProcessRepeatableTest):
 
   def test_automatic_per_rank_seeding(self) -> None:
@@ -170,26 +186,16 @@ class DistributedUtilsTest(seed_test_utils.MultiProcessRepeatableTest):
           "--xla_dump_to=/tmp/dumps/rank_1 --xla_tpu_rank=1",
       )
 
-  def test_dist_run_retries_on_port_collision(self) -> None:
-    """Verifies that dist_run retries when port collision (EADDRINUSE) occurs."""
-    attempt_count = 0
+  def test_gloo_run_provides_working_process_group(self) -> None:
+    """Verifies that gloo_run ranks share an initialized gloo group."""
+    distributed_utils.gloo_run(2, _worker_gloo_all_reduce, 2)
 
-    def mock_spawn(fn, args=(), nprocs=1, join=True):
-      nonlocal attempt_count
-      attempt_count += 1
-      if attempt_count == 1:
-        raise mp.ProcessRaisedException(
-            msg="RuntimeError: Address already in use (errno: 98 EADDRINUSE)",
-            error_index=0,
-            error_pid=12345,
-        )
-      # Second attempt succeeds.
-      return None
-
-    with mock.patch.object(mp, "spawn", side_effect=mock_spawn):
-      distributed_utils.dist_run(2, lambda: None, max_retries=3)
-
-    self.assertEqual(attempt_count, 2)
+  def test_gloo_run_propagates_rank_failure(self) -> None:
+    """Verifies that an assertion failing on one rank fails the caller."""
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=tests the test fixture
+        mp.ProcessRaisedException, "rank 1 failed on purpose"
+    ):
+      distributed_utils.gloo_run(2, _worker_fail_on_rank_one)
 
   def test_dist_run_retries_and_succeeds_with_real_socket_collision(
       self,

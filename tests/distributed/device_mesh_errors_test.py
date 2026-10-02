@@ -15,10 +15,10 @@
 """Tests for topology-aware device mesh error handling."""
 
 import dataclasses
-from unittest import mock
 
 from absl.testing import absltest
 import torch
+import torch.distributed as dist
 from torch_tpu import _loader
 from torch_tpu._internal.distributed import device_mesh
 from tests import seed_test_utils
@@ -32,36 +32,32 @@ class DeviceMeshErrorsTest(seed_test_utils.MultiProcessRepeatableTest):
     _loader._init_device("tpu")  # INIT_DEVICE_OK=CPU runner
 
   def test_pre_initialization_errors(self):
-    # If the process group is not initialized, topology_aware_mesh should
-    # raise a RuntimeError.
-    with mock.patch("torch.distributed.is_initialized", return_value=False):
-      with self.assertRaisesRegex(
-          RuntimeError, "process group must be initialized"
-      ):
-        torch.tpu.topology_aware_mesh(mesh_shape=(8, 8))
+    # This process never initializes a process group, so topology_aware_mesh
+    # should raise a RuntimeError.
+    self.assertFalse(dist.is_initialized())
+    with self.assertRaisesRegex(
+        RuntimeError, "process group must be initialized"
+    ):
+      torch.tpu.topology_aware_mesh(mesh_shape=(8, 8))
 
   def test_multi_slice_rejects_per_slice_mesh_shape(self):
     infos = device_mesh_test_utils.v7x_multislice_infos(num_slices=2)
 
     with self.assertRaisesRegex(ValueError, "must divide mesh_shape"):
-      device_mesh_test_utils.patched_call(
+      device_mesh._rank_mesh_from_infos(
           infos,
-          lambda: torch.tpu.topology_aware_mesh(
-              mesh_shape=(1, 8),
-              dcn_mesh_shape=(2, 1),
-          ),
+          mesh_shape=(1, 8),
+          dcn_mesh_shape=(2, 1),
       )
 
   def test_multi_slice_rejects_mesh_shape_smaller_than_world(self):
     infos = device_mesh_test_utils.v7x_multislice_infos(num_slices=2)
 
     with self.assertRaisesRegex(ValueError, "describes the full mesh"):
-      device_mesh_test_utils.patched_call(
+      device_mesh._rank_mesh_from_infos(
           infos,
-          lambda: torch.tpu.topology_aware_mesh(
-              mesh_shape=(2, 4),
-              dcn_mesh_shape=(2, 1),
-          ),
+          mesh_shape=(2, 4),
+          dcn_mesh_shape=(2, 1),
       )
 
   def test_multi_slice_rejects_all_ones_dcn_mesh_shape(self):
@@ -70,24 +66,20 @@ class DeviceMeshErrorsTest(seed_test_utils.MultiProcessRepeatableTest):
     infos = device_mesh_test_utils.v7x_multislice_infos(num_slices=2)
 
     with self.assertRaisesRegex(ValueError, "covers 1 slices"):
-      device_mesh_test_utils.patched_call(
+      device_mesh._rank_mesh_from_infos(
           infos,
-          lambda: torch.tpu.topology_aware_mesh(
-              mesh_shape=(2, 8),
-              dcn_mesh_shape=(1, 1),
-          ),
+          mesh_shape=(2, 8),
+          dcn_mesh_shape=(1, 1),
       )
 
   def test_multi_slice_rejects_all_ones_dcn_mesh_shape_3d(self):
     infos = device_mesh_test_utils.v7x_multislice_infos(num_slices=2)
 
     with self.assertRaisesRegex(ValueError, "covers 1 slices"):
-      device_mesh_test_utils.patched_call(
+      device_mesh._rank_mesh_from_infos(
           infos,
-          lambda: torch.tpu.topology_aware_mesh(
-              mesh_shape=(2, 2, 4),
-              dcn_mesh_shape=(1, 1, 1),
-          ),
+          mesh_shape=(2, 2, 4),
+          dcn_mesh_shape=(1, 1, 1),
       )
 
   def test_multi_slice_requires_megascale(self):
@@ -96,12 +88,10 @@ class DeviceMeshErrorsTest(seed_test_utils.MultiProcessRepeatableTest):
     )
 
     with self.assertRaisesRegex(RuntimeError, "megascale_port"):
-      device_mesh_test_utils.patched_call(
+      device_mesh._rank_mesh_from_infos(
           infos,
-          lambda: torch.tpu.topology_aware_mesh(
-              mesh_shape=(2, 8),
-              dcn_mesh_shape=(2, 1),
-          ),
+          mesh_shape=(2, 8),
+          dcn_mesh_shape=(2, 1),
       )
 
   def test_rejects_partial_slice_index_reporting(self):
@@ -111,10 +101,7 @@ class DeviceMeshErrorsTest(seed_test_utils.MultiProcessRepeatableTest):
     infos[3] = dataclasses.replace(infos[3], has_slice_index=False)
 
     with self.assertRaisesRegex(RuntimeError, "15 of 16 torch ranks"):
-      device_mesh_test_utils.patched_call(
-          infos,
-          lambda: torch.tpu.topology_aware_mesh(mesh_shape=(2, 8)),
-      )
+      device_mesh._rank_mesh_from_infos(infos, mesh_shape=(2, 8))
 
   def test_multi_slice_rejects_ragged_slices(self):
     infos = device_mesh_test_utils.v7x_multislice_infos(num_slices=2)
@@ -124,12 +111,10 @@ class DeviceMeshErrorsTest(seed_test_utils.MultiProcessRepeatableTest):
     infos[-1] = dataclasses.replace(infos[-1], slice_index=0, id=100099)
 
     with self.assertRaisesRegex(ValueError, "same number of devices"):
-      device_mesh_test_utils.patched_call(
+      device_mesh._rank_mesh_from_infos(
           infos,
-          lambda: torch.tpu.topology_aware_mesh(
-              mesh_shape=(2, 8),
-              dcn_mesh_shape=(2, 1),
-          ),
+          mesh_shape=(2, 8),
+          dcn_mesh_shape=(2, 1),
       )
 
   def test_infer_dcn_mesh_shape_refuses_to_split_shard_axis(self):

@@ -15,14 +15,22 @@
 """Unit tests for TorchTPU integration using TorchComm directly."""
 
 import datetime
+import os
+import time
 from unittest import mock
+
 from absl.testing import absltest
 import torch
 import torch.distributed as dist
-import torch.distributed.distributed_c10d as c10d
+import torch.multiprocessing as mp
 from torch_tpu._internal.distributed import torchcomm_tpu
+from torch_tpu._internal.utils import test_utils
+from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
+from tests.distributed import distributed_utils
 import torchcomms
+
+_WORLD_SIZE = 2
 
 
 def _mock_int_env(values: dict[str, int]):
@@ -44,6 +52,268 @@ def _mock_int_env(values: dict[str, int]):
           name, default_value
       ),
   )
+
+
+def _new_gloo_comm(name: str) -> torchcomms.TorchComm:
+  """Creates a TPU TorchComm on top of the current rank's gloo default group.
+
+  Must run inside `distributed_utils.gloo_run`. With no store, TorchCommsTPU
+  adopts the initialized default process group, and reads its rank and size
+  from the RANK / WORLD_SIZE variables that the launcher sets.
+
+  Args:
+    name: The communicator name.
+
+  Returns:
+    The new communicator.
+  """
+  torchcomm_tpu.register_torchcomms_tpu()
+  comm = torchcomms.new_comm("tpu", torch.device("cpu"), name=name)
+  assert comm.get_rank() == dist.get_rank()
+  assert comm.get_size() == dist.get_world_size()
+  return comm
+
+
+def _wait(work: torchcomms.TorchWork) -> None:
+  assert isinstance(work, torchcomms.TorchWork), type(work)
+  work.wait()
+  assert work.is_completed()
+
+
+def _assert_equal(actual: torch.Tensor, expected: torch.Tensor) -> None:
+  test_utils.assert_close(
+      actual, expected, rtol=0, atol=0, preamble=f"rank {dist.get_rank()}"
+  )
+
+
+def _worker_all_reduce() -> None:
+  rank, world_size = dist.get_rank(), dist.get_world_size()
+  comm = _new_gloo_comm("test_all_reduce")
+
+  tensor = torch.tensor([rank + 1.0, 10.0 * (rank + 1)])
+  _wait(comm.all_reduce(tensor, op=torchcomms.ReduceOp.SUM, async_op=False))
+  total = world_size * (world_size + 1) / 2
+  _assert_equal(tensor, torch.tensor([total, 10.0 * total]))
+
+  # A non-default op shows that the torchcomms op is translated, not dropped.
+  tensor = torch.tensor([rank + 1.0])
+  _wait(comm.all_reduce(tensor, op=torchcomms.ReduceOp.MAX, async_op=False))
+  _assert_equal(tensor, torch.tensor([float(world_size)]))
+  comm.finalize()
+
+
+def _worker_broadcast() -> None:
+  rank, world_size = dist.get_rank(), dist.get_world_size()
+  comm = _new_gloo_comm("test_broadcast")
+
+  # Broadcast from the last rank so that a dropped root (defaulting to 0) shows.
+  root = world_size - 1
+  tensor = torch.tensor([rank + 1.0, rank + 2.0])
+  _wait(comm.broadcast(tensor, root=root, async_op=False))
+  _assert_equal(tensor, torch.tensor([root + 1.0, root + 2.0]))
+  comm.finalize()
+
+
+def _worker_all_gather() -> None:
+  rank, world_size = dist.get_rank(), dist.get_world_size()
+  comm = _new_gloo_comm("test_all_gather")
+  tensor = torch.tensor([rank + 1.0, 10.0 * (rank + 1)])
+  expected = [
+      torch.tensor([i + 1.0, 10.0 * (i + 1)]) for i in range(world_size)
+  ]
+
+  out_list = [torch.zeros(2) for _ in range(world_size)]
+  _wait(comm.all_gather(out_list, tensor, async_op=False))
+  for actual, want in zip(out_list, expected, strict=True):
+    _assert_equal(actual, want)
+
+  out_list_v = [torch.zeros(2) for _ in range(world_size)]
+  _wait(comm.all_gather_v(out_list_v, tensor, async_op=False))
+  for actual, want in zip(out_list_v, expected, strict=True):
+    _assert_equal(actual, want)
+  comm.finalize()
+
+
+def _worker_all_gather_single() -> None:
+  rank, world_size = dist.get_rank(), dist.get_world_size()
+  comm = _new_gloo_comm("test_all_gather_single")
+
+  tensor = torch.tensor([rank + 1.0, 10.0 * (rank + 1)])
+  out = torch.zeros(2 * world_size)
+  _wait(comm.all_gather_single(out, tensor, async_op=False))
+  _assert_equal(
+      out,
+      torch.tensor(
+          [x for i in range(world_size) for x in (i + 1.0, 10.0 * (i + 1))]
+      ),
+  )
+  comm.finalize()
+
+
+def _worker_reduce_scatter() -> None:
+  rank, world_size = dist.get_rank(), dist.get_world_size()
+  comm = _new_gloo_comm("test_reduce_scatter")
+  # Rank k contributes 10 * k + i to chunk i, so chunk `rank` sums to
+  # 10 * sum(k) + world_size * rank.
+  in_list = [torch.full((2,), 10.0 * rank + i) for i in range(world_size)]
+  expected = torch.full((2,), 10.0 * sum(range(world_size)) + world_size * rank)
+
+  out = torch.zeros(2)
+  _wait(
+      comm.reduce_scatter(
+          out, in_list, op=torchcomms.ReduceOp.SUM, async_op=False
+      )
+  )
+  _assert_equal(out, expected)
+
+  out_v = torch.zeros(2)
+  _wait(
+      comm.reduce_scatter_v(
+          out_v, in_list, op=torchcomms.ReduceOp.SUM, async_op=False
+      )
+  )
+  _assert_equal(out_v, expected)
+  comm.finalize()
+
+
+def _worker_reduce_scatter_single() -> None:
+  rank, world_size = dist.get_rank(), dist.get_world_size()
+  comm = _new_gloo_comm("test_reduce_scatter_single")
+
+  in_t = torch.arange(2.0 * world_size) + 100.0 * rank
+  out = torch.zeros(2)
+  _wait(
+      comm.reduce_scatter_single(
+          out, in_t, op=torchcomms.ReduceOp.SUM, async_op=False
+      )
+  )
+  chunk = torch.arange(2.0 * rank, 2.0 * rank + 2)
+  _assert_equal(out, world_size * chunk + 100.0 * sum(range(world_size)))
+  comm.finalize()
+
+
+def _worker_barrier(marker_dir: str) -> None:
+  rank = dist.get_rank()
+  comm = _new_gloo_comm("test_barrier")
+  marker = os.path.join(marker_dir, "rank0_done")
+
+  if rank == 0:
+    # Give the other ranks time to reach the check if the barrier is a no-op.
+    time.sleep(0.5)
+    with open(marker, "w") as f:
+      f.write("done")
+  _wait(comm.barrier(async_op=False))
+  assert os.path.exists(marker), f"rank {rank} passed the barrier before rank 0"
+  comm.finalize()
+
+
+class _P2PProcessGroup:
+  """Exposes a c10d group's send/recv under ProcessGroupTpu's P2P method names.
+
+  TorchCommsTPU drives point-to-point traffic through `experimental_send` /
+  `experimental_recv`, which only ProcessGroupTpu provides. This forwards them
+  to a real gloo group, so the transfer itself still happens.
+  """
+
+  def __init__(self, pg: dist.ProcessGroup):
+    self._pg = pg
+
+  def experimental_send(
+      self, tensors: list[torch.Tensor], dst: int, tag: int
+  ) -> dist.Work:
+    return self._pg.send(tensors, dst, tag)
+
+  def experimental_recv(
+      self, tensors: list[torch.Tensor], src: int, tag: int
+  ) -> dist.Work:
+    return self._pg.recv(tensors, src, tag)
+
+
+def _worker_send_recv() -> None:
+  rank, world_size = dist.get_rank(), dist.get_world_size()
+  # Without the P2P methods, send/recv must refuse rather than silently no-op.
+  gloo_comm = _new_gloo_comm("test_sr_unsupported")
+  try:
+    gloo_comm.get_backend_impl().send(
+        torch.zeros(1), dst=(rank + 1) % world_size
+    )
+  except NotImplementedError:
+    pass
+  else:
+    raise AssertionError("send on a group without P2P support did not raise")
+  gloo_comm.finalize()
+
+  comm = torchcomm_tpu.TorchCommsTPU(
+      device=torch.device("cpu"),
+      name="test_sr",
+      group_rank=rank,
+      group_size=world_size,
+      pg=_P2PProcessGroup(dist.group.WORLD),
+  )
+  # Pass a value around the ring: send to the next rank, receive from the
+  # previous one. Even ranks send first so that the blocking calls pair up.
+  dst, src = (rank + 1) % world_size, (rank - 1) % world_size
+  payload = torch.tensor([rank + 1.0, 10.0 * (rank + 1)])
+  received = torch.zeros(2)
+  if rank % 2 == 0:
+    comm.send(payload, dst=dst).wait()
+    comm.recv(received, src=src).wait()
+  else:
+    comm.recv(received, src=src).wait()
+    comm.send(payload, dst=dst).wait()
+  _assert_equal(received, torch.tensor([src + 1.0, 10.0 * (src + 1)]))
+  comm.finalize()
+
+
+def _worker_all_to_all() -> None:
+  rank, world_size = dist.get_rank(), dist.get_world_size()
+  comm = _new_gloo_comm("test_all_to_all")
+
+  # Rank r sends 10 * r + i to rank i, so rank r receives 10 * i + r from i.
+  in_list = [torch.tensor([10.0 * rank + i]) for i in range(world_size)]
+  out_list = [torch.zeros(1) for _ in range(world_size)]
+  _wait(comm.all_to_all(out_list, in_list, async_op=False))
+  for i, actual in enumerate(out_list):
+    _assert_equal(actual, torch.tensor([10.0 * i + rank]))
+  comm.finalize()
+
+
+def _worker_all_to_all_single() -> None:
+  rank, world_size = dist.get_rank(), dist.get_world_size()
+  comm = _new_gloo_comm("test_all_to_all_single")
+
+  # Even splits: row i of rank r's input goes to rank i.
+  in_t = torch.tensor([[10.0 * rank + i] for i in range(world_size)])
+  out = torch.zeros(world_size, 1)
+  _wait(comm.all_to_all_single(out, in_t, async_op=False))
+  _assert_equal(
+      out, torch.tensor([[10.0 * i + rank] for i in range(world_size)])
+  )
+
+  # Uneven splits: every rank sends i + 1 elements to rank i, so rank r
+  # receives r + 1 elements from each peer.
+  in_splits = [i + 1 for i in range(world_size)]
+  in_v = torch.cat(
+      [torch.full((n,), 10.0 * rank + i) for i, n in enumerate(in_splits)]
+  )
+  out_splits = [rank + 1] * world_size
+  out_v = torch.zeros(sum(out_splits))
+  _wait(
+      comm.all_to_all_v_single(
+          out_v,
+          in_v,
+          output_split_sizes=out_splits,
+          input_split_sizes=in_splits,
+          async_op=False,
+      )
+  )
+  _assert_equal(
+      out_v,
+      torch.cat(
+          [torch.full((rank + 1,), 10.0 * i + rank) for i in range(world_size)]
+      ),
+  )
+  comm.finalize()
 
 
 class TorchCommsTPUTest(seed_test_utils.RepeatableTest):
@@ -188,204 +458,8 @@ class TorchCommsTPUTest(seed_test_utils.RepeatableTest):
     )
 
     # Unsupported / unmapped reduction type raises ValueError
-    invalid_op = mock.MagicMock(spec=torchcomms.ReduceOp)
-    invalid_op.type = "UNSUPPORTED_TYPE"
     with self.assertRaises(ValueError):
-      torchcomm_tpu._to_dist_reduce_op(invalid_op)
-
-  def test_torchcomms_all_reduce(self):
-    """Verifies all_reduce collective delegation and TorchWork handle completion."""
-    comm = torchcomms.new_comm(
-        "tpu", torch.device("cpu"), name="test_all_reduce"
-    )
-    mock_pg = mock.MagicMock()
-    comm.get_backend_impl()._pg = mock_pg
-
-    tensor = torch.tensor([1.0, 2.0])
-    work = comm.all_reduce(tensor, op=torchcomms.ReduceOp.SUM, async_op=False)
-    self.assertIsInstance(work, torchcomms.TorchWork)
-    work.wait()
-    self.assertTrue(work.is_completed())
-    self.assertTrue(mock_pg.allreduce.called)
-    self.assertEqual(
-        mock_pg.allreduce.call_args[0][1].reduceOp, dist.ReduceOp.SUM
-    )
-    comm.finalize()
-
-  def test_torchcomms_broadcast(self):
-    """Verifies broadcast collective delegation and TorchWork handle completion."""
-    comm = torchcomms.new_comm(
-        "tpu", torch.device("cpu"), name="test_broadcast"
-    )
-    mock_pg = mock.MagicMock()
-    comm.get_backend_impl()._pg = mock_pg
-
-    tensor = torch.tensor([1.0, 2.0])
-    work = comm.broadcast(tensor, root=0, async_op=False)
-    self.assertIsInstance(work, torchcomms.TorchWork)
-    work.wait()
-    self.assertTrue(work.is_completed())
-    self.assertTrue(mock_pg.broadcast.called)
-    comm.finalize()
-
-  def test_torchcomms_all_gather_and_all_gather_v(self):
-    """Verifies standard and vectorized all_gather collective operations."""
-    comm = torchcomms.new_comm(
-        "tpu", torch.device("cpu"), name="test_all_gather"
-    )
-    mock_pg = mock.MagicMock()
-    comm.get_backend_impl()._pg = mock_pg
-
-    tensor = torch.tensor([1.0, 2.0])
-    out_list = [torch.empty_like(tensor), torch.empty_like(tensor)]
-
-    # Standard all_gather
-    work = comm.all_gather(out_list, tensor, async_op=False)
-    self.assertIsInstance(work, torchcomms.TorchWork)
-    work.wait()
-    self.assertTrue(work.is_completed())
-    self.assertTrue(mock_pg.allgather.called)
-
-    # Vectorized all_gather_v
-    work_v = comm.all_gather_v(out_list, tensor, async_op=False)
-    self.assertIsInstance(work_v, torchcomms.TorchWork)
-    work_v.wait()
-    self.assertTrue(work_v.is_completed())
-    comm.finalize()
-
-  def test_torchcomms_all_gather_single(self):
-    """Verifies flattened all_gather_single contiguous tensor collective."""
-    comm = torchcomms.new_comm("tpu", torch.device("cpu"), name="test_ags")
-    mock_pg = mock.MagicMock()
-    comm.get_backend_impl()._pg = mock_pg
-
-    tensor = torch.tensor([1.0, 2.0])
-    out = torch.empty([2, 2])
-    work = comm.all_gather_single(out, tensor, async_op=False)
-    self.assertIsInstance(work, torchcomms.TorchWork)
-    work.wait()
-    self.assertTrue(work.is_completed())
-    self.assertTrue(mock_pg._allgather_base.called)
-    comm.finalize()
-
-  def test_torchcomms_reduce_scatter_and_reduce_scatter_v(self):
-    """Verifies standard and vectorized reduce_scatter collective operations."""
-    comm = torchcomms.new_comm("tpu", torch.device("cpu"), name="test_rs")
-    mock_pg = mock.MagicMock()
-    comm.get_backend_impl()._pg = mock_pg
-
-    out = torch.empty([2])
-    in_list = [torch.tensor([1.0, 2.0]), torch.tensor([3.0, 4.0])]
-
-    # Standard reduce_scatter
-    work = comm.reduce_scatter(
-        out, in_list, op=torchcomms.ReduceOp.SUM, async_op=False
-    )
-    self.assertIsInstance(work, torchcomms.TorchWork)
-    work.wait()
-    self.assertTrue(work.is_completed())
-    self.assertTrue(mock_pg.reduce_scatter.called)
-
-    # Vectorized reduce_scatter_v
-    work_v = comm.reduce_scatter_v(
-        out, in_list, op=torchcomms.ReduceOp.SUM, async_op=False
-    )
-    self.assertIsInstance(work_v, torchcomms.TorchWork)
-    work_v.wait()
-    self.assertTrue(work_v.is_completed())
-    comm.finalize()
-
-  def test_torchcomms_reduce_scatter_single(self):
-    """Verifies contiguous single-tensor reduce_scatter_single collective."""
-    comm = torchcomms.new_comm("tpu", torch.device("cpu"), name="test_rss")
-    mock_pg = mock.MagicMock()
-    comm.get_backend_impl()._pg = mock_pg
-
-    out = torch.empty([2])
-    in_t = torch.empty([4])
-    work = comm.reduce_scatter_single(
-        out, in_t, op=torchcomms.ReduceOp.SUM, async_op=False
-    )
-    self.assertIsInstance(work, torchcomms.TorchWork)
-    work.wait()
-    self.assertTrue(work.is_completed())
-    self.assertTrue(mock_pg._reduce_scatter_base.called)
-    comm.finalize()
-
-  def test_torchcomms_barrier(self):
-    """Verifies barrier collective synchronization."""
-    comm = torchcomms.new_comm("tpu", torch.device("cpu"), name="test_barrier")
-    mock_pg = mock.MagicMock()
-    comm.get_backend_impl()._pg = mock_pg
-
-    work = comm.barrier(async_op=False)
-    self.assertIsInstance(work, torchcomms.TorchWork)
-    work.wait()
-    self.assertTrue(work.is_completed())
-    self.assertTrue(mock_pg.barrier.called)
-    comm.finalize()
-
-  def test_torchcomms_send_recv(self):
-    """Verifies point-to-point send and recv operations."""
-    with _mock_int_env({"TORCHCOMM_RANK": 0, "TORCHCOMM_SIZE": 2}):
-      comm = torchcomms.new_comm("tpu", torch.device("cpu"), name="test_sr")
-      mock_pg = mock.MagicMock()
-      mock_pg.experimental_send = mock.MagicMock()
-      mock_pg.experimental_recv = mock.MagicMock()
-      comm.get_backend_impl()._pg = mock_pg
-
-      tensor = torch.tensor([1.0, 2.0])
-      work_send = comm.send(tensor, dst=1, async_op=False)
-      self.assertIsInstance(work_send, torchcomms.TorchWork)
-      work_send.wait()
-      self.assertTrue(work_send.is_completed())
-      self.assertTrue(mock_pg.experimental_send.called)
-
-      work_recv = comm.recv(tensor, src=1, async_op=False)
-      self.assertIsInstance(work_recv, torchcomms.TorchWork)
-      work_recv.wait()
-      self.assertTrue(work_recv.is_completed())
-      self.assertTrue(mock_pg.experimental_recv.called)
-      comm.finalize()
-
-  def test_torchcomms_all_to_all(self):
-    """Verifies all_to_all collective operation with tensor lists."""
-    comm = torchcomms.new_comm("tpu", torch.device("cpu"), name="test_a2a")
-    mock_pg = mock.MagicMock()
-    comm.get_backend_impl()._pg = mock_pg
-
-    t_list = [torch.tensor([1.0]), torch.tensor([2.0])]
-    work = comm.all_to_all(t_list, t_list, async_op=False)
-    self.assertIsInstance(work, torchcomms.TorchWork)
-    work.wait()
-    self.assertTrue(work.is_completed())
-    self.assertTrue(mock_pg.alltoall.called)
-    comm.finalize()
-
-  def test_torchcomms_all_to_all_single_and_v(self):
-    """Verifies all_to_all_single and split-based all_to_all_v_single."""
-    comm = torchcomms.new_comm("tpu", torch.device("cpu"), name="test_a2as")
-    mock_pg = mock.MagicMock()
-    comm.get_backend_impl()._pg = mock_pg
-
-    out = torch.empty([2, 2])
-    work = comm.all_to_all_single(out, out, async_op=False)
-    self.assertIsInstance(work, torchcomms.TorchWork)
-    work.wait()
-    self.assertTrue(work.is_completed())
-    self.assertTrue(mock_pg.alltoall_base.called)
-
-    work_v = comm.all_to_all_v_single(
-        out,
-        out,
-        output_split_sizes=[1, 1],
-        input_split_sizes=[1, 1],
-        async_op=False,
-    )
-    self.assertIsInstance(work_v, torchcomms.TorchWork)
-    work_v.wait()
-    self.assertTrue(work_v.is_completed())
-    comm.finalize()
+      torchcomm_tpu._to_dist_reduce_op(torchcomms.ReduceOp.PREMUL_SUM(2.0))
 
   def test_torchcomms_set_timeout(self):
     """Verifies setting operation timeout on the communicator."""
@@ -400,34 +474,12 @@ class TorchCommsTPUTest(seed_test_utils.RepeatableTest):
     )
     comm.finalize()
 
-  def test_torchcomms_handles_backend_routing(self):
-    """Verifies c10d._torchcomms_handles_backend recognizes tpu and tpu_dist."""
-    with mock.patch.multiple(
-        c10d,
-        _TORCHCOMM_AVAILABLE=True,
-        _torchcomms_is_backend_registered=lambda name: name
-        in ("tpu", "tpu_dist"),
-        _torchcomms_is_backend_built=lambda name: False,
-        create=True,
-    ):
-      self.assertTrue(c10d._torchcomms_handles_backend("tpu"))
-      self.assertTrue(c10d._torchcomms_handles_backend("tpu_dist"))
-      self.assertTrue(c10d._torchcomms_handles_backend("TPU"))
-      self.assertFalse(c10d._torchcomms_handles_backend("unknown_backend"))
-
   def test_c10d_backend_availability(self):
     """Verifies backend availability registration with PyTorch c10d."""
-    mock_distributed = mock.MagicMock()
-    with mock.patch(
-        "torch_tpu._internal.distributed.torchcomm_tpu.tpu_distributed",
-        mock_distributed,
-    ):
-      torchcomm_tpu.register_torchcomms_tpu()
-      self.assertTrue(dist.is_backend_available("tpu_dist"))
-      self.assertTrue(dist.is_backend_available("tpu"))
-      self.assertEqual(
-          dist.Backend.default_device_backend_map.get("tpu"), "tpu"
-      )
+    torchcomm_tpu.register_torchcomms_tpu()
+    self.assertTrue(dist.is_backend_available("tpu_dist"))
+    self.assertTrue(dist.is_backend_available("tpu"))
+    self.assertEqual(dist.Backend.default_device_backend_map.get("tpu"), "tpu")
 
   def test_unsupported_stubs_raise_not_implemented(self):
     """Verifies that unsupported collective or communicator features raise NotImplementedError."""
@@ -485,7 +537,7 @@ class TorchCommsTPUTest(seed_test_utils.RepeatableTest):
       backend.monitored_barrier()
 
     with self.assertRaises(NotImplementedError):
-      backend.register_flight_recorder_hook(mock.MagicMock())
+      backend.register_flight_recorder_hook(lambda *_: None)
 
     with self.assertRaises(NotImplementedError):
       backend.get_flight_recorder_traces()
@@ -505,8 +557,45 @@ class TorchCommsTPUTest(seed_test_utils.RepeatableTest):
     comm.finalize()
 
 
+class TorchCommsTPUCollectivesTest(seed_test_utils.MultiProcessRepeatableTest):
+  """Runs each collective across real gloo ranks and checks the results."""
+
+  def test_all_reduce(self):
+    distributed_utils.gloo_run(_WORLD_SIZE, _worker_all_reduce)
+
+  def test_broadcast(self):
+    distributed_utils.gloo_run(_WORLD_SIZE, _worker_broadcast)
+
+  def test_all_gather_and_all_gather_v(self):
+    distributed_utils.gloo_run(_WORLD_SIZE, _worker_all_gather)
+
+  def test_all_gather_single(self):
+    distributed_utils.gloo_run(_WORLD_SIZE, _worker_all_gather_single)
+
+  def test_reduce_scatter_and_reduce_scatter_v(self):
+    distributed_utils.gloo_run(_WORLD_SIZE, _worker_reduce_scatter)
+
+  def test_reduce_scatter_single(self):
+    distributed_utils.gloo_run(_WORLD_SIZE, _worker_reduce_scatter_single)
+
+  def test_barrier(self):
+    distributed_utils.gloo_run(
+        _WORLD_SIZE, _worker_barrier, self.create_tempdir().full_path
+    )
+
+  def test_send_recv(self):
+    distributed_utils.gloo_run(_WORLD_SIZE, _worker_send_recv)
+
+  def test_all_to_all(self):
+    distributed_utils.gloo_run(_WORLD_SIZE, _worker_all_to_all)
+
+  def test_all_to_all_single_and_v(self):
+    distributed_utils.gloo_run(_WORLD_SIZE, _worker_all_to_all_single)
+
+
 # Alias for backward compatibility
 TorchCommTPUTest = TorchCommsTPUTest
 
 if __name__ == "__main__":
-  absltest.main()
+  mp.set_start_method("spawn")
+  multiprocessing.handle_test_main(absltest.main)

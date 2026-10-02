@@ -14,19 +14,19 @@
 
 """Shared fixtures for the topology-aware device mesh tests.
 
-`topology_aware_mesh` reads the job layout off the PJRT devices, so exercising
-a multi-slice layout only requires synthesizing the gathered device table.
-Both `device_mesh_test` and `device_mesh_errors_test` drive the function that
-way, which is why these helpers live here rather than in either test.
+`topology_aware_mesh` reads the job layout off the PJRT devices and hands the
+gathered device table to the pure `_rank_mesh_from_infos`, so exercising a
+multi-slice layout only requires synthesizing that table. Both
+`device_mesh_test` and `device_mesh_errors_test` drive the function that way,
+which is why these helpers live here rather than in either test.
 """
 
-from collections.abc import Callable
-from typing import TypeVar
-from unittest import mock
+# TODO(wan): revisit DECISION (b/568593385): the gloo fixture
+# (distributed_utils.gloo_run) is not used here. topology_aware_mesh's only
+# distributed step is the PJRT device gather, which gloo cannot serve, so the
+# tests drive the pure _rank_mesh_from_infos directly instead.
 
 from torch_tpu._internal.distributed import device_mesh
-
-_T = TypeVar("_T")
 
 
 def v7x_multislice_infos(
@@ -66,27 +66,3 @@ def v7x_multislice_infos(
           )
       )
   return infos
-
-
-def patched_call(
-    infos: list[device_mesh._DeviceStub],
-    fn: Callable[[], _T],
-) -> _T:
-  """Invokes fn with torch.distributed and the device gather stubbed out.
-
-  Args:
-    infos: Device stubs the patched gather hands back, indexed by torch rank.
-    fn: Callable to invoke under the patches.
-
-  Returns:
-    Whatever `fn` returns.
-  """
-  with mock.patch("torch.distributed.is_initialized", return_value=True):
-    with mock.patch(
-        "torch.distributed.get_world_size", return_value=len(infos)
-    ):
-      with mock.patch(
-          "torch_tpu._internal.distributed.device_mesh._gather_global_device_info",
-          return_value=infos,
-      ):
-        return fn()

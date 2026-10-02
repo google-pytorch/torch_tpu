@@ -85,17 +85,17 @@ torch_tpu_py_test(
     name = "torchcomm_tpu_test",
     srcs = ["torchcomm_tpu_test.py"],
     nobuild_oss = True,  # torchcomms is not yet available in OSS
-    tags = [
-        "requires-tpu-v5lite",
-    ],
     deps = if_oss(
         [],
         ["@pypi//torchcomms"],
     ) + [
+        ":distributed_utils",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/distributed:torchcomm_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
     ],
 )
@@ -901,7 +901,6 @@ torch_tpu_py_test(
     deps = [
         ":device_mesh_test_utils",
         "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu:_loader",
         "//src/torch_tpu/_internal/distributed:device_mesh",
