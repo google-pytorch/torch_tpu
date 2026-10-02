@@ -1967,6 +1967,30 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       torch.std(t, dim=0, out=out)
 
+  def test_reduction_unsupported_int_dtype_var_out(self):
+    """Var out-variant fails when input has integral dtype."""
+    t = torch.ones(2, 3, device=et.device(), dtype=torch.int32)
+    out = torch.empty(3, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""var(): expected a floating point or complex dtype, got int32""",
+        gpu="""std and var only support floating point and complex dtypes""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.var(t, dim=0, out=out)
+
+  def test_reduction_unsupported_int_out_dtype_var(self):
+    """Var out-variant fails when output has non-floating dtype."""
+    t = torch.ones(2, 3, device=et.device(), dtype=torch.float32)
+    out = torch.empty(3, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""var(): result type float32 can't be cast to the desired output type int32""",
+        gpu="""result type Float can't be cast to the desired output type Int""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.var(t, dim=0, out=out)
+
   def test_unfold_size_too_large(self):
     """Unfold fails when size is larger than dimension."""
     t = torch.ones(5, device=et.device())

@@ -30,7 +30,6 @@
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
-#include "c10/util/Exception.h"
 #include "c10/util/OptionalArrayRef.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
@@ -204,8 +203,13 @@ at::Tensor& AtenVarOut(const at::Tensor& self,
   TT_KERNEL(
       OpName::kVarOut, param_keys,
       (self, dim, promoted_correction, keep_dim, out), {
-        c10::ScalarType scalar_dtype = out.scalar_type();
-        TT_THROW_IF_ERROR(ValidateFloatOrComplex(scalar_dtype));
+        const c10::ScalarType self_scalar_dtype = self.scalar_type();
+        TT_THROW_IF_ERROR(ValidateFloatOrComplex(self_scalar_dtype));
+        const c10::ScalarType scalar_dtype = out.scalar_type();
+        const c10::ScalarType expected_dtype =
+            c10::toRealValueType(self_scalar_dtype);
+        TT_THROW_IF_ERROR(ValidateOutDtype(out, expected_dtype,
+                                           /*allow_out_dtype_cast=*/true));
 
         const ReductionMode reduction_mode =
             keep_dim ? ReductionMode::kKeepDims : ReductionMode::kDropDims;
