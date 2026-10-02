@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Any
+
 import torch
 from perflab import context as context_lib
 from perflab import model_helpers
@@ -95,6 +97,15 @@ def default_load_model(
     if num_labels is not None and type(model).__name__.endswith(
         "ForSequenceClassification"
     ):
+      # The labels below are class indices of shape `(batch_size,)`. Pin the
+      # matching `problem_type` so that heads do not take a data-dependent path:
+      # with `problem_type` unset, `DebertaForSequenceClassification` and
+      # `DebertaV2ForSequenceClassification` select labels with
+      # `(labels >= 0).nonzero()`, whose output shape is unknown under
+      # `jax.jit`. Regression heads (`num_labels == 1`) are left unchanged.
+      config: Any = model.config
+      if num_labels > 1 and config.problem_type is None:
+        config.problem_type = "single_label_classification"
       inputs["labels"] = torch.randint(
           0,
           num_labels,

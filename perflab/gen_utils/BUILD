@@ -59,4 +59,19 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_test(
+    name = "load_model_test",
+    srcs = ["load_model_test.py"],
+    deps = [
+        ":load_model",
+        "//perflab:context",
+        "//perflab:model_helpers",
+        "//perflab:target",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//tests:seed_test_utils",
+    ],
+)
+
 torch_tpu_package_end()
