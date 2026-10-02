@@ -19,13 +19,13 @@ load("@rules_testing//lib:test_suite.bzl", "test_suite")
 load(
     "//build_files:build_defs.bzl",
     # go/keep-sorted start
-    "add_rbe_exec_properties_for_testing",
     "check_and_adjust_test_tags_for_testing",
     "clamp_shard_count_for_testing",
     "get_tpu_chip_count_for_testing",
     "get_tpu_version_for_testing",
     "is_backend_dep_for_testing",
     "is_oss",
+    "rbe_tpu_exec_properties_for_testing",
     "torch_tpu_cc_test",
     "torch_tpu_py_test",
     "tpu_gen",
@@ -839,11 +839,22 @@ def _test_shard_count_clamping(env):
 
 _V5_RBE_TAGS = ["requires-tpu"]
 
-_V5_RBE_EXEC_PROPERTIES = {
-    "test.Pool": "ci_tpu_v5_full_rbe",
-    "test.dockerPrivileged": "true",
-    "test.dockerRunAsRoot": "true",
+# RBE region -> v5e worker pool on that region's RBE instance.
+_V5_RBE_POOLS = {
+    "asia-southeast1": "ci_tpu_v5_asia_se1_rbe",
+    "us-central1": "ci_tpu_v5_central1_rbe",
+    "us-east1": "ci_tpu_v5_east1_rbe",
+    "us-west1": "ci_tpu_v5_full_rbe",
 }
+
+def _v5_rbe_exec_properties(pool):
+    return {
+        "test.Pool": pool,
+        "test.dockerPrivileged": "true",
+        "test.dockerRunAsRoot": "true",
+    }
+
+_V5_RBE_EXEC_PROPERTIES = _v5_rbe_exec_properties(_V5_RBE_POOLS["us-west1"])
 
 _V5_RBE_ENV = {
     "TPU_ACCELERATOR_TYPE": "v5e-1",
@@ -852,34 +863,37 @@ _V5_RBE_ENV = {
     "TPU_WORKER_ID": "0",
 }
 
-def _rbe_exec_properties(tpu_generation, tags = _V5_RBE_TAGS, exec_properties = None):
-    kwargs = {} if exec_properties == None else {"exec_properties": exec_properties}
-    add_rbe_exec_properties_for_testing(kwargs, tags, tpu_generation)
-    return kwargs.get("exec_properties", {})
+def _expect_no_rbe_exec_properties(env, tags, tpu_generation, region):
+    # None, not {}: it's what makes the macro skip the region select entirely.
+    env.expect.where(tags = tags, tpu_generation = tpu_generation, region = region).that_bool(
+        rbe_tpu_exec_properties_for_testing(tags, tpu_generation, region) == None,
+    ).equals(True)
 
 def _test_rbe_oss_v5_test_gets_pool(env):
-    """Tests that an OSS single-chip v5 test goes to the v5e RBE pool."""
-    env.expect.that_dict(_rbe_exec_properties("v5")).contains_exactly(
-        _V5_RBE_EXEC_PROPERTIES,
-    )
+    """Tests that a single-chip v5 test goes to the v5e pool of the region it runs in."""
+    for region, pool in _V5_RBE_POOLS.items():
+        env.expect.where(region = region).that_dict(
+            rbe_tpu_exec_properties_for_testing(_V5_RBE_TAGS, "v5", region),
+        ).contains_exactly(_v5_rbe_exec_properties(pool))
 
 def _test_rbe_oss_network_tag_sets_docker_network(env):
-    """Tests that requires-net:external sets test.dockerNetwork=standard on OSS RBE TPU tests."""
-    env.expect.that_dict(
-        _rbe_exec_properties("v5", tags = ["requires-net:external", "requires-tpu"]),
-    ).contains_exactly(
-        _V5_RBE_EXEC_PROPERTIES | {"test.dockerNetwork": "standard"},
-    )
-    env.expect.that_dict(
-        _rbe_exec_properties(None, tags = ["requires-net:external"]),
-    ).contains_exactly({})
+    """Tests that requires-net:external adds test.dockerNetwork=standard on top of the region's pool."""
+    tags = ["requires-net:external", "requires-tpu"]
+    for region, pool in _V5_RBE_POOLS.items():
+        env.expect.where(region = region).that_dict(
+            rbe_tpu_exec_properties_for_testing(tags, "v5", region),
+        ).contains_exactly(
+            _v5_rbe_exec_properties(pool) | {"test.dockerNetwork": "standard"},
+        )
+        _expect_no_rbe_exec_properties(env, ["requires-net:external"], None, region)
 
 def _test_rbe_internal_test_gets_nothing(env):
     """Tests that internal builds (tpu_generation = None) never get RBE exec_properties."""
-    env.expect.that_dict(_rbe_exec_properties(None)).contains_exactly({})
+    for region in _V5_RBE_POOLS:
+        _expect_no_rbe_exec_properties(env, _V5_RBE_TAGS, None, region)
 
 def _test_rbe_test_without_pool_gets_nothing(env):
-    """Tests that CPU, v7 and multi-chip v5 tests don't get a TPU pool."""
+    """Tests that CPU, v7 and multi-chip v5 tests don't get a TPU pool, even in regions with a v5 pool."""
     for tpu_generation, tags in [
         (None, []),
         # TODO: b/567928058 - Once v7x and 8-chip v5e RBE worker pools are added
@@ -889,23 +903,12 @@ def _test_rbe_test_without_pool_gets_nothing(env):
         ("v7", ["requires-tpu-v7x", "requires-tpu"]),
         ("v5", ["requires-tpu", "requires-tpu-v5lite:8"]),
     ]:
-        env.expect.where(tpu_generation = tpu_generation, tags = tags).that_dict(
-            _rbe_exec_properties(tpu_generation, tags),
-        ).contains_exactly({})
+        for region in _V5_RBE_POOLS:
+            _expect_no_rbe_exec_properties(env, tags, tpu_generation, region)
 
-def _test_rbe_caller_exec_properties_win(env):
-    """Tests that exec_properties the caller set win over the RBE ones."""
-    exec_properties = _rbe_exec_properties(
-        "v5",
-        exec_properties = {"test.Pool": "custom_pool", "test.mem": "32g"},
-    )
-
-    env.expect.that_dict(exec_properties).contains_exactly({
-        "test.Pool": "custom_pool",
-        "test.dockerPrivileged": "true",
-        "test.dockerRunAsRoot": "true",
-        "test.mem": "32g",
-    })
+def _test_rbe_unknown_region_gets_nothing(env):
+    """Tests that a v5 test in a region with no v5 pool gets no exec_properties."""
+    _expect_no_rbe_exec_properties(env, _V5_RBE_TAGS, "v5", "europe-west4")
 
 def _test_rbe_macro_exec_properties_impl(env, targets):
     """Verifies exec_properties, env, and shard_count emitted by torch_tpu_py_test and torch_tpu_cc_test."""
@@ -955,22 +958,36 @@ def _test_rbe_macro_exec_properties_impl(env, targets):
     )
     env.expect.that_dict(targets.cc_override[_TagsInfo].env).contains_exactly(caller_env)
 
-    if is_oss():
-        env.expect.that_dict(targets.rbe_py_v5[_TagsInfo].env).contains_exactly(_V5_RBE_ENV)
-        env.expect.that_int(targets.rbe_py_v5[_TagsInfo].shard_count).equals(8)
-        env.expect.that_dict(targets.rbe_py_v5_net[_TagsInfo].env).contains_exactly(_V5_RBE_ENV)
-        env.expect.that_dict(targets.rbe_py_override[_TagsInfo].env).contains_exactly(
-            _V5_RBE_ENV | caller_env,
-        )
-        env.expect.that_dict(targets.rbe_py_cpu[_TagsInfo].env).contains_exactly({})
-        env.expect.that_dict(targets.rbe_py_multichip[_TagsInfo].env).contains_exactly({})
-        env.expect.that_int(targets.rbe_py_multichip[_TagsInfo].shard_count).equals(8)
-        env.expect.that_dict(targets.rbe_py_v7[_TagsInfo].env).contains_exactly({})
-        env.expect.that_dict(targets.rbe_cc_v5[_TagsInfo].env).contains_exactly(_V5_RBE_ENV)
-        env.expect.that_int(targets.rbe_cc_v5[_TagsInfo].shard_count).equals(4)
-        env.expect.that_dict(targets.rbe_cc_override[_TagsInfo].env).contains_exactly(
-            _V5_RBE_ENV | caller_env,
-        )
+    if not is_oss():
+        return
+
+    # Config prefix -> pool a single-chip v5 test should land in. `rbe_` leaves
+    # `//:_rbe_region` unset, which has to behave like us-west1.
+    for prefix, pool in [
+        ("rbe_", _V5_RBE_POOLS["us-west1"]),
+        ("west1_", _V5_RBE_POOLS["us-west1"]),
+        ("central1_", _V5_RBE_POOLS["us-central1"]),
+        ("east1_", _V5_RBE_POOLS["us-east1"]),
+        ("asia_se1_", _V5_RBE_POOLS["asia-southeast1"]),
+    ]:
+        tpu = _v5_rbe_exec_properties(pool)
+        override = tpu | {"test.Pool": "custom_pool", "test.mem": "32g"}
+        for k, exec_properties, test_env, shard_count in [
+            ("py_v5", tpu, _V5_RBE_ENV, 8),
+            ("py_v5_net", tpu | {"test.dockerNetwork": "standard"}, _V5_RBE_ENV, None),
+            ("py_override", override, _V5_RBE_ENV | caller_env, None),
+            ("py_cpu", {}, {}, None),
+            ("py_multichip", {}, {}, 8),
+            ("py_v7", {}, {}, None),
+            ("cc_v5", tpu, _V5_RBE_ENV, 4),
+            ("cc_override", override, _V5_RBE_ENV | caller_env, None),
+        ]:
+            info = getattr(targets, prefix + k)[_TagsInfo]
+            expect = env.expect.where(subject = prefix + k)
+            expect.that_dict(info.exec_properties).contains_exactly(exec_properties)
+            expect.that_dict(info.env).contains_exactly(test_env)
+            if shard_count != None:
+                expect.that_int(info.shard_count).equals(shard_count)
 
 def _test_rbe_macro_exec_properties(name):
     common_py_kwargs = {
@@ -997,7 +1014,7 @@ def _test_rbe_macro_exec_properties(name):
         name = name + "_py_override",
         tags = ["requires-tpu-v5lite"],
         env = select({"//conditions:default": caller_env}),
-        exec_properties = {"test.Pool": "custom_pool", "test.mem": "32g"},
+        exec_properties = select({"//conditions:default": {"test.Pool": "custom_pool", "test.mem": "32g"}}),
         **common_py_kwargs
     )
     torch_tpu_py_test(
@@ -1049,16 +1066,24 @@ def _test_rbe_macro_exec_properties(name):
     attrs = {k: {"aspects": [tags_aspect]} for k in subject_names}
     if is_oss():
         rbe_flag = str(Label("//:_rbe_test_execution"))
+        region_flag = str(Label("//:_rbe_region"))
         for k in subject_names:
             attrs[k] = {
                 "aspects": [tags_aspect],
                 "@config_settings": {rbe_flag: False},
             }
-            targets["rbe_" + k] = name + "_" + k
-            attrs["rbe_" + k] = {
-                "aspects": [tags_aspect],
-                "@config_settings": {rbe_flag: True},
-            }
+            for prefix, config_settings in [
+                ("rbe_", {rbe_flag: True}),
+                ("west1_", {rbe_flag: True, region_flag: "us-west1"}),
+                ("central1_", {rbe_flag: True, region_flag: "us-central1"}),
+                ("east1_", {rbe_flag: True, region_flag: "us-east1"}),
+                ("asia_se1_", {rbe_flag: True, region_flag: "asia-southeast1"}),
+            ]:
+                targets[prefix + k] = name + "_" + k
+                attrs[prefix + k] = {
+                    "aspects": [tags_aspect],
+                    "@config_settings": config_settings,
+                }
     analysis_test(
         name = name,
         impl = _test_rbe_macro_exec_properties_impl,
@@ -1120,11 +1145,11 @@ def build_defs_test_suite(name):
             _test_oss_presubmit_tpu_generation_implicit,
             _test_oss_presubmit_tpu_generation_implicit_default_v5,
             _test_oss_presubmit_tpu_generation_implicit_v6,
-            _test_rbe_caller_exec_properties_win,
             _test_rbe_internal_test_gets_nothing,
             _test_rbe_oss_network_tag_sets_docker_network,
             _test_rbe_oss_v5_test_gets_pool,
             _test_rbe_test_without_pool_gets_nothing,
+            _test_rbe_unknown_region_gets_nothing,
             _test_shard_count_clamping,
             # go/keep-sorted end
         ],

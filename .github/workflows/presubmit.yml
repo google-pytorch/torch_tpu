@@ -39,6 +39,16 @@ on:
         required: false
         type: boolean
         default: false
+      rbe_region:
+        description: 'RBE region for the RBE presubmit'
+        type: choice
+        default: 'auto'
+        options:
+          - 'auto'
+          - 'us-west1'
+          - 'us-central1'
+          - 'us-east1'
+          - 'asia-southeast1'
   pull_request:
     branches:
       - main
@@ -152,10 +162,41 @@ jobs:
         with:
           halt-dispatch-input: ${{ inputs.halt-for-connection }}
 
+      - name: Select RBE Region
+        id: rbe_region
+        env:
+          RBE_REGION: ${{ inputs.rbe_region || 'auto' }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          # Set the RBE_CENTRAL1_PERCENT repo variable to 0 to keep every PR
+          # in us-west1, e.g. during a us-central1 TPU stockout.
+          CENTRAL1_PERCENT: ${{ vars.RBE_CENTRAL1_PERCENT || '50' }}
+        run: |
+          region="$RBE_REGION"
+          if [[ "$region" == "auto" ]]; then
+            if [[ "$PR_NUMBER" =~ ^[0-9]+$ ]] && [[ "$CENTRAL1_PERCENT" =~ ^[0-9]+$ ]] && (( 10#$PR_NUMBER % 100 < 10#$CENTRAL1_PERCENT )); then
+              region="us-central1"
+            else
+              region="us-west1"
+            fi
+          fi
+          case "$region" in
+            us-west1) flags="" ;;
+            us-central1) flags="--config=rbe_central1_instance" ;;
+            us-east1) flags="--config=rbe_east1_instance" ;;
+            asia-southeast1) flags="--config=rbe_asia_se1_instance" ;;
+            *)
+              echo "Unsupported RBE region: $region" >&2
+              exit 1
+              ;;
+          esac
+          echo "Selected RBE region: $region (${flags:-default instance})"
+          echo "extra_bazel_flags=$flags" >> "$GITHUB_OUTPUT"
+
       - name: Run Impacted Tests via bazel-diff
         uses: ./.github/actions/bazel-diff
         with:
           base_sha: ${{ inputs.override_base_sha }}
           current_sha: ${{ inputs.override_current_sha || github.sha }}
           bazel_config: "ci_rbe_presubmit"
+          extra_bazel_flags: ${{ steps.rbe_region.outputs.extra_bazel_flags }}
           test_all: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}

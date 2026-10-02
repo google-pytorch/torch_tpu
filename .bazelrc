@@ -472,6 +472,46 @@ common:ci_rbe_presubmit --config=rbe_test_execution
 common:ci_rbe_presubmit --build_tag_filters=-nobuild,-requires-gpu,-cuda-build-test
 common:ci_rbe_presubmit --test_tag_filters=-nobuild,-notest,-nopresubmit,-requires-gpu,-cuda-build-test,-presubmit-v6,-presubmit-v7,-requires-tpu-v5lite:8,-requires-tpu-v5p:4,-no-remote-exec
 
+# rbe_test_execution and ci_rbe_presubmit on the us-central1, us-east1 and
+# asia-southeast1 RBE instances. Each also has a CPU pool named `default`, so
+# only the instance and the TPU pool change; everything else comes from the
+# us-west1 configs so they don't drift.
+#
+# The `us-central1` instance is named `default_instance` (created first before
+# regional suffixes were adopted for `default_instance_west1`,
+# `default_instance_east1` and `default_instance_asia_se1`).
+#
+# Each `_<region>_instance` config includes `rbe_test_execution` first so the
+# regional `--remote_executor`, `--remote_instance_name`, and `//:_rbe_region`
+# stay paired even if `rbe_<region>_instance` is passed before another RBE
+# config.
+common:rbe_central1_instance --config=rbe_test_execution
+common:rbe_central1_instance --remote_executor=grpcs://us-central1-remotebuildexecution.googleapis.com
+common:rbe_central1_instance --remote_instance_name=projects/rbe-tpu-oss/instances/default_instance
+build:rbe_central1_instance --//:_rbe_region=us-central1
+common:rbe_test_execution_central1 --config=rbe_test_execution
+common:rbe_test_execution_central1 --config=rbe_central1_instance
+common:ci_rbe_presubmit_central1 --config=ci_rbe_presubmit
+common:ci_rbe_presubmit_central1 --config=rbe_central1_instance
+
+common:rbe_east1_instance --config=rbe_test_execution
+common:rbe_east1_instance --remote_executor=grpcs://us-east1-remotebuildexecution.googleapis.com
+common:rbe_east1_instance --remote_instance_name=projects/rbe-tpu-oss/instances/default_instance_east1
+build:rbe_east1_instance --//:_rbe_region=us-east1
+common:rbe_test_execution_east1 --config=rbe_test_execution
+common:rbe_test_execution_east1 --config=rbe_east1_instance
+common:ci_rbe_presubmit_east1 --config=ci_rbe_presubmit
+common:ci_rbe_presubmit_east1 --config=rbe_east1_instance
+
+common:rbe_asia_se1_instance --config=rbe_test_execution
+common:rbe_asia_se1_instance --remote_executor=grpcs://asia-southeast1-remotebuildexecution.googleapis.com
+common:rbe_asia_se1_instance --remote_instance_name=projects/rbe-tpu-oss/instances/default_instance_asia_se1
+build:rbe_asia_se1_instance --//:_rbe_region=asia-southeast1
+common:rbe_test_execution_asia_se1 --config=rbe_test_execution
+common:rbe_test_execution_asia_se1 --config=rbe_asia_se1_instance
+common:ci_rbe_presubmit_asia_se1 --config=ci_rbe_presubmit
+common:ci_rbe_presubmit_asia_se1 --config=rbe_asia_se1_instance
+
 # TPU wheel version extras for local default builds.
 build --define WHEEL_VERSION_EXTRAS=
 
