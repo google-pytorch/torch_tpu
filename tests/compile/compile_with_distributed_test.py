@@ -25,7 +25,6 @@ import torch.multiprocessing as mp
 from torch_tpu._internal import compile as tt_compile
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
-from tests import oss_utils
 from tests import seed_test_utils
 from tests.distributed import distributed_utils
 
@@ -437,12 +436,10 @@ class MultiTpuTorchCompileTest(seed_test_utils.MultiProcessRepeatableTest):
         fn=run_broadcast_with_torch_compile,
     )
 
-  # TODO(b/493050035): Enable once OSS PyTorch supports functional collective
-  # tracing for list-of-tensor reduce_scatter, which currently falls back to
-  # eager and produces 2 subgraphs instead of the expected 3.
   @unittest.skipIf(
-      oss_utils.is_oss(),
-      "The test fails in OSS with 'AssertionError: Expected 3 graphs, got 2'.",
+      utils.parse_version(torch.__version__) < (2, 14, 0),
+      "Dynamo only traces list-of-tensors reduce_scatter since torch 2.14;"
+      " older versions graph-break and produce fewer than 3 graphs.",
   )
   def test_reduce_scatter_with_torch_compile(self):
     distributed_utils.dist_run(
