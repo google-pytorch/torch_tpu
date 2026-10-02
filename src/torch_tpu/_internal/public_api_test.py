@@ -312,44 +312,6 @@ class PublicApiTest(absltest.TestCase):  # ABSLTEST_OK=pure Python; no RNG
     self.assertLen(w, 1)
     self.assertEqual(w[0].filename, "<string>")
 
-  def test_staged_export_warns_and_caches_for_external_caller(self) -> None:
-    table = {
-        "fake_root.tpu": public_api.ModuleSpec(),
-        "fake_root.tpu.sub": public_api.ModuleSpec(
-            exports={
-                "ExportedClass": public_api.Staged(
-                    "fake_impl:ExportedClass",
-                    stage=annotations.Stage.EXPERIMENTAL,
-                    reason="ExportedClass is experimental.",
-                ),
-            }
-        ),
-    }
-    public_api.install(table)
-    sub_mod = self.root_mod.tpu.sub
-    internal_fn = types.FunctionType(
-        (lambda mod: mod.ExportedClass).__code__,
-        {"__name__": "torch_tpu._internal.some_helper"},
-    )
-    with warnings.catch_warnings(record=True) as w:
-      warnings.simplefilter("always")
-      self.assertIs(internal_fn(sub_mod), self.impl_mod.ExportedClass)
-      self.assertEmpty(w)
-      self.assertNotIn("ExportedClass", sub_mod.__dict__)
-
-      cls1 = sub_mod.ExportedClass
-      cls2 = sub_mod.ExportedClass
-    self.assertIs(cls1, self.impl_mod.ExportedClass)
-    self.assertIs(cls2, self.impl_mod.ExportedClass)
-    self.assertIn("ExportedClass", sub_mod.__dict__)
-    self.assertEqual(
-        getattr(cls1, annotations.TT_API_STAGE, None),
-        annotations.Stage.EXPERIMENTAL.value,
-    )
-    self.assertLen(w, 1)
-    self.assertIn("'ExportedClass' is experimental", str(w[0].message))
-    self.assertEqual(w[0].filename, __file__)
-
 
 if __name__ == "__main__":
   absltest.main()

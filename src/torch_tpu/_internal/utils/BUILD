@@ -169,7 +169,7 @@ torch_tpu_py_library(
     deps = [
         ":tt_warnings",
         "//shims/torch:pytorch",
-        "//src/torch_tpu/_internal:exceptions",
+        "//src/torch_tpu/_internal:warnings",
     ],
 )
 
@@ -193,7 +193,7 @@ torch_tpu_py_library(
     srcs = ["tt_warnings.py"],
     deps = [
         "//shims/torch:pytorch",
-        "//src/torch_tpu/_internal:exceptions",
+        "//src/torch_tpu/_internal:warnings",
     ],
 )
 
@@ -205,7 +205,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
-        "//src/torch_tpu/_internal:exceptions",
+        "//src/torch_tpu/_internal:warnings",
         "//tests:seed_test_utils",
     ],
 )

@@ -175,7 +175,7 @@ at::Tensor AtenAoWaitTensor(
       {
         // wait_tensor is an identity pass-through; XLA manages transfer
         // scheduling.
-        TT_WARN_ONCE(WarningCategory::kTorchTpuWarning,
+        TT_WARN_ONCE(WarningCategory::kTorchTpu,
                      "ao.wait_tensor is a no-op on TPU. XLA manages transfer "
                      "scheduling.");
 

@@ -48,30 +48,7 @@ class Property:
   target: str
 
 
-@dataclasses.dataclass(frozen=True)
-class Staged:
-  """An export whose lifecycle stage is resolved on module attribute access.
-
-  Used for exported classes (such as warning categories or enums) and constants
-  where stage warnings should fire when the attribute is accessed on the public
-  module rather than when the object is called or instantiated.
-
-  Attributes:
-    target: Dotted module path and colon-separated attribute path resolving to
-      the exported object, e.g.
-      `"torch_tpu._internal.exceptions:TorchTpuWarning"`.
-    stage: The API readiness `annotations.Stage`.
-    reason: Human-readable rationale for the lifecycle stage.
-    version: Optional deprecation version string when `stage` is `DEPRECATED`.
-  """
-
-  target: str
-  stage: annotations.Stage
-  reason: str
-  version: str | None = None
-
-
-Export: TypeAlias = str | Property | Staged
+Export: TypeAlias = str | Property
 
 
 @dataclasses.dataclass(frozen=True)
@@ -123,10 +100,6 @@ def _tpu_attr(name: str) -> str:
 #   * `Property(target)`: a `property` descriptor installed on a custom
 #     `types.ModuleType` subclass so `torch.tpu.<prop> = value` invokes the
 #     setter.
-#   * `Staged(target, stage, reason, version)`: imported lazily and resolved
-#     through `annotations._resolve_module_attribute` so stage warnings fire on
-#     first external attribute access and the resolved value is cached in the
-#     module's `__dict__` afterward.
 #
 # Procedure for Adding or Updating Public Modules / APIs:
 # -------------------------------------------------------
@@ -219,68 +192,6 @@ _PUBLIC_MODULES: Mapping[str, ModuleSpec] = {
         main="torch_tpu._internal.distributed.distributed",
         doc="Public TorchTPU distributed namespace (`torch.tpu.distributed`).",
     ),
-    "torch.tpu.exceptions": ModuleSpec(
-        exports={
-            # go/keep-sorted start
-            "ApiStageWarning": Staged(
-                "torch_tpu._internal.exceptions:ApiStageWarning",
-                stage=annotations.Stage.EXPERIMENTAL,
-                reason=(
-                    "Warning category for APIs that are not in the STABLE"
-                    " stage."
-                ),
-            ),
-            "CorrectnessWarning": Staged(
-                "torch_tpu._internal.exceptions:CorrectnessWarning",
-                stage=annotations.Stage.EXPERIMENTAL,
-                reason="Warning category for potential correctness issues.",
-            ),
-            "DeprecatedApiWarning": Staged(
-                "torch_tpu._internal.exceptions:DeprecatedApiWarning",
-                stage=annotations.Stage.EXPERIMENTAL,
-                reason=(
-                    "Warning category for APIs that are in the DEPRECATED"
-                    " stage."
-                ),
-            ),
-            "ExperimentalApiWarning": Staged(
-                "torch_tpu._internal.exceptions:ExperimentalApiWarning",
-                stage=annotations.Stage.EXPERIMENTAL,
-                reason=(
-                    "Warning category for APIs that are in the EXPERIMENTAL"
-                    " stage."
-                ),
-            ),
-            "PerformanceWarning": Staged(
-                "torch_tpu._internal.exceptions:PerformanceWarning",
-                stage=annotations.Stage.EXPERIMENTAL,
-                reason="Warning category for potential performance issues.",
-            ),
-            "TcMallocWarning": Staged(
-                "torch_tpu._internal.exceptions:TcMallocWarning",
-                stage=annotations.Stage.EXPERIMENTAL,
-                reason="Warning category for missing tcmalloc allocator.",
-            ),
-            "TorchTpuWarning": Staged(
-                "torch_tpu._internal.exceptions:TorchTpuWarning",
-                stage=annotations.Stage.EXPERIMENTAL,
-                reason=(
-                    "Base warning category for all warnings emitted by"
-                    " TorchTPU."
-                ),
-            ),
-            "UnoptimizedBuildWarning": Staged(
-                "torch_tpu._internal.exceptions:UnoptimizedBuildWarning",
-                stage=annotations.Stage.EXPERIMENTAL,
-                reason="Warning category for unoptimized TorchTPU builds.",
-            ),
-            # go/keep-sorted end
-        },
-        doc=(
-            "Public exception and warning types for TorchTPU"
-            " (`torch.tpu.exceptions`)."
-        ),
-    ),
     "torch.tpu.ops": ModuleSpec(
         exports={
             # go/keep-sorted start
@@ -336,14 +247,12 @@ class _PublicApiModule(types.ModuleType):
       spec: ModuleSpec,
       child_names: AbstractSet[str],
       attr_exports: Mapping[str, str],
-      staged_exports: Mapping[str, Staged],
   ) -> None:
     super().__init__(module_name, spec.doc)
     self._module_name = module_name
     self._spec = spec
     self._child_names = frozenset(child_names)
     self._attr_exports = dict(attr_exports)
-    self._staged_exports = dict(staged_exports)
     self._all_names = tuple(
         sorted(set(spec.exports.keys()) | self._child_names)
     )
@@ -353,36 +262,15 @@ class _PublicApiModule(types.ModuleType):
     """Lazily builds and caches `__tt_api_stages__` on this module."""
     if "__tt_api_stages__" in self.__dict__:
       return self.__dict__["__tt_api_stages__"]
-    if self._spec.stages is not None and not self._staged_exports:
-      raw_map = _import_target(self._spec.stages)
-      setattr(self, "__tt_api_stages__", raw_map)
-      return raw_map
-    stages_map: dict[str, annotations.ApiStageInfo] = {}
-    if self._spec.stages is not None:
-      stages_map.update(_import_target(self._spec.stages))
-    for exp_name, staged in self._staged_exports.items():
-      stages_map[exp_name] = annotations.ApiStageInfo(
-          stage=staged.stage,
-          reason=staged.reason,
-          value=_import_target(staged.target),
-          version=staged.version,
-      )
+    stages_map: Mapping[str, annotations.ApiStageInfo] = (
+        {} if self._spec.stages is None else _import_target(self._spec.stages)
+    )
     setattr(self, "__tt_api_stages__", stages_map)
     return stages_map
 
   def __getattr__(self, name: str) -> Any:
-    if name == "__tt_api_stages__" and (
-        self._spec.stages is not None or self._staged_exports
-    ):
+    if name == "__tt_api_stages__" and self._spec.stages is not None:
       return self._get_stages_map()
-
-    if name in self._staged_exports:
-      return annotations._resolve_module_attribute(  # pylint: disable=protected-access
-          self._get_stages_map(),
-          name,
-          self._module_name,
-          tt_api_globals=self.__dict__,
-      )
 
     target = self._attr_exports.get(name)
     if target is not None:
@@ -444,13 +332,10 @@ class _PublicApiLoader(importlib.abc.Loader):
   ) -> _PublicApiModule:
     del spec
     attr_exports: dict[str, str] = {}
-    staged_exports: dict[str, Staged] = {}
     prop_exports: dict[str, property] = {}
     for export_name, export_spec in self._spec.exports.items():
       if isinstance(export_spec, str):
         attr_exports[export_name] = export_spec
-      elif isinstance(export_spec, Staged):
-        staged_exports[export_name] = export_spec
       elif isinstance(export_spec, Property):
         prop = _import_target(export_spec.target)
         if not isinstance(prop, property):
@@ -477,7 +362,6 @@ class _PublicApiLoader(importlib.abc.Loader):
         self._spec,
         self._child_names,
         attr_exports,
-        staged_exports,
     )
 
   def exec_module(self, module: types.ModuleType) -> None:

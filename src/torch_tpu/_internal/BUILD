@@ -56,6 +56,7 @@ pybind_extension(
         "torch_tpu/csrc/common",
     ],
     py_deps = [
+        ":warnings_impl",  # Imported by testing.cc.
         "//shims/torch:pytorch",
     ],
     wrap_py_init = True,
@@ -84,15 +85,25 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
-    name = "exceptions",
-    srcs = ["exceptions.py"],
+    name = "warnings",
+    srcs = ["warnings.py"],
+    deps = [":warnings_impl"],
 )
 
-torch_tpu_py_library(
-    name = "warnings_bridge",
-    srcs = ["warnings_bridge.py"],
+pybind_extension(
+    name = "warnings_impl",
+    srcs = ["//csrc/internal:warnings_impl.cc"],
+    common_lib_packages = [
+        "torch_tpu/csrc/common",
+    ],
+    py_deps = [
+        "//shims/torch:pytorch",
+    ],
+    wrap_py_init = True,
     deps = [
-        ":exceptions",
+        "//csrc/common:pybind_error_utils",
+        "//csrc/common:warnings",
+        "//shims/torch:torch_headers",
     ],
 )
 
@@ -104,7 +115,6 @@ torch_tpu_py_library(
     # on first attribute access, so `build_cleaner` cannot see static `import`
     # statements for them.
     deps = [
-        ":exceptions",  # build_cleaner: keep
         "//src/torch_tpu/_internal/compiler_options",  # build_cleaner: keep
         "//src/torch_tpu/_internal/device:_device_module",  # build_cleaner: keep
         "//src/torch_tpu/_internal/distributed",  # build_cleaner: keep

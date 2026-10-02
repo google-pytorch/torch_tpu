@@ -469,7 +469,7 @@ class TpuAllocator final : public c10::DeviceAllocator {
     c10::CachingDeviceAllocator::DeviceStats stats;
     auto pjrt_stats_or = PjrtBackend::GetInstance().GetAllocatorStats();
     if (!pjrt_stats_or.ok()) {
-      TT_WARN(WarningCategory::kPerformanceWarning,
+      TT_WARN(WarningCategory::kPerformance,
               "Failed to get allocator stats: ", pjrt_stats_or.status());
       return stats;
     }
@@ -513,7 +513,7 @@ class TpuAllocator final : public c10::DeviceAllocator {
 
   void resetAccumulatedStats(c10::DeviceIndex device) override {
     TT_WARN_ONCE(
-        WarningCategory::kTorchTpuWarning,
+        WarningCategory::kTorchTpu,
         "torch.accelerator.memory.reset_accumulated_memory_stats is not "
         "implemented for TPU.");
   }
@@ -521,7 +521,7 @@ class TpuAllocator final : public c10::DeviceAllocator {
   void resetPeakStats(c10::DeviceIndex device) override {
     auto status = PjrtBackend::GetInstance().ClearAllocatorStats();
     if (!status.ok()) {
-      TT_WARN(WarningCategory::kPerformanceWarning,
+      TT_WARN(WarningCategory::kPerformance,
               "Failed to reset peak memory stats: ", status.ToString());
     }
   }
@@ -530,7 +530,7 @@ class TpuAllocator final : public c10::DeviceAllocator {
   getMemoryInfo(c10::DeviceIndex device) override {
     auto pjrt_stats_or = PjrtBackend::GetInstance().GetAllocatorStats();
     if (!pjrt_stats_or.ok()) {
-      TT_WARN(WarningCategory::kPerformanceWarning,
+      TT_WARN(WarningCategory::kPerformance,
               "Failed to get allocator stats: ", pjrt_stats_or.status());
       return {0, 0};
     }
@@ -583,7 +583,7 @@ class TpuPinnedAllocator final : public at::HostAllocator {
 
   // This allocator does not cache allocations, so there is nothing to do here.
   void empty_cache() override {
-    TT_WARN_ONCE(WarningCategory::kTorchTpuWarning,
+    TT_WARN_ONCE(WarningCategory::kTorchTpu,
                  "TpuPinnedAllocator::empty_cache is not implemented for TPU.");
   }
 

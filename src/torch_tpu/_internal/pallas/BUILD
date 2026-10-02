@@ -58,7 +58,7 @@ torch_tpu_py_library(
     name = "pallas_compat",
     srcs = ["_compat.py"],
     deps = [
-        "//src/torch_tpu/_internal:exceptions",
+        "//src/torch_tpu/_internal:warnings",
         "//src/torch_tpu/_internal/utils:tt_warnings",
     ],
 )

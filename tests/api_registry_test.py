@@ -24,7 +24,6 @@ from absl.testing import absltest
 import torch
 import torch_tpu
 from torch_tpu._internal import compiler_options as internal_compiler_options
-from torch_tpu._internal import exceptions as internal_exceptions
 from torch_tpu._internal import execution_mode as _internal_execution_mode
 from torch_tpu._internal.distributed.distributed import (
     set_tpu_launch_env as internal_set_tpu_launch_env,
@@ -60,7 +59,6 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
     for submod in (
         "compiler",
         "distributed",
-        "exceptions",
         "pallas",
         "profiler",
     ):
@@ -220,79 +218,6 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
           ModuleNotFoundError
       ):
         importlib.import_module(bad_mod)
-
-  def test_exceptions_api_registry(self):
-    """Verifies public exposure, identity, and module behavior for exceptions."""
-    expected_names = [
-        "ApiStageWarning",
-        "CorrectnessWarning",
-        "DeprecatedApiWarning",
-        "ExperimentalApiWarning",
-        "PerformanceWarning",
-        "TcMallocWarning",
-        "TorchTpuWarning",
-        "UnoptimizedBuildWarning",
-    ]
-    exc_mod = importlib.import_module("torch.tpu.exceptions")
-    self.assertIs(exc_mod, torch.tpu.exceptions)
-    self.assertEqual(dir(torch.tpu.exceptions), expected_names)
-    # Simulate a caller inside the `torch_tpu` package to test internal usage.
-    framework_globals = {
-        "__builtins__": __builtins__,
-        "__name__": "torch_tpu._internal.fake_module",
-        "getattr": getattr,
-    }
-    framework_get_attr = types.FunctionType(
-        (lambda mod, attr: getattr(mod, attr)).__code__,
-        framework_globals,
-    )
-
-    for name in expected_names:
-      torch.tpu.exceptions.__dict__.pop(name, None)
-
-      # Verify that when torch_tpu code accesses `torch.tpu.exceptions.<name>`,
-      # no ExperimentalApiWarning is triggered and the attribute is not
-      # prematurely cached into module globals.
-      with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        cls = framework_get_attr(torch.tpu.exceptions, name)
-        self.assertIs(cls, getattr(internal_exceptions, name))
-        self.assertEmpty(w)
-        self.assertNotIn(name, torch.tpu.exceptions.__dict__)
-
-      # Verify that when user code accesses `torch.tpu.exceptions.<name>` (e.g.
-      # for `warnings.filterwarnings` or `issubclass`), an
-      # ExperimentalApiWarning is triggered on first access and cached for
-      # subsequent accesses.
-      with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        cls = getattr(torch.tpu.exceptions, name)
-        self.assertIs(cls, getattr(internal_exceptions, name))
-        self.assertEqual(
-            getattr(cls, annotations.TT_API_STAGE, None),
-            annotations.Stage.EXPERIMENTAL.value,
-        )
-        self.assertLen(w, 1)
-        self.assertIs(w[0].category, internal_exceptions.ExperimentalApiWarning)
-        self.assertIn(f"'{name}' is experimental", str(w[0].message))
-        self.assertIn(name, torch.tpu.exceptions.__dict__)
-
-        # Second access hits cached module globals without emitting a warning.
-        cls2 = getattr(torch.tpu.exceptions, name)
-        self.assertIs(cls2, cls)
-        self.assertLen(w, 1)
-
-    with self.assertRaises(  # ASSERT_RAISES_OK=Verifies non-existent attributes raise AttributeError
-        AttributeError
-    ):
-      _ = getattr(torch.tpu.exceptions, "non_existent_attribute")
-
-    self.assertFalse(hasattr(torch_tpu, "exceptions"))
-    self.assertNotIn("torch_tpu.exceptions", sys.modules)
-    with self.assertRaises(  # ASSERT_RAISES_OK=Verifies torch_tpu.exceptions cannot be imported
-        ModuleNotFoundError
-    ):
-      importlib.import_module("torch_tpu.exceptions")
 
   def test_execution_mode_registry(self):
     """Verifies public exposure, identity, metadata, and functional behavior for execution mode."""

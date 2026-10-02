@@ -311,7 +311,7 @@ template <OpName op_name, typename KernelFn>
 void ImplExperimental(torch::Library& m, KernelFn kernel_fn) {
   ImplWrapperHelper<KernelFn>::template RegisterOp<op_name>(
       m, std::move(kernel_fn), []() {
-        TT_WARN_ONCE(WarningCategory::kExperimentalApiWarning, "operator ",
+        TT_WARN_ONCE(WarningCategory::kExperimentalApi, "operator ",
                      ToString(op_name),
                      " is experimental; its name, signature, and behavior "
                      "may change without notice; use at your own risk");
@@ -330,7 +330,7 @@ void ImplDeprecated(torch::Library& m, KernelFn kernel_fn, int major_version,
                     int minor_version) {
   ImplWrapperHelper<KernelFn>::template RegisterOp<op_name>(
       m, std::move(kernel_fn), [major_version, minor_version]() {
-        TT_WARN_ONCE(WarningCategory::kDeprecatedApiWarning, "operator ",
+        TT_WARN_ONCE(WarningCategory::kDeprecatedApi, "operator ",
                      ToString(op_name),
                      " is deprecated and will be removed in TorchTPU version ",
                      major_version, ".", minor_version);

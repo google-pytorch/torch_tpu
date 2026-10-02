@@ -23,75 +23,91 @@
 
 namespace torch_tpu {
 
-// Canonical warning categories that map directly to subclasses of
-// `torch.tpu.exceptions.TorchTpuWarning`.
+// Categories of the warnings TorchTPU emits, from both C++ and Python.
 //
-// Enumerator names match their corresponding Python warning class names
-// exactly.
+// TorchTPU emits its warnings with Python's built-in warning categories
+// (`DeprecationWarning` for `kDeprecatedApi`, `UserWarning` for everything
+// else) and tells them apart by a message prefix (`GetWarningPrefix`). See
+// `torch_tpu/_internal/warnings.py` for the category hierarchy, the prefix
+// design and its rationale, and how to filter by prefix. Python gets the
+// prefixes from here.
+//
+// Enumerator names match the names of the categories in the hierarchy.
 enum class WarningCategory {
-  kTorchTpuWarning,
-  kExperimentalApiWarning,
-  kDeprecatedApiWarning,
-  kPerformanceWarning,
-  kCorrectnessWarning,
+  kTorchTpu,
+  kPerformance,
+  kUnoptimizedBuild,
+  kTcMalloc,
+  kCorrectness,
+  kApiStage,
+  kExperimentalApi,
+  kDeprecatedApi,
 };
 
-// Returns the hidden delimiter token associated with the given warning
-// category.
-//
-// We embed ASCII Record Separator (`\x1E`) control characters as the token
-// delimiter (i.e., `\x1E[TT_WARN:<ClassName>]\x1E`) at the beginning of the
-// warning message passed to `TORCH_WARN` / `TORCH_WARN_ONCE`.
-//
-// Why `\x1E` (ASCII Record Separator):
-// 1. `\x1E` is a standard non-printable ASCII control character that never
-//    appears in human-readable or compiler-generated warning text, guaranteeing
-//    zero accidental collisions with user strings.
-// 2. It is completely safe and valid inside C++ string literals, `std::string`,
-//    PyTorch's internal `c10::Warning` message payloads, and Python strings.
-// 3. When PyTorch flushes warnings to Python's `warnings.warn_explicit`, the
-//    TorchTPU warning bridge intercepts the message, detects this prefix token,
-//    maps the extracted `<ClassName>` to the corresponding subclass of
-//    `torch.tpu.exceptions.TorchTpuWarning`, and completely strips the
-//    delimiter token so that the user and loggers see only the clean, original
-//    message.
-constexpr std::string_view GetWarningToken(WarningCategory category) {
+// Returns the message prefix of warnings in `category`.
+constexpr std::string_view GetWarningPrefix(WarningCategory category) {
   switch (category) {
-    case WarningCategory::kExperimentalApiWarning:
-      return "\x1E[TT_WARN:ExperimentalApiWarning]\x1E";
-    case WarningCategory::kDeprecatedApiWarning:
-      return "\x1E[TT_WARN:DeprecatedApiWarning]\x1E";
-    case WarningCategory::kPerformanceWarning:
-      return "\x1E[TT_WARN:PerformanceWarning]\x1E";
-    case WarningCategory::kCorrectnessWarning:
-      return "\x1E[TT_WARN:CorrectnessWarning]\x1E";
-    case WarningCategory::kTorchTpuWarning:
-      return "\x1E[TT_WARN:TorchTpuWarning]\x1E";
+    case WarningCategory::kTorchTpu:
+      return "<TorchTpu/> ";
+    case WarningCategory::kPerformance:
+      return "<TorchTpu/Performance/> ";
+    case WarningCategory::kUnoptimizedBuild:
+      return "<TorchTpu/Performance/UnoptimizedBuild/> ";
+    case WarningCategory::kTcMalloc:
+      return "<TorchTpu/Performance/TcMalloc/> ";
+    case WarningCategory::kCorrectness:
+      return "<TorchTpu/Correctness/> ";
+    case WarningCategory::kApiStage:
+      return "<TorchTpu/ApiStage/> ";
+    case WarningCategory::kExperimentalApi:
+      return "<TorchTpu/ApiStage/ExperimentalApi/> ";
+    case WarningCategory::kDeprecatedApi:
+      return "<TorchTpu/ApiStage/DeprecatedApi/> ";
   }
-  return "\x1E[TT_WARN:TorchTpuWarning]\x1E";
+  return "<TorchTpu/> ";
+}
+
+// Returns whether warnings in `category` are emitted as Python
+// `DeprecationWarning`s rather than `UserWarning`s.
+constexpr bool IsDeprecationWarning(WarningCategory category) {
+  return category == WarningCategory::kDeprecatedApi;
 }
 
 }  // namespace torch_tpu
 
-// Direct wrappers over public PyTorch warning macros that embed the category
-// token at the front of the message.
+// Emits a warning in the given `::torch_tpu::WarningCategory` through PyTorch's
+// warning machinery, i.e. `TORCH_WARN` or `TORCH_WARN_DEPRECATION` with the
+// category prefix (`GetWarningPrefix`) prepended to the message. Python
+// receives a plain built-in warning, so all Python warning filters apply to it
+// as to any other warning from PyTorch.
 //
-// How this works:
-// 1. The `category` argument (a `::torch_tpu::WarningCategory` enum value)
-//    selects a prefix token via `GetWarningToken(category)`.
-// 2. `TORCH_WARN` / `TORCH_WARN_ONCE` prepends this token to the variadic
-//    message arguments.
-// 3. PyTorch's `c10::WarningHandler` propagates the message into Python's
-//    `warnings` module (under `warnings._showwarnmsg`).
-// 4. `torch_tpu._internal.warnings_bridge` intercepts the warning, parses the
-//    token prefix, strips it from the message, and remaps the warning category
-//    to the corresponding `TorchTpuWarning` subclass before showing it.
-#define TT_WARN(category, ...)                          \
-  TORCH_WARN(/* TORCH_WARN_OK=implementating TT_WARN */ \
-             ::torch_tpu::GetWarningToken(category), __VA_ARGS__)
+// These macros do NOT cause TorchDynamo graph breaks.
+#define TT_WARN(category, ...)                                          \
+  do {                                                                  \
+    if (::torch_tpu::IsDeprecationWarning(category)) {                  \
+      TORCH_WARN_DEPRECATION(/* TORCH_WARN_OK=implementing TT_WARN */   \
+                             ::torch_tpu::GetWarningPrefix(category),   \
+                             __VA_ARGS__);                              \
+    } else {                                                            \
+      TORCH_WARN(/* TORCH_WARN_OK=implementing TT_WARN */               \
+                 ::torch_tpu::GetWarningPrefix(category), __VA_ARGS__); \
+    }                                                                   \
+  } while (false)
 
-#define TT_WARN_ONCE(category, ...)                               \
-  TORCH_WARN_ONCE(/* TORCH_WARN_OK=implementating TT_WARN_ONCE */ \
-                  ::torch_tpu::GetWarningToken(category), __VA_ARGS__)
+// Like `TT_WARN`, but emits the warning only the first time it's reached in the
+// process, unless `c10::WarningUtils::set_warnAlways(true)` (e.g.
+// `torch.set_warn_always(True)`) is in effect, like `TORCH_WARN_ONCE`. Each
+// expansion has its own block scope, so the once-state is per call site.
+#define TT_WARN_ONCE(category, ...)                                \
+  do {                                                             \
+    if (::c10::WarningUtils::get_warnAlways()) {                   \
+      TT_WARN(category, __VA_ARGS__);                              \
+    } else {                                                       \
+      [[maybe_unused]] static const bool tt_warn_once_done = [&] { \
+        TT_WARN(category, __VA_ARGS__);                            \
+        return true;                                               \
+      }();                                                         \
+    }                                                              \
+  } while (false)
 
 #endif  // TORCH_TPU_CSRC_COMMON_WARNINGS_H_

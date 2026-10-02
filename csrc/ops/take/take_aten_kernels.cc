@@ -128,7 +128,7 @@ absl::Status ValidateTakeInputs(const at::Tensor& self,
     TT_RETURN_IF_ERROR(ValidateIndices(num_elements, index));
   } else {
     TT_WARN_ONCE(
-        WarningCategory::kCorrectnessWarning,
+        WarningCategory::kCorrectness,
         "Unlike PyTorch on CUDA or CPU, TorchTPU doesn't by default check "
         "that the indices for take() are in range. Set the "
         "TORCH_TPU_ENABLE_DEBUG_CHECKS environment variable to "

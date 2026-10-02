@@ -20,7 +20,7 @@ from typing import Any, Final
 import torch
 import torch.distributed.tensor as dt
 from torch_tpu._internal import env
-from torch_tpu._internal import exceptions
+from torch_tpu._internal import warnings
 from torch_tpu._internal.utils import tt_warnings
 
 _UNEVEN_SHARDING_WARNING: Final[str] = (
@@ -54,7 +54,9 @@ def from_local(
   """
   if shape is None or stride is None:
     tt_warnings.warn(
-        _UNEVEN_SHARDING_WARNING, exceptions.CorrectnessWarning, stacklevel=2
+        _UNEVEN_SHARDING_WARNING,
+        warnings.CORRECTNESS,
+        stacklevel=2,
     )
 
   if run_check is None:

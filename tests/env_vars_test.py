@@ -51,11 +51,15 @@ import warnings
 from absl import flags
 from absl.testing import absltest
 import torch
-from torch_tpu._internal import exceptions
 from torch_tpu._internal import testing as tt_testing
+from torch_tpu._internal import warnings as warning_categories
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
 from tests import subprocess_test_utils
+
+_EXPERIMENTAL_API_PREFIX = warning_categories.get_prefix(
+    warning_categories.EXPERIMENTAL_API
+)
 
 
 class TestMode(enum.Enum):
@@ -109,15 +113,8 @@ class EnvVarsTest(seed_test_utils.RepeatableTest):
           f" {[str(w.message) for w in recorded_warnings]}",
       )
       warning_obj = matching_warnings[0]
-      self.assertTrue(
-          issubclass(warning_obj.category, exceptions.TorchTpuWarning)
-      )
-      self.assertTrue(
-          issubclass(warning_obj.category, exceptions.ExperimentalApiWarning)
-      )
-      self.assertIsInstance(
-          warning_obj.message, exceptions.ExperimentalApiWarning
-      )
+      self.assertIs(warning_obj.category, UserWarning)
+      self.assertStartsWith(str(warning_obj.message), _EXPERIMENTAL_API_PREFIX)
       self.assertIn(
           "the TORCH_TPU_TIER2_COMPILATION_CACHE environment variable is an"
           " experimental feature and may change or be removed without notice.",
@@ -155,16 +152,9 @@ class EnvVarsTest(seed_test_utils.RepeatableTest):
           if "TORCH_TPU_TIER2_COMPILATION_CACHE" in str(w.message)
       ]
       self.assertLen(matching_warnings, 1)
-      self.assertTrue(
-          issubclass(matching_warnings[0].category, exceptions.TorchTpuWarning)
-      )
-      self.assertTrue(
-          issubclass(
-              matching_warnings[0].category, exceptions.ExperimentalApiWarning
-          )
-      )
-      self.assertIsInstance(
-          matching_warnings[0].message, exceptions.ExperimentalApiWarning
+      self.assertIs(matching_warnings[0].category, UserWarning)
+      self.assertStartsWith(
+          str(matching_warnings[0].message), _EXPERIMENTAL_API_PREFIX
       )
       self.assertIn(
           "TORCH_TPU_TIER2_COMPILATION_CACHE environment variable is an"

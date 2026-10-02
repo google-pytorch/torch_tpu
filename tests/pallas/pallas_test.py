@@ -1207,7 +1207,10 @@ class TestPallasCompat(seed_test_utils.RepeatableTest):
         )
         self.assertLen(w, 1)
         self.assertTrue(issubclass(w[0].category, DeprecationWarning))
-        self.assertEqual(str(w[0].message), "test message")
+        self.assertEqual(
+            str(w[0].message),
+            "<TorchTpu/ApiStage/DeprecatedApi/> test message",
+        )
         self.assertIn("pallas_test.py", w[0].filename)
     else:
 
@@ -1222,7 +1225,10 @@ class TestPallasCompat(seed_test_utils.RepeatableTest):
         helper()
         self.assertLen(w, 1)
         self.assertTrue(issubclass(w[0].category, DeprecationWarning))
-        self.assertEqual(str(w[0].message), "test message")
+        self.assertEqual(
+            str(w[0].message),
+            "<TorchTpu/ApiStage/DeprecatedApi/> test message",
+        )
         self.assertIn("pallas_test.py", w[0].filename)
 
   def test_pallas_jax_op_stablehlo(self):

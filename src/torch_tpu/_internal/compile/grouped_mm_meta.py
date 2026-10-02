@@ -22,6 +22,7 @@ csrc/ops/grouped_mm/grouped_mm_aten_kernels.cc so eager and compile agree.
 
 import torch
 from torch import _meta_registrations
+from torch_tpu._internal import warnings
 from torch_tpu._internal.utils import tt_warnings
 
 _meta_lib: torch.library.Library | None = None
@@ -140,7 +141,8 @@ def register() -> None:
     # grouped_mm meta tests catch the drift.
     tt_warnings.warn(
         f"torch {torch.__version__} has no Python meta for {op}; TPU"
-        " grouped_mm meta override not installed."
+        " grouped_mm meta override not installed.",
+        warnings.TORCH_TPU,
     )
     return
 

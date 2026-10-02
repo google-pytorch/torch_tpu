@@ -195,13 +195,8 @@ TT_PYBIND11_MODULE(testing, m) {
         "Emits a TORCH_WARN_ONCE warning from C++.");
   m.def("emit_torch_warn_deprecation", &EmitTorchWarnDeprecation,
         py::arg("msg"), "Emits a TORCH_WARN_DEPRECATION warning from C++.");
-  py::enum_<WarningCategory>(GetPyBindHandle(m), "WarningCategory")
-      .value("TorchTpuWarning", WarningCategory::kTorchTpuWarning)
-      .value("ExperimentalApiWarning", WarningCategory::kExperimentalApiWarning)
-      .value("DeprecatedApiWarning", WarningCategory::kDeprecatedApiWarning)
-      .value("PerformanceWarning", WarningCategory::kPerformanceWarning)
-      .value("CorrectnessWarning", WarningCategory::kCorrectnessWarning)
-      .export_values();
+  // Registers the `WarningCategory` type taken by the functions below.
+  PyBindModule::Import("torch_tpu._internal.warnings_impl");
   m.def("emit_tt_warn", &EmitTtWarn, py::arg("category"), py::arg("msg"),
         "Emits a TT_WARN warning from C++.");
   m.def("emit_tt_warn_once", &EmitTtWarnOnce, py::arg("category"),

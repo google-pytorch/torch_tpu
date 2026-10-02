@@ -401,12 +401,12 @@ template <const char* name>
         // var is experimental or deprecated.
         if (maybe_stage.has_value()) {
           if (maybe_stage->is_experimental()) {
-            TT_WARN_ONCE(WarningCategory::kExperimentalApiWarning, "the ", name,
+            TT_WARN_ONCE(WarningCategory::kExperimentalApi, "the ", name,
                          " environment variable is an experimental feature "
                          "and may change or be removed without notice.");
           } else if (maybe_stage->is_deprecated()) {
             const auto deprecated_since = maybe_stage->version();
-            TT_WARN_ONCE(WarningCategory::kDeprecatedApiWarning, "the ", name,
+            TT_WARN_ONCE(WarningCategory::kDeprecatedApi, "the ", name,
                          " environment variable is deprecated since TorchTPU v",
                          deprecated_since,
                          " and will be removed in a future release.");
@@ -434,7 +434,7 @@ template <const char* name>
     if (absl::SimpleAtob(*env_var, &result)) {
       return result;
     }
-    TT_WARN_ONCE(WarningCategory::kCorrectnessWarning,
+    TT_WARN_ONCE(WarningCategory::kCorrectness,
                  "expected environment variable ", name,
                  " to be a Boolean (e.g., '1', '0', 'true', 'false'), got '",
                  *env_var, "'");
@@ -462,7 +462,7 @@ template <typename IntType, const char* name>
     if (absl::SimpleAtoi(*env_var, &result)) {
       return result;
     }
-    TT_WARN_ONCE(WarningCategory::kCorrectnessWarning,
+    TT_WARN_ONCE(WarningCategory::kCorrectness,
                  "expected environment variable ", name,
                  " to be an integer, got '", *env_var, "'");
     return std::nullopt;

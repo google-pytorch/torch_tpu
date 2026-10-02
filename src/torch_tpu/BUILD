@@ -64,8 +64,8 @@ torch_tpu_py_library(
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal:env",
         "//src/torch_tpu/_internal:env_utils",
-        "//src/torch_tpu/_internal:exceptions",
         "//src/torch_tpu/_internal:public_api",
+        "//src/torch_tpu/_internal:warnings",
         "//src/torch_tpu/_internal/batch_transfer",  # buildcleaner: keep
         "//src/torch_tpu/_internal/compile",
         "//src/torch_tpu/_internal/compile:tpu_backend",
@@ -91,7 +91,6 @@ torch_tpu_py_library(
 torch_tpu_py_library(
     name = "_tcmalloc_check",
     srcs = ["_tcmalloc_check.py"],
-    deps = ["//src/torch_tpu/_internal:exceptions"],
 )
 
 py_library_providing_imports_info(
@@ -121,7 +120,6 @@ py_library_providing_imports_info(
         ":_tcmalloc_check",
         ":_versioned_so_loader",
         "//src/torch_tpu/_internal:testing",  # buildcleaner: keep
-        "//src/torch_tpu/_internal:warnings_bridge",
     ],
 )
 

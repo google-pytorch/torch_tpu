@@ -12,10 +12,6 @@
     "type": "MODULE"
   },
   {
-    "name": "torch.tpu.exceptions",
-    "type": "MODULE"
-  },
-  {
     "name": "torch.tpu.ops",
     "type": "MODULE"
   },

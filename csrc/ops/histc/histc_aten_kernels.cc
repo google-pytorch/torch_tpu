@@ -210,7 +210,7 @@ absl::Status HistcHelperOut(const at::Tensor& self, const int64_t bins,
           ValidateBounds(min_val.cpu().item(), max_val.cpu().item(), min, max));
     } else {
       TT_WARN_ONCE(
-          WarningCategory::kCorrectnessWarning,
+          WarningCategory::kCorrectness,
           "Bounds computed from input data are not validated by default on "
           "TorchTPU (unlike CUDA/CPU) to prevent an expensive CPU transfer. "
           "Set the TORCH_TPU_ENABLE_DEBUG_CHECKS environment variable to \"1\" "

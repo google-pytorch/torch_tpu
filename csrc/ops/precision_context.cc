@@ -63,7 +63,7 @@ void PyPopPrecision() { PopContextState<PrecisionContextState>(); }
       mlir::stablehlo::Precision::DEFAULT) {  // EXPLICIT_PRECISION_OK=root
                                               // usage
     TT_WARN_ONCE(
-        WarningCategory::kPerformanceWarning,
+        WarningCategory::kPerformance,
         absl::StrCat("TPU is using ", ToString(current_global_precision),
                      " precision as requested, but performance may be "
                      "significantly lower. Consider using ",

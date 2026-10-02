@@ -24,6 +24,7 @@ package(
 exports_files([
     "env.cc",
     "testing.cc",
+    "warnings_impl.cc",
 ])
 
 # This library is not used directly, but is needed to satisfy go/cclean
@@ -62,6 +63,17 @@ torch_tpu_cc_library(
         "//shims/torch:torch_headers",
         "//shims/torch/c10/util:base_headers",
         "@xla//xla/pjrt:pjrt_client",
+    ],
+)
+
+# This library is not used directly, but is needed for go/cclean.
+torch_tpu_cc_library(
+    name = "warnings_impl_build",
+    srcs = ["warnings_impl.cc"],
+    deps = [
+        "//csrc/common:pybind_error_utils",
+        "//csrc/common:warnings",
+        "//shims/pybind11",
     ],
 )
 

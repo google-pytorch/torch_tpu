@@ -76,7 +76,7 @@ void ValidateDeviceIndex(c10::DeviceIndex device_index) {
 
   auto* pjrt_client = PjrtBackend::GetInstance().GetClient();
   if (pjrt_client == nullptr) {
-    TT_WARN(WarningCategory::kTorchTpuWarning,
+    TT_WARN(WarningCategory::kTorchTpu,
             "PJRT client not available, using TPU device index ",
             static_cast<int>(device_index), " unchecked");
     return;
@@ -246,7 +246,7 @@ void TpuDeviceGuardImpl::record(void** event, const c10::Stream& stream,
   *event = new std::shared_ptr<EventSnapshot>(std::move(shared_event));
 }
 void TpuDeviceGuardImpl::block(void* event, const c10::Stream& stream) const {
-  TT_WARN_ONCE(WarningCategory::kTorchTpuWarning,
+  TT_WARN_ONCE(WarningCategory::kTorchTpu,
                "Asynchronous stream waiting is not yet implemented.");
 }
 bool TpuDeviceGuardImpl::queryEvent(void* event) const {
@@ -256,8 +256,7 @@ bool TpuDeviceGuardImpl::queryEvent(void* event) const {
   return ready;
 }
 bool TpuDeviceGuardImpl::queryStream(const c10::Stream& stream) const {
-  TT_WARN_ONCE(WarningCategory::kTorchTpuWarning,
-               "queryStream not yet implemented.");
+  TT_WARN_ONCE(WarningCategory::kTorchTpu, "queryStream not yet implemented.");
   return true;
 }
 void TpuDeviceGuardImpl::synchronizeStream(const c10::Stream& stream) const {

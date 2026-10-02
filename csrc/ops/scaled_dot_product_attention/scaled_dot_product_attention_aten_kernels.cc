@@ -145,7 +145,7 @@ int64_t AtenFusedSdpChoice(const at::Tensor& query, const at::Tensor& key,
             // Use c10::str rather than absl::StrCat as it will convert enums
             // into their string representation.
             TT_WARN_ONCE(
-                WarningCategory::kPerformanceWarning,
+                WarningCategory::kPerformance,
                 "TorchTPU only supports FLASH_ATTENTION SDPBackend for "
                 "scaled_dot_product_attention when these conditions are met:\n"
                 "- inputs have static shapes\n"
@@ -180,7 +180,7 @@ int64_t AtenFusedSdpChoice(const at::Tensor& query, const at::Tensor& key,
             return static_cast<int64_t>(at::SDPBackend::overrideable);
           } else {
             TT_WARN_ONCE(
-                WarningCategory::kPerformanceWarning,
+                WarningCategory::kPerformance,
                 "TorchTPU only supports SHLO optimized MATH SDPBackend when "
                 "these conditions are met:\n"
                 "- dropout_p is 0.0 (current: ",

@@ -302,7 +302,7 @@ absl::StatusOr<at::Tensor> TpuMemcpyDtoH(const DeviceBufferRef& buffer_ref,
 
   if (non_blocking) {
     TT_WARN_ONCE(
-        WarningCategory::kPerformanceWarning,
+        WarningCategory::kPerformance,
         "non_blocking=True in .cpu() or .to('cpu') only works if the "
         "destination is already a pinned tensor. This will block until all "
         "pending d2h copies on the device complete.");

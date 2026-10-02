@@ -18,29 +18,32 @@ TorchDynamo cannot trace the builtin `warnings.warn`, so every call to it from
 code that runs inside a `torch.compile` region causes a graph break (or a hard
 error under `fullgraph=True`). TorchTPU library code should therefore emit
 Python warnings through `warn` below instead of calling `warnings.warn`
-directly.
+directly. `warn` also prefixes the message with its TorchTPU warning category;
+see `torch_tpu._internal.warnings`.
 """
 
 from typing import Any
 import warnings
 
 import torch
-from torch_tpu._internal import exceptions
+from torch_tpu._internal import warnings as warning_categories
 
 
 def warn(
-    message: str | Warning,
-    category: type[Warning] = exceptions.TorchTpuWarning,
+    message: str,
+    category: warning_categories.WarningCategory,
     stacklevel: int = 1,
     **kwargs: Any,
 ) -> bool:
   """Emits a Python warning, except while TorchDynamo is tracing.
 
-  Behaves like `warnings.warn`, but returns immediately when
-  `torch.compiler.is_compiling()` is true. Dynamo constant-folds that check, so
-  the call traces away entirely and never causes a graph break. The trade-off is
-  that warnings are only emitted during eager execution: a warning raised from
-  code that only ever runs inside a compiled region is never shown.
+  Behaves like `warnings.warn`, except that it emits `message` with the prefix
+  and built-in Python warning category of the TorchTPU warning `category`, and
+  that it returns immediately when `torch.compiler.is_compiling()` is true.
+  Dynamo constant-folds that check, so the call traces away entirely and never
+  causes a graph break. The trade-off is that warnings are only emitted during
+  eager execution: a warning raised from code that only ever runs inside a
+  compiled region is never shown.
 
   This matches what PyTorch core does for its own warnings, which it guards with
   `if not torch.compiler.is_compiling():` (e.g. the deprecation warnings in
@@ -48,8 +51,8 @@ def warn(
   `torch.nn.attention.flex_attention`).
 
   Args:
-    message: The warning message, or a `Warning` instance.
-    category: The warning category. Ignored if `message` is a `Warning`.
+    message: The warning message, without the category prefix.
+    category: The TorchTPU warning category.
     stacklevel: Same meaning as for `warnings.warn`, relative to the caller of
       this function: `1` attributes the warning to the line calling `warn`, `2`
       to that function's caller, and so on.
@@ -65,6 +68,9 @@ def warn(
     return False
   # +1 so that `stacklevel` is relative to our caller rather than to this frame.
   warnings.warn(  # RAW_WARNINGS_OK=This is the wrapper.
-      message, category, stacklevel=stacklevel + 1, **kwargs
+      warning_categories.format_message(category, message),
+      warning_categories.get_builtin_category(category),
+      stacklevel=stacklevel + 1,
+      **kwargs,
   )
   return True

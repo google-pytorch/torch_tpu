@@ -29,7 +29,7 @@ import sys
 from typing import Any, Callable, Mapping, Optional, TypeVar
 
 import torch
-from torch_tpu._internal import exceptions as _exceptions
+from torch_tpu._internal import warnings
 from torch_tpu._internal.utils import tt_warnings
 
 _T = TypeVar("_T")
@@ -66,12 +66,14 @@ class Stage(str, enum.Enum):
   DEPRECATED = "Deprecated"
 
   @property
-  def warning_category(self) -> Optional[type[Warning]]:
-    """The Warning category for this stage."""
+  def warning_category(
+      self,
+  ) -> Optional[warnings.WarningCategory]:
+    """The TorchTPU warning category for this stage."""
     if self == Stage.EXPERIMENTAL:
-      return _exceptions.ExperimentalApiWarning
+      return warnings.EXPERIMENTAL_API
     if self == Stage.DEPRECATED:
-      return _exceptions.DeprecatedApiWarning
+      return warnings.DEPRECATED_API
     return None
 
   def format_warning_message(
@@ -191,8 +193,7 @@ def _create_warning_wrapper(
         name = getattr(display_target, "__name__", str(display_target))
         msg = stage.format_warning_message(name, reason, version)
         cat = stage.warning_category
-        if cat:
-          assert issubclass(cat, _exceptions.ApiStageWarning)
+        if cat is not None:
           _warned = tt_warnings.warn(msg, category=cat, stacklevel=2)
     return fn_to_wrap(*args, **kwargs)
 
@@ -236,14 +237,14 @@ def _annotate_target(
   # 1. Handle Class
   if isinstance(target, type):
     # Attach warning wrapper to the `__init__` method
-    if stage.warning_category:
+    if stage.warning_category is not None:
       target.__init__ = _create_warning_wrapper(
           target.__init__, target, stage, reason, version
       )  # pylint: disable=protected-access
     return target
 
   # 2. Handle Function / Callable
-  if stage.warning_category:
+  if stage.warning_category is not None:
     wrapper = _create_warning_wrapper(
         target, target, stage, reason, version  # type: ignore[arg-type]
     )
@@ -358,7 +359,7 @@ def _resolve_module_attribute(
   # TorchDynamo cannot trace `sys._getframe()`, so skip the caller lookup while
   # compiling. The value then stays uncached so that the next eager access still
   # warns.
-  if cat and not torch.compiler.is_compiling():
+  if cat is not None and not torch.compiler.is_compiling():
     # `_resolve_module_attribute` is called from a module's or metaclass's
     # `__getattr__` (frame 1). When the attribute is accessed through a virtual
     # public module wrapper (e.g. `torch.tpu.X` or `from torch.tpu import X`),
@@ -389,7 +390,6 @@ def _resolve_module_attribute(
       msg = info.stage.format_warning_message(
           f"'{name}'", info.reason, info.version
       )
-      assert issubclass(cat, _exceptions.ApiStageWarning)
       warned = tt_warnings.warn(msg, category=cat, stacklevel=stacklevel)
 
   # Dynamically attach stage metadata to map-registered objects upon resolution.

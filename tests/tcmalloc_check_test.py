@@ -24,13 +24,13 @@ import warnings
 
 from absl.testing import absltest
 from absl.testing import parameterized
-from torch.tpu import exceptions  # pyrefly: ignore[missing-import]
 from torch_tpu import _tcmalloc_check
+from torch_tpu._internal import warnings as warning_categories
 from tests import seed_test_utils
 
 # The prefix users are told to filter on, via
-# PYTHONWARNINGS="ignore:tcmalloc is not loaded".
-_DOCUMENTED_FILTER_PREFIX: Final[str] = "tcmalloc is not loaded"
+# PYTHONWARNINGS="ignore:<TorchTpu/Performance/TcMalloc/".
+_DOCUMENTED_FILTER_PREFIX: Final[str] = "<TorchTpu/Performance/TcMalloc/"
 
 # A /proc/self/maps holding neither tcmalloc nor a sanitizer.
 _MAPS_WITHOUT_TCMALLOC: Final[str] = "7f000000 /usr/lib/libc.so.6\n"
@@ -60,9 +60,22 @@ class CheckTcmallocTest(seed_test_utils.RepeatableTest):
       _tcmalloc_check.check_tcmalloc()
 
     self.assertLen(caught, 1)
-    self.assertIsInstance(caught[0].message, exceptions.TcMallocWarning)
-    self.assertIsInstance(caught[0].message, exceptions.TorchTpuWarning)
+    self.assertIs(caught[0].category, UserWarning)
+    self.assertStartsWith(
+        str(caught[0].message), _tcmalloc_check.TCMALLOC_WARNING_PREFIX
+    )
     self.assertIn("LD_PRELOAD", str(caught[0].message))
+
+  def test_prefix_matches_cpp_warning_category(self) -> None:
+    # `_tcmalloc_check` can't get the prefix from C++, so it hard-codes it.
+    self.assertEqual(
+        _tcmalloc_check.TCMALLOC_WARNING_PREFIX,
+        warning_categories.get_prefix(warning_categories.TCMALLOC),
+    )
+    self.assertIs(
+        warning_categories.get_builtin_category(warning_categories.TCMALLOC),
+        UserWarning,
+    )
 
   def test_message_starts_with_the_documented_filter_prefix(self) -> None:
     # PYTHONWARNINGS matches the message as an anchored prefix, so rewording
@@ -72,9 +85,13 @@ class CheckTcmallocTest(seed_test_utils.RepeatableTest):
       _tcmalloc_check.check_tcmalloc()
 
     self.assertStartsWith(str(caught[0].message), _DOCUMENTED_FILTER_PREFIX)
+    self.assertIn(
+        f'PYTHONWARNINGS="ignore:{_DOCUMENTED_FILTER_PREFIX}"',
+        str(caught[0].message),
+    )
 
   def test_warning_is_suppressed_by_documented_message_filter(self) -> None:
-    # Mirrors PYTHONWARNINGS="ignore:tcmalloc is not loaded", which Python
+    # Mirrors the PYTHONWARNINGS filter suggested by the warning, which Python
     # turns into an anchored, re.escape()d message filter.
     with _no_tcmalloc(), warnings.catch_warnings(record=True) as caught:
       warnings.resetwarnings()
@@ -100,8 +117,10 @@ class CheckTcmallocTest(seed_test_utils.RepeatableTest):
   def test_user_filter_takes_precedence_over_default_filters(self) -> None:
     with _no_tcmalloc(), warnings.catch_warnings(record=True) as caught:
       warnings.resetwarnings()
-      # Simulates PYTHONWARNINGS="always::torch.tpu.exceptions.TcMallocWarning".
-      warnings.filterwarnings("always", category=exceptions.TcMallocWarning)
+      # Simulates PYTHONWARNINGS="always:<TorchTpu/Performance/".
+      warnings.filterwarnings(
+          "always", message=re.escape("<TorchTpu/Performance/")
+      )
       _tcmalloc_check.install_default_filters()
       _tcmalloc_check.check_tcmalloc()
       _tcmalloc_check.check_tcmalloc()
@@ -109,24 +128,27 @@ class CheckTcmallocTest(seed_test_utils.RepeatableTest):
     self.assertLen(caught, 2)
 
   @parameterized.named_parameters(
-      ("tcmalloc_warning", exceptions.TcMallocWarning),
-      ("torch_tpu_warning", exceptions.TorchTpuWarning),
+      ("tcmalloc_warning", "<TorchTpu/Performance/TcMalloc/"),
+      ("tcmalloc_warning_only", "<TorchTpu/Performance/TcMalloc/>"),
+      ("performance_warning", "<TorchTpu/Performance/"),
+      ("torch_tpu_warning", "<TorchTpu/"),
   )
-  def test_warning_is_suppressed_by_ignore_filter(
-      self, category: type[Warning]
-  ) -> None:
+  def test_warning_is_suppressed_by_ignore_filter(self, prefix: str) -> None:
     with _no_tcmalloc(), warnings.catch_warnings(record=True) as caught:
       warnings.simplefilter("always")
-      warnings.filterwarnings("ignore", category=category)
+      warnings.filterwarnings("ignore", message=re.escape(prefix))
       _tcmalloc_check.check_tcmalloc()
 
     self.assertEmpty(caught)
 
   def test_warning_is_escalated_by_error_filter(self) -> None:
     with _no_tcmalloc(), warnings.catch_warnings():
-      warnings.simplefilter("error", exceptions.TcMallocWarning)
-      with self.assertRaises(  # ASSERT_RAISES_OK=Verifies the error:: filter.
-          exceptions.TcMallocWarning
+      warnings.filterwarnings("error", message="<TorchTpu/")
+      with (
+          self.assertRaisesRegex(  # ASSERT_RAISES_OK=Verifies the error filter.
+              UserWarning,
+              "^" + re.escape(_tcmalloc_check.TCMALLOC_WARNING_PREFIX),
+          )
       ):
         _tcmalloc_check.check_tcmalloc()
 

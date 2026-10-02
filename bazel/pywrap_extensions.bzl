@@ -22,6 +22,7 @@ and every per-version wheel pywrap_library (//csrc/common/glue_<suffix>).
 PYWRAP_EXTENSIONS = [
     "//src/torch_tpu/_internal:env",
     "//src/torch_tpu/_internal:testing",
+    "//src/torch_tpu/_internal:warnings_impl",
     "//src/torch_tpu/_internal/batch_transfer:batch_transfer_impl",
     "//src/torch_tpu/_internal/compile:tpu_torch_compile",
     "//src/torch_tpu/_internal/compiler_options:compiler_options_impl",

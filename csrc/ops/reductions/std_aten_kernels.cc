@@ -123,7 +123,7 @@ void WarnIfInvalidCorrection(OpName op_name, double correction_val,
                              int64_t reduction_size) {
   const double denom = reduction_size - correction_val;
   if (denom <= 0) {
-    TT_WARN(WarningCategory::kCorrectnessWarning, GetRootOpName(op_name),
+    TT_WARN(WarningCategory::kCorrectness, GetRootOpName(op_name),
             "(): degrees of freedom (i.e., reduction size - correction) should "
             "be positive, got reduction size = ",
             reduction_size, ", correction = ", correction_val,

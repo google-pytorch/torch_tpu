@@ -17,12 +17,12 @@
 import pathlib
 import sys
 
-from torch_tpu._internal import exceptions
+from torch_tpu._internal import warnings
 from torch_tpu._internal.utils import tt_warnings
 
 
 def warn_deprecation_with_skip(message: str, skip_dir: pathlib.Path):
-  """Issues a DeprecatedApiWarning, skipping files in skip_dir if Python >= 3.12.
+  """Issues a deprecation warning, skipping files in skip_dir if Python >= 3.12.
 
   This handles the `skip_file_prefixes` argument which was added to
   `warnings.warn` in Python 3.12. For older versions, it falls back to
@@ -35,8 +35,12 @@ def warn_deprecation_with_skip(message: str, skip_dir: pathlib.Path):
   if sys.version_info >= (3, 12):
     tt_warnings.warn(
         message,
-        exceptions.DeprecatedApiWarning,
+        warnings.DEPRECATED_API,
         skip_file_prefixes=(str(skip_dir),),
     )
   else:
-    tt_warnings.warn(message, exceptions.DeprecatedApiWarning, stacklevel=3)
+    tt_warnings.warn(
+        message,
+        warnings.DEPRECATED_API,
+        stacklevel=3,
+    )
