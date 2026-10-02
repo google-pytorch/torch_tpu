@@ -25,6 +25,8 @@ torch_tpu_cc_library(
     hdrs = ["cumsum_aten_kernels.h"],
     deps = [
         "cumsum",
+        "//csrc/common:aten_utils",
+        "//csrc/common:device_type",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
         "//csrc/common:to_string",

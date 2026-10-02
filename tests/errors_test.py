@@ -2597,6 +2597,18 @@ Device-side assertion tracking was not enabled by user.""",
       output = torch.empty_like(t)
       torch.cumsum(t, dim=1, out=output)
 
+  def test_cumsum_cpu_out_tensor(self):
+    for shape in [(), (0,), (3,)]:
+      t = torch.ones(shape, device=et.device())
+      out = torch.empty(shape, device="cpu")
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""cumsum(): expected the output tensor to be on tpu, got cpu""",
+          gpu="""Expected out tensor to have device cuda:0, but got cpu instead""",
+          message_reviewed_by="gunhyun",
+      ):
+        torch.cumsum(t, dim=0, out=out)
+
   def test_cumprod_scalar_dimension_out_of_range(self):
     with et.assert_raises_message(
         IndexError,

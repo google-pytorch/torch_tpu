@@ -22,6 +22,8 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "absl/functional/bind_front.h"
+#include "csrc/common/aten_utils.h"
+#include "csrc/common/device_type.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
@@ -39,6 +41,9 @@ at::Tensor& AtenCumsumOut(const at::Tensor& self, int64_t dim,
                           std::optional<at::ScalarType> dtype,
                           at::Tensor& out) {
   TT_KERNEL(OpName::kCumsumOut, param_keys, (self, dim, dtype, out), {
+    TT_CHECK_THROW(IsPrivateUse1Device(out), error::kInvalidArgument)
+        << "expected the output tensor to be on "
+        << GetPrivateUse1DeviceDebugName() << ", got " << out.device();
     TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, self.sizes()));
 
     // PyTorch ATen parity: when explicit dtype is provided, out tensor dtype
