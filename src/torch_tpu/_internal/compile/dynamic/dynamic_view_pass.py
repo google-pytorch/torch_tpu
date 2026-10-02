@@ -86,30 +86,40 @@ class InputDynamicViewPass:
         if idx < len(self._example_inputs):
           self._example_inputs[idx] = example_input.new_empty(tuple(base_shape))
 
-      # Insert canonical view operation nodes immediately after placeholder
+      # Insert canonical view operation nodes immediately after placeholder.
+      # Every inserted node carries FakeTensor metadata, computed by applying
+      # the same view op to the running FakeTensor, because the downstream
+      # dynamism passes (e.g. HandleSliceLikeOpsPass) read ``meta["val"]`` of
+      # each slice/permute node, not only of the final one.
       orig_val = val
       curr_node = node
+      curr_val = new_val
       inserted_nodes = set()
 
       for op_type, op_args in view_ops:
-        with graph_module.graph.inserting_after(curr_node):
-          if op_type == "permute":
-            perm_dims = op_args[0]
-            view_node = graph_module.graph.call_function(
-                torch.ops.aten.permute.default,
-                args=(curr_node, list(perm_dims)),
-            )
-          elif op_type == "slice":
-            dim_idx, start, end, step = op_args
-            view_node = graph_module.graph.call_function(
-                torch.ops.aten.slice.Tensor,
-                args=(curr_node, int(dim_idx), start, end, step),
-            )
-          else:
-            raise ValueError(f"Unsupported view operation: {op_type}")
+        if op_type == "permute":
+          target = torch.ops.aten.permute.default
+          args = (list(op_args[0]),)
+        elif op_type == "slice":
+          dim_idx, start, end, step = op_args
+          target = torch.ops.aten.slice.Tensor
+          args = (int(dim_idx), start, end, step)
+        else:
+          raise ValueError(f"Unsupported view operation: {op_type}")
 
-          inserted_nodes.add(view_node)
-          curr_node = view_node
+        with graph_module.graph.inserting_after(curr_node):
+          view_node = graph_module.graph.call_function(
+              target, args=(curr_node, *args)
+          )
+        curr_val = target(curr_val, *args)
+        view_node.meta["val"] = curr_val
+        if "tensor_meta" in node.meta:
+          view_node.meta["tensor_meta"] = shape_prop._extract_tensor_metadata(
+              curr_val
+          )
+
+        inserted_nodes.add(view_node)
+        curr_node = view_node
 
       final_view_node = curr_node
       final_view_node.meta = node.meta.copy()

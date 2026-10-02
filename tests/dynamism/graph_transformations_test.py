@@ -15,6 +15,8 @@
 """Unit tests for graph transformations."""
 
 from __future__ import annotations
+from collections.abc import Callable
+from typing import Any
 from unittest import mock
 from absl.testing import absltest
 import torch
@@ -358,6 +360,108 @@ class GraphTransformationsTest(seed_test_utils.RepeatableTest):
       self.assertTrue(dynamic_compiler._can_use_pad_real_to_static([t]))  # pylint: disable=protected-access
     with mock.patch.object(utils, "libtpu_version", return_value=None):
       self.assertTrue(dynamic_compiler._can_use_pad_real_to_static([t]))  # pylint: disable=protected-access
+
+  def _capture_dynamic_stride_view_graph(
+      self, make_view: Callable[[int], torch.Tensor]
+  ) -> tuple[torch.fx.GraphModule, list[Any], int]:
+    """Captures the graph compiled for a view input with dynamic strides.
+
+    Compiles `x + 1` for views of bases with two sequence lengths. The sizes
+    of the views are the same, so the second compilation sees an input with
+    static sizes and dynamic strides, like a KV-cache view across decode steps.
+
+    Args:
+      make_view: Builds the view input for a given sequence length.
+
+    Returns:
+      The graph module and example inputs of the second compilation, and the
+      index of the view's placeholder (Dynamo lifts the stride symbols as
+      leading SymInt placeholders).
+    """
+    captured: list[tuple[torch.fx.GraphModule, list[Any]]] = []
+
+    def fw_compiler(graph_module, example_inputs):
+      captured.append((graph_module, list(example_inputs)))
+      return graph_module
+
+    torch._dynamo.reset()
+
+    @torch.compile(backend=aot_autograd(fw_compiler=fw_compiler))
+    def f(x):
+      return x + 1
+
+    for seq_len in (16, 20):
+      f(make_view(seq_len))
+
+    self.assertLen(captured, 2)
+    graph_module, example_inputs = captured[-1]
+    placeholders = list(
+        graph_module.graph.find_nodes(op="placeholder", sort=True)
+    )
+    tensor_indices = [
+        idx
+        for idx, node in enumerate(placeholders)
+        if isinstance(node.meta.get("val"), torch.Tensor)
+    ]
+    self.assertLen(tensor_indices, 1)
+    view_val = placeholders[tensor_indices[0]].meta["val"]
+    self.assertTrue(any(isinstance(s, torch.SymInt) for s in view_val.stride()))
+    return graph_module, example_inputs, tensor_indices[0]
+
+  def _check_input_dynamic_view_pass_metadata(
+      self,
+      make_view: Callable[[int], torch.Tensor],
+      expected_view_ops: list[torch._ops.OpOverload],
+  ) -> None:
+    """Checks that every inserted view node carries metadata and compiles."""
+    graph_module, example_inputs, view_index = (
+        self._capture_dynamic_stride_view_graph(make_view)
+    )
+    view_arg_indices, example_inputs = (
+        graph_transformations.apply_pre_dynamism_transformations(
+            graph_module, example_inputs
+        )
+    )
+    self.assertEqual(view_arg_indices, {view_index})
+
+    view_nodes = [
+        node
+        for node in graph_module.graph.nodes
+        if node.op == "call_function"
+        and node.target
+        in (torch.ops.aten.slice.Tensor, torch.ops.aten.permute.default)
+    ]
+    self.assertEqual([node.target for node in view_nodes], expected_view_ops)
+    for node in view_nodes:
+      with self.subTest(node=node.name):
+        self.assertIn("val", node.meta)
+        expected_val = node.target(
+            *torch.fx.node.map_arg(node.args, lambda arg: arg.meta["val"])
+        )
+        self.assertEqual(list(node.meta["val"].shape), list(expected_val.shape))
+        self.assertEqual(
+            list(node.meta["val"].stride()), list(expected_val.stride())
+        )
+
+    # The later passes read the metadata of the inserted nodes.
+    bm = sym_bounds_manager.SymBoundsManager(example_inputs)
+    graph_transformations.apply_dynamism_transformations(
+        graph_module, example_inputs, bm.get_fallback_symbol_bounds()
+    )
+
+  def test_input_dynamic_view_pass_transposed_slice_input(self):
+    """`k.transpose(1, 2)[:, :4]` decomposes into a slice and a permute."""
+    self._check_input_dynamic_view_pass_metadata(
+        lambda seq_len: torch.ones(2, 3, seq_len, 8).transpose(1, 2)[:, :4],
+        [torch.ops.aten.slice.Tensor, torch.ops.aten.permute.default],
+    )
+
+  def test_input_dynamic_view_pass_two_dim_slice_input(self):
+    """`hidden[:, 1:3, 2:6]` decomposes into two slices."""
+    self._check_input_dynamic_view_pass_metadata(
+        lambda seq_len: torch.ones(2, seq_len, 8)[:, 1:3, 2:6],
+        [torch.ops.aten.slice.Tensor, torch.ops.aten.slice.Tensor],
+    )
 
 
 if __name__ == "__main__":

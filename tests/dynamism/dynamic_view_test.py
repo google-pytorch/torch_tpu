@@ -321,6 +321,68 @@ class DynamicViewTest(seed_test_utils.RepeatableTest):
         (1, 4, 20, 8), 2, lambda x: x[:, :, :1, :], slice_dim=2
     )
 
+  def _check_dynamic_multi_op_view_input(
+      self,
+      base_shape: tuple[int, ...],
+      seq_dim: int,
+      view_fn: Callable[[torch.Tensor], torch.Tensor],
+      expected_view_ops: list[str],
+  ) -> None:
+    """Runs a view of a growing base that decomposes into several view ops.
+
+    Every inserted view op, not only the last one, must carry the metadata
+    that the dynamism passes read.
+
+    Args:
+      base_shape: Shape of the viewed base; `seq_dim` grows across steps.
+      seq_dim: Dimension of the base that grows across steps.
+      view_fn: Takes the base and returns the view passed as input.
+      expected_view_ops: Expected kinds of the decomposed view ops in order.
+    """
+
+    class AddOne(torch.nn.Module):
+
+      def forward(self, x):
+        return x + 1
+
+    torch._dynamo.reset()
+    model_cpu = AddOne()
+    compiled_model = torch.compile(
+        AddOne(), backend="tpu", options={"bounded_dynamism": True}
+    )
+
+    with torch.no_grad():
+      # The second and third steps run the bounded-dynamic executable.
+      for seq_len in (20, 30, 40):
+        shape = list(base_shape)
+        shape[seq_dim] = seq_len
+        base_cpu = torch.randn(shape)
+        view_cpu = view_fn(base_cpu)
+        view_tpu = view_fn(base_cpu.to(self.device))
+
+        decomp = view_decomposition.decompose_into_view_sequence(view_tpu)
+        self.assertIsNotNone(decomp)
+        _, view_ops = decomp
+        self.assertEqual([op for op, _ in view_ops], expected_view_ops)
+
+        out_tpu = compiled_model(view_tpu)
+        utils.assert_close(out_tpu.cpu(), model_cpu(view_cpu))
+
+  def test_dynamic_transposed_slice_input(self):
+    """Tests `k.transpose(1, 2)[:, :4]` (slice, then permute)."""
+    self._check_dynamic_multi_op_view_input(
+        (2, 3, 20, 8),
+        2,
+        lambda x: x.transpose(1, 2)[:, :4],
+        ["slice", "permute"],
+    )
+
+  def test_dynamic_two_dim_slice_input(self):
+    """Tests `hidden[:, 1:3, 2:6]` (two slices)."""
+    self._check_dynamic_multi_op_view_input(
+        (2, 20, 8), 1, lambda x: x[:, 1:3, 2:6], ["slice", "slice"]
+    )
+
 
 def _storage_numel(tensor: torch.Tensor) -> int:
   return tensor.untyped_storage().nbytes() // tensor.element_size()
