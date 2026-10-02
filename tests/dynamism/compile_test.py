@@ -1281,6 +1281,34 @@ class DynamicSliceTest(seed_test_utils.RepeatableTest):
       expected = model(x)
       utils.assert_close(out, expected)
 
+  def test_dynamic_slice_static_buffer_bound_from_slice_clamp(self):
+    # Under automatic dynamic shapes the slice clamp refines the range of
+    # seq_len to [2, max_len] while the stride-contiguity check guards
+    # Ne(seq_len, max_len); the upper bound max_len must still be accepted.
+    max_len = 16
+
+    class Model(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.register_buffer("static_table", torch.randn(4, 1, max_len))
+
+      def forward(self, x):
+        return x + self.static_table[:, :, : x.shape[-1]]
+
+    model = Model().to(self.device)
+    compiled = torch.compile(
+        model, backend="tpu", options={"bounded_dynamism": True}
+    )
+
+    # The second call recompiles with seq_len dynamic (bounded compile).
+    for seq_len in [4, 8, 12]:
+      x = torch.randn(1, 4, 1, seq_len, dtype=torch.float32, device=self.device)
+
+      out = compiled(x)
+      expected = model(x)
+      utils.assert_close(out, expected)
+
 
 @oss_utils.skip_if_libtpu_version(
     lambda v: v < (0, 0, 47),

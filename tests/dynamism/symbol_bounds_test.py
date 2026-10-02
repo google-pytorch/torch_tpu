@@ -123,6 +123,55 @@ class SymbolBoundsTest(seed_test_utils.RepeatableTest):
     )
     self.assertIsNone(satisfied)
 
+  def test_find_violated_guard_inequality_skipped(self):
+    s0 = sympy.Symbol("s0", integer=True)
+    # Ne(s0, 16) is the stride-contiguity guard torch installs for a `(4, s0)`
+    # view of a contiguous `(4, 16)` base. Dynamo recompiles when s0 == 16, so
+    # 16 is still a valid padded capacity for s0.
+    shape_env = FakeShapeEnv(guards=[FakeGuard(sympy.Ne(s0, 16))])
+    self.assertIsNone(symbol_bounds.find_violated_guard(shape_env, {"s0": 16}))
+
+    # Modular equality guards must hold for the padded shape and stay checked.
+    shape_env = FakeShapeEnv(
+        guards=[
+            FakeGuard(sympy.Ne(s0, 16)),
+            FakeGuard(sympy.Eq(sympy.Mod(s0, 3), 0)),
+        ]
+    )
+    violated = symbol_bounds.find_violated_guard(shape_env, {"s0": 16})
+    self.assertEqual(violated, sympy.Eq(sympy.Mod(s0, 3), 0))
+    self.assertIsNone(symbol_bounds.find_violated_guard(shape_env, {"s0": 15}))
+
+  def test_get_fallback_symbol_bounds_inequality_guard_at_upper_bound(self):
+    # `table[:, :s0]` on a static `(4, 16)` table: the slice clamp refines the
+    # range to s0 <= 16 and the contiguity check guards Ne(s0, 16).
+    s0 = sympy.Symbol("s0", integer=True)
+    shape_env = FakeShapeEnv(guards=[FakeGuard(sympy.Ne(s0, 16))])
+    s0_symint, _ = _make_symint(
+        "s0", hint=5, lower=2, upper=16, shape_env=shape_env
+    )
+
+    bm = sym_bounds_manager.SymBoundsManager([s0_symint])
+    self.assertEqual(
+        bm.get_fallback_symbol_bounds().get_symint_bounds(s0_symint), (2, 16)
+    )
+
+  def test_get_bucketed_symbol_bounds_inequality_guard_at_bucket_bound(self):
+    s0 = sympy.Symbol("s0", integer=True)
+    shape_env = FakeShapeEnv(guards=[FakeGuard(sympy.Ne(s0, 128))])
+    s0_symint, _ = _make_symint(
+        "s0", hint=16, lower=16, upper=int_oo, shape_env=shape_env
+    )
+    out_shape = output_sym_shape.OutputSymShape([{"expr": s0}])
+
+    bm = sym_bounds_manager.SymBoundsManager([s0_symint])
+    buckets = bm.get_bucketed_symbol_bounds([out_shape], num_buckets=2)
+
+    self.assertEqual(
+        [b.get_symint_bounds(s0_symint) for b in buckets],
+        [(16, 128), (129, 256)],
+    )
+
   def test_symbol_bounds_merge_bounds(self):
     s0, s1, s2 = sympy.symbols("s0 s1 s2", integer=True)
     sb0 = symbol_bounds.SymbolBounds({

@@ -141,6 +141,16 @@ def find_violated_guard(
     ):
       continue
 
+    # A `!=` guard excludes a single runtime value, for which Dynamo recompiles
+    # anyway. An upper bound is a padded capacity rather than a runtime size,
+    # so it may coincide with the excluded value, e.g. the stride-contiguity
+    # guard Ne(s, 16) of a `(4, s)` view of a contiguous `(4, 16)` base whose
+    # range is already refined to s <= 16. Torch folds every other relational
+    # guard into var_to_range, so only `Ne` can clash with a range-derived
+    # bound; equalities and modular guards must hold for the padded shape.
+    if isinstance(guard_expr, sympy.Ne):
+      continue
+
     substitutions = {
         sym: upper_bounds[str(sym)] for sym in guard_expr.free_symbols
     }
