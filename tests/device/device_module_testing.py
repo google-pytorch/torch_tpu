@@ -15,11 +15,9 @@
 """Base class defining tests for the device module."""
 
 import abc
-import contextlib
 import gc
 import threading
 from typing import Final
-from unittest import mock
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
@@ -59,14 +57,11 @@ class DeviceModuleBase(
     self.device_module._autocast_enabled = False
     self.device_module._autocast_dtype = torch.float16
 
-  @contextlib.contextmanager
-  def patch_current_device(self, device_id: int = 0):
-    patch = mock.patch(
-        "torch.accelerator.current_device_index",
-        return_value=device_id,
-    )
-    with patch:
-      yield patch
+  def _bound_device_index(self) -> int:
+    """Returns the real device index of this process, checking it is valid."""
+    idx = torch.accelerator.current_device_index()
+    self.assertBetween(idx, 0, self.device_module.device_count() - 1)
+    return idx
 
   def test_get_amp_supported_dtype(self):
     supported_dtypes = self.device_module.get_amp_supported_dtype()
@@ -217,9 +212,7 @@ class DeviceModuleBase(
     _device_module._rng_validate_device_index(0, 0)
 
     # Test valid torch.device.
-    _device_module._rng_validate_device_index(
-        mock.MagicMock(spec=torch.device, type="tpu", index=0), 0
-    )
+    _device_module._rng_validate_device_index(torch.device("tpu", 0), 0)
 
     # Test invalid device type.
     with self.assertRaisesRegex(
@@ -235,103 +228,116 @@ class DeviceModuleBase(
     ):
       _device_module._rng_validate_device_index(1, 0)
 
+  def test_bound_device_index_is_valid(self):
+    idx = self._bound_device_index()
+    if self.device_module.device_count() == 1:
+      self.assertEqual(idx, 0)
+
   def test_set_device_valid(self):
-    with self.patch_current_device(device_id=0):
-      # Test valid integer index
-      self.device_module.set_device(0)
-      self.assertEqual(torch.accelerator.current_device_index(), 0)
-      self.assertEqual(self.device_module.current_device(), 0)
+    idx = self._bound_device_index()
 
-      # Test valid string and torch.device
-      if self.device_module._device_type == "tpu":
-        self.device_module.set_device("tpu")
-        self.assertEqual(torch.accelerator.current_device_index(), 0)
-        self.assertEqual(self.device_module.current_device(), 0)
+    # TPU processes are bound to one device, so selecting the bound device must
+    # not raise and must not change the current device.
+    # Test valid integer index
+    self.device_module.set_device(idx)
+    self.assertEqual(self.device_module.current_device(), idx)
 
-        self.device_module.set_device(torch.device("tpu"))
-        self.assertEqual(torch.accelerator.current_device_index(), 0)
-        self.assertEqual(self.device_module.current_device(), 0)
+    # Setting through torch.accelerator is reflected by current_device()
+    torch.accelerator.set_device_index(idx)
+    self.assertEqual(self.device_module.current_device(), idx)
 
-        self.device_module.set_device(torch.device("tpu:0"))
-        self.assertEqual(torch.accelerator.current_device_index(), 0)
-        self.assertEqual(self.device_module.current_device(), 0)
+    # Test valid string and torch.device
+    if self.device_module._device_type == "tpu":
+      self.device_module.set_device("tpu")
+      self.assertEqual(self.device_module.current_device(), idx)
+
+      self.device_module.set_device(torch.device("tpu"))
+      self.assertEqual(self.device_module.current_device(), idx)
+
+      self.device_module.set_device(torch.device("tpu", idx))
+      self.assertEqual(self.device_module.current_device(), idx)
 
   def test_set_device_invalid_index(self):
-    with self.patch_current_device():
-      with self.assertRaisesRegex(
-          ValueError, "Cannot set TPU device to index 1"
-      ):
-        self.device_module.set_device(1)
+    idx = self._bound_device_index()
+    invalid_idx = self.device_module.device_count()
+    with self.assertRaisesRegex(
+        ValueError, f"Cannot set TPU device to index {invalid_idx}"
+    ):
+      self.device_module.set_device(invalid_idx)
+    # A failed set_device does not change the current device.
+    self.assertEqual(self.device_module.current_device(), idx)
 
   def test_set_device_invalid_string(self):
-    with self.patch_current_device():
-      with self.assertRaisesRegex(ValueError, "Invalid device string cpu"):
-        self.device_module.set_device("cpu")
+    with self.assertRaisesRegex(ValueError, "Invalid device string cpu"):
+      self.device_module.set_device("cpu")
 
   def test_set_device_invalid_device_type(self):
-    with self.patch_current_device():
-      with self.assertRaisesRegex(ValueError, "Invalid device type cpu"):
-        self.device_module.set_device(torch.device("cpu"))
+    with self.assertRaisesRegex(ValueError, "Invalid device type cpu"):
+      self.device_module.set_device(torch.device("cpu"))
 
   def test_set_device_invalid_type(self):
-    with self.patch_current_device():
-      with self.assertRaisesRegex(TypeError, "Got unrecognized device type"):
-        self.device_module.set_device(1.0)
+    with self.assertRaisesRegex(TypeError, "Got unrecognized device type"):
+      self.device_module.set_device(1.0)
 
   def test_device_context_manager(self):
-    with self.patch_current_device(device_id=0):
-      # Valid int: verifies device selection and context restoration
-      ctx = self.device_module.device(0)
-      self.assertEqual(ctx.idx, 0)
-      with ctx:
-        self.assertEqual(ctx.prev_idx, 0)
-      self.assertEqual(ctx.idx, 0)
+    idx = self._bound_device_index()
 
-      # Valid string and torch.device if registered
-      if self.device_module._device_type == "tpu":
-        with self.device_module.device("tpu"):
-          self.assertEqual(torch.accelerator.current_device_index(), 0)
-          self.assertEqual(self.device_module.current_device(), 0)
+    # Valid int: verifies device selection and context restoration
+    ctx = self.device_module.device(idx)
+    self.assertEqual(ctx.idx, idx)
+    with ctx:
+      self.assertEqual(ctx.prev_idx, idx)
+      self.assertEqual(self.device_module.current_device(), idx)
+    self.assertEqual(ctx.idx, idx)
+    self.assertEqual(self.device_module.current_device(), idx)
 
-        with self.device_module.device(torch.device("tpu:0")):
-          self.assertEqual(torch.accelerator.current_device_index(), 0)
-          self.assertEqual(self.device_module.current_device(), 0)
+    # Valid string and torch.device if registered
+    if self.device_module._device_type == "tpu":
+      with self.device_module.device("tpu"):
+        self.assertEqual(self.device_module.current_device(), idx)
 
-      # None resolves to current device (0), keeping the active device context
-      none_ctx = self.device_module.device(None)
-      self.assertEqual(none_ctx.idx, 0)
-      with none_ctx:
-        self.assertEqual(none_ctx.prev_idx, 0)
+      with self.device_module.device(torch.device("tpu", idx)):
+        self.assertEqual(self.device_module.current_device(), idx)
 
-      # Negative int is a no-op
-      neg_ctx = self.device_module.device(-1)
-      self.assertEqual(neg_ctx.idx, -1)
-      with neg_ctx:
-        self.assertEqual(neg_ctx.prev_idx, -1)
+    # None resolves to the current device, keeping the active device context
+    none_ctx = self.device_module.device(None)
+    self.assertEqual(none_ctx.idx, idx)
+    with none_ctx:
+      self.assertEqual(none_ctx.prev_idx, idx)
 
-      # Invalid device index raises ValueError
-      with self.assertRaisesRegex(
-          ValueError, "Cannot set TPU device to index 1"
-      ):
-        with self.device_module.device(1):
-          pass
+    # Negative int is a no-op
+    neg_ctx = self.device_module.device(-1)
+    self.assertEqual(neg_ctx.idx, -1)
+    with neg_ctx:
+      self.assertEqual(neg_ctx.prev_idx, -1)
+      self.assertEqual(self.device_module.current_device(), idx)
+
+    # Invalid device index raises ValueError and keeps the current device
+    invalid_idx = self.device_module.device_count()
+    with self.assertRaisesRegex(
+        ValueError, f"Cannot set TPU device to index {invalid_idx}"
+    ):
+      with self.device_module.device(invalid_idx):
+        pass
+    self.assertEqual(self.device_module.current_device(), idx)
 
   def test_device_of_context_manager(self):
-    with self.patch_current_device(device_id=0):
-      # If device backend is TPU, TPU tensor extracts device index 0
-      if self.device_module._device_type == "tpu":
-        tpu_tensor = torch.zeros(1, device="tpu")
-        tpu_ctx = self.device_module.device_of(tpu_tensor)
-        self.assertEqual(tpu_ctx.idx, 0)
-        with tpu_ctx:
-          self.assertEqual(tpu_ctx.prev_idx, 0)
+    idx = self._bound_device_index()
 
-      # CPU tensor is not on TPU, so it acts as a no-op (idx = -1)
-      cpu_tensor = torch.zeros(1, device="cpu")
-      cpu_ctx = self.device_module.device_of(cpu_tensor)
-      self.assertEqual(cpu_ctx.idx, -1)
-      with cpu_ctx:
-        self.assertEqual(cpu_ctx.prev_idx, -1)
+    # If device backend is TPU, a TPU tensor selects its own device index
+    if self.device_module._device_type == "tpu":
+      tpu_tensor = torch.zeros(1, device="tpu")
+      tpu_ctx = self.device_module.device_of(tpu_tensor)
+      self.assertEqual(tpu_ctx.idx, idx)
+      with tpu_ctx:
+        self.assertEqual(tpu_ctx.prev_idx, idx)
+
+    # CPU tensor is not on TPU, so it acts as a no-op (idx = -1)
+    cpu_tensor = torch.zeros(1, device="cpu")
+    cpu_ctx = self.device_module.device_of(cpu_tensor)
+    self.assertEqual(cpu_ctx.idx, -1)
+    with cpu_ctx:
+      self.assertEqual(cpu_ctx.prev_idx, -1)
 
   def test_is_available(self):
     """Verifies that is_available returns a boolean."""
@@ -347,11 +353,12 @@ class DeviceModuleBase(
     self.device_module.synchronize(None)
 
   def test_exchange_device(self):
-    with self.patch_current_device(device_id=0):
-      self.assertEqual(self.device_module._exchange_device(0), 0)
-      self.assertEqual(self.device_module._exchange_device(-1), -1)
-      self.assertEqual(self.device_module._maybe_exchange_device(0), 0)
-      self.assertEqual(self.device_module._maybe_exchange_device(-1), -1)
+    idx = self._bound_device_index()
+    self.assertEqual(self.device_module._exchange_device(idx), idx)
+    self.assertEqual(self.device_module._exchange_device(-1), -1)
+    self.assertEqual(self.device_module._maybe_exchange_device(idx), idx)
+    self.assertEqual(self.device_module._maybe_exchange_device(-1), -1)
+    self.assertEqual(self.device_module.current_device(), idx)
 
   def test_get_local_device_attributes(self):
     """Tests the local device attributes dictionary contains correct keys."""
