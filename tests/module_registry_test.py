@@ -41,6 +41,7 @@ import torch
 from torch_tpu._internal import testing as tt_testing
 from tests import module_registry
 from tests import seed_test_utils
+import torchvision
 
 _GOLDFISH_IMG_PATH = (
     epath.resource_path("torch_tpu") / "tests/compile/data/goldfish.jpg"
@@ -636,10 +637,14 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertIn("image_embeds_position_mask", kwargs)
 
   def test_transformers_glm_ocr_generate_inputs(self):
-    config = mock.MagicMock(
+    # TODO(wan): revisit DECISION (b/568593384): HF configs in this file are
+    # `types.SimpleNamespace` rather than `transformers.PretrainedConfig`, since
+    # the v5 strict-dataclass config adds defaults and validation that are not
+    # under test here.
+    config = types.SimpleNamespace(
         model_type="glm_ocr",
         architectures=["GlmOcrForConditionalGeneration"],
-        vision_config=mock.MagicMock(
+        vision_config=types.SimpleNamespace(
             patch_size=14, temporal_patch_size=2, spatial_merge_size=2
         ),
         image_size=336,
@@ -663,10 +668,10 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertEqual(kwargs["mm_token_type_ids"][0, 1].item(), 1)
 
   def test_transformers_kosmos2_generate_inputs(self):
-    config = mock.MagicMock(
+    config = types.SimpleNamespace(
         model_type="kosmos-2",
         architectures=["Kosmos2ForConditionalGeneration"],
-        vision_config=mock.MagicMock(patch_size=14),
+        vision_config=types.SimpleNamespace(patch_size=14),
         image_size=224,
         latent_query_num=64,
         vocab_size=64007,
@@ -686,7 +691,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     )
 
   def test_transformers_sequence_length_clamping(self):
-    config = mock.MagicMock(
+    config = types.SimpleNamespace(
         model_type="electra",
         architectures=["ElectraForPreTraining"],
         max_position_embeddings=512,
@@ -1096,35 +1101,48 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
       )
       self.assertEqual(custom_spec.modality, mod)
 
+  def _assert_same_state_dict(self, actual, expected):
+    actual_sd = actual.state_dict()
+    expected_sd = expected.state_dict()
+    self.assertEqual(actual_sd.keys(), expected_sd.keys())
+    for key, value in expected_sd.items():
+      self.assertTrue(torch.equal(actual_sd[key], value), key)
+
   def test_torchvision_weights_backbone_none(self):
-    with mock.patch(
-        "torchvision.models.get_model", return_value=mock.MagicMock()
-    ) as mock_get_model:
-      module_spec = self.module_registry.get_module_spec(
-          "torchvision", "resnet50"
-      )
-      model = module_spec.module_factory()
-      self.assertIsNotNone(model)
-      mock_get_model.assert_called_once_with(
-          "resnet50", weights=None, weights_backbone=None
-      )
+    # Detection builders accept `weights_backbone`, whose default would load a
+    # pretrained backbone (with frozen BatchNorm). The factory must disable it.
+    name = "fasterrcnn_mobilenet_v3_large_320_fpn"
+    module_spec = self.module_registry.get_module_spec("torchvision", name)
+
+    torch.manual_seed(0)
+    model = module_spec.module_factory()
+    torch.manual_seed(0)
+    expected = torchvision.models.get_model(
+        name, weights=None, weights_backbone=None
+    )
+
+    self.assertIsInstance(model, torchvision.models.detection.FasterRCNN)
+    self.assertFalse(
+        any(
+            isinstance(m, torchvision.ops.FrozenBatchNorm2d)
+            for m in model.modules()
+        )
+    )
+    self._assert_same_state_dict(model, expected)
 
   def test_torchvision_weights_backbone_type_error_fallback(self):
-    def fake_get_model(name, weights=None, **kwargs):
-      del name, weights
-      if "weights_backbone" in kwargs:
-        raise TypeError("unexpected keyword argument 'weights_backbone'")
-      return mock.MagicMock()
+    # Classification builders reject `weights_backbone` with a TypeError; the
+    # factory must fall back to a randomly initialized model.
+    name = "resnet18"
+    module_spec = self.module_registry.get_module_spec("torchvision", name)
 
-    with mock.patch(
-        "torchvision.models.get_model", side_effect=fake_get_model
-    ) as mock_get_model:
-      module_spec = self.module_registry.get_module_spec(
-          "torchvision", "simple_model"
-      )
-      model = module_spec.module_factory()
-      self.assertIsNotNone(model)
-      self.assertEqual(mock_get_model.call_count, 2)
+    torch.manual_seed(0)
+    model = module_spec.module_factory()
+    torch.manual_seed(0)
+    expected = torchvision.models.get_model(name, weights=None)
+
+    self.assertIsInstance(model, torchvision.models.ResNet)
+    self._assert_same_state_dict(model, expected)
 
   def test_diffusers_dynamic_subfolder_resolution_via_model_index(self):
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -1246,11 +1264,9 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         ),
     ]
     for name, cfg_dict in configs:
-      mock_cfg = mock.MagicMock()
-      for k, v in cfg_dict.items():
-        setattr(mock_cfg, k, v)
+      cfg = types.SimpleNamespace(**cfg_dict)
       inputs = module_registry._generate_transformers_inputs(
-          mock_cfg, module_registry.Modality.VISION
+          cfg, module_registry.Modality.VISION
       )
       if name == "videoprism":
         self.assertIn("pixel_values_videos", inputs, f"Failed for {name}")
@@ -1282,15 +1298,16 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         self.assertFalse(torch.all(inputs["bool_masked_pos"]))
 
   def test_transformers_videomae_classification_no_mask(self):
-    mock_cfg = mock.MagicMock()
-    mock_cfg.model_type = "videomae"
-    mock_cfg.architectures = ["VideoMAEForVideoClassification"]
-    mock_cfg.num_frames = 16
-    mock_cfg.image_size = 224
-    mock_cfg.patch_size = 16
-    mock_cfg.tubelet_size = 2
+    cfg = types.SimpleNamespace(
+        model_type="videomae",
+        architectures=["VideoMAEForVideoClassification"],
+        num_frames=16,
+        image_size=224,
+        patch_size=16,
+        tubelet_size=2,
+    )
     inputs = module_registry._generate_transformers_inputs(
-        mock_cfg, module_registry.Modality.VISION
+        cfg, module_registry.Modality.VISION
     )
     self.assertIn("pixel_values", inputs)
     self.assertNotIn("bool_masked_pos", inputs)
@@ -1304,11 +1321,9 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         "xcodec2",
     ]
     for codec in codecs:
-      mock_cfg = mock.MagicMock()
-      mock_cfg.model_type = codec
-      mock_cfg.architectures = [codec]
+      cfg = types.SimpleNamespace(model_type=codec, architectures=[codec])
       inputs = module_registry._generate_transformers_inputs(
-          mock_cfg, module_registry.Modality.AUDIO, shape=(2, 8000)
+          cfg, module_registry.Modality.AUDIO, shape=(2, 8000)
       )
       if codec == "xcodec2":
         self.assertIn("input_features", inputs, f"Failed for {codec}")
@@ -1330,15 +1345,16 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         "timesfm",
     ]
     for ts in ts_models:
-      mock_cfg = mock.MagicMock()
-      mock_cfg.model_type = ts
-      mock_cfg.architectures = [ts]
-      mock_cfg.context_length = 32
-      mock_cfg.input_size = 1
-      mock_cfg.num_time_features = 4
-      mock_cfg.lags_sequence = [1, 2, 3]
+      cfg = types.SimpleNamespace(
+          model_type=ts,
+          architectures=[ts],
+          context_length=32,
+          input_size=1,
+          num_time_features=4,
+          lags_sequence=[1, 2, 3],
+      )
       inputs = module_registry._generate_transformers_inputs(
-          mock_cfg, module_registry.Modality.CAUSAL_LM, shape=(2, 32)
+          cfg, module_registry.Modality.CAUSAL_LM, shape=(2, 32)
       )
       self.assertNotIn("input_ids", inputs, f"Failed for {ts}")
       self.assertNotIn("attention_mask", inputs, f"Failed for {ts}")
@@ -1358,7 +1374,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
 
   def test_transformers_model_specific_kwargs(self):
     # SigLIP2
-    cfg_siglip2 = mock.MagicMock(
+    cfg_siglip2 = types.SimpleNamespace(
         model_type="siglip2",
         architectures=["Siglip2VisionModel"],
         image_size=224,
@@ -1372,7 +1388,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertEqual(inputs_siglip2["spatial_shapes"].tolist(), [[14, 14]])
 
     # OneFormer
-    cfg_oneformer = mock.MagicMock(
+    cfg_oneformer = types.SimpleNamespace(
         model_type="oneformer",
         architectures=["OneFormerModel"],
         image_size=224,
@@ -1383,7 +1399,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertIn("task_inputs", inputs_oneformer)
 
     # VitMatte (4 channels)
-    cfg_vitmatte = mock.MagicMock(
+    cfg_vitmatte = types.SimpleNamespace(
         model_type="vitmatte",
         architectures=["VitMatteForImageMatting"],
         image_size=224,
@@ -1395,7 +1411,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertEqual(inputs_vitmatte["pixel_values"].shape[1], 4)
 
     # VitPose
-    cfg_vitpose = mock.MagicMock(
+    cfg_vitpose = types.SimpleNamespace(
         model_type="vitpose",
         architectures=["VitPoseModel"],
         image_size=[256, 192],
@@ -1408,7 +1424,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertIn("dataset_index", inputs_vitpose)
 
     # Bros (bbox)
-    cfg_bros = mock.MagicMock(
+    cfg_bros = types.SimpleNamespace(
         model_type="bros",
         architectures=["BrosModel"],
         vocab_size=30522,
@@ -1420,11 +1436,11 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertEqual(inputs_bros["bbox"].shape, (1, 32, 4))
 
     # Pix2Struct (flattened_patches)
-    cfg_p2s = mock.MagicMock(
+    cfg_p2s = types.SimpleNamespace(
         model_type="pix2struct",
         architectures=["Pix2StructForConditionalGeneration"],
         max_patches=16,
-        text_config=mock.MagicMock(hidden_size=768),
+        text_config=types.SimpleNamespace(hidden_size=768),
     )
     inputs_p2s = module_registry._generate_transformers_inputs(
         cfg_p2s, module_registry.Modality.MULTIMODAL, shape=(1, 32)
@@ -1435,7 +1451,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertIn("decoder_input_ids", inputs_p2s)
 
     # Qwen2-VL / Qwen3-VL / Holo (image_grid_thw)
-    cfg_qwenvl = mock.MagicMock(
+    cfg_qwenvl = types.SimpleNamespace(
         model_type="qwen2_5_vl",
         architectures=["Qwen2_5_VLForConditionalGeneration"],
         image_size=224,
@@ -1447,7 +1463,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertEqual(inputs_qwenvl["image_grid_thw"].tolist(), [[1, 16, 16]])
 
     # InstructBlip / Blip
-    cfg_iblip = mock.MagicMock(
+    cfg_iblip = types.SimpleNamespace(
         model_type="instructblip",
         architectures=["InstructBlipForConditionalGeneration"],
         image_size=224,
@@ -1460,7 +1476,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertIn("decoder_input_ids", inputs_iblip)
 
     # LXMERT
-    cfg_lxmert = mock.MagicMock(
+    cfg_lxmert = types.SimpleNamespace(
         model_type="lxmert",
         architectures=["LxmertForQuestionAnswering"],
         vocab_size=30522,
@@ -1475,7 +1491,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertEqual(inputs_lxmert["visual_pos"].shape, (1, 36, 4))
 
     # SpeechT5 (TextToSpeech)
-    cfg_speecht5_tts = mock.MagicMock(
+    cfg_speecht5_tts = types.SimpleNamespace(
         model_type="speecht5",
         architectures=["SpeechT5ForTextToSpeech"],
         vocab_size=81,
@@ -1497,7 +1513,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertEqual(inputs_tts["speaker_embeddings"].shape, (1, 512))
 
     # SpeechT5 (SpeechToText)
-    cfg_speecht5_asr = mock.MagicMock(
+    cfg_speecht5_asr = types.SimpleNamespace(
         model_type="speecht5",
         architectures=["SpeechT5ForSpeechToText"],
         vocab_size=81,
@@ -1517,7 +1533,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertEqual(inputs_asr["attention_mask"].shape, (1, 16000))
 
     # SpeechT5 (SpeechToSpeech)
-    cfg_speecht5_vc = mock.MagicMock(
+    cfg_speecht5_vc = types.SimpleNamespace(
         model_type="speecht5",
         architectures=["SpeechT5ForSpeechToSpeech"],
         vocab_size=81,
@@ -1536,20 +1552,26 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertEqual(inputs_vc["attention_mask"].shape, (1, 16000))
 
   def test_transformers_get_max_seq_len_bounds(self):
-    cfg_normal = mock.MagicMock(max_position_embeddings=2048)
+    cfg_normal = types.SimpleNamespace(max_position_embeddings=2048)
     self.assertEqual(module_registry._get_max_seq_len(cfg_normal), 2048)
 
-    cfg_neg = mock.MagicMock(max_position_embeddings=-1)
+    cfg_neg = types.SimpleNamespace(max_position_embeddings=-1)
     self.assertEqual(module_registry._get_max_seq_len(cfg_neg), 512)
 
-    cfg_oversized = mock.MagicMock(max_position_embeddings=1000000)
+    cfg_oversized = types.SimpleNamespace(max_position_embeddings=1000000)
     self.assertEqual(module_registry._get_max_seq_len(cfg_oversized), 512)
 
-    cfg_empty = mock.MagicMock(spec=[])
+    cfg_empty = types.SimpleNamespace()
     self.assertEqual(module_registry._get_max_seq_len(cfg_empty), 512)
     self.assertEqual(
         module_registry._get_max_seq_len(cfg_empty, default=256), 256
     )
+
+    # Positional limits on `text_config` are used when the top level has none.
+    cfg_text_only = types.SimpleNamespace(
+        text_config=types.SimpleNamespace(max_position_embeddings=1024)
+    )
+    self.assertEqual(module_registry._get_max_seq_len(cfg_text_only), 1024)
 
   def test_safe_int(self):
     self.assertEqual(module_registry._safe_int(42), 42)
@@ -1560,8 +1582,9 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertEqual(module_registry._safe_int("invalid", default=0), 0)
     self.assertEqual(module_registry._safe_int(0, default=10, min_val=1), 10)
     self.assertEqual(module_registry._safe_int(5, default=10, min_val=1), 5)
+    # Non-scalar objects (e.g. nested configs) fall back to the default.
     self.assertEqual(
-        module_registry._safe_int(mock.MagicMock(), default=10), 10
+        module_registry._safe_int(types.SimpleNamespace(), default=10), 10
     )
 
   def test_extract_diffusers_subfolder_candidates(self):
@@ -1614,7 +1637,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         module_registry.Modality.VISION,
     )
     # Config object with dict backbone_config
-    cfg_obj = mock.MagicMock(
+    cfg_obj = types.SimpleNamespace(
         _class_name="",
         _name_or_path="",
         model_type="chmv2",
