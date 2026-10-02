@@ -66,7 +66,6 @@ def test_inference_mode_crash():
   script = textwrap.dedent("""
         import os
         os.environ["TORCH_SHOW_CPP_STACKTRACES"] = "1"
-        os.environ["ACCELERATOR_TYPE"] = "v6e-4"
         import torch
         device = torch.device("tpu")
 

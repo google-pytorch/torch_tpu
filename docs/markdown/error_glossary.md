@@ -2,13 +2,6 @@
 torch_tpu_version: 0.1.1.dev20260922
 ---
 
-```python
-import os
-
-# Environment Configuration
-os.environ["ACCELERATOR_TYPE"] = "v6e-4"
-```
-
 # **Error Code Glossary**
 
 When a model fails on the TPU, the error output can be complex — spanning Python
@@ -29,6 +22,7 @@ enriches errors with:
 The cell below triggers a real error so you can see both layers.
 
 ```python
+import os
 import traceback
 
 # Enable C++ stack traces BEFORE importing torch
@@ -135,7 +129,6 @@ import shutil, subprocess, sys, textwrap
 script = textwrap.dedent("""
       import os
       os.environ["TORCH_SHOW_CPP_STACKTRACES"] = "1"
-      os.environ["ACCELERATOR_TYPE"] = "v6e-4"
       import torch
       import torch_tpu
       device = torch.device("tpu")

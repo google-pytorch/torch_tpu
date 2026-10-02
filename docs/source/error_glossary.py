@@ -24,11 +24,8 @@ app = marimo.App(width="medium")
 @app.cell(hide_code=True)
 def _():
   import marimo as mo
-  import os
 
-  # Environment Configuration
-  os.environ["ACCELERATOR_TYPE"] = "v6e-4"
-  return mo, os
+  return (mo,)
 
 
 @app.cell(hide_code=True)
@@ -57,7 +54,8 @@ def _(mo):
 
 
 @app.cell
-def _(os):
+def _():
+  import os
   import traceback
 
   # Enable C++ stack traces BEFORE importing torch
@@ -181,7 +179,6 @@ def _():
   script = textwrap.dedent("""
         import os
         os.environ["TORCH_SHOW_CPP_STACKTRACES"] = "1"
-        os.environ["ACCELERATOR_TYPE"] = "v6e-4"
         import torch
         import torch_tpu
         device = torch.device("tpu")

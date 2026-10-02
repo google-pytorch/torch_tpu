@@ -23,10 +23,7 @@ app = marimo.App(width="medium")
 @app.cell(hide_code=True)
 def _():
   import marimo as mo
-  import os
 
-  # Environment Configuration
-  os.environ["ACCELERATOR_TYPE"] = "v6e-4"
   return (mo,)
 
 

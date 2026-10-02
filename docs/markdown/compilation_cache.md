@@ -2,13 +2,6 @@
 torch_tpu_version: 0.1.1.dev20260922
 ---
 
-```python
-import os
-
-# Environment Configuration
-os.environ["ACCELERATOR_TYPE"] = "v6e-4"
-```
-
 # **The Compilation Cache**
 
 Understanding "Cold Starts" vs. "Warm Hits" is essential for achieving peak TPU
