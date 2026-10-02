@@ -835,7 +835,7 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     )
     utils.assert_close(actual=expected, expected=expected_values)
     x = expected.to(device='tpu')
-    self.assertTrue(x.is_contiguous())
+    self.assertEqual(x.stride(), expected.to(device='cpu', copy=True).stride())
 
     # Act: force the strides to match expected
     y = tpu_torch_compile.force_strides(
@@ -875,7 +875,7 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     )
     utils.assert_close(actual=expected, expected=expected_values)
     x = expected.to(device='tpu')
-    self.assertTrue(x.is_contiguous())
+    self.assertEqual(x.stride(), expected.to(device='cpu', copy=True).stride())
 
     # Act: force the strides to match expected
     y = tpu_torch_compile.force_strides(

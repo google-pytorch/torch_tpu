@@ -18,6 +18,7 @@
 
 #include <optional>
 
+#include "ATen/ExpandUtils.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "ATen/ops/empty.h"
@@ -86,10 +87,19 @@ at::Tensor AtenToCopy(const at::Tensor& self,
         at::TensorOptions options =
             at::TensorOptions().dtype(target_dtype).device(target_device);
         at::Tensor dest;  // UNINITIALIZED_TENSOR_OK=initialized in the if-else
-        if (preserve_strides && !self.is_contiguous() &&
-            self.is_non_overlapping_and_dense()) {
+        if (preserve_strides && self.is_non_overlapping_and_dense()) {
+          // Input is already non-overlapping and dense: preserve its exact
+          // strides.
           dest = at::empty_strided(self.sizes(), self.strides(), options);
+        } else if (preserve_strides) {
+          // Input is overlapping or non-dense (e.g., from slice/unbind/expand):
+          // compute non-overlapping and dense strides that preserve the input's
+          // dimension permutation.
+          auto strides = at::infer_dense_strides(self.sizes(), self.strides());
+          dest = at::empty_strided(self.sizes(), strides, options);
         } else {
+          // Explicit memory format requested (e.g., Contiguous, ChannelsLast):
+          // allocate according to resolved_format.
           dest = at::empty(self.sizes(), options, resolved_format);
         }
         ::torch_tpu::AtenCopy_(dest, self, non_blocking);

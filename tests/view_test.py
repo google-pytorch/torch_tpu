@@ -20,6 +20,7 @@ import time
 from typing import Callable, Tuple
 
 from absl.testing import absltest
+from absl.testing import parameterized
 import torch
 from torch_tpu._internal import compile as compile_lib
 from torch_tpu._internal import testing as tt_testing
@@ -1428,31 +1429,117 @@ class StridedSliceViewTest(LayoutTest):
 
 class CompileTest(LayoutTest):
 
-  def test_cast_non_contiguous_tensor_view(self):
-    class CastNonContiguousTensorViewModule(torch.nn.Module):
+  def setUp(self):
+    super().setUp()
+    torch._dynamo.reset()
 
-      def forward(self, x):
-        x_fp32 = x.float()
-        x_fp32 = x_fp32 + 1.0
-        x_bf16 = x_fp32.type_as(x)
-        out = (
-            x_bf16.transpose(1, 2)
-            .contiguous()
-            .reshape(1, 512, 1024)
-            .contiguous()
-        )
-        return out
+  @parameterized.product(
+      input_case=[
+          # Branch 1 inputs (when preserve_strides): already non-overlapping and
+          # dense -> output keeps exact input strides.
+          dict(
+              case_name="contiguous",
+              base_shape=(2, 3, 4, 8),
+              view_fn=lambda t: t,
+              expected_is_contiguous=True,
+              expected_is_non_overlapping_and_dense=True,
+          ),
+          dict(
+              case_name="contiguous_permuted_size1_dim",
+              base_shape=(2, 4, 1, 8),
+              view_fn=lambda t: t.transpose(1, 2),
+              expected_is_contiguous=True,
+              expected_is_non_overlapping_and_dense=True,
+          ),
+          dict(
+              case_name="non_contiguous_dense_transposed",
+              base_shape=(2, 3, 4, 8),
+              view_fn=lambda t: t.transpose(1, 2),
+              expected_is_contiguous=False,
+              expected_is_non_overlapping_and_dense=True,
+          ),
+          # Branch 2 inputs (when preserve_strides): non-dense (gaps from slice
+          # or unbind) or overlapping (stride=0 from expand) -> output becomes
+          # non-overlapping and dense while preserving dimension permutation.
+          dict(
+              case_name="non_dense_sliced_row_major",
+              base_shape=(2, 6, 4, 8),
+              view_fn=lambda t: t[:, :3, :, :],
+              expected_is_contiguous=False,
+              expected_is_non_overlapping_and_dense=False,
+          ),
+          dict(
+              case_name="non_dense_unbound_transposed",
+              base_shape=(2, 4, 3, 6, 8),
+              view_fn=lambda t: t.unbind(dim=-3)[0].transpose(1, 2),
+              expected_is_contiguous=False,
+              expected_is_non_overlapping_and_dense=False,
+          ),
+          dict(
+              case_name="overlapping_expanded_transposed",
+              base_shape=(2, 1, 4, 8),
+              view_fn=lambda t: t.expand(2, 3, 4, 8).transpose(1, 2),
+              expected_is_contiguous=False,
+              expected_is_non_overlapping_and_dense=False,
+          ),
+      ],
+      # None / preserve_format hit Branch 1 or 2; contiguous_format /
+      # channels_last hit Branch 3 (allocate with explicit memory format).
+      memory_format=[
+          None,
+          torch.preserve_format,
+          torch.contiguous_format,
+          torch.channels_last,
+      ],
+  )
+  def test_to_copy_branches_and_layouts_table(self, input_case, memory_format):
+    x_cpu = torch.randn(
+        *input_case["base_shape"], dtype=torch.bfloat16, device="cpu"
+    )
+    x_tpu = x_cpu.to(self.tpu_device)
 
-    model = CastNonContiguousTensorViewModule().to(self.tpu_device)
-    # The input to the model should be a non-contiguous tensor.
-    x = torch.randn(
-        1, 512, 4, 256, dtype=torch.bfloat16, device=self.tpu_device
-    ).transpose(1, 2)
+    view_fn = input_case["view_fn"]
+    inp_cpu = view_fn(x_cpu)
+    inp_tpu = view_fn(x_tpu)
 
-    compiled_model = torch.compile(model, backend=compile_lib.TpuBackend())
+    self.assertEqual(
+        inp_cpu.is_contiguous(), input_case["expected_is_contiguous"]
+    )
+    self.assertEqual(
+        inp_tpu.is_contiguous(), input_case["expected_is_contiguous"]
+    )
+    self.assertEqual(
+        torch.ops.aten.is_non_overlapping_and_dense.default(inp_cpu),
+        input_case["expected_is_non_overlapping_and_dense"],
+    )
+    self.assertEqual(
+        torch.ops.aten.is_non_overlapping_and_dense.default(inp_tpu),
+        input_case["expected_is_non_overlapping_and_dense"],
+    )
 
-    y_compiled = compiled_model(x)
-    self.assertEqual(y_compiled.shape, torch.Size([1, 512, 1024]))
+    # 1. Eager layout and value parity between CPU and TPU for _to_copy.
+    y_cpu = inp_cpu.to(dtype=torch.float32, memory_format=memory_format)
+    y_tpu = inp_tpu.to(dtype=torch.float32, memory_format=memory_format)
+    self._assert_same_layout(y_cpu, y_tpu)
+    utils.assert_close(y_tpu.cpu(), y_cpu)
+
+    # 2. Compiled parity when _to_copy is followed by transpose + contiguous +
+    # reshape (which lowers to aten.view when FakeTensor sees a contiguous
+    # tensor).
+    def fn(t):
+      v = view_fn(t)
+      v = v.to(dtype=torch.float32, memory_format=memory_format)
+      v = v.to(dtype=torch.bfloat16, memory_format=memory_format)
+      return v.transpose(1, 2).contiguous().reshape(v.shape[0], -1)
+
+    out_expected = fn(x_cpu)
+    with torch._dynamo.config.patch(fail_on_recompile_limit_hit=True):
+      compiled_fn = torch.compile(
+          fn, backend=compile_lib.TpuBackend(), fullgraph=True
+      )
+      out_compiled = compiled_fn(x_tpu)
+    self.assertEqual(out_compiled.shape, out_expected.shape)
+    utils.assert_close(out_compiled.cpu(), out_expected)
 
 
 if __name__ == "__main__":
