@@ -25,10 +25,12 @@
 
 #include "ATen/core/TensorBody.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_format.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
+#include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/macros/kernel.h"
@@ -40,6 +42,8 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/IR/Value.h"
+#include "mlir/IR/ValueRange.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -54,8 +58,9 @@ auto SparseDenseMatmulGradWithSgdBuilder(int64_t device_batch_size,
                                          int64_t max_ids_per_partition,
                                          int64_t max_unique_ids_per_partition,
                                          std::string_view computation_name) {
-  return [max_ids_per_partition, max_unique_ids_per_partition,
-          computation_name = std::string(computation_name)](
+  return [max_ids_per_partition,
+          computation_name = std::string(computation_name),
+          max_unique_ids_per_partition](
              torch_tpu::FixedSizeSpan<mlir::MlirOp, 7> inputs)
              -> absl::StatusOr<mlir::MlirOp> {
     mlir::MlirOp row_pointers = inputs[0];
@@ -112,32 +117,17 @@ auto SparseDenseMatmulGradWithSgdBuilder(int64_t device_batch_size,
       op_builder.restoreInsertionPoint(prev_insertion_point);
     }
 
-    // Construct DictionaryAttr for frontend_attributes
-    std::vector<mlir::NamedAttribute> frontend_attrs;
-    frontend_attrs.reserve(7);
-    frontend_attrs.push_back(op_builder.getNamedAttr(
-        xla::kXlaComputeTypeAttr,
-        op_builder.getStringAttr(xla::kXlaComputeTypeSparse)));
-    frontend_attrs.push_back(op_builder.getNamedAttr(
-        xla::kXlaMaxIdsPerPartitionAttr,
-        op_builder.getStringAttr(std::to_string(max_ids_per_partition))));
-    frontend_attrs.push_back(op_builder.getNamedAttr(
-        xla::kXlaMaxUniqueIdsPerPartitionAttr,
-        op_builder.getStringAttr(
-            std::to_string(max_unique_ids_per_partition))));
-    frontend_attrs.push_back(op_builder.getNamedAttr(
-        xla::kXlaPadValueAttr, op_builder.getStringAttr("2147483647")));
-    frontend_attrs.push_back(op_builder.getNamedAttr(
-        xla::kXlaShardingStrategyAttr,
-        op_builder.getStringAttr(xla::kXlaShardingStrategyMod)));
-    frontend_attrs.push_back(op_builder.getNamedAttr(
-        xla::kNumSlotVariables, op_builder.getStringAttr("0")));
-    frontend_attrs.push_back(op_builder.getNamedAttr(
-        xla::kNumHyperparameters, op_builder.getStringAttr("1")));
+    const std::string backend_config = absl::StrFormat(
+        R"({"device_type":"DEVICE_TYPE_SPARSECORE","sparse_dense_matmul_config":{"max_ids_per_partition":%d,"max_unique_ids_per_partition":%d,"pad_value":2147483647,"sharding_strategy":1,"num_slot_variables":0,"num_hyperparameters":1}})",
+        max_ids_per_partition, max_unique_ids_per_partition);
+    const mlir::NamedAttribute backend_config_attr = op_builder.getNamedAttr(
+        "backend_config", op_builder.getStringAttr(backend_config));
 
-    mlir::NamedAttribute frontend_attrs_attr =
-        op_builder.getNamedAttr("mhlo.frontend_attributes",
-                                op_builder.getDictionaryAttr(frontend_attrs));
+    mlir::NamedAttribute frontend_attrs_attr = op_builder.getNamedAttr(
+        "mhlo.frontend_attributes",
+        op_builder.getDictionaryAttr({op_builder.getNamedAttr(
+            xla::kXlaComputeTypeAttr,
+            op_builder.getStringAttr(xla::kXlaComputeTypeSparse))}));
 
     std::string call_target = "SparseDenseMatmulGradOpWithOptimizerUpdate";
 
@@ -172,7 +162,7 @@ auto SparseDenseMatmulGradWithSgdBuilder(int64_t device_batch_size,
         /*resultTypes=*/{out_type},
         /*operands=*/operands,
         {call_target_attr, has_side_effect_attr, api_version_attr,
-         called_computations_attr, frontend_attrs_attr});
+         backend_config_attr, called_computations_attr, frontend_attrs_attr});
 
     auto gte = mlir::stablehlo::GetTupleElementOp::create(
         op_builder, builder.getLoc(), op.getResult(0), 0);
