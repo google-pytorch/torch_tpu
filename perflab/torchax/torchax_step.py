@@ -287,10 +287,12 @@ class _BaseTorchaxStepper:
         for k, v in model_jittable.params.items()
     }
     buffers = _drop_property_buffers(model, model_jittable.buffers)
-    self._buffers = {
+    # `model.to("jax")` only moves registered parameters and buffers, but
+    # `JittableModule` also collects plain tensor attributes as buffers.
+    self._buffers = _prepare_inputs_for_torchax({
         k: v.data if isinstance(v, torch.nn.Parameter) else v
         for k, v in buffers.items()
-    }
+    })
     return model_jittable
 
   def pre_warmup_init(self) -> None:

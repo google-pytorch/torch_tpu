@@ -506,6 +506,48 @@ class TorchaxStepTest(seed_test_utils.RepeatableTest):
           msg=f"{k} was not updated",
       )
 
+  def test_unregistered_tensor_attribute_forward(self):
+    target = target_lib.make_target(platform=target_lib.Platform.CPU)
+    ctx = context_lib.Context(
+        target=target, run_scope=context_lib.RUN_SCOPE.value
+    )
+
+    class UnregisteredTensorModule(nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.linear = nn.Linear(4, 2)
+        # A plain tensor attribute rather than a registered buffer, so
+        # `model.to("jax")` does not move it.
+        self.offset = torch.ones(2)
+
+      def forward(self, x):
+        return self.linear(x) + self.offset
+
+    expected = []
+
+    def factory(factory_ctx):
+      del factory_ctx  # unused
+      model = UnregisteredTensorModule()
+      x = torch.randn(2, 4)
+      with torch.no_grad():
+        expected.append(model(x).tolist())
+      return model, (x,), {}
+
+    spec = registry_lib.BenchmarkSpec(
+        name="test_unregistered_tensor_attribute",
+        factory=factory,
+        stepper=step_lib.StepperType.FORWARD,
+    )
+
+    wrapper = torchax_step.TorchaxForwardStepper()
+    wrapper.init_with_benchmark_args(spec, ctx)
+    wrapper.compile(compile_lib.CompileConfig(scope=compile_lib.Scope.STEP))
+    out = wrapper.get_step_fn()()
+
+    self.assertIsInstance(wrapper._buffers["offset"], torchax.tensor.Tensor)
+    np.testing.assert_allclose(out.numpy(), expected[0], rtol=1e-5, atol=1e-6)
+
 
 if __name__ == "__main__":
   absltest.main()
