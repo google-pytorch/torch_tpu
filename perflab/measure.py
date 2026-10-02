@@ -19,7 +19,7 @@ import dataclasses
 import gc
 import random
 import time
-from typing import Iterator
+from typing import Callable, Iterator
 import urllib.parse
 
 from absl import flags
@@ -325,6 +325,7 @@ def _warmup_run(
     *,
     name: str,
     enable_xprof: bool = False,
+    clock: Callable[[], float] = time.perf_counter,
 ) -> metrics.WarmupRunResult:
   """Runs the model to warmup the caches.
 
@@ -341,6 +342,7 @@ def _warmup_run(
     device_ops: The device operations to use.
     name: The name of the benchmark.
     enable_xprof: Whether to enable xprof profiling.
+    clock: Returns the current time in seconds; used to time each step.
 
   Returns:
     A WarmupRunResult instance containing the number of warmup steps, the time
@@ -359,10 +361,10 @@ def _warmup_run(
   ) as warmup_run_context:
     step_fn = stepper.get_step_fn()
     for step in range(MAX_WARMUP_STEPS.value):
-      start_time = time.perf_counter()
+      start_time = clock()
       out = step_fn()
       device_ops.await_result(out)
-      timings[step] = time.perf_counter() - start_time
+      timings[step] = clock() - start_time
       # E.g. reset kv cache to its post-prefill state.
       stepper.post_warmup_hook()
       compile_count[step] = device_ops.compile_count()
@@ -408,6 +410,7 @@ def _post_warmup_run(
     *,
     name: str,
     enable_xprof: bool = False,
+    clock: Callable[[], float] = time.perf_counter,
 ) -> metrics.PostWarmupRunResult:
   """Runs the model once after the warmup is complete.
 
@@ -416,6 +419,7 @@ def _post_warmup_run(
     device_ops: The device operations to use.
     name: The name of the benchmark.
     enable_xprof: Whether to enable xprof profiling.
+    clock: Returns the current time in seconds; used to time each step.
 
   Returns:
     A PostWarmupRunResult instance containing the average step time and peak
@@ -434,10 +438,10 @@ def _post_warmup_run(
   step_fn = stepper.get_step_fn()
 
   def _run_single_step(expected_compile_count: int) -> float:
-    start_time = time.perf_counter()
+    start_time = clock()
     out = step_fn()
     device_ops.await_result(out)
-    elapsed = time.perf_counter() - start_time
+    elapsed = clock() - start_time
     stepper.post_warmup_hook()
 
     step_compile_count = device_ops.compile_count()
@@ -491,9 +495,23 @@ def measure(
     *,
     name: str,
     enable_xprof: bool = False,
+    clock: Callable[[], float] = time.perf_counter,
 ) -> metrics.PerformanceMetrics:
+  """Warms up and then times `stepper`, returning its performance metrics.
+
+  Args:
+    stepper: The stepper to run.
+    device_ops: The device operations to use.
+    name: The name of the benchmark.
+    enable_xprof: Whether to enable xprof profiling.
+    clock: Returns the current time in seconds. Tests inject a fake clock to
+      control the measured durations.
+
+  Returns:
+    The measured PerformanceMetrics.
+  """
   result_kwargs = {}
-  start_time = time.perf_counter()
+  start_time = clock()
 
   stepper.pre_warmup_init()
 
@@ -503,6 +521,7 @@ def measure(
           device_ops,
           name=name,
           enable_xprof=enable_xprof,
+          clock=clock,
       )
   )
 
@@ -514,10 +533,11 @@ def measure(
             device_ops,
             name=name,
             enable_xprof=enable_xprof,
+            clock=clock,
         )
     )
 
   return metrics.PerformanceMetrics(
-      e2e_wall_time_seconds=time.perf_counter() - start_time,
+      e2e_wall_time_seconds=clock() - start_time,
       **result_kwargs,
   )
