@@ -15,6 +15,7 @@
 """Tests for step."""
 
 import functools
+import types
 from unittest import mock
 
 from absl.testing import absltest
@@ -61,6 +62,39 @@ def _state_tensors(states):
   if isinstance(states, torch.Tensor):
     return {0: states}
   return {k: v for k, v in states.items() if isinstance(v, torch.Tensor)}
+
+
+class _TinyLM(nn.Module):
+  """A real module that exposes only the projection heads a test sets.
+
+  Unlike `MagicMock(spec=nn.Module)`, attributes that are not set (e.g.
+  `config` or `embed_tokens`) are genuinely absent, so `DecodeStepper` cannot
+  take a branch because of an auto-created mock attribute.
+  """
+
+  def __init__(
+      self,
+      output_embeddings: nn.Module | None = None,
+      lm_head: nn.Module | None = None,
+      input_embeddings: nn.Module | None = None,
+      config: types.SimpleNamespace | None = None,
+  ):
+    super().__init__()
+    self._output_embeddings = output_embeddings
+    self.lm_head = lm_head
+    self._input_embeddings = input_embeddings
+    if config is not None:
+      self.config = config
+
+  def get_output_embeddings(self) -> nn.Module | None:
+    return self._output_embeddings
+
+  def get_input_embeddings(self) -> nn.Module | None:
+    return self._input_embeddings
+
+
+def _tied_logits(hidden: torch.Tensor, embed: nn.Embedding) -> torch.Tensor:
+  return torch.nn.functional.linear(hidden, embed.weight)
 
 
 discovery_lib.import_submodules(steps)
@@ -945,6 +979,9 @@ class StepperTypeTest(seed_test_utils.RepeatableTest):
         n_embd=64,
         n_layer=2,
     )
+    # TODO(wan): revisit DECISION (b/568593385): the MagicMock models in this
+    # test and in test_decode_stepper_heterogeneous_config were left out of
+    # scope; only the unpack-output tests were moved to real modules.
     model_gpt2 = mock.MagicMock(config=cfg_gpt2, dtype=torch.bfloat16)
     x = torch.randint(0, 16, (2, 8), device=ops.device)
 
@@ -1052,155 +1089,111 @@ class StepperTypeTest(seed_test_utils.RepeatableTest):
 
   def test_decode_unpack_output_base_model_output_variations(self):
     batch_size, seq_len, hidden_dim, vocab_size = 2, 4, 8, 16
-
-    # 1. Output with get_output_embeddings
-    stepper = decode.DecodeStepper()
-    linear_head = torch.nn.Linear(hidden_dim, vocab_size, bias=False)
-    mock_model = mock.MagicMock(spec=torch.nn.Module)
-    mock_model.get_output_embeddings = mock.MagicMock(return_value=linear_head)
-    mock_model.lm_head = None
-    mock_model.get_input_embeddings = mock.MagicMock(return_value=None)
-    stepper._model = mock_model
-    stepper._decode_model = mock_model
-
     hidden = torch.randn(batch_size, seq_len, hidden_dim)
     base_output = transformers.modeling_outputs.BaseModelOutputWithPast(
         last_hidden_state=hidden
     )
-    logits = stepper._unpack_output_and_update_cache(base_output)
-    self.assertEqual(logits.shape, (batch_size, seq_len, vocab_size))
+
+    def unpack(model, output):
+      stepper = decode.DecodeStepper()
+      stepper._model = model
+      stepper._decode_model = model
+      return stepper, stepper._unpack_output_and_update_cache(output)
+
+    # 1. Output with get_output_embeddings
+    linear_head = nn.Linear(hidden_dim, vocab_size, bias=False)
+    _, logits = unpack(_TinyLM(output_embeddings=linear_head), base_output)
+    test_utils.assert_close(logits, linear_head(hidden))
 
     # 2. Output with lm_head
-    stepper = decode.DecodeStepper()
-    mock_model = mock.MagicMock(spec=torch.nn.Module)
-    mock_model.get_output_embeddings = mock.MagicMock(return_value=None)
-    mock_model.lm_head = torch.nn.Linear(hidden_dim, vocab_size, bias=True)
-    mock_model.get_input_embeddings = mock.MagicMock(return_value=None)
-    stepper._model = mock_model
-    stepper._decode_model = mock_model
-
-    logits = stepper._unpack_output_and_update_cache(base_output)
-    self.assertEqual(logits.shape, (batch_size, seq_len, vocab_size))
+    lm_head = nn.Linear(hidden_dim, vocab_size, bias=True)
+    _, logits = unpack(_TinyLM(lm_head=lm_head), base_output)
+    test_utils.assert_close(logits, lm_head(hidden))
 
     # 3. Output with get_input_embeddings
-    stepper = decode.DecodeStepper()
-    mock_model = mock.MagicMock(spec=torch.nn.Module)
-    mock_model.get_output_embeddings = mock.MagicMock(return_value=None)
-    mock_model.lm_head = None
-    mock_model.get_input_embeddings = mock.MagicMock(
-        return_value=torch.nn.Embedding(vocab_size, hidden_dim)
-    )
-    stepper._model = mock_model
-    stepper._decode_model = mock_model
+    in_embed = nn.Embedding(vocab_size, hidden_dim)
+    _, logits = unpack(_TinyLM(input_embeddings=in_embed), base_output)
+    test_utils.assert_close(logits, _tied_logits(hidden, in_embed))
 
-    logits = stepper._unpack_output_and_update_cache(base_output)
-    self.assertEqual(logits.shape, (batch_size, seq_len, vocab_size))
-
-    # 4. Fallback to hidden_state
-    stepper = decode.DecodeStepper()
-    mock_model = mock.MagicMock(spec=[])
-    stepper._model = mock_model
-    stepper._decode_model = mock_model
-
-    logits = stepper._unpack_output_and_update_cache(base_output)
-    self.assertEqual(logits.shape, (batch_size, seq_len, hidden_dim))
+    # 4. Fallback to hidden_state when the model has no projection head
+    _, logits = unpack(nn.Module(), base_output)
+    self.assertIs(logits, hidden)
 
     # 5. Output with tied nn.Embedding from get_output_embeddings
-    stepper = decode.DecodeStepper()
-    mock_model = mock.MagicMock(spec=torch.nn.Module)
-    mock_model.get_output_embeddings = mock.MagicMock(
-        return_value=torch.nn.Embedding(vocab_size, hidden_dim)
-    )
-    mock_model.lm_head = None
-    mock_model.get_input_embeddings = mock.MagicMock(return_value=None)
-    stepper._model = mock_model
-    stepper._decode_model = mock_model
-
-    logits = stepper._unpack_output_and_update_cache(base_output)
-    self.assertEqual(logits.shape, (batch_size, seq_len, vocab_size))
+    out_embed = nn.Embedding(vocab_size, hidden_dim)
+    _, logits = unpack(_TinyLM(output_embeddings=out_embed), base_output)
+    test_utils.assert_close(logits, _tied_logits(hidden, out_embed))
 
     # 6. Dictionary output with past_key_values and last_hidden_state
-    stepper = decode.DecodeStepper()
-    mock_model = mock.MagicMock(spec=torch.nn.Module)
-    mock_model.get_output_embeddings = mock.MagicMock(return_value=None)
-    mock_model.lm_head = None
-    mock_model.get_input_embeddings = mock.MagicMock(
-        return_value=torch.nn.Embedding(vocab_size, hidden_dim)
-    )
-    stepper._model = mock_model
-    stepper._decode_model = mock_model
     dummy_cache = transformers.cache_utils.DynamicCache()
     dict_output = {
         "last_hidden_state": hidden,
         "past_key_values": dummy_cache,
     }
-    logits = stepper._unpack_output_and_update_cache(dict_output)
-    self.assertEqual(logits.shape, (batch_size, seq_len, vocab_size))
+    stepper, logits = unpack(_TinyLM(input_embeddings=in_embed), dict_output)
+    test_utils.assert_close(logits, _tied_logits(hidden, in_embed))
     self.assertIs(stepper.cache, dummy_cache)
 
-    # 7. Tuple output (return_dict=False) with base model hidden state
-    stepper = decode.DecodeStepper()
-    mock_config = mock.MagicMock(vocab_size=vocab_size)
-    mock_model = mock.MagicMock(spec=torch.nn.Module, config=mock_config)
-    mock_model.get_output_embeddings = mock.MagicMock(return_value=None)
-    mock_model.lm_head = None
-    mock_model.get_input_embeddings = mock.MagicMock(
-        return_value=torch.nn.Embedding(vocab_size, hidden_dim)
-    )
-    stepper._model = mock_model
-    stepper._decode_model = mock_model
+    # 7. Tuple output (return_dict=False) with base model hidden state. The
+    # projection only happens because config.vocab_size != hidden_dim.
     tuple_output = (hidden, dummy_cache)
-    logits = stepper._unpack_output_and_update_cache(tuple_output)
-    self.assertEqual(logits.shape, (batch_size, seq_len, vocab_size))
+    stepper, logits = unpack(
+        _TinyLM(
+            input_embeddings=in_embed,
+            config=types.SimpleNamespace(vocab_size=vocab_size),
+        ),
+        tuple_output,
+    )
+    test_utils.assert_close(logits, _tied_logits(hidden, in_embed))
     self.assertIs(stepper.cache, dummy_cache)
+
+    # 7b. Same tuple output without a config: vocab_size is unknown, so the
+    # hidden state is returned unprojected.
+    _, logits = unpack(_TinyLM(input_embeddings=in_embed), tuple_output)
+    self.assertIs(logits, hidden)
 
     # 8. Output with lm_head as nn.Embedding (tied weights)
-    stepper = decode.DecodeStepper()
-    mock_model = mock.MagicMock(spec=torch.nn.Module)
-    mock_model.get_output_embeddings = mock.MagicMock(return_value=None)
-    mock_model.lm_head = torch.nn.Embedding(vocab_size, hidden_dim)
-    mock_model.get_input_embeddings = mock.MagicMock(return_value=None)
-    stepper._model = mock_model
-    stepper._decode_model = mock_model
-
-    logits = stepper._unpack_output_and_update_cache(base_output)
-    self.assertEqual(logits.shape, (batch_size, seq_len, vocab_size))
+    lm_head_embed = nn.Embedding(vocab_size, hidden_dim)
+    _, logits = unpack(_TinyLM(lm_head=lm_head_embed), base_output)
+    test_utils.assert_close(logits, _tied_logits(hidden, lm_head_embed))
 
     # 9. Raw torch.Tensor output already representing logits
     stepper = decode.DecodeStepper()
-    mock_config = mock.MagicMock(vocab_size=vocab_size)
-    mock_model = mock.MagicMock(spec=torch.nn.Module, config=mock_config)
-    mock_model.get_output_embeddings = mock.MagicMock(return_value=None)
-    mock_model.lm_head = None
-    mock_model.get_input_embeddings = mock.MagicMock(
-        return_value=torch.nn.Embedding(vocab_size, hidden_dim)
-    )
-    stepper._model = mock_model
-    stepper._decode_model = mock_model
+    model = _TinyLM(input_embeddings=in_embed)
+    stepper._model = model
+    stepper._decode_model = model
     stepper.vocab_size = vocab_size
     raw_logits_tensor = torch.randn(batch_size, seq_len, vocab_size)
     logits = stepper._unpack_output_and_update_cache(raw_logits_tensor)
-    self.assertEqual(logits.shape, (batch_size, seq_len, vocab_size))
     self.assertIs(logits, raw_logits_tensor)
 
-    # 10. Nested text_config with vocab_size
-    stepper = decode.DecodeStepper()
-    text_cfg = mock.MagicMock(vocab_size=vocab_size)
-    root_cfg = mock.MagicMock(text_config=text_cfg)
-    mock_model = mock.MagicMock(spec=torch.nn.Module, config=root_cfg)
-    mock_model.get_output_embeddings = mock.MagicMock(return_value=None)
-    mock_model.lm_head = None
-    mock_model.get_input_embeddings = mock.MagicMock(
-        return_value=torch.nn.Embedding(vocab_size, hidden_dim)
+    # 10. Nested text_config with vocab_size (multimodal configs)
+    nested_config = types.SimpleNamespace(
+        text_config=types.SimpleNamespace(vocab_size=vocab_size)
     )
-    stepper._model = mock_model
-    stepper._decode_model = mock_model
-    logits = stepper._unpack_output_and_update_cache(tuple_output)
-    self.assertEqual(logits.shape, (batch_size, seq_len, vocab_size))
+    _, logits = unpack(
+        _TinyLM(input_embeddings=in_embed, config=nested_config), tuple_output
+    )
+    test_utils.assert_close(logits, _tied_logits(hidden, in_embed))
+
+    # 11. Head precedence: output embeddings > lm_head > input embeddings.
+    _, logits = unpack(
+        _TinyLM(
+            output_embeddings=linear_head,
+            lm_head=lm_head,
+            input_embeddings=in_embed,
+        ),
+        base_output,
+    )
+    test_utils.assert_close(logits, linear_head(hidden))
+    _, logits = unpack(
+        _TinyLM(lm_head=lm_head, input_embeddings=in_embed), base_output
+    )
+    test_utils.assert_close(logits, lm_head(hidden))
 
   def test_decode_stepper_unpack_output_with_cross_attentions(self):
     last_hidden_state = torch.randn(2, 4, 16)
-    dummy_cache = mock.MagicMock(spec=transformers.cache_utils.Cache)
+    dummy_cache = transformers.cache_utils.DynamicCache()
 
     # 1. BaseModelOutputWithPastAndCrossAttentions without model projection
     stepper = decode.DecodeStepper(output_tokens=4, dynamism=True)
@@ -1212,21 +1205,17 @@ class StepperTypeTest(seed_test_utils.RepeatableTest):
     )
     logits = stepper._unpack_output_and_update_cache(output_cross_attn)
     self.assertTrue(torch.equal(logits, last_hidden_state))
-    self.assertEqual(stepper.cache, dummy_cache)
+    self.assertIs(stepper.cache, dummy_cache)
 
     # 2. BaseModelOutputWithPastAndCrossAttentions with model projection
     stepper = decode.DecodeStepper(output_tokens=4, dynamism=True)
     vocab_size = 32
-    mock_model = mock.MagicMock(spec=torch.nn.Module)
-    mock_model.get_output_embeddings = mock.MagicMock(
-        return_value=torch.nn.Linear(16, vocab_size, bias=False)
-    )
-    mock_model.lm_head = None
-    mock_model.get_input_embeddings = mock.MagicMock(return_value=None)
-    stepper._model = mock_model
-    stepper._decode_model = mock_model
+    head = nn.Linear(16, vocab_size, bias=False)
+    model = _TinyLM(output_embeddings=head)
+    stepper._model = model
+    stepper._decode_model = model
     logits = stepper._unpack_output_and_update_cache(output_cross_attn)
-    self.assertEqual(logits.shape, (2, 4, vocab_size))
+    test_utils.assert_close(logits, head(last_hidden_state))
 
     # 3. BaseModelOutputWithPast
     stepper = decode.DecodeStepper(output_tokens=4, dynamism=True)
@@ -1269,18 +1258,14 @@ class StepperTypeTest(seed_test_utils.RepeatableTest):
     # 6. Indexable custom sequence object with tensor already sized to vocab_size
     stepper = decode.DecodeStepper(output_tokens=4, dynamism=True)
     stepper.vocab_size = vocab_size
-    mock_model = mock.MagicMock(spec=torch.nn.Module)
-    mock_model.get_output_embeddings = mock.MagicMock(
-        return_value=torch.nn.Linear(16, vocab_size, bias=False)
-    )
-    mock_model.lm_head = None
-    mock_model.get_input_embeddings = mock.MagicMock(return_value=None)
-    stepper._model = mock_model
-    stepper._decode_model = mock_model
+    # `model` (from case 2) projects 16 -> 32; applying it to an already
+    # vocab-sized tensor would raise, so this also checks it is skipped.
+    stepper._model = model
+    stepper._decode_model = model
     already_sized_tensor = torch.randn(2, 4, vocab_size)
     custom_output_sized = CustomIndexableOutput(already_sized_tensor)
     logits = stepper._unpack_output_and_update_cache(custom_output_sized)
-    self.assertTrue(torch.equal(logits, already_sized_tensor))
+    self.assertIs(logits, already_sized_tensor)
 
   def test_prepare_forward_kwargs(self):
     cache = mock.MagicMock()
