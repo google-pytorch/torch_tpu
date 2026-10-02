@@ -31,8 +31,10 @@ inputs.
 import abc
 from collections.abc import Callable, Mapping, Sequence
 import copy
+import dataclasses
 import enum
 import functools
+import importlib
 from importlib import resources
 from importlib.resources import abc as resources_abc
 import inspect
@@ -54,6 +56,8 @@ from safetensors import torch as safetensors_torch
 import torch
 
 from tests import transformers_inputs
+
+_generate_transformers_inputs = transformers_inputs.generate_transformers_inputs
 
 try:
   import diffusers
@@ -802,7 +806,11 @@ class _ConfigWrapper:
     if isinstance(self._data, dict):
       self._data[name] = value
     else:
-      setattr(self._data, name, value)
+      try:
+        setattr(self._data, name, value)
+      except Exception:  # pylint: disable=broad-except
+        if hasattr(self._data, "__dict__"):
+          self._data.__dict__[name] = value
 
   def get(self, key: str, default: Any = None) -> Any:
     data = self._data
@@ -1344,10 +1352,12 @@ def _get_max_seq_len(config: Any, default: int = 512) -> int:
   """
   cfg = _wrap_config(config)
   configs_to_check = [cfg]
-  text_cfg = cfg.get("text_config")
-  if text_cfg is not None:
-    configs_to_check.append(text_cfg)
+  for sub in ("text_config", "encoder", "decoder"):
+    sub_cfg = cfg.get(sub)
+    if sub_cfg is not None:
+      configs_to_check.append(_wrap_config(sub_cfg))
 
+  found_vals = []
   for c in configs_to_check:
     for attr in (
         "max_text_len",
@@ -1383,7 +1393,11 @@ def _get_max_seq_len(config: Any, default: int = 512) -> int:
           )
           if pad_id > 0 and val > pad_id + 1:
             val -= pad_id + 1
-        return val
+        found_vals.append(val)
+        break
+
+  if found_vals:
+    return min(found_vals)
 
   # Fallback for relative position models (T5, etc.) or missing data.
   return default
@@ -1834,12 +1848,191 @@ def _load_transformers_preprocessor(
   return _PREPROCESSOR_CACHE.get_or_load(cache_key, _loader)
 
 
-def _sanitize_transformers_config_dict(
+# go/keep-sorted
+# Mapping of non-canonical or community model types to canonical transformers model types.
+_MODEL_TYPE_ALIASES: dict[str, str] = {
+    "LanguageBindAudio": "clip",
+    "LanguageBindImage": "clip",
+    "LanguageBindVideo": "clip",
+    "aquila": "llama",
+    "gemma3_text_only": "gemma3_text",
+    "languagebind_audio": "clip",
+    "languagebind_depth": "clip",
+    "languagebind_thermal": "clip",
+    "languagebind_video": "clip",
+}
+
+# go/keep-sorted
+# Architecture class remapping for models with mismatched or legacy architecture names.
+_ARCHITECTURE_ALIASES: dict[str, dict[str, str]] = {
+    "gemma4_unified": {
+        "Gemma4ForConditionalGeneration": (
+            "Gemma4UnifiedForConditionalGeneration"
+        ),
+    },
+    "speech_to_text": {
+        "AV2TextForConditionalGeneration": (
+            "Speech2TextForConditionalGeneration"
+        ),
+    },
+}
+
+# go/keep-sorted
+# Config attribute aliases to copy if missing on the config dictionary.
+_CONFIG_KEY_ALIASES: dict[str, str] = {
+    "num_nextn_predict_layers": "num_mtp_layers",
+}
+
+# go/keep-sorted
+# Default values for attributes that are explicitly null in upstream model configs.
+_CONFIG_DEFAULTS_WHEN_NONE: dict[str, dict[str, Any]] = {
+    "speech_to_text": {
+        "scale_embedding": (
+            True
+        ),  # AV-HuBERT configs specify null, which breaks embedding scaling
+    },
+}
+
+_MOE_TOPK_KEYS: tuple[str, ...] = (
+    "num_experts_per_tok",
+    "experts_per_token",
+    "moe_topk",
+    "num_selected_experts",
+)
+
+# go/keep-sorted
+# Model types whose floating-point parameters must be zero-initialized before forward pass.
+_ZERO_INIT_WEIGHT_MODEL_TYPES: frozenset[str] = frozenset({
+    "tapas",
+    "vits",
+})
+
+# go/keep-sorted
+# Candidate AutoModel classes tried in priority order when instantiating by modality.
+_CANDIDATE_AUTO_CLASSES_BY_MODALITY: dict[Modality, tuple[str, ...]] = {
+    Modality.AUDIO: (
+        "AutoModelForSpeechSeq2Seq",
+        "AutoModelForCTC",
+        "AutoModelForAudioClassification",
+        "AutoModelForConditionalGeneration",
+        "AutoModel",
+    ),
+    Modality.CAUSAL_LM: (
+        "AutoModelForCausalLM",
+        "AutoModel",
+    ),
+    Modality.MULTIMODAL: (
+        "AutoModelForImageTextToText",
+        "AutoModelForMultimodalLM",
+        "AutoModelForVision2Seq",
+        "AutoModelForConditionalGeneration",
+        "AutoModelForCausalLM",
+        "AutoModel",
+    ),
+    Modality.SEQ2SEQ: (
+        "AutoModelForSpeechSeq2Seq",
+        "AutoModelForSeq2SeqLM",
+        "AutoModel",
+    ),
+    Modality.TEXT: (
+        "AutoModelForSequenceClassification",
+        "AutoModelForMaskedLM",
+        "AutoModel",
+    ),
+    Modality.VISION: (
+        "AutoModelForImageClassification",
+        "AutoModel",
+    ),
+}
+
+_DEFAULT_CANDIDATE_AUTO_CLASSES: tuple[str, ...] = (
+    "AutoModelForImageTextToText",
+    "AutoModelForMultimodalLM",
+    "AutoModelForVision2Seq",
+    "AutoModelForConditionalGeneration",
+    "AutoModelForCausalLM",
+    "AutoModelForSeq2SeqLM",
+    "AutoModelForSequenceClassification",
+    "AutoModelForPreTraining",
+    "AutoModel",
+)
+
+
+def _normalize_rope_parameters(
+    cfg: _ConfigWrapper, *, default_theta: float = 10000.0
+) -> None:
+  """Normalizes rope_parameters on a wrapped config object or dict."""
+  if "rope_parameters" in cfg:
+    rope_params = cfg.get("rope_parameters")
+    if not rope_params:
+      rope_theta = cfg.get("rope_theta", default_theta) or default_theta
+      cfg.rope_parameters = {
+          "rope_type": "default",
+          "rope_theta": float(rope_theta),
+      }
+    else:
+      raw_params = (
+          rope_params.unwrap()
+          if isinstance(rope_params, _ConfigWrapper)
+          else rope_params
+      )
+      if isinstance(raw_params, dict):
+        if "rope_type" not in raw_params and "type" in raw_params:
+          raw_params["rope_type"] = raw_params["type"]
+        if "rope_theta" not in raw_params:
+          rope_theta = cfg.get("rope_theta", default_theta) or default_theta
+          raw_params["rope_theta"] = float(rope_theta)
+        cfg.rope_parameters = raw_params
+
+
+def _normalize_config_dict(
     config_dict: dict[str, Any],
     load_weights: bool = False,
 ) -> dict[str, Any]:
-  """Sanitizes HuggingFace config dictionary to fix common schema and offline issues."""
+  """Pre-instantiation normalization for config dictionaries."""
   config_dict = dict(config_dict)
+
+  # Model type aliases for non-canonical community model types
+  model_type = config_dict.get("model_type")
+  if model_type in _MODEL_TYPE_ALIASES:
+    config_dict["model_type"] = _MODEL_TYPE_ALIASES[model_type]
+  elif (
+      isinstance(model_type, str) and model_type.lower() in _MODEL_TYPE_ALIASES
+  ):
+    config_dict["model_type"] = _MODEL_TYPE_ALIASES[model_type.lower()]
+
+  # Architecture aliases
+  model_type = config_dict.get("model_type")
+  if model_type in _ARCHITECTURE_ALIASES:
+    aliases = _ARCHITECTURE_ALIASES[model_type]
+    archs = config_dict.get("architectures")
+    if isinstance(archs, list):
+      config_dict["architectures"] = [aliases.get(a, a) for a in archs]
+
+  # Defaults when field is explicitly None
+  if model_type in _CONFIG_DEFAULTS_WHEN_NONE:
+    for k, v in _CONFIG_DEFAULTS_WHEN_NONE[model_type].items():
+      if config_dict.get(k) is None:
+        config_dict[k] = v
+
+  # Config key aliases (copy if missing)
+  for src_key, dst_key in _CONFIG_KEY_ALIASES.items():
+    if src_key in config_dict and dst_key not in config_dict:
+      config_dict[dst_key] = config_dict[src_key]
+
+  # Ensure return_dict is True
+  if config_dict.get("return_dict") is False:
+    config_dict["return_dict"] = True
+  for sub in (
+      "text_config",
+      "speech_config",
+      "decoder_config",
+      "audio_config",
+      "vision_config",
+  ):
+    sub_dict = config_dict.get(sub)
+    if isinstance(sub_dict, dict) and sub_dict.get("return_dict") is False:
+      sub_dict["return_dict"] = True
 
   # Convert id2label values to strings
   if "id2label" in config_dict and isinstance(config_dict["id2label"], dict):
@@ -1847,15 +2040,39 @@ def _sanitize_transformers_config_dict(
         str(k): str(v) for k, v in config_dict["id2label"].items()
     }
 
-  # Convert int dropout probabilities to floats
+  # Convert int dropout probabilities and scaling factors to floats
   for float_key in (
       "hidden_dropout_prob",
       "attention_probs_dropout_prob",
       "classifier_dropout",
+      "routed_scaling_factor",
   ):
     val = config_dict.get(float_key)
     if isinstance(val, int) and not isinstance(val, bool):
       config_dict[float_key] = float(val)
+
+  # wavlm, wav2vec2, etc.: num_feat_extract_layers should match len(conv_dim)
+  if "conv_dim" in config_dict and isinstance(
+      config_dict["conv_dim"], (list, tuple)
+  ):
+    config_dict["num_feat_extract_layers"] = len(config_dict["conv_dim"])
+
+  # Ensure rotary_parameters / rope_scaling are compatible with dataclass configs
+  if "rope_scaling" in config_dict and (
+      "rope_parameters" not in config_dict
+      or config_dict["rope_parameters"] is None
+  ):
+    rope_params = (
+        dict(config_dict["rope_scaling"])
+        if isinstance(config_dict["rope_scaling"], dict)
+        else config_dict["rope_scaling"]
+    )
+    if isinstance(rope_params, dict):
+      if "rope_theta" in config_dict:
+        rope_params.setdefault("rope_theta", config_dict["rope_theta"])
+      if "rope_type" not in rope_params and "type" in rope_params:
+        rope_params["rope_type"] = rope_params["type"]
+    config_dict["rope_parameters"] = rope_params
 
   # For offline execution, disable downloading pretrained backbones.
   if not load_weights and "use_pretrained_backbone" in config_dict:
@@ -1881,6 +2098,475 @@ def _sanitize_transformers_config_dict(
   return config_dict
 
 
+_sanitize_transformers_config_dict = _normalize_config_dict
+
+
+def _coerce_dataclass_fields(
+    cfg_cls: type[Any], cfg_dict: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+  """Coerces fields for a dataclass config class and returns (init_kwargs, extra_kwargs)."""
+  known_fields = {f.name: f for f in dataclasses.fields(cfg_cls)}
+  attribute_map = getattr(cfg_cls, "attribute_map", {})
+  if isinstance(attribute_map, dict):
+    for std_attr, model_attr in attribute_map.items():
+      if (
+          std_attr in known_fields
+          and model_attr in cfg_dict
+          and std_attr not in cfg_dict
+      ):
+        cfg_dict[std_attr] = cfg_dict[model_attr]
+
+  if "rope_parameters" in known_fields:
+    rope_params = cfg_dict.get("rope_parameters")
+    if not rope_params:
+      rope_scaling = cfg_dict.get("rope_scaling")
+      if isinstance(rope_scaling, dict):
+        rope_params = dict(rope_scaling)
+      else:
+        rope_params = {}
+    if isinstance(rope_params, dict):
+      rope_theta = cfg_dict.get("rope_theta")
+      if rope_theta is None:
+        rope_theta = getattr(cfg_cls, "default_theta", 10000.0)
+      rope_params.setdefault(
+          "rope_theta",
+          float(rope_theta) if rope_theta is not None else 10000.0,
+      )
+      rope_params.setdefault("rope_type", rope_params.get("type", "default"))
+    cfg_dict["rope_parameters"] = rope_params
+
+  for fname, f in known_fields.items():
+    if fname in cfg_dict:
+      val = cfg_dict[fname]
+      type_str = str(f.type)
+      if val is None:
+        if f.default is not dataclasses.MISSING:
+          if "None" not in type_str:
+            cfg_dict[fname] = f.default
+            val = f.default
+        elif f.default_factory is not dataclasses.MISSING:
+          if "None" not in type_str:
+            cfg_dict[fname] = f.default_factory()
+            val = cfg_dict[fname]
+      if isinstance(val, int) and not isinstance(val, bool):
+        if "float" in type_str:
+          cfg_dict[fname] = float(val)
+        elif "bool" in type_str:
+          cfg_dict[fname] = bool(val)
+
+  init_kwargs = {k: v for k, v in cfg_dict.items() if k in known_fields}
+  extra_kwargs = {k: v for k, v in cfg_dict.items() if k not in known_fields}
+  return init_kwargs, extra_kwargs
+
+
+def _instantiate_transformers_config_class(
+    cfg_cls: type[Any], config_dict: dict[str, Any]
+) -> Any:
+  """Instantiates a Transformers config class, handling dataclass schemas and extra keys."""
+  cfg_dict = dict(config_dict)
+  sub_configs = getattr(cfg_cls, "sub_configs", {})
+  if isinstance(sub_configs, dict):
+    for sub_key, sub_cls in sub_configs.items():
+      if sub_key in cfg_dict and isinstance(cfg_dict[sub_key], dict):
+        sub_dict = cfg_dict[sub_key]
+        sub_inst = None
+        if (
+            hasattr(sub_cls, "for_model")
+            or getattr(sub_cls, "__name__", "") == "AutoConfig"
+        ):
+          sub_model_type = sub_dict.get("model_type")
+          if isinstance(sub_model_type, str):
+            try:
+              concrete_cls = None
+              if hasattr(sub_cls, "_model_mapping"):
+                concrete_cls = sub_cls._model_mapping.get(sub_model_type)
+              if concrete_cls is None:
+                config_mapping = getattr(
+                    getattr(transformers, "models", None)
+                    and getattr(transformers.models, "auto", None)
+                    and getattr(
+                        transformers.models.auto, "configuration_auto", None
+                    ),
+                    "CONFIG_MAPPING",
+                    {},
+                )
+                if sub_model_type in config_mapping:
+                  concrete_cls = config_mapping[sub_model_type]
+              if isinstance(concrete_cls, str):
+                concrete_cls = getattr(transformers, concrete_cls, None)
+              if concrete_cls is not None:
+                sub_inst = _instantiate_transformers_config_class(
+                    concrete_cls, sub_dict
+                )
+              elif hasattr(sub_cls, "for_model"):
+                sub_kwargs = {
+                    k: v for k, v in sub_dict.items() if k != "model_type"
+                }
+                sub_inst = sub_cls.for_model(sub_model_type, **sub_kwargs)
+            except Exception:  # pylint: disable=broad-except
+              pass
+        elif isinstance(sub_cls, type):
+          try:
+            sub_inst = _instantiate_transformers_config_class(sub_cls, sub_dict)
+          except Exception:  # pylint: disable=broad-except
+            pass
+        if sub_inst is not None:
+          cfg_dict[sub_key] = sub_inst
+
+  if dataclasses.is_dataclass(cfg_cls):
+    init_kwargs, extra_kwargs = _coerce_dataclass_fields(cfg_cls, cfg_dict)
+    try:
+      cfg = cfg_cls(**init_kwargs)
+    except Exception:  # pylint: disable=broad-except
+      orig_validate = getattr(cfg_cls, "validate", None)
+      if orig_validate is not None:
+        try:
+          cfg_cls.validate = lambda self: None
+          cfg = cfg_cls(**init_kwargs)
+        except Exception:  # pylint: disable=broad-except
+          if hasattr(cfg_cls, "from_dict"):
+            cfg = cfg_cls.from_dict(init_kwargs)
+          else:
+            raise
+        finally:
+          cfg_cls.validate = orig_validate
+      elif hasattr(cfg_cls, "from_dict"):
+        cfg = cfg_cls.from_dict(init_kwargs)
+      else:
+        raise
+    for k, v in extra_kwargs.items():
+      try:
+        setattr(cfg, k, v)
+      except Exception:  # pylint: disable=broad-except
+        if hasattr(cfg, "__dict__"):
+          cfg.__dict__[k] = v
+    return cfg
+
+  if hasattr(cfg_cls, "from_dict"):
+    try:
+      return cfg_cls.from_dict(cfg_dict)
+    except Exception:  # pylint: disable=broad-except
+      pass
+  try:
+    return cfg_cls(**cfg_dict)
+  except Exception:  # pylint: disable=broad-except
+    pass
+
+  # Filter by __init__ signature if possible
+  try:
+    sig = inspect.signature(cfg_cls.__init__)
+    params = set(sig.parameters.keys()) - {"self", "args", "kwargs"}
+    has_var_kw = any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+    )
+    if not has_var_kw and params:
+      filtered = {k: v for k, v in cfg_dict.items() if k in params}
+      return cfg_cls(**filtered)
+  except Exception:  # pylint: disable=broad-except
+    pass
+  return None
+
+
+def _resolve_config_class(
+    model_type: str, config_dict: dict[str, Any]
+) -> type[Any] | None:
+  """Resolves the configuration class for a model type or architecture."""
+  config_mapping = getattr(
+      getattr(transformers, "models", None)
+      and getattr(transformers.models, "auto", None)
+      and getattr(transformers.models.auto, "configuration_auto", None),
+      "CONFIG_MAPPING",
+      {},
+  )
+  cfg_cls = None
+  if model_type in config_mapping:
+    try:
+      cfg_cls = config_mapping[model_type]
+    except Exception:  # pylint: disable=broad-except
+      pass
+  if cfg_cls is None:
+    # Try direct config class lookup (e.g. TableTransformerConfig for table-transformer)
+    parts = model_type.replace("-", "_").split("_")
+    cls_name = "".join(p.capitalize() for p in parts) + "Config"
+    cfg_cls = getattr(transformers, cls_name, None)
+  if isinstance(cfg_cls, str):
+    cfg_cls = getattr(transformers, cfg_cls, None)
+  if cfg_cls is None:
+    archs = config_dict.get("architectures", [])
+    if archs and isinstance(archs, list) and isinstance(archs[0], str):
+      arch_cls = getattr(transformers, archs[0], None)
+      if arch_cls is not None and hasattr(arch_cls, "config_class"):
+        cfg_cls = getattr(arch_cls, "config_class")
+  return cfg_cls
+
+
+def _sanitize_config(config: Any) -> Any:
+  """Post-instantiation, recursive over sub_configs, idempotent, single call site.
+
+  Ensures return_dict=True, applies architecture aliases, generic rotary_dim /
+  MoE top-k / conv_dim clamps, default_language, and rope_parameters defaults.
+  """
+  if config is None:
+    return None
+  cfg = _wrap_config(config)
+
+  if cfg.get("return_dict") is False:
+    cfg.return_dict = True
+
+  model_type = cfg.get("model_type")
+  if model_type in _ARCHITECTURE_ALIASES:
+    aliases = _ARCHITECTURE_ALIASES[model_type]
+    archs = cfg.get("architectures")
+    if isinstance(archs, list):
+      new_archs = [aliases.get(a, a) for a in archs]
+      if new_archs != archs:
+        cfg.architectures = new_archs
+
+  if model_type in _CONFIG_DEFAULTS_WHEN_NONE:
+    for k, v in _CONFIG_DEFAULTS_WHEN_NONE[model_type].items():
+      if cfg.get(k) is None:
+        setattr(cfg, k, v)
+
+  # Generic rotary_dim clamp for any config with rotary_dim and hidden_size/n_embd and heads
+  rotary_dim = _safe_int(cfg.get("rotary_dim"))
+  if rotary_dim:
+    hidden_size = _safe_int(cfg.get("hidden_size") or cfg.get("n_embd"))
+    num_heads = _safe_int(cfg.get("num_attention_heads") or cfg.get("n_head"))
+    if hidden_size and num_heads and num_heads > 0:
+      head_dim = hidden_size // num_heads
+      if rotary_dim > head_dim:
+        cfg.rotary_dim = head_dim
+
+  # Generic MoE top-k clamp for any config with num_local_experts or num_experts
+  num_local_experts = _safe_int(
+      cfg.get("num_local_experts") or cfg.get("num_experts"), default=None
+  )
+  if num_local_experts and num_local_experts > 0:
+    found_key = False
+    for topk_key in _MOE_TOPK_KEYS:
+      topk_val = _safe_int(cfg.get(topk_key), default=None)
+      if topk_val is not None:
+        found_key = True
+        if topk_val > num_local_experts:
+          setattr(cfg, topk_key, num_local_experts)
+    if not found_key:
+      topk_val = _safe_int(cfg.get("top_k"), default=None)
+      if topk_val is not None and topk_val > num_local_experts:
+        cfg.top_k = num_local_experts
+
+  # Generic conv_dim clamp
+  conv_dim = cfg.get("conv_dim")
+  if isinstance(conv_dim, (list, tuple)):
+    cfg.num_feat_extract_layers = len(conv_dim)
+
+  # Generic default_language for any config with languages list and missing default_language
+  langs = cfg.get("languages")
+  if (
+      langs
+      and isinstance(langs, (list, tuple))
+      and not cfg.get("default_language")
+  ):
+    cfg.default_language = langs[0]
+
+  _normalize_rope_parameters(cfg)
+
+  # Recursively sanitize sub-configs
+  sub_configs = cfg.get("sub_configs")
+  if isinstance(sub_configs, dict):
+    for sub_key in sub_configs:
+      sub = cfg.get(sub_key)
+      if sub is not None:
+        _sanitize_config(sub)
+
+  for sub_name in (
+      "text_config",
+      "speech_config",
+      "decoder_config",
+      "audio_config",
+      "vision_config",
+  ):
+    if not isinstance(sub_configs, dict) or sub_name not in sub_configs:
+      sub = cfg.get(sub_name)
+      if sub is not None:
+        _sanitize_config(sub)
+
+  return config
+
+
+def _resolve_architecture_class(
+    arch_name: str | None, model_type: str = ""
+) -> type[Any] | None:
+  """Resolves the architecture model class from name and model type."""
+  if not arch_name:
+    return None
+
+  # 1. Top-level exact match
+  if hasattr(transformers, arch_name):
+    try:
+      return getattr(transformers, arch_name)
+    except Exception:  # pylint: disable=broad-except
+      pass
+
+  # 2. Top-level case-insensitive match
+  arch_lower = arch_name.lower()
+  for attr in dir(transformers):
+    if attr.lower() == arch_lower:
+      try:
+        return getattr(transformers, attr)
+      except Exception:  # pylint: disable=broad-except
+        continue
+
+  # 3. Model submodule paths
+  candidate_mods = []
+  if model_type:
+    candidate_mods.extend([
+        f"transformers.models.{model_type}.modeling_{model_type}",
+        f"transformers.models.{model_type}",
+    ])
+    for sep in ("_", "-"):
+      if sep in model_type:
+        base_type = model_type.rsplit(sep, 1)[0]
+        candidate_mods.extend([
+            f"transformers.models.{base_type}.modeling_{base_type}",
+            f"transformers.models.{base_type}",
+        ])
+  for mod_name in candidate_mods:
+    try:
+      mod = importlib.import_module(mod_name)
+      if hasattr(mod, arch_name):
+        return getattr(mod, arch_name)
+    except Exception:  # pylint: disable=broad-except
+      continue
+
+  return None
+
+
+def _instantiate_model_with_fallbacks(
+    model_cls: type[Any] | None,
+    cfg: Any,
+    modality: Modality,
+) -> torch.nn.Module | None:
+  """Instantiates a transformers model with fallbacks based on modality candidates."""
+  m = None
+  if model_cls is not None:
+    try:
+      if hasattr(model_cls, "from_config"):
+        m = model_cls.from_config(cfg)
+      elif callable(model_cls):
+        m = model_cls(cfg)
+    except Exception as exc:  # pylint: disable=broad-except
+      logging.warning(
+          "Failed to instantiate %s: %s. Falling back to candidate classes.",
+          model_cls,
+          exc,
+      )
+  if m is None:
+    candidate_names = _CANDIDATE_AUTO_CLASSES_BY_MODALITY.get(
+        modality, _DEFAULT_CANDIDATE_AUTO_CLASSES
+    )
+    for class_name in candidate_names:
+      auto_cls = getattr(transformers, class_name, None)
+      if auto_cls is not None and hasattr(auto_cls, "from_config"):
+        try:
+          m = auto_cls.from_config(cfg)
+          if m is not None:
+            break
+        except Exception:  # pylint: disable=broad-except
+          continue
+  if m is None:
+    try:
+      m = transformers.AutoModel.from_config(cfg)
+    except Exception:  # pylint: disable=broad-except
+      pass
+  return m
+
+
+def _delegate_missing_forward(model: torch.nn.Module) -> None:
+  """If type(model).forward is nn.Module.forward, binds forward to the first child that accepts input_ids."""
+  if model is None or type(model).forward is not torch.nn.Module.forward:
+    return
+  for child in model.children():
+    forward_fn = getattr(child, "forward", None)
+    if forward_fn is not None:
+      try:
+        sig = inspect.signature(forward_fn)
+        if "input_ids" in sig.parameters:
+
+          def _delegated_forward(self, *args, **kwargs):
+            return child(*args, **kwargs)
+
+          model.forward = types.MethodType(_delegated_forward, model)
+          return
+      except (ValueError, TypeError):
+        continue
+
+
+def _apply_model_patches(
+    model: torch.nn.Module | None, config: Any
+) -> torch.nn.Module | None:
+  """Applies post-instantiation patches: zero-init hook, default language, and missing forward."""
+  if model is None:
+    return None
+  cfg = _wrap_config(config)
+
+  if cfg.get("model_type", "") in _ZERO_INIT_WEIGHT_MODEL_TYPES:
+
+    def _zero_weights_pre_hook(module, *_unused_args, **_unused_kwargs):
+      for p in module.parameters():
+        if p.device.type != "meta" and p.dtype.is_floating_point:
+          p.data.zero_()
+
+    model.register_forward_pre_hook(_zero_weights_pre_hook)  # pyrefly: ignore[missing-attribute]
+
+  if (
+      cfg.get("model_type", "") == "bloom"
+      or "bloom" in str(type(model)).lower()
+  ):
+    for sub in model.modules():
+      if sub.__class__.__name__ == "BloomAttention":
+        cls = sub.__class__
+        if not getattr(cls, "_alibi_patched", False):
+          orig_forward = cls.forward
+
+          def _safe_bloom_forward(self, *args, **kwargs):
+            alibi = kwargs.get("alibi")
+            layer_past = kwargs.get("layer_past")
+            alibi_arg_idx = None
+            if alibi is None and len(args) > 2:
+              alibi = args[2]
+              alibi_arg_idx = 2
+            if layer_past is None and len(args) > 4:
+              layer_past = args[4]
+            if alibi is not None and layer_past is not None:
+              max_len = getattr(layer_past, "max_cache_len", None)
+              if max_len is not None and alibi.shape[-1] < max_len:
+                padded_alibi = torch.nn.functional.pad(
+                    alibi, (0, max_len - alibi.shape[-1])
+                )
+                if "alibi" in kwargs:
+                  kwargs["alibi"] = padded_alibi
+                elif alibi_arg_idx is not None:
+                  args_list = list(args)
+                  args_list[alibi_arg_idx] = padded_alibi
+                  args = tuple(args_list)
+            return orig_forward(self, *args, **kwargs)
+
+          cls.forward = _safe_bloom_forward
+          cls._alibi_patched = True
+        break
+
+  if hasattr(model, "set_default_language") and hasattr(model, "config"):
+    langs = getattr(model.config, "languages", None)
+    if langs and not getattr(model.config, "default_language", None):
+      try:
+        model.set_default_language(langs[0])  # pyrefly: ignore[missing-attribute]
+      except Exception:  # pylint: disable=broad-except
+        pass
+
+  _delegate_missing_forward(model)
+  return model
+
+
 def _load_transformers_config_with_fallback(
     model_path_or_file: epath.PathLike | str,
     load_weights: bool = False,
@@ -1890,49 +2576,52 @@ def _load_transformers_config_with_fallback(
   kwargs = {}
   if not load_weights:
     kwargs["use_pretrained_backbone"] = False
+  config = None
   try:
-    return _wrap_config(
-        transformers.AutoConfig.from_pretrained(
-            str(model_path_or_file), **kwargs
-        )
+    cfg_obj = transformers.AutoConfig.from_pretrained(
+        str(model_path_or_file), **kwargs
     )
+    if isinstance(cfg_obj, transformers.PretrainedConfig):
+      config = _wrap_config(cfg_obj)
   except Exception:  # pylint: disable=broad-except
     pass
 
-  # 2. Read config.json, sanitize schema, and instantiate AutoConfig
-  path = epath.Path(model_path_or_file)
-  cfg_file = path / "config.json" if path.is_dir() else path
-  with cfg_file.open("r", encoding="utf-8") as f:
-    config_dict = json.load(f)
+  if config is None:
+    # 2. Read config.json, sanitize schema, and instantiate AutoConfig
+    path = epath.Path(model_path_or_file)
+    cfg_file = path / "config.json" if path.is_dir() else path
+    with cfg_file.open("r", encoding="utf-8") as f:
+      config_dict = json.load(f)
 
-  config_dict = _sanitize_transformers_config_dict(
-      config_dict, load_weights=load_weights
-  )
+    config_dict = _normalize_config_dict(config_dict, load_weights=load_weights)
 
-  model_type = config_dict.get("model_type")
-  if not isinstance(model_type, str):
-    raise ValueError(
-        f"Missing or invalid model_type in config for {model_path_or_file}"
-    )
+    model_type = config_dict.get("model_type")
+    if not isinstance(model_type, str):
+      raise ValueError(
+          f"Missing or invalid model_type in config for {model_path_or_file}"
+      )
 
-  config_mapping = getattr(
-      getattr(transformers, "models", None)
-      and getattr(transformers.models, "auto", None)
-      and getattr(transformers.models.auto, "configuration_auto", None),
-      "CONFIG_MAPPING",
-      {},
-  )
-  if model_type in config_mapping:
-    try:
-      return _wrap_config(config_mapping[model_type].from_dict(config_dict))
-    except Exception:  # pylint: disable=broad-except
-      pass
-  try:
-    return _wrap_config(
-        transformers.AutoConfig.for_model(model_type, **config_dict)
-    )
-  except Exception:  # pylint: disable=broad-except
-    return _wrap_config(config_dict)
+    cfg_cls = _resolve_config_class(model_type, config_dict)
+    if cfg_cls is not None:
+      try:
+        config = _wrap_config(
+            _instantiate_transformers_config_class(cfg_cls, config_dict)
+        )
+      except Exception:  # pylint: disable=broad-except
+        pass
+
+    if config is None:
+      try:
+        filtered_kwargs = {
+            k: v for k, v in config_dict.items() if k != "model_type"
+        }
+        config = _wrap_config(
+            transformers.AutoConfig.for_model(model_type, **filtered_kwargs)
+        )
+      except Exception:  # pylint: disable=broad-except
+        config = _wrap_config(config_dict)
+
+  return _sanitize_config(config)
 
 
 class TransformersProvider(BaseProvider):
@@ -2125,76 +2814,17 @@ class TransformersProvider(BaseProvider):
       )
     else:
       architectures = config.get("architectures", [])
-      model_cls = None
-
-      if architectures:
-        arch_name = architectures[0]
-        if hasattr(transformers, arch_name):
-          try:
-            model_cls = getattr(transformers, arch_name)
-          except Exception:  # pylint: disable=broad-except
-            model_cls = None
-        if model_cls is None:
-          # Try case-insensitive matching against transformers exports
-          arch_lower = arch_name.lower()
-          for attr in dir(transformers):
-            if attr.lower() == arch_lower:
-              try:
-                model_cls = getattr(transformers, attr)
-                break
-              except Exception:  # pylint: disable=broad-except
-                continue
-
-      if model_cls is None:
-        if modality == Modality.CAUSAL_LM:
-          model_cls = transformers.AutoModelForCausalLM
-        elif modality == Modality.SEQ2SEQ:
-          if "whisper" in config.get("model_type", ""):
-            model_cls = getattr(
-                transformers,
-                "AutoModelForSpeechSeq2Seq",
-                transformers.AutoModel,
-            )
-          else:
-            model_cls = transformers.AutoModelForSeq2SeqLM
-        else:
-          model_cls = transformers.AutoModel
-
+      arch_name = architectures[0] if architectures else None
+      model_type = config.get("model_type", "")
+      model_cls = _resolve_architecture_class(arch_name, model_type)
       target_dtype = _extract_target_dtype(config)
 
       def _create_model():
         cfg = config.unwrap() if isinstance(config, _ConfigWrapper) else config
-        m = None
-        if model_cls is not None and hasattr(model_cls, "from_config"):
-          try:
-            m = model_cls.from_config(cfg)
-          except Exception as exc:  # pylint: disable=broad-except
-            logging.warning(
-                "Failed to instantiate %s with from_config: %s. Falling back to"
-                " AutoModel.",
-                model_cls,
-                exc,
-            )
-        if m is None:
-          try:
-            if callable(model_cls):
-              m = model_cls(cfg)
-            else:
-              m = transformers.AutoModel.from_config(cfg)
-          except Exception:
-            m = transformers.AutoModel.from_config(cfg)
-        if target_dtype != torch.float32:
+        m = _instantiate_model_with_fallbacks(model_cls, cfg, modality)
+        if m is not None and target_dtype != torch.float32:
           m = m.to(dtype=target_dtype)  # pyrefly: ignore[missing-attribute]
-        if config.get("model_type", "") in ("vits", "tapas"):
-          # Zero TPU float weights before forward pass to prevent uninitialized
-          # parameters (from to_empty) causing NaNs/overflows.
-          def _zero_weights_pre_hook(module, *_unused_args, **_unused_kwargs):
-            for p in module.parameters():
-              if p.device.type != "meta" and p.dtype.is_floating_point:
-                p.data.zero_()
-
-          m.register_forward_pre_hook(_zero_weights_pre_hook)  # pyrefly: ignore[missing-attribute]
-        return m
+        return _apply_model_patches(m, config)
 
       model_fn = _create_model
 

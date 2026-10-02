@@ -1414,7 +1414,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         architectures=["BrosModel"],
         vocab_size=30522,
     )
-    inputs_bros = module_registry._generate_transformers_inputs(
+    inputs_bros = transformers_inputs.generate_transformers_inputs(
         cfg_bros, module_registry.Modality.CAUSAL_LM, shape=(1, 32)
     )
     self.assertIn("bbox", inputs_bros)
@@ -1427,7 +1427,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         max_patches=16,
         text_config=mock.MagicMock(hidden_size=768),
     )
-    inputs_p2s = module_registry._generate_transformers_inputs(
+    inputs_p2s = transformers_inputs.generate_transformers_inputs(
         cfg_p2s, module_registry.Modality.MULTIMODAL, shape=(1, 32)
     )
     self.assertNotIn("pixel_values", inputs_p2s)
@@ -1441,7 +1441,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         architectures=["Qwen2_5_VLForConditionalGeneration"],
         image_size=224,
     )
-    inputs_qwenvl = module_registry._generate_transformers_inputs(
+    inputs_qwenvl = transformers_inputs.generate_transformers_inputs(
         cfg_qwenvl, module_registry.Modality.MULTIMODAL
     )
     self.assertIn("image_grid_thw", inputs_qwenvl)
@@ -1453,7 +1453,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         architectures=["InstructBlipForConditionalGeneration"],
         image_size=224,
     )
-    inputs_iblip = module_registry._generate_transformers_inputs(
+    inputs_iblip = transformers_inputs.generate_transformers_inputs(
         cfg_iblip, module_registry.Modality.MULTIMODAL
     )
     self.assertIn("qformer_input_ids", inputs_iblip)
@@ -1467,7 +1467,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         vocab_size=30522,
         visual_feat_dim=2048,
     )
-    inputs_lxmert = module_registry._generate_transformers_inputs(
+    inputs_lxmert = transformers_inputs.generate_transformers_inputs(
         cfg_lxmert, module_registry.Modality.CAUSAL_LM, shape=(1, 32)
     )
     self.assertIn("visual_feats", inputs_lxmert)
@@ -1482,7 +1482,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         vocab_size=81,
         num_mel_bins=80,
     )
-    inputs_tts = module_registry._generate_transformers_inputs(
+    inputs_tts = transformers_inputs.generate_transformers_inputs(
         cfg_speecht5_tts, module_registry.Modality.AUDIO
     )
     self.assertIn("input_ids", inputs_tts)
@@ -1504,7 +1504,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         vocab_size=81,
         num_mel_bins=80,
     )
-    inputs_asr = module_registry._generate_transformers_inputs(
+    inputs_asr = transformers_inputs.generate_transformers_inputs(
         cfg_speecht5_asr, module_registry.Modality.AUDIO
     )
     self.assertIn("input_values", inputs_asr)
@@ -1524,7 +1524,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         vocab_size=81,
         num_mel_bins=80,
     )
-    inputs_vc = module_registry._generate_transformers_inputs(
+    inputs_vc = transformers_inputs.generate_transformers_inputs(
         cfg_speecht5_vc, module_registry.Modality.AUDIO
     )
     self.assertIn("input_values", inputs_vc)
