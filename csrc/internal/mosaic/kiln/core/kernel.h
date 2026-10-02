@@ -59,11 +59,15 @@ class Kernel {
   Kernel& operator=(Kernel&&) noexcept;
   ~Kernel();
 
+  // Runs Kiln canonicalization passes on the kernel module.
+  absl::Status Canonicalize();
+
   // Pretty-prints the kernel IR (for logging / tests).
   std::string ToString() const;
 
   // Serializes the kernel for Mosaic custom call execution.
   // This is a destructive operation.
+  // Note: This runs `Canonicalize` before serializing.
   absl::StatusOr<std::string> Serialize() &&;
 
   // Verifies the kernel's internal consistency.

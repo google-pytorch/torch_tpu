@@ -275,6 +275,7 @@ torch_tpu_cc_library(
         ":specs",
         "//csrc/common:error_utils",
         "//csrc/internal/mosaic:op_builders",
+        "//csrc/internal/mosaic/kiln/passes:fold_memref_slice",
         "@com_google_absl//absl/functional:function_ref",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
@@ -283,6 +284,8 @@ torch_tpu_cc_library(
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:Transforms",
     ],
 )
 

@@ -1589,5 +1589,34 @@ TEST_F(KilnTest, DmaValidationErrors) {
       });
   ASSERT_THAT(kernel, IsOk());
 }
+
+TEST_F(KilnTest, CanonicalizeFoldsMemRefSliceAndEliminatesDeadOps) {
+  DType i32 = Int32Type();
+  absl::StatusOr<Kernel> kernel =
+      CreateKernel(GridSpec{.name = "canonicalize_smem", .grid = {4}},
+                   ScalarPrefetchSpec{{4}, i32}, OutSpec::Smem({4, 8}, i32),
+                   [&](Ref idx, Ref out) {
+                     Scalar i = ProgramId(0);
+                     Scalar v = Scalar(idx(i));
+                     out(i, 0) = v;
+                   });
+  ASSERT_THAT(kernel, IsOk());
+  ASSERT_THAT(kernel->Canonicalize(), IsOk());
+
+  ExpectKernelMatches(std::move(*kernel), R"(
+    CHECK-LABEL: func.func @canonicalize_smem(
+    CHECK-SAME:    %[[I:arg[0-9]+]]: i32,
+    CHECK-SAME:    %[[IDX:arg[0-9]+]]: memref<4xi32, #tpu.memory_space<smem>>,
+    CHECK-SAME:    %[[OUT:arg[0-9]+]]: memref<4x8xi32, #tpu.memory_space<smem>>)
+    CHECK-NOT:     tpu.memref_slice
+    CHECK-NOT:     tpu.memref_squeeze
+    CHECK:         %[[I_IDX:.*]] = arith.index_cast %[[I]] : i32 to index
+    CHECK:         %[[V:.*]] = memref.load %[[IDX]][%[[I_IDX]]] : memref<4xi32, #tpu.memory_space<smem>>
+    CHECK:         %[[C0:.*]] = arith.constant 0 : index
+    CHECK:         memref.store %[[V]], %[[OUT]][%[[I_IDX]], %[[C0]]] : memref<4x8xi32, #tpu.memory_space<smem>>
+    CHECK:         return
+  )");
+}
+
 }  // namespace
 }  // namespace torch_tpu::kiln

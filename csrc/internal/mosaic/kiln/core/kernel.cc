@@ -36,6 +36,7 @@
 #include "csrc/internal/mosaic/kiln/core/ref.h"
 #include "csrc/internal/mosaic/kiln/core/scalar.h"
 #include "csrc/internal/mosaic/kiln/core/specs.h"
+#include "csrc/internal/mosaic/kiln/passes/fold_memref_slice.h"
 #include "csrc/internal/mosaic/op_builders.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
@@ -57,6 +58,8 @@
 #include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/Verifier.h"
+#include "mlir/Pass/PassManager.h"
+#include "mlir/Transforms/Passes.h"
 
 namespace torch_tpu::kiln {
 
@@ -249,9 +252,28 @@ Kernel::Kernel(Kernel&&) noexcept = default;
 Kernel& Kernel::operator=(Kernel&&) noexcept = default;
 Kernel::~Kernel() = default;
 
+absl::Status Kernel::Canonicalize() {
+  mlir::PassManager pm(impl_->context.get());
+  // Current Mosaic lowering does not support loading from 0-d memref, we
+  // therefore fold the slice and squeeze ops into the memref.load /
+  // memref.store ops.
+  // We then run DCE and CSE to avoid serializing redundant operations.
+  // Note: we don't run the entire Canonicalize pass because some patterns can
+  // introduce unsupported operations.
+  pm.addNestedPass<mlir::func::FuncOp>(CreateFoldMemRefSlicePass());
+  pm.addPass(mlir::createTrivialDeadCodeEliminationPass());
+  pm.addPass(mlir::createCSEPass());
+  if (llvm::failed(pm.run(*impl_->module))) {
+    return TT_ERROR(::torch_tpu::error::kInternal)
+           << "failed to canonicalize Kiln kernel";
+  }
+  return absl::OkStatus();
+}
+
 std::string Kernel::ToString() const { return PrintModule(*impl_->module); }
 
 absl::StatusOr<std::string> Kernel::Serialize() && {
+  TT_RETURN_IF_ERROR(Canonicalize());
   if (llvm::failed(
           mlir::torch_tpu::SerializeMosaicKernel(impl_->module.get()))) {
     return TT_ERROR(::torch_tpu::error::kInternal)

@@ -56,4 +56,33 @@ torch_tpu_cc_test(
     ],
 )
 
+torch_tpu_cc_test(
+    name = "kiln_e2e_test",
+    srcs = ["kiln_e2e_test.cc"],
+    exec_properties = {
+        "cpp_link.mem": "16g",
+    },
+    tags = ["requires-tpu-v5p"],
+    deps = [
+        ":kiln",
+        "//csrc/common:error_utils",
+        "//csrc/common:oss_test_main",
+        "//csrc/common:status_test_utils",
+        "//csrc/experimental/precompiled_kernels:kernel_test_utils",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@xla//xla:error_spec",
+        "@xla//xla:literal",
+        "@xla//xla:literal_util",
+        "@xla//xla:shape_util",
+        "@xla//xla/hlo/ir:hlo",
+        "@xla//xla/pjrt:pjrt_client",
+        "@xla//xla/service:hlo_module_config",
+        "@xla//xla/service:hlo_runner",
+        "@xla//xla/tests:literal_test_util",
+    ],
+)
+
 torch_tpu_package_end()
