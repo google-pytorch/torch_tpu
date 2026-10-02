@@ -26,6 +26,7 @@
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/ops/nonzero/nonzero.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -180,6 +181,82 @@ absl::StatusOr<mlir::MlirOp> BuildIndexShlo(
     result = mlir::stablehlo::SetDimensionSize(result, dim_size, out_dim);
   }
   return stablehlo::ConvertElementType(result, self_type.getElementType());
+}
+
+absl::StatusOr<mlir::MlirOp> BuildBooleanMaskIndexShlo(
+    mlir::MlirOp self, mlir::MlirOp mask, int64_t dim_indexed,
+    int64_t num_non_zero_elements) {
+  // In PyTorch, an M-dimensional boolean mask with K `True` entries replaces
+  // the M indexed dimensions `[dim_indexed, dim_indexed + M - 1]` of `self`
+  // with a single 1D dimension of size K in row-major order.
+  //
+  // Performing all reshapes, nonzero index extraction, and gathering inside
+  // this single StableHLO lowering avoids multiple ATen tensor-level dispatches
+  // (e.g. `.flatten()` and `AtenNonzero`) outside `op_builder`, keeping the
+  // computation fused in one graph for XLA optimization.
+  const int64_t mask_rank = GetTensorTypeOrDie(mask).getRank();
+
+  // Step 1: Adjust `self` and `mask` so that the masked dimensions of `self`
+  // correspond to a single dimension at `dim_indexed` and `mask` is 1D:
+  // - When `mask_rank == 0` (0D scalar boolean mask), no dimensions of `self`
+  //   are consumed; instead, a new dimension of size 1 is inserted at
+  //   `dim_indexed` via `Unsqueeze`, and `mask` is flattened to shape `(1,)`.
+  // - When `mask_rank > 1` (multi-dimensional boolean mask), the M masked
+  //   dimensions `[dim_indexed, dim_indexed + M - 1]` of `self` are collapsed
+  //   into a single dimension at `dim_indexed`, and `mask` is flattened to 1D.
+  if (mask_rank == 0) {
+    TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=dim_indexed is guaranteed to
+                          // be in [0, self.dim()].
+        self, Unsqueeze(self, dim_indexed));
+    mask = Flatten(mask);
+  } else if (mask_rank > 1) {
+    mlir::stablehlo::Dimensions self_dims = GetDimensions(self);
+    Dimensions static_shape_before;
+    static_shape_before.reserve(self_dims.size());
+    for (const auto& dim : self_dims) {
+      static_shape_before.push_back(dim.size);
+    }
+
+    Dimensions static_shape_after;
+    static_shape_after.reserve(self_dims.size() - mask_rank + 1);
+    for (int64_t i = 0; i < dim_indexed; ++i) {
+      static_shape_after.push_back(static_shape_before[i]);
+    }
+    int64_t collapsed_dim_size = 1;
+    for (int64_t i = dim_indexed; i < dim_indexed + mask_rank; ++i) {
+      collapsed_dim_size *= static_shape_before[i];
+    }
+    static_shape_after.push_back(collapsed_dim_size);
+    for (int64_t i = dim_indexed + mask_rank; i < static_shape_before.size();
+         ++i) {
+      static_shape_after.push_back(static_shape_before[i]);
+    }
+
+    TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=collapsing contiguous valid
+                          // dimensions always succeeds.
+        self, ReshapeFromStaticDimensions(self, static_shape_before,
+                                          static_shape_after));
+    mask = Flatten(mask);
+  }
+
+  // If the indexed dimension of `self` has size 0 (i.e. `mask` has 0 elements
+  // and `num_non_zero_elements == 0`), `self` after Step 1 already has the
+  // exact output shape, whereas `stablehlo.gather` requires `slice_sizes[d] ==
+  // 1 <= operand.dim(d)` on collapsed slice dimensions.
+  if (GetTensorTypeOrDie(self).getDimSize(dim_indexed) == 0) {
+    return self;
+  }
+
+  // Step 2: Compute the 1D linear indices of the `True` elements in `mask`.
+  // `BuildNonzeroShlo` on a 1D mask returns shape `(num_non_zero_elements, 1)`,
+  // which we flatten to `(num_non_zero_elements,)`.
+  TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=1D mask nonzero always succeeds.
+      mlir::MlirOp nonzero_indices,
+      BuildNonzeroShlo(num_non_zero_elements, mask));
+  mlir::MlirOp flat_indices = Flatten(nonzero_indices);
+
+  // Step 3: Gather from `self` along `dim_indexed` using the 1D flat indices.
+  return BuildIndexShlo({self, flat_indices}, {dim_indexed});
 }
 
 }  // namespace torch_tpu

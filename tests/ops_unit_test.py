@@ -5315,63 +5315,201 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         ],
     )
 
-  def test_boolean_indexing(self):
-    """Test boolean indexing."""
+  @parameterized.named_parameters(
+      (
+          "1d_long_mask",
+          lambda: torch.tensor([0, 1, 2, 5, 10, -1, 3, 255], dtype=torch.long),
+          lambda: torch.tensor(
+              [True, True, True, True, False, False, True, False]
+          ),
+          lambda x, m: x[m],
+      ),
+      (
+          "same_rank_mask",
+          lambda: torch.randn(8, 128, 128),
+          lambda: torch.rand(8, 128, 128) > 0.5,
+          lambda x, m: x[m],
+      ),
+      (
+          "smaller_rank_mask",
+          lambda: torch.randn(8, 128, 128),
+          lambda: torch.rand(8, 128) > 0.5,
+          lambda x, m: x[m],
+      ),
+      (
+          "leading_slices_all_true",
+          lambda: torch.randn(2, 3, 7, 7),
+          lambda: torch.ones(7, 7, dtype=torch.bool),
+          lambda x, m: x[:, :, m],
+      ),
+      (
+          "leading_slices_partial_mask",
+          lambda: torch.randn(2, 3, 7, 7),
+          lambda: torch.rand(7, 7) > 0.5,
+          lambda x, m: x[:, :, m],
+      ),
+      (
+          "leading_slices_empty_mask",
+          lambda: torch.randn(2, 3, 7, 7),
+          lambda: torch.zeros(7, 7, dtype=torch.bool),
+          lambda x, m: x[:, :, m],
+      ),
+      (
+          "leading_and_trailing_slices",
+          lambda: torch.randn(2, 3, 7, 7),
+          lambda: torch.tensor([True, False, True, False, True, True, False]),
+          lambda x, m: x[:, :, m, :],
+      ),
+      (
+          "0d_true_mask_with_slices",
+          lambda: torch.randn(2, 3),
+          lambda: torch.tensor(True),
+          lambda x, m: x[:, m, :],
+      ),
+      (
+          "0d_false_mask",
+          lambda: torch.randn(2, 3),
+          lambda: torch.tensor(False),
+          lambda x, m: x[m],
+      ),
+      (
+          "0d_true_mask_aten_index_out_with_slices",
+          lambda: torch.randn(2, 3),
+          lambda: torch.tensor(True),
+          lambda x, m: (
+              torch.ops.aten.index.Tensor_out(
+                  x,
+                  [None, m, None],
+                  out=torch.empty(0, dtype=x.dtype, device=x.device),
+              )
+              if x.device.type == "tpu"
+              else x[:, m, :]
+          ),
+      ),
+      (
+          "0d_false_mask_aten_index_out",
+          lambda: torch.randn(2, 3),
+          lambda: torch.tensor(False),
+          lambda x, m: (
+              torch.ops.aten.index.Tensor_out(
+                  x,
+                  [m],
+                  out=torch.empty(0, dtype=x.dtype, device=x.device),
+              )
+              if x.device.type == "tpu"
+              else x[m]
+          ),
+      ),
+      (
+          "0d_true_mask_aten_index_out_trailing",
+          lambda: torch.randn(2, 3),
+          lambda: torch.tensor(True),
+          lambda x, m: (
+              torch.ops.aten.index.Tensor_out(
+                  x,
+                  [None, None, m],
+                  out=torch.empty(0, dtype=x.dtype, device=x.device),
+              )
+              if x.device.type == "tpu"
+              else x[:, :, m]
+          ),
+      ),
+      (
+          "0d_false_mask_aten_index_out_with_slices",
+          lambda: torch.randn(2, 3),
+          lambda: torch.tensor(False),
+          lambda x, m: (
+              torch.ops.aten.index.Tensor_out(
+                  x,
+                  [None, m, None],
+                  out=torch.empty(0, dtype=x.dtype, device=x.device),
+              )
+              if x.device.type == "tpu"
+              else x[:, m, :]
+          ),
+      ),
+      (
+          "0d_scalar_self_with_0d_mask_aten_index_out",
+          lambda: torch.tensor(42.0),
+          lambda: torch.tensor(True),
+          lambda x, m: (
+              torch.ops.aten.index.Tensor_out(
+                  x,
+                  [m],
+                  out=torch.empty(0, dtype=x.dtype, device=x.device),
+              )
+              if x.device.type == "tpu"
+              else x[m]
+          ),
+      ),
+      (
+          "0d_scalar_self_with_0d_false_mask_aten_index_out",
+          lambda: torch.tensor(42.0),
+          lambda: torch.tensor(False),
+          lambda x, m: (
+              torch.ops.aten.index.Tensor_out(
+                  x,
+                  [m],
+                  out=torch.empty(0, dtype=x.dtype, device=x.device),
+              )
+              if x.device.type == "tpu"
+              else x[m]
+          ),
+      ),
+      (
+          "3d_mask_with_leading_slice",
+          lambda: torch.randn(2, 3, 4, 5),
+          lambda: torch.rand(3, 4, 5) > 0.5,
+          lambda x, m: x[:, m],
+      ),
+      (
+          "2d_mask_with_leading_and_trailing_slices",
+          lambda: torch.randn(2, 3, 4, 5),
+          lambda: torch.rand(3, 4) > 0.5,
+          lambda x, m: x[:, m, :],
+      ),
+      (
+          "zero_sized_2d_mask_with_leading_slice",
+          lambda: torch.randn(2, 0, 4),
+          lambda: torch.zeros(0, 4, dtype=torch.bool),
+          lambda x, m: x[:, m],
+      ),
+      (
+          "zero_sized_1d_mask_with_slices",
+          lambda: torch.randn(2, 0, 4),
+          lambda: torch.zeros(0, dtype=torch.bool),
+          lambda x, m: x[:, m, :],
+      ),
+      (
+          "zero_sized_unindexed_dim_with_2d_mask",
+          lambda: torch.randn(0, 3, 4),
+          lambda: torch.tensor([
+              [True, False, True, False],
+              [False, True, False, True],
+              [True, True, False, False],
+          ]),
+          lambda x, m: x[:, m],
+      ),
+      (
+          "non_contiguous_self_and_mask",
+          lambda: torch.randn(3, 2, 5, 4),
+          lambda: torch.rand(4, 3) > 0.5,
+          lambda x, m: x.transpose(0, 1).transpose(2, 3)[:, m.t(), :],
+      ),
+  )
+  def test_boolean_indexing(self, x_fn, mask_fn, index_fn):
+    x = x_fn()
+    mask = mask_fn()
 
-    def single_tensor_bool_indexing_with(device):
-      # Create sample tensors
-      y = torch.tensor(
-          [0, 1, 2, 5, 10, -1, 3, 255], dtype=torch.long, device=device
-      )
-      y_pred = torch.tensor(
-          [0, 1, 2, 4, 8, 2, 3, 200], dtype=torch.long, device=device
-      )
+    def boolean_indexing(device):
+      return index_fn(x.to(device), mask.to(device))
 
-      num_classes = 10
-
-      print(f"Original y: {y}")
-      print(f"Original y_pred: {y_pred}")
-
-      target_mask = (y >= 0) & (y < num_classes)
-      print(f"\nBoolean mask: {target_mask}")
-
-      y_filtered = y[target_mask]
-      y_pred_filtered = y_pred[target_mask]
-
-      print(f"\nFiltered y: {y_filtered}")
-      print(f"Filtered y_pred: {y_pred_filtered}")
-      print("\nSUCCESS: Boolean indexing works!")
-      return y_filtered, y_pred_filtered
-
-    self.assert_close_tpu_vs_cpu(single_tensor_bool_indexing_with)
-
-  def test_boolean_indexing_with_same_rank_mask(self):
-    x = torch.rand(8, 128, 128)
-    mask = torch.rand(8, 128, 128) > 0.5
-
-    def boolean_indexing_with_same_rank_mask(device):
-      x_tpu = x.to(device)
-      mask_tpu = mask.to(device)
-      return x_tpu[mask_tpu]
-
-    self.assert_close_tpu_vs_cpu(boolean_indexing_with_same_rank_mask)
-
-  def test_boolean_indexing_with_smaller_rank_mask(self):
-    x = torch.rand(8, 128, 128)
-    mask = torch.rand(8, 128) > 0.5
-
-    def boolean_indexing_with_smaller_rank_mask(device):
-      x_tpu = x.to(device)
-      mask_tpu = mask.to(device)
-      return x_tpu[mask_tpu]
-
-    self.assert_close_tpu_vs_cpu(boolean_indexing_with_smaller_rank_mask)
+    self.assert_close_tpu_vs_cpu(boolean_indexing)
 
   def test_is_nonzero(self):
     def assert_is_nonzero_equal_on_cpu_vs_tpu(tensor: torch.Tensor):
       cpu_result = torch.is_nonzero(tensor.to("cpu"))
       tpu_result = torch.is_nonzero(tensor.to(torch.device("tpu")))
-      self.assertEqual(cpu_result, tpu_result)
       self.assertEqual(cpu_result, tpu_result)
 
     assert_is_nonzero_equal_on_cpu_vs_tpu(torch.tensor([0.0]))

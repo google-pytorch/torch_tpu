@@ -17,6 +17,8 @@
 #ifndef TORCH_TPU_CSRC_OPS_INDEX_INDEX_H_
 #define TORCH_TPU_CSRC_OPS_INDEX_INDEX_H_
 
+#include <cstdint>
+
 #include "absl/status/statusor.h"
 #include "csrc/common/dimension_types.h"
 #include "mlir/Support/LLVM.h"
@@ -24,8 +26,19 @@
 
 namespace torch_tpu {
 
+// Builds StableHLO for tensor indexing with integer index tensors.
+// `input_ops[0]` is `self`, and `input_ops[1..]` are the index tensors
+// corresponding to `indexed_dims`.
 absl::StatusOr<mlir::MlirOp> BuildIndexShlo(
     mlir::ArrayRef<mlir::MlirOp> input_ops, Indices indexed_dims);
+
+// Builds StableHLO for tensor indexing with a single boolean mask at
+// `dim_indexed`, given the precomputed `num_non_zero_elements` (`True` count).
+// Performs dimension collapsing on `self`, mask flattening, nonzero index
+// computation, and gathering within a single StableHLO lowering.
+absl::StatusOr<mlir::MlirOp> BuildBooleanMaskIndexShlo(
+    mlir::MlirOp self, mlir::MlirOp mask, int64_t dim_indexed,
+    int64_t num_non_zero_elements);
 
 }  // namespace torch_tpu
 

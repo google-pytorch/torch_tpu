@@ -6797,7 +6797,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         IndexError,
-        tpu="""index(): expected the size of the indices to be <= 2 (number of input dimensions), got 3""",
+        tpu="""index(): too many indices for tensor of dimension 2""",
         gpu="""too many indices for tensor of dimension 2 (got 3)""",
         message_reviewed_by="wan",
     ):
@@ -6821,6 +6821,113 @@ Supported combinations for non-constant padding:
         message_reviewed_by="wan",
     ):
       torch.ops.aten.index.Tensor(t, [None])
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="shape_mismatch",
+          t_shape=(2, 3, 7, 7),
+          indices_fn=lambda d: [
+              None,
+              None,
+              torch.ones(5, 7, dtype=torch.bool, device=d),
+          ],
+          tpu_error=IndexError,
+          tpu_msg="""index(): expected the shape of the mask at index 0 to match the shape of the indexed tensor at index 2, got mask shape [5, 7] and indexed tensor shape [2, 3, 7, 7]""",
+          gpu_error=IndexError,
+          gpu_msg="""The shape of the mask [5, 7] at index 0 does not match the shape of the indexed tensor [2, 3, 7, 7] at index 2""",
+      ),
+      dict(
+          testcase_name="rank_exceeds_remaining_dims",
+          t_shape=(2, 3, 7),
+          indices_fn=lambda d: [
+              None,
+              None,
+              torch.ones(7, 7, dtype=torch.bool, device=d),
+          ],
+          tpu_error=IndexError,
+          tpu_msg="""index(): expected the shape of the mask at index 1 to match the shape of the indexed tensor at index 3, got mask shape [7, 7] and indexed tensor shape [2, 3, 7]""",
+          gpu_error=IndexError,
+          gpu_msg="""Dimension out of range (expected to be in range of [-3, 2], but got 3)""",
+      ),
+      dict(
+          testcase_name="trailing_slice_exceeds_dims",
+          t_shape=(2, 3, 4),
+          indices_fn=lambda d: [
+              None,
+              torch.ones(3, 4, dtype=torch.bool, device=d),
+              None,
+          ],
+          tpu_error=IndexError,
+          tpu_msg="""index(): too many indices for tensor of dimension 3""",
+          gpu_error=RuntimeError,
+          gpu_msg="""The size of tensor a (2) must match the size of tensor b (12) at non-singleton dimension 1""",
+      ),
+      dict(
+          testcase_name="0d_mask_trailing_slices_exceed_dims",
+          t_shape=(2, 3),
+          indices_fn=lambda d: [
+              None,
+              torch.tensor(True, device=d),
+              None,
+              None,
+          ],
+          tpu_error=IndexError,
+          tpu_msg="""index(): too many indices for tensor of dimension 2""",
+          gpu_error=IndexError,
+          gpu_msg="""too many indices for tensor of dimension 2 (got 4)""",
+      ),
+      dict(
+          testcase_name="multiple_bool_masks",
+          t_shape=(3, 3),
+          indices_fn=lambda d: [
+              torch.ones(3, dtype=torch.bool, device=d),
+              torch.ones(3, dtype=torch.bool, device=d),
+          ],
+          tpu_error=NotImplementedError,
+          tpu_msg="""index(): indexing with more than one bool tensor is not yet supported""",
+          gpu_error=None,
+          gpu_msg="""""",
+      ),
+      dict(
+          testcase_name="bool_then_int_index",
+          t_shape=(3, 3),
+          indices_fn=lambda d: [
+              torch.ones(3, dtype=torch.bool, device=d),
+              torch.tensor([0], device=d),
+          ],
+          tpu_error=NotImplementedError,
+          tpu_msg="""index(): indexing with more than one bool tensor is not yet supported""",
+          gpu_error=None,
+          gpu_msg="""""",
+      ),
+      dict(
+          testcase_name="int_then_bool_index",
+          t_shape=(3, 3),
+          indices_fn=lambda d: [
+              torch.tensor([0], device=d),
+              torch.ones(3, dtype=torch.bool, device=d),
+          ],
+          tpu_error=NotImplementedError,
+          tpu_msg="""index(): indexing with more than one bool tensor is not yet supported""",
+          gpu_error=None,
+          gpu_msg="""""",
+      ),
+  )
+  def test_index_boolean_mask(
+      self, t_shape, indices_fn, tpu_error, tpu_msg, gpu_error, gpu_msg
+  ):
+    if et.is_on_gpu() and gpu_error is None:
+      self.skipTest("GPU supports multiple or mixed boolean index tensors")
+    t = torch.randn(*t_shape, device=et.device())
+    indices = indices_fn(et.device())
+    out = torch.empty(1, device=et.device())
+
+    with et.assert_raises_message(
+        gpu_error if et.is_on_gpu() else tpu_error,
+        tpu=tpu_msg,
+        gpu=gpu_msg,
+    ):
+      torch.ops.aten.index.Tensor_out(t, indices, out=out)
 
   @parameterized.named_parameters(
       {"testcase_name": "dot", "op": torch.dot, "op_name": "dot"},
