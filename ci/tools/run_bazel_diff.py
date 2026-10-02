@@ -111,12 +111,12 @@ _DOC_OR_METADATA_REGEX: Final[re.Pattern[str]] = re.compile(
 # marks them impacted by almost any change. Run them only for changes to the
 # operator lowerings and the harness they actually exercise.
 # One regex per entry.
-# TODO(b/568391187): add a unit test to ensure every entry must match at least
-# one file.
+#
+# Every entry must match at least one file in the repository.
 OPS_TEST_PATHS: Final[Sequence[str]] = (
     # go/keep-sorted start
     r"csrc/ops/.*",
-    r"src/torch_tpu/ops/.*",
+    r"src/torch_tpu/_internal/ops/.*",
     r"tests/dynamism_test_utils\.py",
     r"tests/goldens\.pin",
     r"tests/op_testing\.py",
@@ -264,6 +264,15 @@ def are_all_files_doc_or_metadata(changed_files: Sequence[str]) -> bool:
 def should_run_ops_tests(changed_files: Sequence[str]) -> bool:
   """Returns True if any changed file matches OPS_TEST_PATHS."""
   return any(_OPS_TEST_PATHS_REGEX.search(f) for f in changed_files)
+
+
+def list_files_at_commit(sha: str) -> Sequence[str]:
+  """Returns the repo-relative paths of every file in commit sha."""
+  out = subprocess.check_output(
+      ["git", "ls-tree", "-r", "--name-only", "--full-tree", sha],
+      text=True,
+  )
+  return out.splitlines()
 
 
 def filter_ops_test_targets(
@@ -428,6 +437,23 @@ def main(argv: Sequence[str]) -> int:
   current_sha = opts.current_sha
   test_all = opts.test_all
   run_ops_tests = True
+
+  # Ensure that OPS_TEST_PATHS patterns are keep-to-date with file names in the
+  # repository. Postsubmits (without a base SHA) do not select tests so ignored.
+  if base_sha:
+    repo_files = list_files_at_commit(current_sha)
+    unmatched = [
+        pattern
+        for pattern in OPS_TEST_PATHS
+        if not any(re.fullmatch(pattern, repo_file) for repo_file in repo_files)
+    ]
+    if unmatched:
+      print(
+          "ERROR: Found entries in OPS_TEST_PATHS that match no existing file: "
+          f"[{', '.join(unmatched)}]. Please remove or update them.",
+          file=sys.stderr,
+      )
+      return 1
 
   # Check if global Bazel configurations were modified. If so, bypass bazel-diff
   # to guarantee a full build validation.

@@ -14,6 +14,7 @@
 
 """Unit tests for ci/tools/run_bazel_diff.py."""
 
+import io
 import pathlib
 import subprocess
 import tempfile
@@ -284,7 +285,7 @@ class RunBazelDiffTest(unittest.TestCase):
     opted_in_files = [
         "csrc/ops/add.cc",
         "csrc/ops/experimental/foo.h",
-        "src/torch_tpu/ops/custom_op.py",
+        "src/torch_tpu/_internal/ops/custom_op.py",
         "tests/op_testing.py",
         "tests/ops_test.py",
         "tests/ops_test_data.py",
@@ -308,6 +309,35 @@ class RunBazelDiffTest(unittest.TestCase):
     ]
     with self.subTest(opted_out=opted_out_files):
       self.assertFalse(run_bazel_diff.should_run_ops_tests(opted_out_files))
+
+  def test_main_fails_on_stale_ops_test_paths(self):
+    with (
+        tempfile.TemporaryDirectory() as workspace_dir,
+        mock.patch.object(
+            run_bazel_diff,
+            "resolve_base_sha",
+            autospec=True,
+            return_value="4e700c6",
+        ),
+        mock.patch.object(
+            run_bazel_diff,
+            "list_files_at_commit",
+            autospec=True,
+            return_value=[
+                # A file that no OPS_TEST_PATHS entry matches.
+                "__test__.py"
+            ],
+        ),
+        mock.patch("os.chdir"),
+        mock.patch("sys.stderr", new_callable=io.StringIO) as mock_stderr,
+    ):
+      self.assertEqual(
+          run_bazel_diff.main([f"--workspace-dir={workspace_dir}"]), 1
+      )
+      self.assertIn(
+          "Found entries in OPS_TEST_PATHS that match no existing file",
+          mock_stderr.getvalue(),
+      )
 
   def test_filter_ops_test_targets(self):
     impacted = [
