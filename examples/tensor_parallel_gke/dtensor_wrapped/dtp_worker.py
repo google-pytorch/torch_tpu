@@ -28,10 +28,10 @@ from torch import distributed as dist
 from torch.distributed import device_mesh
 from torch.distributed import tensor
 from torch.distributed.tensor import parallel
-from examples.distributed.tensor_parallel.dtensor_wrapped import model
+# Direct all logs to stdout so kubectl logs can see them
+from torch.testing import assert_close
+from examples.tensor_parallel_gke.dtensor_wrapped import model
 
-
-logging.set_verbosity(logging.INFO)
 
 BATCH_SIZE = 64
 MODEL_DIM = 128
@@ -116,7 +116,7 @@ def worker_fn() -> None:
 
   # Assert TPU outputs on rank=0 match the reference outputs.
   if rank == 0:
-    torch.testing.assert_close(
+    assert_close(
         actual=tpu_tp_output,
         expected=reference_output,
         rtol=1e-4,

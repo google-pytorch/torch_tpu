@@ -15,7 +15,6 @@
 
 # A script to run the tensor parallel worker on multiple hosts using torchrun.
 
-echo "TPU_VISIBLE_CHIPS: $TPU_VISIBLE_CHIPS"
 echo "HOSTNAME: $HOSTNAME"
 
 # Standardized dual-container suppression: only even IDs run, odd IDs sleep.

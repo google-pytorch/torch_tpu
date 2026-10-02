@@ -23,10 +23,10 @@ import os
 from absl import logging
 import torch
 from torch import distributed as dist
-from examples.distributed.tensor_parallel.manual import model
+# Direct all logs to stdout so kubectl logs can see them
+from torch.testing import assert_close
+from examples.tensor_parallel_gke.manual import model
 
-
-logging.set_verbosity(logging.INFO)
 
 BATCH_SIZE = 64
 MODEL_DIM = 256
@@ -87,7 +87,7 @@ def worker_fn() -> None:
   # Assert TPU outputs on rank=0 match the reference outputs.
   if rank == 0:
     logging.info("Comparing TPU output with reference output...")
-    torch.testing.assert_close(
+    assert_close(
         actual=tpu_tp_output,
         expected=reference_output,
         rtol=1e-4,
