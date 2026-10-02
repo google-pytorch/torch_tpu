@@ -248,8 +248,15 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> GetDynamicPadModule(
       for (const auto& dynamic_dim : shape.dynamic_dimensions()) {
         auto size_op =
             mlir::stablehlo::GetDimensionSize(input_op, dynamic_dim.dimension);
-        current_op = mlir::stablehlo::SetDimensionSize(current_op, size_op,
-                                                       dynamic_dim.dimension);
+        // Prevent GetDimensionSize on the statically-shaped input parameter
+        // from constant-folding directly into SetDimensionSize's size operand.
+        // When input_shape[dim] == upper_bound, MLIR-to-HLO lowering treats
+        // SetDimensionSize(x, ConstantOp(upper_bound), dim) as
+        // xla::RemoveDynamicDimension, which strips dynamism from the output
+        // buffer and omits the on-device dynamic shape metadata prefix.
+        auto barrier_ops = mlir::stablehlo::OptimizationBarrier(fb, {size_op});
+        current_op = mlir::stablehlo::SetDimensionSize(
+            current_op, barrier_ops[0], dynamic_dim.dimension);
       }
       results.push_back(current_op);
     }

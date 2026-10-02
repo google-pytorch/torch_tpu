@@ -1318,6 +1318,25 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     expected = torch.tensor([[1, 1, 1, 1]], dtype=torch.int32)
     utils.assert_close(padded_tensor.cpu()[:, :4], expected)
 
+    # Also test when runtime dimension size equals upper bound ([1, 8] <= [1, 8]).
+    at_bound_info = [([1, 8], torch.int32)]
+    at_bound_compile_result = tpu_torch_compile.get_dynamic_pad_module(
+        at_bound_info, bounds_list
+    )
+    at_bound_input = torch.ones(1, 8, dtype=torch.int32, device='tpu')
+    at_bound_result = tpu_torch_compile.execute(
+        at_bound_compile_result.executable,
+        [at_bound_input],
+        output_shapes=[tpu_torch_compile.OutputShape(is_dynamic=True)],
+    )
+    self.assertLen(at_bound_result, 1)
+    at_bound_padded = at_bound_result[0]
+    self.assertEqual(at_bound_padded.shape, (1, 8))
+    self.assertTrue(tpu_torch_compile.is_device_shape_dynamic(at_bound_padded))
+    utils.assert_close(
+        at_bound_padded.cpu(), torch.ones(1, 8, dtype=torch.int32)
+    )
+
   def test_static_compiler_buffer_donation(self):
     def simple_fn(x, y):
       return x + y, x * 2
