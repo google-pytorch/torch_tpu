@@ -19,6 +19,7 @@ from typing import Any, Callable
 
 from absl import logging
 import portpicker
+import torch.distributed as torch_dist
 import torch.multiprocessing as mp
 from torch.tpu import distributed  # pyrefly: ignore[missing-import]
 from torch_tpu._internal import env
@@ -157,3 +158,40 @@ def dist_run(
         )
         continue
       raise
+
+
+def _gloo_worker_fn(
+    fn: Callable[..., Any],
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> None:
+  """Runs `fn` inside a gloo default process group, then tears it down."""
+  torch_dist.init_process_group(backend="gloo", init_method="env://")
+  try:
+    fn(*args, **kwargs)
+  finally:
+    torch_dist.destroy_process_group()
+
+
+def gloo_run(
+    world_size: int,
+    fn: Callable[..., Any],
+    *args: Any,
+    **kwargs: Any,
+) -> None:
+  """Runs `fn` on `world_size` CPU ranks that share a real gloo process group.
+
+  Use this instead of patching `torch.distributed` (e.g. `is_initialized`,
+  `get_world_size`) or putting a mock process group into the code under test:
+  each rank gets a real, initialized default group, so collectives move data
+  and `fn` can assert on their results. An assertion that fails on any rank
+  fails the calling test.
+
+  Args:
+    world_size: The number of ranks to spawn on the current host.
+    fn: A picklable (module-level) function run by every rank. Use
+      `torch.distributed.get_rank()` inside it to tell the ranks apart.
+    *args: Positional arguments to pass to `fn`.
+    **kwargs: Keyword arguments to pass to `fn`.
+  """
+  dist_run(world_size, _gloo_worker_fn, fn, args, kwargs)
