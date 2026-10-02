@@ -83,6 +83,7 @@ TORCH_LIBRARY_FRAGMENT(tpu, m) {
          int64_t suggested_coo_buffer_size, int64_t batch_size,
          std::string_view combiner, int64_t local_device_count,
          int64_t global_device_count, int64_t num_sc_per_device,
+         int64_t sc_simd_width, int64_t hbm_word_size_in_4b,
          bool allow_id_dropping,
          std::string_view table_name) -> c10::Dict<std::string, at::Tensor> {
     TT_CHECK_THROW(input_indices.dtype() == at::kInt, error::kInvalidArgument)
@@ -112,6 +113,8 @@ TORCH_LIBRARY_FRAGMENT(tpu, m) {
         .local_device_count = static_cast<int>(local_device_count),
         .global_device_count = static_cast<int>(global_device_count),
         .num_sc_per_device = static_cast<int>(num_sc_per_device),
+        .sc_simd_width = static_cast<int>(sc_simd_width),
+        .hbm_word_size_in_4b = static_cast<int>(hbm_word_size_in_4b),
         .sharding_strategy = sc_preprocessing::ShardingStrategy::kMod,
         .allow_id_dropping = allow_id_dropping,
         .minibatching_mode = sc_preprocessing::MinibatchingMode::kDisabled,
@@ -234,6 +237,8 @@ TORCH_LIBRARY_FRAGMENT(tpu, m) {
       "    int local_device_count, "
       "    int global_device_count, "
       "    int num_sc_per_device, "
+      "    int sc_simd_width, "
+      "    int hbm_word_size_in_4b, "
       "    bool allow_id_dropping, "
       "    str table_name"
       ") -> Dict(str, Tensor)",
