@@ -49,7 +49,6 @@ torch_tpu_py_library(
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/pallas",
         "@pypi//jax",
-        "@pypi//torchax",  # build_cleaner: keep
     ],
 )
 

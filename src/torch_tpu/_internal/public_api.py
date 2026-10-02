@@ -281,6 +281,18 @@ _PUBLIC_MODULES: Mapping[str, ModuleSpec] = {
             " (`torch.tpu.exceptions`)."
         ),
     ),
+    "torch.tpu.ops": ModuleSpec(
+        exports={
+            # go/keep-sorted start
+            "align_jagged_to_multiple": (
+                "torch_tpu.ops.jagged:align_jagged_to_multiple"
+            ),
+            "splash_sdpa": "torch_tpu.ops.splash_attention:splash_sdpa",
+            "strip_jagged_padding": "torch_tpu.ops.jagged:strip_jagged_padding",
+            # go/keep-sorted end
+        },
+        doc="Public custom ops API for TorchTPU (`torch.tpu.ops`).",
+    ),
     "torch.tpu.pallas": ModuleSpec(
         exports={
             # go/keep-sorted start

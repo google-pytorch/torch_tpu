@@ -32,11 +32,14 @@ from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_ma
 from jax.experimental.pallas.ops.tpu.splash_attention.splash_attention_kernel import QKVLayout
 import jax.numpy as jnp
 import torch
-
 # torch_tpu Pallas bridge
-from torch_tpu._internal import pallas
+from torch_tpu._internal import pallas as _pallas
 
-custom_jax_kernel = pallas.custom_jax_kernel
+_custom_jax_kernel = _pallas.custom_jax_kernel
+
+__all__ = [
+    "splash_sdpa",
+]
 
 _DEFAULT_MASK_VALUE = splash_attention_kernel.DEFAULT_MASK_VALUE
 
@@ -342,8 +345,8 @@ def _get_splash_op_names(**splash_kwargs):
     return _splash_op_name_cache[cache_key]
 
   splash_fn, splash_bwd_fn = _make_splash_attention_fn(**splash_kwargs)
-  jax_fwd_callable = custom_jax_kernel(splash_fn, name="splash_attention")
-  jax_bwd_callable = custom_jax_kernel(
+  jax_fwd_callable = _custom_jax_kernel(splash_fn, name="splash_attention")
+  jax_bwd_callable = _custom_jax_kernel(
       splash_bwd_fn, name="splash_attention_bwd"
   )
 

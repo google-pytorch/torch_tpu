@@ -16,6 +16,10 @@
     "type": "MODULE"
   },
   {
+    "name": "torch.tpu.ops",
+    "type": "MODULE"
+  },
+  {
     "name": "torch.tpu.pallas",
     "type": "MODULE"
   },

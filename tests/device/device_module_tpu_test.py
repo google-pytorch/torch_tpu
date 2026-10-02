@@ -82,6 +82,7 @@ class TpuDeviceModuleTest(
         "compiler",
         "distributed",
         "exceptions",
+        "ops",
         "pallas",
         "profiler",
     }

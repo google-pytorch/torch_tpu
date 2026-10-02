@@ -404,6 +404,24 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
     ):
       importlib.import_module("torch_tpu.compiler")
 
+  def test_ops_api_registry(self):
+    """Verifies public exposure, identity, metadata, and proxy behavior for ops."""
+    # 1. Module accessibility
+    self.assertTrue(hasattr(torch, "tpu"))
+    self.assertTrue(hasattr(torch.tpu, "ops"))
+    self.assertIn("torch.tpu.ops", sys.modules)
+
+    # 2. Symbol accessibility
+    self.assertTrue(hasattr(torch.tpu.ops, "align_jagged_to_multiple"))
+    self.assertTrue(hasattr(torch.tpu.ops, "strip_jagged_padding"))
+    self.assertTrue(hasattr(torch.tpu.ops, "splash_sdpa"))
+
+    # 3. Exported public API list
+    self.assertCountEqual(
+        torch.tpu.ops.__all__,
+        ["align_jagged_to_multiple", "splash_sdpa", "strip_jagged_padding"],
+    )
+
 
 if __name__ == "__main__":
   absltest.main()
