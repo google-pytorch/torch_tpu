@@ -477,8 +477,10 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
       expected = torch.tensor([[1, 1, 1, 1, 0, 0, 0, 0]], dtype=torch.int64)
       utils.assert_close(padded_tensor.cpu(), expected)
 
-  # TODO(b/559266072): re-enable the test once fixed in OSS.
-  @oss_utils.skip_in_oss('XLA failure')
+  @oss_utils.skip_if_libtpu_version(
+      lambda v: v < (0, 0, 47),
+      'Bounded dynamism requires libtpu >= 0.0.47',
+  )
   def test_get_or_compile_slice_module(self):
     target_shapes = [[1, 4]]
     padded_shapes = [[1, 8]]
