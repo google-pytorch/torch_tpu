@@ -197,10 +197,12 @@
 #include "csrc/ops/scatter/scatter_aten_kernels.h"
 #include "csrc/ops/searchsorted_aten_kernels.h"
 #include "csrc/ops/segment_reduce/segment_reduce_aten_kernels.h"
+#include "csrc/ops/select_scatter/select_scatter_aten_kernels.h"
 #include "csrc/ops/set/set_aten_kernels.h"
 #include "csrc/ops/sigmoid/sigmoid_aten_kernels.h"
 #include "csrc/ops/silu/silu_aten_kernels.h"
 #include "csrc/ops/slice_backward/slice_backward_aten_kernels.h"
+#include "csrc/ops/slice_scatter/slice_scatter_aten_kernels.h"
 #include "csrc/ops/softmax/_masked_softmax_aten_kernels.h"
 #include "csrc/ops/softmax/softmax_aten_kernels.h"
 #include "csrc/ops/softplus/softplus_aten_kernels.h"
@@ -977,6 +979,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kSearchsortedTensorOut>(m, AtenSearchsortedTensorOut);
   ImplStable<OpName::kSegmentReduce>(m, AtenSegmentReduce);
   ImplStable<OpName::kSelectBackward>(m, AtenSelectBackward);
+  ImplStable<OpName::kSelectScatter>(m, AtenSelectScatter);
+  ImplStable<OpName::kSelectScatterOut>(m, AtenSelectScatterOut);
   ImplStable<OpName::kSet_>(m, AtenSet_);
   ImplStable<OpName::kSet_SourceStorage>(m, AtenSet_SourceStorage);
   ImplStable<OpName::kSet_SourceStorageOffset>(m, AtenSet_SourceStorageOffset);
@@ -993,6 +997,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kSinOut>(m, AtenSinOut);
   ImplStable<OpName::kSinhOut>(m, AtenSinhOut);
   ImplStable<OpName::kSliceBackward>(m, AtenSliceBackward);
+  ImplStable<OpName::kSliceScatter>(m, AtenSliceScatter);
+  ImplStable<OpName::kSliceScatterOut>(m, AtenSliceScatterOut);
   ImplStable<OpName::kSoftmaxBackwardDataOut>(m, AtenSoftmaxBackwardDataOut);
   ImplStable<OpName::kSoftmaxOut>(m, AtenSoftmaxOut);
   ImplStable<OpName::kSoftplusBackwardGradInput>(m,

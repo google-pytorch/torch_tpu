@@ -2086,6 +2086,40 @@ class InplaceBufferDonationTest(seed_test_utils.RepeatableTest):
       self.assertTrue(torch.equal(t1.cpu(), torch.tensor([-1.0, -2.0])))
       self.assertTrue(torch.equal(t2.cpu(), torch.tensor([-3.0, -4.0])))
 
+  def test_slice_scatter_out_donates_buffer_in_defer_never(self):
+    """Verifies that slice_scatter.out donates self buffer when out is self."""
+    with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
+      x = torch.tensor(
+          [1.0, 2.0, 3.0, 4.0], dtype=torch.float32, device=self.device
+      )
+      src = torch.tensor([10.0, 20.0], dtype=torch.float32, device=self.device)
+      v = x.view_as(x)
+
+      res = torch.ops.aten.slice_scatter.out(
+          x, src, dim=0, start=1, end=3, step=1, out=x
+      )
+
+      expected = torch.tensor([1.0, 10.0, 20.0, 4.0])
+      self.assertTrue(torch.equal(x.cpu(), expected))
+      self.assertTrue(torch.equal(res.cpu(), expected))
+      self.assertTrue(torch.equal(v.cpu(), expected))
+
+  def test_select_scatter_out_donates_buffer_in_defer_never(self):
+    """Verifies that select_scatter.out donates self buffer when out is self."""
+    with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
+      x = torch.tensor(
+          [[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32, device=self.device
+      )
+      src = torch.tensor([10.0, 20.0], dtype=torch.float32, device=self.device)
+      v = x.view_as(x)
+
+      res = torch.ops.aten.select_scatter.out(x, src, dim=0, index=1, out=x)
+
+      expected = torch.tensor([[1.0, 2.0], [10.0, 20.0]])
+      self.assertTrue(torch.equal(x.cpu(), expected))
+      self.assertTrue(torch.equal(res.cpu(), expected))
+      self.assertTrue(torch.equal(v.cpu(), expected))
+
 
 if __name__ == "__main__":
   absltest.main()

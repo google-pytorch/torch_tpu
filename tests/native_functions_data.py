@@ -497,6 +497,11 @@ REGISTRATION_OVERRIDES = frozenset([
     # select_backward is registered to lower directly to a single StableHLO
     # DynamicUpdateSlice operation instead of zeros + select + copy_.
     'select_backward',
+    # select_scatter is registered to lower directly to StableHLO
+    # DynamicUpdateSlice or identity reshape, overriding the default
+    # clone + select + copy_ decomposition.
+    'select_scatter',
+    'select_scatter.out',
     # silu_backward is registered to lower directly to a single fused StableHLO
     # kernel (BuildSiluBackwardShlo), overriding the default decomposition.
     'silu_backward',
@@ -504,6 +509,11 @@ REGISTRATION_OVERRIDES = frozenset([
     # DynamicUpdateSlice, Concatenate, or Pad operation instead of zeros +
     # slice + copy_.
     'slice_backward',
+    # slice_scatter is registered to lower directly to StableHLO
+    # DynamicUpdateSlice or Concatenate with algebraic strength reductions,
+    # overriding the default clone + slice + copy_ decomposition.
+    'slice_scatter',
+    'slice_scatter.out',
     # split_with_sizes_copy.out is used by PyTorch's FSDP2 wrapper. The default
     # decomposition performs 2-d reshapes that are inefficient on TPU.
     'split_with_sizes_copy.out',

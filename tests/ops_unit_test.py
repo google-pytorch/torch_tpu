@@ -16071,6 +16071,468 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
     self.assertIn("tensor<131072x1xf32>", mlir_text)
     self.assertNotIn("tensor<2048x64xf32>", mlir_text)
 
+  def test_slice_scatter(self):
+    # Fast-path 1: Full replacement (step == 1 && slice_len == total_len)
+    t = torch.randn(4, 8)
+    src = torch.randn(4, 8) + 10.0
+    self.assert_close_tpu_vs_cpu(
+        lambda device, t=t, src=src: torch.slice_scatter(
+            to(t, device=device),
+            to(src, device=device),
+            dim=0,
+            start=0,
+            end=4,
+            step=1,
+        )
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda device, t=t, src=src: torch.slice_scatter(
+            to(t, device=device),
+            to(src, device=device),
+            dim=1,
+            start=None,
+            end=None,
+            step=1,
+        )
+    )
+
+    # Fast-path 2: Boundary-anchored concatenate (start == 0, slice_len * 2 >= total_len)
+    t_boundary_start = torch.randn(2, 10, 8)
+    src_boundary_start = torch.randn(2, 7, 8) + 5.0
+    self.assert_close_tpu_vs_cpu(
+        lambda device, t=t_boundary_start, src=src_boundary_start: torch.slice_scatter(
+            to(t, device=device),
+            to(src, device=device),
+            dim=1,
+            start=0,
+            end=7,
+            step=1,
+        )
+    )
+
+    # Fast-path 2: Boundary-anchored concatenate (end == total_len, slice_len * 2 >= total_len)
+    t_boundary_end = torch.randn(2, 10, 8)
+    src_boundary_end = torch.randn(2, 6, 8) + 5.0
+    self.assert_close_tpu_vs_cpu(
+        lambda device, t=t_boundary_end, src=src_boundary_end: torch.slice_scatter(
+            to(t, device=device),
+            to(src, device=device),
+            dim=1,
+            start=4,
+            end=10,
+            step=1,
+        )
+    )
+
+    # Fallback: Interior slices (step == 1)
+    t_interior = torch.randn(2, 10, 8)
+    src_interior = torch.randn(2, 3, 8) + 5.0
+    self.assert_close_tpu_vs_cpu(
+        lambda device, t=t_interior, src=src_interior: torch.slice_scatter(
+            to(t, device=device),
+            to(src, device=device),
+            dim=1,
+            start=2,
+            end=5,
+            step=1,
+        )
+    )
+
+    # Boundary concatenate on last dim with negative dim
+    t_neg_dim = torch.randn(3, 4, 12)
+    src_neg_dim = torch.randn(3, 4, 8) + 2.0
+    self.assert_close_tpu_vs_cpu(
+        lambda device, t=t_neg_dim, src=src_neg_dim: torch.slice_scatter(
+            to(t, device=device),
+            to(src, device=device),
+            dim=-1,
+            start=0,
+            end=8,
+            step=1,
+        )
+    )
+
+    # Negative indices
+    t_neg_idx = torch.randn(2, 10, 4)
+    src_neg_idx = torch.randn(2, 6, 4) + 1.0
+    self.assert_close_tpu_vs_cpu(
+        lambda device, t=t_neg_idx, src=src_neg_idx: torch.slice_scatter(
+            to(t, device=device),
+            to(src, device=device),
+            dim=1,
+            start=-8,
+            end=-2,
+            step=1,
+        )
+    )
+
+    # Empty slice (start == end)
+    t_empty = torch.randn(3, 5)
+    src_empty = torch.randn(3, 0)
+    self.assert_close_tpu_vs_cpu(
+        lambda device, t=t_empty, src=src_empty: torch.slice_scatter(
+            to(t, device=device),
+            to(src, device=device),
+            dim=1,
+            start=2,
+            end=2,
+            step=1,
+        )
+    )
+
+    # Strided slice (step > 1): even/odd offsets, minor-most dim, and non-divisible length
+    t_strided = torch.randn(10, 4)
+    src_strided = torch.randn(5, 4) + 3.0
+    for start in [0, 1]:
+      self.assert_close_tpu_vs_cpu(
+          lambda device, t=t_strided, src=src_strided, s=start: torch.slice_scatter(
+              to(t, device=device),
+              to(src, device=device),
+              dim=0,
+              start=s,
+              end=10,
+              step=2,
+          )
+      )
+    t_strided_minor = torch.randn(2, 6, 16)
+    src_strided_minor = torch.randn(2, 6, 8) + 3.0
+    for start in [0, 1]:
+      self.assert_close_tpu_vs_cpu(
+          lambda device, t=t_strided_minor, src=src_strided_minor, s=start: torch.slice_scatter(
+              to(t, device=device),
+              to(src, device=device),
+              dim=-1,
+              start=s,
+              end=16,
+              step=2,
+          )
+      )
+    t_strided_nondiv = torch.randn(3, 11, 5)
+    src_strided_nondiv = torch.randn(3, 2, 5) + 4.0
+    self.assert_close_tpu_vs_cpu(
+        lambda device, t=t_strided_nondiv, src=src_strided_nondiv: torch.slice_scatter(
+            to(t, device=device),
+            to(src, device=device),
+            dim=1,
+            start=4,
+            end=10,
+            step=3,
+        )
+    )
+
+    # Different dtypes
+    for dtype in [torch.bfloat16, torch.int32]:
+      t_dt = torch.arange(24, dtype=dtype).reshape(4, 6)
+      src_dt = torch.arange(12, dtype=dtype).reshape(2, 6) + 100
+      self.assert_close_tpu_vs_cpu(
+          lambda device, t=t_dt, src=src_dt: torch.slice_scatter(
+              to(t, device=device),
+              to(src, device=device),
+              dim=0,
+              start=0,
+              end=2,
+              step=1,
+          )
+      )
+
+    # Zero-element tensor and mixed self/src dtypes
+    t_empty = torch.zeros(0, 4, dtype=torch.float32)
+    src_empty = torch.zeros(0, 2, dtype=torch.float32)
+    self.assert_close_tpu_vs_cpu(
+        lambda device, t=t_empty, src=src_empty: torch.slice_scatter(
+            to(t, device=device),
+            to(src, device=device),
+            dim=1,
+            start=1,
+            end=3,
+            step=1,
+        )
+    )
+    t_mixed = torch.ones(4, 6, dtype=torch.float32)
+    src_mixed = torch.full((2, 6), 5.0, dtype=torch.bfloat16)
+    self.assert_close_tpu_vs_cpu(
+        lambda device, t=t_mixed, src=src_mixed: torch.slice_scatter(
+            to(t, device=device),
+            to(src, device=device),
+            dim=0,
+            start=1,
+            end=3,
+            step=1,
+        )
+    )
+
+  def test_select_scatter(self):
+    # Fast-path: total_len == 1
+    t_len1 = torch.randn(3, 1, 4)
+    src_len1 = torch.randn(3, 4) + 10.0
+    self.assert_close_tpu_vs_cpu(
+        lambda device, t=t_len1, src=src_len1: torch.select_scatter(
+            to(t, device=device),
+            to(src, device=device),
+            dim=1,
+            index=0,
+        )
+    )
+
+    # 1D tensor
+    t_1d = torch.randn(5)
+    src_1d = torch.tensor(42.0)
+    self.assert_close_tpu_vs_cpu(
+        lambda device, t=t_1d, src=src_1d: torch.select_scatter(
+            to(t, device=device),
+            to(src, device=device),
+            dim=0,
+            index=2,
+        )
+    )
+
+    # Multi-dimensional tensor
+    t_multi = torch.randn(3, 5, 4)
+    src_multi = torch.randn(3, 4) + 7.0
+    self.assert_close_tpu_vs_cpu(
+        lambda device, t=t_multi, src=src_multi: torch.select_scatter(
+            to(t, device=device),
+            to(src, device=device),
+            dim=1,
+            index=3,
+        )
+    )
+
+    # Negative index
+    self.assert_close_tpu_vs_cpu(
+        lambda device, t=t_multi, src=src_multi: torch.select_scatter(
+            to(t, device=device),
+            to(src, device=device),
+            dim=1,
+            index=-1,
+        )
+    )
+
+    # Negative dim
+    t_neg_dim = torch.randn(2, 3, 6)
+    src_neg_dim = torch.randn(2, 3) + 9.0
+    self.assert_close_tpu_vs_cpu(
+        lambda device, t=t_neg_dim, src=src_neg_dim: torch.select_scatter(
+            to(t, device=device),
+            to(src, device=device),
+            dim=-1,
+            index=4,
+        )
+    )
+
+    # Different dtypes
+    for dtype in [torch.bfloat16, torch.int32]:
+      t_dt = torch.arange(24, dtype=dtype).reshape(4, 6)
+      src_dt = torch.arange(6, dtype=dtype) + 100
+      self.assert_close_tpu_vs_cpu(
+          lambda device, t=t_dt, src=src_dt: torch.select_scatter(
+              to(t, device=device),
+              to(src, device=device),
+              dim=0,
+              index=1,
+          )
+      )
+
+    # Zero-element tensor and mixed self/src dtypes
+    t_empty = torch.zeros(0, 4, dtype=torch.float32)
+    src_empty = torch.zeros(0, dtype=torch.float32)
+    self.assert_close_tpu_vs_cpu(
+        lambda device, t=t_empty, src=src_empty: torch.select_scatter(
+            to(t, device=device),
+            to(src, device=device),
+            dim=1,
+            index=2,
+        )
+    )
+    t_mixed = torch.ones(4, 6, dtype=torch.float32)
+    src_mixed = torch.full((6,), 5.0, dtype=torch.bfloat16)
+    self.assert_close_tpu_vs_cpu(
+        lambda device, t=t_mixed, src=src_mixed: torch.select_scatter(
+            to(t, device=device),
+            to(src, device=device),
+            dim=0,
+            index=1,
+        )
+    )
+
+  def test_slice_scatter_out(self):
+    # Functional equivalence vs CPU with preallocated out
+    t = torch.randn(4, 8)
+    src = torch.randn(2, 8) + 10.0
+    self.assert_close_tpu_vs_cpu(
+        lambda device, t=t, src=src: torch.ops.aten.slice_scatter.out(
+            to(t, device=device),
+            to(src, device=device),
+            dim=0,
+            start=1,
+            end=3,
+            step=1,
+            out=to(torch.empty(4, 8), device=device),
+        )
+    )
+
+    # Empty out tensor resizing
+    self.assert_close_tpu_vs_cpu(
+        lambda device, t=t, src=src: torch.ops.aten.slice_scatter.out(
+            to(t, device=device),
+            to(src, device=device),
+            dim=0,
+            start=1,
+            end=3,
+            step=1,
+            out=to(torch.empty(0), device=device),
+        )
+    )
+
+    # Strided slice (step > 1) with out
+    t_strided = torch.randn(10, 4)
+    src_strided = torch.randn(5, 4) + 3.0
+    self.assert_close_tpu_vs_cpu(
+        lambda device, t=t_strided, src=src_strided: (
+            torch.ops.aten.slice_scatter.out(
+                to(t, device=device),
+                to(src, device=device),
+                dim=0,
+                start=0,
+                end=10,
+                step=2,
+                out=to(torch.empty(0), device=device),
+            )
+        )
+    )
+
+    # Empty slice (slice_len == 0) with out
+    self.assert_close_tpu_vs_cpu(
+        lambda device, t=t: torch.ops.aten.slice_scatter.out(
+            to(t, device=device),
+            to(torch.empty(0, 8), device=device),
+            dim=0,
+            start=2,
+            end=2,
+            step=1,
+            out=to(torch.empty(0), device=device),
+        )
+    )
+
+    # Zero-element input tensor
+    t_empty = torch.zeros(0, 4, dtype=torch.float32)
+    src_empty = torch.zeros(0, 2, dtype=torch.float32)
+    self.assert_close_tpu_vs_cpu(
+        lambda device, t=t_empty, src=src_empty: (
+            torch.ops.aten.slice_scatter.out(
+                to(t, device=device),
+                to(src, device=device),
+                dim=1,
+                start=1,
+                end=3,
+                step=1,
+                out=to(torch.empty(0), device=device),
+            )
+        )
+    )
+
+    # In-place donation: out is self
+    t_donate = torch.randn(4, 8)
+    src_donate = torch.randn(2, 8) + 5.0
+
+    def run_slice_inplace(device, t=t_donate, src=src_donate):
+      inp = to(t.clone(), device=device)
+      res = torch.ops.aten.slice_scatter.out(
+          inp,
+          to(src, device=device),
+          dim=0,
+          start=1,
+          end=3,
+          step=1,
+          out=inp,
+      )
+      return res
+
+    self.assert_close_tpu_vs_cpu(run_slice_inplace)
+
+  def test_select_scatter_out(self):
+    # Functional equivalence vs CPU with preallocated out
+    t = torch.randn(3, 5, 4)
+    src = torch.randn(3, 4) + 7.0
+    self.assert_close_tpu_vs_cpu(
+        lambda device, t=t, src=src: torch.ops.aten.select_scatter.out(
+            to(t, device=device),
+            to(src, device=device),
+            dim=1,
+            index=3,
+            out=to(torch.empty(3, 5, 4), device=device),
+        )
+    )
+
+    # Empty out tensor resizing
+    self.assert_close_tpu_vs_cpu(
+        lambda device, t=t, src=src: torch.ops.aten.select_scatter.out(
+            to(t, device=device),
+            to(src, device=device),
+            dim=1,
+            index=3,
+            out=to(torch.empty(0), device=device),
+        )
+    )
+
+    # Fast-path total_len == 1 with out
+    t_len1 = torch.randn(3, 1, 4)
+    src_len1 = torch.randn(3, 4) + 10.0
+    self.assert_close_tpu_vs_cpu(
+        lambda device, t=t_len1, src=src_len1: (
+            torch.ops.aten.select_scatter.out(
+                to(t, device=device),
+                to(src, device=device),
+                dim=1,
+                index=0,
+                out=to(torch.empty(0), device=device),
+            )
+        )
+    )
+
+    # Negative index and negative dim
+    self.assert_close_tpu_vs_cpu(
+        lambda device, t=t, src=src: torch.ops.aten.select_scatter.out(
+            to(t, device=device),
+            to(src, device=device),
+            dim=-2,
+            index=-1,
+            out=to(torch.empty(0), device=device),
+        )
+    )
+
+    # Zero-element input tensor
+    t_empty = torch.zeros(0, 4, dtype=torch.float32)
+    src_empty = torch.zeros(0, dtype=torch.float32)
+    self.assert_close_tpu_vs_cpu(
+        lambda device, t=t_empty, src=src_empty: (
+            torch.ops.aten.select_scatter.out(
+                to(t, device=device),
+                to(src, device=device),
+                dim=1,
+                index=2,
+                out=to(torch.empty(0), device=device),
+            )
+        )
+    )
+
+    # In-place donation: out is self
+    t_donate = torch.randn(3, 5, 4)
+    src_donate = torch.randn(3, 4) + 5.0
+
+    def run_select_inplace(device, t=t_donate, src=src_donate):
+      inp = to(t.clone(), device=device)
+      res = torch.ops.aten.select_scatter.out(
+          inp,
+          to(src, device=device),
+          dim=1,
+          index=2,
+          out=inp,
+      )
+      return res
+
+    self.assert_close_tpu_vs_cpu(run_select_inplace)
+
   def test_polygamma_n_0(self):
     # n = 0 is digamma.
     self.assert_close_tpu_vs_cpu(

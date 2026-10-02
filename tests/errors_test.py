@@ -14335,6 +14335,170 @@ class MaskedSoftmaxErrorTest(et.ErrorTestBase):
     ):
       torch.split_with_sizes_copy(self_t, [2, 2], dim=0, out=out)
 
+  def test_select_scatter_errors(self):
+    self_0d = torch.tensor(1.0, device=et.device())
+    src_0d = torch.tensor(2.0, device=et.device())
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""select_scatter(): expected tensor to be at least 1-dimensional, got 0-dimensional""",
+        gpu="""select() cannot be applied to a 0-dim tensor.""",
+        message_reviewed_by="cbasile",
+    ):
+      torch.select_scatter(self_0d, src_0d, dim=0, index=0)
+
+    self_2d = torch.ones(2, 3, device=et.device())
+    src_1d = torch.ones(3, device=et.device())
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""select_scatter(): expected index to be in range [-2, 1], got 5""",
+        gpu="""select(): index 5 out of range for tensor of size [2, 3] at dimension 0""",
+        message_reviewed_by="cbasile",
+    ):
+      torch.select_scatter(self_2d, src_1d, dim=0, index=5)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""select_scatter(): expected src to have a size equal to the slice of self, got [2, 3] vs [3]""",
+        gpu="""expected src to have a size equal to the slice of self. src size = [2, 3], slice size = [3]""",
+        message_reviewed_by="cbasile",
+    ):
+      torch.select_scatter(self_2d, self_2d, dim=0, index=0)
+
+    src_wrong_size = torch.ones(4, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""select_scatter(): expected src to have a size equal to the slice of self, got [4] vs [3]""",
+        gpu="""expected src to have a size equal to the slice of self. src size = [4], slice size = [3]""",
+        message_reviewed_by="cbasile",
+    ):
+      torch.select_scatter(self_2d, src_wrong_size, dim=0, index=0)
+
+    out_wrong_dtype = torch.empty(2, 3, dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""select_scatter(): expected out dtype float32, got int32""",
+        gpu="""Expected out tensor to have dtype float, but got int instead""",
+        message_reviewed_by="cbasile",
+    ):
+      torch.ops.aten.select_scatter.out(
+          self_2d, src_1d, dim=0, index=0, out=out_wrong_dtype
+      )
+
+    out_0d = torch.empty((), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""select_scatter(): expected tensor to be at least 1-dimensional, got 0-dimensional""",
+        gpu="""select() cannot be applied to a 0-dim tensor.""",
+        message_reviewed_by="cbasile",
+    ):
+      torch.ops.aten.select_scatter.out(
+          self_0d, src_0d, dim=0, index=0, out=out_0d
+      )
+
+    out_2d = torch.empty(2, 3, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""select_scatter(): expected index to be in range [-2, 1], got 5""",
+        gpu="""select(): index 5 out of range for tensor of size [2, 3] at dimension 0""",
+        message_reviewed_by="cbasile",
+    ):
+      torch.ops.aten.select_scatter.out(
+          self_2d, src_1d, dim=0, index=5, out=out_2d
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""select_scatter(): expected src to have a size equal to the slice of self, got [4] vs [3]""",
+        gpu="""expected src to have a size equal to the slice of self. src size = [4], slice size = [3]""",
+        message_reviewed_by="cbasile",
+    ):
+      torch.ops.aten.select_scatter.out(
+          self_2d, src_wrong_size, dim=0, index=0, out=out_2d
+      )
+
+  def test_slice_scatter_errors(self):
+    self_2d = torch.ones(4, 3, device=et.device())
+    src_2d = torch.ones(2, 3, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""slice_scatter(): expected step to be greater than 0, got 0""",
+        gpu="""slice step must be positive""",
+        message_reviewed_by="cbasile",
+    ):
+      torch.slice_scatter(self_2d, src_2d, dim=0, start=0, end=2, step=0)
+
+    self_0d = torch.tensor(1.0, device=et.device())
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""slice_scatter(): expected tensor to be at least 1-dimensional, got 0-dimensional""",
+        gpu="""slice() cannot be applied to a 0-dim tensor.""",
+        message_reviewed_by="cbasile",
+    ):
+      torch.slice_scatter(self_0d, self_0d, dim=0, start=0, end=1, step=1)
+
+    src_1d = torch.ones(3, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""slice_scatter(): expected src to have a size equal to the slice of self, got [3] vs [2, 3]""",
+        gpu="""expected src to have a size equal to the slice of self. src size = [3], slice size = [2, 3]""",
+        message_reviewed_by="cbasile",
+    ):
+      torch.slice_scatter(self_2d, src_1d, dim=0, start=0, end=2, step=1)
+
+    src_wrong_size = torch.ones(3, 3, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""slice_scatter(): expected src to have a size equal to the slice of self, got [3, 3] vs [2, 3]""",
+        gpu="""expected src to have a size equal to the slice of self. src size = [3, 3], slice size = [2, 3]""",
+        message_reviewed_by="cbasile",
+    ):
+      torch.slice_scatter(
+          self_2d, src_wrong_size, dim=0, start=0, end=2, step=1
+      )
+
+    out_wrong_dtype = torch.empty(4, 3, dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""slice_scatter(): expected out dtype float32, got int32""",
+        gpu="""Expected out tensor to have dtype float, but got int instead""",
+        message_reviewed_by="cbasile",
+    ):
+      torch.ops.aten.slice_scatter.out(
+          self_2d, src_2d, dim=0, start=0, end=2, step=1, out=out_wrong_dtype
+      )
+
+    out_2d = torch.empty(4, 3, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""slice_scatter(): expected step to be greater than 0, got 0""",
+        gpu="""slice step must be positive""",
+        message_reviewed_by="cbasile",
+    ):
+      torch.ops.aten.slice_scatter.out(
+          self_2d, src_2d, dim=0, start=0, end=2, step=0, out=out_2d
+      )
+
+    out_0d = torch.empty((), dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""slice_scatter(): expected tensor to be at least 1-dimensional, got 0-dimensional""",
+        gpu="""slice() cannot be applied to a 0-dim tensor.""",
+        message_reviewed_by="cbasile",
+    ):
+      torch.ops.aten.slice_scatter.out(
+          self_0d, self_0d, dim=0, start=0, end=1, step=1, out=out_0d
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""slice_scatter(): expected src to have a size equal to the slice of self, got [3, 3] vs [2, 3]""",
+        gpu="""expected src to have a size equal to the slice of self. src size = [3, 3], slice size = [2, 3]""",
+        message_reviewed_by="cbasile",
+    ):
+      torch.ops.aten.slice_scatter.out(
+          self_2d, src_wrong_size, dim=0, start=0, end=2, step=1, out=out_2d
+      )
+
 
 if __name__ == "__main__":
   multiprocessing.handle_test_main(absltest.main)
