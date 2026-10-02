@@ -16,7 +16,6 @@
 
 import collections
 import contextlib
-import os
 import re
 from typing import Any, TypeAlias
 from unittest import mock
@@ -29,7 +28,6 @@ from torch.tpu import distributed  # pyrefly: ignore[missing-import]
 from torch.utils import _pytree as pytree
 from torch_tpu._internal import dynamism
 from torch_tpu._internal import env
-from torch_tpu._internal import env_utils
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import pallas
 from torch_tpu._internal import testing as tt_testing
@@ -39,6 +37,7 @@ from torch_tpu._internal.distributed import distributed as internal_distributed
 from torch_tpu._internal.export import export as torch_tpu_export
 from torch_tpu._internal.pallas import tpu_torch_pallas
 from torch_tpu._internal.utils import hardware
+from tests import env_test_utils
 from tests import error_testing as et
 
 EagerMode: TypeAlias = execution_mode.EagerMode
@@ -4623,8 +4622,8 @@ module {
 
   @et.why_tpu_only("libtpu only present for TPU devices.")
   def test_invalid_libtpu_version(self):
-    env.reset_libtpu_version_for_testing()
-    self.addCleanup(env.reset_libtpu_version_for_testing)
+    tt_testing.reset_libtpu_version_for_testing()
+    self.addCleanup(tt_testing.reset_libtpu_version_for_testing)
 
     with et.assert_raises_message(
         RuntimeError,
@@ -4634,8 +4633,8 @@ module {
 
   @et.why_tpu_only("libtpu only present for TPU devices.")
   def test_reset_different_libtpu_version(self):
-    env.reset_libtpu_version_for_testing()
-    self.addCleanup(env.reset_libtpu_version_for_testing)
+    tt_testing.reset_libtpu_version_for_testing()
+    self.addCleanup(tt_testing.reset_libtpu_version_for_testing)
 
     env.set_libtpu_version("0.1.0")
     with et.assert_raises_message(
@@ -4836,28 +4835,11 @@ class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
         torch.ops.aten.avg_pool1d.out(t, [3], out=out)
 
 
-@contextlib.contextmanager
-def _mock_launch_env(values: dict[str, str]):
+def _mock_launch_env(
+    values: dict[str, str],
+) -> contextlib.AbstractContextManager[None]:
   """Makes the environment look like `values` to `distributed.set_tpu_launch_env`."""
-
-  def get_str_env_once(name, default_value=None):
-    return values.get(name, default_value)
-
-  def get_int_env_once(name, default_value=None):
-    return int(values[name]) if name in values else default_value
-
-  with contextlib.ExitStack() as stack:
-    stack.enter_context(mock.patch.dict(os.environ, values, clear=True))
-    stack.enter_context(
-        mock.patch.dict(env_utils._resolved_values, {}, clear=True)  # pylint: disable=protected-access
-    )
-    stack.enter_context(
-        mock.patch.object(env, "get_str_env_once", side_effect=get_str_env_once)
-    )
-    stack.enter_context(
-        mock.patch.object(env, "get_int_env_once", side_effect=get_int_env_once)
-    )
-    yield
+  return env_test_utils.scoped_env(values, clear=True)
 
 
 class EnvironmentErrorsTest(et.TpuOnlyErrorTestBase):
@@ -5018,7 +5000,6 @@ class ForkErrorsTest(et.TpuOnlyErrorTestBase):
     )
     self.assertFalse(torch.tpu._is_in_bad_fork())
     with mock.patch.object(torch.tpu, "_is_in_bad_fork", return_value=True):
-      self.assertTrue(torch.tpu._is_in_bad_fork())
       self.assertFalse(torch.tpu.is_initialized())
       # In PyTorch, torch.manual_seed() calls _is_in_bad_fork() and skips
       # TPU device seeding when in a bad fork (resolving DataLoader deadlock).

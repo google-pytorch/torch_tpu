@@ -32,6 +32,7 @@ from torch_tpu._internal.compile.compiler import StaticCompiler
 from torch_tpu._internal.compile.debug import TpuCompileDebug
 from torch_tpu._internal.device_utils import annotations
 from torch_tpu._internal.utils import test_utils as utils
+from tests import env_test_utils
 from tests import oss_utils
 from tests import seed_test_utils
 
@@ -1874,10 +1875,8 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     )
 
   def test_traverse_and_compile_shared_storage_deduplication(self):
-    # The knob is read through the memoizing env getter, which cannot observe a
-    # mutation of os.environ made after the first read.
-    with absltest.mock.patch.object(
-        compiler.env, 'get_bool_env_once', return_value=True
+    with env_test_utils.scoped_env(
+        {'TORCH_TPU_INTERNAL_STORAGE_AWARE_PLACEHOLDERS': '1'}
     ):
 
       @torch.compile

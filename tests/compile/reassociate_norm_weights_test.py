@@ -14,8 +14,6 @@
 
 """Tests for reassociate_norm_weights FX pass."""
 
-from unittest import mock
-
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
@@ -23,6 +21,7 @@ from torch import fx
 from torch.fx.experimental import proxy_tensor
 from torch_tpu._internal.compile.fx_passes import reassociate_norm_weights
 from torch_tpu._internal.utils import test_utils as utils
+from tests import env_test_utils
 from tests import seed_test_utils
 
 GraphModule = fx.GraphModule
@@ -1285,10 +1284,8 @@ class ReassociateNormWeightsTest(seed_test_utils.RepeatableTest):
     gm = GraphModule(torch.nn.Module(), graph)
 
     orig_nodes = list(gm.graph.nodes)
-    with mock.patch.object(
-        reassociate_norm_weights,
-        "_is_reassociate_norm_weights_enabled",
-        return_value=False,
+    with env_test_utils.scoped_env(
+        {"TORCH_TPU_INTERNAL_ENABLE_REASSOCIATE_NORM_WEIGHTS": "0"}
     ):
       reassociate_norm_weights.apply(gm)
 

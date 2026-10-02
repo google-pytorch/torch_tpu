@@ -19,52 +19,83 @@
 import contextlib
 import io
 import os
+import string
 import subprocess
 import sys
+from typing import Any
 from unittest import mock
 
 from absl.testing import absltest
 from torch.tpu import distributed  # pyrefly: ignore[missing-import]
-from torch_tpu._internal import env
-from torch_tpu._internal import env_utils
 from torch_tpu._internal.distributed import distributed as internal_distributed
 from torch_tpu._internal.utils import hardware
+from tests import env_test_utils
 from tests import seed_test_utils
 
 
-@contextlib.contextmanager
-def _mock_env(values: dict[str, str]):
+def _mock_env(
+    values: dict[str, str],
+) -> contextlib.AbstractContextManager[None]:
   """Makes the environment look exactly like `values` to the launcher."""
+  return env_test_utils.scoped_env(values, clear=True)
 
-  def get_str_env_once(name, default_value=None):
-    return os.environ.get(name, default_value)
 
-  def get_int_env_once(name, default_value=None):
-    return int(os.environ[name]) if name in os.environ else default_value
+class _FakeCoordsChild:
+  """Stands in for the child process that reports the local device coordinates.
 
-  with contextlib.ExitStack() as stack:
-    stack.enter_context(mock.patch.dict(os.environ, values, clear=True))
-    stack.enter_context(
-        mock.patch.dict(env_utils._resolved_values, {}, clear=True)
+  Like the real child, it fails unless it is launched as this module's
+  coordinate printer with a `PYTHONPATH` from which TorchTPU can be imported.
+  `$NAME` placeholders in its output are replaced with the values of the
+  environment variables it was launched with. Its output is bytes unless
+  `text=True`, and a failure raises only if `check=True`, as with
+  `subprocess.run()`.
+  """
+
+  def __init__(self, stdout: str = "", returncode: int = 0):
+    self._stdout = stdout
+    self._returncode = returncode
+    self.launches = 0
+
+  def __call__(
+      self,
+      args: list[str],
+      *,
+      env: dict[str, str] | None = None,
+      check: bool = False,
+      text: bool = False,
+      **unused_kwargs: Any,
+  ) -> subprocess.CompletedProcess[Any]:
+    """Runs the fake child process, with the signature of `subprocess.run`."""
+    self.launches += 1
+    python_path = (env or {}).get("PYTHONPATH", "").split(os.pathsep)
+    can_import_torch_tpu = all(p in python_path for p in sys.path if p)
+    is_coords_printer = args == [
+        sys.executable,
+        "-m",
+        "torch_tpu._internal.distributed.distributed",
+        "--print_local_device_coords",
+    ]
+    if is_coords_printer and can_import_torch_tpu:
+      returncode = self._returncode
+      stdout = string.Template(self._stdout).safe_substitute(env or {})
+    else:
+      returncode, stdout = 1, ""
+    if check and returncode:
+      raise subprocess.CalledProcessError(returncode, args, stdout)
+    return subprocess.CompletedProcess(
+        args=args,
+        returncode=returncode,
+        stdout=stdout if text else stdout.encode(),
+        stderr="" if text else b"",
     )
-    stack.enter_context(
-        mock.patch.object(env, "get_str_env_once", side_effect=get_str_env_once)
-    )
-    stack.enter_context(
-        mock.patch.object(env, "get_int_env_once", side_effect=get_int_env_once)
-    )
-    yield
 
 
-def _coords_process(
+def _coords_child(
     coords: list[int], prefix_lines: str = ""
-) -> subprocess.CompletedProcess[str]:
-  """Returns a finished child process that reported `coords` on stdout."""
-  return subprocess.CompletedProcess(
-      args=[],
-      returncode=0,
-      stdout=f"{prefix_lines}TORCH_TPU_LOCAL_DEVICE_COORDS={coords}\n",
-      stderr="",
+) -> _FakeCoordsChild:
+  """Returns a fake child process that reports `coords` on stdout."""
+  return _FakeCoordsChild(
+      stdout=f"{prefix_lines}TORCH_TPU_LOCAL_DEVICE_COORDS={coords}\n"
   )
 
 
@@ -167,9 +198,7 @@ class EnvironmentTest(seed_test_utils.RepeatableTest):
     }):
       with (
           mock.patch.object(hardware, "get_tpu_device_count", return_value=4),
-          mock.patch.object(
-              subprocess, "run", return_value=_coords_process([2, 0, 0])
-          ),
+          mock.patch.object(subprocess, "run", _coords_child([2, 0, 0])),
       ):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
@@ -377,9 +406,7 @@ class TopologicalNodeRankTest(seed_test_utils.RepeatableTest):
         "TORCH_TPU_TOPOLOGY": "4x4x4",
         "JOB_COMPLETION_INDEX": "5",
     }):
-      with mock.patch.object(
-          subprocess, "run", return_value=_coords_process([2, 0, 0])
-      ):
+      with mock.patch.object(subprocess, "run", _coords_child([2, 0, 0])):
         distributed.set_tpu_launch_env()
       self.assertEqual(os.environ.get("NODE_RANK"), "1")
 
@@ -390,9 +417,7 @@ class TopologicalNodeRankTest(seed_test_utils.RepeatableTest):
         "TPU_WORKER_HOSTNAMES": "host1,host2",
         "TORCH_TPU_TOPOLOGY": "4x4x4",
     }):
-      with mock.patch.object(
-          subprocess, "run", return_value=_coords_process([0, 2, 0])
-      ):
+      with mock.patch.object(subprocess, "run", _coords_child([0, 2, 0])):
         distributed.set_tpu_launch_env()
       self.assertEqual(os.environ.get("NODE_RANK"), "2")
 
@@ -416,9 +441,7 @@ class TopologicalNodeRankTest(seed_test_utils.RepeatableTest):
         "TORCH_TPU_TOPOLOGY": "4x4x4",
         "JOB_COMPLETION_INDEX": "3",
     }):
-      with mock.patch.object(
-          subprocess, "run", return_value=_coords_process([])
-      ):
+      with mock.patch.object(subprocess, "run", _coords_child([])):
         distributed.set_tpu_launch_env()
       self.assertEqual(os.environ.get("NODE_RANK"), "3")
 
@@ -428,13 +451,12 @@ class TopologicalNodeRankTest(seed_test_utils.RepeatableTest):
         "TORCH_TPU_TOPOLOGY": "4x4x4",
         "JOB_COMPLETION_INDEX": "7",
     }):
-      with mock.patch.object(
-          subprocess, "run", return_value=_coords_process([10, 0, 0])
-      ):
+      with mock.patch.object(subprocess, "run", _coords_child([10, 0, 0])):
         distributed.set_tpu_launch_env()
       self.assertEqual(os.environ.get("NODE_RANK"), "7")
 
   def test_set_tpu_launch_env_without_tpu_devices_skips_query(self):
+    # The child would report a host with rank 1, so rank 3 shows it never ran.
     with _mock_env({
         "TPU_WORKER_HOSTNAMES": "host1,host2",
         "TORCH_TPU_TOPOLOGY": "4x4x4",
@@ -442,25 +464,28 @@ class TopologicalNodeRankTest(seed_test_utils.RepeatableTest):
     }):
       with (
           mock.patch.object(hardware, "get_tpu_device_count", return_value=0),
-          mock.patch.object(subprocess, "run") as run,
+          mock.patch.object(subprocess, "run", _coords_child([2, 0, 0])),
       ):
         distributed.set_tpu_launch_env()
-      run.assert_not_called()
       self.assertEqual(os.environ.get("NODE_RANK"), "3")
 
   def test_set_tpu_launch_env_without_topology_skips_query(self):
+    child = _coords_child([2, 0, 0])
     with _mock_env({
         "TPU_WORKER_HOSTNAMES": "host1,host2",
         "JOB_COMPLETION_INDEX": "3",
     }):
-      with mock.patch.object(subprocess, "run") as run:
+      with mock.patch.object(subprocess, "run", child):
         distributed.set_tpu_launch_env()
-      run.assert_not_called()
       self.assertEqual(os.environ.get("NODE_RANK"), "3")
+    # Without a slice topology, coordinates cannot be ranked, so spawning the
+    # child would only cost time.
+    self.assertEqual(child.launches, 0)
 
   def test_set_tpu_launch_env_ignores_auto_detected_topology(self):
     # The auto-detected topology describes this host alone, not the slice, so
-    # it must not be used to rank hosts.
+    # it must not be used to rank hosts. Ranking the child's coordinates in it
+    # would give rank 0.
     with _mock_env({
         "TPU_WORKER_HOSTNAMES": "host1,host2",
         "JOB_COMPLETION_INDEX": "1",
@@ -469,35 +494,36 @@ class TopologicalNodeRankTest(seed_test_utils.RepeatableTest):
           mock.patch.object(
               hardware, "get_tpu_topology", return_value="2,2,1,2"
           ),
-          mock.patch.object(subprocess, "run") as run,
+          mock.patch.object(subprocess, "run", _coords_child([0, 0, 0])),
       ):
         distributed.set_tpu_launch_env()
-      run.assert_not_called()
       self.assertEqual(os.environ.get("NODE_RANK"), "1")
       self.assertEqual(os.environ.get("TORCH_TPU_TOPOLOGY"), "2,2,1,2")
 
   def test_set_tpu_launch_env_keeps_pinned_node_rank(self):
+    # The child would report a host with rank 0.
     with _mock_env({
         "TPU_WORKER_HOSTNAMES": "host1,host2",
         "TORCH_TPU_TOPOLOGY": "4x4x4",
         "NODE_RANK": "1",
     }):
-      with mock.patch.object(subprocess, "run") as run:
+      with mock.patch.object(subprocess, "run", _coords_child([0, 0, 0])):
         distributed.set_tpu_launch_env()
-      run.assert_not_called()
       self.assertEqual(os.environ.get("NODE_RANK"), "1")
 
   def test_set_tpu_launch_env_singlehost_skips_query(self):
+    child = _coords_child([0, 0, 0])
     with _mock_env({
         "TORCH_TPU_TOPOLOGY": "2,2,1",
     }):
       with (
           mock.patch.object(hardware, "get_tpu_topology", return_value="2,2,1"),
-          mock.patch.object(subprocess, "run") as run,
+          mock.patch.object(subprocess, "run", child),
       ):
         distributed.set_tpu_launch_env()
-      run.assert_not_called()
       self.assertIsNone(os.environ.get("NODE_RANK"))
+    # A single host needs no rank, so spawning the child would only cost time.
+    self.assertEqual(child.launches, 0)
 
 
 class QueryLocalDeviceCoordsTest(seed_test_utils.RepeatableTest):
@@ -512,45 +538,34 @@ class QueryLocalDeviceCoordsTest(seed_test_utils.RepeatableTest):
     with _mock_env({}):
       with (
           mock.patch.object(hardware, "get_tpu_device_count", return_value=0),
-          mock.patch.object(subprocess, "run") as run,
+          mock.patch.object(subprocess, "run", _coords_child([1, 2, 3, 0])),
       ):
         self.assertIsNone(internal_distributed._query_local_device_coords())
-      run.assert_not_called()
 
-  def test_runs_this_module_in_child_process(self):
-    with _mock_env({"FOO": "bar"}):
-      with mock.patch.object(
-          subprocess, "run", return_value=_coords_process([1, 2, 3, 0])
-      ) as run:
+  def test_child_process_inherits_environment(self):
+    child = _FakeCoordsChild(
+        stdout="TORCH_TPU_LOCAL_DEVICE_COORDS=$FAKE_COORDS"
+    )
+    with _mock_env({"FAKE_COORDS": "[1, 2, 3, 0]"}):
+      with mock.patch.object(subprocess, "run", child):
         self.assertEqual(
             internal_distributed._query_local_device_coords(), [1, 2, 3, 0]
         )
-      run.assert_called_once()
-      (cmd,), kwargs = run.call_args
-      self.assertEqual(
-          cmd,
-          [
-              sys.executable,
-              "-m",
-              "torch_tpu._internal.distributed.distributed",
-              "--print_local_device_coords",
-          ],
-      )
-      self.assertTrue(kwargs["check"])
-      self.assertTrue(kwargs["capture_output"])
-      self.assertGreater(kwargs["timeout"], 0)
-      self.assertEqual(kwargs["env"]["FOO"], "bar")
-      self.assertEqual(
-          kwargs["env"]["PYTHONPATH"].split(os.pathsep),
-          [p for p in sys.path if p],
-      )
+
+  def test_child_exit_failure_returns_none(self):
+    child = _FakeCoordsChild(
+        stdout="TORCH_TPU_LOCAL_DEVICE_COORDS=[1, 2, 3, 0]\n", returncode=1
+    )
+    with _mock_env({}):
+      with mock.patch.object(subprocess, "run", child):
+        self.assertIsNone(internal_distributed._query_local_device_coords())
 
   def test_ignores_other_stdout_lines(self):
     with _mock_env({}):
       with mock.patch.object(
           subprocess,
           "run",
-          return_value=_coords_process(
+          _coords_child(
               [2, 0, 1], prefix_lines="Registered Python module for 'tpu'.\n"
           ),
       ):
@@ -572,11 +587,7 @@ class QueryLocalDeviceCoordsTest(seed_test_utils.RepeatableTest):
   def test_missing_coordinates_line_returns_none(self):
     with _mock_env({}):
       with mock.patch.object(
-          subprocess,
-          "run",
-          return_value=subprocess.CompletedProcess(
-              args=[], returncode=0, stdout="unrelated\n", stderr=""
-          ),
+          subprocess, "run", _FakeCoordsChild(stdout="unrelated\n")
       ):
         self.assertIsNone(internal_distributed._query_local_device_coords())
 
@@ -585,12 +596,7 @@ class QueryLocalDeviceCoordsTest(seed_test_utils.RepeatableTest):
       with mock.patch.object(
           subprocess,
           "run",
-          return_value=subprocess.CompletedProcess(
-              args=[],
-              returncode=0,
-              stdout="TORCH_TPU_LOCAL_DEVICE_COORDS=[1, 2\n",
-              stderr="",
-          ),
+          _FakeCoordsChild(stdout="TORCH_TPU_LOCAL_DEVICE_COORDS=[1, 2\n"),
       ):
         self.assertIsNone(internal_distributed._query_local_device_coords())
 

@@ -215,7 +215,8 @@ TEST_F(TraversalTest, ReadableStringWithTraceback) {
   auto traceback = std::make_shared<PythonTraceback>();
   traceback->frames.push_back({"/path/to/user_code.py", "my_function", 42});
 
-  ScopedPythonContextCapturer::SetTracebackForTesting(traceback);
+  const ScopedPythonContextCapturer::ScopedTracebackForTesting
+      traceback_override(traceback);
 
   TT_ASSERT_OK_AND_ASSIGN(auto refs, DeviceBufferList::CreateDeferred(
                                          OpName::kAdd, DummyBuilder, {},

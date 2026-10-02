@@ -417,29 +417,57 @@ template <const char* name>
   return *env_var;
 }
 
+// Parses `env_var`, the value of the environment variable with the given name,
+// as a Boolean using absl::SimpleAtob. Returns std::nullopt if it is not set or
+// cannot be parsed as a Boolean.
+template <const char* name>
+[[nodiscard]] std::optional<bool> ParseBooleanEnv(
+    const std::optional<std::string>& env_var) {
+  if (!env_var.has_value()) {
+    return std::nullopt;
+  }
+  bool result = false;
+  if (absl::SimpleAtob(*env_var, &result)) {
+    return result;
+  }
+  TT_WARN_ONCE(WarningCategory::kCorrectnessWarning,
+               "expected environment variable ", name,
+               " to be a Boolean (e.g., '1', '0', 'true', 'false'), got '",
+               *env_var, "'");
+  return std::nullopt;
+}
+
+// Parses `env_var`, the value of the environment variable with the given name,
+// as an integer using absl::SimpleAtoi. Returns std::nullopt if it is not set
+// or cannot be parsed as an integer.
+template <typename IntType, const char* name>
+[[nodiscard]] std::optional<IntType> ParseIntegerEnv(
+    const std::optional<std::string>& env_var) {
+  static_assert(std::is_integral_v<IntType> && !std::is_same_v<IntType, bool>,
+                "IntType must be a non-boolean integral type.");
+  if (!env_var.has_value()) {
+    return std::nullopt;
+  }
+  IntType result = 0;
+  if (absl::SimpleAtoi(*env_var, &result)) {
+    return result;
+  }
+  TT_WARN_ONCE(WarningCategory::kCorrectnessWarning,
+               "expected environment variable ", name,
+               " to be an integer, got '", *env_var, "'");
+  return std::nullopt;
+}
+
 // Returns the boolean value of the environment variable with the given name, or
 // std::nullopt if it is not set or cannot be parsed as a Boolean.
 //
 // This function delegates to GetEnvOnce() to read the environment variable, and
-// then parses the string into a Boolean using absl::SimpleAtob.
+// then parses the string into a Boolean using ParseBooleanEnv().
 template <const char* name>
 [[nodiscard]] std::optional<bool> GetBooleanEnvOnce() {
   // Compute the value once and memoize it.
-  static const std::optional<bool> value = []() -> std::optional<bool> {
-    const auto& env_var = GetEnvOnce<name>();
-    if (!env_var.has_value()) {
-      return std::nullopt;
-    }
-    bool result = false;
-    if (absl::SimpleAtob(*env_var, &result)) {
-      return result;
-    }
-    TT_WARN_ONCE(WarningCategory::kCorrectnessWarning,
-                 "expected environment variable ", name,
-                 " to be a Boolean (e.g., '1', '0', 'true', 'false'), got '",
-                 *env_var, "'");
-    return std::nullopt;
-  }();
+  static const std::optional<bool> value =
+      ParseBooleanEnv<name>(GetEnvOnce<name>());
   return value;
 }
 
@@ -447,28 +475,40 @@ template <const char* name>
 // std::nullopt if it is not set or cannot be parsed as an integer.
 //
 // This function delegates to GetEnvOnce() to read the environment variable, and
-// then parses the string into an integer using absl::SimpleAtoi.
+// then parses the string into an integer using ParseIntegerEnv().
 template <typename IntType, const char* name>
 [[nodiscard]] std::optional<IntType> GetIntegerEnvOnce() {
-  static_assert(std::is_integral_v<IntType> && !std::is_same_v<IntType, bool>,
-                "IntType must be a non-boolean integral type.");
   // Compute the value once and memoize it.
-  static const std::optional<IntType> value = []() -> std::optional<IntType> {
-    const auto& env_var = GetEnvOnce<name>();
-    if (!env_var.has_value()) {
-      return std::nullopt;
-    }
-    IntType result = 0;
-    if (absl::SimpleAtoi(*env_var, &result)) {
-      return result;
-    }
-    TT_WARN_ONCE(WarningCategory::kCorrectnessWarning,
-                 "expected environment variable ", name,
-                 " to be an integer, got '", *env_var, "'");
-    return std::nullopt;
-  }();
+  static const std::optional<IntType> value =
+      ParseIntegerEnv<IntType, name>(GetEnvOnce<name>());
   return value;
 }
+
+// The functions below let tests change environment variables read by the
+// Python-facing readers in `torch_tpu._internal.env` (get_bool_env_once() and
+// friends). Until ResetEnvCacheForTesting() is first called, those readers
+// share the values memoized by the GetEnvOnce() family above. Afterwards, they
+// use a separate cache that each ResetEnvCacheForTesting() call clears.
+//
+// The GetEnvOnce() family itself is never reset, so C++ readers keep observing
+// the values they memoized first.
+
+// Clears the values memoized by the Python-facing environment variable
+// readers, so that their next calls read the current environment.
+//
+// For testing only.
+void ResetEnvCacheForTesting();
+
+// Returns whether ResetEnvCacheForTesting() has been called in this process.
+[[nodiscard]] bool EnvCacheWasResetForTesting();
+
+// Returns the value of the environment variable `name`, or std::nullopt if it
+// is not set, as read on the first call since the last
+// ResetEnvCacheForTesting() call.
+//
+// REQUIRES: EnvCacheWasResetForTesting().
+[[nodiscard]] std::optional<std::string> GetEnvSinceResetForTesting(
+    const char* name);
 
 }  // namespace torch_tpu
 

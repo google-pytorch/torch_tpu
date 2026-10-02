@@ -20,7 +20,9 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "c10/util/Exception.h"
+#include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/libtpu_version.h"
 #include "csrc/common/pybind_error_utils.h"
 #include "csrc/common/warnings.h"
 #include "csrc/eager/device_gen_impl.h"
@@ -206,6 +208,12 @@ TT_PYBIND11_MODULE(testing, m) {
         "Emits a TT_WARN warning from C++.");
   m.def("emit_tt_warn_once", &EmitTtWarnOnce, py::arg("category"),
         py::arg("msg"), "Emits a TT_WARN_ONCE warning from C++.");
+  m.def("reset_libtpu_version_for_testing", &ResetLibtpuVersionForTesting,
+        "Clears the libtpu version set by set_libtpu_version().");
+  m.def("reset_env_cache_for_testing", &ResetEnvCacheForTesting,
+        "Clears the values memoized by the get_*_env_once() readers in "
+        "torch_tpu._internal.env, so that their next calls read the current "
+        "environment.");
 }
 
 }  // namespace torch_tpu

@@ -817,6 +817,7 @@ torch_tpu_cc_test(
 
 torch_tpu_cc_library(
     name = "env_vars",
+    srcs = ["env_vars.cc"],
     hdrs = ["env_vars.h"],
     deps = [
         ":constexpr_map",
@@ -825,8 +826,11 @@ torch_tpu_cc_library(
         "//shims/torch:torch_headers",
         "//shims/torch/c10/util:base",
         "//shims/torch/c10/util:base_headers",
+        "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/base:no_destructor",
+        "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/synchronization",
     ],
 )
 

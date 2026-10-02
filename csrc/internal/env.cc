@@ -29,10 +29,36 @@
 namespace torch_tpu {
 namespace {
 
+// The Python-facing readers below share the values memoized by the
+// GetEnvOnce() family, unless a test has called ResetEnvCacheForTesting(). In
+// that case, they read the environment again after every reset, so that tests
+// can set environment variables instead of patching these readers.
+template <const char* name>
+std::optional<std::string> PyGetEnv() {
+  if (EnvCacheWasResetForTesting()) return GetEnvSinceResetForTesting(name);
+  return GetEnvOnce<name>();
+}
+
+template <const char* name>
+std::optional<bool> PyGetBooleanEnv() {
+  if (EnvCacheWasResetForTesting()) {
+    return ParseBooleanEnv<name>(GetEnvSinceResetForTesting(name));
+  }
+  return GetBooleanEnvOnce<name>();
+}
+
+template <const char* name>
+std::optional<int64_t> PyGetIntegerEnv() {
+  if (EnvCacheWasResetForTesting()) {
+    return ParseIntegerEnv<int64_t, name>(GetEnvSinceResetForTesting(name));
+  }
+  return GetIntegerEnvOnce<int64_t, name>();
+}
+
 // Returns the Boolean value of the environment variable `name`, or
 // `default_value` if the variable is unset or cannot be parsed as a Boolean.
 //
-// GetBooleanEnvOnce() takes the variable name as a template parameter, so a
+// PyGetBooleanEnv() takes the variable name as a template parameter, so a
 // name given at run time (from Python) has to be dispatched here. Only the
 // variables that Python code reads are listed; add more as needed.
 //
@@ -41,16 +67,15 @@ std::optional<bool> PyGetBooleanEnvOnce(std::string_view name,
                                         std::optional<bool> default_value) {
   std::optional<bool> value;
   if (name == kTorchTpuInternalEnableDebugChecksEnvVar) {
-    value = GetBooleanEnvOnce<kTorchTpuInternalEnableDebugChecksEnvVar>();
+    value = PyGetBooleanEnv<kTorchTpuInternalEnableDebugChecksEnvVar>();
   } else if (name == kTorchTpuInternalEnableReassociateNormWeightsEnvVar) {
-    value = GetBooleanEnvOnce<
-        kTorchTpuInternalEnableReassociateNormWeightsEnvVar>();
-  } else if (name == kTorchTpuInternalMaterializeCollectiveTensorsEnvVar) {
-    value = GetBooleanEnvOnce<
-        kTorchTpuInternalMaterializeCollectiveTensorsEnvVar>();
-  } else if (name == kTorchTpuInternalStorageAwarePlaceholdersEnvVar) {
     value =
-        GetBooleanEnvOnce<kTorchTpuInternalStorageAwarePlaceholdersEnvVar>();
+        PyGetBooleanEnv<kTorchTpuInternalEnableReassociateNormWeightsEnvVar>();
+  } else if (name == kTorchTpuInternalMaterializeCollectiveTensorsEnvVar) {
+    value =
+        PyGetBooleanEnv<kTorchTpuInternalMaterializeCollectiveTensorsEnvVar>();
+  } else if (name == kTorchTpuInternalStorageAwarePlaceholdersEnvVar) {
+    value = PyGetBooleanEnv<kTorchTpuInternalStorageAwarePlaceholdersEnvVar>();
   } else {
     ABSL_LOG(FATAL)  // CRASH_OK=TorchTPU bug
         << "Before reading Boolean environment variable " << name
@@ -65,24 +90,23 @@ std::optional<int64_t> PyGetIntegerEnvOnce(
     std::string_view name, std::optional<int64_t> default_value) {
   std::optional<int64_t> value;
   if (name == kLocalRankEnvVar) {
-    value = GetIntegerEnvOnce<int64_t, kLocalRankEnvVar>();
+    value = PyGetIntegerEnv<kLocalRankEnvVar>();
   } else if (name == kRankEnvVar) {
-    value = GetIntegerEnvOnce<int64_t, kRankEnvVar>();
+    value = PyGetIntegerEnv<kRankEnvVar>();
   } else if (name == kTorchTpuBasePortEnvVar) {
-    value = GetIntegerEnvOnce<int64_t, kTorchTpuBasePortEnvVar>();
+    value = PyGetIntegerEnv<kTorchTpuBasePortEnvVar>();
   } else if (name == kTorchTpuDevicesPerHostEnvVar) {
-    value = GetIntegerEnvOnce<int64_t, kTorchTpuDevicesPerHostEnvVar>();
+    value = PyGetIntegerEnv<kTorchTpuDevicesPerHostEnvVar>();
   } else if (name == kTorchTpuHandshakePortEnvVar) {
-    value = GetIntegerEnvOnce<int64_t, kTorchTpuHandshakePortEnvVar>();
+    value = PyGetIntegerEnv<kTorchTpuHandshakePortEnvVar>();
   } else if (name == kTorchTpuInternalHandshakeTimeoutSEnvVar) {
-    value =
-        GetIntegerEnvOnce<int64_t, kTorchTpuInternalHandshakeTimeoutSEnvVar>();
+    value = PyGetIntegerEnv<kTorchTpuInternalHandshakeTimeoutSEnvVar>();
   } else if (name == kTorchcommRankEnvVar) {
-    value = GetIntegerEnvOnce<int64_t, kTorchcommRankEnvVar>();
+    value = PyGetIntegerEnv<kTorchcommRankEnvVar>();
   } else if (name == kTorchcommSizeEnvVar) {
-    value = GetIntegerEnvOnce<int64_t, kTorchcommSizeEnvVar>();
+    value = PyGetIntegerEnv<kTorchcommSizeEnvVar>();
   } else if (name == kWorldSizeEnvVar) {
-    value = GetIntegerEnvOnce<int64_t, kWorldSizeEnvVar>();
+    value = PyGetIntegerEnv<kWorldSizeEnvVar>();
   } else {
     ABSL_LOG(FATAL)  // CRASH_OK=TorchTPU bug
         << "Before reading integer environment variable " << name
@@ -99,23 +123,23 @@ std::optional<std::string> PyGetStringEnvOnce(
     std::string_view name, std::optional<std::string> default_value) {
   std::optional<std::string> value;
   if (name == kJobCompletionIndexEnvVar) {
-    value = GetEnvOnce<kJobCompletionIndexEnvVar>();
+    value = PyGetEnv<kJobCompletionIndexEnvVar>();
   } else if (name == kMasterAddrEnvVar) {
-    value = GetEnvOnce<kMasterAddrEnvVar>();
+    value = PyGetEnv<kMasterAddrEnvVar>();
   } else if (name == kMasterPortEnvVar) {
-    value = GetEnvOnce<kMasterPortEnvVar>();
+    value = PyGetEnv<kMasterPortEnvVar>();
   } else if (name == kNnodesEnvVar) {
-    value = GetEnvOnce<kNnodesEnvVar>();
+    value = PyGetEnv<kNnodesEnvVar>();
   } else if (name == kNodeRankEnvVar) {
-    value = GetEnvOnce<kNodeRankEnvVar>();
+    value = PyGetEnv<kNodeRankEnvVar>();
   } else if (name == kTorchTpuSlicebuilderAddressesEnvVar) {
-    value = GetEnvOnce<kTorchTpuSlicebuilderAddressesEnvVar>();
+    value = PyGetEnv<kTorchTpuSlicebuilderAddressesEnvVar>();
   } else if (name == kTorchTpuTopologyEnvVar) {
-    value = GetEnvOnce<kTorchTpuTopologyEnvVar>();
+    value = PyGetEnv<kTorchTpuTopologyEnvVar>();
   } else if (name == kTorchTpuXprofSessionIdEnvVar) {
-    value = GetEnvOnce<kTorchTpuXprofSessionIdEnvVar>();
+    value = PyGetEnv<kTorchTpuXprofSessionIdEnvVar>();
   } else if (name == kTpuWorkerHostnamesEnvVar) {
-    value = GetEnvOnce<kTpuWorkerHostnamesEnvVar>();
+    value = PyGetEnv<kTpuWorkerHostnamesEnvVar>();
   } else {
     ABSL_LOG(FATAL)  // CRASH_OK=TorchTPU bug
         << "Before reading string environment variable " << name
@@ -136,7 +160,6 @@ TT_PYBIND11_MODULE(env, m) {
 #endif
   m.def("set_libtpu_version", &SetLibtpuVersion, pybind11::arg("version"));
   m.def("get_libtpu_version", &GetLibtpuVersion);
-  m.def("reset_libtpu_version_for_testing", &ResetLibtpuVersionForTesting);
   m.def("get_enable_debug_checks", &GetEnableDebugChecks);
   m.def("get_bool_env_once", &PyGetBooleanEnvOnce, pybind11::arg("name"),
         pybind11::arg("default_value") = std::optional<bool>(),

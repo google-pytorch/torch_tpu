@@ -16,6 +16,8 @@
 
 #include "csrc/ops/python_context.h"
 
+#include <memory>
+
 #include "csrc/common/context_manager.h"
 #include "csrc/common/context_states.h"
 #include "csrc/ops/op_names.h"
@@ -121,6 +123,19 @@ TEST_F(ScopedPythonContextCapturerTrackebackTest,
     auto context = ScopedPythonContextCapturer::GetContext();
     EXPECT_TRUE(context.traceback() == nullptr);
   }
+}
+
+TEST_F(ScopedPythonContextCapturerTrackebackTest,
+       ScopedTracebackForTestingRestoresPreviousTraceback) {
+  PushContextState<EnableTracebacksContextState>(TracebackMode::kDisabled);
+  ScopedPythonContextCapturer capturer(OpName::kAdd);
+  const auto traceback = std::make_shared<PythonTraceback>();
+  {
+    const ScopedPythonContextCapturer::ScopedTracebackForTesting
+        traceback_override(traceback);
+    EXPECT_EQ(ScopedPythonContextCapturer::GetContext().traceback(), traceback);
+  }
+  EXPECT_EQ(ScopedPythonContextCapturer::GetContext().traceback(), nullptr);
 }
 
 TEST(ScopedPythonContextProvider, NoObjectIsAlive) {

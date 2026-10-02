@@ -171,6 +171,17 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_library(
+    name = "env_test_utils",
+    testonly = True,
+    srcs = ["env_test_utils.py"],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//src/torch_tpu/_internal:env_utils",
+        "//src/torch_tpu/_internal:testing",
+    ],
+)
+
 torch_tpu_py_test(
     name = "env_test",
     srcs = ["env_test.py"],
@@ -185,6 +196,7 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu:_loader",
         "//src/torch_tpu/_internal:env",
+        "//src/torch_tpu/_internal:testing",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
     ],
 )
@@ -1750,6 +1762,7 @@ torch_tpu_py_test(
         [],
     ),
     deps = [
+        ":env_test_utils",
         ":error_testing",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/testing:absltest",
@@ -1757,7 +1770,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal:env",
-        "//src/torch_tpu/_internal:env_utils",
         "//src/torch_tpu/_internal:testing",
         "//src/torch_tpu/_internal/compile:compiler",
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",
@@ -1825,6 +1837,7 @@ torch_tpu_py_test(
     ],
     visibility = ["//:__subpackages__"],
     deps = [
+        ":env_test_utils",
         ":error_testing",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/testing:absltest",
@@ -1832,7 +1845,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal:env",
-        "//src/torch_tpu/_internal:env_utils",
         "//src/torch_tpu/_internal:testing",
         "//src/torch_tpu/_internal/compile:compiler",
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",

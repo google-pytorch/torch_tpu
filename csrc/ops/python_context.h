@@ -198,10 +198,32 @@ class ScopedPythonContextCapturer {
   // ScopedPythonContextCapturer is alive for the current thread.
   [[nodiscard]] static std::optional<PythonContext> MaybeGetContext();
 
-  // For testing only: override the traceback of all currently alive contexts.
-  static void SetTracebackForTesting(MaybeSharedTraceback traceback) {
-    traceback_ = std::move(traceback);
-  }
+  // For testing only: overrides the traceback of all currently alive contexts
+  // for the current thread during the lifetime of this object, and restores
+  // the previous traceback when it is destroyed.
+  //
+  // REQUIRES: A ScopedPythonContextCapturer is alive for the current thread
+  // and outlives this object.
+  class ScopedTracebackForTesting {
+   public:
+    explicit ScopedTracebackForTesting(MaybeSharedTraceback traceback)
+        : previous_traceback_(std::exchange(traceback_, std::move(traceback))) {
+    }
+
+    // This class is neither copyable nor movable.
+    ScopedTracebackForTesting(const ScopedTracebackForTesting&) = delete;
+    ScopedTracebackForTesting& operator=(const ScopedTracebackForTesting&) =
+        delete;
+    ScopedTracebackForTesting(ScopedTracebackForTesting&&) = delete;
+    ScopedTracebackForTesting& operator=(ScopedTracebackForTesting&&) = delete;
+
+    ~ScopedTracebackForTesting() {
+      traceback_ = std::move(previous_traceback_);
+    }
+
+   private:
+    MaybeSharedTraceback previous_traceback_;
+  };
 
  private:
   // Common initialization logic for the Python context capturer.

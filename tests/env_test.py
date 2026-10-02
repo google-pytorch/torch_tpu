@@ -16,11 +16,13 @@
 
 import enum
 import os
+from unittest import mock
 
 from absl import flags
 from absl.testing import absltest
 from torch_tpu import _loader
 from torch_tpu._internal import env
+from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
 from tests import subprocess_test_utils
@@ -286,6 +288,56 @@ class ParentEnvTest(
         TestMode.GET_STR_ENV_ONCE_MEMOIZED,
         env_updates={"MASTER_ADDR": "worker0"},
     )
+
+
+class ResetEnvCacheForTestingTest(seed_test_utils.RepeatableTest):
+  """Tests that the `env` readers observe the environment again after a reset."""
+
+  def setUp(self) -> None:
+    super().setUp()
+    if _TEST_MODE.value is not None:
+      self.skipTest("Skipping in-process test in sub-test mode.")
+    self.enter_context(mock.patch.dict(os.environ))
+    self.addCleanup(tt_testing.reset_env_cache_for_testing)
+
+  def test_get_bool_env_once_rereads_after_reset(self) -> None:
+    name = "TORCH_TPU_INTERNAL_ENABLE_REASSOCIATE_NORM_WEIGHTS"
+    os.environ[name] = "1"
+    tt_testing.reset_env_cache_for_testing()
+    self.assertTrue(env.get_bool_env_once(name))
+
+    os.environ[name] = "0"
+    self.assertTrue(env.get_bool_env_once(name))  # Memoized until reset.
+    tt_testing.reset_env_cache_for_testing()
+    self.assertFalse(env.get_bool_env_once(name))
+
+    os.environ[name] = "not_a_bool"
+    tt_testing.reset_env_cache_for_testing()
+    self.assertTrue(env.get_bool_env_once(name, default_value=True))
+
+  def test_get_int_env_once_rereads_after_reset(self) -> None:
+    os.environ["RANK"] = "3"
+    tt_testing.reset_env_cache_for_testing()
+    self.assertEqual(env.get_int_env_once("RANK"), 3)
+
+    os.environ["RANK"] = "5"
+    self.assertEqual(env.get_int_env_once("RANK"), 3)  # Memoized until reset.
+    tt_testing.reset_env_cache_for_testing()
+    self.assertEqual(env.get_int_env_once("RANK"), 5)
+
+    os.environ["RANK"] = "abc"
+    tt_testing.reset_env_cache_for_testing()
+    self.assertEqual(env.get_int_env_once("RANK", default_value=42), 42)
+
+  def test_get_str_env_once_rereads_after_reset(self) -> None:
+    os.environ["MASTER_ADDR"] = "worker0"
+    tt_testing.reset_env_cache_for_testing()
+    self.assertEqual(env.get_str_env_once("MASTER_ADDR"), "worker0")
+
+    del os.environ["MASTER_ADDR"]
+    self.assertEqual(env.get_str_env_once("MASTER_ADDR"), "worker0")
+    tt_testing.reset_env_cache_for_testing()
+    self.assertIsNone(env.get_str_env_once("MASTER_ADDR"))
 
 
 if __name__ == "__main__":
