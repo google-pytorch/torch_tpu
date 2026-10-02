@@ -132,6 +132,7 @@ torch_tpu_cc_test(
         ":structured_log_buffer",
         ":tensor_to_buffer",
         ":tpu_hooks",
+        ":traversal",
         "//csrc/common:cache_key",
         "//csrc/common:compilation",
         "//csrc/common:compilation_cache",
@@ -154,6 +155,7 @@ torch_tpu_cc_test(
         "@com_google_absl//absl/types:span",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
+        "@xla//xla/pjrt:pjrt_executable",
     ],
 )
 

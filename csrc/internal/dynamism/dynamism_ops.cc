@@ -16,6 +16,7 @@
 
 #include "csrc/internal/dynamism/dynamism_ops.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
@@ -28,6 +29,9 @@
 #include "csrc/common/shape.h"
 #include "csrc/common/to_string.h"
 #include "csrc/ops/op_builder_utils.h"
+#include "llvm/Support/Casting.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
@@ -256,6 +260,15 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> GetDynamicPadModule(
   }
   mlir::func::Return(fb, results);
   auto module = mb.build();
+  mlir::func::FuncOp main = module->lookupSymbol<mlir::func::FuncOp>("main");
+  mlir::Builder builder(&mlir_context);
+  for (size_t i = 0; i < results.size(); ++i) {
+    const auto result_type =
+        llvm::cast<mlir::RankedTensorType>(main.getFunctionType().getResult(i));
+    if (!result_type.hasStaticShape()) {
+      main.setResultAttr(i, "mhlo.layout_mode", builder.getStringAttr("auto"));
+    }
+  }
   return module;
 }
 

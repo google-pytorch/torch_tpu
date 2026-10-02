@@ -16,6 +16,7 @@
 
 #include "csrc/eager/materialize.h"
 
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -41,13 +42,16 @@
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/eager/tpu_hooks.h"
+#include "csrc/eager/traversal.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/python_context.h"
 #include "csrc/pjrt/pjrt_state.h"
+#include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "xla/pjrt/pjrt_executable.h"
 
 namespace torch_tpu {
 namespace {
@@ -135,6 +139,48 @@ TEST_F(MaterializeTest, CompilerOptionsPropagateToMaterializeThread) {
   const PerfStats stats = CompilationCache::GetInstance().GetCacheStats();
   ASSERT_EQ(stats.per_entry_stats.size(), 1);
   EXPECT_EQ(stats.per_entry_stats[0].key.compile_options_key(), expected_key);
+}
+
+TEST_F(MaterializeTest,
+       CompileAnnotatesDynamicArgumentLayoutsWithDefaultTiling) {
+  const ScopedPythonContextCapturer capturer(OpName::kEmpty);
+  CompilationCache::GetInstance().EvictAll();
+
+  const Shape shape_3d(Dimensions{15, 128, 128}, mlir::ElementType::UI8);
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef ref_a,
+                          DeviceBufferList::CreatePlaceholder(
+                              shape_3d.dimensions(), shape_3d.dtype()));
+  ASSERT_TRUE(ref_a.MarkDynamic(0, 2, 15).ok());
+  ASSERT_TRUE(ref_a.MarkDynamic(1, 2, 128).ok());
+  ASSERT_TRUE(ref_a.MarkDynamic(2, 2, 128).ok());
+
+  MlirOpBuilder identity_builder = [](mlir::MlirBuilder& /*builder*/,
+                                      absl::Span<mlir::MlirOp> inputs)
+      -> absl::StatusOr<DynamicMlirOpResults> {
+    return DynamicMlirOpResults{inputs[0]};
+  };
+
+  TT_ASSERT_OK_AND_ASSIGN(const std::vector<DeviceBufferRef> refs_b,
+                          DeviceBufferList::CreateDeferred(
+                              OpName::kAdd, std::move(identity_builder),
+                              {ref_a}, OpParamCacheKeys::Empty(), {shape_3d}));
+  const DeviceBufferRef ref_b = refs_b[0];
+
+  TT_ASSERT_OK_AND_ASSIGN(const std::unique_ptr<Traversal> tr,
+                          Traversal::Create({ref_b}));
+
+  CompilationSpec spec(std::make_unique<xla::CompileOptions>(),
+                       CompileOptionsKey(12345));
+  std::string mlir_text;
+  ASSERT_TRUE(
+      tr->Compile(
+            std::move(spec), &mlir_text,
+            /*use_stablehlo_bounds=*/true,
+            /*argument_layouts=*/{CustomLayout{.minor_to_major = {1, 2, 0}}})
+          .ok());
+  EXPECT_THAT(mlir_text, testing::HasSubstr(
+                             "mhlo.layout_mode = \"{1,2,0:T(8,128)(4,1)}\""));
+  EXPECT_THAT(mlir_text, testing::HasSubstr("mhlo.layout_mode = \"auto\""));
 }
 
 TEST(MaterializeCommonTest, GetCompilationMode) {

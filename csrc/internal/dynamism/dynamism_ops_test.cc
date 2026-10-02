@@ -115,5 +115,32 @@ TEST(DynamismOpsTest, GetSliceModuleDocstringExample) {
       absl::StrContains(module_str, "-> (tensor<3x5xf32>, tensor<8x2x2xf32>)"));
 }
 
+TEST(DynamismOpsTest, GetDynamicPadModuleAnnotatesDynamicOutputLayouts) {
+  DynamismOpsBuilder ops_builder;
+  mlir::MLIRContext& context = ops_builder.getContext();
+
+  std::vector<Shape> shapes;
+  absl::InlinedVector<BoundedDynamicDimension, 1> dynamic_dims = {
+      {.dimension = 0, .lower_bound = 0, .upper_bound = 15},
+      {.dimension = 1, .lower_bound = 0, .upper_bound = 128},
+      {.dimension = 2, .lower_bound = 0, .upper_bound = 128}};
+  shapes.push_back(
+      Shape(Dimensions{5, 10, 15}, mlir::ElementType::I8, dynamic_dims));
+  shapes.push_back(Shape(Dimensions{4, 8}, mlir::ElementType::F32, {}));
+
+  TT_ASSERT_OK_AND_ASSIGN(auto module, GetDynamicPadModule(context, shapes));
+  ASSERT_TRUE(module);
+
+  std::string module_str;
+  llvm::raw_string_ostream os(module_str);
+  module->print(os);
+
+  EXPECT_TRUE(
+      absl::StrContains(module_str,
+                        "-> (tensor<?x?x?xi8, #stablehlo.bounds<15, 128, 128>> "
+                        "{mhlo.layout_mode = \"auto\"}, tensor<4x8xf32>)"))
+      << module_str;
+}
+
 }  // namespace
 }  // namespace torch_tpu

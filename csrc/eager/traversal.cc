@@ -62,6 +62,7 @@
 #include "csrc/ops/python_context.h"
 #include "csrc/pjrt/pjrt_state.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/Support/Casting.h"
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Attributes.h"
@@ -795,6 +796,55 @@ bool IsDefaultDeviceLayout(const DeviceBufferRef& buffer,
   return true;
 }
 
+xla::Layout ToXlaArgumentLayout(const DeviceBufferRef& argument,
+                                const CustomLayout& layout) {
+  std::vector<xla::Tile> tiles;
+  if (!layout.tiles.empty()) {
+    tiles.reserve(layout.tiles.size());
+    for (const Indices& tile_indices : layout.tiles) {
+      tiles.push_back(xla::Tile(tile_indices));
+    }
+    return xla::Layout(layout.minor_to_major, tiles,
+                       layout.element_size_in_bits);
+  }
+
+  if (argument.dynamic_dimensions().empty()) {
+    return xla::Layout(layout.minor_to_major, {}, layout.element_size_in_bits);
+  }
+
+  // Tiles are not specified in the CustomLayout.
+  // For dynamic dimensions, query the default compact tiling for the 2nd-minor
+  // dimension of layout.minor_to_major (clamped to 8 so GetDefaultLayout does
+  // not select large 2nd-minor tiling such as T(32, 128), which XLA does not
+  // support for dynamic shapes).
+  int64_t element_size_in_bits = layout.element_size_in_bits;
+  xla::PjRtClient* const client = PjrtBackend::GetInstance().GetClient();
+  if (client != nullptr) {
+    Dimensions upper_bound_dims = CopyIntVector(argument.dimensions());
+    for (const auto& dynamic_dim : argument.dynamic_dimensions()) {
+      upper_bound_dims[dynamic_dim.dimension] = dynamic_dim.upper_bound;
+    }
+    Dimensions query_dims = upper_bound_dims;
+    if (upper_bound_dims.size() >= 2 && layout.minor_to_major.size() >= 2) {
+      const int64_t second_minor_dim =
+          std::min<int64_t>(upper_bound_dims[layout.minor_to_major[1]], 8);
+      query_dims = {second_minor_dim, 128};
+    }
+    const xla::PrimitiveType element_type =
+        ConvertTo<xla::PrimitiveType>(argument.element_type());
+    if (absl::StatusOr<xla::Layout> default_layout_or =
+            client->GetDefaultLayout(element_type, query_dims);
+        default_layout_or.ok()) {
+      tiles.assign(default_layout_or->tiles().begin(),
+                   default_layout_or->tiles().end());
+      if (element_size_in_bits == 0) {
+        element_size_in_bits = default_layout_or->element_size_in_bits();
+      }
+    }
+  }
+  return xla::Layout(layout.minor_to_major, tiles, element_size_in_bits);
+}
+
 void AnnotateArgumentLayouts(mlir::ModuleOp module,
                              absl::Span<const DeviceBufferRef> arguments,
                              absl::Span<const CustomLayout> argument_layouts) {
@@ -821,13 +871,7 @@ void AnnotateArgumentLayouts(mlir::ModuleOp module,
           << "minor_to_major size (" << layout.minor_to_major.size()
           << ") is smaller than argument " << i << " rank (" << dims.size()
           << ")";
-      std::vector<xla::Tile> tiles;
-      tiles.reserve(layout.tiles.size());
-      for (const Indices& tile_indices : layout.tiles) {
-        tiles.push_back(xla::Tile(tile_indices));
-      }
-      const xla::Layout xla_layout(layout.minor_to_major, tiles,
-                                   layout.element_size_in_bits);
+      const xla::Layout xla_layout = ToXlaArgumentLayout(arguments[i], layout);
       main.setArgAttr(i, "mhlo.layout_mode",
                       builder.getStringAttr(xla_layout.ToString()));
     }
@@ -835,7 +879,8 @@ void AnnotateArgumentLayouts(mlir::ModuleOp module,
 }
 
 void AnnotateOutputLayouts(mlir::ModuleOp module,
-                           absl::Span<const DeviceBufferRef> outputs) {
+                           absl::Span<const DeviceBufferRef> outputs,
+                           bool use_stablehlo_bounds) {
   mlir::func::FuncOp main = module.lookupSymbol<mlir::func::FuncOp>("main");
   ABSL_CHECK(main)  // CRASH_OK: Should never call API on a malformed module.
       << "MLIR module does not contain a main function for output layouts.";
@@ -845,6 +890,12 @@ void AnnotateOutputLayouts(mlir::ModuleOp module,
 
   mlir::Builder builder(main.getContext());
   for (size_t i = 0; i < outputs.size(); ++i) {
+    const auto result_type =
+        llvm::cast<mlir::RankedTensorType>(main.getFunctionType().getResult(i));
+    if (use_stablehlo_bounds && !result_type.hasStaticShape()) {
+      main.setResultAttr(i, "mhlo.layout_mode", builder.getStringAttr("auto"));
+      continue;
+    }
     if (!outputs[i].shape().layout().has_value()) continue;
     const CustomLayout& layout = *outputs[i].shape().layout();
     if (!layout.minor_to_major.empty() &&
@@ -1071,7 +1122,7 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
                         BuildMlirModule(mlir_context, use_stablehlo_bounds,
                                         donated_inputs, module_name));
     AnnotateArgumentLayouts(*module, arguments_, argument_layouts);
-    AnnotateOutputLayouts(*module, outputs_);
+    AnnotateOutputLayouts(*module, outputs_, use_stablehlo_bounds);
     if (out_mlir_text != nullptr) {
       *out_mlir_text = MlirModuleToString(*module);
     }
