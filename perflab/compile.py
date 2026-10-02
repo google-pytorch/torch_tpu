@@ -44,6 +44,27 @@ class CompileConfig:
   dynamic: bool | None = None
   fullgraph: bool = False
 
+  def select_backend(self, target: target_lib.Target) -> Any:
+    """Returns the torch.compile backend for `target`.
+
+    For non-TPU targets this also configures Inductor for benchmarking.
+
+    Args:
+      target: The target to compile for.
+
+    Returns:
+      A `TpuBackend` for TPU targets, otherwise the "inductor" backend name.
+    """
+    if target.device_kind is target_lib.DeviceKind.TPU:
+      from torch_tpu._internal import compile as torch_tpu_compile  # pylint: disable=g-import-not-at-top
+
+      return torch_tpu_compile.TpuBackend(dynamism=self.dynamic is not False)
+
+    from perflab import device_utils  # pylint: disable=g-import-not-at-top
+
+    device_utils.configure_inductor_for_benchmarks()
+    return "inductor"
+
   def apply(self, obj: Any, target: target_lib.Target) -> Callable:
     """Compile `obj` based on the target.
 
@@ -57,19 +78,9 @@ class CompileConfig:
     Returns:
       The compiled object.
     """
-    backend = "inductor"
-    if target.device_kind is target_lib.DeviceKind.TPU:
-      from torch_tpu._internal import compile as torch_tpu_compile  # pylint: disable=g-import-not-at-top
-
-      backend = torch_tpu_compile.TpuBackend(dynamism=self.dynamic is not False)
-    else:
-      from perflab import device_utils  # pylint: disable=g-import-not-at-top
-
-      device_utils.configure_inductor_for_benchmarks()
-
     return torch.compile(
         obj,
-        backend=backend,
+        backend=self.select_backend(target),
         dynamic=self.dynamic,
         fullgraph=self.fullgraph,
     )
