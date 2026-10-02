@@ -18,6 +18,19 @@ Importing this module installs TorchTPU's default filter for
 `torch.tpu.exceptions.TcMallocWarning` as a side effect; see
 `install_default_filters`. The check itself only runs when `check_tcmalloc` is
 called, which `torch_tpu/__init__.py` does once at import time.
+
+This module must not import `torch`, not even indirectly. It is part of
+the torch-free preamble of `torch_tpu/__init__.py`: when `torch_tpu` is
+imported before `torch` and PyTorch's device backend autoloading is
+enabled (the default), importing `torch` makes PyTorch load the
+`torch_tpu._loader` backend entry point, which loads TorchTPU's C++
+extensions. Doing that from here would run that setup in the middle of
+`torch_tpu/__init__.py`, and from module scope even before the
+version-dispatch import hook of `_versioned_so_loader` that selects
+those extensions is installed. For the same reason the warning below
+uses `warnings.warn` instead of the torch-based `tt_warnings.warn`;
+that is safe because the check only runs at import time, never under
+`torch.compile`.
 """
 
 import ctypes
@@ -89,7 +102,8 @@ def check_tcmalloc() -> None:
     # than warn spuriously.
     return
 
-  warnings.warn(
+  # See the module docstring for why this doesn't use `tt_warnings.warn`.
+  warnings.warn(  # RAW_WARNINGS_OK=import time only, no torch import
       "tcmalloc is not loaded; TorchTPU host performance may be degraded due"
       " to glibc ptmalloc contention. Preload libtcmalloc before starting"
       " Python (e.g."

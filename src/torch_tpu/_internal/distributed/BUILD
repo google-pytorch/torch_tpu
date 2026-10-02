@@ -121,6 +121,7 @@ torch_tpu_py_library(
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal:env",
         "//src/torch_tpu/_internal:exceptions",
+        "//src/torch_tpu/_internal/utils:tt_warnings",
     ],
 )
 

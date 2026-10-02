@@ -98,7 +98,10 @@ torch_tpu_py_library(
 torch_tpu_py_library(
     name = "grouped_mm_meta",
     srcs = ["grouped_mm_meta.py"],
-    deps = ["//shims/torch:pytorch"],
+    deps = [
+        "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal/utils:tt_warnings",
+    ],
 )
 
 torch_tpu_py_library(

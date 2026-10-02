@@ -16,12 +16,12 @@
 
 from collections.abc import Callable
 from typing import Any, Final
-import warnings
 
 import torch
 import torch.distributed.tensor as dt
 from torch_tpu._internal import env
 from torch_tpu._internal import exceptions
+from torch_tpu._internal.utils import tt_warnings
 
 _UNEVEN_SHARDING_WARNING: Final[str] = (
     "`DTensor.from_local` called without `shape` and `stride`. Unevenly"
@@ -53,7 +53,7 @@ def from_local(
   `run_check=True` in debug eager mode unless explicitly set.
   """
   if shape is None or stride is None:
-    warnings.warn(
+    tt_warnings.warn(
         _UNEVEN_SHARDING_WARNING, exceptions.CorrectnessWarning, stacklevel=2
     )
 

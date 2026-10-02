@@ -102,6 +102,33 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
       sample_func(3, 4)
       self.assertLen(w, 1)
 
+  def test_experimental_function_traces_under_torch_compile(self):
+    """Verifies experimental functions trace without graph breaks."""
+
+    @experimental("Testing experimental feature.")
+    def sample_func(x: torch.Tensor) -> torch.Tensor:
+      return x * 2
+
+    # `fullgraph=True` raises on any graph break in the warning wrapper.
+    compiled = torch.compile(
+        lambda x: sample_func(x) + 1, backend="eager", fullgraph=True
+    )
+    with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("always")
+      compiled(torch.ones(3))
+      self.assertEmpty([
+          item
+          for item in w
+          if "sample_func is experimental" in str(item.message)
+      ])
+
+    # The warning is still emitted on the first eager call.
+    with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("always")
+      sample_func(torch.ones(3))
+      self.assertLen(w, 1)
+      self.assertIn("sample_func is experimental", str(w[0].message))
+
   def test_experimental_multiple_functions_independent_warnings(self):
     """Verifies that multiple experimental functions trigger warnings independently."""
     @experimental("First experimental feature.")

@@ -59,6 +59,7 @@ torch_tpu_py_library(
     srcs = ["_compat.py"],
     deps = [
         "//src/torch_tpu/_internal:exceptions",
+        "//src/torch_tpu/_internal/utils:tt_warnings",
     ],
 )
 

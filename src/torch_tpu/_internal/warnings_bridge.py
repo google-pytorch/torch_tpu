@@ -77,7 +77,8 @@ def install_warning_bridge() -> None:
     text = str(msg.message)
     new_category, clean_text = _decode_warning(msg.category, text)
     if new_category is not None:
-      warnings.warn_explicit(
+      # Runs inside the warnings display hook, never in traced code.
+      warnings.warn_explicit(  # RAW_WARNINGS_OK=display hook
           clean_text,
           new_category,
           msg.filename,

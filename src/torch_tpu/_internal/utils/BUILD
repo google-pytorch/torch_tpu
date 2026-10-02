@@ -167,6 +167,8 @@ torch_tpu_py_library(
     name = "annotations",
     srcs = ["annotations.py"],
     deps = [
+        ":tt_warnings",
+        "//shims/torch:pytorch",
         "//src/torch_tpu/_internal:exceptions",
     ],
 )
@@ -182,6 +184,28 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/device:_device_module",
         "//src/torch_tpu/_internal/precision:precision_impl",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "tt_warnings",
+    srcs = ["tt_warnings.py"],
+    deps = [
+        "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal:exceptions",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "tt_warnings_test",
+    srcs = ["tt_warnings_test.py"],
+    deps = [
+        ":tt_warnings",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal:exceptions",
         "//tests:seed_test_utils",
     ],
 )

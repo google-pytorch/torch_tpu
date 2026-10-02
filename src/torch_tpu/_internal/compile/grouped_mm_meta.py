@@ -20,10 +20,9 @@ Checks mirror `ValidateGroupedMmInputs` / `GetGroupedMmOutputSize` in
 csrc/ops/grouped_mm/grouped_mm_aten_kernels.cc so eager and compile agree.
 """
 
-import warnings
-
 import torch
 from torch import _meta_registrations
+from torch_tpu._internal.utils import tt_warnings
 
 _meta_lib: torch.library.Library | None = None
 
@@ -139,7 +138,7 @@ def register() -> None:
   if upstream_meta is None:
     # Don't break `import torch` on torch versions without this meta; the
     # grouped_mm meta tests catch the drift.
-    warnings.warn(
+    tt_warnings.warn(
         f"torch {torch.__version__} has no Python meta for {op}; TPU"
         " grouped_mm meta override not installed."
     )

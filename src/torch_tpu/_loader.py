@@ -134,10 +134,10 @@ def _warn_if_unoptimized() -> None:
   from torch_tpu._internal import env  # pylint: disable=g-import-not-at-top
 
   if not env.IS_INTERNAL_TORCH_TPU and not env.TORCH_TPU_IS_OPTIMIZED_BUILD:
-    import warnings  # pylint: disable=g-import-not-at-top
     from torch_tpu._internal import exceptions  # pylint: disable=g-import-not-at-top
+    from torch_tpu._internal.utils import tt_warnings  # pylint: disable=g-import-not-at-top
 
-    warnings.warn(
+    tt_warnings.warn(
         "[UNOPTIMIZED BUILD] TorchTPU was compiled in an unoptimized mode."
         " Performance will be degraded. For production workloads, compile with"
         " '-c opt' (default).",

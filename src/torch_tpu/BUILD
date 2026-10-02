@@ -79,6 +79,7 @@ torch_tpu_py_library(
         "//src/torch_tpu/_internal/sync",
         "//src/torch_tpu/_internal/tracing",
         "//src/torch_tpu/_internal/utils:hardware",
+        "//src/torch_tpu/_internal/utils:tt_warnings",
     ],
 )
 

@@ -16,9 +16,9 @@
 
 import pathlib
 import sys
-import warnings
 
 from torch_tpu._internal import exceptions
+from torch_tpu._internal.utils import tt_warnings
 
 
 def warn_deprecation_with_skip(message: str, skip_dir: pathlib.Path):
@@ -32,10 +32,11 @@ def warn_deprecation_with_skip(message: str, skip_dir: pathlib.Path):
     message: The deprecation message to issue.
     skip_dir: The directory path to skip in stack traces.
   """
-  kwargs = {"category": exceptions.DeprecatedApiWarning}
   if sys.version_info >= (3, 12):
-    kwargs["skip_file_prefixes"] = (str(skip_dir),)  # pyrefly: ignore[bad-assignment]
+    tt_warnings.warn(
+        message,
+        exceptions.DeprecatedApiWarning,
+        skip_file_prefixes=(str(skip_dir),),
+    )
   else:
-    kwargs["stacklevel"] = 3
-
-  warnings.warn(message, **kwargs)
+    tt_warnings.warn(message, exceptions.DeprecatedApiWarning, stacklevel=3)

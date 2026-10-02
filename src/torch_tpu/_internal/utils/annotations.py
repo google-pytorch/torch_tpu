@@ -27,9 +27,10 @@ import enum
 import functools
 import sys
 from typing import Any, Callable, Mapping, Optional, TypeVar
-import warnings
 
+import torch
 from torch_tpu._internal import exceptions as _exceptions
+from torch_tpu._internal.utils import tt_warnings
 
 _T = TypeVar("_T")
 
@@ -176,7 +177,11 @@ def _create_warning_wrapper(
   @functools.wraps(fn_to_wrap)  # type: ignore[arg-type]
   def wrapper(*args: Any, **kwargs: Any) -> Any:
     nonlocal _warned
-    if not _warned:
+    # TorchDynamo cannot trace `sys._getframe()`, so skip the caller check while
+    # compiling to let callers inside `torch.compile` regions trace through
+    # without graph breaks. The warning is emitted on the first eager call
+    # instead.
+    if not _warned and not torch.compiler.is_compiling():
       try:
         caller_frame = sys._getframe(1)
       except (AttributeError, ValueError):
@@ -188,8 +193,7 @@ def _create_warning_wrapper(
         cat = stage.warning_category
         if cat:
           assert issubclass(cat, _exceptions.ApiStageWarning)
-          warnings.warn(msg, category=cat, stacklevel=2)
-        _warned = True
+          _warned = tt_warnings.warn(msg, category=cat, stacklevel=2)
     return fn_to_wrap(*args, **kwargs)
 
   return wrapper
@@ -351,7 +355,10 @@ def _resolve_module_attribute(
   info = stages_map[name]
   cat = info.stage.warning_category
   warned = False
-  if cat:
+  # TorchDynamo cannot trace `sys._getframe()`, so skip the caller lookup while
+  # compiling. The value then stays uncached so that the next eager access still
+  # warns.
+  if cat and not torch.compiler.is_compiling():
     # `_resolve_module_attribute` is called from a module's or metaclass's
     # `__getattr__` (frame 1). When the attribute is accessed through a virtual
     # public module wrapper (e.g. `torch.tpu.X` or `from torch.tpu import X`),
@@ -383,8 +390,7 @@ def _resolve_module_attribute(
           f"'{name}'", info.reason, info.version
       )
       assert issubclass(cat, _exceptions.ApiStageWarning)
-      warnings.warn(msg, category=cat, stacklevel=stacklevel)
-      warned = True
+      warned = tt_warnings.warn(msg, category=cat, stacklevel=stacklevel)
 
   # Dynamically attach stage metadata to map-registered objects upon resolution.
   if info.value is not None:
