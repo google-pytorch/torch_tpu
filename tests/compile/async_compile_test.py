@@ -469,16 +469,20 @@ class AsyncCompileTest(seed_test_utils.RepeatableTest):
     warmup_inputs = [(torch.randn(4, 8, device="tpu"),)]
 
     compiled = tpu_compile.async_compile(model, warmup_inputs)
+    x1 = torch.ones(4, 8, device="tpu")
+    x2 = torch.ones(4, 8, device="tpu") * 2
+    with torch.no_grad():
+      expected1 = model(x1).cpu()
+      expected2 = model(x2).cpu()
 
-    with mock.patch.object(
-        tpu_compiler_mod.StaticCompiler, "__call__"
-    ) as mock_compiler:
-      res1 = compiled(torch.ones(4, 8, device="tpu"))
-      res2 = compiled(torch.ones(4, 8, device="tpu") * 2)
+    # The caches are cleared on entry, so a recompile would show up as a miss.
+    with test_utils.count_tpu_compilations() as compilations:
+      res1 = compiled(x1)
+      res2 = compiled(x2)
 
-      mock_compiler.assert_not_called()
-      self.assertEqual(res1.shape, (4, 8))
-      self.assertEqual(res2.shape, (4, 8))
+    self.assertEqual(compilations.count, 0)
+    test_utils.assert_close(res1.cpu(), expected1)
+    test_utils.assert_close(res2.cpu(), expected2)
 
   def test_async_compile_no_grad_option(self):
     model = SimpleModel().to("tpu")
