@@ -18,23 +18,51 @@ Mainly checks for two things:
 
   - Validating config at construction: A bad scope must raise where the
     benchmark is declared.
-  - compile_config.apply forwards the fields to torch.compile; if any field is
-    dropped, it silently changes what is being measured.
+  - compile_config.apply really compiles with the configured `dynamic` and
+    `fullgraph` settings; if any field is dropped, it silently changes what is
+    being measured.
 
-Note: torch.compile is mocked; Only the config plumbing is tested.
+The CPU tests run a real torch.compile (Inductor). The TPU backend cannot run
+on CPU, so for TPU targets only the selected backend object is checked.
 """
 
-from unittest import mock
-
 from absl.testing import absltest
-import torch.nn as nn
+import torch
+from torch import nn
+from torch_tpu._internal import compile as torch_tpu_compile
+from torch_tpu._internal.utils import test_utils
 from perflab import compile as compile_lib
-from perflab import device_utils
 from perflab import target as target_lib
 from tests import seed_test_utils
 
 
+# TODO(wan): revisit DECISION (b/568592967): the test bodies only use matmuls,
+# which Inductor lowers to extern ATen kernels, because the test sandbox has no
+# C++ compiler for Inductor's generated CPU kernels.
+_WEIGHT = torch.arange(15, dtype=torch.float32).reshape(5, 3) / 10
+
+
+def _project(x: torch.Tensor) -> torch.Tensor:
+  return torch.mm(x, _WEIGHT)
+
+
+def _with_graph_break(x: torch.Tensor) -> torch.Tensor:
+  y = torch.mm(x, _WEIGHT)
+  torch._dynamo.graph_break()  # pylint: disable=protected-access
+  return torch.mm(y, _WEIGHT.t())
+
+
+def _unique_graphs() -> int:
+  return torch._dynamo.utils.counters["stats"]["unique_graphs"]  # pylint: disable=protected-access
+
+
 class CompileConfigTest(seed_test_utils.RepeatableTest):
+
+  def setUp(self):
+    super().setUp()
+    torch._dynamo.reset()  # pylint: disable=protected-access
+    torch._dynamo.utils.counters.clear()  # pylint: disable=protected-access
+    self.cpu = target_lib.make_target(target_lib.Platform.CPU)
 
   def test_default_is_step_scope(self):
     cfg = compile_lib.CompileConfig()
@@ -54,106 +82,85 @@ class CompileConfigTest(seed_test_utils.RepeatableTest):
     with self.assertRaises(ValueError):  # ASSERT_RAISES_OK=benchmark
       compile_lib.Scope("custom")
 
-  def test_both_scopes_accepted(self):
-    self.assertEqual(
-        compile_lib.CompileConfig(scope=compile_lib.Scope.MODEL).scope,
-        compile_lib.Scope.MODEL,
-    )
-    self.assertEqual(
-        compile_lib.CompileConfig(scope=compile_lib.Scope.STEP).scope,
-        compile_lib.Scope.STEP,
+  def test_apply_compiles_module_matching_eager(self):
+    model = nn.Linear(4, 3)
+    x = torch.randn(2, 4)
+
+    compiled = compile_lib.CompileConfig(scope=compile_lib.Scope.MODEL).apply(
+        model, self.cpu
     )
 
-  def test_apply_wraps_the_object(self):
-    model = nn.Linear(4, 4)
-    target = target_lib.make_target(target_lib.Platform.CPU)
-    with mock.patch("torch.compile", return_value="WRAPPED") as tc:
-      out = compile_lib.CompileConfig().apply(model, target)
-    self.assertEqual(out, "WRAPPED")
-    self.assertIs(tc.call_args.args[0], model)
+    test_utils.assert_close(compiled(x), model(x))
+    self.assertEqual(_unique_graphs(), 1)
 
-  def test_apply_forwards_all_fields(self):
-    cfg = compile_lib.CompileConfig(dynamic=False, fullgraph=True)
-    target = target_lib.make_target(target_lib.Platform.CPU)
-    with mock.patch("torch.compile", return_value="X") as tc:
-      cfg.apply(nn.Linear(2, 2), target)
-    kw = tc.call_args.kwargs
-    self.assertEqual(kw["backend"], "inductor")
-    self.assertIs(kw["dynamic"], False)
-    self.assertIs(kw["fullgraph"], True)
+  def test_apply_compiles_step_callable_matching_eager(self):
+    x = torch.randn(3, 5)
 
-  def test_apply_forwards_default_values(self):
-    target = target_lib.make_target(target_lib.Platform.CPU)
-    with mock.patch("torch.compile", return_value="X") as tc:
-      compile_lib.CompileConfig().apply(nn.Linear(2, 2), target)
-    kw = tc.call_args.kwargs
-    self.assertIsNone(kw["dynamic"])
-    self.assertFalse(kw["fullgraph"])
+    compiled = compile_lib.CompileConfig(scope=compile_lib.Scope.STEP).apply(
+        _project, self.cpu
+    )
 
-  def test_tpu_backend_selected(self):
-    target = target_lib.make_target(target_lib.Platform.V5E_1X1)
-    with mock.patch("torch.compile", return_value="X") as tc, mock.patch(
-        "torch_tpu._internal.compile.TpuBackend", return_value="TPU_BACKEND"
-    ):
-      compile_lib.CompileConfig().apply(nn.Linear(2, 2), target)
-    self.assertEqual(tc.call_args.kwargs["backend"], "TPU_BACKEND")
+    test_utils.assert_close(compiled(x), _project(x))
+    self.assertEqual(_unique_graphs(), 1)
 
-  def test_tpu_backend_dynamism_default(self):
-    target = target_lib.make_target(target_lib.Platform.V5E_1X1)
-    with mock.patch("torch.compile"), mock.patch(
-        "torch_tpu._internal.compile.TpuBackend"
-    ) as mock_backend:
-      compile_lib.CompileConfig().apply(nn.Linear(2, 2), target)
-    mock_backend.assert_called_once_with(dynamism=True)
+  def test_fullgraph_rejects_graph_break(self):
+    compiled = compile_lib.CompileConfig(fullgraph=True).apply(
+        _with_graph_break, self.cpu
+    )
 
-  def test_tpu_backend_dynamism_explicitly_enabled(self):
-    target = target_lib.make_target(target_lib.Platform.V5E_1X1)
-    with mock.patch("torch.compile"), mock.patch(
-        "torch_tpu._internal.compile.TpuBackend"
-    ) as mock_backend:
-      compile_lib.CompileConfig(dynamic=True).apply(nn.Linear(2, 2), target)
-    mock_backend.assert_called_once_with(dynamism=True)
+    with self.assertRaises(torch._dynamo.exc.Unsupported):  # pylint: disable=protected-access  # ASSERT_RAISES_OK=benchmark
+      compiled(torch.ones(2, 5))
 
-  def test_tpu_backend_dynamism_disabled(self):
-    target = target_lib.make_target(target_lib.Platform.V5E_1X1)
-    with mock.patch("torch.compile"), mock.patch(
-        "torch_tpu._internal.compile.TpuBackend"
-    ) as mock_backend:
-      compile_lib.CompileConfig(dynamic=False).apply(nn.Linear(2, 2), target)
-    mock_backend.assert_called_once_with(dynamism=False)
+  def test_default_allows_graph_break(self):
+    compiled = compile_lib.CompileConfig().apply(_with_graph_break, self.cpu)
 
-  def test_config_applies_to_a_callable(self):
-    def step(model, args, kwargs, optim):  # pylint: disable=unused-argument
-      return None
+    x = torch.ones(2, 5)
+    test_utils.assert_close(compiled(x), _with_graph_break(x))
 
-    target = target_lib.make_target(target_lib.Platform.CPU)
-    with mock.patch("torch.compile", return_value="COMPILED_STEP") as tc:
-      out = compile_lib.CompileConfig(scope=compile_lib.Scope.STEP).apply(
-          step, target
-      )
-    self.assertEqual(out, "COMPILED_STEP")
-    self.assertIs(tc.call_args.args[0], step)
+  def test_dynamic_controls_recompiles_across_shapes(self):
+    # dynamic=True traces once with symbolic shapes; dynamic=None
+    # (automatic dynamic) recompiles once as dynamic after the first shape
+    # change; dynamic=False recompiles for every new shape.
+    for dynamic, expected_graphs in ((True, 1), (None, 2), (False, 3)):
+      with self.subTest(dynamic=dynamic):
+        torch._dynamo.reset()  # pylint: disable=protected-access
+        torch._dynamo.utils.counters.clear()  # pylint: disable=protected-access
+        compiled = compile_lib.CompileConfig(dynamic=dynamic).apply(
+            _project, self.cpu
+        )
+        for rows in (2, 3, 4):
+          x = torch.randn(rows, 5)
+          test_utils.assert_close(compiled(x), _project(x))
+        self.assertEqual(_unique_graphs(), expected_graphs)
 
-  def test_scope_does_not_affect_apply(self):
-    obj = nn.Linear(2, 2)
-    target = target_lib.make_target(target_lib.Platform.CPU)
-    with mock.patch("torch.compile", return_value="X") as tc:
-      compile_lib.CompileConfig(scope=compile_lib.Scope.MODEL).apply(
-          obj, target
-      )
-      model_kwargs = tc.call_args.kwargs
-      compile_lib.CompileConfig(scope=compile_lib.Scope.STEP).apply(obj, target)
-      step_kwargs = tc.call_args.kwargs
-    self.assertEqual(model_kwargs, step_kwargs)
+  def test_cpu_selects_inductor_and_configures_it(self):
+    with torch._inductor.config.patch(compile_threads=8):  # pylint: disable=protected-access
+      backend = compile_lib.CompileConfig().select_backend(self.cpu)
+      self.assertEqual(torch._inductor.config.compile_threads, 1)  # pylint: disable=protected-access
+    self.assertEqual(backend, "inductor")
 
-  def test_cuda_backend_calls_configure_inductor_for_benchmarks(self):
+  def test_cuda_selects_inductor(self):
     target = target_lib.make_target(target_lib.Platform.B200_1)
-    with mock.patch("torch.compile", return_value="X") as tc, mock.patch.object(
-        device_utils, "configure_inductor_for_benchmarks"
-    ) as mock_cfg:
-      compile_lib.CompileConfig().apply(nn.Linear(2, 2), target)
-    mock_cfg.assert_called_once()
-    self.assertEqual(tc.call_args.kwargs["backend"], "inductor")
+    self.assertEqual(
+        compile_lib.CompileConfig().select_backend(target), "inductor"
+    )
+
+  def test_tpu_backend_dynamism_follows_dynamic(self):
+    target = target_lib.make_target(target_lib.Platform.V5E_1X1)
+    # TODO(wan): revisit DECISION (b/568592967): TpuBackend only exposes
+    # dynamism as a private attribute and cannot compile on CPU, so the real
+    # backend object's state is checked instead of running a TPU compile.
+    for dynamic, expected_dynamism in (
+        (None, True),
+        (True, True),
+        (False, False),
+    ):
+      with self.subTest(dynamic=dynamic):
+        backend = compile_lib.CompileConfig(dynamic=dynamic).select_backend(
+            target
+        )
+        self.assertIsInstance(backend, torch_tpu_compile.TpuBackend)
+        self.assertIs(backend._dynamism, expected_dynamism)  # pylint: disable=protected-access
 
 
 if __name__ == "__main__":
