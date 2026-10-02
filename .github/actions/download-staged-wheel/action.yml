@@ -16,7 +16,9 @@ name: "Download Staged Wheel"
 
 description: >-
   Downloads the torch_tpu wheel for one Python version from a GCS release
-  staging folder into dist/.
+  staging folder into dist/ and checks it against the SHA256SUMS staged with
+  it, which the publish job also checks, so the tests run on the exact bytes
+  that get published.
 inputs:
   gcs_wheel_dir:
     description: "GCS folder with the wheels"
@@ -27,7 +29,7 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - name: Download wheel from GCS
+    - name: Download and check wheel
       shell: bash
       env:
         GCS_WHEEL_DIR: ${{ inputs.gcs_wheel_dir }}
@@ -41,3 +43,18 @@ runs:
         tag="cp${PYTHON_VERSION/./}"
         mkdir -p dist
         gcloud storage cp "${GCS_WHEEL_DIR%/}/torch_tpu-${version}-${tag}-${tag}-*.whl" dist/
+        if ! gcloud storage cp "${GCS_WHEEL_DIR%/}/SHA256SUMS" "$RUNNER_TEMP/"; then
+          echo "::error::No SHA256SUMS in ${GCS_WHEEL_DIR}; did the staging job finish?" >&2
+          exit 1
+        fi
+        cd dist
+        # sha256sum --ignore-missing skips files it has no line for, so check
+        # separately that every downloaded wheel is listed.
+        wheels=(torch_tpu-"${version}"-"${tag}"-"${tag}"-*.whl)
+        for wheel in "${wheels[@]}"; do
+          if ! awk -v f="$wheel" '$2 == f {found = 1} END {exit !found}' "$RUNNER_TEMP/SHA256SUMS"; then
+            echo "::error::${wheel} is not listed in ${GCS_WHEEL_DIR%/}/SHA256SUMS" >&2
+            exit 1
+          fi
+        done
+        sha256sum --check --strict --ignore-missing "$RUNNER_TEMP/SHA256SUMS"
