@@ -107,13 +107,15 @@ TEST(EnvVarsTest, GetBooleanEnvOnceUnsetReturnsNullopt) {
 }
 
 TEST(EnvVarsTest, GetBooleanEnvOnceParsesFalseFromZero) {
-  setenv(kTpuDeferAndFuse, "0", 1);
-  EXPECT_EQ(GetBooleanEnvOnce<kTpuDeferAndFuse>(), false);
+  setenv(kTorchTpuEnableDebugChecksEnvVar, "0", 1);
+  EXPECT_EQ(GetBooleanEnvOnce<kTorchTpuEnableDebugChecksEnvVar>(), false);
 }
 
 TEST(EnvVarsTest, GetBooleanEnvOnceParsesTrueFromString) {
-  setenv(kTpuLaunchBlocking, "true", 1);
-  EXPECT_EQ(GetBooleanEnvOnce<kTpuLaunchBlocking>(), true);
+  setenv(kTorchTpuInternalEnableReassociateNormWeightsEnvVar, "true", 1);
+  EXPECT_EQ(
+      GetBooleanEnvOnce<kTorchTpuInternalEnableReassociateNormWeightsEnvVar>(),
+      true);
 }
 
 TEST(EnvVarsTest, GetBooleanEnvOnceParsesFalseFromString) {

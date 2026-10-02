@@ -81,8 +81,6 @@ inline constexpr char kTorchShowCppStacktracesEnvVar[] =
 // The first port used when deriving slicebuilder addresses for a multi-host
 // job. If not set, 8070 is used.
 inline constexpr char kTorchTpuBasePortEnvVar[] = "TORCH_TPU_BASE_PORT";
-// If both TORCH_TPU_DEFER_AND_FUSE and TPU_DEFER_AND_FUSE are set,
-// TORCH_TPU_DEFER_AND_FUSE takes precedence.
 inline constexpr char kTorchTpuDeferAndFuseEnvVar[] =
     "TORCH_TPU_DEFER_AND_FUSE";  // Used to enable EagerMode::kDeferAndFuse by
                                  // default.
@@ -94,9 +92,6 @@ inline constexpr char kTorchTpuDevicesPerHostEnvVar[] =
 // more bugs in user code, but comes at a significant performance cost for
 // some ops. The debug eager mode enables these checks by default, but can
 // be overridden by setting this env var to "0".
-// If both TORCH_TPU_ENABLE_DEBUG_CHECKS and
-// TORCH_TPU_INTERNAL_ENABLE_DEBUG_CHECKS are set,
-// TORCH_TPU_ENABLE_DEBUG_CHECKS takes precedence.
 inline constexpr char kTorchTpuEnableDebugChecksEnvVar[] =
     "TORCH_TPU_ENABLE_DEBUG_CHECKS";
 // Specifies the fixed port number for the handshake server.
@@ -120,12 +115,6 @@ inline constexpr char kTorchTpuInternalDisableInplaceBufferDonationEnvVar[] =
 // directory path).
 inline constexpr char kTorchTpuInternalDumpMlirPassesToEnvVar[] =
     "TORCH_TPU_INTERNAL_DUMP_MLIR_PASSES_TO";
-// If set to "1", enable expensive debug checks in TorchTPU. This catches
-// more bugs in user code, but comes at a significant performance cost for
-// some ops. The debug eager mode enables these checks by default, but can
-// be overridden by setting this env var to "0".
-inline constexpr char kTorchTpuInternalEnableDebugChecksEnvVar[] =
-    "TORCH_TPU_INTERNAL_ENABLE_DEBUG_CHECKS";
 // If set to "0" or "false", disables reassociating normalization weights.
 // Default is "true".
 inline constexpr char kTorchTpuInternalEnableReassociateNormWeightsEnvVar[] =
@@ -181,13 +170,9 @@ inline constexpr char kTorchTpuInternalXlaOptionsEnvVar[] =
     "TORCH_TPU_INTERNAL_XLA_OPTIONS";
 // Similar to CUDA_LAUNCH_BLOCKING, used to enable
 // EagerMode::kDeferNeverAndLaunchBlocking by default.
-// If both TORCH_TPU_LAUNCH_BLOCKING and TPU_LAUNCH_BLOCKING are set,
-// TORCH_TPU_LAUNCH_BLOCKING takes precedence.
 inline constexpr char kTorchTpuLaunchBlockingEnvVar[] =
     "TORCH_TPU_LAUNCH_BLOCKING";
 // The output directory for TPU profiler XPlane files.
-// If both TORCH_TPU_PROFILER_OUTPUT_DIR and TPU_PROFILER_OUTPUT_DIR are set,
-// TORCH_TPU_PROFILER_OUTPUT_DIR takes precedence.
 inline constexpr char kTorchTpuProfilerOutputDirEnvVar[] =
     "TORCH_TPU_PROFILER_OUTPUT_DIR";
 inline constexpr char kTorchTpuSlicebuilderAddressesEnvVar[] =
@@ -220,15 +205,8 @@ inline constexpr char kTpuChipsPerHostBoundsEnvVar[] =
     "TPU_CHIPS_PER_HOST_BOUNDS";  // Read by Google Cloud.
 inline constexpr char kTpuChipsPerProcessBoundsEnvVar[] =
     "TPU_CHIPS_PER_PROCESS_BOUNDS";
-inline constexpr char kTpuDeferAndFuse[] =
-    "TPU_DEFER_AND_FUSE";  // Used to enable EagerMode::kDeferAndFuse by
-                           // default.
 inline constexpr char kTpuHostBoundsEnvVar[] =
     "TPU_HOST_BOUNDS";  // Read by Google Cloud.
-inline constexpr char kTpuLaunchBlocking[] =
-    "TPU_LAUNCH_BLOCKING";  // Similar to CUDA_LAUNCH_BLOCKING, used enable
-                            // EagerMode::kDeferNeverAndLaunchBlocking by
-                            // default.
 inline constexpr char kTpuPremappedBufferSizeEnvVar[] =
     "TPU_PREMAPPED_BUFFER_SIZE";  // Premapped buffer size in bytes for PjRt
                                   // client.
@@ -237,8 +215,6 @@ inline constexpr char kTpuProcessAddressesEnvVar[] =
 inline constexpr char kTpuProcessBoundsEnvVar[] = "TPU_PROCESS_BOUNDS";
 inline constexpr char kTpuProcessPortEnvVar[] =
     "TPU_PROCESS_PORT";  // Read by Google Cloud.
-// The output directory for TPU profiler XPlane files.
-inline constexpr char kTpuProfilerOutputDirEnvVar[] = "TPU_PROFILER_OUTPUT_DIR";
 // Specifies which TPU chips are visible to this process. Read by libtpu.
 // Note: TPU_VISIBLE_DEVICES is the source of truth for device visibility in
 // TorchTPU. TPU_VISIBLE_CHIPS is overwritten to match TPU_VISIBLE_DEVICES
@@ -310,7 +286,6 @@ inline constexpr auto kEnvVarToStage =
         {kTorchTpuInternalDisableInplaceBufferDonationEnvVar,
          SymbolStage::InternalApi()},
         {kTorchTpuInternalDumpMlirPassesToEnvVar, SymbolStage::InternalApi()},
-        {kTorchTpuInternalEnableDebugChecksEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuInternalEnableReassociateNormWeightsEnvVar,
          SymbolStage::InternalApi()},
         {kTorchTpuInternalHandshakeStageEnvVar, SymbolStage::InternalApi()},
@@ -337,9 +312,7 @@ inline constexpr auto kEnvVarToStage =
         {kTpuChipsPerHostBoundsEnvVar, SymbolStage::InternalImplementation()},
         {kTpuChipsPerProcessBoundsEnvVar,
          SymbolStage::InternalImplementation()},
-        {kTpuDeferAndFuse, std::nullopt},
         {kTpuHostBoundsEnvVar, SymbolStage::InternalImplementation()},
-        {kTpuLaunchBlocking, std::nullopt},
         // Marked as Stable because it is an established XLA/PJRT runtime
         // configuration knob widely used by production workloads. The TorchTPU
         // team is committed to honor this env var.
@@ -347,7 +320,6 @@ inline constexpr auto kEnvVarToStage =
         {kTpuProcessAddressesEnvVar, SymbolStage::InternalImplementation()},
         {kTpuProcessBoundsEnvVar, SymbolStage::InternalImplementation()},
         {kTpuProcessPortEnvVar, SymbolStage::InternalImplementation()},
-        {kTpuProfilerOutputDirEnvVar, std::nullopt},
         {kTpuVisibleChipsEnvVar, SymbolStage::InternalImplementation()},
         // Marked as Stable because it is the standard TPU runtime equivalent to
         // CUDA_VISIBLE_DEVICES that external production consumers and infra

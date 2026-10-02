@@ -1008,7 +1008,7 @@ TEST(GetEnableDebugChecks, IsDisabledInDefaultEagerMode) {
 TEST(GetEnableDebugChecksDeathTest, CanBeEnabledByEnvVar) {
   EXPECT_EXIT(
       {
-        SetEnv<kTorchTpuInternalEnableDebugChecksEnvVar>("1");
+        SetEnv<kTorchTpuEnableDebugChecksEnvVar>("1");
         exit(GetEnableDebugChecks());
       },
       testing::ExitedWithCode(1), "");
@@ -1017,7 +1017,7 @@ TEST(GetEnableDebugChecksDeathTest, CanBeEnabledByEnvVar) {
 TEST(GetEnableDebugChecksDeathTest, CanBeDisabledByEnvVar) {
   EXPECT_EXIT(
       {
-        SetEnv<kTorchTpuInternalEnableDebugChecksEnvVar>("0");
+        SetEnv<kTorchTpuEnableDebugChecksEnvVar>("0");
         exit(GetEnableDebugChecks());
       },
       testing::ExitedWithCode(0), "");
@@ -1027,7 +1027,7 @@ TEST(GetEnableDebugChecksDeathTest, CanBeEnabledByEnvVarInDebugMode) {
   EXPECT_EXIT(
       {
         SetEagerMode(EagerMode::kDeferNeverAndLaunchBlocking);
-        SetEnv<kTorchTpuInternalEnableDebugChecksEnvVar>("1");
+        SetEnv<kTorchTpuEnableDebugChecksEnvVar>("1");
         exit(GetEnableDebugChecks());
       },
       testing::ExitedWithCode(1), "");
@@ -1037,63 +1037,7 @@ TEST(GetEnableDebugChecksDeathTest, CanBeDisabledByEnvVarInDebugMode) {
   EXPECT_EXIT(
       {
         SetEagerMode(EagerMode::kDeferNeverAndLaunchBlocking);
-        SetEnv<kTorchTpuInternalEnableDebugChecksEnvVar>("0");
-        exit(GetEnableDebugChecks());
-      },
-      testing::ExitedWithCode(0), "");
-}
-
-TEST(GetEnableDebugChecksDeathTest, CanBeEnabledByPublicEnvVar) {
-  EXPECT_EXIT(
-      {
-        SetEnv<kTorchTpuEnableDebugChecksEnvVar>("1");
-        exit(GetEnableDebugChecks());
-      },
-      testing::ExitedWithCode(1), "");
-}
-
-TEST(GetEnableDebugChecksDeathTest, CanBeDisabledByPublicEnvVar) {
-  EXPECT_EXIT(
-      {
         SetEnv<kTorchTpuEnableDebugChecksEnvVar>("0");
-        exit(GetEnableDebugChecks());
-      },
-      testing::ExitedWithCode(0), "");
-}
-
-TEST(GetEnableDebugChecksDeathTest, CanBeEnabledByPublicEnvVarInDebugMode) {
-  EXPECT_EXIT(
-      {
-        SetEagerMode(EagerMode::kDeferNeverAndLaunchBlocking);
-        SetEnv<kTorchTpuEnableDebugChecksEnvVar>("1");
-        exit(GetEnableDebugChecks());
-      },
-      testing::ExitedWithCode(1), "");
-}
-
-TEST(GetEnableDebugChecksDeathTest, CanBeDisabledByPublicEnvVarInDebugMode) {
-  EXPECT_EXIT(
-      {
-        SetEagerMode(EagerMode::kDeferNeverAndLaunchBlocking);
-        SetEnv<kTorchTpuEnableDebugChecksEnvVar>("0");
-        exit(GetEnableDebugChecks());
-      },
-      testing::ExitedWithCode(0), "");
-}
-
-TEST(GetEnableDebugChecksDeathTest,
-     PublicEnvVarTakesPrecedenceOverInternalEnvVar) {
-  EXPECT_EXIT(
-      {
-        SetEnv<kTorchTpuEnableDebugChecksEnvVar>("1");
-        SetEnv<kTorchTpuInternalEnableDebugChecksEnvVar>("0");
-        exit(GetEnableDebugChecks());
-      },
-      testing::ExitedWithCode(1), "");
-  EXPECT_EXIT(
-      {
-        SetEnv<kTorchTpuEnableDebugChecksEnvVar>("0");
-        SetEnv<kTorchTpuInternalEnableDebugChecksEnvVar>("1");
         exit(GetEnableDebugChecks());
       },
       testing::ExitedWithCode(0), "");

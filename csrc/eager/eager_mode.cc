@@ -28,20 +28,14 @@ namespace torch_tpu {
 [[nodiscard]] static EagerMode GetDefaultEagerMode() {
   // Compute the mode once and memoize it.
   static const EagerMode mode = [] {
-    const auto launch_blocking_public =
+    const auto launch_blocking =
         GetBooleanEnvOnce<kTorchTpuLaunchBlockingEnvVar>();
-    const auto launch_blocking = launch_blocking_public.has_value()
-                                     ? launch_blocking_public
-                                     : GetBooleanEnvOnce<kTpuLaunchBlocking>();
     if (launch_blocking.value_or(false)) {
       return EagerMode::kDeferNeverAndLaunchBlocking;
     }
 
-    const auto defer_and_fuse_public =
+    const auto defer_and_fuse =
         GetBooleanEnvOnce<kTorchTpuDeferAndFuseEnvVar>();
-    const auto defer_and_fuse = defer_and_fuse_public.has_value()
-                                    ? defer_and_fuse_public
-                                    : GetBooleanEnvOnce<kTpuDeferAndFuse>();
     return defer_and_fuse.value_or(false) ? EagerMode::kDeferAndFuse
                                           : EagerMode::kDeferNever;
   }();

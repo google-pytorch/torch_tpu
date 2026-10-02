@@ -105,52 +105,15 @@ torch_tpu_cc_test(
     ],
 )
 
-# Tests that base output dir can be configured via legacy env var.
-torch_tpu_cc_test(
-    name = "profiler_output_dir_test_legacy",
-    srcs = ["profiler_output_dir_test.cc"],
-    args = [
-        "--expected_output_dir=/legacy_profiler_dir",
-    ],
-    env = {
-        "TPU_PROFILER_OUTPUT_DIR": "/legacy_profiler_dir",
-    },
-    deps = [
-        "//csrc/common:flags",
-        "//csrc/common:oss_test_main",
-        "//csrc/internal/profiler:tpu_profiler_plugin_cc",
-        "@com_google_absl//absl/flags:flag",
-    ],
-)
-
 # Tests that base output dir can be configured via TORCH_TPU_PROFILER_OUTPUT_DIR.
 torch_tpu_cc_test(
-    name = "profiler_output_dir_test_public",
+    name = "profiler_output_dir_test",
     srcs = ["profiler_output_dir_test.cc"],
     args = [
         "--expected_output_dir=/public_profiler_dir",
     ],
     env = {
         "TORCH_TPU_PROFILER_OUTPUT_DIR": "/public_profiler_dir",
-    },
-    deps = [
-        "//csrc/common:flags",
-        "//csrc/common:oss_test_main",
-        "//csrc/internal/profiler:tpu_profiler_plugin_cc",
-        "@com_google_absl//absl/flags:flag",
-    ],
-)
-
-# Tests that TORCH_TPU_PROFILER_OUTPUT_DIR takes precedence over TPU_PROFILER_OUTPUT_DIR.
-torch_tpu_cc_test(
-    name = "profiler_output_dir_test_precedence",
-    srcs = ["profiler_output_dir_test.cc"],
-    args = [
-        "--expected_output_dir=/public_profiler_dir",
-    ],
-    env = {
-        "TORCH_TPU_PROFILER_OUTPUT_DIR": "/public_profiler_dir",
-        "TPU_PROFILER_OUTPUT_DIR": "/legacy_profiler_dir",
     },
     deps = [
         "//csrc/common:flags",

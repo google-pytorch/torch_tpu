@@ -810,12 +810,7 @@ std::string AdaptExternalErrorMessage(const std::string_view message) {
 }
 
 bool GetEnableDebugChecks() {
-  const auto debug_checks_public =
-      GetBooleanEnvOnce<kTorchTpuEnableDebugChecksEnvVar>();
-  const auto env_var =
-      debug_checks_public.has_value()
-          ? debug_checks_public
-          : GetBooleanEnvOnce<kTorchTpuInternalEnableDebugChecksEnvVar>();
+  const auto env_var = GetBooleanEnvOnce<kTorchTpuEnableDebugChecksEnvVar>();
   // If the env var is set, respect the user's choice.
   if (env_var.has_value()) {
     return *env_var;
