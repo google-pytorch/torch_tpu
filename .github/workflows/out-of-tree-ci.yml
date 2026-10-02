@@ -12,66 +12,123 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# PyTorch Out-of-Tree (OOT) Dispatch / CRCR L1 Integration
+# PyTorch Out-of-Tree (OOT) / CRCR Nightly Integration
 #
-# Origin: Based on the PyTorch CRCR (Cross-Repository Continuous Registration) template
-# https://github.com/pytorch/crcr-test/blob/main/README.md#step-3-create-a-dispatch-receiver-workflow.
+# Origin: Modeled after the PyTorch CRCR (Cross-Repository CI Relay) nightly
+# self-report pattern used by L2 partner repositories (e.g.,
+# https://github.com/TorchedHat/pytorch-redhat-ci/blob/main/.github/workflows/crcr-nightly.yml)
+# and the CRCR callback guide:
+# https://github.com/pytorch/crcr-test/blob/main/README.md.
 #
-# Purpose: Triggers CI runs in response to upstream PyTorch https://github.com/pytorch/pytorch push
-# events via repository_dispatch webhooks, running the TorchTPU native test suite against new
-# upstream commits.
-#
-# Expected Behaviors:
-# 1. The PyTorch CRCR relay sends a `repository_dispatch` webhook of type `push` when commits land
-#    in upstream `main` or when a `ciflow` tag is created.
-# 2. This workflow triggers, checking out TorchTPU and the specific PyTorch SHA provided in the
-#    webhook payload (`client_payload.payload.after`).
-# 3. It runs the TorchTPU native test targets to detect breakages early.
-#
-# Anti-pattern warning: No `workflow_dispatch` triggers or remote connection debugging steps to this
-# workflow. See go/ml-github-actions:connect#enable-workflow-dispatch.
-# This workflow relies entirely on the `client_payload` from the `repository_dispatch` webhook to
-# determine which PyTorch SHA to check out. A manual `workflow_dispatch` run will lack this payload,
-# causing the PyTorch checkout step to fail or silently fall back to `main`, defeating the purpose
-# of debugging a specific failing commit.
-#
-# Test: Because GitHub strictly limits `repository_dispatch` events to the default branch `main`, we
-# physically cannot trigger the workflow from a PR. To test modifications to this workflow in a PR
-# before merging, follow these steps:
-# 1. Temporarily swap the `on: repository_dispatch` block below for a PR trigger:
-#      on:
-#        pull_request:
-#          branches:
-#            - main
-# 2. In the "Checkout PyTorch at dispatched SHA" step, temporarily replace the `ref:` variable with
-#    a hardcoded, valid PyTorch SHA.
-# 3. Trigger the workflow.
-# 4. CRITICAL: Revert these temporary changes in steps 1 and 2 before submitting your PR.
+# Purpose: Runs daily after the upstream PyTorch nightly release is published,
+# resolves the upstream `pytorch/pytorch` `main` commit SHA that the latest
+# nightly was cut from, builds the TorchTPU multi-ABI wheel (with RBE enabled),
+# runs the CPU and TPU v7 smoke tests against the latest PyTorch nightly wheel,
+# and reports the results to the PyTorch CRCR HUD (`event-type: nightly`).
 
 name: PyTorch Out-of-Tree Dispatch
 
 on:
-  repository_dispatch:
-    types:
-      - push
-
-run-name: >-
-  Dispatch - ${{ github.event.client_payload.payload.ref }}
-
-concurrency:
-  group: >-
-    oot-${{ github.event.client_payload.payload.repository.full_name }}-${{ github.event.client_payload.payload.ref || github.run_id }}
-  cancel-in-progress: true
+  schedule:
+    # Run daily at 10:30 UTC (~1-2 hours after pytorch/pytorch cuts the daily
+    # nightly branch commit and uploads the cp314 nightly wheels).
+    - cron: "30 10 * * *"
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened, labeled]
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.ref_name != 'main' }}
+
 jobs:
+  resolve_source:
+    name: "CRCR nightly / resolve source"
+    if: >-
+      github.event_name == 'schedule' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:crcr-nightly')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+      default_python_version: "3.14"
+    steps:
+      - name: Fetch source SHA from PyTorch nightly branch
+        id: sha
+        run: |
+          set -euo pipefail
+          COMMIT_MSG=$(curl -fsSL "https://api.github.com/repos/pytorch/pytorch/commits?sha=nightly&per_page=1" | jq -r '.[0].commit.message')
+          SOURCE_SHA=$(echo "$COMMIT_MSG" | grep -oE '\([0-9a-f]{40}\)' | tr -d '()' || true)
+          if [ -z "$SOURCE_SHA" ]; then
+            echo "::error::Could not extract source SHA from latest pytorch/pytorch nightly commit message: ${COMMIT_MSG}"
+            exit 1
+          fi
+          echo "Resolved PyTorch nightly source main SHA: ${SOURCE_SHA}"
+          echo "sha=${SOURCE_SHA}" >> "$GITHUB_OUTPUT"
+          {
+            echo "## CRCR Nightly Source Resolution"
+            echo ""
+            echo "| Property | Value |"
+            echo "|----------|-------|"
+            echo "| Nightly Commit Message | \`${COMMIT_MSG}\` |"
+            echo "| Upstream Main SHA | [\`${SOURCE_SHA}\`](https://github.com/pytorch/pytorch/commit/${SOURCE_SHA}) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build_wheel:
+    name: "CRCR nightly / build wheel (Python ${{ needs.resolve_source.outputs.default_python_version }})"
+    needs: resolve_source
+    runs-on: linux-x86-n4-16
+    container:
+      image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:30a9cf2ed330736957b3256dd3df69a13a556ae46626e9ad2ba205fa7a3c0051"  # Tag infrastructure-public-image-f0ac56f68949 (built 2026-09-21)
+    outputs:
+      gcs_wheel_dir: ${{ steps.build.outputs.gcs_wheel_dir }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      # The k8s container hook mounts the runner's /home/runner/_work volume at
+      # /__w inside the job container. Composite actions that expand
+      # ${{ github.action_path }} in `run:` reference /home/runner/_work/_actions,
+      # so symlink /home/runner/_work -> /__w before invoking external composite actions.
+      - name: Map runner work directory in container
+        run: |
+          if [ -d "/home/runner/_work" ] && [ ! -L "/home/runner/_work" ]; then
+            rm -rf /home/runner/_work
+          fi
+          mkdir -p /home/runner
+          ln -sfn /__w /home/runner/_work
+
+      - name: Checkout TorchTPU
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Build and upload wheel
+        id: build
+        uses: ./.github/actions/build-wheel
+        with:
+          python_version: ${{ needs.resolve_source.outputs.default_python_version }}
+
+      - name: Report build to CRCR
+        if: always() && github.event_name == 'schedule'
+        continue-on-error: true
+        uses: pytorch/test-infra/.github/actions/cross-repo-ci-relay-callback@28dee7456d0348d74a5faa85098bb028b263ee2b  # main
+        with:
+          status: completed
+          conclusion: ${{ job.status }}
+          delivery-id: ${{ needs.resolve_source.outputs.sha }}
+          event-type: nightly
+          job-name: "linux-x86_64 / build"
+
   run_tests:
-    # Only trigger on upstream main branch merges and filter out the massive firehose of ciflow
-    # tags, ghstack branches, and developer pushes that the PyTorch CRCR relay blindly forwards.
-    if: github.event.client_payload.payload.ref == 'refs/heads/main'
-    name: "Presubmit on ${{ matrix.job_info.name || matrix.job_info.runner }} against dispatched PyTorch"
+    name: "CRCR nightly / test on ${{ matrix.job_info.name }} (PyTorch Nightly)"
+    needs: [resolve_source, build_wheel]
+    if: ${{ !cancelled() && needs.build_wheel.result == 'success' }}
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -79,63 +136,62 @@ jobs:
           {
             name: "CPU",
             runner: "linux-x86-n4-16",
-            config: "ci_cpu_presubmit",
-            extra_flags: "",
+            nox_smoke_test: "cpu-nightly",
+            job_name: "linux-x86_64 / test (cpu)",
           },
           {
-            runner: "linux-x86-tpu7x-224-4tpu",
-            config: "ci_tpu_v7_presubmit",
-            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
+            name: "TPU v7",
+            runner: "linux-x86-tpu7x-56-1tpu",
+            nox_smoke_test: "tpu-nightly",
+            job_name: "linux-x86_64 / test (tpu-v7)",
           }
         ]
     runs-on: ${{ matrix.job_info.runner }}
     container:
       image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:30a9cf2ed330736957b3256dd3df69a13a556ae46626e9ad2ba205fa7a3c0051"  # Tag infrastructure-public-image-f0ac56f68949 (built 2026-09-21)
+      options: --privileged
 
     steps:
+      # The k8s container hook mounts the runner's /home/runner/_work volume at
+      # /__w inside the job container. Composite actions that expand
+      # ${{ github.action_path }} in `run:` reference /home/runner/_work/_actions,
+      # so symlink /home/runner/_work -> /__w before invoking external composite actions.
+      - name: Map runner work directory in container
+        run: |
+          if [ -d "/home/runner/_work" ] && [ ! -L "/home/runner/_work" ]; then
+            rm -rf /home/runner/_work
+          fi
+          mkdir -p /home/runner
+          ln -sfn /__w /home/runner/_work
+
       - name: Checkout TorchTPU
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-
-      - name: Checkout PyTorch at dispatched SHA
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          repository: pytorch/pytorch
-          ref: ${{ github.event.client_payload.payload.after }}
-          path: pytorch
 
       - name: Fix Git Workspace Ownership
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-      - name: Run TorchTPU Native Tests
+      - name: Download Wheel from GCS
         env:
-          PYTORCH_SHA: ${{ github.event.client_payload.payload.after }}
+          PYTHON_VERSION: ${{ needs.resolve_source.outputs.default_python_version }}
+          GCS_WHEEL_DIR: ${{ needs.build_wheel.outputs.gcs_wheel_dir }}
         run: |
-          echo "Testing against PyTorch SHA: ${PYTORCH_SHA}"
+          mkdir -p dist
+          PYTHON_VER_CLEAN=$(echo "${PYTHON_VERSION}" | tr -d '.')
+          gcloud storage cp "${GCS_WHEEL_DIR}*cp${PYTHON_VER_CLEAN}*.whl" dist/
 
-          set +e
-          bazel test //... \
-            --config=${{ matrix.job_info.config }} \
-            --override_repository="pytorch=$GITHUB_WORKSPACE/pytorch" \
-            ${{ matrix.job_info.extra_flags }}
-
-          BAZEL_EXIT_CODE=$?
-          set -e
-
-          if [ $BAZEL_EXIT_CODE -eq 4 ]; then
-            echo "No tests found (Exit Code 4). Treating as success."
-            exit 0
-          elif [ $BAZEL_EXIT_CODE -ne 0 ]; then
-            echo "Bazel test failed with exit code $BAZEL_EXIT_CODE."
-            exit $BAZEL_EXIT_CODE
-          fi
-
-      - name: Log event to step summary
-        if: always()
+      - name: Run PyTorch Nightly smoke tests via nox
         env:
-          EVENT_JSON: ${{ toJson(github.event) }}
-        run: |
-          {
-            echo '```json'
-            echo "$EVENT_JSON"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          PYTHON_VERSION: ${{ needs.resolve_source.outputs.default_python_version }}
+          NOX_SMOKE_TEST: ${{ matrix.job_info.nox_smoke_test }}
+        run: uvx nox --force-python "${PYTHON_VERSION}" -s "smoke_test(${NOX_SMOKE_TEST})"
+
+      - name: Report completion to CRCR
+        if: always() && github.event_name == 'schedule'
+        continue-on-error: true
+        uses: pytorch/test-infra/.github/actions/cross-repo-ci-relay-callback@28dee7456d0348d74a5faa85098bb028b263ee2b  # main
+        with:
+          status: completed
+          conclusion: ${{ job.status }}
+          delivery-id: ${{ needs.resolve_source.outputs.sha }}
+          event-type: nightly
+          job-name: ${{ matrix.job_info.job_name }}
