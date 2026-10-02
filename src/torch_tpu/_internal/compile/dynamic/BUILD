@@ -181,11 +181,14 @@ torch_tpu_py_library(
     deps = [
         ":output_sym_shape",
         ":sym_utils",
+        ":symbol_bounds",
         ":view_decomposition",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal/benchmarks:xprof_adapter",
         "//src/torch_tpu/_internal/compile:compiler",
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",
+        "@pypi//sympy",
     ],
 )
 

@@ -29,11 +29,11 @@ from torch_tpu._internal.compile import compiler
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.dynamic import sym_utils
 from torch_tpu._internal.compile.dynamic import view_ops_passes
+from torch_tpu._internal.compile.dynamic.dynamic_executable import BucketCompilationSpec
 from torch_tpu._internal.compile.dynamic.dynamic_executable import DynamicTpuCompiledExecutable
 from torch_tpu._internal.compile.dynamic.graph_transformations import apply_dynamism_transformations
 from torch_tpu._internal.compile.dynamic.graph_transformations import apply_pre_dynamism_transformations
 from torch_tpu._internal.compile.dynamic.output_sym_shape import create_output_sym_shapes
-from torch_tpu._internal.compile.dynamic.output_sym_shape import OutputSymShape
 from torch_tpu._internal.compile.dynamic.sym_bounds_manager import SymBoundsManager
 from torch_tpu._internal.compile.dynamic.symbol_bounds import SymbolBounds
 from torch_tpu._internal.utils import utils
@@ -124,6 +124,7 @@ class DynamicCompiler(compiler.Compiler):
       async_compile: bool = True,
       debug: bool | compiler.TpuCompileDebug | None = None,
       num_buckets: int = 1,
+      num_lookahead_buckets: int = 1,
   ):
     """Initializes the DynamicCompiler instance.
 
@@ -136,11 +137,14 @@ class DynamicCompiler(compiler.Compiler):
         compilation debug artifacts. Note: Passing a bool is deprecated; pass a
         TpuCompileDebug container instead.
       num_buckets: Number of 128-aligned dynamic shape buckets to generate.
+      num_lookahead_buckets: Number of subsequent buckets to asynchronously
+        pre-compile ahead of the current bucket.
     """
     if compilation_context is None:
       compilation_context = compiler.CompilationContext()
     super().__init__(compilation_context, debug=debug)
     self._num_buckets = num_buckets
+    self._num_lookahead_buckets = num_lookahead_buckets
     self.static_compiler = compiler.StaticCompiler(
         compilation_context,
         async_compile=async_compile,
@@ -160,31 +164,21 @@ class DynamicCompiler(compiler.Compiler):
         view_ops_passes.ReplaceDynamicOutputBroadcastOpsPreGradPass()
     )
 
-  def _compile_for_symbol_bounds(
+  def _prepare_bucket_spec(
       self,
       graph_module: torch.fx.GraphModule,
       example_inputs: Sequence[InputType],
       symbol_bounds: SymbolBounds,
-      output_sym_shapes: Sequence[OutputSymShape],
-      is_fwd: bool,
-      module_name: str | None,
       use_pad_real_to_static: bool,
-      view_arg_indices: set[int],
-  ) -> DynamicTpuCompiledExecutable:
-    """Transforms the FX graph and creates an executable for the given SymbolBounds.
-
-    Clones `graph_module.graph` before running `apply_dynamism_transformations`
-    so the caller's `graph_module` is not mutated in place and this helper can
-    be called repeatedly for different `SymbolBounds`.
-    """
+  ) -> BucketCompilationSpec:
+    """Transforms a cloned FX graph and creates bounded inputs for `symbol_bounds`."""
     cloned_graph_module = torch.fx.GraphModule(
         graph_module, copy.deepcopy(graph_module.graph)
     )
     cloned_graph_module.meta = copy.copy(graph_module.meta)
-    graph_module = cloned_graph_module
 
     apply_dynamism_transformations(
-        graph_module,
+        cloned_graph_module,
         example_inputs,
         symbol_bounds,
         use_pad_real_to_static=use_pad_real_to_static,
@@ -192,11 +186,11 @@ class DynamicCompiler(compiler.Compiler):
 
     # TODO: Prevent truncation of log lines.
     logging.debug(
-        "[DynamicTpuBackend] Transformed FX Graph: %s",
-        LazyString(graph_module.print_readable),
+        "[DynamicTpuBackend] Transformed FX Graph for bounds %s: %s",
+        symbol_bounds,
+        LazyString(cloned_graph_module.print_readable),
     )
 
-    # Create example inputs for the model executable and construct bounds.
     bounded_model_inputs, model_input_bounds = _create_bounded_model_inputs(
         example_inputs, symbol_bounds
     )
@@ -207,17 +201,11 @@ class DynamicCompiler(compiler.Compiler):
         model_input_bounds,
     )
 
-    return DynamicTpuCompiledExecutable(
-        static_compiler=self.static_compiler,
-        graph_module=graph_module,
-        example_inputs=example_inputs,
-        output_sym_shapes=output_sym_shapes,
-        is_fwd=is_fwd,
+    return BucketCompilationSpec(
+        symbol_bounds=symbol_bounds,
+        graph_module=cloned_graph_module,
         bounded_model_inputs=bounded_model_inputs,
         model_input_bounds=model_input_bounds,
-        view_arg_indices=view_arg_indices,
-        use_pad_real_to_static=use_pad_real_to_static,
-        module_name=module_name,
     )
 
   def __call__(
@@ -301,13 +289,24 @@ class DynamicCompiler(compiler.Compiler):
 
     use_pad_real_to_static = _can_use_pad_real_to_static(example_inputs)
 
-    return self._compile_for_symbol_bounds(
-        graph_module=graph_module,
+    bucket_specs = [
+        self._prepare_bucket_spec(
+            graph_module=graph_module,
+            example_inputs=example_inputs,
+            symbol_bounds=symbol_bounds,
+            use_pad_real_to_static=use_pad_real_to_static,
+        )
+        for symbol_bounds in bucketed_symbol_bounds
+    ]
+
+    return DynamicTpuCompiledExecutable(
+        static_compiler=self.static_compiler,
         example_inputs=example_inputs,
-        symbol_bounds=merged_symbol_bounds,
+        bucket_specs=bucket_specs,
         output_sym_shapes=output_sym_shapes,
         is_fwd=is_fwd,
-        module_name=module_name,
-        use_pad_real_to_static=use_pad_real_to_static,
         view_arg_indices=view_arg_indices,
+        use_pad_real_to_static=use_pad_real_to_static,
+        module_name=module_name,
+        num_lookahead_buckets=self._num_lookahead_buckets,
     )

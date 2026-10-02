@@ -16,10 +16,13 @@
 
 from __future__ import annotations
 
+import bisect
 from collections.abc import Callable, Sequence
+import dataclasses
 from typing import Any, NamedTuple
 
 from absl import logging
+import sympy
 import torch
 from torch._logging import LazyString
 from torch_tpu._internal.compile import compiler
@@ -27,6 +30,18 @@ from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.dynamic import sym_utils
 from torch_tpu._internal.compile.dynamic import view_decomposition as decompose
 from torch_tpu._internal.compile.dynamic.output_sym_shape import OutputSymShape
+from torch_tpu._internal.compile.dynamic.symbol_bounds import SymbolBounds
+from torch_tpu._internal.benchmarks import xprof_adapter
+
+
+@dataclasses.dataclass(frozen=True)
+class BucketCompilationSpec:
+  """Pre-transformed FX graph and bounded inputs for a single SymbolBounds bucket."""
+
+  symbol_bounds: SymbolBounds
+  graph_module: torch.fx.GraphModule
+  bounded_model_inputs: Sequence[torch.Tensor | int]
+  model_input_bounds: Sequence[Any]
 
 
 class _TensorInfo(NamedTuple):
@@ -47,43 +62,40 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
   def __init__(
       self,
       static_compiler: compiler.StaticCompiler,
-      graph_module: torch.fx.GraphModule,
       example_inputs: Sequence[Any],
+      bucket_specs: Sequence[BucketCompilationSpec],
       output_sym_shapes: Sequence[OutputSymShape],
       is_fwd: bool,
-      bounded_model_inputs: list[torch.Tensor | int],
-      model_input_bounds: list[Any],
       view_arg_indices: set[int],
       use_pad_real_to_static: bool = True,
       module_name: str | None = None,
+      num_lookahead_buckets: int = 1,
   ):
     """Initializes DynamicTpuCompiledExecutable.
 
     Args:
       static_compiler: Compiler used to compile static MLIR executables on
-        layout cache misses.
-      graph_module: Transformed FX graph module specialized for this
-        executable's symbol bounds.
+        bucket or layout cache misses.
       example_inputs: Original example inputs used to build the runtime input
         packing plan.
+      bucket_specs: Ordered sequence of pre-transformed BucketCompilationSpec
+        objects, one per SymbolBounds bucket.
       output_sym_shapes: Symbolic shape specs for computing runtime shapes of
         output tensors.
       is_fwd: Whether this executable represents a forward pass (True) or
         backward pass (False).
-      bounded_model_inputs: Example inputs specialized to static upper bounds
-        for compilation.
-      model_input_bounds: Per-input TensorBounds (or None for static inputs) for
-        lowering and padding.
       view_arg_indices: Input argument indices whose view tensors were
         decomposed into base tensors.
       use_pad_real_to_static: Whether inputs are padded in-graph via
         pad_real_to_static instead of a pad subgraph.
       module_name: Optional custom name for the compiled MLIR module.
+      num_lookahead_buckets: Number of subsequent buckets to asynchronously
+        pre-compile ahead of the current bucket.
     """
     super().__init__()
     self._static_compiler = static_compiler
-    self._graph_module = graph_module
     self._example_inputs = example_inputs
+    self._bucket_specs = list(bucket_specs)
     self._output_sym_shapes = output_sym_shapes
     self._promoted_scalar_output_indices = [
         idx for idx, s in enumerate(output_sym_shapes) if s.is_promoted_scalar
@@ -91,12 +103,12 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
     self._is_fwd = is_fwd
     self._view_arg_indices = view_arg_indices
     self._module_name = module_name
+    self._num_lookahead_buckets = num_lookahead_buckets
 
-    # Cache for compiled executables: layout_key -> executable.
-    self._model_executables: dict[tuple[tuple[int, ...], ...], Any] = {}
-
-    self._bounded_model_inputs = bounded_model_inputs
-    self._model_input_bounds = model_input_bounds
+    # Cache for compiled executables: (bucket_idx, layout_key) -> executable.
+    self._model_executables: dict[
+        tuple[int, tuple[tuple[int, ...], ...]], Any
+    ] = {}
 
     self._dynamic_outputs = [
         out_shape.is_dynamic for out_shape in output_sym_shapes
@@ -134,6 +146,7 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
   def _compile_and_execute_pad_subgraph(
       self,
       tensor_args: Sequence[torch.Tensor],
+      bucket_idx: int,
   ) -> list[torch.Tensor]:
     """Compiles and executes the pad subgraph."""
     if not tensor_args:
@@ -144,15 +157,15 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
     pad_module_args = []
     pad_module_info = []
     pad_module_bounds = []
+    dynamic_tensor_bounds = self._bucket_dynamic_tensor_bounds[bucket_idx]
 
     for i, tensor in enumerate(tensor_args):
-      bounds = self._dynamic_tensor_bounds[i]
-
       if tpu_torch_compile.is_device_shape_dynamic(tensor):
         # Already dynamic, reuse it
         outputs[i] = tensor
       else:
         # Non-dynamic tensor, pad and make it dynamic
+        bounds = dynamic_tensor_bounds[i]
         pad_module_indices.append(i)
         pad_module_args.append(tensor)
         pad_module_info.append(
@@ -199,9 +212,11 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
     self._dynamic_scalar_map = []
     self._static_scalar_map = []
     self._dynamic_input_indices = []
-    self._dynamic_tensor_bounds = [
-        b for b in self._model_input_bounds if b is not None
+    self._bucket_dynamic_tensor_bounds = [
+        [b for b in spec.model_input_bounds if b is not None]
+        for spec in self._bucket_specs
     ]
+    self._symbol_to_input_loc: dict[sympy.Symbol, int] = {}
 
     target_idx = 0
     pad_idx = 0
@@ -212,6 +227,12 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
 
       if isinstance(arg, torch.SymInt):
         self._dynamic_scalar_map.append((idx, target_idx))
+        sym_expr = getattr(getattr(arg, "node", None), "expr", None)
+        if (
+            isinstance(sym_expr, sympy.Symbol)
+            and sym_expr not in self._symbol_to_input_loc
+        ):
+          self._symbol_to_input_loc[sym_expr] = idx
       elif isinstance(arg, torch.Tensor):
         if sym_utils.has_dynamic_shape(arg):
           self._dynamic_tensor_map.append((pad_idx, target_idx))
@@ -228,6 +249,44 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
     self._dynamic_target_indices = {
         target_idx for _, target_idx in self._dynamic_tensor_map
     }
+    self._symbol_bucket_uppers: list[tuple[int, tuple[int, ...]]] = [
+        (
+            arg_idx,
+            tuple(
+                int(spec.symbol_bounds.symbol_ranges[sym].upper)
+                for spec in self._bucket_specs
+            ),
+        )
+        for sym, arg_idx in self._symbol_to_input_loc.items()
+        if all(
+            sym in spec.symbol_bounds.symbol_ranges
+            for spec in self._bucket_specs
+        )
+    ]
+
+  def _get_bucket_index(self, args: Sequence[Any]) -> int:
+    """Returns the index of the first SymbolBounds bucket that fits `args`."""
+    num_buckets = len(self._bucket_specs)
+    if num_buckets <= 1 or not self._symbol_bucket_uppers or not args:
+      return 0
+
+    bucket_idx = 0
+    for arg_idx, uppers in self._symbol_bucket_uppers:
+      idx = bisect.bisect_left(uppers, int(args[arg_idx]))
+      if idx > bucket_idx:
+        bucket_idx = idx
+
+    if bucket_idx >= num_buckets:
+      runtime_symbol_vals: dict[sympy.Symbol, int] = {
+          sym: int(args[arg_idx])
+          for sym, arg_idx in self._symbol_to_input_loc.items()
+      }
+      raise ValueError(
+          f"Runtime symbol values {runtime_symbol_vals} exceed all compiled"
+          f" buckets: {[spec.symbol_bounds for spec in self._bucket_specs]}"
+      )
+
+    return bucket_idx
 
   def _get_model_inputs(
       self,
@@ -350,51 +409,103 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
 
     return tuple(outputs_list) if isinstance(outputs, tuple) else outputs_list
 
+  def _compile_bucket(
+      self,
+      bucket_idx: int,
+      argument_layouts: Sequence[Sequence[int]] | None = None,
+  ) -> compiler.CompiledArtifact:
+    """Compiles the pre-transformed FX graph for `bucket_idx` and `argument_layouts`."""
+    with xprof_adapter.TraceMe(
+        "DynamicTpuCompiledExecutable._compile_bucket",
+        bucket_idx=bucket_idx,
+    ):
+      spec = self._bucket_specs[bucket_idx]
+      return self._static_compiler(
+          spec.graph_module,
+          spec.bounded_model_inputs,
+          is_fwd=self._is_fwd,
+          bounds=spec.model_input_bounds,
+          argument_layouts=argument_layouts,
+          dynamic_outputs=self._dynamic_outputs,
+          module_name=self._module_name,
+      )
+
   def get_executable(
       self,
       layout_key: tuple[tuple[int, ...], ...],
       argument_layouts: Sequence[Sequence[int]] | None = None,
+      bucket_idx: int = 0,
   ) -> Any:
-    """Returns the resolved compiled executable for `layout_key`, compiling if needed."""
-    if layout_key not in self._model_executables:
-      logging.debug(
-          "[DynamicTpuBackend] Compilation cache miss for layouts: %s."
-          " Compiling new executable.",
-          layout_key,
-      )
-      try:
-        executable = self._static_compiler(
-            self._graph_module,
-            self._bounded_model_inputs,
-            is_fwd=self._is_fwd,
-            bounds=self._model_input_bounds,
-            argument_layouts=argument_layouts,
-            dynamic_outputs=self._dynamic_outputs,
-            module_name=self._module_name,
+    """Returns the resolved compiled executable for `(bucket_idx, layout_key)`, compiling if needed."""
+    cache_key = (bucket_idx, layout_key)
+    is_new_or_unresolved = (
+        cache_key not in self._model_executables
+        or not getattr(self._model_executables[cache_key], "is_resolved", True)
+    )
+    submitted_lookahead_keys: list[tuple[int, tuple[tuple[int, ...], ...]]] = []
+    try:
+      if cache_key not in self._model_executables:
+        logging.debug(
+            "[DynamicTpuBackend] Compilation cache miss for bucket %d,"
+            " layouts: %s. Compiling new executable.",
+            bucket_idx,
+            layout_key,
         )
+        self._model_executables[cache_key] = self._compile_bucket(
+            bucket_idx,
+            argument_layouts=argument_layouts,
+        )
+
+      if getattr(self._static_compiler, "_async_compile", False):
+        # Enqueue lookahead bucket compilations before blocking on
+        # `executable.resolve()` for the current bucket so that subsequent
+        # buckets compile in parallel on background threads while the current
+        # bucket is resolving or executing.
+        max_lookahead_idx = min(
+            bucket_idx + 1 + max(0, self._num_lookahead_buckets),
+            len(self._bucket_specs),
+        )
+        for lookahead_idx in range(bucket_idx + 1, max_lookahead_idx):
+          lookahead_cache_key = (lookahead_idx, layout_key)
+          if lookahead_cache_key not in self._model_executables:
+            logging.debug(
+                "[DynamicTpuBackend] Issuing async lookahead compilation for"
+                " bucket %d, layouts: %s.",
+                lookahead_idx,
+                layout_key,
+            )
+            self._model_executables[lookahead_cache_key] = self._compile_bucket(
+                lookahead_idx,
+                argument_layouts=argument_layouts,
+            )
+            submitted_lookahead_keys.append(lookahead_cache_key)
+
+      if is_new_or_unresolved:
+        executable = self._model_executables[cache_key]
         if hasattr(executable, "resolve"):
           executable.resolve()
-      except (RuntimeError, ValueError) as e:
-        raise NotImplementedError(
-            "Failed to lower FX graph with dynamic shapes to MLIR with error:"
-            f" {e}. Please set torch.compile(..., dynamic=False, ...) and try"
-            " again."
-        ) from e
+        logging.debug(
+            "[DynamicTpuBackend] Static Model Executable MLIR: %s",
+            LazyString(lambda: str(getattr(executable, "mlir_text", None))),
+        )
+        logging.debug(
+            "[DynamicTpuBackend] Compiled model executable layouts %s",
+            getattr(executable, "parameter_layouts", None),
+        )
+        self._unique_output_indices = getattr(
+            executable, "unique_output_indices", None
+        )
+    except (RuntimeError, ValueError) as e:
+      self._model_executables.pop(cache_key, None)
+      for lookahead_key in submitted_lookahead_keys:
+        self._model_executables.pop(lookahead_key, None)
+      raise NotImplementedError(
+          "Failed to lower FX graph with dynamic shapes to MLIR with error:"
+          f" {e}. Please set torch.compile(..., dynamic=False, ...) and try"
+          " again."
+      ) from e
 
-      logging.debug(
-          "[DynamicTpuBackend] Static Model Executable MLIR: %s",
-          LazyString(lambda: str(getattr(executable, "mlir_text", None))),
-      )
-      logging.debug(
-          "[DynamicTpuBackend] Compiled model executable layouts %s",
-          getattr(executable, "parameter_layouts", None),
-      )
-      self._unique_output_indices = getattr(
-          executable, "unique_output_indices", None
-      )
-      self._model_executables[layout_key] = executable
-
-    return self._model_executables[layout_key]
+    return self._model_executables[cache_key]
 
   def __call__(self, *args: Any) -> Any:
     logging.debug("[DynamicTpuBackend] Execute Model")
@@ -414,12 +525,21 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
           args_list[idx] = decompose.get_base_tensor(args_list[idx])
       args = tuple(args_list)
 
+    bucket_idx = self._get_bucket_index(args)
+    logging.debug(
+        "[DynamicTpuBackend] Selected bucket %d (%s)",
+        bucket_idx,
+        self._bucket_specs[bucket_idx].symbol_bounds,
+    )
+
     tensor_args = self._get_dynamic_input_tensors(args)
 
     # Run pad subgraph first if needed (for libtpu < 0.0.49 or 64-bit/128-bit
     # tensors)
     if self._use_pad_subgraph:
-      pad_outputs = self._compile_and_execute_pad_subgraph(tensor_args)
+      pad_outputs = self._compile_and_execute_pad_subgraph(
+          tensor_args, bucket_idx
+      )
     else:
       pad_outputs = tensor_args
 
@@ -436,7 +556,9 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
         argument_layouts,
     )
 
-    executable = self.get_executable(layout_key, argument_layouts)
+    executable = self.get_executable(
+        layout_key, argument_layouts, bucket_idx=bucket_idx
+    )
 
     output_shapes = self._compute_output_shapes(args)
 

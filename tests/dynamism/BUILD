@@ -43,6 +43,23 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "multi_bucket_compile_test",
+    srcs = ["multi_bucket_compile_test.py"],
+    notest_oss = True,  # NOTEST_OSS_OK=OSS needs to be updated with the latest libtpu release for bounded dynamism.
+    tags = [
+        "requires-tpu-v5lite",
+    ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile:tpu_backend",
+        "//src/torch_tpu/_internal/utils:test_utils",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "sym_constraint_test",
     srcs = ["sym_constraint_test.py"],
     tags = [
