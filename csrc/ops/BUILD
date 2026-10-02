@@ -222,6 +222,7 @@ torch_tpu_cc_library(
         ":op_names",
         "//csrc/common:context_manager",
         "//csrc/common:context_states",
+        "//csrc/common:env_vars",
         "//csrc/common:flags",
         "//csrc/eager:eager_mode",
         "//shims/torch",

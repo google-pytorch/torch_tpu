@@ -2396,10 +2396,9 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "tracebacks_precedence_test",
     srcs = ["tracebacks_precedence_test.py"],
-    args = [
-        "--torch_tpu_internal_mlir_tracebacks=true",
-    ],
-    notest_oss = True,  # Absl flags don't work in OSS
+    env = {
+        "TORCH_TPU_INTERNAL_MLIR_TRACEBACKS": "1",
+    },
     tags = [
         "requires-tpu-v5lite",
     ],

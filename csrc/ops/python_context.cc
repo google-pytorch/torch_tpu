@@ -34,6 +34,7 @@
 #include "absl/strings/str_join.h"
 #include "csrc/common/context_manager.h"
 #include "csrc/common/context_states.h"
+#include "csrc/common/env_vars.h"
 #include "csrc/common/flags.h"
 #include "csrc/eager/eager_mode.h"
 #include "csrc/ops/op_names.h"
@@ -64,8 +65,9 @@ TracebackMode GetTracebackMode() {
       GetContextState<EnableTracebacksContextState>().value_or(std::nullopt);
   if (mode.has_value()) return mode.value();
 
-  // Otherwise, use the flag value if set. Read the flag once for consistent
-  // behavior in case the flag is changed while the program is running.
+  // Otherwise, use the flag or environment variable value if set. Read them
+  // once for consistent behavior in case they are changed while the program is
+  // running.
   static const auto maybe_flag =
       GetFlagOnce<std::optional<bool>,
                   &FLAGS_torch_tpu_internal_mlir_tracebacks>();
@@ -73,7 +75,14 @@ TracebackMode GetTracebackMode() {
     return (*maybe_flag ? TracebackMode::kEnabled : TracebackMode::kDisabled);
   }
 
-  // The flag is unset, check if we are in compiled mode.
+  const auto maybe_env =
+      GetBooleanEnvOnce<kTorchTpuInternalMlirTracebacksEnvVar>();
+  if (maybe_env.has_value()) {
+    return (*maybe_env ? TracebackMode::kEnabled : TracebackMode::kDisabled);
+  }
+
+  // Neither the flag nor the environment variable is set; check if we are in
+  // compiled mode.
   return GetEagerMode() == EagerMode::kInternalCompileFxGraph
              ? TracebackMode::kEnabled
              : TracebackMode::kDisabled;

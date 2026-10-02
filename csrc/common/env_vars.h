@@ -133,6 +133,12 @@ inline constexpr char kTorchTpuInternalHandshakeTimeoutSEnvVar[] =
 // not expected. Default is "true".
 inline constexpr char kTorchTpuInternalMaterializeCollectiveTensorsEnvVar[] =
     "TORCH_TPU_INTERNAL_MATERIALIZE_COLLECTIVE_TENSORS";
+// If set, MLIR location tracebacks will be enabled or disabled by default
+// depending on the Boolean value. Otherwise, the default is disabling
+// tracebacks in the eager mode and enabling them in the compiled mode. This
+// can be overridden by the enable_tracebacks() context manager.
+inline constexpr char kTorchTpuInternalMlirTracebacksEnvVar[] =
+    "TORCH_TPU_INTERNAL_MLIR_TRACEBACKS";
 // If set to "1", all traversals which contain exactly one distributed operation
 // (a "skinny collective") will be automatically pinned to the SparseCore.
 // This will not override manually specified stream pinning.
@@ -292,6 +298,7 @@ inline constexpr auto kEnvVarToStage =
         {kTorchTpuInternalHandshakeTimeoutSEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuInternalMaterializeCollectiveTensorsEnvVar,
          SymbolStage::InternalApi()},
+        {kTorchTpuInternalMlirTracebacksEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuInternalSkinnyScOffloadEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuInternalSplitRngStateUpdate, SymbolStage::InternalApi()},
         {kTorchTpuInternalStorageAwarePlaceholdersEnvVar,
