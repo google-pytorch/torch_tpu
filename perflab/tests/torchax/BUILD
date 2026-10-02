@@ -32,6 +32,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//src/torch_tpu",
         "//tests:seed_test_utils",
+        "@pypi//jax",
     ],
 )
 
