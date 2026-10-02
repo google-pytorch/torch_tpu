@@ -343,10 +343,6 @@ def _(mo):
     | `TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT` | Cache | `torch.device("tpu")` | `gs://<bucket_name>/<path_to_cache>` |
     | `TORCH_TPU_SLICEBUILDER_ADDRESSES` | Cloud | `import torch` | `10.0.0.1:8471,10.0.0.2:8471` |
     | `TORCH_TPU_TOPOLOGY` | Cloud | `import torch` | `2x2x1`, `2x2x4`, `4x4x4`, etc. |
-    | `TPU_CHIPS_PER_HOST_BOUNDS` | Cloud | `N/A` (Set by GCE) | `1,1,1`, `2,2,1`, `2,2,2` |
-    | `TPU_HOST_BOUNDS` | Cloud | `N/A` (Set by GCE) | `1,1,1`, `2,2,1`, `2,2,2` |
-    | `TPU_PROCESS_ADDRESSES` | Cloud | `N/A` (Set by GCE) | `10.0.0.1:8471,10.0.0.2:8471` |
-    | `TPU_PROCESS_PORT` | Cloud | `N/A` (Set by GCE) | `8471`, `<port_number>` |
     | `TPU_VISIBLE_CHIPS` | Cloud | `N/A` (Set by GCE) | `0`, `0,1`, `0,1,2,3` |
     | `WORLD_SIZE` | Launcher | `import torch` | `1`, `2`, `4`, `8`, `16`, ... (integer) |
     """)
