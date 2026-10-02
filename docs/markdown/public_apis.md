@@ -97,6 +97,7 @@ process. Use it at your own risk. Using it triggers a one-time warning.
 *   `torch.tpu.manual_seed_all`
 *   `torch.tpu.ops.align_jagged_to_multiple`
 *   `torch.tpu.ops.optimization_barrier`
+*   `torch.tpu.ops.splash_sdpa`
 *   `torch.tpu.ops.strip_jagged_padding`
 *   `torch.tpu.pallas.jax_op`
 *   `torch.tpu.precision`

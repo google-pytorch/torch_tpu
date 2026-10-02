@@ -34,6 +34,7 @@ import jax.numpy as jnp
 import torch
 # torch_tpu Pallas bridge
 from torch_tpu._internal import pallas as _pallas
+from torch_tpu._internal.utils import annotations as _annotations
 
 _custom_jax_kernel = _pallas.custom_jax_kernel
 
@@ -437,6 +438,7 @@ def _get_splash_op_names(**splash_kwargs):
   return op_fwd_name, op_bwd_name
 
 
+@_annotations.experimental("splash_sdpa is experimental and subject to change.")
 def splash_sdpa(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -466,6 +468,9 @@ def splash_sdpa(
   Supports backward pass: gradients flow through q, k, v via the JAX splash
   backward kernel. The forward saves (out, logsumexp) so the backward can call
   the pallas backward kernel directly — no extra forward pass at backward time.
+
+  .. warning::
+      This API is experimental and subject to change in future releases.
 
   Args:
     q: Query tensor.

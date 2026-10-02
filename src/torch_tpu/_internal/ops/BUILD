@@ -57,6 +57,7 @@ torch_tpu_py_library(
         "//shims/jax:pallas_tpu_ops",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/pallas",
+        "//src/torch_tpu/_internal/utils:annotations",
         "@pypi//jax",
     ],
 )
