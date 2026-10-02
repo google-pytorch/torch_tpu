@@ -67,31 +67,24 @@ def test_item_demo():
 
 def test_modes_demo():
   import torch
-  from torch_tpu._internal.sync import sync
 
-  def check_fusion(mode_name, mode):
+  def run_with_eager_mode(mode_name, mode):
     print(f"--- Mode: {mode_name} ---")
     with torch.tpu.set_eager_mode(mode):
+      assert torch.tpu.eager_mode == mode
       x = torch.ones((2, 2), device="tpu")
       y = x + 1
       z = y * 2
-
-      # computation_mlir returns the StableHLO graph for the given tensor.
-      # If fused, it will contain 'add' and 'multiply' operations.
-      mlir = sync.computation_mlir(z)
-      has_add = "stablehlo.add" in mlir
-      has_mul = "stablehlo.multiply" in mlir
-
-      print(f"  Graph contains fused 'add': {has_add}")
-      print(f"  Graph contains fused 'multiply': {has_mul}")
-      if has_add and has_mul:
-        print("  Result: Operations are FUSED into a single graph.")
-      else:
-        print("  Result: Operations were EXECUTED immediately (not fused).")
+      result = z.cpu()
+      assert result.shape == (2, 2)
+      assert torch.allclose(result, torch.full((2, 2), 4.0))
+      print(f"  Executed in {mode_name}: result shape {result.shape}")
     print()
 
-  check_fusion(
+  run_with_eager_mode(
       "Fused Eager (DEFER_AND_FUSE)", torch.tpu.EagerMode.DEFER_AND_FUSE
   )
-  check_fusion("Strict Eager (DEFER_NEVER)", torch.tpu.EagerMode.DEFER_NEVER)
+  run_with_eager_mode(
+      "Strict Eager (DEFER_NEVER)", torch.tpu.EagerMode.DEFER_NEVER
+  )
   return
