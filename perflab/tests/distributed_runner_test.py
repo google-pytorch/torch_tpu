@@ -21,7 +21,9 @@ import sys
 from unittest import mock
 
 from absl.testing import absltest
+from absl.testing import parameterized
 import torch
+from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.distributed import multiprocessing
 from perflab import common
 from perflab import discovery as discovery_lib
@@ -409,27 +411,34 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     mock_barrier.assert_not_called()
     mock_destroy_group.assert_called_once()
 
-  @mock.patch.object(torch.distributed, "destroy_process_group")
-  @mock.patch.object(torch.distributed, "is_initialized", return_value=True)
-  @mock.patch.object(torch.compiler, "reset")
-  def test_cleanup_distributed_worker_state_clears_cache(
-      self,
-      mock_compiler_reset,
-      mock_is_initialized,
-      mock_destroy_group,
+  @parameterized.named_parameters(
+      ("tpu", target_lib.Platform.V7_2X2X1, 1),
+      ("cuda", target_lib.Platform.B200_8, 0),
+      ("cpu", target_lib.Platform.CPU, 0),
+  )
+  def test_cleanup_distributed_worker_state_resets_torch_tpu_only_on_tpu(
+      self, platform, expected_tpu_cleanups
   ):
-    del mock_compiler_reset, mock_is_initialized, mock_destroy_group
-    fake_target_tpu = mock.MagicMock(spec=target_lib.Target)
-    fake_target_tpu.device_kind = target_lib.DeviceKind.TPU
-
-    with mock.patch.object(torch, "tpu", create=True) as mock_torch_tpu:
-      mock_torch_tpu._clear_cache = mock.MagicMock()
+    eager_state_resets = []
+    tpu_cache_clears = []
+    with (
+        mock.patch.object(
+            tt_testing,
+            "reset_eager_state",
+            lambda: eager_state_resets.append(True),
+        ),
+        mock.patch.object(
+            torch.tpu, "_clear_cache", lambda: tpu_cache_clears.append(True)
+        ),
+    ):
       distributed_runner._cleanup_distributed_worker_state(
           rank=0,
-          target=fake_target_tpu,
+          target=target_lib.make_target(platform),
           barrier_policy=distributed_runner.BarrierPolicy.SKIP,
       )
-      mock_torch_tpu._clear_cache.assert_called_once()
+
+    self.assertLen(eager_state_resets, expected_tpu_cleanups)
+    self.assertLen(tpu_cache_clears, expected_tpu_cleanups)
 
   @mock.patch.object(shutil, "rmtree")
   def test_clear_persistent_compilation_caches(self, mock_rmtree):

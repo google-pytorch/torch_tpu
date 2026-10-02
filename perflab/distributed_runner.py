@@ -30,7 +30,6 @@ from absl import logging
 from fairscale.nn.model_parallel import initialize as fairscale_init
 import torch
 import torch.multiprocessing as mp
-from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.distributed import multiprocessing
 from perflab import common
 from perflab import compile as compile_lib
@@ -103,7 +102,8 @@ def _cleanup_distributed_worker_state(
 
   Args:
     rank: Distributed rank index of current worker.
-    target: Target runtime specification.
+    target: Target runtime specification. If None, device-specific cleanup
+      (TorchTPU eager state reset and device cache flush) is skipped.
     barrier_policy: Barrier policy before process group destruction. Setting to
       BarrierPolicy.SKIP prevents barrier timeouts/deadlocks when unwinding from
       an unhandled exception on one or more ranks.
@@ -126,7 +126,12 @@ def _cleanup_distributed_worker_state(
     torch.distributed.destroy_process_group()
     logging.info("Rank %s process group destroyed.", rank)
 
-  tt_testing.reset_eager_state()
+  if target is not None and target.device_kind == target_lib.DeviceKind.TPU:
+    # Imported lazily so that CUDA and CPU runs never load TorchTPU testing
+    # hooks; there is no TorchTPU eager state to reset on those devices.
+    from torch_tpu._internal import testing as tt_testing  # pylint: disable=g-import-not-at-top
+
+    tt_testing.reset_eager_state()
   torch.compiler.reset()
 
   # Run cyclic garbage collection BEFORE flushing the device allocator cache so

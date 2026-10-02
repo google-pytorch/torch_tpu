@@ -14,9 +14,11 @@
 
 """Tests for distributed_utils module."""
 
+import importlib.util
 import os
 import random
 import socket
+import sys
 from unittest import mock
 
 from absl.testing import absltest
@@ -224,6 +226,23 @@ class DistributedUtilsTest(seed_test_utils.MultiProcessRepeatableTest):
         )
     finally:
       busy_sock.close()
+
+  def test_module_imports_without_torch_tpu_module(self) -> None:
+    """Verifies distributed_utils imports and runs without `torch.tpu`."""
+    spec = importlib.util.find_spec(distributed_utils.__name__)
+    self.assertIsNotNone(spec)
+    self.assertIsNotNone(spec.loader)
+    module = importlib.util.module_from_spec(spec)
+    with (
+        mock.patch.dict(
+            sys.modules, {"torch.tpu": None, "torch.tpu.distributed": None}
+        ),
+        mock.patch.object(mp, "spawn") as mock_spawn,
+    ):
+      spec.loader.exec_module(module)
+      module.dist_run(2, lambda: None)
+
+    mock_spawn.assert_called_once()
 
 
 if __name__ == "__main__":
