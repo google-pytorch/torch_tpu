@@ -20,8 +20,11 @@ from typing import Any, Callable
 from absl import logging
 import portpicker
 import torch.multiprocessing as mp
-from torch.tpu import distributed  # pyrefly: ignore[missing-import]
 from torch_tpu._internal import env
+# Import directly from torch_tpu._internal.distributed rather than the
+# dynamically registered torch.tpu alias, which is absent before torch_tpu is
+# imported when TORCH_DEVICE_BACKEND_AUTOLOAD=0 (e.g. on GPU runners).
+from torch_tpu._internal.distributed import distributed
 from torch_tpu._internal.utils import hardware
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils

@@ -30,8 +30,11 @@ from absl import logging
 from fairscale.nn.model_parallel import initialize as fairscale_init
 import torch
 import torch.multiprocessing as mp
-from torch.tpu import distributed  # pyrefly: ignore[missing-import]
 from torch_tpu._internal import testing as tt_testing
+# Import directly from torch_tpu._internal.distributed rather than the
+# dynamically registered torch.tpu alias, which is absent before torch_tpu is
+# imported when TORCH_DEVICE_BACKEND_AUTOLOAD=0 (e.g. on GPU runners).
+from torch_tpu._internal.distributed import distributed
 from torch_tpu._internal.distributed import multiprocessing
 from perflab import common
 from perflab import compile as compile_lib
