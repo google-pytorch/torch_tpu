@@ -46,6 +46,7 @@ torch_tpu_py_test(
         "//perflab:target",
         "//perflab/torchax:torchax_step",
         "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//tests:oss_utils",

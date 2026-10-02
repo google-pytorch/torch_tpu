@@ -26,6 +26,7 @@ if oss_utils.is_oss() and sys.version_info >= (3, 14):
 from unittest import mock
 
 from absl.testing import absltest
+from absl.testing import parameterized
 from tests import seed_test_utils
 import torch
 import torch.nn as nn
@@ -341,6 +342,80 @@ class TorchaxStepTest(seed_test_utils.RepeatableTest):
     # Invalid stepper raises KeyError
     with self.assertRaises(KeyError):  # ASSERT_RAISES_OK=benchmark
       torchax_step.resolve_torchax_stepper("unknown")
+
+  @parameterized.named_parameters(
+      ("forward", step_lib.StepperType.FORWARD),
+      ("training", step_lib.StepperType.TRAINING),
+  )
+  def test_factory_legacy_tensor_constructor(self, stepper_type):
+    target = target_lib.make_target(platform=target_lib.Platform.CPU)
+    ctx = context_lib.Context(
+        target=target, run_scope=context_lib.RUN_SCOPE.value
+    )
+
+    class LegacyTensorConstructorModule(nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        # `torch.Tensor(2)` fails while the TorchAX function mode is active.
+        self.scale = nn.Parameter(torch.Tensor(2).uniform_())
+        self.linear = nn.Linear(4, 2)
+
+      def forward(self, x):
+        return self.linear(x) * self.scale
+
+    def factory(factory_ctx):
+      del factory_ctx  # unused
+      model = LegacyTensorConstructorModule()
+      if stepper_type == step_lib.StepperType.TRAINING:
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+        return model, (torch.randn(2, 4),), {}, optimizer
+      return model, (torch.randn(2, 4),), {}
+
+    spec = registry_lib.BenchmarkSpec(
+        name="test_legacy_tensor_constructor",
+        factory=factory,
+        stepper=stepper_type,
+    )
+
+    # Exiting a nested `with env:` resets `env.enabled` to False while the
+    # global modes remain active (where `torchax.disable_temporarily()` is a
+    # no-op).
+    with torchax.default_env():
+      pass
+
+    wrapper = torchax_step.resolve_torchax_stepper(stepper_type)
+    wrapper.init_with_benchmark_args(spec, ctx)
+    wrapper.compile(compile_lib.CompileConfig(scope=compile_lib.Scope.STEP))
+    out = wrapper.get_step_fn()()
+
+    if stepper_type == step_lib.StepperType.TRAINING:
+      loss, new_weights, _ = out
+      self.assertEqual(loss.shape, ())
+      self.assertIsInstance(new_weights["scale"], torchax.tensor.Tensor)
+    else:
+      self.assertEqual(out.shape, (2, 2))
+      self.assertIsInstance(wrapper._weights["scale"], torchax.tensor.Tensor)
+
+  def test_factory_restores_torchax_on_exception(self):
+    target = target_lib.make_target(platform=target_lib.Platform.CPU)
+    ctx = context_lib.Context(
+        target=target, run_scope=context_lib.RUN_SCOPE.value
+    )
+
+    def failing_factory(factory_ctx):
+      del factory_ctx  # unused
+      raise ValueError("factory failed")
+
+    spec = registry_lib.BenchmarkSpec(
+        name="test_failing_factory",
+        factory=failing_factory,
+        stepper=step_lib.StepperType.FORWARD,
+    )
+    wrapper = torchax_step.TorchaxForwardStepper()
+    with self.assertRaisesRegex(ValueError, "factory failed"):
+      wrapper.init_with_benchmark_args(spec, ctx)
+    self.assertIsInstance(torch.randn(2, device="jax"), torchax.tensor.Tensor)
 
 
 if __name__ == "__main__":

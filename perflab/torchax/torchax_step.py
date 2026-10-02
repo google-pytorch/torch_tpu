@@ -198,6 +198,43 @@ class _BaseTorchaxStepper:
     self._input_kwargs = {}
     self._runnable_step: Any = None
 
+  def _call_factory(
+      self, spec: registry_lib.BenchmarkSpec, ctx: context_lib.Context
+  ) -> Any:
+    """Runs `spec.factory` on CPU with TorchAX globally disabled.
+
+    Benchmark factories build their models and sample inputs with standard
+    PyTorch on CPU (via `_TorchaxFactoryContext`, which overrides
+    `device_kind.value` to `"cpu"`), and `_init_model_and_inputs()` moves them
+    to `"jax"` afterward.
+
+    `torchax.enable_globally()` is already active when
+    `init_with_benchmark_args`
+    is called. If TorchAX's `XLAFunctionMode` and `XLADispatchMode` remain on
+    PyTorch's mode stacks while `spec.factory` runs, legacy tensor constructors
+    such as `torch.Tensor(size)` (used by Wav2Vec2, HuBERT, and Wav2Vec2-BERT to
+    initialize `masked_spec_embed`) bypass `TENSOR_CONSTRUCTORS` in
+    `XLAFunctionMode` and hit `XLADispatchMode` on `aten::empty.memory_format`.
+    That makes `torch.Tensor.__new__` return a `torchax.tensor.Tensor`, and
+    Python then invokes `Tensor.__init__(size)`, failing with
+    `TypeError: Tensor.__init__() missing 1 required positional argument:
+    'env'`.
+
+    We call `torchax.disable_globally()` / `torchax.enable_globally()` directly
+    instead of `with torchax.disable_temporarily():` because
+    `disable_temporarily()` only acts when `default_env().enabled` is `True`,
+    and every internal `with self:` block inside TorchAX (such as in
+    `Environment.dispatch()` and `Environment._move_one_value()`) resets
+    `enabled` to `False` on exit even though the modes pushed by
+    `torchax.enable_globally()` are still active on the mode stacks.
+    """
+    factory_ctx = _TorchaxFactoryContext(ctx)
+    torchax.disable_globally()
+    try:
+      return spec.factory(factory_ctx)
+    finally:
+      torchax.enable_globally()
+
   def _init_model_and_inputs(
       self, model: torch.nn.Module, input_args: Any, input_kwargs: Any
   ) -> torchax.interop.JittableModule:
@@ -237,9 +274,7 @@ class TorchaxForwardStepper(_BaseTorchaxStepper):
     """Initializes the stepper by invoking the model factory with spec and ctx."""
     del args, kwargs  # unused in torchax forward stepper wrapper
 
-    factory_ctx = _TorchaxFactoryContext(ctx)
-    factory_res = spec.factory(factory_ctx)
-    model, input_args, input_kwargs = factory_res
+    model, input_args, input_kwargs = self._call_factory(spec, ctx)
 
     model_jittable = self._init_model_and_inputs(
         model, input_args, input_kwargs
@@ -290,9 +325,7 @@ class TorchaxBackwardStepper(_BaseTorchaxStepper):
     """Initializes the stepper by invoking the model factory with spec and ctx."""
     del args, kwargs  # unused in torchax backward stepper wrapper
 
-    factory_ctx = _TorchaxFactoryContext(ctx)
-    factory_res = spec.factory(factory_ctx)
-    model, input_args, input_kwargs, optimizer = factory_res
+    model, input_args, input_kwargs, optimizer = self._call_factory(spec, ctx)
 
     model_jittable = self._init_model_and_inputs(
         model, input_args, input_kwargs
