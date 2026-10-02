@@ -3982,6 +3982,7 @@ Device-side assertion tracking was not enabled by user.""",
       torch.add(a, b, out=a[1:2])
 
   def test_avg_pool2d_unsupported_dtypes(self):
+    t_bool = torch.zeros((1, 1, 4, 4), device=et.device(), dtype=torch.bool)
     t_complex = torch.zeros(
         (1, 1, 4, 4), device=et.device(), dtype=torch.complex64
     )
@@ -3992,35 +3993,53 @@ Device-side assertion tracking was not enabled by user.""",
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""avg_pool2d(): expected input dtype to be none of (uint8, int8, int16, int32, complex64), got complex64""",
+        tpu="""avg_pool2d(): expected input dtype to be none of (bool, uint8, int8, int16, int32, complex64), got bool""",
+        gpu=""""avg_pool2d_out_cuda_frame" not implemented for 'Bool'""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.nn.functional.avg_pool2d(t_bool, kernel_size=3)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""avg_pool2d(): expected input dtype to be none of (bool, uint8, int8, int16, int32, complex64), got bool""",
+        gpu=""""avg_pool2d_out_cuda_frame" not implemented for 'Bool'""",
+        message_reviewed_by="gunhyun",
+    ):
+      out_bool = torch.empty((1, 1, 2, 2), device=et.device(), dtype=torch.bool)
+      torch.ops.aten.avg_pool2d.out(t_bool, [3, 3], out=out_bool)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""avg_pool2d(): expected input dtype to be none of (bool, uint8, int8, int16, int32, complex64), got complex64""",
         gpu=""""avg_pool2d_out_cuda_frame" not implemented for 'ComplexFloat'""",
+        message_reviewed_by="gunhyun",
     ):
       torch.nn.functional.avg_pool2d(t_complex, kernel_size=3)
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""avg_pool2d(): expected input dtype to be none of (uint8, int8, int16, int32, complex64), got uint8""",
+        tpu="""avg_pool2d(): expected input dtype to be none of (bool, uint8, int8, int16, int32, complex64), got uint8""",
         gpu=""""avg_pool2d_out_cuda_frame" not implemented for 'Byte'""",
     ):
       torch.nn.functional.avg_pool2d(t_uint8, kernel_size=3)
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""avg_pool2d(): expected input dtype to be none of (uint8, int8, int16, int32, complex64), got int8""",
+        tpu="""avg_pool2d(): expected input dtype to be none of (bool, uint8, int8, int16, int32, complex64), got int8""",
         gpu=""""avg_pool2d_out_cuda_frame" not implemented for 'Char'""",
     ):
       torch.nn.functional.avg_pool2d(t_int8, kernel_size=3)
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""avg_pool2d(): expected input dtype to be none of (uint8, int8, int16, int32, complex64), got int16""",
+        tpu="""avg_pool2d(): expected input dtype to be none of (bool, uint8, int8, int16, int32, complex64), got int16""",
         gpu=""""avg_pool2d_out_cuda_frame" not implemented for 'Short'""",
     ):
       torch.nn.functional.avg_pool2d(t_int16, kernel_size=3)
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""avg_pool2d(): expected input dtype to be none of (uint8, int8, int16, int32, complex64), got int32""",
+        tpu="""avg_pool2d(): expected input dtype to be none of (bool, uint8, int8, int16, int32, complex64), got int32""",
         gpu=""""avg_pool2d_out_cuda_frame" not implemented for 'Int'""",
     ):
       torch.nn.functional.avg_pool2d(t_int32, kernel_size=3)

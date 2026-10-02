@@ -670,13 +670,14 @@ at::Tensor& AtenAvgPool2dOut(const at::Tensor& self,
             error::kPythonNotImplementedError)
             << "not implemented for "
             << torch_tpu::ToString(self.scalar_type());
-        TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Short &&
+        TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Bool &&
+                           self.scalar_type() != at::ScalarType::Short &&
                            self.scalar_type() != at::ScalarType::Int &&
                            self.scalar_type() != at::ScalarType::Char &&
                            self.scalar_type() != at::ScalarType::Byte &&
                            self.scalar_type() != at::ScalarType::ComplexFloat,
                        error::kInvalidArgument)
-            << "expected input dtype to be none of (uint8, int8, int16, "
+            << "expected input dtype to be none of (bool, uint8, int8, int16, "
                "int32, complex64), got "
             << torch_tpu::ToString(self.scalar_type());
 
