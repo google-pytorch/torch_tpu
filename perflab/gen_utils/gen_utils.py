@@ -16,6 +16,7 @@
 
 import csv
 import dataclasses
+import functools
 import importlib
 import io
 import os
@@ -936,9 +937,13 @@ _GEN_MODEL_CONFIGS_RAW: dict[str, dict[str, Any]] = {
         },
     },
     "gemma_4_e4b_it_train_gen": {
+        # Cap full-scope training to 6 layers and seq_len=1024 so the 8B
+        # multimodal checkpoint fits within single-chip v7 (95 GB) and B200
+        # HBM budgets with AdamW optimizer states.
+        "model_load_fn": functools.partial(
+            load_model.default_load_model, seq_len=1024, num_layers=6
+        ),
         "skipped_run_modes": {
-            "compiled",
-            "eager_default",
             "eager_optimized",
         },
     },

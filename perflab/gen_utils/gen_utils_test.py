@@ -74,6 +74,29 @@ class GenUtilsTest(seed_test_utils.RepeatableTest):
     self.assertIsNotNone(config)
     self.assertIn("compiled", config.skipped_run_modes)
 
+  def test_gemma_4_e4b_it_train_gen_extra_config(self):
+    entry = gen_utils.ModelEntry(
+        model_id="google/gemma-4-E4B-it",
+        provider="transformers",
+        model_type="gemma4",
+        category="Multimodal",
+        pipeline_tag="image-text-to-text",
+        downloads=0,
+        downloads_all_time=0,
+        likes=0,
+        created_at="",
+        trending_score=0.0,
+        params_est=0,
+        is_finetune=False,
+        base_model="",
+        tier="Tier 1",
+    )
+    config = entry.get_extra_config(is_training=True, suffix="gen")
+    self.assertEqual(config.skipped_run_modes, {"eager_optimized"})
+    self.assertEqual(
+        config.model_load_fn.keywords, {"seq_len": 1024, "num_layers": 6}
+    )
+
   def test_iter_models_csv(self):
     models = list(gen_utils.iter_models_csv())
     for model in models:

@@ -122,6 +122,70 @@ class LoadModelTest(seed_test_utils.RepeatableTest):
     self.assertIsNone(model.config.problem_type)
     self.assertNotIn("labels", inputs)
 
+  def test_full_scope_multimodal_training_overrides(self):
+    config = types.SimpleNamespace(
+        use_cache=True,
+        num_hidden_layers=42,
+        num_kv_shared_layers=18,
+        vocab_size=256,
+        text_config=types.SimpleNamespace(
+            use_cache=True,
+            num_hidden_layers=42,
+            num_kv_shared_layers=18,
+            vocab_size=256,
+        ),
+        vision_config=types.SimpleNamespace(num_hidden_layers=16, depth=16),
+    )
+    dummy_model = _FakeForSequenceClassification(config)
+
+    def _get_spec(
+        provider: str,
+        model_id: str,
+        load_weights: bool = False,
+        modify_config_hook: Any = None,
+    ) -> Any:
+      del provider, model_id, load_weights
+      modify_config_hook(config)
+      return types.SimpleNamespace(
+          module_factory=lambda: dummy_model,
+          sample_inputs_factory=lambda shape, device: (
+              None,
+              {
+                  "input_ids": torch.zeros(
+                      shape, dtype=torch.long, device=device
+                  )
+              },
+          ),
+      )
+
+    full_ctx = context_lib.Context(
+        target=target_lib.make_target(platform=target_lib.Platform.CPU),
+        run_scope=context_lib.RunScope.FULL,
+    )
+    registry = types.SimpleNamespace(get_module_spec=_get_spec)
+    with mock.patch.object(
+        model_helpers, "get_module_registry", return_value=registry
+    ):
+      model, inputs = load_model.default_load_model(
+          full_ctx,
+          "google/gemma-4-E4B-it",
+          is_training=True,
+          seq_len=1024,
+          num_layers=6,
+      )
+
+    self.assertTrue(model.training)
+    self.assertFalse(config.use_cache)
+    self.assertFalse(config.text_config.use_cache)
+    self.assertEqual(config.num_hidden_layers, 6)
+    self.assertEqual(config.num_kv_shared_layers, 0)
+    self.assertEqual(config.text_config.num_hidden_layers, 6)
+    self.assertEqual(config.text_config.num_kv_shared_layers, 0)
+    self.assertEqual(config.vision_config.num_hidden_layers, 6)
+    self.assertEqual(config.vision_config.depth, 6)
+    self.assertEqual(inputs["input_ids"].shape, (1, 1024))
+    self.assertEqual(inputs["labels"].shape, (1, 1024))
+
 
 if __name__ == "__main__":
   absltest.main()

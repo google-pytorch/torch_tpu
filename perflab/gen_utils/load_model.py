@@ -21,7 +21,12 @@ from perflab import torch_device_ops
 
 
 def default_load_model(
-    ctx: context_lib.Context, model_id: str, is_training: bool
+    ctx: context_lib.Context,
+    model_id: str,
+    is_training: bool,
+    *,
+    seq_len: int | None = None,
+    num_layers: int | None = None,
 ):
   """Loads the model and generates sample inputs for benchmarking.
 
@@ -29,6 +34,8 @@ def default_load_model(
     ctx: Benchmark execution context containing device and run scope options.
     model_id: Name of the transformer model to retrieve from the registry.
     is_training: Whether to generate training labels and configurations.
+    seq_len: Optional sequence length override for non-presubmit runs.
+    num_layers: Optional layer count cap for non-presubmit runs.
 
   Returns:
     A tuple of (model, inputs dictionary) ready for execution.
@@ -36,24 +43,41 @@ def default_load_model(
   if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
     batch_size = 1
     seq_len = 128
+    target_layers = 2
   else:
     batch_size = 1
-    seq_len = 2048
+    seq_len = seq_len if seq_len is not None else 2048
+    target_layers = num_layers
 
   registry = model_helpers.get_module_registry()
 
   def modify_config_hook(config):
-    if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-      if hasattr(config, "num_hidden_layers"):
-        config.num_hidden_layers = 2
-      if hasattr(config, "text_config") and config.text_config is not None:
-        if hasattr(config.text_config, "num_hidden_layers"):
-          config.text_config.num_hidden_layers = 2
-      if hasattr(config, "vision_config") and config.vision_config is not None:
-        if hasattr(config.vision_config, "num_hidden_layers"):
-          config.vision_config.num_hidden_layers = 2
-        if hasattr(config.vision_config, "depth"):
-          config.vision_config.depth = 2
+    text_configs = [
+        cfg
+        for cfg in (config, getattr(config, "text_config", None))
+        if cfg is not None
+    ]
+    if is_training:
+      # Disable KV-cache allocation during training so forward KV states are not
+      # retained in HBM across the backward pass.
+      for cfg in text_configs:
+        if hasattr(cfg, "use_cache"):
+          cfg.use_cache = False
+    if target_layers is not None:
+      for cfg in text_configs:
+        if hasattr(cfg, "num_hidden_layers"):
+          cfg.num_hidden_layers = target_layers
+        # Multimodal configs like Gemma4TextConfig set num_kv_shared_layers=18
+        # (out of 42 layers) and slice layer_types[:num_hidden_layers -
+        # num_kv_shared_layers]; zero it when capping num_hidden_layers so the
+        # unshared layer count remains non-negative.
+        if getattr(cfg, "num_kv_shared_layers", 0):
+          cfg.num_kv_shared_layers = 0
+      if (vision_cfg := getattr(config, "vision_config", None)) is not None:
+        if hasattr(vision_cfg, "num_hidden_layers"):
+          vision_cfg.num_hidden_layers = target_layers
+        if hasattr(vision_cfg, "depth"):
+          vision_cfg.depth = target_layers
     return config
 
   module_spec = registry.get_module_spec(
