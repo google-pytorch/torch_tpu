@@ -16,7 +16,6 @@
 
 #include "csrc/common/env_vars.h"
 
-#include <cstdint>
 #include <cstdlib>
 #include <optional>
 #include <string>
@@ -24,6 +23,7 @@
 
 #include "absl/log/absl_check.h"
 #include "c10/util/Exception.h"
+#include "csrc/common/env_vars_testing.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
@@ -132,29 +132,28 @@ TEST(EnvVarsTest, GetBooleanEnvOnceReturnsNulloptOnInvalidValue) {
 
 TEST(EnvVarsTest, GetIntegerEnvOnceUnsetReturnsNullopt) {
   unsetenv(kMasterPortEnvVar);
-  EXPECT_EQ((GetIntegerEnvOnce<int, kMasterPortEnvVar>()), std::nullopt);
+  EXPECT_EQ((GetIntegerEnvOnce<kMasterPortEnvVar>()), std::nullopt);
 }
 
 TEST(EnvVarsTest, GetIntegerEnvOnceParsesValidInt) {
   setenv(kLocalRankEnvVar, "42", 1);
-  EXPECT_EQ((GetIntegerEnvOnce<int, kLocalRankEnvVar>()), 42);
+  EXPECT_EQ((GetIntegerEnvOnce<kLocalRankEnvVar>()), 42);
 }
 
 TEST(EnvVarsTest, GetIntegerEnvOnceParsesNegativeInt) {
   setenv(kRankEnvVar, "-1", 1);
-  EXPECT_EQ((GetIntegerEnvOnce<int, kRankEnvVar>()), -1);
+  EXPECT_EQ((GetIntegerEnvOnce<kRankEnvVar>()), -1);
 }
 
 TEST(EnvVarsTest, GetIntegerEnvOnceParsesInt64) {
   setenv(kTpuPremappedBufferSizeEnvVar, "10737418240", 1);
-  EXPECT_EQ((GetIntegerEnvOnce<int64_t, kTpuPremappedBufferSizeEnvVar>()),
+  EXPECT_EQ((GetIntegerEnvOnce<kTpuPremappedBufferSizeEnvVar>()),
             10737418240LL);
 }
 
 TEST(EnvVarsTest, GetIntegerEnvOnceReturnsNulloptOnInvalidValue) {
   setenv(kTorchTpuHandshakePortEnvVar, "invalid_int", 1);
-  EXPECT_EQ((GetIntegerEnvOnce<int, kTorchTpuHandshakePortEnvVar>()),
-            std::nullopt);
+  EXPECT_EQ((GetIntegerEnvOnce<kTorchTpuHandshakePortEnvVar>()), std::nullopt);
 }
 
 // Sets the env vars that reference ${RANK}, runs `read_first`, and checks that
@@ -220,8 +219,8 @@ TEST(EnvVarsDeathTest, EnsureRankIsExpandedInEnvVarsExpandsRank) {
 }
 
 TEST(EnvVarsTest, SetEnvBeforeGetEnvOnceSucceeds) {
-  SafeSetEnv<kTorchTpuBasePortEnvVar>("1234");
-  EXPECT_EQ(GetEnvOnce<kTorchTpuBasePortEnvVar>(), "1234");
+  SafeSetEnv<kTorchTpuInternalDumpMlirPassesToEnvVar>("print");
+  EXPECT_EQ(GetEnvOnce<kTorchTpuInternalDumpMlirPassesToEnvVar>(), "print");
 }
 
 TEST(EnvVarsTest, UnsetEnvBeforeGetEnvOnceSucceeds) {
@@ -233,28 +232,145 @@ TEST(EnvVarsTest, UnsetEnvBeforeGetEnvOnceSucceeds) {
 TEST(EnvVarsDeathTest, SetEnvAfterGetEnvOnceCrashes) {
   EXPECT_DEATH(
       {
-        static_cast<void>(GetEnvOnce<kTorchTpuDevicesPerHostEnvVar>());
-        SafeSetEnv<kTorchTpuDevicesPerHostEnvVar>("4");
+        static_cast<void>(GetEnvOnce<kTorchTpuSpmdHandshakeStageEnvVar>());
+        SafeSetEnv<kTorchTpuSpmdHandshakeStageEnvVar>("OFF");
       },
-      "TORCH_TPU_DEVICES_PER_HOST.*GetEnvOnce");
+      "TORCH_TPU_SPMD_HANDSHAKE_STAGE.*GetEnvOnce");
 }
 
 TEST(EnvVarsDeathTest, UnsetEnvAfterGetIntegerEnvOnceCrashes) {
   EXPECT_DEATH(
       {
-        static_cast<void>(GetIntegerEnvOnce<int, kNodeRankEnvVar>());
-        SafeUnsetEnv<kNodeRankEnvVar>();
+        static_cast<void>(GetIntegerEnvOnce<kTorchcommRankEnvVar>());
+        SafeUnsetEnv<kTorchcommRankEnvVar>();
       },
-      "NODE_RANK.*GetEnvOnce");
+      "TORCHCOMM_RANK.*GetEnvOnce");
 }
 
-TEST(EnvVarsDeathTest, GetIntegerEnvOnceWithDifferentIntTypesCrashes) {
-  EXPECT_DEATH(
-      {
-        static_cast<void>(GetIntegerEnvOnce<int, kNodeRankEnvVar>());
-        static_cast<void>(GetIntegerEnvOnce<int64_t, kNodeRankEnvVar>());
-      },
-      "NODE_RANK.*different IntTypes");
+TEST(EnvVarsTest, ResetEnvCacheForTestingRereadsEnvVars) {
+  setenv(kMasterAddrEnvVar, "worker0", 1);
+  setenv(kTorchTpuInternalSkinnyScOffloadEnvVar, "1", 1);
+  setenv(kTorchTpuInternalHandshakeTimeoutSEnvVar, "10", 1);
+  ResetEnvCacheForTesting();
+  const std::optional<std::string>& master_addr =
+      GetEnvOnce<kMasterAddrEnvVar>();
+  EXPECT_EQ(master_addr, "worker0");
+  EXPECT_EQ(GetBooleanEnvOnce<kTorchTpuInternalSkinnyScOffloadEnvVar>(), true);
+  EXPECT_EQ((GetIntegerEnvOnce<kTorchTpuInternalHandshakeTimeoutSEnvVar>()),
+            10);
+
+  // Without a reset, the memoized values are kept.
+  setenv(kMasterAddrEnvVar, "worker1", 1);
+  setenv(kTorchTpuInternalSkinnyScOffloadEnvVar, "0", 1);
+  setenv(kTorchTpuInternalHandshakeTimeoutSEnvVar, "20", 1);
+  EXPECT_EQ(GetEnvOnce<kMasterAddrEnvVar>(), "worker0");
+  EXPECT_EQ(GetBooleanEnvOnce<kTorchTpuInternalSkinnyScOffloadEnvVar>(), true);
+  EXPECT_EQ((GetIntegerEnvOnce<kTorchTpuInternalHandshakeTimeoutSEnvVar>()),
+            10);
+
+  // After a reset, the updated values are read.
+  ResetEnvCacheForTesting();
+  EXPECT_EQ(GetEnvOnce<kMasterAddrEnvVar>(), "worker1");
+  EXPECT_EQ(master_addr, "worker1");
+  EXPECT_EQ(GetBooleanEnvOnce<kTorchTpuInternalSkinnyScOffloadEnvVar>(), false);
+  EXPECT_EQ((GetIntegerEnvOnce<kTorchTpuInternalHandshakeTimeoutSEnvVar>()),
+            20);
+
+  unsetenv(kMasterAddrEnvVar);
+  unsetenv(kTorchTpuInternalSkinnyScOffloadEnvVar);
+  unsetenv(kTorchTpuInternalHandshakeTimeoutSEnvVar);
+  ResetEnvCacheForTesting();
+  EXPECT_EQ(GetEnvOnce<kMasterAddrEnvVar>(), std::nullopt);
+  ResetEnvCacheForTesting();
+}
+
+TEST(EnvVarsTest, GetBooleanEnvOnceWarnsOncePerReset) {
+  setenv(kTorchTpuInternalMaterializeCollectiveTensorsEnvVar, "invalid_boolean",
+         1);
+  ResetEnvCacheForTesting();
+
+  WarningCapture warnings;
+  EXPECT_EQ(
+      GetBooleanEnvOnce<kTorchTpuInternalMaterializeCollectiveTensorsEnvVar>(),
+      std::nullopt);
+  EXPECT_THAT(
+      warnings.messages(),
+      ElementsAre(ContainsRegex(
+          "TORCH_TPU_INTERNAL_MATERIALIZE_COLLECTIVE_TENSORS.*Boolean")));
+
+  // Reading the same variable again before a reset does not warn.
+  EXPECT_EQ(
+      GetBooleanEnvOnce<kTorchTpuInternalMaterializeCollectiveTensorsEnvVar>(),
+      std::nullopt);
+  EXPECT_EQ(warnings.messages().size(), 1);
+
+  // After a reset, an invalid value warns once again.
+  ResetEnvCacheForTesting();
+  EXPECT_EQ(
+      GetBooleanEnvOnce<kTorchTpuInternalMaterializeCollectiveTensorsEnvVar>(),
+      std::nullopt);
+  EXPECT_EQ(warnings.messages().size(), 2);
+  EXPECT_EQ(
+      GetBooleanEnvOnce<kTorchTpuInternalMaterializeCollectiveTensorsEnvVar>(),
+      std::nullopt);
+  EXPECT_EQ(warnings.messages().size(), 2);
+
+  // A valid value does not warn.
+  setenv(kTorchTpuInternalMaterializeCollectiveTensorsEnvVar, "true", 1);
+  ResetEnvCacheForTesting();
+  EXPECT_EQ(
+      GetBooleanEnvOnce<kTorchTpuInternalMaterializeCollectiveTensorsEnvVar>(),
+      true);
+  EXPECT_EQ(warnings.messages().size(), 2);
+
+  unsetenv(kTorchTpuInternalMaterializeCollectiveTensorsEnvVar);
+  ResetEnvCacheForTesting();
+}
+
+TEST(EnvVarsTest, GetIntegerEnvOnceWarnsOncePerReset) {
+  setenv(kTorchTpuDevicesPerHostEnvVar, "invalid_int", 1);
+  ResetEnvCacheForTesting();
+
+  WarningCapture warnings;
+  EXPECT_EQ((GetIntegerEnvOnce<kTorchTpuDevicesPerHostEnvVar>()), std::nullopt);
+  // TORCH_TPU_DEVICES_PER_HOST is experimental, so setting it also warns.
+  EXPECT_THAT(
+      warnings.messages(),
+      ElementsAre(ContainsRegex("TORCH_TPU_DEVICES_PER_HOST .* experimental"),
+                  ContainsRegex("TORCH_TPU_DEVICES_PER_HOST.*integer")));
+
+  // Reading the same variable again before a reset does not warn.
+  EXPECT_EQ((GetIntegerEnvOnce<kTorchTpuDevicesPerHostEnvVar>()), std::nullopt);
+  EXPECT_EQ(warnings.messages().size(), 2);
+
+  // After a reset, an invalid value warns once again.
+  ResetEnvCacheForTesting();
+  EXPECT_EQ((GetIntegerEnvOnce<kTorchTpuDevicesPerHostEnvVar>()), std::nullopt);
+  EXPECT_EQ(warnings.messages().size(), 4);
+
+  // A valid value does not warn, other than about the experimental variable.
+  setenv(kTorchTpuDevicesPerHostEnvVar, "4", 1);
+  ResetEnvCacheForTesting();
+  EXPECT_EQ((GetIntegerEnvOnce<kTorchTpuDevicesPerHostEnvVar>()), 4);
+  EXPECT_EQ(warnings.messages().size(), 5);
+
+  unsetenv(kTorchTpuDevicesPerHostEnvVar);
+  ResetEnvCacheForTesting();
+}
+
+TEST(EnvVarsDeathTest, SafeSetEnvAfterResetSucceedsUntilReread) {
+  setenv(kTorchTpuInternalXlaOptionsEnvVar, "a", 1);
+  EXPECT_EQ(GetEnvOnce<kTorchTpuInternalXlaOptionsEnvVar>(), "a");
+
+  ResetEnvCacheForTesting();
+  SafeSetEnv<kTorchTpuInternalXlaOptionsEnvVar>("b");
+  EXPECT_EQ(GetEnvOnce<kTorchTpuInternalXlaOptionsEnvVar>(), "b");
+  EXPECT_DEATH(SafeSetEnv<kTorchTpuInternalXlaOptionsEnvVar>("c"),
+               "TORCH_TPU_INTERNAL_XLA_OPTIONS.*GetEnvOnce");
+
+  ResetEnvCacheForTesting();
+  SafeUnsetEnv<kTorchTpuInternalXlaOptionsEnvVar>();
+  ResetEnvCacheForTesting();
 }
 
 }  // namespace

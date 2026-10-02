@@ -4561,8 +4561,8 @@ module {
   )
   @et.why_tpu_only("libtpu only present for TPU devices.")
   def test_invalid_libtpu_version(self, version: str):
-    env.reset_libtpu_version_for_testing()
-    self.addCleanup(env.reset_libtpu_version_for_testing)
+    tt_testing.reset_libtpu_version_for_testing()
+    self.addCleanup(tt_testing.reset_libtpu_version_for_testing)
 
     with et.assert_raises_message(
         RuntimeError,
@@ -4580,8 +4580,8 @@ module {
   )
   @et.why_tpu_only("libtpu only present for TPU devices.")
   def test_overflowing_libtpu_version(self, version: str, component: str):
-    env.reset_libtpu_version_for_testing()
-    self.addCleanup(env.reset_libtpu_version_for_testing)
+    tt_testing.reset_libtpu_version_for_testing()
+    self.addCleanup(tt_testing.reset_libtpu_version_for_testing)
 
     with et.assert_raises_message(
         RuntimeError,
@@ -4591,8 +4591,8 @@ module {
 
   @et.why_tpu_only("libtpu only present for TPU devices.")
   def test_reset_different_libtpu_version(self):
-    env.reset_libtpu_version_for_testing()
-    self.addCleanup(env.reset_libtpu_version_for_testing)
+    tt_testing.reset_libtpu_version_for_testing()
+    self.addCleanup(tt_testing.reset_libtpu_version_for_testing)
 
     env.set_libtpu_version("0.1.0")
     with et.assert_raises_message(
@@ -5138,32 +5138,20 @@ def _patch_env_vars(names: Sequence[str], values: Mapping[str, str]):
 def _mock_launch_env(values: Mapping[str, str]):
   """Makes the environment look like `values` to `distributed.set_tpu_launch_env`.
 
-  Reads through `torch_tpu._internal.env` are redirected to `values`. In
-  `os.environ`, only the variables `set_tpu_launch_env` reads or writes
+  In `os.environ`, only the variables `set_tpu_launch_env` reads or writes
   directly are replaced; the rest of the process environment is left alone.
   `mock.patch.dict(os.environ, ..., clear=True)` would instead unset and re-add
   every variable on entry and exit, which races with `getenv()` on libtpu's
-  background threads and can crash the process (SIGSEGV in `getenv`).
+  background threads and can crash the process (SIGSEGV in `getenv`). The
+  values memoized by `torch_tpu._internal.env` and `env_utils` are cleared on
+  entry and exit so that reads observe `values`.
   """
-
-  def get_str_env_once(name, default_value=None):
-    return values.get(name, default_value)
-
-  def get_int_env_once(name, default_value=None):
-    return int(values[name]) if name in values else default_value
-
-  with contextlib.ExitStack() as stack:
-    stack.enter_context(_patch_env_vars(_LAUNCH_ENV_VARS, values))
-    stack.enter_context(
-        mock.patch.dict(env_utils._resolved_values, {}, clear=True)  # pylint: disable=protected-access
-    )
-    stack.enter_context(
-        mock.patch.object(env, "get_str_env_once", side_effect=get_str_env_once)
-    )
-    stack.enter_context(
-        mock.patch.object(env, "get_int_env_once", side_effect=get_int_env_once)
-    )
-    yield
+  try:
+    with _patch_env_vars(_LAUNCH_ENV_VARS, values):
+      tt_testing.reset_env_cache_for_testing()
+      yield
+  finally:
+    tt_testing.reset_env_cache_for_testing()
 
 
 class EnvironmentErrorsTest(et.TpuOnlyErrorTestBase):
@@ -5462,7 +5450,6 @@ class ForkErrorsTest(et.TpuOnlyErrorTestBase):
     )
     self.assertFalse(torch.tpu._is_in_bad_fork())
     with mock.patch.object(torch.tpu, "_is_in_bad_fork", return_value=True):
-      self.assertTrue(torch.tpu._is_in_bad_fork())
       self.assertFalse(torch.tpu.is_initialized())
       # In PyTorch, torch.manual_seed() calls _is_in_bad_fork() and skips
       # TPU device seeding when in a bad fork (resolving DataLoader deadlock).

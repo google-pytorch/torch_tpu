@@ -1074,7 +1074,7 @@ class ScanTtApisTest(seed_test_utils.RepeatableTest):
     self.assertEqual(duplicates, [])
 
   def test_discover_cpp_source_surfaces_env_vars(self):
-    """Master unit test for discovering C++ environment variables and resolving stages via kEnvVarToStage."""
+    """Master unit test for discovering C++ environment variables and resolving stages via kEnvVarInfo."""
     with tempfile.TemporaryDirectory() as temp_dir:
       common_dir = os.path.join(temp_dir, "common")
       os.makedirs(common_dir)
@@ -1107,21 +1107,22 @@ class ScanTtApisTest(seed_test_utils.RepeatableTest):
       // 8. Env var string containing // (must not be truncated by comment stripper)
       inline constexpr char kUrlVar[] = "http://example.com/api//path"; // Trailing comment
 
-      // 9. Env var where key and value are on separate lines in kEnvVarToStage
+      // 9. Env var where key and value are on separate lines in kEnvVarInfo
       inline constexpr char kSeparateLinesVar[] =
           "TORCH_TPU_SEPARATE_LINES_VAR";
 
-      inline constexpr auto kEnvVarToStage =
-          MakeConstexprMap<std::string_view, std::optional<SymbolStage>>({
-              {kStableVar, SymbolStage::Stable()},
-              {kInternalImplVar, SymbolStage::InternalImplementation()},
-              {kInternalApiVar, SymbolStage::InternalApi()},
-              {kMultiLineCommentVar, std::nullopt},
-              {kExpVar, SymbolStage::Experimental()},
-              {kDepVar, SymbolStage::Deprecated("0.5")},
+      inline constexpr auto kEnvVarInfo =
+          MakeConstexprMap<std::string_view, EnvVarInfo>({
+              {kStableVar, {SymbolStage::Stable(), EnvVarType::kString}},
+              {kInternalImplVar,
+               {SymbolStage::InternalImplementation(), EnvVarType::kString}},
+              {kInternalApiVar, {SymbolStage::InternalApi(), EnvVarType::kInt}},
+              {kExpVar, {SymbolStage::Experimental(), EnvVarType::kBoolean}},
+              {kDepVar,
+               {SymbolStage::Deprecated("0.5"), EnvVarType::kInt64}},
               {
                   kSeparateLinesVar,
-                  SymbolStage::Stable(),
+                  {SymbolStage::Stable(), EnvVarType::kString},
               },
           });
       """

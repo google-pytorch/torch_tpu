@@ -528,10 +528,13 @@ def _print_launch_env() -> None:
   # Always print NODE_RANK, so that launch scripts can pass
   # `--node_rank="${NODE_RANK}"` on single-host too.
   print(f'NODE_RANK="{host_node_rank}"')
-  for var in ("NNODES", "MASTER_ADDR", "MASTER_PORT"):
+  for var in ("NNODES", "MASTER_ADDR"):
     val = env.get_str_env_once(var)
     if val is not None:
       print(f'{var}="{val}"')
+  master_port = env.get_int_env_once("MASTER_PORT")
+  if master_port is not None:
+    print(f'MASTER_PORT="{master_port}"')
 
 
 if __name__ == "__main__":

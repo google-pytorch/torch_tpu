@@ -1516,9 +1516,9 @@ struct NodeLocalStoreConfig {
 // store is unavailable.
 absl::StatusOr<NodeLocalStoreConfig> GetNodeLocalStore(int64_t world_size) {
   const std::optional<int64_t> local_rank =
-      GetIntegerEnvOnce<int, kLocalRankEnvVar>();
+      GetIntegerEnvOnce<kLocalRankEnvVar>();
   const std::optional<int64_t> local_world_size =
-      GetIntegerEnvOnce<int, kTorchTpuDevicesPerHostEnvVar>();
+      GetIntegerEnvOnce<kTorchTpuDevicesPerHostEnvVar>();
   const std::string env_summary = absl::StrFormat(
       "local_rank=%s devices_per_host=%s world_size=%d",
       local_rank.has_value() ? absl::StrCat(*local_rank) : "unset",

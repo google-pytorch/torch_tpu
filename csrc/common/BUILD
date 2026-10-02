@@ -1036,8 +1036,8 @@ torch_tpu_cc_library(
         "//shims/torch/c10/util:base",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/base:no_destructor",
-        "@com_google_absl//absl/container:flat_hash_map",
-        "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/container:node_hash_map",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/synchronization",
@@ -1053,11 +1053,24 @@ torch_tpu_cc_library(
     ],
 )
 
+# The declaration of ResetEnvCacheForTesting(), which is defined in
+# env_vars.cc. Visible only to tests and to the Python testing bindings.
+torch_tpu_cc_library(
+    name = "env_vars_testing",
+    hdrs = ["env_vars_testing.h"],
+    visibility = [
+        "//csrc/common:__pkg__",
+        "//csrc/internal:__pkg__",
+        "//src/torch_tpu/_internal:__pkg__",
+    ],
+)
+
 torch_tpu_cc_test(
     name = "env_vars_test",
     srcs = ["env_vars_test.cc"],
     deps = [
         ":env_vars",
+        ":env_vars_testing",
         "//csrc/common:oss_test_main",
         "//shims/torch",  # build_cleaner: keep for c10::WarningUtils
         "//shims/torch/c10/util:base",

@@ -32,19 +32,19 @@ namespace torch_tpu {
 
 static absl::Status ValidateRequiredDistributedEnvVars() {
   std::vector<std::string> missing_torchrun_vars;
-  if (!GetEnvOnce<kRankEnvVar>().has_value()) {
+  if (!GetIntegerEnvOnce<kRankEnvVar>().has_value()) {
     missing_torchrun_vars.push_back(kRankEnvVar);
   }
-  if (!GetEnvOnce<kLocalRankEnvVar>().has_value()) {
+  if (!GetIntegerEnvOnce<kLocalRankEnvVar>().has_value()) {
     missing_torchrun_vars.push_back(kLocalRankEnvVar);
   }
-  if (!GetEnvOnce<kWorldSizeEnvVar>().has_value()) {
+  if (!GetIntegerEnvOnce<kWorldSizeEnvVar>().has_value()) {
     missing_torchrun_vars.push_back(kWorldSizeEnvVar);
   }
   if (!GetEnvOnce<kMasterAddrEnvVar>().has_value()) {
     missing_torchrun_vars.push_back(kMasterAddrEnvVar);
   }
-  if (!GetEnvOnce<kMasterPortEnvVar>().has_value()) {
+  if (!GetIntegerEnvOnce<kMasterPortEnvVar>().has_value()) {
     missing_torchrun_vars.push_back(kMasterPortEnvVar);
   }
 
@@ -88,21 +88,21 @@ GetDistributedWorkerConfiguration() {
   TT_RETURN_IF_ERROR(ValidateRequiredDistributedEnvVars());
 
   TT_ASSIGN_OR_RETURN(const int rank,
-                      (GetRequiredIntegerEnvOnce<int, kRankEnvVar>()));
+                      (GetRequiredIntegerEnvOnce<kRankEnvVar>()));
   TT_ASSIGN_OR_RETURN(const int local_rank,
-                      (GetRequiredIntegerEnvOnce<int, kLocalRankEnvVar>()));
+                      (GetRequiredIntegerEnvOnce<kLocalRankEnvVar>()));
 
   // Get the master address and port from the environment variables.
   std::string master_addr;
   TT_ASSIGN_OR_RETURN(master_addr, GetRequiredEnvOnce<kMasterAddrEnvVar>());
   TT_ASSIGN_OR_RETURN(const int master_port,
-                      (GetRequiredIntegerEnvOnce<int, kMasterPortEnvVar>()));
+                      (GetRequiredIntegerEnvOnce<kMasterPortEnvVar>()));
   (void)master_port;  // VOID_CAST_OK=master_port is validated but not used in
                       // DistributedWorkerConfiguration.
 
   // Get the world size from the environment variables.
   TT_ASSIGN_OR_RETURN(const int world_size,
-                      (GetRequiredIntegerEnvOnce<int, kWorldSizeEnvVar>()));
+                      (GetRequiredIntegerEnvOnce<kWorldSizeEnvVar>()));
 
   // Get the slice builder addresses from the environment variables.
   TT_ASSIGN_OR_RETURN(

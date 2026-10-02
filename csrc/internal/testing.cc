@@ -20,7 +20,9 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "c10/util/Exception.h"
+#include "csrc/common/env_vars_testing.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/libtpu_version.h"
 #include "csrc/common/pybind_error_utils.h"
 #include "csrc/common/tpu_hardware.h"
 #include "csrc/common/warnings.h"
@@ -29,7 +31,6 @@
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
-#include "csrc/ops/python_context.h"
 #include "csrc/pjrt/pjrt_state.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
@@ -203,6 +204,26 @@ TT_PYBIND11_MODULE(testing, m) {
       "pjrt_init_attempted",
       []() -> bool { return PjrtBackend::GetInstance().InitAttempted(); },
       "Returns whether PjRt runtime initialization has been attempted.");
+  m.def("reset_libtpu_version_for_testing", &ResetLibtpuVersionForTesting,
+        "Clears the libtpu version set by set_libtpu_version().");
+  m.def(
+      "reset_env_cache_for_testing",
+      [] {
+        ResetEnvCacheForTesting();
+        // Every torch_tpu_py_library, env_utils included, depends on this
+        // module, so env_utils cannot be a dependency of it. If env_utils has
+        // not been imported, it has no values to clear.
+        const pybind11::object env_utils =
+            PyBindModule::Import("sys").attr("modules").attr("get")(
+                "torch_tpu._internal.env_utils");
+        if (!env_utils.is_none()) {
+          env_utils.attr("_resolved_values").attr("clear")();
+        }
+      },
+      "Clears the values memoized by the C++ GetEnvOnce() family, which the "
+      "get_*_env_once() readers in torch_tpu._internal.env share, and by "
+      "torch_tpu._internal.env_utils.get_and_set_str_env_once(), so that their "
+      "next calls read the current environment.");
 }
 
 }  // namespace torch_tpu

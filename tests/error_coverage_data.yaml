@@ -26,7 +26,7 @@ csrc/common/dtype.cc: {remaining: 4, total: 6, infeasible: 0}
 csrc/common/dynamism_utils.cc: {remaining: 1, total: 1, infeasible: 0}
 csrc/common/environment.cc: {remaining: 2, total: 2, infeasible: 0}
 csrc/common/error_utils.cc: {remaining: 5, total: 10, infeasible: 1}
-csrc/common/error_utils.h: {remaining: 3, total: 3, infeasible: 0}
+csrc/common/error_utils.h: {remaining: 2, total: 3, infeasible: 0}
 csrc/common/excess_precision.cc: {remaining: 0, total: 1, infeasible: 0}
 csrc/common/layout_utils.cc: {remaining: 0, total: 2, infeasible: 1}
 csrc/common/libtpu_version.cc: {remaining: 0, total: 1, infeasible: 0}

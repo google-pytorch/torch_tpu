@@ -1986,8 +1986,19 @@ TEST(ErrorUtilsTest, GetRequiredEnvOnceReturnsValueWhenSet) {
 TEST(ErrorUtilsTest, GetRequiredIntegerEnvOnceReturnsValueWhenSet) {
   setenv(kWorldSizeEnvVar, "8", 1);
   TT_ASSERT_OK_AND_ASSIGN(const auto val,
-                          (GetRequiredIntegerEnvOnce<int, kWorldSizeEnvVar>()));
+                          (GetRequiredIntegerEnvOnce<kWorldSizeEnvVar>()));
   EXPECT_EQ(val, 8);
+}
+
+TEST(ErrorUtilsTest, GetRequiredIntegerEnvOnceFailsOnInvalidValue) {
+  setenv(kNprocEnvVar, "not_an_int", 1);
+  const absl::Status status =
+      GetRequiredIntegerEnvOnce<kNprocEnvVar>().status();
+  EXPECT_EQ(status.code(), error::kFailedPrecondition);
+  EXPECT_THAT(status.message(),
+              HasSubstr("the NPROC environment variable is not set or is not "
+                        "a valid integer"));
+  unsetenv(kNprocEnvVar);
 }
 
 TEST(TranslateXlaTensorOomError, ReturnsOkStatusUnchanged) {

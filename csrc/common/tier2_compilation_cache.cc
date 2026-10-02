@@ -28,7 +28,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <utility>
 
 #include "absl/base/no_destructor.h"
 #include "absl/log/absl_check.h"
@@ -76,7 +75,7 @@ const std::string& GetTier2CacheName() {
       }
       // Decide whether to use the tier-2 cache based on the world size.
       const int world_size =
-          GetRequiredIntegerEnvOnce<int, kWorldSizeEnvVar>().value_or(1);
+          GetRequiredIntegerEnvOnce<kWorldSizeEnvVar>().value_or(1);
       if (world_size <= 1) {
         ABSL_LOG(INFO) << "Tier-2 compilation cache is disabled for world "
                           "size 1.";
