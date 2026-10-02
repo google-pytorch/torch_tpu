@@ -17,7 +17,16 @@ load("@rules_python//python:py_library.bzl", "py_library")
 load("@rules_python//python:py_test.bzl", "py_test")
 
 exports_files(
-    ["run_cc_tpu_test.sh"],
+    [
+        "custom_linter/__init__.py",
+        "custom_linter/__main__.py",
+        "custom_linter/engine.py",
+        "custom_linter/metadata.py",
+        "custom_linter/tests/engine_test.py",
+        "custom_linter/tests/vcs_test.py",
+        "custom_linter/vcs.py",
+        "run_cc_tpu_test.sh",
+    ],
     visibility = ["//visibility:public"],
 )
 
