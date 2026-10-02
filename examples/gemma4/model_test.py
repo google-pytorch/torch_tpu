@@ -14,7 +14,6 @@
 
 """Tests for Gemma4 model implementation."""
 
-from unittest import mock
 from absl.testing import absltest
 import torch
 import torch_tpu
@@ -187,8 +186,42 @@ class Gemma4ModelTest(absltest.TestCase):
     loss.backward()
     self.assertEqual(output.shape, (2, 10, config.hidden_size))
 
-  def test_checkpoint_not_called_when_disabled_in_train_mode(self):
-    config = model.Gemma4Config(
+  def _assert_layer_calls(self, m, input_ids, *, forward, backward):
+    """Runs forward + backward and checks how often decoder layers ran.
+
+    Gradient checkpointing discards layer activations in the forward pass and
+    re-runs every checkpointed layer during backward, so the backward count is
+    the number of recomputed layers. Forward pre-hooks are used (rather than
+    forward hooks) because non-reentrant checkpointing may stop a recompute
+    early, before the layer's forward returns.
+
+    Args:
+      m: The model under test.
+      input_ids: Input token ids.
+      forward: Expected decoder-layer calls during the forward pass.
+      backward: Expected decoder-layer calls (recomputes) during backward.
+    """
+    calls = []
+    handles = [
+        layer.register_forward_pre_hook(lambda *_: calls.append(1))
+        for layer in m.layers
+    ]
+    try:
+      output = m(input_ids)
+      forward_calls = len(calls)
+      output.sum().backward()
+      backward_calls = len(calls) - forward_calls
+    finally:
+      for handle in handles:
+        handle.remove()
+    self.assertEqual(
+        (forward_calls, backward_calls),
+        (forward, backward),
+        msg='(forward, backward) decoder-layer call counts',
+    )
+
+  def _small_config(self):
+    return model.Gemma4Config(
         num_hidden_layers=2,
         hidden_size=128,
         intermediate_size=256,
@@ -196,71 +229,55 @@ class Gemma4ModelTest(absltest.TestCase):
         num_key_value_heads=2,
         head_dim=32,
     )
+
+  def test_no_recompute_when_checkpointing_disabled_in_train_mode(self):
+    config = self._small_config()
     m = model.Gemma4Model(config)
     m.train()
     input_ids = torch.randint(0, config.vocab_size, (2, 10))
-    with mock.patch('torch.utils.checkpoint.checkpoint') as mock_ckpt:
-      m(input_ids)
-      mock_ckpt.assert_not_called()
-
-  def test_checkpoint_not_called_when_enabled_in_eval_mode(self):
-    config = model.Gemma4Config(
-        num_hidden_layers=2,
-        hidden_size=128,
-        intermediate_size=256,
-        num_attention_heads=4,
-        num_key_value_heads=2,
-        head_dim=32,
+    self._assert_layer_calls(
+        m, input_ids, forward=config.num_hidden_layers, backward=0
     )
+
+  def test_no_recompute_when_checkpointing_enabled_in_eval_mode(self):
+    config = self._small_config()
     m = model.Gemma4Model(config)
     m.gradient_checkpointing_enable()
     m.eval()
     input_ids = torch.randint(0, config.vocab_size, (2, 10))
-    with mock.patch('torch.utils.checkpoint.checkpoint') as mock_ckpt:
-      m(input_ids)
-      mock_ckpt.assert_not_called()
-
-  def test_checkpoint_called_when_enabled_in_train_mode(self):
-    config = model.Gemma4Config(
-        num_hidden_layers=2,
-        hidden_size=128,
-        intermediate_size=256,
-        num_attention_heads=4,
-        num_key_value_heads=2,
-        head_dim=32,
+    self._assert_layer_calls(
+        m, input_ids, forward=config.num_hidden_layers, backward=0
     )
+
+  def test_layers_recomputed_when_checkpointing_enabled_in_train_mode(self):
+    config = self._small_config()
     m = model.Gemma4Model(config)
     m.gradient_checkpointing_enable()
     m.train()
     input_ids = torch.randint(0, config.vocab_size, (2, 10))
-    with mock.patch(
-        'torch.utils.checkpoint.checkpoint',
-        wraps=torch.utils.checkpoint.checkpoint,
-    ) as mock_ckpt:
-      m(input_ids)
-      self.assertEqual(mock_ckpt.call_count, config.num_hidden_layers)
+    self._assert_layer_calls(
+        m,
+        input_ids,
+        forward=config.num_hidden_layers,
+        backward=config.num_hidden_layers,
+    )
 
   def test_checkpoint_manual_attribute_default_kwargs_fallback(self):
-    config = model.Gemma4Config(
-        num_hidden_layers=2,
-        hidden_size=128,
-        intermediate_size=256,
-        num_attention_heads=4,
-        num_key_value_heads=2,
-        head_dim=32,
-    )
+    # Setting the attribute directly skips gradient_checkpointing_enable(), so
+    # the forward falls back to default checkpoint kwargs. Those must select
+    # non-reentrant checkpointing: reentrant checkpointing rejects the
+    # skip_sliding_mask keyword argument and would raise here.
+    config = self._small_config()
     m = model.Gemma4Model(config)
     m.gradient_checkpointing = True
     m.train()
     input_ids = torch.randint(0, config.vocab_size, (2, 10))
-    with mock.patch(
-        'torch.utils.checkpoint.checkpoint',
-        wraps=torch.utils.checkpoint.checkpoint,
-    ) as mock_ckpt:
-      m(input_ids)
-      self.assertEqual(mock_ckpt.call_count, config.num_hidden_layers)
-      for call in mock_ckpt.call_args_list:
-        self.assertFalse(call.kwargs.get('use_reentrant', True))
+    self._assert_layer_calls(
+        m,
+        input_ids,
+        forward=config.num_hidden_layers,
+        backward=config.num_hidden_layers,
+    )
 
 
 if __name__ == '__main__':
