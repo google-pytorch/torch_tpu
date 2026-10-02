@@ -23,6 +23,7 @@ device and the world size.
 
 from collections.abc import Mapping, Set
 import enum
+import glob
 import os
 import pathlib
 from typing import Final
@@ -327,6 +328,50 @@ def get_tpu_device_count() -> int:
   """
   count, _ = _scan_pci_tpus()
   return count
+
+
+_PCI_DEVICES_DIR: Final[str] = "/sys/bus/pci/devices"
+
+# Copied from `jax._src.hardware_utils._TPU_PCI_DEVICE_IDS`.
+_TPU_PCI_DEVICE_IDS_ANY_GENERATION: Final[Set[str]] = frozenset({
+    "0x0027",  # TPU v3
+    "0x0056",  # plc
+    "0x005e",  # TPU v4
+    "0x0062",  # TPU v5p
+    "0x0063",  # TPU v5e
+    "0x006f",  # TPU v6e
+    "0x0076",  # TPU v7
+    "0x0083",  # TPU 8i
+    "0x007c",  # TPU 8t
+})
+
+
+def num_tpu_chips_on_pci() -> int:
+  """Returns the number of TPU chips attached through PCI, whatever the driver.
+
+  Copied from `jax._src.hardware_utils.num_available_tpu_chips_and_device_id()`.
+  Unlike `get_tpu_device_count()`, this does not require the chip to be exposed
+  through VFIO, so it also counts chips bound to other drivers (e.g.
+  `/dev/accel*`). Use it to decide whether TPU hardware is present at all.
+
+  Returns:
+    The number of TPU chips, counting only PCI function 0 of each device.
+  """
+  num_chips = 0
+  for vendor_path in glob.glob(os.path.join(_PCI_DEVICES_DIR, "*", "vendor")):
+    pci_addr = os.path.basename(os.path.dirname(vendor_path))
+    if not pci_addr.endswith(".0"):
+      continue
+    vendor_id = pathlib.Path(vendor_path).read_text().strip()
+    if vendor_id != _GOOGLE_PCI_VENDOR_ID:
+      continue
+
+    device_path = os.path.join(os.path.dirname(vendor_path), "device")
+    device_id = pathlib.Path(device_path).read_text().strip()
+    if device_id in _TPU_PCI_DEVICE_IDS_ANY_GENERATION:
+      num_chips += 1
+
+  return num_chips
 
 
 def get_tpu_topology(world_size: int | None = None) -> str | None:

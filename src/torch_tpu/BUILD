@@ -119,7 +119,9 @@ py_library_providing_imports_info(
         ":_loader",
         ":_tcmalloc_check",
         ":_versioned_so_loader",
+        "//src/torch_tpu/_internal:env_utils",
         "//src/torch_tpu/_internal:testing",  # buildcleaner: keep
+        "//src/torch_tpu/_internal/utils:hardware",
     ],
 )
 

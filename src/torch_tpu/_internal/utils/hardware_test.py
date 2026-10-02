@@ -147,5 +147,45 @@ class DeviceCapabilityTest(seed_test_utils.RepeatableTest):
     self.assertEqual(hardware.get_hbm_bytes_per_device(), 192 * 1024**3 // 2)
 
 
+class NumTpuChipsOnPciTest(seed_test_utils.RepeatableTest):
+
+  def setUp(self):
+    super().setUp()
+    self._pci_dir = self.create_tempdir()
+    self.enter_context(
+        mock.patch.object(hardware, "_PCI_DEVICES_DIR", self._pci_dir.full_path)
+    )
+
+  def _add_device(self, addr: str, device_id: str, vendor_id="0x1ae0") -> None:
+    self._pci_dir.create_file(os.path.join(addr, "vendor"), vendor_id + "\n")
+    self._pci_dir.create_file(os.path.join(addr, "device"), device_id + "\n")
+
+  def test_no_devices(self):
+    self.assertEqual(hardware.num_tpu_chips_on_pci(), 0)
+
+  def test_counts_chips_without_vfio(self):
+    for i in range(4):
+      self._add_device(f"0000:00:0{i + 4}.0", "0x005e")
+
+    self.assertEqual(hardware.num_tpu_chips_on_pci(), 4)
+
+  def test_counts_tpu8t(self):
+    self._add_device("0000:00:04.0", "0x007c")
+
+    self.assertEqual(hardware.num_tpu_chips_on_pci(), 1)
+
+  def test_counts_only_function_zero(self):
+    self._add_device("0000:16:01.0", "0x0076")
+    self._add_device("0000:16:01.1", "0x0076")
+
+    self.assertEqual(hardware.num_tpu_chips_on_pci(), 1)
+
+  def test_ignores_other_devices(self):
+    self._add_device("0000:00:04.0", "0x0063", vendor_id="0x10de")
+    self._add_device("0000:00:05.0", "0x1234")
+
+    self.assertEqual(hardware.num_tpu_chips_on_pci(), 0)
+
+
 if __name__ == "__main__":
   absltest.main()
