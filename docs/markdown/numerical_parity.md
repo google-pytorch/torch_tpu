@@ -94,7 +94,6 @@ detailed diagnostic report. This identifies if the drift is systematic or an
 outlier.
 
 **Example Failure Output:**
-
 ```
 Tensor-likes are not close!
 
