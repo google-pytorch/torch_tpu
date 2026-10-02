@@ -30,7 +30,6 @@ from absl import logging
 from fairscale.nn.model_parallel import initialize as fairscale_init
 import torch
 import torch.multiprocessing as mp
-from torch.tpu import distributed  # pyrefly: ignore[missing-import]
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.distributed import multiprocessing
 from perflab import common
@@ -364,6 +363,10 @@ def main(argv: Sequence[str]) -> None:
     # Populate TORCH_TPU_SLICEBUILDER_ADDRESSES and TORCH_TPU_TOPOLOGY when
     # running standalone single-host TPU benchmarks (e.g., on GCP or GitHub
     # Actions runners). This is a no-op if already set in os.environ.
+    # Imported lazily so GPU runs (TORCH_DEVICE_BACKEND_AUTOLOAD=0) never depend
+    # on `torch.tpu`, which only exists once the TorchTPU backend is loaded.
+    from torch.tpu import distributed  # pylint: disable=g-import-not-at-top  # pyrefly: ignore[missing-import]
+
     distributed.set_tpu_launch_env(nproc_per_node=local_nproc)
 
   test_filter = os.environ.get(  # PY_ENVIRON_OK=benchmark

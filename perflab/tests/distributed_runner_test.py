@@ -14,8 +14,10 @@
 
 """Unit tests for standalone distributed benchmark runner."""
 
+import importlib.util
 import os
 import shutil
+import sys
 from unittest import mock
 
 from absl.testing import absltest
@@ -294,7 +296,7 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     self.assertEqual(mock_barrier.call_count, 1)
 
   @mock.patch.dict(os.environ, {"BENCHMARK_PLATFORM": "v7_2x2x2"})
-  @mock.patch.object(distributed_runner.distributed, "set_tpu_launch_env")
+  @mock.patch("torch.tpu.distributed.set_tpu_launch_env")
   @mock.patch.object(distributed_runner.distributed_utils, "dist_run")
   @mock.patch.object(distributed_runner, "resolve_benchmark_targets")
   def test_main_successful_dispatch(
@@ -321,7 +323,7 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     )
 
   @mock.patch.dict(os.environ, {"BENCHMARK_PLATFORM": "v7_2x2x1"})
-  @mock.patch.object(distributed_runner.distributed, "set_tpu_launch_env")
+  @mock.patch("torch.tpu.distributed.set_tpu_launch_env")
   @mock.patch.object(distributed_runner.distributed_utils, "dist_run")
   @mock.patch.object(distributed_runner, "resolve_benchmark_targets")
   def test_main_singlehost_tpu_prepares_environment(
@@ -345,6 +347,47 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
         "dummy",
         "eager_default",
         "v7_2x2x1",
+    )
+
+  def test_module_imports_without_torch_tpu_module(self):
+    # Re-execute the module body as a GPU host with
+    # TORCH_DEVICE_BACKEND_AUTOLOAD=0 would, where `torch.tpu` is not
+    # registered. A module-level `torch.tpu` import would raise
+    # ModuleNotFoundError here.
+    spec = importlib.util.find_spec(distributed_runner.__name__)
+    module = importlib.util.module_from_spec(spec)
+    with mock.patch.dict(
+        sys.modules, {"torch.tpu": None, "torch.tpu.distributed": None}
+    ):
+      spec.loader.exec_module(module)
+
+  @mock.patch.dict(os.environ, {"BENCHMARK_PLATFORM": "b200_8"})
+  @mock.patch.object(distributed_runner.distributed_utils, "dist_run")
+  @mock.patch.object(distributed_runner, "resolve_benchmark_targets")
+  def test_main_gpu_does_not_require_torch_tpu_module(
+      self, mock_resolve_targets, mock_dist_run
+  ):
+    dummy_spec = mock.MagicMock(spec=registry_lib.BenchmarkSpec)
+    dummy_spec.name = "dummy"
+    mock_resolve_targets.return_value = [
+        (dummy_spec, common.RunMode.EAGER_DEFAULT)
+    ]
+
+    # Simulate a GPU host with TORCH_DEVICE_BACKEND_AUTOLOAD=0, where
+    # `torch.tpu` is not registered: any import of it raises ImportError.
+    with mock.patch.dict(
+        sys.modules, {"torch.tpu": None, "torch.tpu.distributed": None}
+    ), mock.patch.dict(
+        os.environ, {"TESTBRIDGE_TEST_ONLY": "dummy_eager_default"}
+    ):
+      distributed_runner.main(["distributed_runner"])
+
+    mock_dist_run.assert_called_once_with(
+        8,
+        distributed_runner._run_single_target_task,
+        "dummy",
+        "eager_default",
+        "b200_8",
     )
 
   @mock.patch.object(torch.distributed, "barrier")
