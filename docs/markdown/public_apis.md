@@ -21,6 +21,39 @@ and its removal go through the deprecation process.
 
 <!-- BEGIN GENERATED: Stable APIs -->
 
+### Python APIs
+
+*   `torch.accelerator.current_accelerator`
+*   `torch.accelerator.current_device_idx`
+*   `torch.accelerator.current_device_index`
+*   `torch.accelerator.current_stream`
+*   `torch.accelerator.device_count`
+*   `torch.accelerator.device_index`
+*   `torch.accelerator.empty_cache`
+*   `torch.accelerator.get_memory_info`
+*   `torch.accelerator.is_available`
+*   `torch.accelerator.max_memory_allocated`
+*   `torch.accelerator.max_memory_reserved`
+*   `torch.accelerator.memory.empty_cache`
+*   `torch.accelerator.memory.get_memory_info`
+*   `torch.accelerator.memory.max_memory_allocated`
+*   `torch.accelerator.memory.max_memory_reserved`
+*   `torch.accelerator.memory.memory_allocated`
+*   `torch.accelerator.memory.memory_reserved`
+*   `torch.accelerator.memory.memory_stats`
+*   `torch.accelerator.memory.reset_peak_memory_stats`
+*   `torch.accelerator.memory_allocated`
+*   `torch.accelerator.memory_reserved`
+*   `torch.accelerator.memory_stats`
+*   `torch.accelerator.random.get_rng_state`
+*   `torch.accelerator.random.get_rng_state_all`
+*   `torch.accelerator.random.initial_seed`
+*   `torch.accelerator.reset_peak_memory_stats`
+*   `torch.accelerator.set_device_idx`
+*   `torch.accelerator.set_device_index`
+*   `torch.accelerator.set_stream`
+*   `torch.accelerator.synchronize`
+
 ### Environment Variables
 
 *   `LIBTPU_INIT_ARGS`
