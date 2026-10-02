@@ -32,6 +32,7 @@ torch_tpu_cc_library(
         "//csrc/common:fixed_size_span",
         "//csrc/common:to_string",
         "//csrc/eager:device_buffer",
+        "//csrc/eager:device_gen_impl",
         "//csrc/eager:op_dispatcher",
         "//csrc/eager:tensor_to_buffer",
         "//csrc/ops:op_builder_utils",

@@ -16,10 +16,11 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <mutex>
 #include <utility>
-#include <vector>
 
 #include "ATen/core/ATen_fwd.h"
+#include "ATen/core/Generator.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "c10/util/Optional.h"
@@ -30,6 +31,7 @@
 #include "csrc/common/fixed_size_span.h"
 #include "csrc/common/to_string.h"
 #include "csrc/eager/device_buffer.h"
+#include "csrc/eager/device_gen_impl.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/macros/kernel.h"

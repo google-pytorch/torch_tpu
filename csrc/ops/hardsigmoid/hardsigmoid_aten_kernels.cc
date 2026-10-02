@@ -20,6 +20,7 @@
 
 #include "ATen/core/TensorBody.h"
 #include "absl/status/statusor.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"

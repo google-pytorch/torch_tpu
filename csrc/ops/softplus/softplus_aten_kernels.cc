@@ -19,6 +19,7 @@
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
+#include "ATen/core/TensorBody.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
 #include "csrc/common/aten_utils.h"

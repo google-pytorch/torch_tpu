@@ -24,6 +24,7 @@ torch_tpu_cc_library(
     srcs = ["hardsigmoid_aten_kernels.cc"],
     hdrs = ["hardsigmoid_aten_kernels.h"],
     deps = [
+        "//csrc/common:aten_utils",
         "//csrc/common:cache_key",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
