@@ -39,7 +39,9 @@
 #include "absl/strings/str_split.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
+#include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
+#include "csrc/common/compilation_cache.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/shape.h"
@@ -214,6 +216,61 @@ TEST_F(NonzeroIndicesTest, ReusesExecutableAcrossShapesAndCounts) {
       if (k <= size) CheckMosaicKernelCorrectness(rows, cols, k);
     }
   }
+}
+
+// Registers the kernel in the unbounded dynamic cache under the key
+// torch.nonzero looks it up with. Lookups for any F32[M,N] input and count K
+// must then hit that entry instead of compiling, and the kernel it returns
+// must produce the correct indices.
+TEST_F(NonzeroIndicesTest, UnboundedDynamicCacheServesKernel) {
+  CompilationCache& cache = CompilationCache::GetInstance();
+  ASSERT_TRUE(
+      cache
+          .AddUnboundedDynamicCacheEntry(
+              NonZeroCacheKey(),
+              [](xla::PjRtClient&)
+                  -> absl::StatusOr<SharedLoadedExecutableWithMetadata> {
+                return *executable_;
+              })
+          .ok());
+
+  const std::tuple<int64_t, int64_t, int64_t> cases[] = {
+      {3, 7, 5}, {17, 257, 44}, {17, 257, 4369}, {1, 16385, 1025}};
+  for (const auto [rows, cols, k] : cases) {
+    SCOPED_TRACE(testing::Message() << rows << "x" << cols << " K=" << k);
+    const Shape input_shape({rows, cols}, mlir::ElementType::F32);
+    const Shape output_shape({k, 2}, mlir::ElementType::I64);
+    const CompilationCacheKey key = NonZeroCacheKey();
+
+    const int64_t hits_before = cache.GetCacheHits();
+    const int64_t misses_before = cache.GetCacheMisses();
+    TT_ASSERT_OK_AND_ASSIGN(
+        CompiledKernel kernel,
+        cache.GetOrCompile(
+            key, {input_shape}, {output_shape},
+            [](mlir::MLIRContext&)
+                -> absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> {
+              return TT_ERROR(error::kInternal)
+                     << "nonzero must hit the unbounded dynamic cache";
+            },
+            xla::CompileOptions()));
+    EXPECT_EQ(cache.GetCacheHits(), hits_before + 1);
+    EXPECT_EQ(cache.GetCacheMisses(), misses_before);
+    TT_ASSERT_OK_AND_ASSIGN(SharedLoadedExecutableWithMetadata executable,
+                            kernel.fixed_shape_kernel.get());
+    EXPECT_EQ(executable, *executable_);
+
+    const xla::Literal input = MakeInput(rows, cols, k);
+    TT_ASSERT_OK_AND_ASSIGN(const auto operands, PrepareOperands(input));
+    TT_ASSERT_OK_AND_ASSIGN(
+        const auto outputs,
+        Execute(executable, {operands[0].get()}, {output_shape}));
+    ASSERT_EQ(outputs.size(), 1);
+    TT_ASSERT_OK_AND_ASSIGN(auto actual, outputs[0]->ToLiteral().Await());
+    EXPECT_EQ(*actual, ReferenceIndices(input));
+  }
+
+  cache.EvictAll();
 }
 
 // Build the real TorchTPU SHLO lowering for live XLA comparisons.

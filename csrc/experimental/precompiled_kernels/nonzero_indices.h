@@ -17,7 +17,10 @@
 #ifndef TORCH_TPU_CSRC_EXPERIMENTAL_PRECOMPILED_KERNELS_NONZERO_INDICES_H_
 #define TORCH_TPU_CSRC_EXPERIMENTAL_PRECOMPILED_KERNELS_NONZERO_INDICES_H_
 
+#include <cstdint>
+
 #include "absl/status/statusor.h"
+#include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
 #include "xla/pjrt/pjrt_client.h"
 
@@ -44,6 +47,10 @@ namespace torch_tpu {
 // 1 <= N <= INT32_MAX - 127, and 3 <= K <= min(M*N, INT32_MAX).
 absl::StatusOr<SharedLoadedExecutableWithMetadata>
 BuildNonzeroIndicesExecutable(xla::PjRtClient& client);
+
+// Returns the CompilationCacheKey which uses the ShapelessKey a nonzero graph
+// would be lowered to.
+CompilationCacheKey NonZeroCacheKey();
 
 }  // namespace torch_tpu
 

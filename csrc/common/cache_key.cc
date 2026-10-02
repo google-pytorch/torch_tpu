@@ -36,9 +36,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/ascii.h"
-#include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
-#include "absl/strings/str_join.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "c10/core/Device.h"
@@ -51,7 +49,6 @@
 #include "csrc/common/fingerprint_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/to_string.h"
-#include "csrc/common/utils.h"
 #include "csrc/ops/op_names.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch/csrc/distributed/c10d/Types.hpp"
@@ -266,17 +263,22 @@ absl::StatusOr<OpParamCacheKeys> OpParamCacheKeys::Builder::operator*() {
 }
 
 std::string CompilationCacheKey::CompactFormat() const {
-  return absl::StrFormat("%016x_%016x_%016x", graph_key_.shapeless_key().key(),
-                         graph_key_.dimensions_key().key(),
-                         compile_options_key_.key());
+  if (id_key_.empty()) {
+    return absl::StrFormat(
+        "%016x_%016x_%016x", graph_key_.shapeless_key().key(),
+        graph_key_.dimensions_key().key(), compile_options_key_.key());
+  }
+  return absl::StrFormat(
+      "%016x_%016x_%016x_%s", graph_key_.shapeless_key().key(),
+      graph_key_.dimensions_key().key(), compile_options_key_.key(), id_key_);
 }
 
-std::ostream& operator<<(std::ostream& os, CompilationCacheKey key) {
+std::ostream& operator<<(std::ostream& os, const CompilationCacheKey& key) {
   os << "CompilationCacheKey{shapeless_key=" << std::hex
      << key.graph_key().shapeless_key().key()
      << ", dimensions_key=" << key.graph_key().dimensions_key().key()
      << ", compile_options_key=" << key.compile_options_key().key() << std::dec
-     << "}";
+     << ", id_key=" << key.id_key() << "}";
   return os;
 }
 

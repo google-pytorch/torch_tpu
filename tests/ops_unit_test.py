@@ -5722,6 +5722,48 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(compute)
 
+  @parameterized.named_parameters(("functional", False), ("out", True))
+  def test_nonzero_reuses_static_kernel_for_same_num_nonzero(self, use_out):
+    # nonzero compiles one static kernel per number of nonzero elements. That
+    # count is the leading extent of the output, which is already part of the
+    # cache key, so the kernels must stay distinct without an op param cache
+    # key for it.
+    shape = (7, 11)  # Unused by other nonzero tests, so the cache starts cold.
+
+    def make_input(num_nonzero, offset):
+      x = torch.zeros(shape).flatten()
+      x[offset : offset + 3 * num_nonzero : 3] = 1.0
+      return x.reshape(shape)
+
+    def run_nonzero(x):
+      """Checks nonzero(x) on TPU and returns the cache (hits, misses) it adds."""
+      tpu_x = x.to("tpu")
+      tpu_out = torch.empty(0, x.dim(), dtype=torch.int64, device="tpu")
+      start_hits = torch.tpu._get_cache_hits()
+      start_misses = torch.tpu._get_cache_misses()
+      if use_out:
+        torch.nonzero(tpu_x, out=tpu_out)
+        actual = tpu_out.cpu()
+      else:
+        actual = torch.nonzero(tpu_x).cpu()
+      hits = torch.tpu._get_cache_hits() - start_hits
+      misses = torch.tpu._get_cache_misses() - start_misses
+      utils.assert_close(actual, torch.nonzero(x))
+      return hits, misses
+
+    _, misses = run_nonzero(make_input(num_nonzero=3, offset=0))
+    self.assertGreaterEqual(misses, 1, "first count must compile a kernel")
+
+    # Same count at different positions: the count-3 kernel is reused.
+    hits, misses = run_nonzero(make_input(num_nonzero=3, offset=1))
+    self.assertEqual(misses, 0, "same count must not recompile")
+    self.assertGreater(hits, 0)
+
+    # New count: only the count-5 nonzero kernel is compiled. The size kernel
+    # depends on the input shape alone, so it is still a hit.
+    _, misses = run_nonzero(make_input(num_nonzero=5, offset=0))
+    self.assertEqual(misses, 1, "new count must not reuse the count-3 kernel")
+
   def test_normal_float_float_out(self):
     golden_result = torch.normal(
         mean=2.0,

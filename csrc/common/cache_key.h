@@ -41,8 +41,8 @@
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
+#include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "c10/core/Device.h"
 #include "c10/core/Scalar.h"  // IWYU pragma: keep for c10::Scalar
@@ -56,7 +56,6 @@
 #include "csrc/common/fingerprint_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/to_string.h"
-#include "csrc/common/utils.h"
 #include "csrc/ops/op_names.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -847,25 +846,29 @@ void AbslStringify(Sink& sink, const GraphKey key) {
 class CompilationCacheKey {
  public:
   struct Hash {
-    [[nodiscard]] size_t operator()(CompilationCacheKey key) const {
+    [[nodiscard]] size_t operator()(const CompilationCacheKey& key) const {
       const auto& graph_key = key.graph_key();
       const auto& compile_options_key = key.compile_options_key();
 
       return FingerprintCat(graph_key.shapeless_key().key(),
                             graph_key.dimensions_key().key(),
-                            compile_options_key.key());
+                            compile_options_key.key(), key.id_key());
     }
   };
 
   // Creates a CompilationCacheKey from the given components.
-  CompilationCacheKey(GraphKey graph_key, CompileOptionsKey compile_options_key)
-      : graph_key_(graph_key), compile_options_key_(compile_options_key) {}
+  CompilationCacheKey(GraphKey graph_key, CompileOptionsKey compile_options_key,
+                      std::string id_key = "")
+      : graph_key_(graph_key),
+        compile_options_key_(compile_options_key),
+        id_key_(id_key) {}
 
   // Compares two CompilationCacheKeys.
-  [[nodiscard]] friend bool operator==(CompilationCacheKey lhs,
-                                       CompilationCacheKey rhs) {
+  [[nodiscard]] friend bool operator==(const CompilationCacheKey& lhs,
+                                       const CompilationCacheKey& rhs) {
     return lhs.graph_key_ == rhs.graph_key_ &&
-           lhs.compile_options_key_ == rhs.compile_options_key_;
+           lhs.compile_options_key_ == rhs.compile_options_key_ &&
+           lhs.id_key() == rhs.id_key();
   }
 
   // Returns a compact string representation of the key, suitable for use in a
@@ -881,24 +884,23 @@ class CompilationCacheKey {
     return compile_options_key_;
   }
 
+  [[nodiscard]] std::string_view id_key() const { return id_key_; }
+
  private:
   // The fingerprint of all graph properties.
   GraphKey graph_key_;
   // The fingerprint of the compile options.
   CompileOptionsKey compile_options_key_;
+  // Optional id to help identify the cache entry.
+  // e.g. In the case of multiple different dynamic kernels that share a
+  // graph_key but are optimized for different sizes.
+  std::string id_key_ = "";
 };
 
-static_assert(
-    sizeof(CompilationCacheKey) <= 3 * sizeof(void*),
-    "Per C++ Core Guidelines, structs whose size is at most 3 pointers are "
-    "more efficient to pass by value than by reference. We pass "
-    "CompilationCacheKey by value today. We need to revisit the decision if "
-    "its size grows.");
-
 // Formats a compilation cache key as a human-readable string.
-std::ostream& operator<<(std::ostream& os, CompilationCacheKey key);
+std::ostream& operator<<(std::ostream& os, const CompilationCacheKey& key);
 template <typename Sink>
-void AbslStringify(Sink& sink, const CompilationCacheKey key) {
+void AbslStringify(Sink& sink, const CompilationCacheKey& key) {
   absl::Format(&sink, "%s", absl::FormatStreamed(key));
 }
 

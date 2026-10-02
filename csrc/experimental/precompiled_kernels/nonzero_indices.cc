@@ -24,15 +24,19 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
+#include "csrc/common/compile_options_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/experimental/precompiled_kernels/mosaic_custom_call.h"
 #include "csrc/internal/mosaic/op_builders.h"
+#include "csrc/ops/op_names.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Arith/IR/ArithAttributes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -48,6 +52,7 @@
 #include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/ValueRange.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "xla/client/executable_build_options.h"
 #include "xla/hlo/builder/xla_computation.h"
 #include "xla/hlo/ir/hlo_module.h"
@@ -412,6 +417,12 @@ BuildNonzeroIndicesExecutable(xla::PjRtClient& client) {
           },
       .pjrt_param_shapes = std::move(parameters),
       .output_transform = BitcastToLogicalIndices,
+      .is_compatible =
+          [](absl::Span<const Shape> input_shapes) {
+            return input_shapes.size() == 1 &&
+                   input_shapes[0].dimensions().size() == 2 &&
+                   input_shapes[0].dtype() == mlir::ElementType::F32;
+          },
   };
 
   TT_ASSIGN_OR_RETURN(SharedLoadedExecutableWithMetadata executable,
@@ -419,6 +430,27 @@ BuildNonzeroIndicesExecutable(xla::PjRtClient& client) {
                           std::move(loaded),
                           /*argument_indices=*/{}, std::move(dynamic_meta)));
   return executable;
+}
+
+CompilationCacheKey NonZeroCacheKey() {
+  // Only ranks and dtypes reach the shapeless key, so these extents are
+  // placeholders. The rank must be 2: the kernel only accepts F32[M,N].
+  const Dimensions input_dims = {-1, -1};
+  const Dimensions out_dims = {-1, static_cast<int64_t>(input_dims.size())};
+
+  GraphSignature graph;
+  graph.SetCorePinningMode(CorePinningMode::kUnpinned);
+  const int in = graph.AddInput(input_dims, mlir::ElementType::F32);
+  int out = -1;
+  graph.AddOp(OpName::kNonzero, OpParamCacheKeys::Empty(),
+              /*donated_inputs=*/{},
+              [&](GraphSignature::OpSignatureBuilder& op) {
+                op.AddInput(in);
+                out = op.AddOutput(out_dims, mlir::ElementType::I64);
+              });
+  graph.AddGraphOutput(out);
+  return CompilationCacheKey(graph.GetKey(), CompileOptionsKey({}),
+                             "nonzero_2d");
 }
 
 }  // namespace torch_tpu

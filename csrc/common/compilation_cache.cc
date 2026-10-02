@@ -252,7 +252,7 @@ void CompilationCache::SetOptions(
 // Sets the executable promise for the given key. If the promise is already
 // satisfied, this function will do nothing.
 static void TrySetExecutablePromise(
-    CompilationCacheKey key, LoadedExecutablePromise& promise,
+    const CompilationCacheKey& key, LoadedExecutablePromise& promise,
     const absl::StatusOr<SharedLoadedExecutableWithMetadata>& executable) {
   try {
     promise.set_value(std::move(executable));
@@ -305,7 +305,7 @@ void CompilationCache::EvictAll() {
     const auto keys = keys_to_evict;
     // Loop over a copy of keys_to_evict, as we will modify it during
     // the loop and invalidate its iterator.
-    for (const auto key : keys) {
+    for (const auto& key : keys) {
       const auto it = executable_cache_.find(key);
       if (it == executable_cache_.end()) {
         ABSL_VLOG(1) << "Key already evicted by another thread: " << key;
@@ -400,13 +400,13 @@ PerfStats CompilationCache::GetCacheStats() const {
 }
 
 const CacheEntry* CompilationCache::FindStaticCacheEntryOrNull(
-    CompilationCacheKey key) const {
+    const CompilationCacheKey& key) const {
   const auto it = executable_cache_.find(key);
   return it == executable_cache_.end() ? nullptr : &it->second;
 }
 
 std::optional<CompilationCache::CacheLookupInternal>
-CompilationCache::GetStaticCacheEntry(CompilationCacheKey key) const {
+CompilationCache::GetStaticCacheEntry(const CompilationCacheKey& key) const {
   const CacheEntry* cache_entry = FindStaticCacheEntryOrNull(key);
   if (cache_entry == nullptr) {
     return std::nullopt;
@@ -443,16 +443,34 @@ CompilationCache::GetUnboundedDynamicCacheEntry(
   }
 
   for (const auto& entry : it->second) {
-    if (entry.is_compatible(shapes)) {
+    const absl::StatusOr<SharedLoadedExecutableWithMetadata>& executable_or =
+        entry.cache_entry.executable_future().get();
+    if (!executable_or.ok() || *executable_or == nullptr) {
+      ABSL_LOG(WARNING)
+          << "Unbounded dynamic cache entry has not been compiled "
+             "for key: "
+          << key;
+      continue;
+    }
+    const SharedLoadedExecutableWithMetadata& executable = *executable_or;
+    if (!executable->unbounded_dynamic_execution_metadata()) {
+      ABSL_LOG(WARNING)
+          << "Unbounded dynamic cache entry has no dynamic metadata "
+             "for key: "
+          << key;
+      continue;
+    }
+    UnboundedDynamicExecutionMetadata::CompatibilityFunc is_compatible =
+        executable->unbounded_dynamic_execution_metadata()->is_compatible;
+    if (!is_compatible || is_compatible(shapes)) {
       perf_stats_.num_cache_hits++;
       entry.cache_entry.stats().read_count++;
       entry.cache_entry.stats().last_read = absl::Now();
       ABSL_VLOG(2) << "Compilation cache UNBOUNDED DYNAMIC HIT for key: "
                    << key;
-      const CacheEntry& cache_entry = entry.cache_entry;
       return CacheLookupInternal{
-          .executable_promise = cache_entry.executable_promise(),
-          .executable_future = cache_entry.executable_future(),
+          .executable_promise = entry.cache_entry.executable_promise(),
+          .executable_future = entry.cache_entry.executable_future(),
           .needs_compilation = false,
           .dump_on_cache_miss = false,
       };
@@ -462,7 +480,7 @@ CompilationCache::GetUnboundedDynamicCacheEntry(
 }
 
 CompilationCache::CacheLookupInternal CompilationCache::AddStaticCacheEntry(
-    CompilationCacheKey key) {
+    const CompilationCacheKey& key) {
   const auto [entry, inserted] = executable_cache_.insert({key, CacheEntry()});
   ABSL_CHECK(inserted)  // CRASH_OK
       << "Key already exists in static cache: " << key;
@@ -508,21 +526,33 @@ CompilationCache::AddBoundedDynamicCacheEntry(
 }
 
 absl::Status CompilationCache::AddUnboundedDynamicCacheEntry(
-    const ShapelessKey key, SharedLoadedExecutableWithMetadata executable,
-    CompatibilityFunc is_compatible) {
-  absl::MutexLock lock(cache_mutex_);
-  auto& entries = unbounded_dynamic_cache_[key];
-  auto& new_entry = entries.emplace_back(UnboundedDynamicCacheEntry{
-      .is_compatible = std::move(is_compatible),
-  });
+    const CompilationCacheKey& key,
+    absl::AnyInvocable<
+        absl::StatusOr<SharedLoadedExecutableWithMetadata>(xla::PjRtClient&)>
+        compilation_fn) {
+  xla::PjRtClient* const client = PjrtBackend::GetInstance().GetClient();
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=GetClient() lazily initializes the
+                 // backend, so this is unreachable from Python; covered in C++
+                 // compilation_cache_test.
+      client != nullptr, error::kFailedPrecondition)
+      << "PjrtBackend must be initialized before adding unbounded dynamic "
+         "cache entries.";
+  TT_ASSIGN_OR_RETURN(SharedLoadedExecutableWithMetadata executable,
+                      compilation_fn(*client));
 
+  absl::MutexLock lock(cache_mutex_);
+  std::vector<UnboundedDynamicCacheEntry>& entries =
+      unbounded_dynamic_cache_[key.graph_key().shapeless_key()];
+  UnboundedDynamicCacheEntry& new_entry = entries.emplace_back(
+      UnboundedDynamicCacheEntry{.key = key, .cache_entry = CacheEntry()});
   new_entry.cache_entry.executable_promise()->set_value(std::move(executable));
+
   return absl::OkStatus();
 }
 
 absl::StatusOr<CompilationCache::CacheLookupInternal>
 CompilationCache::GetOrCreateCacheEntry(
-    CompilationCacheKey key, const std::vector<Shape>& input_shapes,
+    const CompilationCacheKey& key, const std::vector<Shape>& input_shapes,
     const std::vector<Shape>& output_shapes,
     bool skip_dynamic_lookup_and_compilation) {
   if (!allow_cache_mode_) {
@@ -605,7 +635,7 @@ CompilationCache::GetOrCreateCacheEntry(
   return AddStaticCacheEntry(key);
 }
 
-bool CompilationCache::IsExecutableReady(CompilationCacheKey key) const {
+bool CompilationCache::IsExecutableReady(const CompilationCacheKey& key) const {
   absl::MutexLock lock(cache_mutex_);
   if (const CacheEntry* cache_entry = FindStaticCacheEntryOrNull(key);
       cache_entry != nullptr) {
@@ -831,7 +861,7 @@ CompilationCache::CreateDynamicKernelAdapter(
 }
 
 absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompileImpl(
-    const CompilationCacheKey key, const std::vector<Shape>& input_shapes,
+    const CompilationCacheKey& key, const std::vector<Shape>& input_shapes,
     const std::vector<Shape>& output_shapes,
     MlirComputationBuilder computation_builder,
     const xla::CompileOptions& compile_options,
@@ -915,7 +945,7 @@ absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompileImpl(
 }
 
 absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompile(
-    const CompilationCacheKey key, const std::vector<Shape>& input_shapes,
+    const CompilationCacheKey& key, const std::vector<Shape>& input_shapes,
     const std::vector<Shape>& output_shapes,
     MlirComputationBuilder computation_builder,
     const xla::CompileOptions& compile_options, bool use_dynamic_adapters) {
@@ -926,7 +956,7 @@ absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompile(
 }
 
 absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompile(
-    const CompilationCacheKey key, const std::vector<Shape>& input_shapes,
+    const CompilationCacheKey& key, const std::vector<Shape>& input_shapes,
     const std::vector<Shape>& output_shapes,
     MlirComputationBuilder computation_builder,
     UniqueCompileOptions compile_options, bool use_dynamic_adapters) {
@@ -937,7 +967,7 @@ absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompile(
 }
 
 void CompilationCache::EnqueueCompilation(
-    CompilationCacheKey key, ContextedModule contexted_module,
+    const CompilationCacheKey& key, ContextedModule contexted_module,
     UniqueCompileOptions compile_options) {
   EnsureInitialized();
   auto executable_builder = [contexted_module = std::move(contexted_module)](
@@ -958,13 +988,13 @@ void CompilationCache::EnqueueCompilation(
         // passed down from the dispatch thread.
         DisallowThisThreadToAccessContextState();
         torch_tpu::ScopedMemMeasuringContainer container;
-        this->GetFromTier2OrCompile(std::move(key), std::move(builder),
+        this->GetFromTier2OrCompile(key, std::move(builder),
                                     std::move(compile_options));
       });
 }
 
 void CompilationCache::SetExecutable(
-    CompilationCacheKey key,
+    const CompilationCacheKey& key,
     absl::StatusOr<SharedLoadedExecutableWithMetadata> executable,
     CacheEntryStats stats) {
   absl::MutexLock lock(cache_mutex_);
@@ -1017,7 +1047,7 @@ bool CompilationCache::ShouldUseTier2Cache() const {
 }
 
 void CompilationCache::GetFromTier2OrCompile(
-    CompilationCacheKey key, LoadedExecutableBuilder executable_builder,
+    const CompilationCacheKey& key, LoadedExecutableBuilder executable_builder,
     UniqueCompileOptions compile_options) {
   const bool uses_tier2 = ShouldUseTier2Cache();
   ABSL_VLOG(1) << "Compiling executable for key: " << key
@@ -1026,8 +1056,7 @@ void CompilationCache::GetFromTier2OrCompile(
                               : "");
 
   if (!uses_tier2) {
-    Compile(std::move(key), std::move(executable_builder),
-            std::move(compile_options));
+    Compile(key, std::move(executable_builder), std::move(compile_options));
     return;
   }
 
@@ -1063,13 +1092,13 @@ void CompilationCache::GetFromTier2OrCompile(
       }
     }
 
-    GetFromTier3OrCompile(std::move(key), std::move(executable_builder),
+    GetFromTier3OrCompile(key, std::move(executable_builder),
                           std::move(compile_options), lock, request_start);
   }  // End of critical section.
 }
 
 void CompilationCache::GetFromTier3OrCompile(
-    CompilationCacheKey key, LoadedExecutableBuilder executable_builder,
+    const CompilationCacheKey& key, LoadedExecutableBuilder executable_builder,
     UniqueCompileOptions compile_options, Tier2CacheEntryLock& lock,
     const absl::Time request_start) {
   const bool uses_tier3 = UsesTier3CompilationCache();
@@ -1201,7 +1230,7 @@ void CompilationCache::GetFromTier3OrCompile(
   }
 }
 
-void CompilationCache::Compile(CompilationCacheKey key,
+void CompilationCache::Compile(const CompilationCacheKey& key,
                                LoadedExecutableBuilder executable_builder,
                                UniqueCompileOptions compile_options) {
   xla::PjRtClient* const client = PjrtBackend::GetInstance().GetClient();

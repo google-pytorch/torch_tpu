@@ -116,7 +116,7 @@ const std::string& GetTier2CompilationCachePath() {
   return *cache_path;
 }
 
-std::string GetTier2CacheEntryPath(CompilationCacheKey key) {
+std::string GetTier2CacheEntryPath(const CompilationCacheKey& key) {
   return absl::StrCat(GetTier2CompilationCachePath(), "/", key.CompactFormat(),
                       kTier2CacheFileExtension);
 }
@@ -131,7 +131,7 @@ class MappedCacheEntry {
   // Returns an error if the cache file cannot be opened or mapped.
   //
   // The caller must hold the lock for the given key.
-  static absl::StatusOr<MappedCacheEntry> Make(CompilationCacheKey key) {
+  static absl::StatusOr<MappedCacheEntry> Make(const CompilationCacheKey& key) {
     // Try to open the cache file for reading.
     const std::string path = GetTier2CacheEntryPath(key);
     UniqueFileDescriptor fd(open(path.c_str(), O_RDONLY));
@@ -199,7 +199,7 @@ class MappedCacheEntry {
 };
 
 absl::StatusOr<SharedLoadedExecutableWithMetadata> GetFromTier2Cache(
-    CompilationCacheKey key, absl::Time request_start,
+    const CompilationCacheKey& key, absl::Time request_start,
     Tier2CacheEntryStats& stats) {
   const absl::Time read_start = absl::Now();
 
@@ -227,7 +227,7 @@ absl::StatusOr<SharedLoadedExecutableWithMetadata> GetFromTier2Cache(
 
 // Returns the path to the lock file for the given key.
 [[nodiscard]] static std::string GetTier2CacheEntryLockPath(
-    CompilationCacheKey key) {
+    const CompilationCacheKey& key) {
   return absl::StrCat(GetTier2CompilationCachePath(), "/", key.CompactFormat(),
                       kLockFileExtension);
 }
@@ -246,8 +246,8 @@ static void EnsureTier2CacheDirExistsOnceOrDie() {
   static_cast<void>(dir_exists);  // VOID_CAST_OK=dummy result.
 }
 
-Tier2CacheEntryLock::Tier2CacheEntryLock(CompilationCacheKey key)
-    : key_(std::move(key)) {
+Tier2CacheEntryLock::Tier2CacheEntryLock(const CompilationCacheKey& key)
+    : key_(key) {
   ABSL_VLOG(1) << "Acquiring tier-2 cache lock for key: " << key_;
 
   EnsureTier2CacheDirExistsOnceOrDie();

@@ -35,11 +35,12 @@ namespace torch_tpu {
 [[nodiscard]] bool UsesLocalBackupTaskForTier3Read();
 
 // Returns the path to the tier-3 cache file for the given key.
-[[nodiscard]] std::string GetTier3CacheEntryPath(CompilationCacheKey key);
+[[nodiscard]] std::string GetTier3CacheEntryPath(
+    const CompilationCacheKey& key);
 
 // Tries to get a loaded executable from the tier-3 compilation cache.
 absl::StatusOr<SharedLoadedExecutableWithMetadata> GetFromTier3Cache(
-    CompilationCacheKey key);
+    const CompilationCacheKey& key);
 
 }  // namespace torch_tpu
 

@@ -102,14 +102,14 @@ static void EnsureTier3CacheDirExistsOnceOrDie() {
   static_cast<void>(dir_exists);  // VOID_CAST_OK=don't care about dummy result.
 }
 
-std::string GetTier3CacheEntryPath(CompilationCacheKey key) {
+std::string GetTier3CacheEntryPath(const CompilationCacheKey& key) {
   EnsureTier3CacheDirExistsOnceOrDie();
   return absl::StrCat(GetTier3CompilationCachePath(), "/", key.CompactFormat(),
                       kTier3CacheFileExtension);
 }
 
 absl::StatusOr<SharedLoadedExecutableWithMetadata> GetFromTier3Cache(
-    CompilationCacheKey key) {
+    const CompilationCacheKey& key) {
   // Read the cache file into a char buffer.
   const std::string cache_entry_path = GetTier3CacheEntryPath(key);
   ABSL_VLOG(1) << "Reading tier-3 cache for key " << key << " at path "

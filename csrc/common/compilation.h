@@ -106,7 +106,12 @@ struct UnboundedDynamicExecutionMetadata {
   std::vector<MetadataParamBinding> metadata_params;
   std::vector<xla::Shape> pjrt_param_shapes;
 
+  // Returns whether this executable can serve a call with the given logical
+  // shapes. Consulted when scanning cache entries that share a shapeless key.
+  using CompatibilityFunc = bool (*)(absl::Span<const Shape>);
+
   OutputTransform absl_nullable output_transform = nullptr;
+  CompatibilityFunc is_compatible = nullptr;
 };
 
 class LoadedExecutableWithMetadata {
