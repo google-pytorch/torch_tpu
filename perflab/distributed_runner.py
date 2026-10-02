@@ -55,6 +55,13 @@ discovery_lib.import_submodules(steps)
 
 _FRAMEWORK = mode_lib.Framework.TORCH
 
+# TODO(wan): revisit backend selection for CPU/gloo in distributed_runner (b/568593495).
+_BACKEND_BY_DEVICE_KIND = {
+    target_lib.DeviceKind.CPU: "gloo",
+    target_lib.DeviceKind.CUDA: "nccl",
+    target_lib.DeviceKind.TPU: "tpu_dist",
+}
+
 
 class BarrierPolicy(enum.Enum):
   """Policy for collective synchronization barrier during state cleanup."""
@@ -201,9 +208,7 @@ def _run_single_target_task(
         mode.value,
     )
     return
-  backend = (
-      "nccl" if target.device_kind == target_lib.DeviceKind.CUDA else "tpu_dist"
-  )
+  backend = _BACKEND_BY_DEVICE_KIND[target.device_kind]
   if target.device_kind == target_lib.DeviceKind.CUDA:
     torch.cuda.set_device(
         int(os.environ.get("LOCAL_RANK", "0"))  # PY_ENVIRON_OK=benchmark
@@ -314,21 +319,27 @@ def _run_single_target_task(
     )
 
 
-def _clear_persistent_compilation_caches() -> None:
+def _clear_persistent_compilation_caches(
+    shm_cache_dir: str = "/dev/shm/torch_tpu_cache",
+    cache_patterns: Sequence[str] = (
+        "/tmp/torchinductor*",
+        "/tmp/torch_compile*",
+    ),
+) -> None:
   """Clears shared-memory and on-disk compilation caches between benchmark runs.
 
   Ensures each distributed benchmark target measures true cold compilation
   latency without being polluted by cached graph artifacts or compiled binaries
   from preceding targets.
+
+  Args:
+    shm_cache_dir: Path to the host-local shared-memory compilation cache.
+    cache_patterns: Glob patterns for Inductor/compile on-disk caches.
   """
   # 1. Clear TorchTPU Tier-2 host-local shared memory compilation cache.
-  shutil.rmtree("/dev/shm/torch_tpu_cache", ignore_errors=True)
+  shutil.rmtree(shm_cache_dir, ignore_errors=True)
 
   # 2. Clear PyTorch Inductor and compile on-disk caches.
-  cache_patterns = [
-      "/tmp/torchinductor*",
-      "/tmp/torch_compile*",
-  ]
   if custom_inductor_cache := os.environ.get(  # PY_ENVIRON_OK=benchmark
       "TORCHINDUCTOR_CACHE_DIR"
   ):

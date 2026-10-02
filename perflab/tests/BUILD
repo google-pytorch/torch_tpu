@@ -15,6 +15,7 @@
 load(
     "//build_files:build_defs.bzl",
     "torch_tpu_package_end",
+    "torch_tpu_py_library",
     "torch_tpu_py_test",
 )
 
@@ -39,15 +40,32 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_library(
+    name = "fakes",
+    testonly = True,
+    srcs = ["fakes.py"],
+    deps = [
+        "//perflab:export",
+        "//perflab:registry",
+        "//perflab:step_lib",
+        "//perflab:target",
+        "//shims/torch:pytorch",
+        "@tsl//tsl/profiler/protobuf:xplane_proto_py_proto",
+    ],
+)
+
 torch_tpu_py_test(
     name = "measure_test",
     srcs = ["measure_test.py"],
     nonightly_oss = "TODO:(b/553018817) Re-enable once OSS backend loading is resolved",
     deps = [
+        ":fakes",
+        "//perflab:device_utils",
         "//perflab:measure",
         "//perflab:metrics",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:flagsaver",
+        "//shims/absl_py/testing:parameterized",
         "//src/torch_tpu",
         "//tests:seed_test_utils",
     ],
@@ -210,21 +228,21 @@ torch_tpu_py_test(
     name = "distributed_runner_test",
     srcs = ["distributed_runner_test.py"],
     deps = [
+        ":fakes",
         "//perflab:common",
         "//perflab:discovery",
         "//perflab:distributed_runner_lib",
+        "//perflab:export",
         "//perflab:measure",
-        "//perflab:metrics",
         "//perflab:registry",
-        "//perflab:step_lib",
         "//perflab:target",
-        "//perflab:torch_device_ops",
         "//perflab/steps",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//tests:seed_test_utils",
+        "@pypi//portpicker",
     ],
 )
 
