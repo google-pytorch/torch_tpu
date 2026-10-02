@@ -92,5 +92,6 @@ py_test(
     srcs = ["run_bazel_diff_test.py"],
     deps = [
         ":run_bazel_diff",
+        "//ci/tools/testing:fakes",
     ],
 )

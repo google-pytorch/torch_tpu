@@ -21,6 +21,7 @@ import unittest
 from unittest import mock
 
 from ci.tools import run_bazel_diff
+from ci.tools.testing import fakes
 
 
 class RunBazelDiffTest(unittest.TestCase):
@@ -176,101 +177,97 @@ class RunBazelDiffTest(unittest.TestCase):
           run_bazel_diff.read_targets_file(missing)
 
   def test_run_bazel_diff_invokes_java_jar(self):
-    with mock.patch("subprocess.run") as mock_run:
+    runner = fakes.FakeSubprocessRunner()
+    runner.on(["java", "-jar"])
+    with mock.patch.object(subprocess, "run", runner):
       run_bazel_diff.run_bazel_diff(
           "generate-hashes",
           "-w",
           pathlib.Path("/workspace"),
           pathlib.Path("/workspace/hashes.json"),
       )
-      mock_run.assert_called_once_with(
-          [
-              "java",
-              "-jar",
-              "/tmp/bazel-diff.jar",
-              "generate-hashes",
-              "-w",
-              "/workspace",
-              "/workspace/hashes.json",
-          ],
-          check=True,
+    self.assertEqual(
+        runner.commands("java"),
+        [(
+            "java",
+            "-jar",
+            "/tmp/bazel-diff.jar",
+            "generate-hashes",
+            "-w",
+            "/workspace",
+            "/workspace/hashes.json",
+        )],
+    )
+
+  def test_bazel_test_command_config_flag(self):
+    with self.subTest("with_config"):
+      self.assertEqual(
+          run_bazel_diff._bazel_test_command(
+              "ci_cpu", "--keep_going", ["/" + "/..."]
+          ),
+          "bazel test --config=ci_cpu --keep_going /" + "/...",
+      )
+    with self.subTest("empty_config"):
+      self.assertEqual(
+          run_bazel_diff._bazel_test_command(
+              "", "--keep_going", ["/" + "/..."]
+          ),
+          "bazel test --keep_going /" + "/...",
       )
 
-  def test_run_bazel_test_config_flag(self):
-    with mock.patch("subprocess.run") as mock_run:
-      mock_run.return_value.returncode = 0
-      with self.subTest("with_config"):
-        run_bazel_diff._run_bazel_test("ci_cpu", "--keep_going", ["//..."])
-        mock_run.assert_called_with(
-            ["bash", "-c", "bazel test --config=ci_cpu --keep_going //..."],
-            check=False,
-        )
-      with self.subTest("empty_config"):
-        run_bazel_diff._run_bazel_test("", "--keep_going", ["//..."])
-        mock_run.assert_called_with(
-            ["bash", "-c", "bazel test --keep_going //..."],
-            check=False,
-        )
-
-  def test_run_bazel_analysis_check_config_flag(self):
-    with mock.patch("subprocess.run") as mock_run:
-      mock_run.return_value.returncode = 0
-      with self.subTest("with_config"):
-        rc = run_bazel_diff._run_bazel_analysis_check("wheel_test_cpu")
-        self.assertEqual(rc, 0)
-        mock_run.assert_called_with(
-            [
-                "bazel",
-                "cquery",
-                "--config=wheel_test_cpu",
-                "--output=label",
-                "//...",
-            ],
-            stdout=subprocess.DEVNULL,
-            check=False,
-        )
-      with self.subTest("empty_config"):
-        run_bazel_diff._run_bazel_analysis_check("")
-        mock_run.assert_called_with(
-            ["bazel", "cquery", "--output=label", "//..."],
-            stdout=subprocess.DEVNULL,
-            check=False,
-        )
+  def test_bazel_analysis_command_config_flag(self):
+    with self.subTest("with_config"):
+      self.assertEqual(
+          run_bazel_diff._bazel_analysis_command("wheel_test_cpu"),
+          [
+              "bazel",
+              "cquery",
+              "--config=wheel_test_cpu",
+              "--output=label",
+              "/" + "/...",
+          ],
+      )
+    with self.subTest("empty_config"):
+      self.assertEqual(
+          run_bazel_diff._bazel_analysis_command(""),
+          ["bazel", "cquery", "--output=label", "/" + "/..."],
+      )
 
   def test_main_test_all_analyzes_before_testing(self):
     with (
         tempfile.TemporaryDirectory() as td,
         mock.patch.object(run_bazel_diff, "resolve_base_sha", return_value=""),
-        mock.patch.object(
-            run_bazel_diff, "_run_bazel_analysis_check"
-        ) as mock_analysis,
-        mock.patch.object(run_bazel_diff, "_run_bazel_test") as mock_test,
         mock.patch("os.chdir"),
     ):
       args = [f"--workspace-dir={td}", "--bazel-config=wheel_test_cpu"]
       with self.subTest("analysis_passes"):
-        mock_analysis.return_value = 0
-        mock_test.return_value = 0
-        self.assertEqual(run_bazel_diff.main(args), 0)
-        mock_analysis.assert_called_once_with("wheel_test_cpu")
-        mock_test.assert_called_once_with("wheel_test_cpu", "", ["//..."])
-      mock_analysis.reset_mock()
-      mock_test.reset_mock()
+        runner = fakes.FakeSubprocessRunner()
+        runner.on(["bazel", "cquery"], returncode=0)
+        runner.on(["bash", "-c"], returncode=0)
+        with mock.patch.object(subprocess, "run", runner):
+          self.assertEqual(run_bazel_diff.main(args), 0)
+        self.assertEqual(len(runner.commands("bazel", "cquery")), 1)
+        self.assertEqual(len(runner.commands("bash", "-c")), 1)
       with self.subTest("analysis_fails"):
-        mock_analysis.return_value = 1
-        self.assertEqual(run_bazel_diff.main(args), 1)
-        mock_analysis.assert_called_once_with("wheel_test_cpu")
-        mock_test.assert_not_called()
+        runner = fakes.FakeSubprocessRunner()
+        runner.on(["bazel", "cquery"], returncode=1)
+        with mock.patch.object(subprocess, "run", runner):
+          self.assertEqual(run_bazel_diff.main(args), 1)
+        self.assertEqual(len(runner.commands("bazel", "cquery")), 1)
+        self.assertEqual(runner.commands("bash", "-c"), [])
 
   def test_get_changed_files_normalizes_paths(self):
-    with (
-        mock.patch("subprocess.run") as mock_run,
-        mock.patch("subprocess.check_output") as mock_check_output,
-    ):
-      mock_run.return_value.returncode = 0
-      mock_check_output.return_value = " README.md \n\n  csrc/ops/add.cc\n  \n"
+    runner = fakes.FakeSubprocessRunner()
+    runner.on(["git", "fetch"])
+    runner.on(
+        ["git", "diff", "--name-only"],
+        stdout=" README.md \n\n  csrc/ops/add.cc\n  \n",
+    )
+    runner.on(["git", "diff", "--name-status"])
+    runner.on(["git", "diff", "--stat"])
+    with mock.patch.object(subprocess, "run", runner):
       changed = run_bazel_diff.get_changed_files("base123", "head456")
-      self.assertEqual(changed, ["README.md", "csrc/ops/add.cc"])
+    self.assertEqual(changed, ["README.md", "csrc/ops/add.cc"])
 
   def test_main_raises_if_workspace_dir_missing(self):
     with tempfile.TemporaryDirectory() as td:
