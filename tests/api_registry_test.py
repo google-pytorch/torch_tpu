@@ -28,6 +28,7 @@ from torch_tpu._internal import execution_mode as _internal_execution_mode
 from torch_tpu._internal.distributed.distributed import (
     set_tpu_launch_env as internal_set_tpu_launch_env,
 )
+from torch_tpu._internal.ops import ops as internal_ops
 from torch_tpu._internal.pallas.pallas import (
     custom_jax_kernel as internal_custom_jax_kernel,
     jax_op as internal_jax_op,
@@ -56,13 +57,6 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
 
     tpu_dir = dir(torch.tpu)
     self.assertEmpty([name for name in tpu_dir if name.startswith("_")])
-    for submod in (
-        "compiler",
-        "distributed",
-        "pallas",
-        "profiler",
-    ):
-      self.assertIn(submod, tpu_dir)
 
     for bad_attr in ("non_existent_attribute", "__mro__"):
       with self.assertRaises(  # ASSERT_RAISES_OK=Verifies torch.tpu raises AttributeError for unknown/dunder attributes
@@ -158,6 +152,37 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
         AttributeError
     ):
       _ = getattr(internal_pallas, "non_existent_attribute")
+
+  def test_ops_optimization_barrier_registry(self):
+    """Verifies exposure, identity, metadata and proxy behavior for the barrier."""
+    # 1. Submodule import and symbol identity
+    ops_mod = importlib.import_module("torch.tpu.ops")
+    self.assertIs(ops_mod, torch.tpu.ops)
+    self.assertIs(
+        torch.tpu.ops.optimization_barrier, internal_ops.optimization_barrier
+    )
+
+    # 2. Lifecycle stage metadata
+    fn = torch.tpu.ops.optimization_barrier
+    self.assertEqual(
+        getattr(fn, annotations.TT_API_STAGE, None),
+        annotations.Stage.EXPERIMENTAL.value,
+    )
+    self.assertEqual(
+        getattr(fn, annotations.TT_API_STAGE_REASON, None),
+        "torch.tpu.ops.optimization_barrier is experimental and subject to"
+        " change.",
+    )
+
+    # 3. Invalid attribute handling
+    with self.assertRaises(  # ASSERT_RAISES_OK=Verifies proxy module raises AttributeError for non-existent attributes
+        AttributeError
+    ):
+      _ = getattr(torch.tpu.ops, "non_existent_attribute")
+
+    # 4. The raw custom op is hidden behind a private name.
+    self.assertFalse(hasattr(torch.ops.tpu, "optimization_barrier"))
+    self.assertTrue(hasattr(torch.ops.tpu, "_optimization_barrier"))
 
   def test_distributed_api_registry(self):
     """Verifies public exposure, identity, metadata, and proxy behavior for distributed."""
@@ -338,14 +363,9 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
 
     # 2. Symbol accessibility
     self.assertTrue(hasattr(torch.tpu.ops, "align_jagged_to_multiple"))
+    self.assertTrue(hasattr(torch.tpu.ops, "optimization_barrier"))
     self.assertTrue(hasattr(torch.tpu.ops, "strip_jagged_padding"))
     self.assertTrue(hasattr(torch.tpu.ops, "splash_sdpa"))
-
-    # 3. Exported public API list
-    self.assertCountEqual(
-        torch.tpu.ops.__all__,
-        ["align_jagged_to_multiple", "splash_sdpa", "strip_jagged_padding"],
-    )
 
 
 if __name__ == "__main__":

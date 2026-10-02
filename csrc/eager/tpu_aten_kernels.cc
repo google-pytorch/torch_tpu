@@ -1254,7 +1254,7 @@ TORCH_LIBRARY(tpu, m) {
       "recv_sizes, str process_group_name, *, "
       "Tensor(a!) out) "
       "-> Tensor(a!)");
-  m.def("optimization_barrier(Tensor[] inputs) -> Tensor[]");
+  m.def("_optimization_barrier(Tensor[] inputs) -> Tensor[]");
   // This op is a torch_tpu custom op for use in torch.compile() mode to handle
   // dynamic tensor shapes on TPU. It lowers down to
   // stablehlo.set_dimension_size which XLA uses to determine the runtime size

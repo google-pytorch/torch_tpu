@@ -32,6 +32,15 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
+    name = "ops_lib",
+    srcs = ["ops.py"],
+    deps = [
+        "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal/utils:annotations",
+    ],
+)
+
+torch_tpu_py_library(
     name = "jagged",
     srcs = ["jagged.py"],
     deps = [

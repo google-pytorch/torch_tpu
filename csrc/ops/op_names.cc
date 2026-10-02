@@ -1572,7 +1572,7 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
     case OpName::kTorchTpuInternalZeroSize:
       return "_torchtpu_internal_zero_size";
     case OpName::kTorchTpuOptimizationBarrier:
-      return "optimization_barrier";
+      return "_optimization_barrier";
     case OpName::kTorchTpuStorageAllocate:
       return "storage.allocate";
     case OpName::kTransformerEncoderLayerFwd:

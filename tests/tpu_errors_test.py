@@ -3975,7 +3975,7 @@ module {
             r"""There were no tensor arguments to this function(.|\n)*"""
         ),
     ):
-      torch.ops.tpu.optimization_barrier([])
+      torch.tpu.ops.optimization_barrier([])
 
   @et.why_tpu_only(
       "Native PyTorch accepts 2-D proj_bias without throwing an error."

@@ -198,6 +198,9 @@ _PUBLIC_MODULES: Mapping[str, ModuleSpec] = {
             "align_jagged_to_multiple": (
                 "torch_tpu._internal.ops.jagged:align_jagged_to_multiple"
             ),
+            "optimization_barrier": (
+                "torch_tpu._internal.ops.ops:optimization_barrier"
+            ),
             "splash_sdpa": (
                 "torch_tpu._internal.ops.splash_attention:splash_sdpa"
             ),

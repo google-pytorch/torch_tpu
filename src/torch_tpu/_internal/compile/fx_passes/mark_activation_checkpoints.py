@@ -25,7 +25,7 @@ def apply(gm_or_graph: torch.fx.GraphModule | torch.fx.Graph) -> None:
   This pass finds all nodes marked with `recompute` meta set to
   `MUST_RECOMPUTE` or `PREFER_RECOMPUTE`. It then identifies the "leaf" nodes
   among them (nodes that do not have any users that are also marked for
-  recomputation) and inserts a `torch.ops.tpu.optimization_barrier`
+  recomputation) and inserts a `torch.ops.tpu._optimization_barrier`
   after them.
 
   Args:
@@ -64,7 +64,7 @@ def apply(gm_or_graph: torch.fx.GraphModule | torch.fx.Graph) -> None:
     with graph.inserting_after(node):
       # optimization_barrier accepts variadic input.
       barrier_node = graph.call_function(
-          torch.ops.tpu.optimization_barrier.default,
+          torch.ops.tpu._optimization_barrier.default,
           ([node],),
       )
 

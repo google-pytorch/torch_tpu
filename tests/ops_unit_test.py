@@ -12791,7 +12791,7 @@ module {{
 
     inputs = [x1]
 
-    results = torch.ops.tpu.optimization_barrier(inputs)
+    results = torch.tpu.ops.optimization_barrier(inputs)
 
     self.assertLen(results, 1)
     self.assertEqual(results[0].device.type, "meta")
@@ -12802,7 +12802,7 @@ module {{
   def test_optimization_barrier_meta_non_contiguous_compiled(self):
     def fn(x):
       x1 = x[:, 0, :, :]
-      return torch.ops.tpu.optimization_barrier([x1])
+      return torch.tpu.ops.optimization_barrier([x1])
 
     x = torch.ones((16, 2, 256, 256), device="tpu")
     x1 = x[:, 0, :, :]
@@ -12820,7 +12820,7 @@ module {{
     x3 = torch.empty((2, 2, 2), dtype=torch.bool, device="meta")
 
     inputs = [x1, x2, x3]
-    results = torch.ops.tpu.optimization_barrier(inputs)
+    results = torch.tpu.ops.optimization_barrier(inputs)
 
     self.assertLen(results, 3)
     for i in range(3):
@@ -12831,7 +12831,7 @@ module {{
 
   def test_optimization_barrier_scalar(self):
     x = torch.tensor(1.0, device="meta")
-    results = torch.ops.tpu.optimization_barrier([x])
+    results = torch.tpu.ops.optimization_barrier([x])
     self.assertEqual(results[0].shape, torch.Size([]))
 
 

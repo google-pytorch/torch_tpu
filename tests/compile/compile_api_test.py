@@ -714,7 +714,7 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
           torch.ones(10, device='cpu').to(device=torch.device('tpu')),
           torch.ones(10, device='cpu').to(device=torch.device('tpu')),
       ]
-      results = torch.ops.tpu.optimization_barrier(inputs)
+      results = torch.tpu.ops.optimization_barrier(inputs)
     expected_mlir = """%0:2 = stablehlo.optimization_barrier %arg0, %arg1 : tensor<10xf32>, tensor<10xf32>"""
 
     mlir_text = tpu_torch_compile.serialize_mlir_text(
