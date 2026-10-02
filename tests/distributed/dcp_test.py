@@ -250,7 +250,7 @@ def run_dtensor_dcp_state_dict_optimizer(checkpoint_dir: str) -> None:
 
 class DCPTest(seed_test_utils.MultiProcessRepeatableTest):
 
-  _world_size = 8
+  _world_size = distributed_utils.get_tpu_device_count()
 
   def test_dtensor_dcp_save_load(self):
     checkpoint_dir = self.create_tempdir().full_path

@@ -35,7 +35,7 @@ def run_global_device_count() -> None:
   assert "WORLD_SIZE" in os.environ
 
   world_size = int(os.environ["WORLD_SIZE"])
-  assert world_size == 8
+  assert world_size == distributed_utils.get_tpu_device_count()
 
   dist.init_process_group(backend="tpu_dist")
 
@@ -55,7 +55,7 @@ class MultiTpuTest(seed_test_utils.MultiProcessRepeatableTest):
 
   def test_global_device_count(self):
     distributed_utils.dist_run(
-        nproc_per_node=8,
+        nproc_per_node=distributed_utils.get_tpu_device_count(),
         fn=run_global_device_count,
     )
 

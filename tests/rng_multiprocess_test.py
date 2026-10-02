@@ -131,6 +131,11 @@ class MultiProcessTest(seed_test_utils.MultiProcessRepeatableTest):
 
   def _get_num_devices(self) -> int:
     if self.backend == "tpu":
+      # Spawn one worker per chip on the host rather than capping at
+      # `accelerator_test_utils.OSS_DEFAULT_DEVICE_CAP`. On 8-chip TPU v5e
+      # hosts, libtpu cannot reliably build a 4-process sub-slice: which chip
+      # numbers form a physical 2x2 block varies from host to host. On 4-chip
+      # hosts this spawns 4 workers.
       return hardware.get_tpu_device_count()
     return min(torch.cuda.device_count(), 2)
 

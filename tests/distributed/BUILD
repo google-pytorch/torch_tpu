@@ -14,6 +14,7 @@
 
 load(
     "//build_files:build_defs.bzl",
+    "OSS_REQUIRES_V5_X4",
     "if_oss",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
@@ -106,13 +107,15 @@ torch_tpu_py_test(
     nobuild_oss = True,  # torchcomms is not yet available in OSS
     shard_count = 7,
     tags = if_oss(
-        ["exclusive"],
-        [],
+        [
+            "exclusive",
+            OSS_REQUIRES_V5_X4,
+        ],
+        ["requires-tpu-v5lite:8"],
     ) + [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
-        "requires-tpu-v5lite:8",
     ],
     deps = if_oss(
         [],
@@ -132,13 +135,15 @@ torch_tpu_py_test(
     name = "multi_tpu_test",
     srcs = ["multi_tpu_test.py"],
     tags = if_oss(
-        ["exclusive"],
-        [],
+        [
+            "exclusive",
+            OSS_REQUIRES_V5_X4,
+        ],
+        ["requires-tpu-v5lite:8"],
     ) + [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
-        "requires-tpu-v5lite:8",
     ],
     deps = [
         ":distributed_utils",
@@ -159,13 +164,15 @@ torch_tpu_py_test(
     },
     shard_count = 12,
     tags = if_oss(
-        ["exclusive"],
-        [],
+        [
+            "exclusive",
+            OSS_REQUIRES_V5_X4,
+        ],
+        ["requires-tpu-v5lite:8"],
     ) + [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the timeout in test_broadcast_objects.
-        "requires-tpu-v5lite:8",
     ],
     deps = [
         ":distributed_utils",
@@ -196,14 +203,16 @@ torch_tpu_py_test(
     notest_oss = True,  # fix hang in OSS (TODO)
     shard_count = 12,
     tags = if_oss(
-        ["exclusive"],
-        [],
+        [
+            "exclusive",
+            OSS_REQUIRES_V5_X4,
+        ],
+        ["requires-tpu-v5lite:8"],
     ) + [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/495533335): fix out-of-order in msan mode.
         "notsan",  # TODO(b/495533335): fix out-of-order in tsan mode.
         "requires-net:external",  # Needs remote file access.
-        "requires-tpu-v5lite:8",
     ],
     deps = [
         ":distributed_utils",
@@ -315,11 +324,13 @@ torch_tpu_py_test(
     env = {"TORCH_SHOW_CPP_STACKTRACES": "0"},
     shard_count = 12,
     tags = if_oss(
-        ["exclusive"],
-        [],
+        [
+            "exclusive",
+            OSS_REQUIRES_V5_X4,
+        ],
+        ["requires-tpu-v5lite:8"],
     ) + [
         "nosan",  # *san has low value for error tests.
-        "requires-tpu-v5lite:8",
     ],
     deps = [
         ":distributed_utils",
@@ -371,14 +382,16 @@ torch_tpu_py_test(
     srcs = ["alltoall_collective_test.py"],
     shard_count = 8,
     tags = if_oss(
-        ["exclusive"],
-        [],
+        [
+            "exclusive",
+            OSS_REQUIRES_V5_X4,
+        ],
+        ["requires-tpu-v5lite:8"],
     ) + [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
         "requires-accel-hbm",
-        "requires-tpu-v5lite:8",
     ],
     deps = [
         ":distributed_utils",
@@ -401,11 +414,13 @@ torch_tpu_py_test(
     env = {"TORCH_SHOW_CPP_STACKTRACES": "0"},
     shard_count = 8,
     tags = if_oss(
-        ["exclusive"],
-        [],
+        [
+            "exclusive",
+            OSS_REQUIRES_V5_X4,
+        ],
+        ["requires-tpu-v5lite:8"],
     ) + [
         "nosan",  # *san builds are low-value for error tests.
-        "requires-tpu-v5lite:8",
     ],
     deps = [
         ":distributed_utils",
@@ -455,11 +470,13 @@ torch_tpu_py_test(
     env = {"TORCH_SHOW_CPP_STACKTRACES": "0"},
     shard_count = 3,
     tags = if_oss(
-        ["exclusive"],
-        [],
+        [
+            "exclusive",
+            OSS_REQUIRES_V5_X4,
+        ],
+        ["requires-tpu-v5lite:8"],
     ) + [
         "nosan",  # *san builds are low-value for error tests.
-        "requires-tpu-v5lite:8",
     ],
     deps = [
         ":distributed_utils",
@@ -511,13 +528,15 @@ torch_tpu_py_test(
     name = "scatter_test",
     srcs = ["scatter_test.py"],
     tags = if_oss(
-        ["exclusive"],
-        [],
+        [
+            "exclusive",
+            OSS_REQUIRES_V5_X4,
+        ],
+        ["requires-tpu-v5lite:8"],
     ) + [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
-        "requires-tpu-v5lite:8",
     ],
     deps = [
         ":distributed_utils",
@@ -544,11 +563,13 @@ torch_tpu_py_test(
     },
     shard_count = 3,
     tags = if_oss(
-        ["exclusive"],
-        [],
+        [
+            "exclusive",
+            OSS_REQUIRES_V5_X4,
+        ],
+        ["requires-tpu-v5lite:8"],
     ) + [
         "nosan",  # *san builds are low-value for error tests.
-        "requires-tpu-v5lite:8",
     ],
     deps = [
         ":distributed_utils",
@@ -632,13 +653,15 @@ torch_tpu_py_test(
     srcs = ["dtensor_test.py"],
     shard_count = 10,
     tags = if_oss(
-        ["exclusive"],
-        [],
+        [
+            "exclusive",
+            OSS_REQUIRES_V5_X4,
+        ],
+        ["requires-tpu-v5lite:8"],
     ) + [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
-        "requires-tpu-v5lite:8",
     ],
     deps = [
         ":distributed_utils",
@@ -700,13 +723,15 @@ torch_tpu_py_test(
     ),
     main = "fairscale_tp_test.py",
     tags = if_oss(
-        ["exclusive"],
-        [],
+        [
+            "exclusive",
+            OSS_REQUIRES_V5_X4,
+        ],
+        ["requires-tpu-v5lite:8"],
     ) + [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
-        "requires-tpu-v5lite:8",
     ],
     deps = [
         ":distributed_utils",
@@ -726,13 +751,15 @@ torch_tpu_py_test(
     srcs = ["dcp_test.py"],
     shard_count = 2,
     tags = if_oss(
-        ["exclusive"],
-        [],
+        [
+            "exclusive",
+            OSS_REQUIRES_V5_X4,
+        ],
+        ["requires-tpu-v5lite:8"],
     ) + [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
-        "requires-tpu-v5lite:8",
     ],
     deps = [
         ":distributed_utils",
@@ -749,13 +776,15 @@ torch_tpu_py_test(
     name = "ragged_dot_test",
     srcs = ["ragged_dot_test.py"],
     tags = if_oss(
-        ["exclusive"],
-        [],
+        [
+            "exclusive",
+            OSS_REQUIRES_V5_X4,
+        ],
+        ["requires-tpu-v5lite:8"],
     ) + [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
-        "requires-tpu-v5lite:8",
     ],
     deps = [
         ":distributed_utils",
@@ -822,15 +851,17 @@ torch_tpu_py_test(
     tags = if_oss(
         # In OSS, we have to run the test exclusively to avoid the
         # "TPU initialization failed ... Device or resource busy" error.
-        ["exclusive"],
-        [],
+        [
+            "exclusive",
+            OSS_REQUIRES_V5_X4,
+        ],
+        [
+            "requires-tpu-v5lite:8",
+        ],
     ) + [
         "noasan",  # TODO(b/555774204): fix the test in asan mode.
         "nomsan",  # TODO(b/555774204): OOM
         "notsan",  # TODO(b/555774204): OOM
-        # Exactly 8 chips are required because the test hardcodes _world_size = 8 to match the
-        # topology and avoid uninitialized chips in OSS CI.
-        "requires-tpu-v5lite:8",
     ],
     deps = [
         ":distributed_utils",
@@ -930,13 +961,17 @@ torch_tpu_py_test(
     ),
     shard_count = 8,
     tags = if_oss(
-        ["exclusive"],
-        [],
+        [
+            "exclusive",
+            OSS_REQUIRES_V5_X4,
+        ],
+        [
+            "requires-tpu-v5lite:8",  # We need multi-chip TPU because we are running an actual e2e workflow to test handshake integration.
+        ],
     ) + [
         "noasan",  # TODO(b/497035517)
         "nomsan",  # TODO(b/497035517)
         "notsan",  # TODO(b/497035517)
-        "requires-tpu-v5lite:8",  # We need 8 chips because we are running an actual e2e workflow to test handshake integration.
     ],
     deps = [
         ":distributed_utils",
@@ -999,13 +1034,17 @@ torch_tpu_py_test(
     notest_oss = True,  # Requires PJRT RawBuffer extension not yet exported in OSS libtpu.
     shard_count = 6,
     tags = if_oss(
-        ["exclusive"],
-        [],
+        [
+            "exclusive",
+            OSS_REQUIRES_V5_X4,
+        ],
+        [
+            "requires-tpu-v5lite:8",
+        ],
     ) + [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
-        "requires-tpu-v5lite:8",
     ],
     deps = [
         ":distributed_utils",

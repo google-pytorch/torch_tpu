@@ -14,13 +14,14 @@
 
 """A test runner for the manual FSDP example."""
 
+import os
 from torch.distributed import launcher
 from torch.tpu import distributed  # pyrefly: ignore[missing-import]
 from examples.distributed.fsdp.manual import manual_fsdp_worker
 
 
 def main():
-  world_size = 8
+  world_size = int(os.environ.get("WORLD_SIZE", "8"))
   distributed.set_tpu_launch_env(nproc_per_node=world_size)
   config = launcher.LaunchConfig(
       min_nodes=1,

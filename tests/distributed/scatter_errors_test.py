@@ -146,20 +146,23 @@ def run_scatter_mismatch_input_shapes(
 
 class ScatterErrorsTest(seed_test_utils.MultiProcessRepeatableTest):
 
+  _world_size = distributed_utils.get_tpu_device_count()
+
   # We check the error in the parent process as opposed to each worker because
   # only some of the workers will raise the error.
 
   def test_scatter_wrong_number_inputs(self):
+    num_inputs = self._world_size + 1
     with et.assert_subprocess_raises_message(
         RuntimeError,
         "distributed.scatter(): expected the number of input tensors on the"
-        " root rank to be equal to the group size, got 9 tensors and 8"
-        " processes",
+        f" root rank to be equal to the group size, got {num_inputs} tensors"
+        f" and {self._world_size} processes",
     ):
       distributed_utils.dist_run(
-          nproc_per_node=8,
+          nproc_per_node=self._world_size,
           fn=run_scatter_wrong_number_inputs,
-          num_inputs=9,
+          num_inputs=num_inputs,
       )
 
   def test_scatter_wrong_shape_output(self):
@@ -171,7 +174,7 @@ class ScatterErrorsTest(seed_test_utils.MultiProcessRepeatableTest):
         " tensor shape, got [3, 3] and [2, 3]",
     ):
       distributed_utils.dist_run(
-          nproc_per_node=8,
+          nproc_per_node=self._world_size,
           fn=run_scatter_wrong_shape_output,
           input_shape=input_shape,
           output_shape=output_shape,
@@ -185,7 +188,7 @@ class ScatterErrorsTest(seed_test_utils.MultiProcessRepeatableTest):
         expected_msg="""distributed.scatter(): failed to validate input tensors on root rank: expected all tensors to have the same shape, got [8, 6, 2] at index 0 and [6, 2] at index 1""",
     ):
       distributed_utils.dist_run(
-          nproc_per_node=8,
+          nproc_per_node=self._world_size,
           fn=run_scatter_mismatch_input_shapes,
           shape=shape,
           mismatch_shape=mismatch_shape,

@@ -26,6 +26,22 @@ from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
 
 
+def get_tpu_device_count(default: int = 4) -> int:
+  """Returns the number of workers for multi-process distributed tests.
+
+  This is one worker per TPU chip on the host, so it is 8 on 8-chip hosts and 4
+  on 4-chip hosts. Unlike `accelerator_test_utils.get_tpu_device_count`, it is
+  not capped at 4 chips in OSS: on 8-chip TPU v5e hosts, libtpu cannot reliably
+  build a 4-process sub-slice, because which chip numbers form a physical 2x2
+  block varies from host to host.
+
+  Args:
+    default: Fallback device count to return when no TPU devices are detected
+      (e.g. on CPU-only runners where emulated devices are used).
+  """
+  return hardware.get_tpu_device_count() or default
+
+
 def _worker_fn(
     local_rank: int,
     nproc_per_node: int,

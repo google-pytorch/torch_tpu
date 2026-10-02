@@ -174,45 +174,47 @@ def run_dtensor_1d_partial_to_shard() -> None:
 
 class DTensor1DimTest(seed_test_utils.MultiProcessRepeatableTest):
 
+  _world_size = distributed_utils.get_tpu_device_count()
+
   def test_apply_op(self):
     distributed_utils.dist_run(
-        nproc_per_node=8,
+        nproc_per_node=self._world_size,
         fn=run_dtensor_1d_apply_op,
     )
 
   def test_dtensor_1d_distribute_from_src(self):
     distributed_utils.dist_run(
-        nproc_per_node=8,
+        nproc_per_node=self._world_size,
         fn=run_dtensor_1d_distribute_from_src,
     )
 
   def test_shard_to_replicate(self):
     distributed_utils.dist_run(
-        nproc_per_node=8,
+        nproc_per_node=self._world_size,
         fn=run_dtensor_1d_shard_to_replicate,
     )
 
   def test_replicate_to_shard(self):
     distributed_utils.dist_run(
-        nproc_per_node=8,
+        nproc_per_node=self._world_size,
         fn=run_dtensor_1d_replicate_to_shard,
     )
 
   def test_shard_to_shard(self):
     distributed_utils.dist_run(
-        nproc_per_node=8,
+        nproc_per_node=self._world_size,
         fn=run_dtensor_1d_shard_to_shard,
     )
 
   def test_partial_to_replicate(self):
     distributed_utils.dist_run(
-        nproc_per_node=8,
+        nproc_per_node=self._world_size,
         fn=run_dtensor_1d_partial_to_replicate,
     )
 
   def test_partial_to_shard(self):
     distributed_utils.dist_run(
-        nproc_per_node=8,
+        nproc_per_node=self._world_size,
         fn=run_dtensor_1d_partial_to_shard,
     )
 
@@ -234,9 +236,11 @@ def run_dtensor_2d_shard_to_shard() -> None:
 
 class DTensor2DimTest(seed_test_utils.MultiProcessRepeatableTest):
 
+  _world_size = distributed_utils.get_tpu_device_count()
+
   def test_shard_to_shard(self):
     distributed_utils.dist_run(
-        nproc_per_node=8,
+        nproc_per_node=self._world_size,
         fn=run_dtensor_2d_shard_to_shard,
     )
 
@@ -262,9 +266,11 @@ def run_sync_dtensor() -> None:
 
 class DTensorSyncTest(seed_test_utils.MultiProcessRepeatableTest):
 
+  _world_size = distributed_utils.get_tpu_device_count()
+
   def test_sync_dtensor(self):
     distributed_utils.dist_run(
-        nproc_per_node=8,
+        nproc_per_node=self._world_size,
         fn=run_sync_dtensor,
     )
 

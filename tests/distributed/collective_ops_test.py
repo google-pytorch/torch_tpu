@@ -397,9 +397,11 @@ def run_reduce_scatter() -> None:
   output_cpu = output.cpu()
   logging.info("reduce_scatter output (rank %d): %s", rank, output_cpu)
 
+  sum_r = float(sum(range(world_size)))
+  sum_r2 = float(sum(i**2 for i in range(world_size)))
   expected = torch.tensor([
       [world_size, rank * world_size, rank**2 * world_size],
-      [28.0, 140.0, rank * 28.0],
+      [sum_r, sum_r2, rank * sum_r],
   ])
 
   logging.info("reduce_scatter expected (rank %d): %s", rank, expected)
@@ -738,27 +740,39 @@ def run_rank_variable_dead_collective_without_hang(world_size: int) -> None:
 
 
 class CollectiveOpsTest(seed_test_utils.MultiProcessRepeatableTest):
-  _world_size = 8
+  _world_size = distributed_utils.get_tpu_device_count()
 
   def test_all_reduce_sum(self):
+    w = self._world_size
     distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
+        nproc_per_node=w,
         fn=_test_wrapper,
         test_fn=run_all_reduce,
         input_fn=_all_reduce_input_fn_rank,
         reduce_op=torch.distributed.ReduceOp.SUM,
-        expected=[0.0, 8.0, 28.0, 140.0],
+        expected=[
+            0.0,
+            float(w),
+            float(sum(range(w))),
+            float(sum(r**2 for r in range(w))),
+        ],
         dtype=torch.float32,
     )
 
   def test_all_reduce_avg(self):
+    w = self._world_size
     distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
+        nproc_per_node=w,
         fn=_test_wrapper,
         test_fn=run_all_reduce,
         input_fn=_all_reduce_input_fn_rank,
         reduce_op=torch.distributed.ReduceOp.AVG,
-        expected=[0.0, 1.0, 3.5, 17.5],
+        expected=[
+            0.0,
+            1.0,
+            sum(range(w)) / w,
+            sum(r**2 for r in range(w)) / w,
+        ],
         dtype=torch.float32,
     )
 
@@ -785,13 +799,14 @@ class CollectiveOpsTest(seed_test_utils.MultiProcessRepeatableTest):
     )
 
   def test_all_reduce_max(self):
+    w = self._world_size
     distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
+        nproc_per_node=w,
         fn=_test_wrapper,
         test_fn=run_all_reduce,
         input_fn=_all_reduce_input_fn_rank,
         reduce_op=torch.distributed.ReduceOp.MAX,
-        expected=[0.0, 1.0, 7.0, 49.0],
+        expected=[0.0, 1.0, float(w - 1), float((w - 1) ** 2)],
         dtype=torch.float32,
     )
 
@@ -807,46 +822,56 @@ class CollectiveOpsTest(seed_test_utils.MultiProcessRepeatableTest):
     )
 
   def test_all_reduce_bor(self):
+    w = self._world_size
+    bor_val2 = 0
+    for r in range(w):
+      bor_val2 |= r * 3
     distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
+        nproc_per_node=w,
         fn=_test_wrapper,
         test_fn=run_all_reduce,
         input_fn=_all_reduce_bitwise_input_fn,
         reduce_op=torch.distributed.ReduceOp.BOR,
-        expected=[255, 31, 255],
+        expected=[(1 << w) - 1, bor_val2, 255],
         dtype=torch.int32,
     )
 
   def test_all_reduce_bxor(self):
+    w = self._world_size
+    bxor_val2 = 0
+    for r in range(w):
+      bxor_val2 ^= r * 3
     distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
+        nproc_per_node=w,
         fn=_test_wrapper,
         test_fn=run_all_reduce,
         input_fn=_all_reduce_bitwise_input_fn,
         reduce_op=torch.distributed.ReduceOp.BXOR,
-        expected=[0, 8, 0],
+        expected=[0, bxor_val2, 0 if w % 2 == 0 else 255],
         dtype=torch.int32,
     )
 
   def test_all_reduce_sum_fixed_values(self):
+    w = self._world_size
     distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
+        nproc_per_node=w,
         fn=_test_wrapper,
         test_fn=run_all_reduce,
         input_fn=_all_reduce_input_fn_const,
         reduce_op=torch.distributed.ReduceOp.SUM,
-        expected=[8, 16, 24, 32],
+        expected=[1 * w, 2 * w, 3 * w, 4 * w],
         dtype=torch.float32,
     )
 
   def test_all_reduce_product_fixed_values(self):
+    w = self._world_size
     distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
+        nproc_per_node=w,
         fn=_test_wrapper,
         test_fn=run_all_reduce,
         input_fn=_all_reduce_input_fn_const,
         reduce_op=torch.distributed.ReduceOp.PRODUCT,
-        expected=[1.0, 256.0, 6561.0, 65536.0],
+        expected=[1.0, float(2**w), float(3**w), float(4**w)],
         dtype=torch.float32,
     )
 

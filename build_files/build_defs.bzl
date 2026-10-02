@@ -82,6 +82,18 @@ OSS_TPU_RUNNER_CHIPS = {
     "v7": 4,
 }
 
+# "requires-tpu-v5lite:4" is not a valid internal Forge tag (Forge only supports
+# single-chip "requires-tpu-v5lite" and 8-chip "requires-tpu-v5lite:8"), so it
+# must only be used in the OSS branch of `if_oss(...)`. We write the internal
+# codename here rather than the exported external tag because:
+# 1. `build_defs.bzl` keys `TPU_VERSION_TO_GENERATION` on `"requires-tpu-v5lite"`
+#    before Copybara export.
+# 2. Copybara's reversible `tpu_codenames_to_external` transform rewrites the
+#    internal codenames to external tags across all BUILD/.bzl files and fails
+#    the reversibility check if the exported tag is present in the internal
+#    source of truth.
+OSS_REQUIRES_V5_X4 = "requires-tpu-v5lite:4"
+
 def _get_tpu_generation(tag):
     """Returns the TPU generation for a `requires-tpu-<version>[:<chips>]` tag."""
     return TPU_VERSION_TO_GENERATION.get(tag.split(":")[0])

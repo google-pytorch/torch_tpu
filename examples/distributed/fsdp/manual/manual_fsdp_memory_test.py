@@ -19,6 +19,7 @@ Confirms that full unsharded weights (32.0 MiB for 4096x4096 and 64.0 MiB for
 across the forward-backward boundary.
 """
 
+import os
 from absl import logging
 import torch
 from torch import distributed as dist
@@ -99,13 +100,16 @@ def memory_worker_fn() -> None:
     logging.info("\n".join(lines))
 
   # Full bf16 weights are 32.0 MiB (linear1: 4096x4096) and 64.0 MiB
-  # (linear2: 8192x4096). Sharded weights are 4.0 MiB + 8.0 MiB = 12.0 MiB.
+  # (linear2: 8192x4096). Sharded weights are (32 + 64) MiB / world_size
+  # (12.0 MiB at world_size=8, 24.0 MiB at world_size=4).
   # Assert that retained memory across the forward-backward boundary is
-  # < 20 MiB, proving that full weights (32.0 MiB / 64.0 MiB) were freed
-  # during forward rather than saved for backward.
+  # less than sharded weights + 8 MiB margin, proving that full weights
+  # (32.0 MiB / 64.0 MiB) were freed during forward rather than saved for backward.
+  max_retained_bytes = ((32 + 64) * 1024 * 1024 // world_size) + 8 * 1024 * 1024
   for step, _, _, fwd_retained_bytes, _ in step_stats:
-    assert fwd_retained_bytes < 20 * 1024 * 1024, (
-        f"Step {step}: expected < 20 MiB retained after forward, got"
+    assert fwd_retained_bytes < max_retained_bytes, (
+        f"Step {step}: expected < {max_retained_bytes / (1024 * 1024):.2f} MiB"
+        " retained after forward, got"
         f" {fwd_retained_bytes / (1024 * 1024):.2f} MiB"
     )
 
@@ -113,7 +117,7 @@ def memory_worker_fn() -> None:
 
 
 def main():
-  world_size = 8
+  world_size = int(os.environ.get("WORLD_SIZE", "8"))
   distributed.set_tpu_launch_env(nproc_per_node=world_size)
   config = launcher.LaunchConfig(
       min_nodes=1,

@@ -64,15 +64,17 @@ def run_scatter_scalar() -> None:
 
 class ScatterTest(seed_test_utils.MultiProcessRepeatableTest):
 
+  _world_size = distributed_utils.get_tpu_device_count()
+
   def test_scatter_tensor(self):
     distributed_utils.dist_run(
-        nproc_per_node=8,
+        nproc_per_node=self._world_size,
         fn=run_scatter,
     )
 
   def test_scatter_scalar(self):
     distributed_utils.dist_run(
-        nproc_per_node=8,
+        nproc_per_node=self._world_size,
         fn=run_scatter_scalar,
     )
 

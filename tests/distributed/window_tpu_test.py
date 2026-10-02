@@ -395,7 +395,7 @@ class WindowTpuTest(
 ):
   """Unit test suite for TorchTPU native c10d::Window and zero-copy DMA."""
 
-  _world_size = 8
+  _world_size = distributed_utils.get_tpu_device_count()
 
   @classmethod
   def setUpClass(cls):

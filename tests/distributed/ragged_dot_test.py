@@ -93,16 +93,18 @@ class RaggedDotDistributedTest(seed_test_utils.MultiProcessRepeatableTest):
   a distributed environment.
   """
 
+  _world_size = distributed_utils.get_tpu_device_count()
+
   def test_ragged_dot_independent_eager(self):
     distributed_utils.dist_run(
-        nproc_per_node=8,
+        nproc_per_node=self._world_size,
         fn=run_ragged_dot_local_test,
         compile_test=False,
     )
 
   def test_ragged_dot_independent_compiled(self):
     distributed_utils.dist_run(
-        nproc_per_node=8,
+        nproc_per_node=self._world_size,
         fn=run_ragged_dot_local_test,
         compile_test=True,
     )

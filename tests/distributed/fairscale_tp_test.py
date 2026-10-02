@@ -34,7 +34,7 @@ from tests.distributed import distributed_utils
 RowParallelLinear = layers.RowParallelLinear
 ColumnParallelLinear = layers.ColumnParallelLinear
 RANDOM_SEED = 42
-WORLD_SIZE = 8
+WORLD_SIZE = distributed_utils.get_tpu_device_count()
 BATCH_SIZE = 64
 MODEL_DIM = 128
 

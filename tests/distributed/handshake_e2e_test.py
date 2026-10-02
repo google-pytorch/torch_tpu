@@ -403,7 +403,7 @@ def run_handshake_divergence_after_iteration_async_compile_test():
 
 
 class HandshakeE2ETest(parameterized.TestCase):  # ABSLTEST_OK=b/550338082
-  _world_size = 8
+  _world_size = distributed_utils.get_tpu_device_count()
 
   @parameterized.parameters("COMPILE_STAGE", "DISPATCH_STAGE")
   def test_handshake_no_rank_divergence(self, handshake_stage):

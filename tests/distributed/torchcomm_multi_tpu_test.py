@@ -194,7 +194,7 @@ class TorchCommsMultiTpuTest(
     absltest.TestCase,  # ABSLTEST_OK=Distributed multi-process test.
 ):
 
-  WORLD_SIZE = 8
+  WORLD_SIZE = distributed_utils.get_tpu_device_count()
 
   def test_multi_tpu_attributes(self):
     distributed_utils.dist_run(

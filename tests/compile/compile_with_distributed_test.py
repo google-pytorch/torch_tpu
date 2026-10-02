@@ -56,6 +56,7 @@ def run_all_reduce_with_torch_compile() -> None:
   dist.init_process_group(backend="tpu_dist")
 
   rank = int(os.environ["RANK"])
+  world_size = dist.get_world_size()
 
   def func(x):
     x = x + torch.zeros_like(x)
@@ -69,7 +70,13 @@ def run_all_reduce_with_torch_compile() -> None:
   input_tpu = torch.tensor(
       [0.0, 1.0, float(rank), float(rank**2)], device="tpu"
   )
-  expected = torch.tensor([1.0, 17.0, 57.0, 281.0])
+  sums = torch.tensor([
+      0.0,
+      float(world_size),
+      float(sum(range(world_size))),
+      float(sum(i**2 for i in range(world_size))),
+  ])
+  expected = 2.0 * sums + 1.0
   debugs = compile_and_assert_outputs(
       func,
       inputs=(input_tpu,),
@@ -240,9 +247,11 @@ def run_reduce_scatter_with_torch_compile() -> None:
         )
     )
 
+  sum_r = float(sum(range(world_size)))
+  sum_r2 = float(sum(i**2 for i in range(world_size)))
   expected = torch.tensor([
       [world_size, rank * world_size, rank**2 * world_size],
-      [28.0, 140.0, rank * 28.0],
+      [sum_r, sum_r2, rank * sum_r],
   ])
   expected = expected + torch.abs(expected)
 
@@ -319,8 +328,11 @@ def run_reduce_scatter_tensor_with_torch_compile() -> None:
     return output
 
   input_tpu = torch.tensor([float(rank)] * world_size, device="tpu")
+  expected_val = float(2 * sum(range(world_size)) + 1)
   debugs = compile_and_assert_outputs(
-      func, inputs=(input_tpu,), expected_outputs=(torch.tensor([57.0]),)
+      func,
+      inputs=(input_tpu,),
+      expected_outputs=(torch.tensor([expected_val]),),
   )
   assert (
       len(debugs[0].stablehlo_forward_text) == 3
@@ -382,57 +394,59 @@ def run_fake_tensor_side_effect_pruning_with_torch_compile() -> None:
 
 class MultiTpuTorchCompileTest(seed_test_utils.MultiProcessRepeatableTest):
 
+  _world_size = distributed_utils.get_tpu_device_count()
+
   def test_fake_tensor_side_effect_pruning_with_torch_compile(self):
     distributed_utils.dist_run(
-        nproc_per_node=8,
+        nproc_per_node=self._world_size,
         fn=run_fake_tensor_side_effect_pruning_with_torch_compile,
     )
 
   def test_all_reduce_with_torch_compile(self):
     distributed_utils.dist_run(
-        nproc_per_node=8,
+        nproc_per_node=self._world_size,
         fn=run_all_reduce_with_torch_compile,
     )
 
   def test_all_gather_into_tensor_with_torch_compile(self):
     distributed_utils.dist_run(
-        nproc_per_node=8,
+        nproc_per_node=self._world_size,
         fn=run_all_gather_into_tensor_with_torch_compile,
     )
 
   def test_all_to_all_single_with_torch_compile(self):
     distributed_utils.dist_run(
-        nproc_per_node=8,
+        nproc_per_node=self._world_size,
         fn=run_all_to_all_single_with_torch_compile,
     )
 
   def test_all_to_all_with_torch_compile(self):
     distributed_utils.dist_run(
-        nproc_per_node=8,
+        nproc_per_node=self._world_size,
         fn=run_all_to_all_with_torch_compile,
     )
 
   def test_all_gather_with_torch_compile(self):
     distributed_utils.dist_run(
-        nproc_per_node=8,
+        nproc_per_node=self._world_size,
         fn=run_all_gather_with_torch_compile,
     )
 
   def test_barrier_with_torch_compile(self):
     distributed_utils.dist_run(
-        nproc_per_node=8,
+        nproc_per_node=self._world_size,
         fn=run_barrier_with_torch_compile,
     )
 
   def test_reduce_scatter_tensor_with_torch_compile(self):
     distributed_utils.dist_run(
-        nproc_per_node=8,
+        nproc_per_node=self._world_size,
         fn=run_reduce_scatter_tensor_with_torch_compile,
     )
 
   def test_broadcast_with_torch_compile(self):
     distributed_utils.dist_run(
-        nproc_per_node=8,
+        nproc_per_node=self._world_size,
         fn=run_broadcast_with_torch_compile,
     )
 
@@ -443,13 +457,13 @@ class MultiTpuTorchCompileTest(seed_test_utils.MultiProcessRepeatableTest):
   )
   def test_reduce_scatter_with_torch_compile(self):
     distributed_utils.dist_run(
-        nproc_per_node=8,
+        nproc_per_node=self._world_size,
         fn=run_reduce_scatter_with_torch_compile,
     )
 
   def test_gather_with_torch_compile(self):
     distributed_utils.dist_run(
-        nproc_per_node=8,
+        nproc_per_node=self._world_size,
         fn=run_gather_with_torch_compile,
     )
 
