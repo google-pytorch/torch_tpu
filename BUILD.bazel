@@ -114,6 +114,38 @@ config_setting(
     visibility = ["//visibility:public"],
 )
 
+# The RBE region whose TPU worker pool RBE TPU tests ask for. Set by the
+# `*_central1`, `*_east1` and `*_asia_se1` configs in .bazelrc.
+string_flag(
+    name = "_rbe_region",
+    build_setting_default = "us-west1",
+    values = [
+        "asia-southeast1",
+        "us-central1",
+        "us-east1",
+        "us-west1",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "rbe_asia_southeast1",
+    flag_values = {":_rbe_region": "asia-southeast1"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "rbe_us_central1",
+    flag_values = {":_rbe_region": "us-central1"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "rbe_us_east1",
+    flag_values = {":_rbe_region": "us-east1"},
+    visibility = ["//visibility:public"],
+)
+
 # Hermetic TCMalloc shared library built from @com_google_tcmalloc//tcmalloc
 # for preloading into Python test and benchmark processes via LD_PRELOAD.
 # Under TSan (:tsan_build), builds an empty stub library so

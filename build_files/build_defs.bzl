@@ -140,9 +140,17 @@ def _select_shard_count(raw_shard_count, clamped_shard_count):
         "//conditions:default": clamped_shard_count,
     })
 
-# TPU generation -> OSS RBE pool and test env for single-chip tests.
+# TPU generation -> RBE region -> OSS RBE pool, and TPU generation -> test env,
+# for single-chip tests.
 # TODO: b/567928058 - Add v6e, v7x and multi-chip pools as they come online.
-_RBE_TPU_POOLS = {"v5": "ci_tpu_v5_full_rbe"}
+_RBE_TPU_POOLS = {
+    "v5": {
+        "asia-southeast1": "ci_tpu_v5_asia_se1_rbe",
+        "us-central1": "ci_tpu_v5_central1_rbe",
+        "us-east1": "ci_tpu_v5_east1_rbe",
+        "us-west1": "ci_tpu_v5_full_rbe",
+    },
+}
 _RBE_TPU_ENV = {
     "v5": {
         "TPU_ACCELERATOR_TYPE": "v5e-1",
@@ -152,19 +160,29 @@ _RBE_TPU_ENV = {
     },
 }
 
-def _add_rbe_exec_properties(kwargs, tags, tpu_generation):
-    """Configures OSS RBE pool and TPU environment for a single-chip TPU test.
+# RBE region -> the condition that selects it, from `//:_rbe_region`. us-west1
+# is the default so its action keys, and its remote cache, don't change.
+_RBE_REGION_CONDITIONS = {
+    "asia-southeast1": "//:rbe_asia_southeast1",
+    "us-central1": "//:rbe_us_central1",
+    "us-east1": "//:rbe_us_east1",
+    "us-west1": "//conditions:default",
+}
 
-    A TPU test with no pool gets nothing, so if the RBE filters let one
-    through it fails on the CPU pool instead of running on the wrong TPU.
+def _rbe_tpu_exec_properties(tags, tpu_generation, region):
+    """Returns the exec_properties for a single-chip TPU test on RBE in `region`.
+
+    Returns None if there is no pool for the test there. A TPU test with no
+    pool gets nothing, so if the RBE filters let one through it fails on the
+    CPU pool instead of running on the wrong TPU.
     """
-    pool = _RBE_TPU_POOLS.get(tpu_generation)
+    pool = _RBE_TPU_POOLS.get(tpu_generation, {}).get(region)
     if pool == None:
-        return
+        return None
     for tag in tags:
         chips = _get_tpu_chip_count(tag)
         if chips != None and chips > 1:
-            return
+            return None
     exec_properties = {
         "test.Pool": pool,
         "test.dockerPrivileged": "true",  # The TPU is /dev/vfio.
@@ -173,7 +191,24 @@ def _add_rbe_exec_properties(kwargs, tags, tpu_generation):
     }
     if "requires-net:external" in tags:
         exec_properties["test.dockerNetwork"] = "standard"
-    kwargs["exec_properties"] = exec_properties | (kwargs.get("exec_properties") or {})
+    return exec_properties
+
+def _add_rbe_exec_properties(kwargs, tags, tpu_generation):
+    """Configures OSS RBE pool and TPU environment for a single-chip TPU test."""
+    exec_properties_by_region = {
+        region: _rbe_tpu_exec_properties(tags, tpu_generation, region)
+        for region in _RBE_REGION_CONDITIONS
+    }
+    if all([p == None for p in exec_properties_by_region.values()]):
+        return
+    rbe_exec_properties = select({
+        _RBE_REGION_CONDITIONS[region]: exec_properties or {}
+        for region, exec_properties in exec_properties_by_region.items()
+    })
+    existing_exec_properties = kwargs.get("exec_properties")
+    kwargs["exec_properties"] = (
+        rbe_exec_properties | existing_exec_properties
+    ) if existing_exec_properties else rbe_exec_properties
     rbe_env = _RBE_TPU_ENV.get(tpu_generation)
     if rbe_env:
         rbe_env_select = select({
@@ -300,7 +335,7 @@ is_backend_dep_for_testing = is_backend_dep
 get_tpu_version_for_testing = _get_tpu_version
 get_tpu_chip_count_for_testing = _get_tpu_chip_count
 clamp_shard_count_for_testing = _clamp_shard_count
-add_rbe_exec_properties_for_testing = _add_rbe_exec_properties
+rbe_tpu_exec_properties_for_testing = _rbe_tpu_exec_properties
 
 def torch_tpu_cc_library(name, srcs = [], hdrs = [], copts = None, features = None, **kwargs):
     """Creates a C++ library for torch_tpu.
