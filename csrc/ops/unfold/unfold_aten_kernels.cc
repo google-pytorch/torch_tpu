@@ -36,7 +36,6 @@
 #include "csrc/ops/nullary_aten_kernels.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
-#include "llvm/ADT/ArrayRef.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "stablehlo/dialect/StablehloOps.h"
