@@ -462,27 +462,9 @@ torch_tpu_cc_library(
     ],
 )
 
-# Tests that defer and fuse can be enabled via legacy env var.
-torch_tpu_cc_test(
-    name = "defer_and_fuse_enablement_test_legacy",
-    srcs = ["defer_and_fuse_enablement_test.cc"],
-    args = [
-        "--expected_defer_and_fuse=true",
-    ],
-    env = {
-        "TPU_DEFER_AND_FUSE": "1",
-    },
-    deps = [
-        ":eager_mode",
-        "//csrc/common:flags",
-        "//csrc/common:oss_test_main",
-        "@com_google_absl//absl/flags:flag",
-    ],
-)
-
 # Tests that defer and fuse can be explicitly enabled via TORCH_TPU_DEFER_AND_FUSE.
 torch_tpu_cc_test(
-    name = "defer_and_fuse_enablement_test_enabled_public",
+    name = "defer_and_fuse_enablement_test_enabled",
     srcs = ["defer_and_fuse_enablement_test.cc"],
     args = [
         "--expected_defer_and_fuse=true",
@@ -498,38 +480,18 @@ torch_tpu_cc_test(
     ],
 )
 
-# Tests that TORCH_TPU_DEFER_AND_FUSE takes precedence over TPU_DEFER_AND_FUSE.
+# Tests that defer and fuse can be explicitly disabled via TORCH_TPU_DEFER_AND_FUSE.
 torch_tpu_cc_test(
-    name = "defer_and_fuse_enablement_test_precedence",
+    name = "defer_and_fuse_enablement_test_disabled",
     srcs = ["defer_and_fuse_enablement_test.cc"],
     args = [
         "--expected_defer_and_fuse=false",
     ],
     env = {
         "TORCH_TPU_DEFER_AND_FUSE": "0",
-        "TPU_DEFER_AND_FUSE": "1",
     },
     deps = [
         ":eager_mode",
-        "//csrc/common:flags",
-        "//csrc/common:oss_test_main",
-        "@com_google_absl//absl/flags:flag",
-    ],
-)
-
-# Tests that launch blocking can be enabled via legacy env var.
-torch_tpu_cc_test(
-    name = "launch_blocking_enablement_test_legacy",
-    srcs = ["launch_blocking_enablement_test.cc"],
-    args = [
-        "--expected_launch_blocking=true",
-    ],
-    env = {
-        "TPU_LAUNCH_BLOCKING": "1",
-    },
-    deps = [
-        ":eager_mode",
-        "//csrc/common:context_states",
         "//csrc/common:flags",
         "//csrc/common:oss_test_main",
         "@com_google_absl//absl/flags:flag",
@@ -538,7 +500,7 @@ torch_tpu_cc_test(
 
 # Tests that launch blocking can be explicitly enabled via TORCH_TPU_LAUNCH_BLOCKING.
 torch_tpu_cc_test(
-    name = "launch_blocking_enablement_test_enabled_public",
+    name = "launch_blocking_enablement_test_enabled",
     srcs = ["launch_blocking_enablement_test.cc"],
     args = [
         "--expected_launch_blocking=true",
@@ -555,16 +517,15 @@ torch_tpu_cc_test(
     ],
 )
 
-# Tests that TORCH_TPU_LAUNCH_BLOCKING takes precedence over TPU_LAUNCH_BLOCKING.
+# Tests that launch blocking can be explicitly disabled via TORCH_TPU_LAUNCH_BLOCKING.
 torch_tpu_cc_test(
-    name = "launch_blocking_enablement_test_precedence",
+    name = "launch_blocking_enablement_test_disabled",
     srcs = ["launch_blocking_enablement_test.cc"],
     args = [
         "--expected_launch_blocking=false",
     ],
     env = {
         "TORCH_TPU_LAUNCH_BLOCKING": "0",
-        "TPU_LAUNCH_BLOCKING": "1",
     },
     deps = [
         ":eager_mode",

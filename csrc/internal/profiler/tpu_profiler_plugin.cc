@@ -330,12 +330,8 @@ absl::Status UpdateProfileOptions(std::string_view custom_config,
 
 // Resolves the base output directory for profiling artifacts.
 std::string GetProfilerBaseOutputDir(std::string_view run_dir) {
-  const auto& env_output_dir_opt_public =
-      GetEnvOnce<kTorchTpuProfilerOutputDirEnvVar>();
   const auto& env_output_dir_opt =
-      env_output_dir_opt_public.has_value()
-          ? env_output_dir_opt_public
-          : GetEnvOnce<kTpuProfilerOutputDirEnvVar>();
+      GetEnvOnce<kTorchTpuProfilerOutputDirEnvVar>();
   if (env_output_dir_opt.has_value() && !env_output_dir_opt->empty()) {
     return *env_output_dir_opt;
   }
