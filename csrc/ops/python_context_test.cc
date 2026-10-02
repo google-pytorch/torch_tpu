@@ -127,6 +127,19 @@ TEST_F(ScopedPythonContextCapturerTrackebackTest,
   }
 }
 
+TEST_F(ScopedPythonContextCapturerTrackebackTest,
+       ScopedTracebackForTestingRestoresPreviousTraceback) {
+  PushContextState<EnableTracebacksContextState>(TracebackMode::kDisabled);
+  ScopedPythonContextCapturer capturer(OpName::kAdd);
+  const auto traceback = std::make_shared<PythonTraceback>();
+  {
+    const ScopedPythonContextCapturer::ScopedTracebackForTesting
+        traceback_override(traceback);
+    EXPECT_EQ(ScopedPythonContextCapturer::GetContext().traceback(), traceback);
+  }
+  EXPECT_EQ(ScopedPythonContextCapturer::GetContext().traceback(), nullptr);
+}
+
 TEST(ScopedPythonContextProvider, NoObjectIsAlive) {
   const auto& context = ScopedPythonContextProvider::MaybeGetContext();
   EXPECT_FALSE(context.has_value());

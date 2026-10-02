@@ -53,7 +53,9 @@ torch_tpu_cc_library(
     name = "testing_build",
     srcs = ["testing.cc"],
     deps = [
+        "//csrc/common:env_vars",
         "//csrc/common:error_utils",
+        "//csrc/common:libtpu_version",
         "//csrc/common:pybind_error_utils",
         "//csrc/common:tpu_hardware",
         "//csrc/common:warnings",

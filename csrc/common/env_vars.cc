@@ -16,6 +16,7 @@
 
 #include "csrc/common/env_vars.h"
 
+#include <atomic>
 #include <cstdlib>
 #include <optional>
 #include <string>
@@ -25,6 +26,7 @@
 #include "absl/base/const_init.h"
 #include "absl/base/no_destructor.h"
 #include "absl/base/thread_annotations.h"
+#include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/absl_check.h"
 #include "absl/strings/match.h"
@@ -67,6 +69,43 @@ void CheckEnvVarNotMemoized(std::string_view name) {
 }  // namespace torch_tpu::internal
 
 namespace torch_tpu {
+namespace {
+
+// Whether ResetEnvCacheForTesting() has been called.
+std::atomic<bool> env_cache_was_reset_for_testing = false;
+
+// The environment variable values memoized since the last
+// ResetEnvCacheForTesting() call, keyed by name.
+class EnvCacheForTesting {
+ public:
+  void Clear() {
+    absl::MutexLock lock(mutex_);
+    values_.clear();
+  }
+
+  std::optional<std::string> Get(const char* name) {
+    absl::MutexLock lock(mutex_);
+    const auto [it, inserted] = values_.try_emplace(name);
+    if (inserted) {
+      const char* const value =  //
+          std::getenv(name);     // GETENV_OK=testing-only reread of env vars.
+      if (value != nullptr) it->second = value;
+    }
+    return it->second;
+  }
+
+ private:
+  absl::Mutex mutex_;
+  absl::flat_hash_map<std::string, std::optional<std::string>> values_
+      ABSL_GUARDED_BY(mutex_);
+};
+
+EnvCacheForTesting& GetEnvCacheForTesting() {
+  static absl::NoDestructor<EnvCacheForTesting> cache;
+  return *cache;
+}
+
+}  // namespace
 
 // Replaces the "${RANK}" placeholder in the given environment variable with the
 // given rank.
@@ -107,6 +146,19 @@ const std::optional<std::string>& ExpandAndGetLibtpuInitArgsEnvVarOnce() {
   // accessing.
   EnsureRankIsExpandedInEnvVars();
   return GetEnvOnce<kLibtpuInitArgsEnvVar>();
+}
+
+void ResetEnvCacheForTesting() {
+  GetEnvCacheForTesting().Clear();
+  env_cache_was_reset_for_testing.store(true, std::memory_order_release);
+}
+
+bool EnvCacheWasResetForTesting() {
+  return env_cache_was_reset_for_testing.load(std::memory_order_acquire);
+}
+
+std::optional<std::string> GetEnvSinceResetForTesting(const char* name) {
+  return GetEnvCacheForTesting().Get(name);
 }
 
 }  // namespace torch_tpu
