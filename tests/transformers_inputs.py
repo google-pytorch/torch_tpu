@@ -16,6 +16,7 @@
 
 from collections.abc import Callable, Mapping, Sequence
 import dataclasses
+import math
 import types
 from typing import Any, overload
 
@@ -35,6 +36,7 @@ _VISION_LANGUAGE_MODEL_TYPES = (
     "align",
     "audio-flamingo",
     "audio_flamingo",
+    "audioflamingo",
     "blip",
     "blip-2",
     "blip_2",
@@ -1515,15 +1517,40 @@ def _build_whisper_audio_inputs(
 def _build_clap_audio_inputs(
     ctx: InputContext, input_kwargs: dict[str, Any]
 ) -> None:
-  num_mel = _cfg_int(ctx.config, "num_mel_bins", default=64)
-  input_kwargs["input_features"] = ctx.randn(ctx.batch_size, 1, 1001, num_mel)
+  audio_cfg = ctx.config.get("audio_config") or ctx.config
+  num_mel = _safe_int(
+      audio_cfg.get("num_mel_bins") or ctx.config.get("num_mel_bins"),
+      default=64,
+      min_val=1,
+  )
+  spec_size = _safe_int(
+      audio_cfg.get("spec_size") or ctx.config.get("spec_size"),
+      default=256,
+      min_val=1,
+  )
+  freq_ratio = max(1, spec_size // num_mel)
+  max_time = int(spec_size * freq_ratio)
+  time_length = min(1001, max_time)
+  input_kwargs["input_features"] = ctx.randn(
+      ctx.batch_size, 1, time_length, num_mel
+  )
   input_kwargs["is_longer"] = ctx.zeros((ctx.batch_size, 1), dtype=torch.bool)
   safe_seq_len = min(_get_max_seq_len(ctx.config), 512)
   vocab_size = _cfg_int(ctx.config, "vocab_size", default=32000)
   input_kwargs.update(
       _build_text_tokens(ctx, seq_len=safe_seq_len, vocab_size=vocab_size)
   )
-  if "audio_encoder" in ctx.type_str or "audioencoder" in ctx.type_str:
+  if any(
+      k in ctx.arch_name
+      for k in [
+          "audio_encoder",
+          "audioencoder",
+          "audiomodel",
+          "audio_model",
+          "clapaudio",
+          "clap_audio",
+      ]
+  ):
     input_kwargs.pop("input_ids", None)
     input_kwargs.pop("attention_mask", None)
 
@@ -1539,6 +1566,33 @@ def _build_ast_audio_inputs(
 def _build_w2v_bert_audio_inputs(
     ctx: InputContext, input_kwargs: dict[str, Any]
 ) -> None:
+  if any(
+      k in ctx.type_str
+      for k in [
+          "qwen2_audio_encoder",
+          "qwen2_audio",
+          "qwen2-audio",
+          "qwen2audio",
+          "qwen2a",
+      ]
+  ):
+    enc_cfg = ctx.config.get("encoder_config")
+    num_mel = _safe_int(
+        ctx.config.get("num_mel_bins")
+        or (enc_cfg.get("num_mel_bins") if enc_cfg else None),
+        default=128,
+        min_val=1,
+    )
+    max_positions = _safe_int(
+        ctx.config.get("max_source_positions"),
+        default=1500,
+        min_val=1,
+    )
+    input_kwargs["input_features"] = ctx.randn(
+        ctx.batch_size, num_mel, max_positions * 2
+    )
+    return
+
   enc_cfg = (
       ctx.config.get("encoder_config")
       or ctx.config.get("encoder")
@@ -1553,7 +1607,14 @@ def _build_w2v_bert_audio_inputs(
       min_val=1,
   )
   input_kwargs["input_features"] = ctx.randn(ctx.batch_size, 128, num_mel)
+  if any(k in ctx.type_str for k in ("parakeet", "nemotron")):
+    input_kwargs["decoder_input_ids"] = ctx.zeros(
+        (ctx.batch_size, 1), dtype=torch.long
+    )
   if "nemotron" in ctx.type_str:
+    input_kwargs["attention_mask"] = ctx.ones(
+        (ctx.batch_size, 128), dtype=torch.long
+    )
     input_kwargs["input_lengths"] = torch.tensor(
         [128] * ctx.batch_size, device=ctx.device, dtype=torch.long
     )
@@ -1574,13 +1635,81 @@ def _build_omnitoken2wav_audio_inputs(
   input_kwargs["mel_spectrogram"] = ctx.randn(ctx.batch_size, 80, 128)
 
 
+def _build_kyutai_stt_inputs(
+    ctx: InputContext, input_kwargs: dict[str, Any]
+) -> None:
+  num_codebooks = _safe_int(
+      ctx.config.get("num_codebooks"), default=32, min_val=1
+  )
+  seq_len = 16
+  input_kwargs["input_ids"] = ctx.randint(
+      0, 100, (ctx.batch_size, seq_len, num_codebooks + 1), dtype=torch.long
+  )
+  input_kwargs["attention_mask"] = ctx.ones(
+      (ctx.batch_size, seq_len), dtype=torch.long
+  )
+
+
+def _build_moshi_audio_inputs(
+    ctx: InputContext, input_kwargs: dict[str, Any]
+) -> None:
+  num_codebooks = _safe_int(
+      ctx.config.get("num_codebooks"), default=8, min_val=1
+  )
+  vocab_size = _safe_int(ctx.config.get("vocab_size"), default=32000, min_val=1)
+  audio_vocab_size = _safe_int(
+      ctx.config.get("audio_vocab_size"), default=2048, min_val=1
+  )
+  seq_len = 1
+  input_kwargs["input_ids"] = ctx.randint(
+      0, vocab_size, (ctx.batch_size, seq_len), dtype=torch.long
+  )
+  input_kwargs["user_audio_codes"] = ctx.randint(
+      0,
+      audio_vocab_size,
+      (ctx.batch_size, num_codebooks, seq_len),
+      dtype=torch.long,
+  )
+  input_kwargs["moshi_audio_codes"] = ctx.randint(
+      0,
+      audio_vocab_size,
+      (ctx.batch_size, num_codebooks, seq_len),
+      dtype=torch.long,
+  )
+  input_kwargs["attention_mask"] = ctx.ones(
+      (ctx.batch_size, seq_len), dtype=torch.long
+  )
+
+
+def _build_glmasr_audio_inputs(
+    ctx: InputContext, input_kwargs: dict[str, Any]
+) -> None:
+  text_cfg = ctx.config.get("text_config") or ctx.config
+  vocab_size = _safe_int(
+      text_cfg.get("vocab_size") if text_cfg else None,
+      default=151552,
+      min_val=1,
+  )
+  input_kwargs["input_ids"] = ctx.randint(
+      0, vocab_size, (ctx.batch_size, 8), dtype=torch.long
+  )
+  input_kwargs["attention_mask"] = ctx.ones(
+      (ctx.batch_size, 8), dtype=torch.long
+  )
+
+
 def _build_s2t_audio_inputs(
     ctx: InputContext, input_kwargs: dict[str, Any]
 ) -> None:
-  num_mel = _cfg_int(ctx.config, "num_mel_bins", default=80)
+  num_mel = _safe_int(
+      ctx.config.get("feature_projection_input_dim")
+      or ctx.config.get("num_mel_bins"),
+      default=80,
+      min_val=1,
+  )
   input_kwargs["input_features"] = ctx.randn(ctx.batch_size, 100, num_mel)
-  input_kwargs["decoder_input_ids"] = torch.tensor(
-      [[1]], device=ctx.device, dtype=torch.long
+  input_kwargs["decoder_input_ids"] = ctx.full(
+      (ctx.batch_size, 8), 1, dtype=torch.long
   )
 
 
@@ -1594,8 +1723,40 @@ def _build_univnet_audio_inputs(
 def _build_xcodec2_audio_inputs(
     ctx: InputContext, input_kwargs: dict[str, Any]
 ) -> None:
-  seq_len = ctx.shape[1] if ctx.shape and len(ctx.shape) > 1 else 16000
-  input_kwargs["input_features"] = ctx.randn(ctx.batch_size, 1, seq_len)
+  if ctx.shape and len(ctx.shape) > 1:
+    seq_len = ctx.shape[1]
+    input_kwargs["input_features"] = ctx.randn(ctx.batch_size, 1, seq_len)
+    return
+
+  channels = _cfg_int(ctx.config, "audio_channels", default=1)
+  downsampling_ratios = ctx.config.get("downsampling_ratios") or [
+      2,
+      2,
+      4,
+      4,
+      5,
+  ]
+  hop_length = math.prod(
+      _safe_int(r, default=2, min_val=1) for r in downsampling_ratios
+  )
+  num_frames = 10
+  num_samples = hop_length * num_frames
+  sem_cfg = ctx.config.get("semantic_model_config")
+  feat_dim = None
+  if hasattr(sem_cfg, "feature_projection_input_dim"):
+    feat_dim = getattr(sem_cfg, "feature_projection_input_dim", None)
+  elif isinstance(sem_cfg, dict) and "feature_projection_input_dim" in sem_cfg:
+    feat_dim = sem_cfg["feature_projection_input_dim"]
+  if feat_dim is None:
+    num_mel_bins = _cfg_int(ctx.config, "num_mel_bins", default=80)
+    stride = _cfg_int(ctx.config, "stride", default=2)
+    feat_dim = num_mel_bins * stride
+  input_kwargs["input_values"] = ctx.randn(
+      ctx.batch_size, channels, num_samples
+  )
+  input_kwargs["input_features"] = ctx.randn(
+      ctx.batch_size, num_frames, feat_dim
+  )
 
 
 def _build_codec_audio_inputs(
@@ -1618,7 +1779,7 @@ def _build_musicgen_audio_inputs(
   num_codebooks = _cfg_int(dec_cfg, "num_codebooks", default=4)
   audio_vocab_size = _cfg_int(dec_cfg, "vocab_size", default=2048)
   input_kwargs["decoder_input_ids"] = ctx.randint(
-      0, audio_vocab_size, (ctx.batch_size, num_codebooks, 1)
+      0, audio_vocab_size, (ctx.batch_size * num_codebooks, 1)
   )
 
 
@@ -1631,9 +1792,52 @@ def _build_bark_audio_inputs(
       or ctx.config.get("text_config")
       or ctx.config
   )
-  vocab_size = _cfg_int(sem_cfg, "vocab_size", default=10048)
+  vocab_size = _cfg_int(
+      sem_cfg, "vocab_size", "input_vocab_size", default=10048
+  )
   input_kwargs.update(
       _build_text_tokens(ctx, seq_len=safe_seq_len, vocab_size=vocab_size)
+  )
+
+
+def _build_voxtral_realtime_audio_inputs(
+    ctx: InputContext, input_kwargs: dict[str, Any]
+) -> None:
+  safe_seq_len = min(
+      ctx.shape[1]
+      if ctx.shape and len(ctx.shape) > 1
+      else _get_max_seq_len(ctx.config),
+      32,
+  )
+  text_cfg = ctx.config.get("text_config") or ctx.config
+  audio_cfg = ctx.config.get("audio_config") or ctx.config
+  vocab_size = _safe_int(
+      text_cfg.get("vocab_size") or ctx.config.get("vocab_size"),
+      default=131072,
+      min_val=1,
+  )
+  input_kwargs["input_ids"] = ctx.randint(
+      0, vocab_size, (ctx.batch_size, safe_seq_len), dtype=torch.long
+  )
+  input_kwargs["attention_mask"] = ctx.ones(
+      (ctx.batch_size, safe_seq_len), dtype=torch.long
+  )
+  num_mel = _safe_int(
+      audio_cfg.get("num_mel_bins") or ctx.config.get("num_mel_bins"),
+      default=128,
+      min_val=1,
+  )
+  downsample_factor = _safe_int(
+      ctx.config.get("downsample_factor"), default=4, min_val=1
+  )
+  audio_length_per_tok = _safe_int(
+      ctx.config.get("audio_length_per_tok"),
+      default=2 * downsample_factor,
+      min_val=1,
+  )
+  feat_seq_len = safe_seq_len * audio_length_per_tok
+  input_kwargs["input_features"] = ctx.randn(
+      ctx.batch_size, num_mel, feat_seq_len
   )
 
 
@@ -1658,7 +1862,11 @@ def _build_speecht5_audio_inputs(
   input_kwargs["decoder_attention_mask"] = ctx.ones(
       (ctx.batch_size, dec_seq_len)
   )
-  if "speechtotext" in ctx.arch_name or "speechtospeech" in ctx.arch_name:
+  if (
+      "speechtotext" in ctx.arch_name
+      or "speechtospeech" in ctx.arch_name
+      or "asr" in ctx.type_str
+  ):
     audio_seq_len = 16000
     input_kwargs["input_values"] = ctx.randn(ctx.batch_size, audio_seq_len)
     input_kwargs["attention_mask"] = ctx.ones((ctx.batch_size, audio_seq_len))
@@ -1677,7 +1885,8 @@ def _build_speecht5_audio_inputs(
     input_kwargs["decoder_input_values"] = ctx.randn(
         ctx.batch_size, dec_seq_len, num_mel
     )
-    input_kwargs["speaker_embeddings"] = ctx.randn(ctx.batch_size, 512)
+    speaker_dim = _cfg_int(ctx.config, "speaker_embedding_dim", default=512)
+    input_kwargs["speaker_embeddings"] = ctx.randn(ctx.batch_size, speaker_dim)
 
 
 def _build_vits_audio_inputs(
@@ -1698,7 +1907,11 @@ def _build_vits_audio_inputs(
 def _build_granite_audio_inputs(
     ctx: InputContext, input_kwargs: dict[str, Any]
 ) -> None:
-  encoder_cfg = ctx.config.get("encoder") or ctx.config.get("speech_config")
+  encoder_cfg = (
+      ctx.config.get("encoder_config")
+      or ctx.config.get("encoder")
+      or ctx.config.get("speech_config")
+  )
   num_mel = _safe_int(
       (encoder_cfg.get("input_dim") or encoder_cfg.get("num_mel_bins"))
       if encoder_cfg
@@ -1759,14 +1972,67 @@ def _build_pe_audio_inputs(
   input_kwargs["input_values"] = ctx.randn(ctx.batch_size, 1, audio_len)
 
 
+def _build_cohere_asr_audio_inputs(
+    ctx: InputContext, input_kwargs: dict[str, Any]
+) -> None:
+  enc_cfg = (
+      ctx.config.get("encoder_config")
+      or ctx.config.get("encoder")
+      or ctx.config
+  )
+  num_mel = _safe_int(
+      (enc_cfg.get("num_mel_bins") if enc_cfg else None)
+      or ctx.config.get("num_mel_bins"),
+      default=128,
+      min_val=1,
+  )
+  input_kwargs["input_features"] = ctx.randn(ctx.batch_size, 128, num_mel)
+  input_kwargs["decoder_input_ids"] = ctx.full(
+      (ctx.batch_size, 8), 1, dtype=torch.long
+  )
+
+
+def _build_dia_audio_inputs(
+    ctx: InputContext, input_kwargs: dict[str, Any]
+) -> None:
+  enc_cfg = ctx.config.get("encoder_config") or ctx.config
+  dec_cfg = ctx.config.get("decoder_config") or ctx.config
+  enc_vocab = _safe_int(
+      enc_cfg.get("vocab_size")
+      if hasattr(enc_cfg, "get")
+      else getattr(enc_cfg, "vocab_size", None),
+      default=256,
+      min_val=1,
+  )
+  dec_vocab = _safe_int(
+      dec_cfg.get("vocab_size")
+      if hasattr(dec_cfg, "get")
+      else getattr(dec_cfg, "vocab_size", None),
+      default=1028,
+      min_val=1,
+  )
+  num_channels = _safe_int(
+      dec_cfg.get("num_channels")
+      if hasattr(dec_cfg, "get")
+      else getattr(dec_cfg, "num_channels", None),
+      default=9,
+      min_val=1,
+  )
+  seq_len = 8
+  input_kwargs["input_ids"] = ctx.randint(
+      0, min(enc_vocab, 256), (ctx.batch_size, seq_len)
+  )
+  input_kwargs["attention_mask"] = ctx.ones((ctx.batch_size, seq_len))
+  input_kwargs["decoder_input_ids"] = ctx.randint(
+      1, dec_vocab, (ctx.batch_size, seq_len, num_channels)
+  )
+
+
 _AUDIO_EXTRA_BUILDERS: tuple[tuple[_Matcher, _Builder], ...] = (
     (_model_type_contains("whisper"), _build_whisper_audio_inputs),
     (_model_type_contains("clap"), _build_clap_audio_inputs),
     (
-        lambda ctx: (
-            ctx.model_type in ("ast", "audio-spectrogram-transformer")
-            or "audio-spectrogram-transformer" in ctx.model_type
-        ),
+        _type_contains("ast", "audio-spectrogram-transformer"),
         _build_ast_audio_inputs,
     ),
     (
@@ -1788,8 +2054,39 @@ _AUDIO_EXTRA_BUILDERS: tuple[tuple[_Matcher, _Builder], ...] = (
         _type_contains("omnitoken2wav", "scail"),
         _build_omnitoken2wav_audio_inputs,
     ),
+    (_model_type_contains("speecht5"), _build_speecht5_audio_inputs),
     (
-        _type_contains("s2t", "speech2text", "speech_to_text"),
+        _type_contains("kyutai_speech_to_text", "kyutai_stt"),
+        _build_kyutai_stt_inputs,
+    ),
+    (_type_contains("moshi"), _build_moshi_audio_inputs),
+    (
+        _type_contains(
+            "glmasr",
+            "glm_asr",
+            "glm-asr",
+            "qwen3_asr",
+            "qwen3-asr",
+            "qwen3asr",
+        ),
+        _build_glmasr_audio_inputs,
+    ),
+    (
+        _type_contains("cohere_asr", "cohere-asr"),
+        _build_cohere_asr_audio_inputs,
+    ),
+    (
+        _type_contains("dia"),
+        _build_dia_audio_inputs,
+    ),
+    (
+        _type_contains(
+            "s2t",
+            "speech2text",
+            "speech_to_text",
+            "seamless",
+            "speechtotext",
+        ),
         _build_s2t_audio_inputs,
     ),
     (_type_contains("univnet"), _build_univnet_audio_inputs),
@@ -1798,18 +2095,23 @@ _AUDIO_EXTRA_BUILDERS: tuple[tuple[_Matcher, _Builder], ...] = (
         _type_contains(
             "dac",
             "encodec",
+            "higgs_audio_v2_tokenizer",
             "mimi",
             "vibevoice_acoustic_tokenizer",
+            "xcodec",
         ),
         _build_codec_audio_inputs,
     ),
     (_type_contains("musicgen"), _build_musicgen_audio_inputs),
     (_type_contains("bark"), _build_bark_audio_inputs),
     (
+        _type_contains("voxtral_realtime", "voxtralrealtime"),
+        _build_voxtral_realtime_audio_inputs,
+    ),
+    (
         _type_contains("csm", "voxtral", "dia", "audio2hero", "higgs"),
         _build_csm_audio_inputs,
     ),
-    (_model_type_contains("speecht5"), _build_speecht5_audio_inputs),
     (_model_type_contains("vits"), _build_vits_audio_inputs),
     (_model_type_contains("granite"), _build_granite_audio_inputs),
     (
@@ -2083,6 +2385,19 @@ def _build_beingvl_multimodal_inputs(
   input_kwargs.pop("attention_mask", None)
 
 
+def _build_clvp_multimodal_inputs(
+    ctx: InputContext, input_kwargs: dict[str, Any]
+) -> None:
+  input_kwargs.pop("pixel_values", None)
+  dec_cfg = ctx.config.get("decoder_config") or ctx.config
+  feature_size = _safe_int(
+      dec_cfg.get("feature_size") if dec_cfg else None,
+      default=80,
+      min_val=1,
+  )
+  input_kwargs["input_features"] = ctx.randn(ctx.batch_size, feature_size, 100)
+
+
 _MULTIMODAL_EXTRA_BUILDERS: tuple[tuple[_Matcher, _Builder], ...] = (
     (
         _model_type_contains("idefics", "smolvlm"),
@@ -2122,6 +2437,7 @@ _MULTIMODAL_EXTRA_BUILDERS: tuple[tuple[_Matcher, _Builder], ...] = (
     (_model_type_contains("kosmos"), _build_kosmos_multimodal_inputs),
     (_model_type_contains("xclip"), _build_xclip_multimodal_inputs),
     (_model_type_contains("beingvl", "vq"), _build_beingvl_multimodal_inputs),
+    (_type_contains("clvp"), _build_clvp_multimodal_inputs),
 )
 
 
@@ -2144,10 +2460,12 @@ def _build_multimodal_inputs(ctx: InputContext) -> dict[str, Any]:
   # (31232). Sampling `input_ids` up to `vocab_size` would otherwise produce
   # out-of-bounds token IDs in `[31232, 31640)` for the encoder on CUDA.
   text_cfg = ctx.config.get("text_config")
+  semantic_cfg = ctx.config.get("semantic_config")
   vocab_size = _safe_int(
       ctx.config.get("src_vocab_size")
       or ctx.config.get("vocab_size")
-      or (text_cfg.get("vocab_size") if text_cfg else None),
+      or (text_cfg.get("vocab_size") if text_cfg else None)
+      or (semantic_cfg.get("input_vocab_size") if semantic_cfg else None),
       default=32000,
       min_val=1,
   )
