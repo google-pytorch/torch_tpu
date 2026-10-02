@@ -12,44 +12,54 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections.abc import Callable
 import gc
-from unittest import mock
 
 from absl.testing import absltest
 import torch
+from torch_tpu._internal import execution_mode
 from torch_tpu._internal.distributed import spmd_util
+from torch_tpu._internal.utils import test_utils
 from tests import seed_test_utils
+
+
+def _count_executed_graphs(fn: Callable[[torch.Tensor], torch.Tensor]) -> int:
+  """Returns how many graphs are materialized for `x * 2 -> fn -> * 3`.
+
+  The surrounding ops are deferred in DEFER_AND_FUSE mode, so they are fused
+  with `fn`'s ops into a single graph unless `fn` introduces graph boundaries.
+
+  Args:
+    fn: The function to run between the surrounding ops.
+  """
+  x = torch.ones(2, 2).to("tpu")
+  torch.accelerator.synchronize()
+  # TODO: migrate to shared count_tpu_compilations() helper
+  # pylint: disable-next=protected-access
+  get_cache_stats = getattr(torch, "tpu")._get_cache_stats
+  with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+    reqs_before = get_cache_stats().num_cache_reqs
+    out = fn(x * 2) * 3
+    out_cpu = out.cpu()
+    torch.accelerator.synchronize()
+    reqs_after = get_cache_stats().num_cache_reqs
+  test_utils.assert_close(out_cpu, torch.full((2, 2), 9.0))
+  return reqs_after - reqs_before
 
 
 class SpmdSafeTest(seed_test_utils.MultiProcessRepeatableTest):
 
-  @mock.patch("torch_tpu._internal.sync.sync.synchronize")
-  def test_spmd_safe_decorator(self, mock_sync):
-    @spmd_util.spmd_safe
-    def my_func(a, b):
-      return a + b
+  def test_spmd_safe_isolates_function_graph(self):
+    def add_one(a):
+      return a + 1
 
-    t1 = torch.randn(2, 2).to("tpu")
-    t2 = torch.randn(2, 2).to("tpu")
-
-    res = my_func(t1, t2)
-
-    # Should be called twice: once for inputs, once for results.
-    self.assertEqual(mock_sync.call_count, 2)
-
-    # Check first call (inputs)
-    # The first call should be with the list of input tensors and wait=False.
-    args, kwargs = mock_sync.call_args_list[0]
-    self.assertTrue(any(t is t1 for t in args[0]))
-    self.assertTrue(any(t is t2 for t in args[0]))
-    self.assertFalse(kwargs.get("wait", True))
-
-    # Check second call (outputs)
-    # The second call should be with the list containing the result tensor and
-    # wait=False.
-    args, kwargs = mock_sync.call_args_list[1]
-    self.assertTrue(any(t is res for t in args[0]))
-    self.assertFalse(kwargs.get("wait", True))
+    undecorated = _count_executed_graphs(add_one)
+    decorated = _count_executed_graphs(spmd_util.spmd_safe(add_one))
+    # Without the decorator, everything fuses into a single graph.
+    self.assertEqual(undecorated, 1)
+    # The decorator adds exactly two graph boundaries (before and after the
+    # function), so no outside op is fused with the function's ops.
+    self.assertEqual(decorated - undecorated, 2)
 
   def test_spmd_safe_no_memory_overhead(self):
     device = torch.device("tpu")
