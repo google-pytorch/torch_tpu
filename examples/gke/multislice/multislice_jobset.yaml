@@ -1,0 +1,180 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Kubernetes ConfigMap + JobSet manifest for multi-slice TorchTitan HSDP on GKE TPU.
+#
+# Default setup: 4 slices x 16 chips (tpu7x 2x2x4) = 64 TPU chips total (128 PJRT devices).
+# Parallelism: HSDP with dp_shard=32 (intra-slice ICI) and dp_replicate=4 (inter-slice MegaScale DCN).
+# Model: LLaMA 3 70B (SeqLen 8192, Local Batch Size 4).
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: torchtitan-multislice-scripts
+data:
+  sitecustomize.py: |
+    """Site customization for multi-slice HSDP on GKE TPU."""
+
+    import os
+
+    if (
+        "MEGASCALE_COORDINATOR_ADDRESS" in os.environ
+        or int(os.environ.get("MEGASCALE_NUM_SLICES", "1")) > 1
+    ):
+      # 1. Per-process MegaScale DCN Port Assignment (8080-8087)
+      if "LOCAL_RANK" in os.environ:
+        os.environ["MEGASCALE_PORT"] = str(8080 + int(os.environ["LOCAL_RANK"]))
+
+      # 2. Guard JAX/Pallas against duplicate MegaScale client initialization
+      try:
+        import torch  # pylint: disable=g-import-not-at-top
+        import torch.distributed as dist  # pylint: disable=g-import-not-at-top
+
+        orig_init_pg = dist.init_process_group
+
+        def _patched_init_pg(*args, **kwargs):
+          res = orig_init_pg(*args, **kwargs)
+          os.environ["SKIP_MEGASCALE_PJRT_CLIENT"] = "true"
+          os.environ.pop("MEGASCALE_COORDINATOR_ADDRESS", None)
+          return res
+
+        dist.init_process_group = _patched_init_pg
+        torch.distributed.init_process_group = _patched_init_pg
+      except Exception as e:  # pylint: disable=broad-exception-caught
+        print(f"[sitecustomize] Warning: {e}")
+  entrypoint.sh: |
+    #!/bin/bash
+    set -ex
+
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+    export PYTHONUNBUFFERED=1
+    export JOBSET_NAME="${JOBSET_NAME:?JOBSET_NAME environment variable must be set}"
+    export MEGASCALE_NUM_SLICES="${MEGASCALE_NUM_SLICES:-4}"
+    export MEGASCALE_SLICE_ID="${MEGASCALE_SLICE_ID:-0}"
+    export VMS_PER_SLICE="${VMS_PER_SLICE:-4}"
+    export NNODES=$(( MEGASCALE_NUM_SLICES * VMS_PER_SLICE ))
+    export NODE_RANK=$(( MEGASCALE_SLICE_ID * VMS_PER_SLICE + ${JOB_COMPLETION_INDEX:-0} ))
+
+    # Add script directory to PYTHONPATH so sitecustomize.py is loaded for MegaScale runs.
+    export PYTHONPATH="${SCRIPT_DIR}:${PYTHONPATH:-}"
+
+    # Initialize intra-slice ICI SliceBuilder addresses strictly for hosts within this slice.
+    SLICE_JOB_PREFIX="${JOBSET_NAME}-${REPLICATED_JOB_NAME:-slice}-${MEGASCALE_SLICE_ID}"
+    SB_ADDRS=()
+    for h in $(seq 0 $(( VMS_PER_SLICE - 1 ))); do
+      HOST="${SLICE_JOB_PREFIX}-${h}.${JOBSET_NAME}"
+      for p in $(seq 8070 8077); do
+        SB_ADDRS+=("${HOST}:${p}")
+      done
+    done
+    export TORCH_TPU_SLICEBUILDER_ADDRESSES=$(IFS=,; echo "${SB_ADDRS[*]}")
+
+    # Launch TorchTitan multi-slice HSDP training.
+    python3 -m torch.distributed.run \
+      --nnodes="${NNODES}" \
+      --node_rank="${NODE_RANK}" \
+      --master_addr="${MASTER_ADDR}" \
+      --master_port="${MASTER_PORT:-29501}" \
+      --nproc_per_node=8 \
+      -m torchtitan.experiments.tpu.train \
+        --module="${MODEL_MODULE:-torchtitan.experiments.tpu.llama3}" \
+        --config="${MODEL_CONFIG:-llama3_70b}" \
+        --hf_assets_path="${HF_ASSETS_PATH:-tests/assets/tokenizer}" \
+        --dataloader.dataset_path="${DATASET_PATH:-tests/assets/c4_test}" \
+        --training.steps="${STEPS:-15}" \
+        --training.local_batch_size="${LOCAL_BATCH_SIZE:-4}" \
+        --training.seq_len="${SEQ_LEN:-8192}" \
+        --training.mixed_precision_reduce=bfloat16 \
+        --parallelism.data_parallel_shard_degree="${DP_SHARD:-32}" \
+        --parallelism.data_parallel_replicate_degree="${DP_REPLICATE:-4}"
+---
+apiVersion: jobset.x-k8s.io/v1alpha2
+kind: JobSet
+metadata:
+  name: torchtitan-multislice
+  annotations:
+    alpha.jobset.sigs.k8s.io/exclusive-topology: cloud.google.com/gke-nodepool
+spec:
+  replicatedJobs:
+    - name: slice
+      replicas: 4
+      template:
+        metadata:
+          annotations:
+            cloud.google.com/gke-tpu-slice-topology: 2x2x4
+        spec:
+          parallelism: 4
+          completions: 4
+          completionMode: Indexed
+          backoffLimit: 0
+          template:
+            metadata:
+              annotations:
+                cloud.google.com/gke-tpu-slice-topology: 2x2x4
+            spec:
+              hostNetwork: true
+              dnsPolicy: ClusterFirstWithHostNet
+              restartPolicy: Never
+              nodeSelector:
+                cloud.google.com/gke-tpu-accelerator: tpu7x
+                cloud.google.com/gke-tpu-topology: 2x2x4
+              tolerations:
+                - key: "google.com/tpu"
+                  operator: "Exists"
+              containers:
+                - name: tpu-container
+                  image: <YOUR_IMAGE_URI>
+                  securityContext:
+                    privileged: true
+                  env:
+                    - name: JOBSET_NAME
+                      value: "torchtitan-multislice"
+                    - name: LIBTPU_INIT_ARGS
+                      value: "--xla_tpu_scoped_vmem_limit_kib=65536"
+                    - name: TORCH_TPU_TOPOLOGY
+                      value: "2,2,4,2"
+                    - name: MEGASCALE_NUM_SLICES
+                      value: "4"
+                    - name: MEGASCALE_SLICE_ID
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.annotations['jobset.sigs.k8s.io/job-index']
+                    - name: VMS_PER_SLICE
+                      value: "4"
+                    - name: MASTER_ADDR
+                      value: "torchtitan-multislice-slice-0-0.torchtitan-multislice"
+                    - name: MEGASCALE_COORDINATOR_ADDRESS
+                      value: "torchtitan-multislice-slice-0-0.torchtitan-multislice:8080"
+                  command:
+                    - /bin/bash
+                    - /scripts/entrypoint.sh
+                  resources:
+                    requests:
+                      google.com/tpu: 4
+                    limits:
+                      google.com/tpu: 4
+                  volumeMounts:
+                    - mountPath: /dev/shm
+                      name: dshm
+                    - mountPath: /scripts
+                      name: scripts
+              volumes:
+                - emptyDir:
+                    medium: Memory
+                  name: dshm
+                - configMap:
+                    defaultMode: 0755
+                    name: torchtitan-multislice-scripts
+                  name: scripts
