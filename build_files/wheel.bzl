@@ -33,6 +33,10 @@ WHEEL_PY_TARGETS = [
     "//src/torch_tpu/_internal/dynamism",
     "//src/torch_tpu/_internal/execution_mode",
     "//src/torch_tpu/_internal/export",
+    "//src/torch_tpu/_internal/ops",
+    "//src/torch_tpu/_internal/ops/scaled_mm/kernels:blockwise128_scaled_mm_kernel",
+    "//src/torch_tpu/_internal/ops/scaled_mm/kernels:blockwise_scaled_mm_kernel",
+    "//src/torch_tpu/_internal/ops:splash_attention",
     "//src/torch_tpu/_internal/optim",
     "//src/torch_tpu/_internal/pallas",
     "//src/torch_tpu/_internal/performance/micro:utils",
@@ -55,10 +59,6 @@ WHEEL_PY_TARGETS = [
     "//src/torch_tpu/_internal/benchmarks:export_adapter",
     "//src/torch_tpu/_internal/benchmarks:xprof_adapter",
     "//src/torch_tpu/_internal/distributed:multiprocessing",
-    "//src/torch_tpu/ops",
-    "//src/torch_tpu/ops/scaled_mm/kernels:blockwise128_scaled_mm_kernel",
-    "//src/torch_tpu/ops/scaled_mm/kernels:blockwise_scaled_mm_kernel",
-    "//src/torch_tpu/ops:splash_attention",
     "//src/torch_tpu:_loader",
     # go/keep-sorted end
 ]

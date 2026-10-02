@@ -16,8 +16,8 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import jax.numpy as jnp
 import numpy as np
-from torch_tpu.ops.scaled_mm.kernels import blockwise128_scaled_mm_kernel as kernels
-from torch_tpu.ops.scaled_mm.kernels import scaled_mm_generate
+from torch_tpu._internal.ops.scaled_mm.kernels import blockwise128_scaled_mm_kernel as kernels
+from torch_tpu._internal.ops.scaled_mm.kernels import scaled_mm_generate
 
 _BLOCK_SIZE = 128
 

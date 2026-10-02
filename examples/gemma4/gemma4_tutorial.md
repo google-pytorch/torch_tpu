@@ -328,7 +328,7 @@ directly into the native model's attention layer
 ```mermaid
 graph TD
     A["Gemma4 Layer Attention Dispatch<br/>(model.py)"] --> B["Device & SWA Guard Check<br/>(device_type == 'tpu' & is_sliding)"]
-    B --> C["TorchTPU Splash SDPA<br/>(torch_tpu.ops.splash_attention.splash_sdpa)"]
+    B --> C["TorchTPU Splash SDPA<br/>(torch.tpu.ops.splash_sdpa)"]
     C --> D["TorchTPU Pallas Bridge<br/>(torch_tpu._internal.pallas.custom_pallas_kernel)"]
     D --> E["Pallas Splash Attention Kernel<br/>(pallas.ops.tpu.splash_attention)"]
 ```

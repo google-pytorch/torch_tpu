@@ -1640,7 +1640,6 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/utils:annotations",
         "//src/torch_tpu/_internal/utils:test_utils",
-        "//src/torch_tpu/ops:jagged",
     ],
 )
 

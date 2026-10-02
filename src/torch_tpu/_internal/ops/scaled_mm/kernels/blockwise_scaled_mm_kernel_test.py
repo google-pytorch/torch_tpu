@@ -36,7 +36,7 @@ from absl.testing import parameterized
 import jax
 import jax.numpy as jnp
 import numpy as np
-from torch_tpu.ops.scaled_mm.kernels import blockwise_scaled_mm_kernel as kernels
+from torch_tpu._internal.ops.scaled_mm.kernels import blockwise_scaled_mm_kernel as kernels
 from tests import seed_test_utils
 
 _FP8_E4M3 = jnp.float8_e4m3fn.dtype

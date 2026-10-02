@@ -20,9 +20,9 @@ from typing import Any
 from absl import app
 from absl import flags
 import jax.numpy as jnp
+from torch_tpu._internal.ops.scaled_mm.kernels import blockwise128_scaled_mm_kernel as blockwise128_kernels
+from torch_tpu._internal.ops.scaled_mm.kernels import blockwise_scaled_mm_kernel as kernels
 from torch_tpu._internal.pallas import pallas_kernel_generate_utils as kernel_utils
-from torch_tpu.ops.scaled_mm.kernels import blockwise128_scaled_mm_kernel as blockwise128_kernels
-from torch_tpu.ops.scaled_mm.kernels import blockwise_scaled_mm_kernel as kernels
 
 _HEADER = flags.DEFINE_string(  # PYTHON_FLAG_OK=Stand-alone build-time kernel generator tool.
     "header",

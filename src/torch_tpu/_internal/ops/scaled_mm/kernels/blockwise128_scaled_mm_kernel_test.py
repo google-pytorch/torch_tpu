@@ -17,7 +17,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import jax.numpy as jnp
 import numpy as np
-from torch_tpu.ops.scaled_mm.kernels import blockwise128_scaled_mm_kernel as kernels
+from torch_tpu._internal.ops.scaled_mm.kernels import blockwise128_scaled_mm_kernel as kernels
 
 _FP8_E4M3 = jnp.float8_e4m3fn.dtype
 _E4M3_MAX = 448.0

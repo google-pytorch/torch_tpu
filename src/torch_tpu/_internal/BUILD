@@ -108,11 +108,11 @@ torch_tpu_py_library(
         "//src/torch_tpu/_internal/compiler_options",  # build_cleaner: keep
         "//src/torch_tpu/_internal/device:_device_module",  # build_cleaner: keep
         "//src/torch_tpu/_internal/distributed",  # build_cleaner: keep
+        "//src/torch_tpu/_internal/ops:jagged",  # build_cleaner: keep
+        "//src/torch_tpu/_internal/ops:splash_attention",  # build_cleaner: keep
         "//src/torch_tpu/_internal/pallas:pallas_lib",  # build_cleaner: keep
         "//src/torch_tpu/_internal/profiler:profiler_config",  # build_cleaner: keep
         "//src/torch_tpu/_internal/utils:annotations",
-        "//src/torch_tpu/ops:jagged",  # build_cleaner: keep
-        "//src/torch_tpu/ops:splash_attention",  # build_cleaner: keep
     ],
 )
 

@@ -16,12 +16,8 @@
 
 from absl.testing import absltest
 import torch
+from torch.tpu.ops import splash_sdpa  # pyrefly: ignore[missing-import]
 from examples.gemma4 import model
-
-try:
-  from torch_tpu.ops import splash_attention
-except (ImportError, ModuleNotFoundError):
-  splash_attention = None
 
 
 class Gemma4SWACorrectnessTPUTest(absltest.TestCase):
@@ -29,8 +25,6 @@ class Gemma4SWACorrectnessTPUTest(absltest.TestCase):
   def setUp(self):
     super().setUp()
     torch.manual_seed(1234)
-    if splash_attention is None:
-      self.skipTest('splash_attention module is not available')
     try:
       torch.tensor([1.0]).to('tpu')
     except RuntimeError:
@@ -258,9 +252,7 @@ class Gemma4SWACorrectnessTPUTest(absltest.TestCase):
     k = torch.randn(2, 4, 128, 32, device=device, requires_grad=True)
     v = torch.randn(2, 4, 128, 32, device=device, requires_grad=True)
 
-    out = splash_attention.splash_sdpa(
-        q, k, v, local_window_size=16, use_fused_bwd_kernel=False
-    )
+    out = splash_sdpa(q, k, v, local_window_size=16, use_fused_bwd_kernel=False)
     loss = out.mean()
     loss.backward()
 

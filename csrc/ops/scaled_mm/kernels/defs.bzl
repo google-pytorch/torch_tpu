@@ -62,7 +62,7 @@ def define_scaled_mm_kernel(
     cmd_discovery = """
             # Discover PyTorch and CUDA libraries to support local torch wheel build mode.
             # We search specifically within the generator's runfiles to maintain hermeticity
-            gen_tool="$(location //src/torch_tpu/ops/scaled_mm/kernels:scaled_mm_generate_bin)"
+            gen_tool="$(location //src/torch_tpu/_internal/ops/scaled_mm/kernels:scaled_mm_generate_bin)"
             if [[ -d "$${gen_tool}.runfiles" ]]; then
               lib_dirs=$$(find -L "$${gen_tool}.runfiles" \\( -name "libtorch.so" -o -name "libcudart.so*" -o -name "libnvrtc.so*" \\) -exec dirname {} + 2>/dev/null | sort -u)
               if [[ -n "$$lib_dirs" ]]; then
@@ -79,7 +79,7 @@ def define_scaled_mm_kernel(
             cc_path=$${out_files[1]}
             # Set JAX_PLATFORMS=cpu to cross-compile TPU kernels without needing
             # access to physical TPU hardware or libtpu lockfiles during the build.
-            JAX_PLATFORMS=cpu $(location //src/torch_tpu/ops/scaled_mm/kernels:scaled_mm_generate_bin) \
+            JAX_PLATFORMS=cpu $(location //src/torch_tpu/_internal/ops/scaled_mm/kernels:scaled_mm_generate_bin) \
                 --recipe=%s \
                 --in_dtype=%s \
                 --out_dtype=%s \
@@ -103,7 +103,7 @@ def define_scaled_mm_kernel(
             }),
             "set -e\n" + cmd_body,
         ),
-        tools = ["//src/torch_tpu/ops/scaled_mm/kernels:scaled_mm_generate_bin"],
+        tools = ["//src/torch_tpu/_internal/ops/scaled_mm/kernels:scaled_mm_generate_bin"],
     )
 
     torch_tpu_cc_library(

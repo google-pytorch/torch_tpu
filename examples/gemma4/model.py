@@ -29,11 +29,7 @@ import types
 import torch
 from torch import nn
 import torch.nn.functional as F
-
-try:
-  from torch_tpu.ops import splash_attention
-except (ImportError, ModuleNotFoundError):
-  splash_attention = None
+from torch.tpu.ops import splash_sdpa  # pyrefly: ignore[missing-import]
 
 
 class Gemma4Config:
@@ -311,17 +307,16 @@ class Gemma4Attention(nn.Module):
     )
 
     use_splash = (
-        splash_attention is not None
-        and query_states.device.type == 'tpu'
+        query_states.device.type == 'tpu'
         and self.is_sliding
         and not skip_sliding_mask
         and attention_mask is None
     )
 
     # Use TPU Splash attention SWA kernel on TPU devices.
-    if use_splash and splash_attention is not None:
+    if use_splash:
       enable_gqa = self.num_heads != self.current_kv_heads
-      attn_output = splash_attention.splash_sdpa(
+      attn_output = splash_sdpa(
           query_states,
           key_states,
           value_states,

@@ -31,8 +31,9 @@ import torch
 from torch.nested._internal import nested_tensor as nt_internal
 from torch_tpu._internal.utils import annotations
 from torch_tpu._internal.utils import test_utils as utils
-from torch_tpu.ops import jagged as jagged_ops
 from tests import seed_test_utils
+
+jagged_ops = torch.tpu.ops
 
 
 class JaggedTensorTest(seed_test_utils.RepeatableTest):

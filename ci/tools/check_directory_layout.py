@@ -25,7 +25,6 @@ from typing import Final, Iterable
 EXPECTED_SRC_DIRS: Final[frozenset[str]] = frozenset([
     "_internal",
     "extras",
-    "ops",
 ])
 
 # Expected direct directories at repository root

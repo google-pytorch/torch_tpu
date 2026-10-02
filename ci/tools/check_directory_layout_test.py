@@ -92,7 +92,7 @@ class CheckDirectoryLayoutTest(
 
   def test_missing_src_directory_fails(self):
     self._create_valid_layout()
-    (self.repo_root / "src" / "torch_tpu" / "ops").rmdir()
+    (self.repo_root / "src" / "torch_tpu" / "_internal").rmdir()
     self.assertFalse(
         check_directory_layout.validate_directory_layout(self.repo_root)
     )
