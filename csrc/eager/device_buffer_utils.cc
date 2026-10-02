@@ -188,10 +188,12 @@ MaterializationMode GetRepeatedOpsMaterializationMode() {
 }
 
 // Handles post-op creation events for the kDeferAndFuse eager mode.
-absl::Status DeferAndFuseDispatch(absl::Span<const DeviceBufferRef> results) {
+absl::Status DeferAndFuseDispatch(absl::Span<const DeviceBufferRef> results,
+                                  const OpName op_name) {
   const auto& device_buffer_list = results[0].device_buffer_list();
 
-  if (MustApplyRepeatedOpsHeuristic()) {
+  // Don't consider metadata-only ops for the repeated ops heuristic.
+  if (MustApplyRepeatedOpsHeuristic() && !IsMetadataOnly(op_name)) {
     // Record the deferred op and detect any repetitions.
     // If a repetition is detected, materialize the current stream.
     if (RecordDeferredOpAndDetectRepetition(device_buffer_list)) {
@@ -235,7 +237,7 @@ absl::StatusOr<std::vector<DeviceBufferRef>> CreateDeferredDeviceBufferList(
                                             /*block=*/true));
       break;
     case EagerMode::kDeferAndFuse:
-      TT_RETURN_IF_ERROR(DeferAndFuseDispatch(results));
+      TT_RETURN_IF_ERROR(DeferAndFuseDispatch(results, params.op_name));
       break;
     case EagerMode::kInternalDeferAll:
       // Record the deferred op, but leave it deferred.

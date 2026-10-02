@@ -68,7 +68,10 @@ namespace torch_tpu {
 
 namespace {
 
-constexpr int kMinRepeatedSubsequenceLength = 2;
+// A repeated sequence must be at least 3 ops long. Matching length-2 repeats
+// (e.g. [A, B, A, B]) splits fused eager regions far too eagerly; this restores
+// the threshold of the pre-0643005e OpWindow heuristic (size > 2).
+constexpr int kMinRepeatedSubsequenceLength = 3;
 constexpr int kMaxRepeatedSubsequenceLength = 128;
 constexpr int kMinRepetitionCount = 2;
 constexpr int kMaxTorchDevices = 8;
