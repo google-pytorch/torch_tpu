@@ -517,21 +517,30 @@ class DeprecatedFunctionsTest(seed_test_utils.RepeatableTest):
     )
 
 
-class NvidiaGpuMockTest(seed_test_utils.RepeatableTest):
+class NvidiaGpuTest(seed_test_utils.RepeatableTest):
+  """Tests has_nvidia_gpu against fake device nodes in a temp directory."""
 
-  @parameterized.parameters(
-      ("/dev/nvidia0",),
-      ("/dev/nvidiactl",),
-      ("/dev/dxg",),
-  )
-  @mock.patch.object(os.path, "exists")
-  def test_has_nvidia_gpu_true(self, path_to_exist, mock_exists):
-    mock_exists.side_effect = lambda path: path == path_to_exist
+  def setUp(self):
+    super().setUp()
+    self._dev_dir = pathlib.Path(self.create_tempdir().full_path)
+    self.enter_context(
+        mock.patch.object(
+            hardware,
+            "_NVIDIA_GPU_DEVICES",
+            frozenset(
+                str(self._dev_dir / name)
+                for name in ("nvidia0", "nvidiactl", "dxg")
+            ),
+        )
+    )
+
+  @parameterized.parameters("nvidia0", "nvidiactl", "dxg")
+  def test_has_nvidia_gpu_true(self, device_name):
+    (self._dev_dir / device_name).touch()
     self.assertTrue(hardware.has_nvidia_gpu())
 
-  @mock.patch.object(os.path, "exists")
-  def test_has_nvidia_gpu_false(self, mock_exists):
-    mock_exists.return_value = False
+  def test_has_nvidia_gpu_false(self):
+    (self._dev_dir / "unrelated_device").touch()
     self.assertFalse(hardware.has_nvidia_gpu())
 
 
