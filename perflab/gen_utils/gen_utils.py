@@ -937,9 +937,10 @@ _GEN_MODEL_CONFIGS_RAW: dict[str, dict[str, Any]] = {
     },
     "gemma_4_e4b_it_train_gen": {
         "skipped_run_modes": {
+            # TODO(b/568804716): On TPU, the backward of the image-token
+            # masked_scatter calls masked_select, whose data-dependent output
+            # shape forces a device-to-host copy during the FX trace.
             "compiled",
-            "eager_default",
-            "eager_optimized",
         },
     },
     "git_base_train_gen": {
