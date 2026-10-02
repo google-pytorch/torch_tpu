@@ -3111,6 +3111,28 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       torch.digamma(t)
 
+  def test_digamma_out_unsupported_int_dtype(self):
+    t = torch.tensor([1.5, 2.5], device=et.device(), dtype=torch.float32)
+    out = torch.zeros(2, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""digamma(): result type float32 can't be cast to the desired output type int32""",
+        gpu="""result type Float can't be cast to the desired output type Int""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.digamma(t, out=out)
+
+  def test_digamma_cpu_out_tensor(self):
+    t = torch.ones(2, device=et.device())
+    out = torch.ones(2, device="cpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""digamma(): expected the output tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.digamma(t, out=out)
+
   def test_logit_unsupported_complex(self):
     t = torch.tensor([1 + 1j], device=et.device(), dtype=torch.complex64)
     out = torch.tensor([1 + 1j], device=et.device(), dtype=torch.complex64)

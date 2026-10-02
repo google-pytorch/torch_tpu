@@ -25,10 +25,10 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
-#include "csrc/eager/op_dispatcher.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
+#include "csrc/ops/unary_aten_kernels.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/ChloBuilder.h"
@@ -59,17 +59,15 @@ at::Tensor& AtenDigammaOut(const at::Tensor& self, at::Tensor& out) {
         << "expected the input dtype not to be complex, got "
         << ToString(self.scalar_type());
 
-    TT_ASSIGN_OR_THROW(auto out_dtype,
-                       ConvertTo<mlir::ElementType>(out.scalar_type()));
+    TT_ASSIGN_OR_THROW(const auto out_dtype,
+                       ConvertTo<mlir::ElementType>(InferOutputDtype(self)));
     auto op_builder =
         [out_dtype](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
       return BuildDigammaShlo(input, out_dtype);
     };
-    TT_THROW_IF_ERROR(
-        DispatchOpOut<1>(std::move(op_builder), self, out,
-                         {.out_dtype = out_dtype,
-                          .out_dims = self.sizes(),
-                          .op_param_cache_keys = std::move(param_keys)}));
+    TT_THROW_IF_ERROR(UnaryOpOut(self, out, std::move(op_builder),
+                                 {.op_param_cache_keys = std::move(param_keys),
+                                  .out_dtype = out_dtype}));
     return out;
   });
 }
