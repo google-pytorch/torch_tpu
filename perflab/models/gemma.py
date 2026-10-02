@@ -91,7 +91,7 @@ def gemma_3_270m_training(ctx: context_lib.Context):
     seq_len = 128
     num_layers = 6
   else:
-    batch_size = 16
+    batch_size = 4
     seq_len = 2048
     num_layers = None
 
