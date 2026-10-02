@@ -29,6 +29,11 @@ from typing import Final
 
 import immutabledict
 
+# Root directories scanned for TPU devices. Patched in tests to point at a fake
+# tree.
+_PCI_DEVICES_DIR: pathlib.Path = pathlib.Path("/sys/bus/pci/devices")
+_VFIO_DIR: pathlib.Path = pathlib.Path("/dev/vfio")
+
 # Google's PCI vendor ID (found in /sys/bus/pci/devices/*/vendor)
 _GOOGLE_PCI_VENDOR_ID: Final[str] = "0x1ae0"
 
@@ -98,8 +103,8 @@ _PCI_DEVICE_ID_TO_NAME: Final[Mapping[str, str]] = immutabledict.immutabledict({
     # TPU_DEVICE_0083_PCI_DEVICE_ID_TO_NAME,
 })
 
-# GPU device names
-_NVIDIA_GPU_DEVICES: Final[Set[str]] = frozenset([
+# GPU device names. Patched in tests to point at fake device nodes.
+_NVIDIA_GPU_DEVICES: Set[str] = frozenset([
     "/dev/nvidia0",
     "/dev/nvidiactl",  # Docker/Kubernetes
     "/dev/dxg",  # WSL2
@@ -127,9 +132,8 @@ def get_tpu_device_name() -> str:
     A string containing the TPU name (e.g., "TPU v7") or "TPU" if no recognized
     device is found.
   """
-  pci_devices = pathlib.Path("/sys/bus/pci/devices")
   try:
-    for device_path in pci_devices.iterdir():
+    for device_path in _PCI_DEVICES_DIR.iterdir():
       try:
         vendor_id = (device_path / "vendor").read_text().strip()
         if vendor_id != _GOOGLE_PCI_VENDOR_ID:
@@ -288,9 +292,8 @@ def _scan_pci_tpus() -> tuple[int, Mapping[int, str] | None]:
   count = 0
   topology_map = None
 
-  pci_devices = pathlib.Path("/sys/bus/pci/devices")
   try:
-    for device_path in pci_devices.iterdir():
+    for device_path in _PCI_DEVICES_DIR.iterdir():
       try:
         vendor_id = (device_path / "vendor").read_text().strip()
         if vendor_id != _GOOGLE_PCI_VENDOR_ID:
@@ -303,7 +306,7 @@ def _scan_pci_tpus() -> tuple[int, Mapping[int, str] | None]:
           # We count only those that are exposed via VFIO.
           try:
             group_id = (device_path / "iommu_group").readlink().name
-            (pathlib.Path("/dev/vfio") / group_id).stat()
+            (_VFIO_DIR / group_id).stat()
           except (OSError, IOError):
             continue
 
