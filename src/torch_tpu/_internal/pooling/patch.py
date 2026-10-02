@@ -69,6 +69,8 @@ This module intercepts calls at the Python level
    Dynamo, AOTAutograd, and `functorch`.
 """
 
+from collections.abc import Callable
+import enum
 import functools
 from typing import Any
 import torch
@@ -85,9 +87,78 @@ _ORIG_F_MAX_POOL3D = F.max_pool3d
 _IS_PATCHED: bool = False
 
 
+class _Route(enum.Enum):
+  """Implementation that a patched `max_pool*d` call is dispatched to."""
+
+  # Original PyTorch `F.max_pool*d`.
+  FALLBACK = enum.auto()
+  # Index-free custom autograd function `_TpuMaxPool*dFunction`.
+  AUTOGRAD = enum.auto()
+  # Native `torch.ops.tpu.max_pool*d` (eval / no-grad).
+  NATIVE = enum.auto()
+
+
 def _is_tpu_tensor(tensor: Any) -> bool:
   """Returns True if the object is a Tensor on a TPU device."""
   return isinstance(tensor, torch.Tensor) and tensor.device.type == "tpu"
+
+
+def _normalize_pool_args(
+    to_tuple: Callable[[Any], tuple[Any, ...]],
+    kernel_size: Any,
+    stride: Any,
+    padding: Any,
+    dilation: Any,
+) -> tuple[list[int], list[int], list[int], list[int]]:
+  """Expands pooling arguments to per-spatial-dimension integer lists.
+
+  Args:
+    to_tuple: `_single`, `_pair` or `_triple`, matching the pooling rank.
+    kernel_size: Window size, as an int or a sequence.
+    stride: Window stride, as an int or a sequence. Defaults to `kernel_size`
+      when None.
+    padding: Implicit padding, as an int or a sequence.
+    dilation: Window dilation, as an int or a sequence.
+
+  Returns:
+    The `(kernel_size, stride, padding, dilation)` lists, in the argument
+    order expected by `torch.ops.tpu.max_pool*d`.
+  """
+  k = list(to_tuple(kernel_size))
+  s = list(to_tuple(stride)) if stride is not None else k
+  p = list(to_tuple(padding))
+  d = list(to_tuple(dilation))
+  return k, s, p, d
+
+
+def _select_route(
+    *,
+    is_tpu: bool,
+    return_indices: bool,
+    dilation: list[int],
+    needs_grad: bool,
+) -> _Route:
+  """Chooses the implementation for a `max_pool*d` call.
+
+  Args:
+    is_tpu: Whether the input is a TPU tensor.
+    return_indices: Whether the caller requested argmax indices.
+    dilation: Normalized per-dimension dilation.
+    needs_grad: Whether the input requires grad and grad mode is enabled.
+
+  Returns:
+    `FALLBACK` for non-TPU inputs, when indices are requested, or for
+    non-trivial dilation (StableHLO SelectAndScatterOp only supports
+    undilated windows). Otherwise `AUTOGRAD` when gradients are needed and
+    `NATIVE` in eval / no-grad mode.
+  """
+  if return_indices or not is_tpu:
+    return _Route.FALLBACK
+  if any(dim != 1 for dim in dilation):
+    return _Route.FALLBACK
+  if needs_grad:
+    return _Route.AUTOGRAD
+  return _Route.NATIVE
 
 
 # -----------------------------------------------------------------------------
@@ -320,28 +391,19 @@ def patched_max_pool1d(
     `_TpuMaxPool1dFunction` for index-free autograd.
   - Otherwise (eval / inference), calls `torch.ops.tpu.max_pool1d` directly.
   """
-  # Fall back to PyTorch core when caller explicitly requests indices or
-  # when operating on non-TPU devices (e.g. CPU or CUDA tensors).
-  if return_indices or not _is_tpu_tensor(input):
-    return _ORIG_F_MAX_POOL1D(
-        input,
-        kernel_size,
-        stride=stride,
-        padding=padding,
-        dilation=dilation,
-        ceil_mode=ceil_mode,
-        return_indices=return_indices,
-    )
-
+  is_tpu = _is_tpu_tensor(input)
   # Normalize parameters to lists of integers for 1D spatial dimension.
-  k = list(_single(kernel_size))
-  s = list(_single(stride)) if stride is not None else k
-  p = list(_single(padding))
-  d = list(_single(dilation))
+  k, s, p, d = _normalize_pool_args(
+      _single, kernel_size, stride, padding, dilation
+  )
+  route = _select_route(
+      is_tpu=is_tpu,
+      return_indices=return_indices,
+      dilation=d,
+      needs_grad=is_tpu and input.requires_grad and torch.is_grad_enabled(),
+  )
 
-  # StableHLO SelectAndScatterOp supports trivial dilation (all 1s). Fall back
-  # to original PyTorch lowering if non-trivial dilation is specified.
-  if any(dim != 1 for dim in d):
+  if route is _Route.FALLBACK:
     return _ORIG_F_MAX_POOL1D(
         input,
         kernel_size,
@@ -354,7 +416,7 @@ def patched_max_pool1d(
 
   # In training mode with gradients enabled, route through the custom autograd
   # function so the backward graph can use SelectAndScatter without indices.
-  if input.requires_grad and torch.is_grad_enabled():
+  if route is _Route.AUTOGRAD:
     return _TpuMaxPool1dFunction.apply(input, k, s, p, d, bool(ceil_mode))
 
   # In eval or no-grad mode, call the TPU native operator directly.
@@ -382,28 +444,19 @@ def patched_max_pool2d(
     `_TpuMaxPool2dFunction` for index-free autograd.
   - Otherwise (eval / inference), calls `torch.ops.tpu.max_pool2d` directly.
   """
-  # Fall back to PyTorch core when caller explicitly requests indices or
-  # when operating on non-TPU devices (e.g. CPU or CUDA tensors).
-  if return_indices or not _is_tpu_tensor(input):
-    return _ORIG_F_MAX_POOL2D(
-        input,
-        kernel_size,
-        stride=stride,
-        padding=padding,
-        dilation=dilation,
-        ceil_mode=ceil_mode,
-        return_indices=return_indices,
-    )
-
+  is_tpu = _is_tpu_tensor(input)
   # Normalize parameters to lists of integers for 2D spatial dimensions [H, W].
-  k = list(_pair(kernel_size))
-  s = list(_pair(stride)) if stride is not None else k
-  p = list(_pair(padding))
-  d = list(_pair(dilation))
+  k, s, p, d = _normalize_pool_args(
+      _pair, kernel_size, stride, padding, dilation
+  )
+  route = _select_route(
+      is_tpu=is_tpu,
+      return_indices=return_indices,
+      dilation=d,
+      needs_grad=is_tpu and input.requires_grad and torch.is_grad_enabled(),
+  )
 
-  # StableHLO SelectAndScatterOp supports trivial dilation (all 1s). Fall back
-  # to original PyTorch lowering if non-trivial dilation is specified.
-  if any(dim != 1 for dim in d):
+  if route is _Route.FALLBACK:
     return _ORIG_F_MAX_POOL2D(
         input,
         kernel_size,
@@ -416,7 +469,7 @@ def patched_max_pool2d(
 
   # In training mode with gradients enabled, route through the custom autograd
   # function so the backward graph can use SelectAndScatter without indices.
-  if input.requires_grad and torch.is_grad_enabled():
+  if route is _Route.AUTOGRAD:
     return _TpuMaxPool2dFunction.apply(input, k, s, p, d, bool(ceil_mode))
 
   # In eval or no-grad mode, call the TPU native operator directly.
@@ -444,28 +497,19 @@ def patched_max_pool3d(
     `_TpuMaxPool3dFunction` for index-free autograd.
   - Otherwise (eval / inference), calls `torch.ops.tpu.max_pool3d` directly.
   """
-  # Fall back to PyTorch core when caller explicitly requests indices or
-  # when operating on non-TPU devices (e.g. CPU or CUDA tensors).
-  if return_indices or not _is_tpu_tensor(input):
-    return _ORIG_F_MAX_POOL3D(
-        input,
-        kernel_size,
-        stride=stride,
-        padding=padding,
-        dilation=dilation,
-        ceil_mode=ceil_mode,
-        return_indices=return_indices,
-    )
-
+  is_tpu = _is_tpu_tensor(input)
   # Normalize parameters to lists of integers for 3D spatial dimensions [D, H, W].
-  k = list(_triple(kernel_size))
-  s = list(_triple(stride)) if stride is not None else k
-  p = list(_triple(padding))
-  d = list(_triple(dilation))
+  k, s, p, d = _normalize_pool_args(
+      _triple, kernel_size, stride, padding, dilation
+  )
+  route = _select_route(
+      is_tpu=is_tpu,
+      return_indices=return_indices,
+      dilation=d,
+      needs_grad=is_tpu and input.requires_grad and torch.is_grad_enabled(),
+  )
 
-  # StableHLO SelectAndScatterOp supports trivial dilation (all 1s). Fall back
-  # to original PyTorch lowering if non-trivial dilation is specified.
-  if any(dim != 1 for dim in d):
+  if route is _Route.FALLBACK:
     return _ORIG_F_MAX_POOL3D(
         input,
         kernel_size,
@@ -478,7 +522,7 @@ def patched_max_pool3d(
 
   # In training mode with gradients enabled, route through the custom autograd
   # function so the backward graph can use SelectAndScatter without indices.
-  if input.requires_grad and torch.is_grad_enabled():
+  if route is _Route.AUTOGRAD:
     return _TpuMaxPool3dFunction.apply(input, k, s, p, d, bool(ceil_mode))
 
   # In eval or no-grad mode, call the TPU native operator directly.
