@@ -2614,31 +2614,40 @@ def _generate_transformers_inputs(
       max_vocab = vocab_size - 1
       num_mel = _safe_int(config.get("num_mel_bins"), default=80, min_val=1)
       dec_seq_len = 8
-      input_kwargs["input_values"] = torch.randn(
-          batch_size, 16000, generator=g
-      ).to(device)
-      input_kwargs["input_ids"] = torch.randint(
-          2, max_vocab, actual_shape, generator=g, dtype=torch.long
-      ).to(device)
-      input_kwargs["attention_mask"] = torch.ones(
-          actual_shape, device=device, dtype=torch.long
-      )
-      input_kwargs["speaker_embeddings"] = torch.randn(
-          batch_size, 512, generator=g
-      ).to(device)
-      input_kwargs["decoder_input_ids"] = torch.randint(
-          2,
-          max_vocab,
-          (batch_size, dec_seq_len),
-          generator=g,
-          dtype=torch.long,
-      ).to(device)
-      input_kwargs["labels"] = torch.randn(
-          batch_size, dec_seq_len, num_mel, generator=g
-      ).to(device)
       input_kwargs["decoder_attention_mask"] = torch.ones(
           (batch_size, dec_seq_len), device=device, dtype=torch.long
       )
+      if "speechtotext" in arch_name or "speechtospeech" in arch_name:
+        audio_seq_len = 16000
+        input_kwargs["input_values"] = torch.randn(
+            batch_size, audio_seq_len, generator=g
+        ).to(device)
+        input_kwargs["attention_mask"] = torch.ones(
+            (batch_size, audio_seq_len), device=device, dtype=torch.long
+        )
+      else:
+        input_kwargs["input_ids"] = torch.randint(
+            2, max_vocab, actual_shape, generator=g, dtype=torch.long
+        ).to(device)
+        input_kwargs["attention_mask"] = torch.ones(
+            actual_shape, device=device, dtype=torch.long
+        )
+
+      if "speechtotext" in arch_name:
+        input_kwargs["decoder_input_ids"] = torch.randint(
+            2,
+            max_vocab,
+            (batch_size, dec_seq_len),
+            generator=g,
+            dtype=torch.long,
+        ).to(device)
+      else:
+        input_kwargs["decoder_input_values"] = torch.randn(
+            batch_size, dec_seq_len, num_mel, generator=g
+        ).to(device)
+        input_kwargs["speaker_embeddings"] = torch.randn(
+            batch_size, 512, generator=g
+        ).to(device)
     elif "vits" in model_type:
       safe_seq_len = min(_get_max_seq_len(config), 8)
       actual_shape = (batch_size, safe_seq_len)

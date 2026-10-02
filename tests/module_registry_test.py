@@ -1474,6 +1474,67 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertEqual(inputs_lxmert["visual_feats"].shape, (1, 36, 2048))
     self.assertEqual(inputs_lxmert["visual_pos"].shape, (1, 36, 4))
 
+    # SpeechT5 (TextToSpeech)
+    cfg_speecht5_tts = mock.MagicMock(
+        model_type="speecht5",
+        architectures=["SpeechT5ForTextToSpeech"],
+        vocab_size=81,
+        num_mel_bins=80,
+    )
+    inputs_tts = module_registry._generate_transformers_inputs(
+        cfg_speecht5_tts, module_registry.Modality.AUDIO
+    )
+    self.assertIn("input_ids", inputs_tts)
+    self.assertIn("decoder_input_values", inputs_tts)
+    self.assertIn("speaker_embeddings", inputs_tts)
+    self.assertIn("attention_mask", inputs_tts)
+    self.assertIn("decoder_attention_mask", inputs_tts)
+    self.assertNotIn("labels", inputs_tts)
+    self.assertNotIn("input_values", inputs_tts)
+    self.assertNotIn("decoder_input_ids", inputs_tts)
+    self.assertEqual(inputs_tts["attention_mask"].shape, (1, 8))
+    self.assertEqual(inputs_tts["decoder_input_values"].shape, (1, 8, 80))
+    self.assertEqual(inputs_tts["speaker_embeddings"].shape, (1, 512))
+
+    # SpeechT5 (SpeechToText)
+    cfg_speecht5_asr = mock.MagicMock(
+        model_type="speecht5",
+        architectures=["SpeechT5ForSpeechToText"],
+        vocab_size=81,
+        num_mel_bins=80,
+    )
+    inputs_asr = module_registry._generate_transformers_inputs(
+        cfg_speecht5_asr, module_registry.Modality.AUDIO
+    )
+    self.assertIn("input_values", inputs_asr)
+    self.assertIn("decoder_input_ids", inputs_asr)
+    self.assertIn("attention_mask", inputs_asr)
+    self.assertIn("decoder_attention_mask", inputs_asr)
+    self.assertNotIn("labels", inputs_asr)
+    self.assertNotIn("input_ids", inputs_asr)
+    self.assertNotIn("decoder_input_values", inputs_asr)
+    self.assertNotIn("speaker_embeddings", inputs_asr)
+    self.assertEqual(inputs_asr["attention_mask"].shape, (1, 16000))
+
+    # SpeechT5 (SpeechToSpeech)
+    cfg_speecht5_vc = mock.MagicMock(
+        model_type="speecht5",
+        architectures=["SpeechT5ForSpeechToSpeech"],
+        vocab_size=81,
+        num_mel_bins=80,
+    )
+    inputs_vc = module_registry._generate_transformers_inputs(
+        cfg_speecht5_vc, module_registry.Modality.AUDIO
+    )
+    self.assertIn("input_values", inputs_vc)
+    self.assertIn("decoder_input_values", inputs_vc)
+    self.assertIn("speaker_embeddings", inputs_vc)
+    self.assertIn("attention_mask", inputs_vc)
+    self.assertIn("decoder_attention_mask", inputs_vc)
+    self.assertNotIn("labels", inputs_vc)
+    self.assertNotIn("decoder_input_ids", inputs_vc)
+    self.assertEqual(inputs_vc["attention_mask"].shape, (1, 16000))
+
   def test_transformers_get_max_seq_len_bounds(self):
     cfg_normal = mock.MagicMock(max_position_embeddings=2048)
     self.assertEqual(module_registry._get_max_seq_len(cfg_normal), 2048)
