@@ -18,11 +18,14 @@
 
 import contextlib
 import io
+import multiprocessing
+from multiprocessing import spawn as mp_spawn
 import os
 import subprocess
 import sys
 from unittest import mock
 
+from absl import flags
 from absl.testing import absltest
 from torch.tpu import distributed  # pyrefly: ignore[missing-import]
 from torch_tpu._internal import env
@@ -68,7 +71,38 @@ def _coords_process(
   )
 
 
+def _spawn_worker(output_path: str) -> None:
+  """Worker function used to verify multiprocessing spawn works."""
+  with open(output_path, "w") as f:
+    f.write("ok")
+
+
 class EnvironmentTest(seed_test_utils.RepeatableTest):
+
+  def test_set_tpu_launch_env_initializes_multiprocessing_spawn(self):
+    # Simulate a standalone launch script (which runs without `absl.app.run` or
+    # prior `g3_multiprocessing` initialization) by resetting `absl.flags` and
+    # the multiprocessing spawn executable before calling `set_tpu_launch_env`.
+    self.addCleanup(mp_spawn.set_executable, mp_spawn.get_executable())
+    self.addCleanup(lambda: flags.FLAGS(sys.argv, known_only=True))
+    flags.FLAGS.unparse_flags()
+    mp_spawn.set_executable(sys.executable)
+
+    # `_mock_env` only isolates `os.environ` so `set_tpu_launch_env` can run on
+    # a CPU test runner without physical TPU devices; `multiprocessing.init_spawn`
+    # and child process spawning below execute without mocks.
+    with _mock_env({"TORCH_TPU_TOPOLOGY": "2x2x1"}):
+      distributed.set_tpu_launch_env(nproc_per_node=4)
+    self.assertTrue(flags.FLAGS.is_parsed())
+
+    output_path = os.path.join(self.create_tempdir().full_path, "worker.txt")
+    ctx = multiprocessing.get_context("spawn")
+    proc = ctx.Process(target=_spawn_worker, args=(output_path,))
+    proc.start()
+    proc.join(timeout=30)
+    self.assertEqual(proc.exitcode, 0)
+    with open(output_path, "r") as f:
+      self.assertEqual(f.read(), "ok")
 
   def test_singlehost_auto_detection(self):
     with _mock_env({}):
@@ -608,4 +642,12 @@ class QueryLocalDeviceCoordsTest(seed_test_utils.RepeatableTest):
 
 
 if __name__ == "__main__":
+  if "-c" in sys.argv[1:]:
+    # In Google3 hermetic Python, spawning a child process re-executes this test
+    # binary with `-c "from multiprocessing.spawn import spawn_main; ..."`.
+    # Calling `set_tpu_launch_env()` here mirrors a standalone `launch.py`
+    # script (`if __name__ == "__main__": main()`), allowing `init_spawn()` at
+    # the top of `set_tpu_launch_env()` to intercept `-c`, execute the spawned
+    # worker, and exit before `absltest.main()` runs.
+    distributed.set_tpu_launch_env()
   absltest.main()

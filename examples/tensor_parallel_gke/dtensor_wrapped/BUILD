@@ -31,8 +31,8 @@ torch_tpu_py_test(
     ],
     deps = [
         ":dtp_worker",
+        "//shims/torch:pytorch",
         "//src/torch_tpu",
-        "//tests/distributed:distributed_utils",
     ],
 )
 

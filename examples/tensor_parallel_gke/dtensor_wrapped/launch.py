@@ -14,12 +14,23 @@
 
 """A test runner for the tensor parallel wrappers example."""
 
-from examples.distributed.tensor_parallel.dtensor_wrapped import dtp_worker
-from tests.distributed import distributed_utils
+from torch.distributed import launcher
+from torch.tpu import distributed  # pyrefly: ignore[missing-import]
+from examples.tensor_parallel_gke.dtensor_wrapped import dtp_worker
 
 
 def main():
-  distributed_utils.dist_run(8, dtp_worker.worker_fn)
+  world_size = 8
+  distributed.set_tpu_launch_env(nproc_per_node=world_size)
+  config = launcher.LaunchConfig(
+      min_nodes=1,
+      max_nodes=1,
+      nproc_per_node=world_size,
+      rdzv_backend="c10d",
+      rdzv_endpoint="localhost:0",
+      max_restarts=0,
+  )
+  launcher.elastic_launch(config, dtp_worker.worker_fn)()
 
 
 if __name__ == "__main__":
