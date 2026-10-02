@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <string_view>
 #include <tuple>
 #include <utility>
 
@@ -252,7 +253,8 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLinalgLuFactorExOut(
         auto indices = at::add(at::argmax(zeros, -1), 1);
         CopyTensor(at::where(has_zeros, indices, 0).to(c10::kInt), info);
         if (check_errors) {
-          at::_linalg_check_errors(info, "lu_factor", a.dim() == 2);
+          at::_linalg_check_errors(info, "torch.linalg.lu_factor_ex",
+                                   a.dim() == 2);
         }
         return {lu, pivots, info};
       });

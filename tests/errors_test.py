@@ -6549,6 +6549,16 @@ Supported combinations for non-constant padding:
     ):
       torch.linalg.lu_factor_ex(a, out=out)
 
+  def test_linalg_lu_factor_ex_singular_check_errors(self):
+    a = torch.zeros(3, 3, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""torch.linalg.lu_factor_ex: U[1,1] is zero and using it on lu_solve would result in a division by zero. If you still want to perform the factorization, consider calling linalg.lu(A, pivot) or linalg.lu_factor_ex(A, pivot)""",
+        gpu="""torch.linalg.lu_factor_ex: U[1,1] is zero and using it on lu_solve would result in a division by zero. If you still want to perform the factorization, consider calling linalg.lu(A, pivot) or linalg.lu_factor_ex(A, pivot)""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.linalg.lu_factor_ex(a, check_errors=True)
+
   def test_lu_unpack_data_rank_too_low(self):
     data = torch.ones(4, device=et.device())
     pivots = torch.ones(4, device=et.device(), dtype=torch.int32)
