@@ -51,19 +51,9 @@ namespace {
 // Its backward pass embeds `grad_output` back into a full `input_sizes` tensor
 // filled with zeros everywhere except at `index` along `dim`.
 //
-// Architectural note on `DynamicUpdateSlice` vs `Concatenate`:
-// In unrolled step-by-step recurrence loops (such as Mamba-3 or LSTM backward
-// scans), autograd accumulates `select_backward` gradients across timesteps:
-//   `acc = acc + select_backward(du_t, dim, t)`
-// If `select_backward` emitted a 3-way `Concatenate([Zero_left, grad,
-// Zero_right])`, XLA's `AlgebraicSimplifier` cannot fold `Add(acc,
-// Concatenate(...))` into an in-place buffer update unless the FX
-// slice-addition-tree pass (`cl/980341330`) is active, causing O(L) full-tensor
-// materializations. By emitting `DynamicUpdateSlice(BroadcastInDim(0),
-// reshaped_grad, start_indices)`, XLA's `AlgebraicSimplifier` natively folds
-// `Add(acc, DUS(0, grad, idx))` into `DynamicUpdateSlice(acc,
-// Add(DynamicSlice(acc, idx), grad), idx)` for in-place execution even in
-// standalone eager/compiled graphs.
+// Emits `stablehlo.pad` with static edge padding (`low_pad = index`, `high_pad
+// = total_len - 1 - index`), avoiding full-tensor zero broadcasts and
+// `DynamicUpdateSlice` overhead on attention projection unbinds.
 absl::StatusOr<mlir::MlirOp> BuildSelectBackwardShlo(
     mlir::MlirOp grad_op, const Dimensions& input_sizes, const int64_t dim,
     const int64_t index, const mlir::ElementType element_type) {
@@ -87,20 +77,19 @@ absl::StatusOr<mlir::MlirOp> BuildSelectBackwardShlo(
   TT_ASSIGN_OR_RETURN(
       mlir::MlirOp zero_scalar,
       MakeConstant(builder, at::Scalar(0), element_type, /*shape=*/{}));
-  const auto out_type =
-      mlir::RankedTensorType::get(input_sizes, grad_type.getElementType());
-  mlir::MlirOp zero_tensor =
-      mlir::stablehlo::BroadcastInDim(out_type, zero_scalar, {});
 
-  std::vector<mlir::MlirOp> start_indices;
-  start_indices.reserve(input_sizes.size());
-  for (size_t i = 0; i < input_sizes.size(); ++i) {
-    const int64_t start_idx = (static_cast<int64_t>(i) == dim) ? index : 0;
-    start_indices.push_back(
-        MakeScalarConstant(builder, start_idx, mlir::ElementType::I64));
-  }
-  return mlir::stablehlo::DynamicUpdateSlice(zero_tensor, reshaped_grad,
-                                             start_indices);
+  // Directly pad `reshaped_grad` with zeros along `dim` using static edge
+  // padding. This avoids allocating a full-size zero broadcast tensor and
+  // emitting dynamic update slice logic, enabling XLA to fuse the padding
+  // directly into surrounding loop fusions without intermediate buffer copies.
+  const int64_t total_len = input_sizes[dim];
+  Dimensions low_pad(input_sizes.size(), 0);
+  Dimensions high_pad(input_sizes.size(), 0);
+  Dimensions interior_pad(input_sizes.size(), 0);
+  low_pad[dim] = index;
+  high_pad[dim] = total_len - 1 - index;
+  return mlir::stablehlo::Pad(reshaped_grad, zero_scalar, low_pad, high_pad,
+                              interior_pad);
 }
 
 // Helper for unit-stride (`step == 1`) `slice_backward` lowerings.

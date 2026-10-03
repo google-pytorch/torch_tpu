@@ -18894,6 +18894,57 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
 
     self.assert_close_tpu_vs_cpu(clip_grad_norm_fn, rtol=1e-5, atol=1e-5)
 
+  def test_select_backward(self):
+    for dtype in (torch.float32, torch.bfloat16):
+      test_cases = [
+          ((5,), 0, 0),
+          ((5,), 0, 2),
+          ((5,), 0, 4),
+          ((4, 6), 0, 0),
+          ((4, 6), 0, 3),
+          ((4, 6), 1, 0),
+          ((4, 6), 1, 2),
+          ((4, 6), 1, 5),
+          ((2, 3, 4), 1, 1),
+          ((3, 142, 32, 512), 0, 0),
+          ((3, 142, 32, 512), 0, 1),
+          ((3, 142, 32, 512), 0, 2),
+          ((2, 8, 16, 32), 2, 5),
+          # Size-1 along selected dimension (exercises early return branch)
+          ((1,), 0, 0),
+          ((4, 1, 6), 1, 0),
+          # Negative indexing (dim and index normalization)
+          ((5,), -1, -1),
+          ((4, 6), -2, -1),
+          ((4, 6), -1, -4),
+          ((2, 3, 4), -1, -2),
+          # Zero-element tensor
+          ((0, 5), 1, 2),
+          ((4, 0, 6), 0, 1),
+      ]
+      for input_sizes, dim, index in test_cases:
+        grad_shape = list(input_sizes)
+        del grad_shape[dim]
+        cpu_grad = torch.randn(grad_shape, dtype=dtype)
+        tpu_grad = cpu_grad.to("tpu")
+
+        cpu_out = torch.ops.aten.select_backward(
+            cpu_grad, input_sizes, dim, index
+        )
+        tpu_out = torch.ops.aten.select_backward(
+            tpu_grad, input_sizes, dim, index
+        )
+        self.assertEqual(tpu_out.shape, cpu_out.shape)
+        utils.assert_close(actual=tpu_out.cpu(), expected=cpu_out)
+
+        @torch.compile(dynamic=False)
+        def compiled_fn(g, sz=input_sizes, d=dim, idx=index):
+          return torch.ops.aten.select_backward(g, sz, d, idx)
+
+        compiled_out = compiled_fn(tpu_grad)
+        self.assertEqual(compiled_out.shape, cpu_out.shape)
+        utils.assert_close(actual=compiled_out.cpu(), expected=cpu_out)
+
 
 if __name__ == "__main__":
   absltest.main()
