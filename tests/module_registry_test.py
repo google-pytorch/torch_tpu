@@ -41,6 +41,7 @@ import torch
 from torch_tpu._internal import testing as tt_testing
 from tests import module_registry
 from tests import seed_test_utils
+from tests import transformers_inputs
 
 _GOLDFISH_IMG_PATH = (
     epath.resource_path("torch_tpu") / "tests/compile/data/goldfish.jpg"
@@ -646,7 +647,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         vocab_size=59281,
         max_position_embeddings=8192,
     )
-    kwargs = module_registry._generate_transformers_inputs(
+    kwargs = transformers_inputs.generate_transformers_inputs(
         config,
         module_registry.Modality.MULTIMODAL,
         shape=(1, 2048),
@@ -672,7 +673,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         vocab_size=64007,
         max_position_embeddings=2048,
     )
-    kwargs = module_registry._generate_transformers_inputs(
+    kwargs = transformers_inputs.generate_transformers_inputs(
         config,
         module_registry.Modality.MULTIMODAL,
         shape=(1, 2048),
@@ -692,7 +693,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         max_position_embeddings=512,
         vocab_size=30522,
     )
-    kwargs = module_registry._generate_transformers_inputs(
+    kwargs = transformers_inputs.generate_transformers_inputs(
         config, module_registry.Modality.TEXT, shape=(1, 2048), device="cpu"
     )
     self.assertEqual(kwargs["input_ids"].shape, (1, 512))
@@ -1249,7 +1250,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
       mock_cfg = mock.MagicMock()
       for k, v in cfg_dict.items():
         setattr(mock_cfg, k, v)
-      inputs = module_registry._generate_transformers_inputs(
+      inputs = transformers_inputs.generate_transformers_inputs(
           mock_cfg, module_registry.Modality.VISION
       )
       if name == "videoprism":
@@ -1289,7 +1290,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     mock_cfg.image_size = 224
     mock_cfg.patch_size = 16
     mock_cfg.tubelet_size = 2
-    inputs = module_registry._generate_transformers_inputs(
+    inputs = transformers_inputs.generate_transformers_inputs(
         mock_cfg, module_registry.Modality.VISION
     )
     self.assertIn("pixel_values", inputs)
@@ -1307,7 +1308,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
       mock_cfg = mock.MagicMock()
       mock_cfg.model_type = codec
       mock_cfg.architectures = [codec]
-      inputs = module_registry._generate_transformers_inputs(
+      inputs = transformers_inputs.generate_transformers_inputs(
           mock_cfg, module_registry.Modality.AUDIO, shape=(2, 8000)
       )
       if codec == "xcodec2":
@@ -1337,7 +1338,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
       mock_cfg.input_size = 1
       mock_cfg.num_time_features = 4
       mock_cfg.lags_sequence = [1, 2, 3]
-      inputs = module_registry._generate_transformers_inputs(
+      inputs = transformers_inputs.generate_transformers_inputs(
           mock_cfg, module_registry.Modality.CAUSAL_LM, shape=(2, 32)
       )
       self.assertNotIn("input_ids", inputs, f"Failed for {ts}")
@@ -1364,7 +1365,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         image_size=224,
         patch_size=16,
     )
-    inputs_siglip2 = module_registry._generate_transformers_inputs(
+    inputs_siglip2 = transformers_inputs.generate_transformers_inputs(
         cfg_siglip2, module_registry.Modality.VISION
     )
     self.assertIn("pixel_attention_mask", inputs_siglip2)
@@ -1377,7 +1378,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         architectures=["OneFormerModel"],
         image_size=224,
     )
-    inputs_oneformer = module_registry._generate_transformers_inputs(
+    inputs_oneformer = transformers_inputs.generate_transformers_inputs(
         cfg_oneformer, module_registry.Modality.VISION
     )
     self.assertIn("task_inputs", inputs_oneformer)
@@ -1389,7 +1390,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         image_size=224,
         num_channels=4,
     )
-    inputs_vitmatte = module_registry._generate_transformers_inputs(
+    inputs_vitmatte = transformers_inputs.generate_transformers_inputs(
         cfg_vitmatte, module_registry.Modality.VISION
     )
     self.assertEqual(inputs_vitmatte["pixel_values"].shape[1], 4)
@@ -1401,7 +1402,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         image_size=[256, 192],
         num_channels=3,
     )
-    inputs_vitpose = module_registry._generate_transformers_inputs(
+    inputs_vitpose = transformers_inputs.generate_transformers_inputs(
         cfg_vitpose, module_registry.Modality.VISION
     )
     self.assertEqual(inputs_vitpose["pixel_values"].shape, (1, 3, 256, 192))

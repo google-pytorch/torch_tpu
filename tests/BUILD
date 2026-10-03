@@ -238,7 +238,10 @@ torch_tpu_py_test(
 pytype_strict_library(
     # PY_LIBRARY_OK=Decouple from torch_tpu to avoid C++ dependency in coverage tests.
     name = "module_registry",
-    srcs = ["module_registry.py"],
+    srcs = [
+        "module_registry.py",
+        "transformers_inputs.py",
+    ],
     data = [
         "//perflab/huggingface_diffusers:model_configs_data",
         "//perflab/huggingface_transformers:model_configs_data",
