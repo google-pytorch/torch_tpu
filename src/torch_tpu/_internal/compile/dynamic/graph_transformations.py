@@ -43,7 +43,7 @@ class HandleDynamicInputTensorPass:
   """Dynamic input tensor transformation pass using pad_real_to_static.
 
   Identifies input tensors with dynamic dimensions (SymInts in shape) and
-  replaces their usages with the output of `torch.ops.tpu.pad_real_to_static`.
+  replaces their usages with the output of `torch.ops.tpu._pad_real_to_static`.
   """
 
   def __init__(
@@ -97,7 +97,7 @@ class HandleDynamicInputTensorPass:
 
     with graph_module.graph.inserting_after(node):
       pad_node = graph_module.graph.call_function(
-          torch.ops.tpu.pad_real_to_static,
+          torch.ops.tpu._pad_real_to_static,
           args=(node, shape_tensors, list(bounded_shape), is_dynamic),
       )
       pad_node.meta = node.meta.copy()
@@ -172,7 +172,7 @@ class HandleDynamicInputTensorSetDimensionSizePass:
     """Inserts a set_dimension_logical_size node after the current tensor node."""
     with graph_module.graph.inserting_after(current_tensor_node):
       set_dim_size_node = graph_module.graph.call_function(
-          torch.ops.tpu.set_dimension_logical_size,
+          torch.ops.tpu._set_dimension_logical_size,
           args=(current_tensor_node, dim, size_tensor_node),
       )
       set_dim_size_node.meta = meta.copy()

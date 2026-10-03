@@ -112,7 +112,8 @@ stable, and deprecated, the user code shouldn't need to be changed.
 *   To mark a C++ function/lambda/value bound to Python via `PYBIND11_MODULE`:
     TODO: add instructions.
 *   To mark a custom op in `torch.ops.tpu`:
-    *   **internal**: start the name with `_`.
+    *   **internal**: start the name with `_` and use the `ImplInternal`
+        function.
     *   **experimental** / **stable** / **deprecated**: use the
         `ImplExperimental`/`ImplStable`/`ImplDeprecated` functions
         ([examples](https://github.com/search?q=repo%3Agoogle-pytorch%2Ftorch_tpu+%2F%5Cb%28ImplExperimental%7CImplStable%7CImplDeprecated%29%5Cb%2F+lang%3Ac%2B%2B&type=code)).

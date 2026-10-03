@@ -407,7 +407,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_dynamic_arange_unsupported_dtype(self):
-    """Tests that torch.ops.tpu.dynamic_arange() fails with bool."""
+    """Tests that torch.ops.tpu._dynamic_arange() fails with bool."""
     device = et.device()
     start = torch.tensor(0, device=device, dtype=torch.int32)
     end = torch.tensor(5, device=device, dtype=torch.int32)
@@ -416,11 +416,11 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         RuntimeError,
         tpu="""dynamic_arange(): expected float or int dtype, got bool""",
     ):
-      torch.ops.tpu.dynamic_arange(start, end, step, 5, torch.bool)
+      torch.ops.tpu._dynamic_arange(start, end, step, 5, torch.bool)
 
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_dynamic_arange_invalid_start_dim(self):
-    """Tests that torch.ops.tpu.dynamic_arange() fails if start is 1D."""
+    """Tests that torch.ops.tpu._dynamic_arange() fails if start is 1D."""
     device = et.device()
     start = torch.tensor([0], device=device, dtype=torch.int32)
     end = torch.tensor(5, device=device, dtype=torch.int32)
@@ -429,11 +429,11 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         RuntimeError,
         tpu="""dynamic_arange(): expected a 0-dimensional tensor for start, got 1-dimensional tensor""",
     ):
-      torch.ops.tpu.dynamic_arange(start, end, step, 5, torch.int32)
+      torch.ops.tpu._dynamic_arange(start, end, step, 5, torch.int32)
 
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_dynamic_arange_invalid_end_dim(self):
-    """Tests that torch.ops.tpu.dynamic_arange() fails if end is 1D."""
+    """Tests that torch.ops.tpu._dynamic_arange() fails if end is 1D."""
     device = et.device()
     start = torch.tensor(0, device=device, dtype=torch.int32)
     end = torch.tensor([5], device=device, dtype=torch.int32)
@@ -442,11 +442,11 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         RuntimeError,
         tpu="""dynamic_arange(): expected a 0-dimensional tensor for end, got 1-dimensional tensor""",
     ):
-      torch.ops.tpu.dynamic_arange(start, end, step, 5, torch.int32)
+      torch.ops.tpu._dynamic_arange(start, end, step, 5, torch.int32)
 
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_dynamic_arange_invalid_step_dim(self):
-    """Tests that torch.ops.tpu.dynamic_arange() fails if step is 1D."""
+    """Tests that torch.ops.tpu._dynamic_arange() fails if step is 1D."""
     device = et.device()
     start = torch.tensor(0, device=device, dtype=torch.int32)
     end = torch.tensor(5, device=device, dtype=torch.int32)
@@ -455,7 +455,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         RuntimeError,
         tpu="""dynamic_arange(): expected a 0-dimensional tensor for step, got 1-dimensional tensor""",
     ):
-      torch.ops.tpu.dynamic_arange(start, end, step, 5, torch.int32)
+      torch.ops.tpu._dynamic_arange(start, end, step, 5, torch.int32)
 
   @et.why_tpu_only(
       "The op dynamic_broadcast is TPU only for internal use in"
@@ -472,7 +472,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         RuntimeError,
         tpu="""dynamic_broadcast(): expected shape list size to match static_shape size, got shape list size 1 and static_shape size 2""",
     ):
-      torch.ops.tpu.dynamic_broadcast(
+      torch.ops.tpu._dynamic_broadcast(
           x, shape, broadcast_dims, static_shape, is_dynamic
       )
 
@@ -494,7 +494,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         RuntimeError,
         tpu="""dynamic_broadcast(): expected is_dynamic size to match static_shape size, got is_dynamic size 1 and static_shape size 2""",
     ):
-      torch.ops.tpu.dynamic_broadcast(
+      torch.ops.tpu._dynamic_broadcast(
           x, shape, broadcast_dims, static_shape, is_dynamic
       )
 
@@ -516,7 +516,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         RuntimeError,
         tpu="""dynamic_broadcast(): expected shape tensor at index 0 to be a 0-D (scalar) tensor, got 1-D tensor""",
     ):
-      torch.ops.tpu.dynamic_broadcast(
+      torch.ops.tpu._dynamic_broadcast(
           x, shape, broadcast_dims, static_shape, is_dynamic
       )
 
@@ -538,7 +538,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         RuntimeError,
         tpu="""dynamic_broadcast(): expected shape to be a list of int32 tensors, got float32 tensor at index 0""",
     ):
-      torch.ops.tpu.dynamic_broadcast(
+      torch.ops.tpu._dynamic_broadcast(
           x, shape, broadcast_dims, static_shape, is_dynamic
       )
 
@@ -560,7 +560,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         RuntimeError,
         tpu="""dynamic_broadcast(): expected broadcast_dims size to match input rank, got broadcast_dims size 2 and input rank 1""",
     ):
-      torch.ops.tpu.dynamic_broadcast(
+      torch.ops.tpu._dynamic_broadcast(
           x, shape, broadcast_dims, static_shape, is_dynamic
       )
 
@@ -582,7 +582,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         RuntimeError,
         tpu="""dynamic_broadcast(): expected broadcast_dims to be in range [0, 2), got 2 for broadcast dim at index 0""",
     ):
-      torch.ops.tpu.dynamic_broadcast(
+      torch.ops.tpu._dynamic_broadcast(
           x, shape, broadcast_dims, static_shape, is_dynamic
       )
 
@@ -598,7 +598,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         RuntimeError,
         tpu="""dynamic_slice(): expected start_indices list size to match input number of dimensions, got start_indices size 1 and input number of dimensions 2""",
     ):
-      torch.ops.tpu.dynamic_slice(x, start_indices, slice_sizes)
+      torch.ops.tpu._dynamic_slice(x, start_indices, slice_sizes)
 
   @et.why_tpu_only(
       "The op dynamic_slice is TPU only for internal use in torch.compile()."
@@ -615,7 +615,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         RuntimeError,
         tpu="""dynamic_slice(): expected slice_sizes size to match input number of dimensions, got slice_sizes size 1 and input number of dimensions 2""",
     ):
-      torch.ops.tpu.dynamic_slice(x, start_indices, slice_sizes)
+      torch.ops.tpu._dynamic_slice(x, start_indices, slice_sizes)
 
   @et.why_tpu_only(
       "The op dynamic_slice is TPU only for internal use in torch.compile()."
@@ -632,7 +632,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         RuntimeError,
         tpu="""dynamic_slice(): expected start_indices tensor at index 0 to be a 0-D (scalar) tensor, got 1-D tensor""",
     ):
-      torch.ops.tpu.dynamic_slice(x, start_indices, slice_sizes)
+      torch.ops.tpu._dynamic_slice(x, start_indices, slice_sizes)
 
   @et.why_tpu_only(
       "The op dynamic_slice is TPU only for internal use in torch.compile()."
@@ -649,7 +649,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         RuntimeError,
         tpu="""dynamic_slice(): expected start_indices to be a list of int32 or int64 tensors, got float32 tensor at index 0""",
     ):
-      torch.ops.tpu.dynamic_slice(x, start_indices, slice_sizes)
+      torch.ops.tpu._dynamic_slice(x, start_indices, slice_sizes)
 
   @et.why_tpu_only(
       "The op dynamic_slice is TPU only for internal use in torch.compile()."
@@ -666,7 +666,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         RuntimeError,
         tpu="""dynamic_slice(): expected all start_indices to have the same dtype, got int32 at index 0 but int64 at index 1""",
     ):
-      torch.ops.tpu.dynamic_slice(x, start_indices, slice_sizes)
+      torch.ops.tpu._dynamic_slice(x, start_indices, slice_sizes)
 
   @et.why_tpu_only(
       "The op dynamic_slice is TPU only for internal use in torch.compile()."
@@ -683,7 +683,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         RuntimeError,
         tpu="""dynamic_slice(): expected slice_sizes at index 0 to be in range [0, 2], got -1""",
     ):
-      torch.ops.tpu.dynamic_slice(x, start_indices, slice_sizes)
+      torch.ops.tpu._dynamic_slice(x, start_indices, slice_sizes)
 
   @et.why_tpu_only(
       "The op dynamic_slice is TPU only for internal use in torch.compile()."
@@ -700,7 +700,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         RuntimeError,
         tpu="""dynamic_slice(): expected slice_sizes at index 0 to be in range [0, 2], got 5""",
     ):
-      torch.ops.tpu.dynamic_slice(x, start_indices, slice_sizes)
+      torch.ops.tpu._dynamic_slice(x, start_indices, slice_sizes)
 
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_set_invalid_metadata(self):
@@ -1365,7 +1365,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         tpu="""set_dimension_logical_size(): expected a 0-dimensional tensor for size, got 1-dimensional tensor""",
         message_reviewed_by="wan",
     ):
-      torch.ops.tpu.set_dimension_logical_size(inp, 0, size)
+      torch.ops.tpu._set_dimension_logical_size(inp, 0, size)
 
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_set_dimension_logical_size_size_not_int(self):
@@ -1376,7 +1376,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         tpu="""set_dimension_logical_size(): expected an int32 tensor for size, got float32""",
         message_reviewed_by="wan",
     ):
-      torch.ops.tpu.set_dimension_logical_size(inp, 0, size)
+      torch.ops.tpu._set_dimension_logical_size(inp, 0, size)
 
   @et.why_tpu_only(
       "The op dynamic_reshape is TPU only for internal use in torch.compile()."
@@ -1390,7 +1390,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         RuntimeError,
         tpu="""dynamic_reshape(): expected shape list size to match static_shape size, got shape list size 1 and static_shape size 2""",
     ):
-      torch.ops.tpu.dynamic_reshape(inp, shape, static_shape, is_dynamic)
+      torch.ops.tpu._dynamic_reshape(inp, shape, static_shape, is_dynamic)
 
   @et.why_tpu_only(
       "The op dynamic_reshape is TPU only for internal use in torch.compile()."
@@ -1407,7 +1407,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         RuntimeError,
         tpu="""dynamic_reshape(): expected is_dynamic size to match static_shape size, got is_dynamic size 1 and static_shape size 2""",
     ):
-      torch.ops.tpu.dynamic_reshape(inp, shape, static_shape, is_dynamic)
+      torch.ops.tpu._dynamic_reshape(inp, shape, static_shape, is_dynamic)
 
   @et.why_tpu_only(
       "The op dynamic_reshape is TPU only for internal use in torch.compile()."
@@ -1424,7 +1424,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         RuntimeError,
         tpu="""dynamic_reshape(): expected shape tensor at index 0 to be a 0-D (scalar) tensor, got 1-D tensor""",
     ):
-      torch.ops.tpu.dynamic_reshape(inp, shape, static_shape, is_dynamic)
+      torch.ops.tpu._dynamic_reshape(inp, shape, static_shape, is_dynamic)
 
   @et.why_tpu_only(
       "The op dynamic_reshape is TPU only for internal use in torch.compile()."
@@ -1441,7 +1441,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         RuntimeError,
         tpu="""dynamic_reshape(): expected shape to be a list of int32 tensors, got float32 tensor at index 0""",
     ):
-      torch.ops.tpu.dynamic_reshape(inp, shape, static_shape, is_dynamic)
+      torch.ops.tpu._dynamic_reshape(inp, shape, static_shape, is_dynamic)
 
   @et.why_tpu_only("The op pad_real_to_static is TPU only for internal use.")
   def test_pad_real_to_static_input_rank_mismatch(self):
@@ -1456,7 +1456,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         RuntimeError,
         tpu="""pad_real_to_static(): expected input rank to match static_shape size, got input rank 3 and static_shape size 2""",
     ):
-      torch.ops.tpu.pad_real_to_static(
+      torch.ops.tpu._pad_real_to_static(
           inp, runtime_shape, static_shape, is_dynamic
       )
 
@@ -1470,7 +1470,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         RuntimeError,
         tpu="""pad_real_to_static(): expected runtime_shape list size to match static_shape size, got runtime_shape list size 1 and static_shape size 2""",
     ):
-      torch.ops.tpu.pad_real_to_static(
+      torch.ops.tpu._pad_real_to_static(
           inp, runtime_shape, static_shape, is_dynamic
       )
 
@@ -1487,7 +1487,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         RuntimeError,
         tpu="""pad_real_to_static(): expected is_dynamic size to match static_shape size, got is_dynamic size 1 and static_shape size 2""",
     ):
-      torch.ops.tpu.pad_real_to_static(
+      torch.ops.tpu._pad_real_to_static(
           inp, runtime_shape, static_shape, is_dynamic
       )
 
@@ -1504,7 +1504,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         RuntimeError,
         tpu="""pad_real_to_static(): expected runtime_shape tensor at index 0 to be a 0-D (scalar) tensor, got 1-D tensor""",
     ):
-      torch.ops.tpu.pad_real_to_static(
+      torch.ops.tpu._pad_real_to_static(
           inp, runtime_shape, static_shape, is_dynamic
       )
 
@@ -1521,7 +1521,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         RuntimeError,
         tpu="""pad_real_to_static(): expected runtime_shape to be a list of int32 tensors, got float32 tensor at index 0""",
     ):
-      torch.ops.tpu.pad_real_to_static(
+      torch.ops.tpu._pad_real_to_static(
           inp, runtime_shape, static_shape, is_dynamic
       )
 

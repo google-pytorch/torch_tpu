@@ -75,7 +75,7 @@ class HandleReshapeLikeOpsPass:
 
   Detects reshape-like view operations (such as aten.view, aten.reshape,
   aten._unsafe_view) that have dynamic dimensions (SymInt or SymInt
-  expressions) as input and replaces them with torch.ops.tpu.dynamic_reshape.
+  expressions) as input and replaces them with torch.ops.tpu._dynamic_reshape.
   """
 
   def __init__(self, transform_context: GraphTransformContext):
@@ -127,7 +127,7 @@ class HandleReshapeLikeOpsPass:
 
     with graph_module.graph.inserting_after(node):
       dynamic_reshape_node = graph_module.graph.call_function(
-          torch.ops.tpu.dynamic_reshape,
+          torch.ops.tpu._dynamic_reshape,
           args=(inp, shape_tensors, static_shape, is_dynamic),
       )
       dynamic_reshape_node.meta = node.meta.copy()
@@ -141,7 +141,7 @@ class HandleBroadcastLikeOpsPass:
 
   Detects broadcast operations (such as aten.expand, aten.expand_copy) that
   have dynamic dimensions (SymInt or SymInt expressions) as input and replaces
-  them with torch.ops.tpu.dynamic_broadcast.
+  them with torch.ops.tpu._dynamic_broadcast.
   """
 
   def __init__(self, transform_context: GraphTransformContext):
@@ -201,7 +201,7 @@ class HandleBroadcastLikeOpsPass:
 
     with graph_module.graph.inserting_after(node):
       dynamic_broadcast_node = graph_module.graph.call_function(
-          torch.ops.tpu.dynamic_broadcast,
+          torch.ops.tpu._dynamic_broadcast,
           args=(inp, shape_tensors, broadcast_dims, static_shape, is_dynamic),
       )
       dynamic_broadcast_node.meta = node.meta.copy()
@@ -287,7 +287,7 @@ class HandleSliceLikeOpsPass:
       curr_node.meta = node.meta.copy()
       for dim_idx, size_tensor_node in dynamic_dim_sizes:
         curr_node = graph_module.graph.call_function(
-            torch.ops.tpu.set_dimension_logical_size,
+            torch.ops.tpu._set_dimension_logical_size,
             args=(curr_node, dim_idx, size_tensor_node),
         )
         curr_node.meta = node.meta.copy()
@@ -376,7 +376,7 @@ class HandleSliceLikeOpsPass:
 
     with graph_module.graph.inserting_before(node):
       new_slice_node = graph_module.graph.call_function(
-          torch.ops.tpu.dynamic_slice,
+          torch.ops.tpu._dynamic_slice,
           args=(inp, start_indices, slice_sizes),
       )
 
@@ -489,7 +489,7 @@ class HandleSliceLikeOpsPass:
 
     with graph_module.graph.inserting_before(node):
       new_slice_node = graph_module.graph.call_function(
-          torch.ops.tpu.dynamic_slice,
+          torch.ops.tpu._dynamic_slice,
           args=(inp, start_indices, slice_sizes),
       )
       new_select_node = graph_module.graph.call_function(

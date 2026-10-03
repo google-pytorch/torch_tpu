@@ -308,7 +308,7 @@ class HandleGenerativeOpsPass:
     # Create dynamic_arange op
     with graph_module.graph.inserting_after(node):
       dynamic_arange_node = graph_module.graph.call_function(
-          torch.ops.tpu.dynamic_arange,
+          torch.ops.tpu._dynamic_arange,
           args=(
               start_tensor,
               end_tensor,
@@ -411,7 +411,7 @@ class HandleGenerativeOpsPass:
     """Inserts a set_dimension_logical_size node after the current node."""
     with graph_module.graph.inserting_after(current_node):
       set_dim_size_node = graph_module.graph.call_function(
-          torch.ops.tpu.set_dimension_logical_size,
+          torch.ops.tpu._set_dimension_logical_size,
           args=(current_node, dim, tensor_size_node),
       )
       set_dim_size_node.meta = original_node.meta.copy()

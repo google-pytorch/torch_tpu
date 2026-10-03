@@ -247,6 +247,18 @@ void ImplStable(torch::Library& m, KernelFn kernel_fn) {
       std::string(ToString(op_name)).c_str(), std::move(kernel_fn));
 }
 
+// Registers the kernel function for the given TPU-specific internal op name in
+// the given library. Internal ops are implementation details of TorchTPU (e.g.
+// ones inserted by TorchTPU's own passes) and are not part of the public API,
+// so no stage warning is emitted. Their names must start with `_`.
+template <OpName op_name, typename KernelFn>
+void ImplInternal(torch::Library& m, KernelFn kernel_fn) {
+  static_assert(ToString(op_name).starts_with('_'),
+                "The name of an internal op must start with `_`.");
+  m.impl(  // M_IMPL_OK=implementing ImplInternal().
+      std::string(ToString(op_name)).c_str(), std::move(kernel_fn));
+}
+
 // Helper to extract the concrete signature of the kernel function.
 // This is necessary because torch::Library::impl() needs to inspect the
 // signature of the registered callable at compile-time to verify it against
@@ -1271,7 +1283,7 @@ TORCH_LIBRARY(tpu, m) {
   //   The input tensor with the first `size` elements of the specified
   //   dimension being valid and the rest being undefined.
   m.def(
-      "set_dimension_logical_size(Tensor input, int dim, Tensor size) -> "
+      "_set_dimension_logical_size(Tensor input, int dim, Tensor size) -> "
       "Tensor");
 
   // This op is a torch_tpu custom op for use in torch.compile() mode to handle
@@ -1291,7 +1303,7 @@ TORCH_LIBRARY(tpu, m) {
   //   A 1-D tensor containing the generated sequence, with a physical size of
   //   `max_length` and a logical size determined by `start`, `end`, and `step`.
   m.def(
-      "dynamic_arange(Tensor start, Tensor end, Tensor step, "
+      "_dynamic_arange(Tensor start, Tensor end, Tensor step, "
       "int max_length, ScalarType dtype) -> Tensor");
 
   // Broadcasts the input tensor to a dynamic output shape.
@@ -1315,7 +1327,7 @@ TORCH_LIBRARY(tpu, m) {
   // Returns:
   //   The broadcasted tensor, bounded to its dynamic shape.
   m.def(
-      "dynamic_broadcast(Tensor input, Tensor[] shape, int[] broadcast_dims, "
+      "_dynamic_broadcast(Tensor input, Tensor[] shape, int[] broadcast_dims, "
       "int[] static_shape, bool[] is_dynamic) -> Tensor");
 
   // This op is a torch_tpu custom op for use in torch.compile() mode to handle
@@ -1332,7 +1344,7 @@ TORCH_LIBRARY(tpu, m) {
   // Returns:
   //   The reshaped tensor, bounded to its dynamic shape.
   m.def(
-      "dynamic_reshape(Tensor input, Tensor[] shape, int[] static_shape, "
+      "_dynamic_reshape(Tensor input, Tensor[] shape, int[] static_shape, "
       "bool[] is_dynamic) -> Tensor");
 
   // This op is a torch_tpu custom op for use in torch.compile() mode to handle
@@ -1346,7 +1358,7 @@ TORCH_LIBRARY(tpu, m) {
   // Returns:
   //   The sliced tensor.
   m.def(
-      "dynamic_slice(Tensor input, Tensor[] start_indices, int[] slice_sizes) "
+      "_dynamic_slice(Tensor input, Tensor[] start_indices, int[] slice_sizes) "
       "-> Tensor");
 
   // This op is a torch_tpu custom op for use in torch.compile() mode to pad
@@ -1363,7 +1375,7 @@ TORCH_LIBRARY(tpu, m) {
   // Returns:
   //   The padded tensor, bounded to its dynamic shape.
   m.def(
-      "pad_real_to_static(Tensor input, Tensor[] runtime_shape, int[] "
+      "_pad_real_to_static(Tensor input, Tensor[] runtime_shape, int[] "
       "static_shape, bool[] is_dynamic) -> Tensor");
 
   // Experimental P2P communication ops for ProcessGroupTpu.
@@ -1656,7 +1668,7 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
         at::native::resize_output(out, output.sizes());
         return out;
       });
-  ImplExperimental<OpName::kTorchTpuOptimizationBarrier>(
+  ImplInternal<OpName::kTorchTpuOptimizationBarrier>(
       m, +[](at::TensorList self) -> std::vector<at::Tensor> {
         std::vector<at::Tensor> outs;
         outs.reserve(self.size());
@@ -1687,15 +1699,14 @@ TORCH_LIBRARY_IMPL(tpu, PrivateUse1, m) {
   ImplExperimental<OpName::kRaggedDotWeightGrad>(m, AtenRaggedDotWeightGrad);
   ImplExperimental<OpName::kRaggedAllToAll>(m, AtenRaggedAllToAll);
   ImplExperimental<OpName::kRaggedAllToAllOut>(m, AtenRaggedAllToAllOut);
-  ImplExperimental<OpName::kTorchTpuOptimizationBarrier>(
+  ImplInternal<OpName::kTorchTpuOptimizationBarrier>(
       m, TorchTpuOptimizationBarrier);
-  ImplExperimental<OpName::kSetDimensionLogicalSize>(m,
-                                                     SetDimensionLogicalSize);
-  ImplExperimental<OpName::kDynamicArange>(m, DynamicArange);
-  ImplExperimental<OpName::kDynamicBroadcast>(m, DynamicBroadcast);
-  ImplExperimental<OpName::kDynamicReshape>(m, DynamicReshape);
-  ImplExperimental<OpName::kDynamicSlice>(m, DynamicSlice);
-  ImplExperimental<OpName::kPadRealToStatic>(m, PadRealToStatic);
+  ImplInternal<OpName::kSetDimensionLogicalSize>(m, SetDimensionLogicalSize);
+  ImplInternal<OpName::kDynamicArange>(m, DynamicArange);
+  ImplInternal<OpName::kDynamicBroadcast>(m, DynamicBroadcast);
+  ImplInternal<OpName::kDynamicReshape>(m, DynamicReshape);
+  ImplInternal<OpName::kDynamicSlice>(m, DynamicSlice);
+  ImplInternal<OpName::kPadRealToStatic>(m, PadRealToStatic);
   ImplExperimental<OpName::kSparseDenseMatmul>(m, AtenSparseDenseMatmul);
   ImplExperimental<OpName::kSparseDenseMatmulGradWithSgd>(
       m, AtenSparseDenseMatmulGradWithSgd);

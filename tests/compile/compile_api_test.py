@@ -430,8 +430,8 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     y = torch.ones(ub, dtype=torch.float32, device='tpu')
 
     size = torch.tensor(dim, dtype=torch.int32, device='tpu')
-    x = torch.ops.tpu.set_dimension_logical_size(x, 0, size)
-    y = torch.ops.tpu.set_dimension_logical_size(y, 0, size)
+    x = torch.ops.tpu._set_dimension_logical_size(x, 0, size)
+    y = torch.ops.tpu._set_dimension_logical_size(y, 0, size)
 
     results = tpu_torch_compile.execute(
         executable,
@@ -1016,7 +1016,7 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     logical_size = torch.tensor(
         logical_dynamic_dim, dtype=torch.int32, device=torch.device('tpu')
     )
-    dynamic_input = torch.ops.tpu.set_dimension_logical_size(
+    dynamic_input = torch.ops.tpu._set_dimension_logical_size(
         physical_dynamic_input, 0, logical_size
     )
 
@@ -1084,7 +1084,7 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     logical_size = torch.tensor(
         logical_dynamic_dim, dtype=torch.int32, device=torch.device('tpu')
     )
-    dynamic_input = torch.ops.tpu.set_dimension_logical_size(
+    dynamic_input = torch.ops.tpu._set_dimension_logical_size(
         physical_dynamic_input, 0, logical_size
     )
 
@@ -1154,7 +1154,7 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     logical_size = torch.tensor(
         logical_dynamic_dim, dtype=torch.int32, device=torch.device('tpu')
     )
-    dynamic_input = torch.ops.tpu.set_dimension_logical_size(
+    dynamic_input = torch.ops.tpu._set_dimension_logical_size(
         physical_dynamic_input, 1, logical_size
     )
 
@@ -1211,7 +1211,7 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     logical_size = torch.tensor(
         logical_dynamic_dim, dtype=torch.int32, device=torch.device('tpu')
     )
-    dynamic_input = torch.ops.tpu.set_dimension_logical_size(
+    dynamic_input = torch.ops.tpu._set_dimension_logical_size(
         physical_dynamic_input, 1, logical_size
     )
 
