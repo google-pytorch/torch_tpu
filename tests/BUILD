@@ -2108,6 +2108,25 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "accelerator_api_test",
+    srcs = ["accelerator_api_test.py"],
+    main = "accelerator_api_test.py",
+    tags = ["requires-tpu-v5lite"],
+    deps = [
+        ":oss_utils",
+        ":seed_test_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/execution_mode",
+        "//src/torch_tpu/_internal/sync",
+        "//src/torch_tpu/_internal/utils",
+        "//src/torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "synchronize_test",
     srcs = ["synchronize_test.py"],
     main = "synchronize_test.py",
