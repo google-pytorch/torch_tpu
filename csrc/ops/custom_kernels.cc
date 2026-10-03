@@ -62,8 +62,11 @@
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/transforms/Passes.h"
 #include "xla/hlo/analysis/alias_info.h"
+#include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_instruction.h"
+#include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/hlo/ir/hlo_module.h"
+#include "xla/hlo/ir/replica_group.h"
 #include "xla/hlo/pass/hlo_pass_pipeline.h"
 #include "xla/hlo/transforms/simplifiers/flatten_call_graph.h"
 #include "xla/hlo/transforms/simplifiers/hlo_dce.h"
@@ -219,9 +222,14 @@ absl::Status SpecializeCustomMlirKernel(
 }
 
 void RemoveCopyOps(mlir::ModuleOp module) {
+  llvm::SmallVector<mlir::mhlo::CopyOp> copy_ops;
   module.walk([&](mlir::mhlo::CopyOp copy_op) {
     copy_op.replaceAllUsesWith(copy_op.getOperand());
+    copy_ops.push_back(copy_op);
   });
+  for (mlir::mhlo::CopyOp copy_op : copy_ops) {
+    copy_op.erase();
+  }
 }
 
 void RemoveSpmdParametersShardings(mlir::ModuleOp module) {
@@ -350,6 +358,22 @@ absl::Status PartitionGlobalToLocal(
       AddTpuPartitioningPasses(hlo_module.get(), &alias_info_, &pass));
 
   TT_RETURN_IF_ERROR(pass.Run(hlo_module.get()).status());
+
+  for (xla::HloComputation* computation : hlo_module->computations()) {
+    for (xla::HloInstruction* instruction : computation->instructions()) {
+      if (auto* collective =
+              xla::DynCast<xla::HloCollectiveInstruction>(instruction)) {
+        if (collective->device_list() != nullptr &&
+            collective->device_list()->version() !=
+                xla::CollectiveDeviceListVersion::kListOfLists) {
+          collective->set_device_list(
+              std::make_shared<xla::CollectiveDeviceList>(
+                  xla::ConvertToV1CollectiveDeviceList(
+                      *collective->device_list())));
+        }
+      }
+    }
+  }
 
   //////////////////////////////////////////////////////////////////////////////
   // Convert HLO back to StableHLO.

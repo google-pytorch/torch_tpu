@@ -74,7 +74,9 @@
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
+#include "mlir/Pass/PassManager.h"
 #include "mlir/Support/DebugStringHelper.h"
+#include "mlir/Transforms/Passes.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/FuncBuilder.h"
@@ -749,6 +751,16 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
     module.get()->setAttr("mhlo.frontend_attributes",
                           op_builder.getDictionaryAttr(frontend_attrs));
   }
+
+  auto func_ops = module.get().getOps<mlir::func::FuncOp>();
+  if (!func_ops.empty() && !llvm::hasSingleElement(func_ops)) {
+    mlir::PassManager pm(&mlir_context);
+    pm.addPass(mlir::createInlinerPass());
+    if (mlir::failed(pm.run(module.get()))) {
+      return absl::InternalError("failed to inline functions in MLIR module");
+    }
+  }
+
   return module;
 }
 
