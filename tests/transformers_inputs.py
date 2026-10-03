@@ -35,6 +35,7 @@ _VISION_LANGUAGE_MODEL_TYPES = (
     "align",
     "audio-flamingo",
     "audio_flamingo",
+    "audioflamingo",
     "blip",
     "blip-2",
     "blip_2",
@@ -89,6 +90,7 @@ _VISION_LANGUAGE_MODEL_TYPES = (
     "owlvit",
     "paligemma",
     "pix2struct",
+    "pp_formulanet",
     "qformer",
     "qwen2-audio",
     "qwen2_5_vl",
@@ -98,10 +100,16 @@ _VISION_LANGUAGE_MODEL_TYPES = (
     "qwen3_vl_moe",
     "sam3",
     "sam3_lite_text",
+    "shieldgemma",
+    "shieldgemma2",
     "siglip",
     "smolvlm",
+    "tvp",
     "udop",
+    "videoprism",
     "vilt",
+    "vision-text-dual-encoder",
+    "vision_text_dual_encoder",
     "xclip",
     # go/keep-sorted end
 )
@@ -137,6 +145,8 @@ _DUAL_ENCODER_MODEL_TYPES: frozenset[str] = frozenset({
     "flava",
     "groupvit",
     "siglip",
+    "vision-text-dual-encoder",
+    "vision_text_dual_encoder",
     # go/keep-sorted end
 })
 
@@ -149,6 +159,7 @@ _PATCHIFIED_VLM_MODEL_TYPES: frozenset[str] = frozenset({
     "holo",
     "qwen2_5_vl",
     "qwen2_vl",
+    "qwen3_5",
     "qwen3_vl",
     "qwen_vl",
     "qwenvl",
@@ -162,6 +173,9 @@ _LEGACY_NO_INJECT_VLM_MODEL_TYPES: frozenset[str] = frozenset({
     "glm4v",
     "glm_ocr",
     "qwen2_5_vl",
+    "qwen2_vl",
+    "qwen3_vl",
+    "qwen3_vl_moe",
     "qwen_vl",
     "qwenvl",
     # go/keep-sorted end
@@ -355,10 +369,12 @@ def _get_max_seq_len(config: Any, default: int = 512) -> int:
   """
   cfg = _wrap_config(config)
   configs_to_check = [cfg]
-  text_cfg = cfg.get("text_config")
-  if text_cfg is not None:
-    configs_to_check.append(text_cfg)
+  for sub in ("text_config", "encoder", "decoder"):
+    sub_cfg = cfg.get(sub)
+    if sub_cfg is not None:
+      configs_to_check.append(_wrap_config(sub_cfg))
 
+  found_vals = []
   for c in configs_to_check:
     for attr in (
         "max_text_len",
@@ -372,20 +388,6 @@ def _get_max_seq_len(config: Any, default: int = 512) -> int:
       raw_val = c.get(attr)
       val = _safe_int(raw_val, default=0, min_val=1)
       if 0 < val < _MAX_SEQ_LEN_HEURISTIC_CAP:
-        # Several HuggingFace encoder and seq2seq models offset their learned
-        # positional embedding indices by `pad_token_id + 1` (computing
-        # `position_ids = pad_token_id + 1 + arange(seq_len)` so indices
-        # `0..pad_token_id` remain reserved for padding). This includes RoBERTa
-        # (`FacebookAI/roberta-base`, `roberta-large`), XLM-RoBERTa
-        # (`FacebookAI/xlm-roberta-base`, `xlm-roberta-large`), CamemBERT
-        # (`almanach/camembert-base`), MPNet (`microsoft/mpnet-base`),
-        # Longformer (`allenai/longformer-base-4096`), Data2VecText
-        # (`facebook/data2vec-text-base`), and FSMT (`facebook/wmt19-ru-en`,
-        # which uses `max_target_positions`). When `pad_token_id > 0` (typically
-        # `1`), a sequence of length `val` produces a maximum position ID of
-        # `val + pad_token_id`, which exceeds `nn.Embedding(val, hidden_size)`
-        # and triggers a CUDA device-side out-of-bounds assertion. Subtracting
-        # `pad_token_id + 1` keeps all generated position IDs within `[0, val)`.
         if attr in ("max_position_embeddings", "max_target_positions"):
           pad_id = _safe_int(
               c.get("pad_token_id") or cfg.get("pad_token_id"),
@@ -394,7 +396,11 @@ def _get_max_seq_len(config: Any, default: int = 512) -> int:
           )
           if pad_id > 0 and val > pad_id + 1:
             val -= pad_id + 1
-        return val
+        found_vals.append(val)
+        break
+
+  if found_vals:
+    return min(found_vals)
 
   # Fallback for relative position models (T5, etc.) or missing data.
   return default
@@ -403,6 +409,18 @@ def _get_max_seq_len(config: Any, default: int = 512) -> int:
 def _parse_image_size(config: Any, default_size: int = 224) -> int:
   """Extracts image_size as an integer from config or vision_config or encoder."""
   cfg = _wrap_config(config)
+  if "depth_pro" in str(cfg.get("model_type", "")):
+    patch_size = _safe_int(cfg.get("patch_size"), default=384, min_val=1)
+    ratios = cfg.get("scaled_images_ratios")
+    min_ratio = (
+        min(ratios) if isinstance(ratios, (list, tuple)) and ratios else 0.25
+    )
+    return max(int(patch_size / min_ratio), 1536)
+  if any(
+      k in str(cfg.get("model_type", "")).lower() for k in ["d_fine", "dfine"]
+  ):
+    return 640
+
   vision_config = (
       cfg.get("vision_config")
       or cfg.get("encoder")
@@ -416,7 +434,18 @@ def _parse_image_size(config: Any, default_size: int = 224) -> int:
     raw_val = cfg.get("image_size")
     if isinstance(raw_val, (list, tuple)) and raw_val:
       raw_val = raw_val[0]
-    val = _safe_int(raw_val, default=default_size, min_val=1)
+    val = _safe_int(raw_val, default=None, min_val=1)
+  if val is None:
+    pretrained_cfg = cfg.get("pretrained_cfg")
+    raw_val = cfg.get("input_size") or (
+        pretrained_cfg.get("input_size") if pretrained_cfg else None
+    )
+    if isinstance(raw_val, (list, tuple)) and raw_val:
+      val = _safe_int(raw_val[-1], default=None, min_val=1)
+    else:
+      val = _safe_int(raw_val, default=None, min_val=1)
+  if val is None:
+    val = default_size
 
   return val
 
@@ -484,71 +513,76 @@ def _generate_gemma4_inputs(
       vision_config.get("pooling_kernel_size", 3) if vision_config else 3
   )
 
-  # Default max_soft_tokens from Gemma4ImageProcessor.
+  model_type = cfg.get("model_type", "").lower()
+  is_unified = "unified" in model_type
+
+  # Default max_soft_tokens from Gemma4ImageProcessor / Gemma4UnifiedImageProcessor.
   # This is the budget of soft tokens for the model.
   max_soft_tokens = 280
-  max_patches = max_soft_tokens * pooling_kernel_size**2
 
-  # Determine real patches based on image_size.
-  grid_size = image_size // patch_size
-  num_real_patches = grid_size * grid_size
-
-  # If the dummy image size results in more patches than the budget,
-  # we cap it to the budget to simulate the image processor behavior.
-  if num_real_patches > max_patches:
-    num_real_patches = max_patches
-    grid_size = int(num_real_patches**0.5)
-    num_real_patches = grid_size * grid_size
-
-  # Generate pixel_values: (batch_size, max_patches, patch_pixels).
-  # Unlike standard ViT models that take raw images and do patchification
-  # in the model (e.g. via Conv2d), Gemma 4 expects patchified inputs.
   num_channels = (
       cfg.get("num_channels")
       or (vision_config.get("num_channels") if vision_config else None)
       or 3
   )
-  patch_pixels = num_channels * patch_size * patch_size
+
+  if is_unified:
+    # Gemma 4 Unified models have no vision encoder; patches are pre-merged into
+    # model patches of size (patch_size * pooling_kernel_size) with 6912 channels.
+    model_patch_size = patch_size * pooling_kernel_size
+    patch_pixels = num_channels * model_patch_size * model_patch_size
+    max_patches = max_soft_tokens
+    grid_size = image_size // model_patch_size
+    num_real_patches = grid_size * grid_size
+    if num_real_patches > max_patches:
+      num_real_patches = max_patches
+      grid_size = int(num_real_patches**0.5)
+      num_real_patches = grid_size * grid_size
+    num_features = num_real_patches
+  else:
+    max_patches = max_soft_tokens * pooling_kernel_size**2
+    grid_size = image_size // patch_size
+    num_real_patches = grid_size * grid_size
+    if num_real_patches > max_patches:
+      num_real_patches = max_patches
+      grid_size = int(num_real_patches**0.5)
+      num_real_patches = grid_size * grid_size
+    patch_pixels = num_channels * patch_size * patch_size
+    pooled_dim = grid_size // pooling_kernel_size
+    num_features = pooled_dim * pooled_dim
 
   input_kwargs["pixel_values"] = torch.randn(
       batch_size, max_patches, patch_pixels, generator=generator
   ).to(device)
 
-  # Generate image_position_ids: (batch_size, max_patches, 2).
-  # We initialize with -1 (padding).
-  image_position_ids = torch.full(
-      (batch_size, max_patches, 2), -1, device=device, dtype=torch.long
-  )
-
-  # Fill in real positions (grid coordinates).
   grid_x, grid_y = torch.meshgrid(
-      torch.arange(grid_size, device=device),
-      torch.arange(grid_size, device=device),
-      indexing="ij",
+      torch.arange(grid_size),
+      torch.arange(grid_size),
+      indexing="xy" if is_unified else "ij",
   )
-  coords = torch.stack([grid_x, grid_y], dim=-1)  # (grid_size, grid_size, 2)
-  coords = coords.view(-1, 2)  # (grid_size^2, 2)
+  coords = torch.stack([grid_x, grid_y], dim=-1).view(-1, 2)
+  coords_batch = coords.unsqueeze(0).expand(batch_size, -1, -1).to(device)
+  pad_count = max_patches - num_real_patches
+  if pad_count > 0:
+    pad_tensor = torch.full(
+        (batch_size, pad_count, 2), -1, device=device, dtype=torch.long
+    )
+    image_position_ids = torch.cat([coords_batch, pad_tensor], dim=1)
+  else:
+    image_position_ids = coords_batch
 
-  # Copy coordinates to the valid part of image_position_ids.
-  image_position_ids[:, :num_real_patches, :] = coords.unsqueeze(0).expand(
-      batch_size, -1, -1
-  )
-
-  input_kwargs["image_position_ids"] = image_position_ids
-
-  # Calculate number of pooled features mathematically.
-  # The model pools patches using avg pooling with kernel size
-  # pooling_kernel_size.
-  # We need to know how many valid features will remain after pooling to
-  # insert the correct number of placeholders in input_ids.
-  pooled_dim = grid_size // pooling_kernel_size
-  num_features = pooled_dim * pooled_dim
-
-  # Overwrite input_ids to have num_features copies of image_token_id.
-  # The model expects to find these placeholders to merge text and image
-  # features.
   image_token_id = cfg.get("image_token_id", 258880)
-  input_kwargs["input_ids"][:, :num_features] = image_token_id
+  image_tokens = torch.full(
+      (batch_size, num_features),
+      image_token_id,
+      device=device,
+      dtype=torch.long,
+  )
+  orig_ids = input_kwargs["input_ids"]
+  input_kwargs["input_ids"] = torch.cat(
+      [image_tokens, orig_ids[:, num_features:]], dim=-1
+  )
+  input_kwargs["image_position_ids"] = image_position_ids
 
 
 def _extract_target_dtype(config: Any) -> torch.dtype:
@@ -759,6 +793,10 @@ def _resolve_seq_len(
 ) -> int:
   """min(shape[1], max_pos) when a shape is given, else min(max_pos, cap)."""
   max_pos = _get_max_seq_len(ctx.config)
+  if "videoprism" in ctx.type_str:
+    cap = min(cap, 8)
+  if "encoder-decoder" in ctx.type_str or "gpt2-bert" in ctx.type_str:
+    cap = min(cap, 32)
   if use_shape and ctx.shape is not None and len(ctx.shape) > 1:
     return min(ctx.shape[1], max_pos)
   return min(max_pos, cap)
@@ -773,11 +811,14 @@ def _build_text_tokens(
     eos_token_id: int | None = None,
 ) -> dict[str, torch.Tensor]:
   """Returns {"input_ids", "attention_mask"} — the one place token sampling happens."""
-  actual_shape = (ctx.batch_size, seq_len)
+  if "multiplechoice" in ctx.type_str:
+    actual_shape = (ctx.batch_size, 2, seq_len)
+  else:
+    actual_shape = (ctx.batch_size, seq_len)
   input_ids = ctx.randint(min_token_id, vocab_size, actual_shape)
   attention_mask = ctx.ones(actual_shape)
   if eos_token_id is not None and 0 <= eos_token_id < vocab_size:
-    input_ids[:, -1] = eos_token_id
+    input_ids[..., -1] = eos_token_id
   return {"input_ids": input_ids, "attention_mask": attention_mask}
 
 
@@ -860,15 +901,23 @@ def _build_siglip2_inputs(
   img_size = (
       image_size if image_size is not None else _parse_image_size(ctx.config)
   )
-  input_kwargs["pixel_attention_mask"] = torch.ones(
-      (ctx.batch_size, img_size, img_size), device=ctx.device, dtype=torch.bool
-  )
   patch_size = _cfg_int(
       ctx.config, "vision_config.patch_size", "patch_size", default=16
   )
-  num_patches = img_size // patch_size
+  num_channels = _get_num_channels(ctx.config)
+  grid_size = img_size // patch_size
+  num_patches = grid_size * grid_size
+  patch_dim = num_channels * patch_size * patch_size
+  input_kwargs["pixel_values"] = ctx.randn(
+      ctx.batch_size, num_patches, patch_dim
+  )
+  input_kwargs["pixel_attention_mask"] = ctx.ones(
+      (ctx.batch_size, num_patches), dtype=torch.bool
+  )
   input_kwargs["spatial_shapes"] = torch.tensor(
-      [[num_patches, num_patches]], device=ctx.device, dtype=torch.long
+      [[grid_size, grid_size]] * ctx.batch_size,
+      device=ctx.device,
+      dtype=torch.long,
   )
 
 
@@ -876,8 +925,9 @@ def _build_oneformer_inputs(
     ctx: InputContext,
     input_kwargs: dict[str, Any],
 ) -> None:
-  input_kwargs["task_inputs"] = torch.tensor(
-      [[0]], device=ctx.device, dtype=torch.long
+  task_len = _safe_int(ctx.config.get("task_seq_len"), default=77, min_val=1)
+  input_kwargs["task_inputs"] = torch.zeros(
+      (ctx.batch_size, task_len), device=ctx.device, dtype=torch.long
   )
 
 
@@ -921,16 +971,23 @@ def _add_encoder_decoder_inputs(
   )
   if "." in mod_key:
     mod_key = mod_key.split(".")[-1]
-  if ctx.config.get("is_encoder_decoder", False) is True and (
-      mod_key != "vision" and ctx.model_type not in ("speecht5", "vits")
+  if (
+      ctx.config.get("is_encoder_decoder", False) is True
+      and "decoder_input_ids" not in input_kwargs
+      and mod_key != "vision"
+      and ctx.model_type not in ("speecht5", "vits", "musicgen")
+      and "musicgen" not in ctx.type_str
   ):
     text_cfg = ctx.config.get("text_config")
     gen_cfg = ctx.config.get("generator") or ctx.config.get("generator_config")
+    decoder_cfg = ctx.config.get("decoder") or ctx.config.get("decoder_config")
     vocab_size = _safe_int(
         gen_cfg.get("vocab_size")
         if "rag" in ctx.type_str and gen_cfg
         else (
-            ctx.config.get("vocab_size")
+            ctx.config.get("tgt_vocab_size")
+            or (decoder_cfg.get("vocab_size") if decoder_cfg else None)
+            or ctx.config.get("vocab_size")
             or (text_cfg.get("vocab_size") if text_cfg else None)
         ),
         default=32000,
@@ -949,6 +1006,8 @@ def _add_encoder_decoder_inputs(
       max_len = min(max_len, max_target_pos)
     seq_limit = ctx.shape[1] if ctx.shape and len(ctx.shape) > 1 else 512
     safe_seq_len = min(max_len, seq_limit)
+    if "encoder-decoder" in ctx.type_str or "gpt2-bert" in ctx.type_str:
+      safe_seq_len = min(safe_seq_len, 32)
     # Use first dimension of shape or 1 for batch size
     batch_size = ctx.batch_size
     decoder_shape = (batch_size, safe_seq_len)
@@ -1280,6 +1339,8 @@ def _build_text_inputs(ctx: InputContext) -> dict[str, Any]:
   vocab_size = _cfg_int(
       ctx.config,
       "src_vocab_size",
+      "encoder.vocab_size",
+      "encoder_config.vocab_size",
       "vocab_size",
       "text_config.vocab_size",
       default=32000,
@@ -1298,6 +1359,15 @@ def _build_text_inputs(ctx: InputContext) -> dict[str, Any]:
   _apply_builders(
       ctx, input_kwargs, _TEXT_EXTRA_BUILDERS, first_match_only=True
   )
+  if "flaubert" in ctx.type_str:
+    input_kwargs["use_cache"] = False
+  if "ibert" in ctx.type_str and "input_ids" in input_kwargs:
+    seq_len = input_kwargs["input_ids"].shape[1]
+    input_kwargs["position_ids"] = (
+        torch.arange(seq_len, device=ctx.device, dtype=torch.long)
+        .unsqueeze(0)
+        .repeat(input_kwargs["input_ids"].shape[0], 1)
+    )
   return input_kwargs
 
 
@@ -1484,6 +1554,35 @@ def _build_vision_inputs(
         else (256, 192)
     )
     input_kwargs["pixel_values"] = ctx.randn(ctx.batch_size, num_channels, h, w)
+  elif any(k in ctx.type_str for k in ["mgp_str", "mgp-str", "mgpstr"]):
+    input_kwargs["pixel_values"] = ctx.randn(
+        ctx.batch_size, num_channels, 32, 128
+    )
+  elif "hear" in ctx.type_str:
+    input_kwargs["pixel_values"] = ctx.randn(
+        ctx.batch_size, num_channels, 192, 128
+    )
+  elif "seggpt" in ctx.type_str:
+    input_kwargs["pixel_values"] = ctx.randn(
+        ctx.batch_size, num_channels, 448, 448
+    )
+    input_kwargs["prompt_pixel_values"] = ctx.randn(
+        ctx.batch_size, num_channels, 448, 448
+    )
+    input_kwargs["prompt_masks"] = ctx.zeros(
+        (ctx.batch_size, num_channels, 448, 448)
+    )
+  elif "pix2struct" in ctx.type_str:
+    seq_len = 32
+    patch_embed_hidden_size = _cfg_int(
+        ctx.config, "patch_embed_hidden_size", default=768
+    )
+    input_kwargs["flattened_patches"] = ctx.randn(
+        ctx.batch_size, seq_len, patch_embed_hidden_size + 2
+    )
+    input_kwargs["attention_mask"] = ctx.ones(
+        (ctx.batch_size, seq_len), dtype=torch.long
+    )
   else:
     input_kwargs["pixel_values"] = ctx.randn(
         ctx.batch_size, num_channels, image_size, image_size
@@ -1510,15 +1609,40 @@ def _build_whisper_audio_inputs(
 def _build_clap_audio_inputs(
     ctx: InputContext, input_kwargs: dict[str, Any]
 ) -> None:
-  num_mel = _cfg_int(ctx.config, "num_mel_bins", default=64)
-  input_kwargs["input_features"] = ctx.randn(ctx.batch_size, 1, 1001, num_mel)
+  audio_cfg = ctx.config.get("audio_config") or ctx.config
+  num_mel = _safe_int(
+      audio_cfg.get("num_mel_bins") or ctx.config.get("num_mel_bins"),
+      default=64,
+      min_val=1,
+  )
+  spec_size = _safe_int(
+      audio_cfg.get("spec_size") or ctx.config.get("spec_size"),
+      default=256,
+      min_val=1,
+  )
+  freq_ratio = max(1, spec_size // num_mel)
+  max_time = int(spec_size * freq_ratio)
+  time_length = min(1001, max_time)
+  input_kwargs["input_features"] = ctx.randn(
+      ctx.batch_size, 1, time_length, num_mel
+  )
   input_kwargs["is_longer"] = ctx.zeros((ctx.batch_size, 1), dtype=torch.bool)
   safe_seq_len = min(_get_max_seq_len(ctx.config), 512)
   vocab_size = _cfg_int(ctx.config, "vocab_size", default=32000)
   input_kwargs.update(
       _build_text_tokens(ctx, seq_len=safe_seq_len, vocab_size=vocab_size)
   )
-  if "audio_encoder" in ctx.type_str or "audioencoder" in ctx.type_str:
+  if any(
+      k in ctx.arch_name
+      for k in [
+          "audio_encoder",
+          "audioencoder",
+          "audiomodel",
+          "audio_model",
+          "clapaudio",
+          "clap_audio",
+      ]
+  ):
     input_kwargs.pop("input_ids", None)
     input_kwargs.pop("attention_mask", None)
 
@@ -1534,6 +1658,37 @@ def _build_ast_audio_inputs(
 def _build_w2v_bert_audio_inputs(
     ctx: InputContext, input_kwargs: dict[str, Any]
 ) -> None:
+  if any(
+      k in ctx.type_str
+      for k in [
+          "qwen2_audio_encoder",
+          "qwen2_audio",
+          "qwen2-audio",
+          "qwen2audio",
+          "qwen2a",
+      ]
+  ):
+    enc_cfg = (
+        ctx.config.get("encoder_config")
+        if isinstance(ctx.config.get("encoder_config"), dict)
+        else None
+    )
+    num_mel = _safe_int(
+        ctx.config.get("num_mel_bins")
+        or (enc_cfg.get("num_mel_bins") if enc_cfg else None),
+        default=128,
+        min_val=1,
+    )
+    max_positions = _safe_int(
+        ctx.config.get("max_source_positions"),
+        default=1500,
+        min_val=1,
+    )
+    input_kwargs["input_features"] = ctx.randn(
+        ctx.batch_size, num_mel, max_positions * 2
+    )
+    return
+
   enc_cfg = (
       ctx.config.get("encoder_config")
       or ctx.config.get("encoder")
@@ -1548,10 +1703,37 @@ def _build_w2v_bert_audio_inputs(
       min_val=1,
   )
   input_kwargs["input_features"] = ctx.randn(ctx.batch_size, 128, num_mel)
+  if any(k in ctx.type_str for k in ("parakeet", "nemotron")):
+    input_kwargs["decoder_input_ids"] = ctx.zeros(
+        (ctx.batch_size, 1), dtype=torch.long
+    )
   if "nemotron" in ctx.type_str:
+    input_kwargs["attention_mask"] = ctx.ones(
+        (ctx.batch_size, 128), dtype=torch.long
+    )
     input_kwargs["input_lengths"] = torch.tensor(
         [128] * ctx.batch_size, device=ctx.device, dtype=torch.long
     )
+
+
+def _build_cohere_asr_audio_inputs(
+    ctx: InputContext, input_kwargs: dict[str, Any]
+) -> None:
+  enc_cfg = (
+      ctx.config.get("encoder_config")
+      or ctx.config.get("encoder")
+      or ctx.config
+  )
+  num_mel = _safe_int(
+      (enc_cfg.get("num_mel_bins") if enc_cfg else None)
+      or ctx.config.get("num_mel_bins"),
+      default=128,
+      min_val=1,
+  )
+  input_kwargs["input_features"] = ctx.randn(ctx.batch_size, 128, num_mel)
+  input_kwargs["decoder_input_ids"] = ctx.full(
+      (ctx.batch_size, 8), 1, dtype=torch.long
+  )
 
 
 def _build_gemma3n_audio_inputs(
@@ -1569,13 +1751,81 @@ def _build_omnitoken2wav_audio_inputs(
   input_kwargs["mel_spectrogram"] = ctx.randn(ctx.batch_size, 80, 128)
 
 
+def _build_kyutai_stt_inputs(
+    ctx: InputContext, input_kwargs: dict[str, Any]
+) -> None:
+  num_codebooks = _safe_int(
+      ctx.config.get("num_codebooks"), default=32, min_val=1
+  )
+  seq_len = 16
+  input_kwargs["input_ids"] = ctx.randint(
+      0, 100, (ctx.batch_size, seq_len, num_codebooks + 1), dtype=torch.long
+  )
+  input_kwargs["attention_mask"] = ctx.ones(
+      (ctx.batch_size, seq_len), dtype=torch.long
+  )
+
+
+def _build_moshi_audio_inputs(
+    ctx: InputContext, input_kwargs: dict[str, Any]
+) -> None:
+  num_codebooks = _safe_int(
+      ctx.config.get("num_codebooks"), default=8, min_val=1
+  )
+  vocab_size = _safe_int(ctx.config.get("vocab_size"), default=32000, min_val=1)
+  audio_vocab_size = _safe_int(
+      ctx.config.get("audio_vocab_size"), default=2048, min_val=1
+  )
+  seq_len = 1
+  input_kwargs["input_ids"] = ctx.randint(
+      0, vocab_size, (ctx.batch_size, seq_len), dtype=torch.long
+  )
+  input_kwargs["user_audio_codes"] = ctx.randint(
+      0,
+      audio_vocab_size,
+      (ctx.batch_size, num_codebooks, seq_len),
+      dtype=torch.long,
+  )
+  input_kwargs["moshi_audio_codes"] = ctx.randint(
+      0,
+      audio_vocab_size,
+      (ctx.batch_size, num_codebooks, seq_len),
+      dtype=torch.long,
+  )
+  input_kwargs["attention_mask"] = ctx.ones(
+      (ctx.batch_size, seq_len), dtype=torch.long
+  )
+
+
+def _build_glmasr_audio_inputs(
+    ctx: InputContext, input_kwargs: dict[str, Any]
+) -> None:
+  text_cfg = ctx.config.get("text_config") or ctx.config
+  vocab_size = _safe_int(
+      text_cfg.get("vocab_size") if text_cfg else None,
+      default=151552,
+      min_val=1,
+  )
+  input_kwargs["input_ids"] = ctx.randint(
+      0, vocab_size, (ctx.batch_size, 8), dtype=torch.long
+  )
+  input_kwargs["attention_mask"] = ctx.ones(
+      (ctx.batch_size, 8), dtype=torch.long
+  )
+
+
 def _build_s2t_audio_inputs(
     ctx: InputContext, input_kwargs: dict[str, Any]
 ) -> None:
-  num_mel = _cfg_int(ctx.config, "num_mel_bins", default=80)
+  num_mel = _safe_int(
+      ctx.config.get("feature_projection_input_dim")
+      or ctx.config.get("num_mel_bins"),
+      default=80,
+      min_val=1,
+  )
   input_kwargs["input_features"] = ctx.randn(ctx.batch_size, 100, num_mel)
-  input_kwargs["decoder_input_ids"] = torch.tensor(
-      [[1]], device=ctx.device, dtype=torch.long
+  input_kwargs["decoder_input_ids"] = ctx.full(
+      (ctx.batch_size, 8), 1, dtype=torch.long
   )
 
 
@@ -1589,8 +1839,40 @@ def _build_univnet_audio_inputs(
 def _build_xcodec2_audio_inputs(
     ctx: InputContext, input_kwargs: dict[str, Any]
 ) -> None:
-  seq_len = ctx.shape[1] if ctx.shape and len(ctx.shape) > 1 else 16000
-  input_kwargs["input_features"] = ctx.randn(ctx.batch_size, 1, seq_len)
+  if ctx.shape and len(ctx.shape) > 1:
+    seq_len = ctx.shape[1]
+    input_kwargs["input_features"] = ctx.randn(ctx.batch_size, 1, seq_len)
+    return
+
+  channels = _cfg_int(ctx.config, "audio_channels", default=1)
+  downsampling_ratios = ctx.config.get("downsampling_ratios") or [
+      2,
+      2,
+      4,
+      4,
+      5,
+  ]
+  hop_length = 1
+  for r in downsampling_ratios:
+    hop_length *= _safe_int(r, default=2, min_val=1)
+  num_frames = 10
+  num_samples = hop_length * num_frames
+  sem_cfg = ctx.config.get("semantic_model_config")
+  feat_dim = None
+  if hasattr(sem_cfg, "feature_projection_input_dim"):
+    feat_dim = getattr(sem_cfg, "feature_projection_input_dim", None)
+  elif isinstance(sem_cfg, dict) and "feature_projection_input_dim" in sem_cfg:
+    feat_dim = sem_cfg["feature_projection_input_dim"]
+  if feat_dim is None:
+    num_mel_bins = _cfg_int(ctx.config, "num_mel_bins", default=80)
+    stride = _cfg_int(ctx.config, "stride", default=2)
+    feat_dim = num_mel_bins * stride
+  input_kwargs["input_values"] = ctx.randn(
+      ctx.batch_size, channels, num_samples
+  )
+  input_kwargs["input_features"] = ctx.randn(
+      ctx.batch_size, num_frames, feat_dim
+  )
 
 
 def _build_codec_audio_inputs(
@@ -1613,7 +1895,7 @@ def _build_musicgen_audio_inputs(
   num_codebooks = _cfg_int(dec_cfg, "num_codebooks", default=4)
   audio_vocab_size = _cfg_int(dec_cfg, "vocab_size", default=2048)
   input_kwargs["decoder_input_ids"] = ctx.randint(
-      0, audio_vocab_size, (ctx.batch_size, num_codebooks, 1)
+      0, audio_vocab_size, (ctx.batch_size * num_codebooks, 1)
   )
 
 
@@ -1626,9 +1908,52 @@ def _build_bark_audio_inputs(
       or ctx.config.get("text_config")
       or ctx.config
   )
-  vocab_size = _cfg_int(sem_cfg, "vocab_size", default=10048)
+  vocab_size = _cfg_int(
+      sem_cfg, "vocab_size", "input_vocab_size", default=10048
+  )
   input_kwargs.update(
       _build_text_tokens(ctx, seq_len=safe_seq_len, vocab_size=vocab_size)
+  )
+
+
+def _build_voxtral_realtime_audio_inputs(
+    ctx: InputContext, input_kwargs: dict[str, Any]
+) -> None:
+  safe_seq_len = min(
+      ctx.shape[1]
+      if ctx.shape and len(ctx.shape) > 1
+      else _get_max_seq_len(ctx.config),
+      32,
+  )
+  text_cfg = ctx.config.get("text_config") or ctx.config
+  audio_cfg = ctx.config.get("audio_config") or ctx.config
+  vocab_size = _safe_int(
+      text_cfg.get("vocab_size") or ctx.config.get("vocab_size"),
+      default=131072,
+      min_val=1,
+  )
+  input_kwargs["input_ids"] = ctx.randint(
+      0, vocab_size, (ctx.batch_size, safe_seq_len), dtype=torch.long
+  )
+  input_kwargs["attention_mask"] = ctx.ones(
+      (ctx.batch_size, safe_seq_len), dtype=torch.long
+  )
+  num_mel = _safe_int(
+      audio_cfg.get("num_mel_bins") or ctx.config.get("num_mel_bins"),
+      default=128,
+      min_val=1,
+  )
+  downsample_factor = _safe_int(
+      ctx.config.get("downsample_factor"), default=4, min_val=1
+  )
+  audio_length_per_tok = _safe_int(
+      ctx.config.get("audio_length_per_tok"),
+      default=2 * downsample_factor,
+      min_val=1,
+  )
+  feat_seq_len = safe_seq_len * audio_length_per_tok
+  input_kwargs["input_features"] = ctx.randn(
+      ctx.batch_size, num_mel, feat_seq_len
   )
 
 
@@ -1639,6 +1964,62 @@ def _build_csm_audio_inputs(
   vocab_size = _cfg_int(ctx.config, "vocab_size", default=32000)
   input_kwargs.update(
       _build_text_tokens(ctx, seq_len=safe_seq_len, vocab_size=vocab_size)
+  )
+
+
+def _build_cohere_asr_audio_inputs(
+    ctx: InputContext, input_kwargs: dict[str, Any]
+) -> None:
+  enc_cfg = (
+      ctx.config.get("encoder_config")
+      or ctx.config.get("encoder")
+      or ctx.config
+  )
+  num_mel = _safe_int(
+      (enc_cfg.get("num_mel_bins") if enc_cfg else None)
+      or ctx.config.get("num_mel_bins"),
+      default=128,
+      min_val=1,
+  )
+  input_kwargs["input_features"] = ctx.randn(ctx.batch_size, 128, num_mel)
+  input_kwargs["decoder_input_ids"] = ctx.full(
+      (ctx.batch_size, 8), 1, dtype=torch.long
+  )
+
+
+def _build_dia_audio_inputs(
+    ctx: InputContext, input_kwargs: dict[str, Any]
+) -> None:
+  enc_cfg = ctx.config.get("encoder_config") or ctx.config
+  dec_cfg = ctx.config.get("decoder_config") or ctx.config
+  enc_vocab = _safe_int(
+      enc_cfg.get("vocab_size")
+      if hasattr(enc_cfg, "get")
+      else getattr(enc_cfg, "vocab_size", None),
+      default=256,
+      min_val=1,
+  )
+  dec_vocab = _safe_int(
+      dec_cfg.get("vocab_size")
+      if hasattr(dec_cfg, "get")
+      else getattr(dec_cfg, "vocab_size", None),
+      default=1028,
+      min_val=1,
+  )
+  num_channels = _safe_int(
+      dec_cfg.get("num_channels")
+      if hasattr(dec_cfg, "get")
+      else getattr(dec_cfg, "num_channels", None),
+      default=9,
+      min_val=1,
+  )
+  seq_len = 8
+  input_kwargs["input_ids"] = ctx.randint(
+      1, min(enc_vocab, 256), (ctx.batch_size, seq_len)
+  )
+  input_kwargs["attention_mask"] = ctx.ones((ctx.batch_size, seq_len))
+  input_kwargs["decoder_input_ids"] = ctx.randint(
+      1, dec_vocab, (ctx.batch_size, seq_len, num_channels)
   )
 
 
@@ -1653,7 +2034,11 @@ def _build_speecht5_audio_inputs(
   input_kwargs["decoder_attention_mask"] = ctx.ones(
       (ctx.batch_size, dec_seq_len)
   )
-  if "speechtotext" in ctx.arch_name or "speechtospeech" in ctx.arch_name:
+  if (
+      "speechtotext" in ctx.arch_name
+      or "speechtospeech" in ctx.arch_name
+      or "asr" in ctx.type_str
+  ):
     audio_seq_len = 16000
     input_kwargs["input_values"] = ctx.randn(ctx.batch_size, audio_seq_len)
     input_kwargs["attention_mask"] = ctx.ones((ctx.batch_size, audio_seq_len))
@@ -1672,7 +2057,8 @@ def _build_speecht5_audio_inputs(
     input_kwargs["decoder_input_values"] = ctx.randn(
         ctx.batch_size, dec_seq_len, num_mel
     )
-    input_kwargs["speaker_embeddings"] = ctx.randn(ctx.batch_size, 512)
+    speaker_dim = _cfg_int(ctx.config, "speaker_embedding_dim", default=512)
+    input_kwargs["speaker_embeddings"] = ctx.randn(ctx.batch_size, speaker_dim)
 
 
 def _build_vits_audio_inputs(
@@ -1693,7 +2079,11 @@ def _build_vits_audio_inputs(
 def _build_granite_audio_inputs(
     ctx: InputContext, input_kwargs: dict[str, Any]
 ) -> None:
-  encoder_cfg = ctx.config.get("encoder") or ctx.config.get("speech_config")
+  encoder_cfg = (
+      ctx.config.get("encoder_config")
+      or ctx.config.get("encoder")
+      or ctx.config.get("speech_config")
+  )
   num_mel = _safe_int(
       (encoder_cfg.get("input_dim") or encoder_cfg.get("num_mel_bins"))
       if encoder_cfg
@@ -1783,8 +2173,43 @@ _AUDIO_EXTRA_BUILDERS: tuple[tuple[_Matcher, _Builder], ...] = (
         _type_contains("omnitoken2wav", "scail"),
         _build_omnitoken2wav_audio_inputs,
     ),
+    (_model_type_contains("speecht5"), _build_speecht5_audio_inputs),
     (
-        _type_contains("s2t", "speech2text", "speech_to_text"),
+        _type_contains("kyutai_speech_to_text", "kyutai_stt"),
+        _build_kyutai_stt_inputs,
+    ),
+    (_type_contains("moshi"), _build_moshi_audio_inputs),
+    (
+        _type_contains(
+            "glmasr",
+            "glm_asr",
+            "glm-asr",
+            "qwen3_asr",
+            "qwen3-asr",
+            "qwen3asr",
+        ),
+        _build_glmasr_audio_inputs,
+    ),
+    (
+        _type_contains("cohere_asr", "cohere-asr"),
+        _build_cohere_asr_audio_inputs,
+    ),
+    (
+        lambda ctx: (
+            "dia" in ctx.model_type
+            or "/dia" in ctx.type_str
+            or "dia-" in ctx.type_str
+        ),
+        _build_dia_audio_inputs,
+    ),
+    (
+        _type_contains(
+            "s2t",
+            "speech2text",
+            "speech_to_text",
+            "seamless",
+            "speechtotext",
+        ),
         _build_s2t_audio_inputs,
     ),
     (_type_contains("univnet"), _build_univnet_audio_inputs),
@@ -1793,18 +2218,23 @@ _AUDIO_EXTRA_BUILDERS: tuple[tuple[_Matcher, _Builder], ...] = (
         _type_contains(
             "dac",
             "encodec",
+            "higgs",
             "mimi",
             "vibevoice_acoustic_tokenizer",
+            "xcodec",
         ),
         _build_codec_audio_inputs,
     ),
     (_type_contains("musicgen"), _build_musicgen_audio_inputs),
     (_type_contains("bark"), _build_bark_audio_inputs),
     (
+        _type_contains("voxtral_realtime", "voxtralrealtime"),
+        _build_voxtral_realtime_audio_inputs,
+    ),
+    (
         _type_contains("csm", "voxtral", "dia", "audio2hero", "higgs"),
         _build_csm_audio_inputs,
     ),
-    (_model_type_contains("speecht5"), _build_speecht5_audio_inputs),
     (_model_type_contains("vits"), _build_vits_audio_inputs),
     (_model_type_contains("granite"), _build_granite_audio_inputs),
     (
@@ -1840,7 +2270,11 @@ def _build_idefics_multimodal_inputs(
 ) -> None:
   image_size = _parse_image_size(ctx.config)
   num_channels = _get_num_channels(ctx.config)
-  num_images = 1
+  is_video = (
+      "video" in str(getattr(ctx.config, "name_or_path", "")).lower()
+      or "video" in ctx.type_str
+  )
+  num_images = 16 if is_video else 1
   input_kwargs["pixel_values"] = ctx.randn(
       ctx.batch_size, num_images, num_channels, image_size, image_size
   )
@@ -1931,8 +2365,15 @@ def _build_pix2struct_multimodal_inputs(
       _cfg_int(ctx.config, "max_patches", default=2048),
       32,
   )
+  vision_cfg = ctx.config.get("vision_config") or ctx.config
   text_cfg = ctx.config.get("text_config") or ctx.config
-  patch_hidden_size = _cfg_int(text_cfg, "hidden_size", default=768)
+  patch_hidden_size = _safe_int(
+      vision_cfg.get("patch_embed_hidden_size")
+      or ctx.config.get("patch_embed_hidden_size")
+      or text_cfg.get("hidden_size"),
+      default=768,
+      min_val=1,
+  )
   input_kwargs.pop("pixel_values", None)
   input_kwargs["flattened_patches"] = ctx.randn(
       ctx.batch_size, max_patches, patch_hidden_size + 2
@@ -2078,6 +2519,19 @@ def _build_beingvl_multimodal_inputs(
   input_kwargs.pop("attention_mask", None)
 
 
+def _build_clvp_multimodal_inputs(
+    ctx: InputContext, input_kwargs: dict[str, Any]
+) -> None:
+  input_kwargs.pop("pixel_values", None)
+  dec_cfg = ctx.config.get("decoder_config") or ctx.config
+  feature_size = _safe_int(
+      dec_cfg.get("feature_size") if dec_cfg else None,
+      default=80,
+      min_val=1,
+  )
+  input_kwargs["input_features"] = ctx.randn(ctx.batch_size, feature_size, 100)
+
+
 _MULTIMODAL_EXTRA_BUILDERS: tuple[tuple[_Matcher, _Builder], ...] = (
     (
         _model_type_contains("idefics", "smolvlm"),
@@ -2117,6 +2571,11 @@ _MULTIMODAL_EXTRA_BUILDERS: tuple[tuple[_Matcher, _Builder], ...] = (
     (_model_type_contains("kosmos"), _build_kosmos_multimodal_inputs),
     (_model_type_contains("xclip"), _build_xclip_multimodal_inputs),
     (_model_type_contains("beingvl", "vq"), _build_beingvl_multimodal_inputs),
+    (_type_contains("clvp"), _build_clvp_multimodal_inputs),
+    (
+        _type_contains("siglip2"),
+        lambda ctx, kw: _build_siglip2_inputs(ctx, kw),
+    ),
 )
 
 
@@ -2139,13 +2598,21 @@ def _build_multimodal_inputs(ctx: InputContext) -> dict[str, Any]:
   # (31232). Sampling `input_ids` up to `vocab_size` would otherwise produce
   # out-of-bounds token IDs in `[31232, 31640)` for the encoder on CUDA.
   text_cfg = ctx.config.get("text_config")
-  vocab_size = _safe_int(
-      ctx.config.get("src_vocab_size")
-      or ctx.config.get("vocab_size")
-      or (text_cfg.get("vocab_size") if text_cfg else None),
-      default=32000,
-      min_val=1,
-  )
+  semantic_cfg = ctx.config.get("semantic_config")
+  qformer_cfg = ctx.config.get("qformer_config")
+  if ("retrieval" in ctx.arch_name or "itm" in ctx.type_str) and qformer_cfg:
+    vocab_size = _safe_int(
+        qformer_cfg.get("vocab_size"), default=30522, min_val=1
+    )
+  else:
+    vocab_size = _safe_int(
+        ctx.config.get("src_vocab_size")
+        or ctx.config.get("vocab_size")
+        or (text_cfg.get("vocab_size") if text_cfg else None)
+        or (semantic_cfg.get("input_vocab_size") if semantic_cfg else None),
+        default=32000,
+        min_val=1,
+    )
 
   input_kwargs = {
       "input_ids": ctx.randint(0, vocab_size, actual_shape),
@@ -2164,6 +2631,8 @@ def _build_multimodal_inputs(ctx: InputContext) -> dict[str, Any]:
     )
   elif any(k in ctx.model_type for k in _VISION_LANGUAGE_MODEL_TYPES):
     image_size = _parse_image_size(ctx.config)
+    if any(k in ctx.type_str for k in ["smolvlm", "idefics3"]):
+      image_size = 512
     num_channels = _get_num_channels(ctx.config)
     batch_size = ctx.batch_size
     vision_config = ctx.config.get("vision_config")
@@ -2185,13 +2654,30 @@ def _build_multimodal_inputs(ctx: InputContext) -> dict[str, Any]:
           (batch_size, num_images, num_tiles)
       )
     else:
-      dummy_img = ctx.randn(
-          batch_size,
-          num_channels,
-          image_size,
-          image_size,
-      )
-      input_kwargs["pixel_values"] = dummy_img
+      if "llava_onevision" in ctx.model_type:
+        input_kwargs["pixel_values"] = ctx.randn(
+            batch_size, 2, num_channels, image_size, image_size
+        )
+      elif "tvp" in ctx.type_str:
+        input_kwargs["pixel_values"] = ctx.randn(
+            batch_size, 1, num_channels, 448, 448
+        )
+      else:
+        dummy_img = ctx.randn(
+            batch_size,
+            num_channels,
+            image_size,
+            image_size,
+        )
+        input_kwargs["pixel_values"] = dummy_img
+
+      if any(k in ctx.type_str for k in ["videoprism", "videomt"]):
+        num_frames = 32
+        img_s = 288
+        input_kwargs["pixel_values_videos"] = ctx.randn(
+            batch_size, num_frames, num_channels, img_s, img_s
+        )
+        input_kwargs.pop("pixel_values", None)
 
       is_dual_encoder = any(
           k in ctx.model_type for k in _DUAL_ENCODER_MODEL_TYPES
@@ -2208,9 +2694,38 @@ def _build_multimodal_inputs(ctx: InputContext) -> dict[str, Any]:
         num_image_tokens = _cfg_int(
             ctx.config, "image_seq_length", default=None
         )
-        if num_image_tokens is None:
+        if "ovis" in ctx.model_type:
+          num_image_tokens = 256
+        elif "llava_onevision" in ctx.model_type:
           patch_size = _cfg_int(vision_config, "patch_size", default=14)
-          num_image_tokens = (image_size // patch_size) ** 2
+          h = image_size // patch_size
+          num_image_tokens = 2 * (h * h) + h
+        elif any(k in ctx.type_str for k in ["smolvlm", "idefics3"]):
+          patch_size = _cfg_int(vision_config, "patch_size", default=16)
+          scale_factor = _cfg_int(ctx.config, "scale_factor", default=4)
+          is_video = (
+              "video" in str(getattr(ctx.config, "name_or_path", "")).lower()
+              or "video" in ctx.type_str
+          )
+          num_frames = 16 if is_video else 1
+          num_image_tokens = num_frames * (
+              ((image_size // patch_size) // scale_factor) ** 2
+          )
+        elif "got_ocr2" in ctx.model_type:
+          patch_size = _safe_int(
+              vision_config.get("patch_size") if vision_config else None,
+              default=16,
+              min_val=1,
+          )
+          num_image_tokens = ((image_size // patch_size) // 4) ** 2
+        elif num_image_tokens is None:
+          if "florence2" in ctx.model_type:
+            downsample = 32
+            spatial_patches = (image_size // downsample) ** 2
+            num_image_tokens = spatial_patches + 1
+          else:
+            patch_size = _cfg_int(vision_config, "patch_size", default=14)
+            num_image_tokens = (image_size // patch_size) ** 2
 
         image_token_id = ctx.config.get("image_token_id") or ctx.config.get(
             "image_token_index"

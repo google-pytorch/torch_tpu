@@ -1300,8 +1300,10 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     codecs = [
         "dac",
         "encodec",
+        "higgs",
         "mimi",
         "vibevoice_acoustic_tokenizer",
+        "xcodec",
         "xcodec2",
     ]
     for codec in codecs:
@@ -1321,6 +1323,93 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         self.assertEqual(
             inputs["input_values"].shape, (2, 1, 8000), f"Failed for {codec}"
         )
+
+  def test_transformers_audio_kyutai_stt_tensor_generation(self):
+    mock_cfg = mock.MagicMock()
+    mock_cfg.model_type = "kyutai_speech_to_text"
+    mock_cfg.architectures = ["KyutaiSpeechToTextForConditionalGeneration"]
+    mock_cfg.num_codebooks = 32
+    inputs = transformers_inputs.generate_transformers_inputs(
+        mock_cfg, module_registry.Modality.AUDIO, shape=(2, 16)
+    )
+    self.assertIn("input_ids", inputs)
+    self.assertEqual(inputs["input_ids"].shape, (2, 16, 33))
+    self.assertIn("attention_mask", inputs)
+
+  def test_transformers_audio_moshi_tensor_generation(self):
+    mock_cfg = mock.MagicMock()
+    mock_cfg.model_type = "moshi"
+    mock_cfg.architectures = ["MoshiForConditionalGeneration"]
+    mock_cfg.num_codebooks = 8
+    mock_cfg.vocab_size = 32000
+    mock_cfg.audio_vocab_size = 2048
+    inputs = transformers_inputs.generate_transformers_inputs(
+        mock_cfg, module_registry.Modality.AUDIO, shape=(2, 1)
+    )
+    self.assertIn("input_ids", inputs)
+    self.assertIn("user_audio_codes", inputs)
+    self.assertIn("moshi_audio_codes", inputs)
+    self.assertEqual(inputs["user_audio_codes"].shape, (2, 8, 1))
+    self.assertEqual(inputs["moshi_audio_codes"].shape, (2, 8, 1))
+
+  def test_transformers_audio_glmasr_tensor_generation(self):
+    mock_cfg = mock.MagicMock()
+    mock_cfg.model_type = "glmasr"
+    mock_cfg.architectures = ["GlmAsrForConditionalGeneration"]
+    inputs = transformers_inputs.generate_transformers_inputs(
+        mock_cfg, module_registry.Modality.AUDIO, shape=(2, 8)
+    )
+    self.assertIn("input_ids", inputs)
+    self.assertEqual(inputs["input_ids"].shape, (2, 8))
+    self.assertIn("attention_mask", inputs)
+
+  def test_transformers_audio_voxtral_realtime_tensor_generation(self):
+    mock_cfg = mock.MagicMock()
+    mock_cfg.model_type = "voxtral_realtime"
+    mock_cfg.architectures = ["VoxtralRealtimeForConditionalGeneration"]
+    mock_cfg.downsample_factor = 4
+    mock_cfg.audio_length_per_tok = 8
+    inputs = transformers_inputs.generate_transformers_inputs(
+        mock_cfg, module_registry.Modality.AUDIO, shape=(2, 16)
+    )
+    self.assertIn("input_ids", inputs)
+    self.assertEqual(inputs["input_ids"].shape, (2, 16))
+    self.assertIn("input_features", inputs)
+    self.assertEqual(inputs["input_features"].shape, (2, 128, 128))
+
+  def test_transformers_multimodal_clvp_tensor_generation(self):
+    mock_cfg = mock.MagicMock()
+    mock_cfg.model_type = "clvp"
+    mock_cfg.architectures = ["ClvpForConditionalGeneration"]
+    mock_cfg.decoder_config = {"feature_size": 80}
+    inputs = transformers_inputs.generate_transformers_inputs(
+        mock_cfg, module_registry.Modality.MULTIMODAL, shape=(2, 16)
+    )
+    self.assertIn("input_features", inputs)
+    self.assertEqual(inputs["input_features"].shape, (2, 80, 100))
+    self.assertNotIn("pixel_values", inputs)
+
+  def test_transformers_audio_parakeet_tensor_generation(self):
+    mock_cfg = mock.MagicMock()
+    mock_cfg.model_type = "parakeet_tdt"
+    mock_cfg.architectures = ["ParakeetTdtForCTC"]
+    inputs = transformers_inputs.generate_transformers_inputs(
+        mock_cfg, module_registry.Modality.AUDIO, shape=(2, 128)
+    )
+    self.assertIn("input_features", inputs)
+    self.assertIn("decoder_input_ids", inputs)
+    self.assertEqual(inputs["decoder_input_ids"].shape, (2, 1))
+
+  def test_transformers_audio_clap_dynamic_spec_size(self):
+    mock_cfg = mock.MagicMock()
+    mock_cfg.model_type = "clap"
+    mock_cfg.architectures = ["ClapModel"]
+    mock_cfg.audio_config = {"num_mel_bins": 64, "spec_size": 512}
+    inputs = transformers_inputs.generate_transformers_inputs(
+        mock_cfg, module_registry.Modality.AUDIO, shape=(2, 128)
+    )
+    self.assertIn("input_features", inputs)
+    self.assertEqual(inputs["input_features"].shape, (2, 1, 1001, 64))
 
   def test_transformers_timeseries_tensor_generation(self):
     ts_models = [
@@ -1414,7 +1503,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         architectures=["BrosModel"],
         vocab_size=30522,
     )
-    inputs_bros = module_registry._generate_transformers_inputs(
+    inputs_bros = transformers_inputs.generate_transformers_inputs(
         cfg_bros, module_registry.Modality.CAUSAL_LM, shape=(1, 32)
     )
     self.assertIn("bbox", inputs_bros)
@@ -1427,7 +1516,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         max_patches=16,
         text_config=mock.MagicMock(hidden_size=768),
     )
-    inputs_p2s = module_registry._generate_transformers_inputs(
+    inputs_p2s = transformers_inputs.generate_transformers_inputs(
         cfg_p2s, module_registry.Modality.MULTIMODAL, shape=(1, 32)
     )
     self.assertNotIn("pixel_values", inputs_p2s)
@@ -1441,7 +1530,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         architectures=["Qwen2_5_VLForConditionalGeneration"],
         image_size=224,
     )
-    inputs_qwenvl = module_registry._generate_transformers_inputs(
+    inputs_qwenvl = transformers_inputs.generate_transformers_inputs(
         cfg_qwenvl, module_registry.Modality.MULTIMODAL
     )
     self.assertIn("image_grid_thw", inputs_qwenvl)
@@ -1453,7 +1542,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         architectures=["InstructBlipForConditionalGeneration"],
         image_size=224,
     )
-    inputs_iblip = module_registry._generate_transformers_inputs(
+    inputs_iblip = transformers_inputs.generate_transformers_inputs(
         cfg_iblip, module_registry.Modality.MULTIMODAL
     )
     self.assertIn("qformer_input_ids", inputs_iblip)
@@ -1467,7 +1556,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         vocab_size=30522,
         visual_feat_dim=2048,
     )
-    inputs_lxmert = module_registry._generate_transformers_inputs(
+    inputs_lxmert = transformers_inputs.generate_transformers_inputs(
         cfg_lxmert, module_registry.Modality.CAUSAL_LM, shape=(1, 32)
     )
     self.assertIn("visual_feats", inputs_lxmert)
@@ -1482,7 +1571,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         vocab_size=81,
         num_mel_bins=80,
     )
-    inputs_tts = module_registry._generate_transformers_inputs(
+    inputs_tts = transformers_inputs.generate_transformers_inputs(
         cfg_speecht5_tts, module_registry.Modality.AUDIO
     )
     self.assertIn("input_ids", inputs_tts)
@@ -1504,7 +1593,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         vocab_size=81,
         num_mel_bins=80,
     )
-    inputs_asr = module_registry._generate_transformers_inputs(
+    inputs_asr = transformers_inputs.generate_transformers_inputs(
         cfg_speecht5_asr, module_registry.Modality.AUDIO
     )
     self.assertIn("input_values", inputs_asr)
@@ -1524,7 +1613,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         vocab_size=81,
         num_mel_bins=80,
     )
-    inputs_vc = module_registry._generate_transformers_inputs(
+    inputs_vc = transformers_inputs.generate_transformers_inputs(
         cfg_speecht5_vc, module_registry.Modality.AUDIO
     )
     self.assertIn("input_values", inputs_vc)
