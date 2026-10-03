@@ -174,13 +174,13 @@ enum class OpName {
   kDistributedAllToAllSingle,
   kDistributedBarrier,
   kDistributedBroadcast,
-  kDistributedExperimentalRecv,
-  kDistributedExperimentalSend,
   kDistributedGather,
+  kDistributedRecv,
   kDistributedReduceScatter,
   kDistributedReduceScatterTensor,
   kDistributedReduceScatterTensorCoalesced,
   kDistributedScatter,
+  kDistributedSend,
   kDiv,
   kDivOut,
   kDivOutMode,
@@ -1160,12 +1160,10 @@ ToString(  // NOLINT(google-readability-function-size)
       return "distributed.barrier";
     case OpName::kDistributedBroadcast:
       return "distributed.broadcast";
-    case OpName::kDistributedExperimentalRecv:
-      return "_experimental_recv";
-    case OpName::kDistributedExperimentalSend:
-      return "_experimental_send";
     case OpName::kDistributedGather:
       return "distributed.gather";
+    case OpName::kDistributedRecv:
+      return "_recv";
     case OpName::kDistributedReduceScatter:
       return "distributed.reduce_scatter";
     case OpName::kDistributedReduceScatterTensor:
@@ -1174,6 +1172,8 @@ ToString(  // NOLINT(google-readability-function-size)
       return "distributed.reduce_scatter_tensor_coalesced";
     case OpName::kDistributedScatter:
       return "distributed.scatter";
+    case OpName::kDistributedSend:
+      return "_send";
     case OpName::kDiv:
       return "div";
     case OpName::kDivOut:
@@ -2559,8 +2559,8 @@ inline std::ostream& operator<<(std::ostream& os, const OpName op_name) {
     case OpName::kDistributedAllToAllSingle:
     case OpName::kDistributedBarrier:
     case OpName::kDistributedBroadcast:
-    case OpName::kDistributedExperimentalRecv:
-    case OpName::kDistributedExperimentalSend:
+    case OpName::kDistributedRecv:
+    case OpName::kDistributedSend:
     case OpName::kDistributedGather:
     case OpName::kDistributedReduceScatter:
     case OpName::kDistributedReduceScatterTensor:

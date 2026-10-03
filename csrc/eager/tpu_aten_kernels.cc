@@ -1384,8 +1384,8 @@ TORCH_LIBRARY(tpu, m) {
   // Experimental P2P communication ops for ProcessGroupTpu.
   // Isolated from the public torch.distributed API to safely prototype new
   // behaviors.
-  m.def("_experimental_send(Tensor[] tensors, int dst, int tag) -> Any");
-  m.def("_experimental_recv(Tensor[] tensors, int src, int tag) -> Any");
+  m.def("_send(Tensor[] tensors, int dst, int tag) -> Any");
+  m.def("_recv(Tensor[] tensors, int src, int tag) -> Any");
   m.def(
       "_sparse_dense_matmul(Tensor row_pointers, Tensor embedding_ids, Tensor "
       "sample_ids, Tensor gains, Tensor embedding_table, int "
@@ -1688,10 +1688,8 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
 TORCH_LIBRARY_IMPL(tpu, PrivateUse1, m) {
   // All entries here should be registered via ImplStable, ImplExperimental, or
   // ImplDeprecated to mark their API stages.
-  ImplInternal<OpName::kDistributedExperimentalSend>(m,
-                                                     TorchTpuExperimentalSend);
-  ImplInternal<OpName::kDistributedExperimentalRecv>(m,
-                                                     TorchTpuExperimentalRecv);
+  ImplInternal<OpName::kDistributedSend>(m, TorchTpuSend);
+  ImplInternal<OpName::kDistributedRecv>(m, TorchTpuRecv);
   ImplInternal<OpName::kMaxPool1d>(m, TpuMaxPool1d);
   ImplInternal<OpName::kMaxPool1dBackward>(m, TpuMaxPool1dBackward);
   ImplInternal<OpName::kMaxPool2d>(m, TpuMaxPool2d);

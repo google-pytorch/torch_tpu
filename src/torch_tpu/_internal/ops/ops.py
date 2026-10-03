@@ -379,44 +379,40 @@ def ragged_all_to_all(
 
 
 @annotations.experimental(
-    "torch.tpu.ops.experimental_send is experimental and subject to change."
+    "torch.tpu.ops.send is experimental and subject to change."
 )
-def experimental_send(
-    tensors: Sequence[torch.Tensor], dst: int, tag: int
-) -> Any:
+def send(tensors: Sequence[torch.Tensor], dst: int, tag: int) -> Any:
   """Sends tensors to another rank of the default TPU process group.
 
   Args:
     tensors: The tensors to send.
     dst: The destination rank.
-    tag: The tag to match this send with a `experimental_recv` on `dst`.
+    tag: The tag to match this send with a `recv` on `dst`.
 
   Returns:
     A `torch.distributed.Work` object. Call its `wait()` method to wait for
     the send to complete.
   """
-  return torch.ops.tpu._experimental_send(tensors, dst, tag)  # pylint: disable=protected-access
+  return torch.ops.tpu._send(tensors, dst, tag)  # pylint: disable=protected-access
 
 
 @annotations.experimental(
-    "torch.tpu.ops.experimental_recv is experimental and subject to change."
+    "torch.tpu.ops.recv is experimental and subject to change."
 )
-def experimental_recv(
-    tensors: Sequence[torch.Tensor], src: int, tag: int
-) -> Any:
+def recv(tensors: Sequence[torch.Tensor], src: int, tag: int) -> Any:
   """Receives tensors from another rank of the default TPU process group.
 
   Args:
     tensors: The tensors to receive into. They must match the shapes and dtypes
       of the tensors sent by `src`.
     src: The source rank.
-    tag: The tag to match this receive with a `experimental_send` on `src`.
+    tag: The tag to match this receive with a `send` on `src`.
 
   Returns:
     A `torch.distributed.Work` object. Call its `wait()` method to wait for
     the receive to complete before using `tensors`.
   """
-  return torch.ops.tpu._experimental_recv(tensors, src, tag)  # pylint: disable=protected-access
+  return torch.ops.tpu._recv(tensors, src, tag)  # pylint: disable=protected-access
 
 
 @annotations.experimental(
@@ -819,8 +815,6 @@ def sparse_map_row(
 # PEP 8 requires this to be a list of strings, not a tuple or a list of objects.
 __all__ = [
     # go/keep-sorted start
-    "experimental_recv",
-    "experimental_send",
     "max_pool1d",
     "max_pool1d_backward",
     "max_pool2d",
@@ -831,6 +825,8 @@ __all__ = [
     "ragged_all_to_all",
     "ragged_dot",
     "ragged_dot_weight_grad",
+    "recv",
+    "send",
     "sparse_dense_matmul",
     "sparse_dense_matmul_activation_unstack",
     "sparse_dense_matmul_grad_with_adagrad",
