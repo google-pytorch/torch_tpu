@@ -26,6 +26,7 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/CachingHostAllocator.h"
+#include "absl/algorithm/container.h"
 #include "absl/base/no_destructor.h"
 #include "absl/base/nullability.h"
 #include "absl/base/thread_annotations.h"
@@ -350,7 +351,8 @@ absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const c10::Storage& storage) {
   return *base_buffer_ref;
 }
 
-absl::StatusOr<DeviceBufferRef> GetBuffer(const at::Tensor& tensor) {
+absl::StatusOr<DeviceBufferRef> GetBuffer(const at::Tensor& tensor,
+                                          DonateBase donate_base) {
   TT_RET_CHECK(tensor.defined(), error::kInvalidArgument)
       << "tensor is undefined";
   TT_ASSIGN_OR_RETURN(DeviceBufferRef base_buffer_ref, GetBaseBuffer(tensor));
@@ -366,18 +368,40 @@ absl::StatusOr<DeviceBufferRef> GetBuffer(const at::Tensor& tensor) {
   }
 
   return CreateViewDeviceBufferRef(base_buffer_ref, tpu_layout,
-                                   tensor.is_conj());
+                                   tensor.is_conj(), donate_base);
+}
+
+absl::StatusOr<DeviceBufferRef> GetBuffer(const at::Tensor& tensor) {
+  return GetBuffer(tensor, DonateBase::kDoNotDonate);
+}
+
+absl::StatusOr<std::vector<DeviceBufferRef>> GetBuffers(
+    absl::Span<const at::Tensor> tensors,
+    absl::Span<const int64_t> donated_indices) {
+  std::vector<DeviceBufferRef> buffers;
+  buffers.reserve(tensors.size());
+  if (donated_indices.empty()) {
+    for (const auto& tensor : tensors) {
+      TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer, GetBuffer(tensor));
+      buffers.push_back(std::move(buffer));
+    }
+  } else {
+    for (int64_t i = 0; i < tensors.size(); ++i) {
+      const DonateBase donate_base =
+          (absl::c_find(donated_indices, i) != donated_indices.end())
+              ? DonateBase::kDonate
+              : DonateBase::kDoNotDonate;
+      TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer,
+                          GetBuffer(tensors[i], donate_base));
+      buffers.push_back(std::move(buffer));
+    }
+  }
+  return buffers;
 }
 
 absl::StatusOr<std::vector<DeviceBufferRef>> GetBuffers(
     absl::Span<const at::Tensor> tensors) {
-  std::vector<DeviceBufferRef> buffers;
-  buffers.reserve(tensors.size());
-  for (const auto& tensor : tensors) {
-    TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer, GetBuffer(tensor));
-    buffers.push_back(std::move(buffer));
-  }
-  return buffers;
+  return GetBuffers(tensors, {});
 }
 
 c10::Storage MakeStorage(DeviceBufferRef buffer_ref, int device_idx) {

@@ -534,7 +534,7 @@ AsStridedInverseBuilderResult MakeAsStridedInverseBuilder(
 
 absl::StatusOr<DeviceBufferRef> CreateViewDeviceBufferRef(
     DeviceBufferRef base_buffer_ref, const TpuLayout& tpu_layout,
-    bool view_is_conj) {
+    bool view_is_conj, DonateBase donate_base) {
   absl::Span<const int64_t> view_dimensions = tpu_layout.sizes;
   absl::Span<const int64_t> view_strides = tpu_layout.strides;
   int64_t view_storage_offset = tpu_layout.storage_offset;
@@ -616,6 +616,12 @@ absl::StatusOr<DeviceBufferRef> CreateViewDeviceBufferRef(
   std::vector<Shape> output_shapes;
   output_shapes.emplace_back(CopyIntVector(view_dimensions), view_element_type);
 
+  // Donate the input if requested.
+  Indices donated_indices;
+  if (donate_base == DonateBase::kDonate) {
+    donated_indices.push_back(0);
+  }
+
   // Create the deferred op.
   internal::DeferredOpParams params{
       .op_name = op_name,
@@ -623,6 +629,7 @@ absl::StatusOr<DeviceBufferRef> CreateViewDeviceBufferRef(
       .op_param_cache_keys = std::move(param_keys),
       .inputs = std::move(inputs),
       .output_shapes = std::move(output_shapes),
+      .donated_indices = std::move(donated_indices),
   };
   TT_ASSIGN_OR_RETURN(auto results, internal::CreateDeferredDeviceBufferList(
                                         std::move(params)));

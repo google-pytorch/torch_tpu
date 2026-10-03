@@ -102,10 +102,24 @@ absl::StatusOr<DeviceBufferRef> CreateEmptyDeviceBufferRef(
 absl::StatusOr<DeviceBufferRef> CreateZeroSizeDeviceBufferRef(
     Dimensions dimensions, mlir::ElementType element_type);
 
+// Whether to donate the base buffer when creating a view.
+enum class DonateBase {
+  // The base buffer is donated to the view.
+  // WARNING: if the base is donated, then it can only be used by other ops
+  // that are compiled in the same traversal as the constructed view.
+  // Materializing the view separately will invalidate the base and should only
+  // be performed if all Tensor references to the base will be dropped before
+  // returning to Python.
+  kDonate,
+  // The base buffer is not donated to the view and remains valid after the
+  // view is materialized.
+  kDoNotDonate,
+};
+
 // Creates a DeviceBufferRef representing a view of a base DeviceBufferRef.
 absl::StatusOr<DeviceBufferRef> CreateViewDeviceBufferRef(
     DeviceBufferRef base_buffer_ref, const TpuLayout& tpu_layout,
-    bool view_is_conj);
+    bool view_is_conj, DonateBase donate_base);
 
 absl::StatusOr<DeviceBufferRef> CreateInverseViewDeviceBufferRef(
     DeviceBufferRef base_buffer_ref, DeviceBufferRef write_buf,

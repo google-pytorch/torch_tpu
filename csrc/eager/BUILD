@@ -285,6 +285,7 @@ torch_tpu_cc_library(
         "//shims/torch/c10/core:base_headers",
         "//shims/torch/c10/util:base_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
+        "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/base:no_destructor",
         "@com_google_absl//absl/base:nullability",
@@ -300,6 +301,30 @@ torch_tpu_cc_library(
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@tsl//tsl/profiler/lib:traceme",
         "@xla//xla/pjrt:host_memory_allocator",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "tensor_to_buffer_test",
+    srcs = ["tensor_to_buffer_test.cc"],
+    requires_libtpu = True,
+    deps = [
+        ":device_buffer",
+        ":device_buffer_utils",
+        ":eager_mode",
+        ":tensor_to_buffer",
+        "//csrc/common:context_states",
+        "//csrc/common:dimension_types",
+        "//csrc/common:oss_test_main",
+        "//csrc/common:status_test_utils",
+        "//csrc/ops:op_builder_utils",
+        "//csrc/ops:op_names",
+        "//csrc/ops:python_context",
+        "//shims/torch:aten_headers",
+        "//shims/torch:torch_headers",
+        "@com_google_absl//absl/cleanup",
+        "@com_google_absl//absl/types:span",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
     ],
 )
 

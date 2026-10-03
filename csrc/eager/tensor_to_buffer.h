@@ -17,6 +17,7 @@
 #ifndef TORCH_TPU_CSRC_EAGER_TENSOR_TO_BUFFER_H_
 #define TORCH_TPU_CSRC_EAGER_TENSOR_TO_BUFFER_H_
 
+#include <cstdint>
 #include <vector>
 
 #include "ATen/core/ATen_fwd.h"
@@ -29,6 +30,7 @@
 #include "c10/core/Storage.h"
 #include "c10/util/Optional.h"
 #include "csrc/eager/device_buffer.h"
+#include "csrc/eager/device_buffer_utils.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "torch/headeronly/core/Layout.h"
@@ -105,12 +107,32 @@ absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const c10::Storage& storage);
 // materializing, or materialized. Callers are responsible for handling any
 // unexpected states; for example, erroring on a placeholder state before
 // calling a PjRtLoadedExecutable.
+//
+// If donate_base is kDonate, and a view deferred op is created, then the base
+// buffer will be donated to the view.
+// WARNING: if the base is donated, then it can only be used by other ops
+// that are compiled in the same traversal as the constructed view.
+// Materializing the view separately will invalidate the base and should only
+// be performed if all Tensor references to the base will be dropped before
+// returning to Python.
 absl::StatusOr<DeviceBufferRef> GetBuffer(const at::Tensor& tensor);
+absl::StatusOr<DeviceBufferRef> GetBuffer(const at::Tensor& tensor,
+                                          DonateBase donate_base);
 
 // Extracts all DeviceBufferRefs from the list of AtenTensors.
 // This is just GetBuffer in a loop, exiting on the first error.
+// If donated_indices is not empty, then tensors at the given indices will be
+// donated to any created view ops.
+// WARNING: if any base is donated, then it can only be used by other ops
+// that are compiled in the same traversal as the constructed view.
+// Materializing the view separately will invalidate the base and should only
+// be performed if all Tensor references to the base will be dropped before
+// returning to Python.
 absl::StatusOr<std::vector<DeviceBufferRef>> GetBuffers(
     absl::Span<const at::Tensor> tensors);
+absl::StatusOr<std::vector<DeviceBufferRef>> GetBuffers(
+    absl::Span<const at::Tensor> tensors,
+    absl::Span<const int64_t> donated_indices);
 
 // Creates a c10::Storage pointer to a new c10::StorageImpl, which holds a
 // c10::DataPtr to the given DeviceBufferRef.
