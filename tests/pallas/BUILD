@@ -87,11 +87,14 @@ torch_tpu_py_test(
 
 torch_tpu_py_test(
     name = "pallas_communication_test",
+    timeout = "long",
     srcs = ["pallas_communication_test.py"],
     env = {"TPU_PREMAPPED_BUFFER_SIZE": "0"},
-    notest_oss = True,  # TODO(b/497890629): Fix hang in OSS and enable in OSS.
     shard_count = 2,
-    tags = [
+    tags = if_oss(
+        ["exclusive"],
+        [],
+    ) + [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
