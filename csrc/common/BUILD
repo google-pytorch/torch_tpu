@@ -329,6 +329,7 @@ torch_tpu_cc_library(
         ":error_utils",
         ":excess_precision",
         ":fingerprint_utils",
+        ":libtpu_version",
         ":shape",
         "//csrc/mlir:pipeline",
         "//csrc/ops:op_builder_utils",

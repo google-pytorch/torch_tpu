@@ -42,6 +42,7 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/common/excess_precision.h"
 #include "csrc/common/fingerprint_utils.h"
+#include "csrc/common/libtpu_version.h"
 #include "csrc/common/shape.h"
 #include "csrc/mlir/pipeline.h"
 #include "csrc/ops/op_builder_utils.h"
@@ -311,11 +312,19 @@ static absl::StatusOr<bool> SetTpuOptions(xla::CompileOptions& options) {
             // Important: keep the keys sorted alphabetically - the override
             // merging logic relies on this.
             // go/keep-sorted start
+            {"xla_tpu_enable_offloading_dynamic_padding_to_sparsecore",
+             std::string("true")},
             {"xla_tpu_vmem_scavenging_mode",
              std::string("SAFE_IFF_KERNEL_REQUIRED")},
             // go/keep-sorted end
         });
     options.env_option_overrides = *tpu_env_option_overrides;
+    if (!IsLibtpuVersionAtLeast("0.0.50")) {
+      std::erase_if(options.env_option_overrides, [](const auto& entry) {
+        return entry.first ==
+               "xla_tpu_enable_offloading_dynamic_padding_to_sparsecore";
+      });
+    }
   }
   return is_tpu;
 }
