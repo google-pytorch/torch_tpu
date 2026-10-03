@@ -34,8 +34,6 @@ import unittest
 from absl import logging
 from absl.testing import absltest
 from absl.testing import parameterized
-from tests import oss_utils
-from tests import seed_test_utils
 
 if __name__ == "__main__":  # We are in the parent process.
   # Pick a likely unique cache root for this run. This makes it less likely for
@@ -57,10 +55,10 @@ from torch import distributed as dist
 import torch.multiprocessing as mp
 
 from torch_tpu._internal.utils import test_utils as utils
-from tests.distributed import distributed_utils
-
 from torch_tpu._internal.distributed import multiprocessing
-
+from tests import oss_utils
+from tests import seed_test_utils
+from tests.distributed import distributed_utils
 
 # TODO(b/493050035): Enable P2P tests in OSS once PJRT CrossHostTransfers
 # supports cross-process IPC / shared-memory transport under mp.spawn, or when
@@ -74,6 +72,7 @@ _OSS_P2P_FAILURE_REASON: str = (
     "`SIGSEGV` in `memcpy` when constructing `std::string` inside "
     "`CppCrossHostRecvNotifierToC()` during `MakeCrossHostReceiveBuffers()`."
 )
+
 
 def _test_wrapper(
     test_fn: Callable[..., None], *args: Any, **kwargs: Any

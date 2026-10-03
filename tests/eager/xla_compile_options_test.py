@@ -18,10 +18,10 @@ import glob
 import os
 
 from absl.testing import absltest
-from tests import seed_test_utils
 import torch
 import torch_tpu  # pylint: disable=unused-import  # noqa: F401
 from torch_tpu._internal import execution_mode
+from tests import seed_test_utils
 
 EagerMode = execution_mode.EagerMode
 

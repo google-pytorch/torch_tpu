@@ -34,7 +34,7 @@ from absl import app
 # Pre-import torch and torch_tpu to initialize C++ extensions and TPU runtime
 # before any upstream script imports numpy or other native libraries.
 import torch  # pylint: disable=unused-import  # noqa: F401
-import torch.utils.data as data
+from torch.utils import data
 import torch_tpu  # pylint: disable=unused-import  # noqa: F401
 import torchvision.datasets as vision_datasets
 

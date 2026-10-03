@@ -39,11 +39,11 @@ if "TORCH_TRACE" not in os.environ:
 
 # pylint: disable=g-import-not-at-top
 from absl.testing import absltest
-from tests import seed_test_utils
 import torch
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal import tracing
+from tests import seed_test_utils
 
 
 def _trace_dir() -> str:

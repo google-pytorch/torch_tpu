@@ -67,7 +67,6 @@ def device():
 
 def set_up_module() -> None:
   """Called by absltest after flags are parsed and before tests are run."""
-  pass
 
 
 @functools.lru_cache(maxsize=1)
