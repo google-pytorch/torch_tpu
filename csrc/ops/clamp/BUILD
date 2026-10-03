@@ -31,7 +31,6 @@ torch_tpu_cc_library(
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
         "//csrc/common:fixed_size_span",
-        "//csrc/common:to_string",
         "//csrc/common:utils",
         "//csrc/eager:device_buffer",
         "//csrc/eager:op_dispatcher",
@@ -61,7 +60,6 @@ torch_tpu_cc_library(
     deps = [
         "//csrc/common:error_utils",
         "//csrc/ops:op_builder_utils",
-        "//shims/torch:torch_headers",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status:statusor",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
