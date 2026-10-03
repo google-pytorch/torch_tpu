@@ -198,6 +198,18 @@ _PUBLIC_MODULES: Mapping[str, ModuleSpec] = {
             "align_jagged_to_multiple": (
                 "torch_tpu._internal.ops.jagged:align_jagged_to_multiple"
             ),
+            "max_pool1d": "torch_tpu._internal.ops.ops:max_pool1d",
+            "max_pool1d_backward": (
+                "torch_tpu._internal.ops.ops:max_pool1d_backward"
+            ),
+            "max_pool2d": "torch_tpu._internal.ops.ops:max_pool2d",
+            "max_pool2d_backward": (
+                "torch_tpu._internal.ops.ops:max_pool2d_backward"
+            ),
+            "max_pool3d": "torch_tpu._internal.ops.ops:max_pool3d",
+            "max_pool3d_backward": (
+                "torch_tpu._internal.ops.ops:max_pool3d_backward"
+            ),
             "optimization_barrier": (
                 "torch_tpu._internal.ops.ops:optimization_barrier"
             ),

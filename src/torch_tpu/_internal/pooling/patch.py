@@ -55,14 +55,13 @@ construction entirely (breaking training) or conflicts with AOTAutograd and
 This module intercepts calls at the Python level
 (`torch.nn.functional.max_pool*d`):
 1. **Eval / No-Grad Mode**: When gradients are not required, routes directly to
-   `torch.ops.tpu.max_pool*d`, invoking a single-operand `ReduceWindow` kernel
+   `torch.ops.tpu._max_pool*d`, invoking a single-operand `ReduceWindow` kernel
    with zero index materialization.
 2. **Train / Autograd Mode**: When gradients are required, routes through a
    custom `torch.autograd.Function` (`_TpuMaxPool*Function`). The forward pass
    computes the pooled output without indices and saves *only* the input tensor.
-   The backward pass calls `torch.ops.tpu.max_pool*d_backward`, lowering
-   directly
-   to StableHLO's `SelectAndScatterOp`.
+   The backward pass calls `torch.ops.tpu._max_pool*d_backward`, lowering
+   directly to StableHLO's `SelectAndScatterOp`.
 3. **torch.compile Compatibility**: The autograd functions define
    `setup_context(ctx, inputs, output)` with `forward(*inputs)` (separate from
    `ctx`), adhering to the modern PyTorch autograd contract required by
@@ -103,10 +102,8 @@ class _TpuMaxPool1dFunction(torch.autograd.Function):
   """Differentiable TPU 1D max pooling using SelectAndScatter without indices.
 
   In the forward pass, computes the pooled output using
-  `torch.ops.tpu.max_pool1d`
-  without computing or materializing indices.
-  In the backward pass, uses `torch.ops.tpu.max_pool1d_backward` to recompute
-  the
+  `torch.ops.tpu._max_pool1d` without computing or materializing indices. In
+  the backward pass, uses `torch.ops.tpu._max_pool1d_backward` to recompute the
   argmax positions on the fly via StableHLO `SelectAndScatterOp`.
   """
 
@@ -120,7 +117,7 @@ class _TpuMaxPool1dFunction(torch.autograd.Function):
       ceil_mode: bool,
   ) -> torch.Tensor:
     """Executes native 1D max pooling without index materialization."""
-    return torch.ops.tpu.max_pool1d(
+    return torch.ops.tpu._max_pool1d(
         input, kernel_size, stride, padding, dilation, ceil_mode
     )
 
@@ -150,7 +147,7 @@ class _TpuMaxPool1dFunction(torch.autograd.Function):
     """Computes grad_input using SelectAndScatter from saved input tensor."""
     (grad_output,) = grad_outputs
     (input,) = ctx.saved_tensors
-    grad_input = torch.ops.tpu.max_pool1d_backward(
+    grad_input = torch.ops.tpu._max_pool1d_backward(
         grad_output,
         input,
         ctx.kernel_size,
@@ -168,10 +165,8 @@ class _TpuMaxPool2dFunction(torch.autograd.Function):
   """Differentiable TPU 2D max pooling using SelectAndScatter without indices.
 
   In the forward pass, computes the pooled output using
-  `torch.ops.tpu.max_pool2d`
-  without computing or materializing indices.
-  In the backward pass, uses `torch.ops.tpu.max_pool2d_backward` to recompute
-  the
+  `torch.ops.tpu._max_pool2d` without computing or materializing indices. In
+  the backward pass, uses `torch.ops.tpu._max_pool2d_backward` to recompute the
   argmax positions on the fly via StableHLO `SelectAndScatterOp`.
   """
 
@@ -185,7 +180,7 @@ class _TpuMaxPool2dFunction(torch.autograd.Function):
       ceil_mode: bool,
   ) -> torch.Tensor:
     """Executes native 2D max pooling without index materialization."""
-    return torch.ops.tpu.max_pool2d(
+    return torch.ops.tpu._max_pool2d(
         input, kernel_size, stride, padding, dilation, ceil_mode
     )
 
@@ -215,7 +210,7 @@ class _TpuMaxPool2dFunction(torch.autograd.Function):
     """Computes grad_input using SelectAndScatter from saved input tensor."""
     (grad_output,) = grad_outputs
     (input,) = ctx.saved_tensors
-    grad_input = torch.ops.tpu.max_pool2d_backward(
+    grad_input = torch.ops.tpu._max_pool2d_backward(
         grad_output,
         input,
         ctx.kernel_size,
@@ -233,10 +228,8 @@ class _TpuMaxPool3dFunction(torch.autograd.Function):
   """Differentiable TPU 3D max pooling using SelectAndScatter without indices.
 
   In the forward pass, computes the pooled output using
-  `torch.ops.tpu.max_pool3d`
-  without computing or materializing indices.
-  In the backward pass, uses `torch.ops.tpu.max_pool3d_backward` to recompute
-  the
+  `torch.ops.tpu._max_pool3d` without computing or materializing indices. In
+  the backward pass, uses `torch.ops.tpu._max_pool3d_backward` to recompute the
   argmax positions on the fly via StableHLO `SelectAndScatterOp`.
   """
 
@@ -250,7 +243,7 @@ class _TpuMaxPool3dFunction(torch.autograd.Function):
       ceil_mode: bool,
   ) -> torch.Tensor:
     """Executes native 3D max pooling without index materialization."""
-    return torch.ops.tpu.max_pool3d(
+    return torch.ops.tpu._max_pool3d(
         input, kernel_size, stride, padding, dilation, ceil_mode
     )
 
@@ -280,7 +273,7 @@ class _TpuMaxPool3dFunction(torch.autograd.Function):
     """Computes grad_input using SelectAndScatter from saved input tensor."""
     (grad_output,) = grad_outputs
     (input,) = ctx.saved_tensors
-    grad_input = torch.ops.tpu.max_pool3d_backward(
+    grad_input = torch.ops.tpu._max_pool3d_backward(
         grad_output,
         input,
         ctx.kernel_size,
@@ -318,7 +311,7 @@ def patched_max_pool1d(
     `F.max_pool1d` as SelectAndScatter does not support dilated windows.
   - If `requires_grad=True` and grad is enabled, routes through
     `_TpuMaxPool1dFunction` for index-free autograd.
-  - Otherwise (eval / inference), calls `torch.ops.tpu.max_pool1d` directly.
+  - Otherwise (eval / inference), calls `torch.ops.tpu._max_pool1d` directly.
   """
   # Fall back to PyTorch core when caller explicitly requests indices or
   # when operating on non-TPU devices (e.g. CPU or CUDA tensors).
@@ -358,7 +351,7 @@ def patched_max_pool1d(
     return _TpuMaxPool1dFunction.apply(input, k, s, p, d, bool(ceil_mode))
 
   # In eval or no-grad mode, call the TPU native operator directly.
-  return torch.ops.tpu.max_pool1d(input, k, s, p, d, bool(ceil_mode))
+  return torch.ops.tpu._max_pool1d(input, k, s, p, d, bool(ceil_mode))
 
 
 @functools.wraps(_ORIG_F_MAX_POOL2D)
@@ -380,7 +373,7 @@ def patched_max_pool2d(
     `F.max_pool2d` as SelectAndScatter does not support dilated windows.
   - If `requires_grad=True` and grad is enabled, routes through
     `_TpuMaxPool2dFunction` for index-free autograd.
-  - Otherwise (eval / inference), calls `torch.ops.tpu.max_pool2d` directly.
+  - Otherwise (eval / inference), calls `torch.ops.tpu._max_pool2d` directly.
   """
   # Fall back to PyTorch core when caller explicitly requests indices or
   # when operating on non-TPU devices (e.g. CPU or CUDA tensors).
@@ -420,7 +413,7 @@ def patched_max_pool2d(
     return _TpuMaxPool2dFunction.apply(input, k, s, p, d, bool(ceil_mode))
 
   # In eval or no-grad mode, call the TPU native operator directly.
-  return torch.ops.tpu.max_pool2d(input, k, s, p, d, bool(ceil_mode))
+  return torch.ops.tpu._max_pool2d(input, k, s, p, d, bool(ceil_mode))
 
 
 @functools.wraps(_ORIG_F_MAX_POOL3D)
@@ -442,7 +435,7 @@ def patched_max_pool3d(
     `F.max_pool3d` as SelectAndScatter does not support dilated windows.
   - If `requires_grad=True` and grad is enabled, routes through
     `_TpuMaxPool3dFunction` for index-free autograd.
-  - Otherwise (eval / inference), calls `torch.ops.tpu.max_pool3d` directly.
+  - Otherwise (eval / inference), calls `torch.ops.tpu._max_pool3d` directly.
   """
   # Fall back to PyTorch core when caller explicitly requests indices or
   # when operating on non-TPU devices (e.g. CPU or CUDA tensors).
@@ -482,7 +475,7 @@ def patched_max_pool3d(
     return _TpuMaxPool3dFunction.apply(input, k, s, p, d, bool(ceil_mode))
 
   # In eval or no-grad mode, call the TPU native operator directly.
-  return torch.ops.tpu.max_pool3d(input, k, s, p, d, bool(ceil_mode))
+  return torch.ops.tpu._max_pool3d(input, k, s, p, d, bool(ceil_mode))
 
 
 # -----------------------------------------------------------------------------

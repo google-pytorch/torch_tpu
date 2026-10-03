@@ -1231,23 +1231,26 @@ TORCH_LIBRARY(tpu, m) {
   // these are just signatures. The actual stages of the ops are marked in
   // TORCH_LIBRARY_IMPL(tpu, PrivateUse1, m).
   m.def(
-      "max_pool1d(Tensor self, int[] kernel_size, int[] stride, int[] padding, "
-      "int[] dilation, bool ceil_mode) -> Tensor");
+      "_max_pool1d(Tensor self, int[] kernel_size, int[] stride, "
+      "int[] padding, int[] dilation, bool ceil_mode) -> Tensor");
   m.def(
-      "max_pool1d_backward(Tensor grad_output, Tensor self, int[] kernel_size, "
-      "int[] stride, int[] padding, int[] dilation, bool ceil_mode) -> Tensor");
+      "_max_pool1d_backward(Tensor grad_output, Tensor self, "
+      "int[] kernel_size, int[] stride, int[] padding, int[] dilation, "
+      "bool ceil_mode) -> Tensor");
   m.def(
-      "max_pool2d(Tensor self, int[] kernel_size, int[] stride, int[] padding, "
-      "int[] dilation, bool ceil_mode) -> Tensor");
+      "_max_pool2d(Tensor self, int[] kernel_size, int[] stride, "
+      "int[] padding, int[] dilation, bool ceil_mode) -> Tensor");
   m.def(
-      "max_pool2d_backward(Tensor grad_output, Tensor self, int[] kernel_size, "
-      "int[] stride, int[] padding, int[] dilation, bool ceil_mode) -> Tensor");
+      "_max_pool2d_backward(Tensor grad_output, Tensor self, "
+      "int[] kernel_size, int[] stride, int[] padding, int[] dilation, "
+      "bool ceil_mode) -> Tensor");
   m.def(
-      "max_pool3d(Tensor self, int[] kernel_size, int[] stride, int[] padding, "
-      "int[] dilation, bool ceil_mode) -> Tensor");
+      "_max_pool3d(Tensor self, int[] kernel_size, int[] stride, "
+      "int[] padding, int[] dilation, bool ceil_mode) -> Tensor");
   m.def(
-      "max_pool3d_backward(Tensor grad_output, Tensor self, int[] kernel_size, "
-      "int[] stride, int[] padding, int[] dilation, bool ceil_mode) -> Tensor");
+      "_max_pool3d_backward(Tensor grad_output, Tensor self, "
+      "int[] kernel_size, int[] stride, int[] padding, int[] dilation, "
+      "bool ceil_mode) -> Tensor");
   m.def("ragged_dot(Tensor lhs, Tensor rhs, Tensor group_sizes) -> Tensor");
   m.def(
       "ragged_dot.out(Tensor lhs, Tensor rhs, Tensor group_sizes, *, "
@@ -1458,10 +1461,11 @@ TORCH_LIBRARY_IMPL(aten, Meta, m) {
 
 // Registers meta implementations for torch.ops.tpu ops.
 TORCH_LIBRARY_IMPL(tpu, Meta, m) {
-  // We always use ImplStable here as these are just meta implementations.
+  // We use ImplStable (or ImplInternal for internal ops) here as these are
+  // just meta implementations.
   // The actual stages of the ops are marked in TORCH_LIBRARY_IMPL(tpu,
   // PrivateUse1, m).
-  ImplStable<OpName::kMaxPool1d>(
+  ImplInternal<OpName::kMaxPool1d>(
       m,
       [](const at::Tensor& self, at::IntArrayRef kernel_size,
          at::IntArrayRef stride, at::IntArrayRef padding,
@@ -1472,13 +1476,13 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
                                  dilation, ceil_mode, 1));
         return at::empty(output_size, self.options());
       });
-  ImplStable<OpName::kMaxPool1dBackward>(
+  ImplInternal<OpName::kMaxPool1dBackward>(
       m, [](const at::Tensor& grad_output, const at::Tensor& self,
             at::IntArrayRef kernel_size, at::IntArrayRef stride,
             at::IntArrayRef padding, at::IntArrayRef dilation, bool ceil_mode) {
         return at::empty(self.sizes(), self.options());
       });
-  ImplStable<OpName::kMaxPool2d>(
+  ImplInternal<OpName::kMaxPool2d>(
       m,
       [](const at::Tensor& self, at::IntArrayRef kernel_size,
          at::IntArrayRef stride, at::IntArrayRef padding,
@@ -1489,13 +1493,13 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
                                  dilation, ceil_mode, 2));
         return at::empty(output_size, self.options());
       });
-  ImplStable<OpName::kMaxPool2dBackward>(
+  ImplInternal<OpName::kMaxPool2dBackward>(
       m, [](const at::Tensor& grad_output, const at::Tensor& self,
             at::IntArrayRef kernel_size, at::IntArrayRef stride,
             at::IntArrayRef padding, at::IntArrayRef dilation, bool ceil_mode) {
         return at::empty(self.sizes(), self.options());
       });
-  ImplStable<OpName::kMaxPool3d>(
+  ImplInternal<OpName::kMaxPool3d>(
       m,
       [](const at::Tensor& self, at::IntArrayRef kernel_size,
          at::IntArrayRef stride, at::IntArrayRef padding,
@@ -1506,7 +1510,7 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
                                  dilation, ceil_mode, 3));
         return at::empty(output_size, self.options());
       });
-  ImplStable<OpName::kMaxPool3dBackward>(
+  ImplInternal<OpName::kMaxPool3dBackward>(
       m, [](const at::Tensor& grad_output, const at::Tensor& self,
             at::IntArrayRef kernel_size, at::IntArrayRef stride,
             at::IntArrayRef padding, at::IntArrayRef dilation, bool ceil_mode) {
@@ -1688,12 +1692,12 @@ TORCH_LIBRARY_IMPL(tpu, PrivateUse1, m) {
       m, TorchTpuExperimentalSend);
   ImplExperimental<OpName::kDistributedExperimentalRecv>(
       m, TorchTpuExperimentalRecv);
-  ImplExperimental<OpName::kMaxPool1d>(m, TpuMaxPool1d);
-  ImplExperimental<OpName::kMaxPool1dBackward>(m, TpuMaxPool1dBackward);
-  ImplExperimental<OpName::kMaxPool2d>(m, TpuMaxPool2d);
-  ImplExperimental<OpName::kMaxPool2dBackward>(m, TpuMaxPool2dBackward);
-  ImplExperimental<OpName::kMaxPool3d>(m, TpuMaxPool3d);
-  ImplExperimental<OpName::kMaxPool3dBackward>(m, TpuMaxPool3dBackward);
+  ImplInternal<OpName::kMaxPool1d>(m, TpuMaxPool1d);
+  ImplInternal<OpName::kMaxPool1dBackward>(m, TpuMaxPool1dBackward);
+  ImplInternal<OpName::kMaxPool2d>(m, TpuMaxPool2d);
+  ImplInternal<OpName::kMaxPool2dBackward>(m, TpuMaxPool2dBackward);
+  ImplInternal<OpName::kMaxPool3d>(m, TpuMaxPool3d);
+  ImplInternal<OpName::kMaxPool3dBackward>(m, TpuMaxPool3dBackward);
   ImplExperimental<OpName::kRaggedDot>(m, AtenRaggedDot);
   ImplExperimental<OpName::kRaggedDotOut>(m, AtenRaggedDotOut);
   ImplExperimental<OpName::kRaggedDotWeightGrad>(m, AtenRaggedDotWeightGrad);

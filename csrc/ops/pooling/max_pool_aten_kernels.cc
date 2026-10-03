@@ -935,7 +935,7 @@ at::Tensor AtenMaxPool1d(const at::Tensor& self, at::IntArrayRef kernel_size,
   return tensor;
 }
 
-// Dispatched from PrivateUse1 for tpu::max_pool1d.
+// Dispatched from PrivateUse1 for tpu::_max_pool1d.
 // Directly lowers 1D max pooling to StableHLO ReduceWindowOp without indices.
 at::Tensor TpuMaxPool1d(const at::Tensor& self, at::IntArrayRef kernel_size,
                         at::IntArrayRef stride, at::IntArrayRef padding,
@@ -954,7 +954,7 @@ at::Tensor TpuMaxPool1d(const at::Tensor& self, at::IntArrayRef kernel_size,
             });
 }
 
-// Dispatched from PrivateUse1 for tpu::max_pool1d_backward.
+// Dispatched from PrivateUse1 for tpu::_max_pool1d_backward.
 // Directly lowers 1D max pooling gradient to StableHLO SelectAndScatterOp.
 at::Tensor TpuMaxPool1dBackward(const at::Tensor& grad_output,
                                 const at::Tensor& self,
@@ -974,7 +974,7 @@ at::Tensor TpuMaxPool1dBackward(const at::Tensor& grad_output,
       });
 }
 
-// Forward autograd pass: saves attributes and dispatches to tpu::max_pool1d.
+// Forward autograd pass: saves attributes and dispatches to tpu::_max_pool1d.
 at::Tensor TpuMaxPool1dAutograd::forward(
     torch::autograd::AutogradContext* ctx, const at::Tensor& self,
     at::IntArrayRef kernel_size, at::IntArrayRef stride,
@@ -989,7 +989,7 @@ at::Tensor TpuMaxPool1dAutograd::forward(
   // Cache the operator handle to avoid string schema lookup on every call.
   static const absl::NoDestructor op(
       at::Dispatcher::singleton()
-          .findSchemaOrThrow("tpu::max_pool1d", "")
+          .findSchemaOrThrow("tpu::_max_pool1d", "")
           .typed<at::Tensor(const at::Tensor&, at::IntArrayRef, at::IntArrayRef,
                             at::IntArrayRef, at::IntArrayRef, bool)>());
 
@@ -1013,7 +1013,7 @@ torch::autograd::variable_list TpuMaxPool1dAutograd::backward(
   // Cache the operator handle to avoid string schema lookup on every call.
   static const absl::NoDestructor op(
       at::Dispatcher::singleton()
-          .findSchemaOrThrow("tpu::max_pool1d_backward", "")
+          .findSchemaOrThrow("tpu::_max_pool1d_backward", "")
           .typed<at::Tensor(const at::Tensor&, const at::Tensor&,
                             at::IntArrayRef, at::IntArrayRef, at::IntArrayRef,
                             at::IntArrayRef, bool)>());
@@ -1044,7 +1044,7 @@ at::Tensor AtenMaxPool2d(const at::Tensor& self, at::IntArrayRef kernel_size,
   return tensor;
 }
 
-// Dispatched from PrivateUse1 for tpu::max_pool2d.
+// Dispatched from PrivateUse1 for tpu::_max_pool2d.
 // Directly lowers 2D max pooling to StableHLO ReduceWindowOp without indices.
 at::Tensor TpuMaxPool2d(const at::Tensor& self, at::IntArrayRef kernel_size,
                         at::IntArrayRef stride, at::IntArrayRef padding,
@@ -1063,7 +1063,7 @@ at::Tensor TpuMaxPool2d(const at::Tensor& self, at::IntArrayRef kernel_size,
             });
 }
 
-// Dispatched from PrivateUse1 for tpu::max_pool2d_backward.
+// Dispatched from PrivateUse1 for tpu::_max_pool2d_backward.
 // Directly lowers 2D max pooling gradient to StableHLO SelectAndScatterOp.
 at::Tensor TpuMaxPool2dBackward(const at::Tensor& grad_output,
                                 const at::Tensor& self,
@@ -1083,7 +1083,7 @@ at::Tensor TpuMaxPool2dBackward(const at::Tensor& grad_output,
       });
 }
 
-// Forward autograd pass: saves attributes and dispatches to tpu::max_pool2d.
+// Forward autograd pass: saves attributes and dispatches to tpu::_max_pool2d.
 at::Tensor TpuMaxPool2dAutograd::forward(
     torch::autograd::AutogradContext* ctx, const at::Tensor& self,
     at::IntArrayRef kernel_size, at::IntArrayRef stride,
@@ -1098,7 +1098,7 @@ at::Tensor TpuMaxPool2dAutograd::forward(
   // Cache the operator handle to avoid string schema lookup on every call.
   static const absl::NoDestructor op(
       at::Dispatcher::singleton()
-          .findSchemaOrThrow("tpu::max_pool2d", "")
+          .findSchemaOrThrow("tpu::_max_pool2d", "")
           .typed<at::Tensor(const at::Tensor&, at::IntArrayRef, at::IntArrayRef,
                             at::IntArrayRef, at::IntArrayRef, bool)>());
 
@@ -1106,7 +1106,7 @@ at::Tensor TpuMaxPool2dAutograd::forward(
   return op->call(self, kernel_size, stride, padding, dilation, ceil_mode);
 }
 
-// Backward autograd pass: dispatches to tpu::max_pool2d_backward.
+// Backward autograd pass: dispatches to tpu::_max_pool2d_backward.
 torch::autograd::variable_list TpuMaxPool2dAutograd::backward(
     torch::autograd::AutogradContext* ctx,
     torch::autograd::variable_list grad_outputs) {
@@ -1123,7 +1123,7 @@ torch::autograd::variable_list TpuMaxPool2dAutograd::backward(
   // Cache the operator handle to avoid string schema lookup on every call.
   static const absl::NoDestructor op(
       at::Dispatcher::singleton()
-          .findSchemaOrThrow("tpu::max_pool2d_backward", "")
+          .findSchemaOrThrow("tpu::_max_pool2d_backward", "")
           .typed<at::Tensor(const at::Tensor&, const at::Tensor&,
                             at::IntArrayRef, at::IntArrayRef, at::IntArrayRef,
                             at::IntArrayRef, bool)>());
@@ -1154,7 +1154,7 @@ at::Tensor AtenMaxPool3d(const at::Tensor& self, at::IntArrayRef kernel_size,
   return tensor;
 }
 
-// Dispatched from PrivateUse1 for tpu::max_pool3d.
+// Dispatched from PrivateUse1 for tpu::_max_pool3d.
 // Directly lowers 3D max pooling to StableHLO ReduceWindowOp without indices.
 at::Tensor TpuMaxPool3d(const at::Tensor& self, at::IntArrayRef kernel_size,
                         at::IntArrayRef stride, at::IntArrayRef padding,
@@ -1173,7 +1173,7 @@ at::Tensor TpuMaxPool3d(const at::Tensor& self, at::IntArrayRef kernel_size,
             });
 }
 
-// Dispatched from PrivateUse1 for tpu::max_pool3d_backward.
+// Dispatched from PrivateUse1 for tpu::_max_pool3d_backward.
 // Directly lowers 3D max pooling gradient to StableHLO SelectAndScatterOp.
 at::Tensor TpuMaxPool3dBackward(const at::Tensor& grad_output,
                                 const at::Tensor& self,
@@ -1193,7 +1193,7 @@ at::Tensor TpuMaxPool3dBackward(const at::Tensor& grad_output,
       });
 }
 
-// Forward autograd pass: saves attributes and dispatches to tpu::max_pool3d.
+// Forward autograd pass: saves attributes and dispatches to tpu::_max_pool3d.
 at::Tensor TpuMaxPool3dAutograd::forward(
     torch::autograd::AutogradContext* ctx, const at::Tensor& self,
     at::IntArrayRef kernel_size, at::IntArrayRef stride,
@@ -1208,7 +1208,7 @@ at::Tensor TpuMaxPool3dAutograd::forward(
   // Cache the operator handle to avoid string schema lookup on every call.
   static const absl::NoDestructor op(
       at::Dispatcher::singleton()
-          .findSchemaOrThrow("tpu::max_pool3d", "")
+          .findSchemaOrThrow("tpu::_max_pool3d", "")
           .typed<at::Tensor(const at::Tensor&, at::IntArrayRef, at::IntArrayRef,
                             at::IntArrayRef, at::IntArrayRef, bool)>());
 
@@ -1216,7 +1216,7 @@ at::Tensor TpuMaxPool3dAutograd::forward(
   return op->call(self, kernel_size, stride, padding, dilation, ceil_mode);
 }
 
-// Backward autograd pass: dispatches to tpu::max_pool3d_backward.
+// Backward autograd pass: dispatches to tpu::_max_pool3d_backward.
 torch::autograd::variable_list TpuMaxPool3dAutograd::backward(
     torch::autograd::AutogradContext* ctx,
     torch::autograd::variable_list grad_outputs) {
@@ -1233,7 +1233,7 @@ torch::autograd::variable_list TpuMaxPool3dAutograd::backward(
   // Cache the operator handle to avoid string schema lookup on every call.
   static const absl::NoDestructor op(
       at::Dispatcher::singleton()
-          .findSchemaOrThrow("tpu::max_pool3d_backward", "")
+          .findSchemaOrThrow("tpu::_max_pool3d_backward", "")
           .typed<at::Tensor(const at::Tensor&, const at::Tensor&,
                             at::IntArrayRef, at::IntArrayRef, at::IntArrayRef,
                             at::IntArrayRef, bool)>());

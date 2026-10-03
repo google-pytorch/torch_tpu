@@ -184,6 +184,21 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
     self.assertFalse(hasattr(torch.ops.tpu, "optimization_barrier"))
     self.assertTrue(hasattr(torch.ops.tpu, "_optimization_barrier"))
 
+  def test_ops_max_pool2d_registry(self):
+    """Verifies exposure, identity and stage metadata for max_pool2d."""
+    # 1. Symbol identity
+    self.assertIs(torch.tpu.ops.max_pool2d, internal_ops.max_pool2d)
+
+    # 2. Lifecycle stage metadata
+    self.assertEqual(
+        getattr(torch.tpu.ops.max_pool2d, annotations.TT_API_STAGE, None),
+        annotations.Stage.STABLE.value,
+    )
+
+    # 3. The raw custom op is hidden behind a private name.
+    self.assertFalse(hasattr(torch.ops.tpu, "max_pool2d"))
+    self.assertTrue(hasattr(torch.ops.tpu, "_max_pool2d"))
+
   def test_distributed_api_registry(self):
     """Verifies public exposure, identity, metadata, and proxy behavior for distributed."""
     # 1. Verify python -m torch.tpu.distributed resolves code cleanly without

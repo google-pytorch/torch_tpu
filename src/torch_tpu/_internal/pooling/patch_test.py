@@ -77,7 +77,7 @@ class PatchTest(absltest.TestCase):  # ABSLTEST_OK=deterministic mock test
 
   def test_patched_max_pool2d_tpu_eval_routes_to_tpu_op(self):
     tpu_tensor = self._create_mock_tensor("tpu", requires_grad=False)
-    with mock.patch.object(torch.ops.tpu, "max_pool2d") as mock_op:
+    with mock.patch.object(torch.ops.tpu, "_max_pool2d") as mock_op:
       mock_op.return_value = "mock_tpu_result"
       res = pooling_patch.patched_max_pool2d(
           tpu_tensor, kernel_size=3, stride=2, padding=1
@@ -104,7 +104,7 @@ class PatchTest(absltest.TestCase):  # ABSLTEST_OK=deterministic mock test
 
   def test_patched_max_pool1d_tpu_routes_to_tpu_op(self):
     tpu_tensor = self._create_mock_tensor("tpu", requires_grad=False)
-    with mock.patch.object(torch.ops.tpu, "max_pool1d") as mock_op:
+    with mock.patch.object(torch.ops.tpu, "_max_pool1d") as mock_op:
       mock_op.return_value = "mock_tpu_result"
       res = pooling_patch.patched_max_pool1d(
           tpu_tensor, kernel_size=3, stride=2, padding=1
@@ -114,7 +114,7 @@ class PatchTest(absltest.TestCase):  # ABSLTEST_OK=deterministic mock test
 
   def test_patched_max_pool3d_tpu_routes_to_tpu_op(self):
     tpu_tensor = self._create_mock_tensor("tpu", requires_grad=False)
-    with mock.patch.object(torch.ops.tpu, "max_pool3d") as mock_op:
+    with mock.patch.object(torch.ops.tpu, "_max_pool3d") as mock_op:
       mock_op.return_value = "mock_tpu_result"
       res = pooling_patch.patched_max_pool3d(
           tpu_tensor, kernel_size=3, stride=2, padding=1

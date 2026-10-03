@@ -53,6 +53,12 @@ and its removal go through the deprecation process.
 *   `torch.accelerator.set_device_index`
 *   `torch.accelerator.set_stream`
 *   `torch.accelerator.synchronize`
+*   `torch.tpu.ops.max_pool1d`
+*   `torch.tpu.ops.max_pool1d_backward`
+*   `torch.tpu.ops.max_pool2d`
+*   `torch.tpu.ops.max_pool2d_backward`
+*   `torch.tpu.ops.max_pool3d`
+*   `torch.tpu.ops.max_pool3d_backward`
 
 ### Environment Variables
 

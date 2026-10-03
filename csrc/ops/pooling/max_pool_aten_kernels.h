@@ -36,14 +36,14 @@ at::Tensor AtenMaxPool1d(const at::Tensor& self, at::IntArrayRef kernel_size,
                          at::IntArrayRef stride, at::IntArrayRef padding,
                          at::IntArrayRef dilation, bool ceil_mode);
 
-// Dispatched from PrivateUse1 for tpu::max_pool1d.
+// Dispatched from PrivateUse1 for tpu::_max_pool1d.
 // Directly lowers to StableHLO ReduceWindowOp without returning or computing
 // indices.
 at::Tensor TpuMaxPool1d(const at::Tensor& self, at::IntArrayRef kernel_size,
                         at::IntArrayRef stride, at::IntArrayRef padding,
                         at::IntArrayRef dilation, bool ceil_mode);
 
-// Dispatched from PrivateUse1 for tpu::max_pool1d_backward.
+// Dispatched from PrivateUse1 for tpu::_max_pool1d_backward.
 // Directly lowers to StableHLO SelectAndScatterOp.
 at::Tensor TpuMaxPool1dBackward(const at::Tensor& grad_output,
                                 const at::Tensor& self,
@@ -51,8 +51,8 @@ at::Tensor TpuMaxPool1dBackward(const at::Tensor& grad_output,
                                 at::IntArrayRef stride, at::IntArrayRef padding,
                                 at::IntArrayRef dilation, bool ceil_mode);
 
-// Autograd function for MaxPool1D that routes to tpu::max_pool1d during forward
-// and tpu::max_pool1d_backward during backward.
+// Autograd function for MaxPool1D that routes to tpu::_max_pool1d during
+// forward and tpu::_max_pool1d_backward during backward.
 struct TpuMaxPool1dAutograd
     : public torch::autograd::Function<TpuMaxPool1dAutograd> {
   static at::Tensor forward(torch::autograd::AutogradContext* ctx,
@@ -84,14 +84,14 @@ std::tuple<at::Tensor&, at::Tensor&> AtenMaxPool2dWithIndicesOut(
     at::IntArrayRef padding, at::IntArrayRef dilation, bool ceil_mode,
     at::Tensor& out, at::Tensor& indices);
 
-// Dispatched from PrivateUse1 for tpu::max_pool2d.
+// Dispatched from PrivateUse1 for tpu::_max_pool2d.
 // Directly lowers to StableHLO ReduceWindowOp without returning or computing
 // indices.
 at::Tensor TpuMaxPool2d(const at::Tensor& self, at::IntArrayRef kernel_size,
                         at::IntArrayRef stride, at::IntArrayRef padding,
                         at::IntArrayRef dilation, bool ceil_mode);
 
-// Dispatched from PrivateUse1 for tpu::max_pool2d_backward.
+// Dispatched from PrivateUse1 for tpu::_max_pool2d_backward.
 // Directly lowers to StableHLO SelectAndScatterOp.
 at::Tensor TpuMaxPool2dBackward(const at::Tensor& grad_output,
                                 const at::Tensor& self,
@@ -99,8 +99,8 @@ at::Tensor TpuMaxPool2dBackward(const at::Tensor& grad_output,
                                 at::IntArrayRef stride, at::IntArrayRef padding,
                                 at::IntArrayRef dilation, bool ceil_mode);
 
-// Autograd function for MaxPool2D that routes to tpu::max_pool2d during forward
-// and tpu::max_pool2d_backward during backward.
+// Autograd function for MaxPool2D that routes to tpu::_max_pool2d during
+// forward and tpu::_max_pool2d_backward during backward.
 struct TpuMaxPool2dAutograd
     : public torch::autograd::Function<TpuMaxPool2dAutograd> {
   static at::Tensor forward(torch::autograd::AutogradContext* ctx,
@@ -132,14 +132,14 @@ at::Tensor AtenMaxPool3d(const at::Tensor& self, at::IntArrayRef kernel_size,
                          at::IntArrayRef stride, at::IntArrayRef padding,
                          at::IntArrayRef dilation, bool ceil_mode);
 
-// Dispatched from PrivateUse1 for tpu::max_pool3d.
+// Dispatched from PrivateUse1 for tpu::_max_pool3d.
 // Directly lowers to StableHLO ReduceWindowOp without returning or computing
 // indices.
 at::Tensor TpuMaxPool3d(const at::Tensor& self, at::IntArrayRef kernel_size,
                         at::IntArrayRef stride, at::IntArrayRef padding,
                         at::IntArrayRef dilation, bool ceil_mode);
 
-// Dispatched from PrivateUse1 for tpu::max_pool3d_backward.
+// Dispatched from PrivateUse1 for tpu::_max_pool3d_backward.
 // Directly lowers to StableHLO SelectAndScatterOp.
 at::Tensor TpuMaxPool3dBackward(const at::Tensor& grad_output,
                                 const at::Tensor& self,
@@ -147,8 +147,8 @@ at::Tensor TpuMaxPool3dBackward(const at::Tensor& grad_output,
                                 at::IntArrayRef stride, at::IntArrayRef padding,
                                 at::IntArrayRef dilation, bool ceil_mode);
 
-// Autograd function for MaxPool3D that routes to tpu::max_pool3d during forward
-// and tpu::max_pool3d_backward during backward.
+// Autograd function for MaxPool3D that routes to tpu::_max_pool3d during
+// forward and tpu::_max_pool3d_backward during backward.
 struct TpuMaxPool3dAutograd
     : public torch::autograd::Function<TpuMaxPool3dAutograd> {
   static at::Tensor forward(torch::autograd::AutogradContext* ctx,

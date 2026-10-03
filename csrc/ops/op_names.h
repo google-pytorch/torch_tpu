@@ -1911,21 +1911,21 @@ ToString(  // NOLINT(google-readability-function-size)
     case OpName::kMaxDimMax:
       return "max.dim_max";
     case OpName::kMaxPool1d:
-      return "max_pool1d";
+      return "_max_pool1d";
     case OpName::kMaxPool1dBackward:
-      return "max_pool1d_backward";
+      return "_max_pool1d_backward";
     case OpName::kMaxPool2d:
-      return "max_pool2d";
+      return "_max_pool2d";
     case OpName::kMaxPool2dBackward:
-      return "max_pool2d_backward";
+      return "_max_pool2d_backward";
     case OpName::kMaxPool2dWithIndicesBackwardGradInput:
       return "max_pool2d_with_indices_backward.grad_input";
     case OpName::kMaxPool2dWithIndicesOut:
       return "max_pool2d_with_indices.out";
     case OpName::kMaxPool3d:
-      return "max_pool3d";
+      return "_max_pool3d";
     case OpName::kMaxPool3dBackward:
-      return "max_pool3d_backward";
+      return "_max_pool3d_backward";
     case OpName::kMaxPool3dWithIndices:
       return "max_pool3d_with_indices";
     case OpName::kMaxPool3dWithIndicesBackward:
