@@ -24,7 +24,6 @@ and its removal go through the deprecation process.
 ### Python APIs
 
 *   `torch.accelerator.current_accelerator`
-*   `torch.accelerator.current_device_idx`
 *   `torch.accelerator.current_device_index`
 *   `torch.accelerator.current_stream`
 *   `torch.accelerator.device_count`
@@ -49,7 +48,6 @@ and its removal go through the deprecation process.
 *   `torch.accelerator.random.get_rng_state_all`
 *   `torch.accelerator.random.initial_seed`
 *   `torch.accelerator.reset_peak_memory_stats`
-*   `torch.accelerator.set_device_idx`
 *   `torch.accelerator.set_device_index`
 *   `torch.accelerator.set_stream`
 *   `torch.accelerator.synchronize`
@@ -192,10 +190,15 @@ process. Use it at your own risk. Using it triggers a one-time warning.
 ## Deprecated APIs
 
 A deprecated API will be removed in a future release, at least 2 minor releases
-after the version that deprecated it. Using it triggers a one-time warning.
+after the version that deprecated it. Using it triggers a one-time warning. The
+PyTorch APIs that PyTorch deprecated, e.g. in `torch.accelerator`, follow the
+PyTorch deprecation policy instead.
 
 <!-- BEGIN GENERATED: Deprecated APIs -->
 
-There are no deprecated APIs at this time.
+### Python APIs
+
+*   `torch.accelerator.current_device_idx` (deprecated by PyTorch)
+*   `torch.accelerator.set_device_idx` (deprecated by PyTorch)
 
 <!-- END GENERATED: Deprecated APIs -->
