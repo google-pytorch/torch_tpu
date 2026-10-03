@@ -84,7 +84,6 @@ from torch_tpu._internal import env
 from torch_tpu._internal import env_utils
 from torch_tpu._internal.utils import annotations
 from torch_tpu._internal.utils import hardware
-from torch_tpu._internal.distributed import multiprocessing
 
 # Per-host chip bounds (Cx, Cy, Cz) of the TPU slices that multi-host jobs run
 # on.
@@ -351,8 +350,6 @@ def set_tpu_launch_env(
       neither from the TPU device coordinates and `TORCH_TPU_TOPOLOGY` nor from
       `JOB_COMPLETION_INDEX`.
   """
-  multiprocessing.init_spawn()
-
   xprof_session_id = env_utils.get_and_set_str_env_once(
       "TORCH_TPU_XPROF_SESSION_ID", lambda: str(time.time_ns())
   )

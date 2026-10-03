@@ -33,8 +33,8 @@ torch_tpu_py_test(
     ],
     deps = [
         ":manual_fsdp_worker",
-        "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//tests/distributed:distributed_utils",
     ],
 )
 
@@ -55,6 +55,7 @@ torch_tpu_py_test(
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//tests/distributed:distributed_utils",
     ],
 )
 

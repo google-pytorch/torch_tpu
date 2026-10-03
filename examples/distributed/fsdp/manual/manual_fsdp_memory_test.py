@@ -23,9 +23,8 @@ from absl import logging
 import torch
 from torch import distributed as dist
 from torch import nn
-from torch.distributed import launcher
-from torch.tpu import distributed  # pyrefly: ignore[missing-import]
 from examples.distributed.fsdp.manual import model
+from tests.distributed import distributed_utils
 
 logging.set_verbosity(logging.INFO)
 
@@ -114,16 +113,7 @@ def memory_worker_fn() -> None:
 
 def main():
   world_size = 8
-  distributed.set_tpu_launch_env(nproc_per_node=world_size)
-  config = launcher.LaunchConfig(
-      min_nodes=1,
-      max_nodes=1,
-      nproc_per_node=world_size,
-      rdzv_backend="c10d",
-      rdzv_endpoint="localhost:0",
-      max_restarts=0,
-  )
-  launcher.elastic_launch(config, memory_worker_fn)()
+  distributed_utils.dist_run(world_size, memory_worker_fn)
 
 
 if __name__ == "__main__":
