@@ -15,6 +15,7 @@
 """Unit tests for TorchTPU API lifecycle stage annotations."""
 
 import enum
+import importlib
 import types
 from typing import Any
 from unittest import mock
@@ -27,7 +28,6 @@ from torch_tpu._internal.device import _device_module
 from torch_tpu._internal.precision.precision_impl import Precision
 from torch_tpu._internal.utils import annotations
 from tests import seed_test_utils
-
 
 experimental = annotations.experimental
 stable = annotations.stable
@@ -46,6 +46,23 @@ def _reset_warn_once(api: Any) -> None:
   fn = getattr(api, "__func__", api)
   idx = fn.__code__.co_freevars.index("_warned")
   fn.__closure__[idx].cell_contents = False
+
+
+def _has_target_api(dotted_path: str) -> bool:
+  """Checks if a target API attribute path exists on the runtime torch module."""
+  curr: Any = torch
+  parts = dotted_path.split(".")[1:]  # strip leading "torch"
+  for part in parts:
+    if hasattr(curr, part):
+      curr = getattr(curr, part)
+    else:
+      try:
+        curr = importlib.import_module(
+            f"{getattr(curr, '__name__', '')}.{part}"
+        )
+      except (ImportError, AttributeError):
+        return False
+  return True
 
 
 class AnnotationsTest(seed_test_utils.RepeatableTest):
@@ -67,6 +84,7 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
 
   def test_experimental_first_call_triggers_warning(self):
     """Verifies that calling an experimental function triggers a UserWarning."""
+
     @experimental("Testing experimental feature.")
     def sample_func(a: int, b: int) -> int:
       return a + b
@@ -88,6 +106,7 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
 
   def test_experimental_subsequent_calls_suppress_warning(self):
     """Verifies that subsequent function calls suppress warnings."""
+
     @experimental("Testing experimental feature.")
     def sample_func(a: int, b: int) -> int:
       return a + b
@@ -131,6 +150,7 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
 
   def test_experimental_multiple_functions_independent_warnings(self):
     """Verifies that multiple experimental functions trigger warnings independently."""
+
     @experimental("First experimental feature.")
     def func_one(x: int) -> int:
       return x + 1
@@ -152,6 +172,7 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
 
   def test_stable_metadata_no_warning(self):
     """Verifies that stable functions attach metadata and trigger no warnings."""
+
     @stable("Production ready.")
     def stable_func(x: int) -> int:
       return x * 2
@@ -169,6 +190,7 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
 
   def test_deprecated_metadata_and_warning(self):
     """Verifies that calling a deprecated function triggers a DeprecationWarning."""
+
     @deprecated(version="2.13", reason="Use new_api() instead.")
     def legacy_func(x: int) -> int:
       return x + 10
@@ -654,6 +676,13 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
         "2.14",
     )
 
+  def _call_from_module(self, module_name: str, fn: Any, *args: Any) -> Any:
+    """Calls fn(*args) from a frame whose module __name__ is module_name."""
+    caller = types.FunctionType(
+        (lambda f, a: f(*a)).__code__, {"__name__": module_name}
+    )
+    return caller(fn, args)
+
   def test_warning_suppressed_for_framework_callers(self):
     """Verifies that framework callers in torch/torch_tpu packages do not trigger warnings."""
 
@@ -673,11 +702,92 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
       self.assertEqual(res, 10)
       self.assertEmpty(w)
 
+      res_tt = self._call_from_module("torch_tpu._internal.device", exp_func, 5)
+      self.assertEqual(res_tt, 10)
+      self.assertEmpty(w)
+
       # Now, an external user call SHOULD trigger the warning
       res2 = exp_func(5)
       self.assertEqual(res2, 10)
       self.assertLen(w, 1)
       self.assertIn("exp_func is experimental", str(w[0].message))
+
+  def test_device_module_reasons_point_to_torch_accelerator(self):
+    """Verifies torch.tpu APIs with torch.accelerator equivalents say so."""
+    expected = {
+        "current_device": "torch.accelerator.current_device_index",
+        "set_device": "torch.accelerator.set_device_index",
+        "is_available": "torch.accelerator.is_available",
+        "device_count": "torch.accelerator.device_count",
+        "synchronize": "torch.accelerator.synchronize",
+        "current_stream": "torch.accelerator.current_stream",
+        "set_stream": "torch.accelerator.set_stream",
+        "initial_seed": "torch.accelerator.random.initial_seed",
+        "get_rng_state": "torch.accelerator.random.get_rng_state",
+    }
+    for api, replacement in expected.items():
+      with self.subTest(api=api):
+        reason = getattr(
+            getattr(torch.tpu, api), annotations.TT_API_STAGE_REASON, ""
+        )
+        if _has_target_api(replacement):
+          self.assertIn(f"Prefer {replacement}.", reason)
+        else:
+          self.assertNotIn("Prefer", reason)
+
+  def test_experimental_prefer_appends_hint(self):
+    """Verifies @experimental(prefer=...) appends hint when provided."""
+
+    @experimental(
+        "initial_seed() is experimental.",
+        prefer="torch.accelerator.random.initial_seed",
+    )
+    def fn_with_prefer():
+      return 1
+
+    @experimental(
+        "initial_seed() is experimental.",
+        prefer=None,
+    )
+    def fn_without_prefer():
+      return 2
+
+    self.assertEqual(
+        getattr(fn_with_prefer, annotations.TT_API_STAGE_REASON),
+        "initial_seed() is experimental. Prefer"
+        " torch.accelerator.random.initial_seed.",
+    )
+    self.assertEqual(
+        getattr(fn_without_prefer, annotations.TT_API_STAGE_REASON),
+        "initial_seed() is experimental.",
+    )
+
+    with self.assertRaisesRegex(
+        ValueError, "@experimental 'prefer' must be a non-empty string"
+    ):
+
+      @experimental("reason", prefer="")
+      def _invalid():
+        pass
+
+  def test_parse_version(self):
+    """Verifies parse_version and get_torch_version parse version tuples correctly."""
+    self.assertEqual(annotations.parse_version("2.15.0a0"), (2, 15, 0))
+    self.assertEqual(annotations.parse_version("2.12.0"), (2, 12, 0))
+    self.assertEqual(annotations.parse_version("2.11.0"), (2, 11, 0))
+    self.assertEqual(
+        annotations.parse_version("2.11.0.dev20260101"), (2, 11, 0)
+    )
+    self.assertIsInstance(annotations.get_torch_version(), tuple)
+    self.assertGreaterEqual(len(annotations.get_torch_version()), 2)
+
+  def test_has_target_api(self):
+    """Verifies _has_target_api detects present vs absent attributes."""
+    self.assertTrue(_has_target_api("torch.accelerator.current_device_index"))
+    self.assertFalse(
+        _has_target_api("torch.accelerator.non_existent_api_12345")
+    )
+    self.assertFalse(_has_target_api("torch.non_existent_submodule.foo"))
 
 
 if __name__ == "__main__":

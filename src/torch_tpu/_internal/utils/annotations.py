@@ -20,6 +20,9 @@ metadata (__tt_api_stage__, __tt_api_stage_reason__,
 __tt_api_deprecated_version__) to functions, methods, or classes for automatic
 inspection by scanner tools, and emit standard Python runtime warnings
 (UserWarning, DeprecationWarning) on the first invocation per process.
+
+Warnings are suppressed when the caller is within the torch or torch_tpu
+internal framework packages.
 """
 
 import dataclasses
@@ -41,6 +44,27 @@ TT_API_STAGES_MAP = "__tt_api_stages__"
 _FRAMEWORK_PACKAGES: tuple[str, ...] = ("torch", "torch_tpu")
 
 
+def parse_version(version: str) -> tuple[int, ...]:
+  """Parses leading numeric components from a version string into a tuple."""
+  components = []
+  for part in version.split("."):
+    digits = ""
+    for ch in part:
+      if not ch.isdigit():
+        break
+      digits += ch
+    if not digits:
+      break
+    components.append(int(digits))
+  return tuple(components)
+
+
+@functools.lru_cache(maxsize=1)
+def get_torch_version() -> tuple[int, ...]:
+  """Returns PyTorch runtime version parsed into an integer tuple."""
+  return parse_version(torch.__version__)
+
+
 def _is_framework_caller_frame(frame: Any) -> bool:
   """Checks if a stack frame belongs to torch or torch_tpu framework packages."""
   if frame is None:
@@ -60,6 +84,7 @@ def _is_framework_caller_frame(frame: Any) -> bool:
 
 class Stage(str, enum.Enum):
   """Lifecycle stages for TorchTPU APIs."""
+
   INTERNAL = "Internal"
   STABLE = "Stable"
   EXPERIMENTAL = "Experimental"
@@ -163,6 +188,9 @@ def _create_warning_wrapper(
 ) -> Callable[..., Any]:
   """Wraps a callable to emit a one-time warning per process before execution.
 
+  Warnings are suppressed when called from torch or torch_tpu internal framework
+  code, preserving the one-time warning for subsequent external user calls.
+
   Args:
     fn_to_wrap: The callable to wrap.
     display_target: The target object to display in the warning message.
@@ -256,7 +284,18 @@ def _annotate_target(
   return target
 
 
-def experimental(reason: str) -> Callable[[_T], _T]:
+def _format_reason_with_prefer(
+    reason: str, prefer: Optional[str] = None
+) -> str:
+  """Appends a migration hint to `reason` when `prefer` is provided."""
+  if not prefer:
+    return reason
+  return f"{reason.rstrip()} Prefer {prefer}."
+
+
+def experimental(
+    reason: str, *, prefer: Optional[str] = None
+) -> Callable[[_T], _T]:
   """Marks a TorchTPU Python API (function or class) as experimental.
 
   Experimental APIs are exposed under public namespaces (e.g. torch.tpu.*) for
@@ -267,15 +306,23 @@ def experimental(reason: str) -> Callable[[_T], _T]:
 
   Args:
     reason: Non-empty explanation for why the API is experimental.
+    prefer: Optional dotted path to a preferred replacement API (e.g.
+      "torch.accelerator.current_stream"). When provided, a "Prefer <prefer>."
+      hint is appended to `reason`.
 
   Returns:
     The decorated function or class with experimental stage metadata attached.
   """
   if not isinstance(reason, str) or not reason.strip():
     raise ValueError("@experimental requires a non-empty reason string.")
+  if prefer is not None and (not isinstance(prefer, str) or not prefer.strip()):
+    raise ValueError(
+        "@experimental 'prefer' must be a non-empty string when provided."
+    )
 
+  full_reason = _format_reason_with_prefer(reason, prefer)
   return lambda target: _annotate_target(
-      target, stage=Stage.EXPERIMENTAL, reason=reason
+      target, stage=Stage.EXPERIMENTAL, reason=full_reason
   )
 
 

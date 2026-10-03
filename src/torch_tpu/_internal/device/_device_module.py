@@ -35,6 +35,8 @@ from torch_tpu._internal.utils import annotations
 from torch_tpu._internal.utils import hardware
 
 experimental = annotations.experimental
+get_torch_version = annotations.get_torch_version
+
 
 # TODO: add more dtypes here. Initial list was chosen arbitrarily.
 _AMP_SUPPORTED_DTYPES = (
@@ -441,7 +443,12 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
 
   @classmethod
   @experimental(
-      "current_device() is experimental and subject to change without notice."
+      "current_device() is experimental and subject to change without notice.",
+      prefer=(
+          "torch.accelerator.current_device_index"
+          if get_torch_version() >= (2, 11)
+          else None
+      ),
   )
   def current_device(cls) -> int:  # This is in torch/cuda/__init__.py.
     """Returns the index of the currently selected device.
@@ -472,7 +479,12 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
 
   @classmethod
   @experimental(
-      "set_device() is experimental and subject to change without notice."
+      "set_device() is experimental and subject to change without notice.",
+      prefer=(
+          "torch.accelerator.set_device_index"
+          if get_torch_version() >= (2, 11)
+          else None
+      ),
   )
   def set_device(
       cls, device: int | str | torch.device
@@ -537,7 +549,12 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
 
   @classmethod
   @experimental(
-      "is_available() is experimental and subject to change without notice."
+      "is_available() is experimental and subject to change without notice.",
+      prefer=(
+          "torch.accelerator.is_available"
+          if get_torch_version() >= (2, 11)
+          else None
+      ),
   )
   def is_available(cls) -> bool:  # This is in torch/cuda/__init__.py.
     """Returns if the TPU backend is currently available.
@@ -648,7 +665,12 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
   @classmethod
   @experimental(
       "initial_seed() is experimental and may change or be removed without"
-      " notice."
+      " notice.",
+      prefer=(
+          "torch.accelerator.random.initial_seed"
+          if get_torch_version() >= (2, 13)
+          else None
+      ),
   )
   def initial_seed(cls) -> int:
     """Returns the current random seed of the current TPU device.
@@ -667,7 +689,12 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
 
   @classmethod
   @experimental(
-      "get_rng_state() is experimental and subject to change without notice."
+      "get_rng_state() is experimental and subject to change without notice.",
+      prefer=(
+          "torch.accelerator.random.get_rng_state"
+          if get_torch_version() >= (2, 13)
+          else None
+      ),
   )
   def get_rng_state(
       cls, device: int | str | torch.device = "tpu"
@@ -726,7 +753,12 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
 
   @classmethod
   @experimental(
-      "set_stream() is experimental and subject to change without notice."
+      "set_stream() is experimental and subject to change without notice.",
+      prefer=(
+          "torch.accelerator.set_stream"
+          if get_torch_version() >= (2, 11)
+          else None
+      ),
   )
   def set_stream(cls, stream: streams.TpuStream) -> None:
     """Sets the current stream.
@@ -740,7 +772,12 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
 
   @classmethod
   @experimental(
-      "synchronize() is experimental and subject to change without notice."
+      "synchronize() is experimental and subject to change without notice.",
+      prefer=(
+          "torch.accelerator.synchronize"
+          if get_torch_version() >= (2, 11)
+          else None
+      ),
   )
   def synchronize(cls, device: int | None = None) -> None:
     """Waits for all kernels in all streams on a TPU device to complete.
@@ -752,7 +789,12 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
 
   @classmethod
   @experimental(
-      "device_count() is experimental and subject to change without notice."
+      "device_count() is experimental and subject to change without notice.",
+      prefer=(
+          "torch.accelerator.device_count"
+          if get_torch_version() >= (2, 11)
+          else None
+      ),
   )
   def device_count(cls) -> int:  # This is in torch/cuda/__init__.py.
     """Returns the count of devices. This is implemented for *local* devices.
@@ -823,7 +865,12 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
 
   @classmethod
   @experimental(
-      "current_stream() is experimental and subject to change without notice."
+      "current_stream() is experimental and subject to change without notice.",
+      prefer=(
+          "torch.accelerator.current_stream"
+          if get_torch_version() >= (2, 11)
+          else None
+      ),
   )
   def current_stream(
       cls, device: torch.device | None = None
