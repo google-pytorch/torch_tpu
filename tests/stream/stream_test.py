@@ -513,8 +513,8 @@ _EVENT_CONSTRUCTORS = (
 class EventElapsedTimeTest(seed_test_utils.RepeatableTest):
   """Tests for elapsed_time() of torch.tpu.Event and torch.Event.
 
-  Every test runs with both constructors, since torch.tpu.Event overrides the
-  event methods of torch.Event.
+  The parameterized tests run with both constructors, since torch.tpu.Event
+  overrides the event methods of torch.Event.
   """
 
   @parameterized.named_parameters(*_EVENT_CONSTRUCTORS)
@@ -671,6 +671,23 @@ class EventElapsedTimeTest(seed_test_utils.RepeatableTest):
 
     with self.assertRaisesRegex(RuntimeError, 'torch.Event object'):
       timed.elapsed_time(None)
+
+  def test_event_elapsed_time_to_torch_event(self):
+    """Tests a torch.tpu.Event timed against a torch.Event end event."""
+    x = torch.ones((8, 8), device='tpu')
+    start = torch.tpu.Event(enable_timing=True)
+    end = torch.Event(device='tpu', enable_timing=True)
+    host_start = time.perf_counter()
+    start.record()
+    y = x + x
+    end.record()
+    end.synchronize()
+    elapsed_ms = start.elapsed_time(end)
+
+    self.assertBetween(
+        elapsed_ms, 0.0, (time.perf_counter() - host_start) * 1000
+    )
+    utils.assert_close(y.to('cpu'), torch.full((8, 8), 2.0))
 
 
 if __name__ == '__main__':

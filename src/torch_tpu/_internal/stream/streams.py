@@ -303,7 +303,7 @@ class TpuEvent(torch.Event):
       'elapsed_time() is experimental and may change or be removed without'
       ' notice.'
   )
-  def elapsed_time(self, end_event: Self) -> float:
+  def elapsed_time(self, end_event: torch.Event) -> float:
     """Returns the milliseconds between this event and ``end_event`` completing.
 
     An event completes when all work captured by :meth:`record` has finished.
