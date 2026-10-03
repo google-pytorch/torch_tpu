@@ -484,7 +484,12 @@ class DecodeStepper(common.BaseStepper):
     if supports_static is None and hasattr(self._model, "config"):
       supports_static = getattr(cfg, "_supports_static_cache", None)
 
-    if model_type in _RECURRENT_MODEL_TYPES:
+    if _safe_get(cfg, "alibi") or model_type == "bloom":
+      # ALiBi attention models (such as Bloom and Falcon with alibi=True) do not
+      # support StaticCache due to fixed-length bias shape mismatches (Bloom's
+      # config does not define an explicit `alibi` flag).
+      supports_static = False
+    elif model_type in _RECURRENT_MODEL_TYPES:
       # Pure recurrent / SSM stacks carry no attention KV cache to preallocate,
       # so a StaticCache buys nothing; DynamicCache with crop-based rollback is
       # the cheaper and better-exercised path for them.
