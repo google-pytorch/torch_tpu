@@ -177,7 +177,7 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
 
     embedding_table = torch.cat(sharded_tables, dim=0).to(device)
 
-    out_tpu = torch.ops.tpu.sparse_dense_matmul(
+    out_tpu = torch.tpu.ops.sparse_dense_matmul(
         rp.to(device),
         e_ids.to(device),
         s_ids.to(device),
@@ -572,7 +572,7 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
     )
 
     def matmul_fn(rp, e_ids, s_ids, g, et):
-      return torch.ops.tpu.sparse_dense_matmul(
+      return torch.tpu.ops.sparse_dense_matmul(
           rp,
           e_ids,
           s_ids,
@@ -624,7 +624,7 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
         self._get_inputs(device)
     )
 
-    out = torch.ops.tpu.sparse_dense_matmul(
+    out = torch.tpu.ops.sparse_dense_matmul(
         row_pointers,
         embedding_ids,
         sample_ids,
@@ -685,7 +685,7 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
 
     # Execute backward SGD in eager mode without torch.compile
     # to verify eager DeviceAssignment
-    updated_table_tpu = torch.ops.tpu.sparse_dense_matmul_grad_with_sgd(
+    updated_table_tpu = torch.tpu.ops.sparse_dense_matmul_grad_with_sgd(
         row_pointers,
         embedding_ids,
         sample_ids,
@@ -730,7 +730,7 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
     # Execute backward Adagrad in eager mode without torch.compile
     # to verify eager DeviceAssignment
     updated_table, updated_acc = (
-        torch.ops.tpu.sparse_dense_matmul_grad_with_adagrad(
+        torch.tpu.ops.sparse_dense_matmul_grad_with_adagrad(
             row_pointers,
             embedding_ids,
             sample_ids,
@@ -782,7 +782,7 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
     learning_rate = torch.tensor(0.01, dtype=torch.float32, device=device)
 
     def grad_fn(rp, e_ids, s_ids, g, et, ag, lr):
-      return torch.ops.tpu.sparse_dense_matmul_grad_with_sgd(
+      return torch.tpu.ops.sparse_dense_matmul_grad_with_sgd(
           rp,
           e_ids,
           s_ids,
@@ -828,7 +828,7 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
 
     # Numerical check using finite differences of forward op
     def matmul_fn(rp, e_ids, s_ids, g, et):
-      return torch.ops.tpu.sparse_dense_matmul(
+      return torch.tpu.ops.sparse_dense_matmul(
           rp,
           e_ids,
           s_ids,
@@ -915,7 +915,7 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
     epsilon = 1e-10
 
     def grad_fn(rp, e_ids, s_ids, g, et, acc, ag, lr, eps):
-      return torch.ops.tpu.sparse_dense_matmul_grad_with_adagrad(
+      return torch.tpu.ops.sparse_dense_matmul_grad_with_adagrad(
           rp,
           e_ids,
           s_ids,
@@ -969,7 +969,7 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
         )
 
     def matmul_fn(rp, e_ids, s_ids, g, et):
-      return torch.ops.tpu.sparse_dense_matmul(
+      return torch.tpu.ops.sparse_dense_matmul(
           rp,
           e_ids,
           s_ids,
@@ -1064,7 +1064,7 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
     epsilon = 1e-10
 
     def grad_fn(rp, e_ids, s_ids, g, et, acc, ag, lr, eps):
-      return torch.ops.tpu.sparse_dense_matmul_grad_with_adagrad(
+      return torch.tpu.ops.sparse_dense_matmul_grad_with_adagrad(
           rp,
           e_ids,
           s_ids,
@@ -1118,7 +1118,7 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
         )
 
     def matmul_fn(rp, e_ids, s_ids, g, et):
-      return torch.ops.tpu.sparse_dense_matmul(
+      return torch.tpu.ops.sparse_dense_matmul(
           rp,
           e_ids,
           s_ids,
@@ -1237,7 +1237,7 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
     epsilon = 1e-8
 
     def grad_fn(rp, e_ids, s_ids, g, et, mom, vel, ag, lr, b1, b2, eps):
-      return torch.ops.tpu.sparse_dense_matmul_grad_with_adam(
+      return torch.tpu.ops.sparse_dense_matmul_grad_with_adam(
           rp,
           e_ids,
           s_ids,
@@ -1311,7 +1311,7 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
 
     # Numerical check using finite differences of forward op
     def matmul_fn(rp, e_ids, s_ids, g, et):
-      return torch.ops.tpu.sparse_dense_matmul(
+      return torch.tpu.ops.sparse_dense_matmul(
           rp,
           e_ids,
           s_ids,
@@ -1442,7 +1442,7 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
     epsilon = 1e-8
 
     def grad_fn(rp, e_ids, s_ids, g, et, mom, vel, ag, lr, b1, b2, eps):
-      return torch.ops.tpu.sparse_dense_matmul_grad_with_adam(
+      return torch.tpu.ops.sparse_dense_matmul_grad_with_adam(
           rp,
           e_ids,
           s_ids,
@@ -1516,7 +1516,7 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
 
     # Numerical check using finite differences of forward op
     def matmul_fn(rp, e_ids, s_ids, g, et):
-      return torch.ops.tpu.sparse_dense_matmul(
+      return torch.tpu.ops.sparse_dense_matmul(
           rp,
           e_ids,
           s_ids,
@@ -1613,7 +1613,7 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
     lr = torch.tensor(0.01, dtype=torch.float32, device=device)
 
     for step in range(2):
-      table_t8 = torch.ops.tpu.sparse_dense_matmul_grad_with_sgd(
+      table_t8 = torch.tpu.ops.sparse_dense_matmul_grad_with_sgd(
           row_pointers,
           embedding_ids,
           sample_ids,
@@ -1635,7 +1635,7 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
       )
       self.assertEqual(tpu_annotations.TpuLayout(*layout_tuple), t8_layout)
 
-    upd_table, upd_acc = torch.ops.tpu.sparse_dense_matmul_grad_with_adagrad(
+    upd_table, upd_acc = torch.tpu.ops.sparse_dense_matmul_grad_with_adagrad(
         row_pointers,
         embedding_ids,
         sample_ids,
@@ -1657,7 +1657,7 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
       self.assertEqual(tpu_annotations.TpuLayout(*layout_tuple), t8_layout)
 
     upd_table, upd_mom, upd_vel = (
-        torch.ops.tpu.sparse_dense_matmul_grad_with_adam(
+        torch.tpu.ops.sparse_dense_matmul_grad_with_adam(
             row_pointers,
             embedding_ids,
             sample_ids,

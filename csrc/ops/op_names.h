@@ -1161,9 +1161,9 @@ ToString(  // NOLINT(google-readability-function-size)
     case OpName::kDistributedBroadcast:
       return "distributed.broadcast";
     case OpName::kDistributedExperimentalRecv:
-      return "experimental_recv";
+      return "_experimental_recv";
     case OpName::kDistributedExperimentalSend:
-      return "experimental_send";
+      return "_experimental_send";
     case OpName::kDistributedGather:
       return "distributed.gather";
     case OpName::kDistributedReduceScatter:
@@ -2111,15 +2111,15 @@ ToString(  // NOLINT(google-readability-function-size)
     case OpName::kPut_:
       return "put_";
     case OpName::kRaggedAllToAll:
-      return "ragged_all_to_all";
+      return "_ragged_all_to_all";
     case OpName::kRaggedAllToAllOut:
-      return "ragged_all_to_all.out";
+      return "_ragged_all_to_all.out";
     case OpName::kRaggedDot:
-      return "ragged_dot";
+      return "_ragged_dot";
     case OpName::kRaggedDotOut:
-      return "ragged_dot.out";
+      return "_ragged_dot.out";
     case OpName::kRaggedDotWeightGrad:
-      return "ragged_dot_weight_grad";
+      return "_ragged_dot_weight_grad";
     case OpName::kRandom_:
       return "random_";
     case OpName::kRandom_From:
@@ -2323,27 +2323,27 @@ ToString(  // NOLINT(google-readability-function-size)
     case OpName::kSparseCooTensorWithDimsAndTensors:
       return "_sparse_coo_tensor_with_dims_and_tensors";
     case OpName::kSparseDenseMatmul:
-      return "sparse_dense_matmul";
+      return "_sparse_dense_matmul";
     case OpName::kSparseDenseMatmulActivationUnstack:
-      return "sparse_dense_matmul_activation_unstack";
+      return "_sparse_dense_matmul_activation_unstack";
     case OpName::kSparseDenseMatmulGradWithAdagrad:
-      return "sparse_dense_matmul_grad_with_adagrad";
+      return "_sparse_dense_matmul_grad_with_adagrad";
     case OpName::kSparseDenseMatmulGradWithAdam:
-      return "sparse_dense_matmul_grad_with_adam";
+      return "_sparse_dense_matmul_grad_with_adam";
     case OpName::kSparseDenseMatmulGradWithSgd:
-      return "sparse_dense_matmul_grad_with_sgd";
+      return "_sparse_dense_matmul_grad_with_sgd";
     case OpName::kSparseDenseMatmulGradientStack:
-      return "sparse_dense_matmul_gradient_stack";
+      return "_sparse_dense_matmul_gradient_stack";
     case OpName::kSparseDim:
       return "sparse_dim";
     case OpName::kSparseGather:
-      return "sparse_gather";
+      return "_sparse_gather";
     case OpName::kSparseGatherBackward:
-      return "sparse_gather_backward";
+      return "_sparse_gather_backward";
     case OpName::kSparseIota:
-      return "sparse_iota";
+      return "_sparse_iota";
     case OpName::kSparseMapRow:
-      return "sparse_map_row";
+      return "_sparse_map_row";
     case OpName::kSparseResizeAndClear_:
       return "sparse_resize_and_clear_";
     case OpName::kSparseResize_:

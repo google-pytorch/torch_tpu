@@ -213,13 +213,13 @@ std::vector<at::Tensor> AtenSparseDenseMatmulActivationUnstack(
 }
 
 // Autograd implementation for
-// torch.ops.tpu.sparse_dense_matmul_activation_unstack.
+// torch.ops.tpu._sparse_dense_matmul_activation_unstack.
 //
 // In forward, we save the stacked dimensions and per-feature sizes in
 // `ctx->saved_data`. Saving `stacked_activations` is explicitly avoided to
 // minimize peak HBM memory.
 //
-// In backward, we invoke torch.ops.tpu.sparse_dense_matmul_gradient_stack to
+// In backward, we invoke torch.ops.tpu._sparse_dense_matmul_gradient_stack to
 // stack and interleave the incoming gradients across SparseCore cores.
 std::vector<at::Tensor> AtenSparseDenseMatmulActivationUnstackAutograd::forward(
     torch::autograd::AutogradContext* ctx,
@@ -233,7 +233,7 @@ std::vector<at::Tensor> AtenSparseDenseMatmulActivationUnstackAutograd::forward(
 
   static const absl::NoDestructor unstack_op(
       at::Dispatcher::singleton()
-          .findSchemaOrThrow("tpu::sparse_dense_matmul_activation_unstack", "")
+          .findSchemaOrThrow("tpu::_sparse_dense_matmul_activation_unstack", "")
           .typed<std::vector<at::Tensor>(const at::Tensor&, at::IntArrayRef,
                                          at::IntArrayRef)>());
 
@@ -274,7 +274,7 @@ AtenSparseDenseMatmulActivationUnstackAutograd::backward(
 
     static const absl::NoDestructor grad_stack_op(
         at::Dispatcher::singleton()
-            .findSchemaOrThrow("tpu::sparse_dense_matmul_gradient_stack", "")
+            .findSchemaOrThrow("tpu::_sparse_dense_matmul_gradient_stack", "")
             .typed<at::Tensor(at::TensorList, int64_t, int64_t)>());
 
     at::AutoDispatchBelowADInplaceOrView guard;

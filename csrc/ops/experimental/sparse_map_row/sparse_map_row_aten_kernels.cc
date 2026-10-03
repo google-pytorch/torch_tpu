@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-// This file implements the ATen kernel for `torch.ops.tpu.sparse_map_row`,
+// This file implements the ATen kernel for `torch.ops.tpu._sparse_map_row`,
 // which maps a user-defined row-wise computation over one or more sparse
 // matrices in Compressed Sparse Row (CSR) format on TPU SparseCore.
 //
@@ -318,7 +318,7 @@ absl::Status ValidateSparseMapRowInputs(
   return absl::OkStatus();
 }
 
-// ATen kernel implementation for torch.ops.tpu.sparse_map_row.
+// ATen kernel implementation for torch.ops.tpu._sparse_map_row.
 std::vector<at::Tensor> AtenSparseMapRow(
     const std::vector<at::Tensor>& csr_tensors, at::IntArrayRef csr_lengths,
     const std::vector<at::Tensor>& dense_args, std::string_view body_mlir,

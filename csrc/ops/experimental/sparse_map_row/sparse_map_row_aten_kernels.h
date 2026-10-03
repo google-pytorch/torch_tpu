@@ -44,7 +44,7 @@ absl::Status ValidateSparseMapRowInputs(
     const std::vector<at::Tensor>& dummy_outputs,
     int64_t max_non_zeroes_per_row, int64_t result_row_pointer_op_index);
 
-// ATen implementation of `torch.ops.tpu.sparse_map_row`.
+// ATen implementation of `torch.ops.tpu._sparse_map_row`.
 //
 // Maps a row-wise user computation across one or more sparse matrices in CSR
 // format on TPU SparseCore. Lowers to a `stablehlo.custom_call` targeting

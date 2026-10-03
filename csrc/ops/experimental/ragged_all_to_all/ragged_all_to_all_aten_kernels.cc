@@ -179,7 +179,7 @@ at::Tensor AtenRaggedAllToAllAutograd::forward(
   // Cache the operator handle to avoid string schema lookup on every call.
   static const absl::NoDestructor op(
       at::Dispatcher::singleton()
-          .findSchemaOrThrow("tpu::ragged_all_to_all", "")
+          .findSchemaOrThrow("tpu::_ragged_all_to_all", "")
           .typed<at::Tensor(const at::Tensor&, const at::Tensor&,
                             const at::Tensor&, const at::Tensor&,
                             const at::Tensor&, const at::Tensor&,
@@ -263,7 +263,7 @@ torch::autograd::variable_list AtenRaggedAllToAllAutograd::backward(
   // Cache the operator handle to avoid string schema lookup on every call.
   static const absl::NoDestructor op(
       at::Dispatcher::singleton()
-          .findSchemaOrThrow("tpu::ragged_all_to_all", "")
+          .findSchemaOrThrow("tpu::_ragged_all_to_all", "")
           .typed<at::Tensor(const at::Tensor&, const at::Tensor&,
                             const at::Tensor&, const at::Tensor&,
                             const at::Tensor&, const at::Tensor&,

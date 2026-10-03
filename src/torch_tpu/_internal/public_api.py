@@ -198,6 +198,12 @@ _PUBLIC_MODULES: Mapping[str, ModuleSpec] = {
             "align_jagged_to_multiple": (
                 "torch_tpu._internal.ops.jagged:align_jagged_to_multiple"
             ),
+            "experimental_recv": (
+                "torch_tpu._internal.ops.ops:experimental_recv"
+            ),
+            "experimental_send": (
+                "torch_tpu._internal.ops.ops:experimental_send"
+            ),
             "max_pool1d": "torch_tpu._internal.ops.ops:max_pool1d",
             "max_pool1d_backward": (
                 "torch_tpu._internal.ops.ops:max_pool1d_backward"
@@ -213,6 +219,37 @@ _PUBLIC_MODULES: Mapping[str, ModuleSpec] = {
             "optimization_barrier": (
                 "torch_tpu._internal.ops.ops:optimization_barrier"
             ),
+            "ragged_all_to_all": (
+                "torch_tpu._internal.ops.ops:ragged_all_to_all"
+            ),
+            "ragged_dot": "torch_tpu._internal.ops.ops:ragged_dot",
+            "ragged_dot_weight_grad": (
+                "torch_tpu._internal.ops.ops:ragged_dot_weight_grad"
+            ),
+            "sparse_dense_matmul": (
+                "torch_tpu._internal.ops.ops:sparse_dense_matmul"
+            ),
+            "sparse_dense_matmul_activation_unstack": (
+                "torch_tpu._internal.ops.ops:sparse_dense_matmul_activation_unstack"
+            ),
+            "sparse_dense_matmul_grad_with_adagrad": (
+                "torch_tpu._internal.ops.ops:sparse_dense_matmul_grad_with_adagrad"
+            ),
+            "sparse_dense_matmul_grad_with_adam": (
+                "torch_tpu._internal.ops.ops:sparse_dense_matmul_grad_with_adam"
+            ),
+            "sparse_dense_matmul_grad_with_sgd": (
+                "torch_tpu._internal.ops.ops:sparse_dense_matmul_grad_with_sgd"
+            ),
+            "sparse_dense_matmul_gradient_stack": (
+                "torch_tpu._internal.ops.ops:sparse_dense_matmul_gradient_stack"
+            ),
+            "sparse_gather": "torch_tpu._internal.ops.ops:sparse_gather",
+            "sparse_gather_backward": (
+                "torch_tpu._internal.ops.ops:sparse_gather_backward"
+            ),
+            "sparse_iota": "torch_tpu._internal.ops.ops:sparse_iota",
+            "sparse_map_row": "torch_tpu._internal.ops.ops:sparse_map_row",
             "splash_sdpa": (
                 "torch_tpu._internal.ops.splash_attention:splash_sdpa"
             ),

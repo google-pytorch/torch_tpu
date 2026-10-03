@@ -86,7 +86,7 @@ class SparseIotaTest(op_testing.TorchTpuTestBase):
     expected = inputs[5]
 
     def iota_fn(rp):
-      return torch.ops.tpu.sparse_iota(
+      return torch.tpu.ops.sparse_iota(
           rp,
           max_non_zeroes=max_non_zeroes,
           max_non_zeroes_per_row=max_non_zeroes_per_row,

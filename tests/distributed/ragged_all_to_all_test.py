@@ -59,7 +59,7 @@ def run_ragged_all_to_all_test() -> None:
   operand = torch.arange(offset, offset + world_size, dtype=torch.int32).tpu()
   output = torch.zeros(world_size, dtype=torch.int32).tpu()
 
-  result = torch.ops.tpu.ragged_all_to_all(
+  result = torch.tpu.ops.ragged_all_to_all(
       operand,
       output,
       input_offsets,
@@ -85,7 +85,7 @@ def run_ragged_all_to_all_test() -> None:
 
 
 def run_ragged_all_to_all_uneven_test() -> None:
-  """Tests the lower-level torch.ops.tpu.ragged_all_to_all custom call with uneven splits.
+  """Tests the lower-level torch.tpu.ops.ragged_all_to_all custom call with uneven splits.
 
   What this test does:
     1. Exercises the underlying TPU custom call directly with non-uniform
@@ -150,7 +150,7 @@ def run_ragged_all_to_all_uneven_test() -> None:
   output = torch.zeros(total_recv, dtype=torch.int32).tpu()
 
   # Invoke the ragged_all_to_all ATen custom call.
-  result = torch.ops.tpu.ragged_all_to_all(
+  result = torch.tpu.ops.ragged_all_to_all(
       operand,
       output,
       input_offsets,
@@ -259,7 +259,7 @@ def run_dist_all_to_all_single_uneven_test() -> None:
 
 
 def run_ragged_all_to_all_autograd_test() -> None:
-  """Tests the backward autograd pass of torch.ops.tpu.ragged_all_to_all with uneven splits.
+  """Tests the backward autograd pass of torch.tpu.ops.ragged_all_to_all with uneven splits.
 
   What this test does:
     1. Evaluates autograd backward gradient propagation through
@@ -323,7 +323,7 @@ def run_ragged_all_to_all_autograd_test() -> None:
   output = torch.zeros(total_recv, dtype=torch.float32).tpu()
 
   # Invoke the ragged_all_to_all ATen custom call.
-  result = torch.ops.tpu.ragged_all_to_all(
+  result = torch.tpu.ops.ragged_all_to_all(
       operand,
       output,
       input_offsets,
@@ -431,7 +431,7 @@ def run_ragged_all_to_all_autograd_zero_sized_and_padding_test() -> None:
   )
   output = torch.zeros(total_recv, dtype=torch.float32).tpu()
 
-  result = torch.ops.tpu.ragged_all_to_all(
+  result = torch.tpu.ops.ragged_all_to_all(
       operand,
       output,
       input_offsets,
@@ -541,7 +541,7 @@ def run_ragged_all_to_all_autograd_bfloat16_and_chained_test() -> None:
   z = operand * 2.0
 
   # Invoke ragged_all_to_all on intermediate tensor z
-  res = torch.ops.tpu.ragged_all_to_all(
+  res = torch.tpu.ops.ragged_all_to_all(
       z,
       output,
       input_offsets,
@@ -637,7 +637,7 @@ def run_ragged_all_to_all_autograd_2d_test() -> None:
   operand = (base_tokens + feature_offsets).tpu().requires_grad_(True)
   output = torch.zeros((total_recv, hidden_dim), dtype=torch.float32).tpu()
 
-  result = torch.ops.tpu.ragged_all_to_all(
+  result = torch.tpu.ops.ragged_all_to_all(
       operand,
       output,
       input_offsets,
@@ -743,7 +743,7 @@ def run_ragged_all_to_all_autograd_multiple_iterations_test() -> None:
     )
     output = torch.zeros(total_recv, dtype=torch.float32).tpu()
 
-    result = torch.ops.tpu.ragged_all_to_all(
+    result = torch.tpu.ops.ragged_all_to_all(
         operand,
         output,
         input_offsets,
@@ -783,7 +783,7 @@ def run_ragged_all_to_all_no_grad_test() -> None:
   """Tests execution within torch.no_grad() context.
 
   What this test does:
-    1. Executes torch.ops.tpu.ragged_all_to_all wrapped inside a `with
+    1. Executes torch.tpu.ops.ragged_all_to_all wrapped inside a `with
     torch.no_grad():` block.
     2. Verifies that the ATen autograd wrapper detects that gradient tracking is
     disabled
@@ -816,7 +816,7 @@ def run_ragged_all_to_all_no_grad_test() -> None:
   output = torch.zeros(world_size, dtype=torch.float32).tpu()
 
   with torch.no_grad():
-    result = torch.ops.tpu.ragged_all_to_all(
+    result = torch.tpu.ops.ragged_all_to_all(
         operand,
         output,
         input_offsets,

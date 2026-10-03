@@ -223,7 +223,7 @@ at::Tensor AtenRaggedDotAutograd::forward(torch::autograd::AutogradContext* ctx,
   // Cache the operator handle to avoid string schema lookup on every call.
   static const absl::NoDestructor op(
       at::Dispatcher::singleton()
-          .findSchemaOrThrow("tpu::ragged_dot", "")
+          .findSchemaOrThrow("tpu::_ragged_dot", "")
           .typed<at::Tensor(const at::Tensor&, const at::Tensor&,
                             const at::Tensor&)>());
 
@@ -249,7 +249,7 @@ torch::autograd::variable_list AtenRaggedDotAutograd::backward(
     // Cache the operator handle to avoid string schema lookup on every call.
     static const absl::NoDestructor op(
         at::Dispatcher::singleton()
-            .findSchemaOrThrow("tpu::ragged_dot", "")
+            .findSchemaOrThrow("tpu::_ragged_dot", "")
             .typed<at::Tensor(const at::Tensor&, const at::Tensor&,
                               const at::Tensor&)>());
 
@@ -263,7 +263,7 @@ torch::autograd::variable_list AtenRaggedDotAutograd::backward(
     // Cache the operator handle to avoid string schema lookup on every call.
     static const absl::NoDestructor op(
         at::Dispatcher::singleton()
-            .findSchemaOrThrow("tpu::ragged_dot_weight_grad", "")
+            .findSchemaOrThrow("tpu::_ragged_dot_weight_grad", "")
             .typed<at::Tensor(const at::Tensor&, const at::Tensor&,
                               const at::Tensor&)>());
 

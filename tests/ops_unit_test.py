@@ -11697,7 +11697,7 @@ class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
         g, k, n
     )
     group_sizes = torch.tensor([1, 4], dtype=torch.int32, device=device)
-    out = torch.ops.tpu.ragged_dot(lhs, rhs, group_sizes)
+    out = torch.tpu.ops.ragged_dot(lhs, rhs, group_sizes)
     expected = torch.asarray(
         [
             [42.0, 48.0, 54.0],
@@ -11722,7 +11722,7 @@ class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
         [1, 1, 0, 1, 1], dtype=torch.int32, device=device
     )
     out = torch.zeros(m, n, dtype=torch.float32, device=device)
-    res = torch.ops.tpu.ragged_dot(lhs, rhs, group_sizes, out=out)
+    res = torch.tpu.ops.ragged_dot(lhs, rhs, group_sizes, out=out)
     expected = torch.asarray(
         [
             [10.0, 13.0],
@@ -11738,7 +11738,7 @@ class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
   def test_ragged_dot_weight_grad_on_tpu(self):
     """Tests the tpu.ragged_dot_weight_grad custom op on TPU.
 
-    Verifies that torch.ops.tpu.ragged_dot_weight_grad computes the gradient
+    Verifies that torch.tpu.ops.ragged_dot_weight_grad computes the gradient
     with respect to the 3D weights tensor (grad_rhs) by contracting activations
     and output gradients along the ragged token dimension.
 
@@ -11754,7 +11754,7 @@ class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
     lhs = torch.arange(m * k, dtype=torch.float32, device=device).reshape(m, k)
     grad_output = torch.ones(m, n, dtype=torch.float32, device=device)
     group_sizes = torch.tensor([2, 3], dtype=torch.int32, device=device)
-    res = torch.ops.tpu.ragged_dot_weight_grad(lhs, grad_output, group_sizes)
+    res = torch.tpu.ops.ragged_dot_weight_grad(lhs, grad_output, group_sizes)
 
     # Compute expected golden reference slice-by-slice on CPU.
     lhs_cpu = lhs.cpu()
@@ -11777,7 +11777,7 @@ class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
   def test_ragged_dot_autograd_on_tpu(self, compile_test: bool = False):
     """Tests full autograd backward differentiation for tpu.ragged_dot on TPU.
 
-    Verifies that calling .backward() on the output of torch.ops.tpu.ragged_dot
+    Verifies that calling .backward() on the output of torch.tpu.ops.ragged_dot
     (under both eager execution and torch.compile with TpuBackend):
       1. Accurately differentiates with respect to activations (lhs, shape [M,
       K]).
@@ -11809,7 +11809,7 @@ class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
     rhs_tpu = rhs_cpu.detach().to(device).requires_grad_(True)
 
     def op_fn(x, w, s):
-      return torch.ops.tpu.ragged_dot(x, w, s)
+      return torch.tpu.ops.ragged_dot(x, w, s)
 
     # Execute forward pass (either via torch.compile or eager).
     if compile_test:

@@ -75,7 +75,7 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
     per_feature_batch_sizes = [32, 32]
     per_feature_dims = [16, 32]
 
-    results = torch.ops.tpu.sparse_dense_matmul_activation_unstack(
+    results = torch.tpu.ops.sparse_dense_matmul_activation_unstack(
         stacked, per_feature_batch_sizes, per_feature_dims
     )
 
@@ -93,7 +93,7 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
     per_feature_batch_sizes = [32, 32]
     per_feature_dims = [8, 12]
 
-    results = torch.ops.tpu.sparse_dense_matmul_activation_unstack(
+    results = torch.tpu.ops.sparse_dense_matmul_activation_unstack(
         stacked, per_feature_batch_sizes, per_feature_dims
     )
 
@@ -106,7 +106,7 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
     with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Validates custom op schema errors.
         RuntimeError, "expected stacked_activations to be a 2D tensor"
     ):
-      torch.ops.tpu.sparse_dense_matmul_activation_unstack(
+      torch.tpu.ops.sparse_dense_matmul_activation_unstack(
           stacked_1d, [32, 32], [16, 32]
       )
 
@@ -114,42 +114,42 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
     with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Validates custom op schema errors.
         RuntimeError, "expected at least one feature"
     ):
-      torch.ops.tpu.sparse_dense_matmul_activation_unstack(stacked_2d, [], [])
+      torch.tpu.ops.sparse_dense_matmul_activation_unstack(stacked_2d, [], [])
 
     with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Validates custom op schema errors.
         RuntimeError,
         "expected per_feature_batch_sizes and per_feature_dims to have the same"
         " size",
     ):
-      torch.ops.tpu.sparse_dense_matmul_activation_unstack(
+      torch.tpu.ops.sparse_dense_matmul_activation_unstack(
           stacked_2d, [32], [16, 32]
       )
 
     with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Validates custom op schema errors.
         RuntimeError, "to match total stacked batch size"
     ):
-      torch.ops.tpu.sparse_dense_matmul_activation_unstack(
+      torch.tpu.ops.sparse_dense_matmul_activation_unstack(
           stacked_2d, [32, 16], [16, 32]
       )
 
     with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Validates custom op schema errors.
         RuntimeError, "to be at most stacked_embedding_dim"
     ):
-      torch.ops.tpu.sparse_dense_matmul_activation_unstack(
+      torch.tpu.ops.sparse_dense_matmul_activation_unstack(
           stacked_2d, [32, 32], [16, 48]
       )
 
     with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Validates custom op schema errors.
         RuntimeError, "expected per_feature_batch_sizes\\[1\\] to be positive"
     ):
-      torch.ops.tpu.sparse_dense_matmul_activation_unstack(
+      torch.tpu.ops.sparse_dense_matmul_activation_unstack(
           stacked_2d, [64, 0], [16, 32]
       )
 
     with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Validates custom op schema errors.
         RuntimeError, "expected per_feature_dims\\[0\\] to be positive"
     ):
-      torch.ops.tpu.sparse_dense_matmul_activation_unstack(
+      torch.tpu.ops.sparse_dense_matmul_activation_unstack(
           stacked_2d, [32, 32], [0, 32]
       )
 
@@ -157,7 +157,7 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
     g1 = torch.empty(32, 16, device="meta", dtype=torch.float32)
     g2 = torch.empty(32, 32, device="meta", dtype=torch.float32)
 
-    result = torch.ops.tpu.sparse_dense_matmul_gradient_stack([g1, g2], 64, 32)
+    result = torch.tpu.ops.sparse_dense_matmul_gradient_stack([g1, g2], 64, 32)
 
     self.assertEqual(result.shape, torch.Size([64, 32]))
     self.assertEqual(result.dtype, torch.float32)
@@ -168,7 +168,7 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
     g1 = torch.empty(32, 8, device="meta", dtype=torch.float32)
     g2 = torch.empty(32, 12, device="meta", dtype=torch.float32)
 
-    result = torch.ops.tpu.sparse_dense_matmul_gradient_stack([g1, g2], 64, 16)
+    result = torch.tpu.ops.sparse_dense_matmul_gradient_stack([g1, g2], 64, 16)
 
     self.assertEqual(result.shape, torch.Size([64, 16]))
 
@@ -178,13 +178,13 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
         "(expected at least one unstacked gradient|no fallback function is"
         " registered)",
     ):
-      torch.ops.tpu.sparse_dense_matmul_gradient_stack([], 64, 32)
+      torch.tpu.ops.sparse_dense_matmul_gradient_stack([], 64, 32)
 
     g_1d = torch.empty(32, device="meta", dtype=torch.float32)
     with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Validates custom op schema errors.
         RuntimeError, "expected unstacked_gradients\\[0\\] to be a 2D tensor"
     ):
-      torch.ops.tpu.sparse_dense_matmul_gradient_stack([g_1d], 32, 32)
+      torch.tpu.ops.sparse_dense_matmul_gradient_stack([g_1d], 32, 32)
 
     g1 = torch.empty(32, 16, device="meta", dtype=torch.float32)
     g2_int = torch.empty(32, 32, device="meta", dtype=torch.int32)
@@ -192,28 +192,28 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
         RuntimeError,
         "expected unstacked_gradients\\[1\\] to have float32 dtype",
     ):
-      torch.ops.tpu.sparse_dense_matmul_gradient_stack([g1, g2_int], 64, 32)
+      torch.tpu.ops.sparse_dense_matmul_gradient_stack([g1, g2_int], 64, 32)
 
     g2 = torch.empty(32, 32, device="meta", dtype=torch.float32)
     with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Validates custom op schema errors.
         RuntimeError, "to match stacked_batch_size"
     ):
-      torch.ops.tpu.sparse_dense_matmul_gradient_stack([g1, g2], 60, 32)
+      torch.tpu.ops.sparse_dense_matmul_gradient_stack([g1, g2], 60, 32)
 
     with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Validates custom op schema errors.
         RuntimeError, "to be at most stacked_feature_dim"
     ):
-      torch.ops.tpu.sparse_dense_matmul_gradient_stack([g1, g2], 64, 24)
+      torch.tpu.ops.sparse_dense_matmul_gradient_stack([g1, g2], 64, 24)
 
     with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Validates custom op schema errors.
         RuntimeError, "expected stacked_batch_size to be positive"
     ):
-      torch.ops.tpu.sparse_dense_matmul_gradient_stack([g1, g2], 0, 32)
+      torch.tpu.ops.sparse_dense_matmul_gradient_stack([g1, g2], 0, 32)
 
     with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Validates custom op schema errors.
         RuntimeError, "expected stacked_feature_dim to be positive"
     ):
-      torch.ops.tpu.sparse_dense_matmul_gradient_stack([g1, g2], 64, 0)
+      torch.tpu.ops.sparse_dense_matmul_gradient_stack([g1, g2], 64, 0)
 
   @parameterized.parameters(
       (False, [8, 16], 16),
@@ -241,7 +241,7 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
     stacked_activations_tpu = stacked_activations_cpu.to(device)
 
     def unstack_fn(x):
-      return torch.ops.tpu.sparse_dense_matmul_activation_unstack(
+      return torch.tpu.ops.sparse_dense_matmul_activation_unstack(
           x, per_feature_batch_sizes, per_feature_dims
       )
 
@@ -288,7 +288,7 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
     grads_tpu = [g.to(device) for g in grads_cpu]
 
     def stack_fn(grads):
-      return torch.ops.tpu.sparse_dense_matmul_gradient_stack(
+      return torch.tpu.ops.sparse_dense_matmul_gradient_stack(
           grads, stacked_batch_size, stacked_dim
       )
 
@@ -350,7 +350,7 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
     )[0]
 
     # TPU forward + backward using native custom op autograd
-    tpu_unstacked = torch.ops.tpu.sparse_dense_matmul_activation_unstack(
+    tpu_unstacked = torch.tpu.ops.sparse_dense_matmul_activation_unstack(
         stacked_activations_tpu,
         per_feature_batch_sizes,
         per_feature_dims,
@@ -393,7 +393,7 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
     golden_loss = golden_unstacked[0].sum()
     golden_loss.backward()
 
-    tpu_unstacked = torch.ops.tpu.sparse_dense_matmul_activation_unstack(
+    tpu_unstacked = torch.tpu.ops.sparse_dense_matmul_activation_unstack(
         stacked_tpu, per_feature_batch_sizes, per_feature_dims
     )
     tpu_loss = tpu_unstacked[0].sum()

@@ -199,6 +199,26 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
     self.assertFalse(hasattr(torch.ops.tpu, "max_pool2d"))
     self.assertTrue(hasattr(torch.ops.tpu, "_max_pool2d"))
 
+  def test_ops_ragged_dot_registry(self):
+    """Verifies exposure, identity and stage metadata for ragged_dot."""
+    # 1. Symbol identity
+    self.assertIs(torch.tpu.ops.ragged_dot, internal_ops.ragged_dot)
+
+    # 2. Lifecycle stage metadata
+    fn = torch.tpu.ops.ragged_dot
+    self.assertEqual(
+        getattr(fn, annotations.TT_API_STAGE, None),
+        annotations.Stage.EXPERIMENTAL.value,
+    )
+    self.assertEqual(
+        getattr(fn, annotations.TT_API_STAGE_REASON, None),
+        "torch.tpu.ops.ragged_dot is experimental and subject to change.",
+    )
+
+    # 3. The raw custom op is hidden behind a private name.
+    self.assertFalse(hasattr(torch.ops.tpu, "ragged_dot"))
+    self.assertTrue(hasattr(torch.ops.tpu, "_ragged_dot"))
+
   def test_distributed_api_registry(self):
     """Verifies public exposure, identity, metadata, and proxy behavior for distributed."""
     # 1. Verify python -m torch.tpu.distributed resolves code cleanly without

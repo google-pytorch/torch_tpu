@@ -75,7 +75,7 @@ class SparseGatherMetaTest(seed_test_utils.RepeatableTest):
     indices = torch.empty(total_indices, dtype=torch.int32, device="meta")
     operand = torch.empty(table_depth, table_width, dtype=dtype, device="meta")
 
-    out = torch.ops.tpu.sparse_gather(
+    out = torch.tpu.ops.sparse_gather(
         row_pointers, indices, operand, max_non_zeroes_per_row=max_non_zeroes
     )
     self.assertTrue(out.is_meta)
@@ -97,7 +97,7 @@ class SparseGatherMetaTest(seed_test_utils.RepeatableTest):
         table_depth, table_width, dtype=dtype, device="meta"
     )
 
-    out = torch.ops.tpu.sparse_gather_backward(
+    out = torch.tpu.ops.sparse_gather_backward(
         grad_output, indices, grad_operand
     )
     self.assertTrue(out.is_meta)
@@ -158,7 +158,7 @@ class SparseGatherTest(op_testing.TorchTpuTestBase):
     """Verifies forward sparse_gather execution on TPU against CPU indexing.
 
     Checks:
-      - Validates that torch.ops.tpu.sparse_gather correctly reads embedding
+      - Validates that torch.tpu.ops.sparse_gather correctly reads embedding
         rows from `operand` based on CSR `row_pointers` and `indices`.
       - Tests both eager and torch.compile(fullgraph=True) modes.
 
@@ -179,7 +179,7 @@ class SparseGatherTest(op_testing.TorchTpuTestBase):
     )
 
     def gather_fn(rp, idx, op):
-      return torch.ops.tpu.sparse_gather(
+      return torch.tpu.ops.sparse_gather(
           rp, idx, op, max_non_zeroes_per_row=max_non_zeroes_per_row
       )
 
@@ -231,7 +231,7 @@ class SparseGatherTest(op_testing.TorchTpuTestBase):
     indices = torch.tensor(indices_list, dtype=torch.int32, device=device)
 
     def gather_fn(rp, idx, op):
-      return torch.ops.tpu.sparse_gather(
+      return torch.tpu.ops.sparse_gather(
           rp, idx, op, max_non_zeroes_per_row=max_non_zeroes
       )
 
@@ -277,7 +277,7 @@ class SparseGatherTest(op_testing.TorchTpuTestBase):
     indices = torch.tensor(indices_list, dtype=torch.int32, device=device)
 
     def gather_fn(rp, idx, op):
-      return torch.ops.tpu.sparse_gather(
+      return torch.tpu.ops.sparse_gather(
           rp, idx, op, max_non_zeroes_per_row=max_non_zeroes
       )
 
@@ -318,7 +318,7 @@ class SparseGatherTest(op_testing.TorchTpuTestBase):
     indices = torch.tensor(indices_list, dtype=torch.int32, device=device)
 
     def gather_fn(rp, idx, op):
-      return torch.ops.tpu.sparse_gather(
+      return torch.tpu.ops.sparse_gather(
           rp, idx, op, max_non_zeroes_per_row=max_non_zeroes
       )
 
@@ -359,7 +359,7 @@ class SparseGatherTest(op_testing.TorchTpuTestBase):
     operand = operand.clone().detach().requires_grad_(True)
 
     def gather_fn(rp, idx, op):
-      return torch.ops.tpu.sparse_gather(
+      return torch.tpu.ops.sparse_gather(
           rp, idx, op, max_non_zeroes_per_row=max_non_zeroes_per_row
       )
 
@@ -401,7 +401,7 @@ class SparseGatherTest(op_testing.TorchTpuTestBase):
     )
     operand = operand.clone().detach().requires_grad_(True)
 
-    out = torch.ops.tpu.sparse_gather(
+    out = torch.tpu.ops.sparse_gather(
         row_pointers,
         indices,
         operand,
@@ -435,7 +435,7 @@ class SparseGatherTest(op_testing.TorchTpuTestBase):
         self._get_inputs(device)
     )
     operand = operand.clone().detach().requires_grad_(False)
-    out = torch.ops.tpu.sparse_gather(
+    out = torch.tpu.ops.sparse_gather(
         row_pointers,
         indices,
         operand,
@@ -448,7 +448,7 @@ class SparseGatherTest(op_testing.TorchTpuTestBase):
       dtype=(torch.float32, torch.bfloat16),
   )
   def test_sparse_gather_backward_op_direct(self, compile_op, dtype):
-    """Verifies direct invocation of torch.ops.tpu.sparse_gather_backward op."""
+    """Verifies direct invocation of torch.tpu.ops.sparse_gather_backward op."""
     device = torch.device("tpu")
     table_depth = 512
     table_width = 32
@@ -466,7 +466,7 @@ class SparseGatherTest(op_testing.TorchTpuTestBase):
     )
 
     def bwd_fn(go, idx, g_op):
-      return torch.ops.tpu.sparse_gather_backward(go, idx, g_op)
+      return torch.tpu.ops.sparse_gather_backward(go, idx, g_op)
 
     if compile_op:
       bwd_fn = torch.compile(bwd_fn, fullgraph=True)
@@ -511,7 +511,7 @@ class SparseGatherTest(op_testing.TorchTpuTestBase):
         table_depth, table_width, dtype=torch.float32, device=device
     )
 
-    out_grad = torch.ops.tpu.sparse_gather_backward(
+    out_grad = torch.tpu.ops.sparse_gather_backward(
         grad_output, indices, grad_operand
     )
 
@@ -541,7 +541,7 @@ class SparseGatherTest(op_testing.TorchTpuTestBase):
         (table_depth, table_width), 3.0, dtype=torch.float32, device=device
     )
 
-    out_grad = torch.ops.tpu.sparse_gather_backward(
+    out_grad = torch.tpu.ops.sparse_gather_backward(
         grad_output, indices, initial_grad_operand
     )
     out_cpu = out_grad.cpu()
@@ -580,7 +580,7 @@ class SparseGatherTest(op_testing.TorchTpuTestBase):
         table_depth, table_width, dtype=torch.float32, device=device
     )
 
-    out_grad = torch.ops.tpu.sparse_gather_backward(
+    out_grad = torch.tpu.ops.sparse_gather_backward(
         grad_output, indices, grad_operand
     )
     out_cpu = out_grad.cpu()
@@ -618,7 +618,7 @@ class SparseGatherTest(op_testing.TorchTpuTestBase):
         table_depth, table_width, dtype=torch.float32, device=device
     )
 
-    out_grad = torch.ops.tpu.sparse_gather_backward(
+    out_grad = torch.tpu.ops.sparse_gather_backward(
         grad_output, indices, grad_operand
     )
 
@@ -645,7 +645,7 @@ class SparseGatherTest(op_testing.TorchTpuTestBase):
         table_depth, table_width, dtype=torch.float32, device=device
     )
 
-    out_grad = torch.ops.tpu.sparse_gather_backward(
+    out_grad = torch.tpu.ops.sparse_gather_backward(
         grad_output, indices, grad_operand
     )
     out_cpu = out_grad.cpu()
@@ -684,7 +684,7 @@ class SparseGatherTest(op_testing.TorchTpuTestBase):
         table_depth, table_width, dtype=torch.float32, device=device
     )
 
-    out_grad = torch.ops.tpu.sparse_gather_backward(
+    out_grad = torch.tpu.ops.sparse_gather_backward(
         grad_output, indices, grad_operand
     )
 
@@ -711,7 +711,7 @@ class SparseGatherTest(op_testing.TorchTpuTestBase):
         table_depth, table_width, dtype=torch.float32, device=device
     )
 
-    out_grad = torch.ops.tpu.sparse_gather_backward(
+    out_grad = torch.tpu.ops.sparse_gather_backward(
         grad_output, indices, grad_operand
     )
     out_cpu = out_grad.cpu()
@@ -743,7 +743,7 @@ class SparseGatherTest(op_testing.TorchTpuTestBase):
         table_depth, table_width, dtype=torch.float32, device=device
     )
 
-    out_grad = torch.ops.tpu.sparse_gather_backward(
+    out_grad = torch.tpu.ops.sparse_gather_backward(
         grad_output, indices, grad_operand
     )
 

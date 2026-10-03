@@ -445,7 +445,7 @@ def run_ragged_all_to_all_dim_count_mismatch_error() -> None:
       ".*expected operand and output to have the same number of dimensions.*"
   )
   with et.assert_raises_message(RuntimeError, tpu=expected_msg):
-    torch.ops.tpu.ragged_all_to_all(
+    torch.tpu.ops.ragged_all_to_all(
         operand,
         output,
         input_offsets,
@@ -468,7 +468,7 @@ def run_ragged_all_to_all_trailing_dims_mismatch_error() -> None:
       ".*expected trailing dimensions of operand and output to match.*"
   )
   with et.assert_raises_message(RuntimeError, tpu=expected_msg):
-    torch.ops.tpu.ragged_all_to_all(
+    torch.tpu.ops.ragged_all_to_all(
         operand,
         output,
         input_offsets,
@@ -491,7 +491,7 @@ def run_ragged_all_to_all_dtype_mismatch_error() -> None:
       ".*expected operand and output to have the same dtype.*"
   )
   with et.assert_raises_message(RuntimeError, tpu=expected_msg):
-    torch.ops.tpu.ragged_all_to_all(
+    torch.tpu.ops.ragged_all_to_all(
         operand,
         output,
         input_offsets,

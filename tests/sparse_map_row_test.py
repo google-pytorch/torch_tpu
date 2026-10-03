@@ -91,7 +91,7 @@ def _dispatch_sparse_map_row(
   for c in csrs:
     csr_tensors.extend(c)
   csr_lengths = [len(c) for c in csrs]
-  results = torch.ops.tpu.sparse_map_row(
+  results = torch.tpu.ops.sparse_map_row(
       csr_tensors,
       csr_lengths,
       list(dense_args),
@@ -166,7 +166,7 @@ class SparseMapRowTest(op_testing.TorchTpuTestBase):
 
       @torch.compile(backend="tpu")
       def run_op(r, i, v, s):
-        return torch.ops.tpu.sparse_map_row(
+        return torch.tpu.ops.sparse_map_row(
             [r, i, v],
             [3],
             [s],
@@ -222,7 +222,7 @@ class SparseMapRowTest(op_testing.TorchTpuTestBase):
 
       @torch.compile(backend="tpu")
       def run_op(r, i, v, s):
-        return torch.ops.tpu.sparse_map_row(
+        return torch.tpu.ops.sparse_map_row(
             [r, i, v],
             [3],
             [s],
@@ -283,7 +283,7 @@ class SparseMapRowTest(op_testing.TorchTpuTestBase):
 
       @torch.compile(backend="tpu")
       def run_op(r, i, v, s_i, s_f):
-        return torch.ops.tpu.sparse_map_row(
+        return torch.tpu.ops.sparse_map_row(
             [r, i, v],
             [3],
             [s_i, s_f],
@@ -352,7 +352,7 @@ class SparseMapRowTest(op_testing.TorchTpuTestBase):
 
       @torch.compile(backend="tpu")
       def run_op(r1, i1, v1, r2, i2, v2):
-        return torch.ops.tpu.sparse_map_row(
+        return torch.tpu.ops.sparse_map_row(
             [r1, i1, v1, r2, i2, v2],
             [3, 3],
             [],
@@ -400,7 +400,7 @@ class SparseMapRowTest(op_testing.TorchTpuTestBase):
         torch.empty(16, dtype=torch.int32, device="meta"),
         torch.empty(16, dtype=torch.float32, device="meta"),
     ]
-    out = torch.ops.tpu.sparse_map_row(
+    out = torch.tpu.ops.sparse_map_row(
         [row_ptrs, indices, values],
         [3],
         [],
@@ -426,49 +426,49 @@ class SparseMapRowTest(op_testing.TorchTpuTestBase):
     with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Validates CSR list.
         RuntimeError, "expected at least 1 CSR tensor"
     ):
-      torch.ops.tpu.sparse_map_row(
+      torch.tpu.ops.sparse_map_row(
           [], [], [], "mlir", [dummy], 16, 0, 8, 0.5, 0
       )
 
     with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Validates lengths.
         RuntimeError, "expected at least 1 entry in csr_lengths"
     ):
-      torch.ops.tpu.sparse_map_row(
+      torch.tpu.ops.sparse_map_row(
           [dummy], [], [], "mlir", [dummy], 16, 0, 8, 0.5, 0
       )
 
     with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Validates CSR count.
         RuntimeError, "sum of csr_lengths"
     ):
-      torch.ops.tpu.sparse_map_row(
+      torch.tpu.ops.sparse_map_row(
           [dummy], [2], [], "mlir", [dummy], 16, 0, 8, 0.5, 0
       )
 
     with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Validates op index.
         RuntimeError, "expected result_row_pointer_op_index"
     ):
-      torch.ops.tpu.sparse_map_row(
+      torch.tpu.ops.sparse_map_row(
           [dummy], [1], [], "mlir", [dummy], 16, 0, 8, 0.5, 1
       )
 
     with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Validates max nnz.
         RuntimeError, "expected max_non_zeroes_per_row"
     ):
-      torch.ops.tpu.sparse_map_row(
+      torch.tpu.ops.sparse_map_row(
           [dummy], [1], [], "mlir", [dummy], 0, 0, 8, 0.5, 0
       )
 
     with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Validates MLIR.
         RuntimeError, "expected a non-empty body MLIR"
     ):
-      torch.ops.tpu.sparse_map_row(
+      torch.tpu.ops.sparse_map_row(
           [dummy], [1], [], "", [dummy], 16, 0, 8, 0.5, 0
       )
 
     with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Validates output.
         RuntimeError, "expected at least 1 dummy output tensor"
     ):
-      torch.ops.tpu.sparse_map_row(
+      torch.tpu.ops.sparse_map_row(
           [dummy], [1], [], "mlir", [], 16, 0, 8, 0.5, 0
       )
 

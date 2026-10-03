@@ -93,8 +93,8 @@ class RaggedMoeQwen35(torch.nn.Module):
 
     if ragged_dot_impl is not None:
       self.ragged_dot_impl = ragged_dot_impl
-    elif hasattr(torch.ops, "tpu") and hasattr(torch.ops.tpu, "ragged_dot"):
-      self.ragged_dot_impl = torch.ops.tpu.ragged_dot
+    elif hasattr(torch, "tpu") and hasattr(torch.tpu, "ops"):
+      self.ragged_dot_impl = torch.tpu.ops.ragged_dot
     else:
       self.ragged_dot_impl = None
 
@@ -107,7 +107,11 @@ class RaggedMoeQwen35(torch.nn.Module):
         and (
             self.ragged_dot_impl is None
             or self.ragged_dot_impl
-            == getattr(getattr(torch.ops, "tpu", None), "ragged_dot", None)
+            == getattr(
+                getattr(getattr(torch, "tpu", None), "ops", None),
+                "ragged_dot",
+                None,
+            )
         )
     ):
 
@@ -122,7 +126,7 @@ class RaggedMoeQwen35(torch.nn.Module):
     else:
       if self.ragged_dot_impl is None:
         raise RuntimeError(
-            "torch.ops.tpu.ragged_dot is not available and no alternative"
+            "torch.tpu.ops.ragged_dot is not available and no alternative"
             " ragged_dot_impl was provided."
         )
       ragged_dot_fn = self.ragged_dot_impl

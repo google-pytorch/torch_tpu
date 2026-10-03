@@ -1251,20 +1251,20 @@ TORCH_LIBRARY(tpu, m) {
       "_max_pool3d_backward(Tensor grad_output, Tensor self, "
       "int[] kernel_size, int[] stride, int[] padding, int[] dilation, "
       "bool ceil_mode) -> Tensor");
-  m.def("ragged_dot(Tensor lhs, Tensor rhs, Tensor group_sizes) -> Tensor");
+  m.def("_ragged_dot(Tensor lhs, Tensor rhs, Tensor group_sizes) -> Tensor");
   m.def(
-      "ragged_dot.out(Tensor lhs, Tensor rhs, Tensor group_sizes, *, "
+      "_ragged_dot.out(Tensor lhs, Tensor rhs, Tensor group_sizes, *, "
       "Tensor(a!) out) -> Tensor(a!)");
   m.def(
-      "ragged_dot_weight_grad(Tensor lhs, Tensor grad_output, Tensor "
+      "_ragged_dot_weight_grad(Tensor lhs, Tensor grad_output, Tensor "
       "group_sizes) -> Tensor");
   m.def(
-      "ragged_all_to_all(Tensor operand, Tensor output, Tensor "
+      "_ragged_all_to_all(Tensor operand, Tensor output, Tensor "
       "input_offsets, Tensor send_sizes, Tensor output_offsets, Tensor "
       "recv_sizes, str process_group_name) -> "
       "Tensor");
   m.def(
-      "ragged_all_to_all.out(Tensor operand, Tensor output, Tensor "
+      "_ragged_all_to_all.out(Tensor operand, Tensor output, Tensor "
       "input_offsets, Tensor send_sizes, Tensor output_offsets, Tensor "
       "recv_sizes, str process_group_name, *, "
       "Tensor(a!) out) "
@@ -1384,15 +1384,15 @@ TORCH_LIBRARY(tpu, m) {
   // Experimental P2P communication ops for ProcessGroupTpu.
   // Isolated from the public torch.distributed API to safely prototype new
   // behaviors.
-  m.def("experimental_send(Tensor[] tensors, int dst, int tag) -> Any");
-  m.def("experimental_recv(Tensor[] tensors, int src, int tag) -> Any");
+  m.def("_experimental_send(Tensor[] tensors, int dst, int tag) -> Any");
+  m.def("_experimental_recv(Tensor[] tensors, int src, int tag) -> Any");
   m.def(
-      "sparse_dense_matmul(Tensor row_pointers, Tensor embedding_ids, Tensor "
+      "_sparse_dense_matmul(Tensor row_pointers, Tensor embedding_ids, Tensor "
       "sample_ids, Tensor gains, Tensor embedding_table, int "
       "device_batch_size, int max_ids_per_partition, int "
       "max_unique_ids_per_partition) -> Tensor");
   m.def(
-      "sparse_dense_matmul_grad_with_adagrad(Tensor row_pointers, Tensor "
+      "_sparse_dense_matmul_grad_with_adagrad(Tensor row_pointers, Tensor "
       "embedding_ids, Tensor sample_ids, Tensor gains, Tensor embedding_table, "
       "Tensor accumulator, Tensor activations_grad, Tensor learning_rate, "
       "float epsilon, int "
@@ -1400,13 +1400,13 @@ TORCH_LIBRARY(tpu, m) {
       "max_unique_ids_per_partition, str computation_name) -> (Tensor, "
       "Tensor)");
   m.def(
-      "sparse_dense_matmul_grad_with_sgd(Tensor row_pointers, Tensor "
+      "_sparse_dense_matmul_grad_with_sgd(Tensor row_pointers, Tensor "
       "embedding_ids, Tensor sample_ids, Tensor gains, Tensor embedding_table, "
       "Tensor activations_grad, Tensor learning_rate, int device_batch_size, "
       "int max_ids_per_partition, int max_unique_ids_per_partition, str "
       "computation_name) -> Tensor");
   m.def(
-      "sparse_dense_matmul_grad_with_adam(Tensor row_pointers, Tensor "
+      "_sparse_dense_matmul_grad_with_adam(Tensor row_pointers, Tensor "
       "embedding_ids, Tensor sample_ids, Tensor gains, Tensor embedding_table, "
       "Tensor momentum, Tensor velocity, Tensor activations_grad, Tensor "
       "alpha_t, float beta_1, float beta_2, float epsilon, int "
@@ -1414,23 +1414,23 @@ TORCH_LIBRARY(tpu, m) {
       "max_unique_ids_per_partition, str computation_name) -> (Tensor, Tensor, "
       "Tensor)");
   m.def(
-      "sparse_gather(Tensor row_pointers, Tensor indices, Tensor operand, int "
+      "_sparse_gather(Tensor row_pointers, Tensor indices, Tensor operand, int "
       "max_non_zeroes_per_row) -> Tensor");
   m.def(
-      "sparse_gather_backward(Tensor grad_output, Tensor indices, Tensor "
+      "_sparse_gather_backward(Tensor grad_output, Tensor indices, Tensor "
       "grad_operand) -> Tensor");
   m.def(
-      "sparse_iota(Tensor row_pointers, int max_non_zeroes, int "
+      "_sparse_iota(Tensor row_pointers, int max_non_zeroes, int "
       "max_non_zeroes_per_row) -> Tensor");
   m.def(
-      "sparse_dense_matmul_activation_unstack(Tensor stacked_activations, "
+      "_sparse_dense_matmul_activation_unstack(Tensor stacked_activations, "
       "int[] "
       "per_feature_batch_sizes, int[] per_feature_dims) -> Tensor[]");
   m.def(
-      "sparse_dense_matmul_gradient_stack(Tensor[] unstacked_gradients, int "
+      "_sparse_dense_matmul_gradient_stack(Tensor[] unstacked_gradients, int "
       "stacked_batch_size, int stacked_feature_dim) -> Tensor");
   m.def(
-      "sparse_map_row(Tensor[] csr_tensors, int[] csr_lengths, Tensor[] "
+      "_sparse_map_row(Tensor[] csr_tensors, int[] csr_lengths, Tensor[] "
       "dense_args, str body_mlir, Tensor[] dummy_outputs, int "
       "max_non_zeroes_per_row, int pad_value, int max_pad_per_row, float "
       "wait_threshold, int result_row_pointer_op_index) -> Tensor[]");
@@ -1516,7 +1516,7 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
             at::IntArrayRef padding, at::IntArrayRef dilation, bool ceil_mode) {
         return at::empty(self.sizes(), self.options());
       });
-  ImplExperimental<OpName::kSparseDenseMatmul>(
+  ImplInternal<OpName::kSparseDenseMatmul>(
       m,
       +[](const at::Tensor& row_pointers, const at::Tensor& embedding_ids,
           const at::Tensor& sample_ids, const at::Tensor& gains,
@@ -1530,7 +1530,7 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
         return at::empty({device_batch_size, embedding_table.size(1)},
                          embedding_table.options());
       });
-  ImplExperimental<OpName::kSparseGather>(
+  ImplInternal<OpName::kSparseGather>(
       m,
       +[](const at::Tensor& row_pointers, const at::Tensor& indices,
           const at::Tensor& operand,
@@ -1539,13 +1539,13 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
             row_pointers, indices, operand, max_non_zeroes_per_row));
         return at::empty({indices.size(0), operand.size(1)}, operand.options());
       });
-  ImplExperimental<OpName::kSparseGatherBackward>(
+  ImplInternal<OpName::kSparseGatherBackward>(
       m,
       +[](const at::Tensor& /*grad_output*/, const at::Tensor& /*indices*/,
           const at::Tensor& grad_operand) -> at::Tensor {
         return at::empty_like(grad_operand);
       });
-  ImplExperimental<OpName::kSparseIota>(
+  ImplInternal<OpName::kSparseIota>(
       m,
       +[](const at::Tensor& row_pointers, int64_t max_non_zeroes,
           int64_t max_non_zeroes_per_row) -> at::Tensor {
@@ -1554,7 +1554,7 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
         return at::empty({max_non_zeroes},
                          row_pointers.options().dtype(at::kInt));
       });
-  ImplExperimental<OpName::kSparseDenseMatmulActivationUnstack>(
+  ImplInternal<OpName::kSparseDenseMatmulActivationUnstack>(
       m,
       +[](const at::Tensor& stacked_activations,
           at::IntArrayRef per_feature_batch_sizes,
@@ -1570,7 +1570,7 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
         }
         return outputs;
       });
-  ImplExperimental<OpName::kSparseDenseMatmulGradientStack>(
+  ImplInternal<OpName::kSparseDenseMatmulGradientStack>(
       m,
       +[](at::TensorList unstacked_gradients, int64_t stacked_batch_size,
           int64_t stacked_feature_dim) -> at::Tensor {
@@ -1579,7 +1579,7 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
         return at::empty({stacked_batch_size, stacked_feature_dim},
                          unstacked_gradients[0].options());
       });
-  ImplExperimental<OpName::kSparseMapRow>(
+  ImplInternal<OpName::kSparseMapRow>(
       m,
       +[](const std::vector<at::Tensor>& csr_tensors,
           at::IntArrayRef csr_lengths,
@@ -1600,7 +1600,7 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
         }
         return results;
       });
-  ImplExperimental<OpName::kSparseDenseMatmulGradWithSgd>(
+  ImplInternal<OpName::kSparseDenseMatmulGradWithSgd>(
       m,
       +[](const at::Tensor& row_pointers, const at::Tensor& embedding_ids,
           const at::Tensor& sample_ids, const at::Tensor& gains,
@@ -1610,7 +1610,7 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
           std::string_view computation_name) {
         return at::empty_like(embedding_table);
       });
-  ImplStable<OpName::kSparseDenseMatmulGradWithAdagrad>(
+  ImplInternal<OpName::kSparseDenseMatmulGradWithAdagrad>(
       m,
       +[](const at::Tensor& row_pointers, const at::Tensor& embedding_ids,
           const at::Tensor& sample_ids, const at::Tensor& gains,
@@ -1622,7 +1622,7 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
         return std::make_tuple(at::empty_like(embedding_table),
                                at::empty_like(accumulator));
       });
-  ImplStable<OpName::kSparseDenseMatmulGradWithAdam>(
+  ImplInternal<OpName::kSparseDenseMatmulGradWithAdam>(
       m,
       +[](const at::Tensor& row_pointers, const at::Tensor& embedding_ids,
           const at::Tensor& sample_ids, const at::Tensor& gains,
@@ -1636,34 +1636,34 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
                                at::empty_like(momentum),
                                at::empty_like(velocity));
       });
-  ImplExperimental<OpName::kRaggedDot>(
+  ImplInternal<OpName::kRaggedDot>(
       m, +[](const at::Tensor& lhs, const at::Tensor& rhs,
              const at::Tensor& group_sizes) {
         return at::empty({lhs.size(0), rhs.size(2)},
                          lhs.options().dtype(at::result_type(lhs, rhs)));
       });
-  ImplExperimental<OpName::kRaggedDotOut>(
+  ImplInternal<OpName::kRaggedDotOut>(
       m,
       +[](const at::Tensor& lhs, const at::Tensor& rhs,
           const at::Tensor& group_sizes, at::Tensor& out) -> at::Tensor& {
         at::native::resize_output(out, {lhs.size(0), rhs.size(2)});
         return out;
       });
-  ImplExperimental<OpName::kRaggedDotWeightGrad>(
+  ImplInternal<OpName::kRaggedDotWeightGrad>(
       m, +[](const at::Tensor& lhs, const at::Tensor& grad_output,
              const at::Tensor& group_sizes) {
         return at::empty(
             {group_sizes.size(0), lhs.size(1), grad_output.size(1)},
             lhs.options().dtype(at::result_type(lhs, grad_output)));
       });
-  ImplExperimental<OpName::kRaggedAllToAll>(
+  ImplInternal<OpName::kRaggedAllToAll>(
       m, +[](const at::Tensor& operand, const at::Tensor& output,
              const at::Tensor& input_offsets, const at::Tensor& send_sizes,
              const at::Tensor& output_offsets, const at::Tensor& recv_sizes,
              std::string_view process_group_name) {
         return at::empty_like(output);
       });
-  ImplExperimental<OpName::kRaggedAllToAllOut>(
+  ImplInternal<OpName::kRaggedAllToAllOut>(
       m,
       +[](const at::Tensor& operand, const at::Tensor& output,
           const at::Tensor& input_offsets, const at::Tensor& send_sizes,
@@ -1688,21 +1688,21 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
 TORCH_LIBRARY_IMPL(tpu, PrivateUse1, m) {
   // All entries here should be registered via ImplStable, ImplExperimental, or
   // ImplDeprecated to mark their API stages.
-  ImplExperimental<OpName::kDistributedExperimentalSend>(
-      m, TorchTpuExperimentalSend);
-  ImplExperimental<OpName::kDistributedExperimentalRecv>(
-      m, TorchTpuExperimentalRecv);
+  ImplInternal<OpName::kDistributedExperimentalSend>(m,
+                                                     TorchTpuExperimentalSend);
+  ImplInternal<OpName::kDistributedExperimentalRecv>(m,
+                                                     TorchTpuExperimentalRecv);
   ImplInternal<OpName::kMaxPool1d>(m, TpuMaxPool1d);
   ImplInternal<OpName::kMaxPool1dBackward>(m, TpuMaxPool1dBackward);
   ImplInternal<OpName::kMaxPool2d>(m, TpuMaxPool2d);
   ImplInternal<OpName::kMaxPool2dBackward>(m, TpuMaxPool2dBackward);
   ImplInternal<OpName::kMaxPool3d>(m, TpuMaxPool3d);
   ImplInternal<OpName::kMaxPool3dBackward>(m, TpuMaxPool3dBackward);
-  ImplExperimental<OpName::kRaggedDot>(m, AtenRaggedDot);
-  ImplExperimental<OpName::kRaggedDotOut>(m, AtenRaggedDotOut);
-  ImplExperimental<OpName::kRaggedDotWeightGrad>(m, AtenRaggedDotWeightGrad);
-  ImplExperimental<OpName::kRaggedAllToAll>(m, AtenRaggedAllToAll);
-  ImplExperimental<OpName::kRaggedAllToAllOut>(m, AtenRaggedAllToAllOut);
+  ImplInternal<OpName::kRaggedDot>(m, AtenRaggedDot);
+  ImplInternal<OpName::kRaggedDotOut>(m, AtenRaggedDotOut);
+  ImplInternal<OpName::kRaggedDotWeightGrad>(m, AtenRaggedDotWeightGrad);
+  ImplInternal<OpName::kRaggedAllToAll>(m, AtenRaggedAllToAll);
+  ImplInternal<OpName::kRaggedAllToAllOut>(m, AtenRaggedAllToAllOut);
   ImplInternal<OpName::kTorchTpuOptimizationBarrier>(
       m, TorchTpuOptimizationBarrier);
   ImplInternal<OpName::kSetDimensionLogicalSize>(m, SetDimensionLogicalSize);
@@ -1711,31 +1711,31 @@ TORCH_LIBRARY_IMPL(tpu, PrivateUse1, m) {
   ImplInternal<OpName::kDynamicReshape>(m, DynamicReshape);
   ImplInternal<OpName::kDynamicSlice>(m, DynamicSlice);
   ImplInternal<OpName::kPadRealToStatic>(m, PadRealToStatic);
-  ImplExperimental<OpName::kSparseDenseMatmul>(m, AtenSparseDenseMatmul);
-  ImplExperimental<OpName::kSparseDenseMatmulGradWithSgd>(
+  ImplInternal<OpName::kSparseDenseMatmul>(m, AtenSparseDenseMatmul);
+  ImplInternal<OpName::kSparseDenseMatmulGradWithSgd>(
       m, AtenSparseDenseMatmulGradWithSgd);
-  ImplExperimental<OpName::kSparseDenseMatmulGradWithAdagrad>(
+  ImplInternal<OpName::kSparseDenseMatmulGradWithAdagrad>(
       m, AtenSparseDenseMatmulGradWithAdagrad);
-  ImplExperimental<OpName::kSparseDenseMatmulGradWithAdam>(
+  ImplInternal<OpName::kSparseDenseMatmulGradWithAdam>(
       m, AtenSparseDenseMatmulGradWithAdam);
-  ImplExperimental<OpName::kSparseGather>(m, AtenSparseGather);
-  ImplExperimental<OpName::kSparseGatherBackward>(m, AtenSparseGatherBackward);
-  ImplExperimental<OpName::kSparseIota>(m, AtenSparseIota);
-  ImplExperimental<OpName::kSparseDenseMatmulActivationUnstack>(
+  ImplInternal<OpName::kSparseGather>(m, AtenSparseGather);
+  ImplInternal<OpName::kSparseGatherBackward>(m, AtenSparseGatherBackward);
+  ImplInternal<OpName::kSparseIota>(m, AtenSparseIota);
+  ImplInternal<OpName::kSparseDenseMatmulActivationUnstack>(
       m, AtenSparseDenseMatmulActivationUnstack);
-  ImplExperimental<OpName::kSparseDenseMatmulGradientStack>(
+  ImplInternal<OpName::kSparseDenseMatmulGradientStack>(
       m, AtenSparseDenseMatmulGradientStack);
-  ImplExperimental<OpName::kSparseMapRow>(m, AtenSparseMapRow);
+  ImplInternal<OpName::kSparseMapRow>(m, AtenSparseMapRow);
 }
 
 // Registers custom autograd for torch.ops.tpu ops.
 TORCH_LIBRARY_IMPL(tpu, AutogradPrivateUse1, m) {
-  ImplExperimental<OpName::kRaggedDot>(
+  ImplInternal<OpName::kRaggedDot>(
       m, +[](const at::Tensor& lhs, const at::Tensor& rhs,
              const at::Tensor& group_sizes) {
         return AtenRaggedDotAutograd::apply(lhs, rhs, group_sizes);
       });
-  ImplExperimental<OpName::kRaggedAllToAll>(
+  ImplInternal<OpName::kRaggedAllToAll>(
       m, +[](const at::Tensor& operand, const at::Tensor& output,
              const at::Tensor& input_offsets, const at::Tensor& send_sizes,
              const at::Tensor& output_offsets, const at::Tensor& recv_sizes,
@@ -1744,13 +1744,13 @@ TORCH_LIBRARY_IMPL(tpu, AutogradPrivateUse1, m) {
             operand, output, input_offsets, send_sizes, output_offsets,
             recv_sizes, process_group_name);
       });
-  ImplExperimental<OpName::kSparseGather>(
+  ImplInternal<OpName::kSparseGather>(
       m, +[](const at::Tensor& row_pointers, const at::Tensor& indices,
              const at::Tensor& operand, int64_t max_non_zeroes_per_row) {
         return AtenSparseGatherAutograd::apply(row_pointers, indices, operand,
                                                max_non_zeroes_per_row);
       });
-  ImplExperimental<OpName::kSparseDenseMatmulActivationUnstack>(
+  ImplInternal<OpName::kSparseDenseMatmulActivationUnstack>(
       m, +[](const at::Tensor& stacked_activations,
              at::IntArrayRef per_feature_batch_sizes,
              at::IntArrayRef per_feature_dims) {
@@ -1763,8 +1763,8 @@ TORCH_LIBRARY_IMPL(tpu, AutogradPrivateUse1, m) {
 TORCH_LIBRARY_IMPL(tpu, CPU, m) {
   // All entries here should be registered via ImplStable, ImplExperimental, or
   // ImplDeprecated to mark their API stages.
-  ImplExperimental<OpName::kRaggedAllToAll>(m, AtenRaggedAllToAll);
-  ImplExperimental<OpName::kRaggedAllToAllOut>(m, AtenRaggedAllToAllOut);
+  ImplInternal<OpName::kRaggedAllToAll>(m, AtenRaggedAllToAll);
+  ImplInternal<OpName::kRaggedAllToAllOut>(m, AtenRaggedAllToAllOut);
 }
 
 TORCH_LIBRARY_IMPL(ao, PrivateUse1, m) {

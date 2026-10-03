@@ -59,7 +59,7 @@ def run_ragged_dot_local_test(compile_test: bool = False) -> None:
   group_sizes = torch.tensor(gs_list, dtype=torch.int32, device="tpu")
 
   def op_fn(x, w, gs):
-    return torch.ops.tpu.ragged_dot(x, w, gs)
+    return torch.tpu.ops.ragged_dot(x, w, gs)
 
   if compile_test:
     compiled_op = torch.compile(

@@ -304,14 +304,14 @@ at::Tensor AtenSparseGatherBackward(const at::Tensor& grad_output,
             });
 }
 
-// Autograd implementation for torch.ops.tpu.sparse_gather.
+// Autograd implementation for torch.ops.tpu._sparse_gather.
 //
 // In forward, we only save `indices` and the shape/dtype of `operand`. Saving
 // the entire embedding table is avoided to significantly reduce peak memory
 // consumption during training.
 //
 // In backward, we allocate a zero buffer of shape [V, D] and invoke
-// torch.ops.tpu.sparse_gather_backward to scatter-add the incoming gradients.
+// torch.ops.tpu._sparse_gather_backward to scatter-add the incoming gradients.
 at::Tensor AtenSparseGatherAutograd::forward(
     torch::autograd::AutogradContext* ctx, const at::Tensor& row_pointers,
     const at::Tensor& indices, const at::Tensor& operand,
@@ -324,7 +324,7 @@ at::Tensor AtenSparseGatherAutograd::forward(
 
   static const absl::NoDestructor sparse_gather_op(
       at::Dispatcher::singleton()
-          .findSchemaOrThrow("tpu::sparse_gather", "")
+          .findSchemaOrThrow("tpu::_sparse_gather", "")
           .typed<at::Tensor(const at::Tensor&, const at::Tensor&,
                             const at::Tensor&, int64_t)>());
 
@@ -349,7 +349,7 @@ torch::autograd::variable_list AtenSparseGatherAutograd::backward(
   if (ctx->needs_input_grad(2)) {
     static const absl::NoDestructor sparse_gather_backward_op(
         at::Dispatcher::singleton()
-            .findSchemaOrThrow("tpu::sparse_gather_backward", "")
+            .findSchemaOrThrow("tpu::_sparse_gather_backward", "")
             .typed<at::Tensor(const at::Tensor&, const at::Tensor&,
                               const at::Tensor&)>());
 

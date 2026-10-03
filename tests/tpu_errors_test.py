@@ -3017,7 +3017,7 @@ module {
       with execution_mode.set_eager_mode(
           EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
       ):
-        torch.ops.tpu.sparse_dense_matmul_grad_with_adagrad(
+        torch.tpu.ops.sparse_dense_matmul_grad_with_adagrad(
             row_pointers,
             embedding_ids,
             sample_ids,
@@ -3043,7 +3043,7 @@ module {
       with execution_mode.set_eager_mode(
           EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
       ):
-        torch.ops.tpu.sparse_dense_matmul_grad_with_adagrad(
+        torch.tpu.ops.sparse_dense_matmul_grad_with_adagrad(
             row_pointers,
             embedding_ids,
             sample_ids,
@@ -3137,7 +3137,7 @@ module {
       with execution_mode.set_eager_mode(
           EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
       ):
-        torch.ops.tpu.sparse_dense_matmul_grad_with_adam(
+        torch.tpu.ops.sparse_dense_matmul_grad_with_adam(
             row_pointers,
             col_indices,
             values,
@@ -3169,7 +3169,7 @@ module {
       with execution_mode.set_eager_mode(
           EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
       ):
-        torch.ops.tpu.sparse_dense_matmul_grad_with_adam(
+        torch.tpu.ops.sparse_dense_matmul_grad_with_adam(
             row_pointers,
             col_indices,
             values,
@@ -3199,7 +3199,7 @@ module {
         RuntimeError,
         tpu="""sparse_gather(): expected row_pointers to be a 1D tensor, got a 2D tensor of shape [1, 2]""",
     ):
-      torch.ops.tpu.sparse_gather(row_pointers_2d, indices, operand, 8)
+      torch.tpu.ops.sparse_gather(row_pointers_2d, indices, operand, 8)
 
   @et.why_tpu_only("Custom op sparse_gather is TPU only.")
   def test_sparse_gather_invalid_indices_dim(self):
@@ -3212,7 +3212,7 @@ module {
         RuntimeError,
         tpu="""sparse_gather(): expected indices to be a 1D tensor, got a 2D tensor of shape [1, 8]""",
     ):
-      torch.ops.tpu.sparse_gather(row_pointers, indices_2d, operand, 8)
+      torch.tpu.ops.sparse_gather(row_pointers, indices_2d, operand, 8)
 
   @et.why_tpu_only("Custom op sparse_gather is TPU only.")
   def test_sparse_gather_invalid_operand_dim(self):
@@ -3225,7 +3225,7 @@ module {
         RuntimeError,
         tpu="""sparse_gather(): expected operand to be a 2D tensor, got a 1D tensor of shape [10]""",
     ):
-      torch.ops.tpu.sparse_gather(row_pointers, indices, operand_1d, 8)
+      torch.tpu.ops.sparse_gather(row_pointers, indices, operand_1d, 8)
 
   @et.why_tpu_only("Custom op sparse_gather is TPU only.")
   def test_sparse_gather_invalid_indices_length(self):
@@ -3238,7 +3238,7 @@ module {
         RuntimeError,
         tpu="""sparse_gather(): expected indices length to match the maximum number of non-zeroes, i.e. row_pointers length * maximum number of non-zeroes per row (2 * 8 = 16), got 7""",
     ):
-      torch.ops.tpu.sparse_gather(row_pointers, indices_wrong_len, operand, 8)
+      torch.tpu.ops.sparse_gather(row_pointers, indices_wrong_len, operand, 8)
 
   @et.why_tpu_only("Custom op sparse_gather is TPU only.")
   def test_sparse_gather_unsupported_device_without_sparse_core(self):
@@ -3257,7 +3257,7 @@ module {
         RuntimeError,
         tpu="""sparse_gather(): sparse_gather requires a TPU device with SparseCore support""",
     ):
-      torch.ops.tpu.sparse_gather(row_pointers, indices, operand, 8)
+      torch.tpu.ops.sparse_gather(row_pointers, indices, operand, 8)
 
   @et.why_tpu_only("Custom op sparse_gather_backward is TPU only.")
   def test_sparse_gather_backward_invalid_grad_output_dim(self):
@@ -3270,7 +3270,7 @@ module {
         RuntimeError,
         tpu="""sparse_gather_backward(): expected grad_output to be a 2D tensor, got a 1D tensor of shape [8]""",
     ):
-      torch.ops.tpu.sparse_gather_backward(
+      torch.tpu.ops.sparse_gather_backward(
           grad_output_1d, indices, grad_operand
       )
 
@@ -3285,7 +3285,7 @@ module {
         RuntimeError,
         tpu="""sparse_gather_backward(): expected indices to be a 1D tensor, got a 2D tensor of shape [1, 8]""",
     ):
-      torch.ops.tpu.sparse_gather_backward(
+      torch.tpu.ops.sparse_gather_backward(
           grad_output, indices_2d, grad_operand
       )
 
@@ -3300,7 +3300,7 @@ module {
         RuntimeError,
         tpu="""sparse_gather_backward(): expected grad_operand to be a 2D tensor, got a 1D tensor of shape [10]""",
     ):
-      torch.ops.tpu.sparse_gather_backward(
+      torch.tpu.ops.sparse_gather_backward(
           grad_output, indices, grad_operand_1d
       )
 
@@ -3315,7 +3315,7 @@ module {
         RuntimeError,
         tpu="""sparse_gather_backward(): expected indices length (8) to match grad_output batch size, got 7""",
     ):
-      torch.ops.tpu.sparse_gather_backward(grad_output, indices, grad_operand)
+      torch.tpu.ops.sparse_gather_backward(grad_output, indices, grad_operand)
 
   @et.why_tpu_only("Custom op sparse_gather_backward is TPU only.")
   def test_sparse_gather_backward_invalid_embedding_dim(self):
@@ -3328,7 +3328,7 @@ module {
         RuntimeError,
         tpu="""sparse_gather_backward(): expected embedding dimension to match (8), got 4""",
     ):
-      torch.ops.tpu.sparse_gather_backward(grad_output, indices, grad_operand)
+      torch.tpu.ops.sparse_gather_backward(grad_output, indices, grad_operand)
 
   @et.why_tpu_only("Custom op sparse_iota is TPU only.")
   def test_sparse_iota_invalid_row_pointers_dim(self):
@@ -3338,7 +3338,7 @@ module {
         RuntimeError,
         tpu="""sparse_iota(): expected row_pointers to be a 1D tensor, got a 2D tensor of shape [1, 2]""",
     ):
-      torch.ops.tpu.sparse_iota(row_pointers_2d, 2048, 256)
+      torch.tpu.ops.sparse_iota(row_pointers_2d, 2048, 256)
 
   @et.why_tpu_only("Custom op sparse_iota is TPU only.")
   def test_sparse_iota_invalid_row_pointers_dtype(self):
@@ -3350,7 +3350,7 @@ module {
         RuntimeError,
         tpu="""sparse_iota(): expected row_pointers dtype to be torch.int32, got Float""",
     ):
-      torch.ops.tpu.sparse_iota(row_pointers_float, 2048, 256)
+      torch.tpu.ops.sparse_iota(row_pointers_float, 2048, 256)
 
   @et.why_tpu_only("Custom op sparse_iota is TPU only.")
   def test_sparse_iota_invalid_max_non_zeroes(self):
@@ -3360,7 +3360,7 @@ module {
         RuntimeError,
         tpu="""sparse_iota(): expected max_non_zeroes to be positive, got 0""",
     ):
-      torch.ops.tpu.sparse_iota(row_pointers, 0, 256)
+      torch.tpu.ops.sparse_iota(row_pointers, 0, 256)
 
   @et.why_tpu_only("Custom op sparse_iota is TPU only.")
   def test_sparse_iota_invalid_max_non_zeroes_per_row(self):
@@ -3370,7 +3370,264 @@ module {
         RuntimeError,
         tpu="""sparse_iota(): expected max_non_zeroes_per_row to be positive, got 0""",
     ):
-      torch.ops.tpu.sparse_iota(row_pointers, 2048, 0)
+      torch.tpu.ops.sparse_iota(row_pointers, 2048, 0)
+
+  @et.why_tpu_only("Custom op sparse_gather is TPU only.")
+  def test_sparse_gather_meta_invalid_row_pointers_dim(self):
+    row_pointers_2d = torch.tensor([[0, 8]], dtype=torch.int32, device="meta")
+    indices = torch.tensor([0] * 8, dtype=torch.int32, device="meta")
+    operand = torch.ones(10, 8, dtype=torch.float32, device="meta")
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected row_pointers to be a 1D tensor, got a 2D tensor of shape [1, 2]""",
+    ):
+      torch.tpu.ops.sparse_gather(row_pointers_2d, indices, operand, 8)
+
+  @et.why_tpu_only("Custom op sparse_gather is TPU only.")
+  def test_sparse_gather_meta_invalid_indices_dim(self):
+    row_pointers = torch.tensor([0, 8], dtype=torch.int32, device="meta")
+    indices_2d = torch.tensor([[0] * 8], dtype=torch.int32, device="meta")
+    operand = torch.ones(10, 8, dtype=torch.float32, device="meta")
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected indices to be a 1D tensor, got a 2D tensor of shape [1, 8]""",
+    ):
+      torch.tpu.ops.sparse_gather(row_pointers, indices_2d, operand, 8)
+
+  @et.why_tpu_only("Custom op sparse_gather is TPU only.")
+  def test_sparse_gather_meta_invalid_operand_dim(self):
+    row_pointers = torch.tensor([0, 8], dtype=torch.int32, device="meta")
+    indices = torch.tensor([0] * 8, dtype=torch.int32, device="meta")
+    operand_1d = torch.ones(10, dtype=torch.float32, device="meta")
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected operand to be a 2D tensor, got a 1D tensor of shape [10]""",
+    ):
+      torch.tpu.ops.sparse_gather(row_pointers, indices, operand_1d, 8)
+
+  @et.why_tpu_only("Custom op sparse_gather is TPU only.")
+  def test_sparse_gather_meta_invalid_indices_length(self):
+    row_pointers = torch.tensor([0, 8], dtype=torch.int32, device="meta")
+    indices_wrong_len = torch.tensor([0] * 7, dtype=torch.int32, device="meta")
+    operand = torch.ones(10, 8, dtype=torch.float32, device="meta")
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected indices length to match the maximum number of non-zeroes, i.e. row_pointers length * maximum number of non-zeroes per row (2 * 8 = 16), got 7""",
+    ):
+      torch.tpu.ops.sparse_gather(row_pointers, indices_wrong_len, operand, 8)
+
+  @et.why_tpu_only("Custom op sparse_iota is TPU only.")
+  def test_sparse_iota_meta_invalid_row_pointers_dim(self):
+    row_pointers_2d = torch.tensor([[0, 8]], dtype=torch.int32, device="meta")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected row_pointers to be a 1D tensor, got a 2D tensor of shape [1, 2]""",
+    ):
+      torch.tpu.ops.sparse_iota(row_pointers_2d, 2048, 256)
+
+  @et.why_tpu_only("Custom op sparse_iota is TPU only.")
+  def test_sparse_iota_meta_invalid_row_pointers_dtype(self):
+    row_pointers_float = torch.tensor(
+        [0, 8], dtype=torch.float32, device="meta"
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected row_pointers dtype to be torch.int32, got Float""",
+    ):
+      torch.tpu.ops.sparse_iota(row_pointers_float, 2048, 256)
+
+  @et.why_tpu_only("Custom op sparse_iota is TPU only.")
+  def test_sparse_iota_meta_invalid_max_non_zeroes(self):
+    row_pointers = torch.tensor([0, 8], dtype=torch.int32, device="meta")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected max_non_zeroes to be positive, got 0""",
+    ):
+      torch.tpu.ops.sparse_iota(row_pointers, 0, 256)
+
+  @et.why_tpu_only("Custom op sparse_iota is TPU only.")
+  def test_sparse_iota_meta_invalid_max_non_zeroes_per_row(self):
+    row_pointers = torch.tensor([0, 8], dtype=torch.int32, device="meta")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected max_non_zeroes_per_row to be positive, got 0""",
+    ):
+      torch.tpu.ops.sparse_iota(row_pointers, 2048, 0)
+
+  @et.why_tpu_only(
+      "Custom op sparse_dense_matmul_activation_unstack is TPU only."
+  )
+  def test_sparse_dense_matmul_activation_unstack_meta_invalid_dim(self):
+    stacked_1d = torch.empty(64, device="meta", dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected stacked_activations to be a 2D tensor, got a 1D tensor of shape [64]""",
+    ):
+      torch.tpu.ops.sparse_dense_matmul_activation_unstack(
+          stacked_1d, [32, 32], [16, 32]
+      )
+
+  @et.why_tpu_only(
+      "Custom op sparse_dense_matmul_activation_unstack is TPU only."
+  )
+  def test_sparse_dense_matmul_activation_unstack_meta_invalid_dtype(self):
+    stacked_int = torch.empty(64, 32, device="meta", dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected stacked_activations to have float32 dtype, got int32""",
+    ):
+      torch.tpu.ops.sparse_dense_matmul_activation_unstack(
+          stacked_int, [32, 32], [16, 32]
+      )
+
+  @et.why_tpu_only(
+      "Custom op sparse_dense_matmul_activation_unstack is TPU only."
+  )
+  def test_sparse_dense_matmul_activation_unstack_meta_empty_features(self):
+    stacked_2d = torch.empty(64, 32, device="meta", dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected at least one feature, but per_feature_batch_sizes is empty""",
+    ):
+      torch.tpu.ops.sparse_dense_matmul_activation_unstack(stacked_2d, [], [])
+
+  @et.why_tpu_only(
+      "Custom op sparse_dense_matmul_activation_unstack is TPU only."
+  )
+  def test_sparse_dense_matmul_activation_unstack_meta_mismatched_feature_dims_size(
+      self,
+  ):
+    stacked_2d = torch.empty(64, 32, device="meta", dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected per_feature_batch_sizes and per_feature_dims to have the same size, got 1 and 2""",
+    ):
+      torch.tpu.ops.sparse_dense_matmul_activation_unstack(
+          stacked_2d, [32], [16, 32]
+      )
+
+  @et.why_tpu_only(
+      "Custom op sparse_dense_matmul_activation_unstack is TPU only."
+  )
+  def test_sparse_dense_matmul_activation_unstack_meta_nonpositive_batch_size(
+      self,
+  ):
+    stacked_2d = torch.empty(64, 32, device="meta", dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected per_feature_batch_sizes[1] to be positive, got 0""",
+    ):
+      torch.tpu.ops.sparse_dense_matmul_activation_unstack(
+          stacked_2d, [64, 0], [16, 32]
+      )
+
+  @et.why_tpu_only(
+      "Custom op sparse_dense_matmul_activation_unstack is TPU only."
+  )
+  def test_sparse_dense_matmul_activation_unstack_meta_nonpositive_dim(self):
+    stacked_2d = torch.empty(64, 32, device="meta", dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected per_feature_dims[0] to be positive, got 0""",
+    ):
+      torch.tpu.ops.sparse_dense_matmul_activation_unstack(
+          stacked_2d, [32, 32], [0, 32]
+      )
+
+  @et.why_tpu_only(
+      "Custom op sparse_dense_matmul_activation_unstack is TPU only."
+  )
+  def test_sparse_dense_matmul_activation_unstack_meta_batch_size_mismatch(
+      self,
+  ):
+    stacked_2d = torch.empty(64, 32, device="meta", dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected stacked_activations dim 0 (64) to match total stacked batch size (48)""",
+    ):
+      torch.tpu.ops.sparse_dense_matmul_activation_unstack(
+          stacked_2d, [32, 16], [16, 32]
+      )
+
+  @et.why_tpu_only(
+      "Custom op sparse_dense_matmul_activation_unstack is TPU only."
+  )
+  def test_sparse_dense_matmul_activation_unstack_meta_feature_dim_mismatch(
+      self,
+  ):
+    stacked_2d = torch.empty(64, 32, device="meta", dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected per_feature_dims[1] (48) to be at most stacked_embedding_dim (32)""",
+    ):
+      torch.tpu.ops.sparse_dense_matmul_activation_unstack(
+          stacked_2d, [32, 32], [16, 48]
+      )
+
+  @et.why_tpu_only("Custom op sparse_dense_matmul_gradient_stack is TPU only.")
+  def test_sparse_dense_matmul_gradient_stack_meta_invalid_dim(self):
+    g_1d = torch.empty(32, device="meta", dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected unstacked_gradients[0] to be a 2D tensor, got a 1D tensor of shape [32]""",
+    ):
+      torch.tpu.ops.sparse_dense_matmul_gradient_stack([g_1d], 32, 32)
+
+  @et.why_tpu_only("Custom op sparse_dense_matmul_gradient_stack is TPU only.")
+  def test_sparse_dense_matmul_gradient_stack_meta_invalid_dtype(self):
+    g1 = torch.empty(32, 16, device="meta", dtype=torch.float32)
+    g2_int = torch.empty(32, 32, device="meta", dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected unstacked_gradients[1] to have float32 dtype, got int32""",
+    ):
+      torch.tpu.ops.sparse_dense_matmul_gradient_stack([g1, g2_int], 64, 32)
+
+  @et.why_tpu_only("Custom op sparse_dense_matmul_gradient_stack is TPU only.")
+  def test_sparse_dense_matmul_gradient_stack_meta_nonpositive_batch_size(self):
+    g1 = torch.empty(32, 16, device="meta", dtype=torch.float32)
+    g2 = torch.empty(32, 32, device="meta", dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected stacked_batch_size to be positive, got 0""",
+    ):
+      torch.tpu.ops.sparse_dense_matmul_gradient_stack([g1, g2], 0, 32)
+
+  @et.why_tpu_only("Custom op sparse_dense_matmul_gradient_stack is TPU only.")
+  def test_sparse_dense_matmul_gradient_stack_meta_nonpositive_feature_dim(
+      self,
+  ):
+    g1 = torch.empty(32, 16, device="meta", dtype=torch.float32)
+    g2 = torch.empty(32, 32, device="meta", dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected stacked_feature_dim to be positive, got 0""",
+    ):
+      torch.tpu.ops.sparse_dense_matmul_gradient_stack([g1, g2], 64, 0)
+
+  @et.why_tpu_only("Custom op sparse_dense_matmul_gradient_stack is TPU only.")
+  def test_sparse_dense_matmul_gradient_stack_meta_batch_size_mismatch(self):
+    g1 = torch.empty(32, 16, device="meta", dtype=torch.float32)
+    g2 = torch.empty(32, 32, device="meta", dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected sum of unstacked gradient batch sizes (64) to match stacked_batch_size (60)""",
+    ):
+      torch.tpu.ops.sparse_dense_matmul_gradient_stack([g1, g2], 60, 32)
+
+  @et.why_tpu_only("Custom op sparse_dense_matmul_gradient_stack is TPU only.")
+  def test_sparse_dense_matmul_gradient_stack_meta_feature_dim_mismatch(self):
+    g1 = torch.empty(32, 16, device="meta", dtype=torch.float32)
+    g2 = torch.empty(32, 32, device="meta", dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected unstacked_gradients[1] dim 1 (32) to be at most stacked_feature_dim (24)""",
+    ):
+      torch.tpu.ops.sparse_dense_matmul_gradient_stack([g1, g2], 64, 24)
 
   @et.why_tpu_only("Custom op sparse_map_row is TPU only.")
   def test_sparse_map_row_no_csr_tensors(self):
@@ -3380,7 +3637,7 @@ module {
         RuntimeError,
         tpu="""sparse_map_row(): expected at least 1 CSR tensor, got 0""",
     ):
-      torch.ops.tpu.sparse_map_row(
+      torch.tpu.ops.sparse_map_row(
           [], [], [], "mlir", [dummy], 16, 0, 8, 0.5, 0
       )
 
@@ -3392,7 +3649,7 @@ module {
         RuntimeError,
         tpu="""sparse_map_row(): expected at least 1 entry in csr_lengths, got 0""",
     ):
-      torch.ops.tpu.sparse_map_row(
+      torch.tpu.ops.sparse_map_row(
           [dummy], [], [], "mlir", [dummy], 16, 0, 8, 0.5, 0
       )
 
@@ -3404,7 +3661,7 @@ module {
         RuntimeError,
         tpu="""sparse_map_row(): expected the sum of csr_lengths (2) to equal the number of CSR tensors, got 1""",
     ):
-      torch.ops.tpu.sparse_map_row(
+      torch.tpu.ops.sparse_map_row(
           [dummy], [2], [], "mlir", [dummy], 16, 0, 8, 0.5, 0
       )
 
@@ -3416,7 +3673,7 @@ module {
         RuntimeError,
         tpu="""sparse_map_row(): expected result_row_pointer_op_index to be between 0 and 0, got 1""",
     ):
-      torch.ops.tpu.sparse_map_row(
+      torch.tpu.ops.sparse_map_row(
           [dummy], [1], [], "mlir", [dummy], 16, 0, 8, 0.5, 1
       )
 
@@ -3428,7 +3685,7 @@ module {
         RuntimeError,
         tpu="""sparse_map_row(): expected max_non_zeroes_per_row to be greater than 0, got 0""",
     ):
-      torch.ops.tpu.sparse_map_row(
+      torch.tpu.ops.sparse_map_row(
           [dummy], [1], [], "mlir", [dummy], 0, 0, 8, 0.5, 0
       )
 
@@ -3440,7 +3697,7 @@ module {
         RuntimeError,
         tpu="""sparse_map_row(): expected a non-empty body MLIR module, got an empty string""",
     ):
-      torch.ops.tpu.sparse_map_row(
+      torch.tpu.ops.sparse_map_row(
           [dummy], [1], [], "", [dummy], 16, 0, 8, 0.5, 0
       )
 
@@ -3452,7 +3709,7 @@ module {
         RuntimeError,
         tpu="""sparse_map_row(): expected at least 1 dummy output tensor, got 0""",
     ):
-      torch.ops.tpu.sparse_map_row(
+      torch.tpu.ops.sparse_map_row(
           [dummy], [1], [], "mlir", [], 16, 0, 8, 0.5, 0
       )
 
@@ -3471,7 +3728,7 @@ module {
         RuntimeError,
         tpu="""sparse_map_row(): sparse_map_row requires a TPU device with SparseCore support""",
     ):
-      torch.ops.tpu.sparse_map_row(
+      torch.tpu.ops.sparse_map_row(
           [dummy], [1], [], "mlir", [dummy], 16, 0, 8, 0.5, 0
       )
 
@@ -4162,6 +4419,68 @@ module {
       torch.linalg.svd(t, driver="gesvdj")
 
   @parameterized.named_parameters(
+      dict(
+          testcase_name="invalid_lhs_shape",
+          lhs_arg=(2,),
+          rhs_arg=(2, 2),
+          group_sizes_arg=[1, 1],
+          expected_error="""ragged_dot(): expected lhs to be 2D, got dim: 1""",
+      ),
+      dict(
+          testcase_name="invalid_rhs_shape",
+          lhs_arg=(3, 2),
+          rhs_arg=(2, 2),
+          group_sizes_arg=[1, 1],
+          expected_error="""ragged_dot(): expected rhs to be 3D, got dim: 2""",
+      ),
+      dict(
+          testcase_name="invalid_group_sizes_shape",
+          lhs_arg=(3, 2),
+          rhs_arg=(2, 2, 2),
+          group_sizes_arg=[[1, 1]],
+          expected_error="""ragged_dot(): expected group_sizes to be 1D, got dim: 2""",
+      ),
+      dict(
+          testcase_name="mismatched_contracting_dims",
+          lhs_arg=(3, 2),
+          rhs_arg=(2, 3, 2),
+          group_sizes_arg=[1, 1],
+          expected_error="""ragged_dot(): expected contracting dimension to be the same, got 2 vs 3""",
+      ),
+      dict(
+          testcase_name="mismatched_group_dims",
+          lhs_arg=(3, 2),
+          rhs_arg=(2, 2, 2),
+          group_sizes_arg=[1, 1, 1],
+          expected_error="""ragged_dot(): expected lhs and group_sizes to have the same number of groups, got 2 vs 3""",
+      ),
+  )
+  @et.why_tpu_only("torch.tpu.ops.ragged_dot is a TPU-specific op")
+  def test_ragged_dot(self, lhs_arg, rhs_arg, group_sizes_arg, expected_error):
+    """Tests that tpu.ragged_dot fails with expected errors.
+
+    This test checks various error conditions for the `tpu.ragged_dot`
+    operation, such as invalid input shapes, mismatched dimensions, and
+    incorrect group sizes.
+
+    Args:
+      lhs_arg: The shape argument for the left-hand side tensor.
+      rhs_arg: The shape argument for the right-hand side tensor.
+      group_sizes_arg: The argument for the group sizes tensor.
+      expected_error: The expected error message substring.
+    """
+    lhs = torch.ones(*lhs_arg, dtype=torch.float32, device=et.device())
+    rhs = torch.ones(*rhs_arg, dtype=torch.float32, device=et.device())
+    group_sizes = torch.tensor(
+        group_sizes_arg, dtype=torch.int32, device=et.device()
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=expected_error,
+    ):
+      torch.tpu.ops.ragged_dot(lhs, rhs, group_sizes)
+
+  @parameterized.named_parameters(
       # Tests that non-2D lhs tensors are rejected.
       dict(
           testcase_name="invalid_lhs_shape",
@@ -4195,7 +4514,7 @@ module {
           expected_error="""ragged_dot_weight_grad(): expected lhs and grad_output to have the same batch dimension, got 3 vs 4""",
       ),
   )
-  @et.why_tpu_only("torch.ops.tpu.ragged_dot_weight_grad is a TPU-specific op")
+  @et.why_tpu_only("torch.tpu.ops.ragged_dot_weight_grad is a TPU-specific op")
   def test_ragged_dot_weight_grad(
       self, lhs_arg, grad_output_arg, group_sizes_arg, expected_error
   ):
@@ -4217,7 +4536,7 @@ module {
         RuntimeError,
         tpu=expected_error,
     ):
-      torch.ops.tpu.ragged_dot_weight_grad(lhs, grad_output, group_sizes)
+      torch.tpu.ops.ragged_dot_weight_grad(lhs, grad_output, group_sizes)
 
   def _default_lstm_input_args(self):
     device = et.device()

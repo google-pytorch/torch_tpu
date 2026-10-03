@@ -534,11 +534,11 @@ def run_send_recv() -> None:
   recv_buffer = torch.zeros_like(x, device="tpu")
 
   if rank < world_size - 1:
-    torch.ops.tpu.experimental_send([x], dst=rank + 1, tag=rank).wait()
+    torch.tpu.ops.experimental_send([x], dst=rank + 1, tag=rank).wait()
 
   if rank > 0:
     src_rank = rank - 1
-    torch.ops.tpu.experimental_recv(
+    torch.tpu.ops.experimental_recv(
         [recv_buffer], src=src_rank, tag=src_rank
     ).wait()
     expected = torch.tensor([[float(src_rank), float(src_rank**2)]])
@@ -559,11 +559,11 @@ def run_isend_irecv() -> None:
 
   send_work = None
   if rank < world_size - 1:
-    send_work = torch.ops.tpu.experimental_send([x], dst=rank + 1, tag=rank)
+    send_work = torch.tpu.ops.experimental_send([x], dst=rank + 1, tag=rank)
 
   if rank > 0:
     src_rank = rank - 1
-    recv_work = torch.ops.tpu.experimental_recv(
+    recv_work = torch.tpu.ops.experimental_recv(
         [recv_buffer], src=src_rank, tag=src_rank
     )
 
@@ -599,10 +599,10 @@ def run_send_recv_same_tag():
 
     if rank == src_rank:
       x = torch.full(tensor_shape, tensor_value, device="tpu")
-      torch.ops.tpu.experimental_send([x], dst=dst_rank, tag=p2p_tag).wait()
+      torch.tpu.ops.experimental_send([x], dst=dst_rank, tag=p2p_tag).wait()
     elif rank == dst_rank:
       recv_buffer = torch.zeros(tensor_shape, device="tpu")
-      torch.ops.tpu.experimental_recv(
+      torch.tpu.ops.experimental_recv(
           [recv_buffer], src=src_rank, tag=p2p_tag
       ).wait()
 
