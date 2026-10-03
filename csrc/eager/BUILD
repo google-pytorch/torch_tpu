@@ -1059,6 +1059,7 @@ torch_tpu_cc_library(
         "//csrc/common:env_vars",
         "//csrc/common:error_utils",
         "//csrc/common:layout_utils",
+        "//csrc/common:op_name_stack",
         "//csrc/common:shape",
         "//csrc/common:to_string",
         "//csrc/common:utils",

@@ -40,6 +40,7 @@
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/layout_utils.h"
+#include "csrc/common/op_name_stack.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
@@ -193,7 +194,11 @@ absl::Status DeferAndFuseDispatch(absl::Span<const DeviceBufferRef> results,
   const auto& device_buffer_list = results[0].device_buffer_list();
 
   // Don't consider metadata-only ops for the repeated ops heuristic.
-  if (MustApplyRepeatedOpsHeuristic() && !IsMetadataOnly(op_name)) {
+  // A foreach op dispatches the same per-tensor op sequence once per input
+  // tensor. That loop is bounded and runs once per foreach call, so it must not
+  // be mistaken for a repeated user-level loop.
+  if (MustApplyRepeatedOpsHeuristic() && !IsMetadataOnly(op_name) &&
+      !internal::OpNameStack::InsideForeachOp()) {
     // Record the deferred op and detect any repetitions.
     // If a repetition is detected, materialize the current stream.
     if (RecordDeferredOpAndDetectRepetition(device_buffer_list)) {

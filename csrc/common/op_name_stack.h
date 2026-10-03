@@ -42,11 +42,19 @@ class OpNameStack {
   // the stack is empty.
   static std::optional<OpName> MaybeTop();
 
+  // Returns true if an `_foreach_*` op is on the current thread's stack, i.e.
+  // the current op is being dispatched by a foreach op's per-tensor loop.
+  static bool InsideForeachOp();
+
  private:
   static thread_local  // CPP_THREAD_LOCAL_OK=needed only in the dispatching
                        // thread.
       std::stack<OpName>
           stack_;
+  // Number of `_foreach_*` ops currently on stack_.
+  static thread_local  // CPP_THREAD_LOCAL_OK=needed only in the dispatching
+                       // thread.
+      int foreach_depth_;
 };
 
 // ScopedOpName is an RAII guard that pushes an OpName onto the thread-local

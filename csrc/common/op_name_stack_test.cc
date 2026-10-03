@@ -49,6 +49,23 @@ TEST(OpNameStackTest, NestedScopedOpNamesBehaveAsStack) {
   EXPECT_EQ(OpNameStack::Top(), OpName::kMaxPool2d);
 }
 
+TEST(OpNameStackTest, InsideForeachOpTracksEnclosingForeachOps) {
+  EXPECT_FALSE(OpNameStack::InsideForeachOp());
+  {
+    ScopedOpName foreach_guard(OpName::kForeachNormScalar);
+    EXPECT_TRUE(OpNameStack::InsideForeachOp());
+    {
+      ScopedOpName inner_guard(OpName::kLinalgVectorNormOut);
+      EXPECT_TRUE(OpNameStack::InsideForeachOp());
+    }
+    EXPECT_TRUE(OpNameStack::InsideForeachOp());
+  }
+  EXPECT_FALSE(OpNameStack::InsideForeachOp());
+
+  ScopedOpName non_foreach_guard(OpName::kAdd);
+  EXPECT_FALSE(OpNameStack::InsideForeachOp());
+}
+
 }  // namespace
 }  // namespace internal
 }  // namespace torch_tpu

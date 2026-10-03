@@ -24,6 +24,7 @@
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
+#include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "csrc/common/flags.h"
 #include "csrc/ops/op_names.h"
@@ -38,6 +39,16 @@ namespace internal {
 thread_local  // CPP_THREAD_LOCAL_OK=needed only in the dispatching thread.
     std::stack<OpName>
         OpNameStack::stack_;  // NOLINT
+thread_local  // CPP_THREAD_LOCAL_OK=needed only in the dispatching thread.
+    int OpNameStack::foreach_depth_ = 0;
+
+namespace {
+
+bool IsForeachOp(OpName op_name) {
+  return absl::StartsWith(ToString(op_name), "_foreach_");
+}
+
+}  // namespace
 
 void OpNameStack::Push(OpName op_name) {
   static absl::NoDestructor<const absl::flat_hash_set<OpName>>
@@ -232,12 +243,20 @@ void OpNameStack::Push(OpName op_name) {
     }
   }
   stack_.push(op_name);
+  if (IsForeachOp(op_name)) {
+    ++foreach_depth_;
+  }
 }
 
 void OpNameStack::Pop() {
   ABSL_CHECK(!stack_.empty());  // CRASH_OK
+  if (IsForeachOp(stack_.top())) {
+    --foreach_depth_;
+  }
   stack_.pop();
 }
+
+bool OpNameStack::InsideForeachOp() { return foreach_depth_ > 0; }
 
 OpName OpNameStack::Top() {
   ABSL_CHECK(!stack_.empty());  // CRASH_OK
