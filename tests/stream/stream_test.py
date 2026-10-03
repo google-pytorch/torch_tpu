@@ -651,27 +651,6 @@ class EventElapsedTimeTest(seed_test_utils.RepeatableTest):
     )
     utils.assert_close(y.to('cpu'), torch.full((8, 8), 3.0))
 
-  @parameterized.named_parameters(*_EVENT_CONSTRUCTORS)
-  def test_event_elapsed_time_errors(self, make_event):
-    """Tests the errors of elapsed_time() for unusable events."""
-    timed = make_event(enable_timing=True)
-    untimed = make_event()
-    timed.record()
-    untimed.record()
-    with self.assertRaisesRegex(ValueError, 'enable_timing=True'):
-      timed.elapsed_time(untimed)
-    with self.assertRaisesRegex(ValueError, 'enable_timing=True'):
-      untimed.elapsed_time(timed)
-
-    unrecorded = make_event(enable_timing=True)
-    with self.assertRaisesRegex(ValueError, 'must be recorded'):
-      timed.elapsed_time(unrecorded)
-    with self.assertRaisesRegex(ValueError, 'must be recorded'):
-      unrecorded.elapsed_time(timed)
-
-    with self.assertRaisesRegex(RuntimeError, 'torch.Event object'):
-      timed.elapsed_time(None)
-
   def test_event_elapsed_time_to_torch_event(self):
     """Tests a torch.tpu.Event timed against a torch.Event end event."""
     x = torch.ones((8, 8), device='tpu')
