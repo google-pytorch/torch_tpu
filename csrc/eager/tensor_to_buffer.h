@@ -17,6 +17,7 @@
 #ifndef TORCH_TPU_CSRC_EAGER_TENSOR_TO_BUFFER_H_
 #define TORCH_TPU_CSRC_EAGER_TENSOR_TO_BUFFER_H_
 
+#include <cstdint>
 #include <vector>
 
 #include "ATen/core/ATen_fwd.h"
@@ -28,7 +29,6 @@
 #include "c10/core/Device.h"
 #include "c10/core/Storage.h"
 #include "c10/util/Optional.h"
-#include "csrc/common/error_utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/structured_log_buffer.h"
@@ -106,12 +106,19 @@ absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const c10::Storage& storage);
 // materializing, or materialized. Callers are responsible for handling any
 // unexpected states; for example, erroring on a placeholder state before
 // calling a PjRtLoadedExecutable.
-absl::StatusOr<DeviceBufferRef> GetBuffer(const at::Tensor& tensor);
+//
+// If donate_to_view is true, and a view deferred op is created, then the base
+// buffer will be donated to the view.
+absl::StatusOr<DeviceBufferRef> GetBuffer(const at::Tensor& tensor,
+                                          bool donate_to_view = false);
 
 // Extracts all DeviceBufferRefs from the list of AtenTensors.
 // This is just GetBuffer in a loop, exiting on the first error.
+// If donated_indices is not empty, then tensors at the given indices will be
+// donated to any created view ops.
 absl::StatusOr<std::vector<DeviceBufferRef>> GetBuffers(
-    absl::Span<const at::Tensor> tensors);
+    absl::Span<const at::Tensor> tensors,
+    absl::Span<const int64_t> donated_indices = {});
 
 // Creates a c10::Storage pointer to a new c10::StorageImpl, which holds a
 // c10::DataPtr to the given DeviceBufferRef.
@@ -138,10 +145,14 @@ at::Tensor MakeTensor(DeviceBufferRef device_buffer_ref, int device_idx = 0);
 // Args:
 //    result_buf: the result buffer.
 //    tensor: reference to the tensor into which to copy result_buf.
+//    enable_autodonation: if true and the base buffer of the tensor has only
+//      one live data pointer that is about to be overwritten, then donate the
+//      base buffer to the result if possible.
 // Requires:
 //    result_buf and tensor must have the same shape and dtype.
 absl::Status AssignBufferToAtTensor(DeviceBufferRef result_buf,
-                                    const at::Tensor& tensor);
+                                    const at::Tensor& tensor,
+                                    bool enable_autodonation = false);
 
 // Returns true if `tensor` is a pure reinterpretation of all the bytes of
 // `base` (the base DeviceBufferRef of its storage).

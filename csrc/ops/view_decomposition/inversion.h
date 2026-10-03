@@ -26,6 +26,7 @@
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "csrc/common/shape.h"
+#include "csrc/ops/view_decomposition/bitcast_primitive.h"
 #include "csrc/ops/view_decomposition/conj_primitive.h"
 #include "csrc/ops/view_decomposition/reshape_primitive.h"
 #include "csrc/ops/view_decomposition/slice_primitive.h"
@@ -108,17 +109,25 @@ namespace torch_tpu {
 //   Pads are inverted by slice.
 // * Conj is invertible because it only flips the sign bit of the imag part.
 //   Conj is inverted by conj to undo the flip.
+// * Complex-to-real bitcasts using ViewAsReal are invertible by ViewAsComplex.
+// * ViewAsComplex is invertible by ComplexToRealBitcast using ViewAsReal.
+// * Real-to-real bitcasts are invertible by another real-to-real bitcast, as
+//   long as the view dtype is not boolean (PRED).
 //
 // For the other operations:
-// * Some bitcasts are invertible, but others cause a loss of information (for
-//   example, uint8 -> bool); these are handled separately.
 // * Slices are not trivially invertible, as they remove data. These require
 //   handling using dynamic update slice or stablehlo.select to merge with the
 //   pre-slice value.
+// * Complex-to-real bitcasts using real() and imag() are not invertible as they
+//   lose half of the data.
+// * Real-to-boolean bitcasts are not invertible as they are lossy; XLA only
+//   stores one bit per boolean, causing a loss of 7 bits per byte.
 // * BroadcastInDim and Unfold are not invertible as they are one-to-many, not
 //   one-to-one, which is undefined behavior when inverted.
-using InverseViewPrimitive = std::variant<ReshapePrimitive, TransposePrimitive,
-                                          SlicePrimitive, ConjPrimitive>;
+using InverseViewPrimitive =
+    std::variant<ReshapePrimitive, TransposePrimitive, SlicePrimitive,
+                 ConjPrimitive, RealToRealBitcast, ComplexToRealBitcast,
+                 ViewAsComplex>;
 static_assert(sizeof(InverseViewPrimitive) == 120, "");
 
 bool operator==(const InverseViewPrimitive& lhs,
@@ -175,10 +184,20 @@ struct InverseViewOperation {
 
 // Computes the inverse view operation necessary to produce an updated
 // contiguous base tensor from a mutated view.
+//
+// If preserve_base is true, then the computed view operation will attempt to
+// keep the final shape and dtype the same as the contiguous base shape/dtype;
+// it will only be changed if the contiguous base dtype is boolean (PRED) and
+// the view dtype is not, as we need to store full bytes to preserve data.
+//
+// If preserve_base is false, then the final shape and dtype may be changed to
+// a shape/dtype that will make this view more efficient to compute in the
+// future, possibly by casting the base to the view dtype and reshaping it.
 absl::StatusOr<InverseViewOperation> ComputeInverseViewOperation(
     absl::Span<const int64_t> contiguous_base_shape,
     mlir::ElementType contiguous_base_dtype, const StridedLayout& view_layout,
-    mlir::ElementType view_dtype, bool is_conj = false);
+    mlir::ElementType view_dtype, bool is_conj = false,
+    bool preserve_base = false);
 
 // Applies the inverse view operation to the mutated view, resulting in a
 // tensor with the "final_shape" layout. This may retain some of the data from
@@ -191,10 +210,11 @@ absl::StatusOr<mlir::MlirOp> InverseViewOperationShlo(
 // Constructs the inverse of a view sequence, which will reconstruct the
 // pre-view layout from a strided view.
 //
-// This will fail if the view sequence contains a slice operation, as special
-// handling is required to merge an updated slice with the pre-slice value.
-absl::StatusOr<InverseViewSequence> InvertViewSequence(
-    StridedLayout& layout, ViewSequenceSpan view_sequence);
+// This will crash if the view sequence contains a lossy operation (a slice,
+// real(), imag(), or bitcast to boolean) or if it constructs an overlapping
+// view (including broadcasts).
+InverseViewSequence InvertViewSequence(StridedLayout& layout,
+                                       ViewSequenceSpan view_sequence);
 
 // Applies the inverse view sequence to the mutated view, resulting in a
 // tensor with the same shape as the contiguous base.

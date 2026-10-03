@@ -28,10 +28,12 @@
 #include "ATen/core/ATen_fwd.h"
 #include "absl/base/optimization.h"
 #include "absl/log/absl_check.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "c10/util/Optional.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/context_states.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
@@ -39,6 +41,10 @@
 #include "csrc/common/shape.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/device_buffer_utils.h"
+#include "csrc/eager/eager_mode.h"
+#include "csrc/eager/events_queue.h"
+#include "csrc/eager/materialize.h"
+#include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
@@ -123,6 +129,7 @@ struct DispatchOpOptions {
   OpSplitMode split_mode = OpSplitMode::kNone;
   Indices donated_indices = {};
   std::vector<int64_t> device_assignment = {};  // INT_VEC_OK
+  bool autodonated = false;
 };
 
 // Specialization for the case where the number of outputs is unknown at compile
@@ -139,6 +146,7 @@ struct DispatchOpOptions<kDynamicSize> {
   OpSplitMode split_mode = OpSplitMode::kNone;
   Indices donated_indices = {};
   std::vector<int64_t> device_assignment = {};  // INT_VEC_OK
+  bool autodonated = false;
 };
 
 // Specialization for the case where the number of outputs is 1.
@@ -154,6 +162,7 @@ struct DispatchOpOptions<1> {
   OpSplitMode split_mode = OpSplitMode::kNone;
   Indices donated_indices = {};
   std::vector<int64_t> device_assignment = {};  // INT_VEC_OK
+  bool autodonated = false;
 };
 
 namespace internal {
@@ -281,12 +290,15 @@ absl::Span<const at::Tensor> GetTensorSpan(const OpInputs<kSize>& tensors) {
 
 // Resizes `output` (if shape differs) and assigns `result_buffer` to it.
 absl::Status AssignBufferToOutput(const at::Tensor& output,
-                                  DeviceBufferRef result_buffer);
+                                  DeviceBufferRef result_buffer,
+                                  bool enable_autodonation);
 
 // Resizes each defined tensor in `outputs` (if shape differs) and assigns the
 // corresponding result buffer to it.
-absl::Status AssignBuffersToOutputs(absl::Span<const at::Tensor> outputs,
-                                    absl::Span<DeviceBufferRef> result_buffers);
+absl::Status AssignBuffersToOutputs(
+    absl::Span<const at::Tensor> outputs,
+    absl::Span<DeviceBufferRef> result_buffers,
+    absl::Span<const uint8_t> enable_autodonation);
 
 // Automatically detects and populates buffer donations from `inputs` into
 // `outputs` in eager mode if `donated_indices` is empty.
@@ -297,7 +309,8 @@ void AutoDonateInPlaceBuffers(
     absl::Span<const at::Tensor> outputs,
     absl::Span<const mlir::ElementType> out_dtypes,
     absl::Span<const absl::Span<const int64_t>> out_dims_list,
-    absl::Span<const at::Tensor> inputs, Indices& donated_indices);
+    absl::Span<const at::Tensor> inputs, Indices& donated_indices,
+    std::vector<uint8_t>& output_donated);
 
 }  // namespace internal
 
@@ -339,8 +352,16 @@ absl::StatusOr<DeviceBufferRefArray<kNumOutputs>> DispatchOp(
   const absl::Span<const at::Tensor> inputs_span =
       internal::GetTensorSpan<kArity>(inputs);
 
-  TT_ASSIGN_OR_RETURN(std::vector<DeviceBufferRef> inputs_vec,
-                      GetBuffers(inputs_span));
+  std::vector<DeviceBufferRef> inputs_vec;
+  if (options.autodonated) {
+    // Ensure that base buffers are donated to tensor views.
+    // Example: torch.zeros(1024)[0].add_(1) should donate the entire buffer of
+    // 1024 to the dynamic_update_slice, not just the one-element slice.
+    TT_ASSIGN_OR_RETURN(inputs_vec,
+                        GetBuffers(inputs_span, options.donated_indices));
+  } else {
+    TT_ASSIGN_OR_RETURN(inputs_vec, GetBuffers(inputs_span));
+  }
 
   // Fail if the op is forced to fail for testing.
   const std::string_view op_base_name = ToBaseName(op_name);
@@ -363,6 +384,7 @@ absl::StatusOr<DeviceBufferRefArray<kNumOutputs>> DispatchOp(
         .split_mode = options.split_mode,
         .donated_indices = std::move(options.donated_indices),
         .device_assignment = std::move(options.device_assignment),
+        .allow_materialization = !options.autodonated,
     };
     TT_ASSIGN_OR_RETURN(
         results, internal::CreateDeferredDeviceBufferList(std::move(params)));
@@ -392,6 +414,7 @@ absl::StatusOr<DeviceBufferRefArray<kNumOutputs>> DispatchOp(
         .split_mode = options.split_mode,
         .donated_indices = std::move(options.donated_indices),
         .device_assignment = std::move(options.device_assignment),
+        .allow_materialization = !options.autodonated,
     };
     TT_ASSIGN_OR_RETURN(
         results, internal::CreateDeferredDeviceBufferList(std::move(params)));
@@ -421,6 +444,7 @@ absl::StatusOr<DeviceBufferRefArray<kNumOutputs>> DispatchOp(
         .split_mode = options.split_mode,
         .donated_indices = std::move(options.donated_indices),
         .device_assignment = std::move(options.device_assignment),
+        .allow_materialization = !options.autodonated,
     };
     TT_ASSIGN_OR_RETURN(
         results, internal::CreateDeferredDeviceBufferList(std::move(params)));
@@ -461,28 +485,44 @@ absl::Status DispatchOpOut(NAryMlirOpBuilder<kArity, kNumOutputs> op_builder,
   const absl::Span<const at::Tensor> outputs_span =
       internal::GetTensorSpan<kNumOutputs>(outputs);
 
-  if constexpr (kNumOutputs == 1) {
-    internal::AutoDonateInPlaceBuffers(outputs_span,
-                                       absl::MakeSpan(&options.out_dtype, 1),
-                                       absl::MakeSpan(&options.out_dims, 1),
-                                       inputs_span, options.donated_indices);
-  } else {
-    internal::AutoDonateInPlaceBuffers(outputs_span, options.out_dtypes,
-                                       options.out_dims_list, inputs_span,
-                                       options.donated_indices);
+  // Use a vector of bytes to avoid problematic vector<bool> specialization.
+  std::vector<uint8_t> output_donated(outputs_span.size(), 0);
+  bool autodonated = false;
+  if (options.donated_indices.empty()) {
+    if constexpr (kNumOutputs == 1) {
+      internal::AutoDonateInPlaceBuffers(
+          outputs_span, absl::MakeSpan(&options.out_dtype, 1),
+          absl::MakeSpan(&options.out_dims, 1), inputs_span,
+          options.donated_indices, output_donated);
+    } else {
+      internal::AutoDonateInPlaceBuffers(
+          outputs_span, options.out_dtypes, options.out_dims_list, inputs_span,
+          options.donated_indices, output_donated);
+    }
+    autodonated = !options.donated_indices.empty();
   }
+  options.autodonated = autodonated;
 
   TT_ASSIGN_OR_RETURN(auto result_bufs,
                       (DispatchOp<kArity, kNumOutputs>(
                           std::move(op_builder), inputs, std::move(options))));
 
   if constexpr (kNumOutputs == 1) {
-    return internal::AssignBufferToOutput(outputs_span[0],
-                                          std::move(result_bufs));
+    TT_RETURN_IF_ERROR(internal::AssignBufferToOutput(
+        outputs_span[0], std::move(result_bufs), output_donated[0]));
   } else {
-    return internal::AssignBuffersToOutputs(outputs_span,
-                                            absl::MakeSpan(result_bufs));
+    TT_RETURN_IF_ERROR(internal::AssignBuffersToOutputs(
+        outputs_span, absl::MakeSpan(result_bufs), output_donated));
   }
+  if (autodonated) {
+    auto snapshot_future = MaterializeCurrentStream(
+        MaterializationReason::kDebugMode, MaterializationMode::kFullGraph);
+    if (GetEagerMode() == EagerMode::kDeferNeverAndLaunchBlocking) {
+      TT_ASSIGN_OR_RETURN(auto snapshot, snapshot_future.Await());
+      TT_RETURN_IF_ERROR(snapshot->Synchronize());
+    }
+  }
+  return absl::OkStatus();
 }
 
 // Creates an at::Tensor from an at::Scalar.

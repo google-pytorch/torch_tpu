@@ -24,12 +24,10 @@
 #include <vector>
 
 #include "ATen/core/ATen_fwd.h"
-#include "ATen/ops/ones.h"
 #include "absl/cleanup/cleanup.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
-#include "c10/core/ScalarType.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/context_states.h"
 #include "csrc/common/dimension_types.h"
@@ -155,7 +153,8 @@ void AutoDonateInPlaceBuffer(const at::Tensor& out,
                              absl::Span<const at::Tensor> inputs,
                              mlir::ElementType out_dtype,
                              std::optional<at::IntArrayRef> destination_dims,
-                             Indices& donated_indices) {
+                             Indices& donated_indices,
+                             std::vector<uint8_t>& output_donated) {
   if (!donated_indices.empty() || !out.defined()) {
     return;
   }
@@ -163,10 +162,11 @@ void AutoDonateInPlaceBuffer(const at::Tensor& out,
   const absl::Span<const int64_t> dims_span(dims.data(), dims.size());
   internal::AutoDonateInPlaceBuffers(
       absl::MakeSpan(&out, 1), absl::MakeSpan(&out_dtype, 1),
-      absl::MakeSpan(&dims_span, 1), inputs, donated_indices);
+      absl::MakeSpan(&dims_span, 1), inputs, donated_indices, output_donated);
 }
 
 TEST(AutoDonateInPlaceBuffer, EligibilityAndAliasingTests) {
+  ScopedPythonContextCapturer capturer(OpName::kAdd);
   constexpr auto f32_type = mlir::ElementType::F32;
   constexpr auto f64_type = mlir::ElementType::F64;
 
@@ -176,12 +176,19 @@ TEST(AutoDonateInPlaceBuffer, EligibilityAndAliasingTests) {
                           std::optional<at::IntArrayRef> destination_dims =
                               std::nullopt) -> bool {
     Indices donated;
-    AutoDonateInPlaceBuffer(dest, inputs, out_dtype, destination_dims, donated);
+    std::vector<uint8_t> output_donated = {0};
+    AutoDonateInPlaceBuffer(dest, inputs, out_dtype, destination_dims, donated,
+                            output_donated);
     return !donated.empty();
   };
 
-  at::Tensor t = at::ones({2, 3}, at::kFloat);
-  at::Tensor other = at::ones({2, 3}, at::kFloat);
+  TT_ASSERT_OK_AND_ASSIGN(auto dummy_buffer,
+                          CreateEmptyDeviceBufferRef({2, 3}, f32_type));
+  at::Tensor t = MakeTensor(std::move(dummy_buffer));
+  TT_ASSERT_OK_AND_ASSIGN(dummy_buffer,
+                          CreateEmptyDeviceBufferRef({2, 3}, f32_type));
+  at::Tensor other = MakeTensor(std::move(dummy_buffer));
+  ASSERT_FALSE(t.is_alias_of(other));
 
   // In kDeferAndFuse, donation is disabled.
   SetEagerMode(EagerMode::kDeferAndFuse);
@@ -211,20 +218,23 @@ TEST(AutoDonateInPlaceBuffer, EligibilityAndAliasingTests) {
   // Explicit matching output_dims donates.
   EXPECT_TRUE(should_donate(t, {t}, f32_type, at::IntArrayRef({2, 3})));
 
-  // Non-contiguous tensor does not donate.
-  at::Tensor t_transposed = t.t();
-  EXPECT_FALSE(should_donate(t_transposed, {t_transposed}, f32_type,
-                             at::IntArrayRef({3, 2})));
+  // Non-contiguous tensor can donate, as long as it is both in and out.
+  at::Tensor t_transposed = t;
+  t_transposed.t_();  // Work around "missing aten::as_strided" error
+  EXPECT_TRUE(should_donate(t_transposed, {t_transposed}, f32_type));
 
-  // Non-zero storage offset does not donate.
-  at::Tensor t_sliced = t.slice(/*dim=*/0, /*start=*/1);
-  EXPECT_FALSE(
-      should_donate(t_sliced, {t_sliced}, f32_type, at::IntArrayRef({1, 3})));
+  // Partial slices donate, as long as they are both in and out.
+  // Equivalent to at::Tensor t_sliced = t.slice(/*dim=*/0, /*start=*/1);
+  at::Tensor t_sliced = t;
+  t_sliced.as_strided_(/*size=*/{1, 3}, /*stride=*/{3, 1},
+                       /*storage_offset=*/3);
+  EXPECT_TRUE(should_donate(t_sliced, {t_sliced}, f32_type));
 
-  // Empty tensor does not donate.
-  at::Tensor t_empty = at::ones({0}, at::kFloat);
-  EXPECT_FALSE(
-      should_donate(t_empty, {t_empty}, f32_type, at::IntArrayRef({0})));
+  // Zero-sized tensor does not donate.
+  TT_ASSERT_OK_AND_ASSIGN(dummy_buffer,
+                          CreateEmptyDeviceBufferRef({0}, f32_type));
+  at::Tensor t_zero_sized = MakeTensor(std::move(dummy_buffer));
+  EXPECT_FALSE(should_donate(t_zero_sized, {t_zero_sized}, f32_type));
 
   // Restore default mode.
   SetEagerMode(EagerMode::kDeferAndFuse);
@@ -233,18 +243,30 @@ TEST(AutoDonateInPlaceBuffer, EligibilityAndAliasingTests) {
 TEST(AutoDonateInPlaceBuffer, DetectsDonation) {
   constexpr auto f32_type = mlir::ElementType::F32;
   SetEagerMode(EagerMode::kDeferNever);
+  ScopedPythonContextCapturer capturer(OpName::kAdd);
 
-  at::Tensor a = at::ones({2, 3}, at::kFloat);
-  at::Tensor b = at::ones({2, 3}, at::kFloat);
+  TT_ASSERT_OK_AND_ASSIGN(auto dummy_buffer,
+                          CreateEmptyDeviceBufferRef({2, 3}, f32_type));
+  at::Tensor a = MakeTensor(std::move(dummy_buffer));
+  TT_ASSERT_OK_AND_ASSIGN(dummy_buffer,
+                          CreateEmptyDeviceBufferRef({2, 3}, f32_type));
+  at::Tensor b = MakeTensor(std::move(dummy_buffer));
+  ASSERT_FALSE(a.is_alias_of(b));
 
   Indices donated;
-  AutoDonateInPlaceBuffer(a, {b, a}, f32_type, std::nullopt, donated);
+  std::vector<uint8_t> output_donated = {0};
+  AutoDonateInPlaceBuffer(a, {b, a}, f32_type, std::nullopt, donated,
+                          output_donated);
   EXPECT_EQ(donated, Indices{1});
+  EXPECT_EQ(output_donated, std::vector<uint8_t>({1}));
 
   // Does not overwrite pre-existing donated indices.
   Indices pre_existing = {0};
-  AutoDonateInPlaceBuffer(a, {b, a}, f32_type, std::nullopt, pre_existing);
+  output_donated = {0};
+  AutoDonateInPlaceBuffer(a, {b, a}, f32_type, std::nullopt, pre_existing,
+                          output_donated);
   EXPECT_EQ(pre_existing, Indices{0});
+  EXPECT_EQ(output_donated, std::vector<uint8_t>({0}));
 
   SetEagerMode(EagerMode::kDeferAndFuse);
 }
@@ -252,9 +274,15 @@ TEST(AutoDonateInPlaceBuffer, DetectsDonation) {
 TEST(AutoDonateInPlaceBuffers, MultiOutputDonation) {
   constexpr auto f32_type = mlir::ElementType::F32;
   SetEagerMode(EagerMode::kDeferNever);
+  ScopedPythonContextCapturer capturer(OpName::kAdd);
 
-  at::Tensor in0 = at::ones({4, 5}, at::kFloat);
-  at::Tensor in1 = at::ones({2, 3}, at::kFloat);
+  TT_ASSERT_OK_AND_ASSIGN(auto dummy_buffer,
+                          CreateEmptyDeviceBufferRef({4, 5}, f32_type));
+  at::Tensor in0 = MakeTensor(std::move(dummy_buffer));
+  TT_ASSERT_OK_AND_ASSIGN(dummy_buffer,
+                          CreateEmptyDeviceBufferRef({2, 3}, f32_type));
+  at::Tensor in1 = MakeTensor(std::move(dummy_buffer));
+  ASSERT_FALSE(in0.is_alias_of(in1));
   at::Tensor out0 = in1;  // Aliases in1.
   at::Tensor out1 = in0;  // Aliases in0.
 
@@ -264,10 +292,12 @@ TEST(AutoDonateInPlaceBuffers, MultiOutputDonation) {
   const std::array<mlir::ElementType, 2> out_dtypes = {f32_type, f32_type};
 
   Indices donated;
+  std::vector<uint8_t> output_donated = {0, 0};
   internal::AutoDonateInPlaceBuffers({out0, out1}, out_dtypes, out_dims_list,
-                                     {in0, in1}, donated);
+                                     {in0, in1}, donated, output_donated);
   // out0 matches in1 (index 1), out1 matches in0 (index 0).
   EXPECT_EQ(donated, (Indices{1, 0}));
+  EXPECT_EQ(output_donated, std::vector<uint8_t>({1, 1}));
 
   SetEagerMode(EagerMode::kDeferAndFuse);
 }
@@ -275,8 +305,11 @@ TEST(AutoDonateInPlaceBuffers, MultiOutputDonation) {
 TEST(AutoDonateInPlaceBuffers, CannotDonateBufferMultipleTimes) {
   constexpr auto f32_type = mlir::ElementType::F32;
   SetEagerMode(EagerMode::kDeferNever);
+  ScopedPythonContextCapturer capturer(OpName::kAdd);
 
-  at::Tensor in = at::ones({2, 3}, at::kFloat);
+  TT_ASSERT_OK_AND_ASSIGN(auto dummy_buffer,
+                          CreateEmptyDeviceBufferRef({2, 3}, f32_type));
+  at::Tensor in = MakeTensor(std::move(dummy_buffer));
   at::Tensor out0 = in;  // Aliases in.
   at::Tensor out1 = in;  // Also aliases in.
 
@@ -285,19 +318,24 @@ TEST(AutoDonateInPlaceBuffers, CannotDonateBufferMultipleTimes) {
   const std::array<mlir::ElementType, 2> out_dtypes = {f32_type, f32_type};
 
   Indices donated;
+  std::vector<uint8_t> output_donated = {0, 0};
   internal::AutoDonateInPlaceBuffers({out0, out1}, out_dtypes, out_dims_list,
-                                     {in}, donated);
+                                     {in}, donated, output_donated);
   // 'in' can only be donated to at most ONE output (out0). It must NOT be
   // donated a second time to out1.
   EXPECT_EQ(donated, Indices{0});
+  EXPECT_EQ(output_donated, std::vector<uint8_t>({1, 0}));
 
   // Similarly, if two inputs alias each other, the underlying buffer cannot be
   // donated multiple times.
   at::Tensor in_alias = in;  // Shares storage with 'in'.
   Indices donated_aliased_inputs;
+  output_donated = {0, 0};
   internal::AutoDonateInPlaceBuffers({out0, out1}, out_dtypes, out_dims_list,
-                                     {in, in_alias}, donated_aliased_inputs);
+                                     {in, in_alias}, donated_aliased_inputs,
+                                     output_donated);
   EXPECT_EQ(donated_aliased_inputs, Indices{0});
+  EXPECT_EQ(output_donated, std::vector<uint8_t>({1, 0}));
 
   SetEagerMode(EagerMode::kDeferAndFuse);
 }
@@ -320,9 +358,11 @@ TEST(AutoDonateInPlaceBuffers,
   EXPECT_EQ(dummy_buffer.device_buffer_list()->live_data_ptrs(), 1);
 
   Indices donated;
+  std::vector<uint8_t> output_donated = {0};
   internal::AutoDonateInPlaceBuffers({a}, out_dtypes, out_dims_list, {a},
-                                     donated);
+                                     donated, output_donated);
   EXPECT_EQ(donated, Indices{0});
+  EXPECT_EQ(output_donated, std::vector<uint8_t>({1}));
 
   // Case 2: Second tensor shares the same DeviceBufferRef (live_data_ptrs ==
   // 2), simulating shallow-copy clone semantics. Buffer donation must be
@@ -334,30 +374,38 @@ TEST(AutoDonateInPlaceBuffers,
     EXPECT_FALSE(b.is_alias_of(a));
 
     Indices donated_shared;
+    output_donated = {0};
     internal::AutoDonateInPlaceBuffers({b}, out_dtypes, out_dims_list, {b},
-                                       donated_shared);
+                                       donated_shared, output_donated);
     EXPECT_TRUE(donated_shared.empty());
+    EXPECT_EQ(output_donated, std::vector<uint8_t>({0}));
 
     // In-place on 'a' must also not donate while 'b' is alive.
     Indices donated_a_shared;
+    output_donated = {0};
     internal::AutoDonateInPlaceBuffers({a}, out_dtypes, out_dims_list, {a},
-                                       donated_a_shared);
+                                       donated_a_shared, output_donated);
     EXPECT_TRUE(donated_a_shared.empty());
+    EXPECT_EQ(output_donated, std::vector<uint8_t>({0}));
 
     // In-place on 'b' with 'a' also passed as an input operand.
     Indices donated_both_inputs;
+    output_donated = {0};
     internal::AutoDonateInPlaceBuffers({b}, out_dtypes, out_dims_list, {b, a},
-                                       donated_both_inputs);
+                                       donated_both_inputs, output_donated);
     EXPECT_TRUE(donated_both_inputs.empty());
+    EXPECT_EQ(output_donated, std::vector<uint8_t>({0}));
   }
 
   // Case 3: Once 'b' is destroyed, live_data_ptrs returns to 1, and donation
   // is eligible again.
   EXPECT_EQ(dummy_buffer.device_buffer_list()->live_data_ptrs(), 1);
   Indices donated_after_b_destroyed;
+  output_donated = {0};
   internal::AutoDonateInPlaceBuffers({a}, out_dtypes, out_dims_list, {a},
-                                     donated_after_b_destroyed);
+                                     donated_after_b_destroyed, output_donated);
   EXPECT_EQ(donated_after_b_destroyed, Indices{0});
+  EXPECT_EQ(output_donated, std::vector<uint8_t>({1}));
 
   SetEagerMode(EagerMode::kDeferAndFuse);
 }
@@ -409,9 +457,11 @@ TEST(AutoDonateInPlaceBuffers,
 
   // All 3 slots are eligible for donation on subsequent steps.
   Indices donated_all;
+  std::vector<uint8_t> output_donated = {0, 0, 0};
   internal::AutoDonateInPlaceBuffers({t0, t1, t2}, out_dtypes, out_dims_list,
-                                     {t0, t1, t2}, donated_all);
+                                     {t0, t1, t2}, donated_all, output_donated);
   EXPECT_EQ(donated_all, (Indices{0, 1, 2}));
+  EXPECT_EQ(output_donated, std::vector<uint8_t>({1, 1, 1}));
 
   TT_ASSERT_OK_AND_ASSIGN(
       auto step2_refs,
@@ -434,9 +484,12 @@ TEST(AutoDonateInPlaceBuffers,
     // Slots 0 and 2 still donate; slot 1 is blocked because it has a live
     // clone.
     Indices donated_with_clone;
+    output_donated = {0, 0, 0};
     internal::AutoDonateInPlaceBuffers({t0, t1, t2}, out_dtypes, out_dims_list,
-                                       {t0, t1, t2}, donated_with_clone);
+                                       {t0, t1, t2}, donated_with_clone,
+                                       output_donated);
     EXPECT_EQ(donated_with_clone, (Indices{0, 2}));
+    EXPECT_EQ(output_donated, std::vector<uint8_t>({1, 0, 1}));
 
     TT_ASSERT_OK_AND_ASSIGN(
         auto step3_refs,
@@ -465,7 +518,8 @@ TEST(AssignBufferToOutput, ErrorOnUndefinedOutput) {
       CreateEmptyDeviceBufferRef({2, 3}, mlir::ElementType::F32));
 
   const absl::Status status =
-      internal::AssignBufferToOutput(undefined_output, std::move(dummy_buffer));
+      internal::AssignBufferToOutput(undefined_output, std::move(dummy_buffer),
+                                     /*enable_autodonation=*/false);
   EXPECT_FALSE(status.ok());
   EXPECT_EQ(status.code(), error::kInvalidArgument);
 }

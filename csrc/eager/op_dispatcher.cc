@@ -155,23 +155,16 @@ absl::StatusOr<DeviceBufferRef> MakeBuffer(
 bool IsEligibleDonor(const at::Tensor& in, const at::Tensor& out,
                      mlir::ElementType out_dtype,
                      at::IntArrayRef destination_dims) {
-  if (!out.is_alias_of(in) || !in.is_contiguous() || in.storage_offset() != 0 ||
-      in.is_conj() || in.numel() == 0 || in.sizes() != destination_dims) {
+  // An in-place operation is one where the out-tensor is an alias of the
+  // in-tensor and does not change shape or dtype.
+  if (!out.is_alias_of(in) || in.numel() == 0 ||
+      in.sizes() != destination_dims) {
     return false;
   }
   const auto in_dtype = ConvertTo<mlir::ElementType>(in.scalar_type());
   if (!in_dtype.ok() || *in_dtype != out_dtype) {
     return false;
   }
-  // When running on TPU tensors, verify that the underlying DeviceBufferRef has
-  // exclusive ownership (`live_data_ptrs == 1`). In TorchTPU, `CopyTpuToTpu`
-  // performs shallow buffer sharing for `.clone()` when shapes and dtypes
-  // match, creating separate `c10::Storage` instances that share the same
-  // device buffer. Because `is_alias_of` only inspects storage pointers, it
-  // returns false between a tensor and its clone, but each tensor's storage
-  // aliases itself. Checking `live_data_ptrs() > 1` ensures in-place operations
-  // on a clone do not donate and invalidate the buffer shared by the original.
-  //
   // Note: We explicitly guard this check with `GetPrivateUse1DeviceType()`
   // because standalone C++ unit tests (e.g. in op_dispatcher_test) test ATen
   // layout, contiguity, and offset properties using CPU tensors. In standalone
@@ -180,9 +173,29 @@ bool IsEligibleDonor(const at::Tensor& in, const at::Tensor& out,
   // `GetPrivateUse1DeviceType()` allows those C++ unit tests to run on CPU
   // tensors without `GetBaseBuffer` failing, while strictly enforcing exclusive
   // ownership for real TPU tensors in production.
-  if (in.device().type() == GetPrivateUse1DeviceType()) {
-    const auto in_buf = GetBaseBuffer(in);
-    return in_buf.ok() && in_buf->live_data_ptrs() <= 1;
+  if (in.device().type() != GetPrivateUse1DeviceType()) {
+    return false;
+  }
+  const auto in_buf_or = GetBaseBuffer(in);
+  if (!in_buf_or.ok()) {
+    return false;
+  }
+  const auto& in_buf = *in_buf_or;
+  if (in_buf.live_data_ptrs() > 1) {
+    // Because XLA tensors are immutable, TorchTPU uses copy-on-write semantics.
+    // This means that if a tensor is cloned, we construct a new `c10::Storage`
+    // but retain the same underlying device buffer.
+    // If there is later an in-place write while multiple references exist, we
+    // perform the operation out-of-place, as a copy is required.
+    // If there is only one reference, then it is safe to donate the buffer.
+    return false;
+  }
+  if (in_buf.element_type() == mlir::ElementType::PRED &&
+      out_dtype != mlir::ElementType::PRED) {
+    // Writing a non-boolean value to a boolean tensor is allowed, but requires
+    // upcasting the storage from single-bit PRED to avoid data loss. As such
+    // this is performed out-of-place.
+    return false;
   }
   return true;
 }
@@ -240,7 +253,8 @@ void AutoDonateInPlaceBuffers(
     absl::Span<const at::Tensor> outputs,
     absl::Span<const mlir::ElementType> out_dtypes,
     absl::Span<const absl::Span<const int64_t>> out_dims_list,
-    absl::Span<const at::Tensor> inputs, Indices& donated_indices) {
+    absl::Span<const at::Tensor> inputs, Indices& donated_indices,
+    std::vector<uint8_t>& output_donated) {
   if (!donated_indices.empty() || !IsInplaceBufferDonationEnabled() ||
       !IsDeferNeverMode(GetEagerMode())) {
     return;
@@ -261,6 +275,7 @@ void AutoDonateInPlaceBuffers(
       }
       if (IsEligibleDonor(inputs[in_idx], out, out_dtype, destination_dims)) {
         donated_indices.push_back(static_cast<int64_t>(in_idx));
+        output_donated[out_idx] = true;
         MarkDonatedAndAliases(in_idx, inputs, input_donated);
         break;
       }
@@ -269,23 +284,26 @@ void AutoDonateInPlaceBuffers(
 }
 
 absl::Status AssignBufferToOutput(const at::Tensor& output,
-                                  DeviceBufferRef result_buffer) {
+                                  DeviceBufferRef result_buffer,
+                                  bool enable_autodonation) {
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Output tensors are always defined.
       output.defined(), error::kInvalidArgument)
       << "expected defined output tensor";
   TT_RETURN_IF_ERROR(
       ResizeTensorIfShapeDiffers(output, result_buffer.dimensions()));
-  return AssignBufferToAtTensor(std::move(result_buffer), output);
+  return AssignBufferToAtTensor(std::move(result_buffer), output,
+                                enable_autodonation);
 }
 
 absl::Status AssignBuffersToOutputs(
     absl::Span<const at::Tensor> outputs,
-    absl::Span<DeviceBufferRef> result_buffers) {
+    absl::Span<DeviceBufferRef> result_buffers,
+    absl::Span<const uint8_t> enable_autodonation) {
   ABSL_CHECK_EQ(outputs.size(), result_buffers.size())  // CRASH_OK
       << "Mismatch between number of output tensors and result buffers.";
   for (size_t i = 0; i < outputs.size(); ++i) {
-    TT_RETURN_IF_ERROR(
-        AssignBufferToOutput(outputs[i], std::move(result_buffers[i])));
+    TT_RETURN_IF_ERROR(AssignBufferToOutput(
+        outputs[i], std::move(result_buffers[i]), enable_autodonation[i]));
   }
   return absl::OkStatus();
 }

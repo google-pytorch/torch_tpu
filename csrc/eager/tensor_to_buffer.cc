@@ -27,6 +27,7 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/CachingHostAllocator.h"
+#include "absl/algorithm/container.h"
 #include "absl/base/no_destructor.h"
 #include "absl/base/nullability.h"
 #include "absl/base/thread_annotations.h"
@@ -50,7 +51,6 @@
 #include "c10/core/StorageImpl.h"
 #include "c10/core/Stream.h"
 #include "c10/core/TensorImpl.h"
-#include "c10/util/Exception.h"
 #include "c10/util/Optional.h"
 #include "c10/util/UniqueVoidPtr.h"
 #include "c10/util/intrusive_ptr.h"
@@ -136,7 +136,8 @@ void OverwriteDataPtr(const c10::DataPtr& data_ptr,
 }  // namespace
 
 absl::Status AssignBufferToAtTensor(DeviceBufferRef result_buf,
-                                    const at::Tensor& tensor) {
+                                    const at::Tensor& tensor,
+                                    bool enable_autodonation) {
   ABSL_VLOG(1)
       << "[AssignBufferToAtTensor] Assigning DeviceBufferRef to existing "
          "tensor\n"
@@ -184,19 +185,37 @@ absl::Status AssignBufferToAtTensor(DeviceBufferRef result_buf,
     return absl::OkStatus();
   }
 
-  // We must skip this optimization for Conj tensors because their storage
-  // contains the *original* values, not the conjugated values. Direct storage
-  // assignment would lose the conjugation bit, resulting in incorrect values.
-  // By falling through to ComputeInverseViewOperation, we ensure the proper
-  // view inversion (which includes conjugation) is applied during the
-  // write-back.
-  if (tensor.is_contiguous() && !tensor.is_conj() &&
+  TT_ASSIGN_OR_RETURN(DeviceBufferRef base_buffer_ref, GetBaseBuffer(tensor));
+
+  // A full overwrite will replace every byte of the original base buffer, so
+  // the base buffer can simply be dropped and doesn't need explicit donation.
+  const bool full_overwrite =
       tensor.storage_offset() == 0 &&
-      tensor.storage().nbytes() == result_buf.size_bytes()) {
-    // The result_buf can be used directly as the new storage buffer; even if
-    // it is a different shape, any contiguous view can be the base.
+      tensor.storage().nbytes() == result_buf.size_bytes();
+  // A full overwrite that is also contiguous and non-conjugate doesn't require
+  // a view inversion at all.
+  const bool is_contiguous_overwrite =
+      full_overwrite && tensor.is_contiguous() && !tensor.is_conj();
+  // Writing non-boolean data to a boolean buffer requires changing the
+  // data type of the storage to UINT8 to avoid losing data; this prevents
+  // donation.
+  const bool write_bytes_to_bool =
+      base_buffer_ref.element_type() == mlir::ElementType::PRED &&
+      result_buf.element_type() != mlir::ElementType::PRED;
+
+  // We can donate the base buffer if:
+  //  - Autodonation is enabled, and
+  //  - The write is not a full overwrite of the base buffer, and
+  //  - The write will not erase data outside of the result buffer, and
+  //  - We're overwriting the last live data pointer of the base buffer.
+  const bool auto_donate = enable_autodonation && !full_overwrite &&
+                           !write_bytes_to_bool &&
+                           base_buffer_ref.live_data_ptrs() <= 1;
+
+  if (is_contiguous_overwrite) {
+    // The result_buf can be used directly as the new storage buffer.
     //
-    // Note: this means it's possible for an operation like
+    // When preserve_base is false, it's possible for an operation like
     // ```
     //   a = torch.zeros(100)
     //   b = a.view(10, 10)
@@ -206,6 +225,9 @@ absl::Status AssignBufferToAtTensor(DeviceBufferRef result_buf,
     // to another equivalent shape, in this case (100,) -> (10, 10). In some
     // sense, this changes from `b` being a view of `a`, to `a` being a view
     // of `b`, in a "last write wins" ordering.
+    //
+    // If preserve_base is true, then the view will be reshaped to the original
+    // (100,) shape to ensure no change to the base layout.
     ABSL_VLOG(2) << "[AssignBufferToAtTensor] Directly assigning contiguous "
                     "base buffer of "
                  << result_buf.size_bytes() << " bytes.";
@@ -215,11 +237,10 @@ absl::Status AssignBufferToAtTensor(DeviceBufferRef result_buf,
     // will be updated by the write.
     OverwriteDataPtr(tensor.storage().data_ptr(), std::move(result_buf));
   } else {
-    TT_ASSIGN_OR_RETURN(DeviceBufferRef base_buffer_ref, GetBaseBuffer(tensor));
     TT_ASSIGN_OR_RETURN(DeviceBufferRef new_base_buffer_ref,
                         CreateInverseViewDeviceBufferRef(
                             std::move(base_buffer_ref), std::move(result_buf),
-                            tpu_layout, tensor.is_conj()));
+                            tpu_layout, tensor.is_conj(), auto_donate));
 
     // Overwrite the c10::DataPtr in storage to use the new DeviceBufferRef.
     // All reads that happened before the write will be unaffected, but reads
@@ -325,7 +346,8 @@ absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const c10::Storage& storage) {
   return *base_buffer_ref;
 }
 
-absl::StatusOr<DeviceBufferRef> GetBuffer(const at::Tensor& tensor) {
+absl::StatusOr<DeviceBufferRef> GetBuffer(const at::Tensor& tensor,
+                                          bool donate_to_view) {
   TT_RET_CHECK(tensor.defined(), error::kInvalidArgument)
       << "tensor is undefined";
   TT_ASSIGN_OR_RETURN(DeviceBufferRef base_buffer_ref, GetBaseBuffer(tensor));
@@ -341,16 +363,27 @@ absl::StatusOr<DeviceBufferRef> GetBuffer(const at::Tensor& tensor) {
   }
 
   return CreateViewDeviceBufferRef(base_buffer_ref, tpu_layout,
-                                   tensor.is_conj());
+                                   tensor.is_conj(), donate_to_view);
 }
 
 absl::StatusOr<std::vector<DeviceBufferRef>> GetBuffers(
-    absl::Span<const at::Tensor> tensors) {
+    absl::Span<const at::Tensor> tensors,
+    absl::Span<const int64_t> donated_indices) {
   std::vector<DeviceBufferRef> buffers;
   buffers.reserve(tensors.size());
-  for (const auto& tensor : tensors) {
-    TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer, GetBuffer(tensor));
-    buffers.push_back(std::move(buffer));
+  if (donated_indices.empty()) {
+    for (const auto& tensor : tensors) {
+      TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer, GetBuffer(tensor));
+      buffers.push_back(std::move(buffer));
+    }
+  } else {
+    for (int64_t i = 0; i < tensors.size(); ++i) {
+      const bool donate_to_view =
+          absl::c_find(donated_indices, i) != donated_indices.end();
+      TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer,
+                          GetBuffer(tensors[i], donate_to_view));
+      buffers.push_back(std::move(buffer));
+    }
   }
   return buffers;
 }

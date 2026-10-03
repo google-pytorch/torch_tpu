@@ -16,6 +16,8 @@
 
 #include "csrc/eager/device_buffer_utils.h"
 
+#include <stdbool.h>
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -144,12 +146,18 @@ void ApplyComputationDtype(internal::DeferredOpParams& params) {
 // Handles post-op creation events for the kDeferNever and
 // kDeferNeverAndLaunchBlocking eager modes.
 absl::Status DeferNeverDispatch(absl::Span<const DeviceBufferRef> results,
-                                const OpName op_name, const bool block) {
+                                const OpName op_name, const bool block,
+                                const bool allow_materialization) {
   const auto& device_buffer_list = results[0].device_buffer_list();
   if (IsMetadataOnly(op_name)) {
     // Don't eagerly materialize metadata-only ops.
     return absl::OkStatus();
   }
+
+  if (!allow_materialization) {
+    return absl::OkStatus();
+  }
+
   // materialize.cc and events_queue.h will respect OpSplitMode, even with
   // MaterializationMode::kFullGraph.
   // In DeferNever, we don't block on materialization, we initiate and continue.
@@ -188,13 +196,16 @@ MaterializationMode GetRepeatedOpsMaterializationMode() {
 }
 
 // Handles post-op creation events for the kDeferAndFuse eager mode.
-absl::Status DeferAndFuseDispatch(absl::Span<const DeviceBufferRef> results) {
+absl::Status DeferAndFuseDispatch(absl::Span<const DeviceBufferRef> results,
+                                  const bool allow_materialization) {
   const auto& device_buffer_list = results[0].device_buffer_list();
 
   if (MustApplyRepeatedOpsHeuristic()) {
     // Record the deferred op and detect any repetitions.
-    // If a repetition is detected, materialize the current stream.
-    if (RecordDeferredOpAndDetectRepetition(device_buffer_list)) {
+    // If a repetition is detected, materialize the current stream (unless
+    // materialization is disabled).
+    if (RecordDeferredOpAndDetectRepetition(device_buffer_list) &&
+        allow_materialization) {
       // Start a background materialization of the current stream; don't
       // wait for it to complete.
       MaterializeCurrentStream(MaterializationReason::kRepeatedOpDetection,
@@ -227,15 +238,18 @@ absl::StatusOr<std::vector<DeviceBufferRef>> CreateDeferredDeviceBufferList(
     case EagerMode::kDeferNever:
       RecordDeferredOpCreated(results[0].device_buffer_list());
       TT_RETURN_IF_ERROR(DeferNeverDispatch(results, params.op_name,
-                                            /*block=*/false));
+                                            /*block=*/false,
+                                            params.allow_materialization));
       break;
     case EagerMode::kDeferNeverAndLaunchBlocking:
       RecordDeferredOpCreated(results[0].device_buffer_list());
       TT_RETURN_IF_ERROR(DeferNeverDispatch(results, params.op_name,
-                                            /*block=*/true));
+                                            /*block=*/true,
+                                            params.allow_materialization));
       break;
     case EagerMode::kDeferAndFuse:
-      TT_RETURN_IF_ERROR(DeferAndFuseDispatch(results));
+      TT_RETURN_IF_ERROR(
+          DeferAndFuseDispatch(results, params.allow_materialization));
       break;
     case EagerMode::kInternalDeferAll:
       // Record the deferred op, but leave it deferred.
@@ -420,13 +434,15 @@ absl::StatusOr<int64_t> RequiredStorageBytes(
   return (required_numel * element_bitwidth + 7) / 8;
 }
 
-// A builder and its required inputs for a view inversion (simulated write).
-struct AsStridedInverseBuilderPair {
+// A builder and its required inputs for a view inversion (simulated write),
+// along with the donated indices.
+struct AsStridedInverseBuilderResult {
   // The MlirOpBuilder to put in the constructed DeferredOp.
   MlirOpBuilder builder;
   // Either the write buffer only (if the view covers the entire base), or both
   // the write buffer and the base buffer (if the write is only partial).
   std::vector<DeviceBufferRef> inputs;
+  Indices donated_indices;
 };
 
 // Slices an MLIR input operand down to view_dimensions if its compiled type
@@ -459,10 +475,10 @@ mlir::MlirOp SliceOperandIfNeeded(mlir::MlirOp input,
 // exceed it.
 //
 // Returns the appropriate builder and inputs for the DeferredOp.
-AsStridedInverseBuilderPair MakeAsStridedInverseBuilder(
+AsStridedInverseBuilderResult MakeAsStridedInverseBuilder(
     InverseViewOperation inverse_view_operation,
     DeviceBufferRef base_buffer_ref, DeviceBufferRef write_buf,
-    Dimensions view_dimensions) {
+    Dimensions view_dimensions, bool donate_base) {
   if (inverse_view_operation.stages.size() == 1) {
     ABSL_VLOG(3)
         << "[MakeAsStridedInverseBuilder] View elements are 1:1 with base, "
@@ -496,7 +512,11 @@ AsStridedInverseBuilderPair MakeAsStridedInverseBuilder(
       return DynamicMlirOpResults{std::move(output)};
     };
     auto inputs = {std::move(write_buf)};
-    return {.builder = std::move(op_builder), .inputs = std::move(inputs)};
+    // Since the base is fully overwritten, there's no dependency on it and it
+    // can just be dropped (no donation required).
+    return {.builder = std::move(op_builder),
+            .inputs = std::move(inputs),
+            .donated_indices = Indices()};
   }
 
   // Otherwise, apply the full operation.
@@ -517,14 +537,18 @@ AsStridedInverseBuilderPair MakeAsStridedInverseBuilder(
     return DynamicMlirOpResults{std::move(output)};
   };
   auto inputs = {std::move(base_buffer_ref), std::move(write_buf)};
-  return {std::move(op_builder), std::move(inputs)};
+  Indices donated_indices;
+  if (donate_base) {
+    donated_indices.push_back(0);
+  }
+  return {std::move(op_builder), std::move(inputs), std::move(donated_indices)};
 }
 
 }  // namespace
 
 absl::StatusOr<DeviceBufferRef> CreateViewDeviceBufferRef(
     DeviceBufferRef base_buffer_ref, const TpuLayout& tpu_layout,
-    bool view_is_conj) {
+    bool view_is_conj, bool donate_input) {
   absl::Span<const int64_t> view_dimensions = tpu_layout.sizes;
   absl::Span<const int64_t> view_strides = tpu_layout.strides;
   int64_t view_storage_offset = tpu_layout.storage_offset;
@@ -606,6 +630,12 @@ absl::StatusOr<DeviceBufferRef> CreateViewDeviceBufferRef(
   std::vector<Shape> output_shapes;
   output_shapes.emplace_back(CopyIntVector(view_dimensions), view_element_type);
 
+  // Donate the input if requested.
+  Indices donated_indices;
+  if (donate_input) {
+    donated_indices.push_back(0);
+  }
+
   // Create the deferred op.
   internal::DeferredOpParams params{
       .op_name = op_name,
@@ -613,6 +643,7 @@ absl::StatusOr<DeviceBufferRef> CreateViewDeviceBufferRef(
       .op_param_cache_keys = std::move(param_keys),
       .inputs = std::move(inputs),
       .output_shapes = std::move(output_shapes),
+      .donated_indices = std::move(donated_indices),
   };
   TT_ASSIGN_OR_RETURN(auto results, internal::CreateDeferredDeviceBufferList(
                                         std::move(params)));
@@ -622,7 +653,7 @@ absl::StatusOr<DeviceBufferRef> CreateViewDeviceBufferRef(
 
 absl::StatusOr<DeviceBufferRef> CreateInverseViewDeviceBufferRef(
     DeviceBufferRef base_buffer_ref, DeviceBufferRef write_buf,
-    const TpuLayout& tpu_layout, bool view_is_conj) {
+    const TpuLayout& tpu_layout, bool view_is_conj, bool donate_base) {
   absl::Span<const int64_t> view_dimensions = tpu_layout.sizes;
   absl::Span<const int64_t> view_strides = tpu_layout.strides;
   int64_t view_storage_offset = tpu_layout.storage_offset;
@@ -650,9 +681,9 @@ absl::StatusOr<DeviceBufferRef> CreateInverseViewDeviceBufferRef(
   }
   TT_ASSIGN_OR_RETURN(
       InverseViewOperation inverse_view_operation,
-      ComputeInverseViewOperation(base_buffer_ref.dimensions(),
-                                  base_buffer_ref.element_type(), view_layout,
-                                  view_element_type, view_is_conj));
+      ComputeInverseViewOperation(
+          base_buffer_ref.dimensions(), base_buffer_ref.element_type(),
+          view_layout, view_element_type, view_is_conj, donate_base));
 
   // Create a new DeferredOp representing the updated base value
   // Build the values to construct an ephemeral DeferredOp.
@@ -665,14 +696,14 @@ absl::StatusOr<DeviceBufferRef> CreateInverseViewDeviceBufferRef(
                              base_buffer_ref.dimensions().end());
   Dimensions view_dims(view_dimensions.begin(), view_dimensions.end());
 
-  auto [op_builder, inputs] = MakeAsStridedInverseBuilder(
+  auto [op_builder, inputs, donated_indices] = MakeAsStridedInverseBuilder(
       std::move(inverse_view_operation), std::move(base_buffer_ref),
-      std::move(write_buf), std::move(view_dims));
+      std::move(write_buf), std::move(view_dims), donate_base);
 
   TT_ASSIGN_OR_RETURN(OpParamCacheKeys param_keys,
                       TT_MAKE_OP_PARAM_CACHE_KEYS(
                           view_dimensions, base_dimensions, view_strides,
-                          view_storage_offset, view_is_conj));
+                          view_storage_offset, view_is_conj, donate_base));
 
   // Create the deferred DeviceBufferRef.
   internal::DeferredOpParams params{
@@ -681,6 +712,7 @@ absl::StatusOr<DeviceBufferRef> CreateInverseViewDeviceBufferRef(
       .op_param_cache_keys = std::move(param_keys),
       .inputs = std::move(inputs),
       .output_shapes = std::move(output_shapes),
+      .donated_indices = std::move(donated_indices),
   };
   TT_ASSIGN_OR_RETURN(auto results, internal::CreateDeferredDeviceBufferList(
                                         std::move(params)));

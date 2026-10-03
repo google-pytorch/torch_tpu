@@ -17,10 +17,12 @@
 #ifndef TORCH_TPU_CSRC_EAGER_DEVICE_BUFFER_UTILS_H_
 #define TORCH_TPU_CSRC_EAGER_DEVICE_BUFFER_UTILS_H_
 
+#include <cstdint>
 #include <optional>
 #include <vector>
 
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/layout_utils.h"
@@ -60,6 +62,8 @@ struct DeferredOpParams {
   Indices donated_indices = {};
   // Device assignment for the operation (e.g. rank-to-device mapping).
   std::vector<int64_t> device_assignment = {};  // INT_VEC_OK
+  // Whether to allow materialization of the operation.
+  bool allow_materialization = true;
 };
 
 // Don't use this directly when defining ops. Use DispatchOp<kNumInputs,
@@ -103,11 +107,11 @@ absl::StatusOr<DeviceBufferRef> CreateZeroSizeDeviceBufferRef(
 // Creates a DeviceBufferRef representing a view of a base DeviceBufferRef.
 absl::StatusOr<DeviceBufferRef> CreateViewDeviceBufferRef(
     DeviceBufferRef base_buffer_ref, const TpuLayout& tpu_layout,
-    bool view_is_conj);
+    bool view_is_conj, bool donate_input);
 
 absl::StatusOr<DeviceBufferRef> CreateInverseViewDeviceBufferRef(
     DeviceBufferRef base_buffer_ref, DeviceBufferRef write_buf,
-    const TpuLayout& tpu_layout, bool view_is_conj);
+    const TpuLayout& tpu_layout, bool view_is_conj, bool donate_base);
 
 }  // namespace torch_tpu
 

@@ -214,15 +214,15 @@ class InplaceBufferDonationTest(seed_test_utils.RepeatableTest):
       "TODO(b/565506249): Requires libtpu >= 0.0.42 for"
       " reset_peak_memory_stats.",
   )
-  def test_non_zero_offset_inplace_does_not_donate_in_defer_never(self):
-    """Verifies that non-zero offset slices fall back safely to allocating in DeferNever."""
+  def test_non_zero_offset_inplace_donates_in_defer_never(self):
+    """Verifies that non-zero offset slices are able to donate in DeferNever."""
     with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
       num_elements = 4 * 1024 * 1024  # 16 MB
       base = torch.zeros(
           num_elements + 1, dtype=torch.float32, device=self.device
       )
       _ = base.cpu()
-      # Non-zero storage offset: ShouldDonateInPlaceBuffer returns false
+      # Non-zero storage offset
       x_offset = base[1:]
 
       # Warmup to compile and initialize runtime buffers
@@ -236,20 +236,22 @@ class InplaceBufferDonationTest(seed_test_utils.RepeatableTest):
       torch.accelerator.synchronize()
       peak_mem = torch.accelerator.max_memory_allocated()
       delta = peak_mem - base_mem
-      self.assertGreaterEqual(delta, 12 * 1024 * 1024)
+      # With buffer donation, the 16MB buffer is reused in-place.
+      # Allow up to 4 MB for allocator page alignment/runtime scratchpad.
+      self.assertLess(delta, 4 * 1024 * 1024)
 
   @oss_utils.skip_if_libtpu_version(
       lambda v: v < (0, 0, 42),
       "TODO(b/565506249): Requires libtpu >= 0.0.42 for"
       " reset_peak_memory_stats.",
   )
-  def test_non_contiguous_inplace_does_not_donate_in_defer_never(self):
-    """Verifies that non-contiguous tensors fall back safely to allocating in DeferNever."""
+  def test_non_contiguous_inplace_donates_in_defer_never(self):
+    """Verifies that non-contiguous tensors are able to donate in DeferNever."""
     with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
       # 2048 x 2048 float32 = 16 MB
       base = torch.zeros((2048, 2048), dtype=torch.float32, device=self.device)
       _ = base.cpu()
-      # Non-contiguous transposed view: ShouldDonateInPlaceBuffer returns false
+      # Non-contiguous transposed view
       t = base.t()
       self.assertFalse(t.is_contiguous())
 
@@ -264,7 +266,9 @@ class InplaceBufferDonationTest(seed_test_utils.RepeatableTest):
       torch.accelerator.synchronize()
       peak_mem = torch.accelerator.max_memory_allocated()
       delta = peak_mem - base_mem
-      self.assertGreaterEqual(delta, 12 * 1024 * 1024)
+      # With buffer donation, the 16MB buffer is reused in-place.
+      # Allow up to 4 MB for allocator page alignment/runtime scratchpad.
+      self.assertLess(delta, 4 * 1024 * 1024)
 
   def test_binary_inplace_donates_second_input_in_defer_never(self):
     """Verifies that operations with out=rhs/other donate the second input buffer."""
