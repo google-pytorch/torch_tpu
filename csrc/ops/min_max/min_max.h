@@ -21,7 +21,6 @@
 
 #include "absl/status/statusor.h"
 #include "c10/util/Optional.h"
-#include "csrc/common/dimension_types.h"
 #include "csrc/ops/reductions/reductions.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 

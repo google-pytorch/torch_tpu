@@ -18,7 +18,6 @@
 
 #include <cstdint>
 #include <limits>
-#include <optional>
 #include <type_traits>
 #include <utility>
 

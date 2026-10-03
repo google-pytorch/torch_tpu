@@ -57,7 +57,6 @@ torch_tpu_cc_library(
     srcs = ["min_max.cc"],
     hdrs = ["min_max.h"],
     deps = [
-        "//csrc/common:dimension_types",
         "//csrc/common:error_utils",
         "//csrc/ops:op_builder_utils",
         "//csrc/ops/reductions",

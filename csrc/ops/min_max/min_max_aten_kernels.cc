@@ -20,8 +20,6 @@
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
-#include "ATen/core/TensorBody.h"
-#include "ATen/native/Fill.h"
 #include "ATen/native/ReduceOpsUtils.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
