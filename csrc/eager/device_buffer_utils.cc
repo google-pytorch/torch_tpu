@@ -526,7 +526,7 @@ mlir::MlirOp SliceOperandIfNeeded(mlir::MlirOp input,
 // Returns the appropriate builder and inputs for the DeferredOp.
 AsStridedInverseBuilderResult MakeAsStridedInverseBuilder(
     InverseViewOperation inverse_view_operation,
-    DeviceBufferRef base_buffer_ref, DeviceBufferRef write_buf,
+    std::optional<DeviceBufferRef> base_buffer_ref, DeviceBufferRef write_buf,
     Dimensions view_dimensions, bool donate_base) {
   if (inverse_view_operation.stages.size() == 1) {
     ABSL_VLOG(3)
@@ -569,6 +569,9 @@ AsStridedInverseBuilderResult MakeAsStridedInverseBuilder(
   }
 
   // Otherwise, apply the full operation.
+  ABSL_CHECK(  // CRASH_OK=Partial overwrite needs base.
+      base_buffer_ref.has_value())
+      << "Partial overwrite requires a base buffer. This is a TorchTPU bug.";
   ABSL_VLOG(3) << "[MakeAsStridedInverseBuilder] View is a slice, creating an "
                   "inverse DeferredOp that partially overwrites the base.";
   auto op_builder = [inverse_view_operation = std::move(inverse_view_operation),
@@ -585,12 +588,96 @@ AsStridedInverseBuilderResult MakeAsStridedInverseBuilder(
                                                  inverse_view_operation));
     return DynamicMlirOpResults{std::move(output)};
   };
-  auto inputs = {std::move(base_buffer_ref), std::move(write_buf)};
+  auto inputs = {std::move(*base_buffer_ref), std::move(write_buf)};
   Indices donated_indices;
   if (donate_base) {
     donated_indices.push_back(0);
   }
   return {std::move(op_builder), std::move(inputs), std::move(donated_indices)};
+}
+
+absl::StatusOr<DeviceBufferRef> CreateInverseViewDeviceBufferRefImpl(
+    std::optional<DeviceBufferRef> base_buffer_ref,
+    absl::Span<const int64_t> base_dimensions,
+    mlir::ElementType base_element_type, DeviceBufferRef write_buf,
+    const TpuLayout& tpu_layout, bool view_is_conj, bool donate_base) {
+  absl::Span<const int64_t> view_dimensions = tpu_layout.sizes;
+  absl::Span<const int64_t> view_strides = tpu_layout.strides;
+  int64_t view_storage_offset = tpu_layout.storage_offset;
+  mlir::ElementType view_element_type = tpu_layout.element_type;
+  TT_RET_CHECK(view_dimensions.size() == view_strides.size(),
+               error::kInvalidArgument)
+      << "view dimensions and strides must have the same size.";
+  TT_RET_CHECK(!IsOverlapping(view_dimensions, view_strides),
+               error::kFailedPrecondition)
+      << "inplace writes to overlapping views are undefined behavior and are "
+         "not supported.\n"
+      << "Because multiple logical tensor indices point to the same buffer "
+         "elements, writes from multiple indices may overwrite each other.\n"
+      << "Please use clone() or contiguous() to copy the tensor before "
+         "writing";
+
+  ABSL_VLOG(2) << "[AssignBufferToAtTensor] Assigning to non-contiguous base.";
+
+  // Compute the operations needed to invert the view sequence.
+  StridedLayout view_layout{.storage_offset = view_storage_offset};
+  view_layout.strided_dims.reserve(view_dimensions.size());
+  for (auto i = 0; i < view_dimensions.size(); ++i) {
+    view_layout.strided_dims.push_back(
+        {.size = view_dimensions[i], .stride = view_strides[i]});
+  }
+  // If we're donating the base, we need to ensure it's shape and dtype do not
+  // change. If the base is not being donated, we can write-back a buffer of
+  // a different shape and dtype if doing so is more efficient.
+  const bool preserve_base = donate_base;
+  TT_ASSIGN_OR_RETURN(InverseViewOperation inverse_view_operation,
+                      ComputeInverseViewOperation(
+                          base_dimensions, base_element_type, view_layout,
+                          view_element_type, view_is_conj, preserve_base));
+
+  if (!base_buffer_ref.has_value()) {
+    ABSL_CHECK_EQ(  // CRASH_OK=Full overwrite is 1 stage.
+        inverse_view_operation.stages.size(), 1)
+        << "Expected 1 stage for full overwrite inverse view. "
+        << "This is a TorchTPU bug.";
+  }
+
+  // Create a new DeferredOp representing the updated base value
+  // Build the values to construct an ephemeral DeferredOp.
+  const auto op_name = OpName::kAsStridedInverse;
+  ScopedPythonContextCapturer capturer(op_name);
+
+  std::vector<Shape> output_shapes = {inverse_view_operation.final_shape};
+
+  Dimensions base_dims = CopyIntVector(base_dimensions);
+  Dimensions view_dims = CopyIntVector(view_dimensions);
+
+  auto [op_builder, inputs, donated_indices] = MakeAsStridedInverseBuilder(
+      std::move(inverse_view_operation), std::move(base_buffer_ref),
+      std::move(write_buf), std::move(view_dims), donate_base);
+
+  TT_ASSIGN_OR_RETURN(OpParamCacheKeys param_keys,
+                      TT_MAKE_OP_PARAM_CACHE_KEYS(
+                          view_dimensions, base_dims, view_strides,
+                          view_storage_offset, view_is_conj, donate_base));
+
+  // Create the deferred DeviceBufferRef.
+  internal::DeferredOpParams params{
+      .op_name = op_name,
+      .op_builder = std::move(op_builder),
+      .op_param_cache_keys = std::move(param_keys),
+      .inputs = std::move(inputs),
+      .output_shapes = std::move(output_shapes),
+      .donated_indices = std::move(donated_indices),
+      // A write-back that donates the base is created while the tensor's
+      // c10::DataPtr still references the base; the DataPtr is updated to the
+      // result only afterwards (see AssignBufferToAtTensor).
+      .allow_materialization = !donate_base,
+  };
+  TT_ASSIGN_OR_RETURN(auto results, internal::CreateDeferredDeviceBufferList(
+                                        std::move(params)));
+  ABSL_CHECK_EQ(results.size(), 1);  // CRASH_OK
+  return std::move(results[0]);
 }
 
 }  // namespace
@@ -706,77 +793,20 @@ absl::StatusOr<DeviceBufferRef> CreateViewDeviceBufferRef(
 absl::StatusOr<DeviceBufferRef> CreateInverseViewDeviceBufferRef(
     DeviceBufferRef base_buffer_ref, DeviceBufferRef write_buf,
     const TpuLayout& tpu_layout, bool view_is_conj, bool donate_base) {
-  absl::Span<const int64_t> view_dimensions = tpu_layout.sizes;
-  absl::Span<const int64_t> view_strides = tpu_layout.strides;
-  int64_t view_storage_offset = tpu_layout.storage_offset;
-  mlir::ElementType view_element_type = tpu_layout.element_type;
-  TT_RET_CHECK(view_dimensions.size() == view_strides.size(),
-               error::kInvalidArgument)
-      << "view dimensions and strides must have the same size.";
-  TT_RET_CHECK(!IsOverlapping(view_dimensions, view_strides),
-               error::kFailedPrecondition)
-      << "inplace writes to overlapping views are undefined behavior and are "
-         "not supported.\n"
-      << "Because multiple logical tensor indices point to the same buffer "
-         "elements, writes from multiple indices may overwrite each other.\n"
-      << "Please use clone() or contiguous() to copy the tensor before "
-         "writing";
+  const Dimensions base_dims = CopyIntVector(base_buffer_ref.dimensions());
+  const mlir::ElementType base_elem_type = base_buffer_ref.element_type();
+  return CreateInverseViewDeviceBufferRefImpl(
+      std::move(base_buffer_ref), base_dims, base_elem_type,
+      std::move(write_buf), tpu_layout, view_is_conj, donate_base);
+}
 
-  ABSL_VLOG(2) << "[AssignBufferToAtTensor] Assigning to non-contiguous base.";
-
-  // Compute the operations needed to invert the view sequence.
-  StridedLayout view_layout{.storage_offset = view_storage_offset};
-  view_layout.strided_dims.reserve(view_dimensions.size());
-  for (auto i = 0; i < view_dimensions.size(); ++i) {
-    view_layout.strided_dims.push_back(
-        {.size = view_dimensions[i], .stride = view_strides[i]});
-  }
-  // If we're donating the base, we need to ensure it's shape and dtype do not
-  // change. If the base is not being donated, we can write-back a buffer of
-  // a different shape and dtype if doing so is more efficient.
-  const bool preserve_base = donate_base;
-  TT_ASSIGN_OR_RETURN(
-      InverseViewOperation inverse_view_operation,
-      ComputeInverseViewOperation(
-          base_buffer_ref.dimensions(), base_buffer_ref.element_type(),
-          view_layout, view_element_type, view_is_conj, preserve_base));
-
-  // Create a new DeferredOp representing the updated base value
-  // Build the values to construct an ephemeral DeferredOp.
-  const auto op_name = OpName::kAsStridedInverse;
-  ScopedPythonContextCapturer capturer(op_name);
-
-  std::vector<Shape> output_shapes = {inverse_view_operation.final_shape};
-
-  Dimensions base_dimensions = CopyIntVector(base_buffer_ref.dimensions());
-  Dimensions view_dims = CopyIntVector(view_dimensions);
-
-  auto [op_builder, inputs, donated_indices] = MakeAsStridedInverseBuilder(
-      std::move(inverse_view_operation), std::move(base_buffer_ref),
-      std::move(write_buf), std::move(view_dims), donate_base);
-
-  TT_ASSIGN_OR_RETURN(OpParamCacheKeys param_keys,
-                      TT_MAKE_OP_PARAM_CACHE_KEYS(
-                          view_dimensions, base_dimensions, view_strides,
-                          view_storage_offset, view_is_conj, donate_base));
-
-  // Create the deferred DeviceBufferRef.
-  internal::DeferredOpParams params{
-      .op_name = op_name,
-      .op_builder = std::move(op_builder),
-      .op_param_cache_keys = std::move(param_keys),
-      .inputs = std::move(inputs),
-      .output_shapes = std::move(output_shapes),
-      .donated_indices = std::move(donated_indices),
-      // A write-back that donates the base is created while the tensor's
-      // c10::DataPtr still references the base; the DataPtr is updated to the
-      // result only afterwards (see AssignBufferToAtTensor).
-      .allow_materialization = !donate_base,
-  };
-  TT_ASSIGN_OR_RETURN(auto results, internal::CreateDeferredDeviceBufferList(
-                                        std::move(params)));
-  ABSL_CHECK_EQ(results.size(), 1);  // CRASH_OK
-  return std::move(results[0]);
+absl::StatusOr<DeviceBufferRef> CreateFullOverwriteInverseViewDeviceBufferRef(
+    absl::Span<const int64_t> base_dimensions,
+    mlir::ElementType base_element_type, DeviceBufferRef write_buf,
+    const TpuLayout& tpu_layout, bool view_is_conj) {
+  return CreateInverseViewDeviceBufferRefImpl(
+      /*base_buffer_ref=*/std::nullopt, base_dimensions, base_element_type,
+      std::move(write_buf), tpu_layout, view_is_conj, /*donate_base=*/false);
 }
 
 }  // namespace torch_tpu

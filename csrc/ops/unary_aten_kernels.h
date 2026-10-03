@@ -30,6 +30,19 @@
 
 namespace torch_tpu {
 
+// Controls output strides for shape-preserving UnaryOp calls (when out_dims is
+// not set).
+enum class UnaryOpOutputLayout {
+  // Output strides match PyTorch's TensorIterator (via UnaryOpStrides,
+  // returning contiguous strides for zero-element tensors).
+  kTensorIterator,
+  // Output strides match torch.empty_like (via EmptyLikeStrides) even for
+  // zero-element tensors (e.g. aten::angle).
+  kEmptyLike,
+  // Output strides are contiguous (e.g. aten::logcumsumexp).
+  kContiguous,
+};
+
 struct UnaryOpOptions {
   // The op name for dispatching. If omitted, use the op name from the active
   // TT_KERNEL() context.
@@ -55,6 +68,10 @@ struct UnaryOpOptions {
   // Whether this unary operation is allowed on low-precision float dtypes
   // (`float8_*` or `float4_e2m1fn_x2`), e.g. `zero_` or `abs` on `float8_e5m2`.
   bool allow_low_precision_float = false;
+  // Output layout for shape-preserving UnaryOp calls (when `out_dims` is not
+  // set). Defaults to `kTensorIterator` so output strides match PyTorch's
+  // `TensorIterator` meta functions.
+  UnaryOpOutputLayout output_layout = UnaryOpOutputLayout::kTensorIterator;
 };
 
 // Safely applies a functional unary operation to the input tensor.
