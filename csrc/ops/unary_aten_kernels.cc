@@ -31,6 +31,7 @@
 #include "csrc/common/device_type.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/layout_utils.h"
 #include "csrc/common/macro_utils.h"  // IWYU pragma: keep
 #include "csrc/common/to_string.h"
 #include "csrc/eager/op_dispatcher.h"
@@ -39,11 +40,13 @@
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/unary.h"
+#include "csrc/ops/view_decomposition/contiguous_to_view.h"  // NOLINT
 #include "mlir/IR/BuiltinTypes.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"  // IWYU pragma: keep
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "torch/headeronly/core/MemoryFormat.h"
 #include "torch/headeronly/core/ScalarType.h"
 
 // A "Simple Unary" op is an Aten op that:
@@ -130,6 +133,21 @@ absl::StatusOr<at::Tensor> UnaryOp(const at::Tensor& self,
            .out_dims = output_dims,
            .computation_dtype = options.computation_dtype,
            .op_param_cache_keys = std::move(options.op_param_cache_keys)}));
+  if (!options.out_dims.has_value()) {
+    switch (options.memory_format) {
+      case at::MemoryFormat::Preserve:
+        return ContiguousToView(std::move(result_buf), EmptyLikeStrides(self),
+                                /*target_storage_offset=*/0);
+      case at::MemoryFormat::ChannelsLast:
+      case at::MemoryFormat::ChannelsLast3d:
+        return ContiguousToView(std::move(result_buf),
+                                SuggestMemoryFormatStrides(self),
+                                /*target_storage_offset=*/0);
+      case at::MemoryFormat::Contiguous:
+      default:
+        break;
+    }
+  }
   return MakeTensor(std::move(result_buf));
 }
 absl::StatusOr<at::Tensor> UnaryOp(const at::Tensor& self, OpName op_name,

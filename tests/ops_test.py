@@ -1928,7 +1928,7 @@ class TestOps(op_testing.OpInfoTestBase):
         ),
     )
 
-  def test_native_dropout_backward(self):
+  def test_native_dropout_backward(self) -> None:
     self.do_test_op(
         "native_dropout_backward",
         # GPU (CUDA) does not support complex and integral dtypes for
@@ -2953,7 +2953,7 @@ class TestOps(op_testing.OpInfoTestBase):
         exclude_dtypes=COMPLEX_DTYPES + INTEGRAL_DTYPES,
     )
 
-  def test_logcumsumexp(self):
+  def test_logcumsumexp(self) -> None:
     self.do_test_op(
         "logcumsumexp",
         # logcumsumexp is a floating-point op: integer inputs are
@@ -3414,7 +3414,7 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_nn_functional_hardsigmoid(self):
     self.do_test_op("nn.functional.hardsigmoid")
 
-  def test_nn_functional_hardswish(self):
+  def test_nn_functional_hardswish(self) -> None:
     self.do_test_op(
         "nn.functional.hardswish",
         exclude_dtypes=(_if_tpu_vs_gpu_compiled(INTEGRAL_DTYPES, ())),

@@ -40,6 +40,7 @@ torch_tpu_cc_library(
         "//csrc/ops:unary_aten_kernels",
         "//csrc/ops/macros:kernel",
         "//shims/torch:aten_headers",
+        "//shims/torch/torch/headeronly:torch_headeronly",
         "@com_google_absl//absl/functional:bind_front",
         "@com_google_absl//absl/status:statusor",
         "@llvm-project//llvm:Support",

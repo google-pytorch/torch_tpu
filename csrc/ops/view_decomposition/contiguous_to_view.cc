@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "ATen/core/TensorBody.h"
+#include "absl/algorithm/container.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -274,6 +275,15 @@ absl::StatusOr<at::Tensor> ContiguousToView(
     ABSL_VLOG(2) << "[ContiguousToView] Buffer is already contiguous, no op";
     // The target view is a contiguous base. Lift directly into output tensor.
     return MakeTensor(std::move(contiguous_buffer));
+  }
+
+  if (target_storage_offset == 0 &&
+      absl::c_contains(contiguous_buffer.dimensions(), 0)) {
+    const Dimensions dims = CopyIntVector(contiguous_buffer.dimensions());
+    at::Tensor output_tensor = MakeTensor(std::move(contiguous_buffer));
+    output_tensor.unsafeGetTensorImpl()->set_sizes_and_strides(
+        dims, target_strides, target_storage_offset);
+    return output_tensor;
   }
 
   // Create an empty contiguous base tensor to serve as the new storage.
