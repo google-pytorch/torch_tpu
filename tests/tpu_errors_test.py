@@ -179,6 +179,42 @@ class TpuOnlyErrorTest(et.TpuOnlyErrorTestBase):
     ):
       torch.masked_scatter(t, mask, source)
 
+  @et.why_tpu_only(
+      "TPU validates reduction_op in ParseScatterOp with TPU-specific error"
+      " messages; PyTorch CPU/GPU uses different validation and error messages."
+  )
+  def test_scatter_reduce_unsupported_reduction_op(self):
+    """Tests that scatter_reduce rejects an unsupported reduction operation."""
+    self_t = torch.zeros(3, 5, device=et.device())
+    index = torch.zeros(3, 2, dtype=torch.int64, device=et.device())
+    src = torch.ones(3, 2, device=et.device())
+    out = torch.zeros(3, 5, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scatter_reduce(): expected the reduction_op to be 'sum', 'prod', 'mean', 'amax', or 'amin', got 'invalid'""",
+    ):
+      torch.scatter_reduce(self_t, 1, index, src, reduce="invalid", out=out)
+
+  @et.why_tpu_only(
+      "TPU validates reduction_op in ParseScatterOp with TPU-specific error"
+      " messages; PyTorch CPU/GPU uses different validation and error messages."
+  )
+  def test_scatter_reduce_out_unsupported_reduction_op(self):
+    """Tests that scatter.reduce rejects an unsupported reduction operation."""
+    self_t = torch.zeros(3, 5, device=et.device())
+    index = torch.zeros(3, 2, dtype=torch.int64, device=et.device())
+    src = torch.ones(3, 2, device=et.device())
+    out = torch.zeros(3, 5, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scatter(): expected the reduction_op to be 'add' or 'multiply', got 'invalid'""",
+    ):
+      # Invoke the aten op directly to bypass PyTorch Python frontend argument
+      # validation and exercise the TPU C++ ATen kernel directly.
+      torch.ops.aten.scatter.reduce_out(
+          self_t, 1, index, src, reduce="invalid", out=out
+      )
+
   @et.why_tpu_only("For testing TPU op dispatching.")
   def test_prod_with_op_dispatch_failure(self):
     """Tests that prod() bubbles up errors in op dispatching."""
