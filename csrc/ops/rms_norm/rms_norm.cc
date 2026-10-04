@@ -199,20 +199,25 @@ absl::StatusOr<mlir::MlirOp> BuildRmsNormDgamma(
 // Builds the StableHLO operations for the gradient with respect to input
 // (\nabla_x L).
 // Mathematically:
-//   \nabla_x L = rstd \odot ( \nabla_{\hat{x}} L - \hat{x} \odot
-//       ( \frac{1}{N} \sum_{norm} ( \nabla_{\hat{x}} L \odot \hat{x} ) ) )
+//   \nabla_x L = rstd \odot ( \nabla_{\hat{x}} L - x \odot c )
 // where \nabla_{\hat{x}} L = \nabla_y L \odot \gamma (or \nabla_y L if no
-// weight).
-// Multiplies by constant (1/N) rather than vector division to avoid TPU MXU
-// overhead, computes entirely in compute_float_type (F32), and casts to
-// orig_elem_type if needed.
+// weight), and c = \frac{rstd^2}{N} \sum_{norm} ( \nabla_{\hat{x}} L \odot x ).
+// Factoring the norm-invariant rstd out of the normalized dimensions reduction:
+//   \sum_{norm} (\nabla_{\hat{x}} L \odot \hat{x})
+//   = \sum_{norm} (\nabla_{\hat{x}} L \odot x \odot rstd)
+//   = rstd \odot \sum_{norm} (\nabla_{\hat{x}} L \odot x)
+// allows the scale factor c = \frac{rstd^2}{N} \sum_{norm} (\nabla_{\hat{x}} L
+// \odot x) to be evaluated entirely on the reduced batch dimensions prior to
+// broadcast, eliminating 2 full-rank tensor multiplications and x_hat
+// materialization in dx.
 absl::StatusOr<mlir::MlirOp> BuildRmsNormDx(
-    mlir::MlirBuilder& builder, mlir::MlirOp dy_f32, mlir::MlirOp x_hat,
-    mlir::MlirOp rstd_f32_bcast, std::optional<mlir::MlirOp> weight,
-    at::IntArrayRef normalized_shape, mlir::RankedTensorType compute_x_type,
-    mlir::FloatType compute_float_type, mlir::Type orig_elem_type,
-    const Dimensions& norm_dims, const Dimensions& batch_dims,
-    mlir::MlirOp zero, bool needs_upcast) {
+    mlir::MlirBuilder& builder, mlir::MlirOp dy_f32, mlir::MlirOp x_f32,
+    mlir::MlirOp rstd_f32, mlir::MlirOp rstd_f32_bcast,
+    std::optional<mlir::MlirOp> weight, at::IntArrayRef normalized_shape,
+    mlir::RankedTensorType compute_x_type, mlir::FloatType compute_float_type,
+    mlir::Type orig_elem_type, const Dimensions& norm_dims,
+    const Dimensions& batch_dims, const Dimensions& all_dims, mlir::MlirOp zero,
+    bool needs_upcast) {
   mlir::MlirOp dy_gamma_f32 = dy_f32;
   if (weight.has_value()) {
     mlir::MlirOp weight_f32 =
@@ -229,22 +234,27 @@ absl::StatusOr<mlir::MlirOp> BuildRmsNormDx(
         mlir::stablehlo::buildReduceBody<mlir::stablehlo::AddOp>(
             compute_float_type, rb.getRegion(), rb.getOpBuilder());
       };
-  mlir::MlirOp dy_gamma_times_x_hat = mlir::stablehlo::Mul(dy_gamma_f32, x_hat);
-  mlir::MlirOp sum_dy_gamma_times_x_hat = mlir::stablehlo::Reduce(
-      builder, dy_gamma_times_x_hat, zero, sum_reduce_builder, norm_dims)[0];
+  mlir::MlirOp dy_gamma_times_x = mlir::stablehlo::Mul(dy_gamma_f32, x_f32);
+  mlir::MlirOp sum_dy_gamma_times_x = mlir::stablehlo::Reduce(
+      builder, dy_gamma_times_x, zero, sum_reduce_builder, norm_dims)[0];
+
+  const auto rstd_type = GetTensorTypeOrDie(rstd_f32);
+  mlir::MlirOp sum_bcast = mlir::stablehlo::BroadcastInDim(
+      rstd_type, sum_dy_gamma_times_x, batch_dims);
 
   TT_ASSIGN_OR_RETURN(const int64_t n, NumElements(normalized_shape));
   mlir::MlirOp inv_n =
-      MakeConstantLike(sum_dy_gamma_times_x_hat, 1.0 / static_cast<double>(n));
-  mlir::MlirOp reduced_grad_factor =
-      mlir::stablehlo::Mul(sum_dy_gamma_times_x_hat, inv_n);
-  mlir::MlirOp reduced_grad_factor_bcast = mlir::stablehlo::BroadcastInDim(
-      compute_x_type, reduced_grad_factor, batch_dims);
+      MakeConstantLike(sum_bcast, 1.0 / static_cast<double>(n));
 
-  mlir::MlirOp x_hat_times_grad_factor =
-      mlir::stablehlo::Mul(x_hat, reduced_grad_factor_bcast);
-  mlir::MlirOp diff =
-      mlir::stablehlo::Subtract(dy_gamma_f32, x_hat_times_grad_factor);
+  mlir::MlirOp rstd_sq = mlir::stablehlo::Mul(rstd_f32, rstd_f32);
+  mlir::MlirOp rstd_sq_over_n = mlir::stablehlo::Mul(rstd_sq, inv_n);
+  mlir::MlirOp c_reduced = mlir::stablehlo::Mul(sum_bcast, rstd_sq_over_n);
+
+  mlir::MlirOp c_bcast =
+      mlir::stablehlo::BroadcastInDim(compute_x_type, c_reduced, all_dims);
+
+  mlir::MlirOp x_times_c = mlir::stablehlo::Mul(x_f32, c_bcast);
+  mlir::MlirOp diff = mlir::stablehlo::Subtract(dy_gamma_f32, x_times_c);
   mlir::MlirOp dx_f32 = mlir::stablehlo::Mul(diff, rstd_f32_bcast);
 
   if (needs_upcast) {
@@ -333,11 +343,6 @@ absl::StatusOr<RmsNormBackwardShloResults> BuildRmsNormBackwardShlo(
   mlir::MlirOp rstd_f32_bcast =
       mlir::stablehlo::BroadcastInDim(compute_x_type, rstd_f32, all_dims);
 
-  // x_hat = x * rstd in compute_float_type (F32).
-  // Exactly matches forward pass Mul(compute_input, rstd_broadcasted) for XLA
-  // CSE.
-  mlir::MlirOp x_hat = mlir::stablehlo::Mul(x_f32, rstd_f32_bcast);
-
   mlir::MlirOp dy_f32 =
       needs_upcast ? mlir::stablehlo::ConvertElementType(dy, compute_float_type)
                    : dy;
@@ -345,6 +350,8 @@ absl::StatusOr<RmsNormBackwardShloResults> BuildRmsNormBackwardShlo(
   // 1. Compute dgamma = sum_batch(dy * x_hat)
   mlir::MlirOp dgamma;
   if (output_mask[1]) {
+    // x_hat is only needed when dgamma is requested.
+    mlir::MlirOp x_hat = mlir::stablehlo::Mul(x_f32, rstd_f32_bcast);
     TT_ASSIGN_OR_RETURN(
         dgamma,
         BuildRmsNormDgamma(builder, dy_f32, x_hat, weight, normalized_shape,
@@ -354,14 +361,14 @@ absl::StatusOr<RmsNormBackwardShloResults> BuildRmsNormBackwardShlo(
     TT_ASSIGN_OR_RETURN(dgamma, MakeZeroSizedTensor(builder, orig_weight_type));
   }
 
-  // 2. Compute dx = (dy_gamma - x_hat * reduced_grad_factor) * rstd
+  // 2. Compute dx = rstd * (dy_gamma - x * c)
   mlir::MlirOp dx;
   if (output_mask[0]) {
     TT_ASSIGN_OR_RETURN(
-        dx, BuildRmsNormDx(builder, dy_f32, x_hat, rstd_f32_bcast, weight,
-                           normalized_shape, compute_x_type, compute_float_type,
-                           orig_elem_type, norm_dims, batch_dims, zero,
-                           needs_upcast));
+        dx, BuildRmsNormDx(builder, dy_f32, x_f32, rstd_f32, rstd_f32_bcast,
+                           weight, normalized_shape, compute_x_type,
+                           compute_float_type, orig_elem_type, norm_dims,
+                           batch_dims, all_dims, zero, needs_upcast));
   } else {
     TT_ASSIGN_OR_RETURN(dx, MakeZeroSizedTensor(builder, orig_elem_type));
   }
