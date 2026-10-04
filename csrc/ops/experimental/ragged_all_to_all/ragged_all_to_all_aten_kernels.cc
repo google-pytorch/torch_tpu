@@ -107,7 +107,7 @@ static absl::StatusOr<DeviceBufferRef> RaggedAllToAllCommon(
   TT_ASSIGN_OR_RETURN(ProcessGroupTpu * pg,
                       GetProcessGroupTpu(process_group_name));
 
-  auto op_builder = [device_groups = pg->GetSubgroupRanks()](
+  auto op_builder = [device_groups = pg->GetReplicaGroups()](
                         FixedSizeSpan<mlir::MlirOp, 6> inputs)
       -> absl::StatusOr<mlir::MlirOp> {
     auto& [operand, output, input_offsets, send_sizes, output_offsets,

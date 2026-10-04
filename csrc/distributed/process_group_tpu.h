@@ -62,6 +62,33 @@ namespace torch_tpu {
 // Returns global device attributes and rank-to-device-id mapping.
 const std::vector<PjRtDeviceAttributes>& GetGlobalDeviceAttributes();
 const std::vector<int64_t>& GetGlobalRankToDeviceId();  // INT_VEC_OK
+// Returns, for each world rank r, its position in the physical-topology order
+// computed by `ComputeRankToTopologyOrder` over `GetGlobalDeviceAttributes()`.
+const std::vector<int64_t>& GetGlobalRankToTopologyOrder();  // INT_VEC_OK
+
+// Returns `order` such that `order[r]` is world rank r's position when all
+// ranks are sorted by `(slice_index, x, y, z, core_on_chip, id)`, where
+// `device_attrs[r]` describes rank r's device. A missing `slice_index` sorts as
+// -1 and missing coordinates / `core_on_chip` as 0 (as in the serialized world
+// topology). This matches the flattened order of the physical mesh built by
+// Python `topology_aware_mesh` (`_get_physical_tpu_mesh` indexes devices as
+// `[x, y, z, core]` per slice, and slices are stacked outermost in
+// `slice_index` order).
+std::vector<int64_t> ComputeRankToTopologyOrder(  // INT_VEC_OK
+    absl::Span<const PjRtDeviceAttributes> device_attrs);
+
+// Permutes the world device_assignment to match the flattened order of
+// `subgroup_member_world_ranks` (so `device_assignment[p] =
+// rank_to_device_id[flattened_subgroup_member_world_ranks[p]]`) and populates
+// `replica_groups` with contiguous positions into `device_assignment`
+// ({{0, ..., K-1}, {K, ..., 2K-1}, ...}). `subgroup_member_world_ranks` are
+// world ranks used ONLY to build `device_assignment`; they are never emitted as
+// replica_groups. `replica_groups` are positions, not world ranks.
+void PermuteDeviceAssignmentForSubgroups(
+    const DeviceGroupList& subgroup_member_world_ranks,
+    absl::Span<const int64_t> rank_to_device_id,
+    std::vector<int64_t>& device_assignment,  // INT_VEC_OK
+    DeviceGroupList& replica_groups);
 
 // Returns a cross-host transfer key computed deterministically and stably
 // using FingerprintCat from the source/destination device IDs, communication
@@ -72,6 +99,37 @@ const std::vector<int64_t>& GetGlobalRankToDeviceId();  // INT_VEC_OK
 
 // Returns the OpSplitMode to use for collectives.
 [[nodiscard]] OpSplitMode GetCollectiveSplitMode();
+
+// All-gathers per-rank metadata (`my_value` for `my_key`, which must be one of
+// `peer_keys`) and returns the values in `peer_keys` order. Ranks on a host
+// share the node-local `local_store` (`local_rank` in `[0, local_world_size)`)
+// and only one leader per node talks to `world_store`, so world store traffic
+// is O(nodes). A rank without a node-local store (`local_store == nullptr` or
+// `local_world_size <= 1`) acts as a single-rank node. Any failure (bad keys,
+// store errors, timeouts) is returned as an error status on every
+// participating rank.
+absl::StatusOr<std::vector<std::vector<uint8_t>>> AllGatherViaNodeLocalStore(
+    c10d::Store* world_store, c10d::Store* local_store, int64_t local_rank,
+    int64_t local_world_size, std::string_view my_key,
+    std::string_view my_value, const std::vector<std::string>& peer_keys);
+
+// Exchanges `(subgroup_prefix, pg_rank, world_rank)` across all `world_size`
+// ranks (`world_size = global_rank_to_device_id.size()`) in a single
+// node-local-multiplexed all-gather (`AllGatherViaNodeLocalStore`) and
+// reconstructs both this rank's `out_member_world_ranks` (world rank of each
+// member, indexed by PG rank) and the complete
+// `out_subgroup_member_world_ranks` (world ranks of every subgroup's members,
+// used ONLY to build device_assignment_ and never emitted as replica_groups),
+// with subgroups sorted by `global_rank_to_topo_order[group[0]]`.
+// `global_rank_to_topo_order` must have `world_size` entries.
+// `global_rank_to_device_id` is used only for its size.
+absl::Status GatherSubgroupsViaNodeLocalStore(
+    c10d::Store* store, c10d::Store* local_store, int64_t local_rank,
+    int64_t local_world_size, int64_t pg_rank, int64_t pg_size,
+    int64_t world_rank, absl::Span<const int64_t> global_rank_to_device_id,
+    absl::Span<const int64_t> global_rank_to_topo_order, int64_t gather_id,
+    DeviceGroup& out_member_world_ranks,
+    DeviceGroupList& out_subgroup_member_world_ranks);
 
 class ProcessGroupTpu : public c10d::Backend {
  public:
@@ -98,16 +156,19 @@ class ProcessGroupTpu : public c10d::Backend {
 
   const std::string getBackendName() const override { return "tpu_dist"; }
 
+  // Device id of each member; the index is the PG rank.
   const std::vector<int64_t>& rank_to_device_id() const {  // INT_VEC_OK
-    return rank_to_device_id_;
+    return member_device_ids_;
   }
 
   const std::vector<int64_t>& device_assignment() const {  // INT_VEC_OK
-    return GetGlobalRankToDeviceId();
+    return device_assignment_;
   }
 
-  // Returns the global ranks of all processes split into subgroups.
-  const DeviceGroupList& GetSubgroupRanks() const;
+  // Returns the replica groups emitted as StableHLO replica_groups: positions
+  // into device_assignment_ (one list per subgroup; group i is
+  // {offset_i, ..., offset_i+K-1}). These are NOT world ranks.
+  const DeviceGroupList& GetReplicaGroups() const;
 
   c10::intrusive_ptr<c10d::Work> allreduce(
       std::vector<at::Tensor>& tensors,
@@ -292,7 +353,7 @@ class ProcessGroupTpu : public c10d::Backend {
     return absl::StrFormat(
         "[ProcessGroupTpu::%s] rank=%d, device=%d, group_devices=%s "
         "(world_size=%d): ",
-        method, getRank(), addressable_device_id_, ToString(rank_to_device_id_),
+        method, getRank(), addressable_device_id_, ToString(member_device_ids_),
         GetGlobalRankToDeviceId().size());
   }
 
@@ -338,14 +399,14 @@ class ProcessGroupTpu : public c10d::Backend {
       absl::Span<const xla::CrossHostTransferKey> transfer_keys);
 
   // Exchanges world ranks among the members of this process group. Returns the
-  // world rank of each member, ordered by subgroup rank.
-  absl::StatusOr<DeviceGroup> GatherLocalSubgroupRanks();
+  // world rank of each member, indexed by PG rank.
+  absl::StatusOr<DeviceGroup> GatherMemberWorldRanks();
 
-  // Exchanges `local_subgroup_ranks` across all world ranks and returns the
-  // unique, non-overlapping subgroups that partition the world. Returns an
-  // error if the subgroups overlap or do not cover the world.
+  // Exchanges `member_world_ranks` across all world ranks and returns the
+  // unique, non-overlapping subgroups (as world ranks) that partition the
+  // world. Returns an error if the subgroups overlap or do not cover the world.
   absl::StatusOr<DeviceGroupList> GatherAllSubgroups(
-      const DeviceGroup& local_subgroup_ranks, int64_t world_size);
+      const DeviceGroup& member_world_ranks, int64_t world_size);
 
   // Exchanges device attributes across all world ranks and populates the
   // process-wide world topology. Must be called by a world-sized group.
@@ -355,22 +416,25 @@ class ProcessGroupTpu : public c10d::Backend {
 
   int64_t addressable_device_id_;  // The TPU 'assigned' to this process.
 
-  // World ranks of this process group's members, ordered by subgroup rank, i.e.
-  // local_subgroup_ranks_[i] is the world rank of subgroup rank i. Order is
-  // preserved for groups created with sort_ranks=False.
-  DeviceGroup local_subgroup_ranks_;
+  // World rank of each member of this process's subgroup, indexed by PG rank,
+  // in the caller's order (sort_ranks=False order is preserved); never
+  // re-sorted.
+  DeviceGroup member_world_ranks_;
 
-  // Device id of each member, indexed by subgroup rank
-  // (rank_to_device_id_[i] == device of world rank local_subgroup_ranks_[i]).
-  DeviceGroup rank_to_device_id_;
+  // Device id of each member, indexed by PG rank
+  // (member_device_ids_[i] == device of world rank member_world_ranks_[i]).
+  // Equals this subgroup's slice of device_assignment_.
+  DeviceGroup member_device_ids_;
 
-  // All subgroups of world ranks split the same way as this process group,
-  // including subgroups this process is not a member of (XLA requires the full
-  // partition). Each subgroup's internal order (by subgroup rank) is preserved.
-  // Entries index into device_assignment() (the world rank-to-device-id
-  // mapping) and become the replica_groups attribute of StableHLO collectives.
-  // For a world-sized group: {local_subgroup_ranks_}.
-  DeviceGroupList subgroup_ranks_;
+  // World-sized device assignment permuted to match the flattened order of all
+  // subgroups (device_assignment_[p] == device of
+  // flattened_subgroup_member_world_ranks[p]).
+  std::vector<int64_t> device_assignment_;  // INT_VEC_OK
+
+  // Positions into device_assignment_, one list per subgroup (group i is
+  // {offset_i, ..., offset_i+K-1}). Emitted as the replica_groups attribute of
+  // StableHLO collectives. These are NOT world ranks.
+  DeviceGroupList replica_groups_;
 
   // Monotonic sequence counter for uneven all_to_all and all_to_all_single
   // offset coordination.

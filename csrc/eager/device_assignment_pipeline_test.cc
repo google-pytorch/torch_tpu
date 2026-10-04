@@ -16,9 +16,12 @@
 
 #include "csrc/eager/device_assignment_pipeline.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "absl/status/status.h"
@@ -56,6 +59,96 @@ std::vector<int64_t> ExtractDenseIntAttrValues(  // INT_VEC_OK
     }
   }
   return vals;
+}
+
+// Megascale device ids encode the slice as `id / 100000`.
+constexpr int64_t kMegascaleSliceStride = 100000;
+
+int64_t SliceOf(int64_t device_id) { return device_id / kMegascaleSliceStride; }
+
+// Groups of `op_da` intended by an op emitting iota replica_groups of size
+// `group_size`: group g, rank i is `op_da[g * group_size + i]`.
+std::vector<std::vector<int64_t>> IntendedGroups(  // INT_VEC_OK
+    absl::Span<const int64_t> op_da, int64_t group_size) {
+  std::vector<std::vector<int64_t>> groups;  // INT_VEC_OK
+  const int64_t num_groups = op_da.size() / group_size;
+  for (int64_t g = 0; g < num_groups; ++g) {
+    groups.emplace_back(op_da.begin() + g * group_size,
+                        op_da.begin() + (g + 1) * group_size);
+  }
+  return groups;
+}
+
+// Maps each partition index in `rg` to its physical device `resolved_da[p]`,
+// preserving member order. Mirrors the flattened-id-to-device-id conversion
+// plus the in-order endpoint iteration in the XLA compiler's cross-slice
+// replica-group rewrite: member i of a replica group is shard/rank i of the
+// collective.
+std::vector<std::vector<int64_t>> PhysicalGroups(  // INT_VEC_OK
+    absl::Span<const int64_t> rg, int64_t group_size,
+    absl::Span<const int64_t> resolved_da) {
+  std::vector<std::vector<int64_t>> groups;  // INT_VEC_OK
+  const int64_t num_groups = rg.size() / group_size;
+  for (int64_t g = 0; g < num_groups; ++g) {
+    std::vector<int64_t>& group = groups.emplace_back();  // INT_VEC_OK
+    for (int64_t i = 0; i < group_size; ++i) {
+      group.push_back(resolved_da[rg[g * group_size + i]]);
+    }
+  }
+  return groups;
+}
+
+// Walks `resolved_da` left to right and assigns each device a local partition
+// id equal to the running per-slice count. Mirrors XLA's partition-to-replica
+// mapping.
+std::map<int64_t, int64_t> LocalPartitionIds(
+    absl::Span<const int64_t> resolved_da) {
+  std::map<int64_t, int64_t> per_slice_count;
+  std::map<int64_t, int64_t> local_ids;
+  for (int64_t dev : resolved_da) {
+    local_ids[dev] = per_slice_count[SliceOf(dev)]++;
+  }
+  return local_ids;
+}
+
+// Mirrors the XLA compiler's same-per-slice-communication-pattern check in its
+// cross-slice replica-group rewrite, with replica order significant: localize
+// each intra-slice group to local partition ids (member order preserved), sort
+// each slice's list of groups (members are not sorted), and require every
+// slice to match slice 0. When true, `CollectiveLocalizer` clones slice 0's
+// localized collective onto every slice. Only models intra-slice collectives;
+// returns false for a group that spans slices.
+bool SamePerSliceCommunicationPattern(absl::Span<const int64_t> rg,
+                                      int64_t group_size,
+                                      absl::Span<const int64_t> resolved_da) {
+  const std::map<int64_t, int64_t> local_ids = LocalPartitionIds(resolved_da);
+  std::map<int64_t, std::vector<std::vector<int64_t>>>  // INT_VEC_OK
+      groups_by_slice;
+  for (const std::vector<int64_t>& group :  // INT_VEC_OK
+       PhysicalGroups(rg, group_size, resolved_da)) {
+    const int64_t slice = SliceOf(group.front());
+    std::vector<int64_t> localized;  // INT_VEC_OK
+    for (int64_t dev : group) {
+      if (SliceOf(dev) != slice) {
+        return false;
+      }
+      localized.push_back(local_ids.at(dev));
+    }
+    groups_by_slice[slice].push_back(std::move(localized));
+  }
+  if (groups_by_slice.empty()) {
+    return true;
+  }
+  for (auto& [slice, groups] : groups_by_slice) {
+    std::sort(groups.begin(), groups.end());
+  }
+  const auto& slice0_groups = groups_by_slice.begin()->second;
+  for (const auto& [slice, groups] : groups_by_slice) {
+    if (groups != slice0_groups) {
+      return false;
+    }
+  }
+  return true;
 }
 
 TEST(DeviceAssignmentPipelineTest,
@@ -248,7 +341,7 @@ TEST(DeviceAssignmentPipelineTest,
               testing::ElementsAre(2, 3, 0, 1, 6, 7, 4, 5));
   EXPECT_THAT(ExtractDenseIntAttrValues(replicate_op.getValue().getDefiningOp(),
                                         "replica_groups"),
-              testing::ElementsAre(2, 6, 3, 7, 0, 4, 1, 5));
+              testing::ElementsAre(0, 4, 1, 5, 2, 6, 3, 7));
 }
 
 TEST(DeviceAssignmentPipelineTest,
@@ -327,7 +420,7 @@ TEST(DeviceAssignmentPipelineTest,
 
   EXPECT_THAT(ExtractDenseIntAttrValues(replicate_op.getValue().getDefiningOp(),
                                         "replica_groups"),
-              testing::ElementsAre(3, 4, 2, 5, 1, 6, 0, 7));
+              testing::ElementsAre(0, 7, 1, 6, 2, 5, 3, 4));
 }
 
 TEST(DeviceAssignmentPipelineTest,
@@ -481,6 +574,235 @@ TEST(DeviceAssignmentPipelineTest,
   EXPECT_EQ(resolved_rank0, canonical_world_da);
   EXPECT_EQ(resolved_rank6, canonical_world_da);
   EXPECT_EQ(resolved_rank0, resolved_rank6);
+}
+
+TEST(DeviceAssignmentPipelineTest,
+     MultiSlicePermutedLauncherRanksShardIotaAndReplicateRewrite) {
+  // In a 2-slice (16-device) HSDP setup:
+  // - The FSDP shard PG permutes its device_assignment (`da_shard`) to match
+  //   the flattened slice subgroups ordered by topology_aware_mesh on Slice 0
+  //   followed by Slice 1, and emits contiguous iota replica_groups
+  //   {{0..7}, {8..15}}.
+  // - The DCN replicate PG permutes its device_assignment (`da_replicate`) to
+  //   match the flattened cross-slice replicate pairs, and emits contiguous
+  //   iota replica_groups {{0, 1}, {2, 3}, ..., {14, 15}}.
+  const std::vector<int64_t>  // INT_VEC_OK
+      da_shard = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
+  const std::vector<int64_t>  // INT_VEC_OK
+      da_replicate = {0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6, 14, 7, 15};
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      const std::vector<int64_t> resolved_da,  // INT_VEC_OK
+      ResolveDeviceAssignment({
+          OpDeviceAssignment{OpName::kDistributedReduceScatter, da_shard},
+          OpDeviceAssignment{OpName::kDistributedAllReduce, da_replicate},
+      }));
+  EXPECT_EQ(resolved_da, da_shard);
+
+  mlir::MLIRContext mlir_context;
+  mlir_context.loadDialect<mlir::stablehlo::StablehloDialect>();
+  mlir_context.loadDialect<mlir::func::FuncDialect>();
+
+  mlir::ModuleBuilder mb(mlir_context, "test_multislice_hsdp_module");
+  mlir::func::FunctionBuilder fb(mb, "main");
+  auto tensor_type =
+      mlir::makeTensorType(mlir_context, {16}, mlir::ElementType::F32);
+  mlir::MlirOp arg = mlir::func::Argument(fb, tensor_type);
+
+  // FSDP shard collective emitted with iota replica_groups {{0..7}, {8..15}}.
+  mlir::MlirOp shard_op = mlir::stablehlo::Neg(arg);
+  auto shard_rg_type = mlir::RankedTensorType::get(
+      {2, 8}, mlir::IntegerType::get(&mlir_context, 64));
+  shard_op.getValue().getDefiningOp()->setAttr(
+      "replica_groups",
+      mlir::DenseIntElementsAttr::get(
+          shard_rg_type, llvm::ArrayRef<int64_t>({0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+                                                  10, 11, 12, 13, 14, 15})));
+
+  // DCN replicate collective emitted with iota replica_groups
+  // {{0, 1}, {2, 3}, ..., {14, 15}}.
+  mlir::MlirOp replicate_op = mlir::stablehlo::Abs(shard_op);
+  auto rep_rg_type = mlir::RankedTensorType::get(
+      {8, 2}, mlir::IntegerType::get(&mlir_context, 64));
+  replicate_op.getValue().getDefiningOp()->setAttr(
+      "replica_groups",
+      mlir::DenseIntElementsAttr::get(
+          rep_rg_type, llvm::ArrayRef<int64_t>({0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+                                                10, 11, 12, 13, 14, 15})));
+
+  mlir::func::Return(fb, {replicate_op});
+  auto module = mb.build();
+
+  EXPECT_TRUE(RewriteAndTileOperationForSubgroup(
+                  shard_op.getValue().getDefiningOp(), da_shard, resolved_da)
+                  .ok());
+  EXPECT_TRUE(
+      RewriteAndTileOperationForSubgroup(
+          replicate_op.getValue().getDefiningOp(), da_replicate, resolved_da)
+          .ok());
+
+  EXPECT_THAT(ExtractDenseIntAttrValues(shard_op.getValue().getDefiningOp(),
+                                        "replica_groups"),
+              testing::ElementsAre(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+                                   14, 15));
+  EXPECT_THAT(ExtractDenseIntAttrValues(replicate_op.getValue().getDefiningOp(),
+                                        "replica_groups"),
+              testing::ElementsAre(0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6,
+                                   14, 7, 15));
+}
+
+TEST(DeviceAssignmentPipelineTest,
+     CrossSlicePermutedSubgroupsRemapsReplicaGroups) {
+  const std::vector<int64_t>  // INT_VEC_OK
+      op_da = {100001, 200001, 100000, 200000};
+  const std::vector<int64_t>  // INT_VEC_OK
+      resolved_da = {100000, 100001, 200000, 200001};
+
+  mlir::MLIRContext mlir_context;
+  mlir_context.loadDialect<mlir::stablehlo::StablehloDialect>();
+  mlir_context.loadDialect<mlir::func::FuncDialect>();
+
+  mlir::ModuleBuilder mb(mlir_context, "test_cross_slice_canonical_rg");
+  mlir::func::FunctionBuilder fb(mb, "main");
+  auto tensor_type =
+      mlir::makeTensorType(mlir_context, {4}, mlir::ElementType::F32);
+  mlir::MlirOp arg = mlir::func::Argument(fb, tensor_type);
+
+  mlir::MlirOp replicate_op = mlir::stablehlo::Abs(arg);
+  auto rep_rg_type = mlir::RankedTensorType::get(
+      {2, 2}, mlir::IntegerType::get(&mlir_context, 64));
+  replicate_op.getValue().getDefiningOp()->setAttr(
+      "replica_groups",
+      mlir::DenseIntElementsAttr::get(rep_rg_type,
+                                      llvm::ArrayRef<int64_t>({0, 1, 2, 3})));
+
+  mlir::func::Return(fb, {replicate_op});
+  auto module = mb.build();
+
+  EXPECT_TRUE(RewriteAndTileOperationForSubgroup(
+                  replicate_op.getValue().getDefiningOp(), op_da, resolved_da)
+                  .ok());
+
+  EXPECT_THAT(ExtractDenseIntAttrValues(replicate_op.getValue().getDefiningOp(),
+                                        "replica_groups"),
+              testing::ElementsAre(0, 2, 1, 3));
+}
+
+TEST(DeviceAssignmentPipelineTest,
+     MultiSliceRewritePreservesRankOrderAndPerSliceSymmetryForMegascale) {
+  // 2 slices x 4 devices with megascale ids (slice = id / 100000).
+  // `resolved_da` is the dp_shard order from topology_aware_mesh: within each
+  // slice it is (x, y, z, core) order, which is not numeric, and both slices
+  // share the same per-slice pattern.
+  const std::vector<int64_t>  // INT_VEC_OK
+      da_shard = {100000, 100002, 100001, 100003,
+                  200000, 200002, 200001, 200003};
+  // Op B: cross-slice, order-sensitive collective over replicate pairs.
+  const std::vector<int64_t>  // INT_VEC_OK
+      op_da_b = {100000, 200000, 100001, 200001,
+                 100002, 200002, 100003, 200003};
+  // Op C: intra-slice, order-sensitive subgroup whose rank order differs from
+  // `resolved_da`.
+  const std::vector<int64_t>  // INT_VEC_OK
+      op_da_c = {100001, 100000, 100003, 100002,
+                 200001, 200000, 200003, 200002};
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      const std::vector<int64_t> resolved_da,  // INT_VEC_OK
+      ResolveDeviceAssignment({
+          OpDeviceAssignment{OpName::kDistributedReduceScatter, da_shard},
+          OpDeviceAssignment{OpName::kDistributedAllGather, op_da_b},
+          OpDeviceAssignment{OpName::kDistributedReduceScatter, op_da_c},
+      }));
+  ASSERT_EQ(resolved_da, da_shard);
+
+  mlir::MLIRContext mlir_context;
+  mlir_context.loadDialect<mlir::stablehlo::StablehloDialect>();
+  mlir_context.loadDialect<mlir::func::FuncDialect>();
+
+  mlir::ModuleBuilder mb(mlir_context, "test_multislice_megascale_module");
+  mlir::func::FunctionBuilder fb(mb, "main");
+  auto tensor_type =
+      mlir::makeTensorType(mlir_context, {8}, mlir::ElementType::F32);
+  mlir::MlirOp arg = mlir::func::Argument(fb, tensor_type);
+  auto i64_type = mlir::IntegerType::get(&mlir_context, 64);
+
+  // Op B with iota replica_groups {{0, 1}, {2, 3}, {4, 5}, {6, 7}}.
+  mlir::MlirOp op_b = mlir::stablehlo::Neg(arg);
+  mlir::Operation* raw_op_b = op_b.getValue().getDefiningOp();
+  raw_op_b->setAttr("replica_groups",
+                    mlir::DenseIntElementsAttr::get(
+                        mlir::RankedTensorType::get({4, 2}, i64_type),
+                        llvm::ArrayRef<int64_t>({0, 1, 2, 3, 4, 5, 6, 7})));
+
+  // Op C (and a fresh copy for the asymmetric case) with iota replica_groups
+  // {{0, 1, 2, 3}, {4, 5, 6, 7}}.
+  auto c_rg_attr = mlir::DenseIntElementsAttr::get(
+      mlir::RankedTensorType::get({2, 4}, i64_type),
+      llvm::ArrayRef<int64_t>({0, 1, 2, 3, 4, 5, 6, 7}));
+  mlir::MlirOp op_c = mlir::stablehlo::Abs(op_b);
+  mlir::Operation* raw_op_c = op_c.getValue().getDefiningOp();
+  raw_op_c->setAttr("replica_groups", c_rg_attr);
+  mlir::MlirOp op_c_bad = mlir::stablehlo::Neg(op_c);
+  mlir::Operation* raw_op_c_bad = op_c_bad.getValue().getDefiningOp();
+  raw_op_c_bad->setAttr("replica_groups", c_rg_attr);
+
+  mlir::func::Return(fb, {op_c_bad});
+  auto module = mb.build();
+
+  ASSERT_TRUE(
+      RewriteAndTileOperationForSubgroup(raw_op_b, op_da_b, resolved_da).ok());
+  ASSERT_TRUE(
+      RewriteAndTileOperationForSubgroup(raw_op_c, op_da_c, resolved_da).ok());
+
+  // Op B: rank_to_partition = [0, 4, 2, 6, 1, 5, 3, 7]; groups
+  // {0,4},{2,6},{1,5},{3,7} are reordered by first element only.
+  const std::vector<int64_t> rg_b =  // INT_VEC_OK
+      ExtractDenseIntAttrValues(raw_op_b, "replica_groups");
+  EXPECT_THAT(rg_b, testing::ElementsAre(0, 4, 1, 5, 2, 6, 3, 7));
+  EXPECT_THAT(PhysicalGroups(rg_b, /*group_size=*/2, resolved_da),
+              testing::UnorderedElementsAreArray(
+                  IntendedGroups(op_da_b, /*group_size=*/2)));
+
+  // Op C: rank_to_partition = [2, 0, 3, 1, 6, 4, 7, 5], so the groups become
+  // {2,0,3,1},{6,4,7,5}. The old code sorted members inside each group and
+  // produced {0,1,2,3},{4,5,6,7}, whose physical groups are
+  // {100000,100002,100001,100003},{200000,200002,200001,200003}: the intended
+  // {100001,100000,100003,100002},{200001,200000,200003,200002} with ranks
+  // permuted, which fails the PhysicalGroups assertion below.
+  const std::vector<int64_t> rg_c =  // INT_VEC_OK
+      ExtractDenseIntAttrValues(raw_op_c, "replica_groups");
+  EXPECT_THAT(rg_c, testing::ElementsAre(2, 0, 3, 1, 6, 4, 7, 5));
+  EXPECT_THAT(PhysicalGroups(rg_c, /*group_size=*/4, resolved_da),
+              testing::UnorderedElementsAreArray(
+                  IntendedGroups(op_da_c, /*group_size=*/4)));
+  // Local partition ids on `resolved_da`: x00000->0, x00002->1, x00001->2,
+  // x00003->3 on both slices, so both groups localize to {2, 0, 3, 1}.
+  EXPECT_TRUE(
+      SamePerSliceCommunicationPattern(rg_c, /*group_size=*/4, resolved_da));
+
+  // Asymmetric device order (e.g. arbitrary Kubernetes-pod/RANK order): the
+  // two slices list their devices in different relative orders. The rewrite
+  // stays correct, but Megascale cannot clone slice 0's localized collective
+  // onto slice 1, so ProcessGroupTpu must order devices consistently per
+  // slice.
+  const std::vector<int64_t>  // INT_VEC_OK
+      resolved_da_bad = {100000, 100002, 100001, 100003,
+                         200001, 200003, 200000, 200002};
+  ASSERT_TRUE(
+      RewriteAndTileOperationForSubgroup(raw_op_c_bad, op_da_c, resolved_da_bad)
+          .ok());
+  // rank_to_partition = [2, 0, 3, 1, 4, 6, 5, 7].
+  const std::vector<int64_t> rg_c_bad =  // INT_VEC_OK
+      ExtractDenseIntAttrValues(raw_op_c_bad, "replica_groups");
+  EXPECT_THAT(rg_c_bad, testing::ElementsAre(2, 0, 3, 1, 4, 6, 5, 7));
+  EXPECT_THAT(PhysicalGroups(rg_c_bad, /*group_size=*/4, resolved_da_bad),
+              testing::UnorderedElementsAreArray(
+                  IntendedGroups(op_da_c, /*group_size=*/4)));
+  // Slice 1 local ids: 200001->0, 200003->1, 200000->2, 200002->3, so slice 0
+  // localizes to {2, 0, 3, 1} and slice 1 to {0, 2, 1, 3}.
+  EXPECT_FALSE(SamePerSliceCommunicationPattern(rg_c_bad, /*group_size=*/4,
+                                                resolved_da_bad));
 }
 
 }  // namespace

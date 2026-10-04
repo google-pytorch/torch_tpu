@@ -16,6 +16,8 @@
 
 #include "csrc/distributed/process_group_tpu.h"
 
+#include <unistd.h>
+
 #include <array>
 #include <atomic>
 #include <chrono>  // NOLINT - needed for PyTorch API
@@ -24,9 +26,12 @@
 #include <cstring>
 #include <exception>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -45,11 +50,13 @@
 #include "absl/algorithm/container.h"
 #include "absl/base/no_destructor.h"
 #include "absl/base/nullability.h"
+#include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/match.h"
 #include "absl/strings/numbers.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
@@ -59,9 +66,11 @@
 #include "c10/core/ScalarType.h"
 #include "c10/core/TensorOptions.h"
 #include "c10/util/ArrayRef.h"
+#include "c10/util/Exception.h"
 #include "c10/util/intrusive_ptr.h"
 #include "csrc/common/macro_utils.h"
 #include "torch/csrc/distributed/c10d/Backend.hpp"
+#include "torch/csrc/distributed/c10d/FileStore.hpp"
 #include "torch/csrc/distributed/c10d/PrefixStore.hpp"
 #include "torch/csrc/distributed/c10d/Store.hpp"
 #include "torch/csrc/distributed/c10d/Types.hpp"
@@ -740,6 +749,9 @@ namespace {
 struct WorldTopologyState {
   std::vector<PjRtDeviceAttributes> device_attrs;
   std::vector<int64_t> rank_to_device_id;  // INT_VEC_OK
+  // rank_to_topo_order[r] is world rank r's position in the physical-topology
+  // order (see `ComputeRankToTopologyOrder`).
+  std::vector<int64_t> rank_to_topo_order;  // INT_VEC_OK
   int64_t world_rank = -1;
 };
 
@@ -758,6 +770,681 @@ const std::vector<int64_t>& GetGlobalRankToDeviceId() {  // INT_VEC_OK
   return WorldTopology().rank_to_device_id;
 }
 
+const std::vector<int64_t>& GetGlobalRankToTopologyOrder() {  // INT_VEC_OK
+  return WorldTopology().rank_to_topo_order;
+}
+
+std::vector<int64_t> ComputeRankToTopologyOrder(  // INT_VEC_OK
+    absl::Span<const PjRtDeviceAttributes> device_attrs) {
+  // (slice_index, x, y, z, core_on_chip, id); defaults match
+  // `SerializeDeviceAttributes`.
+  using TopologyKey =
+      std::tuple<int64_t, int64_t, int64_t, int64_t, int64_t, int64_t>;
+  const auto key_of = [](const PjRtDeviceAttributes& attrs) -> TopologyKey {
+    const absl::Span<const int64_t> coords =
+        attrs.coords.has_value() ? absl::MakeConstSpan(*attrs.coords)
+                                 : absl::Span<const int64_t>();
+    return {
+        attrs.slice_index.value_or(-1),    !coords.empty() ? coords[0] : 0,
+        coords.size() > 1 ? coords[1] : 0, coords.size() > 2 ? coords[2] : 0,
+        attrs.core_on_chip.value_or(0),    attrs.id};
+  };
+  std::vector<TopologyKey> keys;
+  keys.reserve(device_attrs.size());
+  for (const PjRtDeviceAttributes& attrs : device_attrs) {
+    keys.push_back(key_of(attrs));
+  }
+  std::vector<int64_t> ranks_in_topo_order(device_attrs.size());  // INT_VEC_OK
+  std::iota(ranks_in_topo_order.begin(), ranks_in_topo_order.end(), 0);
+  absl::c_stable_sort(ranks_in_topo_order, [&keys](int64_t a, int64_t b) {
+    return keys[a] < keys[b];
+  });
+  std::vector<int64_t> rank_to_topo_order(device_attrs.size());  // INT_VEC_OK
+  for (size_t pos = 0; pos < ranks_in_topo_order.size(); ++pos) {
+    rank_to_topo_order[ranks_in_topo_order[pos]] = static_cast<int64_t>(pos);
+  }
+  return rank_to_topo_order;
+}
+
+void PermuteDeviceAssignmentForSubgroups(
+    const DeviceGroupList& subgroup_member_world_ranks,
+    absl::Span<const int64_t> rank_to_device_id,
+    std::vector<int64_t>& device_assignment,  // INT_VEC_OK
+    DeviceGroupList& replica_groups) {
+  device_assignment.clear();
+  device_assignment.reserve(rank_to_device_id.size());
+  std::vector<DeviceGroup> iota_groups;
+  iota_groups.reserve(subgroup_member_world_ranks.size());
+  int64_t partition = 0;
+  for (const DeviceGroup& group : subgroup_member_world_ranks) {
+    DeviceGroup iota_group;
+    iota_group.reserve(group.size());
+    for (int64_t world_rank : group) {
+      device_assignment.push_back(rank_to_device_id[world_rank]);
+      iota_group.push_back(partition++);
+    }
+    iota_groups.push_back(std::move(iota_group));
+  }
+  replica_groups = DeviceGroupList(std::move(iota_groups), /*normalize=*/false);
+}
+
+namespace {
+
+int64_t NowMs() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
+class PrefixStoreAccessor : public c10d::PrefixStore {
+ public:
+  static const std::string& GetPrefix(const c10d::PrefixStore* store) {
+    return static_cast<const PrefixStoreAccessor*>(store)->prefix_;
+  }
+};
+
+struct UnwrappedStoreChain {
+  c10d::Store* root_store = nullptr;
+  std::string full_prefix;
+};
+
+UnwrappedStoreChain UnwrapPrefixStoreChain(c10d::Store* store) {
+  UnwrappedStoreChain result;
+  c10d::Store* curr = store;
+  std::vector<std::string_view> prefixes;
+  while (auto* prefix = dynamic_cast<c10d::PrefixStore*>(curr)) {
+    prefixes.push_back(PrefixStoreAccessor::GetPrefix(prefix));
+    curr = prefix->getUnderlyingStore().get();
+    if (curr == nullptr) {
+      break;
+    }
+  }
+  absl::c_reverse(prefixes);
+  result.root_store = curr;
+  result.full_prefix = absl::StrJoin(prefixes, "/");
+  return result;
+}
+
+// Runs `f`, a call into c10d::Store, converting any exception it throws (e.g.
+// c10::DistStoreError on timeout) into an error status. Returns absl::Status if
+// `f` returns void, else absl::StatusOr of its result. This is the only place
+// in this file that catches store exceptions.
+template <typename F>
+auto CallStore(std::string_view op, F&& f) {
+  using R = std::invoke_result_t<F>;
+  const auto to_status = [op](const std::exception& e) -> absl::Status {
+    // c10::Error::what() appends a C++ backtrace, which doesn't belong in a
+    // TorchTPU error message.
+    const auto* c10_error = dynamic_cast<const c10::Error*>(&e);
+    const std::string message = AdaptExternalErrorMessage(
+        c10_error != nullptr ? c10_error->what_without_backtrace() : e.what());
+    const bool timed_out = absl::StrContainsIgnoreCase(message, "timeout");
+    return TT_ERROR(timed_out ? error::kDeadlineExceeded : error::kUnavailable)
+           << op << ": " << message;
+  };
+  if constexpr (std::is_void_v<R>) {
+    try {
+      std::forward<F>(f)();
+    } catch (const std::exception& e) {
+      return to_status(e);
+    }
+    return absl::OkStatus();
+  } else {
+    try {
+      return absl::StatusOr<R>(std::forward<F>(f)());
+    } catch (const std::exception& e) {
+      return absl::StatusOr<R>(to_status(e));
+    }
+  }
+}
+
+using ByteVector = std::vector<uint8_t>;
+
+std::vector<uint8_t> PackKeyAndValue(std::string_view key,
+                                     std::string_view value) {
+  const std::string packed = absl::StrCat(key.size(), ":", key, value);
+  return std::vector<uint8_t>(packed.begin(), packed.end());
+}
+
+struct KeyAndValue {
+  std::string key;
+  std::vector<uint8_t> value;
+};
+
+absl::StatusOr<KeyAndValue> UnpackKeyAndValue(
+    absl::Span<const uint8_t> packed) {
+  const std::string_view view(reinterpret_cast<const char*>(packed.data()),
+                              packed.size());
+  const size_t colon_pos = view.find(':');
+  size_t key_len = 0;
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=defensive check on internally
+                 // serialized store payload
+      colon_pos != std::string_view::npos &&
+          absl::SimpleAtoi(view.substr(0, colon_pos), &key_len) &&
+          key_len <= view.size() - colon_pos - 1,
+      error::kInternal)
+      << "malformed node-local store key/value entry (" << packed.size()
+      << " bytes)";
+  const size_t key_start = colon_pos + 1;
+  return KeyAndValue{
+      .key = std::string(view.substr(key_start, key_len)),
+      .value = std::vector<uint8_t>(packed.begin() + key_start + key_len,
+                                    packed.end()),
+  };
+}
+
+std::vector<uint8_t> PackValueList(absl::Span<const ByteVector> values) {
+  std::string packed;
+  for (const auto& val : values) {
+    absl::StrAppend(&packed, val.size(), ":",
+                    std::string_view(reinterpret_cast<const char*>(val.data()),
+                                     val.size()));
+  }
+  return std::vector<uint8_t>(packed.begin(), packed.end());
+}
+
+absl::StatusOr<std::vector<ByteVector>> UnpackAllValues(
+    absl::Span<const uint8_t> packed) {
+  std::vector<ByteVector> values;
+  std::string_view cursor(reinterpret_cast<const char*>(packed.data()),
+                          packed.size());
+  while (!cursor.empty()) {
+    const size_t colon_pos = cursor.find(':');
+    size_t val_len = 0;
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=defensive check on internally
+                   // serialized store payload
+        colon_pos != std::string_view::npos &&
+            absl::SimpleAtoi(cursor.substr(0, colon_pos), &val_len) &&
+            val_len <= cursor.size() - colon_pos - 1,
+        error::kInternal)
+        << "malformed node-local store value list (" << packed.size()
+        << " bytes)";
+    cursor.remove_prefix(colon_pos + 1);
+    const auto* val_ptr = reinterpret_cast<const uint8_t*>(cursor.data());
+    values.emplace_back(val_ptr, val_ptr + val_len);
+    cursor.remove_prefix(val_len);
+  }
+  return values;
+}
+
+// Prefixes of the table published by the AllGatherViaNodeLocalStore collector.
+constexpr std::string_view kNodeLocalTableOkPrefix = "OK\n";
+constexpr std::string_view kNodeLocalTableErrPrefix = "ERR\n";
+
+std::vector<uint8_t> EncodeOkTable(absl::Span<const ByteVector> values) {
+  std::vector<uint8_t> bytes(kNodeLocalTableOkPrefix.begin(),
+                             kNodeLocalTableOkPrefix.end());
+  const std::vector<uint8_t> packed = PackValueList(values);
+  bytes.insert(bytes.end(), packed.begin(), packed.end());
+  return bytes;
+}
+
+std::vector<uint8_t> EncodeErrTable(std::string_view message) {
+  const std::string bytes = absl::StrCat(kNodeLocalTableErrPrefix, message);
+  return std::vector<uint8_t>(bytes.begin(), bytes.end());
+}
+
+// Decodes a table published by the collector. Returns an error if the
+// collector reported one.
+absl::StatusOr<std::vector<ByteVector>> DecodeTable(
+    absl::Span<const uint8_t> bytes, size_t expected_count) {
+  const std::string_view view(reinterpret_cast<const char*>(bytes.data()),
+                              bytes.size());
+  if (absl::StartsWith(view, kNodeLocalTableErrPrefix)) {
+    return TT_ERROR(error::kAborted)
+           << "failed to all-gather via the node-local store: "
+           << view.substr(kNodeLocalTableErrPrefix.size());
+  }
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=the collector only publishes OK or
+                 // ERR tables
+      absl::StartsWith(view, kNodeLocalTableOkPrefix), error::kInternal)
+      << "malformed node-local store table (" << bytes.size() << " bytes)";
+  TT_ASSIGN_OR_RETURN(
+      std::vector<ByteVector> values,
+      UnpackAllValues(bytes.subspan(kNodeLocalTableOkPrefix.size())));
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=the collector fills every peer key
+                 // before publishing an OK table
+      values.size() == expected_count, error::kInternal)
+      << "node-local store table has " << values.size() << " entries for "
+      << expected_count << " peer keys";
+  return values;
+}
+
+// Returns up to `max_keys` of the peer keys that are not yet filled.
+std::string DescribeMissingKeys(const std::vector<std::string>& peer_keys,
+                                const std::vector<bool>& filled,
+                                size_t max_keys) {
+  std::vector<std::string_view> missing;
+  size_t num_missing = 0;
+  for (size_t i = 0; i < peer_keys.size(); ++i) {
+    if (filled[i]) {
+      continue;
+    }
+    ++num_missing;
+    if (missing.size() < max_keys) {
+      missing.push_back(peer_keys[i]);
+    }
+  }
+  std::string result = absl::StrCat("[", absl::StrJoin(missing, ", "));
+  if (num_missing > missing.size()) {
+    absl::StrAppend(&result, ", ... (", num_missing - missing.size(), " more)");
+  }
+  absl::StrAppend(&result, "]");
+  return result;
+}
+
+}  // namespace
+
+// Protocol. All keys are scoped by `scope_key` = "<peer_keys[0]>:<num_peers>".
+//   1. A worker (local_rank > 0) sets its packed (key, value) under
+//      "local_up:<scope>:<local_rank>" in the node-local store, then waits for
+//      the table under "local_down:<scope>".
+//   2. A leader multiGets its workers' entries, claims a node slot with
+//      world_store->add("nlag:<scope>:count", 1) and publishes all of its
+//      node's entries as one blob under "nlag:<scope>:node:<slot>".
+//   3. The leader whose node holds peer_keys[0] (the collector) reads node
+//      blobs as their slots fill until every peer key is filled, then
+//      publishes "OK\n<values>" (or "ERR\n<message>") under
+//      "nlag:<scope>:table".
+//   4. Every other leader gets that table, and every leader forwards it to its
+//      workers under "local_down:<scope>".
+// A leader that fails forwards an ERR table to its workers (and, if it is the
+// collector, to the world table) so that they fail promptly instead of timing
+// out.
+absl::StatusOr<std::vector<std::vector<uint8_t>>> AllGatherViaNodeLocalStore(
+    c10d::Store* world_store, c10d::Store* local_store, int64_t local_rank,
+    int64_t local_world_size, std::string_view my_key,
+    std::string_view my_value, const std::vector<std::string>& peer_keys) {
+  if (peer_keys.empty()) {
+    return std::vector<ByteVector>();
+  }
+  const int64_t start_ms = NowMs();
+  const int64_t num_peers = static_cast<int64_t>(peer_keys.size());
+
+  // Without a usable node-local store, this rank is the leader of a node that
+  // contains only itself.
+  const bool use_local = local_store != nullptr && local_world_size > 1;
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=GetNodeLocalStore validates LOCAL_RANK
+                 // before any caller gets here
+      !use_local || (local_rank >= 0 && local_rank < local_world_size),
+      error::kInvalidArgument)
+      << absl::StrFormat(
+             "local_rank=%d is out of range [0, %d) for the node-local store "
+             "(my_key=%s)",
+             local_rank, local_world_size, my_key);
+  if (use_local && world_store != nullptr &&
+      world_store->getTimeout() > local_store->getTimeout()) {
+    local_store->setTimeout(world_store->getTimeout());
+  }
+
+  const std::string scope_key = absl::StrCat(peer_keys[0], ":", num_peers);
+  const std::string down_key = absl::StrCat("local_down:", scope_key);
+
+  if (use_local && local_rank != 0) {
+    const std::string up_key =
+        absl::StrCat("local_up:", scope_key, ":", local_rank);
+    TT_RETURN_IF_ERROR(CallStore(absl::StrCat("local_store set ", up_key), [&] {
+      local_store->set(up_key, PackKeyAndValue(my_key, my_value));
+    }));
+    TT_ASSIGN_OR_RETURN(const ByteVector table,
+                        CallStore(absl::StrCat("local_store get ", down_key),
+                                  [&] { return local_store->get(down_key); }));
+    return DecodeTable(table, peer_keys.size());
+  }
+
+  const std::string count_key = absl::StrCat("nlag:", scope_key, ":count");
+  const std::string table_key = absl::StrCat("nlag:", scope_key, ":table");
+  const auto node_key = [&scope_key](int64_t slot) {
+    return absl::StrCat("nlag:", scope_key, ":node:", slot);
+  };
+  bool is_collector = my_key == peer_keys[0];
+  bool world_table_written = false;
+  bool local_down_written = false;
+  int64_t num_nodes = 0;
+
+  // Reads node blobs until every peer key is filled. Collector only.
+  const auto collect = [&]() -> absl::StatusOr<std::vector<ByteVector>> {
+    absl::flat_hash_map<std::string_view, size_t> key_to_index;
+    key_to_index.reserve(peer_keys.size());
+    for (size_t i = 0; i < peer_keys.size(); ++i) {
+      key_to_index.emplace(peer_keys[i], i);
+    }
+    std::vector<ByteVector> values(peer_keys.size());
+    std::vector<bool> filled(peer_keys.size(), false);
+    int64_t num_filled = 0;
+    const auto run = [&]() -> absl::Status {
+      while (num_filled < num_peers) {
+        const std::string next_key = node_key(num_nodes);
+        TT_RETURN_IF_ERROR(
+            CallStore(absl::StrCat("world_store wait ", next_key),
+                      [&] { world_store->wait({next_key}); }));
+        TT_ASSIGN_OR_RETURN(
+            const int64_t avail,
+            CallStore(absl::StrCat("world_store add ", count_key),
+                      [&] { return world_store->add(count_key, 0); }));
+        TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal invariant: slots are
+                       // claimed only by this gather's peers
+            avail <= num_peers, error::kFailedPrecondition)
+            << avail << " nodes published for " << num_peers
+            << " peer keys (scope reused, or too many nodes)";
+        std::vector<std::string> batch_keys;
+        batch_keys.reserve(avail - num_nodes);
+        for (int64_t slot = num_nodes; slot < avail; ++slot) {
+          batch_keys.push_back(node_key(slot));
+        }
+        TT_ASSIGN_OR_RETURN(const std::vector<ByteVector> blobs,
+                            CallStore("world_store multiGet node blobs", [&] {
+                              return world_store->multiGet(batch_keys);
+                            }));
+        for (const ByteVector& blob : blobs) {
+          TT_ASSIGN_OR_RETURN(const std::vector<ByteVector> entries,
+                              UnpackAllValues(blob));
+          for (const ByteVector& packed_entry : entries) {
+            TT_ASSIGN_OR_RETURN(KeyAndValue entry,
+                                UnpackKeyAndValue(packed_entry));
+            const auto it = key_to_index.find(entry.key);
+            TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Covered by
+                           // process_group_tpu_test
+                it != key_to_index.end(), error::kFailedPrecondition)
+                << "unknown key " << entry.key;
+            TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Covered by
+                           // process_group_tpu_test
+                !filled[it->second], error::kFailedPrecondition)
+                << "duplicate key " << entry.key;
+            values[it->second] = std::move(entry.value);
+            filled[it->second] = true;
+            ++num_filled;
+          }
+        }
+        num_nodes = avail;
+        ABSL_VLOG(1) << "AllGatherViaNodeLocalStore(" << scope_key
+                     << "): collector has " << num_filled << "/" << num_peers
+                     << " entries from " << num_nodes << " nodes after "
+                     << NowMs() - start_ms << " ms";
+      }
+      return absl::OkStatus();
+    };
+    if (absl::Status status = run(); !status.ok()) {
+      return TT_ERROR(status.code()) << absl::StrFormat(
+                 "collector (node holding %s): failed after %dms with %d/%d "
+                 "peer keys filled from %d arrived nodes; missing keys %s: %s",
+                 peer_keys[0], NowMs() - start_ms, num_filled, num_peers,
+                 num_nodes,
+                 DescribeMissingKeys(peer_keys, filled,
+                                     /*max_keys=*/16),
+                 status.message());
+    }
+    return values;
+  };
+
+  // The leader's whole sequence. Any error is forwarded below.
+  const auto lead = [&]() -> absl::StatusOr<std::vector<ByteVector>> {
+    std::vector<ByteVector> node_entries = {PackKeyAndValue(my_key, my_value)};
+    if (use_local) {
+      std::vector<std::string> up_keys;
+      up_keys.reserve(local_world_size - 1);
+      for (int64_t lr = 1; lr < local_world_size; ++lr) {
+        up_keys.push_back(absl::StrCat("local_up:", scope_key, ":", lr));
+      }
+      absl::StatusOr<std::vector<ByteVector>> up_entries =
+          CallStore("local_store multiGet",
+                    [&] { return local_store->multiGet(up_keys); });
+      if (!up_entries.ok()) {
+        return TT_ERROR(  // ERROR_COV_INFEASIBLE=needs a local rank that never
+                          // joins; blocks for the 300s FileStore timeout
+                   up_entries.status().code())
+               << absl::StrFormat(
+                      "leader failed collecting %d local ranks for scope %s "
+                      "(node-local store /dev/shm/torch_tpu_pg_store_%d): %s",
+                      local_world_size - 1, scope_key, getppid(),
+                      up_entries.status().message());
+      }
+      for (ByteVector& packed_entry : *up_entries) {
+        TT_ASSIGN_OR_RETURN(const KeyAndValue entry,
+                            UnpackKeyAndValue(packed_entry));
+        is_collector = is_collector || entry.key == peer_keys[0];
+        node_entries.push_back(std::move(packed_entry));
+      }
+    }
+
+    // Publish this node's entries as one blob in a slot claimed with add().
+    TT_ASSIGN_OR_RETURN(
+        const int64_t count,
+        CallStore(absl::StrCat("world_store add ", count_key),
+                  [&] { return world_store->add(count_key, 1); }));
+    const int64_t slot = count - 1;
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal invariant: slots are
+                   // claimed only by this gather's peers
+        slot < num_peers, error::kFailedPrecondition)
+        << "claimed node slot " << slot << " but there are only " << num_peers
+        << " peer keys (scope " << scope_key << " reused, or too many nodes)";
+    const std::string blob_key = node_key(slot);
+    TT_RETURN_IF_ERROR(CallStore(
+        absl::StrCat("world_store set ", blob_key),
+        [&] { world_store->set(blob_key, PackValueList(node_entries)); }));
+    ABSL_VLOG(1) << "AllGatherViaNodeLocalStore(" << scope_key
+                 << "): leader published " << node_entries.size()
+                 << " entries in node slot " << slot;
+
+    ByteVector table;
+    if (is_collector) {
+      TT_ASSIGN_OR_RETURN(const std::vector<ByteVector> values, collect());
+      table = EncodeOkTable(values);
+      TT_RETURN_IF_ERROR(
+          CallStore(absl::StrCat("world_store set ", table_key),
+                    [&] { world_store->set(table_key, table); }));
+      world_table_written = true;
+    } else {
+      TT_ASSIGN_OR_RETURN(
+          table, CallStore(absl::StrCat("world_store get ", table_key),
+                           [&] { return world_store->get(table_key); }));
+    }
+    // Forward the table before decoding it so workers also see errors.
+    if (use_local) {
+      TT_RETURN_IF_ERROR(CallStore(absl::StrCat("local_store set ", down_key),
+                                   [&] { local_store->set(down_key, table); }));
+      local_down_written = true;
+    }
+    return DecodeTable(table, peer_keys.size());
+  };
+
+  absl::StatusOr<std::vector<ByteVector>> result = lead();
+  if (!result.ok()) {
+    // Best effort: failures to forward the error are ignored.
+    const ByteVector err_table = EncodeErrTable(absl::StrCat(
+        "node leader (my_key=", my_key, "): ", result.status().message()));
+    if (is_collector && !world_table_written) {
+      CallStore("world_store set error table", [&] {
+        world_store->set(table_key, err_table);
+      }).IgnoreError();  // IGNORE_ERROR_OK=best effort; original error returned
+    }
+    if (use_local && !local_down_written) {
+      CallStore("local_store set error table", [&] {
+        local_store->set(down_key, err_table);
+      }).IgnoreError();  // IGNORE_ERROR_OK=best effort; original error returned
+    }
+    return result.status();
+  }
+  if (is_collector) {
+    ABSL_LOG(INFO) << "AllGatherViaNodeLocalStore(" << scope_key
+                   << "): gathered " << num_peers << " entries from "
+                   << num_nodes << " nodes in " << NowMs() - start_ms << " ms";
+  }
+  return result;
+}
+
+namespace {
+
+struct NodeLocalStoreConfig {
+  c10d::Store* store = nullptr;
+  int64_t local_rank = 0;
+  int64_t local_world_size = 1;
+};
+
+// Returns the node-local store used by AllGatherViaNodeLocalStore. Returns a
+// default config (no local store, so every rank publishes on its own) when the
+// node layout (LOCAL_RANK and TORCH_TPU_DEVICES_PER_HOST) is unknown or the
+// store is unavailable.
+absl::StatusOr<NodeLocalStoreConfig> GetNodeLocalStore(int64_t world_size) {
+  const std::optional<int64_t> local_rank =
+      GetIntegerEnvOnce<int64_t, kLocalRankEnvVar>();
+  const std::optional<int64_t> local_world_size =
+      GetIntegerEnvOnce<int64_t, kTorchTpuDevicesPerHostEnvVar>();
+  const std::string env_summary = absl::StrFormat(
+      "local_rank=%s devices_per_host=%s world_size=%d",
+      local_rank.has_value() ? absl::StrCat(*local_rank) : "unset",
+      local_world_size.has_value() ? absl::StrCat(*local_world_size) : "unset",
+      world_size);
+  if (!local_rank.has_value() || !local_world_size.has_value()) {
+    ABSL_LOG_FIRST_N(WARNING, 1)
+        << "Node-local store disabled: LOCAL_RANK or "
+           "TORCH_TPU_DEVICES_PER_HOST is unset ("
+        << env_summary
+        << "). Every rank will publish to the world store individually, "
+           "which is slower at scale.";
+    return NodeLocalStoreConfig{};
+  }
+  if (*local_world_size <= 1) {
+    return NodeLocalStoreConfig{};
+  }
+  TT_RET_CHECK(*local_rank >= 0 && *local_rank < *local_world_size,
+               error::kInvalidArgument)
+      << absl::StrFormat(
+             "expected environment variable LOCAL_RANK to be in [0, %d) "
+             "(TORCH_TPU_DEVICES_PER_HOST), got %d (%s)",
+             *local_world_size, *local_rank, env_summary);
+  if (::access("/dev/shm", W_OK) != 0) {
+    ABSL_LOG_FIRST_N(WARNING, 1)
+        << "Node-local store disabled: /dev/shm is not writable ("
+        << env_summary
+        << "). Every rank will publish to the world store individually, "
+           "which is slower at scale.";
+    return NodeLocalStoreConfig{};
+  }
+  const std::string shm_path = absl::StrFormat("/dev/shm/torch_tpu_pg_store_%d",
+                                               static_cast<int>(getppid()));
+  static absl::NoDestructor<c10::intrusive_ptr<c10d::FileStore>> shm_store(
+      c10::make_intrusive<c10d::FileStore>(
+          shm_path, static_cast<int>(*local_world_size)));
+  return NodeLocalStoreConfig{
+      .store = shm_store->get(),
+      .local_rank = *local_rank,
+      .local_world_size = *local_world_size,
+  };
+}
+
+std::atomic<int64_t> next_subgroup_gather_id{0};
+
+}  // namespace
+
+absl::Status GatherSubgroupsViaNodeLocalStore(
+    c10d::Store* store, c10d::Store* local_store, int64_t local_rank,
+    int64_t local_world_size, int64_t pg_rank, int64_t pg_size,
+    int64_t world_rank, absl::Span<const int64_t> global_rank_to_device_id,
+    absl::Span<const int64_t> global_rank_to_topo_order, int64_t gather_id,
+    DeviceGroup& out_member_world_ranks,
+    DeviceGroupList& out_subgroup_member_world_ranks) {
+  const UnwrappedStoreChain unwrapped = UnwrapPrefixStoreChain(store);
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal store chain invariant
+      unwrapped.root_store != nullptr, error::kInternal)
+      << "root store is null when unwrapping the store chain";
+  const int64_t world_size =
+      static_cast<int64_t>(global_rank_to_device_id.size());
+  const std::string my_key =
+      absl::StrFormat("pg_sub:%d:%d", gather_id, world_rank);
+  const std::string my_val =
+      absl::StrFormat("%d,%d:%s", pg_rank, world_rank, unwrapped.full_prefix);
+  std::vector<std::string> peer_keys(world_size);
+  for (int64_t r = 0; r < world_size; ++r) {
+    peer_keys[r] = absl::StrFormat("pg_sub:%d:%d", gather_id, r);
+  }
+
+  TT_ASSIGN_OR_RETURN(
+      const std::vector<std::vector<uint8_t>> peer_values,
+      AllGatherViaNodeLocalStore(unwrapped.root_store, local_store, local_rank,
+                                 local_world_size, my_key, my_val, peer_keys));
+
+  absl::flat_hash_map<std::string, DeviceGroup> groups_by_prefix;
+  absl::flat_hash_set<int64_t> seen_world_ranks;
+  for (const auto& bytes : peer_values) {
+    const std::string_view payload(reinterpret_cast<const char*>(bytes.data()),
+                                   bytes.size());
+    const size_t comma_pos = payload.find(',');
+    const size_t colon_pos = (comma_pos == std::string_view::npos)
+                                 ? std::string_view::npos
+                                 : payload.find(':', comma_pos + 1);
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=defensive check on internally
+                   // serialized store payload
+        comma_pos != std::string_view::npos &&
+            colon_pos != std::string_view::npos,
+        error::kInternal)
+        << "malformed subgroup gather payload '" << payload << "'";
+    int64_t entry_pg_rank = -1;
+    int64_t entry_world_rank = -1;
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=defensive check on internally
+                   // serialized store payload
+        absl::SimpleAtoi(payload.substr(0, comma_pos), &entry_pg_rank) &&
+            absl::SimpleAtoi(
+                payload.substr(comma_pos + 1, colon_pos - comma_pos - 1),
+                &entry_world_rank),
+        error::kInternal)
+        << "unparsable ranks in subgroup gather payload '" << payload << "'";
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal rank range invariant
+        entry_pg_rank >= 0 && entry_pg_rank < pg_size &&
+            entry_world_rank >= 0 && entry_world_rank < world_size,
+        error::kInternal)
+        << "rank out of range in subgroup gather payload '" << payload << "'";
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal partition invariant
+        seen_world_ranks.insert(entry_world_rank).second,
+        error::kInvalidArgument)
+        << "duplicate world rank " << entry_world_rank << " in subgroup gather";
+
+    const std::string_view entry_prefix = payload.substr(colon_pos + 1);
+    DeviceGroup& group = groups_by_prefix[entry_prefix];
+    if (group.empty()) {
+      group.assign(pg_size, -1);
+    }
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal partition invariant
+        group[entry_pg_rank] == -1, error::kInvalidArgument)
+        << "duplicate pg_rank " << entry_pg_rank << " in subgroup '"
+        << entry_prefix << "'";
+    group[entry_pg_rank] = entry_world_rank;
+  }
+
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal partition invariant
+      static_cast<int64_t>(groups_by_prefix.size()) * pg_size == world_size &&
+          groups_by_prefix.contains(unwrapped.full_prefix),
+      error::kInvalidArgument)
+      << "incomplete or mismatched subgroups in SPMD gather";
+
+  std::vector<DeviceGroup> unique_subgroups;
+  unique_subgroups.reserve(groups_by_prefix.size());
+  for (auto& [prefix, group] : groups_by_prefix) {
+    if (prefix == unwrapped.full_prefix) {
+      out_member_world_ranks = group;
+    }
+    unique_subgroups.push_back(std::move(group));
+  }
+
+  // Order subgroups by their leader's physical topology position only. Never
+  // order by world rank: world ranks come from launcher order and would make
+  // the per-slice device_assignment order (and thus Megascale's per-slice
+  // collective pattern) depend on pod launch order. Members within a subgroup
+  // keep PG-rank order.
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=world topology initialized before PGs
+      static_cast<int64_t>(global_rank_to_topo_order.size()) == world_size,
+      error::kInternal)
+      << "world topology order not initialized";
+  absl::c_sort(unique_subgroups, [global_rank_to_topo_order](
+                                     const DeviceGroup& a,
+                                     const DeviceGroup& b) {
+    return global_rank_to_topo_order[a[0]] < global_rank_to_topo_order[b[0]];
+  });
+  out_subgroup_member_world_ranks =
+      DeviceGroupList(std::move(unique_subgroups), /*normalize=*/false);
+  return absl::OkStatus();
+}
+
 absl::Status ProcessGroupTpu::InitializeRankToDeviceMappings(
     int64_t world_size) {
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=singleton topology initialization
@@ -772,24 +1459,30 @@ absl::Status ProcessGroupTpu::InitializeRankToDeviceMappings(
   TT_ASSIGN_OR_RETURN(PjRtDeviceAttributes local_attrs,
                       PjrtBackend::GetInstance().GetDeviceAttributes());
 
-  store_->set(absl::StrFormat("world_topo:%d", rank_),
-              SerializeDeviceAttributes(local_attrs));
+  const std::string my_key = absl::StrFormat("world_topo:%d", rank_);
   std::vector<std::string> peer_keys(world_size);
   for (int64_t r = 0; r < world_size; ++r) {
     peer_keys[r] = absl::StrFormat("world_topo:%d", r);
   }
-  auto peer_values = store_->multiGet(peer_keys);
+  TT_ASSIGN_OR_RETURN(const NodeLocalStoreConfig local,
+                      GetNodeLocalStore(world_size));
+  TT_ASSIGN_OR_RETURN(
+      const std::vector<std::vector<uint8_t>> peer_values,
+      AllGatherViaNodeLocalStore(
+          store_.get(), local.store, local.local_rank, local.local_world_size,
+          my_key, SerializeDeviceAttributes(local_attrs), peer_keys));
 
   std::vector<PjRtDeviceAttributes> device_attrs(world_size);
   std::vector<int64_t> rank_to_device_id(world_size);  // INT_VEC_OK
   for (int64_t r = 0; r < world_size; ++r) {
-    TT_ASSIGN_OR_RETURN(
-        device_attrs[r],
-        DeserializeDeviceAttributes(std::string_view(
-            reinterpret_cast<const char*>(peer_values[r].data()),
-            peer_values[r].size())));
+    const std::string_view payload(
+        reinterpret_cast<const char*>(peer_values[r].data()),
+        peer_values[r].size());
+    TT_ASSIGN_OR_RETURN(device_attrs[r], DeserializeDeviceAttributes(payload));
     rank_to_device_id[r] = device_attrs[r].id;
   }
+  std::vector<int64_t> rank_to_topo_order =  // INT_VEC_OK
+      ComputeRankToTopologyOrder(device_attrs);
 
   // World ranks are defined by the rank order of the first world-sized
   // ProcessGroupTpu (the default WORLD group in practice). The global state is
@@ -798,69 +1491,154 @@ absl::Status ProcessGroupTpu::InitializeRankToDeviceMappings(
   topo.world_rank = rank_;
   topo.device_attrs = std::move(device_attrs);
   topo.rank_to_device_id = std::move(rank_to_device_id);
+  topo.rank_to_topo_order = std::move(rank_to_topo_order);
   return absl::OkStatus();
 }
 
-absl::StatusOr<DeviceGroup> ProcessGroupTpu::GatherLocalSubgroupRanks() {
+absl::StatusOr<DeviceGroup> ProcessGroupTpu::GatherMemberWorldRanks() {
   const auto& topo = WorldTopology();
-  store_->set(absl::StrFormat("local_rank:%d", rank_),
-              std::to_string(topo.world_rank));
-  std::vector<std::string> keys(size_);
-  for (int64_t i = 0; i < size_; ++i) {
-    keys[i] = absl::StrFormat("local_rank:%d", i);
-  }
-  auto values = store_->multiGet(keys);
-
   const int64_t world_size = topo.rank_to_device_id.size();
-  DeviceGroup local_subgroup_ranks(size_);
-  for (int64_t i = 0; i < size_; ++i) {
-    const std::string_view value(
-        reinterpret_cast<const char*>(values[i].data()), values[i].size());
+  if (size_ == 1) {
+    return DeviceGroup{topo.world_rank};
+  }
+
+  DeviceGroup member_world_ranks;
+  if (rank_ == 0) {
+    member_world_ranks.resize(size_);
+    member_world_ranks[0] = topo.world_rank;
+    std::vector<std::string> keys(size_ - 1);
+    for (int64_t i = 1; i < size_; ++i) {
+      keys[i - 1] = absl::StrFormat("local_rank:%d", i);
+    }
+    TT_ASSIGN_OR_RETURN(const std::vector<std::vector<uint8_t>> values,
+                        CallStore("store multiGet local_rank:*",
+                                  [&] { return store_->multiGet(keys); }));
+    for (int64_t i = 1; i < size_; ++i) {
+      const std::string_view value(
+          reinterpret_cast<const char*>(values[i - 1].data()),
+          values[i - 1].size());
+      TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=defensive check on internally
+                     // serialized store payload
+          absl::SimpleAtoi(value, &member_world_ranks[i]), error::kInternal)
+          << "unparsable world rank '" << value << "' in store";
+      TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal rank range invariant
+          member_world_ranks[i] >= 0 && member_world_ranks[i] < world_size,
+          error::kInternal)
+          << "world rank " << member_world_ranks[i]
+          << " out of range for world size " << world_size;
+    }
+    TT_RETURN_IF_ERROR(CallStore("store set local_subgroup_ranks", [&] {
+      store_->set("local_subgroup_ranks",
+                  absl::StrJoin(member_world_ranks, ","));
+    }));
+    return member_world_ranks;
+  }
+
+  const std::string my_key = absl::StrFormat("local_rank:%d", rank_);
+  TT_RETURN_IF_ERROR(CallStore(absl::StrCat("store set ", my_key), [&] {
+    store_->set(my_key, std::to_string(topo.world_rank));
+  }));
+  TT_ASSIGN_OR_RETURN(const std::vector<uint8_t> bytes,
+                      CallStore("store get local_subgroup_ranks", [&] {
+                        return store_->get("local_subgroup_ranks");
+                      }));
+  const std::string_view csv(reinterpret_cast<const char*>(bytes.data()),
+                             bytes.size());
+  member_world_ranks.reserve(size_);
+  for (std::string_view part : absl::StrSplit(csv, ',')) {
+    int64_t r = 0;
     TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=defensive check on internally
                    // serialized store payload
-        absl::SimpleAtoi(value, &local_subgroup_ranks[i]), error::kInternal)
-        << "Failed to parse world rank from store: " << value;
+        absl::SimpleAtoi(part, &r), error::kInternal)
+        << "unparsable world rank '" << part << "' in store";
     TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal rank range invariant
-        local_subgroup_ranks[i] >= 0 && local_subgroup_ranks[i] < world_size,
-        error::kInternal)
-        << "World rank " << local_subgroup_ranks[i]
-        << " out of range for world size " << world_size;
+        r >= 0 && r < world_size, error::kInternal)
+        << "world rank " << r << " out of range for world size " << world_size;
+    member_world_ranks.push_back(r);
   }
-  return local_subgroup_ranks;
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal subgroup size invariant
+      static_cast<int64_t>(member_world_ranks.size()) == size_,
+      error::kInternal)
+      << "expected " << size_ << " subgroup ranks, got "
+      << member_world_ranks.size();
+  return member_world_ranks;
 }
 
 absl::StatusOr<DeviceGroupList> ProcessGroupTpu::GatherAllSubgroups(
-    const DeviceGroup& local_subgroup_ranks, int64_t world_size) {
+    const DeviceGroup& member_world_ranks, int64_t world_size) {
   c10::intrusive_ptr<c10d::Store> root_store = store_;
-  if (auto* prefix_store = dynamic_cast<c10d::PrefixStore*>(root_store.get())) {
+  while (auto* prefix_store =
+             dynamic_cast<c10d::PrefixStore*>(root_store.get())) {
     root_store = prefix_store->getUnderlyingNonPrefixStore();
   }
 
-  static int64_t subgroup_gather_id = 0;
-  const int64_t gather_id = subgroup_gather_id++;
-  root_store->set(
-      absl::StrFormat("subgroup:%d:%d", gather_id, WorldTopology().world_rank),
-      absl::StrJoin(local_subgroup_ranks, ","));
+  const auto& topo = WorldTopology();
+  const int64_t num_subgroups = world_size / size_;
+  const int64_t gather_id = next_subgroup_gather_id.fetch_add(1);
+  const std::string subgroup_store_key =
+      absl::StrFormat("all_subgroups:%d", gather_id);
 
-  std::vector<std::string> peer_keys(world_size);
-  for (int64_t r = 0; r < world_size; ++r) {
-    peer_keys[r] = absl::StrFormat("subgroup:%d:%d", gather_id, r);
+  std::vector<std::string> subgroup_csvs;
+  subgroup_csvs.reserve(num_subgroups);
+  if (rank_ == 0) {
+    const std::string count_key =
+        absl::StrFormat("subgroup_count:%d", gather_id);
+    TT_ASSIGN_OR_RETURN(
+        const int64_t count,
+        CallStore(absl::StrCat("root_store add ", count_key),
+                  [&] { return root_store->add(count_key, 1); }));
+    const std::string my_subgroup_key =
+        absl::StrFormat("subgroup:%d:%d", gather_id, count - 1);
+    TT_RETURN_IF_ERROR(
+        CallStore(absl::StrCat("root_store set ", my_subgroup_key), [&] {
+          root_store->set(my_subgroup_key,
+                          absl::StrJoin(member_world_ranks, ","));
+        }));
+    std::vector<std::string> peer_keys(num_subgroups);
+    for (int64_t s = 0; s < num_subgroups; ++s) {
+      peer_keys[s] = absl::StrFormat("subgroup:%d:%d", gather_id, s);
+    }
+    TT_ASSIGN_OR_RETURN(const std::vector<std::vector<uint8_t>> peer_values,
+                        CallStore("root_store multiGet subgroup:*", [&] {
+                          return root_store->multiGet(peer_keys);
+                        }));
+    for (const auto& bytes : peer_values) {
+      subgroup_csvs.emplace_back(reinterpret_cast<const char*>(bytes.data()),
+                                 bytes.size());
+    }
+    if (size_ > 1) {
+      TT_RETURN_IF_ERROR(
+          CallStore(absl::StrCat("store set ", subgroup_store_key), [&] {
+            store_->set(subgroup_store_key, absl::StrJoin(subgroup_csvs, ";"));
+          }));
+    }
+  } else {
+    TT_ASSIGN_OR_RETURN(
+        const std::vector<uint8_t> raw_bytes,
+        CallStore(absl::StrCat("store get ", subgroup_store_key),
+                  [&] { return store_->get(subgroup_store_key); }));
+    const std::string_view all_payload(
+        reinterpret_cast<const char*>(raw_bytes.data()), raw_bytes.size());
+    for (std::string_view csv :
+         absl::StrSplit(all_payload, ';', absl::SkipEmpty())) {
+      subgroup_csvs.emplace_back(csv);
+    }
   }
-  auto peer_values = root_store->multiGet(peer_keys);
 
   std::vector<DeviceGroup> unique_subgroups;
   absl::flat_hash_set<int64_t> seen_ranks;
-  for (const auto& bytes : peer_values) {
+  for (std::string_view payload : subgroup_csvs) {
     DeviceGroup group;
-    for (std::string_view p : absl::StrSplit(
-             std::string_view(reinterpret_cast<const char*>(bytes.data()),
-                              bytes.size()),
-             ',')) {
+    for (std::string_view p : absl::StrSplit(payload, ',')) {
       int64_t r = 0;
       TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=defensive check on internally
                      // serialized store payload
           absl::SimpleAtoi(p, &r), error::kInternal)
           << "Failed to parse subgroup world rank from store: " << p;
+      TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal rank range invariant
+          r >= 0 && r < world_size, error::kInternal)
+          << "subgroup world rank " << r << " out of range for world size "
+          << world_size;
       group.push_back(r);
     }
     if (!group.empty() && !seen_ranks.contains(group[0])) {
@@ -877,12 +1655,29 @@ absl::StatusOr<DeviceGroupList> ProcessGroupTpu::GatherAllSubgroups(
       static_cast<int64_t>(unique_subgroups.size()) * size_ == world_size,
       error::kInvalidArgument)
       << "Incomplete or overlapping subgroups are not supported in SPMD.";
-  return DeviceGroupList(unique_subgroups);
+  // Order subgroups by their leader's physical topology position only (see
+  // `ComputeRankToTopologyOrder`), matching Python `topology_aware_mesh`. Never
+  // order by world rank: world ranks come from launcher order and would make
+  // the per-slice device_assignment order (and thus Megascale's per-slice
+  // collective pattern) depend on pod launch order. Members within a subgroup
+  // keep PG-rank order.
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=world topology initialized before PGs
+      static_cast<int64_t>(topo.rank_to_topo_order.size()) == world_size,
+      error::kInternal)
+      << "world topology order not initialized";
+  absl::c_sort(
+      unique_subgroups, [&topo](const DeviceGroup& a, const DeviceGroup& b) {
+        return topo.rank_to_topo_order[a[0]] < topo.rank_to_topo_order[b[0]];
+      });
+  return DeviceGroupList(std::move(unique_subgroups), /*normalize=*/false);
 }
 
 ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
                                  int rank, int group_size)
     : c10d::Backend(rank, group_size), store_(std::move(store)) {
+  static std::atomic<int64_t> next_pg_id{0};
+  const int64_t pg_id = next_pg_id.fetch_add(1);
+  const int64_t ctor_t0 = NowMs();
   ABSL_VLOG(1) << "[ProcessGroupTpu] ctor: "
                << "rank: " << rank << ", group size: " << group_size;
 
@@ -905,33 +1700,73 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
       << "TPU slice size (" << world_size << ") must be divisible by "
       << "process group size (" << group_size << ")";
 
-  if (WorldTopology().rank_to_device_id.empty()) {
+  const bool is_initial_world_pg = WorldTopology().rank_to_device_id.empty();
+  if (is_initial_world_pg) {
     TT_THROW_IF_ERROR(InitializeRankToDeviceMappings(world_size));
   }
   const auto& topo = WorldTopology();
-  // Groups may be created with sort_ranks=False (even world-sized ones), so
-  // always exchange member world ranks to capture subgroup rank order.
-  TT_ASSIGN_OR_THROW(local_subgroup_ranks_, GatherLocalSubgroupRanks());
-  rank_to_device_id_.resize(size_);
-  for (int64_t i = 0; i < size_; ++i) {
-    rank_to_device_id_[i] = topo.rank_to_device_id[local_subgroup_ranks_[i]];
-  }
-  if (size_ == world_size) {
-    subgroup_ranks_ = DeviceGroupList({local_subgroup_ranks_});
+  DeviceGroupList subgroup_member_world_ranks;
+  if (is_initial_world_pg) {
+    member_world_ranks_.resize(size_);
+    std::iota(member_world_ranks_.begin(), member_world_ranks_.end(), 0);
+    subgroup_member_world_ranks = DeviceGroupList({member_world_ranks_});
+  } else if (size_ == 1) {
+    member_world_ranks_ = DeviceGroup{topo.world_rank};
+    std::vector<DeviceGroup> unique_subgroups(world_size);
+    for (int64_t r = 0; r < world_size; ++r) {
+      unique_subgroups[r] = DeviceGroup{r};
+    }
+    // Order subgroups by their leader's physical topology position only. Never
+    // order by world rank: world ranks come from launcher order and would make
+    // the per-slice device_assignment order (and thus Megascale's per-slice
+    // collective pattern) depend on pod launch order. Members within a
+    // subgroup keep PG-rank order.
+    TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=world topology initialized before
+                     // PGs
+        static_cast<int64_t>(topo.rank_to_topo_order.size()) == world_size,
+        error::kInternal)
+        << "world topology order not initialized";
+    absl::c_sort(
+        unique_subgroups, [&topo](const DeviceGroup& a, const DeviceGroup& b) {
+          return topo.rank_to_topo_order[a[0]] < topo.rank_to_topo_order[b[0]];
+        });
+    subgroup_member_world_ranks =
+        DeviceGroupList(std::move(unique_subgroups), /*normalize=*/false);
+  } else if (size_ == world_size ||
+             dynamic_cast<c10d::PrefixStore*>(store_.get()) != nullptr) {
+    TT_ASSIGN_OR_THROW(const NodeLocalStoreConfig local,
+                       GetNodeLocalStore(world_size));
+    const int64_t gather_id = next_subgroup_gather_id.fetch_add(1);
+    TT_THROW_IF_ERROR(GatherSubgroupsViaNodeLocalStore(
+        store_.get(), local.store, local.local_rank, local.local_world_size,
+        rank_, size_, topo.world_rank, topo.rank_to_device_id,
+        topo.rank_to_topo_order, gather_id, member_world_ranks_,
+        subgroup_member_world_ranks));
   } else {
-    TT_ASSIGN_OR_THROW(subgroup_ranks_,
-                       GatherAllSubgroups(local_subgroup_ranks_, world_size));
+    TT_ASSIGN_OR_THROW(member_world_ranks_, GatherMemberWorldRanks());
+    TT_ASSIGN_OR_THROW(subgroup_member_world_ranks,
+                       GatherAllSubgroups(member_world_ranks_, world_size));
   }
+  member_device_ids_.resize(size_);
+  for (int64_t i = 0; i < size_; ++i) {
+    member_device_ids_[i] = topo.rank_to_device_id[member_world_ranks_[i]];
+  }
+  PermuteDeviceAssignmentForSubgroups(subgroup_member_world_ranks,
+                                      topo.rank_to_device_id,
+                                      device_assignment_, replica_groups_);
+  ABSL_VLOG(1) << "[ProcessGroupTpu] ctor done: pg_id=" << pg_id
+               << ", elapsed=" << NowMs() - ctor_t0
+               << " ms, num_subgroups=" << subgroup_member_world_ranks.size();
 
   ABSL_VLOG(1) << "[ProcessGroupTpu] Rank-to-device-id mapping for "
                << "rank=" << rank << ", group_size=" << group_size << ": "
-               << ToString(rank_to_device_id_);
+               << ToString(member_device_ids_);
 
   ABSL_VLOG(1) << "[ProcessGroupTpu] rank: " << getRank()
                << ", group size: " << getSize()
                << ", device id: " << addressable_device_id_
-               << ", group device ids: " << ToString(rank_to_device_id_)
-               << ", all subgroups: " << ToString(subgroup_ranks_);
+               << ", group device ids: " << ToString(member_device_ids_)
+               << ", all subgroups: " << ToString(replica_groups_);
 }
 
 void ProcessGroupTpu::shutdown() {}
@@ -941,10 +1776,10 @@ ProcessGroupTpu::~ProcessGroupTpu() { shutdown(); }
 // Sets the subgroups fingerprint in the given param cache keys.
 #define TT_SET_SUBGROUPS_FINGERPRINT(param_keys) \
   TT_THROW_IF_ERROR(                             \
-      param_keys.SetParam("subgroups_fingerprint", subgroup_ranks_))
+      param_keys.SetParam("subgroups_fingerprint", replica_groups_))
 
-const DeviceGroupList& ProcessGroupTpu::GetSubgroupRanks() const {
-  return subgroup_ranks_;
+const DeviceGroupList& ProcessGroupTpu::GetReplicaGroups() const {
+  return replica_groups_;
 }
 
 c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::allreduce(
@@ -965,7 +1800,7 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::allreduce(
 
     auto& maybe_materialized_input_tensor = tensor;
 
-    auto op_builder = [subgroups = subgroup_ranks_,
+    auto op_builder = [subgroups = replica_groups_,
                        reduce_op = opts.reduceOp](mlir::MlirOp input) {
       return BuildDistributedAllReduceShlo(input, reduce_op, subgroups);
     };
@@ -1001,7 +1836,7 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::broadcast(
   TT_KERNEL(OpName::kDistributedBroadcast, _,
             (tensors, IgnoreInCacheKey(opts, "Doesn't affect SHLO")), {
               auto src_rank = opts.rootRank;
-              auto src_dev_id = rank_to_device_id_[src_rank];
+              auto src_dev_id = member_device_ids_[src_rank];
               auto cur_dev_id = addressable_device_id_;
 
               // NOTE: NCCL implementation does the same check. Gloo
@@ -1057,7 +1892,7 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::experimental_send(
   transfer_keys.reserve(tensors.size());
 
   int64_t src_device_id = addressable_device_id_;
-  int64_t dst_device_id = rank_to_device_id_[dst_rank];
+  int64_t dst_device_id = member_device_ids_[dst_rank];
   for (size_t i = 0; i < tensors.size(); ++i) {
     const auto& tensor = tensors[i];
     // Extract the underlying hardware buffer from the tensor.
@@ -1089,7 +1924,7 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::experimental_recv(
   transfer_keys.reserve(tensors.size());
   recv_shapes.reserve(tensors.size());
 
-  int64_t src_device_id = rank_to_device_id_[src_rank];
+  int64_t src_device_id = member_device_ids_[src_rank];
   int64_t dst_device_id = addressable_device_id_;
   for (size_t i = 0; i < tensors.size(); ++i) {
     const auto& tensor = tensors[i];
@@ -1164,7 +1999,7 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::allgather(
         auto& maybe_materialized_input_tensor = input_tensor;
 
         auto op_builder =
-            [subgroups = subgroup_ranks_](
+            [subgroups = replica_groups_](
                 mlir::MlirOp input) -> absl::StatusOr<DynamicMlirOpResults> {
           return BuildDistributedAllGatherShlo(input, subgroups,
                                                AllGatherOutputMode::kList);
@@ -1286,7 +2121,7 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::_allgather_base(
         auto& maybe_materialized_input_tensor = input_tensor;
 
         auto op_builder =
-            [subgroups = subgroup_ranks_,
+            [subgroups = replica_groups_,
              output_mode](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
           TT_ASSIGN_OR_RETURN(auto results, BuildDistributedAllGatherShlo(
                                                 input, subgroups, output_mode));
@@ -1576,7 +2411,7 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::_reduce_scatter_base(
         auto& maybe_materialized_input_concat_tensor = input_concat;
 
         auto op_builder = [reduce_op = opts.reduceOp,
-                           subgroups = subgroup_ranks_](mlir::MlirOp input) {
+                           subgroups = replica_groups_](mlir::MlirOp input) {
           return BuildDistributedReduceScatterShlo(input, reduce_op, subgroups);
         };
 
@@ -1586,7 +2421,7 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::_reduce_scatter_base(
         // dimension).
         Dimensions out_dims =
             CopyIntVector(maybe_materialized_input_concat_tensor.sizes());
-        size_t group_size = subgroup_ranks_[0].size();
+        size_t group_size = replica_groups_[0].size();
         ABSL_CHECK_EQ(out_dims[0] % group_size, 0);  // CRASH_OK
         out_dims[0] /= group_size;
 
@@ -1652,7 +2487,7 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::alltoall_base(
             {
               const int64_t rank = getRank();
               const bool async = opts.asyncOp;
-              const int64_t group_size = subgroup_ranks_[0].size();
+              const int64_t group_size = replica_groups_[0].size();
 
               // Check on input and output dtypes already done in the
               // PyTorch layer. Hence, we do not need to check for dtypes
@@ -1698,9 +2533,9 @@ absl::StatusOr<DeviceBufferRef> ProcessGroupTpu::AllToAllBaseEqualSplits(
       << "got " << input.sizes() << " and " << output.sizes();
 
   TT_ASSIGN_OR_RETURN(auto param_keys,
-                      TT_MAKE_OP_PARAM_CACHE_KEYS(subgroup_ranks_));
+                      TT_MAKE_OP_PARAM_CACHE_KEYS(replica_groups_));
 
-  auto op_builder = [device_groups = subgroup_ranks_](mlir::MlirOp input) {
+  auto op_builder = [device_groups = replica_groups_](mlir::MlirOp input) {
     return BuildDistributedAllToAllBaseShlo(input, device_groups);
   };
 
@@ -1732,7 +2567,7 @@ absl::StatusOr<DeviceBufferRef> ProcessGroupTpu::AllToAllBaseUnevenSplits(
       << "expected trailing dimensions of input and output to match, got "
       << input.sizes() << " and " << output.sizes();
 
-  const size_t group_size = subgroup_ranks_[0].size();
+  const size_t group_size = replica_groups_[0].size();
 
   // 2. Compute slice sizes for sending and receiving.
   const bool uniform_input = input_split_sizes.empty();
@@ -1764,7 +2599,7 @@ absl::StatusOr<DeviceBufferRef> ProcessGroupTpu::AllToAllBaseUnevenSplits(
           recv_sizes, input_buffer_size, output_buffer_size));
 
   TT_ASSIGN_OR_RETURN(auto param_keys,
-                      TT_MAKE_OP_PARAM_CACHE_KEYS(subgroup_ranks_));
+                      TT_MAKE_OP_PARAM_CACHE_KEYS(replica_groups_));
   TT_RETURN_IF_ERROR(SetRaggedAllToAllParamKeys(param_keys, offsets));
 
   // 4. Explicitly materialize both input and output before dispatching the
@@ -1790,7 +2625,7 @@ absl::StatusOr<DeviceBufferRef> ProcessGroupTpu::AllToAllBaseUnevenSplits(
   // 5. Build the MLIR StableHLO custom call with device replica group
   // attributes and MLIR constant metadata tensors.
   auto op_builder =
-      [device_groups = subgroup_ranks_,
+      [device_groups = replica_groups_,
        offsets = std::move(offsets)](FixedSizeSpan<mlir::MlirOp, 2> inputs) {
         auto& [input, output] = inputs;
         return BuildDistributedAllToAllBaseUnevenSplitsShlo(
@@ -1861,7 +2696,7 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::alltoall(
 
         if (IsUniformAllToAll(output_tensors, input_tensors)) {
           NAryMlirOpBuilder<kDynamicSize, kDynamicSize> op_builder =
-              [device_groups = subgroup_ranks_](absl::Span<mlir::MlirOp> inputs,
+              [device_groups = replica_groups_](absl::Span<mlir::MlirOp> inputs,
                                                 mlir::MlirBuilder& builder) {
                 return BuildDistributedAllToAllShlo(inputs, device_groups);
               };

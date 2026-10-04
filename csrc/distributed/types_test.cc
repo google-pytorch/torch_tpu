@@ -59,5 +59,13 @@ TEST(DeviceGroupListTest, EqualityAndInequality) {
   EXPECT_NE(dgl1, dgl3);
 }
 
+TEST(DeviceGroupListTest, PreservesOrderWhenNormalizeIsFalse) {
+  const std::vector<DeviceGroup> expected = {{6, 7}, {0, 5}, {1, 4}, {3, 2}};
+  const DeviceGroupList dgl(
+      std::vector<DeviceGroup>{{6, 7}, {0, 5}, {1, 4}, {3, 2}},
+      /*normalize=*/false);
+  EXPECT_EQ(dgl.groups(), expected);
+}
+
 }  // namespace
 }  // namespace torch_tpu

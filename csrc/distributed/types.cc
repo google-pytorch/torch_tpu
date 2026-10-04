@@ -43,8 +43,9 @@ std::vector<DeviceGroup> Normalize(std::vector<DeviceGroup> groups) {
 
 }  // namespace
 
-DeviceGroupList::DeviceGroupList(std::vector<DeviceGroup> groups)
-    : groups_(Normalize(std::move(groups))),
+DeviceGroupList::DeviceGroupList(std::vector<DeviceGroup> groups,
+                                 bool normalize)
+    : groups_(normalize ? Normalize(std::move(groups)) : std::move(groups)),
       fingerprint_(Fingerprint(groups_)) {}
 
 DeviceGroupList::DeviceGroupList(std::initializer_list<DeviceGroup> groups)

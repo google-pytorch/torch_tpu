@@ -16,6 +16,7 @@
 
 #include "csrc/eager/device_assignment_pipeline.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -76,15 +77,35 @@ mlir::DenseIntElementsAttr RewriteReplicaGroupsAttr(
   if (!shaped_type || shaped_type.getRank() != 2) {
     return attr;
   }
+  const int64_t num_groups = shaped_type.getDimSize(0);
+  const int64_t group_size = shaped_type.getDimSize(1);
   const int64_t sub_size = rank_to_partition.size();
-  std::vector<int64_t> rewritten_vals;  // INT_VEC_OK
-  rewritten_vals.reserve(shaped_type.getNumElements());
+  std::vector<int64_t> mapped_vals;  // INT_VEC_OK
+  mapped_vals.reserve(shaped_type.getNumElements());
   for (const llvm::APInt& val : attr.getValues<llvm::APInt>()) {
     int64_t r = val.getSExtValue();
     if (r < 0 || r >= sub_size) {
       return attr;
     }
-    rewritten_vals.push_back(rank_to_partition[r]);
+    mapped_vals.push_back(rank_to_partition[r]);
+  }
+  if (num_groups <= 0 || group_size <= 0) {
+    return mlir::DenseIntElementsAttr::get(shaped_type, mapped_vals);
+  }
+  std::vector<std::vector<int64_t>> rows(             // INT_VEC_OK
+      num_groups, std::vector<int64_t>(group_size));  // INT_VEC_OK
+  for (int64_t g = 0; g < num_groups; ++g) {
+    // Intra-group order is rank order and must be preserved; do not sort.
+    for (int64_t i = 0; i < group_size; ++i) {
+      rows[g][i] = mapped_vals[g * group_size + i];
+    }
+  }
+  std::sort(rows.begin(), rows.end(),
+            [](const auto& a, const auto& b) { return a[0] < b[0]; });
+  std::vector<int64_t> rewritten_vals;  // INT_VEC_OK
+  rewritten_vals.reserve(shaped_type.getNumElements());
+  for (const auto& row : rows) {
+    rewritten_vals.insert(rewritten_vals.end(), row.begin(), row.end());
   }
   return mlir::DenseIntElementsAttr::get(shaped_type, rewritten_vals);
 }

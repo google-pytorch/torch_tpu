@@ -151,7 +151,7 @@ absl::StatusOr<DeviceBufferRef> DispatchCollectiveWithDim(
     OpParamCacheKeys param_keys) {
   TT_ASSIGN_OR_RETURN(auto process_group,
                       GetProcessGroupTpu(group_name, group_size));
-  const DeviceGroupList& device_groups = process_group->GetSubgroupRanks();
+  const DeviceGroupList& device_groups = process_group->GetReplicaGroups();
   TT_ASSIGN_OR_RETURN(auto output_dtype,
                       ConvertTo<mlir::ElementType>(input.scalar_type()));
 

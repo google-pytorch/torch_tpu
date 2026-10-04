@@ -34,22 +34,24 @@ using DeviceGroup = std::vector<int64_t>;  // INT_VEC_OK
 // operations.
 //
 // Invariant Guarantees:
-// The list of device groups is sorted in lexicographical order and
-// deduplicated.
+// By default (`normalize = true`), the list of device groups is sorted in
+// lexicographical order and deduplicated. When `normalize = false`, the
+// caller-provided group order is preserved.
 //
-// This guarantees that any two `DeviceGroupList` instances representing
-// equivalent device group configurations will compare equal and produce
-// identical fingerprints.
+// This guarantees that any two normalized `DeviceGroupList` instances
+// representing equivalent device group configurations will compare equal and
+// produce identical fingerprints.
 //
 // Immutability:
 // Once constructed, a `DeviceGroupList` is immutable (except via assignment
 // operations). All accessors return const references or const iterators to
-// maintain normalized invariants.
+// maintain invariants.
 class DeviceGroupList {
  public:
   DeviceGroupList() = default;
 
-  explicit DeviceGroupList(std::vector<DeviceGroup> groups);
+  explicit DeviceGroupList(std::vector<DeviceGroup> groups,
+                           bool normalize = true);
 
   // Constructs from initializer list of DeviceGroups.
   DeviceGroupList(std::initializer_list<DeviceGroup> groups);
@@ -73,8 +75,9 @@ class DeviceGroupList {
 
  private:
   // Invariant:
-  // The list of device groups is sorted in lexicographical order and
-  // deduplicated.
+  // By default (`normalize = true`), the list of device groups is sorted in
+  // lexicographical order and deduplicated; when constructed with
+  // `normalize = false`, preserves caller-provided order.
   std::vector<DeviceGroup> groups_;
   // Fingerprint of `groups_`.
   FingerprintType fingerprint_ = 0;

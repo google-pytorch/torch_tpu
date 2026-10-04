@@ -113,7 +113,15 @@ torch_tpu_cc_test(
     requires_libtpu = True,
     deps = [
         ":process_group_tpu",
+        ":types",
+        "//csrc/common:error_utils",
         "//csrc/common:oss_test_main",
+        "//shims/torch",
+        "//shims/torch:torch_headers",
+        "//shims/torch/c10/util:base_headers",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:str_format",
         "@xla//xla/pjrt:pjrt_client",
     ],
 )
