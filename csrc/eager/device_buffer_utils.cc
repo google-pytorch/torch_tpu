@@ -675,12 +675,15 @@ absl::StatusOr<DeviceBufferRef> CreateInverseViewDeviceBufferRef(
                           view_storage_offset, view_is_conj));
 
   // Create the deferred DeviceBufferRef.
+  const auto split_mode =
+      inputs.size() == 2 ? OpSplitMode::kSplitAfter : OpSplitMode::kNone;
   internal::DeferredOpParams params{
       .op_name = op_name,
       .op_builder = std::move(op_builder),
       .op_param_cache_keys = std::move(param_keys),
       .inputs = std::move(inputs),
       .output_shapes = std::move(output_shapes),
+      .split_mode = split_mode,
   };
   TT_ASSIGN_OR_RETURN(auto results, internal::CreateDeferredDeviceBufferList(
                                         std::move(params)));

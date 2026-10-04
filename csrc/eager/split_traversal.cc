@@ -115,6 +115,12 @@ std::vector<absl_nonnull std::unique_ptr<Traversal>> ApplySplitPoints(
       nodes_to_materialize.clear();
     }
   }
+  if (!execution_order.empty()) {
+    auto new_traversal_or = Traversal::CreateFromExecutionOrder(
+        execution_order, nodes_to_materialize);
+    ABSL_CHECK_OK(new_traversal_or);  // CRASH_OK=subsequence of original
+    traversals.push_back(std::move(*new_traversal_or));
+  }
   return traversals;
 }
 

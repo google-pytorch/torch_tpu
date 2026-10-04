@@ -282,9 +282,11 @@ absl::Status PjrtBackend::InitializeInternal() {
   // to determine the number of replicas of the XLA computation.
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=We can hit this error check, but we
                  // currently do not propagate its status.
-      world_size == 1 || world_size == device_count, error::kInvalidArgument)
-      << "invalid world_size configuration: expected 1 or " << device_count
-      << ", but got " << world_size
+      world_size == 1 ||
+          (world_size >= device_count && world_size % device_count == 0),
+      error::kInvalidArgument)
+      << "invalid world_size configuration: expected 1 or a multiple of "
+      << device_count << ", but got " << world_size
       << ". Please check your environment variables";
 
   if (addressable_devices.size() > 1 && world_size == 1) {
@@ -294,7 +296,7 @@ absl::Status PjrtBackend::InitializeInternal() {
 
   device_ = addressable_devices[0];
   device_type_ = device_type;
-  global_device_count_ = world_size;
+  global_device_count_ = world_size == 1 ? 1 : device_count;
   global_device_id_ = device_->global_device_id().value();
   return absl::OkStatus();
 }

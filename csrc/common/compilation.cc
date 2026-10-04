@@ -438,12 +438,39 @@ absl::Status ApplyCompilerOptionOverrides(
   return fp;
 }
 
+[[nodiscard]] static std::string StripCompilerDumpFlags(std::string_view raw) {
+  if (raw.empty()) {
+    return "";
+  }
+  std::string out;
+  out.reserve(raw.size());
+  bool stripped_any = false;
+  for (std::string_view tok : absl::StrSplit(raw, ' ', absl::SkipEmpty())) {
+    std::string_view flag = tok;
+    if (flag.starts_with("--")) {
+      flag.remove_prefix(2);
+    } else if (flag.starts_with('-')) {
+      flag.remove_prefix(1);
+    }
+    if (flag.starts_with("xla_jf_dump") || flag.starts_with("xla_sc_dump") ||
+        flag.starts_with("xla_mosaic_dump") || flag.starts_with("xla_dump")) {
+      stripped_any = true;
+      continue;
+    }
+    if (!out.empty()) {
+      out.push_back(' ');
+    }
+    out.append(tok.data(), tok.size());
+  }
+  return stripped_any ? out : std::string(raw);
+}
+
 [[nodiscard]] CompileOptionsKey MakeCompileOptionsKey(
     const xla::CompileOptions& options) {
   return CompileOptionsKey(FingerprintCat(
       // Fingerprint of XLA_FLAGS and LIBTPU_INIT_ARGS environment variables,
       // effectively fingerprint of flags that might impact the compiled
-      // executable.
+      // executable (excluding pure compiler dump/output path flags).
       //
       // It is intended not to replicate parsing XLA_FLAGS into `tsl::Flag` or
       // LIBTPU_INIT_ARGS into `absl::Flag`. The current approach is simpler and
@@ -452,9 +479,11 @@ absl::Status ApplyCompilerOptionOverrides(
       // different order will yield different keys, but it is an acceptable
       // trade-off.
       // LINT.IfChange(xla_flags_fingerprint)
-      Fingerprint(GetEnvOnce<kXlaFlagsEnvVar>().value_or("")),
+      Fingerprint(
+          StripCompilerDumpFlags(GetEnvOnce<kXlaFlagsEnvVar>().value_or(""))),
       // LINT.ThenChange()
-      Fingerprint(GetEnvOnce<kLibtpuInitArgsEnvVar>().value_or("")),
+      Fingerprint(StripCompilerDumpFlags(
+          GetEnvOnce<kLibtpuInitArgsEnvVar>().value_or(""))),
       Fingerprint(options)));
 }
 // LINT.ThenChange()

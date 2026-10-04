@@ -16,8 +16,15 @@
 
 #include "csrc/common/tier3_compilation_cache.h"
 
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "absl/base/no_destructor.h"
 #include "absl/log/absl_check.h"
@@ -108,6 +115,60 @@ std::string GetTier3CacheEntryPath(const CompilationCacheKey& key) {
                       kTier3CacheFileExtension);
 }
 
+static std::optional<SharedLoadedExecutableWithMetadata>
+TryLoadMatchingKeyFromPattern(tsl::Env* env, const CompilationCacheKey& key,
+                              const std::string& cache_entry_path,
+                              const std::string& pattern) {
+  std::vector<std::string> matches;
+  if (!env->GetMatchingPaths(pattern, &matches).ok() || matches.empty()) {
+    return std::nullopt;
+  }
+  std::string data;
+  for (const std::string& match_path : matches) {
+    if (!tsl::ReadFileToString(env, match_path, &data).ok()) {
+      continue;
+    }
+    auto loaded = LoadSerializedExecutable(CacheTier::kTier3, key, data);
+    if (!loaded.ok()) {
+      continue;
+    }
+    utimensat(AT_FDCWD, match_path.c_str(), nullptr, 0);
+    if (link(match_path.c_str(), cache_entry_path.c_str()) != 0) {
+      if (absl::Status s = AtomicWriteToCacheFile(cache_entry_path, data);
+          !s.ok()) {
+        ABSL_VLOG(2) << "Failed to populate tier-3 cache alias "
+                     << cache_entry_path << ": " << s;
+      }
+    }
+    utimensat(AT_FDCWD, cache_entry_path.c_str(), nullptr, 0);
+    return *std::move(loaded);
+  }
+  return std::nullopt;
+}
+
+static std::optional<SharedLoadedExecutableWithMetadata>
+TryGetFromTier3CacheByPrefix(tsl::Env* env, const CompilationCacheKey& key,
+                             const std::string& cache_entry_path) {
+  const std::string compact = key.CompactFormat();
+  if (compact.size() <= 34) {
+    return std::nullopt;
+  }
+  const std::string prefix = compact.substr(0, 34);
+  for (const std::string& pattern : {
+           absl::StrCat(GetTier3CompilationCachePath(), "/", prefix, "*",
+                        kTier3CacheFileExtension),
+           absl::StrCat(GetTier3CacheRootDir(), "/*/", prefix, "*",
+                        kTier3CacheFileExtension),
+       }) {
+    if (auto loaded =
+            TryLoadMatchingKeyFromPattern(env, key, cache_entry_path, pattern);
+        loaded.has_value()) {
+      return loaded;
+    }
+  }
+  return std::nullopt;
+}
+
 absl::StatusOr<SharedLoadedExecutableWithMetadata> GetFromTier3Cache(
     const CompilationCacheKey& key) {
   // Read the cache file into a char buffer.
@@ -117,7 +178,17 @@ absl::StatusOr<SharedLoadedExecutableWithMetadata> GetFromTier3Cache(
 
   tsl::Env* const env = tsl::Env::Default();
   std::string data;
-  TT_RETURN_IF_ERROR(tsl::ReadFileToString(env, cache_entry_path, &data))
+  absl::Status read_status =
+      tsl::ReadFileToString(env, cache_entry_path, &data);
+  if (absl::IsNotFound(read_status)) {
+    if (auto loaded = TryGetFromTier3CacheByPrefix(env, key, cache_entry_path);
+        loaded.has_value()) {
+      return *std::move(loaded);
+    }
+  } else if (read_status.ok()) {
+    utimensat(AT_FDCWD, cache_entry_path.c_str(), nullptr, 0);
+  }
+  TT_RETURN_IF_ERROR(read_status)
       << "cannot read tier-3 cache file " << cache_entry_path;
 
   ABSL_VLOG(1) << "Read " << data.size() << " bytes from tier-3 cache for key "

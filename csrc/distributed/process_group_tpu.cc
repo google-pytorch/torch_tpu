@@ -61,6 +61,8 @@
 #include "c10/util/ArrayRef.h"
 #include "c10/util/intrusive_ptr.h"
 #include "csrc/common/macro_utils.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/Support/LLVM.h"
 #include "torch/csrc/distributed/c10d/Backend.hpp"
 #include "torch/csrc/distributed/c10d/PrefixStore.hpp"
 #include "torch/csrc/distributed/c10d/Store.hpp"
@@ -97,6 +99,7 @@
 #include "csrc/pjrt/pjrt_state.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch/csrc/distributed/c10d/Work.hpp"
 #include "torch/headeronly/core/ScalarType.h"
 #include "xla/pjrt/pjrt_client.h"
@@ -741,8 +744,10 @@ namespace {
 
 struct WorldTopologyState {
   std::vector<PjRtDeviceAttributes> device_attrs;
-  std::vector<int64_t> rank_to_device_id;  // INT_VEC_OK
+  std::vector<int64_t> rank_to_device_id;      // INT_VEC_OK
+  std::vector<int64_t> all_rank_to_device_id;  // INT_VEC_OK
   int64_t world_rank = -1;
+  int64_t global_world_size = 0;
 };
 
 WorldTopologyState& WorldTopology() {
@@ -761,36 +766,46 @@ const std::vector<int64_t>& GetGlobalRankToDeviceId() {  // INT_VEC_OK
 }
 
 absl::Status ProcessGroupTpu::InitializeRankToDeviceMappings(
-    int64_t world_size) {
+    int64_t slice_device_count) {
+  const int64_t global_world_size = size_;
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=singleton topology initialization
                  // invariant
-      size_ == world_size, error::kInvalidArgument)
+      global_world_size >= slice_device_count &&
+          global_world_size % slice_device_count == 0,
+      error::kInvalidArgument)
       << absl::StrFormat(
              "the first initialized ProcessGroupTpu "
-             "must be of size WORLD_SIZE "
-             "(expected size %d, got %d)",
-             world_size, size_);
+             "must be a multiple of the TPU slice size "
+             "(expected multiple of %d, got %d)",
+             slice_device_count, global_world_size);
 
   TT_ASSIGN_OR_RETURN(PjRtDeviceAttributes local_attrs,
                       PjrtBackend::GetInstance().GetDeviceAttributes());
 
   store_->set(absl::StrFormat("world_topo:%d", rank_),
               SerializeDeviceAttributes(local_attrs));
-  std::vector<std::string> peer_keys(world_size);
-  for (int64_t r = 0; r < world_size; ++r) {
+  std::vector<std::string> peer_keys(global_world_size);
+  for (int64_t r = 0; r < global_world_size; ++r) {
     peer_keys[r] = absl::StrFormat("world_topo:%d", r);
   }
   auto peer_values = store_->multiGet(peer_keys);
 
-  std::vector<PjRtDeviceAttributes> device_attrs(world_size);
-  std::vector<int64_t> rank_to_device_id(world_size);  // INT_VEC_OK
-  for (int64_t r = 0; r < world_size; ++r) {
+  std::vector<PjRtDeviceAttributes> device_attrs(global_world_size);
+  std::vector<int64_t> all_rank_to_device_id(global_world_size);  // INT_VEC_OK
+  for (int64_t r = 0; r < global_world_size; ++r) {
     TT_ASSIGN_OR_RETURN(
         device_attrs[r],
         DeserializeDeviceAttributes(std::string_view(
             reinterpret_cast<const char*>(peer_values[r].data()),
             peer_values[r].size())));
-    rank_to_device_id[r] = device_attrs[r].id;
+    all_rank_to_device_id[r] = device_attrs[r].id;
+  }
+
+  const int64_t my_slice_base =
+      (rank_ / slice_device_count) * slice_device_count;
+  std::vector<int64_t> rank_to_device_id(slice_device_count);  // INT_VEC_OK
+  for (int64_t i = 0; i < slice_device_count; ++i) {
+    rank_to_device_id[i] = all_rank_to_device_id[my_slice_base + i];
   }
 
   // World ranks are defined by the rank order of the first world-sized
@@ -798,7 +813,9 @@ absl::Status ProcessGroupTpu::InitializeRankToDeviceMappings(
   // only updated once all peers' attributes have been parsed successfully.
   auto& topo = WorldTopology();
   topo.world_rank = rank_;
+  topo.global_world_size = global_world_size;
   topo.device_attrs = std::move(device_attrs);
+  topo.all_rank_to_device_id = std::move(all_rank_to_device_id);
   topo.rank_to_device_id = std::move(rank_to_device_id);
   return absl::OkStatus();
 }
@@ -813,7 +830,9 @@ absl::StatusOr<DeviceGroup> ProcessGroupTpu::GatherLocalSubgroupRanks() {
   }
   auto values = store_->multiGet(keys);
 
-  const int64_t world_size = topo.rank_to_device_id.size();
+  const int64_t world_size = topo.global_world_size > 0
+                                 ? topo.global_world_size
+                                 : topo.rank_to_device_id.size();
   DeviceGroup local_subgroup_ranks(size_);
   for (int64_t i = 0; i < size_; ++i) {
     const std::string_view value(
@@ -882,6 +901,27 @@ absl::StatusOr<DeviceGroupList> ProcessGroupTpu::GatherAllSubgroups(
   return DeviceGroupList(unique_subgroups);
 }
 
+static DeviceGroupList ProjectSubgroupsToSlice(const DeviceGroupList& subgroups,
+                                               int64_t slice_device_count) {
+  std::vector<DeviceGroup> projected_groups;
+  absl::flat_hash_set<std::string> seen_group_keys;
+  for (const auto& grp : subgroups) {
+    DeviceGroup proj;
+    absl::flat_hash_set<int64_t> seen_in_proj;
+    for (int64_t r : grp) {
+      int64_t pr = r % slice_device_count;
+      if (seen_in_proj.insert(pr).second) {
+        proj.push_back(pr);
+      }
+    }
+    std::string key = absl::StrJoin(proj, ",");
+    if (seen_group_keys.insert(key).second) {
+      projected_groups.push_back(std::move(proj));
+    }
+  }
+  return DeviceGroupList(projected_groups);
+}
+
 ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
                                  int rank, int group_size)
     : c10d::Backend(rank, group_size), store_(std::move(store)) {
@@ -890,10 +930,10 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
 
   const auto* const pjrt_client = PjrtBackend::GetInstance().GetClient();
   TT_CHECK_THROW(pjrt_client != nullptr, error::kInternal)
-      << "PjRtClient is not initialized.";
+      << "PjRtClient is not initialized";
   ABSL_CHECK(pjrt_client != nullptr);  // CRASH_OK
 
-  const int64_t world_size = pjrt_client->devices().size();
+  const int64_t slice_device_count = pjrt_client->devices().size();
 
   // Addressable device "assigned" to this process/rank:
   TT_CHECK_THROW(pjrt_client && pjrt_client->addressable_devices().size() == 1,
@@ -903,28 +943,38 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
       pjrt_client->addressable_devices()[0]->global_device_id().value();
 
   // We support creating "flat" process groups, as well as "2D+ mesh" process
-  // (sub)groups. The (sub)group size must evenly divide the world size, i.e.
-  // the total number of devices.
-  TT_CHECK_THROW(world_size % group_size == 0, error::kInternal)
-      << "TPU slice size (" << world_size << ") must be divisible by "
-      << "process group size (" << group_size << ")";
+  // (sub)groups, including multi-slice jobs where group_size is a multiple of
+  // slice_device_count.
+  TT_CHECK_THROW(slice_device_count % group_size == 0 ||
+                     group_size % slice_device_count == 0,
+                 error::kInternal)
+      << "TPU slice size (" << slice_device_count
+      << ") and process group size (" << group_size
+      << ") must be multiples of one another";
 
   if (WorldTopology().rank_to_device_id.empty()) {
-    TT_THROW_IF_ERROR(InitializeRankToDeviceMappings(world_size));
+    TT_THROW_IF_ERROR(InitializeRankToDeviceMappings(slice_device_count));
   }
   const auto& topo = WorldTopology();
+  const int64_t global_world_size = topo.global_world_size;
   // Groups may be created with sort_ranks=False (even world-sized ones), so
   // always exchange member world ranks to capture subgroup rank order.
   TT_ASSIGN_OR_THROW(local_subgroup_ranks_, GatherLocalSubgroupRanks());
   rank_to_device_id_.resize(size_);
   for (int64_t i = 0; i < size_; ++i) {
-    rank_to_device_id_[i] = topo.rank_to_device_id[local_subgroup_ranks_[i]];
+    rank_to_device_id_[i] =
+        topo.all_rank_to_device_id[local_subgroup_ranks_[i]];
   }
-  if (size_ == world_size) {
+  if (size_ == global_world_size) {
     subgroup_ranks_ = DeviceGroupList({local_subgroup_ranks_});
   } else {
-    TT_ASSIGN_OR_THROW(subgroup_ranks_,
-                       GatherAllSubgroups(local_subgroup_ranks_, world_size));
+    TT_ASSIGN_OR_THROW(
+        subgroup_ranks_,
+        GatherAllSubgroups(local_subgroup_ranks_, global_world_size));
+  }
+  if (global_world_size > slice_device_count) {
+    subgroup_ranks_ =
+        ProjectSubgroupsToSlice(subgroup_ranks_, slice_device_count);
   }
 
   ABSL_VLOG(1) << "[ProcessGroupTpu] Rank-to-device-id mapping for "
@@ -1133,7 +1183,7 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::allgather(
       OpName::kDistributedAllGather, param_keys,
       (output_tensors, input_tensors, opts), {
         TT_SET_SUBGROUPS_FINGERPRINT(param_keys);
-        const int64_t group_size = getSize();
+        const int64_t group_size = subgroup_ranks_[0].size();
         TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=PyTorch only ever passes
                          // single-element input lists.
             input_tensors.size() == 1 && output_tensors.size() == 1,
@@ -1142,12 +1192,13 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::allgather(
 
         auto& input_tensor = input_tensors[0];
         std::vector<at::Tensor>& output_tensor_list = output_tensors[0];
-        TT_CHECK_THROW(output_tensor_list.size() == group_size,
+        TT_CHECK_THROW(output_tensor_list.size() == getSize() ||
+                           output_tensor_list.size() == group_size,
                        error::kInvalidArgument)
             << "expected output tensor list to have one tensor per process, "
             << "got "
             << FormatCount(output_tensor_list.size(), "tensor", "tensors")
-            << " and " << FormatCount(group_size, "process", "processes");
+            << " and " << FormatCount(getSize(), "process", "processes");
 
         // NOTE: PyTorch NCCL backend does support non-uniform shapes
         // (implemented as a sequence of broadcasts, one per tensor). We decided
@@ -1185,7 +1236,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::allgather(
         int64_t scalar_size[1] = {1};
         std::vector<absl::Span<const int64_t>> output_dims;
         output_dims.reserve(group_size);
-        for (const auto& output_tensor : output_tensor_list) {
+        for (int64_t i = 0; i < group_size; ++i) {
+          const auto& output_tensor = output_tensor_list[i];
           if (output_tensor.dim() == 0) {
             output_dims.push_back(scalar_size);
           } else {
@@ -1210,6 +1262,9 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::allgather(
           TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result_buffers[i]),
                                                    output_tensor_list[i]));
         }
+        for (size_t j = group_size; j < output_tensor_list.size(); ++j) {
+          output_tensor_list[j].copy_(output_tensor_list[j % group_size]);
+        }
 
         if (opts.asyncOp) {
           return c10::make_intrusive<TpuWork>(output_tensor_list, getRank(),
@@ -1226,7 +1281,14 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::_allgather_base(
       OpName::kDistributedAllGatherIntoTensor, param_keys,
       (output_tensor, input_tensor, opts), {
         TT_SET_SUBGROUPS_FINGERPRINT(param_keys);
-        const int64_t world_size = getSize();
+        const int64_t shlo_group_size = subgroup_ranks_[0].size();
+        const int64_t world_size =
+            (output_tensor.sizes()[0] == shlo_group_size ||
+             (input_tensor.dim() > 0 &&
+              output_tensor.sizes()[0] ==
+                  input_tensor.sizes()[0] * shlo_group_size))
+                ? shlo_group_size
+                : getSize();
         auto input_sizes = input_tensor.sizes();
         auto output_sizes = output_tensor.sizes();
         AllGatherOutputMode output_mode;
@@ -1288,15 +1350,21 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::_allgather_base(
                      << DeviceBufferRefDebugString(input_tensor);
 
         auto& maybe_materialized_input_tensor = input_tensor;
+        const int64_t repeat_factor = world_size / shlo_group_size;
 
         auto op_builder =
-            [subgroups = subgroup_ranks_,
-             output_mode](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
+            [subgroups = subgroup_ranks_, output_mode, repeat_factor](
+                mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
           TT_ASSIGN_OR_RETURN(auto results, BuildDistributedAllGatherShlo(
                                                 input, subgroups, output_mode));
           // `results` must have a single element because this kernel only
           // invokes BuildDistributedAllGatherShlo with kConcat or kStack.
           ABSL_CHECK_EQ(results.size(), 1);  // CRASH_OK
+          if (repeat_factor > 1) {
+            mlir::SmallVector<mlir::MlirOp> repeated(repeat_factor, results[0]);
+            return mlir::stablehlo::Concatenate(results[0].getBuilder(),
+                                                repeated, /*dimension=*/0);
+          }
           return results[0];
         };
 
@@ -1561,9 +1629,15 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::_reduce_scatter_base(
         TT_THROW_IF_ERROR(
             ValidateReductionOp(opts.reduceOp, input.scalar_type()));
 
-        TT_ASSIGN_OR_THROW(
-            auto input_mode,
-            ValidateReduceScatterInputTensorShape(output, input, getSize()));
+        size_t group_size = subgroup_ranks_[0].size();
+        auto maybe_input_mode =
+            ValidateReduceScatterInputTensorShape(output, input, group_size);
+        if (!maybe_input_mode.ok() &&
+            getSize() != static_cast<int64_t>(group_size)) {
+          maybe_input_mode =
+              ValidateReduceScatterInputTensorShape(output, input, getSize());
+        }
+        TT_ASSIGN_OR_THROW(auto input_mode, std::move(maybe_input_mode));
 
         // Reduces to the concat case as that's what StableHLO expects.
         at::Tensor input_concat;  // UNINITIALIZED_TENSOR_OK
@@ -1579,20 +1653,38 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::_reduce_scatter_base(
 
         auto& maybe_materialized_input_concat_tensor = input_concat;
 
-        auto op_builder = [reduce_op = opts.reduceOp,
-                           subgroups = subgroup_ranks_](mlir::MlirOp input) {
-          return BuildDistributedReduceScatterShlo(input, reduce_op, subgroups);
-        };
-
         TT_ASSIGN_OR_THROW(auto out_dtype,
                            ConvertTo<mlir::ElementType>(output.scalar_type()));
         // Calculate the output shape by splitting on dim=0 (our scatter
         // dimension).
         Dimensions out_dims =
             CopyIntVector(maybe_materialized_input_concat_tensor.sizes());
-        size_t group_size = subgroup_ranks_[0].size();
         ABSL_CHECK_EQ(out_dims[0] % group_size, 0);  // CRASH_OK
         out_dims[0] /= group_size;
+        const int64_t target_dim0 = output.dim() == 0 ? 1 : output.size(0);
+        const bool slice_to_target = (out_dims[0] != target_dim0);
+        if (slice_to_target) {
+          out_dims[0] = target_dim0;
+        }
+
+        auto op_builder =
+            [reduce_op = opts.reduceOp, subgroups = subgroup_ranks_,
+             slice_to_target,
+             target_dim0](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
+          TT_ASSIGN_OR_RETURN(auto res, BuildDistributedReduceScatterShlo(
+                                            input, reduce_op, subgroups));
+          if (slice_to_target) {
+            const mlir::RankedTensorType res_type = GetTensorTypeOrDie(res);
+            int64_t res_rank = res_type.getRank();
+            Indices start_indices(res_rank, 0);
+            Indices limit_indices = CopyIntVector(res_type.getShape());
+            Indices stride_indices(res_rank, 1);
+            limit_indices[0] = target_dim0;
+            res = mlir::stablehlo::Slice(res, start_indices, limit_indices,
+                                         stride_indices);
+          }
+          return res;
+        };
 
         TT_ASSIGN_OR_THROW(
             auto result_buffer,

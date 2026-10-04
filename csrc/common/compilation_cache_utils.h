@@ -66,6 +66,9 @@ absl::StatusOr<SharedLoadedExecutableWithMetadata> LoadSerializedExecutable(
 // Calling this concurrently with the same key is safe (i.e. won't produce a
 // corrupted file) - the function first writes to a unique temp file in the same
 // directory, and then atomically renames it to the final cache file path.
+absl::Status AtomicWriteToCacheFile(const std::string& cache_entry_path,
+                                    const std::string& serialized_data);
+
 absl::Status AtomicWriteToCacheFile(
     const std::string& cache_entry_path,
     const SharedLoadedExecutableWithMetadata& executable);

@@ -173,6 +173,18 @@ TEST(CompileOptionsKeyDeathTest, LibtpuInitArgsAffectsFingerprint) {
          "correctness. Do not change the expected value to make the test "
          "pass unless the code changes how `xla::CompileOptions` is "
          "fingerprinted.";
+
+  EXPECT_EXIT(
+      {
+        setenv(kLibtpuInitArgsEnvVar,
+               "--xla_jf_dump_to=/dev/shm/run1/llo --xla_jf_dump_llo_text=true "
+               "--xla_sc_dump_bundles_to=/dev/shm/run1/sc",
+               1);
+        const CompileOptionsKey dump_key = MakeCompileOptionsKey(options);
+        ABSL_CHECK_EQ(dump_key.key(), kDefaultOptionsFingerprint);
+        _exit(0);
+      },
+      ExitedWithCode(0), "");
 }
 
 }  // namespace

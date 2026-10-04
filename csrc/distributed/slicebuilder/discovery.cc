@@ -16,6 +16,7 @@
 
 #include "csrc/distributed/slicebuilder/discovery.h"
 
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -98,16 +99,17 @@ GetDistributedWorkerConfiguration() {
   std::vector<std::string> addresses = absl::StrSplit(sb_addrs, ',');
   int slice_rank = rank % static_cast<int>(addresses.size());
 
-  // Get the local port.
+  // Get the local port (use rfind(':') so IPv6 addresses work).
   std::string my_addr = addresses[slice_rank];
-  std::vector<std::string> my_parts = absl::StrSplit(my_addr, ':');
-  if (my_parts.size() != 2) {
+  const size_t colon_pos = my_addr.rfind(':');
+  if (colon_pos == std::string::npos || colon_pos == 0 ||
+      colon_pos + 1 >= my_addr.size()) {
     return TT_ERROR(error::kFailedPrecondition)
            << "Invalid address format in "
            << kTorchTpuSlicebuilderAddressesEnvVar
            << " for current rank: " << my_addr;
   }
-  std::string sb_port = my_parts[1];
+  std::string sb_port = my_addr.substr(colon_pos + 1);
 
   // Get the topology from the environment variables.
   TT_ASSIGN_OR_RETURN(std::string topology,
