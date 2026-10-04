@@ -18886,6 +18886,29 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
         utils.assert_close(actual=tpu_comp_sm.cpu(), expected=cpu_sm)
         utils.assert_close(actual=tpu_comp_lsm.cpu(), expected=cpu_lsm)
 
+  def test_softmax_dynamic_reduction_dim(self):
+    for dtype in (torch.float32, torch.bfloat16):
+      for dim in (0, 1, -1):
+        cpu_x = torch.randn(4, 6, dtype=dtype)
+        tpu_x = cpu_x.to("tpu")
+        dyn_dim = dim if dim >= 0 else cpu_x.ndim + dim
+        dynamism.mark_dynamic(
+            tpu_x, dimension=dyn_dim, lower_bound=2, upper_bound=10
+        )
+
+        rtol, atol = (1e-4, 1e-4) if dtype == torch.float32 else (2e-2, 2e-2)
+        cpu_sm = torch.softmax(cpu_x, dim=dim)
+        tpu_sm = torch.softmax(tpu_x, dim=dim)
+        utils.assert_close(
+            actual=tpu_sm.cpu(), expected=cpu_sm, rtol=rtol, atol=atol
+        )
+
+        cpu_lsm = torch.log_softmax(cpu_x, dim=dim)
+        tpu_lsm = torch.log_softmax(tpu_x, dim=dim)
+        utils.assert_close(
+            actual=tpu_lsm.cpu(), expected=cpu_lsm, rtol=rtol, atol=atol
+        )
+
   def test_foreach_norm_and_clip_grad_norm(self):
     for ord_val in (0, 1, 2, 3.0, -1.0, -1.5, float("inf"), float("-inf")):
       for out_dtype in (None, torch.float32):
@@ -18927,7 +18950,6 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
       return [total_norm] + [p.grad for p in params]
 
     self.assert_close_tpu_vs_cpu(clip_grad_norm_fn, rtol=1e-5, atol=1e-5)
-
 
 if __name__ == "__main__":
   absltest.main()
