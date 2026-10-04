@@ -21,9 +21,7 @@ on:
   schedule:
     - cron: "0 0 * * *"  # Runs at 00:00 UTC every day
 
-permissions:
-  contents: read
-  pull-requests: write
+permissions: {}
 
 jobs:
   build_wheel:
@@ -42,6 +40,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           ref: ${{ github.ref_name }}
+      - uses: ./.github/actions/network-policy
       - name: Build and upload wheel
         id: build
         uses: ./.github/actions/build-wheel
@@ -50,6 +49,11 @@ jobs:
   run_benchmarks:
     name: Run TorchTPU benchmarks
     needs: [build_wheel]
+    # The BAP reusable workflow declares these for its own jobs; the caller
+    # has to grant at least as much.
+    permissions:
+      contents: read
+      pull-requests: write
     uses: google-ml-infra/bap/.github/workflows/run-benchmarks.yaml@ff212b97420bf479bd492d64e4b549534c22cd91 # main
     with:
       registry_file: "perflab/benchmark_registry.pbtxt"

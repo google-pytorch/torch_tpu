@@ -28,12 +28,57 @@ Details on configuration can be found at: https://nox.thea.codes/
 from collections.abc import Mapping, Sequence
 import os
 import pathlib
+import subprocess
+import tempfile
 from typing import Final
 
 import nox
 
 nox.options.default_venv_backend = "uv"
 nox.options.sessions = ["lint"]
+
+_ACTIVATE_NETWORK_POLICY: Final = (
+    pathlib.Path(__file__).parent
+    / "ci"
+    / "tools"
+    / "network_policy"
+    / "activate.sh"
+)
+
+
+def _export_network_policy(
+    activate_script: pathlib.Path = _ACTIVATE_NETWORK_POLICY,
+) -> None:
+  """Exports the CI network policy (see ci/README.md) into this process.
+
+  Runs `activate.sh` with a temporary `GITHUB_ENV` file so local `nox` runs get
+  the same `UV_HTTP_*`, `PIP_*`, and `CURL_HOME`/`.curlrc` setup as CI jobs.
+  `nox` merges `os.environ` into every `VirtualEnv.create`, `session.install`,
+  and `session.run` subprocess (`include_outer_env=True` by default in
+  `ProcessEnv._get_env`, and none of these variables are in
+  `nox.virtualenv._BLACKLISTED_ENV_VARS`), so loading the policy here covers
+  `uv venv` creation as well as every current and future `@nox.session` without
+  per-session `session.env` boilerplate. A non-empty value already in the
+  environment wins, so a developer's own settings survive.
+
+  Args:
+    activate_script: Path to `ci/tools/network_policy/activate.sh`.
+  """
+  with tempfile.NamedTemporaryFile(mode="w+", encoding="utf-8") as env_file:
+    subprocess.run(
+        [os.fspath(activate_script)],
+        env={**os.environ, "GITHUB_ENV": env_file.name},
+        check=True,
+    )
+    env_text = pathlib.Path(env_file.name).read_text(encoding="utf-8")
+  for line in env_text.splitlines():
+    key, sep, value = line.partition("=")
+    if sep and not os.environ.get(key):  # A non-empty environment value wins.
+      os.environ[key] = value
+
+
+_export_network_policy()
+
 
 # The index that must satisfy the `torch` dependency for each variant. `None`
 # means the default index (PyPI), whose Linux wheels bundle CUDA support. The
@@ -130,6 +175,7 @@ def test_ci_tools(session: nox.Session) -> None:
       "ci/tools/list_ci_tests_test.py",
       "ci/tools/run_bazel_diff_test.py",
       "ci/tools/gen_torch_tests_test.py",
+      "ci/tools/network_policy_test.py",
   )
 
 

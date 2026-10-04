@@ -106,6 +106,8 @@ jobs:
           # to resolve bazel-diff base SHA below.
           fetch-depth: 2
 
+      - uses: ./.github/actions/network-policy
+
       # Git security patch (CVE-2022-24765) blocks root from operating on runner-owned directories:
       # https://github.blog/open-source/git/git-security-vulnerability-announced/#cve-2022-24765.
       # Tell Git explicitly to trust the workspace `/__w/torch_tpu/torch_tpu` inside this ephemeral
@@ -143,6 +145,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 2
+
+      - uses: ./.github/actions/network-policy
 
       - name: Fix Git Workspace Ownership
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"

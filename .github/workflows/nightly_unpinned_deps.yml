@@ -90,6 +90,8 @@ jobs:
       - name: Checkout TorchTPU
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
+      - uses: ./.github/actions/network-policy
+
       # Git security patch (CVE-2022-24765) blocks root from operating on runner-owned directories.
       - name: Fix Git Workspace Ownership
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"

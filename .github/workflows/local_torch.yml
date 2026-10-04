@@ -71,6 +71,7 @@ jobs:
     steps:
       - name: Checkout TorchTPU
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: ./.github/actions/network-policy
       - name: Wait for Connection
         uses: google-ml-infra/actions/ci_connection@9f8d7d8d9954430d0fef4a8cce2cb4e3844c200d
         with:
@@ -158,6 +159,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           path: torch_tpu
+
+      - run: torch_tpu/ci/tools/network_policy/activate.sh
 
       # Enable remote connections. Add a waiting step.
       # See go/ml-github-actions:connect#add-waiting-step.

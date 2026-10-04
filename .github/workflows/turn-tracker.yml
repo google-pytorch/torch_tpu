@@ -35,7 +35,12 @@ jobs:
       - name: Checkout tracker script
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          sparse-checkout: tools
+          # The network-policy action runs ci/tools/network_policy/activate.sh.
+          sparse-checkout: |
+            tools
+            ci/tools
+            .github/actions/network-policy
+      - uses: ./.github/actions/network-policy
       - name: Process Turn State
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -44,6 +44,7 @@ jobs:
     steps:
       - name: "Check out code"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: ./.github/actions/network-policy
       - name: "Set up Go"
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
@@ -84,6 +85,8 @@ jobs:
       - name: "Check out PR HEAD"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
+      - uses: ./.github/actions/network-policy
+
       - name: "Fetch Base Commit"
         run: git fetch --no-tags --depth=1 origin ${{ github.event.pull_request.base.sha || 'main' }}
 
@@ -117,6 +120,8 @@ jobs:
     steps:
       - name: "Check out code"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: ./.github/actions/network-policy
 
       - name: "Setup uv"
         uses: "astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7"  # v10.2.0

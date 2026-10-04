@@ -78,6 +78,7 @@ jobs:
       # accessible for workflow to use. Otherwise, the workflow cannot find the files (e.g. ls -lR
       # will return "total 0").
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: ./.github/actions/network-policy
       # Enable remote connections.
       # Step 2: Add a waiting step.
       # See go/ml-github-actions:connect#add-waiting-step.

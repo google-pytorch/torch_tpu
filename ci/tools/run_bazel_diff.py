@@ -512,16 +512,10 @@ def main(argv: Sequence[str]) -> int:
     return _run_bazel_test(opts.bazel_config, opts.extra_bazel_flags, ["//..."])
 
   print("Downloading bazel-diff...")
+  # Retries and timeouts come from the CI network policy's .curlrc
+  # (CURL_HOME, see ci/README.md) rather than from per-call flags.
   subprocess.run(
-      [
-          "curl",
-          "-fLo",
-          os.fspath(_BAZEL_DIFF_JAR),
-          "--retry",
-          "5",
-          "--retry-connrefused",
-          _BAZEL_DIFF_URL,
-      ],
+      ["curl", "-fLo", os.fspath(_BAZEL_DIFF_JAR), _BAZEL_DIFF_URL],
       check=True,
   )
 

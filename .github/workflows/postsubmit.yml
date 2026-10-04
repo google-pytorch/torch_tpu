@@ -111,6 +111,7 @@ jobs:
       # accessible for workflow to use. Otherwise, the workflow cannot find the files (e.g. ls -lR
       # will return "total 0").
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: ./.github/actions/network-policy
       # Git security patch (CVE-2022-24765) blocks root from operating on runner-owned directories:
       # https://github.blog/open-source/git/git-security-vulnerability-announced/#cve-2022-24765.
       # Tell Git explicitly to trust the workspace `/__w/torch_tpu/torch_tpu` inside this ephemeral
@@ -182,6 +183,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: ./.github/actions/network-policy
       - name: Build and upload wheel
         id: build
         uses: ./.github/actions/build-wheel
@@ -213,6 +215,8 @@ jobs:
   #
   #     - name: Checkout torch_tpu
   #       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+  #
+  #     - uses: ./.github/actions/network-policy
   #
   #     - name: Install SSH
   #       run: |

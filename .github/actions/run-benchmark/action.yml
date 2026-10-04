@@ -110,6 +110,12 @@ inputs:
 runs:
   using: "composite"
   steps:
+    # The reusable workflow that drives this action has no steps of its own,
+    # so the CI network policy is activated here; GITHUB_ENV written by one
+    # composite step is visible to the following steps of the same action.
+    - name: Activate CI network policy
+      shell: bash
+      run: "$GITHUB_ACTION_PATH/../../../ci/tools/network_policy/activate.sh"
     - name: Resolve benchmark environment
       shell: bash
       run: |

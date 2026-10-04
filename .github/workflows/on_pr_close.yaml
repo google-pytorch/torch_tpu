@@ -59,6 +59,8 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: ./.github/actions/network-policy
+
       - name: Delete cancelled PR runs
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
