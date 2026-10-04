@@ -25,6 +25,7 @@ message starts with a prefix naming its category in the following hierarchy:
   │   └── TcMalloc
   ├── Correctness
   └── ApiStage
+      ├── InternalApi
       ├── ExperimentalApi
       └── DeprecatedApi
 
@@ -111,6 +112,7 @@ API_STAGE: Final[WarningCategory] = WarningCategory.API_STAGE
 CORRECTNESS: Final[WarningCategory] = WarningCategory.CORRECTNESS
 DEPRECATED_API: Final[WarningCategory] = WarningCategory.DEPRECATED_API
 EXPERIMENTAL_API: Final[WarningCategory] = WarningCategory.EXPERIMENTAL_API
+INTERNAL_API: Final[WarningCategory] = WarningCategory.INTERNAL_API
 PERFORMANCE: Final[WarningCategory] = WarningCategory.PERFORMANCE
 TCMALLOC: Final[WarningCategory] = WarningCategory.TCMALLOC
 TORCH_TPU: Final[WarningCategory] = WarningCategory.TORCH_TPU

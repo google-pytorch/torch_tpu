@@ -40,6 +40,7 @@ enum class WarningCategory {
   kTcMalloc,
   kCorrectness,
   kApiStage,
+  kInternalApi,
   kExperimentalApi,
   kDeprecatedApi,
 };
@@ -59,6 +60,8 @@ constexpr std::string_view GetWarningPrefix(WarningCategory category) {
       return "<TorchTpu/Correctness/> ";
     case WarningCategory::kApiStage:
       return "<TorchTpu/ApiStage/> ";
+    case WarningCategory::kInternalApi:
+      return "<TorchTpu/ApiStage/InternalApi/> ";
     case WarningCategory::kExperimentalApi:
       return "<TorchTpu/ApiStage/ExperimentalApi/> ";
     case WarningCategory::kDeprecatedApi:

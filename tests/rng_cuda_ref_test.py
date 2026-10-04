@@ -976,7 +976,7 @@ class SingleProcessMultiDeviceTest(_BaseRngTest):
   )
   def test_torch_manual_seed_sets_all_device_seeds(self):
     """Verifies torch.manual_seed seeds all devices."""
-    num_devices = self.backend_mod.device_count()
+    num_devices = torch.accelerator.device_count()
     self.assertGreater(
         num_devices,
         1,
@@ -994,7 +994,7 @@ class SingleProcessMultiDeviceTest(_BaseRngTest):
   )
   def test_backend_manual_seed_does_not_change_other_devices(self):
     """Verifies backend_mod.manual_seed does not modify other devices."""
-    num_devices = self.backend_mod.device_count()
+    num_devices = torch.accelerator.device_count()
     self.assertGreater(
         num_devices,
         1,
@@ -1029,7 +1029,7 @@ class SingleProcessMultiDeviceTest(_BaseRngTest):
   )
   def test_backend_manual_seed_all_sets_all_device_seeds(self):
     """Verifies backend_mod.manual_seed_all seeds all devices."""
-    num_devices = self.backend_mod.device_count()
+    num_devices = torch.accelerator.device_count()
     self.assertGreater(
         num_devices,
         1,
@@ -1055,7 +1055,7 @@ class SingleProcessMultiDeviceTest(_BaseRngTest):
   )
   def test_torch_seed_sets_all_device_seeds(self):
     """Verifies torch.seed seeds all devices."""
-    num_devices = self.backend_mod.device_count()
+    num_devices = torch.accelerator.device_count()
     self.assertGreater(
         num_devices,
         1,
@@ -1086,7 +1086,7 @@ class SingleProcessMultiDeviceTest(_BaseRngTest):
   )
   def test_backend_get_set_rng_state_all(self):
     """Verifies get/set_rng_state_all restore all device states."""
-    num_devices = self.backend_mod.device_count()
+    num_devices = torch.accelerator.device_count()
     self.assertGreater(
         num_devices,
         1,
@@ -1128,7 +1128,7 @@ class SingleProcessMultiDeviceTest(_BaseRngTest):
   )
   def test_multithread_eager_cross_device_isolation(self):
     """Verifies threads on distinct devices produce deterministic outputs."""
-    num_devices = self.backend_mod.device_count()
+    num_devices = torch.accelerator.device_count()
     self.assertGreater(
         num_devices,
         1,
@@ -1233,7 +1233,10 @@ class MultiThreadRngTest(_BaseRngTest):
     """Verifies threads on single device share global and device seeds."""
     outs = self._run_concurrent_threads(
         seed_fn=lambda idx: torch.manual_seed(42 + idx),
-        fn=lambda idx: (torch.initial_seed(), self.backend_mod.initial_seed()),
+        fn=lambda idx: (
+            torch.initial_seed(),
+            self.backend_mod.initial_seed(),
+        ),
         num_threads=2,
     )
     self.assertEqual(outs[0], outs[1])

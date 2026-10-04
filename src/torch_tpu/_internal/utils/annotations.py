@@ -23,6 +23,13 @@ inspection by scanner tools, and emit standard Python runtime warnings
 
 Warnings are suppressed when the caller is within the torch or torch_tpu
 internal framework packages.
+
+The @internal_or_experimental decorator marks a TorchTPU Python API as either
+experimental or internal, depending on a condition (e.g. the PyTorch version).
+An internal API is treated like one with a `_` prefix in its path. It's meant to
+be called only by the PyTorch framework (torch and torch_tpu); calling it from
+any other module emits a one-time warning per process that points to the
+preferred alternative, if any.
 """
 
 import dataclasses
@@ -40,6 +47,7 @@ _T = TypeVar("_T")
 TT_API_STAGE = "__tt_api_stage__"
 TT_API_STAGE_REASON = "__tt_api_stage_reason__"
 TT_API_DEPRECATED_VERSION = "__tt_api_deprecated_version__"
+TT_API_PREFER = "__tt_api_prefer__"
 TT_API_STAGES_MAP = "__tt_api_stages__"
 _FRAMEWORK_PACKAGES: tuple[str, ...] = ("torch", "torch_tpu")
 
@@ -95,6 +103,8 @@ class Stage(str, enum.Enum):
       self,
   ) -> Optional[warnings.WarningCategory]:
     """The TorchTPU warning category for this stage."""
+    if self == Stage.INTERNAL:
+      return warnings.INTERNAL_API
     if self == Stage.EXPERIMENTAL:
       return warnings.EXPERIMENTAL_API
     if self == Stage.DEPRECATED:
@@ -105,6 +115,12 @@ class Stage(str, enum.Enum):
       self, name: str, reason: str, version: Optional[str] = None
   ) -> str:
     """Formats the warning message for this stage."""
+    if self == Stage.INTERNAL:
+      msg = (
+          f"{name} is internal to TorchTPU and may change or be removed without"
+          " notice."
+      )
+      return f"{msg} {reason}" if reason else msg
     if self == Stage.EXPERIMENTAL:
       return f"{name} is experimental and subject to change: {reason}"
     if self == Stage.DEPRECATED:
@@ -153,6 +169,7 @@ def _attach_stage_metadata(
     stage: str,
     reason: str,
     version: Optional[str] = None,
+    prefer: Optional[str] = None,
 ) -> None:
   """Attaches stage metadata attributes to a target.
 
@@ -165,18 +182,21 @@ def _attach_stage_metadata(
     reason: Explanation for the stage.
     version: The version string when the target was deprecated (e.g. "2.13").
       Only used for deprecated targets.
+    prefer: The preferred alternative to the target, if any. Only used for
+      internal targets.
   """
-  _safe_setattr(target, TT_API_STAGE, stage)
-  _safe_setattr(target, TT_API_STAGE_REASON, reason)
-  if version:
-    _safe_setattr(target, TT_API_DEPRECATED_VERSION, version)
+  targets = [target]
   # If target is a method (e.g. bound classmethod), also attach metadata to the
   # underlying function object so it is discoverable when inspecting __func__.
   if hasattr(target, "__func__"):
-    _safe_setattr(target.__func__, TT_API_STAGE, stage)
-    _safe_setattr(target.__func__, TT_API_STAGE_REASON, reason)
+    targets.append(target.__func__)
+  for t in targets:
+    _safe_setattr(t, TT_API_STAGE, stage)
+    _safe_setattr(t, TT_API_STAGE_REASON, reason)
     if version:
-      _safe_setattr(target.__func__, TT_API_DEPRECATED_VERSION, version)
+      _safe_setattr(t, TT_API_DEPRECATED_VERSION, version)
+    if prefer:
+      _safe_setattr(t, TT_API_PREFER, prefer)
 
 
 def _create_warning_wrapper(
@@ -233,6 +253,7 @@ def _annotate_target(
     stage: Stage,
     reason: str,
     version: Optional[str] = None,
+    prefer: Optional[str] = None,
 ) -> _T:
   """Attaches stage metadata and warning wrapper to a target function or class.
 
@@ -255,12 +276,14 @@ def _annotate_target(
       and deprecated stages.
     version: The version string when the target was deprecated (e.g. "2.13").
       Only used for deprecated targets.
+    prefer: The preferred alternative to the target, if any. Only used for
+      internal targets.
 
   Returns:
     The annotated target.
   """
   # Always attach stage metadata to the target itself
-  _attach_stage_metadata(target, stage.value, reason, version)
+  _attach_stage_metadata(target, stage.value, reason, version, prefer)
 
   # 1. Handle Class
   if isinstance(target, type):
@@ -278,24 +301,13 @@ def _annotate_target(
     )
     # Attach stage metadata to the wrapper as well, so external reflection and
     # scanner tools inspecting the returned wrapper can access the attributes.
-    _attach_stage_metadata(wrapper, stage.value, reason, version)
+    _attach_stage_metadata(wrapper, stage.value, reason, version, prefer)
     return wrapper  # type: ignore[return-value]
 
   return target
 
 
-def _format_reason_with_prefer(
-    reason: str, prefer: Optional[str] = None
-) -> str:
-  """Appends a migration hint to `reason` when `prefer` is provided."""
-  if not prefer:
-    return reason
-  return f"{reason.rstrip()} Prefer {prefer}."
-
-
-def experimental(
-    reason: str, *, prefer: Optional[str] = None
-) -> Callable[[_T], _T]:
+def experimental(reason: str) -> Callable[[_T], _T]:
   """Marks a TorchTPU Python API (function or class) as experimental.
 
   Experimental APIs are exposed under public namespaces (e.g. torch.tpu.*) for
@@ -306,23 +318,15 @@ def experimental(
 
   Args:
     reason: Non-empty explanation for why the API is experimental.
-    prefer: Optional dotted path to a preferred replacement API (e.g.
-      "torch.accelerator.current_stream"). When provided, a "Prefer <prefer>."
-      hint is appended to `reason`.
 
   Returns:
     The decorated function or class with experimental stage metadata attached.
   """
   if not isinstance(reason, str) or not reason.strip():
     raise ValueError("@experimental requires a non-empty reason string.")
-  if prefer is not None and (not isinstance(prefer, str) or not prefer.strip()):
-    raise ValueError(
-        "@experimental 'prefer' must be a non-empty string when provided."
-    )
 
-  full_reason = _format_reason_with_prefer(reason, prefer)
   return lambda target: _annotate_target(
-      target, stage=Stage.EXPERIMENTAL, reason=full_reason
+      target, stage=Stage.EXPERIMENTAL, reason=reason
   )
 
 
@@ -367,6 +371,58 @@ def deprecated(version: str, reason: str) -> Callable[[_T], _T]:
 
   return lambda target: _annotate_target(
       target, stage=Stage.DEPRECATED, reason=reason, version=version
+  )
+
+
+def internal_or_experimental(
+    *,
+    internal_when: bool,
+    experimental_msg: str,
+    prefer: Optional[str] = None,
+) -> Callable[[_T], _T]:
+  """Marks a TorchTPU Python API (function or class) as internal or experimental.
+
+  This is for an experimental API that becomes internal once a replacement is
+  available, e.g. a `torch.tpu` API whose `torch.accelerator` equivalent exists
+  in the running PyTorch version.
+
+  When `internal_when` is False, this is equivalent to
+  `@experimental(experimental_msg)`.
+
+  When `internal_when` is True, the API is internal: an implementation detail
+  meant to be used only by the PyTorch framework (the torch and torch_tpu
+  packages), even if it's exposed under a public namespace (e.g. torch.tpu.*)
+  for PyTorch to find it. It's treated like an API with a `_` prefix in its
+  path, e.g. it isn't listed as a public API. Like an experimental API, calling
+  an internal function or instantiating an internal class from any other module
+  (including user code and tests) triggers a one-time warning per process, which
+  names `prefer` if it's given.
+
+  Args:
+    internal_when: Whether the API is internal.
+    experimental_msg: Non-empty explanation for why the API is experimental.
+    prefer: Optional dotted path to the preferred alternative to use while the
+      API is internal, e.g. "torch.accelerator.synchronize".
+
+  Returns:
+    The decorated function or class with internal or experimental stage
+    metadata attached.
+  """
+  if not isinstance(experimental_msg, str) or not experimental_msg.strip():
+    raise ValueError(
+        "@internal_or_experimental requires a non-empty experimental_msg"
+        " string."
+    )
+  if prefer is not None and (not isinstance(prefer, str) or not prefer.strip()):
+    raise ValueError(
+        "@internal_or_experimental 'prefer' must be a non-empty string when"
+        " provided."
+    )
+  if not internal_when:
+    return experimental(experimental_msg)
+  reason = f"Use {prefer} instead." if prefer else ""
+  return lambda target: _annotate_target(
+      target, stage=Stage.INTERNAL, reason=reason, prefer=prefer
   )
 
 

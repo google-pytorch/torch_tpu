@@ -20,9 +20,9 @@ import torch
 
 def test_device_queries(device):
   """Cell: device_queries — verifies torch.tpu API methods work."""
-  assert torch.tpu.is_available() is True
-  assert torch.tpu.device_count() >= 1
-  current = torch.tpu.current_device()
+  assert torch.accelerator.is_available() is True
+  assert torch.accelerator.device_count() >= 1
+  current = torch.accelerator.current_device_index()
   assert current is not None
 
 

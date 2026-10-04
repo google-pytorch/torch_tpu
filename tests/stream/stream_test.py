@@ -36,7 +36,7 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
     new_stream = torch.tpu.Stream()
 
     self.assertIsInstance(new_stream, torch.Stream)
-    self.assertIsInstance(torch.tpu.current_stream(), torch.Stream)
+    self.assertIsInstance(torch.accelerator.current_stream(), torch.Stream)
     self.assertIsInstance(torch.tpu.default_stream(), torch.Stream)
     self.assertEqual(new_stream.device_type, default_acc_stream.device_type)
     self.assertEqual(new_stream.device, torch.device('tpu', 0))
@@ -44,7 +44,6 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
     torch.accelerator.set_stream(new_stream)
     try:
       self.assertEqual(torch.accelerator.current_stream(), new_stream)
-      self.assertEqual(torch.tpu.current_stream(), new_stream)
     finally:
       torch.accelerator.set_stream(default_acc_stream)
     self.assertEqual(torch.accelerator.current_stream(), default_acc_stream)

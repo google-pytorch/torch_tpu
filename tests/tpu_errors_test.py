@@ -1898,7 +1898,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
           RuntimeError,
           tpu=re.compile(r".*async assertion failure.*", re.DOTALL),
       ):
-        torch.tpu.synchronize()
+        torch.accelerator.synchronize()
     finally:
       tt_testing.clear_sticky_error()
 
@@ -2256,7 +2256,7 @@ module {
         ValueError,
         tpu="""expected local device index 0, got 1: accessing RNG state of a non-current TPU device is not supported""",
     ):
-      torch.tpu.get_rng_state(1)
+      torch.tpu.set_rng_state(torch.zeros(16, dtype=torch.uint8), 1)
 
   # TODO(marcosyukio): check if this test passes on CUDA with CC >= 8.9.
   @et.why_tpu_only(

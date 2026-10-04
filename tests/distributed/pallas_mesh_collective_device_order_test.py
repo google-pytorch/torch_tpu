@@ -82,7 +82,6 @@ _FUSED_BROADCAST_SKIP = (
 )
 
 
-
 # Broadcast roots: first, last, middle.
 def _broadcast_sources(world_size: int) -> tuple[int, ...]:
   return (0, world_size - 1, world_size // 2)
@@ -726,7 +725,7 @@ def run_two_mesh_probe(probe_id: str) -> None:
         )
     elif probe_id == "two_same_mesh_kernels_compile_cleanly":
       _ = compiled(x).cpu()
-      torch.tpu.synchronize()
+      torch.accelerator.synchronize()
     elif probe_id == "two_conflicting_mesh_kernels_are_rejected":
       with absltest.TestCase().assertRaisesRegex(  # ABSLTEST_OK=helper only ASSERT_RAISES_OK=Requires multi-device hardware to test mesh conflict rejection in traversal
           (RuntimeError, torch._dynamo.exc.BackendCompilerFailed),

@@ -45,9 +45,9 @@ def run_global_device_count() -> None:
   this_device = torch.accelerator.current_device_index()
   # torch.accelerator.current_device_index() returns the id among all addressable devices,
   # not the global device id.
-  assert 0 <= this_device < torch.tpu.device_count(), (
-      f"Expected device id to be in range [0, {torch.tpu.device_count()}), got"
-      f" {this_device}"
+  assert 0 <= this_device < torch.accelerator.device_count(), (
+      "Expected device id to be in range [0,"
+      f" {torch.accelerator.device_count()}), got {this_device}"
   )
 
 

@@ -15,7 +15,6 @@
 """Unit tests for TorchTPU API lifecycle stage annotations."""
 
 import enum
-import importlib
 import types
 from typing import Any
 from unittest import mock
@@ -32,6 +31,7 @@ from tests import seed_test_utils
 experimental = annotations.experimental
 stable = annotations.stable
 deprecated = annotations.deprecated
+internal_or_experimental = annotations.internal_or_experimental
 
 
 def _reset_warn_once(api: Any) -> None:
@@ -46,23 +46,6 @@ def _reset_warn_once(api: Any) -> None:
   fn = getattr(api, "__func__", api)
   idx = fn.__code__.co_freevars.index("_warned")
   fn.__closure__[idx].cell_contents = False
-
-
-def _has_target_api(dotted_path: str) -> bool:
-  """Checks if a target API attribute path exists on the runtime torch module."""
-  curr: Any = torch
-  parts = dotted_path.split(".")[1:]  # strip leading "torch"
-  for part in parts:
-    if hasattr(curr, part):
-      curr = getattr(curr, part)
-    else:
-      try:
-        curr = importlib.import_module(
-            f"{getattr(curr, '__name__', '')}.{part}"
-        )
-      except (ImportError, AttributeError):
-        return False
-  return True
 
 
 class AnnotationsTest(seed_test_utils.RepeatableTest):
@@ -396,7 +379,10 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
     fn = getattr(torch.tpu, "initial_seed", None)
     self.assertIsNotNone(fn)
     self.assertEqual(
-        getattr(fn, annotations.TT_API_STAGE, None), "Experimental"
+        getattr(fn, annotations.TT_API_STAGE, None),
+        "Internal"
+        if annotations.get_torch_version() >= (2, 13)
+        else "Experimental",
     )
     self.assertIn(
         "initial_seed",
@@ -712,82 +698,258 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
       self.assertLen(w, 1)
       self.assertIn("exp_func is experimental", str(w[0].message))
 
-  def test_device_module_reasons_point_to_torch_accelerator(self):
-    """Verifies torch.tpu APIs with torch.accelerator equivalents say so."""
-    expected = {
-        "current_device": "torch.accelerator.current_device_index",
-        "set_device": "torch.accelerator.set_device_index",
-        "is_available": "torch.accelerator.is_available",
-        "device_count": "torch.accelerator.device_count",
-        "synchronize": "torch.accelerator.synchronize",
-        "current_stream": "torch.accelerator.current_stream",
-        "set_stream": "torch.accelerator.set_stream",
-        "initial_seed": "torch.accelerator.random.initial_seed",
-        "get_rng_state": "torch.accelerator.random.get_rng_state",
-    }
-    for api, replacement in expected.items():
-      with self.subTest(api=api):
-        reason = getattr(
-            getattr(torch.tpu, api), annotations.TT_API_STAGE_REASON, ""
+  # ---------------------------------------------------------------------------
+  # 5. @internal_or_experimental Decorator Tests
+  # ---------------------------------------------------------------------------
+
+  def test_internal_or_experimental_is_experimental_when_not_internal(self):
+    """Verifies that it's @experimental(experimental_msg) if not internal."""
+
+    @internal_or_experimental(
+        internal_when=False,
+        experimental_msg="Testing experimental feature.",
+        prefer="torch.public_func",
+    )
+    def sample_func(a: int, b: int) -> int:
+      return a + b
+
+    self.assertEqual(
+        getattr(sample_func, annotations.TT_API_STAGE), "Experimental"
+    )
+    self.assertEqual(
+        getattr(sample_func, annotations.TT_API_STAGE_REASON),
+        "Testing experimental feature.",
+    )
+    self.assertFalse(hasattr(sample_func, annotations.TT_API_PREFER))
+    with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("always")
+      self.assertEqual(sample_func(1, 2), 3)
+      self.assertLen(w, 1)
+      self.assertTrue(issubclass(w[0].category, UserWarning))
+      self.assertIn(
+          "sample_func is experimental and subject to change: Testing"
+          " experimental feature.",
+          str(w[0].message),
+      )
+
+  def test_internal_or_experimental_internal_function_metadata(self):
+    """Verifies that an internal API has internal stage metadata."""
+
+    @internal_or_experimental(
+        internal_when=True,
+        experimental_msg="Testing experimental feature.",
+        prefer="torch.public_func",
+    )
+    def sample_func() -> None:
+      pass
+
+    self.assertEqual(getattr(sample_func, annotations.TT_API_STAGE), "Internal")
+    self.assertEqual(
+        getattr(sample_func, annotations.TT_API_STAGE_REASON),
+        "Use torch.public_func instead.",
+    )
+    self.assertEqual(
+        getattr(sample_func, annotations.TT_API_PREFER), "torch.public_func"
+    )
+
+  def test_internal_function_warns_once_for_user_caller(self):
+    """Verifies that calling an internal function from user code warns once."""
+
+    @internal_or_experimental(
+        internal_when=True,
+        experimental_msg="Testing experimental feature.",
+        prefer="torch.public_func",
+    )
+    def sample_func(x: int) -> int:
+      return x * 2
+
+    with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("always")
+      self.assertEqual(sample_func(1), 2)
+      self.assertEqual(sample_func(2), 4)
+    self.assertLen(w, 1)
+    self.assertTrue(issubclass(w[0].category, UserWarning))
+    self.assertEqual(
+        str(w[0].message),
+        "<TorchTpu/ApiStage/InternalApi/> sample_func is internal to TorchTPU"
+        " and may change or be removed without notice. Use torch.public_func"
+        " instead.",
+    )
+    # The warning points at the caller.
+    self.assertEqual(w[0].filename, __file__)
+
+  def test_internal_function_without_prefer_warns(self):
+    """Verifies the warning of an internal function without `prefer`."""
+
+    @internal_or_experimental(
+        internal_when=True, experimental_msg="Testing experimental feature."
+    )
+    def sample_func() -> None:
+      pass
+
+    self.assertEqual(getattr(sample_func, annotations.TT_API_STAGE), "Internal")
+    self.assertFalse(hasattr(sample_func, annotations.TT_API_PREFER))
+    with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("always")
+      sample_func()
+    self.assertLen(w, 1)
+    self.assertEqual(
+        str(w[0].message),
+        "<TorchTpu/ApiStage/InternalApi/> sample_func is internal to TorchTPU"
+        " and may change or be removed without notice.",
+    )
+
+  def test_internal_function_silent_for_framework_callers(self):
+    """Verifies that torch and torch_tpu modules can call internal functions."""
+
+    @internal_or_experimental(
+        internal_when=True,
+        experimental_msg="Testing experimental feature.",
+        prefer="torch.public_func",
+    )
+    def sample_func(x: int) -> int:
+      return x * 2
+
+    with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("always")
+      for module_name in (
+          "torch",
+          "torch.accelerator",
+          "torch_tpu._internal.x",
+      ):
+        framework_fn = types.FunctionType(
+            (lambda fn: fn(5)).__code__, {"__name__": module_name}
         )
-        if _has_target_api(replacement):
-          self.assertIn(f"Prefer {replacement}.", reason)
-        else:
-          self.assertNotIn("Prefer", reason)
+        self.assertEqual(framework_fn(sample_func), 10, msg=module_name)
+      self.assertEmpty(w)
 
-  def test_experimental_prefer_appends_hint(self):
-    """Verifies @experimental(prefer=...) appends hint when provided."""
-
-    @experimental(
-        "initial_seed() is experimental.",
-        prefer="torch.accelerator.random.initial_seed",
+    # TorchTPU tests aren't part of the framework.
+    test_fn = types.FunctionType(
+        (lambda fn: fn(5)).__code__, {"__name__": "torch_tpu.tests.foo_test"}
     )
-    def fn_with_prefer():
-      return 1
+    with self.assertWarnsRegex(UserWarning, "is internal to TorchTPU"):
+      self.assertEqual(test_fn(sample_func), 10)
 
-    @experimental(
-        "initial_seed() is experimental.",
-        prefer=None,
+  def test_internal_class_warns_for_user_caller(self):
+    """Verifies that instantiating an internal class from user code warns."""
+
+    @internal_or_experimental(
+        internal_when=True,
+        experimental_msg="Testing experimental feature.",
+        prefer="torch.PublicClass",
     )
-    def fn_without_prefer():
-      return 2
+    class SampleClass:
 
+      def __init__(self, x: int):
+        self.x = x
+
+    self.assertEqual(getattr(SampleClass, annotations.TT_API_STAGE), "Internal")
     self.assertEqual(
-        getattr(fn_with_prefer, annotations.TT_API_STAGE_REASON),
-        "initial_seed() is experimental. Prefer"
-        " torch.accelerator.random.initial_seed.",
+        getattr(SampleClass, annotations.TT_API_PREFER), "torch.PublicClass"
     )
-    self.assertEqual(
-        getattr(fn_without_prefer, annotations.TT_API_STAGE_REASON),
-        "initial_seed() is experimental.",
+    framework_fn = types.FunctionType(
+        (lambda cls: cls(3)).__code__, {"__name__": "torch.nn"}
     )
-
-    with self.assertRaisesRegex(
-        ValueError, "@experimental 'prefer' must be a non-empty string"
+    with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("always")
+      self.assertEqual(framework_fn(SampleClass).x, 3)
+      self.assertEmpty(w)
+    with self.assertWarnsRegex(
+        UserWarning,
+        r"SampleClass is internal to TorchTPU .* Use torch\.PublicClass"
+        r" instead\.$",
     ):
+      self.assertEqual(SampleClass(1).x, 1)
 
-      @experimental("reason", prefer="")
-      def _invalid():
-        pass
+  def test_internal_or_experimental_validates_arguments(self):
+    """Verifies that @internal_or_experimental validates its arguments."""
+    for internal_when in (False, True):
+      with self.assertRaises(ValueError):
+        internal_or_experimental(
+            internal_when=internal_when, experimental_msg=" "
+        )
+      with self.assertRaises(ValueError):
+        internal_or_experimental(
+            internal_when=internal_when,
+            experimental_msg="Testing experimental feature.",
+            prefer=" ",
+        )
+
+  def test_internal_function_traces_under_torch_compile(self):
+    """Verifies internal functions trace without graph breaks."""
+
+    @internal_or_experimental(
+        internal_when=True,
+        experimental_msg="Testing experimental feature.",
+        prefer="torch.public_func",
+    )
+    def sample_func(x: torch.Tensor) -> torch.Tensor:
+      return x * 2
+
+    # `fullgraph=True` raises on any graph break in the warning wrapper.
+    compiled = torch.compile(
+        lambda x: sample_func(x) + 1, backend="eager", fullgraph=True
+    )
+    self.assertEqual(compiled(torch.ones(3)).tolist(), [3.0, 3.0, 3.0])
 
   def test_parse_version(self):
-    """Verifies parse_version and get_torch_version parse version tuples correctly."""
+    """Verifies parse_version and get_torch_version parse version tuples."""
     self.assertEqual(annotations.parse_version("2.15.0a0"), (2, 15, 0))
     self.assertEqual(annotations.parse_version("2.12.0"), (2, 12, 0))
-    self.assertEqual(annotations.parse_version("2.11.0"), (2, 11, 0))
     self.assertEqual(
         annotations.parse_version("2.11.0.dev20260101"), (2, 11, 0)
     )
+    self.assertEqual(annotations.parse_version("2.11.0+cpu"), (2, 11, 0))
     self.assertIsInstance(annotations.get_torch_version(), tuple)
     self.assertGreaterEqual(len(annotations.get_torch_version()), 2)
 
-  def test_has_target_api(self):
-    """Verifies _has_target_api detects present vs absent attributes."""
-    self.assertTrue(_has_target_api("torch.accelerator.current_device_index"))
-    self.assertFalse(
-        _has_target_api("torch.accelerator.non_existent_api_12345")
-    )
-    self.assertFalse(_has_target_api("torch.non_existent_submodule.foo"))
+  def test_device_module_apis_with_torch_accelerator_equivalents(self):
+    """Verifies torch.tpu APIs are internal iff torch.accelerator replaces them."""
+    replacements = {
+        "current_device": ("torch.accelerator.current_device_index", (2, 11)),
+        "set_device": ("torch.accelerator.set_device_index", (2, 11)),
+        "is_available": ("torch.accelerator.is_available", (2, 11)),
+        "device_count": ("torch.accelerator.device_count", (2, 11)),
+        "synchronize": ("torch.accelerator.synchronize", (2, 11)),
+        "current_stream": ("torch.accelerator.current_stream", (2, 11)),
+        "set_stream": ("torch.accelerator.set_stream", (2, 11)),
+        "initial_seed": ("torch.accelerator.random.initial_seed", (2, 13)),
+        "get_rng_state": ("torch.accelerator.random.get_rng_state", (2, 13)),
+    }
+    for api, (replacement, version) in replacements.items():
+      with self.subTest(api=api):
+        fn = getattr(torch.tpu, api)
+        if annotations.get_torch_version() >= version:
+          self.assertEqual(getattr(fn, annotations.TT_API_STAGE), "Internal")
+          self.assertEqual(getattr(fn, annotations.TT_API_PREFER), replacement)
+        else:
+          self.assertEqual(
+              getattr(fn, annotations.TT_API_STAGE), "Experimental"
+          )
+
+  def test_real_api_internal_device_count_warns(self):
+    """Verifies that calling internal torch.tpu.device_count() warns."""
+    if annotations.get_torch_version() < (2, 11):
+      self.skipTest("torch.tpu.device_count() is experimental.")
+    _reset_warn_once(torch.tpu.device_count)
+    with self.assertWarnsRegex(
+        UserWarning,
+        r"^<TorchTpu/ApiStage/InternalApi/> device_count is internal to"
+        r" TorchTPU .* Use torch\.accelerator\.device_count instead\.$",
+    ):
+      self.assertEqual(
+          torch.tpu.device_count(), torch.accelerator.device_count()
+      )
+
+  def test_real_api_torch_accelerator_set_stream_works(self):
+    """Verifies that torch.accelerator.set_stream works on TPU."""
+    new_stream = torch.tpu.Stream()
+    default_stream = torch.accelerator.current_stream()
+    try:
+      torch.accelerator.set_stream(new_stream)
+      self.assertEqual(torch.accelerator.current_stream(), new_stream)
+    finally:
+      torch.accelerator.set_stream(default_stream)
 
 
 if __name__ == "__main__":

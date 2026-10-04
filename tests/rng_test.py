@@ -176,8 +176,10 @@ class RngTest(seed_test_utils.RepeatableTest):
 
   def test_default_generators_is_tuple(self):
     self.assertIsInstance(torch.tpu.default_generators, tuple)
-    self.assertGreater(torch.tpu.device_count(), 0)
-    self.assertLen(torch.tpu.default_generators, torch.tpu.device_count())
+    self.assertGreater(torch.accelerator.device_count(), 0)
+    self.assertLen(
+        torch.tpu.default_generators, torch.accelerator.device_count()
+    )
     self.assertIsInstance(torch.tpu.default_generators[0], torch.Generator)
 
   @parameterized.named_parameters(

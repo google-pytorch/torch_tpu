@@ -32,6 +32,7 @@ TT_PYBIND11_MODULE(warnings_impl, m) {
       .value("TCMALLOC", WarningCategory::kTcMalloc)
       .value("CORRECTNESS", WarningCategory::kCorrectness)
       .value("API_STAGE", WarningCategory::kApiStage)
+      .value("INTERNAL_API", WarningCategory::kInternalApi)
       .value("EXPERIMENTAL_API", WarningCategory::kExperimentalApi)
       .value("DEPRECATED_API", WarningCategory::kDeprecatedApi);
   m.def(

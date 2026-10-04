@@ -128,7 +128,7 @@ class AsyncTransferTest(seed_test_utils.RepeatableTest):
     t_cpu = torch.empty(size, device='cpu', pin_memory=True)
 
     t_cpu.copy_(t_tpu, non_blocking=True)
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
 
     utils.assert_close(t_cpu, torch.ones(size, dtype=torch.float32))
 
@@ -168,7 +168,7 @@ class AsyncTransferTest(seed_test_utils.RepeatableTest):
     self.assertEqual(cpu_view_tensor.device.type, 'cpu')
     self.assertTrue(cpu_view_tensor.is_pinned())
 
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
 
     # Now verify the values.
     expected_cpu_tensor = a_cpu * 2 + b_cpu
@@ -239,7 +239,7 @@ class AsyncTransferTest(seed_test_utils.RepeatableTest):
     cpu_dst = torch.empty((size, size), dtype=torch.int32, pin_memory=True)
     # Warm up the pinned allocator for both full and slice sizes.
     _ = torch.empty((size, half), dtype=torch.int32, pin_memory=True)
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
 
     # TODO(anuragprakash): There is a theoretical race with the background
     # materialize_thread_ that could flake if it finishes lowering the 200-op
@@ -258,7 +258,7 @@ class AsyncTransferTest(seed_test_utils.RepeatableTest):
       cpu_c = c.to('cpu', non_blocking=True)
       self.assertFalse(sync.is_materializing(c))
       self.assertTrue(cpu_c.is_pinned())
-      torch.tpu.synchronize()
+      torch.accelerator.synchronize()
       utils.assert_close(cpu_c, a_cpu + num_ops_1 * b_cpu)
 
       # 2. Full-storage path via copy_(non_blocking=True).
@@ -269,7 +269,7 @@ class AsyncTransferTest(seed_test_utils.RepeatableTest):
       self.assertFalse(sync.is_materializing(c2))
       cpu_dst.copy_(c2, non_blocking=True)
       self.assertFalse(sync.is_materializing(c2))
-      torch.tpu.synchronize()
+      torch.accelerator.synchronize()
       utils.assert_close(cpu_dst, a_cpu + num_ops_2 * b_cpu)
 
       # 3. Non-reinterpret view path (CopyTpuToCpu::MaterializeAndReturn).
@@ -281,7 +281,7 @@ class AsyncTransferTest(seed_test_utils.RepeatableTest):
       cpu_slice = c3[:, :half].to('cpu', non_blocking=True)
       self.assertFalse(sync.is_materializing(c3))
       self.assertTrue(cpu_slice.is_pinned())
-      torch.tpu.synchronize()
+      torch.accelerator.synchronize()
       utils.assert_close(cpu_slice, (a_cpu + num_ops_3 * b_cpu)[:, :half])
 
   def test_to_cpu_non_blocking_non_reinterpret_views(self):
@@ -303,7 +303,7 @@ class AsyncTransferTest(seed_test_utils.RepeatableTest):
     self.assertEqual(cpu_transposed.device.type, 'cpu')
     self.assertTrue(cpu_transposed.is_pinned())
 
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
 
     expected = a_cpu * 3 + b_cpu
     utils.assert_close(cpu_slice, expected[:, :half_cols])
@@ -361,7 +361,7 @@ class AsyncTransferTest(seed_test_utils.RepeatableTest):
     self.assertEqual(cpu_bf16.dtype, torch.bfloat16)
     self.assertTrue(cpu_bf16.is_pinned())
 
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
 
     expected = a_cpu + b_cpu
     utils.assert_close(cpu_fp16, expected.to(torch.float16))
@@ -382,7 +382,7 @@ class AsyncTransferTest(seed_test_utils.RepeatableTest):
     utils.assert_close(t, t_pinned)
 
   def test_h2d_sync_race(self):
-    """Verifies that torch.tpu.synchronize() properly waits for H2D transfers.
+    """Verifies that torch.accelerator.synchronize() properly waits for H2D transfers.
 
     If synchronize() fails to wait, modifying the host tensor immediately
     after the call may corrupt the data transferred to the TPU.

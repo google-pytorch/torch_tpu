@@ -112,12 +112,9 @@ process. Use it at your own risk. Using it triggers a one-time warning.
 *   `torch.tpu.allow_excess_precision` (getter)
 *   `torch.tpu.allow_excess_precision` (setter)
 *   `torch.tpu.compiler.custom_compiler_options`
-*   `torch.tpu.current_device`
-*   `torch.tpu.current_stream`
 *   `torch.tpu.default_generators`
 *   `torch.tpu.default_stream`
 *   `torch.tpu.device`
-*   `torch.tpu.device_count`
 *   `torch.tpu.device_of`
 *   `torch.tpu.distributed.set_tpu_launch_env`
 *   `torch.tpu.eager_mode` (getter)
@@ -126,9 +123,6 @@ process. Use it at your own risk. Using it triggers a one-time warning.
 *   `torch.tpu.get_device_name`
 *   `torch.tpu.get_device_properties`
 *   `torch.tpu.get_device_properties.multi_processor_count`
-*   `torch.tpu.get_rng_state`
-*   `torch.tpu.initial_seed`
-*   `torch.tpu.is_available`
 *   `torch.tpu.is_initialized`
 *   `torch.tpu.manual_seed`
 *   `torch.tpu.manual_seed_all`
@@ -154,12 +148,9 @@ process. Use it at your own risk. Using it triggers a one-time warning.
 *   `torch.tpu.pallas.jax_op`
 *   `torch.tpu.precision`
 *   `torch.tpu.profiler.TpuProfilerConfig`
-*   `torch.tpu.set_device`
 *   `torch.tpu.set_eager_mode`
 *   `torch.tpu.set_rng_state`
-*   `torch.tpu.set_stream`
 *   `torch.tpu.stream`
-*   `torch.tpu.synchronize`
 *   `torch.tpu.topology_aware_mesh`
 *   `torch.tpu.window_num_stripes` (getter)
 *   `torch.tpu.window_num_stripes` (setter)
@@ -202,3 +193,27 @@ PyTorch deprecation policy instead.
 *   `torch.accelerator.set_device_idx` (deprecated by PyTorch)
 
 <!-- END GENERATED: Deprecated APIs -->
+
+## Internal APIs
+
+Some internal APIs are in a public namespace for PyTorch to call, but they
+aren't meant to be used directly. They may change or be removed at any time
+without a deprecation process. Using one triggers a one-time warning. Use its
+recommended alternative instead.
+
+<!-- BEGIN GENERATED: Internal APIs -->
+
+*   `torch.tpu.current_device`: use `torch.accelerator.current_device_index`
+    instead
+*   `torch.tpu.current_stream`: use `torch.accelerator.current_stream` instead
+*   `torch.tpu.device_count`: use `torch.accelerator.device_count` instead
+*   `torch.tpu.get_rng_state`: use `torch.accelerator.random.get_rng_state`
+    instead
+*   `torch.tpu.initial_seed`: use `torch.accelerator.random.initial_seed`
+    instead
+*   `torch.tpu.is_available`: use `torch.accelerator.is_available` instead
+*   `torch.tpu.set_device`: use `torch.accelerator.set_device_index` instead
+*   `torch.tpu.set_stream`: use `torch.accelerator.set_stream` instead
+*   `torch.tpu.synchronize`: use `torch.accelerator.synchronize` instead
+
+<!-- END GENERATED: Internal APIs -->

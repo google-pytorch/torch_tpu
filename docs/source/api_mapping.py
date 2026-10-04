@@ -46,13 +46,13 @@ def _(mo):
 
     | CUDA API | TPU API | Description |
     | :--- | :--- | :--- |
-    | `torch.cuda.is_available()` | `torch.tpu.is_available()` | Checks if the TPU backend is ready. |
+    | `torch.cuda.is_available()` | `torch.accelerator.is_available()` | Checks if the TPU backend is ready. |
     | `torch.cuda.is_initialized()` | `torch.tpu.is_initialized()` | Checks if PyTorch's TPU state has been initialized. |
-    | `torch.cuda.device_count()` | `torch.tpu.device_count()` | Number of devices assigned to the process. |
-    | `torch.cuda.current_device()` | `torch.tpu.current_device()` | Returns the active core index. |
+    | `torch.cuda.device_count()` | `torch.accelerator.device_count()` | Number of devices assigned to the process. |
+    | `torch.cuda.current_device()` | `torch.accelerator.current_device_index()` | Returns the active core index. |
     | `torch.cuda.get_device_name()` | `torch.tpu.get_device_name()` | Returns human-readable model name of the attached TPU. |
     | `torch.cuda.get_device_properties()` | `torch.tpu.get_device_properties()` | Returns static device properties (name, memory, cores). |
-    | `torch.cuda.set_device(rank)` | `torch.tpu.set_device(rank)` | Validates the active device index for the current process. |
+    | `torch.cuda.set_device(rank)` | `torch.accelerator.set_device_index(rank)` | Validates the active device index for the current process. |
     """)
   return
 
@@ -64,10 +64,17 @@ def device_queries():
   # Initialize hardware
   device = torch.device("tpu")
 
-  print(f"torch.tpu.is_available():    {torch.tpu.is_available()}")
+  print(
+      f"torch.accelerator.is_available():    {torch.accelerator.is_available()}"
+  )
   print(f"torch.accelerator.is_available(): {torch.accelerator.is_available()}")
-  print(f"torch.tpu.device_count():    {torch.tpu.device_count()}")
-  print(f"torch.tpu.current_device():  {torch.tpu.current_device()}")
+  print(
+      f"torch.accelerator.device_count():    {torch.accelerator.device_count()}"
+  )
+  print(
+      "torch.accelerator.current_device_index(): "
+      f" {torch.accelerator.current_device_index()}"
+  )
   return (torch,)
 
 
@@ -80,8 +87,8 @@ def _(mo):
     | :--- | :--- | :--- |
     | `torch.cuda.manual_seed(seed)` | `torch.tpu.manual_seed(seed)` | Seeds the current core's RNG. |
     | `torch.cuda.manual_seed_all(seed)` | `torch.tpu.manual_seed_all(seed)` | Seeds all TPU cores (for distributed). |
-    | `torch.cuda.initial_seed()` | `torch.tpu.initial_seed()` | Returns initial random seed of current TPU device. |
-    | `torch.cuda.get_rng_state()` | `torch.tpu.get_rng_state()` | Returns RNG state tensor for the current device. |
+    | `torch.cuda.initial_seed()` | `torch.accelerator.random.initial_seed()` | Returns initial random seed of current TPU device. Requires PyTorch >= 2.13; use `torch.tpu.initial_seed()` on older versions. |
+    | `torch.cuda.get_rng_state()` | `torch.accelerator.random.get_rng_state()` | Returns RNG state tensor for the current device. Requires PyTorch >= 2.13; use `torch.tpu.get_rng_state()` on older versions. |
     | `torch.cuda.set_rng_state(state)` | `torch.tpu.set_rng_state(state)` | Sets RNG state tensor for the current device. |
     """)
   return

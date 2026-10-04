@@ -34,6 +34,7 @@ _EXPECTED_PREFIXES = {
     warning_categories.TCMALLOC: "<TorchTpu/Performance/TcMalloc/> ",
     warning_categories.CORRECTNESS: "<TorchTpu/Correctness/> ",
     warning_categories.API_STAGE: "<TorchTpu/ApiStage/> ",
+    warning_categories.INTERNAL_API: "<TorchTpu/ApiStage/InternalApi/> ",
     warning_categories.EXPERIMENTAL_API: (
         "<TorchTpu/ApiStage/ExperimentalApi/> "
     ),

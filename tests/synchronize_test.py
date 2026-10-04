@@ -27,7 +27,7 @@ EagerMode: TypeAlias = execution_mode.EagerMode
 
 
 class SynchronizeTest(seed_test_utils.RepeatableTest):
-  """Tests synchronization APIs: torch.tpu.synchronize and torch.accelerator.synchronize."""
+  """Tests synchronization APIs, e.g. torch.accelerator.synchronize."""
 
   def setUp(self):
     super().setUp()
@@ -38,33 +38,6 @@ class SynchronizeTest(seed_test_utils.RepeatableTest):
   def tearDown(self):
     execution_mode.eager_mode = self.old_eager_mode
     super().tearDown()
-
-  def test_synchronize_device_materialized(self):
-    x = torch.ones(10, device=torch.device('tpu'))
-    y = torch.ones(11, device=torch.device('tpu'))
-
-    self.assertFalse(sync.is_materializing(x))
-    self.assertFalse(sync.is_materializing(y))
-
-    # torch.tpu.synchronize() maps to _device_ops_backend._synchronize(None)
-    # which maps to TpuDeviceGuardImpl::synchronizeDevice()
-    # which calls MaterializeAll(true) and SynchronizeStream()
-    torch.tpu.synchronize()
-
-    self.assertTrue(sync.is_materializing(x))
-    self.assertTrue(sync.is_materializing(y))
-
-  def test_synchronize_device_ready(self):
-    x = torch.ones(10, device=torch.device('tpu'))
-    y = torch.ones(11, device=torch.device('tpu'))
-
-    self.assertFalse(sync.is_materialized(x))
-    self.assertFalse(sync.is_materialized(y))
-
-    torch.tpu.synchronize()
-
-    self.assertTrue(sync.is_materialized(x))
-    self.assertTrue(sync.is_materialized(y))
 
   def test_accelerator_synchronize_device_materialized(self):
     x = torch.ones(10, device=torch.device('tpu'))
@@ -95,7 +68,7 @@ class SynchronizeTest(seed_test_utils.RepeatableTest):
     x = torch.ones(100, 100, device='tpu')
     y = x + 1.0
 
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
     self.assertTrue(sync.is_materialized(y))
 
   def test_synchronize_event_defer_never(self):
@@ -121,7 +94,7 @@ class SynchronizeTest(seed_test_utils.RepeatableTest):
 
     # Synchronizing the entire device to ensure the stream's pending futures
     # are correctly tracked and waited on
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
     self.assertTrue(sync.is_materialized(y))
 
   def test_sync_list_with_empty_and_non_empty(self):
@@ -129,29 +102,9 @@ class SynchronizeTest(seed_test_utils.RepeatableTest):
     y_cpu = torch.ones(10, 0, device='cpu')
     y = y_cpu.to(torch.device('tpu'))
     # Should not raise error.
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
     del y
     self.assertTrue(sync.is_materialized(x))
-
-  def test_synchronize_from_multiple_threads(self):
-
-    size = 8192 * 8192
-    t_tpu = torch.ones(size, device='tpu', dtype=torch.float32)
-    t_cpu = torch.empty(size, device='cpu', pin_memory=True)
-
-    t_cpu.copy_(t_tpu, non_blocking=True)
-
-    def sync_and_check():
-      torch.tpu.synchronize()
-      utils.assert_close(t_cpu, torch.ones(size, dtype=torch.float32))
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-      futures = [
-          executor.submit(sync_and_check),
-          executor.submit(sync_and_check),
-      ]
-      for future in concurrent.futures.as_completed(futures):
-        future.result()
 
   def test_accelerator_synchronize_from_multiple_threads(self):
 
@@ -172,19 +125,6 @@ class SynchronizeTest(seed_test_utils.RepeatableTest):
       ]
       for future in concurrent.futures.as_completed(futures):
         future.result()
-
-  def test_synchronize_compiled_mode(self):
-    def func(lhs, rhs):
-      return lhs.mm(rhs)
-
-    compiled = torch.compile(func, backend='tpu')
-
-    x = torch.ones(256, 256, dtype=torch.float32, device='tpu')
-    y = compiled(x, x)
-    torch.tpu.synchronize()
-    self.assertTrue(sync.is_materialized(y))
-    expected = torch.full((256, 256), 256.0, dtype=torch.float32, device='cpu')
-    utils.assert_close(y.cpu(), expected)
 
   def test_accelerator_synchronize_compiled_mode(self):
     def func(lhs, rhs):

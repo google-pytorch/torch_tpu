@@ -14,9 +14,9 @@ Use this reference to quickly translate CUDA-based code to TorchTPU.
 
 CUDA API                             | TPU API                                        | Description
 :----------------------------------- | :--------------------------------------------- | :----------
-`torch.cuda.is_available()`          | `torch.tpu.is_available()`                     | Checks if the TPU backend is ready.
-`torch.cuda.device_count()`          | `torch.tpu.device_count()`                     | Number of devices assigned to the process.
-`torch.cuda.current_device()`        | `torch.tpu.current_device()`                   | Returns the active core index.
+`torch.cuda.is_available()`          | `torch.accelerator.is_available()`             | Checks if the TPU backend is ready.
+`torch.cuda.device_count()`          | `torch.accelerator.device_count()`             | Number of devices assigned to the process.
+`torch.cuda.current_device()`        | `torch.accelerator.current_device_index()`     | Returns the active core index.
 `torch.cuda.get_device_properties()` | *(Implicit in `torch.device("tpu")`)*          | Hardware metadata via PjRt logs.
 `torch.cuda.set_device(rank)`        | Handled automatically by `torch.device("tpu")` | Backend init is automatic.
 
@@ -26,10 +26,10 @@ import torch
 # Initialize hardware
 device = torch.device("tpu")
 
-print(f"torch.tpu.is_available():    {torch.tpu.is_available()}")
+print(f"torch.accelerator.is_available():    {torch.accelerator.is_available()}")
 print(f"torch.accelerator.is_available(): {torch.accelerator.is_available()}")
-print(f"torch.tpu.device_count():    {torch.tpu.device_count()}")
-print(f"torch.tpu.current_device():  {torch.tpu.current_device()}")
+print(f"torch.accelerator.device_count():    {torch.accelerator.device_count()}")
+print(f"torch.accelerator.current_device_index():  {torch.accelerator.current_device_index()}")
 ```
 
 ## **Random Number Generation**
@@ -65,14 +65,11 @@ print(f"AMP supported dtypes: {supported_dtypes}")
 The `torch.tpu` module provides `Stream` and `Event` objects to maintain API
 parity with CUDA.
 
-| CUDA API                      | TPU API                      | Status        |
-| :---------------------------- | :--------------------------- | :------------ |
-| `torch.cuda.current_stream()` | `torch.tpu.current_stream()` | **Placeholder |
-:                               :                              : (dummy)**     :
-| `torch.cuda.default_stream()` | `torch.tpu.default_stream()` | **Placeholder |
-:                               :                              : (dummy)**     :
-| `torch.cuda.set_stream()`     | `torch.tpu.set_stream()`     | **Placeholder |
-:                               :                              : (dummy)**     :
+CUDA API                      | TPU API                              | Status
+:---------------------------- | :----------------------------------- | :-----
+`torch.cuda.current_stream()` | `torch.accelerator.current_stream()` | **Placeholder (dummy)**
+`torch.cuda.default_stream()` | `torch.tpu.default_stream()`         | **Placeholder (dummy)**
+`torch.cuda.set_stream()`     | `torch.accelerator.set_stream()`     | **Placeholder (dummy)**
 
 > [!NOTE] In TorchTPU's deferred execution model, the XLA compiler and PjRt
 > runtime manage execution ordering and hardware concurrency automatically.

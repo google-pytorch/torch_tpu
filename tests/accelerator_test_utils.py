@@ -61,6 +61,5 @@ def get_device(
 
 def set_active_device(backend_name: str, device_idx: int) -> torch.device:
   """Sets active device to device_idx and returns torch.device."""
-  backend_mod = get_backend_module(backend_name)
-  backend_mod.set_device(device_idx)
+  torch.accelerator.set_device_index(device_idx)
   return get_device(backend_name, device_idx)
