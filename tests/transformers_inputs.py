@@ -1434,17 +1434,22 @@ _VISION_EXTRA_BUILDERS: tuple[tuple[_Matcher, _Builder], ...] = (
 
 
 def _build_vision_inputs(
-    ctx: InputContext, model_dir: str | None = None
+    ctx: InputContext,
+    model_dir: str | None = None,
+    preprocessor_loader: Callable[[str], Any] | None = None,
 ) -> dict[str, Any]:
   """Builds inputs for vision models."""
   image_size = _parse_image_size(ctx.config)
 
   processor = None
   if model_dir and _HAS_TRANSFORMERS:
-    try:
-      processor = transformers.AutoProcessor.from_pretrained(model_dir)
-    except Exception:  # pylint: disable=broad-except
-      pass
+    if preprocessor_loader is not None:
+      processor = preprocessor_loader(model_dir)
+    else:
+      try:
+        processor = transformers.AutoProcessor.from_pretrained(model_dir)
+      except Exception:  # pylint: disable=broad-except
+        pass
 
   if (
       processor
@@ -2241,12 +2246,12 @@ def _build_multimodal_inputs(ctx: InputContext) -> dict[str, Any]:
 
 
 _INPUT_BUILDERS_BY_MODALITY = {
-    "text": lambda ctx, md: _build_text_inputs(ctx),
-    "causal_lm": lambda ctx, md: _build_text_inputs(ctx),
-    "seq2seq": lambda ctx, md: _build_text_inputs(ctx),
-    "vision": lambda ctx, md: _build_vision_inputs(ctx, md),
-    "audio": lambda ctx, md: _build_audio_inputs(ctx),
-    "multimodal": lambda ctx, md: _build_multimodal_inputs(ctx),
+    "text": lambda ctx, md, pl: _build_text_inputs(ctx),
+    "causal_lm": lambda ctx, md, pl: _build_text_inputs(ctx),
+    "seq2seq": lambda ctx, md, pl: _build_text_inputs(ctx),
+    "vision": lambda ctx, md, pl: _build_vision_inputs(ctx, md, pl),
+    "audio": lambda ctx, md, pl: _build_audio_inputs(ctx),
+    "multimodal": lambda ctx, md, pl: _build_multimodal_inputs(ctx),
 }
 
 
@@ -2256,6 +2261,7 @@ def generate_transformers_inputs(
     shape: Sequence[int] | None = None,
     device: str = "cpu",
     model_dir: str | None = None,
+    preprocessor_loader: Callable[[str], Any] | None = None,
 ) -> dict[str, Any]:
   """Generates dummy inputs for a Transformers model based on its modality.
 
@@ -2266,6 +2272,8 @@ def generate_transformers_inputs(
     device: The target device for the inputs.
     model_dir: Optional local path to the model directory (for loading
       processor).
+    preprocessor_loader: Optional callable taking `model_dir` and returning a
+      loaded processor.
 
   Returns:
     A dictionary of input tensors.
@@ -2277,8 +2285,8 @@ def generate_transformers_inputs(
   if "." in mod_key:
     mod_key = mod_key.split(".")[-1]
   builder = _INPUT_BUILDERS_BY_MODALITY.get(
-      mod_key, lambda c, md: _build_text_inputs(c)
+      mod_key, lambda c, md, pl: _build_text_inputs(c)
   )
-  input_kwargs = builder(ctx, model_dir)
+  input_kwargs = builder(ctx, model_dir, preprocessor_loader)
   _add_encoder_decoder_inputs(ctx, input_kwargs, mod_key)
   return _cast_floating_point_inputs(ctx.config, input_kwargs)

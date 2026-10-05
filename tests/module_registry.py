@@ -32,6 +32,7 @@ import abc
 from collections.abc import Callable, Mapping, Sequence
 import copy
 import enum
+import functools
 from importlib import resources
 from importlib.resources import abc as resources_abc
 import inspect
@@ -675,9 +676,68 @@ class _ConfigCacheManager:
 _CONFIG_CACHE = _ConfigCacheManager()
 
 
+_PreprocessorCacheKey = tuple[Any, ...]
+
+
+class _PreprocessorCacheManager:
+  """Thread-safe in-memory cache manager for model preprocessors and tokenizers."""
+
+  def __init__(self):
+    self._global_lock = threading.Lock()
+    self._key_locks: dict[_PreprocessorCacheKey, threading.Lock] = {}
+    self._cache: dict[_PreprocessorCacheKey, Any] = {}
+
+  def __len__(self) -> int:
+    with self._global_lock:
+      return len(self._cache)
+
+  def clear(self) -> None:
+    """Clears all cached preprocessors and tokenizers."""
+    with self._global_lock:
+      self._cache.clear()
+
+  def _get_key_lock(self, key: _PreprocessorCacheKey) -> threading.Lock:
+    with self._global_lock:
+      if key not in self._key_locks:
+        self._key_locks[key] = threading.Lock()
+      return self._key_locks[key]
+
+  def get_or_load(
+      self,
+      key: _PreprocessorCacheKey,
+      loader: Callable[[], Any],
+  ) -> Any:
+    """Gets cached preprocessor or loads and stores it atomically per key."""
+    with self._global_lock:
+      if key in self._cache:
+        return self._cache[key]
+
+    key_lock = self._get_key_lock(key)
+    with key_lock:
+      with self._global_lock:
+        if key in self._cache:
+          return self._cache[key]
+
+      fresh_entry = loader()
+
+      with self._global_lock:
+        self._cache[key] = fresh_entry
+
+      return fresh_entry
+
+
+_PREPROCESSOR_CACHE = _PreprocessorCacheManager()
+
+
+def clear_preprocessor_cache() -> None:
+  """Clears the in-memory preprocessor and tokenizer cache."""
+  _PREPROCESSOR_CACHE.clear()
+
+
 def clear_config_cache() -> None:
-  """Clears the in-memory config cache for all providers."""
+  """Clears the in-memory config and preprocessor caches for all providers."""
   _CONFIG_CACHE.clear()
+  _PREPROCESSOR_CACHE.clear()
 
 
 class _ConfigWrapper:
@@ -913,7 +973,11 @@ class ModuleSpec:
   ):
     self.module_factory = module_factory
     self.sample_inputs_factory = sample_inputs_factory
-    self.preprocessor_factory = preprocessor_factory
+    self.preprocessor_factory: Callable[[], Any] | None = (
+        functools.cache(preprocessor_factory)
+        if preprocessor_factory is not None
+        else None
+    )
     self.config = config
     self.modality = modality
 
@@ -1734,6 +1798,42 @@ def _extract_target_dtype(config: Any) -> torch.dtype:
   return torch.float32
 
 
+def _load_transformers_preprocessor(
+    model_dir_or_repo_id: epath.PathLike | str | None,
+    modality: Modality | None = None,
+) -> Any:
+  """Loads and caches a HuggingFace processor or tokenizer for a model path."""
+  if model_dir_or_repo_id is None or not _HAS_TRANSFORMERS:
+    return None
+  model_path_str = str(model_dir_or_repo_id)
+  prefer_tokenizer = modality in (
+      Modality.CAUSAL_LM,
+      Modality.TEXT,
+      Modality.SEQ2SEQ,
+  )
+  cache_key = ("transformers", model_path_str, prefer_tokenizer)
+
+  def _loader() -> Any:
+    if prefer_tokenizer:
+      loaders = (
+          transformers.AutoTokenizer.from_pretrained,
+          transformers.AutoProcessor.from_pretrained,
+      )
+    else:
+      loaders = (
+          transformers.AutoProcessor.from_pretrained,
+          transformers.AutoTokenizer.from_pretrained,
+      )
+    for load_fn in loaders:
+      try:
+        return load_fn(model_path_str)
+      except Exception:  # pylint: disable=broad-except
+        continue
+    return None
+
+  return _PREPROCESSOR_CACHE.get_or_load(cache_key, _loader)
+
+
 def _sanitize_transformers_config_dict(
     config_dict: dict[str, Any],
     load_weights: bool = False,
@@ -2098,20 +2198,9 @@ class TransformersProvider(BaseProvider):
 
       model_fn = _create_model
 
-    def _load_preprocessor():
-      try:
-        return transformers.AutoProcessor.from_pretrained(
-            str(model_dir_or_repo_id)
-        )
-      except Exception:  # pylint: disable=broad-except
-        try:
-          return transformers.AutoTokenizer.from_pretrained(
-              str(model_dir_or_repo_id)
-          )
-        except Exception:  # pylint: disable=broad-except
-          return None
-
-    preprocessor_fn = _load_preprocessor
+    preprocessor_fn = lambda: _load_transformers_preprocessor(
+        model_dir_or_repo_id, modality=modality
+    )
 
     def _input_fn(
         shape=None, device="cpu"
@@ -2122,7 +2211,14 @@ class TransformersProvider(BaseProvider):
           else None
       )
       input_kwargs = transformers_inputs.generate_transformers_inputs(
-          config, modality, shape, device, model_dir
+          config,
+          modality,
+          shape,
+          device,
+          model_dir,
+          preprocessor_loader=lambda d: _load_transformers_preprocessor(
+              d, modality=Modality.VISION
+          ),
       )
       return (), input_kwargs
 

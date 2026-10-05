@@ -2058,6 +2058,158 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     model = spec_random.module_factory()
     self.assertIsNotNone(model)
 
+  def test_transformers_preprocessor_cache_and_text_modality_priority(self):
+    module_registry.clear_config_cache()
+    model_name = "google/gemma-3-270m"
+
+    fake_tokenizer = mock.MagicMock(name="FakeTokenizer")
+    fake_processor = mock.MagicMock(name="FakeProcessor")
+    with (
+        mock.patch.object(
+            module_registry.transformers.AutoTokenizer,
+            "from_pretrained",
+            return_value=fake_tokenizer,
+        ) as mock_tok_load,
+        mock.patch.object(
+            module_registry.transformers.AutoProcessor,
+            "from_pretrained",
+            return_value=fake_processor,
+        ) as mock_proc_load,
+    ):
+      spec1 = self.module_registry.get_module_spec("transformers", model_name)
+      spec2 = self.module_registry.get_module_spec("transformers", model_name)
+
+      p1 = spec1.preprocessor_factory()
+      p2 = spec1.preprocessor_factory()
+      p3 = spec2.preprocessor_factory()
+
+      self.assertIs(p1, fake_tokenizer)
+      self.assertIs(p2, fake_tokenizer)
+      self.assertIs(p3, fake_tokenizer)
+      mock_tok_load.assert_called_once()
+      mock_proc_load.assert_not_called()
+
+      # Text modalities (CAUSAL_LM, TEXT, SEQ2SEQ) share the same cache entry
+      for text_mod in (
+          module_registry.Modality.CAUSAL_LM,
+          module_registry.Modality.TEXT,
+          module_registry.Modality.SEQ2SEQ,
+      ):
+        loaded = module_registry._load_transformers_preprocessor(
+            "/tmp/fake_text_model", modality=text_mod
+        )
+        self.assertIs(loaded, fake_tokenizer)
+      # 1 call for gemma-3-270m + 1 call for /tmp/fake_text_model across all 3 text modalities
+      self.assertEqual(mock_tok_load.call_count, 2)
+
+      # Non-text modalities (VISION, MULTIMODAL, None) share the same cache entry
+      for non_text_mod in (
+          module_registry.Modality.VISION,
+          module_registry.Modality.MULTIMODAL,
+          None,
+      ):
+        loaded_proc = module_registry._load_transformers_preprocessor(
+            "/tmp/fake_vlm_model", modality=non_text_mod
+        )
+        self.assertIs(loaded_proc, fake_processor)
+      mock_proc_load.assert_called_once()
+
+      # Vision input generation reuses the cached processor via preprocessor_loader
+      fake_processor.size = {"height": 384}
+      vision_cfg = mock.MagicMock(
+          model_type="vit",
+          architectures=["ViTModel"],
+          image_size=224,
+          num_channels=3,
+      )
+      vision_inputs = transformers_inputs.generate_transformers_inputs(
+          vision_cfg,
+          module_registry.Modality.VISION,
+          model_dir="/tmp/fake_vlm_model",
+          preprocessor_loader=lambda d: (
+              module_registry._load_transformers_preprocessor(
+                  d, modality=module_registry.Modality.VISION
+              )
+          ),
+      )
+      self.assertEqual(vision_inputs["pixel_values"].shape, (1, 3, 384, 384))
+      mock_proc_load.assert_called_once()
+
+    self.assertNotEmpty(module_registry._PREPROCESSOR_CACHE)
+    module_registry.clear_preprocessor_cache()
+    self.assertEmpty(module_registry._PREPROCESSOR_CACHE)
+
+  def test_transformers_preprocessor_text_modality_fallback_to_processor(self):
+    module_registry.clear_config_cache()
+    model_name = "google/gemma-3-270m"
+
+    fake_processor = mock.MagicMock(name="FakeProcessor")
+    with (
+        mock.patch.object(
+            module_registry.transformers.AutoTokenizer,
+            "from_pretrained",
+            side_effect=OSError("no tokenizer"),
+        ) as mock_tok_load,
+        mock.patch.object(
+            module_registry.transformers.AutoProcessor,
+            "from_pretrained",
+            return_value=fake_processor,
+        ) as mock_proc_load,
+    ):
+      spec = self.module_registry.get_module_spec("transformers", model_name)
+      loaded = spec.preprocessor_factory()
+      self.assertIs(loaded, fake_processor)
+      mock_tok_load.assert_called_once()
+      mock_proc_load.assert_called_once()
+
+  def test_concurrent_preprocessor_cache_access(self):
+    module_registry.clear_config_cache()
+    model_name = "google/gemma-3-270m"
+    spec = self.module_registry.get_module_spec("transformers", model_name)
+    module_registry.clear_preprocessor_cache()
+
+    num_threads = 10
+    results: list[object] = [None] * num_threads
+    errors: list[Exception] = []
+    call_count = [0]
+    count_lock = threading.Lock()
+    fake_tokenizer = mock.MagicMock(name="ConcurrentTokenizer")
+
+    def instrumented_load(*unused_args, **unused_kwargs):
+      with count_lock:
+        call_count[0] += 1
+      time.sleep(0.01)
+      return fake_tokenizer
+
+    with mock.patch.object(
+        module_registry.transformers.AutoTokenizer,
+        "from_pretrained",
+        side_effect=instrumented_load,
+    ):
+
+      def worker(idx):
+        try:
+          local_spec = self.module_registry.get_module_spec(
+              "transformers", model_name
+          )
+          results[idx] = local_spec.preprocessor_factory()
+        except Exception as exc:  # pylint: disable=broad-except
+          errors.append(exc)
+
+      threads = [
+          threading.Thread(target=worker, args=(i,)) for i in range(num_threads)
+      ]
+      for t in threads:
+        t.start()
+      for t in threads:
+        t.join()
+
+    self.assertEmpty(errors)
+    self.assertEqual(call_count[0], 1)
+    for res in results:
+      self.assertIs(res, fake_tokenizer)
+    self.assertIs(spec.preprocessor_factory(), fake_tokenizer)
+
 
 if __name__ == "__main__":
   absltest.main()
