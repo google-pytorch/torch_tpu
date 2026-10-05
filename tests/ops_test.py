@@ -31,7 +31,6 @@ from torch.nn import attention
 from torch_tpu._internal.utils import test_utils
 from tests import dynamism_test_utils
 from tests import op_testing
-from tests import oss_utils
 from tests import quantize_utils
 
 _TEST_CATEGORIES = flags.DEFINE_list(
@@ -2065,9 +2064,7 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_foreach_erf(self):
     self.do_test_op("_foreach_erf")
 
-  # TODO(b/535650392): Re-enable this testin OS once the bug is fixed.
   @category("foreach")
-  @oss_utils.skip_in_oss()
   def test_foreach_erfc(self):
     self.do_test_op("_foreach_erfc")
 
@@ -2629,8 +2626,6 @@ class TestOps(op_testing.OpInfoTestBase):
         ),
     )
 
-  # TODO(b/535650392): re-enable this test in OSS.
-  @oss_utils.skip_in_oss()
   def test_linalg_inv_ex_out(self):
     self.do_test_op(
         "linalg.inv",
@@ -2643,9 +2638,23 @@ class TestOps(op_testing.OpInfoTestBase):
             "gpu": INTEGRAL_DTYPES + (torch.half, torch.bfloat16),
         },
         # TODO(b/495521055): linalg.inv fails with complex64 with compile.
+        # Note: F64 LuDecomposition requires libtpu >= 0.0.42. We must filter
+        # float64 via skip_if (evaluated after golden lookup) rather than
+        # adding torch.float64 to exclude_dtypes["gpu"], because
+        # exclude_dtypes["gpu"] alters the candidate dtypes passed to
+        # find_cast_pairs(), shifting illegal_pair from (complex64, float64) to
+        # (complex64, float32) which is not present in the recorded GPU golden
+        # files.
         skip_if=lambda device, variant, op_input: (
-            op_testing.is_compiled_mode()
-            and op_input.input_value.dtype in COMPLEX_DTYPES
+            (
+                op_testing.is_compiled_mode()
+                and op_input.input_value.dtype in COMPLEX_DTYPES
+            )
+            or (
+                op_input.input_value.dtype == torch.float64
+                and (libtpu := test_utils.libtpu_version()) is not None
+                and libtpu < (0, 0, 42)
+            )
         ),
     )
 
@@ -2711,8 +2720,6 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_log_sigmoid(self):
     self.do_test_op("nn.functional.logsigmoid")
 
-  # TODO(b/535650392): re-enable this test in OSS.
-  @oss_utils.skip_in_oss()
   def test_log_softmax(self):
     self.do_test_op("log_softmax")
 
@@ -2976,8 +2983,6 @@ class TestOps(op_testing.OpInfoTestBase):
         skip_if=_native_batch_norm_notrain_cpu,
     )
 
-  # TODO(b/535650392): re-enable this test in OSS.
-  @oss_utils.skip_in_oss()
   def test_native_group_norm(self):
     # TODO: b/470451730 look into the high errors for bfloat16.
     # torch.bfloat16: {"rtol": 4.1, "atol": 4.0},
@@ -2993,8 +2998,6 @@ class TestOps(op_testing.OpInfoTestBase):
         + (torch.float64,),
     )
 
-  # TODO(b/535650392): Re-enable this testin OS once the bug is fixed.
-  @oss_utils.skip_in_oss()
   def test_native_layer_norm(self):
     self.do_test_op(
         "native_layer_norm",
@@ -3123,8 +3126,6 @@ class TestOps(op_testing.OpInfoTestBase):
         },
     )
 
-  # TODO(b/535650392): Re-enable this testin OS once the bug is fixed.
-  @oss_utils.skip_in_oss()
   def test_nn_functional_conv_transpose1d(self):
     self.do_test_op(
         "nn.functional.conv_transpose1d",
@@ -3531,8 +3532,6 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_slice(self):
     self.do_test_op("slice")
 
-  # TODO(b/535650392): Re-enable this testin OS once the bug is fixed.
-  @oss_utils.skip_in_oss()
   def test_softmax(self):
     self.do_test_op("softmax")
 
@@ -3946,8 +3945,6 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_where(self):
     self.do_test_op("where")
 
-  # TODO(b/535650392): Re-enable this testin OS once the bug is fixed.
-  @oss_utils.skip_in_oss()
   def test_xlogy(self):
     self.do_test_op(
         "xlogy",

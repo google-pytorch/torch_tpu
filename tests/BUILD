@@ -458,7 +458,6 @@ torch_tpu_py_test(
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
-        ":oss_utils",
         ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
@@ -506,7 +505,6 @@ torch_tpu_py_test(
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
-        ":oss_utils",
         ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
@@ -554,7 +552,6 @@ torch_tpu_py_test(
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
-        ":oss_utils",
         ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
@@ -601,7 +598,6 @@ torch_tpu_py_test(
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
-        ":oss_utils",
         ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
@@ -648,7 +644,6 @@ torch_tpu_py_test(
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
-        ":oss_utils",
         ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
@@ -697,7 +692,6 @@ torch_tpu_py_test(
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
-        ":oss_utils",
         ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
@@ -746,7 +740,6 @@ torch_tpu_py_test(
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
-        ":oss_utils",
         ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
@@ -791,7 +784,6 @@ torch_tpu_py_test(
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
-        ":oss_utils",
         ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
@@ -840,7 +832,6 @@ torch_tpu_py_test(
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
-        ":oss_utils",
         ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
@@ -890,7 +881,6 @@ torch_tpu_py_test(
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
-        ":oss_utils",
         ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
@@ -933,7 +923,6 @@ torch_tpu_py_test(
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
-        ":oss_utils",
         ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
@@ -978,7 +967,6 @@ torch_tpu_py_test(
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
-        ":oss_utils",
         ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
@@ -1015,7 +1003,6 @@ torch_tpu_py_test(
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
-        ":oss_utils",
         ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
@@ -1044,7 +1031,6 @@ torch_tpu_py_test(
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
-        ":oss_utils",
         ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
@@ -1070,7 +1056,6 @@ torch_tpu_py_test(
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
-        ":oss_utils",
         ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
@@ -1099,7 +1084,6 @@ torch_tpu_py_test(
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
-        ":oss_utils",
         ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
@@ -1121,7 +1105,6 @@ torch_tpu_py_test(
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
-        ":oss_utils",
         ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
@@ -1214,7 +1197,6 @@ torch_tpu_py_test(
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
-        ":oss_utils",
         ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
@@ -1239,7 +1221,6 @@ torch_tpu_py_test(
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
-        ":oss_utils",
         ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
@@ -1265,7 +1246,6 @@ torch_tpu_py_test(
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
-        ":oss_utils",
         ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
