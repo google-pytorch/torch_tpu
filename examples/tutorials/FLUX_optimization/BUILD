@@ -20,8 +20,8 @@ package(
 )
 
 torch_tpu_py_library(
-    name = "flux_baseline",
-    srcs = ["flux_baseline.py"],
+    name = "flux",
+    srcs = ["flux.py"],
     deps = [
         "//shims/torch:pytorch",
         "@pypi//einops",
@@ -29,9 +29,9 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_test(
-    name = "flux_baseline_test",
+    name = "flux_test",
     size = "large",
-    srcs = ["flux_baseline_test.py"],
+    srcs = ["flux_test.py"],
     nopresubmit = "Slow tutorial",
     tags = [
         "requires-accel-hbm",
@@ -39,9 +39,27 @@ torch_tpu_py_test(
         "requires-tpu-v6e",
     ],
     deps = [
-        ":flux_baseline",
+        ":flux",
         "//shims/absl_py/flags",
         "//shims/absl_py/logging",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "flux_rope_parity_test",
+    size = "large",
+    srcs = ["flux_rope_parity_test.py"],
+    nopresubmit = "Requires TPU hardware",
+    tags = [
+        "requires-accel-hbm",
+        "requires-net:external",
+        "requires-tpu-v6e",
+    ],
+    deps = [
+        ":flux",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
