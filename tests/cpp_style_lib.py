@@ -149,10 +149,23 @@ class CppFile:
 
     Will generate result containing (["foo", "bar", ""], "void Baz() {}").
     """
+    for _, active_namespaces, line in self.get_namespace_with_line_number():
+      yield active_namespaces, line
+
+  def get_namespace_with_line_number(
+      self,
+  ) -> Generator[tuple[int, list[str], str], None, None]:
+    """Like `get_namespace`, but also yields the 1-based line number first.
+
+    For lines that open or close a namespace, the yielded namespaces are the
+    ones active *before* the line takes effect.
+    """
 
     namespace_stack = []
 
-    for line in self.path.read_text().splitlines():
+    for line_number, line in enumerate(
+        self.path.read_text().splitlines(), start=1
+    ):
       if not line:
         continue
 
@@ -160,7 +173,7 @@ class CppFile:
       if match:
         name = match.group(1)
         segments = name.split("::")
-        yield (list(namespace_stack), line)
+        yield (line_number, list(namespace_stack), line)
         namespace_stack.extend(segments)
         continue
 
@@ -168,12 +181,12 @@ class CppFile:
       if match:
         name = match.group(1)
         segments = name.split("::")
-        yield (list(namespace_stack), line)
+        yield (line_number, list(namespace_stack), line)
         for _ in reversed(segments):
           namespace_stack.pop()
         continue
 
-      yield (list(namespace_stack), line)
+      yield (line_number, list(namespace_stack), line)
 
 
 class CppCode:
@@ -324,10 +337,56 @@ def check_header_guard(file: CppFile) -> list[str]:
   return errors
 
 
-# TODO(lukeboyer): Consider more general checks that monitor first-level
-# namespaces other than torch_tpu.
+_APPROVED_NESTED_NAMESPACES = frozenset({"error", "internal"})
+
+# Exempts one namespace opening from `check_namespace_root`, and from the
+# "torch_tpu must be outermost" part of `check_unapproved_namespace`, when placed
+# in a trailing comment on the line that opens it.
+_NON_TORCH_TPU_MARKER = "NON_TORCH_TPU_OK"
+_NON_TORCH_TPU_MARKER_RE = re.compile(
+    rf"//.*\b{_NON_TORCH_TPU_MARKER}\b(?:=(?P<reason>.*))?"
+)
+
+
+def _has_marker_with_reason(line: str) -> bool:
+  """Returns True if `line` has a `NON_TORCH_TPU_OK` marker with a reason."""
+  marker = _NON_TORCH_TPU_MARKER_RE.search(line)
+  return bool(marker and (marker.group("reason") or "").strip())
+
+
+def _format_namespace(segments: list[str]) -> str:
+  """Formats namespace segments for error messages, e.g. `foo::(anonymous)`."""
+  return "::".join(segment or "(anonymous)" for segment in segments)
+
+
+def _nested_namespace_error(active_namespaces: list[str]) -> str | None:
+  """Returns why `active_namespaces` is an invalid nesting, or None if valid."""
+  if "torch_tpu" in active_namespaces[1:]:
+    return (
+        "torch_tpu must only be used as the outermost namespace, got"
+        f" {_format_namespace(active_namespaces)}"
+    )
+  if not active_namespaces or active_namespaces[0] != "torch_tpu":
+    return None
+  namespaces_to_check = active_namespaces[1:]
+  # We only permit the inner-most namespace to be anonymous.
+  if namespaces_to_check and not namespaces_to_check[-1]:
+    namespaces_to_check.pop(-1)
+  if all(n in _APPROVED_NESTED_NAMESPACES for n in namespaces_to_check):
+    return None
+  return (
+      "Only approved named namespaces allowed under torch_tpu:"
+      f" {sorted(_APPROVED_NESTED_NAMESPACES)}, got {namespaces_to_check}"
+  )
+
+
 def check_unapproved_namespace(file: CppFile) -> list[str]:
-  """Checks if a CppFile uses any unapproved nested namespaces under torch_tpu.
+  """Checks if a CppFile uses any unapproved nested namespaces.
+
+  Namespaces nested under torch_tpu must be one of the approved names, and only
+  the inner-most one may be anonymous. torch_tpu itself must only appear as the
+  outermost namespace (e.g. `mlir::torch_tpu` is an error), unless the line that
+  opens the offending namespace has a `// NON_TORCH_TPU_OK=<reason>` marker.
 
   Args:
     file: The CppFile to check.
@@ -336,20 +395,74 @@ def check_unapproved_namespace(file: CppFile) -> list[str]:
     A list of strings, where each string is an error message. Empty results mean
     no improper usage.
   """
-  approved = {"error", "internal"}
-  approved_msg = str(sorted(approved))
   errors = []
-  for active_namespaces, line in file.get_namespace():
-    if len(active_namespaces) <= 1 or active_namespaces[0] != "torch_tpu":
+  for (
+      line_number,
+      active_namespaces,
+      line,
+  ) in file.get_namespace_with_line_number():
+    match = _NAMESPACE_START_RE.match(line)
+    if not match:
       continue
-    # We only permit the inner-most namespace to be anonymous.
-    if not active_namespaces[-1]:
-      active_namespaces.pop(-1)
-    namespaces_to_check = active_namespaces[1:]
-    if not all(n in approved for n in namespaces_to_check):
+    opened_namespaces = active_namespaces + match.group(1).split("::")
+    error = _nested_namespace_error(opened_namespaces)
+    # Only report the namespace that introduces the problem, not every
+    # namespace nested inside of it.
+    if not error or _nested_namespace_error(active_namespaces):
+      continue
+    if "torch_tpu" in opened_namespaces[1:] and _has_marker_with_reason(line):
+      continue
+    errors.append(f"{file.torch_tpu_path}:{line_number}: {error}")
+
+  return errors
+
+
+def check_namespace_root(file: CppFile) -> list[str]:
+  """Checks that every top-level namespace in a CppFile is rooted at torch_tpu.
+
+  Every `namespace ... {` that is not nested in another namespace must start
+  with `torch_tpu`, so e.g. `namespace mlir::torch_tpu {`, `namespace xla {` and
+  a top-level anonymous `namespace {` are errors.
+
+  Extending a third-party namespace is occasionally unavoidable (e.g. for
+  registration macros or forward declarations that must not pull in external
+  headers). Such a namespace block can be exempted by adding a trailing comment
+  on the line that opens it, in the form `// NON_TORCH_TPU_OK=<reason>`. The
+  reason must be non-empty.
+
+  Args:
+    file: The CppFile to check.
+
+  Returns:
+    A list of strings, where each string is an error message. Empty results mean
+    no improper usage.
+  """
+  errors = []
+  for (
+      line_number,
+      active_namespaces,
+      line,
+  ) in file.get_namespace_with_line_number():
+    match = _NAMESPACE_START_RE.match(line)
+    if not match or active_namespaces:
+      continue
+    segments = match.group(1).split("::")
+    if segments[0] == "torch_tpu":
+      continue
+    location = f"{file.torch_tpu_path}:{line_number}"
+    if _has_marker_with_reason(line):
+      continue
+    if _NON_TORCH_TPU_MARKER_RE.search(line):
       errors.append(
-          f"{line}: Only approved named namespaces allowed under torch_tpu:"
-          f" {approved_msg}, got {namespaces_to_check}"
+          f"{location}: {_NON_TORCH_TPU_MARKER} requires a reason, e.g."
+          f" `// {_NON_TORCH_TPU_MARKER}=<reason>`, got: {line.strip()}"
       )
+      continue
+    errors.append(
+        f"{location}: Namespaces must be rooted at torch_tpu, got"
+        f" {_format_namespace(segments)}. If extending this namespace is"
+        " unavoidable, add a trailing"
+        f" `// {_NON_TORCH_TPU_MARKER}=<reason>` comment on the same line."
+    )
 
   return errors

@@ -25,7 +25,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "xla/mosaic/dialect/tpu/tpu_dialect.h"
 
-namespace mlir::torch_tpu {
+namespace mlir::torch_tpu {  // NON_TORCH_TPU_OK=TODO(willfroom): migrate this.
 
 // Configuration for the flash attention kernel.
 struct FlashAttnConfig {

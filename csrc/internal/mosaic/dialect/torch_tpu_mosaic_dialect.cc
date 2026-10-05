@@ -16,7 +16,7 @@
 
 #include "csrc/internal/mosaic/dialect/torch_tpu_mosaic_dialect.cc.inc"
 
-namespace mlir::torch_tpu_mosaic {
+namespace mlir::torch_tpu_mosaic {  // NON_TORCH_TPU_OK=TableGen cppNamespace
 
 void TorchTpuMosaicDialect::initialize() {
   addAttributes<

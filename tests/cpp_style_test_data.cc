@@ -69,3 +69,19 @@ namespace {
 void Baz3() { torch_tpu::TorchTpuClass(); }
 }  // namespace
 }  // namespace torch_tpu
+
+namespace mlir::torch_tpu {
+void Qux() { torch_tpu::TorchTpuClass(); }
+}  // namespace mlir::torch_tpu
+
+namespace foo::torch_tpu {  // NON_TORCH_TPU_OK=Testing nested torch_tpu.
+void Qux2() { ::torch_tpu::TorchTpuClass(); }
+}  // namespace foo::torch_tpu
+
+namespace third_party {  // NON_TORCH_TPU_OK=Testing the suppression marker.
+void Qux3() { torch_tpu::TorchTpuClass(); }
+}  // namespace third_party
+
+namespace no_reason {  // NON_TORCH_TPU_OK=
+void Qux4() { torch_tpu::TorchTpuClass(); }
+}  // namespace no_reason

@@ -68,6 +68,16 @@ class CppStyleTest(absltest.TestCase):  # ABSLTEST_OK=avoid heavy dependencies
         (["foo", "bar"], "void Foo5() { torch_tpu::TorchTpuClass(); }"), output
     )
 
+  def test_namespace_with_line_number(self):
+    cpp_code = style.CppCode("tests")
+    file = cpp_code.find_file("cpp_style_test_data.cc")
+
+    output = list(file.get_namespace_with_line_number())
+    self.assertIn(
+        (23, ["torch_tpu"], "void Foo() { torch_tpu::TorchTpuClass(); }"),
+        output,
+    )
+
   def test_unapproved_nested_namespace_in_test_data(self):
     cpp_code = style.CppCode("tests")
     file = cpp_code.find_file("cpp_style_test_data.cc")
@@ -75,18 +85,180 @@ class CppStyleTest(absltest.TestCase):  # ABSLTEST_OK=avoid heavy dependencies
 
     errors = style.check_unapproved_namespace(file)
 
-    expected_error = (
-        "}  // namespace torch_tpu::bar: Only approved named namespaces allowed"
-        " under torch_tpu: ['error', 'internal'], got ['bar']"
+    approved_msg = (
+        "Only approved named namespaces allowed under torch_tpu:"
+        " ['error', 'internal']"
     )
-    expected_error_2 = (
-        "void Baz2() { torch_tpu::TorchTpuClass(); }: Only approved named"
-        " namespaces allowed under torch_tpu: ['error', 'internal'], got ['',"
-        " 'internal']"
+    not_root_msg = "torch_tpu must only be used as the outermost namespace"
+    self.assertCountEqual(
+        errors,
+        [
+            (
+                f"tests/cpp_style_test_data.cc:36: {not_root_msg}, got"
+                " outer::torch_tpu"
+            ),
+            f"tests/cpp_style_test_data.cc:49: {approved_msg}, got ['bar']",
+            (
+                f"tests/cpp_style_test_data.cc:61: {approved_msg}, got ['',"
+                " 'internal']"
+            ),
+            (
+                f"tests/cpp_style_test_data.cc:73: {not_root_msg}, got"
+                " mlir::torch_tpu"
+            ),
+            # Line 77 (foo::torch_tpu) is exempted by NON_TORCH_TPU_OK.
+        ],
     )
-    self.assertIn(expected_error, errors)
-    self.assertIn(expected_error_2, errors)
-    self.assertFalse(any("Baz3()" in e for e in errors))
+
+  def test_namespace_root_in_test_data(self):
+    cpp_code = style.CppCode("tests")
+    file = cpp_code.find_file("cpp_style_test_data.cc")
+    self.assertIsNotNone(file, "Could not find cpp_style_test_data.cc")
+
+    errors = style.check_namespace_root(file)
+
+    error_lines = [e.split(": ", 1)[0] for e in errors]
+    self.assertEqual(
+        error_lines,
+        [
+            "tests/cpp_style_test_data.cc:35",  # outer
+            "tests/cpp_style_test_data.cc:41",  # anonymous
+            "tests/cpp_style_test_data.cc:45",  # foo::bar
+            "tests/cpp_style_test_data.cc:73",  # mlir::torch_tpu
+            "tests/cpp_style_test_data.cc:85",  # marker without a reason
+        ],
+    )
+    self.assertIn("got mlir::torch_tpu", errors[3])
+    self.assertIn("got (anonymous)", errors[1])
+    self.assertIn("NON_TORCH_TPU_OK requires a reason", errors[4])
+
+  def _write_source(self, contents: str) -> style.CppFile:
+    temp_dir = pathlib.Path(self.create_tempdir().full_path)
+    source = temp_dir / "csrc" / "test.cc"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text(contents)
+    return style.CppFile(source, repo_root=temp_dir)
+
+  def test_check_namespace_root_valid(self):
+    cpp_file = self._write_source(
+        "namespace torch_tpu {\n"
+        "namespace {\n"
+        "void Foo() {}\n"
+        "}  // namespace\n"
+        "}  // namespace torch_tpu\n"
+        "\n"
+        "namespace torch_tpu::internal {\n"
+        "void Bar() {}\n"
+        "}  // namespace torch_tpu::internal\n"
+    )
+    self.assertEmpty(style.check_namespace_root(cpp_file))
+    self.assertEmpty(style.check_unapproved_namespace(cpp_file))
+
+  def test_check_namespace_root_mlir_torch_tpu(self):
+    cpp_file = self._write_source(
+        "// Comment.\n"
+        "namespace mlir::torch_tpu {\n"
+        "void Foo() {}\n"
+        "}  // namespace mlir::torch_tpu\n"
+    )
+    root_errors = style.check_namespace_root(cpp_file)
+    self.assertLen(root_errors, 1)
+    self.assertStartsWith(
+        root_errors[0],
+        "csrc/test.cc:2: Namespaces must be rooted at torch_tpu, got"
+        " mlir::torch_tpu.",
+    )
+    self.assertIn("NON_TORCH_TPU_OK=<reason>", root_errors[0])
+    self.assertEqual(
+        style.check_unapproved_namespace(cpp_file),
+        [
+            "csrc/test.cc:2: torch_tpu must only be used as the outermost"
+            " namespace, got mlir::torch_tpu"
+        ],
+    )
+
+  def test_check_namespace_root_top_level_anonymous(self):
+    cpp_file = self._write_source(
+        "namespace {\nvoid Foo() {}\n}  // namespace\n"
+    )
+    errors = style.check_namespace_root(cpp_file)
+    self.assertLen(errors, 1)
+    self.assertStartsWith(
+        errors[0],
+        "csrc/test.cc:1: Namespaces must be rooted at torch_tpu, got"
+        " (anonymous).",
+    )
+
+  def test_check_namespace_root_marker_with_reason(self):
+    cpp_file = self._write_source(
+        "namespace std {  // NON_TORCH_TPU_OK=std specialization.\n"
+        "namespace nested {\n"
+        "}  // namespace nested\n"
+        "}  // namespace std\n"
+    )
+    self.assertEmpty(style.check_namespace_root(cpp_file))
+    self.assertEmpty(style.check_unapproved_namespace(cpp_file))
+
+  def test_check_namespace_root_marker_without_reason(self):
+    for marker in (
+        "NON_TORCH_TPU_OK",
+        "NON_TORCH_TPU_OK=",
+        "NON_TORCH_TPU_OK= ",
+    ):
+      with self.subTest(marker=marker):
+        cpp_file = self._write_source(
+            f"namespace xla {{  // {marker}\n}}  // namespace xla\n"
+        )
+        errors = style.check_namespace_root(cpp_file)
+        self.assertLen(errors, 1)
+        self.assertStartsWith(
+            errors[0], "csrc/test.cc:1: NON_TORCH_TPU_OK requires a reason"
+        )
+
+  def test_check_namespace_root_marker_allows_nested_torch_tpu(self):
+    cpp_file = self._write_source(
+        "namespace mlir::torch_tpu {  // NON_TORCH_TPU_OK=Will be migrated.\n"
+        "namespace {\n"
+        "}  // namespace\n"
+        "}  // namespace mlir::torch_tpu\n"
+        "namespace foo::torch_tpu {  // NON_TORCH_TPU_OK=\n"
+        "}  // namespace foo::torch_tpu\n"
+        "namespace bar {  // NON_TORCH_TPU_OK=Only exempts this line.\n"
+        "namespace torch_tpu {\n"
+        "}  // namespace torch_tpu\n"
+        "}  // namespace bar\n"
+    )
+    root_errors = style.check_namespace_root(cpp_file)
+    self.assertLen(root_errors, 1)
+    self.assertStartsWith(
+        root_errors[0], "csrc/test.cc:5: NON_TORCH_TPU_OK requires a reason"
+    )
+    self.assertEqual(
+        style.check_unapproved_namespace(cpp_file),
+        [
+            (
+                "csrc/test.cc:5: torch_tpu must only be used as the outermost"
+                " namespace, got foo::torch_tpu"
+            ),
+            (
+                "csrc/test.cc:8: torch_tpu must only be used as the outermost"
+                " namespace, got bar::torch_tpu"
+            ),
+        ],
+    )
+
+  def test_check_unapproved_namespace_marker_does_not_allow_unapproved(self):
+    cpp_file = self._write_source(
+        "namespace torch_tpu::foo {  // NON_TORCH_TPU_OK=Not applicable.\n"
+        "}  // namespace torch_tpu::foo\n"
+    )
+    self.assertEqual(
+        style.check_unapproved_namespace(cpp_file),
+        [
+            "csrc/test.cc:1: Only approved named namespaces allowed under"
+            " torch_tpu: ['error', 'internal'], got ['foo']"
+        ],
+    )
 
   def test_expected_header_guard(self):
     temp_dir = pathlib.Path(self.create_tempdir().full_path)

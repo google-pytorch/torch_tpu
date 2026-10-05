@@ -36,7 +36,7 @@
 #include "mlir/IR/Value.h"
 #include "mlir/IR/ValueRange.h"
 
-namespace mlir::torch_tpu {
+namespace mlir::torch_tpu {  // NON_TORCH_TPU_OK=TODO(willfroom): migrate this.
 
 struct KVWindowMaps {
   DictionaryAttr k_map;

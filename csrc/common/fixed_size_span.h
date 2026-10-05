@@ -128,20 +128,17 @@ std::array<T, 8> MoveToStdArray(torch_tpu::FixedSizeSpan<T, 8> span) {
 }  // namespace torch_tpu
 
 // These specializations are needed for using FixedSizeSpan in structured
-// binding. They must be in the `std` namespace.
-namespace std {
+// binding.
 
 // 1. Specialization of `std::tuple_size`
 template <typename T, std::size_t N>
-struct tuple_size<torch_tpu::FixedSizeSpan<T, N>>
+struct std::tuple_size<torch_tpu::FixedSizeSpan<T, N>>
     : std::integral_constant<std::size_t, N> {};
 
 // 2. Specialization of `std::tuple_element`
 template <std::size_t I, typename T, std::size_t N>
-struct tuple_element<I, torch_tpu::FixedSizeSpan<T, N>> {
+struct std::tuple_element<I, torch_tpu::FixedSizeSpan<T, N>> {
   using type = T;
 };
-
-}  // namespace std
 
 #endif  // TORCH_TPU_CSRC_COMMON_FIXED_SIZE_SPAN_H_

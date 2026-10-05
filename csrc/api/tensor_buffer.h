@@ -25,10 +25,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
-
-namespace xla {
-class PjRtBuffer;
-}  // namespace xla
+#include "xla/pjrt/pjrt_client.h"
 
 namespace torch_tpu {
 

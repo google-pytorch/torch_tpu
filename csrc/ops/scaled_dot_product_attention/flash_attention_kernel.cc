@@ -62,7 +62,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "xla/xla_data.pb.h"
 
-namespace mlir::torch_tpu {
+namespace mlir::torch_tpu {  // NON_TORCH_TPU_OK=TODO(willfroom): migrate this.
 
 using mlir::arith::AddFOp;          // USING_DECL_OK
 using mlir::arith::CmpIOp;          // USING_DECL_OK

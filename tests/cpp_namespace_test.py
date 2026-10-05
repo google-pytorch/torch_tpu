@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for unapproved nested namespace violations."""
+"""Tests that C++ namespaces in torch_tpu follow the namespace rules."""
 
 from typing import Generator
 
@@ -26,13 +26,18 @@ def _get_files_to_lint() -> Generator[style.CppFile, None, None]:
   yield from style.CppCode().files(exclude_test_data=True)
 
 
-class UnapprovedNestedNamespaceTest(
+class CppNamespaceTest(
     parameterized.TestCase,  # ABSLTEST_OK=linter tool test
 ):
 
   @parameterized.parameters(_get_files_to_lint())
   def test_unapproved_nested_namespace(self, file: style.CppFile):
     errors = style.check_unapproved_namespace(file)
+    self.assertEmpty(errors, '\n'.join(errors))
+
+  @parameterized.parameters(_get_files_to_lint())
+  def test_namespace_root(self, file: style.CppFile):
+    errors = style.check_namespace_root(file)
     self.assertEmpty(errors, '\n'.join(errors))
 
 

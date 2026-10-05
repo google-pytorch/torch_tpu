@@ -71,7 +71,7 @@
 // including the privateuse1_profiler.h header and using
 // REGISTER_PRIVATEUSE1_PROFILER(TpuProfiler) once PyTorch 2.10 support is
 // dropped and 2.12 is the minimum required version.
-namespace torch::profiler::impl {
+namespace torch::profiler::impl {  // NON_TORCH_TPU_OK=weak-linked PyTorch decl
 using PrivateUse1ProfilerFactory = std::function<  // STD_FUNCTION_OK
     std::unique_ptr<libkineto::IActivityProfiler>()>;
 

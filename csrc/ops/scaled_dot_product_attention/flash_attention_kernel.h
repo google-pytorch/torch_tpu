@@ -23,7 +23,7 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
 
-namespace mlir::torch_tpu {
+namespace mlir::torch_tpu {  // NON_TORCH_TPU_OK=TODO(willfroom): migrate this.
 
 // Creates the flash attention kernel for the given configuration.
 absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> CreateKernel(

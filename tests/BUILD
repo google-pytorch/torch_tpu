@@ -2767,8 +2767,8 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
-    name = "unapproved_nested_namespace_lint_test",
-    srcs = ["unapproved_nested_namespace_lint_test.py"],
+    name = "cpp_namespace_test",
+    srcs = ["cpp_namespace_test.py"],
     data = [
         ":all_cpp_files_recursive",
         "//csrc:all_cpp_files_recursive",

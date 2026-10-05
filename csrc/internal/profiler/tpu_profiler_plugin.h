@@ -18,6 +18,7 @@
 #define TORCH_TPU_CSRC_INTERNAL_PROFILER_TPU_PROFILER_PLUGIN_H_
 
 #include <kineto/ActivityType.h>
+#include <kineto/GenericTraceActivity.h>
 #include <kineto/IActivityProfiler.h>
 
 #include <memory>
@@ -33,10 +34,6 @@
 #include "csrc/internal/profiler/xprof_callback_handler.h"
 #include "tsl/profiler/lib/profiler_session.h"
 #include "tsl/profiler/protobuf/xplane.pb.h"
-
-namespace libkineto {
-class GenericTraceActivity;
-}  // namespace libkineto
 
 namespace torch_tpu {
 

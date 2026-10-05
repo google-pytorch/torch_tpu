@@ -32,7 +32,7 @@
 #include "mlir/Support/LLVM.h"
 #include "xla/mosaic/dialect/tpu/tpu_dialect.h"
 
-namespace mlir::torch_tpu {
+namespace mlir::torch_tpu {  // NON_TORCH_TPU_OK=TODO(willfroom): migrate this.
 
 constexpr int kDefaultSerializationVersion = 13;
 

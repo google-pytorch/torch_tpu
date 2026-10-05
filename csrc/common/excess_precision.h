@@ -17,9 +17,7 @@
 #ifndef TORCH_TPU_CSRC_COMMON_EXCESS_PRECISION_H_
 #define TORCH_TPU_CSRC_COMMON_EXCESS_PRECISION_H_
 
-namespace xla {
-class ExecutableBuildOptions;
-}  // namespace xla
+#include "xla/client/executable_build_options.h"
 
 namespace torch_tpu {
 

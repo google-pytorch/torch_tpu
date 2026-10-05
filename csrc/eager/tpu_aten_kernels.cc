@@ -1786,7 +1786,7 @@ bool IsCpuFallbackEnabled() { return GetMutableGlobalCpuFallbackMode().load(); }
 
 }  // namespace torch_tpu
 
-namespace at::native {
+namespace at::native {  // NON_TORCH_TPU_OK=ATen dispatch stub registration
 // Per https://github.com/pytorch/pytorch/issues/162989, to override
 // _fused_sdp_choice We will need to REGISTER_PRIVATEUSE1_DISPATCH against
 // _fused_sdp_choice_stub. See the example here:
