@@ -14,10 +14,11 @@
 
 """Stress test for RNG state and random operations."""
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 import concurrent.futures
 import functools
 import itertools
+import threading
 
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -72,7 +73,7 @@ RNG_OPS = (
 
 def get_current_generator_offset() -> int:
   """Returns the offset of the current default generator's state tensor."""
-  return torch.tpu.get_rng_state().view(torch.int64).cpu().tolist()[-1]
+  return int(torch.tpu.get_rng_state().view(torch.int64)[-1].item())
 
 
 class RngStressTest(seed_test_utils.RepeatableTest):
@@ -113,69 +114,63 @@ class RngStressTest(seed_test_utils.RepeatableTest):
 
   def assert_all_unique(self, results: Sequence[torch.Tensor]) -> None:
     """Asserts that all tensors in the results are unique."""
-    for (i, tensor1), (j, tensor2) in itertools.combinations(
-        enumerate(results), 2
-    ):
-      self.assertFalse(
-          torch.allclose(tensor1, tensor2),
-          f"Collision detected between tensor {i} and {j}",
-      )
+    stacked = torch.stack(results)
+    if torch.unique(stacked, dim=0).size(0) != len(results):
+      for (i, tensor1), (j, tensor2) in itertools.combinations(
+          enumerate(results), 2
+      ):
+        self.assertFalse(
+            torch.equal(tensor1, tensor2),
+            f"Collision detected between tensor {i} and {j}",
+        )
+
+  def _run_stress_loop(
+      self,
+      worker_fns: Sequence[Callable[[], torch.Tensor]],
+      offset_increments: int,
+      num_iterations: int = 10,
+  ) -> None:
+    num_threads = len(worker_fns)
+    barrier = threading.Barrier(num_threads)
+
+    def run_worker(fn: Callable[[], torch.Tensor]) -> torch.Tensor:
+      barrier.wait()
+      return fn().cpu()
+
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=num_threads
+    ) as executor:
+      for iteration_id in range(num_iterations):
+        torch.manual_seed(iteration_id)
+        begin_rng_offset = get_current_generator_offset()
+        futures = [executor.submit(run_worker, fn) for fn in worker_fns]
+        results = [f.result() for f in futures]
+        end_rng_offset = get_current_generator_offset()
+
+        self.assert_all_unique(results)
+        self.assertEqual(
+            begin_rng_offset + num_threads * offset_increments, end_rng_offset
+        )
 
   @parameterized.named_parameters(*RNG_OPS)
   def test_no_rng_state_collision(self, op_fn, offset_increments=1):
     device = torch.accelerator.current_accelerator()
     op_fn = functools.partial(op_fn, device=device)
     num_threads = 20
-    num_iterations = 50
-
-    def run_op():
-      return op_fn().cpu()
-
-    for iteration_id in range(num_iterations):
-      torch.manual_seed(iteration_id)
-      begin_rng_offset = get_current_generator_offset()
-      with concurrent.futures.ThreadPoolExecutor(
-          max_workers=num_threads
-      ) as executor:
-        futures = [executor.submit(run_op) for _ in range(num_threads)]
-        results = [f.result() for f in futures]
-      end_rng_offset = get_current_generator_offset()
-
-      self.assert_all_unique(results)
-      self.assertEqual(
-          begin_rng_offset + num_threads * offset_increments, end_rng_offset
-      )
+    self._run_stress_loop([op_fn] * num_threads, offset_increments)
 
   @parameterized.named_parameters(*RNG_OPS)
   def test_compile_no_rng_state_collision(self, op_fn, offset_increments=1):
     device = torch.accelerator.current_accelerator()
     op_fn = functools.partial(op_fn, device=device)
     num_threads = 20
-    num_iterations = 50
 
     compiled_op_fn = torch.compile(op_fn, backend="tpu")
 
     # Warm up.
     compiled_op_fn()
 
-    def run_op():
-      return compiled_op_fn().cpu()
-
-    for iteration_id in range(num_iterations):
-      torch.manual_seed(iteration_id)
-
-      begin_rng_offset = get_current_generator_offset()
-      with concurrent.futures.ThreadPoolExecutor(
-          max_workers=num_threads
-      ) as executor:
-        futures = [executor.submit(run_op) for _ in range(num_threads)]
-        results = [f.result() for f in futures]
-      end_rng_offset = get_current_generator_offset()
-
-      self.assert_all_unique(results)
-      self.assertEqual(
-          begin_rng_offset + num_threads * offset_increments, end_rng_offset
-      )
+    self._run_stress_loop([compiled_op_fn] * num_threads, offset_increments)
 
   @parameterized.named_parameters(*RNG_OPS)
   def test_compile_and_eager_no_rng_state_collision(
@@ -184,40 +179,16 @@ class RngStressTest(seed_test_utils.RepeatableTest):
     device = torch.accelerator.current_accelerator()
     op_fn = functools.partial(op_fn, device=device)
     num_threads = 20
-    num_iterations = 50
 
     compiled_op_fn = torch.compile(op_fn, backend="tpu")
 
     # Warm up.
     compiled_op_fn()
 
-    def run_compiled():
-      return compiled_op_fn().cpu()
-
-    def run_eager():
-      return op_fn().cpu()
-
-    for iteration_id in range(num_iterations):
-      torch.manual_seed(iteration_id)
-
-      begin_rng_offset = get_current_generator_offset()
-      with concurrent.futures.ThreadPoolExecutor(
-          max_workers=num_threads
-      ) as executor:
-        futures = []
-        for i in range(num_threads):
-          if i % 2 == 0:
-            futures.append(executor.submit(run_compiled))
-          else:
-            futures.append(executor.submit(run_eager))
-
-        results = [f.result() for f in futures]
-      end_rng_offset = get_current_generator_offset()
-
-      self.assert_all_unique(results)
-      self.assertEqual(
-          begin_rng_offset + num_threads * offset_increments, end_rng_offset
-      )
+    worker_fns = [
+        compiled_op_fn if i % 2 == 0 else op_fn for i in range(num_threads)
+    ]
+    self._run_stress_loop(worker_fns, offset_increments)
 
 
 if __name__ == "__main__":
