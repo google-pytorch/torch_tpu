@@ -808,6 +808,15 @@ class AllTest(seed_test_utils.RepeatableTest):
     self.assertIsNone(utils.get_primary_tensor_output("non_tensor_string"))
     self.assertIsNone(utils.get_primary_tensor_output([]))
 
+  def test_get_torch_version(self):
+    self.assertIs(test_utils.get_torch_version, utils.get_torch_version)
+    with absltest.mock.patch.object(torch, "__version__", "2.11.0+cpu"):
+      self.assertEqual(utils.get_torch_version(), (2, 11, 0))
+      self.assertLess(utils.get_torch_version(), (2, 12))
+    with absltest.mock.patch.object(torch, "__version__", "2.12.0.dev20260301"):
+      self.assertEqual(utils.get_torch_version(), (2, 12, 0))
+      self.assertGreaterEqual(utils.get_torch_version(), (2, 12))
+
 
 if __name__ == "__main__":
   absltest.main()

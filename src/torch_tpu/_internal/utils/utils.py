@@ -637,6 +637,11 @@ def libtpu_version() -> tuple[int, ...] | None:
   return parse_version(version)
 
 
+def get_torch_version() -> tuple[int, ...]:
+  """Returns the parsed version tuple of torch."""
+  return parse_version(torch.__version__)
+
+
 def get_primary_tensor_output(out: Any) -> torch.Tensor | None:
   """Recursively extracts a primary output torch.Tensor from model output objects.
 

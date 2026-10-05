@@ -128,7 +128,6 @@ torch_tpu_py_test(
     timeout = "long",
     srcs = ["profiler_integration_test.py"],
     main = "profiler_integration_test.py",
-    notest_oss = True,  # Skipped until OSS migrates to torch 2.12 (TODO(b/499296481))
     tags = ["requires-tpu-v5lite"],
     deps = [
         "//shims/absl_py/logging",
@@ -138,6 +137,7 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/profiler:profiler_config",
         "//src/torch_tpu/_internal/sync",
+        "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
         "@tsl//tsl/profiler/protobuf:profiler_options_proto_py_proto",
         "@tsl//tsl/profiler/protobuf:xplane_proto_py_proto",

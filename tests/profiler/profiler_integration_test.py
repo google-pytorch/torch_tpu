@@ -26,6 +26,7 @@ import torch
 from torch.autograd import profiler
 from torch_tpu._internal import sync as tpu_sync
 from torch_tpu._internal.profiler.profiler_config import TpuProfilerConfig
+from torch_tpu._internal.utils import test_utils as utils
 from tests import seed_test_utils
 
 # pylint: disable=g-direct-tensorflow-import
@@ -100,6 +101,10 @@ def _get_profiler_options_bytes(xspace: xplane_pb2.XSpace) -> bytes:
   return b""
 
 
+@unittest.skipIf(
+    utils.get_torch_version() < (2, 12),
+    "Native torch.profiler TPU integration requires torch >= 2.12",
+)
 class ProfilerIntegrationTest(seed_test_utils.RepeatableTest):
 
   def _get_and_copy_xplane(self, destination_path: pathlib.Path) -> None:

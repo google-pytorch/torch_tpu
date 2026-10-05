@@ -784,5 +784,6 @@ def _assert_tensor_close(
     )
 
 
+get_torch_version = utils.get_torch_version
 libtpu_version = utils.libtpu_version
 parse_version = utils.parse_version
