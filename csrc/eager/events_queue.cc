@@ -161,50 +161,10 @@ class NodeMatcher {
 
 class StreamState {
  public:
-  // Records on the events queue that a new c10::DataPtr referencing the given
-  // DeviceBufferRef has been created.
-  void RecordNewDataPtrCreated(const DeviceBufferRef& device_buffer_ref) {
-    // Placeholders and constant tensors are never inserted into the map.
-    if (device_buffer_ref.is_placeholder() || device_buffer_ref.is_constant()) {
-      return;
-    }
-    absl::MutexLock lock(mu_);
-    if (!device_buffer_ref.is_materialized()) {
-      // Insert or increment the count for the DeviceBufferList.
-      live_nodes_[device_buffer_ref.device_buffer_list()]++;
-    } else {
-      // Once the ref has a ready PjRtBuffer, we can stop tracking it.
-      live_nodes_.erase(device_buffer_ref.device_buffer_list());
-    }
-  }
-
-  // Records on the events queue that a c10::DataPtr referencing the given
-  // DeviceBufferRef has been destroyed.
-  void RecordDataPtrDestroyed(const DeviceBufferRef& device_buffer_ref) {
-    // Placeholders and constant tensors are never inserted into the map.
-    if (device_buffer_ref.is_placeholder() || device_buffer_ref.is_constant()) {
-      return;
-    }
-    absl::MutexLock lock(mu_);
-    // If the ref is already removed from the map, we do nothing. This can
-    // happen if the ref became ready after insertion, or if the queue was
-    // cleared.
-    auto it = live_nodes_.find(device_buffer_ref.device_buffer_list());
-    if (it == live_nodes_.end()) {
-      return;
-    }
-    // Once the ref is materialized, or the count drops to zero, we can remove
-    // it from the map.
-    if (device_buffer_ref.is_materialized() || --it->second <= 0) {
-      live_nodes_.erase(it);
-    }
-  }
-
   // Clears all tracked DeviceBufferLists from the events queue, and resets the
   // repeated ops heuristic state.
   void Clear() {
     absl::MutexLock lock(mu_);
-    live_nodes_.clear();
     repetition_hashes_.clear();
     repetition_i_ = 0;
     for (auto& event : events_queue_) {
@@ -307,8 +267,6 @@ class StreamState {
     // Settings for the materialization. These are frozen when the request is
     // made, so that context states are only read from the dispatch thread.
     MaterializationSettings materialization_settings;
-    // Live nodes that must be materialized by the snapshot if deferred.
-    absl::flat_hash_map<SharedDeviceBufferList, int64_t> live_nodes;
     // If the snapshot includes a compiled mode execution task, it will be
     // stored here. This is always the last task in the snapshot.
     std::optional<ExecutionTask> execution_task;
@@ -526,22 +484,32 @@ class StreamState {
         (*snapshot_or)->OkCallback(std::move(chaining_promise));
       }
     });
+
+    // Freeze the live nodes that were created before this snapshot request.
+    // These all must be materialized.
+    for (auto it = events_queue_.rbegin(); it != events_queue_.rend(); ++it) {
+      if (const auto* deferred_op_event = std::get_if<DeferredOpEvent>(&*it)) {
+        auto maybe_node = deferred_op_event->lock();
+        if (!maybe_node) continue;
+        if (maybe_node->live_data_ptrs() > 0) {
+          must_materialize.push_back(maybe_node);
+        }
+      } else {
+        // Found the last snapshot request, stop scanning.
+        break;
+      }
+    }
+
     events_queue_.push_back(std::make_unique<EventSnapshotRequest>(
         std::move(futures_), std::move(must_materialize),
-        MaterializationSettings(reason, mode, eager_mode),
-        std::move(live_nodes_), std::nullopt, std::move(snapshot_promise)));
+        MaterializationSettings(reason, mode, eager_mode), std::nullopt,
+        std::move(snapshot_promise)));
     futures_.push_back(std::move(chaining_future));
-    live_nodes_.clear();
     return snapshot_future;
   }
 
   absl::Mutex mu_;
   std::vector<xla::Future<void>> futures_ ABSL_GUARDED_BY(mu_);
-
-  // Hold a strong pointer to the DeviceBufferList as the key; as long as there
-  // is a live DataPtr, the DeviceBufferList can't be dropped.
-  absl::flat_hash_map<SharedDeviceBufferList, int64_t> live_nodes_
-      ABSL_GUARDED_BY(mu_);
 
   std::deque<StreamEvent> events_queue_ ABSL_GUARDED_BY(mu_);
 
@@ -702,23 +670,16 @@ using DefinedNodeMap = absl::flat_hash_map<const DeviceBufferList*, OpUsage>;
 
 // Returns the OpUsage of the given device buffer list, switching between
 // kOutput (if it's a required output) or kUnused (if it's not).
-OpUsage GetOpUsage(
-    const DeferredOp& deferred_op,
-    const SharedDeviceBufferList& device_buffer_list,
-    const absl::flat_hash_map<SharedDeviceBufferList, int64_t>& live_nodes,
-    const NodeMatcher& nodes_to_materialize_set) {
+OpUsage GetOpUsage(const DeferredOp& deferred_op,
+                   const SharedDeviceBufferList& device_buffer_list,
+                   const NodeMatcher& nodes_to_materialize_set) {
   // Explicitly materialized nodes are always outputs, even if they normally
   // wouldn't be (e.g. constants)
   if (nodes_to_materialize_set.contains(device_buffer_list.get())) {
     ABSL_VLOG(3)
-        << "[ProcessDeferredOpEvent] Adding explicitly materialized buffer "
+        << "[ProcessDeferredOpEvent] Adding live or explicitly materialized "
+           "buffer "
         << device_buffer_list.get() << " as output";
-    return OpUsage::kOutput;
-  }
-
-  if (live_nodes.contains(device_buffer_list.get())) {
-    ABSL_VLOG(3) << "[ProcessDeferredOpEvent] Adding live buffer "
-                 << device_buffer_list.get() << " as output";
     return OpUsage::kOutput;
   }
 
@@ -749,7 +710,6 @@ OpUsage GetOpUsage(
 // and updates the defined node map.
 void ProcessDeferredOpEvent(
     SharedDeviceBufferList&& device_buffer_list, const DeferredOp& deferred_op,
-    const absl::flat_hash_map<SharedDeviceBufferList, int64_t>& live_nodes,
     const NodeMatcher& nodes_to_materialize_set,
     std::vector<SharedDeviceBufferList>& execution_order,
     DefinedNodeMap& defined_node_map) {
@@ -788,8 +748,8 @@ void ProcessDeferredOpEvent(
     }
   }
 
-  defined_node_map[device_buffer_list.get()] = GetOpUsage(
-      deferred_op, device_buffer_list, live_nodes, nodes_to_materialize_set);
+  defined_node_map[device_buffer_list.get()] =
+      GetOpUsage(deferred_op, device_buffer_list, nodes_to_materialize_set);
 
   execution_order.push_back(std::move(device_buffer_list));
 }
@@ -848,7 +808,6 @@ absl_nullable std::unique_ptr<Traversal> FinishTraversal(
 
 std::vector<absl_nonnull std::unique_ptr<Traversal>> PrepareTraversals(
     absl::Span<const StreamState::DeferredOpEvent> deferred_op_events,
-    const absl::flat_hash_map<SharedDeviceBufferList, int64_t>& live_nodes,
     absl::Span<const SharedDeviceBufferList> nodes_to_materialize,
     const NodeMatcher& nodes_to_materialize_set,
     CorePinningMode core_pinning_mode) {
@@ -930,8 +889,8 @@ std::vector<absl_nonnull std::unique_ptr<Traversal>> PrepareTraversals(
     }
 
     ProcessDeferredOpEvent(std::move(device_buffer_list), *deferred_op,
-                           live_nodes, nodes_to_materialize_set,
-                           execution_order, defined_node_map);
+                           nodes_to_materialize_set, execution_order,
+                           defined_node_map);
 
     if (IsSplitAfter(split_mode)) {
       auto maybe_traversal = FinishTraversal(execution_order, defined_node_map,
@@ -1098,31 +1057,7 @@ StreamState* absl_nonnull GetStreamFor(
                                 device_buffer_list->stream_id());
 }
 
-StreamState* absl_nonnull GetStreamFor(
-    const DeviceBufferRef& device_buffer_ref) {
-  return GetOrCreateStreamState(device_buffer_ref.device_index(),
-                                device_buffer_ref.stream_id());
-}
-
 }  // namespace
-
-void RecordNewDataPtrCreated(const DeviceBufferRef& device_buffer_ref) {
-  if (GetEagerMode() == EagerMode::kInternalCompileFxGraph) {
-    // In FX trace mode, nothing happens on device, so we don't add anything to
-    // any stream.
-    return;
-  }
-  GetStreamFor(device_buffer_ref)->RecordNewDataPtrCreated(device_buffer_ref);
-}
-
-void RecordDataPtrDestroyed(const DeviceBufferRef& device_buffer_ref) {
-  if (GetEagerMode() == EagerMode::kInternalCompileFxGraph) {
-    // In FX trace mode, nothing happens on device, so we don't add anything to
-    // any stream.
-    return;
-  }
-  GetStreamFor(device_buffer_ref)->RecordDataPtrDestroyed(device_buffer_ref);
-}
 
 void RecordDeferredOpCreated(const SharedDeviceBufferList& device_buffer_list) {
   if (GetEagerMode() == EagerMode::kInternalCompileFxGraph) {
@@ -1163,8 +1098,7 @@ std::vector<PendingSnapshotMaterialization> PrepareSnapshotMaterializations(
       auto& snapshot_event = **snapshot_event_ptr;
 
       auto snapshot_traversals =
-          PrepareTraversals(deferred_ops, snapshot_event.live_nodes,
-                            snapshot_event.must_materialize,
+          PrepareTraversals(deferred_ops, snapshot_event.must_materialize,
                             NodeMatcher(snapshot_event.must_materialize),
                             stream_state->core_pinning_mode());
       PruneCompletedFutures(snapshot_event.futures);

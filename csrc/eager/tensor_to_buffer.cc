@@ -87,7 +87,6 @@ constexpr Version kMinLibtpuVersionWithPeakAllocatedBytes(0, 0, 43);
 // Records that a DeviceBufferRef has one more c10::DataPtr using it.
 void AddDataPtrAlias(const DeviceBufferRef& buffer_ref) {
   buffer_ref.device_buffer_list()->IncrementLiveDataPtrs(buffer_ref.index());
-  RecordNewDataPtrCreated(buffer_ref);
 }
 
 // Records that a ref_ptr has one fewer DataPtr using it.
@@ -95,7 +94,6 @@ void RemoveDataPtrAlias(const DeviceBufferRef& ref) {
   ABSL_VLOG(3) << "[RemoveDataPtrAlias] Cleaning up DataPtr usage for "
                << ref.DebugString();
   ref.device_buffer_list()->DecrementLiveDataPtrs(ref.index());
-  RecordDataPtrDestroyed(ref);
 }
 
 // Delegate responsibility for deleting the DeviceBufferRef to the

@@ -37,7 +37,6 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
-#include "csrc/eager/events_queue.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/op_builder_utils.h"
@@ -954,8 +953,10 @@ ScaledDotProductFusedAttentionShloBackward(
   // Artificially create a simulated DataPtr to prevent the result node from
   // being flushed during the first or second ContiguousToView if there is an
   // early materialization.
-  RecordNewDataPtrCreated(results[0]);
-  absl::Cleanup cleanup = [&results] { RecordDataPtrDestroyed(results[0]); };
+  results[0].device_buffer_list()->IncrementLiveDataPtrs(results[0].index());
+  absl::Cleanup cleanup = [&results] {
+    results[0].device_buffer_list()->DecrementLiveDataPtrs(results[0].index());
+  };
 
   // Return the gradients with the strides of the meta function, which
   // allocates them with `torch.empty_like`.

@@ -78,14 +78,14 @@ TEST_F(EventsQueueTest, GetsLiveDeferredBuffers) {
                                            OpParamCacheKeys::Empty(), {shape}));
   auto ref_a = refs_a[0];
   RecordDeferredOpCreated(ref_a.device_buffer_list());
-  RecordNewDataPtrCreated(ref_a);
+  ref_a.device_buffer_list()->IncrementLiveDataPtrs(ref_a.index());
 
   TT_ASSERT_OK_AND_ASSIGN(auto refs_b, DeviceBufferList::CreateDeferred(
                                            OpName::kAdd, DummyBuilder, {},
                                            OpParamCacheKeys::Empty(), {shape}));
   auto ref_b = refs_b[0];
   RecordDeferredOpCreated(ref_b.device_buffer_list());
-  RecordNewDataPtrCreated(ref_b);
+  ref_b.device_buffer_list()->IncrementLiveDataPtrs(ref_b.index());
 
   // Both a and b are live and unsynced and will be materialized on the next
   // stream materialization or device materialization.
@@ -114,7 +114,7 @@ TEST_F(EventsQueueTest, IgnoresPlaceholderBuffers) {
   // Create a placeholder and record its DataPtr creation.
   TT_ASSERT_OK_AND_ASSIGN(auto ref, DeviceBufferList::CreatePlaceholder(
                                         shape.dimensions(), shape.dtype()));
-  RecordNewDataPtrCreated(ref);
+  ref.device_buffer_list()->IncrementLiveDataPtrs(ref.index());
 
   // The placeholder does not need to be synced.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
@@ -135,7 +135,7 @@ TEST_F(EventsQueueTest, SyncIgnoresEmptyBuffers) {
   // Create an empty buffer and record its DataPtr creation.
   TT_ASSERT_OK_AND_ASSIGN(
       auto ref, CreateEmptyDeviceBufferRef(shape.dimensions(), shape.dtype()));
-  RecordNewDataPtrCreated(ref);
+  ref.device_buffer_list()->IncrementLiveDataPtrs(ref.index());
 
   // The empty buffer does not need to be synced.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
@@ -158,7 +158,7 @@ TEST_F(EventsQueueTest, IgnoresAlreadyMaterializedBuffers) {
                           TpuMallocAndMemcpyHtoD(/*host_data=*/nullptr,
                                                  mlir::ElementType::UI8, {1}));
   ASSERT_TRUE(ref.is_materialized());
-  RecordNewDataPtrCreated(ref);
+  ref.device_buffer_list()->IncrementLiveDataPtrs(ref.index());
 
   // The placeholder does not need to be synced.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
@@ -180,7 +180,7 @@ TEST_F(EventsQueueTest, ClearsBuffersAfterMaterialization) {
                           TpuMallocAndMemcpyHtoD(/*host_data=*/nullptr,
                                                  mlir::ElementType::UI8, {1}));
   ASSERT_TRUE(input_ref.is_materialized());
-  RecordNewDataPtrCreated(input_ref);
+  input_ref.device_buffer_list()->IncrementLiveDataPtrs(input_ref.index());
 
   // Record creation a deferred buffer (with a real op builder).
   auto op_builder = [](mlir::MlirBuilder& builder,
@@ -196,7 +196,6 @@ TEST_F(EventsQueueTest, ClearsBuffersAfterMaterialization) {
   auto ref = refs[0];
   ASSERT_TRUE(ref.is_deferred());
   RecordDeferredOpCreated(ref.device_buffer_list());
-  RecordNewDataPtrCreated(ref);
 
   // The deferred buffer needs to be synced.
   // Materialize the buffer and wait for it to finish.
@@ -230,7 +229,7 @@ TEST_F(EventsQueueTest, StopsTrackingAfterClearEventsQueue) {
                                          OpName::kAdd, DummyBuilder, {},
                                          OpParamCacheKeys::Empty(), {shape}));
   auto ref = refs[0];
-  RecordNewDataPtrCreated(ref);
+  ref.device_buffer_list()->IncrementLiveDataPtrs(ref.index());
 
   // Clear the events queue.
   ClearAllStreams();
@@ -245,7 +244,7 @@ TEST_F(EventsQueueTest, StopsTrackingAfterClearEventsQueue) {
   EXPECT_THAT(traversals1, testing::IsEmpty());
 
   // Create a second data pointer to the same buffer.
-  RecordNewDataPtrCreated(ref);
+  ref.device_buffer_list()->IncrementLiveDataPtrs(ref.index());
 
   EventSnapshot::Record(device_index, stream_id, {});
   auto pending_snapshots2 =
@@ -504,7 +503,7 @@ TEST_F(EventsQueueTest, MaterializationIgnoresUnusedEmptyOps) {
   auto empty_ref = empty_refs[0];
   auto empty_list = empty_ref.device_buffer_list();
   RecordDeferredOpCreated(empty_list);
-  RecordNewDataPtrCreated(empty_ref);
+  empty_list->IncrementLiveDataPtrs(empty_ref.index());
 
   // Create a non-empty deferred tensor that does not rely on the empty tensor.
   TT_ASSERT_OK_AND_ASSIGN(
@@ -514,7 +513,7 @@ TEST_F(EventsQueueTest, MaterializationIgnoresUnusedEmptyOps) {
   auto non_empty_ref = non_empty_refs[0];
   auto non_empty_list = non_empty_ref.device_buffer_list();
   RecordDeferredOpCreated(non_empty_list);
-  RecordNewDataPtrCreated(non_empty_ref);
+  non_empty_list->IncrementLiveDataPtrs(non_empty_ref.index());
 
   const auto device_index = non_empty_list->device_index();
   const auto stream_id = non_empty_list->stream_id();
@@ -548,7 +547,7 @@ TEST_F(EventsQueueTest, UsedEmptyOpsMaterializedOnFirstUse) {
   auto empty_ref = empty_refs[0];
   auto empty_list = empty_ref.device_buffer_list();
   RecordDeferredOpCreated(empty_list);
-  RecordNewDataPtrCreated(empty_ref);
+  empty_list->IncrementLiveDataPtrs(empty_ref.index());
 
   // Create a non-empty deferred tensor that does not rely on the empty tensor.
   TT_ASSERT_OK_AND_ASSIGN(
@@ -558,7 +557,7 @@ TEST_F(EventsQueueTest, UsedEmptyOpsMaterializedOnFirstUse) {
   auto first_non_empty_ref = first_non_empty_refs[0];
   auto first_non_empty_list = first_non_empty_ref.device_buffer_list();
   RecordDeferredOpCreated(first_non_empty_list);
-  RecordNewDataPtrCreated(first_non_empty_ref);
+  first_non_empty_list->IncrementLiveDataPtrs(first_non_empty_ref.index());
 
   TT_ASSERT_OK_AND_ASSIGN(
       auto second_non_empty_refs,
@@ -567,7 +566,7 @@ TEST_F(EventsQueueTest, UsedEmptyOpsMaterializedOnFirstUse) {
   auto second_non_empty_ref = second_non_empty_refs[0];
   auto second_non_empty_list = second_non_empty_ref.device_buffer_list();
   RecordDeferredOpCreated(second_non_empty_list);
-  RecordNewDataPtrCreated(second_non_empty_ref);
+  second_non_empty_list->IncrementLiveDataPtrs(second_non_empty_ref.index());
 
   // Prepare traversals for the non-empty tensors only.
   const auto device_index = first_non_empty_list->device_index();
@@ -605,7 +604,7 @@ TEST_F(EventsQueueTest, MaterializationAppendsExplicitEmptyOps) {
   auto empty_ref = empty_refs[0];
   auto empty_list = empty_ref.device_buffer_list();
   RecordDeferredOpCreated(empty_list);
-  RecordNewDataPtrCreated(empty_ref);
+  empty_list->IncrementLiveDataPtrs(empty_ref.index());
 
   // Create a non-empty deferred tensor that does not rely on the empty tensor.
   TT_ASSERT_OK_AND_ASSIGN(
@@ -615,7 +614,7 @@ TEST_F(EventsQueueTest, MaterializationAppendsExplicitEmptyOps) {
   auto non_empty_ref = non_empty_refs[0];
   auto non_empty_list = non_empty_ref.device_buffer_list();
   RecordDeferredOpCreated(non_empty_list);
-  RecordNewDataPtrCreated(non_empty_ref);
+  non_empty_list->IncrementLiveDataPtrs(non_empty_ref.index());
 
   // Explicitly mark the empty tensor as an output.
   EventSnapshot::Record(non_empty_list->device_index(),
@@ -660,7 +659,7 @@ TEST_F(EventsQueueTest, PrepareDeviceTraversals) {
   auto ref_b = refs_b[0];
   auto list_b = ref_b.device_buffer_list();
   RecordDeferredOpCreated(list_b);
-  RecordNewDataPtrCreated(ref_b);
+  list_b->IncrementLiveDataPtrs(ref_b.index());
 
   ExchangeCurrentDeviceIndex(device_index + 1);
 
@@ -670,7 +669,7 @@ TEST_F(EventsQueueTest, PrepareDeviceTraversals) {
   auto ref_c = refs_c[0];
   auto list_c = ref_c.device_buffer_list();
   RecordDeferredOpCreated(list_c);
-  RecordNewDataPtrCreated(ref_c);
+  list_c->IncrementLiveDataPtrs(ref_c.index());
 
   ExchangeCurrentDeviceIndex(device_index);
 
@@ -716,7 +715,7 @@ TEST_F(EventsQueueTest, PrepareStreamTraversals) {
   auto ref_b = refs_b[0];
   auto list_b = ref_b.device_buffer_list();
   RecordDeferredOpCreated(list_b);
-  RecordNewDataPtrCreated(ref_b);
+  list_b->IncrementLiveDataPtrs(ref_b.index());
 
   const auto non_default_stream_id = NextStreamId(device_index);
   const auto default_stream_id =
@@ -728,7 +727,7 @@ TEST_F(EventsQueueTest, PrepareStreamTraversals) {
   auto ref_c = refs_c[0];
   auto list_c = ref_c.device_buffer_list();
   RecordDeferredOpCreated(list_c);
-  RecordNewDataPtrCreated(ref_c);
+  list_c->IncrementLiveDataPtrs(ref_c.index());
 
   ExchangeCurrentStreamId(device_index, default_stream_id);
 
@@ -772,7 +771,7 @@ TEST_F(EventsQueueTest, StreamsMaterializeSeparately) {
   auto ref_b = refs_b[0];
   auto list_b = ref_b.device_buffer_list();
   RecordDeferredOpCreated(list_b);
-  RecordNewDataPtrCreated(ref_b);
+  list_b->IncrementLiveDataPtrs(ref_b.index());
 
   const auto non_default_stream_id = NextStreamId(device_index);
   const auto default_stream_id =
@@ -784,7 +783,7 @@ TEST_F(EventsQueueTest, StreamsMaterializeSeparately) {
   auto ref_c = refs_c[0];
   auto list_c = ref_c.device_buffer_list();
   RecordDeferredOpCreated(list_c);
-  RecordNewDataPtrCreated(ref_c);
+  list_c->IncrementLiveDataPtrs(ref_c.index());
 
   ExchangeCurrentStreamId(device_index, default_stream_id);
 
@@ -855,7 +854,7 @@ TEST_F(EventsQueueTest, StreamMustMaterializeEmptyTensors) {
   auto empty_ref = empty_refs[0];
   auto empty_list = empty_ref.device_buffer_list();
   RecordDeferredOpCreated(empty_list);
-  RecordNewDataPtrCreated(empty_ref);
+  empty_list->IncrementLiveDataPtrs(empty_ref.index());
   const auto device_index = empty_list->device_index();
   const auto stream_id = empty_list->stream_id();
 
@@ -892,7 +891,7 @@ TEST_F(EventsQueueTest, DeviceMustMaterializeEmptyTensors) {
   auto empty_ref = empty_refs[0];
   auto empty_list = empty_ref.device_buffer_list();
   RecordDeferredOpCreated(empty_list);
-  RecordNewDataPtrCreated(empty_ref);
+  empty_list->IncrementLiveDataPtrs(empty_ref.index());
   const auto device_index = empty_list->device_index();
   const auto stream_id = empty_list->stream_id();
 

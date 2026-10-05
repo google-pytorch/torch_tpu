@@ -39,19 +39,6 @@
 
 namespace torch_tpu {
 
-// Records on the events queue that a new c10::DataPtr referencing the given
-// DeviceBufferRef has been created.
-// As long as at least one DataPtr exists, the DeviceBufferList cannot be freed,
-// and if deferred, must be materialized on any global sync
-// (torch.accelerator.synchronize()).
-void RecordNewDataPtrCreated(const DeviceBufferRef& device_buffer_ref);
-
-// Records on the events queue that a c10::DataPtr referencing the given
-// DeviceBufferRef has been destroyed.
-// Once all references to a DeviceBufferList have been destroyed, the
-// DeviceBufferList can be freed, and does not need to be materialized.
-void RecordDataPtrDestroyed(const DeviceBufferRef& device_buffer_ref);
-
 // Records on the events queue that a new deferred op has been created.
 void RecordDeferredOpCreated(const SharedDeviceBufferList& device_buffer_list);
 
