@@ -22,18 +22,17 @@ Environment & Flags:
   --run_scope          full | presubmit         (default: full)
 """
 
-import torch_xla2 as torchax  # pylint: disable=unused-import # noqa: F401
-from torchax import interop  # pylint: disable=unused-import # noqa: F401
-
 import unittest
+
 from absl import logging
 from absl.testing import absltest
 from absl.testing import parameterized
 import immutabledict
 import jax
-from perflab import common
+from torch_tpu._internal.distributed import multiprocessing
 from perflab import base_test
 from perflab import cases
+from perflab import common
 from perflab import compile as compile_lib
 from perflab import context as context_lib
 from perflab import discovery as discovery_lib
@@ -47,9 +46,11 @@ from perflab import step_lib
 from perflab import target as target_lib
 from perflab.torchax import torchax_device_ops
 from perflab.torchax import torchax_step
-from torch_tpu._internal.distributed import multiprocessing
+
 # Pre-import module_registry so torchvision initializes before XLADispatchMode is enabled.
 from tests import module_registry  # pylint: disable=unused-import # noqa: F401
+import torch_xla2 as torchax  # pylint: disable=unused-import # noqa: F401
+from torchax import interop  # pylint: disable=unused-import # noqa: F401
 
 # Framework definition for this binary.
 _FRAMEWORK = mode_lib.Framework.TORCHAX
@@ -111,6 +112,7 @@ class TorchaxBenchmarkTest(
   framework = _FRAMEWORK
   platform = _PLATFORM
   case_params = base_test.case_params(_CASES)
+
   def test_benchmark_imports(self):
     if failures:
       self.fail(

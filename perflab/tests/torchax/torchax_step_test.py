@@ -15,7 +15,6 @@
 """Tests for torchax_step."""
 
 import sys
-
 from tests import oss_utils
 
 if oss_utils.is_oss() and sys.version_info >= (3, 14):
@@ -208,6 +207,7 @@ class TorchaxStepTest(seed_test_utils.RepeatableTest):
     )
 
     def forward_factory(factory_ctx):
+      del factory_ctx
       model = DummyModule()
       x = torch.randn(2, 4)
       return model, (x,), {}
@@ -253,6 +253,7 @@ class TorchaxStepTest(seed_test_utils.RepeatableTest):
         return self.linear(x)
 
     def train_factory(factory_ctx):
+      del factory_ctx
       model = DummyTrainModule()
       x = torch.randn(2, 4)
       optimizer = torch.optim.Adam(model.parameters(), lr=0.01)

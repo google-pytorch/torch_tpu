@@ -54,7 +54,6 @@ class BaseStepper(abc.ABC):
   @abc.abstractmethod
   def _step_function(*args: Any, **kwargs: Any) -> Any:
     """The actual step function to be executed."""
-    pass
 
   def compile(self, compile_config: CompileConfig, target: target_lib.Target):
     """Default trivial compile application"""

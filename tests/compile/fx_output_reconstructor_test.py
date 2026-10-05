@@ -271,7 +271,7 @@ class FxOutputReconstructorTest(seed_test_utils.RepeatableTest):
   @parameterized.named_parameters(
       (
           "namedtuple",
-          lambda x, y: collections.namedtuple("Inputs", ["x", "y"])(x, y),
+          collections.namedtuple("Inputs", ["x", "y"]),
       ),
       ("generator_of_views", lambda x, y: (t.detach() for t in (x, y))),
   )

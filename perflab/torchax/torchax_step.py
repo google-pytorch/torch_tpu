@@ -17,18 +17,18 @@
 import functools
 import inspect
 from typing import Any, Tuple
+
 import jax
 import optax
 import torch
-import torchax
-from torchax import interop  # pylint: disable=unused-import # noqa: F401
-from torchax import train  # pylint: disable=unused-import # noqa: F401
-
 from perflab import compile as compile_lib
 from perflab import context as context_lib
 from perflab import registry as registry_lib
 from perflab import step_lib
 from perflab.torchax import optimizer as optimizer_lib
+import torchax
+from torchax import interop  # pylint: disable=unused-import # noqa: F401
+from torchax import train  # pylint: disable=unused-import # noqa: F401
 
 
 def _prepare_inputs_for_torchax(inputs: Any) -> Any:

@@ -31,6 +31,7 @@ class GraphTransformContextTest(seed_test_utils.RepeatableTest):
     captured_gm = None
 
     def fw_compiler(graph_module, example_inputs):
+      del example_inputs
       nonlocal captured_gm
       captured_gm = graph_module
       return graph_module
