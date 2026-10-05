@@ -24,6 +24,7 @@ torch_tpu_cc_library(
     srcs = ["repeat_interleave_aten_kernels.cc"],
     hdrs = ["repeat_interleave_aten_kernels.h"],
     deps = [
+        "//csrc/common:cache_key",
         "//csrc/common:dimension_types",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
@@ -33,6 +34,7 @@ torch_tpu_cc_library(
         "//csrc/eager:tensor_to_buffer",
         "//csrc/ops:op_builder_utils",
         "//csrc/ops:op_names",
+        "//csrc/ops/copy_from:tpu_to_cpu",
         "//csrc/ops/cumsum",
         "//csrc/ops/index_select",
         "//csrc/ops/macros:kernel",
@@ -40,6 +42,7 @@ torch_tpu_cc_library(
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
         "//shims/torch/c10/core:base_headers",
+        "//shims/torch/torch/headeronly:torch_headeronly",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
         "@llvm-project//llvm:Support",

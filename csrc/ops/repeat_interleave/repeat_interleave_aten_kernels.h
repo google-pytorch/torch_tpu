@@ -15,10 +15,11 @@
 #ifndef TORCH_TPU_CSRC_OPS_REPEAT_INTERLEAVE_REPEAT_INTERLEAVE_ATEN_KERNELS_H_
 #define TORCH_TPU_CSRC_OPS_REPEAT_INTERLEAVE_REPEAT_INTERLEAVE_ATEN_KERNELS_H_
 
+#include <cstdint>
 #include <optional>
 
+#include "ATen/core/TensorBody.h"
 #include "c10/core/SymInt.h"
-#include "torch/csrc/api/include/torch/types.h"
 
 namespace torch_tpu {
 
@@ -31,6 +32,9 @@ at::Tensor AtenRepeatInterleaveSelfInt(const at::Tensor& self,
                                        c10::SymInt repeats,
                                        std::optional<int64_t> dim,
                                        std::optional<c10::SymInt> output_size);
+
+at::Tensor AtenRepeatInterleaveTensor(const at::Tensor& repeats,
+                                      std::optional<c10::SymInt> output_size);
 
 at::Tensor AtenRepeatInterleaveAutograd(const at::Tensor& self,
                                         const at::Tensor& repeats,

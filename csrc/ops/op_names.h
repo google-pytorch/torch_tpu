@@ -677,6 +677,8 @@ enum class OpName {
   kRepeatInterleaveBackward,
   kRepeatInterleaveSelfInt,
   kRepeatInterleaveSelfTensor,
+  kRepeatInterleaveTensor,
+  kRepeatInterleaveTensorStats,
   kReplicationPad1dBackwardGradInput,
   kReplicationPad1dOut,
   kReplicationPad2dBackward,
@@ -2166,6 +2168,10 @@ ToString(  // NOLINT(google-readability-function-size)
       return "repeat_interleave.self_int";
     case OpName::kRepeatInterleaveSelfTensor:
       return "repeat_interleave.self_Tensor";
+    case OpName::kRepeatInterleaveTensor:
+      return "repeat_interleave.Tensor";
+    case OpName::kRepeatInterleaveTensorStats:
+      return "repeat_interleave_tensor_stats";
     case OpName::kReplicationPad1dBackwardGradInput:
       return "replication_pad1d_backward.grad_input";
     case OpName::kReplicationPad1dOut:
