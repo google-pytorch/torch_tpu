@@ -76,7 +76,6 @@ def jax_1d_mesh_kernel(
         send_sem=send_sem,
         recv_sem=recv_sem,
         device_id={axis_name: next_rank},
-        device_id_type=pl.DeviceIdType.MESH,
     )
     desc.start()
     desc.wait()
@@ -195,7 +194,6 @@ def jax_2d_rank_dp_mesh_kernel(
         send_sem=send_sem,
         recv_sem=recv_sem,
         device_id={axis_name: next_dp},
-        device_id_type=pl.DeviceIdType.MESH,
     )
     desc.start()
     desc.wait()

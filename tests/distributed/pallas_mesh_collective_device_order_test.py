@@ -121,11 +121,7 @@ def _build_ring_op(
         dst_ref=scratch.at[1],
         send_sem=send_sem,
         recv_sem=recv_sem,
-        # MESH addressing is the whole point: the destination is named by a
-        # mesh coordinate, not by a device id, so it is the Mesh (and hence the
-        # DeviceAssignment derived from it) that decides which chip is hit.
         device_id={_AXIS: next_id},
-        device_id_type=pl.DeviceIdType.MESH,
     )
     copy.start()
     copy.wait()
