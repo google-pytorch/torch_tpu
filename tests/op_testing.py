@@ -4810,6 +4810,9 @@ class OpInfoTestBase(
       backend = "tpu" if str(device) == "tpu" else "inductor"
       print(f"Compiling {op_name} for device {device} ...", flush=True)
       if is_dynamic_test:
+        # Reset Dynamo state so dimensions marked dynamic in earlier subtests
+        # do not carry over across compilations.
+        torch._dynamo.reset()  # pylint: disable=protected-access
         op_func = torch.compile(
             op_func, backend=backend, options={"bounded_dynamism": True}
         )

@@ -166,6 +166,7 @@ def _should_skip_input_marking(
 untriaged_ops_deny_list: dict[
     str, set[DynamismMode] | frozenset[DynamismMode]
 ] = {
+    "angle": {COMPILE},  # Dynamo error
     "bincount": ALL_MODES,  # MLIR assertion failure (bounds length vs rank)
     "bmm": {COMPILE},  # numerical mismatch under dynamic compile
     "clamp_min": ALL_MODES,  # dynamic triage (invalid result)

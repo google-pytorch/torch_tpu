@@ -964,8 +964,7 @@ torch_tpu_py_test(
         ],
     ),
     main = "ops_test.py",
-    notap = "Dynamic compile tests are failing on TAP b/568053129.",
-    # nopresubmit = "Dynamic compile tests are run in postsubmit to avoid overloading the presubmit.",
+    nopresubmit = "Dynamic compile tests are run in postsubmit to avoid overloading the presubmit.",
     run_on_accelerators = [
         "requires-tpu-v6e",
         "requires-tpu-v5lite",
