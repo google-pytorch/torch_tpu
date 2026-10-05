@@ -91,10 +91,8 @@ def test_inference_mode_crash():
   assert proc.returncode != 0 or "error" in proc.stderr.lower()
 
 
-def test_optracer_diagnostic(device):
-  """Cell: run OpTracer on a model for diagnostic output."""
-  from torch_tpu._internal.utils import utils
-
+def test_profiler_diagnostic(device):
+  """Cell: run torch.profiler on a model for diagnostic output."""
   diag_model = (
       torch.nn.Sequential(
           torch.nn.Linear(32, 16), torch.nn.ReLU(), torch.nn.Linear(16, 8)
@@ -104,14 +102,15 @@ def test_optracer_diagnostic(device):
   )
   torch.accelerator.synchronize()
 
-  tracer = utils.OpTracer()
   x_diag = torch.randn(4, 32, device=device, dtype=torch.bfloat16)
 
-  with tracer:
+  with torch.profiler.profile(
+      activities=[torch.profiler.ProfilerActivity.CPU]
+  ) as prof:
     out = diag_model(x_diag)
     _ = out.cpu()
 
-  output = tracer._pformat()
+  output = prof.key_averages().table(sort_by="cpu_time_total", row_limit=10)
   assert output is not None and output != ""
 
 

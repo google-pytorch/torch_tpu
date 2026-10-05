@@ -252,23 +252,15 @@ def _(mo):
   mo.md(r"""
     ## **4. Diagnostic Tools (Live)**
 
-    ### **4a. OpTracer — Find CPU Fallbacks**
+    ### **4a. `torch.profiler` — Find CPU Fallbacks**
 
-    The `OpTracer` records every ATen op dispatched during execution. High counts of `aten.copy_` or `aten._to_copy` indicate CPU roundtrips ("Performance Cliffs").
+    `torch.profiler` records every ATen op dispatched during execution. High counts of `aten::copy_` or `aten::_to_copy` indicate CPU roundtrips ("Performance Cliffs").
     """)
   return
 
 
 @app.cell
 def _(device, torch):
-  try:
-    from torch_tpu._internal.utils import utils
-
-    tracer = utils.OpTracer()
-  except (ImportError, AttributeError):
-    tracer = None
-    utils = None
-
   # Build a small model and materialize its weights
   diag_model = (
       torch.nn.Sequential(
@@ -281,24 +273,20 @@ def _(device, torch):
 
   x_diag = torch.randn(4, 32, device=device, dtype=torch.bfloat16)
 
-  if tracer is not None:
-    with tracer:
-      out = diag_model(x_diag)
-      _ = out.cpu()
-    print("OpTracer Report:")
-    print(tracer._pformat())
-  else:
+  with torch.profiler.profile(
+      activities=[torch.profiler.ProfilerActivity.CPU]
+  ) as prof:
     out = diag_model(x_diag)
     _ = out.cpu()
-    print(
-        "OpTracer is an internal diagnostic utility available when running"
-        " against source."
-    )
+
+  print("PyTorch Profiler Report:")
+  print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=10))
 
   print(
-      "💡 Look for aten.copy_ or aten._to_copy — those indicate CPU fallbacks."
+      "💡 Look for aten::copy_ or aten::_to_copy — those indicate CPU"
+      " fallbacks."
   )
-  return diag_model, out, tracer, utils, x_diag
+  return diag_model, out, prof, x_diag
 
 
 @app.cell(hide_code=True)
@@ -352,7 +340,7 @@ def _(mo):
     | Find graph breaks | `torch._dynamo.explain(model)(input)` | Human-readable explanation |
     | Graph break debugging | `TORCH_LOGS="+dynamo"` | Detailed trace (run from terminal) |
     | OOM / crash line attribution | `TORCH_TPU_LAUNCH_BLOCKING=1` | Synchronous failure on exact culprit line |
-    | Fallback detection | `OpTracer` | High `aten.copy` counts = CPU fallbacks |
+    | Fallback detection | `torch.profiler` | High `aten::copy_` counts = CPU fallbacks |
     | HLO inspection | `XLA_FLAGS="--xla_dump_hlo_as_text ..."` | Post-optimization graph as text |
 
     ---
@@ -362,7 +350,7 @@ def _(mo):
     ```
     Level 1: Python Traceback         → Always available (default)
     Level 2: + C++ Stack Traces       → Set TORCH_SHOW_CPP_STACKTRACES=1
-    Level 3: + ATen Op Audit          → Use OpTracer or utils.format_model
+    Level 3: + ATen Op Audit          → Use torch.profiler
     Level 4: + HLO/LLO Dump          → Set XLA_FLAGS and LIBTPU_INIT_ARGS
     Level 5: + Synchronous Debug Eager → Set TORCH_TPU_LAUNCH_BLOCKING=1
     ```
