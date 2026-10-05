@@ -50,8 +50,8 @@ namespace torch_tpu {
 // 1 <= N <= INT32_MAX - 127, and 3 <= K <= min(M*N, INT32_MAX).
 //
 // Matches the LoadedExecutableBuilder signature, so it can be passed directly
-// to CompilationCache::AddUnboundedDynamicCacheEntry. The kernel's build
-// options and argument layouts are set on top of `compile_options`.
+// to CompilationCache::GetOrCompileUnboundedDynamicCacheEntry. The kernel's
+// build options and argument layouts are set on top of `compile_options`.
 absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>>
 BuildNonzeroIndicesExecutable(xla::PjRtClient& client,
                               UniqueCompileOptions compile_options);

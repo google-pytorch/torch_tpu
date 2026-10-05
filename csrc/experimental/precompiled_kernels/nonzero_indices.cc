@@ -457,8 +457,9 @@ CompilationCacheKey NonZeroCacheKey() {
                 out = op.AddOutput(out_dims, mlir::ElementType::I64);
               });
   graph.AddGraphOutput(out);
-  return CompilationCacheKey(graph.GetKey(), CompileOptionsKey({}),
-                             "nonzero_2d");
+  return CompilationCacheKey(
+      GraphKey(graph.GetKey().shapeless_key(), DimensionsKey({})),
+      CompileOptionsKey({}), "nonzero_2d");
 }
 
 }  // namespace torch_tpu

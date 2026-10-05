@@ -33,7 +33,7 @@ UnboundedDynamicExecutionMetadata MakeDummyDynamicMetadata();
 
 // Compiles a trivial identity computation with `client`. Matches the
 // LoadedExecutableBuilder signature, so it can be passed directly to
-// CompilationCache::AddUnboundedDynamicCacheEntry.
+// CompilationCache::GetOrCompileUnboundedDynamicCacheEntry.
 absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>>
 CreateDummyExecutable(xla::PjRtClient& client,
                       UniqueCompileOptions compile_options);
