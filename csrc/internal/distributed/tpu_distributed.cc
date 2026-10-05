@@ -26,6 +26,7 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/common/pybind_error_utils.h"
 #include "csrc/distributed/process_group_tpu.h"
+#include "csrc/distributed/types.h"
 #include "csrc/distributed/utils.h"
 #include "csrc/pjrt/pjrt_state.h"
 #include "pybind11/chrono.h"
@@ -58,6 +59,22 @@ std::vector<int64_t> GetRankToDeviceId(  // INT_VEC_OK
     return pg_tpu->rank_to_device_id();
   }
   return {};
+}
+
+// Returns the global ranks of every subgroup of the split that created the
+// process group of `backend`, as its collectives list them in their replica
+// groups. Empty for a backend that is not a ProcessGroupTpu.
+std::vector<std::vector<int64_t>> GetSubgroupRanks(  // INT_VEC_OK
+    c10::intrusive_ptr<c10d::Backend> backend) {
+  auto* pg_tpu = dynamic_cast<ProcessGroupTpu*>(backend.get());
+  if (pg_tpu == nullptr) {
+    return {};
+  }
+  std::vector<std::vector<int64_t>> subgroup_ranks;  // INT_VEC_OK
+  for (const DeviceGroup& group : pg_tpu->GetSubgroupRanks()) {
+    subgroup_ranks.push_back(group);
+  }
+  return subgroup_ranks;
 }
 
 // Global device id of the (single) addressable device this process is using.
@@ -116,6 +133,7 @@ TT_PYBIND11_MODULE(tpu_distributed, m) {
   // so we need to expose this init function.
   m.def("create_process_group", &MakeProcessGroup);
   m.def("rank_to_device_id", &GetRankToDeviceId);
+  m.def("subgroup_ranks", &GetSubgroupRanks);
 
   // We expose these as helper functions on the Python side
   m.def("global_device_id", &GetGlobalDeviceId);

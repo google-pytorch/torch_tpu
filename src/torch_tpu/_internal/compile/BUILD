@@ -125,6 +125,7 @@ torch_tpu_py_library(
         "//src/torch_tpu/_internal:env",
         "//src/torch_tpu/_internal/benchmarks:xprof_adapter",
         "//src/torch_tpu/_internal/compile/dynamic:dynamic_compiler",
+        "//src/torch_tpu/_internal/distributed:tpu_distributed",
         "//src/torch_tpu/_internal/execution_mode",
         "//src/torch_tpu/_internal/utils",
     ],
