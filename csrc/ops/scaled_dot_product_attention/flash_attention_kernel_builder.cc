@@ -355,10 +355,18 @@ mlir::MlirOp PackPhiloxPairTo4xI32(mlir::MlirOp pair_i64) {
                                       /*dimension=*/0);
 }
 
+// Packs the philox seed and offset that the forward kernel returns into the
+// 4-element i32 tensor that the backward kernels expect. The eager forward
+// kernel returns them as 1-element 1-d tensors, but torch.compile passes them
+// with the 0-d shapes of the meta function, so reshape them to 1-d first.
 mlir::MlirOp PackPhiloxSeedAndOffsetTo4xI32(mlir::MlirOp philox_seed,
                                             mlir::MlirOp philox_offset) {
+  const Dimensions one_element = {1};
   return PackPhiloxPairTo4xI32(mlir::stablehlo::Concatenate(
-      philox_seed.getBuilder(), {philox_seed, philox_offset}, /*dimension=*/0));
+      philox_seed.getBuilder(),
+      {mlir::stablehlo::Reshape(philox_seed, one_element),
+       mlir::stablehlo::Reshape(philox_offset, one_element)},
+      /*dimension=*/0));
 }
 
 absl::StatusOr<mlir::torch_tpu::FlashAttnConfig> CreateFlashAttnConfig(

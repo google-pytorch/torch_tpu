@@ -15965,6 +15965,56 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
     self.assertAlmostEqual(row_sum_mean, 1.0, delta=0.05)
     self.assertIsNotNone(v.grad)
 
+  def test_scaled_dot_product_attention_dropout_compiled(self):
+    """Verifies that compiled FlashAttention dropout backward reuses the mask.
+
+    torch.compile passes the philox seed and offset from the forward to the
+    backward kernel with the 0-d shapes of the meta function, unlike eager mode.
+    """
+    batch_size, num_heads, seq_len = 2, 4, 128
+    dropout_p = 0.25
+    device = torch.device("tpu")
+
+    q = torch.zeros(
+        batch_size, num_heads, seq_len, seq_len, device=device
+    ).requires_grad_(True)
+    k = torch.zeros(
+        batch_size, num_heads, seq_len, seq_len, device=device
+    ).requires_grad_(True)
+    v = (
+        torch.eye(seq_len, device=device)
+        .expand(batch_size, num_heads, seq_len, seq_len)
+        .clone()
+        .requires_grad_(True)
+    )
+
+    def run_sdpa(q, k, v):
+      with torch.nn.attention.sdpa_kernel(
+          torch.nn.attention.SDPBackend.FLASH_ATTENTION
+      ):
+        return torch.nn.functional.scaled_dot_product_attention(
+            q, k, v, dropout_p=dropout_p
+        )
+
+    torch.manual_seed(42)
+    compiled_sdpa = torch.compile(run_sdpa, dynamic=False, backend="tpu")
+    out = compiled_sdpa(q, k, v)
+    out.backward(torch.ones_like(out))
+
+    # With Q=0, K=0, and V=I, out equals the dropped attention weight matrix P.
+    # With an all-ones output gradient, the gradient of V is P^T @ 1, so row j
+    # of v.grad is filled with the sum of column j of P if the backward kernel
+    # regenerated the forward dropout mask.
+    out_cpu = out.detach().cpu()
+    drop_rate = (out_cpu == 0).to(torch.float32).mean().item()
+    self.assertAlmostEqual(drop_rate, dropout_p, delta=0.05)
+    self.assert_close(
+        golden_result=out_cpu.sum(dim=-2).unsqueeze(-1).expand_as(out_cpu),
+        torch_tpu_result=v.grad.cpu(),
+        rtol=1e-2,
+        atol=1e-2,
+    )
+
   def test_pointwise_op_dtype_promotion(self):
     """Ensure that pointwise ops promote as expected.
 
