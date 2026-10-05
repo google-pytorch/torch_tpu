@@ -1190,6 +1190,97 @@ class StepperTypeTest(seed_test_utils.RepeatableTest):
         stepper_mamba.get_cache(), transformers.cache_utils.DynamicCache
     )
 
+  def _mistral_static_stepper(self, ops, sliding_window, output_tokens):
+    config = transformers.MistralConfig(
+        vocab_size=16,
+        hidden_size=16,
+        intermediate_size=32,
+        num_hidden_layers=2,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+        sliding_window=sliding_window,
+    )
+    torch.manual_seed(0)
+    model = transformers.MistralForCausalLM(config).to(ops.device).eval()
+    stepper = decode.decode(output_tokens=output_tokens, dynamism=False)
+    torch.manual_seed(1)
+    input_ids = torch.randint(0, 16, (1, 4)).to(ops.device)
+    stepper.init_with_benchmark_args(model, (), {"input_ids": input_ids})
+    return stepper
+
+  def test_decode_stepper_static_cache_drops_unreachable_sliding_window(self):
+    cache_utils = transformers.cache_utils
+    ops = self._ops()
+    # prompt 4 + 4 new tokens = 8 <= window 4096: the window never rolls.
+    stepper = self._mistral_static_stepper(
+        ops, sliding_window=4096, output_tokens=4
+    )
+    layers = stepper.get_cache().layers
+    self.assertNotEmpty(layers)
+    for layer in layers:
+      self.assertIs(type(layer), cache_utils.StaticLayer)
+      self.assertEqual(layer.max_cache_len, 8)
+      self.assertTrue(layer.is_sliding)
+    # Callers such as masking_utils look up `is_sliding.index(True)`.
+    self.assertEqual(stepper.get_cache().is_sliding.index(True), 0)
+
+    # A window shorter than the sequence rolls, so the layer must be kept.
+    stepper = self._mistral_static_stepper(
+        ops, sliding_window=4, output_tokens=4
+    )
+    for layer in stepper.get_cache().layers:
+      self.assertIs(type(layer), cache_utils.StaticSlidingWindowLayer)
+
+  def _run_static_decode(self, num_steps, compile_model):
+    """Runs a static-cache Mistral decode and returns per-step outputs."""
+    ops = self._ops()
+    stepper = self._mistral_static_stepper(
+        ops, sliding_window=4096, output_tokens=num_steps
+    )
+    stepper.pre_warmup_init()
+    stepper.output_tokens = 1
+    if compile_model:
+      stepper.compile(
+          compile_lib.CompileConfig(
+              scope=compile_lib.Scope.MODEL, dynamic=False
+          ),
+          ops.target,
+      )
+    step_fn = stepper.get_step_fn()
+    graphs_after_step = []
+    logits = []
+    with torch.inference_mode():
+      for _ in range(num_steps):
+        logits.append(step_fn().logits.detach().clone())
+        graphs_after_step.append(
+            torch._dynamo.utils.counters["stats"]["unique_graphs"]
+        )
+    return logits, graphs_after_step
+
+  def test_decode_stepper_static_sliding_window_model_does_not_recompile(self):
+    # Step 0 consumes the prefill token, which was created outside
+    # inference_mode, so step 1 recompiles once on its dispatch keys. That is
+    # absorbed by warmup in practice; the steady state starts at step 1.
+    torch._dynamo.reset()
+    _, graphs = self._run_static_decode(num_steps=5, compile_model=True)
+    self.assertGreater(graphs[1], 0)
+    self.assertEqual(graphs[-1], graphs[1])
+
+    # Without the fix the sliding layer's Python int changes every step and
+    # dynamo recompiles, which is what this test guards against.
+    torch._dynamo.reset()
+    with mock.patch.object(decode, "_drop_unreachable_sliding_windows"):
+      _, graphs = self._run_static_decode(num_steps=5, compile_model=True)
+    self.assertGreater(graphs[-1], graphs[1])
+    torch._dynamo.reset()
+
+  def test_decode_stepper_dropping_sliding_window_keeps_logits(self):
+    fixed, _ = self._run_static_decode(num_steps=4, compile_model=False)
+    with mock.patch.object(decode, "_drop_unreachable_sliding_windows"):
+      original, _ = self._run_static_decode(num_steps=4, compile_model=False)
+    for got, want in zip(fixed, original):
+      test_utils.assert_close(got, want, rtol=0, atol=0)
+
   def test_decode_stepper_falcon_multi_query_heads(self):
     ops = self._ops()
     config_falcon_mq = transformers.FalconConfig(

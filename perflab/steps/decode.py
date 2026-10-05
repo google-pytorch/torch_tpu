@@ -189,6 +189,32 @@ def _make_dynamic_cache(model_config: Any) -> cache_utils.DynamicCache:
     return cache_utils.DynamicCache()
 
 
+def _drop_unreachable_sliding_windows(cache: Any, max_cache_len: int) -> None:
+  """Swaps sliding-window static layers that never roll for `StaticLayer`s.
+
+  `StaticSlidingWindowLayer` tracks its fill level in a Python int, which
+  Dynamo guards on, so every decode step recompiles. If the window covers the
+  whole cache (the layer stores `min(window, max_cache_len)`), the layer never
+  rolls and is equivalent to a `StaticLayer`, which tracks fill as a tensor.
+  The replacement keeps `is_sliding=True` so callers that look up a sliding
+  layer via `cache.is_sliding.index(True)` still find one.
+
+  Args:
+    cache: The freshly built, not yet initialized `StaticCache`.
+    max_cache_len: The `max_cache_len` the cache was built with.
+  """
+  sliding_cls = getattr(cache_utils, "StaticSlidingWindowLayer", None)
+  layers = getattr(cache, "layers", None)
+  if sliding_cls is None or not isinstance(layers, list):
+    return
+  for idx, layer in enumerate(layers):
+    # Exact type match: hybrid subclasses carry extra linear-attention state.
+    if type(layer) is sliding_cls and layer.max_cache_len >= max_cache_len:  # pylint: disable=unidiomatic-typecheck
+      new_layer = cache_utils.StaticLayer(max_cache_len=max_cache_len)
+      new_layer.is_sliding = True
+      layers[idx] = new_layer
+
+
 def _supports_early_initialization(cache: Any) -> bool:
   """Returns whether `early_initialization` is safe for every layer of `cache`.
 
@@ -499,13 +525,15 @@ class DecodeStepper(common.BaseStepper):
 
     if not self.dynamism and supports_static:
       try:
+        max_cache_len = self.prompt_len + self.output_tokens
         self.cache = cache_utils.StaticCache(
             config=model_config,
-            max_cache_len=self.prompt_len + self.output_tokens,
+            max_cache_len=max_cache_len,
             batch_size=self.batch_size,
             dtype=self.dtype,
             device=self.device,
         )
+        _drop_unreachable_sliding_windows(self.cache, max_cache_len)
         if _supports_early_initialization(self.cache):
           try:
             self.cache.early_initialization(
