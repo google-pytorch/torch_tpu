@@ -342,6 +342,7 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ExtractMlirFromGraph(
 
   TT_ASSIGN_OR_RETURN(auto traversal, Traversal::Create(std::move(result_refs)),
                       _.SetPrepend() << "failed to traverse graph: ");
+  traversal->SortByCreationOrder();
   TT_RETURN_IF_ERROR(
       traversal->ValidateAndReorderArguments(std::move(argument_refs)))
           .SetPrepend()
@@ -410,6 +411,7 @@ absl::StatusOr<AsyncCompileResult> TraverseAndCompile(
                        // happens
       auto traversal, Traversal::Create(std::move(result_refs)),
       _ << "failed to create traversal");
+  traversal->SortByCreationOrder();
 
   ABSL_CHECK_OK(  // CRASH_OK=implies a bug in compile backend if this happens
       traversal->ValidateAndReorderArguments(std::move(argument_refs)))

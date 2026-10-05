@@ -340,6 +340,32 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     self.assertIn('func @main', mlir_text)
     self.assertIn('%arg2', mlir_text)
 
+  def test_compile_preserves_dispatch_order(self):
+    with eager_mode_compile_fx_graph():
+      x = torch.ones(10, device='cpu').to(device=torch.device('tpu'))
+      y = torch.ones(10, device='cpu').to(device=torch.device('tpu'))
+      a = torch.sin(x)
+      b = torch.cos(y)
+      z = a + b
+
+    with self.subTest('build_mlir'):
+      mlir = tpu_torch_compile.build_mlir([z], [x, y])
+      mlir_text = tpu_torch_compile.serialize_mlir_text(mlir)
+      self.assertLess(
+          mlir_text.index('stablehlo.sine'),
+          mlir_text.index('stablehlo.cosine'),
+      )
+
+    with self.subTest('traverse_and_compile'):
+      compile_result = tpu_torch_compile.traverse_and_compile(
+          [z], [x, y], build_mlir_module=True
+      )
+      mlir_text = tpu_torch_compile.serialize_mlir_text(compile_result.module)
+      self.assertLess(
+          mlir_text.index('stablehlo.sine'),
+          mlir_text.index('stablehlo.cosine'),
+      )
+
   def test_compile_backend_defaults_to_tpu(self):
     with get_mock_lookup_backend() as mock_lookup_backend:
       x = torch.ones(10, device=torch.device('tpu'))
@@ -712,11 +738,11 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     # dynamic_update_slice and slice operation.
     expected_mlir = """module @tt_jit_build_mlir_compile_mlir_as_strided {
   func.func @main() -> tensor<2x2xf32> {
-    %cst = stablehlo.constant dense<[[1.000000e+00, 2.000000e+00], [3.000000e+00, 4.000000e+00]]> : tensor<2x2xf32>
-    %cst_0 = stablehlo.constant dense<0x7FC00000> : tensor<3x2xf32>
+    %cst = stablehlo.constant dense<0x7FC00000> : tensor<3x2xf32>
+    %cst_0 = stablehlo.constant dense<[[1.000000e+00, 2.000000e+00], [3.000000e+00, 4.000000e+00]]> : tensor<2x2xf32>
     %c = stablehlo.constant dense<1> : tensor<i64>
     %c_1 = stablehlo.constant dense<0> : tensor<i64>
-    %0 = stablehlo.dynamic_update_slice %cst_0, %cst, %c, %c_1 : (tensor<3x2xf32>, tensor<2x2xf32>, tensor<i64>, tensor<i64>) -> tensor<3x2xf32>
+    %0 = stablehlo.dynamic_update_slice %cst, %cst_0, %c, %c_1 : (tensor<3x2xf32>, tensor<2x2xf32>, tensor<i64>, tensor<i64>) -> tensor<3x2xf32>
     %1 = stablehlo.slice %0 [1:3, 0:2] : (tensor<3x2xf32>) -> tensor<2x2xf32>
     return %1 : tensor<2x2xf32>
   }
