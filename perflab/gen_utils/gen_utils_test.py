@@ -14,12 +14,31 @@
 
 """Tests for gen_benchmarks."""
 
+import types
+
 from absl.testing import absltest
+from absl.testing import parameterized
+import torch
 from perflab.gen_utils import gen_utils
 from tests import seed_test_utils
 
 
 class GenUtilsTest(seed_test_utils.RepeatableTest):
+
+  @parameterized.named_parameters(
+      (
+          "last_hidden_state",
+          lambda x: types.SimpleNamespace(last_hidden_state=x),
+      ),
+      ("pooler_output", lambda x: types.SimpleNamespace(pooler_output=x)),
+      ("tuple", lambda x: (x,)),
+      ("tensor", lambda x: x),
+      ("dict", lambda x: {"start_logits": x}),
+  )
+  def test_dummy_compute_loss_returns_mean(self, model):
+    x = torch.tensor([[1.0, 3.0], [5.0, 7.0]])
+    loss = gen_utils.dummy_compute_loss(model, (x,), {})
+    self.assertEqual(loss.item(), 4.0)
 
   def test_model_entry_benchmark_name(self):
     entry = gen_utils.ModelEntry(

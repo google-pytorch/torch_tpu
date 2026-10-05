@@ -75,23 +75,23 @@ def dummy_compute_loss(model, input_args, input_kwargs) -> torch.Tensor:
   """A dummy compute loss function for models that do not return a loss naturally."""
   out = model(*input_args, **input_kwargs)
   if hasattr(out, "last_hidden_state"):
-    return out.last_hidden_state.sum()
+    return out.last_hidden_state.mean()
   if hasattr(out, "pooler_output"):
-    return out.pooler_output.sum()
+    return out.pooler_output.mean()
   if (
       isinstance(out, (tuple, list))
       and len(out) > 0
       and torch.is_tensor(out[0])
   ):
-    return out[0].sum()
+    return out[0].mean()
   if torch.is_tensor(out):
-    return out.sum()
+    return out.mean()
   if isinstance(out, dict):
     for v in out.values():
       if torch.is_tensor(v):
-        return v.sum()
+        return v.mean()
   raise TypeError(
-      "dummy_compute_loss could not find a tensor to sum in"
+      "dummy_compute_loss could not find a tensor to average in"
       f" {type(out).__name__}"
   )
 

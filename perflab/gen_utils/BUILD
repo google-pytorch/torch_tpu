@@ -54,6 +54,8 @@ torch_tpu_py_test(
     deps = [
         ":gen_utils",
         "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//tests:seed_test_utils",
     ],
