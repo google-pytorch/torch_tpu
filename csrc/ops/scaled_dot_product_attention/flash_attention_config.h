@@ -25,11 +25,11 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "xla/mosaic/dialect/tpu/tpu_dialect.h"
 
-namespace mlir::torch_tpu {  // NON_TORCH_TPU_OK=TODO(willfroom): migrate this.
+namespace torch_tpu {
 
 // Configuration for the flash attention kernel.
 struct FlashAttnConfig {
-  ElementType element_type;
+  mlir::ElementType element_type;
   int64_t batch_size;
   int64_t num_heads;
   int64_t kv_num_heads;
@@ -47,7 +47,7 @@ struct FlashAttnConfig {
   bool return_lse;
   bool has_attn_bias;
   float dropout_rate = 0.0f;
-  std::optional<tpu::ContractPrecision> precision = std::nullopt;
+  std::optional<mlir::tpu::ContractPrecision> precision = std::nullopt;
 };
 
 struct Tiling {
@@ -71,6 +71,6 @@ constexpr int64_t kDefaultKTileSize = 512;
 // the natural LSE multiplied by log2(e).
 constexpr float kLog2e = std::numbers::log2e_v<float>;
 
-}  // namespace mlir::torch_tpu
+}  // namespace torch_tpu
 
 #endif  // TORCH_TPU_CSRC_OPS_SCALED_DOT_PRODUCT_ATTENTION_FLASH_ATTENTION_CONFIG_H_

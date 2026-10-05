@@ -423,7 +423,7 @@ BuildNonzeroIndicesExecutable(xla::PjRtClient& client,
   const xla::Shape output_view = MakeUnbounded(xla::S32, xla::Tile({1, 128}));
   const std::vector<xla::Shape> parameters = NonzeroParameters();
   const std::unique_ptr<mlir::MLIRContext> context =
-      mlir::torch_tpu::CreateMlirContextWithDialects();
+      CreateMlirContextWithDialects();
   mlir::OwningOpRef<mlir::ModuleOp> module = BuildNonzeroIndices(*context);
   TT_ASSIGN_OR_RETURN(
       const std::unique_ptr<xla::HloModule> hlo,

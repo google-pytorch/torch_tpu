@@ -172,10 +172,10 @@ int64_t GetKvComputeTileSize(int64_t kt) {
   return kMinHardwareTileSize;
 }
 
-mlir::torch_tpu::Tiling CreateTiling(
-    int64_t q_seq_len, int64_t k_seq_len, int64_t head_dim, bool is_f32,
-    bool has_mask, bool is_backward, bool has_dropout = false,
-    std::optional<int64_t> vmem_limit_override = std::nullopt) {
+Tiling CreateTiling(int64_t q_seq_len, int64_t k_seq_len, int64_t head_dim,
+                    bool is_f32, bool has_mask, bool is_backward,
+                    bool has_dropout = false,
+                    std::optional<int64_t> vmem_limit_override = std::nullopt) {
   const int64_t vmem_limit =
       vmem_limit_override.value_or(GetDeviceVmemLimitBytes());
 
@@ -208,7 +208,7 @@ absl::StatusOr<mlir::stablehlo::CustomCallOp> CreateCustomCallOp(
     mlir::OpBuilder& builder, mlir::Location loc,
     mlir::OwningOpRef<mlir::ModuleOp> module, mlir::ValueRange inputs,
     mlir::TypeRange output_types) {
-  if (failed(mlir::torch_tpu::SerializeMosaicKernel(module.get()))) {
+  if (failed(SerializeMosaicKernel(module.get()))) {
     return TT_ERROR(::torch_tpu::error::kInternal)
            << "failed to serialize mosaic kernel";
   }
@@ -229,8 +229,7 @@ absl::StatusOr<mlir::stablehlo::CustomCallOp> CreateCustomCallOp(
           }
         ]
       })",
-      absl::Base64Escape(mlir::torch_tpu::GetOpString(module.get())),
-      GetDeviceVmemLimitBytes());
+      absl::Base64Escape(GetOpString(module.get())), GetDeviceVmemLimitBytes());
 
   auto get_default_layout = [&builder](mlir::Type type) {
     int64_t rank = mlir::cast<mlir::RankedTensorType>(type).getRank();
@@ -328,9 +327,8 @@ mlir::MlirOp PadBias(mlir::MlirOp bias, int64_t padded_q_len,
   return bias;
 }
 
-mlir::torch_tpu::Tiling CreateTiling(mlir::MlirOp query, mlir::MlirOp key,
-                                     bool has_mask, bool is_backward = false,
-                                     bool has_dropout = false) {
+Tiling CreateTiling(mlir::MlirOp query, mlir::MlirOp key, bool has_mask,
+                    bool is_backward = false, bool has_dropout = false) {
   auto query_type = GetTensorTypeOrDie(query);
   auto key_type = GetTensorTypeOrDie(key);
   int64_t q_seq_len = query_type.getShape()[query_type.getRank() - 2];
@@ -369,12 +367,11 @@ mlir::MlirOp PackPhiloxSeedAndOffsetTo4xI32(mlir::MlirOp philox_seed,
       /*dimension=*/0));
 }
 
-absl::StatusOr<mlir::torch_tpu::FlashAttnConfig> CreateFlashAttnConfig(
+absl::StatusOr<FlashAttnConfig> CreateFlashAttnConfig(
     mlir::MlirOp query, mlir::MlirOp key, mlir::MlirOp value,
     const std::optional<mlir::MlirOp>& attn_bias, bool is_causal,
     std::optional<double> scale, double dropout_p, bool return_lse,
-    const mlir::torch_tpu::Tiling& tiling,
-    mlir::stablehlo::Precision precision) {
+    const Tiling& tiling, mlir::stablehlo::Precision precision) {
   if (is_causal && attn_bias.has_value()) {
     return TT_ERROR(error::kInvalidArgument)
            << "Causal mask and attn bias are mutually exclusive.";
@@ -405,7 +402,7 @@ absl::StatusOr<mlir::torch_tpu::FlashAttnConfig> CreateFlashAttnConfig(
            << "num_heads must be divisible by kv_num_heads for MQA/GQA";
   }
 
-  mlir::torch_tpu::FlashAttnConfig config;
+  FlashAttnConfig config;
   config.return_lse = return_lse;
   TT_ASSIGN_OR_RETURN(config.element_type, GetElementType(query));
   if (config.element_type == mlir::ElementType::F32) {
@@ -519,7 +516,7 @@ CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
                                      /*has_mask=*/attn_bias_mlir.has_value(),
                                      /*is_backward=*/false, has_dropout);
     TT_ASSIGN_OR_RETURN(
-        mlir::torch_tpu::FlashAttnConfig config,
+        FlashAttnConfig config,
         CreateFlashAttnConfig(query_mlir, key_mlir, value_mlir, attn_bias_mlir,
                               is_causal, scale, dropout_p, return_lse, tiling,
                               precision));
@@ -581,10 +578,9 @@ CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
       result_types.push_back(ml_type);
     }
 
-    auto context = mlir::torch_tpu::CreateMlirContextWithDialects();
-    TT_ASSIGN_OR_RETURN(
-        mlir::OwningOpRef<mlir::ModuleOp> kernel,
-        mlir::torch_tpu::CreateKernel(context.get(), config, tiling));
+    auto context = CreateMlirContextWithDialects();
+    TT_ASSIGN_OR_RETURN(mlir::OwningOpRef<mlir::ModuleOp> kernel,
+                        CreateKernel(context.get(), config, tiling));
 
     TT_ASSIGN_OR_RETURN(
         auto custom_call,
@@ -749,7 +745,7 @@ CreateFlashAttentionBackwardKernel(
                                      /*has_mask=*/attn_bias_mlir.has_value(),
                                      /*is_backward=*/true, has_dropout);
     TT_ASSIGN_OR_RETURN(
-        mlir::torch_tpu::FlashAttnConfig config,
+        FlashAttnConfig config,
         CreateFlashAttnConfig(query_mlir, key_mlir, value_mlir, attn_bias_mlir,
                               is_causal, scale, dropout_p,
                               /*return_lse=*/false, tiling, precision));
@@ -827,11 +823,10 @@ CreateFlashAttentionBackwardKernel(
       dkv_inputs.push_back(mask_mlir.getValue());
     }
 
-    auto context = mlir::torch_tpu::CreateMlirContextWithDialects();
+    auto context = CreateMlirContextWithDialects();
 
     TT_ASSIGN_OR_RETURN(mlir::OwningOpRef<mlir::ModuleOp> dkv_kernel,
-                        mlir::torch_tpu::CreateBackwardDkvKernel(
-                            context.get(), config, tiling));
+                        CreateBackwardDkvKernel(context.get(), config, tiling));
     mlir::RankedTensorType key_type = GetTensorTypeOrDie(key_batch);
     mlir::RankedTensorType value_type = GetTensorTypeOrDie(value_batch);
     TT_ASSIGN_OR_RETURN(
@@ -860,9 +855,8 @@ CreateFlashAttentionBackwardKernel(
 
     dq_inputs.push_back(out_batch.getValue());
 
-    TT_ASSIGN_OR_RETURN(
-        mlir::OwningOpRef<mlir::ModuleOp> dq_kernel,
-        mlir::torch_tpu::CreateBackwardDqKernel(context.get(), config, tiling));
+    TT_ASSIGN_OR_RETURN(mlir::OwningOpRef<mlir::ModuleOp> dq_kernel,
+                        CreateBackwardDqKernel(context.get(), config, tiling));
     TT_ASSIGN_OR_RETURN(
         auto dq_custom_call,
         CreateCustomCallOp(builder.getOpBuilder(), builder.getLoc(),

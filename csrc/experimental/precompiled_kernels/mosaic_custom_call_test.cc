@@ -44,7 +44,7 @@ namespace {
 TEST(DynamicMosaic, CopiesDifferentShapesWithOneExecutable) {
   TT_ASSERT_OK_AND_ASSIGN(auto client, CreateKernelTestClient());
   xla::HloRunner runner(std::move(client));
-  auto context = mlir::torch_tpu::CreateMlirContextWithDialects();
+  auto context = CreateMlirContextWithDialects();
   // Copy from src to dst, with runtime-varying dimensions.
   auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
     #hbm = #tpu.memory_space<hbm>

@@ -45,7 +45,7 @@ namespace {
 
 absl::StatusOr<std::string> SerializeMosaic(mlir::ModuleOp module) {
   // Use TorchTPU's pinned Mosaic transport version, not upstream's latest.
-  if (mlir::failed(mlir::torch_tpu::SerializeMosaicKernel(module))) {
+  if (mlir::failed(SerializeMosaicKernel(module))) {
     return TT_ERROR(error::kInternal) << "Mosaic serialization failed";
   }
   std::string bytes;

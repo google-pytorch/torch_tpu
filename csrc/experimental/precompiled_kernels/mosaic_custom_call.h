@@ -29,7 +29,7 @@
 namespace torch_tpu {
 
 // Serializes the module in place and wraps it in one scheduled custom call.
-// Create its context with mlir::torch_tpu::CreateMlirContextWithDialects().
+// Create its context with CreateMlirContextWithDialects().
 // The caller supplies shapes/layouts and metadata routing (-1 for no metadata).
 // A nonnegative aliased_parameter requires the single result to alias that
 // operand; the caller must permit its donation at execution. Compile the

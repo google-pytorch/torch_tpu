@@ -36,42 +36,44 @@
 #include "mlir/IR/Value.h"
 #include "mlir/IR/ValueRange.h"
 
-namespace mlir::torch_tpu {  // NON_TORCH_TPU_OK=TODO(willfroom): migrate this.
+namespace torch_tpu {
 
 struct KVWindowMaps {
-  DictionaryAttr k_map;
-  DictionaryAttr v_map;
+  mlir::DictionaryAttr k_map;
+  mlir::DictionaryAttr v_map;
 };
 
-DictionaryAttr CreateSymbolTransformIndicesAttr(
-    Builder& builder, llvm::StringRef function_name,
+mlir::DictionaryAttr CreateSymbolTransformIndicesAttr(
+    mlir::Builder& builder, llvm::StringRef function_name,
     llvm::ArrayRef<int64_t> window_bounds);
 
 // Creates the KV window maps (k_map and v_map) for MHA, GQA, or MQA.
-KVWindowMaps CreateKVWindowMaps(OpBuilder& builder, func::FuncOp fn,
+KVWindowMaps CreateKVWindowMaps(mlir::OpBuilder& builder, mlir::func::FuncOp fn,
                                 const FlashAttnConfig& config,
                                 const Tiling& tiling);
 
 // Load a 2D tile from the given argument.
-TypedValue<VectorType> LoadTile(ImplicitLocOpBuilder& b, Value arg);
+mlir::TypedValue<mlir::VectorType> LoadTile(mlir::ImplicitLocOpBuilder& b,
+                                            mlir::Value arg);
 // Load the [num_rows, num_cols] sub-tile of the given argument starting at
 // (row_offset, col_offset) of its trailing 2D tile.
-TypedValue<VectorType> LoadTileSlice(ImplicitLocOpBuilder& b, Value arg,
-                                     int64_t row_offset, int64_t num_rows,
-                                     int64_t col_offset, int64_t num_cols);
+mlir::TypedValue<mlir::VectorType> LoadTileSlice(
+    mlir::ImplicitLocOpBuilder& b, mlir::Value arg, int64_t row_offset,
+    int64_t num_rows, int64_t col_offset, int64_t num_cols);
 // Store a 2D tile to the given argument.
 // If the value is not the same type as the argument, it will be converted.
-void StoreTile(ImplicitLocOpBuilder& b, Value value, Value arg);
+void StoreTile(mlir::ImplicitLocOpBuilder& b, mlir::Value value,
+               mlir::Value arg);
 // Store a 2D value at (row_offset, col_offset) of the trailing 2D tile of the
 // given argument.
-void StoreTileSlice(ImplicitLocOpBuilder& b, Value value, Value arg,
-                    int64_t row_offset, int64_t col_offset);
+void StoreTileSlice(mlir::ImplicitLocOpBuilder& b, mlir::Value value,
+                    mlir::Value arg, int64_t row_offset, int64_t col_offset);
 
 // Initialize a 2D tile with zeros.
-void ZeroTile(ImplicitLocOpBuilder& b, Value arg);
+void ZeroTile(mlir::ImplicitLocOpBuilder& b, mlir::Value arg);
 
 // Initialize a 2D tile with -inf.
-void NInfTile(ImplicitLocOpBuilder& b, Value arg);
+void NInfTile(mlir::ImplicitLocOpBuilder& b, mlir::Value arg);
 
 // Whether any sequence boundary masking is required for the given
 // configuration.
@@ -83,57 +85,67 @@ bool NeedsPadMask(int64_t qt, int64_t kt, int64_t q_seq_len,
 // starts at the static (row_offset, col_offset) within the tile; the tile
 // itself is [qt, kt]. Callers should skip calling this on sub-blocks known not
 // to intersect a mask boundary (see CreateIntersectsDiagCondition).
-Value ApplyStructuredMask(ImplicitLocOpBuilder& b, Value sij,
-                          Value row_block_idx, Value col_block_idx, int64_t qt,
-                          int64_t kt, int64_t q_seq_len, int64_t kv_seq_len,
-                          bool is_causal, int64_t row_offset = 0,
-                          int64_t col_offset = 0);
+mlir::Value ApplyStructuredMask(mlir::ImplicitLocOpBuilder& b, mlir::Value sij,
+                                mlir::Value row_block_idx,
+                                mlir::Value col_block_idx, int64_t qt,
+                                int64_t kt, int64_t q_seq_len,
+                                int64_t kv_seq_len, bool is_causal,
+                                int64_t row_offset = 0, int64_t col_offset = 0);
 
 // Reduce the 2D input to a 1D across the lane dimension and then broadcast the
 // results lane dimension to the given size.
-Value ReduceBroadcastLane(ImplicitLocOpBuilder& b, Value input,
-                          vector::CombiningKind kind,
-                          int64_t broadcast_lane_size = 128);
+mlir::Value ReduceBroadcastLane(mlir::ImplicitLocOpBuilder& b,
+                                mlir::Value input,
+                                mlir::vector::CombiningKind kind,
+                                int64_t broadcast_lane_size = 128);
 
 // Clamp the given value to the minimum finite value.
-Value ClampMinFinite(ImplicitLocOpBuilder& b, Value input);
+mlir::Value ClampMinFinite(mlir::ImplicitLocOpBuilder& b, mlir::Value input);
 
 // Creates a constant vector with all elements set to `value`.
-Value SplatConstant(ImplicitLocOpBuilder& b, Type type, float value);
-Value SplatConstant(ImplicitLocOpBuilder& b, ShapedType type,
-                    Attribute value_attr);
+mlir::Value SplatConstant(mlir::ImplicitLocOpBuilder& b, mlir::Type type,
+                          float value);
+mlir::Value SplatConstant(mlir::ImplicitLocOpBuilder& b, mlir::ShapedType type,
+                          mlir::Attribute value_attr);
 
 // Creates a constant vector with all elements set to -infinity.
-Value SplatNegInf(ImplicitLocOpBuilder& b, Type type);
+mlir::Value SplatNegInf(mlir::ImplicitLocOpBuilder& b, mlir::Type type);
 
 // Returns an i1 condition indicating whether the tile at (row_idx, col_idx)
 // is below or on the diagonal (i.e. intersects the causal mask).
-Value CreateBelowOrOnDiagCondition(ImplicitLocOpBuilder& b, Value row_idx,
-                                   Value col_idx, int64_t row_block_size,
-                                   int64_t col_block_size);
+mlir::Value CreateBelowOrOnDiagCondition(mlir::ImplicitLocOpBuilder& b,
+                                         mlir::Value row_idx,
+                                         mlir::Value col_idx,
+                                         int64_t row_block_size,
+                                         int64_t col_block_size);
 
 // Returns an i1 condition indicating whether the tile at (row_idx, col_idx)
 // contains at least one element strictly above the diagonal, i.e. whether a
 // causal mask needs to be applied to it. Tiles strictly below the diagonal
 // need no masking.
-Value CreateIntersectsDiagCondition(ImplicitLocOpBuilder& b, Value row_idx,
-                                    Value col_idx, int64_t row_block_size,
-                                    int64_t col_block_size);
+mlir::Value CreateIntersectsDiagCondition(mlir::ImplicitLocOpBuilder& b,
+                                          mlir::Value row_idx,
+                                          mlir::Value col_idx,
+                                          int64_t row_block_size,
+                                          int64_t col_block_size);
 
 // Create an scf.IfOp where the then block will be executed when
 // row_idx >= col_idx.
-scf::IfOp CreateCausalIfOp(ImplicitLocOpBuilder& b, Value row_idx,
-                           Value col_idx, int64_t row_block_size,
-                           int64_t col_block_size);
+mlir::scf::IfOp CreateCausalIfOp(mlir::ImplicitLocOpBuilder& b,
+                                 mlir::Value row_idx, mlir::Value col_idx,
+                                 int64_t row_block_size,
+                                 int64_t col_block_size);
 
 // Scale the input vector by the given scale factor.
-Value ScaleValue(ImplicitLocOpBuilder& b, Value input, float scale);
+mlir::Value ScaleValue(mlir::ImplicitLocOpBuilder& b, mlir::Value input,
+                       float scale);
 
 // Cast the input value element type to the given target type.
 // Assumes that the input is a vector type.
 // If the input is already the correct type, the input is returned unchanged.
-Value ConvertElementType(ImplicitLocOpBuilder& b, Type target_element_type,
-                         Value input);
+mlir::Value ConvertElementType(mlir::ImplicitLocOpBuilder& b,
+                               mlir::Type target_element_type,
+                               mlir::Value input);
 
 // Normalizes the lane dimension of the input vector.
 // This is intended to be used with the statistic tiles (e.g. lse, di, etc.)
@@ -142,13 +154,13 @@ Value ConvertElementType(ImplicitLocOpBuilder& b, Type target_element_type,
 // size is larger than the input lane size.
 // **NOTE** This will fail if the target lane size is larger and not a
 // multiple of the input lane size.
-Value NormalizeLaneDim(ImplicitLocOpBuilder& builder, Value input,
-                       int64_t target_lane_size);
+mlir::Value NormalizeLaneDim(mlir::ImplicitLocOpBuilder& builder,
+                             mlir::Value input, int64_t target_lane_size);
 
 // Create a log2 operation.
 // For older versions of libtpu that do not support the log2 op we will use a
 // scaled ln operation.
-Value CreateLog2(ImplicitLocOpBuilder& b, Value input);
+mlir::Value CreateLog2(mlir::ImplicitLocOpBuilder& b, mlir::Value input);
 
 // Dropout needs a single Mosaic `scalar_prefetch` operand: a 4-word SMEM buffer
 // holding the Philox {seed_lo, seed_hi, offset_lo, offset_hi}.
@@ -160,13 +172,13 @@ Value CreateLog2(ImplicitLocOpBuilder& b, Value input);
 // which must take exactly `iteration_bounds.size() + scalar_prefetch` args.
 
 // Appends the `scalar_prefetch` operand types for `config` to `types`.
-void AppendScalarPrefetchTypes(MLIRContext* context,
+void AppendScalarPrefetchTypes(mlir::MLIRContext* context,
                                const FlashAttnConfig& config,
-                               SmallVectorImpl<Type>& types);
+                               mlir::SmallVectorImpl<mlir::Type>& types);
 
 // Sets the `scalar_prefetch` attribute on `fn`, if `config` needs one.
-void SetScalarPrefetchAttr(const FlashAttnConfig& config, func::FuncOp fn,
-                           OpBuilder& builder);
+void SetScalarPrefetchAttr(const FlashAttnConfig& config, mlir::func::FuncOp fn,
+                           mlir::OpBuilder& builder);
 
 // Builds a stateless, tile-size-invariant dropout mask of type
 // vector<rows x cols x i1> (true = keep, false = drop) for the sub-block of
@@ -181,16 +193,15 @@ void SetScalarPrefetchAttr(const FlashAttnConfig& config, func::FuncOp fn,
 // backward kernels agree despite their different tilings.
 //
 // `head_idx` must be the *query* head index.
-Value BuildDropoutKeepMask(ImplicitLocOpBuilder& b,
-                           const FlashAttnConfig& config, int64_t qt,
-                           int64_t kt, Value batch_idx, Value head_idx,
-                           Value row_block_idx, Value col_block_idx,
-                           Value seed_smem, int64_t row_offset = 0,
-                           int64_t col_offset = 0, int64_t rows = 0,
-                           int64_t cols = 0);
+mlir::Value BuildDropoutKeepMask(
+    mlir::ImplicitLocOpBuilder& b, const FlashAttnConfig& config, int64_t qt,
+    int64_t kt, mlir::Value batch_idx, mlir::Value head_idx,
+    mlir::Value row_block_idx, mlir::Value col_block_idx, mlir::Value seed_smem,
+    int64_t row_offset = 0, int64_t col_offset = 0, int64_t rows = 0,
+    int64_t cols = 0);
 // Get the string representation of an operation.
-std::string GetOpString(Operation* op);
+std::string GetOpString(mlir::Operation* op);
 
-}  // namespace mlir::torch_tpu
+}  // namespace torch_tpu
 
 #endif  // TORCH_TPU_CSRC_OPS_SCALED_DOT_PRODUCT_ATTENTION_UTIL_H_

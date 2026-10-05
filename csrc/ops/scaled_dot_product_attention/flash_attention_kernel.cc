@@ -61,7 +61,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "xla/xla_data.pb.h"
 
-namespace mlir::torch_tpu {  // NON_TORCH_TPU_OK=TODO(willfroom): migrate this.
+namespace torch_tpu {
 
 using mlir::arith::AddFOp;          // USING_DECL_OK
 using mlir::arith::CmpFOp;          // USING_DECL_OK
@@ -83,14 +83,14 @@ namespace {
 
 void SetKernelAttributes(llvm::ArrayRef<const int64_t> qk_dimensions,
                          const FlashAttnConfig& config, const Tiling& tiling,
-                         func::FuncOp fn, OpBuilder& builder) {
+                         mlir::func::FuncOp fn, mlir::OpBuilder& builder) {
   const int64_t scratch_operands = 3L;
   fn->setAttr("scratch_operands", builder.getI64IntegerAttr(scratch_operands));
   SetScalarPrefetchAttr(config, fn, builder);
 
   const int64_t num_iteration_indices = absl::c_count_if(
       fn.getArguments(),
-      [](BlockArgument arg) { return arg.getType().isIntOrIndex(); });
+      [](mlir::BlockArgument arg) { return arg.getType().isIntOrIndex(); });
   if (num_iteration_indices == 0) {
     // No other attributes are needed in the case there is a single iteration.
     return;
@@ -104,8 +104,8 @@ void SetKernelAttributes(llvm::ArrayRef<const int64_t> qk_dimensions,
   fn->setAttr("iteration_bounds",
               builder.getDenseI64ArrayAttr(
                   {iteration_bounds.begin(), iteration_bounds.end()}));
-  MLIRContext* context = builder.getContext();
-  absl::InlinedVector<Attribute, 4> dimension_semantics(
+  mlir::MLIRContext* context = builder.getContext();
+  absl::InlinedVector<mlir::Attribute, 4> dimension_semantics(
       num_iteration_indices,
       GetDimensionSemanticsAttr(context, DimensionSemantics::kParallel));
   // The last dimension is arbitrary, update it accordingly.
@@ -120,20 +120,20 @@ void SetKernelAttributes(llvm::ArrayRef<const int64_t> qk_dimensions,
   // scalar_prefetch arguments, and scratch arguments.
   // The arguments are in the following order: iteration_indices,
   // [seed_smem], q, k, v, auxiliary_parameters, output, li, mi.
-  SmallVector<AffineExpr> dims(num_iteration_indices);
-  bindDimsList(context, MutableArrayRef{dims});
+  mlir::SmallVector<mlir::AffineExpr> dims(num_iteration_indices);
+  mlir::bindDimsList(context, mlir::MutableArrayRef{dims});
   // Auxiliary function for creating transform_indices attribute.
-  auto transform_indices = [&](ArrayRef<AffineExpr> results) {
+  auto transform_indices = [&](mlir::ArrayRef<mlir::AffineExpr> results) {
     return builder.getDictionaryAttr({builder.getNamedAttr(
-        "transform_indices", AffineMapAttr::get(AffineMap::get(
+        "transform_indices", mlir::AffineMapAttr::get(mlir::AffineMap::get(
                                  /*dimCount=*/dims.size(),
                                  /*symbolCount=*/0, results, context)))});
   };
 
-  llvm::SmallVector<AffineExpr> q_map_expr = {
+  llvm::SmallVector<mlir::AffineExpr> q_map_expr = {
       builder.getAffineDimExpr(0), builder.getAffineDimExpr(1),
       builder.getAffineDimExpr(2), builder.getAffineConstantExpr(0)};
-  llvm::SmallVector<AffineExpr> aux_map_expr = {
+  llvm::SmallVector<mlir::AffineExpr> aux_map_expr = {
       builder.getAffineDimExpr(0), builder.getAffineDimExpr(1),
       builder.getAffineConstantExpr(0), builder.getAffineDimExpr(2)};
 
@@ -142,13 +142,13 @@ void SetKernelAttributes(llvm::ArrayRef<const int64_t> qk_dimensions,
 
   auto [k_map, v_map] = CreateKVWindowMaps(builder, fn, config, tiling);
 
-  SmallVector<DictionaryAttr> window_attrs;
+  mlir::SmallVector<mlir::DictionaryAttr> window_attrs;
   window_attrs.push_back(q_map);  // Q
   window_attrs.push_back(k_map);  // K
   window_attrs.push_back(v_map);  // V
 
   if (config.has_attn_bias) {
-    SmallVector<AffineExpr, 4> mask_expr{
+    mlir::SmallVector<mlir::AffineExpr, 4> mask_expr{
         builder.getAffineDimExpr(0), builder.getAffineDimExpr(1),
         builder.getAffineDimExpr(2), builder.getAffineDimExpr(3)};
     for (auto dim : config.mask_broadcast_dims) {
@@ -169,27 +169,27 @@ void SetKernelAttributes(llvm::ArrayRef<const int64_t> qk_dimensions,
 
 // The running online-softmax state for a band of query rows.
 struct SoftmaxState {
-  Value m;    // [rows, 128] f32 running max (log2 domain).
-  Value l;    // [rows, 128] f32 running sum.
-  Value acc;  // [rows, vo_head_dim] f32 unnormalized output.
+  mlir::Value m;    // [rows, 128] f32 running max (log2 domain).
+  mlir::Value l;    // [rows, 128] f32 running sum.
+  mlir::Value acc;  // [rows, vo_head_dim] f32 unnormalized output.
 };
 
 // Kernel arguments that are shared by all sub-blocks of a grid step.
 struct KernelArgs {
-  Value seed_arg;  // Null when dropout is disabled.
-  Value q_arg;
-  Value k_arg;
-  Value v_arg;
-  Value mask_arg;  // Null when there is no user provided bias.
-  Value oi_arg;
-  Value lse_arg;  // Null when LSE is not returned.
-  Value o_scratch_arg;
-  Value mi_arg;
-  Value li_arg;
-  Value batch_idx;
-  Value head_idx;
-  Value row_block_idx;
-  Value col_block_idx;
+  mlir::Value seed_arg;  // Null when dropout is disabled.
+  mlir::Value q_arg;
+  mlir::Value k_arg;
+  mlir::Value v_arg;
+  mlir::Value mask_arg;  // Null when there is no user provided bias.
+  mlir::Value oi_arg;
+  mlir::Value lse_arg;  // Null when LSE is not returned.
+  mlir::Value o_scratch_arg;
+  mlir::Value mi_arg;
+  mlir::Value li_arg;
+  mlir::Value batch_idx;
+  mlir::Value head_idx;
+  mlir::Value row_block_idx;
+  mlir::Value col_block_idx;
 };
 
 // Applies PyTorch's inverted dropout to the softmax probabilities `p`: kept
@@ -199,46 +199,48 @@ struct KernelArgs {
 // Only the probabilities fed into the P @ V matmul are dropped; the softmax
 // statistics (m_i, l_i and hence the LSE) must stay undropped because the
 // backward pass recomputes P from the LSE.
-Value ApplyDropoutToProbabilities(ImplicitLocOpBuilder& b,
-                                  const FlashAttnConfig& config,
-                                  const Tiling& tiling, const KernelArgs& args,
-                                  int64_t row_offset, int64_t col_offset,
-                                  Value p) {
+mlir::Value ApplyDropoutToProbabilities(mlir::ImplicitLocOpBuilder& b,
+                                        const FlashAttnConfig& config,
+                                        const Tiling& tiling,
+                                        const KernelArgs& args,
+                                        int64_t row_offset, int64_t col_offset,
+                                        mlir::Value p) {
   if (config.dropout_rate <= 0.0f) {
     return p;
   }
-  VectorType p_type = cast<VectorType>(p.getType());
-  Value keep = BuildDropoutKeepMask(
+  mlir::VectorType p_type = mlir::cast<mlir::VectorType>(p.getType());
+  mlir::Value keep = BuildDropoutKeepMask(
       b, config, tiling.qt, tiling.kt, args.batch_idx, args.head_idx,
       args.row_block_idx, args.col_block_idx, args.seed_arg, row_offset,
       col_offset, p_type.getDimSize(0), p_type.getDimSize(1));
-  Value p_rescaled = ScaleValue(b, p, 1.0f / (1.0f - config.dropout_rate));
-  Value zeros = ConstantOp::create(b, b.getZeroAttr(p_type));
-  return arith::SelectOp::create(b, keep, p_rescaled, zeros);
+  mlir::Value p_rescaled =
+      ScaleValue(b, p, 1.0f / (1.0f - config.dropout_rate));
+  mlir::Value zeros = ConstantOp::create(b, b.getZeroAttr(p_type));
+  return mlir::arith::SelectOp::create(b, keep, p_rescaled, zeros);
 }
 
 // Folds the [rows, kc] logits sub-block at (row_offset, col_offset) of the
 // current grid tile into the online softmax state `prev`. When `prev` is
 // nullopt this is the first block for these rows, which avoids the rescaling
 // of an (empty) previous state.
-SoftmaxState UpdateSoftmaxState(ImplicitLocOpBuilder& b,
+SoftmaxState UpdateSoftmaxState(mlir::ImplicitLocOpBuilder& b,
                                 const FlashAttnConfig& config,
                                 const Tiling& tiling, const KernelArgs& args,
-                                Value q, int64_t row_offset, int64_t rows,
+                                mlir::Value q, int64_t row_offset, int64_t rows,
                                 int64_t col_offset, int64_t kc,
                                 bool apply_masking,
                                 const std::optional<SoftmaxState>& prev) {
-  Type ity = getElementType(*b.getContext(), config.element_type);
-  FloatType f32 = b.getF32Type();
+  mlir::Type ity = getElementType(*b.getContext(), config.element_type);
+  mlir::FloatType f32 = b.getF32Type();
 
-  Value k = LoadTileSlice(b, args.k_arg, col_offset, kc, /*col_offset=*/0,
-                          config.qk_head_dim);
-  Value sij = CreateMatmul(
+  mlir::Value k = LoadTileSlice(b, args.k_arg, col_offset, kc, /*col_offset=*/0,
+                                config.qk_head_dim);
+  mlir::Value sij = CreateMatmul(
       b, q, k,
       MatmulOptions{.transpose_rhs = true, .precision = config.precision});
 
   if (args.mask_arg) {
-    Value user_bias =
+    mlir::Value user_bias =
         LoadTileSlice(b, args.mask_arg, row_offset, rows, col_offset, kc);
     user_bias = ConvertElementType(b, f32, user_bias);
     user_bias = ScaleValue(b, user_bias, kLog2e);
@@ -252,7 +254,7 @@ SoftmaxState UpdateSoftmaxState(ImplicitLocOpBuilder& b,
                               row_offset, col_offset);
   }
 
-  Value mij = ReduceBroadcastLane(b, sij, CombiningKind::MAXIMUMF);
+  mlir::Value mij = ReduceBroadcastLane(b, sij, CombiningKind::MAXIMUMF);
   if (args.mask_arg) {
     // Clamping mij instead of sij ensures that when a row is entirely masked
     // out with -inf, sij - mij evaluates to (-inf) - (<large negative finite>)
@@ -260,34 +262,35 @@ SoftmaxState UpdateSoftmaxState(ImplicitLocOpBuilder& b,
     // select on p in the inner loop.
     mij = ClampMinFinite(b, mij);
   }
-  Value v = LoadTileSlice(b, args.v_arg, col_offset, kc, /*col_offset=*/0,
-                          config.vo_head_dim);
+  mlir::Value v = LoadTileSlice(b, args.v_arg, col_offset, kc, /*col_offset=*/0,
+                                config.vo_head_dim);
 
   SoftmaxState next;
   if (!prev.has_value()) {
     next.m = mij;
-    Value p =
+    mlir::Value p =
         Exp2Op::create(b, SubFOp::create(b, sij, NormalizeLaneDim(b, mij, kc)));
     next.l = ReduceBroadcastLane(b, p, CombiningKind::ADD);
-    Value p_for_pv = ApplyDropoutToProbabilities(b, config, tiling, args,
-                                                 row_offset, col_offset, p);
+    mlir::Value p_for_pv = ApplyDropoutToProbabilities(
+        b, config, tiling, args, row_offset, col_offset, p);
     next.acc = CreateMatmul(b, ConvertElementType(b, ity, p_for_pv), v,
                             MatmulOptions{.precision = config.precision});
     return next;
   }
 
   next.m = MaximumFOp::create(b, prev->m, mij);
-  Value alpha = Exp2Op::create(b, SubFOp::create(b, prev->m, next.m));
-  Value p = Exp2Op::create(
+  mlir::Value alpha = Exp2Op::create(b, SubFOp::create(b, prev->m, next.m));
+  mlir::Value p = Exp2Op::create(
       b, SubFOp::create(b, sij, NormalizeLaneDim(b, next.m, kc)));
-  Value tile_sum = ReduceBroadcastLane(b, p, CombiningKind::ADD);
+  mlir::Value tile_sum = ReduceBroadcastLane(b, p, CombiningKind::ADD);
   next.l = AddFOp::create(b, MulFOp::create(b, alpha, prev->l), tile_sum);
 
-  Value p_for_pv = ApplyDropoutToProbabilities(b, config, tiling, args,
-                                               row_offset, col_offset, p);
-  Value current = CreateMatmul(b, ConvertElementType(b, ity, p_for_pv), v,
-                               MatmulOptions{.precision = config.precision});
-  Value adjustment = MulFOp::create(
+  mlir::Value p_for_pv = ApplyDropoutToProbabilities(b, config, tiling, args,
+                                                     row_offset, col_offset, p);
+  mlir::Value current =
+      CreateMatmul(b, ConvertElementType(b, ity, p_for_pv), v,
+                   MatmulOptions{.precision = config.precision});
+  mlir::Value adjustment = MulFOp::create(
       b, NormalizeLaneDim(b, alpha, config.vo_head_dim), prev->acc);
   next.acc = AddFOp::create(b, adjustment, current);
   return next;
@@ -295,18 +298,20 @@ SoftmaxState UpdateSoftmaxState(ImplicitLocOpBuilder& b,
 
 // Normalizes the accumulated output for the query rows starting at
 // `row_offset` and stores it (and optionally the LSE).
-void StoreNormalizedOutput(ImplicitLocOpBuilder& b,
+void StoreNormalizedOutput(mlir::ImplicitLocOpBuilder& b,
                            const FlashAttnConfig& config,
                            const KernelArgs& args, const SoftmaxState& state,
                            int64_t row_offset) {
-  VectorType l_type = cast<VectorType>(state.l.getType());
-  Value zero_l = ConstantOp::create(b, b.getZeroAttr(l_type));
-  Value is_zero_l = CmpFOp::create(b, CmpFPredicate::OEQ, state.l, zero_l);
-  Value one_l = SplatConstant(b, l_type, 1.0f);
-  Value safe_l = SelectOp::create(b, is_zero_l, one_l, state.l);
+  mlir::VectorType l_type = mlir::cast<mlir::VectorType>(state.l.getType());
+  mlir::Value zero_l = ConstantOp::create(b, b.getZeroAttr(l_type));
+  mlir::Value is_zero_l = mlir::arith::CmpFOp::create(
+      b, mlir::arith::CmpFPredicate::OEQ, state.l, zero_l);
+  mlir::Value one_l = SplatConstant(b, l_type, 1.0f);
+  mlir::Value safe_l =
+      mlir::arith::SelectOp::create(b, is_zero_l, one_l, state.l);
 
-  Value li_recip = CreateReciprocal(b, safe_l);
-  Value normalized_output = MulFOp::create(
+  mlir::Value li_recip = CreateReciprocal(b, safe_l);
+  mlir::Value normalized_output = MulFOp::create(
       b, state.acc, NormalizeLaneDim(b, li_recip, config.vo_head_dim));
   StoreTileSlice(b, normalized_output, args.oi_arg, row_offset,
                  /*col_offset=*/0);
@@ -314,11 +319,12 @@ void StoreNormalizedOutput(ImplicitLocOpBuilder& b,
     // As LSE is *only* used for the backward pass, we can use the more
     // efficient log2 instead of log. I.e. this result is actually scaled by
     // log2(e) of the natural log version of LSE.
-    Value ninf_val = SplatNegInf(b, l_type);
-    Value lse = AddFOp::create(b, state.m, CreateLog2(b, safe_l));
-    lse = SelectOp::create(b, is_zero_l, ninf_val, lse);
-    Value sliced_lse = NormalizeLaneDim(b, lse, 1);
-    Value transposed_lse = vector::TransposeOp::create(b, sliced_lse, {1, 0});
+    mlir::Value ninf_val = SplatNegInf(b, l_type);
+    mlir::Value lse = AddFOp::create(b, state.m, CreateLog2(b, safe_l));
+    lse = mlir::arith::SelectOp::create(b, is_zero_l, ninf_val, lse);
+    mlir::Value sliced_lse = NormalizeLaneDim(b, lse, 1);
+    mlir::Value transposed_lse =
+        mlir::vector::TransposeOp::create(b, sliced_lse, {1, 0});
     // The LSE tile is [1, qt], so the query rows are along the lane dimension.
     StoreTileSlice(b, transposed_lse, args.lse_arg, /*row_offset=*/0,
                    /*col_offset=*/row_offset);
@@ -342,7 +348,7 @@ void StoreNormalizedOutput(ImplicitLocOpBuilder& b,
 //   are chosen to match `kc` so that sub-blocks strictly above the diagonal
 //   (fully masked) are skipped entirely and only the sub-blocks on the diagonal
 //   are masked. For non-square tiles every sub-block is masked.
-void EmitGridStep(ImplicitLocOpBuilder& b, const FlashAttnConfig& config,
+void EmitGridStep(mlir::ImplicitLocOpBuilder& b, const FlashAttnConfig& config,
                   const Tiling& tiling, const KernelArgs& args,
                   bool is_single_kv_step, bool has_padding,
                   bool intersects_causal_diag) {
@@ -359,8 +365,8 @@ void EmitGridStep(ImplicitLocOpBuilder& b, const FlashAttnConfig& config,
 
   for (int64_t band = 0; band < num_bands; ++band) {
     const int64_t row_offset = band * band_rows;
-    Value q = LoadTileSlice(b, args.q_arg, row_offset, band_rows,
-                            /*col_offset=*/0, config.qk_head_dim);
+    mlir::Value q = LoadTileSlice(b, args.q_arg, row_offset, band_rows,
+                                  /*col_offset=*/0, config.qk_head_dim);
     q = ScaleValue(b, q, config.scale * kLog2e);
 
     std::optional<SoftmaxState> state;
@@ -398,28 +404,29 @@ void EmitGridStep(ImplicitLocOpBuilder& b, const FlashAttnConfig& config,
 // q [batch_size, num_heads, q_seq_len, d_model]
 // k [batch_size, num_heads, kv_seq_len, d_model]
 // v [batch_size, num_heads, kv_seq_len, d_model]
-func::FuncOp buildModule(ImplicitLocOpBuilder& module_builder,
-                         const FlashAttnConfig& config, const Tiling& tiling) {
-  MLIRContext* context = module_builder.getContext();
-  IntegerType i32 = module_builder.getIntegerType(32);
+mlir::func::FuncOp buildModule(mlir::ImplicitLocOpBuilder& module_builder,
+                               const FlashAttnConfig& config,
+                               const Tiling& tiling) {
+  mlir::MLIRContext* context = module_builder.getContext();
+  mlir::IntegerType i32 = module_builder.getIntegerType(32);
   // FlashAttnConfig::element_type is either F32 or BF16.
-  Type ity = getElementType(*context, config.element_type);
+  mlir::Type ity = getElementType(*context, config.element_type);
   // The output element type is always F32.
-  FloatType f32 = module_builder.getF32Type();
+  mlir::FloatType f32 = module_builder.getF32Type();
   const int64_t qt = tiling.qt;
   const int64_t kt = tiling.kt;
   const bool has_dropout = config.dropout_rate > 0.0f;
 
-  SmallVector<int64_t> q_dims = {1, 1, qt, config.qk_head_dim};
-  SmallVector<int64_t> k_dims = {1, 1, kt, config.qk_head_dim};
-  SmallVector<int64_t> v_dims = {1, 1, kt, config.vo_head_dim};
-  SmallVector<int64_t> oi_dims = {1, 1, qt, config.vo_head_dim};
-  SmallVector<int64_t> lse_dims = {1, 1, 1, qt};
-  SmallVector<int64_t> mi_dims = {qt, 128};
-  SmallVector<int64_t> li_dims = {qt, 128};
+  mlir::SmallVector<int64_t> q_dims = {1, 1, qt, config.qk_head_dim};
+  mlir::SmallVector<int64_t> k_dims = {1, 1, kt, config.qk_head_dim};
+  mlir::SmallVector<int64_t> v_dims = {1, 1, kt, config.vo_head_dim};
+  mlir::SmallVector<int64_t> oi_dims = {1, 1, qt, config.vo_head_dim};
+  mlir::SmallVector<int64_t> lse_dims = {1, 1, 1, qt};
+  mlir::SmallVector<int64_t> mi_dims = {qt, 128};
+  mlir::SmallVector<int64_t> li_dims = {qt, 128};
 
   // We have 4 iteration indices.
-  SmallVector<Type> inputs(4, i32);
+  mlir::SmallVector<mlir::Type> inputs(4, i32);
   AppendScalarPrefetchTypes(context, config, inputs);
   // Add q, k, v.
   inputs.insert(inputs.end(), {GetVmemMemRefType(context, q_dims, ity),
@@ -427,7 +434,7 @@ func::FuncOp buildModule(ImplicitLocOpBuilder& module_builder,
                                GetVmemMemRefType(context, v_dims, ity)});
   bool has_mask = config.has_attn_bias;
   if (has_mask) {
-    SmallVector<int64_t> mask_dims = {1, 1, qt, kt};
+    mlir::SmallVector<int64_t> mask_dims = {1, 1, qt, kt};
     inputs.push_back(GetVmemMemRefType(context, mask_dims, ity));
   }
 
@@ -439,13 +446,14 @@ func::FuncOp buildModule(ImplicitLocOpBuilder& module_builder,
   inputs.insert(inputs.end(), {GetVmemMemRefType(context, oi_dims, f32),
                                GetVmemMemRefType(context, mi_dims, f32),
                                GetVmemMemRefType(context, li_dims, f32)});
-  func::FuncOp fn =
-      func::FuncOp::create(module_builder, "flash_forward",
-                           module_builder.getFunctionType(inputs, {}));
+  mlir::func::FuncOp fn =
+      mlir::func::FuncOp::create(module_builder, "flash_forward",
+                                 module_builder.getFunctionType(inputs, {}));
   SetTcCoreTypeAttr(fn);
 
-  ImplicitLocOpBuilder fn_builder = ImplicitLocOpBuilder::atBlockBegin(
-      module_builder.getLoc(), fn.addEntryBlock());
+  mlir::ImplicitLocOpBuilder fn_builder =
+      mlir::ImplicitLocOpBuilder::atBlockBegin(module_builder.getLoc(),
+                                               fn.addEntryBlock());
 
   // There are 4 induction variables.
   unsigned int next_index = 4;
@@ -472,7 +480,7 @@ func::FuncOp buildModule(ImplicitLocOpBuilder& module_builder,
                    config.kv_sequence_length);
 
   ConstantOp zero = ConstantOp::create(fn_builder, fn_builder.getZeroAttr(i32));
-  std::optional<scf::IfOp> causal_if;
+  std::optional<mlir::scf::IfOp> causal_if;
   if (config.is_causal) {
     causal_if = CreateCausalIfOp(fn_builder, args.row_block_idx,
                                  args.col_block_idx, qt, kt);
@@ -484,8 +492,8 @@ func::FuncOp buildModule(ImplicitLocOpBuilder& module_builder,
         fn_builder,
         CmpIOp::create(fn_builder, CmpIPredicate::eq, zero, args.col_block_idx),
         /*thenBuilder=*/
-        [&](OpBuilder& builder, Location loc) -> void {
-          ImplicitLocOpBuilder b(loc, builder);
+        [&](mlir::OpBuilder& builder, mlir::Location loc) -> void {
+          mlir::ImplicitLocOpBuilder b(loc, builder);
           ZeroTile(b, args.o_scratch_arg);
           ZeroTile(b, args.li_arg);
           NInfTile(b, args.mi_arg);
@@ -496,19 +504,19 @@ func::FuncOp buildModule(ImplicitLocOpBuilder& module_builder,
   if (config.is_causal) {
     // Only tiles that intersect the diagonal need masking; tiles strictly
     // below it are computed without any masking overhead.
-    Value intersects_diag = CreateIntersectsDiagCondition(
+    mlir::Value intersects_diag = CreateIntersectsDiagCondition(
         fn_builder, args.row_block_idx, args.col_block_idx, qt, kt);
-    scf::IfOp::create(
+    mlir::scf::IfOp::create(
         fn_builder, intersects_diag,
-        [&](OpBuilder& then_builder, Location then_loc) {
-          ImplicitLocOpBuilder then_implicit_b(then_loc, then_builder);
+        [&](mlir::OpBuilder& then_builder, mlir::Location then_loc) {
+          mlir::ImplicitLocOpBuilder then_implicit_b(then_loc, then_builder);
           EmitGridStep(then_implicit_b, config, tiling, args, is_single_kv_step,
                        has_padding,
                        /*intersects_causal_diag=*/true);
           YieldOp::create(then_implicit_b);
         },
-        [&](OpBuilder& else_builder, Location else_loc) {
-          ImplicitLocOpBuilder else_implicit_b(else_loc, else_builder);
+        [&](mlir::OpBuilder& else_builder, mlir::Location else_loc) {
+          mlir::ImplicitLocOpBuilder else_implicit_b(else_loc, else_builder);
           EmitGridStep(else_implicit_b, config, tiling, args, is_single_kv_step,
                        has_padding,
                        /*intersects_causal_diag=*/false);
@@ -529,15 +537,15 @@ func::FuncOp buildModule(ImplicitLocOpBuilder& module_builder,
     fn_builder.setInsertionPointAfter(*causal_if);
   }
 
-  Value last_col_idx = ConstantOp::create(
+  mlir::Value last_col_idx = ConstantOp::create(
       fn_builder, fn_builder.getI32IntegerAttr(
                       (config.padded_kv_sequence_length / tiling.kt) - 1));
-  Value is_last_col = CmpIOp::create(fn_builder, CmpIPredicate::eq,
-                                     args.col_block_idx, last_col_idx);
+  mlir::Value is_last_col = CmpIOp::create(fn_builder, CmpIPredicate::eq,
+                                           args.col_block_idx, last_col_idx);
   IfOp::create(fn_builder, is_last_col,
                /*thenBuilder=*/
-               [&](OpBuilder& builder, Location loc) -> void {
-                 ImplicitLocOpBuilder b(loc, builder);
+               [&](mlir::OpBuilder& builder, mlir::Location loc) -> void {
+                 mlir::ImplicitLocOpBuilder b(loc, builder);
                  SoftmaxState state{
                      .m = LoadTile(b, args.mi_arg),
                      .l = LoadTile(b, args.li_arg),
@@ -554,13 +562,14 @@ func::FuncOp buildModule(ImplicitLocOpBuilder& module_builder,
 }
 }  // namespace
 
-absl::StatusOr<OwningOpRef<ModuleOp>> CreateKernel(
-    MLIRContext* context, const FlashAttnConfig& config, const Tiling& tiling) {
-  OpBuilder builder(context);
-  OwningOpRef<ModuleOp> module =
-      ModuleOp::create(builder, builder.getUnknownLoc());
-  ImplicitLocOpBuilder module_builder(module->getLoc(),
-                                      module->getBodyRegion());
+absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> CreateKernel(
+    mlir::MLIRContext* context, const FlashAttnConfig& config,
+    const Tiling& tiling) {
+  mlir::OpBuilder builder(context);
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::ModuleOp::create(builder, builder.getUnknownLoc());
+  mlir::ImplicitLocOpBuilder module_builder(module->getLoc(),
+                                            module->getBodyRegion());
   if (config.padded_q_sequence_length % tiling.qt != 0 ||
       config.padded_kv_sequence_length % tiling.kt != 0) {
     return TT_ERROR(::torch_tpu::error::kInvalidArgument)
@@ -601,4 +610,4 @@ absl::StatusOr<OwningOpRef<ModuleOp>> CreateKernel(
   return module;
 }
 
-}  // namespace mlir::torch_tpu
+}  // namespace torch_tpu
