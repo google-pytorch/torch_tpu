@@ -159,13 +159,41 @@ def _patch_flex_attention() -> None:
     ):
       q_len = query.shape[-2]
       kv_len = key.shape[-2]
+      # TODO(b/561865555): `_tpu_doc_len` is set by the Muse Glimmer benchmark on
+      # masks that are block-diagonal over equal-length documents, so attention
+      # can run per document. Replace with a general mechanism (e.g. deriving the
+      # document layout from the BlockMask's block sparsity) if other models need
+      # it.
+      doc_len = getattr(block_mask, "_tpu_doc_len", None)
+      num_docs = 1
+      if doc_len and query.shape[0] == 1:
+        if q_len != kv_len or q_len % doc_len:
+          raise ValueError(
+              f"_tpu_doc_len={doc_len} must divide q_len=kv_len"
+              f" ({q_len}, {kv_len})."
+          )
+        num_docs = q_len // doc_len
       attn_bias = (
           _get_sdpa_attn_bias(
-              block_mask, q_len, kv_len, query.dtype, query.device
+              block_mask,
+              q_len // num_docs,
+              kv_len // num_docs,
+              query.dtype,
+              query.device,
           )
           if block_mask is not None
           else None
       )
+      if num_docs > 1:
+
+        def fold(
+            tensor: torch.Tensor,
+        ) -> torch.Tensor:  # [1,H,T,D] -> [N,H,T/N,D]
+          return tensor.reshape(
+              tensor.shape[1], num_docs, doc_len, -1
+          ).transpose(0, 1)
+
+        query, key, value = fold(query), fold(key), fold(value)
       out = F.scaled_dot_product_attention(
           query,
           key,
@@ -176,6 +204,8 @@ def _patch_flex_attention() -> None:
           scale=scale,
           enable_gqa=enable_gqa,
       )
+      if num_docs > 1:
+        out = out.transpose(0, 1).reshape(1, -1, q_len, out.shape[-1])
       if return_aux is not None:
         return out, flex_attention.AuxOutput()
       return out
