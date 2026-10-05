@@ -107,12 +107,10 @@ def _patch_flex_attention() -> None:
       dtype: torch.dtype,
       device: torch.device,
   ) -> torch.Tensor:
-    if torch.compiler.is_compiling():
-      # Build the bias inside the compiled graph rather than caching it on the
-      # BlockMask, so the trace has no Python side effects.
-      cache = {}
-    else:
-      cache = block_mask.__dict__.setdefault("_tpu_sdpa_mask_cache", {})
+    # Cached on the BlockMask. Under torch.compile Dynamo records the cache
+    # write as a side effect, so the bias is built in-graph once and later
+    # graphs read it as an input.
+    cache = block_mask.__dict__.setdefault("_tpu_sdpa_mask_cache", {})
     key = (q_len, kv_len, dtype, device)
     if key not in cache:
       b_mask, h_mask = block_mask.kv_num_blocks.shape[:2]
