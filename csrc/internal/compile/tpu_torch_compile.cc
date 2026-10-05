@@ -2366,6 +2366,11 @@ TT_PYBIND11_MODULE(tpu_torch_compile, m) {
         py::arg("body_module"), py::arg("scan_direction"), py::arg("dummy_ys"),
         py::arg("num_scan_inputs"),
         "Creates a deferred scan operation and returns the output tensors.");
+  m.def("create_associative_scan_op", &PyCreateAssociativeScanOp,
+        py::arg("inputs"), py::arg("body_module"), py::arg("scan_direction"),
+        py::arg("dim"), py::arg("num_scan_inputs"),
+        "Creates a deferred associative scan operation and returns the output "
+        "tensors.");
 }
 
 }  // namespace torch_tpu

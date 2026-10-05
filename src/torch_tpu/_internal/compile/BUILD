@@ -137,6 +137,7 @@ torch_tpu_py_library(
         ":tpu_backend",
         ":tpu_torch_compile",
         "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal/execution_mode",
         "//src/torch_tpu/_internal/export",
     ],
 )

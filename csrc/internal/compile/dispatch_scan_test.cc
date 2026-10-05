@@ -30,6 +30,7 @@
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
+#include "c10/util/ArrayRef.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/context_states.h"
@@ -45,7 +46,7 @@
 #include "gtest/gtest.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/raw_ostream.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Func/IR/FuncDialect.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -55,6 +56,7 @@
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Support/LLVM.h"
+#include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -286,6 +288,7 @@ class DispatchScanTest : public testing::Test {
   LoweringResults LowerToMlir(DeferredOp* deferred_op,
                               absl::Span<const at::Tensor> inputs) {
     auto context = std::make_unique<mlir::MLIRContext>();
+    context->loadDialect<mlir::chlo::ChloDialect>();
     context->loadDialect<mlir::stablehlo::StablehloDialect>();
     context->loadDialect<mlir::func::FuncDialect>();
     mlir::ModuleBuilder builder(*context);
@@ -707,6 +710,367 @@ INSTANTIATE_TEST_SUITE_P(
             .num_scan_inputs = 2,
             .expected_error =
                 "to be less than or equal to the number of inputs"}));
+
+static constexpr std::string_view kAssociativeAddCombineMlir = R"mlir(
+  module {
+    func.func @main(%lhs: tensor<3xi32>, %rhs: tensor<3xi32>) -> tensor<3xi32> {
+      %0 = stablehlo.add %lhs, %rhs : tensor<3xi32>
+      return %0 : tensor<3xi32>
+    }
+  }
+)mlir";
+
+static constexpr std::string_view kAssociativeMulCombineMlir = R"mlir(
+  module {
+    func.func @main(%lhs: tensor<3xi32>, %rhs: tensor<3xi32>) -> tensor<3xi32> {
+      %0 = stablehlo.multiply %lhs, %rhs : tensor<3xi32>
+      return %0 : tensor<3xi32>
+    }
+  }
+)mlir";
+
+static constexpr std::string_view kAssociativeMaxF32CombineMlir = R"mlir(
+  module {
+    func.func @main(%lhs: tensor<3xf32>, %rhs: tensor<3xf32>) -> tensor<3xf32> {
+      %0 = stablehlo.maximum %lhs, %rhs : tensor<3xf32>
+      return %0 : tensor<3xf32>
+    }
+  }
+)mlir";
+
+static constexpr std::string_view kAssociativeMinF32CombineMlir = R"mlir(
+  module {
+    func.func @main(%lhs: tensor<3xf32>, %rhs: tensor<3xf32>) -> tensor<3xf32> {
+      %0 = stablehlo.minimum %lhs, %rhs : tensor<3xf32>
+      return %0 : tensor<3xf32>
+    }
+  }
+)mlir";
+
+static constexpr std::string_view kAssociativeXorCombineMlir = R"mlir(
+  module {
+    func.func @main(%lhs: tensor<3xi32>, %rhs: tensor<3xi32>) -> tensor<3xi32> {
+      %0 = stablehlo.xor %lhs, %rhs : tensor<3xi32>
+      return %0 : tensor<3xi32>
+    }
+  }
+)mlir";
+
+static constexpr std::string_view kAssociativeMambaSsmCombineMlir = R"mlir(
+  module {
+    func.func @main(%a_l: tensor<3xi32>, %b_l: tensor<3xi32>, %a_r: tensor<3xi32>, %b_r: tensor<3xi32>) -> (tensor<3xi32>, tensor<3xi32>) {
+      %0 = stablehlo.multiply %a_l, %a_r : tensor<3xi32>
+      %1 = stablehlo.multiply %a_r, %b_l : tensor<3xi32>
+      %2 = stablehlo.add %1, %b_r : tensor<3xi32>
+      return %0, %2 : tensor<3xi32>, tensor<3xi32>
+    }
+  }
+)mlir";
+
+static constexpr std::string_view kAssociativeSubtractCombineMlir = R"mlir(
+  module {
+    func.func @main(%lhs: tensor<3xi32>, %rhs: tensor<3xi32>) -> tensor<3xi32> {
+      %0 = stablehlo.subtract %lhs, %rhs : tensor<3xi32>
+      return %0 : tensor<3xi32>
+    }
+  }
+)mlir";
+
+static constexpr std::string_view kAssociativeAffineAddCombineMlir = R"mlir(
+  module {
+    func.func @main(%lhs: tensor<3xi32>, %rhs: tensor<3xi32>) -> tensor<3xi32> {
+      %c1 = stablehlo.constant dense<1> : tensor<3xi32>
+      %0 = stablehlo.add %lhs, %rhs : tensor<3xi32>
+      %1 = stablehlo.add %0, %c1 : tensor<3xi32>
+      return %1 : tensor<3xi32>
+    }
+  }
+)mlir";
+
+static constexpr std::string_view kAssociativeAddWithStaticInputCombineMlir =
+    R"mlir(
+  module {
+    func.func @main(%lhs: tensor<3xi32>, %rhs: tensor<3xi32>, %static: tensor<3xi32>) -> tensor<3xi32> {
+      %0 = stablehlo.add %lhs, %rhs : tensor<3xi32>
+      %1 = stablehlo.add %0, %static : tensor<3xi32>
+      return %1 : tensor<3xi32>
+    }
+  }
+)mlir";
+
+static constexpr std::string_view kAssociativeAdd4DCombineMlir = R"mlir(
+  module {
+    func.func @main(%lhs: tensor<2x3x5xi32>, %rhs: tensor<2x3x5xi32>) -> tensor<2x3x5xi32> {
+      %0 = stablehlo.add %lhs, %rhs : tensor<2x3x5xi32>
+      return %0 : tensor<2x3x5xi32>
+    }
+  }
+)mlir";
+
+static constexpr std::string_view kAssociativeAndCombineMlir = R"mlir(
+  module {
+    func.func @main(%lhs: tensor<3xi32>, %rhs: tensor<3xi32>) -> tensor<3xi32> {
+      %0 = stablehlo.and %lhs, %rhs : tensor<3xi32>
+      return %0 : tensor<3xi32>
+    }
+  }
+)mlir";
+
+TEST_F(DispatchScanTest, AssociativeScanInfersIdentityAndEmitsChloScan) {
+  const at::Tensor input = MakePlaceholderI32({4, 3});
+  for (const std::string_view mlir_src :
+       {kAssociativeAddCombineMlir, kAssociativeMulCombineMlir,
+        kAssociativeXorCombineMlir}) {
+    const std::shared_ptr<ContextedModule> body_module =
+        CreateBodyModule(mlir_src);
+    const std::vector<at::Tensor> results = PyCreateAssociativeScanOp(
+        {input}, body_module, ScanDirection::kForward, /*dim=*/0,
+        /*num_scan_inputs=*/1);
+    ASSERT_EQ(results.size(), 1);
+
+    std::string lowered_mlir;
+    LowerAndVerify(results, {input}, /*expected_results_size=*/1,
+                   /*output_buffer_index=*/0, &lowered_mlir);
+    EXPECT_THAT(lowered_mlir, HasSubstr("chlo.scan"));
+    EXPECT_THAT(lowered_mlir, testing::Not(HasSubstr("stablehlo.while")));
+    EXPECT_THAT(lowered_mlir, testing::Not(HasSubstr("stablehlo.concatenate")));
+  }
+
+  const auto f32_or =
+      DeviceBufferList::CreatePlaceholder({4, 3}, mlir::ElementType::F32);
+  ABSL_CHECK(f32_or.ok()) << f32_or.status();
+  const at::Tensor input_f32 = MakeTensor(*f32_or);
+  for (const std::string_view mlir_src :
+       {kAssociativeMaxF32CombineMlir, kAssociativeMinF32CombineMlir}) {
+    const std::shared_ptr<ContextedModule> body_module =
+        CreateBodyModule(mlir_src);
+    const std::vector<at::Tensor> results = PyCreateAssociativeScanOp(
+        {input_f32}, body_module, ScanDirection::kForward, /*dim=*/0,
+        /*num_scan_inputs=*/1);
+    ASSERT_EQ(results.size(), 1);
+
+    std::string lowered_mlir;
+    LowerAndVerify(results, {input_f32}, /*expected_results_size=*/1,
+                   /*output_buffer_index=*/0, &lowered_mlir);
+    EXPECT_THAT(lowered_mlir, HasSubstr("chlo.scan"));
+    EXPECT_THAT(lowered_mlir, testing::Not(HasSubstr("stablehlo.while")));
+    EXPECT_THAT(lowered_mlir, testing::Not(HasSubstr("stablehlo.concatenate")));
+  }
+}
+
+TEST_F(DispatchScanTest, AssociativeScanMambaSsmTupleInfersIdentity) {
+  const at::Tensor gates = MakePlaceholderI32({4, 3});
+  const at::Tensor tokens = MakePlaceholderI32({4, 3});
+  const std::shared_ptr<ContextedModule> body_module =
+      CreateBodyModule(kAssociativeMambaSsmCombineMlir);
+
+  const std::vector<at::Tensor> results = PyCreateAssociativeScanOp(
+      {gates, tokens}, body_module, ScanDirection::kForward, /*dim=*/0,
+      /*num_scan_inputs=*/2);
+  ASSERT_EQ(results.size(), 2);
+
+  std::string lowered_mlir;
+  LowerAndVerify(results, {gates, tokens}, /*expected_results_size=*/2,
+                 /*output_buffer_index=*/0, &lowered_mlir);
+  EXPECT_THAT(lowered_mlir, HasSubstr("chlo.scan"));
+  EXPECT_THAT(lowered_mlir, testing::Not(HasSubstr("stablehlo.while")));
+  EXPECT_THAT(lowered_mlir, testing::Not(HasSubstr("stablehlo.concatenate")));
+}
+
+TEST_F(DispatchScanTest, AssociativeScanTier2SliceInitFallback) {
+  // `subtract` has no two-sided identity, which forces Tier 2. It is not
+  // associative, but this test only inspects the lowering and never executes.
+  const at::Tensor input = MakePlaceholderI32({4, 3});
+  const std::shared_ptr<ContextedModule> body_module =
+      CreateBodyModule(kAssociativeSubtractCombineMlir);
+
+  for (const ScanDirection direction :
+       {ScanDirection::kForward, ScanDirection::kReverse}) {
+    const std::vector<at::Tensor> results =
+        PyCreateAssociativeScanOp({input}, body_module, direction, /*dim=*/0,
+                                  /*num_scan_inputs=*/1);
+    ASSERT_EQ(results.size(), 1);
+
+    std::string lowered_mlir;
+    LowerAndVerify(results, {input}, /*expected_results_size=*/1,
+                   /*output_buffer_index=*/0, &lowered_mlir);
+    EXPECT_THAT(lowered_mlir, HasSubstr("chlo.scan"));
+    EXPECT_THAT(lowered_mlir, HasSubstr("stablehlo.slice"));
+    EXPECT_THAT(lowered_mlir, HasSubstr("stablehlo.concatenate"));
+  }
+}
+
+TEST_F(DispatchScanTest, AssociativeScanTier2WhileFallbackWithConstants) {
+  const at::Tensor input = MakePlaceholderI32({4, 3});
+  const std::shared_ptr<ContextedModule> body_module =
+      CreateBodyModule(kAssociativeAffineAddCombineMlir);
+
+  const std::vector<at::Tensor> results = PyCreateAssociativeScanOp(
+      {input}, body_module, ScanDirection::kForward, /*dim=*/0,
+      /*num_scan_inputs=*/1);
+  ASSERT_EQ(results.size(), 1);
+
+  std::string lowered_mlir;
+  LowerAndVerify(results, {input}, /*expected_results_size=*/1,
+                 /*output_buffer_index=*/0, &lowered_mlir);
+  EXPECT_THAT(lowered_mlir, HasSubstr("stablehlo.while"));
+  EXPECT_THAT(lowered_mlir, HasSubstr("stablehlo.slice"));
+  EXPECT_THAT(lowered_mlir, HasSubstr("stablehlo.concatenate"));
+}
+
+TEST_F(DispatchScanTest, AssociativeScanWithStaticInputsUsesWhile) {
+  const at::Tensor input = MakePlaceholderI32({4, 3});
+  const at::Tensor static_input = MakePlaceholderI32({3});
+  const std::shared_ptr<ContextedModule> body_module =
+      CreateBodyModule(kAssociativeAddWithStaticInputCombineMlir);
+
+  const std::vector<at::Tensor> results = PyCreateAssociativeScanOp(
+      {input, static_input}, body_module, ScanDirection::kForward, /*dim=*/0,
+      /*num_scan_inputs=*/1);
+  ASSERT_EQ(results.size(), 1);
+
+  std::string lowered_mlir;
+  LowerAndVerify(results, {input, static_input}, /*expected_results_size=*/1,
+                 /*output_buffer_index=*/0, &lowered_mlir);
+  EXPECT_THAT(lowered_mlir, HasSubstr("stablehlo.while"));
+  EXPECT_THAT(lowered_mlir, HasSubstr("stablehlo.slice"));
+  EXPECT_THAT(lowered_mlir, HasSubstr("stablehlo.concatenate"));
+}
+
+TEST_F(DispatchScanTest, AssociativeScanUnwrapsMovedimView) {
+  at::Tensor movedim_view = MakePlaceholderI32({3, 4});
+  const int64_t view_sizes[] = {4, 3};
+  const int64_t view_strides[] = {1, 4};
+  movedim_view.unsafeGetTensorImpl()->set_sizes_and_strides(
+      c10::IntArrayRef(view_sizes), c10::IntArrayRef(view_strides),
+      /*storage_offset=*/0);
+
+  const std::shared_ptr<ContextedModule> body_module =
+      CreateBodyModule(kAssociativeAddCombineMlir);
+
+  const std::vector<at::Tensor> results = PyCreateAssociativeScanOp(
+      {movedim_view}, body_module, ScanDirection::kForward, /*dim=*/0,
+      /*num_scan_inputs=*/1);
+  ASSERT_EQ(results.size(), 1);
+  EXPECT_THAT(results[0].sizes(), ElementsAre(4, 3));
+  EXPECT_THAT(results[0].strides(), ElementsAre(1, 4));
+
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef base_out_buf,
+                          GetBaseBuffer(results[0]));
+  EXPECT_THAT(base_out_buf.shape().dimensions(), ElementsAre(3, 4));
+  const std::shared_ptr<DeferredOp> deferred_op = base_out_buf.deferred_op();
+  ASSERT_TRUE(deferred_op != nullptr);
+
+  const at::Tensor base_for_lowering = MakePlaceholderI32({3, 4});
+  const LoweringResults lowered =
+      LowerToMlir(deferred_op.get(), {base_for_lowering});
+  ASSERT_TRUE(lowered.results_or.ok());
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*lowered.module)));
+  std::string lowered_mlir;
+  llvm::raw_string_ostream os(lowered_mlir);
+  lowered.module.get().print(os);
+  EXPECT_THAT(lowered_mlir, HasSubstr("dimension=1"));
+}
+
+TEST_F(DispatchScanTest, AssociativeScanHighRankScansOriginalDim) {
+  // A 4D (2, 3, 4, 5) input scanned along dim=2 lowers to a single `chlo.scan`
+  // on the original shape, without reshapes.
+  const at::Tensor input = MakePlaceholderI32({2, 3, 4, 5});
+  const std::shared_ptr<ContextedModule> body_module =
+      CreateBodyModule(kAssociativeAdd4DCombineMlir);
+  const std::vector<at::Tensor> results = PyCreateAssociativeScanOp(
+      {input}, body_module, ScanDirection::kForward, /*dim=*/2,
+      /*num_scan_inputs=*/1);
+  ASSERT_EQ(results.size(), 1);
+
+  std::string lowered_mlir;
+  LowerAndVerify(results, {input}, /*expected_results_size=*/1,
+                 /*output_buffer_index=*/0, &lowered_mlir);
+  EXPECT_THAT(lowered_mlir, HasSubstr("chlo.scan"));
+  EXPECT_THAT(lowered_mlir, HasSubstr("dimension=2"));
+  EXPECT_THAT(lowered_mlir, testing::Not(HasSubstr("stablehlo.reshape")));
+  EXPECT_THAT(lowered_mlir, testing::Not(HasSubstr("stablehlo.concatenate")));
+}
+
+TEST_F(DispatchScanTest, AssociativeScanBitwiseAndUsesSliceInit) {
+  // The AND identity (all ones) is not one of the inferred `IdentityKind`s for
+  // signed integers, so AND must take the slice-init path rather than seed the
+  // scan with a wrong identity.
+  const at::Tensor input = MakePlaceholderI32({4, 3});
+  const std::shared_ptr<ContextedModule> body_module =
+      CreateBodyModule(kAssociativeAndCombineMlir);
+  const std::vector<at::Tensor> results = PyCreateAssociativeScanOp(
+      {input}, body_module, ScanDirection::kForward, /*dim=*/0,
+      /*num_scan_inputs=*/1);
+  ASSERT_EQ(results.size(), 1);
+
+  std::string lowered_mlir;
+  LowerAndVerify(results, {input}, /*expected_results_size=*/1,
+                 /*output_buffer_index=*/0, &lowered_mlir);
+  EXPECT_THAT(lowered_mlir, HasSubstr("chlo.scan"));
+  EXPECT_THAT(lowered_mlir, HasSubstr("stablehlo.concatenate"));
+}
+
+TEST_F(DispatchScanTest, AssociativeScanSeqLenOneShortCircuits) {
+  const at::Tensor input = MakePlaceholderI32({1, 3});
+  const std::shared_ptr<ContextedModule> body_module =
+      CreateBodyModule(kAssociativeAddCombineMlir);
+
+  const std::vector<at::Tensor> results = PyCreateAssociativeScanOp(
+      {input}, body_module, ScanDirection::kForward, /*dim=*/0,
+      /*num_scan_inputs=*/1);
+  ASSERT_EQ(results.size(), 1);
+
+  std::string lowered_mlir;
+  LowerAndVerify(results, {input}, /*expected_results_size=*/1,
+                 /*output_buffer_index=*/0, &lowered_mlir);
+  EXPECT_THAT(lowered_mlir, testing::Not(HasSubstr("chlo.scan")));
+  EXPECT_THAT(lowered_mlir, testing::Not(HasSubstr("stablehlo.while")));
+}
+
+TEST_F(DispatchScanTest, AssociativeScanErrorValidation) {
+  const at::Tensor input = MakePlaceholderI32({4, 3});
+  const std::shared_ptr<ContextedModule> body_module =
+      CreateBodyModule(kAssociativeAddCombineMlir);
+
+  EXPECT_THAT(
+      ([&] {
+        PyCreateAssociativeScanOp({}, body_module, ScanDirection::kForward,
+                                  /*dim=*/0, /*num_scan_inputs=*/1);
+      }),
+      Throws<TtError>(Property(&TtError::what,
+                               HasSubstr("expected at least 1 input tensor"))));
+
+  EXPECT_THAT(([&] {
+                PyCreateAssociativeScanOp({input}, body_module,
+                                          ScanDirection::kForward,
+                                          /*dim=*/0, /*num_scan_inputs=*/0);
+              }),
+              Throws<TtError>(Property(
+                  &TtError::what,
+                  HasSubstr("expected num_scan_inputs to be greater than 0"))));
+
+  EXPECT_THAT(
+      ([&] {
+        PyCreateAssociativeScanOp({input, input}, body_module,
+                                  ScanDirection::kForward,
+                                  /*dim=*/0, /*num_scan_inputs=*/2);
+      }),
+      Throws<TtError>(Property(
+          &TtError::what,
+          HasSubstr("expected associative combine function to have 2 result "
+                    "types, but it has 1"))));
+
+  EXPECT_THAT(([&] {
+                PyCreateAssociativeScanOp({input, input}, body_module,
+                                          ScanDirection::kForward,
+                                          /*dim=*/0, /*num_scan_inputs=*/1);
+              }),
+              Throws<TtError>(Property(
+                  &TtError::what,
+                  HasSubstr("expected associative combine function to have 3 "
+                            "arguments, but it has 2"))));
+}
 
 }  // namespace
 }  // namespace torch_tpu

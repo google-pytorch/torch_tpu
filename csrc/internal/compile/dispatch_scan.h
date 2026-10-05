@@ -54,6 +54,35 @@ std::vector<at::Tensor> PyCreateScanOp(
     ScanDirection scan_direction, const std::vector<at::Tensor>& dummy_outputs,
     int64_t num_scan_inputs);
 
+// Creates an associative scan operation on TPU.
+//
+// Lowers to `chlo.ScanOp(is_associative=true)` when the combine function is a
+// pure elementwise combiner with no external non-scanned inputs, and falls back
+// to `stablehlo.while` otherwise. If `dim == 0` and all scanned inputs are
+// `movedim(base, base_scan_dim, 0)` views of a common `base_scan_dim`, scans
+// the underlying contiguous base buffers directly along `base_scan_dim` and
+// returns `movedim` views to elide pairs of `stablehlo.transpose` operations.
+//
+// Args:
+//   inputs: A list of flat scannable sequence inputs followed by any
+//       loop-invariant additional inputs.
+//   body_module: The MLIR sub-graph representing the associative combine
+//       function ('combine_fn'), which takes
+//       `(*left_elems, *right_elems, *additional_inputs)` and returns
+//       `(*combined_elems)`.
+//   scan_direction: The direction of scan execution (Forward or Reverse).
+//   dim: The dimension along which to scan.
+//   num_scan_inputs: The number of active scanned inputs in the `inputs`
+//       list. Any elements in `inputs` beyond this count are treated as
+//       static inputs, not to be scanned over.
+//
+// Returns:
+//   A list of tensors containing the stacked associative scan outputs.
+std::vector<at::Tensor> PyCreateAssociativeScanOp(
+    const std::vector<at::Tensor>& inputs,
+    const std::shared_ptr<ContextedModule>& body_module,
+    ScanDirection scan_direction, int64_t dim, int64_t num_scan_inputs);
+
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_CSRC_INTERNAL_COMPILE_DISPATCH_SCAN_H_

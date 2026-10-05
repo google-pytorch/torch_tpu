@@ -12,9 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import sys
+from unittest import mock
+
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
+from torch._higher_order_ops import associative_scan as _upstream_associative_scan
 from torch._higher_order_ops import scan
 import torch.fx
 import torch.fx.traceback
@@ -23,6 +27,7 @@ from torch_tpu._internal.compile import scan as tpu_scan
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.debug import TpuCompileDebug
 from torch_tpu._internal.utils import test_utils as utils
+from tests import oss_utils
 from tests import seed_test_utils
 
 try:
@@ -606,6 +611,401 @@ class PinOffloadedBodyArgsTest(seed_test_utils.RepeatableTest):
     # Unpinned + unreloaded -> identity preserved, remains unpinned.
     self.assertIs(pinned[3], args[3])
     self.assertFalse(tpu_torch_compile.is_pinned_host(pinned[3]))
+
+
+_SCAN_OFFSET = 1.0
+_SCAN_BIAS = torch.ones(4)
+
+
+def associative_scan(
+    combine_fn, xs, dim, reverse=False, combine_mode="pointwise"
+):
+  """Upstream `associative_scan`, with CPU references run in `'generic'` mode.
+
+  Some PyTorch releases (e.g. 2.11) reject `combine_mode='pointwise'` for CPU
+  tensors. `'generic'` computes the same result, so the CPU references use it.
+  TPU calls are passed through unchanged.
+  """
+  if all(t.device.type == "cpu" for t in pytree.tree_leaves(xs)):
+    combine_mode = "generic"
+  return _upstream_associative_scan(
+      combine_fn, xs, dim, reverse=reverse, combine_mode=combine_mode
+  )
+
+
+def _add_with_global_offset(a, b):
+  # Associative for any constant offset: (a + b + c) + d + c == a + (b + d + c)
+  # + c. Reads `_SCAN_OFFSET` from the module globals at trace time.
+  return a + b + _SCAN_OFFSET
+
+
+def _add_with_global_bias(a, b):
+  return a + b + _SCAN_BIAS
+
+
+def _calls_tensor_helper(a, b):
+  return _add_with_global_bias(a, b)
+
+
+class CallableCacheKeyTest(seed_test_utils.RepeatableTest):
+  """Tests which combine fns the eager fast path may cache a traced body for."""
+
+  # pylint: disable=protected-access
+  def test_pure_callables_have_keys(self):
+    scale = 2.0
+    self.assertIsNotNone(tpu_scan._callable_cache_key(torch.add))
+    self.assertIsNotNone(tpu_scan._callable_cache_key(lambda a, b: a + b))
+    self.assertIsNotNone(tpu_scan._callable_cache_key(lambda a, b: a * scale))
+    self.assertIsNotNone(tpu_scan._callable_cache_key(_add_with_global_offset))
+
+  def test_keys_track_scalar_values(self):
+    def make(scale):
+      return lambda a, b: a + b * scale
+
+    self.assertEqual(
+        tpu_scan._callable_cache_key(make(1.0)),
+        tpu_scan._callable_cache_key(make(1.0)),
+    )
+    self.assertNotEqual(
+        tpu_scan._callable_cache_key(make(1.0)),
+        tpu_scan._callable_cache_key(make(2.0)),
+    )
+    # `1`, `1.0`, and `True` compare equal but trace to different dtypes.
+    self.assertNotEqual(
+        tpu_scan._callable_cache_key(make(1)),
+        tpu_scan._callable_cache_key(make(1.0)),
+    )
+
+  def test_tensor_state_has_no_key(self):
+    bias = torch.ones(4)
+    self.assertIsNone(tpu_scan._callable_cache_key(lambda a, b: a + b + bias))
+    self.assertIsNone(tpu_scan._callable_cache_key(_add_with_global_bias))
+    self.assertIsNone(tpu_scan._callable_cache_key(_calls_tensor_helper))
+    self.assertIsNone(tpu_scan._callable_cache_key(bias.add))
+    self.assertIsNone(tpu_scan._callable_cache_key(torch.nn.ReLU()))
+
+
+class AssociativeScanOpTest(seed_test_utils.RepeatableTest):
+
+  def setUp(self):
+    super().setUp()
+    torch.compiler.reset()
+
+  @parameterized.named_parameters(
+      ("eager_forward_dim0", False, False, 0),
+      ("eager_reverse_dim0", False, True, 0),
+      ("eager_forward_dim1", False, False, 1),
+      ("eager_reverse_dim1", False, True, 1),
+      ("compiled_forward_dim0", True, False, 0),
+      ("compiled_reverse_dim0", True, True, 0),
+      ("compiled_forward_dim1", True, False, 1),
+      ("compiled_reverse_dim1", True, True, 1),
+  )
+  def test_associative_scan_pointwise_ops(self, compiled, reverse, dim):
+    x_cpu = torch.randn(8, 16, dtype=torch.float32) + 0.5
+    x_tpu = x_cpu.to("tpu")
+
+    def run_fn(t):
+      return (
+          associative_scan(torch.add, t, dim=dim, reverse=reverse),
+          associative_scan(torch.mul, t, dim=dim, reverse=reverse),
+          associative_scan(torch.maximum, t, dim=dim, reverse=reverse),
+          associative_scan(torch.minimum, t, dim=dim, reverse=reverse),
+      )
+
+    expected = run_fn(x_cpu)
+    actual = _compile_and_run(run_fn, x_tpu) if compiled else run_fn(x_tpu)
+    for act, exp in zip(actual, expected, strict=True):
+      utils.assert_close(act.cpu(), exp, rtol=1e-4, atol=1e-4)
+
+  @parameterized.named_parameters(
+      ("eager_bfloat16", False, torch.bfloat16),
+      ("compiled_bfloat16", True, torch.bfloat16),
+      ("eager_int32", False, torch.int32),
+      ("compiled_int32", True, torch.int32),
+  )
+  def test_associative_scan_dtypes(self, compiled, dtype):
+    if dtype == torch.int32:
+      x_cpu = torch.randint(-5, 6, (4, 16, 8), dtype=dtype)
+    else:
+      x_cpu = torch.randn(4, 16, 8, dtype=dtype)
+    x_tpu = x_cpu.to("tpu")
+
+    def run_fn(t):
+      return (
+          associative_scan(torch.add, t, dim=1),
+          associative_scan(torch.maximum, t, dim=1),
+          associative_scan(torch.minimum, t, dim=1),
+      )
+
+    # The TPU scan combines partial sums in a different order than the CPU
+    # sequential loop, so low-precision results are compared against a
+    # float32 reference with tolerances of a few bf16 ulps.
+    expected = run_fn(x_cpu if dtype == torch.int32 else x_cpu.float())
+    actual = _compile_and_run(run_fn, x_tpu) if compiled else run_fn(x_tpu)
+    for act, exp in zip(actual, expected, strict=True):
+      utils.assert_close(act.cpu(), exp.to(dtype), rtol=2e-2, atol=5e-2)
+
+  @parameterized.named_parameters(
+      ("eager_forward_dim1", False, False, 1),
+      ("eager_reverse_dim1", False, True, 1),
+      ("eager_forward_dim_neg1", False, False, -1),
+      ("compiled_forward_dim1", True, False, 1),
+      ("compiled_reverse_dim1", True, True, 1),
+      ("compiled_forward_dim_neg1", True, False, -1),
+  )
+  def test_associative_scan_mamba_ssm_tuple(self, compiled, reverse, dim):
+    def ssm_combine(left, right):
+      a_l, b_l = left
+      a_r, b_r = right
+      return a_l * a_r, a_r * b_l + b_r
+
+    gates_cpu = torch.sigmoid(torch.randn(2, 8, 16, dtype=torch.float32))
+    tokens_cpu = torch.randn(2, 8, 16, dtype=torch.float32)
+    gates_tpu = gates_cpu.to("tpu")
+    tokens_tpu = tokens_cpu.to("tpu")
+
+    def run_ssm(g, u):
+      return associative_scan(
+          ssm_combine,
+          (g, u),
+          dim=dim,
+          reverse=reverse,
+          combine_mode="pointwise",
+      )
+
+    exp_g, exp_u = run_ssm(gates_cpu, tokens_cpu)
+    act_g, act_u = (
+        _compile_and_run(run_ssm, gates_tpu, tokens_tpu)
+        if compiled
+        else run_ssm(gates_tpu, tokens_tpu)
+    )
+    utils.assert_close(act_g.cpu(), exp_g, rtol=1e-4, atol=1e-4)
+    utils.assert_close(act_u.cpu(), exp_u, rtol=1e-4, atol=1e-4)
+
+  @parameterized.named_parameters(
+      ("eager", False),
+      ("compiled", True),
+  )
+  def test_associative_scan_high_rank_and_trailing_one(self, compiled):
+    x4d_cpu = torch.randn(2, 3, 8, 4, dtype=torch.float32)
+    x3d_t1_cpu = torch.randn(2, 8, 1, dtype=torch.float32)
+    x4d_tpu = x4d_cpu.to("tpu")
+    x3d_t1_tpu = x3d_t1_cpu.to("tpu")
+
+    def run_fn(a, b):
+      return (
+          associative_scan(torch.add, a, dim=2),
+          associative_scan(torch.add, b, dim=1),
+      )
+
+    exp_4d, exp_3d = run_fn(x4d_cpu, x3d_t1_cpu)
+    act_4d, act_3d = (
+        _compile_and_run(run_fn, x4d_tpu, x3d_t1_tpu)
+        if compiled
+        else run_fn(x4d_tpu, x3d_t1_tpu)
+    )
+    utils.assert_close(act_4d.cpu(), exp_4d, rtol=1e-4, atol=1e-4)
+    utils.assert_close(act_3d.cpu(), exp_3d, rtol=1e-4, atol=1e-4)
+
+  @parameterized.named_parameters(
+      ("eager", False),
+      ("compiled", True),
+  )
+  def test_associative_scan_seq_len_one(self, compiled):
+    x_cpu = torch.randn(2, 1, 8, dtype=torch.float32)
+    x_tpu = x_cpu.to("tpu")
+
+    def run_fn(t):
+      return associative_scan(torch.add, t, dim=1)
+
+    expected = run_fn(x_cpu)
+    actual = _compile_and_run(run_fn, x_tpu) if compiled else run_fn(x_tpu)
+    utils.assert_close(actual.cpu(), expected)
+
+  @parameterized.named_parameters(
+      ("eager_forward", False, False),
+      ("eager_reverse", False, True),
+      ("compiled_forward", True, False),
+      ("compiled_reverse", True, True),
+  )
+  def test_associative_scan_non_identity_combiner(self, compiled, reverse):
+    # `affine_add` contains a constant (lowers via Tier 2 `stablehlo.while`),
+    # while `bilinear_combine` is pure elementwise with no constant (lowers via
+    # Tier 2 `Slice-Init` + `chlo.scan`).
+    def affine_add(a, b):
+      return a + b + 1.0
+
+    def bilinear_combine(a, b):
+      return a + b + a * b
+
+    x_cpu = torch.arange(1, 13, dtype=torch.float32).reshape(3, 4) * 0.1
+    x_tpu = x_cpu.to("tpu")
+
+    def run_fn(t):
+      return (
+          associative_scan(affine_add, t, dim=1, reverse=reverse),
+          associative_scan(bilinear_combine, t, dim=1, reverse=reverse),
+      )
+
+    exp_affine, exp_bilinear = run_fn(x_cpu)
+    act_affine, act_bilinear = (
+        _compile_and_run(run_fn, x_tpu) if compiled else run_fn(x_tpu)
+    )
+    utils.assert_close(act_affine.cpu(), exp_affine, rtol=1e-4, atol=1e-4)
+    utils.assert_close(act_bilinear.cpu(), exp_bilinear, rtol=1e-4, atol=1e-4)
+
+  @parameterized.named_parameters(
+      ("eager", False),
+      ("compiled", True),
+  )
+  def test_associative_scan_captured_tensor_closure(self, compiled):
+    bias_cpu = torch.tensor([0.5, -0.5, 1.0, -1.0], dtype=torch.float32)
+    bias_tpu = bias_cpu.to("tpu")
+    x_cpu = torch.randn(2, 6, 4, dtype=torch.float32)
+    x_tpu = x_cpu.to("tpu")
+
+    def run_cpu(t):
+      return associative_scan(lambda a, b: a + b + bias_cpu, t, dim=1)
+
+    def run_tpu(t):
+      return associative_scan(lambda a, b: a + b + bias_tpu, t, dim=1)
+
+    expected = run_cpu(x_cpu)
+    actual = _compile_and_run(run_tpu, x_tpu) if compiled else run_tpu(x_tpu)
+    utils.assert_close(actual.cpu(), expected, rtol=1e-4, atol=1e-4)
+
+  @parameterized.named_parameters(
+      ("eager", False),
+      ("compiled", True),
+  )
+  def test_associative_scan_autograd(self, compiled):
+    def fn(x):
+      y = associative_scan(lambda a, b: a + b, x, dim=1)
+      return (y * y).sum()
+
+    x_cpu = torch.randn(4, 8, dtype=torch.float32, requires_grad=True)
+    x_tpu = x_cpu.detach().clone().to("tpu").requires_grad_(True)
+
+    fn(x_cpu).backward()
+    out_tpu = _compile_and_run(fn, x_tpu) if compiled else fn(x_tpu)
+    out_tpu.backward()
+
+    utils.assert_close(x_tpu.grad.cpu(), x_cpu.grad, rtol=1e-4, atol=1e-4)
+
+  @parameterized.named_parameters(
+      ("compiled", True, False),
+      ("compiled_reverse", True, True),
+      ("eager_autograd", False, False),
+  )
+  def test_associative_scan_pointwise_bypasses_upstream_frontend(
+      self, compiled, reverse
+  ):
+    # Some PyTorch releases (e.g. 2.11) reject `combine_mode='pointwise'` in
+    # upstream's frontend for anything but CUDA and XPU, so TPU calls that the
+    # eager fast path does not handle must reach the HOP without it.
+    x_cpu = torch.randn(2, 6, 4, dtype=torch.float32)
+    x_tpu = x_cpu.to("tpu").requires_grad_(not compiled)
+
+    def run_fn(t):
+      return associative_scan(torch.add, t, dim=1, reverse=reverse)
+
+    expected = run_fn(x_cpu)
+    with mock.patch.object(
+        tpu_scan,
+        "_SAVED_ORIG_ASSOCIATIVE_SCAN",
+        side_effect=AssertionError("upstream frontend used for a TPU scan"),
+    ):
+      actual = _compile_and_run(run_fn, x_tpu) if compiled else run_fn(x_tpu)
+    utils.assert_close(actual.detach().cpu(), expected, rtol=1e-4, atol=1e-4)
+
+  def test_associative_scan_eager_cache_tracks_global_scalars(self):
+    # The eager fast path caches the traced body. Changing a global scalar
+    # that `combine_fn` reads must not reuse a body with the old value baked
+    # in.
+    x_cpu = torch.randn(2, 6, 4, dtype=torch.float32)
+    x_tpu = x_cpu.to("tpu")
+    steps = torch.arange(6, dtype=torch.float32).view(1, 6, 1)
+    for offset in (1.0, 2.0):
+      # Upstream rejects float lifted arguments, so use the closed form:
+      # y_k = x_0 + ... + x_k + k * offset.
+      expected = x_cpu.cumsum(dim=1) + steps * offset
+      with mock.patch.object(sys.modules[__name__], "_SCAN_OFFSET", offset):
+        actual = associative_scan(_add_with_global_offset, x_tpu, dim=1)
+      utils.assert_close(actual.cpu(), expected, rtol=1e-4, atol=1e-4)
+
+  @parameterized.named_parameters(
+      ("eager", False),
+      ("compiled", True),
+  )
+  def test_associative_scan_bitwise_and_signed(self, compiled):
+    # Negative values catch a wrong AND identity (e.g. INT32_MAX instead of -1).
+    x_cpu = torch.randint(-8, 8, (2, 6, 4), dtype=torch.int32)
+    x_tpu = x_cpu.to("tpu")
+
+    def run_fn(t):
+      return associative_scan(torch.bitwise_and, t, dim=1)
+
+    expected = run_fn(x_cpu)
+    actual = _compile_and_run(run_fn, x_tpu) if compiled else run_fn(x_tpu)
+    utils.assert_close(actual.cpu(), expected)
+
+  def test_associative_scan_validation_errors(self):
+    x_tpu = torch.randn(4, 8, device="tpu")
+
+    # These errors come from PyTorch's `associative_scan` frontend, not from
+    # TorchTPU; they verify that the eager fast path keeps upstream validation.
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=upstream torch validation
+        RuntimeError, "tree structure of the xs and the outs"
+    ):
+      associative_scan(lambda a, b: (a + b, a - b), x_tpu, dim=0)
+
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=upstream torch validation
+        RuntimeError, "combine_fn needs to be pointwise"
+    ):
+      associative_scan(
+          lambda a, b: a @ b,
+          torch.randn(4, 4, 4, device="tpu"),
+          dim=0,
+          combine_mode="pointwise",
+      )
+
+  @parameterized.named_parameters(
+      ("forward_dim_neg1", False, -1),
+      ("reverse_dim1", True, 1),
+  )
+  # `BuildScanShlo` falls back to `stablehlo.while` when libtpu predates the
+  # native scan emitter (`kMinLibtpuVersionWithNativeScan`).
+  @oss_utils.skip_if_libtpu_version(
+      lambda v: v < (0, 0, 44),
+      "native chlo.scan lowering requires libtpu >= 0.0.44",
+  )
+  def test_associative_scan_lowers_to_chlo_scan_without_transpose(
+      self, reverse, dim
+  ):
+    def ssm_combine(left, right):
+      a_l, b_l = left
+      a_r, b_r = right
+      return a_l * a_r, a_r * b_l + b_r
+
+    class SsmScanModel(torch.nn.Module):
+
+      def forward(self, gates, tokens):
+        return associative_scan(
+            ssm_combine,
+            (gates, tokens),
+            dim=dim,
+            reverse=reverse,
+            combine_mode="pointwise",
+        )
+
+    gates = torch.rand(2, 16, 64, device="tpu")
+    tokens = torch.randn(2, 16, 64, device="tpu")
+    hlo = _compile_and_get_stablehlo(SsmScanModel(), gates, tokens)
+
+    self.assertIn("chlo.scan", hlo)
+    self.assertNotIn("stablehlo.while", hlo)
+    self.assertNotIn("stablehlo.transpose", hlo)
 
 
 if __name__ == "__main__":
