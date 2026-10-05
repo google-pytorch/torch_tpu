@@ -106,13 +106,13 @@ def _patch_flex_attention() -> None:
       kv_len: int,
       dtype: torch.dtype,
       device: torch.device,
-  ) -> torch.Tensor:
-    if torch.compiler.is_compiling():
-      # Build the bias inside the compiled graph rather than caching it on the
-      # BlockMask, so the trace has no Python side effects.
-      cache = {}
-    else:
-      cache = block_mask.__dict__.setdefault("_tpu_sdpa_mask_cache", {})
+  ) -> torch.Tensor | None:
+    # Returns None for a plain causal mask so the caller passes is_causal=True
+    # and the flash kernel skips the tiles above the diagonal.
+    # Cached on the BlockMask. Under torch.compile Dynamo records the cache
+    # write as a side effect, so the bias is built in-graph once and later
+    # graphs read it as an input.
+    cache = block_mask.__dict__.setdefault("_tpu_sdpa_mask_cache", {})
     key = (q_len, kv_len, dtype, device)
     if key not in cache:
       b_mask, h_mask = block_mask.kv_num_blocks.shape[:2]
@@ -125,9 +125,18 @@ def _patch_flex_attention() -> None:
             kv_len,
             device=device,
         )
-        attn_bias = torch.zeros(
-            bool_mask.shape, dtype=dtype, device=device
-        ).masked_fill_(~bool_mask, float("-inf"))
+        # The causal check reads the mask back to the host, so it is only done
+        # (once per shape) outside compilation.
+        if (
+            q_len == kv_len
+            and not torch.compiler.is_compiling()
+            and torch.equal(bool_mask, torch.ones_like(bool_mask).tril())
+        ):
+          attn_bias = None
+        else:
+          attn_bias = torch.zeros(
+              bool_mask.shape, dtype=dtype, device=device
+          ).masked_fill_(~bool_mask, float("-inf"))
       cache[key] = attn_bias
     return cache[key]
 
