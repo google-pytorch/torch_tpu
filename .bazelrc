@@ -40,9 +40,6 @@ common --test_env=PYTHONUNBUFFERED=1
 common --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
 common --incompatible_strict_action_env=true
 
-# Enable passing through TPU envvars by default for convenience.
-common --config=tpu_envvars
-
 # Needed for setting C++ standard to C++20.
 common --enable_platform_specific_config
 
@@ -222,6 +219,7 @@ common:tsan_py --repo_env=HERMETIC_PYTHON_PREFIX=cpython-3.12.x-tsan-shared-linu
 common:local --test_strategy=standalone
 common:local --spawn_strategy=standalone
 common:local --strategy=standalone
+common:local --config=tpu_envvars
 
 # Config for no_remote builds
 common:no_rbe --config=local
@@ -323,7 +321,8 @@ common:ci --curses=no
 
 # Setting specific to benchmarking runs.
 common:bench --config=ci
-common:bench --spawn_strategy=standalone,local
+common:bench --config=tpu_envvars
+common:bench --strategy=TestRunner=standalone,local
 
 # TODO: b/523216544 - Refactor all of this logic to avoid separate configs for
 # every accelerator/job combination
@@ -343,8 +342,14 @@ common:ci_cpu_nightly --test_tag_filters=-nobuild,-notest,-requires-gpu,-require
 
 # Settings specific to TPU CI runs.
 common:ci_tpu_base --config=ci
+common:ci_tpu_base --config=tpu_envvars
+# Clear host-specific VBAR_CONTROL_SERVICE_URL from the Bazel test action
+# environment so that different TPU runner VMs produce identical TestRunner
+# cache keys. parallel_accelerator_execute.sh restores it at runtime when
+# a cache miss executes on the host.
+common:ci_tpu_base --test_env=VBAR_CONTROL_SERVICE_URL=
 common:ci_tpu_base --build_tag_filters=-nobuild,requires-tpu-v5lite,requires-tpu-v5lite:8,requires-tpu-v5p,requires-tpu-v5p:4,requires-tpu-v6e,requires-tpu-v7x,requires-tpu-v7x:4,
-common:ci_tpu_base --spawn_strategy=standalone,local
+common:ci_tpu_base --strategy=TestRunner=standalone,local
 
 # Settings for nightly runs on TPU.
 common:ci_tpu_nightly --config=ci_tpu_base
@@ -488,7 +493,6 @@ build --flag_alias=test_wheel=//:test_wheel
 build:wheel_base --//:wheel_build=True
 
 # Common config for all wheel.
-build:wheel_common --config=remote_caching_readonly
 build:wheel_common --config=remote_execution_readonly
 build:wheel_common --config=wheel_base
 
@@ -537,15 +541,12 @@ test:wheel_test_cpu --test_tag_filters=-nobuild,-notest,-nopresubmit,-requires-g
 # Split wheel test configurations for presubmits
 test:wheel_test_tpu_v5 --config=wheel_common_test
 test:wheel_test_tpu_v5 --config=ci_tpu_v5
-test:wheel_test_tpu_v5 --spawn_strategy=local
 
 test:wheel_test_tpu_v6 --config=wheel_common_test
 test:wheel_test_tpu_v6 --config=ci_tpu_v6
-test:wheel_test_tpu_v6 --spawn_strategy=local
 
 test:wheel_test_tpu_v7 --config=wheel_common_test
 test:wheel_test_tpu_v7 --config=ci_tpu_v7
-test:wheel_test_tpu_v7 --spawn_strategy=local
 
 # Tag filters for split wheel test runs
 # Tests are assigned exactly one mutually exclusive presubmit-v{N} tag.

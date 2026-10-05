@@ -31,6 +31,31 @@
 TORCH_TPU_ACCELERATOR_COUNT=${TORCH_TPU_ACCELERATOR_COUNT:-8}
 TORCH_TPU_TESTS_PER_ACCELERATOR=${TORCH_TPU_TESTS_PER_ACCELERATOR:-1}
 
+# If VBAR_CONTROL_SERVICE_URL was cleared via --test_env=VBAR_CONTROL_SERVICE_URL=
+# to keep Bazel TestRunner cache keys host-independent across TPU VMs, restore
+# it at runtime by walking ancestor processes up to PID 1 (e.g., the Bazel
+# server or container entrypoint).
+if [ -z "${VBAR_CONTROL_SERVICE_URL:-}" ]; then
+  _pid="${PPID:-0}"
+  while [ "${_pid:-0}" -gt 0 ] 2>/dev/null; do
+    if [ -r "/proc/$_pid/environ" ]; then
+      _vbar_url="$(tr '\0' '\n' < "/proc/$_pid/environ" | sed -n 's/^VBAR_CONTROL_SERVICE_URL=//p' | head -n 1)"
+      if [ -n "$_vbar_url" ]; then
+        export VBAR_CONTROL_SERVICE_URL="$_vbar_url"
+        break
+      fi
+    fi
+    [ "$_pid" -le 1 ] && break
+    _ppid="$(awk '/^PPid:/ {print $2}' "/proc/$_pid/status" 2>/dev/null || echo 1)"
+    { [ "${_ppid:-0}" -le 0 ] || [ "$_ppid" -eq "$_pid" ]; } && break
+    _pid="$_ppid"
+  done
+  unset _pid _ppid _vbar_url
+  if [ -z "${VBAR_CONTROL_SERVICE_URL:-}" ] && [ -S /var/run/tpu-plugin/vbar.sock ]; then
+    export VBAR_CONTROL_SERVICE_URL="unix:///var/run/tpu-plugin/vbar.sock"
+  fi
+fi
+
 # rlocation is needed to find the test binary when running with Bazel 8+
 set -uo pipefail
 f=bazel_tools/tools/bash/runfiles/runfiles.bash
