@@ -72,6 +72,10 @@ namespace {
 constexpr int kMinRepeatedSubsequenceLength = 2;
 constexpr int kMaxRepeatedSubsequenceLength = 128;
 constexpr int kMinRepetitionCount = 2;
+// The farthest back FindRepeatedSequence reads: the newest loop plus
+// kMinRepetitionCount prior loops of the longest supported sequence.
+constexpr int kMaxRepeatedSequenceScanLength =
+    (kMinRepetitionCount + 1) * kMaxRepeatedSubsequenceLength;
 constexpr int kMaxTorchDevices = 8;
 
 // Creates a new deferred DeviceBufferList which represents a data dependency
@@ -388,6 +392,11 @@ class StreamState {
                                       eager_mode);
   }
 
+  // Removes and returns all events up to and including the most recent
+  // snapshot request. Deferred ops recorded after it are left in the queue.
+  // FindRepeatedSequence relies on this: events after the most recent snapshot
+  // request are only modified by the dispatch thread, so its scan is
+  // independent of materialization worker progress.
   std::deque<StreamEvent> GetSnapshotEvents() {
     absl::MutexLock lock(mu_);
     std::deque<StreamEvent> temp;
@@ -593,80 +602,60 @@ StreamState::CheckLastRepeatedSequence(size_t new_hash)
 
 int64_t StreamState::FindRepeatedSequence(size_t new_hash)
     ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
-  // Initialize our iterator to be kMinRepeatedSubsequenceLength ops from the
-  // end of the queue.
-  auto prior_repetition_end_it = events_queue_.rbegin();
-  while (prior_repetition_end_it != events_queue_.rend() &&
-         !std::holds_alternative<DeferredOpEvent>(*prior_repetition_end_it)) {
-    ++prior_repetition_end_it;
-  }
-  auto last_deferred_op_it = prior_repetition_end_it;  // intentional copy
+  // Only scan the deferred ops recorded after the most recent snapshot request.
+  // Events before it are removed from the queue by the materialization worker
+  // at an arbitrary time, so including them would make the detected
+  // repetitions (and thus which graphs get compiled) depend on thread timing.
+  // The search for that boundary is capped at kMaxRepeatedSequenceScanLength,
+  // which is the farthest back the scan below can read, so that long runs of
+  // deferred ops without a snapshot request don't cost O(queue size) per op.
+  const auto last_deferred_op_it = events_queue_.rbegin();
+  const auto scan_rend =
+      last_deferred_op_it +
+      std::min(static_cast<std::ptrdiff_t>(events_queue_.size()),
+               static_cast<std::ptrdiff_t>(kMaxRepeatedSequenceScanLength));
+  const auto window_rend = std::find_if(
+      last_deferred_op_it, scan_rend, [](const StreamEvent& event) {
+        return !std::holds_alternative<DeferredOpEvent>(event);
+      });
+  const auto get_hash = [](const StreamEvent& event) {
+    return std::get<DeferredOpEvent>(event).deferred_op_hash;
+  };
 
-  int64_t repetition_length = 0;
-  while (prior_repetition_end_it != events_queue_.rend() &&
-         repetition_length < kMinRepeatedSubsequenceLength) {
-    if (std::holds_alternative<DeferredOpEvent>(*prior_repetition_end_it)) {
-      ++repetition_length;
-    }
-    ++prior_repetition_end_it;
-  }
-  if (prior_repetition_end_it == events_queue_.rend()) {
-    // There are less than kMinRepetitionCount * kMinRepeatedSubsequenceLength
-    // deferred ops in the queue.
+  if (std::distance(last_deferred_op_it, window_rend) <=
+      kMinRepeatedSubsequenceLength) {
     return 0;
   }
 
-  // Incrementally increase the sequence length until we find 2 loops at the
-  // end of the deferred ops queue, or we exceed the maximum sequence length.
-  while (prior_repetition_end_it != events_queue_.rend() &&
-         repetition_length <= kMaxRepeatedSubsequenceLength) {
-    const auto* deferred_op_event =
-        std::get_if<DeferredOpEvent>(&*prior_repetition_end_it);
-    if (deferred_op_event == nullptr) {
-      ++prior_repetition_end_it;
-      continue;
-    }
+  // Incrementally increase the sequence length until we find
+  // kMinRepetitionCount prior loops matching the end of the window, or we
+  // exceed the maximum sequence length.
+  int64_t repetition_length = kMinRepeatedSubsequenceLength;
+  for (auto prior_repetition_end_it =
+           last_deferred_op_it + kMinRepeatedSubsequenceLength;
+       prior_repetition_end_it != window_rend &&
+       repetition_length <= kMaxRepeatedSubsequenceLength;
+       ++prior_repetition_end_it, ++repetition_length) {
     // Look for points where we pushed the same hash value as new_hash.
-    if (deferred_op_event->deferred_op_hash != new_hash) {
-      ++repetition_length;
-      ++prior_repetition_end_it;
+    if (get_hash(*prior_repetition_end_it) != new_hash) {
       continue;
     }
-    // Initialize curr_it at the end of the queue, and prev_it
-    // `repetition_length` from the end.
-    auto prev_it = prior_repetition_end_it;  // intentional copy
-    auto curr_it = last_deferred_op_it;      // intentional copy
-
     const int64_t required_matches = kMinRepetitionCount * repetition_length;
-    int64_t matches = 0;
-    while (matches < required_matches && prev_it != events_queue_.rend()) {
-      const auto* prev_deferred_op_event =
-          std::get_if<DeferredOpEvent>(&*prev_it);
-      if (prev_deferred_op_event == nullptr) {
-        ++prev_it;
-        continue;
-      }
-      const auto* curr_deferred_op_event =
-          std::get_if<DeferredOpEvent>(&*curr_it);
-      if (curr_deferred_op_event == nullptr) {
-        ++curr_it;
-        continue;
-      }
-      if (prev_deferred_op_event->deferred_op_hash !=
-          curr_deferred_op_event->deferred_op_hash) {
-        break;
-      }
-      if (++matches == required_matches) {
-        break;
-      }
-      ++prev_it;
-      ++curr_it;
+    if (std::distance(prior_repetition_end_it, window_rend) <
+        required_matches) {
+      // Longer sequences would need even more ops than the window holds.
+      return 0;
     }
-    if (matches == required_matches) {
+    // Compare the ops `repetition_length` back from the end against the ops
+    // at the end of the window.
+    if (std::equal(prior_repetition_end_it,
+                   prior_repetition_end_it + required_matches,
+                   last_deferred_op_it,
+                   [&](const StreamEvent& prev, const StreamEvent& curr) {
+                     return get_hash(prev) == get_hash(curr);
+                   })) {
       return repetition_length;
     }
-    ++repetition_length;
-    ++prior_repetition_end_it;
   }
   return 0;
 }

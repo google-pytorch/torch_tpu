@@ -1173,6 +1173,69 @@ TEST(EventSnapshotTest, ElapsedTimeReturnsEventError) {
   EXPECT_EQ(ok_event.ElapsedTime(failed_event).status().code(),
             error::kInvalidArgument);
 }
+
+// Records a deferred op for each of `op_names` and appends the result of the
+// repeated-op detector to `detections`. The created refs are appended to
+// `keep_alive` so that the ops stay deferred.
+void RecordOpsAndDetectRepetitions(absl::Span<const OpName> op_names,
+                                   std::vector<DeviceBufferRef>& keep_alive,
+                                   std::vector<bool>& detections) {
+  const Shape shape(Dimensions{8}, mlir::ElementType::F32);
+  for (const OpName op_name : op_names) {
+    TT_ASSERT_OK_AND_ASSIGN(auto refs, DeviceBufferList::CreateDeferred(
+                                           op_name, DummyBuilder, {},
+                                           OpParamCacheKeys::Empty(), {shape}));
+    keep_alive.push_back(refs[0]);
+    detections.push_back(
+        RecordDeferredOpAndDetectRepetition(refs[0].device_buffer_list()));
+  }
+}
+
+// The materialization worker drains the events queue asynchronously, so the
+// repeated-op heuristic must only consider ops recorded after the last snapshot
+// request. Otherwise, whether a repetition is detected (and thus where fused
+// graphs are split) depends on thread timing, causing nondeterministic
+// recompilations in steady-state training loops.
+TEST_F(EventsQueueTest, RepeatedOpDetectionIgnoresOpsBeforeSnapshotRequest) {
+  ScopedPythonContextCapturer capturer(OpName::kEmpty);
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+  const std::vector<OpName> two_loops = {OpName::kAdd, OpName::kMul,
+                                         OpName::kAdd, OpName::kMul};
+  const std::vector<OpName> one_loop = {OpName::kAdd, OpName::kMul};
+
+  for (const bool drain_snapshot : {true, false}) {
+    SCOPED_TRACE(drain_snapshot ? "drained" : "not drained");
+    ClearAllStreams();
+    std::vector<DeviceBufferRef> keep_alive;
+
+    // Two loops of [A, B] are not enough to detect a repetition.
+    std::vector<bool> detections;
+    ASSERT_NO_FATAL_FAILURE(
+        RecordOpsAndDetectRepetitions(two_loops, keep_alive, detections));
+    EXPECT_THAT(detections, testing::Each(false));
+
+    // A snapshot request, e.g. from an explicit sync.
+    EventSnapshot::Record(device_index, stream_id, {});
+    if (drain_snapshot) {
+      // Simulates the worker having already processed the snapshot request.
+      PrepareSnapshotMaterializations(device_index, stream_id);
+    }
+
+    // A third loop must not be matched against the two loops before the
+    // snapshot request, regardless of the worker's progress.
+    detections.clear();
+    ASSERT_NO_FATAL_FAILURE(
+        RecordOpsAndDetectRepetitions(one_loop, keep_alive, detections));
+    EXPECT_THAT(detections, testing::Each(false));
+
+    // Three loops after the snapshot request are detected as a repetition.
+    detections.clear();
+    ASSERT_NO_FATAL_FAILURE(
+        RecordOpsAndDetectRepetitions(two_loops, keep_alive, detections));
+    EXPECT_THAT(detections, testing::ElementsAre(false, false, false, true));
+  }
+}
+
 }  // namespace
 
 }  // namespace torch_tpu
