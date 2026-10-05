@@ -5348,6 +5348,18 @@ Supported combinations for non-constant padding:
     ):
       torch.cat([t_f32], out=out_int32)
 
+  def test_cat_out_cpu_tensor(self):
+    """Tests that cat fails when the out tensor is on CPU instead of TPU/GPU."""
+    t_f32 = torch.tensor([1.0, 2.0], device=et.device(), dtype=torch.float32)
+    out_cpu = torch.zeros(2, device="cpu", dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""cat(): expected tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but got tensors is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA_cat_out_out)""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.cat([t_f32], out=out_cpu)
+
   def test_sub_bool(self):
     lhs = torch.tensor([1.0, 1.0], device=et.device())
     rhs = torch.tensor([1.0, 1.0], device=et.device())

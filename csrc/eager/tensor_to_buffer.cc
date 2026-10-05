@@ -137,6 +137,10 @@ void OverwriteDataPtr(const c10::DataPtr& data_ptr,
 
 absl::Status AssignBufferToAtTensor(DeviceBufferRef result_buf,
                                     const at::Tensor& tensor) {
+  TT_RET_CHECK(tensor.device().type() == GetPrivateUse1DeviceType(),
+               error::kInvalidArgument)
+      << "expected tensor to be on " << GetPrivateUse1DeviceDebugName()
+      << ", got " << tensor.device().str();
   ABSL_VLOG(1)
       << "[AssignBufferToAtTensor] Assigning DeviceBufferRef to existing "
          "tensor\n"
