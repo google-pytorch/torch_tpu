@@ -17,7 +17,6 @@
 #include "csrc/ops/silu/silu_aten_kernels.h"
 
 #include "ATen/OpMathType.h"
-#include "ATen/core/ATen_fwd.h"
 #include "ATen/core/LegacyTypeDispatch.h"
 #include "ATen/core/TensorBody.h"
 #include "ATen/ops/result_type.h"

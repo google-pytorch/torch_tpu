@@ -36,7 +36,6 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch/headeronly/core/ScalarType.h"
-#include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
 
