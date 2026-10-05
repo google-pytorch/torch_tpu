@@ -119,25 +119,32 @@ def _load_meta_llama(
   dtype = torch_device_ops.get_torch_dtype(ctx.dtype)
   prev_dtype = torch.get_default_dtype()
   torch.set_default_dtype(dtype)
-
-  device = torch.device(ctx.device_kind.value)
-  with device:
-    # We currently only support random weights for benchmarking
-    # TODO(b/461516258): investigate need to initialize model with
-    # inference_mode()
+  try:
+    device = torch.device(ctx.device_kind.value)
+    # Initialize on CPU first and then transfer to `device`. Upstream PyPI
+    # `fairscale==0.4.13` allocates `self.weight` via `torch.Tensor(...)` (which
+    # ignores `with torch.device(device):` and stays on CPU) while allocating
+    # `master_weight` via `torch.empty(...)` (which DeviceContext places on
+    # `device`), causing `torch.cat(my_weight_list, out=self.weight)` to fail
+    # with a cross-device `out=` tensor if constructed inside `with device:`.
     with torch.inference_mode():
       model = llama_model.Transformer(args)
+      model = model.to(device=device)
+      model.freqs_cis = model.freqs_cis.to(device=device)
+      for submodule in model.modules():
+        if isinstance(submodule, llama_model.Attention):
+          submodule.cache_k = submodule.cache_k.to(device=device, dtype=dtype)
+          submodule.cache_v = submodule.cache_v.to(device=device, dtype=dtype)
+      model.apply(_init_model_weights)
 
-    model.apply(_init_model_weights)
-
-  input_ids = torch.randint(
-      0, args.vocab_size, (batch_size, seq_len), device=device
-  )
-  # The model expects (tokens, start_pos)
-  example_inputs = (input_ids, 0)
-
-  torch.set_default_dtype(prev_dtype)
-  return model, example_inputs
+    input_ids = torch.randint(
+        0, args.vocab_size, (batch_size, seq_len), device=device
+    )
+    # The model expects (tokens, start_pos)
+    example_inputs = (input_ids, 0)
+    return model, example_inputs
+  finally:
+    torch.set_default_dtype(prev_dtype)
 
 
 @registry_lib.register_benchmark(stepper=step_lib.StepperType.FORWARD)

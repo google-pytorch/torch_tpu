@@ -269,31 +269,36 @@ def get_qwen3_5_397b_a17b_model(
     torch.set_default_dtype(torch_dtype)
     model = modeling_qwen3_5_moe.Qwen3_5MoeForCausalLM(config)
 
-  with torch.device(device):
-    torch.manual_seed(12345)
-    torch.set_default_dtype(torch_dtype)
+  torch.manual_seed(12345)
+  torch.set_default_dtype(torch_dtype)
 
+  if world_size > 1:
+    # FairScale library setup for distributed model parallelism. Guard with
+    # `model_parallel_is_initialized()` because `distributed_runner.py` may
+    # execute multiple distributed benchmarks sequentially in the same worker
+    # process (e.g. `meta_llama_8b_forward` followed by `qwen3_5_397b_a17b`),
+    # and FairScale raises an AssertionError if initialized more than once.
+    if not initialize.model_parallel_is_initialized():
+      initialize.initialize_model_parallel(world_size)
+
+    _warn_if_attn_dimensions_not_divisible(config, world_size, rank)
+    # Apply FairScale tensor-parallel layer replacements outside `with
+    # torch.device(device):` because PyPI `fairscale==0.4.13` allocates
+    # `self.weight` via `torch.Tensor(...)` (CPU) and `master_weight` via
+    # `torch.empty(...)` (intercepted by DeviceContext), which would fail in
+    # `torch.cat(my_weight_list, out=self.weight)` across devices.
+    _apply_tensor_parallel_plan(
+        model,
+        name_prefix="",
+        tp_plan=config.base_model_tp_plan,
+        world_size=world_size,
+        rank=rank,
+    )
+
+  with torch.device(device):
     # 2. Shard model / replace MoE layers
     if use_ragged_dot_moe:
       _replace_moe_layers_with_ragged_dot_moe(model, config, world_size)
-
-    if world_size > 1:
-      # FairScale library setup for distributed model parallelism. Guard with
-      # `model_parallel_is_initialized()` because `distributed_runner.py` may
-      # execute multiple distributed benchmarks sequentially in the same worker
-      # process (e.g. `meta_llama_8b_forward` followed by `qwen3_5_397b_a17b`),
-      # and FairScale raises an AssertionError if initialized more than once.
-      if not initialize.model_parallel_is_initialized():
-        initialize.initialize_model_parallel(world_size)
-
-      _warn_if_attn_dimensions_not_divisible(config, world_size, rank)
-      _apply_tensor_parallel_plan(
-          model,
-          name_prefix="",
-          tp_plan=config.base_model_tp_plan,
-          world_size=world_size,
-          rank=rank,
-      )
 
     # 3. Materialize on the local device
     model.to_empty(device=device)
