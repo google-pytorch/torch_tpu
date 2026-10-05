@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 from collections.abc import Sequence
-import sys
+import operator
 from typing import Any
 from absl import logging
 import torch
@@ -230,7 +230,150 @@ class HandleSliceLikeOpsPass:
         torch.ops.aten.select.int: self._process_select_op,
         torch.ops.aten.select_copy.int: self._process_select_op,
         torch.ops.aten.slice_backward.default: self._process_slice_backward_op,
+        torch.ops.aten.constant_pad_nd.default: (
+            self._process_constant_pad_nd_op
+        ),
     }
+
+  def _is_negative(self, index: int | torch.SymInt) -> bool:
+    """Returns whether an int or SymInt index is negative, without guards.
+
+    PyTorch's view meta kernels decided the sign from the trace-time hint and
+    guarded on it, so only the hint is consistent with the compiled graph
+    (symbolic ranges are not refined for multi-symbol guards). Hint-less
+    (unbacked) SymInts use their symbolic range and must not straddle zero.
+    """
+    hint = sym_utils.get_symint_hint(index)
+    if hint is not None:
+      return hint < 0
+    if not isinstance(index, torch.SymInt):
+      return False
+    lower, upper = self._transform_context.get_symint_bounds(index)
+    if lower < 0 <= upper:
+      raise NotImplementedError(
+          f"Slice index {index} is an unbacked SymInt whose sign is unknown"
+          f" (range [{lower}, {upper}]), which is not supported on TPU."
+      )
+    return upper < 0
+
+  def _normalize_index(
+      self, index: int | torch.SymInt, dim_size: Any
+  ) -> int | torch.SymInt:
+    """Normalizes a negative int or SymInt index relative to dim_size.
+
+    dim_size may be an int, a SymInt, or an FX node carrying one (e.g. the
+    sym_size entries of slice_backward's input_sizes).
+    """
+    if self._is_negative(index):
+      index = _get_node_val(dim_size) + index
+    const_val = sym_utils.get_constant_symint_value(index)
+    if const_val is not None:
+      return const_val
+    return index
+
+  def _build_constant_tensor(
+      self,
+      graph_module: torch.fx.GraphModule,
+      node: torch.fx.Node,
+      block_shape: Sequence[Any],
+      value: Any,
+      dtype: torch.dtype,
+  ) -> torch.fx.Node:
+    """Builds a constant tensor of block_shape using _dynamic_broadcast."""
+    val_scalar = self._transform_context.ensure_tensor(
+        graph_module, value, node, dtype=dtype
+    )
+    shape_tensors, static_shape, is_dynamic = _extract_shape_tensors_and_bounds(
+        graph_module, node, block_shape, self._transform_context
+    )
+    with graph_module.graph.inserting_before(node):
+      return graph_module.graph.call_function(
+          torch.ops.tpu._dynamic_broadcast,
+          args=(val_scalar, shape_tensors, [], static_shape, is_dynamic),
+      )
+
+  def _prepare_slice_operand(
+      self,
+      graph_module: torch.fx.GraphModule,
+      node: torch.fx.Node,
+      inp: torch.fx.Node,
+      inp_val: Any,
+      dim: int,
+      start: int | torch.SymInt,
+      slice_extent: int,
+  ) -> torch.fx.Node:
+    """Returns inp prepared as the operand of a bound-sized _dynamic_slice.
+
+    Every dynamic dim of inp is first bounded to its static upper bound, so
+    the slice window is taken from the padded buffer instead of being clamped
+    against the runtime size. XLA still clamps dynamic_slice starts to
+    [0, operand_dim - slice_size], so when upper_bound(start) + slice_extent
+    exceeds upper_bound(inp_dim) inp is also right-padded along dim with a
+    zero block of the missing extent. Only that case materializes a padded
+    copy of inp (e.g. sliding-window masks `m[:, -q_len:]` with independent
+    kv/q bounds); start-0 slices never pad.
+    """
+    curr = inp
+    ub_shape = [
+        self._transform_context.get_upper_bound(s) for s in inp_val.shape
+    ]
+    for d, s in enumerate(inp_val.shape):
+      if not sym_utils.is_symint(s):
+        continue
+      ub_tensor = self._transform_context.ensure_tensor(
+          graph_module,
+          ub_shape[d],
+          node,
+          dtype=torch.int32,
+      )
+      with graph_module.graph.inserting_before(node):
+        curr = graph_module.graph.call_function(
+            torch.ops.tpu._set_dimension_logical_size,
+            args=(curr, d, ub_tensor),
+        )
+        curr.meta = inp.meta.copy()
+        if isinstance(inp_val, torch.Tensor):
+          curr.meta["val"] = inp_val.new_empty(ub_shape)
+
+    inp_dim_ub = ub_shape[dim]
+    start_ub = max(0, self._transform_context.get_upper_bound(start))
+    extra = start_ub + slice_extent - inp_dim_ub
+    if slice_extent == 0 or extra <= 0:
+      return curr
+    # curr is already bounded to static upper bounds across all dims above.
+    pad_shape = [extra if d == dim else ub for d, ub in enumerate(ub_shape)]
+    pad_block = self._build_constant_tensor(
+        graph_module, node, pad_shape, 0, inp_val.dtype
+    )
+    with graph_module.graph.inserting_before(node):
+      padded = graph_module.graph.call_function(
+          torch.ops.aten.cat.default,
+          args=([curr, pad_block], dim),
+      )
+      padded.meta = inp.meta.copy()
+      if isinstance(inp_val, torch.Tensor):
+        padded.meta["val"] = inp_val.new_empty(
+            [ub + extra if d == dim else ub for d, ub in enumerate(ub_shape)]
+        )
+    return padded
+
+  def _dynamic_output_dim_sizes(
+      self, graph_module: torch.fx.GraphModule, node: torch.fx.Node
+  ) -> list[tuple[int, torch.fx.Node]]:
+    """Returns (dim, runtime size tensor) for every dynamic output dim."""
+    out_val = node.meta.get("val")
+    if not hasattr(out_val, "shape"):
+      return []
+    return [
+        (
+            d,
+            self._transform_context.ensure_tensor(
+                graph_module, s, node, dtype=torch.int32
+            ),
+        )
+        for d, s in enumerate(out_val.shape)
+        if sym_utils.is_symint(s)
+    ]
 
   def _extract_select_args(
       self, node: torch.fx.Node, offset: int = 0
@@ -308,7 +451,13 @@ class HandleSliceLikeOpsPass:
       graph_module: torch.fx.GraphModule,
       node: torch.fx.Node,
   ) -> None:
-    """Processes slice op node and applies set_dimension_logical_size if input or parameters are dynamic."""
+    """Lowers a slice on dynamic input / with dynamic parameters.
+
+    The slice becomes tpu._dynamic_slice over the bound-sized operand (see
+    _prepare_slice_operand) followed by _set_dimension_logical_size for every
+    dynamic output dim. `end` only matters through the output shape metadata,
+    so it is never normalized here.
+    """
     inp = node.args[0]
     dim, start, end, step = self._extract_slice_args(node, offset=0)
     inp_val = _get_node_val(inp)
@@ -320,16 +469,18 @@ class HandleSliceLikeOpsPass:
     if step is None:
       step = 1
 
-    # Normalize negative dim, start, and end indices to absolute indices.
+    # Normalize negative dim and start indices to absolute indices.
     if hasattr(inp_val, "shape"):
       if isinstance(dim, int) and dim < 0:
         dim = dim + len(inp_val.shape)
-      if isinstance(start, int) and start < 0:
-        start = inp_val.shape[dim] + start
-      if end is None or (isinstance(end, int) and end >= sys.maxsize):
-        end = inp_val.shape[dim]
-      elif isinstance(end, int) and end < 0:
-        end = inp_val.shape[dim] + end
+      start = self._normalize_index(start, inp_val.shape[dim])
+      # A start that is still negative after normalization (or can never be
+      # positive) is clamped to 0, exactly like the slice meta kernel did.
+      if (
+          self._is_negative(start)
+          or self._transform_context.get_upper_bound(start) <= 0
+      ):
+        start = 0
 
     start_is_dynamic = sym_utils.is_symint(start)
     end_is_dynamic = sym_utils.is_symint(end)
@@ -346,11 +497,27 @@ class HandleSliceLikeOpsPass:
     ):
       return
 
-    if step != 1:
+    # Decide statically and never through bool(SymBool): this pass runs inside
+    # the backend compiler, where evaluating a SymInt comparison installs a
+    # Dynamo guard (unintended specialization and recompiles).
+    if not sym_utils.is_statically_equal(step, 1):
       raise NotImplementedError(
           f"Slice operation '{node.name}' has non-unit step ({step}) on dynamic"
           " dimension which is not supported on TPU."
       )
+
+    if (
+        hasattr(inp_val, "shape")
+        and hasattr(out_val, "shape")
+        and isinstance(start, int)
+        and start == 0
+        and sym_utils.is_statically_equal(
+            out_val.shape[dim], inp_val.shape[dim]
+        )
+    ):
+      node.replace_all_uses_with(inp)
+      graph_module.graph.erase_node(node)
+      return
 
     rank = len(inp_val.shape)
     start_indices = [
@@ -365,19 +532,15 @@ class HandleSliceLikeOpsPass:
         for d in range(rank)
     ]
 
-    dynamic_dim_sizes: list[tuple[int, torch.fx.Node]] = []
-    if "val" in node.meta and hasattr(node.meta["val"], "shape"):
-      for d, s in enumerate(node.meta["val"].shape):
-        if sym_utils.is_symint(s):
-          size_tensor_node = self._transform_context.ensure_tensor(
-              graph_module, s, node, dtype=torch.int32
-          )
-          dynamic_dim_sizes.append((d, size_tensor_node))
+    dynamic_dim_sizes = self._dynamic_output_dim_sizes(graph_module, node)
+    fitted_inp = self._prepare_slice_operand(
+        graph_module, node, inp, inp_val, dim, start, slice_sizes[dim]
+    )
 
     with graph_module.graph.inserting_before(node):
       new_slice_node = graph_module.graph.call_function(
           torch.ops.tpu._dynamic_slice,
-          args=(inp, start_indices, slice_sizes),
+          args=(fitted_inp, start_indices, slice_sizes),
       )
 
     self._replace_node_with_set_logical_sizes(
@@ -389,9 +552,21 @@ class HandleSliceLikeOpsPass:
       graph_module: torch.fx.GraphModule,
       node: torch.fx.Node,
   ) -> None:
-    """Processes slice_backward op node and applies set_dimension_logical_size if parameters are dynamic."""
+    """Lowers slice_backward with dynamic input sizes / parameters.
+
+    Negative static starts are normalized against the (possibly symbolic)
+    input size; a start that stays symbolic is rejected because the lowering
+    needs a static offset for the gradient window.
+    """
     grad_output, input_sizes = node.args[0], node.args[1]
     dim, start, end, step = self._extract_slice_args(node, offset=1)
+
+    if isinstance(dim, int) and dim < 0 and isinstance(input_sizes, Sequence):
+      dim = dim + len(input_sizes)
+    if start is None:
+      start = 0
+    elif isinstance(input_sizes, Sequence):
+      start = self._normalize_index(start, input_sizes[dim])
 
     if sym_utils.is_symint(start):
       raise NotImplementedError(
@@ -453,8 +628,7 @@ class HandleSliceLikeOpsPass:
     if hasattr(inp_val, "shape"):
       if isinstance(dim, int) and dim < 0:
         dim = dim + len(inp_val.shape)
-      if isinstance(index, int) and index < 0:
-        index = inp_val.shape[dim] + index
+      index = self._normalize_index(index, inp_val.shape[dim])
 
     inp_has_dynamic = sym_utils.has_dynamic_shape(inp_val)
     out_has_dynamic = sym_utils.has_dynamic_shape(out_val)
@@ -478,19 +652,15 @@ class HandleSliceLikeOpsPass:
         for d in range(rank)
     ]
 
-    dynamic_dim_sizes: list[tuple[int, torch.fx.Node]] = []
-    if "val" in node.meta and hasattr(node.meta["val"], "shape"):
-      for d, s in enumerate(node.meta["val"].shape):
-        if sym_utils.is_symint(s):
-          size_tensor_node = self._transform_context.ensure_tensor(
-              graph_module, s, node, dtype=torch.int32
-          )
-          dynamic_dim_sizes.append((d, size_tensor_node))
+    dynamic_dim_sizes = self._dynamic_output_dim_sizes(graph_module, node)
+    fitted_inp = self._prepare_slice_operand(
+        graph_module, node, inp, inp_val, dim, index, 1
+    )
 
     with graph_module.graph.inserting_before(node):
       new_slice_node = graph_module.graph.call_function(
           torch.ops.tpu._dynamic_slice,
-          args=(inp, start_indices, slice_sizes),
+          args=(fitted_inp, start_indices, slice_sizes),
       )
       new_select_node = graph_module.graph.call_function(
           torch.ops.aten.squeeze.dim,
@@ -501,24 +671,141 @@ class HandleSliceLikeOpsPass:
         graph_module, node, new_select_node, dynamic_dim_sizes
     )
 
+  def _process_constant_pad_nd_op(
+      self,
+      graph_module: torch.fx.GraphModule,
+      node: torch.fx.Node,
+  ) -> None:
+    """Lowers constant_pad_nd on dynamic tensors to dynamic_broadcast + cat.
+
+    Each padded dim is concatenated with constant blocks sized from the static
+    upper bounds, and the dynamic output dims are re-bounded with
+    set_dimension_logical_size. Only non-negative static pads are supported on
+    dynamic tensors.
+    """
+    inp = node.args[0]
+    pad = node.args[1] if len(node.args) > 1 else node.kwargs.get("pad", ())
+    value = (
+        node.args[2] if len(node.args) > 2 else node.kwargs.get("value", 0.0)
+    )
+    if value is None:
+      value = 0.0
+    inp_val = _get_node_val(inp)
+    out_val = _get_node_val(node)
+
+    if not hasattr(inp_val, "shape") or not isinstance(pad, Sequence):
+      return
+    if not (
+        sym_utils.has_dynamic_shape(inp_val)
+        or sym_utils.has_dynamic_shape(out_val)
+    ):
+      return
+
+    pad_vals = [_get_node_val(p) for p in pad]
+    if any(sym_utils.is_symint(p) or p < 0 for p in pad_vals):
+      raise NotImplementedError(
+          f"constant_pad_nd operation '{node.name}' has negative or dynamic"
+          f" pads ({pad_vals}) on a tensor with dynamic dimensions, which is"
+          " not supported on TPU. Slice the tensor instead of using negative"
+          " pads, or keep the pad amounts static and non-negative."
+      )
+
+    cur = inp
+    cur_shape = list(inp_val.shape)
+    rank = len(cur_shape)
+    num_pad_dims = len(pad_vals) // 2
+
+    for i in range(num_pad_dims):
+      dim = rank - 1 - i
+      left_pad = int(pad_vals[2 * i])
+      right_pad = int(pad_vals[2 * i + 1])
+      if left_pad == 0 and right_pad == 0:
+        continue
+
+      parts: list[torch.fx.Node] = []
+      if left_pad > 0:
+        left_shape = list(cur_shape)
+        left_shape[dim] = left_pad
+        parts.append(
+            self._build_constant_tensor(
+                graph_module, node, left_shape, value, inp_val.dtype
+            )
+        )
+      parts.append(cur)
+      if right_pad > 0:
+        right_shape = list(cur_shape)
+        right_shape[dim] = right_pad
+        parts.append(
+            self._build_constant_tensor(
+                graph_module, node, right_shape, value, inp_val.dtype
+            )
+        )
+
+      with graph_module.graph.inserting_before(node):
+        cur = graph_module.graph.call_function(
+            torch.ops.aten.cat.default,
+            args=(parts, dim),
+        )
+      cur_shape[dim] = cur_shape[dim] + left_pad + right_pad
+
+    self._replace_node_with_set_logical_sizes(
+        graph_module,
+        node,
+        cur,
+        self._dynamic_output_dim_sizes(graph_module, node),
+    )
+
+
+_SLICE_LIKE_FUNCTIONS = (
+    operator.getitem,
+    torch.ops.aten.slice.Tensor,
+    torch.ops.aten.slice,
+    torch.ops.aten.select.int,
+    torch.ops.aten.select,
+    torch.select,
+    torch.ops.aten.narrow.default,
+    torch.ops.aten.narrow,
+    torch.narrow,
+)
+_SLICE_LIKE_METHODS = ("slice", "select", "narrow")
+
+
+def _has_symbolic_index_args(node: torch.fx.Node) -> bool:
+  """Returns whether any slice/select/narrow index argument of node is dynamic.
+
+  In the Dynamo graph dynamic indices are either SymInts or FX nodes producing
+  them (e.g. the output of `sym_size`); static indices are plain ints/None.
+  """
+  flat_idx_args, _ = pytree.tree_flatten((node.args[1:], node.kwargs))
+  for item in flat_idx_args:
+    parts = (
+        (item.start, item.stop, item.step)
+        if isinstance(item, slice)
+        else (item,)
+    )
+    if any(isinstance(p, (torch.fx.Node, torch.SymInt)) for p in parts):
+      return True
+  return False
+
 
 class ReplaceDynamicOutputBroadcastOpsPreGradPass:
-  """Pre-grad pass to replace returned dynamic broadcast/expand ops with expand_copy.
+  """Pre-grad pass turning returned dynamic views into explicit copies.
 
-  Why this pass is needed:
-  When a model returns a broadcast or expand operation directly as a graph
-  output (e.g. `return x.expand(dynamic_size, ...)` or `return
-  torch.broadcast_to(...)`) and the target shape depends on dynamic SymInt
-  expressions, returning a view op causes PyTorch's AOTAutograd alias
-  resolution to fail. AOTAutograd attempts to generate an alias reconstruction
-  function using `as_strided`, but the original input tensor storage size is
-  smaller than the expanded output shape causing a runtime storage size
-  validation error.
+  AOTAutograd regenerates graph outputs that alias an input or an intermediate
+  from their base at runtime (`gen_alias_from_base`). That only works through
+  view replay, which AOTAutograd skips as soon as a view in the chain has
+  symbolic (SymInt) arguments; it then falls back to `as_strided` with the
+  metadata of the tensor the compiled graph produced. On TPU that tensor is a
+  fresh contiguous buffer, so the fallback either reads the wrong window of
+  the base (dynamic slice/select/narrow indices) or fails the storage size
+  check (expand/broadcast_to to a dynamic shape).
 
-  By replacing returned dynamic broadcast/expand nodes with
-  `aten.expand_copy.default` before AOTAutograd runs (Pre-Grad), the returned
-  tensor becomes an explicit contiguous copy rather than an aliased view,
-  allowing AOTAutograd to handle the output safely.
+  Before AOTAutograd runs, this pass therefore rewrites every returned
+  `expand`/`broadcast_to` with a dynamic target shape to `expand_copy`, and
+  clones every returned slice/select/narrow view with dynamic index arguments
+  right before the `output` node (so in-graph mutations of the base after the
+  view are still reflected). Those outputs become copies instead of aliases
+  of their base; all other nodes are left as they are.
   """
 
   def __call__(self, graph_module: torch.fx.GraphModule) -> None:
@@ -558,10 +845,39 @@ class ReplaceDynamicOutputBroadcastOpsPreGradPass:
       ) or (
           node.op == "call_method" and node.target in ("expand", "broadcast_to")
       )
-      if not is_expand:
+      is_slice_like = (
+          node.op == "call_function" and node.target in _SLICE_LIKE_FUNCTIONS
+      ) or (node.op == "call_method" and node.target in _SLICE_LIKE_METHODS)
+      if not (is_expand or is_slice_like):
         continue
 
       is_returned = node in returned_nodes
+      if is_slice_like:
+        # Only views are regenerated by AOTAutograd; e.g. advanced indexing
+        # already returns a copy and needs no clone.
+        example_value = node.meta.get("example_value")
+        if not (
+            is_returned
+            and isinstance(example_value, torch.Tensor)
+            and example_value._is_view()  # pylint: disable=protected-access
+            and _has_symbolic_index_args(node)
+        ):
+          continue
+        for out_node in output_nodes:
+          with graph_module.graph.inserting_before(out_node):
+            # contiguous_format: a preserve_format clone would evaluate the
+            # view's contiguity (size/stride relations of SymInts) in the meta
+            # kernel and install guards that conflict with the upper bounds.
+            clone_node = graph_module.graph.call_function(
+                torch.ops.aten.clone.default,
+                args=(node,),
+                kwargs={"memory_format": torch.contiguous_format},
+            )
+            clone_node.meta = node.meta.copy()
+          out_node.replace_input_with(node, clone_node)
+        changed = True
+        continue
+
       # Extract input tensor node (`inp`) and target shape dimensions (`shape`).
       # Method calls (e.g. `x.expand(d0, d1)` or `x.expand([d0, d1])`) pass
       # `self` as `node.args[0]`, followed by shape as varargs or sequence.
@@ -599,6 +915,9 @@ class ReplaceDynamicOutputBroadcastOpsPreGradPass:
           expand_copy_node.meta = node.meta.copy()
 
         node.replace_all_uses_with(expand_copy_node)
+        # Erase the node directly: `eliminate_dead_code` would also delete
+        # Dynamo `call_method` in-place mutations (e.g. `add_`) without users.
+        graph_module.graph.erase_node(node)
         changed = True
         logging.debug(
             "[PreGrad] Successfully replaced %s with expand_copy_node %s",
@@ -607,5 +926,4 @@ class ReplaceDynamicOutputBroadcastOpsPreGradPass:
         )
 
     if changed:
-      graph_module.graph.eliminate_dead_code()
       graph_module.recompile()

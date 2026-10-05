@@ -20,6 +20,7 @@ from typing import Any
 from absl import logging
 import sympy
 import torch
+from torch.fx.experimental import symbolic_shapes
 
 
 def _get_tracer(*args) -> torch.fx.Tracer:
@@ -146,6 +147,41 @@ def get_constant_symint_value(val: Any) -> int | None:
       return None
 
   return None
+
+
+def get_symint_hint(val: Any) -> int | None:
+  """Returns the trace-time hint of an int, SymInt, or SymInt FX node.
+
+  The hint is the concrete value PyTorch's meta kernels saw while tracing, so
+  it is the value every data-independent decision (and the guard protecting
+  it) was made with. Returns None for unbacked SymInts and non-integers.
+  """
+  if isinstance(val, torch.fx.Node) and hasattr(val, "meta"):
+    val = val.meta.get("val")
+  if isinstance(val, bool):
+    return None
+  if isinstance(val, int):
+    return val
+  if isinstance(val, torch.SymInt):
+    hint = val.node.hint
+    return None if hint is None else int(hint)
+  return None
+
+
+def is_statically_equal(lhs: Any, rhs: Any) -> bool:
+  """Returns whether lhs == rhs holds without installing a Dynamo guard.
+
+  Calling bool() on a SymInt comparison evaluates it through the ShapeEnv,
+  which records a guard whenever the answer is not already known; compiler
+  passes must never do that. Returns False when the equality is unknown.
+  """
+  if isinstance(lhs, torch.fx.Node) and hasattr(lhs, "meta"):
+    lhs = lhs.meta.get("val")
+  if isinstance(rhs, torch.fx.Node) and hasattr(rhs, "meta"):
+    rhs = rhs.meta.get("val")
+  if isinstance(lhs, torch.SymInt) or isinstance(rhs, torch.SymInt):
+    return symbolic_shapes.statically_known_true(lhs == rhs)
+  return lhs == rhs
 
 
 def is_scalar(val: Any) -> bool:
