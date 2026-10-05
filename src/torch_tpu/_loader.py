@@ -57,8 +57,21 @@ _INIT_LOCK: threading.Lock = threading.Lock()
 _LOADED: bool = False
 
 _torch_compile = torch.compile
+_InductorWrapper = torch._TorchCompileInductorWrapper  # pylint: disable=protected-access
+_orig_inductor_wrapper_call = _InductorWrapper.__call__
 
 _DEVICE_INITIALIZED: bool = False
+
+_INDUCTOR_TPU_ERROR: Final[str] = (
+    "torch.compile(..., backend='inductor') on TPU is experimental and does"
+    " not yet have full TPU support; compilation is likely to fail with"
+    " cryptic errors, e.g."
+    " https://github.com/google-pytorch/torch_tpu/issues/4300. Pass"
+    " backend='tpu' or do not specify `backend` in torch.compile to use"
+    " TorchTPU, which does have full TPU support. If you do want to run"
+    " Inductor on TPU, you can bypass this error by passing"
+    " options={'tpu_backend': 'pallas'}."
+)
 
 public_api.install()
 
@@ -66,6 +79,17 @@ public_api.install()
 # graph breaks and leverage TorchTPU's fused StableHLO kernels.
 if hasattr(torch._dynamo.config, "allow_rnn"):
   torch._dynamo.config.allow_rnn = True
+
+
+def _has_tpu_inputs(example_inputs) -> bool:
+  """Returns True if any tensor in `example_inputs` is on a TPU device."""
+  if not hasattr(torch, "tpu"):
+    return False
+  flat_inputs, _ = pytree.tree_flatten(example_inputs)
+  return any(
+      isinstance(x, torch.Tensor) and x.device.type == "tpu"
+      for x in flat_inputs
+  )
 
 
 def _get_default_backend_impl(example_inputs) -> backend_registry.CompilerFn:
@@ -81,12 +105,8 @@ def _get_default_backend_impl(example_inputs) -> backend_registry.CompilerFn:
   Returns:
     The appropriate backend function for `torch.compile`.
   """
-  flat_inputs, _ = pytree.tree_flatten(example_inputs)
-
-  if hasattr(torch, "tpu"):
-    for x in flat_inputs:
-      if isinstance(x, torch.Tensor) and x.device.type == "tpu":
-        return backend_registry.lookup_backend("tpu")
+  if _has_tpu_inputs(example_inputs):
+    return backend_registry.lookup_backend("tpu")
 
   # At this point all inputs are in CPU so call the default backend in such a
   # case.
@@ -104,6 +124,18 @@ def _default_backend_selector(graph_module, example_inputs, **kwargs):
   """The backend callable to pass to torch.compile."""
   backend = _get_default_backend_impl(example_inputs)
   return backend(graph_module, example_inputs, **kwargs)
+
+
+@functools.wraps(_orig_inductor_wrapper_call)
+def _tpu_inductor_wrapper_call(self, model_, inputs_, *args, **kwargs):
+  """Raises on `torch.compile(..., backend='inductor')` with TPU inputs."""
+  # Allow Inductor on TPU when `tpu_backend="pallas"` is explicitly configured,
+  # as Inductor's own Pallas tests set this option.
+  if getattr(self, "config", {}).get(
+      "tpu_backend"
+  ) != "pallas" and _has_tpu_inputs(inputs_):
+    raise RuntimeError(_INDUCTOR_TPU_ERROR)
+  return _orig_inductor_wrapper_call(self, model_, inputs_, *args, **kwargs)
 
 
 # Monkeypatch torch.compile to default to TPU backend if available.
@@ -316,6 +348,7 @@ def _init_device_impl(device: str) -> torch.device:
   # backend: https://github.com/pytorch/pytorch/issues/178930
   # TODO(b/492505722): Update internal usage of torch.compile.
   torch.compile = _default_tpu_compile
+  _InductorWrapper.__call__ = _tpu_inductor_wrapper_call
 
   return device_d
 

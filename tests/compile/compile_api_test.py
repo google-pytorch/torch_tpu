@@ -21,8 +21,10 @@ import threading
 from typing import TypeAlias
 
 from absl.testing import absltest
+from absl.testing import parameterized
 import torch
 from torch.fx.experimental.proxy_tensor import make_fx
+from torch_tpu import _loader
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import _backend
@@ -375,6 +377,35 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
       torch.compile(lambda arg: arg + 1, backend='aot_eager')(x)
 
       mock_lookup_backend.assert_called_with('aot_eager')
+
+  def test_compile_inductor_backend_on_tpu_raises(self):
+    x = torch.ones(10, device=torch.device('tpu'))
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Python-only check alongside other torch.compile backend selection tests
+        RuntimeError, re.escape(_loader._INDUCTOR_TPU_ERROR)
+    ):
+      torch.compile(lambda arg: arg + 1, backend='inductor')(x)
+
+  @parameterized.named_parameters(
+      dict(testcase_name='on_cpu', device='cpu', options=None),
+      dict(
+          testcase_name='on_tpu_with_pallas_option',
+          device='tpu',
+          options={'tpu_backend': 'pallas'},
+      ),
+  )
+  def test_compile_inductor_backend_succeeds(self, device, options):
+    x = torch.ones(10, device=torch.device(device))
+    with absltest.mock.patch(
+        'torch._inductor.compile_fx.compile_fx',
+        side_effect=lambda gm, *args, **kwargs: gm,
+    ) as mock_compile_fx:
+      res = torch.compile(
+          lambda arg: arg + 1,
+          backend='inductor',
+          options=options,
+      )(x)
+    mock_compile_fx.assert_called_once()
+    utils.assert_close(res.cpu(), (x + 1).cpu())
 
   def test_compile_default_backend_no_recompilations(self):
     num_calls = 0
