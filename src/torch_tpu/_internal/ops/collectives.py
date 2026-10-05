@@ -41,7 +41,7 @@ def _resolve_group(
 
 
 @_annotations.experimental(
-    "all_gather_dim is experimental and subject to change."
+    "torch.tpu.ops.all_gather_dim is experimental and subject to change."
 )
 def all_gather_dim(
     input: torch.Tensor,  # pylint: disable=redefined-builtin
@@ -68,7 +68,7 @@ def all_gather_dim(
 
 
 @_annotations.experimental(
-    "reduce_scatter_dim is experimental and subject to change."
+    "torch.tpu.ops.reduce_scatter_dim is experimental and subject to change."
 )
 def reduce_scatter_dim(
     input: torch.Tensor,  # pylint: disable=redefined-builtin
