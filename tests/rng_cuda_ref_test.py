@@ -24,6 +24,7 @@ from absl import flags
 from absl.testing import absltest
 import torch
 from tests import accelerator_test_utils
+from tests import oss_utils
 from tests import seed_test_utils
 
 _BACKEND = flags.DEFINE_string(
@@ -831,13 +832,12 @@ class CompiledRngTest(_BaseRngTest):
     mask_bwd = x.grad > 0
     self.assertTrue(torch.equal(mask_fwd, mask_bwd))
 
-  @_fail_on_tpu(
-      "b/496168350: Compiled activation checkpointing RNG preservation requires"
-      " graphsafe RNG."
+  @oss_utils.skip_in_oss(
+      "Generic graphsafe RNG for TPU in AOTAutograd is not yet available in"
+      " the OSS PyTorch release used by CI."
   )
   def test_compiled_activation_checkpointing_dropout(self):
-    """Verifies non-reentrant activation checkpointing reproduces the mask."""
-
+    """Verifies non-reentrant activation checkpointing reproduces the mask across steps."""
     class CheckpointModel(torch.nn.Module):
 
       def __init__(self):
@@ -856,13 +856,19 @@ class CompiledRngTest(_BaseRngTest):
     compiled_model = torch.compile(model, fullgraph=True)
 
     torch.manual_seed(42)
-    x = torch.ones(100, device=self.device, requires_grad=True)
-    out = compiled_model(x)
-    mask_fwd = out > 0
-    out.sum().backward()
-    mask_bwd = x.grad > 0
+    masks = []
+    for _ in range(3):
+      x = torch.ones(100, device=self.device, requires_grad=True)
+      out = compiled_model(x)
+      mask_fwd = out > 0
+      out.sum().backward()
+      mask_bwd = x.grad > 0
+      self.assertTrue(torch.equal(mask_fwd, mask_bwd))
+      masks.append(mask_fwd)
 
-    self.assertTrue(torch.equal(mask_fwd, mask_bwd))
+    # Masks across consecutive steps must differ.
+    self.assertFalse(torch.equal(masks[0], masks[1]))
+    self.assertFalse(torch.equal(masks[1], masks[2]))
 
 
 class ErrorHandlingRngTest(_BaseRngTest):

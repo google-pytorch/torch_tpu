@@ -250,7 +250,6 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
-        "//src/torch_tpu/_internal:env",
         "//src/torch_tpu/_internal/compile:debug",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",

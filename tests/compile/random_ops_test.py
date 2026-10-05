@@ -19,8 +19,6 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import torch
 from torch.utils import _pytree
-from torch.utils import checkpoint
-from torch_tpu._internal import env
 from torch_tpu._internal.compile.debug import TpuCompileDebug
 from torch_tpu._internal.utils import test_utils as utils
 from tests import seed_test_utils
@@ -151,54 +149,6 @@ class RandomOpsTest(seed_test_utils.RepeatableTest):
     def runner():
       nonlocal x
       return compiled_module(x)
-
-    self.assert_random_outputs(runner)
-
-  def test_checkpoint_rng_compile(self):
-    # TODO: b/496168350 - Remove test skip once generic graphsafe RNG is
-    # available in OSS PyTorch release.
-    if not env.IS_INTERNAL_TORCH_TPU:
-      self.skipTest(
-          "Pending https://github.com/pytorch/pytorch/pull/182391 to be"
-          " available in OSS PyTorch."
-      )
-
-    # Arrange
-    device = torch.device("tpu")
-
-    class MyModule(torch.nn.Module):
-
-      def __init__(self):
-        super().__init__()
-        self.lin = torch.nn.Linear(5, 5)
-        self.dropout = torch.nn.Dropout(p=0.5)
-
-      def forward(self, x):
-        return self.dropout(self.lin(x))
-
-    module = MyModule().to(device)
-
-    def run_model(model, x, use_checkpoint):
-      if use_checkpoint:
-        return checkpoint.checkpoint(model, x, use_reentrant=False)
-      else:
-        return model(x)
-
-    x = torch.randn(2, 5, device=device).requires_grad_(True)
-
-    compiled_run = torch.compile(run_model)
-
-    def runner():
-      out_compiled = compiled_run(module, x, use_checkpoint=True)
-      loss_compiled = out_compiled.sum()
-      loss_compiled.backward()
-      grad_x_compiled = x.grad.clone()
-      grad_W_compiled = module.lin.weight.grad.clone()  # pylint: disable=invalid-name
-
-      x.grad.zero_()
-      module.lin.weight.grad.zero_()
-      module.lin.bias.grad.zero_()
-      return out_compiled, grad_x_compiled, grad_W_compiled
 
     self.assert_random_outputs(runner)
 

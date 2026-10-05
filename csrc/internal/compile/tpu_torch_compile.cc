@@ -1764,8 +1764,7 @@ void UnpackInputTensorPointers(
     if (THPVariable_Check(item)) {
       argument_tensor_ptrs->push_back(&THPVariable_Unpack(item));
     } else if (generators != nullptr && THPGenerator_Check(item)) {
-      at::Generator gen = THPGenerator_Unwrap(item);
-      generators->push_back(GetDefaultDeviceGenerator(gen.device().index()));
+      generators->push_back(THPGenerator_Unwrap(item));
     }
   }
 }
