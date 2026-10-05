@@ -31,7 +31,7 @@ torch_tpu_py_test(
         "requires-tpu-v5lite:8",
     ],
     deps = [
-        "//examples/tutorials/distributed/fsdp_to_simple_fsdp:fsdp_to_simple_fsdp_worker",
+        "//examples/fsdp/fsdp_to_simple_fsdp:fsdp_to_simple_fsdp_worker",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
     ],
