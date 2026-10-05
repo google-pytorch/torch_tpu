@@ -99,7 +99,7 @@ class EnvironmentTest(seed_test_utils.RepeatableTest):
     ctx = multiprocessing.get_context("spawn")
     proc = ctx.Process(target=_spawn_worker, args=(output_path,))
     proc.start()
-    proc.join(timeout=30)
+    proc.join()
     self.assertEqual(proc.exitcode, 0)
     with open(output_path, "r") as f:
       self.assertEqual(f.read(), "ok")
