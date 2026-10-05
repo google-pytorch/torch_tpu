@@ -398,9 +398,11 @@ class PallasSignatureTest(seed_test_utils.RepeatableTest):
       pallas.jax_op("test::fn_with_set_return", fn_with_set_return)
 
   def test_optional_argument_with_default_preserves_none(self):
+
     def fn_with_opt(
         x: jax.Array, *, out_dtype: jnp.dtype | None = jnp.float32
     ) -> jax.Array:
+      del out_dtype
       return x
 
     op = pallas.jax_op("test::fn_with_opt", fn_with_opt)

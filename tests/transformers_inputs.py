@@ -921,7 +921,7 @@ def _add_encoder_decoder_inputs(
   )
   if "." in mod_key:
     mod_key = mod_key.split(".")[-1]
-  if ctx.config.get("is_encoder_decoder", False) is True and (
+  if bool(ctx.config.get("is_encoder_decoder", False)) and (
       mod_key != "vision" and ctx.model_type not in ("speecht5", "vits")
   ):
     text_cfg = ctx.config.get("text_config")

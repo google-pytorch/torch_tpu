@@ -23,6 +23,7 @@ import warnings
 from absl.testing import absltest
 import torch
 import torch_tpu
+from torch_tpu import _loader  # build_cleaner: keep
 from torch_tpu._internal import compiler_options as internal_compiler_options
 from torch_tpu._internal import execution_mode as _internal_execution_mode
 from torch_tpu._internal.distributed.distributed import (
@@ -37,7 +38,6 @@ from torch_tpu._internal.profiler.profiler_config import (
     TpuProfilerConfig as InternalTpuProfilerConfig,
 )
 from torch_tpu._internal.utils import annotations
-import torch_tpu._loader as _loader  # build_cleaner: keep
 from tests import seed_test_utils
 
 
