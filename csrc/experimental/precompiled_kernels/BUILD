@@ -69,6 +69,7 @@ torch_tpu_cc_library(
         ":mosaic_custom_call",
         "//csrc/common:cache_key",
         "//csrc/common:compilation",
+        "//csrc/common:compilation_spec",
         "//csrc/common:compile_options_key",
         "//csrc/common:dimension_types",
         "//csrc/common:error_utils",

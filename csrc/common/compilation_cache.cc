@@ -293,6 +293,13 @@ void CompilationCache::EvictAll() {
     for (const auto& [key, cache_entry] : executable_cache_) {
       keys_to_evict.insert(key);
     }
+    // Unbounded dynamic entries are cleared wholesale below, but in-flight
+    // ones must be waited for as well so that their promises get fulfilled.
+    for (const auto& [shapeless_key, entries] : unbounded_dynamic_cache_) {
+      for (const UnboundedDynamicCacheEntry& entry : entries) {
+        keys_to_evict.insert(entry.key);
+      }
+    }
   }
 
   // Keep evicting compiled keys until there are no more keys to evict,
@@ -307,18 +314,27 @@ void CompilationCache::EvictAll() {
     // the loop and invalidate its iterator.
     for (const auto& key : keys) {
       const auto it = executable_cache_.find(key);
-      if (it == executable_cache_.end()) {
+      const bool is_static = it != executable_cache_.end();
+      const CacheEntry* cache_entry = nullptr;
+      if (is_static) {
+        cache_entry = &it->second;
+      } else if (const UnboundedDynamicCacheEntry* unbounded_entry =
+                     FindUnboundedDynamicCacheEntryOrNull(key);
+                 unbounded_entry != nullptr) {
+        cache_entry = &unbounded_entry->cache_entry;
+      }
+      if (cache_entry == nullptr) {
         ABSL_VLOG(1) << "Key already evicted by another thread: " << key;
         keys_to_evict.erase(key);
         continue;
       }
 
-      const auto& cache_entry = it->second;
       ABSL_VLOG_EVERY_N(1, 100)
           << "Evicting compilation future for key: " << key;
-      if (IsFutureReady(cache_entry.executable_future())) {
+      if (IsFutureReady(cache_entry->executable_future())) {
         // The compilation is completed, so we can evict it immediately.
-        executable_cache_.erase(it);
+        // Unbounded dynamic entries are cleared wholesale below.
+        if (is_static) executable_cache_.erase(it);
         keys_to_evict.erase(key);
         ABSL_VLOG(1) << "Evicted compilation future for key: " << key;
       } else {
@@ -405,6 +421,35 @@ const CacheEntry* CompilationCache::FindStaticCacheEntryOrNull(
   return it == executable_cache_.end() ? nullptr : &it->second;
 }
 
+const UnboundedDynamicCacheEntry*
+CompilationCache::FindUnboundedDynamicCacheEntryOrNull(
+    const CompilationCacheKey& key) const {
+  const auto it =
+      unbounded_dynamic_cache_.find(key.graph_key().shapeless_key());
+  if (it == unbounded_dynamic_cache_.end()) {
+    return nullptr;
+  }
+  for (const UnboundedDynamicCacheEntry& entry : it->second) {
+    if (entry.key == key) {
+      return &entry;
+    }
+  }
+  return nullptr;
+}
+
+const CacheEntry* CompilationCache::FindCacheEntryOrNull(
+    const CompilationCacheKey& key, const CacheEntryKind kind) const {
+  switch (kind) {
+    case CacheEntryKind::kStatic:
+      return FindStaticCacheEntryOrNull(key);
+    case CacheEntryKind::kUnboundedDynamic: {
+      const UnboundedDynamicCacheEntry* const entry =
+          FindUnboundedDynamicCacheEntryOrNull(key);
+      return entry == nullptr ? nullptr : &entry->cache_entry;
+    }
+  }
+}
+
 std::optional<CompilationCache::CacheLookupInternal>
 CompilationCache::GetStaticCacheEntry(const CompilationCacheKey& key) const {
   const CacheEntry* cache_entry = FindStaticCacheEntryOrNull(key);
@@ -443,25 +488,18 @@ CompilationCache::GetUnboundedDynamicCacheEntry(
   }
 
   for (const auto& entry : it->second) {
-    const absl::StatusOr<SharedLoadedExecutableWithMetadata>& executable_or =
-        entry.cache_entry.executable_future().get();
-    if (!executable_or.ok() || *executable_or == nullptr) {
-      ABSL_LOG(WARNING)
-          << "Unbounded dynamic cache entry has not been compiled "
-             "for key: "
-          << key;
+    // In-flight entries are served as well: callers then wait on the same
+    // future as the thread adding the entry instead of compiling themselves.
+    const SharedLoadedExecutableWithMetadataFuture& future =
+        entry.cache_entry.executable_future();
+    if (IsFutureReady(future) && !future.get().ok()) {
+      ABSL_LOG(WARNING) << "Skipping unbounded dynamic cache entry whose "
+                           "compilation failed for key: "
+                        << key;
       continue;
     }
-    const SharedLoadedExecutableWithMetadata& executable = *executable_or;
-    if (!executable->unbounded_dynamic_execution_metadata()) {
-      ABSL_LOG(WARNING)
-          << "Unbounded dynamic cache entry has no dynamic metadata "
-             "for key: "
-          << key;
-      continue;
-    }
-    UnboundedDynamicExecutionMetadata::CompatibilityFunc is_compatible =
-        executable->unbounded_dynamic_execution_metadata()->is_compatible;
+    const UnboundedDynamicExecutionMetadata::CompatibilityFunc is_compatible =
+        entry.dynamic_meta.is_compatible;
     if (!is_compatible || is_compatible(shapes)) {
       perf_stats_.num_cache_hits++;
       entry.cache_entry.stats().read_count++;
@@ -526,28 +564,41 @@ CompilationCache::AddBoundedDynamicCacheEntry(
 }
 
 absl::Status CompilationCache::AddUnboundedDynamicCacheEntry(
-    const CompilationCacheKey& key,
-    absl::AnyInvocable<
-        absl::StatusOr<SharedLoadedExecutableWithMetadata>(xla::PjRtClient&)>
-        compilation_fn) {
-  xla::PjRtClient* const client = PjrtBackend::GetInstance().GetClient();
-  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=GetClient() lazily initializes the
-                 // backend, so this is unreachable from Python; covered in C++
-                 // compilation_cache_test.
-      client != nullptr, error::kFailedPrecondition)
-      << "PjrtBackend must be initialized before adding unbounded dynamic "
-         "cache entries.";
-  TT_ASSIGN_OR_RETURN(SharedLoadedExecutableWithMetadata executable,
-                      compilation_fn(*client));
+    const CompilationCacheKey& key, LoadedExecutableBuilder executable_builder,
+    const UnboundedDynamicExecutionMetadata& dynamic_meta) {
+  // The tiered lookup below may schedule a backup compilation.
+  EnsureInitialized();
 
-  absl::MutexLock lock(cache_mutex_);
-  std::vector<UnboundedDynamicCacheEntry>& entries =
-      unbounded_dynamic_cache_[key.graph_key().shapeless_key()];
-  UnboundedDynamicCacheEntry& new_entry = entries.emplace_back(
-      UnboundedDynamicCacheEntry{.key = key, .cache_entry = CacheEntry()});
-  new_entry.cache_entry.executable_promise()->set_value(std::move(executable));
+  // Register a pending entry first so that the tiered lookup publishes to it
+  // like to any other tier-1 entry, and so that concurrent lookups for
+  // compatible shapes wait on it instead of compiling.
+  SharedLoadedExecutableWithMetadataFuture future;
+  {
+    absl::MutexLock lock(cache_mutex_);
+    if (FindUnboundedDynamicCacheEntryOrNull(key) != nullptr) {
+      ABSL_VLOG(1) << "Unbounded dynamic cache entry already exists for key: "
+                   << key;
+      return absl::OkStatus();
+    }
+    std::vector<UnboundedDynamicCacheEntry>& entries =
+        unbounded_dynamic_cache_[key.graph_key().shapeless_key()];
+    entries.push_back(
+        UnboundedDynamicCacheEntry{.key = key, .dynamic_meta = dynamic_meta});
+    future = entries.back().cache_entry.executable_future();
+  }
 
-  return absl::OkStatus();
+  GetFromTier2OrCompile(key, CacheEntryKind::kUnboundedDynamic,
+                        std::move(executable_builder),
+                        std::make_unique<xla::CompileOptions>());
+
+  // The entry is published synchronously on every path above, unless it was
+  // evicted in the meantime, in which case its promise is never fulfilled.
+  if (!IsFutureReady(future)) {
+    return TT_ERROR(error::kAborted)  // ERROR_COV_INFEASIBLE=Race condition
+           << "unbounded dynamic cache entry for key " << key
+           << " was evicted before its executable was ready";
+  }
+  return future.get().status();
 }
 
 absl::StatusOr<CompilationCache::CacheLookupInternal>
@@ -580,6 +631,8 @@ CompilationCache::GetOrCreateCacheEntry(
       cache_lookup_or.has_value()) {
     return *cache_lookup_or;
   }
+
+  ABSL_VLOG(2) << "Compilation cache UNBOUNDED DYNAMIC MISS for key: " << key;
 
   // 3. Try to find a bounded dynamic cache entry. We hold on to the iterator to
   // avoid having to look up the shapeless key again later.
@@ -635,9 +688,10 @@ CompilationCache::GetOrCreateCacheEntry(
   return AddStaticCacheEntry(key);
 }
 
-bool CompilationCache::IsExecutableReady(const CompilationCacheKey& key) const {
+bool CompilationCache::IsExecutableReady(const CompilationCacheKey& key,
+                                         const CacheEntryKind kind) const {
   absl::MutexLock lock(cache_mutex_);
-  if (const CacheEntry* cache_entry = FindStaticCacheEntryOrNull(key);
+  if (const CacheEntry* cache_entry = FindCacheEntryOrNull(key, kind);
       cache_entry != nullptr) {
     return IsFutureReady(cache_entry->executable_future());
   }
@@ -988,13 +1042,14 @@ void CompilationCache::EnqueueCompilation(
         // passed down from the dispatch thread.
         DisallowThisThreadToAccessContextState();
         torch_tpu::ScopedMemMeasuringContainer container;
-        this->GetFromTier2OrCompile(key, std::move(builder),
+        this->GetFromTier2OrCompile(key, CacheEntryKind::kStatic,
+                                    std::move(builder),
                                     std::move(compile_options));
       });
 }
 
 void CompilationCache::SetExecutable(
-    const CompilationCacheKey& key,
+    const CompilationCacheKey& key, const CacheEntryKind kind,
     absl::StatusOr<SharedLoadedExecutableWithMetadata> executable,
     CacheEntryStats stats) {
   absl::MutexLock lock(cache_mutex_);
@@ -1002,36 +1057,54 @@ void CompilationCache::SetExecutable(
   // executable, the key may be missing. In this case, adding the key back to
   // the cache doesn't help as EvictAll() already set the executable future
   // to a failed state, so we just log and return.
-  const auto it = executable_cache_.find(key);
-  if (it == executable_cache_.end()) {
+  const CacheEntry* cache_entry = nullptr;
+  const UnboundedDynamicCacheEntry* unbounded_entry = nullptr;
+  switch (kind) {
+    case CacheEntryKind::kStatic:
+      cache_entry = FindStaticCacheEntryOrNull(key);
+      break;
+    case CacheEntryKind::kUnboundedDynamic:
+      unbounded_entry = FindUnboundedDynamicCacheEntryOrNull(key);
+      if (unbounded_entry != nullptr) {
+        cache_entry = &unbounded_entry->cache_entry;
+      }
+      break;
+  }
+  if (cache_entry == nullptr) {
     ABSL_LOG(WARNING) << "Key already evicted when setting executable for key "
                       << key;
     return;
   }
 
-  const CacheEntry& cache_entry = it->second;
-  if (IsFutureReady(cache_entry.executable_future())) {
+  if (IsFutureReady(cache_entry->executable_future())) {
     // Another thread has already set the executable future.
     return;
   }
 
-  cache_entry.stats() = std::move(stats);
-  if (cache_entry.stats().compilation_duration > absl::ZeroDuration()) {
+  cache_entry->stats() = std::move(stats);
+  if (cache_entry->stats().compilation_duration > absl::ZeroDuration()) {
     ABSL_VLOG(1) << "Compile duration for key " << key << ": "
                  << absl::ToInt64Milliseconds(
-                        cache_entry.stats().compilation_duration)
+                        cache_entry->stats().compilation_duration)
                  << " ms";
   }
 
-  TrySetExecutablePromise(key, *cache_entry.executable_promise(),
+  if (unbounded_entry != nullptr && executable.ok()) {
+    // Executables loaded from the persistent tiers carry no metadata, so it is
+    // attached here for every source alike.
+    executable = LoadedExecutableWithMetadata::WithDynamicExecutionMetadata(
+        *executable, unbounded_entry->dynamic_meta);
+  }
+
+  TrySetExecutablePromise(key, *cache_entry->executable_promise(),
                           std::move(executable));
 
-  if (!allow_cache_mode_) {
+  if (kind == CacheEntryKind::kStatic && !allow_cache_mode_) {
     // If the cache is disabled, we remove the executable from the cache.
     // Note that this is done after the executable future is set, so a
     // user holding another shared pointer to the executable future will still
     // be able to retrieve the executable.
-    executable_cache_.erase(it);
+    executable_cache_.erase(key);
     ABSL_VLOG(1) << "Evicted key from cache because allow_cache_mode is false: "
                  << key;
   }
@@ -1047,7 +1120,8 @@ bool CompilationCache::ShouldUseTier2Cache() const {
 }
 
 void CompilationCache::GetFromTier2OrCompile(
-    const CompilationCacheKey& key, LoadedExecutableBuilder executable_builder,
+    const CompilationCacheKey& key, const CacheEntryKind kind,
+    LoadedExecutableBuilder executable_builder,
     UniqueCompileOptions compile_options) {
   const bool uses_tier2 = ShouldUseTier2Cache();
   ABSL_VLOG(1) << "Compiling executable for key: " << key
@@ -1056,7 +1130,8 @@ void CompilationCache::GetFromTier2OrCompile(
                               : "");
 
   if (!uses_tier2) {
-    Compile(key, std::move(executable_builder), std::move(compile_options));
+    Compile(key, kind, std::move(executable_builder),
+            std::move(compile_options));
     return;
   }
 
@@ -1067,7 +1142,7 @@ void CompilationCache::GetFromTier2OrCompile(
   Tier2CacheEntryStats tier2_stats;
   auto executable_or = GetFromTier2Cache(key, request_start, tier2_stats);
   if (executable_or.ok()) {
-    SetExecutable(key, std::move(executable_or),
+    SetExecutable(key, kind, std::move(executable_or),
                   {.tier2 = std::move(tier2_stats)});
     return;
   }
@@ -1086,19 +1161,20 @@ void CompilationCache::GetFromTier2OrCompile(
       Tier2CacheEntryStats tier2_stats;
       auto executable_or = GetFromTier2Cache(key, request_start, tier2_stats);
       if (executable_or.ok()) {
-        SetExecutable(key, std::move(executable_or),
+        SetExecutable(key, kind, std::move(executable_or),
                       {.tier2 = std::move(tier2_stats)});
         return;
       }
     }
 
-    GetFromTier3OrCompile(key, std::move(executable_builder),
+    GetFromTier3OrCompile(key, kind, std::move(executable_builder),
                           std::move(compile_options), lock, request_start);
   }  // End of critical section.
 }
 
 void CompilationCache::GetFromTier3OrCompile(
-    const CompilationCacheKey& key, LoadedExecutableBuilder executable_builder,
+    const CompilationCacheKey& key, const CacheEntryKind kind,
+    LoadedExecutableBuilder executable_builder,
     UniqueCompileOptions compile_options, Tier2CacheEntryLock& lock,
     const absl::Time request_start) {
   const bool uses_tier3 = UsesTier3CompilationCache();
@@ -1109,7 +1185,7 @@ void CompilationCache::GetFromTier3OrCompile(
   const bool backup_compilation = UsesLocalBackupTaskForTier3Read();
   if (backup_compilation) {
     backup_compilation_pool_->Schedule(
-        [this, key, builder = std::move(executable_builder),
+        [this, key, kind, builder = std::move(executable_builder),
          options = std::move(compile_options)]() mutable {
           // Prevent backup compilation threads from accessing thread-local
           // context states to enforce they always rely on resolved
@@ -1117,12 +1193,12 @@ void CompilationCache::GetFromTier3OrCompile(
           DisallowThisThreadToAccessContextState();
           // As an optimization, if the tier-3 cache read has already
           // populated the executable, skip the backup compilation.
-          if (this->IsExecutableReady(key)) {
+          if (this->IsExecutableReady(key, kind)) {
             ABSL_VLOG(1) << "Skipping backup compilation for key: " << key
                          << " because it is already ready.";
             return;
           }
-          this->Compile(key, std::move(builder), std::move(options));
+          this->Compile(key, kind, std::move(builder), std::move(options));
         });
   }
 
@@ -1132,7 +1208,7 @@ void CompilationCache::GetFromTier3OrCompile(
     if (executable_or.ok()) {
       ABSL_VLOG(1) << "Tier-3 cache HIT for key " << key;
       tier = CacheTier::kTier3;
-      SetExecutable(key, executable_or, /*stats=*/{});
+      SetExecutable(key, kind, executable_or, /*stats=*/{});
     } else {
       ABSL_VLOG(1) << "Tier-3 cache MISS for key " << key
                    << " with status: " << executable_or.status();
@@ -1148,8 +1224,8 @@ void CompilationCache::GetFromTier3OrCompile(
       // compile_options are used after being moved in the backup compilation
       // above. It is wrong as that move only happens when backup_compilation is
       // true.
-      Compile(key, std::move(executable_builder),  // NOLINT
-              std::move(compile_options));         // NOLINT
+      Compile(key, kind, std::move(executable_builder),  // NOLINT
+              std::move(compile_options));               // NOLINT
     }
     // When the above call finishes, the tier-1 cache will contain the compiled
     // executable and its initial stats.
@@ -1160,7 +1236,7 @@ void CompilationCache::GetFromTier3OrCompile(
   {
     absl::MutexLock lock(cache_mutex_);
     // Return early if the cache entry has been concurrently evicted.
-    const CacheEntry* cache_entry = FindStaticCacheEntryOrNull(key);
+    const CacheEntry* cache_entry = FindCacheEntryOrNull(key, kind);
     if (cache_entry == nullptr) {
       ABSL_VLOG(1)
           << "Cache entry already evicted before reading tier-1 cache for key: "
@@ -1204,7 +1280,7 @@ void CompilationCache::GetFromTier3OrCompile(
                  << "\n  Write duration: " << write_duration;
     absl::MutexLock lock(cache_mutex_);
     // Skip updating stats if the cache entry has been concurrently evicted.
-    const CacheEntry* cache_entry = FindStaticCacheEntryOrNull(key);
+    const CacheEntry* cache_entry = FindCacheEntryOrNull(key, kind);
     if (cache_entry != nullptr) {
       auto& tier2_stats = cache_entry->stats().tier2;
       if (!tier2_stats.has_value()) {
@@ -1231,6 +1307,7 @@ void CompilationCache::GetFromTier3OrCompile(
 }
 
 void CompilationCache::Compile(const CompilationCacheKey& key,
+                               const CacheEntryKind kind,
                                LoadedExecutableBuilder executable_builder,
                                UniqueCompileOptions compile_options) {
   xla::PjRtClient* const client = PjrtBackend::GetInstance().GetClient();
@@ -1240,16 +1317,20 @@ void CompilationCache::Compile(const CompilationCacheKey& key,
     ABSL_LOG(ERROR) << error.message();
 
     // Fulfill the promise immediately with the error status.
-    SetExecutable(key, std::move(error), /*stats=*/{});
+    SetExecutable(key, kind, std::move(error), /*stats=*/{});
     return;
   }
 
+  {
+    absl::MutexLock lock(cache_mutex_);
+    perf_stats_.num_compilations++;
+  }
   const absl::Time compile_start = absl::Now();
   absl::StatusOr<SharedLoadedExecutableWithMetadata> executable =
       torch_tpu::Compile(*client, std::move(executable_builder),
                          std::move(compile_options));
 
-  SetExecutable(key, std::move(executable),
+  SetExecutable(key, kind, std::move(executable),
                 {
                     .compilation_duration = absl::Now() - compile_start,
                 });
@@ -1279,8 +1360,9 @@ std::string CompilationCache::HbmUsageSummary() const {
   }
   for (const auto& [key, unbounded_caches] : unbounded_dynamic_cache_) {
     for (const UnboundedDynamicCacheEntry& entry : unbounded_caches) {
-      // No need for future readiness check as unbounded caches are always
-      // ready.
+      if (!IsFutureReady(entry.cache_entry.executable_future())) {
+        continue;
+      }
       const auto& executable = entry.cache_entry.executable_future().get();
       if (!executable.ok() || *executable == nullptr) {
         continue;

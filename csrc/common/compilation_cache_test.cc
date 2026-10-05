@@ -39,6 +39,7 @@
 #include "absl/types/span.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
+#include "csrc/common/compilation_cache_test_utils.h"
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/compile_options_key.h"
 #include "csrc/common/contain.h"
@@ -104,51 +105,22 @@ CompilationCacheKey DummyKey(int key = 0) {
                              CompileOptionsKey(0));
 }
 
-bool IsCompatible(absl::Span<const Shape> shapes) {
-  return shapes.size() == 1 && shapes[0].dimensions().size() == 2;
-}
-
-SharedLoadedExecutableWithMetadata CreateDummyExecutable(
-    xla::PjRtClient& client) {
-  xla::XlaBuilder builder("dynamic_metadata_test");
-  xla::Shape data_shape =
-      xla::ShapeUtil::MakeShape(xla::F32, /*dimensions=*/{1});
-  xla::LayoutUtil::SetToDefaultLayout(&data_shape);
-
-  xla::XlaOp p0 = xla::Parameter(&builder, 0, data_shape, "input_0");
-
-  absl::StatusOr<xla::XlaComputation> computation = builder.Build(p0);
-  ABSL_CHECK_OK(computation);
-
-  absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>> loaded_exec =
-      client.CompileAndLoad(*computation, xla::CompileOptions());
-  ABSL_CHECK_OK(loaded_exec);
-
-  UnboundedDynamicExecutionMetadata unbounded_dynamic_execution_metadata = {
-      .is_compatible = IsCompatible,
-  };
-  absl::StatusOr<SharedLoadedExecutableWithMetadata> executable =
-      LoadedExecutableWithMetadata::MakeShared(
-          *std::move(loaded_exec),
-          /*argument_indices=*/{},
-          std::move(unbounded_dynamic_execution_metadata));
-  ABSL_CHECK_OK(executable);
-  return *std::move(executable);
-}
-
 TEST(PerfStatsPrinterTest, EmptyPerEntry) {
   PerfStats stats;
   stats.num_cache_reqs = 10;
   stats.num_cache_hits = 5;
+  stats.num_compilations = 3;
   EXPECT_EQ(absl::StrCat(stats),
             "num_cache_reqs=10\nnum_cache_hits=5 "
-            "{50.0%}\npeak_compilation_memory_bytes=unknown\n");
+            "{50.0%}\nnum_compilations=3\n"
+            "peak_compilation_memory_bytes=unknown\n");
 }
 
 TEST(PerfStatsPrinterTest, WithPerEntry) {
   PerfStats stats;
   stats.num_cache_reqs = 10;
   stats.num_cache_hits = 5;
+  stats.num_compilations = 2;
   stats.per_entry_stats.push_back({
       {.compilation_duration = absl::Milliseconds(100),
        .last_read = absl::FromUnixMillis(1000),
@@ -164,6 +136,7 @@ TEST(PerfStatsPrinterTest, WithPerEntry) {
   // NOLINTBEGIN
   static constexpr std::string_view kExpected = R"(num_cache_reqs=10
 num_cache_hits=5 {50.0%}
+num_compilations=2
 peak_compilation_memory_bytes=unknown
 num_compilation_events=2
 sum_compilation_time=150ms
@@ -346,6 +319,7 @@ TEST_F(CompilationCacheTest, AllowCacheModeDisabled) {
   // If cache is disabled, we shouldn't have any hits.
   PerfStats stats = cache.GetCacheStats();
   EXPECT_EQ(stats.num_cache_hits, 0);
+  EXPECT_EQ(stats.num_compilations, 2);
 
   // Clean up.
   cache.SetAllowCacheMode(true);
@@ -495,8 +469,10 @@ TEST_F(CompilationCacheTest, UnboundedDynamicCache) {
                DimensionsKey({})),
       CompileOptionsKey({}));
 
-  ASSERT_TRUE(
-      cache.AddUnboundedDynamicCacheEntry(key, CreateDummyExecutable).ok());
+  ASSERT_TRUE(cache
+                  .AddUnboundedDynamicCacheEntry(key, CreateDummyExecutable,
+                                                 MakeDummyDynamicMetadata())
+                  .ok());
 
   auto initial_stats =
       CompilationCacheTestHelper::GetUnboundedDynamicCacheEntryStats(cache,
@@ -522,6 +498,7 @@ TEST_F(CompilationCacheTest, UnboundedDynamicCache) {
 
   TT_ASSERT_OK_AND_ASSIGN(auto actual_exec, result.fixed_shape_kernel.get());
   EXPECT_EQ(cache.GetCacheHits(), 1);
+  EXPECT_EQ(cache.GetCacheStats().num_compilations, 1);
 
   auto updated_stats =
       CompilationCacheTestHelper::GetUnboundedDynamicCacheEntryStats(cache,
@@ -541,8 +518,10 @@ TEST_F(CompilationCacheTest, UnboundedDynamicCacheShapeMismatch) {
                DimensionsKey({})),
       CompileOptionsKey({}));
 
-  ASSERT_TRUE(
-      cache.AddUnboundedDynamicCacheEntry(key, CreateDummyExecutable).ok());
+  ASSERT_TRUE(cache
+                  .AddUnboundedDynamicCacheEntry(key, CreateDummyExecutable,
+                                                 MakeDummyDynamicMetadata())
+                  .ok());
 
   CompilationCacheKey test_key(
       GraphKey(key.graph_key().shapeless_key(), DimensionsKey({1, 2, 3})),
@@ -599,8 +578,10 @@ TEST_F(CompilationCacheTest, UnboundedDynamicCacheEvictAll) {
                DimensionsKey({})),
       CompileOptionsKey({}));
 
-  ASSERT_TRUE(
-      cache.AddUnboundedDynamicCacheEntry(key, CreateDummyExecutable).ok());
+  ASSERT_TRUE(cache
+                  .AddUnboundedDynamicCacheEntry(key, CreateDummyExecutable,
+                                                 MakeDummyDynamicMetadata())
+                  .ok());
 
   CompilationCacheKey test_key(
       GraphKey(key.graph_key().shapeless_key(), DimensionsKey({1, 2, 3})),
@@ -653,13 +634,11 @@ TEST_F(CompilationCacheTest, UnboundedDynamicCacheBackendNotInitialized) {
                DimensionsKey({})),
       CompileOptionsKey({}));
 
-  const absl::Status status =
-      cache.AddUnboundedDynamicCacheEntry(key, CreateDummyExecutable);
+  const absl::Status status = cache.AddUnboundedDynamicCacheEntry(
+      key, CreateDummyExecutable, MakeDummyDynamicMetadata());
   EXPECT_EQ(status.code(), error::kFailedPrecondition);
   EXPECT_THAT(status.message(),
-              testing::HasSubstr(
-                  "PjrtBackend must be initialized before adding unbounded "
-                  "dynamic cache entries."));
+              testing::HasSubstr("PjRtClient must be initialized"));
 
   PjrtBackend::GetInstance().Shutdown();
   CompilationCache::ShutDown();

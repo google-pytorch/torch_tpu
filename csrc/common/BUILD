@@ -1272,6 +1272,27 @@ torch_tpu_cc_test(
     ],
 )
 
+torch_tpu_cc_library(
+    name = "compilation_cache_test_utils",
+    testonly = True,
+    srcs = ["compilation_cache_test_utils.cc"],
+    hdrs = ["compilation_cache_test_utils.h"],
+    deps = [
+        ":compilation",
+        ":compilation_spec",
+        ":error_utils",
+        ":shape",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
+        "@xla//xla:shape_util",
+        "@xla//xla:xla_data_proto_cc",
+        "@xla//xla/hlo/builder:xla_builder",
+        "@xla//xla/hlo/builder:xla_computation",
+        "@xla//xla/pjrt:pjrt_client",
+        "@xla//xla/pjrt:pjrt_executable",
+    ],
+)
+
 torch_tpu_cc_test(
     name = "compilation_cache_test",
     srcs = ["compilation_cache_test.cc"],
@@ -1283,6 +1304,7 @@ torch_tpu_cc_test(
         ":cache_key",
         ":compilation",
         ":compilation_cache",
+        ":compilation_cache_test_utils",
         ":compilation_spec",
         ":compile_options_key",
         ":dtype",
@@ -1319,6 +1341,33 @@ torch_tpu_cc_test(
         "@xla//xla/hlo/builder:xla_computation",
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt:pjrt_executable",
+        "@xla//xla/pjrt/plugin/xla_tpu:xla_tpu_pjrt_client",  # buildcleaner: keep
+    ],
+)
+
+# Tests that enable the tier-2 and tier-3 caches. They are in a separate target
+# from compilation_cache_test since the cache env vars are read once per
+# process.
+torch_tpu_cc_test(
+    name = "compilation_cache_tiered_test",
+    srcs = ["compilation_cache_tiered_test.cc"],
+    # go/cppdebugflags#increasing-your-size-limits
+    exec_properties = {"cpp_link.mem": "16g"},  # multiline select
+    requires_libtpu = True,
+    tags = ["requires-tpu-v5lite"],
+    deps = [
+        ":cache_key",
+        ":compilation_cache",
+        ":compilation_cache_test_utils",
+        ":compile_options_key",
+        ":env_vars",
+        ":tier2_compilation_cache",
+        ":tier3_compilation_cache",
+        "//csrc/common:oss_test_main",
+        "//csrc/pjrt:pjrt_state",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
         "@xla//xla/pjrt/plugin/xla_tpu:xla_tpu_pjrt_client",  # buildcleaner: keep
     ],
 )

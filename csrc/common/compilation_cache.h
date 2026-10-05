@@ -36,6 +36,7 @@
 #include "absl/types/span.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
+#include "csrc/common/compilation_cache_utils.h"
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/compile_options_key.h"
 #include "csrc/common/shape.h"
@@ -125,6 +126,10 @@ struct BoundedDynamicCacheEntry {
 
 struct UnboundedDynamicCacheEntry {
   CompilationCacheKey key;
+  // Consulted for compatibility checks while the executable is still in
+  // flight, and attached to the executable when it is published to
+  // `cache_entry` (whether compiled or loaded from a persistent tier).
+  UnboundedDynamicExecutionMetadata dynamic_meta;
   CacheEntry cache_entry;
 };
 
@@ -148,6 +153,7 @@ struct PerfStats {
   int64_t num_cache_misses() const { return num_cache_reqs - num_cache_hits; }
   int64_t num_cache_reqs = 0;
   int64_t num_cache_hits = 0;
+  int64_t num_compilations = 0;
   // Peak memory usage (host) during compilation in bytes across all concurrent
   // calls. std::nullopt represents failed to retrieve or unknown.
   std::optional<int64_t> peak_compilation_memory_bytes;
@@ -159,6 +165,7 @@ struct PerfStats {
     absl::Format(&sink, "num_cache_reqs=%d\n", stats.num_cache_reqs);
     absl::Format(&sink, "num_cache_hits=%d {%s}\n", stats.num_cache_hits,
                  PercAsStr(stats.num_cache_hits, stats.num_cache_reqs));
+    absl::Format(&sink, "num_compilations=%d\n", stats.num_compilations);
     if (stats.peak_compilation_memory_bytes.has_value()) {
       absl::Format(&sink, "peak_compilation_memory_bytes=%d\n",
                    *stats.peak_compilation_memory_bytes);
@@ -198,6 +205,13 @@ class CompilationCache {
   CompilationCache& operator=(const CompilationCache&) = delete;
   CompilationCache(CompilationCache&&) = delete;
   CompilationCache& operator=(CompilationCache&&) = delete;
+
+  // Which tier-1 cache a key lives in. The tiered lookup/compile path is shared
+  // between the two, so callers state explicitly which one they operate on.
+  enum class CacheEntryKind {
+    kStatic,
+    kUnboundedDynamic,
+  };
 
   ~CompilationCache();
 
@@ -258,9 +272,10 @@ class CompilationCache {
   [[nodiscard]] PerfStats GetCacheStats() const
       ABSL_LOCKS_EXCLUDED(cache_mutex_);
 
-  // Returns true if the executable associated with a cache key is compiled and
-  // ready for execution.
-  bool IsExecutableReady(const CompilationCacheKey& key) const
+  // Returns true if the executable associated with a cache key in the given
+  // tier-1 cache is compiled and ready for execution.
+  bool IsExecutableReady(const CompilationCacheKey& key,
+                         CacheEntryKind kind) const
       ABSL_LOCKS_EXCLUDED(cache_mutex_);
 
   // Fetches a CompiledKernel with the right executable futures from the cache,
@@ -304,22 +319,26 @@ class CompilationCache {
   // executables in HBM.
   std::string HbmUsageSummary() const ABSL_LOCKS_EXCLUDED(cache_mutex_);
 
-  // Adds a pre-compiled executable entry with an associated compatibility
-  // predicate to the unbounded dynamic cache for the given shapeless key.
+  // Adds an executable with an associated compatibility predicate to the
+  // unbounded dynamic cache under the given key's shapeless key. The executable
+  // goes through the same tiered lookup as regular compilations: it is loaded
+  // from the tier-2/3 caches when present, and otherwise built with
+  // `executable_builder` and written back to them. Blocks until the entry is
+  // ready. Adding a key that is already present is a no-op.
   //
   // Parameters:
   //  - key: The key to add to the unbounded dynamic cache.
-  //  - compilation_fn: A function that takes a PjRtClient and returns a
-  //    SharedLoadedExecutableWithMetadata. May or may not be called depending
-  //    on if persistent cache is hit.
+  //  - executable_builder: Builds the executable on a persistent cache miss.
+  //  - dynamic_meta: Attached to the executable, whichever tier it comes from.
   //
   // Returns:
-  //   An error status if the PjRtClient is not initialized.
+  //   An error status if the PjRtClient is not initialized, if building the
+  //   executable fails, or if the entry is evicted before it is ready.
   absl::Status AddUnboundedDynamicCacheEntry(
       const CompilationCacheKey& key,
-      absl::AnyInvocable<
-          absl::StatusOr<SharedLoadedExecutableWithMetadata>(xla::PjRtClient&)>
-          compilation_fn) ABSL_LOCKS_EXCLUDED(cache_mutex_);
+      LoadedExecutableBuilder executable_builder,
+      const UnboundedDynamicExecutionMetadata& dynamic_meta)
+      ABSL_LOCKS_EXCLUDED(cache_mutex_);
 
  private:
   friend class CompilationCacheTestHelper;
@@ -367,6 +386,18 @@ class CompilationCache {
   // nullptr.
   [[nodiscard]] const CacheEntry* FindStaticCacheEntryOrNull(
       const CompilationCacheKey& key) const
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(cache_mutex_);
+
+  // Returns a pointer to the unbounded dynamic cache entry for `key` if found,
+  // otherwise returns nullptr.
+  [[nodiscard]] const UnboundedDynamicCacheEntry*
+  FindUnboundedDynamicCacheEntryOrNull(const CompilationCacheKey& key) const
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(cache_mutex_);
+
+  // Returns a pointer to the tier-1 cache entry for `key` in the cache selected
+  // by `kind`, or nullptr if it is not there.
+  [[nodiscard]] const CacheEntry* FindCacheEntryOrNull(
+      const CompilationCacheKey& key, CacheEntryKind kind) const
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(cache_mutex_);
 
   // Retrieves a cache entry from the static cache. If the key is not found in
@@ -465,28 +496,31 @@ class CompilationCache {
       CompileOptionsKey compile_options_key,
       UniqueCompileOptions compile_options);
 
-  // Sets the executable for the given key if it is not already set.
-  // Also sets the stats for the cache entry.
+  // Sets the executable for the given key in the cache selected by `kind` if
+  // it is not already set. Also sets the stats for the cache entry. For
+  // `kUnboundedDynamic`, the entry's dynamic metadata is attached to the
+  // executable first.
   //
   // Precondition:
-  //  - `key` is already in `executable_cache_`.
+  //  - `key` is already in the cache selected by `kind`.
   //  - `cache_mutex_` is not held.
   void SetExecutable(
-      const CompilationCacheKey& key,
+      const CompilationCacheKey& key, CacheEntryKind kind,
       absl::StatusOr<SharedLoadedExecutableWithMetadata> executable,
       CacheEntryStats stats) ABSL_LOCKS_EXCLUDED(cache_mutex_);
 
-  // Compiles the graph and stores the executable in the tier-1 cache.
+  // Compiles the graph and stores the executable in the tier-1 cache selected
+  // by `kind`.
   //
   // Precondition:
-  //  - `key` is already in `executable_cache_`.
+  //  - `key` is already in the cache selected by `kind`.
   //  - `cache_mutex_` is not held.
   // After the compilation is done successfully, the cache entry for `key` will
   // be updated with the compiled executable.
   //
   // This function is used by `GetFromTier2OrCompile()` to compile the graph
   // after a failed tier-2 cache lookup.
-  void Compile(const CompilationCacheKey& key,
+  void Compile(const CompilationCacheKey& key, CacheEntryKind kind,
                LoadedExecutableBuilder executable_builder,
                UniqueCompileOptions compile_options)
       ABSL_LOCKS_EXCLUDED(cache_mutex_);
@@ -497,29 +531,34 @@ class CompilationCache {
 
   // Tries to get the compilation result from the tier-2 cache; if not
   // found, compiles the graph and stores the executable in the tier-1/2/3
-  // caches.
+  // caches. `kind` selects the tier-1 cache the result is published to.
   //
   // Precondition:
-  //  - `key` is already in `executable_cache_` but the executable is not set.
+  //  - `key` is already in the cache selected by `kind` but the executable is
+  //    not set.
   //  - `cache_mutex_` is not held.
   // After the compilation is done successfully, the cache entry for `key` will
   // be updated with the compiled executable.
   void GetFromTier2OrCompile(const CompilationCacheKey& key,
+                             CacheEntryKind kind,
                              LoadedExecutableBuilder executable_builder,
                              UniqueCompileOptions compile_options)
       ABSL_LOCKS_EXCLUDED(cache_mutex_);
 
   // Tries to get the compilation result from the tier-3 cache; if not found,
   // compiles the graph and stores the executable in the tier-1/2/3 caches.
+  // `kind` selects the tier-1 cache the result is published to.
   //
   // Precondition:
-  //  - `key` is already in `executable_cache_` but the executable is not set.
+  //  - `key` is already in the cache selected by `kind` but the executable is
+  //    not set.
   //  - `key` is not in the tier-2 cache.
   //  - `cache_mutex_` is not held.
   //  - `lock` is the lock for the tier-2 cache entry for `key` and held.
   // After the compilation is done successfully, the cache entry for `key` will
   // be updated with the compiled executable.
   void GetFromTier3OrCompile(const CompilationCacheKey& key,
+                             CacheEntryKind kind,
                              LoadedExecutableBuilder executable_builder,
                              UniqueCompileOptions compile_options,
                              Tier2CacheEntryLock& lock,

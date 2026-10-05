@@ -135,8 +135,15 @@ class NonzeroIndicesTest : public testing::Test {
         client_->addressable_devices()[0]->default_memory_space());
 
     const auto start = absl::Now();
-    TT_ASSERT_OK_AND_ASSIGN(auto executable,
-                            BuildNonzeroIndicesExecutable(*client_));
+    TT_ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<xla::PjRtLoadedExecutable> loaded,
+        BuildNonzeroIndicesExecutable(*client_,
+                                      std::make_unique<xla::CompileOptions>()));
+    TT_ASSERT_OK_AND_ASSIGN(
+        SharedLoadedExecutableWithMetadata executable,
+        LoadedExecutableWithMetadata::MakeShared(std::move(loaded),
+                                                 /*argument_indices=*/{},
+                                                 MakeNonzeroDynamicMetadata()));
     executable_ = new SharedLoadedExecutableWithMetadata(std::move(executable));
     compile_ms_ = absl::ToDoubleMilliseconds(absl::Now() - start);
   }
@@ -224,18 +231,15 @@ TEST_F(NonzeroIndicesTest, ReusesExecutableAcrossShapesAndCounts) {
 // must produce the correct indices.
 TEST_F(NonzeroIndicesTest, UnboundedDynamicCacheServesKernel) {
   CompilationCache& cache = CompilationCache::GetInstance();
-  ASSERT_TRUE(
-      cache
-          .AddUnboundedDynamicCacheEntry(
-              NonZeroCacheKey(),
-              [](xla::PjRtClient&)
-                  -> absl::StatusOr<SharedLoadedExecutableWithMetadata> {
-                return *executable_;
-              })
-          .ok());
+  ASSERT_TRUE(cache
+                  .AddUnboundedDynamicCacheEntry(NonZeroCacheKey(),
+                                                 BuildNonzeroIndicesExecutable,
+                                                 MakeNonzeroDynamicMetadata())
+                  .ok());
 
   const std::tuple<int64_t, int64_t, int64_t> cases[] = {
       {3, 7, 5}, {17, 257, 44}, {17, 257, 4369}, {1, 16385, 1025}};
+  const xla::PjRtLoadedExecutable* registered = nullptr;
   for (const auto [rows, cols, k] : cases) {
     SCOPED_TRACE(testing::Message() << rows << "x" << cols << " K=" << k);
     const Shape input_shape({rows, cols}, mlir::ElementType::F32);
@@ -258,7 +262,11 @@ TEST_F(NonzeroIndicesTest, UnboundedDynamicCacheServesKernel) {
     EXPECT_EQ(cache.GetCacheMisses(), misses_before);
     TT_ASSERT_OK_AND_ASSIGN(SharedLoadedExecutableWithMetadata executable,
                             kernel.fixed_shape_kernel.get());
-    EXPECT_EQ(executable, *executable_);
+    ASSERT_TRUE(executable->unbounded_dynamic_execution_metadata().has_value());
+    if (registered == nullptr) {
+      registered = executable->GetLoadedExecutable();
+    }
+    EXPECT_EQ(executable->GetLoadedExecutable(), registered);
 
     const xla::Literal input = MakeInput(rows, cols, k);
     TT_ASSERT_OK_AND_ASSIGN(const auto operands, PrepareOperands(input));

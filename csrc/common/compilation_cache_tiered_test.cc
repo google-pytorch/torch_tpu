@@ -48,6 +48,10 @@ class TieredCompilationCacheTest : public testing::Test {
     SetEnv<kTorchTpuTier2CompilationCacheEnvVar>(name);
     SetEnv<kTorchTpuTier3CompilationCacheRootEnvVar>(
         absl::StrCat(testing::TempDir(), "/", name));
+    // The tier-3 read path races a backup compilation against the read by
+    // default, which would make the compilation counts below nondeterministic.
+    SetEnv<kTorchTpuInternalTier3CompilationCacheLocalBackupTaskEnvVar>(
+        "false");
   }
 
   TieredCompilationCacheTest() {

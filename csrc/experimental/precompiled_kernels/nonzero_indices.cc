@@ -26,6 +26,7 @@
 #include "absl/types/span.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
+#include "csrc/common/compilation_spec.h"
 #include "csrc/common/compile_options_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
@@ -362,35 +363,18 @@ BitcastToLogicalIndices(std::vector<std::unique_ptr<xla::PjRtBuffer>> results,
   return results;
 }
 
-}  // namespace
-
-absl::StatusOr<SharedLoadedExecutableWithMetadata>
-BuildNonzeroIndicesExecutable(xla::PjRtClient& client) {
+// Returns the parameters for the nonzero indices kernel.
+std::vector<xla::Shape> NonzeroParameters() {
   const xla::Shape input = MakeUnbounded(xla::F32, xla::Tile({8, 128}));
   const xla::Shape output_view = MakeUnbounded(xla::S32, xla::Tile({1, 128}));
   xla::Shape dims = xla::ShapeUtil::MakeShape(xla::S32, {2});
   *dims.mutable_layout() = xla::Layout({0}, {xla::Tile({128})});
-  std::vector<xla::Shape> parameters = {input, output_view, dims, dims};
+  return {input, output_view, dims, dims};
+}
 
-  const std::unique_ptr<mlir::MLIRContext> context =
-      mlir::torch_tpu::CreateMlirContextWithDialects();
-  mlir::OwningOpRef<mlir::ModuleOp> module = BuildNonzeroIndices(*context);
-  TT_ASSIGN_OR_RETURN(
-      const std::unique_ptr<xla::HloModule> hlo,
-      BuildMosaicCustomCall(*module, parameters, output_view, {2, 3, -1, -1},
-                            /*aliased_parameter=*/1));
-  xla::CompileOptions compile_options;
-  xla::ExecutableBuildOptions& build = compile_options.executable_build_options;
-  build.set_run_backend_only(true);
-  build.set_result_layout(hlo->entry_computation_layout().result_shape());
-  compile_options.argument_layouts = parameters;
-  const xla::XlaComputation computation(hlo->ToProto());
-  TT_ASSIGN_OR_RETURN(
-      std::unique_ptr<xla::PjRtLoadedExecutable> loaded,
-      AdaptXlaError(
-          client.CompileAndLoad(computation, std::move(compile_options)),
-          /*context=*/"failed to compile the nonzero indices kernel"));
+}  // namespace
 
+UnboundedDynamicExecutionMetadata MakeNonzeroDynamicMetadata() {
   // One logical input, the F32[M,N] payload. The S64[K,2] destination is a
   // donated output: `Execute` allocates it directly in the S32[R,128] view the
   // kernel was compiled against, so callers never see the physical view.
@@ -415,7 +399,7 @@ BuildNonzeroIndicesExecutable(xla::PjRtClient& client) {
                   .shape_pjrt_idx = 3,
               },
           },
-      .pjrt_param_shapes = std::move(parameters),
+      .pjrt_param_shapes = NonzeroParameters(),
       .output_transform = BitcastToLogicalIndices,
       .is_compatible =
           [](absl::Span<const Shape> input_shapes) {
@@ -424,12 +408,30 @@ BuildNonzeroIndicesExecutable(xla::PjRtClient& client) {
                    input_shapes[0].dtype() == mlir::ElementType::F32;
           },
   };
+  return dynamic_meta;
+}
 
-  TT_ASSIGN_OR_RETURN(SharedLoadedExecutableWithMetadata executable,
-                      LoadedExecutableWithMetadata::MakeShared(
-                          std::move(loaded),
-                          /*argument_indices=*/{}, std::move(dynamic_meta)));
-  return executable;
+absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>>
+BuildNonzeroIndicesExecutable(xla::PjRtClient& client,
+                              UniqueCompileOptions compile_options) {
+  const xla::Shape output_view = MakeUnbounded(xla::S32, xla::Tile({1, 128}));
+  const std::vector<xla::Shape> parameters = NonzeroParameters();
+  const std::unique_ptr<mlir::MLIRContext> context =
+      mlir::torch_tpu::CreateMlirContextWithDialects();
+  mlir::OwningOpRef<mlir::ModuleOp> module = BuildNonzeroIndices(*context);
+  TT_ASSIGN_OR_RETURN(
+      const std::unique_ptr<xla::HloModule> hlo,
+      BuildMosaicCustomCall(*module, parameters, output_view, {2, 3, -1, -1},
+                            /*aliased_parameter=*/1));
+  xla::ExecutableBuildOptions& build =
+      compile_options->executable_build_options;
+  build.set_run_backend_only(true);
+  build.set_result_layout(hlo->entry_computation_layout().result_shape());
+  compile_options->argument_layouts = parameters;
+  const xla::XlaComputation computation(hlo->ToProto());
+  return AdaptXlaError(
+      client.CompileAndLoad(computation, std::move(*compile_options)),
+      /*context=*/"failed to compile the nonzero indices kernel");
 }
 
 CompilationCacheKey NonZeroCacheKey() {
