@@ -49,6 +49,7 @@ from torch_tpu._internal.distributed import collective_ops
 from torch_tpu._internal.distributed import handshake
 from torch_tpu._internal.distributed import process_group_utils
 from torch_tpu._internal.distributed import spmd_util
+from torch_tpu._internal.benchmarks import xprof_adapter
 
 ProcessGroupId = handshake.ProcessGroupId
 RankCollectiveCounts = handshake.RankCollectiveCounts
@@ -89,50 +90,51 @@ def _submit_handshake(
       dist.is_initialized()
   ), "Distributed backend must be initialized when submitting a handshake."
 
-  with _RANK_COLLECTIVE_COUNTS_LOCK:
-    _RANK_COLLECTIVE_COUNTS.increment_pg_collective_counts(
-        pg_to_num_collectives
-    )
-    pg_collective_counts = copy.deepcopy(_RANK_COLLECTIVE_COUNTS)
+  with xprof_adapter.TraceMe("split_compiler._submit_handshake"):
+    with _RANK_COLLECTIVE_COUNTS_LOCK:
+      _RANK_COLLECTIVE_COUNTS.increment_pg_collective_counts(
+          pg_to_num_collectives
+      )
+      pg_collective_counts = copy.deepcopy(_RANK_COLLECTIVE_COUNTS)
 
-  rank = dist.get_rank()
+    rank = dist.get_rank()
 
-  msg = CollectiveHandshakeRequest(
-      pg_collective_counts=pg_collective_counts,
-      executable_fingerprint=executable_fingerprint,
-      rank=rank,
-  )
-  result = Handshake().submit(msg)
+    msg = CollectiveHandshakeRequest(
+        pg_collective_counts=pg_collective_counts,
+        executable_fingerprint=executable_fingerprint,
+        rank=rank,
+    )
+    result = Handshake().submit(msg)
 
-  if result:
-    logging.info(
-        "Handshake succeeded for rank %d with executable fingerprint %s and"
-        " pg_to_num_collectives %s",
-        rank,
-        executable_fingerprint,
-        pg_to_num_collectives,
-    )
-  else:
-    logging.warning(
-        "Handshake failed for rank %d with executable fingerprint %s and"
-        " pg_to_num_collectives %s",
-        rank,
-        executable_fingerprint,
-        pg_to_num_collectives,
-    )
-    if graph_module_str:
-      logging.warning(
-          "Handshake failed on rank %d for graph module:\n"
-          "--- [BEGIN GRAPH MODULE: %s] ---\n"
-          "%s\n"
-          "--- [END GRAPH MODULE: %s] ---",
+    if result:
+      logging.info(
+          "Handshake succeeded for rank %d with executable fingerprint %s and"
+          " pg_to_num_collectives %s",
           rank,
           executable_fingerprint,
-          graph_module_str,
-          executable_fingerprint,
+          pg_to_num_collectives,
       )
+    else:
+      logging.warning(
+          "Handshake failed for rank %d with executable fingerprint %s and"
+          " pg_to_num_collectives %s",
+          rank,
+          executable_fingerprint,
+          pg_to_num_collectives,
+      )
+      if graph_module_str:
+        logging.warning(
+            "Handshake failed on rank %d for graph module:\n"
+            "--- [BEGIN GRAPH MODULE: %s] ---\n"
+            "%s\n"
+            "--- [END GRAPH MODULE: %s] ---",
+            rank,
+            executable_fingerprint,
+            graph_module_str,
+            executable_fingerprint,
+        )
 
-  return result
+    return result
 
 
 def _get_unique_wait_tensor_producer(
