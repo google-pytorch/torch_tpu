@@ -50,7 +50,7 @@ mlir::Value AllocaSemaphoreValue(llvm::ArrayRef<int64_t> shape,
   }
   mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
   mlir::MemRefType type =
-      mlir::torch_tpu::GetSemaphoreMemRefType(b.getContext(), shape, elem_type);
+      GetSemaphoreMemRefType(b.getContext(), shape, elem_type);
   return tpu::AllocaSemaphoreOp::create(b, type);
 }
 
@@ -75,8 +75,7 @@ Ref Alloca(const ScratchSpec& spec) {
                  dtype.GetIntOrFloatBitWidth() <= 32u)
           << "VMEM Alloca() does not support bool (i1) or 64-bit element types";
       mlir::Type elem_type = internal::ToMlirType(dtype, ctx);
-      mlir::MemRefType type =
-          mlir::torch_tpu::GetVmemMemRefType(ctx, dims, elem_type);
+      mlir::MemRefType type = GetVmemMemRefType(ctx, dims, elem_type);
       return internal::wrap<Ref>(mlir::memref::AllocaOp::create(b, type),
                                  dtype);
     }
@@ -84,8 +83,7 @@ Ref Alloca(const ScratchSpec& spec) {
       ABSL_CHECK_EQ(dtype.GetIntOrFloatBitWidth(), 32u)  // CRASH_OK
           << "SMEM Alloca() requires a 32-bit element type";
       mlir::Type elem_type = internal::ToMlirType(dtype, ctx);
-      mlir::MemRefType type =
-          mlir::torch_tpu::GetSmemMemRefType(ctx, dims, elem_type);
+      mlir::MemRefType type = GetSmemMemRefType(ctx, dims, elem_type);
       return internal::wrap<Ref>(mlir::memref::AllocaOp::create(b, type),
                                  dtype);
     }
@@ -127,8 +125,8 @@ SemaphoreArray AllocaSemaphore(Dimensions shape) {
 Semaphore GetBarrierSemaphore() {
   mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
   mlir::MLIRContext* ctx = b.getContext();
-  mlir::MemRefType type = mlir::torch_tpu::GetSemaphoreMemRefType(
-      ctx, {}, tpu::SemaphoreType::get(ctx));
+  mlir::MemRefType type =
+      GetSemaphoreMemRefType(ctx, {}, tpu::SemaphoreType::get(ctx));
   return internal::wrap<Semaphore>(tpu::GetBarrierSemaphoreOp::create(b, type));
 }
 

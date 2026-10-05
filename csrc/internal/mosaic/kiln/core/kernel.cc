@@ -64,8 +64,6 @@
 
 namespace torch_tpu::kiln {
 
-using torch_tpu::is_status_or_ref;
-
 namespace {
 
 struct KernelScope {
@@ -125,21 +123,20 @@ mlir::MemRefType BlockType(mlir::MLIRContext* ctx, const Shape& shape,
   mlir::Type elem_type = internal::ToMlirType(shape.dtype(), ctx);
   switch (space) {
     case MemorySpace::kVmem:
-      return mlir::torch_tpu::GetVmemMemRefType(ctx, shape.dims(), elem_type);
+      return GetVmemMemRefType(ctx, shape.dims(), elem_type);
     case MemorySpace::kSmem:
-      return mlir::torch_tpu::GetSmemMemRefType(ctx, shape.dims(), elem_type);
+      return GetSmemMemRefType(ctx, shape.dims(), elem_type);
     case MemorySpace::kHbm:
-      return mlir::torch_tpu::GetHbmMemRefType(ctx, shape.dims(), elem_type);
+      return GetHbmMemRefType(ctx, shape.dims(), elem_type);
   }
 }
 
-mlir::torch_tpu::DimensionSemantics ToMlirDimensionSemantics(
-    DimensionSemantics s) {
+torch_tpu::DimensionSemantics ToMlirDimensionSemantics(DimensionSemantics s) {
   switch (s) {
     case DimensionSemantics::kParallel:
-      return mlir::torch_tpu::DimensionSemantics::kParallel;
+      return torch_tpu::DimensionSemantics::kParallel;
     case DimensionSemantics::kArbitrary:
-      return mlir::torch_tpu::DimensionSemantics::kArbitrary;
+      return torch_tpu::DimensionSemantics::kArbitrary;
   }
 }
 
@@ -168,7 +165,7 @@ absl::StatusOr<mlir::FlatSymbolRefAttr> EmitIndexMapFunction(
   fn.setPrivate();
   KernelScope scope(fn, spec);
   IndexIndices indices = map.Invoke();
-  TT_RET_CHECK(indices.size() == block_rank, torch_tpu::error::kInvalidArgument)
+  TT_RET_CHECK(indices.size() == block_rank, error::kInvalidArgument)
       << "index map must return one index per block dimension";
   llvm::SmallVector<mlir::Value> results;
   for (const IndexArg& s : indices) {
@@ -187,7 +184,7 @@ absl::Status SetGridAttributes(mlir::ImplicitLocOpBuilder& b,
     for (const BlockSpec& s :
          llvm::concat<const BlockSpec>(spec.in_specs, spec.out_specs)) {
       if (s.map.has_mapping()) {
-        return TT_ERROR(::torch_tpu::error::kInvalidArgument)
+        return TT_ERROR(error::kInvalidArgument)
                << "index_map windowing requires a non-empty grid";
       }
     }
@@ -201,8 +198,8 @@ absl::Status SetGridAttributes(mlir::ImplicitLocOpBuilder& b,
     DimensionSemantics sem = spec.grid.dimension_semantics.empty()
                                  ? DimensionSemantics::kParallel
                                  : spec.grid.dimension_semantics[i];
-    semantics.push_back(mlir::torch_tpu::GetDimensionSemanticsAttr(
-        context, ToMlirDimensionSemantics(sem)));
+    semantics.push_back(
+        GetDimensionSemanticsAttr(context, ToMlirDimensionSemantics(sem)));
   }
   fn->setAttr("dimension_semantics", b.getArrayAttr(semantics));
 
@@ -212,7 +209,7 @@ absl::Status SetGridAttributes(mlir::ImplicitLocOpBuilder& b,
        llvm::concat<const BlockSpec>(spec.in_specs, spec.out_specs)) {
     if (s.space == MemorySpace::kHbm) {
       if (s.map.has_mapping()) {
-        return TT_ERROR(::torch_tpu::error::kInvalidArgument)
+        return TT_ERROR(error::kInvalidArgument)
                << "HBM operands do not support index_map windowing";
       }
       window_params.push_back(b.getDictionaryAttr({}));
@@ -274,8 +271,7 @@ absl::Status Kernel::Canonicalize() {
   pm.addPass(mlir::createTrivialDeadCodeEliminationPass());
   pm.addPass(mlir::createCSEPass());
   if (llvm::failed(pm.run(*impl_->module))) {
-    return TT_ERROR(::torch_tpu::error::kInternal)
-           << "failed to canonicalize Kiln kernel";
+    return TT_ERROR(error::kInternal) << "failed to canonicalize Kiln kernel";
   }
   return absl::OkStatus();
 }
@@ -284,19 +280,16 @@ std::string Kernel::ToString() const { return PrintModule(*impl_->module); }
 
 absl::StatusOr<std::string> Kernel::Serialize() && {
   TT_RETURN_IF_ERROR(Canonicalize());
-  if (llvm::failed(
-          mlir::torch_tpu::SerializeMosaicKernel(impl_->module.get()))) {
-    return TT_ERROR(::torch_tpu::error::kInternal)
-           << "failed to serialize mosaic kernel";
+  if (llvm::failed(SerializeMosaicKernel(impl_->module.get()))) {
+    return TT_ERROR(error::kInternal) << "failed to serialize mosaic kernel";
   }
   return ToString();
 }
 
 absl::Status Kernel::Verify() const {
   if (llvm::failed(mlir::verify(impl_->module.get()))) {
-    return TT_ERROR(::torch_tpu::error::kInternal)
-           << "Kiln kernel failed verification:\n"
-           << ToString();
+    return TT_ERROR(error::kInternal) << "Kiln kernel failed verification:\n"
+                                      << ToString();
   }
   return absl::OkStatus();
 }
@@ -321,18 +314,18 @@ absl::StatusOr<Kernel> BuildKernel(const KernelSpec& spec,
   const int64_t grid_rank = spec.grid.grid.size();
   if (!spec.grid.dimension_semantics.empty() &&
       spec.grid.dimension_semantics.size() != grid_rank) {
-    return TT_ERROR(::torch_tpu::error::kInvalidArgument)
+    return TT_ERROR(error::kInvalidArgument)
            << "dimension_semantics must have one entry per grid axis";
   }
   for (const ScratchSpec& s : spec.scratch) {
     if (s.space == MemorySpace::kHbm) {
-      return TT_ERROR(::torch_tpu::error::kInvalidArgument)
+      return TT_ERROR(error::kInvalidArgument)
              << "Scratch operands cannot use HBM memory space";
     }
   }
 
   auto impl = std::make_unique<Kernel::Impl>();
-  impl->context = mlir::torch_tpu::CreateMlirContextWithDialects();
+  impl->context = CreateMlirContextWithDialects();
   mlir::MLIRContext* context = impl->context.get();
 
   mlir::Location loc = mlir::UnknownLoc::get(context);
@@ -345,9 +338,9 @@ absl::StatusOr<Kernel> BuildKernel(const KernelSpec& spec,
   mlir::Type i32_type = b.getI32Type();
   llvm::SmallVector<mlir::Type> prefetch_types;
   for (const ScalarPrefetchSpec& p : spec.scalar_prefetch) {
-    prefetch_types.push_back(mlir::torch_tpu::GetSmemMemRefType(
-        context, p.shape.dims(),
-        internal::ToMlirType(p.shape.dtype(), context)));
+    prefetch_types.push_back(
+        GetSmemMemRefType(context, p.shape.dims(),
+                          internal::ToMlirType(p.shape.dtype(), context)));
   }
   llvm::SmallVector<mlir::Type> arg_types(grid_rank, i32_type);
   arg_types.append(prefetch_types);
@@ -361,7 +354,7 @@ absl::StatusOr<Kernel> BuildKernel(const KernelSpec& spec,
 
   auto fn = mlir::func::FuncOp::create(b, spec.grid.name,
                                        b.getFunctionType(arg_types, {}));
-  mlir::torch_tpu::SetTcCoreTypeAttr(fn);
+  SetTcCoreTypeAttr(fn);
   TT_RETURN_IF_ERROR(SetGridAttributes(b, fn, spec, prefetch_types));
 
   if (!spec.scalar_prefetch.empty()) {
