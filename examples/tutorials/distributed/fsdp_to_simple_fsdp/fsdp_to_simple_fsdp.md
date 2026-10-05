@@ -32,10 +32,14 @@ designed specifically to maximize performance with `torch.compile` and XLA:
 First, verify the available TPU cores and topology:
 
 ```python
-from torch_tpu._internal.distributed import tpu_topology
+import os
+import torch
+from torch.tpu import distributed
 
 try:
-  topology, count = tpu_topology.get_tpu_topology()
+  distributed.set_tpu_launch_env()
+  topology = os.environ.get("TORCH_TPU_TOPOLOGY")
+  count = torch.accelerator.device_count()
   print(f"Detected TPU Topology: {topology}")
   print(f"Available TPU Cores (Count): {count}")
 except Exception as e:
