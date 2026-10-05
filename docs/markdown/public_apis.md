@@ -114,7 +114,6 @@ process. Use it at your own risk. Using it triggers a one-time warning.
 *   `torch.tpu.compiler.custom_compiler_options`
 *   `torch.tpu.default_generators`
 *   `torch.tpu.default_stream`
-*   `torch.tpu.device`
 *   `torch.tpu.device_of`
 *   `torch.tpu.distributed.set_tpu_launch_env`
 *   `torch.tpu.eager_mode` (getter)
@@ -206,6 +205,7 @@ recommended alternative instead.
 *   `torch.tpu.current_device`: use `torch.accelerator.current_device_index`
     instead
 *   `torch.tpu.current_stream`: use `torch.accelerator.current_stream` instead
+*   `torch.tpu.device`: use `torch.accelerator.device_index` instead
 *   `torch.tpu.device_count`: use `torch.accelerator.device_count` instead
 *   `torch.tpu.get_rng_state`: use `torch.accelerator.random.get_rng_state`
     instead

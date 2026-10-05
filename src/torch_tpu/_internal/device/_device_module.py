@@ -200,9 +200,13 @@ def _get_device_index(
   )
 
 
-@experimental(
-    "device() context manager is experimental and subject to change without"
-    " notice."
+@annotations.internal_or_experimental(
+    internal_when=get_torch_version() >= (2, 11),
+    prefer="torch.accelerator.device_index",
+    experimental_msg=(
+        "device() context manager is experimental and subject to change"
+        " without notice."
+    ),
 )
 class _DeviceContext:
   r"""Context-manager that changes the selected device.

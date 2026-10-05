@@ -907,6 +907,7 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
     """Verifies torch.tpu APIs are internal iff torch.accelerator replaces them."""
     replacements = {
         "current_device": ("torch.accelerator.current_device_index", (2, 11)),
+        "device": ("torch.accelerator.device_index", (2, 11)),
         "set_device": ("torch.accelerator.set_device_index", (2, 11)),
         "is_available": ("torch.accelerator.is_available", (2, 11)),
         "device_count": ("torch.accelerator.device_count", (2, 11)),

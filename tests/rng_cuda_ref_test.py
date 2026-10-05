@@ -1148,7 +1148,7 @@ class SingleProcessMultiDeviceTest(_BaseRngTest):
       def thread_worker(thread_id):
         try:
           dev = accelerator_test_utils.get_device(self.backend, thread_id)
-          with self.backend_mod.device(thread_id):
+          with torch.accelerator.device_index(thread_id):
             self.backend_mod.manual_seed(42 + thread_id)
             tensors = [torch.rand(10, device=dev) for _ in range(5)]
             results[thread_id] = torch.stack(tensors).cpu()
