@@ -33,7 +33,6 @@ def _replicate_tensor(
     ndims: int = 1,
     pass_shape_stride: bool = False,
     trailing_dim_size: int = 4,
-    debug_eager: bool = False,
 ) -> None:
   """Redistributes a tensor from shard to replicate."""
   dist.init_process_group(backend="tpu_dist")
@@ -75,11 +74,7 @@ def _replicate_tensor(
   else:
     func = shard_and_redistribute
 
-  with mock.patch.dict(
-      os.environ,
-      {"TORCH_TPU_ENABLE_DEBUG_CHECKS": "1"} if debug_eager else {},
-  ):
-    output = func(local_tensor)
+  output = func(local_tensor)
 
   out = output.cpu()
 
@@ -184,15 +179,15 @@ class UnevenShardingTest(seed_test_utils.MultiProcessRepeatableTest):
       self, ndims, tensor_size, pass_shape_stride
   ):
     def run_fn():
-      distributed_utils.dist_run(
-          nproc_per_node=8,
-          fn=_replicate_tensor,
-          tensor_size=tensor_size,
-          compiled=False,
-          ndims=ndims,
-          pass_shape_stride=pass_shape_stride,
-          debug_eager=True,
-      )
+      with mock.patch.dict(os.environ, {"TORCH_TPU_ENABLE_DEBUG_CHECKS": "1"}):
+        distributed_utils.dist_run(
+            nproc_per_node=8,
+            fn=_replicate_tensor,
+            tensor_size=tensor_size,
+            compiled=False,
+            ndims=ndims,
+            pass_shape_stride=pass_shape_stride,
+        )
 
     if pass_shape_stride:
       run_fn()

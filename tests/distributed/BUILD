@@ -654,16 +654,35 @@ torch_tpu_py_test(
 
 torch_tpu_py_test(
     name = "uneven_sharding_test",
+    timeout = "long",
     srcs = ["uneven_sharding_test.py"],
-    args = [
-        "--xla_tpu_collect_sflag_wait_stats_trace=true",
-        "--xla_tpu_debug_sflag_wait_shalt_on_detection=true",
-        "--xla_tpu_debug_sc_sflag_wait_timeout_ms=10000",
-        "--xla_tpu_debug_sflag_wait_timeout_ms=10000",
-    ],
-    notest_oss = True,  # XLA timeout flags not available.
+    args = if_oss(
+        [],
+        [
+            "--xla_tpu_collect_sflag_wait_stats_trace=true",
+            "--xla_tpu_debug_sflag_wait_shalt_on_detection=true",
+            "--xla_tpu_debug_sc_sflag_wait_timeout_ms=10000",
+            "--xla_tpu_debug_sflag_wait_timeout_ms=10000",
+        ],
+    ),
+    env = if_oss(
+        {
+            "LIBTPU_INIT_ARGS": " ".join([
+                "--undefok=xla_tpu_debug_sc_sflag_wait_timeout_ms",
+                "--xla_tpu_collect_sflag_wait_stats_trace=true",
+                "--xla_tpu_debug_sflag_wait_shalt_on_detection=true",
+                "--xla_tpu_debug_sc_sflag_wait_timeout_ms=10000",
+                "--xla_tpu_debug_sflag_wait_timeout_ms=10000",
+            ]),
+            "TORCH_DISABLE_ADDR2LINE": "1",
+        },
+        {},
+    ),
     shard_count = 8,
-    tags = [
+    tags = if_oss(
+        ["exclusive"],
+        [],
+    ) + [
         "noasan",  # Disabled due to b/497035517.
         "nomsan",  # Disabled due to b/516945438.
         "notsan",  # Disabled due to b/497035517.
