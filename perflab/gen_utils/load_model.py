@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import functools
 from typing import Any
 
 import torch
@@ -152,4 +153,61 @@ def default_load_model(
           requires_grad=False,
       )
 
+  return model, inputs
+
+
+# TODO(b/327271919): Remove once Inductor CPU codegen works in google3.
+def run_forward_on_default_device(model: torch.nn.Module, device: str) -> None:
+  """Makes `model.forward` create device-less tensors on `device`.
+
+  Some HuggingFace models allocate tensors inside `forward` without `device=`,
+  e.g. `BlipForQuestionAnswering`'s `torch.ones(..., dtype=torch.long)` mask or
+  DeBERTa's `torch.tensor(...)` in `scaled_size_sqrt`/`compute_attention_span`.
+  Those land on CPU, so `torch.compile` makes Inductor emit C++ kernels, which
+  cannot be built on hosts without a C++ compiler (e.g. some GPU benchmark
+  hosts). Dynamo traces `torch.set_default_device` (and inlines TorchScript
+  helpers), so the compiled graph allocates them on `device`. A
+  `with torch.device(...)` context is not traced reliably, hence the explicit
+  set/reset.
+
+  The default device is also set in eager mode: after a graph break (e.g.
+  DeBERTa's `Tensor.item()`), Dynamo runs `forward` eagerly and compiles inner
+  frames separately, and those must still see `device`. Assumes no global
+  default device is set.
+
+  Args:
+    model: The model whose `forward` is wrapped in place.
+    device: The device on which device-less factory calls allocate.
+  """
+  forward = model.forward
+
+  @functools.wraps(forward)
+  def forward_on_device(*args, **kwargs):
+    torch.set_default_device(device)
+    try:
+      return forward(*args, **kwargs)
+    finally:
+      # Benchmarks run without a global default device.
+      torch.set_default_device(None)
+
+  model.forward = forward_on_device
+
+
+def default_device_forward_load_model(
+    ctx: context_lib.Context, model_id: str, is_training: bool
+):
+  """Like `default_load_model`, but `forward` runs on the benchmark device.
+
+  See `run_forward_on_default_device`.
+
+  Args:
+    ctx: Benchmark execution context containing device and run scope options.
+    model_id: Name of the transformer model to retrieve from the registry.
+    is_training: Whether to generate training labels and configurations.
+
+  Returns:
+    A tuple of (model, inputs dictionary) ready for execution.
+  """
+  model, inputs = default_load_model(ctx, model_id, is_training)
+  run_forward_on_default_device(model, ctx.device_kind.value)
   return model, inputs

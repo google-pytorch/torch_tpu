@@ -20,6 +20,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import torch
 from perflab.gen_utils import gen_utils
+from perflab.gen_utils import load_model
 from tests import seed_test_utils
 
 
@@ -92,6 +93,17 @@ class GenUtilsTest(seed_test_utils.RepeatableTest):
     config = entry.get_extra_config(is_training=True, suffix="gen")
     self.assertIsNotNone(config)
     self.assertIn("compiled", config.skipped_run_modes)
+
+  def test_implicit_cpu_tensor_models_use_default_device_load_fn(self):
+    for name in (
+        "blip_vqa_capfilt_large_forward_gen",
+        "deberta_base_mnli_forward_gen",
+    ):
+      self.assertIs(
+          gen_utils._GEN_MODEL_CONFIGS[name].model_load_fn,  # pylint: disable=protected-access
+          load_model.default_device_forward_load_model,
+          msg=name,
+      )
 
   def test_iter_models_csv(self):
     models = list(gen_utils.iter_models_csv())

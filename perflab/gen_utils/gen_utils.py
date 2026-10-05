@@ -448,6 +448,10 @@ _GEN_MODEL_CONFIGS_RAW: dict[str, dict[str, Any]] = {
         "skipped_run_modes": {
             "eager_optimized",
         },
+        # `BlipForQuestionAnswering.forward` builds its image attention mask
+        # with `torch.ones` without `device=` (an upstream transformers bug).
+        # TODO(b/327271919): Drop once Inductor CPU codegen works in google3.
+        "model_load_fn": load_model.default_device_forward_load_model,
     },
     "blip_vqa_capfilt_large_train_gen": {
         "skipped_run_modes": {
@@ -680,6 +684,12 @@ _GEN_MODEL_CONFIGS_RAW: dict[str, dict[str, Any]] = {
             "eager_default",
             "eager_optimized",
         },
+    },
+    "deberta_base_mnli_forward_gen": {
+        # DeBERTa's `scaled_size_sqrt` and `compute_attention_span` call
+        # `torch.tensor` without `device=`.
+        # TODO(b/327271919): Drop once Inductor CPU codegen works in google3.
+        "model_load_fn": load_model.default_device_forward_load_model,
     },
     "deberta_base_mnli_train_gen": {
         "skipped_run_modes": {
