@@ -188,102 +188,103 @@ jobs:
         with:
           python_version: "3.12"
 
-  vllm_perf_eval:
-    name: "vLLM Perf Eval"
-    needs: [build_wheels]
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: linux-x86-tpu7x-224-4tpu
-    container:
-      image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:30a9cf2ed330736957b3256dd3df69a13a556ae46626e9ad2ba205fa7a3c0051"  # Tag infrastructure-public-image-f0ac56f68949 (built 2026-09-21)
-      # Disable ipc isolation to prevent shm limit issues.
-      options: --ipc=host
-    timeout-minutes: 180
-
-    env:
-      FORCE_COLOR: "1"
-      UV_NO_CACHE: "1"
-      TQDM_MININTERVAL: "30"
-
-    steps:
-      - name: Redirect torch_tpu cache off /dev/shm
-        run: |
-          mkdir -p /tmp/torch_tpu_cache
-          ln -sfn /tmp/torch_tpu_cache /dev/shm/torch_tpu_cache
-
-      - name: Checkout torch_tpu
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-
-      - name: Install SSH
-        run: |
-          # Best-effort: the image usually already carries openssh-client, and
-          # the deploy-key checkout below fails loudly if it does not.
-          apt-get update || true
-          apt-get install -y openssh-client || true
-
-      - name: Checkout vllm-torchtpu
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          repository: vllm-project/vllm-torchtpu
-          path: vllm-torchtpu
-          ref: main
-          ssh-key: ${{ secrets.TORCHTPU_VLLM_DEPLOY_KEY }}
-
-      - name: Setup uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
-
-      - name: Setup Virtual Environment
-        run: |
-          uv venv
-          echo "VIRTUAL_ENV=$GITHUB_WORKSPACE/.venv" >> "$GITHUB_ENV"
-          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
-
-      - name: Download wheel from GCS
-        shell: bash
-        env:
-          GCS_WHEEL_PATH: ${{ needs.build_wheels.outputs.gcs_wheel_path }}
-        run: |
-          mkdir dist
-          gcloud storage cp "${GCS_WHEEL_PATH}" dist/
-
-      - name: Install vllm-torchtpu with local wheel override
-        run: |
-          cd vllm-torchtpu
-
-          # Runs under `sh`, which has no arrays: `set --` puts the glob
-          # matches in the positional parameters, so "$1" is the wheel. An
-          # unmatched glob stays literal, hence the -f test below.
-          set -- ../dist/*.whl
-          WHEEL_FILE="$1"
-          if [ ! -f "$WHEEL_FILE" ]; then
-            echo "Error: No wheel found in ../dist/"
-            exit 1
-          fi
-          WHEEL_ABS_PATH=$(realpath "$WHEEL_FILE")
-          echo "torch_tpu @ file://$WHEEL_ABS_PATH" > overrides.txt
-
-          ACCESS_TOKEN=$(gcloud auth print-access-token)
-          VLLM_TARGET_DEVICE=empty \
-          SETUPTOOLS_SCM_PRETEND_VERSION_FOR_VLLM_TORCHTPU=0.0.0 \
-          uv --no-config pip install ".[test,benchmarking]" \
-            --index "https://oauth2accesstoken:${ACCESS_TOKEN}@us-python.pkg.dev/ml-oss-artifacts-transient/torch-tpu-virtual-registry/simple/" \
-            --extra-index-url https://pypi.org/simple \
-            --index-strategy unsafe-best-match \
-            --override overrides.txt --prerelease allow
-
-      - name: Wait For Connection
-        uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
-        with:
-          halt-dispatch-input: ${{ inputs.halt-for-connection }}
-
-      - name: Run perf and eval guard configs
-        shell: bash
-        env:
-          MODEL_IMPL_TYPE: vllm
-          BENCHMARK_WARMUP_RUNS: "1"
-        run: |
-          cd vllm-torchtpu
-          ./scripts/vllm/benchmarking/run_benchmarks.sh --config qwen3-coder-30b-fp8-tp8-ep --results-dir /tmp/perf_eval_qwen3
-          python3 scripts/vllm/benchmarking/check_regression.py --mode perf --results-dir /tmp/perf_eval_qwen3 --baseline scripts/vllm/benchmarking/baselines/perf/qwen3-coder-30b-fp8-tp8-ep.baseline.json
+  # TODO(b/570278640): Re-enable vllm_perf_eval once vLLM Perf Eval is fixed.
+  # vllm_perf_eval:
+  #   name: "vLLM Perf Eval"
+  #   needs: [build_wheels]
+  #   if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+  #   runs-on: linux-x86-tpu7x-224-4tpu
+  #   container:
+  #     image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:30a9cf2ed330736957b3256dd3df69a13a556ae46626e9ad2ba205fa7a3c0051"  # Tag infrastructure-public-image-f0ac56f68949 (built 2026-09-21)
+  #     # Disable ipc isolation to prevent shm limit issues.
+  #     options: --ipc=host
+  #   timeout-minutes: 180
+  #
+  #   env:
+  #     FORCE_COLOR: "1"
+  #     UV_NO_CACHE: "1"
+  #     TQDM_MININTERVAL: "30"
+  #
+  #   steps:
+  #     - name: Redirect torch_tpu cache off /dev/shm
+  #       run: |
+  #         mkdir -p /tmp/torch_tpu_cache
+  #         ln -sfn /tmp/torch_tpu_cache /dev/shm/torch_tpu_cache
+  #
+  #     - name: Checkout torch_tpu
+  #       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+  #
+  #     - name: Install SSH
+  #       run: |
+  #         # Best-effort: the image usually already carries openssh-client, and
+  #         # the deploy-key checkout below fails loudly if it does not.
+  #         apt-get update || true
+  #         apt-get install -y openssh-client || true
+  #
+  #     - name: Checkout vllm-torchtpu
+  #       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+  #       with:
+  #         repository: vllm-project/vllm-torchtpu
+  #         path: vllm-torchtpu
+  #         ref: main
+  #         ssh-key: ${{ secrets.TORCHTPU_VLLM_DEPLOY_KEY }}
+  #
+  #     - name: Setup uv
+  #       uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+  #
+  #     - name: Setup Virtual Environment
+  #       run: |
+  #         uv venv
+  #         echo "VIRTUAL_ENV=$GITHUB_WORKSPACE/.venv" >> "$GITHUB_ENV"
+  #         echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+  #
+  #     - name: Download wheel from GCS
+  #       shell: bash
+  #       env:
+  #         GCS_WHEEL_PATH: ${{ needs.build_wheels.outputs.gcs_wheel_path }}
+  #       run: |
+  #         mkdir dist
+  #         gcloud storage cp "${GCS_WHEEL_PATH}" dist/
+  #
+  #     - name: Install vllm-torchtpu with local wheel override
+  #       run: |
+  #         cd vllm-torchtpu
+  #
+  #         # Runs under `sh`, which has no arrays: `set --` puts the glob
+  #         # matches in the positional parameters, so "$1" is the wheel. An
+  #         # unmatched glob stays literal, hence the -f test below.
+  #         set -- ../dist/*.whl
+  #         WHEEL_FILE="$1"
+  #         if [ ! -f "$WHEEL_FILE" ]; then
+  #           echo "Error: No wheel found in ../dist/"
+  #           exit 1
+  #         fi
+  #         WHEEL_ABS_PATH=$(realpath "$WHEEL_FILE")
+  #         echo "torch_tpu @ file://$WHEEL_ABS_PATH" > overrides.txt
+  #
+  #         ACCESS_TOKEN=$(gcloud auth print-access-token)
+  #         VLLM_TARGET_DEVICE=empty \
+  #         SETUPTOOLS_SCM_PRETEND_VERSION_FOR_VLLM_TORCHTPU=0.0.0 \
+  #         uv --no-config pip install ".[test,benchmarking]" \
+  #           --index "https://oauth2accesstoken:${ACCESS_TOKEN}@us-python.pkg.dev/ml-oss-artifacts-transient/torch-tpu-virtual-registry/simple/" \
+  #           --extra-index-url https://pypi.org/simple \
+  #           --index-strategy unsafe-best-match \
+  #           --override overrides.txt --prerelease allow
+  #
+  #     - name: Wait For Connection
+  #       uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
+  #       with:
+  #         halt-dispatch-input: ${{ inputs.halt-for-connection }}
+  #
+  #     - name: Run perf and eval guard configs
+  #       shell: bash
+  #       env:
+  #         MODEL_IMPL_TYPE: vllm
+  #         BENCHMARK_WARMUP_RUNS: "1"
+  #       run: |
+  #         cd vllm-torchtpu
+  #         ./scripts/vllm/benchmarking/run_benchmarks.sh --config qwen3-coder-30b-fp8-tp8-ep --results-dir /tmp/perf_eval_qwen3
+  #         python3 scripts/vllm/benchmarking/check_regression.py --mode perf --results-dir /tmp/perf_eval_qwen3 --baseline scripts/vllm/benchmarking/baselines/perf/qwen3-coder-30b-fp8-tp8-ep.baseline.json
 
 # TODO(b/558939987): consider re-enabling failure notifications
 # once OSS builds stabilize.
