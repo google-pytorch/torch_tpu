@@ -63,6 +63,11 @@ namespace torch_tpu {
 const std::vector<PjRtDeviceAttributes>& GetGlobalDeviceAttributes();
 const std::vector<int64_t>& GetGlobalRankToDeviceId();  // INT_VEC_OK
 
+// Returns true if `device_ids` are the devices of a standalone process group
+// in the group's rank order (see `ProcessGroupTpu::MakeStandalone()`).
+[[nodiscard]] bool IsStandaloneDeviceGroup(
+    absl::Span<const int64_t> device_ids);
+
 // Returns a cross-host transfer key computed deterministically and stably
 // using FingerprintCat from the source/destination device IDs, communication
 // tag, and tensor index.
@@ -100,11 +105,25 @@ class ProcessGroupTpu : public c10d::Backend {
   }
 
   const std::vector<int64_t>& device_assignment() const {  // INT_VEC_OK
-    return GetGlobalRankToDeviceId();
+    return standalone_ ? rank_to_device_id_ : GetGlobalRankToDeviceId();
   }
 
-  // Returns the global ranks of all processes split into subgroups.
+  // Returns whether this process group is a standalone subgroup (see
+  // `MakeStandalone()`); a world-sized group never is.
+  bool standalone() const { return standalone_; }
+
+  // Returns the replica groups of the group's collectives: the global ranks of
+  // all processes split into subgroups, or for a standalone group its subgroup
+  // ranks {{0, ..., size - 1}}.
   const DeviceGroupList& GetSubgroupRanks() const;
+
+  // Makes this process subgroup standalone: its collectives are built for the
+  // devices of the subgroup alone, so its members launch their programs
+  // without the other subgroups, e.g. one stage of a pipeline. Every member
+  // must call this before the first collective of the group; the call waits
+  // for all of them. No-op for a world-sized group; any other group needs
+  // libtpu 0.0.47 or newer.
+  void MakeStandalone();
 
   c10::intrusive_ptr<c10d::Work> allreduce(
       std::vector<at::Tensor>& tensors,
@@ -361,13 +380,18 @@ class ProcessGroupTpu : public c10d::Backend {
   // (rank_to_device_id_[i] == device of world rank local_subgroup_ranks_[i]).
   DeviceGroup rank_to_device_id_;
 
-  // All subgroups of world ranks split the same way as this process group,
-  // including subgroups this process is not a member of (XLA requires the full
-  // partition). Each subgroup's internal order (by subgroup rank) is preserved.
-  // Entries index into device_assignment() (the world rank-to-device-id
-  // mapping) and become the replica_groups attribute of StableHLO collectives.
-  // For a world-sized group: {local_subgroup_ranks_}.
+  // The replica groups of the group's collectives (the replica_groups
+  // attribute of StableHLO collectives), whose entries index into
+  // device_assignment(). For a group that is not standalone: all subgroups of
+  // world ranks split the same way as this process group, including subgroups
+  // this process is not a member of (XLA requires the full partition), each in
+  // its subgroup rank order; for a world-sized group, {local_subgroup_ranks_}.
+  // For a standalone group: {{0, ..., size - 1}}, the subgroup ranks, as
+  // device_assignment() is then rank_to_device_id_.
   DeviceGroupList subgroup_ranks_;
+
+  // Whether this subgroup is standalone (see `MakeStandalone()`).
+  bool standalone_ = false;
 
   // Monotonic sequence counter for uneven all_to_all and all_to_all_single
   // offset coordination.

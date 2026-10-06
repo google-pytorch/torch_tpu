@@ -1112,6 +1112,7 @@ std::vector<at::Tensor> PyCreateScanOp(
           .op_param_cache_keys = std::move(cache_keys),
           .inputs = std::move(input_buffers),
           .output_shapes = std::move(output_shapes),
+          .device_assignment = body_module->device_assignment(),
       }));
 
   std::vector<at::Tensor> results;
@@ -1211,6 +1212,7 @@ std::vector<at::Tensor> PyCreateAssociativeScanOp(
           .op_param_cache_keys = std::move(cache_keys),
           .inputs = std::move(buffers.inputs),
           .output_shapes = std::move(buffers.output_shapes),
+          .device_assignment = body_module->device_assignment(),
       }));
 
   std::vector<at::Tensor> results;

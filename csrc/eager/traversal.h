@@ -18,6 +18,7 @@
 #define TORCH_TPU_CSRC_EAGER_TRAVERSAL_H_
 
 #include <algorithm>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -38,6 +39,7 @@
 #include "csrc/common/dimension_types.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/structured_log_buffer.h"
+#include "csrc/ops/op_names.h"
 #include "csrc/ops/python_context.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
@@ -353,6 +355,23 @@ class Traversal {
 
   CorePinningMode core_pinning_mode_ = CorePinningMode::kUnpinned;
 };
+
+// Returns the devices of the replicas of a program with a SparseCore op, in
+// replica order, on a slice of `num_slice_devices` devices whose ops resolved
+// to the device assignment `resolved_da`. The program of a standalone process
+// subgroup, whose `resolved_da` holds fewer devices than the slice, runs on
+// those devices; any other program runs on every device of the slice, in the
+// order of `resolved_da` or, when it is empty, in device id order.
+std::vector<int64_t> SparseCoreReplicaDevices(  // INT_VEC_OK
+    int num_slice_devices, absl::Span<const int64_t> resolved_da);
+
+// Returns an error if `op_names` hold a sparse-dense-matmul op and
+// `resolved_da` holds the devices of a standalone process subgroup, i.e. fewer
+// than the `num_slice_devices` devices of the slice: the op looks up a table
+// that is sharded across the SparseCores of all devices.
+absl::Status VerifyShardedTableLookups(absl::Span<const OpName> op_names,
+                                       absl::Span<const int64_t> resolved_da,
+                                       int num_slice_devices);
 
 // A simple node traversal is one where the graph outputs are all the outputs of
 // a single deferred op. This is the most common case for materializations.

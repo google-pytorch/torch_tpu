@@ -81,9 +81,15 @@ absl::StatusOr<at::Tensor> MakePlaceholder(Shape shape, bool requires_grad,
 //   The MLIR module.
 //
 // If the tensors are already materialized, will return status.
+//
+// If `device_assignment` is not null, it receives the devices the graph's ops
+// resolve the program to (see `Traversal::ResolveDeviceAssignment()`), or an
+// empty list for the default devices.
 absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ExtractMlirFromGraph(
     mlir::MLIRContext& mlir_context, const std::vector<at::Tensor>& arg_tensors,
-    const std::vector<at::Tensor>& result_tensors, bool use_stablehlo_bounds);
+    const std::vector<at::Tensor>& result_tensors, bool use_stablehlo_bounds,
+    std::vector<int64_t>* absl_nullable device_assignment =  // INT_VEC_OK
+    nullptr);
 
 // Result of `TraverseAndCompile`, containing the compiled executable and
 // optionally additional compilation artifacts (like the MLIR module) if

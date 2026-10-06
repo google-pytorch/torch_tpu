@@ -24,6 +24,7 @@
 #include <cstring>
 #include <exception>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -76,8 +77,10 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fingerprint_utils.h"
 #include "csrc/common/fixed_size_span.h"
+#include "csrc/common/libtpu_version.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
+#include "csrc/common/version.h"
 #include "csrc/distributed/allgather.h"
 #include "csrc/distributed/allreduce.h"
 #include "csrc/distributed/alltoall.h"
@@ -743,6 +746,8 @@ struct WorldTopologyState {
   std::vector<PjRtDeviceAttributes> device_attrs;
   std::vector<int64_t> rank_to_device_id;  // INT_VEC_OK
   int64_t world_rank = -1;
+  // Device ids of each standalone process group, in the group's rank order.
+  absl::flat_hash_set<DeviceGroup> standalone_device_groups;
 };
 
 WorldTopologyState& WorldTopology() {
@@ -758,6 +763,11 @@ const std::vector<PjRtDeviceAttributes>& GetGlobalDeviceAttributes() {
 
 const std::vector<int64_t>& GetGlobalRankToDeviceId() {  // INT_VEC_OK
   return WorldTopology().rank_to_device_id;
+}
+
+bool IsStandaloneDeviceGroup(absl::Span<const int64_t> device_ids) {
+  return WorldTopology().standalone_device_groups.contains(
+      DeviceGroup(device_ids.begin(), device_ids.end()));
 }
 
 absl::Status ProcessGroupTpu::InitializeRankToDeviceMappings(
@@ -949,6 +959,50 @@ ProcessGroupTpu::~ProcessGroupTpu() { shutdown(); }
 
 const DeviceGroupList& ProcessGroupTpu::GetSubgroupRanks() const {
   return subgroup_ranks_;
+}
+
+namespace {
+
+// The oldest libtpu release for standalone subgroups: 0.0.44.1 to 0.0.46.1
+// halt programs of subgroups that span several chips, and earlier releases
+// were not run with them.
+constexpr Version kMinLibtpuVersionForStandaloneSubgroups(0, 0, 47);
+
+}  // namespace
+
+void ProcessGroupTpu::MakeStandalone() {
+  if (standalone_ ||
+      rank_to_device_id_.size() == GetGlobalRankToDeviceId().size()) {
+    return;
+  }
+  TT_CHECK_THROW(GetLibtpuVersion() >= kMinLibtpuVersionForStandaloneSubgroups,
+                 error::kFailedPrecondition)
+      << "standalone process subgroups need libtpu 0.0.47 or newer, but the "
+         "runtime is libtpu "
+      << GetLibtpuVersionString().value_or("");
+  // Waits until every member has made the group standalone: the store blocks
+  // on the keys of the members that have not.
+  store_->set(absl::StrFormat("standalone:%d", rank_), "1");
+  std::vector<std::string> keys(size_);
+  for (int64_t i = 0; i < size_; ++i) {
+    keys[i] = absl::StrFormat("standalone:%d", i);
+  }
+  std::optional<std::string> wait_error;
+  try {
+    store_->multiGet(keys);
+  } catch (const std::exception& e) {
+    wait_error = e.what();
+  }
+  TT_CHECK_THROW(!wait_error.has_value(), error::kFailedPrecondition)
+      << "not every member of the process group of size " << size_
+      << " made it standalone: " << wait_error.value_or("");
+
+  DeviceGroup group_ranks(rank_to_device_id_.size());
+  std::iota(group_ranks.begin(), group_ranks.end(), 0);
+  subgroup_ranks_ = DeviceGroupList({std::move(group_ranks)});
+  standalone_ = true;
+
+  WorldTopology().standalone_device_groups.insert(rank_to_device_id_);
 }
 
 c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::allreduce(

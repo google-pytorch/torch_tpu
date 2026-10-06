@@ -330,12 +330,14 @@ std::shared_ptr<ContextedModule> PyBuildMlir(
     const std::vector<at::Tensor>& result_tensors,
     const std::vector<at::Tensor>& argument_tensors,
     bool use_stablehlo_bounds) {  // INT_VEC_OK
+  std::vector<int64_t> device_assignment;  // INT_VEC_OK
   TT_ASSIGN_OR_THROW(ContextedModule module,
                      ContextedModule::Make([&](mlir::MLIRContext& context) {
-                       return ExtractMlirFromGraph(context, argument_tensors,
-                                                   result_tensors,
-                                                   use_stablehlo_bounds);
+                       return ExtractMlirFromGraph(
+                           context, argument_tensors, result_tensors,
+                           use_stablehlo_bounds, &device_assignment);
                      }));
+  module.set_device_assignment(std::move(device_assignment));
 
   mlir::BaseScopedDiagnosticHandler diag_handler(&module.context());
   if (failed(mlir::verify(module.get()))) {

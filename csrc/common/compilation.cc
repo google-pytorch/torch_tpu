@@ -16,6 +16,7 @@
 
 #include "csrc/common/compilation.h"
 
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <optional>
@@ -23,8 +24,10 @@
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
+#include "absl/algorithm/container.h"
 #include "absl/base/no_destructor.h"
 #include "absl/base/nullability.h"
 #include "absl/log/absl_check.h"
@@ -54,6 +57,7 @@
 #include "xla/hlo/translate/register.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_compiler.h"
+#include "xla/runtime/device_id.h"
 #include "xla/service/device_assignment.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
@@ -138,6 +142,87 @@ LoadedExecutableWithMetadata::MakeShared(
           std::move(argument_indices), std::move(dynamic_execution_metadata)));
 }
 
+std::vector<int64_t> DeviceIdsOf(  // INT_VEC_OK
+    const xla::CompileOptions& compile_options) {
+  const xla::ExecutableBuildOptions& build_options =
+      compile_options.executable_build_options;
+  if (!build_options.has_device_assignment()) {
+    return {};
+  }
+  const xla::DeviceAssignment& assignment = build_options.device_assignment();
+  std::vector<int64_t> device_ids;  // INT_VEC_OK
+  device_ids.reserve(assignment.replica_count() *
+                     assignment.computation_count());
+  for (int replica = 0; replica < assignment.replica_count(); ++replica) {
+    for (int computation = 0; computation < assignment.computation_count();
+         ++computation) {
+      device_ids.push_back(assignment(replica, computation));
+    }
+  }
+  return device_ids;
+}
+
+namespace {
+
+// Returns whether `device_ids` are a proper subgroup of the client's devices
+// with no device on the chip at the origin of the slice. Devices that report
+// no chip coordinates (e.g. CPU devices) form no such subgroup.
+absl::StatusOr<bool> IsSubgroupOffSliceOrigin(
+    const xla::PjRtClient& client, absl::Span<const int64_t> device_ids) {
+  if (device_ids.empty() || device_ids.size() == client.devices().size()) {
+    return false;
+  }
+  // The subgroup is at the origin when some device of it sits on the chip at
+  // the origin of every axis.
+  for (const int64_t device_id : device_ids) {
+    TT_ASSIGN_OR_RETURN(
+        const xla::PjRtDevice* const device,
+        AdaptXlaError(client.LookupDevice(
+                          xla::GlobalDeviceId(static_cast<int32_t>(device_id))),
+                      "failed to look up a device of the subgroup"));
+    const auto& attributes = device->Attributes();
+    const auto it = attributes.find("coords");
+    if (it == attributes.end()) {
+      return false;
+    }
+    const auto* const coords =
+        std::get_if<std::vector<int64_t>>(&it->second);  // INT_VEC_OK
+    TT_RET_CHECK(coords != nullptr, error::kInternal)
+        << "the coords attribute of device " << device_id
+        << " is not a list of integers";
+    if (absl::c_all_of(*coords, [](int64_t coord) { return coord == 0; })) {
+      return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
+absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>> CompileAndLoad(
+    xla::PjRtClient& client, xla::MaybeOwningMlirModule module,
+    xla::CompileOptions options) {
+  TT_ASSIGN_OR_RETURN(const bool off_origin,
+                      IsSubgroupOffSliceOrigin(client, DeviceIdsOf(options)));
+  if (off_origin) {
+    constexpr std::string_view kSparseCoreRaggedAllToAll =
+        "xla_tpu_enable_sparse_core_collective_offload_ragged_all_to_all";
+    auto& overrides = options.env_option_overrides;
+    const auto it = absl::c_find_if(overrides, [&](const auto& entry) {
+      return entry.first == kSparseCoreRaggedAllToAll;
+    });
+    if (it != overrides.end()) {
+      it->second = std::string("false");
+    } else {
+      overrides.emplace_back(std::string(kSparseCoreRaggedAllToAll),
+                             std::string("false"));
+    }
+  }
+  return AdaptXlaError(
+      client.CompileAndLoad(std::move(module), std::move(options)),
+      /* context= */ "failed to compile MLIR module");
+}
+
 absl::StatusOr<SharedLoadedExecutableWithMetadata> Compile(
     xla::PjRtClient& client, LoadedExecutableBuilder executable_builder,
     UniqueCompileOptions compile_options) {
@@ -154,11 +239,9 @@ MlirComputationBuilderToExecutableBuilder(
                       ContextedModule::Make(computation_builder));
   return [contexted_module = std::move(contexted_module)](
              xla::PjRtClient& client, UniqueCompileOptions options) mutable {
-    return AdaptXlaError(
-        client.CompileAndLoad(
-            std::move(contexted_module).ToMaybeOwningMlirModule(),
-            std::move(*options)),
-        /* context= */ "failed to compile MLIR module");
+    return CompileAndLoad(client,
+                          std::move(contexted_module).ToMaybeOwningMlirModule(),
+                          std::move(*options));
   };
 }
 

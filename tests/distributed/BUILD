@@ -323,10 +323,13 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal:env",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/distributed:spmd_util",
         "//src/torch_tpu/_internal/pallas",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:error_testing",
+        "//tests:oss_utils",
         "@pypi//jax",
     ],
 )
@@ -353,10 +356,13 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal:env",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/distributed:spmd_util",
         "//src/torch_tpu/_internal/pallas",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:error_testing",
+        "//tests:oss_utils",
         "@pypi//jax",
     ],
 )
@@ -642,6 +648,46 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "subgroup_launch_order_test",
+    timeout = "long",
+    srcs = ["subgroup_launch_order_test.py"],
+    nopresubmit_oss = "Multi-process test; runs in TPU v7 postsubmit, as pallas_mesh_collective_device_order_test does.",
+    oss_presubmit_tpu_generation = tpu_gen(
+        "v7",
+        reason = "Subgroup launch order test for TPU v7",
+    ),
+    shard_count = 24,
+    tags = if_oss(
+        ["exclusive"],
+        [],
+    ) + [
+        # Sanitizers and TPU generations as for subgroup_collectives_test.
+        "noasan",
+        "nomsan",
+        "notsan",
+        "ok-to-wait-for-v7x-in-presubmit",
+        "requires-tpu-v7x:4",
+        "fails-on-tpu-v5",
+        "fails-on-tpu-v6",
+    ],
+    deps = [
+        ":distributed_utils",
+        "//shims/absl_py/logging",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/distributed:spmd_util",
+        "//src/torch_tpu/_internal/pallas",
+        "//src/torch_tpu/_internal/utils:test_utils",
+        "//tests:oss_utils",
+        "//tests:seed_test_utils",
+        "@pypi//jax",
     ],
 )
 

@@ -1369,18 +1369,25 @@ def _validate_pallas_mesh_world_size(
     mesh_shape: Sequence[int] | None = None,
     process_group: dist.ProcessGroup | None = None,
 ) -> None:
-  """Validates that Pallas mesh, mesh_shape, and process_group match world size."""
+  """Validates that Pallas mesh, mesh_shape, and process_group match world size.
+
+  A standalone process subgroup (see `spmd_util.make_standalone`) is the world
+  of its own meshes.
+  """
   if not dist.is_initialized():
     return
   world_size = dist.get_world_size()
   if process_group is not None:
     pg_size = dist.get_world_size(process_group)
     if pg_size != world_size:
-      raise ValueError(
-          "torch_tpu pallas kernels currently require full world-size meshes"
-          f" only. Got process_group with size {pg_size}, expected"
-          f" {world_size}."
-      )
+      if pg_size < 1 or not device_mesh.is_standalone(process_group):
+        raise ValueError(
+            "torch_tpu pallas kernels currently require full world-size meshes"
+            f" only. Got process_group with size {pg_size}, expected"
+            f" {world_size}. A standalone process subgroup (see"
+            " `spmd_util.make_standalone`) is the world of its own meshes."
+        )
+      world_size = pg_size
   if mesh_shape is not None:
     mesh_size = math.prod(mesh_shape)
     if mesh_size != world_size:
@@ -1388,10 +1395,18 @@ def _validate_pallas_mesh_world_size(
           f"Pallas mesh shape {mesh_shape} product ({mesh_size}) must match"
           f" world size ({world_size})."
       )
-  if mesh is not None and mesh.size != world_size:
+  if (
+      mesh is not None
+      and mesh.size != world_size
+      and not device_mesh.is_standalone_device_group(
+          [int(d.id) for d in mesh.devices.flat]
+      )
+  ):
     raise ValueError(
         f"Pallas kernel mesh size ({mesh.size}) must match world size"
-        f" ({world_size})."
+        f" ({world_size}). The mesh of a standalone process subgroup (see"
+        " `spmd_util.make_standalone`) lists the group's devices in the"
+        " group's rank order."
     )
 
 
@@ -1715,7 +1730,7 @@ def get_pallas_mesh(
         "torch.distributed is not initialized. dist.init_process_group()"
     )
 
-  world_size = dist.get_world_size()
+  world_size = dist.get_world_size(process_group)
   _validate_pallas_mesh_world_size(
       mesh_shape=mesh_shape, process_group=process_group
   )

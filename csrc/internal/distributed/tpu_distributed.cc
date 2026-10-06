@@ -61,9 +61,9 @@ std::vector<int64_t> GetRankToDeviceId(  // INT_VEC_OK
   return {};
 }
 
-// Returns the global ranks of every subgroup of the split that created the
-// process group of `backend`, as its collectives list them in their replica
-// groups. Empty for a backend that is not a ProcessGroupTpu.
+// Returns the replica groups of the collectives of the process group of
+// `backend`: the global ranks of every subgroup of its split, or its subgroup
+// ranks {{0, ..., size - 1}} if standalone. Empty for a non-ProcessGroupTpu.
 std::vector<std::vector<int64_t>> GetSubgroupRanks(  // INT_VEC_OK
     c10::intrusive_ptr<c10d::Backend> backend) {
   auto* pg_tpu = dynamic_cast<ProcessGroupTpu*>(backend.get());
@@ -75,6 +75,22 @@ std::vector<std::vector<int64_t>> GetSubgroupRanks(  // INT_VEC_OK
     subgroup_ranks.push_back(group);
   }
   return subgroup_ranks;
+}
+
+// Makes the process group of `backend` standalone, see
+// `ProcessGroupTpu::MakeStandalone()`.
+void MakeStandalone(c10::intrusive_ptr<c10d::Backend> backend) {
+  auto* pg_tpu = dynamic_cast<ProcessGroupTpu*>(backend.get());
+  if (pg_tpu != nullptr) {
+    pg_tpu->MakeStandalone();
+  }
+}
+
+// Returns whether the process group of `backend` is standalone, see
+// `ProcessGroupTpu::MakeStandalone()`.
+bool IsStandalone(c10::intrusive_ptr<c10d::Backend> backend) {
+  auto* pg_tpu = dynamic_cast<ProcessGroupTpu*>(backend.get());
+  return pg_tpu != nullptr && pg_tpu->standalone();
 }
 
 // Global device id of the (single) addressable device this process is using.
@@ -134,6 +150,12 @@ TT_PYBIND11_MODULE(tpu_distributed, m) {
   m.def("create_process_group", &MakeProcessGroup);
   m.def("rank_to_device_id", &GetRankToDeviceId);
   m.def("subgroup_ranks", &GetSubgroupRanks);
+  m.def("make_standalone", &MakeStandalone);
+  m.def("is_standalone", &IsStandalone);
+  m.def("is_standalone_device_group",
+        [](const std::vector<int64_t>& device_ids) {  // INT_VEC_OK
+          return IsStandaloneDeviceGroup(device_ids);
+        });
 
   // We expose these as helper functions on the Python side
   m.def("global_device_id", &GetGlobalDeviceId);

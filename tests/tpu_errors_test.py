@@ -5347,12 +5347,17 @@ class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
       ):
         pallas.custom_jax_kernel(lambda x: x, mesh=mock.MagicMock(size=4))
 
-      # Subgroup process group (size < world_size) raises ValueError
+      # Subgroup process group (size < world_size) that is not standalone
+      # raises ValueError, also when a standalone subgroup has its devices.
       subgroup = mock.MagicMock(spec=dist.ProcessGroup)
       with mock.patch.object(
           dist,
           "get_world_size",
           side_effect=lambda pg=None: 4 if pg is subgroup else 8,
+      ), mock.patch.object(
+          pallas.pallas.device_mesh,
+          "is_standalone_device_group",
+          return_value=True,
       ):
         with et.assert_raises_message(
             ValueError,

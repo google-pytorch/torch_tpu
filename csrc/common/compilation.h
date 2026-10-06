@@ -177,6 +177,20 @@ class LoadedExecutableWithMetadata {
       unbounded_dynamic_execution_metadata_;
 };
 
+// Returns the devices `compile_options` build an executable for, in device
+// assignment order; empty without a device assignment.
+[[nodiscard]] std::vector<int64_t> DeviceIdsOf(  // INT_VEC_OK
+    const xla::CompileOptions& compile_options);
+
+// Compiles `module` with `options` and loads the executable. A program of a
+// proper subgroup of the devices with no device on the chip at the origin of
+// the slice runs `ragged_all_to_all` on the TensorCores: the SparseCore
+// implementation in libtpu 0.0.49 and older sends to the wrong chips from such
+// a subgroup.
+absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>> CompileAndLoad(
+    xla::PjRtClient& client, xla::MaybeOwningMlirModule module,
+    xla::CompileOptions options);
+
 using LoadedExecutablePromise =
     std::promise<absl::StatusOr<SharedLoadedExecutableWithMetadata>>;
 using SharedLoadedExecutableWithMetadataFuture =
@@ -232,6 +246,17 @@ class ContextedModule {
   // Returns the underlying MLIR context.
   [[nodiscard]] mlir::MLIRContext& context() { return *context_; }
 
+  // The devices the module's ops resolve its program to, or an empty list for
+  // the default devices.
+  [[nodiscard]] const std::vector<int64_t>& device_assignment()  // INT_VEC_OK
+      const {
+    return device_assignment_;
+  }
+  void set_device_assignment(
+      std::vector<int64_t> device_assignment) {  // INT_VEC_OK
+    device_assignment_ = std::move(device_assignment);
+  }
+
   // Destructively converts this ContextedModule into a MaybeOwningMlirModule.
   [[nodiscard]] xla::MaybeOwningMlirModule ToMaybeOwningMlirModule() && {
     return xla::MaybeOwningMlirModule(std::move(context_), std::move(module_));
@@ -246,6 +271,7 @@ class ContextedModule {
   absl_nonnull std::unique_ptr<mlir::MLIRContext> context_;
   // The module. If the context is dropped, the module will be invalidated.
   mlir::OwningOpRef<mlir::ModuleOp> module_;
+  std::vector<int64_t> device_assignment_;  // INT_VEC_OK
 };
 
 // Lifts a MlirComputationBuilder into an ExecutableBuilder.

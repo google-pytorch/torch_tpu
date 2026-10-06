@@ -1793,6 +1793,41 @@ class TestPallasMesh(seed_test_utils.RepeatableTest):
       self.assertEqual(mesh.devices.shape, (8,))
       self.assertEqual(len(mesh.devices.flat), 8)
 
+  def test_get_pallas_mesh_standalone_subgroup(self):
+    subgroup = mock.MagicMock(spec=dist.ProcessGroup)
+    # A group of the same ranks that is not standalone.
+    other_group = mock.MagicMock(spec=dist.ProcessGroup)
+    device_mesh = pallas.pallas.device_mesh
+    with mock.patch.object(
+        dist, "is_initialized", return_value=True
+    ), mock.patch.object(
+        dist,
+        "get_world_size",
+        side_effect=lambda pg=None: 4 if pg in (subgroup, other_group) else 8,
+    ), mock.patch.object(
+        device_mesh, "get_device_assignment", return_value=[6, 7, 2, 3]
+    ), mock.patch.object(
+        device_mesh,
+        "is_standalone",
+        side_effect=lambda pg=None: pg is subgroup,
+    ), mock.patch.object(
+        device_mesh, "is_standalone_device_group", return_value=True
+    ):
+      mesh = pallas.get_pallas_mesh(
+          axis_names=("stage",), process_group=subgroup
+      )
+      self.assertIsInstance(mesh, jax.sharding.Mesh)
+      self.assertEqual(mesh.axis_names, ("stage",))
+      self.assertEqual(mesh.devices.shape, (4,))
+      self.assertEqual([d.id for d in mesh.devices.flat], [6, 7, 2, 3])
+      # A kernel takes the mesh of a standalone subgroup.
+      pallas.pallas._validate_pallas_mesh_world_size(mesh=mesh)
+      # The group of the same ranks that is not standalone has no such mesh.
+      with self.assertRaisesRegex(ValueError, "full world-size meshes"):
+        pallas.get_pallas_mesh(
+            axis_names=("stage",), process_group=other_group
+        )
+
 
 if __name__ == "__main__":
   absltest.main()
