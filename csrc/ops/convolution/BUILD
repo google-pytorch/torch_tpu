@@ -49,6 +49,7 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/types:span",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Support",
+        "@stablehlo//:stablehlo_broadcast_lowering",
         "@stablehlo//:stablehlo_ops",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
@@ -87,7 +88,6 @@ torch_tpu_cc_library(
         "@stablehlo//:stablehlo_ops",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
-        "@xla//xla:xla_data_proto_cc",
     ],
 )
 

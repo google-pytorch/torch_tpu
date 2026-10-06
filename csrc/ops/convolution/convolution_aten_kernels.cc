@@ -50,7 +50,6 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch/headeronly/core/ScalarType.h"
-#include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
 
@@ -391,13 +390,10 @@ absl::StatusOr<DeviceBufferRefArray<3>> ConvolutionBackward(
   auto input_sizes = input.sizes();
   auto weight_sizes = weight.sizes();
 
-  auto op_builder =
-      [stride = expanded_stride, padding = expanded_padding,
-       dilation = expanded_dilation, output_padding = expanded_output_padding,
-       groups, transposed, output_mask,
-       input_dims = Dimensions(input_sizes.begin(), input_sizes.end()),
-       weight_dims = Dimensions(weight_sizes.begin(), weight_sizes.end()),
-       output_dtype, current_precision](FixedSizeSpan<mlir::MlirOp, 3> inputs)
+  auto op_builder = [stride = expanded_stride, padding = expanded_padding,
+                     dilation = expanded_dilation, groups, transposed,
+                     output_mask, output_dtype,
+                     current_precision](FixedSizeSpan<mlir::MlirOp, 3> inputs)
       -> absl::StatusOr<MlirOpResults<3>> {
     auto& [grad_out, in, w] = inputs;
     mlir::MlirOp grad_in, grad_w, grad_b;
@@ -411,27 +407,25 @@ absl::StatusOr<DeviceBufferRefArray<3>> ConvolutionBackward(
 
     if (output_mask[0]) {
       TT_ASSIGN_OR_RETURN(
-          grad_in,
-          BuildConvolutionBackwardInput(
-              grad_out, w, input_dims, stride, padding, dilation, groups,
-              transposed, output_padding, output_dtype, current_precision));
+          grad_in, BuildConvolutionBackwardInput(
+                       grad_out, in, w, stride, padding, dilation, groups,
+                       transposed, output_dtype, current_precision));
     } else {
       TT_ASSIGN_OR_RETURN(grad_in, make_undefined());
     }
 
     if (output_mask[1]) {
       TT_ASSIGN_OR_RETURN(
-          grad_w,
-          BuildConvolutionBackwardWeight(
-              in, grad_out, weight_dims, stride, padding, dilation, groups,
-              transposed, output_padding, output_dtype, current_precision));
+          grad_w, BuildConvolutionBackwardWeight(
+                      in, grad_out, w, stride, padding, dilation, groups,
+                      transposed, output_dtype, current_precision));
     } else {
       TT_ASSIGN_OR_RETURN(grad_w, make_undefined());
     }
 
     if (output_mask[2]) {
-      TT_ASSIGN_OR_RETURN(grad_b, BuildConvolutionBackwardBias(
-                                      grad_out, output_padding, output_dtype));
+      TT_ASSIGN_OR_RETURN(grad_b,
+                          BuildConvolutionBackwardBias(grad_out, output_dtype));
     } else {
       TT_ASSIGN_OR_RETURN(grad_b, make_undefined());
     }

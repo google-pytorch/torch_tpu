@@ -179,8 +179,8 @@ class DynamismTest(seed_test_utils.RepeatableTest):
       return act
 
     # Allow multiple outputs
-    for act, expected in zip(act, expected):
-      utils.assert_close(act.to("cpu"), expected, rtol=1e-5, atol=1e-5)
+    for act_i, expected_i in zip(act, expected):
+      utils.assert_close(act_i.to("cpu"), expected_i, rtol=1e-5, atol=1e-5)
     return act
 
   @parameterized.product(dtype=op_testing.all_xla_supported_dtypes())
@@ -719,6 +719,134 @@ class DynamismTest(seed_test_utils.RepeatableTest):
     self.assertEqual(act_dynamism_info[0].dimension, dim)
     self.assertEqual(act_dynamism_info[0].lower_bound, 2)
     self.assertEqual(act_dynamism_info[0].upper_bound, expected_upper_bound)
+
+  # `+ 1` leaves nonzero values past the runtime sizes of the bounded inputs,
+  # which the convolution backward must ignore.
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="conv1d_strided_dilated",
+          input_shape=(2, 3, 17),
+          weight_shape=(4, 3, 3),
+          stride=[2],
+          padding=[1],
+          dilation=[2],
+          dim=2,
+          upper_bound=25,
+      ),
+      dict(
+          # Causal depthwise convolution of LFM2 and Mamba models.
+          testcase_name="conv1d_causal_depthwise",
+          input_shape=(2, 4, 10),
+          weight_shape=(4, 1, 3),
+          padding=[2],
+          groups=4,
+          dim=2,
+          upper_bound=20,
+      ),
+      dict(
+          testcase_name="conv1d_grouped_bounded_batch",
+          input_shape=(3, 4, 10),
+          weight_shape=(6, 2, 3),
+          stride=[2],
+          groups=2,
+          dim=0,
+          upper_bound=8,
+      ),
+      dict(
+          testcase_name="conv2d_strided",
+          input_shape=(1, 3, 9, 8),
+          weight_shape=(5, 3, 3, 3),
+          stride=[2, 2],
+          padding=[1, 1],
+          dim=2,
+          upper_bound=16,
+      ),
+      dict(
+          testcase_name="conv_transpose1d_strided",
+          input_shape=(2, 3, 6),
+          weight_shape=(3, 4, 3),
+          stride=[2],
+          padding=[1],
+          output_padding=[1],
+          transposed=True,
+          dim=2,
+          upper_bound=12,
+      ),
+  )
+  def test_convolution_backward_dynamic_input(
+      self,
+      input_shape: tuple[int, ...],
+      weight_shape: tuple[int, ...],
+      dim: int,
+      upper_bound: int,
+      stride: Sequence[int] | None = None,
+      padding: Sequence[int] | None = None,
+      dilation: Sequence[int] | None = None,
+      output_padding: Sequence[int] | None = None,
+      transposed: bool = False,
+      groups: int = 1,
+  ):
+    num_spatial_dims = len(input_shape) - 2
+    stride = stride or [1] * num_spatial_dims
+    padding = padding or [0] * num_spatial_dims
+    dilation = dilation or [1] * num_spatial_dims
+    output_padding = output_padding or [0] * num_spatial_dims
+    bias_size = weight_shape[1] * groups if transposed else weight_shape[0]
+
+    def conv_fn(x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
+      return torch.ops.aten.convolution(
+          x,
+          w,
+          None,
+          stride,
+          padding,
+          dilation,
+          transposed,
+          output_padding,
+          groups,
+      )
+
+    def conv_backward_fn(
+        grad_output: torch.Tensor, x: torch.Tensor, w: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+      return torch.ops.aten.convolution_backward(
+          grad_output + 1,
+          x + 1,
+          w,
+          [bias_size],
+          stride,
+          padding,
+          dilation,
+          transposed,
+          output_padding,
+          groups,
+          [True, True, True],
+      )
+
+    # Integer values keep the convolution exact on TPU.
+    w = torch.randint(-3, 4, weight_shape, dtype=torch.float32)
+    x = torch.randint(-3, 4, input_shape, dtype=torch.float32)
+    grad_output = torch.randint(-3, 4, conv_fn(x, w).shape, dtype=torch.float32)
+    bounded_shape = list(input_shape)
+    bounded_shape[dim] = upper_bound
+    grad_output_upper_bound = conv_fn(torch.zeros(bounded_shape), w).shape[dim]
+
+    def mark_dynamic(
+        grad_output: torch.Tensor, x: torch.Tensor, unused_w: torch.Tensor
+    ) -> None:
+      dynamism.mark_dynamic(grad_output, dim, 2, grad_output_upper_bound)
+      dynamism.mark_dynamic(x, dim, 2, upper_bound)
+
+    grads = self._run_bounded_dynamism_test(
+        conv_backward_fn, mark_dynamic, grad_output, x, w
+    )
+    grad_input_dynamism_info = dynamism.get_dynamism_info(grads[0])
+    self.assertLen(grad_input_dynamism_info, 1)
+    self.assertEqual(grad_input_dynamism_info[0].dimension, dim)
+    self.assertEqual(grad_input_dynamism_info[0].lower_bound, 2)
+    self.assertEqual(grad_input_dynamism_info[0].upper_bound, upper_bound)
+    self.assertEmpty(dynamism.get_dynamism_info(grads[1]))
+    self.assertEmpty(dynamism.get_dynamism_info(grads[2]))
 
 
 if __name__ == "__main__":

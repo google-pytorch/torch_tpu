@@ -186,6 +186,10 @@ mlir::stablehlo::Dimensions GetDimensions(mlir::Value value);
 // Returns the dimensions of the input op with bounded information if present.
 mlir::stablehlo::Dimensions GetDimensions(mlir::MlirOp input);
 
+// Returns the static shape of `dims`, with its bounded dynamic dimensions at
+// their upper bounds.
+Dimensions GetStaticShape(const mlir::stablehlo::Dimensions& dims);
+
 // Returns the bytecode of the module.
 absl::StatusOr<std::string> SerializeBytecode(mlir::ModuleOp module);
 
@@ -436,30 +440,43 @@ RngBitGeneratorResults RngBitGeneratorLike(
     mlir::stablehlo::RngAlgorithmAttr rng_alg,
     std::optional<mlir::MlirOp> shape_reference = std::nullopt);
 
-// Builds a stablehlo.convolution that also supports bounded dynamic lhs batch
-// and spatial dimensions. Takes the same arguments as
-// mlir::stablehlo::Convolution.
+// Builds a stablehlo.convolution that also supports bounded dynamic dimensions.
+// Takes the same arguments as mlir::stablehlo::Convolution, plus optional
+// result_dims.
 //
-// If lhs and rhs have static shapes, emits stablehlo.convolution with
-// result_type.
+// If lhs, rhs and result_dims have no bounded dynamic dimensions, emits
+// stablehlo.convolution with result_type (or the static shape of result_dims if
+// given).
 //
 // Otherwise, only the element type of result_type is used. XLA rejects bounded
 // dynamic spatial dimensions on convolutions, so the convolution runs on the
-// static upper-bound shape of lhs, with the elements past the runtime sizes of
-// its bounded spatial dimensions zeroed so that they act like zero padding. The
-// result dimensions that depend on bounded lhs dimensions are then bounded,
-// with their runtime sizes computed in-graph.
+// static upper-bound shapes of lhs and rhs. Every bounded dimension of lhs and
+// rhs except the lhs batch dimension has its elements past the runtime size
+// zeroed so that they act like zero padding. If result_dims is given, its
+// static shape must equal the shape that stablehlo.convolution infers at the
+// upper bounds of lhs and rhs, and its bounded dimensions bound the result;
+// otherwise, the result shape and its bounded dimensions are inferred from lhs
+// and the convolution windows.
 //
-// Returns a kPythonNotImplementedError if rhs or the lhs feature dimension is
-// bounded dynamic, or if the lhs batch dimension is bounded dynamic and
-// batch_group_count is not 1.
+// Returns a kPythonNotImplementedError if:
+// - the lhs batch dimension is bounded dynamic and batch_group_count is not 1,
+// - only one of the lhs feature dimension and the rhs input feature dimension
+//   is bounded dynamic, or both are bounded dynamic with feature_group_count
+//   not 1 or different upper bounds,
+// - the rhs output feature dimension is bounded dynamic,
+// - a rhs spatial dimension is bounded dynamic and result_dims is not given, or
+// - the static shape of result_dims differs from the result shape inferred at
+//   the upper bounds of lhs and rhs (e.g. for a bounded dynamic result feature
+//   dimension).
 absl::StatusOr<mlir::MlirOp> ConvolutionLike(
     mlir::RankedTensorType result_type, mlir::MlirOp lhs, mlir::MlirOp rhs,
     mlir::stablehlo::ConvDimensionNumbersAttr dimension_numbers,
     int64_t feature_group_count, int64_t batch_group_count,
     mlir::DenseI64ArrayAttr window_strides, mlir::DenseIntElementsAttr padding,
     mlir::DenseI64ArrayAttr lhs_dilation, mlir::DenseI64ArrayAttr rhs_dilation,
-    mlir::DenseBoolArrayAttr window_reversal, mlir::ArrayAttr precision_config);
+    mlir::DenseBoolArrayAttr window_reversal, mlir::ArrayAttr precision_config,
+    const std::optional<mlir::stablehlo::Dimensions>& result_dims =
+        std::nullopt);
 
 // Returns an mlir::MlirOp representing the number of elements in the input
 // tensor with the given element type, only counting the dimensions specified.

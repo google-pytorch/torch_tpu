@@ -1418,14 +1418,21 @@ mlir::MlirOp MakeBoundedArgument(mlir::func::FunctionBuilder& fb,
   return arg;
 }
 
-// A convolution of NC(spatial) operands and result, with a (C_out, C_in,
-// spatial) kernel. Operand shapes are the bounds of their bounded dimensions.
+// A convolution of operands and result with configurable dimension numbers and
+// optional result_dims. Operand shapes are the bounds of their bounded
+// dimensions.
 struct ConvolutionLikeParams {
   std::string test_name;
   Dimensions lhs_shape;
   Dimensions lhs_bounded_dims;
   Dimensions rhs_shape;
   Dimensions rhs_bounded_dims;
+  int64_t input_batch_dim = 0;
+  int64_t input_feature_dim = 1;
+  int64_t kernel_input_feature_dim = 1;
+  int64_t kernel_output_feature_dim = 0;
+  int64_t output_batch_dim = 0;
+  int64_t output_feature_dim = 1;
   // Window attributes, absent if empty.
   Dimensions strides;
   // Low and high padding of each spatial dimension.
@@ -1435,14 +1442,19 @@ struct ConvolutionLikeParams {
   bool window_reversal = false;
   int64_t feature_group_count = 1;
   int64_t batch_group_count = 1;
-  // Result shape, with bounds for bounded dimensions.
+  // Optional result_dims passed to ConvolutionLike.
+  Dimensions result_shape;
+  Dimensions result_bounded_dims;
+  // Expected result shape, with bounds for bounded dimensions.
   Dimensions expected_result_shape;
   std::vector<bool> expected_result_bounded;
+  // Expected substring of the error message of unsupported bounds.
+  std::string expected_error;
 };
 
 absl::StatusOr<mlir::MlirOp> CallConvolutionLike(
-    const ConvolutionLikeParams& params, mlir::RankedTensorType result_type,
-    mlir::MlirOp lhs, mlir::MlirOp rhs) {
+    mlir::func::FunctionBuilder& fb, const ConvolutionLikeParams& params,
+    mlir::RankedTensorType result_type, mlir::MlirOp lhs, mlir::MlirOp rhs) {
   mlir::MlirBuilder& builder = lhs.getBuilder();
   mlir::MLIRContext& ctx = builder.getContext();
   const int64_t num_spatial_dims = params.lhs_shape.size() - 2;
@@ -1451,10 +1463,10 @@ absl::StatusOr<mlir::MlirOp> CallConvolutionLike(
     spatial_dims.push_back(i + 2);
   }
   const auto dimension_numbers = mlir::stablehlo::ConvDimensionNumbersAttr::get(
-      &ctx, /*inputBatchDimension=*/0, /*inputFeatureDimension=*/1,
-      spatial_dims, /*kernelInputFeatureDimension=*/1,
-      /*kernelOutputFeatureDimension=*/0, spatial_dims,
-      /*outputBatchDimension=*/0, /*outputFeatureDimension=*/1, spatial_dims);
+      &ctx, params.input_batch_dim, params.input_feature_dim, spatial_dims,
+      params.kernel_input_feature_dim, params.kernel_output_feature_dim,
+      spatial_dims, params.output_batch_dim, params.output_feature_dim,
+      spatial_dims);
 
   auto array_attr = [&](const Dimensions& values) {
     return values.empty() ? mlir::DenseI64ArrayAttr()
@@ -1472,11 +1484,16 @@ absl::StatusOr<mlir::MlirOp> CallConvolutionLike(
     window_reversal = mlir::DenseBoolArrayAttr::get(
         &ctx, llvm::SmallVector<bool>(num_spatial_dims, true));
   }
+  std::optional<mlir::stablehlo::Dimensions> result_dims;
+  if (!params.result_shape.empty()) {
+    result_dims = GetDimensions(MakeBoundedArgument(
+        fb, params.result_shape, params.result_bounded_dims));
+  }
   return ConvolutionLike(
       result_type, lhs, rhs, dimension_numbers, params.feature_group_count,
       params.batch_group_count, array_attr(params.strides), padding,
       array_attr(params.lhs_dilation), array_attr(params.rhs_dilation),
-      window_reversal, /*precision_config=*/mlir::ArrayAttr());
+      window_reversal, /*precision_config=*/mlir::ArrayAttr(), result_dims);
 }
 
 TEST(ConvolutionLike, StaticOperandsUseResultType) {
@@ -1494,12 +1511,39 @@ TEST(ConvolutionLike, StaticOperandsUseResultType) {
   const auto result_type =
       mlir::RankedTensorType::get({1, 4, 10}, fb.getOpBuilder().getF32Type());
 
-  TT_ASSERT_OK_AND_ASSIGN(const mlir::MlirOp result,
-                          CallConvolutionLike(params, result_type, lhs, rhs));
+  TT_ASSERT_OK_AND_ASSIGN(
+      const mlir::MlirOp result,
+      CallConvolutionLike(fb, params, result_type, lhs, rhs));
 
   EXPECT_TRUE(mlir::isa<mlir::stablehlo::ConvolutionOp>(
       result.getValue().getDefiningOp()));
   EXPECT_EQ(result.getType(), result_type);
+}
+
+TEST(ConvolutionLike, StaticOperandsUseStaticResultDims) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  const ConvolutionLikeParams params = {
+      .lhs_shape = {1, 4, 8},
+      .rhs_shape = {4, 1, 3},
+      .padding = {2, 2},
+      .feature_group_count = 4,
+      .result_shape = {1, 4, 10},
+  };
+  const mlir::MlirOp lhs = MakeBoundedArgument(fb, params.lhs_shape, {});
+  const mlir::MlirOp rhs = MakeBoundedArgument(fb, params.rhs_shape, {});
+  const auto placeholder_result_type =
+      mlir::RankedTensorType::get({1, 1, 1}, fb.getOpBuilder().getF32Type());
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      const mlir::MlirOp result,
+      CallConvolutionLike(fb, params, placeholder_result_type, lhs, rhs));
+
+  EXPECT_TRUE(mlir::isa<mlir::stablehlo::ConvolutionOp>(
+      result.getValue().getDefiningOp()));
+  EXPECT_EQ(result.getType(), mlir::RankedTensorType::get(
+                                  {1, 4, 10}, fb.getOpBuilder().getF32Type()));
 }
 
 class ConvolutionLikeBoundedTest
@@ -1518,8 +1562,9 @@ TEST_P(ConvolutionLikeBoundedTest, BoundsResultOfStaticConvolution) {
   const auto result_type = mlir::RankedTensorType::get(
       Dimensions(params.lhs_shape.size(), 1), fb.getOpBuilder().getF32Type());
 
-  TT_ASSERT_OK_AND_ASSIGN(const mlir::MlirOp result,
-                          CallConvolutionLike(params, result_type, lhs, rhs));
+  TT_ASSERT_OK_AND_ASSIGN(
+      const mlir::MlirOp result,
+      CallConvolutionLike(fb, params, result_type, lhs, rhs));
   mlir::func::Return(fb, result);
   mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
   ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
@@ -1530,6 +1575,8 @@ TEST_P(ConvolutionLikeBoundedTest, BoundsResultOfStaticConvolution) {
   module->walk([&](mlir::stablehlo::ConvolutionOp convolution) {
     ++num_convolutions;
     EXPECT_TRUE(convolution.getLhs().getType().hasStaticShape())
+        << DebugString(convolution);
+    EXPECT_TRUE(convolution.getRhs().getType().hasStaticShape())
         << DebugString(convolution);
     EXPECT_TRUE(convolution.getType().hasStaticShape())
         << DebugString(convolution);
@@ -1622,9 +1669,134 @@ INSTANTIATE_TEST_SUITE_P(
             .expected_result_shape = {1, 3, 6, 7},
             .expected_result_bounded = {false, false, true, true},
         },
+        {
+            // Backward w.r.t. input of a strided dilated convolution.
+            .test_name = "BackwardInputWithResultDims",
+            .lhs_shape = {2, 4, 8},
+            .lhs_bounded_dims = {2},
+            .rhs_shape = {4, 3, 3},
+            .kernel_input_feature_dim = 0,
+            .kernel_output_feature_dim = 1,
+            .padding = {3, 3},
+            .lhs_dilation = {2},
+            .rhs_dilation = {2},
+            .window_reversal = true,
+            .result_shape = {2, 3, 17},
+            .result_bounded_dims = {2},
+            .expected_result_shape = {2, 3, 17},
+            .expected_result_bounded = {false, false, true},
+        },
+        {
+            // Backward w.r.t. weight of a grouped strided convolution with
+            // bounded spatial dimensions on both operands.
+            .test_name = "BackwardWeightBoundedSpatial",
+            .lhs_shape = {2, 4, 17},
+            .lhs_bounded_dims = {2},
+            .rhs_shape = {2, 6, 8},
+            .rhs_bounded_dims = {2},
+            .input_batch_dim = 1,
+            .input_feature_dim = 0,
+            .kernel_input_feature_dim = 0,
+            .kernel_output_feature_dim = 1,
+            .output_batch_dim = 1,
+            .output_feature_dim = 0,
+            .strides = {2},
+            .padding = {1, 1},
+            .rhs_dilation = {2},
+            .batch_group_count = 2,
+            .result_shape = {6, 2, 3},
+            .expected_result_shape = {6, 2, 3},
+            .expected_result_bounded = {false, false, false},
+        },
+        {
+            // Backward w.r.t. weight with bounded batch (contracting feature)
+            // dimension on both operands.
+            .test_name = "BackwardWeightBoundedBatch",
+            .lhs_shape = {8, 4, 10},
+            .lhs_bounded_dims = {0},
+            .rhs_shape = {8, 6, 5},
+            .rhs_bounded_dims = {0},
+            .input_batch_dim = 1,
+            .input_feature_dim = 0,
+            .kernel_input_feature_dim = 0,
+            .kernel_output_feature_dim = 1,
+            .output_batch_dim = 1,
+            .output_feature_dim = 0,
+            .rhs_dilation = {2},
+            .batch_group_count = 2,
+            .result_shape = {6, 2, 2},
+            .expected_result_shape = {6, 2, 2},
+            .expected_result_bounded = {false, false, false},
+        },
+        {
+            // Backward w.r.t. input of a strided dilated convolution whose
+            // grad_output bound (32) is looser than the one implied by the
+            // input bound (17), which needs a strongly negative high padding.
+            .test_name = "BackwardInputLooseBoundNegativePadding",
+            .lhs_shape = {2, 4, 32},
+            .lhs_bounded_dims = {2},
+            .rhs_shape = {4, 3, 3},
+            .kernel_input_feature_dim = 0,
+            .kernel_output_feature_dim = 1,
+            .padding = {1, -28},
+            .lhs_dilation = {2},
+            .rhs_dilation = {2},
+            .window_reversal = true,
+            .result_shape = {2, 3, 32},
+            .result_bounded_dims = {2},
+            .expected_result_shape = {2, 3, 32},
+            .expected_result_bounded = {false, false, true},
+        },
+        {
+            // Static operands only bounded through result_dims.
+            .test_name = "StaticOperandsBoundedResultDims",
+            .lhs_shape = {1, 4, 8},
+            .rhs_shape = {4, 1, 3},
+            .padding = {2, 2},
+            .feature_group_count = 4,
+            .result_shape = {1, 4, 10},
+            .result_bounded_dims = {2},
+            .expected_result_shape = {1, 4, 10},
+            .expected_result_bounded = {false, false, true},
+        },
     }),
     [](const testing::TestParamInfo<ConvolutionLikeBoundedTest::ParamType>&
            info) { return info.param.test_name; });
+
+TEST(ConvolutionLike, MismatchedResultDimsReturnsNotImplementedError) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  const ConvolutionLikeParams params = {
+      .lhs_shape = {1, 4, 8},
+      .lhs_bounded_dims = {2},
+      .rhs_shape = {4, 1, 3},
+      .padding = {2, 2},
+      .feature_group_count = 4,
+      .result_shape = {1, 4, 9},
+      .result_bounded_dims = {2},
+  };
+  const mlir::MlirOp lhs =
+      MakeBoundedArgument(fb, params.lhs_shape, params.lhs_bounded_dims);
+  const mlir::MlirOp rhs = MakeBoundedArgument(fb, params.rhs_shape, {});
+  const auto result_type =
+      mlir::RankedTensorType::get({1, 1, 1}, fb.getOpBuilder().getF32Type());
+
+  const absl::StatusOr<mlir::MlirOp> result =
+      CallConvolutionLike(fb, params, result_type, lhs, rhs);
+
+  ASSERT_FALSE(result.ok());
+  EXPECT_EQ(result.status().code(), error::kPythonNotImplementedError);
+  EXPECT_THAT(
+      result.status().message(),
+      testing::HasSubstr(
+          "expected the convolution result shape inferred at the upper bounds "
+          "of the lhs operand of type tensor<1x4x?xf32, "
+          "#stablehlo.bounds<?, ?, 8>> and the rhs operand of type "
+          "tensor<4x1x3xf32> to be [1, 4, 9], got [1, 4, 10]; only the batch "
+          "and spatial dimensions of the input (and of grad_output in "
+          "convolution_backward) may be bounded dynamic"));
+}
 
 class ConvolutionLikeUnsupportedTest
     : public testing::TestWithParam<ConvolutionLikeParams> {};
@@ -1642,30 +1814,94 @@ TEST_P(ConvolutionLikeUnsupportedTest, ReturnsNotImplementedError) {
       Dimensions(params.lhs_shape.size(), 1), fb.getOpBuilder().getF32Type());
 
   const absl::StatusOr<mlir::MlirOp> result =
-      CallConvolutionLike(params, result_type, lhs, rhs);
+      CallConvolutionLike(fb, params, result_type, lhs, rhs);
 
   ASSERT_FALSE(result.ok());
   EXPECT_EQ(result.status().code(), error::kPythonNotImplementedError);
-  EXPECT_THAT(result.status().message(),
-              testing::HasSubstr("expected bounded dynamic dimensions of a "
-                                 "convolution only in the input spatial "
-                                 "dimensions"));
+  EXPECT_THAT(
+      result.status().message(),
+      testing::AllOf(testing::HasSubstr(params.expected_error),
+                     testing::EndsWith(
+                         "; only the batch and spatial dimensions of the input "
+                         "(and of grad_output in convolution_backward) may be "
+                         "bounded dynamic")));
 }
 
 INSTANTIATE_TEST_SUITE_P(
     ConvolutionLikeUnsupportedTests, ConvolutionLikeUnsupportedTest,
     testing::ValuesIn<ConvolutionLikeParams>({
         {
-            .test_name = "BoundedInputFeature",
+            .test_name = "BoundedInputFeatureOnly",
             .lhs_shape = {1, 4, 8},
             .lhs_bounded_dims = {1},
             .rhs_shape = {4, 4, 3},
+            .expected_error =
+                "expected the contracted feature dimensions of a convolution "
+                "to be both static or both bounded dynamic, got dimension 1 of "
+                "the lhs operand of type tensor<1x?x8xf32, "
+                "#stablehlo.bounds<?, 4, ?>> and dimension 1 of the rhs "
+                "operand of type tensor<4x4x3xf32>",
         },
         {
-            .test_name = "BoundedKernel",
+            .test_name = "BoundedKernelInputFeatureOnly",
+            .lhs_shape = {1, 4, 8},
+            .rhs_shape = {4, 4, 3},
+            .rhs_bounded_dims = {1},
+            .expected_error =
+                "expected the contracted feature dimensions of a convolution "
+                "to be both static or both bounded dynamic, got dimension 1 of "
+                "the lhs operand of type tensor<1x4x8xf32> and dimension 1 of "
+                "the rhs operand of type tensor<4x?x3xf32, "
+                "#stablehlo.bounds<?, 4, ?>>",
+        },
+        {
+            .test_name = "BoundedMatchingFeatureWithFeatureGroups",
+            .lhs_shape = {1, 4, 8},
+            .lhs_bounded_dims = {1},
+            .rhs_shape = {4, 2, 3},
+            .rhs_bounded_dims = {1},
+            .feature_group_count = 2,
+            .expected_error =
+                "expected the bounded dynamic contracted feature dimensions of "
+                "a convolution to have equal upper bounds and "
+                "feature_group_count 1, got upper bound 4 in dimension 1 of "
+                "the lhs operand of type tensor<1x?x8xf32, "
+                "#stablehlo.bounds<?, 4, ?>>, upper bound 2 in dimension 1 of "
+                "the rhs operand of type tensor<4x?x3xf32, "
+                "#stablehlo.bounds<?, 2, ?>> and feature_group_count 2",
+        },
+        {
+            .test_name = "BoundedMatchingFeatureWithDifferentBounds",
+            .lhs_shape = {1, 4, 8},
+            .lhs_bounded_dims = {1},
+            .rhs_shape = {4, 8, 3},
+            .rhs_bounded_dims = {1},
+            .expected_error =
+                "got upper bound 4 in dimension 1 of the lhs operand of type "
+                "tensor<1x?x8xf32, #stablehlo.bounds<?, 4, ?>>, upper bound 8 "
+                "in dimension 1 of the rhs operand of type tensor<4x?x3xf32, "
+                "#stablehlo.bounds<?, 8, ?>> and feature_group_count 1",
+        },
+        {
+            .test_name = "BoundedKernelOutputFeature",
+            .lhs_shape = {1, 4, 8},
+            .rhs_shape = {4, 4, 3},
+            .rhs_bounded_dims = {0},
+            .expected_error =
+                "expected a static size in the output feature dimension 0 of "
+                "the rhs operand of a convolution, got rhs type "
+                "tensor<?x4x3xf32, #stablehlo.bounds<4, ?, ?>>",
+        },
+        {
+            .test_name = "BoundedKernelSpatialWithoutResultDims",
             .lhs_shape = {1, 4, 8},
             .rhs_shape = {4, 4, 3},
             .rhs_bounded_dims = {2},
+            .expected_error =
+                "expected static spatial dimensions of the rhs operand of a "
+                "convolution, got a bounded dynamic size in dimension 2 of the "
+                "rhs operand of type tensor<4x4x?xf32, "
+                "#stablehlo.bounds<?, ?, 3>>",
         },
         {
             .test_name = "BoundedBatchWithBatchGroups",
@@ -1673,6 +1909,10 @@ INSTANTIATE_TEST_SUITE_P(
             .lhs_bounded_dims = {0},
             .rhs_shape = {4, 4, 3},
             .batch_group_count = 2,
+            .expected_error =
+                "expected a static size in dimension 0 of the lhs operand of a "
+                "convolution with batch_group_count 2, got lhs type "
+                "tensor<?x4x8xf32, #stablehlo.bounds<8, ?, ?>>",
         },
     }),
     [](const testing::TestParamInfo<ConvolutionLikeUnsupportedTest::ParamType>&

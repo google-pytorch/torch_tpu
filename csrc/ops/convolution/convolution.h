@@ -36,23 +36,26 @@ absl::StatusOr<mlir::MlirOp> BuildConvolution(
     absl::Span<const int64_t> output_dims, mlir::ElementType output_dtype,
     mlir::stablehlo::Precision precision);
 
+// Builds the gradient w.r.t. the convolution input. `input` is only used for
+// its (possibly bounded dynamic) dimensions; the padding of the backward
+// convolution is derived from the upper bounds of `input` and `grad_output`.
 absl::StatusOr<mlir::MlirOp> BuildConvolutionBackwardInput(
-    mlir::MlirOp grad_output, mlir::MlirOp weight,
-    absl::Span<const int64_t> input_dims, absl::Span<const int64_t> stride,
-    absl::Span<const int64_t> padding, absl::Span<const int64_t> dilation,
-    int64_t groups, bool transposed, absl::Span<const int64_t> output_padding,
+    mlir::MlirOp grad_output, mlir::MlirOp input, mlir::MlirOp weight,
+    absl::Span<const int64_t> stride, absl::Span<const int64_t> padding,
+    absl::Span<const int64_t> dilation, int64_t groups, bool transposed,
     mlir::ElementType output_dtype, mlir::stablehlo::Precision precision);
 
+// Builds the gradient w.r.t. the convolution weight. `weight` is only used for
+// its dimensions; the padding of the backward convolution is derived from the
+// upper bounds of `input` and `grad_output`.
 absl::StatusOr<mlir::MlirOp> BuildConvolutionBackwardWeight(
-    mlir::MlirOp input, mlir::MlirOp grad_output,
-    absl::Span<const int64_t> weight_dims, absl::Span<const int64_t> stride,
-    absl::Span<const int64_t> padding, absl::Span<const int64_t> dilation,
-    int64_t groups, bool transposed, absl::Span<const int64_t> output_padding,
+    mlir::MlirOp input, mlir::MlirOp grad_output, mlir::MlirOp weight,
+    absl::Span<const int64_t> stride, absl::Span<const int64_t> padding,
+    absl::Span<const int64_t> dilation, int64_t groups, bool transposed,
     mlir::ElementType output_dtype, mlir::stablehlo::Precision precision);
 
 absl::StatusOr<mlir::MlirOp> BuildConvolutionBackwardBias(
-    mlir::MlirOp grad_output, absl::Span<const int64_t> output_padding,
-    mlir::ElementType output_dtype);
+    mlir::MlirOp grad_output, mlir::ElementType output_dtype);
 
 }  // namespace torch_tpu
 

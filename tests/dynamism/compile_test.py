@@ -1318,6 +1318,9 @@ class DynamicConvolutionTest(seed_test_utils.RepeatableTest):
 
   def setUp(self):
     super().setUp()
+    # The parameterized cases compile the same nested functions, whose code
+    # objects would otherwise hit Dynamo's recompile limit.
+    torch._dynamo.reset()
     tt_testing.reset_eager_state()
     self.device = torch.accelerator.current_accelerator()
 
@@ -1399,6 +1402,263 @@ class DynamicConvolutionTest(seed_test_utils.RepeatableTest):
 
       out = compiled(*device_args)
       utils.assert_close(out.cpu(), conv_fn(x, *others))
+
+  # Gradients of convolutions whose input has a bounded spatial or batch
+  # dimension. The strided cases have windows that overhang the input, so the
+  # input size can't be derived from the output size.
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="conv1d_strided_dilated",
+          input_shape=(2, 3, 17),
+          weight_shape=(4, 3, 3),
+          stride=[2],
+          padding=[1],
+          dilation=[2],
+          dim=2,
+      ),
+      dict(
+          # Causal depthwise convolution of LFM2 and Mamba models.
+          testcase_name="conv1d_causal_depthwise",
+          input_shape=(2, 4, 10),
+          weight_shape=(4, 1, 3),
+          padding=[2],
+          groups=4,
+          dim=2,
+      ),
+      dict(
+          testcase_name="conv1d_grouped_bounded_batch",
+          input_shape=(5, 4, 10),
+          weight_shape=(6, 2, 3),
+          stride=[2],
+          groups=2,
+          dim=0,
+      ),
+      dict(
+          testcase_name="conv1d_grad_input_only",
+          input_shape=(2, 3, 11),
+          weight_shape=(4, 3, 4),
+          stride=[3],
+          padding=[2],
+          output_mask=(True, False, False),
+          dim=2,
+      ),
+      dict(
+          testcase_name="conv1d_grad_weight_and_bias_only",
+          input_shape=(2, 3, 11),
+          weight_shape=(4, 3, 4),
+          stride=[3],
+          padding=[2],
+          output_mask=(False, True, True),
+          dim=2,
+      ),
+      dict(
+          testcase_name="conv1d_bfloat16",
+          input_shape=(2, 3, 12),
+          weight_shape=(4, 3, 3),
+          stride=[2],
+          padding=[1],
+          dtype=torch.bfloat16,
+          dim=2,
+      ),
+      dict(
+          testcase_name="conv2d_strided",
+          input_shape=(1, 3, 9, 8),
+          weight_shape=(5, 3, 3, 3),
+          stride=[2, 2],
+          padding=[1, 1],
+          dim=2,
+      ),
+      dict(
+          testcase_name="conv_transpose1d_strided",
+          input_shape=(2, 3, 6),
+          weight_shape=(3, 4, 3),
+          stride=[2],
+          padding=[1],
+          output_padding=[1],
+          transposed=True,
+          dim=2,
+      ),
+  )
+  def test_convolution_backward_dynamic_input(
+      self,
+      input_shape: tuple[int, ...],
+      weight_shape: tuple[int, ...],
+      dim: int,
+      stride: Sequence[int] | None = None,
+      padding: Sequence[int] | None = None,
+      dilation: Sequence[int] | None = None,
+      output_padding: Sequence[int] | None = None,
+      transposed: bool = False,
+      groups: int = 1,
+      output_mask: tuple[bool, bool, bool] = (True, True, True),
+      dtype: torch.dtype = torch.float32,
+  ):
+    num_spatial_dims = len(input_shape) - 2
+    stride = stride or [1] * num_spatial_dims
+    padding = padding or [0] * num_spatial_dims
+    dilation = dilation or [1] * num_spatial_dims
+    output_padding = output_padding or [0] * num_spatial_dims
+    bias_size = weight_shape[1] * groups if transposed else weight_shape[0]
+
+    def conv_fn(x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
+      return torch.ops.aten.convolution(
+          x,
+          w,
+          None,
+          stride,
+          padding,
+          dilation,
+          transposed,
+          output_padding,
+          groups,
+      )
+
+    def conv_backward_fn(
+        grad_output: torch.Tensor, x: torch.Tensor, w: torch.Tensor
+    ) -> tuple[torch.Tensor | None, ...]:
+      return torch.ops.aten.convolution_backward(
+          grad_output,
+          x,
+          w,
+          [bias_size],
+          stride,
+          padding,
+          dilation,
+          transposed,
+          output_padding,
+          groups,
+          list(output_mask),
+      )
+
+    with mock.patch.object(
+        _backend.dynamic_compiler,
+        "DynamicCompiler",
+        wraps=_backend.dynamic_compiler.DynamicCompiler,
+    ) as mock_dc:
+      compiled = torch.compile(
+          conv_backward_fn, backend="tpu", options={"bounded_dynamism": True}
+      )
+      # Integer values keep the convolution exact on TPU.
+      w = torch.randint(-3, 4, weight_shape).to(dtype)
+      for size in (
+          input_shape[dim],
+          input_shape[dim] - 2,
+          input_shape[dim] + 3,
+      ):
+        shape = list(input_shape)
+        shape[dim] = size
+        x = torch.randint(-3, 4, shape).to(dtype)
+        grad_output = torch.randint(-3, 4, conv_fn(x, w).shape).to(dtype)
+        expected = conv_backward_fn(grad_output.float(), x.float(), w.float())
+
+        device_args = [arg.to(self.device) for arg in (grad_output, x, w)]
+        # min=3 keeps the strided output sizes above 1, which PyTorch
+        # specializes on.
+        torch._dynamo.mark_dynamic(device_args[0], dim, min=3, max=32)
+        torch._dynamo.mark_dynamic(device_args[1], dim, min=3, max=32)
+        actual = compiled(*device_args)
+
+        self.assertLen(actual, 3)
+        for act, exp in zip(actual, expected):
+          if exp is None:
+            self.assertIsNone(act)
+            continue
+          self.assertEqual(act.dtype, dtype)
+          utils.assert_close(
+              act.cpu().float(),
+              exp,
+              rtol=1e-2 if dtype == torch.bfloat16 else 0,
+          )
+      # All sizes run the same bounded compilation.
+      self.assertEqual(mock_dc.call_count, 1)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="conv1d_strided_dilated_with_bias",
+          conv_fn=lambda x, w, b: torch.nn.functional.conv1d(
+              x, w, b, stride=2, padding=1, dilation=2
+          ),
+          input_shape=(2, 3, 17),
+          other_shapes=[(4, 3, 3), (4,)],
+          dim=2,
+      ),
+      dict(
+          # Causal depthwise convolution of LFM2 and Mamba models.
+          testcase_name="conv1d_causal_depthwise",
+          conv_fn=lambda x, w: torch.nn.functional.conv1d(
+              x, w, padding=2, groups=4
+          )[..., : x.shape[-1]],
+          input_shape=(2, 4, 10),
+          other_shapes=[(4, 1, 3)],
+          dim=2,
+      ),
+      dict(
+          testcase_name="conv2d_strided_with_bias_bounded_batch",
+          conv_fn=lambda x, w, b: torch.nn.functional.conv2d(
+              x, w, b, stride=2, padding=1
+          ),
+          input_shape=(7, 3, 9, 8),
+          other_shapes=[(5, 3, 3, 3), (5,)],
+          dim=0,
+      ),
+      dict(
+          testcase_name="conv_transpose1d_strided_with_bias",
+          conv_fn=lambda x, w, b: torch.nn.functional.conv_transpose1d(
+              x, w, b, stride=2, padding=1, output_padding=1
+          ),
+          input_shape=(2, 3, 8),
+          other_shapes=[(3, 4, 3), (4,)],
+          dim=2,
+      ),
+  )
+  def test_convolution_autograd_dynamic_input(
+      self,
+      conv_fn: Callable[..., torch.Tensor],
+      input_shape: tuple[int, ...],
+      other_shapes: Sequence[tuple[int, ...]],
+      dim: int,
+  ):
+    with mock.patch.object(
+        _backend.dynamic_compiler,
+        "DynamicCompiler",
+        wraps=_backend.dynamic_compiler.DynamicCompiler,
+    ) as mock_dc:
+      compiled = torch.compile(
+          conv_fn, backend="tpu", options={"bounded_dynamism": True}
+      )
+      # Integer values keep the convolution exact on TPU.
+      others = [
+          torch.randint(-3, 4, shape, dtype=torch.float32)
+          for shape in other_shapes
+      ]
+      for size in (
+          input_shape[dim],
+          input_shape[dim] - 2,
+          input_shape[dim] + 3,
+      ):
+        shape = list(input_shape)
+        shape[dim] = size
+        x = torch.randint(-3, 4, shape, dtype=torch.float32)
+        cpu_args = [arg.clone().requires_grad_() for arg in (x, *others)]
+        expected = conv_fn(*cpu_args)
+        grad_output = torch.randint(-3, 4, expected.shape, dtype=torch.float32)
+        expected.backward(grad_output)
+
+        device_args = [
+            arg.to(self.device).requires_grad_() for arg in (x, *others)
+        ]
+        # min=5 keeps the strided dilated output sizes above 1, which PyTorch
+        # specializes on.
+        torch._dynamo.mark_dynamic(device_args[0], dim, min=5, max=32)
+        out = compiled(*device_args)
+        out.backward(grad_output.to(self.device))
+
+        utils.assert_close(out.detach().cpu(), expected.detach())
+        for device_arg, cpu_arg in zip(device_args, cpu_args):
+          utils.assert_close(device_arg.grad.cpu(), cpu_arg.grad)
+      # All sizes run the same bounded compilation, whose compiler also
+      # compiles the backward graph.
+      self.assertEqual(mock_dc.call_count, 1)
 
 
 @oss_utils.skip_if_libtpu_version(

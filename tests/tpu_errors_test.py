@@ -1021,25 +1021,40 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
       with et.assert_raises_message(
           NotImplementedError,
-          tpu="""convolution(): expected bounded dynamic dimensions of a convolution only in the input spatial dimensions, or in the input batch dimension if batch_group_count is 1, got input type tensor<1x2x8xf32>, kernel type tensor<3x2x?xf32, #stablehlo.bounds<?, ?, 6>> and batch_group_count 1""",
+          tpu="""convolution(): expected static spatial dimensions of the rhs operand of a convolution, got a bounded dynamic size in dimension 2 of the rhs operand of type tensor<3x2x?xf32, #stablehlo.bounds<?, ?, 6>>; only the batch and spatial dimensions of the input (and of grad_output in convolution_backward) may be bounded dynamic""",
       ):
         # cpu() is needed because the error is triggered inside the op builder.
         torch.nn.functional.conv1d(inp, weight).cpu()
 
   @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
-  def test_convolution_backward_dynamic_spatial_dimension(self):
+  def test_convolution_dynamic_out_channels(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      inp = torch.ones(1, 2, 8, device=et.device())
+      weight = torch.ones(3, 2, 4, device=et.device())
+
+      # Mark the output channel dimension of `weight` as dynamic.
+      dynamism.mark_dynamic(weight, 0, 2, 6)
+
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""convolution(): expected a static size in the output feature dimension 0 of the rhs operand of a convolution, got rhs type tensor<?x2x4xf32, #stablehlo.bounds<6, ?, ?>>; only the batch and spatial dimensions of the input (and of grad_output in convolution_backward) may be bounded dynamic""",
+      ):
+        # cpu() is needed because the error is triggered inside the op builder.
+        torch.nn.functional.conv1d(inp, weight).cpu()
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_convolution_backward_dynamic_channel_dimension(self):
     with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
       grad_output = torch.ones(1, 3, 6, device=et.device())
       inp = torch.ones(1, 2, 8, device=et.device())
       weight = torch.ones(3, 2, 3, device=et.device())
 
-      # Mark the spatial dimensions of `grad_output` and `inp` as dynamic.
-      dynamism.mark_dynamic(grad_output, 2, 2, 14)
-      dynamism.mark_dynamic(inp, 2, 2, 16)
+      # Mark the channel dimension of `grad_output` as dynamic.
+      dynamism.mark_dynamic(grad_output, 1, 2, 6)
 
       with et.assert_raises_message(
           NotImplementedError,
-          tpu="""convolution_backward(): expected static spatial dimensions of the grad_output tensor in the convolution backward, got bounded dynamic dimension 2""",
+          tpu="""convolution_backward(): expected the contracted feature dimensions of a convolution to be both static or both bounded dynamic, got dimension 1 of the lhs operand of type tensor<1x?x6xf32, #stablehlo.bounds<?, 6, ?>> and dimension 0 of the rhs operand of type tensor<3x2x3xf32>; only the batch and spatial dimensions of the input (and of grad_output in convolution_backward) may be bounded dynamic""",
       ):
         grad_input, _, _ = torch.ops.aten.convolution_backward(
             grad_output,
@@ -1056,6 +1071,130 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         )
         # cpu() is needed because the error is triggered inside the op builder.
         grad_input.cpu()
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_convolution_backward_dynamic_kernel(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      grad_output = torch.ones(1, 3, 6, device=et.device())
+      inp = torch.ones(1, 2, 8, device=et.device())
+      weight = torch.ones(3, 2, 3, device=et.device())
+
+      # Mark the kernel spatial dimension of `weight` as dynamic.
+      dynamism.mark_dynamic(weight, 2, 2, 6)
+
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""convolution_backward(): expected a weight with static shape, got bounded dynamic weight of type tensor<3x2x?xf32, #stablehlo.bounds<?, ?, 6>>; only the batch and spatial dimensions of the input and grad_output may be bounded dynamic""",
+      ):
+        grad_input, _, _ = torch.ops.aten.convolution_backward(
+            grad_output,
+            inp,
+            weight,
+            bias_sizes=None,
+            stride=[1],
+            padding=[0],
+            dilation=[1],
+            transposed=False,
+            output_padding=[0],
+            groups=1,
+            output_mask=[True, True, False],
+        )
+        # cpu() is needed because the error is triggered inside the op builder.
+        grad_input.cpu()
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_convolution_backward_grouped_dynamic_channel_dimension(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      grad_output = torch.ones(1, 4, 6, device=et.device())
+      inp = torch.ones(1, 2, 8, device=et.device())
+      weight = torch.ones(4, 1, 3, device=et.device())
+
+      # Mark the channel dimension of `inp` as dynamic, which the weight
+      # gradient of a grouped convolution contracts in batch groups.
+      dynamism.mark_dynamic(inp, 1, 2, 6)
+
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""convolution_backward(): expected a static size in dimension 1 of the lhs operand of a convolution with batch_group_count 2, got lhs type tensor<1x?x8xf32, #stablehlo.bounds<?, 6, ?>>; only the batch and spatial dimensions of the input (and of grad_output in convolution_backward) may be bounded dynamic""",
+      ):
+        _, grad_weight, _ = torch.ops.aten.convolution_backward(
+            grad_output,
+            inp,
+            weight,
+            bias_sizes=None,
+            stride=[1],
+            padding=[0],
+            dilation=[1],
+            transposed=False,
+            output_padding=[0],
+            groups=2,
+            output_mask=[False, True, False],
+        )
+        # cpu() is needed because the error is triggered inside the op builder.
+        grad_weight.cpu()
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_convolution_backward_different_batch_bounds(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      grad_output = torch.ones(2, 3, 6, device=et.device())
+      inp = torch.ones(2, 2, 8, device=et.device())
+      weight = torch.ones(3, 2, 3, device=et.device())
+
+      # Mark the batch dimensions of `inp` and `grad_output` as dynamic with
+      # different upper bounds. The weight gradient contracts them.
+      dynamism.mark_dynamic(inp, 0, 2, 5)
+      dynamism.mark_dynamic(grad_output, 0, 2, 4)
+
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""convolution_backward(): expected the bounded dynamic contracted feature dimensions of a convolution to have equal upper bounds and feature_group_count 1, got upper bound 5 in dimension 0 of the lhs operand of type tensor<?x2x8xf32, #stablehlo.bounds<5, ?, ?>>, upper bound 4 in dimension 0 of the rhs operand of type tensor<?x3x6xf32, #stablehlo.bounds<4, ?, ?>> and feature_group_count 1; only the batch and spatial dimensions of the input (and of grad_output in convolution_backward) may be bounded dynamic""",
+      ):
+        _, grad_weight, _ = torch.ops.aten.convolution_backward(
+            grad_output,
+            inp,
+            weight,
+            bias_sizes=None,
+            stride=[1],
+            padding=[0],
+            dilation=[1],
+            transposed=False,
+            output_padding=[0],
+            groups=1,
+            output_mask=[False, True, False],
+        )
+        # cpu() is needed because the error is triggered inside the op builder.
+        grad_weight.cpu()
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_convolution_backward_dynamic_input_channel_dimension(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      grad_output = torch.ones(1, 3, 6, device=et.device())
+      inp = torch.ones(1, 2, 8, device=et.device())
+      weight = torch.ones(3, 2, 3, device=et.device())
+
+      # Mark the channel dimension of `inp` as dynamic, which the static
+      # weight gradient can't follow.
+      dynamism.mark_dynamic(inp, 1, 2, 6)
+
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu="""convolution_backward(): expected the convolution result shape inferred at the upper bounds of the lhs operand of type tensor<1x?x8xf32, #stablehlo.bounds<?, 6, ?>> and the rhs operand of type tensor<1x3x6xf32> to be [3, 2, 3], got [3, 6, 3]; only the batch and spatial dimensions of the input (and of grad_output in convolution_backward) may be bounded dynamic""",
+      ):
+        _, grad_weight, _ = torch.ops.aten.convolution_backward(
+            grad_output,
+            inp,
+            weight,
+            bias_sizes=None,
+            stride=[1],
+            padding=[0],
+            dilation=[1],
+            transposed=False,
+            output_padding=[0],
+            groups=1,
+            output_mask=[False, True, False],
+        )
+        # cpu() is needed because the error is triggered inside the op builder.
+        grad_weight.cpu()
 
   @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
   def test_embedding_bag_dynamic_shape_arg(self):

@@ -197,14 +197,38 @@ StaticAtBounds MakeStaticAtBounds(mlir::MlirOp input) {
   return result;
 }
 
-// Zeroes the elements of the static `input` past the runtime sizes of `dims`,
-// skipping the dimensions without a runtime size.
+// Returns whether `dims` has any bounded dynamic dimension.
+bool HasBoundedDimension(const std::optional<stablehlo::Dimensions>& dims) {
+  return dims.has_value() &&
+         absl::c_any_of(*dims, [](const stablehlo::DimensionInfo& dim) {
+           return dim.boundOp.has_value();
+         });
+}
+
+// Bounds the dimensions of the static `input` that have a boundOp in `dims`.
+mlir::MlirOp BoundFromDimensions(mlir::MlirOp input,
+                                 const stablehlo::Dimensions& dims) {
+  for (int64_t dim = 0; dim < static_cast<int64_t>(dims.size()); ++dim) {
+    if (!dims[dim].boundOp.has_value()) continue;
+    mlir::MlirOp bound_op(input.getBuilder(), *dims[dim].boundOp);
+    mlir::MlirOp size =
+        stablehlo::GetDimensionSize(bound_op, dims[dim].boundOpDim);
+    input = stablehlo::SetDimensionSize(input, size, dim);
+  }
+  return input;
+}
+
+// Zeroes the elements of the static `input` past the runtime sizes in
+// `runtime_sizes`, skipping dimensions without a runtime size and
+// `unzeroed_dim`.
 mlir::MlirOp ZeroPastRuntimeSizes(
-    mlir::MlirOp input, const mlir::ArrayRef<int64_t> dims,
-    const std::vector<std::optional<mlir::MlirOp>>& runtime_sizes) {
+    mlir::MlirOp input,
+    const std::vector<std::optional<mlir::MlirOp>>& runtime_sizes,
+    const std::optional<int64_t> unzeroed_dim = std::nullopt) {
   std::optional<mlir::MlirOp> in_bounds;
-  for (const int64_t dim : dims) {
-    if (!runtime_sizes[dim].has_value()) continue;
+  for (int64_t dim = 0; dim < static_cast<int64_t>(runtime_sizes.size());
+       ++dim) {
+    if (dim == unzeroed_dim || !runtime_sizes[dim].has_value()) continue;
     mlir::MlirOp runtime_size = *runtime_sizes[dim];
     mlir::MlirOp index =
         stablehlo::IotaLike(input, dim, mlir::ElementType::I32);
@@ -226,7 +250,7 @@ mlir::MlirOp ZeroPastRuntimeSizes(
 // attributes mean no stride, padding or dilation.
 llvm::SmallVector<ConvolutionWindow> GetConvolutionWindows(
     const stablehlo::ConvDimensionNumbersAttr dimension_numbers,
-    const mlir::RankedTensorType rhs_type,
+    const stablehlo::Dimensions& rhs_dims,
     const mlir::DenseI64ArrayAttr window_strides,
     const mlir::DenseIntElementsAttr padding,
     const mlir::DenseI64ArrayAttr lhs_dilation,
@@ -247,12 +271,36 @@ llvm::SmallVector<ConvolutionWindow> GetConvolutionWindows(
     windows.push_back(ConvolutionWindow{
         .lhs_dilation = get_or_one(lhs_dilation, i),
         .padding = padding_values[2 * i] + padding_values[2 * i + 1],
-        .window_size = DilatedSize(rhs_type.getDimSize(kernel_spatial_dims[i]),
+        .window_size = DilatedSize(rhs_dims[kernel_spatial_dims[i]].size,
                                    get_or_one(rhs_dilation, i)),
         .stride = get_or_one(window_strides, i),
     });
   }
   return windows;
+}
+
+// Infers the static result shape of a convolution at the upper bounds of `lhs`
+// and `rhs`, like the StableHLO shape inference.
+Dimensions InferStaticConvolutionResultShape(
+    const stablehlo::ConvDimensionNumbersAttr dimension_numbers,
+    const stablehlo::Dimensions& lhs_dims,
+    const stablehlo::Dimensions& rhs_dims, const int64_t batch_group_count,
+    const mlir::ArrayRef<ConvolutionWindow> windows) {
+  const mlir::ArrayRef<int64_t> input_spatial_dims =
+      dimension_numbers.getInputSpatialDimensions();
+  const mlir::ArrayRef<int64_t> output_spatial_dims =
+      dimension_numbers.getOutputSpatialDimensions();
+  Dimensions result_shape(lhs_dims.size());
+  result_shape[dimension_numbers.getOutputBatchDimension()] =
+      lhs_dims[dimension_numbers.getInputBatchDimension()].size /
+      batch_group_count;
+  result_shape[dimension_numbers.getOutputFeatureDimension()] =
+      rhs_dims[dimension_numbers.getKernelOutputFeatureDimension()].size;
+  for (int64_t i = 0; i < static_cast<int64_t>(windows.size()); ++i) {
+    result_shape[output_spatial_dims[i]] =
+        ConvolutionResultSize(windows[i], lhs_dims[input_spatial_dims[i]].size);
+  }
+  return result_shape;
 }
 
 // Bounds the dimensions of the static convolution `result` that depend on the
@@ -283,6 +331,82 @@ mlir::MlirOp BoundConvolutionResult(
   return result;
 }
 
+// Suffix of the error messages about unsupported bounded dynamic dimensions.
+constexpr std::string_view kSupportedBounds =
+    "; only the batch and spatial dimensions of the input (and of grad_output "
+    "in convolution_backward) may be bounded dynamic";
+
+// Returns a kPythonNotImplementedError if the bounded dynamic dimensions of
+// the convolution operands are not supported by ConvolutionLike, see its
+// documentation. The operand types are only used in the error messages.
+absl::Status ValidateConvolutionBounds(
+    const mlir::RankedTensorType lhs_type,
+    const stablehlo::Dimensions& lhs_dims,
+    const mlir::RankedTensorType rhs_type,
+    const stablehlo::Dimensions& rhs_dims,
+    const stablehlo::ConvDimensionNumbersAttr dimension_numbers,
+    const int64_t feature_group_count, const int64_t batch_group_count,
+    const bool has_result_dims) {
+  auto is_bounded = [](const stablehlo::Dimensions& dims, const int64_t dim) {
+    return dims[dim].boundOp.has_value();
+  };
+
+  const int64_t lhs_batch_dim = dimension_numbers.getInputBatchDimension();
+  TT_RET_CHECK(batch_group_count == 1 || !is_bounded(lhs_dims, lhs_batch_dim),
+               error::kPythonNotImplementedError)
+      << "expected a static size in dimension " << lhs_batch_dim
+      << " of the lhs operand of a convolution with batch_group_count "
+      << batch_group_count << ", got lhs type " << mlir::debugString(lhs_type)
+      << kSupportedBounds;
+
+  const int64_t lhs_feature_dim = dimension_numbers.getInputFeatureDimension();
+  const int64_t rhs_feature_dim =
+      dimension_numbers.getKernelInputFeatureDimension();
+  const bool lhs_feature_bounded = is_bounded(lhs_dims, lhs_feature_dim);
+  TT_RET_CHECK(lhs_feature_bounded == is_bounded(rhs_dims, rhs_feature_dim),
+               error::kPythonNotImplementedError)
+      << "expected the contracted feature dimensions of a convolution to be "
+         "both static or both bounded dynamic, got dimension "
+      << lhs_feature_dim << " of the lhs operand of type "
+      << mlir::debugString(lhs_type) << " and dimension " << rhs_feature_dim
+      << " of the rhs operand of type " << mlir::debugString(rhs_type)
+      << kSupportedBounds;
+  const int64_t lhs_feature_bound = lhs_dims[lhs_feature_dim].size;
+  const int64_t rhs_feature_bound = rhs_dims[rhs_feature_dim].size;
+  TT_RET_CHECK(!lhs_feature_bounded || (feature_group_count == 1 &&
+                                        lhs_feature_bound == rhs_feature_bound),
+               error::kPythonNotImplementedError)
+      << "expected the bounded dynamic contracted feature dimensions of a "
+         "convolution to have equal upper bounds and feature_group_count 1, "
+         "got upper bound "
+      << lhs_feature_bound << " in dimension " << lhs_feature_dim
+      << " of the lhs operand of type " << mlir::debugString(lhs_type)
+      << ", upper bound " << rhs_feature_bound << " in dimension "
+      << rhs_feature_dim << " of the rhs operand of type "
+      << mlir::debugString(rhs_type) << " and feature_group_count "
+      << feature_group_count << kSupportedBounds;
+
+  const int64_t rhs_output_feature_dim =
+      dimension_numbers.getKernelOutputFeatureDimension();
+  TT_RET_CHECK(!is_bounded(rhs_dims, rhs_output_feature_dim),
+               error::kPythonNotImplementedError)
+      << "expected a static size in the output feature dimension "
+      << rhs_output_feature_dim
+      << " of the rhs operand of a convolution, got "
+         "rhs type "
+      << mlir::debugString(rhs_type) << kSupportedBounds;
+
+  if (has_result_dims) return absl::OkStatus();
+  for (const int64_t dim : dimension_numbers.getKernelSpatialDimensions()) {
+    TT_RET_CHECK(!is_bounded(rhs_dims, dim), error::kPythonNotImplementedError)
+        << "expected static spatial dimensions of the rhs operand of a "
+           "convolution, got a bounded dynamic size in dimension "
+        << dim << " of the rhs operand of type " << mlir::debugString(rhs_type)
+        << kSupportedBounds;
+  }
+  return absl::OkStatus();
+}
+
 }  // namespace
 
 mlir::stablehlo::Dimensions GetDimensions(mlir::Value value) {
@@ -295,6 +419,15 @@ mlir::stablehlo::Dimensions GetDimensions(mlir::Value value) {
 
 mlir::stablehlo::Dimensions GetDimensions(mlir::MlirOp input) {
   return GetDimensions(input.getValue());
+}
+
+Dimensions GetStaticShape(const mlir::stablehlo::Dimensions& dims) {
+  Dimensions shape;
+  shape.reserve(dims.size());
+  for (const mlir::stablehlo::DimensionInfo& dim : dims) {
+    shape.push_back(dim.size);
+  }
+  return shape;
 }
 
 std::string DebugString(mlir::Operation* absl_nonnull op,
@@ -661,14 +794,8 @@ RngBitGeneratorResults RngBitGeneratorLike(
       << "rank mismatch between output_type (" << output_type.getRank()
       << ") and shape_reference (" << dims.size() << ")";
 
-  llvm::SmallVector<int64_t> static_shape;
-  static_shape.reserve(dims.size());
-  for (const auto& dim_info : dims) {
-    static_shape.push_back(dim_info.size);
-  }
-
-  mlir::RankedTensorType static_rng_bits_type =
-      mlir::RankedTensorType::get(static_shape, output_type.getElementType());
+  mlir::RankedTensorType static_rng_bits_type = mlir::RankedTensorType::get(
+      GetStaticShape(dims), output_type.getElementType());
 
   auto rng_bits_op = mlir::stablehlo::RngBitGeneratorOp::create(
       op_builder, rng_input_state.getValue().getLoc(), rng_input_state_type,
@@ -677,17 +804,7 @@ RngBitGeneratorResults RngBitGeneratorLike(
   mlir::MlirOp rng_output_state =
       mlir::MlirOp(builder, rng_bits_op.getOutputState());
   mlir::MlirOp current_op = mlir::MlirOp(builder, rng_bits_op.getOutput());
-
-  for (const auto& dim_info : dims) {
-    if (!dim_info.boundOp.has_value()) continue;
-
-    auto runtime_dim_size = mlir::stablehlo::GetDimensionSize(
-        *shape_reference, dim_info.boundOpDim);
-    current_op = mlir::stablehlo::SetDimensionSize(current_op, runtime_dim_size,
-                                                   dim_info.boundOpDim);
-  }
-
-  return {rng_output_state, current_op};
+  return {rng_output_state, BoundFromDimensions(current_op, dims)};
 }
 
 absl::StatusOr<mlir::MlirOp> ConvolutionLike(
@@ -700,64 +817,74 @@ absl::StatusOr<mlir::MlirOp> ConvolutionLike(
     const mlir::DenseI64ArrayAttr lhs_dilation,
     const mlir::DenseI64ArrayAttr rhs_dilation,
     const mlir::DenseBoolArrayAttr window_reversal,
-    const mlir::ArrayAttr precision_config) {
+    const mlir::ArrayAttr precision_config,
+    const std::optional<stablehlo::Dimensions>& result_dims) {
   const mlir::RankedTensorType lhs_type = GetTensorTypeOrDie(lhs);
   const mlir::RankedTensorType rhs_type = GetTensorTypeOrDie(rhs);
-  if (lhs_type.hasStaticShape() && rhs_type.hasStaticShape()) {
+  if (result_dims.has_value()) {
+    ABSL_CHECK_EQ(  // CRASH_OK=internal invariant.
+        static_cast<int64_t>(result_dims->size()), lhs_type.getRank());
+  }
+  if (lhs_type.hasStaticShape() && rhs_type.hasStaticShape() &&
+      !HasBoundedDimension(result_dims)) {
+    const mlir::RankedTensorType static_result_type =
+        result_dims.has_value()
+            ? mlir::RankedTensorType::get(GetStaticShape(*result_dims),
+                                          result_type.getElementType())
+            : result_type;
     return stablehlo::Convolution(
-        result_type, lhs, rhs, dimension_numbers, feature_group_count,
+        static_result_type, lhs, rhs, dimension_numbers, feature_group_count,
         batch_group_count, window_strides, padding, lhs_dilation, rhs_dilation,
         window_reversal, precision_config);
   }
 
-  const int64_t batch_dim = dimension_numbers.getInputBatchDimension();
-  TT_RET_CHECK(
-      rhs_type.hasStaticShape() &&
-          !lhs_type.isDynamicDim(
-              dimension_numbers.getInputFeatureDimension()) &&
-          (batch_group_count == 1 || !lhs_type.isDynamicDim(batch_dim)),
-      error::kPythonNotImplementedError)
-      << "expected bounded dynamic dimensions of a convolution only in the "
-         "input spatial dimensions, or in the input batch dimension if "
-         "batch_group_count is 1, got input type "
-      << mlir::debugString(lhs_type) << ", kernel type "
-      << mlir::debugString(rhs_type) << " and batch_group_count "
-      << batch_group_count;
+  const stablehlo::Dimensions lhs_dims = GetDimensions(lhs);
+  const stablehlo::Dimensions rhs_dims = GetDimensions(rhs);
+  TT_RETURN_IF_ERROR(ValidateConvolutionBounds(
+      lhs_type, lhs_dims, rhs_type, rhs_dims, dimension_numbers,
+      feature_group_count, batch_group_count, result_dims.has_value()));
 
   // XLA rejects bounded dynamic spatial dimensions on convolutions, so run the
-  // convolution on lhs made static at its upper bounds. The elements past the
-  // runtime sizes of the bounded spatial dimensions are undefined, so zero them
-  // to act like zero padding. The batch dimension needs no zeroing, as each
-  // result batch element only reads the same lhs batch element.
-  const mlir::ArrayRef<int64_t> input_spatial_dims =
-      dimension_numbers.getInputSpatialDimensions();
+  // convolution on lhs and rhs made static at their upper bounds. The elements
+  // past the runtime sizes of the bounded dimensions are undefined, so zero
+  // them to act like zero padding. The lhs batch dimension needs no zeroing,
+  // as each result batch element only reads the same lhs batch element.
   const StaticAtBounds static_lhs = MakeStaticAtBounds(lhs);
+  const StaticAtBounds static_rhs = MakeStaticAtBounds(rhs);
   mlir::MlirOp zeroed_lhs = ZeroPastRuntimeSizes(
-      static_lhs.op, input_spatial_dims, static_lhs.runtime_sizes);
+      static_lhs.op, static_lhs.runtime_sizes,
+      /*unzeroed_dim=*/dimension_numbers.getInputBatchDimension());
+  mlir::MlirOp zeroed_rhs =
+      ZeroPastRuntimeSizes(static_rhs.op, static_rhs.runtime_sizes);
 
   const llvm::SmallVector<ConvolutionWindow> windows =
-      GetConvolutionWindows(dimension_numbers, rhs_type, window_strides,
+      GetConvolutionWindows(dimension_numbers, rhs_dims, window_strides,
                             padding, lhs_dilation, rhs_dilation);
-
-  // Infer the static result shape like the StableHLO shape inference.
-  const stablehlo::Dimensions lhs_dims = GetDimensions(lhs);
-  const mlir::ArrayRef<int64_t> output_spatial_dims =
-      dimension_numbers.getOutputSpatialDimensions();
-  Dimensions result_shape(lhs_type.getRank());
-  result_shape[dimension_numbers.getOutputBatchDimension()] =
-      lhs_dims[batch_dim].size / batch_group_count;
-  result_shape[dimension_numbers.getOutputFeatureDimension()] =
-      rhs_type.getDimSize(dimension_numbers.getKernelOutputFeatureDimension());
-  for (int64_t i = 0; i < static_cast<int64_t>(windows.size()); ++i) {
-    result_shape[output_spatial_dims[i]] =
-        ConvolutionResultSize(windows[i], lhs_dims[input_spatial_dims[i]].size);
+  const Dimensions result_shape = InferStaticConvolutionResultShape(
+      dimension_numbers, lhs_dims, rhs_dims, batch_group_count, windows);
+  if (result_dims.has_value()) {
+    // Mismatches come from bounded dynamic operand dimensions that the result
+    // doesn't follow, like a bounded input channel dimension in
+    // convolution_backward, as the callers derive the padding from the same
+    // spatial bounds.
+    TT_RET_CHECK(GetStaticShape(*result_dims) == result_shape,
+                 error::kPythonNotImplementedError)
+        << "expected the convolution result shape inferred at the upper bounds "
+           "of the lhs operand of type "
+        << mlir::debugString(lhs_type) << " and the rhs operand of type "
+        << mlir::debugString(rhs_type) << " to be "
+        << ToString(GetStaticShape(*result_dims)) << ", got "
+        << ToString(result_shape) << kSupportedBounds;
   }
 
   mlir::MlirOp result = stablehlo::Convolution(
       mlir::RankedTensorType::get(result_shape, result_type.getElementType()),
-      zeroed_lhs, rhs, dimension_numbers, feature_group_count,
+      zeroed_lhs, zeroed_rhs, dimension_numbers, feature_group_count,
       batch_group_count, window_strides, padding, lhs_dilation, rhs_dilation,
       window_reversal, precision_config);
+  if (result_dims.has_value()) {
+    return BoundFromDimensions(result, *result_dims);
+  }
   return BoundConvolutionResult(result, dimension_numbers, windows,
                                 static_lhs.runtime_sizes);
 }
