@@ -15,6 +15,7 @@
 """Unit tests for TorchTPU API lifecycle stage annotations."""
 
 import enum
+import sys
 import types
 from typing import Any
 from unittest import mock
@@ -754,13 +755,61 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
         getattr(sample_func, annotations.TT_API_PREFER), "torch.public_func"
     )
 
-  def test_internal_function_warns_once_for_user_caller(self):
-    """Verifies that calling an internal function from user code warns once."""
+  def test_internal_function_raises_for_user_caller(self):
+    """Verifies that calling a strict internal function from user code raises."""
+    calls = []
 
     @internal_or_experimental(
         internal_when=True,
         experimental_msg="Testing experimental feature.",
         prefer="torch.public_func",
+    )
+    def sample_func(x: int) -> int:
+      calls.append(x)
+      return x * 2
+
+    self.assertEqual(getattr(sample_func, annotations.TT_API_STAGE), "Internal")
+    with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("always")
+      # Every call raises, not only the first one.
+      for x in range(3):
+        with self.assertRaises(RuntimeError) as cm:
+          sample_func(x)
+        self.assertEqual(
+            str(cm.exception),
+            "sample_func is internal to TorchTPU and can only be called by the"
+            " PyTorch framework (torch and torch_tpu). Use torch.public_func"
+            " instead.",
+        )
+    self.assertEmpty(w)
+    # The wrapped function isn't called.
+    self.assertEmpty(calls)
+
+  def test_internal_function_without_prefer_raises(self):
+    """Verifies the error of a strict internal function without `prefer`."""
+
+    @internal_or_experimental(
+        internal_when=True, experimental_msg="Testing experimental feature."
+    )
+    def sample_func() -> None:
+      pass
+
+    with self.assertRaises(RuntimeError) as cm:
+      sample_func()
+    self.assertEqual(
+        str(cm.exception),
+        "sample_func is internal to TorchTPU and can only be called by the"
+        " PyTorch framework (torch and torch_tpu).",
+    )
+
+  def test_non_strict_internal_function_warns_once_for_user_caller(self):
+    """Verifies that calling a non-strict internal function warns once."""
+
+    @internal_or_experimental(
+        internal_when=True,
+        experimental_msg="Testing experimental feature.",
+        prefer="torch.public_func",
+        strict=False,
     )
     def sample_func(x: int) -> int:
       return x * 2
@@ -780,11 +829,13 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
     # The warning points at the caller.
     self.assertEqual(w[0].filename, __file__)
 
-  def test_internal_function_without_prefer_warns(self):
-    """Verifies the warning of an internal function without `prefer`."""
+  def test_non_strict_internal_function_without_prefer_warns(self):
+    """Verifies the warning of a non-strict internal function without `prefer`."""
 
     @internal_or_experimental(
-        internal_when=True, experimental_msg="Testing experimental feature."
+        internal_when=True,
+        experimental_msg="Testing experimental feature.",
+        strict=False,
     )
     def sample_func() -> None:
       pass
@@ -801,8 +852,81 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
         " and may change or be removed without notice.",
     )
 
+  def test_internal_or_experimental_is_experimental_when_not_internal_and_strict(
+      self,
+  ):
+    """Verifies that `strict` doesn't apply to APIs that aren't internal."""
+
+    @internal_or_experimental(
+        internal_when=False,
+        experimental_msg="Testing experimental feature.",
+        strict=True,
+    )
+    def sample_func(x: int) -> int:
+      return x * 2
+
+    self.assertEqual(
+        getattr(sample_func, annotations.TT_API_STAGE), "Experimental"
+    )
+    with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("always")
+      self.assertEqual(sample_func(1), 2)
+      self.assertEqual(sample_func(2), 4)
+    self.assertLen(w, 1)
+    self.assertIn("sample_func is experimental", str(w[0].message))
+
   def test_internal_function_silent_for_framework_callers(self):
     """Verifies that torch and torch_tpu modules can call internal functions."""
+    for strict in (True, False):
+
+      @internal_or_experimental(
+          internal_when=True,
+          experimental_msg="Testing experimental feature.",
+          prefer="torch.public_func",
+          strict=strict,
+      )
+      def sample_func(x: int) -> int:
+        return x * 2
+
+      with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        for module_name in (
+            "torch",
+            "torch.accelerator",
+            "torch_tpu",
+            "torch_tpu._internal.x",
+        ):
+          self.assertEqual(
+              self._call_from_module(module_name, sample_func, 5),
+              10,
+              msg=(strict, module_name),
+          )
+        self.assertEmpty(w)
+
+      # Other modules, including TorchTPU tests, aren't part of the framework.
+      for module_name in (
+          "torchtitan",
+          "torchx",
+          "__main__",
+          "torch_tpu.tests",
+          "torch_tpu.tests.foo_test",
+      ):
+        if strict:
+          with self.assertRaisesRegex(
+              RuntimeError, "is internal to TorchTPU", msg=module_name
+          ):
+            self._call_from_module(module_name, sample_func, 5)
+        else:
+          _reset_warn_once(sample_func)
+          with self.assertWarnsRegex(
+              UserWarning, "is internal to TorchTPU", msg=module_name
+          ):
+            self.assertEqual(
+                self._call_from_module(module_name, sample_func, 5), 10
+            )
+
+  def test_internal_apis_allowed_for_testing(self):
+    """Verifies that tests can opt in to call strict internal functions."""
 
     @internal_or_experimental(
         internal_when=True,
@@ -812,28 +936,30 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
     def sample_func(x: int) -> int:
       return x * 2
 
-    with warnings.catch_warnings(record=True) as w:
-      warnings.simplefilter("always")
-      for module_name in (
-          "torch",
-          "torch.accelerator",
-          "torch_tpu._internal.x",
+    with self.assertRaisesRegex(RuntimeError, "is internal to TorchTPU"):
+      sample_func(5)
+
+    # The setting is read on every call, so it applies to APIs decorated
+    # before it's set. Calls then behave as with `strict=False`: they warn once.
+    with mock.patch.object(
+        annotations, "_internal_apis_allowed_for_testing", True
+    ):
+      with self.assertWarnsRegex(
+          UserWarning,
+          r"sample_func is internal to TorchTPU .* Use torch\.public_func"
+          r" instead\.$",
       ):
-        framework_fn = types.FunctionType(
-            (lambda fn: fn(5)).__code__, {"__name__": module_name}
-        )
-        self.assertEqual(framework_fn(sample_func), 10, msg=module_name)
+        self.assertEqual(sample_func(5), 10)
+      with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        self.assertEqual(sample_func(6), 12)
       self.assertEmpty(w)
 
-    # TorchTPU tests aren't part of the framework.
-    test_fn = types.FunctionType(
-        (lambda fn: fn(5)).__code__, {"__name__": "torch_tpu.tests.foo_test"}
-    )
-    with self.assertWarnsRegex(UserWarning, "is internal to TorchTPU"):
-      self.assertEqual(test_fn(sample_func), 10)
+    with self.assertRaisesRegex(RuntimeError, "is internal to TorchTPU"):
+      sample_func(5)
 
-  def test_internal_class_warns_for_user_caller(self):
-    """Verifies that instantiating an internal class from user code warns."""
+  def test_internal_class_raises_for_user_caller(self):
+    """Verifies that instantiating a strict internal class from user code raises."""
 
     @internal_or_experimental(
         internal_when=True,
@@ -849,6 +975,36 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
     self.assertEqual(
         getattr(SampleClass, annotations.TT_API_PREFER), "torch.PublicClass"
     )
+    framework_fn = types.FunctionType(
+        (lambda cls: cls(3)).__code__, {"__name__": "torch.nn"}
+    )
+    with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("always")
+      self.assertEqual(framework_fn(SampleClass).x, 3)
+      self.assertEmpty(w)
+    for _ in range(2):
+      with self.assertRaisesRegex(
+          RuntimeError,
+          r"^SampleClass is internal to TorchTPU and can only be called by the"
+          r" PyTorch framework \(torch and torch_tpu\)\. Use torch\.PublicClass"
+          r" instead\.$",
+      ):
+        SampleClass(1)
+
+  def test_non_strict_internal_class_warns_for_user_caller(self):
+    """Verifies that instantiating a non-strict internal class warns."""
+
+    @internal_or_experimental(
+        internal_when=True,
+        experimental_msg="Testing experimental feature.",
+        prefer="torch.PublicClass",
+        strict=False,
+    )
+    class SampleClass:
+
+      def __init__(self, x: int):
+        self.x = x
+
     framework_fn = types.FunctionType(
         (lambda cls: cls(3)).__code__, {"__name__": "torch.nn"}
     )
@@ -876,6 +1032,13 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
             experimental_msg="Testing experimental feature.",
             prefer=" ",
         )
+      for strict in (None, 0, 1, "True"):
+        with self.assertRaises(TypeError, msg=(internal_when, strict)):
+          internal_or_experimental(
+              internal_when=internal_when,
+              experimental_msg="Testing experimental feature.",
+              strict=strict,  # pytype: disable=wrong-arg-types
+          )
 
   def test_internal_function_traces_under_torch_compile(self):
     """Verifies internal functions trace without graph breaks."""
@@ -888,11 +1051,32 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
     def sample_func(x: torch.Tensor) -> torch.Tensor:
       return x * 2
 
-    # `fullgraph=True` raises on any graph break in the warning wrapper.
-    compiled = torch.compile(
-        lambda x: sample_func(x) + 1, backend="eager", fullgraph=True
+    # A framework caller, e.g. `torch.accelerator.*` calling `torch.tpu.*`.
+    # Older Dynamo versions import the module named by a frame's `__name__`
+    # when tracing its globals, so the module has to be in `sys.modules`.
+    framework_module = types.ModuleType("torch_tpu._internal.x")
+    framework_module.sample_func = sample_func
+    # Register only this module: `mock.patch.dict(sys.modules)` would also
+    # unload every module first imported during the test, e.g. by Dynamo.
+    self.assertNotIn(framework_module.__name__, sys.modules)
+    sys.modules[framework_module.__name__] = framework_module
+    self.addCleanup(sys.modules.pop, framework_module.__name__, None)
+    exec(  # pylint: disable=exec-used
+        "def framework_fn(x):\n  return sample_func(x) + 1\n",
+        framework_module.__dict__,
     )
-    self.assertEqual(compiled(torch.ones(3)).tolist(), [3.0, 3.0, 3.0])
+    framework_fn = framework_module.framework_fn
+    # `fullgraph=True` raises on any graph break in the wrapper. The caller
+    # isn't checked while compiling, so the user caller doesn't raise either.
+    for fn in (framework_fn, lambda x: sample_func(x) + 1):
+      torch._dynamo.reset()  # pylint: disable=protected-access
+      compiled = torch.compile(fn, backend="eager", fullgraph=True)
+      self.assertEqual(compiled(torch.ones(3)).tolist(), [3.0, 3.0, 3.0])
+
+    # The caller is still checked in eager mode.
+    self.assertEqual(framework_fn(torch.ones(3)).tolist(), [3.0, 3.0, 3.0])
+    with self.assertRaisesRegex(RuntimeError, "is internal to TorchTPU"):
+      sample_func(torch.ones(3))
 
   def test_parse_version(self):
     """Verifies parse_version and get_torch_version parse version tuples."""
@@ -930,19 +1114,22 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
               getattr(fn, annotations.TT_API_STAGE), "Experimental"
           )
 
-  def test_real_api_internal_device_count_warns(self):
-    """Verifies that calling internal torch.tpu.device_count() warns."""
+  def test_real_api_internal_device_count_raises(self):
+    """Verifies that calling internal torch.tpu.device_count() raises."""
     if annotations.get_torch_version() < (2, 11):
       self.skipTest("torch.tpu.device_count() is experimental.")
-    _reset_warn_once(torch.tpu.device_count)
-    with self.assertWarnsRegex(
-        UserWarning,
-        r"^<TorchTpu/ApiStage/InternalApi/> device_count is internal to"
-        r" TorchTPU .* Use torch\.accelerator\.device_count instead\.$",
+    with self.assertRaisesRegex(
+        RuntimeError,
+        r"^device_count is internal to TorchTPU and can only be called by the"
+        r" PyTorch framework \(torch and torch_tpu\)\. Use"
+        r" torch\.accelerator\.device_count instead\.$",
     ):
-      self.assertEqual(
-          torch.tpu.device_count(), torch.accelerator.device_count()
-      )
+      torch.tpu.device_count()
+    # The framework can still call it, e.g. through `torch.accelerator`.
+    self.assertEqual(
+        self._call_from_module("torch.accelerator", torch.tpu.device_count),
+        torch.accelerator.device_count(),
+    )
 
   def test_real_api_torch_accelerator_set_stream_works(self):
     """Verifies that torch.accelerator.set_stream works on TPU."""

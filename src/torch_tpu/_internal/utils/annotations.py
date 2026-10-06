@@ -27,8 +27,11 @@ The @internal_or_experimental decorator marks a TorchTPU Python API as either
 experimental or internal, depending on a condition (e.g. the PyTorch version).
 An internal API is treated like one with a `_` prefix in its path. It's meant to
 be called only by the PyTorch framework (torch and torch_tpu); calling it from
-any other module emits a one-time warning per process that points to the
-preferred alternative, if any.
+any other module raises a RuntimeError that points to the preferred
+alternative, if any. With `strict=False`, it emits a one-time warning per
+process instead. TorchTPU's own tests can set
+`_internal_apis_allowed_for_testing = True` to get the warning instead of the
+error.
 """
 
 import dataclasses
@@ -89,6 +92,13 @@ def _is_framework_caller_frame(frame: Any) -> bool:
       or mod.startswith("torch.")
       or mod.startswith("torch_tpu.")
   )
+
+
+# TorchTPU's own tests that verify internal APIs used by PyTorch (e.g.
+# `torch.tpu.get_rng_state`) may set this to True. Strict internal APIs then
+# emit the one-time `strict=False` warning instead of raising when called from
+# outside the framework. It's read on every call.
+_internal_apis_allowed_for_testing: bool = False
 
 
 class Stage(str, enum.Enum):
@@ -206,6 +216,7 @@ def _create_warning_wrapper(
     stage: Stage,
     reason: str,
     version: Optional[str] = None,
+    strict: bool = False,
 ) -> Callable[..., Any]:
   """Wraps a callable to emit a one-time warning per process before execution.
 
@@ -219,6 +230,10 @@ def _create_warning_wrapper(
     reason: Explanation for the stage.
     version: The version string when the target was deprecated (e.g. "2.13").
       Only used for deprecated targets.
+    strict: Whether to raise a RuntimeError on every call from outside the
+      framework instead of warning once, unless
+      `_internal_apis_allowed_for_testing` is True. Only used for internal
+      targets.
 
   Returns:
     The wrapped callable.
@@ -228,11 +243,15 @@ def _create_warning_wrapper(
   @functools.wraps(fn_to_wrap)  # type: ignore[arg-type]
   def wrapper(*args: Any, **kwargs: Any) -> Any:
     nonlocal _warned
+    raises = strict and not _internal_apis_allowed_for_testing
     # TorchDynamo cannot trace `sys._getframe()`, so skip the caller check while
     # compiling to let callers inside `torch.compile` regions trace through
     # without graph breaks. The warning is emitted on the first eager call
     # instead.
-    if not _warned and not torch.compiler.is_compiling():
+    # TODO(wan): Raise for outside callers under torch.compile when strict is
+    # True. Dynamo can't trace `sys._getframe()`, so this needs a trace-time
+    # caller check.
+    if (raises or not _warned) and not torch.compiler.is_compiling():
       try:
         caller_frame = sys._getframe(1)
       except (AttributeError, ValueError):
@@ -240,6 +259,12 @@ def _create_warning_wrapper(
 
       if not _is_framework_caller_frame(caller_frame):
         name = getattr(display_target, "__name__", str(display_target))
+        if raises:
+          msg = (
+              f"{name} is internal to TorchTPU and can only be called by the"
+              " PyTorch framework (torch and torch_tpu)."
+          )
+          raise RuntimeError(f"{msg} {reason}" if reason else msg)
         msg = stage.format_warning_message(name, reason, version)
         cat = stage.warning_category
         if cat is not None:
@@ -255,6 +280,7 @@ def _annotate_target(
     reason: str,
     version: Optional[str] = None,
     prefer: Optional[str] = None,
+    strict: bool = False,
 ) -> _T:
   """Attaches stage metadata and warning wrapper to a target function or class.
 
@@ -279,6 +305,8 @@ def _annotate_target(
       Only used for deprecated targets.
     prefer: The preferred alternative to the target, if any. Only used for
       internal targets.
+    strict: Whether calls from outside the framework raise a RuntimeError
+      instead of warning once. Only used for internal targets.
 
   Returns:
     The annotated target.
@@ -291,14 +319,14 @@ def _annotate_target(
     # Attach warning wrapper to the `__init__` method
     if stage.warning_category is not None:
       target.__init__ = _create_warning_wrapper(
-          target.__init__, target, stage, reason, version
+          target.__init__, target, stage, reason, version, strict
       )  # pylint: disable=protected-access
     return target
 
   # 2. Handle Function / Callable
   if stage.warning_category is not None:
     wrapper = _create_warning_wrapper(
-        target, target, stage, reason, version  # type: ignore[arg-type]
+        target, target, stage, reason, version, strict  # type: ignore[arg-type]
     )
     # Attach stage metadata to the wrapper as well, so external reflection and
     # scanner tools inspecting the returned wrapper can access the attributes.
@@ -380,6 +408,7 @@ def internal_or_experimental(
     internal_when: bool,
     experimental_msg: str,
     prefer: Optional[str] = None,
+    strict: bool = True,
 ) -> Callable[[_T], _T]:
   """Marks a TorchTPU Python API (function or class) as internal or experimental.
 
@@ -388,22 +417,30 @@ def internal_or_experimental(
   in the running PyTorch version.
 
   When `internal_when` is False, this is equivalent to
-  `@experimental(experimental_msg)`.
+  `@experimental(experimental_msg)`, regardless of `strict`.
 
   When `internal_when` is True, the API is internal: an implementation detail
   meant to be used only by the PyTorch framework (the torch and torch_tpu
   packages), even if it's exposed under a public namespace (e.g. torch.tpu.*)
   for PyTorch to find it. It's treated like an API with a `_` prefix in its
-  path, e.g. it isn't listed as a public API. Like an experimental API, calling
-  an internal function or instantiating an internal class from any other module
-  (including user code and tests) triggers a one-time warning per process, which
-  names `prefer` if it's given.
+  path, e.g. it isn't listed as a public API. Calling an internal function or
+  instantiating an internal class from any other module (e.g. user code):
+  - raises a RuntimeError on every such call if `strict` is True, or
+  - triggers a one-time warning per process if `strict` is False.
+  The error or warning names `prefer` if it's given. TorchTPU's own tests can
+  set `_internal_apis_allowed_for_testing = True` to get the warning instead of
+  the error.
+
+  The caller isn't checked while the call is traced by `torch.compile`, as
+  TorchDynamo can't trace the caller lookup; such calls neither raise nor warn.
 
   Args:
     internal_when: Whether the API is internal.
     experimental_msg: Non-empty explanation for why the API is experimental.
     prefer: Optional dotted path to the preferred alternative to use while the
       API is internal, e.g. "torch.accelerator.synchronize".
+    strict: Whether calling the API from outside the framework raises a
+      RuntimeError (True) or only warns once (False) when it's internal.
 
   Returns:
     The decorated function or class with internal or experimental stage
@@ -419,11 +456,15 @@ def internal_or_experimental(
         "@internal_or_experimental 'prefer' must be a non-empty string when"
         " provided."
     )
+  if not isinstance(strict, bool):
+    raise TypeError(
+        f"@internal_or_experimental 'strict' must be a bool, got {strict!r}."
+    )
   if not internal_when:
     return experimental(experimental_msg)
   reason = f"Use {prefer} instead." if prefer else ""
   return lambda target: _annotate_target(
-      target, stage=Stage.INTERNAL, reason=reason, prefer=prefer
+      target, stage=Stage.INTERNAL, reason=reason, prefer=prefer, strict=strict
   )
 
 

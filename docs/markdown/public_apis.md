@@ -240,8 +240,14 @@ PyTorch deprecation policy instead.
 
 Some internal APIs are in a public namespace for PyTorch to call, but they
 aren't meant to be used directly. They may change or be removed at any time
-without a deprecation process. Using one triggers a one-time warning. Use its
-recommended alternative instead.
+without a deprecation process. Calling one from your code raises an error. Use
+its recommended alternative instead.
+
+Each API below is internal in the PyTorch versions that provide its recommended
+alternative: PyTorch 2.11 or later for the `torch.accelerator` APIs, and PyTorch
+2.13 or later for the `torch.accelerator.random` APIs. In the rare case that you
+use an older PyTorch version, the API is experimental instead, and you can call
+it.
 
 <!-- BEGIN GENERATED: Internal APIs -->
 

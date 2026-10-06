@@ -22,7 +22,14 @@ import torch
 from torch._dynamo.device_interface import DeviceInterface
 from torch._dynamo.device_interface import get_interface_for_device
 from torch_tpu._internal.device import _device_module
+from torch_tpu._internal.utils import annotations
 from tests.device import device_module_testing
+
+
+def setUpModule():
+  # Test the internal torch.tpu device APIs that PyTorch uses, e.g. through the
+  # TorchDynamo device interface.
+  annotations._internal_apis_allowed_for_testing = True  # pylint: disable=protected-access
 
 
 # Test cases are defined in device_module_testing.DeviceModuleBase

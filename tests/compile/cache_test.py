@@ -56,9 +56,15 @@ from absl import logging
 from absl.testing import absltest
 import torch
 from torch_tpu._internal import testing as tt_testing
+from torch_tpu._internal.utils import annotations
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
 from tests import subprocess_test_utils
+
+
+def setUpModule():
+  # The test calls the internal `torch.tpu.get_rng_state` API.
+  annotations._internal_apis_allowed_for_testing = True  # pylint: disable=protected-access
 
 
 class TestMode(enum.Enum):

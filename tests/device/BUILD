@@ -49,6 +49,7 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/device:_device_module",
         "//src/torch_tpu/_internal/device:_device_ops_backend",
+        "//src/torch_tpu/_internal/utils:annotations",
     ],
 )
 

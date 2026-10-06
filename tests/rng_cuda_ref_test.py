@@ -23,12 +23,18 @@ from unittest import mock
 from absl import flags
 from absl.testing import absltest
 import torch
+from torch_tpu._internal.utils import annotations
 from tests import accelerator_test_utils
 from tests import seed_test_utils
 
 _BACKEND = flags.DEFINE_string(
     "backend", "tpu", "The backend to test: 'tpu' or 'gpu'."
 )
+
+
+def setUpModule():
+  # The tests compare the internal `torch.tpu` RNG APIs with `torch.cuda`.
+  annotations._internal_apis_allowed_for_testing = True  # pylint: disable=protected-access
 
 
 def _fail_on_tpu(reason: str):

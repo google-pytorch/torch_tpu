@@ -23,6 +23,7 @@ import threading
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
+from torch_tpu._internal.utils import annotations
 from tests import seed_test_utils
 
 RNG_OPS = (
@@ -69,6 +70,11 @@ RNG_OPS = (
         50,  # Offset increment: 100 (size) * 64 (bits) // 128 (philox step).
     ),
 )
+
+
+def setUpModule():
+  # The test reads the RNG offset with the internal `torch.tpu.get_rng_state`.
+  annotations._internal_apis_allowed_for_testing = True  # pylint: disable=protected-access
 
 
 def get_current_generator_offset() -> int:

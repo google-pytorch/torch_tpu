@@ -25,6 +25,7 @@ from absl import flags
 from absl.testing import absltest
 import torch
 import torch.multiprocessing as mp
+from torch_tpu._internal.utils import annotations
 from torch_tpu._internal.utils import hardware
 from torch_tpu._internal.distributed import multiprocessing
 from tests import accelerator_test_utils
@@ -34,6 +35,11 @@ from tests.distributed import distributed_utils
 _BACKEND = flags.DEFINE_string(
     "backend", "tpu", "The backend to test: 'tpu' or 'gpu'."
 )
+
+
+def setUpModule():
+  # The tests compare the internal `torch.tpu` RNG APIs with `torch.cuda`.
+  annotations._internal_apis_allowed_for_testing = True  # pylint: disable=protected-access
 
 
 # Worker callbacks are defined as standalone module-level functions rather
@@ -96,6 +102,9 @@ def _multiprocess_worker(
       seed.
     ops_fn: Callable taking (backend_mod, dev, rank) returning output result.
   """
+  # The workers call the internal `torch.tpu` RNG APIs. `setUpModule` doesn't
+  # run in spawned processes, so allow them here too.
+  annotations._internal_apis_allowed_for_testing = True  # pylint: disable=protected-access
   rank = int(os.environ["LOCAL_RANK"])
   backend_mod = accelerator_test_utils.get_backend_module(backend_name)
   # On GPU/CUDA, all devices are visible, so set to rank.

@@ -16,7 +16,14 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import torch
 from torch._subclasses import fake_tensor
+from torch_tpu._internal.utils import annotations
 from tests import seed_test_utils
+
+
+def setUpModule():
+  # Test internal torch.tpu RNG APIs that PyTorch uses, e.g. in
+  # `torch.utils.checkpoint`.
+  annotations._internal_apis_allowed_for_testing = True  # pylint: disable=protected-access
 
 
 class RngTest(seed_test_utils.RepeatableTest):

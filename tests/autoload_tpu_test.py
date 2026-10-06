@@ -29,7 +29,8 @@ class AutoloadTpuTest(absltest.TestCase):  # ABSLTEST_OK=Autoload test
   def test_torch_dot_tpu(self):
     import torch.tpu as module  # pylint: disable=g-import-not-at-top
 
-    self.assertTrue(module.is_available())
+    self.assertIs(module, torch.tpu)
+    self.assertTrue(torch.accelerator.is_available())
 
   def test_torch_tpu_device(self):
     device = torch.device("tpu")

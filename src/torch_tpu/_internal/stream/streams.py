@@ -269,7 +269,7 @@ class TpuEvent(torch.Event):
   def record(self, stream: torch.Stream | None = None) -> Self:
     """Snapshot all pending async futures on the current device."""
     if stream is None:
-      stream = torch.tpu.current_stream()
+      stream = torch.accelerator.current_stream()
     elif not isinstance(stream, torch.Stream):
       raise TypeError(f'expected torch.Stream, but got {type(stream).__name__}')
     super().record(stream)
@@ -329,8 +329,8 @@ class TpuEvent(torch.Event):
   def synchronize(self) -> None:
     """Block until all snapshotted futures complete.
 
-    Unlike ``torch.tpu.synchronize()``, which waits for all pending D2H copies
-    on the device, this only waits for futures that were pending when
+    Unlike ``torch.accelerator.synchronize()``, which waits for all pending D2H
+    copies on the device, this only waits for futures that were pending when
     :meth:`record` was called. If ``record()`` was never called, this returns
     immediately.
     """

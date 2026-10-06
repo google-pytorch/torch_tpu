@@ -26,12 +26,18 @@ import torch
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import sync
 from torch_tpu._internal import testing as tt_testing
+from torch_tpu._internal.utils import annotations
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.utils import utils as tt_utils
 from tests import oss_utils
 from tests import seed_test_utils
 
 EagerMode: TypeAlias = execution_mode.EagerMode
+
+
+def setUpModule():
+  # Compare torch.accelerator APIs with the internal torch.tpu APIs they use.
+  annotations._internal_apis_allowed_for_testing = True  # pylint: disable=protected-access
 
 
 class AcceleratorDeviceTest(seed_test_utils.RepeatableTest):
