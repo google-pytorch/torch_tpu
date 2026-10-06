@@ -261,8 +261,10 @@ def get_qwen3_5_397b_a17b_model(
       load_weights=False,
       modify_config_hook=modify_config_hook,
   )
-  config = module_spec.config
-  assert config is not None
+  assert module_spec.config is not None
+  # `module_registry` wraps configs for uniform dict/attribute access, but HF
+  # model constructors require the underlying `PreTrainedConfig`.
+  config = module_spec.config.unwrap()
 
   # 1. Instantiate on meta device without allocating storage
   with torch.device("meta"):
