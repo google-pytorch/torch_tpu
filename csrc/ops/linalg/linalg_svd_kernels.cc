@@ -38,6 +38,7 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
 #include "csrc/common/to_string.h"
+#include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
@@ -1619,10 +1620,10 @@ absl::Status HandleEmptyInputSvd(const at::Tensor& self, bool full_matrices,
   const int64_t dim = (m == 0) ? n : m;
   TT_ASSIGN_OR_RETURN(const mlir::ElementType dtype,
                       ConvertTo<mlir::ElementType>(target.scalar_type()));
-  const at::IntArrayRef batch = self.sizes().slice(0, self.dim() - 2);
+  Dimensions batch = CopyIntVector(self.sizes().slice(0, self.dim() - 2));
   return ApplyNullaryOpOut(
       target,
-      [dtype, dim, batch](mlir::MlirBuilder& builder) {
+      [dtype, dim, batch = std::move(batch)](mlir::MlirBuilder& builder) {
         return BuildBatchedEye(builder, dtype, dim, batch);
       },
       target.scalar_type(), target.sizes(), OpParamCacheKeys::Empty());
