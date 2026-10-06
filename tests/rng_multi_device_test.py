@@ -261,14 +261,15 @@ class SingleProcessMultiDeviceTest(_BaseRngTest):
     for exp, act in zip(expected_outs, actual_outs):
       self.assertTrue(torch.equal(exp, act))
 
+  # TODO(b/570289109): Multi-threaded eager execution across devices is not
+  # thread-safe on TPU due to race conditions in eager graph compilation
+  # traversal.
+  @_fail_on_tpu(
+      "TPU backend does not support querying or executing on non-current"
+      " device in a single process."
+  )
   def test_multithread_eager_cross_device_isolation(self):
     """Verifies threads on distinct devices produce deterministic outputs."""
-    if self.backend == "tpu":
-      self.skipTest(
-          "TODO(b/570289109): Multi-threaded eager execution across devices is"
-          " not thread-safe on TPU due to race conditions in eager graph"
-          " compilation traversal."
-      )
     num_devices = torch.accelerator.device_count()
     self.assertGreater(
         num_devices,
@@ -291,6 +292,9 @@ class SingleProcessMultiDeviceTest(_BaseRngTest):
           dev = accelerator_test_utils.get_device(self.backend, thread_id)
           with torch.accelerator.device_index(thread_id):
             self.backend_mod.manual_seed(42 + thread_id)
+            self.assertEqual(
+                self._get_device_rng_seed(thread_id), 42 + thread_id
+            )
             tensors = [torch.rand(10, device=dev) for _ in range(5)]
             results[thread_id] = torch.stack(tensors).cpu()
         except Exception as e:  # pylint: disable=broad-exception-caught
