@@ -1948,7 +1948,7 @@ torch_tpu_py_test(
     srcs = ["rng_cuda_ref_test.py"],
     args = ["--backend=tpu"],
     main = "rng_cuda_ref_test.py",
-    tags = ["requires-tpu-v5lite:8"],
+    tags = ["requires-tpu-v5lite"],
     deps = [
         ":accelerator_test_utils",
         ":seed_test_utils",
@@ -1968,8 +1968,44 @@ torch_tpu_py_test(
     tags = [
         "nozapfhahn",  # Requires --config=cuda; excluded from Zapfhahn coverage.
         # Requires compute capability >= 7.0 for Triton / torch.compile.
+        _REQUIRES_GPU_FOR_NON_OPS_TEST,
+    ],
+    deps = [
+        ":accelerator_test_utils",
+        ":seed_test_utils",
+        "//shims/absl_py/flags",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "rng_multi_device_test",
+    srcs = ["rng_multi_device_test.py"],
+    args = ["--backend=tpu"],
+    main = "rng_multi_device_test.py",
+    tags = [
+        "requires-tpu-v5lite:8",
+    ],
+    deps = [
+        ":accelerator_test_utils",
+        ":seed_test_utils",
+        "//shims/absl_py/flags",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "rng_multi_device_test_cuda",
+    srcs = ["rng_multi_device_test.py"],
+    args = ["--backend=gpu"],
+    main = "rng_multi_device_test.py",
+    tags = [
+        "nozapfhahn",  # Requires --config=cuda; excluded from Zapfhahn coverage.
         # Requires 2 devices for multi-device tests.
-        # Multi-device sm80 is not available on Forge.
         "requires-gpu-sm90-full:2",
     ],
     deps = [
