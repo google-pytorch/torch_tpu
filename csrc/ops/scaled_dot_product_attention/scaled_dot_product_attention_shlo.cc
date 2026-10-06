@@ -168,11 +168,9 @@ bool IsSdpaSequenceAlignedAndLarge(mlir::MlirOp query, mlir::MlirOp key) {
   return is_multiple_of_128 || is_large_multiple_of_32;
 }
 
-// Returns true when XLA's MatchSoftmax rewriter can fuse forward SDPA into the
+// Returns true when XLA's MatchSoftmax rewriter can fuse SDPA into the
 // VMEM-tiled online-softmax custom call (requires aligned sequences <= 8192 and
-// head_dim >= 128 to saturate the 128x128 TPU MXU systolic array). When true,
-// forward SDPA must emit canonical Div(exp, Broadcast(sum_exp)) rather than
-// Mul(exp, Broadcast(inv_sum_exp)) so MatchSoftmax pattern matching succeeds.
+// head_dim >= 128 to saturate the 128x128 TPU MXU systolic array).
 bool CanUseXlaOnlineSoftmax(mlir::MlirOp query, mlir::MlirOp key) {
   if (!IsSdpaSequenceAlignedAndLarge(query, key)) {
     return false;
@@ -190,6 +188,35 @@ bool CanUseXlaOnlineSoftmax(mlir::MlirOp query, mlir::MlirOp key) {
 
   return seq_len_q <= kMaxOnlineSoftmaxSeqLen &&
          seq_len_kv <= kMaxOnlineSoftmaxSeqLen && head_dim >= kMinMxuHeadDim;
+}
+
+// In forward SDPA, masked or causal attention with long aligned sequences
+// (2048 <= seq_len <= 8192) routes to XLA's MatchSoftmax (online-softmax)
+// custom call rather than unmasked MatchAttn even when head_dim < 128 (such as
+// head_dim = 64 in Llama 3.2 1B), eliminating full [B, H, S_q, S_kv] HBM
+// attention matrix materialization.
+bool CanUseXlaOnlineSoftmaxForward(mlir::MlirOp query, mlir::MlirOp key,
+                                   bool has_mask_or_causal) {
+  if (CanUseXlaOnlineSoftmax(query, key)) {
+    return true;
+  }
+  if (!has_mask_or_causal || !IsSdpaSequenceAlignedAndLarge(query, key)) {
+    return false;
+  }
+  constexpr int64_t kMinMaskedOnlineSoftmaxSeqLen = 2048;
+  constexpr int64_t kMaxOnlineSoftmaxSeqLen = 8192;
+
+  const auto query_shape = GetTensorTypeOrDie(query).getShape();
+  const auto key_shape = GetTensorTypeOrDie(key).getShape();
+  const int query_rank = query_shape.size();
+  const int key_rank = key_shape.size();
+  const int64_t seq_len_q = query_shape[query_rank - 2];
+  const int64_t seq_len_kv = key_shape[key_rank - 2];
+
+  return seq_len_q >= kMinMaskedOnlineSoftmaxSeqLen &&
+         seq_len_kv >= kMinMaskedOnlineSoftmaxSeqLen &&
+         seq_len_q <= kMaxOnlineSoftmaxSeqLen &&
+         seq_len_kv <= kMaxOnlineSoftmaxSeqLen;
 }
 
 mlir::MlirOp ConvertElementTypeIfNeeded(mlir::MlirOp op,
@@ -519,7 +546,8 @@ absl::StatusOr<MlirOpResults<2>> BuildScaledDotProductFusedAttentionShloOp(
   mlir::MlirOp sum_exp = SumReduce(builder, exp_val, /*dimension=*/3);
   mlir::MlirOp softmax;
   if (IsSdpaSequenceAlignedAndLarge(query_mlir, key_mlir) &&
-      !CanUseXlaOnlineSoftmax(query_mlir, key_mlir)) {
+      !CanUseXlaOnlineSoftmaxForward(query_mlir, key_mlir,
+                                     is_causal || mask_mlir.has_value())) {
     auto one = MakeConstantLike(sum_exp, 1.0);
     mlir::MlirOp inv_sum_exp = mlir::stablehlo::Div(one, sum_exp);
     TT_ASSIGN_OR_RETURN(mlir::MlirOp inv_sum_exp_broadcasted,
