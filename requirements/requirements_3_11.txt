@@ -611,9 +611,9 @@ dataclasses-json==0.6.7 \
     --hash=sha256:0dbf33f26c8d5305befd61b39d2b3414e8a407bedc2834dea9b8d642666fb40a \
     --hash=sha256:b6b3e528266ea45b9535223bc53ca645f5208833c29229e847b3f26a1cc55fc0
     # via orbax-export
-datasets==4.8.0 \
-    --hash=sha256:3d1e79657f588baf42cfb4a51dd030ca7467e02222e7e88a5f31011884f4f355 \
-    --hash=sha256:e3fe0199939c6d7d59cb60f5819521ec75b8e670ed752396be2bf7881c9417f7
+datasets==5.0.1 \
+    --hash=sha256:9fbf73688f8c18f7529b4fe592abd04015f81d1e58001e4bac73ffb2b39d7cc4 \
+    --hash=sha256:ce22bb851efd7494f08aad33b940803784434f6e77763d00679a0dc45fcf686a
     # via torch-tpu (pyproject.toml)
 diffusers==0.37.0 \
     --hash=sha256:408789af73898585f525afd07ca72b3955affea4216a669558e9f59b5b1fe704 \
