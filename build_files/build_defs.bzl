@@ -788,9 +788,9 @@ def torch_tpu_cc_test(
         args = ["--suppress_failure_output"] + args
     tags = tags or []
     _fail_on_generic_requires_tpu_tag(tags)
-    data = kwargs.pop("data", [])
+    data = list(kwargs.pop("data", []))
     if is_oss():
-        data.append("@bazel_tools//tools/bash/runfiles")
+        data = data + ["@bazel_tools//tools/bash/runfiles"]
     kwargs["data"] = data
 
     cc_test_name = name
@@ -1105,12 +1105,12 @@ def torch_tpu_py_test(
         args = ["--suppress_failure_output"] + args
     tags = tags or []
     _fail_on_generic_requires_tpu_tag(tags)
-    data = kwargs.pop("data", [])
+    data = list(kwargs.pop("data", []))
     if is_wheel_test:
         if ":torch_tpu_wheel" not in data:
-            data.append(":torch_tpu_wheel")
+            data = data + [":torch_tpu_wheel"]
     if is_oss():
-        data.append("@bazel_tools//tools/bash/runfiles")
+        data = data + ["@bazel_tools//tools/bash/runfiles"]
     kwargs["data"] = data
 
     # Remove internal-only attributes

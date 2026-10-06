@@ -15,7 +15,6 @@
 """Unit tests for the test_utils module."""
 
 import gzip
-import hashlib
 import importlib.resources.abc
 import pathlib
 import plistlib
@@ -51,79 +50,6 @@ class TestUtilsTest(seed_test_utils.RepeatableTest):
       mock_files.assert_called_once_with(
           test_utils.goldens_pin.__package__ or test_utils.goldens_pin
       )
-
-  def test_download_golden_file_success(self):
-    payload = b"downloaded golden payload"
-    expected_hash = hashlib.sha256(payload).hexdigest()
-
-    mock_resp = mock.MagicMock()
-    mock_resp.read.return_value = payload
-    mock_resp.__enter__.return_value = mock_resp
-
-    with mock.patch.object(
-        test_utils.urllib.request, "urlopen", return_value=mock_resp
-    ) as mock_urlopen:
-      downloaded_data = test_utils.download_golden_file(
-          filename="ops_test_gpu_golden0.gz",
-          expected_sha256=expected_hash,
-          gcs_bucket="torchtpu-goldens",
-          gcs_path="ops_test/sample/ops_test_gpu_golden0.gz",
-      )
-      mock_urlopen.assert_called_once()
-      call_args = mock_urlopen.call_args[0]
-      req = call_args[0]
-      self.assertEqual(
-          req.full_url,
-          "https://storage.googleapis.com/torchtpu-goldens/ops_test/sample/ops_test_gpu_golden0.gz",
-      )
-      self.assertEqual(downloaded_data, payload)
-
-  def test_download_golden_file_checksum_mismatch_raises(self):
-    corrupted_payload = b"corrupted payload"
-    expected_hash = hashlib.sha256(b"correct payload").hexdigest()
-
-    mock_resp = mock.MagicMock()
-    mock_resp.read.return_value = corrupted_payload
-    mock_resp.__enter__.return_value = mock_resp
-
-    with mock.patch.object(
-        test_utils.urllib.request, "urlopen", return_value=mock_resp
-    ):
-      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=tool test
-          ValueError, "SHA-256 checksum mismatch"
-      ):
-        test_utils.download_golden_file(
-            filename="ops_test_gpu_golden0.gz",
-            expected_sha256=expected_hash,
-            gcs_bucket="torchtpu-goldens",
-            gcs_path="ops_test/sample/ops_test_gpu_golden0.gz",
-        )
-
-  def test_validate_sha256_success(self):
-    payload = b"valid data"
-    expected = hashlib.sha256(payload).hexdigest()
-    test_utils.validate_sha256(payload, expected)
-    test_utils.validate_sha256(payload, expected.upper())
-
-  def test_validate_sha256_mismatch_raises(self):
-    payload = b"actual data"
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=tool test
-        ValueError,
-        r"SHA-256 checksum mismatch for foo\.gz downloaded from"
-        r" http://example\.com/foo\.gz: expected deadbeef, got [0-9a-f]{64}",
-    ):
-      test_utils.validate_sha256(
-          payload,
-          "deadbeef",
-          filename="foo.gz",
-          url="http://example.com/foo.gz",
-      )
-
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=tool test
-        ValueError,
-        r"^SHA-256 checksum mismatch: expected deadbeef, got [0-9a-f]{64}$",
-    ):
-      test_utils.validate_sha256(payload, "deadbeef")
 
   @parameterized.named_parameters(
       (
@@ -180,125 +106,31 @@ class TestUtilsTest(seed_test_utils.RepeatableTest):
     dirs = test_utils.goldens_candidate_local_dirs(base_dir="/custom/path")
     self.assertIn(pathlib.Path("/custom/path"), dirs)
 
-  def test_fallback_local_files_exist_skips_gcs(self):
-    temp_dir = pathlib.Path(self.create_tempdir().full_path)
-    dummy_plist = gzip.compress(plistlib.dumps({}, fmt=plistlib.FMT_BINARY))
-    (temp_dir / "ops_test_gpu_golden0.gz").write_bytes(dummy_plist)
-    sha256 = hashlib.sha256(dummy_plist).hexdigest()
+  def _pin_with(self, filenames: list[str]) -> goldens_pin.GoldenPathPinFile:
+    """Builds a pin file listing `filenames`.
 
-    mock_pin_data = {
-        "version": 1,
-        "gcs_bucket": "torchtpu-goldens",
-        "goldens": {
-            "ops_test_gpu_golden0.gz": {
-                "sha256": sha256,
-                "gcs_path": "ops_test/test/ops_test_gpu_golden0.gz",
+    The checksums are placeholders: goldens are verified against goldens.pin at
+    build time, never by load_golden_files.
+    """
+    return goldens_pin.CONVERTER.structure(
+        {
+            "version": 1,
+            "gcs_bucket": "torchtpu-goldens",
+            "goldens": {
+                fname: {
+                    "sha256": "0" * 64,
+                    "gcs_path": f"ops_test/test/{fname}",
+                }
+                for fname in filenames
             },
         },
-    }
-
-    with (
-        mock.patch.object(
-            test_utils,
-            "goldens_candidate_local_dirs",
-            return_value=[temp_dir],
-        ),
-        mock.patch.object(
-            test_utils.goldens_pin,
-            "parse_goldens_pin",
-            return_value=goldens_pin.CONVERTER.structure(
-                mock_pin_data, goldens_pin.GoldenPathPinFile
-            ),
-        ),
-        mock.patch.object(test_utils.urllib.request, "urlopen") as mock_urlopen,
-    ):
-      results = test_utils.load_golden_files("ops_test_gpu_golden")
-      mock_urlopen.assert_not_called()
-      self.assertEqual(
-          results, [test_utils.LoadedGolden("ops_test_gpu_golden0.gz", {})]
-      )
-
-  def test_fallback_missing_local_files_triggers_gcs_download(self):
-    temp_dir = pathlib.Path(self.create_tempdir().full_path)
-    empty_local_dir = temp_dir / "empty_local"
-    empty_local_dir.mkdir()
-
-    dummy_plist = gzip.compress(plistlib.dumps({}, fmt=plistlib.FMT_BINARY))
-    dummy_sha = hashlib.sha256(dummy_plist).hexdigest()
-
-    mock_pin_data = {
-        "version": 1,
-        "gcs_bucket": "torchtpu-goldens",
-        "goldens": {
-            "ops_test_gpu_golden0.gz": {
-                "sha256": dummy_sha,
-                "gcs_path": "ops_test/test/ops_test_gpu_golden0.gz",
-            },
-        },
-    }
-
-    mock_resp = mock.MagicMock()
-    mock_resp.read.return_value = dummy_plist
-    mock_resp.__enter__.return_value = mock_resp
-
-    with (
-        mock.patch.object(
-            test_utils,
-            "goldens_candidate_local_dirs",
-            return_value=[empty_local_dir],
-        ),
-        mock.patch.object(
-            test_utils.goldens_pin,
-            "parse_goldens_pin",
-            return_value=goldens_pin.CONVERTER.structure(
-                mock_pin_data, goldens_pin.GoldenPathPinFile
-            ),
-        ),
-        mock.patch.object(
-            test_utils.urllib.request, "urlopen", return_value=mock_resp
-        ) as mock_urlopen,
-    ):
-      results = test_utils.load_golden_files("ops_test_gpu_golden")
-      mock_urlopen.assert_called_once()
-      call_args = mock_urlopen.call_args[0]
-      req = call_args[0]
-      self.assertEqual(
-          req.full_url,
-          "https://storage.googleapis.com/torchtpu-goldens/ops_test/test/ops_test_gpu_golden0.gz",
-      )
-      self.assertEqual(
-          results, [test_utils.LoadedGolden("ops_test_gpu_golden0.gz", {})]
-      )
-
-  def test_partial_local_files_downloads_only_missing_from_gcs(self):
-    temp_dir = pathlib.Path(self.create_tempdir().full_path)
-    dummy_plist = gzip.compress(plistlib.dumps({}, fmt=plistlib.FMT_BINARY))
-    (temp_dir / "ops_test_gpu_golden0.gz").write_bytes(dummy_plist)
-
-    dummy_remote_plist = gzip.compress(
-        plistlib.dumps({}, fmt=plistlib.FMT_BINARY)
+        goldens_pin.GoldenPathPinFile,
     )
-    dummy_remote_sha = hashlib.sha256(dummy_remote_plist).hexdigest()
-    dummy_local_sha = hashlib.sha256(dummy_plist).hexdigest()
 
-    mock_pin_data = {
-        "version": 1,
-        "gcs_bucket": "torchtpu-goldens",
-        "goldens": {
-            "ops_test_gpu_golden0.gz": {
-                "sha256": dummy_local_sha,
-                "gcs_path": "ops_test/test/ops_test_gpu_golden0.gz",
-            },
-            "ops_test_gpu_golden1.gz": {
-                "sha256": dummy_remote_sha,
-                "gcs_path": "ops_test/test/ops_test_gpu_golden1.gz",
-            },
-        },
-    }
-
-    mock_resp = mock.MagicMock()
-    mock_resp.read.return_value = dummy_remote_plist
-    mock_resp.__enter__.return_value = mock_resp
+  def test_load_golden_files_local_files_exist_succeeds(self):
+    temp_dir = pathlib.Path(self.create_tempdir().full_path)
+    dummy_plist = gzip.compress(plistlib.dumps({}, fmt=plistlib.FMT_BINARY))
+    (temp_dir / "ops_test_gpu_golden0.gz").write_bytes(dummy_plist)
 
     with (
         mock.patch.object(
@@ -309,44 +141,81 @@ class TestUtilsTest(seed_test_utils.RepeatableTest):
         mock.patch.object(
             test_utils.goldens_pin,
             "parse_goldens_pin",
-            return_value=goldens_pin.CONVERTER.structure(
-                mock_pin_data, goldens_pin.GoldenPathPinFile
-            ),
+            return_value=self._pin_with(["ops_test_gpu_golden0.gz"]),
         ),
-        mock.patch.object(
-            test_utils.urllib.request, "urlopen", return_value=mock_resp
-        ) as mock_urlopen,
     ):
       results = test_utils.load_golden_files("ops_test_gpu_golden")
-      mock_urlopen.assert_called_once()
-      call_args = mock_urlopen.call_args[0]
-      req = call_args[0]
       self.assertEqual(
-          req.full_url,
-          "https://storage.googleapis.com/torchtpu-goldens/ops_test/test/ops_test_gpu_golden1.gz",
-      )
-      self.assertEqual(
-          [golden.filename for golden in results],
-          ["ops_test_gpu_golden0.gz", "ops_test_gpu_golden1.gz"],
+          results, [test_utils.LoadedGolden("ops_test_gpu_golden0.gz", {})]
       )
 
-  def test_no_matching_prefix_in_pinfile_raises(self):
-    mock_pin_data = {
-        "version": 1,
-        "gcs_bucket": "torchtpu-goldens",
-        "goldens": {
-            "unrelated_golden0.gz": {
-                "sha256": "sha",
-                "gcs_path": "ops_test/test/unrelated_golden0.gz",
-            },
-        },
-    }
+  def test_load_golden_files_missing_file_raises(self):
+    temp_dir = pathlib.Path(self.create_tempdir().full_path)
+    dummy_plist = gzip.compress(plistlib.dumps({}, fmt=plistlib.FMT_BINARY))
+    (temp_dir / "ops_test_gpu_golden0.gz").write_bytes(dummy_plist)
+    nonexistent_dir = temp_dir / "does_not_exist"
+
     with mock.patch.object(
         test_utils.goldens_pin,
         "parse_goldens_pin",
-        return_value=goldens_pin.CONVERTER.structure(
-            mock_pin_data, goldens_pin.GoldenPathPinFile
+        return_value=self._pin_with(
+            ["ops_test_gpu_golden0.gz", "ops_test_gpu_golden1.gz"]
         ),
+    ):
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=tool test
+          FileNotFoundError,
+          rf"ops_test_gpu_golden1\.gz .* not found .*{temp_dir},"
+          rf" {nonexistent_dir}",
+      ):
+        test_utils.load_golden_files(
+            "ops_test_gpu_golden", candidate_dirs=[temp_dir, nonexistent_dir]
+        )
+
+  def test_load_golden_files_uses_first_candidate_dir_with_file(self):
+    temp_dir = pathlib.Path(self.create_tempdir().full_path)
+    first_dir = temp_dir / "first"
+    second_dir = temp_dir / "second"
+    first_dir.mkdir()
+    second_dir.mkdir()
+
+    def plist(tree):
+      return gzip.compress(plistlib.dumps(tree, fmt=plistlib.FMT_BINARY))
+
+    (first_dir / "ops_test_gpu_golden0.gz").write_bytes(plist({"dir": "first"}))
+    (second_dir / "ops_test_gpu_golden0.gz").write_bytes(
+        plist({"dir": "second"})
+    )
+    (second_dir / "ops_test_gpu_golden1.gz").write_bytes(
+        plist({"dir": "second"})
+    )
+
+    with mock.patch.object(
+        test_utils.goldens_pin,
+        "parse_goldens_pin",
+        return_value=self._pin_with(
+            ["ops_test_gpu_golden0.gz", "ops_test_gpu_golden1.gz"]
+        ),
+    ):
+      results = test_utils.load_golden_files(
+          "ops_test_gpu_golden", candidate_dirs=[first_dir, second_dir]
+      )
+    self.assertEqual(
+        results,
+        [
+            test_utils.LoadedGolden(
+                "ops_test_gpu_golden0.gz", {"dir": "first"}
+            ),
+            test_utils.LoadedGolden(
+                "ops_test_gpu_golden1.gz", {"dir": "second"}
+            ),
+        ],
+    )
+
+  def test_no_matching_prefix_in_pinfile_raises(self):
+    with mock.patch.object(
+        test_utils.goldens_pin,
+        "parse_goldens_pin",
+        return_value=self._pin_with(["unrelated_golden0.gz"]),
     ):
       with self.assertRaisesRegex(  # ASSERT_RAISES_OK=tool test
           ValueError, "No golden files found matching"

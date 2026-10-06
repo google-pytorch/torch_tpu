@@ -297,6 +297,17 @@ glue_packages(
     name = "torch_tpu_glues",
 )
 
+# The ops_test GPU golden files, fetched from GCS as pinned by
+# tests/goldens.pin so that Bazel downloads them once per invocation (and
+# caches them by checksum) instead of every test shard pulling them at runtime.
+# See //bazel:goldens.bzl.
+goldens_repo = use_repo_rule("//bazel:goldens.bzl", "goldens_repo")
+
+goldens_repo(
+    name = "torch_tpu_goldens",
+    pin_file = "//tests:goldens.pin",
+)
+
 # Load and run the custom extension
 torch_tpu_ext = use_extension("//bazel:extensions.bzl", "torch_tpu_deps_ext")
 

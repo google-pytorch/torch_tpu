@@ -17,18 +17,19 @@
 from collections.abc import Sequence
 import dataclasses
 import gzip
-import hashlib
 import importlib.resources
-import io
 import os
 import pathlib
 import plistlib
 import typing
 from typing import Any, IO
-import urllib.request
 
 from absl import flags
 from tests import goldens_pin
+
+# Apparent name of the Bazel external repository that holds the golden files in
+# OSS builds. Must match the `goldens_repo(name = ...)` in oss/MODULE.bazel.
+GOLDENS_REPO_NAME = "torch_tpu_goldens"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -76,6 +77,13 @@ def goldens_candidate_local_dirs(
         test_srcdir / "_main" / "tests",
         test_srcdir / "torch_tpu" / "tests",
     ])
+    # 4. In OSS the goldens are not checked in; Bazel fetches them from GCS as
+    # the external repository `@torch_tpu_goldens` (see oss/bazel/goldens.bzl)
+    # and the ops tests list the files they need in `data`. Its runfiles
+    # directory is named after the repository's canonical name, whose
+    # Bazel-version-dependent prefix (e.g. "+_repo_rules+") always ends in the
+    # apparent name.
+    candidate_dirs.extend(sorted(test_srcdir.glob(f"*{GOLDENS_REPO_NAME}")))
   return candidate_dirs
 
 
@@ -88,47 +96,6 @@ def locate_goldens_pinfile() -> pathlib.Path:
   return pathlib.Path(str(resource))
 
 
-def validate_sha256(
-    data: bytes,
-    expected_sha256: str,
-    filename: str | None = None,
-    url: str | None = None,
-) -> None:
-  """Validates that data matches expected SHA-256 checksum."""
-  actual_sha256 = hashlib.sha256(data).hexdigest()
-  if actual_sha256.lower() != expected_sha256.lower():
-    details = []
-    if filename:
-      details.append(f" for {filename}")
-    if url:
-      details.append(f" downloaded from {url}")
-    target_info = "".join(details)
-    raise ValueError(
-        f"SHA-256 checksum mismatch{target_info}:"
-        f" expected {expected_sha256}, got {actual_sha256}"
-    )
-
-
-def download_golden_file(
-    filename: str,
-    expected_sha256: str,
-    gcs_bucket: str,
-    gcs_path: str,
-) -> bytes:
-  """Downloads a golden file from GCS and validates its SHA-256 checksum."""
-  url = f"https://storage.googleapis.com/{gcs_bucket}/{gcs_path}"
-  print(f"Downloading golden file from {url}...", flush=True)
-  req = urllib.request.Request(
-      url, headers={"User-Agent": "TorchTPU-Golden-Downloader"}
-  )
-  with urllib.request.urlopen(req, timeout=60) as response:
-    data = response.read()
-
-  validate_sha256(data, expected_sha256, filename=filename, url=url)
-
-  return data
-
-
 def load_golden_files(
     prefix: str,
     candidate_dirs: Sequence[pathlib.Path] | None = None,
@@ -136,23 +103,24 @@ def load_golden_files(
 ) -> Sequence[LoadedGolden]:
   """Loads golden files into plistlib pytrees matching prefix.
 
-  The source of truth for the golden files is the tests/goldens.pin file.
-  The golden files are resolved in 2 stages:
-  1. Check the local filesystem in the candidate directories.
-  2. If a local file is not found, download it from GCS.
+  The source of truth for which golden files exist is the tests/goldens.pin
+  file. Every matching file must be present in one of the candidate
+  directories: internally they are checked in next to the tests, and in OSS
+  Bazel fetches them from GCS at build time.
+
+  Raises:
+    ValueError: If no pinned golden matches `prefix`.
+    FileNotFoundError: If a pinned golden file is not present in any of the
+      candidate directories.
   """
   if pin_path is None:
     pin_path = locate_goldens_pinfile()
   pin_data = goldens_pin.parse_goldens_pin(pin_path)
-  gcs_bucket = pin_data.gcs_bucket
-  goldens_map = pin_data.goldens
 
-  matching_items = [
-      (fname, finfo)
-      for fname, finfo in goldens_map.items()
-      if matches_prefix(fname, prefix)
+  matching_names = [
+      fname for fname in pin_data.goldens if matches_prefix(fname, prefix)
   ]
-  if not matching_items:
+  if not matching_names:
     raise ValueError(
         f"No golden files found matching prefix '{prefix}' in {pin_path}"
     )
@@ -160,69 +128,36 @@ def load_golden_files(
   if candidate_dirs is None:
     candidate_dirs = goldens_candidate_local_dirs()
 
-  missing_goldens: list[tuple[str, goldens_pin.GoldenPath]] = []
   results: list[LoadedGolden] = []
-
-  # Attempt to locate the golden file in the local candidate directories.
-  for fname, finfo in sorted(matching_items):
-    local_file: pathlib.Path | None = None
-    for candidate_dir in candidate_dirs:
-      if candidate_dir.is_dir():
-        candidate_path = candidate_dir / fname
-        if candidate_path.is_file():
-          with open(candidate_path, "rb") as f:
-            data = bytes(f.read())
-          try:
-            validate_sha256(data, finfo.sha256, filename=fname)
-            local_file = candidate_path
-          except ValueError:
-            # If sha mismatches, do not throw, mark as missing.
-            print(
-                f"SHA-256 mismatch for {fname} in {candidate_path}",
-                flush=True,
-            )
-          break
-
-    if local_file is not None:
-      print(
-          "Loading the collected input/output pairs for each op from"
-          f" {local_file}",
-          flush=True,
+  for fname in sorted(matching_names):
+    local_file = _find_golden_file(fname, candidate_dirs)
+    if local_file is None:
+      searched = ", ".join(str(d) for d in candidate_dirs)
+      raise FileNotFoundError(
+          f"Golden file {fname} was not found in any of the candidate"
+          f" directories: {searched}."
       )
-      with gzip.open(local_file, "rb") as f:
-        # gzip.GzipFile duck types as typing.IO[bytes], but does not inherit
-        # from it, so need to cast.
-        f = typing.cast(IO[bytes], f)
-        plist_ptree = plistlib.load(f, fmt=plistlib.FMT_BINARY)
-      results.append(LoadedGolden(fname, plist_ptree))
-    else:
-      missing_goldens.append((fname, finfo))
-
-  if missing_goldens:
-    missing_files = [fname for fname, _ in missing_goldens]
     print(
-        "The following golden files were missing locally and will be downloaded"
-        f" from GCS: {missing_files}",
+        "Loading the collected input/output pairs for each op from"
+        f" {local_file}",
         flush=True,
     )
-
-  # Download missing golden files from GCS.
-  for fname, finfo in missing_goldens:
-    data = download_golden_file(
-        filename=fname,
-        expected_sha256=finfo.sha256,
-        gcs_bucket=gcs_bucket,
-        gcs_path=finfo.gcs_path,
-    )
-    print(
-        "Loading the collected input/output pairs for each op from GCS:"
-        f" {fname}",
-        flush=True,
-    )
-    with gzip.GzipFile(fileobj=io.BytesIO(data)) as f:
-      # Cast required: gzip.GzipFile does not inherit from typing.IO[bytes].
+    with gzip.open(local_file, "rb") as f:
+      # gzip.GzipFile duck types as typing.IO[bytes], but does not inherit
+      # from it, so need to cast.
       f = typing.cast(IO[bytes], f)
       plist_ptree = plistlib.load(f, fmt=plistlib.FMT_BINARY)
     results.append(LoadedGolden(fname, plist_ptree))
 
   return results
+
+
+def _find_golden_file(
+    filename: str, candidate_dirs: Sequence[pathlib.Path]
+) -> pathlib.Path | None:
+  """Returns the first candidate directory entry for `filename` that is a file."""
+  for candidate_dir in candidate_dirs:
+    candidate_path = candidate_dir / filename
+    if candidate_path.is_file():
+      return candidate_path
+  return None
