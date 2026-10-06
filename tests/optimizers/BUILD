@@ -97,7 +97,6 @@ torch_tpu_py_test(
     srcs = ["single_trace_trainer_test.py"],
     main = "single_trace_trainer_test.py",
     nopresubmit = "slow example",
-    notest_oss = True,  # NOTEST_OSS_OK=slow test
     tags = [
         "requires-accel-hbm",
         "requires-net:external",
