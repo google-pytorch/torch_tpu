@@ -158,9 +158,99 @@ mlir::MlirOp BuildUnitStrideSliceBackwardShlo(mlir::MlirOp grad_op,
                                              start_indices);
 }
 
+// Helper for strided (`step > 1`, `grad_len > 1`) `slice_backward` lowerings.
+//
+// Avoids emitting `stablehlo.pad` with `interior_padding > 0`, which XLA's TPU
+// backend cannot fuse into surrounding loop fusions and lowers to unvectorized
+// per-element scatter loops. Instead, expands `grad_op` with a trailing unit
+// dimension `[..., grad_len, 1, ...]`, pads along that unit dimension to size
+// `step` via 2-way or 3-way `stablehlo.concatenate` (pure edge padding with
+// `interior_padding = 0`), and reshapes to `[..., grad_len * step, ...]`.
+// When complementary strided slices (such as `gate_up[..., ::2]` and
+// `gate_up[..., 1::2]`) are summed in backward, XLA's `ReshapeMover` sinks the
+// `[..., grad_len, step, ...] -> [..., grad_len * step, ...]` reshape below the
+// addition and fuses both edge pads and the add into a single loop fusion.
+mlir::MlirOp BuildStridedSliceBackwardShlo(mlir::MlirOp grad_op,
+                                           mlir::MlirOp zero_scalar,
+                                           const Dimensions& input_sizes,
+                                           const int64_t dim,
+                                           const int64_t start,
+                                           const int64_t step) {
+  const mlir::RankedTensorType grad_type = GetTensorTypeOrDie(grad_op);
+  mlir::MlirBuilder& builder = grad_op.getBuilder();
+  const mlir::Type elem_mlir_type = grad_type.getElementType();
+  const int64_t total_len = input_sizes[dim];
+  const int64_t grad_len = grad_type.getShape()[dim];
+
+  Dimensions expanded_shape;
+  expanded_shape.reserve(input_sizes.size() + 1);
+  for (size_t i = 0; i < input_sizes.size(); ++i) {
+    if (static_cast<int64_t>(i) == dim) {
+      expanded_shape.push_back(grad_len);
+      expanded_shape.push_back(1);
+    } else {
+      expanded_shape.push_back(input_sizes[i]);
+    }
+  }
+  const int64_t step_dim = dim + 1;
+  const mlir::MlirOp grad_expanded = mlir::stablehlo::Reshape(
+      mlir::RankedTensorType::get(expanded_shape, elem_mlir_type), grad_op);
+
+  const bool is_aligned_full = (start < step) && (grad_len * step == total_len);
+  const int64_t offset_in_step = is_aligned_full ? start : 0;
+
+  std::vector<mlir::MlirOp> step_parts;
+  step_parts.reserve(3);
+  if (offset_in_step > 0) {
+    Dimensions left_pad_shape = expanded_shape;
+    left_pad_shape[step_dim] = offset_in_step;
+    step_parts.push_back(mlir::stablehlo::BroadcastInDim(
+        mlir::RankedTensorType::get(left_pad_shape, elem_mlir_type),
+        zero_scalar, {}));
+  }
+  step_parts.push_back(grad_expanded);
+  if (offset_in_step + 1 < step) {
+    Dimensions right_pad_shape = expanded_shape;
+    right_pad_shape[step_dim] = step - 1 - offset_in_step;
+    step_parts.push_back(mlir::stablehlo::BroadcastInDim(
+        mlir::RankedTensorType::get(right_pad_shape, elem_mlir_type),
+        zero_scalar, {}));
+  }
+
+  mlir::MlirOp padded_step = mlir::stablehlo::Concatenate(
+      builder, mlir::ArrayRef<mlir::MlirOp>(step_parts), step_dim);
+
+  if (is_aligned_full) {
+    return mlir::stablehlo::Reshape(
+        mlir::RankedTensorType::get(input_sizes, elem_mlir_type), padded_step);
+  }
+
+  Dimensions interleaved_shape = input_sizes;
+  const int64_t interleaved_len = grad_len * step;
+  interleaved_shape[dim] = interleaved_len;
+  mlir::MlirOp interleaved = mlir::stablehlo::Reshape(
+      mlir::RankedTensorType::get(interleaved_shape, elem_mlir_type),
+      padded_step);
+
+  const int64_t span_len = std::min(interleaved_len, total_len - start);
+  if (span_len < interleaved_len) {
+    const Dimensions starts(input_sizes.size(), 0);
+    Dimensions limits = interleaved_shape;
+    limits[dim] = span_len;
+    const Dimensions strides(input_sizes.size(), 1);
+    interleaved = mlir::stablehlo::Slice(interleaved, starts, limits, strides);
+  }
+
+  if (start == 0 && span_len == total_len) {
+    return interleaved;
+  }
+  return BuildUnitStrideSliceBackwardShlo(interleaved, zero_scalar, input_sizes,
+                                          dim, start, start + span_len);
+}
+
 // Builds the StableHLO graph for `aten::slice_backward`.
 //
-// Dispatches across three specialized StableHLO patterns depending on slice
+// Dispatches across four specialized StableHLO patterns depending on slice
 // geometry and stride:
 //   1. Identity (`step == 1 && slice_len == total_len`): Returns `grad_op`
 //      directly without allocation.
@@ -171,12 +261,15 @@ mlir::MlirOp BuildUnitStrideSliceBackwardShlo(mlir::MlirOp grad_op,
 //      broadcast
 //      + DUS overhead on Causal LM shifted logits (`logits[:, :-1, :]`) and
 //      RoPE half-slices (`x[..., :d//2]`, `x[..., d//2:]`).
-//   3. Interior or small unit-stride slices (`step == 1`): Emits
-//      `stablehlo.dynamic_update_slice` into a zero broadcast so XLA's
+//   3. Interior or small unit-stride slices (`step == 1` or `grad_len <= 1`):
+//      Emits `stablehlo.dynamic_update_slice` into a zero broadcast so XLA's
 //      `AlgebraicSimplifier` can fold recurrence gradient accumulations
 //      in-place.
-//   4. Strided slices (`step > 1`): Emits `stablehlo.pad` with
-//      `interior_pad = step - 1` to scatter gradients across strided positions.
+//   4. Strided slices (`step > 1` and `grad_len > 1`): Expands `grad_op` to
+//      `[..., grad_len, 1, ...]`, pads along the unit step axis via
+//      `stablehlo.concatenate` (`interior_padding = 0`), and reshapes to
+//      `[..., grad_len * step, ...]` so XLA can fuse strided backward slices
+//      into surrounding elementwise loop fusions.
 absl::StatusOr<mlir::MlirOp> BuildSliceBackwardShlo(
     mlir::MlirOp grad_op, const Dimensions& input_sizes, const int64_t dim,
     const int64_t start, const int64_t end, const int64_t step,
@@ -197,18 +290,29 @@ absl::StatusOr<mlir::MlirOp> BuildSliceBackwardShlo(
                                             dim, start, end);
   }
 
-  // For strided slices (`step > 1`), use StableHLO Pad with interior padding
-  // to interleave `(step - 1)` zeros between each element of `grad_op`.
   const mlir::RankedTensorType grad_type = GetTensorTypeOrDie(grad_op);
+  if (grad_type.isDynamicDim(dim) || !grad_type.hasStaticShape()) {
+    // Dynamic shapes cannot use reshape+concatenate strided lowering.
+    // Fall back to stablehlo.pad with interior padding.
+    const int64_t grad_len = (end - start + step - 1) / step;
+    Dimensions low_pad(input_sizes.size(), 0);
+    Dimensions high_pad(input_sizes.size(), 0);
+    Dimensions interior_pad(input_sizes.size(), 0);
+    low_pad[dim] = start;
+    interior_pad[dim] = step - 1;
+    high_pad[dim] = total_len - start - (grad_len - 1) * step - 1;
+    return mlir::stablehlo::Pad(grad_op, zero_scalar, low_pad, high_pad,
+                                interior_pad);
+  }
+
   const int64_t grad_len = grad_type.getShape()[dim];
-  Dimensions low_pad(input_sizes.size(), 0);
-  Dimensions high_pad(input_sizes.size(), 0);
-  Dimensions interior_pad(input_sizes.size(), 0);
-  low_pad[dim] = start;
-  interior_pad[dim] = step - 1;
-  high_pad[dim] = total_len - start - (grad_len - 1) * step - 1;
-  return mlir::stablehlo::Pad(grad_op, zero_scalar, low_pad, high_pad,
-                              interior_pad);
+  if (grad_len <= 1) {
+    return BuildUnitStrideSliceBackwardShlo(grad_op, zero_scalar, input_sizes,
+                                            dim, start, start + grad_len);
+  }
+
+  return BuildStridedSliceBackwardShlo(grad_op, zero_scalar, input_sizes, dim,
+                                       start, step);
 }
 
 }  // namespace

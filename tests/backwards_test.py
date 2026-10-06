@@ -305,6 +305,47 @@ class BackwardsTest(seed_test_utils.RepeatableTest):
     utils.assert_close(tpu_weight_cpu, cpu_model.weight, atol=1e-3, rtol=6e-5)
     utils.assert_close(tpu_bias_cpu, cpu_model.bias, atol=5e-4, rtol=4e-3)
 
+  def test_slice_backward_strided_variants(self):
+    device = torch.device('tpu')
+    cpu_device = torch.device('cpu')
+
+    # 1. Aligned full-dimension strided slices (step=2, even/odd + gated sum)
+    x_cpu = torch.arange(24, dtype=torch.float32, device=cpu_device).reshape(
+        3, 8
+    )
+    x_tpu = x_cpu.to(device).detach().requires_grad_(True)
+    x_cpu.requires_grad_(True)
+    (x_cpu[:, ::2] * 2.0 + x_cpu[:, 1::2] * 3.0).sum().backward()
+    (x_tpu[:, ::2] * 2.0 + x_tpu[:, 1::2] * 3.0).sum().backward()
+    utils.assert_close(x_tpu.grad.cpu(), x_cpu.grad)
+
+    # 2. Step=2, 3, 5 aligned and unaligned slices along inner and outer dims
+    for dim in (0, 1):
+      for total_len in (6, 7, 8, 10):
+        for start, end, step in (
+            (0, total_len, 2),
+            (1, total_len, 2),
+            (0, total_len, 3),
+            (1, total_len, 3),
+            (2, total_len, 3),
+            (2, total_len - 1, 2),
+            (3, total_len, 3),
+            (1, 3, 5),  # grad_len == 1 with step > 1
+        ):
+          shape = [total_len, 5] if dim == 0 else [4, total_len]
+          x_cpu = torch.randn(shape, dtype=torch.bfloat16, device=cpu_device)
+          x_tpu = x_cpu.to(device).detach().requires_grad_(True)
+          x_cpu.requires_grad_(True)
+          slc_cpu = (
+              x_cpu[start:end:step, :] if dim == 0 else x_cpu[:, start:end:step]
+          )
+          slc_tpu = (
+              x_tpu[start:end:step, :] if dim == 0 else x_tpu[:, start:end:step]
+          )
+          slc_cpu.backward(torch.ones_like(slc_cpu))
+          slc_tpu.backward(torch.ones_like(slc_tpu))
+          utils.assert_close(x_tpu.grad.cpu(), x_cpu.grad)
+
 
 if __name__ == '__main__':
   absltest.main()
