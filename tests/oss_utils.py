@@ -28,7 +28,7 @@ _T = TypeVar("_T", bound=Callable[..., Any])
 def running_in_cloud() -> bool:
   """Returns True if the codebase is running in GCP."""
   try:
-    import libtpu  # pylint: disable=g-import-not-at-top,unused-import # pytype: disable=import-error # noqa: F401
+    import libtpu  # pylint: disable=g-import-not-at-top,unused-import # noqa: F401  # pyrefly: ignore[missing-import]
 
     return True
   except ImportError:

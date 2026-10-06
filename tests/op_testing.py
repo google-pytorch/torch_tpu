@@ -2885,7 +2885,7 @@ class PerfResult:
       duration_sec: float,
   ) -> None:
     # Sponge uses 1-based shard indices.
-    self.test_shard = _get_test_shard() + 1  # pytype: disable=name-error
+    self.test_shard = _get_test_shard() + 1
     self.sequence_number = PerfResult.num_instances
     PerfResult.num_instances += 1
     self.op_name = op_name
@@ -5989,7 +5989,7 @@ def set_up_test_module() -> None:
   # the globally shared default compilation context.
   if _torch_tpu_vs_gpu_mode() or _gen_gpu_golden_mode():
     if is_compiled_mode():
-      torch.tpu.allow_excess_precision = True  # pytype: disable=module-attr
+      torch.tpu.allow_excess_precision = True
 
   # Assert that `torch.get_default_dtype()` returns `torch.float` when `setUp`
   # and `tearDown` are called.

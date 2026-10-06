@@ -589,7 +589,7 @@ class HandleSliceLikeOpsPass:
     step_upper = self._transform_context.get_upper_bound(step)
 
     dynamic_dim_sizes: list[tuple[int, torch.fx.Node]] = []
-    for d, s in enumerate(input_sizes):  # pyrefly: ignore[not-iterable, bad-argument-type]
+    for d, s in enumerate(input_sizes):  # pyrefly: ignore[not-iterable]
       if sym_utils.is_symint(s):
         size_tensor_node = self._transform_context.ensure_tensor(
             graph_module, s, node, dtype=torch.int32

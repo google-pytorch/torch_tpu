@@ -27,7 +27,7 @@ from torch_tpu._internal.compile.dynamic import sym_utils
 
 
 def _is_valid_bound(s: sympy.Expr) -> bool:
-  return s.is_integer and s.is_constant() and (s not in (int_oo, -int_oo))  # pyrefly: ignore[missing-attribute, bad-return]
+  return s.is_integer and s.is_constant() and (s not in (int_oo, -int_oo))  # pyrefly: ignore[bad-return]
 
 
 def _lookup_bounds_in_shape_env(

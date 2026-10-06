@@ -59,7 +59,7 @@ class SeededTest(parameterized.TestCase):  # ABSLTEST_OK=base seed class
 
     super().setUpClass()
     # A subclass must define choose_seed(), which must return an int.
-    cls.test_random_seed = cls.choose_seed()  # pytype: disable=attribute-error
+    cls.test_random_seed = cls.choose_seed()  # pyrefly: ignore[missing-attribute]
     print(f"Repro with --test_random_seed={cls.test_random_seed}", flush=True)
 
   def setUp(self) -> None:

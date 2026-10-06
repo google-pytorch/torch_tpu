@@ -2120,7 +2120,7 @@ class TransformersProvider(BaseProvider):
       kwargs.setdefault("ignore_mismatched_sizes", True)
       if target_dtype != torch.float32:
         kwargs.setdefault("torch_dtype", target_dtype)
-      model_fn = lambda: model_cls.from_pretrained(  # pyrefly: ignore[missing-attribute]
+      model_fn = lambda: model_cls.from_pretrained(
           str(model_dir_or_repo_id), **kwargs
       )
     else:
@@ -2184,7 +2184,7 @@ class TransformersProvider(BaseProvider):
           except Exception:
             m = transformers.AutoModel.from_config(cfg)
         if target_dtype != torch.float32:
-          m = m.to(dtype=target_dtype)  # pyrefly: ignore[missing-attribute]
+          m = m.to(dtype=target_dtype)
         if config.get("model_type", "") in ("vits", "tapas"):
           # Zero TPU float weights before forward pass to prevent uninitialized
           # parameters (from to_empty) causing NaNs/overflows.
@@ -2193,7 +2193,7 @@ class TransformersProvider(BaseProvider):
               if p.device.type != "meta" and p.dtype.is_floating_point:
                 p.data.zero_()
 
-          m.register_forward_pre_hook(_zero_weights_pre_hook)  # pyrefly: ignore[missing-attribute]
+          m.register_forward_pre_hook(_zero_weights_pre_hook)
         return m
 
       model_fn = _create_model
@@ -2488,7 +2488,7 @@ class DiffusersProvider(BaseProvider):
             "modify_config_hook is not supported when load_weights is True."
         )
       raw_config = modify_config_hook(raw_config)
-    config_dict = dict(raw_config)  # pyrefly: ignore[no-matching-overload]
+    config_dict = dict(raw_config)
 
     def _module_factory():
       if load_weights:
@@ -2515,7 +2515,7 @@ class DiffusersProvider(BaseProvider):
         model = model_cls.from_config(config_dict)
         if isinstance(model, tuple):
           model = model[0]
-        return model.to(d_type)  # pyrefly: ignore[missing-attribute]
+        return model.to(d_type)
 
     def _input_factory(shape=None, device="cpu"):
       g = torch.Generator(device="cpu").manual_seed(42)

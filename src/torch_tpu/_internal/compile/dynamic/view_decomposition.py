@@ -76,7 +76,7 @@ def _to_sym(expr: Any, shape_env: Any) -> Any:
   if hasattr(expr, "is_Integer") and expr.is_Integer:
     return int(expr)
   if shape_env is not None:
-    return shape_env.create_symintnode(expr, hint=None)  # pytype: disable=bad-argument-type
+    return shape_env.create_symintnode(expr, hint=None)
   return expr
 
 
