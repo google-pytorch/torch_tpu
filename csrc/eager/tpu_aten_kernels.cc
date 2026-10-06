@@ -1090,6 +1090,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kViewAsComplex>(m, AtenViewAsComplex);
   ImplStable<OpName::kViewAsReal>(m, AtenViewAsReal);
   ImplStable<OpName::kWeightNormInterface>(m, AtenWeightNormInterface);
+  ImplStable<OpName::kWeightNormInterfaceBackward>(
+      m, AtenWeightNormInterfaceBackward);
   ImplStable<OpName::kWhereSelf>(m, AtenWhereSelf);
   ImplStable<OpName::kWhereSelfOut>(m, AtenWhereSelfOut);
   ImplStable<OpName::kXlogyOutTensor>(m, AtenXlogyOutTensor);

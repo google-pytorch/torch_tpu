@@ -9427,6 +9427,85 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     self.assertEqual(norm_md_last.shape, (1, 1, 4))
 
   @parameterized.product(
+      dtype=[
+          torch.float32,
+          torch.float64,
+          torch.float16,
+          torch.bfloat16,
+      ],
+      dim=[0, 3],
+  )
+  def test_weight_norm_interface_backward(self, dtype, dim):
+    """Tests torch.ops.aten._weight_norm_interface_backward with various dims and dtypes."""
+    v = torch.randn(2, 3, 4, 5, dtype=dtype)
+    g = torch.randn(v.shape[dim], dtype=dtype)
+    grad_w = torch.randn(2, 3, 4, 5, dtype=dtype)
+
+    def run_backward(device):
+      v_dev = v.to(device)
+      g_dev = g.to(device)
+      grad_w_dev = grad_w.to(device)
+      _, norm_dev = torch.ops.aten._weight_norm_interface(v_dev, g_dev, dim)
+      return torch.ops.aten._weight_norm_interface_backward(
+          grad_w_dev, v_dev, g_dev, norm_dev, dim
+      )
+
+    rtol = 1e-2 if dtype in (torch.float16, torch.bfloat16) else 1e-4
+    atol = 1e-2 if dtype in (torch.float16, torch.bfloat16) else 1e-4
+    self.assert_close_tpu_vs_cpu(run_backward, rtol=rtol, atol=atol)
+
+  def test_weight_norm_interface_backward_all_inputs(self):
+    """Tests torch.ops.aten._weight_norm_interface_backward with all possible inputs."""
+    test_cases = [
+        # Last dim
+        ((2, 3, 4), (4,), 2),
+        # First dim
+        ((2, 3, 4), (2,), 0),
+        # Dimensions match, but g is not 1D (first dim)
+        ((5, 10, 7), (5, 1, 1), 0),
+        # Dimensions match, but g is not 1D (last dim)
+        ((2, 3, 4), (1, 1, 4), 2),
+        # Minimal dimension (Rank 1)
+        ((10,), (10,), 0),
+        # Rank-2 v with same-rank g
+        ((2, 3), (2, 1), 0),
+        ((2, 3), (1, 3), 1),
+        # Scalar g
+        ((1, 3, 4), (), 0),
+    ]
+
+    for v_shape, g_shape, dim in test_cases:
+      with self.subTest(v_shape=v_shape, g_shape=g_shape, dim=dim):
+        v = torch.randn(v_shape, dtype=torch.float32)
+        g = torch.randn(g_shape, dtype=torch.float32)
+        grad_w = torch.randn(v_shape, dtype=torch.float32)
+
+        def run_backward(device, v=v, g=g, grad_w=grad_w, dim=dim):
+          v_dev = v.to(device)
+          g_dev = g.to(device)
+          grad_w_dev = grad_w.to(device)
+          _, norm_dev = torch.ops.aten._weight_norm_interface(v_dev, g_dev, dim)
+          return torch.ops.aten._weight_norm_interface_backward(
+              grad_w_dev, v_dev, g_dev, norm_dev, dim
+          )
+
+        self.assert_close_tpu_vs_cpu(run_backward)
+
+  def test_weight_norm_interface_autograd_backward(self):
+    """Tests end-to-end autograd backward through _weight_norm_interface."""
+    v_base = torch.randn(8, 4, 5)
+    g_base = torch.randn(1, 1, 5)
+
+    def run_autograd(device):
+      v = v_base.to(device).detach().requires_grad_(True)
+      g = g_base.to(device).detach().requires_grad_(True)
+      w, _ = torch.ops.aten._weight_norm_interface(v, g, 2)
+      w.sum().backward()
+      return v.grad, g.grad
+
+    self.assert_close_tpu_vs_cpu(run_autograd)
+
+  @parameterized.product(
       input_dtype=[
           torch.float32,
           torch.bfloat16,

@@ -37,6 +37,7 @@
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/reductions/reductions.h"
+#include "csrc/ops/reductions/sum.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -108,6 +109,91 @@ absl::StatusOr<MlirOpResults<2>> BuildWeightNormShlo(mlir::MlirOp v_op,
   auto weight_norm = mlir::stablehlo::Mul(v_op, inv_norm_bcst);
 
   return MlirOpResults<2>{weight_norm, v_norm_aligned};
+}
+
+absl::StatusOr<MlirOpResults<2>> BuildWeightNormBackwardShlo(
+    mlir::MlirOp grad_w_op, mlir::MlirOp v_op, mlir::MlirOp g_op,
+    mlir::MlirOp norms_op, int64_t dim) {
+  auto v_orig_type = GetTensorTypeOrDie(v_op);
+  auto g_orig_type = GetTensorTypeOrDie(g_op);
+  auto v_rank = v_orig_type.getRank();
+  auto g_rank = g_orig_type.getRank();
+
+  // Promote to F32 for calculations if needed
+  TT_ASSIGN_OR_RETURN(grad_w_op, PromoteFloatDtype(grad_w_op));
+  TT_ASSIGN_OR_RETURN(v_op, PromoteFloatDtype(v_op));
+  TT_ASSIGN_OR_RETURN(g_op, PromoteFloatDtype(g_op));
+  TT_ASSIGN_OR_RETURN(norms_op, PromoteFloatDtype(norms_op));
+
+  auto v_calc_type = GetTensorTypeOrDie(v_op);
+  TT_ASSIGN_OR_RETURN(auto element_type, ConvertTo<mlir::ElementType>(
+                                             v_calc_type.getElementType()));
+
+  Dimensions reduce_dims;
+  reduce_dims.reserve(v_rank);
+  if (g_rank == 0) {
+    for (int i = 0; i < v_rank; ++i) {
+      reduce_dims.push_back(i);
+    }
+  } else {
+    for (int i = 0; i < v_rank; ++i) {
+      if (i != dim) {
+        reduce_dims.push_back(i);
+      }
+    }
+  }
+
+  ReductionMode reduction_mode =
+      (g_rank == v_rank) ? ReductionMode::kKeepDims : ReductionMode::kDropDims;
+  auto gw_v = mlir::stablehlo::Mul(grad_w_op, v_op);
+  TT_ASSIGN_OR_RETURN(
+      auto per_dim_sums,
+      BuildSumShlo(gw_v, reduce_dims, reduction_mode, element_type));
+
+  // Align per_dim_sums shape with g_op (e.g., if g is [C, 1, 1] but
+  // per_dim_sums is [C])
+  TT_ASSIGN_OR_RETURN(auto per_dim_sums_aligned,
+                      BroadcastIfNeeded(per_dim_sums, g_op));
+  TT_ASSIGN_OR_RETURN(auto norms_aligned, BroadcastIfNeeded(norms_op, g_op));
+
+  // grad_g = per_dim_sums / norms
+  auto grad_g = mlir::stablehlo::Div(per_dim_sums_aligned, norms_aligned);
+
+  Dimensions broadcast_dims;
+  broadcast_dims.reserve(v_rank);
+  auto g_calc_rank = GetTensorTypeOrDie(g_op).getRank();
+  if (g_calc_rank == v_rank) {
+    for (int i = 0; i < v_rank; ++i) broadcast_dims.push_back(i);
+  } else if (g_calc_rank > 0) {
+    broadcast_dims.push_back(dim);
+  }
+
+  // v_scale = per_dim_sums / (norms * norms)
+  auto norms_sq = mlir::stablehlo::Mul(norms_aligned, norms_aligned);
+  auto v_scale = mlir::stablehlo::Div(per_dim_sums_aligned, norms_sq);
+  auto v_scale_bcst =
+      mlir::stablehlo::BroadcastInDim(v_calc_type, v_scale, broadcast_dims);
+
+  auto v_scaled = mlir::stablehlo::Mul(v_op, v_scale_bcst);
+  auto diff = mlir::stablehlo::Subtract(grad_w_op, v_scaled);
+
+  // inv_norm = g / norms
+  auto inv_norm = mlir::stablehlo::Div(g_op, norms_aligned);
+  auto inv_norm_bcst =
+      mlir::stablehlo::BroadcastInDim(v_calc_type, inv_norm, broadcast_dims);
+
+  auto grad_v = mlir::stablehlo::Mul(diff, inv_norm_bcst);
+
+  auto v_elem_type = v_orig_type.getElementType();
+  auto g_elem_type = g_orig_type.getElementType();
+  if (GetTensorTypeOrDie(grad_v).getElementType() != v_elem_type) {
+    grad_v = mlir::stablehlo::ConvertElementType(grad_v, v_elem_type);
+  }
+  if (GetTensorTypeOrDie(grad_g).getElementType() != g_elem_type) {
+    grad_g = mlir::stablehlo::ConvertElementType(grad_g, g_elem_type);
+  }
+
+  return MlirOpResults<2>{grad_v, grad_g};
 }
 }  // namespace
 
@@ -189,6 +275,95 @@ std::tuple<at::Tensor, at::Tensor> AtenWeightNormInterface(const at::Tensor& v,
     return std::make_tuple(MakeTensor(std::move(weight_norm_buf)),
                            MakeTensor(std::move(v_norm_buf)));
   });
+}
+
+std::tuple<at::Tensor, at::Tensor> AtenWeightNormInterfaceBackward(
+    const at::Tensor& grad_w, const at::Tensor& saved_v,
+    const at::Tensor& saved_g, const at::Tensor& saved_norms,
+    const int64_t dim) {
+  TT_KERNEL(
+      OpName::kWeightNormInterfaceBackward, param_keys,
+      (grad_w, saved_v, saved_g, saved_norms, dim), {
+        const int64_t v_rank = saved_v.dim();
+        TT_ASSIGN_OR_THROW(auto wrapped_dim, SafeWrapDim(dim, v_rank));
+
+        TT_CHECK_THROW(IsFloatingPoint(saved_v), error::kInvalidArgument)
+            << "expected the input dtype to be floating point, got "
+            << ToString(saved_v.scalar_type());
+        TT_CHECK_THROW(saved_v.scalar_type() == grad_w.scalar_type(),
+                       error::kInvalidArgument)
+            << "expected grad_w to have the same dtype as saved_v, got "
+            << ToString(grad_w.scalar_type()) << " and "
+            << ToString(saved_v.scalar_type());
+        TT_CHECK_THROW(v_rank > 0, error::kIndexError)
+            << "expected v to have at least 1 dimension, got " << v_rank;
+        TT_CHECK_THROW(wrapped_dim == 0 || wrapped_dim == saved_v.dim() - 1,
+                       error::kInvalidArgument)
+            << "expected dim to be 0 or the last dimension of v, got " << dim;
+        TT_CHECK_THROW(grad_w.sizes() == saved_v.sizes(),
+                       error::kInvalidArgument)
+            << "expected grad_w to have the same shape as saved_v, got "
+            << ToString(grad_w.sizes()) << " and " << ToString(saved_v.sizes());
+        TT_CHECK_THROW(saved_norms.sizes() == saved_g.sizes(),
+                       error::kInvalidArgument)
+            << "expected saved_norms to have the same shape as saved_g, got "
+            << ToString(saved_norms.sizes()) << " and "
+            << ToString(saved_g.sizes());
+
+        const int64_t g_rank = saved_g.dim();
+        TT_CHECK_THROW(g_rank == 0 || g_rank == 1 || g_rank == v_rank,
+                       error::kInvalidArgument)
+            << "expected the weight magnitude (g) to be a scalar, a 1D tensor, "
+               "or have the same rank as v, got a tensor of shape "
+            << ToString(saved_g.sizes());
+
+        if (g_rank == 1) {
+          TT_CHECK_THROW(saved_g.size(0) == saved_v.size(wrapped_dim),
+                         error::kInvalidArgument)
+              << "expected weight magnitude (g) size 0 to match weight size "
+              << saved_v.size(wrapped_dim) << " at dimension " << wrapped_dim
+              << ", got " << saved_g.size(0);
+        } else if (g_rank == v_rank) {
+          for (int64_t i = 0; i < v_rank; ++i) {
+            if (i == wrapped_dim) {
+              TT_CHECK_THROW(saved_g.size(i) == saved_v.size(wrapped_dim),
+                             error::kInvalidArgument)
+                  << "expected the size of the weight magnitude (g) at "
+                     "dimension "
+                  << i << " to be " << saved_v.size(wrapped_dim) << ", got "
+                  << saved_g.size(i);
+            } else {
+              TT_CHECK_THROW(saved_g.size(i) == 1, error::kInvalidArgument)
+                  << "expected the size of the weight magnitude (g) at "
+                     "dimension "
+                  << i << " to be 1, got " << saved_g.size(i);
+            }
+          }
+        }
+
+        TT_ASSIGN_OR_THROW(const auto grad_v_dtype,
+                           ConvertTo<mlir::ElementType>(saved_v.scalar_type()));
+        TT_ASSIGN_OR_THROW(const auto grad_g_dtype,
+                           ConvertTo<mlir::ElementType>(saved_g.scalar_type()));
+
+        auto op_builder = [wrapped_dim](FixedSizeSpan<mlir::MlirOp, 4> inputs)
+            -> absl::StatusOr<MlirOpResults<2>> {
+          return BuildWeightNormBackwardShlo(inputs[0], inputs[1], inputs[2],
+                                             inputs[3], wrapped_dim);
+        };
+
+        TT_ASSIGN_OR_THROW(
+            (auto [grad_v_buf, grad_g_buf]),
+            (DispatchOp<4, 2>(
+                std::move(op_builder), {grad_w, saved_v, saved_g, saved_norms},
+                {.out_dtypes = {grad_v_dtype, grad_g_dtype},
+                 .out_dims_list = {CopyIntVector(saved_v.sizes()),
+                                   CopyIntVector(saved_g.sizes())},
+                 .op_param_cache_keys = std::move(param_keys)})));
+
+        return std::make_tuple(MakeTensor(std::move(grad_v_buf)),
+                               MakeTensor(std::move(grad_g_buf)));
+      });
 }
 
 }  // namespace torch_tpu

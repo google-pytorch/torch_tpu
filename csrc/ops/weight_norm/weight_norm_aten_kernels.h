@@ -28,6 +28,10 @@ std::tuple<at::Tensor, at::Tensor> AtenWeightNormInterface(const at::Tensor& v,
                                                            const at::Tensor& g,
                                                            int64_t dim);
 
+std::tuple<at::Tensor, at::Tensor> AtenWeightNormInterfaceBackward(
+    const at::Tensor& grad_w, const at::Tensor& saved_v,
+    const at::Tensor& saved_g, const at::Tensor& saved_norms, int64_t dim);
+
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_CSRC_OPS_WEIGHT_NORM_WEIGHT_NORM_ATEN_KERNELS_H_

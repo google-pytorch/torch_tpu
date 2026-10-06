@@ -39,6 +39,7 @@ torch_tpu_cc_library(
         "//csrc/ops/linalg/vector_norm:pnorm",
         "//csrc/ops/macros:kernel",
         "//csrc/ops/reductions",
+        "//csrc/ops/reductions:sum",
         "//shims/torch:aten_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
         "@com_google_absl//absl/status:statusor",

@@ -178,7 +178,6 @@ UNREGISTERED_OPS = frozenset([
     '_weight_int4pack_mm_for_cpu',
     '_weight_int4pack_mm_with_scales_and_zeros',
     '_weight_int8pack_mm',
-    '_weight_norm_interface_backward',
     'adaptive_max_pool2d_backward.grad_input',
     'adaptive_max_pool3d.out',
     'adaptive_max_pool3d_backward.grad_input',
