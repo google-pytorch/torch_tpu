@@ -19,55 +19,20 @@ import pathlib
 import re
 from typing import Generator
 
+from tests import repo_root as repo_root_lib
+
 
 def _find_repo_root() -> pathlib.Path:
   """Returns the root directory of the torch_tpu repository."""
-  rf_dir = os.environ.get("TEST_SRCDIR") or os.environ.get("RUNFILES_DIR")
-  if rf_dir:
-    for candidate in [
-        # Blaze (internal Google3).
-        pathlib.Path(rf_dir) / "google3" / "third_party" / "py" / "torch_tpu",
-        # Bazel (OSS with Bzlmod names the root workspace '_main').
-        pathlib.Path(rf_dir) / "_main",
-        # Bazel (classic WORKSPACE or when torch_tpu is used as an external dependency).
-        pathlib.Path(rf_dir) / "torch_tpu",
-    ]:
-      if (candidate / "tests" / "cpp_style_test_data.cc").exists():
-        return candidate
-
-  raise FileNotFoundError(
-      "Could not find torch_tpu repository root in runfiles."
-  )
+  return repo_root_lib.find(
+      os.path.join("tests", "cpp_style_test_data.cc")
+  ).path
 
 
 _RUNFILES_DIR = _find_repo_root()
 
 _NAMESPACE_START_RE = re.compile(r"^namespace\s*([\w:]*)\s*{")
 _NAMESPACE_END_RE = re.compile(r"^}  // namespace\s*([\w:]*)\s*")
-
-_NON_REPO_DIR_NAMES = frozenset(
-    {"site-packages", "dist-packages", "venv", ".venv"}
-)
-
-
-def _is_ignored_dir(name: str) -> bool:
-  """Returns True if a directory should be skipped during file traversal.
-
-  In OSS Bazel builds, rules_python creates virtual environments inside the
-  test runfiles directory (e.g. tests/_<target>.venv/lib/.../site-packages/).
-  These directories pull in external third-party C/C++ files (such as
-  lxml/etree.h) that are not part of the TorchTPU repository and must be
-  skipped. Wheel tests unpack the built torch_tpu wheel into a
-  <target>_unpacked_wheel/ directory; the public headers it ships are copies
-  of source files that are linted at their source location.
-  Hidden directories (starting with '.') are also ignored.
-  """
-  return (
-      name.endswith(".venv")
-      or name.endswith("_unpacked_wheel")
-      or name in _NON_REPO_DIR_NAMES
-      or name.startswith(".")
-  )
 
 
 class CppFile:
@@ -112,7 +77,7 @@ class CppFile:
       parts_to_check = self._path.parts[:-1]
 
     for part in parts_to_check:
-      if _is_ignored_dir(part):
+      if repo_root_lib.is_ignored_dir(part):
         return False
     return True
 
@@ -213,7 +178,7 @@ class CppCode:
     """Yields CppFile objects for the selected files."""
     for root, dirs, filenames in os.walk(self.path):
       if exclude_non_repo:
-        dirs[:] = [d for d in dirs if not _is_ignored_dir(d)]
+        dirs[:] = [d for d in dirs if not repo_root_lib.is_ignored_dir(d)]
       for filename in filenames:
         if filename.endswith((".cc", ".cpp", ".h")):
           f = CppFile(pathlib.Path(root) / filename, repo_root=self._repo_root)
