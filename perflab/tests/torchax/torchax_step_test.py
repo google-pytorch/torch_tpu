@@ -333,14 +333,6 @@ class TorchaxStepTest(seed_test_utils.RepeatableTest):
         backward_stepper3, torchax_step.TorchaxBackwardStepper
     )
 
-    # Resolution with custom loss function raises ValueError
-    with self.assertRaises(ValueError):  # ASSERT_RAISES_OK=benchmark
-      torchax_step.resolve_torchax_stepper(
-          step_lib.StepperType.TRAINING,
-          accum_steps=1,
-          compute_loss=lambda *args, **kwargs: torch.tensor(0.0),
-      )
-
     # Invalid stepper raises KeyError
     with self.assertRaises(KeyError):  # ASSERT_RAISES_OK=benchmark
       torchax_step.resolve_torchax_stepper("unknown")
@@ -548,6 +540,64 @@ class TorchaxStepTest(seed_test_utils.RepeatableTest):
 
     self.assertIsInstance(wrapper._buffers["offset"], torchax.tensor.Tensor)
     np.testing.assert_allclose(out.numpy(), expected[0], rtol=1e-5, atol=1e-6)
+
+  def test_backward_stepper_custom_compute_loss(self):
+    target = target_lib.make_target(platform=target_lib.Platform.CPU)
+    ctx = context_lib.Context(
+        target=target, run_scope=context_lib.RUN_SCOPE.value
+    )
+
+    def factory(factory_ctx):
+      del factory_ctx  # unused
+      # Reseed so that both steppers start from the same weights and inputs.
+      torch.manual_seed(0)
+      model = DummyModule()
+      optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+      return model, (torch.randn(2, 4),), {}, optimizer
+
+    spec = registry_lib.BenchmarkSpec(
+        name="test_custom_compute_loss",
+        factory=factory,
+        stepper=step_lib.StepperType.TRAINING,
+    )
+    seen_models = []
+
+    def negated_sum_loss(model, input_args, input_kwargs):
+      seen_models.append(model)
+      return -model(*input_args, **input_kwargs).sum()
+
+    default_stepper = torchax_step.TorchaxBackwardStepper()
+    default_stepper.init_with_benchmark_args(spec, ctx)
+    custom_stepper = torchax_step.resolve_torchax_stepper(
+        step_lib.StepperType.TRAINING, compute_loss=negated_sum_loss
+    )
+    custom_stepper.init_with_benchmark_args(spec, ctx)
+    custom_stepper.compile(
+        compile_lib.CompileConfig(scope=compile_lib.Scope.STEP)
+    )
+    # Copy to host memory because the compiled step donates the weight buffers.
+    weights_before = {k: v.numpy() for k, v in custom_stepper._weights.items()}
+
+    default_loss, default_weights, _ = default_stepper.get_step_fn()()
+    custom_loss, custom_weights, _ = custom_stepper.get_step_fn()()
+
+    # Check `type()` because `JittableModule` overrides `__class__` to pass
+    # `isinstance()` checks for the module that it wraps.
+    self.assertEqual({type(m) for m in seen_models}, {DummyModule})
+    # The model has 4 outputs, so their negated sum is -4 times their mean.
+    np.testing.assert_allclose(
+        custom_loss.numpy(), -4 * default_loss.numpy(), rtol=1e-5, atol=1e-6
+    )
+    # Adam's first update is about `-lr * sign(grad)`, so the nonzero default
+    # update flips sign only if the gradient is computed through
+    # `compute_loss`.
+    for name, before in weights_before.items():
+      default_update = default_weights[name].numpy() - before
+      custom_update = custom_weights[name].numpy() - before
+      self.assertFalse(np.allclose(default_update, 0), msg=name)
+      np.testing.assert_allclose(
+          custom_update, -default_update, rtol=1e-4, atol=1e-6, err_msg=name
+      )
 
 
 if __name__ == "__main__":

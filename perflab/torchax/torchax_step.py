@@ -14,6 +14,7 @@
 
 """TorchAx stepper wrapper and conversion utilities for benchmarking."""
 
+from collections.abc import Callable
 import functools
 import inspect
 from typing import Any, Tuple
@@ -186,8 +187,18 @@ def _train_step_fn(
     opt_state: Any,
     args: Any,
     kwargs: Any,
+    compute_loss: Callable[..., torch.Tensor] | None = None,
 ) -> Tuple[Any, Any, Any]:
   def loss_func(params):
+    if compute_loss is not None:
+      # The loss must be computed from the traced `params`, or it would not
+      # depend on them and every gradient would be zero. `functional_call`
+      # swaps `params` and `buffers` into the original module and calls
+      # `compute_loss(module, args, kwargs)`, the same contract as in the
+      # TorchTPU training steppers.
+      return model_jittable.functional_call(
+          compute_loss, params, buffers, args, kwargs
+      )
     out = _call_functional_model(model_jittable, params, buffers, args, kwargs)
     return _default_loss_fn(out)
 
@@ -351,10 +362,11 @@ class TorchaxForwardStepper(_BaseTorchaxStepper):
 class TorchaxBackwardStepper(_BaseTorchaxStepper):
   """Wraps a benchmark model and optimizer into a TorchAx / JAX backward/training step."""
 
-  def __init__(self):
+  def __init__(self, compute_loss: Callable[..., torch.Tensor] | None = None):
     super().__init__()
     self._opt_state = None
     self._optax_optimizer = None
+    self._compute_loss = compute_loss
 
   def init_with_benchmark_args(
       self,
@@ -376,7 +388,10 @@ class TorchaxBackwardStepper(_BaseTorchaxStepper):
         self._optax_optimizer.init, self._weights
     )
     self._runnable_step = functools.partial(
-        _train_step_fn, model_jittable, self._optax_optimizer
+        _train_step_fn,
+        model_jittable,
+        self._optax_optimizer,
+        compute_loss=self._compute_loss,
     )
 
   def compile(
@@ -417,18 +432,26 @@ def forward() -> step_lib.Stepper:
 
 
 def training(
-    accum_steps: int = 1, compute_loss=_default_loss_fn
+    accum_steps: int = 1,
+    compute_loss: Callable[..., torch.Tensor] | None = None,
 ) -> step_lib.Stepper:
-  """Training stepper for TorchAx."""
+  """Training stepper for TorchAx.
+
+  Args:
+    accum_steps: The number of micro-batches per optimizer step. Only 1 is
+      supported.
+    compute_loss: Optional `compute_loss(model, input_args, input_kwargs)` that
+      returns a scalar loss tensor, as in the TorchTPU training steppers. If
+      `None`, the loss is derived from the model output by `_default_loss_fn`.
+
+  Returns:
+    A `TorchaxBackwardStepper`.
+  """
   if accum_steps != 1:
     raise ValueError(
         "TorchAx stepper wrapper does not support accumulation steps."
     )
-  if compute_loss != _default_loss_fn:
-    raise ValueError(
-        "TorchAx stepper wrapper does not support custom loss functions."
-    )
-  return TorchaxBackwardStepper()
+  return TorchaxBackwardStepper(compute_loss=compute_loss)
 
 
 TORCHAX_STEPPERS: dict[step_lib.StepperType, Any] = {
