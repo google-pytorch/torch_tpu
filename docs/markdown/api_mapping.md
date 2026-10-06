@@ -38,6 +38,9 @@ CUDA API                           | TPU API                           | Descrip
 :--------------------------------- | :-------------------------------- | :----------
 `torch.cuda.manual_seed(seed)`     | `torch.tpu.manual_seed(seed)`     | Seeds the current core's RNG.
 `torch.cuda.manual_seed_all(seed)` | `torch.tpu.manual_seed_all(seed)` | Seeds all TPU cores (for distributed).
+`torch.cuda.initial_seed()`        | `torch.tpu.initial_seed()`        | Returns initial random seed of current TPU device.
+`torch.cuda.get_rng_state()`       | `torch.tpu.get_rng_state()`       | Returns RNG state tensor for the current device.
+`torch.cuda.set_rng_state(state)`  | `torch.tpu.set_rng_state(state)`  | Sets RNG state tensor for the current device.
 
 ```python
 # Set the seed across all cores

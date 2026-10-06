@@ -94,7 +94,6 @@ except RuntimeError as shape_err:
 --------------------------------------------------------------------------------
 
 ### **3b. dtype Mismatch**
-
 Mixing `float32` and `int64` in operations that require matching types.
 
 ```python
@@ -261,8 +260,8 @@ print(f"r @ q completed: shape={s.shape}")
 
 print(
     "\n✅ Synchronous dispatch (TORCH_TPU_LAUNCH_BLOCKING=1 or explicit"
-    " torch.accelerator.synchronize()) forces immediate execution — useful for"
-    " NaN/Inf debugging."
+    " torch.accelerator.synchronize()) forces immediate execution — useful"
+    " for NaN/Inf debugging."
 )
 print("⚠️  Much slower than deferred mode. Use only for debugging.")
 ```

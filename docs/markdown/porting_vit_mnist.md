@@ -9,21 +9,30 @@ import warnings
 warnings.filterwarnings(
     "ignore",
     message=(
-        "The .grad attribute of a Tensor that is not a leaf Tensor is being"
+        "The `.grad` attribute of a Tensor that is not a leaf Tensor is being"
         " accessed"
     ),
 )
 ```
 
-# Training a Vision Transformer (ViT) with TorchTPU
+# Train a Vision Transformer (ViT) with TorchTPU
 
 This tutorial demonstrates how to train a standard Vision Transformer (ViT)
-model on the TorchTPU backend. We'll implement a "Tiny ViT" optimized for TPU
-performance and train it on the MNIST dataset.
+model on a TPU using the TorchTPU backend. In this tutorial, you'll implement a
+"Tiny ViT" optimized for TPU execution, train it on the MNIST dataset, and run
+inference on a test image.
 
-## 1. Model Architecture (Optimized for TPU)
+## Prerequisites
 
-We define a standard VIT architecture.
+These instructions assume you have access to a TPU environment with TorchTPU
+installed. For setup instructions, see
+[Get Started with TorchTPU](?file=get_started_tpu.py).
+
+## 1. Define the model architecture
+
+Define the `TpuAttentionBlock` and `TpuViT` modules. This architecture uses a
+`Conv2d` layer for patch embedding and explicit matrix multiplications for
+multi-head self-attention.
 
 ```python
 import torch.nn as nn
@@ -101,10 +110,15 @@ class TpuViT(nn.Module):
     return self.mlp_head(x.mean(dim=1))
 ```
 
-## 2. Data Preparation
+## 2. Prepare the dataset
 
-We fetch the MNIST dataset and prepare it as PyTorch tensors. We resize the
-images to 32x32 to match our model's expected input size.
+To keep the code self-contained, load the MNIST dataset directly from
+scikit-learn. In practice, you would use the PyTorch
+[`torch.utils.data.DataLoader`](https://pytorch.org/docs/stable/data.html#torch.utils.data.DataLoader)
+abstraction to load and batch the data.
+
+After fetching the MNIST dataset, convert the arrays into PyTorch tensors and
+resize the images to 32x32 to match the model's expected input size.
 
 ```python
 from sklearn.datasets import fetch_openml
@@ -141,19 +155,17 @@ except Exception as e:
 print(f"Train: {len(X_tensor)} samples, Test: {len(X_test_tensor)} samples")
 ```
 
-## 3. Training Loop
+## 3. Train the model
 
-Finally, we initialize the TPU device, move the model to the device, and run the
+Initialize the `tpu` device, move the `TpuViT` model to the TPU, and run the
 training loop.
 
 ```python
 device = torch.device("tpu")
 print(f"Executing on: {device}")
-```
 
-```python
-# Move model to TPU (float32 — required by SDP attention fast path)
-model = TpuViT().to("tpu")
+# Move model to TPU and initialize the optimizer and loss function
+model = TpuViT().to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 criterion = nn.CrossEntropyLoss()
 
@@ -165,14 +177,14 @@ for epoch in range(
   idx = 0
   batch_size = 32
 
-  # We accumulate loss using .detach() to avoid materializing the tensor back
+  # Accumulate loss using .detach() to avoid materializing the tensor back
   # to the CPU during every iteration. This avoids stalling the CPU and
   # amortizes the expensive TPU -> CPU DMA transfer.
   epoch_loss = 0.0
 
   while idx < len(X_tensor):
-    inputs = X_tensor[idx : idx + batch_size].to("tpu")
-    targets = Y_tensor[idx : idx + batch_size].to("tpu")
+    inputs = X_tensor[idx : idx + batch_size].to(device)
+    targets = Y_tensor[idx : idx + batch_size].to(device)
 
     optimizer.zero_grad()
     outputs = model(inputs)
@@ -190,14 +202,15 @@ for epoch in range(
   print(f"Epoch {epoch} complete. Average Loss: {avg_loss:.4f}")
 
 print("\n" + "=" * 40)
-print("Verification complete: torchtpu is functional")
+print("Verification complete: TorchTPU is functional")
 print("=" * 40)
 ```
 
-## 4. Inference Demo
+## 4. Run inference
 
-Now that the model is trained, let's run inference on a single test image and
-see what the model predicts. Adjust the epochs as needed to improve accuracy.
+Run inference on a random test image to verify the trained model's prediction.
+To improve accuracy, increase the number of training epochs in the previous
+step.
 
 ```python
 import matplotlib.pyplot as plt

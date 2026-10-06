@@ -3,7 +3,6 @@ torch_tpu_version: 0.1.1.dev20260922
 ---
 
 # Python Custom Ops: Quantize & Pack
-
 Baseline single operation for quantizing and packing.
 
 ```python
