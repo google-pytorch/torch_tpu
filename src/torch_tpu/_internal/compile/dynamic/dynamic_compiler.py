@@ -121,33 +121,43 @@ class DynamicCompiler(compiler.Compiler):
       self,
       compilation_context: compiler.CompilationContext | None = None,
       *,
-      async_compile: bool = True,
       debug: bool | compiler.TpuCompileDebug | None = None,
       num_buckets: int = 1,
-      num_lookahead_buckets: int = 1,
+      num_lookahead_buckets: int | None = None,
+      bucket_size: int = 128,
   ):
     """Initializes the DynamicCompiler instance.
 
     Args:
       compilation_context: A `compiler.CompilationContext` instance used for
         maintaining compilation state.
-      async_compile: If True, executes underlying static XLA compilation
-        asynchronously.
       debug: Optional TpuCompileDebug container or bool for recording
         compilation debug artifacts. Note: Passing a bool is deprecated; pass a
         TpuCompileDebug container instead.
-      num_buckets: Number of 128-aligned dynamic shape buckets to generate.
+      num_buckets: Number of `bucket_size`-aligned dynamic shape buckets to
+        generate.
       num_lookahead_buckets: Number of subsequent buckets to asynchronously
-        pre-compile ahead of the current bucket.
+        pre-compile ahead of the current bucket. Defaults to `num_buckets`.
+      bucket_size: Step size for dynamic shape buckets. Defaults to 128.
     """
     if compilation_context is None:
       compilation_context = compiler.CompilationContext()
     super().__init__(compilation_context, debug=debug)
     self._num_buckets = num_buckets
-    self._num_lookahead_buckets = num_lookahead_buckets
+    # Default lookahead to `num_buckets` so all configured buckets are
+    # pre-compiled during warmup (on StaticCompiler's bounded thread pool),
+    # avoiding lookahead compilation overhead during steady-state execution.
+    # TODO: Expose configurable lookahead once steady-state lookahead
+    # overhead is resolved.
+    self._num_lookahead_buckets = (
+        num_buckets if num_lookahead_buckets is None else num_lookahead_buckets
+    )
+    self._bucket_size = bucket_size
+    # Always enable async_compile on the underlying StaticCompiler so bucket
+    # compilations happen asynchronously.
     self.static_compiler = compiler.StaticCompiler(
         compilation_context,
-        async_compile=async_compile,
+        async_compile=True,
         debug=debug,
         use_stablehlo_bounds=True,
     )
@@ -259,10 +269,12 @@ class DynamicCompiler(compiler.Compiler):
     sym_bounds_manager = SymBoundsManager(example_inputs)
 
     output_sym_shapes = create_output_sym_shapes(graph_module, example_inputs)
-    # Create symbol bound buckets at consecutive multiples of 128 (adjusted for
-    # constant output offsets).
+    # Create symbol bound buckets at consecutive multiples of `self._bucket_size`
+    # (adjusted for constant output offsets).
     bucketed_symbol_bounds = sym_bounds_manager.get_bucketed_symbol_bounds(
-        output_sym_shapes, num_buckets=self._num_buckets
+        output_sym_shapes,
+        num_buckets=self._num_buckets,
+        bucket_step=self._bucket_size,
     )
     if not bucketed_symbol_bounds:
       # If bucketed bounds violate shape guards (e.g. divisibility constraints),

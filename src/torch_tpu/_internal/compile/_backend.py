@@ -75,6 +75,9 @@ _TPU_DECOMPOSITIONS = get_decompositions([
 ])
 
 _ExpectedTypes: TypeAlias = torch.Tensor | torch.nn.Module | torch.SymInt
+# Maximum number of dynamic shape buckets allowed per compilation, matching the
+# worker limit of StaticCompiler._async_compile_executor.
+_MAX_DYNAMIC_BUCKETS = 8
 
 
 def get_default_cpu_backend() -> str:
@@ -455,8 +458,7 @@ def make_backend_compiler(
     async_compile: bool = False,
     debug: TpuCompileDebug | None = None,
     num_dynamic_buckets: int = 1,
-    dynamic_async_compile: bool = True,
-    num_lookahead_buckets: int = 1,
+    bucket_size: int = 128,
 ) -> compiler.Compiler:
   """Creates a compiler configured for static or dynamic compilation.
 
@@ -465,12 +467,9 @@ def make_backend_compiler(
     async_compile: If True, executes XLA compilation asynchronously.
     debug: Optional TpuCompileDebug container for recording compilation debug
       artifacts.
-    num_dynamic_buckets: Number of 128-aligned dynamic shape buckets to generate
-      when compiling with dynamic shapes.
-    dynamic_async_compile: If True, executes underlying static XLA compilation
-      asynchronously within DynamicCompiler.
-    num_lookahead_buckets: Number of subsequent buckets to asynchronously
-      pre-compile ahead of the current bucket.
+    num_dynamic_buckets: Number of `bucket_size`-aligned dynamic shape buckets
+      to generate when compiling with dynamic shapes.
+    bucket_size: Step size for dynamic shape buckets.
 
   Returns:
     A SplitCompiler instance wrapping either DynamicCompiler or StaticCompiler,
@@ -479,10 +478,9 @@ def make_backend_compiler(
   has_dynamic_symints = compiler.has_dynamic_symints(example_inputs)
   if has_dynamic_symints:
     base_compiler = dynamic_compiler.DynamicCompiler(
-        async_compile=dynamic_async_compile,
         debug=debug,
         num_buckets=num_dynamic_buckets,
-        num_lookahead_buckets=num_lookahead_buckets,
+        bucket_size=bucket_size,
     )
   else:
     base_compiler = compiler.StaticCompiler(
@@ -702,14 +700,11 @@ class TpuBackend:
         async_compile: Default False. If True, executes XLA compilation
           asynchronously.
         bounded_dynamism: Default False. If True, allows bounded dynamic shapes.
-        num_dynamic_buckets: Default 1. Number of 128-aligned dynamic shape
-          buckets to generate when `bounded_dynamism=True`.
-        dynamic_async_compile: Default True. If True, executes underlying static
-          XLA compilation asynchronously within `DynamicCompiler` when
+        num_dynamic_buckets: Default 1. Number of `bucket_size`-aligned dynamic
+          shape buckets to generate when `bounded_dynamism=True`. Must be
+          between 1 and 8.
+        bucket_size: Default 128. Step size for dynamic shape buckets when
           `bounded_dynamism=True`.
-        num_lookahead_buckets: Default 1. Number of subsequent buckets to
-          asynchronously pre-compile ahead of the current bucket when
-          `bounded_dynamism=True` and `dynamic_async_compile=True`.
         serializable: Default True. If True, uses
           SerializableAOTDispatchCompiler so that .serialize() is attached to
           compiled functions, which enables PyTorch's AOTAutogradCache to
@@ -737,8 +732,23 @@ class TpuBackend:
     async_compile = options.get("async_compile", False)
     bounded_dynamism = options.get("bounded_dynamism", False)
     num_dynamic_buckets = options.get("num_dynamic_buckets", 1)
-    dynamic_async_compile = options.get("dynamic_async_compile", True)
-    num_lookahead_buckets = options.get("num_lookahead_buckets", 1)
+    num_dynamic_buckets = (
+        1 if num_dynamic_buckets is None else num_dynamic_buckets
+    )
+    if (
+        not isinstance(num_dynamic_buckets, int)
+        or not 1 <= num_dynamic_buckets <= _MAX_DYNAMIC_BUCKETS
+    ):
+      raise ValueError(
+          "`num_dynamic_buckets` must be an integer between 1 and"
+          f" {_MAX_DYNAMIC_BUCKETS}, got {num_dynamic_buckets}"
+      )
+    bucket_size = options.get("bucket_size", 128)
+    bucket_size = 128 if bucket_size is None else bucket_size
+    if not isinstance(bucket_size, int) or bucket_size <= 0:
+      raise ValueError(
+          f"`bucket_size` must be a positive integer, got {bucket_size}"
+      )
     # DynamicCompiler artifacts are not pickleable yet, so only static
     # compilations can participate in AOTAutogradCache.
     serializable = cast(
@@ -792,8 +802,7 @@ class TpuBackend:
         async_compile=async_compile,
         debug=debug,
         num_dynamic_buckets=num_dynamic_buckets,
-        dynamic_async_compile=dynamic_async_compile,
-        num_lookahead_buckets=num_lookahead_buckets,
+        bucket_size=bucket_size,
     )
     compiler_instance.execute_pre_grad_passes(graph_module)
 

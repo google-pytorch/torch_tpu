@@ -1878,7 +1878,7 @@ class DynamicErrorHandlingTest(seed_test_utils.RepeatableTest):
       )
       self.assertIn("MLIR lowering failed", str(ctx.exception))
 
-  def test_dynamic_async_compile_disabled_option(self):
+  def test_dynamic_compiler_options(self):
     def simple(x):
       return x + 1.0
 
@@ -1890,15 +1890,20 @@ class DynamicErrorHandlingTest(seed_test_utils.RepeatableTest):
       compiled = torch.compile(
           simple,
           backend="tpu",
-          options={"bounded_dynamism": True, "dynamic_async_compile": False},
+          options={
+              "bounded_dynamism": True,
+              "num_dynamic_buckets": 2,
+              "bucket_size": 64,
+          },
       )
       device = torch.accelerator.current_accelerator()
       t = torch.ones(4, device=device)
-      torch._dynamo.mark_dynamic(t, 0, min=2, max=8)
+      torch._dynamo.mark_dynamic(t, 0, min=2, max=128)
       out = compiled(t)
       utils.assert_close(out, simple(t))
       mock_dyn_compiler.assert_called_once()
-      self.assertFalse(mock_dyn_compiler.call_args.kwargs["async_compile"])
+      self.assertEqual(mock_dyn_compiler.call_args.kwargs["num_buckets"], 2)
+      self.assertEqual(mock_dyn_compiler.call_args.kwargs["bucket_size"], 64)
 
 
 @oss_utils.skip_if_libtpu_version(

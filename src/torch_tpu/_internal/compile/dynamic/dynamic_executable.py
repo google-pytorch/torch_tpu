@@ -69,7 +69,7 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
       view_arg_indices: set[int],
       use_pad_real_to_static: bool = True,
       module_name: str | None = None,
-      num_lookahead_buckets: int = 1,
+      num_lookahead_buckets: int | None = None,
   ):
     """Initializes DynamicTpuCompiledExecutable.
 
@@ -90,7 +90,8 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
         pad_real_to_static instead of a pad subgraph.
       module_name: Optional custom name for the compiled MLIR module.
       num_lookahead_buckets: Number of subsequent buckets to asynchronously
-        pre-compile ahead of the current bucket.
+        pre-compile ahead of the current bucket. Defaults to the total number of
+        buckets.
     """
     super().__init__()
     self._static_compiler = static_compiler
@@ -103,7 +104,11 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
     self._is_fwd = is_fwd
     self._view_arg_indices = view_arg_indices
     self._module_name = module_name
-    self._num_lookahead_buckets = num_lookahead_buckets
+    self._num_lookahead_buckets = (
+        len(self._bucket_specs)
+        if num_lookahead_buckets is None
+        else num_lookahead_buckets
+    )
 
     # Cache for compiled executables: (bucket_idx, layout_key) -> executable.
     self._model_executables: dict[
