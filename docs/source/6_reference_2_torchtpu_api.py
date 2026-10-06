@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # pylint: skip-file
-"""Marimo notebook for API mapping."""
+"""Marimo notebook for TorchTPU API."""
 
 import marimo
 
@@ -30,7 +30,7 @@ def _():
 @app.cell(hide_code=True)
 def _(mo):
   mo.md(r"""
-    # **API Mapping Table: `torch.cuda` → `torch.tpu`**
+    # **TorchTPU API**
 
     Once the backend is initialized via `device = torch.device("tpu")`, TorchTPU registers a dedicated Python module: **`torch.tpu`**. This module is designed as a drop-in replacement for the standard `torch.cuda` API.
 
