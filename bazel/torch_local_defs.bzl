@@ -144,11 +144,17 @@ def define_torch_local(name, is_source_mode = True):
 
     native.filegroup(
         name = "torch_py_files",
-        srcs = native.glob(py_library_source_mapping([
-            "torch/**/*",
-            "torchgen/**/*",
-            "functorch/**/*",
-        ])),
+        srcs = native.glob(
+            py_library_source_mapping([
+                "torch/**/*",
+                "torchgen/**/*",
+                "functorch/**/*",
+                "torch-*.dist-info/**",
+            ]),
+            # Exclude RECORD because Bazel manages package layouts and
+            # runfiles tree by itself.
+            exclude = py_library_source_mapping(["torch-*.dist-info/RECORD"]),
+        ),
     )
     py_library(
         # PY_LIBRARY_OK=Upstream source not pytype compatible
@@ -158,21 +164,30 @@ def define_torch_local(name, is_source_mode = True):
             "torchgen/**/*.py",
             "functorch/**/*.py",
         ])),
-        data = native.glob(py_library_source_mapping([
-            "torch/**/*.so*",
-            "torch/**/*.pyd",
-            "torch/**/*.pyi",
-            "torch/**/*.yaml",
-            "torch/**/*.json",
-            "torch/**/*.jinja",
-            "torch/bin/*",
-            "torch/lib/*.so*",
-            "torch/include/**",
-            "torchgen/**/*.pyi",
-            "torchgen/**/*.yaml",
-            "torchgen/**/*.json",
-            "functorch/**/*.pyi",
-        ])),
+        # Since PyTorch 2.14, built-in c10d backends (gloo, nccl, ...) are
+        # registered lazily via the `torch.distributed.backends` entry points
+        # in torch's dist-info, so it has to be on the runtime path.
+        data = native.glob(
+            py_library_source_mapping([
+                "torch/**/*.so*",
+                "torch/**/*.pyd",
+                "torch/**/*.pyi",
+                "torch/**/*.yaml",
+                "torch/**/*.json",
+                "torch/**/*.jinja",
+                "torch/bin/*",
+                "torch/lib/*.so*",
+                "torch/include/**",
+                "torchgen/**/*.pyi",
+                "torchgen/**/*.yaml",
+                "torchgen/**/*.json",
+                "functorch/**/*.pyi",
+                "torch-*.dist-info/**",
+            ]),
+            # Exclude RECORD because Bazel manages package layouts and
+            # runfiles tree by itself.
+            exclude = py_library_source_mapping(["torch-*.dist-info/RECORD"]),
+        ),
         imports = ["site-packages"],
         experimental_venvs_site_packages = "@rules_python//python/config_settings:venvs_site_packages",
         visibility = ["//visibility:public"],
