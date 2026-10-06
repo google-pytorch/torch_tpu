@@ -170,6 +170,27 @@ absl::Status TpuMemcpyDtoHFP4(xla::PjRtBuffer* absl_nonnull buffer,
   return absl::OkStatus();
 }
 
+// Returns the on-device layout for a transfer of `rank` dimensions: the layout
+// of the innermost layout context if it has `rank` dimensions, or null for the
+// default layout.
+const xla::Layout* absl_nullable ChooseTransferLayout(size_t rank) {
+  const xla::Layout* const context_layout =
+      GetContextState<LayoutContextState>().value_or(nullptr).get();
+  if (context_layout == nullptr) {
+    return nullptr;
+  }
+  // A layout only fits tensors of its own rank. Other transfers made inside a
+  // layout context (e.g. the 0-D fill value of `torch.full`) keep the default
+  // layout instead of failing later in the XLA compiler.
+  if (context_layout->minor_to_major().size() != rank) {
+    ABSL_VLOG(1) << "[TpuMallocAndMemcpyHtoD INTERNAL] Ignoring context layout "
+                 << context_layout->ToString() << " for a transfer of rank "
+                 << rank << ".";
+    return nullptr;
+  }
+  return context_layout;
+}
+
 }  // namespace
 
 absl::StatusOr<DeviceBufferRef> TpuMallocAndMemcpyHtoD(
@@ -264,8 +285,7 @@ absl::StatusOr<DeviceBufferRef> TpuMallocAndMemcpyHtoD(
                << ", dimensions: [" << absl::StrJoin(dimensions, ",") << "]"
                << ", semantics: " << static_cast<int>(semantics);
 
-  const xla::Layout* const layout_ptr =
-      GetContextState<LayoutContextState>().value_or(nullptr).get();
+  const xla::Layout* const layout_ptr = ChooseTransferLayout(dimensions.size());
 
   TT_ASSIGN_OR_RETURN(
       std::unique_ptr<xla::PjRtBuffer> buffer,
