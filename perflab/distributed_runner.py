@@ -326,7 +326,10 @@ def _clear_persistent_compilation_caches() -> None:
   from preceding targets.
   """
   # 1. Clear TorchTPU Tier-2 host-local shared memory compilation cache.
+  # LINT.IfChange(tier2_cache_root_dir)
+  # Must match kTier2CacheRootDir in csrc/common/tier2_compilation_cache.cc.
   shutil.rmtree("/dev/shm/torch_tpu_cache", ignore_errors=True)
+  # LINT.ThenChange()
 
   # 2. Clear PyTorch Inductor and compile on-disk caches.
   cache_patterns = [

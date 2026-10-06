@@ -445,7 +445,10 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     with mock.patch("glob.glob", return_value=["/tmp/torchinductor_test"]):
       distributed_runner._clear_persistent_compilation_caches()
 
+    # LINT.IfChange(tier2_cache_root_dir)
+    # Must match kTier2CacheRootDir in csrc/common/tier2_compilation_cache.cc.
     mock_rmtree.assert_any_call("/dev/shm/torch_tpu_cache", ignore_errors=True)
+    # LINT.ThenChange()
     mock_rmtree.assert_any_call("/tmp/torchinductor_test", ignore_errors=True)
 
 

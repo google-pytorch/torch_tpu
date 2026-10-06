@@ -38,7 +38,10 @@ def _():
 
   tier2_name = "tpu_tier2_cache"
   tier3_path = "/tmp/tpu_tier3_cache"
+  # LINT.IfChange(tier2_cache_root_dir)
+  # Must match kTier2CacheRootDir in csrc/common/tier2_compilation_cache.cc.
   tier2_path = os.path.join("/dev/shm/torch_tpu_cache", tier2_name)
+  # LINT.ThenChange()
   for p in [tier2_path, tier3_path]:
     if os.path.exists(p):
       shutil.rmtree(p)
@@ -272,8 +275,10 @@ def _(os, safe_init):
     import time
 
     tier2_name = "tpu_tier2_cache"
+    # LINT.IfChange(tier2_cache_root_dir_example)
     # The backend automatically places named tier-2 caches inside /dev/shm/torch_tpu_cache/
     tier2_path = os.path.join("/dev/shm/torch_tpu_cache", tier2_name)
+    # LINT.ThenChange()
     tier3_path = "/tmp/tpu_tier3_cache"
 
     # Ensure directories exist
@@ -329,6 +334,9 @@ def _(os, safe_init):
 
 @app.cell(hide_code=True)
 def _(mo):
+  # LINT.IfChange(tier2_cache_root_dir_summary)
+  # The TORCH_TPU_TIER2_COMPILATION_CACHE row must match kTier2CacheRootDir in
+  # csrc/common/tier2_compilation_cache.cc.
   mo.md(r"""
     ## **Quick Reference Summary**
     | Variable | Scope | Must Set Before | Possible Values |
@@ -345,6 +353,7 @@ def _(mo):
     | `TORCH_TPU_TOPOLOGY` | Cloud | `import torch` | `2x2x1`, `2x2x4`, `4x4x4`, etc. |
     | `WORLD_SIZE` | Launcher | `import torch` | `1`, `2`, `4`, `8`, `16`, ... (integer) |
     """)
+  # LINT.ThenChange()
   return
 
 

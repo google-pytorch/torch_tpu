@@ -192,6 +192,26 @@ _PUBLIC_MODULES: Mapping[str, ModuleSpec] = {
         main="torch_tpu._internal.distributed.distributed",
         doc="Public TorchTPU distributed namespace (`torch.tpu.distributed`).",
     ),
+    "torch.tpu.experimental": ModuleSpec(
+        doc=(
+            "Experimental TorchTPU APIs (`torch.tpu.experimental`). APIs in"
+            " this package are not covered by any compatibility guarantee and"
+            " may change or be removed without notice."
+        ),
+    ),
+    "torch.tpu.experimental.precompiled_kernels": ModuleSpec(
+        exports={
+            # go/keep-sorted start
+            "load_kernels": (
+                "torch_tpu._internal.precompiled_kernels:load_kernels"
+            ),
+            # go/keep-sorted end
+        },
+        doc=(
+            "Experimental precompiled kernels API for TorchTPU"
+            " (`torch.tpu.experimental.precompiled_kernels`)."
+        ),
+    ),
     "torch.tpu.ops": ModuleSpec(
         exports={
             # go/keep-sorted start

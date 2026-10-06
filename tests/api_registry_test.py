@@ -26,6 +26,7 @@ import torch_tpu
 from torch_tpu import _loader  # build_cleaner: keep
 from torch_tpu._internal import compiler_options as internal_compiler_options
 from torch_tpu._internal import execution_mode as _internal_execution_mode
+from torch_tpu._internal import precompiled_kernels as internal_precompiled_kernels
 from torch_tpu._internal.distributed.distributed import (
     set_tpu_launch_env as internal_set_tpu_launch_env,
 )
@@ -401,6 +402,57 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
         AttributeError
     ):
       _ = getattr(torch.tpu.optimizers, "non_existent_attribute")
+
+  def test_experimental_precompiled_kernels_api_registry(self):
+    """Verifies exposure, identity, metadata, and proxy behavior for the nested experimental module."""
+    # 1. Nested submodule import and symbol identity
+    mod = importlib.import_module("torch.tpu.experimental.precompiled_kernels")
+    from torch.tpu.experimental import precompiled_kernels as from_imported  # pylint: disable=g-import-not-at-top
+
+    self.assertIs(mod, torch.tpu.experimental.precompiled_kernels)
+    self.assertIs(from_imported, torch.tpu.experimental.precompiled_kernels)
+    self.assertIs(
+        torch.tpu.experimental.precompiled_kernels.load_kernels,
+        internal_precompiled_kernels.load_kernels,
+    )
+
+    # 2. Lifecycle stage metadata
+    fn = torch.tpu.experimental.precompiled_kernels.load_kernels
+    self.assertEqual(
+        getattr(fn, annotations.TT_API_STAGE, None),
+        annotations.Stage.EXPERIMENTAL.value,
+    )
+    self.assertEqual(
+        getattr(fn, annotations.TT_API_STAGE_REASON, None),
+        "torch.tpu.experimental.precompiled_kernels.load_kernels is"
+        " experimental and subject to change.",
+    )
+
+    # 3. Proxy dir and invalid attribute handling
+    self.assertEqual(dir(torch.tpu.experimental), ["precompiled_kernels"])
+    self.assertEqual(
+        dir(torch.tpu.experimental.precompiled_kernels), ["load_kernels"]
+    )
+    for module in (
+        torch.tpu.experimental,
+        torch.tpu.experimental.precompiled_kernels,
+    ):
+      with self.assertRaises(  # ASSERT_RAISES_OK=Verifies proxy module raises AttributeError for non-existent attributes
+          AttributeError
+      ):
+        _ = getattr(module, "non_existent_attribute")
+
+    # 4. Verify torch_tpu does not expose experimental
+    self.assertFalse(hasattr(torch_tpu, "experimental"))
+    for bad_mod in (
+        "torch_tpu.experimental",
+        "torch_tpu.experimental.precompiled_kernels",
+    ):
+      self.assertNotIn(bad_mod, sys.modules)
+      with self.assertRaises(  # ASSERT_RAISES_OK=Verifies torch_tpu.experimental cannot be imported
+          ModuleNotFoundError
+      ):
+        importlib.import_module(bad_mod)
 
   def test_ops_api_registry(self):
     """Verifies public exposure, identity, metadata, and proxy behavior for ops."""

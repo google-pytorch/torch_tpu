@@ -98,6 +98,17 @@ torch_tpu_cc_library(
     ],
 )
 
+torch_tpu_cc_library(
+    name = "precompiled_kernels",
+    srcs = ["precompiled_kernels.cc"],
+    hdrs = ["precompiled_kernels.h"],
+    deps = [
+        ":nonzero_indices",
+        "//csrc/common:compilation_cache",
+        "//csrc/common:error_utils",
+    ],
+)
+
 torch_tpu_cc_test(
     name = "mosaic_custom_call_test",
     srcs = ["mosaic_custom_call_test.cc"],

@@ -235,8 +235,11 @@ TEST_F(Tier2CacheEntryLockTest, OnlyOneUserCanHoldLockAtATime) {
 }
 
 TEST_F(Tier2CacheTest, CachePath) {
+  // LINT.IfChange(tier2_cache_root_dir)
+  // Must match kTier2CacheRootDir in tier2_compilation_cache.cc.
   const std::string kCachePathPrefix =
       absl::StrCat("/dev/shm/torch_tpu_cache/my_cache_", getpid(), "/");
+  // LINT.ThenChange()
   ASSERT_THAT(cache_path_, StartsWith(kCachePathPrefix));
 
   // The suffix should be a 16-character hexadecimal string.

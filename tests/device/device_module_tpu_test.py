@@ -81,6 +81,7 @@ class TpuDeviceModuleTest(
     actual_exports = set(torch.tpu.__all__) - {
         "compiler",
         "distributed",
+        "experimental",
         "ops",
         "optimizers",
         "pallas",

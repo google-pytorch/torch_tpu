@@ -207,8 +207,11 @@ jobs:
     steps:
       - name: Redirect torch_tpu cache off /dev/shm
         run: |
+          # LINT.IfChange(tier2_cache_root_dir)
+          # Must match kTier2CacheRootDir in csrc/common/tier2_compilation_cache.cc.
           mkdir -p /tmp/torch_tpu_cache
           ln -sfn /tmp/torch_tpu_cache /dev/shm/torch_tpu_cache
+          # LINT.ThenChange()
 
       - name: Checkout torch_tpu
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
