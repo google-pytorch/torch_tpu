@@ -119,10 +119,15 @@ absl::StatusOr<c10d::ReduceOp::RedOpType> ParseReduceOp(
 // backend can still be a wrapper around ProcessGroupTpu, e.g. under
 // TORCH_DISTRIBUTED_DEBUG=DETAIL or TorchComms.
 absl::StatusOr<c10::intrusive_ptr<ProcessGroupTpu>> GetProcessGroupTpu(
-    std::string_view group_name) {
+    std::string_view group_name, int64_t group_size) {
   c10::intrusive_ptr<c10d::ProcessGroup> pg =
       c10d::resolve_process_group(std::string(group_name));
   ABSL_CHECK(pg != nullptr);  // CRASH_OK
+  // The output shape comes from group_size, while the lowered collective's
+  // shape comes from the process group.
+  TT_RET_CHECK(group_size == pg->getSize(), error::kInvalidArgument)
+      << "expected group_size to match process group size, got " << group_size
+      << " vs " << pg->getSize();
   c10::intrusive_ptr<c10d::Backend> backend =
       pg->getBackend(c10::DeviceType::PrivateUse1);
   ABSL_CHECK(backend != nullptr);  // CRASH_OK
@@ -140,12 +145,8 @@ absl::StatusOr<DeviceBufferRef> DispatchCollectiveWithDim(
     const at::Tensor& input, int64_t group_size, Dimensions output_shape,
     std::string_view group_name, CollectiveBuilder collective_builder,
     OpParamCacheKeys param_keys) {
-  TT_ASSIGN_OR_RETURN(auto process_group, GetProcessGroupTpu(group_name));
-  // The output shape comes from group_size, while the lowered collective's
-  // shape comes from the process group.
-  TT_RET_CHECK(group_size == process_group->getSize(), error::kInvalidArgument)
-      << "expected group_size to match process group size, got " << group_size
-      << " vs " << process_group->getSize();
+  TT_ASSIGN_OR_RETURN(auto process_group,
+                      GetProcessGroupTpu(group_name, group_size));
   const DeviceGroupList& device_groups = process_group->GetSubgroupRanks();
   TT_ASSIGN_OR_RETURN(auto output_dtype,
                       ConvertTo<mlir::ElementType>(input.scalar_type()));

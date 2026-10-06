@@ -25,6 +25,7 @@ from absl.testing import parameterized
 import torch
 import torch.distributed as dist
 from torch.fx.experimental.proxy_tensor import make_fx
+from torch.testing._internal.distributed import fake_pg
 from torch.tpu import distributed  # pyrefly: ignore[missing-import]
 from torch.utils import _pytree as pytree
 from torch_tpu._internal import dynamism
@@ -4721,14 +4722,34 @@ module {
           args=("band", 0, 2),
           expected_error="""reduce_scatter_dim(): expected the tensors dtype to be integer on bitwise reduction ops (BAND, BOR, BXOR), got float32""",
       ),
+      dict(
+          testcase_name="all_gather_dim_group_size_mismatch",
+          op="_all_gather_dim",
+          shape=(2, 4),
+          args=(0, 3),
+          expected_error="""all_gather_dim(): expected group_size to match process group size, got 3 vs 2""",
+      ),
+      dict(
+          testcase_name="reduce_scatter_dim_non_tpu_backend",
+          op="_reduce_scatter_dim",
+          shape=(2, 4),
+          args=("sum", 0, 2),
+          expected_error="""reduce_scatter_dim(): expected the TPU backend of process group 0 to be an unwrapped ProcessGroupTpu, got a wrapped or non-TPU backend""",
+      ),
   )
   @et.why_tpu_only("torch.ops.tpu dimensional collectives are TPU-specific ops")
   def test_dimensional_collectives(
       self, op, shape, args, expected_error, exception=RuntimeError
   ):
+    # The default group is named "0", and its TPU backend is a
+    # FakeProcessGroup rather than a ProcessGroupTpu.
+    dist.init_process_group(
+        "tpu:fake", store=fake_pg.FakeStore(), rank=0, world_size=2
+    )
+    self.addCleanup(dist.destroy_process_group)
     x = torch.ones(shape, device=et.device())
     with et.assert_raises_message(exception, tpu=expected_error):
-      getattr(torch.ops.tpu, op)(x, *args, "unused")
+      getattr(torch.ops.tpu, op)(x, *args, "0")
 
   def _default_lstm_input_args(self):
     device = et.device()
