@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+from typing import Final
 from unittest import mock
 
 from absl.testing import absltest
@@ -25,6 +26,12 @@ from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
 from tests.distributed import distributed_utils
+
+_SHAPE_MISMATCH: Final[str] = "Tensor shape mismatch"
+_SFLAG_TIMEOUT: Final[str] = "Wait timeout on sflag"
+_ZERO_ALL_GATHER_DIM: Final[str] = (
+    "dimension size of operand at 'all_gather_dim' cannot be zero"
+)
 
 
 def _replicate_tensor(
@@ -107,49 +114,52 @@ class UnevenShardingTest(seed_test_utils.MultiProcessRepeatableTest):
     )
 
   @parameterized.named_parameters(
-      ("1d_compiled_fail_small", 1, True, 4, "Tensor shape mismatch"),
+      # Mismatched local shapes in the all-gather are undefined behavior:
+      # depending on the libtpu build, the 1-D cases either fail the shape
+      # check or hang until the runtime reports an sflag wait timeout.
+      (
+          "1d_compiled_fail_small",
+          1,
+          True,
+          4,
+          f"{_SHAPE_MISMATCH}|{_SFLAG_TIMEOUT}",
+      ),
       (
           "1d_eager_fail_small",
           1,
           False,
           4,
-          (
-              "Tensor shape mismatch|dimension size of operand at"
-              " 'all_gather_dim' cannot be zero"
-          ),
+          f"{_SHAPE_MISMATCH}|{_SFLAG_TIMEOUT}|{_ZERO_ALL_GATHER_DIM}",
       ),
-      ("1d_compiled_fail_uneven", 1, True, 12, "Tensor shape mismatch"),
+      (
+          "1d_compiled_fail_uneven",
+          1,
+          True,
+          12,
+          f"{_SHAPE_MISMATCH}|{_SFLAG_TIMEOUT}",
+      ),
       (
           "1d_eager_fail_uneven",
           1,
           False,
           12,
-          (
-              "Tensor shape mismatch|dimension size of operand at"
-              " 'all_gather_dim' cannot be zero"
-          ),
+          f"{_SHAPE_MISMATCH}|{_SFLAG_TIMEOUT}|{_ZERO_ALL_GATHER_DIM}",
       ),
-      ("2d_compiled_fail_small", 2, True, 4, "Wait timeout on sflag"),
+      ("2d_compiled_fail_small", 2, True, 4, _SFLAG_TIMEOUT),
       (
           "2d_eager_fail_small",
           2,
           False,
           4,
-          (
-              "Wait timeout on sflag|dimension size of operand at"
-              " 'all_gather_dim' cannot be zero"
-          ),
+          f"{_SFLAG_TIMEOUT}|{_ZERO_ALL_GATHER_DIM}",
       ),
-      ("2d_compiled_fail_uneven", 2, True, 12, "Wait timeout on sflag"),
+      ("2d_compiled_fail_uneven", 2, True, 12, _SFLAG_TIMEOUT),
       (
           "2d_eager_fail_uneven",
           2,
           False,
           12,
-          (
-              "Wait timeout on sflag|dimension size of operand at"
-              " 'all_gather_dim' cannot be zero"
-          ),
+          f"{_SFLAG_TIMEOUT}|{_ZERO_ALL_GATHER_DIM}",
       ),
   )
   def test_replicate_tensor_without_shape(
