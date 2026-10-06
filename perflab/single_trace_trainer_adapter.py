@@ -19,16 +19,19 @@ from typing import Any, Callable
 import torch
 from torch.utils import _pytree
 from torch_tpu._internal.compile import compiler
+from torch_tpu._internal.optimizers import adamw
+from torch_tpu._internal.optimizers import muon
+from torch_tpu._internal.optimizers import sgd
 
 optimizers = torch.tpu.optimizers
 
 # Re-export optimizer classes
 Optimizer = optimizers.Optimizer
-ReferenceAdamw = optimizers.ReferenceAdamw
-TorchAdamw = optimizers.TorchAdamw
-ReferenceSgd = optimizers.ReferenceSgd
+ReferenceAdamW = adamw.ReferenceAdamW
+TorchAdamW = optimizers.TorchAdamW
+ReferenceSgd = sgd.ReferenceSgd
 TorchSgd = optimizers.TorchSgd
-ReferenceMuon = optimizers.ReferenceMuon
+ReferenceMuon = muon.ReferenceMuon
 TorchMuon = optimizers.TorchMuon
 
 
@@ -61,8 +64,8 @@ class SingleTraceTrainerAdapter(optimizers.SingleTraceTrainer):
         # Only donate parameter buffers when an optimizer updates parameters in-place.
         # Without an optimizer (or when input donation is explicitly disabled),
         # donating parameters would invalidate them across repeated training iterations.
-        if self.optimizer is not None and getattr(
-            self.optimizer, "donate_inputs", True
+        if self._optimizer is not None and getattr(
+            self._optimizer, "_donate_inputs", True
         ):
           flat_param_group, _ = _pytree.tree_flatten(self.param_group)
           donated_inputs = [

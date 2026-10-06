@@ -97,6 +97,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:flagsaver",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal/optimizers:sgd",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
         "@pypi//transformers",

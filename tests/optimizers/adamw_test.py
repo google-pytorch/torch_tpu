@@ -17,6 +17,7 @@
 from absl.testing import absltest
 import torch
 from torch.tpu import optimizers
+from torch_tpu._internal.optimizers import adamw
 from torch_tpu._internal.utils import test_utils as assert_utils
 from tests import seed_test_utils
 from tests.optimizers import test_utils
@@ -42,8 +43,8 @@ class AdamWOptimizersTest(seed_test_utils.RepeatableTest):
         list(ref_params.values()),
         lr=lr,
         weight_decay=weight_decay,
-        betas=(custom_opt.beta1, custom_opt.beta2),
-        eps=custom_opt.eps,
+        betas=(custom_opt.defaults["beta1"], custom_opt.defaults["beta2"]),
+        eps=custom_opt.defaults["eps"],
     )
     for k, p in ref_params.items():
       p.grad = grads_ref[k].clone().detach()
@@ -88,19 +89,19 @@ class AdamWOptimizersTest(seed_test_utils.RepeatableTest):
       )
 
   def test_reference_adamw_step(self):
-    opt = optimizers.ReferenceAdamw(
+    opt = adamw.ReferenceAdamW(
         lr=1e-3, weight_decay=1e-2, use_bfloat16_moments=False
     )
     self._validate_opt_step(opt, lr=1e-3, weight_decay=1e-2)
 
   def test_torch_adamw_step(self):
-    opt = optimizers.TorchAdamw(
+    opt = optimizers.TorchAdamW(
         lr=1e-3, weight_decay=1e-2, use_bfloat16_moments=False
     )
     self._validate_opt_step(opt, lr=1e-3, weight_decay=1e-2)
 
   def test_torch_adamw_custom_kwargs(self):
-    opt = optimizers.TorchAdamw(
+    opt = optimizers.TorchAdamW(
         lr=1e-3,
         weight_decay=1e-2,
         use_bfloat16_moments=False,
@@ -112,10 +113,24 @@ class AdamWOptimizersTest(seed_test_utils.RepeatableTest):
     self._validate_opt_step(opt, lr=1e-3, weight_decay=1e-2)
 
   def test_torch_adamw_compiled_linear_train_step(self):
-    opt = optimizers.TorchAdamw(
+    opt = optimizers.TorchAdamW(
         lr=1e-3, weight_decay=1e-2, use_bfloat16_moments=False
     )
     test_utils.validate_compiled_linear_train_step(self, opt, self.device)
+
+  def test_defaults_are_read_only(self):
+    for opt in (
+        optimizers.TorchAdamW(lr=1e-2, beta1=0.5),
+        adamw.ReferenceAdamW(lr=1e-2, beta1=0.5),
+    ):
+      with self.subTest(type(opt).__name__):
+        self.assertEqual(opt.defaults["lr"], 1e-2)
+        self.assertEqual(opt.defaults["beta1"], 0.5)
+        self.assertFalse(hasattr(opt, "lr"))
+        with self.assertRaises(  # ASSERT_RAISES_OK=Python attribute check
+            TypeError
+        ):
+          opt.defaults["lr"] = 1e-3  # pytype: disable=unsupported-operands
 
 
 if __name__ == "__main__":

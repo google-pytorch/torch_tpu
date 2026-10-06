@@ -15,6 +15,8 @@
 """Stateless functional optimizer base class and shared types for TPU tracing."""
 
 import abc
+from collections.abc import Mapping
+import types
 from typing import Any, ClassVar
 
 import torch
@@ -26,21 +28,40 @@ __all__ = [
 
 
 @_annotations.experimental(
-    'Optimizer is experimental and may change or be removed without notice.'
+    "Optimizer is experimental and may change or be removed without notice."
 )
 class Optimizer(abc.ABC):
-  """Abstract base class for stateless functional optimizers operating on nested ParamGroup."""
+  """Abstract base class for stateless functional optimizers operating on nested ParamGroup.
+
+  Hyperparameters are fixed at construction and can be read through
+  `defaults`. They are captured as constants when a train step is traced, so
+  they can't be changed afterwards. Create a new optimizer instead.
+  """
 
   ParamGroup: ClassVar[Any]
 
+  # The names of the constructor arguments that `defaults` lists. Each is
+  # stored in the attribute of the same name with a leading underscore.
+  _HYPERPARAMETER_NAMES: ClassVar[tuple[str, ...]] = ("lr", "weight_decay")
+
   def __init__(self, lr: float = 1e-3, weight_decay: float = 0.0):
-    self.lr = lr
-    self.weight_decay = weight_decay
+    self._lr = lr
+    self._weight_decay = weight_decay
+
+  @property
+  @_annotations.experimental(
+      "defaults is experimental and may change or be removed without notice."
+  )
+  def defaults(self) -> Mapping[str, Any]:
+    """Returns a read-only mapping of the optimizer's hyperparameters."""
+    return types.MappingProxyType(
+        {name: getattr(self, f"_{name}") for name in self._HYPERPARAMETER_NAMES}
+    )
 
   @abc.abstractmethod
   @_annotations.experimental(
-      'init_param_group() is experimental and may change or be removed without'
-      ' notice.'
+      "init_param_group() is experimental and may change or be removed without"
+      " notice."
   )
   def init_param_group(
       self, params: dict[str, torch.Tensor] | torch.nn.Module
@@ -50,7 +71,7 @@ class Optimizer(abc.ABC):
 
   @abc.abstractmethod
   @_annotations.experimental(
-      'step() is experimental and may change or be removed without notice.'
+      "step() is experimental and may change or be removed without notice."
   )
   def step(self, param_group: Any, grads: dict[str, torch.Tensor]) -> Any:
     """Performs optimizer step on param_group given grads and returns updated ParamGroup."""

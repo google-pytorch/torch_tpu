@@ -194,7 +194,7 @@ def _get_device_index(
       raise ValueError(f"Expected a tpu device, but got: {device_arg}")
   if not torch.jit.is_scripting():
     if isinstance(device_arg, _DeviceContext):
-      return device_arg.idx
+      return device_arg._idx  # pylint: disable=protected-access
   return torch._utils._get_device_index(  # pylint: disable=protected-access
       device_arg, optional=optional, allow_cpu=allow_cpu
   )
@@ -220,14 +220,14 @@ class _DeviceContext:
   """
 
   def __init__(self, device: Any):  # pylint: disable=redefined-outer-name
-    self.idx = _get_device_index(device, optional=True)
-    self.prev_idx = -1
+    self._idx = _get_device_index(device, optional=True)
+    self._prev_idx = -1
 
   def __enter__(self):
-    self.prev_idx = _DeviceModule._exchange_device(self.idx)  # pylint: disable=protected-access
+    self._prev_idx = _DeviceModule._exchange_device(self._idx)  # pylint: disable=protected-access
 
   def __exit__(self, exc_type: Any, exc_value: Any, exc_traceback: Any):
-    self.idx = _DeviceModule._maybe_exchange_device(self.prev_idx)  # pylint: disable=protected-access
+    self._idx = _DeviceModule._maybe_exchange_device(self._prev_idx)  # pylint: disable=protected-access
     return False
 
 

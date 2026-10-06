@@ -17,6 +17,7 @@
 from absl.testing import absltest
 import torch
 from torch.tpu import optimizers
+from torch_tpu._internal.optimizers import sgd
 from torch_tpu._internal.utils import test_utils as assert_utils
 from tests import seed_test_utils
 from tests.optimizers import test_utils
@@ -45,8 +46,8 @@ class SGDOptimizersTest(seed_test_utils.RepeatableTest):
         lr=lr,
         momentum=momentum,
         weight_decay=weight_decay,
-        dampening=custom_opt.dampening,
-        nesterov=custom_opt.nesterov,
+        dampening=custom_opt.defaults["dampening"],
+        nesterov=custom_opt.defaults["nesterov"],
     )
     for k, p in ref_params.items():
       p.grad = grads_ref[k].clone().detach()
@@ -71,27 +72,27 @@ class SGDOptimizersTest(seed_test_utils.RepeatableTest):
         )
 
   def test_reference_sgd_step(self):
-    opt = optimizers.ReferenceSgd(lr=1e-2, momentum=0.9)
+    opt = sgd.ReferenceSgd(lr=1e-2, momentum=0.9)
     self._validate_opt_step(opt, lr=1e-2, momentum=0.9)
 
   def test_reference_sgd_no_momentum_step(self):
-    opt = optimizers.ReferenceSgd(lr=1e-2, momentum=0.0)
+    opt = sgd.ReferenceSgd(lr=1e-2, momentum=0.0)
     self._validate_opt_step(opt, lr=1e-2, momentum=0.0)
 
   def test_reference_sgd_weight_decay_step(self):
-    opt = optimizers.ReferenceSgd(lr=1e-2, momentum=0.9, weight_decay=1e-2)
+    opt = sgd.ReferenceSgd(lr=1e-2, momentum=0.9, weight_decay=1e-2)
     self._validate_opt_step(opt, lr=1e-2, momentum=0.9, weight_decay=1e-2)
 
   def test_reference_sgd_nesterov_step(self):
-    opt = optimizers.ReferenceSgd(lr=1e-2, momentum=0.9, nesterov=True)
+    opt = sgd.ReferenceSgd(lr=1e-2, momentum=0.9, nesterov=True)
     self._validate_opt_step(opt, lr=1e-2, momentum=0.9)
 
   def test_reference_sgd_dampening_step(self):
-    opt = optimizers.ReferenceSgd(lr=1e-2, momentum=0.9, dampening=0.1)
+    opt = sgd.ReferenceSgd(lr=1e-2, momentum=0.9, dampening=0.1)
     self._validate_opt_step(opt, lr=1e-2, momentum=0.9)
 
   def test_reference_sgd_compiled_linear_train_step(self):
-    opt = optimizers.ReferenceSgd(lr=1e-2, momentum=0.9)
+    opt = sgd.ReferenceSgd(lr=1e-2, momentum=0.9)
     test_utils.validate_compiled_linear_train_step(self, opt, self.device)
 
   def test_torch_sgd_step(self):
@@ -115,6 +116,20 @@ class SGDOptimizersTest(seed_test_utils.RepeatableTest):
   def test_torch_sgd_compiled_linear_train_step(self):
     opt = optimizers.TorchSgd(lr=1e-2, momentum=0.9)
     test_utils.validate_compiled_linear_train_step(self, opt, self.device)
+
+  def test_defaults_are_read_only(self):
+    for opt in (
+        optimizers.TorchSgd(lr=1e-2, momentum=0.5),
+        sgd.ReferenceSgd(lr=1e-2, momentum=0.5),
+    ):
+      with self.subTest(type(opt).__name__):
+        self.assertEqual(opt.defaults["lr"], 1e-2)
+        self.assertEqual(opt.defaults["momentum"], 0.5)
+        self.assertFalse(hasattr(opt, "lr"))
+        with self.assertRaises(  # ASSERT_RAISES_OK=Python attribute check
+            TypeError
+        ):
+          opt.defaults["lr"] = 1e-3  # pytype: disable=unsupported-operands
 
 
 if __name__ == "__main__":

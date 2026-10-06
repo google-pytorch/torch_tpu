@@ -239,10 +239,10 @@ class DeviceModuleBase(
     with self.patch_current_device(device_id=0):
       # Valid int: verifies device selection and context restoration
       ctx = self.device_module.device(0)
-      self.assertEqual(ctx.idx, 0)
+      self.assertEqual(ctx._idx, 0)
       with ctx:
-        self.assertEqual(ctx.prev_idx, 0)
-      self.assertEqual(ctx.idx, 0)
+        self.assertEqual(ctx._prev_idx, 0)
+      self.assertEqual(ctx._idx, 0)
 
       # Valid string and torch.device if registered
       if self.device_module._device_type == "tpu":
@@ -254,15 +254,15 @@ class DeviceModuleBase(
 
       # None resolves to current device (0), keeping the active device context
       none_ctx = self.device_module.device(None)
-      self.assertEqual(none_ctx.idx, 0)
+      self.assertEqual(none_ctx._idx, 0)
       with none_ctx:
-        self.assertEqual(none_ctx.prev_idx, 0)
+        self.assertEqual(none_ctx._prev_idx, 0)
 
       # Negative int is a no-op
       neg_ctx = self.device_module.device(-1)
-      self.assertEqual(neg_ctx.idx, -1)
+      self.assertEqual(neg_ctx._idx, -1)
       with neg_ctx:
-        self.assertEqual(neg_ctx.prev_idx, -1)
+        self.assertEqual(neg_ctx._prev_idx, -1)
 
       # Invalid device index raises ValueError
       with self.assertRaisesRegex(
@@ -277,16 +277,16 @@ class DeviceModuleBase(
       if self.device_module._device_type == "tpu":
         tpu_tensor = torch.zeros(1, device="tpu")
         tpu_ctx = self.device_module.device_of(tpu_tensor)
-        self.assertEqual(tpu_ctx.idx, 0)
+        self.assertEqual(tpu_ctx._idx, 0)
         with tpu_ctx:
-          self.assertEqual(tpu_ctx.prev_idx, 0)
+          self.assertEqual(tpu_ctx._prev_idx, 0)
 
       # CPU tensor is not on TPU, so it acts as a no-op (idx = -1)
       cpu_tensor = torch.zeros(1, device="cpu")
       cpu_ctx = self.device_module.device_of(cpu_tensor)
-      self.assertEqual(cpu_ctx.idx, -1)
+      self.assertEqual(cpu_ctx._idx, -1)
       with cpu_ctx:
-        self.assertEqual(cpu_ctx.prev_idx, -1)
+        self.assertEqual(cpu_ctx._prev_idx, -1)
 
   def test_exchange_device(self):
     with self.patch_current_device(device_id=0):
