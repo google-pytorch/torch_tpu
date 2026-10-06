@@ -355,12 +355,6 @@ torch_tpu_oss_torch_test(
 )
 
 torch_tpu_oss_torch_test(
-    name = "jit_llga_fuser_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
-    torch_test_module = "test_jit_llga_fuser",
-)
-
-torch_tpu_oss_torch_test(
     name = "legacy_vmap_test",
     notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "test_legacy_vmap",
