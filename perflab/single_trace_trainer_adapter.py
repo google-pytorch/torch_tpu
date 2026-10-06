@@ -24,8 +24,8 @@ optimizers = torch.tpu.optimizers
 
 # Re-export optimizer classes
 Optimizer = optimizers.Optimizer
-ReferenceAdamw = optimizers.ReferenceAdamw
-TorchAdamw = optimizers.TorchAdamw
+ReferenceAdamW = optimizers.ReferenceAdamW
+TorchAdamW = optimizers.TorchAdamW
 ReferenceSgd = optimizers.ReferenceSgd
 TorchSgd = optimizers.TorchSgd
 ReferenceMuon = optimizers.ReferenceMuon

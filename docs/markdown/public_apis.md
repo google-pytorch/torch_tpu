@@ -148,10 +148,10 @@ process. Use it at your own risk. Using it triggers a one-time warning.
 *   `torch.tpu.optimizers.Optimizer`
 *   `torch.tpu.optimizers.Optimizer.init_param_group`
 *   `torch.tpu.optimizers.Optimizer.step`
-*   `torch.tpu.optimizers.ReferenceAdamw`
-*   `torch.tpu.optimizers.ReferenceAdamw.ParamGroup`
-*   `torch.tpu.optimizers.ReferenceAdamw.init_param_group`
-*   `torch.tpu.optimizers.ReferenceAdamw.step`
+*   `torch.tpu.optimizers.ReferenceAdamW`
+*   `torch.tpu.optimizers.ReferenceAdamW.ParamGroup`
+*   `torch.tpu.optimizers.ReferenceAdamW.init_param_group`
+*   `torch.tpu.optimizers.ReferenceAdamW.step`
 *   `torch.tpu.optimizers.ReferenceMuon`
 *   `torch.tpu.optimizers.ReferenceMuon.DEFAULT_A`
 *   `torch.tpu.optimizers.ReferenceMuon.DEFAULT_B`
@@ -169,10 +169,10 @@ process. Use it at your own risk. Using it triggers a one-time warning.
 *   `torch.tpu.optimizers.SingleTraceTrainer.bufs` (getter)
 *   `torch.tpu.optimizers.SingleTraceTrainer.make_compiled_train_step`
 *   `torch.tpu.optimizers.SingleTraceTrainer.params` (getter)
-*   `torch.tpu.optimizers.TorchAdamw`
-*   `torch.tpu.optimizers.TorchAdamw.ParamGroup`
-*   `torch.tpu.optimizers.TorchAdamw.init_param_group`
-*   `torch.tpu.optimizers.TorchAdamw.step`
+*   `torch.tpu.optimizers.TorchAdamW`
+*   `torch.tpu.optimizers.TorchAdamW.ParamGroup`
+*   `torch.tpu.optimizers.TorchAdamW.init_param_group`
+*   `torch.tpu.optimizers.TorchAdamW.step`
 *   `torch.tpu.optimizers.TorchMuon`
 *   `torch.tpu.optimizers.TorchMuon.DEFAULT_A`
 *   `torch.tpu.optimizers.TorchMuon.DEFAULT_B`

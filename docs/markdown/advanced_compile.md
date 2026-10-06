@@ -184,7 +184,7 @@ The `SingleTraceTrainer` utility
 
 1.  Using `torch.func.grad_and_value` to compute reverse-mode automatic
     differentiation symbolically.
-2.  Using functional optimizer updates (`adamw.TorchAdamw` or `sgd.TorchSgd`).
+2.  Using functional optimizer updates (`adamw.TorchAdamW` or `sgd.TorchSgd`).
 3.  Capturing the entire forward, loss, backward, and optimizer pipeline into a
     single FX graph via `make_fx`.
 
@@ -201,10 +201,10 @@ with torch.device("tpu"):
   no_break_x = torch.randn(4, 16)
   no_break_target = torch.randn(4, 16)
 
-# Initialize SingleTraceTrainer with TorchAdamw
+# Initialize SingleTraceTrainer with TorchAdamW
 trainer = single_trace_trainer.SingleTraceTrainer(
     model=no_break_model,
-    optimizer=adamw.TorchAdamw(use_bfloat16_moments=False),
+    optimizer=adamw.TorchAdamW(use_bfloat16_moments=False),
 )
 
 # Verify zero graph breaks and compile with fullgraph=True

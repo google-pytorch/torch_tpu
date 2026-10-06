@@ -62,7 +62,7 @@ class SingleTraceTrainerStandaloneSanityTest(seed_test_utils.RepeatableTest):
     model = ToyLinearModule().to(device=self.device)
     trainer = optimizers.SingleTraceTrainer(
         model=model,
-        optimizer=optimizers.ReferenceAdamw(use_bfloat16_moments=False),
+        optimizer=optimizers.ReferenceAdamW(use_bfloat16_moments=False),
         compile_fn=torch.compile,
     )
 
@@ -98,7 +98,7 @@ class SingleTraceTrainerStandaloneSanityTest(seed_test_utils.RepeatableTest):
     model = ToyLinearModule().to(device=self.device)
     trainer = optimizers.SingleTraceTrainer(
         model=model,
-        optimizer=optimizers.ReferenceAdamw(),
+        optimizer=optimizers.ReferenceAdamW(),
         compile_fn=torch.compile,
     )
 

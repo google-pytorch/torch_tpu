@@ -25,8 +25,8 @@ from torch_tpu._internal.optimizers import optim as _optim
 from torch_tpu._internal.utils import annotations as _annotations
 
 __all__ = [
-    "ReferenceAdamw",
-    "TorchAdamw",
+    'ReferenceAdamW',
+    'TorchAdamW',
 ]
 
 
@@ -126,10 +126,10 @@ class _AdamWBase(_optim.Optimizer):
 
 
 @_annotations.experimental(
-    'ReferenceAdamw is experimental and may change or be removed without'
+    'ReferenceAdamW is experimental and may change or be removed without'
     ' notice.'
 )
-class ReferenceAdamw(_AdamWBase):
+class ReferenceAdamW(_AdamWBase):
   """Reference pure PyTorch implementation of AdamW."""
 
   def _reference_adamw_update(
@@ -182,9 +182,9 @@ class ReferenceAdamw(_AdamWBase):
 
 
 @_annotations.experimental(
-    'TorchAdamw is experimental and may change or be removed without notice.'
+    'TorchAdamW is experimental and may change or be removed without notice.'
 )
-class TorchAdamw(_AdamWBase):
+class TorchAdamW(_AdamWBase):
   """Torch AdamW implementation calling torch.optim.adamw.adamw directly."""
 
   def __init__(
