@@ -25,7 +25,9 @@ __all__ = [
 ]
 
 
-@_annotations.experimental("Optimizer base class is experimental.")
+@_annotations.experimental(
+    'Optimizer is experimental and may change or be removed without notice.'
+)
 class Optimizer(abc.ABC):
   """Abstract base class for stateless functional optimizers operating on nested ParamGroup."""
 
@@ -36,6 +38,10 @@ class Optimizer(abc.ABC):
     self.weight_decay = weight_decay
 
   @abc.abstractmethod
+  @_annotations.experimental(
+      'init_param_group() is experimental and may change or be removed without'
+      ' notice.'
+  )
   def init_param_group(
       self, params: dict[str, torch.Tensor] | torch.nn.Module
   ) -> Any:
@@ -43,6 +49,9 @@ class Optimizer(abc.ABC):
     pass
 
   @abc.abstractmethod
+  @_annotations.experimental(
+      'step() is experimental and may change or be removed without notice.'
+  )
   def step(self, param_group: Any, grads: dict[str, torch.Tensor]) -> Any:
     """Performs optimizer step on param_group given grads and returns updated ParamGroup."""
     pass

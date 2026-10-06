@@ -261,7 +261,10 @@ def _decomp_embedding_bag_backward(
   )
 
 
-@_annotations.experimental("SingleTraceTrainer is experimental.")
+@_annotations.experimental(
+    "SingleTraceTrainer is experimental and may change or be removed without"
+    " notice."
+)
 class SingleTraceTrainer:
   """Facilitates compiled train steps with a single offload containing the optimizer step.
 
@@ -338,6 +341,9 @@ class SingleTraceTrainer:
     self.model.load_state_dict(self.bufs, strict=False)
 
   @property
+  @_annotations.experimental(
+      "params is experimental and may change or be removed without notice."
+  )
   def params(self) -> dict[str, torch.Tensor]:
     """Returns parameters with their original names."""
     p = (
@@ -348,10 +354,17 @@ class SingleTraceTrainer:
     return {self._key_map[k]: v for k, v in p.items()}
 
   @property
+  @_annotations.experimental(
+      "bufs is experimental and may change or be removed without notice."
+  )
   def bufs(self) -> dict[str, torch.Tensor]:
     """Returns buffers with their original names."""
     return {self._key_map[k]: v for k, v in self.buffers.items()}
 
+  @_annotations.experimental(
+      "make_compiled_train_step() is experimental and may change or be removed"
+      " without notice."
+  )
   def make_compiled_train_step(
       self,
       example_inputs: Any,

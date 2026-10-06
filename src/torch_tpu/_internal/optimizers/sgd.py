@@ -31,10 +31,15 @@ __all__ = [
 ]
 
 
-@_annotations.experimental("SGD optimizer is experimental.")
+@_annotations.experimental(
+    'SGD is experimental and may change or be removed without notice.'
+)
 class SGD(_optim.Optimizer):
   """Base class for SGD optimizer variants with nested ParamGroup."""
 
+  @_annotations.experimental(
+      'ParamGroup is experimental and may change or be removed without notice.'
+  )
   @dataclasses.dataclass
   class ParamGroup:
     """Holds model parameters and SGD optimizer states (m, steps)."""
@@ -59,6 +64,10 @@ class SGD(_optim.Optimizer):
     self.dampening = dampening
     self.nesterov = nesterov
 
+  @_annotations.experimental(
+      'init_param_group() is experimental and may change or be removed without'
+      ' notice.'
+  )
   def init_param_group(
       self, params: dict[str, torch.Tensor] | torch.nn.Module
   ) -> ParamGroup:
@@ -97,6 +106,9 @@ class SGD(_optim.Optimizer):
     )
 
   @abc.abstractmethod
+  @_annotations.experimental(
+      'step() is experimental and may change or be removed without notice.'
+  )
   def step(
       self, param_group: ParamGroup, grads: dict[str, torch.Tensor]
   ) -> ParamGroup:
@@ -104,7 +116,9 @@ class SGD(_optim.Optimizer):
     pass
 
 
-@_annotations.experimental("ReferenceSgd optimizer is experimental.")
+@_annotations.experimental(
+    'ReferenceSgd is experimental and may change or be removed without notice.'
+)
 class ReferenceSgd(SGD):
   """Reference pure PyTorch implementation of SGD."""
 
@@ -134,6 +148,9 @@ class ReferenceSgd(SGD):
     new_p = param - self.lr * d_p
     param.copy_(new_p)
 
+  @_annotations.experimental(
+      'step() is experimental and may change or be removed without notice.'
+  )
   def step(
       self, param_group: SGD.ParamGroup, grads: dict[str, torch.Tensor]
   ) -> SGD.ParamGroup:
@@ -151,7 +168,9 @@ class ReferenceSgd(SGD):
     return param_group
 
 
-@_annotations.experimental("TorchSgd optimizer is experimental.")
+@_annotations.experimental(
+    'TorchSgd is experimental and may change or be removed without notice.'
+)
 class TorchSgd(SGD):
   """Torch SGD implementation calling torch.optim.sgd.sgd directly."""
 
@@ -183,6 +202,9 @@ class TorchSgd(SGD):
     self.found_inf = found_inf
     self.has_sparse_grad = has_sparse_grad
 
+  @_annotations.experimental(
+      'step() is experimental and may change or be removed without notice.'
+  )
   def step(
       self, param_group: SGD.ParamGroup, grads: dict[str, torch.Tensor]
   ) -> SGD.ParamGroup:

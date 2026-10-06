@@ -17,7 +17,7 @@
 import abc
 import dataclasses
 import math
-from typing import Any
+from typing import Any, ClassVar
 
 import torch
 import torch.optim._muon as _torch_muon
@@ -79,7 +79,9 @@ def _adjust_lr(
   return lr * adjusted_ratio
 
 
-@_annotations.experimental("Muon optimizer is experimental.")
+@_annotations.experimental(
+    'Muon is experimental and may change or be removed without notice.'
+)
 class Muon(_optim.Optimizer):
   """Base class for Muon optimizer variants with nested ParamGroup."""
 
@@ -89,6 +91,46 @@ class Muon(_optim.Optimizer):
   DEFAULT_NS_STEPS: int = 5
   EPS: float = 1e-7
 
+  __tt_api_stages__: ClassVar[dict[str, _annotations.ApiStageInfo]] = {
+      'DEFAULT_A': _annotations.ApiStageInfo(
+          stage=_annotations.Stage.EXPERIMENTAL,
+          reason=(
+              'DEFAULT_A is experimental and may change or be removed without'
+              ' notice.'
+          ),
+      ),
+      'DEFAULT_B': _annotations.ApiStageInfo(
+          stage=_annotations.Stage.EXPERIMENTAL,
+          reason=(
+              'DEFAULT_B is experimental and may change or be removed without'
+              ' notice.'
+          ),
+      ),
+      'DEFAULT_C': _annotations.ApiStageInfo(
+          stage=_annotations.Stage.EXPERIMENTAL,
+          reason=(
+              'DEFAULT_C is experimental and may change or be removed without'
+              ' notice.'
+          ),
+      ),
+      'DEFAULT_NS_STEPS': _annotations.ApiStageInfo(
+          stage=_annotations.Stage.EXPERIMENTAL,
+          reason=(
+              'DEFAULT_NS_STEPS is experimental and may change or be removed'
+              ' without notice.'
+          ),
+      ),
+      'EPS': _annotations.ApiStageInfo(
+          stage=_annotations.Stage.EXPERIMENTAL,
+          reason=(
+              'EPS is experimental and may change or be removed without notice.'
+          ),
+      ),
+  }
+
+  @_annotations.experimental(
+      'ParamGroup is experimental and may change or be removed without notice.'
+  )
   @dataclasses.dataclass
   class ParamGroup:
     """Holds model parameters and Muon optimizer states (m, steps)."""
@@ -125,6 +167,10 @@ class Muon(_optim.Optimizer):
     self.adjust_lr_fn = adjust_lr_fn
     self.use_bfloat16_moments = use_bfloat16_moments
 
+  @_annotations.experimental(
+      'init_param_group() is experimental and may change or be removed without'
+      ' notice.'
+  )
   def init_param_group(
       self, params: dict[str, torch.Tensor] | torch.nn.Module
   ) -> ParamGroup:
@@ -161,6 +207,9 @@ class Muon(_optim.Optimizer):
     )
 
   @abc.abstractmethod
+  @_annotations.experimental(
+      'step() is experimental and may change or be removed without notice.'
+  )
   def step(
       self, param_group: ParamGroup, grads: dict[str, torch.Tensor]
   ) -> ParamGroup:
@@ -168,7 +217,9 @@ class Muon(_optim.Optimizer):
     pass
 
 
-@_annotations.experimental("ReferenceMuon optimizer is experimental.")
+@_annotations.experimental(
+    'ReferenceMuon is experimental and may change or be removed without notice.'
+)
 class ReferenceMuon(Muon):
   """Reference pure PyTorch implementation of Muon."""
 
@@ -193,6 +244,9 @@ class ReferenceMuon(Muon):
     param.mul_(1.0 - self.lr * self.weight_decay)
     param.add_(update, alpha=-adjusted_lr)
 
+  @_annotations.experimental(
+      'step() is experimental and may change or be removed without notice.'
+  )
   def step(
       self, param_group: Muon.ParamGroup, grads: dict[str, torch.Tensor]
   ) -> Muon.ParamGroup:
@@ -207,7 +261,9 @@ class ReferenceMuon(Muon):
     return param_group
 
 
-@_annotations.experimental("TorchMuon optimizer is experimental.")
+@_annotations.experimental(
+    'TorchMuon is experimental and may change or be removed without notice.'
+)
 class TorchMuon(Muon):
   """Torch Muon implementation calling torch.optim._muon.muon directly."""
 
@@ -243,6 +299,9 @@ class TorchMuon(Muon):
     self.foreach = foreach
     self.has_complex = has_complex
 
+  @_annotations.experimental(
+      'step() is experimental and may change or be removed without notice.'
+  )
   def step(
       self, param_group: Muon.ParamGroup, grads: dict[str, torch.Tensor]
   ) -> Muon.ParamGroup:

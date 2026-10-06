@@ -31,10 +31,15 @@ __all__ = [
 ]
 
 
-@_annotations.experimental("AdamW optimizer is experimental.")
+@_annotations.experimental(
+    'AdamW is experimental and may change or be removed without notice.'
+)
 class AdamW(_optim.Optimizer):
   """Base class for AdamW optimizer variants with nested ParamGroup."""
 
+  @_annotations.experimental(
+      'ParamGroup is experimental and may change or be removed without notice.'
+  )
   @dataclasses.dataclass
   class ParamGroup:
     """Holds model parameters and Adam optimizer states (m, v, steps)."""
@@ -64,6 +69,10 @@ class AdamW(_optim.Optimizer):
     self.eps = eps
     self.use_bfloat16_moments = use_bfloat16_moments
 
+  @_annotations.experimental(
+      'init_param_group() is experimental and may change or be removed without'
+      ' notice.'
+  )
   def init_param_group(
       self, params: dict[str, torch.Tensor] | torch.nn.Module
   ) -> ParamGroup:
@@ -110,6 +119,9 @@ class AdamW(_optim.Optimizer):
     )
 
   @abc.abstractmethod
+  @_annotations.experimental(
+      'step() is experimental and may change or be removed without notice.'
+  )
   def step(
       self, param_group: ParamGroup, grads: dict[str, torch.Tensor]
   ) -> ParamGroup:
@@ -117,7 +129,10 @@ class AdamW(_optim.Optimizer):
     pass
 
 
-@_annotations.experimental("ReferenceAdamw optimizer is experimental.")
+@_annotations.experimental(
+    'ReferenceAdamw is experimental and may change or be removed without'
+    ' notice.'
+)
 class ReferenceAdamw(AdamW):
   """Reference pure PyTorch implementation of AdamW."""
 
@@ -150,6 +165,9 @@ class ReferenceAdamw(AdamW):
     m.copy_(new_m)
     v.copy_(new_v)
 
+  @_annotations.experimental(
+      'step() is experimental and may change or be removed without notice.'
+  )
   def step(
       self, param_group: AdamW.ParamGroup, grads: dict[str, torch.Tensor]
   ) -> AdamW.ParamGroup:
@@ -167,7 +185,9 @@ class ReferenceAdamw(AdamW):
     return param_group
 
 
-@_annotations.experimental("TorchAdamw optimizer is experimental.")
+@_annotations.experimental(
+    'TorchAdamw is experimental and may change or be removed without notice.'
+)
 class TorchAdamw(AdamW):
   """Torch AdamW implementation calling torch.optim.adamw.adamw directly."""
 
@@ -205,6 +225,9 @@ class TorchAdamw(AdamW):
     self.grad_scale = grad_scale
     self.found_inf = found_inf
 
+  @_annotations.experimental(
+      'step() is experimental and may change or be removed without notice.'
+  )
   def step(
       self, param_group: AdamW.ParamGroup, grads: dict[str, torch.Tensor]
   ) -> AdamW.ParamGroup:
