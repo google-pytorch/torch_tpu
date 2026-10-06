@@ -119,11 +119,6 @@ inline constexpr char kTorchTpuInternalDumpMlirPassesToEnvVar[] =
 // Default is "true".
 inline constexpr char kTorchTpuInternalEnableReassociateNormWeightsEnvVar[] =
     "TORCH_TPU_INTERNAL_ENABLE_REASSOCIATE_NORM_WEIGHTS";
-// Specifies the internal handshake stage mode.
-// Supported modes: OFF, COMPILE_STAGE, DISPATCH_STAGE.
-// Default is OFF.
-inline constexpr char kTorchTpuInternalHandshakeStageEnvVar[] =
-    "TORCH_TPU_INTERNAL_HANDSHAKE_STAGE";
 // How long, in seconds, to wait for the distributed handshake to complete. If
 // not set, 60 is used.
 inline constexpr char kTorchTpuInternalHandshakeTimeoutSEnvVar[] =
@@ -177,6 +172,13 @@ inline constexpr char kTorchTpuProfilerOutputDirEnvVar[] =
     "TORCH_TPU_PROFILER_OUTPUT_DIR";
 inline constexpr char kTorchTpuSlicebuilderAddressesEnvVar[] =
     "TORCH_TPU_SLICEBUILDER_ADDRESSES";  // Set by Torch TPU specific launchers.
+// Specifies the stage at which ranks perform a handshake to check that they
+// generated identical graphs containing collectives, so that such graphs can be
+// compiled without splitting at the collectives.
+// Supported modes: OFF, COMPILE_STAGE, DISPATCH_STAGE.
+// Default is OFF.
+inline constexpr char kTorchTpuSpmdHandshakeStageEnvVar[] =
+    "TORCH_TPU_SPMD_HANDSHAKE_STAGE";
 // The name of the tier-2 compilation cache. The special name "disabled" can be
 // used to disable the tier-2 cache. If not set, TorchTPU decides whether to use
 // the tier-2 cache or not based on the world size: if the world size is 1, the
@@ -288,7 +290,6 @@ inline constexpr auto kEnvVarToStage =
         {kTorchTpuInternalDumpMlirPassesToEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuInternalEnableReassociateNormWeightsEnvVar,
          SymbolStage::InternalApi()},
-        {kTorchTpuInternalHandshakeStageEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuInternalHandshakeTimeoutSEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuInternalMaterializeCollectiveTensorsEnvVar,
          SymbolStage::InternalApi()},
@@ -302,6 +303,7 @@ inline constexpr auto kEnvVarToStage =
         {kTorchTpuLaunchBlockingEnvVar, SymbolStage::Experimental()},
         {kTorchTpuProfilerOutputDirEnvVar, SymbolStage::Experimental()},
         {kTorchTpuSlicebuilderAddressesEnvVar, SymbolStage::Experimental()},
+        {kTorchTpuSpmdHandshakeStageEnvVar, SymbolStage::Experimental()},
         {kTorchTpuTier2CompilationCacheEnvVar, SymbolStage::Experimental()},
         {kTorchTpuTier3CompilationCacheRootEnvVar, SymbolStage::Experimental()},
         {kTorchTpuTopologyEnvVar, SymbolStage::Experimental()},

@@ -19,7 +19,7 @@
 
 namespace torch_tpu {
 
-// Options for TORCH_TPU_INTERNAL_HANDSHAKE_STAGE.
+// Options for TORCH_TPU_SPMD_HANDSHAKE_STAGE.
 enum class HandshakeStage {
   kOff = 0,
   kCompileStage = 1,
@@ -27,7 +27,7 @@ enum class HandshakeStage {
 };
 
 // Returns the handshake stage mode configured via
-// TORCH_TPU_INTERNAL_HANDSHAKE_STAGE.
+// TORCH_TPU_SPMD_HANDSHAKE_STAGE.
 HandshakeStage GetHandshakeStageEnvVarOnce();
 
 }  // namespace torch_tpu

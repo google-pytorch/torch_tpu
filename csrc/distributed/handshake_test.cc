@@ -25,10 +25,10 @@ namespace {
 TEST(HandshakeDeathTest, FatalOnInvalidHandshakeStage) {
   EXPECT_DEATH(
       {
-        setenv(kTorchTpuInternalHandshakeStageEnvVar, "INVALID_VALUE", 1);
+        setenv(kTorchTpuSpmdHandshakeStageEnvVar, "INVALID_VALUE", 1);
         GetHandshakeStageEnvVarOnce();
       },
-      "Invalid value for TORCH_TPU_INTERNAL_HANDSHAKE_STAGE: INVALID_VALUE");
+      "Invalid value for TORCH_TPU_SPMD_HANDSHAKE_STAGE: INVALID_VALUE");
 }
 
 }  // namespace

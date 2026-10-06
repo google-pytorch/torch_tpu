@@ -23,8 +23,7 @@ namespace torch_tpu {
 
 HandshakeStage GetHandshakeStageEnvVarOnce() {
   static const HandshakeStage env_value = []() {
-    const auto& raw_env_value =
-        GetEnvOnce<kTorchTpuInternalHandshakeStageEnvVar>();
+    const auto& raw_env_value = GetEnvOnce<kTorchTpuSpmdHandshakeStageEnvVar>();
     if (!raw_env_value.has_value() || *raw_env_value == "OFF") {
       return HandshakeStage::kOff;
     }
@@ -35,7 +34,7 @@ HandshakeStage GetHandshakeStageEnvVarOnce() {
       return HandshakeStage::kDispatchStage;
     }
     ABSL_LOG(FATAL) << "Invalid value for "  // CRASH_OK
-                    << kTorchTpuInternalHandshakeStageEnvVar << ": "
+                    << kTorchTpuSpmdHandshakeStageEnvVar << ": "
                     << *raw_env_value
                     << ". Expected OFF, COMPILE_STAGE, or DISPATCH_STAGE.";
   }();

@@ -410,7 +410,7 @@ class HandshakeE2ETest(parameterized.TestCase):  # ABSLTEST_OK=b/550338082
     with mock.patch.dict(
         os.environ,
         {
-            "TORCH_TPU_INTERNAL_HANDSHAKE_STAGE": handshake_stage,
+            "TORCH_TPU_SPMD_HANDSHAKE_STAGE": handshake_stage,
             # We patch the port with an unused one to ensure the test doesn't
             # fail due to a port conflict with another test.
             "TORCH_TPU_INTERNAL_HANDSHAKE_PORT": str(
@@ -429,7 +429,7 @@ class HandshakeE2ETest(parameterized.TestCase):  # ABSLTEST_OK=b/550338082
     with mock.patch.dict(
         os.environ,
         {
-            "TORCH_TPU_INTERNAL_HANDSHAKE_STAGE": handshake_stage,
+            "TORCH_TPU_SPMD_HANDSHAKE_STAGE": handshake_stage,
             "TORCH_TPU_INTERNAL_HANDSHAKE_PORT": str(
                 portpicker.pick_unused_port()
             ),
@@ -446,7 +446,7 @@ class HandshakeE2ETest(parameterized.TestCase):  # ABSLTEST_OK=b/550338082
     with mock.patch.dict(
         os.environ,
         {
-            "TORCH_TPU_INTERNAL_HANDSHAKE_STAGE": handshake_stage,
+            "TORCH_TPU_SPMD_HANDSHAKE_STAGE": handshake_stage,
             "TORCH_TPU_INTERNAL_HANDSHAKE_PORT": str(
                 portpicker.pick_unused_port()
             ),
@@ -468,7 +468,7 @@ class HandshakeE2ETest(parameterized.TestCase):  # ABSLTEST_OK=b/550338082
     with mock.patch.dict(
         os.environ,
         {
-            "TORCH_TPU_INTERNAL_HANDSHAKE_STAGE": handshake_stage,
+            "TORCH_TPU_SPMD_HANDSHAKE_STAGE": handshake_stage,
             "TORCH_TPU_INTERNAL_HANDSHAKE_PORT": str(
                 portpicker.pick_unused_port()
             ),
@@ -501,7 +501,7 @@ class HandshakeE2ETest(parameterized.TestCase):  # ABSLTEST_OK=b/550338082
     with mock.patch.dict(
         os.environ,
         {
-            "TORCH_TPU_INTERNAL_HANDSHAKE_STAGE": handshake_stage,
+            "TORCH_TPU_SPMD_HANDSHAKE_STAGE": handshake_stage,
             "TORCH_TPU_INTERNAL_HANDSHAKE_PORT": str(
                 portpicker.pick_unused_port()
             ),
@@ -524,7 +524,7 @@ class HandshakeE2ETest(parameterized.TestCase):  # ABSLTEST_OK=b/550338082
     with mock.patch.dict(
         os.environ,
         {
-            "TORCH_TPU_INTERNAL_HANDSHAKE_STAGE": handshake_stage,
+            "TORCH_TPU_SPMD_HANDSHAKE_STAGE": handshake_stage,
             "TORCH_TPU_INTERNAL_HANDSHAKE_PORT": str(
                 portpicker.pick_unused_port()
             ),
@@ -547,7 +547,7 @@ class HandshakeE2ETest(parameterized.TestCase):  # ABSLTEST_OK=b/550338082
     with mock.patch.dict(
         os.environ,
         {
-            "TORCH_TPU_INTERNAL_HANDSHAKE_STAGE": handshake_stage,
+            "TORCH_TPU_SPMD_HANDSHAKE_STAGE": handshake_stage,
             "TORCH_TPU_INTERNAL_HANDSHAKE_PORT": str(
                 portpicker.pick_unused_port()
             ),
@@ -565,7 +565,7 @@ class HandshakeE2ETest(parameterized.TestCase):  # ABSLTEST_OK=b/550338082
     with mock.patch.dict(
         os.environ,
         {
-            "TORCH_TPU_INTERNAL_HANDSHAKE_STAGE": handshake_stage,
+            "TORCH_TPU_SPMD_HANDSHAKE_STAGE": handshake_stage,
             "TORCH_TPU_INTERNAL_HANDSHAKE_PORT": str(
                 portpicker.pick_unused_port()
             ),
@@ -584,7 +584,7 @@ class HandshakeE2ETest(parameterized.TestCase):  # ABSLTEST_OK=b/550338082
     with mock.patch.dict(
         os.environ,
         {
-            "TORCH_TPU_INTERNAL_HANDSHAKE_STAGE": handshake_stage,
+            "TORCH_TPU_SPMD_HANDSHAKE_STAGE": handshake_stage,
             "TORCH_TPU_INTERNAL_HANDSHAKE_PORT": str(
                 portpicker.pick_unused_port()
             ),
