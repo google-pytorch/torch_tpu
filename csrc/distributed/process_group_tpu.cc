@@ -888,6 +888,10 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
   ABSL_VLOG(1) << "[ProcessGroupTpu] ctor: "
                << "rank: " << rank << ", group size: " << group_size;
 
+  TT_THROW_IF_ERROR(  // ERROR_COV_INFEASIBLE=needs a TPU runtime init failure
+      PjrtBackend::GetInstance().EnsureInitialized())
+          .SetPrepend()
+      << "failed to initialize PjRt for the TPU process group: ";
   const auto* const pjrt_client = PjrtBackend::GetInstance().GetClient();
   TT_CHECK_THROW(pjrt_client != nullptr, error::kInternal)
       << "PjRtClient is not initialized.";
