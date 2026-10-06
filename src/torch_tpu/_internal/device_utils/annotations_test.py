@@ -18,6 +18,7 @@ from absl.testing import absltest
 import torch
 from torch_tpu._internal.compile import tpu_torch_compile
 import torch_tpu._internal.device_utils.annotations as tpu_annotations
+from torch_tpu._internal.utils import test_utils
 from tests import seed_test_utils
 
 
@@ -100,6 +101,34 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
       self.assertIsNotNone(device_layout_tuple)
       device_layout = tpu_annotations.TpuLayout(*device_layout_tuple)
       self.assertEqual(device_layout, layout)
+
+  def test_layout_context_ignores_transfers_of_other_ranks(self):
+    device = torch.device("tpu")
+    layout = tpu_annotations.TpuLayout(
+        minor_to_major=[1, 0],
+        tiles=[[8]],
+    )
+    expected_vector = torch.arange(8, dtype=torch.float32)
+    with tpu_annotations.LayoutContext(layout):
+      # `torch.full` copies its 0-D fill value to the device.
+      filled = torch.full((16, 128), 0.5, device=device)
+      scalar = torch.tensor(2.0).to(device)
+      vector = expected_vector.to(device)
+      matrix = torch.ones(16, 128).to(device)
+    torch.accelerator.synchronize()
+
+    test_utils.assert_close(filled.cpu(), torch.full((16, 128), 0.5))
+    test_utils.assert_close(scalar.cpu(), torch.tensor(2.0))
+    test_utils.assert_close(vector.cpu(), expected_vector)
+    self.assertEqual(
+        tpu_torch_compile.get_device_layout_if_materialized(vector),
+        tpu_torch_compile.get_default_layout(torch.float32, [8]),
+    )
+    matrix_layout_tuple = tpu_torch_compile.get_device_layout_if_materialized(
+        matrix
+    )
+    self.assertIsNotNone(matrix_layout_tuple)
+    self.assertEqual(tpu_annotations.TpuLayout(*matrix_layout_tuple), layout)
 
 
 if __name__ == "__main__":
