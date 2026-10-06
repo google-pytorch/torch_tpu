@@ -233,10 +233,10 @@ class TpuEvent(torch.Event):
     - ``record()`` snapshots pending async D2H copy futures.
     - ``synchronize()`` blocks until the snapshotted futures complete.
     - ``query()`` checks whether the snapshotted futures have completed.
+    - ``elapsed_time()`` measures the time between two events completing.
 
   Not yet implemented:
     - ``wait(stream)`` requires multi-stream support.
-    - ``elapsed_time()`` requires device-side timing support.
     - ``ipc_handle()`` / ``from_ipc_handle()`` require IPC event support.
 
   TODO: b/452051142 - Explore if and how to make better use of streams.
@@ -303,9 +303,24 @@ class TpuEvent(torch.Event):
       'elapsed_time() is experimental and may change or be removed without'
       ' notice.'
   )
-  def elapsed_time(self, end_event: Self) -> float:  # pylint: disable=unused-argument
-    """Returns the time elapsed between recording and completing this event."""
-    raise NotImplementedError(_NOT_IMPLEMENTED_STREAMS_MSG)
+  def elapsed_time(self, end_event: torch.Event) -> float:
+    """Returns the milliseconds between this event and ``end_event`` completing.
+
+    An event completes when all work captured by :meth:`record` has finished.
+    The result is measured on the host, not on the device: it is the interval
+    between the moments the host is notified that the work of each event has
+    completed, so it can include gaps for dispatch and compilation and the
+    delay in delivering those notifications. Both events must be created with
+    ``enable_timing=True``, recorded and completed, for example by calling
+    :meth:`synchronize` on ``end_event``.
+
+    Args:
+      end_event: The event recorded after this one.
+    """
+    # torch.Event.elapsed_time() only accepts an end event of the exact type
+    # torch.Event, so the backend reads the timing of the two events.
+    # pylint: disable=protected-access
+    return _device_ops_backend._event_elapsed_time(self, end_event)
 
   @experimental(
       'synchronize() is experimental and may change or be removed without'

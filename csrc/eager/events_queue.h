@@ -17,6 +17,7 @@
 #ifndef TORCH_TPU_CSRC_EAGER_EVENTS_QUEUE_H_
 #define TORCH_TPU_CSRC_EAGER_EVENTS_QUEUE_H_
 
+#include <chrono>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -88,7 +89,7 @@ enum class MaterializationMode { kFullGraph, kSplitGraph };
 class EventSnapshot {
  public:
   explicit EventSnapshot(xla::Future<void> future)
-      : future_(std::move(future)) {}
+      : future_(future.Map([] { return std::chrono::steady_clock::now(); })) {}
 
   static xla::Future<std::shared_ptr<EventSnapshot>> Record(
       c10::DeviceIndex device_index, c10::StreamId stream_id,
@@ -102,13 +103,20 @@ class EventSnapshot {
   // Query whether the event snapshot has completed.
   absl::StatusOr<bool> Query() const;
 
+  // Returns the milliseconds from the completion of this event snapshot to the
+  // completion of `end`, as observed by the host. Both snapshots must have
+  // completed.
+  absl::StatusOr<double> ElapsedTime(const EventSnapshot& end) const;
+
   // Sets the promise to OkStatus as soon as the event snapshot is complete
   // or fails. The error is not propagated to the promise.
   void OkCallback(xla::Promise<void>&& chain_promise);
 
  private:
-  // The future backing the event snapshot.
-  xla::Future<void> future_;
+  // The future backing the event snapshot. It resolves to the host time at
+  // which the snapshot completed, so anything waiting on it, such as the
+  // callback releasing the next snapshot, runs after the stamp exists.
+  xla::Future<std::chrono::steady_clock::time_point> future_;
 };
 
 // A future that will resolve to an EventSnapshot during the materialization

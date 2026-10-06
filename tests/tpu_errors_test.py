@@ -5005,6 +5005,77 @@ module {
       with execution_mode.set_eager_mode(EagerMode._INTERNAL_COMPILE_FX_GRAPH):
         _ = torch.Event(device="tpu").record()
 
+  @et.why_tpu_only(
+      "torch.tpu.Event is a TorchTPU class; errors_test.py covers torch.Event."
+  )
+  def test_tpu_event_elapsed_time_untimed_event(self):
+    timed = torch.tpu.Event(enable_timing=True)
+    untimed = torch.tpu.Event()
+    timed.record()
+    untimed.record()
+
+    with et.assert_raises_message(
+        ValueError,
+        tpu="""Both events must be created with argument 'enable_timing=True'.""",
+    ):
+      timed.elapsed_time(untimed)
+    with et.assert_raises_message(
+        ValueError,
+        tpu="""Both events must be created with argument 'enable_timing=True'.""",
+    ):
+      untimed.elapsed_time(timed)
+
+  @et.why_tpu_only(
+      "torch.tpu.Event is a TorchTPU class; errors_test.py covers torch.Event."
+  )
+  def test_tpu_event_elapsed_time_unrecorded_event(self):
+    recorded = torch.tpu.Event(enable_timing=True)
+    unrecorded = torch.tpu.Event(enable_timing=True)
+    recorded.record()
+
+    with et.assert_raises_message(
+        ValueError,
+        tpu="""Both events must be recorded before calculating elapsed time.""",
+    ):
+      recorded.elapsed_time(unrecorded)
+    with et.assert_raises_message(
+        ValueError,
+        tpu="""Both events must be recorded before calculating elapsed time.""",
+    ):
+      unrecorded.elapsed_time(recorded)
+
+  @et.why_tpu_only("torch.tpu.Event is a TorchTPU class.")
+  def test_tpu_event_elapsed_time_non_event(self):
+    event = torch.tpu.Event(enable_timing=True)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""_event_elapsed_time(): expected start and end to be torch.Event objects, got TpuEvent and NoneType""",
+    ):
+      event.elapsed_time(None)
+
+  @et.why_tpu_only(
+      "errors_test.py runs on GPU with CUDA_LAUNCH_BLOCKING=1, so events cannot"
+      " be kept pending there reliably."
+  )
+  def test_tpu_event_elapsed_time_pending_event(self):
+    # A large device-to-host copy keeps the events recorded after it pending.
+    size = 8192 * 8192
+    t_tpu = torch.ones(size, device="tpu", dtype=torch.float32)
+    t_cpu = torch.empty(size, device="cpu", pin_memory=True)
+    start = torch.tpu.Event(enable_timing=True)
+    end = torch.tpu.Event(enable_timing=True)
+    t_cpu.copy_(t_tpu, non_blocking=True)
+    start.record()
+    end.record()
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""Both events must be completed before calculating elapsed time.""",
+    ):
+      start.elapsed_time(end)
+    end.synchronize()
+
 
 class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
 
