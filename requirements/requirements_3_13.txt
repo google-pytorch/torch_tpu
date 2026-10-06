@@ -11,6 +11,7 @@ absl-py==2.0.0 \
     #   grain
     #   optax
     #   orbax-checkpoint
+    #   orbax-export
     #   tensorboard
     #   tensorflow-datasets
     #   tensorflow-metadata
@@ -604,6 +605,10 @@ cycler==0.12.1 \
     --hash=sha256:85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30 \
     --hash=sha256:88bb128f02ba341da8ef447245a9e138fae777f6a23943da4540077d3601eb1c
     # via matplotlib
+dataclasses-json==0.6.7 \
+    --hash=sha256:0dbf33f26c8d5305befd61b39d2b3414e8a407bedc2834dea9b8d642666fb40a \
+    --hash=sha256:b6b3e528266ea45b9535223bc53ca645f5208833c29229e847b3f26a1cc55fc0
+    # via orbax-export
 datasets==4.8.0 \
     --hash=sha256:3d1e79657f588baf42cfb4a51dd030ca7467e02222e7e88a5f31011884f4f355 \
     --hash=sha256:e3fe0199939c6d7d59cb60f5819521ec75b8e670ed752396be2bf7881c9417f7
@@ -665,6 +670,7 @@ etils==1.14.0 \
     #   array-record
     #   grain
     #   orbax-checkpoint
+    #   orbax-export
     #   tensorflow-datasets
 expecttest==0.3.0 \
     --hash=sha256:60f88103086e1754240b42175f622be83b6ffeac419434691ee5a5be819d0544 \
@@ -681,9 +687,9 @@ filelock==4.0.1 \
     #   diffusers
     #   huggingface-hub
     #   torch
-flax==0.12.0 \
-    --hash=sha256:13dee5f2658e8b51e22cef54b788ddbad1b6e14a9d7c5b6d1ae9c3a0110d645e \
-    --hash=sha256:cb3d4a2028666640c1a2e5b267dadfbd42ef14c6db41896fb4c765a7f05ebe74
+flax==0.12.3 \
+    --hash=sha256:8b9ca031d0a4759b0719718de578b27703a8b2d6105552b30f98989ce1be04f0 \
+    --hash=sha256:add0432489da2a532357d8a3a014a349d70774156a5a0a594706ba4319efa599
     # via torch-tpu (pyproject.toml)
 fonttools==4.66.0 \
     --hash=sha256:02117d05dddb51e39b5c5a6eed0702ed8e0e1c341cb138101b2446eb479858f8 \
@@ -1191,6 +1197,7 @@ jax==0.9.2 \
     #   flax
     #   optax
     #   orbax-checkpoint
+    #   orbax-export
 jaxlib==0.9.2 \
     --hash=sha256:2d445dab57debd8c26b416c8bc91a4704ba6d7169788a961e4b15419bc3f4254 \
     --hash=sha256:306de54a1de7386c806c723e356ce332d923ef748f8a72d674fefb748121d4dc \
@@ -1217,6 +1224,11 @@ jaxlib==0.9.2 \
     # via
     #   jax
     #   optax
+    #   orbax-export
+jaxtyping==0.3.11 \
+    --hash=sha256:8a4bedc4e3f963fa82df41bd13c7ebc2bad925601eb48614c65798f21329d4e3 \
+    --hash=sha256:b09c14acf6686feb9e0df5b0d8c6e7c5b6f8d36bf059ee54cd522a186c2ef050
+    # via orbax-export
 jinja2==3.1.6 \
     --hash=sha256:0137fb05990d35f1275a587e9aee6d56da821fc83491a0fb838183be43f66d6d \
     --hash=sha256:85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67
@@ -1657,6 +1669,10 @@ markupsafe==3.0.3 \
     # via
     #   jinja2
     #   werkzeug
+marshmallow==3.26.2 \
+    --hash=sha256:013fa8a3c4c276c24d26d84ce934dc964e2aa794345a0f8c7e5a7191482c8a73 \
+    --hash=sha256:bbe2adb5a03e6e3571b573f42527c6fe926e17467833660bebd11593ab8dfd57
+    # via dataclasses-json
 matplotlib==3.11.0 \
     --hash=sha256:03acfeddf87b0dddb11b081ef7740ad445a3ca8bcb6b8e3011b08f2cf802b75c \
     --hash=sha256:0515d495124be3124340e59f164d901ed4484e2246a5b74cfa483cac3b80bd97 \
@@ -2043,6 +2059,10 @@ multiprocess==0.70.19 \
     --hash=sha256:e6c0674d34b8adac22533f6786576b3de4e396aaeda9e0c15378af9b8ada2702 \
     --hash=sha256:e8cc7fbdff15c0613f0a1f1f8744bef961b0a164c0ca29bdff53e9d2d93c5e5f
     # via datasets
+mypy-extensions==1.1.0 \
+    --hash=sha256:1be4cccdb0f2482337c4743e60421de3a356cd97508abadd57d47403e94f5505 \
+    --hash=sha256:52e68efc3284861e772bbcd66823fde5ae21fd2fdb51c62a211403730b916558
+    # via typing-inspect
 networkx==3.7 \
     --hash=sha256:e3fd2c13a7814cee3746340d8d7f8598a67f16a58bf47fb7f8793fab6efca1b0 \
     --hash=sha256:fd77a511bd90f39f3d016351345b52cf5319b813bdca01de3f755d3cca62e96a
@@ -2116,6 +2136,7 @@ numpy==2.1.0 \
     #   ml-dtypes
     #   optax
     #   orbax-checkpoint
+    #   orbax-export
     #   pandas
     #   peft
     #   scipy
@@ -2137,6 +2158,12 @@ optax==0.2.8 \
 orbax-checkpoint==0.12.5 \
     --hash=sha256:2fa697de73f75c6dd5f94ca84b1a87deefc101a531e60a04bf7574a23c922d03 \
     --hash=sha256:337b803370f62d23dc85d174fa9fb59115f9f5b43b5473b23318e118fd0c6114
+    # via
+    #   flax
+    #   orbax-export
+orbax-export==0.0.8 \
+    --hash=sha256:544eef564e2a6f17cd11b1167febe348b7b7cf56d9575de994a33d5613dd568a \
+    --hash=sha256:f8037e1666ad28411cdb08d0668a2737b1281a32902c623ceda12109a089bc36
     # via flax
 packaging==26.3 \
     --hash=sha256:94edc256424af38762eb31306eed28beb9f0efc50a8837492c9d6fd6004aed79 \
@@ -2145,6 +2172,7 @@ packaging==26.3 \
     #   accelerate
     #   datasets
     #   huggingface-hub
+    #   marshmallow
     #   matplotlib
     #   peft
     #   pytest
@@ -2507,6 +2535,7 @@ protobuf==6.33.6 \
     #   grain
     #   grpcio-tools
     #   orbax-checkpoint
+    #   orbax-export
     #   proto-plus
     #   tensorboard
     #   tensorboardx
@@ -3527,7 +3556,12 @@ typing-extensions==4.16.0 \
     #   pydantic-core
     #   simple-parsing
     #   torch
+    #   typing-inspect
     #   typing-inspection
+typing-inspect==0.9.0 \
+    --hash=sha256:9ee6fc59062311ef8547596ab6b955e1b8aa46242d854bfc78f4f6b0eff35f9f \
+    --hash=sha256:b23fc42ff6f6ef6954e4852c1fb512cdd18dbea03134f91f856a95ccc9461f78
+    # via dataclasses-json
 typing-inspection==0.4.4 \
     --hash=sha256:547274fa6b0a561ccf549cc9524b999a578e737d015d8709d021f9d0d13bea47 \
     --hash=sha256:65b8397ba37ccbce054456aaccddfc91e6e3083c92824df348d96ca832f3f147
@@ -3591,6 +3625,10 @@ uvloop==0.22.1 \
     --hash=sha256:ef6f0d4cc8a9fa1f6a910230cd53545d9a14479311e87e3cb225495952eb672c \
     --hash=sha256:fe94b4564e865d968414598eea1a6de60adba0c040ba4ed05ac1300de402cd42
     # via orbax-checkpoint
+wadler-lindig==0.1.7 \
+    --hash=sha256:81d14d3fe77d441acf3ebd7f4aefac20c74128bf460e84b512806dccf7b2cd55 \
+    --hash=sha256:e3ec83835570fd0a9509f969162aeb9c65618f998b1f42918cfc8d45122fe953
+    # via jaxtyping
 werkzeug==3.1.8 \
     --hash=sha256:63a77fb8892bf28ebc3178683445222aa500e48ebad5ec77b0ad80f8726b1f50 \
     --hash=sha256:9bad61a4268dac112f1c5cd4630a56ede601b6ed420300677a869083d70a4c44

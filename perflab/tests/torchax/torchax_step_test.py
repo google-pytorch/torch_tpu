@@ -14,20 +14,11 @@
 
 """Tests for torchax_step."""
 
-import sys
-from tests import oss_utils
-
-if oss_utils.is_oss() and sys.version_info >= (3, 14):
-  # `torchax` imports `flax`, and the `flax` version pinned for OSS fails to
-  # import on Python 3.14+ with `KeyError: '__annotations__'`.
-  sys.exit(0)
-
 from unittest import mock
 
 from absl.testing import absltest
 from absl.testing import parameterized
 import numpy as np
-from tests import seed_test_utils
 import torch
 import torch.nn as nn
 from perflab import compile as compile_lib
@@ -36,6 +27,7 @@ from perflab import registry as registry_lib
 from perflab import step_lib
 from perflab import target as target_lib
 from perflab.torchax import torchax_step
+from tests import seed_test_utils
 import torchax
 
 
