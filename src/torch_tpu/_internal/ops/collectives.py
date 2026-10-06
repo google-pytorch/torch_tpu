@@ -37,6 +37,11 @@ def _resolve_group(
     group: Optional[dist.ProcessGroup],
 ) -> tuple[int, str]:
   group = dist.group.WORLD if group is None else group
+  if group is None:
+    raise ValueError(
+        "Default process group has not been initialized, please make sure to"
+        " call init_process_group."
+    )
   return group.size(), group.group_name
 
 
