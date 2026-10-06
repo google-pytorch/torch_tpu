@@ -248,7 +248,7 @@ class ScopedPythonContextProvider {
   // provider stack for the current thread. If `builder` is provided, sets the
   // location attribute of `builder` to the MLIR Location corresponding to the
   // python context.
-  ScopedPythonContextProvider(
+  explicit ScopedPythonContextProvider(
       PythonContext context,
       mlir::MlirBuilder* absl_nullable builder = nullptr);
 

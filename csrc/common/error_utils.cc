@@ -70,7 +70,6 @@
 #include "csrc/common/utils.h"
 #include "csrc/eager/eager_mode.h"
 #include "re2/re2.h"
-#include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
 namespace {

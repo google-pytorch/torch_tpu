@@ -22,6 +22,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -907,16 +908,16 @@ class AnythingCompatibleWithThrow {
   //
   // This version is for functions that return by reference.
   template <typename T>
-  operator T&() const {
-    StaticAssertCanThrow<std::remove_cv_t<std::remove_reference_t<T>>>();
+  operator T&() const {  // NOLINT(google-explicit-constructor)
+    StaticAssertCanThrow<std::remove_cvref_t<T>>();
     ABSL_LOG(FATAL)  // CRASH_OK
         << "This is only used for compile time checks. It should "
            "never be called at runtime.";
   }
   // This version is for functions that return by value.
   template <typename T>
-  operator T() && {
-    StaticAssertCanThrow<std::remove_cv_t<std::remove_reference_t<T>>>();
+  operator T() && {  // NOLINT(google-explicit-constructor)
+    StaticAssertCanThrow<std::remove_cvref_t<T>>();
     ABSL_LOG(FATAL)  // CRASH_OK
         << "This is only used for compile time checks. It should "
            "never be called at runtime.";
