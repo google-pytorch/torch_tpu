@@ -23020,6 +23020,122 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(test_fn_5)
 
+  def test_index_put_permutation_and_inverse_gather_compiled(self) -> None:
+    scores_cpu = torch.randn(8, 16, dtype=torch.float32, requires_grad=True)
+    hidden_cpu = torch.randn(8, 32, dtype=torch.bfloat16, requires_grad=True)
+    grad_out_cpu = torch.randn(8, 32, dtype=torch.bfloat16)
+
+    def moe_route_fwd(scores, hidden, grad_out):
+      top_w, top_idx = torch.topk(scores.softmax(dim=-1), k=2, dim=-1)
+      sample_weights = top_w.reshape(-1).to(hidden.dtype)
+      expert_ids = top_idx.reshape(-1)
+      _, perm = torch.sort(expert_ids)
+      selected_hidden = hidden[perm // 2]
+      weighted = selected_hidden * sample_weights[perm].unsqueeze(-1)
+      inv_perm = torch.empty_like(perm)
+      inv_perm[perm] = torch.arange(perm.size(0), device=perm.device)
+      restored = weighted[inv_perm]
+      out = restored.view(8, 2, 32).sum(dim=1)
+      grad_restored = grad_out.unsqueeze(1).expand(8, 2, 32).reshape(16, 32)
+      grad_weighted = torch.zeros_like(weighted).index_put(
+          (inv_perm,), grad_restored, accumulate=True
+      )
+      return out, perm, inv_perm, grad_weighted[inv_perm]
+
+    exp_out, _, _, exp_roundtrip = moe_route_fwd(
+        scores_cpu, hidden_cpu, grad_out_cpu
+    )
+    (exp_out * grad_out_cpu).sum().backward()
+    exp_d_scores = scores_cpu.grad.clone()
+    exp_d_hidden = hidden_cpu.grad.clone()
+
+    scores_tpu = scores_cpu.detach().clone().to("tpu").requires_grad_(True)
+    hidden_tpu = hidden_cpu.detach().clone().to("tpu").requires_grad_(True)
+    grad_out_tpu = grad_out_cpu.to("tpu")
+
+    def moe_train_step(s, h, g):
+      out, perm, inv_perm, roundtrip = moe_route_fwd(s, h, g)
+      loss = (out * g).sum()
+      loss.backward()
+      return out, perm, inv_perm, roundtrip, s.grad, h.grad
+
+    compiled_step = torch.compile(moe_train_step, backend="tpu")
+    (
+        act_out,
+        act_perm,
+        act_inv_perm,
+        act_roundtrip,
+        act_d_scores,
+        act_d_hidden,
+    ) = compiled_step(scores_tpu, hidden_tpu, grad_out_tpu)
+    self.assertEqual(
+        act_inv_perm.cpu()[act_perm.cpu()].tolist(),
+        list(range(act_perm.numel())),
+    )
+    utils.assert_close(
+        actual=act_roundtrip.cpu(), expected=exp_roundtrip, rtol=1e-2, atol=1e-2
+    )
+    utils.assert_close(
+        actual=act_out.cpu(), expected=exp_out, rtol=1e-2, atol=1e-2
+    )
+    utils.assert_close(
+        actual=act_d_scores.cpu(), expected=exp_d_scores, rtol=2e-2, atol=2e-2
+    )
+    utils.assert_close(
+        actual=act_d_hidden.cpu(), expected=exp_d_hidden, rtol=2e-2, atol=2e-2
+    )
+
+    # Verify that 1D permutation index_put emits stablehlo.sort and not
+    # fallback scatter.
+    ids = torch.randint(0, 4, (16,), device="cpu").to("tpu")
+    with execution_mode.set_eager_mode(
+        execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
+    ):
+      _, p = torch.sort(ids)
+      inv_p = torch.empty_like(p)
+      inv_p[p] = torch.arange(p.size(0), device=p.device)
+    mlir_text = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir([inv_p], [ids])
+    )
+    self.assertIn("stablehlo.sort", mlir_text)
+    self.assertNotIn("stablehlo.scatter", mlir_text)
+
+  def test_index_put_wrapped_int8_arange_fallback_to_scatter(self) -> None:
+    # A length-256 int8 arange wraps: [0..127, -128..-1].
+    # index_put must not lower to sort (which assumes non-negative permutation)
+    # and instead fall back to stablehlo.scatter, matching CPU behavior.
+    input_cpu = torch.zeros(256, dtype=torch.float32)
+    idx_cpu = torch.arange(256, dtype=torch.int8).to(torch.long)
+    vals_cpu = torch.arange(256, dtype=torch.float32)
+
+    def fn(inp, idx, vals):
+      out = inp.clone()
+      out[idx] = vals
+      return out
+
+    expected = fn(input_cpu, idx_cpu, vals_cpu)
+
+    input_tpu = input_cpu.to("tpu")
+    idx_tpu = idx_cpu.to("tpu")
+    vals_tpu = vals_cpu.to("tpu")
+
+    compiled_fn = torch.compile(fn, backend="tpu")
+    actual = compiled_fn(input_tpu, idx_tpu, vals_tpu)
+    utils.assert_close(actual=actual.cpu(), expected=expected)
+
+    with execution_mode.set_eager_mode(
+        execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
+    ):
+      graph_out = fn(input_tpu, idx_tpu, vals_tpu)
+
+    mlir_text = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir(
+            [graph_out], [input_tpu, idx_tpu, vals_tpu]
+        )
+    )
+    self.assertIn("stablehlo.scatter", mlir_text)
+    self.assertNotIn("stablehlo.sort", mlir_text)
+
   def test_masked_scatter(self):
     # Case 1: Standard 1D masked_scatter
     self.assert_close_tpu_vs_cpu(

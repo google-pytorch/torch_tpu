@@ -2234,5 +2234,155 @@ INSTANTIATE_TEST_SUITE_P(
     [](const testing::TestParamInfo<ConvolutionLikeUnsupportedTest::ParamType>&
            info) { return info.param.test_name; });
 
+TEST(OpBuilderUtils, IndexValueRangeAndPermutationAnalysis) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::OpBuilder& op_builder = fb.getOpBuilder();
+
+  constexpr int64_t kLen = 16;
+  const auto i32_vec_type =
+      mlir::RankedTensorType::get({kLen}, op_builder.getI32Type());
+
+  mlir::MlirOp keys = mlir::func::Argument(fb, i32_vec_type);
+  mlir::MlirOp iota_i32 = mlir::stablehlo::Iota(fb, i32_vec_type, 0);
+  EXPECT_TRUE(IsProvablyNonNegative(iota_i32.getValue()));
+  EXPECT_TRUE(IsProvablyI32Bounded(iota_i32.getValue()));
+  EXPECT_TRUE(Is1DIota0(iota_i32.getValue(), kLen));
+  EXPECT_TRUE(Is1DPermutation(iota_i32.getValue(), kLen));
+
+  // Verify float iota is not treated as integer index iota.
+  const auto f32_vec_type =
+      mlir::RankedTensorType::get({kLen}, op_builder.getF32Type());
+  mlir::MlirOp iota_f32 = mlir::stablehlo::Iota(fb, f32_vec_type, 0);
+  EXPECT_FALSE(Is1DIota0(iota_f32.getValue(), kLen));
+  EXPECT_FALSE(Is1DPermutation(iota_f32.getValue(), kLen));
+
+  // BuildArangeOp pattern: Add(Mul(Iota(0), 1), 0).
+  const auto i64_vec_type =
+      mlir::RankedTensorType::get({kLen}, op_builder.getI64Type());
+  mlir::MlirOp iota_i64 = mlir::stablehlo::Iota(fb, i64_vec_type, 0);
+  mlir::MlirOp one_i64 =
+      MakeConstant(fb, int64_t{1}, op_builder.getI64Type(), {kLen});
+  mlir::MlirOp zero_arange_i64 =
+      MakeConstant(fb, int64_t{0}, op_builder.getI64Type(), {kLen});
+  mlir::MlirOp mul_iota_i64 = mlir::stablehlo::Mul(iota_i64, one_i64);
+  mlir::MlirOp arange_i64 = mlir::stablehlo::Add(mul_iota_i64, zero_arange_i64);
+  EXPECT_TRUE(Is1DIota0(arange_i64.getValue(), kLen));
+  EXPECT_TRUE(IsProvablyNonNegative(arange_i64.getValue()));
+  EXPECT_TRUE(IsProvablyI32Bounded(arange_i64.getValue()));
+
+  // Division by strictly positive constant vs zero divisor.
+  mlir::MlirOp two_i64 =
+      MakeConstant(fb, int64_t{2}, op_builder.getI64Type(), {kLen});
+  mlir::MlirOp zero_i64_div =
+      MakeConstant(fb, int64_t{0}, op_builder.getI64Type(), {kLen});
+  mlir::MlirOp div_valid = mlir::stablehlo::Div(iota_i64, two_i64);
+  mlir::MlirOp div_zero = mlir::stablehlo::Div(iota_i64, zero_i64_div);
+  EXPECT_TRUE(IsProvablyNonNegative(div_valid.getValue()));
+  EXPECT_TRUE(IsProvablyI32Bounded(div_valid.getValue()));
+  EXPECT_FALSE(IsProvablyNonNegative(div_zero.getValue()));
+  EXPECT_FALSE(IsProvablyI32Bounded(div_zero.getValue()));
+
+  // TryGetSplatIntConstant with unsigned integers.
+  const auto ui16_vec_type = mlir::RankedTensorType::get(
+      {1}, op_builder.getIntegerType(16, /*isSigned=*/false));
+  auto ui16_cst = mlir::stablehlo::Constant(
+      fb, mlir::DenseIntElementsAttr::get(
+              ui16_vec_type, llvm::APInt(16, 65535, /*isSigned=*/false)));
+  EXPECT_EQ(TryGetSplatIntConstant(ui16_cst.getValue()), 65535);
+
+  const auto ui64_vec_type = mlir::RankedTensorType::get(
+      {1}, op_builder.getIntegerType(64, /*isSigned=*/false));
+  auto ui64_valid = mlir::stablehlo::Constant(
+      fb,
+      mlir::DenseIntElementsAttr::get(
+          ui64_vec_type,
+          llvm::APInt(
+              64, static_cast<uint64_t>(std::numeric_limits<int64_t>::max()),
+              /*isSigned=*/false)));
+  EXPECT_EQ(TryGetSplatIntConstant(ui64_valid.getValue()),
+            std::numeric_limits<int64_t>::max());
+
+  auto ui64_overflow = mlir::stablehlo::Constant(
+      fb, mlir::DenseIntElementsAttr::get(
+              ui64_vec_type,
+              llvm::APInt(64, static_cast<uint64_t>(0x8000000000000000ULL),
+                          /*isSigned=*/false)));
+  EXPECT_EQ(TryGetSplatIntConstant(ui64_overflow.getValue()), std::nullopt);
+
+  auto comparator = [](mlir::RegionBuilder& rb) {
+    mlir::OpBuilder& b = rb.getOpBuilder();
+    mlir::stablehlo::buildSortComparisonBody(
+        {b.getI32Type(), b.getI32Type()},
+        mlir::stablehlo::ComparisonDirection::LT, std::nullopt, &rb.getRegion(),
+        &b);
+  };
+  auto sorted = mlir::stablehlo::Sort(fb, {keys, iota_i32}, comparator,
+                                      /*dimension=*/0, /*is_stable=*/false);
+  mlir::MlirOp perm_i32 = sorted[1];
+  mlir::MlirOp perm_i64 =
+      mlir::stablehlo::ConvertElementType(perm_i32, mlir::ElementType::I64);
+
+  EXPECT_TRUE(IsProvablyNonNegative(perm_i64.getValue()));
+  EXPECT_TRUE(IsProvablyI32Bounded(perm_i64.getValue()));
+  EXPECT_TRUE(Is1DPermutation(perm_i64.getValue(), kLen));
+
+  // Wrap `perm_i64` in the ResolveNegativeIndices pattern:
+  // select(compare(perm_i64, 0, LT), add(perm_i64, kLen), perm_i64).
+  mlir::MlirOp zero_i64 =
+      MakeConstant(fb, int64_t{0}, op_builder.getI64Type(), {kLen});
+  mlir::MlirOp len_i64 =
+      MakeConstant(fb, kLen, op_builder.getI64Type(), {kLen});
+  mlir::MlirOp lt_zero = mlir::stablehlo::Compare(
+      perm_i64, zero_i64, mlir::stablehlo::ComparisonDirection::LT);
+  mlir::MlirOp added = mlir::stablehlo::Add(perm_i64, len_i64);
+  mlir::MlirOp resolved_perm =
+      mlir::stablehlo::Select(lt_zero, added, perm_i64);
+
+  EXPECT_EQ(UnwrapResolvedNonNegativeIndex(resolved_perm.getValue()),
+            perm_i64.getValue());
+  EXPECT_EQ(Strip1DIndexWrappers(resolved_perm.getValue(), kLen),
+            perm_i32.getValue());
+
+  // Narrow integer iota wraparound tests.
+  const auto i8_300_type =
+      mlir::RankedTensorType::get({300}, op_builder.getI8Type());
+  mlir::MlirOp iota_300_i8 = mlir::stablehlo::Iota(fb, i8_300_type, 0);
+  EXPECT_FALSE(IsProvablyNonNegative(iota_300_i8.getValue()));
+  EXPECT_FALSE(Is1DIota0(iota_300_i8.getValue(), 300));
+
+  const auto ui8_300_type = mlir::RankedTensorType::get(
+      {300}, op_builder.getIntegerType(8, /*isSigned=*/false));
+  mlir::MlirOp iota_300_ui8 = mlir::stablehlo::Iota(fb, ui8_300_type, 0);
+  EXPECT_TRUE(IsProvablyNonNegative(iota_300_ui8.getValue()));
+  EXPECT_FALSE(Is1DIota0(iota_300_ui8.getValue(), 300));
+
+  const auto i16_70000_type =
+      mlir::RankedTensorType::get({70000}, op_builder.getI16Type());
+  mlir::MlirOp iota_70000_i16 = mlir::stablehlo::Iota(fb, i16_70000_type, 0);
+  EXPECT_FALSE(IsProvablyNonNegative(iota_70000_i16.getValue()));
+  EXPECT_FALSE(Is1DIota0(iota_70000_i16.getValue(), 70000));
+
+  // i1 -> i64 convert does not preserve non-negativity because i1 `true`
+  // sign-extends to -1 in signed/signless integer.
+  const auto i1_vec_type =
+      mlir::RankedTensorType::get({kLen}, op_builder.getI1Type());
+  mlir::MlirOp i1_arg = mlir::func::Argument(fb, i1_vec_type);
+  mlir::MlirOp conv_i1_to_i64 =
+      mlir::stablehlo::ConvertElementType(i1_arg, mlir::ElementType::I64);
+  EXPECT_FALSE(IsProvablyNonNegative(conv_i1_to_i64.getValue()));
+
+  // Positive control: i32 iota of length 1024.
+  const auto i32_1024_type =
+      mlir::RankedTensorType::get({1024}, op_builder.getI32Type());
+  mlir::MlirOp iota_1024_i32 = mlir::stablehlo::Iota(fb, i32_1024_type, 0);
+  EXPECT_TRUE(IsProvablyNonNegative(iota_1024_i32.getValue()));
+  EXPECT_TRUE(Is1DIota0(iota_1024_i32.getValue(), 1024));
+  EXPECT_TRUE(Is1DPermutation(iota_1024_i32.getValue(), 1024));
+
+  mlir::func::Return(fb, {perm_i64});
+}
+
 }  // namespace
 }  // namespace torch_tpu
