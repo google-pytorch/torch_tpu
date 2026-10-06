@@ -275,6 +275,7 @@ torch_tpu_cc_library(
         "//csrc/common:libtpu_version",
         "//csrc/common:to_string",
         "//csrc/common:utils",
+        "//csrc/common:version",
         "//csrc/common:warnings",
         "//csrc/ops:op_names",
         "//csrc/ops:python_context",

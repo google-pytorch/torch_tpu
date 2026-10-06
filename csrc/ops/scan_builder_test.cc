@@ -428,7 +428,7 @@ TEST_P(ScanBuilderTest, StaticShape1D) {
 TEST_P(ScanBuilderTest, NativeScanUnsupportedFallsBackToWhileLoop) {
   // Restore the default (supported) even if an assertion below fails, so this
   // process-global gate never leaks into other tests.
-  const std::optional<std::string> original_version = GetLibtpuVersion();
+  const std::optional<std::string> original_version = GetLibtpuVersionString();
   const absl::Cleanup restore = [original_version] {
     ResetLibtpuVersionForTesting();
     if (original_version.has_value()) {

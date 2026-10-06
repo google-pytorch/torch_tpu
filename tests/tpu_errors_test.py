@@ -4947,9 +4947,20 @@ module {
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""set_libtpu_version(): expected version string to be of the format <major>.<minor>.<patch>[.dev<date>], got '1.2.3.4.dev20260914'""",
+        tpu="""set_libtpu_version(): expected version string to be of the format <major>[.<minor>[.<patch>]][.dev<build>][<suffix>], got '1.2.3.4.dev20260914'""",
     ):
       env.set_libtpu_version("1.2.3.4.dev20260914")
+
+  @et.why_tpu_only("libtpu only present for TPU devices.")
+  def test_overflowing_libtpu_version(self):
+    env.reset_libtpu_version_for_testing()
+    self.addCleanup(env.reset_libtpu_version_for_testing)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""set_libtpu_version(): version component '99999999999' overflows in '99999999999.0.0'""",
+    ):
+      env.set_libtpu_version("99999999999.0.0")
 
   @et.why_tpu_only("libtpu only present for TPU devices.")
   def test_reset_different_libtpu_version(self):

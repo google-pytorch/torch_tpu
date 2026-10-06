@@ -26,6 +26,7 @@
 #include "absl/log/absl_check.h"
 #include "absl/log/log.h"
 #include "csrc/common/libtpu_version.h"
+#include "csrc/common/version.h"
 #include "csrc/internal/mosaic/op_builders.h"
 #include "csrc/ops/scaled_dot_product_attention/flash_attention_config.h"
 #include "llvm/ADT/STLExtras.h"
@@ -500,7 +501,7 @@ KVWindowMaps CreateKVWindowMaps(OpBuilder& builder, func::FuncOp fn,
 
 Value CreateLog2(ImplicitLocOpBuilder& b, Value input) {
   static bool is_natively_supported =
-      ::torch_tpu::IsLibtpuVersionAtLeast("0.0.48");
+      ::torch_tpu::GetLibtpuVersion() >= ::torch_tpu::Version(0, 0, 48);
   if (is_natively_supported) {
     return math::Log2Op::create(b, input);
   }

@@ -135,7 +135,7 @@ TT_PYBIND11_MODULE(env, m) {
   m.attr("TORCH_TPU_IS_OPTIMIZED_BUILD") = false;
 #endif
   m.def("set_libtpu_version", &SetLibtpuVersion, pybind11::arg("version"));
-  m.def("get_libtpu_version", &GetLibtpuVersion);
+  m.def("get_libtpu_version", &GetLibtpuVersionString);
   m.def("reset_libtpu_version_for_testing", &ResetLibtpuVersionForTesting);
   m.def("get_enable_debug_checks", &GetEnableDebugChecks);
   m.def("get_bool_env_once", &PyGetBooleanEnvOnce, pybind11::arg("name"),

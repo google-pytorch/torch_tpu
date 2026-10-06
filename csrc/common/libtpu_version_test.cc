@@ -19,6 +19,7 @@
 #include <optional>
 
 #include "csrc/common/error_utils.h"
+#include "csrc/common/version.h"
 #include "gtest/gtest.h"
 
 namespace torch_tpu {
@@ -31,8 +32,8 @@ class LibtpuVersionTest : public testing::Test {
 };
 
 TEST_F(LibtpuVersionTest, InitialValueIsUnsetInFreshProcess) {
-  EXPECT_EQ(GetLibtpuVersion(), std::nullopt);
-  EXPECT_TRUE(IsLibtpuVersionAtLeast("0.1.0"));
+  EXPECT_EQ(GetLibtpuVersionString(), std::nullopt);
+  EXPECT_EQ(GetLibtpuVersion(), Version::Max());
 }
 
 TEST_F(LibtpuVersionTest, SettingDifferentVersionThrows) {
@@ -44,88 +45,67 @@ TEST_F(LibtpuVersionTest, SettingInvalidVersionThrows) {
   EXPECT_THROW(SetLibtpuVersion("0.1.2.3.4"), torch_tpu::TtError);
 }
 
-TEST_F(LibtpuVersionTest, InvalidVersionComparison) {
-  SetLibtpuVersion("0.1.0");
-  EXPECT_FALSE(IsLibtpuVersionAtLeast("0.1.2.3.4"));
-}
-
 TEST_F(LibtpuVersionTest, SetAndGetVersion) {
   SetLibtpuVersion("0.1.0");
-  EXPECT_EQ(GetLibtpuVersion(), "0.1.0");
+  EXPECT_EQ(GetLibtpuVersionString(), "0.1.0");
+  EXPECT_EQ(GetLibtpuVersion(), Version(0, 1, 0));
 
   // Re-setting to identical version should succeed.
   SetLibtpuVersion("0.1.0");
-  EXPECT_EQ(GetLibtpuVersion(), "0.1.0");
+  EXPECT_EQ(GetLibtpuVersionString(), "0.1.0");
+  EXPECT_EQ(GetLibtpuVersion(), Version(0, 1, 0));
 }
 
-TEST_F(LibtpuVersionTest, IsLibtpuVersionAtLeast) {
+TEST_F(LibtpuVersionTest, CompareVersion) {
   SetLibtpuVersion("0.1.0");
-  EXPECT_TRUE(IsLibtpuVersionAtLeast("0.0.44"));
-  EXPECT_TRUE(IsLibtpuVersionAtLeast("0.0.99"));
-  EXPECT_TRUE(IsLibtpuVersionAtLeast("0.1.0"));
-  EXPECT_FALSE(IsLibtpuVersionAtLeast("0.1.1"));
-  EXPECT_FALSE(IsLibtpuVersionAtLeast("0.2.0"));
+  EXPECT_GE(GetLibtpuVersion(), Version(0, 0, 44));
+  EXPECT_GE(GetLibtpuVersion(), Version(0, 0, 99));
+  EXPECT_GE(GetLibtpuVersion(), Version(0, 1, 0));
+  EXPECT_LT(GetLibtpuVersion(), Version(0, 1, 1));
+  EXPECT_LT(GetLibtpuVersion(), Version(0, 2, 0));
 }
 
 TEST_F(LibtpuVersionTest, PaddingZerosForFirstThreeComponents) {
   SetLibtpuVersion("0.1");
-  EXPECT_TRUE(IsLibtpuVersionAtLeast("0.1.0"));
-  EXPECT_TRUE(IsLibtpuVersionAtLeast("0.1"));
-  EXPECT_TRUE(IsLibtpuVersionAtLeast("0.0.99"));
-  EXPECT_FALSE(IsLibtpuVersionAtLeast("0.1.1"));
-
-  ResetLibtpuVersionForTesting();
-  SetLibtpuVersion("0.1.0");
-  EXPECT_TRUE(IsLibtpuVersionAtLeast("0.1"));
+  EXPECT_EQ(GetLibtpuVersion(), Version(0, 1, 0));
 }
 
 TEST_F(LibtpuVersionTest, StableVersionPrecedenceOverNightly) {
   // Stable 0.0.47 has precedence over 0.0.47 nightly pre-releases.
   SetLibtpuVersion("0.0.47");
-  EXPECT_TRUE(IsLibtpuVersionAtLeast("0.0.47.dev20260824+nightly"));
-  EXPECT_TRUE(IsLibtpuVersionAtLeast("0.0.47"));
-  EXPECT_TRUE(IsLibtpuVersionAtLeast("0.0.46"));
-  EXPECT_FALSE(IsLibtpuVersionAtLeast("0.0.48"));
-  EXPECT_FALSE(IsLibtpuVersionAtLeast("0.0.48.dev20260824+nightly"));
+  EXPECT_GE(GetLibtpuVersion(), Version(0, 0, 47, 20260824));
+  EXPECT_GE(GetLibtpuVersion(), Version(0, 0, 47));
+  EXPECT_GE(GetLibtpuVersion(), Version(0, 0, 46));
+  EXPECT_LT(GetLibtpuVersion(), Version(0, 0, 48));
+  EXPECT_LT(GetLibtpuVersion(), Version(0, 0, 48, 20260824));
 
   // Nightly 0.0.47 does not satisfy requirement for stable 0.0.47.
   ResetLibtpuVersionForTesting();
   SetLibtpuVersion("0.0.47.dev20260824+nightly");
-  EXPECT_FALSE(IsLibtpuVersionAtLeast("0.0.47"));
-  EXPECT_TRUE(IsLibtpuVersionAtLeast("0.0.47.dev20260824+nightly"));
-  EXPECT_TRUE(IsLibtpuVersionAtLeast("0.0.47.dev20260823+nightly"));
-  EXPECT_FALSE(IsLibtpuVersionAtLeast("0.0.47.dev20260825+nightly"));
-  EXPECT_TRUE(IsLibtpuVersionAtLeast("0.0.46"));
+  EXPECT_LT(GetLibtpuVersion(), Version(0, 0, 47));
+  EXPECT_GE(GetLibtpuVersion(), Version(0, 0, 47, 20260824));
+  EXPECT_GE(GetLibtpuVersion(), Version(0, 0, 47, 20260823));
+  EXPECT_LT(GetLibtpuVersion(), Version(0, 0, 47, 20260825));
+  EXPECT_GE(GetLibtpuVersion(), Version(0, 0, 46));
 }
 
 TEST_F(LibtpuVersionTest, TimestampDevVersion) {
-  // Timestamp-based dev versions use 12 digits (YYYYMMDDHHMM), exceeding
-  // 32-bit signed int limits (2,147,483,647).
   SetLibtpuVersion("0.0.47.dev202605201400");
-  EXPECT_FALSE(IsLibtpuVersionAtLeast("0.0.47"));
-  EXPECT_TRUE(IsLibtpuVersionAtLeast("0.0.47.dev202605201400"));
-  EXPECT_TRUE(IsLibtpuVersionAtLeast("0.0.47.dev202605201300"));
-  EXPECT_FALSE(IsLibtpuVersionAtLeast("0.0.47.dev202605201500"));
-  EXPECT_TRUE(IsLibtpuVersionAtLeast("0.0.46"));
-
-  // Stable 0.0.47 satisfies requirements for timestamp-based dev versions.
-  ResetLibtpuVersionForTesting();
-  SetLibtpuVersion("0.0.47");
-  EXPECT_TRUE(IsLibtpuVersionAtLeast("0.0.47.dev202605201400"));
+  EXPECT_EQ(GetLibtpuVersion(), Version(0, 0, 47, 202605201400));
 }
 
 TEST_F(LibtpuVersionTest, SetEmptyVersion) {
   SetLibtpuVersion("");
-  EXPECT_EQ(GetLibtpuVersion(), "");
-  EXPECT_TRUE(IsLibtpuVersionAtLeast("0.1.0"));
+  EXPECT_EQ(GetLibtpuVersionString(), "");
+  EXPECT_EQ(GetLibtpuVersion(), Version::Max());
 }
 
 TEST_F(LibtpuVersionTest, ResetLibtpuVersionForTesting) {
   SetLibtpuVersion("0.1.0");
-  EXPECT_EQ(GetLibtpuVersion(), "0.1.0");
+  EXPECT_EQ(GetLibtpuVersionString(), "0.1.0");
   ResetLibtpuVersionForTesting();
-  EXPECT_EQ(GetLibtpuVersion(), std::nullopt);
-  EXPECT_TRUE(IsLibtpuVersionAtLeast("0.1.0"));
+  EXPECT_EQ(GetLibtpuVersionString(), std::nullopt);
+  EXPECT_EQ(GetLibtpuVersion(), Version::Max());
 }
 
 }  // namespace

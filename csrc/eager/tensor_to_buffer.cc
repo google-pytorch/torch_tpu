@@ -21,7 +21,6 @@
 #include <limits>
 #include <sstream>
 #include <string>
-#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -62,6 +61,7 @@
 #include "csrc/common/libtpu_version.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
+#include "csrc/common/version.h"
 #include "csrc/common/warnings.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/device_buffer_utils.h"
@@ -83,7 +83,7 @@ namespace torch_tpu {
 
 namespace {
 
-constexpr std::string_view kMinLibtpuVersionWithPeakAllocatedBytes = "0.0.43";
+constexpr Version kMinLibtpuVersionWithPeakAllocatedBytes(0, 0, 43);
 
 // Records that a DeviceBufferRef has one more c10::DataPtr using it.
 void AddDataPtrAlias(const DeviceBufferRef& buffer_ref) {
@@ -482,7 +482,7 @@ class TpuAllocator final : public c10::DeviceAllocator {
     // Map available stats
     using StatType = c10::CachingAllocator::StatType;
 
-    if (IsLibtpuVersionAtLeast(kMinLibtpuVersionWithPeakAllocatedBytes)) {
+    if (GetLibtpuVersion() >= kMinLibtpuVersionWithPeakAllocatedBytes) {
       stats.allocated_bytes[static_cast<size_t>(StatType::AGGREGATE)].current =
           pjrt_stats.bytes_in_use + pjrt_stats.bytes_reserved;
       stats.allocated_bytes[static_cast<size_t>(StatType::AGGREGATE)].peak =

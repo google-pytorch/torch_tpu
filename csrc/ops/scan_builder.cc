@@ -18,7 +18,6 @@
 
 #include <cstdint>
 #include <iterator>
-#include <string_view>
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
@@ -27,6 +26,7 @@
 #include "absl/status/statusor.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/libtpu_version.h"
+#include "csrc/common/version.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -48,7 +48,7 @@ namespace torch_tpu {
 
 namespace {
 
-constexpr std::string_view kMinLibtpuVersionWithNativeScan = "0.0.44";
+constexpr Version kMinLibtpuVersionWithNativeScan(0, 0, 44);
 
 mlir::Value GetScanDimSize(mlir::MlirBuilder& builder, mlir::MlirOp input,
                            const int64_t scan_dim) {
@@ -506,7 +506,7 @@ absl::StatusOr<DynamicMlirOpResults> BuildScanShlo(
   // dynamic since the TPU compiler does not yet support dynamic scans.
   const bool is_static = type.hasStaticShape();
   if (options.is_associative &&
-      IsLibtpuVersionAtLeast(kMinLibtpuVersionWithNativeScan) && is_static) {
+      GetLibtpuVersion() >= kMinLibtpuVersionWithNativeScan && is_static) {
     const ScanOptions emit_options = {.direction = options.direction,
                                       .should_squeeze = false,
                                       .is_associative = true};
@@ -579,7 +579,7 @@ absl::StatusOr<DynamicMlirOpResults> BuildScanShlo(
     return GetTensorTypeOrDie(op).hasStaticShape();
   });
   if (options.is_associative &&
-      IsLibtpuVersionAtLeast(kMinLibtpuVersionWithNativeScan) && all_static) {
+      GetLibtpuVersion() >= kMinLibtpuVersionWithNativeScan && all_static) {
     return BuildAssociativeScanChlo(builder, scan_inputs, scan_dim,
                                     num_scan_inputs, carry_inits, output_inits,
                                     body_builder, options);

@@ -114,6 +114,7 @@ torch_tpu_cc_library(
         ":op_builder_utils",
         "//csrc/common:error_utils",
         "//csrc/common:libtpu_version",
+        "//csrc/common:version",
         "//shims/torch:aten_headers",
         "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/status",

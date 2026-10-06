@@ -37,13 +37,13 @@
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/libtpu_version.h"
+#include "csrc/common/version.h"
 #include "csrc/distributed/slicebuilder/discovery.h"
 
 namespace torch_tpu {
 namespace {
 
-constexpr std::string_view kMinLibtpuVersionWithSlicebuilderInsecureGrpc =
-    "0.0.48";
+constexpr Version kMinLibtpuVersionWithSlicebuilderInsecureGrpc(0, 0, 48);
 
 // Returns the local hostname with any domain or port suffix (starting at '.'
 // or ':') stripped, matching SliceBuilder's `GetAndSanitizeHostName()`. Falls
@@ -207,7 +207,7 @@ absl::Status InitializeDistributedEnvironment(
   SetEnv<kTpuProcessPortEnvVar>(config.sb_port);
 
   const bool use_slicebuilder_insecure_grpc =
-      IsLibtpuVersionAtLeast(kMinLibtpuVersionWithSlicebuilderInsecureGrpc);
+      GetLibtpuVersion() >= kMinLibtpuVersionWithSlicebuilderInsecureGrpc;
   if (use_slicebuilder_insecure_grpc) {
     // Under LIBTPU_ON_GCE (libtpu >= 0.0.48), SliceBuilder WorkerService binds
     // to `<GetAndSanitizeHostName()>:<port>` rather than `[::]:<port>`, which
