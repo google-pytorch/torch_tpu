@@ -486,6 +486,11 @@ REGISTRATION_OVERRIDES = frozenset([
     # lstm.input is registered to provide an optimized fused StableHLO kernel
     # on TPU, overriding the default PyTorch decomposition.
     'lstm.input',
+    # masked_fill.Scalar and masked_fill.Tensor are registered to lower directly
+    # to StableHLO Select without decomposing into expand + clone +
+    # masked_fill_.
+    'masked_fill.Scalar',
+    'masked_fill.Tensor',
     'native_layer_norm',  # pending removal
     # repeat_interleave.self_Tensor is registered to provide an optimized TPU
     # implementation, overriding the default decomposition.

@@ -11366,6 +11366,99 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(compute)
 
+  def test_masked_fill_scalar_and_tensor_values(self):
+    input_f32 = torch.randn(2, 3, dtype=torch.float32)
+    input_bf16 = torch.randn(2, 3, dtype=torch.bfloat16)
+    mask_value = torch.tensor(
+        [[True, False, True], [False, True, False]], dtype=torch.bool
+    )
+    tpu_tensor_val = torch.tensor(5, dtype=torch.int32)
+
+    def compute(device):
+      inp_f32 = to(input_f32, device).clone()
+      inp_bf16 = to(input_bf16, device).clone()
+      mask = to(mask_value, device)
+      val_tpu = to(tpu_tensor_val, device)
+      val_cpu = torch.tensor(-7, dtype=torch.int32, device="cpu")
+
+      out_neg_inf = torch.masked_fill(inp_f32, mask, -float("inf"))
+      out_bf16_min = inp_bf16.masked_fill(mask, torch.finfo(torch.bfloat16).min)
+      out_zero = inp_f32.masked_fill(mask, 0.0)
+      out_tpu_tensor = torch.masked_fill(inp_f32, mask, val_tpu)
+      out_cpu_tensor = inp_f32.masked_fill(mask, val_cpu)
+      return (
+          out_neg_inf,
+          out_bf16_min,
+          out_zero,
+          out_tpu_tensor,
+          out_cpu_tensor,
+          inp_f32,
+          inp_bf16,
+      )
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  def test_masked_fill_out_of_place_mutual_broadcast(self):
+    input_1d = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32)
+    input_2d = torch.tensor([[4.0, 5.0, 6.0]], dtype=torch.float32)
+    mask_2d = torch.tensor(
+        [[True, False, True], [False, True, False]], dtype=torch.bool
+    )
+    tensor_val = torch.tensor(-9.5, dtype=torch.float32)
+
+    def compute(device):
+      inp1 = to(input_1d, device).clone()
+      inp2 = to(input_2d, device).clone()
+      mask = to(mask_2d, device)
+      val = to(tensor_val, device)
+
+      out_1d_scalar = torch.masked_fill(inp1, mask, -1.0)
+      out_1d_tensor = torch.masked_fill(inp1, mask, val)
+      out_2d_scalar = inp2.masked_fill(mask, -2.0)
+      out_2d_tensor = inp2.masked_fill(mask, val)
+      return (
+          out_1d_scalar,
+          out_1d_tensor,
+          out_2d_scalar,
+          out_2d_tensor,
+          inp1,
+          inp2,
+      )
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  def test_masked_fill_autograd_backward(self):
+    input_value = torch.randn(2, 3, dtype=torch.float32)
+    mask_value = torch.tensor(
+        [[True, False, True], [False, True, False]], dtype=torch.bool
+    )
+    grad_output_value = torch.randn(2, 3, dtype=torch.float32)
+
+    def compute(device):
+      inp_scalar = to(input_value, device).clone().requires_grad_(True)
+      mask = to(mask_value, device)
+      grad_out = to(grad_output_value, device)
+
+      out_scalar = inp_scalar.masked_fill(mask, -10.0)
+      out_scalar.backward(grad_out)
+
+      inp_tensor = to(input_value, device).clone().requires_grad_(True)
+      val_tensor = torch.tensor(
+          3.5, dtype=torch.float32, device=device, requires_grad=True
+      )
+      out_tensor = torch.masked_fill(inp_tensor, mask, val_tensor)
+      out_tensor.backward(grad_out)
+
+      return (
+          out_scalar,
+          inp_scalar.grad,
+          out_tensor,
+          inp_tensor.grad,
+          val_tensor.grad,
+      )
+
+    self.assert_close_tpu_vs_cpu(compute)
+
   @parameterized.named_parameters(
       ("crop_left_and_pad_right", (-2, 3), False),
       ("pad_left_and_crop_right", (3, -2), False),

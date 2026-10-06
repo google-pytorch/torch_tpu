@@ -41,7 +41,6 @@
 #include "absl/log/absl_log.h"
 #include "absl/log/log.h"
 #include "c10/core/ScalarType.h"
-#include "c10/util/Exception.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/warnings.h"
@@ -821,6 +820,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kLtScalarOut>(m, AtenLtScalarOut);
   ImplStable<OpName::kLtTensorOut>(m, AtenLtTensorOut);
   ImplStable<OpName::kLuUnpackOut>(m, AtenLuUnpackOut);
+  ImplStable<OpName::kMaskedFillScalar>(m, AtenMaskedFillScalar);
+  ImplStable<OpName::kMaskedFillTensor>(m, AtenMaskedFillTensor);
   ImplStable<OpName::kMaskedFill_Scalar>(m, AtenMaskedFill_Scalar);
   ImplStable<OpName::kMaskedFill_Tensor>(m, AtenMaskedFill_Tensor);
   ImplStable<OpName::kMaskedScatter_>(m, AtenMaskedScatter_);

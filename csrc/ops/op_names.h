@@ -537,6 +537,8 @@ enum class OpName {
   kLtScalarOut,
   kLtTensorOut,
   kLuUnpackOut,
+  kMaskedFillScalar,
+  kMaskedFillTensor,
   kMaskedFill_Scalar,
   kMaskedFill_Tensor,
   kMaskedScatter_,
@@ -1888,6 +1890,10 @@ ToString(  // NOLINT(google-readability-function-size)
       return "lt.Tensor_out";
     case OpName::kLuUnpackOut:
       return "lu_unpack.out";
+    case OpName::kMaskedFillScalar:
+      return "masked_fill.Scalar";
+    case OpName::kMaskedFillTensor:
+      return "masked_fill.Tensor";
     case OpName::kMaskedFill_Scalar:
       return "masked_fill_.Scalar";
     case OpName::kMaskedFill_Tensor:

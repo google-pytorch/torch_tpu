@@ -584,6 +584,7 @@ class TernaryElementwiseDynamicOpInfo(DynamicOpInfo):
       "addcmul",
       "clamp",
       "lerp",
+      "masked_fill",
       "where",
   }
 
