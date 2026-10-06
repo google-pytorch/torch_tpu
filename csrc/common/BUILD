@@ -376,6 +376,7 @@ torch_tpu_cc_library(
         "@xla//xla/pjrt:maybe_owning_mlir_module",
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt:pjrt_compiler",
+        "@xla//xla/pjrt:pjrt_device_dimensions",
         "@xla//xla/pjrt:pjrt_executable",
         "@xla//xla/runtime:device_id",
         "@xla//xla/service:device_assignment",
@@ -412,6 +413,7 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/types:span",
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt:pjrt_executable",
         "@xla//xla/tsl/platform:env",
@@ -436,6 +438,7 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/time",
+        "@com_google_absl//absl/types:span",
     ],
 )
 
@@ -449,11 +452,13 @@ torch_tpu_cc_test(
     deps = [
         ":cache_key",
         ":compilation",
+        ":compilation_cache",
         ":compilation_cache_utils",
         ":compilation_spec",
         ":dimension_types",
         ":env_vars",
         ":error_utils",
+        ":status_test_utils",
         ":tier2_compilation_cache",
         ":unique_file_descriptor",
         "//csrc/common:oss_test_main",
@@ -461,8 +466,11 @@ torch_tpu_cc_test(
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/time",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
     ],
 )
 
@@ -665,6 +673,7 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
         "@xla//xla/tsl/platform:env",
         "@xla//xla/tsl/platform/cloud:gcs_file_system",  # buildcleaner: keep - for GCS support
     ] + add_internal_filesystem_dependencies(),
@@ -1364,11 +1373,14 @@ torch_tpu_cc_test(
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@xla//xla:shape_util",
         "@xla//xla:xla_data_proto_cc",
+        "@xla//xla/client:executable_build_options",
         "@xla//xla/hlo/builder:xla_builder",
         "@xla//xla/hlo/builder:xla_computation",
         "@xla//xla/pjrt:pjrt_client",
+        "@xla//xla/pjrt:pjrt_device_dimensions",
         "@xla//xla/pjrt:pjrt_executable",
         "@xla//xla/pjrt/plugin/xla_tpu:xla_tpu_pjrt_client",  # buildcleaner: keep
+        "@xla//xla/service:device_assignment",
     ],
 )
 

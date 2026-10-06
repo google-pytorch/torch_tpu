@@ -170,7 +170,7 @@ TEST_F(RemoteCacheTest, GetFromTier3Cache) {
   // Read back using GetFromTier3Cache.
   // We expect failure because the data is invalid, but we want to verify that
   // it *successfully read the file*.
-  auto result = GetFromTier3Cache(key);
+  auto result = GetFromTier3Cache(key, /*device_ids=*/{});
   ASSERT_NE(result.status(), absl::OkStatus());
   EXPECT_THAT(result.status().message(), HasSubstr("load serialized"));
 }

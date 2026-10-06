@@ -56,6 +56,7 @@ from absl import logging
 from absl.testing import absltest
 import torch
 from torch_tpu._internal import testing as tt_testing
+from torch_tpu._internal.compile import debug as tpu_debug
 from torch_tpu._internal.utils import annotations
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
@@ -107,6 +108,15 @@ def list_bin_files(dir_path: pathlib.Path) -> list[pathlib.Path]:
   return list(dir_path.glob("**/*.bin"))
 
 
+def list_device_ids(debug: tpu_debug.TpuCompileDebug) -> list[list[int]]:
+  """Lists the devices of each executable of the given compilation."""
+  return [
+      list(executable._executable.device_ids())
+      for artifact in debug.compiled_executables
+      for executable in artifact.compiled_executables
+  ]
+
+
 class CacheTest(seed_test_utils.RepeatableTest):
   """Tests persistent Tier-2 and Tier-3 cache for torch.compile.
 
@@ -122,7 +132,9 @@ class CacheTest(seed_test_utils.RepeatableTest):
     super().setUp()
     tt_testing.reset_eager_state()
 
-  def _run_persistent_cache_logic(self, cache_dir: pathlib.Path | str):
+  def _run_persistent_cache_logic(
+      self, cache_dir: pathlib.Path | str, drop_tier2: bool = False
+  ):
     """Verifies that compilation artifacts persist to disk and hit on reload.
 
     This helper performs a two-step verification:
@@ -131,6 +143,11 @@ class CacheTest(seed_test_utils.RepeatableTest):
     2. Second compile (Cache Hit): Clears in-memory caches and re-runs `fn`,
        asserting that persistent cache lookup succeeds and no new cache files
        are written to disk.
+
+    Args:
+      cache_dir: The directory of the cache under test.
+      drop_tier2: Whether to delete the tier-2 cache entries before the second
+        compile, so that it loads from the tier-3 cache.
     """
 
     device = torch.accelerator.current_accelerator()
@@ -156,7 +173,15 @@ class CacheTest(seed_test_utils.RepeatableTest):
     initial_caches = set(list_bin_files(cache_dir))
     logging.info("Initial caches: %s", initial_caches)
 
-    @torch.compile(backend="tpu", fullgraph=True, dynamic=False)
+    debugs = []
+    compiled_device_ids = []
+
+    @torch.compile(
+        backend="tpu",
+        fullgraph=True,
+        dynamic=False,
+        options={"debug_callback": debugs.append},
+    )
     def fn(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
       return torch.sin(x + y) * torch.cos(x - y)
 
@@ -172,9 +197,20 @@ class CacheTest(seed_test_utils.RepeatableTest):
           caches_after_first_compile - initial_caches,
           "No new caches written after first compile",
       )
+      compiled_device_ids = list_device_ids(debugs[-1])
+      self.assertNotEmpty(compiled_device_ids)
+      self.assertTrue(all(compiled_device_ids), compiled_device_ids)
 
     # Clear in-memory cache to force a persistent cache lookup from disk.
     clear_in_memory_caches()
+    if drop_tier2:
+      tier2_dir = get_tier2_cache_dir(
+          os.environ["TORCH_TPU_TIER2_COMPILATION_CACHE"]
+      )
+      for path in list_bin_files(tier2_dir):
+        path.unlink()
+    stats = torch.tpu._get_cache_stats  # pylint: disable=protected-access
+    num_compilations = stats().num_compilations
 
     with self.subTest("TestCacheHit"):
       # Second compile: Should trigger a persistent cache hit from disk.
@@ -190,6 +226,11 @@ class CacheTest(seed_test_utils.RepeatableTest):
           caches_after_second_compile - caches_after_first_compile,
           "New caches written after second compile",
       )
+      # The executable is loaded from disk, not compiled, and has the devices
+      # of the compiled one.
+      self.assertEqual(stats().num_compilations, num_compilations)
+      self.assertLen(debugs, 2)
+      self.assertEqual(list_device_ids(debugs[-1]), compiled_device_ids)
 
   def test_persistent_cache_tier2(self) -> None:
     """Tests Tier-2 persistent compilation caching in shared memory."""
@@ -207,7 +248,7 @@ class CacheTest(seed_test_utils.RepeatableTest):
         os.environ.get("TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT")
     )
     empty_dir(cache_dir)
-    self._run_persistent_cache_logic(cache_dir)
+    self._run_persistent_cache_logic(cache_dir, drop_tier2=True)
 
 
 class ParentCacheTest(
@@ -273,6 +314,9 @@ class ParentCacheTest(
             "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT": str(
                 self.create_tempdir().full_path
             ),
+            # A tier-3 read also starts a backup compilation, which would count
+            # as a compilation of the second compile.
+            "TORCH_TPU_INTERNAL_TIER3_COMPILATION_CACHE_LOCAL_BACKUP_TASK": "0",
         },
     )
 

@@ -258,8 +258,9 @@ def _process_group_cache_key_tag(graph_module: torch.fx.GraphModule) -> str:
   A graph names each process group it communicates over by the group's name,
   which counts groups in creation order, so another run can give the same name
   to a group of other ranks. The program compiled for a collective depends on
-  the ranks of its group, on the groups split together with it and on the
-  devices of the ranks, so the returned tag adds them to
+  the ranks of its group, on the groups split together with it, on the
+  devices of the ranks and on whether the group is standalone (see
+  `spmd_util.make_standalone`), so the returned tag adds them to
   `torch.compiler.config.cache_key_tag`, which compile cache keys include. A
   graph without process groups keeps the configured tag.
 
@@ -296,15 +297,16 @@ def _process_group_cache_key_tag(graph_module: torch.fx.GraphModule) -> str:
   # pylint: disable-next=g-import-not-at-top
   from torch_tpu._internal.distributed import tpu_distributed
 
-  def tpu_layout(group: torch.distributed.ProcessGroup) -> tuple[Any, Any]:
+  def tpu_layout(group: torch.distributed.ProcessGroup) -> tuple[Any, ...]:
     try:
       # pylint: disable-next=protected-access
       backend = group._get_backend(torch.device("tpu"))
     except RuntimeError:
-      return [], []
+      return [], [], False
     return (
         tpu_distributed.subgroup_ranks(backend),
         tpu_distributed.rank_to_device_id(backend),
+        tpu_distributed.is_standalone(backend),
     )
 
   groups = [

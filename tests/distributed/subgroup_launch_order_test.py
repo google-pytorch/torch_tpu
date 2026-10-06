@@ -24,7 +24,12 @@ over the whole slice.
 
 import inspect
 import os
+import pathlib
+import pickle
+import shutil
 import signal
+from unittest import mock
+import uuid
 
 from absl import logging
 from absl.testing import absltest
@@ -32,11 +37,15 @@ from absl.testing import parameterized
 import jax
 import torch
 from torch import distributed as dist
+from torch._dynamo.utils import counters
+import torch._functorch.config as functorch_config
 from torch._higher_order_ops import scan
+from torch._inductor.runtime.cache_dir_utils import temporary_cache_dir
 from torch.distributed import _functional_collectives as funcol
 import torch.multiprocessing as mp
 from torch_tpu._internal import pallas
 from torch_tpu._internal.utils import test_utils as utils
+from torch_tpu._internal.distributed import device_mesh
 from torch_tpu._internal.distributed import multiprocessing
 from torch_tpu._internal.distributed import spmd_util
 from tests import oss_utils
@@ -67,6 +76,7 @@ _LAYOUTS = {
     "diagonals": _DIAGONALS,
 }
 _LAYOUT_CASES = tuple((name, name) for name in _LAYOUTS)
+_TIER2_CACHE_ROOT = "/dev/shm/torch_tpu_cache"
 # Groups in other than ascending rank order need `dist.new_group(sort_ranks=)`.
 _HAS_SORT_RANKS = "sort_ranks" in inspect.signature(dist.new_group).parameters
 _AXIS = "group"
@@ -504,6 +514,48 @@ def run_standalone_subgroup_shares_no_program() -> None:
     raise AssertionError("the lookup ran in the program of the pair")
 
 
+def run_cached_pair_all_reduce(standalone: bool) -> None:
+  """Compiles a pair all-reduce with the AOTAutograd cache on."""
+  dist.init_process_group(backend="tpu_dist")
+  rank = int(os.environ["RANK"])
+  assert int(os.environ["WORLD_SIZE"]) == _WORLD
+  signal.alarm(600)
+  my_pair, my_pair_ranks = None, None
+  for ranks in _PAIRS:
+    group = dist.new_group(ranks=ranks)
+    if rank in ranks:
+      my_pair, my_pair_ranks = group, ranks
+  if standalone:
+    spmd_util.make_standalone(my_pair)
+
+  @torch.compile(backend="tpu", fullgraph=True, dynamic=False)
+  def all_reduce(x: torch.Tensor) -> torch.Tensor:
+    y = x * 1.0
+    dist.all_reduce(y, group=my_pair)
+    return y
+
+  # Standalone pair k launches its program k + 1 times.
+  launches = _PAIRS.index(my_pair_ranks) + 1 if standalone else 1
+  for i in range(launches):
+    out = all_reduce(torch.full((4,), float(rank + 10 * i), device="tpu"))
+    utils.assert_close(
+        out.cpu(), torch.full((4,), float(sum(my_pair_ranks) + 20 * i))
+    )
+  aot = counters["aot_autograd"]
+  if standalone:
+    # The run with standalone pairs does not reuse the program that the run
+    # before it compiled for the whole slice.
+    assert aot["autograd_cache_hit"] == 0, dict(aot)
+  else:
+    # The run for the whole slice saves the program that the next run must not
+    # reuse.
+    assert aot["autograd_cache_saved"] == 1, dict(aot)
+
+  w = torch.tensor([float(rank)], device="tpu")
+  dist.all_reduce(w)
+  utils.assert_close(w.cpu(), torch.tensor([float(sum(range(_WORLD)))]))
+
+
 def run_uneven_group_all_to_all(layout: str) -> None:
   """Group k exchanges uneven, partly empty splits k + 1 times.
 
@@ -568,6 +620,158 @@ def run_uneven_group_all_to_all(layout: str) -> None:
   utils.assert_close(w.cpu(), torch.tensor([float(sum(range(_WORLD)))]))
 
 
+def _half_region(my_half, members):
+  """An all-gather over one half, then a reduce-scatter of the gathered rows."""
+
+  @spmd_util.spmd_safe
+  def region(x: torch.Tensor) -> torch.Tensor:
+    gathered = torch.empty((members * 4, 8), device=x.device)
+    dist.all_gather_into_tensor(gathered, x, group=my_half)
+    scattered = torch.empty((4, 8), device=x.device)
+    dist.reduce_scatter_tensor(scattered, gathered, group=my_half)
+    return scattered
+
+  return region
+
+
+def run_uneven_compiled_half_programs() -> None:
+  """Half k launches a compiled all-gather and reduce-scatter k + 1 times."""
+  dist.init_process_group(backend="tpu_dist")
+  rank = int(os.environ["RANK"])
+  assert int(os.environ["WORLD_SIZE"]) == _WORLD
+  signal.alarm(600)
+  my_half, my_half_ranks, half_index = _make_standalone_group(rank, "halves")
+  members = len(my_half_ranks)
+  region = _half_region(my_half, members)
+
+  # `serializable=False` keeps this a fresh compile, whose executables the
+  # debug callback reports, rather than an AOTAutograd cache hit.
+  debugs = []
+  compiled = torch.compile(
+      region,
+      backend="tpu",
+      fullgraph=True,
+      dynamic=False,
+      options={"serializable": False, "debug_callback": debugs.append},
+  )
+  for i in range(half_index + 1):
+    value = float(rank + 1 + 10 * i)
+    x = torch.full((4, 8), value, device="tpu")
+    # Every member gathers the same rows, so the sum returns its own rows once
+    # per member.
+    utils.assert_close(
+        compiled(x).cpu(), torch.full((4, 8), members * value)
+    )
+
+  # The AOTAutograd cache pickles the executable; both halves load it back, the
+  # half off the origin at its own chips.
+  (artifact,) = debugs[0].compiled_executables
+  device_ids = [
+      list(executable._executable.device_ids())
+      for executable in artifact.compiled_executables
+  ]
+  logging.info("rank %d executable devices %s", rank, device_ids)
+  # Every rank knows the devices of the program of its half, whether it
+  # compiled the executable or loaded it from the tier-2 cache.
+  half_devices = device_mesh.get_device_assignment(my_half)
+  assert half_devices in device_ids and all(device_ids), device_ids
+  restored = pickle.loads(pickle.dumps(artifact))
+  x = torch.full((4, 8), float(rank + 1), device="tpu")
+  (out,) = restored(x)
+  utils.assert_close(out.cpu(), torch.full((4, 8), members * float(rank + 1)))
+
+  w = torch.tensor([float(rank)], device="tpu")
+  dist.all_reduce(w)
+  utils.assert_close(w.cpu(), torch.tensor([float(sum(range(_WORLD)))]))
+
+
+def run_cached_half_programs(warm: bool) -> None:
+  """Compiles the half programs with the AOTAutograd cache on."""
+  dist.init_process_group(backend="tpu_dist")
+  rank = int(os.environ["RANK"])
+  assert int(os.environ["WORLD_SIZE"]) == _WORLD
+  signal.alarm(600)
+  my_half, my_half_ranks, half_index = _make_standalone_group(rank, "halves")
+  members = len(my_half_ranks)
+  region = _half_region(my_half, members)
+  compiled = torch.compile(region, backend="tpu", fullgraph=True, dynamic=False)
+  for i in range(half_index + 1):
+    value = float(rank + 1 + 10 * i)
+    x = torch.full((4, 8), value, device="tpu")
+    utils.assert_close(
+        compiled(x).cpu(), torch.full((4, 8), members * value)
+    )
+
+  aot = counters["aot_autograd"]
+  if warm:
+    # Both halves reload their programs, the half off the origin at its chips.
+    assert aot["autograd_cache_hit"] == 1, dict(aot)
+  else:
+    assert aot["autograd_cache_bypass"] == 0, dict(aot)
+
+  w = torch.tensor([float(rank)], device="tpu")
+  dist.all_reduce(w)
+  utils.assert_close(w.cpu(), torch.tensor([float(sum(range(_WORLD)))]))
+
+
+def run_strict_cache_half_programs() -> None:
+  """A strict AOTAutograd cache saves the programs of both halves."""
+  dist.init_process_group(backend="tpu_dist")
+  rank = int(os.environ["RANK"])
+  assert int(os.environ["WORLD_SIZE"]) == _WORLD
+  signal.alarm(600)
+  my_half, my_half_ranks, _ = _make_standalone_group(rank, "halves")
+  members = len(my_half_ranks)
+  region = _half_region(my_half, members)
+  x = torch.full((4, 8), float(rank + 1), device="tpu")
+  with functorch_config.patch(strict_autograd_cache=True):
+    compiled = torch.compile(
+        region, backend="tpu", fullgraph=True, dynamic=False
+    )
+    utils.assert_close(
+        compiled(x).cpu(), torch.full((4, 8), members * float(rank + 1))
+    )
+
+  w = torch.tensor([float(rank)], device="tpu")
+  dist.all_reduce(w)
+  utils.assert_close(w.cpu(), torch.tensor([float(sum(range(_WORLD)))]))
+
+
+def run_group_programs_from_the_caches(layout: str, compilations: int) -> None:
+  """The members of each group compile the group's program `compilations` times.
+
+  The members that do not compile it load it from the tier-2 or the tier-3
+  cache, a group that fills a box of devices off the origin at its own chips;
+  a member whose load fails compiles the program again.
+  """
+  dist.init_process_group(backend="tpu_dist")
+  rank = int(os.environ["RANK"])
+  assert int(os.environ["WORLD_SIZE"]) == _WORLD
+  signal.alarm(600)
+  my_group, my_ranks, _ = _make_standalone_group(rank, layout)
+
+  x = torch.full((3, 5), float(rank + 1), device="tpu")
+  x.cpu()
+  stats = torch.tpu._get_cache_stats  # pylint: disable=protected-access
+  before = stats().num_compilations
+  dist.all_reduce(x, group=my_group)
+  out = x.cpu()
+  local_compilations = stats().num_compilations - before
+  utils.assert_close(
+      out, torch.full((3, 5), float(sum(r + 1 for r in my_ranks)))
+  )
+
+  counts = torch.empty(_WORLD, dtype=torch.int32, device="tpu")
+  dist.all_gather_into_tensor(
+      counts,
+      torch.tensor([local_compilations], dtype=torch.int32, device="tpu"),
+  )
+  counts = counts.cpu().tolist()
+  logging.info("rank %d compilations per rank %s", rank, counts)
+  for group in _LAYOUTS[layout]:
+    assert sum(counts[r] for r in group) == compilations, counts
+
+
 @oss_utils.skip_if_libtpu_version(
     lambda v: v < (0, 0, 47),
     "standalone process subgroups need libtpu 0.0.47 or newer",
@@ -611,6 +815,15 @@ class SubgroupLaunchOrderTest(seed_test_utils.MultiProcessRepeatableTest):
         layout=layout,
     )
 
+  def test_standalone_programs_do_not_reuse_world_programs(self):
+    with temporary_cache_dir(self.create_tempdir().full_path):
+      for standalone in (False, True):
+        distributed_utils.dist_run(
+            nproc_per_node=_WORLD,
+            fn=run_cached_pair_all_reduce,
+            standalone=standalone,
+        )
+
   @parameterized.named_parameters(*_LAYOUT_CASES)
   def test_uneven_group_all_to_all(self, layout: str):
     self._skip_unsupported_layout(layout)
@@ -630,6 +843,84 @@ class SubgroupLaunchOrderTest(seed_test_utils.MultiProcessRepeatableTest):
     distributed_utils.dist_run(
         nproc_per_node=_WORLD,
         fn=run_standalone_subgroup_shares_no_program,
+    )
+
+  def test_compiled_half_programs_through_the_aot_cache(self):
+    with temporary_cache_dir(self.create_tempdir().full_path):
+      for warm in (False, True):
+        distributed_utils.dist_run(
+            nproc_per_node=_WORLD,
+            fn=run_cached_half_programs,
+            warm=warm,
+        )
+
+  def test_strict_cache_saves_half_programs(self):
+    with temporary_cache_dir(self.create_tempdir().full_path):
+      distributed_utils.dist_run(
+          nproc_per_node=_WORLD,
+          fn=run_strict_cache_half_programs,
+      )
+
+  def _fresh_tier2_cache(self) -> str:
+    """Returns the name of a tier-2 cache that no other test uses."""
+    name = f"subgroup_launch_order_test_{uuid.uuid4().hex}"
+    self.addCleanup(
+        shutil.rmtree, os.path.join(_TIER2_CACHE_ROOT, name), ignore_errors=True
+    )
+    return name
+
+  @parameterized.named_parameters(
+      ("halves", "halves"), ("diagonals", "diagonals")
+  )
+  def test_group_programs_through_the_tier2_cache(self, layout: str):
+    # No tier-3 cache, whose backup compilations would count.
+    tier2_cache = self._fresh_tier2_cache()
+    with mock.patch.dict(
+        os.environ, {"TORCH_TPU_TIER2_COMPILATION_CACHE": tier2_cache}
+    ):
+      os.environ.pop("TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT", None)
+      distributed_utils.dist_run(
+          nproc_per_node=_WORLD,
+          fn=run_group_programs_from_the_caches,
+          layout=layout,
+          compilations=1,
+      )
+
+  @parameterized.named_parameters(
+      ("halves", "halves"), ("diagonals", "diagonals")
+  )
+  def test_group_programs_through_the_tier3_cache(self, layout: str):
+    tier2_cache = self._fresh_tier2_cache()
+    with mock.patch.dict(
+        os.environ,
+        {
+            "TORCH_TPU_TIER2_COMPILATION_CACHE": tier2_cache,
+            "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT": (
+                self.create_tempdir().full_path
+            ),
+            "TORCH_TPU_INTERNAL_TIER3_COMPILATION_CACHE_LOCAL_BACKUP_TASK": "0",
+        },
+    ):
+      distributed_utils.dist_run(
+          nproc_per_node=_WORLD,
+          fn=run_group_programs_from_the_caches,
+          layout=layout,
+          compilations=1,
+      )
+      # Without the tier-2 entries, the second run loads from the tier-3 cache.
+      for path in pathlib.Path(_TIER2_CACHE_ROOT, tier2_cache).glob("**/*.bin"):
+        path.unlink()
+      distributed_utils.dist_run(
+          nproc_per_node=_WORLD,
+          fn=run_group_programs_from_the_caches,
+          layout=layout,
+          compilations=0,
+      )
+
+  def test_uneven_compiled_half_programs(self):
+    distributed_utils.dist_run(
+        nproc_per_node=_WORLD,
+        fn=run_uneven_compiled_half_programs,
     )
 
 

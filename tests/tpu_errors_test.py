@@ -5085,6 +5085,30 @@ module {
           x, hx, params[:3], True, 1, 0.0, False, False, False
       )
 
+  @et.why_tpu_only("A serialized TPU executable records its devices.")
+  def test_load_serialized_executable_of_other_devices_errors(self):
+    debugs = []
+    compiled = torch.compile(
+        lambda x: x + 1.0,
+        backend="tpu",
+        options={"serializable": False, "debug_callback": debugs.append},
+    )
+    compiled(torch.ones(4, device=et.device()))
+    (artifact,) = debugs[0].compiled_executables
+    executable = artifact.compiled_executables[0]._executable
+    other_devices = [device_id + 1 for device_id in executable.device_ids()]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r".*the executable was built for devices .*, not for device \d+ of"
+            r" this process.*",
+            re.DOTALL,
+        ),
+    ):
+      tpu_torch_compile.load_serialized_executable(
+          tpu_torch_compile.serialize_executable(executable), other_devices
+      )
+
   @et.why_tpu_only("ao.reload is implemented for device=tpu.")
   def test_reload_invalid_device(self):
     _ensure_ao_ops_registered()

@@ -660,7 +660,7 @@ torch_tpu_py_test(
         "v7",
         reason = "Subgroup launch order test for TPU v7",
     ),
-    shard_count = 24,
+    shard_count = 32,
     tags = if_oss(
         ["exclusive"],
         [],
@@ -681,6 +681,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal/distributed:device_mesh",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/distributed:spmd_util",
         "//src/torch_tpu/_internal/pallas",

@@ -19,10 +19,12 @@
 
 // Utilities for compiling PyTorch to PjRt executables.
 
+#include <array>
 #include <cstdint>
 #include <future>
 #include <memory>
 #include <optional>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -42,6 +44,7 @@
 #include "xla/layout.h"
 #include "xla/pjrt/maybe_owning_mlir_module.h"
 #include "xla/pjrt/pjrt_client.h"
+#include "xla/pjrt/pjrt_device_dimensions.h"
 #include "xla/pjrt/pjrt_executable.h"
 
 namespace torch_tpu {
@@ -116,11 +119,15 @@ struct UnboundedDynamicExecutionMetadata {
 
 class LoadedExecutableWithMetadata {
  public:
+  // `device_ids` are the devices the executable was built for, in device
+  // assignment order; empty when the executable was built without a device
+  // assignment.
   static absl::StatusOr<SharedLoadedExecutableWithMetadata> MakeShared(
       absl_nonnull std::unique_ptr<xla::PjRtLoadedExecutable> executable,
       Indices argument_indices = {},
       std::optional<UnboundedDynamicExecutionMetadata>
-          unbounded_dynamic_execution_metadata = std::nullopt);
+          unbounded_dynamic_execution_metadata = std::nullopt,
+      std::vector<int64_t> device_ids = {});  // INT_VEC_OK
 
   static SharedLoadedExecutableWithMetadata WithArgumentIndices(
       const SharedLoadedExecutableWithMetadata& existing,
@@ -129,7 +136,8 @@ class LoadedExecutableWithMetadata {
         new LoadedExecutableWithMetadata(
             existing->executable_, existing->output_shapes_,
             std::move(argument_indices),
-            existing->unbounded_dynamic_execution_metadata_));
+            existing->unbounded_dynamic_execution_metadata_,
+            existing->device_ids_));
   }
 
   static SharedLoadedExecutableWithMetadata WithDynamicExecutionMetadata(
@@ -139,7 +147,8 @@ class LoadedExecutableWithMetadata {
         new LoadedExecutableWithMetadata(
             existing->executable_, existing->output_shapes_,
             existing->argument_indices_,
-            std::move(unbounded_dynamic_execution_metadata)));
+            std::move(unbounded_dynamic_execution_metadata),
+            existing->device_ids_));
   }
 
   const xla::PjRtExecutable* GetExecutable() const {
@@ -156,18 +165,24 @@ class LoadedExecutableWithMetadata {
   unbounded_dynamic_execution_metadata() const {
     return unbounded_dynamic_execution_metadata_;
   }
+  // The devices the executable was built for; see `MakeShared()`.
+  const std::vector<int64_t>& device_ids() const {  // INT_VEC_OK
+    return device_ids_;
+  }
 
  private:
   LoadedExecutableWithMetadata(
       absl_nonnull std::shared_ptr<const xla::PjRtLoadedExecutable> executable,
       std::vector<Shape> output_shapes, Indices argument_indices = {},
       std::optional<UnboundedDynamicExecutionMetadata>
-          unbounded_dynamic_execution_metadata = std::nullopt)
+          unbounded_dynamic_execution_metadata = std::nullopt,
+      std::vector<int64_t> device_ids = {})  // INT_VEC_OK
       : executable_(std::move(executable)),
         output_shapes_(std::move(output_shapes)),
         argument_indices_(std::move(argument_indices)),
         unbounded_dynamic_execution_metadata_(
-            std::move(unbounded_dynamic_execution_metadata)) {}
+            std::move(unbounded_dynamic_execution_metadata)),
+        device_ids_(std::move(device_ids)) {}
 
   absl_nonnull std::shared_ptr<const xla::PjRtLoadedExecutable> executable_;
   // Cached output shapes for the executable.
@@ -175,6 +190,7 @@ class LoadedExecutableWithMetadata {
   Indices argument_indices_;
   std::optional<UnboundedDynamicExecutionMetadata>
       unbounded_dynamic_execution_metadata_;
+  std::vector<int64_t> device_ids_;  // INT_VEC_OK
 };
 
 // Returns the devices `compile_options` build an executable for, in device
@@ -186,10 +202,53 @@ class LoadedExecutableWithMetadata {
 // proper subgroup of the devices with no device on the chip at the origin of
 // the slice runs `ragged_all_to_all` on the TensorCores: the SparseCore
 // implementation in libtpu 0.0.49 and older sends to the wrong chips from such
-// a subgroup.
+// a subgroup. A program of a subgroup that fills a box of devices off the
+// slice origin is compiled against a sub-slice of the box's shape at the slice
+// origin and loaded at the box, so its serialized form loads there in any
+// process (see `LoadSerializedExecutableForDevices()`).
 absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>> CompileAndLoad(
     xla::PjRtClient& client, xla::MaybeOwningMlirModule module,
     xla::CompileOptions options);
+
+// Loads `serialized`, the serialized form of an executable built for
+// `device_ids`. When the devices fill a box off the slice origin (see
+// `CompileAndLoad()`), loads it at the box and checks that it runs on the
+// devices of this process among `device_ids`.
+absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>>
+LoadSerializedExecutableForDevices(xla::PjRtClient& client,
+                                   std::string_view serialized,
+                                   absl::Span<const int64_t> device_ids);
+
+// Returns the options for loading the serialized form of an executable built
+// for `device_ids`: the executable of a box of devices off the slice origin
+// loads at the box's origin (see `CompileAndLoad()`).
+absl::StatusOr<xla::LoadOptions> LoadOptionsForDevices(
+    const xla::PjRtClient& client, absl::Span<const int64_t> device_ids);
+
+// The chip coordinates of a device followed by its core index on the chip.
+using DevicePosition = std::array<int64_t, 4>;
+
+// A box of chips that the devices of a subgroup fill densely, counting the
+// cores of each chip as a fourth axis.
+struct SubsliceBox {
+  // The chip of the box at the lowest coordinates.
+  xla::PjRtDeviceDimensions origin;
+  // The number of chips along each axis.
+  xla::PjRtDeviceDimensions chips;
+};
+
+// Returns the box of the devices at `positions` when they are fewer than the
+// `num_slice_devices` devices of the slice and fill a box of devices off the
+// origin of the slice, and nullopt otherwise.
+std::optional<SubsliceBox> OffOriginBoxOf(
+    absl::Span<const DevicePosition> positions, int64_t num_slice_devices);
+
+// Returns the chips of each process and the processes of the sub-slice that
+// tiles a box of `box_chips` chips, with at most `chips_per_process` chips in
+// each process.
+std::pair<xla::PjRtDeviceDimensions, xla::PjRtDeviceDimensions>
+SubsliceTilingOf(const xla::PjRtDeviceDimensions& box_chips,
+                 const xla::PjRtDeviceDimensions& chips_per_process);
 
 using LoadedExecutablePromise =
     std::promise<absl::StatusOr<SharedLoadedExecutableWithMetadata>>;

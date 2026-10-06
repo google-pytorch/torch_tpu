@@ -34,19 +34,29 @@
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/time/clock.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
+#include "csrc/common/compilation_cache.h"
 #include "csrc/common/compilation_cache_utils.h"
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/status_test_utils.h"
 #include "csrc/common/unique_file_descriptor.h"
 #include "csrc/pjrt/pjrt_state.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Location.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/OwningOpRef.h"
 
 namespace torch_tpu {
 
@@ -111,6 +121,35 @@ CompilationCacheKey MakeCacheKey(uint64_t shapeless_key, int num_dims) {
   return CompilationCacheKey(
       GraphKey(ShapelessKey(shapeless_key), dimensions_key),
       GetCompilationSpec(CompilationMode::kFastCompile).compile_options_key);
+}
+
+// Builds `main(x: f32[4]) -> x`.
+absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> BuildIdentityModule(
+    mlir::MLIRContext& context) {
+  auto module = mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
+  mlir::OpBuilder builder(&context);
+  builder.setInsertionPointToEnd(module.getBody());
+  auto tensor_type = mlir::RankedTensorType::get({4}, builder.getF32Type());
+  auto func = builder.create<mlir::func::FuncOp>(
+      mlir::UnknownLoc::get(&context), "main",
+      builder.getFunctionType({tensor_type}, {tensor_type}));
+  mlir::Block* const entry_block = func.addEntryBlock();
+  builder.setInsertionPointToStart(entry_block);
+  builder.create<mlir::func::ReturnOp>(mlir::UnknownLoc::get(&context),
+                                       entry_block->getArgument(0));
+  return mlir::OwningOpRef<mlir::ModuleOp>(module);
+}
+
+// Looks up `key` for the identity module with the default compile options.
+absl::StatusOr<SharedLoadedExecutableWithMetadata> GetOrCompileIdentity(
+    const CompilationCacheKey& key) {
+  TT_ASSIGN_OR_RETURN(
+      CompiledKernel kernel,
+      CompilationCache::GetInstance().GetOrCompile(
+          key, /*input_shapes=*/{}, /*output_shapes=*/{}, BuildIdentityModule,
+          GetCompilationSpec(CompilationMode::kFastCompile)
+              .xla_compile_options));
+  return kernel.fixed_shape_kernel.get();
 }
 
 // A test environment that initializes the PjRt client, which is required for
@@ -326,12 +365,41 @@ TEST_F(Tier2CacheTest, ConcurrentWritesDoNotCorruptCacheFile) {
   }
 }
 
+// An executable loaded from the tier-2 cache records the devices it was built
+// for, like one compiled in this process: a pickle of it carries them, and
+// loading the pickle checks them against the devices of the process.
+TEST_F(Tier2CacheTest, ExecutableLoadedFromCacheRecordsItsDevices) {
+  const std::vector<int64_t> device_ids = DeviceIdsOf(  // INT_VEC_OK
+      *GetCompilationSpec(CompilationMode::kFastCompile).xla_compile_options);
+  ASSERT_FALSE(device_ids.empty());
+  const auto key = MakeCacheKey(/*shapeless_key=*/789, /*num_dims=*/0);
+
+  // The first lookup compiles the module and writes its tier-2 entry. The
+  // restart waits for the compilation threads, which finish the write first.
+  CompilationCache::Restart();
+  TT_ASSERT_OK_AND_ASSIGN(const SharedLoadedExecutableWithMetadata compiled,
+                          GetOrCompileIdentity(key));
+  EXPECT_EQ(compiled->device_ids(), device_ids);
+  CompilationCache::Restart();
+
+  // With an empty in-memory cache, the lookup loads the tier-2 entry.
+  TT_ASSERT_OK_AND_ASSIGN(const SharedLoadedExecutableWithMetadata loaded,
+                          GetOrCompileIdentity(key));
+  const PerfStats stats = CompilationCache::GetInstance().GetCacheStats();
+  EXPECT_EQ(stats.num_compilations, 0);
+  ASSERT_EQ(stats.per_entry_stats.size(), 1);
+  EXPECT_TRUE(stats.per_entry_stats[0].tier2.has_value());
+  EXPECT_EQ(loaded->device_ids(), device_ids);
+}
+
 // GetFromTier2Cache() should return a not-found error if the cache file does
 // not exist.
 TEST_F(Tier2CacheTest, GetFromTier2CacheFailsIfCacheFileDoesNotExist) {
   const auto key = MakeCacheKey(/*shapeless_key=*/123, /*num_dims=*/0);
   Tier2CacheEntryStats tier2_stats;
-  EXPECT_EQ(GetFromTier2Cache(key, absl::Now(), tier2_stats).status().code(),
+  EXPECT_EQ(GetFromTier2Cache(key, absl::Now(), tier2_stats, /*device_ids=*/{})
+                .status()
+                .code(),
             error::kNotFound);
 }
 
@@ -347,7 +415,9 @@ TEST_F(Tier2CacheTest, GetFromTier2CacheFailsIfCacheFileIsInvalid) {
 
   Tier2CacheEntryStats tier2_stats;
   const auto status_code =
-      GetFromTier2Cache(key, absl::Now(), tier2_stats).status().code();
+      GetFromTier2Cache(key, absl::Now(), tier2_stats, /*device_ids=*/{})
+          .status()
+          .code();
 
   // The error should not be kNotFound, because the file exists.
   EXPECT_NE(status_code, error::kOk);
