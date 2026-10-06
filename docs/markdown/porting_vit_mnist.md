@@ -26,7 +26,7 @@ inference on a test image.
 
 These instructions assume you have access to a TPU environment with TorchTPU
 installed. For setup instructions, see
-[Get Started with TorchTPU](?file=get_started_tpu.py).
+[Get Started with TorchTPU](./get_started_tpu.md).
 
 ## 1. Define the model architecture
 

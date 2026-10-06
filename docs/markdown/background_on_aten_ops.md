@@ -46,7 +46,7 @@ addmm: "f32[32, 64][64, 1]cpu" = torch.ops.aten.addmm.default(primals_2, primals
 You now know how to view the ATen ops that PyTorch creates internally.
 
 **Exercise for the reader**: Apply the same logging as in the sample below to
-**[extending_modules_and_functions_via_composition.py](?file=extending_modules_and_functions_via_composition.py)**
+**[extending_modules_and_functions_via_composition.py](./extending_modules_and_functions_via_composition.md)**
 and figure out which ATen ops correspond to the bit operations.
 
 ```python
@@ -60,7 +60,7 @@ and figure out which ATen ops correspond to the bit operations.
 ```
 
 **Exercise for the reader**: Apply the same logging technique to
-**[customizing_autograd_via_torch_autograd_function.py](?file=customizing_autograd_via_torch_autograd_function.py)**
+**[customizing_autograd_via_torch_autograd_function.py](./customizing_autograd_via_torch_autograd_function.md)**
 and figure out which ATen ops correspond to `torch.where` and the `>` and `<=`
 operator.
 

@@ -42,7 +42,7 @@ a solution to implement some custom ops.
 
 As a toy problem, suppose you want to implement via JAX a custom op that
 performs a quantized sum for the one-bit format developed in
-**[extending_modules_and_functions_via_composition.py](?file=extending_modules_and_functions_via_composition.py)**.
+**[extending_modules_and_functions_via_composition.py](./extending_modules_and_functions_via_composition.md)**.
 You decide to take advantage of popcount as a "sum" function for the one bit
 format. The sum of a tensor in this quantization format can be inferred from the
 number of bits set *without conversion to a native PyTorch floating point

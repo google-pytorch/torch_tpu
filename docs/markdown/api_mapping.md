@@ -12,13 +12,15 @@ Use this reference to quickly translate CUDA-based code to TorchTPU.
 
 ## **Core Device Queries**
 
-CUDA API                             | TPU API                                        | Description
-:----------------------------------- | :--------------------------------------------- | :----------
-`torch.cuda.is_available()`          | `torch.accelerator.is_available()`             | Checks if the TPU backend is ready.
-`torch.cuda.device_count()`          | `torch.accelerator.device_count()`             | Number of devices assigned to the process.
-`torch.cuda.current_device()`        | `torch.accelerator.current_device_index()`     | Returns the active core index.
-`torch.cuda.get_device_properties()` | *(Implicit in `torch.device("tpu")`)*          | Hardware metadata via PjRt logs.
-`torch.cuda.set_device(rank)`        | Handled automatically by `torch.device("tpu")` | Backend init is automatic.
+CUDA API                             | TPU API                                    | Description
+:----------------------------------- | :----------------------------------------- | :----------
+`torch.cuda.is_available()`          | `torch.accelerator.is_available()`         | Checks if the TPU backend is ready.
+`torch.cuda.is_initialized()`        | `torch.tpu.is_initialized()`               | Checks if PyTorch's TPU state has been initialized.
+`torch.cuda.device_count()`          | `torch.accelerator.device_count()`         | Number of devices assigned to the process.
+`torch.cuda.current_device()`        | `torch.accelerator.current_device_index()` | Returns the active core index.
+`torch.cuda.get_device_name()`       | `torch.tpu.get_device_name()`              | Returns human-readable model name of the attached TPU.
+`torch.cuda.get_device_properties()` | `torch.tpu.get_device_properties()`        | Returns static device properties (name, memory, cores).
+`torch.cuda.set_device(rank)`        | `torch.accelerator.set_device_index(rank)` | Validates the active device index for the current process.
 
 ```python
 import torch
@@ -26,21 +28,41 @@ import torch
 # Initialize hardware
 device = torch.device("tpu")
 
-print(f"torch.accelerator.is_available():    {torch.accelerator.is_available()}")
+print(
+    f"torch.accelerator.is_available():    {torch.accelerator.is_available()}"
+)
 print(f"torch.accelerator.is_available(): {torch.accelerator.is_available()}")
-print(f"torch.accelerator.device_count():    {torch.accelerator.device_count()}")
-print(f"torch.accelerator.current_device_index():  {torch.accelerator.current_device_index()}")
+print(
+    f"torch.accelerator.device_count():    {torch.accelerator.device_count()}"
+)
+print(
+    "torch.accelerator.current_device_index(): "
+    f" {torch.accelerator.current_device_index()}"
+)
 ```
 
 ## **Random Number Generation**
 
-CUDA API                           | TPU API                           | Description
-:--------------------------------- | :-------------------------------- | :----------
-`torch.cuda.manual_seed(seed)`     | `torch.tpu.manual_seed(seed)`     | Seeds the current core's RNG.
-`torch.cuda.manual_seed_all(seed)` | `torch.tpu.manual_seed_all(seed)` | Seeds all TPU cores (for distributed).
-`torch.cuda.initial_seed()`        | `torch.tpu.initial_seed()`        | Returns initial random seed of current TPU device.
-`torch.cuda.get_rng_state()`       | `torch.tpu.get_rng_state()`       | Returns RNG state tensor for the current device.
-`torch.cuda.set_rng_state(state)`  | `torch.tpu.set_rng_state(state)`  | Sets RNG state tensor for the current device.
+| CUDA API                           | TPU API                                    | Description                 |
+| :--------------------------------- | :----------------------------------------- | :-------------------------- |
+| `torch.cuda.manual_seed(seed)`     | `torch.tpu.manual_seed(seed)`              | Seeds the current core's    |
+:                                    :                                            : RNG.                        :
+| `torch.cuda.manual_seed_all(seed)` | `torch.tpu.manual_seed_all(seed)`          | Seeds all TPU cores (for    |
+:                                    :                                            : distributed).               :
+| `torch.cuda.initial_seed()`        | `torch.accelerator.random.initial_seed()`  | Returns initial random seed |
+:                                    :                                            : of current TPU device.      :
+:                                    :                                            : Requires PyTorch >= 2.13;   :
+:                                    :                                            : use                         :
+:                                    :                                            : `torch.tpu.initial_seed()`  :
+:                                    :                                            : on older versions.          :
+| `torch.cuda.get_rng_state()`       | `torch.accelerator.random.get_rng_state()` | Returns RNG state tensor    |
+:                                    :                                            : for the current device.     :
+:                                    :                                            : Requires PyTorch >= 2.13;   :
+:                                    :                                            : use                         :
+:                                    :                                            : `torch.tpu.get_rng_state()` :
+:                                    :                                            : on older versions.          :
+| `torch.cuda.set_rng_state(state)`  | `torch.tpu.set_rng_state(state)`           | Sets RNG state tensor for   |
+:                                    :                                            : the current device.         :
 
 ```python
 # Set the seed across all cores
@@ -65,14 +87,14 @@ print(f"AMP supported dtypes: {supported_dtypes}")
 
 ## **Streams and Events**
 
-The `torch.tpu` module provides `Stream` and `Event` objects to maintain API
-parity with CUDA.
+For streams and events, prefer standard `torch.accelerator` APIs. Use
+`torch.tpu` only for TPU-specific features.
 
-CUDA API                      | TPU API                              | Status
-:---------------------------- | :----------------------------------- | :-----
-`torch.cuda.current_stream()` | `torch.accelerator.current_stream()` | **Placeholder (dummy)**
-`torch.cuda.default_stream()` | `torch.tpu.default_stream()`         | **Placeholder (dummy)**
-`torch.cuda.set_stream()`     | `torch.accelerator.set_stream()`     | **Placeholder (dummy)**
+CUDA API                      | TPU / Accelerator API                | Description
+:---------------------------- | :----------------------------------- | :----------
+`torch.cuda.current_stream()` | `torch.accelerator.current_stream()` | Returns the active stream.
+`torch.cuda.set_stream()`     | `torch.accelerator.set_stream()`     | Sets the active stream.
+`torch.cuda.default_stream()` | `torch.tpu.default_stream()`         | Returns the default stream.
 
 > [!NOTE] In TorchTPU's deferred execution model, the XLA compiler and PjRt
 > runtime manage execution ordering and hardware concurrency automatically.

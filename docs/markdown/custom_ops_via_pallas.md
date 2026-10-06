@@ -10,7 +10,7 @@ This notebook is the advanced continuation of our Pallas integration series.
 
 Before diving into this notebook, you should be familiar with the basic
 integration patterns covered in
-**[Custom Kernels with Pallas](?file=custom_pallas_kernel.py)** (including
+**[Custom Kernels with Pallas](./custom_pallas_kernel.md)** (including
 `pallas.jax_op` wrappers, static shapes, and compiling/autograd registration).
 
 While the introductory guide focused on the syntax of wrapping simple math (like
@@ -38,7 +38,7 @@ quantizes them down to fp8 blockwise (with an f32 scaling factor per block), and
 packs them to one float per byte.
 
 In our previous composition design
-(**[extending_modules_and_functions_via_composition.py](?file=extending_modules_and_functions_via_composition.py)**),
+(**[extending_modules_and_functions_via_composition.py](./extending_modules_and_functions_via_composition.md)**),
 we created two separate passes: one for binarization (quantize) and one for
 packing (pack). Saving the binarized outputs to High-Bandwidth Memory (HBM) only
 to read them back immediately for packing creates a severe memory bottleneck.
@@ -52,17 +52,16 @@ Since writing kernels is about performance, you want to understand the
 performance of an unoptimized baseline first. This baseline also acts as a test
 of numerical correctness.
 
-The unoptimized baseline in Python is implemented in
-**[quant.py](?file=quant.py)**. In a realistic example, you would profile the
-baseline first. For this case study, we assume you have done so and decided to
-write a Pallas kernel.
+The unoptimized baseline in Python is implemented in **[quant.py](./quant.md)**.
+In a realistic example, you would profile the baseline first. For this case
+study, we assume you have done so and decided to write a Pallas kernel.
 
 ## 2. Pallas Implementation
 
 Look at the implementation below. Notice that:
 
 *   The wrapper around the JAX function is similar to the quantized sum example
-    (**[quantized_sum.py](?file=quantized_sum.py)**), using
+    (**[quantized_sum.py](./quantized_sum.md)**), using
     `torch.tpu.pallas.jax_op`.
 *   The JAX code itself calls into Pallas to implement the register-level
     packing kernel.

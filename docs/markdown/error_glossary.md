@@ -227,7 +227,8 @@ print("PyTorch Profiler Report:")
 print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=10))
 
 print(
-    "💡 Look for aten::copy_ or aten::_to_copy — those indicate CPU fallbacks."
+    "💡 Look for aten::copy_ or aten::_to_copy — those indicate CPU"
+    " fallbacks."
 )
 ```
 
