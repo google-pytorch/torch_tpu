@@ -119,7 +119,7 @@ mlir::MlirOp BuildIndices(mlir::MlirOp input_op, mlir::MlirOp min_op,
   mlir::MlirOp mul_bins = stablehlo::Mul(numerator, bins_op);
   mlir::MlirOp div = stablehlo::Div(mul_bins, denominator);
   if (input_op_type.getElementType().isInteger()) {
-    return div;
+    return stablehlo::ConvertElementType(div, mlir::ElementType::I32);
   }
   mlir::MlirOp indices = stablehlo::Floor(div);
   return stablehlo::ConvertElementType(indices, mlir::ElementType::I32);
@@ -130,7 +130,7 @@ mlir::MlirOp BuildClampedIndices(mlir::MlirOp indices, int64_t bins,
                                  mlir::MlirBuilder& builder) {
   // clamped_indices = clamp(indices, 0, bins - 1)
   const mlir::RankedTensorType indices_type = GetTensorTypeOrDie(indices);
-  mlir::MlirOp zero_indices = MakeConstant(builder, 0.0, indices_type);
+  mlir::MlirOp zero_indices = MakeConstant(builder, 0, indices_type);
   mlir::MlirOp bins_minus_1_indices =
       MakeConstant(builder, bins - 1, indices_type);
   return stablehlo::Clamp(zero_indices, indices, bins_minus_1_indices);
@@ -221,22 +221,30 @@ absl::StatusOr<mlir::MlirOp> BuildHistcShlo(mlir::MlirOp input_op, int64_t bins,
                                             mlir::MlirOp max_op) {
   mlir::MlirBuilder& builder = input_op.getBuilder();
   mlir::Type input_dtype = GetTensorTypeOrDie(input_op).getElementType();
+  mlir::MlirOp compute_input_op = input_op;
+  if (input_dtype.isInteger()) {
+    compute_input_op =
+        stablehlo::ConvertElementType(input_op, mlir::ElementType::I64);
+    min_op = stablehlo::ConvertElementType(min_op, mlir::ElementType::I64);
+    max_op = stablehlo::ConvertElementType(max_op, mlir::ElementType::I64);
+  }
 
   // Broadcast min and max to the shape of the input tensor.
-  min_op =
-      BuildBroadcastToShape(min_op, GetTensorTypeOrDie(input_op).getShape());
-  max_op =
-      BuildBroadcastToShape(max_op, GetTensorTypeOrDie(input_op).getShape());
+  min_op = BuildBroadcastToShape(
+      min_op, GetTensorTypeOrDie(compute_input_op).getShape());
+  max_op = BuildBroadcastToShape(
+      max_op, GetTensorTypeOrDie(compute_input_op).getShape());
 
   // Compute bin indices:
   //   indices = floor((input - min) * bins / (max - min))
-  mlir::MlirOp indices = BuildIndices(input_op, min_op, max_op, bins, builder);
+  mlir::MlirOp indices =
+      BuildIndices(compute_input_op, min_op, max_op, bins, builder);
   // Then clamp indices to [0, bins - 1].
   mlir::MlirOp clamped_indices = BuildClampedIndices(indices, bins, builder);
 
   // Values outside of [min_op, max_op] are ignored, which mirrors the PyTorch
   // implementation.
-  mlir::MlirOp in_range = BuildInRange(input_op, min_op, max_op);
+  mlir::MlirOp in_range = BuildInRange(compute_input_op, min_op, max_op);
   // Scatter-add to accumulate counts.
   mlir::MlirOp hist =
       BuildScatterAdd(clamped_indices, in_range, bins, input_dtype, builder);

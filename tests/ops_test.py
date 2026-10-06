@@ -2416,9 +2416,6 @@ class TestOps(op_testing.OpInfoTestBase):
     )
 
   def test_histc(self):
-    # TODO: b/487653210 - skipping `int8` and `uint8` dtypes due to incorrect
-    # results. Test those dtypes once the bug is fixed.
-
     self.do_test_op(
         "histc",
         # NOTE: Exclude integral dtypes on CPU, because histc() is not
@@ -2428,11 +2425,7 @@ class TestOps(op_testing.OpInfoTestBase):
         # TODO: GPU does not support `bool` and `float16` dtypes.
         exclude_dtypes={
             "cpu": INTEGRAL_DTYPES + (torch.float16, torch.bfloat16),
-            "gpu": (
-                torch.int8,
-                torch.uint8,
-                torch.float16,
-            ),
+            "gpu": (torch.float16,),
         },
         # TODO(b/542534758): `histc()` does not support dynamism.
         check_dynamism=False,
@@ -2448,8 +2441,6 @@ class TestOps(op_testing.OpInfoTestBase):
             "cpu": INTEGRAL_DTYPES + (torch.bfloat16,),
             "gpu": (
                 torch.bool,
-                torch.int8,
-                torch.uint8,
                 torch.float16,
             ),
         },

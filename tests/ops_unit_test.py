@@ -3824,6 +3824,36 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         tpu_result = torch.histc(tpu_input, bins=8, min=0, max=7)
         self.assertEqual(tpu_result, torch.tensor(int_result, dtype=int_dtype))
 
+  @parameterized.named_parameters(
+      (
+          "int8",
+          [-7, 9, -7, -9, 6],
+          torch.int8,
+          10,
+          -10,
+          10,
+          [1, 2, 0, 0, 0, 0, 0, 0, 1, 1],
+      ),
+      (
+          "uint8",
+          [1, 9, 1, 0, 6],
+          torch.uint8,
+          10,
+          0,
+          10,
+          [1, 2, 0, 0, 0, 0, 1, 0, 0, 1],
+      ),
+  )
+  def test_histc_int8_uint8(
+      self, input_data, dtype, bins, min_val, max_val, expected
+  ):
+    # Regression test for b/487653210: histc returns incorrect output on int8
+    # and uint8 dtypes.
+    tpu_input = torch.tensor(input_data, dtype=dtype, device="tpu")
+    tpu_result = torch.histc(tpu_input, bins=bins, min=min_val, max=max_val)
+    expected_tensor = torch.tensor(expected, dtype=dtype, device="tpu")
+    self.assertEqual(tpu_result, expected_tensor)
+
   def test_conj_physical(self):
     def test_out(device):
       x = torch.tensor([[1 + 1j, 2 - 2j], [3 + 3j, 4 - 4j]]).to(device=device)
