@@ -17,6 +17,7 @@
 import contextlib
 from typing import Generator
 
+import torch
 from torch_tpu._internal.precision import precision_impl
 from torch_tpu._internal.utils import annotations
 
@@ -69,6 +70,19 @@ def precision(mode: Precision) -> Generator[None, None, None]:  # pyrefly: ignor
   Yields:
       None
   """
+
+  # TorchDynamo graph-breaks on the opaque pybind11 calls below. Use an
+  # explicit break to provide users an actionable message. It'll trigger eager
+  # fallback in default `torch.compile` and raise an exception when using
+  # `fullgraph=True`. No-op in eager mode.
+  # TODO(b/568859422): remove once precision is traceable.
+  torch._dynamo.graph_break(
+      msg=(
+          "`precision` context manager is not yet traceable by TorchDynamo, "
+          "so the surrounding frame will fall back to eager execution. "
+          "We plan to make it traceable in future releases."
+      )
+  )
 
   if mode not in _VALID_PRECISIONS:
     raise ValueError(

@@ -62,27 +62,22 @@ class ContextManagerGraphBreakTest(seed_test_utils.RepeatableTest):
     # TorchDynamo cannot symbolically execute the opaque pybind11 calls inside
     # TorchTPU context managers. Consequently, it abandons the whole frame and
     # runs it eagerly: zero graphs captured.
-    # TODO(b/537815330): update graph count to 1 after the fix.
+    # TODO(b/568859422): update graph count to 1 after the fix.
     self.assertEqual(explanation.graph_count, 0)
 
-  def test_torch_tpu_ctx_trace_fullgraph_raises(self):
-    """Test that a TorchTPU context manager raises tracing exceptions."""
-    # With `fullgraph=True`, a graph break becomes a hard compile error instead
-    # of a silent eager fallback.
-    compiled = torch.compile(
-        _torch_tpu_ctx_matmul, backend="eager", fullgraph=True
-    )
-    # TODO(b/537815330): remove the expected exception after TorchTPU context
-    # managers become traceable.
-    with self.assertRaises(torch._dynamo.exc.Unsupported):
-      compiled(torch.randn(2, 2), torch.randn(2, 2))
+  def test_torch_tpu_ctx_eager_fallback_in_default_torch_compile(self):
+    """Test that a TorchTPU context manager falls back to eager execution."""
+    compiled = torch.compile(_torch_tpu_ctx_matmul, backend="tpu")
+    mat1, mat2 = torch.randn(2, 2), torch.randn(2, 2)
+    with precision.precision(precision.Precision.HIGHEST):
+      utils.assert_close(compiled(mat1, mat2), mat1 @ mat2)
 
   def test_torch_native_ctx_compiles_without_graph_breaks(self):
     """Test that a PyTorch-native context manager compiles cleanly."""
     compiled = torch.compile(
         _torch_native_ctx_matmul, backend="eager", fullgraph=True
     )
-    mat1, mat2 = torch.ones(2, 2), torch.ones(2, 2)
+    mat1, mat2 = torch.randn(2, 2), torch.randn(2, 2)
     utils.assert_close(compiled(mat1, mat2), mat1 @ mat2)
 
     explanation = torch._dynamo.explain(_torch_native_ctx_matmul)(

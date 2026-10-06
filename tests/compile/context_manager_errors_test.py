@@ -18,6 +18,7 @@ from absl.testing import absltest
 import torch
 from torch_tpu._internal import compiler_options
 from torch_tpu._internal import execution_mode
+from torch_tpu._internal import precision
 from torch_tpu._internal import profiler
 from torch_tpu._internal.device_utils import annotations
 from torch_tpu._internal.export import export
@@ -91,6 +92,22 @@ class ContextManagerErrorsTest(seed_test_utils.RepeatableTest):
         return x.abs()
 
     with self.assertRaisesRegex(AssertionError, _ASSERTION_ERROR_REGEX):
+      model(torch.randn(2, 2))
+
+  def test_precision_raises_in_torch_compile_region_when_fullgraph(self):
+    # With `fullgraph=True`, a graph break becomes a hard compile error instead
+    # of a silent eager fallback.
+    @torch.compile(backend="tpu", fullgraph=True)
+    def model(x: torch.Tensor) -> torch.Tensor:
+      with precision.precision(precision.Precision.HIGHEST):
+        return x.abs()
+
+    # TODO(b/568859422): remove the expected exception after `precision` context
+    # manager becomes traceable.
+    with self.assertRaisesRegex(
+        torch._dynamo.exc.Unsupported,
+        r"`precision` context manager is not yet traceable",
+    ):
       model(torch.randn(2, 2))
 
 

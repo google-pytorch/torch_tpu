@@ -457,6 +457,7 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/device_utils:annotations",
         "//src/torch_tpu/_internal/execution_mode",
         "//src/torch_tpu/_internal/export",
+        "//src/torch_tpu/_internal/precision",
         "//src/torch_tpu/_internal/profiler",
         "//tests:seed_test_utils",
     ],

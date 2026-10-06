@@ -47,6 +47,7 @@ torch_tpu_py_library(
     allow_multiple_srcs = True,
     deps = [
         ":precision_impl",
+        "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/utils:annotations",
     ],
 )
