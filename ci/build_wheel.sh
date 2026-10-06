@@ -25,8 +25,21 @@ set -exu -o history -o allexport
 
 echo "===> Starting Python wheel build in Kokoro..."
 
-# Prepare wheel version string with metadata date suffix (similar to GitHub)
-WHEEL_VERSION_EXTRAS="${WHEEL_VERSION_EXTRAS:-.dev$(date +%Y%m%d%H%M%S)}"
+# Set WHEEL_CONFIG=--config=wheel_release for release-channel wheels.
+WHEEL_CONFIG="${WHEEL_CONFIG:---config=wheel_nightly}"
+
+# Release builds use WHEEL_VERSION_EXTRAS exactly as the caller set it, so an
+# explicitly empty value yields the plain pyproject version (e.g. 0.1.1). The
+# Kokoro wrapper decides the suffix for release candidates: it runs this script
+# once with an empty suffix and once with the rcN it parsed from the Louhi
+# release name (e.g. 0.1.1rc0). Other builds get a .dev suffix.
+if [[ "${WHEEL_CONFIG}" == "--config=wheel_release" ]]; then
+  WHEEL_VERSION_EXTRAS="${WHEEL_VERSION_EXTRAS-}"
+  release_args=(--release)
+else
+  WHEEL_VERSION_EXTRAS="${WHEEL_VERSION_EXTRAS:-.dev$(date +%Y%m%d%H%M%S)}"
+  release_args=()
+fi
 export WHEEL_VERSION_EXTRAS
 echo "WHEEL_VERSION_EXTRAS: ${WHEEL_VERSION_EXTRAS}"
 
@@ -46,8 +59,6 @@ echo "===> Compiling wheel via Bazel inside ml-build container..."
 # We map the checked out directory into /workspace and run the shared build
 # script for every supported Python version.
 # RBE is disabled because Kokoro doesn't yet have permissions to run RBE.
-# Set WHEEL_CONFIG=--config=wheel_release for release-channel wheels.
-WHEEL_CONFIG="${WHEEL_CONFIG:---config=wheel_nightly}"
 
 mkdir -p dist
 docker run --rm \
@@ -55,7 +66,8 @@ docker run --rm \
   -v "$(pwd):/workspace" \
   -w "/workspace" \
   "${CONTAINER_IMAGE}" \
-  ci/build_wheels.sh --output-dir /workspace/dist 3.11 3.12 3.13 3.14 -- "${WHEEL_CONFIG}" --config=no_rbe
+  ci/build_wheels.sh "${release_args[@]}" \
+    --output-dir /workspace/dist 3.11 3.12 3.13 3.14 -- "${WHEEL_CONFIG}" --config=no_rbe
 
 # Move the built wheels from local dist back to Kokoro artifacts directory
 if [[ -d dist && -n "$(ls -A dist/*.whl 2>/dev/null)" ]]; then
