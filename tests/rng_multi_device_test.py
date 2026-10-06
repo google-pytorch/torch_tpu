@@ -30,7 +30,7 @@ _BACKEND = flags.DEFINE_string(
 )
 
 
-def _fail_on_tpu(reason: str):
+def _fails_on_tpu(reason: str):
   """Decorator that asserts the test fails on TPU."""
 
   def decorator(func):
@@ -102,16 +102,18 @@ class SingleProcessMultiDeviceTest(_BaseRngTest):
   to Python GIL contention (PyTorch recommends 1 process per GPU via DDP;
   see
   https://pytorch.org/docs/stable/notes/cuda.html#use-nn-parallel-distributeddataparallel-instead-of-multiprocessing-or-nn-dataparallel)
-  and is not planned to be supported on TPU due to the PJRT 1-process-per-chip
-  runtime architecture.
+  and is a current TPU runtime limitation planned to be addressed (see
+  b/555281188).
   """
 
   def setUp(self):
     super().setUp()
     self.device_idx = torch.accelerator.current_device_index()
 
-  @_fail_on_tpu(
-      "TPU backend does not support querying non-current device RNG state."
+  @_fails_on_tpu(
+      "TODO(b/555281188): Querying non-current device RNG state is not yet"
+      " supported on TPU due to single-process multi-device runtime"
+      " limitations."
   )
   def test_torch_manual_seed_sets_all_device_seeds(self):
     """Verifies torch.manual_seed seeds all devices."""
@@ -128,8 +130,10 @@ class SingleProcessMultiDeviceTest(_BaseRngTest):
       self.assertEqual(self._get_device_rng_seed(i), 42)
       self.assertEqual(self._get_device_rng_offset(i), 0)
 
-  @_fail_on_tpu(
-      "TPU backend does not support querying non-current device RNG state."
+  @_fails_on_tpu(
+      "TODO(b/555281188): Querying non-current device RNG state is not yet"
+      " supported on TPU due to single-process multi-device runtime"
+      " limitations."
   )
   def test_backend_manual_seed_does_not_change_other_devices(self):
     """Verifies backend_mod.manual_seed does not modify other devices."""
@@ -163,8 +167,10 @@ class SingleProcessMultiDeviceTest(_BaseRngTest):
           msg=f"Device {i} offset mismatch",
       )
 
-  @_fail_on_tpu(
-      "TPU backend does not support querying non-current device RNG state."
+  @_fails_on_tpu(
+      "TODO(b/555281188): Querying non-current device RNG state is not yet"
+      " supported on TPU due to single-process multi-device runtime"
+      " limitations."
   )
   def test_backend_manual_seed_all_sets_all_device_seeds(self):
     """Verifies backend_mod.manual_seed_all seeds all devices."""
@@ -189,8 +195,10 @@ class SingleProcessMultiDeviceTest(_BaseRngTest):
           msg=f"Device {i} offset mismatch",
       )
 
-  @_fail_on_tpu(
-      "TPU backend does not support querying non-current device RNG state."
+  @_fails_on_tpu(
+      "TODO(b/555281188): Querying non-current device RNG state is not yet"
+      " supported on TPU due to single-process multi-device runtime"
+      " limitations."
   )
   def test_torch_seed_sets_all_device_seeds(self):
     """Verifies torch.seed seeds all devices."""
@@ -220,8 +228,10 @@ class SingleProcessMultiDeviceTest(_BaseRngTest):
           msg=f"Device {i} offset mismatch",
       )
 
-  @_fail_on_tpu(
-      "TPU backend does not support get_rng_state_all / set_rng_state_all."
+  @_fails_on_tpu(
+      "TODO(b/555281188): get_rng_state_all / set_rng_state_all is not yet"
+      " supported on TPU due to single-process multi-device runtime"
+      " limitations."
   )
   def test_backend_get_set_rng_state_all(self):
     """Verifies get/set_rng_state_all restore all device states."""
@@ -264,7 +274,7 @@ class SingleProcessMultiDeviceTest(_BaseRngTest):
   # TODO(b/570289109): Multi-threaded eager execution across devices is not
   # thread-safe on TPU due to race conditions in eager graph compilation
   # traversal.
-  @_fail_on_tpu(
+  @_fails_on_tpu(
       "TPU backend does not support querying or executing on non-current"
       " device in a single process."
   )
