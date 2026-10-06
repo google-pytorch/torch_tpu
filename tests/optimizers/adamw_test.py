@@ -16,10 +16,10 @@
 
 from absl.testing import absltest
 import torch
+from torch.tpu import optimizers
 from torch_tpu._internal.utils import test_utils as assert_utils
-from torch_tpu.extras.optimizers import adamw
 from tests import seed_test_utils
-from tests.extras.optimizers import test_utils
+from tests.optimizers import test_utils
 
 
 class AdamWOptimizersTest(seed_test_utils.RepeatableTest):
@@ -88,19 +88,19 @@ class AdamWOptimizersTest(seed_test_utils.RepeatableTest):
       )
 
   def test_reference_adamw_step(self):
-    opt = adamw.ReferenceAdamw(
+    opt = optimizers.ReferenceAdamw(
         lr=1e-3, weight_decay=1e-2, use_bfloat16_moments=False
     )
     self._validate_opt_step(opt, lr=1e-3, weight_decay=1e-2)
 
   def test_torch_adamw_step(self):
-    opt = adamw.TorchAdamw(
+    opt = optimizers.TorchAdamw(
         lr=1e-3, weight_decay=1e-2, use_bfloat16_moments=False
     )
     self._validate_opt_step(opt, lr=1e-3, weight_decay=1e-2)
 
   def test_torch_adamw_custom_kwargs(self):
-    opt = adamw.TorchAdamw(
+    opt = optimizers.TorchAdamw(
         lr=1e-3,
         weight_decay=1e-2,
         use_bfloat16_moments=False,
@@ -112,7 +112,7 @@ class AdamWOptimizersTest(seed_test_utils.RepeatableTest):
     self._validate_opt_step(opt, lr=1e-3, weight_decay=1e-2)
 
   def test_torch_adamw_compiled_linear_train_step(self):
-    opt = adamw.TorchAdamw(
+    opt = optimizers.TorchAdamw(
         lr=1e-3, weight_decay=1e-2, use_bfloat16_moments=False
     )
     test_utils.validate_compiled_linear_train_step(self, opt, self.device)

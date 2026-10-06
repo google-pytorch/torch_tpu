@@ -256,6 +256,30 @@ _PUBLIC_MODULES: Mapping[str, ModuleSpec] = {
         },
         doc="Public custom ops API for TorchTPU (`torch.tpu.ops`).",
     ),
+    "torch.tpu.optimizers": ModuleSpec(
+        exports={
+            # go/keep-sorted start
+            "AdamW": "torch_tpu._internal.optimizers.adamw:AdamW",
+            "Muon": "torch_tpu._internal.optimizers.muon:Muon",
+            "Optimizer": "torch_tpu._internal.optimizers.optim:Optimizer",
+            "ReferenceAdamw": (
+                "torch_tpu._internal.optimizers.adamw:ReferenceAdamw"
+            ),
+            "ReferenceMuon": (
+                "torch_tpu._internal.optimizers.muon:ReferenceMuon"
+            ),
+            "ReferenceSgd": "torch_tpu._internal.optimizers.sgd:ReferenceSgd",
+            "SGD": "torch_tpu._internal.optimizers.sgd:SGD",
+            "SingleTraceTrainer": (
+                "torch_tpu._internal.optimizers.single_trace_trainer:SingleTraceTrainer"
+            ),
+            "TorchAdamw": "torch_tpu._internal.optimizers.adamw:TorchAdamw",
+            "TorchMuon": "torch_tpu._internal.optimizers.muon:TorchMuon",
+            "TorchSgd": "torch_tpu._internal.optimizers.sgd:TorchSgd",
+            # go/keep-sorted end
+        },
+        doc="Public optimizers API for TorchTPU (`torch.tpu.optimizers`).",
+    ),
     "torch.tpu.pallas": ModuleSpec(
         exports={
             # go/keep-sorted start

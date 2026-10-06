@@ -20,9 +20,16 @@ import math
 from typing import Any
 
 import torch
-import torch.optim._muon as torch_muon
+import torch.optim._muon as _torch_muon
 from torch.utils import _pytree
-from torch_tpu.extras.optimizers import optim
+from torch_tpu._internal.optimizers import optim as _optim
+from torch_tpu._internal.utils import annotations as _annotations
+
+__all__ = [
+    "Muon",
+    "ReferenceMuon",
+    "TorchMuon",
+]
 
 
 def _zeropower_via_newtonschulz(
@@ -72,7 +79,8 @@ def _adjust_lr(
   return lr * adjusted_ratio
 
 
-class Muon(optim.Optimizer):
+@_annotations.experimental("Muon optimizer is experimental.")
+class Muon(_optim.Optimizer):
   """Base class for Muon optimizer variants with nested ParamGroup."""
 
   DEFAULT_A: float = 3.4445
@@ -160,6 +168,7 @@ class Muon(optim.Optimizer):
     pass
 
 
+@_annotations.experimental("ReferenceMuon optimizer is experimental.")
 class ReferenceMuon(Muon):
   """Reference pure PyTorch implementation of Muon."""
 
@@ -198,6 +207,7 @@ class ReferenceMuon(Muon):
     return param_group
 
 
+@_annotations.experimental("TorchMuon optimizer is experimental.")
 class TorchMuon(Muon):
   """Torch Muon implementation calling torch.optim._muon.muon directly."""
 
@@ -243,7 +253,7 @@ class TorchMuon(Muon):
     m_list = [param_group.opt_state_m[k] for k in param_keys]
     step_list = [param_group.opt_steps[k] for k in param_keys]
 
-    torch_muon.muon(
+    _torch_muon.muon(
         params=param_list,
         grads=grad_list,
         muon_momentum_bufs=m_list,

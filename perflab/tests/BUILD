@@ -98,7 +98,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/utils:test_utils",
-        "//src/torch_tpu/extras/optimizers:single_trace_trainer",
         "//tests:seed_test_utils",
         "@pypi//transformers",
     ],

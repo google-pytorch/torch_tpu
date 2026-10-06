@@ -19,12 +19,20 @@ import dataclasses
 from typing import Any
 
 import torch
-import torch.optim.sgd as torch_sgd
+import torch.optim.sgd as _torch_sgd
 from torch.utils import _pytree
-from torch_tpu.extras.optimizers import optim
+from torch_tpu._internal.optimizers import optim as _optim
+from torch_tpu._internal.utils import annotations as _annotations
+
+__all__ = [
+    "ReferenceSgd",
+    "SGD",
+    "TorchSgd",
+]
 
 
-class SGD(optim.Optimizer):
+@_annotations.experimental("SGD optimizer is experimental.")
+class SGD(_optim.Optimizer):
   """Base class for SGD optimizer variants with nested ParamGroup."""
 
   @dataclasses.dataclass
@@ -96,6 +104,7 @@ class SGD(optim.Optimizer):
     pass
 
 
+@_annotations.experimental("ReferenceSgd optimizer is experimental.")
 class ReferenceSgd(SGD):
   """Reference pure PyTorch implementation of SGD."""
 
@@ -142,6 +151,7 @@ class ReferenceSgd(SGD):
     return param_group
 
 
+@_annotations.experimental("TorchSgd optimizer is experimental.")
 class TorchSgd(SGD):
   """Torch SGD implementation calling torch.optim.sgd.sgd directly."""
 
@@ -187,7 +197,7 @@ class TorchSgd(SGD):
     )
     step_list = [param_group.opt_steps[k] for k in param_keys]
 
-    torch_sgd.sgd(
+    _torch_sgd.sgd(
         params=param_list,
         d_p_list=grad_list,
         momentum_buffer_list=m_list,

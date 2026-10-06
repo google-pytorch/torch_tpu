@@ -144,6 +144,17 @@ process. Use it at your own risk. Using it triggers a one-time warning.
 *   `torch.tpu.ops.sparse_map_row`
 *   `torch.tpu.ops.splash_sdpa`
 *   `torch.tpu.ops.strip_jagged_padding`
+*   `torch.tpu.optimizers.AdamW`
+*   `torch.tpu.optimizers.Muon`
+*   `torch.tpu.optimizers.Optimizer`
+*   `torch.tpu.optimizers.ReferenceAdamw`
+*   `torch.tpu.optimizers.ReferenceMuon`
+*   `torch.tpu.optimizers.ReferenceSgd`
+*   `torch.tpu.optimizers.SGD`
+*   `torch.tpu.optimizers.SingleTraceTrainer`
+*   `torch.tpu.optimizers.TorchAdamw`
+*   `torch.tpu.optimizers.TorchMuon`
+*   `torch.tpu.optimizers.TorchSgd`
 *   `torch.tpu.pallas.jax_op`
 *   `torch.tpu.precision`
 *   `torch.tpu.profiler.TpuProfilerConfig`

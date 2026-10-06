@@ -389,6 +389,19 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
     ):
       importlib.import_module("torch_tpu.compiler")
 
+  def test_optimizers_api_registry(self):
+    """Verifies public exposure and proxy behavior for optimizers."""
+    # 1. Module accessibility
+    self.assertTrue(hasattr(torch, "tpu"))
+    self.assertTrue(hasattr(torch.tpu, "optimizers"))
+    self.assertIn("torch.tpu.optimizers", sys.modules)
+
+    # 2. Proxy invalid attribute handling
+    with self.assertRaises(  # ASSERT_RAISES_OK=Verifies proxy module raises AttributeError for non-existent attributes
+        AttributeError
+    ):
+      _ = getattr(torch.tpu.optimizers, "non_existent_attribute")
+
   def test_ops_api_registry(self):
     """Verifies public exposure, identity, metadata, and proxy behavior for ops."""
     # 1. Module accessibility

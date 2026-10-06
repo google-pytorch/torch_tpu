@@ -18,11 +18,8 @@ import copy
 
 from absl.testing import absltest
 import torch
-import torch_tpu  # pylint: disable=unused-import  # noqa: F401
+from torch.tpu import optimizers
 from torch_tpu._internal.utils import test_utils
-from torch_tpu.extras.optimizers import adamw
-from torch_tpu.extras.optimizers import sgd
-from torch_tpu.extras.optimizers import single_trace_trainer
 from tests import seed_test_utils
 
 
@@ -63,9 +60,9 @@ class SingleTraceTrainerStandaloneSanityTest(seed_test_utils.RepeatableTest):
 
   def test_torch_compile_adamw_step(self):
     model = ToyLinearModule().to(device=self.device)
-    trainer = single_trace_trainer.SingleTraceTrainer(
+    trainer = optimizers.SingleTraceTrainer(
         model=model,
-        optimizer=adamw.ReferenceAdamw(use_bfloat16_moments=False),
+        optimizer=optimizers.ReferenceAdamw(use_bfloat16_moments=False),
         compile_fn=torch.compile,
     )
 
@@ -80,9 +77,9 @@ class SingleTraceTrainerStandaloneSanityTest(seed_test_utils.RepeatableTest):
 
   def test_torch_compile_sgd_step(self):
     model = ToyLinearModule().to(device=self.device)
-    trainer = single_trace_trainer.SingleTraceTrainer(
+    trainer = optimizers.SingleTraceTrainer(
         model=model,
-        optimizer=sgd.ReferenceSgd(lr=1e-2, momentum=0.9),
+        optimizer=optimizers.ReferenceSgd(lr=1e-2, momentum=0.9),
     )
 
     x = torch.randn((16, 128), device=self.device)
@@ -99,9 +96,9 @@ class SingleTraceTrainerStandaloneSanityTest(seed_test_utils.RepeatableTest):
 
   def test_torch_compile_no_targets(self):
     model = ToyLinearModule().to(device=self.device)
-    trainer = single_trace_trainer.SingleTraceTrainer(
+    trainer = optimizers.SingleTraceTrainer(
         model=model,
-        optimizer=adamw.ReferenceAdamw(),
+        optimizer=optimizers.ReferenceAdamw(),
         compile_fn=torch.compile,
     )
 
@@ -114,7 +111,7 @@ class SingleTraceTrainerStandaloneSanityTest(seed_test_utils.RepeatableTest):
 
   def test_torch_compile_no_optimizer(self):
     model = ToyLinearModule().to(device=self.device)
-    trainer = single_trace_trainer.SingleTraceTrainer(
+    trainer = optimizers.SingleTraceTrainer(
         model=model,
         optimizer=None,
         compile_fn=torch.compile,
@@ -132,7 +129,7 @@ class SingleTraceTrainerStandaloneSanityTest(seed_test_utils.RepeatableTest):
 
   def test_torch_compile_parameterless_module(self):
     model = torch.nn.Tanh().to(device=self.device)
-    trainer = single_trace_trainer.SingleTraceTrainer(
+    trainer = optimizers.SingleTraceTrainer(
         model=model,
         optimizer=None,
         compile_fn=torch.compile,
@@ -147,7 +144,7 @@ class SingleTraceTrainerStandaloneSanityTest(seed_test_utils.RepeatableTest):
 
   def test_torch_compile_sparse_embedding_no_optimizer(self):
     model = torch.nn.Embedding(128, 64, sparse=True).to(device=self.device)
-    trainer = single_trace_trainer.SingleTraceTrainer(
+    trainer = optimizers.SingleTraceTrainer(
         model=model,
         optimizer=None,
         compile_fn=torch.compile,
@@ -169,7 +166,7 @@ class SingleTraceTrainerStandaloneSanityTest(seed_test_utils.RepeatableTest):
     model = torch.nn.EmbeddingBag(128, 64, sparse=True, mode="sum").to(
         device=self.device
     )
-    trainer = single_trace_trainer.SingleTraceTrainer(
+    trainer = optimizers.SingleTraceTrainer(
         model=model,
         optimizer=None,
         compile_fn=torch.compile,
@@ -203,7 +200,7 @@ class SingleTraceTrainerStandaloneSanityTest(seed_test_utils.RepeatableTest):
     expected_loss = sum_loss(eager_model, (), {"ids": ids})
     expected_loss.backward()
 
-    trainer = single_trace_trainer.SingleTraceTrainer(
+    trainer = optimizers.SingleTraceTrainer(
         model=model,
         optimizer=None,
         compile_fn=torch.compile,

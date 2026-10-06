@@ -121,6 +121,11 @@ torch_tpu_py_library(
         "//src/torch_tpu/_internal/ops:jagged",  # build_cleaner: keep
         "//src/torch_tpu/_internal/ops:ops_lib",  # build_cleaner: keep
         "//src/torch_tpu/_internal/ops:splash_attention",  # build_cleaner: keep
+        "//src/torch_tpu/_internal/optimizers:adamw",  # build_cleaner: keep
+        "//src/torch_tpu/_internal/optimizers:muon",  # build_cleaner: keep
+        "//src/torch_tpu/_internal/optimizers:optim",  # build_cleaner: keep
+        "//src/torch_tpu/_internal/optimizers:sgd",  # build_cleaner: keep
+        "//src/torch_tpu/_internal/optimizers:single_trace_trainer",  # build_cleaner: keep
         "//src/torch_tpu/_internal/pallas:pallas_lib",  # build_cleaner: keep
         "//src/torch_tpu/_internal/profiler:profiler_config",  # build_cleaner: keep
         "//src/torch_tpu/_internal/utils:annotations",

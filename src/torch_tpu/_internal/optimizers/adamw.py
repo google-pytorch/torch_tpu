@@ -19,12 +19,20 @@ import dataclasses
 from typing import Any
 
 import torch
-import torch.optim.adamw as torch_adamw
+import torch.optim.adamw as _torch_adamw
 from torch.utils import _pytree
-from torch_tpu.extras.optimizers import optim
+from torch_tpu._internal.optimizers import optim as _optim
+from torch_tpu._internal.utils import annotations as _annotations
+
+__all__ = [
+    "AdamW",
+    "ReferenceAdamw",
+    "TorchAdamw",
+]
 
 
-class AdamW(optim.Optimizer):
+@_annotations.experimental("AdamW optimizer is experimental.")
+class AdamW(_optim.Optimizer):
   """Base class for AdamW optimizer variants with nested ParamGroup."""
 
   @dataclasses.dataclass
@@ -109,6 +117,7 @@ class AdamW(optim.Optimizer):
     pass
 
 
+@_annotations.experimental("ReferenceAdamw optimizer is experimental.")
 class ReferenceAdamw(AdamW):
   """Reference pure PyTorch implementation of AdamW."""
 
@@ -158,6 +167,7 @@ class ReferenceAdamw(AdamW):
     return param_group
 
 
+@_annotations.experimental("TorchAdamw optimizer is experimental.")
 class TorchAdamw(AdamW):
   """Torch AdamW implementation calling torch.optim.adamw.adamw directly."""
 
@@ -206,7 +216,7 @@ class TorchAdamw(AdamW):
     v_list = [param_group.opt_state_v[k] for k in param_keys]
     step_list = [param_group.opt_steps[k] for k in param_keys]
 
-    torch_adamw.adamw(
+    _torch_adamw.adamw(
         params=param_list,
         grads=grad_list,
         exp_avgs=m_list,

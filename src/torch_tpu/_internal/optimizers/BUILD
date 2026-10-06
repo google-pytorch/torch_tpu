@@ -28,6 +28,7 @@ torch_tpu_py_library(
     srcs = ["optim.py"],
     deps = [
         "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal/utils:annotations",
     ],
 )
 
@@ -37,6 +38,7 @@ torch_tpu_py_library(
     deps = [
         ":optim",
         "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal/utils:annotations",
     ],
 )
 
@@ -46,6 +48,7 @@ torch_tpu_py_library(
     deps = [
         ":optim",
         "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal/utils:annotations",
     ],
 )
 
@@ -55,6 +58,7 @@ torch_tpu_py_library(
     deps = [
         ":optim",
         "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal/utils:annotations",
     ],
 )
 
@@ -67,6 +71,7 @@ torch_tpu_py_library(
         ":optim",
         ":sgd",
         "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal/utils:annotations",
     ],
 )
 

@@ -16,10 +16,10 @@
 
 from absl.testing import absltest
 import torch
+from torch.tpu import optimizers
 from torch_tpu._internal.utils import test_utils as assert_utils
-from torch_tpu.extras.optimizers import muon
 from tests import seed_test_utils
-from tests.extras.optimizers import test_utils
+from tests.optimizers import test_utils
 
 
 class MuonOptimizersTest(seed_test_utils.RepeatableTest):
@@ -77,21 +77,21 @@ class MuonOptimizersTest(seed_test_utils.RepeatableTest):
       )
 
   def test_reference_muon_step(self):
-    opt = muon.ReferenceMuon(lr=1e-3, momentum=0.95, weight_decay=0.1)
+    opt = optimizers.ReferenceMuon(lr=1e-3, momentum=0.95, weight_decay=0.1)
     self._validate_opt_step(opt, lr=1e-3, momentum=0.95, weight_decay=0.1)
 
   def test_reference_muon_compiled_linear_train_step(self):
-    opt = muon.ReferenceMuon(lr=1e-3, momentum=0.95, weight_decay=0.1)
+    opt = optimizers.ReferenceMuon(lr=1e-3, momentum=0.95, weight_decay=0.1)
     test_utils.validate_compiled_linear_train_step(
         self, opt, self.device, bias=False
     )
 
   def test_torch_muon_step(self):
-    opt = muon.TorchMuon(lr=1e-3, momentum=0.95, weight_decay=0.1)
+    opt = optimizers.TorchMuon(lr=1e-3, momentum=0.95, weight_decay=0.1)
     self._validate_opt_step(opt, lr=1e-3, momentum=0.95, weight_decay=0.1)
 
   def test_torch_muon_custom_kwargs(self):
-    opt = muon.TorchMuon(
+    opt = optimizers.TorchMuon(
         lr=1e-3,
         momentum=0.95,
         weight_decay=0.1,
@@ -101,7 +101,7 @@ class MuonOptimizersTest(seed_test_utils.RepeatableTest):
     self._validate_opt_step(opt, lr=1e-3, momentum=0.95, weight_decay=0.1)
 
   def test_torch_muon_compiled_linear_train_step(self):
-    opt = muon.TorchMuon(lr=1e-3, momentum=0.95, weight_decay=0.1)
+    opt = optimizers.TorchMuon(lr=1e-3, momentum=0.95, weight_decay=0.1)
     test_utils.validate_compiled_linear_train_step(
         self, opt, self.device, bias=False
     )

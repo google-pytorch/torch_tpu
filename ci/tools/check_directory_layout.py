@@ -24,7 +24,6 @@ from typing import Final, Iterable
 # Expected direct subdirectories inside src/torch_tpu
 EXPECTED_SRC_DIRS: Final[frozenset[str]] = frozenset([
     "_internal",
-    "extras",
 ])
 
 # Expected direct directories at repository root

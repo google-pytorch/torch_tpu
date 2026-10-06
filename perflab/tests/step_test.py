@@ -20,8 +20,8 @@ from absl.testing import absltest
 from absl.testing import flagsaver
 import torch
 import torch.nn as nn
+from torch.tpu import optimizers
 from torch_tpu._internal.utils import test_utils
-from torch_tpu.extras.optimizers import single_trace_trainer
 from perflab import compile as compile_lib
 from perflab import discovery as discovery_lib
 from perflab import measure as measure_lib
@@ -577,7 +577,7 @@ class StepperTypeTest(seed_test_utils.RepeatableTest):
   def test_single_trace_training_updates_params(self):
     ops = self._ops()
     model = _mlp(seed=99).to(ops.device)
-    opt = single_trace_trainer.ReferenceSgd(lr=0.1)
+    opt = optimizers.ReferenceSgd(lr=0.1)
     stepper = step_lib.resolve_stepper(
         step_lib.StepperType.SINGLE_TRACE_TRAINING
     )

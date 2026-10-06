@@ -18,8 +18,14 @@ import abc
 from typing import Any, ClassVar
 
 import torch
+from torch_tpu._internal.utils import annotations as _annotations
+
+__all__ = [
+    "Optimizer",
+]
 
 
+@_annotations.experimental("Optimizer base class is experimental.")
 class Optimizer(abc.ABC):
   """Abstract base class for stateless functional optimizers operating on nested ParamGroup."""
 

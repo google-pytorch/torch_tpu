@@ -19,26 +19,23 @@ from typing import Any, Callable
 import torch
 from torch.utils import _pytree
 from torch_tpu._internal.compile import compiler
-from torch_tpu.extras.optimizers import adamw
-from torch_tpu.extras.optimizers import muon
-from torch_tpu.extras.optimizers import optim
-from torch_tpu.extras.optimizers import sgd
-from torch_tpu.extras.optimizers import single_trace_trainer
+
+optimizers = torch.tpu.optimizers
 
 # Re-export optimizer classes
-Optimizer = optim.Optimizer
-AdamW = adamw.AdamW
-SGD = sgd.SGD
-ReferenceAdamw = adamw.ReferenceAdamw
-TorchAdamw = adamw.TorchAdamw
-ReferenceSgd = sgd.ReferenceSgd
-TorchSgd = sgd.TorchSgd
-Muon = muon.Muon
-ReferenceMuon = muon.ReferenceMuon
-TorchMuon = muon.TorchMuon
+Optimizer = optimizers.Optimizer
+AdamW = optimizers.AdamW
+SGD = optimizers.SGD
+ReferenceAdamw = optimizers.ReferenceAdamw
+TorchAdamw = optimizers.TorchAdamw
+ReferenceSgd = optimizers.ReferenceSgd
+TorchSgd = optimizers.TorchSgd
+Muon = optimizers.Muon
+ReferenceMuon = optimizers.ReferenceMuon
+TorchMuon = optimizers.TorchMuon
 
 
-class SingleTraceTrainerAdapter(single_trace_trainer.SingleTraceTrainer):
+class SingleTraceTrainerAdapter(optimizers.SingleTraceTrainer):
   """Adapter for SingleTraceTrainer that re-internalizes StaticCompiler."""
 
   def __init__(

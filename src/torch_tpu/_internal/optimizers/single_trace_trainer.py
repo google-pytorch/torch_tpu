@@ -26,10 +26,15 @@ import torch.func as func
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch.nn.utils import stateless
 from torch.utils import _pytree
-from torch_tpu.extras.optimizers import adamw
-from torch_tpu.extras.optimizers import muon
-from torch_tpu.extras.optimizers import optim
-from torch_tpu.extras.optimizers import sgd
+from torch_tpu._internal.optimizers import adamw
+from torch_tpu._internal.optimizers import muon
+from torch_tpu._internal.optimizers import optim
+from torch_tpu._internal.optimizers import sgd
+from torch_tpu._internal.utils import annotations as _annotations
+
+__all__ = [
+    "SingleTraceTrainer",
+]
 
 # Re-export optimizer classes for simple_trainer
 Optimizer = optim.Optimizer
@@ -256,6 +261,7 @@ def _decomp_embedding_bag_backward(
   )
 
 
+@_annotations.experimental("SingleTraceTrainer is experimental.")
 class SingleTraceTrainer:
   """Facilitates compiled train steps with a single offload containing the optimizer step.
 

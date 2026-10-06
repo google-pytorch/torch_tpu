@@ -50,7 +50,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/utils:test_utils",
-        "//src/torch_tpu/extras/optimizers:adamw",
         "//tests:seed_test_utils",
     ],
 )
@@ -70,7 +69,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/utils:test_utils",
-        "//src/torch_tpu/extras/optimizers:sgd",
         "//tests:seed_test_utils",
     ],
 )
@@ -90,7 +88,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/utils:test_utils",
-        "//src/torch_tpu/extras/optimizers:muon",
         "//tests:seed_test_utils",
     ],
 )
@@ -100,7 +97,7 @@ torch_tpu_py_test(
     srcs = ["single_trace_trainer_test.py"],
     main = "single_trace_trainer_test.py",
     nopresubmit = "slow example",
-    notest_oss = True,  # slow example
+    notest_oss = True,  # NOTEST_OSS_OK=slow test
     tags = [
         "requires-accel-hbm",
         "requires-net:external",
@@ -111,9 +108,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/utils:test_utils",
-        "//src/torch_tpu/extras/optimizers:adamw",
-        "//src/torch_tpu/extras/optimizers:sgd",
-        "//src/torch_tpu/extras/optimizers:single_trace_trainer",
         "//tests:seed_test_utils",
     ],
 )

@@ -16,6 +16,10 @@
     "type": "MODULE"
   },
   {
+    "name": "torch.tpu.optimizers",
+    "type": "MODULE"
+  },
+  {
     "name": "torch.tpu.pallas",
     "type": "MODULE"
   },
