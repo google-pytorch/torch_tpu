@@ -323,7 +323,7 @@ common:ci --curses=no
 
 # Setting specific to benchmarking runs.
 common:bench --config=ci
-common:bench --spawn_strategy=standalone,local
+common:bench --strategy=TestRunner=standalone,local
 
 # TODO: b/523216544 - Refactor all of this logic to avoid separate configs for
 # every accelerator/job combination
@@ -344,7 +344,7 @@ common:ci_cpu_nightly --test_tag_filters=-nobuild,-notest,-requires-gpu,-require
 # Settings specific to TPU CI runs.
 common:ci_tpu_base --config=ci
 common:ci_tpu_base --build_tag_filters=-nobuild,requires-tpu-v5lite,requires-tpu-v5lite:8,requires-tpu-v5p,requires-tpu-v5p:4,requires-tpu-v6e,requires-tpu-v7x,requires-tpu-v7x:4,
-common:ci_tpu_base --spawn_strategy=standalone,local
+common:ci_tpu_base --strategy=TestRunner=standalone,local
 
 # Settings for nightly runs on TPU.
 common:ci_tpu_nightly --config=ci_tpu_base
@@ -537,15 +537,12 @@ test:wheel_test_cpu --test_tag_filters=-nobuild,-notest,-nopresubmit,-requires-g
 # Split wheel test configurations for presubmits
 test:wheel_test_tpu_v5 --config=wheel_common_test
 test:wheel_test_tpu_v5 --config=ci_tpu_v5
-test:wheel_test_tpu_v5 --spawn_strategy=local
 
 test:wheel_test_tpu_v6 --config=wheel_common_test
 test:wheel_test_tpu_v6 --config=ci_tpu_v6
-test:wheel_test_tpu_v6 --spawn_strategy=local
 
 test:wheel_test_tpu_v7 --config=wheel_common_test
 test:wheel_test_tpu_v7 --config=ci_tpu_v7
-test:wheel_test_tpu_v7 --spawn_strategy=local
 
 # Tag filters for split wheel test runs
 # Tests are assigned exactly one mutually exclusive presubmit-v{N} tag.
