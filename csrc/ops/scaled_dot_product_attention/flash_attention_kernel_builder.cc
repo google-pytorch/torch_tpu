@@ -355,10 +355,16 @@ mlir::MlirOp PackPhiloxPairTo4xI32(mlir::MlirOp pair_i64) {
                                       /*dimension=*/0);
 }
 
+// Packs `philox_seed` and `philox_offset` into a 4-element i32 tensor. The
+// inputs may be 0-d (e.g. from the torch.compile meta function) or have shape
+// [1] (from the eager forward kernel).
 mlir::MlirOp PackPhiloxSeedAndOffsetTo4xI32(mlir::MlirOp philox_seed,
                                             mlir::MlirOp philox_offset) {
   return PackPhiloxPairTo4xI32(mlir::stablehlo::Concatenate(
-      philox_seed.getBuilder(), {philox_seed, philox_offset}, /*dimension=*/0));
+      philox_seed.getBuilder(),
+      {mlir::stablehlo::Reshape(philox_seed, {1}),
+       mlir::stablehlo::Reshape(philox_offset, {1})},
+      /*dimension=*/0));
 }
 
 absl::StatusOr<mlir::torch_tpu::FlashAttnConfig> CreateFlashAttnConfig(

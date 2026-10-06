@@ -15965,6 +15965,78 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
     self.assertAlmostEqual(row_sum_mean, 1.0, delta=0.05)
     self.assertIsNotNone(v.grad)
 
+  @parameterized.product(
+      use_mask=[False, True],
+      dropout_p=[0.0, 0.1],
+  )
+  def test_scaled_dot_product_attention_compiled_backward(
+      self, use_mask: bool, dropout_p: float
+  ):
+    """Tests compiled FlashAttention forward and backward, with dropout.
+
+    Under torch.compile, the meta function of
+    `_scaled_dot_product_cudnn_attention` returns 0-d philox seed/offset
+    tensors, which the backward kernel must accept.
+
+    Args:
+      use_mask: Whether to pass a constant (non-trainable) boolean attn_mask.
+      dropout_p: The dropout probability.
+    """
+    batch_size, num_heads, seq_len, head_dim = 2, 4, 128, 64
+    torch.manual_seed(0)
+    q, k, v = (
+        torch.randn(batch_size, num_heads, seq_len, head_dim) for _ in range(3)
+    )
+    attn_mask = (
+        torch.ones(seq_len, seq_len, dtype=torch.bool).tril()
+        if use_mask
+        else None
+    )
+    grad_out = torch.randn(batch_size, num_heads, seq_len, head_dim)
+
+    def run_sdpa(q, k, v, attn_mask):
+      return torch.nn.functional.scaled_dot_product_attention(
+          q, k, v, attn_mask=attn_mask, dropout_p=dropout_p
+      )
+
+    def compute(device):
+      inputs = [
+          t.to(device=device, dtype=torch.bfloat16).requires_grad_()
+          for t in (q, k, v)
+      ]
+      mask = attn_mask.to(device) if attn_mask is not None else None
+      if device == "cpu":
+        out = run_sdpa(*inputs, mask)
+      else:
+        with torch.nn.attention.sdpa_kernel(
+            torch.nn.attention.SDPBackend.FLASH_ATTENTION
+        ):
+          out = torch.compile(run_sdpa, dynamic=False, backend="tpu")(
+              *inputs, mask
+          )
+      out.backward(grad_out.to(device=device, dtype=torch.bfloat16))
+      return [out.detach().cpu().float()] + [
+          t.grad.cpu().float() for t in inputs
+      ]
+
+    names = ("out", "q_grad", "k_grad", "v_grad")
+    tpu_results = compute("tpu")
+    for name, tpu in zip(names, tpu_results):
+      with self.subTest(f"{name}_finite"):
+        self.assertTrue(torch.isfinite(tpu).all())
+
+    if dropout_p == 0.0:
+      cpu_results = compute("cpu")
+      for name, cpu, tpu in zip(names, cpu_results, tpu_results):
+        with self.subTest(f"{name}_values"):
+          self.assert_close(
+              golden_result=cpu,
+              torch_tpu_result=tpu,
+              rtol=5e-2,
+              atol=1e-1,
+              preamble=f"close check failed for {name}",
+          )
+
   def test_pointwise_op_dtype_promotion(self):
     """Ensure that pointwise ops promote as expected.
 
