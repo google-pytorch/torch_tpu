@@ -17,7 +17,6 @@
 #include "csrc/ops/softmax/softmax_aten_kernels.h"
 
 #include <cstdint>
-#include <functional>
 #include <utility>
 
 #include "ATen/core/TensorBody.h"
@@ -47,7 +46,9 @@ namespace torch_tpu {
 namespace {
 
 MlirUnaryOpBuilder GetSoftmaxFunctional(int64_t dim, SoftmaxMode softmax_mode) {
-  return std::bind(&BuildSoftmaxShlo, std::placeholders::_1, dim, softmax_mode);
+  return [dim, softmax_mode](mlir::MlirOp input) {
+    return BuildSoftmaxShlo(input, dim, softmax_mode);
+  };
 }
 
 NAryMlirOpBuilder<2> GetSoftmaxBackwardDataFunctional(

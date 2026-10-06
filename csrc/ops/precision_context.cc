@@ -22,7 +22,6 @@
 
 #include "absl/log/absl_check.h"
 #include "absl/strings/str_cat.h"
-#include "c10/util/Exception.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/context_manager.h"
 #include "csrc/common/context_states.h"
