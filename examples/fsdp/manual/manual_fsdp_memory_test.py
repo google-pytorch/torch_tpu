@@ -33,6 +33,7 @@ BATCH_SIZE = 16
 IN_FEATURES = 4096
 OUT_FEATURES = 8192
 NUM_STEPS = 4
+NUM_WARMUP_STEPS = 2
 RANDOM_SEED = 0
 
 
@@ -103,7 +104,9 @@ def memory_worker_fn() -> None:
   # Assert that retained memory across the forward-backward boundary is
   # < 20 MiB, proving that full weights (32.0 MiB / 64.0 MiB) were freed
   # during forward rather than saved for backward.
-  for step, _, _, fwd_retained_bytes, _ in step_stats:
+  # Warm-up steps may retain one-time compilation and runtime allocations, so
+  # the retained-memory check only applies to the steps after them.
+  for step, _, _, fwd_retained_bytes, _ in step_stats[NUM_WARMUP_STEPS:]:
     assert fwd_retained_bytes < 20 * 1024 * 1024, (
         f"Step {step}: expected < 20 MiB retained after forward, got"
         f" {fwd_retained_bytes / (1024 * 1024):.2f} MiB"
