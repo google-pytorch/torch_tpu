@@ -21,6 +21,7 @@
 #include <exception>
 #include <sstream>
 #include <string>
+#include <string_view>
 
 #include "ATen/OpMathType.h"
 #include "ATen/core/ATen_fwd.h"
@@ -36,7 +37,7 @@
 namespace torch_tpu {
 
 std::string ToString(const at::ScalarType& scalar_type,
-                     const std::string& name) {
+                     const std::string_view name) {
   std::stringstream os;
   if (!name.empty()) {
     os << name << ": ";

@@ -96,7 +96,7 @@ std::string ToString(c10d::ReduceOp::RedOpType reduce_op_type) {
   return absl::StrFormat("enum%d", reduce_op_type);
 }
 
-std::string ToString(const at::Tensor& tensor, const std::string& name) {
+std::string ToString(const at::Tensor& tensor, const std::string_view name) {
   std::string result;
   if (!name.empty()) {
     absl::StrAppend(&result, name, ": ");
@@ -155,7 +155,7 @@ std::string ToString(const at::Tensor& tensor, const std::string& name) {
   return result;
 }
 
-std::string ToString(const at::Scalar& scalar, const std::string& name) {
+std::string ToString(const at::Scalar& scalar, const std::string_view name) {
   std::string result;
   if (!name.empty()) {
     absl::StrAppend(&result, name, ": ");

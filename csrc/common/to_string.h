@@ -95,9 +95,9 @@ template <typename Iterator>
 
 [[nodiscard]] std::string ToString(c10d::ReduceOp::RedOpType reduce_op_type);
 [[nodiscard]] std::string ToString(const at::Tensor& tensor,
-                                   const std::string& name = "");
+                                   std::string_view name = "");
 [[nodiscard]] std::string ToString(const at::Scalar& scalar,
-                                   const std::string& name = "");
+                                   std::string_view name = "");
 
 // Returns a string representation of the given type as a PyTorch dtype name
 // (e.g. "float32", "int8"). This is suitable for use in user messages.

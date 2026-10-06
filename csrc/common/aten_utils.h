@@ -22,6 +22,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
@@ -40,7 +41,7 @@ namespace torch_tpu {
 
 // Use these functions only for debugging purposes.
 [[nodiscard]] std::string ToString(const at::ScalarType& scalar_type,
-                                   const std::string& name);
+                                   std::string_view name);
 
 // Returns the scalar type of the given tensor.
 inline at::ScalarType GetScalarType(const at::Tensor& tensor) {
@@ -105,7 +106,7 @@ inline absl::Status ValidateOutDtype(const at::Tensor& out,
 //   - const at::Scalar&
 //   - at::ScalarType
 template <typename T>
-bool IsBool(T thing) {
+bool IsBool(const T& thing) {
   return GetScalarType(thing) == at::ScalarType::Bool;
 }
 
@@ -117,7 +118,7 @@ bool IsBool(T thing) {
 //   - const at::Scalar&
 //   - at::ScalarType
 template <typename T>
-bool IsComplex(T thing) {
+bool IsComplex(const T& thing) {
   return c10::isComplexType(GetScalarType(thing));
 }
 
@@ -150,7 +151,7 @@ inline bool IsInteger(const at::Tensor& tensor) {
 //   - const at::Scalar&
 //   - at::ScalarType
 template <typename T>
-bool IsIntegral(T thing) {
+bool IsIntegral(const T& thing) {
   return c10::isIntegralType(GetScalarType(thing), /* includeBool= */ true);
 }
 
