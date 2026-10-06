@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")
+load("//build_files:build_defs.bzl", "if_oss", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -22,9 +22,18 @@ package(
 torch_tpu_py_test(
     name = "launch",
     srcs = ["launch.py"],
+    env = {
+        "JOB_COMPLETION_INDEX": "0",
+        "TPU_WORKER_HOSTNAMES": "localhost",
+    },
     main = "launch.py",
     nopresubmit = "slow example",
-    tags = [
+    # In OSS CI, tests run on a shared TPU host where only one test can acquire
+    # all 8 TPU chips at a time; in Google3, requires-tpu-v5lite:8 isolates it.
+    tags = if_oss(
+        ["exclusive"],
+        [],
+    ) + [
         "noasan",  # OOMs even with the highest memory limit.
         "requires-mem:28g",
         "requires-tpu-v5lite:8",
