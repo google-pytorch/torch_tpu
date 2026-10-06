@@ -18,16 +18,19 @@ import importlib.util
 import os
 import shutil
 import sys
+import types
 from unittest import mock
 
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
+import torch.multiprocessing as mp
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.distributed import multiprocessing
 from perflab import common
 from perflab import discovery as discovery_lib
 from perflab import distributed_runner
+from perflab import export as export_lib
 from perflab import measure as measure_lib
 from perflab import metrics as metrics_lib
 from perflab import registry as registry_lib
@@ -40,6 +43,29 @@ from tests import seed_test_utils
 
 def setUpModule():
   discovery_lib.import_submodules(steps)
+
+
+class _FakeDistRun:
+  """Stateful fake for `distributed_utils.dist_run`.
+
+  Records the spec name of every dispatched target and simulates a worker rank
+  raising (as surfaced by `torch.multiprocessing.spawn`) for specs listed in
+  `failing_specs`.
+  """
+
+  def __init__(self, failing_specs: set[str]):
+    self._failing_specs = failing_specs
+    self.ran = []
+
+  def __call__(self, nproc_per_node, fn, spec_name, mode_value, platform_name):
+    del nproc_per_node, fn, mode_value, platform_name
+    self.ran.append(spec_name)
+    if spec_name in self._failing_specs:
+      raise mp.ProcessRaisedException(
+          f"RuntimeError: factory failed for {spec_name}",
+          error_index=0,
+          error_pid=1234,
+      )
 
 
 class DistributedRunnerTest(seed_test_utils.RepeatableTest):
@@ -306,6 +332,7 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
   ):
     dummy_spec = mock.MagicMock(spec=registry_lib.BenchmarkSpec)
     dummy_spec.name = "dummy"
+    dummy_spec.skipped_run_modes = set()
     mock_resolve_targets.return_value = [
         (dummy_spec, common.RunMode.EAGER_DEFAULT)
     ]
@@ -333,6 +360,7 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
   ):
     dummy_spec = mock.MagicMock(spec=registry_lib.BenchmarkSpec)
     dummy_spec.name = "dummy"
+    dummy_spec.skipped_run_modes = set()
     mock_resolve_targets.return_value = [
         (dummy_spec, common.RunMode.EAGER_DEFAULT)
     ]
@@ -371,6 +399,7 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
   ):
     dummy_spec = mock.MagicMock(spec=registry_lib.BenchmarkSpec)
     dummy_spec.name = "dummy"
+    dummy_spec.skipped_run_modes = set()
     mock_resolve_targets.return_value = [
         (dummy_spec, common.RunMode.EAGER_DEFAULT)
     ]
@@ -391,6 +420,85 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
         "eager_default",
         "b200_8",
     )
+
+  def test_main_isolates_failed_target_and_exits_nonzero(self):
+    fake_dist_run = _FakeDistRun(failing_specs={"broken"})
+    exported = []
+    registry = {
+        "broken": types.SimpleNamespace(
+            name="broken", skipped_run_modes=frozenset()
+        ),
+        "healthy": types.SimpleNamespace(
+            name="healthy", skipped_run_modes=frozenset()
+        ),
+    }
+
+    with (
+        mock.patch.dict(registry_lib.REGISTRY, registry, clear=True),
+        mock.patch.dict(
+            os.environ,
+            {
+                "BENCHMARK_PLATFORM": "b200_8",
+                "TESTBRIDGE_TEST_ONLY": (
+                    "broken_eager_default healthy_eager_default"
+                ),
+            },
+        ),
+        mock.patch.object(
+            distributed_runner.distributed_utils, "dist_run", fake_dist_run
+        ),
+        mock.patch.object(export_lib, "export", exported.append),
+        self.assertLogs(level="INFO") as logs,
+        self.assertRaises(
+            SystemExit
+        ) as exit_cm,  # ASSERT_RAISES_OK=Runner must exit non-zero when any target fails.
+    ):
+      distributed_runner.main(["distributed_runner"])
+
+    self.assertNotEqual(exit_cm.exception.code, 0)
+    # The healthy target still runs after the broken one fails.
+    self.assertEqual(fake_dist_run.ran, ["broken", "healthy"])
+    # The failed target is reported once as FAILED to the export path.
+    self.assertEqual(
+        [(d.spec_name, d.run_mode, d.succeeded) for d in exported],
+        [("broken", common.RunMode.EAGER_DEFAULT, False)],
+    )
+    summary = "\n".join(logs.output)
+    self.assertRegex(summary, r"broken_eager_default\s+FAILED")
+    self.assertRegex(summary, r"healthy_eager_default\s+PASSED")
+    self.assertIn("1 passed, 1 failed, 0 skipped", summary)
+
+  def test_main_reports_unsupported_mode_as_skipped(self):
+    fake_dist_run = _FakeDistRun(failing_specs=set())
+    registry = {
+        "healthy": types.SimpleNamespace(
+            name="healthy", skipped_run_modes=frozenset()
+        ),
+    }
+
+    with (
+        mock.patch.dict(registry_lib.REGISTRY, registry, clear=True),
+        mock.patch.dict(
+            os.environ,
+            {
+                "BENCHMARK_PLATFORM": "b200_8",
+                # eager_optimized is TPU-only, so it is skipped on CUDA.
+                "TESTBRIDGE_TEST_ONLY": (
+                    "healthy_eager_optimized healthy_eager_default"
+                ),
+            },
+        ),
+        mock.patch.object(
+            distributed_runner.distributed_utils, "dist_run", fake_dist_run
+        ),
+        self.assertLogs(level="INFO") as logs,
+    ):
+      distributed_runner.main(["distributed_runner"])
+
+    self.assertEqual(fake_dist_run.ran, ["healthy"])
+    summary = "\n".join(logs.output)
+    self.assertRegex(summary, r"healthy_eager_optimized\s+SKIPPED")
+    self.assertIn("1 passed, 0 failed, 1 skipped", summary)
 
   @mock.patch.object(torch.distributed, "barrier")
   @mock.patch.object(torch.distributed, "destroy_process_group")

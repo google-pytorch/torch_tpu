@@ -212,6 +212,7 @@ torch_tpu_py_test(
         "//perflab:common",
         "//perflab:discovery",
         "//perflab:distributed_runner_lib",
+        "//perflab:export",
         "//perflab:measure",
         "//perflab:metrics",
         "//perflab:registry",

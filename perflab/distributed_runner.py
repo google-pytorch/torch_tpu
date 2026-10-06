@@ -23,6 +23,7 @@ import gc
 import glob
 import os
 import shutil
+import sys
 from typing import Sequence
 
 from absl import app
@@ -59,6 +60,65 @@ class BarrierPolicy(enum.Enum):
 
   SYNCHRONIZE = "synchronize"
   SKIP = "skip"
+
+
+class TargetStatus(enum.Enum):
+  """Outcome of a single batched benchmark target."""
+
+  PASSED = "PASSED"
+  FAILED = "FAILED"
+  SKIPPED = "SKIPPED"
+
+
+def _is_mode_skipped(
+    spec: registry_lib.BenchmarkSpec,
+    mode: common.RunMode,
+    device_kind: target_lib.DeviceKind,
+) -> bool:
+  """Returns whether `spec` should not run in `mode` on `device_kind`.
+
+  resolve_benchmark_targets() expands all common.RunMode values when unfiltered.
+  Filter against mode_lib.modes_for() (matching base_test.py) so TPU-only modes
+  like eager_optimized or debug modes like eager_defer_never_and_launch_blocking
+  do not run and export duplicate rows on CUDA or TPU.
+
+  Args:
+    spec: Benchmark spec to check.
+    mode: Run mode to check.
+    device_kind: Device kind of the current platform.
+  """
+  return mode.value in spec.skipped_run_modes or mode not in mode_lib.modes_for(
+      _FRAMEWORK, device_kind
+  )
+
+
+def _failure_reason(e: Exception) -> str:
+  """Returns a one-line failure reason for the summary table."""
+  lines = str(e).strip().splitlines()
+  return lines[-1] if lines else type(e).__name__
+
+
+def _format_summary(
+    platform: target_lib.Platform,
+    results: Sequence[tuple[str, TargetStatus, str]],
+) -> str:
+  """Formats a per-target pass/fail summary table."""
+  counts = {
+      status: sum(1 for _, s, _ in results if s == status)
+      for status in TargetStatus
+  }
+  name_width = max((len(name) for name, _, _ in results), default=0)
+  lines = [
+      f"Distributed benchmark summary ({platform.value}):"
+      f" {counts[TargetStatus.PASSED]} passed,"
+      f" {counts[TargetStatus.FAILED]} failed,"
+      f" {counts[TargetStatus.SKIPPED]} skipped"
+  ]
+  for name, status, reason in results:
+    lines.append(
+        f"  {name:<{name_width}}  {status.value:<7}  {reason}".rstrip()
+    )
+  return "\n".join(lines)
 
 
 def resolve_benchmark_targets(
@@ -191,14 +251,7 @@ def _run_single_target_task(
 
   # Setup Target for benchmark execution and cleanup
   target = target_lib.make_target(platform, dtype=spec.dtype)
-  # resolve_benchmark_targets() expands all common.RunMode values when
-  # unfiltered. Filter against mode_lib.modes_for() (matching base_test.py) so
-  # TPU-only modes like eager_optimized or debug modes like
-  # eager_defer_never_and_launch_blocking do not run and export duplicate rows
-  # on CUDA or TPU.
-  if mode.value in spec.skipped_run_modes or mode not in mode_lib.modes_for(
-      _FRAMEWORK, target.device_kind
-  ):
+  if _is_mode_skipped(spec, mode, target.device_kind):
     logging.info(
         "Skipping benchmark %s on mode %s",
         spec.name,
@@ -293,16 +346,8 @@ def _run_single_target_task(
   except Exception as e:
     exception_raised = True
     logging.error("FATAL DISTRIBUTED WORKER ERROR: %s: %s", type(e).__name__, e)
-    # Only rank 0 reports failure status to persistent storage to prevent
-    # duplicate failure records across worker processes.
-    if rank == 0:
-      _export_benchmark_result(
-          spec,
-          target.platform,
-          mode,
-          succeeded=False,
-          metrics=metrics_lib.PerformanceMetrics(),
-      )
+    # The launcher in main() reports the FAILED status once per target, which
+    # also covers ranks that die without reaching this handler.
     raise
   finally:
     # Explicitly drop local references to the model, example inputs, and stepper
@@ -394,8 +439,13 @@ def main(argv: Sequence[str]) -> None:
       local_nproc,
   )
 
+  results: list[tuple[str, TargetStatus, str]] = []
   for idx, (spec, mode) in enumerate(targets_to_run):
     target_name = f"{spec.name}_{mode.value}"
+    if _is_mode_skipped(spec, mode, target.device_kind):
+      logging.info("Skipping benchmark %s on %s", target_name, platform.value)
+      results.append((target_name, TargetStatus.SKIPPED, ""))
+      continue
     logging.info(
         "Executing batched target %d/%d: %s",
         idx + 1,
@@ -403,15 +453,44 @@ def main(argv: Sequence[str]) -> None:
         target_name,
     )
     # Evict shared-memory and on-disk compilation caches between targets so each
-    # target measures true cold compilation latency.
+    # target measures true cold compilation latency, including after a failed
+    # target.
     _clear_persistent_compilation_caches()
-    distributed_utils.dist_run(
-        local_nproc,
-        _run_single_target_task,
-        spec.name,
-        mode.value,
-        platform.value,
-    )
+    # Isolate failures per target: `mp.spawn` raises `ProcessRaisedException`
+    # or `ProcessExitedException` after terminating the surviving ranks, so a
+    # broken target must not abort the remaining ones.
+    try:
+      distributed_utils.dist_run(
+          local_nproc,
+          _run_single_target_task,
+          spec.name,
+          mode.value,
+          platform.value,
+      )
+    except Exception as e:  # pylint: disable=broad-exception-caught
+      logging.exception("Benchmark target %s FAILED.", target_name)
+      results.append((target_name, TargetStatus.FAILED, _failure_reason(e)))
+      # Report from the launcher rather than the worker so failures that never
+      # reach the worker's exception handler (e.g. a rank killed by a signal)
+      # are still visible on dashboards. Only node 0 exports to avoid duplicate
+      # records in multi-host runs.
+      node_rank = int(
+          os.environ.get("NODE_RANK", "0")  # PY_ENVIRON_OK=benchmark
+      )
+      if node_rank == 0:
+        _export_benchmark_result(
+            spec,
+            platform,
+            mode,
+            succeeded=False,
+            metrics=metrics_lib.PerformanceMetrics(),
+        )
+    else:
+      results.append((target_name, TargetStatus.PASSED, ""))
+
+  logging.info("%s", _format_summary(platform, results))
+  if any(status == TargetStatus.FAILED for _, status, _ in results):
+    sys.exit(1)
 
 
 if __name__ == "__main__":
