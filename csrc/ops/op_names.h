@@ -559,6 +559,10 @@ enum class OpName {
   kMaskedSoftmaxBackward,
   kMaskedSoftmaxBackwardOut,
   kMaskedSoftmaxOut,
+  kMatmul,
+  kMatmulBackward,
+  kMatmulBackwardOut,
+  kMatmulOut,
   kMax,
   kMaxDimMax,
   kMaxPool1d,
@@ -1953,6 +1957,14 @@ ToString(  // NOLINT(google-readability-function-size)
       return "_masked_softmax_backward.out";
     case OpName::kMaskedSoftmaxOut:
       return "_masked_softmax.out";
+    case OpName::kMatmul:
+      return "matmul";
+    case OpName::kMatmulBackward:
+      return "matmul_backward";
+    case OpName::kMatmulBackwardOut:
+      return "matmul_backward.out";
+    case OpName::kMatmulOut:
+      return "matmul.out";
     case OpName::kMax:
       return "max";
     case OpName::kMaxDimMax:

@@ -351,7 +351,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     b = torch.zeros((5, 5), dtype=torch.int64, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""mm(): not implemented for int64""",
+        tpu="""matmul(): not implemented for int64""",
         gpu=""""addmm_cuda" not implemented for 'Long'""",
     ):
       torch.matmul(a, b)
@@ -1217,11 +1217,10 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     a = torch.ones(2, 3, dtype=dtype, device=et.device())
     b = torch.ones(3, 2, dtype=dtype, device=et.device())
 
-    # `matmul` decomposes to `mm`, so both report the`mm` kernel.
-    for op in (torch.mm, torch.matmul):
+    for op, op_name in ((torch.mm, "mm"), (torch.matmul, "matmul")):
       with et.assert_raises_message(
           NotImplementedError,
-          tpu=f"""mm(): not implemented for {tpu_dtype}""",
+          tpu=f"""{op_name}(): not implemented for {tpu_dtype}""",
           gpu=f""""addmm_cuda" not implemented for '{gpu_dtype}'""",
           message_reviewed_by="wan",
       ):
@@ -14996,6 +14995,90 @@ class MaskedSoftmaxErrorTest(et.ErrorTestBase):
           gpu="""The expanded size of the tensor (3) must match the existing size (5) at non-singleton dimension 1.  Target sizes: [2, 3].  Tensor sizes: [5]""",
       ):
         torch.nn.functional.linear(inp, weight, bias)
+
+  def test_matmul_errors(self):
+    t_0d = torch.tensor(1.0, device=et.device())
+    t_2d = torch.ones(2, 3, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""matmul(): both arguments to matmul need to be at least 1D, but they are 0D and 2D""",
+        gpu="""both arguments to matmul need to be at least 1D, but they are 0D and 2D""",
+    ):
+      torch.matmul(t_0d, t_2d)
+
+    t_f32 = torch.ones(2, 3, dtype=torch.float32, device=et.device())
+    t_f16 = torch.ones(3, 2, dtype=torch.float16, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""matmul(): expected both arguments to have the same dtype, got float32 vs float16""",
+        gpu="""expected mat1 and mat2 to have the same dtype, but got: float != c10::Half""",
+    ):
+      torch.matmul(t_f32, t_f16)
+
+    out_i32 = torch.empty(2, 2, dtype=torch.int32, device=et.device())
+    t_f32_rhs = torch.ones(3, 2, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""matmul(): expected out tensor to have dtype float32, got int32""",
+        gpu="""Expected out tensor to have dtype float, but got int instead""",
+    ):
+      torch.matmul(t_f32, t_f32_rhs, out=out_i32)
+
+    v3 = torch.ones(3, device=et.device())
+    v4 = torch.ones(4, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""matmul(): expected both 1D tensors to have the same number of elements, got 3 and 4""",
+        gpu="""inconsistent tensor size, expected tensor [3] and src [4] to have the same number of elements, but got 3 and 4 elements respectively""",
+    ):
+      torch.matmul(v3, v4)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""matmul(): expected the last dimension of the first argument (2x3) to match the dimension of the second argument (4), got 3 vs 4""",
+        gpu="""size mismatch, got input (2), mat (2x3), vec (4)""",
+    ):
+      torch.matmul(t_2d, v4)
+
+    m45 = torch.ones(4, 5, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""matmul(): mat1 and mat2 shapes cannot be multiplied (1x3 and 4x5)""",
+        gpu="""mm: mat1 and mat2 shapes cannot be multiplied (1x3 and 4x5)""",
+    ):
+      torch.matmul(v3, m45)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""matmul(): mat1 and mat2 shapes cannot be multiplied (2x3 and 4x5)""",
+        gpu="""mm: mat1 and mat2 shapes cannot be multiplied (2x3 and 4x5)""",
+    ):
+      torch.matmul(t_2d, m45)
+
+    b234 = torch.ones(2, 3, 4, device=et.device())
+    v5 = torch.ones(5, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""matmul(): expected the last dimension of the first argument [2, 3, 4] to match the dimension of the second argument [5], got 4 vs 5""",
+        gpu="""size mismatch, got input (6), mat (6x4), vec (5)""",
+    ):
+      torch.matmul(b234, v5)
+
+    b345 = torch.ones(3, 4, 5, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""matmul(): the size of tensor a (2) must match the size of tensor b (3) at non-singleton dimension 0""",
+        gpu="""The size of tensor a (2) must match the size of tensor b (3) at non-singleton dimension 0""",
+    ):
+      torch.matmul(b234, b345)
+
+    b256 = torch.ones(2, 5, 6, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""matmul(): mat1 and mat2 shapes cannot be multiplied (3x4 and 5x6)""",
+        gpu="""Expected size for first two dimensions of batch2 tensor to be: [2, 4] but got: [2, 5].""",
+    ):
+      torch.matmul(b234, b256)
 
 
 if __name__ == "__main__":

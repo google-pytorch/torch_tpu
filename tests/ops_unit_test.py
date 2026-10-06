@@ -11854,6 +11854,222 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         ),
     )
 
+  @parameterized.named_parameters(
+      ("float32", torch.float32),
+      ("bfloat16", torch.bfloat16),
+      ("float16", torch.float16),
+  )
+  def test_matmul_all_rank_combinations(self, dtype):
+    shapes = [
+        ((4,), (4,)),
+        ((3, 4), (4,)),
+        ((4,), (4, 5)),
+        ((3, 4), (4, 5)),
+        ((2, 3, 4), (4,)),
+        ((4,), (2, 4, 5)),
+        ((2, 3, 4), (4, 5)),
+        ((3, 4), (2, 4, 5)),
+        ((2, 3, 4), (2, 4, 5)),
+        ((1, 3, 4), (2, 4, 5)),
+        ((2, 3, 4), (1, 4, 5)),
+        ((2, 1, 3, 4), (1, 5, 4, 6)),
+        ((2, 3, 4, 5), (5, 6)),
+        ((4, 5), (2, 3, 5, 6)),
+    ]
+    tol = 2e-2 if dtype in (torch.bfloat16, torch.float16) else 1e-4
+    old_precision = torch.get_float32_matmul_precision()
+    torch.set_float32_matmul_precision("highest")
+    try:
+      for lhs_shape, rhs_shape in shapes:
+        with self.subTest(lhs_shape=lhs_shape, rhs_shape=rhs_shape):
+          lhs_cpu = torch.randn(lhs_shape, dtype=dtype)
+          rhs_cpu = torch.randn(rhs_shape, dtype=dtype)
+          out_shape = torch.matmul(lhs_cpu, rhs_cpu).shape
+          grad_cpu = torch.randn(out_shape, dtype=dtype)
+
+          def compute(
+              device,
+              lhs_cpu=lhs_cpu,
+              rhs_cpu=rhs_cpu,
+              grad_cpu=grad_cpu,
+          ):
+            lhs = to(lhs_cpu.clone(), device).requires_grad_(True)
+            rhs = to(rhs_cpu.clone(), device).requires_grad_(True)
+            grad = to(grad_cpu.clone(), device)
+            out = torch.matmul(lhs, rhs)
+            out.backward(grad)
+            return out, lhs.grad, rhs.grad
+
+          self.assert_close_tpu_vs_cpu(compute, atol=tol, rtol=tol)
+    finally:
+      torch.set_float32_matmul_precision(old_precision)
+
+  @parameterized.named_parameters(
+      ("complex64", torch.complex64),
+      ("complex128", torch.complex128),
+  )
+  def test_matmul_complex(self, dtype):
+    shapes = [
+        ((4,), (4,)),
+        ((3, 4), (4,)),
+        ((4,), (4, 5)),
+        ((3, 4), (4, 5)),
+        ((2, 3, 4), (4, 5)),
+        ((1, 3, 4), (2, 4, 5)),
+    ]
+    old_precision = torch.get_float32_matmul_precision()
+    torch.set_float32_matmul_precision("highest")
+    try:
+      for lhs_shape, rhs_shape in shapes:
+        with self.subTest(lhs_shape=lhs_shape, rhs_shape=rhs_shape):
+          lhs_cpu = torch.randn(lhs_shape, dtype=dtype)
+          rhs_cpu = torch.randn(rhs_shape, dtype=dtype)
+          out_shape = torch.matmul(lhs_cpu, rhs_cpu).shape
+          grad_cpu = torch.randn(out_shape, dtype=dtype)
+
+          def compute(
+              device,
+              lhs_cpu=lhs_cpu,
+              rhs_cpu=rhs_cpu,
+              grad_cpu=grad_cpu,
+          ):
+            lhs = to(lhs_cpu.clone(), device).requires_grad_(True)
+            rhs = to(rhs_cpu.clone(), device).requires_grad_(True)
+            grad = to(grad_cpu.clone(), device)
+            out = torch.matmul(lhs, rhs)
+            out.backward(grad)
+            return out, lhs.grad, rhs.grad
+
+          self.assert_close_tpu_vs_cpu(compute, atol=1e-4, rtol=1e-4)
+    finally:
+      torch.set_float32_matmul_precision(old_precision)
+
+  def test_matmul_zero_sized(self):
+    shapes = [
+        ((0,), (0,)),
+        ((3, 0), (0,)),
+        ((0, 4), (4,)),
+        ((0,), (0, 5)),
+        ((4,), (4, 0)),
+        ((2, 0, 4), (4, 5)),
+        ((2, 3, 0), (0, 5)),
+        ((0, 3, 4), (1, 4, 5)),
+    ]
+    for lhs_shape, rhs_shape in shapes:
+      with self.subTest(lhs_shape=lhs_shape, rhs_shape=rhs_shape):
+        lhs_cpu = torch.randn(lhs_shape, dtype=torch.float32)
+        rhs_cpu = torch.randn(rhs_shape, dtype=torch.float32)
+        out_shape = torch.matmul(lhs_cpu, rhs_cpu).shape
+        grad_cpu = torch.randn(out_shape, dtype=torch.float32)
+
+        def compute(
+            device,
+            lhs_cpu=lhs_cpu,
+            rhs_cpu=rhs_cpu,
+            grad_cpu=grad_cpu,
+        ):
+          lhs = to(lhs_cpu.clone(), device).requires_grad_(True)
+          rhs = to(rhs_cpu.clone(), device).requires_grad_(True)
+          grad = to(grad_cpu.clone(), device)
+          out = torch.matmul(lhs, rhs)
+          out.backward(grad)
+          return out, lhs.grad, rhs.grad
+
+        self.assert_close_tpu_vs_cpu(compute)
+
+  def test_matmul_out_and_backward_out(self):
+    old_precision = torch.get_float32_matmul_precision()
+    torch.set_float32_matmul_precision("highest")
+    try:
+      lhs_cpu = torch.randn(2, 3, 4, dtype=torch.float32)
+      rhs_cpu = torch.randn(4, 5, dtype=torch.float32)
+      grad_cpu = torch.randn(2, 3, 5, dtype=torch.float32)
+
+      # 1. Pre-allocated and resized out tensor for torch.matmul
+      def run_matmul_out(device):
+        lhs = to(lhs_cpu, device)
+        rhs = to(rhs_cpu, device)
+        out_pre = torch.empty(2, 3, 5, dtype=torch.float32, device=device)
+        res_pre = torch.matmul(lhs, rhs, out=out_pre)
+        self.assertIs(res_pre, out_pre)
+
+        out_resize = torch.empty(0, dtype=torch.float32, device=device)
+        res_resize = torch.matmul(lhs, rhs, out=out_resize)
+        self.assertIs(res_resize, out_resize)
+        return out_pre, out_resize
+
+      self.assert_close_tpu_vs_cpu(run_matmul_out, atol=1e-4, rtol=1e-4)
+
+      # 2. aten.matmul_backward and aten.matmul_backward.out with masks
+      lhs_tpu = to(lhs_cpu, "tpu")
+      rhs_tpu = to(rhs_cpu, "tpu")
+      grad_tpu = to(grad_cpu, "tpu")
+
+      lhs_ref = lhs_cpu.clone().requires_grad_(True)
+      rhs_ref = rhs_cpu.clone().requires_grad_(True)
+      torch.matmul(lhs_ref, rhs_ref).backward(grad_cpu)
+
+      for mask in (
+          [True, True],
+          [True, False],
+          [False, True],
+          [False, False],
+      ):
+        with self.subTest(mask=mask):
+          gs, go = torch.ops.aten.matmul_backward(
+              grad_tpu, lhs_tpu, rhs_tpu, mask
+          )
+          if mask[0]:
+            utils.assert_close(gs.cpu(), lhs_ref.grad, atol=1e-4, rtol=1e-4)
+          else:
+            self.assertIsNone(gs)
+          if mask[1]:
+            utils.assert_close(go.cpu(), rhs_ref.grad, atol=1e-4, rtol=1e-4)
+          else:
+            self.assertIsNone(go)
+
+          gs_out = torch.empty(0, dtype=torch.float32, device="tpu")
+          go_out = torch.empty(0, dtype=torch.float32, device="tpu")
+          res_gs, res_go = torch.ops.aten.matmul_backward.out(
+              grad_tpu, lhs_tpu, rhs_tpu, mask, out0=gs_out, out1=go_out
+          )
+          self.assertIs(res_gs, gs_out)
+          self.assertIs(res_go, go_out)
+          if mask[0]:
+            utils.assert_close(gs_out.cpu(), lhs_ref.grad, atol=1e-4, rtol=1e-4)
+          if mask[1]:
+            utils.assert_close(go_out.cpu(), rhs_ref.grad, atol=1e-4, rtol=1e-4)
+    finally:
+      torch.set_float32_matmul_precision(old_precision)
+
+  def test_matmul_non_contiguous_and_higher_order_grad(self):
+    old_precision = torch.get_float32_matmul_precision()
+    torch.set_float32_matmul_precision("highest")
+    try:
+      lhs_base = torch.randn(2, 4, 3, dtype=torch.float32)
+      rhs_base = torch.randn(2, 5, 4, dtype=torch.float32)
+
+      def run_non_contiguous_and_double_backward(device):
+        lhs = (
+            to(lhs_base.clone(), device).transpose(-2, -1).requires_grad_(True)
+        )
+        rhs = (
+            to(rhs_base.clone(), device).transpose(-2, -1).requires_grad_(True)
+        )
+        out = torch.matmul(lhs, rhs)
+        grad_lhs, grad_rhs = torch.autograd.grad(
+            out.sum(), (lhs, rhs), create_graph=True
+        )
+        loss2 = (grad_lhs * 2.0).sum() + (grad_rhs * 3.0).sum()
+        gg_lhs, gg_rhs = torch.autograd.grad(loss2, (lhs, rhs))
+        return out, grad_lhs, grad_rhs, gg_lhs, gg_rhs
+
+      self.assert_close_tpu_vs_cpu(
+          run_non_contiguous_and_double_backward, atol=1e-4, rtol=1e-4
+      )
+    finally:
+      torch.set_float32_matmul_precision(old_precision)
+
   def test_linear_shapes_and_bias(self):
     cases = [
         # 1D input x 2D weight

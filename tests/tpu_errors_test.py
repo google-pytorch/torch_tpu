@@ -5467,6 +5467,50 @@ module {
       start.elapsed_time(end)
     end.synchronize()
 
+  @et.why_tpu_only("aten.matmul_backward is not registered on CUDA.")
+  def test_matmul_backward_errors(self):
+    self_t = torch.ones(2, 3, 4, dtype=torch.float32, device=et.device())
+    other_t = torch.ones(4, 5, dtype=torch.float32, device=et.device())
+    grad_t = torch.ones(2, 3, 5, dtype=torch.float32, device=et.device())
+
+    grad_f16 = torch.ones(2, 3, 5, dtype=torch.float16, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""matmul_backward(): expected grad and self to have the same dtype, got float16 vs float32""",
+    ):
+      torch.ops.aten.matmul_backward(grad_f16, self_t, other_t, [True, True])
+
+    grad_bad_shape = torch.ones(
+        2, 3, 6, dtype=torch.float32, device=et.device()
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""matmul_backward(): expected grad to have shape [2, 3, 5], got [2, 3, 6]""",
+    ):
+      torch.ops.aten.matmul_backward(
+          grad_bad_shape, self_t, other_t, [True, True]
+      )
+
+    gs_bad_dtype = torch.empty(2, 3, 4, dtype=torch.float16, device=et.device())
+    go_ok = torch.empty(4, 5, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""matmul_backward(): expected grad_self out tensor to have dtype float32, got float16""",
+    ):
+      torch.ops.aten.matmul_backward.out(
+          grad_t, self_t, other_t, [True, True], out0=gs_bad_dtype, out1=go_ok
+      )
+
+    gs_ok = torch.empty(2, 3, 4, dtype=torch.float32, device=et.device())
+    go_bad_dtype = torch.empty(4, 5, dtype=torch.float16, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""matmul_backward(): expected grad_other out tensor to have dtype float32, got float16""",
+    ):
+      torch.ops.aten.matmul_backward.out(
+          grad_t, self_t, other_t, [True, True], out0=gs_ok, out1=go_bad_dtype
+      )
+
 
 class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
 

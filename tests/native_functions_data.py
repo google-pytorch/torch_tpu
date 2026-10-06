@@ -257,7 +257,6 @@ UNREGISTERED_OPS = frozenset([
     'logaddexp2.out',
     'logspace.out',
     'lstm_mps_backward',
-    'matmul_backward',  # No need to register as matmul is an optional op
     'max_pool2d_backward',
     'max_unpool2d',
     'max_unpool2d.out',
@@ -498,6 +497,12 @@ REGISTRATION_OVERRIDES = frozenset([
     # masked_fill_.
     'masked_fill.Scalar',
     'masked_fill.Tensor',
+    # matmul, matmul.out, and matmul_backward.out are registered to lower
+    # directly to StableHLO DotGeneral, overriding the default reshape/expand +
+    # mm/bmm decomposition.
+    'matmul',
+    'matmul.out',
+    'matmul_backward.out',
     'native_layer_norm',  # pending removal
     # new_full, new_ones, new_zeros, ones, and ones_like are registered
     # directly to lower to a single StableHLO constant instead of the composite
