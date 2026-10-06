@@ -46,8 +46,11 @@ class SingleTraceTrainerAdapter(single_trace_trainer.SingleTraceTrainer):
       model: torch.nn.Module,
       optimizer: Any = None,
       backend_compiler: compiler.StaticCompiler | None = None,
+      compute_loss_fn: Callable[..., torch.Tensor] | None = None,
   ):
-    super().__init__(model=model, optimizer=optimizer)
+    super().__init__(
+        model=model, optimizer=optimizer, compute_loss_fn=compute_loss_fn
+    )
     self.backend_compiler = backend_compiler or compiler.StaticCompiler()
 
   def make_compiled_train_step(

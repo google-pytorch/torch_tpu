@@ -135,6 +135,15 @@ class SingleTraceTrainingStepper(common.BaseStepper):
         optimizer=_to_single_trace_optimizer(
             optimizer, use_bfloat16_moments=use_bfloat16_moments
         ),
+        # Keep the built-in loss for the default `real_loss`. Both pick the
+        # same loss when `real_loss` succeeds, and the built-in loss falls back
+        # to averaging `logits` or the first output tensor where `real_loss`
+        # raises.
+        compute_loss_fn=(
+            None
+            if self._compute_loss is loss_lib.real_loss
+            else self._compute_loss
+        ),
     )
 
   def compile(self, compile_config, target):

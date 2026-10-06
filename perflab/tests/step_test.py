@@ -622,6 +622,8 @@ class StepperTypeTest(seed_test_utils.RepeatableTest):
         step_lib.StepperType.TRAINING, compute_loss=mock_grad_probe
     )
     x = torch.randn(4, 4, device=ops.device)
+    with torch.no_grad():
+      expected_loss = mock_grad_probe(model, (x,), {})
     stepper.init_with_benchmark_args(model, (x,), {}, opt)
     target = target_lib.make_target(platform=target_lib.Platform.V5E_1X1)
     compile_config = compile_lib.CompileConfig(
@@ -632,7 +634,10 @@ class StepperTypeTest(seed_test_utils.RepeatableTest):
     before = {
         name: p.detach().cpu().clone() for name, p in model.named_parameters()
     }
-    stepper.get_step_fn()()
+    loss = stepper.get_step_fn()()
+    # Only the single-trace step returns the loss, and it must come from
+    # `compute_loss` (a sum) rather than the built-in loss (a mean).
+    test_utils.assert_close(loss, expected_loss)
     after = stepper.get_params()
     changed = [
         not torch.equal(before[name], after[name].cpu()) for name in before

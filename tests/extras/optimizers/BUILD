@@ -110,6 +110,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
         "//src/torch_tpu/extras/optimizers:adamw",
         "//src/torch_tpu/extras/optimizers:sgd",
         "//src/torch_tpu/extras/optimizers:single_trace_trainer",

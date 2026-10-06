@@ -24,6 +24,7 @@ from typing import Any, Callable, Sequence
 import torch
 import torch.func as func
 from torch.fx.experimental.proxy_tensor import make_fx
+from torch.nn.utils import stateless
 from torch.utils import _pytree
 from torch_tpu.extras.optimizers import adamw
 from torch_tpu.extras.optimizers import muon
@@ -77,8 +78,13 @@ def _compute_loss(
     buffers: dict[str, torch.Tensor],
     inputs: Any,
     targets: Any,
+    compute_loss_fn: Callable[..., torch.Tensor] | None = None,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-  """Computes loss for functional execution."""
+  """Computes loss for functional execution.
+
+  If `compute_loss_fn` is set, the loss is `compute_loss_fn(model, args,
+  kwargs)`. Otherwise, it is derived from `targets` or the model output.
+  """
   p_orig = {key_map[k]: v for k, v in params.items()}
   b_orig = {key_map[k]: v for k, v in buffers.items()}
 
@@ -93,6 +99,15 @@ def _compute_loss(
       torch.nn.attention.SDPBackend.OVERRIDEABLE,
       torch.nn.attention.SDPBackend.MATH,
   ]):
+    if compute_loss_fn is not None:
+      # Swaps in `params` and `buffers` like `func.functional_call`, but lets
+      # `compute_loss_fn` call the model. `params` lists tied weights (such as
+      # an LM head sharing the embedding weight) only once, and
+      # `tie_weights=True` swaps them in for every alias.
+      with stateless._reparametrize_module(  # pylint: disable=protected-access
+          model, {**p_orig, **b_orig}, tie_weights=True
+      ):
+        return compute_loss_fn(model, args, kwargs), buffers
     out = func.functional_call(model, (p_orig, b_orig), args, kwargs)
 
   loss = None
@@ -258,11 +273,25 @@ class SingleTraceTrainer:
       model: torch.nn.Module,
       optimizer: Any = None,
       compile_fn: Callable[..., Any] | None = None,
+      compute_loss_fn: Callable[..., torch.Tensor] | None = None,
   ):
-    """Initializes the SingleTraceTrainer."""
+    """Initializes the SingleTraceTrainer.
+
+    Args:
+      model: The model to train.
+      optimizer: The optimizer applied inside the compiled step. If `None`, the
+        step only computes gradients and stores them in `param.grad`.
+      compile_fn: The default compilation callback for
+        `make_compiled_train_step`.
+      compute_loss_fn: Optional `compute_loss_fn(model, args, kwargs) -> loss`
+        that replaces the built-in loss. It is called while the traced
+        parameters and buffers are swapped into `model`, and it does not receive
+        the targets passed to the train step.
+    """
     self.model = model
     self.optimizer = optimizer
     self.compile_fn = compile_fn
+    self.compute_loss_fn = compute_loss_fn
 
     tie_weights = getattr(model, "tie_weights", None)
     if callable(tie_weights):
@@ -361,6 +390,7 @@ class SingleTraceTrainer:
             buffers=bufs_arg,
             inputs=inp,
             targets=tgts,
+            compute_loss_fn=self.compute_loss_fn,
         )
 
       grads, (loss, updated_bufs) = func.grad_and_value(

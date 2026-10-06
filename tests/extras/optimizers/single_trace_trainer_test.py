@@ -14,9 +14,12 @@
 
 """Sanity check tests for standalone SingleTraceTrainer using torch.compile."""
 
+import copy
+
 from absl.testing import absltest
 import torch
 import torch_tpu  # pylint: disable=unused-import  # noqa: F401
+from torch_tpu._internal.utils import test_utils
 from torch_tpu.extras.optimizers import adamw
 from torch_tpu.extras.optimizers import sgd
 from torch_tpu.extras.optimizers import single_trace_trainer
@@ -32,6 +35,23 @@ class ToyLinearModule(torch.nn.Module):
 
   def forward(self, x):
     return self.linear(x)
+
+
+class TiedEmbeddingModule(torch.nn.Module):
+  """Toy language model whose output head shares the embedding weight."""
+
+  def __init__(self, vocab_size=16, hidden_size=8):
+    super().__init__()
+    self.embed = torch.nn.Embedding(vocab_size, hidden_size)
+    self.head = torch.nn.Linear(hidden_size, vocab_size, bias=False)
+    self.tie_weights()
+
+  def tie_weights(self):
+    """Shares the embedding weight with the head, like Hugging Face models."""
+    self.head.weight = self.embed.weight
+
+  def forward(self, ids):
+    return self.head(self.embed(ids))
 
 
 class SingleTraceTrainerStandaloneSanityTest(seed_test_utils.RepeatableTest):
@@ -166,6 +186,38 @@ class SingleTraceTrainerStandaloneSanityTest(seed_test_utils.RepeatableTest):
     self.assertIsNotNone(model.weight.grad)
     self.assertTrue(model.weight.grad.is_sparse)
     self.assertFalse(torch.isnan(model.weight.grad._values()).any())  # pylint: disable=protected-access
+
+  def test_torch_compile_compute_loss_fn_with_tied_weights(self):
+    model = TiedEmbeddingModule().to(device=self.device)
+    # On TPU, `.to()` replaces the shared parameter separately in each module,
+    # so re-tie the weights before copying the model for the eager reference.
+    model.tie_weights()
+    eager_model = copy.deepcopy(model)
+    ids = torch.randint(0, 16, (4, 8), device=self.device)
+
+    # Sums instead of averaging like the built-in loss, so the test fails if
+    # `compute_loss_fn` is ignored.
+    def sum_loss(m, args, kwargs):
+      return m(*args, **kwargs).sum()
+
+    expected_loss = sum_loss(eager_model, (), {"ids": ids})
+    expected_loss.backward()
+
+    trainer = single_trace_trainer.SingleTraceTrainer(
+        model=model,
+        optimizer=None,
+        compile_fn=torch.compile,
+        compute_loss_fn=sum_loss,
+    )
+    train_step = trainer.make_compiled_train_step({"ids": ids})
+    loss = train_step({"ids": ids})
+
+    test_utils.assert_close(loss, expected_loss.detach())
+    # The gradient includes the contributions of both the embedding and the
+    # tied head.
+    test_utils.assert_close(
+        model.embed.weight.grad, eager_model.embed.weight.grad
+    )
 
 
 if __name__ == "__main__":
