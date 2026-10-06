@@ -444,6 +444,25 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "context_manager_errors_test",
+    srcs = ["context_manager_errors_test.py"],
+    tags = [
+        "nosan",  # *san builds are low-value for error tests.
+    ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compiler_options",
+        "//src/torch_tpu/_internal/device_utils:annotations",
+        "//src/torch_tpu/_internal/execution_mode",
+        "//src/torch_tpu/_internal/export",
+        "//src/torch_tpu/_internal/profiler",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "trace_autograd_ops_test",
     srcs = ["trace_autograd_ops_test.py"],
     # Run on single-chip TPU v7 for faster TorchDynamo/Inductor compilation

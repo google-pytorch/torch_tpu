@@ -122,6 +122,9 @@ class _ExecutionModeModule(types.ModuleType):
 sys.modules[__name__].__class__ = _ExecutionModeModule
 
 
+@annotations.forbid_in_torch_compile(
+    "A compiled graph cannot select how to dispatch eager ops."
+)
 @annotations.experimental("Context manager for setting the eager mode.")
 @contextlib.contextmanager
 def set_eager_mode(mode: EagerMode | _EagerMode):

@@ -64,6 +64,7 @@ torch_tpu_py_library(
     deps = [
         ":_impl",
         ":_profiler_backend",
+        "//src/torch_tpu/_internal/utils:annotations",
     ],
 )
 

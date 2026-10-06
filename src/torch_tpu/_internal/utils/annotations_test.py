@@ -26,12 +26,14 @@ import torch_tpu  # pylint: disable=unused-import  # noqa: F401
 from torch_tpu._internal.device import _device_module
 from torch_tpu._internal.precision.precision_impl import Precision
 from torch_tpu._internal.utils import annotations
+from torch_tpu._internal.utils import test_utils as utils
 from tests import seed_test_utils
 
 experimental = annotations.experimental
 stable = annotations.stable
 deprecated = annotations.deprecated
 internal_or_experimental = annotations.internal_or_experimental
+forbid_in_torch_compile = annotations.forbid_in_torch_compile
 
 
 def _reset_warn_once(api: Any) -> None:
@@ -951,6 +953,86 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
       self.assertEqual(torch.accelerator.current_stream(), new_stream)
     finally:
       torch.accelerator.set_stream(default_stream)
+
+  # ---------------------------------------------------------------------------
+  # 6. torch.compile Restriction Tests (@forbid_in_torch_compile)
+  # ---------------------------------------------------------------------------
+
+  def test_forbid_in_torch_compile_function_raises_only_when_compiled(self):
+    """Verifies a forbidden function raises under TorchDynamo but works eagerly."""
+
+    @forbid_in_torch_compile("__reason__")
+    def forbidden(x: torch.Tensor) -> torch.Tensor:
+      return x + 1
+
+    utils.assert_close(forbidden(torch.ones(1)), torch.full((1,), 2.0))
+
+    torch._dynamo.reset()
+    compiled = torch.compile(lambda x: forbidden(x) + 1, backend="tpu")
+    with self.assertRaisesRegex(
+        AssertionError, r"Attempt to trace forbidden callable"
+    ):
+      compiled(torch.ones(1))
+
+  def test_forbid_in_torch_compile_class_raises_only_when_compiled(self):
+    """Verifies a forbidden class raises under TorchDynamo but works eagerly."""
+
+    @forbid_in_torch_compile("__reason__")
+    class Forbidden:
+
+      def __enter__(self) -> None:
+        pass
+
+      def __exit__(self, *args: Any) -> None:
+        pass
+
+    def calculate(x: torch.Tensor) -> torch.Tensor:
+      with Forbidden():
+        return x + 1
+
+    utils.assert_close(calculate(torch.ones(1)), torch.full((1,), 2.0))
+
+    torch._dynamo.reset()
+    with self.assertRaisesRegex(
+        AssertionError, r"Attempt to trace forbidden callable"
+    ):
+      torch.compile(calculate, backend="tpu")(torch.ones(1))
+
+  def test_forbid_in_torch_compile_appends_docstring(self):
+    """Verifies the reason is appended to the API docstring."""
+
+    @forbid_in_torch_compile("__reason__")
+    def forbidden():
+      """Summary line.
+
+      Details.
+      """
+
+    self.assertIn("__reason__", forbidden.__doc__)
+    self.assertIn(".. note::", forbidden.__doc__)
+    self.assertIn(
+        "Unsupported inside `torch.compile` regions",
+        forbidden.__doc__,
+    )
+    self.assertStartsWith(forbidden.__doc__, "Summary line.\n\nDetails.")
+
+  def test_forbid_in_torch_compile_without_docstring(self):
+    """Verifies a docstring is created when the target has none."""
+
+    @forbid_in_torch_compile("__reason__")
+    def forbidden():
+      pass
+
+    self.assertIn("__reason__", forbidden.__doc__)
+    self.assertStartsWith(
+        forbidden.__doc__,
+        ".. note::\n  Unsupported inside `torch.compile` regions",
+    )
+
+  def test_forbid_in_torch_compile_invalid_reason_raises(self):
+    """Verifies that an empty reason raises ValueError."""
+    with self.assertRaises(ValueError):
+      forbid_in_torch_compile("")
 
 
 if __name__ == "__main__":

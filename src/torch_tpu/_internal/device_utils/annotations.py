@@ -17,6 +17,7 @@
 import dataclasses
 from typing import List
 from torch_tpu._internal.device_utils import annotations_py
+from torch_tpu._internal.utils import annotations as api_annotations
 
 field = dataclasses.field
 dataclass = dataclasses.dataclass
@@ -39,6 +40,10 @@ class TpuLayout:
   element_size_in_bits: int = 0
 
 
+@api_annotations.forbid_in_torch_compile(
+    "The layout hint only applies to eager host-to-device copies, which never "
+    "occur inside a compiled graph."
+)
 class LayoutContext:
   """Context manager to set the layout hint for TPU tensors.
 

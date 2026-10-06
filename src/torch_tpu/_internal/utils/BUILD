@@ -179,6 +179,7 @@ torch_tpu_py_test(
     tags = ["requires-tpu-v5lite"],
     deps = [
         ":annotations",
+        ":test_utils",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",

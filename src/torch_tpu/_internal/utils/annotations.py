@@ -20,7 +20,6 @@ metadata (__tt_api_stage__, __tt_api_stage_reason__,
 __tt_api_deprecated_version__) to functions, methods, or classes for automatic
 inspection by scanner tools, and emit standard Python runtime warnings
 (UserWarning, DeprecationWarning) on the first invocation per process.
-
 Warnings are suppressed when the caller is within the torch or torch_tpu
 internal framework packages.
 
@@ -35,7 +34,9 @@ preferred alternative, if any.
 import dataclasses
 import enum
 import functools
+import inspect
 import sys
+import textwrap
 from typing import Any, Callable, Mapping, Optional, TypeVar
 
 import torch
@@ -424,6 +425,64 @@ def internal_or_experimental(
   return lambda target: _annotate_target(
       target, stage=Stage.INTERNAL, reason=reason, prefer=prefer
   )
+
+
+def forbid_in_torch_compile(reason: str) -> Callable[[_T], _T]:
+  """Forbids a TorchTPU API (function or class) inside `torch.compile` regions.
+
+  TorchDynamo raises
+    AssertionError: Attempt to trace forbidden callable ...
+  as soon as it traces a call to the decorated API, instead of silently
+  breaking the graph and running the surrounding frame eagerly.
+
+  Since `torch._dynamo.forbid_in_graph` does not allow customizing the error
+  message, append the reason to the API's docstring so that users can tell the
+  restriction is intentional.
+
+  Apply it as the outermost decorator, so that both the forbidden flag and the
+  docstring note land on the object that users call.
+
+  Example:
+    @forbid_in_torch_compile(
+        "A compiled graph cannot select how to dispatch eager ops."
+    )
+    @contextlib.contextmanager
+    def set_eager_mode(mode: EagerMode):
+      ...
+
+  Args:
+    reason: Non-empty explanation for why the API is incompatible with
+      `torch.compile`. It must read as a clause following "because".
+
+  Returns:
+    A decorator that marks the target as forbidden in `torch.compile` regions
+    and returns the target itself.
+  """
+  if not isinstance(reason, str) or not reason.strip():
+    raise ValueError(
+        "@forbid_in_torch_compile requires a non-empty reason string."
+    )
+
+  reason = reason[0].lower() + reason[1:]
+
+  def decorator(target: _T) -> _T:
+    body = textwrap.fill(
+        f"Unsupported inside `torch.compile` regions because {reason}",
+        width=80,
+        initial_indent="  ",
+        subsequent_indent="  ",
+        break_long_words=False,
+        break_on_hyphens=False,
+    )
+    note = f".. note::\n{body}"
+    # Normalize the indentation of the original docstring so that the appended
+    # section lines up with it in `help()`.
+    doc = inspect.cleandoc(getattr(target, "__doc__", None) or "")
+    _safe_setattr(target, "__doc__", f"{doc}\n\n{note}".lstrip())
+
+    return torch._dynamo.forbid_in_graph(target)
+
+  return decorator
 
 
 def _resolve_module_attribute(

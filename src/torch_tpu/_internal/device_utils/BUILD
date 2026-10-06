@@ -32,6 +32,7 @@ torch_tpu_py_library(
     srcs = ["annotations.py"],
     deps = [
         ":annotations_py",
+        "//src/torch_tpu/_internal/utils:annotations",
     ],
 )
 

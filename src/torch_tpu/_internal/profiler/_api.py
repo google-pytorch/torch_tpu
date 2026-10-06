@@ -22,6 +22,7 @@ from typing import Any
 
 from torch_tpu._internal.profiler import _profiler_backend
 import torch_tpu._internal.profiler._impl as profiler
+from torch_tpu._internal.utils import annotations
 
 
 class ProfilerActivity(enum.Enum):
@@ -110,6 +111,10 @@ def _get_profile_options(
 
 # TODO(b/509670300): remove it when the native PyTorch profiler API is fully
 # integrated and available.
+@annotations.forbid_in_torch_compile(
+    "Using it in a compiled region would force the profiled code to run "
+    "eagerly, and the trace would not reflect compiled execution."
+)
 @contextlib.contextmanager
 def profile(
     activities: list[ProfilerActivity] | None = None,

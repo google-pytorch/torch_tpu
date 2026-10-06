@@ -18,6 +18,10 @@ from torch_tpu._internal.compiler_options import compiler_options_impl as compil
 from torch_tpu._internal.utils import annotations
 
 
+@annotations.forbid_in_torch_compile(
+    "A compiled graph is lowered to a single executable and has one set of "
+    "XLA compiler options for all of its ops."
+)
 @annotations.experimental(
     "torch.tpu.compiler.custom_compiler_options is experimental and subject to"
     " change."

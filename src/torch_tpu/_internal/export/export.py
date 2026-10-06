@@ -27,6 +27,7 @@ import torch.export
 import torch.utils._pytree as pytree
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal.compile import tpu_torch_compile
+from torch_tpu._internal.utils import annotations
 from torch_tpu._internal.benchmarks import xprof_adapter
 
 EagerMode: TypeAlias = execution_mode.EagerMode
@@ -408,6 +409,10 @@ def _process_fx_outputs(
   )
 
 
+@annotations.forbid_in_torch_compile(
+    "A compiled graph already has MLIR debug locations for each op from the FX "
+    "graph."
+)
 @contextlib.contextmanager
 def enable_tracebacks(value: bool | None = True):
   """A context manager that overrides whether enabling MLIR tracebacks."""
