@@ -91,7 +91,7 @@ def _to_single_trace_optimizer(
         fused=defaults.get("fused", True),
     )
   beta1, beta2 = defaults.get("betas", (0.9, 0.999))
-  return single_trace_trainer_adapter.ReferenceAdamw(
+  return single_trace_trainer_adapter.ReferenceAdamW(
       lr=defaults.get("lr", 1e-4),
       weight_decay=defaults.get("weight_decay", 1e-2),
       beta1=beta1,
