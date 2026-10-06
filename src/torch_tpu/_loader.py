@@ -266,7 +266,8 @@ def _init_device_impl(device: str) -> torch.device:
 
   print(
       f"Device type: {device_d.type}, Device index:"
-      f" {device_d.index if device_d.index is not None else 'default'}"
+      f" {device_d.index if device_d.index is not None else 'default'}",
+      file=sys.stderr,
   )
 
   if device == "tpu" and not torch.distributed.is_initialized():
@@ -278,7 +279,7 @@ def _init_device_impl(device: str) -> torch.device:
     # Pass `devices` as a list (not the bare string "tpu") to work around a
     # register_backend string-handling bug fixed upstream in
     # pytorch/pytorch#187960; the list form is correct regardless.
-    print("Initializing TPU distributed runtime")
+    print("Initializing TPU distributed runtime", file=sys.stderr)
     from torch_tpu._internal.distributed import torchcomm_tpu  # pylint: disable=g-import-not-at-top
 
     torch.distributed.Backend.register_backend(

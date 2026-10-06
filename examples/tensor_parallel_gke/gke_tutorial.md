@@ -13,6 +13,7 @@ export ZONE_NAME=
 export PROJECT=
 export ARTIFACT_REGISTRY_URL=us-pkg.docker.dev/...
 export DOCKER_IMAGE=test-docker-image:latest
+export TORCH_TPU_SRC=/path/to/torch_tpu
 export TPU_TYPE=
 ```
 
@@ -89,11 +90,13 @@ xpk workload create \
   --zone=${ZONE_NAME} \
   --project=${PROJECT} \
   --tpu-type=tpu7x-8 \
+  --no-use-parallel-containers \
   --docker-image=${ARTIFACT_REGISTRY_URL}/${DOCKER_IMAGE} \
-  --command="cd /workspace/examples/distributed/manual/tensor_parallel/ && ./launch.sh"
+  --command="cd /workspace/examples/tensor_parallel_gke/manual/ && ./launch_singlehost.sh"
 ```
 
-If the example contains a requirements file, you will need to install them:
+To run an FSDP example (or if the example contains a `requirements.txt` file to
+install first):
 
 ```bash
 xpk workload create \
@@ -102,8 +105,9 @@ xpk workload create \
   --zone=${ZONE_NAME} \
   --project=${PROJECT} \
   --tpu-type=tpu7x-8 \
+  --no-use-parallel-containers \
   --docker-image=${ARTIFACT_REGISTRY_URL}/${DOCKER_IMAGE} \
-  --command="cd /workspace/examples/distributed/fsdp/lora/ && pip install -r requirements.txt && ./launch.sh"
+  --command="cd /workspace/examples/fsdp/manual/ && ./launch.sh"
 ```
 
 If the example needs to leverage model weights or data, you may set them up in a
@@ -116,9 +120,10 @@ xpk workload create \
   --zone=${ZONE_NAME} \
   --project=${PROJECT} \
   --tpu-type=tpu7x-8 \
+  --no-use-parallel-containers \
   --storage=${BUCKET} \
   --docker-image=${ARTIFACT_REGISTRY_URL}/${DOCKER_IMAGE} \
-  --command="cd /workspace/examples/distributed/manual/tensor_parallel/ && ./launch.sh"
+  --command="cd /workspace/examples/tensor_parallel_gke/manual/ && ./launch_singlehost.sh"
 ```
 
 <!-- LINT.ThenChange($INTERNAL_DOCS/gke.md) -->
