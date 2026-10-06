@@ -36,7 +36,6 @@ import torch
 from torch import distributed as dist
 import torch.multiprocessing as mp
 from torch_tpu._internal import pallas
-from torch_tpu._internal.distributed import spmd_util
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import error_testing as et
@@ -441,7 +440,7 @@ def run_conflicting_device_assignments_error() -> None:
   subgroup = low if rank < half else high
 
   @torch.compile(backend="tpu", fullgraph=True)
-  @spmd_util.spmd_safe
+  @torch.tpu.distributed.spmd_safe
   def compatible_tiled_fn(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     dist.all_reduce(a)
     dist.all_reduce(b, group=subgroup)
@@ -475,7 +474,7 @@ def run_conflicting_device_assignments_error() -> None:
   )
 
   @torch.compile(backend="tpu", fullgraph=True)
-  @spmd_util.spmd_safe
+  @torch.tpu.distributed.spmd_safe
   def conflicting_fn(a: torch.Tensor) -> torch.Tensor:
     dist.all_reduce(a)
     return kernel2(kernel1(a))

@@ -17,7 +17,6 @@ from unittest import mock
 
 from absl.testing import absltest
 import torch
-from torch_tpu._internal.distributed import spmd_util
 from tests import seed_test_utils
 
 
@@ -25,7 +24,8 @@ class SpmdSafeTest(seed_test_utils.MultiProcessRepeatableTest):
 
   @mock.patch("torch_tpu._internal.sync.sync.synchronize")
   def test_spmd_safe_decorator(self, mock_sync):
-    @spmd_util.spmd_safe
+
+    @torch.tpu.distributed.spmd_safe
     def my_func(a, b):
       return a + b
 
@@ -60,7 +60,7 @@ class SpmdSafeTest(seed_test_utils.MultiProcessRepeatableTest):
         return a + b, a
 
       if use_spmd_safe:
-        simple_fn = spmd_util.spmd_safe(simple_fn)
+        simple_fn = torch.tpu.distributed.spmd_safe(simple_fn)
 
       compiled_fn = torch.compile(simple_fn, backend="tpu")
 

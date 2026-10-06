@@ -187,6 +187,7 @@ _PUBLIC_MODULES: Mapping[str, ModuleSpec] = {
             "set_tpu_launch_env": (
                 "torch_tpu._internal.distributed.distributed:set_tpu_launch_env"
             ),
+            "spmd_safe": "torch_tpu._internal.distributed.spmd_util:spmd_safe",
             # go/keep-sorted end
         },
         main="torch_tpu._internal.distributed.distributed",

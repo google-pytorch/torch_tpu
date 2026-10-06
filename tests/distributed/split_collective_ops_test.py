@@ -24,7 +24,6 @@ from torch_tpu._internal.compile import split_compiler
 from torch_tpu._internal.compile import torch_tpu_compiled_executable
 from torch_tpu._internal.compile.debug import TpuCompileDebug
 from torch_tpu._internal.distributed import collective_ops
-from torch_tpu._internal.distributed import spmd_util
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
@@ -213,7 +212,7 @@ def run_compile_all_reduce_and_serdes_test():
 def run_compile_no_splits_with_spmd_safe_test():
   debugs: list[TpuCompileDebug] = []
 
-  @spmd_util.spmd_safe
+  @torch.tpu.distributed.spmd_safe
   def f(x):
     y = x * 2
     y = y + 5

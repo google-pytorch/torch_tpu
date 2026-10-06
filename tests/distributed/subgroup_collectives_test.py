@@ -29,7 +29,6 @@ import torch
 from torch import distributed as dist
 import torch.multiprocessing as mp
 from torch_tpu._internal.distributed import device_mesh
-from torch_tpu._internal.distributed import spmd_util
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
@@ -248,7 +247,7 @@ def run_unaligned_subgroups() -> None:
   unaligned_group = unaligned_a if rank in (1, 2) else unaligned_b
 
   @torch.compile(backend="tpu", fullgraph=True)
-  @spmd_util.spmd_safe
+  @torch.tpu.distributed.spmd_safe
   def unaligned_fn(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     dist.all_reduce(a)
     dist.all_reduce(b, group=unaligned_group)

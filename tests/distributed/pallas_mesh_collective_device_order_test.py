@@ -41,7 +41,6 @@ from torch import distributed as dist
 import torch.multiprocessing as mp
 from torch_tpu._internal import pallas
 from torch_tpu._internal.distributed import device_mesh
-from torch_tpu._internal.distributed import spmd_util
 from torch_tpu._internal.distributed import tpu_distributed
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
@@ -491,9 +490,9 @@ def _run_fused(
   # away from the kernel and never sees the kernel's DeviceAssignment. The
   # decorator only suppresses that split -- it does not touch DeviceAssignment,
   # meshes or replica groups -- so it cannot manufacture the property under
-  # test. Under compile it annotates the traced nodes
-  # (_internal/distributed/spmd_util.py:82-84).
-  @spmd_util.spmd_safe
+  # test. Under compile it annotates the traced nodes (see `spmd_safe` in
+  # _internal/distributed/spmd_util.py).
+  @torch.tpu.distributed.spmd_safe
   def region(kernel_input: torch.Tensor, payload: torch.Tensor):
     kernel_out = kernel_op(kernel_input)
     # A real element of the kernel output, so the collective cannot be
@@ -696,7 +695,7 @@ def run_two_mesh_probe(probe_id: str) -> None:
     )
     x = torch.full((1, _ROWS, _COLS), rank, dtype=torch.int32, device="tpu")
 
-    @spmd_util.spmd_safe
+    @torch.tpu.distributed.spmd_safe
     def region(t: torch.Tensor) -> torch.Tensor:
       return second(first(t))
 

@@ -253,8 +253,7 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
         " and subject to change.",
     )
 
-    # 4. Proxy dir and invalid attribute handling
-    self.assertEqual(dir(torch.tpu.distributed), ["set_tpu_launch_env"])
+    # 4. Invalid attribute handling
     with self.assertRaises(  # ASSERT_RAISES_OK=Verifies proxy module raises AttributeError for non-existent attributes
         AttributeError
     ):

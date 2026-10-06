@@ -23,7 +23,6 @@ from absl.testing import absltest
 import torch
 from torch import distributed as dist
 from torch_tpu._internal import execution_mode
-from torch_tpu._internal.distributed import spmd_util
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
 from tests.distributed import distributed_utils
@@ -50,7 +49,8 @@ def _test_wrapper(test_fn, *args, **kwargs):
 
 
 def run_spmd_safe_decorator_test(compile_test: bool = False):
-  @spmd_util.spmd_safe
+
+  @torch.tpu.distributed.spmd_safe
   def eager_fused_all_reduce(x):
     y = x * 5
     dist.all_reduce(y)
@@ -69,7 +69,8 @@ def run_spmd_safe_decorator_test(compile_test: bool = False):
 
 
 def run_spmd_safe_decorator_backward_test():
-  @spmd_util.spmd_safe
+
+  @torch.tpu.distributed.spmd_safe
   def eager_fused_all_reduce(x):
     y = x * 5
     dist.all_reduce(y)
@@ -93,7 +94,7 @@ def run_uncoordinated_op_stream_test():
       if rank == 0 and i % 2 == 0:
         x = x + 1
 
-      @spmd_util.spmd_safe
+      @torch.tpu.distributed.spmd_safe
       def foo(x):
         for _ in range(10):
           x = x + 1
@@ -109,7 +110,7 @@ def run_spmd_safe_dtensor_compile_test():
   world_size = dist.get_world_size()
   mesh = torch.distributed.tensor.DeviceMesh("tpu", torch.arange(world_size))
 
-  @spmd_util.spmd_safe
+  @torch.tpu.distributed.spmd_safe
   def my_func(x):
     return x * 2
 
@@ -128,7 +129,7 @@ def run_spmd_safe_multi_dtensor_compile_test():
   world_size = dist.get_world_size()
   mesh = torch.distributed.tensor.DeviceMesh("tpu", torch.arange(world_size))
 
-  @spmd_util.spmd_safe
+  @torch.tpu.distributed.spmd_safe
   def my_func(x, y):
     return x + y
 

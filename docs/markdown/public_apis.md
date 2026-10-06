@@ -116,6 +116,7 @@ process. Use it at your own risk. Using it triggers a one-time warning.
 *   `torch.tpu.default_stream`
 *   `torch.tpu.device_of`
 *   `torch.tpu.distributed.set_tpu_launch_env`
+*   `torch.tpu.distributed.spmd_safe`
 *   `torch.tpu.eager_mode` (getter)
 *   `torch.tpu.eager_mode` (setter)
 *   `torch.tpu.get_amp_supported_dtype`
