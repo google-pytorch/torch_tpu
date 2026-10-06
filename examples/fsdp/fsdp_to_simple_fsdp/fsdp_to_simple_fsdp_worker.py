@@ -55,7 +55,7 @@ from torch import optim
 from torch.distributed import fsdp
 from torch.distributed import tensor as dt
 from torch.utils import checkpoint as checkpoint_utils
-from examples.tutorials.distributed.fsdp_to_simple_fsdp import model as model_lib
+from examples.fsdp.fsdp_to_simple_fsdp import model as model_lib
 from torchtitan.experiments.graph_trainer import simple_fsdp
 
 BATCH_SIZE = 4  # Per-device batch size.

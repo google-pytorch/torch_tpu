@@ -25,7 +25,7 @@ from torch import distributed as dist
 from torch import nn
 from torch.distributed import launcher
 from torch.tpu import distributed  # pyrefly: ignore[missing-import]
-from examples.distributed.fsdp.manual import model
+from examples.fsdp.manual import model
 
 logging.set_verbosity(logging.INFO)
 
