@@ -43,8 +43,8 @@ class AdamWOptimizersTest(seed_test_utils.RepeatableTest):
         list(ref_params.values()),
         lr=lr,
         weight_decay=weight_decay,
-        betas=(custom_opt.beta1, custom_opt.beta2),
-        eps=custom_opt.eps,
+        betas=(custom_opt.defaults["beta1"], custom_opt.defaults["beta2"]),
+        eps=custom_opt.defaults["eps"],
     )
     for k, p in ref_params.items():
       p.grad = grads_ref[k].clone().detach()
@@ -117,6 +117,20 @@ class AdamWOptimizersTest(seed_test_utils.RepeatableTest):
         lr=1e-3, weight_decay=1e-2, use_bfloat16_moments=False
     )
     test_utils.validate_compiled_linear_train_step(self, opt, self.device)
+
+  def test_defaults_are_read_only(self):
+    for opt in (
+        optimizers.TorchAdamW(lr=1e-2, beta1=0.5),
+        adamw.ReferenceAdamW(lr=1e-2, beta1=0.5),
+    ):
+      with self.subTest(type(opt).__name__):
+        self.assertEqual(opt.defaults["lr"], 1e-2)
+        self.assertEqual(opt.defaults["beta1"], 0.5)
+        self.assertFalse(hasattr(opt, "lr"))
+        with self.assertRaises(  # ASSERT_RAISES_OK=Python attribute check
+            TypeError
+        ):
+          opt.defaults["lr"] = 1e-3  # pytype: disable=unsupported-operands
 
 
 if __name__ == "__main__":

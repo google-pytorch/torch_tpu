@@ -294,10 +294,10 @@ class SingleTraceTrainer:
         parameters and buffers are swapped into `model`, and it does not receive
         the targets passed to the train step.
     """
-    self.model = model
-    self.optimizer = optimizer
-    self.compile_fn = compile_fn
-    self.compute_loss_fn = compute_loss_fn
+    self._model = model
+    self._optimizer = optimizer
+    self._compile_fn = compile_fn
+    self._compute_loss_fn = compute_loss_fn
 
     tie_weights = getattr(model, "tie_weights", None)
     if callable(tie_weights):
@@ -313,18 +313,18 @@ class SingleTraceTrainer:
       self._key_map[safe_name] = name
       initial_params[safe_name] = param.detach()
 
-    self.buffers = {}
+    self._buffers = {}
     for name, buf in raw_buffers.items():
       safe_name = name.replace(".", "_")
       self._key_map[safe_name] = name
-      self.buffers[safe_name] = buf.detach()
+      self._buffers[safe_name] = buf.detach()
 
-    if self.optimizer is not None:
-      self.param_group = self.optimizer.init_param_group(initial_params)
+    if self._optimizer is not None:
+      self._param_group = self._optimizer.init_param_group(initial_params)
     else:
       # Without an optimizer, store raw parameter tensors directly in the
       # param_group container for pure forward + backward execution.
-      self.param_group = initial_params
+      self._param_group = initial_params
 
   # Update state in this container and in user model.
   # Not technically required for params; all of the optimizers internalize an
@@ -333,9 +333,21 @@ class SingleTraceTrainer:
   # by func.grad_and_value. This is functionalized so we will need an update
   # for buffers.
   def _update(self, new_pg, updated_bufs):
-    self.buffers = updated_bufs
-    self.param_group = new_pg
-    self.model.load_state_dict(self.bufs, strict=False)
+    self._buffers = updated_bufs
+    self._param_group = new_pg
+    self._model.load_state_dict(self.bufs, strict=False)
+
+  @property
+  @_annotations.experimental(
+      "param_group is experimental and may change or be removed without notice."
+  )
+  def param_group(self) -> Any:
+    """Returns the parameters and optimizer state that the train step updates.
+
+    This is the `ParamGroup` returned by the optimizer's `init_param_group`, or
+    a dict of parameters if the trainer has no optimizer.
+    """
+    return self._param_group
 
   @property
   @_annotations.experimental(
@@ -344,9 +356,9 @@ class SingleTraceTrainer:
   def params(self) -> dict[str, torch.Tensor]:
     """Returns parameters with their original names."""
     p = (
-        self.param_group.params
-        if hasattr(self.param_group, "params")
-        else self.param_group
+        self._param_group.params
+        if hasattr(self._param_group, "params")
+        else self._param_group
     )
     return {self._key_map[k]: v for k, v in p.items()}
 
@@ -356,7 +368,7 @@ class SingleTraceTrainer:
   )
   def bufs(self) -> dict[str, torch.Tensor]:
     """Returns buffers with their original names."""
-    return {self._key_map[k]: v for k, v in self.buffers.items()}
+    return {self._key_map[k]: v for k, v in self._buffers.items()}
 
   @_annotations.experimental(
       "make_compiled_train_step() is experimental and may change or be removed"
@@ -370,7 +382,7 @@ class SingleTraceTrainer:
   ) -> Callable[..., torch.Tensor]:
     """Returns a callable for the training step with the model compiled."""
     if compile_fn is None:
-      compile_fn = self.compile_fn
+      compile_fn = self._compile_fn
     if compile_fn is None:
       raise ValueError(
           "A compilation callback (compile_fn) must be provided either to"
@@ -380,7 +392,7 @@ class SingleTraceTrainer:
     # We don't actually want to trace through example_targets if it is None.
     # Static compiler doesn't support optional input args.
     flat_inputs, in_spec = _pytree.tree_flatten(
-        (self.param_group, self.buffers, example_inputs)
+        (self._param_group, self._buffers, example_inputs)
         + ((example_targets,) if example_targets is not None else ())
     )
 
@@ -400,21 +412,21 @@ class SingleTraceTrainer:
         p = target if params_to_diff else {}
         inp = inps if params_to_diff else target
         return _compute_loss(
-            self.model,
+            self._model,
             self._key_map,
             params=p,
             buffers=bufs_arg,
             inputs=inp,
             targets=tgts,
-            compute_loss_fn=self.compute_loss_fn,
+            compute_loss_fn=self._compute_loss_fn,
         )
 
       grads, (loss, updated_bufs) = func.grad_and_value(
           bound_loss, has_aux=True, argnums=0
       )(diff_target, bufs)
 
-      if self.optimizer is not None:
-        new_p_group = self.optimizer(p_group, grads)
+      if self._optimizer is not None:
+        new_p_group = self._optimizer(p_group, grads)
         flat_outputs, traced_out_spec = _pytree.tree_flatten(
             (loss, new_p_group, updated_bufs)
         )
@@ -484,21 +496,21 @@ class SingleTraceTrainer:
       # Build a template to capture output structure (`TreeSpec`) for
       # restoring backend flat results.
       dummy_loss = torch.tensor(0.0)
-      if self.optimizer is not None:
+      if self._optimizer is not None:
         _, out_spec = _pytree.tree_flatten(
-            (dummy_loss, self.param_group, self.buffers)
+            (dummy_loss, self._param_group, self._buffers)
         )
       else:
         # Construct dummy gradients matching the output structure: input tree
         # for parameterless modules, or parameter dictionary for parameterized ones.
-        if not self.param_group:
+        if not self._param_group:
           dummy_grads = _pytree.tree_map(
               lambda _: torch.tensor(0.0), example_inputs
           )
         else:
-          dummy_grads = {k: torch.tensor(0.0) for k in self.param_group.keys()}
+          dummy_grads = {k: torch.tensor(0.0) for k in self._param_group.keys()}
         _, out_spec = _pytree.tree_flatten(
-            (dummy_loss, dummy_grads, self.buffers)
+            (dummy_loss, dummy_grads, self._buffers)
         )
 
     # Stateful wrapper returned to user; handles flattening, running compiled
@@ -510,22 +522,22 @@ class SingleTraceTrainer:
       ), "Targets passed to step but not as examples, or vice versa."
 
       flat_inputs, _ = _pytree.tree_flatten(
-          (self.param_group, self.buffers, inputs)
+          (self._param_group, self._buffers, inputs)
           + ((targets,) if targets is not None else ())
       )
 
       result = compiled_step(*flat_inputs)
 
       assert out_spec is not None
-      if self.optimizer is not None:
+      if self._optimizer is not None:
         loss, new_param_group, updated_bufs = _pytree.tree_unflatten(
             result, out_spec
         )
         self._update(new_param_group, updated_bufs)
       else:
         loss, grads, updated_bufs = _pytree.tree_unflatten(result, out_spec)
-        self.buffers = updated_bufs
-        self.model.load_state_dict(self.bufs, strict=False)
+        self._buffers = updated_bufs
+        self._model.load_state_dict(self.bufs, strict=False)
 
         def _unwrap_sparse(x):
           if isinstance(x, _SparseGradPlaceholder):
@@ -542,7 +554,7 @@ class SingleTraceTrainer:
         # Populate param.grad so callers (e.g. benchmark synchronization harness)
         # can eagerly synchronize device execution on parameter gradients.
         if isinstance(grads, dict):
-          for name, param in self.model.named_parameters():
+          for name, param in self._model.named_parameters():
             safe_name = name.replace(".", "_")
             if safe_name in grads:
               param.grad = grads[safe_name]

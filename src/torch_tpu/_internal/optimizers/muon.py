@@ -17,7 +17,7 @@
 import abc
 import dataclasses
 import math
-from typing import Any, ClassVar
+from typing import ClassVar
 
 import torch
 import torch.optim._muon as _torch_muon
@@ -88,44 +88,44 @@ class _MuonBase(_optim.Optimizer):
   EPS: float = 1e-7
 
   __tt_api_stages__: ClassVar[dict[str, _annotations.ApiStageInfo]] = {
-      'DEFAULT_A': _annotations.ApiStageInfo(
+      "DEFAULT_A": _annotations.ApiStageInfo(
           stage=_annotations.Stage.EXPERIMENTAL,
           reason=(
-              'DEFAULT_A is experimental and may change or be removed without'
-              ' notice.'
+              "DEFAULT_A is experimental and may change or be removed without"
+              " notice."
           ),
       ),
-      'DEFAULT_B': _annotations.ApiStageInfo(
+      "DEFAULT_B": _annotations.ApiStageInfo(
           stage=_annotations.Stage.EXPERIMENTAL,
           reason=(
-              'DEFAULT_B is experimental and may change or be removed without'
-              ' notice.'
+              "DEFAULT_B is experimental and may change or be removed without"
+              " notice."
           ),
       ),
-      'DEFAULT_C': _annotations.ApiStageInfo(
+      "DEFAULT_C": _annotations.ApiStageInfo(
           stage=_annotations.Stage.EXPERIMENTAL,
           reason=(
-              'DEFAULT_C is experimental and may change or be removed without'
-              ' notice.'
+              "DEFAULT_C is experimental and may change or be removed without"
+              " notice."
           ),
       ),
-      'DEFAULT_NS_STEPS': _annotations.ApiStageInfo(
+      "DEFAULT_NS_STEPS": _annotations.ApiStageInfo(
           stage=_annotations.Stage.EXPERIMENTAL,
           reason=(
-              'DEFAULT_NS_STEPS is experimental and may change or be removed'
-              ' without notice.'
+              "DEFAULT_NS_STEPS is experimental and may change or be removed"
+              " without notice."
           ),
       ),
-      'EPS': _annotations.ApiStageInfo(
+      "EPS": _annotations.ApiStageInfo(
           stage=_annotations.Stage.EXPERIMENTAL,
           reason=(
-              'EPS is experimental and may change or be removed without notice.'
+              "EPS is experimental and may change or be removed without notice."
           ),
       ),
   }
 
   @_annotations.experimental(
-      'ParamGroup is experimental and may change or be removed without notice.'
+      "ParamGroup is experimental and may change or be removed without notice."
   )
   @dataclasses.dataclass
   class ParamGroup:
@@ -136,7 +136,18 @@ class _MuonBase(_optim.Optimizer):
         default_factory=dict
     )
     opt_steps: dict[str, torch.Tensor] = dataclasses.field(default_factory=dict)
-    extra_state: dict[str, Any] = dataclasses.field(default_factory=dict)
+
+  _HYPERPARAMETER_NAMES: ClassVar[tuple[str, ...]] = (
+      "lr",
+      "weight_decay",
+      "momentum",
+      "nesterov",
+      "ns_coefficients",
+      "eps",
+      "ns_steps",
+      "adjust_lr_fn",
+      "use_bfloat16_moments",
+  )
 
   def __init__(
       self,
@@ -155,17 +166,17 @@ class _MuonBase(_optim.Optimizer):
       use_bfloat16_moments: bool = False,
   ):
     super().__init__(lr=lr, weight_decay=weight_decay)
-    self.momentum = momentum
-    self.nesterov = nesterov
-    self.ns_coefficients = ns_coefficients
-    self.eps = eps
-    self.ns_steps = ns_steps
-    self.adjust_lr_fn = adjust_lr_fn
-    self.use_bfloat16_moments = use_bfloat16_moments
+    self._momentum = momentum
+    self._nesterov = nesterov
+    self._ns_coefficients = ns_coefficients
+    self._eps = eps
+    self._ns_steps = ns_steps
+    self._adjust_lr_fn = adjust_lr_fn
+    self._use_bfloat16_moments = use_bfloat16_moments
 
   @_annotations.experimental(
-      'init_param_group() is experimental and may change or be removed without'
-      ' notice.'
+      "init_param_group() is experimental and may change or be removed without"
+      " notice."
   )
   def init_param_group(
       self, params: dict[str, torch.Tensor] | torch.nn.Module
@@ -180,7 +191,7 @@ class _MuonBase(_optim.Optimizer):
       return self.ParamGroup(params={})
 
     device = next(iter(params.values())).device
-    moment_dtype = torch.bfloat16 if self.use_bfloat16_moments else None
+    moment_dtype = torch.bfloat16 if self._use_bfloat16_moments else None
 
     opt_state_m = {
         name: torch.zeros_like(
@@ -204,7 +215,7 @@ class _MuonBase(_optim.Optimizer):
 
   @abc.abstractmethod
   @_annotations.experimental(
-      'step() is experimental and may change or be removed without notice.'
+      "step() is experimental and may change or be removed without notice."
   )
   def step(
       self, param_group: ParamGroup, grads: dict[str, torch.Tensor]
@@ -230,15 +241,15 @@ class ReferenceMuon(_MuonBase):
     if grad.ndim != 2:
       raise ValueError("Param gradient must be a 2D matrix")
 
-    m.lerp_(grad, 1.0 - self.momentum)
-    update = grad.lerp(m, self.momentum) if self.nesterov else m
+    m.lerp_(grad, 1.0 - self._momentum)
+    update = grad.lerp(m, self._momentum) if self._nesterov else m
 
     update = _zeropower_via_newtonschulz(
-        update, self.ns_coefficients, self.ns_steps, self.eps
+        update, self._ns_coefficients, self._ns_steps, self._eps
     )
-    adjusted_lr = _adjust_lr(self.lr, self.adjust_lr_fn, param.shape)
+    adjusted_lr = _adjust_lr(self._lr, self._adjust_lr_fn, param.shape)
 
-    param.mul_(1.0 - self.lr * self.weight_decay)
+    param.mul_(1.0 - self._lr * self._weight_decay)
     param.add_(update, alpha=-adjusted_lr)
 
   def step(
@@ -256,10 +267,24 @@ class ReferenceMuon(_MuonBase):
 
 
 @_annotations.experimental(
-    'TorchMuon is experimental and may change or be removed without notice.'
+    "TorchMuon is experimental and may change or be removed without notice."
 )
 class TorchMuon(_MuonBase):
   """Torch Muon implementation calling torch.optim._muon.muon directly."""
+
+  _HYPERPARAMETER_NAMES: ClassVar[tuple[str, ...]] = (
+      "lr",
+      "weight_decay",
+      "momentum",
+      "nesterov",
+      "ns_coefficients",
+      "eps",
+      "ns_steps",
+      "adjust_lr_fn",
+      "use_bfloat16_moments",
+      "foreach",
+      "has_complex",
+  )
 
   def __init__(
       self,
@@ -290,11 +315,11 @@ class TorchMuon(_MuonBase):
         adjust_lr_fn=adjust_lr_fn,
         use_bfloat16_moments=use_bfloat16_moments,
     )
-    self.foreach = foreach
-    self.has_complex = has_complex
+    self._foreach = foreach
+    self._has_complex = has_complex
 
   @_annotations.experimental(
-      'step() is experimental and may change or be removed without notice.'
+      "step() is experimental and may change or be removed without notice."
   )
   def step(
       self, param_group: _MuonBase.ParamGroup, grads: dict[str, torch.Tensor]
@@ -310,16 +335,16 @@ class TorchMuon(_MuonBase):
         params=param_list,
         grads=grad_list,
         muon_momentum_bufs=m_list,
-        foreach=self.foreach,
-        lr=self.lr,
-        weight_decay=self.weight_decay,
-        momentum=self.momentum,
-        nesterov=self.nesterov,
-        ns_coefficients=self.ns_coefficients,
-        ns_steps=self.ns_steps,
-        eps=self.eps,
-        adjust_lr_fn=self.adjust_lr_fn,
-        has_complex=self.has_complex,
+        foreach=self._foreach,
+        lr=self._lr,
+        weight_decay=self._weight_decay,
+        momentum=self._momentum,
+        nesterov=self._nesterov,
+        ns_coefficients=self._ns_coefficients,
+        ns_steps=self._ns_steps,
+        eps=self._eps,
+        adjust_lr_fn=self._adjust_lr_fn,
+        has_complex=self._has_complex,
     )
     torch.ops.aten._foreach_add_(step_list, 1.0)
 
@@ -331,7 +356,6 @@ def _muon_param_group_flatten(group: _MuonBase.ParamGroup):
       group.params,
       group.opt_state_m,
       group.opt_steps,
-      group.extra_state,
   )
   return children, None
 
@@ -341,7 +365,6 @@ def _muon_param_group_unflatten(children, _context):
       params=children[0],
       opt_state_m=children[1],
       opt_steps=children[2],
-      extra_state=children[3],
   )
 
 

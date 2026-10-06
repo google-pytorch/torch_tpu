@@ -50,11 +50,11 @@ class MuonOptimizersTest(seed_test_utils.RepeatableTest):
         lr=lr,
         weight_decay=weight_decay,
         momentum=momentum,
-        nesterov=custom_opt.nesterov,
-        ns_coefficients=custom_opt.ns_coefficients,
-        eps=custom_opt.eps,
-        ns_steps=custom_opt.ns_steps,
-        adjust_lr_fn=custom_opt.adjust_lr_fn,
+        nesterov=custom_opt.defaults["nesterov"],
+        ns_coefficients=custom_opt.defaults["ns_coefficients"],
+        eps=custom_opt.defaults["eps"],
+        ns_steps=custom_opt.defaults["ns_steps"],
+        adjust_lr_fn=custom_opt.defaults["adjust_lr_fn"],
     )
     for k, p in ref_params.items():
       p.grad = grads_ref[k].clone().detach()
@@ -106,6 +106,20 @@ class MuonOptimizersTest(seed_test_utils.RepeatableTest):
     test_utils.validate_compiled_linear_train_step(
         self, opt, self.device, bias=False
     )
+
+  def test_defaults_are_read_only(self):
+    for opt in (
+        optimizers.TorchMuon(lr=1e-2, momentum=0.5),
+        muon.ReferenceMuon(lr=1e-2, momentum=0.5),
+    ):
+      with self.subTest(type(opt).__name__):
+        self.assertEqual(opt.defaults["lr"], 1e-2)
+        self.assertEqual(opt.defaults["momentum"], 0.5)
+        self.assertFalse(hasattr(opt, "lr"))
+        with self.assertRaises(  # ASSERT_RAISES_OK=Python attribute check
+            TypeError
+        ):
+          opt.defaults["lr"] = 1e-3  # pytype: disable=unsupported-operands
 
 
 if __name__ == "__main__":

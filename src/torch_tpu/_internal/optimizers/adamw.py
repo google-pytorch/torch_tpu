@@ -16,7 +16,7 @@
 
 import abc
 import dataclasses
-from typing import Any
+from typing import ClassVar
 
 import torch
 import torch.optim.adamw as _torch_adamw
@@ -25,8 +25,8 @@ from torch_tpu._internal.optimizers import optim as _optim
 from torch_tpu._internal.utils import annotations as _annotations
 
 __all__ = [
-    'ReferenceAdamW',
-    'TorchAdamW',
+    "ReferenceAdamW",
+    "TorchAdamW",
 ]
 
 
@@ -34,7 +34,7 @@ class _AdamWBase(_optim.Optimizer):
   """Internal base class for AdamW optimizer variants with nested ParamGroup."""
 
   @_annotations.experimental(
-      'ParamGroup is experimental and may change or be removed without notice.'
+      "ParamGroup is experimental and may change or be removed without notice."
   )
   @dataclasses.dataclass
   class ParamGroup:
@@ -48,7 +48,15 @@ class _AdamWBase(_optim.Optimizer):
         default_factory=dict
     )
     opt_steps: dict[str, torch.Tensor] = dataclasses.field(default_factory=dict)
-    extra_state: dict[str, Any] = dataclasses.field(default_factory=dict)
+
+  _HYPERPARAMETER_NAMES: ClassVar[tuple[str, ...]] = (
+      "lr",
+      "weight_decay",
+      "beta1",
+      "beta2",
+      "eps",
+      "use_bfloat16_moments",
+  )
 
   def __init__(
       self,
@@ -60,14 +68,14 @@ class _AdamWBase(_optim.Optimizer):
       use_bfloat16_moments: bool = True,
   ):
     super().__init__(lr=lr, weight_decay=weight_decay)
-    self.beta1 = beta1
-    self.beta2 = beta2
-    self.eps = eps
-    self.use_bfloat16_moments = use_bfloat16_moments
+    self._beta1 = beta1
+    self._beta2 = beta2
+    self._eps = eps
+    self._use_bfloat16_moments = use_bfloat16_moments
 
   @_annotations.experimental(
-      'init_param_group() is experimental and may change or be removed without'
-      ' notice.'
+      "init_param_group() is experimental and may change or be removed without"
+      " notice."
   )
   def init_param_group(
       self, params: dict[str, torch.Tensor] | torch.nn.Module
@@ -82,7 +90,7 @@ class _AdamWBase(_optim.Optimizer):
       return self.ParamGroup(params={})
 
     device = next(iter(params.values())).device
-    moment_dtype = torch.bfloat16 if self.use_bfloat16_moments else None
+    moment_dtype = torch.bfloat16 if self._use_bfloat16_moments else None
 
     opt_state_m = {
         name: torch.zeros_like(
@@ -116,7 +124,7 @@ class _AdamWBase(_optim.Optimizer):
 
   @abc.abstractmethod
   @_annotations.experimental(
-      'step() is experimental and may change or be removed without notice.'
+      "step() is experimental and may change or be removed without notice."
   )
   def step(
       self, param_group: ParamGroup, grads: dict[str, torch.Tensor]
@@ -141,19 +149,19 @@ class ReferenceAdamW(_AdamWBase):
       step: float | torch.Tensor = 1.0,
   ) -> None:
     """Performs an in-place reference AdamW update on param, m, and v."""
-    if self.weight_decay != 0.0:
-      p_decayed = param * (1.0 - self.lr * self.weight_decay)
+    if self._weight_decay != 0.0:
+      p_decayed = param * (1.0 - self._lr * self._weight_decay)
     else:
       p_decayed = param
 
-    bias_correction1 = 1.0 - (self.beta1**step)
-    bias_correction2 = 1.0 - (self.beta2**step)
+    bias_correction1 = 1.0 - (self._beta1**step)
+    bias_correction2 = 1.0 - (self._beta2**step)
     sqrt_bc2 = bias_correction2**0.5
-    step_size = (self.lr / bias_correction1) * sqrt_bc2
-    scaled_eps = self.eps * sqrt_bc2
+    step_size = (self._lr / bias_correction1) * sqrt_bc2
+    scaled_eps = self._eps * sqrt_bc2
 
-    new_m = self.beta1 * m + (1.0 - self.beta1) * grad
-    new_v = self.beta2 * v + (1.0 - self.beta2) * (grad * grad)
+    new_m = self._beta1 * m + (1.0 - self._beta1) * grad
+    new_v = self._beta2 * v + (1.0 - self._beta2) * (grad * grad)
     denom = torch.sqrt(new_v) + scaled_eps
     new_p = p_decayed - (step_size * new_m) / denom
 
@@ -179,10 +187,27 @@ class ReferenceAdamW(_AdamWBase):
 
 
 @_annotations.experimental(
-    'TorchAdamW is experimental and may change or be removed without notice.'
+    "TorchAdamW is experimental and may change or be removed without notice."
 )
 class TorchAdamW(_AdamWBase):
   """Torch AdamW implementation calling torch.optim.adamw.adamw directly."""
+
+  _HYPERPARAMETER_NAMES: ClassVar[tuple[str, ...]] = (
+      "lr",
+      "weight_decay",
+      "beta1",
+      "beta2",
+      "eps",
+      "use_bfloat16_moments",
+      "amsgrad",
+      "maximize",
+      "foreach",
+      "capturable",
+      "differentiable",
+      "fused",
+      "grad_scale",
+      "found_inf",
+  )
 
   def __init__(
       self,
@@ -209,17 +234,17 @@ class TorchAdamW(_AdamWBase):
         eps=eps,
         use_bfloat16_moments=use_bfloat16_moments,
     )
-    self.amsgrad = amsgrad
-    self.maximize = maximize
-    self.foreach = foreach
-    self.capturable = capturable
-    self.differentiable = differentiable
-    self.fused = fused
-    self.grad_scale = grad_scale
-    self.found_inf = found_inf
+    self._amsgrad = amsgrad
+    self._maximize = maximize
+    self._foreach = foreach
+    self._capturable = capturable
+    self._differentiable = differentiable
+    self._fused = fused
+    self._grad_scale = grad_scale
+    self._found_inf = found_inf
 
   @_annotations.experimental(
-      'step() is experimental and may change or be removed without notice.'
+      "step() is experimental and may change or be removed without notice."
   )
   def step(
       self, param_group: _AdamWBase.ParamGroup, grads: dict[str, torch.Tensor]
@@ -239,19 +264,19 @@ class TorchAdamW(_AdamWBase):
         exp_avg_sqs=v_list,
         max_exp_avg_sqs=[],
         state_steps=step_list,
-        foreach=self.foreach,
-        capturable=self.capturable,
-        differentiable=self.differentiable,
-        fused=self.fused,
-        grad_scale=self.grad_scale,
-        found_inf=self.found_inf,
-        amsgrad=self.amsgrad,
-        beta1=self.beta1,
-        beta2=self.beta2,
-        lr=self.lr,
-        weight_decay=self.weight_decay,
-        eps=self.eps,
-        maximize=self.maximize,
+        foreach=self._foreach,
+        capturable=self._capturable,
+        differentiable=self._differentiable,
+        fused=self._fused,
+        grad_scale=self._grad_scale,
+        found_inf=self._found_inf,
+        amsgrad=self._amsgrad,
+        beta1=self._beta1,
+        beta2=self._beta2,
+        lr=self._lr,
+        weight_decay=self._weight_decay,
+        eps=self._eps,
+        maximize=self._maximize,
     )
     return param_group
 
@@ -262,7 +287,6 @@ def _adam_param_group_flatten(group: _AdamWBase.ParamGroup):
       group.opt_state_m,
       group.opt_state_v,
       group.opt_steps,
-      group.extra_state,
   )
   return children, None
 
@@ -273,7 +297,6 @@ def _adam_param_group_unflatten(children, _context):
       opt_state_m=children[1],
       opt_state_v=children[2],
       opt_steps=children[3],
-      extra_state=children[4],
   )
 
 

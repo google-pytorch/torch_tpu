@@ -46,8 +46,8 @@ class SGDOptimizersTest(seed_test_utils.RepeatableTest):
         lr=lr,
         momentum=momentum,
         weight_decay=weight_decay,
-        dampening=custom_opt.dampening,
-        nesterov=custom_opt.nesterov,
+        dampening=custom_opt.defaults["dampening"],
+        nesterov=custom_opt.defaults["nesterov"],
     )
     for k, p in ref_params.items():
       p.grad = grads_ref[k].clone().detach()
@@ -116,6 +116,20 @@ class SGDOptimizersTest(seed_test_utils.RepeatableTest):
   def test_torch_sgd_compiled_linear_train_step(self):
     opt = optimizers.TorchSgd(lr=1e-2, momentum=0.9)
     test_utils.validate_compiled_linear_train_step(self, opt, self.device)
+
+  def test_defaults_are_read_only(self):
+    for opt in (
+        optimizers.TorchSgd(lr=1e-2, momentum=0.5),
+        sgd.ReferenceSgd(lr=1e-2, momentum=0.5),
+    ):
+      with self.subTest(type(opt).__name__):
+        self.assertEqual(opt.defaults["lr"], 1e-2)
+        self.assertEqual(opt.defaults["momentum"], 0.5)
+        self.assertFalse(hasattr(opt, "lr"))
+        with self.assertRaises(  # ASSERT_RAISES_OK=Python attribute check
+            TypeError
+        ):
+          opt.defaults["lr"] = 1e-3  # pytype: disable=unsupported-operands
 
 
 if __name__ == "__main__":

@@ -64,8 +64,8 @@ class SingleTraceTrainerAdapter(optimizers.SingleTraceTrainer):
         # Only donate parameter buffers when an optimizer updates parameters in-place.
         # Without an optimizer (or when input donation is explicitly disabled),
         # donating parameters would invalidate them across repeated training iterations.
-        if self.optimizer is not None and getattr(
-            self.optimizer, "donate_inputs", True
+        if self._optimizer is not None and getattr(
+            self._optimizer, "_donate_inputs", True
         ):
           flat_param_group, _ = _pytree.tree_flatten(self.param_group)
           donated_inputs = [

@@ -16,7 +16,7 @@
 
 import abc
 import dataclasses
-from typing import Any
+from typing import ClassVar
 
 import torch
 import torch.optim.sgd as _torch_sgd
@@ -34,7 +34,7 @@ class _SgdBase(_optim.Optimizer):
   """Internal base class for SGD optimizer variants with nested ParamGroup."""
 
   @_annotations.experimental(
-      'ParamGroup is experimental and may change or be removed without notice.'
+      "ParamGroup is experimental and may change or be removed without notice."
   )
   @dataclasses.dataclass
   class ParamGroup:
@@ -45,7 +45,14 @@ class _SgdBase(_optim.Optimizer):
         default_factory=dict
     )
     opt_steps: dict[str, torch.Tensor] = dataclasses.field(default_factory=dict)
-    extra_state: dict[str, Any] = dataclasses.field(default_factory=dict)
+
+  _HYPERPARAMETER_NAMES: ClassVar[tuple[str, ...]] = (
+      "lr",
+      "momentum",
+      "dampening",
+      "weight_decay",
+      "nesterov",
+  )
 
   def __init__(
       self,
@@ -56,13 +63,13 @@ class _SgdBase(_optim.Optimizer):
       nesterov: bool = False,
   ):
     super().__init__(lr=lr, weight_decay=weight_decay)
-    self.momentum = momentum
-    self.dampening = dampening
-    self.nesterov = nesterov
+    self._momentum = momentum
+    self._dampening = dampening
+    self._nesterov = nesterov
 
   @_annotations.experimental(
-      'init_param_group() is experimental and may change or be removed without'
-      ' notice.'
+      "init_param_group() is experimental and may change or be removed without"
+      " notice."
   )
   def init_param_group(
       self, params: dict[str, torch.Tensor] | torch.nn.Module
@@ -87,7 +94,7 @@ class _SgdBase(_optim.Optimizer):
             )
             for name, param in params.items()
         }
-        if self.momentum != 0.0
+        if self._momentum != 0.0
         else {}
     )
     opt_steps = {
@@ -103,7 +110,7 @@ class _SgdBase(_optim.Optimizer):
 
   @abc.abstractmethod
   @_annotations.experimental(
-      'step() is experimental and may change or be removed without notice.'
+      "step() is experimental and may change or be removed without notice."
   )
   def step(
       self, param_group: ParamGroup, grads: dict[str, torch.Tensor]
@@ -127,22 +134,22 @@ class ReferenceSgd(_SgdBase):
       step: float | torch.Tensor = 1.0,
   ) -> None:
     """Performs an in-place reference SGD update on param and momentum buffer m."""
-    if self.weight_decay != 0.0:
-      d_p = grad + self.weight_decay * param
+    if self._weight_decay != 0.0:
+      d_p = grad + self._weight_decay * param
     else:
       d_p = grad
 
-    if self.momentum != 0.0 and m is not None:
+    if self._momentum != 0.0 and m is not None:
       new_m = torch.where(
-          step == 1.0, d_p, self.momentum * m + (1.0 - self.dampening) * d_p
+          step == 1.0, d_p, self._momentum * m + (1.0 - self._dampening) * d_p
       )
-      if self.nesterov:
-        d_p = d_p + self.momentum * new_m
+      if self._nesterov:
+        d_p = d_p + self._momentum * new_m
       else:
         d_p = new_m
       m.copy_(new_m)
 
-    new_p = param - self.lr * d_p
+    new_p = param - self._lr * d_p
     param.copy_(new_p)
 
   def step(
@@ -163,10 +170,24 @@ class ReferenceSgd(_SgdBase):
 
 
 @_annotations.experimental(
-    'TorchSgd is experimental and may change or be removed without notice.'
+    "TorchSgd is experimental and may change or be removed without notice."
 )
 class TorchSgd(_SgdBase):
   """Torch SGD implementation calling torch.optim.sgd.sgd directly."""
+
+  _HYPERPARAMETER_NAMES: ClassVar[tuple[str, ...]] = (
+      "lr",
+      "momentum",
+      "dampening",
+      "weight_decay",
+      "nesterov",
+      "maximize",
+      "foreach",
+      "fused",
+      "grad_scale",
+      "found_inf",
+      "has_sparse_grad",
+  )
 
   def __init__(
       self,
@@ -189,15 +210,15 @@ class TorchSgd(_SgdBase):
         weight_decay=weight_decay,
         nesterov=nesterov,
     )
-    self.maximize = maximize
-    self.foreach = foreach
-    self.fused = fused
-    self.grad_scale = grad_scale
-    self.found_inf = found_inf
-    self.has_sparse_grad = has_sparse_grad
+    self._maximize = maximize
+    self._foreach = foreach
+    self._fused = fused
+    self._grad_scale = grad_scale
+    self._found_inf = found_inf
+    self._has_sparse_grad = has_sparse_grad
 
   @_annotations.experimental(
-      'step() is experimental and may change or be removed without notice.'
+      "step() is experimental and may change or be removed without notice."
   )
   def step(
       self, param_group: _SgdBase.ParamGroup, grads: dict[str, torch.Tensor]
@@ -208,7 +229,7 @@ class TorchSgd(_SgdBase):
     grad_list = [grads[k] for k in param_keys]
     m_list = (
         [param_group.opt_state_m[k] for k in param_keys]
-        if self.momentum != 0.0
+        if self._momentum != 0.0
         else []
     )
     step_list = [param_group.opt_steps[k] for k in param_keys]
@@ -217,17 +238,17 @@ class TorchSgd(_SgdBase):
         params=param_list,
         d_p_list=grad_list,
         momentum_buffer_list=m_list,
-        has_sparse_grad=self.has_sparse_grad,
-        foreach=self.foreach,
-        fused=self.fused,
-        grad_scale=self.grad_scale,
-        found_inf=self.found_inf,
-        weight_decay=self.weight_decay,
-        momentum=self.momentum,
-        lr=self.lr,
-        dampening=self.dampening,
-        nesterov=self.nesterov,
-        maximize=self.maximize,
+        has_sparse_grad=self._has_sparse_grad,
+        foreach=self._foreach,
+        fused=self._fused,
+        grad_scale=self._grad_scale,
+        found_inf=self._found_inf,
+        weight_decay=self._weight_decay,
+        momentum=self._momentum,
+        lr=self._lr,
+        dampening=self._dampening,
+        nesterov=self._nesterov,
+        maximize=self._maximize,
     )
     torch.ops.aten._foreach_add_(step_list, 1.0)
 
@@ -239,7 +260,6 @@ def _sgd_param_group_flatten(group: _SgdBase.ParamGroup):
       group.params,
       group.opt_state_m,
       group.opt_steps,
-      group.extra_state,
   )
   return children, None
 
@@ -249,7 +269,6 @@ def _sgd_param_group_unflatten(children, _context):
       params=children[0],
       opt_state_m=children[1],
       opt_steps=children[2],
-      extra_state=children[3],
   )
 
 
