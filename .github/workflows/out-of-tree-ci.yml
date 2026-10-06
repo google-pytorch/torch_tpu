@@ -12,21 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# PyTorch Out-of-Tree (OOT) Dispatch / CRCR L1 Integration
+# PyTorch Out-of-Tree (OOT) Dispatch / CRCR Integration
 #
 # Origin: Based on the PyTorch CRCR (Cross-Repository Continuous Registration) template
 # https://github.com/pytorch/crcr-test/blob/main/README.md#step-3-create-a-dispatch-receiver-workflow.
 #
 # Purpose: Triggers CI runs in response to upstream PyTorch https://github.com/pytorch/pytorch push
 # events via repository_dispatch webhooks, running the TorchTPU native test suite against new
-# upstream commits.
+# upstream commits and reporting status back to the PyTorch CRCR relay.
 #
 # Expected Behaviors:
 # 1. The PyTorch CRCR relay sends a `repository_dispatch` webhook of type `push` when commits land
 #    in upstream `main` or when a `ciflow` tag is created.
 # 2. This workflow triggers, checking out TorchTPU and the specific PyTorch SHA provided in the
 #    webhook payload (`client_payload.payload.after`).
-# 3. It runs the TorchTPU native test targets to detect breakages early.
+# 3. It reports `in_progress` to CRCR, runs the TorchTPU native test targets, and reports the final
+#    job conclusion back to CRCR via `pytorch/test-infra/.github/actions/cross-repo-ci-relay-callback`.
 #
 # Anti-pattern warning: No `workflow_dispatch` triggers or remote connection debugging steps to this
 # workflow. See go/ml-github-actions:connect#enable-workflow-dispatch.
@@ -61,7 +62,7 @@ run-name: >-
 concurrency:
   group: >-
     oot-${{ github.event.client_payload.payload.repository.full_name }}-${{ github.event.client_payload.payload.ref || github.run_id }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -72,6 +73,9 @@ jobs:
     # tags, ghstack branches, and developer pushes that the PyTorch CRCR relay blindly forwards.
     if: github.event.client_payload.payload.ref == 'refs/heads/main'
     name: "Presubmit on ${{ matrix.job_info.name || matrix.job_info.runner }} against dispatched PyTorch"
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -93,6 +97,27 @@ jobs:
       image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:30a9cf2ed330736957b3256dd3df69a13a556ae46626e9ad2ba205fa7a3c0051"  # Tag infrastructure-public-image-f0ac56f68949 (built 2026-09-21)
 
     steps:
+      # The k8s container hook mounts the runner's /home/runner/_work volume at
+      # /__w inside the job container. Composite actions that expand
+      # ${{ github.action_path }} in `run:` reference /home/runner/_work/_actions,
+      # so symlink /home/runner/_work -> /__w before invoking external composite actions.
+      - name: Map runner work directory in container
+        continue-on-error: true
+        run: |
+          if [ -d "/home/runner/_work" ] && [ ! -L "/home/runner/_work" ]; then
+            rmdir /home/runner/_work
+          fi
+          mkdir -p /home/runner
+          ln -sfn /__w /home/runner/_work
+
+      - name: Report in_progress to CRCR
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: pytorch/test-infra/.github/actions/cross-repo-ci-relay-callback@28dee7456d0348d74a5faa85098bb028b263ee2b  # main
+        with:
+          status: in_progress
+          job-name: "Presubmit on ${{ matrix.job_info.name || matrix.job_info.runner }}"
+
       - name: Checkout TorchTPU
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
@@ -139,3 +164,13 @@ jobs:
             echo "$EVENT_JSON"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report completion to CRCR
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: pytorch/test-infra/.github/actions/cross-repo-ci-relay-callback@28dee7456d0348d74a5faa85098bb028b263ee2b  # main
+        with:
+          status: completed
+          conclusion: ${{ job.status }}
+          job-name: "Presubmit on ${{ matrix.job_info.name || matrix.job_info.runner }}"
