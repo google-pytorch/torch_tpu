@@ -145,19 +145,6 @@ process. Use it at your own risk. Using it triggers a one-time warning.
 *   `torch.tpu.ops.sparse_map_row`
 *   `torch.tpu.ops.splash_sdpa`
 *   `torch.tpu.ops.strip_jagged_padding`
-*   `torch.tpu.optimizers.AdamW`
-*   `torch.tpu.optimizers.AdamW.ParamGroup`
-*   `torch.tpu.optimizers.AdamW.init_param_group`
-*   `torch.tpu.optimizers.AdamW.step`
-*   `torch.tpu.optimizers.Muon`
-*   `torch.tpu.optimizers.Muon.DEFAULT_A`
-*   `torch.tpu.optimizers.Muon.DEFAULT_B`
-*   `torch.tpu.optimizers.Muon.DEFAULT_C`
-*   `torch.tpu.optimizers.Muon.DEFAULT_NS_STEPS`
-*   `torch.tpu.optimizers.Muon.EPS`
-*   `torch.tpu.optimizers.Muon.ParamGroup`
-*   `torch.tpu.optimizers.Muon.init_param_group`
-*   `torch.tpu.optimizers.Muon.step`
 *   `torch.tpu.optimizers.Optimizer`
 *   `torch.tpu.optimizers.Optimizer.init_param_group`
 *   `torch.tpu.optimizers.Optimizer.step`
@@ -178,10 +165,6 @@ process. Use it at your own risk. Using it triggers a one-time warning.
 *   `torch.tpu.optimizers.ReferenceSgd.ParamGroup`
 *   `torch.tpu.optimizers.ReferenceSgd.init_param_group`
 *   `torch.tpu.optimizers.ReferenceSgd.step`
-*   `torch.tpu.optimizers.SGD`
-*   `torch.tpu.optimizers.SGD.ParamGroup`
-*   `torch.tpu.optimizers.SGD.init_param_group`
-*   `torch.tpu.optimizers.SGD.step`
 *   `torch.tpu.optimizers.SingleTraceTrainer`
 *   `torch.tpu.optimizers.SingleTraceTrainer.bufs` (getter)
 *   `torch.tpu.optimizers.SingleTraceTrainer.make_compiled_train_step`

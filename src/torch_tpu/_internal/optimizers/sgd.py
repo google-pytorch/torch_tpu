@@ -26,16 +26,12 @@ from torch_tpu._internal.utils import annotations as _annotations
 
 __all__ = [
     "ReferenceSgd",
-    "SGD",
     "TorchSgd",
 ]
 
 
-@_annotations.experimental(
-    'SGD is experimental and may change or be removed without notice.'
-)
-class SGD(_optim.Optimizer):
-  """Base class for SGD optimizer variants with nested ParamGroup."""
+class _SgdBase(_optim.Optimizer):
+  """Internal base class for SGD optimizer variants with nested ParamGroup."""
 
   @_annotations.experimental(
       'ParamGroup is experimental and may change or be removed without notice.'
@@ -119,7 +115,7 @@ class SGD(_optim.Optimizer):
 @_annotations.experimental(
     'ReferenceSgd is experimental and may change or be removed without notice.'
 )
-class ReferenceSgd(SGD):
+class ReferenceSgd(_SgdBase):
   """Reference pure PyTorch implementation of SGD."""
 
   def _reference_sgd_update(
@@ -152,8 +148,8 @@ class ReferenceSgd(SGD):
       'step() is experimental and may change or be removed without notice.'
   )
   def step(
-      self, param_group: SGD.ParamGroup, grads: dict[str, torch.Tensor]
-  ) -> SGD.ParamGroup:
+      self, param_group: _SgdBase.ParamGroup, grads: dict[str, torch.Tensor]
+  ) -> _SgdBase.ParamGroup:
     """Reference pure PyTorch implementation of SGD step."""
     for name, param in param_group.params.items():
       step_tensor = param_group.opt_steps[name]
@@ -171,7 +167,7 @@ class ReferenceSgd(SGD):
 @_annotations.experimental(
     'TorchSgd is experimental and may change or be removed without notice.'
 )
-class TorchSgd(SGD):
+class TorchSgd(_SgdBase):
   """Torch SGD implementation calling torch.optim.sgd.sgd directly."""
 
   def __init__(
@@ -206,8 +202,8 @@ class TorchSgd(SGD):
       'step() is experimental and may change or be removed without notice.'
   )
   def step(
-      self, param_group: SGD.ParamGroup, grads: dict[str, torch.Tensor]
-  ) -> SGD.ParamGroup:
+      self, param_group: _SgdBase.ParamGroup, grads: dict[str, torch.Tensor]
+  ) -> _SgdBase.ParamGroup:
     """Torch SGD step calling torch.optim.sgd.sgd directly."""
     param_keys = list(param_group.params.keys())
     param_list = [param_group.params[k] for k in param_keys]
@@ -240,7 +236,7 @@ class TorchSgd(SGD):
     return param_group
 
 
-def _sgd_param_group_flatten(group: SGD.ParamGroup):
+def _sgd_param_group_flatten(group: _SgdBase.ParamGroup):
   children = (
       group.params,
       group.opt_state_m,
@@ -251,7 +247,7 @@ def _sgd_param_group_flatten(group: SGD.ParamGroup):
 
 
 def _sgd_param_group_unflatten(children, _context):
-  return SGD.ParamGroup(
+  return _SgdBase.ParamGroup(
       params=children[0],
       opt_state_m=children[1],
       opt_steps=children[2],
@@ -260,7 +256,7 @@ def _sgd_param_group_unflatten(children, _context):
 
 
 _pytree.register_pytree_node(
-    SGD.ParamGroup,
+    _SgdBase.ParamGroup,
     _sgd_param_group_flatten,
     _sgd_param_group_unflatten,
 )

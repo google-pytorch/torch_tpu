@@ -260,8 +260,6 @@ _PUBLIC_MODULES: Mapping[str, ModuleSpec] = {
     "torch.tpu.optimizers": ModuleSpec(
         exports={
             # go/keep-sorted start
-            "AdamW": "torch_tpu._internal.optimizers.adamw:AdamW",
-            "Muon": "torch_tpu._internal.optimizers.muon:Muon",
             "Optimizer": "torch_tpu._internal.optimizers.optim:Optimizer",
             "ReferenceAdamw": (
                 "torch_tpu._internal.optimizers.adamw:ReferenceAdamw"
@@ -270,7 +268,6 @@ _PUBLIC_MODULES: Mapping[str, ModuleSpec] = {
                 "torch_tpu._internal.optimizers.muon:ReferenceMuon"
             ),
             "ReferenceSgd": "torch_tpu._internal.optimizers.sgd:ReferenceSgd",
-            "SGD": "torch_tpu._internal.optimizers.sgd:SGD",
             "SingleTraceTrainer": (
                 "torch_tpu._internal.optimizers.single_trace_trainer:SingleTraceTrainer"
             ),

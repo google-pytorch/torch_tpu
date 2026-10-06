@@ -26,7 +26,6 @@ from torch_tpu._internal.optimizers import optim as _optim
 from torch_tpu._internal.utils import annotations as _annotations
 
 __all__ = [
-    "Muon",
     "ReferenceMuon",
     "TorchMuon",
 ]
@@ -79,11 +78,8 @@ def _adjust_lr(
   return lr * adjusted_ratio
 
 
-@_annotations.experimental(
-    'Muon is experimental and may change or be removed without notice.'
-)
-class Muon(_optim.Optimizer):
-  """Base class for Muon optimizer variants with nested ParamGroup."""
+class _MuonBase(_optim.Optimizer):
+  """Internal base class for Muon optimizer variants with nested ParamGroup."""
 
   DEFAULT_A: float = 3.4445
   DEFAULT_B: float = -4.7750
@@ -220,7 +216,7 @@ class Muon(_optim.Optimizer):
 @_annotations.experimental(
     'ReferenceMuon is experimental and may change or be removed without notice.'
 )
-class ReferenceMuon(Muon):
+class ReferenceMuon(_MuonBase):
   """Reference pure PyTorch implementation of Muon."""
 
   def _reference_muon_update(
@@ -248,8 +244,8 @@ class ReferenceMuon(Muon):
       'step() is experimental and may change or be removed without notice.'
   )
   def step(
-      self, param_group: Muon.ParamGroup, grads: dict[str, torch.Tensor]
-  ) -> Muon.ParamGroup:
+      self, param_group: _MuonBase.ParamGroup, grads: dict[str, torch.Tensor]
+  ) -> _MuonBase.ParamGroup:
     """Reference pure PyTorch implementation of Muon step."""
     for name, param in param_group.params.items():
       self._reference_muon_update(
@@ -264,7 +260,7 @@ class ReferenceMuon(Muon):
 @_annotations.experimental(
     'TorchMuon is experimental and may change or be removed without notice.'
 )
-class TorchMuon(Muon):
+class TorchMuon(_MuonBase):
   """Torch Muon implementation calling torch.optim._muon.muon directly."""
 
   def __init__(
@@ -274,12 +270,12 @@ class TorchMuon(Muon):
       momentum: float = 0.95,
       nesterov: bool = True,
       ns_coefficients: tuple[float, float, float] = (
-          Muon.DEFAULT_A,
-          Muon.DEFAULT_B,
-          Muon.DEFAULT_C,
+          _MuonBase.DEFAULT_A,
+          _MuonBase.DEFAULT_B,
+          _MuonBase.DEFAULT_C,
       ),
-      eps: float = Muon.EPS,
-      ns_steps: int = Muon.DEFAULT_NS_STEPS,
+      eps: float = _MuonBase.EPS,
+      ns_steps: int = _MuonBase.DEFAULT_NS_STEPS,
       adjust_lr_fn: str | None = None,
       use_bfloat16_moments: bool = False,
       foreach: bool | None = False,
@@ -303,8 +299,8 @@ class TorchMuon(Muon):
       'step() is experimental and may change or be removed without notice.'
   )
   def step(
-      self, param_group: Muon.ParamGroup, grads: dict[str, torch.Tensor]
-  ) -> Muon.ParamGroup:
+      self, param_group: _MuonBase.ParamGroup, grads: dict[str, torch.Tensor]
+  ) -> _MuonBase.ParamGroup:
     """Torch Muon step calling torch.optim._muon.muon directly."""
     param_keys = list(param_group.params.keys())
     param_list = [param_group.params[k] for k in param_keys]
@@ -332,7 +328,7 @@ class TorchMuon(Muon):
     return param_group
 
 
-def _muon_param_group_flatten(group: Muon.ParamGroup):
+def _muon_param_group_flatten(group: _MuonBase.ParamGroup):
   children = (
       group.params,
       group.opt_state_m,
@@ -343,7 +339,7 @@ def _muon_param_group_flatten(group: Muon.ParamGroup):
 
 
 def _muon_param_group_unflatten(children, _context):
-  return Muon.ParamGroup(
+  return _MuonBase.ParamGroup(
       params=children[0],
       opt_state_m=children[1],
       opt_steps=children[2],
@@ -352,7 +348,7 @@ def _muon_param_group_unflatten(children, _context):
 
 
 _pytree.register_pytree_node(
-    Muon.ParamGroup,
+    _MuonBase.ParamGroup,
     _muon_param_group_flatten,
     _muon_param_group_unflatten,
 )

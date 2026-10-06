@@ -38,13 +38,10 @@ __all__ = [
 
 # Re-export optimizer classes for simple_trainer
 Optimizer = optim.Optimizer
-AdamW = adamw.AdamW
-SGD = sgd.SGD
 ReferenceAdamw = adamw.ReferenceAdamw
 TorchAdamw = adamw.TorchAdamw
 ReferenceSgd = sgd.ReferenceSgd
 TorchSgd = sgd.TorchSgd
-Muon = muon.Muon
 ReferenceMuon = muon.ReferenceMuon
 TorchMuon = muon.TorchMuon
 

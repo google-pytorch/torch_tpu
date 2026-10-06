@@ -25,17 +25,13 @@ from torch_tpu._internal.optimizers import optim as _optim
 from torch_tpu._internal.utils import annotations as _annotations
 
 __all__ = [
-    "AdamW",
     "ReferenceAdamw",
     "TorchAdamw",
 ]
 
 
-@_annotations.experimental(
-    'AdamW is experimental and may change or be removed without notice.'
-)
-class AdamW(_optim.Optimizer):
-  """Base class for AdamW optimizer variants with nested ParamGroup."""
+class _AdamWBase(_optim.Optimizer):
+  """Internal base class for AdamW optimizer variants with nested ParamGroup."""
 
   @_annotations.experimental(
       'ParamGroup is experimental and may change or be removed without notice.'
@@ -133,7 +129,7 @@ class AdamW(_optim.Optimizer):
     'ReferenceAdamw is experimental and may change or be removed without'
     ' notice.'
 )
-class ReferenceAdamw(AdamW):
+class ReferenceAdamw(_AdamWBase):
   """Reference pure PyTorch implementation of AdamW."""
 
   def _reference_adamw_update(
@@ -169,8 +165,8 @@ class ReferenceAdamw(AdamW):
       'step() is experimental and may change or be removed without notice.'
   )
   def step(
-      self, param_group: AdamW.ParamGroup, grads: dict[str, torch.Tensor]
-  ) -> AdamW.ParamGroup:
+      self, param_group: _AdamWBase.ParamGroup, grads: dict[str, torch.Tensor]
+  ) -> _AdamWBase.ParamGroup:
     """Reference pure PyTorch implementation of AdamW step."""
     for name, param in param_group.params.items():
       step_tensor = param_group.opt_steps[name]
@@ -188,7 +184,7 @@ class ReferenceAdamw(AdamW):
 @_annotations.experimental(
     'TorchAdamw is experimental and may change or be removed without notice.'
 )
-class TorchAdamw(AdamW):
+class TorchAdamw(_AdamWBase):
   """Torch AdamW implementation calling torch.optim.adamw.adamw directly."""
 
   def __init__(
@@ -229,8 +225,8 @@ class TorchAdamw(AdamW):
       'step() is experimental and may change or be removed without notice.'
   )
   def step(
-      self, param_group: AdamW.ParamGroup, grads: dict[str, torch.Tensor]
-  ) -> AdamW.ParamGroup:
+      self, param_group: _AdamWBase.ParamGroup, grads: dict[str, torch.Tensor]
+  ) -> _AdamWBase.ParamGroup:
     """Torch AdamW step calling torch.optim.adamw.adamw directly."""
     param_keys = list(param_group.params.keys())
     param_list = [param_group.params[k] for k in param_keys]
@@ -263,7 +259,7 @@ class TorchAdamw(AdamW):
     return param_group
 
 
-def _adam_param_group_flatten(group: AdamW.ParamGroup):
+def _adam_param_group_flatten(group: _AdamWBase.ParamGroup):
   children = (
       group.params,
       group.opt_state_m,
@@ -275,7 +271,7 @@ def _adam_param_group_flatten(group: AdamW.ParamGroup):
 
 
 def _adam_param_group_unflatten(children, _context):
-  return AdamW.ParamGroup(
+  return _AdamWBase.ParamGroup(
       params=children[0],
       opt_state_m=children[1],
       opt_state_v=children[2],
@@ -285,7 +281,7 @@ def _adam_param_group_unflatten(children, _context):
 
 
 _pytree.register_pytree_node(
-    AdamW.ParamGroup,
+    _AdamWBase.ParamGroup,
     _adam_param_group_flatten,
     _adam_param_group_unflatten,
 )
