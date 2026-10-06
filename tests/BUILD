@@ -2698,11 +2698,31 @@ torch_tpu_py_test(
     ],
 )
 
+# Finds the TorchTPU repository root in google3 and OSS, in runfiles and in the
+# workspace of `blaze run` / `bazel run`.
+torch_tpu_py_library(
+    name = "repo_root",
+    srcs = ["repo_root.py"],
+    visibility = ["//:__subpackages__"],
+)
+
+torch_tpu_py_test(
+    name = "repo_root_test",
+    srcs = ["repo_root_test.py"],
+    deps = [
+        ":repo_root",
+        ":seed_test_utils",
+        "//shims/absl_py/testing:absltest",
+        "//src/torch_tpu",
+    ],
+)
+
 torch_tpu_py_library(
     name = "cpp_style_lib",
     testonly = True,
     srcs = ["cpp_style_lib.py"],
     visibility = ["//:__subpackages__"],
+    deps = [":repo_root"],
 )
 
 torch_tpu_py_test(

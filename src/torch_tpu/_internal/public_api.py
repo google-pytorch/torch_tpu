@@ -114,8 +114,8 @@ def _tpu_attr(name: str) -> str:
 #    `_internal/BUILD` (with `# build_cleaner: keep`, since imports happen
 #    dynamically via string targets) and to `WHEEL_PY_TARGETS` in
 #    `build_files/wheel.bzl`.
-# 4. Regenerate `google/tools/tt_apis.yaml` (from the artifacts of
-#    `google/tools:tt_apis_test`) and add unit tests in
+# 4. Regenerate `tests/api/tt_apis.yaml` (with `tests/api:scan_tt_apis`, see
+#    `tests/api/scan_tt_apis.py`) and add unit tests in
 #    `tests/api_registry_test.py`.
 #
 # TODO(wan): Consider a more local registration mechanism (e.g. a decorator in
