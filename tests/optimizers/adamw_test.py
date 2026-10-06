@@ -17,6 +17,7 @@
 from absl.testing import absltest
 import torch
 from torch.tpu import optimizers
+from torch_tpu._internal.optimizers import adamw
 from torch_tpu._internal.utils import test_utils as assert_utils
 from tests import seed_test_utils
 from tests.optimizers import test_utils
@@ -88,7 +89,7 @@ class AdamWOptimizersTest(seed_test_utils.RepeatableTest):
       )
 
   def test_reference_adamw_step(self):
-    opt = optimizers.ReferenceAdamW(
+    opt = adamw.ReferenceAdamW(
         lr=1e-3, weight_decay=1e-2, use_bfloat16_moments=False
     )
     self._validate_opt_step(opt, lr=1e-3, weight_decay=1e-2)

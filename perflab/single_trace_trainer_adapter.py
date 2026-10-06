@@ -19,16 +19,19 @@ from typing import Any, Callable
 import torch
 from torch.utils import _pytree
 from torch_tpu._internal.compile import compiler
+from torch_tpu._internal.optimizers import adamw
+from torch_tpu._internal.optimizers import muon
+from torch_tpu._internal.optimizers import sgd
 
 optimizers = torch.tpu.optimizers
 
 # Re-export optimizer classes
 Optimizer = optimizers.Optimizer
-ReferenceAdamW = optimizers.ReferenceAdamW
+ReferenceAdamW = adamw.ReferenceAdamW
 TorchAdamW = optimizers.TorchAdamW
-ReferenceSgd = optimizers.ReferenceSgd
+ReferenceSgd = sgd.ReferenceSgd
 TorchSgd = optimizers.TorchSgd
-ReferenceMuon = optimizers.ReferenceMuon
+ReferenceMuon = muon.ReferenceMuon
 TorchMuon = optimizers.TorchMuon
 
 

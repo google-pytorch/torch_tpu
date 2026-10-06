@@ -125,12 +125,12 @@ class _AdamWBase(_optim.Optimizer):
     pass
 
 
-@_annotations.experimental(
-    'ReferenceAdamW is experimental and may change or be removed without'
-    ' notice.'
-)
 class ReferenceAdamW(_AdamWBase):
-  """Reference pure PyTorch implementation of AdamW."""
+  """Reference pure PyTorch implementation of AdamW.
+
+  Internal: not part of the public API. Use
+  `torch.tpu.optimizers.TorchAdamW` instead.
+  """
 
   def _reference_adamw_update(
       self,
@@ -161,9 +161,6 @@ class ReferenceAdamW(_AdamWBase):
     m.copy_(new_m)
     v.copy_(new_v)
 
-  @_annotations.experimental(
-      'step() is experimental and may change or be removed without notice.'
-  )
   def step(
       self, param_group: _AdamWBase.ParamGroup, grads: dict[str, torch.Tensor]
   ) -> _AdamWBase.ParamGroup:

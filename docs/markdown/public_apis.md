@@ -148,23 +148,6 @@ process. Use it at your own risk. Using it triggers a one-time warning.
 *   `torch.tpu.optimizers.Optimizer`
 *   `torch.tpu.optimizers.Optimizer.init_param_group`
 *   `torch.tpu.optimizers.Optimizer.step`
-*   `torch.tpu.optimizers.ReferenceAdamW`
-*   `torch.tpu.optimizers.ReferenceAdamW.ParamGroup`
-*   `torch.tpu.optimizers.ReferenceAdamW.init_param_group`
-*   `torch.tpu.optimizers.ReferenceAdamW.step`
-*   `torch.tpu.optimizers.ReferenceMuon`
-*   `torch.tpu.optimizers.ReferenceMuon.DEFAULT_A`
-*   `torch.tpu.optimizers.ReferenceMuon.DEFAULT_B`
-*   `torch.tpu.optimizers.ReferenceMuon.DEFAULT_C`
-*   `torch.tpu.optimizers.ReferenceMuon.DEFAULT_NS_STEPS`
-*   `torch.tpu.optimizers.ReferenceMuon.EPS`
-*   `torch.tpu.optimizers.ReferenceMuon.ParamGroup`
-*   `torch.tpu.optimizers.ReferenceMuon.init_param_group`
-*   `torch.tpu.optimizers.ReferenceMuon.step`
-*   `torch.tpu.optimizers.ReferenceSgd`
-*   `torch.tpu.optimizers.ReferenceSgd.ParamGroup`
-*   `torch.tpu.optimizers.ReferenceSgd.init_param_group`
-*   `torch.tpu.optimizers.ReferenceSgd.step`
 *   `torch.tpu.optimizers.SingleTraceTrainer`
 *   `torch.tpu.optimizers.SingleTraceTrainer.bufs` (getter)
 *   `torch.tpu.optimizers.SingleTraceTrainer.make_compiled_train_step`

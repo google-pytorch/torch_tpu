@@ -213,11 +213,12 @@ class _MuonBase(_optim.Optimizer):
     pass
 
 
-@_annotations.experimental(
-    'ReferenceMuon is experimental and may change or be removed without notice.'
-)
 class ReferenceMuon(_MuonBase):
-  """Reference pure PyTorch implementation of Muon."""
+  """Reference pure PyTorch implementation of Muon.
+
+  Internal: not part of the public API. Use
+  `torch.tpu.optimizers.TorchMuon` instead.
+  """
 
   def _reference_muon_update(
       self,
@@ -240,9 +241,6 @@ class ReferenceMuon(_MuonBase):
     param.mul_(1.0 - self.lr * self.weight_decay)
     param.add_(update, alpha=-adjusted_lr)
 
-  @_annotations.experimental(
-      'step() is experimental and may change or be removed without notice.'
-  )
   def step(
       self, param_group: _MuonBase.ParamGroup, grads: dict[str, torch.Tensor]
   ) -> _MuonBase.ParamGroup:

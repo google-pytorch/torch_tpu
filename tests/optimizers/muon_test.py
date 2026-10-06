@@ -17,6 +17,7 @@
 from absl.testing import absltest
 import torch
 from torch.tpu import optimizers
+from torch_tpu._internal.optimizers import muon
 from torch_tpu._internal.utils import test_utils as assert_utils
 from tests import seed_test_utils
 from tests.optimizers import test_utils
@@ -77,11 +78,11 @@ class MuonOptimizersTest(seed_test_utils.RepeatableTest):
       )
 
   def test_reference_muon_step(self):
-    opt = optimizers.ReferenceMuon(lr=1e-3, momentum=0.95, weight_decay=0.1)
+    opt = muon.ReferenceMuon(lr=1e-3, momentum=0.95, weight_decay=0.1)
     self._validate_opt_step(opt, lr=1e-3, momentum=0.95, weight_decay=0.1)
 
   def test_reference_muon_compiled_linear_train_step(self):
-    opt = optimizers.ReferenceMuon(lr=1e-3, momentum=0.95, weight_decay=0.1)
+    opt = muon.ReferenceMuon(lr=1e-3, momentum=0.95, weight_decay=0.1)
     test_utils.validate_compiled_linear_train_step(
         self, opt, self.device, bias=False
     )

@@ -112,11 +112,12 @@ class _SgdBase(_optim.Optimizer):
     pass
 
 
-@_annotations.experimental(
-    'ReferenceSgd is experimental and may change or be removed without notice.'
-)
 class ReferenceSgd(_SgdBase):
-  """Reference pure PyTorch implementation of SGD."""
+  """Reference pure PyTorch implementation of SGD.
+
+  Internal: not part of the public API. Use
+  `torch.tpu.optimizers.TorchSgd` instead.
+  """
 
   def _reference_sgd_update(
       self,
@@ -144,9 +145,6 @@ class ReferenceSgd(_SgdBase):
     new_p = param - self.lr * d_p
     param.copy_(new_p)
 
-  @_annotations.experimental(
-      'step() is experimental and may change or be removed without notice.'
-  )
   def step(
       self, param_group: _SgdBase.ParamGroup, grads: dict[str, torch.Tensor]
   ) -> _SgdBase.ParamGroup:

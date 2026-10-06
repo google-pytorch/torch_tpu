@@ -78,6 +78,9 @@ torch_tpu_py_library(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/compile:compiler",
+        "//src/torch_tpu/_internal/optimizers:adamw",
+        "//src/torch_tpu/_internal/optimizers:muon",
+        "//src/torch_tpu/_internal/optimizers:sgd",
     ],
 )
 
