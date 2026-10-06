@@ -3,7 +3,6 @@ torch_tpu_version: 0.1.1.dev20260922
 ---
 
 # TorchTPU Tutorials & Guides
-
 Explore tutorials, how-to guides, reference specifications, and performance
 optimization guides for TorchTPU on Google Cloud TPUs.
 
