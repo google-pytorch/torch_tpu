@@ -20,7 +20,6 @@
 #include <chrono>
 #include <memory>
 #include <optional>
-#include <utility>
 #include <vector>
 
 #include "absl/base/nullability.h"
@@ -30,9 +29,10 @@
 #include "c10/core/Stream.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
+#include "csrc/common/compilation_spec.h"
 #include "csrc/common/context_states.h"
 #include "csrc/eager/device_buffer.h"
-#include "csrc/eager/materialize_common.h"
+#include "csrc/eager/execution_task.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/traversal.h"
 #include "xla/future.h"

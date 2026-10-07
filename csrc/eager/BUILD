@@ -128,7 +128,6 @@ torch_tpu_cc_test(
         ":device_buffer",
         ":device_buffer_utils",
         ":materialize",
-        ":materialize_common",
         ":structured_log_buffer",
         ":tensor_to_buffer",
         ":tpu_hooks",
@@ -137,7 +136,6 @@ torch_tpu_cc_test(
         "//csrc/common:compilation_cache",
         "//csrc/common:compilation_spec",
         "//csrc/common:compile_options_key",
-        "//csrc/common:context_states",
         "//csrc/common:dimension_types",
         "//csrc/common:error_utils",
         "//csrc/common:oss_test_main",
@@ -343,9 +341,9 @@ torch_tpu_cc_library(
 )
 
 torch_tpu_cc_library(
-    name = "materialize_common",
-    srcs = ["materialize_common.cc"],
-    hdrs = ["materialize_common.h"],
+    name = "execution_task",
+    srcs = ["execution_task.cc"],
+    hdrs = ["execution_task.h"],
     deps = [
         ":device_buffer",
         ":structured_log_buffer",
@@ -396,8 +394,8 @@ torch_tpu_cc_library(
         ":device_buffer",
         ":eager_mode",
         ":events_queue",
+        ":execution_task",
         ":materialization_heuristics",
-        ":materialize_common",
         ":split_traversal",
         ":structured_log_buffer",
         ":traversal",
@@ -1058,7 +1056,7 @@ torch_tpu_cc_library(
         ":current_stream",
         ":device_buffer",
         ":eager_mode",
-        ":materialize_common",
+        ":execution_task",
         ":structured_log_buffer",
         ":traversal",
         "//csrc/common:cache_key",

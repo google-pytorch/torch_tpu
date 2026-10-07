@@ -30,14 +30,12 @@
 #include "csrc/common/compilation_cache.h"
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/compile_options_key.h"
-#include "csrc/common/context_states.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/status_test_utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/device_buffer_utils.h"
-#include "csrc/eager/materialize_common.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/eager/tpu_hooks.h"
@@ -135,19 +133,6 @@ TEST_F(MaterializeTest, CompilerOptionsPropagateToMaterializeThread) {
   const PerfStats stats = CompilationCache::GetInstance().GetCacheStats();
   ASSERT_EQ(stats.per_entry_stats.size(), 1);
   EXPECT_EQ(stats.per_entry_stats[0].key.compile_options_key(), expected_key);
-}
-
-TEST(MaterializeCommonTest, GetCompilationMode) {
-  EXPECT_EQ(GetCompilationMode(EagerMode::kInternalDeferAll),
-            CompilationMode::kFastRuntime);
-  EXPECT_EQ(GetCompilationMode(EagerMode::kDeferAndFuse),
-            CompilationMode::kFastRuntime);
-  EXPECT_EQ(GetCompilationMode(EagerMode::kInternalCompileFxGraph),
-            CompilationMode::kFastRuntime);
-  EXPECT_EQ(GetCompilationMode(EagerMode::kDeferNever),
-            CompilationMode::kFastCompile);
-  EXPECT_EQ(GetCompilationMode(EagerMode::kDeferNeverAndLaunchBlocking),
-            CompilationMode::kFastCompile);
 }
 
 class PinnedHostPropagationTest : public testing::Test {

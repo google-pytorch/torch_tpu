@@ -26,6 +26,7 @@
 #include <iterator>
 #include <memory>
 #include <optional>
+#include <ratio>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -53,7 +54,7 @@
 #include "csrc/eager/current_stream.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/eager_mode.h"
-#include "csrc/eager/materialize_common.h"
+#include "csrc/eager/execution_task.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/traversal.h"
 #include "csrc/ops/op_builder_utils.h"

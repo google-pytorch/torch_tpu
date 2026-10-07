@@ -1173,6 +1173,20 @@ TEST(EventSnapshotTest, ElapsedTimeReturnsEventError) {
   EXPECT_EQ(ok_event.ElapsedTime(failed_event).status().code(),
             error::kInvalidArgument);
 }
+
+TEST(CompilationModeTest, GetCompilationMode) {
+  EXPECT_EQ(GetCompilationMode(EagerMode::kInternalDeferAll),
+            CompilationMode::kFastRuntime);
+  EXPECT_EQ(GetCompilationMode(EagerMode::kDeferAndFuse),
+            CompilationMode::kFastRuntime);
+  EXPECT_EQ(GetCompilationMode(EagerMode::kInternalCompileFxGraph),
+            CompilationMode::kFastRuntime);
+  EXPECT_EQ(GetCompilationMode(EagerMode::kDeferNever),
+            CompilationMode::kFastCompile);
+  EXPECT_EQ(GetCompilationMode(EagerMode::kDeferNeverAndLaunchBlocking),
+            CompilationMode::kFastCompile);
+}
+
 }  // namespace
 
 }  // namespace torch_tpu

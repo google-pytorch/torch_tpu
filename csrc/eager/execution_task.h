@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef TORCH_TPU_CSRC_EAGER_MATERIALIZE_COMMON_H_
-#define TORCH_TPU_CSRC_EAGER_MATERIALIZE_COMMON_H_
+#ifndef TORCH_TPU_CSRC_EAGER_EXECUTION_TASK_H_
+#define TORCH_TPU_CSRC_EAGER_EXECUTION_TASK_H_
 
 #include <memory>
 #include <string>
@@ -131,4 +131,4 @@ class ExecutionTask {
 
 }  // namespace torch_tpu
 
-#endif  // TORCH_TPU_CSRC_EAGER_MATERIALIZE_COMMON_H_
+#endif  // TORCH_TPU_CSRC_EAGER_EXECUTION_TASK_H_

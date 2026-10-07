@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "csrc/eager/materialize_common.h"
+#include "csrc/eager/execution_task.h"
 
 #include <algorithm>
 #include <chrono>
