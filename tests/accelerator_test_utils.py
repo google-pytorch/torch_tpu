@@ -14,10 +14,46 @@
 
 """Provides utilities for managing accelerator devices across backends in tests."""
 
-from typing import Any
+from typing import Any, Final
 
 import torch
 import torch_tpu  # pylint: disable=unused-import  # noqa: F401
+from tests import oss_utils
+
+# Default device cap applied to multi-chip TPU tests in OSS presubmit
+# (`requires-tpu-v5lite:4`). Multi-chip tests cap at 4 chips (the smallest
+# valid 2x2x1 multi-chip sub-slice topology on TPU v4/v5e/v5p/v6e) so that tests
+# use 4 chips in OSS CI even when scheduled on 8-chip hosts (such as
+# `ct5lp-224-8tpu` in OSS).
+# This only affects OSS and is the default cap, not a global maximum (some
+# tests can choose not to cap the device count).
+_OSS_DEFAULT_DEVICE_CAP: Final[int] = 4
+
+
+def get_tpu_device_count(default: int = 0) -> int:
+  """Returns the TPU device count for multi-device tests, capped at 4 in OSS.
+
+  In OSS environments, multi-chip TPU tests are capped at 4 chips (the smallest
+  valid 2x2x1 multi-chip topology on TPU v4/v5e/v5p/v6e) so that tests use 4
+  chips in OSS presubmit (`requires-tpu-v5lite:4`) even when scheduled on 8-chip
+  hosts. In internal Google3 environments, the cap is not applied and the full
+  device count is returned.
+
+  Because `torch.tpu.device_count()` queries `hardware.get_tpu_device_count()`
+  when PJRT is not yet initialized and queries the active PJRT client when it
+  is initialized, this helper works in both single-process tests and
+  multi-process (`mp.spawn`) parent runners.
+
+  Args:
+    default: Fallback device count to return when no TPU devices are detected
+      (e.g. on CPU-only runners where emulated devices are used).
+  """
+  count = torch.tpu.device_count()
+  if count == 0:
+    return default
+  if oss_utils.is_oss():
+    return min(count, _OSS_DEFAULT_DEVICE_CAP)
+  return count
 
 
 def get_backend_module(backend_name: str) -> Any:

@@ -15,6 +15,7 @@
 load(
     "//build_files:build_defs.bzl",
     "DEFAULT_TORCH_EXAMPLE_DEPS",
+    "OSS_REQUIRES_V5_X4",
     "if_oss",
     "torch_tpu_oss_torch_example",
     "torch_tpu_package_end",
@@ -338,6 +339,7 @@ torch_tpu_py_library(
     srcs = ["accelerator_test_utils.py"],
     visibility = ["//:__subpackages__"],
     deps = [
+        ":oss_utils",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
     ],
@@ -1988,9 +1990,10 @@ torch_tpu_py_test(
     srcs = ["rng_multi_device_test.py"],
     args = ["--backend=tpu"],
     main = "rng_multi_device_test.py",
-    tags = [
-        "requires-tpu-v5lite:8",
-    ],
+    tags = if_oss(
+        [OSS_REQUIRES_V5_X4],
+        ["requires-tpu-v5lite:8"],
+    ),
     deps = [
         ":accelerator_test_utils",
         ":seed_test_utils",
@@ -2029,15 +2032,17 @@ torch_tpu_py_test(
     args = ["--backend=tpu"],
     main = "rng_multiprocess_test.py",
     tags = if_oss(
-        ["exclusive"],
-        [],
+        [
+            "exclusive",
+            OSS_REQUIRES_V5_X4,
+        ],
+        ["requires-tpu-v5lite:8"],
     ) + [
         # Spawning 8 PyTorch processes in *san exceeds Forge's 28GB container
         # memory limit; this is an infra constraint rather than a code defect.
         "noasan",  # See comment above.
         "nomsan",  # See comment above.
         "notsan",  # See comment above.
-        "requires-tpu-v5lite:8",
     ],
     deps = [
         ":accelerator_test_utils",

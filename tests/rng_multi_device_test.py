@@ -110,6 +110,12 @@ class SingleProcessMultiDeviceTest(_BaseRngTest):
     super().setUp()
     self.device_idx = torch.accelerator.current_device_index()
 
+  def _get_num_devices(self) -> int:
+    """Returns the number of devices to test, capped at 4 on TPU in OSS."""
+    if self.backend == "tpu":
+      return accelerator_test_utils.get_tpu_device_count()
+    return torch.accelerator.device_count()
+
   @_fails_on_tpu(
       "TODO(b/555281188): Querying non-current device RNG state is not yet"
       " supported on TPU due to single-process multi-device runtime"
@@ -117,7 +123,7 @@ class SingleProcessMultiDeviceTest(_BaseRngTest):
   )
   def test_torch_manual_seed_sets_all_device_seeds(self):
     """Verifies torch.manual_seed seeds all devices."""
-    num_devices = torch.accelerator.device_count()
+    num_devices = self._get_num_devices()
     self.assertGreater(
         num_devices,
         1,
@@ -137,7 +143,7 @@ class SingleProcessMultiDeviceTest(_BaseRngTest):
   )
   def test_backend_manual_seed_does_not_change_other_devices(self):
     """Verifies backend_mod.manual_seed does not modify other devices."""
-    num_devices = torch.accelerator.device_count()
+    num_devices = self._get_num_devices()
     self.assertGreater(
         num_devices,
         1,
@@ -174,7 +180,7 @@ class SingleProcessMultiDeviceTest(_BaseRngTest):
   )
   def test_backend_manual_seed_all_sets_all_device_seeds(self):
     """Verifies backend_mod.manual_seed_all seeds all devices."""
-    num_devices = torch.accelerator.device_count()
+    num_devices = self._get_num_devices()
     self.assertGreater(
         num_devices,
         1,
@@ -202,7 +208,7 @@ class SingleProcessMultiDeviceTest(_BaseRngTest):
   )
   def test_torch_seed_sets_all_device_seeds(self):
     """Verifies torch.seed seeds all devices."""
-    num_devices = torch.accelerator.device_count()
+    num_devices = self._get_num_devices()
     self.assertGreater(
         num_devices,
         1,
@@ -235,7 +241,7 @@ class SingleProcessMultiDeviceTest(_BaseRngTest):
   )
   def test_backend_get_set_rng_state_all(self):
     """Verifies get/set_rng_state_all restore all device states."""
-    num_devices = torch.accelerator.device_count()
+    num_devices = self._get_num_devices()
     self.assertGreater(
         num_devices,
         1,
@@ -280,7 +286,7 @@ class SingleProcessMultiDeviceTest(_BaseRngTest):
   )
   def test_multithread_eager_cross_device_isolation(self):
     """Verifies threads on distinct devices produce deterministic outputs."""
-    num_devices = torch.accelerator.device_count()
+    num_devices = self._get_num_devices()
     self.assertGreater(
         num_devices,
         1,

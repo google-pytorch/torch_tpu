@@ -343,7 +343,7 @@ common:ci_cpu_nightly --test_tag_filters=-nobuild,-notest,-requires-gpu,-require
 
 # Settings specific to TPU CI runs.
 common:ci_tpu_base --config=ci
-common:ci_tpu_base --build_tag_filters=-nobuild,requires-tpu-v5lite,requires-tpu-v5lite:8,requires-tpu-v5p,requires-tpu-v5p:4,requires-tpu-v6e,requires-tpu-v7x,requires-tpu-v7x:4,
+common:ci_tpu_base --build_tag_filters=-nobuild,requires-tpu-v5lite,requires-tpu-v5lite:4,requires-tpu-v5lite:8,requires-tpu-v5p,requires-tpu-v5p:4,requires-tpu-v6e,requires-tpu-v7x,requires-tpu-v7x:4,
 common:ci_tpu_base --strategy=TestRunner=standalone,local
 
 # Settings for nightly runs on TPU.
@@ -470,7 +470,7 @@ common:ci_rbe_presubmit --color=yes
 common:ci_rbe_presubmit --curses=no
 common:ci_rbe_presubmit --config=rbe_test_execution
 common:ci_rbe_presubmit --build_tag_filters=-nobuild,-requires-gpu,-cuda-build-test
-common:ci_rbe_presubmit --test_tag_filters=-nobuild,-notest,-nopresubmit,-requires-gpu,-cuda-build-test,-presubmit-v6,-presubmit-v7,-requires-tpu-v5lite:8,-requires-tpu-v5p:4,-no-remote-exec
+common:ci_rbe_presubmit --test_tag_filters=-nobuild,-notest,-nopresubmit,-requires-gpu,-cuda-build-test,-presubmit-v6,-presubmit-v7,-requires-tpu-v5lite:4,-requires-tpu-v5lite:8,-requires-tpu-v5p:4,-no-remote-exec
 
 # TPU wheel version extras for local default builds.
 build --define WHEEL_VERSION_EXTRAS=
