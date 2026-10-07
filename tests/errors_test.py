@@ -14911,6 +14911,7 @@ class InputPreprocessingErrorTest(et.ErrorTestBase):
           1,
           1,
           2,
+          8,
           True,
           "table_0",
       )
@@ -14935,6 +14936,7 @@ class InputPreprocessingErrorTest(et.ErrorTestBase):
           1,
           1,
           2,
+          8,
           True,
           "table_0",
       )
