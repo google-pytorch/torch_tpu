@@ -249,7 +249,8 @@ static absl::Status SetDefaultDeviceAssignment(
                         PjrtBackend::GetInstance().GetGlobalDeviceId());
     da(0, 0) = global_device_id;
   } else {
-    const auto* const pjrt_client = PjrtBackend::GetInstance().GetClient();
+    TT_ASSIGN_OR_RETURN(const xla::PjRtClient* const pjrt_client,
+                        PjrtBackend::GetInstance().GetClient());
     for (int idx = 0; idx < num_devices; ++idx) {
       da(0, idx) = pjrt_client->devices()[idx]->global_device_id().value();
     }
@@ -296,9 +297,8 @@ static absl::Status SetDefaultDeviceAssignment(
 //
 // Returns whether the current device is a TPU.
 static absl::StatusOr<bool> SetTpuOptions(xla::CompileOptions& options) {
-  const xla::PjRtClient* const client = PjrtBackend::GetInstance().GetClient();
-  TT_RET_CHECK(client, error::kFailedPrecondition)
-      << "PjRtClient must be initialized";
+  TT_ASSIGN_OR_RETURN(const xla::PjRtClient* const client,
+                      PjrtBackend::GetInstance().GetClient());
   const bool is_tpu = client->platform_id() == xla::TpuId();
   if (is_tpu) {
     // WARNING: When assigning string values below, make sure to explicitly

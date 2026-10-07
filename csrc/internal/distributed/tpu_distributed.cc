@@ -34,6 +34,7 @@
 #include "torch/csrc/distributed/c10d/Backend.hpp"
 #include "torch/csrc/distributed/c10d/Store.hpp"
 #include "torch/csrc/utils/pybind.h"  // IWYU pragma: keep or multi_tpu_test fails
+#include "xla/pjrt/pjrt_client.h"
 
 namespace torch_tpu {
 
@@ -69,9 +70,8 @@ int GetGlobalDeviceId() {
 }
 
 std::vector<int> GetAllGlobalDeviceIds() {
-  const auto* pjrt_client = PjrtBackend::GetInstance().GetClient();
-  TT_CHECK_THROW(pjrt_client, error::kInternal)
-      << "PjRtClient is not initialized";
+  TT_ASSIGN_OR_THROW(const xla::PjRtClient* const pjrt_client,
+                     PjrtBackend::GetInstance().GetClient());
 
   const auto& devices = pjrt_client->devices();
   std::vector<int> global_device_ids;
@@ -84,8 +84,8 @@ std::vector<int> GetAllGlobalDeviceIds() {
 }
 
 std::string DeviceDebugString() {
-  const auto* pjrtdev = PjrtBackend::GetInstance().GetDevice();
-  TT_CHECK_THROW(pjrtdev, error::kInternal) << "PjRtDevice is not initialized";
+  TT_ASSIGN_OR_THROW(const xla::PjRtDevice* const pjrtdev,
+                     PjrtBackend::GetInstance().GetDevice());
   return std::string(pjrtdev->DebugString());
 }
 
@@ -93,11 +93,8 @@ std::string DeviceDebugString() {
 // as reported by the PJRT runtime "coords" attribute. Returns an empty vector
 // if coordinates are absent or unavailable.
 std::vector<int64_t> GetLocalDeviceCoords() {  // INT_VEC_OK
-  const auto* pjrtdev = PjrtBackend::GetInstance().GetDevice();
-  TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=PjRtDevice is null only if
-                   // initialization fails
-      pjrtdev != nullptr, error::kInternal)
-      << "PjRtDevice is not initialized";
+  TT_ASSIGN_OR_THROW(const xla::PjRtDevice* const pjrtdev,
+                     PjrtBackend::GetInstance().GetDevice());
   const auto& attrs = pjrtdev->Attributes();
   auto it = attrs.find("coords");
   if (it != attrs.end()) {

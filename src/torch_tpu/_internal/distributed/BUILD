@@ -190,6 +190,7 @@ pybind_extension(
         "//shims/torch/torch/headeronly:torch_headeronly",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/log:check",
+        "@xla//xla/pjrt:pjrt_client",
     ],
 )
 

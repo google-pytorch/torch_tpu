@@ -20,6 +20,8 @@
 #include <string>
 #include <string_view>
 
+#include "absl/base/nullability.h"
+#include "absl/log/absl_log.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -33,22 +35,12 @@
 
 namespace torch_tpu {
 
-absl::StatusOr<xla::PjRtClient*> GetPjRtClient() {
-  xla::PjRtClient* const client = PjrtBackend::GetInstance().GetClient();
-  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=XLA PjRt client invariants ensure
-                 // PjRtClient is always initialized during runtime.
-      client != nullptr, error::kFailedPrecondition)
-      << "pjrt client not initialized";
-  return client;
+absl::StatusOr<xla::PjRtClient* absl_nonnull> GetPjRtClient() {
+  return PjrtBackend::GetInstance().GetClient();
 }
 
-absl::StatusOr<xla::PjRtDevice*> GetPjRtDevice() {
-  xla::PjRtDevice* const device = PjrtBackend::GetInstance().GetDevice();
-  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=XLA PjRt device invariants ensure
-                 // PjRtDevice is always initialized during runtime.
-      device != nullptr, error::kFailedPrecondition)
-      << "pjrt device not initialized";
-  return device;
+absl::StatusOr<xla::PjRtDevice* absl_nonnull> GetPjRtDevice() {
+  return PjrtBackend::GetInstance().GetDevice();
 }
 
 absl::StatusOr<xla::PjRtMemorySpace*> GetDefaultMemorySpace(
@@ -69,11 +61,15 @@ std::string ToString(const xla::PjRtBuffer& buffer) {
 }
 
 bool TpuDeviceSupportsSparseCore() {
-  xla::PjRtDevice* const device = PjrtBackend::GetInstance().GetDevice();
-  if (device == nullptr) {
+  const absl::StatusOr<xla::PjRtDevice* absl_nonnull> device_or =
+      PjrtBackend::GetInstance().GetDevice();
+  if (!device_or.ok()) {
+    ABSL_LOG_FIRST_N(WARNING, 1)
+        << "TpuDeviceSupportsSparseCore: PjRt backend unavailable: "
+        << device_or.status();
     return false;
   }
-  std::string_view kind = device->device_kind();
+  std::string_view kind = (*device_or)->device_kind();
   if (kind == "TPU v5 lite" || kind == "TPU v5e" || kind == "TPU v4" ||
       kind == "TPU v4 lite" || kind == "TPU v3" || kind == "TPU v2" ||
       kind == "cpu" || kind.empty()) {

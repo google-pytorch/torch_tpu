@@ -26,6 +26,7 @@
 #include "csrc/pjrt/pjrt_state.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "xla/pjrt/pjrt_client.h"
 
 namespace torch_tpu {
 namespace {
@@ -50,8 +51,32 @@ TEST_F(PjRtInitTest, InitializePjRtIsLazy) {
       {.device_type = "tpu"});
   EXPECT_FALSE(PjrtBackend::GetInstance().IsInitialized());
 
-  ASSERT_NE(PjrtBackend::GetInstance().GetClient(), nullptr);
+  TT_ASSERT_OK_AND_ASSIGN(xla::PjRtClient * client,
+                          PjrtBackend::GetInstance().GetClient());
+  EXPECT_NE(client, nullptr);
   EXPECT_TRUE(PjrtBackend::GetInstance().IsInitialized());
+}
+
+TEST_F(PjRtInitTest, GetClientAndGetDeviceSucceedAfterInit) {
+  PjrtBackend::GetInstance().SetPjRtInitializationOptions(
+      {.device_type = "tpu"});
+
+  TT_ASSERT_OK_AND_ASSIGN(xla::PjRtClient * client,
+                          PjrtBackend::GetInstance().GetClient());
+  TT_ASSERT_OK_AND_ASSIGN(xla::PjRtDevice * device,
+                          PjrtBackend::GetInstance().GetDevice());
+  ASSERT_NE(client, nullptr);
+  ASSERT_NE(device, nullptr);
+  EXPECT_EQ(device->client(), client);
+}
+
+TEST_F(PjRtInitTest, GetClientAndGetDeviceFailForUnsupportedDeviceType) {
+  PjrtBackend::GetInstance().SetPjRtInitializationOptions(
+      {.device_type = "unsupported"});
+
+  EXPECT_FALSE(PjrtBackend::GetInstance().GetClient().ok());
+  EXPECT_FALSE(PjrtBackend::GetInstance().GetDevice().ok());
+  EXPECT_FALSE(PjrtBackend::GetInstance().IsInitialized());
 }
 
 TEST_F(PjRtInitTest, InitializePjRtSetsCorrectDeviceCount) {
@@ -60,8 +85,9 @@ TEST_F(PjRtInitTest, InitializePjRtSetsCorrectDeviceCount) {
   PjrtBackend::GetInstance().SetPjRtInitializationOptions(
       {.device_type = "tpu"});
 
-  auto* client = PjrtBackend::GetInstance().GetClient();
-  ASSERT_NE(client, nullptr);
+  TT_ASSERT_OK_AND_ASSIGN(xla::PjRtClient * client,
+                          PjrtBackend::GetInstance().GetClient());
+  EXPECT_NE(client, nullptr);
   EXPECT_TRUE(PjrtBackend::GetInstance().IsInitialized());
 
   TT_ASSERT_OK_AND_ASSIGN(int device_count,
@@ -83,8 +109,9 @@ TEST_F(PjRtInitTest, InitializeExpandsRankInEnvVars) {
 
   PjrtBackend::GetInstance().SetPjRtInitializationOptions(
       {.device_type = "tpu"});
-  auto* client = PjrtBackend::GetInstance().GetClient();
-  ASSERT_NE(client, nullptr);
+  TT_ASSERT_OK_AND_ASSIGN(xla::PjRtClient * client,
+                          PjrtBackend::GetInstance().GetClient());
+  EXPECT_NE(client, nullptr);
 
   const char* xla_flags = std::getenv(kXlaFlagsEnvVar);
   EXPECT_NE(xla_flags, nullptr);
@@ -110,7 +137,8 @@ TEST_F(PjRtInitTest, BadForkCheckerPreventsAccessAfterInit) {
   in_bad_fork = true;
   EXPECT_TRUE(PjrtBackend::GetInstance().IsInBadFork());
   EXPECT_FALSE(PjrtBackend::GetInstance().IsInitialized());
-  EXPECT_EQ(PjrtBackend::GetInstance().GetClient(), nullptr);
+  EXPECT_FALSE(PjrtBackend::GetInstance().GetClient().ok());
+  EXPECT_FALSE(PjrtBackend::GetInstance().GetDevice().ok());
   EXPECT_THAT(
       PjrtBackend::GetInstance().EnsureInitialized(),
       StatusIs(error::kFailedPrecondition, HasSubstr("forked subprocess")));
@@ -127,8 +155,9 @@ TEST_F(PjRtInitTest, OnInitializedHookIsInvoked) {
        .on_initialized_hook = []() { hook_called = true; }});
 
   EXPECT_FALSE(hook_called);
-  auto* client = PjrtBackend::GetInstance().GetClient();
-  ASSERT_NE(client, nullptr);
+  TT_ASSERT_OK_AND_ASSIGN(xla::PjRtClient * client,
+                          PjrtBackend::GetInstance().GetClient());
+  EXPECT_NE(client, nullptr);
   EXPECT_TRUE(hook_called);
   EXPECT_TRUE(PjrtBackend::GetInstance().IsInitialized());
 }

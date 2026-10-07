@@ -50,8 +50,7 @@ class PjrtExecuteTest : public testing::Test {
   void SetUp() override {
     PjrtBackend::GetInstance().SetPjRtInitializationOptions(
         {.device_type = "tpu"});
-    client_ = PjrtBackend::GetInstance().GetClient();
-    ASSERT_NE(client_, nullptr);
+    TT_ASSERT_OK_AND_ASSIGN(client_, PjrtBackend::GetInstance().GetClient());
     ASSERT_FALSE(client_->addressable_devices().empty());
     TT_ASSERT_OK_AND_ASSIGN(
         memory_space_,

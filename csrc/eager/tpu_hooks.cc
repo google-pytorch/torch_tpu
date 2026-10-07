@@ -26,6 +26,8 @@
 #include "ATen/detail/PrivateUse1HooksInterface.h"
 #include "ATen/ops/empty.h"
 #include "absl/base/no_destructor.h"
+#include "absl/base/nullability.h"
+#include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "c10/core/Allocator.h"
 #include "c10/core/Device.h"
@@ -35,7 +37,6 @@
 #include "c10/core/TensorOptions.h"
 #include "c10/core/impl/DeviceGuardImplInterface.h"
 #include "c10/macros/Export.h"
-#include "c10/util/Exception.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/device_type.h"
 #include "csrc/common/dtype.h"
@@ -56,6 +57,7 @@
 #include "torch/headeronly/core/DeviceType.h"
 #include "torch/headeronly/core/ScalarType.h"
 #include "torch/headeronly/macros/Export.h"
+#include "xla/pjrt/pjrt_client.h"
 
 namespace torch_tpu {
 namespace {
@@ -74,15 +76,18 @@ void ValidateDeviceIndex(c10::DeviceIndex device_index) {
       << "Device index " << static_cast<int>(device_index)
       << " is out of bounds of the maximum device count " << kMaxDevices;
 
-  auto* pjrt_client = PjrtBackend::GetInstance().GetClient();
-  if (pjrt_client == nullptr) {
+  const absl::StatusOr<xla::PjRtClient* absl_nonnull> pjrt_client_or =
+      PjrtBackend::GetInstance().GetClient();
+  if (!pjrt_client_or.ok()) {
     TT_WARN(WarningCategory::kTorchTpu,
             "PJRT client not available, using TPU device index ",
-            static_cast<int>(device_index), " unchecked");
+            static_cast<int>(device_index),
+            " unchecked: ", pjrt_client_or.status().ToString());
     return;
   }
 
-  const int addressable_device_count = pjrt_client->addressable_device_count();
+  const int addressable_device_count =
+      (*pjrt_client_or)->addressable_device_count();
   TT_CHECK_THROW(
       device_index < static_cast<c10::DeviceIndex>(addressable_device_count),
       error::kInvalidArgument)
@@ -221,12 +226,17 @@ c10::Stream TpuDeviceGuardImpl::exchangeStream(c10::Stream s) const {
 }
 
 c10::DeviceIndex TpuDeviceGuardImpl::deviceCount() const noexcept {
-  auto* pjrt_client = PjrtBackend::GetInstance().GetClient();
-  if (pjrt_client != nullptr) {
-    return static_cast<c10::DeviceIndex>(
-        pjrt_client->addressable_device_count());
+  // This method is noexcept, so initialization errors cannot be thrown.
+  const absl::StatusOr<xla::PjRtClient* absl_nonnull> pjrt_client_or =
+      PjrtBackend::GetInstance().GetClient();
+  if (!pjrt_client_or.ok()) {
+    ABSL_LOG_FIRST_N(WARNING, 1)
+        << "TpuDeviceGuardImpl::deviceCount: PjRt backend unavailable: "
+        << pjrt_client_or.status();
+    return 0;
   }
-  return 0;
+  return static_cast<c10::DeviceIndex>(
+      (*pjrt_client_or)->addressable_device_count());
 }
 
 c10::Stream TpuDeviceGuardImpl::getDefaultStream(c10::Device d) const {

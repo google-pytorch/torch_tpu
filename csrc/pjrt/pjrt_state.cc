@@ -312,13 +312,13 @@ bool PjrtBackend::IsInBadFork() const {
       bad_fork_checker_.load(std::memory_order_relaxed);
   return checker != nullptr && checker();
 }
-xla::PjRtClient* absl_nullable PjrtBackend::GetClient() {
-  if (const absl::Status s = EnsureInitialized(); !s.ok()) {
-    ABSL_LOG_FIRST_N(ERROR, 1)
-        << "PjrtBackend::GetClient failed to initialize: " << s;
-    return nullptr;
-  }
+absl::StatusOr<xla::PjRtClient* absl_nonnull> PjrtBackend::GetClient() {
+  TT_RETURN_IF_ERROR(EnsureInitialized());
   absl::ReaderMutexLock lock(mutex_);
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Only reachable if Shutdown() races
+                 // with a successful EnsureInitialized().
+      client_ != nullptr, error::kInternal)
+      << "PjRt client is not initialized";
   return client_.get();
 }
 
@@ -329,13 +329,13 @@ PjrtBackend::GetSharedClient() {
   return client_;
 }
 
-xla::PjRtDevice* absl_nullable PjrtBackend::GetDevice() {
-  if (const absl::Status s = EnsureInitialized(); !s.ok()) {
-    ABSL_LOG_FIRST_N(ERROR, 1)
-        << "PjrtBackend::GetDevice failed to initialize: " << s;
-    return nullptr;
-  }
+absl::StatusOr<xla::PjRtDevice* absl_nonnull> PjrtBackend::GetDevice() {
+  TT_RETURN_IF_ERROR(EnsureInitialized());
   absl::ReaderMutexLock lock(mutex_);
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Only reachable if Shutdown() races
+                 // with a successful EnsureInitialized().
+      device_ != nullptr, error::kInternal)
+      << "PjRt device is not initialized";
   return device_;
 }
 
@@ -382,26 +382,17 @@ absl::StatusOr<PjRtDeviceAttributes> PjrtBackend::GetDeviceAttributes() {
 }
 
 absl::StatusOr<tsl::AllocatorStats> PjrtBackend::GetAllocatorStats() {
-  xla::PjRtDevice* device = GetDevice();
-  if (device == nullptr) {
-    return TT_ERROR(error::kInternal) << "PjRt device is not initialized";
-  }
+  TT_ASSIGN_OR_RETURN(xla::PjRtDevice* const device, GetDevice());
   return device->GetAllocatorStats();
 }
 
 absl::Status PjrtBackend::ClearAllocatorStats() {
-  xla::PjRtDevice* device = GetDevice();
-  if (device == nullptr) {
-    return TT_ERROR(error::kInternal) << "PjRt device is not initialized";
-  }
+  TT_ASSIGN_OR_RETURN(xla::PjRtDevice* const device, GetDevice());
   return device->ClearMemoryStats();
 }
 
 absl::StatusOr<xla::HostMemoryAllocator*> PjrtBackend::GetHostAllocator() {
-  xla::PjRtClient* client = GetClient();
-  if (client == nullptr) {
-    return TT_ERROR(error::kInternal) << "PjRt client is not initialized";
-  }
+  TT_ASSIGN_OR_RETURN(xla::PjRtClient* const client, GetClient());
   if (auto host_allocator = client->GetHostMemoryAllocator();
       host_allocator != nullptr) {
     return host_allocator;

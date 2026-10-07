@@ -769,10 +769,15 @@ std::vector<Shape> GetShapes(absl::Span<const DeviceBufferRef> buffers) {
 
 bool IsDefaultDeviceLayout(const DeviceBufferRef& buffer,
                            const CustomLayout& layout) {
-  xla::PjRtClient* const client = PjrtBackend::GetInstance().GetClient();
-  if (client == nullptr) {
+  const absl::StatusOr<xla::PjRtClient* absl_nonnull> client_or =
+      PjrtBackend::GetInstance().GetClient();
+  if (!client_or.ok()) {
+    ABSL_LOG_FIRST_N(WARNING, 1)
+        << "IsDefaultDeviceLayout: PjRt backend unavailable: "
+        << client_or.status();
     return false;
   }
+  xla::PjRtClient* const client = *client_or;
   const xla::PrimitiveType element_type =
       ConvertTo<xla::PrimitiveType>(buffer.element_type());
   const absl::StatusOr<xla::Layout> default_layout_or =

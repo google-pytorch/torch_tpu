@@ -178,10 +178,10 @@ TEST_F(TensorBufferTest, ViewTensorBaseBufferSharing) {
 }
 
 TEST_F(TensorBufferTest, CreateTensorBufferFromPjRtBufferAndToTensor) {
-  xla::PjRtClient* client = PjrtBackend::GetInstance().GetClient();
-  ASSERT_NE(client, nullptr);
-  xla::PjRtDevice* device = PjrtBackend::GetInstance().GetDevice();
-  ASSERT_NE(device, nullptr);
+  TT_ASSERT_OK_AND_ASSIGN(xla::PjRtClient * client,
+                          PjrtBackend::GetInstance().GetClient());
+  TT_ASSERT_OK_AND_ASSIGN(xla::PjRtDevice * device,
+                          PjrtBackend::GetInstance().GetDevice());
   TT_ASSERT_OK_AND_ASSIGN(xla::PjRtMemorySpace * memory_space,
                           device->default_memory_space());
   std::vector<float> data = {1.0f, 2.0f, 3.0f, 4.0f};
@@ -219,10 +219,10 @@ TEST_F(TensorBufferTest, CreateTensorBufferFromPjRtBufferAndToTensor) {
 }
 
 TEST_F(TensorBufferTest, DeletedBufferRejection) {
-  xla::PjRtClient* client = PjrtBackend::GetInstance().GetClient();
-  ASSERT_NE(client, nullptr);
-  xla::PjRtDevice* device = PjrtBackend::GetInstance().GetDevice();
-  ASSERT_NE(device, nullptr);
+  TT_ASSERT_OK_AND_ASSIGN(xla::PjRtClient * client,
+                          PjrtBackend::GetInstance().GetClient());
+  TT_ASSERT_OK_AND_ASSIGN(xla::PjRtDevice * device,
+                          PjrtBackend::GetInstance().GetDevice());
   TT_ASSERT_OK_AND_ASSIGN(xla::PjRtMemorySpace * memory_space,
                           device->default_memory_space());
   std::vector<float> data = {1.0f};

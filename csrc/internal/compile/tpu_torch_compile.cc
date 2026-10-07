@@ -36,6 +36,7 @@
 #include "absl/container/flat_hash_set.h"
 #include "absl/container/inlined_vector.h"
 #include "absl/log/absl_check.h"
+#include "absl/log/absl_log.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/escaping.h"
 #include "absl/strings/str_cat.h"
@@ -281,11 +282,15 @@ std::optional<PyLayout> PyGetDeviceLayoutIfMaterialized(
 
 PyLayout PyGetDefaultLayout(at::ScalarType dtype,
                             const std::vector<int64_t>& shape) {  // INT_VEC_OK
-  xla::PjRtClient* const client = PjrtBackend::GetInstance().GetClient();
-  if (client == nullptr) {
+  const absl::StatusOr<xla::PjRtClient* absl_nonnull> client_or =
+      PjrtBackend::GetInstance().GetClient();
+  if (!client_or.ok()) {
+    ABSL_LOG_FIRST_N(WARNING, 1)
+        << "PyGetDefaultLayout: PjRt backend unavailable: "
+        << client_or.status();
     return PyLayout();
   }
-  xla::PjRtClient& checked_client = *client;
+  xla::PjRtClient& checked_client = **client_or;
   TT_ASSIGN_OR_THROW(auto element_type, ConvertTo<xla::PrimitiveType>(dtype));
 
   TT_ASSIGN_OR_THROW(const auto& layout,
@@ -1183,10 +1188,8 @@ py::bytes PySerializeExecutable(
 
 absl::StatusOr<SharedLoadedExecutableWithMetadata> LoadSerializedExecutableImpl(
     std::string_view data) {
-  xla::PjRtClient* const client = PjrtBackend::GetInstance().GetClient();
-  TT_RET_CHECK(client != nullptr, error::kFailedPrecondition)
-      << "PjRtClient must be initialized before loading a serialized "
-         "executable.";
+  TT_ASSIGN_OR_RETURN(xla::PjRtClient* const client,
+                      PjrtBackend::GetInstance().GetClient());
   TT_ASSIGN_OR_RETURN(
       std::unique_ptr<xla::PjRtLoadedExecutable> pjrt_executable,
       AdaptXlaError(client->LoadSerializedExecutable(

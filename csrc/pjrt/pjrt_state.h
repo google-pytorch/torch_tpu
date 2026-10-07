@@ -91,8 +91,9 @@ class PjrtBackend {
   // (i.e. forked after PjRt runtime initialization occurred in the parent).
   [[nodiscard]] bool IsInBadFork() const;
 
-  // Returns the PjRtClient singleton. Triggers lazy initialization if needed.
-  [[nodiscard]] xla::PjRtClient* absl_nullable GetClient()
+  // Returns the PjRtClient singleton. Triggers lazy initialization if needed,
+  // and returns the initialization error on failure.
+  absl::StatusOr<xla::PjRtClient* absl_nonnull> GetClient()
       ABSL_LOCKS_EXCLUDED(mutex_);
 
   // Returns a shared pointer to the PjRtClient. Triggers lazy initialization if
@@ -100,8 +101,9 @@ class PjrtBackend {
   absl::StatusOr<absl_nonnull std::shared_ptr<xla::PjRtClient>>
   GetSharedClient() ABSL_LOCKS_EXCLUDED(mutex_);
 
-  // Returns the PjRtDevice singleton. Triggers lazy initialization if needed.
-  [[nodiscard]] xla::PjRtDevice* absl_nullable GetDevice()
+  // Returns the PjRtDevice singleton. Triggers lazy initialization if needed,
+  // and returns the initialization error on failure.
+  absl::StatusOr<xla::PjRtDevice* absl_nonnull> GetDevice()
       ABSL_LOCKS_EXCLUDED(mutex_);
 
   // Returns the global device count. Triggers lazy initialization if needed.

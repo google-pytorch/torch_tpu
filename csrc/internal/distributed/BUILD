@@ -40,6 +40,7 @@ torch_tpu_cc_library(
         "//shims/torch/c10/util:base_headers",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/log:check",
+        "@xla//xla/pjrt:pjrt_client",
     ],
 )
 

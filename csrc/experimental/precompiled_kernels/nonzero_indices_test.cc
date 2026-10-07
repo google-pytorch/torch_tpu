@@ -127,8 +127,7 @@ class NonzeroIndicesTest : public testing::Test {
   static void SetUpTestSuite() {
     if (client_ != nullptr) return;
 
-    client_ = PjrtBackend::GetInstance().GetClient();
-    ASSERT_NE(client_, nullptr);
+    TT_ASSERT_OK_AND_ASSIGN(client_, PjrtBackend::GetInstance().GetClient());
     ASSERT_FALSE(client_->addressable_devices().empty());
     TT_ASSERT_OK_AND_ASSIGN(
         memory_space_,

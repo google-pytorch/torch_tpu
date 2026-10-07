@@ -20,6 +20,7 @@
 #include <string>
 
 // clang-format off
+#include "absl/base/nullability.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "xla/pjrt/pjrt_client.h"
@@ -28,8 +29,8 @@
 
 namespace torch_tpu {
 
-absl::StatusOr<xla::PjRtClient*> GetPjRtClient();
-absl::StatusOr<xla::PjRtDevice*> GetPjRtDevice();
+absl::StatusOr<xla::PjRtClient* absl_nonnull> GetPjRtClient();
+absl::StatusOr<xla::PjRtDevice* absl_nonnull> GetPjRtDevice();
 absl::StatusOr<xla::PjRtMemorySpace*> GetDefaultMemorySpace(
     xla::PjRtDevice* device);
 

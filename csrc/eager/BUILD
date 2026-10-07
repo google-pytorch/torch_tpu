@@ -300,6 +300,7 @@ torch_tpu_cc_library(
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@tsl//tsl/profiler/lib:traceme",
         "@xla//xla/pjrt:host_memory_allocator",
+        "@xla//xla/pjrt:pjrt_client",
     ],
 )
 
@@ -888,8 +889,11 @@ torch_tpu_cc_library(
         "//shims/torch/torch/headeronly:torch_headeronly",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/base:no_destructor",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+        "@xla//xla/pjrt:pjrt_client",
     ],
 )
 

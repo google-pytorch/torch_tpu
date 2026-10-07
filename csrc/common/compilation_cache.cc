@@ -899,7 +899,8 @@ CompilationCache::CreateDynamicKernelAdapter(
   // at all. We know that if the padding kernel doesn't induce a layout change,
   // then the current mechanisms in the TPU backend already handle the slicing
   // for us.
-  xla::PjRtClient* const client = PjrtBackend::GetInstance().GetClient();
+  TT_ASSIGN_OR_RETURN(xla::PjRtClient* const client,
+                      PjrtBackend::GetInstance().GetClient());
   if (!AnyInducesLayoutChange(static_runtime_input_shapes,
                               static_padded_input_shapes, client)) {
     return adapter;
@@ -1311,16 +1312,16 @@ void CompilationCache::Compile(const CompilationCacheKey& key,
                                const CacheEntryKind kind,
                                LoadedExecutableBuilder executable_builder,
                                UniqueCompileOptions compile_options) {
-  xla::PjRtClient* const client = PjrtBackend::GetInstance().GetClient();
-  if (client == nullptr) {
-    absl::Status error = TT_ERROR(error::kFailedPrecondition)
-                         << "PjRtClient must be initialized";
-    ABSL_LOG(ERROR) << error.message();
+  absl::StatusOr<xla::PjRtClient* absl_nonnull> client_or =
+      PjrtBackend::GetInstance().GetClient();
+  if (!client_or.ok()) {
+    ABSL_LOG(ERROR) << client_or.status().message();
 
     // Fulfill the promise immediately with the error status.
-    SetExecutable(key, kind, std::move(error), /*stats=*/{});
+    SetExecutable(key, kind, std::move(client_or).status(), /*stats=*/{});
     return;
   }
+  xla::PjRtClient* const client = *client_or;
 
   {
     absl::MutexLock lock(cache_mutex_);

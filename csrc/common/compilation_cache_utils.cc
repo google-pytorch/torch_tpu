@@ -69,9 +69,9 @@ std::ostream& operator<<(std::ostream& os, const CacheTier tier) {
 
 // Returns the PjRt version string.
 [[nodiscard]] static std::string GetPjRtVersion() {
-  xla::PjRtClient* const client = PjrtBackend::GetInstance().GetClient();
-  ABSL_CHECK(client != nullptr)  // CRASH_OK
-      << "PjRtClient must be initialized before accessing the tier-2 cache.";
+  TT_ASSIGN_OR_CRASH(  // CRASH_OK
+      xla::PjRtClient* const client, PjrtBackend::GetInstance().GetClient(),
+      _ << "PjRtClient must be initialized before accessing the tier-2 cache");
 
   // Get the PjRt C API version.
   const auto attrib_opt = client->plugin_attributes();
@@ -109,10 +109,10 @@ FingerprintType GetTorchTpuBinaryFingerprint() {
 absl::StatusOr<SharedLoadedExecutableWithMetadata> LoadSerializedExecutable(
     CacheTier tier, const CompilationCacheKey& key,
     const std::string_view data) {
-  xla::PjRtClient* const client = PjrtBackend::GetInstance().GetClient();
-  TT_RET_CHECK(client, error::kFailedPrecondition)
-      << "PjRtClient must be initialized before accessing the " << tier
-      << " cache";
+  TT_ASSIGN_OR_RETURN(
+      xla::PjRtClient* const client, PjrtBackend::GetInstance().GetClient(),
+      _ << "PjRtClient must be initialized before accessing the " << tier
+        << " cache");
   TT_ASSIGN_OR_RETURN(
       std::unique_ptr<xla::PjRtLoadedExecutable> pjrt_executable,
       AdaptXlaError(

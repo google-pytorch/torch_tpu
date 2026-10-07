@@ -721,13 +721,12 @@ ProcessGroupTpu::CrossHostReceiveBuffers(
 
   // Initiate the receive process on the PJRT client. The resulting buffers
   // will be populated once the remote sender initiates its transfer.
-  auto* client = PjrtBackend::GetInstance().GetClient();
-  TT_RET_CHECK(client != nullptr, error::kInternal)
-      << "PjRtClient is not initialized.";
-  TT_ASSIGN_OR_RETURN(
-      auto buffers,
-      client->MakeCrossHostReceiveBuffers(
-          shapes, PjrtBackend::GetInstance().GetDevice(), std::move(notifier)));
+  TT_ASSIGN_OR_RETURN(xla::PjRtClient* const client,
+                      PjrtBackend::GetInstance().GetClient());
+  TT_ASSIGN_OR_RETURN(xla::PjRtDevice* const device,
+                      PjrtBackend::GetInstance().GetDevice());
+  TT_ASSIGN_OR_RETURN(auto buffers, client->MakeCrossHostReceiveBuffers(
+                                        shapes, device, std::move(notifier)));
 
   // Wait for the buffer to be ready to transfer and descriptors to be
   // posted to the store. This ensures the enqueueing order of send and receive
@@ -887,15 +886,13 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
   ABSL_VLOG(1) << "[ProcessGroupTpu] ctor: "
                << "rank: " << rank << ", group size: " << group_size;
 
-  const auto* const pjrt_client = PjrtBackend::GetInstance().GetClient();
-  TT_CHECK_THROW(pjrt_client != nullptr, error::kInternal)
-      << "PjRtClient is not initialized.";
-  ABSL_CHECK(pjrt_client != nullptr);  // CRASH_OK
+  TT_ASSIGN_OR_THROW(const xla::PjRtClient* const pjrt_client,
+                     PjrtBackend::GetInstance().GetClient());
 
   const int64_t world_size = pjrt_client->devices().size();
 
   // Addressable device "assigned" to this process/rank:
-  TT_CHECK_THROW(pjrt_client && pjrt_client->addressable_devices().size() == 1,
+  TT_CHECK_THROW(pjrt_client->addressable_devices().size() == 1,
                  error::kInternal)
       << "expected exactly one TPU device per PyTorch process";
   addressable_device_id_ =

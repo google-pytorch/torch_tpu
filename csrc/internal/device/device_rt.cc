@@ -333,13 +333,10 @@ TT_PYBIND11_MODULE(_device_ops_backend, m) {
   m.def(
       "_get_current_device_id",
       []() -> int {
-        TT_THROW_IF_ERROR(PjrtBackend::GetInstance().EnsureInitialized());
-        xla::PjRtClient* client = PjrtBackend::GetInstance().GetClient();
-        ABSL_CHECK(client != nullptr)  // CRASH_OK
-            << "PjRtClient is null after initialization.";
-        xla::PjRtDevice* device = PjrtBackend::GetInstance().GetDevice();
-        ABSL_CHECK(device != nullptr)  // CRASH_OK
-            << "PjRtDevice is null after initialization.";
+        TT_ASSIGN_OR_THROW(xla::PjRtClient* const client,
+                           PjrtBackend::GetInstance().GetClient());
+        TT_ASSIGN_OR_THROW(xla::PjRtDevice* const device,
+                           PjrtBackend::GetInstance().GetDevice());
 
         const auto& addressable_devices = client->addressable_devices();
         for (size_t i = 0; i < addressable_devices.size(); ++i) {
@@ -356,10 +353,8 @@ TT_PYBIND11_MODULE(_device_ops_backend, m) {
   m.def(
       "_get_device_count",
       []() -> int {
-        TT_THROW_IF_ERROR(PjrtBackend::GetInstance().EnsureInitialized());
-        xla::PjRtClient* client = PjrtBackend::GetInstance().GetClient();
-        TT_CHECK_THROW(client != nullptr, error::kInternal)
-            << "PjRtClient is null after initialization.";
+        TT_ASSIGN_OR_THROW(xla::PjRtClient* const client,
+                           PjrtBackend::GetInstance().GetClient());
         return client->addressable_device_count();
       },
       "Returns the number of devices visible to the PJRT client. This count "

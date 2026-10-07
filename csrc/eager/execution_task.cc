@@ -221,9 +221,8 @@ bool TilesMatchDefault(absl::Span<const Indices> layout_tiles,
 absl::StatusOr<std::vector<CustomLayout>>
 ExtractArgumentLayoutsIfDifferentFromDefault(const Traversal& traversal) {
   std::vector<CustomLayout> argument_layouts;
-  xla::PjRtClient* const client = PjrtBackend::GetInstance().GetClient();
-  ABSL_CHECK(client != nullptr)  // CRASH_OK
-      << "Could not get PjRtClient from PjrtBackend.";
+  TT_ASSIGN_OR_RETURN(xla::PjRtClient* const client,
+                      PjrtBackend::GetInstance().GetClient());
   const auto& arguments = traversal.arguments();
   for (size_t i = 0; i < arguments.size(); ++i) {
     const DeviceBufferRef& arg = arguments[i];

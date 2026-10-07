@@ -99,6 +99,7 @@ torch_tpu_cc_test(
         "@com_google_absl//absl/cleanup",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
+        "@xla//xla/pjrt:pjrt_client",
     ],
 )
 
@@ -113,7 +114,9 @@ torch_tpu_cc_library(
     deps = [
         ":pjrt_state",
         "//csrc/common:error_utils",
+        "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@xla//xla:shape_util",

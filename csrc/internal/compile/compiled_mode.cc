@@ -563,9 +563,8 @@ absl::StatusOr<SharedLoadedExecutableWithMetadata> CompileMlirExecutable(
 
 absl::StatusOr<SharedLoadedExecutableWithMetadata> CompileMlirExecutable(
     xla::MaybeOwningMlirModule module, UniqueCompileOptions compile_options) {
-  xla::PjRtClient* const client = PjrtBackend::GetInstance().GetClient();
-  TT_RET_CHECK(client, error::kFailedPrecondition)
-      << "PjRtClient must be initialized";
+  TT_ASSIGN_OR_RETURN(xla::PjRtClient* const client,
+                      PjrtBackend::GetInstance().GetClient());
 
   LoadedExecutableBuilder executable_builder =
       [module = std::move(module)](

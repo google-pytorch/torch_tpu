@@ -390,9 +390,8 @@ absl::StatusOr<mlir::func::FuncOp> InjectCustomKernel(
   }
 
   // Partition global view kernels to local view.
-  xla::PjRtClient* client = PjrtBackend::GetInstance().GetClient();
-  TT_RET_CHECK(client != nullptr, error::kInternal)
-      << "PjRt client is not initialized.";
+  TT_ASSIGN_OR_RETURN(xla::PjRtClient* const client,
+                      PjrtBackend::GetInstance().GetClient());
   TT_ASSIGN_OR_RETURN(const xla::PjRtTopologyDescription* client_topology,
                       client->GetTopologyDescription());
   TT_RETURN_IF_ERROR(PartitionGlobalToLocal(custom_kernel.getContext(),

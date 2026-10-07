@@ -122,9 +122,10 @@ absl::StatusOr<TensorBufferHandle> MakeTensorBuffer(
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Covered by tensor_buffer_test.
       !buffer->IsDeleted(), error::kFailedPrecondition)
       << "cannot create TensorBufferHandle from deleted PjRtBuffer";
+  TT_ASSIGN_OR_RETURN(xla::PjRtClient* const client,
+                      PjrtBackend::GetInstance().GetClient());
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Covered by tensor_buffer_test.
-      buffer->client() == PjrtBackend::GetInstance().GetClient(),
-      error::kInvalidArgument)
+      buffer->client() == client, error::kInvalidArgument)
       << "PjRtBuffer must belong to TorchTPU's active PjrtBackend instance";
   TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref,
                       DeviceBufferList::CreateMaterialized(std::move(buffer)));
