@@ -53,9 +53,22 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_test(
+    name = "device_module_test_no_tpu",
+    srcs = ["device_module_no_tpu_test.py"],
+    main = "device_module_no_tpu_test.py",
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//tests:seed_test_utils",
+    ],
+)
+
 test_suite(
     name = "device_module_tests",
     tests = [
+        "device_module_test_no_tpu",
         "device_module_test_tpu",
     ],
 )

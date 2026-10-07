@@ -193,6 +193,41 @@ class DistributedUtilsTest(seed_test_utils.MultiProcessRepeatableTest):
 
     self.assertEqual(attempt_count, 2)
 
+  def test_dist_run_keeps_pinned_slicebuilder_ports(self) -> None:
+    """Verifies caller-pinned SliceBuilder addresses survive a retry."""
+    pinned = "localhost:11111,localhost:22222"
+    seen_addresses = []
+
+    def mock_spawn(fn, args=(), nprocs=1, join=True):
+      del fn, args, nprocs, join  # Unused.
+      seen_addresses.append(os.environ["TORCH_TPU_SLICEBUILDER_ADDRESSES"])
+      if len(seen_addresses) == 1:
+        raise mp.ProcessRaisedException(
+            msg="RuntimeError: Address already in use (errno: 98 EADDRINUSE)",
+            error_index=0,
+            error_pid=12345,
+        )
+      return None
+
+    # Pretend a 2-chip single host so that `dist_run` bootstraps the TPU launch
+    # environment, while pinning the topology so no real TPU is required.
+    with (
+        mock.patch.dict(
+            os.environ,
+            {
+                "TORCH_TPU_SLICEBUILDER_ADDRESSES": pinned,
+                "TORCH_TPU_TOPOLOGY": "1,2,1",
+            },
+        ),
+        mock.patch.object(
+            distributed_utils.hardware, "get_tpu_device_count", return_value=2
+        ),
+        mock.patch.object(mp, "spawn", side_effect=mock_spawn),
+    ):
+      distributed_utils.dist_run(2, lambda: None, max_retries=3)
+
+    self.assertEqual(seen_addresses, [pinned, pinned])
+
   def test_dist_run_retries_and_succeeds_with_real_socket_collision(
       self,
   ) -> None:

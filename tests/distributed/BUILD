@@ -38,6 +38,7 @@ torch_tpu_py_library(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal:env",
+        "//src/torch_tpu/_internal:env_utils",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/utils:hardware",
         "//tests:seed_test_utils",
@@ -56,6 +57,29 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//tests:seed_test_utils",
         "@pypi//portpicker",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "distributed_utils_tpu_test",
+    srcs = ["distributed_utils_tpu_test.py"],
+    tags = if_oss(
+        ["exclusive"],
+        [],
+    ) + [
+        "noasan",  # TODO(b/497035517): fix the test in asan mode.
+        "nomsan",  # TODO(b/497035517): fix the test in msan mode.
+        "notsan",  # TODO(b/497035517): fix the test in tsan mode.
+        "requires-tpu-v5lite:8",
+    ],
+    deps = [
+        ":distributed_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/utils:hardware",
+        "//tests:seed_test_utils",
     ],
 )
 

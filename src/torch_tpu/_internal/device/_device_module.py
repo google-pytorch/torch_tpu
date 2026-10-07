@@ -642,9 +642,15 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
   def manual_seed(cls, seed: int) -> None:
     """Sets the seed for generating random numbers on the current device.
 
+    Like `torch.cuda.manual_seed`, this is a no-op when no TPU is present. When
+    a TPU is present, this raises if TPU initialization fails rather than
+    silently leaving the device unseeded.
+
     .. warning::
         This API is experimental and subject to change in future releases.
     """
+    if not cls._public_module().is_available():
+      return
     _device_ops_backend.manual_seed(seed)
 
   @classmethod
@@ -655,12 +661,19 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
   def manual_seed_all(cls, seed: int) -> None:
     """Sets the seed for generating random numbers on all devices.
 
+    Like `torch.cuda.manual_seed_all`, this is a no-op when no TPU is present
+    (so `torch.manual_seed()` keeps working on CPU-only hosts). When a TPU is
+    present, this raises if TPU initialization fails rather than silently
+    leaving the devices unseeded.
+
     .. warning::
         This API is experimental and subject to change in future releases.
 
     Args:
       seed: The desired seed.
     """
+    if not cls._public_module().is_available():
+      return
     _device_ops_backend.manual_seed_all(seed)
 
   @classmethod

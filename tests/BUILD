@@ -1701,12 +1701,14 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/compile:compiler",
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",
         "//src/torch_tpu/_internal/distributed",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/dynamism",
         "//src/torch_tpu/_internal/execution_mode",
         "//src/torch_tpu/_internal/export",
         "//src/torch_tpu/_internal/pallas",
         "//src/torch_tpu/_internal/pallas:tpu_torch_pallas",  # build_cleaner: keep
         "//src/torch_tpu/_internal/utils:hardware",
+        "//tests/distributed:distributed_utils",
     ],
 )
 
@@ -1776,12 +1778,14 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/compile:compiler",
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",
         "//src/torch_tpu/_internal/distributed",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/dynamism",
         "//src/torch_tpu/_internal/execution_mode",
         "//src/torch_tpu/_internal/export",
         "//src/torch_tpu/_internal/pallas",
         "//src/torch_tpu/_internal/pallas:tpu_torch_pallas",  # build_cleaner: keep
         "//src/torch_tpu/_internal/utils:hardware",
+        "//tests/distributed:distributed_utils",
     ],
 )
 

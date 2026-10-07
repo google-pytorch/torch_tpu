@@ -26,6 +26,7 @@ from absl.testing import parameterized
 import torch
 import torch.distributed as dist
 from torch.fx.experimental.proxy_tensor import make_fx
+import torch.multiprocessing as mp
 from torch.testing._internal.distributed import fake_pg
 from torch.tpu import distributed  # pyrefly: ignore[missing-import]
 from torch.utils import _pytree as pytree
@@ -41,7 +42,9 @@ from torch_tpu._internal.distributed import distributed as internal_distributed
 from torch_tpu._internal.export import export as torch_tpu_export
 from torch_tpu._internal.pallas import tpu_torch_pallas
 from torch_tpu._internal.utils import hardware
+from torch_tpu._internal.distributed import multiprocessing
 from tests import error_testing as et
+from tests.distributed import distributed_utils
 
 EagerMode: TypeAlias = execution_mode.EagerMode
 _EagerMode: TypeAlias = execution_mode._EagerMode
@@ -5164,6 +5167,91 @@ class EnvironmentErrorsTest(et.TpuOnlyErrorTestBase):
         ):
           distributed.set_tpu_launch_env()
 
+  @et.why_tpu_only("dist_run sets up the TPU launch environment.")
+  def test_dist_run_does_not_retry_unrelated_failures(self):
+    mock_spawn = mock.Mock(
+        side_effect=mp.ProcessRaisedException(
+            msg="RuntimeError: unrelated worker failure",
+            error_index=0,
+            error_pid=12345,
+        )
+    )
+    # `dist_run` and `set_tpu_launch_env` export launch variables (e.g.
+    # `TORCH_TPU_SLICEBUILDER_ADDRESSES`); keep them from leaking into other
+    # tests.
+    with (
+        mock.patch.dict(os.environ),
+        mock.patch.dict(env_utils._resolved_values),  # pylint: disable=protected-access
+        mock.patch.object(mp, "spawn", mock_spawn),
+    ):
+      with et.assert_raises_message(
+          mp.ProcessRaisedException,
+          tpu="""RuntimeError: unrelated worker failure""",
+      ):
+        distributed_utils.dist_run(1, lambda: None, max_retries=3)
+
+    mock_spawn.assert_called_once()
+
+
+_SEED_FNS = {
+    "torch.manual_seed": lambda seed: torch.manual_seed(seed),
+    "torch.tpu.manual_seed": lambda seed: torch.tpu.manual_seed(seed),
+    "torch.tpu.manual_seed_all": lambda seed: torch.tpu.manual_seed_all(seed),
+}
+
+
+def _seed_in_fresh_process(local_rank: int, seed_fn_name: str) -> None:
+  """Worker that seeds through `seed_fn_name` as the first TPU access."""
+  del local_rank  # Unused.
+  multiprocessing.parse_absl_flags()
+  _SEED_FNS[seed_fn_name](0)
+
+
+def _init_process_group_in_fresh_process(local_rank: int) -> None:
+  """Worker that constructs `ProcessGroupTpu` as the first TPU access."""
+  multiprocessing.parse_absl_flags()
+  dist.init_process_group(
+      backend="tpu", store=dist.HashStore(), rank=local_rank, world_size=1
+  )
+
+
+class InitializationErrorsTest(et.TpuOnlyErrorTestBase):
+  """Tests that a failed TPU initialization is surfaced rather than swallowed.
+
+  TPU initialization runs at most once per process and its status is sticky,
+  so each test runs its TPU access in a freshly spawned worker. This process
+  holds the TPU devices, so the worker cannot acquire them and its TPU
+  initialization fails.
+  """
+
+  def setUp(self):
+    super().setUp()
+    # Initialize the TPU in this process, so that it holds the devices.
+    torch.ones(1, device="tpu").cpu()
+
+  def assert_worker_raises_tpu_init_failure(self, fn, *args: Any) -> None:
+    """Asserts that `fn(0, *args)` in a fresh worker raises the init failure."""
+    # The rest of the message names the device node and the colliding process,
+    # both of which vary from host to host and run to run.
+    with et.assert_subprocess_raises_message(
+        RuntimeError, """[TorchTPU] Failed to acquire a TPU device node"""
+    ):
+      mp.spawn(fn, args=args, nprocs=1, join=True)
+
+  @et.why_tpu_only("TPU initialization can only fail on a TPU host.")
+  def test_manual_seed_raises_tpu_init_failure(self):
+    for seed_fn_name in _SEED_FNS:
+      with self.subTest(seed_fn=seed_fn_name):
+        self.assert_worker_raises_tpu_init_failure(
+            _seed_in_fresh_process, seed_fn_name
+        )
+
+  @et.why_tpu_only("TPU initialization can only fail on a TPU host.")
+  def test_process_group_raises_tpu_init_failure(self):
+    self.assert_worker_raises_tpu_init_failure(
+        _init_process_group_in_fresh_process
+    )
+
 
 class ForkErrorsTest(et.TpuOnlyErrorTestBase):
 
@@ -5189,4 +5277,4 @@ class ForkErrorsTest(et.TpuOnlyErrorTestBase):
 
 
 if __name__ == "__main__":
-  absltest.main()
+  multiprocessing.handle_test_main(absltest.main)

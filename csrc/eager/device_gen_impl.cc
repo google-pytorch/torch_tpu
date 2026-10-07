@@ -203,7 +203,7 @@ class DeviceGenerators {
   void SetExportModeDefaultGenerator(c10::DeviceIndex idx,
                                      c10::optional<at::Generator> gen);
 
-  void ClearExportModeDefaultGenerators() {
+  static void ClearExportModeDefaultGenerators() {
     GetExportModeDefaultGenerators().clear();
   }
 
@@ -311,6 +311,11 @@ c10::intrusive_ptr<DeviceGeneratorState> DeviceGeneratorState::clone() const {
 }
 
 DeviceGenerators& DeviceGenerators::GetDefaultInstance() {
+  // If TPU initialization failed, `deviceCount()` reports 0 devices, which
+  // would be cached below and make every generator operation (e.g. seeding in
+  // `torch.manual_seed()`) silently a no-op or fail with an unrelated error
+  // later. Surface the underlying initialization error instead.
+  TT_THROW_IF_ERROR(PjrtBackend::GetInstance().EnsureInitialized());
   // We cannot use absl::NoDestructor here because the constructor is private.
   static auto* const kInstance = []() -> DeviceGenerators* {
     const auto* const guard =
@@ -768,18 +773,14 @@ void SetExportModeDefaultDeviceGenerator(c10::optional<at::Generator> gen,
 }
 
 void ClearExportModeDefaultDeviceGenerators() {
-  DeviceGenerators::GetDefaultInstance().ClearExportModeDefaultGenerators();
+  DeviceGenerators::ClearExportModeDefaultGenerators();
 }
 
 at::Generator& GetDefaultDeviceGenerator(c10::DeviceIndex idx) {
-  // Fail early with an actionable error (e.g., VFIO collision) rather than
-  // crashing later on an uninitialized device dereference.
-  TT_THROW_IF_ERROR(PjrtBackend::GetInstance().EnsureInitialized());
   return DeviceGenerators::GetDefaultInstance().GetDefaultGenerator(idx);
 }
 
 at::Generator& GetEagerDefaultDeviceGenerator(c10::DeviceIndex idx) {
-  TT_THROW_IF_ERROR(PjrtBackend::GetInstance().EnsureInitialized());
   return DeviceGenerators::GetDefaultInstance().GetEagerDefaultGenerator(idx);
 }
 
