@@ -25,6 +25,7 @@
 #include <cstdint>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "absl/log/absl_log.h"
@@ -32,23 +33,27 @@
 #include "absl/status/statusor.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "xla/hlo/testlib/filecheck.h"
 
 namespace torch_tpu::kiln {
 namespace {
 
 using absl_testing::IsOk;
-using testing::HasSubstr;
+using absl_testing::IsOkAndHolds;
 
 class KilnTest : public testing::Test {
  protected:
   // Verifies that the kernel survives the same serialization step as the
-  // production kernels and returns its textual form.
-  std::string CheckAndPrint(Kernel&& kernel) {
+  // production kernels and that its textual form matches `pattern`, a
+  // FileCheck pattern (see https://llvm.org/docs/CommandGuide/FileCheck.html).
+  // Patterns are written as they would be in an MLIR lit test; lines that are
+  // not `CHECK` directives (e.g. `//` comments) are ignored by FileCheck.
+  void ExpectKernelMatches(Kernel&& kernel, std::string_view pattern) {
     std::string ir = ToString(kernel);
     ABSL_LOG(INFO) << "\n" << ir;
     EXPECT_THAT(kernel.Verify(), IsOk());
     EXPECT_THAT(std::move(kernel).Serialize(), IsOk()) << ir;
-    return ir;
+    EXPECT_THAT(xla::RunFileCheck(ir, pattern), IsOkAndHolds(true));
   }
 };
 
@@ -85,11 +90,49 @@ TEST_F(KilnTest, BlockwiseMatmul) {
       });
   ASSERT_THAT(kernel, IsOk());
 
-  const std::string ir = CheckAndPrint(std::move(*kernel));
-  EXPECT_THAT(ir, HasSubstr("iteration_bounds = array<i64: 4, 2, 4>"));
-  EXPECT_THAT(ir, HasSubstr("scratch_operands = 1"));
-  EXPECT_THAT(ir, HasSubstr("tpu.matmul"));
-  EXPECT_THAT(ir, HasSubstr("scf.if"));
+  ExpectKernelMatches(std::move(*kernel), R"(
+    CHECK-LABEL: func.func private @matmul_index_map_0(
+    CHECK-SAME:    %[[I:arg[0-9]+]]: i32, %[[J:arg[0-9]+]]: i32, %[[K:arg[0-9]+]]: i32) -> (i32, i32)
+    CHECK-NEXT:    return %[[I]], %[[K]]
+    CHECK-LABEL: func.func private @matmul_index_map_1(
+    CHECK-SAME:    %[[I:arg[0-9]+]]: i32, %[[J:arg[0-9]+]]: i32, %[[K:arg[0-9]+]]: i32) -> (i32, i32)
+    CHECK-NEXT:    return %[[K]], %[[J]]
+    CHECK-LABEL: func.func private @matmul_index_map_2(
+    CHECK-SAME:    %[[I:arg[0-9]+]]: i32, %[[J:arg[0-9]+]]: i32, %[[K:arg[0-9]+]]: i32) -> (i32, i32)
+    CHECK-NEXT:    return %[[I]], %[[J]]
+
+    CHECK-LABEL: func.func @matmul(
+    CHECK-SAME:    %[[I:arg[0-9]+]]: i32, %[[J:arg[0-9]+]]: i32, %[[K:arg[0-9]+]]: i32,
+    CHECK-SAME:    %[[A:arg[0-9]+]]: memref<256x512xbf16, #tpu.memory_space<vmem>>,
+    CHECK-SAME:    %[[B:arg[0-9]+]]: memref<512x256xbf16, #tpu.memory_space<vmem>>,
+    CHECK-SAME:    %[[OUT:arg[0-9]+]]: memref<256x256xbf16, #tpu.memory_space<vmem>>,
+    CHECK-SAME:    %[[ACC:arg[0-9]+]]: memref<256x256xf32, #tpu.memory_space<vmem>>)
+    CHECK-SAME:    dimension_semantics = [#tpu.dimension_semantics<parallel>, #tpu.dimension_semantics<parallel>, #tpu.dimension_semantics<arbitrary>]
+    CHECK-SAME:    iteration_bounds = array<i64: 4, 2, 4>
+    CHECK-SAME:    scratch_operands = 1
+    CHECK-SAME:    window_params = [{transform_indices = @matmul_index_map_0, window_bounds = array<i64: 256, 512>}, {transform_indices = @matmul_index_map_1, window_bounds = array<i64: 512, 256>}, {transform_indices = @matmul_index_map_2, window_bounds = array<i64: 256, 256>}]
+
+    CHECK:         %[[C0:.*]] = arith.constant 0 : i32
+    CHECK:         %[[IS_FIRST:.*]] = arith.cmpi eq, %[[K]], %[[C0]] : i32
+    CHECK:         scf.if %[[IS_FIRST]] {
+    CHECK:           %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : vector<256x256xf32>
+    CHECK:           tpu.vector_store %[[ACC]][%{{.*}}, %{{.*}}], %[[ZERO]]
+    CHECK:         }
+    CHECK:         %[[ACC_V:.*]] = vector.load %[[ACC]]
+    CHECK:         %[[A_V:.*]] = vector.load %[[A]]
+    CHECK:         %[[B_V:.*]] = vector.load %[[B]]
+    CHECK:         %[[DOT:.*]] = tpu.matmul %[[A_V]], %[[B_V]], %{{.*}} : vector<256x512xbf16>, vector<512x256xbf16>, vector<256x256xf32> -> vector<256x256xf32>
+    CHECK:         %[[SUM:.*]] = arith.addf %[[ACC_V]], %[[DOT]] : vector<256x256xf32>
+    CHECK:         tpu.vector_store %[[ACC]][%{{.*}}, %{{.*}}], %[[SUM]]
+    CHECK:         %[[C3:.*]] = arith.constant 3 : i32
+    CHECK:         %[[IS_LAST:.*]] = arith.cmpi eq, %[[K]], %[[C3]] : i32
+    CHECK:         scf.if %[[IS_LAST]] {
+    CHECK:           %[[FINAL:.*]] = vector.load %[[ACC]]
+    CHECK:           %[[BF16:.*]] = arith.truncf %[[FINAL]] : vector<256x256xf32> to vector<256x256xbf16>
+    CHECK:           tpu.vector_store %[[OUT]][%{{.*}}, %{{.*}}], %[[BF16]]
+    CHECK:         }
+    CHECK:         return
+  )");
 }
 
 // Scalar prefetch + function index map: gathers rows by an index table held in
@@ -117,10 +160,38 @@ TEST_F(KilnTest, ScalarPrefetchAndLoop) {
       });
   ASSERT_THAT(kernel, IsOk());
 
-  const std::string ir = CheckAndPrint(std::move(*kernel));
-  EXPECT_THAT(ir, HasSubstr("scalar_prefetch = 1"));
-  EXPECT_THAT(ir, HasSubstr("func.func private @gather_rows_index_map_0"));
-  EXPECT_THAT(ir, HasSubstr("memref.load"));
+  ExpectKernelMatches(std::move(*kernel), R"(
+    CHECK-LABEL: func.func private @gather_rows_index_map_0(
+    CHECK-SAME:    %[[I:arg[0-9]+]]: i32, %[[IDX:arg[0-9]+]]: memref<64xi32, #tpu.memory_space<smem>>) -> (i32, i32)
+    CHECK:         %[[SLICE:.*]] = tpu.memref_slice %[[IDX]][%[[I]]] : memref<64xi32, #tpu.memory_space<smem>> -> memref<1xi32, #tpu.memory_space<smem>>
+    CHECK:         %[[SQ:.*]] = tpu.memref_squeeze %[[SLICE]] : memref<1xi32, #tpu.memory_space<smem>> -> memref<i32, #tpu.memory_space<smem>>
+    CHECK:         %[[ROW:.*]] = memref.load %[[SQ]][] : memref<i32, #tpu.memory_space<smem>>
+    CHECK:         %[[C0:.*]] = arith.constant 0 : i32
+    CHECK:         return %[[ROW]], %[[C0]]
+
+    CHECK-LABEL: func.func private @gather_rows_index_map_1(
+    CHECK-SAME:    %[[I:arg[0-9]+]]: i32, %{{.*}}: memref<64xi32, #tpu.memory_space<smem>>) -> (i32, i32)
+    CHECK:         return %[[I]], %{{.*}}
+
+    CHECK-LABEL: func.func @gather_rows(
+    CHECK-SAME:    %{{.*}}: i32, %{{.*}}: memref<64xi32, #tpu.memory_space<smem>>,
+    CHECK-SAME:    %[[ROWS:arg[0-9]+]]: memref<1x1024xf32, #tpu.memory_space<vmem>>,
+    CHECK-SAME:    %[[OUT:arg[0-9]+]]: memref<1x128xf32, #tpu.memory_space<vmem>>)
+    CHECK-SAME:    iteration_bounds = array<i64: 64>
+    CHECK-SAME:    scalar_prefetch = 1
+    CHECK-SAME:    window_params = [{transform_indices = @gather_rows_index_map_0, window_bounds = array<i64: 1, 1024>}, {transform_indices = @gather_rows_index_map_1, window_bounds = array<i64: 1, 128>}]
+
+    CHECK:         %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : vector<1x128xf32>
+    CHECK:         %[[S0:.*]] = tpu.memref_slice %[[ROWS]][%{{.*}}, %{{.*}}] : memref<1x1024xf32, #tpu.memory_space<vmem>> -> memref<1x128xf32, #tpu.memory_space<vmem>>
+    CHECK:         %[[SQ0:.*]] = tpu.memref_squeeze %[[S0]] : memref<1x128xf32, #tpu.memory_space<vmem>> -> memref<128xf32, #tpu.memory_space<vmem>>
+    CHECK:         %[[L0:.*]] = vector.load %[[SQ0]][%{{.*}}] : memref<128xf32, #tpu.memory_space<vmem>>, vector<128xf32>
+    CHECK:         %[[B0:.*]] = vector.broadcast %[[L0]] : vector<128xf32> to vector<1x128xf32>
+    CHECK:         arith.addf %[[ZERO]], %[[B0]] : vector<1x128xf32>
+    CHECK-COUNT-7: tpu.memref_slice %[[ROWS]]
+    CHECK:         %[[OUT_SQ:.*]] = tpu.memref_squeeze %[[OUT]] : memref<1x128xf32, #tpu.memory_space<vmem>> -> memref<128xf32, #tpu.memory_space<vmem>>
+    CHECK:         %[[TOTAL:.*]] = vector.shape_cast %{{.*}} : vector<1x128xf32> to vector<128xf32>
+    CHECK:         tpu.vector_store %[[OUT_SQ]][%{{.*}}], %[[TOTAL]]
+  )");
 }
 
 TEST_F(KilnTest, RefSliceRankCollapsing) {
@@ -139,8 +210,13 @@ TEST_F(KilnTest, RefSliceRankCollapsing) {
                      out2d = tile2d;
                    });
   ASSERT_THAT(kernel, IsOk());
-  const std::string ir = CheckAndPrint(std::move(*kernel));
-  EXPECT_THAT(ir, HasSubstr("tpu.memref_squeeze"));
+  ExpectKernelMatches(std::move(*kernel), R"(
+    CHECK-LABEL: func.func @rank_collapse(
+    CHECK-SAME:    %{{.*}}: i32, %[[IN:arg[0-9]+]]: memref<1x1x32x128xf32, #tpu.memory_space<vmem>>, %[[OUT:arg[0-9]+]]: memref<32x128xf32, #tpu.memory_space<vmem>>)
+    CHECK:         %[[SQ:.*]] = tpu.memref_squeeze %[[IN]] : memref<1x1x32x128xf32, #tpu.memory_space<vmem>> -> memref<32x128xf32, #tpu.memory_space<vmem>>
+    CHECK:         %[[V:.*]] = vector.load %[[SQ]][%{{.*}}, %{{.*}}] : memref<32x128xf32, #tpu.memory_space<vmem>>, vector<32x128xf32>
+    CHECK:         tpu.vector_store %[[OUT]][%{{.*}}, %{{.*}}], %[[V]]
+  )");
 }
 
 TEST_F(KilnTest, LiteralOverloads) {
@@ -184,7 +260,44 @@ TEST_F(KilnTest, LiteralOverloads) {
                          [&] { out = Zeros({32, 128}, f32); });
                    });
   ASSERT_THAT(kernel, IsOk());
-  CheckAndPrint(std::move(*kernel));
+  ExpectKernelMatches(std::move(*kernel), R"(
+    CHECK-LABEL: func.func @literal_ops(
+    CHECK-SAME:    %[[PID:arg[0-9]+]]: i32, %[[F_IN:arg[0-9]+]]: memref<32x128xf32, #tpu.memory_space<vmem>>, %[[I_IN:arg[0-9]+]]: memref<32x128xi32, #tpu.memory_space<vmem>>, %[[OUT:arg[0-9]+]]: memref<32x128xf32, #tpu.memory_space<vmem>>)
+    CHECK:         %[[F:.*]] = vector.load %[[F_IN]]
+    CHECK:         %[[I:.*]] = vector.load %[[I_IN]]
+
+    // Literals adopt the dtype of the tile they are combined with.
+    CHECK:         %[[C1:.*]] = arith.constant dense<1.000000e+00> : vector<32x128xf32>
+    CHECK:         %[[F_ADD:.*]] = arith.addf %[[F]], %[[C1]] : vector<32x128xf32>
+    CHECK:         %[[C2_5:.*]] = arith.constant dense<2.500000e+00> : vector<32x128xf32>
+    CHECK:         %[[F_SUB:.*]] = arith.subf %[[F]], %[[C2_5]] : vector<32x128xf32>
+    CHECK:         %[[C0_5:.*]] = arith.constant dense<5.000000e-01> : vector<32x128xf32>
+    CHECK:         %[[F_SCALE:.*]] = arith.mulf %[[F]], %[[C0_5]] : vector<32x128xf32>
+    CHECK:         %[[C_NEG:.*]] = arith.constant dense<-1.000000e+04> : vector<32x128xf32>
+    CHECK:         %[[F_CLAMP:.*]] = arith.maximumf %[[F]], %[[C_NEG]] : vector<32x128xf32>
+    CHECK:         %[[GT:.*]] = arith.cmpf ogt, %[[F]], %{{.*}} : vector<32x128xf32>
+    CHECK:         %[[F_MASK:.*]] = arith.select %[[GT]], %[[F]], %{{.*}} : vector<32x128xi1>, vector<32x128xf32>
+    CHECK:         %[[C10:.*]] = arith.constant dense<10> : vector<32x128xi32>
+    CHECK:         %[[I_ADD:.*]] = arith.addi %[[I]], %[[C10]] : vector<32x128xi32>
+    CHECK:         %[[I_EQ:.*]] = arith.cmpi eq, %[[I]], %{{.*}} : vector<32x128xi32>
+    CHECK:         %[[I_SEL:.*]] = arith.select %[[I_EQ]], %[[I_ADD]], %{{.*}} : vector<32x128xi1>, vector<32x128xi32>
+
+    // Cond -> Scalar -> Cond round trip still yields a plain i1 for scf.if.
+    CHECK:         %[[S_PLUS:.*]] = arith.addi %[[PID]], %{{.*}} : i32
+    CHECK:         %[[COND:.*]] = arith.cmpi eq, %[[S_PLUS]], %{{.*}} : i32
+    CHECK:         scf.if %[[COND]] {
+    CHECK:           arith.addf %[[F_ADD]], %[[F_SUB]]
+    CHECK:           arith.addf %{{.*}}, %[[F_SCALE]]
+    CHECK:           arith.addf %{{.*}}, %[[F_CLAMP]]
+    CHECK:           arith.addf %{{.*}}, %[[F_MASK]]
+    CHECK:           %[[I_F:.*]] = arith.sitofp %[[I_SEL]] : vector<32x128xi32> to vector<32x128xf32>
+    CHECK:           %[[RES:.*]] = arith.addf %{{.*}}, %[[I_F]]
+    CHECK:           tpu.vector_store %[[OUT]][%{{.*}}, %{{.*}}], %[[RES]]
+    CHECK:         } else {
+    CHECK:           %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : vector<32x128xf32>
+    CHECK:           tpu.vector_store %[[OUT]][%{{.*}}, %{{.*}}], %[[ZERO]]
+    CHECK:         }
+  )");
 }
 
 TEST_F(KilnTest, ScalarFloatOperations) {
@@ -218,45 +331,104 @@ TEST_F(KilnTest, ScalarFloatOperations) {
                                  sf_abs + sf_sel + sf_min + sf_max + sf_div;
                    });
   ASSERT_THAT(kernel, IsOk());
-  const std::string ir = CheckAndPrint(std::move(*kernel));
-  EXPECT_THAT(ir, HasSubstr("math.exp"));
-  EXPECT_THAT(ir, HasSubstr("math.log"));
-  EXPECT_THAT(ir, HasSubstr("math.sqrt"));
-  EXPECT_THAT(ir, HasSubstr("math.rsqrt"));
-  EXPECT_THAT(ir, HasSubstr("math.absf"));
+  ExpectKernelMatches(std::move(*kernel), R"(
+    CHECK-LABEL: func.func @scalar_float_ops(
+    CHECK-SAME:    %{{.*}}: i32, %[[IN:arg[0-9]+]]: memref<32x128xf32, #tpu.memory_space<smem>>, %[[OUT:arg[0-9]+]]: memref<32x128xf32, #tpu.memory_space<smem>>)
+    CHECK:         %[[SF:.*]] = arith.constant 2.500000e+00 : f32
+    CHECK:         %[[MUL:.*]] = arith.mulf %[[SF]], %{{.*}} : f32
+    CHECK:         %[[ADD:.*]] = arith.addf %[[MUL]], %{{.*}} : f32
+    CHECK:         %[[DIV:.*]] = arith.divf %[[ADD]], %{{.*}} : f32
+    CHECK:         %[[NEG:.*]] = arith.negf %[[SF]] : f32
+    CHECK:         %[[EXP:.*]] = math.exp %[[SF]] : f32
+    CHECK:         %[[LOG:.*]] = math.log %[[SF]] : f32
+    CHECK:         %[[SQRT:.*]] = math.sqrt %[[SF]] : f32
+    CHECK:         %[[RSQRT:.*]] = math.rsqrt %[[SF]] : f32
+    CHECK:         %[[ABS:.*]] = math.absf %[[NEG]] : f32
+    CHECK:         %[[GT:.*]] = arith.cmpf ogt, %[[SF]], %{{.*}} : f32
+    CHECK:         %[[SEL:.*]] = arith.select %[[GT]], %[[SF]], %{{.*}} : f32
+    CHECK:         %[[MIN:.*]] = arith.minimumf %[[SF]], %{{.*}} : f32
+    CHECK:         %[[MAX:.*]] = arith.maximumf %[[SF]], %{{.*}} : f32
+
+    // Scalar(ref) on an SMEM ref is a scalar memref.load of the squeezed slice.
+    CHECK:         %[[IN_SLICE:.*]] = tpu.memref_slice %[[IN]][%{{.*}}, %{{.*}}] : memref<32x128xf32, #tpu.memory_space<smem>> -> memref<1x1xf32, #tpu.memory_space<smem>>
+    CHECK:         %[[IN_SQ:.*]] = tpu.memref_squeeze %[[IN_SLICE]] : memref<1x1xf32, #tpu.memory_space<smem>> -> memref<f32, #tpu.memory_space<smem>>
+    CHECK:         %[[LOADED:.*]] = memref.load %[[IN_SQ]][] : memref<f32, #tpu.memory_space<smem>>
+    CHECK:         arith.addf %[[LOADED]], %[[EXP]] : f32
+    CHECK:         arith.addf %{{.*}}, %[[LOG]] : f32
+    CHECK:         arith.addf %{{.*}}, %[[SQRT]] : f32
+    CHECK:         arith.addf %{{.*}}, %[[RSQRT]] : f32
+    CHECK:         arith.addf %{{.*}}, %[[ABS]] : f32
+    CHECK:         arith.addf %{{.*}}, %[[SEL]] : f32
+    CHECK:         arith.addf %{{.*}}, %[[MIN]] : f32
+    CHECK:         arith.addf %{{.*}}, %[[MAX]] : f32
+    CHECK:         %[[RES:.*]] = arith.addf %{{.*}}, %[[DIV]] : f32
+    CHECK:         %[[OUT_SLICE:.*]] = tpu.memref_slice %[[OUT]]
+    CHECK:         %[[OUT_SQ:.*]] = tpu.memref_squeeze %[[OUT_SLICE]]
+    CHECK:         memref.store %[[RES]], %[[OUT_SQ]][] : memref<f32, #tpu.memory_space<smem>>
+  )");
 }
 
 // The same integer hash written once and applied to both a Scalar and a Tile.
 template <typename T>
 T Fmix32(T h) {
-  h = h ^ (LogicalRightShift(h, 16));
+  h = h ^ (h >> 16);
   h = h * 0x85EBCA6Bu;
-  h = h ^ (LogicalRightShift(h, 13));
+  h = h ^ (h >> 13);
   h = h * 0xC2B2AE35u;
-  h = h ^ (LogicalRightShift(h, 16));
+  h = h ^ (h >> 16);
   return h;
 }
 
 TEST_F(KilnTest, BitwiseOperations) {
-  DType i32 = Int32Type();
+  DType u32 = UInt32Type();
   absl::StatusOr<Kernel> kernel = CreateKernel(
-      GridSpec{.name = "bitwise_ops", .grid = {4}}, InSpec{{32, 128}, i32},
-      OutSpec{{32, 128}, i32}, [&](Ref in, Ref out) {
-        Scalar stream = Fmix32(ProgramId(0) ^ 0x9E3779B9u);
+      GridSpec{.name = "bitwise_ops", .grid = {4}}, InSpec{{32, 128}, u32},
+      OutSpec{{32, 128}, u32}, [&](Ref in, Ref out) {
+        Scalar pid = ProgramId(0).AsType(u32);
+        Scalar stream = Fmix32(pid ^ 0x9E3779B9u);
         Scalar shifted = (stream << 1) | (stream & 1);
 
         Tile t(in);
         Tile hashed = Fmix32(t ^ shifted);
-        Tile masked = (hashed & 0xFFFF) | (LogicalRightShift(hashed, 16));
-        out = Select(masked >= 0, masked, 0);
+        Tile masked = (hashed & 0xFFFF) | (hashed >> 16);
+        Tile masked_signed = masked.AsType(Int32Type());
+        out = Select(masked_signed >= 0, masked_signed, 0);
       });
   ASSERT_THAT(kernel, IsOk());
-  const std::string ir = CheckAndPrint(std::move(*kernel));
-  EXPECT_THAT(ir, HasSubstr("arith.xori"));
-  EXPECT_THAT(ir, HasSubstr("arith.shrui"));
-  EXPECT_THAT(ir, HasSubstr("arith.shli"));
-  EXPECT_THAT(ir, HasSubstr("arith.andi"));
-  EXPECT_THAT(ir, HasSubstr("arith.ori"));
+  ExpectKernelMatches(std::move(*kernel), R"(
+    CHECK-LABEL: func.func @bitwise_ops(
+    CHECK-SAME:    %[[PID:arg[0-9]+]]: i32, %[[IN:arg[0-9]+]]: memref<32x128xi32, #tpu.memory_space<vmem>>, %[[OUT:arg[0-9]+]]: memref<32x128xi32, #tpu.memory_space<vmem>>)
+    CHECK-SAME:    iteration_bounds = array<i64: 4>
+
+    // Scalar hash: unsigned literals are emitted as their i32 bit pattern.
+    CHECK:         %[[SEED:.*]] = arith.constant -1640531527 : i32
+    CHECK:         %[[H0:.*]] = arith.xori %[[PID]], %[[SEED]] : i32
+    CHECK:         %[[SHR0:.*]] = arith.shrui %[[H0]], %{{.*}} : i32
+    CHECK:         %[[H1:.*]] = arith.xori %[[H0]], %[[SHR0]] : i32
+    CHECK:         arith.muli %[[H1]], %{{.*}} : i32
+    CHECK:         arith.muli %{{.*}}, %{{.*}} : i32
+    CHECK:         %[[STREAM:.*]] = arith.xori %{{.*}}, %{{.*}} : i32
+    CHECK:         %[[SHL:.*]] = arith.shli %[[STREAM]], %{{.*}} : i32
+    CHECK:         %[[AND:.*]] = arith.andi %[[STREAM]], %{{.*}} : i32
+    CHECK:         %[[SHIFTED:.*]] = arith.ori %[[SHL]], %[[AND]] : i32
+
+    // Tile hash: the Scalar is splat once, then the same op sequence follows.
+    CHECK:         %[[T:.*]] = vector.load %[[IN]]
+    CHECK:         %[[S_0D:.*]] = vector.broadcast %[[SHIFTED]] : i32 to vector<i32>
+    CHECK:         %[[S:.*]] = vector.broadcast %[[S_0D]] : vector<i32> to vector<32x128xi32>
+    CHECK:         %[[TX:.*]] = arith.xori %[[T]], %[[S]] : vector<32x128xi32>
+    CHECK:         arith.shrui %[[TX]], %{{.*}} : vector<32x128xi32>
+    CHECK:         arith.muli %{{.*}}, %{{.*}} : vector<32x128xi32>
+    CHECK:         arith.muli %{{.*}}, %{{.*}} : vector<32x128xi32>
+    CHECK:         %[[HASHED:.*]] = arith.xori %{{.*}}, %{{.*}} : vector<32x128xi32>
+    CHECK:         %[[MASK:.*]] = arith.constant dense<65535> : vector<32x128xi32>
+    CHECK:         %[[LO:.*]] = arith.andi %[[HASHED]], %[[MASK]] : vector<32x128xi32>
+    CHECK:         %[[HI:.*]] = arith.shrui %[[HASHED]], %{{.*}} : vector<32x128xi32>
+    CHECK:         %[[MASKED:.*]] = arith.ori %[[LO]], %[[HI]] : vector<32x128xi32>
+    CHECK:         %[[GE:.*]] = arith.cmpi sge, %[[MASKED]], %{{.*}} : vector<32x128xi32>
+    CHECK:         %[[RES:.*]] = arith.select %[[GE]], %[[MASKED]], %{{.*}} : vector<32x128xi1>, vector<32x128xi32>
+    CHECK:         tpu.vector_store %[[OUT]][%{{.*}}, %{{.*}}], %[[RES]]
+  )");
 }
 
 TEST_F(KilnTest, TileScalarOperations) {
@@ -315,10 +487,45 @@ TEST_F(KilnTest, TileScalarOperations) {
                            i_shr.ToF32() + w1 + w2 + w3 + w4 + max_f + min_f;
                    });
   ASSERT_THAT(kernel, IsOk());
-  const std::string ir = CheckAndPrint(std::move(*kernel));
-  EXPECT_THAT(ir, HasSubstr("vector.broadcast"));
-  EXPECT_THAT(ir, HasSubstr("arith.addf"));
-  EXPECT_THAT(ir, HasSubstr("arith.xori"));
+  ExpectKernelMatches(std::move(*kernel), R"(
+    CHECK-LABEL: func.func @tile_scalar_ops(
+    CHECK-SAME:    %[[PID:arg[0-9]+]]: i32, %[[F_IN:arg[0-9]+]]: memref<32x128xf32, #tpu.memory_space<vmem>>, %[[I_IN:arg[0-9]+]]: memref<32x128xi32, #tpu.memory_space<vmem>>, %[[OUT:arg[0-9]+]]: memref<32x128xf32, #tpu.memory_space<vmem>>)
+    CHECK-SAME:    iteration_bounds = array<i64: 2>
+    CHECK:         %[[F:.*]] = vector.load %[[F_IN]]
+    CHECK:         %[[I:.*]] = vector.load %[[I_IN]]
+    CHECK:         %[[S_F:.*]] = arith.constant 1.500000e+00 : f32
+    CHECK:         %[[S_I:.*]] = arith.constant 42 : i32
+
+    // Tile(scalar) is a 0-D vector.
+    CHECK:         vector.broadcast %[[S_I]] : i32 to vector<i32>
+
+    // Tile <op> Scalar splats the scalar through a 0-D vector and keeps operand
+    // order.
+    CHECK:         %[[S_F_0D:.*]] = vector.broadcast %[[S_F]] : f32 to vector<f32>
+    CHECK:         %[[S_F_V:.*]] = vector.broadcast %[[S_F_0D]] : vector<f32> to vector<32x128xf32>
+    CHECK:         arith.addf %[[F]], %[[S_F_V]] : vector<32x128xf32>
+    CHECK:         arith.subf %{{.*}}, %[[F]] : vector<32x128xf32>
+    CHECK:         %[[PID_F:.*]] = arith.sitofp %[[PID]] : i32 to f32
+    CHECK:         vector.broadcast %[[PID_F]] : f32 to vector<f32>
+    CHECK:         arith.mulf %[[F]], %{{.*}} : vector<32x128xf32>
+    CHECK:         arith.divf %{{.*}}, %[[F]] : vector<32x128xf32>
+    CHECK:         arith.xori %[[I]], %{{.*}} : vector<32x128xi32>
+    CHECK:         arith.ori %{{.*}}, %[[I]] : vector<32x128xi32>
+    CHECK:         arith.andi %[[I]], %{{.*}} : vector<32x128xi32>
+    CHECK:         arith.shli %[[I]], %{{.*}} : vector<32x128xi32>
+    CHECK:         arith.shrsi %[[I]], %{{.*}} : vector<32x128xi32>
+    CHECK:         %[[CMP1:.*]] = arith.cmpf ogt, %[[F]], %{{.*}} : vector<32x128xf32>
+    CHECK:         %[[CMP2:.*]] = arith.cmpf ole, %{{.*}}, %[[F]] : vector<32x128xf32>
+    CHECK:         %[[CMP3:.*]] = arith.cmpi eq, %[[I]], %{{.*}} : vector<32x128xi32>
+    CHECK:         %[[CMP4:.*]] = arith.cmpi ne, %{{.*}}, %[[I]] : vector<32x128xi32>
+    CHECK:         arith.select %[[CMP1]], %[[F]], %{{.*}} : vector<32x128xi1>, vector<32x128xf32>
+    CHECK:         arith.select %[[CMP2]], %{{.*}}, %[[F]] : vector<32x128xi1>, vector<32x128xf32>
+    CHECK:         arith.select %[[CMP3]], %{{.*}}, %{{.*}} : vector<32x128xi1>, vector<32x128xf32>
+    CHECK:         arith.select %[[CMP4]], %{{.*}}, %{{.*}} : vector<32x128xi1>, vector<32x128xf32>
+    CHECK:         arith.maximumf %[[F]], %{{.*}} : vector<32x128xf32>
+    CHECK:         arith.minimumf %{{.*}}, %[[F]] : vector<32x128xf32>
+    CHECK:         tpu.vector_store %[[OUT]]
+  )");
 }
 
 TEST_F(KilnTest, RotateGatherExtractBitcastAndMaskedStore) {
@@ -339,12 +546,32 @@ TEST_F(KilnTest, RotateGatherExtractBitcastAndMaskedStore) {
         Store(out, row_bits + lane_bits, mask);
       });
   ASSERT_THAT(kernel, IsOk());
-  const std::string ir = CheckAndPrint(std::move(*kernel));
-  EXPECT_THAT(ir, HasSubstr("tpu.dynamic_rotate"));
-  EXPECT_THAT(ir, HasSubstr("tpu.dynamic_gather"));
-  EXPECT_THAT(ir, HasSubstr("vector.extract"));
-  EXPECT_THAT(ir, HasSubstr("arith.bitcast"));
-  EXPECT_THAT(ir, HasSubstr("tpu.vector_store"));
+  ExpectKernelMatches(std::move(*kernel), R"(
+    CHECK-LABEL: func.func @rotate_gather_extract_bitcast_store(
+    CHECK-SAME:    %[[STEP:arg[0-9]+]]: i32, %[[IN:arg[0-9]+]]: memref<8x128xf32, #tpu.memory_space<vmem>>, %[[OUT:arg[0-9]+]]: memref<1x128xi32, #tpu.memory_space<vmem>>)
+    CHECK:         %[[V:.*]] = vector.load %[[IN]]
+    CHECK:         %[[C7:.*]] = arith.constant 7 : i32
+    CHECK:         %[[LOW:.*]] = arith.andi %[[STEP]], %[[C7]] : i32
+    CHECK:         %[[C8:.*]] = arith.constant 8 : i32
+    CHECK:         %[[AMOUNT:.*]] = arith.subi %[[C8]], %[[LOW]] : i32
+    CHECK:         %[[ROTATED:.*]] = tpu.dynamic_rotate %[[V]] by %[[AMOUNT]] dim 0 : vector<8x128xf32>, i32 -> vector<8x128xf32>
+    CHECK:         %[[ROW0:.*]] = vector.extract_strided_slice %[[ROTATED]] offsets = [0, 0], sizes = [1, 128], strides = [1, 1] : vector<8x128xf32> to vector<1x128xf32>
+    CHECK:         %[[INDICES:.*]] = vector.broadcast %[[STEP]] : i32 to vector<1x128xi32>
+    CHECK:         %[[GATHERED:.*]] = tpu.dynamic_gather %[[ROW0]][%[[INDICES]]] in [1] : vector<1x128xf32>, vector<1x128xi32> -> vector<1x128xf32>
+    CHECK:         %[[LANE:.*]] = vector.extract %[[GATHERED]][0, 0] : f32 from vector<1x128xf32>
+    CHECK:         %[[LANE_BITS:.*]] = arith.bitcast %[[LANE]] : f32 to i32
+    CHECK:         %[[ROW_BITS:.*]] = arith.bitcast %[[ROW0]] : vector<1x128xf32> to vector<1x128xi32>
+    CHECK:         %[[IOTA:.*]] = tpu.iota {dimensions = array<i32: 1>} : vector<1x128xi32>
+    CHECK:         %[[C127:.*]] = arith.constant 127 : i32
+    CHECK:         %[[LANE_ID:.*]] = arith.andi %[[STEP]], %[[C127]] : i32
+    CHECK:         %[[LANE_ID_0D:.*]] = vector.broadcast %[[LANE_ID]] : i32 to vector<i32>
+    CHECK:         %[[LANE_ID_V:.*]] = vector.broadcast %[[LANE_ID_0D]] : vector<i32> to vector<1x128xi32>
+    CHECK:         %[[MASK:.*]] = arith.cmpi eq, %[[IOTA]], %[[LANE_ID_V]] : vector<1x128xi32>
+    CHECK:         %[[LANE_BITS_0D:.*]] = vector.broadcast %[[LANE_BITS]] : i32 to vector<i32>
+    CHECK:         %[[LANE_BITS_V:.*]] = vector.broadcast %[[LANE_BITS_0D]] : vector<i32> to vector<1x128xi32>
+    CHECK:         %[[SUM:.*]] = arith.addi %[[ROW_BITS]], %[[LANE_BITS_V]] : vector<1x128xi32>
+    CHECK:         tpu.vector_store %[[OUT]][%{{.*}}, %{{.*}}], %[[SUM]] masked %[[MASK]]
+  )");
 }
 
 TEST_F(KilnTest, ForLoopWithInductionVarAndBounds) {
@@ -371,30 +598,63 @@ TEST_F(KilnTest, ForLoopWithInductionVarAndBounds) {
         });
       });
   ASSERT_THAT(kernel, IsOk());
-  const std::string ir = CheckAndPrint(std::move(*kernel));
-  EXPECT_THAT(ir, HasSubstr("scf.for"));
-  EXPECT_THAT(ir, HasSubstr("arith.index_cast"));
+  ExpectKernelMatches(std::move(*kernel), R"(
+    CHECK-LABEL: func.func @for_loop(
+    CHECK-SAME:    %{{.*}}: i32, %[[IN:arg[0-9]+]]: memref<32x128xf32, #tpu.memory_space<vmem>>, %[[OUT:arg[0-9]+]]: memref<32x128xf32, #tpu.memory_space<vmem>>)
+
+    // Static bounds become index constants; the induction variable is exposed to
+    // the body as an i32.
+    CHECK:         %[[C1:.*]] = arith.constant 1 : index
+    CHECK:         %[[C0:.*]] = arith.constant 0 : index
+    CHECK:         %[[C10:.*]] = arith.constant 10 : index
+    CHECK:         scf.for %[[IV:.*]] = %[[C0]] to %[[C10]] step %[[C1]] {
+    CHECK:           %[[I:.*]] = arith.index_cast %[[IV]] : index to i32
+    CHECK:           %[[I_NEXT:.*]] = arith.addi %[[I]], %{{.*}} : i32
+    CHECK:           %[[LT:.*]] = arith.cmpi slt, %[[I_NEXT]], %{{.*}} : i32
+    CHECK:           scf.if %[[LT]] {
+    CHECK:             %[[V:.*]] = vector.load %[[IN]]
+    CHECK:             tpu.vector_store %[[OUT]][%{{.*}}, %{{.*}}], %[[V]]
+    CHECK:           }
+    CHECK:         }
+
+    // A Scalar bound is cast from i32 to index.
+    CHECK:         %[[ITERS:.*]] = arith.constant 10 : i32
+    CHECK:         %[[UB:.*]] = arith.index_cast %[[ITERS]] : i32 to index
+    CHECK:         scf.for %[[IV2:.*]] = %{{.*}} to %[[UB]] step %{{.*}} {
+    CHECK:           %[[I2:.*]] = arith.index_cast %[[IV2]] : index to i32
+    CHECK:           %[[EQ:.*]] = arith.cmpi eq, %[[I2]], %{{.*}} : i32
+    CHECK:           scf.if %[[EQ]] {
+    CHECK:             vector.load %[[IN]]
+    CHECK:             tpu.vector_store %[[OUT]]
+    CHECK:           }
+    CHECK:         }
+  )");
 }
 
 TEST_F(KilnTest, ScalarMismatchedTypesFail) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "mismatched", .grid = {1}},
       InSpec{{32, 128}, Float32Type()}, InSpec{{32, 128}, Int32Type()},
-      OutSpec{{32, 128}, Float32Type()}, [&](Ref f_in, Ref i_in, Ref out) {
+      InSpec{{32, 128}, UInt32Type()}, OutSpec{{32, 128}, Float32Type()},
+      [&](Ref f_in, Ref i_in, Ref u_in, Ref out) {
         Scalar s_i = I32(1);
+        Scalar s_u = U32(1);
         Scalar s_f = F32(1.0);
-        EXPECT_DEATH(s_i + s_f,
-                     "Scalar arithmetic requires operands of the same type");
+        EXPECT_DEATH(s_i + s_f, "\\+ requires operands of the same dtype");
+        EXPECT_DEATH(s_i + s_u, "\\+ requires operands of the same dtype");
         EXPECT_DEATH(For(s_f, [&](Scalar) {}),
                      "IndexArg requires an integer scalar");
 
         Tile t_f(f_in);
         Tile t_i(i_in);
-        EXPECT_DEATH(
-            t_f + t_i,
-            "Tile binary operators require operands of the same dtype");
-        EXPECT_DEATH(t_f & t_f,
-                     "Bitwise tile operators require integer or mask operands");
+        Tile t_u(u_in);
+        EXPECT_DEATH(t_f + t_i, "\\+ requires operands of the same dtype");
+        EXPECT_DEATH(t_i + t_u, "\\+ requires operands of the same dtype");
+        EXPECT_DEATH(static_cast<void>(t_i == t_u),
+                     "Comparison requires operands of the same dtype");
+        EXPECT_DEATH(Min(t_i, t_u),
+                     "Min\\(\\) requires operands of the same dtype");
+        EXPECT_DEATH(t_f & t_f, "& requires integer or bool operands");
 
         EXPECT_DEATH(f_in(0, 0, 0), "Too many slice indices");
         EXPECT_DEATH(f_in(0, Slice(0, 0)), "Slice size must be positive");
@@ -412,10 +672,11 @@ TEST_F(KilnTest, DTypeProperties) {
   DType f32 = Float32Type();
   EXPECT_TRUE(f32.IsFloat());
   EXPECT_FALSE(f32.IsInt());
+  EXPECT_FALSE(f32.IsSigned());
+  EXPECT_FALSE(f32.IsUnsigned());
   EXPECT_TRUE(f32.IsIntOrFloat());
   EXPECT_EQ(f32.GetIntOrFloatBitWidth(), 32);
   EXPECT_EQ(f32.ToString(), "f32");
-  EXPECT_TRUE(static_cast<bool>(f32));
 
   std::ostringstream ss;
   ss << f32;
@@ -424,14 +685,51 @@ TEST_F(KilnTest, DTypeProperties) {
   DType i32 = Int32Type();
   EXPECT_FALSE(i32.IsFloat());
   EXPECT_TRUE(i32.IsInt());
+  EXPECT_TRUE(i32.IsSigned());
+  EXPECT_FALSE(i32.IsUnsigned());
   EXPECT_TRUE(i32.IsIntOrFloat());
   EXPECT_TRUE(i32.IsInteger(32));
+  EXPECT_TRUE(i32.IsSignedInteger(32));
+  EXPECT_FALSE(i32.IsUnsignedInteger(32));
   EXPECT_FALSE(i32.IsInteger(64));
   EXPECT_EQ(i32.GetIntOrFloatBitWidth(), 32);
   EXPECT_EQ(i32.ToString(), "i32");
 
+  DType u8 = UInt8Type();
+  EXPECT_FALSE(u8.IsFloat());
+  EXPECT_TRUE(u8.IsInt());
+  EXPECT_FALSE(u8.IsSigned());
+  EXPECT_TRUE(u8.IsUnsigned());
+  EXPECT_TRUE(u8.IsUnsignedInteger(8));
+  EXPECT_FALSE(u8.IsSignedInteger(8));
+  EXPECT_EQ(u8.GetIntOrFloatBitWidth(), 8);
+  EXPECT_EQ(u8.ToString(), "u8");
+
+  DType u16 = UInt16Type();
+  EXPECT_TRUE(u16.IsUnsigned());
+  EXPECT_TRUE(u16.IsUnsignedInteger(16));
+  EXPECT_EQ(u16.GetIntOrFloatBitWidth(), 16);
+  EXPECT_EQ(u16.ToString(), "u16");
+
+  DType u32 = UInt32Type();
+  EXPECT_FALSE(u32.IsFloat());
+  EXPECT_TRUE(u32.IsInt());
+  EXPECT_FALSE(u32.IsSigned());
+  EXPECT_TRUE(u32.IsUnsigned());
+  EXPECT_TRUE(u32.IsUnsignedInteger(32));
+  EXPECT_FALSE(u32.IsSignedInteger(32));
+  EXPECT_EQ(u32.GetIntOrFloatBitWidth(), 32);
+  EXPECT_EQ(u32.ToString(), "u32");
+
+  DType u64 = UInt64Type();
+  EXPECT_TRUE(u64.IsUnsigned());
+  EXPECT_TRUE(u64.IsUnsignedInteger(64));
+  EXPECT_EQ(u64.GetIntOrFloatBitWidth(), 64);
+  EXPECT_EQ(u64.ToString(), "u64");
+
   EXPECT_EQ(f32, Float32Type());
   EXPECT_NE(f32, i32);
+  EXPECT_NE(u32, i32);
 }
 
 TEST_F(KilnTest, TypeHelpersInsideKernel) {
@@ -441,10 +739,14 @@ TEST_F(KilnTest, TypeHelpersInsideKernel) {
       OutSpec{{32, 128}, f32}, [&](Ref in, Ref out) {
         EXPECT_TRUE(BoolType().IsBool());
         EXPECT_FALSE(BoolType().IsIntOrFloat());
-        EXPECT_TRUE(Int8Type().IsInteger(8));
-        EXPECT_TRUE(Int16Type().IsInteger(16));
-        EXPECT_TRUE(Int32Type().IsInteger(32));
-        EXPECT_TRUE(Int64Type().IsInteger(64));
+        EXPECT_TRUE(Int8Type().IsSignedInteger(8));
+        EXPECT_TRUE(Int16Type().IsSignedInteger(16));
+        EXPECT_TRUE(Int32Type().IsSignedInteger(32));
+        EXPECT_TRUE(Int64Type().IsSignedInteger(64));
+        EXPECT_TRUE(UInt8Type().IsUnsignedInteger(8));
+        EXPECT_TRUE(UInt16Type().IsUnsignedInteger(16));
+        EXPECT_TRUE(UInt32Type().IsUnsignedInteger(32));
+        EXPECT_TRUE(UInt64Type().IsUnsignedInteger(64));
         EXPECT_TRUE(Float16Type().IsFloat());
         EXPECT_EQ(Float16Type().GetIntOrFloatBitWidth(), 16);
         EXPECT_TRUE(Float32Type().IsFloat());
@@ -454,14 +756,6 @@ TEST_F(KilnTest, TypeHelpersInsideKernel) {
         out = Tile(in);
       });
   ASSERT_THAT(kernel, IsOk());
-}
-
-TEST_F(KilnTest, DTypeNullability) {
-  DType null_dt;
-  EXPECT_FALSE(static_cast<bool>(null_dt));
-  EXPECT_EQ(null_dt, DType());
-  EXPECT_NE(null_dt, Float32Type());
-  EXPECT_EQ(null_dt.ToString(), "invalid");
 }
 
 TEST_F(KilnTest, DTypeInTileAndScalarOps) {
@@ -496,6 +790,16 @@ TEST_F(KilnTest, DTypeInTileAndScalarOps) {
         out = t_bf16.ToF32();
       });
   ASSERT_THAT(kernel, IsOk());
+  ExpectKernelMatches(std::move(*kernel), R"(
+    CHECK-LABEL: func.func @dtype_ops(
+    CHECK-SAME:    %[[PID:arg[0-9]+]]: i32, %[[IN:arg[0-9]+]]: memref<32x128xf32, #tpu.memory_space<vmem>>, %[[OUT:arg[0-9]+]]: memref<32x128xf32, #tpu.memory_space<vmem>>)
+    CHECK:         %[[T:.*]] = vector.load %[[IN]]
+    CHECK:         %[[T_BF16:.*]] = arith.truncf %[[T]] : vector<32x128xf32> to vector<32x128xbf16>
+    CHECK:         arith.fptosi %[[T]] : vector<32x128xf32> to vector<32x128xi32>
+    CHECK:         arith.sitofp %[[PID]] : i32 to f32
+    CHECK:         %[[T_F32:.*]] = arith.extf %[[T_BF16]] : vector<32x128xbf16> to vector<32x128xf32>
+    CHECK:         tpu.vector_store %[[OUT]][%{{.*}}, %{{.*}}], %[[T_F32]]
+  )");
 }
 
 TEST_F(KilnTest, SimplifiedOverloadsAndBounds) {
@@ -556,9 +860,188 @@ TEST_F(KilnTest, SimplifiedOverloadsAndBounds) {
         EXPECT_EQ(mod3.dtype(), i32);
       });
   ASSERT_THAT(kernel, IsOk());
-  const std::string ir = CheckAndPrint(std::move(*kernel));
-  EXPECT_THAT(ir, HasSubstr("scf.for"));
-  EXPECT_THAT(ir, HasSubstr("arith.remsi"));
+  ExpectKernelMatches(std::move(*kernel), R"(
+    CHECK-LABEL: func.func @simplified_ops(
+    CHECK-SAME:    %{{.*}}: i32, %[[IN:arg[0-9]+]]: memref<32x128xf32, #tpu.memory_space<vmem>>, %{{.*}}: memref<32x128xf32, #tpu.memory_space<vmem>>)
+    CHECK:         %[[ZERO:.*]] = arith.constant 0 : i32
+    CHECK:         %[[TEN:.*]] = arith.constant 10 : i32
+
+    // For(Scalar, int64_t): only the Scalar bound needs an index_cast.
+    CHECK:         %[[LB:.*]] = arith.index_cast %[[ZERO]] : i32 to index
+    CHECK:         %[[C10:.*]] = arith.constant 10 : index
+    CHECK:         scf.for %{{.*}} = %[[LB]] to %[[C10]] step %{{.*}} {
+
+    // For(int64_t, Scalar).
+    CHECK:         %[[UB:.*]] = arith.index_cast %[[TEN]] : i32 to index
+    CHECK:         scf.for %{{.*}} = %{{.*}} to %[[UB]] step %{{.*}} {
+
+    // Literal on the LHS of a shift.
+    CHECK:         %[[TWO:.*]] = arith.constant 2 : i32
+    CHECK:         %[[ONE:.*]] = arith.constant 1 : i32
+    CHECK:         arith.shli %[[ONE]], %[[TWO]] : i32
+    CHECK:         %[[C1024:.*]] = arith.constant 1024 : i32
+    CHECK:         arith.shrsi %[[C1024]], %[[TWO]] : i32
+
+    // Min/Max/Select with a literal on either side.
+    CHECK:         arith.minsi %[[TWO]], %{{.*}} : i32
+    CHECK:         arith.minsi %{{.*}}, %[[TWO]] : i32
+    CHECK:         arith.maxsi %[[TWO]], %{{.*}} : i32
+    CHECK:         arith.maxsi %{{.*}}, %[[TWO]] : i32
+    CHECK:         %[[COND:.*]] = arith.cmpi eq, %[[TWO]], %{{.*}} : i32
+    CHECK:         arith.select %[[COND]], %[[TWO]], %{{.*}} : i32
+    CHECK:         arith.select %[[COND]], %{{.*}}, %[[TWO]] : i32
+
+    // Ref slicing with an IndexArg (dynamic index / dynamic slice start).
+    CHECK:         %[[ROW:.*]] = tpu.memref_slice %[[IN]][%[[ZERO]], %{{.*}}] : memref<32x128xf32, #tpu.memory_space<vmem>> -> memref<1x128xf32, #tpu.memory_space<vmem>>
+    CHECK:         tpu.memref_squeeze %[[ROW]] : memref<1x128xf32, #tpu.memory_space<vmem>> -> memref<128xf32, #tpu.memory_space<vmem>>
+    CHECK:         %[[DS:.*]] = tpu.memref_slice %[[IN]][%{{.*}}, %[[ZERO]]] : memref<32x128xf32, #tpu.memory_space<vmem>> -> memref<1x64xf32, #tpu.memory_space<vmem>>
+    CHECK:         tpu.memref_squeeze %[[DS]] : memref<1x64xf32, #tpu.memory_space<vmem>> -> memref<64xf32, #tpu.memory_space<vmem>>
+    CHECK:         tpu.memref_slice %[[IN]][%{{.*}}, %[[ZERO]]] : memref<32x128xf32, #tpu.memory_space<vmem>> -> memref<32x64xf32, #tpu.memory_space<vmem>>
+
+    // Tile modulo with a Tile or Literal on either side.
+    CHECK:         %[[IOTA:.*]] = tpu.iota {dimensions = array<i32: 1>} : vector<32x128xi32>
+    CHECK:         %[[C4:.*]] = arith.constant dense<4> : vector<32x128xi32>
+    CHECK:         %[[MOD1:.*]] = arith.remsi %[[IOTA]], %[[C4]] : vector<32x128xi32>
+    CHECK:         %[[PLUS1:.*]] = arith.addi %[[IOTA]], %{{.*}} : vector<32x128xi32>
+    CHECK:         %[[C100:.*]] = arith.constant dense<100> : vector<32x128xi32>
+    CHECK:         %[[MOD2:.*]] = arith.remsi %[[C100]], %[[PLUS1]] : vector<32x128xi32>
+    CHECK:         arith.remsi %[[MOD1]], %[[MOD2]] : vector<32x128xi32>
+  )");
+}
+
+TEST_F(KilnTest, UnsignedOperations) {
+  DType u32 = UInt32Type();
+  absl::StatusOr<Kernel> kernel = CreateKernel(
+      GridSpec{.name = "unsigned_ops", .grid = {1}}, InSpec{{32, 128}, u32},
+      InSpec{{32, 128}, u32}, OutSpec{{32, 128}, u32},
+      [&](Ref in_a, Ref in_b, Ref out) {
+        Tile a(in_a);
+        Tile b(in_b);
+        EXPECT_TRUE(a.dtype().IsUnsigned());
+        EXPECT_FALSE(a.dtype().IsSigned());
+        EXPECT_TRUE(b.dtype().IsUnsigned());
+
+        // Arithmetic
+        Tile div = a / b;
+        Tile rem = a % b;
+        Tile min_val = Min(a, b);
+        Tile max_val = Max(a, b);
+
+        // Shifts: >> on unsigned should be logical right shift (shrui).
+        Tile shr = a >> b;
+
+        // Comparisons
+        Tile lt = a < b;
+        Tile le = a <= b;
+        Tile gt = a > b;
+        Tile ge = a >= b;
+        Tile eq = a == b;
+        Tile ne = a != b;
+
+        // Select
+        Tile sel = Select(lt, a, b) + Select(le, a, b) + Select(gt, a, b) +
+                   Select(ge, a, b) + Select(eq, a, b) + Select(ne, a, b);
+
+        // MaxReduce on unsigned uses MAXUI and 0 init
+        Tile max_red = MaxReduce(a, 1);
+        Tile red_lane = max_red.Lanes(128);
+
+        // Abs on unsigned is identity
+        Tile abs_a = Abs(a);
+
+        // Scalar unsigned
+        Scalar s_u = U32(42);
+        EXPECT_TRUE(s_u.IsUnsigned());
+        Scalar s_div = s_u / U32(2);
+        Scalar s_rem = s_u % U32(5);
+        Scalar s_shr = s_u >> U32(1);
+        Cond s_lt = s_u < U32(100);
+
+        Tile s_tile = Splat(s_div + s_rem + s_shr, {32, 128});
+        If(s_lt, [&] {
+          out = sel + red_lane + div + rem + min_val + max_val + shr + abs_a +
+                s_tile;
+        });
+      });
+  ASSERT_THAT(kernel, IsOk());
+  ExpectKernelMatches(std::move(*kernel), R"(
+    CHECK-LABEL: func.func @unsigned_ops(
+    CHECK-SAME:    %{{.*}}: i32, %[[A:arg[0-9]+]]: memref<32x128xi32, #tpu.memory_space<vmem>>, %[[B:arg[0-9]+]]: memref<32x128xi32, #tpu.memory_space<vmem>>, %[[OUT:arg[0-9]+]]: memref<32x128xi32, #tpu.memory_space<vmem>>)
+    CHECK-DAG:     %[[VA:.*]] = vector.load %[[A]]
+    CHECK-DAG:     %[[VB:.*]] = vector.load %[[B]]
+    CHECK:         arith.divui %[[VA]], %[[VB]] : vector<32x128xi32>
+    CHECK:         arith.remui %[[VA]], %[[VB]] : vector<32x128xi32>
+    CHECK:         arith.minui %[[VA]], %[[VB]] : vector<32x128xi32>
+    CHECK:         arith.maxui %[[VA]], %[[VB]] : vector<32x128xi32>
+    CHECK:         arith.shrui %[[VA]], %[[VB]] : vector<32x128xi32>
+    CHECK:         arith.cmpi ult, %[[VA]], %[[VB]] : vector<32x128xi32>
+    CHECK:         arith.cmpi ule, %[[VA]], %[[VB]] : vector<32x128xi32>
+    CHECK:         arith.cmpi ugt, %[[VA]], %[[VB]] : vector<32x128xi32>
+    CHECK:         arith.cmpi uge, %[[VA]], %[[VB]] : vector<32x128xi32>
+    CHECK:         arith.cmpi eq, %[[VA]], %[[VB]] : vector<32x128xi32>
+    CHECK:         arith.cmpi ne, %[[VA]], %[[VB]] : vector<32x128xi32>
+    CHECK:         arith.select %{{.*}}, %[[VA]], %[[VB]] : vector<32x128xi1>, vector<32x128xi32>
+    CHECK:         %[[ZERO:.*]] = arith.constant dense<0> : vector<32xi32>
+    CHECK:         vector.multi_reduction <maxui>, %[[VA]], %[[ZERO]] [1] : vector<32x128xi32> to vector<32xi32>
+    CHECK:         %[[C42:.*]] = arith.constant 42 : i32
+    CHECK:         %[[C2:.*]] = arith.constant 2 : i32
+    CHECK:         arith.divui %[[C42]], %[[C2]] : i32
+    CHECK:         %[[C5:.*]] = arith.constant 5 : i32
+    CHECK:         arith.remui %[[C42]], %[[C5]] : i32
+    CHECK:         %[[C1:.*]] = arith.constant 1 : i32
+    CHECK:         arith.shrui %[[C42]], %[[C1]] : i32
+    CHECK:         %[[C100:.*]] = arith.constant 100 : i32
+    CHECK:         arith.cmpi ult, %[[C42]], %[[C100]] : i32
+  )");
+}
+
+TEST_F(KilnTest, UnsignedAndSignedCasts) {
+  DType u32 = UInt32Type();
+  DType u8 = UInt8Type();
+  DType i8 = Int8Type();
+  DType i32 = Int32Type();
+  DType f32 = Float32Type();
+
+  absl::StatusOr<Kernel> kernel = CreateKernel(
+      GridSpec{.name = "unsigned_casts", .grid = {1}}, InSpec{{32, 128}, f32},
+      InSpec{{32, 128}, u8}, InSpec{{32, 128}, i8}, OutSpec{{32, 128}, f32},
+      [&](Ref in_f, Ref in_u8, Ref in_i8, Ref out) {
+        Tile f(in_f);
+        Tile u(in_u8);
+        Tile i(in_i8);
+
+        // Float to Unsigned vs Signed
+        Tile f_to_u32 = f.AsType(u32);
+        Tile f_to_i32 = f.AsType(i32);
+
+        // Unsigned vs Signed to Float
+        Tile u_to_f = u.AsType(f32);
+        Tile i_to_f = i.AsType(f32);
+
+        // Extension: extui vs extsi
+        Tile u8_to_u32 = u.AsType(u32);
+        Tile i8_to_i32 = i.AsType(i32);
+
+        // Bitcast between same-width int types (identity)
+        Tile u_bitcast_i = f_to_u32.Bitcast(i32);
+        EXPECT_EQ(u_bitcast_i.dtype(), i32);
+
+        out = f_to_u32.AsType(f32) + f_to_i32.AsType(f32) + u_to_f + i_to_f +
+              u8_to_u32.AsType(f32) + i8_to_i32.AsType(f32);
+      });
+  ASSERT_THAT(kernel, IsOk());
+  ExpectKernelMatches(std::move(*kernel), R"(
+    CHECK-LABEL: func.func @unsigned_casts(
+    CHECK:         %[[F:.*]] = vector.load %{{.*}} : memref<32x128xf32, #tpu.memory_space<vmem>>
+    CHECK:         %[[U8:.*]] = vector.load %{{.*}} : memref<32x128xi8, #tpu.memory_space<vmem>>
+    CHECK:         %[[I8:.*]] = vector.load %{{.*}} : memref<32x128xi8, #tpu.memory_space<vmem>>
+    CHECK:         arith.fptoui %[[F]] : vector<32x128xf32> to vector<32x128xi32>
+    CHECK:         arith.fptosi %[[F]] : vector<32x128xf32> to vector<32x128xi32>
+    CHECK:         arith.uitofp %[[U8]] : vector<32x128xi8> to vector<32x128xf32>
+    CHECK:         arith.sitofp %[[I8]] : vector<32x128xi8> to vector<32x128xf32>
+    CHECK:         arith.extui %[[U8]] : vector<32x128xi8> to vector<32x128xi32>
+    CHECK:         arith.extsi %[[I8]] : vector<32x128xi8> to vector<32x128xi32>
+  )");
 }
 
 }  // namespace

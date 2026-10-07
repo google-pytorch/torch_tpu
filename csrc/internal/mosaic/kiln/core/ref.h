@@ -93,6 +93,12 @@ class Ref : public ValueBase {
 
   llvm::ArrayRef<int64_t> shape() const;
   DType dtype() const;
+  bool IsBool() const;
+  bool IsFloat() const;
+  bool IsInt() const;
+  bool IsSigned() const;
+  bool IsUnsigned() const;
+  bool IsIntOrFloat() const;
   int64_t rank() const;
 
   // Slices a view of the ref:
@@ -108,7 +114,7 @@ class Ref : public ValueBase {
 
  private:
   friend struct internal::ValueAccess;
-  explicit Ref(const void* impl);
+  Ref(const void* impl, DType dtype);
 };
 
 // Stores `value` into `dst` (a VMEM ref), optionally masked by an i1 `mask`

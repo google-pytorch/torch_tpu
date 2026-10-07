@@ -17,6 +17,8 @@
 #ifndef TORCH_TPU_CSRC_INTERNAL_MOSAIC_KILN_CORE_VALUE_BASE_H_
 #define TORCH_TPU_CSRC_INTERNAL_MOSAIC_KILN_CORE_VALUE_BASE_H_
 
+#include "csrc/internal/mosaic/kiln/core/dtype.h"
+
 namespace torch_tpu::kiln {
 
 namespace internal {
@@ -24,15 +26,17 @@ struct ValueAccess;
 }  // namespace internal
 
 // Common base for KILN SSA handles (`Scalar`, `Cond`, `Tile`, `Ref`). Holds
-// an opaque pointer to the underlying IR value.
+// an opaque pointer to the underlying IR value and its KILN element dtype.
 class ValueBase {
  protected:
-  explicit ValueBase(const void* impl) : impl_(impl) {}
+  ValueBase(const void* impl, DType dtype) : impl_(impl), dtype_(dtype) {}
   const void* impl() const { return impl_; }
+  DType dtype() const { return dtype_; }
 
  private:
   friend struct internal::ValueAccess;
   const void* impl_ = nullptr;
+  DType dtype_;
 };
 
 }  // namespace torch_tpu::kiln

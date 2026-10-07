@@ -45,26 +45,25 @@ class BuilderScope {
 // Must be called within an active BuildKernel() or IndexMap execution.
 mlir::ImplicitLocOpBuilder& CurrentBuilder();
 
+mlir::Type ToMlirType(DType dtype, mlir::MLIRContext* ctx);
+mlir::Type ToMlirType(DType dtype);
+
 struct ValueAccess {
   static mlir::Value Get(const ValueBase& v) {
     return mlir::Value::getFromOpaquePointer(v.impl());
   }
   template <typename T>
-  static T Make(mlir::Value v) {
-    return T(v.getAsOpaquePointer());
+  static T Make(mlir::Value v, DType dtype) {
+    return T(v.getAsOpaquePointer(), dtype);
   }
 };
 
 inline mlir::Value unwrap(const ValueBase& v) { return ValueAccess::Get(v); }
 
 template <typename T>
-inline T wrap(mlir::Value v) {
-  return ValueAccess::Make<T>(v);
+inline T wrap(mlir::Value v, DType dtype) {
+  return ValueAccess::Make<T>(v, dtype);
 }
-
-mlir::Type ToMlirType(DType dtype, mlir::MLIRContext* ctx);
-mlir::Type ToMlirType(DType dtype);
-DType FromMlirType(mlir::Type type);
 
 mlir::TypedAttr LiteralToAttr(mlir::ImplicitLocOpBuilder& b, DType dtype,
                               Literal literal);

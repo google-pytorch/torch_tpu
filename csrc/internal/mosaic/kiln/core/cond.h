@@ -17,6 +17,7 @@
 #ifndef TORCH_TPU_CSRC_INTERNAL_MOSAIC_KILN_CORE_COND_H_
 #define TORCH_TPU_CSRC_INTERNAL_MOSAIC_KILN_CORE_COND_H_
 
+#include "csrc/internal/mosaic/kiln/core/dtype.h"
 #include "csrc/internal/mosaic/kiln/core/value_base.h"
 
 namespace torch_tpu::kiln {
@@ -30,7 +31,7 @@ class Cond : public ValueBase {
 
  private:
   friend struct internal::ValueAccess;
-  explicit Cond(const void* impl);
+  Cond(const void* impl, DType dtype);
 };
 
 }  // namespace torch_tpu::kiln

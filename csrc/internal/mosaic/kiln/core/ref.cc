@@ -22,6 +22,7 @@
 #include "absl/log/absl_check.h"
 #include "csrc/internal/mosaic/kiln/core/context.h"
 #include "csrc/internal/mosaic/kiln/core/dtype.h"
+#include "csrc/internal/mosaic/kiln/core/index_arg.h"
 #include "csrc/internal/mosaic/kiln/core/scalar.h"
 #include "csrc/internal/mosaic/kiln/core/tile.h"
 #include "csrc/internal/mosaic/kiln/core/value_base.h"
@@ -71,7 +72,7 @@ bool IsVmemRef(const Ref& r) {
 
 }  // namespace
 
-Ref::Ref(const void* impl) : ValueBase(impl) {
+Ref::Ref(const void* impl, DType dtype) : ValueBase(impl, dtype) {
   ABSL_CHECK(  // CRASH_OK
       llvm::isa<mlir::MemRefType>(internal::unwrap(*this).getType()))
       << "Ref must be a memref value";
@@ -98,17 +99,21 @@ Ref::operator Scalar() const {
       << "Ref::operator Scalar() expects a 0-D ref";
   ABSL_CHECK(IsSmemRef(*this))  // CRASH_OK
       << "Ref::operator Scalar() expects an SMEM ref";
-  return internal::wrap<Scalar>(memref::LoadOp::create(
-      internal::CurrentBuilder(), internal::unwrap(*this), mlir::ValueRange{}));
+  return internal::wrap<Scalar>(
+      memref::LoadOp::create(internal::CurrentBuilder(),
+                             internal::unwrap(*this), mlir::ValueRange{}),
+      dtype());
 }
 
 Ref::operator Tile() const {
   ABSL_CHECK(IsVmemRef(*this))  // CRASH_OK
       << "Ref::operator Tile() expects a VMEM ref";
   mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
-  return internal::wrap<Tile>(vector::LoadOp::create(
-      b, mlir::VectorType::get(shape(), internal::ToMlirType(dtype())),
-      internal::unwrap(*this), ZeroIndices(b, rank())));
+  return internal::wrap<Tile>(
+      vector::LoadOp::create(
+          b, mlir::VectorType::get(shape(), internal::ToMlirType(dtype())),
+          internal::unwrap(*this), ZeroIndices(b, rank())),
+      dtype());
 }
 
 void Ref::Store(Tile value, std::optional<Tile> mask) {
@@ -136,9 +141,14 @@ llvm::ArrayRef<int64_t> Ref::shape() const {
   return MemRefTypeOf(*this).getShape();
 }
 
-DType Ref::dtype() const {
-  return internal::FromMlirType(MemRefTypeOf(*this).getElementType());
-}
+DType Ref::dtype() const { return ValueBase::dtype(); }
+
+bool Ref::IsBool() const { return dtype().IsBool(); }
+bool Ref::IsFloat() const { return dtype().IsFloat(); }
+bool Ref::IsInt() const { return dtype().IsInt(); }
+bool Ref::IsSigned() const { return dtype().IsSigned(); }
+bool Ref::IsUnsigned() const { return dtype().IsUnsigned(); }
+bool Ref::IsIntOrFloat() const { return dtype().IsIntOrFloat(); }
 
 int64_t Ref::rank() const { return MemRefTypeOf(*this).getRank(); }
 
@@ -204,7 +214,7 @@ Ref SliceRefImpl(Ref base, llvm::ArrayRef<DimDesc> dims) {
     current = tpu::MemRefSqueezeOp::create(b, squeezed_type, current);
   }
 
-  return wrap<Ref>(current);
+  return wrap<Ref>(current, base.dtype());
 }
 
 }  // namespace internal

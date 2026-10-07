@@ -112,13 +112,6 @@ class WithLiteralOps {
     return rhs.MakeConstant(lhs) >> rhs;
   }
 
-  friend Derived LogicalRightShift(Derived lhs, Literal rhs) {
-    return LogicalRightShift(lhs, lhs.MakeConstant(rhs));
-  }
-  friend Derived LogicalRightShift(Literal lhs, Derived rhs) {
-    return LogicalRightShift(rhs.MakeConstant(lhs), rhs);
-  }
-
   // Elementwise min / max / select
   friend Derived Min(Derived lhs, Literal rhs) {
     return Min(lhs, lhs.MakeConstant(rhs));

@@ -19,6 +19,7 @@
 #include "absl/functional/function_ref.h"
 #include "csrc/internal/mosaic/kiln/core/cond.h"
 #include "csrc/internal/mosaic/kiln/core/context.h"
+#include "csrc/internal/mosaic/kiln/core/dtype.h"
 #include "csrc/internal/mosaic/kiln/core/index_arg.h"
 #include "csrc/internal/mosaic/kiln/core/scalar.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -69,7 +70,7 @@ void For(IndexArg lower, IndexArg upper, absl::FunctionRef<void(Scalar)> body) {
   b.setInsertionPointToStart(for_op.getBody());
   mlir::Value iv = mlir::arith::IndexCastOp::create(b, b.getI32Type(),
                                                     for_op.getInductionVar());
-  body(internal::wrap<Scalar>(iv));
+  body(internal::wrap<Scalar>(iv, Int32Type()));
 }
 
 }  // namespace torch_tpu::kiln

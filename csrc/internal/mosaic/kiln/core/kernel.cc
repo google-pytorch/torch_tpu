@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "absl/functional/function_ref.h"
@@ -27,7 +28,6 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
-#include "absl/strings/string_view.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/internal/mosaic/kiln/core/context.h"
 #include "csrc/internal/mosaic/kiln/core/dtype.h"
@@ -75,16 +75,23 @@ struct KernelScope {
     int arg = 0;
     mlir::Block* entry = builder.getBlock();
     const int num_args = entry->getNumArguments();
-    auto bind = [&]<typename T>(llvm::SmallVectorImpl<T>& out, size_t count) {
+    auto bind = [&]<typename T>(llvm::SmallVectorImpl<T>& out, size_t count,
+                                auto get_dtype) {
       for (size_t i = 0; i < count && arg < num_args; ++i) {
-        out.push_back(internal::wrap<T>(entry->getArgument(arg++)));
+        out.push_back(
+            internal::wrap<T>(entry->getArgument(arg++), get_dtype(i)));
       }
     };
-    bind(program_ids, spec.grid.grid.size());
-    bind(scalar_prefetch, spec.scalar_prefetch.size());
-    bind(inputs, spec.in_specs.size());
-    bind(outputs, spec.out_specs.size());
-    bind(scratch, spec.scratch.size());
+    bind(program_ids, spec.grid.grid.size(),
+         [](size_t) { return Int32Type(); });
+    bind(scalar_prefetch, spec.scalar_prefetch.size(),
+         [&](size_t i) { return spec.scalar_prefetch[i].dtype; });
+    bind(inputs, spec.in_specs.size(),
+         [&](size_t i) { return spec.in_specs[i].dtype; });
+    bind(outputs, spec.out_specs.size(),
+         [&](size_t i) { return spec.out_specs[i].dtype; });
+    bind(scratch, spec.scratch.size(),
+         [&](size_t i) { return spec.scratch[i].dtype; });
   }
   ~KernelScope() { tls_scope = prev; }
 

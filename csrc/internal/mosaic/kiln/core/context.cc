@@ -44,6 +44,27 @@ mlir::Type WithElementType(mlir::Type type, DType target) {
   return elem;
 }
 
+mlir::Value EmitIntCast(mlir::ImplicitLocOpBuilder& b, mlir::Value value,
+                        DType source, DType target, mlir::Type dst_mlir_type) {
+  const unsigned src_bits = source.GetIntOrFloatBitWidth();
+  const unsigned dst_bits = target.GetIntOrFloatBitWidth();
+  if (src_bits < dst_bits) {
+    if (source.IsBool() || source.IsUnsigned()) {
+      return mlir::arith::ExtUIOp::create(b, dst_mlir_type, value);
+    }
+    return mlir::arith::ExtSIOp::create(b, dst_mlir_type, value);
+  }
+  if (target.IsBool()) {
+    return mlir::arith::CmpIOp::create(
+        b, mlir::arith::CmpIPredicate::ne, value,
+        mlir::arith::ConstantOp::create(b, b.getZeroAttr(value.getType())));
+  }
+  if (src_bits == dst_bits) {
+    return value;
+  }
+  return mlir::arith::TruncIOp::create(b, dst_mlir_type, value);
+}
+
 }  // namespace
 
 mlir::ImplicitLocOpBuilder& CurrentBuilder() {
@@ -61,18 +82,19 @@ BuilderScope::~BuilderScope() { tls_builder = prev_; }
 
 mlir::Type ToMlirType(DType dtype, mlir::MLIRContext* ctx) {
   switch (dtype.kind()) {
-    case DType::Kind::kInvalid:
-      ABSL_CHECK(false) << "Invalid DType";  // CRASH_OK
-      return mlir::Type();
     case DType::Kind::kBool:
       return mlir::IntegerType::get(ctx, 1);
     case DType::Kind::kI8:
+    case DType::Kind::kU8:
       return mlir::IntegerType::get(ctx, 8);
     case DType::Kind::kI16:
+    case DType::Kind::kU16:
       return mlir::IntegerType::get(ctx, 16);
     case DType::Kind::kI32:
+    case DType::Kind::kU32:
       return mlir::IntegerType::get(ctx, 32);
     case DType::Kind::kI64:
+    case DType::Kind::kU64:
       return mlir::IntegerType::get(ctx, 64);
     case DType::Kind::kF16:
       return mlir::Float16Type::get(ctx);
@@ -85,20 +107,6 @@ mlir::Type ToMlirType(DType dtype, mlir::MLIRContext* ctx) {
 
 mlir::Type ToMlirType(DType dtype) {
   return ToMlirType(dtype, CurrentBuilder().getContext());
-}
-
-DType FromMlirType(mlir::Type type) {
-  if (!type) return DType();
-  if (type.isF32()) return Float32Type();
-  if (type.isBF16()) return BFloat16Type();
-  if (type.isF16()) return Float16Type();
-  if (type.isInteger(1)) return BoolType();
-  if (type.isInteger(8)) return Int8Type();
-  if (type.isInteger(16)) return Int16Type();
-  if (type.isInteger(32)) return Int32Type();
-  if (type.isInteger(64)) return Int64Type();
-  ABSL_CHECK(false) << "Unsupported MLIR element type in KILN";  // CRASH_OK
-  return DType();
 }
 
 mlir::TypedAttr LiteralToAttr(mlir::ImplicitLocOpBuilder& b, DType dtype,
@@ -118,14 +126,13 @@ mlir::Value EmitCast(mlir::Value value, DType source, DType target) {
 
   mlir::ImplicitLocOpBuilder& b = CurrentBuilder();
   mlir::Type dst_mlir_type = WithElementType(value.getType(), target);
-  const unsigned src_bits = source.GetIntOrFloatBitWidth();
-  const unsigned dst_bits = target.GetIntOrFloatBitWidth();
   if (source.IsFloat() && target.IsFloat()) {
+    const unsigned src_bits = source.GetIntOrFloatBitWidth();
+    const unsigned dst_bits = target.GetIntOrFloatBitWidth();
     ABSL_CHECK_NE(src_bits, dst_bits) << "Unsupported float cast";  // CRASH_OK
     if (src_bits < dst_bits) {
       return mlir::arith::ExtFOp::create(b, dst_mlir_type, value);
     }
-    // src_bits > dst_bits
     return mlir::arith::TruncFOp::create(b, dst_mlir_type, value);
   }
   if (source.IsFloat()) {
@@ -134,27 +141,18 @@ mlir::Value EmitCast(mlir::Value value, DType source, DType target) {
           b, mlir::arith::CmpFPredicate::UNE, value,
           mlir::arith::ConstantOp::create(b, b.getZeroAttr(value.getType())));
     }
+    if (target.IsUnsigned()) {
+      return mlir::arith::FPToUIOp::create(b, dst_mlir_type, value);
+    }
     return mlir::arith::FPToSIOp::create(b, dst_mlir_type, value);
   }
   if (target.IsFloat()) {
-    if (source.IsBool()) {
+    if (source.IsBool() || source.IsUnsigned()) {
       return mlir::arith::UIToFPOp::create(b, dst_mlir_type, value);
     }
     return mlir::arith::SIToFPOp::create(b, dst_mlir_type, value);
   }
-  // From this point, both source and target are non-floats.
-  if (src_bits < dst_bits) {
-    if (source.IsBool()) {
-      return mlir::arith::ExtUIOp::create(b, dst_mlir_type, value);
-    }
-    return mlir::arith::ExtSIOp::create(b, dst_mlir_type, value);
-  }
-  if (target.IsBool()) {
-    return mlir::arith::CmpIOp::create(
-        b, mlir::arith::CmpIPredicate::ne, value,
-        mlir::arith::ConstantOp::create(b, b.getZeroAttr(value.getType())));
-  }
-  return mlir::arith::TruncIOp::create(b, dst_mlir_type, value);
+  return EmitIntCast(b, value, source, target, dst_mlir_type);
 }
 
 mlir::Value EmitBitcast(mlir::Value value, DType source, DType target) {
@@ -167,6 +165,9 @@ mlir::Value EmitBitcast(mlir::Value value, DType source, DType target) {
                 target.GetIntOrFloatBitWidth())
       << "Bitcast() requires source and target types to have the same bit "
          "width";
+  if (source.IsInt() && target.IsInt()) {
+    return value;
+  }
   mlir::ImplicitLocOpBuilder& b = CurrentBuilder();
   mlir::Type dst_mlir_type = WithElementType(value.getType(), target);
   return mlir::arith::BitcastOp::create(b, dst_mlir_type, value);

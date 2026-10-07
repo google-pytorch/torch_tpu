@@ -51,6 +51,7 @@
 #include "csrc/internal/mosaic/kiln/core/cond.h"          // IWYU pragma: export
 #include "csrc/internal/mosaic/kiln/core/control_flow.h"  // IWYU pragma: export
 #include "csrc/internal/mosaic/kiln/core/dtype.h"         // IWYU pragma: export
+#include "csrc/internal/mosaic/kiln/core/elementwise.h"   // IWYU pragma: export
 #include "csrc/internal/mosaic/kiln/core/index_arg.h"     // IWYU pragma: export
 #include "csrc/internal/mosaic/kiln/core/index_map.h"     // IWYU pragma: export
 #include "csrc/internal/mosaic/kiln/core/kernel.h"        // IWYU pragma: export

@@ -18,6 +18,7 @@
 
 #include "absl/log/absl_check.h"
 #include "csrc/internal/mosaic/kiln/core/context.h"
+#include "csrc/internal/mosaic/kiln/core/dtype.h"
 #include "csrc/internal/mosaic/kiln/core/value_base.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/Builders.h"
@@ -25,28 +26,31 @@
 
 namespace torch_tpu::kiln {
 
-Cond::Cond(const void* impl) : ValueBase(impl) {
+Cond::Cond(const void* impl, DType dtype) : ValueBase(impl, dtype) {
+  ABSL_CHECK(dtype.IsBool()) << "Cond dtype must be bool";    // CRASH_OK
   ABSL_CHECK(internal::unwrap(*this).getType().isInteger(1))  // CRASH_OK
       << "Cond must be i1";
 }
 
 Cond operator&&(Cond lhs, Cond rhs) {
-  return internal::wrap<Cond>(mlir::arith::AndIOp::create(
-      internal::CurrentBuilder(), internal::unwrap(lhs),
-      internal::unwrap(rhs)));
+  return internal::wrap<Cond>(
+      mlir::arith::AndIOp::create(internal::CurrentBuilder(),
+                                  internal::unwrap(lhs), internal::unwrap(rhs)),
+      BoolType());
 }
 
 Cond operator||(Cond lhs, Cond rhs) {
   return internal::wrap<Cond>(
       mlir::arith::OrIOp::create(internal::CurrentBuilder(),
-                                 internal::unwrap(lhs), internal::unwrap(rhs)));
+                                 internal::unwrap(lhs), internal::unwrap(rhs)),
+      BoolType());
 }
 
 Cond operator!(Cond cond) {
   mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
   mlir::Value t = mlir::arith::ConstantOp::create(b, b.getBoolAttr(true));
   return internal::wrap<Cond>(
-      mlir::arith::XOrIOp::create(b, internal::unwrap(cond), t));
+      mlir::arith::XOrIOp::create(b, internal::unwrap(cond), t), BoolType());
 }
 
 }  // namespace torch_tpu::kiln

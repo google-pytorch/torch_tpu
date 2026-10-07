@@ -31,61 +31,72 @@ using Shape = llvm::SmallVector<int64_t, 4>;
 class DType {
  public:
   enum class Kind : uint8_t {
-    kInvalid = 0,
     kBool,
     kI8,
     kI16,
     kI32,
     kI64,
+    kU8,
+    kU16,
+    kU32,
+    kU64,
     kF16,
     kBF16,
     kF32,
   };
 
-  constexpr DType() = default;
   constexpr explicit DType(Kind kind) : kind_(kind) {}
 
   constexpr Kind kind() const { return kind_; }
-
-  constexpr explicit operator bool() const { return kind_ != Kind::kInvalid; }
 
   constexpr bool IsBool() const { return kind_ == Kind::kBool; }
 
   constexpr bool IsFloat() const {
     return kind_ == Kind::kF16 || kind_ == Kind::kBF16 || kind_ == Kind::kF32;
   }
-  constexpr bool IsInt() const {
+  constexpr bool IsSigned() const {
     return kind_ == Kind::kI8 || kind_ == Kind::kI16 || kind_ == Kind::kI32 ||
            kind_ == Kind::kI64;
   }
+  constexpr bool IsUnsigned() const {
+    return kind_ == Kind::kU8 || kind_ == Kind::kU16 || kind_ == Kind::kU32 ||
+           kind_ == Kind::kU64;
+  }
+  constexpr bool IsInt() const { return IsSigned() || IsUnsigned(); }
   constexpr bool IsIntOrFloat() const { return IsInt() || IsFloat(); }
   constexpr bool IsInteger(unsigned width) const {
     return IsInt() && GetIntOrFloatBitWidth() == width;
   }
+  constexpr bool IsSignedInteger(unsigned width) const {
+    return IsSigned() && GetIntOrFloatBitWidth() == width;
+  }
+  constexpr bool IsUnsignedInteger(unsigned width) const {
+    return IsUnsigned() && GetIntOrFloatBitWidth() == width;
+  }
   constexpr unsigned GetIntOrFloatBitWidth() const {
     switch (kind_) {
-      case Kind::kInvalid:
-        return 0;
       case Kind::kBool:
         return 1;
       case Kind::kI8:
+      case Kind::kU8:
         return 8;
       case Kind::kI16:
+      case Kind::kU16:
       case Kind::kF16:
       case Kind::kBF16:
         return 16;
       case Kind::kI32:
+      case Kind::kU32:
       case Kind::kF32:
         return 32;
       case Kind::kI64:
+      case Kind::kU64:
         return 64;
     }
   }
 
   constexpr std::string_view ToString() const {
     switch (kind_) {
-      case Kind::kInvalid:
-        return "invalid";
       case Kind::kBool:
         return "bool";
       case Kind::kI8:
@@ -96,6 +107,14 @@ class DType {
         return "i32";
       case Kind::kI64:
         return "i64";
+      case Kind::kU8:
+        return "u8";
+      case Kind::kU16:
+        return "u16";
+      case Kind::kU32:
+        return "u32";
+      case Kind::kU64:
+        return "u64";
       case Kind::kF16:
         return "f16";
       case Kind::kBF16:
@@ -114,7 +133,7 @@ class DType {
   }
 
  private:
-  Kind kind_ = Kind::kInvalid;
+  Kind kind_;
 };
 
 inline std::ostream& operator<<(std::ostream& os, DType dtype) {
@@ -127,6 +146,10 @@ constexpr DType Int8Type() { return DType(DType::Kind::kI8); }
 constexpr DType Int16Type() { return DType(DType::Kind::kI16); }
 constexpr DType Int32Type() { return DType(DType::Kind::kI32); }
 constexpr DType Int64Type() { return DType(DType::Kind::kI64); }
+constexpr DType UInt8Type() { return DType(DType::Kind::kU8); }
+constexpr DType UInt16Type() { return DType(DType::Kind::kU16); }
+constexpr DType UInt32Type() { return DType(DType::Kind::kU32); }
+constexpr DType UInt64Type() { return DType(DType::Kind::kU64); }
 constexpr DType Float16Type() { return DType(DType::Kind::kF16); }
 constexpr DType BFloat16Type() { return DType(DType::Kind::kBF16); }
 constexpr DType Float32Type() { return DType(DType::Kind::kF32); }
