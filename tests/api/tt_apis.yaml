@@ -1,0 +1,214 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# --- Public Python API ---
+torch.accelerator.current_accelerator: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.accelerator.current_device_idx: {category: Public Python API, defined_in: runtime, stage: Deprecated}
+torch.accelerator.current_device_index: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.accelerator.current_stream: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.accelerator.device_count: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.accelerator.device_index: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.accelerator.empty_cache: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.accelerator.get_memory_info: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.accelerator.is_available: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.accelerator.max_memory_allocated: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.accelerator.max_memory_reserved: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.accelerator.memory.empty_cache: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.accelerator.memory.get_memory_info: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.accelerator.memory.max_memory_allocated: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.accelerator.memory.max_memory_reserved: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.accelerator.memory.memory_allocated: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.accelerator.memory.memory_reserved: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.accelerator.memory.memory_stats: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.accelerator.memory.reset_peak_memory_stats: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.accelerator.memory_allocated: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.accelerator.memory_reserved: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.accelerator.memory_stats: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.accelerator.random.get_rng_state: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.accelerator.random.get_rng_state_all: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.accelerator.random.initial_seed: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.accelerator.reset_peak_memory_stats: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.accelerator.set_device_idx: {category: Public Python API, defined_in: runtime, stage: Deprecated}
+torch.accelerator.set_device_index: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.accelerator.set_stream: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.accelerator.synchronize: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.tpu.EagerMode: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.EagerMode.DEFER_AND_FUSE: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.EagerMode.DEFER_NEVER: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.Event: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.Event.elapsed_time: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.Event.from_ipc_handle: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.Event.ipc_handle: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.Event.query: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.Event.record: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.Event.synchronize: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.Event.wait: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.Precision: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.Precision.DEFAULT: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.Precision.HIGH: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.Precision.HIGHEST: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.Stream: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.Stream.is_dense getter: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.Stream.is_sparse getter: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.Stream.priority_range: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.Stream.query: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.Stream.record_event: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.Stream.synchronize: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.Stream.wait_event: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.Stream.wait_stream: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.allow_excess_precision getter: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.allow_excess_precision setter: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.compiler.custom_compiler_options: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.current_device: {category: Public Python API, defined_in: runtime, prefer: torch.accelerator.current_device_index, stage: Internal}
+torch.tpu.current_stream: {category: Public Python API, defined_in: runtime, prefer: torch.accelerator.current_stream, stage: Internal}
+torch.tpu.default_generators: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.default_stream: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.device: {category: Public Python API, defined_in: runtime, prefer: torch.accelerator.device_index, stage: Internal}
+torch.tpu.device_count: {category: Public Python API, defined_in: runtime, prefer: torch.accelerator.device_count, stage: Internal}
+torch.tpu.device_of: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.distributed.set_tpu_launch_env: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.distributed.spmd_safe: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.eager_mode getter: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.eager_mode setter: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.get_amp_supported_dtype: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.get_device_name: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.get_device_properties: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.get_device_properties.multi_processor_count: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.get_rng_state: {category: Public Python API, defined_in: runtime, prefer: torch.accelerator.random.get_rng_state, stage: Internal}
+torch.tpu.initial_seed: {category: Public Python API, defined_in: runtime, prefer: torch.accelerator.random.initial_seed, stage: Internal}
+torch.tpu.is_available: {category: Public Python API, defined_in: runtime, prefer: torch.accelerator.is_available, stage: Internal}
+torch.tpu.is_initialized: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.manual_seed: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.manual_seed_all: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.ops.align_jagged_to_multiple: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.ops.all_gather_dim: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.ops.max_pool1d: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.tpu.ops.max_pool1d_backward: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.tpu.ops.max_pool2d: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.tpu.ops.max_pool2d_backward: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.tpu.ops.max_pool3d: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.tpu.ops.max_pool3d_backward: {category: Public Python API, defined_in: runtime, stage: Stable}
+torch.tpu.ops.optimization_barrier: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.ops.ragged_all_to_all: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.ops.ragged_dot: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.ops.ragged_dot_weight_grad: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.ops.recv: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.ops.reduce_scatter_dim: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.ops.send: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.ops.sparse_dense_matmul: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.ops.sparse_dense_matmul_activation_unstack: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.ops.sparse_dense_matmul_grad_with_adagrad: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.ops.sparse_dense_matmul_grad_with_adam: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.ops.sparse_dense_matmul_grad_with_sgd: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.ops.sparse_dense_matmul_gradient_stack: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.ops.sparse_gather: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.ops.sparse_gather_backward: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.ops.sparse_iota: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.ops.sparse_map_row: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.ops.splash_sdpa: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.ops.strip_jagged_padding: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.optimizers.Optimizer: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.optimizers.Optimizer.defaults getter: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.optimizers.Optimizer.init_param_group: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.optimizers.Optimizer.step: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.optimizers.SingleTraceTrainer: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.optimizers.SingleTraceTrainer.make_compiled_train_step: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.optimizers.SingleTraceTrainer.param_group getter: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.optimizers.SingleTraceTrainer.params getter: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.optimizers.TorchAdamW: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.optimizers.TorchAdamW.ParamGroup: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.optimizers.TorchAdamW.defaults getter: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.optimizers.TorchAdamW.init_param_group: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.optimizers.TorchAdamW.step: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.optimizers.TorchMuon: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.optimizers.TorchMuon.ParamGroup: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.optimizers.TorchMuon.defaults getter: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.optimizers.TorchMuon.init_param_group: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.optimizers.TorchMuon.step: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.optimizers.TorchSgd: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.optimizers.TorchSgd.ParamGroup: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.optimizers.TorchSgd.defaults getter: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.optimizers.TorchSgd.init_param_group: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.optimizers.TorchSgd.step: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.pallas.jax_op: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.precision: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.profiler.TpuProfilerConfig: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.set_device: {category: Public Python API, defined_in: runtime, prefer: torch.accelerator.set_device_index, stage: Internal}
+torch.tpu.set_eager_mode: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.set_rng_state: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.set_stream: {category: Public Python API, defined_in: runtime, prefer: torch.accelerator.set_stream, stage: Internal}
+torch.tpu.stream: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.synchronize: {category: Public Python API, defined_in: runtime, prefer: torch.accelerator.synchronize, stage: Internal}
+torch.tpu.topology_aware_mesh: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.window_num_stripes getter: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.window_num_stripes setter: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.window_stripe_chunk_mb getter: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.window_stripe_chunk_mb setter: {category: Public Python API, defined_in: runtime, stage: Experimental}
+
+# --- ABSL Python Flag ---
+torch_tpu_internal_compilation_container_memory_limit_mb: {category: ABSL Python Flag, defined_in: runtime, stage: Internal}
+torch_tpu_internal_enable_compilation_container: {category: ABSL Python Flag, defined_in: runtime, stage: Internal}
+torch_tpu_internal_mlir_tracebacks: {category: ABSL Python Flag, defined_in: runtime, stage: Internal}
+torch_tpu_internal_num_compilation_threads: {category: ABSL Python Flag, defined_in: runtime, stage: Internal}
+
+# --- Environment Variable ---
+JOB_COMPLETION_INDEX: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
+LIBTPU_INIT_ARGS: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Stable}
+LOCAL_RANK: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Stable}
+MASTER_ADDR: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Stable}
+MASTER_PORT: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Stable}
+NNODES: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Stable}
+NODE_RANK: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Stable}
+NPROC: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
+RANK: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Stable}
+TMPDIR: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Stable}
+TORCHCOMM_RANK: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
+TORCHCOMM_SIZE: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
+TORCH_DEVICE_BACKEND_AUTOLOAD: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Stable}
+TORCH_SHOW_CPP_STACKTRACES: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
+TORCH_TPU_BASE_PORT: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
+TORCH_TPU_DEFER_AND_FUSE: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
+TORCH_TPU_DEVICES_PER_HOST: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
+TORCH_TPU_ENABLE_DEBUG_CHECKS: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
+TORCH_TPU_INTERNAL_DETECT_REPEATED_OPS: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
+TORCH_TPU_INTERNAL_DISABLE_INPLACE_BUFFER_DONATION: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
+TORCH_TPU_INTERNAL_DUMP_MLIR_PASSES_TO: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
+TORCH_TPU_INTERNAL_ENABLE_REASSOCIATE_NORM_WEIGHTS: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
+TORCH_TPU_INTERNAL_HANDSHAKE_PORT: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
+TORCH_TPU_INTERNAL_HANDSHAKE_TIMEOUT_S: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
+TORCH_TPU_INTERNAL_MATERIALIZE_COLLECTIVE_TENSORS: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
+TORCH_TPU_INTERNAL_SKINNY_SC_OFFLOAD: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
+TORCH_TPU_INTERNAL_SPLIT_RNG_STATE_UPDATE: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
+TORCH_TPU_INTERNAL_STORAGE_AWARE_PLACEHOLDERS: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
+TORCH_TPU_INTERNAL_TIER3_COMPILATION_CACHE_LOCAL_BACKUP_TASK: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
+TORCH_TPU_INTERNAL_XLA_OPTIONS: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
+TORCH_TPU_LAUNCH_BLOCKING: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
+TORCH_TPU_PROFILER_OUTPUT_DIR: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
+TORCH_TPU_SLICEBUILDER_ADDRESSES: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
+TORCH_TPU_SPMD_HANDSHAKE_STAGE: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
+TORCH_TPU_TIER2_COMPILATION_CACHE: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
+TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
+TORCH_TPU_TOPOLOGY: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
+TORCH_TPU_XPROF_SESSION_ID: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
+TORCH_TRACE: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
+TPU_PREMAPPED_BUFFER_SIZE: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Stable}
+TPU_VISIBLE_DEVICES: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Stable}
+TPU_WORKER_HOSTNAMES: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
+WORLD_SIZE: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Stable}
+XLA_FLAGS: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
+
+# --- ABSL C++ Flag ---
+torch_tpu_internal_mlir_tracebacks: {category: ABSL C++ Flag, defined_in: csrc/ops/python_context.cc, stage: Internal}
+torch_tpu_internal_num_compilation_threads: {category: ABSL C++ Flag, defined_in: csrc/common/compilation_cache.cc, stage: Internal}
