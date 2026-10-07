@@ -119,6 +119,9 @@ int64_t GetDeviceVmemLimitBytes() {
 constexpr int64_t kMinHardwareTileSize = 128;
 // Minimum tile size for the > 256 heuristic.
 constexpr int64_t kMinHeuristicTileSize = 256;
+// Maximum initial tile size so multi-tile sequences pipeline across
+// double-buffered VMEM tiles without non-power-of-two halving bloat.
+constexpr int64_t kMaxInitialTileSize = 512;
 
 int64_t RoundUpToTileSize(int64_t seq_len, int64_t tile_size) {
   return llvm::divideCeil(seq_len, tile_size) * tile_size;
@@ -131,7 +134,7 @@ int64_t GetInitialTileSize(int64_t seq_len) {
   if (seq_len <= 256) {
     return kMinHeuristicTileSize;
   }
-  return RoundUpToTileSize(seq_len, kMinHeuristicTileSize);
+  return kMaxInitialTileSize;
 }
 
 int64_t EstimateTileVmemBytes(int64_t qt, int64_t kt, int64_t head_dim,
