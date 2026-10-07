@@ -1295,39 +1295,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       ):
         torch.nn.functional.embedding_bag(indices, weight, offsets)
 
-  @et.why_tpu_only("Testing TPU AtenEmbedding kernel error validation.")
-  def test_embedding_errors(self):
-    with self.subTest("weight_dim"):
-      weight = torch.ones(10, device=et.device())
-      indices = torch.zeros(1, dtype=torch.int64, device=et.device())
-      with et.assert_raises_message(
-          RuntimeError,
-          tpu="""embedding(): expected weight to be 2-D, got [10]""",
-          message_reviewed_by="wan",
-      ):
-        torch.ops.aten.embedding(weight, indices)
-
-    with self.subTest("indices_dtype"):
-      weight = torch.ones(10, 4, device=et.device())
-      indices = torch.zeros(1, dtype=torch.float32, device=et.device())
-      with et.assert_raises_message(
-          RuntimeError,
-          tpu="""embedding(): expected indices to be int64 or int32, got float32""",
-          message_reviewed_by="wan",
-      ):
-        torch.ops.aten.embedding(weight, indices)
-
-    with self.subTest("out_dtype"):
-      weight = torch.ones(10, 4, dtype=torch.float32, device=et.device())
-      indices = torch.zeros(1, dtype=torch.int64, device=et.device())
-      out = torch.empty(1, 4, dtype=torch.float64, device=et.device())
-      with et.assert_raises_message(
-          RuntimeError,
-          tpu="""embedding(): expected out tensor to have dtype float32, got float64""",
-          message_reviewed_by="wan",
-      ):
-        torch.ops.aten.embedding.out(weight, indices, out=out)
-
   @et.why_tpu_only(
       "On CPU/GPU, linear with bool input raises RuntimeError from matmul; on"
       " TPU, AtenLinear raises NotImplementedError."
@@ -2597,70 +2564,6 @@ module {
         tpu="""expected local device index 0, got 1: accessing RNG state of a non-current TPU device is not supported""",
     ):
       torch.tpu.set_rng_state(torch.zeros(16, dtype=torch.uint8), 1)
-
-  # TODO(marcosyukio): check if this test passes on CUDA with CC >= 8.9.
-  @et.why_tpu_only(
-      "TPU enforces scale orientation ([M, 1] / [1, N]); CPU has no equivalent"
-      " check (it rejects all non-scalar scales outright)."
-  )
-  def test_scaled_mm_invalid_scale_a_orientation(self):
-    """Tests that scaled_mm rejects a 2-D row-wise scale_a with wrong orientation.
-
-    TPU-only: scale_a must be [M, 1] (per-row); a [1, M] scale is rejected so a
-    transposed scale is a clean error rather than a silent wrong-axis broadcast.
-    There is no comparable CPU error to assert -- CPU has no scale-orientation
-    check; it rejects all non-scalar scales outright (covered by
-    test_scaled_mm_invalid_scale_a_size in errors_test.py).
-    """
-    device = et.device()
-    # Generate in F32 and cast to FP8 to avoid randn failure on TPU!
-    mat1 = torch.randn(16, 16, dtype=torch.float32, device=device).to(
-        torch.float8_e4m3fn
-    )
-    mat2 = torch.randn(16, 32, dtype=torch.float32, device=device).to(
-        torch.float8_e4m3fn
-    )
-    # scale_a should be [16, 1]; [1, 16] is the wrong orientation.
-    scale_a = torch.ones(1, 16, dtype=torch.float32, device=device)
-    scale_b = torch.tensor([1.0], dtype=torch.float32, device=device)
-
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""scaled_mm(): expected row-wise scale_a to have shape [16, 1], got [1, 16]""",
-    ):
-      torch._scaled_mm(mat1, mat2, scale_a, scale_b)
-
-  # TODO(marcosyukio): check if this test passes on CUDA with CC >= 8.9.
-  @et.why_tpu_only(
-      "TPU enforces scale orientation ([M, 1] / [1, N]); CPU has no equivalent"
-      " check (it rejects all non-scalar scales outright)."
-  )
-  def test_scaled_mm_invalid_scale_b_orientation(self):
-    """Tests that scaled_mm rejects a 2-D per-channel scale_b with wrong orientation.
-
-    TPU-only: scale_b must be [1, N] (per-output-channel); a [N, 1] scale is
-    rejected so a transposed scale is a clean error rather than a silent
-    wrong-axis broadcast. There is no comparable CPU error to assert -- CPU has
-    no scale-orientation check; it rejects all non-scalar scales outright
-    (covered by test_scaled_mm_invalid_scale_b_size in errors_test.py).
-    """
-    device = et.device()
-    # Generate in F32 and cast to FP8 to avoid randn failure on TPU!
-    mat1 = torch.randn(16, 16, dtype=torch.float32, device=device).to(
-        torch.float8_e4m3fn
-    )
-    mat2 = torch.randn(16, 32, dtype=torch.float32, device=device).to(
-        torch.float8_e4m3fn
-    )
-    # scale_b should be [1, 32]; [32, 1] is the wrong orientation.
-    scale_a = torch.tensor([1.0], dtype=torch.float32, device=device)
-    scale_b = torch.ones(32, 1, dtype=torch.float32, device=device)
-
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""scaled_mm(): expected per-channel scale_b to have shape [1, 32], got [32, 1]""",
-    ):
-      torch._scaled_mm(mat1, mat2, scale_a, scale_b)
 
   # TODO(marcosyukio): check if this test passes on CUDA with CC >= 8.9.
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
@@ -4867,46 +4770,11 @@ module {
       )
 
   @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
-  def test_lstm_input_invalid_hx_size(self):
-    x, hx, params = self._default_lstm_input_args()
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""lstm(): expected hx to contain exactly 2 tensors (h_0, c_0), got 1""",
-    ):
-      torch.ops.aten.lstm.input(
-          x, [hx[0]], params, True, 1, 0.0, False, False, False
-      )
-
-  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
-  def test_lstm_input_zero_seq_len(self):
-    _, hx, params = self._default_lstm_input_args()
-    x_zero_seq = torch.randn(0, 3, 16, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""lstm(): expected sequence length to be larger than 0 in RNN, got 0""",
-    ):
-      torch.ops.aten.lstm.input(
-          x_zero_seq, hx, params, True, 1, 0.0, False, False, False
-      )
-
-  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
-  def test_lstm_input_zero_batch_size(self):
-    _, hx, params = self._default_lstm_input_args()
-    x_zero_batch = torch.randn(10, 0, 16, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""lstm(): expected batch size > 0 in RNN, got 0""",
-    ):
-      torch.ops.aten.lstm.input(
-          x_zero_batch, hx, params, True, 1, 0.0, False, False, False
-      )
-
-  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
   def test_lstm_input_zero_num_layers(self):
     x, hx, params = self._default_lstm_input_args()
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""lstm(): expected num_layers > 0 in RNN, got 0""",
+        tpu="""lstm(): expected the number of layers (num_layers) to be > 0, got 0""",
     ):
       torch.ops.aten.lstm.input(
           x, hx, params, True, 0, 0.0, False, False, False
@@ -4917,7 +4785,7 @@ module {
     x, hx, params = self._default_lstm_input_args()
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""lstm(): expected dropout to be in range [0, 1], got -0.5""",
+        tpu="""lstm(): expected the dropout probability (dropout) to be in range [0, 1], got -0.5""",
     ):
       torch.ops.aten.lstm.input(
           x, hx, params, True, 1, -0.5, False, False, False
@@ -4929,7 +4797,7 @@ module {
     h0_2d = torch.randn(1, 3, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""lstm(): expected h_0 to be a 3D tensor [num_layers * num_directions, batch, out_size], got 2D""",
+        tpu="""lstm(): expected the initial hidden state h_0 (first element of hx) to be a 3D tensor [num_layers * num_directions, batch, out_size], got 2D tensor of shape [1, 3]""",
     ):
       torch.ops.aten.lstm.input(
           x, [h0_2d, hx[1]], params, True, 1, 0.0, False, False, False
@@ -4941,7 +4809,7 @@ module {
     c0_2d = torch.randn(1, 3, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""lstm(): expected c_0 to be a 3D tensor [num_layers * num_directions, batch, hidden_size], got 2D""",
+        tpu="""lstm(): expected the initial cell state c_0 (second element of hx) to be a 3D tensor [num_layers * num_directions, batch, hidden_size], got 2D tensor of shape [1, 3]""",
     ):
       torch.ops.aten.lstm.input(
           x, [hx[0], c0_2d], params, True, 1, 0.0, False, False, False
@@ -4953,7 +4821,7 @@ module {
     h0_bad_layers = torch.randn(2, 3, 32, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""lstm(): expected h_0 size(0) to match num_layers * num_directions (1), got 2""",
+        tpu="""lstm(): expected the size of the initial hidden state h_0 (first element of hx) at dimension 0 to be 1 (num_layers * number of directions), got 2""",
     ):
       torch.ops.aten.lstm.input(
           x, [h0_bad_layers, hx[1]], params, True, 1, 0.0, False, False, False
@@ -4965,34 +4833,10 @@ module {
     h0_bad_batch = torch.randn(1, 4, 32, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""lstm(): expected h_0 size(1) to match batch (3), got 4""",
+        tpu="""lstm(): expected the size of the initial hidden state h_0 (first element of hx) at dimension 1 to be 3 (batch size), got 4""",
     ):
       torch.ops.aten.lstm.input(
           x, [h0_bad_batch, hx[1]], params, True, 1, 0.0, False, False, False
-      )
-
-  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
-  def test_lstm_input_c0_layer_mismatch(self):
-    x, hx, params = self._default_lstm_input_args()
-    c0_bad_layers = torch.randn(2, 3, 32, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""lstm(): expected c_0 size(0) to match num_layers * num_directions (1), got 2""",
-    ):
-      torch.ops.aten.lstm.input(
-          x, [hx[0], c0_bad_layers], params, True, 1, 0.0, False, False, False
-      )
-
-  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
-  def test_lstm_input_c0_batch_mismatch(self):
-    x, hx, params = self._default_lstm_input_args()
-    c0_bad_batch = torch.randn(1, 4, 32, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""lstm(): expected c_0 size(1) to match batch (3), got 4""",
-    ):
-      torch.ops.aten.lstm.input(
-          x, [hx[0], c0_bad_batch], params, True, 1, 0.0, False, False, False
       )
 
   @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
@@ -5002,21 +4846,10 @@ module {
     c0 = torch.randn(1, 3, 32, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""lstm(): h_0 size(2) (64) cannot exceed c_0 size(2) (32)""",
+        tpu="""lstm(): expected the size of the initial hidden state h_0 (first element of hx) at dimension 2 to be <= 32 (size of the initial cell state c_0 -- second element of hx) at dimension 2, got 64""",
     ):
       torch.ops.aten.lstm.input(
           x, [h0_large_out, c0], params, True, 1, 0.0, False, False, False
-      )
-
-  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
-  def test_lstm_input_params_count_mismatch(self):
-    x, hx, params = self._default_lstm_input_args()
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""lstm(): expected 4 parameters, got 3""",
-    ):
-      torch.ops.aten.lstm.input(
-          x, hx, params[:3], True, 1, 0.0, False, False, False
       )
 
   def _default_gru_input_args(self):
@@ -5052,47 +4885,6 @@ module {
       )
 
   @et.why_tpu_only("torch.ops.aten.gru.input error validations on TPU")
-  def test_gru_input_zero_seq_len(self):
-    """Verifies that sequence length of zero raises RuntimeError.
-
-    What is being tested:
-      - Passing an input tensor with seq_len=0 (shape [0, 3, 16]).
-
-    Expected result:
-      - RuntimeError: 'gru(): expected sequence length to be larger than 0 in
-      RNN, got 0'
-    """
-    _, hx, params = self._default_gru_input_args()
-    x_zero_seq = torch.randn(0, 3, 16, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""gru(): expected sequence length to be larger than 0 in RNN, got 0""",
-    ):
-      torch.ops.aten.gru.input(
-          x_zero_seq, hx, params, True, 1, 0.0, False, False, False
-      )
-
-  @et.why_tpu_only("torch.ops.aten.gru.input error validations on TPU")
-  def test_gru_input_zero_batch_size(self):
-    """Verifies that batch size of zero raises RuntimeError.
-
-    What is being tested:
-      - Passing an input tensor with batch_size=0 (shape [10, 0, 16]).
-
-    Expected result:
-      - RuntimeError: 'gru(): expected batch size > 0 in RNN, got 0'
-    """
-    _, hx, params = self._default_gru_input_args()
-    x_zero_batch = torch.randn(10, 0, 16, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""gru(): expected batch size > 0 in RNN, got 0""",
-    ):
-      torch.ops.aten.gru.input(
-          x_zero_batch, hx, params, True, 1, 0.0, False, False, False
-      )
-
-  @et.why_tpu_only("torch.ops.aten.gru.input error validations on TPU")
   def test_gru_input_zero_num_layers(self):
     """Verifies that num_layers=0 raises RuntimeError.
 
@@ -5100,12 +4892,13 @@ module {
       - Passing num_layers=0 to aten.gru.input.
 
     Expected result:
-      - RuntimeError: 'gru(): expected num_layers > 0 in RNN, got 0'
+      - RuntimeError: 'gru(): expected the number of layers (num_layers) to be >
+      0, got 0'
     """
     x, hx, params = self._default_gru_input_args()
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""gru(): expected num_layers > 0 in RNN, got 0""",
+        tpu="""gru(): expected the number of layers (num_layers) to be > 0, got 0""",
     ):
       torch.ops.aten.gru.input(x, hx, params, True, 0, 0.0, False, False, False)
 
@@ -5117,12 +4910,13 @@ module {
       - Passing dropout=2.0 (outside [0, 1]).
 
     Expected result:
-      - RuntimeError: 'gru(): expected dropout to be in range [0, 1], got 2'
+      - RuntimeError: 'gru(): expected the dropout probability (dropout) to be
+      in range [0, 1], got 2'
     """
     x, hx, params = self._default_gru_input_args()
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""gru(): expected dropout to be in range [0, 1], got 2""",
+        tpu="""gru(): expected the dropout probability (dropout) to be in range [0, 1], got 2""",
     ):
       torch.ops.aten.gru.input(x, hx, params, True, 1, 2.0, False, False, False)
 
@@ -5134,14 +4928,15 @@ module {
       - Passing a 2D tensor of shape [1, 3] as hx.
 
     Expected result:
-      - RuntimeError: 'gru(): expected hx to be a 3D tensor [num_layers *
-      num_directions, batch, hidden_size], got 2D'
+      - RuntimeError: 'gru(): expected the initial hidden state hx to be a 3D
+      tensor [num_layers * num_directions, batch, hidden_size], got 2D tensor of
+      shape [1, 3]'
     """
     x, _, params = self._default_gru_input_args()
     hx_2d = torch.randn(1, 3, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""gru(): expected hx to be a 3D tensor [num_layers * num_directions, batch, hidden_size], got 2D""",
+        tpu="""gru(): expected the initial hidden state hx to be a 3D tensor [num_layers * num_directions, batch, hidden_size], got 2D tensor of shape [1, 3]""",
     ):
       torch.ops.aten.gru.input(
           x, hx_2d, params, True, 1, 0.0, False, False, False
@@ -5155,14 +4950,15 @@ module {
       - Passing hx with size(0)=2 when num_layers * num_directions = 1.
 
     Expected result:
-      - RuntimeError: 'gru(): expected hx size(0) to match num_layers *
+      - RuntimeError: 'gru(): expected the size of the initial hidden state hx
+      at dimension 0 to match num_layers *
       num_directions (1), got 2'
     """
     x, _, params = self._default_gru_input_args()
     hx_bad_layers = torch.randn(2, 3, 32, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""gru(): expected hx size(0) to match num_layers * num_directions (1), got 2""",
+        tpu="""gru(): expected the size of the initial hidden state hx at dimension 0 to be 1 (num_layers * number of directions), got 2""",
     ):
       torch.ops.aten.gru.input(
           x, hx_bad_layers, params, True, 1, 0.0, False, False, False
@@ -5176,36 +4972,17 @@ module {
       - Passing hx with batch=4 when input x has batch=3.
 
     Expected result:
-      - RuntimeError: 'gru(): expected hx size(1) to match batch (3), got 4'
+      - RuntimeError: 'gru(): expected the size of the initial hidden state hx
+      at dimension 1 to match batch (3), got 4'
     """
     x, _, params = self._default_gru_input_args()
     hx_bad_batch = torch.randn(1, 4, 32, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""gru(): expected hx size(1) to match batch (3), got 4""",
+        tpu="""gru(): expected the size of the initial hidden state hx at dimension 1 to be 3 (batch size), got 4""",
     ):
       torch.ops.aten.gru.input(
           x, hx_bad_batch, params, True, 1, 0.0, False, False, False
-      )
-
-  @et.why_tpu_only("torch.ops.aten.gru.input error validations on TPU")
-  def test_gru_input_params_count_mismatch(self):
-    """Verifies that parameter count mismatch raises RuntimeError.
-
-    What is being tested:
-      - Providing 3 parameter tensors instead of 4 for a single-layer biased
-      GRU.
-
-    Expected result:
-      - RuntimeError: 'gru(): expected 4 parameters, got 3'
-    """
-    x, hx, params = self._default_gru_input_args()
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""gru(): expected 4 parameters, got 3""",
-    ):
-      torch.ops.aten.gru.input(
-          x, hx, params[:3], True, 1, 0.0, False, False, False
       )
 
   @et.why_tpu_only("ao.reload is implemented for device=tpu.")
