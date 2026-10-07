@@ -489,7 +489,7 @@ def run_conflicting_device_assignments_error() -> None:
 
 
 class CollectiveErrorsTest(et.TpuOnlyDistributedErrorTestBase):
-  _world_size = 8
+  _world_size = distributed_utils.DEFAULT_WORLD_SIZE
 
   def test_all_gather(self):
     distributed_utils.dist_run(

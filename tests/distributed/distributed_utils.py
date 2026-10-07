@@ -25,6 +25,8 @@ from torch_tpu._internal.utils import hardware
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
 
+DEFAULT_WORLD_SIZE: int = hardware.get_tpu_device_count() or 8
+
 
 def _worker_fn(
     local_rank: int,
