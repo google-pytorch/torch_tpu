@@ -95,7 +95,7 @@ def _patch_closure_chain(method, patched_decorator_fn):
             # Re-apply profile_hook_step wrapper if it was hooked
             if getattr(contents, "hooked", False):
               new_step = torch.optim.Optimizer.profile_hook_step(patched_step)
-              new_step.hooked = True  # pytype: disable=missing-attribute  # pyrefly: ignore[missing-attribute]
+              new_step.hooked = True  # pyrefly: ignore[missing-attribute]
             else:
               new_step = patched_step
 
@@ -157,7 +157,7 @@ def patch_optimizer_graph_breaks() -> None:
         # Re-apply profile_hook_step wrapper if it was hooked
         if getattr(step_method, "hooked", False):
           new_step = torch.optim.Optimizer.profile_hook_step(patched_step)
-          new_step.hooked = True  # pytype: disable=missing-attribute  # pyrefly: ignore[missing-attribute]
+          new_step.hooked = True  # pyrefly: ignore[missing-attribute]
         else:
           new_step = patched_step
         opt_class.step = new_step

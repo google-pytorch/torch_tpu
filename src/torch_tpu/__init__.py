@@ -25,7 +25,7 @@ from torch_tpu import _versioned_so_loader
 _versioned_so_loader.install_hook(pathlib.Path(__file__).parent)
 
 try:
-  import libtpu  # pylint: disable=g-import-not-at-top # pytype: disable=import-error
+  import libtpu  # pylint: disable=g-import-not-at-top  # pyrefly: ignore[missing-import]
 
   libtpu.configure_library_path()
 except ImportError:

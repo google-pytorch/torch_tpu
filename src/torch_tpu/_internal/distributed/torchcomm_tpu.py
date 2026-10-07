@@ -31,9 +31,9 @@ from torch_tpu._internal import env
 from torch_tpu._internal.distributed import tpu_distributed
 
 try:
-  import torchcomms  # pyrefly: ignore[missing-import]
+  import torchcomms
 
-  _TorchCommBackendBase = torchcomms.TorchCommBackend  # pyrefly: ignore[invalid-inheritance]
+  _TorchCommBackendBase = torchcomms.TorchCommBackend
 except Exception:
   _TorchCommBackendBase = object
 
@@ -69,7 +69,7 @@ def _to_dist_reduce_op(op: Any) -> Any:
   if isinstance(op, (dist.ReduceOp.RedOpType, dist.ReduceOp)):
     return op
   try:
-    import torchcomms  # pyrefly: ignore[missing-import]
+    import torchcomms
 
     if isinstance(op, torchcomms.ReduceOp):
       # Map torchcomms.RedOpType enum variants to PyTorch dist.ReduceOp equivalents
@@ -841,7 +841,7 @@ def register_torchcomms_tpu() -> bool:
 
   # 1. Register with torchcomms if available
   try:
-    import torchcomms  # pylint: disable=g-import-not-at-top # pytype: disable=import-error # pyrefly: ignore[missing-import]
+    import torchcomms  # pylint: disable=g-import-not-at-top
 
     if hasattr(torchcomms, "register_backend"):
       torchcomms.register_backend("tpu", TorchCommsTPU)
@@ -874,7 +874,7 @@ def register_torchcomms_tpu() -> bool:
 def is_torchcomms_registered(backend_name: str = "tpu") -> bool:
   """Check whether the given backend is registered in torchcomms."""
   try:
-    import torchcomms  # pylint: disable=g-import-not-at-top # pytype: disable=import-error # pyrefly: ignore[missing-import]
+    import torchcomms  # pylint: disable=g-import-not-at-top
 
     if hasattr(torchcomms, "_is_backend_registered"):
       return torchcomms._is_backend_registered(backend_name)

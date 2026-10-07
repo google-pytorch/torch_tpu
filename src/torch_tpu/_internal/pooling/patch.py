@@ -141,9 +141,7 @@ class _TpuMaxPool1dFunction(torch.autograd.Function):
     ctx.ceil_mode = ceil_mode
 
   @staticmethod
-  def backward(  # pytype: disable=bad-override  # pyrefly: ignore[bad-override]
-      ctx: Any, *grad_outputs: Any
-  ) -> tuple[Any, ...]:
+  def backward(ctx: Any, *grad_outputs: Any) -> tuple[Any, ...]:
     """Computes grad_input using SelectAndScatter from saved input tensor."""
     (grad_output,) = grad_outputs
     (input,) = ctx.saved_tensors
@@ -204,9 +202,7 @@ class _TpuMaxPool2dFunction(torch.autograd.Function):
     ctx.ceil_mode = ceil_mode
 
   @staticmethod
-  def backward(  # pytype: disable=bad-override  # pyrefly: ignore[bad-override]
-      ctx: Any, *grad_outputs: Any
-  ) -> tuple[Any, ...]:
+  def backward(ctx: Any, *grad_outputs: Any) -> tuple[Any, ...]:
     """Computes grad_input using SelectAndScatter from saved input tensor."""
     (grad_output,) = grad_outputs
     (input,) = ctx.saved_tensors
@@ -267,9 +263,7 @@ class _TpuMaxPool3dFunction(torch.autograd.Function):
     ctx.ceil_mode = ceil_mode
 
   @staticmethod
-  def backward(  # pytype: disable=bad-override  # pyrefly: ignore[bad-override]
-      ctx: Any, *grad_outputs: Any
-  ) -> tuple[Any, ...]:
+  def backward(ctx: Any, *grad_outputs: Any) -> tuple[Any, ...]:
     """Computes grad_input using SelectAndScatter from saved input tensor."""
     (grad_output,) = grad_outputs
     (input,) = ctx.saved_tensors

@@ -450,7 +450,7 @@ class DecodeStepper(common.BaseStepper):
     self.batch_size = self.input_ids.shape[0]
     self.prompt_len = self.input_ids.shape[1]
 
-    model_config = getattr(self._model, "config")  # pytype: disable=attribute-error
+    model_config = getattr(self._model, "config")
     try:
       setattr(model_config, "allow_global_per_layer_attribute_access", True)
     except Exception:  # pylint: disable=broad-except

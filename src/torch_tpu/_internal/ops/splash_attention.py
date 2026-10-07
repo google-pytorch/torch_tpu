@@ -320,7 +320,7 @@ class _SplashAttentionFn(torch.autograd.Function):
 
   @staticmethod
   @torch.autograd.function.once_differentiable
-  def backward(ctx, grad_output):  # pytype: disable=bad-override  # pyrefly: ignore[bad-override]
+  def backward(ctx, grad_output):  # pyrefly: ignore[bad-override]
     q, k, v, out, logsumexp = ctx.saved_tensors
     # Direct backward — no extra forward inside JAX.
     grad_q, grad_k, grad_v = ctx.torch_bwd_fn(
@@ -360,7 +360,7 @@ def _get_splash_op_names(**splash_kwargs):
       mutates_args=(),
       schema="(Tensor q, Tensor k, Tensor v) -> (Tensor, Tensor)",
   )
-  torch_fwd_fn.register_fake(  # pytype: disable=missing-attribute  # pyrefly: ignore[missing-attribute]
+  torch_fwd_fn.register_fake(
       # lse: (batch, num_q_heads, q_seq_len, ??)
       lambda q, k, v: (
           torch.empty_like(q),
@@ -421,7 +421,7 @@ def _get_splash_op_names(**splash_kwargs):
         ImportError,
     ) as e:
       logging.warning("Failed to register JAX composite: %s", e)
-  torch_bwd_fn.register_fake(  # pytype: disable=missing-attribute  # pyrefly: ignore[missing-attribute]
+  torch_bwd_fn.register_fake(
       lambda q, k, v, out, lse, grad_out: (
           torch.empty_like(q),
           torch.empty_like(k),

@@ -175,6 +175,4 @@ class TpuProfilerConfig(torch.profiler._ExperimentalConfig):  # pylint: disable=
     # PyTorch library. This suppression allows the build to pass while
     # ensuring the configuration string is correctly passed to the backend at
     # runtime.
-    super().__init__(
-        custom_profiler_config=",".join(config_parts)
-    )  # pytype: disable=wrong-keyword-args
+    super().__init__(custom_profiler_config=",".join(config_parts))

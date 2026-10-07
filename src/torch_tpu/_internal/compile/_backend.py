@@ -847,9 +847,7 @@ class TpuBackend:
               partition_fn=min_cut_rematerialization_partition,
               decompositions=_TPU_DECOMPOSITIONS,  # pyrefly: ignore[bad-argument-type]
               keep_inference_input_mutations=False,
-          )(
-              graph_module, example_inputs
-          )  # pytype: disable=wrong-arg-types
+          )(graph_module, example_inputs)
 
       # The following section allows us to avoid blocking within Dynamo on
       # first execution following compilation when `async_compile=True`. This

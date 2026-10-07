@@ -361,7 +361,7 @@ class OpTracer(
   """
 
   def __enter__(self):
-    super().__enter__()  # pytype: disable=attribute-error
+    super().__enter__()
     self.ops_log = collections.defaultdict(dict)
     return self
 
@@ -628,7 +628,7 @@ def parse_version(version: str) -> tuple[int, ...]:
 def libtpu_version() -> tuple[int, ...] | None:
   """Returns the parsed version tuple of libtpu in OSS, or None in google3."""
   try:
-    import libtpu  # pylint: disable=g-import-not-at-top # pytype: disable=import-error
+    import libtpu  # pylint: disable=g-import-not-at-top  # pyrefly: ignore[missing-import]
   except ImportError:
     return None
   version = getattr(libtpu, "__version__", None)

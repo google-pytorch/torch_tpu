@@ -699,9 +699,9 @@ def _map_jax_param_to_torch(typ: Any) -> Any:
   if elem_type is not None:
     mapped_elem = _map_jax_param_to_torch(elem_type)
     if typing.get_origin(underlying) is list:
-      seq_type = list[mapped_elem]  # pyrefly: ignore[not-a-type]
+      seq_type = list[mapped_elem]
     else:
-      seq_type = collections.abc.Sequence[mapped_elem]  # pyrefly: ignore[not-a-type]
+      seq_type = collections.abc.Sequence[mapped_elem]
     return (seq_type | types.NoneType) if is_optional else seq_type
   mapped = _map_jax_base_to_torch(underlying)
   return (mapped | types.NoneType) if is_optional else mapped
@@ -723,15 +723,15 @@ def _map_jax_return_to_torch(typ: Any) -> Any:
       return tuple[()]
     if len(args) == 2 and args[1] is Ellipsis:
       mapped_elem = _map_jax_return_to_torch(args[0])
-      return tuple[mapped_elem, ...]  # pyrefly: ignore[not-a-type]
+      return tuple[mapped_elem, ...]
     mapped_args = tuple(_map_jax_return_to_torch(arg) for arg in args)
     return tuple[mapped_args]  # pyrefly: ignore[not-a-type]
   elem_type = _get_sequence_element_type(typ)
   if elem_type is not None:
     mapped_elem = _map_jax_return_to_torch(elem_type)
     if origin is list:
-      return list[mapped_elem]  # pyrefly: ignore[not-a-type]
-    return collections.abc.Sequence[mapped_elem]  # pyrefly: ignore[not-a-type]
+      return list[mapped_elem]
+    return collections.abc.Sequence[mapped_elem]
   if (
       isinstance(typ, type)
       and issubclass(typ, int)

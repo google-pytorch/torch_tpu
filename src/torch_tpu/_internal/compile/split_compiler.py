@@ -299,7 +299,7 @@ class _SubmodCompiler(torch.fx.interpreter.Interpreter):
   def _convert_to_fake_tensor(self, tensor: torch.Tensor) -> torch.Tensor:
     symbolic_context = None
     source = None
-    if tracing_context := torch._guards.TracingContext.try_get():  # pytype: disable=protected-access
+    if tracing_context := torch._guards.TracingContext.try_get():
       if tensor in tracing_context.tensor_to_context:
         symbolic_context = tracing_context.tensor_to_context[tensor]
         source = symbolic_context.tensor_source

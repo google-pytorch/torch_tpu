@@ -95,4 +95,4 @@ def spmd_safe(func: _F) -> _F:
     with torch.fx.traceback.annotate({SPMD_SAFE_METADATA_KEY: True}):
       return func(*args, **kwargs)
 
-  return wrapper  # pytype: disable=bad-return-type
+  return wrapper  # pyrefly: ignore[bad-return]
