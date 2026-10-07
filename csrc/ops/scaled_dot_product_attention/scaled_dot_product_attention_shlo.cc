@@ -66,7 +66,9 @@ struct AttentionPrepResults {
   mlir::MlirOp query_4d;
   mlir::MlirOp key_4d;
   mlir::MlirOp value_4d;
+  mlir::MlirOp masked_attn_logits;
   mlir::MlirOp shifted_attn_logits;
+  mlir::MlirOp max_logits;
   mlir::MlirOp scale_value;
   int64_t head_count_ratio;
   std::optional<mlir::MlirOp> is_row_all_masked;
@@ -192,6 +194,30 @@ bool CanUseXlaOnlineSoftmax(mlir::MlirOp query, mlir::MlirOp key) {
          seq_len_kv <= kMaxOnlineSoftmaxSeqLen && head_dim >= kMinMxuHeadDim;
 }
 
+bool CanUseXlaOnlineSoftmaxForward(mlir::MlirOp query, mlir::MlirOp key,
+                                   bool has_mask_or_causal) {
+  if (CanUseXlaOnlineSoftmax(query, key)) {
+    return true;
+  }
+  if (!has_mask_or_causal || !IsSdpaSequenceAlignedAndLarge(query, key)) {
+    return false;
+  }
+  constexpr int64_t kMinMaskedOnlineSoftmaxSeqLen = 2048;
+  constexpr int64_t kMaxOnlineSoftmaxSeqLen = 8192;
+
+  const auto query_shape = GetTensorTypeOrDie(query).getShape();
+  const auto key_shape = GetTensorTypeOrDie(key).getShape();
+  const int query_rank = query_shape.size();
+  const int key_rank = key_shape.size();
+  const int64_t seq_len_q = query_shape[query_rank - 2];
+  const int64_t seq_len_kv = key_shape[key_rank - 2];
+
+  return seq_len_q >= kMinMaskedOnlineSoftmaxSeqLen &&
+         seq_len_kv >= kMinMaskedOnlineSoftmaxSeqLen &&
+         seq_len_q <= kMaxOnlineSoftmaxSeqLen &&
+         seq_len_kv <= kMaxOnlineSoftmaxSeqLen;
+}
+
 mlir::MlirOp ConvertElementTypeIfNeeded(mlir::MlirOp op,
                                         mlir::Type target_type) {
   if (GetTensorTypeOrDie(op).getElementType() != target_type) {
@@ -204,7 +230,7 @@ absl::StatusOr<AttentionPrepResults> PrepareAttentionLogits(
     mlir::MlirBuilder& builder, mlir::MLIRContext* context, mlir::MlirOp query,
     mlir::MlirOp key, mlir::MlirOp value, std::optional<mlir::MlirOp> mask,
     bool is_causal, std::optional<double> scale,
-    mlir::stablehlo::Precision precision) {
+    mlir::stablehlo::Precision precision, bool compute_shifted_logits = true) {
   auto query_tensor_type = GetTensorTypeOrDie(query);
   const int64_t query_rank = query_tensor_type.getRank();
   // The head count and head dim are used as concrete values below (e.g. the
@@ -383,27 +409,33 @@ absl::StatusOr<AttentionPrepResults> PrepareAttentionLogits(
     masked_attn_logits = mlir::stablehlo::Add(scaled_attn_logits, clamped_mask);
   }
 
-  auto max_reduce_builder = [element_type](mlir::RegionBuilder& rb) {
-    mlir::stablehlo::buildReduceBody<mlir::stablehlo::MaxOp>(
-        element_type, rb.getRegion(), rb.getOpBuilder());
-  };
-  mlir::MlirOp minus_inf =
-      GetNegInf(builder, mlir::cast<mlir::FloatType>(element_type));
-  mlir::MlirOp max_logits =
-      mlir::stablehlo::Reduce(builder, {masked_attn_logits},
-                              /*init_value=*/{minus_inf}, max_reduce_builder,
-                              /*dimensions=*/{3})[0];
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp max_logits_broadcasted,
-                      BroadcastIfNeeded(max_logits, masked_attn_logits,
-                                        /*broadcast_dimensions=*/{0, 1, 2}));
-  mlir::MlirOp shifted_attn_logits =
-      mlir::stablehlo::Subtract(masked_attn_logits, max_logits_broadcasted);
+  mlir::MlirOp max_logits;
+  mlir::MlirOp shifted_attn_logits = masked_attn_logits;
+  if (compute_shifted_logits) {
+    auto max_reduce_builder = [element_type](mlir::RegionBuilder& rb) {
+      mlir::stablehlo::buildReduceBody<mlir::stablehlo::MaxOp>(
+          element_type, rb.getRegion(), rb.getOpBuilder());
+    };
+    mlir::MlirOp minus_inf =
+        GetNegInf(builder, mlir::cast<mlir::FloatType>(element_type));
+    max_logits =
+        mlir::stablehlo::Reduce(builder, {masked_attn_logits},
+                                /*init_value=*/{minus_inf}, max_reduce_builder,
+                                /*dimensions=*/{3})[0];
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp max_logits_broadcasted,
+                        BroadcastIfNeeded(max_logits, masked_attn_logits,
+                                          /*broadcast_dimensions=*/{0, 1, 2}));
+    shifted_attn_logits =
+        mlir::stablehlo::Subtract(masked_attn_logits, max_logits_broadcasted);
+  }
 
   return AttentionPrepResults{
       .query_4d = query_4d,
       .key_4d = key_4d,
       .value_4d = value_4d,
+      .masked_attn_logits = masked_attn_logits,
       .shifted_attn_logits = shifted_attn_logits,
+      .max_logits = max_logits,
       .scale_value = scale_value,
       .head_count_ratio = head_count_ratio,
       .is_row_all_masked = is_row_all_masked,
@@ -495,9 +527,11 @@ absl::StatusOr<MlirOpResults<2>> BuildScaledDotProductFusedAttentionShloOp(
   TT_ASSIGN_OR_RETURN(
       auto prep_results,
       PrepareAttentionLogits(builder, context, query, key, value, mask_mlir,
-                             is_causal, scale, precision));
-  auto [query_4d, key_4d, value_4d, shifted_attn_logits, scale_value,
-        head_count_ratio, is_row_all_masked] = prep_results;
+                             is_causal, scale, precision,
+                             /*compute_shifted_logits=*/true));
+  auto [query_4d, key_4d, value_4d, masked_attn_logits, shifted_attn_logits,
+        max_logits, scale_value, head_count_ratio, is_row_all_masked] =
+      prep_results;
 
   const auto original_element_type =
       GetTensorTypeOrDie(query_mlir).getElementType();
@@ -510,16 +544,12 @@ absl::StatusOr<MlirOpResults<2>> BuildScaledDotProductFusedAttentionShloOp(
         shifted_attn_logits, builder.getOpBuilder().getF32Type());
   }
 
-  // Softmax along the last dimension (Lk). Emit canonical Div when XLA's
-  // online-softmax pattern matcher applies (or when sequences are unaligned),
-  // and 3D reciprocal multiplication otherwise (e.g. ultra-long sequences >8192
-  // or head_dim < 128 where online-softmax does not match or underutilizes
-  // MXU).
   mlir::MlirOp exp_val = mlir::stablehlo::Exp(logits);
   mlir::MlirOp sum_exp = SumReduce(builder, exp_val, /*dimension=*/3);
   mlir::MlirOp softmax;
   if (IsSdpaSequenceAlignedAndLarge(query_mlir, key_mlir) &&
-      !CanUseXlaOnlineSoftmax(query_mlir, key_mlir)) {
+      !CanUseXlaOnlineSoftmaxForward(query_mlir, key_mlir,
+                                     is_causal || mask_mlir.has_value())) {
     auto one = MakeConstantLike(sum_exp, 1.0);
     mlir::MlirOp inv_sum_exp = mlir::stablehlo::Div(one, sum_exp);
     TT_ASSIGN_OR_RETURN(mlir::MlirOp inv_sum_exp_broadcasted,
@@ -538,9 +568,6 @@ absl::StatusOr<MlirOpResults<2>> BuildScaledDotProductFusedAttentionShloOp(
     auto zero_softmax = MakeConstantLike(softmax, 0.0);
     softmax =
         mlir::stablehlo::Select(is_masked_broadcasted, zero_softmax, softmax);
-    auto zero_sum_exp = MakeConstantLike(sum_exp, 0.0);
-    sum_exp =
-        mlir::stablehlo::Select(*is_row_all_masked, zero_sum_exp, sum_exp);
   }
 
   if (promotion_type == SdpaPromotionType::kSoftmaxOnly && is_half_precision) {
@@ -567,12 +594,24 @@ absl::StatusOr<MlirOpResults<2>> BuildScaledDotProductFusedAttentionShloOp(
   mlir::MlirOp out = ConvertElementTypeIfNeeded(restore_batch_dims(out_4d),
                                                 original_element_type);
 
-  // The aten op requires sum_exp to be f32.
-  mlir::MlirOp sum_exp_f32 = mlir::stablehlo::ConvertElementType(
-      sum_exp, builder.getOpBuilder().getF32Type());
-  mlir::MlirOp unflattened_sum_exp = restore_batch_dims(sum_exp_f32);
+  // Save true logsumexp = max_logits + log(sum_exp) in f32 so backward
+  // reconstructs softmax without recomputing 4D ReduceMax or retaining forward
+  // 4D logits across layers.
+  mlir::Type f32_type = builder.getOpBuilder().getF32Type();
+  mlir::MlirOp max_logits_f32 =
+      ConvertElementTypeIfNeeded(max_logits, f32_type);
+  mlir::MlirOp sum_exp_f32 = ConvertElementTypeIfNeeded(sum_exp, f32_type);
+  mlir::MlirOp log_sum_exp_f32 = mlir::stablehlo::Log(sum_exp_f32);
+  mlir::MlirOp logsumexp_f32 =
+      mlir::stablehlo::Add(max_logits_f32, log_sum_exp_f32);
+  if (is_row_all_masked.has_value()) {
+    auto zero_lse = MakeConstantLike(logsumexp_f32, 0.0);
+    logsumexp_f32 =
+        mlir::stablehlo::Select(*is_row_all_masked, zero_lse, logsumexp_f32);
+  }
+  mlir::MlirOp unflattened_logsumexp = restore_batch_dims(logsumexp_f32);
 
-  return MlirOpResults<2>{out, unflattened_sum_exp};
+  return MlirOpResults<2>{out, unflattened_logsumexp};
 }
 
 absl::StatusOr<mlir::MlirOp> ComputeGradP(mlir::MlirBuilder& builder,
@@ -773,58 +812,45 @@ BuildScaledDotProductAttentionBackward(absl::Span<mlir::MlirOp> inputs,
       ConvertElementTypeIfNeeded(grad_out_mlir, query_acc_type);
   mlir::MlirOp sum_exp = sum_exp_mlir;
 
+  // Isolate backward query and key inputs with an optimization barrier so
+  // HloCSE recomputes local 4D attention logits instead of retaining forward
+  // [B, H, S, S] buffers in HBM across all transformer layers until backward.
+  auto barrier_inputs =
+      mlir::stablehlo::OptimizationBarrier(builder, {query, key});
+  query = barrier_inputs[0];
+  key = barrier_inputs[1];
+
   TT_ASSIGN_OR_RETURN(
       auto prep_results,
       PrepareAttentionLogits(builder, context, query, key, value, mask_mlir,
-                             is_causal, scale, precision));
-  auto [query_4d, key_4d, value_4d, shifted_attn_logits, scale_value,
-        head_count_ratio, is_row_all_masked] = prep_results;
+                             is_causal, scale, precision,
+                             /*compute_shifted_logits=*/false));
+  auto [query_4d, key_4d, value_4d, masked_attn_logits, shifted_attn_logits,
+        max_logits, scale_value, head_count_ratio, is_row_all_masked] =
+      prep_results;
   const auto element_type = GetTensorTypeOrDie(query).getElementType();
   const bool is_half_precision = element_type.isF16() || element_type.isBF16();
 
   const auto num_batch_dims = rank - 3;
   mlir::MlirOp grad_out_4d =
       flatten_batch_dims(grad_out, batch_size, num_batch_dims);
-  mlir::MlirOp sum_exp_3d =
+  mlir::MlirOp logsumexp_3d =
       flatten_batch_dims(sum_exp, batch_size, num_batch_dims);
 
-  mlir::MlirOp logits = shifted_attn_logits;
-  if (promotion_type == SdpaPromotionType::kSoftmaxOnly && is_half_precision) {
-    logits = mlir::stablehlo::ConvertElementType(
-        shifted_attn_logits, builder.getOpBuilder().getF32Type());
-  }
-  const auto softmax_calc_type = GetTensorTypeOrDie(logits).getElementType();
-
-  // Softmax using previously computed sum_exp. Use 3D reciprocal multiplication
-  // when sequence dimensions are aligned to TPU tiles and outside the
-  // online-softmax regime (avoiding multi-output convolution fusion buffer
-  // materialization of 4D FP32 softmax tensors across GQA backward layers).
-  mlir::MlirOp sum_exp_converted =
-      ConvertElementTypeIfNeeded(sum_exp_3d, softmax_calc_type);
-  auto zero_sum_exp_converted = MakeConstantLike(sum_exp_converted, 0.0);
-  auto one_sum_exp_converted = MakeConstantLike(sum_exp_converted, 1.0);
-  mlir::MlirOp is_zero_sum_exp =
-      mlir::stablehlo::Compare(sum_exp_converted, zero_sum_exp_converted,
-                               mlir::stablehlo::ComparisonDirection::EQ);
-  mlir::MlirOp safe_sum_exp = mlir::stablehlo::Select(
-      is_zero_sum_exp, one_sum_exp_converted, sum_exp_converted);
-
-  mlir::MlirOp exp_val = mlir::stablehlo::Exp(logits);
-  mlir::MlirOp softmax;
-  if (IsSdpaSequenceAlignedAndLarge(query_mlir, key_mlir) &&
-      !CanUseXlaOnlineSoftmax(query_mlir, key_mlir)) {
-    auto one = MakeConstantLike(safe_sum_exp, 1.0);
-    mlir::MlirOp inv_sum_exp = mlir::stablehlo::Div(one, safe_sum_exp);
-    TT_ASSIGN_OR_RETURN(mlir::MlirOp inv_sum_exp_broadcasted,
-                        BroadcastIfNeeded(inv_sum_exp, logits,
-                                          /*broadcast_dimensions=*/{0, 1, 2}));
-    softmax = mlir::stablehlo::Mul(exp_val, inv_sum_exp_broadcasted);
-  } else {
-    TT_ASSIGN_OR_RETURN(mlir::MlirOp sum_exp_broadcasted,
-                        BroadcastIfNeeded(safe_sum_exp, logits,
-                                          /*broadcast_dimensions=*/{0, 1, 2}));
-    softmax = mlir::stablehlo::Div(exp_val, sum_exp_broadcasted);
-  }
+  const mlir::Type softmax_calc_type =
+      (promotion_type == SdpaPromotionType::kSoftmaxOnly && is_half_precision)
+          ? builder.getOpBuilder().getF32Type()
+          : element_type;
+  mlir::MlirOp logits =
+      ConvertElementTypeIfNeeded(masked_attn_logits, softmax_calc_type);
+  mlir::MlirOp logsumexp_converted =
+      ConvertElementTypeIfNeeded(logsumexp_3d, softmax_calc_type);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp logsumexp_broadcasted,
+                      BroadcastIfNeeded(logsumexp_converted, logits,
+                                        /*broadcast_dimensions=*/{0, 1, 2}));
+  mlir::MlirOp shifted_logits =
+      mlir::stablehlo::Subtract(logits, logsumexp_broadcasted);
+  mlir::MlirOp softmax = mlir::stablehlo::Exp(shifted_logits);
 
   if (is_row_all_masked.has_value()) {
     TT_ASSIGN_OR_RETURN(mlir::MlirOp is_masked_broadcasted,
