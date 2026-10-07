@@ -35,18 +35,55 @@ import nox
 nox.options.default_venv_backend = "uv"
 nox.options.sessions = ["lint"]
 
-# The index that must satisfy the `torch` dependency for each variant. `None`
-# means the default index (PyPI), whose Linux wheels bundle CUDA support. The
+# The indexes that may satisfy the `torch` dependency for each variant. The
+# `cpu` and `cuda` variants include PyTorch's RC test channels so release
+# candidates in WHEEL_TORCH_VERSIONS resolve alongside final releases. The
 # `local` variant installs no torch from an index at all: it uses the torch
 # wheel file in dist/local/ that the torch_tpu wheel was built against
 # (--config=local_torch builds).
-_TORCH_INDEXES: Final[Mapping[str, str | None]] = {
-    "cpu": "https://download.pytorch.org/whl/cpu",
-    "cuda": None,
-    "local": None,
-    "nightly": "https://download.pytorch.org/whl/nightly/cpu",
-    "nightly-pinned": "https://download.pytorch.org/whl/nightly/cpu",
+# NOTE(PyTorch 2.15.0 RC): The `/whl/test/cpu` and `/whl/test/cu130` entries
+# (and the multi-index `/whl/test/` handling in `_torch_index_args` below) are
+# only needed while PyTorch 2.15.0 is a release candidate. Remove them once
+# PyTorch 2.15.0 final is published to PyPI and `download.pytorch.org/whl/cpu`.
+_TORCH_INDEXES: Final[Mapping[str, Sequence[str]]] = {
+    "cpu": (
+        "https://download.pytorch.org/whl/cpu",
+        "https://download.pytorch.org/whl/test/cpu",  # Remove after 2.15.0 GA
+    ),
+    "cuda": (
+        "https://download.pytorch.org/whl/test/cu130",  # Remove after 2.15.0 GA
+    ),
+    "local": (),
+    "nightly": ("https://download.pytorch.org/whl/nightly/cpu",),
+    "nightly-pinned": ("https://download.pytorch.org/whl/nightly/cpu",),
 }
+
+
+def _torch_index_args(
+    variant: str, *, unsafe_best_match: bool = False
+) -> Sequence[str]:
+  """Return the `uv pip install` index arguments for a torch variant."""
+  indexes = _TORCH_INDEXES[variant]
+  if not indexes:
+    return ()
+  args: list[str] = []
+  for index in indexes:
+    args += ["--extra-index-url", index]
+  # NOTE(PyTorch 2.15.0 RC): The `len(indexes) > 1` and `"/whl/test/"` checks
+  # below can be removed once `/whl/test/cpu` and `/whl/test/cu130` are removed
+  # from `_TORCH_INDEXES` after PyTorch 2.15.0 GA. When searching multiple extra
+  # indexes (whl/cpu + whl/test/cpu) or the PyTorch test channel (which carries
+  # a stale packaging==22.0 wheel), uv's default first-index strategy stops at
+  # the first index that carries the package name and fails to find RC torch
+  # builds or newer PyPI dependencies.
+  if (
+      unsafe_best_match
+      or len(indexes) > 1
+      or any("/whl/test/" in idx for idx in indexes)
+  ):
+    args += ["--index-strategy", "unsafe-best-match"]
+  return args
+
 
 # The lock the wheel's nightly glue is built against (see MODULE.bazel's
 # pypi_torch_nightly hub); the nightly-pinned variant installs exactly this
@@ -263,13 +300,7 @@ def smoke_test(session: nox.Session, device: str, torch_variant: str) -> None:
     device: the accelerator the smoke test targets (`cpu` or `tpu`).
     torch_variant: the torch build to install, a `_TORCH_INDEXES` key.
   """
-  install_args: list[str] = []
-  if (index := _TORCH_INDEXES[torch_variant]) is not None:
-    # Unlike pip, uv gives --extra-index-url priority over the default index
-    # and resolves each package from the first index that carries it, so
-    # torch is guaranteed to come from the variant index while every other
-    # dependency falls back to PyPI.
-    install_args += ["--extra-index-url", index]
+  install_args: list[str] = list(_torch_index_args(torch_variant))
   if torch_variant == "local":
     # The exact torch wheel the torch_tpu wheel was built against
     # (--config=local_torch), installed from the file rather than an index.
@@ -317,8 +348,7 @@ def intermediate_patch_abi(session: nox.Session, torch_version: str) -> None:
       session,
       "cpu",
       f"torch=={torch_version}",
-      "--extra-index-url",
-      _TORCH_INDEXES["cpu"],
+      *_torch_index_args("cpu"),
   )
 
 
@@ -341,8 +371,7 @@ def tpu_smoke_all_versions(session: nox.Session, torch_version: str) -> None:
       session,
       "tpu",
       f"torch=={torch_version}",
-      "--extra-index-url",
-      _TORCH_INDEXES["cpu"],
+      *_torch_index_args("cpu"),
   )
 
 
@@ -369,10 +398,8 @@ def dep_upper_bounds(session: nox.Session) -> None:
       "cpu",
       "-r",
       str(req_file),
-      "--extra-index-url",
-      _TORCH_INDEXES["cpu"],
-      "--index-strategy",
-      "unsafe-best-match",  # Use pypi for non torch dependencies
+      # Use pypi for non torch dependencies.
+      *_torch_index_args("cpu", unsafe_best_match=True),
   )
 
 
