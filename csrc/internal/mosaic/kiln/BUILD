@@ -49,6 +49,7 @@ torch_tpu_cc_test(
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
+        "@xla//xla/hlo/testlib:filecheck",
     ],
 )
 
