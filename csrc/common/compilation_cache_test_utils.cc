@@ -37,8 +37,10 @@
 namespace torch_tpu {
 namespace {
 
-bool IsCompatible(absl::Span<const Shape> shapes) {
-  return shapes.size() == 1 && shapes[0].dimensions().size() == 2;
+bool IsCompatible(absl::Span<const Shape> input_shapes,
+                  absl::Span<const Shape> output_shapes) {
+  return input_shapes.size() == 1 && input_shapes[0].dimensions().size() == 2 &&
+         output_shapes.size() == 1 && output_shapes[0].dimensions().size() == 2;
 }
 
 }  // namespace

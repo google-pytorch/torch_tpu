@@ -480,7 +480,8 @@ CompilationCache::GetBoundedDynamicCacheEntries(ShapelessKey shapeless_key) {
 
 std::optional<CompilationCache::CacheLookupInternal>
 CompilationCache::GetUnboundedDynamicCacheEntry(
-    const ShapelessKey key, absl::Span<const Shape> shapes) const {
+    const ShapelessKey key, absl::Span<const Shape> input_shapes,
+    absl::Span<const Shape> output_shapes) const {
   const auto it = unbounded_dynamic_cache_.find(key);
 
   if (it == unbounded_dynamic_cache_.end()) {
@@ -500,7 +501,7 @@ CompilationCache::GetUnboundedDynamicCacheEntry(
     }
     const UnboundedDynamicExecutionMetadata::CompatibilityFunc is_compatible =
         entry.dynamic_meta.is_compatible;
-    if (!is_compatible || is_compatible(shapes)) {
+    if (!is_compatible || is_compatible(input_shapes, output_shapes)) {
       perf_stats_.num_cache_hits++;
       entry.cache_entry.stats().read_count++;
       entry.cache_entry.stats().last_read = absl::Now();
@@ -627,7 +628,7 @@ CompilationCache::GetOrCreateCacheEntry(
 
   // 2. Try to find an unbounded dynamic cache entry.
   if (const auto cache_lookup_or = GetUnboundedDynamicCacheEntry(
-          key.graph_key().shapeless_key(), input_shapes);
+          key.graph_key().shapeless_key(), input_shapes, output_shapes);
       cache_lookup_or.has_value()) {
     return *cache_lookup_or;
   }

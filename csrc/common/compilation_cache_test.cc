@@ -543,6 +543,38 @@ TEST_F(CompilationCacheTest, UnboundedDynamicCacheShapeMismatch) {
   CompilationCache::ShutDown();
 }
 
+TEST_F(CompilationCacheTest, UnboundedDynamicCacheOutputShapeMismatch) {
+  CompilationCache& cache = CompilationCache::GetInstance();
+
+  CompilationCacheKey key(
+      GraphKey(ShapelessKey(Fingerprint(std::string_view("dummykey"))),
+               DimensionsKey({})),
+      CompileOptionsKey({}));
+
+  ASSERT_TRUE(cache
+                  .AddUnboundedDynamicCacheEntry(key, CreateDummyExecutable,
+                                                 MakeDummyDynamicMetadata())
+                  .ok());
+
+  CompilationCacheKey test_key(
+      GraphKey(key.graph_key().shapeless_key(), DimensionsKey({1, 2, 3})),
+      CompileOptionsKey({}));
+  TT_ASSERT_OK_AND_ASSIGN(
+      CompiledKernel result,
+      cache.GetOrCompile(
+          test_key, {Shape(Dimensions({128, 128}), mlir::ElementType::F32)},
+          {Shape(Dimensions({128, 128, 256}), mlir::ElementType::F32)},
+          [](mlir::MLIRContext& context) {
+            return mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
+          },
+          std::make_unique<xla::CompileOptions>()));
+
+  EXPECT_FALSE(result.fixed_shape_kernel.get().ok());
+  EXPECT_EQ(cache.GetCacheHits(), 0);
+  EXPECT_EQ(cache.GetCacheMisses(), 1);
+  CompilationCache::ShutDown();
+}
+
 TEST_F(CompilationCacheTest, UnboundedDynamicCacheMiss) {
   CompilationCache& cache = CompilationCache::GetInstance();
 

@@ -402,10 +402,16 @@ UnboundedDynamicExecutionMetadata MakeNonzeroDynamicMetadata() {
       .pjrt_param_shapes = NonzeroParameters(),
       .output_transform = BitcastToLogicalIndices,
       .is_compatible =
-          [](absl::Span<const Shape> input_shapes) {
+          [](absl::Span<const Shape> input_shapes,
+             absl::Span<const Shape> output_shapes) {
             return input_shapes.size() == 1 &&
                    input_shapes[0].dimensions().size() == 2 &&
-                   input_shapes[0].dtype() == mlir::ElementType::F32;
+                   input_shapes[0].dtype() == mlir::ElementType::F32 &&
+                   output_shapes.size() == 1 &&
+                   output_shapes[0].dimensions().size() == 2 &&
+                   output_shapes[0].dimensions()[0] > 2 &&
+                   output_shapes[0].dimensions()[1] == 2 &&
+                   output_shapes[0].dtype() == mlir::ElementType::I64;
           },
   };
   return dynamic_meta;

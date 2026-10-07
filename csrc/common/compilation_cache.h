@@ -418,9 +418,11 @@ class CompilationCache {
       ShapelessKey shapeless_key) ABSL_EXCLUSIVE_LOCKS_REQUIRED(cache_mutex_);
 
   // Retrieves a cache entry from the unbounded dynamic cache that is compatible
-  // with `shapes`. If no compatible entry is found, returns nullopt.
+  // with `input_shapes` and `output_shapes`. If no compatible entry is found,
+  // returns nullopt.
   std::optional<CacheLookupInternal> GetUnboundedDynamicCacheEntry(
-      ShapelessKey key, absl::Span<const Shape> shapes) const
+      ShapelessKey key, absl::Span<const Shape> input_shapes,
+      absl::Span<const Shape> output_shapes) const
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(cache_mutex_);
 
   // Creates a cache entry in the static cache. If the key is already in the
