@@ -17042,6 +17042,76 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
               preamble=f"close check failed for {name}",
           )
 
+  @parameterized.product(
+      compiled=[False, True],
+  )
+  def test_scaled_dot_product_attention_with_mask_gradient(self, compiled):
+    """Verifies that SDPA correctly handles requires_grad for attn_mask."""
+    batch_size, num_heads, seq_len, head_dim = 2, 4, 16, 64
+    torch.manual_seed(1337)
+    q = torch.randn(
+        batch_size,
+        num_heads,
+        seq_len,
+        head_dim,
+        requires_grad=True,
+    )
+    k = torch.randn(
+        batch_size,
+        num_heads,
+        seq_len,
+        head_dim,
+        requires_grad=True,
+    )
+    v = torch.randn(
+        batch_size,
+        num_heads,
+        seq_len,
+        head_dim,
+        requires_grad=True,
+    )
+    mask = torch.randn(
+        batch_size,
+        num_heads,
+        seq_len,
+        seq_len,
+        requires_grad=True,
+    )
+
+    def run_sdpa(q, k, v, mask, compile_fn=False):
+      sdpa_fn = torch.nn.functional.scaled_dot_product_attention
+      if compile_fn:
+        sdpa_fn = torch.compile(sdpa_fn, dynamic=False, backend="tpu")
+      out = sdpa_fn(q, k, v, attn_mask=mask)
+      out.mean().backward()
+      return q.grad, k.grad, v.grad, mask.grad
+
+    q_grad_cpu, k_grad_cpu, v_grad_cpu, mask_grad_cpu = run_sdpa(q, k, v, mask)
+
+    q_tpu = q.detach().tpu().requires_grad_(True)
+    k_tpu = k.detach().tpu().requires_grad_(True)
+    v_tpu = v.detach().tpu().requires_grad_(True)
+    mask_tpu = mask.detach().tpu().requires_grad_(True)
+    q_grad_tpu, k_grad_tpu, v_grad_tpu, mask_grad_tpu = run_sdpa(
+        q_tpu, k_tpu, v_tpu, mask_tpu, compile_fn=compiled
+    )
+
+    def assert_close(cpu, tpu, name):
+      self.assertIsNotNone(cpu)
+      self.assertIsNotNone(tpu)
+      self.assert_close(
+          golden_result=cpu,
+          torch_tpu_result=tpu,
+          rtol=1e-4,
+          atol=1e-3,
+          preamble=f"close check failed for {name}",
+      )
+
+    assert_close(q_grad_cpu, q_grad_tpu, "q_grad")
+    assert_close(k_grad_cpu, k_grad_tpu, "k_grad")
+    assert_close(v_grad_cpu, v_grad_tpu, "v_grad")
+    assert_close(mask_grad_cpu, mask_grad_tpu, "mask_grad")
+
   def test_pointwise_op_dtype_promotion(self):
     """Ensure that pointwise ops promote as expected.
 

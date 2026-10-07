@@ -31,9 +31,9 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
+#include "c10/core/GradMode.h"
 #include "c10/core/ScalarType.h"
 #include "c10/core/SymInt.h"
-#include "c10/util/Exception.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/warnings.h"
@@ -142,6 +142,9 @@ int64_t AtenFusedSdpChoice(const at::Tensor& query, const at::Tensor& key,
         bool has_batch = query.ndimension() >= 4;
         bool has_dropout = dropout_p != 0.0;
         bool valid_flash_dropout = dropout_p >= 0.0 && dropout_p < 1.0;
+        bool mask_requires_grad =
+            c10::GradMode::is_enabled() && attn_mask.has_value() &&
+            attn_mask->defined() && attn_mask->requires_grad();
 
         if (flash_enabled) {
           bool supported_flash_dtype =
@@ -149,7 +152,7 @@ int64_t AtenFusedSdpChoice(const at::Tensor& query, const at::Tensor& key,
                query.scalar_type() == at::ScalarType::BFloat16);
           if (supported_flash_dtype &&
               IsSupportedFlashAttentionShape(query, key, value, attn_mask) &&
-              consistent_ranks && valid_flash_dropout) {
+              consistent_ranks && valid_flash_dropout && !mask_requires_grad) {
             return static_cast<int64_t>(at::SDPBackend::cudnn_attention);
           } else {
             // Use c10::str rather than absl::StrCat as it will convert enums
@@ -178,7 +181,10 @@ int64_t AtenFusedSdpChoice(const at::Tensor& query, const at::Tensor& key,
                 // `sym_sizes()` so that symbolic sizes under torch.compile are
                 // printed without being specialized.
                 "(query shape: ",
-                query.sym_sizes(), ")");
+                query.sym_sizes(),
+                ")\n"
+                "- attn_mask does not require gradient (current: ",
+                mask_requires_grad, ")");
           }
         }
 
@@ -187,7 +193,7 @@ int64_t AtenFusedSdpChoice(const at::Tensor& query, const at::Tensor& key,
         if (math_enabled || overrideable_enabled) {
           bool is_floating_type = c10::isFloatingType(query.scalar_type());
           if (consistent_ranks && has_batch && !has_dropout &&
-              is_floating_type) {
+              is_floating_type && !mask_requires_grad) {
             return static_cast<int64_t>(at::SDPBackend::overrideable);
           } else {
             TT_WARN_ONCE(
@@ -202,7 +208,10 @@ int64_t AtenFusedSdpChoice(const at::Tensor& query, const at::Tensor& key,
                 ")\n"
                 "- inputs have the same rank (query: ",
                 query.ndimension(), ", key: ", key.ndimension(),
-                ", value: ", value.ndimension(), ")");
+                ", value: ", value.ndimension(),
+                ")\n"
+                "- attn_mask does not require gradient (current: ",
+                mask_requires_grad, ")");
           }
         }
 
