@@ -73,43 +73,38 @@ enum class MaterializationBlockMode {
 // a placeholder.
 // Optional parameter block_mode controls if the materialization will block the
 // calling thread, and if so, for how long.
-absl::Status Materialize(
-    absl::Span<const SharedDeviceBufferList> nodes,
-    MaterializationReason reason,
-    MaterializationMode mode = MaterializationMode::kSplitGraph,
-    MaterializationBlockMode block_mode =
-        MaterializationBlockMode::kBlockUntilStarted);
+absl::Status Materialize(absl::Span<const SharedDeviceBufferList> nodes,
+                         MaterializationReason reason,
+                         MaterializationBlockMode block_mode =
+                             MaterializationBlockMode::kBlockUntilStarted);
 
 // Materializes all of the buffers and connected leaf nodes in-place.
 // This materializes all DeviceBufferLists referenced which are not already
 // materialized; no-op for all materialized DeviceBufferLists.
 // Errors if any of the buffers are placeholders.
-absl::Status Materialize(
-    absl::Span<const DeviceBufferRef> buffer_refs, MaterializationReason reason,
-    MaterializationMode mode = MaterializationMode::kSplitGraph);
+absl::Status Materialize(absl::Span<const DeviceBufferRef> buffer_refs,
+                         MaterializationReason reason);
 
 absl::Status Materialize(absl::Span<const DeviceBufferRef> buffer_refs,
-                         MaterializationReason reason, MaterializationMode mode,
+                         MaterializationReason reason,
                          MaterializationBlockMode block_mode);
 
 // Materializes the given node in-place. Delegates to the span overload.
 inline absl::Status Materialize(
     const SharedDeviceBufferList& node, MaterializationReason reason,
-    MaterializationMode mode = MaterializationMode::kSplitGraph,
     MaterializationBlockMode block_mode =
         MaterializationBlockMode::kBlockUntilStarted) {
   return Materialize(absl::Span<const SharedDeviceBufferList>(&node, 1), reason,
-                     mode, block_mode);
+                     block_mode);
 }
 
 // Materializes the given buffer in-place. Delegates to the span overload.
 inline absl::Status Materialize(
     const DeviceBufferRef& buffer_ref, MaterializationReason reason,
-    MaterializationMode mode = MaterializationMode::kSplitGraph,
     MaterializationBlockMode block_mode =
         MaterializationBlockMode::kBlockUntilStarted) {
   return Materialize(absl::Span<const DeviceBufferRef>(&buffer_ref, 1), reason,
-                     mode, block_mode);
+                     block_mode);
 }
 
 // Enqueues an executable for materialization.
@@ -134,7 +129,6 @@ void ShutDownMaterializationState();
 xla::Future<std::shared_ptr<EventSnapshot>> MaterializeStream(
     c10::DeviceIndex device_index, c10::StreamId stream_id,
     MaterializationReason reason,
-    MaterializationMode mode = MaterializationMode::kSplitGraph,
     absl::Span<const SharedDeviceBufferList> must_materialize = {});
 
 // Materializes all live tensors on the current stream.
@@ -144,7 +138,6 @@ xla::Future<std::shared_ptr<EventSnapshot>> MaterializeStream(
 // materialization is complete.
 xla::Future<std::shared_ptr<EventSnapshot>> MaterializeCurrentStream(
     MaterializationReason reason,
-    MaterializationMode mode = MaterializationMode::kSplitGraph,
     absl::Span<const SharedDeviceBufferList> must_materialize = {});
 
 // Materializes all live tensors on the given device.
@@ -154,7 +147,6 @@ xla::Future<std::shared_ptr<EventSnapshot>> MaterializeCurrentStream(
 // queried or awaited to determine when the materialization is complete.
 std::vector<xla::Future<std::shared_ptr<EventSnapshot>>> MaterializeDevice(
     c10::DeviceIndex device_index, MaterializationReason reason,
-    MaterializationMode mode = MaterializationMode::kSplitGraph,
     absl::Span<const SharedDeviceBufferList> must_materialize = {});
 
 }  // namespace torch_tpu

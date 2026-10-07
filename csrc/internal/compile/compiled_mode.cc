@@ -150,7 +150,6 @@ absl::StatusOr<std::vector<DeviceBufferRef>> PrepareCompiledModeArgumentsImpl(
   if (has_deferred_or_placeholder) {
     TT_RETURN_IF_ERROR(Materialize(
         argument_buffer_refs, MaterializationReason::kCompileModeExecution,
-        MaterializationMode::kSplitGraph,
         MaterializationBlockMode::kBlockUntilStarted));
   }
 
@@ -252,7 +251,6 @@ absl::StatusOr<std::vector<DeviceBufferRef>> PrepareCompiledModeArgumentsImpl(
   if (has_deferred_or_placeholder) {
     TT_RETURN_IF_ERROR(Materialize(
         argument_buffer_refs, MaterializationReason::kCompileModeExecution,
-        MaterializationMode::kSplitGraph,
         MaterializationBlockMode::kBlockUntilStarted));
   }
   return argument_buffer_refs;

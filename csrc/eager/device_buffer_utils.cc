@@ -31,6 +31,7 @@
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/numbers.h"
 #include "absl/types/span.h"
 #include "c10/util/accumulate.h"
 #include "csrc/common/cache_key.h"
@@ -150,55 +151,54 @@ absl::Status DeferNeverDispatch(absl::Span<const DeviceBufferRef> results,
     // Don't eagerly materialize metadata-only ops.
     return absl::OkStatus();
   }
-  // materialize.cc and events_queue.h will respect OpSplitMode, even with
-  // MaterializationMode::kFullGraph.
   // In DeferNever, we don't block on materialization, we initiate and continue.
   // In DeferNeverAndLaunchBlocking, we first block until the materialization is
   // started, and then block on its completion.
   const MaterializationBlockMode block_mode =
       block ? MaterializationBlockMode::kBlockUntilStarted
             : MaterializationBlockMode::kNonBlocking;
-  TT_RETURN_IF_ERROR(Materialize(device_buffer_list,
-                                 MaterializationReason::kDebugMode,
-                                 MaterializationMode::kFullGraph, block_mode));
+  TT_RETURN_IF_ERROR(Materialize(
+      device_buffer_list, MaterializationReason::kDebugMode, block_mode));
   if (block) {
     return device_buffer_list->Synchronize();
   }
   return absl::OkStatus();
 }
 
+// Legacy environment variable for detecting repeated ops.
 constexpr std::string_view kRepeatedOpSafeMode = "safe";
 constexpr std::string_view kRepeatedOpAggressiveMode = "aggressive";
 
-bool MustApplyRepeatedOpsHeuristic() {
-  const std::string& detect_repeated_ops =
-      GetEnvOnce<kTorchTpuInternalDetectRepeatedOpsEnvVar>().value_or(
-          std::string(kRepeatedOpSafeMode));
+bool IsRepeatedOpsHeuristicEnabled() {
+  const std::optional<std::string>& detect_repeated_ops =
+      GetEnvOnce<kTorchTpuInternalDetectRepeatedOpsEnvVar>();
+  if (!detect_repeated_ops.has_value()) {
+    // Default to true.
+    return true;
+  }
+  // The environment variable was explicitly set. Try to parse it as a boolean.
+  bool atob = false;
+  if (absl::SimpleAtob(detect_repeated_ops.value(), &atob)) {
+    // Parse successful.
+    return atob;
+  }
+  // Legacy fallback; "safe" and "aggressive" are treated as true, all other
+  // values are treated as false.
   return (detect_repeated_ops == kRepeatedOpSafeMode ||
           detect_repeated_ops == kRepeatedOpAggressiveMode);
-}
-
-MaterializationMode GetRepeatedOpsMaterializationMode() {
-  const std::string& detect_repeated_ops =
-      GetEnvOnce<kTorchTpuInternalDetectRepeatedOpsEnvVar>().value_or(
-          std::string(kRepeatedOpSafeMode));
-  return (detect_repeated_ops == kRepeatedOpAggressiveMode)
-             ? MaterializationMode::kFullGraph
-             : MaterializationMode::kSplitGraph;
 }
 
 // Handles post-op creation events for the kDeferAndFuse eager mode.
 absl::Status DeferAndFuseDispatch(absl::Span<const DeviceBufferRef> results) {
   const auto& device_buffer_list = results[0].device_buffer_list();
 
-  if (MustApplyRepeatedOpsHeuristic()) {
+  if (IsRepeatedOpsHeuristicEnabled()) {
     // Record the deferred op and detect any repetitions.
     // If a repetition is detected, materialize the current stream.
     if (RecordDeferredOpAndDetectRepetition(device_buffer_list)) {
       // Start a background materialization of the current stream; don't
       // wait for it to complete.
-      MaterializeCurrentStream(MaterializationReason::kRepeatedOpDetection,
-                               GetRepeatedOpsMaterializationMode());
+      MaterializeCurrentStream(MaterializationReason::kRepeatedOpDetection);
     }
   } else {
     RecordDeferredOpCreated(device_buffer_list);

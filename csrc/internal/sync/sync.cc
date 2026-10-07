@@ -118,7 +118,6 @@ absl::Status SynchronizeTensorsImpl(TensorSpan tensors) {
   if (has_deferred_or_placeholder) {
     TT_RETURN_IF_ERROR(
         Materialize(buffer_refs, MaterializationReason::kExplicitSync,
-                    MaterializationMode::kSplitGraph,
                     MaterializationBlockMode::kBlockUntilStarted));
   }
 

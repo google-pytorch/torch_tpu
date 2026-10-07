@@ -25,7 +25,6 @@
 
 #include "absl/base/no_destructor.h"
 #include "absl/strings/numbers.h"
-#include "c10/util/Exception.h"
 #include "csrc/common/constexpr_map.h"
 #include "csrc/common/symbol_stage.h"
 #include "csrc/common/warnings.h"
@@ -97,12 +96,9 @@ inline constexpr char kTorchTpuEnableDebugChecksEnvVar[] =
 // Specifies the fixed port number for the handshake server.
 inline constexpr char kTorchTpuHandshakePortEnvVar[] =
     "TORCH_TPU_INTERNAL_HANDSHAKE_PORT";
-// Specifies the repeated op detection mode. If not set, "safe" mode is used.
-// Supported modes:
-// - "safe": Uses MaterializationMode::kSplitGraph when a repeated sequence is
-// detected.
-// - "aggressive": Uses MaterializationMode::kFullGraph when a repeated sequence
-// is detected.
+// Enables or disables repeated op detection in DEFER_AND_FUSE mode.
+// Defaults to "1"; for legacy reasons, "safe" and "aggressive" are also
+// supported (same as "1").
 // Other values are no-ops.
 inline constexpr char kTorchTpuInternalDetectRepeatedOpsEnvVar[] =
     "TORCH_TPU_INTERNAL_DETECT_REPEATED_OPS";

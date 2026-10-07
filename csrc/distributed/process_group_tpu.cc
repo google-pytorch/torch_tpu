@@ -1408,7 +1408,6 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::gather(
           }
           TT_THROW_IF_ERROR(
               Materialize(empty_buffers, MaterializationReason::kDistributedOp,
-                          MaterializationMode::kSplitGraph,
                           MaterializationBlockMode::kNonBlocking));
         }
 

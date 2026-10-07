@@ -396,7 +396,6 @@ torch_tpu_cc_library(
         ":events_queue",
         ":execution_task",
         ":materialization_heuristics",
-        ":split_traversal",
         ":structured_log_buffer",
         ":traversal",
         "//csrc/common:cache_key",
@@ -424,7 +423,6 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/types:span",
         "@llvm-project//mlir:IR",
-        "@tsl//tsl/profiler/lib:traceme",
         "@xla//xla:future",
     ],
 )
@@ -608,23 +606,6 @@ torch_tpu_cc_library(
         "@tsl//tsl/platform:path",
         "@tsl//tsl/profiler/lib:traceme",
         "@xla//xla/pjrt/plugin/xla_tpu:xla_tpu_pjrt_client",  # buildcleaner: keep
-    ],
-)
-
-torch_tpu_cc_library(
-    name = "split_traversal",
-    srcs = ["split_traversal.cc"],
-    hdrs = ["split_traversal.h"],
-    deps = [
-        ":device_buffer",
-        ":traversal",
-        "//shims/torch:torch_headers",
-        "@com_google_absl//absl/base:nullability",
-        "@com_google_absl//absl/container:flat_hash_set",
-        "@com_google_absl//absl/log:absl_check",
-        "@com_google_absl//absl/log:absl_log",
-        "@com_google_absl//absl/types:span",
-        "@tsl//tsl/profiler/lib:traceme",
     ],
 )
 
@@ -976,33 +957,6 @@ torch_tpu_cc_library(
     ],
 )
 
-torch_tpu_cc_test(
-    name = "split_traversal_test",
-    srcs = ["split_traversal_test.cc"],
-    exec_properties = {
-        "cpp_link.mem": "16g",  # Needed for asan.
-    },
-    requires_libtpu = True,
-    deps = [
-        ":device_buffer",
-        ":split_traversal",
-        ":traversal",
-        "//csrc/common:cache_key",
-        "//csrc/common:dimension_types",
-        "//csrc/common:oss_test_main",
-        "//csrc/common:shape",
-        "//csrc/common:status_test_utils",
-        "//csrc/ops:op_builder_utils",
-        "//csrc/ops:op_names",
-        "//csrc/ops:python_context",
-        "@com_google_absl//absl/container:flat_hash_set",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/types:span",
-        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
-        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
-    ],
-)
-
 torch_tpu_cc_library(
     name = "device_buffer_utils",
     srcs = ["device_buffer_utils.cc"],
@@ -1040,6 +994,7 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",

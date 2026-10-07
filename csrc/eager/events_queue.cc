@@ -382,10 +382,9 @@ class StreamState {
 
   xla::Future<std::shared_ptr<EventSnapshot>> RequestEventSnapshot(
       std::vector<SharedDeviceBufferList> must_materialize,
-      MaterializationReason reason, MaterializationMode mode,
-      EagerMode eager_mode) {
+      MaterializationReason reason, EagerMode eager_mode) {
     absl::MutexLock lock(mu_);
-    return RequestEventSnapshotLocked(std::move(must_materialize), reason, mode,
+    return RequestEventSnapshotLocked(std::move(must_materialize), reason,
                                       eager_mode);
   }
 
@@ -453,7 +452,7 @@ class StreamState {
     absl::MutexLock lock(mu_);
     RequestEventSnapshotLocked(
         /*must_materialize=*/{}, MaterializationReason::kCompileModeExecution,
-        MaterializationMode::kSplitGraph, eager_mode);
+        eager_mode);
     EventSnapshotRequest& request =
         *std::get<std::unique_ptr<EventSnapshotRequest>>(events_queue_.back());
     request.execution_task = std::move(execution_task);
@@ -508,8 +507,8 @@ class StreamState {
   // Common helper for RequestEventSnapshot and RecordCompiledExecutionTask.
   xla::Future<std::shared_ptr<EventSnapshot>> RequestEventSnapshotLocked(
       std::vector<SharedDeviceBufferList> must_materialize,
-      MaterializationReason reason, MaterializationMode mode,
-      EagerMode eager_mode) ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+      MaterializationReason reason, EagerMode eager_mode)
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
     auto [snapshot_promise, snapshot_future] =
         xla::MakePromise<std::shared_ptr<EventSnapshot>>();
     // Explanation: synchronizing the last EventSnapshot should also await all
@@ -528,8 +527,8 @@ class StreamState {
     });
     events_queue_.push_back(std::make_unique<EventSnapshotRequest>(
         std::move(futures_), std::move(must_materialize),
-        MaterializationSettings(reason, mode, eager_mode),
-        std::move(live_nodes_), std::nullopt, std::move(snapshot_promise)));
+        MaterializationSettings(reason, eager_mode), std::move(live_nodes_),
+        std::nullopt, std::move(snapshot_promise)));
     futures_.push_back(std::move(chaining_future));
     live_nodes_.clear();
     return snapshot_future;
@@ -1203,7 +1202,7 @@ void RecordAsyncDeviceToHost(xla::Future<void> to_literal_future) {
 std::vector<PendingEventSnapshot> RecordDeviceSnapshots(
     c10::DeviceIndex device_index,
     std::vector<SharedDeviceBufferList> must_materialize,
-    MaterializationReason reason, MaterializationMode mode) {
+    MaterializationReason reason) {
   ABSL_VLOG(1) << "RecordDeviceSnapshots: device="
                << static_cast<int>(device_index);
   auto eager_mode = GetEagerMode();
@@ -1227,7 +1226,7 @@ std::vector<PendingEventSnapshot> RecordDeviceSnapshots(
         .device_index = device_index,
         .stream_id = stream_id,
         .snapshot_future = stream_state->RequestEventSnapshot(
-            std::move(stream_must_materialize), reason, mode, eager_mode),
+            std::move(stream_must_materialize), reason, eager_mode),
     });
   }
   return snapshots;
@@ -1236,7 +1235,7 @@ std::vector<PendingEventSnapshot> RecordDeviceSnapshots(
 xla::Future<std::shared_ptr<EventSnapshot>> EventSnapshot::Record(
     c10::DeviceIndex device_index, c10::StreamId stream_id,
     std::vector<SharedDeviceBufferList> must_materialize,
-    MaterializationReason reason, MaterializationMode mode) {
+    MaterializationReason reason) {
   auto eager_mode = GetEagerMode();
   if (eager_mode == EagerMode::kInternalCompileFxGraph) {
     return xla::Future<std::shared_ptr<EventSnapshot>>(
@@ -1244,8 +1243,7 @@ xla::Future<std::shared_ptr<EventSnapshot>> EventSnapshot::Record(
         << "cannot record EventSnapshot during an FX trace");
   }
   return GetOrCreateStreamState(device_index, stream_id)
-      ->RequestEventSnapshot(std::move(must_materialize), reason, mode,
-                             eager_mode);
+      ->RequestEventSnapshot(std::move(must_materialize), reason, eager_mode);
 }
 
 absl::Status EventSnapshot::Synchronize() const {

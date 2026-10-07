@@ -116,7 +116,6 @@ void PySyncSpanNoWait(absl::Span<const at::Tensor> tensors_span) {
   // wait until they reach the full is_materialized() state.
   TT_THROW_IF_ERROR(Materialize(buffer_refs,
                                 MaterializationReason::kExplicitSync,
-                                MaterializationMode::kSplitGraph,
                                 MaterializationBlockMode::kBlockUntilStarted));
 }
 
@@ -212,10 +211,10 @@ bool TrySyncSingleTensorFast(PyObject* ptr, bool wait) {
     // Even though this is "no wait", we still wait until the execution has
     // started, so that is_materializing() is true for the single buffer. We
     // just don't wait until they reach the full is_materialized() state.
-    TT_THROW_IF_ERROR(Materialize(
-        absl::MakeConstSpan(&buffer_ref, 1),
-        MaterializationReason::kExplicitSync, MaterializationMode::kSplitGraph,
-        MaterializationBlockMode::kBlockUntilStarted));
+    TT_THROW_IF_ERROR(
+        Materialize(absl::MakeConstSpan(&buffer_ref, 1),
+                    MaterializationReason::kExplicitSync,
+                    MaterializationBlockMode::kBlockUntilStarted));
   }
   return true;
 }
@@ -293,7 +292,6 @@ bool TrySyncTensorArrayFast(PyObject* const* items, Py_ssize_t size,
     // don't wait until they reach the full is_materialized() state.
     TT_THROW_IF_ERROR(
         Materialize(buffer_refs, MaterializationReason::kExplicitSync,
-                    MaterializationMode::kSplitGraph,
                     MaterializationBlockMode::kBlockUntilStarted));
   }
   return true;

@@ -849,7 +849,6 @@ torch_tpu_cc_library(
         ":warnings",
         "//shims/torch:torch_headers",
         "//shims/torch/c10/util:base",
-        "//shims/torch/c10/util:base_headers",
         "@com_google_absl//absl/base:no_destructor",
         "@com_google_absl//absl/strings",
     ],

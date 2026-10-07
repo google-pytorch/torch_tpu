@@ -100,7 +100,7 @@ absl::Status CopyTpuToCpu(const at::Tensor& src, const at::Tensor& dest,
       tsl::profiler::TraceMe trace_mat("CopyTpuToCpu::MaterializeBase");
       TT_RETURN_IF_ERROR(TranslateXlaTensorOomError(
           Materialize(base_buf, MaterializationReason::kCpuTransfer,
-                      MaterializationMode::kSplitGraph, block_mode),
+                      block_mode),
           dest.scalar_type(), src.sizes()));
     }
     absl::Status status =

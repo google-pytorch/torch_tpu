@@ -52,7 +52,6 @@ absl::StatusOr<at::Tensor> MarkDynamic(const at::Tensor& tensor,
       GetEagerMode() != EagerMode::kInternalCompileFxGraph) {
     TT_RETURN_IF_ERROR(
         Materialize(buffer_ref, MaterializationReason::kExplicitSync,
-                    MaterializationMode::kSplitGraph,
                     MaterializationBlockMode::kBlockUntilStarted));
   }
 
@@ -95,7 +94,6 @@ absl::StatusOr<absl::Span<const BoundedDynamicDimension>> GetDynamismInfo(
       GetEagerMode() != EagerMode::kInternalCompileFxGraph) {
     TT_RETURN_IF_ERROR(
         Materialize(buffer_ref, MaterializationReason::kExplicitSync,
-                    MaterializationMode::kSplitGraph,
                     MaterializationBlockMode::kBlockUntilStarted));
   }
   return buffer_ref.dynamic_dimensions();

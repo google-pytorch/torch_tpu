@@ -701,19 +701,17 @@ absl::StatusOr<DeviceBufferRef> MaterializeAndReturn(
     // one-stream-per-thread setup).
     if (!base_buffer_ref.is_materializing()) {
       TT_RETURN_IF_ERROR(
-          Materialize(base_buffer_ref, reason, MaterializationMode::kSplitGraph,
+          Materialize(base_buffer_ref, reason,
                       MaterializationBlockMode::kBlockUntilStarted));
     }
-    TT_RETURN_IF_ERROR(Materialize(
-        view_buffer_ref, reason, MaterializationMode::kSplitGraph, block_mode));
+    TT_RETURN_IF_ERROR(Materialize(view_buffer_ref, reason, block_mode));
   } else {
     // Deduplication will happen inside the Materialize() call; this will cover
     // the case where a tensor is a trivial view.
     // If the view is not trivial but the base and view are on the same stream,
     // we can materialize them jointly.
-    TT_RETURN_IF_ERROR(Materialize({base_buffer_ref, view_buffer_ref}, reason,
-                                   MaterializationMode::kSplitGraph,
-                                   block_mode));
+    TT_RETURN_IF_ERROR(
+        Materialize({base_buffer_ref, view_buffer_ref}, reason, block_mode));
   }
 
   return view_buffer_ref;

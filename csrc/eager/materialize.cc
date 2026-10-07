@@ -61,12 +61,10 @@
 #include "csrc/eager/events_queue.h"
 #include "csrc/eager/execution_task.h"
 #include "csrc/eager/materialization_heuristics.h"
-#include "csrc/eager/split_traversal.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/traversal.h"
 #include "csrc/ops/op_names.h"
 #include "mlir/IR/MLIRContext.h"
-#include "tsl/profiler/lib/traceme.h"
 #include "xla/future.h"
 
 namespace torch_tpu {
@@ -131,27 +129,6 @@ const CompilationSpec& GetCompilationSpecForTraversal(
   }
 
   return compilation_specs.at(materialization_settings.compilation_mode);
-}
-
-void SplitSingleTraversal(
-    absl_nonnull std::unique_ptr<Traversal> pre_split_traversal,
-    absl::flat_hash_set<const DeviceBufferList*>& scratch_set,
-    std::vector<absl_nonnull std::unique_ptr<Traversal>>&
-        post_split_traversals) {
-  const auto core_pinning_mode = pre_split_traversal->core_pinning_mode();
-  auto split_traversals =
-      SplitTraversal(std::move(pre_split_traversal), scratch_set);
-
-  // Retain the core pinning mode when splitting traversals.
-  if (core_pinning_mode != CorePinningMode::kUnpinned) {
-    for (auto& split_traversal : split_traversals) {
-      split_traversal->SetCorePinningMode(core_pinning_mode);
-    }
-  }
-  post_split_traversals.insert(
-      post_split_traversals.end(),
-      std::make_move_iterator(split_traversals.begin()),
-      std::make_move_iterator(split_traversals.end()));
 }
 
 bool DependsOnPlaceholder(
@@ -285,26 +262,12 @@ FilterPlaceholderDependentTraversals(
 }
 
 // Converts a sequence of Traversals to a sequence of ExecutionTasks.
-// If materialization_mode is kSplitGraph, then there may be more returned
-// tasks than there were original traversals; otherwise, there will be exactly
-// one ExecutionTask per traversal (provided all task creations succeed).
-MaterializationStages ApplySplitMode(
+MaterializationStages MakeExecutionStages(
     std::vector<absl_nonnull std::unique_ptr<Traversal>>&& traversals,
     const MaterializationSettings& settings, mlir::MLIRContext& mlir_context) {
   MaterializationStages result;
   traversals = FilterPlaceholderDependentTraversals(std::move(traversals),
                                                     result.first_error);
-
-  if (settings.materialization_mode == MaterializationMode::kSplitGraph) {
-    tsl::profiler::TraceMe t("SplitTraversal");
-    std::vector<absl_nonnull std::unique_ptr<Traversal>> post_split_traversals;
-    absl::flat_hash_set<const DeviceBufferList*> scratch_set;
-    for (auto& pre_split_traversal : traversals) {
-      SplitSingleTraversal(std::move(pre_split_traversal), scratch_set,
-                           post_split_traversals);
-    }
-    std::swap(traversals, post_split_traversals);
-  }
 
   if (torch_tpu::GetBooleanEnvOnce<kTorchTpuInternalSkinnyScOffloadEnvVar>()
           .value_or(false)) {
@@ -320,12 +283,11 @@ MaterializationStages ApplySplitMode(
   }
 
   result.execution_tasks.reserve(traversals.size());
-  for (auto& split_traversal : traversals) {
+  for (auto& traversal : traversals) {
     const CompilationSpec& compilation_spec =
-        GetCompilationSpecForTraversal(settings, *split_traversal);
+        GetCompilationSpecForTraversal(settings, *traversal);
     auto execution_task_or = ExecutionTask::FromTraversalWithLogging(
-        std::move(split_traversal), mlir_context, compilation_spec,
-        settings.reason);
+        std::move(traversal), mlir_context, compilation_spec, settings.reason);
     if (execution_task_or.ok()) {
       result.execution_tasks.push_back(std::move(*execution_task_or));
     } else if (result.first_error.ok()) {
@@ -367,8 +329,8 @@ std::vector<ExecutionTask> ProcessMaterializationTask(
       PrepareSnapshotMaterializations(task.device_index, task.stream_id);
   for (auto& snapshot_to_materialize : snapshots_to_materialize) {
     MaterializationStages stages =
-        ApplySplitMode(std::move(snapshot_to_materialize.traversals),
-                       snapshot_to_materialize.settings, mlir_context);
+        MakeExecutionStages(std::move(snapshot_to_materialize.traversals),
+                            snapshot_to_materialize.settings, mlir_context);
 
     if (stages.first_error.ok()) {
       stages.first_error =
@@ -723,7 +685,6 @@ absl::StatusOr<std::vector<SharedDeviceBufferList>> GetUniqueDeferredNodes(
 template <typename T>
 absl::Status MaterializeSpan(absl::Span<const T> items,
                              MaterializationReason reason,
-                             MaterializationMode materialization_mode,
                              MaterializationBlockMode block_mode) {
   if (items.empty()) {
     return absl::OkStatus();
@@ -769,8 +730,7 @@ absl::Status MaterializeSpan(absl::Span<const T> items,
         std::vector<SharedDeviceBufferList> nodes_on_stream,
         GetUniqueDeferredNodes(items, node->device_index(), node->stream_id()));
     auto future = EventSnapshot::Record(node->device_index(), node->stream_id(),
-                                        std::move(nodes_on_stream), reason,
-                                        materialization_mode);
+                                        std::move(nodes_on_stream), reason);
     GetMaterializationWorker().EnqueueStream(node->device_index(),
                                              node->stream_id());
 
@@ -792,23 +752,20 @@ void ShutDownMaterializationState() { GetMaterializationWorker().Shutdown(); }
 
 absl::Status Materialize(absl::Span<const SharedDeviceBufferList> nodes,
                          MaterializationReason reason,
-                         MaterializationMode materialization_mode,
                          MaterializationBlockMode block_mode) {
-  return MaterializeSpan(nodes, reason, materialization_mode, block_mode);
+  return MaterializeSpan(nodes, reason, block_mode);
 }
 
 absl::Status Materialize(absl::Span<const DeviceBufferRef> buffer_refs,
-                         MaterializationReason reason,
-                         MaterializationMode materialization_mode) {
-  return Materialize(buffer_refs, reason, materialization_mode,
+                         MaterializationReason reason) {
+  return Materialize(buffer_refs, reason,
                      MaterializationBlockMode::kBlockUntilStarted);
 }
 
 absl::Status Materialize(absl::Span<const DeviceBufferRef> buffer_refs,
                          MaterializationReason reason,
-                         MaterializationMode materialization_mode,
                          MaterializationBlockMode block_mode) {
-  return MaterializeSpan(buffer_refs, reason, materialization_mode, block_mode);
+  return MaterializeSpan(buffer_refs, reason, block_mode);
 }
 
 absl::StatusOr<std::vector<DeviceBufferRef>> EnqueueExecutable(
@@ -855,7 +812,7 @@ absl::StatusOr<std::vector<DeviceBufferRef>> EnqueueExecutable(
 
 xla::Future<std::shared_ptr<EventSnapshot>> MaterializeStream(
     c10::DeviceIndex device_index, c10::StreamId stream_id,
-    MaterializationReason reason, MaterializationMode mode,
+    MaterializationReason reason,
     absl::Span<const SharedDeviceBufferList> must_materialize) {
 #ifndef NDEBUG
   for (const auto& node : must_materialize) {
@@ -868,15 +825,14 @@ xla::Future<std::shared_ptr<EventSnapshot>> MaterializeStream(
   TT_ASSIGN_OR_RETURN(
       std::vector<SharedDeviceBufferList> must_materialize_vec,
       GetUniqueDeferredNodes(must_materialize, device_index, stream_id));
-  auto future = EventSnapshot::Record(
-      device_index, stream_id, std::move(must_materialize_vec), reason, mode);
+  auto future = EventSnapshot::Record(device_index, stream_id,
+                                      std::move(must_materialize_vec), reason);
   GetMaterializationWorker().EnqueueStream(device_index, stream_id);
   return future;
 }
 
 std::vector<xla::Future<std::shared_ptr<EventSnapshot>>> MaterializeDevice(
     c10::DeviceIndex device_index, MaterializationReason reason,
-    MaterializationMode mode,
     absl::Span<const SharedDeviceBufferList> must_materialize) {
 #ifndef NDEBUG
   for (const auto& node : must_materialize) {
@@ -893,7 +849,7 @@ std::vector<xla::Future<std::shared_ptr<EventSnapshot>>> MaterializeDevice(
   }
 
   auto device_snapshot_futures = RecordDeviceSnapshots(
-      device_index, std::move(*must_materialize_vec_or), reason, mode);
+      device_index, std::move(*must_materialize_vec_or), reason);
 
   std::vector<xla::Future<std::shared_ptr<EventSnapshot>>> snapshot_futures;
   snapshot_futures.reserve(device_snapshot_futures.size());
@@ -909,11 +865,10 @@ std::vector<xla::Future<std::shared_ptr<EventSnapshot>>> MaterializeDevice(
 }
 
 xla::Future<std::shared_ptr<EventSnapshot>> MaterializeCurrentStream(
-    MaterializationReason reason, MaterializationMode mode,
+    MaterializationReason reason,
     absl::Span<const SharedDeviceBufferList> must_materialize) {
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-  return MaterializeStream(device_index, stream_id, reason, mode,
-                           must_materialize);
+  return MaterializeStream(device_index, stream_id, reason, must_materialize);
 }
 
 }  // namespace torch_tpu

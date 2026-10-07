@@ -82,8 +82,6 @@ void RecordAsyncHostToDevice(const DeviceBufferRef& device_buffer_ref);
 // The future should be the return value from a call to PjRtBuffer::ToLiteral.
 void RecordAsyncDeviceToHost(xla::Future<void> to_literal_future);
 
-enum class MaterializationMode { kFullGraph, kSplitGraph };
-
 // An EventSnapshot is a joined XLA future that represents the state of
 // a stream at a particular point in time.
 class EventSnapshot {
@@ -94,8 +92,7 @@ class EventSnapshot {
   static xla::Future<std::shared_ptr<EventSnapshot>> Record(
       c10::DeviceIndex device_index, c10::StreamId stream_id,
       std::vector<SharedDeviceBufferList> must_materialize = {},
-      MaterializationReason reason = MaterializationReason::kUnknown,
-      MaterializationMode mode = MaterializationMode::kSplitGraph);
+      MaterializationReason reason = MaterializationReason::kUnknown);
 
   // Blocks the calling thread until the event snapshot is complete.
   absl::Status Synchronize() const;
@@ -134,8 +131,7 @@ struct PendingEventSnapshot {
 std::vector<PendingEventSnapshot> RecordDeviceSnapshots(
     c10::DeviceIndex device_index,
     std::vector<SharedDeviceBufferList> must_materialize = {},
-    MaterializationReason reason = MaterializationReason::kUnknown,
-    MaterializationMode mode = MaterializationMode::kSplitGraph);
+    MaterializationReason reason = MaterializationReason::kUnknown);
 
 // Returns the CompilationMode for the given EagerMode.
 CompilationMode GetCompilationMode(EagerMode eager_mode);
@@ -144,14 +140,10 @@ CompilationMode GetCompilationMode(EagerMode eager_mode);
 // These are frozen at the time of the snapshot request, and used to dictate
 // later behavior.
 struct MaterializationSettings {
-  MaterializationSettings(MaterializationReason reason,
-                          MaterializationMode materialization_mode,
-                          EagerMode eager_mode)
-      : materialization_mode(materialization_mode),
-        reason(reason),
+  MaterializationSettings(MaterializationReason reason, EagerMode eager_mode)
+      : reason(reason),
         compilation_mode(GetCompilationMode(eager_mode)),
         compilation_context(GetCompilationContext()) {}
-  MaterializationMode materialization_mode;
   MaterializationReason reason;
   CompilationMode compilation_mode;
   // Immutable, shared set of pre-resolved CompilationSpecs for every

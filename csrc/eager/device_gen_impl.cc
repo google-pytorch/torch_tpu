@@ -279,8 +279,8 @@ absl::Status DeviceGeneratorState::MaybeMaterializeDeviceStateTensor(
   const MaterializationBlockMode block_mode =
       should_block ? MaterializationBlockMode::kBlockUntilStarted
                    : MaterializationBlockMode::kNonBlocking;
-  TT_RETURN_IF_ERROR(Materialize(buf, MaterializationReason::kExplicitSync,
-                                 MaterializationMode::kSplitGraph, block_mode));
+  TT_RETURN_IF_ERROR(
+      Materialize(buf, MaterializationReason::kExplicitSync, block_mode));
   if (should_block) {
     TT_RETURN_IF_ERROR(buf.Synchronize());
   }

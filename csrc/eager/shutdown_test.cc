@@ -69,7 +69,6 @@ TEST(ShutdownTest, E2EShutdownCompletes) {
   // Trigger materialization. We don't await the result because we just want to
   // start the process and then shutdown.
   ASSERT_EQ(Materialize(refs, MaterializationReason::kExplicitSync,
-                        MaterializationMode::kSplitGraph,
                         MaterializationBlockMode::kNonBlocking),
             absl::OkStatus());
 
