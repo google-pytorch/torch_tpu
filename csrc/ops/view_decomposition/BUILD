@@ -488,8 +488,6 @@ torch_tpu_cc_test(
         "//csrc/common:oss_test_main",
         "//csrc/common:shape",
         "//csrc/common:status_test_utils",
-        "@com_google_absl//absl/status:status_matchers",
-        "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
     ],

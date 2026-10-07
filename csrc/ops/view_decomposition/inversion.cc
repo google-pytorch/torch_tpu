@@ -19,7 +19,9 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <limits>
+#include <optional>
 #include <ostream>
 #include <utility>
 #include <variant>
@@ -162,22 +164,32 @@ InverseViewPrimitive InvertViewPrimitive(const PadPrimitive& pad,
 
 InverseViewPrimitive InvertViewPrimitive(const RealToRealBitcast& real_to_real,
                                          const StridedLayout& layout_before) {
-  ABSL_LOG(FATAL)  // CRASH_OK
-      << "Cannot invert RealToRealBitcast primitive. Bitcasting "
-         "should be taken care of before this point.";
+  ABSL_CHECK_NE(  // CRASH_OK=Internal error on view decomposition.
+      real_to_real.to_type, mlir::ElementType::PRED)
+      << "cannot invert a bitcast into boolean (PRED) type as this is a lossy "
+         "operation";
+  return RealToRealBitcast{
+      .from_type = real_to_real.to_type,
+      .to_type = real_to_real.from_type,
+  };
 }
 InverseViewPrimitive InvertViewPrimitive(
     const ComplexToRealBitcast& complex_to_real,
     const StridedLayout& layout_before) {
-  ABSL_LOG(FATAL)  // CRASH_OK
-      << "Cannot invert ComplexToRealBitcast primitive. Bitcasting "
-         "should be taken care of before this point.";
+  ABSL_CHECK_EQ(  // CRASH_OK=Internal error on view decomposition.
+      complex_to_real.bitcast_type, ComplexToRealBitcastType::kViewAsReal)
+      << "cannot invert the real() or imag() functions as they are lossy "
+         "operations";
+  return ViewAsComplex{
+      .complex_element_type = complex_to_real.complex_element_type,
+  };
 }
 InverseViewPrimitive InvertViewPrimitive(const ViewAsComplex& view_as_complex,
                                          const StridedLayout& layout_before) {
-  ABSL_LOG(FATAL)  // CRASH_OK
-      << "Cannot invert ViewAsComplex primitive. Bitcasting "
-         "should be taken care of before this point.";
+  return ComplexToRealBitcast{
+      .complex_element_type = view_as_complex.complex_element_type,
+      .bitcast_type = ComplexToRealBitcastType::kViewAsReal,
+  };
 }
 
 // Computes the inverse of a view primitive.
@@ -365,6 +377,16 @@ bool operator==(const InverseViewPrimitive& lhs,
   if (std::holds_alternative<ConjPrimitive>(lhs)) {
     return true;
   }
+  if (std::holds_alternative<ComplexToRealBitcast>(lhs)) {
+    return std::get<ComplexToRealBitcast>(lhs) ==
+           std::get<ComplexToRealBitcast>(rhs);
+  }
+  if (std::holds_alternative<RealToRealBitcast>(lhs)) {
+    return std::get<RealToRealBitcast>(lhs) == std::get<RealToRealBitcast>(rhs);
+  }
+  if (std::holds_alternative<ViewAsComplex>(lhs)) {
+    return std::get<ViewAsComplex>(lhs) == std::get<ViewAsComplex>(rhs);
+  }
   ABSL_CHECK(false) << "Unknown view primitive";  // CRASH_OK
 }
 
@@ -382,6 +404,15 @@ std::ostream& operator<<(std::ostream& os,
   }
   if (std::holds_alternative<ConjPrimitive>(primitive)) {
     return os << "conj()";
+  }
+  if (std::holds_alternative<ComplexToRealBitcast>(primitive)) {
+    return os << std::get<ComplexToRealBitcast>(primitive);
+  }
+  if (std::holds_alternative<RealToRealBitcast>(primitive)) {
+    return os << std::get<RealToRealBitcast>(primitive);
+  }
+  if (std::holds_alternative<ViewAsComplex>(primitive)) {
+    return os << std::get<ViewAsComplex>(primitive);
   }
   ABSL_CHECK(false) << "Unknown view primitive";  // CRASH_OK
 }
@@ -436,14 +467,50 @@ absl::StatusOr<mlir::MlirOp> InverseViewPrimitiveShlo(
       primitive);
 }
 
-absl::StatusOr<InverseViewSequence> InvertViewSequence(
+InverseViewSequence InvertViewSequence(
     StridedLayout& layout, absl::Span<const ViewPrimitive> view_sequence) {
-  std::vector<InverseViewPrimitive> result_sequence(view_sequence.size());
+  size_t num_complex_bitcasts = 0;
+  for (const auto& primitive : view_sequence) {
+    if (std::holds_alternative<ViewAsComplex>(primitive) ||
+        std::holds_alternative<ComplexToRealBitcast>(primitive)) {
+      ++num_complex_bitcasts;
+    }
+  }
+
+  std::vector<InverseViewPrimitive> result_sequence(view_sequence.size() +
+                                                    num_complex_bitcasts);
   size_t write_index = result_sequence.size() - 1;
   for (const auto& primitive : view_sequence) {
-    result_sequence[write_index] = InvertViewPrimitive(primitive, layout);
-    UpdateLayout(layout, primitive);
-    --write_index;
+    if (std::holds_alternative<ViewAsComplex>(primitive) ||
+        std::holds_alternative<ComplexToRealBitcast>(primitive)) {
+      // ViewAsReal and ViewAsComplex are not 1:1 inverses.
+      // ViewAsReal will always append a new dimension of size 2, but
+      // ViewAsComplex just divides the last dimension by 2.
+      // This means that a round-trip needs an extra reshape, like:
+      //   cfloat[10] -> ViewAsReal -> f32[10, 2] -> ViewAsComplex
+      //     -> cfloat[10, 1] -> Reshape -> cfloat[10]
+      // or
+      //   f32[10, 2] -> ViewAsComplex -> cfloat[10, 1] -> ViewAsReal
+      //     -> f32[10, 1, 2] -> Reshape -> f32[10, 2]
+      Dimensions restored_shape = GetSizes(layout);
+      auto bitcast = InvertViewPrimitive(primitive, layout);
+      UpdateLayout(layout, primitive);
+      StridedLayout layout_copy = layout;
+      UpdateLayout(layout_copy, bitcast);
+      Dimensions actual_shape = GetSizes(layout_copy);
+      ReshapePrimitive restore_shape = ReshapePrimitive{
+          .base_sizes = std::move(actual_shape),
+          .new_sizes = std::move(restored_shape),
+      };
+      result_sequence[write_index] = std::move(restore_shape);
+      --write_index;
+      result_sequence[write_index] = std::move(bitcast);
+      --write_index;
+    } else {
+      result_sequence[write_index] = InvertViewPrimitive(primitive, layout);
+      UpdateLayout(layout, primitive);
+      --write_index;
+    }
   }
   ABSL_VLOG(3) << "[InvertViewSequence] Inverted view sequence:"
                << "\nView sequence: " << ToString(view_sequence)
@@ -461,61 +528,6 @@ absl::StatusOr<mlir::MlirOp> InverseViewSequenceShlo(
 }
 
 namespace {
-
-// Gets a common dtype that the base and view can both be bitcasted into which
-// will preserve all data in a view -> base update.
-mlir::ElementType GetWritableDtype(const mlir::ElementType base_dtype,
-                                   const mlir::ElementType view_dtype) {
-  if (base_dtype == view_dtype) {
-    // Neither base nor view needs to be bitcasted.
-    // This is fine even when base and view are both booleans; no data is lost
-    // from base on assignment, since the values were already 0x00 or 0x01.
-    return base_dtype;
-  }
-
-  const int64_t base_bitwidth = TorchEquivalentBitwidth(base_dtype);
-  const int64_t view_bitwidth = TorchEquivalentBitwidth(view_dtype);
-
-  if (view_bitwidth < base_bitwidth) {
-    ABSL_CHECK_EQ(  // CRASH_OK=Supported PyTorch type bitwidths are
-                    // always multiple of each other.
-        base_bitwidth % view_bitwidth, 0)
-        << "expected the bitwidth of the base tensor dtype ("
-        << ToString(base_dtype)
-        << ") to be divisible by the bitwidth of the view tensor dtype ("
-        << ToString(view_dtype) << "), got " << base_bitwidth
-        << " is not divisible by " << view_bitwidth
-        << "; calling GetWritableDtype(); this is a TorchTPU bug";
-
-    if (view_dtype == mlir::ElementType::PRED) {
-      // Any bytes in the base that are not 0x00 or 0x01 should be preserved,
-      // so we can't cast base to boolean.
-      // Instead we cast both base and view to uint8.
-      return mlir::ElementType::UI8;
-    }
-
-    // base will be bitcasted into view's dtype losslessly.
-    return view_dtype;
-  }
-
-  ABSL_CHECK_EQ(  // CRASH_OK=Supported PyTorch type bitwidths are
-                  // always multiple of each other.
-      view_bitwidth % base_bitwidth, 0)
-      << "expected the bitwidth of the view tensor dtype ("
-      << ToString(view_dtype)
-      << ") to be divisible by the bitwidth of the base tensor dtype ("
-      << ToString(base_dtype) << "), got " << view_bitwidth
-      << " is not divisible by " << base_bitwidth
-      << "; calling GetWritableDtype(); this is a TorchTPU bug";
-
-  if (base_dtype == mlir::ElementType::PRED) {
-    // view will be writing bytes other than 0x00 or 0x01 to base, so we need
-    // to promote the base to UI8 to preserve the full value of written bytes.
-    return mlir::ElementType::UI8;
-  }
-  // view will be bitcasted into base's dtype losslessly.
-  return base_dtype;
-}
 
 // Gets a view sequence to bitcast from the given dtype to a writable dtype.
 // The bitwidth of from_dtype must be greater than or equal to the bitwidth of
@@ -695,63 +707,165 @@ mlir::MlirOp InvertNonStridedSliceShlo(mlir::MlirOp pre_slice_value,
       /*operand=*/pre_slice_value, /*update=*/post_slice_value, start_indices);
 }
 
-}  // namespace
-
-absl::StatusOr<InverseViewOperation> ComputeInverseViewOperation(
+struct BitcastTransforms {
+  ViewSequence base_transform;
+  mlir::ElementType base_dtype_after_transform;
+  ViewSequence bitcast_view;
+  mlir::ElementType writable_dtype;
+  ViewSequence invertible_bitcast;
+};
+BitcastTransforms GetBitcastTransforms(
     absl::Span<const int64_t> contiguous_base_shape,
     mlir::ElementType contiguous_base_dtype, const StridedLayout& view_layout,
-    mlir::ElementType view_dtype, bool is_conj) {
-  // Get the common dtype to bitcast base and view into.
-  mlir::ElementType writable_dtype =
-      GetWritableDtype(contiguous_base_dtype, view_dtype);
-
-  // Cast the contiguous base to the writable dtype and update the shape
-  // accordingly.
-  ViewSequence base_transform;
-  StridedLayout layout = MakeContiguousBaseLayout(contiguous_base_shape);
-  base_transform = GetBitcastSequenceToWritable(contiguous_base_dtype,
-                                                writable_dtype, layout);
-
-  // Initially set the final shape to the shape after the bitcast.
-  Shape final_shape({}, writable_dtype);
-  final_shape.dimensions().reserve(layout.strided_dims.size());
-  for (const auto& dim : layout.strided_dims) {
-    final_shape.dimensions().push_back(dim.size);
+    mlir::ElementType view_dtype) {
+  if (contiguous_base_dtype == view_dtype) {
+    // No bitcasts are necessary.
+    return BitcastTransforms{
+        .base_transform = {},
+        .base_dtype_after_transform = contiguous_base_dtype,
+        .bitcast_view = {},
+        .writable_dtype = contiguous_base_dtype,
+        .invertible_bitcast = {},
+    };
   }
 
-  // Cast the view to the writable dtype and update the layout accordingly.
-  StridedLayout view_layout_after_bitcast = view_layout;
-  ViewSequence bitcast_view = GetBitcastSequenceToWritable(
-      view_dtype, writable_dtype, view_layout_after_bitcast);
+  StridedLayout base_layout_after_transform =
+      MakeContiguousBaseLayout(contiguous_base_shape);
+  mlir::ElementType base_dtype_after_transform = contiguous_base_dtype;
+  ViewSequence base_transform;
 
-  // Compute the view sequence that would go from the base to the view...
+  if (contiguous_base_dtype == mlir::ElementType::PRED) {
+    // We must transform the base to UI8 to avoid losing data, as XLA stores
+    // only 1 bit per boolean while PyTorch expects 1 byte.
+    base_transform.push_back(
+        RealToRealBitcast{.from_type = mlir::ElementType::PRED,
+                          .to_type = mlir::ElementType::UI8});
+    UpdateLayout(base_layout_after_transform, base_transform.back());
+    base_dtype_after_transform = mlir::ElementType::UI8;
+  }
+
+  if (base_dtype_after_transform == view_dtype) {
+    // Writing bytes (UI8) to bits, only the base transform is needed.
+    return BitcastTransforms{
+        .base_transform = std::move(base_transform),
+        .base_dtype_after_transform = base_dtype_after_transform,
+        .bitcast_view = {},
+        .writable_dtype = base_dtype_after_transform,
+        .invertible_bitcast = {},
+    };
+  }
+
+  const int64_t base_bitwidth =
+      TorchEquivalentBitwidth(base_dtype_after_transform);
+  const int64_t view_bitwidth = TorchEquivalentBitwidth(view_dtype);
+
+  if (view_bitwidth >= base_bitwidth) {
+    // We can losslessly transform the view to the base dtype.
+    StridedLayout view_layout_after_transform = view_layout;
+    auto bitcast_view = GetBitcastSequenceToWritable(
+        view_dtype, base_dtype_after_transform, view_layout_after_transform);
+    return BitcastTransforms{
+        .base_transform = std::move(base_transform),
+        .base_dtype_after_transform = base_dtype_after_transform,
+        .bitcast_view = std::move(bitcast_view),
+        .writable_dtype = base_dtype_after_transform,
+        .invertible_bitcast = {},
+    };
+  }
+
+  // base_bitwidth > view_bitwidth. If the view dtype is not PRED, we can do an
+  // invertible bitcast from base -> view dtypes. But if view dtype is PRED,
+  // this would not be invertible, so we need to align on UI8 as the writable
+  // dtype.
+  mlir::ElementType writable_dtype = view_dtype;
+  ViewSequence bitcast_view;
+  if (view_dtype == mlir::ElementType::PRED) {
+    writable_dtype = mlir::ElementType::UI8;
+    StridedLayout view_layout_after_transform = view_layout;
+    bitcast_view = GetBitcastSequenceToWritable(view_dtype, writable_dtype,
+                                                view_layout_after_transform);
+  }
+
+  // Cast from the base dtype to the writable dtype, do the write in that dtype,
+  // and then transform it back to the base dtype.
+  StridedLayout layout_copy = base_layout_after_transform;
+  auto invertible_bitcast = GetBitcastSequenceToWritable(
+      base_dtype_after_transform, writable_dtype, layout_copy);
+  return BitcastTransforms{
+      .base_transform = std::move(base_transform),
+      .base_dtype_after_transform = base_dtype_after_transform,
+      .bitcast_view = std::move(bitcast_view),
+      .writable_dtype = writable_dtype,
+      .invertible_bitcast = std::move(invertible_bitcast),
+  };
+}
+
+// Computes a bitcast-free view sequence from the post-bitcast base to the
+// post-bitcast view that is suitable for view inversion.
+absl::StatusOr<ViewSequence> CalculatePostBitcastBaseToView(
+    const StridedLayout& base_layout, const StridedLayout& view_layout,
+    ViewSequenceSpan bitcast_view, ViewSequence&& invertible_bitcast,
+    mlir::ElementType writable_dtype, bool is_conj) {
   ViewSequence base_to_view;
-  {
-    Dimensions contiguous_base_shape_after_bitcast;
-    contiguous_base_shape_after_bitcast.reserve(layout.strided_dims.size());
-    for (const auto& dim : layout.strided_dims) {
-      contiguous_base_shape_after_bitcast.push_back(dim.size);
-    }
-    TT_ASSIGN_OR_RETURN(
-        base_to_view, DecomposeIntoViewSequence(
+  // Get the base and view layouts, after they have both been bitcast
+  // to the writable dtype.
+  StridedLayout base_layout_after_bitcast = base_layout;
+  for (const auto& primitive : invertible_bitcast) {
+    UpdateLayout(base_layout_after_bitcast, primitive);
+  }
+  Dimensions contiguous_base_shape_after_bitcast =
+      GetSizes(base_layout_after_bitcast);
+
+  StridedLayout view_layout_after_bitcast = view_layout;
+  for (const auto& primitive : bitcast_view) {
+    UpdateLayout(view_layout_after_bitcast, primitive);
+  }
+  TT_ASSIGN_OR_RETURN(auto post_bitcast_view_sequence,
+                      DecomposeIntoViewSequence(
                           contiguous_base_shape_after_bitcast, writable_dtype,
                           view_layout_after_bitcast, writable_dtype, is_conj));
-    // Don't use strided slices here so the inversion is more efficient.
-    TT_RETURN_IF_ERROR(ReplaceStridedSlices(contiguous_base_shape_after_bitcast,
-                                            base_to_view));
-    Simplify(base_to_view, contiguous_base_shape_after_bitcast);
-  }
+  // Don't use strided slices here so the inversion is more efficient.
+  TT_RETURN_IF_ERROR(ReplaceStridedSlices(contiguous_base_shape_after_bitcast,
+                                          post_bitcast_view_sequence));
+  Simplify(post_bitcast_view_sequence, contiguous_base_shape_after_bitcast);
 
-  // ...and partition it into stages.
+  if (invertible_bitcast.empty()) {
+    base_to_view = std::move(post_bitcast_view_sequence);
+  } else {
+    base_to_view.reserve(invertible_bitcast.size() +
+                         post_bitcast_view_sequence.size());
+    base_to_view.insert(base_to_view.end(),
+                        std::make_move_iterator(invertible_bitcast.begin()),
+                        std::make_move_iterator(invertible_bitcast.end()));
+    base_to_view.insert(
+        base_to_view.end(),
+        std::make_move_iterator(post_bitcast_view_sequence.begin()),
+        std::make_move_iterator(post_bitcast_view_sequence.end()));
+  }
+  return base_to_view;
+}
+
+// Given a base layout, a base transform, and a view sequence to some view
+// layout, computes one or more inverse view stages that can go from the view
+// back to the post-transform base.
+// If preserve_base is false, then the base transform and final shape may be
+// modified.
+std::vector<InverseViewStage> InvertAndPartition(StridedLayout& base_layout,
+                                                 ViewSequence& base_transform,
+                                                 ViewSequence&& base_to_view,
+                                                 Shape& final_shape,
+                                                 bool preserve_base) {
   std::vector<InverseViewStage> stages;
   stages.push_back(InverseViewStage());
   for (auto i = 0; i < base_to_view.size(); ++i) {
-    if (i == 0 && std::holds_alternative<ReshapePrimitive>(base_to_view[i])) {
+    if (i == 0 && !preserve_base &&
+        std::holds_alternative<ReshapePrimitive>(base_to_view[i])) {
       // An initial reshape can be folded into the base transform, since it
-      // retains contiguity. This also changes the expected final shape.
-      UpdateLayout(layout, base_to_view[i]);
+      // retains contiguity. This also changes the expected final shape, so
+      // skip this if we're preserving the base shape.
+      UpdateLayout(base_layout, base_to_view[i]);
       final_shape.dimensions().clear();
-      for (const auto& dim : layout.strided_dims) {
+      for (const auto& dim : base_layout.strided_dims) {
         final_shape.dimensions().push_back(dim.size);
       }
       base_transform.push_back(std::move(base_to_view[i]));
@@ -761,12 +875,12 @@ absl::StatusOr<InverseViewOperation> ComputeInverseViewOperation(
 
       // Compute the inverse of this stage's forward sequence (excluding the
       // slice), updating the layout to the pre-slice layout.
-      TT_ASSIGN_OR_RETURN(InverseViewSequence inverse,
-                          InvertViewSequence(layout, stages.back().forward));
+      InverseViewSequence inverse =
+          InvertViewSequence(base_layout, stages.back().forward);
       stages.back().inverse = std::move(inverse);
 
       // Update the layout to the post-slice layout and assign the slice.
-      UpdateLayout(layout, *slice);
+      UpdateLayout(base_layout, *slice);
       stages.back().slice = std::move(*slice);
 
       // Start a new empty stage.
@@ -778,9 +892,55 @@ absl::StatusOr<InverseViewOperation> ComputeInverseViewOperation(
   }
 
   // Invert the final stage.
-  TT_ASSIGN_OR_RETURN(InverseViewSequence final_stage_inverse,
-                      InvertViewSequence(layout, stages.back().forward));
+  InverseViewSequence final_stage_inverse =
+      InvertViewSequence(base_layout, stages.back().forward);
   stages.back().inverse = std::move(final_stage_inverse);
+  return stages;
+}
+
+}  // namespace
+
+absl::StatusOr<InverseViewOperation> ComputeInverseViewOperation(
+    absl::Span<const int64_t> contiguous_base_shape,
+    mlir::ElementType contiguous_base_dtype, const StridedLayout& view_layout,
+    mlir::ElementType view_dtype, bool is_conj, bool preserve_base) {
+  // Compute any bitcast transformations necessary to align the dtype.
+  auto [base_transform, base_dtype_after_transform, bitcast_view,
+        writable_dtype, invertible_bitcast] =
+      GetBitcastTransforms(contiguous_base_shape, contiguous_base_dtype,
+                           view_layout, view_dtype);
+
+  if (!preserve_base && !invertible_bitcast.empty()) {
+    // If we're not preserving the base shape, then just merge the invertible
+    // bitcast into the base transform to save the inversion cost.
+    base_transform.insert(base_transform.end(),
+                          std::make_move_iterator(invertible_bitcast.begin()),
+                          std::make_move_iterator(invertible_bitcast.end()));
+    invertible_bitcast.clear();
+    base_dtype_after_transform = writable_dtype;
+  }
+
+  // Compute the final layout and shape after the bitcast transform, but before
+  // the invertible part of the view sequence.
+  StridedLayout base_layout = MakeContiguousBaseLayout(contiguous_base_shape);
+  for (const auto& primitive : base_transform) {
+    UpdateLayout(base_layout, primitive);
+  }
+  Shape final_shape(GetSizes(base_layout), base_dtype_after_transform);
+
+  // Compute the view sequence that would go from the post-bitcast base to the
+  // post-bitcast view...
+  TT_ASSIGN_OR_RETURN(
+      ViewSequence base_to_view,
+      CalculatePostBitcastBaseToView(base_layout, view_layout, bitcast_view,
+                                     std::move(invertible_bitcast),
+                                     writable_dtype, is_conj));
+
+  // ...then invert it and partition it into stages.
+  // This may modify the base transform and final shape when !preserve_base.
+  auto stages =
+      InvertAndPartition(base_layout, base_transform, std::move(base_to_view),
+                         final_shape, preserve_base);
 
   return InverseViewOperation{
       .base_transform = std::move(base_transform),

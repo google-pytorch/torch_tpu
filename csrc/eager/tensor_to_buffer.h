@@ -28,7 +28,6 @@
 #include "c10/core/Device.h"
 #include "c10/core/Storage.h"
 #include "c10/util/Optional.h"
-#include "csrc/common/error_utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/structured_log_buffer.h"
@@ -138,10 +137,14 @@ at::Tensor MakeTensor(DeviceBufferRef device_buffer_ref, int device_idx = 0);
 // Args:
 //    result_buf: the result buffer.
 //    tensor: reference to the tensor into which to copy result_buf.
+//    enable_autodonation: if true and the base buffer of the tensor has only
+//      one live data pointer that is about to be overwritten, then donate the
+//      base buffer to the result if possible.
 // Requires:
 //    result_buf and tensor must have the same shape and dtype.
 absl::Status AssignBufferToAtTensor(DeviceBufferRef result_buf,
-                                    const at::Tensor& tensor);
+                                    const at::Tensor& tensor,
+                                    bool enable_autodonation = false);
 
 // Returns true if `tensor` is a pure reinterpretation of all the bytes of
 // `base` (the base DeviceBufferRef of its storage).

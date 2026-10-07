@@ -570,4 +570,18 @@ absl::StatusOr<mlir::MlirOp> ViewPrimitiveShlo(mlir::MlirOp input,
   return mlir::stablehlo::Complex(real_values, imag_values);
 }
 
+bool operator==(const RealToRealBitcast& lhs, const RealToRealBitcast& rhs) {
+  return lhs.from_type == rhs.from_type && lhs.to_type == rhs.to_type;
+}
+
+bool operator==(const ComplexToRealBitcast& lhs,
+                const ComplexToRealBitcast& rhs) {
+  return lhs.bitcast_type == rhs.bitcast_type &&
+         lhs.complex_element_type == rhs.complex_element_type;
+}
+
+bool operator==(const ViewAsComplex& lhs, const ViewAsComplex& rhs) {
+  return lhs.complex_element_type == rhs.complex_element_type;
+}
+
 }  // namespace torch_tpu
