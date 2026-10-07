@@ -94,7 +94,6 @@ except RuntimeError as shape_err:
 --------------------------------------------------------------------------------
 
 ### **3b. dtype Mismatch**
-
 Mixing `float32` and `int64` in operations that require matching types.
 
 ```python

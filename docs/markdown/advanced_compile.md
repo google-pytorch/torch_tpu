@@ -179,12 +179,12 @@ To prevent graph breaks during training and achieve maximum TPU utilization, the
 entire training step (forward pass, loss, backward gradient calculation, and
 optimizer update) should be fused into a **single, unified static graph**.
 
-The `SingleTraceTrainer` utility
-(`torch_tpu.extras.optimizers.single_trace_trainer`) achieves this by:
+The `SingleTraceTrainer` utility (`torch.tpu.optimizers.SingleTraceTrainer`)
+achieves this by:
 
 1.  Using `torch.func.grad_and_value` to compute reverse-mode automatic
     differentiation symbolically.
-2.  Using functional optimizer updates (`adamw.TorchAdamW` or `sgd.TorchSgd`).
+2.  Using functional optimizer updates (`TorchAdamW` or `TorchSgd`).
 3.  Capturing the entire forward, loss, backward, and optimizer pipeline into a
     single FX graph via `make_fx`.
 
@@ -193,8 +193,8 @@ This unified graph compiles with `torch.compile(..., fullgraph=True)` with
 hardware.
 
 ```python
-from torch_tpu.extras.optimizers import adamw
-from torch_tpu.extras.optimizers import single_trace_trainer
+SingleTraceTrainer = torch.tpu.optimizers.SingleTraceTrainer
+TorchAdamW = torch.tpu.optimizers.TorchAdamW
 
 with torch.device("tpu"):
   no_break_model = ToyLinearModule()
@@ -202,9 +202,9 @@ with torch.device("tpu"):
   no_break_target = torch.randn(4, 16)
 
 # Initialize SingleTraceTrainer with TorchAdamW
-trainer = single_trace_trainer.SingleTraceTrainer(
+trainer = SingleTraceTrainer(
     model=no_break_model,
-    optimizer=adamw.TorchAdamW(use_bfloat16_moments=False),
+    optimizer=TorchAdamW(use_bfloat16_moments=False),
 )
 
 # Verify zero graph breaks and compile with fullgraph=True
