@@ -278,6 +278,9 @@ triaged_ops_deny_lists: dict[
         "linalg.solve_triangular": {EAGER},
     },
     "the lowering emits an op without bounded shape support": {
+        # cross_entropy_loss lowers via gather/scatter and static element count
+        # queries, and requires synchronized target/weight dynamic marking.
+        "nn.functional.cross_entropy": ALL_MODES,
         "sort": {EAGER},  # stablehlo.iota must be static
         # stablehlo.reshape allows at most one bounded dimension. This fails
         # when dims 0 and 2 are both dynamic, which happens in compile mode

@@ -15444,6 +15444,486 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
     self.assert_close_tpu_vs_cpu(compute)
 
   @parameterized.product(
+      shape=[(4,), (3, 4), (2, 4, 3), (2, 4, 2, 1), (2, 3, 2, 1, 1)],
+      dtype=[torch.float32, torch.bfloat16, torch.float16],
+      target_dtype=[torch.int64, torch.uint8],
+      reduction=["none", "mean", "sum"],
+      has_weight=[False, True],
+  )
+  def test_nll_loss_comprehensive(
+      self, shape, dtype, target_dtype, reduction, has_weight
+  ):
+    g = torch.Generator().manual_seed(42)
+    c = shape[0] if len(shape) == 1 else shape[1]
+    target_shape = () if len(shape) == 1 else (shape[0],) + shape[2:]
+    inp = torch.randn(shape, generator=g, dtype=dtype).log_softmax(
+        dim=0 if len(shape) == 1 else 1
+    )
+    target = torch.randint(0, c, target_shape, generator=g, dtype=target_dtype)
+    weight = torch.rand(c, generator=g, dtype=dtype) if has_weight else None
+
+    def compute(device):
+      x = inp.to(device).detach().clone().requires_grad_(True)
+      w = weight.to(device) if weight is not None else None
+      # PyTorch CPU nll_loss2d (rank >= 3) only implements int64 targets,
+      # whereas TPU supports both int64 and uint8 across all ranks.
+      t_dtype = (
+          torch.int64
+          if torch.device(device).type == "cpu" and len(shape) >= 3
+          else target_dtype
+      )
+      loss = torch.nn.functional.nll_loss(
+          x, target.to(device, dtype=t_dtype), weight=w, reduction=reduction
+      )
+      if reduction == "none":
+        loss.sum().backward()
+      else:
+        loss.backward()
+      return loss, x.grad
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  def test_nll_loss_ignore_index_and_edge_cases(self):
+    g = torch.Generator().manual_seed(123)
+
+    # 1. Active class ignore_index across 1D..4D with weight and all reductions.
+    for shape in [(4,), (3, 4), (2, 4, 3), (2, 4, 2, 2)]:
+      c = shape[0] if len(shape) == 1 else shape[1]
+      target_shape = () if len(shape) == 1 else (shape[0],) + shape[2:]
+      inp = torch.randn(shape, generator=g)
+      target = torch.randint(0, c, target_shape, generator=g, dtype=torch.int64)
+      weight = torch.rand(c, generator=g)
+      for reduction in ["none", "mean", "sum"]:
+        with self.subTest(
+            case="active_ignore", shape=shape, reduction=reduction
+        ):
+
+          def compute_active(
+              device, inp=inp, target=target, weight=weight, reduction=reduction
+          ):
+            x = inp.to(device).detach().clone().requires_grad_(True)
+            loss = torch.nn.functional.nll_loss(
+                x,
+                target.to(device),
+                weight=weight.to(device),
+                reduction=reduction,
+                ignore_index=1,
+            )
+            (loss.sum() if reduction == "none" else loss).backward()
+            return loss, x.grad
+
+          self.assert_close_tpu_vs_cpu(compute_active)
+
+    # 2. Out-of-bounds ignore_index when class 0 has -inf (tests Select masking).
+    for shape in [(3, 4), (2, 4, 3, 2)]:
+      target_shape = (shape[0],) + shape[2:]
+      inp = torch.randn(shape, generator=g)
+      inp[:, 0] = -float("inf")
+      target = torch.ones(target_shape, dtype=torch.int64)
+      target.view(-1)[0] = 999
+      for reduction in ["none", "mean", "sum"]:
+        with self.subTest(
+            case="oob_ignore_neg_inf", shape=shape, reduction=reduction
+        ):
+
+          def compute_oob(device, inp=inp, target=target, reduction=reduction):
+            x = inp.to(device).detach().clone().requires_grad_(True)
+            loss = torch.nn.functional.nll_loss(
+                x,
+                target.to(device),
+                reduction=reduction,
+                ignore_index=999,
+            )
+            (loss.sum() if reduction == "none" else loss).backward()
+            return loss, x.grad
+
+          self.assert_close_tpu_vs_cpu(compute_oob)
+
+    # 3. All targets ignored under reduction='mean' (loss is NaN, grad is 0).
+    for shape in [(4,), (3, 4), (2, 4, 3), (2, 4, 2, 2)]:
+      c = shape[0] if len(shape) == 1 else shape[1]
+      target_shape = () if len(shape) == 1 else (shape[0],) + shape[2:]
+      inp = torch.randn(shape, generator=g)
+      target = torch.full(target_shape, -100, dtype=torch.int64)
+      for has_weight in [False, True]:
+        weight = torch.rand(c, generator=g) if has_weight else None
+        with self.subTest(
+            case="all_ignored_mean", shape=shape, has_weight=has_weight
+        ):
+
+          def compute_all_ignored(
+              device, inp=inp, target=target, weight=weight
+          ):
+            x = inp.to(device).detach().clone().requires_grad_(True)
+            w = weight.to(device) if weight is not None else None
+            loss = torch.nn.functional.nll_loss(
+                x,
+                target.to(device),
+                weight=w,
+                reduction="mean",
+                ignore_index=-100,
+            )
+            loss.backward()
+            return loss, x.grad
+
+          self.assert_close_tpu_vs_cpu(compute_all_ignored)
+
+    # 4. Zero-element tensors across 2D, 3D, 4D and reductions.
+    for shape, target_shape in [
+        ((0, 4), (0,)),
+        ((2, 4, 0), (2, 0)),
+        ((2, 4, 0, 3), (2, 0, 3)),
+    ]:
+      inp = torch.empty(shape, dtype=torch.float32)
+      target = torch.empty(target_shape, dtype=torch.int64)
+      for reduction in ["none", "mean", "sum"]:
+        with self.subTest(case="empty", shape=shape, reduction=reduction):
+
+          def compute_empty(
+              device, inp=inp, target=target, reduction=reduction
+          ):
+            x = inp.to(device).detach().clone().requires_grad_(True)
+            loss = torch.nn.functional.nll_loss(
+                x, target.to(device), reduction=reduction
+            )
+            (loss.sum() if reduction == "none" else loss).backward()
+            return loss, x.grad
+
+          self.assert_close_tpu_vs_cpu(compute_empty)
+
+  def test_nll_loss_out_and_2d_variants(self):
+    g = torch.Generator().manual_seed(7)
+    # 1. nll_loss_forward.output and nll_loss_backward.grad_input (with resize)
+    inp_2d = torch.randn(3, 4, generator=g).log_softmax(dim=1)
+    target_2d = torch.tensor([0, 2, 1], dtype=torch.int64)
+    weight_2d = torch.rand(4, generator=g)
+    for reduction in [0, 1, 2]:
+      with self.subTest(op="nll_loss_out", reduction=reduction):
+
+        def compute_1d_out(device, reduction=reduction):
+          out = torch.empty((9, 9), dtype=torch.float32, device=device)
+          tw = torch.empty((5,), dtype=torch.float32, device=device)
+          torch.ops.aten.nll_loss_forward.output(
+              inp_2d.to(device),
+              target_2d.to(device),
+              weight_2d.to(device),
+              reduction,
+              -100,
+              output=out,
+              total_weight=tw,
+          )
+          grad_out = torch.ones_like(out)
+          grad_in = torch.empty((1,), dtype=torch.float32, device=device)
+          torch.ops.aten.nll_loss_backward.grad_input(
+              grad_out,
+              inp_2d.to(device),
+              target_2d.to(device),
+              weight_2d.to(device),
+              reduction,
+              -100,
+              tw,
+              grad_input=grad_in,
+          )
+          return out, tw, grad_in
+
+        self.assert_close_tpu_vs_cpu(compute_1d_out)
+
+    # 2. nll_loss2d_forward.output and nll_loss2d_backward.grad_input (with resize and buffer donation)
+    inp_4d = torch.randn(2, 3, 4, 4, generator=g).log_softmax(dim=1)
+    target_4d = torch.randint(0, 3, (2, 4, 4), generator=g, dtype=torch.int64)
+    weight_4d = torch.rand(3, generator=g)
+    for reduction in [0, 1, 2]:
+      with self.subTest(op="nll_loss2d_out", reduction=reduction):
+
+        def compute_2d_out(device, reduction=reduction):
+          out = torch.empty((7,), dtype=torch.float32, device=device)
+          tw = torch.empty((3, 3), dtype=torch.float32, device=device)
+          torch.ops.aten.nll_loss2d_forward.output(
+              inp_4d.to(device),
+              target_4d.to(device),
+              weight_4d.to(device),
+              reduction,
+              -100,
+              output=out,
+              total_weight=tw,
+          )
+          grad_out = torch.ones_like(out)
+          # Also test buffer donation where grad_input aliases self
+          x_donate = inp_4d.to(device).clone()
+          torch.ops.aten.nll_loss2d_backward.grad_input(
+              grad_out,
+              x_donate,
+              target_4d.to(device),
+              weight_4d.to(device),
+              reduction,
+              -100,
+              tw,
+              grad_input=x_donate,
+          )
+          return out, tw, x_donate
+
+        self.assert_close_tpu_vs_cpu(compute_2d_out)
+
+  def _make_well_separated_logits(self, shape, dtype, generator):
+    c = shape[0] if len(shape) == 1 else shape[1]
+    class_shape = (c,) if len(shape) == 1 else (1, c) + (1,) * (len(shape) - 2)
+    class_ramp = (
+        torch.arange(c, dtype=torch.float32).view(class_shape) - (c - 1) / 2.0
+    ) * 16.0
+    noise = (
+        torch.randint(-3, 4, shape, generator=generator, dtype=torch.int64).to(
+            torch.float32
+        )
+        * 0.125
+    )
+    return (class_ramp + noise).to(dtype)
+
+  @parameterized.product(
+      shape=[(4,), (3, 4), (2, 4, 3), (2, 4, 2, 1), (2, 4, 2, 1, 1)],
+      dtype=[torch.float32, torch.bfloat16, torch.float16],
+      reduction=["none", "mean", "sum"],
+      has_weight=[False, True],
+      label_smoothing=[0.0, 0.25],
+  )
+  def test_cross_entropy_class_indices_comprehensive(
+      self, shape, dtype, reduction, has_weight, label_smoothing
+  ):
+    g = torch.Generator().manual_seed(99)
+    c = shape[0] if len(shape) == 1 else shape[1]
+    target_shape = () if len(shape) == 1 else (shape[0],) + shape[2:]
+    inp = self._make_well_separated_logits(shape, dtype, g)
+    target = torch.randint(0, c, target_shape, generator=g, dtype=torch.int64)
+    weight = (
+        torch.tensor([0.5, 1.0, 1.5, 2.0][:c], dtype=dtype)
+        if has_weight
+        else None
+    )
+
+    def compute(device):
+      x = inp.to(device).detach().clone().requires_grad_(True)
+      w = weight.to(device) if weight is not None else None
+      loss = torch.nn.functional.cross_entropy(
+          x,
+          target.to(device),
+          weight=w,
+          reduction=reduction,
+          ignore_index=1 if len(shape) > 1 else -100,
+          label_smoothing=label_smoothing,
+      )
+      (loss.sum() if reduction == "none" else loss).backward()
+      return loss, x.grad
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  @parameterized.product(
+      shape=[(4,), (3, 4), (2, 4, 3), (2, 4, 2, 1), (2, 4, 2, 1, 1)],
+      dtype=[torch.float32, torch.bfloat16, torch.float16],
+      reduction=["none", "mean", "sum"],
+      has_weight=[False, True],
+      label_smoothing=[0.0, 0.25],
+  )
+  def test_cross_entropy_prob_targets_comprehensive(
+      self, shape, dtype, reduction, has_weight, label_smoothing
+  ):
+    g = torch.Generator().manual_seed(101)
+    c = shape[0] if len(shape) == 1 else shape[1]
+    inp = self._make_well_separated_logits(shape, dtype, g)
+    target = (
+        torch.randint(1, 4, shape, generator=g, dtype=torch.int64).to(dtype)
+        * 0.25
+    )
+    weight = (
+        torch.tensor([0.5, 1.0, 1.5, 2.0][:c], dtype=dtype)
+        if has_weight
+        else None
+    )
+
+    def compute(device):
+      x = inp.to(device).detach().clone().requires_grad_(True)
+      t = target.to(device).detach().clone().requires_grad_(True)
+      w = weight.to(device) if weight is not None else None
+      loss = torch.nn.functional.cross_entropy(
+          x,
+          t,
+          weight=w,
+          reduction=reduction,
+          label_smoothing=label_smoothing,
+      )
+      (loss.sum() if reduction == "none" else loss).backward()
+      return loss, x.grad, t.grad
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  def test_cross_entropy_edge_cases(self):
+    g = torch.Generator().manual_seed(202)
+
+    # 1. uint8 class index targets with label_smoothing and weight.
+    inp_u8 = self._make_well_separated_logits((2, 4, 2), torch.float32, g)
+    target_u8 = torch.randint(0, 4, (2, 2), generator=g, dtype=torch.uint8)
+    weight_u8 = torch.tensor([0.5, 1.0, 1.5, 2.0], dtype=torch.float32)
+    with self.subTest(case="uint8_target"):
+
+      def compute_u8(device):
+        x = inp_u8.to(device).detach().clone().requires_grad_(True)
+        # PyTorch CPU gather/nll_loss2d requires int64 targets for 3D + label_smoothing,
+        # whereas TPU supports uint8 directly.
+        t_dtype = (
+            torch.int64 if torch.device(device).type == "cpu" else torch.uint8
+        )
+        loss = torch.nn.functional.cross_entropy(
+            x,
+            target_u8.to(device, dtype=t_dtype),
+            weight=weight_u8.to(device),
+            reduction="mean",
+            ignore_index=2,
+            label_smoothing=0.25,
+        )
+        loss.backward()
+        return loss, x.grad
+
+      self.assert_close_tpu_vs_cpu(compute_u8)
+
+    # 2. Target-only requires_grad (self.requires_grad=False) in prob-target mode.
+    inp_prob = self._make_well_separated_logits((2, 4, 2), torch.float32, g)
+    target_prob = (
+        torch.randint(1, 4, (2, 4, 2), generator=g, dtype=torch.int64).to(
+            torch.float32
+        )
+        * 0.25
+    )
+    for reduction in ["none", "mean", "sum"]:
+      with self.subTest(case="target_only_grad", reduction=reduction):
+
+        def compute_target_grad(device, reduction=reduction):
+          x = inp_prob.to(device).detach().clone()
+          t = target_prob.to(device).detach().clone().requires_grad_(True)
+          loss = torch.nn.functional.cross_entropy(
+              x,
+              t,
+              weight=weight_u8.to(device),
+              reduction=reduction,
+              label_smoothing=0.25,
+          )
+          (loss.sum() if reduction == "none" else loss).backward()
+          return loss, t.grad
+
+        self.assert_close_tpu_vs_cpu(compute_target_grad)
+
+    # 3. All targets ignored under reduction='mean' (with and without label_smoothing and weight).
+    for shape in [(4,), (3, 4), (2, 4, 3)]:
+      c = shape[0] if len(shape) == 1 else shape[1]
+      target_shape = () if len(shape) == 1 else (shape[0],) + shape[2:]
+      inp = self._make_well_separated_logits(shape, torch.float32, g)
+      target = torch.full(target_shape, -100, dtype=torch.int64)
+      for ls in [0.0, 0.25]:
+        for has_weight in [False, True]:
+          w = (
+              torch.tensor([0.5, 1.0, 1.5, 2.0][:c], dtype=torch.float32)
+              if has_weight
+              else None
+          )
+          with self.subTest(
+              case="all_ignored_mean",
+              shape=shape,
+              label_smoothing=ls,
+              has_weight=has_weight,
+          ):
+
+            def compute_all_ignored(device, inp=inp, target=target, w=w, ls=ls):
+              x = inp.to(device).detach().clone().requires_grad_(True)
+              w_dev = w.to(device) if w is not None else None
+              loss = torch.nn.functional.cross_entropy(
+                  x,
+                  target.to(device),
+                  weight=w_dev,
+                  reduction="mean",
+                  ignore_index=-100,
+                  label_smoothing=ls,
+              )
+              loss.backward()
+              return loss, x.grad
+
+            self.assert_close_tpu_vs_cpu(compute_all_ignored)
+
+    # 4. Out-of-bounds ignore_index (e.g. 999) with label_smoothing.
+    inp_oob = self._make_well_separated_logits((3, 4, 2), torch.float32, g)
+    target_oob = torch.randint(0, 4, (3, 2), generator=g, dtype=torch.int64)
+    target_oob[0, 0] = 999
+    for reduction in ["none", "mean", "sum"]:
+      with self.subTest(case="oob_ignore", reduction=reduction):
+
+        def compute_oob(device, reduction=reduction):
+          x = inp_oob.to(device).detach().clone().requires_grad_(True)
+          loss = torch.nn.functional.cross_entropy(
+              x,
+              target_oob.to(device),
+              reduction=reduction,
+              ignore_index=999,
+              label_smoothing=0.25,
+          )
+          (loss.sum() if reduction == "none" else loss).backward()
+          return loss, x.grad
+
+        self.assert_close_tpu_vs_cpu(compute_oob)
+
+    # 5. Zero-element tensors for both class indices and probability targets.
+    for shape, target_shape in [
+        ((0, 4), (0,)),
+        ((2, 4, 0), (2, 0)),
+        ((2, 4, 0, 3), (2, 0, 3)),
+    ]:
+      inp_empty = torch.empty(shape, dtype=torch.float32)
+      target_idx_empty = torch.empty(target_shape, dtype=torch.int64)
+      target_prob_empty = torch.empty(shape, dtype=torch.float32)
+      for reduction in ["none", "mean", "sum"]:
+        with self.subTest(
+            case="empty_class_indices", shape=shape, reduction=reduction
+        ):
+
+          def compute_empty_idx(
+              device,
+              inp_empty=inp_empty,
+              target_idx_empty=target_idx_empty,
+              reduction=reduction,
+          ):
+            x = inp_empty.to(device).detach().clone().requires_grad_(True)
+            loss = torch.nn.functional.cross_entropy(
+                x,
+                target_idx_empty.to(device),
+                reduction=reduction,
+                label_smoothing=0.1,
+            )
+            (loss.sum() if reduction == "none" else loss).backward()
+            return loss, x.grad
+
+          self.assert_close_tpu_vs_cpu(compute_empty_idx)
+
+        with self.subTest(
+            case="empty_prob_targets", shape=shape, reduction=reduction
+        ):
+
+          def compute_empty_prob(
+              device,
+              inp_empty=inp_empty,
+              target_prob_empty=target_prob_empty,
+              reduction=reduction,
+          ):
+            x = inp_empty.to(device).detach().clone().requires_grad_(True)
+            t = (
+                target_prob_empty.to(device)
+                .detach()
+                .clone()
+                .requires_grad_(True)
+            )
+            loss = torch.nn.functional.cross_entropy(
+                x, t, reduction=reduction, label_smoothing=0.1
+            )
+            (loss.sum() if reduction == "none" else loss).backward()
+            return loss, x.grad, t.grad
+
+          self.assert_close_tpu_vs_cpu(compute_empty_prob)
+
+  @parameterized.product(
       shape=[(100,), (0,), (2, 10, 5), (2, 2, 2, 2), (1, 0, 2)],
       return_inverse=[True, False],
       return_counts=[True, False],

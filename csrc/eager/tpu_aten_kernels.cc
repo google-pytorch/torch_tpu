@@ -70,6 +70,7 @@
 #include "csrc/ops/convolution/convolution_aten_kernels.h"
 #include "csrc/ops/copy_from/copy_from_aten_kernels.h"
 #include "csrc/ops/count_nonzero/count_nonzero_aten_kernels.h"
+#include "csrc/ops/cross_entropy_loss/cross_entropy_loss_aten_kernels.h"
 #include "csrc/ops/ctc_loss/ctc_loss_aten_kernels.h"
 #include "csrc/ops/cummax/cummax_aten_kernels.h"
 #include "csrc/ops/cummin/cummin_aten_kernels.h"
@@ -471,6 +472,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kCosOut>(m, AtenCosOut);
   ImplStable<OpName::kCoshOut>(m, AtenCoshOut);
   ImplStable<OpName::kCountNonzeroDimIntList>(m, AtenCountNonzeroDimIntList);
+  ImplStable<OpName::kCrossEntropyLoss>(m, AtenCrossEntropyLoss);
   ImplStable<OpName::kCtcLoss>(m, AtenCtcLoss);
   ImplStable<OpName::kCtcLossBackward>(m, AtenCtcLossBackward);
   ImplStable<OpName::kCtcLossBackwardTensor>(m, AtenCtcLossBackwardTensor);
@@ -898,6 +900,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kNllLossBackwardGradInput>(m,
                                                 AtenNllLossBackwardGradInput);
   ImplStable<OpName::kNllLossForwardOut>(m, AtenNllLossForwardOut);
+  ImplStable<OpName::kNllLossNd>(m, AtenNllLossNd);
   ImplStable<OpName::kNonzero>(m, AtenNonzero);
   ImplStable<OpName::kNonzeroOut>(m, AtenNonzeroOut);
   ImplStable<OpName::kNormDtypeOut>(m, AtenNormDtypeOut);
@@ -1200,6 +1203,7 @@ TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
   // All entries should be registered via ImplStable as we don't want to
   // generate a warning for standard aten ops.
   // go/keep-sorted start
+  ImplStable<OpName::kCrossEntropyLoss>(m, AtenCrossEntropyLossAutograd);
   // TODO(b/513607161): remove CtcLossPublic overrides once upstream PyTorch bug
   // is fixed.
   // Because we override the public ctc_loss in PrivateUse1, we bypass its
@@ -1218,6 +1222,7 @@ TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
   ImplStable<OpName::kFftIrfftOut>(m, AtenFftIrfftOut);
   ImplStable<OpName::kFftRfft>(m, AtenFftRfft);
   ImplStable<OpName::kFftRfftOut>(m, AtenFftRfftOut);
+  ImplStable<OpName::kNllLossNd>(m, AtenNllLossNdAutograd);
   ImplStable<OpName::kRepeatInterleaveSelfInt>(
       m, AtenRepeatInterleaveSelfIntAutograd);
   ImplStable<OpName::kRepeatInterleaveSelfTensor>(m,

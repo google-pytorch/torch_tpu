@@ -5145,6 +5145,19 @@ module {
         _ = torch.Event(device="tpu").record()
 
   @et.why_tpu_only(
+      "PyTorch CUDA nll_loss_forward does not validate integer reduction"
+      " values."
+  )
+  def test_nll_loss_invalid_integer_reduction(self):
+    t = torch.ones(3, 5, device=et.device(), dtype=torch.float32)
+    target = torch.tensor([1, 0, 4], device=et.device(), dtype=torch.long)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""nll_loss_nd(): expected reduction to be one of ['none', 'mean', 'sum'], got 3""",
+    ):
+      torch.ops.aten.nll_loss_nd(t, target, None, 3, -100)
+
+  @et.why_tpu_only(
       "torch.tpu.Event is a TorchTPU class; errors_test.py covers torch.Event."
   )
   def test_tpu_event_elapsed_time_untimed_event(self):

@@ -26,6 +26,11 @@
 
 namespace torch_tpu {
 
+// Gathers class weights from 1D `weight` ([C]) using `safe_target` of arbitrary
+// shape ([N, d1, ..., dk]). Flattens `safe_target` to 1D before calling
+// `BuildIndexSelectShlo` and reshapes the result back to `safe_target`'s shape.
+mlir::MlirOp GatherWeightsShlo(mlir::MlirOp weight, mlir::MlirOp safe_target);
+
 absl::StatusOr<MlirOpResults<2>> BuildNllLossForwardOutShlo(
     mlir::MlirOp self, mlir::MlirOp target, std::optional<mlir::MlirOp> weight,
     int64_t reduction, int64_t ignore_index, mlir::MlirBuilder& builder);

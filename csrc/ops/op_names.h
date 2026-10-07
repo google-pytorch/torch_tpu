@@ -150,6 +150,8 @@ enum class OpName {
   kCosOut,
   kCoshOut,
   kCountNonzeroDimIntList,
+  kCrossEntropyLoss,
+  kCrossEntropyLossBackward,
   kCtcLoss,
   kCtcLossBackward,
   kCtcLossBackwardTensor,
@@ -619,8 +621,10 @@ enum class OpName {
   kNllLoss2dBackwardGradInput,
   kNllLoss2dForward,
   kNllLoss2dForwardOut,
+  kNllLossBackward,
   kNllLossBackwardGradInput,
   kNllLossForwardOut,
+  kNllLossNd,
   kNnz,
   kNonzero,
   kNonzeroOut,
@@ -1116,6 +1120,10 @@ ToString(  // NOLINT(google-readability-function-size)
       return "cosh.out";
     case OpName::kCountNonzeroDimIntList:
       return "count_nonzero.dim_IntList";
+    case OpName::kCrossEntropyLoss:
+      return "cross_entropy_loss";
+    case OpName::kCrossEntropyLossBackward:
+      return "cross_entropy_loss_backward";
     case OpName::kCtcLoss:
       return "_ctc_loss";
     case OpName::kCtcLossBackward:
@@ -2054,10 +2062,14 @@ ToString(  // NOLINT(google-readability-function-size)
       return "nll_loss2d_forward";
     case OpName::kNllLoss2dForwardOut:
       return "nll_loss2d_forward.output";
+    case OpName::kNllLossBackward:
+      return "nll_loss_backward";
     case OpName::kNllLossBackwardGradInput:
       return "nll_loss_backward.grad_input";
     case OpName::kNllLossForwardOut:
       return "nll_loss_forward.output";
+    case OpName::kNllLossNd:
+      return "nll_loss_nd";
     case OpName::kNnz:
       return "_nnz";
     case OpName::kNonzero:

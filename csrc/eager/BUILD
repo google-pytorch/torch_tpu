@@ -678,6 +678,7 @@ torch_tpu_cc_library(
         "//csrc/ops/convolution:convolution_aten_kernels",
         "//csrc/ops/copy_from:copy_from_aten_kernels",
         "//csrc/ops/count_nonzero:count_nonzero_aten_kernels",
+        "//csrc/ops/cross_entropy_loss:cross_entropy_loss_aten_kernels",
         "//csrc/ops/ctc_loss:ctc_loss_aten_kernels",
         "//csrc/ops/cummax:cummax_aten_kernels",
         "//csrc/ops/cummin:cummin_aten_kernels",

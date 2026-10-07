@@ -22,8 +22,17 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "c10/util/Optional.h"
+#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
+
+bool IsFakeOrFunctorchLossInputs(const at::Tensor& self,
+                                 const at::Tensor& target,
+                                 const c10::optional<at::Tensor>& weight);
+
+bool IsSupportedLossFloatType(at::ScalarType scalar_type);
+
+bool IsLongOrByteTarget(const at::Tensor& tensor);
 
 std::tuple<at::Tensor&, at::Tensor&> AtenNllLossForwardOut(
     const at::Tensor& self, const at::Tensor& target,
@@ -58,6 +67,15 @@ at::Tensor& AtenNllLoss2dBackwardGradInput(
     const at::Tensor& target, const c10::optional<at::Tensor>& weight,
     int64_t reduction, int64_t ignore_index, const at::Tensor& total_weight,
     at::Tensor& grad_input);
+
+at::Tensor AtenNllLossNd(const at::Tensor& self, const at::Tensor& target,
+                         const c10::optional<at::Tensor>& weight,
+                         int64_t reduction, int64_t ignore_index);
+
+at::Tensor AtenNllLossNdAutograd(const at::Tensor& self,
+                                 const at::Tensor& target,
+                                 const c10::optional<at::Tensor>& weight,
+                                 int64_t reduction, int64_t ignore_index);
 
 }  // namespace torch_tpu
 

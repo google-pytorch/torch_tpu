@@ -15,6 +15,7 @@
 #include "csrc/ops/nll_loss/nll_loss.h"
 
 #include <cstdint>
+#include <limits>
 #include <optional>
 
 #include "ATen/core/Reduction.h"
@@ -35,95 +36,154 @@
 
 namespace torch_tpu {
 
+mlir::MlirOp GatherWeightsShlo(mlir::MlirOp weight, mlir::MlirOp safe_target) {
+  const mlir::RankedTensorType target_type = GetTensorTypeOrDie(safe_target);
+  mlir::MlirOp flat_target = safe_target;
+  if (target_type.getRank() != 1) {
+    flat_target =
+        mlir::stablehlo::Reshape(safe_target, {target_type.getNumElements()});
+  }
+  mlir::MlirOp gathered_weights = BuildIndexSelectShlo(weight, 0, flat_target);
+  if (target_type.getRank() != 1) {
+    gathered_weights =
+        mlir::stablehlo::Reshape(gathered_weights, target_type.getShape());
+  }
+  return gathered_weights;
+}
+
 absl::StatusOr<MlirOpResults<2>> BuildNllLossForwardOutShlo(
     mlir::MlirOp self, mlir::MlirOp target, std::optional<mlir::MlirOp> weight,
     int64_t reduction, int64_t ignore_index, mlir::MlirBuilder& builder) {
-  mlir::RankedTensorType self_type_before_unsqueeze = GetTensorTypeOrDie(self);
-  bool unsqueezed = false;
-  if (self_type_before_unsqueeze.getRank() == 1) {
-    unsqueezed = true;
-    TT_ASSIGN_OR_RETURN(self, Unsqueeze(self, 0));
-    TT_ASSIGN_OR_RETURN(target, Unsqueeze(target, 0));
-  }
+  const mlir::RankedTensorType orig_self_type = GetTensorTypeOrDie(self);
+  const mlir::RankedTensorType orig_target_type = GetTensorTypeOrDie(target);
 
-  // Now, we have the following Shapes.
-  // self: [batch, num_classes]
-  // target: [batch]
-  // weight: [num_classes]
-  // reduction: a scalar
-  // ignore_index: a scalar
-
-  TT_ASSIGN_OR_RETURN(mlir::ElementType orig_self_dtype, GetElementType(self));
-  TT_ASSIGN_OR_RETURN(mlir::ElementType compute_dtype,
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType orig_self_dtype,
+                      GetElementType(self));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
                       InferComputationDtype(orig_self_dtype));
 
+  if (orig_self_type.getNumElements() == 0 ||
+      orig_target_type.getNumElements() == 0) {
+    mlir::MlirOp loss_output;
+    switch (static_cast<at::Reduction::Reduction>(reduction)) {
+      case at::Reduction::None:
+        loss_output = MakeConstantLike(target, 0.0, orig_self_dtype);
+        break;
+      case at::Reduction::Sum:
+        loss_output = MakeScalarConstant(builder, 0.0, orig_self_dtype);
+        break;
+      case at::Reduction::Mean:
+        loss_output = MakeScalarConstant(
+            builder, std::numeric_limits<double>::quiet_NaN(), orig_self_dtype);
+        break;
+      default:
+        return TT_ERROR(  // ERROR_COV_INFEASIBLE=Validated before calling
+                          // builder.
+                   error::kInvalidArgument)
+               << "expected reduction to be one of ['none', 'mean', 'sum'], "
+               << "got " << reduction;
+    }
+    mlir::MlirOp total_weight_scalar =
+        MakeScalarConstant(builder, 0.0, orig_self_dtype);
+    return {{loss_output, total_weight_scalar}};
+  }
+
+  const int64_t orig_target_rank = orig_target_type.getRank();
+  bool unsqueezed = false;
+  if (orig_self_type.getRank() == 1) {
+    unsqueezed = true;
+    TT_ASSIGN_OR_RETURN(self, Unsqueeze(self, 0));
+    if (orig_target_rank == 0) {
+      TT_ASSIGN_OR_RETURN(target, Unsqueeze(target, 0));
+    }
+  }
+
+  // Shapes after optional 1D normalization:
+  //   self: [N, C, d1, ..., dk] (rank >= 2)
+  //   target: [N, d1, ..., dk] (rank >= 1)
+  //   weight: [C]
   TT_ASSIGN_OR_RETURN(self, CastIfNeeded(self, compute_dtype));
   if (weight.has_value()) {
     TT_ASSIGN_OR_RETURN(weight, CastIfNeeded(weight.value(), compute_dtype));
   }
+  TT_ASSIGN_OR_RETURN(target, CastIfNeeded(target, mlir::ElementType::I64));
 
-  // mask = target != ignore_index
-  // mask is of shape [batch] with 0s and 1s.
-  // 0s are for ignoring samples with ignore_index.
+  // mask = (target != ignore_index), shape [N, d1, ..., dk]
+  // Clamp ignored target indices to 0 before gathering from `self` and `weight`
+  // so out-of-bounds `ignore_index` values (e.g. -100) never index into index 0
+  // or last class with `-inf` and cause `-inf * 0 = NaN`.
   mlir::MlirOp ignore_index_bcast = MakeConstantLike(target, ignore_index);
   TT_ASSIGN_OR_RETURN(mlir::MlirOp mask,
                       BuildNeShlo(target, ignore_index_bcast));
-  mlir::MlirOp mask_float =
-      mlir::stablehlo::ConvertElementType(mask, compute_dtype);
+  mlir::MlirOp zero_target = MakeConstantLike(target, 0);
+  mlir::MlirOp safe_target = mlir::stablehlo::Select(mask, target, zero_target);
 
-  // loss = - self[target]
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp target_unsqueeze, Unsqueeze(target, 1));
+  // raw_loss = -self[safe_target] along class dimension 1.
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp target_unsqueeze, Unsqueeze(safe_target, 1));
   TT_ASSIGN_OR_RETURN(mlir::MlirOp gathered_unsqueeze,
                       BuildGatherShlo(self, 1, target_unsqueeze,
                                       /*sparse_grad=*/false, compute_dtype));
   TT_ASSIGN_OR_RETURN(mlir::MlirOp gathered, Squeeze(gathered_unsqueeze, {1}));
-  // loss_no_reduction is of shape [batch], which contains the loss for each
-  // sample.
-  mlir::MlirOp loss_no_reduction = mlir::stablehlo::Neg(gathered);
+  mlir::MlirOp raw_loss = mlir::stablehlo::Neg(gathered);
 
-  // Mask the weights and apply to loss.
-  mlir::MlirOp weight_to_apply = mask_float;
+  // Apply class weights and mask out ignored positions using Select (not Mul).
+  mlir::MlirOp zero_float = MakeConstantLike(raw_loss, 0.0, compute_dtype);
+  mlir::MlirOp weight_to_apply;
   if (weight.has_value()) {
-    mlir::MlirOp sample_weight =
-        BuildIndexSelectShlo(weight.value(), 0, target);
-    weight_to_apply = mlir::stablehlo::Mul(weight_to_apply, sample_weight);
-  }
-  loss_no_reduction = mlir::stablehlo::Mul(loss_no_reduction, weight_to_apply);
-
-  mlir::MlirOp total_weight_scalar;
-  if (!unsqueezed && reduction == at::Reduction::None) {
-    total_weight_scalar = MakeScalarConstant(builder, 0.0, compute_dtype);
+    mlir::MlirOp sample_weight = GatherWeightsShlo(weight.value(), safe_target);
+    raw_loss = mlir::stablehlo::Mul(raw_loss, sample_weight);
+    weight_to_apply = mlir::stablehlo::Select(mask, sample_weight, zero_float);
   } else {
-    TT_ASSIGN_OR_RETURN(
-        total_weight_scalar,
-        BuildSumShlo(weight_to_apply, GetAllDimensions(weight_to_apply),
-                     ReductionMode::kDropDims));
+    weight_to_apply = mlir::stablehlo::ConvertElementType(mask, compute_dtype);
   }
+  mlir::MlirOp loss_no_reduction =
+      mlir::stablehlo::Select(mask, raw_loss, zero_float);
 
   mlir::MlirOp loss_output;
-  if (reduction == at::Reduction::None) {
-    loss_output = loss_no_reduction;
-  } else {
-    TT_ASSIGN_OR_RETURN(
-        mlir::MlirOp sum,
-        BuildSumShlo(loss_no_reduction, GetAllDimensions(loss_no_reduction),
-                     ReductionMode::kDropDims));
-    if (reduction == at::Reduction::Sum) {
-      loss_output = sum;
-    } else if (reduction == at::Reduction::Mean) {
+  mlir::MlirOp total_weight_scalar;
+  switch (static_cast<at::Reduction::Reduction>(reduction)) {
+    case at::Reduction::None: {
+      if (unsqueezed) {
+        TT_ASSIGN_OR_RETURN(loss_output, Squeeze(loss_no_reduction, {0}));
+        TT_ASSIGN_OR_RETURN(
+            total_weight_scalar,
+            BuildSumShlo(weight_to_apply, GetAllDimensions(weight_to_apply),
+                         ReductionMode::kDropDims));
+      } else {
+        loss_output = loss_no_reduction;
+        total_weight_scalar = MakeScalarConstant(builder, 0.0, compute_dtype);
+      }
+      break;
+    }
+    case at::Reduction::Sum: {
+      TT_ASSIGN_OR_RETURN(
+          loss_output,
+          BuildSumShlo(loss_no_reduction, GetAllDimensions(loss_no_reduction),
+                       ReductionMode::kDropDims));
+      TT_ASSIGN_OR_RETURN(
+          total_weight_scalar,
+          BuildSumShlo(weight_to_apply, GetAllDimensions(weight_to_apply),
+                       ReductionMode::kDropDims));
+      break;
+    }
+    case at::Reduction::Mean: {
+      TT_ASSIGN_OR_RETURN(
+          mlir::MlirOp sum,
+          BuildSumShlo(loss_no_reduction, GetAllDimensions(loss_no_reduction),
+                       ReductionMode::kDropDims));
+      TT_ASSIGN_OR_RETURN(
+          total_weight_scalar,
+          BuildSumShlo(weight_to_apply, GetAllDimensions(weight_to_apply),
+                       ReductionMode::kDropDims));
       loss_output = mlir::stablehlo::Div(sum, total_weight_scalar);
-    } else {
-      return TT_ERROR(  // ERROR_COV_INFEASIBLE=PyTorch checks this before
-                        // calling this function. This is just a fall back if
-                        // they changed the implementation.
+      break;
+    }
+    default:
+      return TT_ERROR(  // ERROR_COV_INFEASIBLE=Validated before calling
+                        // builder.
                  error::kInvalidArgument)
              << "expected reduction to be one of ['none', 'mean', 'sum'], "
              << "got " << reduction;
-    }
-  }
-
-  if (unsqueezed && reduction == at::Reduction::None) {
-    TT_ASSIGN_OR_RETURN(loss_output, Squeeze(loss_output, {0}));
   }
 
   TT_ASSIGN_OR_RETURN(loss_output, CastIfNeeded(loss_output, orig_self_dtype));
@@ -135,97 +195,112 @@ absl::StatusOr<MlirOpResults<2>> BuildNllLossForwardOutShlo(
 absl::StatusOr<mlir::MlirOp> BuildNllLossBackwardGradInputShlo(
     mlir::MlirOp grad_output, mlir::MlirOp self, mlir::MlirOp target,
     std::optional<mlir::MlirOp> weight, int64_t reduction, int64_t ignore_index,
-    mlir::MlirOp total_weight, mlir::MlirBuilder& builder) {
-  mlir::RankedTensorType self_type_before_unsqueeze = GetTensorTypeOrDie(self);
-  // Unsqueeze if it is a single sample without batch dimension.
+    mlir::MlirOp total_weight, mlir::MlirBuilder& /*builder*/) {
+  const mlir::RankedTensorType orig_self_type = GetTensorTypeOrDie(self);
+  const mlir::RankedTensorType orig_target_type = GetTensorTypeOrDie(target);
+
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType orig_self_dtype,
+                      GetElementType(self));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(orig_self_dtype));
+
+  if (orig_self_type.getNumElements() == 0 ||
+      orig_target_type.getNumElements() == 0) {
+    return MakeConstantLike(self, 0.0, orig_self_dtype);
+  }
+
+  // Unsqueeze if it is a single 1D sample without a batch dimension.
   bool unsqueezed = false;
-  if (self_type_before_unsqueeze.getRank() == 1) {
+  if (orig_self_type.getRank() == 1) {
     unsqueezed = true;
     TT_ASSIGN_OR_RETURN(self, Unsqueeze(self, 0));
-    TT_ASSIGN_OR_RETURN(target, Unsqueeze(target, 0));
-    if (reduction == at::Reduction::None) {
+    if (orig_target_type.getRank() == 0) {
+      TT_ASSIGN_OR_RETURN(target, Unsqueeze(target, 0));
+    }
+    if (reduction == at::Reduction::None &&
+        GetTensorTypeOrDie(grad_output).getRank() == 0) {
       TT_ASSIGN_OR_RETURN(grad_output, Unsqueeze(grad_output, 0));
     }
   }
 
-  // Now, we have the following Shapes.
-  // grad_output: [batch] for none,or a scalar for sum and mean
-  // self: [batch, num_classes]
-  // target: [batch]
-  // weight: [num_classes]
-  // reduction: a scalar
-  // ignore_index: a scalar
-  // total_weight: a scalar
-
-  // Define the types.
-  TT_ASSIGN_OR_RETURN(mlir::ElementType orig_self_dtype, GetElementType(self));
-  TT_ASSIGN_OR_RETURN(mlir::ElementType compute_dtype,
-                      InferComputationDtype(orig_self_dtype));
-  mlir::RankedTensorType target_type = GetTensorTypeOrDie(target);
-
+  // Shapes after optional 1D normalization:
+  //   grad_output: [N, d1, ..., dk] for None, or 1-element (0D/1D) for Sum/Mean
+  //   self: [N, C, d1, ..., dk] (rank >= 2)
+  //   target: [N, d1, ..., dk] (rank >= 1)
+  //   weight: [C]
+  //   total_weight: 1-element (0D/1D)
   TT_ASSIGN_OR_RETURN(grad_output, CastIfNeeded(grad_output, compute_dtype));
   TT_ASSIGN_OR_RETURN(total_weight, CastIfNeeded(total_weight, compute_dtype));
   if (weight.has_value()) {
     TT_ASSIGN_OR_RETURN(weight, CastIfNeeded(weight.value(), compute_dtype));
   }
+  TT_ASSIGN_OR_RETURN(target, CastIfNeeded(target, mlir::ElementType::I64));
+  const mlir::RankedTensorType target_type = GetTensorTypeOrDie(target);
 
-  // Initialize grad_input to zeros of shape [batch, num_classes].
-  // Use self shape since the grad is w.r.t. self.
-  // Use compute_dtype to keep intermediate grad accumulation in full precision.
-  mlir::MlirOp grad_input = MakeConstantLike(self, 0, compute_dtype);
-
-  // mask is of shape [batch] with 0s and 1s.
-  // 0s are for ignoring samples with ignore_index.
   mlir::MlirOp ignore_index_bcast = MakeConstantLike(target, ignore_index);
   TT_ASSIGN_OR_RETURN(mlir::MlirOp mask,
                       BuildNeShlo(target, ignore_index_bcast));
-  mask = mlir::stablehlo::ConvertElementType(mask, compute_dtype);
+  mlir::MlirOp zero_target = MakeConstantLike(target, 0);
+  mlir::MlirOp safe_target = mlir::stablehlo::Select(mask, target, zero_target);
 
-  // Initialize grad_val to -grad_output no matter it's a scalar or [batch].
   mlir::MlirOp grad_val = mlir::stablehlo::Neg(grad_output);
-  if (reduction != at::Reduction::None) {
-    // The reduction is mean or sum.
-    // grad_val now is a scalar.
-    if (reduction == at::Reduction::Mean) {
-      grad_val = mlir::stablehlo::Div(grad_val, total_weight);
+  switch (static_cast<at::Reduction::Reduction>(reduction)) {
+    case at::Reduction::None: {
+      TT_ASSIGN_OR_RETURN(grad_val,
+                          BroadcastIfNeeded(grad_val, target_type.getShape()));
+      break;
     }
-
-    // Broadcast grad_val to [batch].
-    TT_ASSIGN_OR_RETURN(grad_val,
-                        BroadcastIfNeeded(grad_val, target_type.getShape()));
+    case at::Reduction::Sum: {
+      if (GetTensorTypeOrDie(grad_val).getRank() != 0) {
+        grad_val = mlir::stablehlo::Reshape(grad_val, {});
+      }
+      TT_ASSIGN_OR_RETURN(grad_val,
+                          BroadcastIfNeeded(grad_val, target_type.getShape()));
+      break;
+    }
+    case at::Reduction::Mean: {
+      if (GetTensorTypeOrDie(grad_val).getRank() != 0) {
+        grad_val = mlir::stablehlo::Reshape(grad_val, {});
+      }
+      if (GetTensorTypeOrDie(total_weight).getRank() != 0) {
+        total_weight = mlir::stablehlo::Reshape(total_weight, {});
+      }
+      grad_val = mlir::stablehlo::Div(grad_val, total_weight);
+      TT_ASSIGN_OR_RETURN(grad_val,
+                          BroadcastIfNeeded(grad_val, target_type.getShape()));
+      break;
+    }
+    default:
+      return TT_ERROR(  // ERROR_COV_INFEASIBLE=Validated before calling
+                        // builder.
+                 error::kInvalidArgument)
+             << "expected reduction to be one of ['none', 'mean', 'sum'], "
+             << "got " << reduction;
   }
 
-  // Now grad_val is of shape [batch].
-  // Apply the mask to grad_val.
-  grad_val = mlir::stablehlo::Mul(grad_val, mask);
-
-  // Apply sample weight to grad_val.
   if (weight.has_value()) {
-    mlir::MlirOp sample_weight =
-        BuildIndexSelectShlo(weight.value(), 0, target);
+    mlir::MlirOp sample_weight = GatherWeightsShlo(weight.value(), safe_target);
     grad_val = mlir::stablehlo::Mul(grad_val, sample_weight);
   }
 
-  // Unsqueeze to prepare for scatter.
-  // target and grad_val become of shape [batch, 1].
-  TT_ASSIGN_OR_RETURN(target, Unsqueeze(target, 1));
-  TT_ASSIGN_OR_RETURN(grad_val, Unsqueeze(grad_val, 1));
+  // Zero out ignored targets via Select so NaN/inf (e.g. when total_weight == 0
+  // in Mean reduction) does not propagate into grad_input.
+  mlir::MlirOp zero_grad_val = MakeConstantLike(grad_val, 0.0, compute_dtype);
+  grad_val = mlir::stablehlo::Select(mask, grad_val, zero_grad_val);
 
-  // Apply scatter_add to grad_input.
-  // grad_input[i, target[i]] += grad_val[i, 0]
-  TT_ASSIGN_OR_RETURN(grad_input,
-                      BuildScatterShlo(grad_input, 1, target, grad_val,
-                                       ScatterOp::kAdd, compute_dtype));
+  // Unsqueeze at class dimension 1 to [N, 1, d1, ..., dk] for BuildScatterShlo.
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp safe_target_unsqueeze,
+                      Unsqueeze(safe_target, 1));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp grad_val_unsqueeze, Unsqueeze(grad_val, 1));
 
-  // Squeeze the batch dimension if it was added earlier.
+  mlir::MlirOp grad_input = MakeConstantLike(self, 0.0, compute_dtype);
+  TT_ASSIGN_OR_RETURN(
+      grad_input,
+      BuildScatterShlo(grad_input, 1, safe_target_unsqueeze, grad_val_unsqueeze,
+                       ScatterOp::kAdd, compute_dtype));
+
   if (unsqueezed) {
-    auto grad_input_type = GetTensorTypeOrDie(grad_input);
-    auto shape = grad_input_type.getShape();
-    auto squeezed_shape = shape.drop_front();
-    grad_input = mlir::stablehlo::Reshape(
-        mlir::RankedTensorType::get(squeezed_shape,
-                                    grad_input_type.getElementType()),
-        grad_input);
+    TT_ASSIGN_OR_RETURN(grad_input, Squeeze(grad_input, {0}));
   }
 
   return CastIfNeeded(grad_input, orig_self_dtype);

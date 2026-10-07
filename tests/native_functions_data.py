@@ -446,6 +446,9 @@ REGISTRATION_OVERRIDES = frozenset([
     # The loop is copy_ -> MathOpFallback::fallback_impl -> clone -> copy_...
     # Registering copy_ as an alias for _copy_from breaks this loop.
     'copy_',
+    # cross_entropy_loss is registered to provide a fused StableHLO lowering
+    # and autograd implementation on TPU, overriding the default decomposition.
+    'cross_entropy_loss',
     # TODO: b/513607161 - revert once upstream PyTorch bug is fixed.
     # ctc_loss and ctc_loss.Tensor are registered because we provide a custom
     # StableHLO lowering and autograd implementation, bypassing the default
@@ -492,6 +495,9 @@ REGISTRATION_OVERRIDES = frozenset([
     'masked_fill.Scalar',
     'masked_fill.Tensor',
     'native_layer_norm',  # pending removal
+    # nll_loss_nd is registered to provide a direct N-D StableHLO lowering and
+    # autograd implementation on TPU, overriding the default decomposition.
+    'nll_loss_nd',
     # repeat_interleave.self_Tensor is registered to provide an optimized TPU
     # implementation, overriding the default decomposition.
     'repeat_interleave.self_Tensor',
