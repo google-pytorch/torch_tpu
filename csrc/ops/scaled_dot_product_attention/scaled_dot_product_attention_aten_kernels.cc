@@ -71,7 +71,13 @@ bool HasDynamicShape(const at::Tensor& tensor) {
   if (tensor.unsafeGetTensorImpl()->has_symbolic_sizes_strides()) {
     return true;
   }
-  absl::StatusOr<DeviceBufferRef> buf = GetBuffer(tensor);
+  // Wrapper tensors, such as the functorch wrappers that `torch.func`
+  // transforms pass to this kernel, have no storage and throw on storage
+  // access, so they have no device buffer to inspect.
+  if (!tensor.has_storage()) {
+    return false;
+  }
+  const absl::StatusOr<DeviceBufferRef> buf = GetBuffer(tensor);
   return buf.ok() && (!buf->dynamic_dimensions().empty() ||
                       buf->on_device_shape_is_dynamic());
 }

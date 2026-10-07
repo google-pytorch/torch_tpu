@@ -17262,6 +17262,50 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
     assert_close(v_grad_cpu, v_grad_tpu, "v_grad")
     assert_close(mask_grad_cpu, mask_grad_tpu, "mask_grad")
 
+  def test_scaled_dot_product_attention_flash_under_func_grad(self):
+    """Tests FlashAttention gradients under the torch.func.grad transform.
+
+    torch.func.grad passes functorch wrapper tensors, which have no storage, to
+    the SDPA backend selection.
+    """
+    batch_size, num_heads, seq_len, head_dim = 2, 4, 128, 64
+    torch.manual_seed(0)
+    q, k, v, grad_out = (
+        torch.randn(batch_size, num_heads, seq_len, head_dim) for _ in range(4)
+    )
+
+    def compute(device):
+      cotangent = grad_out.to(device=device, dtype=torch.bfloat16)
+
+      def loss(q, k, v):
+        out = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+        return (out * cotangent).sum()
+
+      inputs = [t.to(device=device, dtype=torch.bfloat16) for t in (q, k, v)]
+      grad_fn = torch.func.grad(loss, argnums=(0, 1, 2))
+      if device == "cpu":
+        grads = grad_fn(*inputs)
+      else:
+        with torch.nn.attention.sdpa_kernel(
+            torch.nn.attention.SDPBackend.FLASH_ATTENTION
+        ):
+          grads = grad_fn(*inputs)
+      return [g.cpu().float() for g in grads]
+
+    cpu_grads = compute("cpu")
+    tpu_grads = compute("tpu")
+    for name, cpu, tpu in zip(
+        ("q_grad", "k_grad", "v_grad"), cpu_grads, tpu_grads
+    ):
+      with self.subTest(name):
+        self.assert_close(
+            golden_result=cpu,
+            torch_tpu_result=tpu,
+            rtol=5e-2,
+            atol=1e-1,
+            preamble=f"close check failed for {name}",
+        )
+
   def test_pointwise_op_dtype_promotion(self):
     """Ensure that pointwise ops promote as expected.
 
