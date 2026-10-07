@@ -14,6 +14,7 @@
 
 """Tests for step."""
 
+import functools
 from unittest import mock
 
 from absl.testing import absltest
@@ -1236,12 +1237,51 @@ class StepperTypeTest(seed_test_utils.RepeatableTest):
     for layer in stepper.get_cache().layers:
       self.assertIs(type(layer), cache_utils.StaticSlidingWindowLayer)
 
-  def _run_static_decode(self, num_steps, compile_model):
-    """Runs a static-cache Mistral decode and returns per-step outputs."""
-    ops = self._ops()
-    stepper = self._mistral_static_stepper(
-        ops, sliding_window=4096, output_tokens=num_steps
+  def _opt_static_stepper(self, ops, output_tokens, explicit_inputs=True):
+    """Builds a static-cache OPT stepper.
+
+    Args:
+      ops: Test ops/device helper.
+      output_tokens: Number of decode tokens.
+      explicit_inputs: When False, the config is marked as using multimodal RoPE
+        so the stepper does not pass explicit `attention_mask` and
+        `position_ids`. OPT uses learned positional embeddings and never reads
+        `rope_scaling`, so the model's numerics are unaffected.
+    """
+    config = transformers.OPTConfig(
+        vocab_size=16,
+        hidden_size=16,
+        ffn_dim=32,
+        num_hidden_layers=2,
+        num_attention_heads=2,
+        max_position_embeddings=64,
+        word_embed_proj_dim=16,
     )
+    if not explicit_inputs:
+      config.rope_scaling = {"rope_type": "default", "mrope_section": [1]}
+    torch.manual_seed(0)
+    model = transformers.OPTForCausalLM(config).to(ops.device).eval()
+    stepper = decode.decode(output_tokens=output_tokens, dynamism=False)
+    torch.manual_seed(1)
+    input_ids = torch.randint(0, 16, (1, 4)).to(ops.device)
+    stepper.init_with_benchmark_args(model, (), {"input_ids": input_ids})
+    return stepper
+
+  def _run_static_decode(self, num_steps, compile_model, make_stepper=None):
+    """Runs a static-cache decode and returns per-step outputs.
+
+    Args:
+      num_steps: Number of single-token decode steps to run.
+      compile_model: Whether to compile the model with the target's backend.
+      make_stepper: `(ops, output_tokens) -> stepper`. Defaults to a Mistral
+        model whose sliding window covers the whole cache.
+    """
+    ops = self._ops()
+    if make_stepper is None:
+      make_stepper = functools.partial(
+          self._mistral_static_stepper, sliding_window=4096
+      )
+    stepper = make_stepper(ops, output_tokens=num_steps)
     stepper.pre_warmup_init()
     stepper.output_tokens = 1
     if compile_model:
@@ -1285,6 +1325,49 @@ class StepperTypeTest(seed_test_utils.RepeatableTest):
       original, _ = self._run_static_decode(num_steps=4, compile_model=False)
     for got, want in zip(fixed, original):
       test_utils.assert_close(got, want, rtol=0, atol=0)
+
+  def test_decode_stepper_static_opt_does_not_recompile(self):
+    # Step 1 recompiles once on dispatch keys; see the sliding-window test.
+    torch._dynamo.reset()
+    _, graphs = self._run_static_decode(
+        num_steps=5, compile_model=True, make_stepper=self._opt_static_stepper
+    )
+    self.assertGreater(graphs[1], 0)
+    self.assertEqual(graphs[-1], graphs[1])
+
+    # Without explicit inputs OPT sizes its mask from the cache length, which
+    # graph-breaks and grows every step, so the resumed frames recompile.
+    torch._dynamo.reset()
+    _, graphs = self._run_static_decode(
+        num_steps=5,
+        compile_model=True,
+        make_stepper=functools.partial(
+            self._opt_static_stepper, explicit_inputs=False
+        ),
+    )
+    self.assertGreater(graphs[-1], graphs[1])
+    torch._dynamo.reset()
+
+  def test_decode_stepper_static_opt_explicit_inputs_keep_logits(self):
+    fixed, _ = self._run_static_decode(
+        num_steps=4, compile_model=False, make_stepper=self._opt_static_stepper
+    )
+    original, _ = self._run_static_decode(
+        num_steps=4,
+        compile_model=False,
+        make_stepper=functools.partial(
+            self._opt_static_stepper, explicit_inputs=False
+        ),
+    )
+    for got, want in zip(fixed, original):
+      test_utils.assert_close(got, want, rtol=0, atol=0)
+
+  def test_decode_stepper_static_inputs_skip_multimodal_rope(self):
+    text_cfg = transformers.MistralConfig()
+    self.assertTrue(decode._static_decode_inputs_supported(text_cfg))
+    mrope_cfg = transformers.MistralConfig()
+    mrope_cfg.rope_scaling = {"rope_type": "default", "mrope_section": [1]}
+    self.assertFalse(decode._static_decode_inputs_supported(mrope_cfg))
 
   def test_decode_stepper_falcon_multi_query_heads(self):
     ops = self._ops()

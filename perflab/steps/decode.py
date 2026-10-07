@@ -215,6 +215,43 @@ def _drop_unreachable_sliding_windows(cache: Any, max_cache_len: int) -> None:
       layers[idx] = new_layer
 
 
+# Decode-step inputs only passed when the model's forward names them: models
+# that take them through **kwargs may forward them somewhere unexpected.
+_OPTIONAL_DECODE_KWARGS = ("attention_mask", "position_ids")
+
+
+def _uses_multimodal_rope(cfg: Any) -> bool:
+  """Returns whether `cfg` uses multimodal RoPE (e.g. Qwen2-VL's mrope).
+
+  These models derive multi-axis positions (plus `rope_deltas`) themselves, so
+  a plain 1-D `position_ids` from the stepper would be wrong.
+
+  Args:
+    cfg: The (text) model config to inspect.
+  """
+  for name in ("rope_parameters", "rope_scaling"):
+    rope = _safe_get(cfg, name)
+    if isinstance(rope, dict) and "mrope_section" in rope:
+      return True
+  return False
+
+
+def _static_decode_inputs_supported(cfg: Any) -> bool:
+  """Returns whether the static-cache decode step passes explicit inputs.
+
+  Without `attention_mask` and `position_ids`, models such as OPT rebuild them
+  from `past_key_values.get_seq_length()`, which `StaticLayer` returns as a
+  tensor. Using it as a size or slice bound graph-breaks, and the mask grows
+  every step, so the resumed frames recompile until Dynamo falls back to eager.
+  A fixed `max_cache_len` mask and `position_ids == cache_position` (what
+  `generate()` passes for an unpadded prompt) keep every shape static.
+
+  Args:
+    cfg: The (text) model config to inspect.
+  """
+  return not _uses_multimodal_rope(cfg)
+
+
 def _supports_early_initialization(cache: Any) -> bool:
   """Returns whether `early_initialization` is safe for every layer of `cache`.
 
@@ -436,6 +473,7 @@ class DecodeStepper(common.BaseStepper):
     self.prefill_next_token = None
     self.current_pos = None
     self._decode_model = None
+    self._decode_attention_mask = None
     self._prefill_cache_snapshot = None
     self._prefill_linear_states = None
     self._prefill_module_states = None
@@ -556,6 +594,18 @@ class DecodeStepper(common.BaseStepper):
 
     _activate_past_recording(self.cache)
 
+    self._decode_attention_mask = None
+    if isinstance(
+        self.cache, cache_utils.StaticCache
+    ) and _static_decode_inputs_supported(cfg):
+      # Long rather than bool: some models do arithmetic on the mask.
+      self._decode_attention_mask = torch.ones(
+          self.batch_size,
+          self.prompt_len + self.output_tokens,
+          dtype=torch.long,
+          device=self.device,
+      )
+
     self.next_token = None
     self.prefill_next_token = None
     self.current_pos = None
@@ -626,8 +676,13 @@ class DecodeStepper(common.BaseStepper):
           and not has_var_kwargs
       ):
         del call_kwargs["cache_position"]
+      for name in _OPTIONAL_DECODE_KWARGS:
+        if name not in params or "past_key_values" not in params:
+          call_kwargs.pop(name, None)
     else:
       call_kwargs["past_key_values"] = cache
+      for name in _OPTIONAL_DECODE_KWARGS:
+        call_kwargs.pop(name, None)
 
     return call_kwargs
 
@@ -834,10 +889,17 @@ class DecodeStepper(common.BaseStepper):
         decode_output = None
         for _ in range(self.output_tokens):
           cache_position = torch.tensor([self.current_pos], device=self.device)
+          step_kwargs = {"use_cache": True, "cache_position": cache_position}
+          if self._decode_attention_mask is not None:
+            assert self.current_pos is not None and self.batch_size is not None
+            step_kwargs["attention_mask"] = self._decode_attention_mask
+            step_kwargs["position_ids"] = torch.full(
+                (self.batch_size, 1), self.current_pos, device=self.device
+            )
           decode_output = self._inner_stepper(
               self._decode_model,
               self.next_token,
-              {"use_cache": True, "cache_position": cache_position},
+              step_kwargs,
               self.cache,
           )
           logits = self._unpack_output_and_update_cache(decode_output)
