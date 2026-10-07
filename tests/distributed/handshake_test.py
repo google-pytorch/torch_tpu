@@ -740,6 +740,51 @@ class HandshakeServerClientBackendTest(seed_test_utils.RepeatableTest):
       server.close()
       loop.close()
 
+  def test_handshake_server_replies_to_remote_ranks_before_coordinator(
+      self,
+  ) -> None:
+    """Tests _HandshakeServer replies to remote ranks before coordinator."""
+    port = portpicker.pick_unused_port()
+    server = _HandshakeServer(current_rank=0, port=port, world_size=3)
+    client1 = _ZMQClient(port=port, routing_id=b"rank-1")
+    client2 = _ZMQClient(port=port, routing_id=b"rank-2")
+
+    replied_ranks: list[int] = []
+    original_reply_to_rank = server._reply_to_rank
+
+    async def record_reply_to_rank(
+        rank: int, client_id: bytes, response: CollectiveHandshakeResponse
+    ) -> None:
+      replied_ranks.append(rank)
+      await original_reply_to_rank(rank, client_id, response)
+
+    try:
+      with mock.patch.object(
+          server, "_reply_to_rank", side_effect=record_reply_to_rank
+      ):
+        participating_ranks = [0, 1, 2]
+        # Coordinator rank submits first so self._current_rank is the first key
+        # in received_msgs.
+        server.send(
+            _make_request(rank=0, participating_ranks=participating_ranks)
+        )
+        client1.send(
+            _make_request(rank=1, participating_ranks=participating_ranks)
+        )
+        client2.send(
+            _make_request(rank=2, participating_ranks=participating_ranks)
+        )
+
+        self.assertTrue(server.recv().success)
+        self.assertTrue(client1.recv().success)
+        self.assertTrue(client2.recv().success)
+
+      self.assertEqual(replied_ranks, [1, 2, 0])
+    finally:
+      client1.close()
+      client2.close()
+      server.close()
+
 
 def test_wrapper(
     target_fn: Callable[..., Any], *args: Any, **kwargs: Any

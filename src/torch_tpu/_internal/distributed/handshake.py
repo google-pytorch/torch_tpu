@@ -1219,9 +1219,21 @@ class _HandshakeServer(_HandshakeBackend):
         )
         consensus_response = CollectiveHandshakeResponse(success=all_match)
 
+        # We first reply to all ranks that are not the current rank, and then we
+        # reply to the current rank.
+        # We do this to avoid GIL contention between the main thread and the loop
+        # runner thread which would cause us to wait before sending out replies
+        # to other ranks.
         for r in received_msgs.keys():
+          if r != self._current_rank:
+            await self._reply_to_rank(
+                r, client_ids.get(r, b""), consensus_response
+            )
+        if self._current_rank in received_msgs:
           await self._reply_to_rank(
-              r, client_ids.get(r, b""), consensus_response
+              self._current_rank,
+              client_ids.get(self._current_rank, b""),
+              consensus_response,
           )
 
         await self._exhaust_ranks(received_msgs)
