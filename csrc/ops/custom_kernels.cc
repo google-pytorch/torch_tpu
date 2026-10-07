@@ -32,6 +32,7 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
@@ -62,14 +63,17 @@
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/transforms/Passes.h"
 #include "xla/hlo/analysis/alias_info.h"
+#include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_instruction.h"
+#include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/hlo/ir/hlo_module.h"
+#include "xla/hlo/ir/hlo_opcode.h"
+#include "xla/hlo/ir/replica_group.h"
 #include "xla/hlo/pass/hlo_pass_pipeline.h"
 #include "xla/hlo/transforms/simplifiers/flatten_call_graph.h"
 #include "xla/hlo/transforms/simplifiers/hlo_dce.h"
 #include "xla/hlo/translate/stablehlo.h"
 #include "xla/mlir/utils/error_util.h"
-#include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 #include "xla/pjrt/mlir_to_hlo.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_compiler.h"
@@ -218,14 +222,9 @@ absl::Status SpecializeCustomMlirKernel(
   return absl::OkStatus();
 }
 
-void RemoveCopyOps(mlir::ModuleOp module) {
-  module.walk([&](mlir::mhlo::CopyOp copy_op) {
-    copy_op.replaceAllUsesWith(copy_op.getOperand());
-  });
-}
-
-void RemoveSpmdParametersShardings(mlir::ModuleOp module) {
+void RemoveSpmdModuleShardings(mlir::ModuleOp module) {
   module->removeAttr("mhlo.spmd_parameters_shardings");
+  module->removeAttr("mhlo.spmd_output_sharding");
 }
 
 absl::Status AddTpuPartitioningPasses(xla::HloModule* module,
@@ -334,6 +333,40 @@ absl::Status PartitionGlobalToLocal(
 
   TT_RETURN_IF_ERROR(pass.Run(hlo_module.get()).status());
 
+  for (xla::HloComputation* computation : hlo_module->computations()) {
+    std::vector<xla::HloInstruction*> instructions(
+        computation->instructions().begin(), computation->instructions().end());
+    for (xla::HloInstruction* instruction : instructions) {
+      instruction->clear_sharding();
+      xla::FrontendAttributes cleaned_attrs;
+      for (const auto& [key, val] : instruction->frontend_attributes().map()) {
+        if (!absl::StartsWith(key, "xla.sdy.")) {
+          (*cleaned_attrs.mutable_map())[key] = val;
+        }
+      }
+      instruction->set_frontend_attributes(std::move(cleaned_attrs));
+
+      if (instruction->opcode() == xla::HloOpcode::kCopy) {
+        TT_RETURN_IF_ERROR(instruction->DropAllControlDeps());
+        TT_RETURN_IF_ERROR(computation->ReplaceInstruction(
+            instruction, instruction->mutable_operand(0)));
+        continue;
+      }
+
+      if (auto* collective =
+              xla::DynCast<xla::HloCollectiveInstruction>(instruction)) {
+        if (collective->device_list() != nullptr &&
+            collective->device_list()->version() !=
+                xla::CollectiveDeviceListVersion::kListOfLists) {
+          collective->set_device_list(
+              std::make_shared<xla::CollectiveDeviceList>(
+                  xla::ConvertToV1CollectiveDeviceList(
+                      *collective->device_list())));
+        }
+      }
+    }
+  }
+
   //////////////////////////////////////////////////////////////////////////////
   // Convert HLO back to StableHLO.
   TT_ASSIGN_OR_RETURN(auto new_module_owned,
@@ -357,8 +390,7 @@ absl::Status PartitionGlobalToLocal(
 
   new_module.erase();
 
-  RemoveCopyOps(module);
-  RemoveSpmdParametersShardings(module);
+  RemoveSpmdModuleShardings(module);
 
   return absl::OkStatus();
 }
