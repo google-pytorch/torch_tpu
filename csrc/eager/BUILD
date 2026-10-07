@@ -96,8 +96,11 @@ torch_tpu_cc_test(
     tags = if_oss(["requires-tpu-v5lite"]),
     deps = [
         ":device_buffer",
+        ":structured_log_buffer",
         ":traversal",
         "//csrc/common:cache_key",
+        "//csrc/common:compilation",
+        "//csrc/common:compilation_cache",
         "//csrc/common:compilation_spec",
         "//csrc/common:compile_options_key",
         "//csrc/common:dimension_types",

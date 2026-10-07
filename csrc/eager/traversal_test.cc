@@ -16,6 +16,8 @@
 
 #include "csrc/eager/traversal.h"
 
+#include <atomic>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -26,6 +28,8 @@
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/compilation.h"
+#include "csrc/common/compilation_cache.h"
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/compile_options_key.h"
 #include "csrc/common/dimension_types.h"
@@ -33,6 +37,7 @@
 #include "csrc/common/shape.h"
 #include "csrc/common/status_test_utils.h"
 #include "csrc/eager/device_buffer.h"
+#include "csrc/eager/structured_log_buffer.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/python_context.h"
@@ -53,10 +58,25 @@ absl::StatusOr<DynamicMlirOpResults> DummyBuilder(
 
 class TraversalTest : public testing::Test {
  protected:
+  void SetUp() override {
+    CompilationCache::GetInstance().SetAllowCacheMode(false);
+    // Ensure each test invocation receives a globally unique CompileOptionsKey
+    // to avoid inter-test collisions in the process-global CompilationCache.
+    static std::atomic<int> key_counter = 10000;
+    compile_options_key_ = CompileOptionsKey(++key_counter);
+  }
+
+  void TearDown() override {
+    CompilationCache::GetInstance().EvictAll();
+    CompilationCache::GetInstance().SetAllowCacheMode(true);
+  }
+
   // Automatically handles Python context for every test.
   ScopedPythonContextCapturer capturer_{OpName::kEmpty};
   // Common shape used for creating deferred buffers.
   Shape shape_{Dimensions{8}, mlir::ElementType::F32};
+  // Unique CompileOptionsKey per test invocation.
+  CompileOptionsKey compile_options_key_{0};
 };
 
 TEST_F(TraversalTest, ReadableString) {
@@ -253,15 +273,15 @@ TEST_F(TraversalTest, CompileAnnotatesArgumentLayouts) {
       Traversal::Create({ref_b}, {ref_a.device_buffer_list().get()}));
 
   CompilationSpec spec(std::make_unique<xla::CompileOptions>(),
-                       CompileOptionsKey(12345));
+                       compile_options_key_);
   std::string mlir_text;
-  ASSERT_TRUE(
-      traversal
-          ->Compile(
-              std::move(spec), &mlir_text,
-              /*use_stablehlo_bounds=*/false,
-              /*argument_layouts=*/{CustomLayout{.minor_to_major = {1, 0}}})
-          .ok());
+  TT_ASSERT_OK_AND_ASSIGN(
+      const CompiledKernel kernel,
+      traversal->Compile(
+          std::move(spec), &mlir_text,
+          /*use_stablehlo_bounds=*/false,
+          /*argument_layouts=*/{CustomLayout{.minor_to_major = {1, 0}}}));
+  kernel.fixed_shape_kernel.wait();
   EXPECT_THAT(mlir_text, testing::HasSubstr("mhlo.layout_mode = \"{1,0}\""));
 }
 
@@ -292,12 +312,13 @@ TEST_F(TraversalTest, CompileAnnotatesArgumentLayoutsWithTilingAndCaching) {
   CustomLayout tiled_layout{.minor_to_major = {1, 0}, .tiles = {{8}}};
   ref_b.set_layout(tiled_layout);
   CompilationSpec spec(std::make_unique<xla::CompileOptions>(),
-                       CompileOptionsKey(12345));
+                       compile_options_key_);
   std::string mlir_text;
-  ASSERT_TRUE(tr->Compile(std::move(spec), &mlir_text,
-                          /*use_stablehlo_bounds=*/false,
-                          /*argument_layouts=*/{tiled_layout})
-                  .ok());
+  TT_ASSERT_OK_AND_ASSIGN(const CompiledKernel kernel,
+                          tr->Compile(std::move(spec), &mlir_text,
+                                      /*use_stablehlo_bounds=*/false,
+                                      /*argument_layouts=*/{tiled_layout}));
+  kernel.fixed_shape_kernel.wait();
   EXPECT_THAT(
       mlir_text,
       testing::HasSubstr(
@@ -307,12 +328,12 @@ TEST_F(TraversalTest, CompileAnnotatesArgumentLayoutsWithTilingAndCaching) {
 
   CustomLayout different_tile_layout{.minor_to_major = {1, 0}, .tiles = {{16}}};
   CompilationCacheKey key_untiled = tr->GetCacheKey(
-      CompileOptionsKey(12345), {CustomLayout{.minor_to_major = {1, 0}}},
+      compile_options_key_, {CustomLayout{.minor_to_major = {1, 0}}},
       /*donated_inputs=*/{});
   CompilationCacheKey key_tiled8 = tr->GetCacheKey(
-      CompileOptionsKey(12345), {tiled_layout}, /*donated_inputs=*/{});
+      compile_options_key_, {tiled_layout}, /*donated_inputs=*/{});
   CompilationCacheKey key_tiled16 =
-      tr->GetCacheKey(CompileOptionsKey(12345), {different_tile_layout},
+      tr->GetCacheKey(compile_options_key_, {different_tile_layout},
                       /*donated_inputs=*/{});
   EXPECT_NE(key_untiled, key_tiled8);
   EXPECT_NE(key_tiled8, key_tiled16);
@@ -389,23 +410,21 @@ TEST_F(TraversalTest, CompilePopulatesAndResetsOutCacheKey) {
       Traversal::Create({ref_b}, {ref_a.device_buffer_list().get()}));
 
   CustomLayout tiled_layout{.minor_to_major = {1, 0}, .tiles = {{8}}};
-  // Use a CompileOptionsKey distinct from the other tests in this file. The
-  // CompilationCache is a process-global singleton, so sharing a key here would
-  // let this test prime the entry that
-  // CompileAnnotatesArgumentLayoutsWithTilingAndCaching expects to miss.
-  const CompileOptionsKey kCompileOptionsKey(54321);
   CompilationSpec spec(std::make_unique<xla::CompileOptions>(),
-                       kCompileOptionsKey);
+                       compile_options_key_);
   std::optional<CompilationCacheKey> out_cache_key;
-  ASSERT_TRUE(tr->Compile(spec, /*out_mlir_text=*/nullptr,
-                          /*use_stablehlo_bounds=*/false,
-                          /*argument_layouts=*/{tiled_layout},
-                          /*donated_inputs=*/{},
-                          /*module_name=*/std::nullopt, &out_cache_key)
-                  .ok());
+  TT_ASSERT_OK_AND_ASSIGN(
+      const CompiledKernel kernel,
+      tr->Compile(spec, /*out_mlir_text=*/nullptr,
+                  /*use_stablehlo_bounds=*/false,
+                  /*argument_layouts=*/{tiled_layout},
+                  /*donated_inputs=*/{},
+                  /*module_name=*/std::nullopt, &out_cache_key));
+  kernel.fixed_shape_kernel.wait();
   ASSERT_TRUE(out_cache_key.has_value());
-  EXPECT_EQ(*out_cache_key, tr->GetCacheKey(kCompileOptionsKey, {tiled_layout},
-                                            /*donated_inputs=*/{}));
+  EXPECT_EQ(*out_cache_key,
+            tr->GetCacheKey(compile_options_key_, {tiled_layout},
+                            /*donated_inputs=*/{}));
 
   // Verify that an early validation failure resets out_cache_key to nullopt.
   EXPECT_FALSE(tr->Compile(spec, /*out_mlir_text=*/nullptr,
