@@ -195,6 +195,13 @@ mlir::torch_tpu::Tiling CreateTiling(
     }
   }
 
+  // Avoid odd multiples of 256 (such as 1280 or 1792) where
+  // GetKvComputeTileSize drops kc down to 256; snapping down to a 1024 multiple
+  // keeps kc = 1024 while strictly reducing VMEM usage.
+  if (kt > 1024 && GetKvComputeTileSize(kt) < 512) {
+    kt = (kt / 1024) * 1024;
+  }
+
   return {
       .qt = qt,
       .kt = kt,
