@@ -347,9 +347,9 @@ def set_tpu_launch_env(
   Raises:
     ValueError: If `nnodes` and `TPU_WORKER_HOSTNAMES` disagree on the number of
       hosts, if no TPU devices are found on single-host, or, on multi-host, if
-      `TPU_WORKER_HOSTNAMES` is unset or `NODE_RANK` is unset and can be derived
-      neither from the TPU device coordinates and `TORCH_TPU_TOPOLOGY` nor from
-      `JOB_COMPLETION_INDEX`.
+      `TPU_WORKER_HOSTNAMES` is needed to derive an unset variable but is unset,
+      or `NODE_RANK` is unset and can be derived neither from the TPU device
+      coordinates and `TORCH_TPU_TOPOLOGY` nor from `JOB_COMPLETION_INDEX`.
   """
   multiprocessing.init_spawn()
 
@@ -383,12 +383,16 @@ def set_tpu_launch_env(
   )
 
   if is_multihost:
-    if not worker_hostnames:
-      raise ValueError(
-          "set_tpu_launch_env(): expected environment variable "
-          "TPU_WORKER_HOSTNAMES to be a comma-separated list of worker "
-          "hostnames or IP addresses, got it as unset"
-      )
+
+    def require_worker_hostnames() -> list[str]:
+      """Returns the parsed worker hostnames, which must not be empty."""
+      if not worker_hostnames:
+        raise ValueError(
+            "set_tpu_launch_env(): expected environment variable "
+            "TPU_WORKER_HOSTNAMES to be a comma-separated list of worker "
+            "hostnames or IP addresses, got it as unset"
+        )
+      return worker_hostnames
 
     # Only a topology supplied from the outside describes the whole slice, so
     # read it before the auto-detected, host-local one below is filled in. Read
@@ -400,6 +404,7 @@ def set_tpu_launch_env(
 
     def build_slicebuilder_addresses() -> str:
       """Returns one address per device across all worker hosts."""
+      hosts = require_worker_hostnames()
       base_port = env.get_int_env_once(
           "TORCH_TPU_BASE_PORT", default_value=8070
       )
@@ -409,7 +414,7 @@ def set_tpu_launch_env(
       )
       return ",".join(
           f"{host}:{base_port + i}"
-          for host in worker_hostnames
+          for host in hosts
           for i in range(devices_per_host)
       )
 
@@ -417,8 +422,14 @@ def set_tpu_launch_env(
         "TORCH_TPU_SLICEBUILDER_ADDRESSES", build_slicebuilder_addresses
     )
 
-    resolved_nnodes = nnodes if nnodes is not None else len(worker_hostnames)
-    env_utils.get_and_set_str_env_once("NNODES", lambda: str(resolved_nnodes))
+    def resolve_nnodes() -> str:
+      """Returns the total number of hosts in the job."""
+      resolved = (
+          nnodes if nnodes is not None else len(require_worker_hostnames())
+      )
+      return str(resolved)
+
+    env_utils.get_and_set_str_env_once("NNODES", resolve_nnodes)
 
     def resolve_node_rank() -> str:
       """Returns this host's rank, by physical coordinates when available."""
@@ -432,7 +443,7 @@ def set_tpu_launch_env(
     env_utils.get_and_set_str_env_once("NODE_RANK", resolve_node_rank)
 
     env_utils.get_and_set_str_env_once(
-        "MASTER_ADDR", lambda: worker_hostnames[0]
+        "MASTER_ADDR", lambda: require_worker_hostnames()[0]
     )
     env_utils.get_and_set_str_env_once("MASTER_PORT", lambda: "29500")
 

@@ -165,6 +165,22 @@ class EnvironmentTest(seed_test_utils.RepeatableTest):
       self.assertEqual(os.environ.get("MASTER_ADDR"), "host1")
       self.assertEqual(os.environ.get("MASTER_PORT"), "29500")
 
+  def test_multihost_keeps_pinned_env_without_worker_hostnames(self):
+    pinned_env = {
+        "TORCH_TPU_SLICEBUILDER_ADDRESSES": "host0:8070,host1:8070",
+        "TORCH_TPU_TOPOLOGY": "2,2,2,2",
+        "TORCH_TPU_XPROF_SESSION_ID": "12345",
+        "NNODES": "2",
+        "NODE_RANK": "0",
+        "MASTER_ADDR": "host0",
+        "MASTER_PORT": "29500",
+        "JOB_COMPLETION_INDEX": "0",
+    }
+    with _mock_env(pinned_env):
+      distributed.set_tpu_launch_env(nproc_per_node=8)
+      for key, expected_val in pinned_env.items():
+        self.assertEqual(os.environ.get(key), expected_val)
+
   def test_print_launch_env_singlehost(self):
     with _mock_env({}):
       with (

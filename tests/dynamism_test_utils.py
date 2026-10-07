@@ -482,6 +482,7 @@ class DynamicOpInfo:
         ForEachDynamicOpInfo,
         MatmulDynamicOpInfo,
         SdpaDynamicOpInfo,
+        LinearDynamicOpInfo,
         BinaryElementwiseDynamicOpInfo,
         TernaryElementwiseDynamicOpInfo,
         ConvolutionDynamicOpInfo,
@@ -749,6 +750,38 @@ class MatmulDynamicOpInfo(DynamicOpInfo):
       elif idx < lhs_ndim - 2:
         _mark_numpy_broadcastable_arg_dynamic(rhs, like, idx, ub, mode=mode)
     return
+
+
+class LinearDynamicOpInfo(DynamicOpInfo):
+  """A wrapper around nn.functional.linear OpInfo that supports bounded dynamism."""
+
+  @staticmethod
+  def adapter_supports_op(op_info: core.OpInfo) -> bool:
+    """Method to declare ops supported by this adapter."""
+    return op_info.name == "nn.functional.linear"
+
+  def _mark_dependent_arg_dynamic(
+      self,
+      args: Sequence[Any],
+      like: torch.Tensor,
+      idx: int,
+      ub: int,
+      mode: DynamismMode = DynamismMode.EAGER,
+      kwargs: Mapping[str, Any] | None = None,
+  ):
+    """Marks weight's contracting dim dynamic when input's last dim is dynamic."""
+    del kwargs
+    weight = args[0]
+    if isinstance(weight, torch.Tensor) and idx == like.ndim - 1:
+      weight_cdim = weight.ndim - 1
+      if weight.shape[weight_cdim] > 1:
+        weight_value_str = utils.get_tensor_summary(weight, data=False)
+        print(
+            f">>>> Marking dim {weight_cdim} dynamic [<={ub}] in"
+            f" {weight_value_str} (mode={mode.value})",
+            flush=True,
+        )
+        _mark_tensor_dynamic(weight, weight_cdim, 2, ub, mode=mode)
 
 
 class ConvolutionDynamicOpInfo(DynamicOpInfo):

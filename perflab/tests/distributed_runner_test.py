@@ -353,6 +353,46 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
         "v7_2x2x2",
     )
 
+  @mock.patch.object(export_lib, "export")
+  @mock.patch.object(mp, "spawn")
+  @mock.patch.object(distributed_runner, "resolve_benchmark_targets")
+  def test_main_multihost_tpu_with_pinned_env_and_no_worker_hostnames(
+      self, mock_resolve_targets, mock_mp_spawn, mock_export
+  ):
+    dummy_spec = mock.MagicMock(spec=registry_lib.BenchmarkSpec)
+    dummy_spec.name = "dummy"
+    dummy_spec.skipped_run_modes = set()
+    mock_resolve_targets.return_value = [
+        (dummy_spec, common.RunMode.EAGER_DEFAULT)
+    ]
+    pinned_env = {
+        "BENCHMARK_PLATFORM": "v7_2x2x2",
+        "TESTBRIDGE_TEST_ONLY": "dummy_eager_default",
+        "JOB_COMPLETION_INDEX": "0",
+        "NNODES": "2",
+        "NODE_RANK": "0",
+        "WORLD_SIZE": "16",
+        "MASTER_ADDR": "host0",
+        "MASTER_PORT": "29500",
+        "TORCH_TPU_TOPOLOGY": "2,2,2,2",
+        "TORCH_TPU_SLICEBUILDER_ADDRESSES": "host0:8070,host1:8070",
+    }
+
+    with (
+        mock.patch.dict(os.environ, pinned_env, clear=True),
+        mock.patch.object(
+            distributed_runner.distributed_utils.env,
+            "get_str_env_once",
+            side_effect=lambda name, default_value=None: os.environ.get(
+                name, default_value
+            ),
+        ),
+    ):
+      distributed_runner.main(["distributed_runner"])
+
+    mock_mp_spawn.assert_called_once()
+    mock_export.assert_not_called()
+
   @mock.patch.dict(os.environ, {"BENCHMARK_PLATFORM": "v7_2x2x1"})
   @mock.patch("torch.tpu.distributed.set_tpu_launch_env")
   @mock.patch.object(distributed_runner.distributed_utils, "dist_run")

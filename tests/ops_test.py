@@ -517,6 +517,12 @@ ACCURACY_OVERRIDES_VS_GPU = {
     "nn.functional.group_norm": {
         torch.bfloat16: {"rtol": 3.3e-2, "atol": 8e-2},
     },
+    "nn.functional.linear": {
+        torch.bfloat16: {"rtol": 8.7e-3, "atol": 1.9e-2},
+        torch.complex64: {"rtol": 2.2e-2, "atol": 3.5e-2},
+        torch.float16: {"rtol": 1.9e-2, "atol": 1.5e-2},
+        torch.float32: {"rtol": 2.0e-2, "atol": 1.7e-2},
+    },
     "nn.functional.scaled_dot_product_attention": {
         torch.bfloat16: {"rtol": 3.3e-1, "atol": 4e-1},
         torch.float16: {"rtol": 5e-1, "atol": 5.4e-1},
@@ -990,6 +996,10 @@ ACCURACY_OVERRIDES_GRAD_VS_GPU: dict[
         "nn.functional.interpolate": {
             torch.bfloat16: {"rtol": 2.7e-2, "atol": 7.9e-2},
             torch.float16: {"rtol": 1.8e-3, "atol": 4e-3},
+        },
+        "nn.functional.linear": {
+            torch.float16: {"rtol": 3.6e-3, "atol": 5.9e-3},
+            torch.float32: {"rtol": 4.1e-3, "atol": 2.5e-3},
         },
         "nn.functional.max_pool2d": {
             torch.float32: {"atol": 11},
@@ -3303,6 +3313,20 @@ class TestOps(op_testing.OpInfoTestBase):
 
   def test_nn_functional_hardtanh(self):
     self.do_test_op("nn.functional.hardtanh")
+
+  def test_nn_functional_linear(self):
+    self.do_test_op(
+        "nn.functional.linear",
+        # GPU (CUDA) does not support integral or boolean dtypes for linear.
+        # In compiled mode, linear decomposes to addmm which does not yet
+        # support complex64.
+        exclude_dtypes={
+            "gpu": (
+                INTEGRAL_DTYPES
+                + _if_tpu_vs_gpu_compiled((torch.complex64,), ())
+            ),
+        },
+    )
 
   def test_nn_functional_silu(self):
     self.do_test_op(
