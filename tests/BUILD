@@ -2767,11 +2767,20 @@ torch_tpu_py_test(
     ],
 )
 
+# Paths in the TorchTPU repository, and its root in google3 and OSS, in runfiles
+# and in the workspace of `blaze run` / `bazel run`.
+torch_tpu_py_library(
+    name = "repo_paths",
+    srcs = ["repo_paths.py"],
+    visibility = ["//:__subpackages__"],
+)
+
 torch_tpu_py_library(
     name = "cpp_style_lib",
     testonly = True,
     srcs = ["cpp_style_lib.py"],
     visibility = ["//:__subpackages__"],
+    deps = [":repo_paths"],
 )
 
 torch_tpu_py_test(

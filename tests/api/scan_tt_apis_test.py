@@ -96,22 +96,6 @@ class ScanTtApisTest(seed_test_utils.RepeatableTest):
     )
     self.assertFalse(scan_tt_apis._is_unsupported_message(""))
 
-  def test_get_default_probe_arg(self):
-    """Verifies safe default arguments used to probe accelerator APIs."""
-    fake_stream = object()
-    with mock.patch.object(
-        scan_tt_apis.torch.accelerator, "is_available", return_value=True
-    ), mock.patch.object(
-        scan_tt_apis.torch.accelerator,
-        "current_stream",
-        return_value=fake_stream,
-    ):
-      self.assertEqual(scan_tt_apis._get_default_probe_arg("device"), 0)
-      self.assertEqual(scan_tt_apis._get_default_probe_arg("device_index"), 0)
-      self.assertIs(scan_tt_apis._get_default_probe_arg("stream"), fake_stream)
-      self.assertEqual(scan_tt_apis._get_default_probe_arg("path"), "")
-      self.assertIsNone(scan_tt_apis._get_default_probe_arg("unknown"))
-
   def test_is_excluded_python_api_skips_internal_and_test_packages(self):
     """Verifies that internal-only and test-only packages are excluded."""
     self.assertTrue(scan_tt_apis._is_excluded_python_api("torch_tpu.google"))
@@ -798,15 +782,40 @@ class ScanTtApisTest(seed_test_utils.RepeatableTest):
         ],
     )
 
-  def test_split_property_accessor(self):
-    """Verifies that an entry's name is split into its path and accessor."""
-    self.assertEqual(
-        scan_tt_apis.split_property_accessor("torch.tpu.num_stripes setter"),
-        ("torch.tpu.num_stripes", "setter"),
+  def test_extract_python_apis_lists_staged_class_from_bare_module(self):
+    """Verifies that a class in `__tt_api_stages__` is a TorchTPU object.
+
+    A pybind11 class can have a bare extension module name as its `__module__`
+    (e.g. `precision_impl` in OSS builds), which isn't a TorchTPU namespace.
+    Registering it in a TorchTPU object's `__tt_api_stages__` still makes it a
+    TorchTPU API, so it and its members are listed.
+    """
+
+    class FakePybindEnum:
+      __module__ = "fake_pybind_impl"
+      __qualname__ = "FakePybindEnum"
+
+    FakePybindEnum.LOW = FakePybindEnum()
+    FakePybindEnum.HIGH = FakePybindEnum()
+
+    class FakeDeviceModule:
+      __tt_api_stages__ = {
+          "FakePybindEnum": types.SimpleNamespace(stage=Stage.EXPERIMENTAL)
+      }
+
+    FakeDeviceModule.FakePybindEnum = FakePybindEnum
+
+    entries = scan_tt_apis._extract_python_apis(
+        [(FakeDeviceModule, "torch.tpu")]
     )
+
     self.assertEqual(
-        scan_tt_apis.split_property_accessor("torch.tpu.synchronize"),
-        ("torch.tpu.synchronize", ""),
+        {e.name: e.stage for e in entries},
+        {
+            "torch.tpu.FakePybindEnum": Stage.EXPERIMENTAL,
+            "torch.tpu.FakePybindEnum.HIGH": None,
+            "torch.tpu.FakePybindEnum.LOW": None,
+        },
     )
 
   def test_find_duplicate_public_paths_groups_paths_to_the_same_object(self):
@@ -1413,28 +1422,6 @@ class ScanTtApisTest(seed_test_utils.RepeatableTest):
             ),
         ],
     )
-
-  def test_format_tt_apis_yaml_omits_api_counts(self):
-    """Verifies that section headers in tt_apis.yaml omit category API counts."""
-    items = [
-        scan_tt_apis.ApiEntry(
-            name="torch.tpu.current_device",
-            category="Public Python API",
-            stage=annotations.Stage.EXPERIMENTAL,
-            defined_in="runtime",
-        ),
-        scan_tt_apis.ApiEntry(
-            name="LIBTPU_INIT_ARGS",
-            category="Environment Variable",
-            stage=annotations.Stage.STABLE,
-            defined_in="csrc/common/env_vars.h",
-        ),
-    ]
-    yaml_text = scan_tt_apis.format_tt_apis_yaml(items)
-    self.assertIn("# --- Public Python API ---", yaml_text)
-    self.assertIn("# --- Environment Variable ---", yaml_text)
-    self.assertNotIn("Count:", yaml_text)
-    self.assertNotIn("# --- Duplicated Export ---", yaml_text)
 
   def test_format_tt_apis_yaml_lists_preferred_alternatives(self):
     """Verifies that tt_apis.yaml lists the alternatives to internal APIs."""

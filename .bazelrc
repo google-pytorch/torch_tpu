@@ -331,15 +331,15 @@ common:bench --strategy=TestRunner=standalone,local
 # Settings specific to CPU CI runs.
 common:ci_cpu --config=ci
 common:ci_cpu --build_tag_filters=-nobuild,-requires-gpu,-requires-tpu,-cuda-build-test
-common:ci_cpu --test_tag_filters=-nobuild,-notest,-requires-gpu,-requires-tpu,-cuda-build-test
+common:ci_cpu --test_tag_filters=-nobuild,-notest,-requires-gpu,-requires-tpu,-cuda-build-test,-requires-newest-deps
 
 # Settings specific to CPU presubmit.
 common:ci_cpu_presubmit --config=ci_cpu
-common:ci_cpu_presubmit --test_tag_filters=-nobuild,-notest,-requires-gpu,-requires-tpu,-nopresubmit,-cuda-build-test
+common:ci_cpu_presubmit --test_tag_filters=-nobuild,-notest,-requires-gpu,-requires-tpu,-nopresubmit,-cuda-build-test,-requires-newest-deps
 
 # Settings for nightly runs on CPU.
 common:ci_cpu_nightly --config=ci_cpu
-common:ci_cpu_nightly --test_tag_filters=-nobuild,-notest,-requires-gpu,-requires-tpu,-nonightly,-cuda-build-test
+common:ci_cpu_nightly --test_tag_filters=-nobuild,-notest,-requires-gpu,-requires-tpu,-nonightly,-cuda-build-test,-requires-newest-deps
 
 # Settings specific to TPU CI runs.
 common:ci_tpu_base --config=ci
@@ -348,7 +348,7 @@ common:ci_tpu_base --strategy=TestRunner=standalone,local
 
 # Settings for nightly runs on TPU.
 common:ci_tpu_nightly --config=ci_tpu_base
-common:ci_tpu_nightly --test_tag_filters=requires-tpu,-notest,-nobuild,-nonightly
+common:ci_tpu_nightly --test_tag_filters=requires-tpu,-notest,-nobuild,-nonightly,-requires-newest-deps
 common:ci_tpu_nightly --test_timeout=-1,-1,-1,4800
 common:ci_tpu_nightly --local_test_jobs=8
 
@@ -369,33 +369,43 @@ common:ci_tpu_nightly --local_test_jobs=8
 
 # Runs on linux-x86-ct5lp-224-8tpu.
 common:ci_tpu_v5 --config=ci_tpu_base
-common:ci_tpu_v5 --test_tag_filters=requires-tpu,-notest,-nobuild,-fails-on-tpu-v5
+common:ci_tpu_v5 --test_tag_filters=requires-tpu,-notest,-nobuild,-fails-on-tpu-v5,-requires-newest-deps
 common:ci_tpu_v5 --local_test_jobs=8
 
 common:ci_tpu_v5_presubmit --config=ci_tpu_v5
-common:ci_tpu_v5_presubmit --test_tag_filters=-notest,-nobuild,-nopresubmit,-fails-on-tpu-v5,presubmit-v5
+common:ci_tpu_v5_presubmit --test_tag_filters=-notest,-nobuild,-nopresubmit,-fails-on-tpu-v5,presubmit-v5,-requires-newest-deps
+
+# Runs only the tests tagged `requires-newest-deps`, which need the newest
+# supported dependencies (requirements/requirements_3_14_latest.txt). Every
+# other CI config excludes them.
+common:ci_tpu_v5_newest_deps --config=ci_tpu_v5
+common:ci_tpu_v5_newest_deps --test_tag_filters=requires-newest-deps,-notest,-nobuild,-fails-on-tpu-v5
 
 # Runs on linux-x86-ct6e-180-8tpu.
 common:ci_tpu_v6 --config=ci_tpu_base
-common:ci_tpu_v6 --test_tag_filters=requires-tpu,-notest,-nobuild,-fails-on-tpu-v6
+common:ci_tpu_v6 --test_tag_filters=requires-tpu,-notest,-nobuild,-fails-on-tpu-v6,-requires-newest-deps
 common:ci_tpu_v6 --local_test_jobs=8
 
 common:ci_tpu_v6_presubmit --config=ci_tpu_v6
-common:ci_tpu_v6_presubmit --test_tag_filters=-notest,-nobuild,-nopresubmit,-fails-on-tpu-v6,presubmit-v6
+common:ci_tpu_v6_presubmit --test_tag_filters=-notest,-nobuild,-nopresubmit,-fails-on-tpu-v6,presubmit-v6,-requires-newest-deps
 
 # Runs on linux-x86-tpu7x-224-4tpu.
 common:ci_tpu_v7 --config=ci_tpu_base
-common:ci_tpu_v7 --test_tag_filters=requires-tpu,-notest,-nobuild,-fails-on-tpu-v7
+common:ci_tpu_v7 --test_tag_filters=requires-tpu,-notest,-nobuild,-fails-on-tpu-v7,-requires-newest-deps
 common:ci_tpu_v7 --test_env=TORCH_TPU_ACCELERATOR_COUNT="4"
 common:ci_tpu_v7 --test_env=ALLOW_MULTIPLE_LIBTPU_LOAD=true
 common:ci_tpu_v7 --local_test_jobs=4
 
 common:ci_tpu_v7_presubmit --config=ci_tpu_v7
-common:ci_tpu_v7_presubmit --test_tag_filters=-notest,-nobuild,-nopresubmit,-fails-on-tpu-v7,presubmit-v7
+common:ci_tpu_v7_presubmit --test_tag_filters=-notest,-nobuild,-nopresubmit,-fails-on-tpu-v7,presubmit-v7,-requires-newest-deps
 
 common:ci_tpu_v7_nightly --config=ci_tpu_v7
-common:ci_tpu_v7_nightly --test_tag_filters=requires-tpu,-notest,-nobuild,-nonightly,-fails-on-tpu-v7
+common:ci_tpu_v7_nightly --test_tag_filters=requires-tpu,-notest,-nobuild,-nonightly,-fails-on-tpu-v7,-requires-newest-deps
 common:ci_tpu_v7_nightly --test_timeout=-1,-1,-1,4800
+
+# The TPU v7 counterpart of ci_tpu_v5_newest_deps.
+common:ci_tpu_v7_newest_deps --config=ci_tpu_v7
+common:ci_tpu_v7_newest_deps --test_tag_filters=requires-newest-deps,-notest,-nobuild,-fails-on-tpu-v7
 
 # Setting TPU support true for profiler trace.
 build --define=with_tpu_support=true
@@ -470,7 +480,7 @@ common:ci_rbe_presubmit --color=yes
 common:ci_rbe_presubmit --curses=no
 common:ci_rbe_presubmit --config=rbe_test_execution
 common:ci_rbe_presubmit --build_tag_filters=-nobuild,-requires-gpu,-cuda-build-test
-common:ci_rbe_presubmit --test_tag_filters=-nobuild,-notest,-nopresubmit,-requires-gpu,-cuda-build-test,-presubmit-v6,-presubmit-v7,-requires-tpu-v5lite:4,-requires-tpu-v5lite:8,-requires-tpu-v5p:4,-no-remote-exec
+common:ci_rbe_presubmit --test_tag_filters=-nobuild,-notest,-nopresubmit,-requires-gpu,-cuda-build-test,-presubmit-v6,-presubmit-v7,-requires-tpu-v5lite:4,-requires-tpu-v5lite:8,-requires-tpu-v5p:4,-no-remote-exec,-requires-newest-deps
 
 # TPU wheel version extras for local default builds.
 build --define WHEEL_VERSION_EXTRAS=
@@ -532,7 +542,7 @@ test:wheel_common_test --test_lang_filters=py  # Only run python tests
 # Config for CPU wheel test.
 test:wheel_test_cpu --config=ci_cpu
 test:wheel_test_cpu --config=wheel_common_test
-test:wheel_test_cpu --test_tag_filters=-nobuild,-notest,-nopresubmit,-requires-gpu,-requires-tpu,-wheel_test_excluded,-cuda-build-test
+test:wheel_test_cpu --test_tag_filters=-nobuild,-notest,-nopresubmit,-requires-gpu,-requires-tpu,-wheel_test_excluded,-cuda-build-test,-requires-newest-deps
 
 # Split wheel test configurations for presubmits
 test:wheel_test_tpu_v5 --config=wheel_common_test
@@ -548,9 +558,9 @@ test:wheel_test_tpu_v7 --config=ci_tpu_v7
 # Tests are assigned exactly one mutually exclusive presubmit-v{N} tag.
 # presubmit-v{N} must be the ONLY positive filter used here to prevent tests
 # from running on the wrong hardware.
-test:wheel_test_tpu_v5 --test_tag_filters=-notest,-nobuild,-nopresubmit,-wheel_test_excluded,-fails-on-tpu-v5,presubmit-v5
-test:wheel_test_tpu_v6 --test_tag_filters=-notest,-nobuild,-nopresubmit,-wheel_test_excluded,-fails-on-tpu-v6,presubmit-v6
-test:wheel_test_tpu_v7 --test_tag_filters=-notest,-nobuild,-nopresubmit,-wheel_test_excluded,-fails-on-tpu-v7,presubmit-v7
+test:wheel_test_tpu_v5 --test_tag_filters=-notest,-nobuild,-nopresubmit,-wheel_test_excluded,-fails-on-tpu-v5,presubmit-v5,-requires-newest-deps
+test:wheel_test_tpu_v6 --test_tag_filters=-notest,-nobuild,-nopresubmit,-wheel_test_excluded,-fails-on-tpu-v6,presubmit-v6,-requires-newest-deps
+test:wheel_test_tpu_v7 --test_tag_filters=-notest,-nobuild,-nopresubmit,-wheel_test_excluded,-fails-on-tpu-v7,presubmit-v7,-requires-newest-deps
 
 ###############################################################################
 # Allow per-user, project-specific bazelrc (gitignored).

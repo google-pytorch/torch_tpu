@@ -159,3 +159,41 @@ jobs:
           current_sha: ${{ inputs.override_current_sha || github.sha }}
           bazel_config: "ci_rbe_presubmit"
           test_all: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
+
+  # Runs the tests tagged `requires-newest-deps` (e.g. //tests/api:tt_apis_test,
+  # since tests/api/tt_apis.yaml tracks the public APIs with the newest
+  # supported dependencies) with those dependencies. The other jobs exclude
+  # them.
+  tpu_v5_newest_deps:
+    name: "Presubmit on TPU v5 (newest deps)"
+    runs-on: linux-x86-ct5lp-224-8tpu
+    container:
+      image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:30a9cf2ed330736957b3256dd3df69a13a556ae46626e9ad2ba205fa7a3c0051"  # Tag infrastructure-public-image-f0ac56f68949 (built 2026-09-21)
+      options: --ipc=host
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Fix Git Workspace Ownership
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Wait For Connection
+        uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
+        with:
+          halt-dispatch-input: ${{ inputs.halt-for-connection }}
+
+      - name: Use newest dependencies lock
+        run: cp requirements/requirements_3_14_latest.txt requirements/requirements_3_14.txt
+
+      - name: Run tests that require the newest dependencies
+        run: bazel test --config=ci_tpu_v5_newest_deps --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" //...
+
+      # E.g. the test outputs of tt_apis_test have the up-to-date tt_apis.yaml
+      # and public_apis.md.
+      - name: Upload Test Logs on Failure
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: failure()
+        with:
+          name: bazel-testlogs-newest-deps
+          path: bazel-testlogs/
+          retention-days: 7

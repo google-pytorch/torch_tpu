@@ -88,6 +88,7 @@ jobs:
             bazel_config: "ci_tpu_v5",
             extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
             use_latest_deps: true,
+            newest_deps_config: "ci_tpu_v5_newest_deps",
           },
           {
             name: "TPU v7 (newest deps)",
@@ -95,6 +96,7 @@ jobs:
             bazel_config: "ci_tpu_v7",
             extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
             use_latest_deps: true,
+            newest_deps_config: "ci_tpu_v7_newest_deps",
           }
         ]
     # Use self-hosted runners. See go/tt-devguide#test-machines for more details about the runners.
@@ -160,6 +162,11 @@ jobs:
       - name: Run Bazel Test
         if: steps.check_superseded.outputs.skip != 'true' && steps.check_superseded_midway.outputs.skip != 'true'
         run: bazel test --config=${{ matrix.job_info.bazel_config }} ${{ matrix.job_info.extra_flags }} //...
+      # The regular configs exclude the tests tagged `requires-newest-deps`; the
+      # newest-deps lanes run them here.
+      - name: Run tests that require the newest dependencies
+        if: steps.check_superseded.outputs.skip != 'true' && steps.check_superseded_midway.outputs.skip != 'true' && matrix.job_info.newest_deps_config
+        run: bazel test --config=${{ matrix.job_info.newest_deps_config }} ${{ matrix.job_info.extra_flags }} //...
       - name: Upload Test Logs on Failure
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         if: failure()
