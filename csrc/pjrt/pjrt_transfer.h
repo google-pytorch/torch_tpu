@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <vector>
 
 #include "ATen/core/TensorBody.h"
 #include "absl/status/status.h"
@@ -36,7 +37,8 @@ namespace torch_tpu {
 absl::StatusOr<DeviceBufferRef> TpuMallocAndMemcpyHtoD(
     const void* host_data, mlir::ElementType element_type,
     absl::Span<const int64_t> dimensions,
-    std::optional<at::Tensor> backing_tensor = std::nullopt);
+    std::optional<at::Tensor> backing_tensor = std::nullopt,
+    std::vector<uint8_t> backing_data = {});
 
 absl::StatusOr<at::Tensor> TpuMemcpyDtoH(const DeviceBufferRef& buffer_ref,
                                          bool non_blocking = false);

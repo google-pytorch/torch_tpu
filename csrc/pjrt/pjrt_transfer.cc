@@ -36,7 +36,6 @@
 #include "absl/strings/str_join.h"
 #include "absl/types/span.h"
 #include "c10/core/TensorImpl.h"
-#include "c10/util/Exception.h"
 #include "csrc/common/context_manager.h"
 #include "csrc/common/context_states.h"
 #include "csrc/common/dimension_types.h"
@@ -176,13 +175,27 @@ absl::Status TpuMemcpyDtoHFP4(xla::PjRtBuffer* absl_nonnull buffer,
 absl::StatusOr<DeviceBufferRef> TpuMallocAndMemcpyHtoD(
     const void* host_data, mlir::ElementType element_type,
     absl::Span<const int64_t> dimensions,
-    std::optional<at::Tensor> backing_tensor) {
+    std::optional<at::Tensor> backing_tensor,
+    std::vector<uint8_t> backing_data) {
   tsl::profiler::TraceMe trace("TpuMallocAndMemcpyHtoD");
-  if (backing_tensor.has_value() && backing_tensor->data_ptr() != host_data) {
-    return TT_ERROR(error::kInvalidArgument)
-           << "expected backing tensor data pointer to be " << host_data
-           << ", got " << backing_tensor->data_ptr();
+  if (backing_tensor.has_value()) {
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=not visible to Python
+        backing_data.empty(), error::kInvalidArgument)
+        << "expected at most one of backing_tensor or backing_data to be set";
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=not visible to Python
+        backing_tensor->data_ptr() == host_data, error::kInvalidArgument)
+        << "expected backing tensor data pointer to be " << host_data
+        << ", got " << backing_tensor->data_ptr();
+  } else if (!backing_data.empty()) {
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=not visible to Python
+        !backing_tensor.has_value(), error::kInvalidArgument)
+        << "expected at most one of backing_tensor or backing_data to be set";
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=not visible to Python
+        backing_data.data() == host_data, error::kInvalidArgument)
+        << "expected backing data pointer to be " << host_data << ", got "
+        << backing_data.data();
   }
+  bool non_blocking = backing_tensor.has_value() || !backing_data.empty();
 
   if (element_type == mlir::ElementType::F4E2M1FN) {
     ValidateFp4Dimensions(dimensions);
@@ -215,13 +228,14 @@ absl::StatusOr<DeviceBufferRef> TpuMallocAndMemcpyHtoD(
   xla::PjRtClient::HostBufferSemantics semantics =
       xla::PjRtClient::HostBufferSemantics::kImmutableUntilTransferCompletes;
   const void* effective_host_data = host_data;
-  std::vector<char> zeroed_host_data_for_alloc;
-  std::vector<uint8_t> temp_unpacked_data;
 
   if (host_data != nullptr && element_type == mlir::ElementType::F4E2M1FN) {
-    temp_unpacked_data =
+    // Unpack FP4 data from host_data into backing_data and use that as the
+    // effective_host_data.
+    backing_data =
         UnpackFp4(static_cast<const uint8_t*>(host_data), num_elements);
-    effective_host_data = temp_unpacked_data.data();
+    backing_tensor.reset();
+    effective_host_data = backing_data.data();
   } else if (host_data == nullptr && num_elements > 0) {
     size_t buffer_size_bytes =
         xla::ShapeUtil::ByteSizeOf(xla::ShapeUtil::MakeShape(type, dimensions));
@@ -230,9 +244,10 @@ absl::StatusOr<DeviceBufferRef> TpuMallocAndMemcpyHtoD(
                       "num_elements > 0. Creating temporary zeroed host buffer "
                       "of size "
                    << buffer_size_bytes << " bytes.";
-      zeroed_host_data_for_alloc.resize(buffer_size_bytes, 0);
-      effective_host_data = zeroed_host_data_for_alloc.data();
-
+      backing_tensor.reset();
+      backing_data.clear();
+      backing_data.resize(buffer_size_bytes, 0);
+      effective_host_data = backing_data.data();
     } else {
       ABSL_VLOG(1)
           << "[TpuMallocAndMemcpyHtoD INTERNAL] host_data is nullptr, "
@@ -251,7 +266,6 @@ absl::StatusOr<DeviceBufferRef> TpuMallocAndMemcpyHtoD(
 
   const xla::Layout* const layout_ptr =
       GetContextState<LayoutContextState>().value_or(nullptr).get();
-  bool keep_host_data_alive = backing_tensor.has_value();
 
   TT_ASSIGN_OR_RETURN(
       std::unique_ptr<xla::PjRtBuffer> buffer,
@@ -259,12 +273,12 @@ absl::StatusOr<DeviceBufferRef> TpuMallocAndMemcpyHtoD(
           client->BufferFromHostBuffer(
               effective_host_data, type, dimensions, std::nullopt, semantics,
               [backing_tensor = std::move(backing_tensor),
-               temp_unpacked = std::move(temp_unpacked_data)]() mutable {
-                // This lambda ensures that the backing tensor and the temporary
-                // unpacked FP4 buffer are kept alive until the transfer
-                // completes.
+               backing_data = std::move(backing_data)]() mutable {
+                // This lambda ensures that the backing tensor or bytes vector
+                // are kept alive until the transfer completes.
                 backing_tensor.reset();
-                temp_unpacked = std::vector<uint8_t>();
+                backing_data = std::vector<uint8_t>();
+                ;
               },
               memory_space, layout_ptr),
           /* context= */ "failed to start copy of buffer from host to device"));
@@ -276,16 +290,16 @@ absl::StatusOr<DeviceBufferRef> TpuMallocAndMemcpyHtoD(
   auto future = buffer->GetReadyFuture();
   TT_ASSIGN_OR_RETURN(auto buffer_ref,
                       DeviceBufferList::CreateMaterialized(std::move(buffer)));
-  if (!keep_host_data_alive) {
-    ABSL_VLOG(1) << "[TpuMallocAndMemcpyHtoD INTERNAL] No backing tensor, "
-                    "blocking on future.";
+  if (non_blocking) {
+    ABSL_VLOG(1) << "[TpuMallocAndMemcpyHtoD INTERNAL] Non-blocking transfer, "
+                    "creating DeviceBufferRef and recording async transfer.";
+    RecordAsyncHostToDevice(buffer_ref);
+  } else {
+    ABSL_VLOG(1) << "[TpuMallocAndMemcpyHtoD INTERNAL] Blocking transfer, "
+                    "awaiting future.";
     TT_RETURN_IF_ERROR(AdaptXlaError(
         future.Await(),
         /* context= */ "failed to copy buffer from host to device"));
-  } else {
-    ABSL_VLOG(1) << "[TpuMallocAndMemcpyHtoD INTERNAL] Backing tensor present, "
-                    "creating DeviceBufferRef and recording async transfer.";
-    RecordAsyncHostToDevice(buffer_ref);
   }
 
   ABSL_VLOG(1) << "[TpuMallocAndMemcpyHtoD INTERNAL EXIT] Created "
