@@ -179,6 +179,12 @@ _TESTED_TORCH_VERSIONS: Final[Sequence[str]] = sorted(
     {*_EXTRA_PYTORCH_VERSIONS, *_INTERMEDIATE_PATCH_VERSIONS},
     key=lambda v: tuple(map(int, v.split("."))),
 )
+# Every released PyTorch version the wheel supports: the default version plus
+# every version in _TESTED_TORCH_VERSIONS.
+_ALL_RELEASED_TORCH_VERSIONS: Final[Sequence[str]] = sorted(
+    {*_WHEEL_TORCH_VERSIONS, *_INTERMEDIATE_PATCH_VERSIONS},
+    key=lambda v: tuple(map(int, v.split("."))),
+)
 
 
 def _newest_supported_torch() -> str:
@@ -310,6 +316,30 @@ def intermediate_patch_abi(session: nox.Session, torch_version: str) -> None:
   _install_and_run_smoke_tests(
       session,
       "cpu",
+      f"torch=={torch_version}",
+      "--extra-index-url",
+      _TORCH_INDEXES["cpu"],
+  )
+
+
+@nox.session
+@nox.parametrize("torch_version", _ALL_RELEASED_TORCH_VERSIONS)
+def tpu_smoke_all_versions(session: nox.Session, torch_version: str) -> None:
+  """Run the TPU smoke tests against every supported PyTorch release.
+
+  Installs the wheel in dist/ with each released PyTorch version in
+  WHEEL_TORCH_VERSIONS and INTERMEDIATE_PATCH_VERSIONS and runs the TPU smoke
+  suite against it. Because this session is parametrized over torch_version,
+  `nox -s tpu_smoke_all_versions` tests every supported release sequentially
+  on a single TPU runner.
+
+  Args:
+    session: the nox session the checks run in.
+    torch_version: the PyTorch release to install and test.
+  """
+  _install_and_run_smoke_tests(
+      session,
+      "tpu",
       f"torch=={torch_version}",
       "--extra-index-url",
       _TORCH_INDEXES["cpu"],

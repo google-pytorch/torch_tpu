@@ -1,0 +1,119 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Tests the plain X.Y.Z wheels the Louhi RC flow staged to GCS, which are the
+# exact files the publish flow uploads to PyPI. Every job installs the staged
+# wheel into a clean virtualenv via nox instead of running under Bazel.
+name: Release Candidate Tests
+# The Kokoro trigger job finds its run by this title.
+run-name: RC tests ${{ inputs.request_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      gcs_wheel_dir:
+        description: "GCS folder with staged wheels, e.g. gs://torch-tpu-release-artifacts/0.1.1/rc0/release/"
+        required: true
+        type: string
+      source_sha:
+        description: "Commit the RC was built from; tests are checked out at this commit. Defaults to the dispatched ref."
+        required: false
+        type: string
+        default: ""
+      request_id:
+        description: "ID the caller uses to find this run"
+        required: false
+        type: string
+        default: "manual"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.gcs_wheel_dir }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  test_wheels_tpu_smoke:
+    name: "Smoke test staged wheel on ${{ matrix.tpu.name }} (Python ${{ matrix.python_version }})"
+    strategy:
+      fail-fast: false
+      # tpu_smoke_all_versions runs the TPU smoke suite in a fresh virtualenv
+      # for every supported PyTorch release (WHEEL_TORCH_VERSIONS and
+      # INTERMEDIATE_PATCH_VERSIONS) sequentially within each job.
+      matrix:
+        tpu:
+          - name: "TPU v5"
+            runner: "linux-x86-ct5lp-224-8tpu"
+          - name: "TPU v6"
+            runner: "linux-x86-ct6e-180-8tpu"
+          - name: "TPU v7 1-Chip"
+            runner: "linux-x86-tpu7x-56-1tpu"
+        python_version: ["3.11", "3.12", "3.13", "3.14"]
+    runs-on: ${{ matrix.tpu.runner }}
+    timeout-minutes: 45
+    container:
+      image: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:30a9cf2ed330736957b3256dd3df69a13a556ae46626e9ad2ba205fa7a3c0051  # Tag infrastructure-public-image-f0ac56f68949 (built 2026-09-21)
+      options: --privileged
+    env:
+      GCS_WHEEL_DIR: ${{ inputs.gcs_wheel_dir }}
+      PYTHON_VERSION: ${{ matrix.python_version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+      - name: Fix Git Workspace Ownership
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Download staged wheel from GCS
+        uses: ./.github/actions/download-staged-wheel
+        with:
+          gcs_wheel_dir: ${{ env.GCS_WHEEL_DIR }}
+          python_version: ${{ env.PYTHON_VERSION }}
+      - name: Run TPU smoke tests across all supported PyTorch versions via nox
+        run: uvx nox --force-python "${PYTHON_VERSION}" -s tpu_smoke_all_versions
+
+  test_wheel_cpu_compat:
+    name: "Test ABI and dependency compatibility (${{ matrix.session }}, Python 3.14)"
+    strategy:
+      fail-fast: false
+      matrix:
+        session:
+          - "smoke_test(cpu-cuda)"
+          - "intermediate_patch_abi"
+          - "dep_upper_bounds"
+    runs-on: linux-x86-n4-16
+    timeout-minutes: 60
+    container:
+      image: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:30a9cf2ed330736957b3256dd3df69a13a556ae46626e9ad2ba205fa7a3c0051  # Tag infrastructure-public-image-f0ac56f68949 (built 2026-09-21)
+    env:
+      GCS_WHEEL_DIR: ${{ inputs.gcs_wheel_dir }}
+      PYTHON_VERSION: "3.14"
+      NOX_SESSION: ${{ matrix.session }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+      - name: Fix Git Workspace Ownership
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Download staged wheel from GCS
+        uses: ./.github/actions/download-staged-wheel
+        with:
+          gcs_wheel_dir: ${{ env.GCS_WHEEL_DIR }}
+          python_version: ${{ env.PYTHON_VERSION }}
+      - name: Run ${{ matrix.session }} via nox
+        run: uvx nox --force-python "${PYTHON_VERSION}" -s "${NOX_SESSION}"

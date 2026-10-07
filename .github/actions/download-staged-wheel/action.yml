@@ -1,0 +1,43 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: "Download Staged Wheel"
+
+description: >-
+  Downloads the torch_tpu wheel for one Python version from a GCS release
+  staging folder into dist/.
+inputs:
+  gcs_wheel_dir:
+    description: "GCS folder with the wheels"
+    required: true
+  python_version:
+    description: "Python version of the wheel to download, e.g. 3.12"
+    required: true
+runs:
+  using: "composite"
+  steps:
+    - name: Download wheel from GCS
+      shell: bash
+      env:
+        GCS_WHEEL_DIR: ${{ inputs.gcs_wheel_dir }}
+        PYTHON_VERSION: ${{ inputs.python_version }}
+      run: |
+        if [[ ! "${GCS_WHEEL_DIR%/}" =~ /([0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?)/rc[0-9]+/release$ ]]; then
+          echo "::error::Expected gcs_wheel_dir to end with /<version>/rc<N>/release, got: ${GCS_WHEEL_DIR}" >&2
+          exit 1
+        fi
+        version="${BASH_REMATCH[1]}"
+        tag="cp${PYTHON_VERSION/./}"
+        mkdir -p dist
+        gcloud storage cp "${GCS_WHEEL_DIR%/}/torch_tpu-${version}-${tag}-${tag}-*.whl" dist/
