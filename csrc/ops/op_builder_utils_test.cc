@@ -1462,6 +1462,45 @@ TEST(OpBuilderUtils, SerializePortableArtifact) {
   EXPECT_THAT(artifact, testing::HasSubstr("StableHLO_v1."));
 }
 
+TEST(OpBuilderUtils, SerializePortableArtifact_CustomCall_NoVhloCustomCallV2) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::OpBuilder& op_builder = fb.getOpBuilder();
+
+  auto tensor_type = mlir::RankedTensorType::get({10}, op_builder.getF32Type());
+  const mlir::NamedAttribute call_target = op_builder.getNamedAttr(
+      "call_target_name", op_builder.getStringAttr("custom_call_target"));
+  const mlir::NamedAttribute has_side_effect =
+      op_builder.getNamedAttr("has_side_effect", op_builder.getBoolAttr(false));
+  const mlir::NamedAttribute api_version = op_builder.getNamedAttr(
+      "api_version",
+      mlir::stablehlo::CustomCallApiVersionAttr::get(
+          op_builder.getContext(),
+          mlir::stablehlo::CustomCallApiVersion::API_VERSION_ORIGINAL));
+
+  auto custom_call_op = mlir::stablehlo::CustomCallOp::create(
+      op_builder, fb.getLoc(), {tensor_type}, mlir::ValueRange{},
+      {call_target, has_side_effect, api_version});
+  mlir::MlirOp custom_call_result(fb, custom_call_op.getResult(0));
+  mlir::func::Return(fb, custom_call_result);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+
+  TT_ASSERT_OK_AND_ASSIGN(std::string artifact,
+                          SerializePortableArtifact(module.get()));
+
+  // Check for the MLIR magic string that denotes bytecode.
+  EXPECT_THAT(artifact, testing::HasSubstr("\x4D\x4C\xEF\x52"));
+  // Check for the StableHLO_v1 producer string to indicate versioned StableHLO.
+  EXPECT_THAT(artifact, testing::HasSubstr("StableHLO_v1."));
+
+  // Verify that WEEK_12 compatibility requirement serializes to
+  // vhlo.custom_call_v1 and avoids emitting vhlo.custom_call_v2, which causes
+  // deserialization failures in StableHLO 1.17.0 (jaxlib 0.9.2).
+  EXPECT_THAT(artifact, testing::Not(testing::HasSubstr("custom_call_v2")));
+  EXPECT_THAT(artifact, testing::HasSubstr("custom_call_v1"));
+}
+
 TEST(OpBuilderUtils, MakeZeroSizedTensor_MlirType_DefaultShape) {
   OpBuilderUtilsBuilder op_builder_utils_builder;
   mlir::MlirBuilder& builder = op_builder_utils_builder.get();
