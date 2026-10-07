@@ -489,6 +489,7 @@ enum class OpName {
   kIsPosInfOut,
   kJaggedToPaddedDenseForward,
   kLayerNorm,
+  kLcmOut,
   kLdexpOut,
   kLdexpTensor,
   kLdexp_,
@@ -1813,6 +1814,8 @@ ToString(  // NOLINT(google-readability-function-size)
       return "_jagged_to_padded_dense_forward";
     case OpName::kLayerNorm:
       return "layer_norm";
+    case OpName::kLcmOut:
+      return "lcm.out";
     case OpName::kLdexpOut:
       return "ldexp.out";
     case OpName::kLdexpTensor:

@@ -2513,6 +2513,9 @@ class TestOps(op_testing.OpInfoTestBase):
         check_out_variant=False,
     )
 
+  def test_lcm(self):
+    self.do_test_op("lcm")
+
   def test_ldexp(self):
     self.do_test_op("ldexp")
 

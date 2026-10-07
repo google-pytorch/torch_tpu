@@ -140,6 +140,7 @@
 #include "csrc/ops/isin/isin_aten_kernels.h"
 #include "csrc/ops/jagged/jagged_aten_kernels.h"
 #include "csrc/ops/layer_norm/layer_norm_aten_kernels.h"
+#include "csrc/ops/lcm/lcm_aten_kernels.h"
 #include "csrc/ops/leaky_relu/leaky_relu_aten_kernels.h"
 #include "csrc/ops/lerp/lerp_aten_kernels.h"
 #include "csrc/ops/linalg/linalg_kernels.h"
@@ -777,6 +778,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kIsPosInfOut>(m, AtenIsPosInfOut);
   ImplStable<OpName::kJaggedToPaddedDenseForward>(
       m, AtenJaggedToPaddedDenseForward);
+  ImplStable<OpName::kLcmOut>(m, AtenLcmOut);
   ImplStable<OpName::kLdexpOut>(m, AtenLdexpOut);
   ImplStable<OpName::kLdexpTensor>(m, AtenLdexpTensor);
   ImplStable<OpName::kLdexp_>(m, AtenLdexp_);

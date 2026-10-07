@@ -752,6 +752,7 @@ torch_tpu_cc_library(
         "//csrc/ops/isin:isin_aten_kernels",
         "//csrc/ops/jagged:jagged_aten_kernels",
         "//csrc/ops/layer_norm:layer_norm_aten_kernels",
+        "//csrc/ops/lcm:lcm_aten_kernels",
         "//csrc/ops/leaky_relu:leaky_relu_aten_kernels",
         "//csrc/ops/lerp:lerp_aten_kernels",
         "//csrc/ops/linalg:linalg_kernels",

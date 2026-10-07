@@ -238,7 +238,6 @@ UNREGISTERED_OPS = frozenset([
     'int_repr',
     'is_set_to',
     'kthvalue.values',
-    'lcm.out',
     'linalg_cholesky_ex.L',
     'linalg_cross.out',
     'linalg_eig',

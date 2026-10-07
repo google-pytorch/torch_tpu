@@ -12025,6 +12025,123 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(run_out, rtol=2e-2, atol=2e-2)
 
+  @parameterized.named_parameters(
+      ("int8", torch.int8),
+      ("uint8", torch.uint8),
+      ("int16", torch.int16),
+      ("int32", torch.int32),
+      ("int64", torch.int64),
+  )
+  def test_lcm_zero_and_signs(self, dtype: torch.dtype):
+    """Tests lcm with zero edge cases and negative inputs across integer dtypes."""
+
+    def compute(device):
+      if dtype == torch.uint8:
+        a = torch.tensor([0, 0, 12, 12, 15, 7], dtype=dtype, device=device)
+        b = torch.tensor([0, 18, 0, 18, 20, 13], dtype=dtype, device=device)
+      else:
+        a = torch.tensor(
+            [0, 0, 12, -12, 12, -12, 15, -7], dtype=dtype, device=device
+        )
+        b = torch.tensor(
+            [0, 18, 0, 18, -18, -18, 20, 13], dtype=dtype, device=device
+        )
+      return torch.lcm(a, b)
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  def test_lcm_narrow_overflow_and_int_min(self):
+    """Tests narrow integer overflow, INT_MIN, and large coprime Fibonacci pairs."""
+
+    def compute_int8(device):
+      a = torch.tensor([-20, -128, -128, 100], dtype=torch.int8, device=device)
+      b = torch.tensor([14, 1, 2, 120], dtype=torch.int8, device=device)
+      return torch.lcm(a, b)
+
+    def compute_int16(device):
+      a = torch.tensor([-32768, 300, -250], dtype=torch.int16, device=device)
+      b = torch.tensor([1, 400, 350], dtype=torch.int16, device=device)
+      return torch.lcm(a, b)
+
+    def compute_int32_fibonacci(device):
+      a = torch.tensor(
+          [1836311903, -2147483648, 46340], dtype=torch.int32, device=device
+      )
+      b = torch.tensor([1134903170, 1, 46341], dtype=torch.int32, device=device)
+      return torch.lcm(a, b)
+
+    def compute_int64(device):
+      a = torch.tensor(
+          [1836311903, -(2**63), 1000000007], dtype=torch.int64, device=device
+      )
+      b = torch.tensor(
+          [1134903170, 1, 1000000009], dtype=torch.int64, device=device
+      )
+      return torch.lcm(a, b)
+
+    self.assert_close_tpu_vs_cpu(compute_int8)
+    self.assert_close_tpu_vs_cpu(compute_int16)
+    self.assert_close_tpu_vs_cpu(compute_int32_fibonacci)
+    self.assert_close_tpu_vs_cpu(compute_int64)
+
+  def test_lcm_promotion_out_cast_and_shapes(self):
+    """Tests mixed-dtype promotion, out casting, resizing, 0-D, and 0-element tensors."""
+
+    def compute(device):
+      a_i16 = torch.tensor(
+          [[12, -18], [0, 7]], dtype=torch.int16, device=device
+      )
+      b_i32 = torch.tensor([18, 24], dtype=torch.int32, device=device)
+      res_promoted = torch.lcm(a_i16, b_i32)
+
+      b_bool = torch.tensor([True, False], dtype=torch.bool, device=device)
+      res_bool_promo = torch.lcm(b_i32, b_bool)
+
+      out_i32 = torch.empty((2, 2), dtype=torch.int32, device=device)
+      torch.lcm(a_i16, a_i16, out=out_i32)
+
+      out_f32 = torch.empty((2, 2), dtype=torch.float32, device=device)
+      torch.lcm(a_i16, b_i32, out=out_f32)
+
+      out_resized = torch.empty(0, dtype=torch.int32, device=device)
+      torch.lcm(a_i16, b_i32, out=out_resized)
+
+      s1 = torch.tensor(-12, dtype=torch.int32, device=device)
+      s2 = torch.tensor(18, dtype=torch.int32, device=device)
+      res_scalar = torch.lcm(s1, s2)
+
+      empty_a = torch.empty((2, 0, 3), dtype=torch.int32, device=device)
+      empty_b = torch.empty((1, 0, 3), dtype=torch.int32, device=device)
+      res_empty = torch.lcm(empty_a, empty_b)
+
+      return (
+          res_promoted,
+          res_bool_promo,
+          out_i32,
+          out_f32,
+          out_resized,
+          res_scalar,
+          res_empty,
+      )
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  def test_lcm_inplace_and_out_buffer_donation(self):
+    """Tests in-place lcm_ and out=x buffer donation in DEFER_NEVER mode."""
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_NEVER):
+
+      def compute(device):
+        x1 = torch.tensor([12, -18, 0, 21], dtype=torch.int32, device=device)
+        y1 = torch.tensor([18, 24, 5, 14], dtype=torch.int32, device=device)
+        torch.lcm(x1, y1, out=x1)
+
+        x2 = torch.tensor([15, -20, 8, 0], dtype=torch.int32, device=device)
+        y2 = torch.tensor([25, 30, 12, 0], dtype=torch.int32, device=device)
+        x2.lcm_(y2)
+        return x1, x2
+
+      self.assert_close_tpu_vs_cpu(compute)
+
 
 class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
   """Tests for custom ops."""
