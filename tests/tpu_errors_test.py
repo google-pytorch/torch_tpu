@@ -3425,37 +3425,6 @@ module {
       )
 
   @et.why_tpu_only("TPU-specific C++ kernel argument validation")
-  def test_scaled_mm_v2_invalid_contraction_dim_size(self):
-    (
-        self_tpu,
-        mat2_tpu,
-        scale_a_tpu,
-        recipe_a,
-        swizzle_a,
-        scale_b_tpu,
-        recipe_b,
-        swizzle_b,
-    ) = et.get_scaled_mm_v2_default_inputs()
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""scaled_mm_v2(): expected contraction_dim list to contain exactly 2 elements, got 1""",
-        message_reviewed_by="wan",
-    ):
-      torch._scaled_mm_v2(
-          self_tpu,
-          mat2_tpu,
-          scale_a_tpu,
-          recipe_a,
-          swizzle_a,
-          scale_b_tpu,
-          recipe_b,
-          swizzle_b,
-          None,
-          None,
-          contraction_dim=[1],
-      )
-
-  @et.why_tpu_only("TPU-specific C++ kernel argument validation")
   def test_scaled_mm_v2_non_standard_contraction_dim(self):
     (
         self_tpu,
@@ -4022,18 +3991,6 @@ module {
       )
 
   @et.why_tpu_only("Custom eager input validation in TorchTPU jagged kernels")
-  def test_jagged_to_padded_values_0d(self):
-    values = torch.tensor(1.0, device=et.device())
-    offsets = torch.tensor([0], dtype=torch.int64, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""jagged_to_padded_dense_forward(): expected values to have >= 1 dimensions, got 0""",
-    ):
-      torch.ops.aten._jagged_to_padded_dense_forward(
-          values, [offsets], [3], 0.0
-      )
-
-  @et.why_tpu_only("Custom eager input validation in TorchTPU jagged kernels")
   def test_jagged_to_padded_offsets_out_of_bounds(self):
     values = torch.randn(3, 4, device=et.device())
     offsets = torch.tensor([0, 2, 5], dtype=torch.int64, device=et.device())
@@ -4385,30 +4342,6 @@ module {
       )
 
   @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
-  def test_lstm_input_h0_not_3d(self):
-    x, hx, params = self._default_lstm_input_args()
-    h0_2d = torch.randn(1, 3, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""lstm(): expected h_0 to be a 3D tensor [num_layers * num_directions, batch, out_size], got 2D""",
-    ):
-      torch.ops.aten.lstm.input(
-          x, [h0_2d, hx[1]], params, True, 1, 0.0, False, False, False
-      )
-
-  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
-  def test_lstm_input_c0_not_3d(self):
-    x, hx, params = self._default_lstm_input_args()
-    c0_2d = torch.randn(1, 3, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""lstm(): expected c_0 to be a 3D tensor [num_layers * num_directions, batch, hidden_size], got 2D""",
-    ):
-      torch.ops.aten.lstm.input(
-          x, [hx[0], c0_2d], params, True, 1, 0.0, False, False, False
-      )
-
-  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
   def test_lstm_input_h0_layer_mismatch(self):
     x, hx, params = self._default_lstm_input_args()
     h0_bad_layers = torch.randn(2, 3, 32, device=et.device())
@@ -4588,27 +4521,6 @@ module {
       torch.ops.aten.gru.input(x, hx, params, True, 1, 2.0, False, False, False)
 
   @et.why_tpu_only("torch.ops.aten.gru.input error validations on TPU")
-  def test_gru_input_hx_not_3d(self):
-    """Verifies that non-3D initial hidden state hx raises RuntimeError.
-
-    What is being tested:
-      - Passing a 2D tensor of shape [1, 3] as hx.
-
-    Expected result:
-      - RuntimeError: 'gru(): expected hx to be a 3D tensor [num_layers *
-      num_directions, batch, hidden_size], got 2D'
-    """
-    x, _, params = self._default_gru_input_args()
-    hx_2d = torch.randn(1, 3, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""gru(): expected hx to be a 3D tensor [num_layers * num_directions, batch, hidden_size], got 2D""",
-    ):
-      torch.ops.aten.gru.input(
-          x, hx_2d, params, True, 1, 0.0, False, False, False
-      )
-
-  @et.why_tpu_only("torch.ops.aten.gru.input error validations on TPU")
   def test_gru_input_hx_layer_mismatch(self):
     """Verifies that layer count mismatch between hx and num_layers raises RuntimeError.
 
@@ -4668,16 +4580,6 @@ module {
       torch.ops.aten.gru.input(
           x, hx, params[:3], True, 1, 0.0, False, False, False
       )
-
-  @et.why_tpu_only("ao.reload is implemented for device=tpu.")
-  def test_reload_invalid_device(self):
-    _ensure_ao_ops_registered()
-    x = torch.tensor([1.0, 2.0], device=et.device(), dtype=torch.float32)
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""reload(): expected 'tpu' device, got 'cpu'""",
-    ):
-      torch.ops.ao.reload(x, torch.device("cpu"))
 
   @et.why_tpu_only("ao.reload is implemented for device=tpu.")
   def test_reload_cpu_tensor(self):

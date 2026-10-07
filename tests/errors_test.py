@@ -41,6 +41,21 @@ def setUpModule():
   et.set_up_module()
 
 
+def _ensure_ao_ops_registered() -> None:
+  """Ensures activation offload ops are registered, skipping test if unavailable."""
+  try:
+    # pylint: disable=g-import-not-at-top
+    from torch._functorch._activation_offloading import offload_ops
+    # Reference offload_ops to prevent a lint warning. The import is required
+    # to register the offload custom ops.
+    _ = offload_ops
+  except ImportError:
+    raise absltest.SkipTest(
+        "torch._functorch._activation_offloading.offload_ops is not available"
+        " in this PyTorch version"
+    )
+
+
 def _get_aminmax_outputs(
     op: Any, device: str, dtype: torch.dtype
 ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
@@ -14809,6 +14824,69 @@ Device-side assertion tracking was not enabled by user.""",
           False,
           False,
       )
+
+  def test_gru_input_hx_not_3d(self):
+    x, _, params = _get_gru_inputs()
+    hx_2d = torch.randn(1, 3, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError if et.is_on_tpu() else IndexError,
+        tpu="""gru(): expected hx to be a 3D tensor [num_layers * num_directions, batch, hidden_size], got 2D""",
+        gpu="""Dimension out of range (expected to be in range of [-2, 1], but got 2)""",
+    ):
+      torch.ops.aten.gru.input(
+          x, hx_2d, params, True, 1, 0.0, False, False, False
+      )
+
+  def test_jagged_to_padded_values_0d(self):
+    values = torch.tensor(1.0, device=et.device())
+    offsets = torch.tensor([0], dtype=torch.int64, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError if et.is_on_tpu() else IndexError,
+        tpu="""jagged_to_padded_dense_forward(): expected values to have >= 1 dimensions, got 0""",
+        gpu="""Dimension specified as 0 but tensor has no dimensions""",
+    ):
+      torch.ops.aten._jagged_to_padded_dense_forward(
+          values, [offsets], [3], 0.0
+      )
+
+  def test_lstm_input_c0_not_3d(self):
+    x, hx, params = _get_lstm_inputs()
+    c0_2d = torch.randn(1, 3, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError if et.is_on_tpu() else IndexError,
+        tpu="""lstm(): expected c_0 to be a 3D tensor [num_layers * num_directions, batch, hidden_size], got 2D""",
+        gpu="""Dimension out of range (expected to be in range of [-2, 1], but got 2)""",
+    ):
+      torch.ops.aten.lstm.input(
+          x, [hx[0], c0_2d], params, True, 1, 0.0, False, False, False
+      )
+
+  def test_lstm_input_h0_not_3d(self):
+    x, hx, params = _get_lstm_inputs()
+    h0_2d = torch.randn(1, 3, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError if et.is_on_tpu() else IndexError,
+        tpu="""lstm(): expected h_0 to be a 3D tensor [num_layers * num_directions, batch, out_size], got 2D""",
+        gpu="""Dimension out of range (expected to be in range of [-2, 1], but got 2)""",
+    ):
+      torch.ops.aten.lstm.input(
+          x, [h0_2d, hx[1]], params, True, 1, 0.0, False, False, False
+      )
+
+  def test_reload_invalid_device(self):
+    _ensure_ao_ops_registered()
+    x = torch.tensor([1.0, 2.0], device=et.device(), dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError if et.is_on_tpu() else ValueError,
+        tpu="""reload(): expected 'tpu' device, got 'cpu'""",
+        gpu="""cpu doesn't match the current accelerator cuda.""",
+    ):
+      torch.ops.ao.reload(x, torch.device("cpu"))
 
 
 class InputPreprocessingErrorTest(et.ErrorTestBase):
