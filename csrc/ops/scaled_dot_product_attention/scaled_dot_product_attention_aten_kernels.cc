@@ -146,7 +146,22 @@ int64_t AtenFusedSdpChoice(const at::Tensor& query, const at::Tensor& key,
             c10::GradMode::is_enabled() && attn_mask.has_value() &&
             attn_mask->defined() && attn_mask->requires_grad();
 
-        if (flash_enabled) {
+        const bool requires_grad = query.requires_grad() ||
+                                   key.requires_grad() || value.requires_grad();
+        const int64_t q_seq_len =
+            has_batch ? query.size(query.ndimension() - 2) : 0;
+        const int64_t kv_seq_len =
+            has_batch ? key.size(key.ndimension() - 2) : 0;
+        const int64_t head_dim =
+            has_batch ? query.size(query.ndimension() - 1) : 0;
+        const bool is_power_of_two_head_dim =
+            head_dim > 0 && (head_dim & (head_dim - 1)) == 0;
+        const bool prefer_overrideable_for_single_tile =
+            overrideable_enabled && !has_dropout &&
+            (q_seq_len <= 128 || (q_seq_len <= 256 && kv_seq_len <= 256 &&
+                                  is_power_of_two_head_dim && !requires_grad));
+
+        if (flash_enabled && !prefer_overrideable_for_single_tile) {
           bool supported_flash_dtype =
               (query.scalar_type() == at::ScalarType::Float ||
                query.scalar_type() == at::ScalarType::BFloat16);
