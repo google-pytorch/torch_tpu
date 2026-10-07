@@ -160,11 +160,6 @@ process. Use it at your own risk. Using it triggers a one-time warning.
 *   `torch.tpu.optimizers.TorchAdamW.init_param_group`
 *   `torch.tpu.optimizers.TorchAdamW.step`
 *   `torch.tpu.optimizers.TorchMuon`
-*   `torch.tpu.optimizers.TorchMuon.DEFAULT_A`
-*   `torch.tpu.optimizers.TorchMuon.DEFAULT_B`
-*   `torch.tpu.optimizers.TorchMuon.DEFAULT_C`
-*   `torch.tpu.optimizers.TorchMuon.DEFAULT_NS_STEPS`
-*   `torch.tpu.optimizers.TorchMuon.EPS`
 *   `torch.tpu.optimizers.TorchMuon.ParamGroup`
 *   `torch.tpu.optimizers.TorchMuon.defaults` (getter)
 *   `torch.tpu.optimizers.TorchMuon.init_param_group`

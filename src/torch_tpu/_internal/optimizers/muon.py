@@ -78,51 +78,15 @@ def _adjust_lr(
   return lr * adjusted_ratio
 
 
+DEFAULT_A: float = 3.4445
+DEFAULT_B: float = -4.7750
+DEFAULT_C: float = 2.0315
+DEFAULT_NS_STEPS: int = 5
+EPS: float = 1e-7
+
+
 class _MuonBase(_optim.Optimizer):
   """Internal base class for Muon optimizer variants with nested ParamGroup."""
-
-  DEFAULT_A: float = 3.4445
-  DEFAULT_B: float = -4.7750
-  DEFAULT_C: float = 2.0315
-  DEFAULT_NS_STEPS: int = 5
-  EPS: float = 1e-7
-
-  __tt_api_stages__: ClassVar[dict[str, _annotations.ApiStageInfo]] = {
-      "DEFAULT_A": _annotations.ApiStageInfo(
-          stage=_annotations.Stage.EXPERIMENTAL,
-          reason=(
-              "DEFAULT_A is experimental and may change or be removed without"
-              " notice."
-          ),
-      ),
-      "DEFAULT_B": _annotations.ApiStageInfo(
-          stage=_annotations.Stage.EXPERIMENTAL,
-          reason=(
-              "DEFAULT_B is experimental and may change or be removed without"
-              " notice."
-          ),
-      ),
-      "DEFAULT_C": _annotations.ApiStageInfo(
-          stage=_annotations.Stage.EXPERIMENTAL,
-          reason=(
-              "DEFAULT_C is experimental and may change or be removed without"
-              " notice."
-          ),
-      ),
-      "DEFAULT_NS_STEPS": _annotations.ApiStageInfo(
-          stage=_annotations.Stage.EXPERIMENTAL,
-          reason=(
-              "DEFAULT_NS_STEPS is experimental and may change or be removed"
-              " without notice."
-          ),
-      ),
-      "EPS": _annotations.ApiStageInfo(
-          stage=_annotations.Stage.EXPERIMENTAL,
-          reason=(
-              "EPS is experimental and may change or be removed without notice."
-          ),
-      ),
-  }
 
   @_annotations.experimental(
       "ParamGroup is experimental and may change or be removed without notice."
@@ -293,12 +257,12 @@ class TorchMuon(_MuonBase):
       momentum: float = 0.95,
       nesterov: bool = True,
       ns_coefficients: tuple[float, float, float] = (
-          _MuonBase.DEFAULT_A,
-          _MuonBase.DEFAULT_B,
-          _MuonBase.DEFAULT_C,
+          DEFAULT_A,
+          DEFAULT_B,
+          DEFAULT_C,
       ),
-      eps: float = _MuonBase.EPS,
-      ns_steps: int = _MuonBase.DEFAULT_NS_STEPS,
+      eps: float = EPS,
+      ns_steps: int = DEFAULT_NS_STEPS,
       adjust_lr_fn: str | None = None,
       use_bfloat16_moments: bool = False,
       foreach: bool | None = False,
