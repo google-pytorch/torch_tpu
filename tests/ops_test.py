@@ -395,6 +395,10 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.complex64: {"rtol": 4.8e-6},
         torch.float32: {"rtol": 4.8e-6},
     },
+    "linspace": {
+        torch.bfloat16: {"rtol": 9.2e-3, "atol": 9.4e-3},
+        torch.float16: {"rtol": 1.2e-3, "atol": 1.8e-3},
+    },
     "log": {
         torch.complex64: {"rtol": 4.7e-5},
         torch.float32: {"rtol": 4.9e-5, "atol": 4.3e-5},
