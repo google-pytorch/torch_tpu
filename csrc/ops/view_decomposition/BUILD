@@ -253,7 +253,6 @@ torch_tpu_cc_library(
     deps = [
         ":strided_layout",
         ":view_primitive_error_utils",
-        "//csrc/common:aten_utils",
         "//csrc/common:dimension_types",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",

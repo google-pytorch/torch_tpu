@@ -22,7 +22,6 @@
 #include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
-#include "csrc/common/aten_utils.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
