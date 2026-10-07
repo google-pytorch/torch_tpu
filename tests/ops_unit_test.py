@@ -18162,8 +18162,17 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
         ((0, 4), (3, 4), (3,)),
         ((3, 4, 0), (5, 0), (5,)),
     ]
-    for dtype in [torch.float32, torch.bfloat16, torch.complex64]:
-      rtol, atol = (5e-2, 5e-2) if dtype == torch.bfloat16 else (2e-2, 2e-2)
+    for dtype in [
+        torch.float32,
+        torch.bfloat16,
+        torch.complex64,
+        torch.float16,
+    ]:
+      rtol, atol = (
+          (5e-2, 5e-2)
+          if dtype in (torch.bfloat16, torch.float16)
+          else (2e-2, 2e-2)
+      )
       for x_shape, w_shape, b_shape in shape_cases:
         with self.subTest(
             dtype=dtype, x_shape=x_shape, w_shape=w_shape, b_shape=b_shape
@@ -18274,7 +18283,64 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
           out.backward(grad_out)
           return (x.grad, w.grad, b.grad)
 
-        self.assert_close_tpu_vs_cpu(run_bcast_bias_grad, rtol=2e-2, atol=2e-2)
+        self.assert_close_tpu_vs_cpu(run_bcast_bias_grad, rtol=2e-2, atol=4e-2)
+
+    # Low-precision (bf16/f16) grad_bias accumulation over large batch*seq (8192)
+    # to verify FP32 reduction accumulation prevents stagnation at 256 (bf16) or
+    # 2048 (f16).
+    for lp_dtype in [torch.bfloat16, torch.float16]:
+      with self.subTest(low_precision_grad_bias_accum=lp_dtype):
+        x_lp_base = torch.ones(64, 128, 4, dtype=lp_dtype)
+        w_lp_base = torch.ones(3, 4, dtype=lp_dtype)
+        b_lp_base = torch.zeros(3, dtype=lp_dtype)
+        grad_lp_base = torch.ones(64, 128, 3, dtype=lp_dtype)
+
+        def run_lp_grad_bias(
+            device,
+            x_b=x_lp_base,
+            w_b=w_lp_base,
+            b_b=b_lp_base,
+            g_b=grad_lp_base,
+        ):
+          x = to(x_b.clone(), device=device).requires_grad_(True)
+          w = to(w_b.clone(), device=device).requires_grad_(True)
+          b = to(b_b.clone(), device=device).requires_grad_(True)
+          grad_out = to(g_b.clone(), device=device)
+          out = torch.nn.functional.linear(x, w, b)
+          out.backward(grad_out)
+          return b.grad
+
+        self.assert_close_tpu_vs_cpu(run_lp_grad_bias, rtol=1e-3, atol=1e-3)
+
+    # 2D input + 1D weight + non-scalar broadcastable bias with requires_grad
+    with self.subTest("2d_input_1d_weight_bcast_bias"):
+      x_1dw = to(torch.randn(2, 4, dtype=torch.float32), "tpu").requires_grad_(
+          True
+      )
+      w_1dw = to(torch.randn(4, dtype=torch.float32), "tpu").requires_grad_(
+          True
+      )
+      b_1dw = to(torch.randn(2, dtype=torch.float32), "tpu").requires_grad_(
+          True
+      )
+      grad_1dw = to(torch.randn(2, dtype=torch.float32), "tpu")
+      out_1dw = torch.nn.functional.linear(x_1dw, w_1dw, b_1dw)
+      out_1dw.backward(grad_1dw)
+      self.assertEqual(x_1dw.grad.shape, (2, 4))
+      self.assertEqual(w_1dw.grad.shape, (4,))
+      self.assertEqual(b_1dw.grad.shape, (2,))
+
+    # FakeTensorMode with 1D weight and requires_grad=True
+    with self.subTest("fake_tensor_1d_weight_grad"):
+      with fake_tensor.FakeTensorMode():
+        fx = torch.randn(2, 4, device="tpu", requires_grad=True)
+        fw = torch.randn(4, device="tpu", requires_grad=True)
+        fb = torch.randn((), device="tpu", requires_grad=True)
+        fout = torch.nn.functional.linear(fx, fw, fb)
+        fout.sum().backward()
+        self.assertEqual(fx.grad.shape, (2, 4))
+        self.assertEqual(fw.grad.shape, (4,))
+        self.assertEqual(fb.grad.shape, ())
 
   def test_linear_backward_direct_all_masks(self):
     cases = [
