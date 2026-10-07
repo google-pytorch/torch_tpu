@@ -864,7 +864,7 @@ def register_torchcomms_tpu() -> bool:
         except Exception:
           pass
       if hasattr(torch.distributed.Backend, "default_device_backend_map"):
-        torch.distributed.Backend.default_device_backend_map["tpu"] = "tpu"
+        torch.distributed.Backend.default_device_backend_map["tpu"] = "tpu_dist"
   except Exception:
     pass
 

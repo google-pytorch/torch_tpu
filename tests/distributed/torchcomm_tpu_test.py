@@ -426,7 +426,7 @@ class TorchCommsTPUTest(seed_test_utils.RepeatableTest):
       self.assertTrue(dist.is_backend_available("tpu_dist"))
       self.assertTrue(dist.is_backend_available("tpu"))
       self.assertEqual(
-          dist.Backend.default_device_backend_map.get("tpu"), "tpu"
+          dist.Backend.default_device_backend_map.get("tpu"), "tpu_dist"
       )
 
   def test_unsupported_stubs_raise_not_implemented(self):

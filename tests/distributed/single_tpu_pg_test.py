@@ -26,6 +26,11 @@ from tests import seed_test_utils
 
 class SingleTpuPGTest(seed_test_utils.MultiProcessRepeatableTest):
 
+  def tearDown(self):
+    super().tearDown()
+    if torch.distributed.is_initialized():
+      torch.distributed.destroy_process_group()
+
   def test_init_pg(self):
     """Test registration and initialization call from PyTorch."""
 
@@ -48,6 +53,16 @@ class SingleTpuPGTest(seed_test_utils.MultiProcessRepeatableTest):
         world_size=1,
     )
     self.assertTrue(torch.distributed.is_initialized())
+
+  def test_init_pg_default_backend_on_tpu(self):
+    """Test default backend resolution on TPU without specifying backend."""
+    torch.distributed.init_process_group(
+        init_method=f"tcp://localhost:{portpicker.pick_unused_port()}",
+        rank=0,
+        world_size=1,
+    )
+    self.assertTrue(torch.distributed.is_initialized())
+    self.assertEqual(torch.distributed.get_backend_config(), "tpu:tpu_dist")
 
   def test_manual_pg(self):
     """Test manual/explicit ProcessGroup creation."""
