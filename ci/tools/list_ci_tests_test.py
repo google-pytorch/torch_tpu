@@ -654,6 +654,31 @@ class ListCiTestsTest(unittest.TestCase):  # UNITTEST_OK=testing tools
       self.assertEqual(parsed["ci_cpu_mock"].machine_type, "CPU")
       self.assertEqual(parsed["ci_cpu_mock"].runner, "linux-x86-n4-16")
 
+  def test_parse_workflow_machine_types_any_config_key(self):
+    """Verifies every `*_config` key of a matrix entry maps to its runner."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = pathlib.Path(temp_dir)
+      (temp_path / "postsubmit.yml").write_text(
+          textwrap.dedent("""\
+              jobs:
+                test_matrix:
+                  strategy:
+                    matrix:
+                      job_info:
+                        - runner: "linux-x86-tpu7x-224-4tpu"
+                          bazel_config: "ci_tpu_v7"
+                          newest_deps_config: "ci_tpu_v7_newest_deps"
+                          config_file: "not_a_config"
+              """),
+          encoding="utf-8",
+      )
+      parsed = list_ci_tests.parse_workflow_machine_types(temp_path)
+      self.assertCountEqual(parsed, ["ci_tpu_v7", "ci_tpu_v7_newest_deps"])
+      for config in ("ci_tpu_v7", "ci_tpu_v7_newest_deps"):
+        with self.subTest(config=config):
+          self.assertEqual(parsed[config].machine_type, "TPU v7x")
+          self.assertEqual(parsed[config].runner, "linux-x86-tpu7x-224-4tpu")
+
   def test_parse_workflow_machine_types_step_command(self):
     """Verifies parsing step-level bazel test --config in single-job workflows."""
     with tempfile.TemporaryDirectory() as temp_dir:

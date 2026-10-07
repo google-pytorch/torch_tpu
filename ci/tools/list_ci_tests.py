@@ -365,16 +365,6 @@ _BAZEL_TEST_CONFIG_RE = re.compile(
     re.VERBOSE | re.IGNORECASE,
 )
 
-# Matrix entry keys naming the Bazel config (== CI job) an entry selects. The
-# key varies across our workflows, and a single entry may set several of them,
-# e.g. a job that tests both the sources and the wheel built from them.
-_CONFIG_KEYS = (
-    "bazel_config",
-    "source_test_config",
-    "wheel_test_config",
-    "config",
-)
-
 # GitHub Actions only expands expressions at workflow run time, so a value
 # containing one is a template rather than a label we can report.
 _EXPRESSION_MARKER = "${{"
@@ -432,6 +422,28 @@ def _get_literal(mapping: Mapping[str, Any], key: str) -> str:
   return value.strip()
 
 
+def _get_configs(mapping: Mapping[str, Any]) -> list[str]:
+  """Returns the literal Bazel configs (== CI jobs) a mapping names.
+
+  A matrix entry or action input names a config with a key that is `config` or
+  ends in `_config`, e.g. `bazel_config`. One mapping may name several, e.g.
+  `source_test_config` and `wheel_test_config` for a job that tests both the
+  sources and the wheel built from them.
+
+  Args:
+    mapping: A matrix entry, or the `with` inputs of a step.
+
+  Returns:
+    The configs, in declaration order.
+  """
+  return [
+      config
+      for key in mapping
+      if isinstance(key, str) and (key == "config" or key.endswith("_config"))
+      if (config := _get_literal(mapping, key))
+  ]
+
+
 def _get_job_runner(job: Mapping[str, Any]) -> str:
   """Returns a concrete runner label for a job, or '' if it has none.
 
@@ -469,10 +481,7 @@ def _get_step_configs(job: Mapping[str, Any]) -> list[str]:
       configs.extend(_BAZEL_TEST_CONFIG_RE.findall(command))
     with_args = step.get("with")
     if isinstance(with_args, dict):
-      for key in _CONFIG_KEYS:
-        config = _get_literal(with_args, key)
-        if config:
-          configs.append(config)
+      configs.extend(_get_configs(with_args))
   return configs
 
 
@@ -505,10 +514,8 @@ def parse_workflow_machine_types(
         machine_type = _get_literal(
             entry, "machine_type"
         ) or decode_runner_machine_type(runner)
-        for key in _CONFIG_KEYS:
-          config = _get_literal(entry, key)
-          if config:
-            job_machines[config] = JobMachineInfo(machine_type, runner)
+        for config in _get_configs(entry):
+          job_machines[config] = JobMachineInfo(machine_type, runner)
 
     # A config hardcoded in a step command or action input only tells us which
     # job runs it, so it falls back to the job's runner and never overrides a
