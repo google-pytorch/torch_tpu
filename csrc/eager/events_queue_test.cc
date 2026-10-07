@@ -26,6 +26,8 @@
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/compilation_spec.h"
+#include "csrc/common/context_states.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/shape.h"
@@ -1187,6 +1189,95 @@ TEST(CompilationModeTest, GetCompilationMode) {
             CompilationMode::kFastCompile);
 }
 
+TEST(RepeatedOpsTest, DetectsRepeatdOps) {
+  ClearAllStreams();
+  ScopedPythonContextCapturer capturer(OpName::kEmpty);
+  Shape shape(Dimensions{8}, mlir::ElementType::F32);
+
+  // Create three lists for three different OpNames.
+  TT_ASSERT_OK_AND_ASSIGN(auto refs_a, DeviceBufferList::CreateDeferred(
+                                           OpName::kAdd, DummyBuilder, {},
+                                           OpParamCacheKeys::Empty(), {shape}));
+  auto list_a = refs_a[0].device_buffer_list();
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto refs_b,
+      DeviceBufferList::CreateDeferred(OpName::kBaddbmmDtype, DummyBuilder, {},
+                                       OpParamCacheKeys::Empty(), {shape}));
+  auto list_b = refs_b[0].device_buffer_list();
+  TT_ASSERT_OK_AND_ASSIGN(auto refs_c,
+                          DeviceBufferList::CreateDeferred(
+                              OpName::kCountNonzeroDimIntList, DummyBuilder, {},
+                              OpParamCacheKeys::Empty(), {shape}));
+  auto list_c = refs_c[0].device_buffer_list();
+
+  // Push these ops into the queue three times, (abcabcabc)
+  // For the first 5 ops, no repetition is detected.
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_a));
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_b));
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_c));
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_a));
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_b));
+
+  // When we push the second repetition, it is detected.
+  EXPECT_TRUE(RecordDeferredOpAndDetectRepetition(list_c));
+
+  // The third repetition is only detected when it ends.
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_a));
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_b));
+  EXPECT_TRUE(RecordDeferredOpAndDetectRepetition(list_c));
+}
+
+TEST(RepeatedOpsTest, DoesNotDetectRepetitionsOverSnapshots) {
+  ClearAllStreams();
+  ScopedPythonContextCapturer capturer(OpName::kEmpty);
+  Shape shape(Dimensions{8}, mlir::ElementType::F32);
+
+  // Create three lists for three different OpNames.
+  TT_ASSERT_OK_AND_ASSIGN(auto refs_a, DeviceBufferList::CreateDeferred(
+                                           OpName::kAdd, DummyBuilder, {},
+                                           OpParamCacheKeys::Empty(), {shape}));
+  auto list_a = refs_a[0].device_buffer_list();
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto refs_b,
+      DeviceBufferList::CreateDeferred(OpName::kBaddbmmDtype, DummyBuilder, {},
+                                       OpParamCacheKeys::Empty(), {shape}));
+  auto list_b = refs_b[0].device_buffer_list();
+  TT_ASSERT_OK_AND_ASSIGN(auto refs_c,
+                          DeviceBufferList::CreateDeferred(
+                              OpName::kCountNonzeroDimIntList, DummyBuilder, {},
+                              OpParamCacheKeys::Empty(), {shape}));
+  auto list_c = refs_c[0].device_buffer_list();
+
+  // Push these ops into the queue repeatedly, but interrupt with a snapshot.
+  // For the first 5 ops, no repetition is detected.
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_a));
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_b));
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_c));
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_a));
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_b));
+
+  // Request an event snapshot.
+  auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+  EventSnapshot::Record(device_index, stream_id);
+
+  // When we push the second repetition, it is not detected, as the state was
+  // reset after the snapshot.
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_c));
+
+  // Pushing a third repetition also does not trigger detection yet.
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_a));
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_b));
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_c));
+
+  // But if the loop continues further, we do detect it starting from the
+  // beginning of the loop, as (cab)x2.
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_a));
+  EXPECT_TRUE(RecordDeferredOpAndDetectRepetition(list_b));
+
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_c));
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_a));
+  EXPECT_TRUE(RecordDeferredOpAndDetectRepetition(list_b));
+}
 }  // namespace
 
 }  // namespace torch_tpu

@@ -532,6 +532,10 @@ class StreamState {
         std::move(live_nodes_), std::nullopt, std::move(snapshot_promise)));
     futures_.push_back(std::move(chaining_future));
     live_nodes_.clear();
+
+    // After pushing the request the queue is now effectively empty; reset the
+    // repetition index to start scanning for an existing or new pattern.
+    repetition_i_ = 0;
     return snapshot_future;
   }
 
@@ -594,27 +598,27 @@ StreamState::CheckLastRepeatedSequence(size_t new_hash)
 
 int64_t StreamState::FindRepeatedSequence(size_t new_hash)
     ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+  auto last_deferred_op_it = events_queue_.rbegin();
+  if (last_deferred_op_it == events_queue_.rend() ||
+      !std::holds_alternative<DeferredOpEvent>(*last_deferred_op_it)) {
+    // Either the queue is empty, or the last event is a snapshot request, so
+    // the queue is effectively empty.
+    return 0;
+  }
+
   // Initialize our iterator to be kMinRepeatedSubsequenceLength ops from the
   // end of the queue.
   auto prior_repetition_end_it = events_queue_.rbegin();
-  while (prior_repetition_end_it != events_queue_.rend() &&
-         !std::holds_alternative<DeferredOpEvent>(*prior_repetition_end_it)) {
-    ++prior_repetition_end_it;
-  }
-  auto last_deferred_op_it = prior_repetition_end_it;  // intentional copy
-
   int64_t repetition_length = 0;
   while (prior_repetition_end_it != events_queue_.rend() &&
          repetition_length < kMinRepeatedSubsequenceLength) {
-    if (std::holds_alternative<DeferredOpEvent>(*prior_repetition_end_it)) {
-      ++repetition_length;
+    if (!std::holds_alternative<DeferredOpEvent>(*prior_repetition_end_it)) {
+      // There are less than kMinRepeatedSubsequenceLength deferred ops in the
+      // queue.
+      return 0;
     }
+    ++repetition_length;
     ++prior_repetition_end_it;
-  }
-  if (prior_repetition_end_it == events_queue_.rend()) {
-    // There are less than kMinRepetitionCount * kMinRepeatedSubsequenceLength
-    // deferred ops in the queue.
-    return 0;
   }
 
   // Incrementally increase the sequence length until we find 2 loops at the
@@ -624,8 +628,9 @@ int64_t StreamState::FindRepeatedSequence(size_t new_hash)
     const auto* deferred_op_event =
         std::get_if<DeferredOpEvent>(&*prior_repetition_end_it);
     if (deferred_op_event == nullptr) {
-      ++prior_repetition_end_it;
-      continue;
+      // Exhausted the DeferredOpEvents at the end of the queue with no
+      // repetition found.
+      return 0;
     }
     // Look for points where we pushed the same hash value as new_hash.
     if (deferred_op_event->deferred_op_hash != new_hash) {
@@ -638,26 +643,28 @@ int64_t StreamState::FindRepeatedSequence(size_t new_hash)
     auto prev_it = prior_repetition_end_it;  // intentional copy
     auto curr_it = last_deferred_op_it;      // intentional copy
 
-    const int64_t required_matches = kMinRepetitionCount * repetition_length;
+    const int64_t required_matches =
+        (kMinRepetitionCount - 1) * repetition_length;
     int64_t matches = 0;
     while (matches < required_matches && prev_it != events_queue_.rend()) {
       const auto* prev_deferred_op_event =
           std::get_if<DeferredOpEvent>(&*prev_it);
       if (prev_deferred_op_event == nullptr) {
-        ++prev_it;
-        continue;
+        // Exhausted the DeferredOpEvents at the end of the queue;
+        // the current `repetition_length` is not valid.
+        break;
       }
-      const auto* curr_deferred_op_event =
-          std::get_if<DeferredOpEvent>(&*curr_it);
-      if (curr_deferred_op_event == nullptr) {
-        ++curr_it;
-        continue;
-      }
+      // prior_repetition_end_it and prev_it have already verified that this is
+      // a DeferredOpEvent.
+      const auto& curr_deferred_op_event = std::get<DeferredOpEvent>(*curr_it);
+
       if (prev_deferred_op_event->deferred_op_hash !=
-          curr_deferred_op_event->deferred_op_hash) {
+          curr_deferred_op_event.deferred_op_hash) {
+        // Sequence mismatch, the current `repetition_length` is not valid.
         break;
       }
       if (++matches == required_matches) {
+        // Repetition found, stop looking.
         break;
       }
       ++prev_it;

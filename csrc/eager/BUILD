@@ -1111,6 +1111,8 @@ torch_tpu_cc_test(
         ":tensor_to_buffer",
         ":traversal",
         "//csrc/common:cache_key",
+        "//csrc/common:compilation_spec",
+        "//csrc/common:context_states",
         "//csrc/common:dimension_types",
         "//csrc/common:error_utils",
         "//csrc/common:oss_test_main",
