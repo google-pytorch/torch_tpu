@@ -16,10 +16,8 @@
 
 #include "csrc/ops/scaled_dot_product_attention/flash_attention_kernel.h"
 
-#include <algorithm>
 #include <cstdint>
 #include <initializer_list>
-#include <numbers>
 #include <optional>
 
 #include "absl/algorithm/container.h"
@@ -33,6 +31,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Arith/IR/ArithAttributes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -65,11 +64,14 @@
 namespace mlir::torch_tpu {  // NON_TORCH_TPU_OK=TODO(willfroom): migrate this.
 
 using mlir::arith::AddFOp;          // USING_DECL_OK
+using mlir::arith::CmpFOp;          // USING_DECL_OK
+using mlir::arith::CmpFPredicate;   // USING_DECL_OK
 using mlir::arith::CmpIOp;          // USING_DECL_OK
 using mlir::arith::CmpIPredicate;   // USING_DECL_OK
 using mlir::arith::ConstantOp;      // USING_DECL_OK
 using mlir::arith::MaximumFOp;      // USING_DECL_OK
 using mlir::arith::MulFOp;          // USING_DECL_OK
+using mlir::arith::SelectOp;        // USING_DECL_OK
 using mlir::arith::SubFOp;          // USING_DECL_OK
 using mlir::func::ReturnOp;         // USING_DECL_OK
 using mlir::math::Exp2Op;           // USING_DECL_OK
@@ -250,14 +252,14 @@ SoftmaxState UpdateSoftmaxState(ImplicitLocOpBuilder& b,
                               row_offset, col_offset);
   }
 
-  if (args.mask_arg) {
-    // If a user provides a mask we must defend against a row being entirely
-    // masked out. without this clamp we can get nan values.
-    // If there is no user mask there is no possibility of this happening.
-    sij = ClampLogits(b, sij);
-  }
-
   Value mij = ReduceBroadcastLane(b, sij, CombiningKind::MAXIMUMF);
+  if (args.mask_arg) {
+    // Clamping mij instead of sij ensures that when a row is entirely masked
+    // out with -inf, sij - mij evaluates to (-inf) - (<large negative finite>)
+    // = -inf, so exp2(-inf) = 0.0 naturally without any vector compare or
+    // select on p in the inner loop.
+    mij = ClampMinFinite(b, mij);
+  }
   Value v = LoadTileSlice(b, args.v_arg, col_offset, kc, /*col_offset=*/0,
                           config.vo_head_dim);
 
@@ -297,7 +299,13 @@ void StoreNormalizedOutput(ImplicitLocOpBuilder& b,
                            const FlashAttnConfig& config,
                            const KernelArgs& args, const SoftmaxState& state,
                            int64_t row_offset) {
-  Value li_recip = CreateReciprocal(b, state.l);
+  VectorType l_type = cast<VectorType>(state.l.getType());
+  Value zero_l = ConstantOp::create(b, b.getZeroAttr(l_type));
+  Value is_zero_l = CmpFOp::create(b, CmpFPredicate::OEQ, state.l, zero_l);
+  Value one_l = SplatConstant(b, l_type, 1.0f);
+  Value safe_l = SelectOp::create(b, is_zero_l, one_l, state.l);
+
+  Value li_recip = CreateReciprocal(b, safe_l);
   Value normalized_output = MulFOp::create(
       b, state.acc, NormalizeLaneDim(b, li_recip, config.vo_head_dim));
   StoreTileSlice(b, normalized_output, args.oi_arg, row_offset,
@@ -306,7 +314,9 @@ void StoreNormalizedOutput(ImplicitLocOpBuilder& b,
     // As LSE is *only* used for the backward pass, we can use the more
     // efficient log2 instead of log. I.e. this result is actually scaled by
     // log2(e) of the natural log version of LSE.
-    Value lse = AddFOp::create(b, state.m, CreateLog2(b, state.l));
+    Value ninf_val = SplatNegInf(b, l_type);
+    Value lse = AddFOp::create(b, state.m, CreateLog2(b, safe_l));
+    lse = SelectOp::create(b, is_zero_l, ninf_val, lse);
     Value sliced_lse = NormalizeLaneDim(b, lse, 1);
     Value transposed_lse = vector::TransposeOp::create(b, sliced_lse, {1, 0});
     // The LSE tile is [1, qt], so the query rows are along the lane dimension.

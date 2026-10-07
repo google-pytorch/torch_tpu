@@ -16657,17 +16657,50 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
       ("flash", torch.nn.attention.SDPBackend.FLASH_ATTENTION),
       ("overrideable", torch.nn.attention.SDPBackend.OVERRIDEABLE),
   )
+  @oss_utils.skip_if_libtpu_version(
+      lambda v: v < (0, 0, 50),
+      "Requires libtpu >= 0.0.50 for correct numerics.",
+  )
   def test_sdpa_masked_out_row(self, backend: torch.nn.attention.SDPBackend):
-    """Check that a masked out row does not contain NaNs."""
-    q = torch.ones((1, 1, 2, 2), dtype=torch.float32).tpu()
-    k = torch.ones((1, 1, 2, 2), dtype=torch.float32).tpu()
-    v = torch.ones((1, 1, 2, 2), dtype=torch.float32).tpu()
-    mask = torch.tensor([[0, 0], [1, 1]], dtype=torch.bool).tpu()
+    """Check that a fully masked query row produces zeros and does not contain NaNs."""
+    query = torch.randn(1, 1, 50, 64, device="tpu")
+    key = torch.randn(1, 1, 100, 64, device="tpu")
+    # Non-zero entries across all keys
+    value = torch.randn(1, 1, 100, 64, device="tpu") + 1.0
+
+    # Boolean mask: the first query attends to nothing
+    mask_bool = torch.ones(1, 1, 50, 100, dtype=torch.bool, device="tpu")
+    mask_bool[:, :, 0, :] = False
+
+    # Additive mask with -inf: the first query attends to nothing
+    mask_ninf = torch.zeros(1, 1, 50, 100, dtype=torch.float32, device="tpu")
+    mask_ninf[:, :, 0, :] = -float("inf")
+
+    for mask in (mask_bool, mask_ninf):
+      with torch.nn.attention.sdpa_kernel(backend):
+        result = torch.nn.functional.scaled_dot_product_attention(
+            query, key, value, attn_mask=mask
+        ).cpu()
+        self.assertFalse(torch.isnan(result).any())
+        # First query attends to nothing, so output must be exactly zero.
+        self.assertTrue((result[0, 0, 0] == 0.0).all())
+        # Second query is unmasked, so output should be non-zero.
+        self.assertFalse((result[0, 0, 1] == 0.0).all())
+
+    # Test gradients when query attends to nothing
+    q_grad = query.clone().requires_grad_(True)
+    k_grad = key.clone().requires_grad_(True)
+    v_grad = value.clone().requires_grad_(True)
     with torch.nn.attention.sdpa_kernel(backend):
-      result = torch.nn.functional.scaled_dot_product_attention(
-          q, k, v, attn_mask=mask
-      ).cpu()
-      self.assertFalse(torch.isnan(result).any())
+      out = torch.nn.functional.scaled_dot_product_attention(
+          q_grad, k_grad, v_grad, attn_mask=mask_bool
+      )
+      out.sum().backward()
+      self.assertFalse(torch.isnan(q_grad.grad).any())
+      self.assertFalse(torch.isnan(k_grad.grad).any())
+      self.assertFalse(torch.isnan(v_grad.grad).any())
+      # Query 0 attends to nothing, so its grad must be 0
+      self.assertTrue((q_grad.grad[0, 0, 0] == 0.0).all())
 
   @parameterized.named_parameters(
       ("flash", torch.nn.attention.SDPBackend.FLASH_ATTENTION),

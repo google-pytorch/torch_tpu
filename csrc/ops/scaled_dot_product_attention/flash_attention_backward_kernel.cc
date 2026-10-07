@@ -59,10 +59,13 @@ namespace mlir::torch_tpu {  // NON_TORCH_TPU_OK=TODO(willfroom): migrate this.
 
 using mlir::arith::AddFOp;         // USING_DECL_OK
 using mlir::arith::AndIOp;         // USING_DECL_OK
+using mlir::arith::CmpFOp;         // USING_DECL_OK
+using mlir::arith::CmpFPredicate;  // USING_DECL_OK
 using mlir::arith::CmpIOp;         // USING_DECL_OK
 using mlir::arith::CmpIPredicate;  // USING_DECL_OK
 using mlir::arith::ConstantOp;     // USING_DECL_OK
 using mlir::arith::MulFOp;         // USING_DECL_OK
+using mlir::arith::SelectOp;       // USING_DECL_OK
 using mlir::arith::SubFOp;         // USING_DECL_OK
 using mlir::func::ReturnOp;        // USING_DECL_OK
 using mlir::math::Exp2Op;          // USING_DECL_OK
@@ -100,16 +103,19 @@ SharedBwdResult ComputeSharedBackwardLogic(
                             kt, config.q_sequence_length,
                             config.kv_sequence_length, config.is_causal);
 
-  if (user_bias) {
-    // See comment in forward pass for details.
-    sij = ClampLogits(fn_builder, sij);
-  }
-
   Value lse_broadcast =
       BroadcastOp::create(fn_builder, vector_type_qt_kt, lse_tile);
 
-  Value sub_op = SubFOp::create(fn_builder, sij, lse_broadcast);
+  Value ninf_val = SplatNegInf(fn_builder, vector_type_qt_kt);
+  Value is_lse_ninf =
+      CmpFOp::create(fn_builder, CmpFPredicate::OEQ, lse_broadcast, ninf_val);
+  Value zero_p =
+      ConstantOp::create(fn_builder, fn_builder.getZeroAttr(vector_type_qt_kt));
+  Value safe_lse =
+      SelectOp::create(fn_builder, is_lse_ninf, zero_p, lse_broadcast);
+  Value sub_op = SubFOp::create(fn_builder, sij, safe_lse);
   Value pij = Exp2Op::create(fn_builder, sub_op);
+  pij = SelectOp::create(fn_builder, is_lse_ninf, zero_p, pij);
 
   // Compute dP = dO @ V^T!
   Value dpij = CreateMatmul(

@@ -95,8 +95,16 @@ Value ReduceBroadcastLane(ImplicitLocOpBuilder& b, Value input,
                           vector::CombiningKind kind,
                           int64_t broadcast_lane_size = 128);
 
-// Clamp the input logits to a minimum value.
-Value ClampLogits(ImplicitLocOpBuilder& b, Value input);
+// Clamp the given value to the minimum finite value.
+Value ClampMinFinite(ImplicitLocOpBuilder& b, Value input);
+
+// Creates a constant vector with all elements set to `value`.
+Value SplatConstant(ImplicitLocOpBuilder& b, Type type, float value);
+Value SplatConstant(ImplicitLocOpBuilder& b, ShapedType type,
+                    Attribute value_attr);
+
+// Creates a constant vector with all elements set to -infinity.
+Value SplatNegInf(ImplicitLocOpBuilder& b, Type type);
 
 // Returns an i1 condition indicating whether the tile at (row_idx, col_idx)
 // is below or on the diagonal (i.e. intersects the causal mask).

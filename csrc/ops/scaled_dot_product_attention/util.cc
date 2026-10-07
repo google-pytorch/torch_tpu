@@ -57,20 +57,6 @@ namespace mlir::torch_tpu {  // NON_TORCH_TPU_OK=TODO(willfroom): migrate this.
 
 namespace {
 
-// Exact value doesn't really matter as long as exp(min_val) is 0.
-constexpr float kLogitsMin = -10000.0f;
-
-Value SplatConstant(ImplicitLocOpBuilder& b, ShapedType type,
-                    Attribute value_attr) {
-  return arith::ConstantOp::create(b, DenseElementsAttr::get(type, value_attr));
-}
-
-Value SplatConstant(ImplicitLocOpBuilder& b, Type type, float value) {
-  ShapedType shaped_type = cast<ShapedType>(type);
-  Attribute value_attr = b.getFloatAttr(shaped_type.getElementType(), value);
-  return SplatConstant(b, shaped_type, value_attr);
-}
-
 Value CreateReductionInitValue(ImplicitLocOpBuilder& b, FloatType element_type,
                                ArrayRef<int64_t> shape,
                                vector::CombiningKind kind) {
@@ -91,18 +77,6 @@ Value CreateReductionInitValue(ImplicitLocOpBuilder& b, FloatType element_type,
       << "Unsupported combining kind: "
       << mlir::vector::stringifyCombiningKind(kind).str();
 }
-
-}  // namespace
-
-std::string GetOpString(Operation* op) {
-  ABSL_CHECK(op != nullptr) << "Input op is null.";  // CRASH_OK
-  std::string op_string;
-  llvm::raw_string_ostream os(op_string);
-  op->print(os, OpPrintingFlags().useLocalScope());
-  return op_string;
-}
-
-namespace {
 
 // Returns the indices for a load / store of the trailing 2D tile of `arg`
 // starting at (row_offset, col_offset).
@@ -127,6 +101,34 @@ SmallVector<Value> TileIndices(ImplicitLocOpBuilder& b, MemRefType arg_type,
 }
 
 }  // namespace
+
+std::string GetOpString(Operation* op) {
+  ABSL_CHECK(op != nullptr) << "Input op is null.";  // CRASH_OK
+  std::string op_string;
+  llvm::raw_string_ostream os(op_string);
+  op->print(os, OpPrintingFlags().useLocalScope());
+  return op_string;
+}
+
+Value SplatConstant(ImplicitLocOpBuilder& b, ShapedType type,
+                    Attribute value_attr) {
+  return arith::ConstantOp::create(b, DenseElementsAttr::get(type, value_attr));
+}
+
+Value SplatConstant(ImplicitLocOpBuilder& b, Type type, float value) {
+  ShapedType shaped_type = cast<ShapedType>(type);
+  Attribute value_attr = b.getFloatAttr(shaped_type.getElementType(), value);
+  return SplatConstant(b, shaped_type, value_attr);
+}
+
+Value SplatNegInf(ImplicitLocOpBuilder& b, Type type) {
+  ShapedType shaped_type = cast<ShapedType>(type);
+  FloatType element_type = cast<FloatType>(shaped_type.getElementType());
+  Attribute value_attr = b.getFloatAttr(
+      element_type,
+      APFloat::getInf(element_type.getFloatSemantics(), /*Negative=*/true));
+  return SplatConstant(b, shaped_type, value_attr);
+}
 
 TypedValue<VectorType> LoadTileSlice(ImplicitLocOpBuilder& b, Value arg,
                                      int64_t row_offset, int64_t num_rows,
@@ -277,7 +279,7 @@ Value ApplyStructuredMask(ImplicitLocOpBuilder& b, Value sij,
                             : col_valid;
   }
 
-  Value masking_vector = SplatConstant(b, sij.getType(), kLogitsMin);
+  Value masking_vector = SplatNegInf(b, sij.getType());
   return arith::SelectOp::create(b, valid_mask, sij, masking_vector);
 }
 
@@ -324,10 +326,12 @@ Value ReduceBroadcastLane(ImplicitLocOpBuilder& b, Value input,
   return vector::BroadcastOp::create(b, broadcast_type, cast_op);
 }
 
-Value ClampLogits(ImplicitLocOpBuilder& b, Value input) {
+Value ClampMinFinite(ImplicitLocOpBuilder& b, Value input) {
   VectorType input_type = cast<VectorType>(input.getType());
-  Type element_type = input_type.getElementType();
-  auto min_value_attr = b.getFloatAttr(element_type, kLogitsMin);
+  FloatType element_type = cast<FloatType>(input_type.getElementType());
+  auto min_value_attr = b.getFloatAttr(
+      element_type,
+      APFloat::getLargest(element_type.getFloatSemantics(), /*Negative=*/true));
   auto min_finite_op = arith::ConstantOp::create(b, min_value_attr);
   auto min_value_broadcast =
       vector::BroadcastOp::create(b, input_type, min_finite_op);
