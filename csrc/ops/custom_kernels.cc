@@ -45,6 +45,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Location.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/PatternMatch.h"
@@ -57,6 +58,7 @@
 #include "mlir/Transforms/Passes.h"
 #include "shardy/dialect/sdy/ir/dialect.h"
 #include "shardy/dialect/sdy/transforms/common/propagation_options.h"
+#include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/FuncBuilder.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -376,10 +378,32 @@ bool ContainsSdyManualComputation(mlir::ModuleOp module) {
   return has_manual_computation;
 }
 
+// Wraps the location of every Mosaic `tpu_custom_call` that carries a
+// `kernel_name` attribute (set by Pallas from `pallas_call(name=...)` or the
+// kernel function name) in a NameLoc of that kernel name.
+//
+// XLA derives HLO instruction names (and thus the op names shown in XProf)
+// from the innermost name of the op's location, but drops the `kernel_name`
+// attribute during StableHLO -> HLO conversion. Without this, Pallas kernels
+// show up under generic names such as `pallas_call.N`, or whatever name the
+// first StableHLO -> HLO round trip happened to assign.
+void NameTpuCustomCallsFromKernelName(mlir::ModuleOp module) {
+  module.walk([](mlir::stablehlo::CustomCallOp op) {
+    if (op.getCallTargetName() != "tpu_custom_call") return;
+    auto kernel_name = op->getAttrOfType<mlir::StringAttr>("kernel_name");
+    if (!kernel_name || kernel_name.getValue().empty()) return;
+    op->setLoc(mlir::NameLoc::get(kernel_name, op->getLoc()));
+  });
+}
+
 absl::StatusOr<mlir::func::FuncOp> InjectCustomKernel(
     mlir::MlirBuilder& builder, mlir::ModuleOp custom_kernel,
     mlir::ArrayRef<mlir::Type> input_types,
     std::optional<std::string_view> kernel_id_str = std::nullopt) {
+  // Must run before PartitionGlobalToLocal, whose HLO round trip bakes the
+  // instruction name into the location.
+  NameTpuCustomCallsFromKernelName(custom_kernel);
+
   // TODO(elliotenglish): Currently symbolic shape export is unsupported when we
   // have a distributed kernel. The specialization code also doesn't understand
   // these constructs. Fix this when we implement distributed framework kernels.

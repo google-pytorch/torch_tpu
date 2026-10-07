@@ -14,6 +14,7 @@
 
 #include "csrc/ops/custom_kernels.h"
 
+#include <string>
 #include <string_view>
 
 #include "absl/status/status.h"
@@ -28,10 +29,12 @@
 #include "csrc/pjrt/pjrt_state.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "llvm/Support/raw_ostream.h"
 #include "mlir/Dialect/Func/Extensions/AllExtensions.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Types.h"
 #include "re2/re2.h"
@@ -307,6 +310,51 @@ TEST_F(CustomKernelRegistryTest,
       status.status().message(),
       HasSubstr(
           "number of refinements must match number of op operands 1 vs 2"));
+}
+
+// A kernel wrapping a Mosaic custom call, as produced by jax.export of a
+// pallas_call. The location is deliberately generic, mimicking JAX's
+// `.../pallas_call` name stack.
+constexpr std::string_view kTpuCustomCallMlirKernel = R"(
+module @kernel_pallas {
+  func.func public @main(%arg0: tensor<8x128xf32>) -> tensor<8x128xf32> {
+    %0 = stablehlo.custom_call @tpu_custom_call(%arg0) {
+      backend_config = "{}",
+      kernel_name = "my_pallas_kernel"
+    } : (tensor<8x128xf32>) -> tensor<8x128xf32> loc("jit(f)/pallas_call")
+    return %0 : tensor<8x128xf32>
+  }
+}
+)";
+
+TEST_F(CustomKernelRegistryTest, TpuCustomCallIsNamedAfterKernelName) {
+  RegisterCustomKernel("kernel_pallas", "", kTpuCustomCallMlirKernel);
+
+  mlir::DialectRegistry registry;
+  mlir::stablehlo::registerAllDialects(registry);
+  mlir::func::registerAllExtensions(registry);
+  mlir::MLIRContext context;
+  context.appendDialectRegistry(registry);
+  context.loadAllAvailableDialects();
+  mlir::ModuleBuilder mb(context, mlir::unknownLoc(context));
+  mlir::func::FunctionBuilder fb(mb, "main");
+
+  mlir::Type arg_type =
+      mlir::makeTensorType(fb.getContext(), {8, 128}, mlir::ElementType::F32);
+  mlir::MlirOp op1 = mlir::func::Argument(fb, arg_type);
+  TT_ASSERT_OK_AND_ASSIGN(auto results,
+                          CallCustomKernel(fb, {op1}, "kernel_pallas", ""));
+  mlir::func::Return(fb, results);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+
+  std::string printed;
+  llvm::raw_string_ostream os(printed);
+  module->print(os, mlir::OpPrintingFlags().enableDebugInfo());
+
+  // The partitioning round trip through HLO names the instruction after the
+  // innermost location name; it must be the kernel name, not "pallas_call".
+  EXPECT_THAT(printed, HasSubstr("loc(\"my_pallas_kernel\""));
+  EXPECT_THAT(printed, testing::Not(HasSubstr("pallas_call")));
 }
 
 }  // namespace
