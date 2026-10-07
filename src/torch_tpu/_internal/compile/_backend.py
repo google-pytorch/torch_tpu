@@ -55,7 +55,6 @@ from torch._functorch._aot_autograd.schemas import SerializableAOTDispatchCompil
 import torch._functorch.config as functorch_config
 from torch._functorch.partitioners import min_cut_rematerialization_partition
 from torch.utils import _pytree
-from torch_tpu._internal import env
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal.compile import compiler
 from torch_tpu._internal.compile import split_compiler
@@ -472,8 +471,7 @@ def make_backend_compiler(
     bucket_size: Step size for dynamic shape buckets.
 
   Returns:
-    A SplitCompiler instance wrapping either DynamicCompiler or StaticCompiler,
-    or the base compiler directly if collective materialization is disabled.
+    A SplitCompiler instance wrapping either DynamicCompiler or StaticCompiler.
   """
   has_dynamic_symints = compiler.has_dynamic_symints(example_inputs)
   if has_dynamic_symints:
@@ -486,12 +484,6 @@ def make_backend_compiler(
     base_compiler = compiler.StaticCompiler(
         async_compile=async_compile, debug=debug
     )
-
-  materialize_collectives = env.get_bool_env_once(
-      "TORCH_TPU_INTERNAL_MATERIALIZE_COLLECTIVE_TENSORS", default_value=True
-  )
-  if not materialize_collectives:
-    return base_compiler
 
   return split_compiler.SplitCompiler(base_compiler)
 
