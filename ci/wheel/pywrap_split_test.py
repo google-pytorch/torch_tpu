@@ -156,7 +156,7 @@ class PywrapSplitTest(
     # Importing pytorch should dlopen the extensions and resolve their
     # libtorch symbols.
     super().setUpClass()
-    import torch  # pylint: disable=unused-import, g-import-not-at-top,  # noqa: F401
+    import torch  # pylint: disable=unused-import, g-import-not-at-top,  # ruff: ignore[unused-import]
 
   @parameterized.parameters(
       "torch_tpu._internal.compile",

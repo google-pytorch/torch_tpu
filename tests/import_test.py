@@ -24,7 +24,7 @@ from torch_tpu._internal.distributed import multiprocessing
 
 def _worker_import_torch_tpu(q):
   try:
-    import torch_tpu  # pylint: disable=unused-import  # noqa: F401
+    import torch_tpu  # pylint: disable=unused-import  # ruff: ignore[unused-import]
 
     q.put("OK")
   except Exception:
@@ -33,7 +33,7 @@ def _worker_import_torch_tpu(q):
 
 def _worker_import_torch(q):
   try:
-    import torch  # pylint: disable=unused-import  # noqa: F401
+    import torch  # pylint: disable=unused-import  # ruff: ignore[unused-import]
 
     q.put("OK")
   except Exception:
@@ -42,8 +42,8 @@ def _worker_import_torch(q):
 
 def _worker_import_torch_then_torch_tpu(q):
   try:
-    import torch  # pylint: disable=unused-import  # noqa: F401
-    import torch_tpu  # pylint: disable=unused-import  # noqa: F401
+    import torch  # pylint: disable=unused-import  # ruff: ignore[unused-import]
+    import torch_tpu  # pylint: disable=unused-import  # ruff: ignore[unused-import]
 
     q.put("OK")
   except Exception:
@@ -52,8 +52,8 @@ def _worker_import_torch_then_torch_tpu(q):
 
 def _worker_import_torch_tpu_then_torch(q):
   try:
-    import torch_tpu  # pylint: disable=unused-import  # noqa: F401
-    import torch  # pylint: disable=unused-import  # noqa: F401
+    import torch_tpu  # pylint: disable=unused-import  # ruff: ignore[unused-import]
+    import torch  # pylint: disable=unused-import  # ruff: ignore[unused-import]
 
     q.put("OK")
   except Exception:

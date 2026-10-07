@@ -892,24 +892,24 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
       # pylint: disable=line-too-long
       #
       # module @tt_jit_export_L175C0_dispatch_fx_node_neg {
-      #   func.func private @"test::mul_and_add_scalars_backward_0x728519e39ec5d7ce"(%arg0: tensor<f32> {mhlo.sharding = "{replicated}"}, %arg1: tensor<f32> {mhlo.sharding = "{replicated}"}, %arg2: tensor<f32> {mhlo.sharding = "{replicated}"}, %arg3: tensor<f32> {mhlo.sharding = "{replicated}"}) -> (tensor<f32>, tensor<f32>) {  # noqa: E501
+      #   func.func private @"test::mul_and_add_scalars_backward_0x728519e39ec5d7ce"(%arg0: tensor<f32> {mhlo.sharding = "{replicated}"}, %arg1: tensor<f32> {mhlo.sharding = "{replicated}"}, %arg2: tensor<f32> {mhlo.sharding = "{replicated}"}, %arg3: tensor<f32> {mhlo.sharding = "{replicated}"}) -> (tensor<f32>, tensor<f32>) {  # ruff: ignore[line-too-long]
       #     %0 = stablehlo.multiply %arg2, %arg1 : tensor<f32>
       #     %1 = stablehlo.add %arg3, %0 : tensor<f32>
       #     %2 = stablehlo.multiply %arg0, %arg2 : tensor<f32>
       #     %3 = stablehlo.add %arg3, %2 : tensor<f32>
       #     return %1, %3 : tensor<f32>, tensor<f32>
       #   }
-      #   func.func private @"test::mul_and_add_scalars_0x5affe934a9008caa"(%arg0: tensor<f32> {mhlo.sharding = "{replicated}"}, %arg1: tensor<f32> {mhlo.sharding = "{replicated}"}) -> (tensor<f32>, tensor<f32>) {  # noqa: E501
+      #   func.func private @"test::mul_and_add_scalars_0x5affe934a9008caa"(%arg0: tensor<f32> {mhlo.sharding = "{replicated}"}, %arg1: tensor<f32> {mhlo.sharding = "{replicated}"}) -> (tensor<f32>, tensor<f32>) {  # ruff: ignore[line-too-long]
       #     %0 = stablehlo.multiply %arg0, %arg1 : tensor<f32>
       #     %1 = stablehlo.add %arg0, %arg1 : tensor<f32>
       #     return %0, %1 : tensor<f32>, tensor<f32>
       #   }
-      #   func.func @main(%arg0: tensor<f32>, %arg1: tensor<f32>) -> (tensor<f32>, tensor<f32>, tensor<f32>) {  # noqa: E501
+      #   func.func @main(%arg0: tensor<f32>, %arg1: tensor<f32>) -> (tensor<f32>, tensor<f32>, tensor<f32>) {  # ruff: ignore[line-too-long]
       #     %cst = stablehlo.constant dense<2.000000e+00> : tensor<f64>
       #     %cst_0 = stablehlo.constant dense<1.000000e+00> : tensor<f32>
       #     %cst_1 = stablehlo.constant dense<1.000000e+01> : tensor<f64>
       #     %0 = stablehlo.cosine %arg0 : tensor<f32>
-      #     %1:2 = call @"test::mul_and_add_scalars_0x5affe934a9008caa"(%arg0, %arg1) : (tensor<f32>, tensor<f32>) -> (tensor<f32>, tensor<f32>)  # noqa: E501
+      #     %1:2 = call @"test::mul_and_add_scalars_0x5affe934a9008caa"(%arg0, %arg1) : (tensor<f32>, tensor<f32>) -> (tensor<f32>, tensor<f32>)  # ruff: ignore[line-too-long]
       #     %2 = stablehlo.add %1#0, %1#1 : tensor<f32>
       #     %3 = stablehlo.add %2, %0 : tensor<f32>
       #     %4 = stablehlo.convert %3 : (tensor<f32>) -> tensor<f64>
@@ -924,7 +924,7 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
       #     %cst_3 = stablehlo.constant dense<1.000000e+00> : tensor<f32>
       #     %12 = stablehlo.negate %cst_3 : tensor<f32>
       #     %13 = stablehlo.multiply %12, %11 : tensor<f32>
-      #     %14:2 = call @"test::mul_and_add_scalars_backward_0x728519e39ec5d7ce"(%arg0, %arg1, %13, %13) : (tensor<f32>, tensor<f32>, tensor<f32>, tensor<f32>) -> (tensor<f32>, tensor<f32>)  # noqa: E501
+      #     %14:2 = call @"test::mul_and_add_scalars_backward_0x728519e39ec5d7ce"(%arg0, %arg1, %13, %13) : (tensor<f32>, tensor<f32>, tensor<f32>, tensor<f32>) -> (tensor<f32>, tensor<f32>)  # ruff: ignore[line-too-long]
       #     %15 = stablehlo.sine %arg0 : tensor<f32>
       #     %16 = stablehlo.negate %15 : tensor<f32>
       #     %17 = stablehlo.multiply %13, %16 : tensor<f32>

@@ -69,7 +69,7 @@ if hasattr(torch._dynamo.config, "allow_rnn"):
 
 def _register_scan_operator() -> None:
   """Registers the custom scan operator implementation for TPU."""
-  from torch_tpu._internal.compile import scan as _  # pylint: disable=g-import-not-at-top  # noqa: F401
+  from torch_tpu._internal.compile import scan as _  # pylint: disable=g-import-not-at-top  # ruff: ignore[unused-import]
 
 
 _register_scan_operator()

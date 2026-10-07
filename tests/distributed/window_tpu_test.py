@@ -20,7 +20,7 @@ from absl.testing import absltest
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
-import torch_tpu  # pylint: disable=unused-import  # noqa: F401
+import torch_tpu  # pylint: disable=unused-import  # ruff: ignore[unused-import]
 from torch_tpu._internal.utils.test_utils import assert_close
 from torch_tpu._internal.distributed import multiprocessing
 from tests.distributed import distributed_utils

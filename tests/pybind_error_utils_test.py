@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from absl.testing import absltest
-import torch  # pylint: disable=unused-import  # noqa: F401
+import torch  # pylint: disable=unused-import  # ruff: ignore[unused-import]
 
 # Pre-loads `libtorch.so` for the `_internal.testing` C++ extension in OSS.
 from torch_tpu._internal import testing

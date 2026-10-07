@@ -23,7 +23,7 @@ import warnings
 
 from absl.testing import absltest
 import torch
-import torch_tpu  # pylint: disable=unused-import  # noqa: F401
+import torch_tpu  # pylint: disable=unused-import  # ruff: ignore[unused-import]
 from torch_tpu._internal.device import _device_module
 from torch_tpu._internal.precision.precision_impl import Precision
 from torch_tpu._internal.utils import annotations

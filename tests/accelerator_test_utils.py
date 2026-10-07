@@ -17,7 +17,7 @@
 from typing import Any, Final
 
 import torch
-import torch_tpu  # pylint: disable=unused-import  # noqa: F401
+import torch_tpu  # pylint: disable=unused-import  # ruff: ignore[unused-import]
 from tests import oss_utils
 
 # Default device cap applied to multi-chip TPU tests in OSS presubmit

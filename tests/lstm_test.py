@@ -17,7 +17,7 @@
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
-import torch_tpu  # pylint: disable=unused-import  # noqa: F401
+import torch_tpu  # pylint: disable=unused-import  # ruff: ignore[unused-import]
 from torch_tpu._internal.utils.test_utils import assert_close
 from tests import seed_test_utils
 

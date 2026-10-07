@@ -24,7 +24,7 @@ import torch
 from torch_tpu._internal.utils import utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import error_testing as et
-from tests import oss_utils  # pylint: disable=unused-import  # noqa: F401
+from tests import oss_utils  # pylint: disable=unused-import  # ruff: ignore[unused-import]
 
 _TEST_MODE = et.TEST_MODE
 

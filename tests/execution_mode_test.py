@@ -22,7 +22,7 @@ from typing import TypeAlias
 from absl.testing import absltest
 
 #  Keep import to avoid libtorch.so link error in OSS build.
-import torch  # pylint: disable=unused-import  # noqa: F401
+import torch  # pylint: disable=unused-import  # ruff: ignore[unused-import]
 from torch_tpu._internal import execution_mode
 
 EagerMode: TypeAlias = execution_mode.EagerMode

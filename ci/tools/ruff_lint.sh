@@ -51,7 +51,7 @@ case "$MODE" in
             echo "2. Run the autofixer in the root of the repository: nox -s format"
             echo ""
             echo "To suppress specific ruff warnings when legitimate:"
-            echo "Add a trailing comment on the affected line, e.g. # noqa: E501"
+            echo "Add a trailing comment on the affected line, e.g. # ruff: ignore[line-too-long]"
             echo "================================================================="
             exit 1
         fi

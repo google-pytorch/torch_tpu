@@ -14,7 +14,7 @@
 
 from absl import flags
 from absl.testing import absltest
-import torch  # pylint: disable=unused-import  # noqa: F401
+import torch  # pylint: disable=unused-import  # ruff: ignore[unused-import]
 from tests.compile import stablehlo_compile_testing as sct
 
 _ITERATIONS = flags.DEFINE_integer(

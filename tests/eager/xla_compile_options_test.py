@@ -19,7 +19,7 @@ import os
 
 from absl.testing import absltest
 import torch
-import torch_tpu  # pylint: disable=unused-import  # noqa: F401
+import torch_tpu  # pylint: disable=unused-import  # ruff: ignore[unused-import]
 from torch_tpu._internal import execution_mode
 from tests import seed_test_utils
 
