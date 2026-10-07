@@ -60,12 +60,10 @@ _ROW_AXIS_INDEX = 0  # what `lax.axis_index(_AXIS)` resolved to.
 _ROW_SENT = 1  # the payload this device put on the wire.
 _ROW_RECEIVED = 2  # the payload this device took off the wire.
 
-# A custom-kernel dispatch lowers to `mlir::func::Call`
-# (csrc/ops/custom_kernels.cc:589,596), and `func.func` declares
-# `getDefaultDialect() == "func"` (llvm-project/mlir/include/mlir/Dialect/Func/
-# IR/FuncOps.td:359), so the call prints unprefixed as `call @`. The word
-# boundary is what keeps `stablehlo.custom_call @` from matching.
-_KERNEL_CALL_SITE_RE = re.compile(r"\bcall @")
+# Custom-kernel functions are inlined into `@main` during `BuildMlirModule`,
+# leaving each Pallas kernel's `@tpu_custom_call` (or un-inlined `call @`) at
+# the call site.
+_KERNEL_CALL_SITE_RE = re.compile(r"(?:\bcall @|@tpu_custom_call\b)")
 
 # How a case reacts to a permuted DeviceAssignment.
 _ORDER_SENSITIVE = "order-sensitive"

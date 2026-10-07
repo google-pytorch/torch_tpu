@@ -29,6 +29,7 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "mlir/Dialect/Func/Extensions/AllExtensions.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
@@ -147,6 +148,27 @@ TEST_F(CustomKernelRegistryTest, RegisterAndCallMlirKernel) {
   // Check that module is refined to the shapes of the concrete arguments.
   EXPECT_THAT(debug_string,
               HasSubstr("stablehlo.add %arg0, %arg1 : tensor<10xf32>"));
+  EXPECT_THAT(debug_string, testing::Not(HasSubstr("mhlo.copy")));
+
+  // Check that no residual sharding attributes remain on the module, functions,
+  // function arguments, function results, or operations.
+  EXPECT_FALSE((*module)->hasAttr("mhlo.spmd_parameters_shardings"));
+  EXPECT_FALSE((*module)->hasAttr("mhlo.spmd_output_sharding"));
+  module->walk([&](mlir::func::FuncOp func_op) {
+    for (unsigned i = 0; i < func_op.getNumArguments(); ++i) {
+      EXPECT_FALSE(func_op.getArgAttr(i, "mhlo.sharding"));
+      EXPECT_FALSE(func_op.getArgAttr(i, "sdy.sharding"));
+    }
+    for (unsigned i = 0; i < func_op.getNumResults(); ++i) {
+      EXPECT_FALSE(func_op.getResultAttr(i, "mhlo.sharding"));
+      EXPECT_FALSE(func_op.getResultAttr(i, "sdy.sharding"));
+    }
+  });
+  module->walk([&](mlir::Operation* op) {
+    EXPECT_FALSE(op->hasAttr("mhlo.sharding"));
+    EXPECT_FALSE(op->hasAttr("sdy.sharding"));
+    EXPECT_FALSE(op->hasAttr("sdy.sharding_rule"));
+  });
 }
 
 TEST_F(CustomKernelRegistryTest, RegisterAndCallKernelWithHelperFunction) {

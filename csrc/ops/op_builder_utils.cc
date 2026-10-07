@@ -464,7 +464,7 @@ absl::StatusOr<std::string> SerializePortableArtifact(mlir::ModuleOp module) {
       xla::SerializeUsingVersionedStablehlo(
           module,
           mlir::vhlo::Version::fromCompatibilityRequirement(
-              mlir::vhlo::Version::CompatibilityRequirement::WEEK_4)
+              mlir::vhlo::Version::CompatibilityRequirement::WEEK_12)
               .toString(),
           /*inplace=*/false,
           /*allow_mixed_serialization=*/true),
