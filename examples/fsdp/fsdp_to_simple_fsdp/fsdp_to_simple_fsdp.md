@@ -1,8 +1,7 @@
 # Migrating from FSDPv2 to SimpleFSDP on TorchTPU
 
 This tutorial demonstrates how to migrate a model using **PyTorch FSDPv2
-(`fully_shard`)** to **SimpleFSDP
-(`torchtitan.experiments.graph_trainer.simple_fsdp.data_parallel`)** on TPUs.
+(`fully_shard`)** to **SimpleFSDP (`simple_fsdp.data_parallel`)** on TPUs.
 
 Under most cases, we expect SimpleFSDP to provide significant speedups over
 FSDPv2 for TPU-based training.
@@ -59,7 +58,7 @@ Available TPU Cores (Count): 8
 
 Below are the key changes needed when converting FSDPv2
 (`torch.distributed.fsdp.fully_shard`) code to SimpleFSDP
-(`torchtitan.experiments.graph_trainer.simple_fsdp.data_parallel`).
+(`simple_fsdp.data_parallel`).
 
 ### Before: FSDPv2 (`fully_shard`)
 
@@ -97,7 +96,7 @@ for i, layer in enumerate(layers):
 ```python
 import functools
 from torch.utils import checkpoint as checkpoint_utils
-from torchtitan.experiments.graph_trainer import simple_fsdp
+from examples.fsdp import simple_fsdp
 
 # 1. Configure MixedPrecisionPolicy from simple_fsdp
 mp_policy = simple_fsdp.MixedPrecisionPolicy(
@@ -138,14 +137,14 @@ backend="tpu")`. The parameter redistributions (`all-gather` in forward,
 > world_size`) to maintain identical gradient magnitude.
 
 ```python
+compiled_model = torch.compile(simple_fsdp_model, backend="tpu")
+
 def simple_fsdp_train_step(model, x, y, world_size):
   y_pred = model(x)
   loss = nn.MSELoss()(y_pred.float(), y.float())
   # Scale by 1/world_size to match FSDPv2's AVG gradient reduction
   (loss / world_size).backward()
   return loss.detach(), y_pred.detach()
-
-compiled_train_step = torch.compile(simple_fsdp_train_step, backend="tpu")
 ```
 
 --------------------------------------------------------------------------------
@@ -162,16 +161,16 @@ You can run the comparison script across 8 TPU cores using the shell launcher:
 
 The script builds both a compiled FSDPv2 model (`torch.compile(fsdp2_model,
 backend="tpu")`) and a compiled SimpleFSDP model
-(`torch.compile(simple_fsdp_train_step, backend="tpu")`) from identical initial
+(`torch.compile(simple_fsdp_model, backend="tpu")`) from identical initial
 weights, runs both across 5 training steps, and verifies numerical equivalence
 (`assert_close`) and steady-state step speedups:
 
 ```text
-Step 0: FSDPv2 loss=0.952936 (6664.90 ms) | SimpleFSDP loss=0.952937 (7038.18 ms)
-Step 1: FSDPv2 loss=0.952835 (281.05 ms) | SimpleFSDP loss=0.952836 (80.30 ms)
-Step 2: FSDPv2 loss=0.952739 (170.04 ms) | SimpleFSDP loss=0.952740 (214.29 ms)
-Step 3: FSDPv2 loss=0.952636 (168.63 ms) | SimpleFSDP loss=0.952636 (45.68 ms)
-Step 4: FSDPv2 loss=0.952551 (187.02 ms) | SimpleFSDP loss=0.952553 (46.23 ms)
+Step 0: FSDPv2 loss=0.952937 (10663.96 ms) | SimpleFSDP loss=0.952937 (8205.92 ms)
+Step 1: FSDPv2 loss=0.952836 (194.41 ms) | SimpleFSDP loss=0.952836 (138.65 ms)
+Step 2: FSDPv2 loss=0.952740 (156.00 ms) | SimpleFSDP loss=0.952740 (36.90 ms)
+Step 3: FSDPv2 loss=0.952636 (154.55 ms) | SimpleFSDP loss=0.952636 (52.44 ms)
+Step 4: FSDPv2 loss=0.952552 (157.09 ms) | SimpleFSDP loss=0.952553 (51.82 ms)
 ✅ FSDPv2 to SimpleFSDP migration tutorial verified successfully!
 ```
 

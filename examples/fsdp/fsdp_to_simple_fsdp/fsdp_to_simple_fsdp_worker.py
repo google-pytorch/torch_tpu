@@ -17,9 +17,9 @@
 ================================================================================
 OVERVIEW: WHY MIGRATE TO SIMPLEFSDP?
 ================================================================================
-SimpleFSDP (`torchtitan.experiments.graph_trainer.simple_fsdp.data_parallel`) is
-a compile-first Fully Sharded Data Parallel implementation designed specifically
-to maximize performance with `torch.compile` and XLA on TPUs:
+SimpleFSDP (`simple_fsdp.data_parallel`) is a compile-first Fully Sharded Data
+Parallel implementation that maximizes performance with `torch.compile` and XLA
+on TPUs:
 
 1. Compile-First Architecture:
    Instead of dynamic runtime pre-forward/post-backward Python hooks, SimpleFSDP
@@ -44,6 +44,7 @@ Via CLI shell launcher:
   ./run_fsdp_to_simple_fsdp.sh
 """
 
+from collections.abc import Callable
 import copy
 import functools
 import time
@@ -55,8 +56,8 @@ from torch import optim
 from torch.distributed import fsdp
 from torch.distributed import tensor as dt
 from torch.utils import checkpoint as checkpoint_utils
+from examples.fsdp import simple_fsdp
 from examples.fsdp.fsdp_to_simple_fsdp import model as model_lib
-from torchtitan.experiments.graph_trainer import simple_fsdp
 
 BATCH_SIZE = 4  # Per-device batch size.
 HIDDEN_DIM = 128
@@ -196,7 +197,7 @@ def build_simple_fsdp_model(
 
 
 def simple_fsdp_train_step(
-    model: nn.Module,
+    model: nn.Module | Callable[..., torch.Tensor],
     x: torch.Tensor,
     y: torch.Tensor,
     world_size: int,
@@ -214,15 +215,15 @@ def simple_fsdp_train_step(
 # ==============================================================================
 #
 # Expected Output on 8 TPU cores (v6e-8):
-#   Step 0: FSDPv2 loss=0.952936 (6664.90 ms) | SimpleFSDP loss=0.952937 (7038.18 ms)
-#   Step 1: FSDPv2 loss=0.952835 (281.05 ms)  | SimpleFSDP loss=0.952836 (80.30 ms)
-#   Step 2: FSDPv2 loss=0.952739 (170.04 ms)  | SimpleFSDP loss=0.952740 (214.29 ms)
-#   Step 3: FSDPv2 loss=0.952636 (168.63 ms)  | SimpleFSDP loss=0.952636 (45.68 ms)
-#   Step 4: FSDPv2 loss=0.952551 (187.02 ms)  | SimpleFSDP loss=0.952553 (46.23 ms)
+#   Step 0: FSDPv2 loss=0.952937 (10663.96 ms) | SimpleFSDP loss=0.952937 (8205.92 ms)
+#   Step 1: FSDPv2 loss=0.952836 (194.41 ms)   | SimpleFSDP loss=0.952836 (138.65 ms)
+#   Step 2: FSDPv2 loss=0.952740 (156.00 ms)   | SimpleFSDP loss=0.952740 (36.90 ms)
+#   Step 3: FSDPv2 loss=0.952636 (154.55 ms)   | SimpleFSDP loss=0.952636 (52.44 ms)
+#   Step 4: FSDPv2 loss=0.952552 (157.09 ms)   | SimpleFSDP loss=0.952553 (51.82 ms)
 #   ✅ FSDPv2 to SimpleFSDP migration tutorial verified successfully!
 #
 # Even when FSDPv2 is compiled with `torch.compile(backend="tpu")`, compiled
-# SimpleFSDP achieves a ~3.7x steady-state speedup because FSDPv2's runtime
+# SimpleFSDP achieves a ~3.3x steady-state speedup because FSDPv2's runtime
 # hooks introduce graph breaks, whereas SimpleFSDP compiles the full forward +
 # backward pass into a single whole-step XLA program.
 
@@ -277,8 +278,8 @@ def worker_fn() -> None:
     fsdp2_times_ms.append((time.perf_counter() - t0) * 1000.0)
 
   # 4. Run compiled SimpleFSDP training loop.
+  compiled_simple_fsdp_model = torch.compile(simple_fsdp_model, backend="tpu")
   simple_fsdp_opt = optim.SGD(simple_fsdp_model.parameters(), lr=LR)
-  compiled_train_step = torch.compile(simple_fsdp_train_step, backend="tpu")
   simple_losses = []
   simple_preds = []
   simple_times_ms = []
@@ -286,7 +287,9 @@ def worker_fn() -> None:
   for _ in range(NUM_STEPS):
     t0 = time.perf_counter()
     simple_fsdp_opt.zero_grad()
-    loss, y_pred = compiled_train_step(simple_fsdp_model, x, y, world_size)
+    loss, y_pred = simple_fsdp_train_step(
+        compiled_simple_fsdp_model, x, y, world_size
+    )
     simple_fsdp_opt.step()
     simple_losses.append(loss.to("cpu"))
     simple_preds.append(y_pred.to("cpu"))

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//build_files:build_defs.bzl", "if_oss", "torch_tpu_package_end", "torch_tpu_py_library")
+load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -28,11 +28,9 @@ torch_tpu_py_library(
 torch_tpu_py_library(
     name = "fsdp_to_simple_fsdp_worker",
     srcs = ["fsdp_to_simple_fsdp_worker.py"],
-    deps = if_oss(
-        [],
-        ["//shims/torchtitan/experiments/graph_trainer:simple_fsdp"],
-    ) + [
+    deps = [
         ":model",
+        "//examples/fsdp:simple_fsdp",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
     ],
