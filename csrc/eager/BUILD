@@ -757,6 +757,7 @@ torch_tpu_cc_library(
         "//csrc/ops/linalg/qr:linalg_qr_kernels",
         "//csrc/ops/linalg/solve_triangular:linalg_solve_triangular_kernels",
         "//csrc/ops/linalg/vector_norm:aten_vector_norm_kernels",
+        "//csrc/ops/linear:linear_aten_kernels",
         "//csrc/ops/linspace:linspace_aten_kernels",
         "//csrc/ops/logcumsumexp:logcumsumexp_aten_kernels",
         "//csrc/ops/logical:logical_aten_kernels",

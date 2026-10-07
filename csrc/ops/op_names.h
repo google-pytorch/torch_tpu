@@ -508,6 +508,9 @@ enum class OpName {
   kLinalgSolveTriangularOut,
   kLinalgSvdU,
   kLinalgVectorNormOut,
+  kLinear,
+  kLinearBackward,
+  kLinearOut,
   kLinspaceOut,
   kLocalScalarDense,
   kLog10Out,
@@ -1837,6 +1840,12 @@ ToString(  // NOLINT(google-readability-function-size)
       return "_linalg_svd.U";
     case OpName::kLinalgVectorNormOut:
       return "linalg_vector_norm.out";
+    case OpName::kLinear:
+      return "linear";
+    case OpName::kLinearBackward:
+      return "linear_backward";
+    case OpName::kLinearOut:
+      return "linear.out";
     case OpName::kLinspaceOut:
       return "linspace.out";
     case OpName::kLocalScalarDense:

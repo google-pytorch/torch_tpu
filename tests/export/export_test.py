@@ -72,8 +72,7 @@ class TestExportLinearMode(seed_test_utils.RepeatableTest):
     self.assertIn("stablehlo.add", mlir_text)
 
     # Check for namescope / opname
-    self.assertIn('loc("addmm/as_strided"', mlir_text)
-    self.assertIn('loc("addmm/addmm"', mlir_text)
+    self.assertIn('loc("linear/linear"', mlir_text)
 
     # Check for file info
     current_filename = os.path.basename(__file__)

@@ -252,7 +252,6 @@ UNREGISTERED_OPS = frozenset([
     'linalg_matrix_exp',
     'linalg_matrix_sqrth',
     'linalg_polar.out',
-    'linear_backward',
     'log_normal_',
     'logaddexp.out',
     'logaddexp2.out',
@@ -483,6 +482,10 @@ REGISTRATION_OVERRIDES = frozenset([
     'ldexp.Tensor',
     'ldexp.out',
     'ldexp_',
+    # linear and linear.out are registered to provide direct StableHLO lowerings
+    # via DotGeneral on TPU, overriding the default PyTorch decomposition.
+    'linear',
+    'linear.out',
     # lstm.input is registered to provide an optimized fused StableHLO kernel
     # on TPU, overriding the default PyTorch decomposition.
     'lstm.input',

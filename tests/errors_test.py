@@ -14777,6 +14777,101 @@ class MaskedSoftmaxErrorTest(et.ErrorTestBase):
           self_2d, src_wrong_size, dim=0, start=0, end=2, step=1, out=out_2d
       )
 
+  def test_linear_errors(self):
+    with self.subTest("0d_input"):
+      inp = torch.tensor(1.0, dtype=torch.float32, device=et.device())
+      weight = torch.ones(3, 4, dtype=torch.float32, device=et.device())
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linear(): expected both arguments to linear to be at least 1D, got 0D and 2D""",
+          gpu="""both arguments to linear need to be at least 1D, but they are 0D and 2D""",
+      ):
+        torch.nn.functional.linear(inp, weight)
+
+    with self.subTest("0d_weight"):
+      inp = torch.ones(2, 4, dtype=torch.float32, device=et.device())
+      weight = torch.tensor(1.0, dtype=torch.float32, device=et.device())
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linear(): expected both arguments to linear to be at least 1D, got 2D and 0D""",
+          gpu="""both arguments to linear need to be at least 1D, but they are 2D and 0D""",
+      ):
+        torch.nn.functional.linear(inp, weight)
+
+    with self.subTest("3d_weight"):
+      inp = torch.ones(2, 4, dtype=torch.float32, device=et.device())
+      weight = torch.ones(2, 3, 4, dtype=torch.float32, device=et.device())
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linear(): expected the weight tensor to be at most 2D, got 3D""",
+          gpu="""t() expects a tensor with <= 2 dimensions, but self is 3D""",
+      ):
+        torch.nn.functional.linear(inp, weight)
+
+    with self.subTest("contracting_dim_mismatch"):
+      inp = torch.ones(2, 4, dtype=torch.float32, device=et.device())
+      weight = torch.ones(3, 5, dtype=torch.float32, device=et.device())
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linear(): expected the input and weight tensors to have the same last dimension size, got 4 and 5 for shapes [2, 4] and [3, 5]""",
+          gpu="""mm: mat1 and mat2 shapes cannot be multiplied (2x4 and 5x3)""",
+      ):
+        torch.nn.functional.linear(inp, weight)
+
+    with self.subTest("input_weight_dtype_mismatch"):
+      inp = torch.ones(2, 4, dtype=torch.float32, device=et.device())
+      weight = torch.ones(3, 4, dtype=torch.float64, device=et.device())
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linear(): expected the input and weight tensors to have the same dtype, got float32 and float64""",
+          gpu="""expected mat1 and mat2 to have the same dtype, but got: float != double""",
+      ):
+        torch.nn.functional.linear(inp, weight)
+
+    with self.subTest("input_bias_dtype_mismatch"):
+      inp = torch.ones(2, 4, dtype=torch.float32, device=et.device())
+      weight = torch.ones(3, 4, dtype=torch.float32, device=et.device())
+      bias = torch.ones(3, dtype=torch.float64, device=et.device())
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linear(): expected the input and bias tensors to have the same dtype, got float32 and float64""",
+          gpu="""self and mat2 must have the same dtype, but got Double and Float""",
+      ):
+        torch.nn.functional.linear(inp, weight, bias)
+
+    with self.subTest("out_dtype_mismatch"):
+      inp = torch.ones(2, 4, dtype=torch.float32, device=et.device())
+      weight = torch.ones(3, 4, dtype=torch.float32, device=et.device())
+      out = torch.empty(2, 3, dtype=torch.float64, device=et.device())
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linear(): expected the output dtype to be float32, got float64""",
+          gpu="""Expected out tensor to have dtype float, but got double instead""",
+      ):
+        torch.nn.functional.linear(inp, weight, out=out)
+
+    with self.subTest("rank_expanding_bias"):
+      inp = torch.ones(2, 4, dtype=torch.float32, device=et.device())
+      weight = torch.ones(3, 4, dtype=torch.float32, device=et.device())
+      bias = torch.ones(1, 2, 3, dtype=torch.float32, device=et.device())
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linear(): expected the bias tensor to be broadcastable to the output shape [2, 3], got shape [1, 2, 3]""",
+          gpu="""expand(torch.cuda.FloatTensor{[1, 2, 3]}, size=[2, 3]): the number of sizes provided (2) must be greater or equal to the number of dimensions in the tensor (3)""",
+      ):
+        torch.nn.functional.linear(inp, weight, bias)
+
+    with self.subTest("non_broadcastable_bias"):
+      inp = torch.ones(2, 4, dtype=torch.float32, device=et.device())
+      weight = torch.ones(3, 4, dtype=torch.float32, device=et.device())
+      bias = torch.ones(5, dtype=torch.float32, device=et.device())
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linear(): expected the bias tensor to be broadcastable to the output shape [2, 3], got shape [5]""",
+          gpu="""The expanded size of the tensor (3) must match the existing size (5) at non-singleton dimension 1.  Target sizes: [2, 3].  Tensor sizes: [5]""",
+      ):
+        torch.nn.functional.linear(inp, weight, bias)
+
 
 if __name__ == "__main__":
   multiprocessing.handle_test_main(absltest.main)

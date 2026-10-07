@@ -147,6 +147,7 @@
 #include "csrc/ops/linalg/qr/linalg_qr_kernels.h"
 #include "csrc/ops/linalg/solve_triangular/linalg_solve_triangular_kernels.h"
 #include "csrc/ops/linalg/vector_norm/aten_vector_norm_kernels.h"
+#include "csrc/ops/linear/linear_aten_kernels.h"
 #include "csrc/ops/linspace/linspace_aten_kernels.h"
 #include "csrc/ops/logcumsumexp/logcumsumexp_aten_kernels.h"
 #include "csrc/ops/logical/logical_aten_kernels.h"
@@ -793,6 +794,9 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
                                                 AtenLinalgSolveTriangularOut);
   ImplStable<OpName::kLinalgSvdU>(m, AtenLinalgSvdU);
   ImplStable<OpName::kLinalgVectorNormOut>(m, AtenLinalgVectorNormOut);
+  ImplStable<OpName::kLinear>(m, AtenLinear);
+  ImplStable<OpName::kLinearBackward>(m, AtenLinearBackward);
+  ImplStable<OpName::kLinearOut>(m, AtenLinearOut);
   ImplStable<OpName::kLinspaceOut>(m, AtenLinspaceOut);
   ImplStable<OpName::kLocalScalarDense>(m, AtenLocalScalarDense);
   ImplStable<OpName::kLog10Out>(m, AtenLog10Out);
@@ -1224,6 +1228,7 @@ TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
   ImplStable<OpName::kFftIrfftOut>(m, AtenFftIrfftOut);
   ImplStable<OpName::kFftRfft>(m, AtenFftRfft);
   ImplStable<OpName::kFftRfftOut>(m, AtenFftRfftOut);
+  ImplStable<OpName::kLinear>(m, AtenLinearAutograd);
   ImplStable<OpName::kNllLossNd>(m, AtenNllLossNdAutograd);
   ImplStable<OpName::kRepeatInterleaveSelfInt>(
       m, AtenRepeatInterleaveSelfIntAutograd);

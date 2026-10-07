@@ -1274,6 +1274,48 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       ):
         torch.ops.aten.embedding.out(weight, indices, out=out)
 
+  @et.why_tpu_only(
+      "On CPU/GPU, linear with bool input raises RuntimeError from matmul; on"
+      " TPU, AtenLinear raises NotImplementedError."
+  )
+  def test_linear_bool_input_error(self):
+    inp = torch.ones(2, 4, dtype=torch.bool, device=et.device())
+    weight = torch.ones(3, 4, dtype=torch.bool, device=et.device())
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""linear(): not implemented for bool""",
+    ):
+      torch.nn.functional.linear(inp, weight)
+
+  @et.why_tpu_only(
+      "aten.linear_backward is only registered for TPU (PrivateUse1), not"
+      " CPU/CUDA."
+  )
+  def test_linear_backward_errors(self):
+    with self.subTest("grad_output_shape_mismatch"):
+      inp = torch.ones(2, 4, dtype=torch.float32, device=et.device())
+      weight = torch.ones(3, 4, dtype=torch.float32, device=et.device())
+      grad_out = torch.ones(2, 4, dtype=torch.float32, device=et.device())
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linear_backward(): expected the grad_output tensor to have shape [2, 3], got [2, 4]""",
+      ):
+        torch.ops.aten.linear_backward(
+            inp, grad_out, weight, [True, True, True]
+        )
+
+    with self.subTest("grad_output_dtype_mismatch"):
+      inp = torch.ones(2, 4, dtype=torch.float32, device=et.device())
+      weight = torch.ones(3, 4, dtype=torch.float32, device=et.device())
+      grad_out = torch.ones(2, 3, dtype=torch.float64, device=et.device())
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linear_backward(): expected the grad_output tensor to have dtype float32, got float64""",
+      ):
+        torch.ops.aten.linear_backward(
+            inp, grad_out, weight, [True, True, True]
+        )
+
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_grid_sampler_2d_invalid_interpolation_mode(self):
     inp = torch.ones(1, 1, 2, 2, device=et.device())

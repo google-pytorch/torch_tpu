@@ -848,6 +848,118 @@ class DynamismTest(seed_test_utils.RepeatableTest):
     self.assertEmpty(dynamism.get_dynamism_info(grads[1]))
     self.assertEmpty(dynamism.get_dynamism_info(grads[2]))
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="linear_2d_no_bias",
+          linear_fn=lambda x, w: torch.nn.functional.linear(x, w),
+          shapes=[(3, 4), (5, 4)],
+          dim=0,
+          upper_bound=8,
+      ),
+      dict(
+          testcase_name="linear_2d_with_bias",
+          linear_fn=lambda x, w, b: torch.nn.functional.linear(x, w, b),
+          shapes=[(3, 4), (5, 4), (5,)],
+          dim=0,
+          upper_bound=8,
+      ),
+      dict(
+          testcase_name="linear_3d_no_bias",
+          linear_fn=lambda x, w: torch.nn.functional.linear(x, w),
+          shapes=[(2, 5, 4), (6, 4)],
+          dim=1,
+          upper_bound=10,
+      ),
+      dict(
+          testcase_name="linear_3d_with_bias",
+          linear_fn=lambda x, w, b: torch.nn.functional.linear(x, w, b),
+          shapes=[(2, 5, 4), (6, 4), (6,)],
+          dim=1,
+          upper_bound=10,
+      ),
+  )
+  def test_linear_dynamic_input(
+      self,
+      linear_fn: Callable[..., torch.Tensor],
+      shapes: Sequence[tuple[int, ...]],
+      dim: int,
+      upper_bound: int,
+  ):
+    def mark_dynamic(x: torch.Tensor, *unused_args: torch.Tensor) -> None:
+      dynamism.mark_dynamic(x, dim, 2, upper_bound)
+
+    args = [
+        torch.randint(-3, 4, shape, dtype=torch.float32) for shape in shapes
+    ]
+    act = self._run_bounded_dynamism_test(linear_fn, mark_dynamic, *args)
+    act_dynamism_info = dynamism.get_dynamism_info(act)
+    self.assertLen(act_dynamism_info, 1)
+    self.assertEqual(act_dynamism_info[0].dimension, dim)
+    self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+    self.assertEqual(act_dynamism_info[0].upper_bound, upper_bound)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="linear_backward_2d",
+          x_shape=(3, 4),
+          grad_out_shape=(3, 5),
+          w_shape=(5, 4),
+          dim=0,
+          upper_bound=8,
+      ),
+      dict(
+          testcase_name="linear_backward_3d",
+          x_shape=(2, 5, 4),
+          grad_out_shape=(2, 5, 6),
+          w_shape=(6, 4),
+          dim=1,
+          upper_bound=10,
+      ),
+  )
+  def test_linear_backward_dynamic_input(
+      self,
+      x_shape: tuple[int, ...],
+      grad_out_shape: tuple[int, ...],
+      w_shape: tuple[int, ...],
+      dim: int,
+      upper_bound: int,
+  ):
+    def mark_dynamic(
+        x: torch.Tensor, grad_out: torch.Tensor, w: torch.Tensor
+    ) -> None:
+      del w
+      dynamism.mark_dynamic(x, dim, 2, upper_bound)
+      dynamism.mark_dynamic(grad_out, dim, 2, upper_bound)
+
+    def linear_backward_fn(
+        x: torch.Tensor, grad_out: torch.Tensor, w: torch.Tensor
+    ):
+      if x.device.type == "cpu":
+        x_req = x.detach().clone().requires_grad_(True)
+        w_req = w.detach().clone().requires_grad_(True)
+        b_req = torch.zeros(
+            w.shape[0], dtype=x.dtype, device=x.device, requires_grad=True
+        )
+        out = torch.nn.functional.linear(x_req, w_req, b_req)
+        out.backward(grad_out)
+        return (x_req.grad, w_req.grad, b_req.grad)
+      return torch.ops.aten.linear_backward(x, grad_out, w, [True, True, True])
+
+    args = [
+        torch.randint(-3, 4, shape, dtype=torch.float32)
+        for shape in (x_shape, grad_out_shape, w_shape)
+    ]
+    act = self._run_bounded_dynamism_test(
+        linear_backward_fn, mark_dynamic, *args
+    )
+    grad_x_dynamism_info = dynamism.get_dynamism_info(act[0])
+    self.assertLen(grad_x_dynamism_info, 1)
+    self.assertEqual(grad_x_dynamism_info[0].dimension, dim)
+    self.assertEqual(grad_x_dynamism_info[0].lower_bound, 2)
+    self.assertEqual(grad_x_dynamism_info[0].upper_bound, upper_bound)
+    self.assertEmpty(dynamism.get_dynamism_info(act[1]))
+    self.assertEmpty(dynamism.get_dynamism_info(act[2]))
+
 
 if __name__ == "__main__":
   absltest.main()

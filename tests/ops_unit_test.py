@@ -11854,6 +11854,177 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         ),
     )
 
+  def test_linear_shapes_and_bias(self):
+    cases = [
+        # 1D input x 2D weight
+        ((4,), (3, 4), None),
+        ((4,), (3, 4), (3,)),
+        # 1D input x 1D weight
+        ((4,), (4,), None),
+        ((4,), (4,), ()),
+        # 2D input x 2D weight
+        ((2, 4), (3, 4), None),
+        ((2, 4), (3, 4), (3,)),
+        ((2, 4), (3, 4), (1, 3)),
+        ((2, 4), (3, 4), (2, 3)),
+        # 2D/3D input x 1D weight
+        ((2, 4), (4,), None),
+        ((2, 5, 4), (4,), None),
+        ((2, 5, 4), (4,), (2, 5)),
+        # 3D input x 2D weight
+        ((2, 5, 4), (3, 4), None),
+        ((2, 5, 4), (3, 4), (3,)),
+        ((2, 5, 4), (3, 4), (1, 5, 3)),
+        # 4D input x 2D weight
+        ((2, 3, 4, 5), (6, 5), None),
+        ((2, 3, 4, 5), (6, 5), (6,)),
+        # Zero-dimension batch shapes
+        ((0, 4), (3, 4), None),
+        ((0, 4), (3, 4), (3,)),
+        ((2, 0, 4), (3, 4), None),
+        ((2, 0, 4), (3, 4), (3,)),
+        # Zero-sized contracting dimension
+        ((3, 4, 0), (5, 0), None),
+        ((3, 4, 0), (5, 0), (5,)),
+        ((3, 4, 0), (0,), None),
+        # Single-element shape
+        ((1, 1), (1, 1), (1,)),
+    ]
+    for x_shape, w_shape, b_shape in cases:
+      with self.subTest(x_shape=x_shape, w_shape=w_shape, b_shape=b_shape):
+        x = torch.randn(x_shape, dtype=torch.float32)
+        w = torch.randn(w_shape, dtype=torch.float32)
+        b = (
+            torch.randn(b_shape, dtype=torch.float32)
+            if b_shape is not None
+            else None
+        )
+        self.assert_close_tpu_vs_cpu(
+            lambda device, x=x, w=w, b=b: torch.nn.functional.linear(
+                to(x, device=device),
+                to(w, device=device),
+                to(b, device=device) if b is not None else None,
+            ),
+            rtol=2e-2,
+            atol=2e-2,
+        )
+
+  def test_linear_dtypes(self):
+    dtypes = [
+        torch.float32,
+        torch.bfloat16,
+        torch.float16,
+        torch.complex64,
+        torch.int32,
+        torch.int64,
+    ]
+    for dtype in dtypes:
+      for x_shape in [(2, 4), (2, 5, 4)]:
+        for use_bias in [False, True]:
+          with self.subTest(dtype=dtype, x_shape=x_shape, use_bias=use_bias):
+            if dtype in (torch.int32, torch.int64):
+              x = torch.randint(-5, 6, x_shape, dtype=dtype)
+              w = torch.randint(-5, 6, (3, 4), dtype=dtype)
+              b = torch.randint(-5, 6, (3,), dtype=dtype) if use_bias else None
+              rtol, atol = None, None
+            else:
+              x = torch.randn(x_shape, dtype=dtype)
+              w = torch.randn((3, 4), dtype=dtype)
+              b = torch.randn((3,), dtype=dtype) if use_bias else None
+              rtol, atol = 2e-2, 2e-2
+
+            self.assert_close_tpu_vs_cpu(
+                lambda device, x=x, w=w, b=b: torch.nn.functional.linear(
+                    to(x, device=device),
+                    to(w, device=device),
+                    to(b, device=device) if b is not None else None,
+                ),
+                rtol=rtol,
+                atol=atol,
+            )
+
+    # Verify Precision::HIGHEST mode with tight tolerances for float32/complex64
+    prev_prec = torch.get_float32_matmul_precision()
+    try:
+      torch.set_float32_matmul_precision("highest")
+      for dtype in [torch.float32, torch.complex64]:
+        with self.subTest(dtype=dtype, precision="highest"):
+          x = torch.randn((2, 5, 4), dtype=dtype)
+          w = torch.randn((3, 4), dtype=dtype)
+          b = torch.randn((3,), dtype=dtype)
+          self.assert_close_tpu_vs_cpu(
+              lambda device, x=x, w=w, b=b: torch.nn.functional.linear(
+                  to(x, device=device),
+                  to(w, device=device),
+                  to(b, device=device),
+              ),
+              rtol=1e-4,
+              atol=1e-4,
+          )
+    finally:
+      torch.set_float32_matmul_precision(prev_prec)
+
+  def test_linear_non_contiguous_and_views(self):
+    x_base = torch.randn(5, 2, 4, dtype=torch.float32)
+    w_base = torch.randn(4, 3, dtype=torch.float32)
+    b_base = torch.randn(6, dtype=torch.float32)
+
+    def run_non_contiguous(device):
+      x = to(x_base, device=device).transpose(0, 1)
+      w = to(w_base, device=device).t()
+      b = to(b_base, device=device)[::2]
+      return (
+          torch.nn.functional.linear(x, w, b),
+          torch.nn.functional.linear(x, w, None),
+          torch.nn.functional.linear(x[:, ::2, :], w, b),
+      )
+
+    self.assert_close_tpu_vs_cpu(run_non_contiguous, rtol=2e-2, atol=2e-2)
+
+  def test_linear_out(self):
+    x_2d = torch.randn(2, 4, dtype=torch.float32)
+    x_3d = torch.randn(2, 5, 4, dtype=torch.float32)
+    w = torch.randn(3, 4, dtype=torch.float32)
+    b = torch.randn(3, dtype=torch.float32)
+
+    def run_out(device):
+      results = []
+      for x, out_shape in [(x_2d, (2, 3)), (x_3d, (2, 5, 3))]:
+        x_dev = to(x, device=device)
+        w_dev = to(w, device=device)
+        b_dev = to(b, device=device)
+
+        # Pre-allocated out with bias
+        out_exact_b = torch.empty(out_shape, dtype=torch.float32, device=device)
+        res_exact_b = torch.nn.functional.linear(
+            x_dev, w_dev, b_dev, out=out_exact_b
+        )
+        results.append(out_exact_b)
+        results.append(res_exact_b)
+
+        # Pre-allocated out without bias
+        out_exact_nob = torch.empty(
+            out_shape, dtype=torch.float32, device=device
+        )
+        res_exact_nob = torch.nn.functional.linear(
+            x_dev, w_dev, None, out=out_exact_nob
+        )
+        results.append(out_exact_nob)
+        results.append(res_exact_nob)
+
+        # Empty 0-element out (auto-resize) with and without bias
+        out_empty_b = torch.empty(0, dtype=torch.float32, device=device)
+        torch.nn.functional.linear(x_dev, w_dev, b_dev, out=out_empty_b)
+        results.append(out_empty_b)
+
+        out_empty_nob = torch.empty(0, dtype=torch.float32, device=device)
+        torch.nn.functional.linear(x_dev, w_dev, None, out=out_empty_nob)
+        results.append(out_empty_nob)
+
+      return tuple(results)
+
+    self.assert_close_tpu_vs_cpu(run_out, rtol=2e-2, atol=2e-2)
+
 
 class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
   """Tests for custom ops."""
@@ -17862,6 +18033,186 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
       return tuple(results)
 
     self.assert_close_tpu_vs_cpu(test_fn, rtol=1e-2, atol=1e-2)
+
+  def test_linear_grad(self):
+    shape_cases = [
+        # 1D, 2D, 3D, 4D input with 2D weight (with and without bias)
+        ((4,), (3, 4), None),
+        ((4,), (3, 4), (3,)),
+        ((2, 4), (3, 4), None),
+        ((2, 4), (3, 4), (3,)),
+        ((2, 5, 4), (3, 4), None),
+        ((2, 5, 4), (3, 4), (3,)),
+        ((2, 3, 4, 5), (6, 5), None),
+        ((2, 3, 4, 5), (6, 5), (6,)),
+        # 1D and 2D input with 1D weight
+        ((4,), (4,), None),
+        ((4,), (4,), ()),
+        ((2, 4), (4,), None),
+        # Zero-sized batch and contracting dimensions
+        ((0, 4), (3, 4), (3,)),
+        ((3, 4, 0), (5, 0), (5,)),
+    ]
+    for dtype in [torch.float32, torch.bfloat16, torch.complex64]:
+      rtol, atol = (5e-2, 5e-2) if dtype == torch.bfloat16 else (2e-2, 2e-2)
+      for x_shape, w_shape, b_shape in shape_cases:
+        with self.subTest(
+            dtype=dtype, x_shape=x_shape, w_shape=w_shape, b_shape=b_shape
+        ):
+          x_base = torch.randn(x_shape, dtype=dtype)
+          w_base = torch.randn(w_shape, dtype=dtype)
+          b_base = (
+              torch.randn(b_shape, dtype=dtype) if b_shape is not None else None
+          )
+          out_shape = torch.nn.functional.linear(x_base, w_base, b_base).shape
+          grad_out_base = torch.randn(out_shape, dtype=dtype)
+
+          def run_grad(
+              device,
+              x_b=x_base,
+              w_b=w_base,
+              b_b=b_base,
+              g_b=grad_out_base,
+          ):
+            x = to(x_b.clone(), device=device).requires_grad_(True)
+            w = to(w_b.clone(), device=device).requires_grad_(True)
+            b = (
+                to(b_b.clone(), device=device).requires_grad_(True)
+                if b_b is not None
+                else None
+            )
+            grad_out = to(g_b.clone(), device=device)
+            out = torch.nn.functional.linear(x, w, b)
+            out.backward(grad_out)
+            return (x.grad, w.grad, b.grad if b is not None else None)
+
+          self.assert_close_tpu_vs_cpu(run_grad, rtol=rtol, atol=atol)
+
+    # Non-contiguous input, weight, and grad_out
+    with self.subTest("non_contiguous"):
+      x_nc_base = torch.randn(5, 2, 4, dtype=torch.float32)
+      w_nc_base = torch.randn(4, 3, dtype=torch.float32)
+      b_nc_base = torch.randn(6, dtype=torch.float32)
+      grad_nc_base = torch.randn(5, 2, 3, dtype=torch.float32)
+
+      def run_nc_grad(device):
+        x = (
+            to(x_nc_base.clone(), device=device)
+            .transpose(0, 1)
+            .detach()
+            .requires_grad_(True)
+        )
+        w = (
+            to(w_nc_base.clone(), device=device)
+            .t()
+            .detach()
+            .requires_grad_(True)
+        )
+        b = (
+            to(b_nc_base.clone(), device=device)[::2]
+            .detach()
+            .requires_grad_(True)
+        )
+        grad_out = to(grad_nc_base.clone(), device=device).transpose(0, 1)
+        out = torch.nn.functional.linear(x, w, b)
+        out.backward(grad_out)
+        return (x.grad, w.grad, b.grad)
+
+      self.assert_close_tpu_vs_cpu(run_nc_grad, rtol=2e-2, atol=2e-2)
+
+    # All combinations of requires_grad for (x, w, b)
+    x_mask_base = torch.randn(2, 5, 4, dtype=torch.float32)
+    w_mask_base = torch.randn(3, 4, dtype=torch.float32)
+    b_mask_base = torch.randn(3, dtype=torch.float32)
+    grad_mask_base = torch.randn(2, 5, 3, dtype=torch.float32)
+    for mask in itertools.product([True, False], repeat=3):
+      if not any(mask):
+        continue
+      with self.subTest(requires_grad_mask=mask):
+        req_x, req_w, req_b = mask
+
+        def run_mask_grad(device, rx=req_x, rw=req_w, rb=req_b):
+          x = to(x_mask_base.clone(), device=device).requires_grad_(rx)
+          w = to(w_mask_base.clone(), device=device).requires_grad_(rw)
+          b = to(b_mask_base.clone(), device=device).requires_grad_(rb)
+          grad_out = to(grad_mask_base.clone(), device=device)
+          out = torch.nn.functional.linear(x, w, b)
+          out.backward(grad_out)
+          return (x.grad, w.grad, b.grad)
+
+        self.assert_close_tpu_vs_cpu(run_mask_grad, rtol=2e-2, atol=2e-2)
+
+    # Non-standard broadcastable bias shapes with requires_grad=True
+    for b_bcast_shape in [(1,), (1, 3), (2, 1, 3), (2, 5, 3)]:
+      with self.subTest(broadcastable_bias_shape=b_bcast_shape):
+        x_bcast_base = torch.randn(2, 5, 4, dtype=torch.float32)
+        w_bcast_base = torch.randn(3, 4, dtype=torch.float32)
+        b_bcast_base = torch.randn(b_bcast_shape, dtype=torch.float32)
+        grad_bcast_base = torch.randn(2, 5, 3, dtype=torch.float32)
+
+        def run_bcast_bias_grad(
+            device,
+            x_b=x_bcast_base,
+            w_b=w_bcast_base,
+            b_b=b_bcast_base,
+            g_b=grad_bcast_base,
+        ):
+          x = to(x_b.clone(), device=device).requires_grad_(True)
+          w = to(w_b.clone(), device=device).requires_grad_(True)
+          b = to(b_b.clone(), device=device).requires_grad_(True)
+          grad_out = to(g_b.clone(), device=device)
+          out = torch.nn.functional.linear(x, w, b)
+          out.backward(grad_out)
+          return (x.grad, w.grad, b.grad)
+
+        self.assert_close_tpu_vs_cpu(run_bcast_bias_grad, rtol=2e-2, atol=2e-2)
+
+  def test_linear_backward_direct_all_masks(self):
+    cases = [
+        ((2, 5, 4), (3, 4), (3,)),
+        ((4,), (3, 4), (3,)),
+        ((2, 4), (4,), ()),
+        ((4,), (4,), ()),
+    ]
+    for x_shape, w_shape, b_shape in cases:
+      x_cpu = torch.randn(x_shape, dtype=torch.float32, requires_grad=True)
+      w_cpu = torch.randn(w_shape, dtype=torch.float32, requires_grad=True)
+      b_cpu = torch.randn(b_shape, dtype=torch.float32, requires_grad=True)
+      if len(x_shape) == 2 and len(w_shape) == 1:
+        # CPU aten::linear dispatches 2D input with bias to addmm, which
+        # rejects 1D weight; compute equivalent matmul + bias reference.
+        out_cpu = torch.matmul(x_cpu, w_cpu.t()) + b_cpu
+      else:
+        out_cpu = torch.nn.functional.linear(x_cpu, w_cpu, b_cpu)
+      grad_out_cpu = torch.randn_like(out_cpu)
+      out_cpu.backward(grad_out_cpu)
+      ref_grads = (x_cpu.grad, w_cpu.grad, b_cpu.grad)
+
+      x_tpu = to(x_cpu.detach(), "tpu")
+      w_tpu = to(w_cpu.detach(), "tpu")
+      grad_out_tpu = to(grad_out_cpu.detach(), "tpu")
+
+      for output_mask in itertools.product([True, False], repeat=3):
+        with self.subTest(
+            x_shape=x_shape, w_shape=w_shape, output_mask=output_mask
+        ):
+          tpu_grads = torch.ops.aten.linear_backward(
+              x_tpu, grad_out_tpu, w_tpu, list(output_mask)
+          )
+          self.assertLen(tpu_grads, 3)
+          for mask_bit, tpu_grad, ref_grad in zip(
+              output_mask, tpu_grads, ref_grads, strict=True
+          ):
+            if mask_bit:
+              self.assertIsNotNone(tpu_grad)
+              self.assert_close(
+                  golden_result=ref_grad,
+                  torch_tpu_result=tpu_grad.cpu(),
+                  rtol=2e-2,
+                  atol=2e-2,
+              )
+            else:
+              self.assertTrue(tpu_grad is None or not tpu_grad.defined())
 
 
 class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
