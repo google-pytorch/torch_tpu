@@ -152,6 +152,13 @@ absl::StatusOr<std::vector<DeviceBufferRef>> PrepareCompiledModeArgumentsImpl(
         argument_buffer_refs, MaterializationReason::kCompileModeExecution,
         MaterializationMode::kSplitGraph,
         MaterializationBlockMode::kBlockUntilStarted));
+    for (size_t i = 0; i < argument_tensors.size(); ++i) {
+      const at::Tensor& argument_tensor = DerefTensor(argument_tensors[i]);
+      if (TensorHasTrivialLayout(argument_tensor)) {
+        MaybeCacheMaterializedFullStorageView(argument_tensor,
+                                              argument_buffer_refs[i]);
+      }
+    }
   }
 
   // After materialization, each argument buffer will be a materialized,

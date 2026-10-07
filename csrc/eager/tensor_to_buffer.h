@@ -157,6 +157,13 @@ bool IsFullStorageReinterpretView(const at::Tensor& tensor,
 absl::Status AssignBufferAsStorageBase(DeviceBufferRef new_base,
                                        const at::Tensor& tensor);
 
+// Caches `materialized_view` as the base DeviceBufferRef of `tensor`'s storage
+// if `tensor` is a full-storage reinterpretation of `materialized_view`,
+// without bumping the autograd version counter since logical values are
+// unchanged.
+void MaybeCacheMaterializedFullStorageView(
+    const at::Tensor& tensor, const DeviceBufferRef& materialized_view);
+
 // Returns the C10 allocator singleton for TPU.
 c10::Allocator* GetTpuAllocator();
 

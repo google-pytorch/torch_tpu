@@ -296,6 +296,20 @@ absl::Status AssignBufferAsStorageBase(DeviceBufferRef new_base,
   return absl::OkStatus();
 }
 
+void MaybeCacheMaterializedFullStorageView(
+    const at::Tensor& tensor, const DeviceBufferRef& materialized_view) {
+  if (!IsFullStorageReinterpretView(tensor, materialized_view)) {
+    return;
+  }
+  const DeviceBufferRef* current_base =
+      static_cast<const DeviceBufferRef*>(tensor.storage().data_ptr().get());
+  if (current_base != nullptr && *current_base == materialized_view) {
+    return;
+  }
+  OverwriteDataPtr(tensor.storage().data_ptr(),
+                   DeviceBufferRef(materialized_view));
+}
+
 absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const at::Tensor& tensor) {
   TT_RET_CHECK(tensor.defined(), error::kInvalidArgument)
       << "tensor is undefined";
@@ -695,6 +709,7 @@ absl::StatusOr<DeviceBufferRef> MaterializeAndReturn(
                                    block_mode));
   }
 
+  MaybeCacheMaterializedFullStorageView(tensor, view_buffer_ref);
   return view_buffer_ref;
 }
 
