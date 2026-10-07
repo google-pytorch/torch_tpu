@@ -41,6 +41,7 @@
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/op_builder_utils.h"
+#include "csrc/ops/precision_context.h"
 #include "csrc/ops/scaled_dot_product_attention/helpers.h"
 #include "csrc/ops/view_decomposition/contiguous_to_view.h"
 #include "mlir/IR/Attributes.h"
@@ -202,7 +203,8 @@ mlir::MlirOp ConvertElementTypeIfNeeded(mlir::MlirOp op,
 absl::StatusOr<AttentionPrepResults> PrepareAttentionLogits(
     mlir::MlirBuilder& builder, mlir::MLIRContext* context, mlir::MlirOp query,
     mlir::MlirOp key, mlir::MlirOp value, std::optional<mlir::MlirOp> mask,
-    bool is_causal, std::optional<double> scale) {
+    bool is_causal, std::optional<double> scale,
+    mlir::stablehlo::Precision precision) {
   auto query_tensor_type = GetTensorTypeOrDie(query);
   const int64_t query_rank = query_tensor_type.getRank();
   // The head count and head dim are used as concrete values below (e.g. the
@@ -298,6 +300,8 @@ absl::StatusOr<AttentionPrepResults> PrepareAttentionLogits(
   mlir::MlirOp scaled_query_4d =
       mlir::stablehlo::Mul(query_4d, broadcasted_scale_value);
 
+  const auto precision_config = mlir::stablehlo::PrecisionConfigAttr::get(
+      context, {precision, precision});
   mlir::MlirOp scaled_attn_logits;
   if (head_count_ratio > 1) {
     mlir::MlirOp scaled_query_5d = mlir::stablehlo::Reshape(
@@ -308,7 +312,7 @@ absl::StatusOr<AttentionPrepResults> PrepareAttentionLogits(
         /*rhs_batching_dimensions=*/{0, 1}, /*lhs_contracting_dimensions=*/{4},
         /*rhs_contracting_dimensions=*/{3});
     mlir::MlirOp logits_5d = mlir::stablehlo::DotGeneral(
-        scaled_query_5d, key_4d, attention_dot_dims);
+        scaled_query_5d, key_4d, attention_dot_dims, precision_config);
     scaled_attn_logits = mlir::stablehlo::Reshape(
         logits_5d, {batch_size, num_head_q, seq_len_q, seq_len_kv});
   } else {
@@ -316,8 +320,8 @@ absl::StatusOr<AttentionPrepResults> PrepareAttentionLogits(
         context, /*lhs_batching_dimensions=*/{0, 1},
         /*rhs_batching_dimensions=*/{0, 1}, /*lhs_contracting_dimensions=*/{3},
         /*rhs_contracting_dimensions=*/{3});
-    scaled_attn_logits = mlir::stablehlo::DotGeneral(scaled_query_4d, key_4d,
-                                                     attention_dot_dims);
+    scaled_attn_logits = mlir::stablehlo::DotGeneral(
+        scaled_query_4d, key_4d, attention_dot_dims, precision_config);
   }
 
   mlir::Attribute min_attr =
@@ -433,7 +437,10 @@ mlir::MlirOp PromoteInputIfRequired(mlir::MlirBuilder& builder, mlir::MlirOp op,
 mlir::MlirOp ComputeAttentionOutput(mlir::MLIRContext* context,
                                     mlir::MlirOp softmax, mlir::MlirOp value_4d,
                                     mlir::MlirOp query_4d,
-                                    int64_t head_count_ratio) {
+                                    int64_t head_count_ratio,
+                                    mlir::stablehlo::Precision precision) {
+  const auto precision_config = mlir::stablehlo::PrecisionConfigAttr::get(
+      context, {precision, precision});
   if (head_count_ratio > 1) {
     const auto query_shape = GetTensorTypeOrDie(query_4d).getShape();
     const int64_t batch_size = query_shape[0];
@@ -450,8 +457,8 @@ mlir::MlirOp ComputeAttentionOutput(mlir::MLIRContext* context,
         context, /*lhs_batching_dimensions=*/{0, 1},
         /*rhs_batching_dimensions=*/{0, 1}, /*lhs_contracting_dimensions=*/{4},
         /*rhs_contracting_dimensions=*/{2});
-    mlir::MlirOp out_5d =
-        mlir::stablehlo::DotGeneral(softmax_5d, value_4d, output_dot_dims);
+    mlir::MlirOp out_5d = mlir::stablehlo::DotGeneral(
+        softmax_5d, value_4d, output_dot_dims, precision_config);
     return mlir::stablehlo::Reshape(
         out_5d, {batch_size, num_head_q, seq_len_q, v_head_dim});
   }
@@ -459,12 +466,14 @@ mlir::MlirOp ComputeAttentionOutput(mlir::MLIRContext* context,
       context, /*lhs_batching_dimensions=*/{0, 1},
       /*rhs_batching_dimensions=*/{0, 1}, /*lhs_contracting_dimensions=*/{3},
       /*rhs_contracting_dimensions=*/{2});
-  return mlir::stablehlo::DotGeneral(softmax, value_4d, output_dot_dims);
+  return mlir::stablehlo::DotGeneral(softmax, value_4d, output_dot_dims,
+                                     precision_config);
 }
 
 absl::StatusOr<MlirOpResults<2>> BuildScaledDotProductFusedAttentionShloOp(
     absl::Span<mlir::MlirOp> inputs, mlir::MlirBuilder& builder, bool is_causal,
-    std::optional<double> scale, bool allow_half_precision_reduction_math) {
+    std::optional<double> scale, bool allow_half_precision_reduction_math,
+    mlir::stablehlo::Precision precision) {
   mlir::MlirOp query_mlir = inputs[0];
   mlir::MlirOp key_mlir = inputs[1];
   mlir::MlirOp value_mlir = inputs[2];
@@ -486,7 +495,7 @@ absl::StatusOr<MlirOpResults<2>> BuildScaledDotProductFusedAttentionShloOp(
   TT_ASSIGN_OR_RETURN(
       auto prep_results,
       PrepareAttentionLogits(builder, context, query, key, value, mask_mlir,
-                             is_causal, scale));
+                             is_causal, scale, precision));
   auto [query_4d, key_4d, value_4d, shifted_attn_logits, scale_value,
         head_count_ratio, is_row_all_masked] = prep_results;
 
@@ -540,8 +549,8 @@ absl::StatusOr<MlirOpResults<2>> BuildScaledDotProductFusedAttentionShloOp(
   }
 
   // Compute Attention Output: softmax @ value
-  mlir::MlirOp out_4d = ComputeAttentionOutput(context, softmax, value_4d,
-                                               query_4d, head_count_ratio);
+  mlir::MlirOp out_4d = ComputeAttentionOutput(
+      context, softmax, value_4d, query_4d, head_count_ratio, precision);
 
   // Restore the batch dims flattened in PrepareAttentionLogits: the query's
   // leading batch dims followed by the result's own non-batch dims. Sizes are
@@ -594,7 +603,10 @@ absl::StatusOr<BackwardGradients4D> ComputeGqaBackwardGradients(
     mlir::MlirOp key_4d, mlir::MlirOp value_4d, mlir::Type element_type,
     mlir::Type softmax_calc_type, int64_t head_count_ratio, int64_t batch_size,
     int64_t num_head_q, int64_t num_head_kv, int64_t seq_len_q,
-    int64_t seq_len_kv, int64_t head_dim) {
+    int64_t seq_len_kv, int64_t head_dim,
+    mlir::stablehlo::Precision precision) {
+  const auto precision_config = mlir::stablehlo::PrecisionConfigAttr::get(
+      context, {precision, precision});
   mlir::MlirOp softmax_for_dv =
       ConvertElementTypeIfNeeded(softmax, element_type);
   mlir::MlirOp softmax_5d = mlir::stablehlo::Reshape(
@@ -615,8 +627,8 @@ absl::StatusOr<BackwardGradients4D> ComputeGqaBackwardGradients(
           /*rhs_batching_dimensions=*/{0, 1},
           /*lhs_contracting_dimensions=*/{2, 3},
           /*rhs_contracting_dimensions=*/{2, 3});
-  mlir::MlirOp grad_value_4d =
-      mlir::stablehlo::DotGeneral(softmax_5d, grad_out_5d, grad_value_dot_dims);
+  mlir::MlirOp grad_value_4d = mlir::stablehlo::DotGeneral(
+      softmax_5d, grad_out_5d, grad_value_dot_dims, precision_config);
 
   // dS = grad_out @ value^T
   const auto grad_softmax_dot_dims =
@@ -625,8 +637,8 @@ absl::StatusOr<BackwardGradients4D> ComputeGqaBackwardGradients(
           /*rhs_batching_dimensions=*/{0, 1},
           /*lhs_contracting_dimensions=*/{4},
           /*rhs_contracting_dimensions=*/{3});
-  mlir::MlirOp grad_softmax_5d =
-      mlir::stablehlo::DotGeneral(grad_out_5d, value_4d, grad_softmax_dot_dims);
+  mlir::MlirOp grad_softmax_5d = mlir::stablehlo::DotGeneral(
+      grad_out_5d, value_4d, grad_softmax_dot_dims, precision_config);
   mlir::MlirOp grad_softmax = mlir::stablehlo::Reshape(
       grad_softmax_5d, {batch_size, num_head_q, seq_len_q, seq_len_kv});
 
@@ -647,8 +659,8 @@ absl::StatusOr<BackwardGradients4D> ComputeGqaBackwardGradients(
           /*rhs_batching_dimensions=*/{0, 1},
           /*lhs_contracting_dimensions=*/{4},
           /*rhs_contracting_dimensions=*/{2});
-  mlir::MlirOp grad_query_5d =
-      mlir::stablehlo::DotGeneral(grad_p_5d, key_4d, grad_query_dot_dims);
+  mlir::MlirOp grad_query_5d = mlir::stablehlo::DotGeneral(
+      grad_p_5d, key_4d, grad_query_dot_dims, precision_config);
   mlir::MlirOp grad_query_4d = mlir::stablehlo::Reshape(
       grad_query_5d, {batch_size, num_head_q, seq_len_q, head_dim});
 
@@ -658,8 +670,8 @@ absl::StatusOr<BackwardGradients4D> ComputeGqaBackwardGradients(
       /*rhs_batching_dimensions=*/{0, 1},
       /*lhs_contracting_dimensions=*/{2, 3},
       /*rhs_contracting_dimensions=*/{2, 3});
-  mlir::MlirOp grad_key_4d =
-      mlir::stablehlo::DotGeneral(grad_p_5d, query_5d, grad_key_dot_dims);
+  mlir::MlirOp grad_key_4d = mlir::stablehlo::DotGeneral(
+      grad_p_5d, query_5d, grad_key_dot_dims, precision_config);
 
   return BackwardGradients4D{
       .grad_query_4d = grad_query_4d,
@@ -672,7 +684,9 @@ absl::StatusOr<BackwardGradients4D> ComputeStandardBackwardGradients(
     mlir::MLIRContext* context, mlir::MlirBuilder& builder,
     mlir::MlirOp softmax, mlir::MlirOp grad_out_4d, mlir::MlirOp query_4d,
     mlir::MlirOp key_4d, mlir::MlirOp value_4d, mlir::Type element_type,
-    mlir::Type softmax_calc_type) {
+    mlir::Type softmax_calc_type, mlir::stablehlo::Precision precision) {
+  const auto precision_config = mlir::stablehlo::PrecisionConfigAttr::get(
+      context, {precision, precision});
   // dV = softmax^T @ grad_out
   mlir::MlirOp softmax_for_dv =
       ConvertElementTypeIfNeeded(softmax, element_type);
@@ -681,8 +695,8 @@ absl::StatusOr<BackwardGradients4D> ComputeStandardBackwardGradients(
       /*rhs_batching_dimensions=*/{0, 1},
       /*lhs_contracting_dimensions=*/{2},
       /*rhs_contracting_dimensions=*/{2});
-  mlir::MlirOp grad_value_4d =
-      mlir::stablehlo::DotGeneral(softmax_for_dv, grad_out_4d, dv_dot_dims);
+  mlir::MlirOp grad_value_4d = mlir::stablehlo::DotGeneral(
+      softmax_for_dv, grad_out_4d, dv_dot_dims, precision_config);
 
   // dS = grad_out @ value^T
   const auto ds_dot_dims = mlir::stablehlo::DotDimensionNumbersAttr::get(
@@ -690,8 +704,8 @@ absl::StatusOr<BackwardGradients4D> ComputeStandardBackwardGradients(
       /*rhs_batching_dimensions=*/{0, 1},
       /*lhs_contracting_dimensions=*/{3},
       /*rhs_contracting_dimensions=*/{3});
-  mlir::MlirOp grad_softmax =
-      mlir::stablehlo::DotGeneral(grad_out_4d, value_4d, ds_dot_dims);
+  mlir::MlirOp grad_softmax = mlir::stablehlo::DotGeneral(
+      grad_out_4d, value_4d, ds_dot_dims, precision_config);
 
   // dP = S * (dS - rowsum(S * dS))
   TT_ASSIGN_OR_RETURN(
@@ -705,8 +719,8 @@ absl::StatusOr<BackwardGradients4D> ComputeStandardBackwardGradients(
       /*rhs_batching_dimensions=*/{0, 1},
       /*lhs_contracting_dimensions=*/{3},
       /*rhs_contracting_dimensions=*/{2});
-  mlir::MlirOp grad_query_4d =
-      mlir::stablehlo::DotGeneral(grad_p_dot, key_4d, dq_dot_dims);
+  mlir::MlirOp grad_query_4d = mlir::stablehlo::DotGeneral(
+      grad_p_dot, key_4d, dq_dot_dims, precision_config);
 
   // dK = (dP^T @ query) * scale
   const auto dk_dot_dims = mlir::stablehlo::DotDimensionNumbersAttr::get(
@@ -714,8 +728,8 @@ absl::StatusOr<BackwardGradients4D> ComputeStandardBackwardGradients(
       /*rhs_batching_dimensions=*/{0, 1},
       /*lhs_contracting_dimensions=*/{2},
       /*rhs_contracting_dimensions=*/{2});
-  mlir::MlirOp grad_key_4d =
-      mlir::stablehlo::DotGeneral(grad_p_dot, query_4d, dk_dot_dims);
+  mlir::MlirOp grad_key_4d = mlir::stablehlo::DotGeneral(
+      grad_p_dot, query_4d, dk_dot_dims, precision_config);
 
   return BackwardGradients4D{
       .grad_query_4d = grad_query_4d,
@@ -725,12 +739,15 @@ absl::StatusOr<BackwardGradients4D> ComputeStandardBackwardGradients(
 }
 
 absl::StatusOr<std::array<mlir::MlirOp, 3>>
-BuildScaledDotProductAttentionBackward(
-    absl::Span<mlir::MlirOp> inputs, mlir::MlirBuilder& builder, int rank,
-    int batch_size, bool is_causal, std::optional<double> scale,
-    int64_t num_head_q, int64_t num_head_kv, int64_t seq_len_q,
-    int64_t seq_len_kv, int64_t head_dim,
-    bool allow_half_precision_reduction_math) {
+BuildScaledDotProductAttentionBackward(absl::Span<mlir::MlirOp> inputs,
+                                       mlir::MlirBuilder& builder, int rank,
+                                       int batch_size, bool is_causal,
+                                       std::optional<double> scale,
+                                       int64_t num_head_q, int64_t num_head_kv,
+                                       int64_t seq_len_q, int64_t seq_len_kv,
+                                       int64_t head_dim,
+                                       bool allow_half_precision_reduction_math,
+                                       mlir::stablehlo::Precision precision) {
   mlir::MlirOp grad_out_mlir = inputs[0];
   mlir::MlirOp query_mlir = inputs[1];
   mlir::MlirOp key_mlir = inputs[2];
@@ -759,7 +776,7 @@ BuildScaledDotProductAttentionBackward(
   TT_ASSIGN_OR_RETURN(
       auto prep_results,
       PrepareAttentionLogits(builder, context, query, key, value, mask_mlir,
-                             is_causal, scale));
+                             is_causal, scale, precision));
   auto [query_4d, key_4d, value_4d, shifted_attn_logits, scale_value,
         head_count_ratio, is_row_all_masked] = prep_results;
   const auto element_type = GetTensorTypeOrDie(query).getElementType();
@@ -822,16 +839,16 @@ BuildScaledDotProductAttentionBackward(
   BackwardGradients4D grads;
   if (head_count_ratio > 1) {
     TT_ASSIGN_OR_RETURN(
-        grads,
-        ComputeGqaBackwardGradients(
-            context, builder, softmax, grad_out_4d, query_4d, key_4d, value_4d,
-            element_type, softmax_calc_type, head_count_ratio, batch_size,
-            num_head_q, num_head_kv, seq_len_q, seq_len_kv, head_dim));
+        grads, ComputeGqaBackwardGradients(
+                   context, builder, softmax, grad_out_4d, query_4d, key_4d,
+                   value_4d, element_type, softmax_calc_type, head_count_ratio,
+                   batch_size, num_head_q, num_head_kv, seq_len_q, seq_len_kv,
+                   head_dim, precision));
   } else {
     TT_ASSIGN_OR_RETURN(
         grads, ComputeStandardBackwardGradients(
                    context, builder, softmax, grad_out_4d, query_4d, key_4d,
-                   value_4d, element_type, softmax_calc_type));
+                   value_4d, element_type, softmax_calc_type, precision));
   }
 
   mlir::MlirOp broadcasted_scale_for_query = mlir::stablehlo::Broadcast(
@@ -876,12 +893,14 @@ absl::StatusOr<FusedAttentionResults> ScaledDotProductFusedAttentionShlo(
   Dimensions out_dims(query.sizes().begin(), query.sizes().end() - 1);
   out_dims.push_back(value.sizes().back());
   Dimensions lse_dims(query.sizes().begin(), query.sizes().end() - 1);
+  const mlir::stablehlo::Precision precision = GetAndAddPrecisionTo(param_keys);
   auto op_builder =
-      [is_causal, scale, allow_half_precision_reduction_math](
+      [is_causal, scale, allow_half_precision_reduction_math, precision](
           absl::Span<mlir::MlirOp> inputs,
           mlir::MlirBuilder& builder) -> absl::StatusOr<MlirOpResults<2>> {
     return BuildScaledDotProductFusedAttentionShloOp(
-        inputs, builder, is_causal, scale, allow_half_precision_reduction_math);
+        inputs, builder, is_causal, scale, allow_half_precision_reduction_math,
+        precision);
   };
 
   std::vector<at::Tensor> inputs = {query, key, value};
@@ -927,15 +946,16 @@ ScaledDotProductFusedAttentionShloBackward(
   const int64_t seq_len_q = query.size(rank - 2);
   const int64_t seq_len_kv = key.size(rank - 2);
   const int64_t head_dim = query.size(rank - 1);
+  const mlir::stablehlo::Precision precision = GetAndAddPrecisionTo(param_keys);
 
   auto op_builder =
       [rank, batch_size, is_causal, scale, num_head_q, num_head_kv, seq_len_q,
-       seq_len_kv, head_dim, allow_half_precision_reduction_math](
-          absl::Span<mlir::MlirOp> inputs, mlir::MlirBuilder& builder) {
+       seq_len_kv, head_dim, allow_half_precision_reduction_math,
+       precision](absl::Span<mlir::MlirOp> inputs, mlir::MlirBuilder& builder) {
         return BuildScaledDotProductAttentionBackward(
             inputs, builder, rank, batch_size, is_causal, scale, num_head_q,
             num_head_kv, seq_len_q, seq_len_kv, head_dim,
-            allow_half_precision_reduction_math);
+            allow_half_precision_reduction_math, precision);
       };
 
   std::vector<at::Tensor> inputs = {grad_out, query, key, value, sum_exp};

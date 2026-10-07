@@ -540,12 +540,77 @@ class PrecisionTest(seed_test_utils.RepeatableTest):
     ref_out = run("cpu", torch.float64)
     fwd_err = {}
     # HIGH (bf16x3) requires OSS libtpu >= 0.0.48.
-    for mode in (Precision.DEFAULT, Precision.HIGHEST):
+    for mode in (Precision.DEFAULT, Precision.HIGH, Precision.HIGHEST):
       out = run("tpu", torch.float32, mode)
       fwd_err[mode] = rel_err(out, ref_out)
 
     self.assertLess(fwd_err[Precision.HIGHEST], 1e-4)
     self.assertLess(fwd_err[Precision.HIGHEST], fwd_err[Precision.DEFAULT])
+    if (ver := utils.libtpu_version()) is None or ver >= (0, 0, 48):
+      self.assertLess(fwd_err[Precision.HIGH], fwd_err[Precision.DEFAULT])
+
+  def test_sdpa_math_precision_in_shlo(self):
+    device = torch.device("tpu")
+    q, k, v = (torch.randn(1, 4, 16, 16, device=device) for _ in range(3))
+
+    def model(q, k, v):
+      with sdpa_kernel(SDPBackend.MATH):
+        return torch.nn.functional.scaled_dot_product_attention(q, k, v)
+
+    for mode, expected in (
+        (Precision.HIGH, "precision = [HIGH, HIGH]"),
+        (Precision.HIGHEST, "precision = [HIGHEST, HIGHEST]"),
+    ):
+      with self.subTest(mode=mode):
+        with precision(mode):
+          shlo = utils.format_model(model, q, k, v, shlo=True)
+          self.assertIn(expected, shlo)
+
+  def test_sdpa_precision_comparison_issue_4847(self):
+    torch.manual_seed(0)
+    q, k, v = (torch.randn(2, 4, 32, 64) for _ in range(3))
+    ref = torch.nn.functional.scaled_dot_product_attention(
+        q.double(), k.double(), v.double()
+    )
+    err = lambda x: (
+        (x.cpu().double() - ref).abs().mean() / ref.abs().mean()
+    ).item()
+    q, k, v = q.to("tpu"), k.to("tpu"), v.to("tpu")
+
+    default_err = {}
+    math_err = {}
+    eager_err = {}
+    try:
+      for mode in ["highest", "high", "medium"]:
+        torch.set_float32_matmul_precision(mode)
+        default_err[mode] = err(
+            torch.nn.functional.scaled_dot_product_attention(q, k, v)
+        )
+        with sdpa_kernel(SDPBackend.MATH):
+          math_err[mode] = err(
+              torch.nn.functional.scaled_dot_product_attention(q, k, v)
+          )
+        eager_err[mode] = err(
+            torch.softmax(q @ k.transpose(-1, -2) / 8, -1) @ v
+        )
+        print(
+            f"ISSUE_4847: {mode:8s} default={default_err[mode]:.1e}"
+            f" MATH={math_err[mode]:.1e} eager={eager_err[mode]:.1e}"
+        )
+    finally:
+      torch.set_float32_matmul_precision("medium")
+
+    for mode in ["highest", "high", "medium"]:
+      self.assertAlmostEqual(math_err[mode], eager_err[mode], delta=1e-5)
+    self.assertLess(math_err["highest"], 1e-4)
+    self.assertLess(math_err["highest"], math_err["high"])
+    self.assertLess(math_err["high"], math_err["medium"])
+    self.assertLess(default_err["highest"], 1e-4)
+    if (ver := utils.libtpu_version()) is None or ver >= (0, 0, 48):
+      self.assertLess(default_err["highest"], default_err["high"])
+      self.assertLess(default_err["high"], default_err["medium"])
+    else:
+      self.assertLess(default_err["highest"], default_err["medium"])
 
 
 if __name__ == "__main__":
