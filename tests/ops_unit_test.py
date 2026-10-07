@@ -18586,6 +18586,46 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
     )
     self.assertEqual(op_testing._build_dtype_exclusions_yaml(), expected_yaml)
 
+  def test_softmax_empty_tensor(self):
+    for dtype in (torch.float32, torch.bfloat16):
+      test_cases = [
+          # Empty reduction dimension
+          ((2, 0, 3), 1),
+          ((0,), 0),
+          ((0, 5), 0),
+          # Empty non-reduction dimension
+          ((0, 5), 1),
+          ((2, 0, 3), 0),
+          ((2, 0, 3), 2),
+          ((2, 0, 3), -1),
+      ]
+      for shape, dim in test_cases:
+        cpu_x = torch.empty(shape, dtype=dtype)
+        tpu_x = cpu_x.to("tpu")
+
+        # Softmax
+        cpu_sm = torch.softmax(cpu_x, dim=dim)
+        tpu_sm = torch.softmax(tpu_x, dim=dim)
+        self.assertEqual(tpu_sm.shape, cpu_sm.shape)
+        utils.assert_close(actual=tpu_sm.cpu(), expected=cpu_sm)
+
+        # LogSoftmax
+        cpu_lsm = torch.log_softmax(cpu_x, dim=dim)
+        tpu_lsm = torch.log_softmax(tpu_x, dim=dim)
+        self.assertEqual(tpu_lsm.shape, cpu_lsm.shape)
+        utils.assert_close(actual=tpu_lsm.cpu(), expected=cpu_lsm)
+
+        # Compiled
+        @torch.compile(dynamic=False)
+        def compiled_fn(x, d=dim):
+          return torch.softmax(x, dim=d), torch.log_softmax(x, dim=d)
+
+        tpu_comp_sm, tpu_comp_lsm = compiled_fn(tpu_x)
+        self.assertEqual(tpu_comp_sm.shape, cpu_sm.shape)
+        self.assertEqual(tpu_comp_lsm.shape, cpu_lsm.shape)
+        utils.assert_close(actual=tpu_comp_sm.cpu(), expected=cpu_sm)
+        utils.assert_close(actual=tpu_comp_lsm.cpu(), expected=cpu_lsm)
+
 
 if __name__ == "__main__":
   absltest.main()
