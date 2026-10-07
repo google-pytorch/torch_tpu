@@ -160,10 +160,16 @@ class CheckTcmallocTest(seed_test_utils.RepeatableTest):
           "",
       ),
       ("maps_has_asan", "7f000000 /usr/lib/libasan.so.8\n", ""),
+      ("maps_has_msan", "7f000000 /usr/lib/libmsan.so.0\n", ""),
       ("maps_has_tsan", "7f000000 /usr/lib/libtsan.so.0\n", ""),
       (
           "maps_has_clang_rt_asan",
           "7f000000 /usr/lib/clang/18/lib/linux/libclang_rt.asan-x86_64.so\n",
+          "",
+      ),
+      (
+          "maps_has_clang_rt_msan",
+          "7f000000 /usr/lib/clang/18/lib/linux/libclang_rt.msan-x86_64.so\n",
           "",
       ),
       ("rtld_has_tcmalloc_symbol", "", "MallocExtension_GetAllocatedSize"),
@@ -174,6 +180,7 @@ class CheckTcmallocTest(seed_test_utils.RepeatableTest):
       ),
       ("rtld_has_tc_version_symbol", "", "tc_version"),
       ("rtld_has_asan_symbol", "", "__asan_init"),
+      ("rtld_has_msan_symbol", "", "__msan_init"),
       ("rtld_has_tsan_symbol", "", "__tsan_init"),
   )
   def test_does_not_warn_when_tcmalloc_present(

@@ -40,13 +40,39 @@ import re
 from typing import Final
 import warnings
 
-# Matches e.g. libtcmalloc.so.4, libtcmalloc_minimal.so.4, libtsan.so.0 and
-# libclang_rt.asan-x86_64.so. The trailing separator class is deliberate: a
-# trailing `\b` would not match `libtcmalloc_minimal` because `_` is a word
-# character.
+# Sanitizers (ASan, MSan, TSan) replace the allocator, so tcmalloc cannot be
+# active under them.
 _TCMALLOC_OR_SANITIZER_RE: Final[re.Pattern[str]] = re.compile(
-    r"\blib(?:tcmalloc|clang_rt\.[at]san|[at]san)[._-]"
+    r"""
+    \blib
+    (?:
+        tcmalloc              # libtcmalloc.so.4, libtcmalloc_minimal.so.4
+      | clang_rt\.[amt]san    # libclang_rt.asan-x86_64.so
+      | [amt]san              # libasan.so.8, libmsan.so.0, libtsan.so.0
+    )
+    # Intentionally not have a trailing `\b`, otherwise it would not match
+    # `libtcmalloc_minimal` because `_` is a word character.
+    [._-]
+    """,
+    re.VERBOSE,
 )
+
+
+def _is_sanitizer_init(global_syms: ctypes.CDLL) -> bool:
+  """Returns whether a sanitizer runtime's init symbol is in `global_syms`.
+
+  The symbol is present when ASan, MSan, or TSan is statically linked or
+  preloaded.
+
+  Args:
+    global_syms: The process' global symbol table.
+  """
+  return (
+      hasattr(global_syms, "__asan_init")
+      or hasattr(global_syms, "__msan_init")
+      or hasattr(global_syms, "__tsan_init")
+  )
+
 
 # The prefix of `torch_tpu._internal.warnings.TCMALLOC` warnings; see the module
 # docstring for why it's hard-coded. Tests check that it matches the C++ value.
@@ -92,14 +118,13 @@ def check_tcmalloc() -> None:
         hasattr(global_syms, "MallocExtension_Internal_GetAllocatedSize")
         or hasattr(global_syms, "MallocExtension_GetAllocatedSize")
         or hasattr(global_syms, "tc_version")
-        or hasattr(global_syms, "__asan_init")
-        or hasattr(global_syms, "__tsan_init")
+        or _is_sanitizer_init(global_syms)
     ):
       return
   except OSError:
     pass
 
-  # Check if tcmalloc or a sanitizer (ASan/TSan) is mapped in /proc/self/maps.
+  # Check if tcmalloc or a sanitizer is mapped in /proc/self/maps.
   try:
     with open("/proc/self/maps", "r", encoding="utf-8") as f:
       if _TCMALLOC_OR_SANITIZER_RE.search(f.read()):
