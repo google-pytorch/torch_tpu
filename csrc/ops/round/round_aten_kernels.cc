@@ -17,7 +17,6 @@
 #include "csrc/ops/round/round_aten_kernels.h"
 
 #include <cstdint>
-#include <functional>
 #include <utility>
 
 #include "ATen/core/TensorBody.h"
@@ -34,13 +33,16 @@
 #include "csrc/ops/round/round.h"
 #include "csrc/ops/unary_aten_kernels.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 namespace {
 
 MlirUnaryOpBuilder GetRoundFunctional(int64_t decimals) {
-  return std::bind(&BuildRoundShlo, std::placeholders::_1, decimals);
+  return [decimals](mlir::MlirOp input) {
+    return BuildRoundShlo(input, decimals);
+  };
 }
 
 // Check that the provided dtype is appropriate for rounding.

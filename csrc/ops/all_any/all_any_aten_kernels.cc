@@ -17,7 +17,6 @@
 #include "csrc/ops/all_any/all_any_aten_kernels.h"
 
 #include <cstdint>
-#include <functional>
 #include <optional>
 #include <string_view>
 #include <utility>
@@ -40,6 +39,7 @@
 #include "csrc/ops/reductions/reductions.h"
 #include "csrc/ops/unary_aten_kernels.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
 namespace torch_tpu {
 
@@ -47,14 +47,18 @@ namespace {
 
 MlirUnaryOpBuilder GetAllBuilder(Dimensions reduce_dims,
                                  ReductionMode reduction_mode) {
-  return std::bind(&BuildAllShlo, std::placeholders::_1, reduce_dims,
-                   reduction_mode);
+  return [reduce_dims = std::move(reduce_dims),
+          reduction_mode](mlir::MlirOp input) {
+    return BuildAllShlo(input, reduce_dims, reduction_mode);
+  };
 }
 
 MlirUnaryOpBuilder GetAnyBuilder(Dimensions reduce_dims,
                                  ReductionMode reduction_mode) {
-  return std::bind(&BuildAnyShlo, std::placeholders::_1, reduce_dims,
-                   reduction_mode);
+  return [reduce_dims = std::move(reduce_dims),
+          reduction_mode](mlir::MlirOp input) {
+    return BuildAnyShlo(input, reduce_dims, reduction_mode);
+  };
 }
 
 struct AllAnyReductionParams {
