@@ -100,6 +100,7 @@ torch_tpu_cc_library(
     deps = [
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
+        "//csrc/common:reroute_warnings",
         "//csrc/common:status_builder",
         "//csrc/common:to_string",
         "//csrc/eager:device_buffer",
@@ -116,6 +117,7 @@ torch_tpu_cc_library(
         "//csrc/pjrt:pjrt_utils",
         "//shims/torch:aten_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
+        "@com_google_absl//absl/cleanup",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status",

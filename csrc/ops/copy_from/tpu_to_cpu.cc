@@ -22,6 +22,7 @@
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "ATen/ops/empty.h"
+#include "absl/cleanup/cleanup.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
@@ -29,6 +30,7 @@
 #include "absl/types/span.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/reroute_warnings.h"
 #include "csrc/common/status_builder.h"
 #include "csrc/common/to_string.h"
 #include "csrc/eager/device_buffer.h"
@@ -77,6 +79,9 @@ absl::Status CopyTpuToCpu(const at::Tensor& src, const at::Tensor& dest,
   tsl::profiler::TraceMe trace("CopyTpuToCpu");
   ABSL_VLOG(1) << "[AtenCopyFrom] TPU -> CPU copy path for "
                << ToString(src, "src");
+  // Surface warnings rerouted from background threads that the copy waited on,
+  // also on errors.
+  absl::Cleanup cleanup = [] { SurfaceReroutedWarnings(); };
 
   if (src.numel() == 0) {
     // Shortcut: no data to move, just set dest's storage to an empty

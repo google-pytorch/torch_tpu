@@ -53,6 +53,7 @@
 #include "csrc/common/context_manager.h"
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/reroute_warnings.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/status_builder.h"
 #include "csrc/eager/current_stream.h"
@@ -549,6 +550,8 @@ class MaterializationWorker {
     // thread-local context states to enforce they always rely on
     // resolved configurations passed down from the dispatch thread.
     DisallowThisThreadToAccessContextState();
+    // Let dispatch threads surface this thread's warnings to Python.
+    RouteWarningsOnThisThreadToDispatchThread();
 
     // Create the MLIR context outside the loop once and reuse for
     // materialization tasks.
@@ -565,6 +568,8 @@ class MaterializationWorker {
     // states to enforce they always rely on resolved configurations passed
     // down from the dispatch thread.
     DisallowThisThreadToAccessContextState();
+    // Let dispatch threads surface this thread's warnings to Python.
+    RouteWarningsOnThisThreadToDispatchThread();
 
     while (true) {
       auto task_or_shutdown = DequeueExecutionTask();

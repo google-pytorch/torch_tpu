@@ -1199,6 +1199,7 @@ torch_tpu_cc_library(
         ":env_vars",
         ":error_utils",
         ":flags",
+        ":reroute_warnings",
         ":shape",
         ":thread_pool",
         ":tier2_compilation_cache",

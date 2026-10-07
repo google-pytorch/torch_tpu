@@ -249,7 +249,6 @@ class ParentEnvVarsTest(
     if _TEST_MODE.value is not None:
       self.skipTest("Skipping parent test in sub-test mode.")
 
-  @absltest.skip("b/567323733 - The warning does not reach Python `warnings`.")
   def test_tier2_compilation_cache_warns_once_on_read(self) -> None:
     """Tests TORCH_TPU_TIER2_COMPILATION_CACHE warning in isolated subprocess."""
     self.run_sub_test(
@@ -257,7 +256,6 @@ class ParentEnvVarsTest(
         env_updates={"TORCH_TPU_TIER2_COMPILATION_CACHE": "my_tier2_cache"},
     )
 
-  @absltest.skip("b/567323733 - The warning does not reach Python `warnings`.")
   def test_tier2_compilation_cache_disabled_warns_on_read(self) -> None:
     """Tests TORCH_TPU_TIER2_COMPILATION_CACHE='disabled' warning in isolated subprocess."""
     self.run_sub_test(
@@ -272,7 +270,6 @@ class ParentEnvVarsTest(
         env_removals=["TORCH_TPU_TIER2_COMPILATION_CACHE"],
     )
 
-  @absltest.skip("b/567323733 - The warning does not reach Python `warnings`.")
   def test_tier3_compilation_cache_root_warns_once_on_read(self) -> None:
     """Tests TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT warning in isolated subprocess."""
     temp_dir = self.create_tempdir().full_path

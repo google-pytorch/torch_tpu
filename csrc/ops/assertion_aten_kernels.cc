@@ -31,6 +31,7 @@
 #include "csrc/common/cache_key.h"
 #include "csrc/common/context_states.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/reroute_warnings.h"
 #include "csrc/common/thread_pool.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/eager_mode.h"
@@ -105,6 +106,8 @@ void ScheduleAsyncAssertionCheck(const at::Tensor& self,
 
   IncrementPendingAssertionChecks();
   GetAssertionThreadPool().Schedule([materialized_buf, msg = std::move(msg)]() {
+    // Let dispatch threads surface this thread's warnings to Python.
+    RouteWarningsOnThisThreadToDispatchThread();
     absl::Cleanup cleanup = [] { DecrementPendingAssertionChecks(); };
 
     // Asynchronously copy the condition scalar to CPU host memory.

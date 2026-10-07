@@ -61,6 +61,7 @@
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/flags.h"
+#include "csrc/common/reroute_warnings.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/thread_pool.h"
 #include "csrc/common/tier2_compilation_cache.h"
@@ -1043,6 +1044,8 @@ void CompilationCache::EnqueueCompilation(
         // states to enforce they always rely on resolved compiler options
         // passed down from the dispatch thread.
         DisallowThisThreadToAccessContextState();
+        // Let dispatch threads surface this thread's warnings to Python.
+        RouteWarningsOnThisThreadToDispatchThread();
         torch_tpu::ScopedMemMeasuringContainer container;
         this->GetFromTier2OrCompile(key, CacheEntryKind::kStatic,
                                     std::move(builder),
@@ -1193,6 +1196,8 @@ void CompilationCache::GetFromTier3OrCompile(
           // context states to enforce they always rely on resolved
           // compiler options passed down from the dispatch thread.
           DisallowThisThreadToAccessContextState();
+          // Let dispatch threads surface this thread's warnings to Python.
+          RouteWarningsOnThisThreadToDispatchThread();
           // As an optimization, if the tier-3 cache read has already
           // populated the executable, skip the backup compilation.
           if (this->IsExecutableReady(key, kind)) {

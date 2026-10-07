@@ -50,6 +50,7 @@
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/context_states.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/reroute_warnings.h"
 #include "csrc/common/shape.h"
 #include "csrc/eager/current_stream.h"
 #include "csrc/eager/device_buffer.h"
@@ -1249,7 +1250,10 @@ xla::Future<std::shared_ptr<EventSnapshot>> EventSnapshot::Record(
 }
 
 absl::Status EventSnapshot::Synchronize() const {
-  return future_.Await().status();
+  const absl::Status status = future_.Await().status();
+  // Surface the warnings rerouted from background threads.
+  SurfaceReroutedWarnings();
+  return status;
 }
 
 absl::StatusOr<bool> EventSnapshot::Query() const { return future_.IsReady(); }

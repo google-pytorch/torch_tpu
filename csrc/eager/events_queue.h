@@ -97,7 +97,9 @@ class EventSnapshot {
       MaterializationReason reason = MaterializationReason::kUnknown,
       MaterializationMode mode = MaterializationMode::kSplitGraph);
 
-  // Blocks the calling thread until the event snapshot is complete.
+  // Blocks the calling thread until the event snapshot is complete, then
+  // surfaces the warnings rerouted from background threads. Must be called on a
+  // dispatch thread.
   absl::Status Synchronize() const;
 
   // Query whether the event snapshot has completed.

@@ -375,6 +375,7 @@ torch_tpu_cc_library(
         "//csrc/common:cache_key",
         "//csrc/common:context_states",
         "//csrc/common:error_utils",
+        "//csrc/common:reroute_warnings",
         "//csrc/common:thread_pool",
         "//csrc/eager:device_buffer",
         "//csrc/eager:eager_mode",
