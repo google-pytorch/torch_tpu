@@ -16,11 +16,14 @@
 
 from collections.abc import Callable
 import contextlib
+import dataclasses
 import enum
 import functools
 from multiprocessing import connection as mp_connection
+import os
 import re
 import sys
+import tempfile
 import traceback
 from typing import Any
 import unittest
@@ -275,6 +278,24 @@ In either case, just ignore the failure (the test is not currently enforced for 
   return wrapper
 
 
+# Raised by `assert_raises_message()` when the code block under test completes
+# without raising any exception.
+#
+# The parent process in `ErrorTestBase.run()` relies on this exception's
+# `error_prefix()` to distinguish between:
+#
+# 1) A test that failed because the tested op did not raise any error at all
+#    (in which case the error message starts with this exception's prefix).
+# 2) A test that raised an arbitrary error on GPU (which is permitted when
+#    decorated with @gpu_crashes_or_raises).
+class NoExceptionRaisedError(AssertionError):
+  """Assertion error raised when the code under test does not raise any exception."""
+
+  @classmethod
+  def error_prefix(cls) -> str:
+    return f"{cls.__module__}.{cls.__qualname__}: "
+
+
 @_append_error_test_failure_protocol
 @contextlib.contextmanager
 def assert_raises_message(
@@ -328,8 +349,8 @@ def assert_raises_message(
         f"Expected {exception_type.__name__} but got {type(e).__name__}: {e}"
     ) from e
   else:
-    raise AssertionError(
-        f"Expected {exception_type.__name__} to be raised, but no exception was"
+    raise NoExceptionRaisedError(
+        f"expected {exception_type.__name__} to be raised, but no exception was"
         " raised."
     )
 
@@ -408,8 +429,8 @@ def assert_subprocess_raises_message(exception_type, expected_msg: str):
         f" {type(e).__name__}: {e}"
     ) from e
   else:
-    raise AssertionError(
-        "Expected ProcessRaisedException or ChildFailedError to be raised, but"
+    raise NoExceptionRaisedError(
+        "expected ProcessRaisedException or ChildFailedError to be raised, but"
         " no exception was raised."
     )
 
@@ -490,45 +511,74 @@ def _get_why_tpu_only_reason(
   return _get_test_method_attribute(test_case, _WHY_TPU_ONLY_ATTR)
 
 
-# Attribute name to store the @gpu_crashes reason in the test method.
-_GPU_CRASHES_REASON_ATTR = "_gpu_crashes_reason"
+# Attribute name to store the @gpu_crashes_or_raises info in the test method.
+_GPU_CRASHES_OR_RAISES_ATTR = "_gpu_crashes_or_raises_reason"
 
 
-def gpu_crashes(reason: str):
-  """Decorates a test method that is expected to crash the GPU subprocess.
+def gpu_crashes_or_raises(reason: str):
+  """Decorates a test method expected to crash the GPU subprocess.
+
+  DO NOT use this decorator for tests that are guaranteed to raise some specific
+  error. This should only be used for tests that would definitely crash on, for
+  example, out-of-bounds access.
 
   When running in GPU mode (`--test_mode=gpu`), tests decorated with
-  `@gpu_crashes` expect the isolated child process to terminate abruptly
-  (non-zero exit code). If the process crashes, the test succeeds. If the
-  process completes normally without crashing, the test fails.
+  `@gpu_crashes_or_raises` expect the isolated child process to either
+  terminate abruptly (non-zero exit code) or raise an exception (e.g. read of
+  uninitialized data).
+
+  If the process crashes or raises an error, the test succeeds.
+  If the process completes normally without raising an error, the test fails.
 
   When running in TPU mode (`--test_mode=tpu` or `--test_mode=cov`), this
   decorator has no effect and the test runs normally.
 
   Args:
-    reason: Explanation of why the op causes the GPU subprocess to crash.
+    reason: Explanation of why the op is expected to crash on GPU.
 
   Returns:
     The decorated function.
   """
-  if not reason or not isinstance(reason, str) or not reason.strip():
+  if not isinstance(reason, str) or not reason.strip():
     raise ValueError(
-        "gpu_crashes requires a non-empty explanation of why this test case"
-        f" crashes on GPU, got: {reason!r}"
+        "gpu_crashes_or_raises(): the reason why this test case crashes on"
+        " GPU must be specified."
     )
 
   def decorator(func):
-    setattr(func, _GPU_CRASHES_REASON_ATTR, reason)
+    setattr(func, _GPU_CRASHES_OR_RAISES_ATTR, reason)
     return func
 
   return decorator
 
 
-def _get_gpu_crashes_reason(
+def _get_gpu_crashes_or_raises_reason(
     test_case: seed_test_utils.RepeatableTest,
 ) -> str | None:
-  """Retrieves the @gpu_crashes data for the active test method."""
-  return _get_test_method_attribute(test_case, _GPU_CRASHES_REASON_ATTR)
+  """Retrieves the @gpu_crashes_or_raises reason for the active test method."""
+  return _get_test_method_attribute(test_case, _GPU_CRASHES_OR_RAISES_ATTR)
+
+
+def _has_gpu_crashes_or_raises_reason(
+    test_case: seed_test_utils.RepeatableTest,
+) -> bool:
+  """Checks if the active test method has a @gpu_crashes_or_raises attribute."""
+  return _get_gpu_crashes_or_raises_reason(test_case) is not None
+
+
+def _is_no_exception_raised_error(detail: str) -> bool:
+  """Checks if the subprocess failure was caused by `NoExceptionRaisedError`.
+
+  On failures or errors, `detail` should be the traceback string of the raised
+  error. With that in mind, this function tries to find if there's any line that
+  starts with `NoExceptionRaisedError.error_prefix()`, which is equivalent to:
+
+  ```
+  torch_tpu.tests.error_testing.NoExceptionRaisedError:
+  ```
+  """
+  prefix = NoExceptionRaisedError.error_prefix()
+  return any(line.strip().startswith(prefix) for line in detail.splitlines())
 
 
 _OUTCOME_SUCCESS = "success"
@@ -541,6 +591,7 @@ def _subprocess_test_worker(
     cls: type[absltest.TestCase],  # ABSLTEST_OK=Reference to absltest.TestCase
     method_name: str,
     conn: mp_connection.Connection,
+    output_file: str,
 ) -> None:
   """Executes a single TestCase method in an isolated child process.
 
@@ -550,7 +601,14 @@ def _subprocess_test_worker(
     cls: The test case class.
     method_name: The name of the test method to run.
     conn: The connection to send the result to.
+    output_file: The file path for binding the child process stdout and stderr.
   """
+  # Make stdout (1) and stderr (2) point to `output_file`, so that we can
+  # retrieve both stdout and stderr if this child process ends up crashing.
+  with open(output_file, "w") as f:
+    os.dup2(f.fileno(), 1)
+    os.dup2(f.fileno(), 2)
+
   try:
     instance = cls(method_name)
     res = unittest.TestResult()  # UNITTEST_OK=TestResult object for subprocess
@@ -571,68 +629,174 @@ def _subprocess_test_worker(
     conn.close()
 
 
-def _record_failure(
-    exception_type: type[BaseException],
-    test: absltest.TestCase,  # ABSLTEST_OK=TestCase type annotation.
+@dataclasses.dataclass(frozen=True)
+class _SubprocessData:
+  """Represents the data of a subprocess test run."""
+
+  exitcode: int
+
+  # The piped subprocess stdout and stderr.
+  out: str
+
+  # A tuple composed by one of `_OUTCOME_*` and the stringified traceback.
+  payload: tuple[str, Any] | None
+
+  @property
+  def outcome(self) -> str | None:
+    return self.payload[0] if self.payload else None
+
+  @property
+  def detail(self) -> Any | None:
+    return self.payload[1] if self.payload else None
+
+  def __str__(self) -> str:
+    out_str = (
+        "No Output."
+        if not self.out
+        else f"BEGIN Output:\n{self.out}\nEND Output.\n"
+    )
+
+    return (
+        "Subprocess Data\n"
+        "===============\n"
+        f"Exit Code: {self.exitcode}\n"
+        f"Payload Outcome: {self.outcome}\n"
+        f"{out_str}"
+    )
+
+
+def _record_subprocess_failure(
+    test: seed_test_utils.RepeatableTest,
     result: unittest.TestResult,  # UNITTEST_OK=TestResult type annotation.
     error_message: str,
+    data: _SubprocessData | None = None,
 ) -> None:
   """Records a test failure with the given error message."""
+  error_message = f"GPU subprocess failed: {error_message}."
+  if data is not None:
+    error_message += f"\n\n{data}"
+
   try:
-    raise exception_type(error_message)
-  except exception_type:
+    raise AssertionError(error_message)
+  except AssertionError:
     result.addFailure(test, sys.exc_info())
 
 
-def _record_unexpected_gpu_crash(
-    test: absltest.TestCase,  # ABSLTEST_OK=TestCase type annotation.
+def _record_subprocess_error(
+    test: seed_test_utils.RepeatableTest,
     result: unittest.TestResult,  # UNITTEST_OK=TestResult type annotation.
-    exitcode: int,
+    error_message: str,
+    data: _SubprocessData | None = None,
 ) -> None:
-  """Records a test failure when the GPU subprocess crashed unexpectedly."""
-  _record_failure(
-      RuntimeError,
-      test,
-      result,
-      error_message=(
-          f"GPU subprocess unexpectedly crashed with code: {exitcode}"
-      ),
-  )
+  """Records a test error with the given error message."""
+  error_message = f"GPU subprocess raised an unexpected error: {error_message}."
+  if data is not None:
+    error_message += f"\n\n{data}"
+
+  try:
+    raise RuntimeError(error_message)
+  except RuntimeError:
+    result.addError(test, sys.exc_info())
 
 
-def _record_unexpected_gpu_failure(
-    test: absltest.TestCase,  # ABSLTEST_OK=TestCase type annotation.
+def _populate_result_on_outcome(
+    test: seed_test_utils.RepeatableTest,
     result: unittest.TestResult,  # UNITTEST_OK=TestResult type annotation.
-    detail: str,
+    data: _SubprocessData,
 ) -> None:
-  """Records a test failure when the GPU subprocess failed unexpectedly."""
-  _record_failure(
-      AssertionError,
-      test,
-      result,
-      error_message=f"GPU subprocess unexpectedly failed: {detail}",
-  )
+  """Populates the TestResult based on the subprocess outcome payload.
 
+  Subprocess outcomes are processed as follows:
+  - Success: Recorded as a test success. Even for tests expected to crash or
+    raise, reaching this outcome indicates the expected error was matched.
+  - Skipped: Forwarded to TestResult as skipped with the provided reason.
+  - Failure: If the test was decorated with @gpu_crashes_or_raises and did
+    raise an exception (i.e. did not fail due to an unraised exception), it is
+    recorded as a success. Otherwise, recorded as a test failure.
+  - Error: Recorded as a test error with the execution traceback.
 
-def _record_unexpected_gpu_not_crashing(
-    test: absltest.TestCase,  # ABSLTEST_OK=TestCase type annotation.
-    result: unittest.TestResult,  # UNITTEST_OK=TestResult type annotation.
-    outcome: str,
-    reason: str,
-) -> None:
-  """Records a test failure when a test expected to crash completed normally."""
-  _record_failure(
-      AssertionError,
-      test,
-      result,
-      f"""GPU subprocess unexpectedly did not crash, even though it was supposed to because of: "{reason}". However, it completed with outcome: {outcome}""",
-  )
+  Args:
+    test: The TestCase instance being executed.
+    result: The TestResult object to populate with test outcome data.
+    data: The collected subprocess run data containing exit code and payload.
+  """
+  assert data.payload is not None
+
+  outcome, detail = data.payload
+
+  gpu_crashes_or_raises_reason = _get_gpu_crashes_or_raises_reason(test)
+  expected_test_to_crash_or_raise = gpu_crashes_or_raises_reason is not None
+
+  # Reset `data`, so that it's omitted from the test error message on tests not
+  # decorated with @gpu_crashes_or_raises.
+  #
+  # The reason being that dumping that information only makes sense if the test
+  # crashed (checked in the caller) or we actually expected the test to crash or
+  # raise (i.e. decorated).
+  data_if_expected_crash = data if expected_test_to_crash_or_raise else None
+
+  if outcome == _OUTCOME_SUCCESS:
+    # Record this test as "success", even if it was decorated with
+    # `@gpu_crashes_or_raises()`. That's because this decorator is supposed
+    # to be used only on error tests. Having this outcome, it means that an
+    # error was successfully raised and matched.
+    result.addSuccess(test)
+    return
+
+  if outcome == _OUTCOME_SKIPPED:
+    result.addSkip(test, detail)
+    return
+
+  if outcome == _OUTCOME_FAILURE:
+    # Any other failure that's not `NoExceptionRaisedError` counts as success,
+    # as long as the test was decorated with `@gpu_crashes_or_raises()`.
+    if expected_test_to_crash_or_raise and not _is_no_exception_raised_error(
+        detail
+    ):
+      result.addSuccess(test)
+      return
+
+    # Otherwise, this is an actual failure that should be reported. So, we
+    # should forward the failure detail, adding the necessary context.
+
+    # Case 1/2: the test was expected to crash or raise, but it didn't raise
+    # anything.
+    if expected_test_to_crash_or_raise:
+      message = (
+          "expected the test to crash or raise an error inside the"
+          " `et.assert_*raises_message()` context manager, but the test ran to"
+          " completion without errors.\nReason:"
+          f" {gpu_crashes_or_raises_reason}\n\n{detail}"
+      )
+    else:
+      # Case 2/2: the test was not expected to crash or raise.
+      message = detail
+
+    _record_subprocess_failure(test, result, message, data_if_expected_crash)
+    return
+
+  if outcome == _OUTCOME_ERROR:
+    # In this context, an error outcome simply means that the test raised an
+    # error unexpectedly, i.e. outside our `assert_*raises_message` context
+    # manager.
+    #
+    # Therefore, we should just forward the error.
+    message = (
+        "the test raised an unexpected error outside the"
+        f" `et.assert_*raises_message()` context manager.\n{detail}"
+    )
+    _record_subprocess_error(test, result, message, data=data_if_expected_crash)
+    return
+
+  bad_outcome_error = f"unexpected outcome: {outcome}.\n{detail}"
+  # In this exceptional case, also append the `data` to the error message.
+  _record_subprocess_error(test, result, bad_outcome_error, data)
 
 
 def _run_in_subprocess(
     cls: type[absltest.TestCase],  # ABSLTEST_OK=TestCase type annotation.
     method_name: str,
-) -> tuple[int, tuple[str, Any] | None]:
+) -> _SubprocessData:
   """Runs the test method in an isolated subprocess, returning (exitcode, payload)."""
 
   # Rationale for choosing `multiprocessing` over `subprocess` or
@@ -647,24 +811,36 @@ def _run_in_subprocess(
   #    transport needed to execute single parameterized `TestCase` class
   #    methods mid-flight.
   ctx = multiprocessing.get_context("forkserver")
-  parent_conn, child_conn = ctx.Pipe(duplex=False)
 
-  # Create a subprocess to run the test method.
-  p = ctx.Process(
-      target=_subprocess_test_worker,
-      args=(cls, method_name, child_conn),
-  )
+  # Pipe for sending the payload: (outcome, detail) pair.
+  payload_receiver_conn, payload_sender_conn = ctx.Pipe(duplex=False)
 
-  p.start()
-  child_conn.close()
-  p.join()
+  # Temporary file for capturing the sub-process stdout and stderr.
+  with tempfile.NamedTemporaryFile() as child_output_file:
+    # Create a subprocess to run the test method.
+    p = ctx.Process(
+        target=_subprocess_test_worker,
+        args=(cls, method_name, payload_sender_conn, child_output_file.name),
+    )
 
-  payload = (
-      parent_conn.recv() if p.exitcode == 0 and parent_conn.poll() else None
-  )
+    p.start()
+    # Close the parent's payload connection for sending, since that will be done
+    # by the child process.
+    payload_sender_conn.close()
+    p.join()
 
-  parent_conn.close()
-  return p.exitcode, payload
+    # Reads the actual child output.
+    child_output_file.seek(0)
+    child_output = child_output_file.read().decode("utf-8", errors="replace")
+
+  # Retrieve the sent payload, if any.
+  if p.exitcode == 0 and payload_receiver_conn.poll():
+    payload = payload_receiver_conn.recv()
+  else:
+    payload = None
+
+  payload_receiver_conn.close()
+  return _SubprocessData(p.exitcode, child_output, payload)
 
 
 class ErrorTestBase(seed_test_utils.RepeatableTest):
@@ -694,6 +870,40 @@ class ErrorTestBase(seed_test_utils.RepeatableTest):
     tt_testing.set_op_dispatch_failure("", "")
     super().tearDown()
 
+  @contextlib.contextmanager
+  def _testcase_run_context(self, result):
+    """Context manager wrapping test execution with TestResult lifecycle hooks.
+
+    Adapted from the lifecycle management of `TestCase.run()` for keeping track
+    of the `TestResult` internal state.
+
+    Args:
+      result: Optional existing TestResult object. If `None`, a new instance
+        will be created.
+
+    Yields:
+      An instantiated TestResult object.
+    """
+    if result is None:
+      result = self.defaultTestResult()
+      start_test_run = getattr(result, "startTestRun", None)
+      stop_test_run = getattr(result, "stopTestRun", None)
+      if start_test_run is not None:
+        start_test_run()
+    else:
+      stop_test_run = None
+
+    result.startTest(self)
+
+    try:
+      # Actually spawn a new sub-process and handle its outcome.
+      yield result
+
+    finally:
+      result.stopTest(self)
+      if stop_test_run is not None:
+        stop_test_run()
+
   def run(self, result=None):
     """Executes the test case, isolating GPU tests inside clean subprocesses.
 
@@ -716,74 +926,51 @@ class ErrorTestBase(seed_test_utils.RepeatableTest):
       If the child process terminates abruptly (e.g., CUDA device-side assert
       or SIGSEGV) without transmitting a payload, the parent detects the
       non-zero exit code and verifies whether it matches an expected
-      `@gpu_crashes` expectation, or records a test failure.
+      `@gpu_crashes_or_raises` expectation, or records a test failure.
     """
     if TEST_MODE.value != "gpu":
       return super().run(result)
 
-    if result is None:
-      result = self.defaultTestResult()
-      start_test_run = getattr(result, "startTestRun", None)
-      if start_test_run is not None:
-        start_test_run()
+    with self._testcase_run_context(result) as r:
+      # Instead of conditionally instantiating `result` here, we pass it to the
+      # `_testcase_run_context()` context manager because if it's `None`,
+      # we need to set up the testing environment, too.
+      #
+      # The yielded `r` is guaranteed to be an instance of `TestResult`.
+      result = r
 
-    exitcode, payload = _run_in_subprocess(self.__class__, self._testMethodName)
-    test_crashed = exitcode != 0
+      # Run the test method in an isolated subprocess to capture its output and
+      # execution outcome.
+      data = _run_in_subprocess(self.__class__, self._testMethodName)
+      test_crashed = data.exitcode != 0
 
-    gpu_crashes_reason = _get_gpu_crashes_reason(self)
-    should_test_crash = gpu_crashes_reason is not None
+      # Process the collected subprocess data to populate the TestResult.
+      # We evaluate the observed execution against test expectations across two
+      # cases:
+      #   Case 1: The test crashed.
+      #   Case 2: The test did not crash and returned an outcome payload.
 
-    # There are 4 different cases to check: the combinations of the expected and
-    # actual behavior of the test w.r.t. whether it crashed or not.
+      # Case 1: test crashed.
+      if test_crashed:
+        if _has_gpu_crashes_or_raises_reason(self):
+          result.addSuccess(self)
+        else:
+          unexpected_crash_error = "subprocess crashed"
+          _record_subprocess_error(self, result, unexpected_crash_error, data)
+        return result
 
-    # Case 1/4: test crashed as expected.
-    if should_test_crash and test_crashed:
-      result.addSuccess(self)
-      return
+      # Assumption: if the test didn't crash, its payload should not be None.
+      if data.payload is None:
+        no_payload_error = (
+            "assumption failed: no payload was received, even though the"
+            " process did not crash"
+        )
+        _record_subprocess_error(self, result, no_payload_error, data)
+        return result
 
-    # Case 2/4: test crashed unexpectedly.
-    # Unexpected GPU failure
-    if test_crashed:
-      _record_unexpected_gpu_crash(self, result, exitcode)
-      return
-
-    # Assumption: if the test didn't crash, its payload should not be None.
-    if payload is None:
-      _record_unexpected_gpu_failure(
-          self,
-          result,
-          detail=(
-              "assumption failed: no payload was received, even though the"
-              " process has not crashed"
-          ),
-      )
-      return
-
-    outcome, detail = payload
-
-    # Case 3/4: Test didn't crash, but it should have crashed.
-    if should_test_crash:
-      # Assert here, so that type-checking passes.
-      assert gpu_crashes_reason is not None
-
-      _record_unexpected_gpu_not_crashing(
-          self, result, outcome, gpu_crashes_reason
-      )
-      return
-
-    # Case 4/4: Test didn't crash, and it shouldn't have crashed.
-    # Check the received outcome.
-    if outcome == _OUTCOME_SUCCESS:
-      result.addSuccess(self)
-    elif outcome == _OUTCOME_SKIPPED:
-      result.addSkip(self, detail)
-    elif outcome == _OUTCOME_FAILURE:
-      _record_unexpected_gpu_failure(self, result, detail)
-    elif outcome == _OUTCOME_ERROR:
-      try:
-        raise RuntimeError(f"Subprocess test errored:\n{detail}")
-      except RuntimeError:
-        result.addError(self, sys.exc_info())
+      # Case 2: test did not crash and returned an outcome payload.
+      _populate_result_on_outcome(self, result, data)
+      return result
 
 
 class TpuOnlyErrorTestBaseNoCheckingWhy(ErrorTestBase):
@@ -823,9 +1010,9 @@ class TpuOnlyErrorTestBase(TpuOnlyErrorTestBaseNoCheckingWhy):
   def setUp(self):
     super().setUp()
 
-    if _get_gpu_crashes_reason(self) is not None:
+    if _get_gpu_crashes_or_raises_reason(self) is not None:
       self.fail(
-          "Tests decorated with @gpu_crashes should be placed in"
+          "Tests decorated with @gpu_crashes_or_raises should be placed in"
           " errors_test.py."
       )
 

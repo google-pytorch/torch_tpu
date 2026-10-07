@@ -14158,6 +14158,46 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       torch.ops.aten.frac.out(x_f32, out=out_f64)
 
+  @et.gpu_crashes_or_raises("GPU does not check the sizes of the inputs.")
+  def test_fused_adagrad_mismatched_grads_size(self):
+    device = et.device()
+    p = [
+        torch.tensor([1.0], dtype=torch.float32, device=device),
+        torch.tensor([2.0], dtype=torch.float32, device=device),
+        torch.tensor([2.0], dtype=torch.float32, device=device),
+        torch.tensor([2.0], dtype=torch.float32, device=device),
+    ]
+    g = [torch.tensor([0.1], dtype=torch.float32, device=device)]
+    v = [
+        torch.tensor([0.0], dtype=torch.float32, device=device),
+        torch.tensor([0.0], dtype=torch.float32, device=device),
+        torch.tensor([0.0], dtype=torch.float32, device=device),
+        torch.tensor([0.0], dtype=torch.float32, device=device),
+    ]
+    s = [
+        torch.tensor([1.0], dtype=torch.float32, device=device),
+        torch.tensor([2.0], dtype=torch.float32, device=device),
+        torch.tensor([2.0], dtype=torch.float32, device=device),
+        torch.tensor([2.0], dtype=torch.float32, device=device),
+    ]
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_adagrad_(): expected grads to have size 4, got 1""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.ops.aten._fused_adagrad_.default(
+          p,
+          g,
+          v,
+          s,
+          lr=0.1,
+          lr_decay=0.0,
+          weight_decay=0.01,
+          eps=1e-10,
+          maximize=False,
+      )
+
 
 class InputPreprocessingErrorTest(et.ErrorTestBase):
 

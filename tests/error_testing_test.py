@@ -14,6 +14,8 @@
 
 """Tests for `error_testing.py` functions."""
 
+from typing import Any
+import unittest
 from unittest import mock
 
 from absl.testing import absltest
@@ -22,6 +24,16 @@ from absl.testing import parameterized
 import torch
 from tests import error_testing as et
 from tests import seed_test_utils
+
+
+def _mock_run_in_subprocess_with_data(
+    exitcode: int = 0,
+    out: str = "",
+    payload: tuple[str, Any] | None = None,
+):
+  """Returns a mock for `et._run_in_subprocess`, returning the given data."""
+  data = et._SubprocessData(exitcode, out, payload)
+  return mock.patch.object(et, "_run_in_subprocess", return_value=data)
 
 
 class ErrorTestingTest(seed_test_utils.RepeatableTest):
@@ -108,29 +120,35 @@ class ErrorTestingTest(seed_test_utils.RepeatableTest):
       ):
         test_standalone.setUp()
 
-  def test_gpu_crashes_validation(self):
-    """Tests that gpu_crashes decorator requires a non-empty reason string."""
-    with self.assertRaisesRegex(ValueError, "non-empty"):
-      et.gpu_crashes("")
+  def test_assert_raises_message_raises_no_exception_raised_error(self):
+    """Tests that assert_raises_message raises `NoExceptionRaisedError`."""
+    with self.assertRaises(et.NoExceptionRaisedError):
+      with et.assert_raises_message(RuntimeError, tpu="""some msg"""):
+        pass
 
-    with self.assertRaisesRegex(ValueError, "non-empty"):
-      et.gpu_crashes("   ")
+  def test_gpu_crashes_or_raises_validation(self):
+    """Tests that gpu_crashes_or_raises validates reason."""
+    with self.assertRaisesRegex(ValueError, "must be specified"):
+      et.gpu_crashes_or_raises("")
 
-    with self.assertRaisesRegex(ValueError, "non-empty"):
-      et.gpu_crashes(None)
+    with self.assertRaisesRegex(ValueError, "must be specified"):
+      et.gpu_crashes_or_raises("   ")
 
-  def test_gpu_crashes_sets_attribute(self):
-    """Tests that @gpu_crashes sets the _gpu_crashes_reason attribute on the function."""
+    with self.assertRaisesRegex(ValueError, "must be specified"):
+      et.gpu_crashes_or_raises(None)
 
-    @et.gpu_crashes("Valid reason")
+  def test_gpu_crashes_or_raises_sets_attribute(self):
+    """Tests that @gpu_crashes_or_raises sets metadata on the function."""
+
+    @et.gpu_crashes_or_raises("Valid reason")
     def dummy_func():
       pass
 
-    self.assertTrue(hasattr(dummy_func, "_gpu_crashes_reason"))
-    self.assertEqual(dummy_func._gpu_crashes_reason, "Valid reason")
+    self.assertTrue(hasattr(dummy_func, "_gpu_crashes_or_raises_reason"))
+    self.assertEqual(dummy_func._gpu_crashes_or_raises_reason, "Valid reason")
 
-  def test_gpu_crashes_works_for_parameterized_tests(self):
-    """Tests that @gpu_crashes is resolved for parameterized tests."""
+  def test_gpu_crashes_or_raises_works_for_parameterized_tests(self):
+    """Tests that @gpu_crashes_or_raises is resolved for parameterized tests."""
 
     class DummyParameterizedCrashTest(et.ErrorTestBase):
 
@@ -138,34 +156,32 @@ class ErrorTestingTest(seed_test_utils.RepeatableTest):
           {"testcase_name": "param1", "val": 1},
           {"testcase_name": "param2", "val": 2},
       )
-      @et.gpu_crashes("Parameterized expected crash")
+      @et.gpu_crashes_or_raises("Parameterized expected crash or raise")
       def test_param_crash(self, val):
         pass
 
     test1 = DummyParameterizedCrashTest("test_param_crash_param1")
     test2 = DummyParameterizedCrashTest("test_param_crash_param2")
-    self.assertEqual(
-        et._get_gpu_crashes_reason(test1), "Parameterized expected crash"
-    )
-    self.assertEqual(
-        et._get_gpu_crashes_reason(test2), "Parameterized expected crash"
-    )
+    info1 = et._get_gpu_crashes_or_raises_reason(test1)
+    info2 = et._get_gpu_crashes_or_raises_reason(test2)
+    self.assertEqual(info1, "Parameterized expected crash or raise")
+    self.assertEqual(info2, "Parameterized expected crash or raise")
 
-  def test_tpu_only_error_test_base_rejects_gpu_crashes(self):
-    """Tests that TpuOnlyErrorTestBase disallows @gpu_crashes decorator."""
+  def test_tpu_only_error_test_base_rejects_gpu_crashes_or_raises(self):
+    """Tests that TpuOnlyErrorTestBase disallows @gpu_crashes_or_raises decorator."""
 
-    class DummyTpuOnlyWithGpuCrashes(et.TpuOnlyErrorTestBase):
+    class DummyTpuOnlyWithGpuCrashesOrRaises(et.TpuOnlyErrorTestBase):
 
-      @et.gpu_crashes("Should be in ErrorTestBase")
+      @et.gpu_crashes_or_raises("Should be in ErrorTestBase")
       @et.why_tpu_only("Reason for TPU")
       def test_invalid(self):
         pass
 
-    test_instance = DummyTpuOnlyWithGpuCrashes("test_invalid")
+    test_instance = DummyTpuOnlyWithGpuCrashesOrRaises("test_invalid")
     with flagsaver.flagsaver(test_mode="tpu"):
       with self.assertRaisesRegex(
           AssertionError,
-          "Tests decorated with @gpu_crashes should be placed in"
+          "Tests decorated with @gpu_crashes_or_raises should be placed in"
           " errors_test.py.",
       ):
         test_instance.setUp()
@@ -231,6 +247,157 @@ class ErrorTestingTest(seed_test_utils.RepeatableTest):
         torch, "get_device_module", side_effect=RuntimeError("PJRT not ready")
     ):
       self.assertFalse(et.is_sparsecore_supported())
+
+
+class ErrorTestBaseTest(seed_test_utils.RepeatableTest):
+  """Tests `ErrorTestBase` by mocking the `_run_in_subprocess()` function.
+
+  Checks that the outcome processing translates the received payload (outcome,
+  detail) as expected, taking into account whether the test was decorated with
+  `@gpu_crashes_or_raises`.
+  """
+
+  def _run_mocked_test(
+      self,
+      outcome: str | None = None,
+      detail: str | None = None,
+      *,
+      exitcode: int = 0,
+      gpu_crashes_or_raises: bool = False,
+  ) -> unittest.TestResult:  # UNITTEST_OK=TestResult type annotation.
+    """Mocks test execution to verify outcome and detail handling.
+
+    This helper mocks the execution of an `ErrorTestBase` test method under GPU
+    test mode (`--test_mode=gpu`) by intercepting `_run_in_subprocess` to
+    return synthetic subprocess data created from the given arguments. It is
+    used to test how `ErrorTestBase.run()` and `_populate_result_on_outcome()`
+    translate different subprocess outcomes, details, and exit codes into the
+    returned `TestResult`.
+
+    Args:
+      outcome: The outcome status string transmitted by the child process (one
+        of `_OUTCOME_*`, e.g. success, failure, error, skipped). If None,
+        simulates a missing payload.
+      detail: The detail string (e.g. traceback or skip reason) transmitted by
+        the child process. Must be None if outcome is None.
+      exitcode: The exit code of the mocked child process (0 for normal
+        termination, non-zero for crashes or abrupt aborts).
+      gpu_crashes_or_raises: If True, mocks execution of a test method decorated
+        with `@gpu_crashes_or_raises`; if False, mocks an undecorated test
+        method.
+
+    Returns:
+      The populated `unittest.TestResult` returned by `test_case.run()`.
+    """
+    if outcome is None and detail is not None:
+      raise ValueError(
+          "invalid payload for given `outcome` and `detail`: expected `detail`"
+          " to be None whenever `outcome` is None. Rationale: if `outcome` is"
+          " None, then the whole payload is None. `outcome` should never be"
+          " None otherwise."
+      )
+
+    # Set `payload` only if `outcome` is not None.
+    payload = (outcome, detail) if outcome is not None else None
+
+    class DummyTest(et.ErrorTestBase):
+
+      def test_undecorated(self):
+        pass
+
+      @et.gpu_crashes_or_raises("Op crashes or raises on GPU")
+      def test_decorated(self):
+        pass
+
+    method_name = (
+        "test_decorated" if gpu_crashes_or_raises else "test_undecorated"
+    )
+
+    test_case = DummyTest(method_name)
+    res = unittest.TestResult()  # UNITTEST_OK=TestResult object for mock run
+
+    with flagsaver.flagsaver(test_mode="gpu"):
+      with _mock_run_in_subprocess_with_data(exitcode, payload=payload):
+        return test_case.run(res)
+
+  def test_subprocess_success(self):
+    res = self._run_mocked_test(et._OUTCOME_SUCCESS)
+    self.assertTrue(res.wasSuccessful())
+
+  def test_subprocess_failure(self):
+    outcome = et._OUTCOME_FAILURE
+    detail = "Traceback:\nAssertionError: Expected error was not raised"
+
+    res = self._run_mocked_test(outcome, detail)
+
+    self.assertFalse(res.wasSuccessful())
+    self.assertLen(res.failures, 1)
+
+  def test_subprocess_error(self):
+    outcome = et._OUTCOME_ERROR
+    detail = "Traceback:\nRuntimeError: Subprocess test errored"
+
+    res = self._run_mocked_test(outcome, detail)
+
+    self.assertFalse(res.wasSuccessful())
+    self.assertLen(res.errors, 1)
+
+  def test_subprocess_crash(self):
+    res = self._run_mocked_test(exitcode=1)
+    self.assertFalse(res.wasSuccessful())
+    self.assertLen(res.errors, 1)
+
+  def test_subprocess_no_payload(self):
+    # Tests that an error is correctly recorded error when no payload is
+    # received from the child process.
+    res = self._run_mocked_test(exitcode=0)
+    self.assertFalse(res.wasSuccessful())
+    self.assertLen(res.errors, 1)
+
+  def test_gpu_crashes_or_raises_subprocess_crash(self):
+    # Tests that a success is recorded when the test is expected to crash, and
+    # it actually crashes.
+    res = self._run_mocked_test(exitcode=1, gpu_crashes_or_raises=True)
+    self.assertTrue(res.wasSuccessful())
+
+  def test_gpu_crashes_or_raises_subprocess_arbitrary_error(self):
+    # Tests that a success is recorded when the test is expected to crash, and
+    # it actually raises an `AssertionError` (which gets recorded as a failure
+    # by the child process).
+    outcome = et._OUTCOME_FAILURE
+    detail = "Traceback:\nAssertionError: Expected foo but got bar"
+
+    res = self._run_mocked_test(outcome, detail, gpu_crashes_or_raises=True)
+
+    self.assertTrue(res.wasSuccessful())
+
+  def test_gpu_crashes_or_raises_subprocess_no_exception_raised(self):
+    # Tests that a failure is recorded when the test is expected to crash, and it
+    # runs without any issues (e.g. doesn't crash or raise any errors).
+    outcome = et._OUTCOME_FAILURE
+    detail = f"Traceback:\n{et.NoExceptionRaisedError.error_prefix()}error."
+
+    res = self._run_mocked_test(outcome, detail, gpu_crashes_or_raises=True)
+
+    self.assertFalse(res.wasSuccessful())
+    self.assertLen(res.failures, 1)
+
+  def test_gpu_crashes_or_raises_forward_success(self):
+    # Tests that the success the child process recorded is correctly forwarded,
+    # when the test is expected to crash.
+    res = self._run_mocked_test(et._OUTCOME_SUCCESS, gpu_crashes_or_raises=True)
+    self.assertTrue(res.wasSuccessful())
+
+  def test_gpu_crashes_or_raises_forward_error(self):
+    # Tests that the error the child process recorded is correctly forwarded,
+    # when the test is expected to crash.
+    outcome = et._OUTCOME_ERROR
+    detail = "Traceback:\nRuntimeError: Setup error in child process"
+
+    res = self._run_mocked_test(outcome, detail, gpu_crashes_or_raises=True)
+
+    self.assertFalse(res.wasSuccessful())
+    self.assertLen(res.errors, 1)
 
 
 if __name__ == "__main__":
