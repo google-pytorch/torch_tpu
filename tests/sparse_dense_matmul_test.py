@@ -69,7 +69,8 @@ def preprocess_sparse_dense_matmul_input(
       combiner,
       options.get("local_device_count", 1),
       options.get("global_device_count", 1),
-      options.get("num_sc_per_device", 2),
+      options.get("num_sc_per_device", _get_num_sc_per_device()),
+      options.get("sc_simd_width", _get_sc_simd_width()),
       options.get("allow_id_dropping", True),
       table_name,
   )
@@ -81,6 +82,18 @@ def _get_num_sc_per_device():
     return 2
   elif tpu_version == TpuVersion.V5P:
     return 4
+  else:
+    raise ValueError(
+        f"Unsupported TPU version for sparse_dense_matmul: {tpu_version}"
+    )
+
+
+def _get_sc_simd_width():
+  tpu_version = get_tpu_version()
+  if tpu_version == TpuVersion.V7:
+    return 16
+  elif tpu_version in (TpuVersion.V6E, TpuVersion.V5P):
+    return 8
   else:
     raise ValueError(
         f"Unsupported TPU version for sparse_dense_matmul: {tpu_version}"
@@ -144,6 +157,7 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
         "local_device_count": 1,
         "global_device_count": 1,
         "num_sc_per_device": _get_num_sc_per_device(),
+        "sc_simd_width": _get_sc_simd_width(),
         "allow_id_dropping": True,
     }
 
@@ -236,6 +250,7 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
         "local_device_count": 1,
         "global_device_count": 1,
         "num_sc_per_device": _get_num_sc_per_device(),
+        "sc_simd_width": _get_sc_simd_width(),
         "allow_id_dropping": True,
     }
 
@@ -370,6 +385,7 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
         1,  # local_device_count
         global_device_count,
         num_sc_per_device,
+        _get_sc_simd_width(),  # sc_simd_width
         True,  # allow_id_dropping
         "table_parity",
     )
