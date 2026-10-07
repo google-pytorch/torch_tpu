@@ -71,7 +71,7 @@ docker run --rm \
 
 # Move the built wheels from local dist back to Kokoro artifacts directory
 if [[ -d dist && -n "$(ls -A dist/*.whl 2>/dev/null)" ]]; then
-  cp dist/*.whl "${WHEEL_DIR}/"
+  cp -n dist/*.whl "${WHEEL_DIR}/"
   echo "===> Wheels created and copied to Kokoro artifacts successfully:"
   ls -lh "${WHEEL_DIR}"
 else
