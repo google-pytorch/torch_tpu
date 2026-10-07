@@ -195,6 +195,38 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "cases_test",
+    srcs = ["cases_test.py"],
+    deps = [
+        "//perflab:cases",
+        "//perflab:common",
+        "//perflab:known_failures",
+        "//perflab:mode",
+        "//perflab:registry",
+        "//perflab:step_lib",
+        "//perflab:target",
+        "//shims/absl_py/testing:absltest",
+        "//src/torch_tpu",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "known_failures_test",
+    srcs = ["known_failures_test.py"],
+    deps = [
+        "//perflab:common",
+        "//perflab:known_failures",
+        "//perflab:mode",
+        "//perflab:target",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//src/torch_tpu",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "loss_test",
     srcs = ["loss_test.py"],
     deps = [
@@ -214,8 +246,10 @@ torch_tpu_py_test(
         "//perflab:discovery",
         "//perflab:distributed_runner_lib",
         "//perflab:export",
+        "//perflab:known_failures",
         "//perflab:measure",
         "//perflab:metrics",
+        "//perflab:mode",
         "//perflab:registry",
         "//perflab:step_lib",
         "//perflab:target",

@@ -120,13 +120,16 @@ class BenchmarkTest(
   def test_benchmark(
       self, spec: registry_lib.BenchmarkSpec, mode: common.RunMode
   ):
-    is_skipped = mode.value in spec.skipped_run_modes
+    skip_reason = cases.get_skip_reason(
+        spec,
+        mode,
+        framework=_FRAMEWORK,
+        device_kind=target_lib.make_target(_PLATFORM).device_kind,
+    )
 
-    if is_skipped and flags_lib.SKIP_BEHAVIOR.value == "skip":
-      self.skipTest(
-          f"Benchmark {spec.name} explicitly skips run mode {mode.value}"
-      )
-    if not is_skipped and flags_lib.SKIP_BEHAVIOR.value == "run_skipped":
+    if skip_reason is not None and flags_lib.SKIP_BEHAVIOR.value == "skip":
+      self.skipTest(skip_reason)
+    if skip_reason is None and flags_lib.SKIP_BEHAVIOR.value == "run_skipped":
       self.skipTest(
           f"Benchmark {spec.name} is not skipped for run mode {mode.value},"
           " skipping due to skip_behavior=run_skipped"
@@ -144,7 +147,10 @@ class BenchmarkTest(
 
     reset_state(target, device_ops.device, mode)
 
-    if is_skipped and flags_lib.SKIP_BEHAVIOR.value == "assert_raise":
+    if (
+        skip_reason is not None
+        and flags_lib.SKIP_BEHAVIOR.value == "assert_raise"
+    ):
       with self.assertRaises(Exception):  # ASSERT_RAISES_OK=benchmark
         self._run_and_measure(spec, mode, target, device_ops, ctx)
       return

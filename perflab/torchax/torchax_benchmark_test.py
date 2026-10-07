@@ -27,7 +27,6 @@ import unittest
 from absl import logging
 from absl.testing import absltest
 from absl.testing import parameterized
-import immutabledict
 import jax
 from torch_tpu._internal.distributed import multiprocessing
 from perflab import base_test
@@ -66,58 +65,6 @@ torchax.enable_performance_mode()
 
 
 _CASES = list(cases.get_cases(_PLATFORM, _FRAMEWORK))
-
-# TODO(b/568037427): remove entries when underlying issues are fixed.
-# Benchmarks that are known to fail under TorchAx, keyed by benchmark name.
-_TORCHAX_KNOWN_FAILURES = immutabledict.immutabledict({
-    # `torch._grouped_mm`, used by the transformers MoE experts, has no TorchAX
-    # lowering.
-    "gemma_4_26b_a4b_6_layers_forward": (
-        "aten::_grouped_mm has no lowering (on v5e_1x1, HBM OOM while moving"
-        " the model to the device)"
-    ),
-    "gemma_4_26b_a4b_6_layers_training": "aten::_grouped_mm has no lowering",
-    "gpt_oss_120b_4_layers_forward": "aten::_grouped_mm has no lowering",
-    "gpt_oss_20b_4_layers_training": "aten::_grouped_mm has no lowering",
-    "gpt_oss_20b_forward": "aten::_grouped_mm has no lowering",
-    "qwen3_coder_30b_moe_forward": "aten::_grouped_mm has no lowering",
-    "qwen3_5_397b_4_layers_forward": "aten::_grouped_mm has no lowering",
-    # The model forward needs a concrete value from a traced tensor (for a shape
-    # or Python control flow), which fails under `jax.jit`.
-    "bart_large_mnli_forward_gen": (
-        "torch.unique_consecutive() on a traced EOS count in modeling_bart.py"
-    ),
-    "clap_htsat_fused_forward_gen": (
-        "torch.where() with a data-dependent size in modeling_clap.py"
-    ),
-    "gemma_4_e4b_it_forward_gen": (
-        "boolean indexing with a traced pooler_mask in modeling_gemma4.py"
-    ),
-    "glm_ocr_forward_gen": (
-        "grid_thw.tolist() in transformers get_vision_position_ids()"
-    ),
-    "janus_pro_1b_forward_gen": (
-        "aten::_is_all_true in torch_compilable_check on a traced image token"
-        " count in modeling_janus.py"
-    ),
-    "lahja_sa_ahmad_v1_forward_gen": (
-        "torch.arange(predicted_lengths.max()) in modeling_vits.py"
-    ),
-    "llava_1_5_7b_hf_forward_gen": (
-        "torch_compilable_check and masked_scatter on a traced image mask in"
-        " modeling_llava.py"
-    ),
-    "sam3_litetext_s0_forward_gen": (
-        "torch.arange() with a traced height in modeling_sam3_lite_text.py"
-    ),
-    "vjepa2_vitl_fpc64_256_forward_gen": (
-        "Tensor.repeat() with a traced patch count in modeling_vjepa2.py"
-    ),
-    # Out of memory.
-    "gemma_4_31b_6_layers_forward": (
-        "host OOM while moving the model to the device"
-    ),
-})
 
 
 def _make_run_step(
@@ -169,19 +116,16 @@ class TorchaxBenchmarkTest(
           f"TorchAx benchmark does not support stepper {spec.stepper}"
       )
 
-    if spec.name in _TORCHAX_KNOWN_FAILURES:
-      self.skipTest(
-          f"Benchmark {spec.name} is known to fail in TorchAx due to"
-          f" {_TORCHAX_KNOWN_FAILURES[spec.name]}."
-      )
+    skip_reason = cases.get_skip_reason(
+        spec,
+        mode,
+        framework=_FRAMEWORK,
+        device_kind=target_lib.make_target(_PLATFORM).device_kind,
+    )
 
-    is_skipped = mode.value in spec.skipped_run_modes
-
-    if is_skipped and flags_lib.SKIP_BEHAVIOR.value == "skip":
-      self.skipTest(
-          f"Benchmark {spec.name} explicitly skips run mode {mode.value}"
-      )
-    if not is_skipped and flags_lib.SKIP_BEHAVIOR.value == "run_skipped":
+    if skip_reason is not None and flags_lib.SKIP_BEHAVIOR.value == "skip":
+      self.skipTest(skip_reason)
+    if skip_reason is None and flags_lib.SKIP_BEHAVIOR.value == "run_skipped":
       self.skipTest(
           f"Benchmark {spec.name} is not skipped for run mode {mode.value},"
           " skipping due to skip_behavior=run_skipped"
@@ -199,7 +143,10 @@ class TorchaxBenchmarkTest(
 
     reset_state()
 
-    if is_skipped and flags_lib.SKIP_BEHAVIOR.value == "assert_raise":
+    if (
+        skip_reason is not None
+        and flags_lib.SKIP_BEHAVIOR.value == "assert_raise"
+    ):
       with self.assertRaises(Exception):  # ASSERT_RAISES_OK=benchmark
         self._run_and_measure(spec, mode, device_ops, ctx)
       return

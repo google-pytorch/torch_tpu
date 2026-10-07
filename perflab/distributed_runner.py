@@ -32,6 +32,7 @@ from fairscale.nn.model_parallel import initialize as fairscale_init
 import torch
 import torch.multiprocessing as mp
 from torch_tpu._internal.distributed import multiprocessing
+from perflab import cases
 from perflab import common
 from perflab import compile as compile_lib
 from perflab import context as context_lib
@@ -70,25 +71,28 @@ class TargetStatus(enum.Enum):
   SKIPPED = "SKIPPED"
 
 
-def _is_mode_skipped(
+def _get_skip_reason(
     spec: registry_lib.BenchmarkSpec,
     mode: common.RunMode,
     device_kind: target_lib.DeviceKind,
-) -> bool:
-  """Returns whether `spec` should not run in `mode` on `device_kind`.
+) -> str | None:
+  """Returns why `spec` should not run in `mode` on `device_kind`, or None.
 
   resolve_benchmark_targets() expands all common.RunMode values when unfiltered.
-  Filter against mode_lib.modes_for() (matching base_test.py) so TPU-only modes
-  like eager_optimized or debug modes like eager_defer_never_and_launch_blocking
-  do not run and export duplicate rows on CUDA or TPU.
+  Filter against mode_lib.modes_for() (matching cases.get_cases()) so TPU-only
+  modes like eager_optimized or debug modes like
+  eager_defer_never_and_launch_blocking do not run and export duplicate rows on
+  CUDA or TPU.
 
   Args:
     spec: Benchmark spec to check.
     mode: Run mode to check.
     device_kind: Device kind of the current platform.
   """
-  return mode.value in spec.skipped_run_modes or mode not in mode_lib.modes_for(
-      _FRAMEWORK, device_kind
+  if mode not in mode_lib.modes_for(_FRAMEWORK, device_kind):
+    return f"Run mode {mode.value} is not supported on {device_kind.value}"
+  return cases.get_skip_reason(
+      spec, mode, framework=_FRAMEWORK, device_kind=device_kind
   )
 
 
@@ -251,11 +255,13 @@ def _run_single_target_task(
 
   # Setup Target for benchmark execution and cleanup
   target = target_lib.make_target(platform, dtype=spec.dtype)
-  if _is_mode_skipped(spec, mode, target.device_kind):
+  skip_reason = _get_skip_reason(spec, mode, target.device_kind)
+  if skip_reason is not None:
     logging.info(
-        "Skipping benchmark %s on mode %s",
+        "Skipping benchmark %s on mode %s: %s",
         spec.name,
         mode.value,
+        skip_reason,
     )
     return
   backend = (
@@ -442,9 +448,15 @@ def main(argv: Sequence[str]) -> None:
   results: list[tuple[str, TargetStatus, str]] = []
   for idx, (spec, mode) in enumerate(targets_to_run):
     target_name = f"{spec.name}_{mode.value}"
-    if _is_mode_skipped(spec, mode, target.device_kind):
-      logging.info("Skipping benchmark %s on %s", target_name, platform.value)
-      results.append((target_name, TargetStatus.SKIPPED, ""))
+    skip_reason = _get_skip_reason(spec, mode, target.device_kind)
+    if skip_reason is not None:
+      logging.info(
+          "Skipping benchmark %s on %s: %s",
+          target_name,
+          platform.value,
+          skip_reason,
+      )
+      results.append((target_name, TargetStatus.SKIPPED, skip_reason))
       continue
     logging.info(
         "Executing batched target %d/%d: %s",

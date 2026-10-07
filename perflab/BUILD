@@ -233,8 +233,19 @@ torch_tpu_py_library(
     srcs = ["cases.py"],
     deps = [
         ":common",
+        ":known_failures",
         ":mode",
         ":registry",
+        ":target",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "known_failures",
+    srcs = ["known_failures.py"],
+    deps = [
+        ":common",
+        ":mode",
         ":target",
     ],
 )
@@ -380,6 +391,7 @@ torch_tpu_py_library(
     testonly = 1,
     srcs = ["distributed_runner.py"],
     deps = [
+        ":cases",
         ":common",
         ":compile",
         ":context",

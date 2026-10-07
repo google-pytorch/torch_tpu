@@ -31,8 +31,10 @@ from perflab import common
 from perflab import discovery as discovery_lib
 from perflab import distributed_runner
 from perflab import export as export_lib
+from perflab import known_failures
 from perflab import measure as measure_lib
 from perflab import metrics as metrics_lib
+from perflab import mode as mode_lib
 from perflab import registry as registry_lib
 from perflab import step_lib
 from perflab import steps
@@ -497,8 +499,63 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
 
     self.assertEqual(fake_dist_run.ran, ["healthy"])
     summary = "\n".join(logs.output)
-    self.assertRegex(summary, r"healthy_eager_optimized\s+SKIPPED")
+    self.assertRegex(
+        summary,
+        r"healthy_eager_optimized\s+SKIPPED\s+Run mode eager_optimized is not"
+        r" supported on cuda",
+    )
     self.assertIn("1 passed, 0 failed, 1 skipped", summary)
+
+  def test_main_reports_known_failure_as_skipped(self):
+    fake_dist_run = _FakeDistRun(failing_specs=set())
+    registry = {
+        "known_bad": types.SimpleNamespace(
+            name="known_bad", skipped_run_modes=frozenset()
+        ),
+        "healthy": types.SimpleNamespace(
+            name="healthy", skipped_run_modes=frozenset()
+        ),
+    }
+    failures = (
+        known_failures.KnownFailure(
+            benchmark="known_bad",
+            framework=mode_lib.Framework.TORCH,
+            device_kind=target_lib.DeviceKind.CUDA,
+            run_modes=frozenset({common.RunMode.COMPILED}),
+            reason="simulated CUDA compiled failure",
+        ),
+    )
+
+    with (
+        mock.patch.dict(registry_lib.REGISTRY, registry, clear=True),
+        mock.patch.object(known_failures, "KNOWN_FAILURES", failures),
+        mock.patch.dict(
+            os.environ,
+            {
+                "BENCHMARK_PLATFORM": "b200_8",
+                "TESTBRIDGE_TEST_ONLY": (
+                    "known_bad_compiled known_bad_eager_default"
+                    " healthy_compiled"
+                ),
+            },
+        ),
+        mock.patch.object(
+            distributed_runner.distributed_utils, "dist_run", fake_dist_run
+        ),
+        self.assertLogs(level="INFO") as logs,
+    ):
+      distributed_runner.main(["distributed_runner"])
+
+    self.assertEqual(fake_dist_run.ran, ["known_bad", "healthy"])
+    summary = "\n".join(logs.output)
+    self.assertRegex(
+        summary,
+        r"known_bad_compiled\s+SKIPPED\s+Benchmark known_bad is known to fail:"
+        r" simulated CUDA compiled failure",
+    )
+    self.assertRegex(summary, r"known_bad_eager_default\s+PASSED")
+    self.assertRegex(summary, r"healthy_compiled\s+PASSED")
+    self.assertIn("2 passed, 0 failed, 1 skipped", summary)
 
   @mock.patch.object(torch.distributed, "barrier")
   @mock.patch.object(torch.distributed, "destroy_process_group")
