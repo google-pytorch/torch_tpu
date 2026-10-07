@@ -45,12 +45,15 @@ class Platform(enum.Enum):
 
   CPU = "cpu"
   B200_1 = "b200_1"
+  B200_2 = "b200_2"
   B200_4 = "b200_4"
   B200_8 = "b200_8"
   V5E_1X1 = "v5e_1x1"
   V6E_1X1 = "v6e_1x1"
   V5P_1X1X1 = "v5p_1x1x1"
   V7_1X1X1 = "v7_1x1x1"
+  V7_1X1X1_2TC = "v7_1x1x1_2tc"
+  V7_1X2X1 = "v7_1x2x1"
   V7_2X2X1 = "v7_2x2x1"
   V7_2X2X2 = "v7_2x2x2"
   V7_2X2X4 = "v7_2x2x4"
@@ -125,12 +128,19 @@ _PLATFORMS: dict[Platform, PlatformSpec] = {
         kind=DeviceKind.CPU, topology=Topology(chip="cpu")
     ),
     Platform.B200_1: _gpu("b200"),
+    Platform.B200_2: _gpu("b200", nnodes=1, nprocs_per_node=2),
     Platform.B200_4: _gpu("b200", nnodes=1, nprocs_per_node=4),
     Platform.B200_8: _gpu("b200", nnodes=1, nprocs_per_node=8),
     Platform.V5E_1X1: _tpu("v5e"),
     Platform.V6E_1X1: _tpu("v6e"),
     Platform.V5P_1X1X1: _tpu("v5p"),
     Platform.V7_1X1X1: _tpu("v7"),
+    # A single v7 chip with one process per TensorCore (2 processes), for
+    # world_size=2 distributed benchmarks. V7_1X1X1 above uses one process.
+    Platform.V7_1X1X1_2TC: _tpu("v7", nnodes=1, nprocs_per_node=2),
+    # Two v7 chips (a 1x2x1 sub-slice of a 4-chip host) with one process per
+    # TensorCore (4 processes), for world_size=4 distributed benchmarks.
+    Platform.V7_1X2X1: _tpu("v7", nnodes=1, nprocs_per_node=4),
     # Each v7 has two cores, we use one process per core. Hence, nprocs is 8
     # for the 2x2x1 case.
     Platform.V7_2X2X1: _tpu("v7", nnodes=1, nprocs_per_node=8),

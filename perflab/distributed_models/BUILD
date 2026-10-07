@@ -14,6 +14,7 @@
 
 load(
     "//build_files:build_defs.bzl",
+    "internal_target",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
 )
@@ -39,6 +40,28 @@ torch_tpu_py_library(
         "//tests:module_registry",
         "@pypi//fairscale",
         "@pypi//transformers",
+    ],
+)
+
+# The Qwen3.8 benchmark depends on torchtitan, which is not available in OSS,
+# so it is a separate non-OSS target that benchmark binaries add with
+# `if_oss([], [...])`. Discovery imports whichever model modules are present.
+internal_target(
+    torch_tpu_py_library,
+    name = "qwen3_8",
+    srcs = ["qwen3_8.py"],
+    deps = [
+        "//perflab:compile",
+        "//perflab:context",
+        "//perflab:registry",
+        "//perflab:step_lib",
+        "//perflab:target",
+        "//perflab:torch_device_ops",
+        "//perflab/model_utils:torchtitan_qwen3_5",
+        "//shims/absl_py/logging",
+        "//shims/torch:pytorch",
+        "//shims/torchtitan/experiments/graph_trainer:simple_fsdp",
+        "//src/torch_tpu",
     ],
 )
 

@@ -14,6 +14,7 @@
 
 load(
     "//build_files:build_defs.bzl",
+    "internal_target",
     "torch_tpu_package_end",
     "torch_tpu_py_test",
 )
@@ -276,6 +277,28 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//src/torch_tpu",
         "//tests:seed_test_utils",
+    ],
+)
+
+# torchtitan is not available in OSS.
+internal_target(
+    torch_tpu_py_test,
+    name = "distributed_qwen3_8_test",
+    srcs = ["distributed_qwen3_8_test.py"],
+    # Fix to alleviate too many input files error (transformers + torchtitan).
+    use_precompile = False,
+    deps = [
+        "//perflab:context",
+        "//perflab:target",
+        "//perflab/distributed_models:qwen3_8",
+        "//perflab/model_utils:torchtitan_qwen3_5",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/utils:test_utils",
+        "//tests:seed_test_utils",
+        "//tests/distributed:distributed_utils",
     ],
 )
 

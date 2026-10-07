@@ -1128,6 +1128,7 @@ def torch_tpu_py_test(
     # Remove internal-only attributes
     if is_oss():
         kwargs.pop("linking_mode", None)
+        kwargs.pop("use_precompile", None)
     kwargs.pop("imports", None)
 
     existing_env = kwargs.pop("env", None)

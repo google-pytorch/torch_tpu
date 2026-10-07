@@ -14,6 +14,7 @@
 
 load(
     "//build_files:build_defs.bzl",
+    "internal_target",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
     "torch_tpu_py_test",
@@ -33,6 +34,23 @@ torch_tpu_py_library(
     ],
 )
 
+# torchtitan is not available in OSS, so this and its test are not built in OSS.
+internal_target(
+    torch_tpu_py_library,
+    name = "torchtitan_qwen3_5",
+    srcs = ["torchtitan_qwen3_5.py"],
+    deps = [
+        "//shims/torch:pytorch",
+        # google3's copybara rewrite of torchtitan's
+        # `distributed/activation_checkpoint.py` (imported by
+        # `torchtitan.models`) imports `torchtitan.experiments.tpu.utils`, which
+        # the root torchtitan library cannot depend on. Every torchtitan
+        # consumer adds it (e.g. torch_tpu/google/examples/benchmarks/e2e).
+        "//shims/torchtitan/experiments/tpu:utils",  # buildcleaner: keep
+        "//shims/torchtitan/models",
+    ],
+)
+
 torch_tpu_py_library(
     name = "model_utils",
     srcs = ["__init__.py"],
@@ -46,6 +64,21 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//tests:seed_test_utils",
+        "@pypi//transformers",
+    ],
+)
+
+internal_target(
+    torch_tpu_py_test,
+    name = "torchtitan_qwen3_5_test",
+    srcs = ["torchtitan_qwen3_5_test.py"],
+    deps = [
+        ":torchtitan_qwen3_5",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
         "@pypi//transformers",
     ],

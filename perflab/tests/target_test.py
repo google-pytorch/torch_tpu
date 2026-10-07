@@ -27,12 +27,15 @@ class PlatformFromEnvTest(parameterized.TestCase):  # ABSLTEST_OK=benchmark
   @parameterized.parameters(
       ("cpu", target_lib.Platform.CPU),
       ("b200_1", target_lib.Platform.B200_1),
+      ("b200_2", target_lib.Platform.B200_2),
       ("b200_4", target_lib.Platform.B200_4),
       ("b200_8", target_lib.Platform.B200_8),
       ("v5e_1x1", target_lib.Platform.V5E_1X1),
       ("v6e_1x1", target_lib.Platform.V6E_1X1),
       ("v5p_1x1x1", target_lib.Platform.V5P_1X1X1),
       ("v7_1x1x1", target_lib.Platform.V7_1X1X1),
+      ("v7_1x1x1_2tc", target_lib.Platform.V7_1X1X1_2TC),
+      ("v7_1x2x1", target_lib.Platform.V7_1X2X1),
       ("v7_2x2x1", target_lib.Platform.V7_2X2X1),
   )
   def test_reads_all_platforms_from_env(self, env_val, expected_platform):
@@ -82,6 +85,13 @@ class MakeTargetTest(parameterized.TestCase):  # ABSLTEST_OK=benchmark
               1,
           ),
           (
+              target_lib.Platform.B200_2,
+              target_lib.DeviceKind.CUDA,
+              "b200",
+              1,
+              2,
+          ),
+          (
               target_lib.Platform.B200_4,
               target_lib.DeviceKind.CUDA,
               "b200",
@@ -105,6 +115,14 @@ class MakeTargetTest(parameterized.TestCase):  # ABSLTEST_OK=benchmark
               1,
           ),
           (target_lib.Platform.V7_1X1X1, target_lib.DeviceKind.TPU, "v7", 1, 1),
+          (
+              target_lib.Platform.V7_1X1X1_2TC,
+              target_lib.DeviceKind.TPU,
+              "v7",
+              1,
+              2,
+          ),
+          (target_lib.Platform.V7_1X2X1, target_lib.DeviceKind.TPU, "v7", 1, 4),
           (target_lib.Platform.V7_2X2X1, target_lib.DeviceKind.TPU, "v7", 1, 8),
       ],
   )

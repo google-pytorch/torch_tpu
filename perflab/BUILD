@@ -14,6 +14,7 @@
 
 load(
     "//build_files:build_defs.bzl",
+    "if_oss",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
     "torch_tpu_py_test",
@@ -345,7 +346,13 @@ torch_tpu_py_test(
         "requires-net:external",
         "requires-tpu-v7x",
     ],
-    deps = [
+    # The torchtitan dep (via models:qwen3_8) exceeds the Forge input file limit
+    # with precompiled .pyc inputs.
+    use_precompile = False,
+    deps = if_oss(
+        [],
+        ["//perflab/models:qwen3_8"],
+    ) + [
         ":base_test",
         ":cases",
         ":common",
@@ -438,8 +445,14 @@ torch_tpu_py_test(
         "requires-net:external",
         "requires-tpu-v7x",
     ],
+    # The torchtitan dep (via models:qwen3_8) exceeds the Forge input file limit
+    # with precompiled .pyc inputs.
+    use_precompile = False,
     use_tcmalloc = True,
-    deps = [
+    deps = if_oss(
+        [],
+        ["//perflab/models:qwen3_8"],
+    ) + [
         ":base_test",
         ":cases",
         ":common",
@@ -488,7 +501,13 @@ torch_tpu_py_test(
         "requires-gpu-sm100-full",
         "requires-net:external",
     ],
-    deps = [
+    # The torchtitan dep (via models:qwen3_8) exceeds the Forge input file limit
+    # with precompiled .pyc inputs.
+    use_precompile = False,
+    deps = if_oss(
+        [],
+        ["//perflab/models:qwen3_8"],
+    ) + [
         ":base_test",
         ":cases",
         ":common",
@@ -514,15 +533,24 @@ torch_tpu_py_test(
     ],
 )
 
+_DISTRIBUTED_RUNNER_DATA = [
+    "//shims/model_configs:google_model_configs_data",
+    "//perflab/huggingface_transformers:model_configs_data",
+]
+
+# The Qwen3.8 benchmark depends on torchtitan, which is not available in OSS, so
+# it is added to the runner binaries rather than to `distributed_runner_lib`.
+_DISTRIBUTED_RUNNER_MODEL_DEPS = if_oss(
+    [],
+    ["//perflab/distributed_models:qwen3_8"],
+)
+
 pytype_strict_binary(
     name = "distributed_runner",
     testonly = 1,
     srcs = ["distributed_runner.py"],
-    data = [
-        "//perflab/huggingface_transformers:model_configs_data",
-        "//shims/model_configs:google_model_configs_data",
-    ],
-    deps = [
+    data = _DISTRIBUTED_RUNNER_DATA,
+    deps = _DISTRIBUTED_RUNNER_MODEL_DEPS + [
         ":distributed_runner_lib",
     ],
 )
@@ -543,6 +571,149 @@ genmpm(
     testonly = 1,
     temporal = True,
     deps = [":distributed_runner_with_runfiles"],
+)
+
+# Distributed counterparts of `dev_benchmarks`: manual dev targets that run
+# `distributed_runner` under blaze test on a single TPU host. Select
+# benchmarks with --test_filter (full target names, e.g.
+# `--test_filter=qwen3_8_27b_4_layers_simple_fsdp_training_compiled`).
+_DISTRIBUTED_DEV_BENCHMARKS_ARGS = [
+    "--min_warmup_steps=3",
+    "--max_warmup_steps=10",
+    "--enable_xprof=true",
+    # Surfaces the per-rank absl logs (incl. the "Metrics for ..." line) in the
+    # test log.
+    "--alsologtostderr",
+]
+
+_DISTRIBUTED_DEV_BENCHMARKS_DEPS = _DISTRIBUTED_RUNNER_MODEL_DEPS + [
+    ":distributed_runner_lib",
+    "//src/torch_tpu",
+    "//src/torch_tpu/_internal/distributed:multiprocessing",
+]
+
+# world_size=2: one TPU v7 chip, one process per TensorCore.
+torch_tpu_py_test(
+    name = "distributed_dev_benchmarks_ws2",
+    timeout = "eternal",
+    srcs = ["distributed_runner.py"],
+    args = _DISTRIBUTED_DEV_BENCHMARKS_ARGS,
+    data = _DISTRIBUTED_RUNNER_DATA,
+    env = {
+        "BENCHMARK_PLATFORM": "v7_1x1x1_2tc",
+    },
+    main = "distributed_runner.py",
+    nolocal = "user requested to run this manually",
+    notap = "Development benchmark target; run manually on demand.",
+    tags = [
+        "nofastbuild",
+        "nosan",  # *san tests provide no benefit for benchmarks.
+        "requires-accel-hbm",
+        "requires-net:external",
+        "requires-tpu-v7x",
+    ],
+    # The torchtitan dep (via distributed_models:qwen3_8) exceeds the Forge input
+    # file limit with precompiled .pyc inputs.
+    use_precompile = False,
+    deps = _DISTRIBUTED_DEV_BENCHMARKS_DEPS,
+)
+
+# world_size=4: two TPU v7 chips x 2 TensorCores. Forge only allocates a
+# single chip or a full 4-chip host, so this takes the full host and runs on a
+# 1x2x1 sub-slice of it.
+torch_tpu_py_test(
+    name = "distributed_dev_benchmarks_ws4",
+    timeout = "eternal",
+    srcs = ["distributed_runner.py"],
+    args = _DISTRIBUTED_DEV_BENCHMARKS_ARGS,
+    data = _DISTRIBUTED_RUNNER_DATA,
+    env = {
+        "BENCHMARK_PLATFORM": "v7_1x2x1",
+    },
+    main = "distributed_runner.py",
+    nolocal = "user requested to run this manually",
+    notap = "Development benchmark target; run manually on demand.",
+    tags = [
+        "nofastbuild",
+        "nosan",  # *san tests provide no benefit for benchmarks.
+        "requires-accel-hbm",
+        "requires-net:external",
+        "requires-tpu-v7x:4",
+    ],
+    # The torchtitan dep (via distributed_models:qwen3_8) exceeds the Forge input
+    # file limit with precompiled .pyc inputs.
+    use_precompile = False,
+    deps = _DISTRIBUTED_DEV_BENCHMARKS_DEPS,
+)
+
+# world_size=8: one TPU v7 host, 4 chips x 2 TensorCores.
+torch_tpu_py_test(
+    name = "distributed_dev_benchmarks_ws8",
+    timeout = "eternal",
+    srcs = ["distributed_runner.py"],
+    args = _DISTRIBUTED_DEV_BENCHMARKS_ARGS,
+    data = _DISTRIBUTED_RUNNER_DATA,
+    env = {
+        "BENCHMARK_PLATFORM": "v7_2x2x1",
+    },
+    main = "distributed_runner.py",
+    nolocal = "user requested to run this manually",
+    notap = "Development benchmark target; run manually on demand.",
+    tags = [
+        "nofastbuild",
+        "nosan",  # *san tests provide no benefit for benchmarks.
+        # 8 processes compiling concurrently exceed the 28g `requires-mem` cap
+        # (Forge OOM). `requires-accel-hbm` raises the host RAM limit to 28 GiB
+        # plus the allocated chips' HBM (go/forge-requires-mem#accel-hbm).
+        # Forge rejects `requires-mem` combined with `requires-accel-hbm`.
+        "requires-accel-hbm",
+        # A bare "requires-tpu-v7x" allocates one chip; ":4" allocates the
+        # full 4-chip host (8 TensorCores).
+        "requires-tpu-v7x:4",
+        "requires-net:external",
+    ],
+    # The torchtitan dep (via distributed_models:qwen3_8) exceeds the Forge input
+    # file limit with precompiled .pyc inputs.
+    use_precompile = False,
+    deps = _DISTRIBUTED_DEV_BENCHMARKS_DEPS,
+)
+
+# GPU counterpart of `distributed_dev_benchmarks_ws2`: 2 B200s, one process per
+# GPU. Run with --config=cuda. Forge allocates at most 2 whole B200s, so the
+# 4- and 8-GPU counterparts (b200_4 / b200_8) run through the multi-host
+# benchmark launcher instead.
+torch_tpu_py_test(
+    name = "distributed_dev_benchmarks_cuda_ws2",
+    timeout = "eternal",
+    srcs = ["distributed_runner.py"],
+    # No XProf: it interferes with GPU collectives (b/517613809).
+    args = [
+        "--min_warmup_steps=3",
+        "--max_warmup_steps=10",
+        "--alsologtostderr",
+    ],
+    # Keeps the TPU backend from autoloading on the CUDA workers.
+    autoload = False,
+    data = _DISTRIBUTED_RUNNER_DATA,
+    env = {
+        "BENCHMARK_PLATFORM": "b200_2",
+    },
+    exec_properties = {
+        "cpp_link.mem": "16g",
+    },
+    main = "distributed_runner.py",
+    nolocal = "user requested to run this manually",
+    notap = "Development benchmark target; run manually on demand.",
+    platform = "//buildenv/platforms/forge/gpu/b200_full_only:2",
+    tags = [
+        "nofastbuild",
+        "nosan",  # *san tests provide no benefit for benchmarks.
+        "requires-net:external",
+    ],
+    # The torchtitan dep (via distributed_models:qwen3_8) exceeds the Forge input
+    # file limit with precompiled .pyc inputs.
+    use_precompile = False,
+    deps = _DISTRIBUTED_DEV_BENCHMARKS_DEPS,
 )
 
 torch_tpu_py_library(
