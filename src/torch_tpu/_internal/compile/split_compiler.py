@@ -30,6 +30,7 @@ from absl import logging
 import torch
 from torch._dynamo.utils import detect_fake_mode
 from torch._inductor.utils import InputType
+from torch._logging import LazyString
 from torch._subclasses.fake_tensor import unset_fake_temporarily
 import torch.distributed as dist
 from torch.fx.passes import graph_transform_observer
@@ -689,7 +690,7 @@ class SplitCompiler(compiler.Compiler):
         split_gm, "reorder_symints"
     ).apply_gm_pass(reorder_symints.apply)
 
-    logging.debug("Split graph\n%s", split_gm.print_readable())
+    logging.debug("Split graph\n%s", LazyString(split_gm.print_readable))
 
     fake_mode = detect_fake_mode(example_inputs)
     if fake_mode is None:
