@@ -414,10 +414,8 @@ registration has filtered them out.
 """
 REGISTRATION_OVERRIDES = frozenset([
     # go/keep-sorted start
-    # "aten ops rms_norm and scaled_dot_product_attention delegate to
-    # _fused_rms_norm and _scaled_dot_product_fused_attention_overrideable.
-    # We register these fused ops for more efficient lowerings, rather than
-    # overriding the entire delegation behavior".
+    # _fused_rms_norm and _scaled_dot_product_fused_attention_overrideable are
+    # registered for fused forward/backward lowerings.
     '_fused_rms_norm',
     '_grouped_mm',
     '_masked_softmax.out',
@@ -503,6 +501,10 @@ REGISTRATION_OVERRIDES = frozenset([
     # repeat_interleave.self_int is registered to provide an optimized TPU
     # implementation, overriding the default decomposition.
     'repeat_interleave.self_int',
+    # rms_norm is registered to provide a direct 1-output inference lowering
+    # and mixed-dtype/non-contiguous support on TPU, overriding the default
+    # CompositeImplicitAutograd decomposition.
+    'rms_norm',
     # select_backward is registered to lower directly to a single StableHLO
     # DynamicUpdateSlice operation instead of zeros + select + copy_.
     'select_backward',

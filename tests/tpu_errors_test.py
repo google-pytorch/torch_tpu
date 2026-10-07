@@ -5388,6 +5388,18 @@ class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
       ):
         torch.ops.aten.avg_pool1d.out(t, [3], out=out)
 
+  @et.why_tpu_only(
+      "Upstream CUDA _fused_rms_norm skips dtype validation when M == 0."
+  )
+  def test_rms_norm_empty_input_weight_int(self):
+    x_empty = torch.empty(0, 8, dtype=torch.float32, device=et.device())
+    w_int = torch.ones(8, dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""rms_norm(): expected the weight dtype to be floating point, got int32""",
+    ):
+      torch.nn.functional.rms_norm(x_empty, (8,), weight=w_int, eps=1e-5)
+
 
 @contextlib.contextmanager
 def _mock_launch_env(values: dict[str, str]):

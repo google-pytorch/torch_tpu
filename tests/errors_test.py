@@ -7448,7 +7448,7 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""fused_rms_norm(): expected the input dtype to be floating point, got int32""",
+        tpu="""rms_norm(): expected the input dtype to be floating point, got int32""",
         gpu=""""LayerNormKernelImpl" not implemented for 'Int'""",
         message_reviewed_by="wan",
     ):
@@ -7476,11 +7476,49 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu=f"""fused_rms_norm(): expected the input dtype to be floating point, got {tpu_dtype}""",
+        tpu=f"""rms_norm(): expected the input dtype to be floating point, got {tpu_dtype}""",
         gpu=f""""LayerNormKernelImpl" not implemented for '{gpu_dtype}'""",
         message_reviewed_by="chizz",
     ):
       torch.nn.functional.rms_norm(inp, normalized_shape)
+
+  def test_rms_norm_input_shape_mismatch(self):
+    inp = torch.ones(2, 2, 3, device=et.device())
+    normalized_shape = (2, 2)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""rms_norm(): expected input trailing dimensions to match normalized_shape [2, 2], got input of shape [2, 2, 3]""",
+        gpu="""Given normalized_shape=[2, 2], expected input with shape [*2, 2], but got input of size[2, 2, 3]""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.nn.functional.rms_norm(inp, normalized_shape)
+
+  def test_rms_norm_weight_int(self):
+    inp = torch.ones(5, 5, device=et.device(), dtype=torch.float32)
+    normalized_shape = (5,)
+    weight = torch.ones(5, device=et.device(), dtype=torch.int32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_rms_norm(): expected the weight dtype to be floating point, got int32""",
+        gpu="""expected scalar type Float but found Int""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ops.aten._fused_rms_norm(inp, normalized_shape, weight, 1e-5)
+
+  def test_rms_norm_weight_shape_mismatch(self):
+    inp = torch.ones(1, 2, 3, device=et.device())
+    normalized_shape = (1, 2, 3)
+    weight = torch.ones(1, 2, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""rms_norm(): expected weight to be of same shape as normalized_shape [1, 2, 3], got weight of shape [1, 2]""",
+        gpu="""Expected weight to be of same shape as normalized_shape, but got weight of shape [1, 2] and normalized_shape = [1, 2, 3]""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.nn.functional.rms_norm(inp, normalized_shape, weight=weight)
 
   def test_rms_norm_backward_int(self):
     inp = torch.ones(5, 5, device=et.device(), dtype=torch.int32)

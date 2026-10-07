@@ -13874,6 +13874,231 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(fn, rtol=1e-5, atol=1e-5)
 
+  def test_rms_norm_inference_no_grad_and_default_eps(self):
+    """Tests nn.functional.rms_norm 1-output inference path and default eps=None."""
+    for dtype, tol in [
+        (torch.float32, 1e-5),
+        (torch.bfloat16, 1e-2),
+        (torch.float16, 1e-2),
+        (torch.float64, 1e-6),
+    ]:
+      for eps in [None, 1e-6]:
+
+        def fn_no_grad(device, dtype=dtype, eps=eps):
+          with torch.no_grad():
+            x = (
+                torch.arange(24, dtype=dtype, device=device).reshape(2, 3, 4)
+                / 10.0
+                + 0.1
+            )
+            w = torch.arange(4, dtype=dtype, device=device) / 4.0 + 0.5
+            out_with_w = torch.nn.functional.rms_norm(
+                x, (4,), weight=w, eps=eps
+            )
+            out_no_w = torch.nn.functional.rms_norm(
+                x, (4,), weight=None, eps=eps
+            )
+            self.assertEqual(out_with_w.dtype, dtype)
+            self.assertEqual(out_no_w.dtype, dtype)
+            return out_with_w, out_no_w
+
+        self.assert_close_tpu_vs_cpu(fn_no_grad, rtol=tol, atol=tol)
+
+        def fn_requires_grad_false(device, dtype=dtype, eps=eps):
+          x = (
+              torch.arange(24, dtype=dtype, device=device).reshape(2, 3, 4)
+              / 10.0
+              + 0.1
+          ).requires_grad_(False)
+          w = (
+              torch.arange(4, dtype=dtype, device=device) / 4.0 + 0.5
+          ).requires_grad_(False)
+          return torch.nn.functional.rms_norm(x, (4,), weight=w, eps=eps)
+
+        self.assert_close_tpu_vs_cpu(fn_requires_grad_false, rtol=tol, atol=tol)
+
+  def test_rms_norm_mixed_dtypes_forward_and_backward(self):
+    """Tests nn.functional.rms_norm when input and weight have different dtypes."""
+    dtype_pairs = [
+        (torch.float32, torch.bfloat16),
+        (torch.bfloat16, torch.float32),
+        (torch.float32, torch.float16),
+        (torch.float16, torch.float32),
+    ]
+    for input_dtype, weight_dtype in dtype_pairs:
+      # 1. Eager inference (torch.no_grad())
+      def fn_infer(device, in_dt=input_dtype, w_dt=weight_dtype):
+        with torch.no_grad():
+          x = (
+              torch.arange(32, dtype=in_dt, device=device).reshape(4, 8) / 10.0
+              + 0.2
+          )
+          w = torch.arange(8, dtype=w_dt, device=device) / 4.0 + 0.5
+          out = torch.nn.functional.rms_norm(x, (8,), weight=w, eps=1e-5)
+          self.assertEqual(out.dtype, in_dt)
+          return out
+
+      self.assert_close_tpu_vs_cpu(fn_infer, rtol=2e-2, atol=2e-2)
+
+      # 2. Eager training (forward + backward)
+      def fn_train(device, in_dt=input_dtype, w_dt=weight_dtype):
+        x = (
+            torch.arange(32, dtype=in_dt, device=device).reshape(4, 8) / 10.0
+            + 0.2
+        ).requires_grad_()
+        w = (
+            torch.arange(8, dtype=w_dt, device=device) / 4.0 + 0.5
+        ).requires_grad_()
+        g = (
+            torch.arange(32, dtype=in_dt, device=device).reshape(4, 8) / 20.0
+            - 0.3
+        )
+        out = torch.nn.functional.rms_norm(x, (8,), weight=w, eps=1e-5)
+        out.backward(g)
+        self.assertEqual(out.dtype, in_dt)
+        self.assertEqual(x.grad.dtype, in_dt)
+        self.assertEqual(w.grad.dtype, w_dt)
+        return out, x.grad, w.grad
+
+      self.assert_close_tpu_vs_cpu(fn_train, rtol=2e-2, atol=2e-2)
+
+      # 3. 1D input (batch_dims.empty()) with mixed dtypes
+      def fn_1d(device, in_dt=input_dtype, w_dt=weight_dtype):
+        x = (
+            torch.arange(8, dtype=in_dt, device=device) / 4.0 + 0.2
+        ).requires_grad_()
+        w = (
+            torch.arange(8, dtype=w_dt, device=device) / 8.0 + 1.0
+        ).requires_grad_()
+        g = torch.ones_like(x)
+        out = torch.nn.functional.rms_norm(x, (8,), weight=w, eps=1e-5)
+        out.backward(g)
+        self.assertEqual(out.dtype, in_dt)
+        self.assertEqual(x.grad.dtype, in_dt)
+        self.assertEqual(w.grad.dtype, w_dt)
+        return out, x.grad, w.grad
+
+      self.assert_close_tpu_vs_cpu(fn_1d, rtol=2e-2, atol=2e-2)
+
+      # 4. torch.compile with mixed dtypes (forward + backward)
+      def fn_compiled(device, in_dt=input_dtype, w_dt=weight_dtype):
+        x = (
+            torch.arange(32, dtype=in_dt, device=device).reshape(4, 8) / 10.0
+            + 0.2
+        ).requires_grad_()
+        w = (
+            torch.arange(8, dtype=w_dt, device=device) / 4.0 + 0.5
+        ).requires_grad_()
+        g = torch.ones_like(x)
+        rms_fn = (
+            torch.compile(torch.nn.functional.rms_norm, backend="tpu")
+            if torch.device(device).type == "tpu"
+            else torch.nn.functional.rms_norm
+        )
+        out = rms_fn(x, (8,), weight=w, eps=1e-5)
+        out.backward(g)
+        self.assertEqual(out.dtype, in_dt)
+        self.assertEqual(x.grad.dtype, in_dt)
+        self.assertEqual(w.grad.dtype, w_dt)
+        return out, x.grad, w.grad
+
+      self.assert_close_tpu_vs_cpu(fn_compiled, rtol=2e-2, atol=2e-2)
+
+  def test_rms_norm_channels_last_and_transposed_views(self):
+    """Tests nn.functional.rms_norm on 4D QK-norm transposed views and channels_last layouts."""
+
+    # 1. 4D QK-norm transposed view (2, 16, 4, 8).transpose(1, 2) -> (2, 4, 16, 8)
+    def fn_transposed_infer(device):
+      with torch.no_grad():
+        x_base = (
+            torch.arange(1024, dtype=torch.float32, device=device).reshape(
+                2, 16, 4, 8
+            )
+            / 100.0
+            + 0.1
+        )
+        x = x_base.transpose(1, 2)
+        w = torch.arange(8, dtype=torch.bfloat16, device=device) / 8.0 + 0.5
+        return torch.nn.functional.rms_norm(x, (8,), weight=w, eps=1e-5)
+
+    self.assert_close_tpu_vs_cpu(fn_transposed_infer, rtol=1e-2, atol=1e-2)
+
+    def fn_transposed_train(device):
+      x_base = (
+          torch.arange(1024, dtype=torch.float32, device=device).reshape(
+              2, 16, 4, 8
+          )
+          / 100.0
+          + 0.1
+      ).requires_grad_()
+      x = x_base.transpose(1, 2)
+      w = (
+          torch.arange(8, dtype=torch.float32, device=device) / 8.0 + 0.5
+      ).requires_grad_()
+      g = torch.ones_like(x)
+      out = torch.nn.functional.rms_norm(x, (8,), weight=w, eps=1e-5)
+      out.backward(g)
+      return out, x_base.grad, w.grad
+
+    self.assert_close_tpu_vs_cpu(fn_transposed_train, rtol=1e-5, atol=1e-5)
+
+    # 2. Explicit channels_last (4D) and channels_last_3d (5D) memory formats
+    def fn_channels_last(device):
+      x4 = (
+          torch.arange(192, dtype=torch.float32, device=device)
+          .reshape(2, 3, 4, 8)
+          .to(memory_format=torch.channels_last)
+          / 50.0
+          + 0.1
+      ).requires_grad_()
+      w4 = (
+          torch.arange(8, dtype=torch.float32, device=device) / 4.0 + 0.5
+      ).requires_grad_()
+      out4 = torch.nn.functional.rms_norm(x4, (8,), weight=w4, eps=1e-5)
+      out4.backward(torch.ones_like(out4))
+
+      x5 = (
+          torch.arange(384, dtype=torch.float32, device=device)
+          .reshape(2, 3, 2, 4, 8)
+          .to(memory_format=torch.channels_last_3d)
+          / 50.0
+          + 0.1
+      ).requires_grad_()
+      w5 = (
+          torch.arange(8, dtype=torch.float32, device=device) / 4.0 + 0.5
+      ).requires_grad_()
+      out5 = torch.nn.functional.rms_norm(x5, (8,), weight=w5, eps=1e-5)
+      out5.backward(torch.ones_like(out5))
+      return out4, x4.grad, w4.grad, out5, x5.grad, w5.grad
+
+    self.assert_close_tpu_vs_cpu(fn_channels_last, rtol=1e-5, atol=1e-5)
+
+  def test_rms_norm_zero_elements_inference_and_mixed_dtype(self):
+    """Tests nn.functional.rms_norm with empty (0, 8) input in inference and mixed-dtype training."""
+
+    def fn_infer(device):
+      with torch.no_grad():
+        x = torch.empty(0, 8, dtype=torch.float32, device=device)
+        w = torch.ones(8, dtype=torch.bfloat16, device=device)
+        out = torch.nn.functional.rms_norm(x, (8,), weight=w, eps=1e-5)
+        self.assertEqual(out.dtype, torch.float32)
+        return out
+
+    self.assert_close_tpu_vs_cpu(fn_infer)
+
+    def fn_train(device):
+      x = torch.empty(0, 8, dtype=torch.float32, device=device).requires_grad_()
+      w = torch.ones(8, dtype=torch.bfloat16, device=device).requires_grad_()
+      g = torch.empty(0, 8, dtype=torch.float32, device=device)
+      out = torch.nn.functional.rms_norm(x, (8,), weight=w, eps=1e-5)
+      out.backward(g)
+      self.assertEqual(out.dtype, torch.float32)
+      self.assertEqual(x.grad.dtype, torch.float32)
+      self.assertEqual(w.grad.dtype, torch.bfloat16)
+      return out, x.grad, w.grad
+
+    self.assert_close_tpu_vs_cpu(fn_train)
+
   def test_max_pool2d_with_indices(self):
     """Tests nn.functional.max_pool2d_float32_sample54."""
     device = torch.device("tpu")

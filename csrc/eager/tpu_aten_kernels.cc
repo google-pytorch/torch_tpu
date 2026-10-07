@@ -965,6 +965,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kReplicationPad3dOut>(m, AtenReplicationPad3dOut);
   ImplStable<OpName::kReshapeAlias>(m, AtenReshapeAlias);
   ImplStable<OpName::kResize_>(m, AtenResize_);
+  ImplStable<OpName::kRmsNorm>(m, AtenRmsNorm);
   ImplStable<OpName::kRoll>(m, AtenRoll);
   ImplStable<OpName::kRoundDecimalsOut>(m, AtenRoundDecimalsOut);
   ImplStable<OpName::kRoundOut>(m, AtenRoundOut);
@@ -1228,6 +1229,7 @@ TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
       m, AtenRepeatInterleaveSelfIntAutograd);
   ImplStable<OpName::kRepeatInterleaveSelfTensor>(m,
                                                   AtenRepeatInterleaveAutograd);
+  ImplStable<OpName::kRmsNorm>(m, AtenRmsNormAutograd);
   ImplStable<OpName::kSiluBackward>(m, AtenSiluBackwardAutograd);
   // go/keep-sorted end
 }

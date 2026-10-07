@@ -25,9 +25,19 @@
 
 namespace torch_tpu {
 
+at::Tensor AtenRmsNorm(const at::Tensor& input,
+                       at::IntArrayRef normalized_shape,
+                       const std::optional<at::Tensor>& weight,
+                       std::optional<double> eps);
+
+at::Tensor AtenRmsNormAutograd(const at::Tensor& input,
+                               at::IntArrayRef normalized_shape,
+                               const std::optional<at::Tensor>& weight,
+                               std::optional<double> eps);
+
 std::tuple<at::Tensor, at::Tensor> AtenFusedRmsNorm(
-    const at::Tensor& input, const at::IntArrayRef normalized_shape,
-    const std::optional<at::Tensor>& weight, const std::optional<double> eps);
+    const at::Tensor& input, at::IntArrayRef normalized_shape,
+    const std::optional<at::Tensor>& weight, std::optional<double> eps);
 
 std::tuple<at::Tensor, at::Tensor> AtenFusedRmsNormBackward(
     const at::Tensor& grad_out, const at::Tensor& input,

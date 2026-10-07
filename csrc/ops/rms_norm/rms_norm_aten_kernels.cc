@@ -19,21 +19,32 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <tuple>
 #include <utility>
 #include <vector>
 
+#include "ATen/OpMathType.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBase.h"
+#include "ATen/core/TensorBody.h"
+#include "ATen/ops/_fused_rms_norm.h"
+#include "ATen/ops/pow.h"
+#include "ATen/ops/rsqrt.h"
 #include "ATen/ops/zeros.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "c10/core/DispatchKey.h"
+#include "c10/core/DispatchKeySet.h"
+#include "c10/core/GradMode.h"
+#include "c10/core/impl/LocalDispatchKeySet.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/op_name_stack.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
@@ -48,45 +59,267 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch/headeronly/core/DeviceType.h"
+#include "torch/headeronly/core/MemoryFormat.h"
 #include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 
 namespace {
 
-absl::Status ValidateFusedRmsNormInputs(const at::Tensor& input,
-                                        at::IntArrayRef normalized_shape) {
+double GetRmsNormEpsilon(std::optional<double> eps,
+                         c10::ScalarType input_dtype) {
+  if (eps.has_value()) {
+    return *eps;
+  }
+  if (ToAccumulateType(input_dtype) == at::ScalarType::Double) {
+    return std::numeric_limits<double>::epsilon();
+  }
+  return static_cast<double>(std::numeric_limits<float>::epsilon());
+}
+
+absl::Status ValidateRmsNormInputs(const at::Tensor& input,
+                                   at::IntArrayRef normalized_shape,
+                                   const std::optional<at::Tensor>& weight) {
   TT_RET_CHECK(input.numel() == 0 || IsFloatingPoint(input),
                error::kInvalidArgument)
       << "expected the input dtype to be floating point, got "
       << ToString(input.scalar_type());
 
-  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=PyTorch catches this error in
-                 // the caller op `rms_norm()`.
-      !normalized_shape.empty(), error::kInvalidArgument)
+  TT_RET_CHECK(!normalized_shape.empty(), error::kInvalidArgument)
       << "the normalized shape must have >= 1 dimensions";
 
-  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=PyTorch catches this error in
-                 // the caller op `rms_norm()`.
-      normalized_shape.size() <= input.dim(), error::kInvalidArgument)
-      << "expected the normalized shape to have <= " << input.dim()
-      << " dimensions, got " << normalized_shape.size();
+  const int64_t normalized_ndim = normalized_shape.size();
+  const int64_t input_ndim = input.dim();
+  TT_RET_CHECK(normalized_ndim <= input_ndim, error::kInvalidArgument)
+      << "expected the normalized shape to have <= " << input_ndim
+      << " dimensions, got " << normalized_ndim;
+
+  const auto input_trailing_shape =
+      input.sizes().slice(input_ndim - normalized_ndim);
+  TT_RET_CHECK(input_trailing_shape.equals(normalized_shape),
+               error::kInvalidArgument)
+      << "expected input trailing dimensions to match normalized_shape "
+      << ToString(normalized_shape) << ", got input of shape "
+      << ToString(input.sizes());
+
+  if (weight.has_value() && weight->defined()) {
+    // Upstream _fused_rms_norm_cuda skips RmsNormKernelImpl (and its dtype
+    // dispatch check) when M == 0 (input.numel() == 0) and dtypes match, which
+    // ops_test exercises for bool/int32/int64 in subtest4. However, never allow
+    // mixed-dtype non-floating-point weight (e.g. empty float input with int32
+    // weight).
+    TT_RET_CHECK(IsFloatingPoint(*weight) ||
+                     (input.numel() == 0 &&
+                      weight->scalar_type() == input.scalar_type()),
+                 error::kInvalidArgument)
+        << "expected the weight dtype to be floating point, got "
+        << ToString(weight->scalar_type());
+    TT_RET_CHECK(weight->sizes().equals(normalized_shape),
+                 error::kInvalidArgument)
+        << "expected weight to be of same shape as normalized_shape "
+        << ToString(normalized_shape) << ", got weight of shape "
+        << ToString(weight->sizes());
+  }
 
   return absl::OkStatus();
 }
 
+void ValidateRmsNormInputsOrThrow(const at::Tensor& input,
+                                  at::IntArrayRef normalized_shape,
+                                  const std::optional<at::Tensor>& weight) {
+  internal::ScopedOpName scoped_op_name(OpName::kRmsNorm);
+  try {
+    TT_THROW_IF_ERROR(ValidateRmsNormInputs(input, normalized_shape, weight));
+  } catch (const TtError& e) {
+    TranslateToC10ErrorAndThrow(e);
+  }
+}
+
+bool IsFakeOrFunctorchTensor(const at::Tensor& tensor) {
+  const auto include_set = c10::impl::tls_local_dispatch_key_set().included_;
+  if (include_set.has(c10::DispatchKey::FuncTorchDynamicLayerFrontMode) ||
+      include_set.has(c10::DispatchKey::FuncTorchDynamicLayerBackMode) ||
+      !tensor.has_storage()) {
+    return true;
+  }
+  return tensor.storage().data_ptr() == nullptr;
+}
+
+// Composite fallback using TORCH_API-exported ATen ops for FakeTensor
+// (torch.compile), functorch transforms, and forward-mode AD when
+// _fused_rms_norm cannot be used directly (e.g. mixed-dtype input/weight or
+// forward AD). Note: at::native::rms_norm_composite is not exported with
+// TORCH_API from libtorch_cpu.so and has hidden visibility in open-source
+// builds.
+at::Tensor RmsNormComposite(const at::Tensor& input,
+                            at::IntArrayRef normalized_shape,
+                            const std::optional<at::Tensor>& weight,
+                            std::optional<double> eps) {
+  const int64_t input_ndim = input.dim();
+  const size_t normalized_ndim = normalized_shape.size();
+  Dimensions dims_to_reduce;
+  dims_to_reduce.reserve(normalized_ndim);
+  for (size_t i = 0; i < normalized_ndim; ++i) {
+    dims_to_reduce.push_back(input_ndim - static_cast<int64_t>(i) - 1);
+  }
+
+  const at::ScalarType opmath_type = at::toOpMathType(input.scalar_type());
+  const at::Tensor upcasted_input = input.to(opmath_type);
+  const double eps_val = GetRmsNormEpsilon(eps, input.scalar_type());
+
+  at::Tensor mean_sq =
+      at::pow(upcasted_input, 2).mean(dims_to_reduce, /*keepdim=*/true);
+  at::Tensor rstd = (opmath_type == at::ScalarType::Float ||
+                     opmath_type == at::ScalarType::ComplexFloat)
+                        ? at::rsqrt(mean_sq.add(static_cast<float>(eps_val)))
+                        : at::rsqrt(mean_sq.add(eps_val));
+  at::Tensor upcasted_result = upcasted_input.mul(rstd);
+
+  const bool has_weight = weight.has_value() && weight->defined();
+  if (has_weight) {
+    upcasted_result = upcasted_result.mul(*weight);
+  }
+  if (!input.is_nested() && !(has_weight && weight->is_nested()) &&
+      input.suggest_memory_format() != c10::MemoryFormat::ChannelsLast &&
+      input.suggest_memory_format() != c10::MemoryFormat::ChannelsLast3d) {
+    upcasted_result = upcasted_result.contiguous();
+  }
+  return upcasted_result.type_as(input);
+}
+
+at::Tensor DelegateRmsNormFakeOrFunctorch(
+    const at::Tensor& input, at::IntArrayRef normalized_shape,
+    const std::optional<at::Tensor>& weight, std::optional<double> eps,
+    bool any_has_fw_grad) {
+  ValidateRmsNormInputsOrThrow(input, normalized_shape, weight);
+  const bool has_weight = weight.has_value() && weight->defined();
+  if (any_has_fw_grad ||
+      (has_weight && weight->scalar_type() != input.scalar_type())) {
+    return RmsNormComposite(input, normalized_shape, weight, eps);
+  }
+  return std::get<0>(at::_fused_rms_norm(input, normalized_shape, weight, eps));
+}
+
 }  // namespace
 
+at::Tensor AtenRmsNorm(const at::Tensor& input,
+                       at::IntArrayRef normalized_shape,
+                       const std::optional<at::Tensor>& weight,
+                       std::optional<double> eps) {
+  const bool has_weight = weight.has_value() && weight->defined();
+  if (IsFakeOrFunctorchTensor(input) ||
+      (has_weight && IsFakeOrFunctorchTensor(*weight))) {
+    return DelegateRmsNormFakeOrFunctorch(input, normalized_shape, weight, eps,
+                                          /*any_has_fw_grad=*/false);
+  }
+  const double epsilon = GetRmsNormEpsilon(eps, input.scalar_type());
+  TT_KERNEL(
+      OpName::kRmsNorm, param_keys, (input, normalized_shape, weight, epsilon),
+      {
+        TT_THROW_IF_ERROR(
+            ValidateRmsNormInputs(input, normalized_shape, weight));
+
+        const auto input_sizes = input.sizes();
+        if (input.numel() == 0) {
+          TT_ASSIGN_OR_THROW(at::Tensor out,
+                             MakeEmptyTensor(input_sizes, input.scalar_type(),
+                                             input.device()));
+          return out;
+        }
+
+        const size_t normalized_shape_dims = normalized_shape.size();
+        auto op_builder = [normalized_shape_dims, epsilon](
+                              absl::Span<const mlir::MlirOp> inputs,
+                              mlir::MlirBuilder& builder)
+            -> absl::StatusOr<MlirOpResults<1>> {
+          TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=The inputs vector is always
+                         // constructed with this op input, possibly followed by
+                         // the weights.
+              !inputs.empty() && inputs.size() <= 2, error::kInternal)
+              << "expected 1 or 2 inputs, got " << inputs.size();
+
+          mlir::MlirOp input_op = inputs[0];
+          std::optional<mlir::MlirOp> weight_op;
+          if (inputs.size() > 1) {
+            weight_op = inputs[1];
+          }
+
+          TT_ASSIGN_OR_RETURN(LayerNormShloResults results,
+                              BuildRmsNormShlo(input_op, weight_op,
+                                               normalized_shape_dims, epsilon));
+          return results.normalized_values;
+        };
+
+        TT_ASSIGN_OR_THROW(const auto elem_dtype,
+                           ConvertTo<mlir::ElementType>(input.scalar_type()));
+        Dimensions output_dims = CopyIntVector(input_sizes);
+
+        std::vector<at::Tensor> inputs = {input};
+        if (has_weight) {
+          inputs.push_back(*weight);
+        }
+
+        TT_ASSIGN_OR_THROW(
+            DeviceBufferRef output_buf,
+            (DispatchOp<kDynamicSize, 1>(
+                std::move(op_builder), inputs,
+                {.out_dtype = elem_dtype,
+                 .out_dims = output_dims,
+                 .op_param_cache_keys = std::move(param_keys)})));
+
+        return MakeTensor(std::move(output_buf));
+      });
+}
+
+at::Tensor AtenRmsNormAutograd(const at::Tensor& input,
+                               at::IntArrayRef normalized_shape,
+                               const std::optional<at::Tensor>& weight,
+                               std::optional<double> eps) {
+  const bool has_weight = weight.has_value() && weight->defined();
+  const bool any_has_fw_grad =
+      input._fw_grad(/*level=*/0).defined() ||
+      (has_weight && weight->_fw_grad(/*level=*/0).defined());
+  const bool is_fake_or_functorch =
+      IsFakeOrFunctorchTensor(input) ||
+      (has_weight && IsFakeOrFunctorchTensor(*weight));
+
+  // 1. FakeTensor (torch.compile), Functorch, or Forward-mode AD:
+  // Must be checked BEFORE GradMode / requires_grad so FakeTensors in
+  // torch.no_grad() inference mode never enter AtenRmsNorm's DeviceBuffer
+  // path directly.
+  if (is_fake_or_functorch || any_has_fw_grad) {
+    return DelegateRmsNormFakeOrFunctorch(input, normalized_shape, weight, eps,
+                                          any_has_fw_grad);
+  }
+
+  // 2. Eager Inference fast path: dispatch directly to 1-output AtenRmsNorm
+  // without allocating an unused rstd DeviceBuffer.
+  const bool any_requires_grad =
+      input.requires_grad() || (has_weight && weight->requires_grad());
+  if (!c10::GradMode::is_enabled() || !any_requires_grad) {
+    c10::impl::ExcludeDispatchKeyGuard no_autograd(
+        c10::autograd_dispatch_keyset);
+    return AtenRmsNorm(input, normalized_shape, weight, eps);
+  }
+
+  // 3. Eager Training path: delegate to at::_fused_rms_norm so PyTorch's
+  // autograd engine (derivatives.yaml:1301) attaches _FusedRmsNormBackward0
+  // and invokes AtenFusedRmsNorm at OpNameStack depth 1 (where
+  // ValidateRmsNormInputs is executed inside TT_KERNEL).
+  return std::get<0>(at::_fused_rms_norm(input, normalized_shape, weight, eps));
+}
+
 std::tuple<at::Tensor, at::Tensor> AtenFusedRmsNorm(
-    const at::Tensor& input, const at::IntArrayRef normalized_shape,
-    const std::optional<at::Tensor>& weight, const std::optional<double> eps) {
+    const at::Tensor& input, at::IntArrayRef normalized_shape,
+    const std::optional<at::Tensor>& weight, std::optional<double> eps) {
   // _fused_rms_norm(Tensor input, int[] normalized_shape, Tensor? weight,
   // float? eps) -> (Tensor, Tensor)
-  const double epsilon = eps.value_or(1e-5);
+  const double epsilon = GetRmsNormEpsilon(eps, input.scalar_type());
   TT_KERNEL(
       OpName::kFusedRmsNorm, param_keys,
       (input, normalized_shape, weight, epsilon), {
-        TT_THROW_IF_ERROR(ValidateFusedRmsNormInputs(input, normalized_shape));
+        TT_THROW_IF_ERROR(
+            ValidateRmsNormInputs(input, normalized_shape, weight));
 
         const size_t normalized_shape_dims = normalized_shape.size();
         const auto input_sizes = input.sizes();
@@ -143,7 +376,7 @@ std::tuple<at::Tensor, at::Tensor> AtenFusedRmsNorm(
         Dimensions output_dims = CopyIntVector(input_sizes);
 
         std::vector<at::Tensor> inputs = {input};
-        if (weight.has_value()) {
+        if (weight.has_value() && weight->defined()) {
           inputs.push_back(*weight);
         }
 
@@ -179,7 +412,8 @@ std::tuple<at::Tensor, at::Tensor> AtenFusedRmsNormBackward(
   TT_KERNEL(
       OpName::kFusedRmsNormBackward, param_keys,
       (grad_out, input, normalized_shape, rstd, weight, output_mask), {
-        TT_THROW_IF_ERROR(ValidateFusedRmsNormInputs(input, normalized_shape));
+        TT_THROW_IF_ERROR(
+            ValidateRmsNormInputs(input, normalized_shape, weight));
 
         // PyTorch's autograd engine passes an output_mask where output_mask[0]
         // indicates if grad_input is required and output_mask[1] indicates if

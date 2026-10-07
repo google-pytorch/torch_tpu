@@ -129,7 +129,7 @@ absl::StatusOr<LayerNormShloResults> BuildRmsNormShlo(
   mlir::MlirOp output = normalized_input;
   if (weight_op.has_value()) {
     mlir::MlirOp weight_compute = *weight_op;
-    if (need_cast) {
+    if (GetTensorTypeOrDie(weight_compute).getElementType() != compute_type) {
       weight_compute =
           mlir::stablehlo::ConvertElementType(weight_compute, compute_type);
     }
@@ -167,18 +167,19 @@ absl::StatusOr<mlir::MlirOp> BuildRmsNormDgamma(
     mlir::MlirBuilder& builder, mlir::MlirOp dy_f32, mlir::MlirOp x_hat,
     std::optional<mlir::MlirOp> weight, at::IntArrayRef normalized_shape,
     mlir::FloatType compute_float_type, mlir::Type orig_weight_type,
-    const Dimensions& batch_dims, mlir::MlirOp zero, bool needs_upcast) {
+    const Dimensions& batch_dims, mlir::MlirOp zero) {
   if (!weight.has_value()) {
     mlir::MlirOp zero_w =
-        needs_upcast ? MakeScalarConstant(builder, 0.0, orig_weight_type)
-                     : zero;
+        (orig_weight_type != compute_float_type)
+            ? MakeScalarConstant(builder, 0.0, orig_weight_type)
+            : zero;
     return mlir::stablehlo::BroadcastInDim(
         mlir::RankedTensorType::get(normalized_shape, orig_weight_type), zero_w,
         {});
   }
   mlir::MlirOp dgamma_full = mlir::stablehlo::Mul(dy_f32, x_hat);
   if (batch_dims.empty()) {
-    if (needs_upcast) {
+    if (orig_weight_type != compute_float_type) {
       return mlir::stablehlo::ConvertElementType(dgamma_full, orig_weight_type);
     }
     return dgamma_full;
@@ -190,7 +191,7 @@ absl::StatusOr<mlir::MlirOp> BuildRmsNormDgamma(
       };
   mlir::MlirOp dgamma = mlir::stablehlo::Reduce(
       builder, dgamma_full, zero, sum_reduce_builder, batch_dims)[0];
-  if (needs_upcast) {
+  if (orig_weight_type != compute_float_type) {
     dgamma = mlir::stablehlo::ConvertElementType(dgamma, orig_weight_type);
   }
   return dgamma;
@@ -212,11 +213,11 @@ absl::StatusOr<mlir::MlirOp> BuildRmsNormDx(
     at::IntArrayRef normalized_shape, mlir::RankedTensorType compute_x_type,
     mlir::FloatType compute_float_type, mlir::Type orig_elem_type,
     const Dimensions& norm_dims, const Dimensions& batch_dims,
-    mlir::MlirOp zero, bool needs_upcast) {
+    mlir::MlirOp zero) {
   mlir::MlirOp dy_gamma_f32 = dy_f32;
   if (weight.has_value()) {
     mlir::MlirOp weight_f32 =
-        needs_upcast
+        (GetTensorTypeOrDie(*weight).getElementType() != compute_float_type)
             ? mlir::stablehlo::ConvertElementType(*weight, compute_float_type)
             : *weight;
     mlir::MlirOp gamma_bcast =
@@ -247,7 +248,7 @@ absl::StatusOr<mlir::MlirOp> BuildRmsNormDx(
       mlir::stablehlo::Subtract(dy_gamma_f32, x_hat_times_grad_factor);
   mlir::MlirOp dx_f32 = mlir::stablehlo::Mul(diff, rstd_f32_bcast);
 
-  if (needs_upcast) {
+  if (orig_elem_type != compute_float_type) {
     return mlir::stablehlo::ConvertElementType(dx_f32, orig_elem_type);
   }
   return dx_f32;
@@ -323,11 +324,13 @@ absl::StatusOr<RmsNormBackwardShloResults> BuildRmsNormBackwardShlo(
 
   // Upcast inputs to compute_float_type (F32) once.
   mlir::MlirOp x_f32 =
-      needs_upcast ? mlir::stablehlo::ConvertElementType(x, compute_float_type)
-                   : x;
-  mlir::MlirOp rstd_f32 = needs_upcast ? mlir::stablehlo::ConvertElementType(
-                                             rstd, compute_float_type)
-                                       : rstd;
+      (orig_elem_type != compute_float_type)
+          ? mlir::stablehlo::ConvertElementType(x, compute_float_type)
+          : x;
+  mlir::MlirOp rstd_f32 =
+      (GetTensorTypeOrDie(rstd).getElementType() != compute_float_type)
+          ? mlir::stablehlo::ConvertElementType(rstd, compute_float_type)
+          : rstd;
   const auto compute_x_type =
       mlir::RankedTensorType::get(x_type.getShape(), compute_float_type);
   mlir::MlirOp rstd_f32_bcast =
@@ -339,17 +342,17 @@ absl::StatusOr<RmsNormBackwardShloResults> BuildRmsNormBackwardShlo(
   mlir::MlirOp x_hat = mlir::stablehlo::Mul(x_f32, rstd_f32_bcast);
 
   mlir::MlirOp dy_f32 =
-      needs_upcast ? mlir::stablehlo::ConvertElementType(dy, compute_float_type)
-                   : dy;
+      (GetTensorTypeOrDie(dy).getElementType() != compute_float_type)
+          ? mlir::stablehlo::ConvertElementType(dy, compute_float_type)
+          : dy;
 
   // 1. Compute dgamma = sum_batch(dy * x_hat)
   mlir::MlirOp dgamma;
   if (output_mask[1]) {
-    TT_ASSIGN_OR_RETURN(
-        dgamma,
-        BuildRmsNormDgamma(builder, dy_f32, x_hat, weight, normalized_shape,
-                           compute_float_type, orig_weight_type, batch_dims,
-                           zero, needs_upcast));
+    TT_ASSIGN_OR_RETURN(dgamma,
+                        BuildRmsNormDgamma(builder, dy_f32, x_hat, weight,
+                                           normalized_shape, compute_float_type,
+                                           orig_weight_type, batch_dims, zero));
   } else {
     TT_ASSIGN_OR_RETURN(dgamma, MakeZeroSizedTensor(builder, orig_weight_type));
   }
@@ -360,8 +363,7 @@ absl::StatusOr<RmsNormBackwardShloResults> BuildRmsNormBackwardShlo(
     TT_ASSIGN_OR_RETURN(
         dx, BuildRmsNormDx(builder, dy_f32, x_hat, rstd_f32_bcast, weight,
                            normalized_shape, compute_x_type, compute_float_type,
-                           orig_elem_type, norm_dims, batch_dims, zero,
-                           needs_upcast));
+                           orig_elem_type, norm_dims, batch_dims, zero));
   } else {
     TT_ASSIGN_OR_RETURN(dx, MakeZeroSizedTensor(builder, orig_elem_type));
   }
