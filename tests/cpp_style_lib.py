@@ -337,7 +337,7 @@ def check_header_guard(file: CppFile) -> list[str]:
   return errors
 
 
-_APPROVED_NESTED_NAMESPACES = frozenset({"error", "internal"})
+_APPROVED_NESTED_NAMESPACES = frozenset({"error", "internal", "kiln"})
 
 # Exempts one namespace opening from `check_namespace_root`, and from the
 # "torch_tpu must be outermost" part of `check_unapproved_namespace`, when placed

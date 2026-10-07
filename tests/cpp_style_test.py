@@ -87,7 +87,7 @@ class CppStyleTest(absltest.TestCase):  # ABSLTEST_OK=avoid heavy dependencies
 
     approved_msg = (
         "Only approved named namespaces allowed under torch_tpu:"
-        " ['error', 'internal']"
+        " ['error', 'internal', 'kiln']"
     )
     not_root_msg = "torch_tpu must only be used as the outermost namespace"
     self.assertCountEqual(
@@ -256,7 +256,7 @@ class CppStyleTest(absltest.TestCase):  # ABSLTEST_OK=avoid heavy dependencies
         style.check_unapproved_namespace(cpp_file),
         [
             "csrc/test.cc:1: Only approved named namespaces allowed under"
-            " torch_tpu: ['error', 'internal'], got ['foo']"
+            " torch_tpu: ['error', 'internal', 'kiln'], got ['foo']"
         ],
     )
 

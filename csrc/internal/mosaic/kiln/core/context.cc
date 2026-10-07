@@ -1,0 +1,175 @@
+/*
+ * Copyright 2026 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "csrc/internal/mosaic/kiln/core/context.h"
+
+#include "absl/log/absl_check.h"
+#include "csrc/internal/mosaic/kiln/core/dtype.h"
+#include "csrc/internal/mosaic/kiln/core/literal.h"
+#include "llvm/Support/Casting.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Arith/IR/ArithAttributes.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributeInterfaces.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Types.h"
+#include "mlir/IR/Value.h"
+
+namespace torch_tpu::kiln::internal {
+namespace {
+
+thread_local mlir::ImplicitLocOpBuilder*  // CPP_THREAD_LOCAL_OK=C++ scope
+    tls_builder = nullptr;
+
+mlir::Type WithElementType(mlir::Type type, DType target) {
+  mlir::Type elem = ToMlirType(target, type.getContext());
+  if (auto vec = llvm::dyn_cast<mlir::VectorType>(type)) {
+    return vec.clone(elem);
+  }
+  return elem;
+}
+
+}  // namespace
+
+mlir::ImplicitLocOpBuilder& CurrentBuilder() {
+  ABSL_CHECK(tls_builder != nullptr)  // CRASH_OK
+      << "KILN operations may only be called inside BuildKernel()";
+  return *tls_builder;
+}
+
+BuilderScope::BuilderScope(mlir::ImplicitLocOpBuilder* builder)
+    : prev_(tls_builder) {
+  tls_builder = builder;
+}
+
+BuilderScope::~BuilderScope() { tls_builder = prev_; }
+
+mlir::Type ToMlirType(DType dtype, mlir::MLIRContext* ctx) {
+  switch (dtype.kind()) {
+    case DType::Kind::kInvalid:
+      ABSL_CHECK(false) << "Invalid DType";  // CRASH_OK
+      return mlir::Type();
+    case DType::Kind::kBool:
+      return mlir::IntegerType::get(ctx, 1);
+    case DType::Kind::kI8:
+      return mlir::IntegerType::get(ctx, 8);
+    case DType::Kind::kI16:
+      return mlir::IntegerType::get(ctx, 16);
+    case DType::Kind::kI32:
+      return mlir::IntegerType::get(ctx, 32);
+    case DType::Kind::kI64:
+      return mlir::IntegerType::get(ctx, 64);
+    case DType::Kind::kF16:
+      return mlir::Float16Type::get(ctx);
+    case DType::Kind::kBF16:
+      return mlir::BFloat16Type::get(ctx);
+    case DType::Kind::kF32:
+      return mlir::Float32Type::get(ctx);
+  }
+}
+
+mlir::Type ToMlirType(DType dtype) {
+  return ToMlirType(dtype, CurrentBuilder().getContext());
+}
+
+DType FromMlirType(mlir::Type type) {
+  if (!type) return DType();
+  if (type.isF32()) return Float32Type();
+  if (type.isBF16()) return BFloat16Type();
+  if (type.isF16()) return Float16Type();
+  if (type.isInteger(1)) return BoolType();
+  if (type.isInteger(8)) return Int8Type();
+  if (type.isInteger(16)) return Int16Type();
+  if (type.isInteger(32)) return Int32Type();
+  if (type.isInteger(64)) return Int64Type();
+  ABSL_CHECK(false) << "Unsupported MLIR element type in KILN";  // CRASH_OK
+  return DType();
+}
+
+mlir::TypedAttr LiteralToAttr(mlir::ImplicitLocOpBuilder& b, DType dtype,
+                              Literal literal) {
+  mlir::Type mlir_type = ToMlirType(dtype, b.getContext());
+  if (dtype.IsFloat()) {
+    return b.getFloatAttr(mlir_type, literal.AsDouble());
+  }
+  // Integer or boolean.
+  return b.getIntegerAttr(mlir_type, literal.AsInt());
+}
+
+mlir::Value EmitCast(mlir::Value value, DType source, DType target) {
+  if (source == target) {
+    return value;
+  }
+
+  mlir::ImplicitLocOpBuilder& b = CurrentBuilder();
+  mlir::Type dst_mlir_type = WithElementType(value.getType(), target);
+  const unsigned src_bits = source.GetIntOrFloatBitWidth();
+  const unsigned dst_bits = target.GetIntOrFloatBitWidth();
+  if (source.IsFloat() && target.IsFloat()) {
+    ABSL_CHECK_NE(src_bits, dst_bits) << "Unsupported float cast";  // CRASH_OK
+    if (src_bits < dst_bits) {
+      return mlir::arith::ExtFOp::create(b, dst_mlir_type, value);
+    }
+    // src_bits > dst_bits
+    return mlir::arith::TruncFOp::create(b, dst_mlir_type, value);
+  }
+  if (source.IsFloat()) {
+    if (target.IsBool()) {
+      return mlir::arith::CmpFOp::create(
+          b, mlir::arith::CmpFPredicate::UNE, value,
+          mlir::arith::ConstantOp::create(b, b.getZeroAttr(value.getType())));
+    }
+    return mlir::arith::FPToSIOp::create(b, dst_mlir_type, value);
+  }
+  if (target.IsFloat()) {
+    if (source.IsBool()) {
+      return mlir::arith::UIToFPOp::create(b, dst_mlir_type, value);
+    }
+    return mlir::arith::SIToFPOp::create(b, dst_mlir_type, value);
+  }
+  // From this point, both source and target are non-floats.
+  if (src_bits < dst_bits) {
+    if (source.IsBool()) {
+      return mlir::arith::ExtUIOp::create(b, dst_mlir_type, value);
+    }
+    return mlir::arith::ExtSIOp::create(b, dst_mlir_type, value);
+  }
+  if (target.IsBool()) {
+    return mlir::arith::CmpIOp::create(
+        b, mlir::arith::CmpIPredicate::ne, value,
+        mlir::arith::ConstantOp::create(b, b.getZeroAttr(value.getType())));
+  }
+  return mlir::arith::TruncIOp::create(b, dst_mlir_type, value);
+}
+
+mlir::Value EmitBitcast(mlir::Value value, DType source, DType target) {
+  if (source == target) {
+    return value;
+  }
+  ABSL_CHECK(source.IsIntOrFloat() && target.IsIntOrFloat())  // CRASH_OK
+      << "Bitcast() requires integer or floating-point types";
+  ABSL_CHECK_EQ(source.GetIntOrFloatBitWidth(),  // CRASH_OK
+                target.GetIntOrFloatBitWidth())
+      << "Bitcast() requires source and target types to have the same bit "
+         "width";
+  mlir::ImplicitLocOpBuilder& b = CurrentBuilder();
+  mlir::Type dst_mlir_type = WithElementType(value.getType(), target);
+  return mlir::arith::BitcastOp::create(b, dst_mlir_type, value);
+}
+
+}  // namespace torch_tpu::kiln::internal
