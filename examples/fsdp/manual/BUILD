@@ -27,8 +27,7 @@ torch_tpu_py_test(
         ["exclusive"],
         [],
     ) + [
-        "noasan",  # OOMs even with the highest memory limit.
-        "requires-mem:28g",  # For the *san builds.
+        "nosan",  # *san builds are low-value for this example and cause OOMs.
         "requires-tpu-v5lite:8",
     ],
     deps = [
