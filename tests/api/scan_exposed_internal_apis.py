@@ -55,6 +55,7 @@ from typing import Any
 from absl import app
 from absl import flags
 from absl import logging
+from tests import repo_paths
 import yaml
 
 
@@ -112,19 +113,29 @@ class Stage(str, enum.Enum):
   DEPRECATED = "Deprecated"
 
 
-_REPO_ROOT = "third_party/py/torch_tpu"
-
 # The label of the binary that updates `exposed_internal_apis.yaml`.
 SCAN_EXPOSED_INTERNAL_APIS_LABEL = (
-    f"//{_REPO_ROOT}/tests/api:scan_exposed_internal_apis"
+    f"//{repo_paths.G3_REPO_PATH}/{repo_paths.SCANNER_PACKAGE}"
+    ":scan_exposed_internal_apis"
 )
 
-# Keep in sync with the `exposed_internal_apis_data` filegroup in BUILD.
+# The directories to scan, relative to the TorchTPU repository root. Keep in
+# sync with the `exposed_internal_apis_data` filegroup in BUILD.
 DEFAULT_SCAN_SUBDIRS: tuple[str, ...] = (
-    "third_party/py/torch_tpu/docs/notebooks",
-    "third_party/py/torch_tpu/docs/source",
-    "third_party/py/torch_tpu/examples",
+    "docs/notebooks",
+    "docs/source",
+    "examples",
 )
+
+# How to update `exposed_internal_apis.yaml`.
+UPDATE_INSTRUCTIONS = f"""\
+To update `{repo_paths.EXPOSED_INTERNAL_APIS_YAML_PATH}`, run this, which writes
+it into your workspace:
+  blaze run {SCAN_EXPOSED_INTERNAL_APIS_LABEL} -- --update_baseline
+Alternatively, open the Sponge link of the test, go to the "Artifacts" tab,
+download `{os.path.basename(repo_paths.EXPOSED_INTERNAL_APIS_YAML_PATH)}`, and
+copy it to the path above, relative to the TorchTPU repository root."""
+
 _TORCH_TPU_NAMESPACES: tuple[str, ...] = (
     "torch.tpu.",
     "torch_tpu.",
@@ -777,8 +788,8 @@ def scan_directories(
     for file_path in discovered_files:
       if repository_root and file_path.startswith(repository_root):
         rel_path = os.path.relpath(file_path, repository_root)
-      elif _REPO_ROOT in file_path:
-        idx = file_path.find(_REPO_ROOT)
+      elif repo_paths.G3_REPO_PATH in file_path:
+        idx = file_path.find(repo_paths.G3_REPO_PATH)
         rel_path = file_path[idx:]
       else:
         rel_path = file_path
@@ -901,14 +912,6 @@ def export_sponge_artifact(
       logging.warning("Failed to export Sponge artifact: %s", error)
 
 
-def get_repository_root() -> str:
-  """Returns the TorchTPU repository root used for file scanning."""
-  workspace_dir = os.environ.get("BUILD_WORKSPACE_DIRECTORY", "")
-  if workspace_dir:
-    return workspace_dir
-  return ""
-
-
 # ==============================================================================
 # Main Execution Entrypoint
 # ==============================================================================
@@ -918,22 +921,19 @@ def main(argv: Sequence[str]) -> None:
   if len(argv) > 1:
     raise app.UsageError("Too many command-line arguments.")
 
-  base_dir = get_repository_root()
-  scan_dirs = [os.path.join(base_dir, d) for d in DEFAULT_SCAN_SUBDIRS]
+  try:
+    root = repo_paths.get_repo_root_in_workspace()
+  except FileNotFoundError as error:
+    raise app.UsageError(
+        f"scan_exposed_internal_apis scans the workspace: {error}"
+    ) from error
+  baseline_path = os.path.join(root, repo_paths.EXPOSED_INTERNAL_APIS_YAML_PATH)
 
-  tt_apis_path = os.path.join(
-      base_dir, "third_party/py/torch_tpu/tests/api/tt_apis.yaml"
-  )
-  baseline_path = os.path.join(
-      base_dir,
-      "third_party/py/torch_tpu/tests/api/exposed_internal_apis.yaml",
-  )
-
+  # `used_in` paths are relative to the google3 root.
   internal_py, internal_env = scan_directories(
-      scan_dirs,
-      tt_apis_path,
-      repository_root=base_dir,
-      include_tests=True,
+      [os.path.join(root, subdir) for subdir in DEFAULT_SCAN_SUBDIRS],
+      os.path.join(root, repo_paths.TT_APIS_YAML_PATH),
+      repository_root=root.removesuffix(repo_paths.G3_REPO_PATH),
   )
 
   yaml_text = format_exposed_internal_apis_yaml(internal_py, internal_env)

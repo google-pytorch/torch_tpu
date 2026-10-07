@@ -41,17 +41,30 @@ torch_tpu_py_library(
     deps = [
         # Imported at run time.
         ":wheel_py_targets",  # build_cleaner: keep
+        "//shims/absl_py:app",
         "//shims/absl_py/flags",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/utils:annotations",
+        "//tests:repo_paths",
         "@pypi//pyyaml",
     ],
 )
 
-# TODO(b/570277416): Run the tests below in OSS only. They are only built in OSS
-# for now, because the scanner only finds the google3 repository root.
+# Updates tt_apis.yaml and docs/markdown/public_apis.md in the workspace. Run it
+# on a TPU host with `blaze run`.
+pytype_strict_binary(
+    name = "scan_tt_apis",
+    srcs = ["scan_tt_apis.py"],
+    main = "scan_tt_apis.py",
+    deps = [
+        ":scan_tt_apis_lib",
+    ],
+)
+
+# TODO(b/570277416): Run tt_apis_test in OSS only, and the other tests below in
+# OSS too.
 torch_tpu_py_test(
     name = "scan_tt_apis_test",
     srcs = ["scan_tt_apis_test.py"],
@@ -76,7 +89,7 @@ torch_tpu_py_test(
         "//csrc:all_cpp_files_recursive",
         "//docs/markdown:public_apis.md",
     ],
-    notest_oss = True,  # NOTEST_OSS_OK=The scanner only finds the google3 repository root.
+    notest_oss = True,  # NOTEST_OSS_OK=repo_paths only finds the google3 layout so far (b/570277416).
     tags = [
         # Must run on TPU hardware for C++ extension to be loaded into memory, enabling memory
         # reflection to discover all public runtime APIs.
@@ -86,6 +99,7 @@ torch_tpu_py_test(
         ":scan_tt_apis_lib",
         "//shims/absl_py/testing:absltest",
         "//src/torch_tpu",
+        "//tests:repo_paths",
         "//tests:seed_test_utils",
         "@pypi//pyyaml",
     ],
@@ -121,6 +135,7 @@ torch_tpu_py_library(
         "//shims/absl_py/flags",
         "//shims/absl_py/logging",
         "//src/torch_tpu",
+        "//tests:repo_paths",
         "@pypi//pyyaml",
     ],
 )
@@ -139,17 +154,17 @@ pytype_strict_binary(
 # environment variables that the docs and examples use. It scans
 # docs/notebooks, docs/source and examples.
 #
-# TODO(b/570277416): Run the tests below in OSS. They are only built in OSS for
-# now, because the scanner only finds the google3 repository root.
+# TODO(b/570277416): Run the tests below in OSS too.
 torch_tpu_py_test(
     name = "exposed_internal_apis_test",
     srcs = ["exposed_internal_apis_test.py"],
     data = [":exposed_internal_apis_data"],
-    notest_oss = True,  # NOTEST_OSS_OK=The scanner only finds the google3 repository root.
+    notest_oss = True,  # NOTEST_OSS_OK=repo_paths only finds the google3 layout so far (b/570277416).
     deps = [
         ":scan_exposed_internal_apis_lib",
         "//shims/absl_py/testing:absltest",
         "//src/torch_tpu",
+        "//tests:repo_paths",
         "//tests:seed_test_utils",
         "@pypi//pyyaml",
     ],
@@ -158,7 +173,6 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "scan_exposed_internal_apis_test",
     srcs = ["scan_exposed_internal_apis_test.py"],
-    data = [":exposed_internal_apis_data"],
     notest_oss = True,  # NOTEST_OSS_OK=The scanner only finds the google3 repository root.
     deps = [
         ":scan_exposed_internal_apis_lib",

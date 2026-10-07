@@ -25,30 +25,23 @@ APIs, `docs/markdown/public_apis.md`, is up to date.
 """
 
 import difflib
-import functools
 import os
 from typing import Any, Dict, FrozenSet, List, Tuple
 
 from absl.testing import absltest
+from tests import repo_paths
 from tests import seed_test_utils
 from tests.api import scan_tt_apis
 import yaml
 
-_BASELINE_PATH = os.path.join(os.path.dirname(__file__), "tt_apis.yaml")
+# The paths below are relative to the TorchTPU repository root.
+_OWNERS_PATH = "tests/api/OWNERS"
 
-_OWNERS_PATH = "third_party/py/torch_tpu/tests/api/OWNERS"
+_API_DESIGN_GUIDE_PATH = "docs/developers/api_design_guide.md"
 
-_API_DESIGN_GUIDE_PATH = (
-    "third_party/py/torch_tpu/docs/developers/api_design_guide.md"
-)
+_PYTHON_STAGE_ANNOTATIONS_PATH = "_internal/utils/annotations.py"
 
-_PYTHON_STAGE_ANNOTATIONS_PATH = (
-    "third_party/py/torch_tpu/_internal/utils/annotations.py"
-)
-
-_CPP_STAGE_ANNOTATIONS_PATH = (
-    "third_party/py/torch_tpu/csrc/common/symbol_stage.h"
-)
+_CPP_STAGE_ANNOTATIONS_PATH = "csrc/common/symbol_stage.h"
 
 # API names must not contain this word in any case; stage annotations mark
 # experimental APIs instead.
@@ -58,21 +51,7 @@ _UPDATE_INSTRUCTIONS = f"""\
 Any change (addition, deletion, or modification) to TorchTPU public APIs needs
 approval from the `tt_apis.yaml` owners listed in `{_OWNERS_PATH}`.
 
-To update the baseline:
-  1. Run `blaze test {scan_tt_apis.TT_APIS_TEST_LABEL}`.
-  2. Open the Sponge link, go to the "Artifacts" tab, and download
-     `tt_apis.yaml`.
-  3. Copy it to `third_party/py/torch_tpu/tests/api/tt_apis.yaml` and get
-     approval from the `tt_apis.yaml` owners listed in `{_OWNERS_PATH}`."""
-
-_PUBLIC_APIS_MD_PATH = scan_tt_apis.get_public_apis_md_path()
-
-_PUBLIC_APIS_MD_UPDATE_INSTRUCTIONS = f"""\
-To update it:
-  1. Run `blaze test {scan_tt_apis.TT_APIS_TEST_LABEL}`.
-  2. Open the Sponge link, go to the "Artifacts" tab, and download
-     `{scan_tt_apis.PUBLIC_APIS_MD}`.
-  3. Copy it to `{_PUBLIC_APIS_MD_PATH}`."""
+{scan_tt_apis.UPDATE_INSTRUCTIONS}"""
 
 # The public Python API paths outside `scan_tt_apis.PUBLIC_NAMESPACES` that
 # predate the namespace rule. Property accessors are listed without their
@@ -152,20 +131,19 @@ def _describe_diff(expected: _ApiMap, actual: _ApiMap) -> List[str]:
   return lines
 
 
-@functools.cache
-def _discover_all_apis() -> List[scan_tt_apis.ApiEntry]:
-  """Discovers all TorchTPU APIs once per test process.
-
-  This must be called from a test rather than `setUpClass`: discovery probes
-  `torch.accelerator` APIs at runtime, and the results can depend on the RNG
-  state that `RepeatableTest.setUp` sets (e.g. for `initial_seed`).
-
-  Returns:
-    All discovered API items.
-  """
-  return scan_tt_apis.discover_all_apis(scan_tt_apis.get_repository_root())
+def _read_from_runfiles(relative_path: str) -> str:
+  """Returns the text of a file relative to the repository root in runfiles."""
+  with open(
+      os.path.join(repo_paths.get_repo_root_in_runfiles(), relative_path),
+      encoding="utf-8",
+  ) as file:
+    return file.read()
 
 
+# The tests call `scan_tt_apis.discover_all_apis` themselves, not in
+# `setUpClass`: discovery probes `torch.accelerator` APIs at runtime, and the
+# results can depend on the RNG state that `RepeatableTest.setUp` sets (e.g. for
+# `initial_seed`).
 class TtApisTest(seed_test_utils.RepeatableTest):
 
   public_python_apis: List[scan_tt_apis.ApiEntry]
@@ -176,15 +154,16 @@ class TtApisTest(seed_test_utils.RepeatableTest):
     cls.public_python_apis, _ = scan_tt_apis.discover_python_apis()
 
   def test_tt_apis_yaml_matches_discovered_apis(self):
-    all_items = _discover_all_apis()
+    all_items = scan_tt_apis.discover_all_apis(
+        repo_paths.get_repo_root_in_runfiles()
+    )
     actual_text = scan_tt_apis.format_tt_apis_yaml(
         all_items, scan_tt_apis.find_duplicated_exports(all_items)
     )
     # Export the up-to-date baseline so it can be downloaded from Sponge.
     scan_tt_apis.export_tt_apis_artifact(actual_text)
 
-    with open(_BASELINE_PATH, encoding="utf-8") as baseline_file:
-      expected_text = baseline_file.read()
+    expected_text = _read_from_runfiles(repo_paths.TT_APIS_YAML_PATH)
 
     if actual_text == expected_text:
       return
@@ -206,11 +185,11 @@ class TtApisTest(seed_test_utils.RepeatableTest):
     )
 
   def test_public_apis_md_matches_discovered_apis(self):
-    with open(_PUBLIC_APIS_MD_PATH, encoding="utf-8") as md_file:
-      expected_text = md_file.read()
+    expected_text = _read_from_runfiles(repo_paths.PUBLIC_APIS_MD_PATH)
 
     actual_text = scan_tt_apis.update_public_apis_md(
-        expected_text, _discover_all_apis()
+        expected_text,
+        scan_tt_apis.discover_all_apis(repo_paths.get_repo_root_in_runfiles()),
     )
     # Export the up-to-date file so it can be downloaded from Sponge.
     scan_tt_apis.export_tt_apis_artifact(
@@ -223,16 +202,16 @@ class TtApisTest(seed_test_utils.RepeatableTest):
     diff_lines = difflib.unified_diff(
         expected_text.splitlines(),
         actual_text.splitlines(),
-        fromfile=_PUBLIC_APIS_MD_PATH,
+        fromfile=repo_paths.PUBLIC_APIS_MD_PATH,
         tofile="generated",
         lineterm="",
     )
     self.fail(
-        f"{_PUBLIC_APIS_MD_PATH} does not match the TorchTPU public APIs"
-        " discovered by scan_tt_apis.py.\n\n"
+        f"{repo_paths.PUBLIC_APIS_MD_PATH} does not match the TorchTPU"
+        " public APIs discovered by scan_tt_apis.py.\n\n"
         + "\n".join(diff_lines)
         + "\n\n"
-        + _PUBLIC_APIS_MD_UPDATE_INSTRUCTIONS
+        + _UPDATE_INSTRUCTIONS
     )
 
   def test_public_python_apis_are_in_public_namespaces(self):
@@ -270,8 +249,9 @@ class TtApisTest(seed_test_utils.RepeatableTest):
             self.public_python_apis
         )
     }
-    with open(_BASELINE_PATH, encoding="utf-8") as baseline_file:
-      baseline = _parse_tt_apis_yaml(baseline_file.read())
+    baseline = _parse_tt_apis_yaml(
+        _read_from_runfiles(repo_paths.TT_APIS_YAML_PATH)
+    )
     tracked = {
         tuple(sorted([name, *attributes["also_exported_as"]]))
         for (category, name), attributes in baseline.items()
@@ -319,7 +299,9 @@ class TtApisTest(seed_test_utils.RepeatableTest):
     # the API's stage changes, so the stage must come from an annotation.
     offending = sorted(
         f"{api.name} [{api.category}]"
-        for api in _discover_all_apis()
+        for api in scan_tt_apis.discover_all_apis(
+            repo_paths.get_repo_root_in_runfiles()
+        )
         if _EXPERIMENTAL_WORD in api.name.lower()
     )
     if offending:

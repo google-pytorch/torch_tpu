@@ -46,13 +46,13 @@ It uses a dual-strategy approach to discover and categorize APIs:
 `tt_apis_test` compares the results with the checked-in files and exports the
 up-to-date files as Sponge test artifacts.
 
-TO UPDATE BASELINE (tt_apis.yaml and public_apis.md):
-  1. Run `blaze test` on the `tests/api:tt_apis_test` target of TorchTPU.
-  2. Open the Sponge link printed in the test output and navigate to the
-     "Artifacts" tab.
-  3. Download `tt_apis.yaml` and copy it to
-     `third_party/py/torch_tpu/tests/api/` in your workspace. Download
-     `public_apis.md` and copy it to `third_party/py/torch_tpu/docs/markdown/`.
+The source code scan and both files are relative to the TorchTPU repository
+root, which `repo_paths.get_repo_root_in_runfiles` locates in the runfiles.
+
+TO UPDATE BASELINE (tt_apis.yaml and public_apis.md), `blaze run` the
+`tests/api:scan_tt_apis` target of TorchTPU on a TPU host. It writes both files
+directly into your workspace. Alternatively, copy the files from the "Artifacts"
+tab of the Sponge link of `tt_apis_test`.
 """
 
 import ast
@@ -71,20 +71,27 @@ import typing
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 import warnings
 
+from absl import app
 from absl import flags
 from absl import logging
 import torch
 import torch_tpu
 from torch_tpu._internal.utils import annotations
+from tests import repo_paths
 import yaml
 
 Stage = annotations.Stage
 
-_REPO_ROOT = "third_party/py/torch_tpu"
-
 # The label of `tt_apis_test`, whose Sponge artifacts are the up-to-date
 # `tt_apis.yaml` and `public_apis.md`.
-TT_APIS_TEST_LABEL = f"//{_REPO_ROOT}/tests/api:tt_apis_test"
+TT_APIS_TEST_LABEL = (
+    f"//{repo_paths.G3_REPO_PATH}/{repo_paths.SCANNER_PACKAGE}:tt_apis_test"
+)
+
+# The label of the binary that updates `tt_apis.yaml` and `public_apis.md`.
+SCAN_TT_APIS_LABEL = (
+    f"//{repo_paths.G3_REPO_PATH}/{repo_paths.SCANNER_PACKAGE}:scan_tt_apis"
+)
 
 # Exclude build output, test, documentation, and tooling directories
 EXCLUDED_DIRS: Set[str] = {
@@ -1261,7 +1268,7 @@ def _assigned_self_attributes(
     return []
   self_name = positional[0].arg
 
-  marker = f"{_REPO_ROOT}/"
+  marker = f"{repo_paths.G3_REPO_PATH}/"
   if marker in source_file:
     source_file = source_file[source_file.rindex(marker) + len(marker) :]
 
@@ -1879,17 +1886,59 @@ def export_tt_apis_artifact(text: str, filename: str = "tt_apis.yaml") -> None:
       logging.warning("Failed to export Sponge artifact: %s", error)
 
 
-def get_repository_root() -> str:
-  """Returns the TorchTPU repository root used for source code scanning."""
-  workspace_dir = os.environ.get("BUILD_WORKSPACE_DIRECTORY", "")
-  if workspace_dir:
-    return os.path.join(workspace_dir, _REPO_ROOT)
-  return _REPO_ROOT
+# How to update `tt_apis.yaml` and `public_apis.md`.
+UPDATE_INSTRUCTIONS = f"""\
+To update `{repo_paths.TT_APIS_YAML_PATH}` and
+`{repo_paths.PUBLIC_APIS_MD_PATH}`, run this on a TPU host, which writes them
+into your workspace:
+  blaze run {SCAN_TT_APIS_LABEL}
+Alternatively, open the Sponge link of `{TT_APIS_TEST_LABEL}`, go to the
+"Artifacts" tab, download `{os.path.basename(repo_paths.TT_APIS_YAML_PATH)}`
+and `{PUBLIC_APIS_MD}`, and copy them to the paths above, relative to the
+TorchTPU repository root."""
 
 
-def get_public_apis_md_path() -> str:
-  """Returns the path of `public_apis.md`."""
-  return os.path.join(get_repository_root(), "docs", "markdown", PUBLIC_APIS_MD)
+def find_out_of_date_baseline_files(
+    repository_root: str, all_items: Sequence[ApiEntry]
+) -> Dict[str, str]:
+  """Returns the up-to-date `tt_apis.yaml` and `public_apis.md`, if they changed.
+
+  Args:
+      repository_root: The TorchTPU repository root that has the current files.
+      all_items: API entries, e.g. from `discover_all_apis`.
+
+  Returns:
+      The up-to-date text of each out-of-date file, keyed by its path relative
+      to `repository_root`. A file that is already up to date is omitted.
+  """
+  items = list(all_items)
+
+  def _read(relative_path: str) -> str:
+    with open(
+        os.path.join(repository_root, relative_path), encoding="utf-8"
+    ) as current_file:
+      return current_file.read()
+
+  current = {
+      relative_path: _read(relative_path)
+      for relative_path in (
+          repo_paths.TT_APIS_YAML_PATH,
+          repo_paths.PUBLIC_APIS_MD_PATH,
+      )
+  }
+  generated = {
+      repo_paths.TT_APIS_YAML_PATH: format_tt_apis_yaml(
+          items, find_duplicated_exports(items)
+      ),
+      repo_paths.PUBLIC_APIS_MD_PATH: update_public_apis_md(
+          current[repo_paths.PUBLIC_APIS_MD_PATH], items
+      ),
+  }
+  return {
+      relative_path: text
+      for relative_path, text in generated.items()
+      if current[relative_path] != text
+  }
 
 
 def discover_all_apis(repository_root: str) -> List[ApiEntry]:
@@ -1918,3 +1967,37 @@ def discover_all_apis(repository_root: str) -> List[ApiEntry]:
       + cpp_flags
       + custom_ops
   )
+
+
+def main(argv: Sequence[str]) -> None:
+  """Writes the up-to-date `tt_apis.yaml` and `public_apis.md` into the workspace.
+
+  Args:
+      argv: The command line arguments, which must only be the program name.
+
+  Raises:
+      app.UsageError: If there are extra arguments, or if this doesn't run with
+        `blaze run`, which tells the workspace to update.
+  """
+  if len(argv) > 1:
+    raise app.UsageError("Too many command-line arguments.")
+  try:
+    root = repo_paths.get_repo_root_in_workspace()
+  except FileNotFoundError as error:
+    raise app.UsageError(
+        f"scan_tt_apis writes into the workspace: {error}"
+    ) from error
+  out_of_date = find_out_of_date_baseline_files(root, discover_all_apis(root))
+  for relative_path, text in out_of_date.items():
+    with open(
+        os.path.join(root, relative_path), "w", encoding="utf-8"
+    ) as output_file:
+      output_file.write(text)
+  if out_of_date:
+    print("Updated:\n" + "\n".join(f"  {path}" for path in out_of_date))
+  else:
+    print("tt_apis.yaml and public_apis.md are up to date.")
+
+
+if __name__ == "__main__":
+  app.run(main)

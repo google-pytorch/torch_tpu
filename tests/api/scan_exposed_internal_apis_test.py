@@ -384,53 +384,6 @@ class ScanExposedInternalApisTest(absltest.TestCase):  # ABSLTEST_OK=tool test
     self.assertEqual(py_stages, {"torch.tpu.op": Stage.EXPERIMENTAL})
     self.assertEqual(env_stages, {})
 
-  def test_exposed_internal_apis_baseline_in_sync(self):
-    """Verifies that the exposed_internal_apis.yaml baseline matches the live scanned sources."""
-    tools_dir = os.path.dirname(os.path.abspath(__file__))
-    baseline_path = os.path.join(tools_dir, "exposed_internal_apis.yaml")
-    tt_apis_path = os.path.join(tools_dir, "tt_apis.yaml")
-
-    test_srcdir = os.environ.get("TEST_SRCDIR")
-    if test_srcdir:
-      repo_root = os.path.join(test_srcdir, "google3")
-    else:
-      repo_root = os.path.abspath(os.path.join(tools_dir, "../../../../.."))
-
-    scan_dirs = [
-        os.path.join(repo_root, subdir)
-        for subdir in scan_exposed_internal_apis.DEFAULT_SCAN_SUBDIRS
-    ]
-
-    self.assertTrue(
-        os.path.exists(baseline_path), f"Baseline not found: {baseline_path}"
-    )
-    self.assertTrue(
-        os.path.exists(tt_apis_path), f"tt_apis.yaml not found: {tt_apis_path}"
-    )
-    for scan_dir in scan_dirs:
-      self.assertTrue(
-          os.path.exists(scan_dir), f"Scan directory not found: {scan_dir}"
-      )
-
-    internal_py, internal_env = scan_exposed_internal_apis.scan_directories(
-        scan_dirs, tt_apis_path, repository_root=repo_root
-    )
-    current_yaml = scan_exposed_internal_apis.format_exposed_internal_apis_yaml(
-        internal_py, internal_env
-    )
-    scan_exposed_internal_apis.export_sponge_artifact(current_yaml)
-
-    with open(baseline_path, "r", encoding="utf-8") as f:
-      golden_yaml = f.read()
-
-    self.assertEqual(
-        current_yaml.strip(),
-        golden_yaml.strip(),
-        "Internal APIs baseline changed! Update baseline with: blaze run"
-        f" {scan_exposed_internal_apis.SCAN_EXPOSED_INTERNAL_APIS_LABEL} --"
-        " --update_baseline",
-    )
-
 
 if __name__ == "__main__":
   absltest.main()

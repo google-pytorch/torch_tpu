@@ -24,28 +24,20 @@ import os
 from typing import Any
 
 from absl.testing import absltest
+from tests import repo_paths
 from tests import seed_test_utils
 from tests.api import scan_exposed_internal_apis
 import yaml
 
-_BASELINE_PATH = os.path.join(
-    os.path.dirname(__file__), "exposed_internal_apis.yaml"
-)
-_TT_APIS_PATH = os.path.join(os.path.dirname(__file__), "tt_apis.yaml")
-_OWNERS_PATH = "third_party/py/torch_tpu/tests/api/OWNERS"
+# Relative to the TorchTPU repository root.
+_OWNERS_PATH = "tests/api/OWNERS"
 
 _UPDATE_INSTRUCTIONS = f"""\
 Any change (addition, deletion, or modification) to TorchTPU internal APIs or
 environment variables exposed in documentation and examples needs approval from
 the `exposed_internal_apis.yaml` owners listed in `{_OWNERS_PATH}`.
 
-To update the baseline:
-  1. Run `blaze run {scan_exposed_internal_apis.SCAN_EXPOSED_INTERNAL_APIS_LABEL} -- --update_baseline`
-     (or open the Sponge link of this test, go to the "Artifacts" tab, and download
-     `exposed_internal_apis.yaml`).
-  2. Copy it to `third_party/py/torch_tpu/tests/api/exposed_internal_apis.yaml`
-     and get approval from the `exposed_internal_apis.yaml` owners listed in `{_OWNERS_PATH}`.
-"""
+{scan_exposed_internal_apis.UPDATE_INSTRUCTIONS}"""
 
 
 def _parse_exposed_internal_apis_yaml(
@@ -107,33 +99,29 @@ def _describe_diff(
 class ExposedInternalApisTest(seed_test_utils.RepeatableTest):
 
   def test_exposed_internal_apis_matches_scanned_code(self):
-    test_srcdir = os.environ.get("TEST_SRCDIR")
-    if test_srcdir:
-      repo_root = os.path.join(test_srcdir, "google3")
-    else:
-      repo_root = os.path.abspath(
-          os.path.join(os.path.dirname(__file__), "../../../../..")
-      )
-
-    scan_dirs = [
-        os.path.join(repo_root, subdir)
-        for subdir in scan_exposed_internal_apis.DEFAULT_SCAN_SUBDIRS
-    ]
-
-    self.assertTrue(
-        os.path.exists(_BASELINE_PATH), f"Baseline not found: {_BASELINE_PATH}"
+    root = repo_paths.get_repo_root_in_runfiles()
+    baseline_path = os.path.join(
+        root, repo_paths.EXPOSED_INTERNAL_APIS_YAML_PATH
     )
+    tt_apis_path = os.path.join(root, repo_paths.TT_APIS_YAML_PATH)
+    # The loader silently ignores a missing `tt_apis.yaml`.
     self.assertTrue(
-        os.path.exists(_TT_APIS_PATH),
-        f"tt_apis.yaml not found: {_TT_APIS_PATH}",
+        os.path.exists(tt_apis_path), f"tt_apis.yaml not found: {tt_apis_path}"
     )
-    for scan_dir in scan_dirs:
+    for subdir in scan_exposed_internal_apis.DEFAULT_SCAN_SUBDIRS:
+      scan_dir = os.path.join(root, subdir)
       self.assertTrue(
           os.path.exists(scan_dir), f"Scan directory not found: {scan_dir}"
       )
 
+    # `used_in` paths are relative to the google3 root.
     internal_py, internal_env = scan_exposed_internal_apis.scan_directories(
-        scan_dirs, _TT_APIS_PATH, repository_root=repo_root
+        [
+            os.path.join(root, subdir)
+            for subdir in scan_exposed_internal_apis.DEFAULT_SCAN_SUBDIRS
+        ],
+        tt_apis_path,
+        repository_root=root.removesuffix(repo_paths.G3_REPO_PATH),
     )
     actual_text = scan_exposed_internal_apis.format_exposed_internal_apis_yaml(
         internal_py, internal_env
@@ -141,7 +129,7 @@ class ExposedInternalApisTest(seed_test_utils.RepeatableTest):
     # Export up-to-date baseline so it can be downloaded from Sponge.
     scan_exposed_internal_apis.export_sponge_artifact(actual_text)
 
-    with open(_BASELINE_PATH, "r", encoding="utf-8") as f:
+    with open(baseline_path, "r", encoding="utf-8") as f:
       expected_text = f.read()
 
     if actual_text.strip() == expected_text.strip():
