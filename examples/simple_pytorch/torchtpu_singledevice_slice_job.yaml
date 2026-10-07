@@ -1,0 +1,80 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Public Reference Kubernetes Job manifest for single-device PyTorch Tensor Parallel execution on TPU v7x
+# Slice topology: 2x2x1 (1 physical VM / 4 TPU chips / 8 addressable TPU devices)
+##
+# Placeholder variables to customize:
+# - <NODEPOOL_NAME>: Name of your GKE 4-chip TPU node pool (e.g. your-v7x-4chip-nodepool).
+# - <DOCKER_IMAGE>: URI of your TorchTPU Docker image in Artifact Registry.
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: torchtpu-singledevice-1chip-job
+  namespace: default
+  labels:
+    kueue.x-k8s.io/queue-name: multislice-queue
+spec:
+  template:
+    metadata:
+      labels:
+        google.com/tpu: "Exists"
+        kueue.x-k8s.io/queue-name: multislice-queue
+      annotations:
+        cloud.google.com/gke-tpu-slice-topology: 2x2x1
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      restartPolicy: Never
+      nodeSelector:
+        cloud.google.com/gke-nodepool: <NODEPOOL_NAME>
+        cloud.google.com/gke-tpu-accelerator: tpu7x
+        cloud.google.com/gke-tpu-topology: 2x2x1
+      tolerations:
+      - key: "google.com/tpu"
+        operator: "Exists"
+      containers:
+      - name: tpu-container
+        image: <DOCKER_IMAGE>
+        imagePullPolicy: Always
+        securityContext:
+          privileged: true
+        env:
+        - name: TORCH_TPU_TOPOLOGY
+          value: "1,1,1,1"
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -ex
+          export PYTHONUNBUFFERED=1
+          export TPU_LAUNCH_BLOCKING=1
+          export ABSL_LOGGING_MIN_LOG_LEVEL=0
+          echo "=== Starting Single-Device 1-Chip, 1-Device TPU v7x Workload ==="
+          cd /workspace/examples/simple_pytorch/
+          python3 ./simple_pytorch.py
+          echo "=== Single-Host single-device Workload Completed Successfully ==="
+        resources:
+          limits:
+            google.com/tpu: 4
+          requests:
+            google.com/tpu: 4
+        volumeMounts:
+        - mountPath: /dev/shm
+          name: dshm
+      volumes:
+      - emptyDir:
+          medium: Memory
+        name: dshm

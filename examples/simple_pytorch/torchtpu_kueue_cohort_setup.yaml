@@ -1,0 +1,361 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Public Reference Kueue Cohort Setup manifest for GKE TPU v7x (Trillium) clusters.
+#
+# Purpose:
+# 1. Defines an 80-chip shared reservation cohort (cohortName: tpu-shared-reservation) across five heterogeneous
+#    TPU slice topologies: 4-chip (2x2x1), 8-chip (2x2x2), 16-chip (2x2x4), 32-chip (2x4x4), and 64-chip (4x4x4).
+# 2. Configures nominalQuota: 80 for each ResourceFlavor, allowing workloads across different slice sizes to borrow
+#    from the shared pool while protecting against GKE autoscaler quota exhaustion.
+# 3. Uses small-to-large best-fit flavor ordering in universal ClusterQueue tpu-cluster-queue to pack smaller jobs
+#    and protect large multi-node (64-chip) slice availability.
+# 4. Configures Kubernetes PriorityClasses (high, medium, low, lowest) to manage preemption and queuing priority.
+# 5. Establishes LocalQueue lq and multislice-queue as universal default entrypoint queues for XPK workloads and
+#    standard Kubernetes jobs. Workloads submitted with label kueue.x-k8s.io/queue-name: lq are automatically
+#    admitted into ClusterQueue tpu-cluster-queue and routed to the matching ResourceFlavor based on nodeSelector
+#    topology labels.
+#
+# Placeholder variables to customize:
+# - <NODEPOOL_NAME>: Name of your GKE 4-chip TPU node pool (e.g. your-v7x-4chip-nodepool).
+
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: high
+value: 100000
+globalDefault: false
+description: "High priority for critical TorchTPU benchmarks and verification runs."
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: medium
+value: 50000
+globalDefault: true
+description: "Default priority for general TorchTPU interactive development and testing."
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: low
+value: 10000
+globalDefault: false
+description: "Low priority for background exploratory jobs."
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: lowest
+value: 1000
+globalDefault: false
+description: "Lowest priority for preemptible or opportunistic runs."
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: rf-4chip
+spec:
+  nodeLabels:
+    cloud.google.com/gke-nodepool: <NODEPOOL_NAME>
+    cloud.google.com/gke-tpu-accelerator: tpu7x
+    cloud.google.com/gke-tpu-topology: 2x2x1
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: rf-8chip
+spec:
+  nodeLabels:
+    cloud.google.com/gke-tpu-accelerator: tpu7x
+    cloud.google.com/gke-tpu-topology: 2x2x2
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: rf-16chip
+spec:
+  nodeLabels:
+    cloud.google.com/gke-tpu-accelerator: tpu7x
+    cloud.google.com/gke-tpu-topology: 2x2x4
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: rf-32chip
+spec:
+  nodeLabels:
+    cloud.google.com/gke-tpu-accelerator: tpu7x
+    cloud.google.com/gke-tpu-topology: 2x4x4
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: rf-64chip
+spec:
+  nodeLabels:
+    cloud.google.com/gke-nodepool: <YOUR_64CHIP_NODEPOOL_NAME>
+    cloud.google.com/gke-tpu-accelerator: tpu7x
+    cloud.google.com/gke-tpu-topology: 4x4x4
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: tpu7x-rf
+spec:
+  nodeLabels:
+    cloud.google.com/gke-tpu-accelerator: tpu7x
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: tpu-cluster-queue
+spec:
+  cohortName: tpu-shared-reservation
+  flavorFungibility:
+    whenCanBorrow: MayStopSearch
+    whenCanPreempt: TryNextFlavor
+  namespaceSelector: {}
+  preemption:
+    borrowWithinCohort:
+      policy: Never
+    reclaimWithinCohort: Never
+    withinClusterQueue: Never
+  queueingStrategy: BestEffortFIFO
+  resourceGroups:
+  - coveredResources:
+    - google.com/tpu
+    # Small-to-large best-fit packing to protect the 64-chip slice:
+    flavors:
+    - name: rf-4chip
+      resources:
+      - borrowingLimit: 80
+        name: google.com/tpu
+        nominalQuota: 80
+    - name: rf-8chip
+      resources:
+      - borrowingLimit: 80
+        name: google.com/tpu
+        nominalQuota: 80
+    - name: rf-16chip
+      resources:
+      - borrowingLimit: 80
+        name: google.com/tpu
+        nominalQuota: 80
+    - name: rf-32chip
+      resources:
+      - borrowingLimit: 80
+        name: google.com/tpu
+        nominalQuota: 80
+    - name: rf-64chip
+      resources:
+      - borrowingLimit: 80
+        name: google.com/tpu
+        nominalQuota: 80
+  stopPolicy: None
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: cq-4chip
+spec:
+  cohortName: tpu-shared-reservation
+  flavorFungibility:
+    whenCanBorrow: MayStopSearch
+    whenCanPreempt: TryNextFlavor
+  namespaceSelector: {}
+  preemption:
+    borrowWithinCohort:
+      policy: Never
+    reclaimWithinCohort: Never
+    withinClusterQueue: Never
+  queueingStrategy: BestEffortFIFO
+  resourceGroups:
+  - coveredResources:
+    - google.com/tpu
+    flavors:
+    - name: rf-4chip
+      resources:
+      - name: google.com/tpu
+        nominalQuota: 80
+  stopPolicy: None
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: cq-8chip
+spec:
+  cohortName: tpu-shared-reservation
+  flavorFungibility:
+    whenCanBorrow: MayStopSearch
+    whenCanPreempt: TryNextFlavor
+  namespaceSelector: {}
+  preemption:
+    borrowWithinCohort:
+      policy: Never
+    reclaimWithinCohort: Never
+    withinClusterQueue: Never
+  queueingStrategy: BestEffortFIFO
+  resourceGroups:
+  - coveredResources:
+    - google.com/tpu
+    flavors:
+    - name: rf-8chip
+      resources:
+      - name: google.com/tpu
+        nominalQuota: 80
+  stopPolicy: None
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: cq-16chip
+spec:
+  cohortName: tpu-shared-reservation
+  flavorFungibility:
+    whenCanBorrow: MayStopSearch
+    whenCanPreempt: TryNextFlavor
+  namespaceSelector: {}
+  preemption:
+    borrowWithinCohort:
+      policy: Never
+    reclaimWithinCohort: Never
+    withinClusterQueue: Never
+  queueingStrategy: BestEffortFIFO
+  resourceGroups:
+  - coveredResources:
+    - google.com/tpu
+    flavors:
+    - name: rf-16chip
+      resources:
+      - name: google.com/tpu
+        nominalQuota: 80
+  stopPolicy: None
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: cq-32chip
+spec:
+  cohortName: tpu-shared-reservation
+  flavorFungibility:
+    whenCanBorrow: MayStopSearch
+    whenCanPreempt: TryNextFlavor
+  namespaceSelector: {}
+  preemption:
+    borrowWithinCohort:
+      policy: Never
+    reclaimWithinCohort: Never
+    withinClusterQueue: Never
+  queueingStrategy: BestEffortFIFO
+  resourceGroups:
+  - coveredResources:
+    - google.com/tpu
+    flavors:
+    - name: rf-32chip
+      resources:
+      - name: google.com/tpu
+        nominalQuota: 80
+  stopPolicy: None
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: cq-64chip
+spec:
+  cohortName: tpu-shared-reservation
+  flavorFungibility:
+    whenCanBorrow: MayStopSearch
+    whenCanPreempt: TryNextFlavor
+  namespaceSelector: {}
+  preemption:
+    borrowWithinCohort:
+      policy: Never
+    reclaimWithinCohort: Never
+    withinClusterQueue: Never
+  queueingStrategy: BestEffortFIFO
+  resourceGroups:
+  - coveredResources:
+    - google.com/tpu
+    flavors:
+    - name: rf-64chip
+      resources:
+      - name: google.com/tpu
+        nominalQuota: 80
+  stopPolicy: None
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: multislice-queue
+  namespace: default
+spec:
+  clusterQueue: tpu-cluster-queue
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: lq
+  namespace: default
+spec:
+  clusterQueue: tpu-cluster-queue
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: tpu-4chip-queue
+  namespace: default
+spec:
+  clusterQueue: cq-4chip
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: tpu-8chip-queue
+  namespace: default
+spec:
+  clusterQueue: cq-8chip
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: tpu-16chip-queue
+  namespace: default
+spec:
+  clusterQueue: cq-16chip
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: tpu-32chip-queue
+  namespace: default
+spec:
+  clusterQueue: cq-32chip
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: tpu-64chip-queue
+  namespace: default
+spec:
+  clusterQueue: cq-64chip
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: tpu-queue
+  namespace: default
+spec:
+  clusterQueue: cq-64chip
+

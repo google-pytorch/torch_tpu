@@ -2,77 +2,195 @@
 torch_tpu_version: 0.1.1.dev20260922
 ---
 
-# Get started with TorchTPU
+# GKE TPUv7 example
 
-This tutorial will guide you through your first successful computation on Google
-TPU hardware using the `torch_tpu` backend.
+We can run the same earlier very basic example through GKE. This example is
+stored in github at examples/simple_pytorch/simple_pytorch.py
 
-## 1. Install and set up
+Recent TPUs from v7 onwards are only supported on GKE. Here we assume that you
+have a TPU cluster and node pool already created.
 
-Before running this notebook, ensure you are running on a
-[Google Cloud TPU VM](https://docs.cloud.google.com/tpu/docs/intro-to-tpu?hl=en)
-(e.g., v6e).
+## One-time setup that we can reuse for other GKE examples later.
 
-Install TorchTPU and its dependencies on your TPU VM. Components must be
-installed in this order to ensure the PyTorch dispatcher and TPU drivers align
-correctly.
+\### Check out the TorchTPU repo and set environment variables
 
-### Step 1: Initialize Python 3.12
+Check out the TorchTPU repo to run this tutorial. You need access to the
+kubernetes manifests and optionally the source code from which to build the
+docker image.
 
-```bash
-sudo apt update && sudo apt install -y python3.12 python3.12-venv
-python3.12 -m venv env
-source env/bin/activate
-```
-
-### Step 2: Install TorchTPU and dependencies
+All of the steps in this tutorial rely on the following variables, set them
+accordingly.
 
 ```bash
-# 1. Authenticate to get access to wheel files
-pip install keyrings.google-artifactregistry-auth
-gcloud auth login
-gcloud auth application-default login
-
-# 2. Install torch_tpu, PyTorch 2.11 CPU will install automatically, do not install manually.
-pip install --pre --index-url "https://oauth2accesstoken:$(gcloud auth print-access-token)@us-python.pkg.dev/ml-oss-artifacts-transient/torch-tpu-virtual-registry/simple/" torch_tpu
-
-# 3. Install optional utilities
-pip install portpicker marimo scikit-learn pandas
-
-# 4. Optional for Pallas kernels
-pip install jax
-
-# 5. Optional for xProf
-pip install tensorboard
+ export CLUSTER=<YOUR_CLUSTER_NAME>
+ export ZONE_NAME=<YOUR_ZONE_NAME>
+ export NODEPOOL_NAME=<YOUR_NODEPOOL_NAME>
+ export PROJECT=<YOUR_PROJECT_ID>
+ export TORCH_TPU_SRC=/path/to/torch_tpu
+ export TPU_TYPE=tpu7x-8
+ # Artifact registry to store the docker image.
+ # If you have your own, use it instead, but these default to the nightly build.
+ export ARTIFACT_REGISTRY_URL=us-docker.pkg.dev/ml-oss-artifacts-transient/torch-tpu-docker-container
+ export DOCKER_IMAGE=torch-tpu:nightly-latest
 ```
 
-## 2. Initialize the hardware
+If using a fuse bucket, also setup:
 
-Similar to a CPU or GPU, the TPU backend must be explicitly initialized. This
-registers the "tpu" device string with PyTorch.
+```bash
+ export BUCKET=<YOUR_BUCKET_NAME>
+```
 
-**Note:** This must be called before moving any tensors to the TPU.
+You may need to install the gcloud CLI following instructions at:
+https://docs.cloud.google.com/sdk/docs/install-sdk as well as setting up a
+cluster and node pool.
+
+\### GCloud setup
+
+Configure docker credentials so we can push to artifact registry for GKE to
+consume.
+
+```bash
+ gcloud auth login
+ gcloud auth application-default login
+```
+
+\### Cluster Credentials Setup At this point you may need to install kubectl and
+the gke plugin:
+
+```bash
+ gcloud components install kubectl
+ gcloud components install gke-gloud-auth-plugin
+```
+
+Follow instructions at
+https://docs.cloud.google.com/kubernetes-engine/docs/how-to/cluster-access-for-kubectl#install_plugin
+for more information.
+
+Get cluster credentials to interact with the GKE TPU cluster using `kubectl`:
+
+```bash
+ gcloud container clusters get-credentials ${CLUSTER} --zone=${ZONE_NAME} --project=${PROJECT}
+```
+
+\### GCloud and docker setup
+
+Configure docker credentials so we can push to artifact registry for GKE to
+consume.
+
+```bash
+ gcloud auth configure-docker ${ZONE_NAME}-docker.pkg.dev
+ sudo usermod -aG docker $USER # relaunch the terminal and activate venv
+ newgrp docker
+ docker run hello-world # Test Docker
+```
+
+Follow
+[this tutorial](https://docs.cloud.google.com/artifact-registry/docs/docker/store-docker-container-images)
+to initialize your artifact registry to store this new container image for use
+in GKE (skip if one already exists).
+
+\### [Optional] Build TorchTPU docker
+
+If you want to build the docker image yourself because you have changed torchtpu
+or its examples, follow these instructions. Otherwise skip this section and use
+the pre-built docker image that we defaulted to in the environment variables
+above.
+
+Check out the repo and build it and upload it as follows:
+
+```bash
+ export DOCKER_IMAGE=torch-tpu-local-$USER
+ cd $TORCH_TPU_SRC/docker
+ ./build_image_multistage.sh
+ docker tag torch-tpu:latest ${ARTIFACT_REGISTRY_URL}/${DOCKER_IMAGE}
+ docker push ${ARTIFACT_REGISTRY_URL}/${DOCKER_IMAGE}
+```
+
+\### Submitting Workloads via Kubectl
+
+Workloads are submitted to GKE and managed via Kueue queue admission using
+standard Kubernetes `Job` or `JobSet` manifests. We generally recommend Kueue
+for queueing. TPU jobs because it maps well to the multi-slice structure of TPU
+deployments.
+
+Reference manifests are located in the TorchTPU examples
+`third_party/py/torch_tpu/examples/`.
+
+\### Kueue Cohort Setup
+
+Before submitting workloads to Kueue queues, ensure Kueue ClusterQueues and
+LocalQueues are applied. First we patch the node pool name into the manifest and
+then apply the kueue manifest:
+
+```bash
+ sed -i "s|<NODEPOOL_NAME>|${NODEPOOL_NAME}|g" examples/tensor_parallel/torchtpu_kueue_cohort_setup.yaml
+ kubectl apply -f examples/tensor_parallel/torchtpu_kueue_cohort_setup.yaml
+```
+
+\#### Universal Queue `lq` and Automatic Topology Routing
+
+For seamless compatibility with XPK tools and standard Kubernetes jobs, our
+setup provides a universal default queue named `LocalQueue: lq`.
+
+When you specify `kueue.x-k8s.io/queue-name: lq` in your workload labels:
+
+1.  **Universal Queue**: Workloads are admitted through `LocalQueue lq` into
+    `ClusterQueue tpu-cluster-queue` within `cohort: tpu-shared-reservation`.
+2.  **Automatic Flavor Routing**: Kueue automatically matches your workload's
+    `nodeSelector` topology labels (`cloud.google.com/gke-tpu-topology`) and
+    assigns the correct `ResourceFlavor` (`rf-4chip`, `rf-8chip`, `rf-16chip`,
+    `rf-32chip`, or `rf-64chip`).
+3.  **Automatic Suspension**: Kueue injects `spec.suspend: true` upon submission
+    and removes it (`spec.suspend: false`) once shared cohort quota is reserved.
+
+    ## Single-Host Workload Execution (1-chip / 1-device slice)
+
+    Submit a single-host Kubernetes Job by first updating the manifest with your
+    docker image and node pool name and then launching the job using kubectl.
+
+    This manifest is interesting in a couple of ways. It applies to a single
+    host of 4 v7 TPUs (or 8 cores) so the topology is described as 2x2x1:
+
+    ```yaml
+        cloud.google.com/gke-tpu-slice-topology: 2x2x1
+        ...
+        cloud.google.com/gke-tpu-topology: 2x2x1
+    ```
+
+    and where TorchTPU interprets this as a 1x1x1x1 topology because we will
+    launch with a single process for a single TPU core. We will ignore the other
+    TPU devices on the host:
+
+    ```yaml
+        - name: TORCH_TPU_TOPOLOGY
+          value: "1,1,1,1"
+    ```
+
+    and it runs the simple_pytorch manual code from the docker image:
+
+    ```yaml
+      command:
+        - /bin/bash
+        - -c
+        - |
+          export PYTHONUNBUFFERED=1
+          export TPU_LAUNCH_BLOCKING=1
+          export ABSL_LOGGING_MIN_LOG_LEVEL=0
+          echo "=== Starting Single-Device 1-Chip, 1-Device TPU v7x Workload ==="
+          cd /workspace/examples/simple_pytorch/
+          python3 ./simple_pytorch.py
+          echo "=== Single-Host single-device Workload Completed Successfully ==="
+    ```
+
+    This is a very simple single-device pytorch program, with nothing
+    surprising:
 
 ```python
 import torch
 
 device = torch.device("tpu")  # Change from cuda to tpu
-
 print(f"TPU Initialization complete. Primary device: {device}")
-```
 
-## 3. Work with tensors
-
-Once initialized, you can interact with the TPU much like you would with a GPU.
-You can move existing CPU tensors to the TPU or create new tensors directly on
-the hardware.
-
-You have two standard ways to specify the TPU device:
-
-1.  Using the `device` object returned by `torch.device()`.
-2.  Using the `"tpu"` string identifier.
-
-```python
 # 1. Create a tensor on the CPU
 cpu_tensor = torch.ones((5, 5))
 
@@ -89,25 +207,34 @@ print(f"tpu_tensor is on: {tpu_tensor.device}")
 print(f"direct_tpu_tensor is on: {direct_tpu_tensor.device}")
 ```
 
-## 4. Compute and materialize results
+and is in `examples/simple_pytorch/simple_pytorch.py`
 
-Performing math on the TPU is seamless. When you perform operations on TPU
-tensors, the computation happens on the hardware. To retrieve the data back to
-the CPU for printing or interaction with standard Python libraries, use the
-`.cpu()` method.
+As kubectl consumes a manifest file off disk, we patch in the environment
+variables here for convenience, and then apply the manifest.
 
-```python
-# Perform a simple operation on the TPU
-result_on_tpu = tpu_tensor + direct_tpu_tensor
-
-# Bring the result back to the CPU to print or use in other libraries
-result_on_cpu = result_on_tpu.cpu()
-
-print("Computation complete.")
-print(f"Result Checksum (Sum): {result_on_cpu.sum():.4f}")
+```bash
+sed -i "s|<DOCKER_IMAGE>|${ARTIFACT_REGISTRY_URL}/${DOCKER_IMAGE}|g" examples/tensor_parallel/torchtpu_singlehost_slice_job.yaml
+sed -i "s|<NODEPOOL_NAME>|${NODEPOOL_NAME}|g" examples/tensor_parallel/torchtpu_singlehost_slice_job.yaml
+kubectl apply -f examples/tensor_parallel/torchtpu_singledevice_slice_job.yaml
 ```
 
-### 🎉 Success!
+Check workload and pod status:
 
-You have successfully initialized the TPU, mapped tensors to the device,
-performed a calculation, and retrieved the results.
+```bash
+kubectl get job -n default
+kubectl get pods -n default
+```
+
+and you can query the logs for the pod based on the job name:
+
+```bash
+kubectl logs -n default -l job-name=torchtpu-singledevice-1chip-job
+```
+
+We should be able to see the job and pod running and eventually complete with
+the expected output logged.
+
+```python
+mo.md(r"""
+  """)
+```

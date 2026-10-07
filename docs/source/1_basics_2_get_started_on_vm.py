@@ -29,10 +29,14 @@ def _():
 @app.cell(hide_code=True)
 def _(mo):
   mo.md(r"""
-    # Get started with TorchTPU
+    # Get started with TorchTPU on a TPU VM
 
-    This tutorial will guide you through your first successful computation on Google TPU hardware using the `torch_tpu` backend.
-
+    The simplest way to use TorchTPU is on a TPU VM.
+    In this example we will run a simple tensor parallel example. 
+    We do not focus on the example, just the setup code to get running on a VM.
+    In the following tutorial we will see how to achieve something similar through GKE, which is necessary to access recent TPU hardware.
+    
+    
     ## 1. Install and set up
 
     Before running this notebook, ensure you are running on a [Google Cloud TPU VM](https://docs.cloud.google.com/tpu/docs/intro-to-tpu?hl=en) (e.g., v6e).
@@ -57,15 +61,6 @@ def _(mo):
 
     # 2. Install torch_tpu, PyTorch 2.11 CPU will install automatically, do not install manually.
     pip install --pre --index-url "https://oauth2accesstoken:$(gcloud auth print-access-token)@us-python.pkg.dev/ml-oss-artifacts-transient/torch-tpu-virtual-registry/simple/" torch_tpu
-
-    # 3. Install optional utilities
-    pip install portpicker marimo scikit-learn pandas
-
-    # 4. Optional for Pallas kernels
-    pip install jax
-
-    # 5. Optional for xProf
-    pip install tensorboard
     ```
     """)
   return
@@ -78,7 +73,6 @@ def _(mo):
 
     Similar to a CPU or GPU, the TPU backend must be explicitly initialized. This registers the "tpu" device string with PyTorch.
 
-    **Note:** This must be called before moving any tensors to the TPU.
     """)
   return
 

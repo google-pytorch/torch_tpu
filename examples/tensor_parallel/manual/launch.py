@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""A test runner for the tensor parallel wrappers example."""
+"""A test runner for the tensor parallel example."""
 
 from torch.distributed import launcher
 from torch.tpu import distributed  # pyrefly: ignore[missing-import]
-from examples.tensor_parallel_gke.dtensor_wrapped import dtp_worker
+from examples.tensor_parallel.manual import tp_worker
 
 
 def main():
@@ -30,7 +30,7 @@ def main():
       rdzv_endpoint="localhost:0",
       max_restarts=0,
   )
-  launcher.elastic_launch(config, dtp_worker.worker_fn)()
+  launcher.elastic_launch(config, tp_worker.worker_fn)()
 
 
 if __name__ == "__main__":

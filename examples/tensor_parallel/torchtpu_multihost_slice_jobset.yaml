@@ -1,0 +1,95 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Public Reference JobSet manifest for multi-host PyTorch Tensor Parallel execution on TPU v7x (Trillium)
+# Dynamic slice topology: 4x4x4 (16 physical VMs / 64 TPU chips / 128 PjRt addressable devices)
+#
+# Purpose:
+# 1. Demonstrates multi-host Tensor Parallel execution across 16 TPU VMs (64 chips) using multihost_wrapper.
+# 2. Uses label kueue.x-k8s.io/queue-name: lq to admit the workload via universal LocalQueue lq, where Kueue
+#    automatically routes to ResourceFlavor rf-64chip based on the nodeSelector topology label (4x4x4).
+#
+# Placeholder variables to customize:
+# - <NODEPOOL_NAME>: Name of your GKE 64-chip TPU node pool (e.g. your-v7x-64chip-nodepool).
+# - <DOCKER_IMAGE>: URI of your TorchTPU Docker image in Artifact Registry.
+
+apiVersion: jobset.x-k8s.io/v1alpha2
+kind: JobSet
+metadata:
+  name: torchtpu-multihost-64chip-jobset
+  namespace: default
+  labels:
+    kueue.x-k8s.io/queue-name: multislice-queue
+spec:
+  replicatedJobs:
+    - name: slice-job
+      replicas: 1
+      template:
+        metadata:
+          labels:
+            kueue.x-k8s.io/queue-name: multislice-queue
+          annotations:
+            cloud.google.com/gke-tpu-slice-topology: 4x4x4
+        spec:
+          parallelism: 16
+          completions: 16
+          backoffLimit: 0
+          template:
+            metadata:
+              annotations:
+                cloud.google.com/gke-tpu-slice-topology: 4x4x4
+            spec:
+              hostNetwork: true
+              dnsPolicy: ClusterFirstWithHostNet
+              restartPolicy: Never
+              nodeSelector:
+                cloud.google.com/gke-nodepool: <NODEPOOL_NAME>
+                cloud.google.com/gke-tpu-accelerator: tpu7x
+                cloud.google.com/gke-tpu-topology: 4x4x4
+              tolerations:
+              - key: "google.com/tpu"
+                operator: "Exists"
+              containers:
+              - name: tpu-container
+                image: <DOCKER_IMAGE>
+                imagePullPolicy: Always
+                securityContext:
+                  privileged: true
+                env:
+                - name: TORCH_TPU_TOPOLOGY
+                  value: "4,4,4,2"
+                command:
+                - /bin/bash
+                - -c
+                - |
+                  set -ex
+                  export PYTHONUNBUFFERED=1
+                  export TPU_LAUNCH_BLOCKING=1
+                  export ABSL_LOGGING_MIN_LOG_LEVEL=0
+                  echo "=== Starting Full 64-Chip (128-Device) TPU v7x Tensor Parallel Workload ==="
+                  cd /workspace/examples/tensor_parallel/manual/
+                  bash ./launch_multihost.sh
+                  echo "=== 64-Chip Workload Completed Successfully ==="
+                resources:
+                  limits:
+                    google.com/tpu: 4
+                  requests:
+                    google.com/tpu: 4
+                volumeMounts:
+                - mountPath: /dev/shm
+                  name: dshm
+              volumes:
+              - emptyDir:
+                  medium: Memory
+                name: dshm

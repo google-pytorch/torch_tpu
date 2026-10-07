@@ -1,0 +1,85 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Public Reference Kubernetes Job manifest for single-host PyTorch Tensor Parallel execution on TPU v7x (Trillium)
+# Slice topology: 2x2x1 (1 physical VM / 4 TPU chips / 8 addressable TPU devices)
+#
+# Purpose:
+# 1. Demonstrates single-host Tensor Parallel execution on a 4-chip TPU v7x slice using singlehost_wrapper.
+# 2. Uses label kueue.x-k8s.io/queue-name: lq to admit the workload via universal LocalQueue lq, where Kueue
+#    automatically routes to ResourceFlavor rf-4chip based on the nodeSelector topology label (2x2x1).
+#
+# Placeholder variables to customize:
+# - torchtpu-v7x-4chip-pool: Name of your GKE 4-chip TPU node pool (e.g. your-v7x-4chip-nodepool).
+# - torch-tpu-local-lwh: URI of your TorchTPU Docker image in Artifact Registry.
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: torchtpu-singlehost-4chip-job
+  namespace: default
+  labels:
+    kueue.x-k8s.io/queue-name: multislice-queue
+spec:
+  template:
+    metadata:
+      labels:
+        google.com/tpu: "Exists"
+        kueue.x-k8s.io/queue-name: multislice-queue
+      annotations:
+        cloud.google.com/gke-tpu-slice-topology: 2x2x1
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      restartPolicy: Never
+      nodeSelector:
+        cloud.google.com/gke-nodepool: <NODEPOOL_NAME>
+        cloud.google.com/gke-tpu-accelerator: tpu7x
+        cloud.google.com/gke-tpu-topology: 2x2x1
+      tolerations:
+      - key: "google.com/tpu"
+        operator: "Exists"
+      containers:
+      - name: tpu-container
+        image: <DOCKER_IMAGE>
+        imagePullPolicy: Always
+        securityContext:
+          privileged: true
+        env:
+        - name: TORCH_TPU_TOPOLOGY
+          value: "2,2,1,2"
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -ex
+          export PYTHONUNBUFFERED=1
+          export TPU_LAUNCH_BLOCKING=1
+          export ABSL_LOGGING_MIN_LOG_LEVEL=0
+          echo "=== Starting Single-Host 4-Chip (8-Device) TPU v7x Workload ==="
+          cd /workspace/examples/tensor_parallel/manual/
+          bash ./launch_singlehost.sh
+          echo "=== Single-Host 4-Chip Workload Completed Successfully ==="
+        resources:
+          limits:
+            google.com/tpu: 4
+          requests:
+            google.com/tpu: 4
+        volumeMounts:
+        - mountPath: /dev/shm
+          name: dshm
+      volumes:
+      - emptyDir:
+          medium: Memory
+        name: dshm
