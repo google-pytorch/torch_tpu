@@ -207,6 +207,141 @@ absl::StatusOr<mlir::MlirOp> BuildScatterShlo(
     }
   }
 
+  // Fast path for multidimensional broadcast indices (such as multi-head
+  // relative position attention gradients where `[Q, K]` indices are expanded
+  // across `H` heads to `[H, Q, K]`): when `index` is invariant along one or
+  // more non-scatter dimensions `free_dims` and the scatter axis is bounded,
+  // contract `src` with the shared 1-bit indicator matrix on the MXU instead
+  // of flattening all batching dimensions into a 64-bit scalar scatter loop.
+  if ((scatter_op == ScatterOp::kAdd || scatter_op == ScatterOp::kSum) &&
+      include_self == ScatterIncludeSelf::kYes &&
+      self_src_match_off_scatter_dim &&
+      src_type.getShape() == index_type.getShape() &&
+      self_type.hasStaticShape() && index_type.hasStaticShape()) {
+    const mlir::Type fast_comp_type =
+        mlir::getElementType(self.getContext(), computation_element_type);
+    const int64_t rank = self_type.getRank();
+    mlir::Value raw_index_val = index.getValue();
+    while (auto conv = mlir::dyn_cast_or_null<mlir::stablehlo::ConvertOp>(
+               raw_index_val.getDefiningOp())) {
+      raw_index_val = conv.getOperand();
+    }
+    if ((fast_comp_type.isF32() || fast_comp_type.isBF16()) && rank >= 3) {
+      if (auto broadcast =
+              mlir::dyn_cast_or_null<mlir::stablehlo::BroadcastInDimOp>(
+                  raw_index_val.getDefiningOp())) {
+        auto base_type = mlir::dyn_cast<mlir::RankedTensorType>(
+            broadcast.getOperand().getType());
+        llvm::ArrayRef<int64_t> bcast_dims = broadcast.getBroadcastDimensions();
+        bool exact_bcast = base_type && base_type.getRank() >= 2 &&
+                           base_type.hasStaticShape() &&
+                           base_type.getNumElements() > 0;
+        std::vector<int64_t> base_pos_for_dim(rank, -1);  // INT_VEC_OK
+        for (int64_t i = 0;
+             exact_bcast && i < static_cast<int64_t>(bcast_dims.size()); ++i) {
+          const int64_t d = bcast_dims[i];
+          if (d < 0 || d >= rank || base_pos_for_dim[d] != -1 ||
+              base_type.getDimSize(i) != index_type.getDimSize(d)) {
+            exact_bcast = false;
+            break;
+          }
+          base_pos_for_dim[d] = i;
+        }
+        const int64_t target_len = self_type.getDimSize(dim);
+        const int64_t src_len = index_type.getDimSize(dim);
+        if (exact_bcast && base_pos_for_dim[dim] != -1 && target_len > 0 &&
+            src_len > 0 && target_len <= 1024 && src_len <= 1024 &&
+            base_type.getNumElements() * target_len <= 268435456) {
+          Dimensions batch_dims;
+          Dimensions rhs_batch_dims;
+          Dimensions free_dims;
+          for (int64_t d = 0; d < rank; ++d) {
+            if (d == dim) continue;
+            if (base_pos_for_dim[d] != -1) {
+              batch_dims.push_back(d);
+              rhs_batch_dims.push_back(base_pos_for_dim[d]);
+            } else {
+              free_dims.push_back(d);
+            }
+          }
+          if (!free_dims.empty()) {
+            mlir::MlirBuilder& fast_builder = self.getBuilder();
+            const mlir::Type i32_type =
+                mlir::getElementType(self.getContext(), mlir::ElementType::I32);
+            mlir::MlirOp self_conv =
+                self_type.getElementType() != fast_comp_type
+                    ? mlir::stablehlo::ConvertElementType(self, fast_comp_type)
+                    : self;
+            mlir::MlirOp src_conv =
+                src_type.getElementType() != fast_comp_type
+                    ? mlir::stablehlo::ConvertElementType(src, fast_comp_type)
+                    : src;
+            mlir::MlirOp base_op(fast_builder, broadcast.getOperand());
+            mlir::MlirOp base_i32 =
+                mlir::stablehlo::ConvertElementType(base_op, i32_type);
+            const int64_t base_rank = base_type.getRank();
+            Dimensions ind_shape(base_type.getShape().begin(),
+                                 base_type.getShape().end());
+            ind_shape.push_back(target_len);
+            Dimensions bcast_to_ind(base_rank);
+            for (int64_t i = 0; i < base_rank; ++i) {
+              bcast_to_ind[i] = i;
+            }
+            auto ind_i32_type =
+                mlir::RankedTensorType::get(ind_shape, i32_type);
+            mlir::MlirOp idx_expanded = mlir::stablehlo::BroadcastInDim(
+                ind_i32_type, base_i32, bcast_to_ind);
+            mlir::MlirOp iota_p =
+                mlir::stablehlo::Iota(fast_builder, ind_i32_type,
+                                      /*iota_dimension=*/base_rank);
+            mlir::MlirOp mask = mlir::stablehlo::Compare(
+                idx_expanded, iota_p, mlir::stablehlo::ComparisonDirection::EQ);
+            mlir::MlirOp weights =
+                mlir::stablehlo::ConvertElementType(mask, fast_comp_type);
+            auto dot_dims = mlir::stablehlo::DotDimensionNumbersAttr::get(
+                &self.getContext(),
+                /*lhsBatchingDimensions=*/batch_dims,
+                /*rhsBatchingDimensions=*/rhs_batch_dims,
+                /*lhsContractingDimensions=*/{dim},
+                /*rhsContractingDimensions=*/{base_pos_for_dim[dim]});
+            mlir::ArrayAttr precision_config;
+            if (fast_comp_type.isF32()) {
+              const mlir::stablehlo::Precision precisions[2] = {
+                  mlir::stablehlo::Precision::
+                      HIGHEST,  // EXPLICIT_PRECISION_OK=f32_scatter
+                  mlir::stablehlo::Precision::
+                      HIGHEST,  // EXPLICIT_PRECISION_OK=one_hot_rhs
+              };
+              precision_config = mlir::stablehlo::PrecisionConfigAttr::get(
+                  &self.getContext(), precisions);
+            }
+            mlir::MlirOp dot_out = mlir::stablehlo::DotGeneral(
+                src_conv, weights, dot_dims,
+                /*precisionConfig=*/precision_config);
+            Dimensions dot_out_axes;
+            dot_out_axes.insert(dot_out_axes.end(), batch_dims.begin(),
+                                batch_dims.end());
+            dot_out_axes.insert(dot_out_axes.end(), free_dims.begin(),
+                                free_dims.end());
+            dot_out_axes.push_back(dim);
+            Dimensions perm(rank);
+            for (int64_t pos = 0; pos < rank; ++pos) {
+              perm[dot_out_axes[pos]] = pos;
+            }
+            mlir::MlirOp delta = mlir::stablehlo::Transpose(dot_out, perm);
+            mlir::MlirOp result = mlir::stablehlo::Add(self_conv, delta);
+            if (GetTensorTypeOrDie(result).getElementType() !=
+                original_element_type) {
+              result = mlir::stablehlo::ConvertElementType(
+                  result, original_element_type);
+            }
+            return result;
+          }
+        }
+      }
+    }
+  }
+
   // Convert arguments to the computation type if necessary.
   mlir::Type computation_type =
       mlir::getElementType(self.getContext(), computation_element_type);

@@ -8810,6 +8810,130 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     self.assertNotIn("update_window_dims = []", mlir_text)
 
   @parameterized.product(
+      dtype=[torch.float32, torch.bfloat16],
+      rank=[3, 4],
+      dim=[-2, -1],
+  )
+  def test_gather_multidim_broadcast_index(
+      self, dtype: torch.dtype, rank: int, dim: int
+  ):
+    """gather with a multi-dimensional broadcast index matches CPU."""
+    b, h, q, v, k = 2, 4, 8, 12, 6
+    torch.manual_seed(42)
+    lead_shape = (h,) if rank == 3 else (b, h)
+    if dim == -1:
+      x_cpu = torch.randn(*lead_shape, q, v, dtype=dtype)
+      base_idx_cpu = torch.randint(0, v, (q, k))
+      idx_view = (1,) * len(lead_shape) + (q, k)
+      target_idx_shape = (*lead_shape, q, k)
+    else:
+      x_cpu = torch.randn(*lead_shape, v, q, dtype=dtype)
+      base_idx_cpu = torch.randint(0, v, (k, q))
+      idx_view = (1,) * len(lead_shape) + (k, q)
+      target_idx_shape = (*lead_shape, k, q)
+
+    def test_fn(device: torch.device) -> torch.Tensor:
+      x = x_cpu.to(device)
+      base_idx = base_idx_cpu.to(device)
+      index = base_idx.view(idx_view).expand(*target_idx_shape)
+      return torch.gather(x, dim, index)
+
+    rtol, atol = (1e-2, 1e-2) if dtype == torch.bfloat16 else (None, None)
+    self.assert_close_tpu_vs_cpu(test_fn, rtol=rtol, atol=atol)
+
+  @parameterized.product(
+      dtype=[torch.float32, torch.bfloat16],
+      rank=[3, 4],
+      dim=[-2, -1],
+      nonzero_self=[False, True],
+  )
+  def test_scatter_add_multidim_broadcast_index(
+      self, dtype: torch.dtype, rank: int, dim: int, nonzero_self: bool
+  ):
+    """scatter_add with a multi-dimensional broadcast index matches CPU."""
+    b, h, q, v, k = 2, 4, 8, 6, 12
+    torch.manual_seed(42)
+    lead_shape = (h,) if rank == 3 else (b, h)
+    if dim == -1:
+      out_shape = (*lead_shape, q, v)
+      src_shape = (*lead_shape, q, k)
+      base_idx_cpu = torch.arange(q * k).reshape(q, k) % v
+    else:
+      out_shape = (*lead_shape, v, q)
+      src_shape = (*lead_shape, k, q)
+      base_idx_cpu = torch.arange(k * q).reshape(k, q) % v
+    out_cpu = (
+        torch.randn(*out_shape, dtype=dtype)
+        if nonzero_self
+        else torch.zeros(*out_shape, dtype=dtype)
+    )
+    src_cpu = torch.randn(*src_shape, dtype=dtype) * 0.1
+    idx_view = (1,) * len(lead_shape) + base_idx_cpu.shape
+
+    def test_fn(device: torch.device) -> torch.Tensor:
+      out = out_cpu.to(device)
+      src = src_cpu.to(device)
+      base_idx = base_idx_cpu.to(device)
+      index = base_idx.view(idx_view).expand(*src_shape)
+      return out.scatter_add(dim, index, src)
+
+    rtol, atol = (1e-2, 1e-2) if dtype == torch.bfloat16 else (None, None)
+    self.assert_close_tpu_vs_cpu(test_fn, rtol=rtol, atol=atol)
+
+  @parameterized.product(dtype=[torch.float32, torch.bfloat16])
+  def test_gather_multidim_broadcast_index_backward(self, dtype: torch.dtype):
+    """Forward and backward of broadcast-index gather match CPU."""
+    b, h, q, v, k = 2, 4, 8, 10, 8
+    torch.manual_seed(42)
+    x_cpu = torch.randn(b, h, q, v, dtype=dtype)
+    grad_out_cpu = torch.randn(b, h, q, k, dtype=dtype)
+    base_idx_cpu = torch.arange(q * k).reshape(q, k) % v
+
+    def test_fn(device: torch.device):
+      x = x_cpu.to(device).detach().requires_grad_(True)
+      grad_out = grad_out_cpu.to(device)
+      base_idx = base_idx_cpu.to(device)
+      index = base_idx.unsqueeze(0).unsqueeze(0).expand(b, h, q, k)
+      out = torch.gather(x, -1, index)
+      out.backward(grad_out)
+      return out.detach(), x.grad.detach()
+
+    rtol, atol = (1e-2, 1e-2) if dtype == torch.bfloat16 else (None, None)
+    self.assert_close_tpu_vs_cpu(test_fn, rtol=rtol, atol=atol)
+
+  def test_gather_and_scatter_add_multidim_broadcast_index_lowers_to_dot_general(
+      self,
+  ):
+    """Multi-dim broadcast-index gather and scatter_add lower to dot_general."""
+    h, q, v, k = 4, 8, 12, 8
+    base_idx = (torch.arange(q * k).reshape(q, k) % v).to("tpu")
+    x = torch.ones(h, q, v, device="cpu").to("tpu")
+    src = torch.ones(h, q, k, device="cpu").to("tpu")
+
+    with execution_mode.set_eager_mode(
+        execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
+    ):
+      idx = base_idx.unsqueeze(0).expand(h, q, k)
+      gathered = torch.gather(x, -1, idx)
+    gather_mlir = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir([gathered], [base_idx, x])
+    )
+    self.assertIn("stablehlo.dot_general", gather_mlir)
+    self.assertNotIn("stablehlo.gather", gather_mlir)
+
+    with execution_mode.set_eager_mode(
+        execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
+    ):
+      out = torch.zeros(h, q, v, device="tpu")
+      idx = base_idx.unsqueeze(0).expand(h, q, k)
+      scattered = out.scatter_add(-1, idx, src)
+    scatter_mlir = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir([scattered], [base_idx, src])
+    )
+    self.assertIn("stablehlo.dot_general", scatter_mlir)
+    self.assertNotIn("stablehlo.scatter", scatter_mlir)
+
+  @parameterized.product(
       reduce_op=["add", "multiply"],
       dtype=[torch.float32, torch.int32, torch.bfloat16],
       value=[2.0, -1.5, 0.0],
