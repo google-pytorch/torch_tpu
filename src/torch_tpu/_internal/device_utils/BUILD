@@ -48,7 +48,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",
-        "//tests:seed_test_utils",
     ],
 )
 

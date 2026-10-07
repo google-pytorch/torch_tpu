@@ -18,10 +18,11 @@ from absl.testing import absltest
 import torch
 from torch_tpu._internal.compile import tpu_torch_compile
 import torch_tpu._internal.device_utils.annotations as tpu_annotations
-from tests import seed_test_utils
 
 
-class AnnotationsTest(seed_test_utils.RepeatableTest):
+class AnnotationsTest(
+    absltest.TestCase  # ABSLTEST_OK=Deterministic layout annotation test
+):
 
   def test_layout_context_to_device(self):
     device = torch.device("tpu")
