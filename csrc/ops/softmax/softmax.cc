@@ -107,7 +107,16 @@ absl::StatusOr<mlir::MlirOp> BuildSoftmaxShlo(mlir::MlirOp input_op,
   TT_ASSIGN_OR_RETURN(mlir::MlirOp unsqueezed_sum_op, Unsqueeze(sum_op, dim));
 
   mlir::MlirOp result;
-  if (softmax_mode == SoftmaxMode::kLogSoftmax) {
+  if (input_type.isDynamicDim(dim)) {
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp sum_exp_broadcasted_op,
+                        BroadcastIfNeeded(unsqueezed_sum_op, input_op));
+    if (softmax_mode == SoftmaxMode::kLogSoftmax) {
+      mlir::MlirOp log_op = mlir::stablehlo::Log(sum_exp_broadcasted_op);
+      result = mlir::stablehlo::Subtract(shifted_op, log_op);
+    } else {
+      result = mlir::stablehlo::Div(exp_op, sum_exp_broadcasted_op);
+    }
+  } else if (softmax_mode == SoftmaxMode::kLogSoftmax) {
     mlir::MlirOp log_op = mlir::stablehlo::Log(unsqueezed_sum_op);
     TT_ASSIGN_OR_RETURN(mlir::MlirOp log_broadcasted,
                         BroadcastIfNeeded(log_op, input_op));
