@@ -44,57 +44,44 @@ RUN uv pip compile pyproject.toml --all-extras --python-version 3.14 --python-pl
 ENV LD_PRELOAD="/usr/lib/x86_64-linux-gnu/libtcmalloc.so.4"
 
 # =====================================================================
-# Stage 1: Builder Image (torchtpu-builder)
-# =====================================================================
-FROM base AS builder
-
-# Install build-time system dependencies
-RUN apt-get update && apt-get install -y curl gnupg git && \
-    rm -rf /var/lib/apt/lists/*
-
-# Install bazelisk for bazel management
-RUN curl -L https://github.com/bazelbuild/bazelisk/releases/download/v1.19.0/bazelisk-linux-amd64 -o /usr/local/bin/bazel && \
-    chmod +x /usr/local/bin/bazel
-
-# Set working directory
-WORKDIR /workspace
-
-# Copy the local repository source from the build context
-COPY . /workspace/torch_tpu_src
-
-
-
-# Build the wheel using bazel.
-# Preserving cache mounts and flags from Dockerfile.from_src
-RUN --mount=type=cache,id=torch-tpu-bazelisk,target=/root/.cache/bazelisk \
-    --mount=type=cache,id=torch-tpu-bazel-repo,target=/root/.cache/bazel,sharing=locked \
-    --mount=type=cache,target=/root/.cache/uv \
-    cd /workspace/torch_tpu_src && \
-    rm -rf bazel-* && \
-    bazel build -c opt \
-    --config=wheel_common \
-    --repository_cache=/root/.cache/bazel/repository_cache \
-    --disk_cache=/root/.cache/bazel/disk_cache \
-    //ci/wheel:torch_tpu_wheel --config=no_rbe && \
-    mkdir -p dist && mv bazel-bin/ci/wheel/* dist/
-
-
-
-# =====================================================================
-# Stage 2: Final Image (torchtpu)
+# Stage 1: Final Image (torchtpu)
 # =====================================================================
 FROM base AS final
 
+ARG GCLOUD_TOKEN=""
+
 WORKDIR /opt/wheels
 
-# Pull the fresh wheel from the builder stage
-COPY --from=builder /workspace/torch_tpu_src/dist/*.whl .
+# Copy prebuilt wheel(s) from dist/ if present in the build context.
+# pyproject.toml ensures COPY succeeds even when dist is empty or omitted.
+COPY pyproject.toml dist* /opt/wheels/
 
-# Install the wheel forcing reinstall to overwrite metadata-only install from base stage
-RUN pip install --force-reinstall --no-deps *.whl
+# If a prebuilt wheel was provided, install it.
+# Otherwise, download the latest nightly torch_tpu wheel authenticated from Google Cloud Artifact Registry.
+# Supports BuildKit secret (--mount=type=secret,id=gcloud_token) or build argument (--build-arg GCLOUD_TOKEN=...).
+RUN --mount=type=secret,id=gcloud_token \
+    set -eu; \
+    if ls /opt/wheels/*.whl 1>/dev/null 2>&1; then \
+      echo "===> Installing provided prebuilt wheel(s)..."; \
+    else \
+      echo "===> No prebuilt wheel provided; fetching latest nightly from Artifact Registry..."; \
+      TOKEN="${GCLOUD_TOKEN}"; \
+      if [ -f /run/secrets/gcloud_token ]; then TOKEN="$(cat /run/secrets/gcloud_token)"; fi; \
+      if [ -z "${TOKEN}" ]; then \
+        echo "Error: Missing prebuilt wheel in dist/ and missing BuildKit secret (id=gcloud_token) or build arg (GCLOUD_TOKEN) for Artifact Registry authentication." >&2; \
+        exit 1; \
+      fi; \
+      pip download --no-deps --pre torch_tpu \
+          --index-url "https://oauth2accesstoken:${TOKEN}@us-python.pkg.dev/ml-oss-artifacts-transient/torch-tpu-virtual-registry/simple/" \
+          --only-binary=:all: \
+          -d /opt/wheels; \
+    fi; \
+    pip install --force-reinstall --no-deps /opt/wheels/*.whl
 
 # Maintain hierarchy: Copy examples to /workspace/examples
-COPY --from=builder /workspace/torch_tpu_src/examples /workspace/examples
+COPY examples /workspace/examples
+
+WORKDIR /workspace
 
 # Ensure /workspace is in the Python path and output is unbuffered
 ENV PYTHONPATH="/workspace"
@@ -102,3 +89,5 @@ ENV PYTHONUNBUFFERED=1
 
 # Default command
 CMD ["/bin/bash"]
+
+

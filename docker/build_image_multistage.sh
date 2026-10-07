@@ -18,7 +18,7 @@
 
 set -e
 
-# Usage: ./build_image_multistage.sh [LOCAL_REPO_ROOT] [IMAGE_TAG_PREFIX] [-v|--pytorch-version <version>] [--2.10] [--2.12]
+# Usage: ./build_image_multistage.sh [--wheel <path_to_wheel>] [--examples <path_to_examples>] [LOCAL_REPO_ROOT] [IMAGE_TAG_PREFIX]
 # LOCAL_REPO_ROOT: Path to the root of the torch_tpu repository (optional,
 #                  defaults to parent dir).
 # IMAGE_TAG_PREFIX: Prefix for the built images (optional, defaults to
@@ -30,10 +30,36 @@ DEFAULT_REPO_ROOT="$(cd "${SCRIPT_DIR}/../" && pwd)"
 
 LOCAL_REPO_ROOT="${DEFAULT_REPO_ROOT}"
 IMAGE_TAG_PREFIX="torch-tpu"
+WHEEL_PATH=""
+EXAMPLES_PATH=""
 
 # Parse flags
 while [[ $# -gt 0 ]]; do
   case $1 in
+    -w|--wheel)
+      if [ -z "${2:-}" ]; then
+        echo "Error: --wheel requires a file path argument"
+        exit 1
+      fi
+      WHEEL_PATH="$2"
+      shift 2
+      ;;
+    --wheel=*)
+      WHEEL_PATH="${1#*=}"
+      shift
+      ;;
+    -e|--examples)
+      if [ -z "${2:-}" ]; then
+        echo "Error: --examples requires a directory path argument"
+        exit 1
+      fi
+      EXAMPLES_PATH="$2"
+      shift 2
+      ;;
+    --examples=*)
+      EXAMPLES_PATH="${1#*=}"
+      shift
+      ;;
     *)
       if [ -z "${LOCAL_REPO_ROOT_SET}" ]; then
         LOCAL_REPO_ROOT="$1"
@@ -58,6 +84,34 @@ if [ ! -f "${ABS_REPO_ROOT}/${DOCKERFILE}" ]; then
   exit 1
 fi
 
+mkdir -p "${ABS_REPO_ROOT}/dist"
+if [ -n "${WHEEL_PATH}" ]; then
+  if [ ! -f "${WHEEL_PATH}" ]; then
+    echo "Error: Wheel file not found at ${WHEEL_PATH}"
+    exit 1
+  fi
+  ABS_WHEEL_PATH=$(readlink -f "${WHEEL_PATH}")
+  echo "===> Using provided prebuilt wheel: ${ABS_WHEEL_PATH}"
+  rm -f "${ABS_REPO_ROOT}/dist"/*.whl
+  cp -f "${ABS_WHEEL_PATH}" "${ABS_REPO_ROOT}/dist/"
+else
+  # No wheel explicitly provided; clear dist so Dockerfile fetches latest nightly from Artifact Registry
+  rm -f "${ABS_REPO_ROOT}/dist"/*.whl
+fi
+
+if [ -n "${EXAMPLES_PATH}" ]; then
+  if [ ! -d "${EXAMPLES_PATH}" ]; then
+    echo "Error: Examples directory not found at ${EXAMPLES_PATH}"
+    exit 1
+  fi
+  ABS_EXAMPLES_PATH=$(cd "${EXAMPLES_PATH}" && pwd)
+  echo "===> Using provided examples directory: ${ABS_EXAMPLES_PATH}"
+  if [ "${ABS_EXAMPLES_PATH}" != "${ABS_REPO_ROOT}/examples" ]; then
+    mkdir -p "${ABS_REPO_ROOT}/examples"
+    cp -r "${ABS_EXAMPLES_PATH}"/* "${ABS_REPO_ROOT}/examples/"
+  fi
+fi
+
 echo "===> Building Docker images with prefix '${IMAGE_TAG_PREFIX}' using local source at ${ABS_REPO_ROOT}..."
 
 # Build base image
@@ -71,8 +125,19 @@ docker build \
 
 # Build final image
 echo "===> Building Final Image..."
+SECRET_BUILD_ARGS=()
+if [ -z "${WHEEL_PATH}" ]; then
+  if command -v gcloud &>/dev/null; then
+    TOKEN="$(gcloud auth print-access-token 2>/dev/null || true)"
+    if [ -n "${TOKEN}" ]; then
+      SECRET_BUILD_ARGS+=(--build-arg "GCLOUD_TOKEN=${TOKEN}")
+    fi
+  fi
+fi
+
 docker build \
   --progress=plain \
+  "${SECRET_BUILD_ARGS[@]}" \
   -f "${ABS_REPO_ROOT}/${DOCKERFILE}" \
   -t "${IMAGE_TAG_PREFIX}:latest" \
   "${ABS_REPO_ROOT}"
