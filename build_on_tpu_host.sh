@@ -88,7 +88,16 @@ export BAZEL_OUTPUT_BASE="$BAZEL_CACHE_DIR/output_base"
 print_info "Working directory: $PWD"
 print_info "Bazel cache: $BAZEL_CACHE_DIR"
 print_info "Locating PyTorch installation..."
-TORCH_PATH=$(python -c "import torch, os; print(os.path.dirname(torch.__file__))")
+# `-P` (Python 3.11+) keeps the CWD off sys.path. Without it this probe dies on
+# any commit whose tree still has a top-level `torch_tpu/` package directory: the
+# script cd's into the source root, `import torch` autoloads the torch_tpu
+# backend by entry point, and Python resolves that to the *source* package rather
+# than the installed one. The source has no compiled extension, so it fails with
+# `ImportError: cannot import name '_device_ops_backend'` wrapped in
+# `RuntimeError: Failed to load the backend extension: torch_tpu`, which reads
+# like a broken install rather than a path problem. Tip-of-main trees keep the
+# package under src/ and happen to dodge it; older commits do not.
+TORCH_PATH=$(python -P -c "import torch, os; print(os.path.dirname(torch.__file__))")
 
 if [[ -z "$TORCH_PATH" ]]; then
     print_error "Could not find PyTorch installation"
@@ -133,7 +142,28 @@ echo ""
 # ``import torch`` with duplicate static registrations; //ci/wheel refuses to
 # build rather than emit that wheel. --config=no_rbe must come *after* it to
 # strip the remote cache/executor wheel_common turns on.
-if bazel --output_base="$BAZEL_OUTPUT_BASE" build -c opt //ci/wheel:torch_tpu_wheel --config=wheel_common --config=no_rbe --disk_cache="$BAZEL_CACHE_DIR/disk-cache"; then
+# Build the wheel for the Python that will run it, not bazel's default.
+#
+# TWO independent knobs, and both are required:
+#
+#  * --repo_env=HERMETIC_PYTHON_VERSION picks the interpreter the build compiles
+#    against and the per-python requirements lock. .bazelrc pins
+#    `common --repo_env=HERMETIC_PYTHON_VERSION=3.14` and MODULE.bazel defaults
+#    DEFAULT_PYTHON_VERSION to 3.14, and MODULE.bazel wires python_version_env to
+#    this var, so overriding it here is the supported retarget (same mechanism
+#    .bazelrc's tsan_py config uses for 3.12).
+#
+#  * --define PYTHON_VERSION drives the wheel's FILENAME TAG. ci/wheel/BUILD.bazel
+#    builds `config_setting(name = "python_<v>", define_values = {"PYTHON_VERSION": v})`
+#    for every SUPPORTED_PYTHON_VERSIONS except 3.14, and py_wheel's `python_tag`
+#    / `python_requires` select on those with cp314/>=3.14 as the fall-through
+#    default. Setting only HERMETIC_PYTHON_VERSION therefore compiles correctly
+#    for 3.12 but still stamps the wheel `cp314`, which then refuses to install
+#    on the 3.12 host with a tag-mismatch error that says nothing about this.
+HERMETIC_PY=$(python -P -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+print_info "Targeting Python $HERMETIC_PY (HERMETIC_PYTHON_VERSION + --define PYTHON_VERSION)"
+
+if bazel --output_base="$BAZEL_OUTPUT_BASE" build -c opt //ci/wheel:torch_tpu_wheel --config=wheel_common --config=no_rbe --repo_env=HERMETIC_PYTHON_VERSION="$HERMETIC_PY" --define PYTHON_VERSION="$HERMETIC_PY" --disk_cache="$BAZEL_CACHE_DIR/disk-cache"; then
     print_success "Build completed!"
 
     # Find and copy wheel

@@ -27,7 +27,15 @@ requires-python = ">=3.11"
 # )
 
 dependencies = [
-    "torch>=2.11.0,<2.12.0",
+    # No upper cap. The wheel is multi-ABI: it ships one thin glue per version in
+    # WHEEL_TORCH_VERSIONS (2.11.0 / 2.12.0 / 2.13.0, see
+    # bazel/pytorch_versions.bzl) over a shared XLA base, and
+    # torch_tpu/_versioned_so_loader.py serves each install from the newest glue
+    # at or below its torch. 2.12.1 is in INTERMEDIATE_PATCH_VERSIONS, i.e.
+    # proven ABI-compatible with the 2.12.0 glue, so this wheel runs on the
+    # coreflow 26 image (torch 2.12.1+cpu) as built. A `<2.12.0` cap here does
+    # not change the ABI, it only makes uv refuse to install the wheel there.
+    "torch>=2.11.0",
     "numpy>=2",
     "absl-py>=2",
     # DO NOT change the minimum libtpu version without approval from TorchTPU
