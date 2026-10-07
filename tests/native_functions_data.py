@@ -206,7 +206,6 @@ UNREGISTERED_OPS = frozenset([
     'empty_quantized',
     'erfc.out',
     'fake_quantize_per_channel_affine_cachemask',
-    'frac.out',
     'fractional_max_pool2d.output',
     'fractional_max_pool2d_backward.grad_input',
     'fractional_max_pool3d.output',

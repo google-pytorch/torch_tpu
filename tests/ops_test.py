@@ -2282,6 +2282,14 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_foreach_zero(self):
     self.do_test_op("_foreach_zero")
 
+  def test_frac(self):
+    self.do_test_op(
+        "frac",
+        # TODO(b/568080282): Clean up exclude_dtypes once Dynamo recompile_limit
+        # eager fallback is fixed.
+        exclude_dtypes=(_if_tpu_vs_gpu_compiled(INTEGRAL_DTYPES, ())),
+    )
+
   def test_full(self):
     self.do_test_op("full")
 

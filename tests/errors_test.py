@@ -14097,6 +14097,33 @@ Device-side assertion tracking was not enabled by user.""",
           x, [h0, c0], params, False, 1, 0.0, False, False, False
       )
 
+  def test_frac_out_errors(self):
+    x_int = torch.ones(4, device=et.device(), dtype=torch.int32)
+    out_int = torch.empty_like(x_int)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""frac(): expected the input dtype to be floating point, got int32""",
+        gpu=""""frac_cuda" not implemented for 'Int'""",
+    ):
+      torch.ops.aten.frac.out(x_int, out=out_int)
+
+    x_f32 = torch.ones(4, device=et.device(), dtype=torch.float32)
+    out_cpu = torch.empty(4, device="cpu", dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""frac(): expected the output tensor to be on tpu, got cpu""",
+        gpu="""Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!""",
+    ):
+      torch.ops.aten.frac.out(x_f32, out=out_cpu)
+
+    out_f64 = torch.empty(4, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""frac(): expected the output dtype to be float32, got float64""",
+        gpu="""Found dtype Double but expected Float""",
+    ):
+      torch.ops.aten.frac.out(x_f32, out=out_f64)
+
 
 class InputPreprocessingErrorTest(et.ErrorTestBase):
 

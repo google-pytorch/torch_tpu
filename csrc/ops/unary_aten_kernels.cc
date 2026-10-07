@@ -404,4 +404,18 @@ at::Tensor& AtenFloorOut(const at::Tensor& self, at::Tensor& out) {
   });
 }
 
+at::Tensor& AtenFracOut(const at::Tensor& self, at::Tensor& out) {
+  TT_KERNEL(OpName::kFracOut, _, (self, out), {
+    TT_CHECK_THROW(c10::isFloatingType(self.scalar_type()),
+                   error::kInvalidArgument)
+        << "expected the input dtype to be floating point, got "
+        << ToString(self.scalar_type());
+    TT_THROW_IF_ERROR(
+        UnaryOpOut(self, out, BuildFracShlo,
+                   {.op_param_cache_keys = OpParamCacheKeys::Empty(),
+                    .allow_out_dtype_cast = false}));
+    return out;
+  });
+}
+
 }  // namespace torch_tpu

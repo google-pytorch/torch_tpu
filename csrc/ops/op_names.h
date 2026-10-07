@@ -398,6 +398,7 @@ enum class OpName {
   kForeachTrunc,
   kForeachTrunc_,
   kForeachZero_,
+  kFracOut,
   kFusedAdagrad,
   kFusedAdagradFunctional,
   kFusedAdagradFunctionalTensorLr,
@@ -1616,6 +1617,8 @@ ToString(  // NOLINT(google-readability-function-size)
       return "_foreach_trunc_";
     case OpName::kForeachZero_:
       return "_foreach_zero_";
+    case OpName::kFracOut:
+      return "frac.out";
     case OpName::kFusedAdagrad:
       return "_fused_adagrad_";
     case OpName::kFusedAdagradFunctional:
