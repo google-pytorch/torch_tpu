@@ -97,7 +97,12 @@ print_info "Locating PyTorch installation..."
 # `RuntimeError: Failed to load the backend extension: torch_tpu`, which reads
 # like a broken install rather than a path problem. Tip-of-main trees keep the
 # package under src/ and happen to dodge it; older commits do not.
-TORCH_PATH=$(python -P -c "import torch, os; print(os.path.dirname(torch.__file__))")
+#
+# find_spec locates torch WITHOUT importing it. Importing torch autoloads the
+# torch_tpu backend, which prints "Device type: tpu, ..." and "Initializing TPU
+# distributed runtime" to stdout, and $(...) captured those lines as the path:
+# the log read "Found PyTorch at: Device type: tpu, Device index: default".
+TORCH_PATH=$(python -P -c "import importlib.util, os; print(os.path.dirname(importlib.util.find_spec('torch').origin))")
 
 if [[ -z "$TORCH_PATH" ]]; then
     print_error "Could not find PyTorch installation"
