@@ -52,11 +52,12 @@
 #include "csrc/ops/binary_aten_kernels.h"
 #include "csrc/ops/clamp/clamp_aten_kernels.h"
 #include "csrc/ops/copy_from/copy_from_aten_kernels.h"
-#include "csrc/ops/linalg/vector_norm/aten_vector_norm_kernels.h"
+#include "csrc/ops/linalg/vector_norm/pnorm.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/min_max/min_max_aten_kernels.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
+#include "csrc/ops/reductions/reductions.h"
 #include "csrc/ops/round/round.h"
 #include "csrc/ops/sigmoid/sigmoid_aten_kernels.h"
 #include "csrc/ops/to_copy/to_copy_aten_kernels.h"
@@ -2961,37 +2962,75 @@ void AtenForeachCopy_(at::TensorList self, at::TensorList src,
 std::vector<at::Tensor> AtenForeachNormScalar(
     at::TensorList self, const at::Scalar& ord,
     const std::optional<c10::ScalarType> dtype) {
-  auto promoted_ord = PromoteScalar(ord);
+  PromotedScalar promoted_ord = PromoteScalar(ord);
   TT_KERNEL(
-      OpName::kForeachNormScalar, _,
+      OpName::kForeachNormScalar, param_keys,
       (self, promoted_ord,
-       IgnoreInCacheKey(dtype, "Delegates to AtenLinalgVectorNormOut")),
+       IgnoreInCacheKey(dtype, "Output dtype is in GraphSignature")),
       {
         TT_THROW_IF_ERROR(ValidateNotIntegral(self, /* arg_name= */ "self"));
-        TT_ASSIGN_OR_THROW(at::Tensor ord_tensor, promoted_ord.GetTensor());
-        std::vector<at::Tensor> result;
-        result.reserve(self.size());
-        for (const auto& tensor : self) {
-          auto out_dtype =
-              at::toRealValueType(dtype.value_or(tensor.scalar_type()));
-          TT_ASSIGN_OR_THROW(auto out,
-                             MakeEmptyTensor({}, out_dtype, tensor.device()));
-          // If the tensor is empty, return zero scalar.
-          // If ord < 0, to avoid inf caused by pow(0, ord), check for 0s
-          // in the tensor and return zero directly, which is the correct
-          // result.
-          if (tensor.numel() == 0 || (promoted_ord.scalar().to<double>() < 0 &&
-                                      tensor.eq(0).any().item<bool>())) {
-            out.fill_(0);
-            result.push_back(out);
-            continue;
-          }
-          AtenLinalgVectorNormOut(tensor.to(out_dtype), promoted_ord.scalar(),
-                                  /*dim=*/{},
-                                  /*keepdim=*/false, dtype, out);
-          result.push_back(out);
+        if (self.empty()) {
+          return {};
         }
-        return result;
+        TT_THROW_IF_ERROR(param_keys.SetParam("ord", ord));
+
+        const size_t num_tensors = self.size();
+        const double ord_val = ord.toDouble();
+
+        DtypeVec out_dtypes;
+        out_dtypes.reserve(num_tensors);
+        std::vector<absl::Span<const int64_t>> out_dims_list(num_tensors);
+        std::vector<at::Tensor> inputs;
+        // Reserve one extra slot at the end for the promoted `ord` tensor.
+        inputs.reserve(num_tensors + 1);
+        inputs.insert(inputs.end(), self.begin(), self.end());
+
+        for (const auto& tensor : self) {
+          const at::ScalarType out_scalar_type =
+              at::toRealValueType(dtype.value_or(tensor.scalar_type()));
+          TT_ASSIGN_OR_THROW(const mlir::ElementType out_element_type,
+                             ConvertTo<mlir::ElementType>(out_scalar_type));
+          out_dtypes.push_back(out_element_type);
+        }
+        TT_ASSIGN_OR_THROW(const at::Tensor ord_tensor,
+                           promoted_ord.GetTensor());
+        inputs.push_back(ord_tensor);
+
+        const auto op_builder = [num_tensors, ord_val, out_dtypes](
+                                    absl::Span<mlir::MlirOp> inputs,
+                                    mlir::MlirBuilder& builder)
+            -> absl::StatusOr<mlir::SmallVector<mlir::MlirOp>> {
+          mlir::SmallVector<mlir::MlirOp> results;
+          results.reserve(num_tensors);
+          mlir::MlirOp ord_op = inputs[num_tensors];
+          for (size_t i = 0; i < num_tensors; ++i) {
+            mlir::MlirOp self_op = inputs[i];
+            const mlir::RankedTensorType self_type =
+                GetTensorTypeOrDie(self_op);
+            if (self_type.hasStaticShape() && self_type.getNumElements() == 0) {
+              results.push_back(
+                  MakeScalarConstant(builder, 0.0, out_dtypes[i]));
+              continue;
+            }
+            const Dimensions reduce_dims = GetAllDimensions(self_op);
+            TT_ASSIGN_OR_RETURN(
+                mlir::MlirOp res,
+                BuildPNormShlo(self_op, ord_op, ord_val, reduce_dims,
+                               ReductionMode::kDropDims, out_dtypes[i]));
+            results.push_back(res);
+          }
+          return results;
+        };
+
+        DispatchOpOptions<kDynamicSize> options = {
+            .out_dtypes = out_dtypes,
+            .out_dims_list = out_dims_list,
+            .op_param_cache_keys = std::move(param_keys),
+        };
+        TT_ASSIGN_OR_THROW(std::vector<DeviceBufferRef> result_buffers,
+                           DispatchForeach(self, op_builder, std::move(inputs),
+                                           std::move(options)));
+        return ForeachConvertToTensor(std::move(result_buffers), out_dtypes);
       });
 }
 

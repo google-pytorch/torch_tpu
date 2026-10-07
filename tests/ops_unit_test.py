@@ -18852,6 +18852,48 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
         utils.assert_close(actual=tpu_comp_sm.cpu(), expected=cpu_sm)
         utils.assert_close(actual=tpu_comp_lsm.cpu(), expected=cpu_lsm)
 
+  def test_foreach_norm_and_clip_grad_norm(self):
+    for ord_val in (0, 1, 2, 3.0, -1.0, -1.5, float("inf"), float("-inf")):
+      for out_dtype in (None, torch.float32):
+
+        def foreach_norm_fn(device, ord_arg=ord_val, dtype_arg=out_dtype):
+          tensors = [
+              torch.tensor(
+                  [-3.0, 0.0, 4.0], dtype=torch.float32, device=device
+              ),
+              torch.tensor(
+                  [[1.0, -2.0], [3.0, 4.0]], dtype=torch.bfloat16, device=device
+              ),
+              torch.zeros((2, 2), dtype=torch.float32, device=device),
+              torch.tensor(5.0, dtype=torch.float32, device=device),
+          ]
+          if ord_arg >= 0 and ord_arg != float("inf"):
+            tensors.append(
+                torch.empty((0,), dtype=torch.float32, device=device)
+            )
+          return torch._foreach_norm(tensors, ord=ord_arg, dtype=dtype_arg)
+
+        self.assert_close_tpu_vs_cpu(foreach_norm_fn, rtol=1e-2, atol=1e-2)
+
+    def clip_grad_norm_fn(device):
+      params = [
+          torch.nn.Parameter(
+              torch.arange(1, 7, dtype=torch.float32, device=device).reshape(
+                  2, 3
+              )
+              * (i + 1)
+          )
+          for i in range(6)
+      ]
+      for i, p in enumerate(params):
+        p.grad = torch.full_like(p, float(i + 1))
+      total_norm = torch.nn.utils.clip_grad_norm_(
+          params, max_norm=1.0, foreach=True
+      )
+      return [total_norm] + [p.grad for p in params]
+
+    self.assert_close_tpu_vs_cpu(clip_grad_norm_fn, rtol=1e-5, atol=1e-5)
+
 
 if __name__ == "__main__":
   absltest.main()

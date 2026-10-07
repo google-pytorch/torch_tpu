@@ -125,7 +125,6 @@ void OpNameStack::Push(OpName op_name) {
           OpName::kForeachMul_Scalar,
           OpName::kForeachMul_ScalarList,
           OpName::kForeachMul_Tensor,
-          OpName::kForeachNormScalar,
           OpName::kForeachPowList,
           OpName::kForeachPowScalar,
           OpName::kForeachPowScalarAndTensor,
@@ -205,7 +204,7 @@ void OpNameStack::Push(OpName op_name) {
   // Only check known_composite_ops size once as it's a run-time constant.
   static const bool check_once = [] {
     ABSL_CHECK_EQ(  // CRASH_OK
-        known_composite_ops->size(), 153 /* DO NOT increase this! */)
+        known_composite_ops->size(), 152 /* DO NOT increase this! */)
         << "The size of known_composite_ops MUST NOT go up. "
            "If you are removing entries from known_composite_ops, please LOWER "
            "the expected size in the comparison to match the new size and "
