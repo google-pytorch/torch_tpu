@@ -297,8 +297,27 @@ runs:
         # One resolution for the whole requirement set. This lets uv fail on
         # conflicts rather than installing a mismatched library versions.
         echo "Installing: ${SPECS[*]}"
-        uv pip install --python "$VENV_PYTHON" \
-          ${INSTALL_ARGS[@]+"${INSTALL_ARGS[@]}"} "${SPECS[@]}"
+
+        # PyPI connections are occasionally reset mid-request ("broken pipe",
+        # "peer closed connection without sending TLS close_notify"). uv 0.5.x,
+        # as shipped in the runner images, gives up on these within a second,
+        # failing the whole job before the benchmark starts, so retry with
+        # backoff. Non-network failures (e.g. resolution conflicts) are retried
+        # too and still fail after MAX_ATTEMPTS. Drop this loop once the
+        # runners' uv honours UV_HTTP_RETRIES (uv >= 0.7.21).
+        MAX_ATTEMPTS=3
+        for ((attempt = 1; ; attempt++)); do
+          uv pip install --python "$VENV_PYTHON" \
+            ${INSTALL_ARGS[@]+"${INSTALL_ARGS[@]}"} "${SPECS[@]}" && break
+          status=$?
+          if ((attempt >= MAX_ATTEMPTS)); then
+            echo "error: uv pip install failed after $MAX_ATTEMPTS attempts." >&2
+            exit "$status"
+          fi
+          delay=$((30 * attempt))
+          echo "::warning::uv pip install failed (attempt $attempt/$MAX_ATTEMPTS); retrying in ${delay}s."
+          sleep "$delay"
+        done
 
         echo "BENCHMARK_PYTHON=$VENV_PYTHON" >> "$GITHUB_ENV"
         echo "::endgroup::"
