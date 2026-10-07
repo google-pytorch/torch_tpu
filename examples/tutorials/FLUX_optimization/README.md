@@ -351,18 +351,21 @@ matrix:
 # Configuration 1: Unoptimized Baseline (Eager)
 bazel run \
   //examples/tutorials/FLUX_optimization:flux_test -- \
+  --batch_size=2 --img_seq_len=512 --txt_seq_len=128 --hidden_size=1024 \
   --use_zero_copy_view=false --use_fused_rope=false --compile=false \
   --num_warmup_steps=2 --num_benchmark_steps=10
 
 # Configuration 2: Zero-Copy Views Only (Eager)
 bazel run \
   //examples/tutorials/FLUX_optimization:flux_test -- \
+  --batch_size=2 --img_seq_len=512 --txt_seq_len=128 --hidden_size=1024 \
   --use_zero_copy_view=true --use_fused_rope=false --compile=false \
   --num_warmup_steps=2 --num_benchmark_steps=10
 
 # Configuration 5: Full Optimization (Zero-Copy Views + Fused 2D RoPE + XLA Compile)
 bazel run \
   //examples/tutorials/FLUX_optimization:flux_test -- \
+  --batch_size=2 --img_seq_len=512 --txt_seq_len=128 --hidden_size=1024 \
   --use_zero_copy_view=true --use_fused_rope=true --compile=true \
   --num_warmup_steps=2 --num_benchmark_steps=10
 ```

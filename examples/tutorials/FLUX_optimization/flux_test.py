@@ -52,8 +52,9 @@ Run test suite via Bazel:
     //examples/tutorials/FLUX_optimization:flux_test
 
 Run interactive benchmark with custom flags:
-  bazel test \\
+  bazel run \\
     //examples/tutorials/FLUX_optimization:flux_test -- \\
+    --batch_size=2 --img_seq_len=512 --txt_seq_len=128 --hidden_size=1024 \\
     --use_zero_copy_view=true --use_fused_rope=true --compile=true \\
     --num_warmup_steps=2 --num_benchmark_steps=10
 """
@@ -91,25 +92,25 @@ _ENABLE_PROFILER = flags.DEFINE_bool(
 
 _BATCH_SIZE = flags.DEFINE_integer(
     "batch_size",
-    2,
+    1,
     "Batch size for the FLUX block benchmark.",
 )
 
 _IMG_SEQ_LEN = flags.DEFINE_integer(
     "img_seq_len",
-    512,
+    128,
     "Image sequence length (number of image patch tokens).",
 )
 
 _TXT_SEQ_LEN = flags.DEFINE_integer(
     "txt_seq_len",
-    128,
+    32,
     "Text sequence length (number of text tokens from T5).",
 )
 
 _HIDDEN_SIZE = flags.DEFINE_integer(
     "hidden_size",
-    1024,
+    512,
     "Hidden dimension size of the transformer block (must be divisible by"
     " num_heads).",
 )
@@ -464,10 +465,9 @@ class FluxBaselineTest(absltest.TestCase):
     # --------------------------------------------------------------------------
     # 2. Steady-State Timed Benchmark Loop with Native TPU Profiler
     # --------------------------------------------------------------------------
-    activities = [
-        torch.profiler.ProfilerActivity.CPU,
-        torch.profiler.ProfilerActivity.TPU,
-    ]
+    activities = [torch.profiler.ProfilerActivity.CPU]
+    if hasattr(torch.profiler.ProfilerActivity, "TPU"):
+      activities.append(torch.profiler.ProfilerActivity.TPU)
 
     bench_start_total = time.perf_counter()
 
