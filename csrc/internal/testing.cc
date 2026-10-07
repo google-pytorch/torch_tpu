@@ -15,10 +15,12 @@
  */
 
 #include <exception>
+#include <optional>
 #include <string>
 #include <string_view>
 
 #include "ATen/core/ATen_fwd.h"
+#include "absl/flags/flag.h"
 #include "c10/util/Exception.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/pybind_error_utils.h"
@@ -28,6 +30,7 @@
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
+#include "csrc/ops/python_context.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
 #include "torch/csrc/Exceptions.h"
@@ -201,6 +204,13 @@ TT_PYBIND11_MODULE(testing, m) {
         "Emits a TT_WARN warning from C++.");
   m.def("emit_tt_warn_once", &EmitTtWarnOnce, py::arg("category"),
         py::arg("msg"), "Emits a TT_WARN_ONCE warning from C++.");
+  m.def(
+      "enable_mlir_tracebacks",
+      [](std::optional<bool> enabled) {
+        absl::SetFlag(&FLAGS_torch_tpu_internal_mlir_tracebacks, enabled);
+      },
+      py::arg("enabled"),
+      "Sets FLAGS_torch_tpu_internal_mlir_tracebacks in C++ for testing.");
 }
 
 }  // namespace torch_tpu

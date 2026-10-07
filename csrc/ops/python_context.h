@@ -40,11 +40,14 @@
 #include <vector>
 
 #include "absl/base/nullability.h"
+#include "absl/flags/declare.h"
 #include "csrc/common/context_states.h"
 #include "csrc/ops/op_names.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/MLIRContext.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+
+ABSL_DECLARE_FLAG(std::optional<bool>, torch_tpu_internal_mlir_tracebacks);
 
 namespace torch_tpu {
 

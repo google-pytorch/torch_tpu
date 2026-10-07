@@ -69,6 +69,7 @@ pybind_extension(
         "//csrc/eager:op_dispatcher",
         "//csrc/eager:structured_log_buffer",
         "//csrc/eager:tensor_to_buffer",
+        "//csrc/ops:python_context",
         "//shims/torch",
         "//shims/torch:aten",
         "//shims/torch:aten_headers",

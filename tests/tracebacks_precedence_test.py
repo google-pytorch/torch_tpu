@@ -19,6 +19,7 @@ import os
 from absl.testing import absltest
 import torch
 import torch.export
+from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.export import export as torch_tpu_export
 from tests import seed_test_utils
 
@@ -32,9 +33,8 @@ class SimpleModule(torch.nn.Module):
 class TracebackPrecedenceTest(seed_test_utils.RepeatableTest):
 
   def test_traceback_disabled_by_context_manager_even_if_flag_enabled(self):
-    # This test assumes the flag --torch_tpu_internal_mlir_tracebacks=true
-    # is set in the BUILD file via test target args.
-
+    tt_testing.enable_mlir_tracebacks(True)
+    self.addCleanup(tt_testing.enable_mlir_tracebacks, None)
     sample_input = (torch.tensor([0.1, 0.2, 0.3]),)
     exported = torch.export.export(SimpleModule(), args=sample_input)
 
