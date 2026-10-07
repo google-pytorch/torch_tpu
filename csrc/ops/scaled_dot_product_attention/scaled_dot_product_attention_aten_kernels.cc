@@ -90,6 +90,21 @@ bool IsSupportedFlashAttentionShape(
   return has_batch && valid_head_dim;
 }
 
+bool ShouldPreferFlashAttentionOverShlo(const at::Tensor& query,
+                                        const at::Tensor& key) {
+  constexpr int64_t kMinFlashHeadDim = 128;
+  constexpr int64_t kMinFlashSeqLen = 512;
+  const int64_t rank = query.ndimension();
+  if (rank < 4 || key.ndimension() < 4) {
+    return false;
+  }
+  const int64_t head_dim = query.size(rank - 1);
+  const int64_t q_seq_len = query.size(rank - 2);
+  const int64_t kv_seq_len = key.size(key.ndimension() - 2);
+  return head_dim >= kMinFlashHeadDim && q_seq_len >= kMinFlashSeqLen &&
+         kv_seq_len >= kMinFlashSeqLen;
+}
+
 }  // namespace
 
 // Torch's extensibility is pretty gross here due to weird SDPA
@@ -133,6 +148,11 @@ int64_t AtenFusedSdpChoice(const at::Tensor& query, const at::Tensor& key,
         bool has_dropout = dropout_p != 0.0;
         bool valid_flash_dropout = dropout_p >= 0.0 && dropout_p < 1.0;
 
+        const bool can_use_overrideable =
+            (math_enabled || overrideable_enabled) && consistent_ranks &&
+            has_batch && !has_dropout &&
+            c10::isFloatingType(query.scalar_type());
+
         if (flash_enabled) {
           bool supported_flash_dtype =
               (query.scalar_type() == at::ScalarType::Float ||
@@ -140,7 +160,10 @@ int64_t AtenFusedSdpChoice(const at::Tensor& query, const at::Tensor& key,
           if (supported_flash_dtype &&
               IsSupportedFlashAttentionShape(query, key, value, attn_mask) &&
               consistent_ranks && valid_flash_dropout) {
-            return static_cast<int64_t>(at::SDPBackend::cudnn_attention);
+            if (!overrideable_enabled || !can_use_overrideable ||
+                ShouldPreferFlashAttentionOverShlo(query, key)) {
+              return static_cast<int64_t>(at::SDPBackend::cudnn_attention);
+            }
           } else {
             // Use c10::str rather than absl::StrCat as it will convert enums
             // into their string representation.
