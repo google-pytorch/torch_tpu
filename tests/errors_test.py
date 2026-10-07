@@ -21,7 +21,7 @@ import unittest
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
-from torch_tpu._internal import env  # pylint: disable=unused-import
+from torch_tpu._internal.utils import utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import error_testing as et
 from tests import oss_utils  # pylint: disable=unused-import  # noqa: F401
@@ -1166,7 +1166,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     """Tests that mm with non-2D argument 1 fails with expected error."""
     t1 = torch.ones(2, device=et.device(), dtype=torch.float32)
     t2 = torch.ones(4, 2, device=et.device(), dtype=torch.float32)
-    if env.IS_INTERNAL_TORCH_TPU:
+    if utils.get_torch_version() >= (2, 15):
       tpu_error_msg = "mm: self must be a matrix, got 1-D tensor"
     else:
       tpu_error_msg = "self must be a matrix"
@@ -1180,7 +1180,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     """Tests that mm with non-2D argument 2 fails with expected error."""
     t1 = torch.ones(2, 3, device=et.device(), dtype=torch.float32)
     t2 = torch.ones(3, 3, 4, device=et.device(), dtype=torch.float32)
-    if env.IS_INTERNAL_TORCH_TPU:
+    if utils.get_torch_version() >= (2, 15):
       tpu_error_msg = "mm: mat2 must be a matrix, got 3-D tensor"
     else:
       tpu_error_msg = "mat2 must be a matrix"
@@ -1194,7 +1194,7 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     """Tests that mm with mismatched sizes fails with expected error."""
     t1 = torch.ones(2, 3, device=et.device(), dtype=torch.float32)
     t2 = torch.ones(4, 2, device=et.device(), dtype=torch.float32)
-    if env.IS_INTERNAL_TORCH_TPU:
+    if utils.get_torch_version() >= (2, 15):
       tpu_error_msg = (
           "mm: mat1 and mat2 shapes cannot be multiplied (2x3 and 4x2)"
       )
@@ -3032,7 +3032,7 @@ Device-side assertion tracking was not enabled by user.""",
     mat1 = torch.ones(2, device=et.device(), dtype=torch.float32)
     mat2 = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
     # This error is created by pytorch before our kernel is called.
-    if env.IS_INTERNAL_TORCH_TPU:
+    if utils.get_torch_version() >= (2, 15):
       tpu_error_msg = "addmm: self must be a matrix, got 1-D tensor"
     else:
       tpu_error_msg = "mat1 must be a matrix, got 1-D tensor"
@@ -3047,7 +3047,7 @@ Device-side assertion tracking was not enabled by user.""",
     mat1 = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
     mat2 = torch.ones(2, device=et.device(), dtype=torch.float32)
     # This error is created by pytorch before our kernel is called.
-    if env.IS_INTERNAL_TORCH_TPU:
+    if utils.get_torch_version() >= (2, 15):
       tpu_error_msg = "addmm: mat2 must be a matrix, got 1-D tensor"
     else:
       tpu_error_msg = "mat2 must be a matrix, got 1-D tensor"
@@ -3062,7 +3062,7 @@ Device-side assertion tracking was not enabled by user.""",
     mat1 = torch.ones(3, 13, device=et.device(), dtype=torch.float32)
     mat2 = torch.ones(11, 2, device=et.device(), dtype=torch.float32)
     # This error is created by pytorch before our kernel is called.
-    if env.IS_INTERNAL_TORCH_TPU:
+    if utils.get_torch_version() >= (2, 15):
       tpu_error_msg = (
           "addmm: mat1 and mat2 shapes cannot be multiplied (3x13 and 11x2)"
       )
@@ -3126,7 +3126,7 @@ Device-side assertion tracking was not enabled by user.""",
     input_ = torch.ones(3, 2, device=et.device(), dtype=torch.float32)
     mat1 = torch.ones(3, 4, device=et.device(), dtype=torch.float32)
     mat2 = torch.ones(5, 2, device=et.device(), dtype=torch.float32)
-    if env.IS_INTERNAL_TORCH_TPU:
+    if utils.get_torch_version() >= (2, 15):
       tpu_error_msg = (
           "addmm: mat1 and mat2 shapes cannot be multiplied (3x4 and 5x2)"
       )
@@ -3158,7 +3158,7 @@ Device-side assertion tracking was not enabled by user.""",
     input_ = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
     mat1 = torch.ones(2, device=et.device(), dtype=torch.float32)
     mat2 = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
-    if env.IS_INTERNAL_TORCH_TPU:
+    if utils.get_torch_version() >= (2, 15):
       tpu_error_msg = "addmm: self must be a matrix, got 1-D tensor"
     else:
       tpu_error_msg = "mat1 must be a matrix, got 1-D tensor"
@@ -3188,7 +3188,7 @@ Device-side assertion tracking was not enabled by user.""",
     input_ = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
     mat1 = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
     mat2 = torch.ones(2, 2, 2, device=et.device(), dtype=torch.float32)
-    if env.IS_INTERNAL_TORCH_TPU:
+    if utils.get_torch_version() >= (2, 15):
       tpu_error_msg = "addmm: mat2 must be a matrix, got 3-D tensor"
     else:
       tpu_error_msg = "mat2 must be a matrix, got 3-D tensor"
@@ -5653,7 +5653,7 @@ Supported combinations for non-constant padding:
   def test_aminmax_complex(self, op_name_cpu: str, op_name_tpu: str, op: Any):
     tensor = torch.ones(5, device=et.device(), dtype=torch.complex64)
 
-    if op is torch.aminmax and env.IS_INTERNAL_TORCH_TPU:
+    if op is torch.aminmax and utils.get_torch_version() >= (2, 15):
       err_type = TypeError
       tpu_msg = "aminmax not implemented for ComplexFloat"
       gpu_msg = "aminmax not implemented for ComplexFloat"
