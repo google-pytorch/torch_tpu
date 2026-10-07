@@ -335,7 +335,7 @@ class SingleTraceTrainer:
   def _update(self, new_pg, updated_bufs):
     self._buffers = updated_bufs
     self._param_group = new_pg
-    self._model.load_state_dict(self.bufs, strict=False)
+    self._model.load_state_dict(self._bufs, strict=False)
 
   @property
   @_annotations.experimental(
@@ -363,10 +363,7 @@ class SingleTraceTrainer:
     return {self._key_map[k]: v for k, v in p.items()}
 
   @property
-  @_annotations.experimental(
-      "bufs is experimental and may change or be removed without notice."
-  )
-  def bufs(self) -> dict[str, torch.Tensor]:
+  def _bufs(self) -> dict[str, torch.Tensor]:
     """Returns buffers with their original names."""
     return {self._key_map[k]: v for k, v in self._buffers.items()}
 
@@ -537,7 +534,7 @@ class SingleTraceTrainer:
       else:
         loss, grads, updated_bufs = _pytree.tree_unflatten(result, out_spec)
         self._buffers = updated_bufs
-        self._model.load_state_dict(self.bufs, strict=False)
+        self._model.load_state_dict(self._bufs, strict=False)
 
         def _unwrap_sparse(x):
           if isinstance(x, _SparseGradPlaceholder):

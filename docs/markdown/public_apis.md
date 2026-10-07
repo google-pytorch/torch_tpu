@@ -150,7 +150,6 @@ process. Use it at your own risk. Using it triggers a one-time warning.
 *   `torch.tpu.optimizers.Optimizer.init_param_group`
 *   `torch.tpu.optimizers.Optimizer.step`
 *   `torch.tpu.optimizers.SingleTraceTrainer`
-*   `torch.tpu.optimizers.SingleTraceTrainer.bufs` (getter)
 *   `torch.tpu.optimizers.SingleTraceTrainer.make_compiled_train_step`
 *   `torch.tpu.optimizers.SingleTraceTrainer.param_group` (getter)
 *   `torch.tpu.optimizers.SingleTraceTrainer.params` (getter)
