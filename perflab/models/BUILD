@@ -33,6 +33,7 @@ torch_tpu_py_library(
         "gpt.py",
         "llama.py",
         "qwen.py",
+        "synthetic.py",
     ],
     allow_multiple_srcs = True,
     deps = [
