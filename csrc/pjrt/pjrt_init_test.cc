@@ -162,5 +162,14 @@ TEST_F(PjRtInitTest, OnInitializedHookIsInvoked) {
   EXPECT_TRUE(PjrtBackend::GetInstance().IsInitialized());
 }
 
+TEST_F(PjRtInitTest, SingleSliceInitDoesNotSetSkipMegascaleEnvVar) {
+  unsetenv(kSkipMegascalePjrtClientEnvVar);
+  PjrtBackend::GetInstance().SetPjRtInitializationOptions(
+      {.device_type = "tpu"});
+
+  ASSERT_NE(PjrtBackend::GetInstance().GetClient(), nullptr);
+  EXPECT_EQ(std::getenv(kSkipMegascalePjrtClientEnvVar), nullptr);
+}
+
 }  // namespace
 }  // namespace torch_tpu

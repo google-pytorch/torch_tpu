@@ -29,6 +29,7 @@
 
 #include "absl/base/no_destructor.h"
 #include "absl/base/nullability.h"
+#include "absl/container/flat_hash_map.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
@@ -54,6 +55,7 @@
 #include "xla/pjrt/host_memory_allocator.h"
 #include "xla/pjrt/pjrt_api.h"
 #include "xla/pjrt/pjrt_client.h"
+#include "xla/pjrt/pjrt_device_description.h"
 #include "xla/pjrt/plugin/plugin_names.h"
 #include "xla/tsl/framework/allocator.h"
 
@@ -163,6 +165,24 @@ std::optional<std::vector<int64_t>> GetIntVecAttribute(  // INT_VEC_OK
   return std::nullopt;
 }
 
+// Sets SKIP_MEGASCALE_PJRT_CLIENT if the device belongs to a MegaScale client
+// (only those publish `slice_index`), so that later PJRT clients in this
+// process, e.g. JAX's for Pallas, skip MegaScale. A second MegaScale client
+// would redo slice discovery, which the coordinator rejects. The variable is
+// never unset, since any later MegaScale client would fail the same way.
+void MaybeSkipMegascaleForLaterClients(
+    const absl::flat_hash_map<std::string, xla::PjRtDeviceAttribute>&
+        device_attributes) {
+  if (!device_attributes.contains("slice_index")) {
+    return;
+  }
+  SetEnv<kSkipMegascalePjrtClientEnvVar>("true");
+  ABSL_LOG(INFO) << "TorchTPU owns the MegaScale PJRT client; set "
+                 << kSkipMegascalePjrtClientEnvVar
+                 << " so that later PJRT clients in this process skip "
+                    "MegaScale.";
+}
+
 }  // namespace
 
 PjrtBackend& PjrtBackend::GetInstance() {
@@ -268,6 +288,8 @@ absl::Status PjrtBackend::InitializeInternal() {
   const auto& addressable_devices = client_->addressable_devices();
   ABSL_CHECK(!addressable_devices.empty())  // CRASH_OK
       << "No addressable PjRt devices found.";
+  // Do this before anything else in this process can create a PJRT client.
+  MaybeSkipMegascaleForLaterClients(addressable_devices[0]->Attributes());
 
   int world_size = 1;
   if (const auto& world_size_or =

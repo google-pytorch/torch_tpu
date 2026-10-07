@@ -70,6 +70,9 @@ inline constexpr char kNodeRankEnvVar[] = "NODE_RANK";
 // running on the same host.
 inline constexpr char kNprocEnvVar[] = "NPROC";
 inline constexpr char kRankEnvVar[] = "RANK";  // Set by launchers.
+// Read by libtpu: if set to any value, new TPU PJRT clients skip MegaScale.
+inline constexpr char kSkipMegascalePjrtClientEnvVar[] =
+    "SKIP_MEGASCALE_PJRT_CLIENT";
 // Standard temporary directory.
 inline constexpr char kTmpdirEnvVar[] = "TMPDIR";
 // If set to "0", PyTorch skips autoloading out-of-tree device backends.
@@ -284,6 +287,7 @@ inline constexpr auto kEnvVarToStage =
         // environment variable widely used by production workloads. The
         // TorchTPU team is committed to honor this env var.
         {kRankEnvVar, SymbolStage::Stable()},
+        {kSkipMegascalePjrtClientEnvVar, SymbolStage::InternalImplementation()},
         {kTmpdirEnvVar, SymbolStage::Stable()},
         {kTorchDeviceBackendAutoloadEnvVar, SymbolStage::Stable()},
         {kTorchShowCppStacktracesEnvVar, SymbolStage::Experimental()},

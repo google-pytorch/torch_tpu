@@ -310,8 +310,8 @@ def topology_aware_mesh(
         "'slice_index' attribute, so the job mixes the MegaScale PJRT client "
         "with the plain one. The ranks that stay silent cannot be placed, "
         "since their slice is unknowable, so every rank has to agree. Check "
-        "that --megascale_port and SKIP_MEGASCALE_PJRT_CLIENT are set the "
-        "same way on every task."
+        "that every task gets the same MegaScale settings (the MEGASCALE_* "
+        "environment variables, or --megascale_port)."
     )
   has_slice_index = ranks_reporting_slice_index == world_size
   num_slices = len({i.slice_index for i in infos}) if has_slice_index else 1
@@ -333,11 +333,12 @@ def topology_aware_mesh(
           "not expose a 'slice_index' attribute. That attribute is published "
           "only by the MegaScale PJRT client, which the TPU plugin installs "
           "when --megascale_port >= 0 and SKIP_MEGASCALE_PJRT_CLIENT is "
-          "unset. libtpu sets --megascale_port to MEGASCALE_PORT once "
-          "MEGASCALE_COORDINATOR_ADDRESS, MEGASCALE_SLICE_ID and "
-          "MEGASCALE_NUM_SLICES are set. Give the coordinator address a port, "
-          "e.g. <MASTER_ADDR>:8080, since libtpu otherwise appends each "
-          "process's own MEGASCALE_PORT."
+          "unset; do not set it at launch, TorchTPU sets it itself after "
+          "creating its client. libtpu sets --megascale_port to "
+          "MEGASCALE_PORT once MEGASCALE_COORDINATOR_ADDRESS, "
+          "MEGASCALE_SLICE_ID and MEGASCALE_NUM_SLICES are set. Give the "
+          "coordinator address a port, e.g. <MASTER_ADDR>:8080, since libtpu "
+          "otherwise appends each process's own MEGASCALE_PORT."
       )
     if dcn_mesh_shape is None:
       dcn_mesh_shape = _infer_dcn_mesh_shape(mesh_shape, num_slices)
