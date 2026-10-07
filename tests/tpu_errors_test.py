@@ -15,6 +15,7 @@
 """Tests error handling on TPU only."""
 
 import collections
+from collections.abc import Mapping, Sequence
 import contextlib
 import os
 import re
@@ -4929,9 +4930,72 @@ class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
       torch.nn.functional.rms_norm(x_empty, (8,), weight=w_int, eps=1e-5)
 
 
+# Environment variables that `distributed.set_tpu_launch_env` reads or writes,
+# directly or through `torch_tpu._internal.env`.
+_LAUNCH_ENV_VARS = (
+    "JOB_COMPLETION_INDEX",
+    "MASTER_ADDR",
+    "MASTER_PORT",
+    "NNODES",
+    "NODE_RANK",
+    "TORCH_TPU_BASE_PORT",
+    "TORCH_TPU_DEVICES_PER_HOST",
+    "TORCH_TPU_SLICEBUILDER_ADDRESSES",
+    "TORCH_TPU_TOPOLOGY",
+    "TORCH_TPU_XPROF_SESSION_ID",
+    "TPU_WORKER_HOSTNAMES",
+)
+
+
+def _set_env_var(name: str, value: str) -> None:
+  """Sets `name` to `value` in `os.environ`."""
+  os.environ[name] = value
+
+
+def _unset_env_var(name: str) -> None:
+  """Unsets `name` in `os.environ`."""
+  os.environ.pop(name, None)
+
+
+@contextlib.contextmanager
+def _patch_env_vars(names: Sequence[str], values: Mapping[str, str]):
+  """Sets `names` in `os.environ` to their entries in `values`, or unsets them.
+
+  Only the variables in `names` are touched, and only the ones whose value
+  actually changes, so the C-level environment is mutated as little as
+  possible. The original values are restored on exit.
+  """
+
+  def apply(target: Mapping[str, str | None]) -> None:
+    for name, value in target.items():
+      # Skip no-op writes: each putenv/unsetenv can race with getenv() on
+      # libtpu threads, which is what this helper exists to avoid.
+      if os.environ.get(name) == value:
+        continue
+      if value is None:
+        _unset_env_var(name)
+      else:
+        _set_env_var(name, value)
+
+  saved = {name: os.environ.get(name) for name in names}
+  try:
+    apply({name: values.get(name) for name in names})
+    yield
+  finally:
+    apply(saved)
+
+
 @contextlib.contextmanager
 def _mock_launch_env(values: dict[str, str]):
-  """Makes the environment look like `values` to `distributed.set_tpu_launch_env`."""
+  """Makes the environment look like `values` to `distributed.set_tpu_launch_env`.
+
+  Reads through `torch_tpu._internal.env` are redirected to `values`. In
+  `os.environ`, only the variables `set_tpu_launch_env` reads or writes
+  directly are replaced; the rest of the process environment is left alone.
+  `mock.patch.dict(os.environ, ..., clear=True)` would instead unset and re-add
+  every variable on entry and exit, which races with `getenv()` on libtpu's
+  background threads and can crash the process (SIGSEGV in `getenv`).
+  """
 
   def get_str_env_once(name, default_value=None):
     return values.get(name, default_value)
@@ -4940,7 +5004,7 @@ def _mock_launch_env(values: dict[str, str]):
     return int(values[name]) if name in values else default_value
 
   with contextlib.ExitStack() as stack:
-    stack.enter_context(mock.patch.dict(os.environ, values, clear=True))
+    stack.enter_context(_patch_env_vars(_LAUNCH_ENV_VARS, values))
     stack.enter_context(
         mock.patch.dict(env_utils._resolved_values, {}, clear=True)  # pylint: disable=protected-access
     )
