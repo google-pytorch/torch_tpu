@@ -21,6 +21,7 @@
 #include <optional>
 
 #include "csrc/internal/mosaic/kiln/core/dtype.h"
+#include "csrc/internal/mosaic/kiln/core/elementwise.h"
 #include "csrc/internal/mosaic/kiln/core/index_arg.h"
 #include "csrc/internal/mosaic/kiln/core/literal.h"
 #include "csrc/internal/mosaic/kiln/core/scalar.h"
@@ -31,11 +32,15 @@ namespace torch_tpu::kiln {
 
 // A vector-typed value: a tile living in vregs.
 //
-// Binary operators broadcast numpy-style (size-1 dims and lower ranks are
-// broadcast, e.g. `(qt, kt) - (qt, 1)`), and accept a `Literal` or `Scalar` on
-// either side which is splatted in the tile's dtype. Element types are never
-// promoted implicitly; use `AsType`.
-class Tile : public ValueBase, public WithLiteralOps<Tile, Tile> {
+// Arithmetic, bitwise, comparison (yielding an i1 mask tile), min / max /
+// select and unary math operators come from `WithElementwiseOps`. Their
+// operands broadcast numpy-style (size-1 dims and lower ranks are broadcast,
+// e.g. `(qt, kt) - (qt, 1)`), and accept a `Literal` or `Scalar` on either
+// side which is splatted in the tile's dtype. Element types are never promoted
+// implicitly; use `AsType`.
+class Tile : public ValueBase,
+             public WithElementwiseOps<Tile, Tile>,
+             public WithLiteralOps<Tile, Tile> {
  public:
   // Construct a 0-D tile from a scalar.
   /* implicit */ Tile(Scalar scalar);  // NOLINT(google-explicit-constructor)
@@ -47,14 +52,6 @@ class Tile : public ValueBase, public WithLiteralOps<Tile, Tile> {
   int64_t rank() const;
   int64_t num_elements() const;
 
-  // Element type conversion (float<->float, int<->float, int widths).
-  Tile AsType(DType target) const;
-  // Reinterprets the bit pattern of each element as `target` (must have the
-  // same bit width).
-  Tile Bitcast(DType target) const;
-  Tile ToI32() const;
-  Tile ToF32() const;
-  Tile ToBF16() const;
   // Same number of elements, different shape.
   Tile Reshape(llvm::ArrayRef<int64_t> shape) const;
   // Drops leading unit dimensions, but never below rank 2.
@@ -82,32 +79,6 @@ class Tile : public ValueBase, public WithLiteralOps<Tile, Tile> {
   // A splat constant with the same shape and dtype as this tile.
   Tile Full(Literal value) const;
 
-  friend Tile operator-(Tile t);
-  friend Tile operator+(Tile lhs, Tile rhs);
-  friend Tile operator-(Tile lhs, Tile rhs);
-  friend Tile operator*(Tile lhs, Tile rhs);
-  friend Tile operator/(Tile lhs, Tile rhs);
-  friend Tile operator%(Tile lhs, Tile rhs);
-
-  // Comparisons produce an i1 tile (a mask).
-  friend Tile operator==(Tile lhs, Tile rhs);
-  friend Tile operator!=(Tile lhs, Tile rhs);
-  friend Tile operator<(Tile lhs, Tile rhs);
-  friend Tile operator<=(Tile lhs, Tile rhs);
-  friend Tile operator>(Tile lhs, Tile rhs);
-  friend Tile operator>=(Tile lhs, Tile rhs);
-
-  // Bitwise / logical ops on integer and mask tiles. `>>` is an arithmetic
-  // (signed) shift.
-  friend Tile operator&(Tile lhs, Tile rhs);
-  friend Tile operator|(Tile lhs, Tile rhs);
-  friend Tile operator^(Tile lhs, Tile rhs);
-  friend Tile operator<<(Tile lhs, Tile rhs);
-  friend Tile operator>>(Tile lhs, Tile rhs);
-
-  // Logical (unsigned) right shift.
-  friend Tile LogicalRightShift(Tile lhs, Tile rhs);
-
  private:
   friend struct internal::ValueAccess;
   explicit Tile(const void* impl);
@@ -120,7 +91,6 @@ Tile NInf(llvm::ArrayRef<int64_t> shape, DType dtype);
 Tile Iota(llvm::ArrayRef<int64_t> shape, DType dtype, int axis);
 Tile Splat(Scalar scalar, llvm::ArrayRef<int64_t> shape);
 
-inline Tile Bitcast(Tile t, DType target) { return t.Bitcast(target); }
 inline Tile Rotate(Tile t, IndexArg amount, int32_t axis) {
   return t.Rotate(amount, axis);
 }
@@ -135,16 +105,8 @@ inline Scalar Extract(Tile t, llvm::ArrayRef<int64_t> indices) {
   return t.Extract(indices);
 }
 
-// Unary elementwise math on tiles.
-Tile Exp(Tile t);
-Tile Exp2(Tile t);
-Tile Log(Tile t);
-Tile Log2(Tile t);
-Tile Sqrt(Tile t);
-Tile Rsqrt(Tile t);
-Tile Tanh(Tile t);
+// Approximate or exact reciprocal (`tpu.reciprocal`).
 Tile Reciprocal(Tile t, bool approx = false);
-Tile Abs(Tile t);
 
 // Reductions along `axis`, keeping the reduced dimension as size 1.
 Tile MaxReduce(Tile t, int axis);
@@ -152,11 +114,6 @@ Tile SumReduce(Tile t, int axis);
 
 // 2-D transpose.
 Tile Transpose(Tile t);
-
-// Elementwise min / max / select.
-Tile Max(Tile lhs, Tile rhs);
-Tile Min(Tile lhs, Tile rhs);
-Tile Select(Tile mask, Tile if_true, Tile if_false);
 
 enum class ContractPrecision {
   kBF16,

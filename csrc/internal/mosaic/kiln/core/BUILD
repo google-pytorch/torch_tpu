@@ -67,6 +67,34 @@ torch_tpu_cc_library(
 )
 
 torch_tpu_cc_library(
+    name = "elementwise",
+    hdrs = ["elementwise.h"],
+    deps = [":dtype"],
+)
+
+# Shared definitions of the elementwise ops. Only for the .cc files of handle
+# types that explicitly instantiate `internal::ElementwiseOps`.
+torch_tpu_cc_library(
+    name = "elementwise_impl",
+    srcs = ["elementwise_impl.cc"],
+    hdrs = ["elementwise_impl.h"],
+    visibility = ["//visibility:private"],
+    deps = [
+        ":context",
+        ":dtype",
+        ":elementwise",
+        "//csrc/common:libtpu_version",
+        "//csrc/common:version",
+        "@com_google_absl//absl/log:absl_check",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:ArithDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:MathDialect",
+        "@llvm-project//mlir:VectorDialect",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "scalar",
     srcs = ["scalar.cc"],
     hdrs = ["scalar.h"],
@@ -74,14 +102,13 @@ torch_tpu_cc_library(
         ":cond",
         ":context",
         ":dtype",
+        ":elementwise",
+        ":elementwise_impl",
         ":literal",
         ":value_base",
-        "//csrc/common:libtpu_version",
-        "//csrc/common:version",
         "@com_google_absl//absl/log:absl_check",
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:IR",
-        "@llvm-project//mlir:MathDialect",
     ],
 )
 
@@ -117,18 +144,17 @@ torch_tpu_cc_library(
     deps = [
         ":context",
         ":dtype",
+        ":elementwise",
+        ":elementwise_impl",
         ":index_arg",
         ":literal",
         ":scalar",
         ":value_base",
-        "//csrc/common:libtpu_version",
-        "//csrc/common:version",
         "//csrc/internal/mosaic:op_builders",
         "@com_google_absl//absl/log:absl_check",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:IR",
-        "@llvm-project//mlir:MathDialect",
         "@llvm-project//mlir:VectorDialect",
         "@xla//xla/mosaic:tpu_dialect",
     ],

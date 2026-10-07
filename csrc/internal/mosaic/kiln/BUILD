@@ -28,6 +28,7 @@ torch_tpu_cc_library(
         "//csrc/internal/mosaic/kiln/core:cond",
         "//csrc/internal/mosaic/kiln/core:control_flow",
         "//csrc/internal/mosaic/kiln/core:dtype",
+        "//csrc/internal/mosaic/kiln/core:elementwise",
         "//csrc/internal/mosaic/kiln/core:index_arg",
         "//csrc/internal/mosaic/kiln/core:index_map",
         "//csrc/internal/mosaic/kiln/core:kernel",
@@ -49,6 +50,7 @@ torch_tpu_cc_test(
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
+        "@xla//xla/hlo/testlib:filecheck",
     ],
 )
 

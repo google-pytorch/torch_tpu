@@ -16,16 +16,14 @@
 
 #include "csrc/internal/mosaic/kiln/core/tile.h"
 
-#include <algorithm>
 #include <cstdint>
-#include <numbers>
 #include <optional>
 
 #include "absl/log/absl_check.h"
-#include "csrc/common/libtpu_version.h"
-#include "csrc/common/version.h"
 #include "csrc/internal/mosaic/kiln/core/context.h"
 #include "csrc/internal/mosaic/kiln/core/dtype.h"
+#include "csrc/internal/mosaic/kiln/core/elementwise.h"
+#include "csrc/internal/mosaic/kiln/core/elementwise_impl.h"  // IWYU pragma: keep
 #include "csrc/internal/mosaic/kiln/core/index_arg.h"
 #include "csrc/internal/mosaic/kiln/core/literal.h"
 #include "csrc/internal/mosaic/kiln/core/scalar.h"
@@ -38,8 +36,6 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Arith/IR/ArithAttributes.h"
-#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributeInterfaces.h"
@@ -53,7 +49,6 @@ namespace torch_tpu::kiln {
 namespace {
 
 namespace arith = mlir::arith;
-namespace math = mlir::math;
 namespace tpu = mlir::tpu;
 namespace vector = mlir::vector;
 
@@ -85,87 +80,6 @@ mlir::TypedAttr NegativeInfinity(mlir::ImplicitLocOpBuilder& b, DType dtype) {
   }
   return b.getIntegerAttr(
       mlir_type, llvm::APInt::getSignedMinValue(dtype.GetIntOrFloatBitWidth()));
-}
-
-// numpy broadcasting rule over two static shapes.
-Shape BroadcastShapes(llvm::ArrayRef<int64_t> lhs,
-                      llvm::ArrayRef<int64_t> rhs) {
-  const int64_t rank = std::max(lhs.size(), rhs.size());
-  Shape result(rank, 1);
-  for (int64_t i = 0; i < rank; ++i) {
-    const int64_t l = i < rank - static_cast<int64_t>(lhs.size())
-                          ? 1
-                          : lhs[i - (rank - lhs.size())];
-    const int64_t r = i < rank - static_cast<int64_t>(rhs.size())
-                          ? 1
-                          : rhs[i - (rank - rhs.size())];
-    ABSL_CHECK(l == r || l == 1 || r == 1)  // CRASH_OK
-        << "shapes are not broadcastable";
-    result[i] = std::max(l, r);
-  }
-  return result;
-}
-
-struct BroadcastedTiles {
-  Tile lhs;
-  Tile rhs;
-};
-
-// Brings `lhs` and `rhs` to a common shape. Dtypes must already match.
-BroadcastedTiles Broadcast(Tile lhs, Tile rhs) {
-  ABSL_CHECK_EQ(lhs.dtype(), rhs.dtype())  // CRASH_OK
-      << "Tile binary operators require operands of the same dtype";
-  const Shape shape = BroadcastShapes(lhs.shape(), rhs.shape());
-  return {lhs.BroadcastTo(shape), rhs.BroadcastTo(shape)};
-}
-
-template <typename FloatOp, typename IntOp>
-Tile Arith(Tile lhs, Tile rhs) {
-  auto [l, r] = Broadcast(lhs, rhs);
-  ABSL_CHECK(l.dtype().IsIntOrFloat())  // CRASH_OK
-      << "Tile arithmetic requires integer or floating-point operands";
-  mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
-  if (l.dtype().IsFloat()) {
-    return internal::wrap<Tile>(
-        FloatOp::create(b, internal::unwrap(l), internal::unwrap(r)));
-  }
-  return internal::wrap<Tile>(
-      IntOp::create(b, internal::unwrap(l), internal::unwrap(r)));
-}
-
-Tile Compare(Tile lhs, Tile rhs, arith::CmpFPredicate fpred,
-             arith::CmpIPredicate ipred) {
-  auto [l, r] = Broadcast(lhs, rhs);
-  ABSL_CHECK(l.dtype().IsIntOrFloat())  // CRASH_OK
-      << "Tile comparison requires integer or floating-point operands";
-  mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
-  if (l.dtype().IsFloat()) {
-    return internal::wrap<Tile>(arith::CmpFOp::create(
-        b, fpred, internal::unwrap(l), internal::unwrap(r)));
-  }
-  return internal::wrap<Tile>(arith::CmpIOp::create(
-      b, ipred, internal::unwrap(l), internal::unwrap(r)));
-}
-
-template <typename Op>
-Tile BitwiseTile(Tile lhs, Tile rhs) {
-  DType lhs_dtype = lhs.dtype();
-  DType rhs_dtype = rhs.dtype();
-  ABSL_CHECK(  // CRASH_OK
-      (lhs_dtype.IsInt() || lhs_dtype.IsBool()) &&
-      (rhs_dtype.IsInt() || rhs_dtype.IsBool()))
-      << "Bitwise tile operators require integer or mask operands";
-  auto [l, r] = Broadcast(lhs, rhs);
-  return internal::wrap<Tile>(Op::create(
-      internal::CurrentBuilder(), internal::unwrap(l), internal::unwrap(r)));
-}
-
-template <typename Op>
-Tile UnaryFloat(Tile t) {
-  ABSL_CHECK(t.dtype().IsFloat())  // CRASH_OK
-      << "Unary math operation requires a floating-point tile";
-  return internal::wrap<Tile>(
-      Op::create(internal::CurrentBuilder(), internal::unwrap(t)));
 }
 
 Tile Reduce(const Tile& t, int axis, vector::CombiningKind kind,
@@ -210,20 +124,6 @@ int64_t Tile::num_elements() const {
   return VectorTypeOf(*this).getNumElements();
 }
 
-Tile Tile::AsType(DType target) const {
-  return internal::wrap<Tile>(
-      internal::EmitCast(internal::unwrap(*this), dtype(), target));
-}
-
-Tile Tile::Bitcast(DType target) const {
-  return internal::wrap<Tile>(
-      internal::EmitBitcast(internal::unwrap(*this), dtype(), target));
-}
-
-Tile Tile::ToI32() const { return AsType(Int32Type()); }
-Tile Tile::ToF32() const { return AsType(Float32Type()); }
-Tile Tile::ToBF16() const { return AsType(BFloat16Type()); }
-
 Tile Tile::Reshape(llvm::ArrayRef<int64_t> shape) const {
   if (shape == this->shape()) return *this;
   mlir::Type elem_type = internal::ToMlirType(dtype());
@@ -250,15 +150,8 @@ Tile Tile::ToShape(llvm::ArrayRef<int64_t> shape) const {
 }
 
 Tile Tile::BroadcastTo(llvm::ArrayRef<int64_t> shape) const {
-  if (shape == this->shape()) {
-    return *this;
-  }
-  ABSL_CHECK_EQ(BroadcastShapes(this->shape(), shape), shape)  // CRASH_OK
-      << "Cannot broadcast tile to target shape";
-  return internal::wrap<Tile>(vector::BroadcastOp::create(
-      internal::CurrentBuilder(),
-      mlir::VectorType::get(shape, internal::ToMlirType(dtype())),
-      internal::unwrap(*this)));
+  return internal::wrap<Tile>(
+      internal::EmitBroadcast(internal::unwrap(*this), shape));
 }
 
 Tile Tile::Lanes(int64_t n) const {
@@ -374,113 +267,15 @@ Tile Iota(llvm::ArrayRef<int64_t> shape, DType dtype, int axis) {
 }
 
 Tile Splat(Scalar scalar, llvm::ArrayRef<int64_t> shape) {
-  mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
-  return internal::wrap<Tile>(vector::BroadcastOp::create(
-      b, mlir::VectorType::get(shape, internal::ToMlirType(scalar.dtype())),
-      internal::unwrap(scalar)));
+  return internal::wrap<Tile>(
+      internal::EmitBroadcast(internal::unwrap(scalar), shape));
 }
 
-Tile operator-(Tile t) {
-  ABSL_CHECK(t.dtype().IsIntOrFloat())  // CRASH_OK
-      << "Unary - requires an integer or floating-point tile";
-  mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
-  if (t.dtype().IsFloat()) {
-    return internal::wrap<Tile>(arith::NegFOp::create(b, internal::unwrap(t)));
-  }
-  return t.Full(0.0) - t;
-}
-Tile operator+(Tile lhs, Tile rhs) {
-  return Arith<arith::AddFOp, arith::AddIOp>(lhs, rhs);
-}
-Tile operator-(Tile lhs, Tile rhs) {
-  return Arith<arith::SubFOp, arith::SubIOp>(lhs, rhs);
-}
-Tile operator*(Tile lhs, Tile rhs) {
-  return Arith<arith::MulFOp, arith::MulIOp>(lhs, rhs);
-}
-Tile operator/(Tile lhs, Tile rhs) {
-  return Arith<arith::DivFOp, arith::DivSIOp>(lhs, rhs);
-}
-Tile operator%(Tile lhs, Tile rhs) {
-  ABSL_CHECK(lhs.dtype().IsInt())  // CRASH_OK
-      << "Tile % requires integer operands";
-  auto [l, r] = Broadcast(lhs, rhs);
-  return internal::wrap<Tile>(arith::RemSIOp::create(
-      internal::CurrentBuilder(), internal::unwrap(l), internal::unwrap(r)));
-}
-
-Tile operator==(Tile lhs, Tile rhs) {
-  return Compare(lhs, rhs, arith::CmpFPredicate::OEQ, arith::CmpIPredicate::eq);
-}
-Tile operator!=(Tile lhs, Tile rhs) {
-  return Compare(lhs, rhs, arith::CmpFPredicate::ONE, arith::CmpIPredicate::ne);
-}
-Tile operator<(Tile lhs, Tile rhs) {
-  return Compare(lhs, rhs, arith::CmpFPredicate::OLT,
-                 arith::CmpIPredicate::slt);
-}
-Tile operator<=(Tile lhs, Tile rhs) {
-  return Compare(lhs, rhs, arith::CmpFPredicate::OLE,
-                 arith::CmpIPredicate::sle);
-}
-Tile operator>(Tile lhs, Tile rhs) {
-  return Compare(lhs, rhs, arith::CmpFPredicate::OGT,
-                 arith::CmpIPredicate::sgt);
-}
-Tile operator>=(Tile lhs, Tile rhs) {
-  return Compare(lhs, rhs, arith::CmpFPredicate::OGE,
-                 arith::CmpIPredicate::sge);
-}
-
-Tile operator&(Tile lhs, Tile rhs) {
-  return BitwiseTile<arith::AndIOp>(lhs, rhs);
-}
-Tile operator|(Tile lhs, Tile rhs) {
-  return BitwiseTile<arith::OrIOp>(lhs, rhs);
-}
-Tile operator^(Tile lhs, Tile rhs) {
-  return BitwiseTile<arith::XOrIOp>(lhs, rhs);
-}
-Tile operator<<(Tile lhs, Tile rhs) {
-  return BitwiseTile<arith::ShLIOp>(lhs, rhs);
-}
-Tile operator>>(Tile lhs, Tile rhs) {
-  return BitwiseTile<arith::ShRSIOp>(lhs, rhs);
-}
-
-Tile LogicalRightShift(Tile lhs, Tile rhs) {
-  return BitwiseTile<arith::ShRUIOp>(lhs, rhs);
-}
-
-Tile Exp(Tile t) { return UnaryFloat<math::ExpOp>(t); }
-Tile Exp2(Tile t) { return UnaryFloat<math::Exp2Op>(t); }
-Tile Log(Tile t) { return UnaryFloat<math::LogOp>(t); }
-Tile Log2(Tile t) {
-  // Older libtpu releases have no native log2 lowering.
-  static const bool is_natively_supported =
-      torch_tpu::GetLibtpuVersion() >= torch_tpu::Version(0, 0, 48);
-  if (is_natively_supported) {
-    return UnaryFloat<math::Log2Op>(t);
-  }
-  return Log(t) * std::numbers::log2e;
-}
-Tile Sqrt(Tile t) { return UnaryFloat<math::SqrtOp>(t); }
-Tile Rsqrt(Tile t) { return UnaryFloat<math::RsqrtOp>(t); }
-Tile Tanh(Tile t) { return UnaryFloat<math::TanhOp>(t); }
 Tile Reciprocal(Tile t, bool approx) {
   ABSL_CHECK(t.dtype().IsFloat());  // CRASH_OK
   return internal::wrap<Tile>(tpu::ReciprocalOp::create(
       internal::CurrentBuilder(), internal::unwrap(t), approx,
       /*full_range=*/false));
-}
-Tile Abs(Tile t) {
-  ABSL_CHECK(t.dtype().IsIntOrFloat())  // CRASH_OK
-      << "Abs() requires an integer or floating-point tile";
-  mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
-  if (t.dtype().IsFloat()) {
-    return internal::wrap<Tile>(math::AbsFOp::create(b, internal::unwrap(t)));
-  }
-  return internal::wrap<Tile>(math::AbsIOp::create(b, internal::unwrap(t)));
 }
 
 Tile MaxReduce(Tile t, int axis) {
@@ -506,32 +301,6 @@ Tile Transpose(Tile t) {
   return internal::wrap<Tile>(vector::TransposeOp::create(
       internal::CurrentBuilder(), internal::unwrap(t),
       llvm::ArrayRef<int64_t>{1, 0}));
-}
-
-Tile Max(Tile lhs, Tile rhs) {
-  // TODO(willfroom): maybe think about a new CondTile type?
-  if (lhs.dtype().IsBool() && rhs.dtype().IsBool()) {
-    return lhs | rhs;
-  }
-  return Arith<arith::MaximumFOp, arith::MaxSIOp>(lhs, rhs);
-}
-Tile Min(Tile lhs, Tile rhs) {
-  if (lhs.dtype().IsBool() && rhs.dtype().IsBool()) {
-    return lhs & rhs;
-  }
-  return Arith<arith::MinimumFOp, arith::MinSIOp>(lhs, rhs);
-}
-
-Tile Select(Tile mask, Tile if_true, Tile if_false) {
-  ABSL_CHECK(mask.dtype().IsBool()) << "mask must be i1";  // CRASH_OK
-  ABSL_CHECK_EQ(if_true.dtype(), if_false.dtype())         // CRASH_OK
-      << "Select() branches must have the same dtype";
-  const Shape shape = BroadcastShapes(
-      mask.shape(), BroadcastShapes(if_true.shape(), if_false.shape()));
-  return internal::wrap<Tile>(arith::SelectOp::create(
-      internal::CurrentBuilder(), internal::unwrap(mask.BroadcastTo(shape)),
-      internal::unwrap(if_true.BroadcastTo(shape)),
-      internal::unwrap(if_false.BroadcastTo(shape))));
 }
 
 Tile Dot(Tile lhs, Tile rhs, const DotOptions& options) {
@@ -565,5 +334,7 @@ Tile Dot(Tile lhs, Tile rhs, const DotOptions& options) {
                                      .transpose_rhs = options.transpose_rhs,
                                      .precision = precision}));
 }
+
+template struct internal::ElementwiseOps<Tile, Tile>;
 
 }  // namespace torch_tpu::kiln

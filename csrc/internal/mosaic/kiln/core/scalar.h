@@ -19,6 +19,7 @@
 
 #include "csrc/internal/mosaic/kiln/core/cond.h"
 #include "csrc/internal/mosaic/kiln/core/dtype.h"
+#include "csrc/internal/mosaic/kiln/core/elementwise.h"
 #include "csrc/internal/mosaic/kiln/core/literal.h"
 #include "csrc/internal/mosaic/kiln/core/value_base.h"
 
@@ -27,50 +28,24 @@ namespace torch_tpu::kiln {
 // A scalar SSA value (boolean, integer, or floating-point). Grid indices,
 // loop induction variables, SMEM scalar values, constants, and scalar
 // statistics are Scalars.
-class Scalar : public ValueBase, public WithLiteralOps<Scalar, Cond> {
+//
+// Arithmetic, bitwise, comparison (yielding a `Cond`), min / max / select and
+// unary math operators come from `WithElementwiseOps`; overloads taking a
+// `Literal` on either side come from `WithLiteralOps`.
+class Scalar : public ValueBase,
+               public WithElementwiseOps<Scalar, Cond>,
+               public WithLiteralOps<Scalar, Cond> {
  public:
   /* implicit */ Scalar(Cond cond);  // NOLINT(google-explicit-constructor)
   explicit operator Cond() const;
 
-  Scalar MakeConstant(Literal value) const { return Constant(value); }
+  Scalar MakeConstant(Literal value) const;
 
   DType dtype() const;
   bool IsBool() const;
   bool IsFloat() const;
   bool IsInt() const;
   bool IsIntOrFloat() const;
-
-  Scalar AsType(DType target) const;
-  Scalar Bitcast(DType target) const;
-  Scalar ToI32() const;
-  Scalar ToF32() const;
-  Scalar ToBF16() const;
-
-  // A constant with the same type as this scalar.
-  Scalar Constant(Literal value) const;
-
-  friend Scalar operator-(Scalar s);
-  friend Scalar operator+(Scalar lhs, Scalar rhs);
-  friend Scalar operator-(Scalar lhs, Scalar rhs);
-  friend Scalar operator*(Scalar lhs, Scalar rhs);
-  friend Scalar operator/(Scalar lhs, Scalar rhs);
-  friend Scalar operator%(Scalar lhs, Scalar rhs);
-
-  // Bitwise ops on integer scalars. `>>` is an arithmetic (signed) shift.
-  friend Scalar operator&(Scalar lhs, Scalar rhs);
-  friend Scalar operator|(Scalar lhs, Scalar rhs);
-  friend Scalar operator^(Scalar lhs, Scalar rhs);
-  friend Scalar operator<<(Scalar lhs, Scalar rhs);
-  friend Scalar operator>>(Scalar lhs, Scalar rhs);
-
-  friend Scalar LogicalRightShift(Scalar lhs, Scalar rhs);
-
-  friend Cond operator==(Scalar lhs, Scalar rhs);
-  friend Cond operator!=(Scalar lhs, Scalar rhs);
-  friend Cond operator<(Scalar lhs, Scalar rhs);
-  friend Cond operator<=(Scalar lhs, Scalar rhs);
-  friend Cond operator>(Scalar lhs, Scalar rhs);
-  friend Cond operator>=(Scalar lhs, Scalar rhs);
 
  private:
   friend struct internal::ValueAccess;
@@ -79,23 +54,6 @@ class Scalar : public ValueBase, public WithLiteralOps<Scalar, Cond> {
 
 Scalar I32(Literal value);
 Scalar F32(Literal value);
-
-Scalar Select(Cond cond, Scalar if_true, Scalar if_false);
-Scalar Min(Scalar lhs, Scalar rhs);
-Scalar Max(Scalar lhs, Scalar rhs);
-
-inline Scalar Bitcast(Scalar s, DType target) { return s.Bitcast(target); }
-
-// Scalar elementwise math
-// TODO(willfroom): Combine these with the tile implementations.
-Scalar Exp(Scalar s);
-Scalar Exp2(Scalar s);
-Scalar Log(Scalar s);
-Scalar Log2(Scalar s);
-Scalar Sqrt(Scalar s);
-Scalar Rsqrt(Scalar s);
-Scalar Abs(Scalar s);
-Scalar Tanh(Scalar s);
 
 }  // namespace torch_tpu::kiln
 
