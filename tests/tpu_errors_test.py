@@ -903,8 +903,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       torch.add(t, s, alpha=1j)
 
-  # TODO: remove this test once we support complex alpha on TPU.
-  @et.why_tpu_only("TODO: support complex128 alpha in add_relu on TPU.")
+  @et.why_tpu_only("GPU has no implementation for _add_relu() op.")
   def test__add_relu_Scalar_complex_alpha(self):
     """Tests _add_relu.Scalar with an alpha of complex type."""
     device = et.device()
@@ -915,7 +914,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       torch.ops.aten._add_relu.Scalar(t, 2.0, 1j)
 
-  @et.why_tpu_only("TODO: support complex128 alpha in add_relu on TPU.")
+  @et.why_tpu_only("GPU has no implementation for _add_relu() op.")
   def test__add_relu_Tensor_complex_alpha(self):
     """Tests _add_relu.Tensor with an alpha of complex type."""
     device = et.device()
@@ -927,7 +926,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       torch.ops.aten._add_relu.Tensor(t, s, alpha=1j)
 
-  @et.why_tpu_only("TODO: support complex128 alpha in add_relu on TPU.")
+  @et.why_tpu_only("GPU has no implementation for _add_relu() op.")
   def test__add_relu_out_complex_alpha(self):
     """Tests _add_relu.out with an alpha of complex type."""
     device = et.device()
@@ -940,7 +939,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       torch.ops.aten._add_relu.out(t, s, alpha=1j, out=out)
 
-  @et.why_tpu_only("TODO: support complex128 alpha in add_relu on TPU.")
+  @et.why_tpu_only("GPU has no implementation for _add_relu() op.")
   def test__add_relu__Scalar_complex_alpha(self):
     """Tests _add_relu_.Scalar with an alpha of complex type."""
     device = et.device()
@@ -951,7 +950,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       torch.ops.aten._add_relu_.Scalar(t, 2.0, alpha=1j)
 
-  @et.why_tpu_only("TODO: support complex128 alpha in add_relu on TPU.")
+  @et.why_tpu_only("GPU has no implementation for _add_relu() op.")
   def test__add_relu__Tensor_complex_alpha(self):
     """Tests _add_relu_.Tensor with an alpha of complex type."""
     device = et.device()
