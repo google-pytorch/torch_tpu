@@ -817,6 +817,7 @@ torch_tpu_cc_library(
         "//csrc/ops/split_with_sizes_copy:split_with_sizes_copy_aten_kernels",
         "//csrc/ops/take:take_aten_kernels",
         "//csrc/ops/tanh:tanh_aten_kernels",
+        "//csrc/ops/tensor_factories:tensor_factories_aten_kernels",
         "//csrc/ops/thnn_fused_gru_cell:thnn_fused_gru_cell_aten_kernels",
         "//csrc/ops/thnn_fused_lstm_cell:thnn_fused_lstm_cell_aten_kernels",
         "//csrc/ops/threshold:threshold_aten_kernels",

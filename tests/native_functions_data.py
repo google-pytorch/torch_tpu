@@ -470,6 +470,10 @@ REGISTRATION_OVERRIDES = frozenset([
     'fft_irfft.out',
     'fft_rfft',
     'fft_rfft.out',
+    # full and full_like are registered directly to lower to a single StableHLO
+    # constant instead of the composite empty + fill_ double dispatch.
+    'full',
+    'full_like',
     'gather',
     # Gelu is registered to handle type promotion for integer and boolean
     # inputs to match PyTorch GPU behavior for functional calls.
@@ -495,9 +499,17 @@ REGISTRATION_OVERRIDES = frozenset([
     'masked_fill.Scalar',
     'masked_fill.Tensor',
     'native_layer_norm',  # pending removal
+    # new_full, new_ones, new_zeros, ones, and ones_like are registered
+    # directly to lower to a single StableHLO constant instead of the composite
+    # empty + fill_/zero_ double dispatch.
+    'new_full',
+    'new_ones',
+    'new_zeros',
     # nll_loss_nd is registered to provide a direct N-D StableHLO lowering and
     # autograd implementation on TPU, overriding the default decomposition.
     'nll_loss_nd',
+    'ones',
+    'ones_like',
     # repeat_interleave.self_Tensor is registered to provide an optimized TPU
     # implementation, overriding the default decomposition.
     'repeat_interleave.self_Tensor',
@@ -531,6 +543,10 @@ REGISTRATION_OVERRIDES = frozenset([
     # split_with_sizes_copy.out is used by PyTorch's FSDP2 wrapper. The default
     # decomposition performs 2-d reshapes that are inefficient on TPU.
     'split_with_sizes_copy.out',
+    # zeros and zeros_like are registered directly to lower to a single
+    # StableHLO constant instead of the composite empty + zero_ double dispatch.
+    'zeros',
+    'zeros_like',
     # go/keep-sorted end
 ])
 

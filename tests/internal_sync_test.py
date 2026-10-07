@@ -310,22 +310,19 @@ class InternalSyncTest(absltest.TestCase):  # ABSLTEST_OK=Internal sync test
         Graphviz string: (try pasting in http://graphviz/ to see the graph)
         digraph {
           // Vertices:
-          0 [shape="box", label=" float32[] (materialized)"];
-          1 [label="fill_.Scalar"];
-          2 [shape="box", label=" float32[2, 3]"];
-          3 [label="fill_.Scalar"];
-          4 [shape="box", label=" float32[2, 3]"];
-          5 [label="add.out"];
-          6 [shape="box", label=" float32[2, 3]"];
+          0 [label="ones"];
+          1 [shape="box", label=" float32[2, 3]"];
+          2 [label="ones"];
+          3 [shape="box", label=" float32[2, 3]"];
+          4 [label="add.out"];
+          5 [shape="box", label=" float32[2, 3]"];
 
           // Edges:
           0 -> 1
-          1 -> 2
-          0 -> 3
+          2 -> 3
           3 -> 4
+          1 -> 4
           4 -> 5
-          2 -> 5
-          5 -> 6
         }
         """)
     with self.undeclared_outputs_dir() as output_dir:

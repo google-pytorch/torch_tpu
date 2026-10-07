@@ -374,6 +374,60 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       torch.empty_strided((2,), (1,), dtype=torch.complex32, device="tpu")
 
+  @et.why_tpu_only("TODO: support complex32 on TPU.")
+  def test_tensor_factories_complex32_unsupported(self):
+    t = torch.empty((2, 3), dtype=torch.float32, device=et.device())
+    for op_name, fn in (
+        (
+            "zeros",
+            lambda: torch.zeros(
+                (2, 3), dtype=torch.complex32, device=et.device()
+            ),
+        ),
+        (
+            "ones",
+            lambda: torch.ones(
+                (2, 3), dtype=torch.complex32, device=et.device()
+            ),
+        ),
+        (
+            "full",
+            lambda: torch.full(
+                (2, 3), 1.0, dtype=torch.complex32, device=et.device()
+            ),
+        ),
+        ("zeros_like", lambda: torch.zeros_like(t, dtype=torch.complex32)),
+        ("ones_like", lambda: torch.ones_like(t, dtype=torch.complex32)),
+        ("full_like", lambda: torch.full_like(t, 1.0, dtype=torch.complex32)),
+        ("new_zeros", lambda: t.new_zeros((2, 3), dtype=torch.complex32)),
+        ("new_ones", lambda: t.new_ones((2, 3), dtype=torch.complex32)),
+        ("new_full", lambda: t.new_full((2, 3), 1.0, dtype=torch.complex32)),
+    ):
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu=f"""{op_name}(): TorchTPU does not yet support dtype complex32""",
+      ):
+        fn()
+
+  @et.why_tpu_only("TODO: support complex128 dtype on TPU.")
+  def test_tensor_factories_complex128_unsupported(self):
+    t = torch.empty((2, 3), dtype=torch.float32, device=et.device())
+    for op_name, fn in (
+        (
+            "full",
+            lambda: torch.full(
+                (2, 3), 1.0, dtype=torch.complex128, device=et.device()
+            ),
+        ),
+        ("full_like", lambda: torch.full_like(t, 1.0, dtype=torch.complex128)),
+        ("new_full", lambda: t.new_full((2, 3), 1.0, dtype=torch.complex128)),
+    ):
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu=f"""{op_name}(): complex128 dtype is not supported""",
+      ):
+        fn()
+
   @parameterized.named_parameters(
       {"testcase_name": "eq", "op_name": "eq", "op": torch.eq},
       {"testcase_name": "ne", "op_name": "ne", "op": torch.ne},

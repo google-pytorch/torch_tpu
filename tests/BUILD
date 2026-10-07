@@ -2695,6 +2695,19 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "tensor_factories_test",
+    srcs = ["tensor_factories_test.py"],
+    tags = ["requires-tpu-v5lite"],
+    deps = [
+        ":seed_test_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+    ],
+)
+
+torch_tpu_py_test(
     name = "fused_moving_avg_obs_fq_helper_test",
     srcs = ["fused_moving_avg_obs_fq_helper_test.py"],
     tags = ["requires-tpu-v5lite"],

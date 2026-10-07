@@ -399,6 +399,8 @@ enum class OpName {
   kForeachTrunc_,
   kForeachZero_,
   kFracOut,
+  kFull,
+  kFullLike,
   kFusedAdagrad,
   kFusedAdagradFunctional,
   kFusedAdagradFunctionalTensorLr,
@@ -621,6 +623,9 @@ enum class OpName {
   kNestedGetRaggedIdx,
   kNestedGetValues,
   kNestedViewFromJagged,
+  kNewFull,
+  kNewOnes,
+  kNewZeros,
   kNllLoss2dBackward,
   kNllLoss2dBackwardGradInput,
   kNllLoss2dForward,
@@ -642,6 +647,8 @@ enum class OpName {
   kNormalTensorTensor,
   kNormalTensorTensorOut,
   kNormal_,
+  kOnes,
+  kOnesLike,
   kPadRealToStatic,
   kPadUninitialized_,
   kPaddedDenseToJaggedForward,
@@ -860,6 +867,8 @@ enum class OpName {
   kWhereSelfOut,
   kXlogyOutTensor,
   kZero_,
+  kZeros,
+  kZerosLike,
   // go/keep-sorted end
   kMaxOpPlus1,  // For enumerating all OpNames for testing. Not a real op.
 };
@@ -1622,6 +1631,10 @@ ToString(  // NOLINT(google-readability-function-size)
       return "_foreach_zero_";
     case OpName::kFracOut:
       return "frac.out";
+    case OpName::kFull:
+      return "full";
+    case OpName::kFullLike:
+      return "full_like";
     case OpName::kFusedAdagrad:
       return "_fused_adagrad_";
     case OpName::kFusedAdagradFunctional:
@@ -2066,6 +2079,12 @@ ToString(  // NOLINT(google-readability-function-size)
       return "_nested_get_values";
     case OpName::kNestedViewFromJagged:
       return "_nested_view_from_jagged";
+    case OpName::kNewFull:
+      return "new_full";
+    case OpName::kNewOnes:
+      return "new_ones";
+    case OpName::kNewZeros:
+      return "new_zeros";
     case OpName::kNllLoss2dBackward:
       return "nll_loss2d_backward";
     case OpName::kNllLoss2dBackwardGradInput:
@@ -2108,6 +2127,10 @@ ToString(  // NOLINT(google-readability-function-size)
       return "normal.Tensor_Tensor_out";
     case OpName::kNormal_:
       return "normal_";
+    case OpName::kOnes:
+      return "ones";
+    case OpName::kOnesLike:
+      return "ones_like";
     case OpName::kPadRealToStatic:
       return "_pad_real_to_static";
     case OpName::kPadUninitialized_:
@@ -2548,6 +2571,10 @@ ToString(  // NOLINT(google-readability-function-size)
       return "xlogy.OutTensor";
     case OpName::kZero_:
       return "zero_";
+    case OpName::kZeros:
+      return "zeros";
+    case OpName::kZerosLike:
+      return "zeros_like";
       // go/keep-sorted end
       // Deliberately omitting default case to let the C++ compiler enforce that
       // all cases are handled.

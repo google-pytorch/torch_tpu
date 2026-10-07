@@ -212,6 +212,7 @@
 #include "csrc/ops/split_with_sizes_copy/split_with_sizes_copy_aten_kernels.h"
 #include "csrc/ops/take/take_aten_kernels.h"
 #include "csrc/ops/tanh/tanh_aten_kernels.h"
+#include "csrc/ops/tensor_factories/tensor_factories_aten_kernels.h"
 #include "csrc/ops/thnn_fused_gru_cell/thnn_fused_gru_cell_aten_kernels.h"
 #include "csrc/ops/thnn_fused_lstm_cell/thnn_fused_lstm_cell_aten_kernels.h"
 #include "csrc/ops/threshold/threshold_aten_kernels.h"
@@ -704,6 +705,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kForeachTrunc_>(m, AtenForeachTrunc_);
   ImplStable<OpName::kForeachZero_>(m, AtenForeachZero_);
   ImplStable<OpName::kFracOut>(m, AtenFracOut);
+  ImplStable<OpName::kFull>(m, AtenFull);
+  ImplStable<OpName::kFullLike>(m, AtenFullLike);
   ImplStable<OpName::kFusedAdagrad>(m, AtenFusedAdagrad);
   ImplStable<OpName::kFusedAdagradTensorLr>(m, AtenFusedAdagradTensorLr);
   ImplStable<OpName::kFusedAdam>(m, AtenFusedAdam);
@@ -897,6 +900,9 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kNestedGetRaggedIdx>(m, AtenNestedGetRaggedIdx);
   ImplStable<OpName::kNestedGetValues>(m, AtenNestedGetValues);
   ImplStable<OpName::kNestedViewFromJagged>(m, AtenNestedViewFromJagged);
+  ImplStable<OpName::kNewFull>(m, AtenNewFull);
+  ImplStable<OpName::kNewOnes>(m, AtenNewOnes);
+  ImplStable<OpName::kNewZeros>(m, AtenNewZeros);
   ImplStable<OpName::kNllLoss2dBackward>(m, AtenNllLoss2dBackward);
   ImplStable<OpName::kNllLoss2dBackwardGradInput>(
       m, AtenNllLoss2dBackwardGradInput);
@@ -917,6 +923,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kNormalTensorTensor>(m, AtenNormalTensorTensor);
   ImplStable<OpName::kNormalTensorTensorOut>(m, AtenNormalTensorTensorOut);
   ImplStable<OpName::kNormal_>(m, AtenNormal_);
+  ImplStable<OpName::kOnes>(m, AtenOnes);
+  ImplStable<OpName::kOnesLike>(m, AtenOnesLike);
   ImplStable<OpName::kPaddedDenseToJaggedForward>(
       m, AtenPaddedDenseToJaggedForward);
   ImplStable<OpName::kPdistBackward>(m, AtenPdistBackward);
@@ -1104,6 +1112,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kWhereSelfOut>(m, AtenWhereSelfOut);
   ImplStable<OpName::kXlogyOutTensor>(m, AtenXlogyOutTensor);
   ImplStable<OpName::kZero_>(m, AtenZero_);
+  ImplStable<OpName::kZeros>(m, AtenZeros);
+  ImplStable<OpName::kZerosLike>(m, AtenZerosLike);
   // go/keep-sorted end
 }
 
