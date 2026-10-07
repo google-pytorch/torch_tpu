@@ -28,6 +28,7 @@
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBase.h"
 #include "ATen/ops/zeros.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
@@ -36,6 +37,8 @@
 #include "csrc/common/cache_key.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/warnings.h"
+#include "csrc/eager/device_buffer.h"
+#include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/scaled_dot_product_attention/flash_attention_kernel_builder.h"
@@ -59,11 +62,18 @@ struct SdpaKernelKey {
   bool operator==(const SdpaKernelKey& other) const = default;
 };
 
+// Returns true if `tensor` has symbolic sizes (torch.compile dynamic shapes) or
+// bounded dynamic dimensions on its device buffer (eager `mark_dynamic`).
 bool HasDynamicShape(const at::Tensor& tensor) {
   if (!tensor.defined()) {
     return false;
   }
-  return tensor.unsafeGetTensorImpl()->has_symbolic_sizes_strides();
+  if (tensor.unsafeGetTensorImpl()->has_symbolic_sizes_strides()) {
+    return true;
+  }
+  absl::StatusOr<DeviceBufferRef> buf = GetBuffer(tensor);
+  return buf.ok() && (!buf->dynamic_dimensions().empty() ||
+                      buf->on_device_shape_is_dynamic());
 }
 
 bool IsSupportedFlashAttentionShape(
@@ -162,12 +172,13 @@ int64_t AtenFusedSdpChoice(const at::Tensor& query, const at::Tensor& key,
                 "- query rank is at least 4 (current: ",
                 query.ndimension(),
                 ")\n"
-                "- batch size is at least 1 (current: ",
-                get_batch_size(query.sizes()),
-                ")\n"
+                "- batch size is at least 1\n"
                 "- Head dimension (dim - 1) is less than 128 or divisible by "
-                "128 (query: ",
-                query.size(query.ndimension() - 1), ")");
+                "128\n"
+                // `sym_sizes()` so that symbolic sizes under torch.compile are
+                // printed without being specialized.
+                "(query shape: ",
+                query.sym_sizes(), ")");
           }
         }
 

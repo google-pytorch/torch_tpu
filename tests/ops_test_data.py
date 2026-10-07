@@ -175,6 +175,28 @@ SDPA_CONFIGS = (
         v_head_dim=64,
         is_causal=True,
     ),
+    # Explicit GQA config (8 query heads, 2 kv heads)
+    SdpaConfig(
+        batch_size=2,
+        q_seq_len=128,
+        kv_seq_len=128,
+        q_num_heads=8,
+        kv_num_heads=2,
+        qk_head_dim=64,
+        v_head_dim=64,
+        is_causal=False,
+    ),
+    # GQA with unequal sequence length + causal mask (decoding case)
+    SdpaConfig(
+        batch_size=2,
+        q_seq_len=2,
+        kv_seq_len=64,
+        q_num_heads=8,
+        kv_num_heads=2,
+        qk_head_dim=64,
+        v_head_dim=64,
+        is_causal=True,
+    ),
     # AFM v7 configs
     SdpaConfig(
         batch_size=2,

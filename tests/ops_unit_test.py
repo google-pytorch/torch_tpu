@@ -16624,6 +16624,12 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
       # first.
       mean_sim_bound = 0.9999
       sim = torch.nn.functional.cosine_similarity(cpu, tpu, dim=-1)
+      # Rows that are all zeros in both results (e.g. key/value positions that
+      # are fully masked out by causal attention when q_seq_len < kv_seq_len)
+      # have an undefined cosine similarity, so exclude them. assert_close
+      # below still verifies them.
+      nonzero_rows = (cpu != 0).any(dim=-1) | (tpu != 0).any(dim=-1)
+      sim = sim[nonzero_rows]
       self.assertGreater(
           sim.mean().item(),
           mean_sim_bound,

@@ -165,7 +165,9 @@ class DynamismTest(seed_test_utils.RepeatableTest):
     execution_mode.eager_mode = self.old_eager_mode
     super().tearDown()
 
-  def _run_bounded_dynamism_test(self, fn, mark_dynamic_fn, *args):
+  def _run_bounded_dynamism_test(
+      self, fn, mark_dynamic_fn, *args, rtol=1e-5, atol=1e-5
+  ):
     expected = fn(*args)
 
     # Move args to TPU and mark dynamic
@@ -175,12 +177,12 @@ class DynamismTest(seed_test_utils.RepeatableTest):
 
     # Compare outputs
     if isinstance(act, torch.Tensor):
-      utils.assert_close(act.to("cpu"), expected, rtol=1e-5, atol=1e-5)
+      utils.assert_close(act.to("cpu"), expected, rtol=rtol, atol=atol)
       return act
 
     # Allow multiple outputs
     for act_i, expected_i in zip(act, expected):
-      utils.assert_close(act_i.to("cpu"), expected_i, rtol=1e-5, atol=1e-5)
+      utils.assert_close(act_i.to("cpu"), expected_i, rtol=rtol, atol=atol)
     return act
 
   @parameterized.product(dtype=op_testing.all_xla_supported_dtypes())

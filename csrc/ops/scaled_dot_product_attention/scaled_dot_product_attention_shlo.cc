@@ -30,6 +30,7 @@
 #include "absl/cleanup/cleanup.h"
 #include "absl/log/check.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_join.h"
 #include "absl/types/span.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
@@ -48,11 +49,13 @@
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/Support/DebugStringHelper.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "stablehlo/transforms/StablehloBroadcastLowering.h"
 
 namespace torch_tpu {
 
@@ -77,15 +80,14 @@ mlir::MlirOp GetNegInf(mlir::MlirBuilder& builder,
                           op_builder.getFloatAttr(element_type, neg_inf)));
 }
 
-mlir::MlirOp GetCausalMask(mlir::MlirBuilder& builder,
-                           mlir::ArrayRef<int64_t> shape) {
-  auto iota_type =
-      mlir::RankedTensorType::get(shape, builder.getOpBuilder().getI32Type());
-  mlir::MlirOp iota_i = mlir::stablehlo::Iota(builder, iota_type,
-                                              /*dimension=*/shape.size() - 2);
-  mlir::MlirOp iota_j = mlir::stablehlo::Iota(builder, iota_type,
-                                              /*dimension=*/shape.size() - 1);
-
+// Returns a boolean mask with the shape of `reference_op` that is true where
+// query position i must not attend to key position j (i.e. i < j).
+absl::StatusOr<mlir::MlirOp> GetCausalMask(mlir::MlirOp reference_op) {
+  mlir::Type i32_type = reference_op.getBuilder().getOpBuilder().getI32Type();
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp iota_i,
+                      Iota(reference_op, /*iota_dimension=*/-2, i32_type));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp iota_j,
+                      Iota(reference_op, /*iota_dimension=*/-1, i32_type));
   return mlir::stablehlo::Compare(iota_i, iota_j,
                                   mlir::stablehlo::ComparisonDirection::LT);
 }
@@ -188,19 +190,67 @@ bool CanUseXlaOnlineSoftmax(mlir::MlirOp query, mlir::MlirOp key) {
          seq_len_kv <= kMaxOnlineSoftmaxSeqLen && head_dim >= kMinMxuHeadDim;
 }
 
+mlir::MlirOp ConvertElementTypeIfNeeded(mlir::MlirOp op,
+                                        mlir::Type target_type) {
+  if (GetTensorTypeOrDie(op).getElementType() != target_type) {
+    return mlir::stablehlo::ConvertElementType(op, target_type);
+  }
+  return op;
+}
+
 absl::StatusOr<AttentionPrepResults> PrepareAttentionLogits(
     mlir::MlirBuilder& builder, mlir::MLIRContext* context, mlir::MlirOp query,
     mlir::MlirOp key, mlir::MlirOp value, std::optional<mlir::MlirOp> mask,
     bool is_causal, std::optional<double> scale) {
   auto query_tensor_type = GetTensorTypeOrDie(query);
-  auto key_tensor_type = GetTensorTypeOrDie(key);
-  int rank = query_tensor_type.getRank();
-  int batch_size = get_batch_size(query_tensor_type.getShape());
-  int64_t head_dim = query_tensor_type.getDimSize(rank - 1);
-  int64_t seq_len_q = query_tensor_type.getDimSize(rank - 2);
-  int64_t seq_len_kv = key_tensor_type.getDimSize(rank - 2);
-  int64_t num_head_q = query_tensor_type.getDimSize(rank - 3);
-  int64_t num_head_kv = key_tensor_type.getDimSize(rank - 3);
+  const int64_t query_rank = query_tensor_type.getRank();
+  // The head count and head dim are used as concrete values below (e.g. the
+  // GQA ratio and the default scale), so they must be static. Only batch and
+  // sequence dimensions may be bounded dynamic.
+  for (mlir::MlirOp input : {query, key, value}) {
+    const mlir::RankedTensorType type = GetTensorTypeOrDie(input);
+    const int64_t input_rank = type.getRank();
+    if (input_rank < 3 || input_rank != query_rank) {
+      return TT_ERROR(error::kInvalidArgument)
+             << "expected query, key and value "
+                "to have the same rank >= 3, got "
+             << query_rank << ", " << GetTensorTypeOrDie(key).getRank()
+             << " and " << GetTensorTypeOrDie(value).getRank();
+    }
+    if (type.isDynamicDim(input_rank - 1) ||
+        type.isDynamicDim(input_rank - 3)) {
+      return TT_ERROR(error::kInvalidArgument)
+             << "expected a static head count (dim -3) and head dim (dim -1), "
+                "got type "
+             << mlir::debugString(type);
+    }
+    // The batch dims are flattened into one dim and restored afterwards. If a
+    // batch dim is dynamic, the merged dim is dynamic, and restoring it is
+    // ambiguous when more than one batch dim is not 1.
+    const Dimensions input_shape = GetStaticShape(input);
+    bool has_dynamic_batch_dim = false;
+    int num_non_one_batch_dims = 0;
+    for (int64_t i = 0; i < input_rank - 3; ++i) {
+      has_dynamic_batch_dim |= type.isDynamicDim(i);
+      num_non_one_batch_dims += input_shape[i] != 1;
+    }
+    if (has_dynamic_batch_dim && num_non_one_batch_dims > 1) {
+      return TT_ERROR(error::kInvalidArgument)
+             << "expected at most one batch dim "
+                "not equal to 1 when a batch dim is dynamic, got shape ["
+             << absl::StrJoin(input_shape, ", ") << "]";
+    }
+  }
+  // Static sizes, or upper bounds for bounded dynamic dimensions.
+  const Dimensions query_shape = GetStaticShape(query);
+  const Dimensions key_shape = GetStaticShape(key);
+  int rank = query_shape.size();
+  int batch_size = get_batch_size(query_shape);
+  int64_t head_dim = query_shape[rank - 1];
+  int64_t seq_len_q = query_shape[rank - 2];
+  int64_t seq_len_kv = key_shape[rank - 2];
+  int64_t num_head_q = query_shape[rank - 3];
+  int64_t num_head_kv = key_shape[rank - 3];
   auto element_type =
       mlir::cast<mlir::FloatType>(query_tensor_type.getElementType());
 
@@ -215,6 +265,27 @@ absl::StatusOr<AttentionPrepResults> PrepareAttentionLogits(
              << "num_head_q must be divisible by num_head_kv";
     }
     head_count_ratio = num_head_q / num_head_kv;
+  }
+
+  // The grouped GQA path reshapes the logits across both sequence dimensions,
+  // but stablehlo.reshape supports at most one bounded dimension. For dynamic
+  // shapes, replicate K/V across query heads and use the standard path.
+  if (head_count_ratio > 1 && !(query_tensor_type.hasStaticShape() &&
+                                GetTensorTypeOrDie(key).hasStaticShape() &&
+                                GetTensorTypeOrDie(value).hasStaticShape())) {
+    auto replicate = [&](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
+      mlir::stablehlo::Dimensions target_shape = GetDimensions(input);
+      target_shape.insert(target_shape.begin() + 2,
+                          mlir::stablehlo::DimensionInfo{head_count_ratio});
+      TT_ASSIGN_OR_RETURN(mlir::MlirOp broadcasted,
+                          BroadcastIfNeeded(input, target_shape, {0, 1, 3, 4}));
+      const Dimensions shape = GetStaticShape(broadcasted);
+      return ReshapeToStaticDimensions(
+          broadcasted, {shape[0], num_head_q, shape[3], shape[4]});
+    };
+    TT_ASSIGN_OR_RETURN(key_4d, replicate(key_4d));
+    TT_ASSIGN_OR_RETURN(value_4d, replicate(value_4d));
+    head_count_ratio = 1;
   }
 
   // Scale Q before Dot product - matches pytorch attention implementation and
@@ -258,8 +329,8 @@ absl::StatusOr<AttentionPrepResults> PrepareAttentionLogits(
 
   mlir::MlirOp masked_attn_logits = scaled_attn_logits;
   if (is_causal) {
-    auto shape = GetTensorTypeOrDie(scaled_attn_logits).getShape();
-    mlir::MlirOp causal_mask = GetCausalMask(builder, shape);
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp causal_mask,
+                        GetCausalMask(scaled_attn_logits));
     masked_attn_logits = mlir::stablehlo::Select(causal_mask, mask_out_value,
                                                  scaled_attn_logits);
   } else if (mask) {
@@ -267,12 +338,15 @@ absl::StatusOr<AttentionPrepResults> PrepareAttentionLogits(
     // attention op.
     if (IsBooleanType(GetTensorTypeOrDie(*mask))) {
       return TT_ERROR(error::kInvalidArgument)
-             << "Boolean mask is not supported";
+             << "boolean mask is not supported";
     }
 
-    int64_t mask_rank = GetTensorTypeOrDie(*mask).getRank();
+    mlir::MlirOp promoted_mask =
+        ConvertElementTypeIfNeeded(*mask, element_type);
+    int64_t mask_rank = GetTensorTypeOrDie(promoted_mask).getRank();
     mlir::MlirOp flat_mask =
-        mask_rank > 4 ? flatten_batch_dims(*mask, batch_size, rank - 3) : *mask;
+        mask_rank > 4 ? flatten_batch_dims(promoted_mask, batch_size, rank - 3)
+                      : promoted_mask;
     TT_ASSIGN_OR_RETURN(mlir::MlirOp broadcasted_mask,
                         BroadcastIfNeeded(flat_mask, scaled_attn_logits));
 
@@ -334,14 +408,6 @@ mlir::MlirOp PromoteInputIfRequired(mlir::MlirBuilder& builder, mlir::MlirOp op,
   return op;
 }
 
-mlir::MlirOp ConvertElementTypeIfNeeded(mlir::MlirOp op,
-                                        mlir::Type target_type) {
-  if (GetTensorTypeOrDie(op).getElementType() != target_type) {
-    return mlir::stablehlo::ConvertElementType(op, target_type);
-  }
-  return op;
-}
-
 mlir::MlirOp ComputeAttentionOutput(mlir::MLIRContext* context,
                                     mlir::MlirOp softmax, mlir::MlirOp value_4d,
                                     mlir::MlirOp query_4d,
@@ -375,8 +441,7 @@ mlir::MlirOp ComputeAttentionOutput(mlir::MLIRContext* context,
 }
 
 absl::StatusOr<MlirOpResults<2>> BuildScaledDotProductFusedAttentionShloOp(
-    absl::Span<mlir::MlirOp> inputs, mlir::MlirBuilder& builder,
-    const Dimensions& out_dims, const Dimensions& lse_dims, bool is_causal,
+    absl::Span<mlir::MlirOp> inputs, mlir::MlirBuilder& builder, bool is_causal,
     std::optional<double> scale, bool allow_half_precision_reduction_math) {
   mlir::MlirOp query_mlir = inputs[0];
   mlir::MlirOp key_mlir = inputs[1];
@@ -396,15 +461,10 @@ absl::StatusOr<MlirOpResults<2>> BuildScaledDotProductFusedAttentionShloOp(
   mlir::MlirOp value =
       PromoteInputIfRequired(builder, value_mlir, promotion_type);
 
-  std::optional<mlir::MlirOp> mask;
-  if (mask_mlir) {
-    const auto query_acc_type = GetTensorTypeOrDie(query).getElementType();
-    mask = ConvertElementTypeIfNeeded(*mask_mlir, query_acc_type);
-  }
-
-  TT_ASSIGN_OR_RETURN(auto prep_results,
-                      PrepareAttentionLogits(builder, context, query, key,
-                                             value, mask, is_causal, scale));
+  TT_ASSIGN_OR_RETURN(
+      auto prep_results,
+      PrepareAttentionLogits(builder, context, query, key, value, mask_mlir,
+                             is_causal, scale));
   auto [query_4d, key_4d, value_4d, shifted_attn_logits, scale_value,
         head_count_ratio] = prep_results;
 
@@ -449,16 +509,25 @@ absl::StatusOr<MlirOpResults<2>> BuildScaledDotProductFusedAttentionShloOp(
   mlir::MlirOp out_4d = ComputeAttentionOutput(context, softmax, value_4d,
                                                query_4d, head_count_ratio);
 
-  // Unflatten batch dimensions of output.
-  mlir::MlirOp out_unflattened = unflatten_batch_dims(out_4d, out_dims);
-  mlir::MlirOp out =
-      ConvertElementTypeIfNeeded(out_unflattened, original_element_type);
+  // Restore the batch dims flattened in PrepareAttentionLogits: the query's
+  // leading batch dims followed by the result's own non-batch dims. Sizes are
+  // static, or upper bounds for bounded dynamic dims.
+  const Dimensions query_shape = GetStaticShape(query_mlir);
+  const Dimensions batch_dims(query_shape.begin(), query_shape.end() - 3);
+  auto restore_batch_dims = [&batch_dims](mlir::MlirOp flat_op) {
+    Dimensions dims = batch_dims;
+    const Dimensions flat_shape = GetStaticShape(flat_op);
+    dims.insert(dims.end(), flat_shape.begin() + 1, flat_shape.end());
+    return unflatten_batch_dims(flat_op, dims);
+  };
+
+  mlir::MlirOp out = ConvertElementTypeIfNeeded(restore_batch_dims(out_4d),
+                                                original_element_type);
 
   // The aten op requires sum_exp to be f32.
   mlir::MlirOp sum_exp_f32 = mlir::stablehlo::ConvertElementType(
       sum_exp, builder.getOpBuilder().getF32Type());
-  mlir::MlirOp unflattened_sum_exp =
-      unflatten_batch_dims(sum_exp_f32, lse_dims);
+  mlir::MlirOp unflattened_sum_exp = restore_batch_dims(sum_exp_f32);
 
   return MlirOpResults<2>{out, unflattened_sum_exp};
 }
@@ -653,14 +722,10 @@ BuildScaledDotProductAttentionBackward(
       ConvertElementTypeIfNeeded(grad_out_mlir, query_acc_type);
   mlir::MlirOp sum_exp = sum_exp_mlir;
 
-  std::optional<mlir::MlirOp> mask;
-  if (mask_mlir) {
-    mask = ConvertElementTypeIfNeeded(*mask_mlir, query_acc_type);
-  }
-
-  TT_ASSIGN_OR_RETURN(auto prep_results,
-                      PrepareAttentionLogits(builder, context, query, key,
-                                             value, mask, is_causal, scale));
+  TT_ASSIGN_OR_RETURN(
+      auto prep_results,
+      PrepareAttentionLogits(builder, context, query, key, value, mask_mlir,
+                             is_causal, scale));
   auto [query_4d, key_4d, value_4d, shifted_attn_logits, scale_value,
         head_count_ratio] = prep_results;
   const auto element_type = GetTensorTypeOrDie(query).getElementType();
@@ -761,13 +826,11 @@ absl::StatusOr<FusedAttentionResults> ScaledDotProductFusedAttentionShlo(
   out_dims.push_back(value.sizes().back());
   Dimensions lse_dims(query.sizes().begin(), query.sizes().end() - 1);
   auto op_builder =
-      [out_dims, lse_dims, is_causal, scale,
-       allow_half_precision_reduction_math](
+      [is_causal, scale, allow_half_precision_reduction_math](
           absl::Span<mlir::MlirOp> inputs,
           mlir::MlirBuilder& builder) -> absl::StatusOr<MlirOpResults<2>> {
     return BuildScaledDotProductFusedAttentionShloOp(
-        inputs, builder, out_dims, lse_dims, is_causal, scale,
-        allow_half_precision_reduction_math);
+        inputs, builder, is_causal, scale, allow_half_precision_reduction_math);
   };
 
   std::vector<at::Tensor> inputs = {query, key, value};

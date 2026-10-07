@@ -27,6 +27,7 @@
 #include "ATen/ops/ones.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "c10/core/DefaultDtype.h"
 #include "csrc/common/context_states.h"
@@ -1012,6 +1013,236 @@ TEST(DynamicReshapeFromStaticDimensions, ErrorNonTransposeLikeReshape) {
       testing::HasSubstr(
           "reshape reassociation not supported for same sized reshapes"));
 }
+
+// Returns an f32 function argument of `shape` with `bound_dims` made bounded
+// dynamic by set_dimension_size with runtime size arguments.
+mlir::MlirOp MakeBoundedArg(mlir::func::FunctionBuilder& fb,
+                            const Dimensions& shape,
+                            absl::Span<const int64_t> bound_dims) {
+  mlir::OpBuilder& op_builder = fb.getOpBuilder();
+  mlir::MlirOp op = mlir::func::Argument(
+      fb, mlir::RankedTensorType::get(shape, op_builder.getF32Type()));
+  for (int64_t dim : bound_dims) {
+    mlir::MlirOp size = mlir::func::Argument(
+        fb, mlir::RankedTensorType::get({}, op_builder.getI32Type()));
+    op = mlir::stablehlo::SetDimensionSize(op, size, dim);
+  }
+  return op;
+}
+
+TEST(GetStaticShape, ReturnsUpperBoundsForBoundedDims) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::func::FunctionBuilder fb(op_builder_utils_builder.get(), "main");
+  mlir::MlirOp op = MakeBoundedArg(fb, {2, 13, 5}, /*bound_dims=*/{1});
+  ASSERT_TRUE(GetTensorTypeOrDie(op).isDynamicDim(1));
+  EXPECT_THAT(GetStaticShape(op), ElementsAre(2, 13, 5));
+}
+
+TEST(ReshapeToStaticDimensions, SameShapeReturnsInput) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::func::FunctionBuilder fb(op_builder_utils_builder.get(), "main");
+  mlir::MlirOp op = MakeBoundedArg(fb, {2, 13, 5}, /*bound_dims=*/{1});
+  TT_ASSERT_OK_AND_ASSIGN(mlir::MlirOp reshaped,
+                          ReshapeToStaticDimensions(op, {2, 13, 5}));
+  EXPECT_EQ(reshaped.getValue(), op.getValue());
+}
+
+TEST(ReshapeToStaticDimensions, StaticShape) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::MlirOp op =
+      MakeConstant(mb, 1.0f, mb.getOpBuilder().getF32Type(), {2, 3});
+  TT_ASSERT_OK_AND_ASSIGN(mlir::MlirOp reshaped,
+                          ReshapeToStaticDimensions(op, {6}));
+  EXPECT_THAT(GetTensorTypeOrDie(reshaped).getShape(), ElementsAre(6));
+}
+
+TEST(ReshapeToStaticDimensions, CollapsePropagatesBoundedDim) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::func::FunctionBuilder fb(op_builder_utils_builder.get(), "main");
+  mlir::MlirOp op = MakeBoundedArg(fb, {2, 13, 5}, /*bound_dims=*/{1});
+  TT_ASSERT_OK_AND_ASSIGN(mlir::MlirOp reshaped,
+                          ReshapeToStaticDimensions(op, {26, 5}));
+  const mlir::stablehlo::Dimensions dims = GetDimensions(reshaped);
+  ASSERT_EQ(dims.size(), 2);
+  EXPECT_EQ(dims[0].size, 26);
+  EXPECT_TRUE(dims[0].boundOp.has_value());
+  EXPECT_EQ(dims[1].size, 5);
+  EXPECT_FALSE(dims[1].boundOp.has_value());
+}
+
+TEST(ReshapeToStaticDimensions, ErrorExpandBoundedDimToMultiple) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::func::FunctionBuilder fb(op_builder_utils_builder.get(), "main");
+  mlir::MlirOp op = MakeBoundedArg(fb, {10, 6}, /*bound_dims=*/{0});
+  absl::StatusOr<mlir::MlirOp> reshaped =
+      ReshapeToStaticDimensions(op, {2, 5, 6});
+  ASSERT_FALSE(reshaped.ok());
+  EXPECT_EQ(reshaped.status().code(), error::kInvalidArgument);
+}
+
+// Returns the stablehlo.iota op that produces `op`, looking through any
+// set_dimension_size ops applied to it.
+mlir::stablehlo::IotaOp GetUnderlyingIota(mlir::MlirOp op) {
+  mlir::Value value = op.getValue();
+  while (auto set_size =
+             value.getDefiningOp<mlir::stablehlo::SetDimensionSizeOp>()) {
+    value = set_size.getOperand();
+  }
+  return value.getDefiningOp<mlir::stablehlo::IotaOp>();
+}
+
+TEST(Iota, StaticShapeUsesReferenceElementTypeByDefault) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::MlirOp reference =
+      MakeConstant(mb, 1.0f, mb.getOpBuilder().getF32Type(), {2, 3, 4});
+
+  TT_ASSERT_OK_AND_ASSIGN(mlir::MlirOp iota,
+                          Iota(reference, /*iota_dimension=*/1));
+
+  const mlir::RankedTensorType type = GetTensorTypeOrDie(iota);
+  EXPECT_TRUE(type.hasStaticShape());
+  EXPECT_THAT(type.getShape(), ElementsAre(2, 3, 4));
+  EXPECT_TRUE(type.getElementType().isF32());
+  mlir::stablehlo::IotaOp iota_op =
+      iota.getValue().getDefiningOp<mlir::stablehlo::IotaOp>();
+  ASSERT_TRUE(iota_op);
+  EXPECT_EQ(iota_op.getIotaDimension(), 1);
+}
+
+TEST(Iota, StaticShapeUsesRequestedElementType) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::MlirOp reference =
+      MakeConstant(mb, 1.0f, mb.getOpBuilder().getF32Type(), {2, 3});
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      mlir::MlirOp iota,
+      Iota(reference, /*iota_dimension=*/0, mb.getOpBuilder().getI32Type()));
+
+  const mlir::RankedTensorType type = GetTensorTypeOrDie(iota);
+  EXPECT_THAT(type.getShape(), ElementsAre(2, 3));
+  EXPECT_TRUE(type.getElementType().isSignlessInteger(32));
+}
+
+TEST(Iota, BoundedDimsArePropagated) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp reference = MakeBoundedArg(fb, {2, 13, 5}, /*bound_dims=*/{1});
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      mlir::MlirOp iota,
+      Iota(reference, /*iota_dimension=*/2, fb.getOpBuilder().getI32Type()));
+  mlir::func::Return(fb, iota);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+
+  // The result is bounded in the same dimension as the reference, with the
+  // reference's upper bound.
+  const mlir::RankedTensorType type = GetTensorTypeOrDie(iota);
+  EXPECT_FALSE(type.isDynamicDim(0));
+  EXPECT_TRUE(type.isDynamicDim(1));
+  EXPECT_FALSE(type.isDynamicDim(2));
+  EXPECT_TRUE(type.getElementType().isSignlessInteger(32));
+  EXPECT_THAT(GetStaticShape(iota), ElementsAre(2, 13, 5));
+  const mlir::stablehlo::Dimensions dims = GetDimensions(iota);
+  ASSERT_EQ(dims.size(), 3);
+  EXPECT_FALSE(dims[0].boundOp.has_value());
+  EXPECT_TRUE(dims[1].boundOp.has_value());
+  EXPECT_FALSE(dims[2].boundOp.has_value());
+
+  // The iota itself is static at the bound, and the runtime size is applied
+  // with set_dimension_size.
+  auto set_size =
+      iota.getValue().getDefiningOp<mlir::stablehlo::SetDimensionSizeOp>();
+  ASSERT_TRUE(set_size) << DebugString(module.get());
+  EXPECT_EQ(set_size.getDimension(), 1);
+  mlir::stablehlo::IotaOp iota_op = GetUnderlyingIota(iota);
+  ASSERT_TRUE(iota_op) << DebugString(module.get());
+  EXPECT_TRUE(iota_op.getType().hasStaticShape());
+  EXPECT_THAT(iota_op.getType().getShape(), ElementsAre(2, 13, 5));
+  EXPECT_EQ(iota_op.getIotaDimension(), 2);
+}
+
+TEST(Iota, MultipleBoundedDimsArePropagated) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::MlirOp reference =
+      MakeBoundedArg(fb, {4, 8, 16}, /*bound_dims=*/{0, 2});
+
+  TT_ASSERT_OK_AND_ASSIGN(mlir::MlirOp iota,
+                          Iota(reference, /*iota_dimension=*/0));
+  mlir::func::Return(fb, iota);
+  mlir::OwningOpRef<mlir::ModuleOp> module = mb.build();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(module.get())))
+      << DebugString(module.get());
+
+  const mlir::RankedTensorType type = GetTensorTypeOrDie(iota);
+  EXPECT_TRUE(type.isDynamicDim(0));
+  EXPECT_FALSE(type.isDynamicDim(1));
+  EXPECT_TRUE(type.isDynamicDim(2));
+  EXPECT_THAT(GetStaticShape(iota), ElementsAre(4, 8, 16));
+  int num_set_sizes = 0;
+  module->walk([&](mlir::stablehlo::SetDimensionSizeOp) { ++num_set_sizes; });
+  // Two from MakeBoundedArg on the reference, two from Iota.
+  EXPECT_EQ(num_set_sizes, 4);
+}
+
+TEST(Iota, NegativeDimensionCountsFromTheEnd) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::MlirOp reference =
+      MakeConstant(mb, 1.0f, mb.getOpBuilder().getF32Type(), {2, 3, 4});
+
+  TT_ASSERT_OK_AND_ASSIGN(mlir::MlirOp last,
+                          Iota(reference, /*iota_dimension=*/-1));
+  TT_ASSERT_OK_AND_ASSIGN(mlir::MlirOp first,
+                          Iota(reference, /*iota_dimension=*/-3));
+
+  mlir::stablehlo::IotaOp last_op = GetUnderlyingIota(last);
+  mlir::stablehlo::IotaOp first_op = GetUnderlyingIota(first);
+  ASSERT_TRUE(last_op);
+  ASSERT_TRUE(first_op);
+  EXPECT_EQ(last_op.getIotaDimension(), 2);
+  EXPECT_EQ(first_op.getIotaDimension(), 0);
+}
+
+TEST(Iota, NegativeDimensionWithBoundedDims) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::func::FunctionBuilder fb(op_builder_utils_builder.get(), "main");
+  mlir::MlirOp reference = MakeBoundedArg(fb, {2, 13, 5}, /*bound_dims=*/{1});
+
+  TT_ASSERT_OK_AND_ASSIGN(mlir::MlirOp iota,
+                          Iota(reference, /*iota_dimension=*/-2));
+
+  mlir::stablehlo::IotaOp iota_op = GetUnderlyingIota(iota);
+  ASSERT_TRUE(iota_op);
+  EXPECT_EQ(iota_op.getIotaDimension(), 1);
+  EXPECT_TRUE(GetTensorTypeOrDie(iota).isDynamicDim(1));
+}
+
+class IotaOutOfBoundsTest : public testing::TestWithParam<int64_t> {};
+
+TEST_P(IotaOutOfBoundsTest, ReturnsInvalidArgument) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::MlirOp reference =
+      MakeConstant(mb, 1.0f, mb.getOpBuilder().getF32Type(), {2, 3, 4});
+
+  absl::StatusOr<mlir::MlirOp> iota = Iota(reference, GetParam());
+
+  ASSERT_FALSE(iota.ok());
+  EXPECT_EQ(iota.status().code(), error::kInvalidArgument);
+  EXPECT_EQ(iota.status().message(), absl::StrCat("iota_dimension ", GetParam(),
+                                                  " out of bounds for rank 3"));
+}
+
+INSTANTIATE_TEST_SUITE_P(IotaOutOfBoundsTests, IotaOutOfBoundsTest,
+                         testing::Values(3, 10, -4, -10));
 
 // Helper for Broadcast tests.
 struct BroadcastTestResult {

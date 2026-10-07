@@ -190,6 +190,10 @@ mlir::stablehlo::Dimensions GetDimensions(mlir::MlirOp input);
 // their upper bounds.
 Dimensions GetStaticShape(const mlir::stablehlo::Dimensions& dims);
 
+// Returns the static shape of the input op. For bounded dynamic dimensions, the
+// upper bound is returned.
+Dimensions GetStaticShape(mlir::MlirOp input);
+
 // Returns the bytecode of the module.
 absl::StatusOr<std::string> SerializeBytecode(mlir::ModuleOp module);
 
@@ -516,6 +520,19 @@ absl::StatusOr<mlir::MlirOp> BroadcastIfNeeded(
 absl::StatusOr<mlir::MlirOp> BroadcastIfNeeded(
     mlir::MlirOp input, mlir::MlirOp target,
     absl::Span<const int64_t> broadcast_dimensions = {});
+
+// Generates an Iota tensor with the same shape as the reference op,
+// filled with sequential integers along iota_dimension.
+//
+// Supports both static and dynamic shapes. If reference_op contains bounded
+// dynamic dimensions, all dynamic bounds and dimension sizes are propagated
+// to the output tensor.
+//
+// If element_type is null, the element type of the reference op is
+// used.
+absl::StatusOr<mlir::MlirOp> Iota(mlir::MlirOp reference_op,
+                                  int64_t iota_dimension,
+                                  mlir::Type element_type = nullptr);
 
 // Unsqueezes the input tensor by inserting a dimension of size 1 at the
 // given dimension.
@@ -900,6 +917,14 @@ absl::StatusOr<ReshapeReassociation> GetReshapeReassociation(
 absl::StatusOr<mlir::MlirOp> ReshapeFromStaticDimensions(
     mlir::MlirOp op, const Dimensions& static_shape_before,
     const Dimensions& static_shape_after);
+
+// Reshapes the input op to `static_shape_after` (static sizes, or upper bounds
+// for bounded dynamic dimensions). Equivalent to ReshapeFromStaticDimensions
+// with `static_shape_before` set to GetStaticShape(op), with the same
+// constraints for bounded dynamic inputs. Returns `op` unchanged if its static
+// shape already equals `static_shape_after`.
+absl::StatusOr<mlir::MlirOp> ReshapeToStaticDimensions(
+    mlir::MlirOp op, const Dimensions& static_shape_after);
 
 }  // namespace torch_tpu
 

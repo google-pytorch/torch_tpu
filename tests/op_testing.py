@@ -4799,6 +4799,7 @@ class OpInfoTestBase(
           device_op_input.input_value,
           device_op_input.args,
           mode=dynamism_mode,
+          kwargs=device_op_input.kwargs,
       )
 
     if use_compiled and device != torch.device("cpu"):

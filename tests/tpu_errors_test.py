@@ -1448,6 +1448,111 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       torch.fft.rfftn(inp)
 
+  @parameterized.named_parameters(
+      ("head_count", 1, "tensor<2x?x16x32xf32, #stablehlo.bounds<?, 4, ?, ?>>"),
+      ("head_dim", 3, "tensor<2x4x16x?xf32, #stablehlo.bounds<?, ?, ?, 32>>"),
+  )
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_scaled_dot_product_attention_dynamic_head_dim(
+      self, dynamic_dim, query_type
+  ):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      query = torch.ones(2, 4, 16, 32, device=et.device())
+      key = torch.ones(2, 4, 16, 32, device=et.device())
+      value = torch.ones(2, 4, 16, 32, device=et.device())
+
+      # Mark the head count (dim 1) or head dim (dim 3) as dynamic.
+      for t in (query, key, value):
+        dynamism.mark_dynamic(t, dynamic_dim, 2, t.size(dynamic_dim))
+
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=f"""scaled_dot_product_fused_attention_overrideable(): expected a static head count (dim -3) and head dim (dim -1), got type {query_type}""",
+      ):
+        # cpu() is needed because the error is triggered inside the op builder.
+        torch.nn.functional.scaled_dot_product_attention(
+            query, key, value
+        ).cpu()
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_scaled_dot_product_attention_dynamic_multiple_batch_dims(self):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      query = torch.ones(2, 3, 4, 16, 32, device=et.device())
+      key = torch.ones(2, 3, 4, 16, 32, device=et.device())
+      value = torch.ones(2, 3, 4, 16, 32, device=et.device())
+
+      # Mark the first of two non-1 batch dims as dynamic.
+      for t in (query, key, value):
+        dynamism.mark_dynamic(t, 0, 2, 4)
+
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""scaled_dot_product_fused_attention_overrideable(): expected at most one batch dim not equal to 1 when a batch dim is dynamic, got shape [4, 3, 4, 16, 32]""",
+      ):
+        # cpu() is needed because the error is triggered inside the op builder.
+        torch.nn.functional.scaled_dot_product_attention(
+            query, key, value
+        ).cpu()
+
+  @et.why_tpu_only(
+      "Tests internal _scaled_dot_product_fused_attention_overrideable SHLO"
+      " validation."
+  )
+  def test_scaled_dot_product_fused_attention_overrideable_mismatched_rank(
+      self,
+  ):
+    query = torch.ones(2, 4, 16, 32, device=et.device())
+    key = torch.ones(4, 16, 32, device=et.device())
+    value = torch.ones(2, 4, 16, 32, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scaled_dot_product_fused_attention_overrideable(): expected query, key and value to have the same rank >= 3, got 4, 3 and 4""",
+    ):
+      # cpu() is needed because the error is triggered inside the op builder.
+      torch.ops.aten._scaled_dot_product_fused_attention_overrideable(
+          query, key, value
+      )[0].cpu()
+
+  @et.why_tpu_only(
+      "Tests internal _scaled_dot_product_fused_attention_overrideable SHLO"
+      " validation."
+  )
+  def test_scaled_dot_product_fused_attention_overrideable_indivisible_heads(
+      self,
+  ):
+    query = torch.ones(2, 5, 16, 32, device=et.device())
+    key = torch.ones(2, 2, 16, 32, device=et.device())
+    value = torch.ones(2, 2, 16, 32, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scaled_dot_product_fused_attention_overrideable(): num_head_q must be divisible by num_head_kv""",
+    ):
+      # cpu() is needed because the error is triggered inside the op builder.
+      torch.ops.aten._scaled_dot_product_fused_attention_overrideable(
+          query, key, value
+      )[0].cpu()
+
+  @et.why_tpu_only(
+      "Tests internal _scaled_dot_product_fused_attention_overrideable SHLO"
+      " validation."
+  )
+  def test_scaled_dot_product_fused_attention_overrideable_boolean_mask(self):
+    query = torch.ones(2, 4, 16, 32, device=et.device())
+    key = torch.ones(2, 4, 16, 32, device=et.device())
+    value = torch.ones(2, 4, 16, 32, device=et.device())
+    attn_bias = torch.ones(2, 4, 16, 16, dtype=torch.bool, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scaled_dot_product_fused_attention_overrideable(): boolean mask is not supported""",
+    ):
+      # cpu() is needed because the error is triggered inside the op builder.
+      torch.ops.aten._scaled_dot_product_fused_attention_overrideable(
+          query, key, value, attn_bias=attn_bias
+      )[0].cpu()
+
   @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
   def test_mark_dynamic_multiple_dimensions_failure(self):
     inp = torch.ones(10, 10, device=et.device(), dtype=torch.float32)

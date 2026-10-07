@@ -21,7 +21,7 @@ Handles the following details for per-op unit testing:
   - Mark dependent args as dynamic.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 import enum
 import random
 from typing import Any
@@ -223,9 +223,9 @@ untriaged_ops_deny_list: dict[
         ALL_MODES
     ),  # inlined vector size fail (likely using bound)
     "nn.functional.relu": ALL_MODES,  # dynamic triage (tolerance)
-    "nn.functional.scaled_dot_product_attention": (
-        ALL_MODES
-    ),  # broadcasting issue in add
+    # Also on `compiled_deny_list` in op_testing.py, where compiled results
+    # mismatch CPU even with static shapes.
+    "nn.functional.scaled_dot_product_attention": {COMPILE},
     "nn.functional.upsample_bilinear": ALL_MODES,  # MLIR gather out of bounds
     "nn.functional.upsample_nearest": ALL_MODES,  # MLIR gather build failure
     "normal": ALL_MODES,  # OK
@@ -481,6 +481,7 @@ class DynamicOpInfo:
     adapters = [
         ForEachDynamicOpInfo,
         MatmulDynamicOpInfo,
+        SdpaDynamicOpInfo,
         BinaryElementwiseDynamicOpInfo,
         TernaryElementwiseDynamicOpInfo,
         ConvolutionDynamicOpInfo,
@@ -503,6 +504,7 @@ class DynamicOpInfo:
       input_value: torch.Tensor,
       args: Sequence[Any],
       mode: DynamismMode = DynamismMode.EAGER,
+      kwargs: Mapping[str, Any] | None = None,
   ):
     """Mark the op as dynamic."""
 
@@ -531,7 +533,9 @@ class DynamicOpInfo:
     _mark_tensor_dynamic(input_value, idx, 2, ub, mode=mode)
 
     # Mark any dependent args as dynamic.
-    self._mark_dependent_arg_dynamic(args, input_value, idx, ub, mode=mode)
+    self._mark_dependent_arg_dynamic(
+        args, input_value, idx, ub, mode=mode, kwargs=kwargs
+    )
 
   def _mark_dependent_arg_dynamic(
       self,
@@ -540,10 +544,11 @@ class DynamicOpInfo:
       idx: int,
       ub: int,
       mode: DynamismMode = DynamismMode.EAGER,
+      kwargs: Mapping[str, Any] | None = None,
   ):
     """Marks dependent dims of a bounded dimension as dynamic."""
     # No dependent args to mark.
-    del like, idx, ub, mode
+    del like, idx, ub, mode, kwargs
     logging.debug(
         "[DynamicOpInfo] _mark_dependent_arg_dynamic %s %s",
         self.op_info.name,
@@ -572,8 +577,10 @@ class BinaryElementwiseDynamicOpInfo(DynamicOpInfo):
       idx: int,
       ub: int,
       mode: DynamismMode = DynamismMode.EAGER,
+      kwargs: Mapping[str, Any] | None = None,
   ):
     """Mark the args of a binary elementwise op as dynamic."""
+    del kwargs
     rhs = args[0]
     if isinstance(rhs, torch.Tensor):
       _mark_numpy_broadcastable_arg_dynamic(rhs, like, idx, ub, mode=mode)
@@ -606,8 +613,10 @@ class TernaryElementwiseDynamicOpInfo(DynamicOpInfo):
       idx: int,
       ub: int,
       mode: DynamismMode = DynamismMode.EAGER,
+      kwargs: Mapping[str, Any] | None = None,
   ):
     """Mark the args of a ternary elementwise op as dynamic."""
+    del kwargs
     if len(args) >= 1 and isinstance(args[0], torch.Tensor):
       _mark_numpy_broadcastable_arg_dynamic(args[0], like, idx, ub, mode=mode)
     if len(args) >= 2 and isinstance(args[1], torch.Tensor):
@@ -632,8 +641,10 @@ class ForEachDynamicOpInfo(DynamicOpInfo):
       input_value: torch.Tensor | Sequence[torch.Tensor],
       args: Sequence[Any],
       mode: DynamismMode = DynamismMode.EAGER,
+      kwargs: Mapping[str, Any] | None = None,
   ):
     """Mark the op as dynamic, handling for list types."""
+    del kwargs
     # Split the inputs into their logical units for marking dynamic.
     # Options are:
     #   - foreach_add(list, [scalar|tensor])
@@ -715,8 +726,10 @@ class MatmulDynamicOpInfo(DynamicOpInfo):
       idx: int,
       ub: int,
       mode: DynamismMode = DynamismMode.EAGER,
+      kwargs: Mapping[str, Any] | None = None,
   ):
     """Mark the args of a binary elementwise op as dynamic."""
+    del kwargs
     rhs = args[0]
     if isinstance(rhs, torch.Tensor):
       lhs_ndim = like.ndim
@@ -771,12 +784,67 @@ class ConvolutionDynamicOpInfo(DynamicOpInfo):
     ]
 
 
+class SdpaDynamicOpInfo(DynamicOpInfo):
+  """A wrapper around OpInfo for scaled_dot_product_attention."""
+
+  @staticmethod
+  def adapter_supports_op(op_info: core.OpInfo) -> bool:
+    """Method to declare ops supported by this adapter."""
+
+    return op_info.name == "nn.functional.scaled_dot_product_attention"
+
+  def dynamic_dimension_candidates(
+      self, input_value: torch.Tensor, args: Sequence[Any]
+  ) -> Sequence[int]:
+    """Returns the batch dimensions of the query (rank >= 4, dims 0..ndim-4)."""
+    del args  # Unused.
+    if isinstance(input_value, torch.Tensor) and input_value.ndim >= 4:
+      return [
+          i
+          for i, sz in enumerate(input_value.shape)
+          if sz > 1 and i <= input_value.ndim - 4
+      ]
+    return []
+
+  def _mark_dependent_arg_dynamic(
+      self,
+      args: Sequence[Any],
+      like: torch.Tensor,
+      idx: int,
+      ub: int,
+      mode: DynamismMode = DynamismMode.EAGER,
+      kwargs: Mapping[str, Any] | None = None,
+  ):
+    """Mark the key, value and attn_mask batch dims as dynamic."""
+    lhs_ndim = like.ndim
+    if idx > lhs_ndim - 4:
+      return
+    if len(args) >= 2:
+      key = args[0]
+      value = args[1]
+      if (
+          isinstance(key, torch.Tensor)
+          and isinstance(value, torch.Tensor)
+          and key.ndim == lhs_ndim
+          and value.ndim == lhs_ndim
+      ):
+        _mark_numpy_broadcastable_arg_dynamic(key, like, idx, ub, mode=mode)
+        _mark_numpy_broadcastable_arg_dynamic(value, like, idx, ub, mode=mode)
+    if kwargs and "attn_mask" in kwargs:
+      attn_mask = kwargs["attn_mask"]
+      if isinstance(attn_mask, torch.Tensor):
+        _mark_numpy_broadcastable_arg_dynamic(
+            attn_mask, like, idx, ub, mode=mode
+        )
+
+
 def mark_input_dynamic(
     seed: int,
     op_info: core.OpInfo,
     input_value: torch.Tensor | Sequence[torch.Tensor],
     args: Sequence[Any],
     mode: DynamismMode = DynamismMode.EAGER,
+    kwargs: Mapping[str, Any] | None = None,
 ):
   """Mark an arg tensor as dynamic.
 
@@ -786,6 +854,7 @@ def mark_input_dynamic(
     input_value: The primary input value to for the op test.
     args: The additional args to the op test.
     mode: The dynamism mode (EAGER or COMPILE).
+    kwargs: The keyword arguments to the op test.
   """
 
   dynamic_op_info = DynamicOpInfo.get(op_info)
@@ -793,4 +862,6 @@ def mark_input_dynamic(
       ">>> Marking input dynamic using"
       f" {type(dynamic_op_info)} (mode={mode.value})"
   )
-  dynamic_op_info.mark_dynamic(seed, input_value, args, mode=mode)
+  dynamic_op_info.mark_dynamic(
+      seed, input_value, args, mode=mode, kwargs=kwargs
+  )

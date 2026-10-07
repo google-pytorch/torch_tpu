@@ -28,6 +28,8 @@
 
 namespace torch_tpu {
 
+// Batch dim (un)flattening helpers. Shapes are static sizes, or upper bounds
+// for bounded dynamic dimensions; bounded dimensions are propagated.
 mlir::MlirOp flatten_batch_dims(mlir::MlirOp mlir_op, int batch_size,
                                 int num_batch_dims);
 mlir::MlirOp unflatten_batch_dims(mlir::MlirOp mlir_op,

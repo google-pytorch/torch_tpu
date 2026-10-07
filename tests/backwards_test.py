@@ -86,6 +86,64 @@ class BackwardsTest(seed_test_utils.RepeatableTest):
     )
 
   @parameterized.product(
+      dtype=[torch.float32, torch.bfloat16],
+      is_causal=[True, False],
+      enable_gqa=[True, False],
+  )
+  def test_sdpa_backward_overrideable(self, dtype, is_causal, enable_gqa):
+    torch.manual_seed(42)
+    device = torch.device('tpu')
+    cpu_device = torch.device('cpu')
+
+    q_heads = 8
+    kv_heads = 2 if enable_gqa else 8
+
+    query_cpu = torch.randn(
+        2, q_heads, 64, 32, requires_grad=True, device=cpu_device, dtype=dtype
+    )
+    key_cpu = torch.randn(
+        2, kv_heads, 64, 32, requires_grad=True, device=cpu_device, dtype=dtype
+    )
+    value_cpu = torch.randn(
+        2, kv_heads, 64, 32, requires_grad=True, device=cpu_device, dtype=dtype
+    )
+    query_tpu = query_cpu.to(device).detach().requires_grad_(True)
+    key_tpu = key_cpu.to(device).detach().requires_grad_(True)
+    value_tpu = value_cpu.to(device).detach().requires_grad_(True)
+
+    with attention.sdpa_kernel(attention.SDPBackend.MATH):
+      sdpa_cpu = torch.nn.functional.scaled_dot_product_attention(
+          query_cpu,
+          key_cpu,
+          value_cpu,
+          is_causal=is_causal,
+          enable_gqa=enable_gqa,
+      )
+
+    with attention.sdpa_kernel(attention.SDPBackend.OVERRIDEABLE):
+      sdpa_tpu = torch.nn.functional.scaled_dot_product_attention(
+          query_tpu,
+          key_tpu,
+          value_tpu,
+          is_causal=is_causal,
+          enable_gqa=enable_gqa,
+      )
+
+    sdpa_fake_grad_cpu = torch.randn_like(sdpa_cpu, device=cpu_device)
+    sdpa_fake_grad_tpu = sdpa_fake_grad_cpu.to(device)
+
+    sdpa_cpu.backward(gradient=sdpa_fake_grad_cpu)
+    sdpa_tpu.backward(gradient=sdpa_fake_grad_tpu)
+
+    utils.assert_close(
+        query_cpu.grad, query_tpu.grad.cpu(), rtol=1e-2, atol=2e-2
+    )
+    utils.assert_close(key_cpu.grad, key_tpu.grad.cpu(), rtol=1e-2, atol=2e-2)
+    utils.assert_close(
+        value_cpu.grad, value_tpu.grad.cpu(), rtol=1e-2, atol=2e-2
+    )
+
+  @parameterized.product(
       dtype=[torch.float32, torch.bfloat16], is_causal=[True, False]
   )
   def test_sdpa_backward_flash(self, dtype, is_causal):

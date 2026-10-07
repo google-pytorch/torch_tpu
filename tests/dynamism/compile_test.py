@@ -512,6 +512,81 @@ class CompileTest(seed_test_utils.RepeatableTest):
     actual_full = compiled(prefill_cache, new_token_key)
     utils.assert_close(actual_full, expected_full)
 
+  @parameterized.named_parameters(
+      ("no_mask", False),
+      ("padding_mask", True),
+  )
+  def test_sdpa_enable_gqa_decode_dynamic_kv_len(self, use_mask):
+    # GQA decode step: the KV cache length is bounded-dynamic and SDPA is
+    # called with enable_gqa=True, so the grouped (5D) lowering sees a dynamic
+    # key sequence dimension.
+    def decode_step(q, cache_k, cache_v, new_k, new_v):
+      k = torch.cat([cache_k, new_k], dim=-2)
+      v = torch.cat([cache_v, new_v], dim=-2)
+      mask = None
+      if use_mask:
+        # Mask out the first key position; the mask has the dynamic length.
+        mask = (torch.arange(k.shape[-2], device=k.device) >= 1).view(
+            1, 1, 1, -1
+        )
+      return torch.nn.functional.scaled_dot_product_attention(
+          q, k, v, attn_mask=mask, is_causal=False, enable_gqa=True
+      )
+
+    with mock.patch.object(
+        _backend.dynamic_compiler,
+        "DynamicCompiler",
+        wraps=_backend.dynamic_compiler.DynamicCompiler,
+    ) as mock_dc:
+      compiled = torch.compile(
+          decode_step, backend="tpu", options={"bounded_dynamism": True}
+      )
+      for cache_len in (8, 13):
+        q = torch.randn(1, 8, 1, 32)
+        cache_k = torch.randn(1, 2, cache_len, 32)
+        cache_v = torch.randn(1, 2, cache_len, 32)
+        new_k = torch.randn(1, 2, 1, 32)
+        new_v = torch.randn(1, 2, 1, 32)
+        expected = decode_step(q, cache_k, cache_v, new_k, new_v)
+
+        inputs = [
+            t.to(self.device) for t in (q, cache_k, cache_v, new_k, new_v)
+        ]
+        torch._dynamo.mark_dynamic(inputs[1], 2, min=4, max=64)
+        torch._dynamo.mark_dynamic(inputs[2], 2, min=4, max=64)
+        actual = compiled(*inputs)
+        utils.assert_close(actual.to("cpu"), expected, rtol=2e-2, atol=2e-2)
+    self.assertGreaterEqual(mock_dc.call_count, 1)
+
+  def test_sdpa_enable_gqa_causal_dynamic_seq_len(self):
+    # GQA prefill with is_causal=True: the causal mask must be built for a
+    # bounded-dynamic query/key sequence length.
+    def prefill(q, k, v):
+      return torch.nn.functional.scaled_dot_product_attention(
+          q, k, v, is_causal=True, enable_gqa=True
+      )
+
+    with mock.patch.object(
+        _backend.dynamic_compiler,
+        "DynamicCompiler",
+        wraps=_backend.dynamic_compiler.DynamicCompiler,
+    ) as mock_dc:
+      compiled = torch.compile(
+          prefill, backend="tpu", options={"bounded_dynamism": True}
+      )
+      for seq_len in (9, 14):
+        q = torch.randn(1, 8, seq_len, 32)
+        k = torch.randn(1, 2, seq_len, 32)
+        v = torch.randn(1, 2, seq_len, 32)
+        expected = prefill(q, k, v)
+
+        inputs = [t.to(self.device) for t in (q, k, v)]
+        for t in inputs:
+          torch._dynamo.mark_dynamic(t, 2, min=4, max=64)
+        actual = compiled(*inputs)
+        utils.assert_close(actual.to("cpu"), expected, rtol=2e-2, atol=2e-2)
+    self.assertGreaterEqual(mock_dc.call_count, 1)
+
   def test_sliced_view_and_dynamic_input(self):
     def fn(dynamic_x, sliced_y):
       return dynamic_x + 1, sliced_y + 1

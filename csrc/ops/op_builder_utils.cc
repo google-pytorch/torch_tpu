@@ -430,6 +430,10 @@ Dimensions GetStaticShape(const mlir::stablehlo::Dimensions& dims) {
   return shape;
 }
 
+Dimensions GetStaticShape(mlir::MlirOp input) {
+  return GetStaticShape(GetDimensions(input));
+}
+
 std::string DebugString(mlir::Operation* absl_nonnull op,
                         DebugStringOptions opts) {
   std::string result;
@@ -1112,6 +1116,54 @@ absl::StatusOr<mlir::MlirOp> ConvertIfInteger(mlir::MlirOp op,
     return stablehlo::ConvertElementType(op, target_dtype);
   }
   return op;
+}
+
+absl::StatusOr<mlir::MlirOp> Iota(mlir::MlirOp reference_op,
+                                  int64_t iota_dimension,
+                                  mlir::Type element_type) {
+  const mlir::RankedTensorType reference_type =
+      GetTensorTypeOrDie(reference_op);
+  const int64_t rank = reference_type.getRank();
+  const int64_t requested_dimension = iota_dimension;
+  // Support negative indexing.
+  if (iota_dimension < 0) {
+    iota_dimension += rank;
+  }
+  if (iota_dimension < 0 || iota_dimension >= rank) {
+    return TT_ERROR(  // ERROR_COV_INFEASIBLE=Callers pass constant dimensions
+               error::kInvalidArgument)
+           << "iota_dimension " << requested_dimension
+           << " out of bounds for rank " << rank;
+  }
+
+  if (element_type == nullptr) {
+    element_type = reference_type.getElementType();
+  }
+
+  if (reference_type.hasStaticShape()) {
+    mlir::RankedTensorType iota_type = mlir::RankedTensorType::get(
+        reference_type.getShape(), element_type, reference_type.getEncoding());
+    return mlir::stablehlo::Iota(reference_op.getBuilder(), iota_type,
+                                 iota_dimension);
+  }
+
+  mlir::stablehlo::Dimensions input_dims = GetDimensions(reference_op);
+  mlir::RankedTensorType static_iota_type =
+      mlir::RankedTensorType::get(GetStaticShape(reference_op), element_type);
+
+  mlir::MlirOp iota_op = mlir::stablehlo::Iota(
+      reference_op.getBuilder(), static_iota_type, iota_dimension);
+
+  for (size_t i = 0; i < input_dims.size(); ++i) {
+    if (input_dims[i].boundOp.has_value()) {
+      mlir::MlirOp bound_op =
+          mlir::MlirOp(reference_op.getBuilder(), *input_dims[i].boundOp);
+      mlir::MlirOp dim_size =
+          stablehlo::GetDimensionSize(bound_op, input_dims[i].boundOpDim);
+      iota_op = stablehlo::SetDimensionSize(iota_op, dim_size, i);
+    }
+  }
+  return iota_op;
 }
 
 absl::StatusOr<DynamicMlirOpResults> ToResultVector(
@@ -1915,6 +1967,16 @@ absl::StatusOr<mlir::MlirOp> ReshapeFromStaticDimensions(
   mlir::RankedTensorType dynamic_shape_after =
       mlir::stablehlo::getRankedTensorType(output_dims, type.getElementType());
   return mlir::stablehlo::Reshape(dynamic_shape_after, op);
+}
+
+absl::StatusOr<mlir::MlirOp> ReshapeToStaticDimensions(
+    mlir::MlirOp op, const Dimensions& static_shape_after) {
+  const Dimensions static_shape_before = GetStaticShape(op);
+  if (static_shape_before == static_shape_after) {
+    return op;
+  }
+  return ReshapeFromStaticDimensions(op, static_shape_before,
+                                     static_shape_after);
 }
 
 }  // namespace torch_tpu

@@ -27,6 +27,7 @@
 #include "ATen/core/TensorBase.h"
 #include "absl/algorithm/container.h"
 #include "absl/log/absl_check.h"
+#include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "c10/util/ArrayRef.h"
 #include "csrc/common/dimension_types.h"
@@ -40,29 +41,43 @@
 
 namespace torch_tpu {
 
+namespace {
+
+// Batch dim (un)flattening is a valid reshape reassociation as long as at most
+// one non-1 batch dim exists when a batch dim is dynamic, which
+// PrepareAttentionLogits enforces, so failures here are internal errors.
+mlir::MlirOp ReshapeBatchDimsOrDie(mlir::MlirOp mlir_op,
+                                   absl::Span<const int64_t> shape) {
+  absl::StatusOr<mlir::MlirOp> reshaped = ReshapeToStaticDimensions(
+      mlir_op, Dimensions(shape.begin(), shape.end()));
+  ABSL_CHECK_OK(reshaped.status());  // CRASH_OK
+  return *reshaped;
+}
+
+}  // namespace
+
 mlir::MlirOp flatten_batch_dims(mlir::MlirOp mlir_op, int batch_size,
                                 int num_batch_dims) {
-  const mlir::RankedTensorType type = GetTensorTypeOrDie(mlir_op);
-  int rank = type.getRank();
+  const Dimensions shape = GetStaticShape(mlir_op);
+  int rank = shape.size();
   int num_non_batch_dims = rank - num_batch_dims;
   Dimensions new_dims(num_non_batch_dims + 1);
   new_dims[0] = batch_size;
   for (int i = 0; i < num_non_batch_dims; i++)
-    new_dims[i + 1] = type.getDimSize(i + num_batch_dims);
+    new_dims[i + 1] = shape[i + num_batch_dims];
 
-  return mlir::stablehlo::Reshape(mlir_op, new_dims);
+  return ReshapeBatchDimsOrDie(mlir_op, new_dims);
 }
 
 mlir::MlirOp unflatten_batch_dims(mlir::MlirOp mlir_op,
                                   absl::Span<const int64_t> shape) {
-  return mlir::stablehlo::Reshape(mlir_op, shape);
+  return ReshapeBatchDimsOrDie(mlir_op, shape);
 }
 
 mlir::MlirOp unflatten_batch_dims(mlir::MlirOp mlir_op,
                                   mlir::MlirOp mlir_op_with_target_dims) {
-  const mlir::RankedTensorType type =
-      GetTensorTypeOrDie(mlir_op_with_target_dims);
-  return mlir::stablehlo::Reshape(mlir_op, type.getShape());
+  return ReshapeBatchDimsOrDie(mlir_op,
+                               GetStaticShape(mlir_op_with_target_dims));
 }
 
 int get_batch_size(absl::Span<const int64_t> shape) {
