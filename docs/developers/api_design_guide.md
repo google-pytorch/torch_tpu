@@ -108,6 +108,12 @@ follow them in new code and migrate the existing APIs to conform to them.
         import that module and assign only the public names (e.g.
         `align_jagged_to_multiple = _jagged.align_jagged_to_multiple`), so that
         the implementation's own imports don't become public paths.
+    *   **Instance attributes of public classes must start with `_`.** An
+        instance attribute such as `self.lr` is a public path too, but the API
+        scanner can't discover it, so it would escape API review. To expose
+        state, add a property: properties are tracked like other APIs, and one
+        without a setter makes the state read-only. `tt_apis_test` enforces
+        this. Dataclass fields are exempt.
 
 ## Python API Module Structure
 
