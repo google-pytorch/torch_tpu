@@ -62,9 +62,6 @@ TorchTpuCompiledExecutable = (
 )
 Handshake = handshake.Handshake
 
-_COLLECTIVE_OPS = collective_ops.COLLECTIVE_OPS
-
-
 # We define a per process global collective count to keep track of the
 # collectives that have been submitted to the split compiler. This is used to
 # determine if a handshake is needed and to submit the handshake message.
@@ -193,10 +190,7 @@ def _get_unique_wait_tensor_producer(
     raise ValueError(
         f"Expected call_function for wait_tensor producer, got {producer.op}"
     )
-  if (
-      getattr(producer.target, "overloadpacket", producer.target)
-      not in _COLLECTIVE_OPS
-  ):
+  if not collective_ops.is_collective_op(producer.target):
     raise ValueError(
         f"Expected collective for wait_tensor producer, got {producer.target}"
     )
@@ -224,8 +218,8 @@ def _is_getitem_of_collective(node: torch.fx.Node) -> bool:
     if len(curr.args) == 0:
       break
     curr = curr.args[0]
-  if isinstance(curr, torch.fx.Node) and (
-      getattr(curr.target, "overloadpacket", curr.target) in _COLLECTIVE_OPS
+  if isinstance(curr, torch.fx.Node) and collective_ops.is_collective_op(
+      curr.target
   ):
     return True
   return False
@@ -612,7 +606,8 @@ class SplitCompiler(compiler.Compiler):
 
       maybe_collective = getattr(node.target, "overloadpacket", node.target)
       is_collective = (
-          node.op == "call_function" and maybe_collective in _COLLECTIVE_OPS
+          node.op == "call_function"
+          and collective_ops.is_collective_op(maybe_collective)
       )
 
       # `wait_tensor`` is a special case. It is a collective-related op, but it

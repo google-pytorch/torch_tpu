@@ -70,6 +70,9 @@ const std::vector<int64_t>& GetGlobalRankToDeviceId();  // INT_VEC_OK
     int64_t src_device_id, int64_t dst_device_id, int tag,
     size_t tensor_index = 0);
 
+// Returns the OpSplitMode to use for collectives.
+[[nodiscard]] OpSplitMode GetCollectiveSplitMode();
+
 class ProcessGroupTpu : public c10d::Backend {
  public:
   // The standard pattern for PyTorch distributed backend initialization is

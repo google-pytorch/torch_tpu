@@ -26,7 +26,7 @@ def _is_collective_or_wait(node: torch.fx.Node) -> bool:
     return False
   maybe_collective = getattr(node.target, "overloadpacket", None)
   return (
-      maybe_collective in collective_ops.COLLECTIVE_OPS
+      collective_ops.is_collective_op(maybe_collective)
       or maybe_collective == torch.ops._c10d_functional.wait_tensor  # pylint: disable=protected-access
   )
 

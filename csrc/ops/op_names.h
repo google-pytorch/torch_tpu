@@ -170,6 +170,7 @@ enum class OpName {
   kDimI,
   kDimV,
   kDistributedAllGather,
+  kDistributedAllGatherDim,
   kDistributedAllGatherIntoTensor,
   kDistributedAllReduce,
   kDistributedAllToAll,
@@ -179,6 +180,7 @@ enum class OpName {
   kDistributedGather,
   kDistributedRecv,
   kDistributedReduceScatter,
+  kDistributedReduceScatterDim,
   kDistributedReduceScatterTensor,
   kDistributedReduceScatterTensorCoalesced,
   kDistributedScatter,
@@ -1173,6 +1175,8 @@ ToString(  // NOLINT(google-readability-function-size)
       return "_dimV";
     case OpName::kDistributedAllGather:
       return "distributed.all_gather";
+    case OpName::kDistributedAllGatherDim:
+      return "_all_gather_dim";
     case OpName::kDistributedAllGatherIntoTensor:
       return "distributed.all_gather_into_tensor";
     case OpName::kDistributedAllReduce:
@@ -1191,6 +1195,8 @@ ToString(  // NOLINT(google-readability-function-size)
       return "_recv";
     case OpName::kDistributedReduceScatter:
       return "distributed.reduce_scatter";
+    case OpName::kDistributedReduceScatterDim:
+      return "_reduce_scatter_dim";
     case OpName::kDistributedReduceScatterTensor:
       return "distributed.reduce_scatter_tensor";
     case OpName::kDistributedReduceScatterTensorCoalesced:
@@ -2616,6 +2622,7 @@ inline std::ostream& operator<<(std::ostream& os, const OpName op_name) {
 [[nodiscard]] inline bool IsDistributedOp(OpName op_name) {
   switch (op_name) {
     case OpName::kDistributedAllGather:
+    case OpName::kDistributedAllGatherDim:
     case OpName::kDistributedAllGatherIntoTensor:
     case OpName::kDistributedAllReduce:
     case OpName::kDistributedAllToAll:
@@ -2626,6 +2633,7 @@ inline std::ostream& operator<<(std::ostream& os, const OpName op_name) {
     case OpName::kDistributedSend:
     case OpName::kDistributedGather:
     case OpName::kDistributedReduceScatter:
+    case OpName::kDistributedReduceScatterDim:
     case OpName::kDistributedReduceScatterTensor:
     case OpName::kDistributedReduceScatterTensorCoalesced:
     case OpName::kDistributedScatter:

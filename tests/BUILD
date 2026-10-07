@@ -2340,6 +2340,17 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "experimental_collectives_test",
+    srcs = ["experimental_collectives_test.py"],
+    deps = [
+        ":seed_test_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+    ],
+)
+
+torch_tpu_py_test(
     name = "autoload_test_tpu",
     srcs = ["autoload_tpu_test.py"],
     main = "autoload_tpu_test.py",

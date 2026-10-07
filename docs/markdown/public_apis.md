@@ -127,11 +127,13 @@ process. Use it at your own risk. Using it triggers a one-time warning.
 *   `torch.tpu.manual_seed`
 *   `torch.tpu.manual_seed_all`
 *   `torch.tpu.ops.align_jagged_to_multiple`
+*   `torch.tpu.ops.all_gather_dim`
 *   `torch.tpu.ops.optimization_barrier`
 *   `torch.tpu.ops.ragged_all_to_all`
 *   `torch.tpu.ops.ragged_dot`
 *   `torch.tpu.ops.ragged_dot_weight_grad`
 *   `torch.tpu.ops.recv`
+*   `torch.tpu.ops.reduce_scatter_dim`
 *   `torch.tpu.ops.send`
 *   `torch.tpu.ops.sparse_dense_matmul`
 *   `torch.tpu.ops.sparse_dense_matmul_activation_unstack`

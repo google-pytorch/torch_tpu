@@ -697,6 +697,7 @@ torch_tpu_cc_library(
         "//csrc/ops/elu:elu_aten_kernels",
         "//csrc/ops/embedding:embedding_aten_kernels",
         "//csrc/ops/equal:equal_aten_kernels",
+        "//csrc/ops/experimental/collectives:collectives_aten_kernels",
         "//csrc/ops/experimental/ragged_dot:ragged_dot_aten_kernels",
         "//csrc/ops/experimental/ragged_all_to_all:ragged_all_to_all_aten_kernels",
         "//csrc/ops/experimental/send_recv:send_recv_kernels",

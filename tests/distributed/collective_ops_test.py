@@ -51,6 +51,7 @@ if __name__ == "__main__":  # We are in the parent process.
 
 import torch  # pylint: disable=g-import-not-at-top
 from torch import distributed as dist
+from torch.distributed import device_mesh
 import torch.multiprocessing as mp
 
 from torch_tpu._internal.utils import test_utils as utils
@@ -285,6 +286,68 @@ def run_all_gather_rank_order() -> None:
       recv_new_group, send, group=explicit_world_pg
   )
   utils.assert_close(recv_new_group.cpu(), expected)
+
+
+def _check_dim_collectives(fn: Callable[..., Any], group: Any) -> None:
+  # Encode inputs by world rank so that a wrong group membership changes the
+  # result, not just a wrong order within the group.
+  ranks = dist.get_process_group_ranks(
+      dist.group.WORLD if group is None else group
+  )
+  rank = dist.get_rank(group)
+  size = len(ranks)
+  x = torch.arange(6, dtype=torch.float32).reshape(2, 3)
+  y = torch.arange(6 * size, dtype=torch.float32).reshape(2, 3 * size)
+  gathered, scattered_sum, scattered_avg = fn(
+      (x + 100 * dist.get_rank()).to("tpu"),
+      (y + 1000 * dist.get_rank()).to("tpu"),
+      group,
+  )
+  utils.assert_close(
+      gathered.cpu(), torch.cat([x + 100 * r for r in ranks], dim=1)
+  )
+  utils.assert_close(
+      scattered_sum.cpu(),
+      (size * y + 1000 * sum(ranks)).chunk(size, dim=1)[rank],
+  )
+  utils.assert_close(
+      scattered_avg.cpu(),
+      (y + 1000 * sum(ranks) / size).chunk(size, dim=1)[rank],
+  )
+
+
+def run_experimental_collectives_on_dim() -> None:
+  """Tests the experimental collectives on a non-leading dim of a 2D mesh."""
+  # Mesh dim 0 groups are strided ({0, 4}, ...), dim 1 groups are contiguous.
+  mesh = device_mesh.init_device_mesh("tpu", (2, dist.get_world_size() // 2))
+  mesh_groups = (mesh.get_group(0), mesh.get_group(1))
+
+  def _dim_collectives(x, y, group):
+    return (
+        torch.tpu.ops.all_gather_dim(x, 1, group),
+        torch.tpu.ops.reduce_scatter_dim(y, -1, group),
+        torch.tpu.ops.reduce_scatter_dim(y, -1, group, reduce_op="avg"),
+    )
+
+  debugs = []
+  compiled = torch.compile(
+      _dim_collectives,
+      backend="tpu",
+      fullgraph=True,
+      dynamic=False,
+      options={"serializable": False, "debug_callback": debugs.append},
+  )
+  # Compile first so the first call of each public op happens under Dynamo.
+  for group in mesh_groups:
+    _check_dim_collectives(compiled, group)
+  for group in (None, *mesh_groups):
+    _check_dim_collectives(_dim_collectives, group)
+
+  stablehlo = "\n".join(
+      text for debug in debugs for text in debug.stablehlo_forward_text
+  )
+  assert "all_gather_dim = 1" in stablehlo, stablehlo
+  assert "scatter_dimension = 1" in stablehlo, stablehlo
 
 
 def run_gather_scalar() -> None:
@@ -861,6 +924,13 @@ class CollectiveOpsTest(seed_test_utils.MultiProcessRepeatableTest):
         nproc_per_node=self._world_size,
         fn=_test_wrapper,
         test_fn=run_all_gather_rank_order,
+    )
+
+  def test_experimental_collectives_on_dim(self):
+    distributed_utils.dist_run(
+        nproc_per_node=self._world_size,
+        fn=_test_wrapper,
+        test_fn=run_experimental_collectives_on_dim,
     )
 
   def test_gather_scalar(self):

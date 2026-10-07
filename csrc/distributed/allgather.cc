@@ -34,7 +34,7 @@ namespace torch_tpu {
 
 absl::StatusOr<mlir::SmallVector<mlir::MlirOp>> BuildDistributedAllGatherShlo(
     mlir::MlirOp input, const DeviceGroupList& device_groups,
-    AllGatherOutputMode output_mode) {
+    AllGatherOutputMode output_mode, int64_t gather_dim) {
   ABSL_CHECK(!device_groups.empty())  // CRASH_OK
       << "[BuildDistributedAllGatherShlo]: device_groups is empty";
   const int group_size = device_groups[0].size();
@@ -54,10 +54,11 @@ absl::StatusOr<mlir::SmallVector<mlir::MlirOp>> BuildDistributedAllGatherShlo(
     input = mlir::stablehlo::Reshape(input, input_shape);
   }
 
-  // Though XLA can perform an allgather along any dimension, using the 0th
-  // dimension is sufficient for all PyTorch use cases.
+  ABSL_CHECK(gather_dim >= 0 &&  // CRASH_OK
+             gather_dim < static_cast<int64_t>(input_shape.size()))
+      << "[BuildDistributedAllGatherShlo]: invalid gather_dim " << gather_dim;
   Dimensions output_shape = CopyIntVector(input_shape);
-  output_shape[0] *= group_size;
+  output_shape[gather_dim] *= group_size;
   auto output_type =
       mlir::RankedTensorType::get(output_shape, input_element_type);
 
@@ -66,7 +67,7 @@ absl::StatusOr<mlir::SmallVector<mlir::MlirOp>> BuildDistributedAllGatherShlo(
       builder,
       /*resultType=*/output_type,
       /*operands=*/input,
-      /*all_gather_dim=*/0,
+      /*all_gather_dim=*/gather_dim,
       /*replica_groups=*/BuildReplicaGroupsAttr(builder, device_groups),
       /*channel_id=*/BuildChannelHandleAttr(builder, /*handle=*/1, /*type=*/0),
       /*use_global_device_ids=*/true);
@@ -77,6 +78,9 @@ absl::StatusOr<mlir::SmallVector<mlir::MlirOp>> BuildDistributedAllGatherShlo(
     case AllGatherOutputMode::kConcat:
       return mlir::SmallVector<mlir::MlirOp>{gather_output};
     case AllGatherOutputMode::kStack: {
+      ABSL_CHECK_EQ(gather_dim, 0)  // CRASH_OK
+          << "[BuildDistributedAllGatherShlo]: only kConcat supports a nonzero "
+             "gather_dim";
       Dimensions stacked_shape;
       stacked_shape.reserve(input_shape.size() + 1);
       stacked_shape.push_back(group_size);
@@ -87,6 +91,9 @@ absl::StatusOr<mlir::SmallVector<mlir::MlirOp>> BuildDistributedAllGatherShlo(
           mlir::stablehlo::Reshape(gather_output, stacked_shape)};
     }
     case AllGatherOutputMode::kList: {
+      ABSL_CHECK_EQ(gather_dim, 0)  // CRASH_OK
+          << "[BuildDistributedAllGatherShlo]: only kConcat supports a nonzero "
+             "gather_dim";
       mlir::SmallVector<mlir::MlirOp> results;
       results.reserve(group_size);
 
