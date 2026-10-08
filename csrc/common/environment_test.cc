@@ -20,6 +20,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <cstdio>
 #include <cstdlib>
 #include <string>
 
@@ -40,7 +41,7 @@ TEST(EnvironmentDeathTest,
       {
         unsetenv(kTpuProcessAddressesEnvVar);
         unsetenv(kTpuProcessPortEnvVar);
-        DistributedWorkerConfiguration config;
+        DistributedWorkerConfiguration config{};
         config.rank = 0;
         config.local_rank = 0;
         config.sb_port = "1234";
@@ -65,7 +66,7 @@ TEST(EnvironmentDeathTest,
       {
         unsetenv(kTpuProcessAddressesEnvVar);
         unsetenv(kTpuProcessPortEnvVar);
-        DistributedWorkerConfiguration config;
+        DistributedWorkerConfiguration config{};
         config.rank = 0;
         config.local_rank = 0;
         config.sb_port = "5678";
@@ -88,7 +89,7 @@ TEST(EnvironmentDeathTest, InitializeDistributedEnvironment_ResolvesBnsPort) {
   EXPECT_EXIT(
       {
         unsetenv(kTpuProcessPortEnvVar);
-        DistributedWorkerConfiguration config;
+        DistributedWorkerConfiguration config{};
         config.rank = 0;
         config.local_rank = 0;
         config.sb_port = "1234";
@@ -108,7 +109,7 @@ TEST(EnvironmentDeathTest,
      InitializeDistributedEnvironment_FailsOnEmptySlicebuilderAddresses) {
   EXPECT_EXIT(
       {
-        DistributedWorkerConfiguration config;
+        DistributedWorkerConfiguration config{};
         config.rank = 0;
         config.local_rank = 0;
         config.sb_port = "1234";
@@ -125,7 +126,7 @@ TEST(EnvironmentDeathTest,
      InitializeDistributedEnvironment_FailsOnNegativeRank) {
   EXPECT_EXIT(
       {
-        DistributedWorkerConfiguration config;
+        DistributedWorkerConfiguration config{};
         config.rank = -1;
         config.local_rank = 0;
         config.sb_port = "1234";
@@ -144,7 +145,7 @@ TEST(EnvironmentDeathTest,
       {
         setenv(kLibtpuInitArgsEnvVar,
                "--xla_tpu_use_enhanced_launch_barrier=true", 1);
-        DistributedWorkerConfiguration config;
+        DistributedWorkerConfiguration config{};
         config.rank = 0;
         config.local_rank = 0;
         config.sb_port = "1234";
@@ -171,7 +172,7 @@ TEST(EnvironmentDeathTest,
         setenv(kLibtpuInitArgsEnvVar,
                "--undefok=existing_flag --slicebuilder_use_insecure_grpc=false",
                1);
-        DistributedWorkerConfiguration config;
+        DistributedWorkerConfiguration config{};
         config.rank = 0;
         config.local_rank = 0;
         config.sb_port = "1234";
@@ -197,7 +198,7 @@ TEST(EnvironmentDeathTest,
         unsetenv(kLibtpuInitArgsEnvVar);
         unsetenv(kTpuProcessAddressesEnvVar);
         SetLibtpuVersion("0.0.41");
-        DistributedWorkerConfiguration config;
+        DistributedWorkerConfiguration config{};
         config.rank = 0;
         config.local_rank = 0;
         config.sb_port = "1234";
@@ -223,7 +224,7 @@ TEST(EnvironmentDeathTest,
         unsetenv(kTpuChipsPerHostBoundsEnvVar);
         unsetenv(kTpuProcessBoundsEnvVar);
         unsetenv(kTpuChipsPerProcessBoundsEnvVar);
-        DistributedWorkerConfiguration config;
+        DistributedWorkerConfiguration config{};
         config.rank = 0;
         config.local_rank = 0;
         config.sb_port = "1234";
@@ -270,7 +271,7 @@ TEST(EnvironmentDeathTest,
         unsetenv(kTpuChipsPerHostBoundsEnvVar);
         unsetenv(kTpuProcessBoundsEnvVar);
         unsetenv(kTpuChipsPerProcessBoundsEnvVar);
-        DistributedWorkerConfiguration config;
+        DistributedWorkerConfiguration config{};
         config.rank = 0;
         config.local_rank = 0;
         config.sb_port = "1234";
@@ -290,7 +291,7 @@ TEST(EnvironmentDeathTest,
   EXPECT_EXIT(
       {
         setenv(kTpuProcessAddressesEnvVar, "old_address", 1);
-        DistributedWorkerConfiguration config;
+        DistributedWorkerConfiguration config{};
         config.rank = 0;
         config.local_rank = 0;
         config.sb_port = "1234";
@@ -316,7 +317,7 @@ TEST(EnvironmentDeathTest,
         unsetenv(kTpuChipsPerProcessBoundsEnvVar);
         unsetenv(kCloudTpuTaskIdEnvVar);
 
-        DistributedWorkerConfiguration config;
+        DistributedWorkerConfiguration config{};
         config.rank = 5;
         config.local_rank = 0;
         config.sb_port = "1234";
@@ -330,12 +331,61 @@ TEST(EnvironmentDeathTest,
       ExitedWithCode(0), "");
 }
 
+// SliceBuilder addresses of one slice made of two hosts with four processes
+// each.
+constexpr char kTwoHostSliceAddresses[] =
+    "h0:8070,h0:8071,h0:8072,h0:8073,h1:8070,h1:8071,h1:8072,h1:8073";
+
+// Returns the configuration of local rank `local_rank` on the first host of
+// the second slice in a job of two `kTwoHostSliceAddresses` slices.
+DistributedWorkerConfiguration MultisliceConfig(const int local_rank) {
+  DistributedWorkerConfiguration config{};
+  config.rank = 8 + local_rank;
+  config.local_rank = local_rank;
+  config.world_size = 16;
+  config.sb_port = "8070";
+  config.sb_addrs = kTwoHostSliceAddresses;
+  config.topology = "1,1,1";
+  return config;
+}
+
+// Runs InitializeDistributedEnvironment(config) in a death test child and
+// prints the resulting MegaScale ports to stderr as
+// "ports=<MEGASCALE_PORT>,<MEGASCALE_DEBUG_PORT>" for EXPECT_EXIT to match.
+void InitAndPrintMegascalePorts(const DistributedWorkerConfiguration& config) {
+  if (!InitializeDistributedEnvironment(config).ok()) _exit(1);
+  const char* const port = std::getenv(kMegascalePortEnvVar);
+  const char* const debug_port = std::getenv(kMegascaleDebugPortEnvVar);
+  std::fprintf(stderr, "ports=%s,%s\n", port ? port : "unset",
+               debug_port ? debug_port : "unset");
+  _exit(0);
+}
+
+TEST(EnvironmentDeathTest,
+     InitDistEnvSetsMegascalePortsPerLocalRankForMultislice) {
+  EXPECT_EXIT(InitAndPrintMegascalePorts(MultisliceConfig(/*local_rank=*/3)),
+              ExitedWithCode(0), "ports=8086,8087");
+}
+
+TEST(EnvironmentDeathTest,
+     InitDistEnvKeepsDefaultMegascalePortsForLocalRankZero) {
+  EXPECT_EXIT(InitAndPrintMegascalePorts(MultisliceConfig(/*local_rank=*/0)),
+              ExitedWithCode(0), "ports=8080,8081");
+}
+
+TEST(EnvironmentDeathTest, InitDistEnvLeavesMegascalePortsUnsetForSingleSlice) {
+  DistributedWorkerConfiguration config = MultisliceConfig(/*local_rank=*/3);
+  config.world_size = 8;
+  EXPECT_EXIT(InitAndPrintMegascalePorts(config), ExitedWithCode(0),
+              "ports=unset,unset");
+}
+
 TEST(EnvironmentDeathTest,
      InitDistEnv_FallsBackOnMalformedTpuVisibleDevicesEnvVar) {
   EXPECT_EXIT(
       {
         setenv(kTpuVisibleDevicesEnvVar, "invalid_dev", 1);
-        DistributedWorkerConfiguration config;
+        DistributedWorkerConfiguration config{};
         config.rank = 0;
         config.local_rank = 1;
         config.sb_port = "1234";
@@ -358,7 +408,7 @@ TEST(EnvironmentDeathTest,
   EXPECT_EXIT(
       {
         setenv(kTpuVisibleDevicesEnvVar, "-5", 1);
-        DistributedWorkerConfiguration config;
+        DistributedWorkerConfiguration config{};
         config.rank = 0;
         config.local_rank = 2;
         config.sb_port = "1234";
@@ -381,7 +431,7 @@ TEST(EnvironmentDeathTest,
   EXPECT_EXIT(
       {
         setenv(kTpuVisibleDevicesEnvVar, "3", 1);
-        DistributedWorkerConfiguration config;
+        DistributedWorkerConfiguration config{};
         config.rank = 0;
         config.local_rank = 0;
         config.sb_port = "1234";
@@ -401,7 +451,7 @@ TEST(EnvironmentDeathTest,
   EXPECT_EXIT(
       {
         setenv(kTpuVisibleDevicesEnvVar, "0,1,2,3", 1);
-        DistributedWorkerConfiguration config;
+        DistributedWorkerConfiguration config{};
         config.rank = 0;
         config.local_rank = 1;
         config.sb_port = "1234";
@@ -422,7 +472,7 @@ TEST(EnvironmentDeathTest,
       {
         setenv(kTpuVisibleChipsEnvVar, "0,1,2,3", 1);
         unsetenv(kTpuVisibleDevicesEnvVar);
-        DistributedWorkerConfiguration config;
+        DistributedWorkerConfiguration config{};
         config.rank = 0;
         config.local_rank = 0;
         config.sb_port = "1234";

@@ -55,6 +55,12 @@ inline constexpr char kLibtpuInitArgsEnvVar[] =
 inline constexpr char kLocalRankEnvVar[] = "LOCAL_RANK";    // Set by launchers.
 inline constexpr char kMasterAddrEnvVar[] = "MASTER_ADDR";  // Set by launchers.
 inline constexpr char kMasterPortEnvVar[] = "MASTER_PORT";  // Set by launchers.
+// The MegaScale debug server port of this process. Read by libtpu, which
+// defaults it to 8081 in every process.
+inline constexpr char kMegascaleDebugPortEnvVar[] = "MEGASCALE_DEBUG_PORT";
+// The MegaScale (DCN) port of this process in a multi-slice job. Read by
+// libtpu, which defaults it to 8080 in every process.
+inline constexpr char kMegascalePortEnvVar[] = "MEGASCALE_PORT";
 // The number of nodes in a multi-host job. Set by launchers like torchrun.
 inline constexpr char kNnodesEnvVar[] = "NNODES";
 // The rank of this node within a multi-host job. Set by launchers like
@@ -259,6 +265,8 @@ inline constexpr auto kEnvVarToStage =
         // environment variable widely used by production workloads. The
         // TorchTPU team is committed to honor this env var.
         {kMasterPortEnvVar, SymbolStage::Stable()},
+        {kMegascaleDebugPortEnvVar, SymbolStage::InternalImplementation()},
+        {kMegascalePortEnvVar, SymbolStage::InternalImplementation()},
         // Marked as Stable because it is an established distributed launcher
         // environment variable widely used by production workloads. The
         // TorchTPU team is committed to honor this env var.

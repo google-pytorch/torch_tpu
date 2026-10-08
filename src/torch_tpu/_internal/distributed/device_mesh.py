@@ -332,10 +332,12 @@ def topology_aware_mesh(
           f"(dcn_mesh_shape={tuple(dcn_mesh_shape)}), but the PJRT devices do "
           "not expose a 'slice_index' attribute. That attribute is published "
           "only by the MegaScale PJRT client, which the TPU plugin installs "
-          "when --megascale_port >= 0. Set --megascale_port (plus "
-          "MEGASCALE_NUM_SLICES / MEGASCALE_SLICE_ID / "
-          "MEGASCALE_COORDINATOR_ADDRESS) and make sure "
-          "SKIP_MEGASCALE_PJRT_CLIENT is unset."
+          "when --megascale_port >= 0 and SKIP_MEGASCALE_PJRT_CLIENT is "
+          "unset. libtpu sets --megascale_port to MEGASCALE_PORT once "
+          "MEGASCALE_COORDINATOR_ADDRESS, MEGASCALE_SLICE_ID and "
+          "MEGASCALE_NUM_SLICES are set. Give the coordinator address a port, "
+          "e.g. <MASTER_ADDR>:8080, since libtpu otherwise appends each "
+          "process's own MEGASCALE_PORT."
       )
     if dcn_mesh_shape is None:
       dcn_mesh_shape = _infer_dcn_mesh_shape(mesh_shape, num_slices)

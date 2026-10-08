@@ -45,6 +45,25 @@ namespace {
 
 constexpr Version kMinLibtpuVersionWithSlicebuilderInsecureGrpc(0, 0, 48);
 
+// libtpu's default MegaScale port. Local rank 0 keeps it, so a MegaScale
+// coordinator address of `<MASTER_ADDR>:8080` still reaches global rank 0.
+constexpr int kMegascaleBasePort = 8080;
+
+// Gives the process with `local_rank` its own MegaScale ports in a multi-slice
+// job. libtpu defaults the MegaScale port to 8080 and the MegaScale debug port
+// to 8081 in every process, so the processes on a host would collide. The
+// ports are interleaved (8080/8081, 8082/8083, ...) so that no process's
+// MegaScale port is another process's debug port.
+void AssignMegascalePorts(const int local_rank) {
+  const int megascale_port = kMegascaleBasePort + 2 * local_rank;
+  const int megascale_debug_port = megascale_port + 1;
+  ABSL_LOG(INFO) << "Multi-slice job detected, setting " << kMegascalePortEnvVar
+                 << "=" << megascale_port << " and "
+                 << kMegascaleDebugPortEnvVar << "=" << megascale_debug_port;
+  SetEnv<kMegascalePortEnvVar>(absl::StrCat(megascale_port));
+  SetEnv<kMegascaleDebugPortEnvVar>(absl::StrCat(megascale_debug_port));
+}
+
 // Returns the local hostname with any domain or port suffix (starting at '.'
 // or ':') stripped, matching SliceBuilder's `GetAndSanitizeHostName()`. Falls
 // back to "localhost" if querying or resolving the sanitized hostname fails.
@@ -205,6 +224,12 @@ absl::Status InitializeDistributedEnvironment(
 
   // The free slicebuilder port of this process.
   SetEnv<kTpuProcessPortEnvVar>(config.sb_port);
+
+  // `addresses` lists the processes of one slice, so a larger world spans
+  // several slices, which libtpu connects over MegaScale (DCN).
+  if (config.world_size > static_cast<int>(addresses.size())) {
+    AssignMegascalePorts(config.local_rank);
+  }
 
   const bool use_slicebuilder_insecure_grpc =
       GetLibtpuVersion() >= kMinLibtpuVersionWithSlicebuilderInsecureGrpc;
