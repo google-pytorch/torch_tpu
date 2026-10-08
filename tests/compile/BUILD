@@ -569,20 +569,6 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
-    name = "reassociate_norm_weights_test",
-    srcs = ["reassociate_norm_weights_test.py"],
-    deps = [
-        "//shims/absl_py/testing:absltest",
-        "//shims/absl_py/testing:parameterized",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "//src/torch_tpu/_internal/compile/fx_passes:reassociate_norm_weights",
-        "//src/torch_tpu/_internal/utils:test_utils",
-        "//tests:seed_test_utils",
-    ],
-)
-
-torch_tpu_py_test(
     name = "async_compile_test",
     srcs = ["async_compile_test.py"],
     tags = [

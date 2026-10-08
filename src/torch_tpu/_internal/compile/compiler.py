@@ -46,7 +46,6 @@ from torch_tpu._internal.compile.fx_passes import detect_causal_mask
 from torch_tpu._internal.compile.fx_passes import fold_gqa
 from torch_tpu._internal.compile.fx_passes import mark_activation_checkpoints
 from torch_tpu._internal.compile.fx_passes import mark_embedded_constants
-from torch_tpu._internal.compile.fx_passes import reassociate_norm_weights
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import AsyncCompiledArtifact
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import CompiledArtifact
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import NoOpCompiledArtifact
@@ -519,9 +518,6 @@ class StaticCompiler(Compiler):
     graph_transform_observer.GraphTransformObserver(
         graph_module, "decompose_auto_functionalized"
     ).apply_graph_pass(post_grad.decompose_auto_functionalized)
-    graph_transform_observer.GraphTransformObserver(
-        graph_module, "reassociate_norm_weights"
-    ).apply_graph_pass(reassociate_norm_weights.apply)
     graph_transform_observer.GraphTransformObserver(
         graph_module, "fold_gqa"
     ).apply_graph_pass(fold_gqa.apply)

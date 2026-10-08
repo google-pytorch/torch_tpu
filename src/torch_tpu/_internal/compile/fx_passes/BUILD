@@ -90,15 +90,6 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
-    name = "reassociate_norm_weights",
-    srcs = ["reassociate_norm_weights.py"],
-    deps = [
-        "//shims/torch:pytorch",
-        "//src/torch_tpu/_internal:env",
-    ],
-)
-
-torch_tpu_py_library(
     name = "fold_gqa",
     srcs = ["fold_gqa.py"],
     deps = [

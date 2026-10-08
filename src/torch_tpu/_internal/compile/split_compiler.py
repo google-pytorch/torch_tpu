@@ -43,7 +43,6 @@ from torch_tpu._internal.compile.fx_passes import clone_mutated_returned_placeho
 from torch_tpu._internal.compile.fx_passes import force_collectives_output
 from torch_tpu._internal.compile.fx_passes import mark_embedded_constants
 from torch_tpu._internal.compile.fx_passes import propagate_symints
-from torch_tpu._internal.compile.fx_passes import reassociate_norm_weights
 from torch_tpu._internal.compile.fx_passes import reorder_symints
 from torch_tpu._internal.compile.fx_passes import sink_get_attr_constants
 from torch_tpu._internal.distributed import collective_ops
@@ -579,9 +578,6 @@ class SplitCompiler(compiler.Compiler):
       **kwargs,
   ) -> _SplitCompiledExecutable:
     """Splits the graph on collectives and compiles the submodules."""
-    graph_transform_observer.GraphTransformObserver(
-        graph_module, "reassociate_norm_weights"
-    ).apply_graph_pass(reassociate_norm_weights.apply)
     graph_transform_observer.GraphTransformObserver(
         graph_module, "mark_embedded_constants"
     ).apply_graph_pass(mark_embedded_constants.apply)
