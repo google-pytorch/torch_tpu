@@ -19,7 +19,7 @@ import importlib.metadata
 import os
 import sys
 import threading
-from typing import Final
+from typing import Any, Final
 
 from torch_tpu._internal import env_utils
 
@@ -138,13 +138,24 @@ def _tpu_inductor_wrapper_call(self, model_, inputs_, *args, **kwargs):
   return _orig_inductor_wrapper_call(self, model_, inputs_, *args, **kwargs)
 
 
-# Monkeypatch torch.compile to default to TPU backend if available.
+def _is_tpu_backend(backend: Any) -> bool:
+  """Returns True if the backend specifies a TorchTPU backend."""
+  return (
+      backend == "tpu"
+      or backend is _default_backend_selector
+      or isinstance(backend, _backend.TpuBackend)
+  )
+
+
+# Monkeypatch torch.compile to default to TPU backend if available and
+# default to dynamic=False for TPU backends.
 @functools.wraps(_torch_compile)
 def _default_tpu_compile(*args, **kwargs):
-
   # If an explicit backend is not specified, use DefaultBackendSelector.
-  if "backend" not in kwargs:
+  if kwargs.get("backend") is None:
     kwargs["backend"] = _default_backend_selector
+  if "dynamic" not in kwargs and _is_tpu_backend(kwargs["backend"]):
+    kwargs["dynamic"] = False
   return _torch_compile(*args, **kwargs)
 
 

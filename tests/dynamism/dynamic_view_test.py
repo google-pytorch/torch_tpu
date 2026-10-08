@@ -57,9 +57,7 @@ class DynamicViewTest(seed_test_utils.RepeatableTest):
 
     model_cpu = SlidingWindowCacheUpdate(sliding_window=128)
     model_tpu = SlidingWindowCacheUpdate(sliding_window=128)
-    compiled_model = torch.compile(
-        model_tpu, backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled_model = torch.compile(model_tpu, backend="tpu")
 
     with torch.no_grad():
       # Prefill (seq_len = 256 >= sliding_window 128):
@@ -117,9 +115,7 @@ class DynamicViewTest(seed_test_utils.RepeatableTest):
 
     model_cpu = DynamicViewModule()
     model_tpu = DynamicViewModule()
-    compiled_model = torch.compile(
-        model_tpu, backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled_model = torch.compile(model_tpu, backend="tpu", dynamic=None)
 
     with torch.no_grad():
       # Step 1: Pass a dynamic non-contiguous view (transpose on dynamic seq_len)
@@ -178,7 +174,7 @@ class DynamicViewTest(seed_test_utils.RepeatableTest):
     compiled_model = torch.compile(
         RecurrentStateUpdate(),
         backend="tpu",
-        options={"bounded_dynamism": True},
+        dynamic=None,
     )
 
     shape, stride = (1, 8, 4, 64), (4096, 256, 64, 1)
@@ -214,7 +210,7 @@ class DynamicViewTest(seed_test_utils.RepeatableTest):
     compiled_model = torch.compile(
         TransposedStateRead(),
         backend="tpu",
-        options={"bounded_dynamism": True},
+        dynamic=None,
     )
 
     shape, stride = (1, 8, 4, 64), (4096, 256, 64, 1)
@@ -263,9 +259,7 @@ class DynamicViewTest(seed_test_utils.RepeatableTest):
 
     torch._dynamo.reset()
     model_cpu = AddOne()
-    compiled_model = torch.compile(
-        AddOne(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled_model = torch.compile(AddOne(), backend="tpu", dynamic=None)
 
     with torch.no_grad():
       # The second and third steps run the bounded-dynamic executable.
@@ -347,9 +341,7 @@ class DynamicViewTest(seed_test_utils.RepeatableTest):
 
     torch._dynamo.reset()
     model_cpu = AddOne()
-    compiled_model = torch.compile(
-        AddOne(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled_model = torch.compile(AddOne(), backend="tpu", dynamic=None)
 
     with torch.no_grad():
       # The second and third steps run the bounded-dynamic executable.

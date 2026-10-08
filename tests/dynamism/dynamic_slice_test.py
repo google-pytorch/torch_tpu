@@ -37,11 +37,8 @@ from torch_tpu._internal.utils import test_utils as utils
 from tests import oss_utils
 from tests import seed_test_utils
 
-_COMPILE_OPTS = {"bounded_dynamism": True}
-
-
 def _compile_bd(fn: Callable[..., Any]) -> Callable[..., Any]:
-  return torch.compile(fn, backend="tpu", options=_COMPILE_OPTS)
+  return torch.compile(fn, backend="tpu", dynamic=None)
 
 
 class _PassResult(NamedTuple):

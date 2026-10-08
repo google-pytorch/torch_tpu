@@ -23,6 +23,7 @@ from typing import TypeAlias
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
+import torch._dynamo.backends.registry as backend_registry
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch_tpu import _loader
 from torch_tpu._internal import execution_mode
@@ -403,6 +404,178 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
       torch.compile(lambda arg: arg + 1, backend='aot_eager')(x)
 
       mock_lookup_backend.assert_called_with('aot_eager')
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name='direct_call_default_backend',
+          compile_fn=torch.compile,
+      ),
+      dict(
+          testcase_name='direct_call_model_kwarg',
+          compile_fn=lambda fn: torch.compile(model=fn),
+      ),
+      dict(
+          testcase_name='direct_call_backend_none',
+          compile_fn=lambda fn: torch.compile(fn, backend=None),
+      ),
+      dict(
+          testcase_name='direct_call_backend_str',
+          compile_fn=lambda fn: torch.compile(fn, backend='tpu'),
+      ),
+      dict(
+          testcase_name='direct_call_lookup_backend',
+          compile_fn=lambda fn: torch.compile(
+              fn, backend=backend_registry.lookup_backend('tpu')
+          ),
+      ),
+      dict(
+          testcase_name='direct_call_backend_instance',
+          compile_fn=lambda fn: torch.compile(
+              fn, backend=_backend.TpuBackend()
+          ),
+      ),
+      dict(
+          testcase_name='bare_decorator',
+          compile_fn=torch.compile,
+      ),
+      dict(
+          testcase_name='decorator_with_parens',
+          compile_fn=lambda fn: torch.compile()(fn),
+      ),
+      dict(
+          testcase_name='decorator_with_tpu_backend_str',
+          compile_fn=lambda fn: torch.compile(backend='tpu')(fn),
+      ),
+      dict(
+          testcase_name='decorator_with_tpu_backend_instance',
+          compile_fn=lambda fn: torch.compile(backend=_backend.TpuBackend())(
+              fn
+          ),
+      ),
+  )
+  def test_compile_tpu_defaults_dynamic_to_false(self, compile_fn):
+    def fn(x):
+      return x + 1
+
+    with absltest.mock.patch.object(
+        _loader, '_torch_compile', wraps=_loader._torch_compile
+    ) as mock_torch_compile:
+      compiled_fn = compile_fn(fn)
+      self.assertGreaterEqual(mock_torch_compile.call_count, 1)
+      _, kwargs = mock_torch_compile.call_args_list[0]
+      self.assertIn('dynamic', kwargs)
+      self.assertFalse(kwargs['dynamic'])
+
+      x = torch.ones(5, device=self.device)
+      res = compiled_fn(x)
+      utils.assert_close(res.cpu(), (x + 1).cpu())
+
+  def test_nn_module_compile_defaults_dynamic_to_false(self):
+    class SimpleModule(torch.nn.Module):
+
+      def forward(self, x):
+        return x * 2.0 + 1.0
+
+    model = SimpleModule().to(device=self.device)
+    with absltest.mock.patch.object(
+        _loader, '_torch_compile', wraps=_loader._torch_compile
+    ) as mock_torch_compile:
+      model.compile()
+      mock_torch_compile.assert_called_once()
+      _, kwargs = mock_torch_compile.call_args
+      self.assertIn('dynamic', kwargs)
+      self.assertFalse(kwargs['dynamic'])
+
+    x = torch.randn(2, 5, device=self.device)
+    out = model(x)
+    utils.assert_close(out.cpu(), (x * 2.0 + 1.0).cpu())
+
+  def test_compile_non_tpu_backend_does_not_set_dynamic_false(self):
+    def fn(x):
+      return x + 1
+
+    with absltest.mock.patch.object(
+        _loader, '_torch_compile', wraps=_loader._torch_compile
+    ) as mock_torch_compile:
+      compiled_fn = torch.compile(fn, backend='aot_eager')
+      mock_torch_compile.assert_called_once()
+      _, kwargs = mock_torch_compile.call_args
+      self.assertNotIn('dynamic', kwargs)
+
+      x = torch.ones(5)
+      res = compiled_fn(x)
+      utils.assert_close(res, x + 1)
+
+    with absltest.mock.patch.object(
+        _loader, '_torch_compile', wraps=_loader._torch_compile
+    ) as mock_torch_compile:
+
+      @torch.compile(backend='aot_eager')
+      def foo(x):
+        return x + 1
+
+      self.assertGreaterEqual(mock_torch_compile.call_count, 1)
+      initial_kwargs = mock_torch_compile.call_args_list[0][1]
+      self.assertNotIn('dynamic', initial_kwargs)
+
+      x = torch.ones(5)
+      res = foo(x)
+      utils.assert_close(res, x + 1)
+
+  def test_compile_explicit_dynamic_overrides_preserved(self):
+    def fn(x):
+      return x + 1
+
+    for backend in (None, 'tpu'):
+      for dynamic_val in (True, False, None):
+        with self.subTest(backend=backend, dynamic=dynamic_val):
+          kwargs_to_pass = {'dynamic': dynamic_val}
+          if backend is not None:
+            kwargs_to_pass['backend'] = backend
+
+          with absltest.mock.patch.object(
+              _loader, '_torch_compile', wraps=_loader._torch_compile
+          ) as mock_torch_compile:
+            torch.compile(fn, **kwargs_to_pass)
+            mock_torch_compile.assert_called_once()
+            _, kwargs = mock_torch_compile.call_args
+            self.assertIn('dynamic', kwargs)
+            self.assertIs(kwargs['dynamic'], dynamic_val)
+
+    with absltest.mock.patch.object(
+        _loader, '_torch_compile', wraps=_loader._torch_compile
+    ) as mock_torch_compile:
+
+      @torch.compile(dynamic=True)
+      def foo_dyn_true(x):
+        return x + 1
+
+      initial_kwargs = mock_torch_compile.call_args_list[0][1]
+      self.assertIn('dynamic', initial_kwargs)
+      self.assertTrue(initial_kwargs['dynamic'])
+
+      x = torch.ones(5, device=self.device)
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Verifies dynamic=True.
+          Exception,
+          r'TPU backend does not support torch\.compile\(\.\.\., dynamic=True',
+      ):
+        foo_dyn_true(x)
+
+    with absltest.mock.patch.object(
+        _loader, '_torch_compile', wraps=_loader._torch_compile
+    ) as mock_torch_compile:
+
+      @torch.compile(dynamic=None)
+      def foo_dyn_none(x):
+        return x + 1
+
+      initial_kwargs = mock_torch_compile.call_args_list[0][1]
+      self.assertIn('dynamic', initial_kwargs)
+      self.assertIsNone(initial_kwargs['dynamic'])
+
+      x = torch.ones(5, device=self.device)
+      res = foo_dyn_none(x)
+      utils.assert_close(res.cpu(), (x + 1).cpu())
 
   def test_compile_inductor_backend_on_tpu_raises(self):
     x = torch.ones(10, device=torch.device('tpu'))
@@ -1340,9 +1513,7 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     def fn(x):
       return x + 1
 
-    compiled_fn = torch.compile(
-        fn, backend='tpu', options={'bounded_dynamism': True}
-    )
+    compiled_fn = torch.compile(fn, backend='tpu')
     dynamic_input = torch.randn(5, 10, device='tpu')
     torch._dynamo.mark_dynamic(dynamic_input, 0)
     dynamic_output = compiled_fn(dynamic_input)

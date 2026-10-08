@@ -54,31 +54,33 @@ class EnsureNoDynamicTest(seed_test_utils.RepeatableTest):
     compiled = torch.compile(simple, dynamic=True, backend="tpu")
     with self.assertRaises(Exception) as err:
       compiled(input_1).to("cpu")
-    self.assertIn("torch.compile(..., dynamic=False, ...)", str(err.exception))
-
-  def test_dynamic_true_with_dynamism_enabled_not_supported(self):
-    input_1 = torch.tensor([0.1, 0.2], device=torch.device("tpu"))
-
-    compiled = torch.compile(
-        simple,
-        dynamic=True,
-        backend="tpu",
-        options={"bounded_dynamism": True},
-    )
-    with self.assertRaises(Exception) as err:
-      compiled(input_1).to("cpu")
     self.assertIn("dynamic=True", str(err.exception))
 
-  def test_dynamic_none_and_size_change_recompile_not_supported(self):
-    input_1 = torch.tensor([0.1, 0.2], device=torch.device("tpu"))
-    input_2 = torch.tensor([0.1, 0.2, 0.3, 0.4], device=torch.device("tpu"))
+  def test_dynamic_none_and_size_change_recompile_supported(self):
+    input_1 = torch.tensor([0.1, 0.2])
+    input_1_tpu = input_1.to(torch.device("tpu"))
 
-    compiled = torch.compile(simple, backend="tpu")
-    compiled(input_1).to("cpu")
-    with self.assertRaises(Exception) as err:
-      # Shape change and recompile
-      compiled(input_2).to("cpu")
-    self.assertIn("torch.compile(..., dynamic=False, ...)", str(err.exception))
+    input_2 = torch.tensor([0.1, 0.2, 0.3, 0.4])
+    input_2_tpu = input_2.to(torch.device("tpu"))
+
+    recompile_count = 0
+
+    def count_recompile():
+      nonlocal recompile_count
+      recompile_count += 1
+      return f"recompile: {recompile_count}"
+
+    torch._dynamo.reset_recompile_user_contexts()
+    self.addCleanup(torch._dynamo.reset_recompile_user_contexts)
+    torch._dynamo.register_hook_for_recompile_user_context(count_recompile)
+
+    compiled = torch.compile(simple, dynamic=None, backend="tpu")
+    utils.assert_close(compiled(input_1_tpu).to("cpu"), simple(input_1))
+    self.assertEqual(recompile_count, 1)
+
+    # Shape change recompiles with bounded dynamism
+    utils.assert_close(compiled(input_2_tpu).to("cpu"), simple(input_2))
+    self.assertEqual(recompile_count, 2)
 
   def test_dynamic_false_and_size_change_recompile_supported(self):
     input_1 = torch.tensor([0.1, 0.2])
@@ -91,6 +93,19 @@ class EnsureNoDynamicTest(seed_test_utils.RepeatableTest):
     utils.assert_close(compiled(input_1_tpu).to("cpu"), simple(input_1))
 
     ## Shape change and recompile
+    utils.assert_close(compiled(input_2_tpu).to("cpu"), simple(input_2))
+
+  def test_default_dynamic_and_size_change_recompile_supported(self):
+    input_1 = torch.tensor([0.1, 0.2])
+    input_1_tpu = input_1.to(torch.device("tpu"))
+
+    input_2 = torch.tensor([0.1, 0.2, 0.3, 0.4])
+    input_2_tpu = input_2.to(torch.device("tpu"))
+
+    compiled = torch.compile(simple, backend="tpu")
+    utils.assert_close(compiled(input_1_tpu).to("cpu"), simple(input_1))
+
+    ## Shape change and recompile statically by default
     utils.assert_close(compiled(input_2_tpu).to("cpu"), simple(input_2))
 
   def test_concrete_symint_treated_as_static(self):

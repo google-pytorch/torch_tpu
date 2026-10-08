@@ -76,7 +76,6 @@ class MultiBucketCompilationTest(seed_test_utils.RepeatableTest):
           fn,
           backend="tpu",
           options={
-              "bounded_dynamism": True,
               "num_dynamic_buckets": 4,
           },
       )
@@ -134,7 +133,6 @@ class MultiBucketCompilationTest(seed_test_utils.RepeatableTest):
           fn,
           backend="tpu",
           options={
-              "bounded_dynamism": True,
               "num_dynamic_buckets": 3,
               "bucket_size": 64,
           },

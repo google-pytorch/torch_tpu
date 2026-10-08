@@ -46,9 +46,7 @@ class SymExprArgTest(seed_test_utils.RepeatableTest):
         return CustomOp.apply(x, x.shape[0] // 2)
 
     m = Model()
-    compiled = torch.compile(
-        m, backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(m, backend="tpu")
 
     # CPU Reference
     x_cpu = torch.ones(4, requires_grad=True)
@@ -83,9 +81,7 @@ class SymExprArgTest(seed_test_utils.RepeatableTest):
     out_cpu.sum().backward()
 
     # TPU Execution
-    compiled = torch.compile(
-        m, backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(m, backend="tpu")
 
     x1 = torch.ones(8, 4, device=self.device, requires_grad=True)
     torch._dynamo.mark_dynamic(x1, 0)

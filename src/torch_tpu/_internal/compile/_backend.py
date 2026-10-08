@@ -124,29 +124,6 @@ def to_device(
   return _pytree.tree_map_only(_ExpectedTypes, _to, x)
 
 
-def _raise_on_symint(
-    x: Any,
-) -> Any:
-  """We will defer the support of symint for now.
-
-  Here it scans the input object for SymInt. And raises error if found.
-
-  Args:
-    x: The input object to scan for SymInt.
-
-  Returns:
-    The input object if no SymInt is found.
-  """
-
-  def _raise(t: torch.SymInt):
-    raise NotImplementedError(
-        "TPU backend: does not support dynamic shape. Please set"
-        " torch.compile(..., dynamic=False, ...) and try again."
-    )
-
-  return _pytree.tree_map_only(torch.SymInt, _raise, x)
-
-
 def _is_ao_op(node: torch.fx.Node, op_name: str) -> bool:
   """Returns whether `node` represents a torch.ops.ao.{op_name} operation."""
   if node.op != "call_function":
@@ -649,18 +626,17 @@ class TpuBackend:
     Args:
       debug (bool): If True, enable debug logging and save a dump of the fx
         graph.
-      dynamism (bool): If True, enable dynamism.
+      dynamism (bool): Deprecated/unused. Retained for signature compatibility.
       enable_serialization: If True, enable the aot_autograd bundled cache so
         that .serialize() is attached to compiled functions. This defaults to
         True so PyTorch's AOTAutogradCache can save/load compilation artifacts.
         Debug mode disables serialization so debug callers inspect freshly
         compiled artifacts instead of cache hits.
 
-    Note: The `debug`, `dynamism`, and `enable_serialization` arguments are
-    internal flags slated for deprecation. If set on the instance, they will
-    override the corresponding keys passed in the `options` dict to `__call__`.
-    New callers should pass options to `torch.compile(..., backend="tpu",
-      options={...})`.
+    Note: The `debug` and `enable_serialization` arguments are internal flags
+    slated for deprecation. If set on the instance, they will override the
+    corresponding keys passed in the `options` dict to `__call__`. New callers
+    should pass options to `torch.compile(..., backend="tpu", options={...})`.
     """
     self._debug = debug
     self._dynamism = dynamism
@@ -691,19 +667,17 @@ class TpuBackend:
       options: Options dict to pass to the backend. Available keys:
         async_compile: Default False. If True, executes XLA compilation
           asynchronously.
-        bounded_dynamism: Default False. If True, allows bounded dynamic shapes.
         num_dynamic_buckets: Default 1. Number of `bucket_size`-aligned dynamic
-          shape buckets to generate when `bounded_dynamism=True`. Must be
+          shape buckets to generate when compiling with dynamic shapes. Must be
           between 1 and 8.
         bucket_size: Default 128. Step size for dynamic shape buckets when
-          `bounded_dynamism=True`.
+          compiling with dynamic shapes.
         serializable: Default True. If True, uses
           SerializableAOTDispatchCompiler so that .serialize() is attached to
           compiled functions, which enables PyTorch's AOTAutogradCache to
           save/load compilation artifacts. If False, serialization disabled so
           that callers can inspect freshly compiled artifacts instead of cache
-          hits. Ignored and treated as False if symints and bounded dynamism are
-          both present.
+          hits. Ignored and treated as False if dynamic symints are present.
         debug_callback: Callback function to receive debug information. Must
           accept one arg of type `TpuCompileDebug`. Note: For training graphs
           with backward passes, the callback is invoked upon forward compilation
@@ -722,7 +696,6 @@ class TpuBackend:
     options = kwargs.pop("options", {}) or {}
 
     async_compile = options.get("async_compile", False)
-    bounded_dynamism = options.get("bounded_dynamism", False)
     num_dynamic_buckets = options.get("num_dynamic_buckets", 1)
     num_dynamic_buckets = (
         1 if num_dynamic_buckets is None else num_dynamic_buckets
@@ -756,8 +729,6 @@ class TpuBackend:
 
     # TODO(yho): The following self._* attributes are slated for deprecation.
     # Overwrite options if legacy constructor arguments were specified.
-    if self._dynamism:
-      bounded_dynamism = self._dynamism
     if not self._enable_serialization or self._debug:
       serializable = self._enable_serialization
     if self._debug and debug is None:
@@ -765,14 +736,11 @@ class TpuBackend:
     # self._debug, self._dynamism, and self._enable_serialization should
     # NOT be accessed after this point.
 
-    # Dynamism support is currently experimental.
-    if not bounded_dynamism:
-      _raise_on_symint(example_inputs)
-    elif not torch._dynamo.config.assume_static_by_default:  # pylint: disable=protected-access
+    if not torch._dynamo.config.assume_static_by_default:  # pylint: disable=protected-access
       raise NotImplementedError(
           "TPU backend does not support torch.compile(..., dynamic=True, ...)."
-          " Please run torch.compile() with default dynamism i.e."
-          " torch.compile(model) and try again."
+          " Please run torch.compile() with dynamic=None or default dynamism"
+          " i.e. torch.compile(model) and try again."
       )
 
     _log_gm_and_inputs("__call__", "Pre", graph_module, example_inputs)

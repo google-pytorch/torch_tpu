@@ -46,9 +46,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[0]
         return torch.arange(s0, device=x.device)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -64,9 +62,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[0]
         return torch.arange(s0, s0 + 5, device=x.device)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -82,9 +78,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[0]
         return torch.arange(s0, s0 * 2, device=x.device)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -100,9 +94,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[0]
         return torch.arange(0, s0, 2, device=x.device)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(8, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0)
@@ -118,9 +110,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[1]
         return torch.arange(1, device=x.device) + s0
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(1, 1024, device=self.device)
     torch._dynamo.mark_dynamic(x1, 1, min=2, max=2048)
@@ -136,9 +126,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[1]
         return torch.arange(s0, s0 + 1, device=x.device)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(1, 1024, device=self.device)
     torch._dynamo.mark_dynamic(x1, 1, min=2, max=2048)
@@ -158,9 +146,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[0]
         return torch.ones(s0, device=x.device)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -176,9 +162,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[0]
         return torch.ones((s0, 8), device=x.device)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -195,9 +179,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s1 = x.shape[1]
         return torch.ones((s0, s1), device=x.device)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, 6, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -214,9 +196,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[0]
         return torch.ones(s0, dtype=torch.int32, device=x.device)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -236,9 +216,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[0]
         return torch.zeros(s0, device=x.device)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.ones(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -254,9 +232,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[0]
         return torch.zeros((s0, 16), device=x.device)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.ones(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -273,9 +249,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s1 = x.shape[1]
         return torch.zeros((s0, s1), device=x.device)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.ones(4, 6, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -292,9 +266,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[0]
         return torch.zeros((s0, 8), dtype=torch.int64, device=x.device)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.ones(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -314,9 +286,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[0]
         return torch.full((s0,), 3.14, device=x.device)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -332,9 +302,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[0]
         return torch.full((s0, 8), 7, dtype=torch.int32, device=x.device)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -351,9 +319,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s1 = x.shape[1]
         return torch.full((s0, s1), 42.0, device=x.device)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, 6, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -374,9 +340,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[0]
         return torch.empty(s0, device=x.device)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -391,9 +355,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[0]
         return torch.empty((s0, 8), device=x.device)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -409,9 +371,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s1 = x.shape[1]
         return torch.empty((s0, s1), device=x.device)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, 6, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -431,9 +391,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[0]
         return x.new_empty(s0)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -448,9 +406,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[0]
         return x.new_empty((s0, 8))
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -466,9 +422,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s1 = x.shape[1]
         return x.new_empty((s0, s1))
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, 6, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -488,9 +442,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[0]
         return x.new_zeros(s0)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.ones(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -506,9 +458,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[0]
         return x.new_zeros((s0, 16))
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.ones(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -525,9 +475,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s1 = x.shape[1]
         return x.new_zeros((s0, s1))
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.ones(4, 6, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -544,9 +492,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[0]
         return x.new_zeros((s0, 8), dtype=torch.int64)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.ones(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -566,9 +512,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[0]
         return x.new_ones(s0)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -584,9 +528,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[0]
         return x.new_ones((s0, 8))
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -603,9 +545,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s1 = x.shape[1]
         return x.new_ones((s0, s1))
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, 6, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -622,9 +562,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[0]
         return x.new_ones(s0, dtype=torch.int32)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -644,9 +582,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[0]
         return x.new_full((s0,), 3.14)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -662,9 +598,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[0]
         return x.new_full((s0, 8), 7, dtype=torch.int32)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -681,9 +615,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s1 = x.shape[1]
         return x.new_full((s0, s1), 42.0)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, 6, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -703,9 +635,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return torch.ones_like(x)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -720,9 +650,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return torch.ones_like(x)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, 8, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -737,9 +665,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return torch.ones_like(x)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, 6, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -755,9 +681,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return torch.ones_like(x, dtype=torch.int32)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -776,9 +700,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return torch.zeros_like(x)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.ones(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -793,9 +715,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return torch.zeros_like(x)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.ones(4, 16, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -810,9 +730,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return torch.zeros_like(x)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.ones(4, 6, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -828,9 +746,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return torch.zeros_like(x, dtype=torch.int64)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.ones(4, 8, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -849,9 +765,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return torch.full_like(x, 3.14)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -866,9 +780,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return torch.full_like(x, 7, dtype=torch.int32)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, 8, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -883,9 +795,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return torch.full_like(x, 42.0)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, 6, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -905,9 +815,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return torch.empty_like(x)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -921,9 +829,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return torch.empty_like(x)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, 8, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -937,9 +843,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return torch.empty_like(x)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, 6, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -959,9 +863,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[0]
         return torch.rand(s0, device=x.device)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -978,9 +880,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[0]
         return torch.rand((s0, 8), device=x.device)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -998,9 +898,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s1 = x.shape[1]
         return torch.rand((s0, s1), device=x.device)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, 6, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -1018,9 +916,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[0]
         return torch.randn(s0, device=x.device)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -1035,9 +931,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[0]
         return torch.randn((s0, 8), device=x.device)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -1053,9 +947,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s1 = x.shape[1]
         return torch.randn((s0, s1), device=x.device)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, 6, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -1075,9 +967,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[0]
         return torch.randint(10, (s0,), device=x.device)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -1094,9 +984,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[0]
         return torch.randint(10, (s0, 8), device=x.device)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -1113,9 +1001,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[0]
         return torch.randint(5, 15, (s0, 8), device=x.device)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -1133,9 +1019,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         s1 = x.shape[1]
         return torch.randint(5, 15, (s0, s1), device=x.device)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(4, 6, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -1161,9 +1045,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         full = torch.full((s0, s1), 3.0, device=x.device)
         return x + ones + zeros + full
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.ones(4, 8, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -1184,9 +1066,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         full = x.new_full((s0, s1), 3.0)
         return x + ones + zeros + full
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.ones(4, 8, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
@@ -1205,9 +1085,7 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
         full = torch.full_like(x, 3.0)
         return x + ones + zeros + full
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.ones(4, 8, device=self.device)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)

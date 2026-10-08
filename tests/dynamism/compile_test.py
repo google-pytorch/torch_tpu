@@ -50,9 +50,7 @@ class CompileTest(seed_test_utils.RepeatableTest):
         "DynamicCompiler",
         wraps=_backend.dynamic_compiler.DynamicCompiler,
     ) as mock_dc:
-      compiled = torch.compile(
-          func, backend="tpu", options={"bounded_dynamism": True}
-      )
+      compiled = torch.compile(func, backend="tpu", dynamic=None)
 
       for inputs, per_case_mark_info in zip(
           test_inputs, mark_dynamic_tests_info
@@ -110,9 +108,7 @@ class CompileTest(seed_test_utils.RepeatableTest):
         autospec=True,
         side_effect=capture_executable,
     ):
-      compiled = torch.compile(
-          simple, backend="tpu", options={"bounded_dynamism": True}
-      )
+      compiled = torch.compile(simple, backend="tpu")
       x = torch.arange(4, dtype=torch.float32, device=self.device).reshape(1, 4)
       torch._dynamo.mark_dynamic(x, 1, min=2, max=8)
       utils.assert_close(compiled(x).to("cpu"), simple(x).to("cpu"))
@@ -433,9 +429,7 @@ class CompileTest(seed_test_utils.RepeatableTest):
       torch._check(x.shape[0] == x.shape[1])
       return x * 2
 
-    compiled_f = torch.compile(
-        f, backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled_f = torch.compile(f, backend="tpu")
 
     x = torch.ones((2, 2), device="tpu")
     torch._dynamo.mark_dynamic(x, 0, min=2, max=8)
@@ -456,9 +450,7 @@ class CompileTest(seed_test_utils.RepeatableTest):
           return x.sum() + y.sum()
         return x.sum() - y.sum()
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.ones(4, 3, device="tpu")
     y1 = torch.ones(8, 5, device="tpu")
@@ -477,9 +469,7 @@ class CompileTest(seed_test_utils.RepeatableTest):
         scale = y.shape[0]
         return x * scale
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x = torch.ones((2, 2), dtype=torch.float32, device="tpu")
     y = torch.ones((4, 2), dtype=torch.float32, device="tpu")
@@ -495,9 +485,7 @@ class CompileTest(seed_test_utils.RepeatableTest):
       new_full = torch.cat([full_attention_cache, new_token_key], dim=-2)
       return new_full
 
-    compiled = torch.compile(
-        decode_step, backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(decode_step, backend="tpu")
 
     prefill_cache = torch.randn(
         2, 1, 8, 16, device=self.device, dtype=torch.bfloat16
@@ -538,9 +526,7 @@ class CompileTest(seed_test_utils.RepeatableTest):
         "DynamicCompiler",
         wraps=_backend.dynamic_compiler.DynamicCompiler,
     ) as mock_dc:
-      compiled = torch.compile(
-          decode_step, backend="tpu", options={"bounded_dynamism": True}
-      )
+      compiled = torch.compile(decode_step, backend="tpu")
       for cache_len in (8, 13):
         q = torch.randn(1, 8, 1, 32)
         cache_k = torch.randn(1, 2, cache_len, 32)
@@ -571,9 +557,7 @@ class CompileTest(seed_test_utils.RepeatableTest):
         "DynamicCompiler",
         wraps=_backend.dynamic_compiler.DynamicCompiler,
     ) as mock_dc:
-      compiled = torch.compile(
-          prefill, backend="tpu", options={"bounded_dynamism": True}
-      )
+      compiled = torch.compile(prefill, backend="tpu")
       for seq_len in (9, 14):
         q = torch.randn(1, 8, seq_len, 32)
         k = torch.randn(1, 2, seq_len, 32)
@@ -591,9 +575,7 @@ class CompileTest(seed_test_utils.RepeatableTest):
     def fn(dynamic_x, sliced_y):
       return dynamic_x + 1, sliced_y + 1
 
-    compiled_fn = torch.compile(
-        fn, backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled_fn = torch.compile(fn, backend="tpu")
 
     x = torch.randn(4, 8, device=self.device)
     torch._dynamo.mark_dynamic(x, 0, min=2, max=10)
@@ -614,9 +596,7 @@ class CompileTest(seed_test_utils.RepeatableTest):
         torch._check(scale == 4)
         return x * scale, scale * 2
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x = torch.ones(2, 2, dtype=torch.float32, device="tpu")
     torch._dynamo.mark_dynamic(x, 0, min=2, max=8)
@@ -632,9 +612,7 @@ class CompileTest(seed_test_utils.RepeatableTest):
     def simple(x):
       return x + 3.0
 
-    compiled = torch.compile(
-        simple, backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(simple, backend="tpu")
 
     x = torch.ones(2, 3, device="tpu", dtype=torch.int64)
     torch._dynamo.mark_dynamic(x, 0, min=1, max=4)
@@ -661,9 +639,7 @@ class SymIntArithmeticTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[1]
         return torch.arange(1, device=x.device) + s0
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(1, 1024, device="tpu")
     torch._dynamo.mark_dynamic(x1, 1, min=1, max=2048)
@@ -678,9 +654,7 @@ class SymIntArithmeticTest(seed_test_utils.RepeatableTest):
         s0 = x.shape[1]
         return torch.arange(s0, s0 + 1, device=x.device)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(1, 1024, device="tpu")
     torch._dynamo.mark_dynamic(x1, 1, min=1, max=2048)
@@ -694,9 +668,7 @@ class SymIntArithmeticTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return x.shape[1] * 2 + 1
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.zeros(1, 4, device="tpu")
     torch._dynamo.mark_dynamic(x1, 1, min=1, max=16)
@@ -721,9 +693,7 @@ class DynamicReshapeTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return x.squeeze(0)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.arange(20, dtype=torch.float32, device="tpu").reshape(1, 10, 2)
     torch._dynamo.mark_dynamic(x1, 1, min=2, max=20)
@@ -742,9 +712,7 @@ class DynamicReshapeTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return x.unsqueeze(0).unsqueeze(-1)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.arange(20, dtype=torch.float32, device="tpu").reshape(5, 4)
     torch._dynamo.mark_dynamic(x1, 1, min=2, max=20)
@@ -764,9 +732,7 @@ class DynamicReshapeTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return x.transpose(0, 1)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.arange(30, dtype=torch.float32, device="tpu").reshape(2, 5, 3)
     torch._dynamo.mark_dynamic(x1, 1, min=2, max=20)
@@ -785,9 +751,7 @@ class DynamicReshapeTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return x.permute(2, 0, 1)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.arange(30, dtype=torch.float32, device="tpu").reshape(2, 5, 3)
     torch._dynamo.mark_dynamic(x1, 1, min=2, max=20)
@@ -806,9 +770,7 @@ class DynamicReshapeTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return x.flatten()
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.arange(30, dtype=torch.float32, device="tpu").reshape(2, 5, 3)
     torch._dynamo.mark_dynamic(x1, 1, min=2, max=20)
@@ -827,9 +789,7 @@ class DynamicReshapeTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return x.reshape(-1, 3)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.arange(30, dtype=torch.float32, device="tpu").reshape(2, 5, 3)
     torch._dynamo.mark_dynamic(x1, 1, min=2, max=20)
@@ -848,9 +808,7 @@ class DynamicReshapeTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return x.reshape(2, 3, -1, 1)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.arange(30, dtype=torch.float32, device="tpu").reshape(6, 5)
     torch._dynamo.mark_dynamic(x1, 1, min=2, max=20)
@@ -869,9 +827,7 @@ class DynamicReshapeTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return x.view(-1, 6, 1, 1, 5)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.arange(300, dtype=torch.float32, device="tpu").reshape(
         1, 10, 1, 6, 5
@@ -892,9 +848,7 @@ class DynamicReshapeTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return x.reshape(2, -1, 3)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     # Dynamic dim 0 (size 10) expands into two non-one dims (2, -1=5)
     x1 = torch.arange(30, dtype=torch.float32, device="tpu").reshape(10, 3)
@@ -914,9 +868,7 @@ class DynamicReshapeTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return x.reshape(3, -1)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     # Same rank reshape [2, 6] -> [3, 4] with dynamic dim 1
     x1 = torch.arange(12, dtype=torch.float32, device="tpu").reshape(2, 6)
@@ -936,9 +888,7 @@ class DynamicReshapeTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return x.view(x.shape[0], 4, 2)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     # Dynamic dim 0 with trailing dims [8] unflattened to [4, 2]
     x1 = torch.arange(32, dtype=torch.float32, device="tpu").reshape(4, 8)
@@ -968,9 +918,7 @@ class DynamicReshapeTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return torch.ops.aten.view_copy.default(x, [x.shape[0], 5, 2])
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.arange(20, dtype=torch.float32, device="tpu").reshape(2, 10)
     torch._dynamo.mark_dynamic(x1, 0, min=2, max=10)
@@ -989,9 +937,7 @@ class DynamicReshapeTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return x.reshape(x.shape[0], 5, x.shape[1], 1)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.arange(60, dtype=torch.float32, device="tpu").reshape(4, 3, 5)
     torch._dynamo.mark_dynamic(x1, 0)
@@ -1011,9 +957,7 @@ class DynamicReshapeTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return x.reshape(-1, 5)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.arange(60, dtype=torch.float32, device="tpu").reshape(4, 3, 5)
     torch._dynamo.mark_dynamic(x1, 0)
@@ -1040,9 +984,7 @@ class DynamicBroadcastTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return x.expand(-1, 3, 5)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.arange(20, dtype=torch.float32, device="tpu").reshape(4, 1, 5)
     torch._dynamo.mark_dynamic(x1, 0)
@@ -1061,9 +1003,7 @@ class DynamicBroadcastTest(seed_test_utils.RepeatableTest):
       def forward(self, x, y):
         return x.expand(y.shape[0], 5)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.arange(5, dtype=torch.float32, device="tpu").reshape(1, 5)
     y1 = torch.arange(20, dtype=torch.float32, device="tpu").reshape(4, 5)
@@ -1079,9 +1019,7 @@ class DynamicBroadcastTest(seed_test_utils.RepeatableTest):
       def forward(self, x, y):
         return x.expand(x.shape[0], y.shape[1])
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.arange(4, dtype=torch.float32, device="tpu").reshape(4, 1)
     y1 = torch.arange(12, dtype=torch.float32, device="tpu").reshape(4, 3)
@@ -1100,9 +1038,7 @@ class DynamicBroadcastTest(seed_test_utils.RepeatableTest):
         z = torch.broadcast_to(x, (y.shape[0], 5))
         return z * 2
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.arange(5, dtype=torch.float32, device="tpu").reshape(1, 5)
     y1 = torch.arange(20, dtype=torch.float32, device="tpu").reshape(4, 5)
@@ -1118,9 +1054,7 @@ class DynamicBroadcastTest(seed_test_utils.RepeatableTest):
       def forward(self, x, y):
         return torch.broadcast_to(x, (y.shape[0], 5))
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.arange(5, dtype=torch.float32, device="tpu").reshape(1, 5)
     y1 = torch.arange(20, dtype=torch.float32, device="tpu").reshape(4, 5)
@@ -1136,9 +1070,7 @@ class DynamicBroadcastTest(seed_test_utils.RepeatableTest):
       def forward(self, x, y):
         return x.expand([y.shape[0], 5])
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.arange(5, dtype=torch.float32, device="tpu").reshape(1, 5)
     y1 = torch.arange(20, dtype=torch.float32, device="tpu").reshape(4, 5)
@@ -1158,9 +1090,7 @@ class DynamicBroadcastTest(seed_test_utils.RepeatableTest):
         reshaped = y.reshape([1, y.shape[0] * y.shape[1]])
         return expanded.sum() + reshaped.sum()
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x = torch.ones((1, 5), dtype=torch.float32, device="tpu")
     y = torch.ones((2, 3), dtype=torch.float32, device="tpu")
@@ -1190,9 +1120,7 @@ class DynamicSliceTest(seed_test_utils.RepeatableTest):
       def forward(self, grid):
         return grid[:, 1] * grid[:, 2]
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     grid = torch.tensor(
         [[1, 24, 48], [1, 24, 48]], dtype=torch.int32, device=self.device
@@ -1209,9 +1137,7 @@ class DynamicSliceTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return x[: x.shape[0] - 1, :] * 2.0
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x = torch.randn(6, 4, dtype=torch.float32, device=self.device)
     torch._dynamo.mark_dynamic(x, 0)
@@ -1226,9 +1152,7 @@ class DynamicSliceTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return x[:2, :]
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x = torch.randn(5, 4, dtype=torch.float32, device=self.device)
     torch._dynamo.mark_dynamic(x, 0, min=3, max=32)
@@ -1243,9 +1167,7 @@ class DynamicSliceTest(seed_test_utils.RepeatableTest):
       def forward(self, grid):
         return grid.select(-1, 1) * grid.select(-1, 2)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     grid = torch.tensor(
         [[1, 24, 48], [1, 24, 48]], dtype=torch.int32, device=self.device
@@ -1262,9 +1184,7 @@ class DynamicSliceTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return x.select(0, 2)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x = torch.randn(6, 8, dtype=torch.float32, device=self.device)
     torch._dynamo.mark_dynamic(x, 0, min=4, max=16)
@@ -1279,9 +1199,7 @@ class DynamicSliceTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return x.select(0, -1)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     for dim_size in [6, 10]:
       x = torch.randn(dim_size, 8, dtype=torch.float32, device=self.device)
@@ -1297,9 +1215,7 @@ class DynamicSliceTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return x[:, -4:]
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x = torch.randn(2, 8, dtype=torch.float32, device=self.device)
     torch._dynamo.mark_dynamic(x, 1, min=6, max=16)
@@ -1317,9 +1233,7 @@ class DynamicSliceTest(seed_test_utils.RepeatableTest):
         full_k = torch.cat([cache, new_k], dim=-2)
         return full_k[:, :, -sliding_window + 1 :, :]
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     cache = torch.randn(1, 1, 4, 16, dtype=torch.float32, device=self.device)
     new_k = torch.randn(1, 1, 1, 16, dtype=torch.float32, device=self.device)
@@ -1344,9 +1258,7 @@ class DynamicSliceTest(seed_test_utils.RepeatableTest):
         return x + sliced_table
 
     model = Model().to(self.device)
-    compiled = torch.compile(
-        model, backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(model, backend="tpu")
 
     for seq_len in [8, 16]:
       x = torch.randn(1, 4, 1, seq_len, dtype=torch.float32, device=self.device)
@@ -1372,9 +1284,7 @@ class DynamicSliceTest(seed_test_utils.RepeatableTest):
         return x + self.static_table[:, :, : x.shape[-1]]
 
     model = Model().to(self.device)
-    compiled = torch.compile(
-        model, backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(model, backend="tpu", dynamic=None)
 
     # The second call recompiles with seq_len dynamic (bounded compile).
     for seq_len in [4, 8, 12]:
@@ -1458,9 +1368,7 @@ class DynamicConvolutionTest(seed_test_utils.RepeatableTest):
       other_shapes: Sequence[tuple[int, ...]],
       dim: int,
   ):
-    compiled = torch.compile(
-        conv_fn, backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(conv_fn, backend="tpu")
     # Integer values keep the convolution exact on TPU.
     others = [
         torch.randint(-3, 4, shape, dtype=torch.float32)
@@ -1610,9 +1518,7 @@ class DynamicConvolutionTest(seed_test_utils.RepeatableTest):
         "DynamicCompiler",
         wraps=_backend.dynamic_compiler.DynamicCompiler,
     ) as mock_dc:
-      compiled = torch.compile(
-          conv_backward_fn, backend="tpu", options={"bounded_dynamism": True}
-      )
+      compiled = torch.compile(conv_backward_fn, backend="tpu")
       # Integer values keep the convolution exact on TPU.
       w = torch.randint(-3, 4, weight_shape).to(dtype)
       for size in (
@@ -1698,9 +1604,7 @@ class DynamicConvolutionTest(seed_test_utils.RepeatableTest):
         "DynamicCompiler",
         wraps=_backend.dynamic_compiler.DynamicCompiler,
     ) as mock_dc:
-      compiled = torch.compile(
-          conv_fn, backend="tpu", options={"bounded_dynamism": True}
-      )
+      compiled = torch.compile(conv_fn, backend="tpu")
       # Integer values keep the convolution exact on TPU.
       others = [
           torch.randint(-3, 4, shape, dtype=torch.float32)
@@ -1756,9 +1660,7 @@ class DynamicDropoutTest(seed_test_utils.RepeatableTest):
         return torch.nn.functional.dropout(x, p=0.4, training=True)
 
     model = Model().to(self.device)
-    compiled = torch.compile(
-        model, backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(model, backend="tpu")
 
     for dim_size in [4, 8, 12]:
       x = torch.randn(dim_size, 16, dtype=torch.float32, device=self.device)
@@ -1779,9 +1681,7 @@ class DynamicDropoutTest(seed_test_utils.RepeatableTest):
         return torch.ops.aten.native_dropout(x, 0.5, True)
 
     model = Model().to(self.device)
-    compiled = torch.compile(
-        model, backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(model, backend="tpu")
 
     for dim_size in [6, 10]:
       x = torch.randn(dim_size, 8, dtype=torch.float32, device=self.device)
@@ -1799,9 +1699,7 @@ class DynamicDropoutTest(seed_test_utils.RepeatableTest):
         return torch.ops.aten.native_dropout_backward(grad_output, mask, 2.0)
 
     model = Model().to(self.device)
-    compiled = torch.compile(
-        model, backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(model, backend="tpu")
 
     for dim_size in [4, 12]:
       grad = torch.randn(dim_size, 16, dtype=torch.float32, device=self.device)
@@ -1826,9 +1724,7 @@ class DynamicDropoutTest(seed_test_utils.RepeatableTest):
         return self.dropout(x)
 
     model = Model().to(self.device).train()
-    compiled = torch.compile(
-        model, backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(model, backend="tpu")
 
     for dim_size in [4, 8, 12]:
       x = torch.randn(
@@ -1854,9 +1750,7 @@ class DynamicDropoutTest(seed_test_utils.RepeatableTest):
         return torch.nn.functional.dropout(x, p=0.25, training=True)
 
     model = Model().to(self.device)
-    compiled = torch.compile(
-        model, backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(model, backend="tpu")
 
     for dtype in [torch.bfloat16, torch.float16, torch.float64]:
       x = torch.randn(6, 12, dtype=dtype, device=self.device)
@@ -1873,9 +1767,7 @@ class DynamicDropoutTest(seed_test_utils.RepeatableTest):
         return torch.ops.aten.native_dropout(x, p, train)
 
     model = Model().to(self.device)
-    compiled = torch.compile(
-        model, backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(model, backend="tpu")
 
     x = torch.randn(4, 16, dtype=torch.float32, device=self.device)
     torch._dynamo.mark_dynamic(x, 0, min=2, max=32)
@@ -1905,9 +1797,7 @@ class DynamicDropoutTest(seed_test_utils.RepeatableTest):
         return torch.nn.functional.dropout(x, p=0.3, training=True)
 
     model = Model().to(self.device)
-    compiled = torch.compile(
-        model, backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(model, backend="tpu")
 
     for b, s in [(2, 8), (4, 16), (3, 12)]:
       x = torch.randn(b, s, 32, dtype=torch.float32, device=self.device)
@@ -1938,9 +1828,7 @@ class DynamicErrorHandlingTest(seed_test_utils.RepeatableTest):
         "__call__",
         side_effect=RuntimeError("MLIR lowering failed"),
     ):
-      compiled = torch.compile(
-          simple, backend="tpu", options={"bounded_dynamism": True}
-      )
+      compiled = torch.compile(simple, backend="tpu")
       device = torch.accelerator.current_accelerator()
       t = torch.ones(4, device=device)
       torch._dynamo.mark_dynamic(t, 0, min=2, max=8)
@@ -1966,7 +1854,6 @@ class DynamicErrorHandlingTest(seed_test_utils.RepeatableTest):
           simple,
           backend="tpu",
           options={
-              "bounded_dynamism": True,
               "num_dynamic_buckets": 2,
               "bucket_size": 64,
           },
@@ -1998,9 +1885,7 @@ class SymMaxMinTest(seed_test_utils.RepeatableTest):
       min_val = min(10, x.shape[0] + 2)
       return torch.arange(8, device=x.device) + max_val + min_val
 
-    compiled = torch.compile(
-        fn, backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(fn, backend="tpu")
 
     t = torch.ones(8, device=self.device)
     torch._dynamo.mark_dynamic(t, 0, min=2, max=16)
@@ -2031,9 +1916,7 @@ class IndexPutDynamicBooleanMaskTest(seed_test_utils.RepeatableTest):
       embeddings[mask] = eoi_embedding
       return embeddings
 
-    compiled = torch.compile(
-        fn, backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(fn, backend="tpu")
 
     batch_size = 2
     seq_len = 6

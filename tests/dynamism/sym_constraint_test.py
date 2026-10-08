@@ -37,9 +37,7 @@ class SymConstraintTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return x.reshape(3, -1)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.arange(12, dtype=torch.float32, device="tpu").reshape(2, 6)
     # Total elements = 2 * s. Reshape to (3, -1) requires (2 * s) % 3 == 0.
@@ -58,9 +56,7 @@ class SymConstraintTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return x.reshape(3, -1)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     # Initial shape [6, 6] (total elements 36, divisible by 3).
     # Hints: s0=6, s1=6.
@@ -83,9 +79,7 @@ class SymConstraintTest(seed_test_utils.RepeatableTest):
       def forward(self, x):
         return x.reshape(3, -1)
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     # Initial shape [6, 6] (total elements 36, divisible by 3).
     # Hints: s0=6, s1=6.
@@ -114,9 +108,7 @@ class SymConstraintTest(seed_test_utils.RepeatableTest):
         assert x.shape[0] + y.shape[0] == 64
         return x * 2, y * 3
 
-    compiled = torch.compile(
-        Model(), backend="tpu", options={"bounded_dynamism": True}
-    )
+    compiled = torch.compile(Model(), backend="tpu")
 
     x1 = torch.arange(20, dtype=torch.float32, device="tpu")
     y1 = torch.arange(44, dtype=torch.float32, device="tpu")

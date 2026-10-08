@@ -60,9 +60,7 @@ class JaggedDynamismTest(seed_test_utils.RepeatableTest):
         "DynamicCompiler",
         wraps=_backend.dynamic_compiler.DynamicCompiler,
     ) as mock_dc:
-      compiled_linear = torch.compile(
-          linear, backend="tpu", options={"bounded_dynamism": True}
-      )
+      compiled_linear = torch.compile(linear, backend="tpu")
 
       # Varying batch token counts M <= 64 across iterations.
       for count in [15, 27, 45]:
@@ -103,9 +101,7 @@ class JaggedDynamismTest(seed_test_utils.RepeatableTest):
         "DynamicCompiler",
         wraps=_backend.dynamic_compiler.DynamicCompiler,
     ) as mock_dc:
-      compiled_model = torch.compile(
-          model, backend="tpu", options={"bounded_dynamism": True}
-      )
+      compiled_model = torch.compile(model, backend="tpu")
 
       for count in [18, 42, 70]:
         values = torch.randn(count, d_model, device="tpu")
@@ -139,9 +135,7 @@ class JaggedDynamismTest(seed_test_utils.RepeatableTest):
         "DynamicCompiler",
         wraps=_backend.dynamic_compiler.DynamicCompiler,
     ) as mock_dc:
-      compiled_model = torch.compile(
-          model, backend="tpu", options={"bounded_dynamism": True}
-      )
+      compiled_model = torch.compile(model, backend="tpu")
 
       for count in [20, 50, 80]:
         values = torch.randn(count, d_model, device="tpu")

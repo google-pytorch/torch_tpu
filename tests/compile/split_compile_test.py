@@ -49,9 +49,7 @@ class SplitCompileTest(seed_test_utils.RepeatableTest):
     new_ops = orig_ops + (torch.ops.aten.mul,)
 
     with unittest.mock.patch.object(collective_ops, "COLLECTIVE_OPS", new_ops):
-      compiled_f = torch.compile(
-          f, backend="tpu", options={"bounded_dynamism": True}
-      )
+      compiled_f = torch.compile(f, backend="tpu")
 
       x = torch.ones((2, 2), device="tpu")
       torch._dynamo.mark_dynamic(x, 0, min=2, max=8)
@@ -75,9 +73,7 @@ class SplitCompileTest(seed_test_utils.RepeatableTest):
     new_ops = orig_ops + (torch.ops.aten.mul,)
 
     with unittest.mock.patch.object(collective_ops, "COLLECTIVE_OPS", new_ops):
-      compiled_f = torch.compile(
-          f, backend="tpu", options={"bounded_dynamism": True}
-      )
+      compiled_f = torch.compile(f, backend="tpu")
 
       x = torch.ones((8, 6), device="tpu")
       torch._dynamo.mark_dynamic(x, 0, min=2, max=16)

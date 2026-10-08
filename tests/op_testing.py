@@ -4814,9 +4814,7 @@ class OpInfoTestBase(
         # Reset Dynamo state so dimensions marked dynamic in earlier subtests
         # do not carry over across compilations.
         torch._dynamo.reset()  # pylint: disable=protected-access
-        op_func = torch.compile(
-            op_func, backend=backend, options={"bounded_dynamism": True}
-        )
+        op_func = torch.compile(op_func, backend=backend)
       else:
         op_func = torch.compile(op_func, dynamic=False, backend=backend)
 
