@@ -159,7 +159,30 @@ jobs:
           fi
       - name: Run Bazel Test
         if: steps.check_superseded.outputs.skip != 'true' && steps.check_superseded_midway.outputs.skip != 'true'
-        run: bazel test --config=${{ matrix.job_info.bazel_config }} ${{ matrix.job_info.extra_flags }} //...
+        # `--build_event_json_file` writes the same Build Event Protocol stream that BES uploads to
+        # ResultStore to a local file, so test-level telemetry can be exported below.
+        run: bazel test --config=${{ matrix.job_info.bazel_config }} ${{ matrix.job_info.extra_flags }} --build_event_json_file="${RUNNER_TEMP}/bazel_bep.json" //...
+      # Export per-target test results for the ML Velocity CI/CD dashboard.
+      # Telemetry must never fail the job, hence `continue-on-error`.
+      - name: Export Test Results to BigQuery
+        if: >-
+          always() &&
+          github.event_name != 'pull_request' &&
+          steps.check_superseded.outputs.skip != 'true' &&
+          steps.check_superseded_midway.outputs.skip != 'true'
+        continue-on-error: true
+        env:
+          JOB_NAME: ${{ matrix.job_info.name || matrix.job_info.runner }}
+          RUNNER_LABEL: ${{ matrix.job_info.runner }}
+          BAZEL_CONFIG: ${{ matrix.job_info.bazel_config }}
+        run: >-
+          python3 ./ci/tools/export_bazel_test_results.py
+          --bep_file="${RUNNER_TEMP}/bazel_bep.json"
+          --output="${RUNNER_TEMP}/bazel_test_results.ndjson"
+          --job_name="${JOB_NAME}"
+          --runner_label="${RUNNER_LABEL}"
+          --bazel_config="${BAZEL_CONFIG}"
+          --bq_table=ml-velocity-actions-telemetry:ml_velocity.bazel_test_results
       - name: Upload Test Logs on Failure
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         if: failure()
