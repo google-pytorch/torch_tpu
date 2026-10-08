@@ -31,8 +31,14 @@ _TEST_MODE = et.TEST_MODE
 # Regex used by: TpuVsGpuErrorTest.test_index_no_indices
 # Matches an arbitrary file path.
 _INDEX_INTERNAL_ASSERTION_ERROR_RE = re.compile(
-    r"ntensor >= 3 INTERNAL ASSERT FAILED at .*, please report a bug to"
-    r" PyTorch.*"
+    r"""N <= iter\.ntensors\(\) INTERNAL ASSERT FAILED at .*"""
+)
+
+# Regex used by:
+# - TpuVsGpuErrorTest.test_gru_input_invalid_dropout
+# - TpuVsGpuErrorTest.test_lstm_input_invalid_dropout
+_DROPOUT_INTERNAL_ASSERTION_ERROR_RE = re.compile(
+    r"""dropout > 0 INTERNAL ASSERT FAILED .*""",
 )
 
 
@@ -7062,9 +7068,7 @@ Supported combinations for non-constant padding:
     with et.assert_raises_message(
         RuntimeError,
         tpu="""index(): expected at least one index tensor to be defined, got 0""",
-        gpu=re.compile(
-            r"""N <= iter\.ntensors\(\) INTERNAL ASSERT FAILED at.*OffsetCalculator\.cuh.*please report a bug to PyTorch\.\s*"""
-        ),
+        gpu=_INDEX_INTERNAL_ASSERTION_ERROR_RE,
         message_reviewed_by="wan",
     ):
       torch.ops.aten.index.Tensor(t, [None])
@@ -14921,17 +14925,396 @@ Device-side assertion tracking was not enabled by user.""",
           False,
       )
 
+  def test_embedding_invalid_weight_shape(self):
+    weight = torch.ones(10, device=et.device())
+    indices = torch.zeros(1, dtype=torch.int64, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""embedding(): expected weight to be 2D, got tensor of shape [10]""",
+        gpu="""'weight' must be 2-D""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.embedding(weight, indices)
+
+  def test_embedding_invalid_indices_dtype(self):
+    weight = torch.ones(10, 4, device=et.device())
+    indices = torch.zeros(1, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""embedding(): expected indices to be int64 or int32, got float32""",
+        gpu="""Expected tensor for argument #1 'indices' to have one of the following scalar types: Long, Int; but got torch.cuda.FloatTensor instead (while checking arguments for embedding)""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.embedding(weight, indices)
+
+  def test_embedding_invalid_out_dtype(self):
+    weight = torch.ones(10, 4, dtype=torch.float32, device=et.device())
+    indices = torch.zeros(1, dtype=torch.int64, device=et.device())
+    out = torch.empty(1, 4, dtype=torch.float64, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""embedding(): expected out tensor to have dtype float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.embedding.out(weight, indices, out=out)
+
+  def test_scaled_mm_invalid_scale_a_orientation(self):
+    """Tests that scaled_mm rejects a 2-D row-wise scale_a with wrong orientation."""
+    device = et.device()
+    # Generate in F32 and cast to FP8 to avoid randn failure on TPU!
+    mat1 = torch.randn(16, 16, dtype=torch.float32, device=device).to(
+        torch.float8_e4m3fn
+    )
+    mat2 = torch.randn(16, 32, dtype=torch.float32, device=device).to(
+        torch.float8_e4m3fn
+    )
+    # scale_a should be [16, 1]; [1, 16] is the wrong orientation.
+    scale_a = torch.ones(1, 16, dtype=torch.float32, device=device)
+    scale_b = torch.tensor([1.0], dtype=torch.float32, device=device)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scaled_mm(): expected row-wise scale_a to have shape [16, 1], got [1, 16]""",
+        gpu="""Invalid scaling configuration.
+- For TensorWise scaling, a and b should be float8, scales should be float and singletons.
+- For RowWise scaling, a and b should be float8, scales should be float, scale_a should be (16, 1) and scale_b should be (1, 32), and both should be contiguous.
+- For BlockWise 1x128 scaling, a and b should be float8, scales should be float, scale_a should be (16, 1) and scale_b should be (1, 32), and both should be outer-dim-major.
+- For BlockWise 128x128 scaling, a and b should be float8, scales should be float, scale_a should be (1, 1) and scale_b should be (1, 1), and both should be near-inner-dim-major (with 16-byte aligned strides).
+- For Blockwise 1x32 scaling, a and b should be float8, scales should be float8_e8m0fnu, scale_a should have 512 elements and scale_b should have 512 elements, and both should be contiguous.
+- For Blockwise 1x16 scaling, a and b should be float4 (packed 2x), scales should be float8_e4m3fn, scale_a should have 512 elements and scale_b should have 512 elements, and both should be contiguous.
+Got a.dtype()=Float8_e4m3fn, scale_a.dtype()=Float, scale_a.size()=[1, 16], scale_a.stride()=[16, 1], b.dtype()=Float8_e4m3fn, scale_b.dtype()=Float, scale_b.size()=[1] and scale_b.stride()=[1]""",
+        message_reviewed_by="wan",
+    ):
+      torch._scaled_mm(mat1, mat2, scale_a, scale_b)
+
+  def test_scaled_mm_invalid_scale_b_orientation(self):
+    """Tests that scaled_mm rejects a 2-D per-channel scale_b with wrong orientation."""
+    device = et.device()
+    # Generate in F32 and cast to FP8 to avoid randn failure on TPU!
+    mat1 = torch.randn(16, 16, dtype=torch.float32, device=device).to(
+        torch.float8_e4m3fn
+    )
+    mat2 = torch.randn(16, 32, dtype=torch.float32, device=device).to(
+        torch.float8_e4m3fn
+    )
+    # scale_b should be [1, 32]; [32, 1] is the wrong orientation.
+    scale_a = torch.tensor([1.0], dtype=torch.float32, device=device)
+    scale_b = torch.ones(32, 1, dtype=torch.float32, device=device)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scaled_mm(): expected per-channel scale_b to have shape [1, 32], got [32, 1]""",
+        gpu="""Invalid scaling configuration.
+- For TensorWise scaling, a and b should be float8, scales should be float and singletons.
+- For RowWise scaling, a and b should be float8, scales should be float, scale_a should be (16, 1) and scale_b should be (1, 32), and both should be contiguous.
+- For BlockWise 1x128 scaling, a and b should be float8, scales should be float, scale_a should be (16, 1) and scale_b should be (1, 32), and both should be outer-dim-major.
+- For BlockWise 128x128 scaling, a and b should be float8, scales should be float, scale_a should be (1, 1) and scale_b should be (1, 1), and both should be near-inner-dim-major (with 16-byte aligned strides).
+- For Blockwise 1x32 scaling, a and b should be float8, scales should be float8_e8m0fnu, scale_a should have 512 elements and scale_b should have 512 elements, and both should be contiguous.
+- For Blockwise 1x16 scaling, a and b should be float4 (packed 2x), scales should be float8_e4m3fn, scale_a should have 512 elements and scale_b should have 512 elements, and both should be contiguous.
+Got a.dtype()=Float8_e4m3fn, scale_a.dtype()=Float, scale_a.size()=[1], scale_a.stride()=[1], b.dtype()=Float8_e4m3fn, scale_b.dtype()=Float, scale_b.size()=[32, 1] and scale_b.stride()=[1, 1]""",
+        message_reviewed_by="wan",
+    ):
+      torch._scaled_mm(mat1, mat2, scale_a, scale_b)
+
+  def test_lstm_input_invalid_hx_size(self):
+    x, hx, params = _get_lstm_inputs()
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): expected hx to be a list of 2 tensors (the initial hidden states h_0 and c_0, in order), got 1 tensor""",
+        gpu="""lstm expects two hidden states""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.lstm.input(
+          x, [hx[0]], params, True, 1, 0.0, False, False, False
+      )
+
+  def test_lstm_input_zero_seq_len(self):
+    _, hx, params = _get_lstm_inputs()
+    x_zero_seq = torch.randn(0, 3, 16, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): expected the sequence length to be > 0, got 0""",
+        gpu="""Expected sequence length to be larger than 0 in RNN""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.lstm.input(
+          x_zero_seq, hx, params, True, 1, 0.0, False, False, False
+      )
+
+  def test_lstm_input_zero_batch_size(self):
+    _, hx, params = _get_lstm_inputs()
+    x_zero_batch = torch.randn(10, 0, 16, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): expected the batch size to be > 0, got 0""",
+        gpu="""Expected tensor for argument #1 'input_gates' to have same size as tensor for argument #2 'hidden_gates'; but [0, 128] does not equal [3, 128] (while checking arguments for _thnn_fused_lstm_cell_cuda)""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.lstm.input(
+          x_zero_batch, hx, params, True, 1, 0.0, False, False, False
+      )
+
+  def test_lstm_input_c0_layer_mismatch(self):
+    x, hx, params = _get_lstm_inputs()
+    c0_bad_layers = torch.randn(2, 3, 32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): expected the size of the initial cell state c_0 (second element of hx) at dimension 0 to be 1 (num_layers * number of directions), got 2""",
+        gpu="""Expected cell size [1, 3, 32], got [2, 3, 32]""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.lstm.input(
+          x, [hx[0], c0_bad_layers], params, True, 1, 0.0, False, False, False
+      )
+
+  def test_lstm_input_c0_batch_mismatch(self):
+    x, hx, params = _get_lstm_inputs()
+    c0_bad_batch = torch.randn(1, 4, 32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): expected the size of the initial cell state c_0 (second element of hx) at dimension 1 to be 3 (batch size), got 4""",
+        gpu="""Expected cell size [1, 3, 32], got [1, 4, 32]""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.lstm.input(
+          x, [hx[0], c0_bad_batch], params, True, 1, 0.0, False, False, False
+      )
+
+  def test_lstm_input_params_count_mismatch(self):
+    x, hx, params = _get_lstm_inputs()
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): expected 4 parameters, got 3""",
+        gpu="""MatrixRef: ArrayRef size 3 not divisible by stride 4""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.lstm.input(
+          x, hx, params[:3], True, 1, 0.0, False, False, False
+      )
+
+  def test_gru_input_zero_seq_len(self):
+    _, hx, params = _get_gru_inputs()
+    x_zero_seq = torch.randn(0, 3, 16, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gru(): expected the sequence length to be > 0, got 0""",
+        gpu="""Expected sequence length to be larger than 0 in RNN""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.gru.input(
+          x_zero_seq, hx, params, True, 1, 0.0, False, False, False
+      )
+
+  def test_gru_input_zero_batch_size(self):
+    _, hx, params = _get_gru_inputs()
+    x_zero_batch = torch.randn(10, 0, 16, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gru(): expected the batch size to be > 0, got 0""",
+        gpu="""Expected tensor for argument #1 'input_gates' to have same size as tensor for argument #2 'hidden_gates'; but [0, 96] does not equal [3, 96] (while checking arguments for _thnn_fused_gru_cell_cuda)""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.gru.input(
+          x_zero_batch, hx, params, True, 1, 0.0, False, False, False
+      )
+
+  def test_gru_input_params_count_mismatch(self):
+    x, hx, params = _get_gru_inputs()
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gru(): expected 4 parameters, got 3""",
+        gpu="""MatrixRef: ArrayRef size 3 not divisible by stride 4""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.gru.input(
+          x, hx, params[:3], True, 1, 0.0, False, False, False
+      )
+
   def test_gru_input_hx_not_3d(self):
     x, _, params = _get_gru_inputs()
     hx_2d = torch.randn(1, 3, device=et.device())
 
     with et.assert_raises_message(
         RuntimeError if et.is_on_tpu() else IndexError,
-        tpu="""gru(): expected hx to be a 3D tensor [num_layers * num_directions, batch, hidden_size], got 2D""",
+        tpu="""gru(): expected the initial hidden state hx to be a 3D tensor [num_layers * num_directions, batch, hidden_size], got 2D tensor of shape [1, 3]""",
         gpu="""Dimension out of range (expected to be in range of [-2, 1], but got 2)""",
     ):
       torch.ops.aten.gru.input(
           x, hx_2d, params, True, 1, 0.0, False, False, False
+      )
+
+  def test_gru_input_hx_batch_mismatch(self):
+    x, _, params = _get_gru_inputs()
+    hx_bad_batch = torch.randn(1, 4, 32, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gru(): expected the size of the initial hidden state hx at dimension 1 to be 3 (batch size), got 4""",
+        gpu="""cuDNN error: CUDNN_STATUS_BAD_PARAM""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.gru.input(
+          x, hx_bad_batch, params, True, 1, 0.0, False, False, False
+      )
+
+  def test_gru_input_hx_layer_mismatch(self):
+    x, _, params = _get_gru_inputs()
+    hx_bad_layers = torch.randn(2, 3, 32, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gru(): expected the size of the initial hidden state hx at dimension 0 to be 1 (num_layers * number of directions), got 2""",
+        gpu="""cuDNN error: CUDNN_STATUS_BAD_PARAM""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.gru.input(
+          x, hx_bad_layers, params, True, 1, 0.0, False, False, False
+      )
+
+  def test_gru_input_zero_num_layers(self):
+    x, hx, params = _get_gru_inputs()
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gru(): expected the number of layers (num_layers) to be > 0, got 0""",
+        gpu="""cuDNN error: CUDNN_STATUS_BAD_PARAM""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.gru.input(x, hx, params, True, 0, 0.0, False, False, False)
+
+  def test_gru_input_invalid_input_dim(self):
+    _, hx, params = _get_gru_inputs()
+    x_2d = torch.randn(10, 3, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gru(): expected input to be a 3D tensor, got 2D""",
+        gpu="""shape '[288, 1]' is invalid for input of size 1536""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.gru.input(
+          x_2d, hx, params, True, 1, 0.0, False, False, False
+      )
+
+  def test_gru_input_invalid_dropout(self):
+    x, hx, params = _get_gru_inputs()
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gru(): expected the dropout probability (dropout) to be in range [0, 1], got -0.5""",
+        gpu=_DROPOUT_INTERNAL_ASSERTION_ERROR_RE,
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.gru.input(x, hx, params, True, 1, -0.5, True, False, False)
+
+  def test_lstm_input_c0_not_3d(self):
+    x, hx, params = _get_lstm_inputs()
+    c0_2d = torch.randn(1, 3, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError if et.is_on_tpu() else IndexError,
+        tpu="""lstm(): expected the initial cell state c_0 (second element of hx) to be a 3D tensor [num_layers * num_directions, batch, hidden_size], got 2D tensor of shape [1, 3]""",
+        gpu="""Dimension out of range (expected to be in range of [-2, 1], but got 2)""",
+    ):
+      torch.ops.aten.lstm.input(
+          x, [hx[0], c0_2d], params, True, 1, 0.0, False, False, False
+      )
+
+  def test_lstm_input_h0_not_3d(self):
+    x, hx, params = _get_lstm_inputs()
+    h0_2d = torch.randn(1, 3, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError if et.is_on_tpu() else IndexError,
+        tpu="""lstm(): expected the initial hidden state h_0 (first element of hx) to be a 3D tensor [num_layers * num_directions, batch, out_size], got 2D tensor of shape [1, 3]""",
+        gpu="""Dimension out of range (expected to be in range of [-2, 1], but got 2)""",
+    ):
+      torch.ops.aten.lstm.input(
+          x, [h0_2d, hx[1]], params, True, 1, 0.0, False, False, False
+      )
+
+  def test_lstm_input_h0_batch_mismatch(self):
+    x, hx, params = _get_lstm_inputs()
+    h0_bad_batch = torch.randn(1, 4, 32, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): expected the size of the initial hidden state h_0 (first element of hx) at dimension 1 to be 3 (batch size), got 4""",
+        gpu="""cuDNN error: CUDNN_STATUS_BAD_PARAM""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.lstm.input(
+          x, [h0_bad_batch, hx[1]], params, True, 1, 0.0, False, False, False
+      )
+
+  def test_lstm_input_h0_layer_mismatch(self):
+    x, hx, params = _get_lstm_inputs()
+    h0_bad_layers = torch.randn(2, 3, 32, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): expected the size of the initial hidden state h_0 (first element of hx) at dimension 0 to be 1 (num_layers * number of directions), got 2""",
+        gpu="""cuDNN error: CUDNN_STATUS_BAD_PARAM""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.lstm.input(
+          x, [h0_bad_layers, hx[1]], params, True, 1, 0.0, False, False, False
+      )
+
+  def test_lstm_input_h0_out_size_exceeds_c0(self):
+    x, _, params = _get_lstm_inputs()
+    h0_large_out = torch.randn(1, 3, 64, device=et.device())
+
+    c0 = torch.randn(1, 3, 32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): expected the size of the initial hidden state h_0 (first element of hx) at dimension 2 to be <= 32 (size of the initial cell state c_0 -- second element of hx) at dimension 2, got 64""",
+        gpu="""cuDNN error: CUDNN_STATUS_NOT_SUPPORTED. This error may appear if you passed in a non-contiguous input.""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.lstm.input(
+          x, [h0_large_out, c0], params, True, 1, 0.0, False, False, False
+      )
+
+  def test_lstm_input_invalid_input_dim(self):
+    _, hx, params = _get_lstm_inputs()
+    x_2d = torch.randn(10, 3, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): expected input to be a 3D tensor, got 2D""",
+        gpu="""shape '[384, 1]' is invalid for input of size 2048""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.lstm.input(
+          x_2d, hx, params, True, 1, 0.0, False, False, False
+      )
+
+  def test_lstm_input_zero_num_layers(self):
+    x, hx, params = _get_lstm_inputs()
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): expected the number of layers (num_layers) to be > 0, got 0""",
+        gpu="""cuDNN error: CUDNN_STATUS_BAD_PARAM""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.lstm.input(
+          x, hx, params, True, 0, 0.0, False, False, False
+      )
+
+  def test_lstm_input_invalid_dropout(self):
+    x, hx, params = _get_lstm_inputs()
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): expected the dropout probability (dropout) to be in range [0, 1], got -0.5""",
+        gpu=_DROPOUT_INTERNAL_ASSERTION_ERROR_RE,
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten.lstm.input(
+          x, hx, params, True, 1, -0.5, True, False, False
       )
 
   def test_jagged_to_padded_values_0d(self):
@@ -14945,32 +15328,6 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       torch.ops.aten._jagged_to_padded_dense_forward(
           values, [offsets], [3], 0.0
-      )
-
-  def test_lstm_input_c0_not_3d(self):
-    x, hx, params = _get_lstm_inputs()
-    c0_2d = torch.randn(1, 3, device=et.device())
-
-    with et.assert_raises_message(
-        RuntimeError if et.is_on_tpu() else IndexError,
-        tpu="""lstm(): expected c_0 to be a 3D tensor [num_layers * num_directions, batch, hidden_size], got 2D""",
-        gpu="""Dimension out of range (expected to be in range of [-2, 1], but got 2)""",
-    ):
-      torch.ops.aten.lstm.input(
-          x, [hx[0], c0_2d], params, True, 1, 0.0, False, False, False
-      )
-
-  def test_lstm_input_h0_not_3d(self):
-    x, hx, params = _get_lstm_inputs()
-    h0_2d = torch.randn(1, 3, device=et.device())
-
-    with et.assert_raises_message(
-        RuntimeError if et.is_on_tpu() else IndexError,
-        tpu="""lstm(): expected h_0 to be a 3D tensor [num_layers * num_directions, batch, out_size], got 2D""",
-        gpu="""Dimension out of range (expected to be in range of [-2, 1], but got 2)""",
-    ):
-      torch.ops.aten.lstm.input(
-          x, [h0_2d, hx[1]], params, True, 1, 0.0, False, False, False
       )
 
   def test_reload_invalid_device(self):

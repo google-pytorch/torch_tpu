@@ -76,7 +76,8 @@ absl::Status ValidateStaticShape(const at::Tensor& tensor,
 absl::Status ValidateEmbeddingArgs(const at::Tensor& weight,
                                    const at::Tensor& indices) {
   TT_RET_CHECK(weight.dim() == 2, error::kInvalidArgument)
-      << "expected weight to be 2-D, got " << ToString(weight.sizes());
+      << "expected weight to be 2D, got tensor of shape "
+      << ToString(weight.sizes());
   TT_RET_CHECK(
       indices.scalar_type() == at::kLong || indices.scalar_type() == at::kInt,
       error::kInvalidArgument)
