@@ -405,6 +405,7 @@ absl::Status ApplyCompilerOptionOverrides(
         compile_options.env_option_overrides.push_back(
             // This move is safe despite the move in the for-loop above, as it's
             // done when when replaced is false.
+            // NOLINTNEXTLINE(bugprone-use-after-move)
             std::make_pair(key, std::move(value)));
       }
     }
