@@ -316,7 +316,7 @@ torch_tpu_py_test(
     env = {
         "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT": "/tmp/collective_ops_test",
     },
-    shard_count = 12,
+    shard_count = 4,
     tags = if_oss(
         ["exclusive"],
         [],
@@ -327,6 +327,7 @@ torch_tpu_py_test(
         "notsan",  # TODO(b/497035517): fix the timeout in test_broadcast_objects.
     ],
     deps = [
+        ":continuous_test_utils",
         ":distributed_utils",
         "//shims/absl_py/logging",
         "//shims/absl_py/testing:absltest",
@@ -334,6 +335,7 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/utils:hardware",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
     ],
@@ -348,7 +350,7 @@ torch_tpu_py_test(
         "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT": "gs://torchtpu-shared/collective_ops_remote_cache_test",
     },
     main = "collective_ops_test.py",
-    shard_count = 12,
+    shard_count = 4,
     tags = if_oss(
         [
             "exclusive",
@@ -365,6 +367,7 @@ torch_tpu_py_test(
         "requires-net:external",  # Needs remote file access.
     ],
     deps = [
+        ":continuous_test_utils",
         ":distributed_utils",
         "//shims/absl_py/logging",
         "//shims/absl_py/testing:absltest",
@@ -372,6 +375,7 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/utils:hardware",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
     ],
