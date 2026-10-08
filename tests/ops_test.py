@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Trigger OSS CI export and verification for ops_test_compiled_tpu-v6e.
 """Fuzz tests for ops.
 
 For each op, we test that the result on TPU matches the result on the golden
