@@ -18,9 +18,15 @@ load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load(
     "@xla//third_party/py/rules_pywrap:pywrap.default.bzl",
     "pywrap_binaries",
+    "pywrap_common_library",
     "pywrap_library",
 )
-load("//bazel:pywrap_extensions.bzl", "PYWRAP_EXTENSIONS")
+load(
+    "//bazel:pywrap_extensions.bzl",
+    "CORE_PYWRAP_EXTENSIONS",
+    "PYWRAP_EXTENSIONS",
+    "SCOPED_PYWRAP_EXTENSIONS",
+)
 load(
     "//build_files:build_defs.bzl",
     "if_oss",
@@ -35,6 +41,7 @@ load(
 )
 load(
     "//shims/build_files:torch_version.bzl",
+    "scoped_pywrap_extension",
     "xla_base_filter",
 )
 load(
@@ -1049,11 +1056,12 @@ torch_tpu_cc_library(
     visibility = ["//csrc/common:__subpackages__"],
 )
 
-# Single-version aggregator used by bazel-only builds and tests (injected into
-# every torch_tpu_py_test via extra_pywrap_deps). Built against the default
-# PyTorch; not the wheel layout. (The extension list lives in
-# pywrap_extensions.bzl so the per-version wheel pywrap_library targets under
-# //csrc/common/glue_<suffix> can share it.)
+# Single-version core aggregator used by bazel-only builds and tests (injected
+# into every torch_tpu_py_test via extra_pywrap_deps). Built against the default
+# PyTorch; not the wheel layout. Subsystem-scoped extensions live in
+# SCOPED_PYWRAP_EXTENSIONS and link dynamically against
+# `:pywrap_torch_tpu_common_lib` (`libpywrap_torch_tpu_common.so`) so C++
+# changes in isolated subsystems do not invalidate `pywrap_torch_tpu`.
 pywrap_library(
     name = "pywrap_torch_tpu",
     extra_deps = [
@@ -1061,7 +1069,13 @@ pywrap_library(
         "//shims/torch:torch_python",
     ],
     visibility = ["//:__subpackages__"],
-    deps = PYWRAP_EXTENSIONS,
+    deps = CORE_PYWRAP_EXTENSIONS,
+)
+
+pywrap_common_library(
+    name = "pywrap_torch_tpu_common_lib",
+    dep = ":pywrap_torch_tpu",
+    visibility = ["//:__subpackages__"],
 )
 
 pywrap_binaries(
@@ -1069,6 +1083,27 @@ pywrap_binaries(
     dep = ":pywrap_torch_tpu",
     visibility = ["//:__subpackages__"],
 )
+
+[
+    (
+        scoped_pywrap_extension(
+            name = "_{}_scoped".format(pywrap_name),
+            core_deps = CORE_PYWRAP_EXTENSIONS,
+            dep = ext_label,
+        ),
+        pywrap_library(
+            name = pywrap_name,
+            extra_deps = [
+                ":pywrap_torch_tpu_common_lib",
+                ":torch_rpath_flags",
+                "//shims/torch:torch_python",
+            ],
+            visibility = ["//:__subpackages__"],
+            deps = [":_{}_scoped".format(pywrap_name)],
+        ),
+    )
+    for pywrap_name, ext_label in SCOPED_PYWRAP_EXTENSIONS.items()
+]
 
 # Aggregate of every extension's `_backend_probe` (a plain mirror of its deps).
 # Fed to `xla_base_filter`, which re-exports it under the sentinel config so the

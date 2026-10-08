@@ -31,6 +31,9 @@ torch_tpu_py_library(
     srcs = [
         "__init__.py",
     ],
+    extra_pywrap_deps = [
+        "//csrc/common:pywrap_batch_transfer",
+    ],
     deps = [":batch_transfer_impl"],
 )
 

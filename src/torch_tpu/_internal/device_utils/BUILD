@@ -30,6 +30,9 @@ package(
 torch_tpu_py_library(
     name = "annotations",
     srcs = ["annotations.py"],
+    extra_pywrap_deps = [
+        "//csrc/common:pywrap_annotations",
+    ],
     deps = [
         ":annotations_py",
         "//src/torch_tpu/_internal/utils:annotations",

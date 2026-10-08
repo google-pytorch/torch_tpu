@@ -27,6 +27,7 @@ extension source is compiled once per supported PyTorch version. The versioned
 library produced under the pinned config above.
 """
 
+load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
 load("@rules_cc//cc/common:cc_shared_library_info.bzl", "CcSharedLibraryInfo")
 load("@rules_ml_toolchain//py/rules_pywrap:pywrap.impl.bzl", "PywrapInfo")
@@ -310,6 +311,66 @@ xla_base_filter = rule(
         ),
         "_allowlist_function_transition": attr.label(
             default = "@bazel_tools//tools/allowlists/function_transition_allowlist",
+        ),
+    },
+)
+
+def _scoped_pywrap_extension_impl(ctx):
+    # Collect all transitive linker inputs that are already statically linked into
+    # `libpywrap_torch_tpu_common.so` via `CORE_PYWRAP_EXTENSIONS` (`[1:]` excludes
+    # each core extension's own `PyInit_*` object file, matching
+    # `_pywrap_common_split_library_impl` in `rules_pywrap`).
+    core_lis = {}
+    for core_dep in ctx.attr.core_deps:
+        for li in core_dep[PywrapInfo].cc_info.linking_context.linker_inputs.to_list()[1:]:
+            core_lis[li] = True
+
+    child = ctx.attr.dep
+    child_pw = child[PywrapInfo]
+    all_lis = child_pw.cc_info.linking_context.linker_inputs.to_list()
+    scoped_lis = all_lis[:1] + [li for li in all_lis[1:] if li not in core_lis]
+
+    scoped_cc_info = CcInfo(
+        compilation_context = child_pw.cc_info.compilation_context,
+        linking_context = cc_common.create_linking_context(
+            linker_inputs = depset(
+                direct = scoped_lis,
+                order = "topological",
+            ),
+        ),
+    )
+    return [
+        PywrapInfo(
+            cc_info = scoped_cc_info,
+            owner = child_pw.owner,
+            default_runfiles = child_pw.default_runfiles,
+            common_lib_packages = child_pw.common_lib_packages,
+            py_stub = child_pw.py_stub,
+            cc_only = child_pw.cc_only,
+            starlark_only = child_pw.starlark_only,
+        ),
+        child[PyInfo],
+        child[DefaultInfo],
+    ]
+
+scoped_pywrap_extension = rule(
+    implementation = _scoped_pywrap_extension_impl,
+    doc = """Filters a subsystem pybind_extension's PywrapInfo to exclude linker inputs already in CORE_PYWRAP_EXTENSIONS.
+
+    Used by per-subsystem `pywrap_library` targets in `//csrc/common` that link
+    dynamically against `:pywrap_torch_tpu_common_lib` (`libpywrap_torch_tpu_common.so`).
+    This keeps core C++ singletons in `libpywrap_torch_tpu_common.so` (avoiding
+    ODR violations and duplicate linking) while removing the subsystem extension
+    from `pywrap_torch_tpu`'s `cquery` dependency graph.
+    """,
+    attrs = {
+        "core_deps": attr.label_list(
+            providers = [PywrapInfo],
+            mandatory = True,
+        ),
+        "dep": attr.label(
+            providers = [PywrapInfo],
+            mandatory = True,
         ),
     },
 )

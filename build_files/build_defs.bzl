@@ -942,7 +942,12 @@ register_extension_info(
     label_regex_for_dep = "{extension_name}",
 )
 
-def torch_tpu_py_library(name, srcs = [], allow_multiple_srcs = False, **kwargs):
+def torch_tpu_py_library(
+        name,
+        srcs = [],
+        allow_multiple_srcs = False,
+        extra_pywrap_deps = [],
+        **kwargs):
     """Creates a pytype_strict_library for torch_tpu.
 
     Also creates a build_test for the library to ensure it is buildable.
@@ -951,6 +956,8 @@ def torch_tpu_py_library(name, srcs = [], allow_multiple_srcs = False, **kwargs)
         name: The name of the library.
         srcs: The source files for the library. Must contain at most one .py file unless allow_multiple_srcs is True.
         allow_multiple_srcs: Whether to allow multiple srcs files.
+        extra_pywrap_deps: Optional subsystem-scoped pywrap_library dependencies to
+            add when use_pywrap_rules() is True (in non-wheel test builds).
         **kwargs: Any additional arguments.
     """
 
@@ -961,12 +968,15 @@ def torch_tpu_py_library(name, srcs = [], allow_multiple_srcs = False, **kwargs)
     _fail_on_generic_requires_tpu_tag(kwargs.get("tags", []))
 
     deps = kwargs.pop("deps", [])
+    pywrap_deps = extra_pywrap_deps if use_pywrap_rules() else []
     if not is_oss():
         if type(deps) == "list":
             if "//src/torch_tpu/_internal:testing" not in deps:
                 deps = deps + ["//src/torch_tpu/_internal:testing"]
         else:
             deps = deps + ["//src/torch_tpu/_internal:testing"]
+        if pywrap_deps:
+            deps = deps + pywrap_deps
     else:
         # In OSS, dynamically route @pypi// dependencies to @pypi_cuda// if --config=cuda is used
         if type(deps) == "list":
@@ -977,6 +987,12 @@ def torch_tpu_py_library(name, srcs = [], allow_multiple_srcs = False, **kwargs)
                     "//shims/torch:use_cuda_torch": ["@pypi_cuda//" + pkg for pkg in pypi_pkgs],
                     "//conditions:default": ["@pypi//" + pkg for pkg in pypi_pkgs],
                 })
+        if pywrap_deps:
+            deps = deps + select({
+                "//:wheel_test_enabled": [],
+                "//:wheel_test_with_cuda_torch": [],
+                "//conditions:default": pywrap_deps,
+            })
 
     pytype_strict_library(
         # PY_LIBRARY_OK=for implementing torch_tpu_py_library.

@@ -29,6 +29,9 @@ torch_tpu_py_library(
     srcs = [
         "__init__.py",
     ],
+    extra_pywrap_deps = [
+        "//csrc/common:pywrap_dynamism",
+    ],
     visibility = [
         "//:__subpackages__",
     ],

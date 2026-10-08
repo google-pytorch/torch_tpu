@@ -60,7 +60,6 @@ torch_tpu_py_library(
         "//src/torch_tpu/_internal:env_utils",
         "//src/torch_tpu/_internal:public_api",
         "//src/torch_tpu/_internal:warnings",
-        "//src/torch_tpu/_internal/batch_transfer",  # buildcleaner: keep
         "//src/torch_tpu/_internal/compile",
         "//src/torch_tpu/_internal/compile:tpu_backend",
         "//src/torch_tpu/_internal/device:_device_module",
