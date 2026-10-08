@@ -509,6 +509,9 @@ REGISTRATION_OVERRIDES = frozenset([
     'nll_loss_nd',
     'ones',
     'ones_like',
+    # repeat_interleave.Tensor_out is registered to write indices directly into
+    # out via DispatchOpOut, overriding the autogen copy decomposition.
+    'repeat_interleave.Tensor_out',
     # repeat_interleave.self_Tensor is registered to provide an optimized TPU
     # implementation, overriding the default decomposition.
     'repeat_interleave.self_Tensor',

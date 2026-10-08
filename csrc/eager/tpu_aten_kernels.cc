@@ -965,6 +965,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kRepeatInterleaveSelfInt>(m, AtenRepeatInterleaveSelfInt);
   ImplStable<OpName::kRepeatInterleaveSelfTensor>(m, AtenRepeatInterleave);
   ImplStable<OpName::kRepeatInterleaveTensor>(m, AtenRepeatInterleaveTensor);
+  ImplStable<OpName::kRepeatInterleaveTensorOut>(m,
+                                                 AtenRepeatInterleaveTensorOut);
   ImplStable<OpName::kReplicationPad1dBackwardGradInput>(
       m, AtenReplicationPad1dBackwardGradInput);
   ImplStable<OpName::kReplicationPad1dOut>(m, AtenReplicationPad1dOut);

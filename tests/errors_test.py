@@ -13886,7 +13886,7 @@ Device-side assertion tracking was not enabled by user.""",
     t = torch.tensor([1, 2], device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""repeat_interleave(): allocated size does not match required size""",
+        tpu="""repeat_interleave(): expected output_size to equal 4, got 10""",
         gpu="""repeat_interleave: Invalid output_size, expected 4 but got 10""",
     ):
       torch.repeat_interleave(t, 2, output_size=10)
@@ -13895,7 +13895,7 @@ Device-side assertion tracking was not enabled by user.""",
     repeats = torch.tensor([[1, 2]], device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""repeat_interleave(): repeat_interleave only accept 1D vector as repeat""",
+        tpu="""repeat_interleave(): expected repeats to be a 1D tensor, got 2D""",
         gpu="""repeat_interleave only accept 1D vector as repeat""",
     ):
       torch.repeat_interleave(repeats)
@@ -13904,7 +13904,7 @@ Device-side assertion tracking was not enabled by user.""",
     repeats = torch.tensor([1.0, 2.0], device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""repeat_interleave(): repeats has to be Long or Int tensor""",
+        tpu="""repeat_interleave(): expected repeats to have int64 or int32 dtype, got float32""",
         gpu=""""repeat_interleave_cuda" not implemented for 'Float'""",
     ):
       torch.repeat_interleave(repeats)
@@ -13913,7 +13913,7 @@ Device-side assertion tracking was not enabled by user.""",
     repeats = torch.tensor([3, -1], device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""repeat_interleave(): repeats can not be negative""",
+        tpu="""repeat_interleave(): expected repeats to be greater than or equal to zero, got -1""",
         gpu="""repeats can not be negative""",
     ):
       torch.repeat_interleave(repeats)
@@ -13922,10 +13922,20 @@ Device-side assertion tracking was not enabled by user.""",
     repeats = torch.tensor([1, 2], device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""repeat_interleave(): trying to create tensor with negative dimension -1""",
+        tpu="""repeat_interleave(): expected output_size to be greater than or equal to zero, got -1""",
         gpu="""Trying to create tensor with negative dimension -1: [-1]""",
     ):
       torch.repeat_interleave(repeats, output_size=-1)
+
+  def test_repeat_interleave_repeats_only_out_dtype_mismatch(self):
+    repeats = torch.tensor([1, 2], dtype=torch.int32, device=et.device())
+    out = torch.empty(3, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""repeat_interleave(): expected the output dtype to be int32, got float32""",
+        gpu="""Expected out tensor to have dtype int, but got float instead""",
+    ):
+      torch.ops.aten.repeat_interleave.Tensor_out(repeats, out=out)
 
   def test_constant_pad_nd_odd_pad_length(self):
     t = torch.ones(2, 2, device=et.device())

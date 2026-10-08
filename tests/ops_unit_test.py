@@ -6436,6 +6436,40 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
           lambda device, r=r: torch.repeat_interleave(to(r, device=device)),
       )
 
+    # Out-variant (`repeat_interleave.Tensor_out`): pre-allocated, resized,
+    # zero-length output, and in-place aliasing (`out=repeats` buffer donation).
+    for dtype in [torch.int64, torch.int32]:
+      for repeats, out_init_size, out_size in [
+          ([2, 1, 3], (6,), None),
+          ([2, 1, 3], (2,), 6),
+          ([0, 0, 0], (4,), None),
+          ([], (3,), None),
+      ]:
+        r = torch.tensor(repeats, dtype=dtype)
+
+        def _run_out(
+            device, r=r, dtype=dtype, init_sz=out_init_size, out_sz=out_size
+        ):
+          out = torch.empty(init_sz, dtype=dtype, device=device)
+          res = torch.ops.aten.repeat_interleave.Tensor_out(
+              to(r, device=device), output_size=out_sz, out=out
+          )
+          self.assertIs(res, out)
+          return out
+
+        self.assert_close_tpu_vs_cpu(_run_out)
+
+      # In-place aliasing (`out=repeats` with matching shape `{3}` -> `{3}`).
+      def _run_inplace_out(device, dtype=dtype):
+        r_dev = to(torch.tensor([1, 0, 2], dtype=dtype), device=device)
+        res = torch.ops.aten.repeat_interleave.Tensor_out(
+            r_dev, output_size=3, out=r_dev
+        )
+        self.assertIs(res, r_dev)
+        return r_dev
+
+      self.assert_close_tpu_vs_cpu(_run_inplace_out)
+
   def test_repeat_interleave_tensor_backward_variable_repeats(self):
     # Variable repeats with autograd go through
     # `repeat_interleave(repeats) -> index_select`.
