@@ -648,6 +648,10 @@ torch_tpu_cc_library(
         "//csrc/common:warnings",
         # Ensure that both TORCH_LIBRARY_IMPL values get built together always.
         ":amp_policies",  # buildcleaner: keep
+        # Registers the precompiled unbounded dynamic kernels at load time so
+        # TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS can serve them.
+        # Nothing references its symbols.
+        "//csrc/experimental/precompiled_kernels:kernel_registration",  # buildcleaner: keep
         "//csrc/common:to_string",
         "//csrc/ops/pooling",
         "//csrc/ops/repeat_interleave:repeat_interleave_aten_kernels",

@@ -345,6 +345,7 @@ torch_tpu_cc_library(
     srcs = ["compilation.cc"],
     hdrs = ["compilation.h"],
     deps = [
+        ":cache_key",
         ":compilation_spec",
         ":compile_options_key",
         ":context_manager",
@@ -1205,6 +1206,7 @@ torch_tpu_cc_library(
         ":tier2_compilation_cache",
         ":tier3_compilation_cache",
         ":to_string",
+        ":unbounded_dynamic_kernel_registry",
         ":utils",
         "//csrc/common:contain",
         "//csrc/internal/dynamism:dynamism_ops",
@@ -1234,6 +1236,25 @@ torch_tpu_cc_library(
         "@xla//xla/hlo/utils/concurrency:concurrency_utils",
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt:pjrt_compiler",
+        "@xla//xla/pjrt:pjrt_executable",
+    ],
+)
+
+torch_tpu_cc_library(
+    name = "unbounded_dynamic_kernel_registry",
+    srcs = ["unbounded_dynamic_kernel_registry.cc"],
+    hdrs = ["unbounded_dynamic_kernel_registry.h"],
+    deps = [
+        ":cache_key",
+        ":compilation",
+        ":compilation_spec",
+        ":shape",
+        "@com_google_absl//absl/base:no_destructor",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
+        "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt:pjrt_executable",
     ],
 )
@@ -1368,6 +1389,8 @@ torch_tpu_cc_test(
         ":utils",
         "//csrc/common:contain",
         "//csrc/common:oss_test_main",
+        "//csrc/experimental/precompiled_kernels:kernel_registration",  # buildcleaner: keep
+        "//csrc/experimental/precompiled_kernels:nonzero_indices",
         "//csrc/ops:op_builder_utils",
         "//csrc/pjrt:pjrt_state",
         "//shims/torch:torch_headers",

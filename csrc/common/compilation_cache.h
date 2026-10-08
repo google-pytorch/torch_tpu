@@ -42,6 +42,7 @@
 #include "csrc/common/shape.h"
 #include "csrc/common/thread_pool.h"
 #include "csrc/common/tier2_compilation_cache.h"
+#include "csrc/common/unbounded_dynamic_kernel_registry.h"
 #include "csrc/common/utils.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "xla/pjrt/pjrt_client.h"
@@ -334,7 +335,7 @@ class CompilationCache {
   // Returns:
   //   An error status if the PjRtClient is not initialized, if building the
   //   executable fails, or if the entry is evicted before it is ready.
-  absl::Status AddUnboundedDynamicCacheEntry(
+  absl::Status GetOrCompileUnboundedDynamicCacheEntry(
       const CompilationCacheKey& key,
       LoadedExecutableBuilder executable_builder,
       const UnboundedDynamicExecutionMetadata& dynamic_meta)
@@ -380,6 +381,8 @@ class CompilationCache {
     std::optional<ShapeDynamismMetadata> shape_dynamism_metadata;
     bool needs_compilation = false;
     bool dump_on_cache_miss = false;
+    const UnboundedDynamicKernel* absl_nullable unbounded_dynamic_kernel =
+        nullptr;
   };
 
   // Returns a pointer to the cache entry for `key` if found, otherwise returns
@@ -392,6 +395,11 @@ class CompilationCache {
   // otherwise returns nullptr.
   [[nodiscard]] const UnboundedDynamicCacheEntry*
   FindUnboundedDynamicCacheEntryOrNull(const CompilationCacheKey& key) const
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(cache_mutex_);
+
+  // Removes the unbounded dynamic cache entry for `key`, if present, dropping
+  // its shapeless-key bucket when it becomes empty.
+  void EraseUnboundedDynamicCacheEntry(const CompilationCacheKey& key)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(cache_mutex_);
 
   // Returns a pointer to the tier-1 cache entry for `key` in the cache selected
@@ -440,6 +448,33 @@ class CompilationCache {
       ShapeDynamismMetadata shape_dynamism_metadata,
       std::optional<BoundedDynamicCache::iterator> dynamic_it)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(cache_mutex_);
+
+  // Registers a pending unbounded dynamic cache entry for `key` under its
+  // shapeless key, without compiling anything. The caller is responsible for
+  // scheduling the compilation that fulfills the returned promise, e.g. with
+  // `EnqueueCompilation(key, CacheEntryKind::kUnboundedDynamic, ...)`. The key
+  // must not already be present in the unbounded dynamic cache.
+  CacheLookupInternal CreateUnboundedDynamicCacheEntry(
+      const CompilationCacheKey& key,
+      const UnboundedDynamicExecutionMetadata& dynamic_meta)
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(cache_mutex_);
+
+  // If auto-loading unbounded dynamic kernels is enabled and a registered
+  // kernel accepts the given shapes, registers a pending entry for that kernel
+  // (see CreateUnboundedDynamicCacheEntry) with `unbounded_dynamic_kernel`
+  // set. Otherwise creates a static cache entry.
+  CacheLookupInternal AddUnboundedDynamicKernelOrStaticCacheEntry(
+      const CompilationCacheKey& key, absl::Span<const Shape> input_shapes,
+      absl::Span<const Shape> output_shapes)
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(cache_mutex_);
+
+  // Schedules `executable_builder` on the compilation threadpool and publishes
+  // its result to the tier-1 entry for `key` in the cache selected by `kind`,
+  // going through the tier-2/3 caches first.
+  void EnqueueCompilation(const CompilationCacheKey& key, CacheEntryKind kind,
+                          LoadedExecutableBuilder executable_builder,
+                          UniqueCompileOptions compile_options)
+      ABSL_LOCKS_EXCLUDED(cache_mutex_);
 
   // Retrieves a cache entry or create a new one as needed. This updates the
   // access count and last accessed time for the cache entry if it is found.
@@ -602,6 +637,11 @@ class CompilationCache {
   // If true, the cache will dump the input StableHLO module for any cache
   // misses.
   bool dump_on_cache_miss_ ABSL_GUARDED_BY(cache_mutex_) = false;
+  // If true, a cache miss whose input shapes are accepted by a kernel in the
+  // `UnboundedDynamicKernelRegistry` loads that kernel instead of compiling
+  // the traced computation. Initialized from
+  // TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS; false by default.
+  bool auto_load_unbounded_dynamic_kernels_ ABSL_GUARDED_BY(cache_mutex_);
 
   // The current initialization options.
   CompilationCacheInitializationOptions options_ ABSL_GUARDED_BY(cache_mutex_);

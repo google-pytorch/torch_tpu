@@ -98,6 +98,39 @@ torch_tpu_cc_library(
     ],
 )
 
+# Registers every precompiled unbounded dynamic kernel with
+# //csrc/common:unbounded_dynamic_kernel_registry when
+# loaded. Nothing references its symbols, hence `alwayslink`. Depends on
+# Mosaic through the kernels, so link it only into TPU-only targets.
+torch_tpu_cc_library(
+    name = "kernel_registration",
+    srcs = ["kernel_registration.cc"],
+    deps = [
+        ":nonzero_indices",
+        "//csrc/common:unbounded_dynamic_kernel_registry",
+    ],
+    alwayslink = True,
+)
+
+torch_tpu_cc_test(
+    name = "kernel_registration_test",
+    srcs = ["kernel_registration_test.cc"],
+    # Runs on CPU, but links the TPU PJRT plugin registration, which needs
+    # libtpu on the library path at load time in OSS.
+    requires_libtpu = True,
+    deps = [
+        ":kernel_registration",  # buildcleaner: keep
+        ":nonzero_indices",
+        "//csrc/common:cache_key",
+        "//csrc/common:dimension_types",
+        "//csrc/common:fingerprint_utils",
+        "//csrc/common:oss_test_main",
+        "//csrc/common:shape",
+        "//csrc/common:unbounded_dynamic_kernel_registry",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
+    ],
+)
+
 torch_tpu_cc_test(
     name = "mosaic_custom_call_test",
     srcs = ["mosaic_custom_call_test.cc"],

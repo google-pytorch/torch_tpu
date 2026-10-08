@@ -231,9 +231,9 @@ TEST_F(NonzeroIndicesTest, ReusesExecutableAcrossShapesAndCounts) {
 TEST_F(NonzeroIndicesTest, UnboundedDynamicCacheServesKernel) {
   CompilationCache& cache = CompilationCache::GetInstance();
   ASSERT_TRUE(cache
-                  .AddUnboundedDynamicCacheEntry(NonZeroCacheKey(),
-                                                 BuildNonzeroIndicesExecutable,
-                                                 MakeNonzeroDynamicMetadata())
+                  .GetOrCompileUnboundedDynamicCacheEntry(
+                      NonZeroCacheKey(), BuildNonzeroIndicesExecutable,
+                      MakeNonzeroDynamicMetadata())
                   .ok());
 
   const std::tuple<int64_t, int64_t, int64_t> cases[] = {

@@ -193,6 +193,7 @@ TORCH_TPU_INTERNAL_SKINNY_SC_OFFLOAD: {category: Environment Variable, defined_i
 TORCH_TPU_INTERNAL_SPLIT_RNG_STATE_UPDATE: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
 TORCH_TPU_INTERNAL_STORAGE_AWARE_PLACEHOLDERS: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
 TORCH_TPU_INTERNAL_TIER3_COMPILATION_CACHE_LOCAL_BACKUP_TASK: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
+TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
 TORCH_TPU_INTERNAL_XLA_OPTIONS: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
 TORCH_TPU_LAUNCH_BLOCKING: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
 TORCH_TPU_PROFILER_OUTPUT_DIR: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}

@@ -166,6 +166,10 @@ inline constexpr char kTorchTpuInternalStorageAwarePlaceholdersEnvVar[] =
 inline constexpr char
     kTorchTpuInternalTier3CompilationCacheLocalBackupTaskEnvVar[] =
         "TORCH_TPU_INTERNAL_TIER3_COMPILATION_CACHE_LOCAL_BACKUP_TASK";
+// If set to `"1"` or `"true"`, unbounded kernels are loaded instead of static
+// ones if a compatible one exists.
+inline constexpr char kTorchTpuInternalUseUnboundedDynamicKernelsEnvVar[] =
+    "TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS";
 // TorchTPU-internal XLA compiler option overrides, in the format of
 // "key1=value1 key2=value2 ...". It is used to update `xla::CompileOptions`
 // through `env_option_overrides`, and takes precedence over `debug_options` set
@@ -310,6 +314,8 @@ inline constexpr auto kEnvVarToStage =
         {kTorchTpuInternalStorageAwarePlaceholdersEnvVar,
          SymbolStage::InternalApi()},
         {kTorchTpuInternalTier3CompilationCacheLocalBackupTaskEnvVar,
+         SymbolStage::InternalApi()},
+        {kTorchTpuInternalUseUnboundedDynamicKernelsEnvVar,
          SymbolStage::InternalApi()},
         {kTorchTpuInternalXlaOptionsEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuLaunchBlockingEnvVar, SymbolStage::Experimental()},

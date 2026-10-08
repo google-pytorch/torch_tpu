@@ -50,6 +50,7 @@
 #include "csrc/common/shape.h"
 #include "csrc/common/status_test_utils.h"
 #include "csrc/common/utils.h"
+#include "csrc/experimental/precompiled_kernels/nonzero_indices.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/pjrt/pjrt_state.h"
 #include "gmock/gmock.h"
@@ -93,6 +94,15 @@ class CompilationCacheTestHelper {
       }
     }
     return std::nullopt;
+  }
+
+  // Overrides the value read from
+  // TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS, which is memoized and
+  // thus cannot be toggled per test.
+  static void SetAutoLoadUnboundedDynamicKernels(CompilationCache& cache,
+                                                 const bool enable) {
+    absl::MutexLock lock(cache.cache_mutex_);
+    cache.auto_load_unbounded_dynamic_kernels_ = enable;
   }
 };
 
@@ -470,8 +480,8 @@ TEST_F(CompilationCacheTest, UnboundedDynamicCache) {
       CompileOptionsKey({}));
 
   ASSERT_TRUE(cache
-                  .AddUnboundedDynamicCacheEntry(key, CreateDummyExecutable,
-                                                 MakeDummyDynamicMetadata())
+                  .GetOrCompileUnboundedDynamicCacheEntry(
+                      key, CreateDummyExecutable, MakeDummyDynamicMetadata())
                   .ok());
 
   auto initial_stats =
@@ -519,8 +529,8 @@ TEST_F(CompilationCacheTest, UnboundedDynamicCacheShapeMismatch) {
       CompileOptionsKey({}));
 
   ASSERT_TRUE(cache
-                  .AddUnboundedDynamicCacheEntry(key, CreateDummyExecutable,
-                                                 MakeDummyDynamicMetadata())
+                  .GetOrCompileUnboundedDynamicCacheEntry(
+                      key, CreateDummyExecutable, MakeDummyDynamicMetadata())
                   .ok());
 
   CompilationCacheKey test_key(
@@ -552,8 +562,8 @@ TEST_F(CompilationCacheTest, UnboundedDynamicCacheOutputShapeMismatch) {
       CompileOptionsKey({}));
 
   ASSERT_TRUE(cache
-                  .AddUnboundedDynamicCacheEntry(key, CreateDummyExecutable,
-                                                 MakeDummyDynamicMetadata())
+                  .GetOrCompileUnboundedDynamicCacheEntry(
+                      key, CreateDummyExecutable, MakeDummyDynamicMetadata())
                   .ok());
 
   CompilationCacheKey test_key(
@@ -611,8 +621,8 @@ TEST_F(CompilationCacheTest, UnboundedDynamicCacheEvictAll) {
       CompileOptionsKey({}));
 
   ASSERT_TRUE(cache
-                  .AddUnboundedDynamicCacheEntry(key, CreateDummyExecutable,
-                                                 MakeDummyDynamicMetadata())
+                  .GetOrCompileUnboundedDynamicCacheEntry(
+                      key, CreateDummyExecutable, MakeDummyDynamicMetadata())
                   .ok());
 
   CompilationCacheKey test_key(
@@ -666,11 +676,168 @@ TEST_F(CompilationCacheTest, UnboundedDynamicCacheBackendNotInitialized) {
                DimensionsKey({})),
       CompileOptionsKey({}));
 
-  const absl::Status status = cache.AddUnboundedDynamicCacheEntry(
+  const absl::Status status = cache.GetOrCompileUnboundedDynamicCacheEntry(
       key, CreateDummyExecutable, MakeDummyDynamicMetadata());
   EXPECT_FALSE(status.ok());
 
   PjrtBackend::GetInstance().Shutdown();
+  CompilationCache::ShutDown();
+}
+
+TEST_F(CompilationCacheTest, UnboundedDynamicKernelNotAutoLoadedByDefault) {
+  CompilationCache& cache = CompilationCache::GetInstance();
+  const CompilationCacheKey nonzero_key = NonZeroCacheKey();
+
+  // Auto-loading is off unless TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS
+  // is set, so even a compatible lookup must take the static path (whose empty
+  // module fails to compile) instead of loading the kernel.
+  TT_ASSERT_OK_AND_ASSIGN(
+      CompiledKernel result,
+      cache.GetOrCompile(
+          nonzero_key, {Shape(Dimensions({4, 4}), mlir::ElementType::F32)},
+          {Shape(Dimensions({5, 2}), mlir::ElementType::I64)},
+          [](mlir::MLIRContext& context) {
+            return mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
+          },
+          std::make_unique<xla::CompileOptions>()));
+
+  EXPECT_FALSE(result.fixed_shape_kernel.get().ok());
+  EXPECT_EQ(cache.GetCacheHits(), 0);
+  EXPECT_EQ(cache.GetCacheMisses(), 1);
+  EXPECT_FALSE(CompilationCacheTestHelper::GetUnboundedDynamicCacheEntryStats(
+                   cache, nonzero_key)
+                   .has_value());
+
+  CompilationCache::ShutDown();
+}
+
+TEST_F(CompilationCacheTest,
+       UnboundedDynamicKernelNotAutoLoadedForIncompatibleInput) {
+  CompilationCache& cache = CompilationCache::GetInstance();
+  CompilationCacheTestHelper::SetAutoLoadUnboundedDynamicKernels(cache, true);
+  const CompilationCacheKey nonzero_key = NonZeroCacheKey();
+
+  // A 3-D input is rejected by the nonzero kernel's predicate, so the lookup
+  // must take the static path (whose empty module fails to compile) instead
+  // of auto-loading the kernel.
+  TT_ASSERT_OK_AND_ASSIGN(
+      CompiledKernel result,
+      cache.GetOrCompile(
+          nonzero_key, {Shape(Dimensions({2, 4, 4}), mlir::ElementType::F32)},
+          {Shape(Dimensions({5, 3}), mlir::ElementType::I64)},
+          [](mlir::MLIRContext& context) {
+            return mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
+          },
+          std::make_unique<xla::CompileOptions>()));
+
+  EXPECT_FALSE(result.fixed_shape_kernel.get().ok());
+  EXPECT_EQ(cache.GetCacheHits(), 0);
+  EXPECT_EQ(cache.GetCacheMisses(), 1);
+  EXPECT_FALSE(CompilationCacheTestHelper::GetUnboundedDynamicCacheEntryStats(
+                   cache, nonzero_key)
+                   .has_value());
+
+  CompilationCache::ShutDown();
+}
+
+// Compiling the nonzero kernel requires libtpu >= 0.0.48 with
+// operand_to_metadata support, which the OSS build may not have.
+#if TT_IS_INTERNAL_TORCH_TPU
+TEST_F(CompilationCacheTest,
+       UnboundedDynamicKernelAutoLoadedForCompatibleInput) {
+  CompilationCache& cache = CompilationCache::GetInstance();
+  CompilationCacheTestHelper::SetAutoLoadUnboundedDynamicKernels(cache, true);
+  const CompilationCacheKey nonzero_key = NonZeroCacheKey();
+  const auto must_not_be_called = [](mlir::MLIRContext&)
+      -> absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> {
+    return TT_ERROR(error::kInternal)
+           << "The traced computation must not be built when a compatible "
+              "unbounded dynamic kernel is registered.";
+  };
+
+  // A compatible lookup misses the tier-1 cache, finds the nonzero kernel in
+  // the registry and builds that instead of the traced computation.
+  TT_ASSERT_OK_AND_ASSIGN(
+      CompiledKernel first,
+      cache.GetOrCompile(
+          nonzero_key, {Shape(Dimensions({4, 4}), mlir::ElementType::F32)},
+          {Shape(Dimensions({5, 2}), mlir::ElementType::I64)},
+          must_not_be_called, std::make_unique<xla::CompileOptions>()));
+  TT_ASSERT_OK_AND_ASSIGN(SharedLoadedExecutableWithMetadata first_executable,
+                          first.fixed_shape_kernel.get());
+  EXPECT_EQ(cache.GetCacheHits(), 0);
+  EXPECT_EQ(cache.GetCacheMisses(), 1);
+  EXPECT_TRUE(cache.IsExecutableReady(
+      nonzero_key, CompilationCache::CacheEntryKind::kUnboundedDynamic));
+  EXPECT_TRUE(
+      first_executable->unbounded_dynamic_execution_metadata().has_value());
+  EXPECT_TRUE(CompilationCacheTestHelper::GetUnboundedDynamicCacheEntryStats(
+                  cache, nonzero_key)
+                  .has_value());
+
+  // A second compatible lookup with different shapes hits the same entry.
+  TT_ASSERT_OK_AND_ASSIGN(
+      CompiledKernel second,
+      cache.GetOrCompile(
+          nonzero_key, {Shape(Dimensions({16, 256}), mlir::ElementType::F32)},
+          {Shape(Dimensions({7, 2}), mlir::ElementType::I64)},
+          must_not_be_called, std::make_unique<xla::CompileOptions>()));
+  TT_ASSERT_OK_AND_ASSIGN(SharedLoadedExecutableWithMetadata second_executable,
+                          second.fixed_shape_kernel.get());
+  EXPECT_EQ(cache.GetCacheHits(), 1);
+  EXPECT_EQ(cache.GetCacheMisses(), 1);
+  EXPECT_EQ(second_executable->GetLoadedExecutable(),
+            first_executable->GetLoadedExecutable());
+
+  CompilationCache::ShutDown();
+}
+#endif  // TT_IS_INTERNAL_TORCH_TPU
+
+TEST_F(CompilationCacheTest,
+       UnboundedDynamicKernelFailedEntryFallsBackToStaticPath) {
+  CompilationCache& cache = CompilationCache::GetInstance();
+  CompilationCacheTestHelper::SetAutoLoadUnboundedDynamicKernels(cache, true);
+  const CompilationCacheKey nonzero_key = NonZeroCacheKey();
+
+  // Populate the kernel's entry with a failing builder. The failed entry stays
+  // in the cache.
+  EXPECT_FALSE(
+      cache
+          .GetOrCompileUnboundedDynamicCacheEntry(
+              nonzero_key,
+              [](xla::PjRtClient& client, UniqueCompileOptions compile_options)
+                  -> absl::StatusOr<
+                      std::unique_ptr<xla::PjRtLoadedExecutable>> {
+                return TT_ERROR(error::kInternal) << "Kernel build failed.";
+              },
+              MakeNonzeroDynamicMetadata())
+          .ok());
+  auto failed_stats =
+      CompilationCacheTestHelper::GetUnboundedDynamicCacheEntryStats(
+          cache, nonzero_key);
+  ASSERT_TRUE(failed_stats.has_value());
+
+  // A compatible lookup must neither serve the failed entry nor re-register
+  // the kernel; it falls through to the static path.
+  TT_ASSERT_OK_AND_ASSIGN(
+      CompiledKernel result,
+      cache.GetOrCompile(
+          nonzero_key, {Shape(Dimensions({4, 4}), mlir::ElementType::F32)},
+          {Shape(Dimensions({5, 2}), mlir::ElementType::I64)},
+          [](mlir::MLIRContext& context) {
+            return mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
+          },
+          std::make_unique<xla::CompileOptions>()));
+
+  EXPECT_FALSE(result.fixed_shape_kernel.get().ok());
+  EXPECT_EQ(cache.GetCacheHits(), 0);
+  EXPECT_EQ(cache.GetCacheMisses(), 1);
+  auto stats_after =
+      CompilationCacheTestHelper::GetUnboundedDynamicCacheEntryStats(
+          cache, nonzero_key);
+  ASSERT_TRUE(stats_after.has_value());
+  EXPECT_EQ(stats_after->read_count, failed_stats->read_count);
+
   CompilationCache::ShutDown();
 }
 

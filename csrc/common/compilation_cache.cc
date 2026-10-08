@@ -67,6 +67,7 @@
 #include "csrc/common/tier2_compilation_cache.h"
 #include "csrc/common/tier3_compilation_cache.h"
 #include "csrc/common/to_string.h"
+#include "csrc/common/unbounded_dynamic_kernel_registry.h"
 #include "csrc/common/utils.h"
 #include "csrc/internal/dynamism/dynamism_ops.h"
 #include "csrc/ops/op_builder_utils.h"
@@ -192,7 +193,10 @@ void CompilationCache::EnsureInitialized() {
   initialized_ = true;
 }
 
-CompilationCache::CompilationCache() = default;
+CompilationCache::CompilationCache()
+    : auto_load_unbounded_dynamic_kernels_(
+          GetBooleanEnvOnce<kTorchTpuInternalUseUnboundedDynamicKernelsEnvVar>()
+              .value_or(false)) {}
 
 CompilationCache::~CompilationCache() {
   ABSL_VLOG(1) << "CompilationCache shutting down.";
@@ -294,8 +298,6 @@ void CompilationCache::EvictAll() {
     for (const auto& [key, cache_entry] : executable_cache_) {
       keys_to_evict.insert(key);
     }
-    // Unbounded dynamic entries are cleared wholesale below, but in-flight
-    // ones must be waited for as well so that their promises get fulfilled.
     for (const auto& [shapeless_key, entries] : unbounded_dynamic_cache_) {
       for (const UnboundedDynamicCacheEntry& entry : entries) {
         keys_to_evict.insert(entry.key);
@@ -334,8 +336,10 @@ void CompilationCache::EvictAll() {
           << "Evicting compilation future for key: " << key;
       if (IsFutureReady(cache_entry->executable_future())) {
         // The compilation is completed, so we can evict it immediately.
-        // Unbounded dynamic entries are cleared wholesale below.
-        if (is_static) executable_cache_.erase(it);
+        if (is_static) {
+          executable_cache_.erase(it);
+        }
+        EraseUnboundedDynamicCacheEntry(key);
         keys_to_evict.erase(key);
         ABSL_VLOG(1) << "Evicted compilation future for key: " << key;
       } else {
@@ -346,7 +350,7 @@ void CompilationCache::EvictAll() {
     // Release the lock here to give in-flight compilations a chance to
     // complete and update the cache.
   }
-  // Clear bounded and unbounded dynamic cache entries.
+  // Clear dynamic cache entries.
   {
     absl::MutexLock lock(cache_mutex_);
     bounded_dynamic_cache_.clear();
@@ -438,6 +442,22 @@ CompilationCache::FindUnboundedDynamicCacheEntryOrNull(
   return nullptr;
 }
 
+void CompilationCache::EraseUnboundedDynamicCacheEntry(
+    const CompilationCacheKey& key) {
+  const auto it =
+      unbounded_dynamic_cache_.find(key.graph_key().shapeless_key());
+  if (it == unbounded_dynamic_cache_.end()) {
+    return;
+  }
+  std::vector<UnboundedDynamicCacheEntry>& entries = it->second;
+  std::erase_if(entries, [&key](const UnboundedDynamicCacheEntry& entry) {
+    return entry.key == key;
+  });
+  if (entries.empty()) {
+    unbounded_dynamic_cache_.erase(it);
+  }
+}
+
 const CacheEntry* CompilationCache::FindCacheEntryOrNull(
     const CompilationCacheKey& key, const CacheEntryKind kind) const {
   switch (kind) {
@@ -495,9 +515,12 @@ CompilationCache::GetUnboundedDynamicCacheEntry(
     const SharedLoadedExecutableWithMetadataFuture& future =
         entry.cache_entry.executable_future();
     if (IsFutureReady(future) && !future.get().ok()) {
-      ABSL_LOG(WARNING) << "Skipping unbounded dynamic cache entry whose "
-                           "compilation failed for key: "
-                        << key;
+      // A failed entry stays in the cache until eviction and is skipped by
+      // every later lookup, so log once rather than on every call.
+      ABSL_LOG_FIRST_N(WARNING, 1)
+          << "Skipping unbounded dynamic cache entry whose compilation failed "
+             "for key: "
+          << key;
       continue;
     }
     const UnboundedDynamicExecutionMetadata::CompatibilityFunc is_compatible =
@@ -565,7 +588,7 @@ CompilationCache::AddBoundedDynamicCacheEntry(
   return cache_lookup;
 }
 
-absl::Status CompilationCache::AddUnboundedDynamicCacheEntry(
+absl::Status CompilationCache::GetOrCompileUnboundedDynamicCacheEntry(
     const CompilationCacheKey& key, LoadedExecutableBuilder executable_builder,
     const UnboundedDynamicExecutionMetadata& dynamic_meta) {
   // The tiered lookup below may schedule a backup compilation.
@@ -582,11 +605,8 @@ absl::Status CompilationCache::AddUnboundedDynamicCacheEntry(
                    << key;
       return absl::OkStatus();
     }
-    std::vector<UnboundedDynamicCacheEntry>& entries =
-        unbounded_dynamic_cache_[key.graph_key().shapeless_key()];
-    entries.push_back(
-        UnboundedDynamicCacheEntry{.key = key, .dynamic_meta = dynamic_meta});
-    future = entries.back().cache_entry.executable_future();
+    future =
+        CreateUnboundedDynamicCacheEntry(key, dynamic_meta).executable_future;
   }
 
   GetFromTier2OrCompile(key, CacheEntryKind::kUnboundedDynamic,
@@ -601,6 +621,47 @@ absl::Status CompilationCache::AddUnboundedDynamicCacheEntry(
            << " was evicted before its executable was ready";
   }
   return future.get().status();
+}
+
+CompilationCache::CacheLookupInternal
+CompilationCache::CreateUnboundedDynamicCacheEntry(
+    const CompilationCacheKey& key,
+    const UnboundedDynamicExecutionMetadata& dynamic_meta) {
+  ABSL_DCHECK(FindUnboundedDynamicCacheEntryOrNull(key) == nullptr)
+      << "Key already exists in unbounded dynamic cache: " << key;
+  std::vector<UnboundedDynamicCacheEntry>& entries =
+      unbounded_dynamic_cache_[key.graph_key().shapeless_key()];
+  entries.push_back(
+      UnboundedDynamicCacheEntry{.key = key, .dynamic_meta = dynamic_meta});
+  const CacheEntry& cache_entry = entries.back().cache_entry;
+  return CacheLookupInternal{
+      .executable_promise = cache_entry.executable_promise(),
+      .executable_future = cache_entry.executable_future(),
+      .needs_compilation = true,
+      .dump_on_cache_miss = false};
+}
+
+CompilationCache::CacheLookupInternal
+CompilationCache::AddUnboundedDynamicKernelOrStaticCacheEntry(
+    const CompilationCacheKey& key, absl::Span<const Shape> input_shapes,
+    absl::Span<const Shape> output_shapes) {
+  if (auto_load_unbounded_dynamic_kernels_) {
+    const UnboundedDynamicKernel* kernel =
+        UnboundedDynamicKernelRegistry::GetInstance()
+            .FindUnboundedDynamicKernel(key.graph_key().shapeless_key(),
+                                        input_shapes, output_shapes);
+    if (kernel && !FindUnboundedDynamicCacheEntryOrNull(kernel->key)) {
+      ABSL_VLOG(2) << "Creating an unbounded dynamic cache entry for key: "
+                   << kernel->key;
+      CacheLookupInternal cache_lookup =
+          CreateUnboundedDynamicCacheEntry(kernel->key, kernel->metadata);
+      cache_lookup.unbounded_dynamic_kernel = kernel;
+      return cache_lookup;
+    }
+  }
+
+  ABSL_VLOG(2) << "Creating a static cache entry for key: " << key;
+  return AddStaticCacheEntry(key);
 }
 
 absl::StatusOr<CompilationCache::CacheLookupInternal>
@@ -685,9 +746,11 @@ CompilationCache::GetOrCreateCacheEntry(
                                        dynamism_metadata, dynamic_it);
   }
 
-  ABSL_VLOG(2) << "Creating a static cache entry for key: " << key;
-  // 5. Lastly, we create a static cache entry.
-  return AddStaticCacheEntry(key);
+  // 5. Lastly, create a pending entry for a registered unbounded dynamic
+  // kernel if auto-loading is enabled and one accepts these shapes, or a
+  // static cache entry otherwise.
+  return AddUnboundedDynamicKernelOrStaticCacheEntry(key, input_shapes,
+                                                     output_shapes);
 }
 
 bool CompilationCache::IsExecutableReady(const CompilationCacheKey& key,
@@ -972,6 +1035,17 @@ absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompileImpl(
   }
 
   if (cache_lookup.needs_compilation) {
+    if (cache_lookup.unbounded_dynamic_kernel) {
+      const UnboundedDynamicKernel& kernel =
+          *cache_lookup.unbounded_dynamic_kernel;
+      EnqueueCompilation(kernel.key, CacheEntryKind::kUnboundedDynamic,
+                         kernel.build, std::make_unique<xla::CompileOptions>());
+      ABSL_VLOG(1) << "[TtPerf] Scheduled compilation of unbounded dynamic "
+                      "kernel for key: "
+                   << kernel.key;
+      return compiled_kernel;
+    }
+
     // Only create the contexted module if we need to compile.
     auto contexted_module_or = ContextedModule::Make(computation_builder);
     if (!contexted_module_or.ok()) {
@@ -1026,7 +1100,6 @@ absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompile(
 void CompilationCache::EnqueueCompilation(
     const CompilationCacheKey& key, ContextedModule contexted_module,
     UniqueCompileOptions compile_options) {
-  EnsureInitialized();
   auto executable_builder = [contexted_module = std::move(contexted_module)](
                                 xla::PjRtClient& client,
                                 UniqueCompileOptions options) mutable {
@@ -1036,9 +1109,17 @@ void CompilationCache::EnqueueCompilation(
             std::move(*options)),
         /* context= */ "failed to compile MLIR module");
   };
+  EnqueueCompilation(key, CacheEntryKind::kStatic,
+                     std::move(executable_builder), std::move(compile_options));
+}
 
+void CompilationCache::EnqueueCompilation(
+    const CompilationCacheKey& key, const CacheEntryKind kind,
+    LoadedExecutableBuilder executable_builder,
+    UniqueCompileOptions compile_options) {
+  EnsureInitialized();
   compilation_pool_->Schedule(
-      [this, key, builder = std::move(executable_builder),
+      [this, key, kind, builder = std::move(executable_builder),
        compile_options = std::move(compile_options)]() mutable {
         // Prevent compilation threads from accessing thread-local context
         // states to enforce they always rely on resolved compiler options
@@ -1047,8 +1128,7 @@ void CompilationCache::EnqueueCompilation(
         // Let dispatch threads surface this thread's warnings to Python.
         RouteWarningsOnThisThreadToDispatchThread();
         torch_tpu::ScopedMemMeasuringContainer container;
-        this->GetFromTier2OrCompile(key, CacheEntryKind::kStatic,
-                                    std::move(builder),
+        this->GetFromTier2OrCompile(key, kind, std::move(builder),
                                     std::move(compile_options));
       });
 }

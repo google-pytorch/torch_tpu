@@ -67,8 +67,8 @@ TEST_F(TieredCompilationCacheTest, UnboundedDynamicCacheTier2Hit) {
   const CompilationCacheKey key(GraphKey(ShapelessKey(2), DimensionsKey({})),
                                 CompileOptionsKey({}), "tier2");
   ASSERT_TRUE(cache
-                  .AddUnboundedDynamicCacheEntry(key, CreateDummyExecutable,
-                                                 MakeDummyDynamicMetadata())
+                  .GetOrCompileUnboundedDynamicCacheEntry(
+                      key, CreateDummyExecutable, MakeDummyDynamicMetadata())
                   .ok());
   EXPECT_EQ(cache.GetCacheStats().num_compilations, 1);
 
@@ -78,8 +78,8 @@ TEST_F(TieredCompilationCacheTest, UnboundedDynamicCacheTier2Hit) {
   ASSERT_EQ(unlink(GetTier3CacheEntryPath(key).c_str()), 0);
 
   ASSERT_TRUE(cache
-                  .AddUnboundedDynamicCacheEntry(key, CreateDummyExecutable,
-                                                 MakeDummyDynamicMetadata())
+                  .GetOrCompileUnboundedDynamicCacheEntry(
+                      key, CreateDummyExecutable, MakeDummyDynamicMetadata())
                   .ok());
   EXPECT_EQ(cache.GetCacheStats().num_compilations, 1);
 }
@@ -89,8 +89,8 @@ TEST_F(TieredCompilationCacheTest, UnboundedDynamicCacheTier3Hit) {
   const CompilationCacheKey key(GraphKey(ShapelessKey(3), DimensionsKey({})),
                                 CompileOptionsKey({}), "tier3");
   ASSERT_TRUE(cache
-                  .AddUnboundedDynamicCacheEntry(key, CreateDummyExecutable,
-                                                 MakeDummyDynamicMetadata())
+                  .GetOrCompileUnboundedDynamicCacheEntry(
+                      key, CreateDummyExecutable, MakeDummyDynamicMetadata())
                   .ok());
   EXPECT_EQ(cache.GetCacheStats().num_compilations, 1);
 
@@ -100,8 +100,8 @@ TEST_F(TieredCompilationCacheTest, UnboundedDynamicCacheTier3Hit) {
   ASSERT_EQ(unlink(GetTier2CacheEntryPath(key).c_str()), 0);
 
   ASSERT_TRUE(cache
-                  .AddUnboundedDynamicCacheEntry(key, CreateDummyExecutable,
-                                                 MakeDummyDynamicMetadata())
+                  .GetOrCompileUnboundedDynamicCacheEntry(
+                      key, CreateDummyExecutable, MakeDummyDynamicMetadata())
                   .ok());
   EXPECT_EQ(cache.GetCacheStats().num_compilations, 1);
 
@@ -112,8 +112,8 @@ TEST_F(TieredCompilationCacheTest, UnboundedDynamicCacheTier3Hit) {
   ASSERT_EQ(unlink(GetTier3CacheEntryPath(key).c_str()), 0);
 
   ASSERT_TRUE(cache
-                  .AddUnboundedDynamicCacheEntry(key, CreateDummyExecutable,
-                                                 MakeDummyDynamicMetadata())
+                  .GetOrCompileUnboundedDynamicCacheEntry(
+                      key, CreateDummyExecutable, MakeDummyDynamicMetadata())
                   .ok());
   EXPECT_EQ(cache.GetCacheStats().num_compilations, 1);
 }
