@@ -25,6 +25,30 @@ package(
 )
 
 torch_tpu_py_test(
+    name = "base_test_test",
+    srcs = ["base_test_test.py"],
+    tags = [
+        # `perflab/base_test.py` matches the `*_test.py` exclude of
+        # `wheel_test_site_packages`, so OSS wheel tests cannot import it.
+        "wheel_test_excluded",
+    ],
+    deps = [
+        "//perflab:base_test",
+        "//perflab:common",
+        "//perflab:flags",
+        "//perflab:known_failures",
+        "//perflab:mode",
+        "//perflab:registry",
+        "//perflab:step_lib",
+        "//perflab:target",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:flagsaver",
+        "//src/torch_tpu",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "export_test",
     srcs = ["export_test.py"],
     deps = [

@@ -56,6 +56,7 @@ from absl import flags
 from absl import logging
 from absl.testing import absltest
 from torch_tpu._internal.distributed import multiprocessing
+from perflab import cases as cases_lib
 from perflab import common
 from perflab import export as export_lib
 from perflab import flags as flags_lib
@@ -290,6 +291,29 @@ class BaseBenchmarkTest(
         and flags_lib.RUN_IN_SUBPROCESS.value
         and not flags_lib.DRY_RUN.value
     )
+
+  def test_cases_selected(self):
+    """Fails if the run selects no benchmark case to execute.
+
+    Without this check a binary whose cases are all skipped, or that generated
+    none, passes while measuring nothing. The selection is computed from the
+    full case matrix, which is the same in every shard, and absltest assigns
+    this method to exactly one shard. The check is thus on the total across
+    shards: a shard that legitimately gets no case passes.
+    """
+    selected = cases_lib.get_selected_cases(
+        self.case_params.values(),
+        framework=self.framework,
+        device_kind=target_lib.make_target(self.platform).device_kind,
+        skip_behavior=flags_lib.SKIP_BEHAVIOR.value,
+    )
+    if not selected:
+      self.fail(
+          f"No benchmark case is selected to run: {len(self.case_params)}"
+          f" case(s) generated for {self.framework.value} on"
+          f" {self.platform.value}, all excluded with"
+          f" --skip_behavior={flags_lib.SKIP_BEHAVIOR.value}."
+      )
 
   def run(self, result=None):
     """Runs the test method in a child process and records its outcome.

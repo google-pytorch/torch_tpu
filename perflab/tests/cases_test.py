@@ -95,5 +95,59 @@ class GetSkipReasonTest(seed_test_utils.RepeatableTest):
     )
 
 
+class GetSelectedCasesTest(seed_test_utils.RepeatableTest):
+
+  def setUp(self):
+    super().setUp()
+    self.enter_context(
+        mock.patch.object(
+            known_failures,
+            "KNOWN_FAILURES",
+            (
+                known_failures.KnownFailure(
+                    benchmark="known_bad",
+                    framework=mode_lib.Framework.TORCH,
+                    reason="failure",
+                ),
+            ),
+        )
+    )
+    self.known_bad = (_make_spec("known_bad"), common.RunMode.EAGER_DEFAULT)
+    self.healthy = (_make_spec("healthy"), common.RunMode.EAGER_DEFAULT)
+
+  def _select(self, case_params, skip_behavior):
+    return cases.get_selected_cases(
+        case_params,
+        framework=mode_lib.Framework.TORCH,
+        device_kind=target_lib.DeviceKind.CPU,
+        skip_behavior=skip_behavior,
+    )
+
+  def test_skip_drops_skipped_cases(self):
+    self.assertEqual(
+        self._select([self.known_bad, self.healthy], "skip"), [self.healthy]
+    )
+
+  def test_run_skipped_keeps_only_skipped_cases(self):
+    self.assertEqual(
+        self._select([self.known_bad, self.healthy], "run_skipped"),
+        [self.known_bad],
+    )
+
+  def test_ignore_and_assert_raise_keep_every_case(self):
+    for skip_behavior in ("ignore", "assert_raise"):
+      with self.subTest(skip_behavior=skip_behavior):
+        self.assertEqual(
+            self._select([self.known_bad, self.healthy], skip_behavior),
+            [self.known_bad, self.healthy],
+        )
+
+  def test_empty_when_every_case_is_skipped(self):
+    self.assertEmpty(self._select([self.known_bad], "skip"))
+
+  def test_empty_when_no_case_is_skipped_with_run_skipped(self):
+    self.assertEmpty(self._select([self.healthy], "run_skipped"))
+
+
 if __name__ == "__main__":
   absltest.main()

@@ -14,7 +14,7 @@
 
 """Provides logic to resolve benchmark cases."""
 
-from typing import Iterator, Tuple
+from typing import Iterable, Iterator, Tuple
 
 from perflab import common
 from perflab import known_failures
@@ -59,3 +59,42 @@ def get_skip_reason(
   if mode.value in spec.skipped_run_modes:
     return f"Benchmark {spec.name} explicitly skips run mode {mode.value}"
   return None
+
+
+def get_selected_cases(
+    case_params: Iterable[tuple[registry_lib.BenchmarkSpec, common.RunMode]],
+    *,
+    framework: mode_lib.Framework,
+    device_kind: target_lib.DeviceKind,
+    skip_behavior: str,
+) -> list[tuple[registry_lib.BenchmarkSpec, common.RunMode]]:
+  """Returns the (spec, mode) cases that a run with `skip_behavior` executes.
+
+  Applies `--skip_behavior` to the reasons from `get_skip_reason` the same way
+  the benchmark binaries do: `skip` drops the skipped cases, `run_skipped` keeps
+  only them, and `ignore` and `assert_raise` keep every case. Skips that are
+  only known at run time (e.g. `UnsupportedBenchmark`) are not accounted for.
+
+  Args:
+    case_params: The (spec, mode) pairs generated for the binary.
+    framework: The framework the binary measures.
+    device_kind: The device kind the binary targets.
+    skip_behavior: The value of `--skip_behavior`.
+
+  Returns:
+    The selected (spec, mode) pairs, in input order.
+  """
+  selected = []
+  for spec, mode in case_params:
+    skipped = (
+        get_skip_reason(
+            spec, mode, framework=framework, device_kind=device_kind
+        )
+        is not None
+    )
+    if skip_behavior == "skip" and skipped:
+      continue
+    if skip_behavior == "run_skipped" and not skipped:
+      continue
+    selected.append((spec, mode))
+  return selected
