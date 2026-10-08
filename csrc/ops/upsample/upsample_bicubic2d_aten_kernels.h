@@ -24,6 +24,29 @@
 
 namespace torch_tpu {
 
+at::Tensor AtenUpsampleBicubic2d(const at::Tensor& self,
+                                 at::IntArrayRef output_size,
+                                 bool align_corners,
+                                 std::optional<double> scales_h,
+                                 std::optional<double> scales_w);
+
+at::Tensor AtenUpsampleBicubic2dAutograd(const at::Tensor& self,
+                                         at::IntArrayRef output_size,
+                                         bool align_corners,
+                                         std::optional<double> scales_h,
+                                         std::optional<double> scales_w);
+
+at::Tensor AtenUpsampleBicubic2dVecAutograd(
+    const at::Tensor& input, at::OptionalIntArrayRef output_size,
+    bool align_corners, std::optional<at::ArrayRef<double>> scale_factors);
+
+at::Tensor AtenUpsampleBicubic2dBackward(const at::Tensor& grad_output,
+                                         at::IntArrayRef output_size,
+                                         at::IntArrayRef input_size,
+                                         bool align_corners,
+                                         std::optional<double> scales_h,
+                                         std::optional<double> scales_w);
+
 at::Tensor& AtenUpsampleBicubic2dOut(const at::Tensor& self,
                                      at::IntArrayRef output_size,
                                      bool align_corners,

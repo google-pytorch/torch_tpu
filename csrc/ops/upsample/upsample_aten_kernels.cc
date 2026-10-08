@@ -24,10 +24,14 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "ATen/ops/upsample_bilinear2d.h"
+#include "ATen/ops/upsample_bilinear2d_backward.h"
 #include "absl/container/inlined_vector.h"
 #include "absl/functional/function_ref.h"
 #include "absl/status/statusor.h"
+#include "c10/core/DispatchKeySet.h"
 #include "c10/core/ScalarType.h"
+#include "c10/core/impl/LocalDispatchKeySet.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -39,6 +43,7 @@
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/binary.h"
 #include "csrc/ops/macros/kernel.h"
+#include "csrc/ops/nullary_aten_kernels.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -47,6 +52,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "torch/csrc/autograd/custom_function.h"
 
 // Upsample nearest interpolation for 1D, 2D and 3D tensors.
 // This implementation is based on creating a gather tensor from scaled iota
@@ -401,6 +407,58 @@ absl::StatusOr<mlir::MlirOp> AccumulateBilinearInterpolation(
 //     and weights.
 // Accumulation: Calls AccumulateBilinearInterpolation to combine the results.
 // kDimensions: The number of spatial dimensions (2 for bilinear 2d).
+// Builds the 1D linear interpolation weight matrix M of shape
+// [in_size, out_size] in `calc_type` for a spatial axis.
+absl::StatusOr<mlir::MlirOp> BuildBilinear1dWeightMatrix(
+    mlir::MlirBuilder& builder, int64_t out_size, int64_t in_size,
+    std::optional<double> scale_opt, bool align_corners, mlir::Type calc_type) {
+  TT_ASSIGN_OR_RETURN(auto src_idx,
+                      ComputeSourceIndex(builder, out_size, in_size, scale_opt,
+                                         align_corners, calc_type));
+  auto idx_floor_calc = mlir::stablehlo::Floor(src_idx);
+  auto one_calc = MakeConstant(builder, 1.0, calc_type, out_size);
+  TT_ASSIGN_OR_RETURN(auto idx_ceil_calc,
+                      BuildAddShlo(idx_floor_calc, one_calc));
+  TT_ASSIGN_OR_RETURN(auto lambda, BuildSubShlo(src_idx, idx_floor_calc));
+  TT_ASSIGN_OR_RETURN(auto w_floor, BuildSubShlo(one_calc, lambda));
+
+  auto i32_type = builder.getOpBuilder().getI32Type();
+  auto zero_i32 = MakeConstant(builder, 0, i32_type, out_size);
+  auto max_idx_i32 = MakeConstant(builder, std::max<int64_t>(0, in_size - 1),
+                                  i32_type, out_size);
+  auto idx_floor_unclamped =
+      mlir::stablehlo::ConvertElementType(idx_floor_calc, i32_type);
+  auto idx_ceil_unclamped =
+      mlir::stablehlo::ConvertElementType(idx_ceil_calc, i32_type);
+  auto idx_floor_i32 =
+      mlir::stablehlo::Clamp(zero_i32, idx_floor_unclamped, max_idx_i32);
+  auto idx_ceil_i32 =
+      mlir::stablehlo::Clamp(zero_i32, idx_ceil_unclamped, max_idx_i32);
+
+  auto mat_i32_type =
+      mlir::RankedTensorType::get({in_size, out_size}, i32_type);
+  auto mat_calc_type =
+      mlir::RankedTensorType::get({in_size, out_size}, calc_type);
+  auto row_iota = mlir::stablehlo::Iota(builder, mat_i32_type, 0);
+  auto zero_mat = MakeConstant(builder, 0.0, calc_type, {in_size, out_size});
+
+  auto b_idx_floor =
+      mlir::stablehlo::BroadcastInDim(mat_i32_type, idx_floor_i32, {1});
+  auto b_w_floor = mlir::stablehlo::BroadcastInDim(mat_calc_type, w_floor, {1});
+  auto mask_floor = mlir::stablehlo::Compare(
+      row_iota, b_idx_floor, mlir::stablehlo::ComparisonDirection::EQ);
+  auto term_floor = mlir::stablehlo::Select(mask_floor, b_w_floor, zero_mat);
+
+  auto b_idx_ceil =
+      mlir::stablehlo::BroadcastInDim(mat_i32_type, idx_ceil_i32, {1});
+  auto b_w_ceil = mlir::stablehlo::BroadcastInDim(mat_calc_type, lambda, {1});
+  auto mask_ceil = mlir::stablehlo::Compare(
+      row_iota, b_idx_ceil, mlir::stablehlo::ComparisonDirection::EQ);
+  auto term_ceil = mlir::stablehlo::Select(mask_ceil, b_w_ceil, zero_mat);
+
+  return BuildAddShlo(term_floor, term_ceil);
+}
+
 absl::StatusOr<mlir::MlirOp> BuildUpsampleBilinearShlo(
     mlir::MlirOp input, int num_dimensions, at::IntArrayRef output_shape,
     bool align_corners, const ScaleVector& scales_opt) {
@@ -412,15 +470,66 @@ absl::StatusOr<mlir::MlirOp> BuildUpsampleBilinearShlo(
   int64_t spatial_dim_size = num_dimensions;
   int64_t offset_dim_size = input_shape.size() - spatial_dim_size;
 
-  UpsampleGatherConfig gather_config =
-      GetUpsampleGatherConfig(input, spatial_dim_size);
+  bool all_identity = true;
+  for (int i = 0; i < spatial_dim_size; ++i) {
+    const int64_t out_size = output_shape[offset_dim_size + i];
+    const int64_t in_size = input_shape[offset_dim_size + i];
+    if (out_size != in_size ||
+        (scales_opt[i].has_value() && *scales_opt[i] != 1.0)) {
+      all_identity = false;
+      break;
+    }
+  }
+  if (all_identity) {
+    return input;
+  }
 
-  // Helper to compute source index and weight for a dimension.
   auto element_type = GetTensorTypeOrDie(input).getElementType();
   mlir::Type calc_type = builder.getOpBuilder().getF32Type();
   if (element_type.isF64()) {
     calc_type = builder.getOpBuilder().getF64Type();
   }
+
+  if (spatial_dim_size == 2 && input_shape.size() == 4 &&
+      !mlir::isa<mlir::ComplexType>(element_type)) {
+    const int64_t h_in = input_shape[2];
+    const int64_t w_in = input_shape[3];
+    const int64_t h_out = output_shape[2];
+    const int64_t w_out = output_shape[3];
+    if (h_in * h_out <= 262144 && w_in * w_out <= 262144) {
+      TT_ASSIGN_OR_RETURN(auto m_h, BuildBilinear1dWeightMatrix(
+                                        builder, h_out, h_in, scales_opt[0],
+                                        align_corners, calc_type));
+      TT_ASSIGN_OR_RETURN(auto m_w, BuildBilinear1dWeightMatrix(
+                                        builder, w_out, w_in, scales_opt[1],
+                                        align_corners, calc_type));
+      auto input_calc = mlir::stablehlo::ConvertElementType(input, calc_type);
+      auto dot_dims = mlir::stablehlo::DotDimensionNumbersAttr::get(
+          &builder.getContext(), /*lhs_batching_dimensions=*/{},
+          /*rhs_batching_dimensions=*/{}, /*lhs_contracting_dimensions=*/{2},
+          /*rhs_contracting_dimensions=*/{0});
+      auto precision_config = builder.getOpBuilder().getArrayAttr({
+          mlir::stablehlo::PrecisionAttr::get(
+              &builder.getContext(), mlir::stablehlo::Precision::HIGHEST),
+          mlir::stablehlo::PrecisionAttr::get(
+              &builder.getContext(), mlir::stablehlo::Precision::HIGHEST),
+      });
+      auto mid_type = mlir::RankedTensorType::get(
+          {input_shape[0], input_shape[1], w_in, h_out}, calc_type);
+      auto mid = mlir::stablehlo::DotGeneral(
+          mid_type, input_calc, m_h, dot_dims, precision_config,
+          mlir::stablehlo::DotAlgorithmAttr{});
+      auto out_calc_type = mlir::RankedTensorType::get(
+          {input_shape[0], input_shape[1], h_out, w_out}, calc_type);
+      auto out_calc = mlir::stablehlo::DotGeneral(
+          out_calc_type, mid, m_w, dot_dims, precision_config,
+          mlir::stablehlo::DotAlgorithmAttr{});
+      return mlir::stablehlo::ConvertElementType(out_calc, element_type);
+    }
+  }
+
+  UpsampleGatherConfig gather_config =
+      GetUpsampleGatherConfig(input, spatial_dim_size);
 
   std::vector<DimInfo> dim_infos;
   dim_infos.reserve(spatial_dim_size);
@@ -547,6 +656,59 @@ absl::StatusOr<mlir::MlirOp> BuildUpsampleBilinearBackwardShlo(
   mlir::Type calc_type = builder.getOpBuilder().getF32Type();
   if (element_type.isF64()) {
     calc_type = builder.getOpBuilder().getF64Type();
+  }
+
+  bool all_identity = true;
+  for (int i = 0; i < spatial_dim_size; ++i) {
+    const int64_t out_size = grad_output_shape[offset_dim_size + i];
+    const int64_t in_size = grad_input_shape[offset_dim_size + i];
+    if (out_size != in_size ||
+        (scales_opt[i].has_value() && *scales_opt[i] != 1.0)) {
+      all_identity = false;
+      break;
+    }
+  }
+  if (all_identity) {
+    return grad_output;
+  }
+
+  if (spatial_dim_size == 2 && grad_output_shape.size() == 4 &&
+      !mlir::isa<mlir::ComplexType>(element_type)) {
+    const int64_t h_in = grad_input_shape[2];
+    const int64_t w_in = grad_input_shape[3];
+    const int64_t h_out = grad_output_shape[2];
+    const int64_t w_out = grad_output_shape[3];
+    if (h_in * h_out <= 262144 && w_in * w_out <= 262144) {
+      TT_ASSIGN_OR_RETURN(auto m_h, BuildBilinear1dWeightMatrix(
+                                        builder, h_out, h_in, scales_opt[0],
+                                        align_corners, calc_type));
+      TT_ASSIGN_OR_RETURN(auto m_w, BuildBilinear1dWeightMatrix(
+                                        builder, w_out, w_in, scales_opt[1],
+                                        align_corners, calc_type));
+      auto grad_out_calc =
+          mlir::stablehlo::ConvertElementType(grad_output, calc_type);
+      auto dot_dims = mlir::stablehlo::DotDimensionNumbersAttr::get(
+          &builder.getContext(), /*lhs_batching_dimensions=*/{},
+          /*rhs_batching_dimensions=*/{}, /*lhs_contracting_dimensions=*/{2},
+          /*rhs_contracting_dimensions=*/{1});
+      auto precision_config = builder.getOpBuilder().getArrayAttr({
+          mlir::stablehlo::PrecisionAttr::get(
+              &builder.getContext(), mlir::stablehlo::Precision::HIGHEST),
+          mlir::stablehlo::PrecisionAttr::get(
+              &builder.getContext(), mlir::stablehlo::Precision::HIGHEST),
+      });
+      auto mid_type = mlir::RankedTensorType::get(
+          {grad_output_shape[0], grad_output_shape[1], w_out, h_in}, calc_type);
+      auto mid = mlir::stablehlo::DotGeneral(
+          mid_type, grad_out_calc, m_h, dot_dims, precision_config,
+          mlir::stablehlo::DotAlgorithmAttr{});
+      auto grad_in_calc_type = mlir::RankedTensorType::get(
+          {grad_input_shape[0], grad_input_shape[1], h_in, w_in}, calc_type);
+      auto grad_in_calc = mlir::stablehlo::DotGeneral(
+          grad_in_calc_type, mid, m_w, dot_dims, precision_config,
+          mlir::stablehlo::DotAlgorithmAttr{});
+      return mlir::stablehlo::ConvertElementType(grad_in_calc, element_type);
+    }
   }
 
   std::vector<DimInfo> dim_infos;
@@ -792,6 +954,60 @@ void CheckUpsampleDtypes(const at::Tensor& tensor) {
                  error::kPythonNotImplementedError)
       << "not implemented for " << ToString(tensor.scalar_type());
 }
+
+Dimensions Compute2dOutputSizeFromVec(
+    at::IntArrayRef input_sizes, at::OptionalIntArrayRef output_size,
+    std::optional<at::ArrayRef<double>> scale_factors,
+    std::optional<double>& scale_h, std::optional<double>& scale_w) {
+  if (scale_factors.has_value() && scale_factors->size() == 2) {
+    scale_h = (*scale_factors)[0];
+    scale_w = (*scale_factors)[1];
+  } else {
+    scale_h = std::nullopt;
+    scale_w = std::nullopt;
+  }
+  if (output_size.has_value() && output_size->size() == 2) {
+    return {(*output_size)[0], (*output_size)[1]};
+  }
+  return {static_cast<int64_t>(
+              std::floor(static_cast<double>(input_sizes[2]) * (*scale_h))),
+          static_cast<int64_t>(
+              std::floor(static_cast<double>(input_sizes[3]) * (*scale_w)))};
+}
+
+struct UpsampleBilinear2dAutogradNode
+    : public torch::autograd::Function<UpsampleBilinear2dAutogradNode> {
+  static at::Tensor forward(torch::autograd::AutogradContext* ctx,
+                            const at::Tensor& self, at::IntArrayRef output_size,
+                            bool align_corners, std::optional<double> scales_h,
+                            std::optional<double> scales_w) {
+    c10::impl::ExcludeDispatchKeyGuard guard(c10::autograd_dispatch_keyset);
+    ctx->saved_data["output_size"] = output_size.vec();
+    ctx->saved_data["input_size"] = self.sizes().vec();
+    ctx->saved_data["align_corners"] = align_corners;
+    ctx->saved_data["scales_h"] = scales_h;
+    ctx->saved_data["scales_w"] = scales_w;
+    return at::_ops::upsample_bilinear2d::call(
+        self, c10::fromIntArrayRefSlow(output_size), align_corners, scales_h,
+        scales_w);
+  }
+
+  static torch::autograd::variable_list backward(
+      torch::autograd::AutogradContext* ctx,
+      torch::autograd::variable_list grad_outputs) {
+    c10::impl::ExcludeDispatchKeyGuard guard(c10::autograd_dispatch_keyset);
+    const auto output_size = ctx->saved_data["output_size"].toIntVector();
+    const auto input_size = ctx->saved_data["input_size"].toIntVector();
+    const bool align_corners = ctx->saved_data["align_corners"].toBool();
+    const auto scales_h = ctx->saved_data["scales_h"].toOptional<double>();
+    const auto scales_w = ctx->saved_data["scales_w"].toOptional<double>();
+    at::Tensor grad_input = at::_ops::upsample_bilinear2d_backward::call(
+        grad_outputs[0], c10::fromIntArrayRefSlow(output_size),
+        c10::fromIntArrayRefSlow(input_size), align_corners, scales_h,
+        scales_w);
+    return {grad_input, at::Tensor(), at::Tensor(), at::Tensor(), at::Tensor()};
+  }
+};
 
 }  // namespace
 
@@ -1103,6 +1319,113 @@ at::Tensor& AtenUpsampleNearestExact3dBackwardGradInput(
 //
 // We calculate weights based on how close (u, v) is to these integer points
 // and sum up the 4 weighted corner values.
+at::Tensor AtenUpsampleBilinear2d(const at::Tensor& self,
+                                  at::IntArrayRef output_size,
+                                  bool align_corners,
+                                  std::optional<double> scales_h,
+                                  std::optional<double> scales_w) {
+  TT_KERNEL(
+      OpName::kUpsampleBilinear2d, param_keys,
+      (self, output_size, align_corners, scales_h, scales_w), {
+        TORCH_CHECK(output_size.size() == 2,
+                    "It is expected output_size equals to 2, but got size ",
+                    output_size.size());
+        TORCH_CHECK(self.dim() == 4,
+                    "It is expected input_size equals to 4, but got size ",
+                    self.dim());
+        CheckUpsampleDtypes(self);
+        const Dimensions out_dims = {self.size(0), self.size(1), output_size[0],
+                                     output_size[1]};
+        if (self.numel() == 0 || output_size[0] == 0 || output_size[1] == 0) {
+          return AtenEfficientZeroTensor(out_dims, self.scalar_type(),
+                                         std::nullopt, self.device(),
+                                         std::nullopt);
+        }
+        TT_ASSIGN_OR_THROW(const auto element_type,
+                           ConvertTo<mlir::ElementType>(self.scalar_type()));
+        auto op_builder =
+            [out_dims, align_corners, scales_h,
+             scales_w](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
+          return BuildUpsampleBilinearShlo(input, /*num_dimensions=*/2,
+                                           out_dims, align_corners,
+                                           {scales_h, scales_w});
+        };
+        TT_ASSIGN_OR_THROW(
+            auto out_buf,
+            (DispatchOp<1>(std::move(op_builder), {self},
+                           {.out_dtype = element_type,
+                            .out_dims = out_dims,
+                            .op_param_cache_keys = std::move(param_keys)})));
+        return MakeTensor(std::move(out_buf), self.device().index());
+      });
+}
+
+at::Tensor AtenUpsampleBilinear2dAutograd(const at::Tensor& self,
+                                          at::IntArrayRef output_size,
+                                          bool align_corners,
+                                          std::optional<double> scales_h,
+                                          std::optional<double> scales_w) {
+  return UpsampleBilinear2dAutogradNode::apply(self, output_size, align_corners,
+                                               scales_h, scales_w);
+}
+
+at::Tensor AtenUpsampleBilinear2dVecAutograd(
+    const at::Tensor& input, at::OptionalIntArrayRef output_size,
+    bool align_corners, std::optional<at::ArrayRef<double>> scale_factors) {
+  std::optional<double> scale_h;
+  std::optional<double> scale_w;
+  const Dimensions osize = Compute2dOutputSizeFromVec(
+      input.sizes(), output_size, scale_factors, scale_h, scale_w);
+  return at::upsample_bilinear2d(input, osize, align_corners, scale_h, scale_w);
+}
+
+at::Tensor AtenUpsampleBilinear2dBackward(const at::Tensor& grad_output,
+                                          at::IntArrayRef output_size,
+                                          at::IntArrayRef input_size,
+                                          bool align_corners,
+                                          std::optional<double> scales_h,
+                                          std::optional<double> scales_w) {
+  TT_KERNEL(
+      OpName::kUpsampleBilinear2dBackward, param_keys,
+      (grad_output, output_size, input_size, align_corners, scales_h, scales_w),
+      {
+        TORCH_CHECK(output_size.size() == 2,
+                    "It is expected output_size equals to 2, but got size ",
+                    output_size.size());
+        TORCH_CHECK(input_size.size() == 4,
+                    "It is expected input_size equals to 4, but got size ",
+                    input_size.size());
+        TORCH_CHECK(grad_output.dim() == 4,
+                    "Expected grad_output to be a tensor of dimension 4 but "
+                    "got: dimension ",
+                    grad_output.dim());
+        const Dimensions grad_in_dims = CopyIntVector(input_size);
+        if (grad_output.numel() == 0 || grad_in_dims[2] == 0 ||
+            grad_in_dims[3] == 0) {
+          return AtenEfficientZeroTensor(
+              grad_in_dims, grad_output.scalar_type(), std::nullopt,
+              grad_output.device(), std::nullopt);
+        }
+        TT_ASSIGN_OR_THROW(
+            const auto element_type,
+            ConvertTo<mlir::ElementType>(grad_output.scalar_type()));
+        auto op_builder =
+            [grad_in_dims, align_corners, scales_h,
+             scales_w](mlir::MlirOp grad_out) -> absl::StatusOr<mlir::MlirOp> {
+          return BuildUpsampleBilinearBackwardShlo(
+              grad_out, /*num_dimensions=*/2, grad_in_dims, align_corners,
+              {scales_h, scales_w});
+        };
+        TT_ASSIGN_OR_THROW(
+            auto grad_in_buf,
+            (DispatchOp<1>(std::move(op_builder), {grad_output},
+                           {.out_dtype = element_type,
+                            .out_dims = grad_in_dims,
+                            .op_param_cache_keys = std::move(param_keys)})));
+        return MakeTensor(std::move(grad_in_buf), grad_output.device().index());
+      });
+}
+
 at::Tensor& AtenUpsampleBilinear2dOut(const at::Tensor& self,
                                       at::IntArrayRef upsample_shape,
                                       bool align_corners,

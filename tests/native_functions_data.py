@@ -545,6 +545,14 @@ REGISTRATION_OVERRIDES = frozenset([
     # split_with_sizes_copy.out is used by PyTorch's FSDP2 wrapper. The default
     # decomposition performs 2-d reshapes that are inefficient on TPU.
     'split_with_sizes_copy.out',
+    # Register 2D bilinear and bicubic upsample overloads directly on TPU to
+    # bypass Python gather decompositions and lower via separable DotGeneral.
+    'upsample_bicubic2d',
+    'upsample_bicubic2d.vec',
+    'upsample_bicubic2d_backward',
+    'upsample_bilinear2d',
+    'upsample_bilinear2d.vec',
+    'upsample_bilinear2d_backward',
     # zeros and zeros_like are registered directly to lower to a single
     # StableHLO constant instead of the composite empty + zero_ double dispatch.
     'zeros',

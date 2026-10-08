@@ -23,11 +23,15 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "ATen/ops/upsample_bicubic2d.h"
+#include "ATen/ops/upsample_bicubic2d_backward.h"
 #include "absl/container/inlined_vector.h"
 #include "absl/functional/function_ref.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "c10/core/DispatchKeySet.h"
 #include "c10/core/ScalarType.h"
+#include "c10/core/impl/LocalDispatchKeySet.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -49,6 +53,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "torch/csrc/autograd/custom_function.h"
 #include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
@@ -397,6 +402,56 @@ absl::StatusOr<mlir::MlirOp> AccumulateBicubicInterpolation(
   return accumulated_result;
 }
 
+absl::StatusOr<mlir::MlirOp> BuildBicubic1dWeightMatrix(
+    mlir::MlirBuilder& builder, int64_t out_size, int64_t in_size,
+    std::optional<double> scale_opt, bool align_corners, mlir::Type calc_type) {
+  TT_ASSIGN_OR_RETURN(auto src_idx, ComputeBicubicSourceIndex(
+                                        builder, out_size, in_size, scale_opt,
+                                        align_corners, calc_type));
+  auto idx_floor_calc = mlir::stablehlo::Floor(src_idx);
+  auto one_calc = MakeConstant(builder, 1.0, calc_type, {out_size});
+  auto two_calc = MakeConstant(builder, 2.0, calc_type, {out_size});
+  TT_ASSIGN_OR_RETURN(auto lambda, BuildSubShlo(src_idx, idx_floor_calc));
+
+  auto i32_type = builder.getOpBuilder().getI32Type();
+  auto zero_i32 = MakeConstant(builder, 0, i32_type, {out_size});
+  auto max_idx_i32 = MakeConstant(builder, std::max<int64_t>(0, in_size - 1),
+                                  i32_type, {out_size});
+  auto mat_i32_type =
+      mlir::RankedTensorType::get({in_size, out_size}, i32_type);
+  auto mat_calc_type =
+      mlir::RankedTensorType::get({in_size, out_size}, calc_type);
+  auto row_iota = mlir::stablehlo::Iota(builder, mat_i32_type, 0);
+  auto zero_mat = MakeConstant(builder, 0.0, calc_type, {in_size, out_size});
+
+  const TapIndex taps[4] = {TapIndex::kTap0, TapIndex::kTap1, TapIndex::kTap2,
+                            TapIndex::kTap3};
+  mlir::MlirOp mat;
+  for (int i = 0; i < 4; ++i) {
+    TT_ASSIGN_OR_RETURN(
+        auto dist, ComputeTapDistance(taps[i], lambda, one_calc, two_calc));
+    TT_ASSIGN_OR_RETURN(
+        auto w, ComputeTapWeight(builder, taps[i], dist, calc_type, out_size));
+    TT_ASSIGN_OR_RETURN(auto raw_idx, ComputeTapOffset(taps[i], idx_floor_calc,
+                                                       one_calc, two_calc));
+    auto raw_idx_i32 = mlir::stablehlo::ConvertElementType(raw_idx, i32_type);
+    auto idx_clamped =
+        mlir::stablehlo::Clamp(zero_i32, raw_idx_i32, max_idx_i32);
+    auto b_idx =
+        mlir::stablehlo::BroadcastInDim(mat_i32_type, idx_clamped, {1});
+    auto b_w = mlir::stablehlo::BroadcastInDim(mat_calc_type, w, {1});
+    auto mask = mlir::stablehlo::Compare(
+        row_iota, b_idx, mlir::stablehlo::ComparisonDirection::EQ);
+    auto term = mlir::stablehlo::Select(mask, b_w, zero_mat);
+    if (i == 0) {
+      mat = term;
+    } else {
+      TT_ASSIGN_OR_RETURN(mat, BuildAddShlo(mat, term));
+    }
+  }
+  return mat;
+}
+
 absl::StatusOr<mlir::MlirOp> BuildUpsampleBicubic2dShlo(
     mlir::MlirOp input, const Dimensions& output_shape, bool align_corners,
     const ScaleVector& scales_opt, mlir::Type calc_type) {
@@ -405,8 +460,59 @@ absl::StatusOr<mlir::MlirOp> BuildUpsampleBicubic2dShlo(
   const int64_t spatial_dim_size = 2;
   const int64_t offset_dim_size = input_shape.size() - spatial_dim_size;
 
-  BicubicGatherConfig gather_config = GetBicubicGatherConfig(input);
+  bool all_identity = true;
+  for (int i = 0; i < spatial_dim_size; ++i) {
+    const int64_t out_size = output_shape[offset_dim_size + i];
+    const int64_t in_size = input_shape[offset_dim_size + i];
+    if (out_size != in_size ||
+        (scales_opt[i].has_value() && *scales_opt[i] != 1.0)) {
+      all_identity = false;
+      break;
+    }
+  }
+  if (all_identity) {
+    return input;
+  }
+
   auto element_type = GetTensorTypeOrDie(input).getElementType();
+  if (input_shape.size() == 4 && !mlir::isa<mlir::ComplexType>(element_type)) {
+    const int64_t h_in = input_shape[2];
+    const int64_t w_in = input_shape[3];
+    const int64_t h_out = output_shape[2];
+    const int64_t w_out = output_shape[3];
+    if (h_in * h_out <= 262144 && w_in * w_out <= 262144) {
+      TT_ASSIGN_OR_RETURN(auto m_h, BuildBicubic1dWeightMatrix(
+                                        builder, h_out, h_in, scales_opt[0],
+                                        align_corners, calc_type));
+      TT_ASSIGN_OR_RETURN(auto m_w, BuildBicubic1dWeightMatrix(
+                                        builder, w_out, w_in, scales_opt[1],
+                                        align_corners, calc_type));
+      auto input_calc = mlir::stablehlo::ConvertElementType(input, calc_type);
+      auto dot_dims = mlir::stablehlo::DotDimensionNumbersAttr::get(
+          &builder.getContext(), /*lhs_batching_dimensions=*/{},
+          /*rhs_batching_dimensions=*/{}, /*lhs_contracting_dimensions=*/{2},
+          /*rhs_contracting_dimensions=*/{0});
+      auto precision_config = builder.getOpBuilder().getArrayAttr({
+          mlir::stablehlo::PrecisionAttr::get(
+              &builder.getContext(), mlir::stablehlo::Precision::HIGHEST),
+          mlir::stablehlo::PrecisionAttr::get(
+              &builder.getContext(), mlir::stablehlo::Precision::HIGHEST),
+      });
+      auto mid_type = mlir::RankedTensorType::get(
+          {input_shape[0], input_shape[1], w_in, h_out}, calc_type);
+      auto mid = mlir::stablehlo::DotGeneral(
+          mid_type, input_calc, m_h, dot_dims, precision_config,
+          mlir::stablehlo::DotAlgorithmAttr{});
+      auto out_calc_type = mlir::RankedTensorType::get(
+          {input_shape[0], input_shape[1], h_out, w_out}, calc_type);
+      auto out_calc = mlir::stablehlo::DotGeneral(
+          out_calc_type, mid, m_w, dot_dims, precision_config,
+          mlir::stablehlo::DotAlgorithmAttr{});
+      return mlir::stablehlo::ConvertElementType(out_calc, element_type);
+    }
+  }
+
+  BicubicGatherConfig gather_config = GetBicubicGatherConfig(input);
 
   // Prepare broadcast and calc types for spatial index/weight vectors.
   absl::InlinedVector<BicubicDimInfo, 2> dim_infos;
@@ -520,6 +626,59 @@ absl::StatusOr<mlir::MlirOp> BuildUpsampleBicubic2dBackwardShlo(
 
   auto element_type = GetTensorTypeOrDie(grad_output).getElementType();
 
+  bool all_identity = true;
+  for (int i = 0; i < spatial_dim_size; ++i) {
+    const int64_t out_size = grad_output_shape[offset_dim_size + i];
+    const int64_t in_size = grad_input_shape[offset_dim_size + i];
+    if (out_size != in_size ||
+        (scales_opt[i].has_value() && *scales_opt[i] != 1.0)) {
+      all_identity = false;
+      break;
+    }
+  }
+  if (all_identity) {
+    return grad_output;
+  }
+
+  if (grad_output_shape.size() == 4 &&
+      !mlir::isa<mlir::ComplexType>(element_type)) {
+    const int64_t h_in = grad_input_shape[2];
+    const int64_t w_in = grad_input_shape[3];
+    const int64_t h_out = grad_output_shape[2];
+    const int64_t w_out = grad_output_shape[3];
+    if (h_in * h_out <= 262144 && w_in * w_out <= 262144) {
+      TT_ASSIGN_OR_RETURN(auto m_h, BuildBicubic1dWeightMatrix(
+                                        builder, h_out, h_in, scales_opt[0],
+                                        align_corners, calc_type));
+      TT_ASSIGN_OR_RETURN(auto m_w, BuildBicubic1dWeightMatrix(
+                                        builder, w_out, w_in, scales_opt[1],
+                                        align_corners, calc_type));
+      auto grad_out_calc =
+          mlir::stablehlo::ConvertElementType(grad_output, calc_type);
+      auto dot_dims = mlir::stablehlo::DotDimensionNumbersAttr::get(
+          &builder.getContext(), /*lhs_batching_dimensions=*/{},
+          /*rhs_batching_dimensions=*/{}, /*lhs_contracting_dimensions=*/{2},
+          /*rhs_contracting_dimensions=*/{1});
+      auto precision_config = builder.getOpBuilder().getArrayAttr({
+          mlir::stablehlo::PrecisionAttr::get(
+              &builder.getContext(), mlir::stablehlo::Precision::HIGHEST),
+          mlir::stablehlo::PrecisionAttr::get(
+              &builder.getContext(), mlir::stablehlo::Precision::HIGHEST),
+      });
+      auto mid_type = mlir::RankedTensorType::get(
+          {grad_output_shape[0], grad_output_shape[1], w_out, h_in}, calc_type);
+      auto mid = mlir::stablehlo::DotGeneral(
+          mid_type, grad_out_calc, m_h, dot_dims, precision_config,
+          mlir::stablehlo::DotAlgorithmAttr{});
+      auto grad_in_calc_type = mlir::RankedTensorType::get(
+          {grad_input_shape[0], grad_input_shape[1], h_in, w_in}, calc_type);
+      auto grad_in_calc = mlir::stablehlo::DotGeneral(
+          grad_in_calc_type, mid, m_w, dot_dims, precision_config,
+          mlir::stablehlo::DotAlgorithmAttr{});
+      return mlir::stablehlo::ConvertElementType(grad_in_calc, element_type);
+    }
+  }
+
   // Prepare broadcast and calc types for spatial coordinate vectors.
   absl::InlinedVector<BicubicDimInfo, 2> dim_infos;
   dim_infos.reserve(spatial_dim_size);
@@ -585,7 +744,181 @@ void CheckUpsampleDtypes(const at::Tensor& tensor) {
       << "not implemented for " << ToString(tensor.scalar_type());
 }
 
+Dimensions ComputeBicubic2dOutputSizeFromVec(
+    at::IntArrayRef input_sizes, at::OptionalIntArrayRef output_size,
+    std::optional<at::ArrayRef<double>> scale_factors,
+    std::optional<double>& scale_h, std::optional<double>& scale_w) {
+  if (scale_factors.has_value() && scale_factors->size() == 2) {
+    scale_h = (*scale_factors)[0];
+    scale_w = (*scale_factors)[1];
+  } else {
+    scale_h = std::nullopt;
+    scale_w = std::nullopt;
+  }
+  if (output_size.has_value() && output_size->size() == 2) {
+    return {(*output_size)[0], (*output_size)[1]};
+  }
+  return {static_cast<int64_t>(
+              std::floor(static_cast<double>(input_sizes[2]) * (*scale_h))),
+          static_cast<int64_t>(
+              std::floor(static_cast<double>(input_sizes[3]) * (*scale_w)))};
+}
+
+struct UpsampleBicubic2dAutogradNode
+    : public torch::autograd::Function<UpsampleBicubic2dAutogradNode> {
+  static at::Tensor forward(torch::autograd::AutogradContext* ctx,
+                            const at::Tensor& self, at::IntArrayRef output_size,
+                            bool align_corners, std::optional<double> scales_h,
+                            std::optional<double> scales_w) {
+    c10::impl::ExcludeDispatchKeyGuard guard(c10::autograd_dispatch_keyset);
+    ctx->saved_data["output_size"] = output_size.vec();
+    ctx->saved_data["input_size"] = self.sizes().vec();
+    ctx->saved_data["align_corners"] = align_corners;
+    ctx->saved_data["scales_h"] = scales_h;
+    ctx->saved_data["scales_w"] = scales_w;
+    return at::_ops::upsample_bicubic2d::call(
+        self, c10::fromIntArrayRefSlow(output_size), align_corners, scales_h,
+        scales_w);
+  }
+
+  static torch::autograd::variable_list backward(
+      torch::autograd::AutogradContext* ctx,
+      torch::autograd::variable_list grad_outputs) {
+    c10::impl::ExcludeDispatchKeyGuard guard(c10::autograd_dispatch_keyset);
+    const auto output_size = ctx->saved_data["output_size"].toIntVector();
+    const auto input_size = ctx->saved_data["input_size"].toIntVector();
+    const bool align_corners = ctx->saved_data["align_corners"].toBool();
+    const auto scales_h = ctx->saved_data["scales_h"].toOptional<double>();
+    const auto scales_w = ctx->saved_data["scales_w"].toOptional<double>();
+    at::Tensor grad_input = at::_ops::upsample_bicubic2d_backward::call(
+        grad_outputs[0], c10::fromIntArrayRefSlow(output_size),
+        c10::fromIntArrayRefSlow(input_size), align_corners, scales_h,
+        scales_w);
+    return {grad_input, at::Tensor(), at::Tensor(), at::Tensor(), at::Tensor()};
+  }
+};
+
 }  // namespace
+
+at::Tensor AtenUpsampleBicubic2d(const at::Tensor& self,
+                                 at::IntArrayRef output_size,
+                                 bool align_corners,
+                                 std::optional<double> scales_h,
+                                 std::optional<double> scales_w) {
+  TT_KERNEL(
+      OpName::kUpsampleBicubic2d, param_keys,
+      (self, output_size, align_corners, scales_h, scales_w), {
+        TORCH_CHECK(output_size.size() == 2,
+                    "It is expected output_size equals to 2, but got size ",
+                    output_size.size());
+        TORCH_CHECK(self.dim() == 4,
+                    "It is expected input_size equals to 4, but got size ",
+                    self.dim());
+        CheckUpsampleDtypes(self);
+        const Dimensions out_dims = {self.size(0), self.size(1), output_size[0],
+                                     output_size[1]};
+        if (self.numel() == 0 || output_size[0] == 0 || output_size[1] == 0) {
+          return AtenEfficientZeroTensor(out_dims, self.scalar_type(),
+                                         std::nullopt, self.device(),
+                                         std::nullopt);
+        }
+        TT_ASSIGN_OR_THROW(const auto element_type,
+                           ConvertTo<mlir::ElementType>(self.scalar_type()));
+        const at::ScalarType real_dtype =
+            c10::toRealValueType(self.scalar_type());
+        auto op_builder =
+            [out_dims, align_corners, scales_h, scales_w,
+             real_dtype](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
+          mlir::Type calc_type =
+              (real_dtype == at::kDouble)
+                  ? input.getBuilder().getOpBuilder().getF64Type()
+                  : input.getBuilder().getOpBuilder().getF32Type();
+          return BuildUpsampleBicubic2dShlo(input, out_dims, align_corners,
+                                            {scales_h, scales_w}, calc_type);
+        };
+        TT_ASSIGN_OR_THROW(
+            auto out_buf,
+            (DispatchOp<1>(std::move(op_builder), {self},
+                           {.out_dtype = element_type,
+                            .out_dims = out_dims,
+                            .op_param_cache_keys = std::move(param_keys)})));
+        return MakeTensor(std::move(out_buf), self.device().index());
+      });
+}
+
+at::Tensor AtenUpsampleBicubic2dAutograd(const at::Tensor& self,
+                                         at::IntArrayRef output_size,
+                                         bool align_corners,
+                                         std::optional<double> scales_h,
+                                         std::optional<double> scales_w) {
+  return UpsampleBicubic2dAutogradNode::apply(self, output_size, align_corners,
+                                              scales_h, scales_w);
+}
+
+at::Tensor AtenUpsampleBicubic2dVecAutograd(
+    const at::Tensor& input, at::OptionalIntArrayRef output_size,
+    bool align_corners, std::optional<at::ArrayRef<double>> scale_factors) {
+  std::optional<double> scale_h;
+  std::optional<double> scale_w;
+  const Dimensions osize = ComputeBicubic2dOutputSizeFromVec(
+      input.sizes(), output_size, scale_factors, scale_h, scale_w);
+  return at::upsample_bicubic2d(input, osize, align_corners, scale_h, scale_w);
+}
+
+at::Tensor AtenUpsampleBicubic2dBackward(const at::Tensor& grad_output,
+                                         at::IntArrayRef output_size,
+                                         at::IntArrayRef input_size,
+                                         bool align_corners,
+                                         std::optional<double> scales_h,
+                                         std::optional<double> scales_w) {
+  TT_KERNEL(
+      OpName::kUpsampleBicubic2dBackward, param_keys,
+      (grad_output, IgnoreInCacheKey(output_size, "Unused"), input_size,
+       align_corners, scales_h, scales_w),
+      {
+        TORCH_CHECK(output_size.size() == 2,
+                    "It is expected output_size equals to 2, but got size ",
+                    output_size.size());
+        TORCH_CHECK(input_size.size() == 4,
+                    "It is expected input_size equals to 4, but got size ",
+                    input_size.size());
+        TORCH_CHECK(grad_output.dim() == 4,
+                    "Expected grad_output to be a tensor of dimension 4 but "
+                    "got: dimension ",
+                    grad_output.dim());
+        const Dimensions grad_in_dims = CopyIntVector(input_size);
+        CheckUpsampleDtypes(grad_output);
+        if (grad_output.numel() == 0 || grad_in_dims[2] == 0 ||
+            grad_in_dims[3] == 0) {
+          return AtenEfficientZeroTensor(
+              grad_in_dims, grad_output.scalar_type(), std::nullopt,
+              grad_output.device(), std::nullopt);
+        }
+        TT_ASSIGN_OR_THROW(
+            const auto element_type,
+            ConvertTo<mlir::ElementType>(grad_output.scalar_type()));
+        const at::ScalarType real_dtype =
+            c10::toRealValueType(grad_output.scalar_type());
+        auto op_builder =
+            [grad_in_dims, align_corners, scales_h, scales_w, real_dtype](
+                mlir::MlirOp grad_out) -> absl::StatusOr<mlir::MlirOp> {
+          mlir::Type calc_type =
+              (real_dtype == at::kDouble)
+                  ? grad_out.getBuilder().getOpBuilder().getF64Type()
+                  : grad_out.getBuilder().getOpBuilder().getF32Type();
+          return BuildUpsampleBicubic2dBackwardShlo(
+              grad_out, grad_in_dims, align_corners, {scales_h, scales_w},
+              calc_type);
+        };
+        TT_ASSIGN_OR_THROW(
+            auto grad_in_buf,
+            (DispatchOp<1>(std::move(op_builder), {grad_output},
+                           {.out_dtype = element_type,
+                            .out_dims = grad_in_dims,
+                            .op_param_cache_keys = std::move(param_keys)})));
+        return MakeTensor(std::move(grad_in_buf), grad_output.device().index());
+      });
+}
 
 at::Tensor& AtenUpsampleBicubic2dOut(const at::Tensor& self,
                                      at::IntArrayRef output_size,

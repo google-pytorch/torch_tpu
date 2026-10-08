@@ -837,10 +837,16 @@ enum class OpName {
   kUnsqueezeCopyOut,
   kUnsqueeze_,
   kUntypedStorageResize_,
+  kUpsampleBicubic2d,
+  kUpsampleBicubic2dBackward,
   kUpsampleBicubic2dBackwardGradInput,
   kUpsampleBicubic2dOut,
+  kUpsampleBicubic2dVec,
+  kUpsampleBilinear2d,
+  kUpsampleBilinear2dBackward,
   kUpsampleBilinear2dBackwardGradInput,
   kUpsampleBilinear2dOut,
+  kUpsampleBilinear2dVec,
   kUpsampleLinear1dOut,
   kUpsampleNearest1dBackwardGradInput,
   kUpsampleNearest1dOut,
@@ -2514,14 +2520,26 @@ ToString(  // NOLINT(google-readability-function-size)
       return "unsqueeze_";
     case OpName::kUntypedStorageResize_:
       return "untyped_storage_resize_";
+    case OpName::kUpsampleBicubic2d:
+      return "upsample_bicubic2d";
+    case OpName::kUpsampleBicubic2dBackward:
+      return "upsample_bicubic2d_backward";
     case OpName::kUpsampleBicubic2dBackwardGradInput:
       return "upsample_bicubic2d_backward.grad_input";
     case OpName::kUpsampleBicubic2dOut:
       return "upsample_bicubic2d.out";
+    case OpName::kUpsampleBicubic2dVec:
+      return "upsample_bicubic2d.vec";
+    case OpName::kUpsampleBilinear2d:
+      return "upsample_bilinear2d";
+    case OpName::kUpsampleBilinear2dBackward:
+      return "upsample_bilinear2d_backward";
     case OpName::kUpsampleBilinear2dBackwardGradInput:
       return "upsample_bilinear2d_backward.grad_input";
     case OpName::kUpsampleBilinear2dOut:
       return "upsample_bilinear2d.out";
+    case OpName::kUpsampleBilinear2dVec:
+      return "upsample_bilinear2d.vec";
     case OpName::kUpsampleLinear1dOut:
       return "upsample_linear1d.out";
     case OpName::kUpsampleNearest1dBackwardGradInput:

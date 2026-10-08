@@ -56,6 +56,29 @@ at::Tensor& AtenUpsampleNearestExact3dBackwardGradInput(
     std::optional<double> scale_w, std::optional<double> scale_d,
     at::Tensor& grad_input);
 
+at::Tensor AtenUpsampleBilinear2d(const at::Tensor& self,
+                                  at::IntArrayRef output_size,
+                                  bool align_corners,
+                                  std::optional<double> scales_h,
+                                  std::optional<double> scales_w);
+
+at::Tensor AtenUpsampleBilinear2dAutograd(const at::Tensor& self,
+                                          at::IntArrayRef output_size,
+                                          bool align_corners,
+                                          std::optional<double> scales_h,
+                                          std::optional<double> scales_w);
+
+at::Tensor AtenUpsampleBilinear2dVecAutograd(
+    const at::Tensor& input, at::OptionalIntArrayRef output_size,
+    bool align_corners, std::optional<at::ArrayRef<double>> scale_factors);
+
+at::Tensor AtenUpsampleBilinear2dBackward(const at::Tensor& grad_output,
+                                          at::IntArrayRef output_size,
+                                          at::IntArrayRef input_size,
+                                          bool align_corners,
+                                          std::optional<double> scales_h,
+                                          std::optional<double> scales_w);
+
 at::Tensor& AtenUpsampleBilinear2dOut(const at::Tensor& self,
                                       at::IntArrayRef upsample_shape,
                                       bool align_corners,

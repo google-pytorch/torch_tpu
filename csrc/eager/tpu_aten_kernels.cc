@@ -1077,12 +1077,22 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kUnique2>(m, AtenUnique2);
   ImplStable<OpName::kUniqueConsecutive>(m, AtenUniqueConsecutive);
   ImplStable<OpName::kUniqueDimConsecutive>(m, AtenUniqueDimConsecutive);
+  ImplStable<OpName::kUpsampleBicubic2d>(m, AtenUpsampleBicubic2d);
+  ImplStable<OpName::kUpsampleBicubic2dBackward>(m,
+                                                 AtenUpsampleBicubic2dBackward);
   ImplStable<OpName::kUpsampleBicubic2dBackwardGradInput>(
       m, AtenUpsampleBicubic2dBackwardGradInput);
   ImplStable<OpName::kUpsampleBicubic2dOut>(m, AtenUpsampleBicubic2dOut);
+  ImplStable<OpName::kUpsampleBicubic2dVec>(m,
+                                            AtenUpsampleBicubic2dVecAutograd);
+  ImplStable<OpName::kUpsampleBilinear2d>(m, AtenUpsampleBilinear2d);
+  ImplStable<OpName::kUpsampleBilinear2dBackward>(
+      m, AtenUpsampleBilinear2dBackward);
   ImplStable<OpName::kUpsampleBilinear2dBackwardGradInput>(
       m, AtenUpsampleBilinear2dBackwardGradInput);
   ImplStable<OpName::kUpsampleBilinear2dOut>(m, AtenUpsampleBilinear2dOut);
+  ImplStable<OpName::kUpsampleBilinear2dVec>(m,
+                                             AtenUpsampleBilinear2dVecAutograd);
   ImplStable<OpName::kUpsampleLinear1dOut>(m, AtenUpsampleLinear1dOut);
   ImplStable<OpName::kUpsampleNearest1dBackwardGradInput>(
       m, AtenUpsampleNearest1dBackwardGradInput);
@@ -1251,6 +1261,12 @@ TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
                                                   AtenRepeatInterleaveAutograd);
   ImplStable<OpName::kRmsNorm>(m, AtenRmsNormAutograd);
   ImplStable<OpName::kSiluBackward>(m, AtenSiluBackwardAutograd);
+  ImplStable<OpName::kUpsampleBicubic2d>(m, AtenUpsampleBicubic2dAutograd);
+  ImplStable<OpName::kUpsampleBicubic2dVec>(m,
+                                            AtenUpsampleBicubic2dVecAutograd);
+  ImplStable<OpName::kUpsampleBilinear2d>(m, AtenUpsampleBilinear2dAutograd);
+  ImplStable<OpName::kUpsampleBilinear2dVec>(m,
+                                             AtenUpsampleBilinear2dVecAutograd);
   // go/keep-sorted end
 }
 
