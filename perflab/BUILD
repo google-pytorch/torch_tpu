@@ -93,6 +93,7 @@ torch_tpu_py_library(
     testonly = True,
     srcs = ["base_test.py"],
     deps = [
+        ":cases",
         ":common",
         ":export",
         ":flags",

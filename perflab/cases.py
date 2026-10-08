@@ -14,6 +14,8 @@
 
 """Provides logic to resolve benchmark cases."""
 
+import hashlib
+import os
 from typing import Iterator, Tuple
 
 from perflab import common
@@ -23,17 +25,44 @@ from perflab import registry as registry_lib
 from perflab import target as target_lib
 
 
+def _case_order_key(name: str, seed: str) -> str:
+  """Returns a deterministic hash key for ordering benchmark cases."""
+  payload = f"{seed}:{name}" if seed else name
+  return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def get_cases(
     platform: target_lib.Platform,
     framework: mode_lib.Framework,
+    *,
+    order_seed: str | None = None,
 ) -> Iterator[Tuple[str, registry_lib.BenchmarkSpec, common.RunMode]]:
   """One case per (benchmark, applicable mode).
 
   The mode matrix is resolved here, at collection, so generated cases match the
   cell exactly: a CPU run never emits an eager_optimized case just to skip it.
+  Ordering uses a deterministic hash (seeded by TORCH_TPU_BENCHMARK_ORDER_SEED
+  when set) so all shards agree on the partition without alphabetical tail bias.
+
+  Args:
+    platform: Target hardware platform on which the benchmarks will run.
+    framework: Execution framework (e.g. TORCH or TORCHAX) filtering modes.
+    order_seed: Seed string used for deterministic benchmark ordering; falls
+      back to the TORCH_TPU_BENCHMARK_ORDER_SEED environment variable if None.
+
+  Yields:
+    Tuples of (case_name, spec, run_mode) in deterministic hashed order.
   """
+  if order_seed is None:
+    order_seed = os.environ.get(  # PY_ENVIRON_OK=benchmark
+        "TORCH_TPU_BENCHMARK_ORDER_SEED", ""
+    )
   target_kind = target_lib.make_target(platform).device_kind
-  for name in sorted(registry_lib.REGISTRY):
+  ordered_names = sorted(
+      registry_lib.REGISTRY,
+      key=lambda name: _case_order_key(name, order_seed),
+  )
+  for name in ordered_names:
     spec = registry_lib.REGISTRY[name]
     for mode in mode_lib.modes_for(framework, target_kind):
       yield f"{spec.name}_{mode.value}", spec, mode

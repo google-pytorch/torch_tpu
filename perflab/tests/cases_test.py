@@ -14,6 +14,7 @@
 
 """Tests for perflab/cases.py."""
 
+import os
 from typing import Any
 from unittest import mock
 
@@ -93,6 +94,70 @@ class GetSkipReasonTest(seed_test_utils.RepeatableTest):
         ),
         "Benchmark healthy explicitly skips run mode compiled",
     )
+
+  def test_get_cases_deterministic_across_shards_and_permuted_by_seed(self):
+    fake_registry = {
+        name: _make_spec(name)
+        for name in ("alpha", "bravo", "charlie", "delta", "echo", "foxtrot")
+    }
+    with mock.patch.dict(registry_lib.REGISTRY, fake_registry, clear=True):
+      seed_a_first = [
+          name
+          for name, _, _ in cases.get_cases(
+              target_lib.Platform.CPU,
+              mode_lib.Framework.TORCH,
+              order_seed="cl_1001",
+          )
+      ]
+      seed_a_second = [
+          name
+          for name, _, _ in cases.get_cases(
+              target_lib.Platform.CPU,
+              mode_lib.Framework.TORCH,
+              order_seed="cl_1001",
+          )
+      ]
+      seed_b = [
+          name
+          for name, _, _ in cases.get_cases(
+              target_lib.Platform.CPU,
+              mode_lib.Framework.TORCH,
+              order_seed="cl_1002",
+          )
+      ]
+      self.assertEqual(seed_a_first, seed_a_second)
+      self.assertCountEqual(seed_a_first, seed_b)
+      self.assertNotEqual(seed_a_first, seed_b)
+
+  def test_get_cases_uses_env_seed_when_order_seed_omitted(self):
+    fake_registry = {
+        name: _make_spec(name)
+        for name in ("alpha", "bravo", "charlie", "delta", "echo", "foxtrot")
+    }
+    with (
+        mock.patch.dict(registry_lib.REGISTRY, fake_registry, clear=True),
+        mock.patch.dict(
+            os.environ,  # PY_ENVIRON_OK=test
+            {"TORCH_TPU_BENCHMARK_ORDER_SEED": "cl_1001"},
+            clear=False,
+        ),
+    ):
+      from_env = [
+          name
+          for name, _, _ in cases.get_cases(
+              target_lib.Platform.CPU,
+              mode_lib.Framework.TORCH,
+          )
+      ]
+      explicit = [
+          name
+          for name, _, _ in cases.get_cases(
+              target_lib.Platform.CPU,
+              mode_lib.Framework.TORCH,
+              order_seed="cl_1001",
+          )
+      ]
+      self.assertEqual(from_env, explicit)
 
 
 if __name__ == "__main__":

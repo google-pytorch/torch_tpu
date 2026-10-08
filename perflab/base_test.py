@@ -56,6 +56,7 @@ from absl import flags
 from absl import logging
 from absl.testing import absltest
 from torch_tpu._internal.distributed import multiprocessing
+from perflab import cases
 from perflab import common
 from perflab import export as export_lib
 from perflab import flags as flags_lib
@@ -291,6 +292,32 @@ class BaseBenchmarkTest(
         and not flags_lib.DRY_RUN.value
     )
 
+  def _get_parent_skip_reason(self) -> str | None:
+    """Returns skip reason if the test method can be skipped without spawning a child.
+
+    Returns:
+      The human-readable skip reason string if the test should be skipped in the
+      parent process, or None if the test should execute.
+    """
+    params = self.case_params.get(self._testMethodName)
+    if params is None:
+      return None
+    spec, mode = params
+    skip_reason = cases.get_skip_reason(
+        spec,
+        mode,
+        framework=self.framework,
+        device_kind=target_lib.make_target(self.platform).device_kind,
+    )
+    if flags_lib.SKIP_BEHAVIOR.value == "skip":
+      return skip_reason
+    if flags_lib.SKIP_BEHAVIOR.value == "run_skipped" and skip_reason is None:
+      return (
+          f"Benchmark {spec.name} is not skipped for run mode {mode.value},"
+          " skipping due to skip_behavior=run_skipped"
+      )
+    return None
+
   def run(self, result=None):
     """Runs the test method in a child process and records its outcome.
 
@@ -316,6 +343,11 @@ class BaseBenchmarkTest(
 
     result.startTest(self)
     try:
+      skip_reason = self._get_parent_skip_reason()
+      if skip_reason is not None:
+        _record(result, self, Outcome.SKIPPED, skip_reason)
+        return result
+
       outcome, detail, payload = run_isolated(
           self.__class__,
           self._testMethodName,
