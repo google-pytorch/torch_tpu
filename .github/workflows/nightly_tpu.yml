@@ -97,9 +97,41 @@ jobs:
           # TEST_TARGETS is a space-separated target list that must word-split,
           # and this runs under `sh`, so a bash array is not an option.
           # shellcheck disable=SC2086
-          bazel build --config=ci_tpu_nightly --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" ${TEST_TARGETS}
+          bazel build --config=ci_tpu_nightly --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" --build_event_json_file="${RUNNER_TEMP}/bazel_bep_build.json" ${TEST_TARGETS}
           # shellcheck disable=SC2086
-          bazel test --config=ci_tpu_nightly --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" ${TEST_TARGETS}
+          bazel test --config=ci_tpu_nightly --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" --build_event_json_file="${RUNNER_TEMP}/bazel_bep.json" ${TEST_TARGETS}
+      # Export per-target test results for the ML Velocity CI/CD dashboard.
+      # Telemetry must never fail the job, hence `continue-on-error`.
+      - name: Export Test Results to BigQuery
+        if: always() && github.event_name != 'pull_request'
+        continue-on-error: true
+        env:
+          JOB_NAME: ${{ matrix.job_info.runner }}
+          RUNNER_LABEL: ${{ matrix.job_info.runner }}
+        run: >-
+          python3 ./ci/tools/export_bazel_test_results.py
+          --bep_file="${RUNNER_TEMP}/bazel_bep.json"
+          --output="${RUNNER_TEMP}/bazel_test_results.ndjson"
+          --job_name="${JOB_NAME}"
+          --runner_label="${RUNNER_LABEL}"
+          --bazel_config=ci_tpu_nightly
+          --bq_table=ml-velocity-actions-telemetry:ml_velocity.bazel_test_results
+      # Export per-invocation build metrics for the ML Velocity CI/CD dashboard.
+      - name: Export Bazel Invocation Metrics to BigQuery
+        if: always() && github.event_name != 'pull_request'
+        continue-on-error: true
+        env:
+          JOB_NAME: ${{ matrix.job_info.runner }}
+          RUNNER_LABEL: ${{ matrix.job_info.runner }}
+        run: >-
+          python3 -m ci.tools.export_bazel_invocation_metrics
+          --bep_file="${RUNNER_TEMP}/bazel_bep_build.json"
+          --bep_file="${RUNNER_TEMP}/bazel_bep.json"
+          --output="${RUNNER_TEMP}/bazel_invocations.ndjson"
+          --job_name="${JOB_NAME}"
+          --runner_label="${RUNNER_LABEL}"
+          --bazel_config=ci_tpu_nightly
+          --bq_table=ml-velocity-actions-telemetry:ml_velocity.bazel_invocations
 
 # TODO(b/558939987): consider re-enabling failure notifications
 # once OSS builds stabilize.
