@@ -329,6 +329,7 @@ torch_tpu_py_test(
 
 torch_tpu_py_test(
     name = "collective_errors_test",
+    timeout = "long",
     srcs = ["collective_errors_test.py"],
     args = [
         "--test_mode=tpu",
@@ -357,6 +358,7 @@ torch_tpu_py_test(
 
 torch_tpu_py_test(
     name = "collective_errors_test_cov",
+    timeout = "long",
     srcs = ["collective_errors_test.py"],
     args = [
         "--test_mode=cov",
@@ -413,6 +415,7 @@ torch_tpu_py_test(
 
 torch_tpu_py_test(
     name = "alltoall_collective_errors_test",
+    timeout = "long",
     srcs = ["alltoall_collective_errors_test.py"],
     args = [
         "--test_mode=tpu",
@@ -439,6 +442,7 @@ torch_tpu_py_test(
 
 torch_tpu_py_test(
     name = "alltoall_collective_errors_test_cov",
+    timeout = "long",
     srcs = ["alltoall_collective_errors_test.py"],
     args = [
         "--test_mode=cov",
