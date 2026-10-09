@@ -26,7 +26,6 @@ from absl.testing import absltest
 import torch
 import torch.multiprocessing as mp
 from torch_tpu._internal.utils import annotations
-from torch_tpu._internal.utils import hardware
 from torch_tpu._internal.distributed import multiprocessing
 from tests import accelerator_test_utils
 from tests import seed_test_utils
@@ -144,8 +143,11 @@ class MultiProcessTest(seed_test_utils.MultiProcessRepeatableTest):
       # `accelerator_test_utils.get_tpu_device_count()`. On 8-chip TPU v5e
       # hosts, libtpu cannot reliably build a 4-process sub-slice: which chip
       # numbers form a physical 2x2 block varies from host to host. On 4-chip
-      # hosts this spawns 4 workers.
-      return hardware.get_tpu_device_count()
+      # hosts this spawns 4 workers. Before the TPU runtime is initialized,
+      # `torch.accelerator.device_count()` counts the TPU devices on the PCI bus
+      # instead of initializing the runtime in this process, which would keep
+      # the workers from claiming the devices.
+      return torch.accelerator.device_count()
     return min(torch.cuda.device_count(), 2)
 
   def _run_distributed(

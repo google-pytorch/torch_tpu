@@ -21,7 +21,6 @@ from unittest import mock
 from absl.testing import absltest
 from absl.testing import flagsaver
 from absl.testing import parameterized
-import torch
 from tests import error_testing as et
 from tests import seed_test_utils
 
@@ -185,68 +184,6 @@ class ErrorTestingTest(seed_test_utils.RepeatableTest):
           " errors_test.py.",
       ):
         test_instance.setUp()
-
-  def test_is_sparsecore_supported_cpu(self):
-    """Tests that is_sparsecore_supported returns False when not on TPU."""
-    self.addCleanup(et.is_sparsecore_supported.cache_clear)
-    et.is_sparsecore_supported.cache_clear()
-    with mock.patch.object(et, "is_on_tpu", return_value=False):
-      self.assertFalse(et.is_sparsecore_supported())
-
-  @parameterized.named_parameters(
-      {"testcase_name": "v6e", "device_kind": "TPU v6e", "expected": True},
-      {
-          "testcase_name": "v6_lite",
-          "device_kind": "TPU v6 lite",
-          "expected": True,
-      },
-      {"testcase_name": "v5p", "device_kind": "TPU v5p", "expected": True},
-      {"testcase_name": "v5e", "device_kind": "TPU v5e", "expected": False},
-      {
-          "testcase_name": "v5_lite",
-          "device_kind": "TPU v5 lite",
-          "expected": False,
-      },
-      {"testcase_name": "v4", "device_kind": "TPU v4", "expected": False},
-      {
-          "testcase_name": "v4_lite",
-          "device_kind": "TPU v4 lite",
-          "expected": False,
-      },
-      {"testcase_name": "v3", "device_kind": "TPU v3", "expected": False},
-      {"testcase_name": "v2", "device_kind": "TPU v2", "expected": False},
-      {"testcase_name": "cpu", "device_kind": "cpu", "expected": False},
-      {"testcase_name": "none", "device_kind": None, "expected": False},
-  )
-  def test_is_sparsecore_supported_device_kinds(self, device_kind, expected):
-    """Tests is_sparsecore_supported for different device kinds."""
-    self.addCleanup(et.is_sparsecore_supported.cache_clear)
-    et.is_sparsecore_supported.cache_clear()
-    mock_module = mock.MagicMock()
-    mock_module._get_local_device_attributes.return_value = {
-        "device_kind": device_kind
-    }
-    with mock.patch.object(
-        et, "is_on_tpu", return_value=True
-    ), mock.patch.object(
-        torch.accelerator, "is_available", return_value=True
-    ), mock.patch.object(
-        torch, "get_device_module", return_value=mock_module
-    ):
-      self.assertEqual(et.is_sparsecore_supported(), expected)
-
-  def test_is_sparsecore_supported_exception(self):
-    """Tests that is_sparsecore_supported returns False on unexpected error."""
-    self.addCleanup(et.is_sparsecore_supported.cache_clear)
-    et.is_sparsecore_supported.cache_clear()
-    with mock.patch.object(
-        et, "is_on_tpu", return_value=True
-    ), mock.patch.object(
-        torch.accelerator, "is_available", return_value=True
-    ), mock.patch.object(
-        torch, "get_device_module", side_effect=RuntimeError("PJRT not ready")
-    ):
-      self.assertFalse(et.is_sparsecore_supported())
 
 
 class ErrorTestBaseTest(seed_test_utils.RepeatableTest):

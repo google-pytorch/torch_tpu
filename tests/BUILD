@@ -413,7 +413,6 @@ torch_tpu_py_library(
         "//shims/torch:testing_internal",
         "//src/torch_tpu/_internal/compile",
         "//src/torch_tpu/_internal/compiler_options",
-        "//src/torch_tpu/_internal/device:_device_ops_backend",
         "//src/torch_tpu/_internal/utils",
         "//src/torch_tpu/_internal/utils:test_utils",
         "@pypi//pyyaml",
@@ -1266,7 +1265,6 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",
         "//src/torch_tpu/_internal/device_utils:annotations",
-        "//src/torch_tpu/_internal/utils:hardware",
         "@pypi//numpy",
     ],
 )
@@ -1349,7 +1347,6 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
-        "//src/torch_tpu/_internal/utils:hardware",
     ],
 )
 
@@ -2059,7 +2056,6 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/utils:annotations",
-        "//src/torch_tpu/_internal/utils:hardware",
         "//tests/distributed:distributed_utils",
     ],
 )
@@ -2086,7 +2082,6 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/utils:annotations",
-        "//src/torch_tpu/_internal/utils:hardware",
         "//tests/distributed:distributed_utils",
     ],
 )

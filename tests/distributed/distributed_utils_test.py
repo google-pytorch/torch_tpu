@@ -209,8 +209,8 @@ class DistributedUtilsTest(seed_test_utils.MultiProcessRepeatableTest):
         )
       return None
 
-    # Pretend a 2-chip single host so that `dist_run` bootstraps the TPU launch
-    # environment, while pinning the topology so no real TPU is required.
+    # Pretend a TPU host so that `dist_run` bootstraps the TPU launch
+    # environment, while pinning a 2-chip topology so no real TPU is required.
     with (
         mock.patch.dict(
             os.environ,
@@ -220,7 +220,7 @@ class DistributedUtilsTest(seed_test_utils.MultiProcessRepeatableTest):
             },
         ),
         mock.patch.object(
-            distributed_utils.hardware, "get_tpu_device_count", return_value=2
+            distributed_utils, "_has_tpu_devices", return_value=True
         ),
         mock.patch.object(mp, "spawn", side_effect=mock_spawn),
     ):
@@ -240,12 +240,12 @@ class DistributedUtilsTest(seed_test_utils.MultiProcessRepeatableTest):
           os.environ["TORCH_TPU_TOPOLOGY"],
       ))
 
-    # Pretend an 8-device single host so that `dist_run` bootstraps the TPU
-    # launch environment without a real TPU.
+    # Pretend a TPU host so that `dist_run` bootstraps the TPU launch
+    # environment without a real TPU.
     with (
         mock.patch.dict(os.environ),
         mock.patch.object(
-            distributed_utils.hardware, "get_tpu_device_count", return_value=8
+            distributed_utils, "_has_tpu_devices", return_value=True
         ),
         mock.patch.object(
             distributed_utils.hardware,
@@ -272,7 +272,7 @@ class DistributedUtilsTest(seed_test_utils.MultiProcessRepeatableTest):
     with (
         mock.patch.dict(os.environ, {"TORCH_TPU_TOPOLOGY": "1,2,1"}),
         mock.patch.object(
-            distributed_utils.hardware, "get_tpu_device_count", return_value=2
+            distributed_utils, "_has_tpu_devices", return_value=True
         ),
         mock.patch.object(mp, "spawn", side_effect=mock_spawn),
     ):
@@ -280,6 +280,24 @@ class DistributedUtilsTest(seed_test_utils.MultiProcessRepeatableTest):
       distributed_utils.dist_run(2, lambda: None)
 
     self.assertEqual(seen_topologies, ["1,2,1"])
+
+  def test_dist_run_does_not_take_other_accelerators_for_tpus(self) -> None:
+    """Verifies that e.g. the GPUs of a GPU run don't count as TPU devices."""
+    with (
+        mock.patch.dict(os.environ),
+        mock.patch.object(
+            torch.accelerator,
+            "current_accelerator",
+            return_value=torch.device("cuda"),
+        ),
+        mock.patch.object(torch.accelerator, "device_count", return_value=2),
+        mock.patch.object(mp, "spawn") as mock_spawn,
+    ):
+      os.environ.pop("TORCH_TPU_SLICEBUILDER_ADDRESSES", None)
+      distributed_utils.dist_run(2, lambda: None)
+
+      self.assertNotIn("TORCH_TPU_SLICEBUILDER_ADDRESSES", os.environ)
+    mock_spawn.assert_called_once()
 
   def test_dist_run_retries_and_succeeds_with_real_socket_collision(
       self,

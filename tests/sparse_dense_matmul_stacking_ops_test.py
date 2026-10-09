@@ -18,7 +18,6 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import torch
 import torch.nn.functional as F
-from torch_tpu._internal.utils import hardware
 from tests import op_testing
 
 
@@ -232,7 +231,7 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
     torch.manual_seed(42)
 
     # 2 features; per-SC batch size is feature_bs // num_sc.
-    num_sc = hardware.get_num_sparse_cores_per_device()
+    num_sc = torch.tpu.get_device_properties().sparse_cores_per_device
     per_feature_batch_sizes = [16, 16]
     stacked_batch_size = 32
 
@@ -280,7 +279,7 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
     device = torch.device("tpu")
     torch.manual_seed(42)
 
-    num_sc = hardware.get_num_sparse_cores_per_device()
+    num_sc = torch.tpu.get_device_properties().sparse_cores_per_device
     stacked_batch_size = 32
 
     grads_cpu = [
@@ -322,7 +321,7 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
   ):
     device = torch.device("tpu")
     torch.manual_seed(42)
-    num_sc = hardware.get_num_sparse_cores_per_device()
+    num_sc = torch.tpu.get_device_properties().sparse_cores_per_device
 
     stacked_activations_cpu = torch.randn(
         32, stacked_dim, dtype=torch.float32, requires_grad=True
@@ -381,7 +380,7 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
     """Verifies backward pass when downstream loss only uses a subset of features."""
     device = torch.device("tpu")
     torch.manual_seed(42)
-    num_sc = hardware.get_num_sparse_cores_per_device()
+    num_sc = torch.tpu.get_device_properties().sparse_cores_per_device
 
     stacked_cpu = torch.randn(
         32, stacked_dim, dtype=torch.float32, requires_grad=True

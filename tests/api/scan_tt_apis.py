@@ -1728,6 +1728,17 @@ def _public_apis_md_markers(stage: Stage) -> Tuple[str, str]:
   )
 
 
+def _wrap_md_list_item(line: str) -> str:
+  """Wraps a `public_apis.md` list item like mdformat."""
+  return textwrap.fill(
+      line,
+      width=80,
+      subsequent_indent="    ",
+      break_long_words=False,
+      break_on_hyphens=False,
+  )
+
+
 def _format_public_api_md_item(item: ApiEntry) -> str:
   """Returns the `public_apis.md` list item for a public API."""
   name, accessor = split_property_accessor(item.name)
@@ -1741,14 +1752,14 @@ def _format_public_api_md_item(item: ApiEntry) -> str:
       # An upstream PyTorch API, e.g. in `torch.accelerator`, that PyTorch
       # deprecated.
       line += " (deprecated by PyTorch)"
-      return line
+      return _wrap_md_list_item(line)
     if not item.deprecated_in:
       raise ValueError(
           f"{item.name} is deprecated, but the scanner can't tell in which"
           " TorchTPU version."
       )
     line += f" (deprecated in TorchTPU {item.deprecated_in})"
-  return line
+  return _wrap_md_list_item(line)
 
 
 def _format_internal_apis_md_list(all_items: Sequence[ApiEntry]) -> str:
@@ -1784,16 +1795,7 @@ def _format_internal_apis_md_list(all_items: Sequence[ApiEntry]) -> str:
       line += f" ({accessor})"
     if item.prefer:
       line += f": use `{item.prefer}` instead"
-    # Wrap like mdformat, which formats `public_apis.md`.
-    lines.extend(
-        textwrap.wrap(
-            line,
-            width=80,
-            subsequent_indent="    ",
-            break_long_words=False,
-            break_on_hyphens=False,
-        )
-    )
+    lines.append(_wrap_md_list_item(line))
   return "\n".join(lines)
 
 

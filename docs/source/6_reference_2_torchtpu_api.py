@@ -60,7 +60,7 @@ def _(mo):
     | `torch.cuda.set_device(rank)` | `torch.accelerator.set_device_index(rank)` | Sets the active TPU device index for the current process. |
     | `torch.cuda.device(rank)` | `torch.accelerator.device_index(rank)` | Context manager that temporarily sets the active device index. |
     | `torch.cuda.get_device_name(device=None)` | `torch.tpu.get_device_name(device=None)` | Returns the human-readable model name of the attached TPU (e.g., `"TPU v6e"`). |
-    | `torch.cuda.get_device_properties(device=None)` | `torch.tpu.get_device_properties(device=None)` | Returns static TPU device properties (including `name`, `total_memory`, and `multi_processor_count`). |
+    | `torch.cuda.get_device_properties(device=None)` | `torch.tpu.get_device_properties(device=None)` | Returns static TPU device properties (including `name`, `devices_per_chip`, `hbm_bytes_per_chip`, `hbm_bytes_per_device`, `bf16_flops_per_chip`, `bf16_flops_per_device`, `sparse_cores_per_device`, and `sparse_core_simd_width`). |
 
     The `torch.accelerator` APIs in this table require PyTorch 2.11 or later. In the rare case that you use an older PyTorch version, use the corresponding `torch.tpu` API instead (for example `torch.tpu.device_count()` or `torch.tpu.current_device()`). In PyTorch 2.11 and later, those redundant `torch.tpu` APIs are internal to TorchTPU, and calling them directly from user code raises an error.
     """)
@@ -260,6 +260,8 @@ def _(mo):
     | `torch.tpu.pallas.jax_op(name, fn=None, ...)` | Registers a JAX/Pallas function as a traceable PyTorch custom operator. |
 
     #### **SparseCore Embedding Operators**
+
+    These operators require a TPU with SparseCores. Use `torch.tpu.is_sparsecore_supported()` to check whether the attached TPU has SparseCores, and the `sparse_cores_per_device` and `sparse_core_simd_width` properties of `torch.tpu.get_device_properties()` for their number and SIMD width.
 
     | API | Description |
     | :--- | :--- |

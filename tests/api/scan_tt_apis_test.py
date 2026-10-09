@@ -1580,6 +1580,13 @@ class ScanTtApisTest(seed_test_utils.RepeatableTest):
         _public_api("torch.tpu.op", Stage.EXPERIMENTAL),
         _public_api("torch.tpu.mode getter", Stage.STABLE),
         _public_api("torch.tpu.old_op", Stage.DEPRECATED),
+        dataclasses.replace(
+            _public_api(
+                "torch.tpu.get_device_properties.total_memory getter",
+                Stage.DEPRECATED,
+            ),
+            deprecated_in="0.2.1",
+        ),
         _public_api("torch.tpu.unknown_op"),
         _public_api("torch.tpu.internal_op", Stage.INTERNAL),
         dataclasses.replace(
@@ -1667,6 +1674,8 @@ class ScanTtApisTest(seed_test_utils.RepeatableTest):
             ### Python APIs
 
             *   `torch.accelerator.current_device_idx` (deprecated by PyTorch)
+            *   `torch.tpu.get_device_properties.total_memory` (getter) (deprecated in
+                TorchTPU 0.2.1)
             *   `torch.tpu.old_op` (deprecated in TorchTPU 2.14)
 
             ### Environment Variables

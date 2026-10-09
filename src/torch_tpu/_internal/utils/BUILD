@@ -56,17 +56,22 @@ torch_tpu_py_library(
 torch_tpu_py_library(
     name = "hardware",
     srcs = ["hardware.py"],
-    deps = ["@pypi//immutabledict"],
+    deps = [
+        ":annotations",
+        "@pypi//immutabledict",
+    ],
 )
 
 torch_tpu_py_test(
     name = "hardware_test",
     srcs = ["hardware_test.py"],
     deps = [
+        ":annotations",
         ":hardware",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
         "//src/torch_tpu",
+        "//tests:op_testing",
         "//tests:seed_test_utils",
     ],
 )

@@ -155,6 +155,7 @@ _PUBLIC_MODULES: Mapping[str, ModuleSpec] = {
             "initial_seed": _tpu_attr("initial_seed"),
             "is_available": _tpu_attr("is_available"),
             "is_initialized": _tpu_attr("is_initialized"),
+            "is_sparsecore_supported": _tpu_attr("is_sparsecore_supported"),
             "manual_seed": _tpu_attr("manual_seed"),
             "manual_seed_all": _tpu_attr("manual_seed_all"),
             "precision": _tpu_attr("precision"),

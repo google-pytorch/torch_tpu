@@ -84,33 +84,6 @@ def is_on_gpu() -> bool:
   return device().type == "cuda"
 
 
-_SPARSECORE_UNSUPPORTED_DEVICE_KINDS = frozenset({
-    "TPU v5 lite",
-    "TPU v5e",
-    "TPU v4",
-    "TPU v4 lite",
-    "TPU v3",
-    "TPU v2",
-    "cpu",
-})
-
-
-@functools.lru_cache(maxsize=1)
-def is_sparsecore_supported() -> bool:
-  """Returns True if the current device environment supports SparseCore."""
-  if not is_on_tpu() or not torch.accelerator.is_available():
-    return False
-
-  try:
-    attrs = getattr(
-        torch.get_device_module("tpu"), "_get_local_device_attributes"
-    )()
-    kind = attrs.get("device_kind")
-    return kind is not None and kind not in _SPARSECORE_UNSUPPORTED_DEVICE_KINDS
-  except Exception:  # pylint: disable=broad-exception-caught
-    return False
-
-
 # Matches a source location in the format of "file:line: ...".
 _SOURCE_LOC_RE = re.compile(r"([/\w\.]+:\d+):.*")
 

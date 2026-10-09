@@ -2939,7 +2939,7 @@ module {
   def test_sparse_gather_unsupported_device_without_sparse_core(self):
     # TODO(b/563396617): Pin tpu_errors_test to TPU v5 in OSS CI or isolate
     # SparseCore-unsupported error tests to prevent test coverage loss.
-    if et.is_sparsecore_supported():
+    if torch.tpu.is_sparsecore_supported():
       self.skipTest("SparseCore is supported on this TPU device.")
     device = et.device()
     row_pointers = torch.tensor([0, 8], dtype=torch.int32, device=device)
@@ -3412,7 +3412,7 @@ module {
   def test_sparse_map_row_unsupported_device_without_sparse_core(self):
     # TODO(b/563396617): Pin tpu_errors_test to TPU v5 in OSS CI or isolate
     # SparseCore-unsupported error tests to prevent test coverage loss.
-    if et.is_sparsecore_supported():
+    if torch.tpu.is_sparsecore_supported():
       self.skipTest("SparseCore is supported on this TPU device.")
     device = et.device()
     dummy = torch.empty(8, dtype=torch.int32, device=device)

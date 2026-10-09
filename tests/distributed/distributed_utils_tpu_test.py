@@ -27,7 +27,6 @@ import os
 from absl.testing import absltest
 import torch
 import torch.multiprocessing as mp
-from torch_tpu._internal.utils import hardware
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
 from tests.distributed import distributed_utils
@@ -86,7 +85,7 @@ class DistributedUtilsTpuTest(seed_test_utils.MultiProcessRepeatableTest):
   @classmethod
   def setUpClass(cls):
     super().setUpClass()
-    device_count = hardware.get_tpu_device_count()
+    device_count = torch.accelerator.device_count()
     if device_count < _TPU_NPROC:
       raise AssertionError(
           f"expected at least {_TPU_NPROC} TPU devices, got {device_count}"

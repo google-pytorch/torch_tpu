@@ -127,8 +127,16 @@ process. Use it at your own risk. Using it triggers a one-time warning.
 *   `torch.tpu.get_amp_supported_dtype`
 *   `torch.tpu.get_device_name`
 *   `torch.tpu.get_device_properties`
-*   `torch.tpu.get_device_properties.multi_processor_count`
+*   `torch.tpu.get_device_properties.bf16_flops_per_chip`
+*   `torch.tpu.get_device_properties.bf16_flops_per_device`
+*   `torch.tpu.get_device_properties.devices_per_chip`
+*   `torch.tpu.get_device_properties.hbm_bytes_per_chip`
+*   `torch.tpu.get_device_properties.hbm_bytes_per_device`
+*   `torch.tpu.get_device_properties.name`
+*   `torch.tpu.get_device_properties.sparse_core_simd_width`
+*   `torch.tpu.get_device_properties.sparse_cores_per_device`
 *   `torch.tpu.is_initialized`
+*   `torch.tpu.is_sparsecore_supported`
 *   `torch.tpu.manual_seed`
 *   `torch.tpu.manual_seed_all`
 *   `torch.tpu.ops.align_jagged_to_multiple`
@@ -219,6 +227,10 @@ PyTorch deprecation policy instead.
 
 *   `torch.accelerator.current_device_idx` (deprecated by PyTorch)
 *   `torch.accelerator.set_device_idx` (deprecated by PyTorch)
+*   `torch.tpu.get_device_properties.multi_processor_count` (getter) (deprecated
+    in TorchTPU 0.2.1)
+*   `torch.tpu.get_device_properties.total_memory` (getter) (deprecated in
+    TorchTPU 0.2.1)
 *   `torch.tpu.topology_aware_mesh` (deprecated in TorchTPU 0.2.0)
 
 <!-- END GENERATED: Deprecated APIs -->
