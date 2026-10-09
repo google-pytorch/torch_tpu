@@ -380,6 +380,29 @@ TEST(EnvironmentDeathTest, InitDistEnvLeavesMegascalePortsUnsetForSingleSlice) {
               "ports=unset,unset");
 }
 
+// Runs InitializeDistributedEnvironment(config) in a death test child and
+// prints the resulting SKIP_MEGASCALE_PJRT_CLIENT to stderr as
+// "skip=<SKIP_MEGASCALE_PJRT_CLIENT>" for EXPECT_EXIT to match.
+void InitAndPrintSkipMegascale(const DistributedWorkerConfiguration& config) {
+  unsetenv(kSkipMegascalePjrtClientEnvVar);
+  if (!InitializeDistributedEnvironment(config).ok()) _exit(1);
+  const char* const skip = std::getenv(kSkipMegascalePjrtClientEnvVar);
+  std::fprintf(stderr, "skip=%s\n", skip ? skip : "unset");
+  _exit(0);
+}
+
+TEST(EnvironmentDeathTest, InitDistEnvSkipsMegascaleClientForSingleSlice) {
+  DistributedWorkerConfiguration config = MultisliceConfig(/*local_rank=*/3);
+  config.world_size = 8;
+  EXPECT_EXIT(InitAndPrintSkipMegascale(config), ExitedWithCode(0),
+              "skip=true");
+}
+
+TEST(EnvironmentDeathTest, InitDistEnvKeepsMegascaleClientForMultislice) {
+  EXPECT_EXIT(InitAndPrintSkipMegascale(MultisliceConfig(/*local_rank=*/3)),
+              ExitedWithCode(0), "skip=unset");
+}
+
 TEST(EnvironmentDeathTest,
      InitDistEnv_FallsBackOnMalformedTpuVisibleDevicesEnvVar) {
   EXPECT_EXIT(
