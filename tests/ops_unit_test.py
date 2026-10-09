@@ -23267,6 +23267,89 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
     self.assertIn("tensor<131072x1xf32>", mlir_text)
     self.assertNotIn("tensor<2048x64xf32>", mlir_text)
 
+  def test_nonzero_i32_sorting(self) -> None:
+    # Verifies nonzero index sorting and output size reduction in i32 for
+    # tensors that fit within 32-bit bounds, comparing eager and compiled
+    # executions against CPU.
+    shapes = [(16,), (4, 8), (2, 3, 5)]
+    compiled_nonzero = torch.compile(torch.nonzero, backend="tpu")
+
+    for shape in shapes:
+      inputs_cpu = (torch.randn(*shape) > 0.3).to(torch.int32)
+      expected = torch.nonzero(inputs_cpu)
+      actual_eager = torch.nonzero(inputs_cpu.to("tpu")).cpu()
+      utils.assert_close(actual=actual_eager, expected=expected)
+
+      actual_compiled = compiled_nonzero(inputs_cpu.to("tpu")).cpu()
+      utils.assert_close(actual=actual_compiled, expected=expected)
+
+    # 1. Boundary inputs: zeros, ones, and rank 0 scalars exercising
+    # reduce_in_i32 with empty reduction dims and output_size == 0 || rank == 0.
+    boundary_inputs = [
+        torch.zeros((4, 8), dtype=torch.int32),
+        torch.ones((4, 8), dtype=torch.int32),
+        torch.tensor(0, dtype=torch.int32),
+        torch.tensor(1, dtype=torch.int32),
+    ]
+    for inp in boundary_inputs:
+      expected = torch.nonzero(inp)
+      actual_eager = torch.nonzero(inp.to("tpu")).cpu()
+      utils.assert_close(actual=actual_eager, expected=expected)
+
+      actual_compiled = compiled_nonzero(inp.to("tpu")).cpu()
+      utils.assert_close(actual=actual_compiled, expected=expected)
+
+    # 2. AtenNonzeroOut: verify torch.nonzero(x, out=out) with output resizing
+    # for zero, partial, and nonzero counts across rank > 0 and rank 0.
+    x_zero = torch.zeros((4, 8), dtype=torch.int32, device="tpu")
+    out_zero = torch.empty((10, 2), dtype=torch.int64, device="tpu")
+    res_zero = torch.nonzero(x_zero, out=out_zero)
+    self.assertIs(res_zero, out_zero)
+    self.assertEqual(out_zero.shape, (0, 2))
+    utils.assert_close(
+        actual=out_zero.cpu(),
+        expected=torch.nonzero(torch.zeros((4, 8), dtype=torch.int32)),
+    )
+
+    x_ones = torch.ones((4, 8), dtype=torch.int32, device="tpu")
+    out_ones = torch.empty((2, 2), dtype=torch.int64, device="tpu")
+    res_ones = torch.nonzero(x_ones, out=out_ones)
+    self.assertIs(res_ones, out_ones)
+    self.assertEqual(out_ones.shape, (32, 2))
+    utils.assert_close(
+        actual=out_ones.cpu(),
+        expected=torch.nonzero(torch.ones((4, 8), dtype=torch.int32)),
+    )
+
+    x_scalar_zero = torch.tensor(0, dtype=torch.int32, device="tpu")
+    out_scalar_zero = torch.empty((5, 1), dtype=torch.int64, device="tpu")
+    res_scalar_zero = torch.nonzero(x_scalar_zero, out=out_scalar_zero)
+    self.assertIs(res_scalar_zero, out_scalar_zero)
+    self.assertEqual(out_scalar_zero.shape, (0, 0))
+    utils.assert_close(
+        actual=out_scalar_zero.cpu(),
+        expected=torch.nonzero(torch.tensor(0, dtype=torch.int32)),
+    )
+
+    x_scalar_one = torch.tensor(1, dtype=torch.int32, device="tpu")
+    out_scalar_one = torch.empty((0, 0), dtype=torch.int64, device="tpu")
+    res_scalar_one = torch.nonzero(x_scalar_one, out=out_scalar_one)
+    self.assertIs(res_scalar_one, out_scalar_one)
+    self.assertEqual(out_scalar_one.shape, (1, 0))
+    utils.assert_close(
+        actual=out_scalar_one.cpu(),
+        expected=torch.nonzero(torch.tensor(1, dtype=torch.int32)),
+    )
+
+    # 3. Verify fusion of the i32 count reduction with a deferred TPU producer
+    # op under DEFER_AND_FUSE.
+    t_producer = torch.randn(4, 8, device="tpu")
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
+      x_deferred = (t_producer > 0.0).to(torch.int32)
+      actual_fused = torch.nonzero(x_deferred).cpu()
+    expected_fused = torch.nonzero((t_producer.cpu() > 0.0).to(torch.int32))
+    utils.assert_close(actual=actual_fused, expected=expected_fused)
+
   def test_slice_scatter(self):
     # Fast-path 1: Full replacement (step == 1 && slice_len == total_len)
     t = torch.randn(4, 8)
