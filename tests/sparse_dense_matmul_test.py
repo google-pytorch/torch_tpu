@@ -71,6 +71,7 @@ def preprocess_sparse_dense_matmul_input(
       options.get("global_device_count", 1),
       options.get("num_sc_per_device", _get_num_sc_per_device()),
       options.get("sc_simd_width", _get_sc_simd_width()),
+      options.get("hbm_word_size_in_4b", _get_hbm_word_size_in_4b()),
       options.get("allow_id_dropping", True),
       table_name,
   )
@@ -98,6 +99,10 @@ def _get_sc_simd_width():
     raise ValueError(
         f"Unsupported TPU version for sparse_dense_matmul: {tpu_version}"
     )
+
+
+def _get_hbm_word_size_in_4b():
+  return 8
 
 
 class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
@@ -386,6 +391,7 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
         global_device_count,
         num_sc_per_device,
         _get_sc_simd_width(),  # sc_simd_width
+        _get_hbm_word_size_in_4b(),  # hbm_word_size_in_4b
         True,  # allow_id_dropping
         "table_parity",
     )

@@ -15046,6 +15046,7 @@ class InputPreprocessingErrorTest(et.ErrorTestBase):
           1,
           2,
           8,
+          8,  # hbm_word_size_in_4b
           True,
           "table_0",
       )
@@ -15071,6 +15072,7 @@ class InputPreprocessingErrorTest(et.ErrorTestBase):
           1,
           2,
           8,
+          8,  # hbm_word_size_in_4b
           True,
           "table_0",
       )

@@ -83,7 +83,8 @@ TORCH_LIBRARY_FRAGMENT(tpu, m) {
          int64_t suggested_coo_buffer_size, int64_t batch_size,
          std::string_view combiner, int64_t local_device_count,
          int64_t global_device_count, int64_t num_sc_per_device,
-         int64_t sc_simd_width, bool allow_id_dropping,
+         int64_t sc_simd_width, int64_t hbm_word_size_in_4b,
+         bool allow_id_dropping,
          std::string_view table_name) -> c10::Dict<std::string, at::Tensor> {
     TT_CHECK_THROW(input_indices.dtype() == at::kInt, error::kInvalidArgument)
         << "indices must be int32";
@@ -113,6 +114,7 @@ TORCH_LIBRARY_FRAGMENT(tpu, m) {
         .global_device_count = static_cast<int>(global_device_count),
         .num_sc_per_device = static_cast<int>(num_sc_per_device),
         .sc_simd_width = static_cast<int>(sc_simd_width),
+        .hbm_word_size_in_4b = static_cast<int>(hbm_word_size_in_4b),
         .sharding_strategy = sc_preprocessing::ShardingStrategy::kMod,
         .allow_id_dropping = allow_id_dropping,
         .minibatching_mode = sc_preprocessing::MinibatchingMode::kDisabled,
@@ -211,12 +213,16 @@ TORCH_LIBRARY_FRAGMENT(tpu, m) {
   //   input_offsets: Tensor - Feature offsets tensor for the table.
   //   max_ids_per_partition: int - Maximum IDs per SparseCore partition.
   //   max_unique_ids_per_partition: int - Maximum unique IDs per SparseCore
-  //   partition. suggested_coo_buffer_size: int - Suggested COO buffer size per
-  //   device. batch_size: int - Batch size per device. combiner: str - Row
-  //   combiner ("sum", "mean", etc.). local_device_count: int - Number of local
-  //   TPU devices. global_device_count: int - Total TPU device count across
-  //   hosts. num_sc_per_device: int - Number of SparseCore units per TPU
-  //   device. allow_id_dropping: bool - Whether to allow dropping excess IDs.
+  //     partition.
+  //   suggested_coo_buffer_size: int - Suggested COO buffer size per device.
+  //   batch_size: int - Batch size per device.
+  //   combiner: str - Row combiner ("sum", "mean", etc.).
+  //   local_device_count: int - Number of local TPU devices.
+  //   global_device_count: int - Total TPU device count across hosts.
+  //   num_sc_per_device: int - Number of SparseCore units per TPU device.
+  //   sc_simd_width: int - SIMD width of each SparseCore tile.
+  //   hbm_word_size_in_4b: int - HBM word size in 4-byte words.
+  //   allow_id_dropping: bool - Whether to allow dropping excess IDs.
   //   table_name: str - Table name for logging and identification.
   // Returns:
   //   Dict[str, Tensor] containing CSR buffers ("row_pointers",
@@ -236,6 +242,7 @@ TORCH_LIBRARY_FRAGMENT(tpu, m) {
       "    int global_device_count, "
       "    int num_sc_per_device, "
       "    int sc_simd_width, "
+      "    int hbm_word_size_in_4b, "
       "    bool allow_id_dropping, "
       "    str table_name"
       ") -> Dict(str, Tensor)",

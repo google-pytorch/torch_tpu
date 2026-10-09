@@ -19,8 +19,8 @@ preprocessing library is framework-independent.
 
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
-JAX_TPU_EMBEDDING_COMMIT = "0b8e64c73918bce82b39cd5972c41e1e2c71ca2c"
-JAX_TPU_EMBEDDING_SHA256 = "94d05b475263660357df89b6ad9aa9d247a4f48051b3134405f4021dc07d9515"
+JAX_TPU_EMBEDDING_COMMIT = "9772781da67c3d39d87f52d184f4f179043726bd"
+JAX_TPU_EMBEDDING_SHA256 = "264047b40dcded934b91670c5d4ea08bead6e7f00d9b517746bc7fa8234be03d"
 
 def jax_tpu_embedding_repo():
     http_archive(
