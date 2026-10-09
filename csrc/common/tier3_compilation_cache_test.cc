@@ -95,7 +95,8 @@ TEST_F(Tier3CompilationCacheTest, GetTier3CacheEntryPath) {
 TEST_F(Tier3CompilationCacheTest,
        GetFromTier3CacheFailsIfCacheFileDoesNotExist) {
   const auto key = MakeCacheKey(/*shapeless_key=*/123, /*num_dims=*/0);
-  EXPECT_EQ(GetFromTier3Cache(key).status().code(), error::kNotFound);
+  EXPECT_EQ(GetFromTier3Cache(key, /*device_ids=*/{}).status().code(),
+            error::kNotFound);
 }
 
 // GetFromTier3Cache() should return an error if the cache file exists
@@ -107,7 +108,8 @@ TEST_F(Tier3CompilationCacheTest, GetFromTier3CacheFailsIfCacheFileIsInvalid) {
       AtomicWriteToCacheFile(GetTier3CacheEntryPath(key), serialized_data),
       absl::OkStatus());
 
-  const auto status_code = GetFromTier3Cache(key).status().code();
+  const auto status_code =
+      GetFromTier3Cache(key, /*device_ids=*/{}).status().code();
 
   // The error should not be kNotFound, because the file exists.
   EXPECT_NE(status_code, error::kOk);

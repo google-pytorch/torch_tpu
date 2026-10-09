@@ -76,6 +76,31 @@ class BackendSerializationTest(seed_test_utils.RepeatableTest):
     inputs = [torch.randn(4, 4), torch.randn(4, 4)]
     self.check_serialization(simple, inputs)
 
+  def test_copy_shares_the_loaded_executable(self):
+    def simple(x, y):
+      return x + y, x * y
+
+    inputs = [torch.randn(4, 4), torch.randn(4, 4)]
+    inputs_tpu = _backend.to_device(inputs, torch.device("tpu"))
+    gm = dynamo_graph_capture_for_export(simple)(*inputs_tpu)
+    # Debug mode records the compiled executables.
+    backend = _backend.TpuBackend(debug=True)
+    backend(gm, inputs_tpu)
+
+    executables = [
+        executable
+        for artifact in backend._compiled_executables
+        for executable in artifact.compiled_executables
+    ]
+    self.assertNotEmpty(executables)
+    for executable in executables:
+      copied = copy.copy(executable)
+      self.assertIsNot(copied, executable)
+      self.assertIs(copied._executable, executable._executable)
+      result = _backend.to_device(copied(*inputs_tpu), "cpu")
+      utils.assert_close(result[0], inputs[0] + inputs[1])
+      utils.assert_close(result[1], inputs[0] * inputs[1])
+
   def _compile_simple_with_registered_backend(self):
     torch._dynamo.reset()
     counters.clear()

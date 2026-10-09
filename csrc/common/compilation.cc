@@ -16,15 +16,22 @@
 
 #include "csrc/common/compilation.h"
 
+#include <algorithm>
+#include <array>
+#include <cstdint>
 #include <map>
 #include <memory>
+#include <numeric>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
+#include "absl/algorithm/container.h"
 #include "absl/base/no_destructor.h"
 #include "absl/base/nullability.h"
 #include "absl/log/absl_check.h"
@@ -32,7 +39,9 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/escaping.h"
+#include "absl/strings/str_join.h"
 #include "absl/strings/str_split.h"
+#include "absl/types/span.h"
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/compile_options_key.h"
 #include "csrc/common/context_manager.h"
@@ -54,6 +63,9 @@
 #include "xla/hlo/translate/register.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_compiler.h"
+#include "xla/pjrt/pjrt_device_dimensions.h"
+#include "xla/pjrt/pjrt_executable.h"
+#include "xla/runtime/device_id.h"
 #include "xla/service/device_assignment.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
@@ -110,8 +122,8 @@ absl::StatusOr<SharedLoadedExecutableWithMetadata>
 LoadedExecutableWithMetadata::MakeShared(
     absl_nonnull std::unique_ptr<xla::PjRtLoadedExecutable> executable,
     Indices argument_indices,
-    std::optional<UnboundedDynamicExecutionMetadata>
-        dynamic_execution_metadata) {
+    std::optional<UnboundedDynamicExecutionMetadata> dynamic_execution_metadata,
+    std::vector<int64_t> device_ids) {  // INT_VEC_OK
   TT_RET_CHECK(executable, error::kInternal)
       << "cannot create SharedLoadedExecutableWithMetadata from null "
          "executable.";
@@ -135,16 +147,338 @@ LoadedExecutableWithMetadata::MakeShared(
   return std::shared_ptr<const LoadedExecutableWithMetadata>(
       new LoadedExecutableWithMetadata(
           std::move(executable), std::move(output_shapes),
-          std::move(argument_indices), std::move(dynamic_execution_metadata)));
+          std::move(argument_indices), std::move(dynamic_execution_metadata),
+          std::move(device_ids)));
+}
+
+std::vector<int64_t> DeviceIdsOf(  // INT_VEC_OK
+    const xla::CompileOptions& compile_options) {
+  const xla::ExecutableBuildOptions& build_options =
+      compile_options.executable_build_options;
+  if (!build_options.has_device_assignment()) {
+    return {};
+  }
+  const xla::DeviceAssignment& assignment = build_options.device_assignment();
+  std::vector<int64_t> device_ids;  // INT_VEC_OK
+  device_ids.reserve(assignment.replica_count() *
+                     assignment.computation_count());
+  for (int replica = 0; replica < assignment.replica_count(); ++replica) {
+    for (int computation = 0; computation < assignment.computation_count();
+         ++computation) {
+      device_ids.push_back(assignment(replica, computation));
+    }
+  }
+  return device_ids;
+}
+
+namespace {
+
+// Returns whether `device_ids` are a proper subgroup of the client's devices
+// with no device on the chip at the origin of the slice. Devices that report
+// no chip coordinates (e.g. CPU devices) form no such subgroup.
+absl::StatusOr<bool> IsSubgroupOffSliceOrigin(
+    const xla::PjRtClient& client, absl::Span<const int64_t> device_ids) {
+  if (device_ids.empty() || device_ids.size() == client.devices().size()) {
+    return false;
+  }
+  // The subgroup is at the origin when some device of it sits on the chip at
+  // the origin of every axis.
+  for (const int64_t device_id : device_ids) {
+    TT_ASSIGN_OR_RETURN(
+        const xla::PjRtDevice* const device,
+        AdaptXlaError(client.LookupDevice(
+                          xla::GlobalDeviceId(static_cast<int32_t>(device_id))),
+                      "failed to look up a device of the subgroup"));
+    const auto& attributes = device->Attributes();
+    const auto it = attributes.find("coords");
+    if (it == attributes.end()) {
+      return false;
+    }
+    const auto* const coords =
+        std::get_if<std::vector<int64_t>>(&it->second);  // INT_VEC_OK
+    TT_RET_CHECK(coords != nullptr, error::kInternal)
+        << "the coords attribute of device " << device_id
+        << " is not a list of integers";
+    if (absl::c_all_of(*coords, [](int64_t coord) { return coord == 0; })) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Returns the position of each device of `device_ids`, or nullopt when a device
+// reports no chip coordinates or core index (e.g. CPU devices) or belongs to a
+// job of several slices, whose devices report chip coordinates within their
+// slice.
+absl::StatusOr<std::optional<std::vector<DevicePosition>>> DevicePositions(
+    const xla::PjRtClient& client, absl::Span<const int64_t> device_ids) {
+  std::vector<DevicePosition> positions;
+  positions.reserve(device_ids.size());
+  for (const int64_t device_id : device_ids) {
+    TT_ASSIGN_OR_RETURN(
+        const xla::PjRtDevice* const device,
+        AdaptXlaError(client.LookupDevice(
+                          xla::GlobalDeviceId(static_cast<int32_t>(device_id))),
+                      "failed to look up a device of the subgroup"));
+    const auto& attributes = device->Attributes();
+    const auto coords = attributes.find("coords");
+    const auto core = attributes.find("core_on_chip");
+    if (coords == attributes.end() || core == attributes.end() ||
+        attributes.contains("slice_index")) {
+      return std::nullopt;
+    }
+    const auto* const chip =
+        std::get_if<std::vector<int64_t>>(&coords->second);  // INT_VEC_OK
+    const auto* const index = std::get_if<int64_t>(&core->second);
+    TT_RET_CHECK(chip != nullptr && chip->size() == 3 && index != nullptr,
+                 error::kInternal)
+        << "device " << device_id
+        << " reports malformed coords or core_on_chip attributes";
+    positions.push_back({(*chip)[0], (*chip)[1], (*chip)[2], *index});
+  }
+  return positions;
+}
+
+// The box off the slice origin that a subgroup's devices fill, and the
+// position of each device of the subgroup.
+struct OffOriginDevices {
+  SubsliceBox box;
+  std::vector<DevicePosition> positions;
+};
+
+// Returns the box and the positions of `device_ids` when they fill a box of
+// devices off the slice origin (see `OffOriginBoxOf()`), and nullopt otherwise.
+absl::StatusOr<std::optional<OffOriginDevices>> FindOffOriginBox(
+    const xla::PjRtClient& client, absl::Span<const int64_t> device_ids) {
+  const int64_t num_slice_devices = client.devices().size();
+  if (device_ids.empty() ||
+      static_cast<int64_t>(device_ids.size()) >= num_slice_devices) {
+    return std::nullopt;
+  }
+  TT_ASSIGN_OR_RETURN(std::optional<std::vector<DevicePosition>> positions,
+                      DevicePositions(client, device_ids));
+  if (!positions.has_value()) {
+    return std::nullopt;
+  }
+  std::optional<SubsliceBox> box =
+      OffOriginBoxOf(*positions, num_slice_devices);
+  if (!box.has_value()) {
+    return std::nullopt;
+  }
+  return OffOriginDevices{.box = *std::move(box),
+                          .positions = *std::move(positions)};
+}
+
+// Returns an error unless `executable` runs on the devices of this process
+// among `device_ids`. A runtime that ignores the origin of a load runs the
+// executable of a sub-slice on the devices at the slice origin instead.
+absl::Status VerifyLoadedForDevices(const xla::PjRtClient& client,
+                                    const xla::PjRtLoadedExecutable& executable,
+                                    absl::Span<const int64_t> device_ids) {
+  std::vector<int64_t> expected;  // INT_VEC_OK
+  for (const xla::PjRtDevice* const device : client.addressable_devices()) {
+    const int64_t device_id = device->global_device_id().value();
+    if (absl::c_linear_search(device_ids, device_id)) {
+      expected.push_back(device_id);
+    }
+  }
+  std::vector<int64_t> loaded;  // INT_VEC_OK
+  for (const xla::PjRtDevice* const device : executable.addressable_devices()) {
+    loaded.push_back(device->global_device_id().value());
+  }
+  absl::c_sort(expected);
+  absl::c_sort(loaded);
+  TT_RET_CHECK(loaded == expected, error::kFailedPrecondition)
+      << "the executable built for the devices "
+      << absl::StrJoin(device_ids, ", ") << " was loaded for the devices "
+      << absl::StrJoin(loaded, ", ") << " of this process instead of "
+      << absl::StrJoin(expected, ", ")
+      << "; the runtime must load an executable at the origin of a sub-slice";
+  return absl::OkStatus();
+}
+
+}  // namespace
+
+std::optional<SubsliceBox> OffOriginBoxOf(
+    absl::Span<const DevicePosition> positions, int64_t num_slice_devices) {
+  if (positions.empty() ||
+      static_cast<int64_t>(positions.size()) >= num_slice_devices) {
+    return std::nullopt;
+  }
+  DevicePosition lo = positions.front();
+  DevicePosition hi = positions.front();
+  for (const DevicePosition& position : positions) {
+    for (int d = 0; d < 4; ++d) {
+      lo[d] = std::min(lo[d], position[d]);
+      hi[d] = std::max(hi[d], position[d]);
+    }
+  }
+  int64_t box_devices = 1;
+  for (int d = 0; d < 4; ++d) {
+    box_devices *= hi[d] - lo[d] + 1;
+  }
+  // The devices fill the box when there are as many distinct positions as
+  // places in the box.
+  if (box_devices != static_cast<int64_t>(positions.size()) ||
+      std::set<DevicePosition>(positions.begin(), positions.end()).size() !=
+          positions.size() ||
+      (lo[0] == 0 && lo[1] == 0 && lo[2] == 0)) {
+    return std::nullopt;
+  }
+  SubsliceBox box{.origin = {0, 0, 0}, .chips = {0, 0, 0}};
+  for (int d = 0; d < 3; ++d) {
+    box.origin[d] = static_cast<int32_t>(lo[d]);
+    box.chips[d] = static_cast<int32_t>(hi[d] - lo[d] + 1);
+  }
+  return box;
+}
+
+std::pair<xla::PjRtDeviceDimensions, xla::PjRtDeviceDimensions>
+SubsliceTilingOf(const xla::PjRtDeviceDimensions& box_chips,
+                 const xla::PjRtDeviceDimensions& chips_per_process) {
+  xla::PjRtDeviceDimensions chips{1, 1, 1};
+  xla::PjRtDeviceDimensions processes{1, 1, 1};
+  for (int d = 0; d < 3; ++d) {
+    chips[d] =
+        std::gcd(box_chips[d], std::max<int32_t>(chips_per_process[d], 1));
+    processes[d] = box_chips[d] / chips[d];
+  }
+  return {chips, processes};
+}
+
+absl::StatusOr<xla::LoadOptions> LoadOptionsForDevices(
+    const xla::PjRtClient& client, absl::Span<const int64_t> device_ids) {
+  xla::LoadOptions load_options;
+  TT_ASSIGN_OR_RETURN(const std::optional<OffOriginDevices> devices,
+                      FindOffOriginBox(client, device_ids));
+  if (devices.has_value()) {
+    load_options.computation_origin = devices->box.origin;
+  }
+  return load_options;
+}
+
+absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>>
+LoadSerializedExecutableForDevices(xla::PjRtClient& client,
+                                   std::string_view serialized,
+                                   absl::Span<const int64_t> device_ids) {
+  TT_ASSIGN_OR_RETURN(const xla::LoadOptions load_options,
+                      LoadOptionsForDevices(client, device_ids));
+  TT_ASSIGN_OR_RETURN(
+      std::unique_ptr<xla::PjRtLoadedExecutable> executable,
+      AdaptXlaError(client.LoadSerializedExecutable(
+                        serialized, /* options= */ std::nullopt, load_options),
+                    /* context= */ "failed to load a serialized executable"));
+  if (load_options.computation_origin.has_value()) {
+    TT_RETURN_IF_ERROR(VerifyLoadedForDevices(client, *executable, device_ids));
+  }
+  return executable;
+}
+
+absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>> CompileAndLoad(
+    xla::PjRtClient& client, xla::MaybeOwningMlirModule module,
+    xla::CompileOptions options) {
+  const std::vector<int64_t> device_ids = DeviceIdsOf(options);  // INT_VEC_OK
+  TT_ASSIGN_OR_RETURN(const bool off_origin,
+                      IsSubgroupOffSliceOrigin(client, device_ids));
+  if (off_origin) {
+    constexpr std::string_view kSparseCoreRaggedAllToAll =
+        "xla_tpu_enable_sparse_core_collective_offload_ragged_all_to_all";
+    auto& overrides = options.env_option_overrides;
+    const auto it = absl::c_find_if(overrides, [&](const auto& entry) {
+      return entry.first == kSparseCoreRaggedAllToAll;
+    });
+    if (it != overrides.end()) {
+      it->second = std::string("false");
+    } else {
+      overrides.emplace_back(std::string(kSparseCoreRaggedAllToAll),
+                             std::string("false"));
+    }
+  }
+  TT_ASSIGN_OR_RETURN(const std::optional<OffOriginDevices> devices,
+                      FindOffOriginBox(client, device_ids));
+  if (!devices.has_value()) {
+    return AdaptXlaError(
+        client.CompileAndLoad(std::move(module), std::move(options)),
+        /* context= */ "failed to compile MLIR module");
+  }
+  // The program is compiled against a sub-slice of the box's shape at the
+  // slice origin, for the devices at the same positions in it, and loaded at
+  // the box's origin through its serialized form, like every later load of it.
+  TT_ASSIGN_OR_RETURN(
+      const xla::PjRtTopologyDescription* const slice,
+      AdaptXlaError(client.GetTopologyDescription(),
+                    /* context= */ "failed to read the slice topology"));
+  TT_ASSIGN_OR_RETURN(
+      const xla::PjRtDeviceDimensions per_process,
+      AdaptXlaError(slice->ChipsPerProcessBounds(),
+                    /* context= */ "failed to read the chips per process"));
+  const auto [chips_per_process, processes] =
+      SubsliceTilingOf(devices->box.chips, per_process);
+  TT_ASSIGN_OR_RETURN(
+      std::unique_ptr<xla::PjRtTopologyDescription> sub_slice,
+      AdaptXlaError(slice->Subslice(chips_per_process, processes),
+                    /* context= */ "failed to derive the sub-slice topology"));
+  std::map<DevicePosition, int64_t> sub_slice_ids;
+  for (const auto& description : sub_slice->DeviceDescriptions()) {
+    const auto& attributes = description->Attributes();
+    const auto coords = attributes.find("coords");
+    const auto core = attributes.find("core_on_chip");
+    const auto* const chip =
+        coords == attributes.end()
+            ? nullptr
+            : std::get_if<std::vector<int64_t>>(&coords->second);  // INT_VEC_OK
+    const auto* const index = core == attributes.end()
+                                  ? nullptr
+                                  : std::get_if<int64_t>(&core->second);
+    TT_RET_CHECK(chip != nullptr && chip->size() == 3 && index != nullptr,
+                 error::kInternal)
+        << "a device of the sub-slice reports no position";
+    sub_slice_ids[{(*chip)[0], (*chip)[1], (*chip)[2], *index}] =
+        description->id();
+  }
+  const xla::DeviceAssignment& assignment =
+      options.executable_build_options.device_assignment();
+  xla::DeviceAssignment sub_slice_assignment(assignment.replica_count(),
+                                             assignment.computation_count());
+  int64_t k = 0;
+  for (int64_t r = 0; r < assignment.replica_count(); ++r) {
+    for (int64_t c = 0; c < assignment.computation_count(); ++c, ++k) {
+      DevicePosition position = devices->positions[k];
+      for (int d = 0; d < 3; ++d) {
+        position[d] -= devices->box.origin[d];
+      }
+      const auto it = sub_slice_ids.find(position);
+      TT_RET_CHECK(it != sub_slice_ids.end(), error::kInternal)
+          << "the sub-slice has no device at the position of device "
+          << device_ids[k];
+      sub_slice_assignment(r, c) = it->second;
+    }
+  }
+  options.executable_build_options.set_device_assignment(sub_slice_assignment);
+  TT_ASSIGN_OR_RETURN(
+      std::unique_ptr<xla::PjRtExecutable> executable,
+      AdaptXlaError(
+          xla::PjRtCompile(options, std::move(module), *sub_slice, &client),
+          /* context= */ "failed to compile MLIR module for a sub-slice"));
+  TT_ASSIGN_OR_RETURN(
+      const std::string serialized,
+      AdaptXlaError(executable->SerializeExecutable(),
+                    /* context= */ "failed to serialize a sub-slice program"));
+  return LoadSerializedExecutableForDevices(client, serialized, device_ids);
 }
 
 absl::StatusOr<SharedLoadedExecutableWithMetadata> Compile(
     xla::PjRtClient& client, LoadedExecutableBuilder executable_builder,
     UniqueCompileOptions compile_options) {
+  std::vector<int64_t> device_ids =  // INT_VEC_OK
+      DeviceIdsOf(*compile_options);
   TT_ASSIGN_OR_RETURN(
       std::unique_ptr<xla::PjRtLoadedExecutable> executable,
       std::move(executable_builder)(client, std::move(compile_options)));
-  return LoadedExecutableWithMetadata::MakeShared(std::move(executable));
+  return LoadedExecutableWithMetadata::MakeShared(
+      std::move(executable), /*argument_indices=*/{},
+      /*unbounded_dynamic_execution_metadata=*/std::nullopt,
+      std::move(device_ids));
 }
 
 absl::StatusOr<LoadedExecutableBuilder>
@@ -154,11 +488,9 @@ MlirComputationBuilderToExecutableBuilder(
                       ContextedModule::Make(computation_builder));
   return [contexted_module = std::move(contexted_module)](
              xla::PjRtClient& client, UniqueCompileOptions options) mutable {
-    return AdaptXlaError(
-        client.CompileAndLoad(
-            std::move(contexted_module).ToMaybeOwningMlirModule(),
-            std::move(*options)),
-        /* context= */ "failed to compile MLIR module");
+    return CompileAndLoad(client,
+                          std::move(contexted_module).ToMaybeOwningMlirModule(),
+                          std::move(*options));
   };
 }
 

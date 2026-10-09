@@ -35,11 +35,16 @@ import jax
 from jax.sharding import PartitionSpec as P
 import torch
 from torch import distributed as dist
+from torch._higher_order_ops import scan
+from torch.distributed import _functional_collectives as funcol
 import torch.multiprocessing as mp
+from torch_tpu._internal import env
 from torch_tpu._internal import pallas
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
+from torch_tpu._internal.distributed import spmd_util
 from tests import error_testing as et
+from tests import oss_utils
 from tests.distributed import distributed_utils
 
 
@@ -465,6 +470,50 @@ def run_conflicting_device_assignments_error() -> None:
     _ = conflicting_fn(x).cpu()
 
 
+def run_scan_with_standalone_collective_error() -> None:
+  """Tests that a scan body cannot mix a standalone pair with the world."""
+  dist.init_process_group(backend="tpu_dist")
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
+  groups = [dist.new_group(ranks=[r, r + 1]) for r in range(0, world_size, 2)]
+  my_pair = groups[rank // 2]
+  spmd_util.make_standalone(my_pair)
+
+  def step(carry: torch.Tensor, x: torch.Tensor):
+    pair_total = funcol.all_reduce(carry + x, "sum", my_pair)
+    total = funcol.all_reduce(pair_total, "sum", dist.group.WORLD)
+    return total, total.clone()
+
+  compiled = torch.compile(scan, backend="tpu", dynamic=False)
+  expected_msg = re.compile(
+      r".*device assignment mismatch across operations.*", re.DOTALL
+  )
+  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
+    compiled(
+        step,
+        torch.zeros(4, device="tpu"),
+        torch.ones((3, 4), device="tpu"),
+        dim=0,
+    )
+
+
+def run_make_standalone_on_old_libtpu_error() -> None:
+  """Tests that subgroups are not made standalone below libtpu 0.0.47."""
+  dist.init_process_group(backend="tpu_dist")
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
+  groups = [dist.new_group(ranks=[r, r + 1]) for r in range(0, world_size, 2)]
+  env.reset_libtpu_version_for_testing()
+  env.set_libtpu_version("0.0.46")
+  expected_msg = re.compile(
+      r".*standalone process subgroups need libtpu 0\.0\.47 or newer, but the"
+      r" runtime is libtpu 0\.0\.46.*",
+      re.DOTALL,
+  )
+  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
+    spmd_util.make_standalone(groups[rank // 2])
+
+
 # Constants and helpers for ProcessGroupTpuErrorsTest.
 _PG_WORLD_SIZE = 8
 
@@ -722,6 +771,22 @@ class CollectiveErrorsTest(et.TpuOnlyDistributedErrorTestBase):
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
         fn=run_conflicting_device_assignments_error,
+    )
+
+  @oss_utils.skip_if_libtpu_version(
+      lambda v: v < (0, 0, 47),
+      "standalone process subgroups need libtpu 0.0.47 or newer",
+  )
+  def test_scan_with_standalone_collective_error(self):
+    distributed_utils.dist_run(
+        nproc_per_node=self._world_size,
+        fn=run_scan_with_standalone_collective_error,
+    )
+
+  def test_make_standalone_on_old_libtpu_error(self):
+    distributed_utils.dist_run(
+        nproc_per_node=self._world_size,
+        fn=run_make_standalone_on_old_libtpu_error,
     )
 
 

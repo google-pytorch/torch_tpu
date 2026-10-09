@@ -17,9 +17,11 @@
 #ifndef TORCH_TPU_CSRC_COMMON_TIER3_COMPILATION_CACHE_H_
 #define TORCH_TPU_CSRC_COMMON_TIER3_COMPILATION_CACHE_H_
 
+#include <cstdint>
 #include <string>
 
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
 
@@ -38,9 +40,10 @@ namespace torch_tpu {
 [[nodiscard]] std::string GetTier3CacheEntryPath(
     const CompilationCacheKey& key);
 
-// Tries to get a loaded executable from the tier-3 compilation cache.
+// Tries to get a loaded executable from the tier-3 compilation cache, where
+// `device_ids` are the devices the executable was built for.
 absl::StatusOr<SharedLoadedExecutableWithMetadata> GetFromTier3Cache(
-    const CompilationCacheKey& key);
+    const CompilationCacheKey& key, absl::Span<const int64_t> device_ids);
 
 }  // namespace torch_tpu
 

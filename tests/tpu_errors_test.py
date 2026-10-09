@@ -4584,6 +4584,30 @@ module {
           x, hx, params[:3], True, 1, 0.0, False, False, False
       )
 
+  @et.why_tpu_only("A serialized TPU executable records its devices.")
+  def test_load_serialized_executable_of_other_devices_errors(self):
+    debugs = []
+    compiled = torch.compile(
+        lambda x: x + 1.0,
+        backend="tpu",
+        options={"serializable": False, "debug_callback": debugs.append},
+    )
+    compiled(torch.ones(4, device=et.device()))
+    (artifact,) = debugs[0].compiled_executables
+    executable = artifact.compiled_executables[0]._executable
+    other_devices = [device_id + 1 for device_id in executable.device_ids()]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r".*the executable was built for devices .*, not for device \d+ of"
+            r" this process.*",
+            re.DOTALL,
+        ),
+    ):
+      tpu_torch_compile.load_serialized_executable(
+          tpu_torch_compile.serialize_executable(executable), other_devices
+      )
+
   @et.why_tpu_only("ao.reload is implemented for device=tpu.")
   def test_reload_cpu_tensor(self):
     _ensure_ao_ops_registered()
@@ -4779,12 +4803,17 @@ class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
       ):
         pallas.custom_jax_kernel(lambda x: x, mesh=mock.MagicMock(size=4))
 
-      # Subgroup process group (size < world_size) raises ValueError
+      # Subgroup process group (size < world_size) that is not standalone
+      # raises ValueError, also when a standalone subgroup has its devices.
       subgroup = mock.MagicMock(spec=dist.ProcessGroup)
       with mock.patch.object(
           dist,
           "get_world_size",
           side_effect=lambda pg=None: 4 if pg is subgroup else 8,
+      ), mock.patch.object(
+          pallas.pallas.device_mesh,
+          "is_standalone_device_group",
+          return_value=True,
       ):
         with et.assert_raises_message(
             ValueError,

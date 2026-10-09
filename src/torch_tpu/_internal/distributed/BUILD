@@ -183,6 +183,7 @@ pybind_extension(
         "//csrc/common:error_utils",
         "//csrc/common:pybind_error_utils",
         "//csrc/distributed:process_group_tpu",
+        "//csrc/distributed:types",
         "//csrc/distributed:utils",
         "//csrc/pjrt:pjrt_state",
         "//shims/torch:torch_headers",

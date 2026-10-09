@@ -17,6 +17,7 @@
 import abc
 from collections.abc import Callable, Sequence
 import concurrent.futures
+import copy
 import operator
 import threading
 from typing import Any, TypeAlias
@@ -188,6 +189,7 @@ def _unpickle_compiled_executable(
     updates_default_generator_state: bool,
     dynamic_outputs: Sequence[bool] | None = None,
     unique_output_indices: Sequence[int] | None = None,
+    device_ids: Sequence[int] = (),
 ) -> "TorchTpuCompiledExecutable":
   """Reconstructs a TorchTpuCompiledExecutable from serialized bytes.
 
@@ -209,12 +211,16 @@ def _unpickle_compiled_executable(
       output tensor is dynamic.
     unique_output_indices: Optional sequence of original output indices
       corresponding to deduplicated outputs.
+    device_ids: The devices the executable was built for; empty for an
+      executable built without a device assignment.
 
   Returns:
     A deserialized TorchTpuCompiledExecutable instance.
   """
   return TorchTpuCompiledExecutable(
-      executable=tpu_torch_compile.load_serialized_executable(serialized_bytes),
+      executable=tpu_torch_compile.load_serialized_executable(
+          serialized_bytes, list(device_ids)
+      ),
       reconstruct_fx_outputs_fn=reconstruct_fx_outputs_fn,
       updates_default_generator_state=updates_default_generator_state,
       dynamic_outputs=dynamic_outputs,
@@ -534,6 +540,16 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
 
     return outputs
 
+  def __copy__(self) -> "TorchTpuCompiledExecutable":
+    """Returns a TorchTpuCompiledExecutable of the same loaded executable."""
+    return TorchTpuCompiledExecutable(
+        executable=self._executable,
+        reconstruct_fx_outputs_fn=self._reconstruct_fx_outputs_fn,
+        updates_default_generator_state=self._updates_default_generator_state,
+        dynamic_outputs=self._dynamic_outputs,
+        unique_output_indices=self._unique_output_indices,
+    )
+
   def __reduce__(self) -> tuple[Callable[..., Any], tuple[Any, ...]]:
     """Enables pickling of the TorchTpuCompiledExecutable.
 
@@ -544,7 +560,7 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
       2. A tuple of arguments to be passed to the callable. These arguments
          include the serialized PjRtLoadedExecutable, the
          reconstruct_fx_outputs_fn, the updates_default_generator_state flag,
-         and the dynamic_outputs.
+         the dynamic_outputs and the devices the executable was built for.
 
     Serialization of the executable is necessary for caching compiled
     artifacts within Dynamo.
@@ -562,6 +578,7 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
             self._updates_default_generator_state,
             self._dynamic_outputs,
             self._unique_output_indices,
+            list(self._executable.device_ids()),
         ),
     )
 
@@ -648,6 +665,11 @@ class AsyncCompiledArtifact(CompiledArtifact):
     """Resolves the background compilation and executes the real callable."""
     self._resolve()
     return self(*args, **kwargs)
+
+  def __copy__(self) -> CompiledArtifact:
+    """Resolves the background compilation and copies the executable."""
+    self._resolve()
+    return copy.copy(self)
 
   def __reduce__(self) -> tuple[Callable[..., Any], tuple[Any, ...]]:
     """Resolves the background compilation and serializes the executable."""

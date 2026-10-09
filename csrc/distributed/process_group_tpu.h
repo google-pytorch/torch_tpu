@@ -90,6 +90,11 @@ void PermuteDeviceAssignmentForSubgroups(
     std::vector<int64_t>& device_assignment,  // INT_VEC_OK
     DeviceGroupList& replica_groups);
 
+// Returns true if `device_ids` are the devices of a standalone process group
+// in the group's rank order (see `ProcessGroupTpu::MakeStandalone()`).
+[[nodiscard]] bool IsStandaloneDeviceGroup(
+    absl::Span<const int64_t> device_ids);
+
 // Returns a cross-host transfer key computed deterministically and stably
 // using FingerprintCat from the source/destination device IDs, communication
 // tag, and tensor index.
@@ -165,10 +170,23 @@ class ProcessGroupTpu : public c10d::Backend {
     return device_assignment_;
   }
 
+  // Returns whether this process group is a standalone subgroup (see
+  // `MakeStandalone()`); a world-sized group never is.
+  bool standalone() const { return standalone_; }
+
   // Returns the replica groups emitted as StableHLO replica_groups: positions
   // into device_assignment_ (one list per subgroup; group i is
-  // {offset_i, ..., offset_i+K-1}). These are NOT world ranks.
+  // {offset_i, ..., offset_i+K-1}). These are NOT world ranks. For a
+  // standalone group: {{0, ..., size - 1}}.
   const DeviceGroupList& GetReplicaGroups() const;
+
+  // Makes this process subgroup standalone: its collectives are built for the
+  // devices of the subgroup alone, so its members launch their programs
+  // without the other subgroups, e.g. one stage of a pipeline. Every member
+  // must call this before the first collective of the group; the call waits
+  // for all of them. No-op for a world-sized group; any other group needs
+  // libtpu 0.0.47 or newer.
+  void MakeStandalone();
 
   c10::intrusive_ptr<c10d::Work> allreduce(
       std::vector<at::Tensor>& tensors,
@@ -428,13 +446,18 @@ class ProcessGroupTpu : public c10d::Backend {
 
   // World-sized device assignment permuted to match the flattened order of all
   // subgroups (device_assignment_[p] == device of
-  // flattened_subgroup_member_world_ranks[p]).
+  // flattened_subgroup_member_world_ranks[p]). For a standalone group:
+  // member_device_ids_.
   std::vector<int64_t> device_assignment_;  // INT_VEC_OK
 
   // Positions into device_assignment_, one list per subgroup (group i is
   // {offset_i, ..., offset_i+K-1}). Emitted as the replica_groups attribute of
-  // StableHLO collectives. These are NOT world ranks.
+  // StableHLO collectives. These are NOT world ranks. For a standalone group:
+  // {{0, ..., size - 1}}.
   DeviceGroupList replica_groups_;
+
+  // Whether this subgroup is standalone (see `MakeStandalone()`).
+  bool standalone_ = false;
 
   // Monotonic sequence counter for uneven all_to_all and all_to_all_single
   // offset coordination.

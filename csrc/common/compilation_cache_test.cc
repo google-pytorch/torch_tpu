@@ -16,6 +16,7 @@
 
 #include "csrc/common/compilation_cache.h"
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -61,11 +62,14 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "xla/client/executable_build_options.h"
 #include "xla/hlo/builder/xla_builder.h"
 #include "xla/hlo/builder/xla_computation.h"
 #include "xla/layout_util.h"
 #include "xla/pjrt/pjrt_client.h"
+#include "xla/pjrt/pjrt_device_dimensions.h"
 #include "xla/pjrt/pjrt_executable.h"
+#include "xla/service/device_assignment.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
 #include "xla/xla_data.pb.h"
@@ -98,11 +102,97 @@ class CompilationCacheTestHelper {
 
 namespace {
 
+using testing::ElementsAre;
+using testing::IsEmpty;
 using testing::MatchesRegex;
 
 CompilationCacheKey DummyKey(int key = 0) {
   return CompilationCacheKey(GraphKey(ShapelessKey(key), DimensionsKey({})),
                              CompileOptionsKey(0));
+}
+
+TEST(DeviceIdsOfTest, ListsTheDeviceAssignmentInOrder) {
+  xla::CompileOptions compile_options;
+  EXPECT_THAT(DeviceIdsOf(compile_options), IsEmpty());
+
+  // One replica with a partition per device of a group, in group order.
+  xla::DeviceAssignment group(/*replica_count=*/1, /*computation_count=*/4);
+  group(0, 0) = 6;
+  group(0, 1) = 7;
+  group(0, 2) = 2;
+  group(0, 3) = 3;
+  compile_options.executable_build_options.set_device_assignment(group);
+  EXPECT_THAT(DeviceIdsOf(compile_options), ElementsAre(6, 7, 2, 3));
+}
+
+// The position of each device of a host of four two-core chips.
+constexpr DevicePosition kHostPositions[] = {
+    {0, 0, 0, 0}, {0, 0, 0, 1}, {1, 0, 0, 0}, {1, 0, 0, 1},
+    {0, 1, 0, 0}, {0, 1, 0, 1}, {1, 1, 0, 0}, {1, 1, 0, 1}};
+
+std::vector<DevicePosition> PositionsOf(absl::Span<const int64_t> device_ids) {
+  std::vector<DevicePosition> positions;
+  for (const int64_t device_id : device_ids) {
+    positions.push_back(kHostPositions[device_id]);
+  }
+  return positions;
+}
+
+std::vector<int32_t> Dims(const xla::PjRtDeviceDimensions& dims) {
+  return std::vector<int32_t>(dims.begin(), dims.end());
+}
+
+TEST(OffOriginBoxOfTest, FindsTheBoxOfDevicesOffTheSliceOrigin) {
+  // Both cores of the two chips at x = 1.
+  std::optional<SubsliceBox> box = OffOriginBoxOf(PositionsOf({6, 7, 2, 3}), 8);
+  ASSERT_TRUE(box.has_value());
+  EXPECT_THAT(Dims(box->origin), ElementsAre(1, 0, 0));
+  EXPECT_THAT(Dims(box->chips), ElementsAre(1, 2, 1));
+  // Both cores of one chip.
+  box = OffOriginBoxOf(PositionsOf({4, 5}), 8);
+  ASSERT_TRUE(box.has_value());
+  EXPECT_THAT(Dims(box->origin), ElementsAre(0, 1, 0));
+  EXPECT_THAT(Dims(box->chips), ElementsAre(1, 1, 1));
+  // One core of each of two chips.
+  box = OffOriginBoxOf(PositionsOf({4, 6}), 8);
+  ASSERT_TRUE(box.has_value());
+  EXPECT_THAT(Dims(box->origin), ElementsAre(0, 1, 0));
+  EXPECT_THAT(Dims(box->chips), ElementsAre(2, 1, 1));
+}
+
+TEST(OffOriginBoxOfTest, FindsNoBoxAtTheOriginOrForDevicesThatFillNone) {
+  EXPECT_FALSE(OffOriginBoxOf({}, 8).has_value());
+  // Boxes at the origin.
+  EXPECT_FALSE(OffOriginBoxOf(PositionsOf({0, 1, 4, 5}), 8).has_value());
+  EXPECT_FALSE(OffOriginBoxOf(PositionsOf({0, 4, 6, 2}), 8).has_value());
+  // Both cores of two diagonal chips, and cores of two chips that differ.
+  EXPECT_FALSE(OffOriginBoxOf(PositionsOf({4, 5, 2, 3}), 8).has_value());
+  EXPECT_FALSE(OffOriginBoxOf(PositionsOf({6, 3}), 8).has_value());
+  // A device listed twice, which leaves a place of the box empty.
+  EXPECT_FALSE(OffOriginBoxOf(PositionsOf({2, 2, 3, 6}), 8).has_value());
+  // Every device of the slice.
+  EXPECT_FALSE(
+      OffOriginBoxOf(PositionsOf({0, 1, 2, 3, 4, 5, 6, 7}), 8).has_value());
+}
+
+TEST(SubsliceTilingOfTest, TilesTheBoxWithProcesses) {
+  const auto expect_tiling = [](const xla::PjRtDeviceDimensions& box_chips,
+                                const xla::PjRtDeviceDimensions& per_process,
+                                std::vector<int32_t> chips,
+                                std::vector<int32_t> processes) {
+    const auto [tiling_chips, tiling_processes] =
+        SubsliceTilingOf(box_chips, per_process);
+    EXPECT_EQ(Dims(tiling_chips), chips);
+    EXPECT_EQ(Dims(tiling_processes), processes);
+  };
+  // One chip per process.
+  expect_tiling({1, 2, 1}, {1, 1, 1}, {1, 1, 1}, {1, 2, 1});
+  // Processes of 2x2x1 chips.
+  expect_tiling({2, 2, 1}, {2, 2, 1}, {2, 2, 1}, {1, 1, 1});
+  expect_tiling({4, 2, 1}, {2, 2, 1}, {2, 2, 1}, {2, 1, 1});
+  expect_tiling({1, 2, 1}, {2, 2, 1}, {1, 2, 1}, {1, 1, 1});
+  // A box that processes of 2x2x1 chips do not tile.
+  expect_tiling({3, 1, 1}, {2, 2, 1}, {1, 1, 1}, {3, 1, 1});
 }
 
 TEST(PerfStatsPrinterTest, EmptyPerEntry) {
@@ -166,6 +256,21 @@ class CompilationCacheTest : public testing::Test {
     CompilationCacheTestHelper::RestartCompilationCache();
   }
 };
+
+TEST_F(CompilationCacheTest, ExecutablesOfAllDevicesLoadWithoutOrigin) {
+  TT_ASSERT_OK_AND_ASSIGN(const xla::PjRtClient* const client,
+                          PjrtBackend::GetInstance().GetClient());
+  std::vector<int64_t> all_devices;  // INT_VEC_OK
+  for (const xla::PjRtDevice* const device : client->devices()) {
+    all_devices.push_back(device->global_device_id().value());
+  }
+
+  TT_ASSERT_OK_AND_ASSIGN(xla::LoadOptions options,
+                          LoadOptionsForDevices(*client, {}));
+  EXPECT_FALSE(options.computation_origin.has_value());
+  TT_ASSERT_OK_AND_ASSIGN(options, LoadOptionsForDevices(*client, all_devices));
+  EXPECT_FALSE(options.computation_origin.has_value());
+}
 
 TEST_F(CompilationCacheTest, DumpOnMissMode) {
   CompilationCache& cache = CompilationCache::GetInstance();

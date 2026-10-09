@@ -520,6 +520,66 @@ TEST_F(TraversalTest, ApplyDeviceAssignmentToCompileSpecUpdatesSpec) {
   EXPECT_NE(spec.compile_options_key, initial_key);
 }
 
+// A program of a standalone process subgroup with a SparseCore op runs on the
+// devices of the subgroup alone, in their order, so that only its members
+// launch it.
+TEST(SparseCoreReplicaDevicesTest, ProgramOfProcessSubgroupRunsOnItsDevices) {
+  const std::vector<int64_t> reversed_pair = {7, 6};  // INT_VEC_OK
+  const std::vector<int64_t> half = {6, 7, 2, 3};     // INT_VEC_OK
+  EXPECT_EQ(SparseCoreReplicaDevices(/*num_slice_devices=*/8, reversed_pair),
+            reversed_pair);
+  EXPECT_EQ(SparseCoreReplicaDevices(/*num_slice_devices=*/8, half), half);
+}
+
+// Any other program with a SparseCore op runs on every device of the slice.
+TEST(SparseCoreReplicaDevicesTest, OtherProgramsRunOnEveryDevice) {
+  // In world rank order when its ops name the world.
+  const std::vector<int64_t> world = {0, 1, 4, 5, 6, 7, 2, 3};  // INT_VEC_OK
+  EXPECT_EQ(SparseCoreReplicaDevices(/*num_slice_devices=*/8, world), world);
+  // In device id order when no op names devices.
+  EXPECT_THAT(SparseCoreReplicaDevices(/*num_slice_devices=*/8, {}),
+              testing::ElementsAre(0, 1, 2, 3, 4, 5, 6, 7));
+}
+
+// A sparse-dense-matmul op looks up a table that is sharded across the
+// SparseCores of all devices, so a program of a standalone process subgroup
+// cannot hold one.
+TEST(VerifyShardedTableLookupsTest, RejectsLookupInProgramOfProcessSubgroup) {
+  const std::vector<int64_t> pair = {6, 7};  // INT_VEC_OK
+  for (const OpName lookup :
+       {OpName::kSparseDenseMatmul, OpName::kSparseDenseMatmulGradWithAdagrad,
+        OpName::kSparseDenseMatmulGradWithAdam,
+        OpName::kSparseDenseMatmulGradWithSgd}) {
+    const std::vector<OpName> op_names = {lookup,
+                                          OpName::kDistributedAllReduce};
+    const absl::Status status =
+        VerifyShardedTableLookups(op_names, pair, /*num_slice_devices=*/8);
+    EXPECT_EQ(status.code(), error::kInvalidArgument);
+    EXPECT_THAT(status.message(),
+                testing::HasSubstr("sparse-dense-matmul lookup cannot be part "
+                                   "of a program for 2 of the 8 devices"));
+  }
+}
+
+TEST(VerifyShardedTableLookupsTest, AcceptsOtherPrograms) {
+  const std::vector<int64_t> pair = {6, 7};                     // INT_VEC_OK
+  const std::vector<int64_t> world = {0, 1, 4, 5, 6, 7, 2, 3};  // INT_VEC_OK
+  const std::vector<int64_t> no_assignment;                     // INT_VEC_OK
+  const std::vector<OpName> gather = {OpName::kSparseGather,
+                                      OpName::kDistributedAllReduce};
+  const std::vector<OpName> lookup = {OpName::kSparseDenseMatmul,
+                                      OpName::kDistributedAllReduce};
+  // Another SparseCore op in a program of a process subgroup.
+  EXPECT_TRUE(
+      VerifyShardedTableLookups(gather, pair, /*num_slice_devices=*/8).ok());
+  // A lookup in a program of the world, or of no named devices.
+  EXPECT_TRUE(
+      VerifyShardedTableLookups(lookup, world, /*num_slice_devices=*/8).ok());
+  EXPECT_TRUE(
+      VerifyShardedTableLookups(lookup, no_assignment, /*num_slice_devices=*/8)
+          .ok());
+}
+
 TEST_F(TraversalTest, PreCompileAndCompileCacheKeyMatch) {
   TT_ASSERT_OK_AND_ASSIGN(
       const std::vector<DeviceBufferRef> refs,

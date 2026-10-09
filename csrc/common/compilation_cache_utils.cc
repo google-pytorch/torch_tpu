@@ -27,6 +27,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "absl/base/no_destructor.h"
 #include "absl/cleanup/cleanup.h"
@@ -107,23 +108,24 @@ FingerprintType GetTorchTpuBinaryFingerprint() {
 }
 
 absl::StatusOr<SharedLoadedExecutableWithMetadata> LoadSerializedExecutable(
-    CacheTier tier, const CompilationCacheKey& key,
-    const std::string_view data) {
+    CacheTier tier, const CompilationCacheKey& key, const std::string_view data,
+    absl::Span<const int64_t> device_ids) {
   TT_ASSIGN_OR_RETURN(
       xla::PjRtClient* const client, PjrtBackend::GetInstance().GetClient(),
       _ << "PjRtClient must be initialized before accessing the " << tier
         << " cache");
   TT_ASSIGN_OR_RETURN(
       std::unique_ptr<xla::PjRtLoadedExecutable> pjrt_executable,
-      AdaptXlaError(
-          client->LoadSerializedExecutable(data,
-                                           /* options= */ std::nullopt,
-                                           xla::LoadOptions()),
-          /* context =*/absl::StrCat(
-              "failed to load serialized executable from the ", tier,
-              " cache for key ", key, ", where the serialized data has ",
-              data.size(), " bytes")));
-  return LoadedExecutableWithMetadata::MakeShared(std::move(pjrt_executable));
+      LoadSerializedExecutableForDevices(*client, data, device_ids),
+      _.SetPrepend() << "failed to load serialized executable from the " << tier
+                     << " cache for key " << key
+                     << ", where the serialized data has " << data.size()
+                     << " bytes: ");
+  return LoadedExecutableWithMetadata::MakeShared(
+      std::move(pjrt_executable), /*argument_indices=*/{},
+      /*unbounded_dynamic_execution_metadata=*/std::nullopt,
+      std::vector<int64_t>(device_ids.begin(),  // INT_VEC_OK
+                           device_ids.end()));
 }
 
 absl::Status AtomicWriteToCacheFile(const std::string& cache_entry_path,

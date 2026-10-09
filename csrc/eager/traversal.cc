@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <ostream>
 #include <sstream>
@@ -940,7 +941,48 @@ void ApplyPlacementsToCompileSpec(CompilationSpec& spec,
   }
 }
 
+// Returns true if `op_name` is a sparse-dense-matmul op, which looks up a table
+// that is sharded across the SparseCores of all devices.
+bool LooksUpShardedTable(OpName op_name) {
+  switch (op_name) {
+    case OpName::kSparseDenseMatmul:
+    case OpName::kSparseDenseMatmulGradWithAdagrad:
+    case OpName::kSparseDenseMatmulGradWithAdam:
+    case OpName::kSparseDenseMatmulGradWithSgd:
+      return true;
+    default:
+      return false;
+  }
+}
+
 }  // namespace
+
+std::vector<int64_t> SparseCoreReplicaDevices(  // INT_VEC_OK
+    int num_slice_devices, absl::Span<const int64_t> resolved_da) {
+  const int num_resolved = static_cast<int>(resolved_da.size());
+  if (num_resolved > 0 && num_resolved <= num_slice_devices) {
+    return std::vector<int64_t>(resolved_da.begin(),  // INT_VEC_OK
+                                resolved_da.end());
+  }
+  std::vector<int64_t> devices(num_slice_devices);  // INT_VEC_OK
+  std::iota(devices.begin(), devices.end(), 0);
+  return devices;
+}
+
+absl::Status VerifyShardedTableLookups(absl::Span<const OpName> op_names,
+                                       absl::Span<const int64_t> resolved_da,
+                                       int num_slice_devices) {
+  if (resolved_da.empty() ||
+      static_cast<int>(resolved_da.size()) >= num_slice_devices ||
+      !absl::c_any_of(op_names, LooksUpShardedTable)) {
+    return absl::OkStatus();
+  }
+  return TT_ERROR(error::kInvalidArgument)
+         << "a sparse-dense-matmul lookup cannot be part of a program for "
+         << resolved_da.size() << " of the " << num_slice_devices
+         << " devices: its table is sharded across the SparseCores of all "
+            "devices";
+}
 
 bool Traversal::HasSparseCoreOp() const {
   for (const SharedDeviceBufferList& node : execution_order_) {
@@ -959,6 +1001,19 @@ Traversal::ResolveDeviceAssignment() const {
   if (!resolved_da_.has_value()) {
     TT_ASSIGN_OR_RETURN(std::vector<int64_t> resolved,  // INT_VEC_OK
                         ResolveDeviceAssignmentForTraversal(execution_order_));
+    if (!resolved.empty() && HasSparseCoreOp()) {
+      TT_ASSIGN_OR_RETURN(const int num_devices,
+                          PjrtBackend::GetInstance().GetGlobalDeviceCount());
+      std::vector<OpName> op_names;
+      op_names.reserve(execution_order_.size());
+      for (const SharedDeviceBufferList& node : execution_order_) {
+        if (node->is_deferred() && node->deferred_op() != nullptr) {
+          op_names.push_back(node->deferred_op()->op_name());
+        }
+      }
+      TT_RETURN_IF_ERROR(
+          VerifyShardedTableLookups(op_names, resolved, num_devices));
+    }
     resolved_da_ = std::move(resolved);
   }
   return *resolved_da_;
@@ -974,7 +1029,8 @@ absl::Status Traversal::ApplyDeviceAssignmentToCompileSpec(
   //      replicated executables (`num_replicas = num_devices`,
   //      `num_partitions = 1`, `use_spmd_partitioning = false`,
   //      `use_shardy_partitioner = false`) with a `(num_devices, 1)`
-  //      `xla::DeviceAssignment`.
+  //      `xla::DeviceAssignment`. When `resolved_da` holds the devices of a
+  //      standalone process subgroup, the executable is replicated over them.
   //   2. Non-SparseCore graphs with a non-empty `resolved_da` (e.g. Pallas
   //      custom kernels or process-group collectives over a mesh or subgroup)
   //      must override `num_replicas = 1`, `num_partitions =
@@ -985,19 +1041,16 @@ absl::Status Traversal::ApplyDeviceAssignmentToCompileSpec(
     absl::StatusOr<int> status =
         PjrtBackend::GetInstance().GetGlobalDeviceCount();
     if (status.ok() && *status > 1) {
-      const int num_devices = *status;
+      const std::vector<int64_t> replica_devices =  // INT_VEC_OK
+          SparseCoreReplicaDevices(*status, resolved_da);
+      const int num_devices = static_cast<int>(replica_devices.size());
       xla::ExecutableBuildOptions& exec_options =
           spec.xla_compile_options->executable_build_options;
       exec_options.set_num_replicas(num_devices);
       exec_options.set_num_partitions(1);
       xla::DeviceAssignment da(num_devices, 1);
       for (int idx = 0; idx < num_devices; ++idx) {
-        if (!resolved_da.empty() &&
-            static_cast<int>(resolved_da.size()) == num_devices) {
-          da(idx, 0) = resolved_da[idx];
-        } else {
-          da(idx, 0) = idx;
-        }
+        da(idx, 0) = replica_devices[idx];
       }
       exec_options.set_device_assignment(da);
       exec_options.set_use_spmd_partitioning(false);

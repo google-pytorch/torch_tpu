@@ -17,12 +17,14 @@
 #ifndef TORCH_TPU_CSRC_COMMON_TIER2_COMPILATION_CACHE_H_
 #define TORCH_TPU_CSRC_COMMON_TIER2_COMPILATION_CACHE_H_
 
+#include <cstdint>
 #include <string>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
+#include "absl/types/span.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/unique_file_descriptor.h"
@@ -68,10 +70,10 @@ struct Tier2CacheEntryStats {
 // Fetches a compiled executable from the tier-2 cache, where `request_start`
 // is when the request for getting the executable from the tier-2 cache was
 // made. Populates the output parameter `stats` with the cache entry
-// statistics.
+// statistics. `device_ids` are the devices the executable was built for.
 absl::StatusOr<SharedLoadedExecutableWithMetadata> GetFromTier2Cache(
     const CompilationCacheKey& key, absl::Time request_start,
-    Tier2CacheEntryStats& stats);
+    Tier2CacheEntryStats& stats, absl::Span<const int64_t> device_ids);
 
 // Returns the path to the tier-2 cache file for the given key.
 [[nodiscard]] std::string GetTier2CacheEntryPath(

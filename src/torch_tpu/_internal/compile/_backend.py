@@ -228,6 +228,76 @@ def _mark_pinned_host_inputs(
       example_input._is_pinned_host = True
 
 
+def _process_group_cache_key_tag(graph_module: torch.fx.GraphModule) -> str:
+  """Returns the compile cache key tag for `graph_module`.
+
+  A graph names each process group it communicates over by the group's name,
+  which counts groups in creation order, so another run can give the same name
+  to a group of other ranks. The program compiled for a collective depends on
+  the ranks of its group, on the groups split together with it and on the
+  devices of the ranks, so the returned tag adds them to
+  `torch.compiler.config.cache_key_tag`, which compile cache keys include. A
+  graph without process groups keeps the configured tag.
+
+  Args:
+    graph_module: The graph to compile.
+
+  Returns:
+    The cache key tag to compile `graph_module` with.
+  """
+  tag = torch.compiler.config.cache_key_tag
+  if not (
+      torch.distributed.is_available() and torch.distributed.is_initialized()
+  ):
+    return tag
+  # pylint: disable-next=protected-access
+  names_by_group = torch.distributed.distributed_c10d._world.pg_names
+  groups_by_name = {name: group for group, name in names_by_group.items()}
+  names = set()
+  for module in graph_module.modules():
+    if not isinstance(module, torch.fx.GraphModule):
+      continue
+    for node in module.graph.nodes:
+      for value in _pytree.tree_leaves((node.args, node.kwargs)):
+        if isinstance(value, str) and value in groups_by_name:
+          names.add(value)
+        elif (
+            isinstance(value, torch.distributed.ProcessGroup)
+            and value in names_by_group
+        ):
+          names.add(names_by_group[value])
+  if not names:
+    return tag
+
+  # pylint: disable-next=g-import-not-at-top
+  from torch_tpu._internal.distributed import tpu_distributed
+
+  def tpu_layout(group: torch.distributed.ProcessGroup) -> tuple[Any, ...]:
+    try:
+      # pylint: disable-next=protected-access
+      backend = group._get_backend(torch.device("tpu"))
+    except RuntimeError:
+      return [], [], []
+    return (
+        tpu_distributed.replica_groups(backend),
+        tpu_distributed.device_assignment(backend),
+        tpu_distributed.rank_to_device_id(backend),
+    )
+
+  groups = [
+      (
+          name,
+          torch.distributed.get_process_group_ranks(groups_by_name[name]),
+          *tpu_layout(groups_by_name[name]),
+      )
+      for name in sorted(names)
+  ]
+  # pylint: disable-next=protected-access
+  world = tpu_layout(torch.distributed.distributed_c10d._get_default_group())
+  digest = hashlib.sha256(repr((groups, world)).encode()).hexdigest()
+  return f"{tag}:torchtpu_process_groups={digest}"
+
+
 @contextlib.contextmanager
 def _serialization_context(
     example_inputs: Sequence[Any],
@@ -814,8 +884,11 @@ class TpuBackend:
         if async_compile
         else contextlib.nullcontext()
     )
+    cache_key_tag = _process_group_cache_key_tag(graph_module)
     with _serialization_context(example_inputs, serializable) as captured_entry:
-      with save_context:
+      with save_context, torch.compiler.config.patch(
+          cache_key_tag=cache_key_tag
+      ):
         with execution_mode.set_eager_mode(
             execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
         ):

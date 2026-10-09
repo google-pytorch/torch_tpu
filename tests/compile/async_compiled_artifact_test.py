@@ -14,6 +14,7 @@
 
 from collections.abc import Callable, Sequence
 import concurrent.futures
+import copy
 import pickle
 import threading
 import time
@@ -143,6 +144,21 @@ class AsyncCompiledArtifactTest(seed_test_utils.RepeatableTest):
     restored = pickle.loads(pickled_data)
     self.assertIsInstance(restored, DummyConcreteArtifact)
     self.assertEqual(restored.value, 99)
+
+  def test_copy_triggers_resolution(self):
+    future = concurrent.futures.Future()
+    real_artifact = DummyConcreteArtifact(value=99)
+    future.set_result(real_artifact)
+
+    artifact = AsyncCompiledArtifact(future)
+    self.assertFalse(artifact.is_resolved)
+
+    copied = copy.copy(artifact)
+
+    self.assertTrue(artifact.is_resolved)
+    self.assertIsInstance(copied, DummyConcreteArtifact)
+    self.assertIsNot(copied, artifact)
+    self.assertEqual(copied.value, 99)
 
   def test_aot_autograd_hooks_do_not_cause_resolution(self):
     future = concurrent.futures.Future()

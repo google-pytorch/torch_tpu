@@ -298,7 +298,8 @@ absl::StatusOr<at::Tensor> MakePlaceholder(Shape shape, bool requires_grad,
 
 absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ExtractMlirFromGraph(
     mlir::MLIRContext& mlir_context, const std::vector<at::Tensor>& arg_tensors,
-    const std::vector<at::Tensor>& result_tensors, bool use_stablehlo_bounds) {
+    const std::vector<at::Tensor>& result_tensors, bool use_stablehlo_bounds,
+    std::vector<int64_t>* absl_nullable device_assignment) {  // INT_VEC_OK
   // Use artificial python context for compiled mode to that modules have better
   // names when dumped. Currently this will always point to `_export_to_fx`, and
   // can be improved in the future, but it is useful for distinguishing torch
@@ -350,6 +351,10 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ExtractMlirFromGraph(
   TT_ASSIGN_OR_RETURN(
       mlir::OwningOpRef<mlir::ModuleOp> mlir_module,
       traversal->BuildMlirModule(mlir_context, use_stablehlo_bounds));
+  if (device_assignment != nullptr) {
+    TT_ASSIGN_OR_RETURN(*device_assignment,
+                        traversal->ResolveDeviceAssignment());
+  }
 
   return mlir_module;
 }
@@ -497,6 +502,9 @@ absl::StatusOr<AsyncCompileResult> TraverseAndCompile(
                   unique_donated_inputs, options.module_name);
             }),
         _ << "failed to build MLIR module");
+    TT_ASSIGN_OR_RETURN(std::vector<int64_t> device_assignment,  // INT_VEC_OK
+                        traversal->ResolveDeviceAssignment());
+    contexted_module.set_device_assignment(std::move(device_assignment));
     module = std::make_shared<ContextedModule>(std::move(contexted_module));
   }
 
@@ -570,9 +578,8 @@ absl::StatusOr<SharedLoadedExecutableWithMetadata> CompileMlirExecutable(
       [module = std::move(module)](
           xla::PjRtClient& client,
           UniqueCompileOptions compile_options) mutable {
-        return AdaptXlaError(client.CompileAndLoad(std::move(module),
-                                                   std::move(*compile_options)),
-                             /* context= */ "failed to compile MLIR module");
+        return CompileAndLoad(client, std::move(module),
+                              std::move(*compile_options));
       };
   return Compile(*client, std::move(executable_builder),
                  std::move(compile_options));

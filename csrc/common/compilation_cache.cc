@@ -1030,11 +1030,9 @@ void CompilationCache::EnqueueCompilation(
   auto executable_builder = [contexted_module = std::move(contexted_module)](
                                 xla::PjRtClient& client,
                                 UniqueCompileOptions options) mutable {
-    return AdaptXlaError(
-        client.CompileAndLoad(
-            std::move(contexted_module).ToMaybeOwningMlirModule(),
-            std::move(*options)),
-        /* context= */ "failed to compile MLIR module");
+    return CompileAndLoad(client,
+                          std::move(contexted_module).ToMaybeOwningMlirModule(),
+                          std::move(*options));
   };
 
   compilation_pool_->Schedule(
@@ -1128,6 +1126,8 @@ void CompilationCache::GetFromTier2OrCompile(
     const CompilationCacheKey& key, const CacheEntryKind kind,
     LoadedExecutableBuilder executable_builder,
     UniqueCompileOptions compile_options) {
+  const std::vector<int64_t> device_ids =  // INT_VEC_OK
+      DeviceIdsOf(*compile_options);
   const bool uses_tier2 = ShouldUseTier2Cache();
   ABSL_VLOG(1) << "Compiling executable for key: " << key
                << (uses_tier2 ? absl::StrCat(" with tier-2 cache at ",
@@ -1145,7 +1145,8 @@ void CompilationCache::GetFromTier2OrCompile(
 
   // Check 1: if the compilation result is already in the tier-2 cache, use it.
   Tier2CacheEntryStats tier2_stats;
-  auto executable_or = GetFromTier2Cache(key, request_start, tier2_stats);
+  auto executable_or =
+      GetFromTier2Cache(key, request_start, tier2_stats, device_ids);
   if (executable_or.ok()) {
     SetExecutable(key, kind, std::move(executable_or),
                   {.tier2 = std::move(tier2_stats)});
@@ -1164,7 +1165,8 @@ void CompilationCache::GetFromTier2OrCompile(
       // in case another thread or process has just finished the compilation and
       // released the lock.
       Tier2CacheEntryStats tier2_stats;
-      auto executable_or = GetFromTier2Cache(key, request_start, tier2_stats);
+      auto executable_or =
+          GetFromTier2Cache(key, request_start, tier2_stats, device_ids);
       if (executable_or.ok()) {
         SetExecutable(key, kind, std::move(executable_or),
                       {.tier2 = std::move(tier2_stats)});
@@ -1186,6 +1188,8 @@ void CompilationCache::GetFromTier3OrCompile(
   const auto pre_compile_duration = absl::Now() - request_start;
   absl::StatusOr<SharedLoadedExecutableWithMetadata> executable_or;
   CacheTier tier = CacheTier::kUnknown;
+  const std::vector<int64_t> device_ids =  // INT_VEC_OK
+      DeviceIdsOf(*compile_options);
 
   const bool backup_compilation = UsesLocalBackupTaskForTier3Read();
   if (backup_compilation) {
@@ -1211,7 +1215,7 @@ void CompilationCache::GetFromTier3OrCompile(
 
   // If tier-3 cache is enabled, try to get the executable from it first.
   if (uses_tier3) {
-    executable_or = GetFromTier3Cache(key);
+    executable_or = GetFromTier3Cache(key, device_ids);
     if (executable_or.ok()) {
       ABSL_VLOG(1) << "Tier-3 cache HIT for key " << key;
       tier = CacheTier::kTier3;

@@ -218,7 +218,12 @@ def _validate_multi_slice(
     )
 
 
-__all__ = ["topology_aware_mesh", "get_device_assignment"]
+__all__ = [
+    "topology_aware_mesh",
+    "get_device_assignment",
+    "is_standalone",
+    "is_standalone_device_group",
+]
 
 
 def topology_aware_mesh(
@@ -388,3 +393,38 @@ def get_device_assignment(
     return [int(x) for x in tpu_distributed.rank_to_device_id(backend)]
   except (RuntimeError, TypeError):
     return []
+
+
+def is_standalone(pg: Optional[dist.ProcessGroup] = None) -> bool:
+  """Returns whether `pg` was made standalone with `spmd_util.make_standalone`.
+
+  Args:
+    pg: The process group to query. If None or dist.group.WORLD, queries the
+      world process group, which is never standalone.
+
+  Returns:
+    True if `pg` is a standalone process group of this process.
+  """
+  if not dist.is_initialized():
+    return False
+  pg = pg or dist.group.WORLD
+  if pg is None:
+    return False
+  try:
+    backend = pg._get_backend(torch.device("tpu"))
+    return tpu_distributed.is_standalone(backend)
+  except (RuntimeError, TypeError):
+    return False
+
+
+def is_standalone_device_group(device_ids: list[int]) -> bool:
+  """Returns whether `device_ids` are the devices of a standalone subgroup.
+
+  Args:
+    device_ids: Global device IDs.
+
+  Returns:
+    True if a process subgroup of exactly these devices, in the subgroup's rank
+    order, was made standalone with `spmd_util.make_standalone`.
+  """
+  return tpu_distributed.is_standalone_device_group(device_ids)

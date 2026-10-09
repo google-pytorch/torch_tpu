@@ -150,7 +150,8 @@ std::vector<int64_t> ResolvePallasDeviceAssignment(  // INT_VEC_OK
            "0: "
         << VectorToString(authoritative_pallas_da)
         << " vs Kernel DA: " << VectorToString(pallas_op.device_assignment)
-        << ". All Pallas kernels in a traversal must share the identical mesh";
+        << ". All Pallas kernels in a traversal, and scans, which carry the "
+           "device assignment of their body, must share the identical mesh";
   }
   return authoritative_pallas_da;
 }

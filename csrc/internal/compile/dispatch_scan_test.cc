@@ -364,6 +364,22 @@ TEST_F(DispatchScanTest, With1D) {
   LowerAndVerify(results, {carry_init, input}, /*expected_results_size=*/2);
 }
 
+TEST_F(DispatchScanTest, ScanOpTakesTheDeviceAssignmentOfItsBody) {
+  const auto [input, carry_init, dummy_output, body_module] =
+      GetStandard1DInputs();
+  body_module->set_device_assignment({6, 7});
+
+  const std::vector<at::Tensor> results = PyCreateScanOp(
+      {carry_init}, {input}, body_module, ScanDirection::kForward,
+      {dummy_output}, /*num_scan_inputs=*/1);
+  ASSERT_EQ(results.size(), 2);
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef outputs_buf,
+                          GetBuffer(results[1]));
+  ASSERT_TRUE(outputs_buf.deferred_op() != nullptr);
+  EXPECT_THAT(outputs_buf.deferred_op()->device_assignment(),
+              ElementsAre(6, 7));
+}
+
 TEST_F(DispatchScanTest, StepFunctionCalleeIsImported) {
   const auto [input, carry_init, dummy_output, body_module] =
       GetStandard1DInputs(kCalleeStepMlir);
@@ -856,6 +872,22 @@ TEST_F(DispatchScanTest, AssociativeScanInfersIdentityAndEmitsChloScan) {
     EXPECT_THAT(lowered_mlir, testing::Not(HasSubstr("stablehlo.while")));
     EXPECT_THAT(lowered_mlir, testing::Not(HasSubstr("stablehlo.concatenate")));
   }
+}
+
+TEST_F(DispatchScanTest, AssociativeScanOpTakesTheDeviceAssignmentOfItsBody) {
+  const at::Tensor input = MakePlaceholderI32({4, 3});
+  const std::shared_ptr<ContextedModule> body_module =
+      CreateBodyModule(kAssociativeAddCombineMlir);
+  body_module->set_device_assignment({6, 7});
+
+  const std::vector<at::Tensor> results = PyCreateAssociativeScanOp(
+      {input}, body_module, ScanDirection::kForward, /*dim=*/0,
+      /*num_scan_inputs=*/1);
+  ASSERT_EQ(results.size(), 1);
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef result_buf,
+                          GetBuffer(results[0]));
+  ASSERT_TRUE(result_buf.deferred_op() != nullptr);
+  EXPECT_THAT(result_buf.deferred_op()->device_assignment(), ElementsAre(6, 7));
 }
 
 TEST_F(DispatchScanTest, AssociativeScanMambaSsmTupleInfersIdentity) {

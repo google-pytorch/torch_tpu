@@ -18,6 +18,7 @@ import functools
 from typing import Any, TypeVar
 
 import torch
+from torch import distributed as dist
 from torch.utils import _pytree
 from torch_tpu._internal.distributed import tpu_distributed
 from torch_tpu._internal.sync import sync
@@ -96,3 +97,33 @@ def spmd_safe(func: _F) -> _F:
       return func(*args, **kwargs)
 
   return wrapper  # pyrefly: ignore[bad-return]
+
+
+def make_standalone(group: dist.ProcessGroup) -> None:
+  """Makes a process subgroup launch its programs without the other subgroups.
+
+  By default, the collectives of a subgroup are part of a program for every
+  device of the slice, which all subgroups launch together and in the same
+  order. The collectives of a standalone subgroup, and the Pallas kernels over
+  its mesh, are compiled for the devices of the subgroup alone, so its members
+  launch them on their own, e.g. the stages of a pipeline. A program holds the
+  collectives and kernels of one standalone subgroup only, and no
+  sparse-dense-matmul lookup, whose table is sharded across the SparseCores of
+  all devices.
+
+  Every member of `group` must call this before the first collective of the
+  group; the call waits for all of them. No-op for a group of the world size.
+
+  Args:
+    group: The process subgroup to make standalone.
+
+  Raises:
+    RuntimeError: If libtpu is older than 0.0.47; libtpu 0.0.44.1 to 0.0.46.1
+      halt programs of subgroups that span several chips.
+
+  Example:
+    make_standalone(stage_group)
+    dist.all_reduce(x, group=stage_group)  # Launched by the stage's ranks.
+  """
+  backend = group._get_backend(torch.device("tpu"))
+  tpu_distributed.make_standalone(backend)

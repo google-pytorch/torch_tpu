@@ -40,6 +40,7 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/escaping.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_join.h"
 #include "absl/types/span.h"
 #include "c10/core/Device.h"
 #include "c10/core/DeviceGuard.h"
@@ -335,12 +336,14 @@ std::shared_ptr<ContextedModule> PyBuildMlir(
     const std::vector<at::Tensor>& result_tensors,
     const std::vector<at::Tensor>& argument_tensors,
     bool use_stablehlo_bounds) {  // INT_VEC_OK
+  std::vector<int64_t> device_assignment;  // INT_VEC_OK
   TT_ASSIGN_OR_THROW(ContextedModule module,
                      ContextedModule::Make([&](mlir::MLIRContext& context) {
-                       return ExtractMlirFromGraph(context, argument_tensors,
-                                                   result_tensors,
-                                                   use_stablehlo_bounds);
+                       return ExtractMlirFromGraph(
+                           context, argument_tensors, result_tensors,
+                           use_stablehlo_bounds, &device_assignment);
                      }));
+  module.set_device_assignment(std::move(device_assignment));
 
   mlir::BaseScopedDiagnosticHandler diag_handler(&module.context());
   if (failed(mlir::verify(module.get()))) {
@@ -1187,22 +1190,35 @@ py::bytes PySerializeExecutable(
 }
 
 absl::StatusOr<SharedLoadedExecutableWithMetadata> LoadSerializedExecutableImpl(
-    std::string_view data) {
+    std::string_view data, absl::Span<const int64_t> device_ids) {
   TT_ASSIGN_OR_RETURN(xla::PjRtClient* const client,
                       PjrtBackend::GetInstance().GetClient());
+  if (!device_ids.empty()) {
+    TT_ASSIGN_OR_RETURN(const xla::PjRtDevice* const device,
+                        PjrtBackend::GetInstance().GetDevice());
+    const int64_t device_id = device->global_device_id().value();
+    TT_RET_CHECK(absl::c_linear_search(device_ids, device_id),
+                 error::kInvalidArgument)
+        << "the executable was built for devices "
+        << absl::StrJoin(device_ids, ", ") << ", not for device " << device_id
+        << " of this process";
+  }
   TT_ASSIGN_OR_RETURN(
       std::unique_ptr<xla::PjRtLoadedExecutable> pjrt_executable,
-      AdaptXlaError(client->LoadSerializedExecutable(
-                        data, /* options= */ std::nullopt, xla::LoadOptions()),
-                    /* context= */ "failed to load serialized executable"));
-  return LoadedExecutableWithMetadata::MakeShared(std::move(pjrt_executable));
+      LoadSerializedExecutableForDevices(*client, data, device_ids));
+  return LoadedExecutableWithMetadata::MakeShared(
+      std::move(pjrt_executable), /*argument_indices=*/{},
+      /*unbounded_dynamic_execution_metadata=*/std::nullopt,
+      std::vector<int64_t>(device_ids.begin(),  // INT_VEC_OK
+                           device_ids.end()));
 }
 
 SharedLoadedExecutableWithMetadata PyLoadSerializedExecutable(
-    py::bytes& serialized_bytes) {
+    py::bytes& serialized_bytes,
+    const std::vector<int64_t>& device_ids) {  // INT_VEC_OK
   const auto data = py::cast<std::string_view>(serialized_bytes);
   TT_ASSIGN_OR_THROW(SharedLoadedExecutableWithMetadata executable,
-                     LoadSerializedExecutableImpl(data),
+                     LoadSerializedExecutableImpl(data, device_ids),
                      _.SetPrepend() << "failed to load executable: ");
   return executable;
 }
@@ -2110,6 +2126,14 @@ TT_PYBIND11_MODULE(tpu_torch_compile, m) {
       m, "LoadedExecutableWithMetadata")
       .def("get_parameter_layouts", &PyGetParameterLayoutsFromMetadata)
       .def("get_output_layouts", &PyGetOutputLayoutsFromMetadata)
+      .def(
+          "device_ids",
+          [](const LoadedExecutableWithMetadata& executable) {
+            return executable.device_ids();
+          },
+          "Returns the ids of the devices the executable was built for, in "
+          "device assignment order; empty for an executable built without a "
+          "device assignment.")
       .def("fingerprint_executable",
            [](const LoadedExecutableWithMetadata& executable) -> std::string {
              TT_ASSIGN_OR_THROW(
@@ -2313,7 +2337,15 @@ TT_PYBIND11_MODULE(tpu_torch_compile, m) {
         "Serializes a PjRtLoadedExecutable to bytes for caching.");
   m.def("load_serialized_executable", PyLoadSerializedExecutable,
         py::arg("serialized_bytes"),
-        "Loads a PjRtLoadedExecutable from serialized bytes.");
+        py::arg("device_ids") = std::vector<int64_t>{},  // INT_VEC_OK
+        "Loads a PjRtLoadedExecutable from serialized bytes.\n\n"
+        "Args:\n"
+        "  serialized_bytes: The bytes from `serialize_executable`.\n"
+        "  device_ids: The devices the executable was built for "
+        "(`LoadedExecutableWithMetadata.device_ids()`); the device of this "
+        "process must be one of them. The executable of a subgroup that "
+        "fills a box of devices off the slice origin loads at that box. Empty "
+        "for an executable built without a device assignment.");
   m.def("make_constant_tensor", PyMakeConstantTensor, py::arg("cpu_tensor"),
         "Creates a TPU tensor that represents the constant value of the CPU "
         "tensor.");

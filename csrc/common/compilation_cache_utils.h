@@ -17,6 +17,7 @@
 #ifndef TORCH_TPU_CSRC_COMMON_COMPILATION_CACHE_UTILS_H_
 #define TORCH_TPU_CSRC_COMMON_COMPILATION_CACHE_UTILS_H_
 
+#include <cstdint>
 #include <ostream>
 #include <string>
 #include <string_view>
@@ -24,6 +25,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_format.h"
+#include "absl/types/span.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/fingerprint_utils.h"
@@ -56,9 +58,11 @@ void AbslStringify(Sink& sink, const CacheTier tier) {
 // 0777 (rwxrwxrwx).
 absl::Status EnsureDirExistsRecursively(const std::string& path);
 
-// Loads a serialized executable read from the given cache.
+// Loads a serialized executable read from the given cache for `device_ids`,
+// the devices it was built for (see `LoadSerializedExecutableForDevices()`).
 absl::StatusOr<SharedLoadedExecutableWithMetadata> LoadSerializedExecutable(
-    CacheTier tier, const CompilationCacheKey& key, std::string_view data);
+    CacheTier tier, const CompilationCacheKey& key, std::string_view data,
+    absl::Span<const int64_t> device_ids);
 
 // Writes a compiled executable to the given tier-2 or tier-3 cache file. This
 // is best effort.
