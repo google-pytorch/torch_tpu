@@ -45,7 +45,6 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "multi_bucket_compile_test",
     srcs = ["multi_bucket_compile_test.py"],
-    notest_oss = True,  # NOTEST_OSS_OK=OSS needs to be updated with the latest libtpu release for bounded dynamism.
     tags = [
         "requires-tpu-v5lite",
     ],
@@ -55,6 +54,7 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/compile:tpu_backend",
         "//src/torch_tpu/_internal/utils:test_utils",
+        "//tests:oss_utils",
         "//tests:seed_test_utils",
     ],
 )
