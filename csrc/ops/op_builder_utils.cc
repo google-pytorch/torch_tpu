@@ -1979,4 +1979,577 @@ absl::StatusOr<mlir::MlirOp> ReshapeToStaticDimensions(
                                      static_shape_after);
 }
 
+namespace {
+
+std::optional<mlir::Value> MatchResolveNegativeSelect(mlir::Value val) {
+  auto sel =
+      mlir::dyn_cast_or_null<mlir::stablehlo::SelectOp>(val.getDefiningOp());
+  if (!sel) {
+    return std::nullopt;
+  }
+  auto cmp = mlir::dyn_cast_or_null<mlir::stablehlo::CompareOp>(
+      sel.getPred().getDefiningOp());
+  if (!cmp || cmp.getComparisonDirection() !=
+                  mlir::stablehlo::ComparisonDirection::LT) {
+    return std::nullopt;
+  }
+  mlir::Value raw_idx = sel.getOnFalse();
+  if (cmp.getLhs() != raw_idx) {
+    return std::nullopt;
+  }
+  const std::optional<int64_t> rhs_const = TryGetSplatIntConstant(cmp.getRhs());
+  if (!rhs_const.has_value() || *rhs_const != 0) {
+    return std::nullopt;
+  }
+  auto add_op = mlir::dyn_cast_or_null<mlir::stablehlo::AddOp>(
+      sel.getOnTrue().getDefiningOp());
+  if (!add_op || (add_op.getLhs() != raw_idx && add_op.getRhs() != raw_idx)) {
+    return std::nullopt;
+  }
+  return raw_idx;
+}
+
+}  // namespace
+
+std::optional<int64_t> TryGetSplatIntConstant(mlir::Value val, int depth) {
+  if (depth > 6 || !val) {
+    return std::nullopt;
+  }
+  mlir::Operation* def = val.getDefiningOp();
+  if (!def) {
+    return std::nullopt;
+  }
+  if (auto cst = mlir::dyn_cast<mlir::stablehlo::ConstantOp>(def)) {
+    auto dense = mlir::dyn_cast<mlir::DenseIntElementsAttr>(cst.getValue());
+    if (dense && dense.isSplat()) {
+      const llvm::APInt ap_val = dense.getSplatValue<llvm::APInt>();
+      if (ap_val.getBitWidth() <= 64) {
+        auto rtype = mlir::dyn_cast<mlir::RankedTensorType>(val.getType());
+        if (rtype && rtype.getElementType().isUnsignedInteger()) {
+          if (ap_val.ult(
+                  llvm::APInt(ap_val.getBitWidth(),
+                              static_cast<uint64_t>(
+                                  std::numeric_limits<int64_t>::max())))) {
+            return static_cast<int64_t>(ap_val.getZExtValue());
+          }
+          return std::nullopt;
+        }
+        return ap_val.getSExtValue();
+      }
+    }
+    return std::nullopt;
+  }
+  if (auto bcast = mlir::dyn_cast<mlir::stablehlo::BroadcastInDimOp>(def)) {
+    return TryGetSplatIntConstant(bcast.getOperand(), depth + 1);
+  }
+  if (auto reshape = mlir::dyn_cast<mlir::stablehlo::ReshapeOp>(def)) {
+    return TryGetSplatIntConstant(reshape.getOperand(), depth + 1);
+  }
+  if (auto conv = mlir::dyn_cast<mlir::stablehlo::ConvertOp>(def)) {
+    auto in_type =
+        mlir::dyn_cast<mlir::RankedTensorType>(conv.getOperand().getType());
+    auto out_type = mlir::dyn_cast<mlir::RankedTensorType>(val.getType());
+    if (in_type && out_type && in_type.getElementType().isInteger() &&
+        out_type.getElementType().isInteger() &&
+        out_type.getElementType().getIntOrFloatBitWidth() >=
+            in_type.getElementType().getIntOrFloatBitWidth()) {
+      return TryGetSplatIntConstant(conv.getOperand(), depth + 1);
+    }
+  }
+  return std::nullopt;
+}
+
+bool IsZeroTensor(mlir::Value val, int depth) {
+  if (depth > 6 || !val) {
+    return false;
+  }
+  mlir::Operation* def = val.getDefiningOp();
+  if (!def) {
+    return false;
+  }
+  if (auto cst = mlir::dyn_cast<mlir::stablehlo::ConstantOp>(def)) {
+    auto dense = mlir::dyn_cast<mlir::DenseElementsAttr>(cst.getValue());
+    if (!dense || !dense.isSplat()) {
+      return false;
+    }
+    const mlir::Type elem_type = dense.getElementType();
+    if (mlir::isa<mlir::IntegerType>(elem_type)) {
+      return dense.getSplatValue<llvm::APInt>().isZero();
+    }
+    if (mlir::isa<mlir::FloatType>(elem_type)) {
+      const llvm::APFloat f = dense.getSplatValue<llvm::APFloat>();
+      return f.isZero() && !f.isNegative();
+    }
+    return false;
+  }
+  if (auto bcast = mlir::dyn_cast<mlir::stablehlo::BroadcastInDimOp>(def)) {
+    return IsZeroTensor(bcast.getOperand(), depth + 1);
+  }
+  if (auto reshape = mlir::dyn_cast<mlir::stablehlo::ReshapeOp>(def)) {
+    return IsZeroTensor(reshape.getOperand(), depth + 1);
+  }
+  if (auto slice = mlir::dyn_cast<mlir::stablehlo::SliceOp>(def)) {
+    return IsZeroTensor(slice.getOperand(), depth + 1);
+  }
+  if (auto conv = mlir::dyn_cast<mlir::stablehlo::ConvertOp>(def)) {
+    return IsZeroTensor(conv.getOperand(), depth + 1);
+  }
+  return false;
+}
+
+bool IsProvablyNonNegative(mlir::Value val, int depth) {
+  if (depth > 8 || !val) {
+    return false;
+  }
+  if (std::optional<mlir::Value> raw = MatchResolveNegativeSelect(val)) {
+    if (IsProvablyNonNegative(*raw, depth + 1)) {
+      return true;
+    }
+  }
+  if (std::optional<int64_t> cst = TryGetSplatIntConstant(val)) {
+    return *cst >= 0;
+  }
+  auto rtype = mlir::dyn_cast<mlir::RankedTensorType>(val.getType());
+  if (!rtype || !rtype.getElementType().isInteger()) {
+    return false;
+  }
+  if (rtype.getElementType().isUnsignedInteger() ||
+      rtype.getElementType().isInteger(1)) {
+    return true;
+  }
+  mlir::Operation* def = val.getDefiningOp();
+  if (!def) {
+    return false;
+  }
+  if (mlir::isa<mlir::stablehlo::IotaOp>(def)) {
+    return true;
+  }
+  if (def->getName().getStringRef() == "chlo.top_k" &&
+      mlir::cast<mlir::OpResult>(val).getResultNumber() == 1) {
+    return true;
+  }
+  if (mlir::isa<mlir::stablehlo::ReshapeOp, mlir::stablehlo::TransposeOp,
+                mlir::stablehlo::BroadcastInDimOp, mlir::stablehlo::SliceOp,
+                mlir::stablehlo::DynamicSliceOp>(def)) {
+    return IsProvablyNonNegative(def->getOperand(0), depth + 1);
+  }
+  if (auto conv = mlir::dyn_cast<mlir::stablehlo::ConvertOp>(def)) {
+    auto in_type =
+        mlir::dyn_cast<mlir::RankedTensorType>(conv.getOperand().getType());
+    if (in_type && in_type.getElementType().isInteger() &&
+        (rtype.getElementType().getIntOrFloatBitWidth() >=
+             in_type.getElementType().getIntOrFloatBitWidth() ||
+         IsProvablyI32Bounded(conv.getOperand(), depth + 1))) {
+      return IsProvablyNonNegative(conv.getOperand(), depth + 1);
+    }
+    return false;
+  }
+  if (auto sort_op = mlir::dyn_cast<mlir::stablehlo::SortOp>(def)) {
+    const unsigned res_idx = mlir::cast<mlir::OpResult>(val).getResultNumber();
+    if (res_idx < sort_op.getInputs().size()) {
+      return IsProvablyNonNegative(sort_op.getInputs()[res_idx], depth + 1);
+    }
+    return false;
+  }
+  if (auto min_op = mlir::dyn_cast<mlir::stablehlo::MinOp>(def)) {
+    return IsProvablyNonNegative(min_op.getLhs(), depth + 1) &&
+           IsProvablyNonNegative(min_op.getRhs(), depth + 1);
+  }
+  if (auto max_op = mlir::dyn_cast<mlir::stablehlo::MaxOp>(def)) {
+    return IsProvablyNonNegative(max_op.getLhs(), depth + 1) ||
+           IsProvablyNonNegative(max_op.getRhs(), depth + 1);
+  }
+  if (auto clamp_op = mlir::dyn_cast<mlir::stablehlo::ClampOp>(def)) {
+    return IsProvablyNonNegative(clamp_op.getMin(), depth + 1);
+  }
+  if (mlir::isa<mlir::stablehlo::DivOp, mlir::chlo::BroadcastDivOp>(def)) {
+    return IsProvablyNonNegative(def->getOperand(0), depth + 1) &&
+           IsProvablyNonNegative(def->getOperand(1), depth + 1);
+  }
+  if (auto add_op = mlir::dyn_cast<mlir::stablehlo::AddOp>(def)) {
+    if (const std::optional<int64_t> rhs =
+            TryGetSplatIntConstant(add_op.getRhs());
+        rhs.has_value() && *rhs == 0) {
+      return IsProvablyNonNegative(add_op.getLhs(), depth + 1);
+    }
+    if (const std::optional<int64_t> lhs =
+            TryGetSplatIntConstant(add_op.getLhs());
+        lhs.has_value() && *lhs == 0) {
+      return IsProvablyNonNegative(add_op.getRhs(), depth + 1);
+    }
+  }
+  if (auto mul_op = mlir::dyn_cast<mlir::stablehlo::MulOp>(def)) {
+    if (const std::optional<int64_t> rhs =
+            TryGetSplatIntConstant(mul_op.getRhs());
+        rhs.has_value() && (*rhs == 0 || *rhs == 1)) {
+      return *rhs == 0 || IsProvablyNonNegative(mul_op.getLhs(), depth + 1);
+    }
+    if (const std::optional<int64_t> lhs =
+            TryGetSplatIntConstant(mul_op.getLhs());
+        lhs.has_value() && (*lhs == 0 || *lhs == 1)) {
+      return *lhs == 0 || IsProvablyNonNegative(mul_op.getRhs(), depth + 1);
+    }
+  }
+  if (auto sel = mlir::dyn_cast<mlir::stablehlo::SelectOp>(def)) {
+    return IsProvablyNonNegative(sel.getOnTrue(), depth + 1) &&
+           IsProvablyNonNegative(sel.getOnFalse(), depth + 1);
+  }
+  return false;
+}
+
+bool IsProvablyStrictlyPositiveInt(mlir::Value val) {
+  const std::optional<int64_t> cst = TryGetSplatIntConstant(val);
+  return cst.has_value() && *cst > 0;
+}
+
+bool IsProvablyI32Bounded(mlir::Value val, int depth) {
+  if (depth > 8 || !val) {
+    return false;
+  }
+  if (std::optional<mlir::Value> raw = MatchResolveNegativeSelect(val)) {
+    if (IsProvablyNonNegative(*raw, depth + 1)) {
+      return IsProvablyI32Bounded(*raw, depth + 1);
+    }
+  }
+  if (std::optional<int64_t> cst = TryGetSplatIntConstant(val)) {
+    return *cst >= std::numeric_limits<int32_t>::min() &&
+           *cst <= std::numeric_limits<int32_t>::max();
+  }
+  auto rtype = mlir::dyn_cast<mlir::RankedTensorType>(val.getType());
+  if (!rtype || !rtype.getElementType().isInteger()) {
+    return false;
+  }
+  const unsigned bw = rtype.getElementType().getIntOrFloatBitWidth();
+  if ((!rtype.getElementType().isUnsignedInteger() && bw <= 32) ||
+      (rtype.getElementType().isUnsignedInteger() && bw < 32)) {
+    return true;
+  }
+  mlir::Operation* def = val.getDefiningOp();
+  if (!def) {
+    return false;
+  }
+  if (auto iota = mlir::dyn_cast<mlir::stablehlo::IotaOp>(def)) {
+    const int64_t dim_size = rtype.getDimSize(iota.getIotaDimension());
+    return dim_size >= 0 && dim_size <= std::numeric_limits<int32_t>::max();
+  }
+  if (def->getName().getStringRef() == "chlo.top_k" &&
+      mlir::cast<mlir::OpResult>(val).getResultNumber() == 1) {
+    return true;
+  }
+  if (mlir::isa<mlir::stablehlo::ReshapeOp, mlir::stablehlo::TransposeOp,
+                mlir::stablehlo::BroadcastInDimOp, mlir::stablehlo::SliceOp,
+                mlir::stablehlo::DynamicSliceOp, mlir::stablehlo::ConvertOp>(
+          def)) {
+    return IsProvablyI32Bounded(def->getOperand(0), depth + 1);
+  }
+  if (auto sort_op = mlir::dyn_cast<mlir::stablehlo::SortOp>(def)) {
+    const unsigned res_idx = mlir::cast<mlir::OpResult>(val).getResultNumber();
+    if (res_idx < sort_op.getInputs().size()) {
+      return IsProvablyI32Bounded(sort_op.getInputs()[res_idx], depth + 1);
+    }
+    return false;
+  }
+  if (auto min_op = mlir::dyn_cast<mlir::stablehlo::MinOp>(def)) {
+    if (IsProvablyI32Bounded(min_op.getLhs(), depth + 1) &&
+        IsProvablyI32Bounded(min_op.getRhs(), depth + 1)) {
+      return true;
+    }
+    return IsProvablyNonNegative(min_op.getLhs(), depth + 1) &&
+           IsProvablyNonNegative(min_op.getRhs(), depth + 1) &&
+           (IsProvablyI32Bounded(min_op.getLhs(), depth + 1) ||
+            IsProvablyI32Bounded(min_op.getRhs(), depth + 1));
+  }
+  if (auto max_op = mlir::dyn_cast<mlir::stablehlo::MaxOp>(def)) {
+    return IsProvablyI32Bounded(max_op.getLhs(), depth + 1) &&
+           IsProvablyI32Bounded(max_op.getRhs(), depth + 1);
+  }
+  if (auto clamp_op = mlir::dyn_cast<mlir::stablehlo::ClampOp>(def)) {
+    return IsProvablyI32Bounded(clamp_op.getMin(), depth + 1) &&
+           IsProvablyI32Bounded(clamp_op.getMax(), depth + 1);
+  }
+  if (mlir::isa<mlir::stablehlo::DivOp, mlir::chlo::BroadcastDivOp>(def)) {
+    return IsProvablyNonNegative(def->getOperand(0), depth + 1) &&
+           IsProvablyNonNegative(def->getOperand(1), depth + 1) &&
+           IsProvablyI32Bounded(def->getOperand(0), depth + 1);
+  }
+  if (auto add_op = mlir::dyn_cast<mlir::stablehlo::AddOp>(def)) {
+    if (const std::optional<int64_t> rhs =
+            TryGetSplatIntConstant(add_op.getRhs());
+        rhs.has_value() && *rhs == 0) {
+      return IsProvablyI32Bounded(add_op.getLhs(), depth + 1);
+    }
+    if (const std::optional<int64_t> lhs =
+            TryGetSplatIntConstant(add_op.getLhs());
+        lhs.has_value() && *lhs == 0) {
+      return IsProvablyI32Bounded(add_op.getRhs(), depth + 1);
+    }
+  }
+  if (auto mul_op = mlir::dyn_cast<mlir::stablehlo::MulOp>(def)) {
+    if (const std::optional<int64_t> rhs =
+            TryGetSplatIntConstant(mul_op.getRhs());
+        rhs.has_value() && (*rhs == 0 || *rhs == 1)) {
+      return *rhs == 0 || IsProvablyI32Bounded(mul_op.getLhs(), depth + 1);
+    }
+    if (const std::optional<int64_t> lhs =
+            TryGetSplatIntConstant(mul_op.getLhs());
+        lhs.has_value() && (*lhs == 0 || *lhs == 1)) {
+      return *lhs == 0 || IsProvablyI32Bounded(mul_op.getRhs(), depth + 1);
+    }
+  }
+  if (auto sel = mlir::dyn_cast<mlir::stablehlo::SelectOp>(def)) {
+    return IsProvablyI32Bounded(sel.getOnTrue(), depth + 1) &&
+           IsProvablyI32Bounded(sel.getOnFalse(), depth + 1);
+  }
+  return false;
+}
+
+mlir::Value UnwrapResolvedNonNegativeIndex(mlir::Value val) {
+  for (int i = 0; i < 4; ++i) {
+    std::optional<mlir::Value> raw = MatchResolveNegativeSelect(val);
+    if (raw.has_value() && IsProvablyNonNegative(*raw)) {
+      val = *raw;
+    } else {
+      break;
+    }
+  }
+  return val;
+}
+
+mlir::Value Strip1DIndexWrappers(mlir::Value val, int64_t expected_len) {
+  for (int i = 0; i < 8; ++i) {
+    val = UnwrapResolvedNonNegativeIndex(val);
+    mlir::Operation* def = val.getDefiningOp();
+    if (!def) {
+      break;
+    }
+    if (auto add_op = mlir::dyn_cast<mlir::stablehlo::AddOp>(def)) {
+      if (const std::optional<int64_t> rhs =
+              TryGetSplatIntConstant(add_op.getRhs());
+          rhs.has_value() && *rhs == 0) {
+        val = add_op.getLhs();
+        continue;
+      }
+      if (const std::optional<int64_t> lhs =
+              TryGetSplatIntConstant(add_op.getLhs());
+          lhs.has_value() && *lhs == 0) {
+        val = add_op.getRhs();
+        continue;
+      }
+    }
+    if (auto mul_op = mlir::dyn_cast<mlir::stablehlo::MulOp>(def)) {
+      if (const std::optional<int64_t> rhs =
+              TryGetSplatIntConstant(mul_op.getRhs());
+          rhs.has_value() && *rhs == 1) {
+        val = mul_op.getLhs();
+        continue;
+      }
+      if (const std::optional<int64_t> lhs =
+              TryGetSplatIntConstant(mul_op.getLhs());
+          lhs.has_value() && *lhs == 1) {
+        val = mul_op.getRhs();
+        continue;
+      }
+    }
+    if (auto conv = mlir::dyn_cast<mlir::stablehlo::ConvertOp>(def)) {
+      auto in_type =
+          mlir::dyn_cast<mlir::RankedTensorType>(conv.getOperand().getType());
+      if (in_type && in_type.getRank() == 1 &&
+          in_type.getDimSize(0) == expected_len &&
+          in_type.getElementType().isInteger() &&
+          in_type.getElementType().getIntOrFloatBitWidth() >= 32) {
+        val = conv.getOperand();
+        continue;
+      }
+    }
+    if (auto reshape = mlir::dyn_cast<mlir::stablehlo::ReshapeOp>(def)) {
+      auto in_type = mlir::dyn_cast<mlir::RankedTensorType>(
+          reshape.getOperand().getType());
+      if (in_type && in_type.getRank() == 1 &&
+          in_type.getDimSize(0) == expected_len) {
+        val = reshape.getOperand();
+        continue;
+      }
+    }
+    if (auto bcast = mlir::dyn_cast<mlir::stablehlo::BroadcastInDimOp>(def)) {
+      auto in_type =
+          mlir::dyn_cast<mlir::RankedTensorType>(bcast.getOperand().getType());
+      if (in_type && in_type.getRank() == 1 &&
+          in_type.getDimSize(0) == expected_len &&
+          bcast.getBroadcastDimensions().size() == 1 &&
+          bcast.getBroadcastDimensions()[0] == 0) {
+        val = bcast.getOperand();
+        continue;
+      }
+    }
+    break;
+  }
+  return val;
+}
+
+bool Is1DIota0(mlir::Value val, int64_t expected_len) {
+  val = Strip1DIndexWrappers(val, expected_len);
+  auto type = mlir::dyn_cast<mlir::RankedTensorType>(val.getType());
+  if (!type || type.getRank() != 1 || type.getDimSize(0) != expected_len) {
+    return false;
+  }
+  auto iota =
+      mlir::dyn_cast_or_null<mlir::stablehlo::IotaOp>(val.getDefiningOp());
+  return iota && iota.getIotaDimension() == 0;
+}
+
+bool IsAscendingKeySort(mlir::stablehlo::SortOp sort_op) {
+  if (sort_op.getComparator().empty()) {
+    return false;
+  }
+  mlir::Block& block = sort_op.getComparator().front();
+  if (block.getNumArguments() < 2) {
+    return false;
+  }
+  for (mlir::Operation& op : block.getOperations()) {
+    if (auto cmp = mlir::dyn_cast<mlir::stablehlo::CompareOp>(&op)) {
+      if (cmp.getLhs() == block.getArgument(0) &&
+          cmp.getRhs() == block.getArgument(1) &&
+          cmp.getComparisonDirection() ==
+              mlir::stablehlo::ComparisonDirection::LT) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool IsProvablySorted1D(mlir::Value val, int depth) {
+  if (depth > 8 || !val) {
+    return false;
+  }
+  auto type = mlir::dyn_cast<mlir::RankedTensorType>(val.getType());
+  if (!type || type.getRank() != 1) {
+    return false;
+  }
+  val = Strip1DIndexWrappers(val, type.getDimSize(0));
+  mlir::Operation* def = val.getDefiningOp();
+  if (!def) {
+    return false;
+  }
+  if (auto iota = mlir::dyn_cast<mlir::stablehlo::IotaOp>(def)) {
+    return iota.getIotaDimension() == 0;
+  }
+  if (auto sort_op = mlir::dyn_cast<mlir::stablehlo::SortOp>(def)) {
+    const unsigned res_idx = mlir::cast<mlir::OpResult>(val).getResultNumber();
+    return res_idx == 0 && sort_op.getDimension() == 0 &&
+           IsAscendingKeySort(sort_op);
+  }
+  if (auto conv = mlir::dyn_cast<mlir::stablehlo::ConvertOp>(def)) {
+    auto in_type =
+        mlir::dyn_cast<mlir::RankedTensorType>(conv.getOperand().getType());
+    if (in_type && in_type.getElementType().isInteger() &&
+        type.getElementType().isInteger() &&
+        (type.getElementType().getIntOrFloatBitWidth() >=
+             in_type.getElementType().getIntOrFloatBitWidth() ||
+         IsProvablyI32Bounded(conv.getOperand(), depth + 1))) {
+      return IsProvablySorted1D(conv.getOperand(), depth + 1);
+    }
+  }
+  if (auto min_op = mlir::dyn_cast<mlir::stablehlo::MinOp>(def)) {
+    if (TryGetSplatIntConstant(min_op.getRhs()).has_value() &&
+        IsProvablySorted1D(min_op.getLhs(), depth + 1)) {
+      return true;
+    }
+    if (TryGetSplatIntConstant(min_op.getLhs()).has_value() &&
+        IsProvablySorted1D(min_op.getRhs(), depth + 1)) {
+      return true;
+    }
+  }
+  if (auto max_op = mlir::dyn_cast<mlir::stablehlo::MaxOp>(def)) {
+    if (TryGetSplatIntConstant(max_op.getRhs()).has_value() &&
+        IsProvablySorted1D(max_op.getLhs(), depth + 1)) {
+      return true;
+    }
+    if (TryGetSplatIntConstant(max_op.getLhs()).has_value() &&
+        IsProvablySorted1D(max_op.getRhs(), depth + 1)) {
+      return true;
+    }
+  }
+  if (auto clamp_op = mlir::dyn_cast<mlir::stablehlo::ClampOp>(def)) {
+    if (TryGetSplatIntConstant(clamp_op.getMin()).has_value() &&
+        TryGetSplatIntConstant(clamp_op.getMax()).has_value() &&
+        IsProvablySorted1D(clamp_op.getOperand(), depth + 1)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool Is1DPermutation(mlir::Value val, int64_t expected_len, int depth) {
+  if (depth > 4 || expected_len <= 0 || !val) {
+    return false;
+  }
+  val = Strip1DIndexWrappers(val, expected_len);
+  auto type = mlir::dyn_cast<mlir::RankedTensorType>(val.getType());
+  if (!type || type.getRank() != 1 || type.getDimSize(0) != expected_len ||
+      !type.getElementType().isInteger()) {
+    return false;
+  }
+  if (Is1DIota0(val, expected_len)) {
+    return true;
+  }
+  auto sort_op =
+      mlir::dyn_cast_or_null<mlir::stablehlo::SortOp>(val.getDefiningOp());
+  if (!sort_op || sort_op.getDimension() != 0) {
+    return false;
+  }
+  const unsigned res_idx = mlir::cast<mlir::OpResult>(val).getResultNumber();
+  if (res_idx >= sort_op.getInputs().size()) {
+    return false;
+  }
+  return Is1DPermutation(sort_op.getInputs()[res_idx], expected_len, depth + 1);
+}
+
+std::optional<mlir::Value> FindInversePermutation(mlir::Value val,
+                                                  int64_t expected_len,
+                                                  mlir::Block* current_block) {
+  mlir::Value stripped = Strip1DIndexWrappers(val, expected_len);
+  if (!Is1DPermutation(stripped, expected_len)) {
+    return std::nullopt;
+  }
+  if (auto sort_op = mlir::dyn_cast_or_null<mlir::stablehlo::SortOp>(
+          stripped.getDefiningOp())) {
+    const unsigned res_idx =
+        mlir::cast<mlir::OpResult>(stripped).getResultNumber();
+    if (sort_op.getDimension() == 0 && sort_op.getInputs().size() == 2 &&
+        res_idx == 1 && IsAscendingKeySort(sort_op) &&
+        Is1DIota0(sort_op.getInputs()[1], expected_len) &&
+        Is1DPermutation(sort_op.getInputs()[0], expected_len)) {
+      return sort_op.getInputs()[0];
+    }
+  }
+  auto check_user = [&](mlir::Operation* user) -> std::optional<mlir::Value> {
+    auto user_sort = mlir::dyn_cast<mlir::stablehlo::SortOp>(user);
+    if (!user_sort || user_sort->getBlock() != current_block ||
+        user_sort.getDimension() != 0 || user_sort.getInputs().size() != 2 ||
+        !IsAscendingKeySort(user_sort)) {
+      return std::nullopt;
+    }
+    if (Strip1DIndexWrappers(user_sort.getInputs()[0], expected_len) ==
+            stripped &&
+        Is1DIota0(user_sort.getInputs()[1], expected_len)) {
+      return user_sort.getResult(1);
+    }
+    return std::nullopt;
+  };
+  for (mlir::Operation* user : stripped.getUsers()) {
+    if (std::optional<mlir::Value> inv = check_user(user)) {
+      return inv;
+    }
+    if (auto conv = mlir::dyn_cast<mlir::stablehlo::ConvertOp>(user)) {
+      for (mlir::Operation* conv_user : conv.getResult().getUsers()) {
+        if (std::optional<mlir::Value> inv = check_user(conv_user)) {
+          return inv;
+        }
+      }
+    }
+  }
+  return std::nullopt;
+}
+
 }  // namespace torch_tpu

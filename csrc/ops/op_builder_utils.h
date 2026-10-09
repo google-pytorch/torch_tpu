@@ -926,6 +926,21 @@ absl::StatusOr<mlir::MlirOp> ReshapeFromStaticDimensions(
 absl::StatusOr<mlir::MlirOp> ReshapeToStaticDimensions(
     mlir::MlirOp op, const Dimensions& static_shape_after);
 
+// Value-range and permutation analysis helpers for integer index tensors.
+std::optional<int64_t> TryGetSplatIntConstant(mlir::Value val, int depth = 0);
+bool IsZeroTensor(mlir::Value val, int depth = 0);
+bool IsProvablyNonNegative(mlir::Value val, int depth = 0);
+bool IsProvablyStrictlyPositiveInt(mlir::Value val);
+bool IsProvablyI32Bounded(mlir::Value val, int depth = 0);
+mlir::Value UnwrapResolvedNonNegativeIndex(mlir::Value val);
+mlir::Value Strip1DIndexWrappers(mlir::Value val, int64_t expected_len);
+bool Is1DIota0(mlir::Value val, int64_t expected_len);
+bool IsAscendingKeySort(mlir::stablehlo::SortOp sort_op);
+bool IsProvablySorted1D(mlir::Value val, int depth = 0);
+bool Is1DPermutation(mlir::Value val, int64_t expected_len, int depth = 0);
+std::optional<mlir::Value> FindInversePermutation(mlir::Value val,
+                                                  int64_t expected_len,
+                                                  mlir::Block* current_block);
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_CSRC_OPS_OP_BUILDER_UTILS_H_

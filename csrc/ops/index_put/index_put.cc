@@ -15,6 +15,8 @@
 #include "csrc/ops/index_put/index_put.h"
 
 #include <cstdint>
+#include <limits>
+#include <optional>
 #include <vector>
 
 #include "absl/log/absl_log.h"
@@ -46,6 +48,54 @@ absl::StatusOr<mlir::MlirOp> ApplyScatter(
     const Dimensions& values_broadcast_shape, const bool accumulate) {
   const mlir::RankedTensorType self_type = GetTensorTypeOrDie(self);
   ABSL_VLOG(1) << "[BuildIndexPutShlo] self: " << debugString(self_type);
+
+  // Fast path for 1D non-accumulating permutation scatters (e.g. computing
+  // `inv_perm[perm] = torch.arange(N)` in MoE token routing). When the index
+  // is a provable bijection of [0, N), every index in [0, N) is written
+  // exactly once, so `self[perm] = values` is equivalent to sorting
+  // `(perm, values)` in ascending order of `perm` via 32-bit `stablehlo.sort`.
+  if (!accumulate && indices.size() == 1 && index_start_dim == 0 &&
+      index_end_dim == 0 && index_broadcast_shape.size() == 1 &&
+      self_type.hasStaticShape() && self_type.getRank() == 1 &&
+      self_type.getDimSize(0) == index_broadcast_shape[0] &&
+      index_broadcast_shape[0] > 0 &&
+      index_broadcast_shape[0] <= std::numeric_limits<int32_t>::max()) {
+    const int64_t n = index_broadcast_shape[0];
+    const mlir::Value raw_idx = Strip1DIndexWrappers(indices[0].getValue(), n);
+    if (Is1DPermutation(raw_idx, n)) {
+      TT_ASSIGN_OR_RETURN(values,
+                          BroadcastIfNeeded(values, values_broadcast_shape));
+      mlir::MlirBuilder& builder = self.getBuilder();
+      mlir::MlirOp key_op(builder, raw_idx);
+      if (GetElementTypeOrDie(key_op) != mlir::ElementType::I32) {
+        key_op = stablehlo::ConvertElementType(key_op, mlir::ElementType::I32);
+      }
+      const bool values_is_iota = Is1DIota0(values.getValue(), n);
+      mlir::MlirOp sort_val =
+          values_is_iota
+              ? stablehlo::Iota(builder,
+                                makeTensorType(builder.getContext(), {n},
+                                               mlir::ElementType::I32),
+                                0)
+              : values;
+      const mlir::Type sort_val_elem_type =
+          GetTensorTypeOrDie(sort_val).getElementType();
+      auto comparator = [sort_val_elem_type](mlir::RegionBuilder& rb) {
+        mlir::OpBuilder& op_b = rb.getOpBuilder();
+        stablehlo::buildSortComparisonBody(
+            {op_b.getI32Type(), sort_val_elem_type},
+            stablehlo::ComparisonDirection::LT, std::nullopt, &rb.getRegion(),
+            &op_b);
+      };
+      auto sorted = stablehlo::Sort(builder, {key_op, sort_val}, comparator,
+                                    /*dimension=*/0, /*is_stable=*/false);
+      mlir::MlirOp res = sorted[1];
+      if (GetElementTypeOrDie(res) != GetElementTypeOrDie(self)) {
+        res = stablehlo::ConvertElementType(res, GetElementTypeOrDie(self));
+      }
+      return res;
+    }
+  }
 
   // Broadcast indices to the broadcast shape.
   std::vector<mlir::MlirOp> parts;

@@ -2189,5 +2189,96 @@ INSTANTIATE_TEST_SUITE_P(
     [](const testing::TestParamInfo<ConvolutionLikeUnsupportedTest::ParamType>&
            info) { return info.param.test_name; });
 
+TEST(OpBuilderUtils, IndexValueRangeAndPermutationAnalysis) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
+  mlir::func::FunctionBuilder fb(mb, "main");
+  mlir::OpBuilder& op_builder = fb.getOpBuilder();
+
+  constexpr int64_t kLen = 16;
+  const auto i32_vec_type =
+      mlir::RankedTensorType::get({kLen}, op_builder.getI32Type());
+
+  mlir::MlirOp keys = mlir::func::Argument(fb, i32_vec_type);
+  mlir::MlirOp iota_i32 = mlir::stablehlo::Iota(fb, i32_vec_type, 0);
+  EXPECT_TRUE(IsProvablyNonNegative(iota_i32.getValue()));
+  EXPECT_TRUE(IsProvablyI32Bounded(iota_i32.getValue()));
+  EXPECT_TRUE(Is1DIota0(iota_i32.getValue(), kLen));
+  EXPECT_TRUE(Is1DPermutation(iota_i32.getValue(), kLen));
+  EXPECT_TRUE(IsProvablySorted1D(iota_i32.getValue()));
+
+  // BuildArangeOp pattern: Add(Mul(Iota(0), 1), 0).
+  const auto i64_vec_type =
+      mlir::RankedTensorType::get({kLen}, op_builder.getI64Type());
+  mlir::MlirOp iota_i64 = mlir::stablehlo::Iota(fb, i64_vec_type, 0);
+  mlir::MlirOp one_i64 =
+      MakeConstant(fb, int64_t{1}, op_builder.getI64Type(), {kLen});
+  mlir::MlirOp zero_arange_i64 =
+      MakeConstant(fb, int64_t{0}, op_builder.getI64Type(), {kLen});
+  mlir::MlirOp mul_iota_i64 = mlir::stablehlo::Mul(iota_i64, one_i64);
+  mlir::MlirOp arange_i64 = mlir::stablehlo::Add(mul_iota_i64, zero_arange_i64);
+  EXPECT_TRUE(Is1DIota0(arange_i64.getValue(), kLen));
+  EXPECT_TRUE(IsProvablyNonNegative(arange_i64.getValue()));
+  EXPECT_TRUE(IsProvablyI32Bounded(arange_i64.getValue()));
+  EXPECT_TRUE(IsProvablySorted1D(arange_i64.getValue()));
+
+  auto comparator = [](mlir::RegionBuilder& rb) {
+    mlir::OpBuilder& b = rb.getOpBuilder();
+    mlir::stablehlo::buildSortComparisonBody(
+        {b.getI32Type(), b.getI32Type()},
+        mlir::stablehlo::ComparisonDirection::LT, std::nullopt, &rb.getRegion(),
+        &b);
+  };
+  auto sorted = mlir::stablehlo::Sort(fb, {keys, iota_i32}, comparator,
+                                      /*dimension=*/0, /*is_stable=*/false);
+  mlir::MlirOp sorted_keys = sorted[0];
+  mlir::MlirOp perm_i32 = sorted[1];
+  mlir::MlirOp perm_i64 =
+      mlir::stablehlo::ConvertElementType(perm_i32, mlir::ElementType::I64);
+
+  EXPECT_TRUE(IsProvablySorted1D(sorted_keys.getValue()));
+  EXPECT_TRUE(IsProvablyNonNegative(perm_i64.getValue()));
+  EXPECT_TRUE(IsProvablyI32Bounded(perm_i64.getValue()));
+  EXPECT_TRUE(Is1DPermutation(perm_i64.getValue(), kLen));
+
+  // Wrap `perm_i64` in the ResolveNegativeIndices pattern:
+  // select(compare(perm_i64, 0, LT), add(perm_i64, kLen), perm_i64).
+  mlir::MlirOp zero_i64 =
+      MakeConstant(fb, int64_t{0}, op_builder.getI64Type(), {kLen});
+  mlir::MlirOp len_i64 =
+      MakeConstant(fb, kLen, op_builder.getI64Type(), {kLen});
+  mlir::MlirOp lt_zero = mlir::stablehlo::Compare(
+      perm_i64, zero_i64, mlir::stablehlo::ComparisonDirection::LT);
+  mlir::MlirOp added = mlir::stablehlo::Add(perm_i64, len_i64);
+  mlir::MlirOp resolved_perm =
+      mlir::stablehlo::Select(lt_zero, added, perm_i64);
+
+  EXPECT_EQ(UnwrapResolvedNonNegativeIndex(resolved_perm.getValue()),
+            perm_i64.getValue());
+  EXPECT_EQ(Strip1DIndexWrappers(resolved_perm.getValue(), kLen),
+            perm_i32.getValue());
+
+  // Compute `inv_perm` by sorting `(perm_i32, iota_i32)` and verify
+  // FindInversePermutation resolves both directions.
+  auto inv_sorted = mlir::stablehlo::Sort(fb, {perm_i32, iota_i32}, comparator,
+                                          /*dimension=*/0, /*is_stable=*/false);
+  mlir::MlirOp inv_perm_i32 = inv_sorted[1];
+  mlir::MlirOp inv_perm_i64 =
+      mlir::stablehlo::ConvertElementType(inv_perm_i32, mlir::ElementType::I64);
+
+  mlir::Block* block = op_builder.getInsertionBlock();
+  const std::optional<mlir::Value> inv_of_inv =
+      FindInversePermutation(inv_perm_i64.getValue(), kLen, block);
+  ASSERT_TRUE(inv_of_inv.has_value());
+  EXPECT_EQ(*inv_of_inv, perm_i32.getValue());
+
+  const std::optional<mlir::Value> inv_of_perm =
+      FindInversePermutation(resolved_perm.getValue(), kLen, block);
+  ASSERT_TRUE(inv_of_perm.has_value());
+  EXPECT_EQ(*inv_of_perm, inv_perm_i32.getValue());
+
+  mlir::func::Return(fb, {inv_perm_i64});
+}
+
 }  // namespace
 }  // namespace torch_tpu
