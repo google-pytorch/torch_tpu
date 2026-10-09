@@ -26,6 +26,7 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/common/pybind_error_utils.h"
 #include "csrc/distributed/process_group_tpu.h"
+#include "csrc/distributed/types.h"
 #include "csrc/distributed/utils.h"
 #include "csrc/pjrt/pjrt_state.h"
 #include "pybind11/chrono.h"
@@ -57,6 +58,33 @@ std::vector<int64_t> GetRankToDeviceId(  // INT_VEC_OK
   auto* pg_tpu = dynamic_cast<ProcessGroupTpu*>(backend.get());
   if (pg_tpu != nullptr) {
     return pg_tpu->rank_to_device_id();
+  }
+  return {};
+}
+
+// Returns the replica groups of the collectives of the process group of
+// `backend`, positions into its device assignment. Empty for a backend that is
+// not a ProcessGroupTpu.
+std::vector<std::vector<int64_t>> GetReplicaGroups(  // INT_VEC_OK
+    c10::intrusive_ptr<c10d::Backend> backend) {
+  auto* pg_tpu = dynamic_cast<ProcessGroupTpu*>(backend.get());
+  if (pg_tpu == nullptr) {
+    return {};
+  }
+  std::vector<std::vector<int64_t>> replica_groups;  // INT_VEC_OK
+  for (const DeviceGroup& group : pg_tpu->GetReplicaGroups()) {
+    replica_groups.push_back(group);
+  }
+  return replica_groups;
+}
+
+// Returns the device assignment of the collectives of the process group of
+// `backend`. Empty for a backend that is not a ProcessGroupTpu.
+std::vector<int64_t> GetDeviceAssignment(  // INT_VEC_OK
+    c10::intrusive_ptr<c10d::Backend> backend) {
+  auto* pg_tpu = dynamic_cast<ProcessGroupTpu*>(backend.get());
+  if (pg_tpu != nullptr) {
+    return pg_tpu->device_assignment();
   }
   return {};
 }
@@ -113,6 +141,8 @@ TT_PYBIND11_MODULE(tpu_distributed, m) {
   // so we need to expose this init function.
   m.def("create_process_group", &MakeProcessGroup);
   m.def("rank_to_device_id", &GetRankToDeviceId);
+  m.def("replica_groups", &GetReplicaGroups);
+  m.def("device_assignment", &GetDeviceAssignment);
 
   // We expose these as helper functions on the Python side
   m.def("global_device_id", &GetGlobalDeviceId);

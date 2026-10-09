@@ -640,6 +640,30 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "compile_cache_process_group_test",
+    srcs = ["compile_cache_process_group_test.py"],
+    tags = if_oss(
+        ["exclusive"],
+        [],
+    ) + [
+        "noasan",
+        "nomsan",
+        "notsan",
+        "requires-tpu-v5lite:8",
+    ],
+    deps = [
+        ":distributed_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile:tpu_backend",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/utils:test_utils",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "dtensor_test",
     srcs = ["dtensor_test.py"],
     shard_count = 10,
