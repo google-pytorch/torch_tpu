@@ -64,6 +64,22 @@ def apply(
         gm._processed_constant_attrs.add(attr_target)  # pyrefly: ignore[missing-attribute]
         continue
 
+      # Skip constants that are exclusively consumed by CPU operations.
+      # Converting them into TPU constant tensors would cause a failure during
+      # dispatch. If the final CPU result is transferred to TPU (via
+      # `.to(device)`) then the CPU-to-TPU copy logic will handle this.
+      attr_nodes = [
+          node
+          for node in graph.find_nodes(op="get_attr")
+          if node.target == attr_target
+      ]
+      if attr_nodes and all(
+          isinstance(node.meta.get("val"), torch.Tensor)
+          and node.meta["val"].device.type == "cpu"
+          for node in attr_nodes
+      ):
+        continue
+
       # The target will be placed on the device by AOT Autograd automatically,
       # transfer it back to CPU so that we can access the data.
       new_target = tpu_torch_compile.make_constant_tensor(target.to("cpu"))

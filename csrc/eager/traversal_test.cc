@@ -389,10 +389,9 @@ TEST_F(TraversalTest, ValidateAndReorderArgumentsErrorCases) {
   const absl::Status deferred_status =
       tr->ValidateAndReorderArguments({ref_a, ref_out});
   EXPECT_EQ(deferred_status.code(), error::kInvalidArgument);
-  EXPECT_THAT(
-      deferred_status.message(),
-      testing::HasSubstr(
-          "found a deferred argument, which is not allowed: 8xfloat32"));
+  EXPECT_THAT(deferred_status.message(),
+              testing::HasSubstr("found a non-constant deferred argument, "
+                                 "which is not allowed: 8xfloat32"));
 
   // Case 4: Valid reordered input buffers should succeed.
   EXPECT_TRUE(tr->ValidateAndReorderArguments({ref_b, ref_a}).ok());
@@ -637,6 +636,47 @@ TEST_F(TraversalTest,
   ASSERT_NE(main_func, nullptr);
   EXPECT_TRUE(main_func.getOps<mlir::func::CallOp>().empty());
   EXPECT_FALSE(main_func.getOps<mlir::stablehlo::NegOp>().empty());
+}
+
+TEST_F(TraversalTest, ConstantBufferInStoppingPointsAndValidateArguments) {
+  TT_ASSERT_OK_AND_ASSIGN(
+      const std::vector<DeviceBufferRef> refs_const,
+      DeviceBufferList::CreateDeferred(OpName::kEmpty, DummyBuilder, {},
+                                       OpParamCacheKeys::Empty(), {shape_}));
+  const DeviceBufferRef ref_const = refs_const[0];
+  ASSERT_TRUE(ref_const.is_constant());
+  ASSERT_TRUE(ref_const.is_deferred());
+
+  // 1. When not in stopping_points, a constant buffer is traversed as an op
+  // with 0 graph arguments.
+  TT_ASSERT_OK_AND_ASSIGN(const std::unique_ptr<Traversal> tr_as_op,
+                          Traversal::Create({ref_const}));
+  EXPECT_TRUE(tr_as_op->arguments().empty());
+  EXPECT_EQ(tr_as_op->execution_order().size(), 1);
+  EXPECT_TRUE(tr_as_op->ValidateAndReorderArguments({}).ok());
+
+  // 2. When in stopping_points as a direct output, it is treated as a graph
+  // argument and accepted by ValidateAndReorderArguments.
+  TT_ASSERT_OK_AND_ASSIGN(
+      const std::unique_ptr<Traversal> tr_direct_arg,
+      Traversal::Create({ref_const}, {ref_const.device_buffer_list().get()}));
+  EXPECT_EQ(tr_direct_arg->arguments().size(), 1);
+  EXPECT_TRUE(tr_direct_arg->execution_order().empty());
+  EXPECT_TRUE(tr_direct_arg->ValidateAndReorderArguments({ref_const}).ok());
+
+  // 3. When in stopping_points as an input to another op, it is treated as a
+  // graph argument and accepted by ValidateAndReorderArguments.
+  TT_ASSERT_OK_AND_ASSIGN(
+      const std::vector<DeviceBufferRef> refs_out,
+      DeviceBufferList::CreateDeferred(OpName::kAdd, DummyBuilder, {ref_const},
+                                       OpParamCacheKeys::Empty(), {shape_}));
+  const DeviceBufferRef ref_out = refs_out[0];
+  TT_ASSERT_OK_AND_ASSIGN(
+      const std::unique_ptr<Traversal> tr_input_arg,
+      Traversal::Create({ref_out}, {ref_const.device_buffer_list().get()}));
+  EXPECT_EQ(tr_input_arg->arguments().size(), 1);
+  EXPECT_EQ(tr_input_arg->execution_order().size(), 1);
+  EXPECT_TRUE(tr_input_arg->ValidateAndReorderArguments({ref_const}).ok());
 }
 
 }  // namespace

@@ -34,6 +34,7 @@
 #include "absl/algorithm/container.h"
 #include "absl/base/call_once.h"
 #include "absl/base/nullability.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/log/check.h"
@@ -311,6 +312,7 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ExtractMlirFromGraph(
       << "no result tensors provided";
 
   std::vector<DeviceBufferRef> argument_refs;
+  absl::flat_hash_set<const DeviceBufferList*> stopping_points;
   argument_refs.reserve(arg_tensors.size());
   for (const at::Tensor& tensor : arg_tensors) {
     // Get the base buffer, not the view; view tensors will always have
@@ -319,8 +321,13 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ExtractMlirFromGraph(
                         _.SetPrepend()
                             << "failed to get buffer from argument tensor: "
                             << ToString(tensor));
-    TT_RET_CHECK(!buffer_ref.is_deferred(), error::kInternal)
-        << "argument tensor has deferred ops: " << ToString(tensor);
+    TT_RET_CHECK(!buffer_ref.is_deferred() || buffer_ref.is_constant(),
+                 error::kInternal)
+        << "argument tensor has non-constant deferred ops: "
+        << ToString(tensor);
+    if (buffer_ref.is_constant()) {
+      stopping_points.insert(buffer_ref.device_buffer_list().get());
+    }
     ABSL_VLOG(3) << "[ExtractMlirFromGraph] arg_tensor: "
                  << buffer_ref.DebugString();
     argument_refs.push_back(std::move(buffer_ref));
@@ -340,8 +347,10 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ExtractMlirFromGraph(
     result_refs.push_back(std::move(buffer_ref));
   }
 
-  TT_ASSIGN_OR_RETURN(auto traversal, Traversal::Create(std::move(result_refs)),
-                      _.SetPrepend() << "failed to traverse graph: ");
+  TT_ASSIGN_OR_RETURN(
+      auto traversal,
+      Traversal::Create(std::move(result_refs), stopping_points),
+      _.SetPrepend() << "failed to traverse graph: ");
   traversal->SortByCreationOrder();
   TT_RETURN_IF_ERROR(
       traversal->ValidateAndReorderArguments(std::move(argument_refs)))
@@ -365,6 +374,7 @@ absl::StatusOr<AsyncCompileResult> TraverseAndCompile(
       << "no result tensors provided";
 
   std::vector<DeviceBufferRef> argument_refs;
+  absl::flat_hash_set<const DeviceBufferList*> stopping_points;
   Indices argument_indices;
   argument_refs.reserve(argument_tensors.size());
   argument_indices.reserve(argument_tensors.size());
@@ -376,8 +386,12 @@ absl::StatusOr<AsyncCompileResult> TraverseAndCompile(
                             << "failed to get buffer from argument tensor: "
                             << ToString(tensor));
     ABSL_CHECK(  // CRASH_OK=implies a bug in compile backend if this happens
-        !buffer_ref.is_deferred())
-        << "argument tensor has deferred ops: " << ToString(tensor);
+        !buffer_ref.is_deferred() || buffer_ref.is_constant())
+        << "argument tensor has non-constant deferred ops: "
+        << ToString(tensor);
+    if (buffer_ref.is_constant()) {
+      stopping_points.insert(buffer_ref.device_buffer_list().get());
+    }
 
     // Using a vector scan instead of a hashset for deduplication
     // as `argument_tensors` is expected to have few elements (<100)
@@ -409,7 +423,8 @@ absl::StatusOr<AsyncCompileResult> TraverseAndCompile(
 
   TT_ASSIGN_OR_CRASH(  // CRASH_OK=implies a bug in compile backend if this
                        // happens
-      auto traversal, Traversal::Create(std::move(result_refs)),
+      auto traversal,
+      Traversal::Create(std::move(result_refs), stopping_points),
       _ << "failed to create traversal");
   traversal->SortByCreationOrder();
 

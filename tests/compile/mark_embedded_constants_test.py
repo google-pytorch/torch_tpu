@@ -113,6 +113,30 @@ class MarkEmbeddedConstantsTest(seed_test_utils.RepeatableTest):
     self.assertIs(sub_gm.c_attr, first_tensor)
     self.assertIn("c_attr", sub_gm._processed_constant_attrs)
 
+  def test_mark_embedded_constants_skips_cpu_constants(self):
+    g = Graph()
+    x = g.placeholder("x")
+    c = g.get_attr("cpu_c_attr")
+    c.meta["val"] = torch.empty((1,), device="cpu")
+    out = g.call_function(torch.ops.aten.add.Tensor, (x, c))
+    g.output(out)
+
+    root = torch.nn.Module()
+    orig_tensor = torch.tensor([1.0], dtype=torch.float32)
+    root.cpu_c_attr = orig_tensor
+    gm = GraphModule(root, g)
+
+    with mock.patch.object(
+        tpu_torch_compile,
+        "make_constant_tensor",
+        wraps=tpu_torch_compile.make_constant_tensor,
+    ) as mock_make:
+      mark_embedded_constants.apply(gm)
+      mock_make.assert_not_called()
+
+    self.assertIs(gm.cpu_c_attr, orig_tensor)
+    self.assertFalse(tpu_torch_compile.is_constant_tensor(gm.cpu_c_attr))
+
 
 if __name__ == "__main__":
   absltest.main()

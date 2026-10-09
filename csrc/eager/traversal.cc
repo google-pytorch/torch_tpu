@@ -122,10 +122,11 @@ absl::StatusOr<absl_nonnull std::unique_ptr<Traversal>> Traversal::Create(
 
   // Populate the stack with the nodes feeding the graph outputs.
   for (const auto& output : outputs) {
-    // If the output node has a deferred op, then we must consider it for the
-    // DFS traversal; otherwise, it is an input and we store it as such.
+    // If the output node has a deferred op and is not a stopping point, then we
+    // must consider it for the DFS traversal; otherwise, it is an input and we
+    // store it as such.
     auto& node = output.device_buffer_list();
-    if (node->is_deferred()) {
+    if (node->is_deferred() && !stopping_points.contains(node.get())) {
       if (visited_deferred.insert(std::make_pair(node.get(), Color::kGray))
               .second) {
         stack.push(node);
@@ -424,11 +425,12 @@ absl::Status Traversal::ValidateAndReorderArguments(
         << prev_argument.DebugString();
   }
 
-  // Checks that all provided arguments are non-deferred, are non-duplicates,
-  // and marks them as used.
+  // Checks that all provided arguments are non-deferred (or constant), are
+  // non-duplicates, and marks them as used.
   for (const DeviceBufferRef& input : arguments) {
-    TT_RET_CHECK(!input.is_deferred(), error::kInvalidArgument)
-        << "found a deferred argument, which is not allowed: "
+    TT_RET_CHECK(!input.is_deferred() || input.is_constant(),
+                 error::kInvalidArgument)
+        << "found a non-constant deferred argument, which is not allowed: "
         << ToString(input.shape());
     if (auto it = prev_arguments.find(input); it != prev_arguments.end()) {
       // The first time we see a previous argument in the new arguments, mark

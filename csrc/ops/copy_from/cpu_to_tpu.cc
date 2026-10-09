@@ -16,19 +16,23 @@
 
 #include "csrc/ops/copy_from/cpu_to_tpu.h"
 
+#include <cstddef>
 #include <optional>
 #include <utility>
+#include <vector>
 
 #include "ATen/core/TensorBody.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "csrc/common/context_states.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/layout_utils.h"
 #include "csrc/common/to_string.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/device_buffer_utils.h"
+#include "csrc/eager/eager_mode.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/pjrt/pjrt_transfer.h"
 #include "xla/xla_data.pb.h"
@@ -49,6 +53,21 @@ absl::StatusOr<DeviceBufferRef> CopyCpuToTpuBuffer(const at::Tensor& src,
     // If there's no data to actually copy, then we can just create a zero-sized
     // buffer directly and avoid blocking on host/device synchronization.
     return CreateZeroSizeDeviceBufferRef(std::move(tpu_layout.sizes),
+                                         tpu_layout.element_type);
+  }
+
+  // During FX graph compilation, non-FX-input CPU tensors transferred to TPU
+  // (e.g. `torch.arange(..., device='cpu').to(tpu_device)`) must become
+  // `stablehlo.constant` nodes rather than materialized PJRT buffers, otherwise
+  // `Traversal::ValidateAndReorderArguments` will reject them as unprovided
+  // graph arguments.
+  if (GetEagerMode() == EagerMode::kInternalCompileFxGraph) {
+    const size_t nbytes = contiguous_src_for_tpu.nbytes();
+    const char* data_ptr =
+        static_cast<const char*>(contiguous_src_for_tpu.const_data_ptr());
+    std::vector<char> cpu_bytes_copy(data_ptr, data_ptr + nbytes);
+    return CreateConstantDeviceBufferRef(std::move(cpu_bytes_copy),
+                                         std::move(tpu_layout.sizes),
                                          tpu_layout.element_type);
   }
 

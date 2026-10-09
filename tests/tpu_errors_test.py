@@ -2154,9 +2154,9 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("build_mlir() input validation is TPU-only.")
   def test_build_mlir_missing_input(self):
+    x = torch.ones(2, 3, device="cpu").to(device=et.device())
+    y = torch.ones(2, 3, device="cpu").to(device=et.device())
     with execution_mode.set_eager_mode(EagerMode._INTERNAL_COMPILE_FX_GRAPH):
-      x = torch.ones(2, 3, device="cpu").to(device=et.device())
-      y = torch.ones(2, 3, device="cpu").to(device=et.device())
       z = x + y
 
     with et.assert_raises_message(

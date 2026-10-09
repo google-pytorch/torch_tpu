@@ -167,17 +167,17 @@ class FunctionTest(seed_test_utils.RepeatableTest):
         self.assertNotEmpty(debugs[0].stablehlo_forward_text)
         self.assertNotIn("f64", debugs[0].stablehlo_forward_text[0])
 
-  @absltest.skip("b/546708345")
   def test_cpu_tensor_copy_to_tpu(self):
     def fn(x):
-      cpu_tensor = torch.zeros((1, 10), dtype=x.dtype)
+      cpu_tensor = torch.ones((1, 10), dtype=x.dtype)
       tpu_tensor = cpu_tensor.to(x.device)
       return x + tpu_tensor
 
     x = torch.randn(1, 10, dtype=torch.float32)
-    self._run_and_compare(fn, [x])
+    debugs = self._run_and_compare(fn, [x])
+    self.assertLen(debugs, 1)
+    self.assertIn("stablehlo.constant", debugs[0].stablehlo_forward_text[0])
 
-  @absltest.skip("b/546708345")
   def test_swin_cpu_attention_mask_pattern(self):
     def fn(x):
       mask = torch.zeros((1, 4, 4, 1), dtype=x.dtype)
@@ -191,6 +191,45 @@ class FunctionTest(seed_test_utils.RepeatableTest):
       return x + attn_mask
 
     x = torch.randn(1, 16, 16, dtype=torch.float32)
+    self._run_and_compare(fn, [x])
+
+  def test_cpu_tensor_copy_non_blocking(self):
+    def fn(x):
+      cpu_const = torch.full((2, 3), 5.0, dtype=x.dtype)
+      tpu_const = cpu_const.to(device=x.device, non_blocking=True)
+      return x * tpu_const
+
+    x = torch.ones(2, 3, dtype=torch.float32)
+    debugs = self._run_and_compare(fn, [x])
+    self.assertLen(debugs, 1)
+    self.assertIn("stablehlo.constant", debugs[0].stablehlo_forward_text[0])
+
+  def test_cpu_tensor_indexing(self):
+    def fn(x):
+      cpu_idx = torch.tensor([0, 2], dtype=torch.int64)
+      return x[cpu_idx]
+
+    x = torch.arange(12, dtype=torch.float32).reshape(4, 3)
+    self._run_and_compare(fn, [x])
+
+  def test_cpu_tensor_copy_direct_output(self):
+    def fn(x):
+      cpu_const = torch.tensor([1.0, 2.0, 3.0], dtype=x.dtype)
+      return cpu_const.to(x.device)
+
+    x = torch.zeros(1, dtype=torch.float32)
+    debugs = self._run_and_compare(fn, [x])
+    self.assertLen(debugs, 1)
+    self.assertIn("stablehlo.constant", debugs[0].stablehlo_forward_text[0])
+
+  def test_cpu_tensor_copy_inplace(self):
+    def fn(x):
+      out = torch.zeros_like(x)
+      cpu_tensor = torch.full((2, 3), 3.0, dtype=x.dtype)
+      out.copy_(cpu_tensor)
+      return x + out
+
+    x = torch.ones(2, 3, dtype=torch.float32)
     self._run_and_compare(fn, [x])
 
   def test_to_copy(self):
