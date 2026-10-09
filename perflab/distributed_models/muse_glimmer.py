@@ -14,12 +14,25 @@
 
 """Distributed Muse Glimmer benchmark definitions.
 
-The model is the text-only 30B flavor truncated to its last 4 layers (of 52),
-representing one full cycle of the model's sliding window attention pattern:
-3 layers of SWA+RoPE followed by 1 layer of global NoPE.
-Because seq_len (2048) equals the sliding window size, the upstream SDPA backend
-is exact without modifications. It is trained with torchtitan's SimpleFSDP
-fully_shard, per-layer activation checkpointing, and AdamW.
+The model and its training setup are those of the team's Muse Glimmer TPU
+benchmark (`torch_tpu/google/prototypes/glimmer/glimmer_tpu_test.py`); see
+`model_utils/muse_glimmer`. The model is the text-only 30B flavor truncated to
+its last 4 layers (of 52), one full cycle of its attention pattern: 3 sliding
+window (2048 tokens) RoPE layers and a global NoPE layer. It is fully sharded
+over all ranks with SimpleFSDP (`spmd_types` backend, bf16 compute, fp32
+gradient reduction), with full activation checkpointing and AdamW after
+gradient clipping. On TPU every block's forward is `spmd_safe`, so its
+collectives fuse with the surrounding ops.
+
+Each rank trains on `batch_size` packed documents of 2048 tokens (`_bs<N>`
+variants for `batch_size > 1`; the prototype's 30B runs use 4): RoPE positions
+restart per document and attention is masked per document.
+
+Like the prototype, the benchmark runs eagerly with deferred, fused execution
+(`eager_optimized`) as well as with the whole step compiled. The prototype also
+makes the eager backward pass `spmd_safe`; the perflab training stepper calls
+`backward()` itself, so here only the compiled step's backward is (via the
+forward annotations, which AOTAutograd copies to the backward).
 """
 
 import functools
@@ -28,78 +41,42 @@ from typing import Any
 from absl import logging
 import torch
 from torch import nn
-from torch.utils import checkpoint as checkpoint_utils
 from perflab import compile as compile_lib
 from perflab import context as context_lib
 from perflab import registry as registry_lib
 from perflab import step_lib
 from perflab import target as target_lib
 from perflab import torch_device_ops
-from perflab.model_utils import torchtitan_muse_glimmer
-from torchtitan.experiments.graph_trainer import simple_fsdp
+from perflab.model_utils import muse_glimmer
 
 _SUPPORTED_PLATFORMS: frozenset[target_lib.Platform] = frozenset({
+    # world_size=2: one chip, one process per TensorCore.
     target_lib.Platform.V7_1X1X1_2TC,
+    # world_size=4: two chips x 2 TensorCores.
     target_lib.Platform.V7_1X2X1,
+    # world_size=8: one host, 4 chips x 2 TensorCores.
     target_lib.Platform.V7_2X2X1,
+    # GPU counterparts with the same world sizes (one process per B200).
     target_lib.Platform.B200_2,
     target_lib.Platform.B200_4,
     target_lib.Platform.B200_8,
 })
 
-_FULL_SEQ_LEN = 2048
+# Document length in RunScope.FULL, as in the prototype's 30B runs. Equal to
+# the sliding window.
+_FULL_DOC_LEN = 2048
+# Per-rank batch sizes (documents per rank), each registered as its own
+# benchmark.
+_BATCH_SIZES = (1, 2, 4)
+
+# eager_optimized (deferred, fused eager execution) is the prototype's default
+# mode; the other eager modes are not benchmarked.
+_SKIPPED_RUN_MODES = frozenset({
+    "eager_default",
+    "eager_defer_never_and_launch_blocking",
+})
 
 
-def build_model(
-    config: torchtitan_muse_glimmer.muse_glimmer.MuseGlimmerModel.Config,
-    device: str,
-    world_size: int,
-    dtype: torch.dtype,
-) -> nn.Module:
-  """Builds the torchtitan model, checkpoints and SimpleFSDP-shards it."""
-  torch.manual_seed(12345)
-  model = torchtitan_muse_glimmer.build_model(config, device, dtype)
-  model.train()
-
-  # Per-layer activation checkpointing, as SimpleFSDP expects.
-  for layer in model.layers.values():
-    layer.forward = functools.partial(
-        checkpoint_utils.checkpoint, layer.forward, use_reentrant=False
-    )
-
-  mesh = torch.distributed.device_mesh.init_device_mesh(
-      device, (world_size,), mesh_dim_names=("fsdp",)
-  )
-  model = simple_fsdp.data_parallel(
-      model,
-      device_mesh=mesh,
-      mode="fully_shard",
-      mp_policy=simple_fsdp.MixedPrecisionPolicy(
-          param_dtype=dtype,
-          reduce_dtype=dtype,
-      ),
-  )
-  if device == target_lib.DeviceKind.TPU.value:
-    # Lets torch_tpu fuse the SimpleFSDP collectives with surrounding ops.
-    model.forward = torch.tpu.distributed.spmd_safe(model.forward)
-  return model
-
-
-@registry_lib.register_benchmark(
-    stepper=step_lib.StepperType.TRAINING,
-    stepper_kwargs={
-        "use_single_trace": False,
-        "compute_loss": torchtitan_muse_glimmer.cross_entropy_loss,
-    },
-    compile_config=compile_lib.CompileConfig(
-        scope=compile_lib.Scope.STEP, dynamic=False
-    ),
-    skipped_run_modes={
-        "eager_default",
-        "eager_optimized",
-        "eager_defer_never_and_launch_blocking",
-    },
-)
 def muse_glimmer_30b_4_layers_simple_fsdp_training(
     ctx: context_lib.Context,
     batch_size: int = 1,
@@ -109,10 +86,12 @@ def muse_glimmer_30b_4_layers_simple_fsdp_training(
     dict[str, Any],
     torch.optim.Optimizer,
 ]:
-  """Benchmark factory for Muse Glimmer (30B, 4 layers) SimpleFSDP training."""
-  if batch_size != 1:
-    raise NotImplementedError("Batch size > 1 is not implemented yet.")
+  """Benchmark factory for Muse Glimmer (30B, 4 layers) SimpleFSDP training.
 
+  Args:
+    ctx: Benchmark context.
+    batch_size: Documents per rank, packed into one token stream.
+  """
   if ctx.target.platform not in _SUPPORTED_PLATFORMS:
     raise target_lib.UnsupportedBenchmark(
         "Muse Glimmer SimpleFSDP training is not supported on platform"
@@ -127,35 +106,62 @@ def muse_glimmer_30b_4_layers_simple_fsdp_training(
   rank = torch.distributed.get_rank()
 
   if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-    seq_len = 128
-    num_layers = 2
     flavor = "debugmodel"
+    doc_len = 128
   else:
-    seq_len = _FULL_SEQ_LEN
-    num_layers = 4
     flavor = "30B"
+    doc_len = _FULL_DOC_LEN
+  num_layers = 4
 
   device_str = ctx.device_kind.value
-  config = torchtitan_muse_glimmer.text_config(flavor, num_layers, seq_len)
   logging.info(
-      "Rank %d/%d: building torchtitan Muse Glimmer (%s arch) num_layers=%d"
-      " seq_len=%d with SimpleFSDP fully_shard",
+      "Rank %d/%d: building Muse Glimmer (%s arch) num_layers=%d doc_len=%d"
+      " batch_size=%d with SimpleFSDP fully_shard",
       rank,
       world_size,
       flavor,
       num_layers,
-      seq_len,
+      doc_len,
+      batch_size,
   )
-  model = build_model(
-      config,
+  bundle = muse_glimmer.build_model(
+      flavor,
+      num_layers,
+      doc_len,
       device_str,
-      world_size,
-      dtype=torch_device_ops.get_torch_dtype(ctx.dtype),
+      torch_device_ops.get_torch_dtype(ctx.dtype),
+      world_size=world_size,
+      spmd_safe=ctx.device_kind == target_lib.DeviceKind.TPU,
   )
-  tokens, labels = torchtitan_muse_glimmer.make_inputs(
-      config.vocab_size, seq_len, rank, device_str
+  muse_glimmer.allow_block_mask_cache_under_checkpoint()
+  tokens, kwargs = muse_glimmer.make_batch(
+      bundle, batch_size, doc_len, rank, world_size, device_str
   )
-  opt = torch.optim.AdamW(
-      model.parameters(), lr=1e-4, fused=True, capturable=True
-  )
-  return model, (tokens,), {"labels": labels}, opt
+  opt = muse_glimmer.make_optimizer(bundle.model)
+  return bundle.model, (tokens,), kwargs, opt
+
+
+def _register_benchmarks() -> None:
+  for batch_size in _BATCH_SIZES:
+    suffix = "" if batch_size == 1 else f"_bs{batch_size}"
+    registry_lib.add_benchmark(
+        factory=functools.partial(
+            muse_glimmer_30b_4_layers_simple_fsdp_training,
+            batch_size=batch_size,
+        ),
+        stepper=step_lib.StepperType.TRAINING,
+        # zero_grad + forward + loss + backward + optimizer.step(); compiled
+        # as one torch.compile (Scope.STEP).
+        stepper_kwargs={
+            "use_single_trace": False,
+            "compute_loss": muse_glimmer.cross_entropy_loss,
+        },
+        compile_config=compile_lib.CompileConfig(
+            scope=compile_lib.Scope.STEP, dynamic=False
+        ),
+        name=f"muse_glimmer_30b_4_layers_simple_fsdp_training{suffix}",
+        skipped_run_modes=_SKIPPED_RUN_MODES,
+    )
+
+
+_register_benchmarks()

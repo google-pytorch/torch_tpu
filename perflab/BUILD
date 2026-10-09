@@ -558,14 +558,14 @@ _DISTRIBUTED_RUNNER_DATA = [
     "//perflab/huggingface_transformers:model_configs_data",
 ]
 
-# The Qwen3.8 and synthetic benchmarks depend on torchtitan, which is not
-# available in OSS, so they are added to the runner binaries rather than to
-# `distributed_runner_lib`.
+# The Muse Glimmer (glimmer prototype), Qwen3.8 and synthetic (torchtitan)
+# benchmarks are not available in OSS, so they are added to the runner binaries
+# rather than to `distributed_runner_lib`.
 _DISTRIBUTED_RUNNER_MODEL_DEPS = if_oss(
     [],
     [
-        "//perflab/distributed_models:qwen3_8",
         "//perflab/distributed_models:muse_glimmer",
+        "//perflab/distributed_models:qwen3_8",
         "//perflab/distributed_models:synthetic",
     ],
 )

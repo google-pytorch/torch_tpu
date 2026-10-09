@@ -108,6 +108,7 @@ torch_tpu_py_library(
     ],
 )
 
+# Muse Glimmer from the glimmer prototype, which is not available in OSS.
 internal_target(
     torch_tpu_py_library,
     name = "muse_glimmer",
@@ -119,11 +120,9 @@ internal_target(
         "//perflab:step_lib",
         "//perflab:target",
         "//perflab:torch_device_ops",
-        "//perflab/model_utils:torchtitan_muse_glimmer",
+        "//perflab/model_utils:muse_glimmer",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
-        "//shims/torchtitan/experiments/graph_trainer:simple_fsdp",
-        "//src/torch_tpu",
     ],
 )
 

@@ -84,23 +84,25 @@ internal_target(
     ],
 )
 
+# Muse Glimmer from the glimmer prototype, which is not available in OSS.
 internal_target(
     torch_tpu_py_library,
-    name = "torchtitan_muse_glimmer",
-    srcs = ["torchtitan_muse_glimmer.py"],
+    name = "muse_glimmer",
+    srcs = ["muse_glimmer.py"],
     deps = [
         "//shims/torch:pytorch",
-        "//shims/torchtitan/experiments/tpu:utils",  # buildcleaner: keep
-        "//shims/torchtitan/models",
+        "//src/torch_tpu",
+        # Imported lazily; see the module docstring.
+        "//src/torch_tpu/google/prototypes/glimmer",  # buildcleaner: keep
     ],
 )
 
 internal_target(
     torch_tpu_py_test,
-    name = "torchtitan_muse_glimmer_test",
-    srcs = ["torchtitan_muse_glimmer_test.py"],
+    name = "muse_glimmer_test",
+    srcs = ["muse_glimmer_test.py"],
     deps = [
-        ":torchtitan_muse_glimmer",
+        ":muse_glimmer",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
