@@ -51,6 +51,7 @@
 #include "pybind11/gil.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
+#include "torch/csrc/Event.h"
 #include "torch/csrc/utils/device_lazy_init.h"
 #include "torch/csrc/utils/pybind.h"  // IWYU pragma: keep, needed for at::Tensor mapping
 #include "xla/pjrt/pjrt_client.h"
@@ -127,6 +128,20 @@ PyTpuEventBase PyRecordEvent(std::optional<int> device_index,
       MaterializeStream(index, id, MaterializationReason::kExplicitSync)
           .Await());
   return PyTpuEventBase(std::move(event_snapshot));
+}
+
+// Returns the milliseconds from the completion of `start` to the completion of
+// `end`. torch.Event.elapsed_time() only accepts an end event of the exact type
+// torch.Event, so its subclasses reach the timing of the two events here.
+double PyEventElapsedTime(py::handle start, py::handle end) {
+  TT_CHECK_THROW(THPEvent_Check(start.ptr()) && THPEvent_Check(end.ptr()),
+                 error::kInvalidArgument)
+      << "expected start and end to be torch.Event objects, got "
+      << Py_TYPE(start.ptr())->tp_name << " and "
+      << Py_TYPE(end.ptr())->tp_name;
+  THPEvent* start_event = reinterpret_cast<THPEvent*>(start.ptr());
+  THPEvent* end_event = reinterpret_cast<THPEvent*>(end.ptr());
+  return start_event->event.elapsedTime(end_event->event);
 }
 
 bool CheckIsInBadFork() {
@@ -301,6 +316,11 @@ TT_PYBIND11_MODULE(_device_ops_backend, m) {
         py::arg("stream_id") = py::none(),
         "Records a fence over async d2h copies already enqueued on the "
         "specified device and stream.");
+
+  m.def("_event_elapsed_time", &PyEventElapsedTime, py::arg("start"),
+        py::arg("end"),
+        "Returns the milliseconds from the completion of the `start` event to "
+        "the completion of the `end` event.");
 
   m.def("_get_next_stream_id", &PyNextStreamId, py::arg("device_index"),
         "Returns the next available stream ID for the given device.");

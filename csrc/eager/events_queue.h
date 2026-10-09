@@ -17,13 +17,16 @@
 #ifndef TORCH_TPU_CSRC_EAGER_EVENTS_QUEUE_H_
 #define TORCH_TPU_CSRC_EAGER_EVENTS_QUEUE_H_
 
+#include <chrono>
 #include <memory>
 #include <optional>
 #include <vector>
 
 #include "absl/base/nullability.h"
+#include "absl/base/thread_annotations.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/synchronization/mutex.h"
 #include "c10/core/Device.h"
 #include "c10/core/Stream.h"
 #include "csrc/common/cache_key.h"
@@ -74,8 +77,7 @@ enum class MaterializationMode { kFullGraph, kSplitGraph };
 // a stream at a particular point in time.
 class EventSnapshot {
  public:
-  explicit EventSnapshot(xla::Future<void> future)
-      : future_(std::move(future)) {}
+  explicit EventSnapshot(xla::Future<void> future);
 
   static xla::Future<std::shared_ptr<EventSnapshot>> Record(
       c10::DeviceIndex device_index, c10::StreamId stream_id,
@@ -91,13 +93,34 @@ class EventSnapshot {
   // Query whether the event snapshot has completed.
   absl::StatusOr<bool> Query() const;
 
+  // Returns the milliseconds from the completion of this event snapshot to the
+  // completion of `end`, as observed by the host. Both snapshots must have
+  // completed.
+  absl::StatusOr<double> ElapsedTime(const EventSnapshot& end) const;
+
   // Sets the promise to OkStatus as soon as the event snapshot is complete
   // or fails. The error is not propagated to the promise.
   void OkCallback(xla::Promise<void>&& chain_promise);
 
  private:
+  // The completion of an event snapshot, shared with the callback on its future
+  // that records it.
+  struct Completion {
+    absl::Mutex mu;
+    // Whether the snapshot has completed and `time` is set.
+    bool completed ABSL_GUARDED_BY(mu) = false;
+    // The host time at which the snapshot completed.
+    std::chrono::steady_clock::time_point time ABSL_GUARDED_BY(mu);
+    // The promise passed to OkCallback before the snapshot completed.
+    std::optional<xla::Promise<void>> chain_promise ABSL_GUARDED_BY(mu);
+  };
+
+  // Returns the host time at which the snapshot completed, if it has.
+  std::optional<std::chrono::steady_clock::time_point> CompletionTime() const;
+
   // The future backing the event snapshot.
   xla::Future<void> future_;
+  absl_nonnull std::shared_ptr<Completion> completion_;
 };
 
 // A future that will resolve to an EventSnapshot during the materialization

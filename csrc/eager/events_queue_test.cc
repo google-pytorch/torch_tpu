@@ -16,7 +16,10 @@
 
 #include "csrc/eager/events_queue.h"
 
+#include <chrono>
+#include <memory>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -47,6 +50,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "xla/future.h"
+#include "xla/tsl/platform/env.h"
 
 namespace torch_tpu {
 namespace {
@@ -1089,6 +1093,33 @@ TEST_F(EventsQueueTest, NodeMatcherAcrossSmallAndLargeSpans) {
   }
 }
 
+TEST_F(EventsQueueTest, CompletesLongSnapshotChainOnSmallStack) {
+  ClearAllStreams();
+  // Snapshots recorded while a transfer is pending wait for it, and each one
+  // also waits for the snapshot before it, as while model weights load.
+  auto [transfer_promise, transfer_future] = xla::MakePromise<void>();
+  RecordAsyncDeviceToHost(std::move(transfer_future));
+  std::vector<xla::Future<std::shared_ptr<EventSnapshot>>> snapshot_futures;
+  for (int i = 0; i < 20000; ++i) {
+    snapshot_futures.push_back(
+        MaterializeCurrentStream(MaterializationReason::kExplicitSync));
+  }
+  std::shared_ptr<EventSnapshot> last_snapshot;
+  for (const auto& snapshot_future : snapshot_futures) {
+    TT_ASSERT_OK_AND_ASSIGN(last_snapshot, snapshot_future.Await());
+  }
+  TT_ASSERT_OK_AND_ASSIGN(bool completed, last_snapshot->Query());
+  ASSERT_FALSE(completed);
+
+  // The runtime completes device work on threads with 1 MiB stacks.
+  xla::Promise<void> promise = std::move(transfer_promise);
+  std::unique_ptr<tsl::Thread> thread(tsl::Env::Default()->StartThread(
+      tsl::ThreadOptions{.stack_size = 1 << 20}, "complete_transfer",
+      [&promise] { promise.Set(); }));
+  thread.reset();
+  EXPECT_TRUE(last_snapshot->Synchronize().ok());
+}
+
 TEST(CompilationModeTest, GetCompilationMode) {
   EXPECT_EQ(GetCompilationMode(EagerMode::kInternalDeferAll),
             CompilationMode::kFastRuntime);
@@ -1190,6 +1221,90 @@ TEST(RepeatedOpsTest, DoesNotDetectRepetitionsOverSnapshots) {
   EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_c));
   EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_a));
   EXPECT_TRUE(RecordDeferredOpAndDetectRepetition(list_b));
+}
+
+// Returns `duration` in milliseconds, the unit of EventSnapshot::ElapsedTime.
+double ToMilliseconds(std::chrono::steady_clock::duration duration) {
+  return std::chrono::duration<double, std::milli>(duration).count();
+}
+
+TEST(EventSnapshotTest, ElapsedTimeMeasuresCompletionTimes) {
+  auto [start_promise, start_future] = xla::MakePromise<void>();
+  auto [end_promise, end_future] = xla::MakePromise<void>();
+  EventSnapshot start(std::move(start_future));
+  EventSnapshot end(std::move(end_future));
+  EXPECT_EQ(start.ElapsedTime(end).status().code(), error::kFailedPrecondition);
+
+  const auto before_start = std::chrono::steady_clock::now();
+  start_promise.Set();
+  const auto after_start = std::chrono::steady_clock::now();
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  EXPECT_EQ(start.ElapsedTime(end).status().code(), error::kFailedPrecondition);
+  const auto before_end = std::chrono::steady_clock::now();
+  end_promise.Set();
+  const auto after_end = std::chrono::steady_clock::now();
+
+  TT_ASSERT_OK_AND_ASSIGN(double elapsed_ms, start.ElapsedTime(end));
+  EXPECT_GE(elapsed_ms, ToMilliseconds(before_end - after_start));
+  EXPECT_LE(elapsed_ms, ToMilliseconds(after_end - before_start));
+  TT_ASSERT_OK_AND_ASSIGN(double reverse_ms, end.ElapsedTime(start));
+  EXPECT_EQ(reverse_ms, -elapsed_ms);
+}
+
+TEST(EventSnapshotTest, ElapsedTimeExcludesWorkPendingAtStart) {
+  // The start event is recorded while earlier work is pending, and the end
+  // event captures later work. As in the events queue, the start event also
+  // releases the end event.
+  auto [earlier_promise, earlier_future] = xla::MakePromise<void>();
+  EventSnapshot start(std::move(earlier_future));
+  auto [chain_promise, chain_future] = xla::MakePromise<void>();
+  start.OkCallback(std::move(chain_promise));
+  auto [later_promise, later_future] = xla::MakePromise<void>();
+  EventSnapshot end(xla::JoinFutures({later_future, chain_future}));
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+  const auto before_earlier = std::chrono::steady_clock::now();
+  earlier_promise.Set();
+  const auto after_earlier = std::chrono::steady_clock::now();
+  TT_ASSERT_OK_AND_ASSIGN(bool end_ready, end.Query());
+  ASSERT_FALSE(end_ready);
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  const auto before_later = std::chrono::steady_clock::now();
+  later_promise.Set();
+  const auto after_later = std::chrono::steady_clock::now();
+
+  // The time between recording the start event and `before_earlier` does not
+  // count.
+  TT_ASSERT_OK_AND_ASSIGN(double elapsed_ms, start.ElapsedTime(end));
+  EXPECT_GE(elapsed_ms, ToMilliseconds(before_later - after_earlier));
+  EXPECT_LE(elapsed_ms, ToMilliseconds(after_later - before_earlier));
+}
+
+TEST(EventSnapshotTest, ElapsedTimeIsNonNegativeForChainedPendingEvents) {
+  // Two events recorded back to back while earlier work is pending: the second
+  // event completes when the first event's completion callback releases it, so
+  // the first event must be stamped before that callback runs.
+  auto [work_promise, work_future] = xla::MakePromise<void>();
+  EventSnapshot start(std::move(work_future));
+  auto [chain_promise, chain_future] = xla::MakePromise<void>();
+  start.OkCallback(std::move(chain_promise));
+  EventSnapshot end(std::move(chain_future));
+  TT_ASSERT_OK_AND_ASSIGN(bool end_ready, end.Query());
+  ASSERT_FALSE(end_ready);
+
+  work_promise.Set();
+  TT_ASSERT_OK_AND_ASSIGN(end_ready, end.Query());
+  ASSERT_TRUE(end_ready);
+  TT_ASSERT_OK_AND_ASSIGN(double elapsed_ms, start.ElapsedTime(end));
+  EXPECT_GE(elapsed_ms, 0.0);
+}
+
+TEST(EventSnapshotTest, ElapsedTimeReturnsEventError) {
+  EventSnapshot ok_event{xla::Future<void>(absl::OkStatus())};
+  EventSnapshot failed_event{
+      xla::Future<void>(TT_ERROR(error::kInvalidArgument) << "fake error")};
+  EXPECT_EQ(ok_event.ElapsedTime(failed_event).status().code(),
+            error::kInvalidArgument);
 }
 }  // namespace
 

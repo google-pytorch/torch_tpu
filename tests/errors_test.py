@@ -13760,6 +13760,39 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       Stream(8)
 
+  def test_event_elapsed_time_untimed_event(self):
+    timed = torch.Event(device=et.device(), enable_timing=True)
+    untimed = torch.Event(device=et.device())
+    timed.record()
+    untimed.record()
+
+    with et.assert_raises_message(
+        ValueError,
+        tpu="""Both events must be created with argument 'enable_timing=True'.""",
+    ):
+      timed.elapsed_time(untimed)
+    with et.assert_raises_message(
+        ValueError,
+        tpu="""Both events must be created with argument 'enable_timing=True'.""",
+    ):
+      untimed.elapsed_time(timed)
+
+  def test_event_elapsed_time_unrecorded_event(self):
+    recorded = torch.Event(device=et.device(), enable_timing=True)
+    unrecorded = torch.Event(device=et.device(), enable_timing=True)
+    recorded.record()
+
+    with et.assert_raises_message(
+        ValueError,
+        tpu="""Both events must be recorded before calculating elapsed time.""",
+    ):
+      recorded.elapsed_time(unrecorded)
+    with et.assert_raises_message(
+        ValueError,
+        tpu="""Both events must be recorded before calculating elapsed time.""",
+    ):
+      unrecorded.elapsed_time(recorded)
+
   def test_native_multi_head_attention_dtypes_mismatch(self):
     query = torch.ones(2, 4, 8, device=et.device(), dtype=torch.float32)
     key = torch.ones(2, 4, 8, device=et.device(), dtype=torch.float16)

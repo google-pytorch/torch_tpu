@@ -124,12 +124,13 @@ class TpuDeviceGuardImpl final : public c10::impl::DeviceGuardImplInterface {
   void synchronizeStream(const c10::Stream& stream) const override;
   void synchronizeDevice(c10::DeviceIndex device_index) const override;
   void synchronizeEvent(void* event) const override;
+  double elapsedTime(void* event1, void* event2,
+                     c10::DeviceIndex device_index) const override;
   // Not implemented: getStreamFromGlobalPool
   // Not implemented: getDeviceCapability
   // Not implemented: getStreamNativeHandle
   // Not implemented: isStreamCapturing
   // Not implemented: recordDataPtrOnStream
-  // Not implemented: elapsedTime
  private:
   void ValidateDevice(c10::Device d) const;
 };
@@ -300,6 +301,16 @@ void TpuDeviceGuardImpl::synchronizeEvent(void* event) const {
   std::shared_ptr<EventSnapshot>* snapshot =
       reinterpret_cast<std::shared_ptr<EventSnapshot>*>(event);
   TT_THROW_IF_ERROR((*snapshot)->Synchronize());
+}
+
+double TpuDeviceGuardImpl::elapsedTime(
+    void* event1, void* event2, const c10::DeviceIndex device_index) const {
+  std::shared_ptr<EventSnapshot>* start =
+      reinterpret_cast<std::shared_ptr<EventSnapshot>*>(event1);
+  std::shared_ptr<EventSnapshot>* end =
+      reinterpret_cast<std::shared_ptr<EventSnapshot>*>(event2);
+  TT_ASSIGN_OR_THROW(double elapsed_ms, (*start)->ElapsedTime(**end));
+  return elapsed_ms;
 }
 
 C10_REGISTER_GUARD_IMPL(PrivateUse1, TpuDeviceGuardImpl);

@@ -13,8 +13,11 @@
 # limitations under the License.
 
 import concurrent.futures
+import functools
+import time
 
 from absl.testing import absltest
+from absl.testing import parameterized
 import torch
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import sync
@@ -216,15 +219,13 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
     self.assertEqual(event_device_idx.device, torch.device('tpu'))
 
   def test_event_partially_implemented(self):
-    """Tests that timing/ipc event methods remain unimplemented."""
+    """Tests that ipc event methods remain unimplemented."""
 
     e = torch.tpu.Event()
     expected_msg = (
         'Streams and Events are not fully implemented in TorchTPU. Please file'
         ' a feature request describing your use case.'
     )
-    with self.assertRaisesWithLiteralMatch(NotImplementedError, expected_msg):
-      e.elapsed_time(e)
     with self.assertRaisesWithLiteralMatch(NotImplementedError, expected_msg):
       e.ipc_handle()
 
@@ -499,6 +500,172 @@ class TorchStreamsTest(seed_test_utils.RepeatableTest):
 
     # Verify that the tensor is now materialized.
     self.assertTrue(sync.is_materialized(x))
+
+
+# The two public constructors of a TPU event.
+_EVENT_CONSTRUCTORS = (
+    ('tpu_event', torch.tpu.Event),
+    ('torch_event', functools.partial(torch.Event, device='tpu')),
+)
+
+
+class EventElapsedTimeTest(seed_test_utils.RepeatableTest):
+  """Tests for elapsed_time() of torch.tpu.Event and torch.Event.
+
+  The parameterized tests run with both constructors, since torch.tpu.Event
+  overrides the event methods of torch.Event.
+  """
+
+  @parameterized.named_parameters(*_EVENT_CONSTRUCTORS)
+  def test_event_elapsed_time(self, make_event):
+    """Tests that elapsed_time() lies within the host-observed interval."""
+    x = torch.full((2048, 2048), 1 / 2048, device='tpu')
+    (x @ x).to('cpu')
+
+    start = make_event(enable_timing=True)
+    end = make_event(enable_timing=True)
+    host_start = time.perf_counter()
+    start.record()
+    y = x
+    for _ in range(10):
+      y = y @ x
+    end.record()
+    end.synchronize()
+    elapsed_ms = start.elapsed_time(end)
+    host_elapsed_ms = (time.perf_counter() - host_start) * 1000
+
+    self.assertGreater(elapsed_ms, 0.0)
+    self.assertLessEqual(elapsed_ms, host_elapsed_ms)
+    self.assertEqual(end.elapsed_time(start), -elapsed_ms)
+    self.assertEqual(end.elapsed_time(end), 0.0)
+
+  @parameterized.named_parameters(*_EVENT_CONSTRUCTORS)
+  def test_event_elapsed_time_ends_when_work_completes(self, make_event):
+    """Tests that the end time is taken when the work completes.
+
+    The host waits until the end event has completed, then sleeps before it
+    synchronizes, which must not count.
+    """
+    x = torch.ones((8, 8), device='tpu')
+    start = make_event(enable_timing=True)
+    end = make_event(enable_timing=True)
+    host_start = time.perf_counter()
+    start.record()
+    y = x + x
+    end.record()
+    while not end.query():
+      time.sleep(0.001)
+    host_completed = time.perf_counter()
+    time.sleep(0.1)
+    end.synchronize()
+
+    self.assertLessEqual(
+        start.elapsed_time(end), (host_completed - host_start) * 1000
+    )
+    utils.assert_close(y.to('cpu'), torch.full((8, 8), 2.0))
+
+  @parameterized.named_parameters(*_EVENT_CONSTRUCTORS)
+  def test_event_elapsed_time_chained_pending_events(self, make_event):
+    """Tests events recorded back to back while earlier work is pending.
+
+    The end event completes right after the start event does, so the start
+    event must be stamped before the end event is released.
+    """
+    size = 8192 * 8192
+    t_tpu = torch.ones(size, device='tpu', dtype=torch.float32)
+    t_cpu = torch.empty(size, device='cpu', pin_memory=True)
+
+    for _ in range(20):
+      t_cpu.copy_(t_tpu, non_blocking=True)
+      start = make_event(enable_timing=True)
+      end = make_event(enable_timing=True)
+      start.record()
+      end.record()
+      end.synchronize()
+      self.assertGreaterEqual(start.elapsed_time(end), 0.0)
+
+  @parameterized.named_parameters(*_EVENT_CONSTRUCTORS)
+  def test_event_elapsed_time_start_during_pending_copy(self, make_event):
+    """Tests a start event recorded while a large copy is in flight.
+
+    The start event completes when the copy does, and the elapsed time lies
+    within the interval the host observes around the copy and the timed work.
+    """
+    size = 8192 * 8192
+    t_tpu = torch.ones(size, device='tpu', dtype=torch.float32)
+    t_cpu = torch.empty(size, device='cpu', pin_memory=True)
+    x = torch.ones((8, 8), device='tpu')
+    (x + x).to('cpu')
+
+    host_start = time.perf_counter()
+    t_cpu.copy_(t_tpu, non_blocking=True)
+    start = make_event(enable_timing=True)
+    end = make_event(enable_timing=True)
+    start.record()
+    y = x + x
+    end.record()
+    torch.accelerator.synchronize()
+    host_elapsed_ms = (time.perf_counter() - host_start) * 1000
+    elapsed_ms = start.elapsed_time(end)
+
+    self.assertGreaterEqual(elapsed_ms, 0.0)
+    self.assertLessEqual(elapsed_ms, host_elapsed_ms)
+    utils.assert_close(y.to('cpu'), torch.full((8, 8), 2.0))
+
+  @parameterized.named_parameters(*_EVENT_CONSTRUCTORS)
+  def test_event_elapsed_time_uses_latest_record(self, make_event):
+    """Tests that elapsed_time() uses the times of the latest record() calls."""
+    x = torch.ones((8, 8), device='tpu')
+    start = make_event(enable_timing=True)
+    end = make_event(enable_timing=True)
+    host_start = time.perf_counter()
+    start.record()
+    end.record()
+    end.synchronize()
+    first_ms = start.elapsed_time(end)
+    host_first_end = time.perf_counter()
+
+    # The end event recorded again completes after host_rerecord, while its
+    # first completion preceded host_first_end.
+    time.sleep(0.01)
+    host_rerecord = time.perf_counter()
+    y = x + x
+    end.record()
+    end.synchronize()
+    second_ms = start.elapsed_time(end)
+    self.assertGreaterEqual(
+        second_ms - first_ms, (host_rerecord - host_first_end) * 1000
+    )
+    self.assertLessEqual(second_ms, (time.perf_counter() - host_start) * 1000)
+
+    # Both events recorded again complete within the latest host interval.
+    host_third_start = time.perf_counter()
+    start.record()
+    y = y + x
+    end.record()
+    end.synchronize()
+    third_ms = start.elapsed_time(end)
+    self.assertBetween(
+        third_ms, 0.0, (time.perf_counter() - host_third_start) * 1000
+    )
+    utils.assert_close(y.to('cpu'), torch.full((8, 8), 3.0))
+
+  def test_event_elapsed_time_to_torch_event(self):
+    """Tests a torch.tpu.Event timed against a torch.Event end event."""
+    x = torch.ones((8, 8), device='tpu')
+    start = torch.tpu.Event(enable_timing=True)
+    end = torch.Event(device='tpu', enable_timing=True)
+    host_start = time.perf_counter()
+    start.record()
+    y = x + x
+    end.record()
+    end.synchronize()
+    elapsed_ms = start.elapsed_time(end)
+
+    self.assertBetween(
+        elapsed_ms, 0.0, (time.perf_counter() - host_start) * 1000
+    )
+    utils.assert_close(y.to('cpu'), torch.full((8, 8), 2.0))
 
 
 if __name__ == '__main__':
