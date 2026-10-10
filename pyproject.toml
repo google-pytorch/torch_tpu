@@ -65,6 +65,7 @@ test = [
     "google-api-core>=2.18.0",
     "unittest-xml-reporting>=4",
     "cattrs>=24.1.0",
+    "dill>=0.4.1",
 ]
 
 benchmark = [
@@ -72,6 +73,7 @@ benchmark = [
     "flax>=0.12.3",
     "grain>=0.2.16",
     "llama-models>=0.3.0",
+    "optax>=0.2.8",
     "tensorflow-datasets>=4.9.9",
     "tensorboardx>=2.6",
     "timm>=1.0.26",
@@ -85,6 +87,7 @@ benchmark = [
 
 examples = [
     "datasets>=4.8",
+    "einops>=0.8.2",
     "pillow>=11",
     "tqdm>=4",
     "huggingface-hub>=0.34",

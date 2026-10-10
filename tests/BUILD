@@ -1345,6 +1345,7 @@ torch_tpu_py_test(
     ],
     deps = [
         ":op_testing",
+        ":oss_utils",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",

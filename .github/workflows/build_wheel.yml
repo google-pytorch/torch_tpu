@@ -64,7 +64,7 @@ jobs:
       cpu_versions: ${{ steps.set.outputs.cpu_versions }}
       tpu_versions: ${{ steps.set.outputs.tpu_versions }}
       default_python_version: "3.14"
-      latest_python_version: "3.14"
+      latest_python_version: "3.15"
       should_build: ${{ steps.check_diff.outputs.should_build }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -95,8 +95,8 @@ jobs:
              [[ "${HAS_TPU_NIGHTLY_LABEL}" == "true" ]] || \
              [[ "${HAS_RUN_ALL_VERSIONS_LABEL}" == "true" ]] || \
              [[ "${HAS_POSTSUBMIT_LABEL}" == "true" ]]; then
-            CPU_VERS='["3.11", "3.12", "3.13", "3.14", "3.14t"]'
-            TPU_VERS='["3.11", "3.12", "3.13", "3.14", "3.14t"]'
+            CPU_VERS='["3.11", "3.12", "3.13", "3.14", "3.15", "3.14t", "3.15t"]'
+            TPU_VERS='["3.11", "3.12", "3.13", "3.14", "3.15", "3.14t", "3.15t"]'
           fi
           echo "cpu_versions=${CPU_VERS}" >> "$GITHUB_OUTPUT"
           echo "tpu_versions=${TPU_VERS}" >> "$GITHUB_OUTPUT"
@@ -205,7 +205,7 @@ jobs:
         with:
           halt-dispatch-input: ${{ inputs.halt-for-connection }}
       # For the alternate-torch wheel variants (CUDA, nightly) and free-threaded
-      # Python builds (3.14t), run a trimmed-down smoke test instead of
+      # Python builds (3.14t, 3.15t), run a trimmed-down smoke test instead of
       # the bazel test suite: nox installs the built wheel and the torch variant
       # in a single uv resolution, then checks that the backend autoloads.
       - name: Run smoke tests via nox
@@ -307,6 +307,8 @@ jobs:
         wheel_version: ["standard", "v7"]
         exclude:
           - python_version: "3.14t"
+            wheel_version: "v7"
+          - python_version: "3.15t"
             wheel_version: "v7"
         include:
           # v7 1-Chip: Run Nox smoke tests on single-chip v7 and skip Bazel test suite.

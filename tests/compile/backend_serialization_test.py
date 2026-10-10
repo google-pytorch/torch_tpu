@@ -19,6 +19,7 @@ import gc
 import pickle
 import random
 import tempfile
+from unittest import mock
 
 from absl.testing import absltest
 import torch
@@ -29,6 +30,7 @@ from torch._functorch._aot_autograd.aot_autograd_result import (
     deserialize_bundled_cache_entry,
 )
 from torch._inductor.runtime.cache_dir_utils import temporary_cache_dir
+from torch_tpu._internal import env
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import _backend
 from torch_tpu._internal.utils import test_utils as utils
@@ -262,6 +264,85 @@ class BackendSerializationTest(seed_test_utils.RepeatableTest):
         )
         res_3 = compiled_fn_3(x_128)
         self.assertEqual(res_3[0].cpu().item(), 256)
+        c3 = dict(counters["aot_autograd"])
+        self.assertEqual(c3.get("autograd_cache_hit"), 1)
+
+  def test_different_world_sizes_produce_different_cache_keys(self):
+    self.assertIn("tpu", registry.list_backends())
+
+    def simple(x):
+      return (x + 1,)
+
+    x = torch.randn(4, 4, device="tpu")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+      with temporary_cache_dir(tmpdir):
+        # First run with WORLD_SIZE=1 populates the cache (miss)
+        torch._dynamo.reset()
+        counters.clear()
+        with mock.patch.object(
+            env,
+            "get_int_env_once",
+            side_effect=lambda name, default=None: {
+                "WORLD_SIZE": 1,
+                "RANK": 0,
+            }.get(name, default),
+        ):
+          compiled_fn_1 = torch.compile(
+              simple,
+              backend="tpu",
+              fullgraph=True,
+              dynamic=False,
+          )
+          res_1 = compiled_fn_1(x)
+        utils.assert_close(res_1[0].cpu(), x.cpu() + 1)
+        c1 = dict(counters["aot_autograd"])
+        self.assertEqual(c1.get("autograd_cache_miss"), 1)
+        self.assertEqual(c1.get("autograd_cache_hit", 0), 0)
+
+        # Second run with WORLD_SIZE=8 in a fresh Dynamo session must result in
+        # a cache MISS (no key collision with WORLD_SIZE=1).
+        torch._dynamo.reset()
+        counters.clear()
+        with mock.patch.object(
+            env,
+            "get_int_env_once",
+            side_effect=lambda name, default=None: {
+                "WORLD_SIZE": 8,
+                "RANK": 0,
+            }.get(name, default),
+        ):
+          compiled_fn_2 = torch.compile(
+              simple,
+              backend="tpu",
+              fullgraph=True,
+              dynamic=False,
+          )
+          res_2 = compiled_fn_2(x)
+        utils.assert_close(res_2[0].cpu(), x.cpu() + 1)
+        c2 = dict(counters["aot_autograd"])
+        self.assertEqual(c2.get("autograd_cache_miss"), 1)
+        self.assertEqual(c2.get("autograd_cache_hit", 0), 0)
+
+        # Subsequent run with WORLD_SIZE=8 hits the autograd cache
+        torch._dynamo.reset()
+        counters.clear()
+        with mock.patch.object(
+            env,
+            "get_int_env_once",
+            side_effect=lambda name, default=None: {
+                "WORLD_SIZE": 8,
+                "RANK": 0,
+            }.get(name, default),
+        ):
+          compiled_fn_3 = torch.compile(
+              simple,
+              backend="tpu",
+              fullgraph=True,
+              dynamic=False,
+          )
+          res_3 = compiled_fn_3(x)
+        utils.assert_close(res_3[0].cpu(), x.cpu() + 1)
         c3 = dict(counters["aot_autograd"])
         self.assertEqual(c3.get("autograd_cache_hit"), 1)
 

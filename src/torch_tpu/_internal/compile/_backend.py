@@ -55,6 +55,7 @@ from torch._functorch._aot_autograd.schemas import SerializableAOTDispatchCompil
 import torch._functorch.config as functorch_config
 from torch._functorch.partitioners import min_cut_rematerialization_partition
 from torch.utils import _pytree
+from torch_tpu._internal import env
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal.compile import compiler
 from torch_tpu._internal.compile import split_compiler
@@ -275,6 +276,29 @@ def _serialization_context(
         functorch_config.patch("bundled_autograd_cache", True),
     )
 
+    import torch_tpu  # pylint: disable=g-import-not-at-top; buildcleaner: ignore
+
+    # Include TorchTPU version and distributed environment variables in
+    # cache_key_tag so AOTAutogradCache does not reuse PJRT executables compiled
+    # for a different world size or rank.
+    existing_tag = torch.compiler.config.cache_key_tag
+    tpu_env_tag = (
+        f"torchtpu={getattr(torch_tpu, '__version__', 'dev')}"
+        f":world_size={env.get_int_env_once('WORLD_SIZE')}"
+        f":rank={env.get_int_env_once('RANK')}"
+        f":local_rank={env.get_int_env_once('LOCAL_RANK')}"
+    )
+    tpu_cache_key_tag = (
+        f"{existing_tag}:{tpu_env_tag}" if existing_tag else tpu_env_tag
+    )
+    torch.compiler.config.cache_key_tag = tpu_cache_key_tag
+    stack.callback(
+        setattr,
+        torch.compiler.config,
+        "cache_key_tag",
+        existing_tag,
+    )
+
     # The default tensor metadata extraction methods below are used during cache
     # key generation and unfortunately they zero-out `storage_offset` in the
     # returned metadata object which is harmful for TPU. Override them so that
@@ -325,12 +349,7 @@ def _serialization_context(
       has_cache_info = aot_config.cache_info is not None
 
       if not has_cache_info:
-        import torch_tpu  # pylint: disable=g-import-not-at-top; buildcleaner: ignore
-
-        version_prefix = (
-            f"torch={torch.__version__}"
-            f"_torchtpu={getattr(torch_tpu, '__version__', 'dev')}"
-        )
+        version_prefix = f"torch={torch.__version__}_{tpu_cache_key_tag}"
         # Without inputs_meta, the custom key would collide for graphs
         # differing only in `storage_offset`, causing runtime input size
         # mismatches between the compiled artifact and the provided input.

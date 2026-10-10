@@ -120,6 +120,7 @@ torch_tpu_py_library(
         ":torch_tpu_compiled_executable",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal:env",
         "//src/torch_tpu/_internal/benchmarks:xprof_adapter",
         "//src/torch_tpu/_internal/compile/dynamic:dynamic_compiler",
         "//src/torch_tpu/_internal/execution_mode",

@@ -34,14 +34,34 @@ cd "$working_dir"
 
 PYTHON_PLATFORM="x86_64-manylinux_2_31"
 
-# Loop over supported Python versions and generate the full-environment locks.
-for version in "3.11" "3.12" "3.13" "3.14"; do
-  version_und=$(echo "$version" | tr '.' '_')
-  REQUIREMENTS_FILE="requirements/requirements_${version_und}.txt"
+# Generate the full-environment CPU and (optionally) CUDA locks for a single
+# Python version.
+# Usage: lock_environment <python_version> [--skip-cuda] [<extra_uv_args>...]
+lock_environment() {
+  local version="$1"
+  shift
+  local skip_cuda=false
+  local extra_uv_args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --skip-cuda)
+        skip_cuda=true
+        shift
+        ;;
+      *)
+        extra_uv_args+=("$1")
+        shift
+        ;;
+    esac
+  done
 
-  echo "Generating lock file for Python $version -> $REQUIREMENTS_FILE"
-  if [ -f "$REQUIREMENTS_FILE" ]; then
-    rm "$REQUIREMENTS_FILE"
+  local version_und
+  version_und=$(echo "$version" | tr '.' '_')
+  local requirements_file="requirements/requirements_${version_und}.txt"
+
+  echo "Generating lock file for Python $version -> $requirements_file"
+  if [ -f "$requirements_file" ]; then
+    rm "$requirements_file"
   fi
 
   # See https://docs.astral.sh/uv/reference/cli/#uv-pip-compile for more details.
@@ -51,25 +71,34 @@ for version in "3.11" "3.12" "3.13" "3.14"; do
     --python-platform "$PYTHON_PLATFORM" \
     --resolution lowest-direct \
     --generate-hashes \
-    --output-file "$REQUIREMENTS_FILE"
+    "${extra_uv_args[@]}" \
+    --output-file "$requirements_file"
 
-  REQUIREMENTS_CUDA_FILE="requirements/requirements_cuda_${version_und}.txt"
-  echo "Generating CUDA lock file for Python $version -> $REQUIREMENTS_CUDA_FILE"
-  if [ -f "$REQUIREMENTS_CUDA_FILE" ]; then
-    rm "$REQUIREMENTS_CUDA_FILE"
+  if [ "$skip_cuda" = false ]; then
+    local requirements_cuda_file="requirements/requirements_cuda_${version_und}.txt"
+    echo "Generating CUDA lock file for Python $version -> $requirements_cuda_file"
+    if [ -f "$requirements_cuda_file" ]; then
+      rm "$requirements_cuda_file"
+    fi
+
+    # --no-sources ignores the [tool.uv.sources] pytorch-cpu index pins, so
+    # torch resolves as the CUDA build from PyPI instead of the +cpu wheel.
+    uv pip compile pyproject.toml \
+      --no-sources \
+      --all-extras \
+      --python-version "$version" \
+      --python-platform "$PYTHON_PLATFORM" \
+      --resolution lowest-direct \
+      --generate-hashes \
+      --index-url https://pypi.org/simple \
+      "${extra_uv_args[@]}" \
+      --output-file "$requirements_cuda_file"
   fi
+}
 
-  # --no-sources ignores the [tool.uv.sources] pytorch-cpu index pins, so
-  # torch resolves as the CUDA build from PyPI instead of the +cpu wheel.
-  uv pip compile pyproject.toml \
-    --no-sources \
-    --all-extras \
-    --python-version "$version" \
-    --python-platform "$PYTHON_PLATFORM" \
-    --resolution lowest-direct \
-    --generate-hashes \
-    --index-url https://pypi.org/simple \
-    --output-file "$REQUIREMENTS_CUDA_FILE"
+# Loop over supported Python versions and generate the full-environment locks.
+for version in "3.11" "3.12" "3.13" "3.14"; do
+  lock_environment "$version"
 done
 
 # Full-environment lock for the latest supported Python version pinning the upper
@@ -167,3 +196,31 @@ if [ "$pinned_release" != "$declared" ]; then
   echo "and MODULE.bazel to $pinned_release." >&2
   exit 1
 fi
+
+# Python 3.15 caveats:
+# - PyTorch does not yet publish Python 3.15 CUDA wheels on PyPI (--skip-cuda).
+# - PyTorch < 2.15 blocks torch.compile on Python 3.15, so pin torch==2.15.0+cpu
+#   (matching the 2.15.0 glue in requirements_torch_2_15_0.txt) and
+#   torchvision>=0.29.2 from the PyTorch CPU and RC test indexes.
+# - grain and array-record (a required Linux dependency of tensorflow-datasets)
+#   do not publish source distributions or Python 3.15 wheels on PyPI, and
+#   flax (via tensorstore/uvloop), dm-tree, and datasets (via pyarrow/aiohttp)
+#   do not yet publish Python 3.15 binary wheels for their C/C++ extensions, so
+#   we exclude them when locking Python 3.15.
+# - Under --resolution lowest-direct, uv otherwise resolves older minimum
+#   versions that predate Python 3.15 and only ship source distributions;
+#   --only-binary forces resolution to versions with prebuilt cp315 wheels.
+# - libtpu==0.0.46 (the earliest cp315 wheel) has a dynamic-shape host DMA
+#   alignment regression and multi-process TPU initialization hang fixed in
+#   libtpu>=0.0.48; huggingface-hub<1.19.0 imports dataclasses._MISSING_TYPE
+#   (removed in Python 3.15); torchax<0.0.14.dev20261002 accesses
+#   torch.ops.aten.prod.dim_Dimname and torch.ops.aten.qr (removed in PyTorch
+#   2.15).
+lock_environment "3.15" --skip-cuda \
+  --no-sources \
+  --index-url https://pypi.org/simple \
+  --extra-index-url https://download.pytorch.org/whl/cpu \
+  --extra-index-url https://download.pytorch.org/whl/test/cpu \
+  --index-strategy unsafe-best-match \
+  --only-binary numpy,scipy,pillow,matplotlib,grpcio-tools,pydantic-core \
+  --overrides <(printf "grain ; python_version < '3.15'\ntensorflow-datasets ; python_version < '3.15'\nflax ; python_version < '3.15'\ndm-tree ; python_version < '3.15'\ndatasets ; python_version < '3.15'\nlibtpu>=0.0.49\nhuggingface-hub>=1.19.0\ntorch==2.15.0+cpu\ntorchvision>=0.29.2\ntorchax>=0.0.14.dev20261002\n")

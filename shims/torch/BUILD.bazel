@@ -33,7 +33,8 @@ alias(
             "//:wheel_test_3_12": "@pypi_torch_312//:libc10",
             "//:wheel_test_3_13": "@pypi_torch_313//:libc10",
             "//:wheel_test_3_14": "@pypi_torch_314//:libc10",
-            "//conditions:default": "@pypi_torch_314//:libc10",
+            "//:wheel_test_3_15": "@pypi_torch_315//:libc10",
+            "//conditions:default": "@pypi//torch:libc10",
         },
     )),
 )
@@ -47,7 +48,8 @@ alias(
             "//:wheel_test_3_12": "@pypi_torch_312//:libtorch_cpu",
             "//:wheel_test_3_13": "@pypi_torch_313//:libtorch_cpu",
             "//:wheel_test_3_14": "@pypi_torch_314//:libtorch_cpu",
-            "//conditions:default": "@pypi_torch_314//:libtorch_cpu",
+            "//:wheel_test_3_15": "@pypi_torch_315//:libtorch_cpu",
+            "//conditions:default": "@pypi//torch:libtorch_cpu",
         },
     )),
 )
@@ -61,7 +63,8 @@ alias(
             "//:wheel_test_3_12": "@pypi_torch_312//:libtorch_python",
             "//:wheel_test_3_13": "@pypi_torch_313//:libtorch_python",
             "//:wheel_test_3_14": "@pypi_torch_314//:libtorch_python",
-            "//conditions:default": "@pypi_torch_314//:libtorch_python",
+            "//:wheel_test_3_15": "@pypi_torch_315//:libtorch_python",
+            "//conditions:default": "@pypi//torch:libtorch_python",
         },
     )),
 )

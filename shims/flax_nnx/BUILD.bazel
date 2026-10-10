@@ -12,12 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@rules_python//python:py_library.bzl", "py_library")
 load("//:visibility.bzl", "PACKAGE_DEFAULT_VISIBILITY")
 
 package(default_visibility = PACKAGE_DEFAULT_VISIBILITY)
 
-# flax.nnx is part of the flax package.
-alias(
+# flax (including flax.nnx) is part of the flax package.
+# Omit @pypi//flax on Python 3.15 because its transitive dependency tensorstore
+# does not yet publish Python 3.15 wheels on PyPI (and torchax_step_test
+# already skips on Python 3.14+ in OSS).
+py_library(
     name = "flax_nnx",
-    actual = "@pypi//flax",
+    deps = select({
+        "@rules_python//python/config_settings:is_python_3.15": [],
+        "//conditions:default": ["@pypi//flax"],
+    }),
 )
