@@ -22,6 +22,7 @@
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/mlir/instrumentation.h"
+#include "csrc/mlir/passes/fuse_moe_dispatch_combine.h"
 #include "csrc/mlir/passes/reassociate_norm_weights.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -47,6 +48,7 @@ void AddShloPasses(mlir::PassManager& pm) {
   }
   pm.addNestedPass<mlir::func::FuncOp>(
       mlir::stablehlo::createStablehloTargetIndependentOptimizationPass());
+  pm.addNestedPass<mlir::func::FuncOp>(createFuseMoeDispatchCombinePass());
 }
 
 }  // namespace

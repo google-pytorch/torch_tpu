@@ -15,6 +15,7 @@
 load(
     "//build_files:build_defs.bzl",
     "torch_tpu_cc_library",
+    "torch_tpu_cc_test",
     "torch_tpu_package_end",
 )
 
@@ -46,6 +47,40 @@ torch_tpu_cc_library(
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:Support",
         "@llvm-project//mlir:TransformUtils",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_library(
+    name = "fuse_moe_dispatch_combine",
+    srcs = ["fuse_moe_dispatch_combine.cc"],
+    hdrs = ["fuse_moe_dispatch_combine.h"],
+    deps = [
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:chlo_ops",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "fuse_moe_dispatch_combine_test",
+    srcs = ["fuse_moe_dispatch_combine_test.cc"],
+    deps = [
+        ":fuse_moe_dispatch_combine",
+        "//csrc/common:oss_test_main",
+        "//csrc/mlir:pipeline",
+        "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/status:status_matchers",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Parser",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:chlo_ops",
         "@stablehlo//:stablehlo_ops",
     ],
 )

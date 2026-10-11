@@ -48,6 +48,7 @@ torch_tpu_cc_library(
         ":instrumentation",
         "//csrc/common:env_vars",
         "//csrc/common:error_utils",
+        "//csrc/mlir/passes:fuse_moe_dispatch_combine",
         "//csrc/mlir/passes:reassociate_norm_weights",
         "@com_google_absl//absl/status",
         "@llvm-project//mlir:FuncDialect",
@@ -79,6 +80,7 @@ torch_tpu_cc_library(
     hdrs = ["registration.h"],
     deps = [
         "//csrc/mlir/passes:dummy_pass",
+        "//csrc/mlir/passes:fuse_moe_dispatch_combine",
         "//csrc/mlir/passes:reassociate_norm_weights",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",
