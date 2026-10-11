@@ -304,7 +304,7 @@ void TpuDeviceGuardImpl::synchronizeEvent(void* event) const {
 }
 
 double TpuDeviceGuardImpl::elapsedTime(
-    void* event1, void* event2, const c10::DeviceIndex device_index) const {
+    void* event1, void* event2, c10::DeviceIndex /*device_index*/) const {
   std::shared_ptr<EventSnapshot>* start =
       reinterpret_cast<std::shared_ptr<EventSnapshot>*>(event1);
   std::shared_ptr<EventSnapshot>* end =

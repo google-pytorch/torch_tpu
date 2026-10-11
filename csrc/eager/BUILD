@@ -1164,6 +1164,7 @@ torch_tpu_cc_test(
         "//csrc/pjrt:pjrt_state",
         "//csrc/pjrt:pjrt_transfer",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",

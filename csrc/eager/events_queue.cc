@@ -1157,7 +1157,7 @@ EventSnapshot::EventSnapshot(xla::Future<void> future)
     : future_(std::move(future)), completion_(std::make_shared<Completion>()) {
   // The completion time is recorded before the next snapshot is released, so
   // the next snapshot cannot complete before this one has a time.
-  future_.OnReady([completion = completion_](absl::Status status) {
+  future_.OnReady([completion = completion_](absl::Status /*status*/) {
     std::optional<xla::Promise<void>> chain_promise;
     {
       absl::MutexLock lock(completion->mu);

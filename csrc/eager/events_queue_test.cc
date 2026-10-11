@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "absl/status/status.h"
+#include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "csrc/common/cache_key.h"
@@ -55,6 +56,8 @@
 
 namespace torch_tpu {
 namespace {
+
+using absl_testing::StatusIs;
 
 class EventsQueueTest : public testing::Test {
  protected:
@@ -1104,13 +1107,13 @@ TEST(EventSnapshotTest, ElapsedTimeMeasuresCompletionTimes) {
   auto [end_promise, end_future] = xla::MakePromise<void>();
   EventSnapshot start(std::move(start_future));
   EventSnapshot end(std::move(end_future));
-  EXPECT_EQ(start.ElapsedTime(end).status().code(), error::kFailedPrecondition);
+  EXPECT_THAT(start.ElapsedTime(end), StatusIs(error::kFailedPrecondition));
 
   const auto before_start = std::chrono::steady_clock::now();
   start_promise.Set();
   const auto after_start = std::chrono::steady_clock::now();
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  EXPECT_EQ(start.ElapsedTime(end).status().code(), error::kFailedPrecondition);
+  EXPECT_THAT(start.ElapsedTime(end), StatusIs(error::kFailedPrecondition));
   const auto before_end = std::chrono::steady_clock::now();
   end_promise.Set();
   const auto after_end = std::chrono::steady_clock::now();
@@ -1119,7 +1122,7 @@ TEST(EventSnapshotTest, ElapsedTimeMeasuresCompletionTimes) {
   EXPECT_GE(elapsed_ms, ToMilliseconds(before_end - after_start));
   EXPECT_LE(elapsed_ms, ToMilliseconds(after_end - before_start));
   TT_ASSERT_OK_AND_ASSIGN(double reverse_ms, end.ElapsedTime(start));
-  EXPECT_EQ(reverse_ms, -elapsed_ms);
+  EXPECT_DOUBLE_EQ(reverse_ms, -elapsed_ms);
 }
 
 TEST(EventSnapshotTest, ElapsedTimeExcludesWorkPendingAtStart) {
@@ -1174,8 +1177,8 @@ TEST(EventSnapshotTest, ElapsedTimeReturnsEventError) {
   EventSnapshot ok_event{xla::Future<void>(absl::OkStatus())};
   EventSnapshot failed_event{
       xla::Future<void>(TT_ERROR(error::kInvalidArgument) << "fake error")};
-  EXPECT_EQ(ok_event.ElapsedTime(failed_event).status().code(),
-            error::kInvalidArgument);
+  EXPECT_THAT(ok_event.ElapsedTime(failed_event),
+              StatusIs(error::kInvalidArgument));
 }
 
 TEST_F(EventsQueueTest, CompletesLongSnapshotChainOnSmallStack) {
