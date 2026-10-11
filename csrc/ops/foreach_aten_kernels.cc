@@ -28,6 +28,8 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/ops/result_type.h"
+#include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/functional/any_invocable.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -36,8 +38,12 @@
 #include "absl/types/span.h"
 #include "c10/core/DefaultDtype.h"
 #include "c10/core/ScalarType.h"
+#include "c10/core/StorageImpl.h"
+#include "c10/core/TensorImpl.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/context_states.h"
+#include "csrc/common/device_type.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -45,6 +51,7 @@
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
+#include "csrc/eager/eager_mode.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/binary.h"
@@ -61,6 +68,7 @@
 #include "csrc/ops/sigmoid/sigmoid_aten_kernels.h"
 #include "csrc/ops/to_copy/to_copy_aten_kernels.h"
 #include "csrc/ops/unary.h"
+#include "llvm/ADT/SmallVector.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -356,15 +364,330 @@ bool CanDispatchInPlace(at::TensorList self, DtypeSpan out_dtypes) {
   return true;
 }
 
-// Dispatches a foreach op. When executed in-place and output dtypes match the
-// input tensors, delegates to DispatchOpOut which automatically manages
-// in-place buffer donation and output tensor assignment. For out-of-place
-// execution or when dtypes promote across operands, dispatches via DispatchOp
-// and returns the resulting device buffers for subsequent copy/cast.
+// Identifies an input operand buffer slot in a foreach operation.
+struct ForeachSlotKey {
+  // Underlying device buffer holding the operand tensor data.
+  DeviceBufferRef buffer_ref;
+  // PyTorch scalar type of the operand tensor.
+  int scalar_type = 0;
+  // Shape dimensions distinguishing different views of the same buffer.
+  Dimensions sizes;
+  bool operator==(const ForeachSlotKey&) const = default;
+  template <typename H>
+  friend H AbslHashValue(H h, const ForeachSlotKey& k) {
+    return H::combine(std::move(h), k.buffer_ref, k.scalar_type,
+                      absl::MakeConstSpan(k.sizes));
+  }
+};
+
+// Groups foreach element operations that share identical output shapes, dtypes,
+// and input buffer slots for deduplicated execution.
+struct ForeachElemGroupKey {
+  // Output MLIR element type encoded as int.
+  int out_dtype = 0;
+  // Output shape dimensions.
+  Dimensions out_dims;
+  // Input buffer slot keys for this element across all input lists.
+  llvm::SmallVector<ForeachSlotKey, 4> slots;
+  bool operator==(const ForeachElemGroupKey&) const = default;
+  template <typename H>
+  friend H AbslHashValue(H h, const ForeachElemGroupKey& k) {
+    return H::combine(std::move(h), k.out_dtype,
+                      absl::MakeConstSpan(k.out_dims),
+                      absl::MakeConstSpan(k.slots));
+  }
+};
+
+// Dispatches a foreach op, collapsing duplicate underlying device buffer tuples
+// across self elements in eager execution and deduplicating repeated extra
+// operand buffers across all modes.
 absl::StatusOr<std::vector<DeviceBufferRef>> DispatchForeach(
     at::TensorList self,
     NAryMlirOpBuilder<kDynamicSize, kDynamicSize> op_builder,
     std::vector<at::Tensor> inputs, DispatchOpOptions<kDynamicSize> options) {
+  const size_t num_self = self.size();
+  const EagerMode mode = GetEagerMode();
+  if (num_self > 1 && !inputs.empty() && inputs.size() % num_self == 0 &&
+      options.out_dtypes.size() == num_self &&
+      options.out_dims_list.size() == num_self &&
+      mode != EagerMode::kInternalCompileFxGraph &&
+      mode != EagerMode::kInternalDeferAll) {
+    // Two elements can share a group only when self[i] and self[j] share the
+    // same underlying DeviceBufferRef. In addition, in-place foreach operations
+    // mutate self elements and cannot group duplicate buffers without dropping
+    // sequential in-place updates. Scan self first to skip grouping immediately
+    // on standard multi-tensor parameter and gradient lists where all self
+    // buffers are distinct.
+    bool can_group = !IsCurrentOpInPlace();
+    if (can_group) {
+      absl::flat_hash_set<std::pair<const void*, int64_t>> seen_self_bufs;
+      seen_self_bufs.reserve(num_self);
+      bool has_shared_self = false;
+      for (const at::Tensor& t : self) {
+        if (!t.defined() || t.device().type() != GetPrivateUse1DeviceType() ||
+            !t.is_contiguous() || t.storage_offset() != 0 || t.is_conj() ||
+            !t.has_storage() || !t.storage().data_ptr()) {
+          can_group = false;
+          break;
+        }
+        const auto* buf_ref =
+            static_cast<const DeviceBufferRef*>(t.storage().data_ptr().get());
+        if (buf_ref == nullptr || buf_ref->device_buffer_list() == nullptr ||
+            t.nbytes() != buf_ref->size_bytes()) {
+          can_group = false;
+          break;
+        }
+        if (!seen_self_bufs
+                 .insert(
+                     {buf_ref->device_buffer_list().get(), buf_ref->index()})
+                 .second) {
+          has_shared_self = true;
+        }
+      }
+      if (!has_shared_self) {
+        can_group = false;
+      }
+    }
+
+    if (can_group) {
+      const size_t num_lists = inputs.size() / num_self;
+      std::vector<ForeachSlotKey> flat_slot_keys;
+      flat_slot_keys.reserve(inputs.size());
+      for (const at::Tensor& t : inputs) {
+        if (!t.defined() || t.device().type() != GetPrivateUse1DeviceType() ||
+            !t.is_contiguous() || t.storage_offset() != 0 || t.is_conj()) {
+          can_group = false;
+          break;
+        }
+        auto buf_or = GetBaseBuffer(t);
+        if (!buf_or.ok() || buf_or->device_buffer_list() == nullptr ||
+            t.nbytes() != buf_or->size_bytes()) {
+          can_group = false;
+          break;
+        }
+        flat_slot_keys.push_back(ForeachSlotKey{
+            .buffer_ref = std::move(*buf_or),
+            .scalar_type = static_cast<int>(t.scalar_type()),
+            .sizes = CopyIntVector(t.sizes()),
+        });
+      }
+
+      if (can_group && flat_slot_keys.size() == inputs.size()) {
+        absl::flat_hash_map<ForeachElemGroupKey, size_t> group_map;
+        group_map.reserve(num_self);
+        std::vector<size_t> rep_indices;
+        rep_indices.reserve(num_self);
+        std::vector<size_t> elem_to_group;
+        elem_to_group.reserve(num_self);
+        for (size_t i = 0; i < num_self; ++i) {
+          ForeachElemGroupKey key;
+          key.out_dtype = static_cast<int>(options.out_dtypes[i]);
+          key.out_dims = CopyIntVector(options.out_dims_list[i]);
+          key.slots.reserve(num_lists);
+          for (size_t g = 0; g < num_lists; ++g) {
+            key.slots.push_back(flat_slot_keys[g * num_self + i]);
+          }
+          auto [it, inserted] =
+              group_map.emplace(std::move(key), rep_indices.size());
+          if (inserted) {
+            rep_indices.push_back(i);
+          }
+          elem_to_group.push_back(it->second);
+        }
+
+        const size_t num_unique = rep_indices.size();
+        if (num_unique < num_self) {
+          std::vector<at::Tensor> dedup_inputs;
+          dedup_inputs.reserve(num_lists * num_unique);
+          for (size_t u = 0; u < num_unique; ++u) {
+            dedup_inputs.push_back(inputs[rep_indices[u]]);
+          }
+          absl::flat_hash_map<ForeachSlotKey, size_t> extra_slot_map;
+          extra_slot_map.reserve(num_lists * num_unique);
+          for (size_t u = 0; u < num_unique; ++u) {
+            extra_slot_map.emplace(flat_slot_keys[rep_indices[u]], u);
+          }
+          std::vector<size_t> extra_slot_remap;
+          extra_slot_remap.reserve((num_lists - 1) * num_unique);
+          for (size_t g = 1; g < num_lists; ++g) {
+            for (size_t u = 0; u < num_unique; ++u) {
+              const size_t orig_idx = g * num_self + rep_indices[u];
+              auto [it, inserted] = extra_slot_map.emplace(
+                  flat_slot_keys[orig_idx], dedup_inputs.size());
+              if (inserted) {
+                dedup_inputs.push_back(inputs[orig_idx]);
+              }
+              extra_slot_remap.push_back(it->second);
+            }
+          }
+
+          DtypeVec rep_out_dtypes;
+          rep_out_dtypes.reserve(num_unique);
+          std::vector<absl::Span<const int64_t>> rep_out_dims_list;
+          rep_out_dims_list.reserve(num_unique);
+          for (const size_t r : rep_indices) {
+            rep_out_dtypes.push_back(options.out_dtypes[r]);
+            rep_out_dims_list.push_back(options.out_dims_list[r]);
+          }
+
+          TT_RETURN_IF_ERROR(options.op_param_cache_keys.SetParam(
+              "group_dedup_u", static_cast<int64_t>(num_unique)));
+          TT_RETURN_IF_ERROR(options.op_param_cache_keys.SetParam(
+              "group_dedup_lists", static_cast<int64_t>(num_lists)));
+          TT_RETURN_IF_ERROR(options.op_param_cache_keys.SetParam(
+              "elem_to_group", absl::MakeConstSpan(elem_to_group)));
+          if (!extra_slot_remap.empty()) {
+            TT_RETURN_IF_ERROR(options.op_param_cache_keys.SetParam(
+                "group_extra_remap", absl::MakeConstSpan(extra_slot_remap)));
+          }
+
+          const bool is_inplace = IsCurrentOpInPlace() &&
+                                  CanDispatchInPlace(self, options.out_dtypes);
+          auto reduced_builder =
+              [inner = std::move(op_builder), num_self, num_lists, num_unique,
+               rep_indices = std::move(rep_indices),
+               elem_to_group_copy = elem_to_group,
+               extra_slot_remap = std::move(extra_slot_remap)](
+                  absl::Span<mlir::MlirOp> dedup_ops,
+                  mlir::MlirBuilder& builder)
+              -> absl::StatusOr<mlir::SmallVector<mlir::MlirOp>> {
+            mlir::SmallVector<mlir::MlirOp> full_ops;
+            full_ops.reserve(num_lists * num_self);
+            for (size_t g = 0; g < num_lists; ++g) {
+              for (size_t i = 0; i < num_self; ++i) {
+                const size_t u = elem_to_group_copy[i];
+                const size_t slot =
+                    (g == 0) ? u : extra_slot_remap[(g - 1) * num_unique + u];
+                full_ops.push_back(dedup_ops[slot]);
+              }
+            }
+            TT_ASSIGN_OR_RETURN(auto all_out_ops,
+                                inner(absl::MakeSpan(full_ops), builder));
+            mlir::SmallVector<mlir::MlirOp> rep_out_ops;
+            rep_out_ops.reserve(rep_indices.size());
+            for (const size_t r : rep_indices) {
+              rep_out_ops.push_back(all_out_ops[r]);
+            }
+            return rep_out_ops;
+          };
+
+          Indices donated_indices;
+          std::vector<uint8_t> rep_donated(num_unique, 0);
+          if (is_inplace && IsInplaceBufferDonationEnabled() &&
+              SupportsInplaceBufferDonation(GetEagerMode())) {
+            std::vector<size_t> group_counts(num_unique, 0);
+            for (size_t i = 0; i < num_self; ++i) {
+              group_counts[elem_to_group[i]]++;
+            }
+            donated_indices.reserve(num_unique);
+            for (size_t u = 0; u < num_unique; ++u) {
+              if (group_counts[u] == 1) {
+                const size_t orig_idx = rep_indices[u];
+                bool aliases_other = false;
+                for (size_t k = 0; k < dedup_inputs.size(); ++k) {
+                  if (k != u && dedup_inputs[k].is_alias_of(dedup_inputs[u])) {
+                    aliases_other = true;
+                    break;
+                  }
+                }
+                if (!aliases_other &&
+                    internal::IsEligibleDonor(dedup_inputs[u], self[orig_idx],
+                                              rep_out_dtypes[u],
+                                              rep_out_dims_list[u])) {
+                  donated_indices.push_back(static_cast<int64_t>(u));
+                  rep_donated[u] = 1;
+                }
+              }
+            }
+          }
+
+          const bool autodonated = !donated_indices.empty();
+          DispatchOpOptions<kDynamicSize> reduced_options = {
+              .op_name = options.op_name,
+              .out_dtypes = rep_out_dtypes,
+              .out_dims_list = rep_out_dims_list,
+              .computation_dtype = options.computation_dtype,
+              .op_param_cache_keys = std::move(options.op_param_cache_keys),
+              .split_mode = options.split_mode,
+              .donated_indices = std::move(donated_indices),
+              .device_assignment = std::move(options.device_assignment),
+              .autodonated = autodonated,
+          };
+          TT_ASSIGN_OR_RETURN(std::vector<DeviceBufferRef> unique_results,
+                              (DispatchOp<kDynamicSize, kDynamicSize>(
+                                  std::move(reduced_builder), dedup_inputs,
+                                  std::move(reduced_options))));
+          if (is_inplace) {
+            for (size_t i = 0; i < num_self; ++i) {
+              const size_t u = elem_to_group[i];
+              TT_RETURN_IF_ERROR(AssignBufferToAtTensor(
+                  unique_results[u], self[i],
+                  /*enable_autodonation=*/static_cast<bool>(rep_donated[u])));
+            }
+            if (autodonated) {
+              TT_RETURN_IF_ERROR(internal::RunPostponedMaterialization());
+            }
+            return std::vector<DeviceBufferRef>{};
+          }
+          std::vector<DeviceBufferRef> full_results;
+          full_results.reserve(num_self);
+          for (size_t i = 0; i < num_self; ++i) {
+            full_results.push_back(unique_results[elem_to_group[i]]);
+          }
+          return full_results;
+        }
+      }
+    }
+  }
+
+  if (inputs.size() > num_self) {
+    std::vector<at::Tensor> dedup_inputs;
+    dedup_inputs.reserve(inputs.size());
+    std::vector<size_t> input_remap;
+    input_remap.reserve(inputs.size());
+
+    // Keep the first self.size() inputs in direct slots so in place output
+    // buffer donation from inputs[i] to self[i] is preserved.
+    for (size_t i = 0; i < num_self; ++i) {
+      input_remap.push_back(i);
+      dedup_inputs.push_back(std::move(inputs[i]));
+    }
+
+    absl::flat_hash_map<const c10::TensorImpl*, size_t> extra_impl_to_slot;
+    extra_impl_to_slot.reserve(inputs.size() - num_self);
+    for (size_t j = num_self; j < inputs.size(); ++j) {
+      if (!inputs[j].defined()) {
+        input_remap.push_back(dedup_inputs.size());
+        dedup_inputs.push_back(std::move(inputs[j]));
+        continue;
+      }
+      const c10::TensorImpl* impl = inputs[j].unsafeGetTensorImpl();
+      auto [it, inserted] =
+          extra_impl_to_slot.emplace(impl, dedup_inputs.size());
+      if (inserted) {
+        dedup_inputs.push_back(std::move(inputs[j]));
+      }
+      input_remap.push_back(it->second);
+    }
+
+    if (dedup_inputs.size() < input_remap.size()) {
+      TT_RETURN_IF_ERROR(options.op_param_cache_keys.SetParam(
+          "input_remap", absl::MakeConstSpan(input_remap)));
+      op_builder =
+          [inner = std::move(op_builder), remap = std::move(input_remap)](
+              absl::Span<mlir::MlirOp> dedup_ops, mlir::MlirBuilder& builder)
+          -> absl::StatusOr<mlir::SmallVector<mlir::MlirOp>> {
+        mlir::SmallVector<mlir::MlirOp> full_ops;
+        full_ops.reserve(remap.size());
+        for (const size_t idx : remap) {
+          full_ops.push_back(dedup_ops[idx]);
+        }
+        return inner(absl::MakeSpan(full_ops), builder);
+      };
+    }
+    inputs = std::move(dedup_inputs);
+  }
+
   if (IsCurrentOpInPlace() && CanDispatchInPlace(self, options.out_dtypes)) {
     std::vector<at::Tensor> outputs(self.begin(), self.end());
     TT_RETURN_IF_ERROR((DispatchOpOut<kDynamicSize, kDynamicSize>(
