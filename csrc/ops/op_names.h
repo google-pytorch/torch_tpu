@@ -190,6 +190,7 @@ enum class OpName {
   kDivOutMode,
   kDot,
   kDropout,
+  kDropout_,
   kDynamicArange,
   kDynamicBroadcast,
   kDynamicReshape,
@@ -1219,6 +1220,8 @@ ToString(  // NOLINT(google-readability-function-size)
       return "dot";
     case OpName::kDropout:
       return "dropout";
+    case OpName::kDropout_:
+      return "dropout_";
     case OpName::kDynamicArange:
       return "_dynamic_arange";
     case OpName::kDynamicBroadcast:

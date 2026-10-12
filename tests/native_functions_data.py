@@ -449,6 +449,11 @@ REGISTRATION_OVERRIDES = frozenset([
     # decomposition in order to workaround a bug in PyTorch core.
     'ctc_loss',
     'ctc_loss.Tensor',
+    # dropout and dropout_ are registered to provide direct 1-output and
+    # in-place StableHLO lowerings and zero-op no-op short-circuiting on TPU,
+    # overriding the default CompositeImplicitAutograd decomposition.
+    'dropout',
+    'dropout_',
     # embedding, embedding.out, embedding_backward, and embedding_sparse_backward
     # are registered to provide direct StableHLO lowerings on TPU, overriding
     # the default PyTorch decomposition.

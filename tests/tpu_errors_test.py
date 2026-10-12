@@ -4792,6 +4792,66 @@ module {
     ):
       torch.tpu.allow_excess_precision = not current
 
+  @et.why_tpu_only("CUDA native_dropout does not validate p in [0, 1].")
+  def test_native_dropout_invalid_p(self):
+    inp = torch.ones(5, 3, device=et.device())
+
+    def check(p: float, train: bool) -> None:
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=f"""native_dropout(): expected p to be in the range [0, 1], got {p}""",
+          message_reviewed_by="adivinpatel",
+      ):
+        torch.native_dropout(inp, p=p, train=train)
+
+    for p in (-1.5, -0.1, 1.1, 1.5, float("nan")):
+      for train in (True, False):
+        with self.subTest(p=p, train=train):
+          check(p, train)
+
+  @et.why_tpu_only("CUDA _fused_dropout does not validate p in [0, 1].")
+  def test_fused_dropout_invalid_p(self):
+    x = torch.ones(5, 3, device=et.device())
+
+    def check(p: float) -> None:
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=f"""fused_dropout(): expected p to be in the range [0, 1], got {p}""",
+          message_reviewed_by="adivinpatel",
+      ):
+        torch.ops.aten._fused_dropout(x, p=p)
+
+    for p in (-1.5, -0.0001, 1.0001, 1.5, float("nan")):
+      with self.subTest(p=p):
+        check(p)
+
+  @et.why_tpu_only(
+      "CUDA dropout and native_dropout short-circuit train=False before dtype"
+      " validation."
+  )
+  def test_dropout_eval_invalid_dtype(self):
+    x = torch.ones((2, 3), device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""dropout(): expected input to be floating point or complex, got int32""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.dropout(x, p=0.5, train=False)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""dropout_(): expected input to be floating point or complex, got int32""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.dropout_(x, p=0.5, train=False)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_dropout(): expected input to be floating point or complex, got int32""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.native_dropout(x, p=0.5, train=False)
+
 
 class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
 

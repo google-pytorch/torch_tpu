@@ -24,13 +24,39 @@
 
 namespace torch_tpu {
 
-std::tuple<at::Tensor, at::Tensor> AtenDropout(const at::Tensor& input,
-                                               double p,
-                                               c10::optional<bool> train);
+// Implements `aten::dropout` (`dropout.default`) on `PrivateUse1`.
+// Short-circuits no-op calls (`p <= 0.0`, `!train`, or `numel == 0`) by
+// returning `input` directly without launching a device kernel, and dispatches
+// a 1-output StableHLO dropout kernel when `train` is true and `p > 0.0`.
+at::Tensor AtenDropout(const at::Tensor& input, double p, bool train);
 
+// Implements `aten::dropout` (`dropout.default`) on `AutogradPrivateUse1`.
+// Short-circuits no-op calls and non-differentiable training calls to
+// `AtenDropout`, while delegating active autograd training calls to
+// `at::native_dropout` (or a `NativeDropoutBackward0` node for complex inputs).
+at::Tensor AtenDropoutAutograd(const at::Tensor& input, double p, bool train);
+
+// Implements in-place `aten::dropout_` (`dropout_.default`) on `PrivateUse1`.
+// Short-circuits no-op calls by returning `self` directly and dispatches an
+// in-place 1-output StableHLO dropout kernel with buffer donation when active.
+at::Tensor& AtenDropout_(at::Tensor& self, double p, bool train);
+
+// Implements in-place `aten::dropout_` (`dropout_.default`) on
+// `AutogradPrivateUse1`.
+at::Tensor& AtenDropout_Autograd(at::Tensor& self, double p, bool train);
+
+// Implements `aten::native_dropout` on `PrivateUse1`, returning `(output,
+// mask)`.
+std::tuple<at::Tensor, at::Tensor> AtenNativeDropout(const at::Tensor& input,
+                                                     double p,
+                                                     c10::optional<bool> train);
+
+// Implements `aten::_fused_dropout` on `PrivateUse1`, returning `(output,
+// mask)`.
 std::tuple<at::Tensor, at::Tensor> AtenFusedDropout(
     const at::Tensor& self, double p, c10::optional<at::Generator> generator);
 
+// Implements `aten::native_dropout_backward` on `PrivateUse1`.
 at::Tensor AtenNativeDropoutBackward(const at::Tensor& grad_output,
                                      const at::Tensor& mask, double scale);
 

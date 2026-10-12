@@ -8001,48 +8001,97 @@ Supported combinations for non-constant padding:
     ):
       torch.grid_sampler(inp3d, grid3d, 0, 0, False)
 
-  def test_native_dropout_invalid_p(self):
-    if et.is_on_gpu():
-      self.skipTest("GPU behavior difference")
+  def test_dropout_invalid_p(self):
     inp = torch.ones(5, 3, device=et.device())
 
-    def check(p: float) -> None:
+    def check(p: float, train: bool) -> None:
       with et.assert_raises_message(
           RuntimeError,
-          tpu="""dropout(): expected p to be in the range [0, 1], got"""
-          f""" {p}""",
-          gpu=f"""bernoulli_ expects p to be in [0, 1], but got p={1 - p}""",
-          message_reviewed_by="wan",
-      ):
-        torch.native_dropout(inp, p=p, train=True)
-
-    for p in (-1.5, 1.5):
-      with self.subTest(p=p):
-        check(p)
-
-  def test_fused_dropout_invalid_p(self):
-    if et.is_on_gpu():
-      self.skipTest("GPU behavior difference")
-    x = torch.ones(5, 3, device=et.device())
-
-    def check(p: float) -> None:
-      with et.assert_raises_message(
-          RuntimeError,
-          tpu=f"fused_dropout(): expected p to be in the range [0, 1], got {p}",
+          tpu=f"""dropout(): expected p to be in the range [0, 1], got {p}""",
+          gpu=f"""dropout probability has to be between 0 and 1, but got {p}""",
           message_reviewed_by="adivinpatel",
       ):
-        torch.ops.aten._fused_dropout(x, p=p)
+        torch.dropout(inp, p=p, train=train)
 
-    for p in (-1.5, -0.0001, 1.0001, 1.5):
+    for p in (-0.1, 1.1, float("nan")):
+      for train in (True, False):
+        with self.subTest(p=p, train=train):
+          check(p, train)
+
+  def test_dropout_inplace_invalid_p(self):
+    inp = torch.ones(5, 3, device=et.device())
+
+    def check(p: float, train: bool) -> None:
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=f"""dropout_(): expected p to be in the range [0, 1], got {p}""",
+          gpu=f"""dropout probability has to be between 0 and 1, but got {p}""",
+          message_reviewed_by="adivinpatel",
+      ):
+        torch.dropout_(inp, p=p, train=train)
+
+    for p in (-0.1, 1.1, float("nan")):
+      for train in (True, False):
+        with self.subTest(p=p, train=train):
+          check(p, train)
+
+  def test_dropout_invalid_dtype(self):
+    x = torch.ones((2, 3), device=et.device(), dtype=torch.int32)
+    err_type = RuntimeError if et.is_on_tpu() else NotImplementedError
+    with et.assert_raises_message(
+        err_type,
+        tpu="""dropout(): expected input to be floating point or complex, got int32""",
+        gpu=""""fused_dropout" not implemented for 'Int'""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.dropout(x, p=0.5, train=True)
+
+  def test_dropout_inplace_invalid_dtype(self):
+    x = torch.ones((2, 3), device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""dropout_(): expected input to be floating point or complex, got int32""",
+        gpu="""result type Float can't be cast to the desired output type Int""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.dropout_(x, p=0.5, train=True)
+
+  def test_dropout_inplace_leaf_requires_grad_error(self):
+    for p in (0.5, 1.0):
       with self.subTest(p=p):
-        check(p)
+        x = torch.ones((4, 4), device=et.device(), requires_grad=True)
+        with et.assert_raises_message(
+            RuntimeError,
+            tpu="""a leaf Variable that requires grad is being used in an in-place operation.""",
+            gpu="""a leaf Variable that requires grad is being used in an in-place operation.""",
+        ):
+          torch.dropout_(x, p=p, train=True)
+        base = torch.ones((4, 4), device=et.device(), requires_grad=True)
+        view = base.view(16)
+        with et.assert_raises_message(
+            RuntimeError,
+            tpu="""a view of a leaf Variable that requires grad is being used in an in-place operation.""",
+            gpu="""a view of a leaf Variable that requires grad is being used in an in-place operation.""",
+        ):
+          torch.dropout_(view, p=p, train=True)
+
+  def test_native_dropout_invalid_dtype(self):
+    x = torch.ones((2, 3), device=et.device(), dtype=torch.int32)
+    err_type = RuntimeError if et.is_on_tpu() else NotImplementedError
+    with et.assert_raises_message(
+        err_type,
+        tpu="""native_dropout(): expected input to be floating point or complex, got int32""",
+        gpu=""""fused_dropout" not implemented for 'Int'""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.native_dropout(x, p=0.5, train=True)
 
   def test_fused_dropout_invalid_dtype(self):
     x = torch.ones((2, 3), device=et.device(), dtype=torch.int32)
     err_type = RuntimeError if et.is_on_tpu() else NotImplementedError
     with et.assert_raises_message(
         err_type,
-        tpu="""fused_dropout(): expected input to be floating point or complex, got Int""",
+        tpu="""fused_dropout(): expected input to be floating point or complex, got int32""",
         gpu=""""fused_dropout" not implemented for 'Int'""",
         message_reviewed_by="adivinpatel",
     ):
@@ -8053,7 +8102,7 @@ Supported combinations for non-constant padding:
     mask = torch.ones((2, 3), device=et.device(), dtype=torch.int32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""native_dropout_backward(): expected mask to be Bool scalar type, got Int""",
+        tpu="""native_dropout_backward(): expected mask to be bool, got int32""",
         gpu="""Mask should be Bool Scalar TypeInt""",
     ):
       torch.ops.aten.native_dropout_backward(grad_output, mask, 2.0)
@@ -8085,7 +8134,7 @@ Supported combinations for non-constant padding:
     mask = torch.ones((2, 3), device=et.device(), dtype=torch.bool)
     with et.assert_raises_message(
         NotImplementedError,
-        tpu=f"""native_dropout_backward(): not implemented for {tpu_dtype}""",
+        tpu=f"""native_dropout_backward(): expected grad_output dtype not to be bool, int32, or int64, got {tpu_dtype}""",
         gpu=f""""masked_scale" not implemented for '{gpu_dtype}'""",
         message_reviewed_by="gunhyun",
     ):

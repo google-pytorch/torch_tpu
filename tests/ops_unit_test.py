@@ -5061,6 +5061,148 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         golden_result=z.to("cpu"), torch_tpu_result=z_again.to("cpu")
     )
 
+  @parameterized.named_parameters(
+      dict(testcase_name="p_zero", shape=(4, 6), p=0.0, train=True),
+      dict(testcase_name="eval_mode", shape=(4, 6), p=0.5, train=False),
+      dict(testcase_name="numel_zero", shape=(0, 6), p=0.5, train=True),
+  )
+  def test_dropout_noop_short_circuit(self, shape, p, train):
+    tpu_device = torch.device("tpu")
+    for inplace in (False, True):
+      with self.subTest(inplace=inplace):
+        x = torch.randn(shape, dtype=torch.float32, device=tpu_device)
+        out = torch.nn.functional.dropout(
+            x, p=p, training=train, inplace=inplace
+        )
+        self.assertEqual(out.data_ptr(), x.data_ptr())
+        self.assert_close(golden_result=x.cpu(), torch_tpu_result=out.cpu())
+
+        # Leaf tensor with requires_grad=True is allowed when dropout is a no-op
+        leaf = torch.randn(
+            shape, dtype=torch.float32, device=tpu_device, requires_grad=True
+        )
+        out_leaf = torch.nn.functional.dropout(
+            leaf, p=p, training=train, inplace=inplace
+        )
+        self.assertEqual(out_leaf.data_ptr(), leaf.data_ptr())
+        self.assertTrue(out_leaf.requires_grad)
+
+    # Non-contiguous view input preserves view data_ptr and strides
+    if shape[0] > 0:
+      base = torch.randn((shape[1], shape[0]), device=tpu_device)
+      view = base.t()
+      self.assertFalse(view.is_contiguous())
+      out_view = torch.dropout(view, p=p, train=train)
+      self.assertEqual(out_view.data_ptr(), view.data_ptr())
+      self.assertEqual(out_view.stride(), view.stride())
+      self.assert_close(
+          golden_result=view.cpu(), torch_tpu_result=out_view.cpu()
+      )
+
+  @parameterized.named_parameters(
+      dict(testcase_name="p_zero", shape=(4, 6), p=0.0, train=True),
+      dict(testcase_name="eval_mode", shape=(4, 6), p=0.5, train=False),
+      dict(testcase_name="numel_zero", shape=(0, 6), p=0.5, train=True),
+  )
+  def test_native_dropout_noop_cow_and_views(self, shape, p, train):
+    tpu_device = torch.device("tpu")
+    x_cpu = torch.arange(math.prod(shape), dtype=torch.float32).reshape(shape)
+    x = x_cpu.to(tpu_device)
+
+    out, mask = torch.native_dropout(x, p=p, train=train)
+    self.assertEqual(mask.dtype, torch.bool)
+    self.assertEqual(mask.shape, x.shape)
+    self.assertTrue(bool(mask.all().item()))
+    self.assert_close(golden_result=x_cpu, torch_tpu_result=out.cpu())
+
+    # Copy-on-write check: mutating `out` in-place must not mutate `x`.
+    out.add_(10.0)
+    self.assert_close(golden_result=x_cpu, torch_tpu_result=x.cpu())
+    self.assert_close(golden_result=x_cpu + 10.0, torch_tpu_result=out.cpu())
+
+    # Non-contiguous view input check
+    if shape[0] > 0:
+      base_cpu = torch.arange(math.prod(shape), dtype=torch.float32).reshape(
+          shape[1], shape[0]
+      )
+      base = base_cpu.to(tpu_device)
+      view = base.t()
+      out_v, mask_v = torch.native_dropout(view, p=p, train=train)
+      self.assertEqual(mask_v.dtype, torch.bool)
+      self.assertEqual(mask_v.shape, view.shape)
+      self.assertTrue(bool(mask_v.all().item()))
+      self.assert_close(
+          golden_result=base_cpu.t(), torch_tpu_result=out_v.cpu()
+      )
+      out_v.add_(5.0)
+      self.assert_close(golden_result=base_cpu.t(), torch_tpu_result=view.cpu())
+
+  @parameterized.product(
+      dtype=[torch.float32, torch.bfloat16, torch.complex64],
+      inplace=[False, True],
+      requires_grad=[False, True],
+      compiled=[False, True],
+      p=[0.5, 1.0],
+  )
+  def test_dropout_training_dtypes_eager_and_compile(
+      self, dtype, inplace, requires_grad, compiled, p
+  ):
+    tpu_device = torch.device("tpu")
+    shape = (16, 16)
+    if dtype.is_complex:
+      x_cpu = torch.complex(
+          torch.ones(shape, dtype=torch.float32) * 2.0,
+          torch.ones(shape, dtype=torch.float32) * -3.0,
+      )
+    else:
+      x_cpu = torch.ones(shape, dtype=dtype) * 2.0
+
+    def fn(inp):
+      work = inp.clone() if inplace and requires_grad else inp
+      return torch.nn.functional.dropout(
+          work, p=p, training=True, inplace=inplace
+      )
+
+    run_fn = torch.compile(fn, backend="tpu") if compiled else fn
+
+    x = x_cpu.to(tpu_device).requires_grad_(requires_grad)
+    out = run_fn(x)
+    out_cpu = out.detach().cpu()
+
+    if p == 1.0:
+      self.assert_close(
+          golden_result=torch.zeros_like(x_cpu),
+          torch_tpu_result=out_cpu,
+      )
+    else:
+      scale = 1.0 / (1.0 - p)
+      scaled_x = x_cpu * scale
+      is_zero = out_cpu == 0
+      is_scaled = torch.isclose(out_cpu, scaled_x, rtol=1e-2, atol=1e-2)
+      self.assertTrue(bool(torch.all(is_zero | is_scaled).item()))
+      # With 256 elements and p=0.5, both kept and dropped elements exist.
+      self.assertTrue(bool(torch.any(is_zero).item()))
+      self.assertTrue(bool(torch.any(is_scaled).item()))
+
+    if requires_grad:
+      grad_out_cpu = torch.ones_like(x_cpu)
+      out.backward(grad_out_cpu.to(tpu_device))
+      grad_cpu = x.grad.detach().cpu()
+      if p == 1.0:
+        self.assert_close(
+            golden_result=torch.zeros_like(x_cpu),
+            torch_tpu_result=grad_cpu,
+        )
+      else:
+        kept_mask = out_cpu != 0
+        expected_grad = torch.where(
+            kept_mask, grad_out_cpu * (1.0 / (1.0 - p)), torch.zeros_like(x_cpu)
+        )
+        self.assert_close(
+            golden_result=expected_grad,
+            torch_tpu_result=grad_cpu,
+        )
+
   def test_exponential(self):
     """Tests the exponential_ op."""
     tpu_device = torch.device("tpu")

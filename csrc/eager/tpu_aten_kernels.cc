@@ -499,6 +499,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kDivOut>(m, AtenDivOut);
   ImplStable<OpName::kDivOutMode>(m, AtenDivOutMode);
   ImplStable<OpName::kDot>(m, AtenDot);
+  ImplStable<OpName::kDropout>(m, AtenDropout);
+  ImplStable<OpName::kDropout_>(m, AtenDropout_);
   ImplStable<OpName::kEfficientZeroTensor>(m, AtenEfficientZeroTensor);
   ImplStable<OpName::kEluBackwardGradInput>(m, AtenEluBackwardGradInput);
   ImplStable<OpName::kEluOut>(m, AtenEluOut);
@@ -881,7 +883,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
       m, AtenNativeBatchNormLegitNoStatsOut);
   ImplStable<OpName::kNativeBatchNormLegitOut>(m, AtenNativeBatchNormLegitOut);
   ImplStable<OpName::kNativeBatchNormOut>(m, AtenNativeBatchNormOut);
-  ImplStable<OpName::kNativeDropout>(m, AtenDropout);
+  ImplStable<OpName::kNativeDropout>(m, AtenNativeDropout);
   ImplStable<OpName::kNativeDropoutBackward>(m, AtenNativeDropoutBackward);
   ImplStable<OpName::kNativeGroupNormBackward>(m, AtenNativeGroupNormBackward);
   ImplStable<OpName::kNativeLayerNorm>(m, AtenNativeLayerNorm);
@@ -1239,6 +1241,8 @@ TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
   // ctc_loss to our custom forward/backward autograd implementation.
   ImplStable<OpName::kCtcLossPublic>(m, AtenCtcLossPublicAutograd);
   ImplStable<OpName::kCtcLossPublicTensor>(m, AtenCtcLossPublicTensorAutograd);
+  ImplStable<OpName::kDropout>(m, AtenDropoutAutograd);
+  ImplStable<OpName::kDropout_>(m, AtenDropout_Autograd);
   ImplStable<OpName::kFftFft>(m, AtenFftFft);
   ImplStable<OpName::kFftFftOut>(m, AtenFftFftOut);
   ImplStable<OpName::kFftIfft>(m, AtenFftIfft);

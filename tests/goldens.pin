@@ -2,16 +2,16 @@
   "gcs_bucket": "torchtpu-goldens",
   "goldens": {
     "ops_test_gpu_golden0.gz": {
-      "gcs_path": "ops_test/20261008_173845/ops_test_gpu_golden0.gz",
-      "sha256": "d2d211cc1042f950aec60141dcd11b9c8bc555fe6918b5eeef8e6fb786bbb6a7"
+      "gcs_path": "ops_test/20261012_193201/ops_test_gpu_golden0.gz",
+      "sha256": "78ef672f3af60cd4649eafc88497a50b40ca9e2fc74f907a3404767b11306c90"
     },
     "ops_test_gpu_golden1.gz": {
-      "gcs_path": "ops_test/20261008_173845/ops_test_gpu_golden1.gz",
-      "sha256": "469130124d3d3525f4828c0a7edf9f08d8546f2b7ca7c75b48e5c0a1febd63fc"
+      "gcs_path": "ops_test/20261012_193201/ops_test_gpu_golden1.gz",
+      "sha256": "0e2a2c2063056dba13d94edc2c9e2bca0685609f17764068860d31fe572091dc"
     },
     "ops_test_gpu_golden2.gz": {
-      "gcs_path": "ops_test/20261008_173845/ops_test_gpu_golden2.gz",
-      "sha256": "9b65dfbcc00b97f3e5b36b819bc5b9765be5b68d44a8d58205de26aa797bf96b"
+      "gcs_path": "ops_test/20261012_193201/ops_test_gpu_golden2.gz",
+      "sha256": "d11e6b4bd56d0192a641c16605e134bb39ac25c149fad6e910760fd33d674a1e"
     },
     "ops_test_gpu_golden_compiled0.gz": {
       "gcs_path": "ops_test/20261008_173845/ops_test_gpu_golden_compiled0.gz",
@@ -30,16 +30,16 @@
       "sha256": "b933c000da7dacd8d92fc9b6d0b1de19a129933a315508efa35248275b1357c2"
     },
     "ops_test_gpu_golden_grad0.gz": {
-      "gcs_path": "ops_test/20261008_173845/ops_test_gpu_golden_grad0.gz",
-      "sha256": "f452af7bcc3d48450a54dfd657f6769c5ebc36d4406649a169036c580b9cef26"
+      "gcs_path": "ops_test/20261012_193201/ops_test_gpu_golden_grad0.gz",
+      "sha256": "2c181dd8090bf3037ef5e0855a11d01b5a81d30f2fad4ab238864901c282986f"
     },
     "ops_test_gpu_golden_grad1.gz": {
-      "gcs_path": "ops_test/20261008_173845/ops_test_gpu_golden_grad1.gz",
-      "sha256": "393ac36426383fc6deedefc1bfe2ace0685fcaf2a7c7176f50bf1fcf688353e7"
+      "gcs_path": "ops_test/20261012_193201/ops_test_gpu_golden_grad1.gz",
+      "sha256": "f5465001d5bc59fc6b7cf727be69d456443845aa3cef68ffe48bb092a33d0ef9"
     },
     "ops_test_gpu_golden_grad2.gz": {
-      "gcs_path": "ops_test/20261008_173845/ops_test_gpu_golden_grad2.gz",
-      "sha256": "fd761336bdf1d7bf7ba9c310e0da17bf377e2b506126e22c8930d83155c08062"
+      "gcs_path": "ops_test/20261012_193201/ops_test_gpu_golden_grad2.gz",
+      "sha256": "a339a1d3080877c610adbf9f85cf41d6bd87c03535e131ef29a7f41fe6878c7b"
     },
     "ops_test_gpu_golden_grad_hopper0.gz": {
       "gcs_path": "ops_test/20261007_130933/ops_test_gpu_golden_grad_hopper0.gz",

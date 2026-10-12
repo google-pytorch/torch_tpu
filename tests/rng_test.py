@@ -192,42 +192,116 @@ class RngTest(seed_test_utils.RepeatableTest):
   @parameterized.named_parameters(
       dict(
           testcase_name="inference_mode",
+          shape=(10,),
           p=0.5,
           train=False,
           advances=False,
       ),
       dict(
           testcase_name="p_zero",
+          shape=(10,),
           p=0.0,
           train=True,
           advances=False,
       ),
       dict(
           testcase_name="p_one",
+          shape=(10,),
           p=1.0,
           train=True,
           advances=False,
       ),
       dict(
+          testcase_name="numel_zero",
+          shape=(0, 10),
+          p=0.5,
+          train=True,
+          advances=False,
+      ),
+      dict(
           testcase_name="training_mode",
+          shape=(10,),
           p=0.5,
           train=True,
           advances=True,
       ),
   )
-  def test_dropout_rng_advances(self, p, train, advances):
+  def test_dropout_rng_advances(self, shape, p, train, advances):
     device = torch.accelerator.current_accelerator()
-    x = torch.ones(10, device=device)
+    for op_name in ("native_dropout", "dropout", "dropout_"):
+      with self.subTest(op_name=op_name):
+        x = torch.ones(shape, device=device)
+        initial_state = torch.tpu.get_rng_state(device)
+
+        if op_name == "native_dropout":
+          out, _ = torch.native_dropout(x, p=p, train=train)
+        elif op_name == "dropout":
+          out = torch.dropout(x, p=p, train=train)
+        else:
+          out = torch.dropout_(x, p=p, train=train)
+        out.cpu()
+
+        new_state = torch.tpu.get_rng_state(device)
+        if advances:
+          self.assertFalse(torch.equal(initial_state, new_state))
+        else:
+          self.assertTrue(torch.equal(initial_state, new_state))
+
+  @parameterized.named_parameters(
+      dict(testcase_name="p_zero", shape=(4, 8), p=0.0, train=True),
+      dict(testcase_name="eval_mode", shape=(4, 8), p=0.5, train=False),
+      dict(testcase_name="numel_zero", shape=(0, 8), p=0.5, train=True),
+  )
+  def test_dropout_noop_data_ptr_and_autograd(self, shape, p, train):
+    device = torch.accelerator.current_accelerator()
+    for inplace in (False, True):
+      with self.subTest(inplace=inplace):
+        x = torch.randn(shape, device=device)
+        initial_state = torch.tpu.get_rng_state(device)
+        out = torch.nn.functional.dropout(
+            x, p=p, training=train, inplace=inplace
+        )
+        self.assertEqual(out.data_ptr(), x.data_ptr())
+        self.assertTrue(
+            torch.equal(initial_state, torch.tpu.get_rng_state(device))
+        )
+
+        # Verify autograd pass-through (no extra grad_fn node or RNG advance)
+        leaf = torch.randn(shape, device=device, requires_grad=True)
+        y = leaf * 2.0
+        initial_state = torch.tpu.get_rng_state(device)
+        out_grad = torch.nn.functional.dropout(
+            y, p=p, training=train, inplace=inplace
+        )
+        self.assertEqual(out_grad.data_ptr(), y.data_ptr())
+        self.assertIs(out_grad.grad_fn, y.grad_fn)
+        self.assertTrue(
+            torch.equal(initial_state, torch.tpu.get_rng_state(device))
+        )
+        out_grad.sum().backward()
+        self.assertTrue(torch.equal(leaf.grad.cpu(), torch.full(shape, 2.0)))
+
+  @parameterized.named_parameters(
+      dict(testcase_name="p_zero", shape=(4, 8), p=0.0, train=True),
+      dict(testcase_name="eval_mode", shape=(4, 8), p=0.5, train=False),
+      dict(testcase_name="numel_zero", shape=(0, 8), p=0.5, train=True),
+  )
+  def test_native_dropout_noop_mask_and_cow(self, shape, p, train):
+    device = torch.accelerator.current_accelerator()
+    x = torch.ones(shape, device=device)
     initial_state = torch.tpu.get_rng_state(device)
 
-    out, _ = torch.native_dropout(x, p=p, train=train)
-    out.cpu()
+    out, mask = torch.native_dropout(x, p=p, train=train)
+    self.assertTrue(torch.equal(initial_state, torch.tpu.get_rng_state(device)))
+    self.assertEqual(mask.dtype, torch.bool)
+    self.assertEqual(mask.shape, x.shape)
+    self.assertTrue(bool(mask.all().item()))
+    self.assertTrue(torch.equal(out.cpu(), x.cpu()))
 
-    new_state = torch.tpu.get_rng_state(device)
-    if advances:
-      self.assertFalse(torch.equal(initial_state, new_state))
-    else:
-      self.assertTrue(torch.equal(initial_state, new_state))
+    # In-place mutation of `out` must not corrupt `x` (copy-on-write safety).
+    out.add_(5.0)
+    self.assertTrue(torch.equal(x.cpu(), torch.ones(shape)))
+    self.assertTrue(torch.equal(out.cpu(), torch.full(shape, 6.0)))
 
 
 if __name__ == "__main__":

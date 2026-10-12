@@ -1735,6 +1735,27 @@ class TestOps(op_testing.OpInfoTestBase):
         },
     )
 
+  def test_dropout(self):
+    exclude_dtypes = {
+        "cpu": (*INTEGRAL_DTYPES, torch.bool),
+        "gpu": (
+            *INTEGRAL_DTYPES,
+            torch.int4,
+            torch.bool,
+            # TODO(b/555391048): support float8 golden data sampling.
+            torch.float8_e4m3fn,
+            torch.float8_e5m2,
+        ),
+    }
+    self.do_test_op(
+        "nn.functional.dropout",
+        # By definition, dropout() returns a tensor with random values, so
+        # there's no point in checking the values.
+        check_value=CheckValueMode.SKIP,
+        exclude_dtypes=exclude_dtypes,
+        exclude_inplace_dtypes=exclude_dtypes,
+    )
+
   def test_native_dropout_backward(self):
     self.do_test_op(
         "native_dropout_backward",

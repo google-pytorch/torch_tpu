@@ -4142,6 +4142,7 @@ def _compiled_supports_op(
       "empty_strided",
       "empty_strided.out",
       "multinomial",
+      "nn.functional.dropout",
       "nn.functional.scaled_dot_product_attention",
       "normal",
       "normal.out",
