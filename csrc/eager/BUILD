@@ -821,6 +821,7 @@ torch_tpu_cc_library(
         "//csrc/ops/lerp:lerp_aten_kernels",
         "//csrc/ops/linalg:linalg_kernels",
         "//csrc/ops/linalg:linalg_svd_kernels",
+        "//csrc/ops/linalg/cholesky:linalg_cholesky_kernels",
         "//csrc/ops/linalg/lu:linalg_lu_kernels",
         "//csrc/ops/linalg/qr:linalg_qr_kernels",
         "//csrc/ops/linalg/solve_triangular:linalg_solve_triangular_kernels",

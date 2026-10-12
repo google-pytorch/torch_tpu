@@ -7412,6 +7412,54 @@ Supported combinations for non-constant padding:
     ):
       torch.linalg.lu_factor_ex(a, check_errors=True)
 
+  def test_linalg_cholesky_ex_rank_too_low(self):
+    a = torch.ones(4, device=et.device())
+    out = (
+        torch.empty(4, device=et.device()),
+        torch.empty((), dtype=torch.int32, device=et.device()),
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_cholesky_ex(): expected input tensor to have at least 2 dimensions, got 1""",
+        gpu="""linalg.cholesky: The input tensor A must have at least 2 dimensions.""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.linalg.cholesky_ex(a, out=out)
+
+  def test_linalg_cholesky_ex_non_square(self):
+    a = torch.ones(3, 2, device=et.device())
+    out = (
+        torch.empty(3, 2, device=et.device()),
+        torch.empty((), dtype=torch.int32, device=et.device()),
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_cholesky_ex(): expected input tensor's last 2 dimensions to be equal, got [3, 2]""",
+        gpu="""linalg.cholesky: A must be batches of square matrices, but they are 3 by 2 matrices""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.linalg.cholesky_ex(a, out=out)
+
+  def test_linalg_cholesky_ex_unsupported_dtype(self):
+    a = torch.ones(2, 2, dtype=torch.bfloat16, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_cholesky_ex(): expected the input dtype to be float32, float64, complex64, or complex128, got bfloat16""",
+        gpu=""""cholesky_cusolver" not implemented for 'BFloat16'""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.linalg.cholesky_ex(a)
+
+  def test_linalg_cholesky_ex_singular_check_errors(self):
+    a = torch.zeros(3, 3, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg.cholesky_ex: The factorization could not be completed because the input is not positive-definite (the leading minor of order 1 is not positive-definite).""",
+        gpu="""linalg.cholesky_ex: The factorization could not be completed because the input is not positive-definite (the leading minor of order 1 is not positive-definite).""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.linalg.cholesky_ex(a, check_errors=True)
+
   def test_lu_unpack_data_rank_too_low(self):
     data = torch.ones(4, device=et.device())
     pivots = torch.ones(4, device=et.device(), dtype=torch.int32)

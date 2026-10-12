@@ -975,6 +975,9 @@ ACCURACY_OVERRIDES_GRAD_VS_GPU: dict[
             torch.bfloat16: {"rtol": 1.3e-1, "atol": 1.9e-1},
             torch.float16: {"rtol": 6.6e-3, "atol": 5.9e-3},
         },
+        "linalg.cholesky_ex": {
+            torch.float32: {"atol": 1.3e-3},
+        },
         "linalg.inv": {
             torch.float32: {"rtol": 7.8e-2, "atol": 1.3e-2},
             torch.float64: {"rtol": 9e-6, "atol": 2.5e-7},
@@ -2510,6 +2513,12 @@ class TestOps(op_testing.OpInfoTestBase):
         # TODO: fix lgamma() failing for complex.
         exclude_dtypes=(torch.complex64,),
         exclude_inplace_dtypes=(torch.complex64,),
+    )
+
+  def test_linalg_cholesky_ex(self):
+    self.do_test_op(
+        "linalg.cholesky_ex",
+        exclude_dtypes=INTEGRAL_DTYPES,
     )
 
   def test_linalg_lu_factor_ex(self):
