@@ -20,9 +20,7 @@
 
 #include "absl/status/statusor.h"
 #include "absl/strings/str_join.h"
-#include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
-#include "csrc/common/utils.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Support/LLVM.h"
@@ -61,12 +59,12 @@ namespace {
 //      [1, 1],  <=    [0, 1],    =     [0, 1],
 //      [2, 2]]        [0, 1]]          [0, 0]]
 mlir::MlirOp TriangularMask(mlir::MlirBuilder& builder,
-                            const Dimensions& input_shape, int64_t diagonal,
-                            TriangleType triangle_type) {
+                            llvm::ArrayRef<int64_t> input_shape,
+                            int64_t diagonal, TriangleType triangle_type) {
   const int64_t n_dims = input_shape.size();
   const int64_t m = input_shape[n_dims - 2];
   const int64_t n = input_shape[n_dims - 1];
-  Dimensions major_dims(input_shape.begin(), input_shape.end() - 2);
+  llvm::ArrayRef<int64_t> major_dims = input_shape.drop_back(2);
   auto mlir_element_type = mlir::ElementType::I64;
   mlir::MlirOp a = stablehlo::Iota(
       builder, makeTensorType(builder.getContext(), {n}, mlir_element_type), 0);
@@ -86,8 +84,7 @@ mlir::MlirOp TriangularMask(mlir::MlirBuilder& builder,
   mlir::MlirOp mask = stablehlo::Compare(b_plus_diagonal_broadcast, a_broadcast,
                                          comparison_direction);
   if (!major_dims.empty()) {
-    mlir::MlirOp mask_broadcast = stablehlo::Broadcast(mask, major_dims);
-    return mask_broadcast;
+    return stablehlo::Broadcast(mask, major_dims);
   }
   return mask;
 }
@@ -99,7 +96,7 @@ absl::StatusOr<mlir::MlirOp> BuildTriangularShlo(
     mlir::MlirOp input_op) {
   mlir::MlirBuilder& builder = input_op.getBuilder();
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op);
-  Dimensions input_shape = CopyIntVector(input_type.getShape());
+  llvm::ArrayRef<int64_t> input_shape = input_type.getShape();
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=pytorch catches this error first.
       input_shape.size() >= 2, error::kInvalidArgument)
       << "input shape must have at least 2 dimensions, got shape ("

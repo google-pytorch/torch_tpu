@@ -44,12 +44,11 @@ void AtenSplitWithSizesCopyOut(const at::Tensor& self,
       {
         TT_ASSIGN_OR_THROW(int64_t normalized_dim,
                            SafeWrapDim(dim, self.dim()));
+        Dimensions expected_shape = CopyIntVector(self.sizes());
         for (int64_t i = 0; i < out.size(); ++i) {
           TT_THROW_IF_ERROR(ValidateOutDtype(out[i], self.scalar_type(),
                                              /*allow_out_dtype_cast=*/false));
-          int64_t size = split_sizes[i];
-          Dimensions expected_shape = CopyIntVector(self.sizes());
-          expected_shape[normalized_dim] = size;
+          expected_shape[normalized_dim] = split_sizes[i];
           TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out[i], expected_shape));
         }
         // split_with_sizes_copy is an undocumented op used by PyTorch's

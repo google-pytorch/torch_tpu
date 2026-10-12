@@ -30,11 +30,9 @@
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "csrc/common/cache_key.h"
-#include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
-#include "csrc/common/utils.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/binary.h"
@@ -171,19 +169,15 @@ absl::Status DispatchBinaryCrossEntropyOut(
   TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_dtype,
                       ConvertTo<mlir::ElementType>(comp_type));
 
-  Dimensions out_dims = (reduction == at::Reduction::None)
-                            ? CopyIntVector(self.sizes())
-                            : Dimensions();
-
-  DispatchOpOptions<1> options = {
-      .out_dtype = output_dtype,
-      .out_dims = out_dims,
-      .computation_dtype = computation_dtype,
-      .op_param_cache_keys = std::move(param_keys),
-  };
-
-  return DispatchOpOut<kDynamicSize>(std::move(op_builder), inputs, out,
-                                     std::move(options));
+  return DispatchOpOut<kDynamicSize>(
+      std::move(op_builder), inputs, out,
+      DispatchOpOptions<1>{
+          .out_dtype = output_dtype,
+          .out_dims = (reduction == at::Reduction::None) ? self.sizes()
+                                                         : at::IntArrayRef(),
+          .computation_dtype = computation_dtype,
+          .op_param_cache_keys = std::move(param_keys),
+      });
 }
 
 absl::StatusOr<mlir::MlirOp> BuildBinaryCrossEntropyBackwardShlo(
@@ -274,17 +268,14 @@ absl::Status DispatchBinaryCrossEntropyBackwardOut(
   TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_dtype,
                       ConvertTo<mlir::ElementType>(comp_type));
 
-  Dimensions out_dims = CopyIntVector(self.sizes());
-
-  DispatchOpOptions<1> options = {
-      .out_dtype = output_dtype,
-      .out_dims = out_dims,
-      .computation_dtype = computation_dtype,
-      .op_param_cache_keys = std::move(param_keys),
-  };
-
-  return DispatchOpOut<kDynamicSize>(std::move(op_builder), inputs, grad_input,
-                                     std::move(options));
+  return DispatchOpOut<kDynamicSize>(
+      std::move(op_builder), inputs, grad_input,
+      DispatchOpOptions<1>{
+          .out_dtype = output_dtype,
+          .out_dims = self.sizes(),
+          .computation_dtype = computation_dtype,
+          .op_param_cache_keys = std::move(param_keys),
+      });
 }
 
 }  // namespace
