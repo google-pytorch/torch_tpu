@@ -25,7 +25,6 @@
 
 #include "absl/base/no_destructor.h"
 #include "absl/strings/numbers.h"
-#include "c10/util/Exception.h"
 #include "csrc/common/constexpr_map.h"
 #include "csrc/common/symbol_stage.h"
 #include "csrc/common/warnings.h"
@@ -130,6 +129,15 @@ inline constexpr char kTorchTpuInternalDisableInplaceBufferDonationEnvVar[] =
 // directory path).
 inline constexpr char kTorchTpuInternalDumpMlirPassesToEnvVar[] =
     "TORCH_TPU_INTERNAL_DUMP_MLIR_PASSES_TO";
+// If set to "0" or "false", disables canonicalizing decomposed normalization
+// and activation patterns. Default is "true".
+inline constexpr char
+    kTorchTpuInternalEnableCanonicalizeDecomposedNormsEnvVar[] =
+        "TORCH_TPU_INTERNAL_ENABLE_CANONICALIZE_DECOMPOSED_NORMS";
+// If set to "0" or "false", disables folding complementary zero-padded add ops
+// into concatenate. Default is "true".
+inline constexpr char kTorchTpuInternalEnableFoldPadAddToConcatEnvVar[] =
+    "TORCH_TPU_INTERNAL_ENABLE_FOLD_PAD_ADD_TO_CONCAT";
 // If set to "0" or "false", disables reassociating normalization weights.
 // Default is "true".
 inline constexpr char kTorchTpuInternalEnableReassociateNormWeightsEnvVar[] =
@@ -307,6 +315,10 @@ inline constexpr auto kEnvVarToStage =
         {kTorchTpuInternalDisableInplaceBufferDonationEnvVar,
          SymbolStage::InternalApi()},
         {kTorchTpuInternalDumpMlirPassesToEnvVar, SymbolStage::InternalApi()},
+        {kTorchTpuInternalEnableCanonicalizeDecomposedNormsEnvVar,
+         SymbolStage::InternalApi()},
+        {kTorchTpuInternalEnableFoldPadAddToConcatEnvVar,
+         SymbolStage::InternalApi()},
         {kTorchTpuInternalEnableReassociateNormWeightsEnvVar,
          SymbolStage::InternalApi()},
         {kTorchTpuInternalHandshakeTimeoutSEnvVar, SymbolStage::InternalApi()},

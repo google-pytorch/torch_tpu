@@ -188,6 +188,8 @@ TORCH_TPU_ENABLE_DEBUG_CHECKS: {category: Environment Variable, defined_in: csrc
 TORCH_TPU_INTERNAL_DETECT_REPEATED_OPS: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
 TORCH_TPU_INTERNAL_DISABLE_INPLACE_BUFFER_DONATION: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
 TORCH_TPU_INTERNAL_DUMP_MLIR_PASSES_TO: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
+TORCH_TPU_INTERNAL_ENABLE_CANONICALIZE_DECOMPOSED_NORMS: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
+TORCH_TPU_INTERNAL_ENABLE_FOLD_PAD_ADD_TO_CONCAT: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
 TORCH_TPU_INTERNAL_ENABLE_REASSOCIATE_NORM_WEIGHTS: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
 TORCH_TPU_INTERNAL_HANDSHAKE_PORT: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
 TORCH_TPU_INTERNAL_HANDSHAKE_TIMEOUT_S: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
