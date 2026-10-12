@@ -50,4 +50,27 @@ int64_t GetDeviceVmemCapacityBytes() {
   return capacity_bytes;
 }
 
+int64_t GetDeviceDefaultScopedVmemBytes() {
+  static const int64_t default_scoped_bytes = []() -> int64_t {
+    // Matches XLA Target::DefaultPlatformScopedMemoryBytes() on TPU v4 / v5e /
+    // v5p (16 MiB) and TPU v6e / v7x / v8 (32 MiB).
+    constexpr int64_t kDefaultScopedVmemBytes = 16LL * 1024 * 1024;
+    constexpr int64_t kLargeDefaultScopedVmemBytes = 32LL * 1024 * 1024;
+    if (absl::StatusOr<PjRtDeviceAttributes> attrs =
+            PjrtBackend::GetInstance().GetDeviceAttributes();
+        attrs.ok()) {
+      const std::string& device_kind = attrs->device_kind;
+      if (device_kind == "TPU v6e" || device_kind == "TPU v6 lite" ||
+          device_kind == "TPU7" || device_kind == "TPU7x" ||
+          device_kind == "TPU 7" || device_kind == "TPU 7x" ||
+          device_kind == "TPU8i" || device_kind == "TPU8t" ||
+          device_kind == "TPU 8i" || device_kind == "TPU 8t") {
+        return kLargeDefaultScopedVmemBytes;
+      }
+    }
+    return kDefaultScopedVmemBytes;
+  }();
+  return default_scoped_bytes;
+}
+
 }  // namespace torch_tpu

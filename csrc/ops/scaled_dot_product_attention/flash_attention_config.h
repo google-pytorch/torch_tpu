@@ -39,6 +39,10 @@ struct FlashAttnConfig {
   int64_t padded_q_sequence_length;
   int64_t padded_kv_sequence_length;
   bool is_causal;
+  // Inclusive diagonal band offsets (`key >= query - *window_left` and
+  // `key <= query + *window_right`).
+  std::optional<int64_t> window_left = std::nullopt;
+  std::optional<int64_t> window_right = std::nullopt;
   float scale;
   // Broadcast dimensions of the mask.
   llvm::SmallVector<int64_t, 4> mask_broadcast_dims;
@@ -47,6 +51,20 @@ struct FlashAttnConfig {
   bool has_attn_bias;
   float dropout_rate = 0.0f;
   std::optional<kiln::ContractPrecision> precision = std::nullopt;
+
+  [[nodiscard]] bool HasBandMask() const {
+    return is_causal || window_left.has_value() || window_right.has_value();
+  }
+
+  [[nodiscard]] std::optional<int64_t> EffectiveRightWindow() const {
+    if (window_right.has_value()) {
+      return window_right;
+    }
+    if (is_causal) {
+      return 0;
+    }
+    return std::nullopt;
+  }
 };
 
 struct Tiling {

@@ -89,6 +89,18 @@ kiln::Scalar BelowOrOnDiagonal(kiln::Scalar row_block, kiln::Scalar col_block,
 kiln::Scalar IntersectsDiagonal(kiln::Scalar row_block, kiln::Scalar col_block,
                                 const Tiling& tiling);
 
+// True when the (row_block, col_block) tile contains at least one element
+// within the configured attention band `[i - window_left, i + window_right]`.
+kiln::Scalar OverlapsBand(kiln::Scalar row_block, kiln::Scalar col_block,
+                          const FlashAttnConfig& config, const Tiling& tiling);
+
+// True when the (row_block, col_block) tile contains at least one element
+// outside the configured attention band, requiring per-element band masking.
+kiln::Scalar IntersectsBandBoundary(kiln::Scalar row_block,
+                                    kiln::Scalar col_block,
+                                    const FlashAttnConfig& config,
+                                    const Tiling& tiling);
+
 // Whether `ApplyStructuredMask` masks out the logits of query rows past the end
 // of the query sequence.
 enum class QueryTailMasking {
@@ -106,7 +118,8 @@ kiln::Tile ApplyStructuredMask(
     kiln::Tile s, kiln::Scalar row_block, kiln::Scalar col_block,
     const FlashAttnConfig& config, const Tiling& tiling, int64_t row_offset = 0,
     int64_t col_offset = 0,
-    QueryTailMasking query_tail_masking = QueryTailMasking::kMask);
+    QueryTailMasking query_tail_masking = QueryTailMasking::kMask,
+    std::optional<int64_t> fixed_block_delta = std::nullopt);
 
 // log2-scaled logits for one (q, k) tile pair:
 //   s = (q @ k^T) * scale * log2(e) [+ bias * log2(e)]

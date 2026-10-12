@@ -67,6 +67,43 @@ Strides EmptyLikeStrides(const at::TensorBase& tensor);
 Strides MatchingLayoutStrides(const at::TensorBase& query,
                               absl::Span<const int64_t> result_sizes);
 
+// Unwraps GQA `repeat_kv` head expansion (`BroadcastInDim` + `Reshape`
+// repeating `H_kv` heads into `num_head_q`) for rank at least 4 `kv_op`
+// (`[..., H_kv, S, D]`, where the producing broadcast operation may originate
+// from a rank 3 or rank 4 source) back to `[..., H_kv, S, D]` when
+// `num_head_q % H_kv == 0`. Returns `nullopt` if `kv_op` is not a pure
+// head-group repetition.
+std::optional<mlir::MlirOp> UnwrapRepeatedKvHead(mlir::MlirOp kv_op,
+                                                 int64_t num_head_q);
+
+// Inclusive attention window bounds around the main diagonal (`j == i`):
+//   key_idx >= query_idx - *left_window   (when left_window.has_value())
+//   key_idx <= query_idx + *right_window  (when right_window.has_value())
+// Both bounds, when present, are `>= 0` so the main diagonal is included.
+struct AttnBand {
+  std::optional<int64_t> left_window;
+  std::optional<int64_t> right_window;
+};
+
+// Returns true if `bias_op` evaluates to an all-zero additive attention bias
+// (`0.0` at every index in its static domain).
+bool IsAllZeroAttnBias(mlir::MlirOp bias_op);
+
+// Matches an additive attention bias that evaluates to `0.0` inside an
+// inclusive diagonal band `[i - left_window, i + right_window]` and `-inf` (or
+// min finite float) outside it over `[..., S, S]` with `q_seq_len ==
+// kv_seq_len`. Bounds redundant on `[0, S)` (`>= S - 1`) are normalized to
+// `std::nullopt`.
+[[nodiscard]] std::optional<AttnBand> MatchAttnBandBias(mlir::MlirOp bias_op,
+                                                        int64_t q_seq_len,
+                                                        int64_t kv_seq_len);
+
+// Returns true if `bias_op` is an explicit lower-triangular causal attention
+// mask (`0.0` on `i >= j` and `-inf` / min finite float on `i < j`) over
+// `[..., S, S]` with `q_seq_len == kv_seq_len`.
+bool IsPureCausalAttnBias(mlir::MlirOp bias_op, int64_t q_seq_len,
+                          int64_t kv_seq_len);
+
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_CSRC_OPS_SCALED_DOT_PRODUCT_ATTENTION_HELPERS_H_
