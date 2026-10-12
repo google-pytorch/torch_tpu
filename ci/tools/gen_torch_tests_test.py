@@ -26,11 +26,8 @@ from ci.tools import gen_torch_tests
 
 _SAMPLE_BUILD_FILE_TEMPLATE: Final[str] = textwrap.dedent(f"""\
     # Copyright 2026 Google LLC
-    load(
-        "//torch_tpu/build_files:build_files:build_defs.bzl",
-        "torch_tpu_oss_torch_test",
-        "torch_tpu_package_end",
-    )
+    load("//build_files:build_defs.bzl", "torch_tpu_package_end")
+    load("//build_files:torch_rules.bzl", "torch_tpu_torch_test")
 
     pytype_strict_binary(
         name = "torch_test_runner",
@@ -85,7 +82,7 @@ class GenTorchTestsTest(unittest.TestCase):  # UNITTEST_OK=testing tools
   def test_unsharded_torch_test_target(self):
     target_def = gen_torch_tests.torch_test_target("dynamo/test_debug_utils")
     expected = textwrap.dedent("""\
-        torch_tpu_oss_torch_test(
+        torch_tpu_torch_test(
             name = "dynamo_debug_utils_test",
             torch_test_module = "dynamo/test_debug_utils",
         )""")
@@ -98,7 +95,7 @@ class GenTorchTestsTest(unittest.TestCase):  # UNITTEST_OK=testing tools
   def test_torch_test_target_disabled_module(self):
     target_def = gen_torch_tests.torch_test_target("test_binary_ufuncs")
     expected = textwrap.dedent("""\
-        torch_tpu_oss_torch_test(
+        torch_tpu_torch_test(
             name = "binary_ufuncs_test",
             notap = "b/563402379",  # NOTAP_OK=torch tests
             shard_count = 8,
@@ -135,7 +132,7 @@ class GenTorchTestsTest(unittest.TestCase):  # UNITTEST_OK=testing tools
     build_file = self.test_root / "BUILD"
     build_file.write_text(_SAMPLE_BUILD_FILE_TEMPLATE)
 
-    new_targets = "torch_tpu_oss_torch_test(name = 'ops_test')"
+    new_targets = "torch_tpu_torch_test(name = 'ops_test')"
     gen_torch_tests.write_to_build_file(build_file, new_targets)
 
     content = build_file.read_text()

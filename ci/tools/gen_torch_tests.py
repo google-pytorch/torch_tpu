@@ -84,7 +84,7 @@ def torch_test_target(test_module: str) -> str:
 
   For instance, given `dynamo/test_debug_utils.py`, the function returns:
 
-  torch_tpu_oss_torch_test(
+  torch_tpu_torch_test(
       name = "dynamo_debug_utils_test",
       torch_test_module = "dynamo/test_debug_utils",
   )
@@ -109,7 +109,7 @@ def torch_test_target(test_module: str) -> str:
   shard_count = f"    shard_count = {num_shards},\n" if num_shards else ""
 
   return (
-      "torch_tpu_oss_torch_test(\n"
+      "torch_tpu_torch_test(\n"
       f'    name = "{name}",\n'
       f"{notap}"
       f"{shard_count}"

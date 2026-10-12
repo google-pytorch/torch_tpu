@@ -56,6 +56,15 @@ bzl_library(
     ],
 )
 
+bzl_library(
+    name = "torch_rules_bzl",
+    srcs = ["torch_rules.bzl"],
+    deps = [
+        ":build_defs_bzl",
+        "//shims/build_cleaner:build_defs_lib",
+    ],
+)
+
 # This library just holds the ENTRY_POINTS variable, so this target is unused;
 # it only exists because cclean wants something to point to entry_points.bzl
 bzl_library(
