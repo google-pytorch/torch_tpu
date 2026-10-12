@@ -24,6 +24,21 @@ package(
 )
 
 torch_tpu_cc_library(
+    name = "canonicalize_decomposed_norms",
+    srcs = ["canonicalize_decomposed_norms.cc"],
+    hdrs = ["canonicalize_decomposed_norms.h"],
+    deps = [
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:Support",
+        "@llvm-project//mlir:TransformUtils",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "dummy_pass",
     srcs = ["dummy_pass.cc"],
     hdrs = ["dummy_pass.h"],

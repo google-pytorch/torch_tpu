@@ -22,8 +22,11 @@
 #include "csrc/common/error_utils.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "llvm/ADT/APFloat.h"
+#include "mlir/Dialect/Func/IR/FuncDialect.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/DialectRegistry.h"
@@ -287,6 +290,141 @@ module {
   EXPECT_EQ(slice_count, 0);
   EXPECT_EQ(dim20_value_count, 0);
   EXPECT_EQ(max_reduce_count, 2);
+}
+
+TEST(PipelineTest,
+     CanonicalizesDecomposedGemmaRmsNormAndReassociatesMixedDtypeWeight) {
+  static constexpr const char* kIr = R"mlir(
+module {
+  func.func @main(%x: tensor<2x8x16xbf16>, %w_f32: tensor<16xf32>) -> tensor<2x8x16xbf16> {
+    %zero = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+    %two = stablehlo.constant dense<2.000000e+00> : tensor<2x8x16xf32>
+    %n = stablehlo.constant dense<1.600000e+01> : tensor<2x8x1xf32>
+    %eps = stablehlo.constant dense<1.000000e-06> : tensor<2x8x1xf32>
+    %one = stablehlo.constant dense<1.000000e+00> : tensor<16xf32>
+    %x_f32 = stablehlo.convert %x : (tensor<2x8x16xbf16>) -> tensor<2x8x16xf32>
+    %sq = stablehlo.power %x_f32, %two : tensor<2x8x16xf32>
+    %sum = stablehlo.reduce(%sq init: %zero) across dimensions = [2] : (tensor<2x8x16xf32>, tensor<f32>) -> tensor<2x8xf32>
+     reducer(%lhs: tensor<f32>, %rhs: tensor<f32>) {
+      %a = stablehlo.add %lhs, %rhs : tensor<f32>
+      stablehlo.return %a : tensor<f32>
+    }
+    %keepdim = stablehlo.reshape %sum : (tensor<2x8xf32>) -> tensor<2x8x1xf32>
+    %var = stablehlo.divide %keepdim, %n : tensor<2x8x1xf32>
+    %var_eps = stablehlo.add %var, %eps : tensor<2x8x1xf32>
+    %rstd = stablehlo.rsqrt %var_eps : tensor<2x8x1xf32>
+    %bcast_rstd = stablehlo.broadcast_in_dim %rstd, dims = [0, 1, 2] : (tensor<2x8x1xf32>) -> tensor<2x8x16xf32>
+    %norm_f32 = stablehlo.multiply %x_f32, %bcast_rstd : tensor<2x8x16xf32>
+    %norm_bf16 = stablehlo.convert %norm_f32 : (tensor<2x8x16xf32>) -> tensor<2x8x16xbf16>
+    %one_plus_w_f32 = stablehlo.add %one, %w_f32 : tensor<16xf32>
+    %one_plus_w_bf16 = stablehlo.convert %one_plus_w_f32 : (tensor<16xf32>) -> tensor<16xbf16>
+    %bcast_w = stablehlo.broadcast_in_dim %one_plus_w_bf16, dims = [2] : (tensor<16xbf16>) -> tensor<2x8x16xbf16>
+    %out = stablehlo.multiply %norm_bf16, %bcast_w : tensor<2x8x16xbf16>
+    return %out : tensor<2x8x16xbf16>
+  }
+}
+)mlir";
+
+  mlir::DialectRegistry registry;
+  mlir::stablehlo::registerAllDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::parseSourceString<mlir::ModuleOp>(kIr, &context);
+  ASSERT_TRUE(module);
+
+  EXPECT_THAT(RunTorchTpuOptimizationPasses(*module, &context), IsOk());
+
+  int pow_count = 0;
+  int div_count = 0;
+  int one_const_count = 0;
+
+  module->walk([&](mlir::Operation* op) {
+    if (mlir::isa<mlir::stablehlo::PowOp>(op)) {
+      ++pow_count;
+    }
+    if (mlir::isa<mlir::stablehlo::DivOp>(op)) {
+      ++div_count;
+    }
+    if (auto const_op = mlir::dyn_cast<mlir::stablehlo::ConstantOp>(op)) {
+      if (auto attr =
+              mlir::dyn_cast<mlir::DenseElementsAttr>(const_op.getValue())) {
+        if (attr.isSplat() &&
+            mlir::isa<mlir::FloatType>(attr.getElementType()) &&
+            attr.getSplatValue<llvm::APFloat>().isExactlyValue(1.0)) {
+          ++one_const_count;
+        }
+      }
+    }
+  });
+
+  EXPECT_EQ(pow_count, 0);
+  EXPECT_EQ(div_count, 0);
+  EXPECT_EQ(one_const_count, 0);
+}
+
+TEST(PipelineTest, CommutesInverse4DTransposePairAroundQkRmsNorm) {
+  static constexpr const char* kIr = R"mlir(
+module {
+  func.func @main(%x: tensor<2x8x4x16xbf16>, %w: tensor<16xbf16>) -> tensor<2x8x4x16xbf16> {
+    %zero = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+    %two = stablehlo.constant dense<2.000000e+00> : tensor<2x4x8x16xf32>
+    %n = stablehlo.constant dense<1.600000e+01> : tensor<2x4x8x1xf32>
+    %eps = stablehlo.constant dense<1.000000e-06> : tensor<2x4x8x1xf32>
+    %t_in = stablehlo.transpose %x, dims = [0, 2, 1, 3] : (tensor<2x8x4x16xbf16>) -> tensor<2x4x8x16xbf16>
+    %x_f32 = stablehlo.convert %t_in : (tensor<2x4x8x16xbf16>) -> tensor<2x4x8x16xf32>
+    %sq = stablehlo.power %x_f32, %two : tensor<2x4x8x16xf32>
+    %sum = stablehlo.reduce(%sq init: %zero) across dimensions = [3] : (tensor<2x4x8x16xf32>, tensor<f32>) -> tensor<2x4x8xf32>
+     reducer(%lhs: tensor<f32>, %rhs: tensor<f32>) {
+      %a = stablehlo.add %lhs, %rhs : tensor<f32>
+      stablehlo.return %a : tensor<f32>
+    }
+    %keepdim = stablehlo.reshape %sum : (tensor<2x4x8xf32>) -> tensor<2x4x8x1xf32>
+    %var = stablehlo.divide %keepdim, %n : tensor<2x4x8x1xf32>
+    %var_eps = stablehlo.add %var, %eps : tensor<2x4x8x1xf32>
+    %rstd = stablehlo.rsqrt %var_eps : tensor<2x4x8x1xf32>
+    %bcast_rstd = stablehlo.broadcast_in_dim %rstd, dims = [0, 1, 2, 3] : (tensor<2x4x8x1xf32>) -> tensor<2x4x8x16xf32>
+    %norm_f32 = stablehlo.multiply %x_f32, %bcast_rstd : tensor<2x4x8x16xf32>
+    %norm_bf16 = stablehlo.convert %norm_f32 : (tensor<2x4x8x16xf32>) -> tensor<2x4x8x16xbf16>
+    %bcast_w = stablehlo.broadcast_in_dim %w, dims = [3] : (tensor<16xbf16>) -> tensor<2x4x8x16xbf16>
+    %scaled = stablehlo.multiply %norm_bf16, %bcast_w : tensor<2x4x8x16xbf16>
+    %t_out = stablehlo.transpose %scaled, dims = [0, 2, 1, 3] : (tensor<2x4x8x16xbf16>) -> tensor<2x8x4x16xbf16>
+    return %t_out : tensor<2x8x4x16xbf16>
+  }
+}
+)mlir";
+
+  mlir::DialectRegistry registry;
+  mlir::stablehlo::registerAllDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::parseSourceString<mlir::ModuleOp>(kIr, &context);
+  ASSERT_TRUE(module);
+
+  EXPECT_THAT(RunTorchTpuOptimizationPasses(*module, &context), IsOk());
+
+  int transpose_count = 0;
+  int pow_count = 0;
+  int div_count = 0;
+
+  module->walk([&](mlir::Operation* op) {
+    if (mlir::isa<mlir::stablehlo::TransposeOp>(op)) {
+      ++transpose_count;
+    }
+    if (mlir::isa<mlir::stablehlo::PowOp>(op)) {
+      ++pow_count;
+    }
+    if (mlir::isa<mlir::stablehlo::DivOp>(op)) {
+      ++div_count;
+    }
+  });
+
+  EXPECT_EQ(transpose_count, 0);
+  EXPECT_EQ(pow_count, 0);
+  EXPECT_EQ(div_count, 0);
 }
 
 }  // namespace

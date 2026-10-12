@@ -48,6 +48,7 @@ torch_tpu_cc_library(
         ":instrumentation",
         "//csrc/common:env_vars",
         "//csrc/common:error_utils",
+        "//csrc/mlir/passes:canonicalize_decomposed_norms",
         "//csrc/mlir/passes:fold_concat_softmax",
         "//csrc/mlir/passes:reassociate_norm_weights",
         "@com_google_absl//absl/status",
@@ -69,6 +70,7 @@ torch_tpu_cc_test(
         "//csrc/common:error_utils",
         "//csrc/common:oss_test_main",
         "@com_google_absl//absl/status:status_matchers",
+        "@llvm-project//llvm:Support",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Parser",
@@ -83,6 +85,7 @@ torch_tpu_cc_library(
     srcs = ["registration.cc"],
     hdrs = ["registration.h"],
     deps = [
+        "//csrc/mlir/passes:canonicalize_decomposed_norms",
         "//csrc/mlir/passes:dummy_pass",
         "//csrc/mlir/passes:fold_concat_softmax",
         "//csrc/mlir/passes:reassociate_norm_weights",
