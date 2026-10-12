@@ -113,8 +113,8 @@ class AmpTest(seed_test_utils.RepeatableTest):
   func.func @main(%arg0: tensor<10xi64>, %arg1: tensor<10x10xf32>, %arg2: tensor<10x10xf32>, %arg3: tensor<10x10xf32>, %arg4: tensor<10xf32>) -> tensor<f32> {
     %cst = stablehlo.constant dense<0x7FC00000> : tensor<100xf32>
     %cst_0 = stablehlo.constant dense<-1.000000e+00> : tensor<10x10xbf16>
+    %cst_1 = stablehlo.constant dense<0.00999999977> : tensor<f32>
     %c = stablehlo.constant dense<0> : tensor<i64>
-    %cst_1 = stablehlo.constant dense<1.000000e+02> : tensor<f32>
     %cst_2 = stablehlo.constant dense<0.000000e+00> : tensor<f32>
     %0 = "stablehlo.gather"(%arg2, %arg0) <{dimension_numbers = #stablehlo.gather<offset_dims = [1], collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 10>}> : (tensor<10x10xf32>, tensor<10xi64>) -> tensor<10x10xf32>
     %1 = stablehlo.convert %0 : (tensor<10x10xf32>) -> tensor<10x10xbf16>
@@ -128,7 +128,7 @@ class AmpTest(seed_test_utils.RepeatableTest):
     %9 = stablehlo.subtract %8, %arg1 : tensor<10x10xf32>
     %10 = stablehlo.multiply %9, %9 : tensor<10x10xf32>
     %11 = stablehlo.reduce(%10 init: %cst_2) applies stablehlo.add across dimensions = [0, 1] : (tensor<10x10xf32>, tensor<f32>) -> tensor<f32>
-    %12 = stablehlo.divide %11, %cst_1 : tensor<f32>
+    %12 = stablehlo.multiply %11, %cst_1 : tensor<f32>
     %13 = stablehlo.reshape %12 : (tensor<f32>) -> tensor<1xf32>
     %14 = stablehlo.dynamic_update_slice %cst, %13, %c : (tensor<100xf32>, tensor<1xf32>, tensor<i64>) -> tensor<100xf32>
     %15 = stablehlo.slice %14 [0:1] : (tensor<100xf32>) -> tensor<1xf32>

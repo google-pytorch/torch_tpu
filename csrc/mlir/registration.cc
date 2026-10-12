@@ -18,8 +18,11 @@
 
 #include <memory>
 
+#include "csrc/mlir/passes/canonicalize_decomposed_norms.h"
 #include "csrc/mlir/passes/dummy_pass.h"
 #include "csrc/mlir/passes/fold_concat_softmax.h"
+#include "csrc/mlir/passes/fold_pad_add_to_concat.h"
+#include "csrc/mlir/passes/fuse_rotary_half_rotation.h"
 #include "csrc/mlir/passes/reassociate_norm_weights.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/Pass/Pass.h"
@@ -32,7 +35,16 @@ void RegisterTorchTpuPasses() {
   mlir::registerPass(
       []() -> std::unique_ptr<mlir::Pass> { return createDummyPass(); });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return createCanonicalizeDecomposedNormsPass();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return createReassociateNormWeightsPass();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return createFoldPadAddToConcatPass();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return createFuseRotaryHalfRotationPass();
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return createFoldConcatSoftmaxPass();
