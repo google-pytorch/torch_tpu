@@ -129,18 +129,18 @@ int64_t GetKvComputeTileSize(int64_t kt) {
     if (kt % target_kc == 0) {
       return target_kc;
     }
-
     target_kc -= kMinHeuristicTileSize;
   }
-
   return kMinHardwareTileSize;
 }
 
-Tiling CreateTiling(int64_t q_seq_len, int64_t k_seq_len, int64_t head_dim,
-                    bool is_f32, bool has_mask, bool is_backward,
-                    bool has_dropout = false,
+Tiling CreateTiling(int64_t q_seq_len, int64_t k_seq_len, int64_t qk_head_dim,
+                    int64_t vo_head_dim, bool is_f32, bool has_mask,
+                    bool is_backward, bool has_dropout = false,
+                    bool is_causal = false,
                     std::optional<int64_t> vmem_limit_override = std::nullopt) {
   const int64_t vmem_limit = vmem_limit_override.value_or(GetVmemLimitBytes());
+  const int64_t head_dim = std::max(qk_head_dim, vo_head_dim);
 
   int64_t qt = GetInitialTileSize(q_seq_len);
   int64_t kt = GetInitialTileSize(k_seq_len);
@@ -148,7 +148,17 @@ Tiling CreateTiling(int64_t q_seq_len, int64_t k_seq_len, int64_t head_dim,
   while (EstimateTileVmemBytes(qt, kt, head_dim, is_f32, has_mask, is_backward,
                                has_dropout) > vmem_limit &&
          (qt > kMinHeuristicTileSize || kt > kMinHeuristicTileSize)) {
-    if (qt > kt && qt > kMinHeuristicTileSize) {
+    // GENERIC: cost-model Square (qt == kt) causal tiles partition the S x S
+    // matrix into N x N blocks where N(N-1)/2 upper-triangular blocks lie
+    // strictly above the diagonal and are skipped by CreateCausalIfOp; a
+    // rectangular tile spans the full diagonal and skips 0 blocks.
+    if (is_causal && q_seq_len == k_seq_len && qt == kt &&
+        qt > kMinHeuristicTileSize) {
+      qt = std::max(kMinHeuristicTileSize,
+                    RoundUpToTileSize(qt / 2, kMinHeuristicTileSize));
+      kt = std::max(kMinHeuristicTileSize,
+                    RoundUpToTileSize(kt / 2, kMinHeuristicTileSize));
+    } else if (qt > kt && qt > kMinHeuristicTileSize) {
       qt = std::max(kMinHeuristicTileSize,
                     RoundUpToTileSize(qt / 2, kMinHeuristicTileSize));
     } else if (kt > kMinHeuristicTileSize) {
@@ -228,16 +238,19 @@ mlir::MlirOp PadBias(mlir::MlirOp bias, int64_t padded_q_len,
   return bias;
 }
 
-Tiling CreateTiling(mlir::MlirOp query, mlir::MlirOp key, bool has_mask,
-                    bool is_backward = false, bool has_dropout = false) {
+Tiling CreateTiling(mlir::MlirOp query, mlir::MlirOp key, mlir::MlirOp value,
+                    bool has_mask, bool is_backward = false,
+                    bool has_dropout = false, bool is_causal = false) {
   auto query_type = GetTensorTypeOrDie(query);
   auto key_type = GetTensorTypeOrDie(key);
+  auto value_type = GetTensorTypeOrDie(value);
   int64_t q_seq_len = query_type.getShape()[query_type.getRank() - 2];
   int64_t k_seq_len = key_type.getShape()[key_type.getRank() - 2];
-  int64_t head_dim = query_type.getShape()[query_type.getRank() - 1];
+  int64_t qk_head_dim = query_type.getShape()[query_type.getRank() - 1];
+  int64_t vo_head_dim = value_type.getShape()[value_type.getRank() - 1];
   bool is_f32 = query_type.getElementType().isF32();
-  return CreateTiling(q_seq_len, k_seq_len, head_dim, is_f32, has_mask,
-                      is_backward, has_dropout);
+  return CreateTiling(q_seq_len, k_seq_len, qk_head_dim, vo_head_dim, is_f32,
+                      has_mask, is_backward, has_dropout, is_causal);
 }
 
 // Unpacks a 2-element i64 tensor `[seed, offset]` into a 4-element i32 tensor
@@ -436,14 +449,47 @@ CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
       rng_state_mlir = inputs[idx++];
     }
 
-    const auto tiling = CreateTiling(query_mlir, key_mlir,
+    const auto query_type_orig = GetTensorTypeOrDie(query_mlir);
+    const auto key_type_orig = GetTensorTypeOrDie(key_mlir);
+    const int64_t orig_num_heads = query_type_orig.getShape()[rank - 3];
+    const int64_t orig_q_seq_len = query_type_orig.getShape()[rank - 2];
+    const int64_t orig_kv_seq_len = key_type_orig.getShape()[rank - 2];
+    const int64_t orig_qk_head_dim = query_type_orig.getShape()[rank - 1];
+    const double effective_scale =
+        scale.value_or(1.0 / std::sqrt(static_cast<double>(orig_qk_head_dim)));
+
+    if (!return_lse) {
+      if (auto unwrapped_k = UnwrapRepeatedKvHead(key_mlir, orig_num_heads),
+          unwrapped_v = UnwrapRepeatedKvHead(value_mlir, orig_num_heads);
+          unwrapped_k.has_value() && unwrapped_v.has_value() &&
+          GetTensorTypeOrDie(*unwrapped_k).getDimSize(rank - 3) ==
+              GetTensorTypeOrDie(*unwrapped_v).getDimSize(rank - 3)) {
+        key_mlir = *unwrapped_k;
+        value_mlir = *unwrapped_v;
+      }
+    }
+
+    bool effective_is_causal = is_causal;
+    if (!return_lse && attn_bias_mlir.has_value()) {
+      if (IsAllZeroAttnBias(*attn_bias_mlir)) {
+        attn_bias_mlir = std::nullopt;
+      } else if (!effective_is_causal &&
+                 IsPureCausalAttnBias(*attn_bias_mlir, orig_q_seq_len,
+                                      orig_kv_seq_len)) {
+        effective_is_causal = true;
+        attn_bias_mlir = std::nullopt;
+      }
+    }
+
+    const auto tiling = CreateTiling(query_mlir, key_mlir, value_mlir,
                                      /*has_mask=*/attn_bias_mlir.has_value(),
-                                     /*is_backward=*/false, has_dropout);
+                                     /*is_backward=*/false, has_dropout,
+                                     /*is_causal=*/effective_is_causal);
     TT_ASSIGN_OR_RETURN(
         FlashAttnConfig config,
         CreateFlashAttnConfig(query_mlir, key_mlir, value_mlir, attn_bias_mlir,
-                              is_causal, scale, dropout_p, return_lse, tiling,
-                              precision));
+                              effective_is_causal, effective_scale, dropout_p,
+                              return_lse, tiling, precision));
 
     mlir::MlirOp mask_mlir =
         attn_bias_mlir.has_value()
@@ -665,16 +711,12 @@ CreateFlashAttentionBackwardKernel(
       philox_offset_mlir = inputs[idx++];
     }
 
-    const auto tiling = CreateTiling(query_mlir, key_mlir,
-                                     /*has_mask=*/attn_bias_mlir.has_value(),
-                                     /*is_backward=*/true, has_dropout);
-    TT_ASSIGN_OR_RETURN(
-        FlashAttnConfig config,
-        CreateFlashAttnConfig(query_mlir, key_mlir, value_mlir, attn_bias_mlir,
-                              is_causal, scale, dropout_p,
-                              /*return_lse=*/false, tiling, precision));
+    const auto orig_query_type = GetTensorTypeOrDie(query_mlir);
+    const int64_t orig_qk_head_dim = orig_query_type.getShape()[rank - 1];
+    const double effective_scale =
+        scale.value_or(1.0 / std::sqrt(static_cast<double>(orig_qk_head_dim)));
+    const bool effective_is_causal = is_causal;
 
-    // Compute di in SHLO
     mlir::Type f32_type = builder.getOpBuilder().getF32Type();
     mlir::MlirOp out_f32 =
         mlir::stablehlo::ConvertElementType(out_mlir, f32_type);
@@ -684,6 +726,16 @@ CreateFlashAttentionBackwardKernel(
     TT_ASSIGN_OR_RETURN(auto mul_di, BuildMulShlo(out_f32, grad_out_f32));
     TT_ASSIGN_OR_RETURN(auto di_shlo, BuildSumShlo(mul_di, {rank - 1},
                                                    ReductionMode::kDropDims));
+
+    const auto tiling = CreateTiling(query_mlir, key_mlir, value_mlir,
+                                     /*has_mask=*/attn_bias_mlir.has_value(),
+                                     /*is_backward=*/true, has_dropout,
+                                     /*is_causal=*/effective_is_causal);
+    TT_ASSIGN_OR_RETURN(
+        FlashAttnConfig config,
+        CreateFlashAttnConfig(query_mlir, key_mlir, value_mlir, attn_bias_mlir,
+                              effective_is_causal, effective_scale, dropout_p,
+                              /*return_lse=*/false, tiling, precision));
 
     // Reshape di_shlo to 4D [B_flat, N, 1, S]
     Dimensions aux_dims_4d = {config.batch_size, config.num_heads, 1,
@@ -759,7 +811,6 @@ CreateFlashAttentionBackwardKernel(
 
     mlir::MlirOp out_batch =
         flatten_batch_dims(out_mlir, config.batch_size, rank - 3);
-
     out_batch = PadSequenceDim(out_batch, 2, config.padded_q_sequence_length);
 
     std::vector<mlir::Value> dq_inputs;
