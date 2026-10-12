@@ -160,6 +160,7 @@ class PrecisionTest(seed_test_utils.RepeatableTest):
     device = torch.device("tpu")
     a = torch.randn(10, 10, device=device)
     b = torch.randn(10, 10, device=device)
+    torch.accelerator.synchronize()
 
     class Model(torch.nn.Module):
 
