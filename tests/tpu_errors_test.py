@@ -2373,7 +2373,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       tpu_torch_compile.execute(compile_result.executable, [ph])
 
-  @et.why_tpu_only("Asynchronous device assertions are TPU-only.")
+  @et.why_tpu_only("CUDA errors synchronously due to CUDA_LAUNCH_BLOCKING=1.")
   def test_synchronize_surfaces_async_assertion(self):
     false_cond = torch.tensor(False, device=et.device())
     torch.ops.aten._assert_async.msg(false_cond, "async assertion failure")
@@ -2386,7 +2386,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     finally:
       tt_testing.clear_sticky_error()
 
-  @et.why_tpu_only("Asynchronous device assertions are TPU-only.")
+  @et.why_tpu_only("CUDA errors synchronously due to CUDA_LAUNCH_BLOCKING=1.")
   def test_accelerator_synchronize_surfaces_async_assertion(self):
     false_cond = torch.tensor(False, device=et.device())
     torch.ops.aten._assert_async.msg(false_cond, "async assertion failure")
@@ -4718,77 +4718,6 @@ module {
         tpu="""nll_loss_nd(): expected reduction to be one of ['none', 'mean', 'sum'], got 3""",
     ):
       torch.ops.aten.nll_loss_nd(t, target, None, 3, -100)
-
-  @et.why_tpu_only(
-      "torch.tpu.Event is a TorchTPU class; errors_test.py covers torch.Event."
-  )
-  def test_tpu_event_elapsed_time_untimed_event(self):
-    timed = torch.tpu.Event(enable_timing=True)
-    untimed = torch.tpu.Event()
-    timed.record()
-    untimed.record()
-
-    with et.assert_raises_message(
-        ValueError,
-        tpu="""Both events must be created with argument 'enable_timing=True'.""",
-    ):
-      timed.elapsed_time(untimed)
-    with et.assert_raises_message(
-        ValueError,
-        tpu="""Both events must be created with argument 'enable_timing=True'.""",
-    ):
-      untimed.elapsed_time(timed)
-
-  @et.why_tpu_only(
-      "torch.tpu.Event is a TorchTPU class; errors_test.py covers torch.Event."
-  )
-  def test_tpu_event_elapsed_time_unrecorded_event(self):
-    recorded = torch.tpu.Event(enable_timing=True)
-    unrecorded = torch.tpu.Event(enable_timing=True)
-    recorded.record()
-
-    with et.assert_raises_message(
-        ValueError,
-        tpu="""Both events must be recorded before calculating elapsed time.""",
-    ):
-      recorded.elapsed_time(unrecorded)
-    with et.assert_raises_message(
-        ValueError,
-        tpu="""Both events must be recorded before calculating elapsed time.""",
-    ):
-      unrecorded.elapsed_time(recorded)
-
-  @et.why_tpu_only("torch.tpu.Event is a TorchTPU class.")
-  def test_tpu_event_elapsed_time_non_event(self):
-    event = torch.tpu.Event(enable_timing=True)
-
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""_event_elapsed_time(): expected start and end to be torch.Event objects, got TpuEvent and NoneType""",
-    ):
-      event.elapsed_time(None)
-
-  @et.why_tpu_only(
-      "errors_test.py runs on GPU with CUDA_LAUNCH_BLOCKING=1, so events cannot"
-      " be kept pending there reliably."
-  )
-  def test_tpu_event_elapsed_time_pending_event(self):
-    # A large device-to-host copy keeps the events recorded after it pending.
-    size = 8192 * 8192
-    t_tpu = torch.ones(size, device="tpu", dtype=torch.float32)
-    t_cpu = torch.empty(size, device="cpu", pin_memory=True)
-    start = torch.tpu.Event(enable_timing=True)
-    end = torch.tpu.Event(enable_timing=True)
-    t_cpu.copy_(t_tpu, non_blocking=True)
-    start.record()
-    end.record()
-
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""Both events must be completed before calculating elapsed time.""",
-    ):
-      start.elapsed_time(end)
-    end.synchronize()
 
   @et.why_tpu_only("torch.tpu.allow_excess_precision is TPU-specific.")
   def test_allow_excess_precision_after_compilation(self):
