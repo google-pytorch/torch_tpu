@@ -49,6 +49,7 @@ torch_tpu_cc_library(
         "//csrc/common:env_vars",
         "//csrc/common:error_utils",
         "//csrc/mlir/passes:fold_concat_softmax",
+        "//csrc/mlir/passes:fuse_rotary_and_view_transpose",
         "//csrc/mlir/passes:lower_separable_gather_to_dot",
         "//csrc/mlir/passes:reassociate_norm_weights",
         "@com_google_absl//absl/status",

@@ -52,6 +52,37 @@ torch_tpu_cc_library(
 )
 
 torch_tpu_cc_library(
+    name = "fuse_rotary_and_view_transpose",
+    srcs = ["fuse_rotary_and_view_transpose.cc"],
+    hdrs = ["fuse_rotary_and_view_transpose.h"],
+    deps = [
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:chlo_ops",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "fuse_rotary_and_view_transpose_test",
+    srcs = ["fuse_rotary_and_view_transpose_test.cc"],
+    deps = [
+        ":fuse_rotary_and_view_transpose",
+        "//csrc/common:oss_test_main",
+        "//csrc/mlir:pipeline",
+        "@com_google_absl//absl/status:status_matchers",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Parser",
+        "@stablehlo//:chlo_ops",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "lower_separable_gather_to_dot",
     srcs = ["lower_separable_gather_to_dot.cc"],
     hdrs = ["lower_separable_gather_to_dot.h"],
