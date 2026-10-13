@@ -45,6 +45,11 @@ namespace {
 
 constexpr Version kMinLibtpuVersionWithSlicebuilderInsecureGrpc(0, 0, 48);
 
+// Under LIBTPU_ON_GCE, libtpu 0.0.48 and 0.0.49 bind SliceBuilder WorkerService
+// to `<GetAndSanitizeHostName()>:<port>` rather than `[::]:<port>`; libtpu
+// 0.0.50 restored the `[::]:<port>` bind (see b/565342785).
+constexpr Version kMinLibtpuVersionWithWildcardSlicebuilderBind(0, 0, 50);
+
 // libtpu's default MegaScale port. Local rank 0 keeps it, so a MegaScale
 // coordinator address of `<MASTER_ADDR>:8080` still reaches global rank 0.
 constexpr int kMegascaleBasePort = 8080;
@@ -88,6 +93,22 @@ void AssignMegascalePorts(const int local_rank) {
   }
   freeaddrinfo(res);
   return sanitized;
+}
+
+// Returns true if `flags` sets the boolean libtpu flag `flag_name` in any
+// spelling the flag parser accepts: `--<name>`, `--<name>=<value>` or the
+// negated `--no<name>`, each with one or two leading dashes.
+[[nodiscard]] bool HasLibtpuBoolFlag(std::string_view flag_name,
+                                     const std::vector<std::string>& flags) {
+  return absl::c_any_of(flags, [flag_name](std::string_view flag) {
+    if (!absl::ConsumePrefix(&flag, "-")) return false;
+    absl::ConsumePrefix(&flag, "-");
+    if (!absl::ConsumePrefix(&flag, flag_name)) {
+      absl::ConsumePrefix(&flag, "no");
+      if (!absl::ConsumePrefix(&flag, flag_name)) return false;
+    }
+    return flag.empty() || flag.front() == '=';
+  });
 }
 
 // Ensures `flags` sets the boolean flag matching `flag_prefix` to
@@ -145,8 +166,8 @@ void EnsureUndefokFlag(std::string_view flag_name,
 
 // Normalizes `LIBTPU_INIT_ARGS` (`raw_args`) for distributed execution by
 // disabling the enhanced launch barrier and, when
-// `use_slicebuilder_insecure_grpc` is true, enabling insecure SliceBuilder gRPC
-// credentials along with `--undefok=slicebuilder_use_insecure_grpc`.
+// `use_slicebuilder_insecure_grpc` is true, defaulting to insecure SliceBuilder
+// gRPC credentials along with `--undefok=slicebuilder_use_insecure_grpc`.
 [[nodiscard]] std::string ConfigureLibtpuInitArgs(
     std::string_view raw_args, const bool use_slicebuilder_insecure_grpc) {
   std::vector<std::string> flags =
@@ -165,16 +186,12 @@ void EnsureUndefokFlag(std::string_view flag_name,
 
   if (use_slicebuilder_insecure_grpc) {
     // Preventing SliceBuilder ALTS gRPC handshake hangs on GKE/GCE, see
-    // b/565342785 and b/526788926.
-    EnsureLibtpuBoolFlag(
-        "--slicebuilder_use_insecure_grpc",
-        "--slicebuilder_use_insecure_grpc=false",
-        "--slicebuilder_use_insecure_grpc=true",
-        "libtpu_init_args contains "
-        "--slicebuilder_use_insecure_grpc=false, "
-        "this can cause SliceBuilder gRPC handshake hangs on GKE/GCE. "
-        "Rewriting environment variable to true.",
-        flags);
+    // b/565342785 and b/526788926. This is only a default: an explicit
+    // `--slicebuilder_use_insecure_grpc` setting is preserved so users can opt
+    // back into ALTS credentials, see b/571936195.
+    if (!HasLibtpuBoolFlag("slicebuilder_use_insecure_grpc", flags)) {
+      flags.emplace_back("--slicebuilder_use_insecure_grpc=true");
+    }
     // `slicebuilder_use_insecure_grpc` was introduced in libtpu 0.0.48; mark
     // it in `--undefok` so environments where SetLibtpuVersion was not called
     // (e.g. standalone C++ tests) never fail command line flag parsing.
@@ -231,14 +248,16 @@ absl::Status InitializeDistributedEnvironment(
     AssignMegascalePorts(config.local_rank);
   }
 
+  const Version libtpu_version = GetLibtpuVersion();
   const bool use_slicebuilder_insecure_grpc =
-      GetLibtpuVersion() >= kMinLibtpuVersionWithSlicebuilderInsecureGrpc;
-  if (use_slicebuilder_insecure_grpc) {
-    // Under LIBTPU_ON_GCE (libtpu >= 0.0.48), SliceBuilder WorkerService binds
-    // to `<GetAndSanitizeHostName()>:<port>` rather than `[::]:<port>`, which
-    // resolves to the host/pod network interface IP rather than loopback
-    // (127.0.0.1). Rewrite `localhost:<port>` addresses to `<hostname>:<port>`
-    // so MasterFactory connects to the exact address WorkerService listens on.
+      libtpu_version >= kMinLibtpuVersionWithSlicebuilderInsecureGrpc;
+  if (use_slicebuilder_insecure_grpc &&
+      libtpu_version < kMinLibtpuVersionWithWildcardSlicebuilderBind) {
+    // SliceBuilder WorkerService listens on
+    // `<GetAndSanitizeHostName()>:<port>`, which resolves to the host/pod
+    // network interface IP rather than loopback (127.0.0.1). Rewrite
+    // `localhost:<port>` addresses to `<hostname>:<port>` so MasterFactory
+    // connects to the exact address WorkerService listens on.
     const std::string sanitized_hostname = GetSanitizedHostName();
     for (std::string& addr : addresses) {
       std::string_view addr_view(addr);
