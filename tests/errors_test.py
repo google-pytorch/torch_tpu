@@ -738,6 +738,83 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
           grad_input=grad_input,
       )
 
+  def test_upsample_bilinear2d_aa_invalid_rank(self):
+    t = torch.ones(1, 2, 4, device=et.device(), dtype=torch.float32)
+    out = torch.empty(1, 2, 8, 8, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""upsample_bilinear2d_aa(): expected input tensor to be 4D (NCHW), got 3D tensor with shape [1, 2, 4]""",
+        gpu="""It is expected input_size equals to 4, but got size 3""",
+    ):
+      torch.ops.aten._upsample_bilinear2d_aa.out(
+          t, [8, 8], False, None, None, out=out
+      )
+
+  def test_upsample_bilinear2d_aa_invalid_output_size_len(self):
+    t = torch.ones(1, 2, 4, 4, device=et.device(), dtype=torch.float32)
+    out = torch.empty(1, 2, 8, 8, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""upsample_bilinear2d_aa(): expected output_size to have 2 elements, got 1""",
+        gpu="""It is expected output_size equals to 2, but got size 1""",
+    ):
+      torch.ops.aten._upsample_bilinear2d_aa.out(
+          t, [8], False, None, None, out=out
+      )
+
+  def test_upsample_bilinear2d_aa_non_positive_output_size(self):
+    t = torch.ones(1, 2, 4, 4, device=et.device(), dtype=torch.float32)
+    out = torch.empty(1, 2, 0, 4, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""upsample_bilinear2d_aa(): expected output_size dimensions to be positive, got [0, 4]""",
+        gpu="""Input and output sizes should be greater than 0, but got input (H: 4, W: 4) output (H: 0, W: 4)""",
+    ):
+      torch.ops.aten._upsample_bilinear2d_aa.out(
+          t, [0, 4], False, None, None, out=out
+      )
+
+  def test_upsample_bilinear2d_aa_zero_non_batch_dim(self):
+    t = torch.ones(1, 0, 4, 4, device=et.device(), dtype=torch.float32)
+    out = torch.empty(1, 0, 8, 8, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""upsample_bilinear2d_aa(): expected input tensor to have non-zero size for non-batch dimensions, got [1, 0, 4, 4]""",
+        gpu="""Non-empty 4D data tensor expected but got a tensor with sizes [1, 0, 4, 4]""",
+    ):
+      torch.ops.aten._upsample_bilinear2d_aa.out(
+          t, [8, 8], False, None, None, out=out
+      )
+
+  def test_upsample_bilinear2d_aa_unsupported_dtype(self):
+    for dtype, tpu_dtype, gpu_dtype in (
+        (torch.bool, "bool", "Bool"),
+        (torch.int32, "int32", "Int"),
+        (torch.int64, "int64", "Long"),
+    ):
+      t = torch.ones(1, 1, 2, 2, device=et.device(), dtype=dtype)
+      out = torch.empty(1, 1, 4, 4, device=et.device(), dtype=dtype)
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu=f"""upsample_bilinear2d_aa(): not implemented for {tpu_dtype}""",
+          gpu=f""""upsample_bilinear2d_out_frame" not implemented for '{gpu_dtype}'""",
+      ):
+        torch.ops.aten._upsample_bilinear2d_aa.out(
+            t, [4, 4], False, None, None, out=out
+        )
+
+  def test_upsample_bilinear2d_aa_dtype_mismatch(self):
+    t = torch.ones(1, 1, 4, 4, device=et.device(), dtype=torch.float32)
+    out = torch.empty(1, 1, 8, 8, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""upsample_bilinear2d_aa(): expected out tensor to have the same dtype as self (float32), got int32""",
+        gpu="""Expected out tensor to have dtype float, but got int instead""",
+    ):
+      torch.ops.aten._upsample_bilinear2d_aa.out(
+          t, [8, 8], False, None, None, out=out
+      )
+
   def test_upsample_bicubic2d_backward_invalid_grad_output_rank(self):
     grad_output = torch.ones(1, 2, 3, device=et.device(), dtype=torch.float32)
     with et.assert_raises_message(

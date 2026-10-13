@@ -278,6 +278,9 @@ triaged_ops_deny_lists: dict[
         "linalg.solve_triangular": {EAGER},
     },
     "the lowering emits an op without bounded shape support": {
+        # _upsample_bilinear2d_aa lowers via stablehlo.gather with static
+        # slice_sizes and computes filter parameters from static spatial dims.
+        "_upsample_bilinear2d_aa": ALL_MODES,
         # cross_entropy_loss lowers via gather/scatter and static element count
         # queries, and requires synchronized target/weight dynamic marking.
         "nn.functional.cross_entropy": ALL_MODES,

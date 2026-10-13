@@ -2,28 +2,28 @@
   "gcs_bucket": "torchtpu-goldens",
   "goldens": {
     "ops_test_gpu_golden0.gz": {
-      "gcs_path": "ops_test/20261013_033213/ops_test_gpu_golden0.gz",
-      "sha256": "a89d9dd0fa3a57f2ae00e228d016c996a7f35df8218060877c701b94370777d1"
+      "gcs_path": "ops_test/20261013_090342/ops_test_gpu_golden0.gz",
+      "sha256": "3220364fe32a2207a451b37ffc3cf18eefc9cc34270db27e64ffd5ac2a10ca68"
     },
     "ops_test_gpu_golden1.gz": {
-      "gcs_path": "ops_test/20261013_033213/ops_test_gpu_golden1.gz",
-      "sha256": "7dd33e8c164161cd246990bf55ed41c10a6a413b3baa31ba7286b02767d9698a"
+      "gcs_path": "ops_test/20261013_090342/ops_test_gpu_golden1.gz",
+      "sha256": "9de9d55f861b5759fbe59ad7f63d3bd44c6f93eeb9da051e55a90703c7a85999"
     },
     "ops_test_gpu_golden2.gz": {
-      "gcs_path": "ops_test/20261013_033213/ops_test_gpu_golden2.gz",
-      "sha256": "2392598414874383ae2026d37a768c3f3aba5882e72702fcb158c22f7a57506b"
+      "gcs_path": "ops_test/20261013_090342/ops_test_gpu_golden2.gz",
+      "sha256": "0eb48f7c7b8ffb7f53c51c2eeb2472a1ba319412df1f41e8946bc00bd56495e9"
     },
     "ops_test_gpu_golden_compiled0.gz": {
-      "gcs_path": "ops_test/20261013_033244/ops_test_gpu_golden_compiled0.gz",
-      "sha256": "a85fbfc39003b14b5b05b880b1a22287225590e23793797cbdda76a78c23249d"
+      "gcs_path": "ops_test/20261013_090342/ops_test_gpu_golden_compiled0.gz",
+      "sha256": "9bf201a4d7c55ab81f802ff4767200243e62537b368767655a6f22154806c9ed"
     },
     "ops_test_gpu_golden_compiled1.gz": {
-      "gcs_path": "ops_test/20261013_033244/ops_test_gpu_golden_compiled1.gz",
-      "sha256": "e3e91cf3885a3dbee0d4bed2c006d805946e7f0bde3a0cdadb90997837ff5c8c"
+      "gcs_path": "ops_test/20261013_090342/ops_test_gpu_golden_compiled1.gz",
+      "sha256": "4c94c509a6cc958a314937c338129a66a9f89850ffa5eb1f87ecdc1523503eba"
     },
     "ops_test_gpu_golden_compiled2.gz": {
-      "gcs_path": "ops_test/20261013_033244/ops_test_gpu_golden_compiled2.gz",
-      "sha256": "389fa4c44e0ad0705b14bef9e06bc7ba340ca1b12153770c5d2182e0f1efcb57"
+      "gcs_path": "ops_test/20261013_090342/ops_test_gpu_golden_compiled2.gz",
+      "sha256": "10dad4344d427b53b33f60a3c08677ea65325dc9fb2fc4b2f40158b29726cea0"
     },
     "ops_test_gpu_golden_compiled_hopper0.gz": {
       "gcs_path": "ops_test/20261007_130933/ops_test_gpu_golden_compiled_hopper0.gz",

@@ -250,6 +250,10 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.float16: {"rtol": 7.6e-2, "atol": 1.8e-1},
         torch.float32: {"rtol": 7.0e-2, "atol": 2.1e-1},
     },
+    "_upsample_bilinear2d_aa": {
+        torch.bfloat16: {"rtol": 4.7e-2, "atol": 3.7e-2},
+        torch.float16: {"rtol": 6.9e-3, "atol": 6.5e-3},
+    },
     "abs": {
         torch.complex64: {"rtol": 2.0e-6, "atol": 2.0e-6},
         torch.float64: {"rtol": 4.7e-6, "atol": 1e-6},
@@ -630,6 +634,10 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
     "_softmax_backward_data": {
         torch.bfloat16: {"atol": 5.9e-3},
         torch.float16: {"atol": 5.9e-4},
+    },
+    "_upsample_bilinear2d_aa": {
+        torch.bfloat16: {"rtol": 2.8e-2, "atol": 2.6e-2},
+        torch.float16: {"rtol": 6.9e-3, "atol": 6.5e-3},
     },
     "abs": {
         torch.complex64: {"rtol": 2.0e-6, "atol": 2.0e-6},
@@ -3968,6 +3976,12 @@ class TestOps(op_testing.OpInfoTestBase):
             ),
         },
         # TODO: STRICT fails for some types. Look into narrowing this down.
+    )
+
+  def test_upsample_bilinear2d_aa(self):
+    self.do_test_op(
+        "_upsample_bilinear2d_aa",
+        check_grad=False,
     )
 
   def test_upsample_nearest_exact(self):
