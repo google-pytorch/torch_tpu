@@ -16,7 +16,9 @@ name: "Download Staged Wheel"
 
 description: >-
   Downloads the torch_tpu wheel for one Python version from a GCS release
-  staging folder into dist/.
+  staging folder into dist/ and checks it against the SHA256SUMS staged with
+  it, which the publish job also checks, so the tests run on the exact bytes
+  that get published.
 inputs:
   gcs_wheel_dir:
     description: "GCS folder with the wheels"
@@ -27,17 +29,37 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - name: Download wheel from GCS
+    - name: Download and check wheel
       shell: bash
       env:
         GCS_WHEEL_DIR: ${{ inputs.gcs_wheel_dir }}
         PYTHON_VERSION: ${{ inputs.python_version }}
       run: |
+        set -euo pipefail
         if [[ ! "${GCS_WHEEL_DIR%/}" =~ /([0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?)/rc[0-9]+/release$ ]]; then
           echo "::error::Expected gcs_wheel_dir to end with /<version>/rc<N>/release, got: ${GCS_WHEEL_DIR}" >&2
           exit 1
         fi
         version="${BASH_REMATCH[1]}"
-        tag="cp${PYTHON_VERSION/./}"
+        abi_tag="cp${PYTHON_VERSION/./}"
+        py_tag="${abi_tag%t}"
+        if ! gcloud storage cp "${GCS_WHEEL_DIR%/}/SHA256SUMS" "$RUNNER_TEMP/"; then
+          echo "::error::No SHA256SUMS in ${GCS_WHEEL_DIR}; did the staging job finish?" >&2
+          exit 1
+        fi
         mkdir -p dist
-        gcloud storage cp "${GCS_WHEEL_DIR%/}/torch_tpu-${version}-${tag}-${tag}-*.whl" dist/
+        gcloud storage cp "${GCS_WHEEL_DIR%/}/torch_tpu-${version}-${py_tag}-${abi_tag}-*.whl" dist/
+        shopt -s nullglob
+        wheels=(dist/*.whl)
+        if [[ ${#wheels[@]} -ne 1 ]]; then
+          echo "::error::Expected exactly one wheel in dist/, found ${#wheels[@]}: ${wheels[*]-}" >&2
+          exit 1
+        fi
+        wheel="${wheels[0]#dist/}"
+        checksum_line="$(awk -v f="$wheel" '$2 == f' "$RUNNER_TEMP/SHA256SUMS")"
+        if [[ -z "$checksum_line" ]]; then
+          echo "::error::${wheel} is not listed in ${GCS_WHEEL_DIR%/}/SHA256SUMS" >&2
+          exit 1
+        fi
+        echo "$checksum_line"
+        (cd dist && echo "$checksum_line" | sha256sum --check --strict)
