@@ -1639,6 +1639,22 @@ TEST(ErrorMessageGuidelinesPassTest, MultilineErrorMessage) {
 
 #endif  // TT_CHECKS_ERROR_FORMAT
 
+TEST(TranslateToC10ErrorAndThrowTest,
+     ThrowsOutOfMemoryErrorOnResourceExhausted) {
+  const absl::Status status = TT_ERROR(error::kResourceExhausted)
+                              << "failed to allocate memory on TPU";
+  const TtError err(status, c10::SourceLocation{"file.cc", "func", 123});
+  EXPECT_THROW(TranslateToC10ErrorAndThrow(err), c10::OutOfMemoryError);
+}
+
+TEST(TranslateToC10ErrorAndThrowTest, ThrowsOutOfMemoryErrorOnXlaOom) {
+  const absl::Status status =
+      TT_ERROR(error::kInternal)
+      << "failed to allocate: allocation_size exceeds limit";
+  const TtError err(status, c10::SourceLocation{"file.cc", "func", 123});
+  EXPECT_THROW(TranslateToC10ErrorAndThrow(err), c10::OutOfMemoryError);
+}
+
 TEST(ErrorUtilsTest, GetRequiredEnvOnceReturnsValueWhenSet) {
   setenv(kTorchTpuTopologyEnvVar, "2x2x1", 1);
   TT_ASSERT_OK_AND_ASSIGN(const auto val,

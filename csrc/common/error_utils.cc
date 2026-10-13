@@ -1230,6 +1230,11 @@ void TranslateToC10ErrorAndThrow(const TtError& e) {
   const std::string message =
       MakeErrorMessage(e.status(), e.thrown_from(), ExceptionType::kC10Error);
 
+  if (IsXlaOomError(e.status())) {
+    throw  // Translates to Python torch.OutOfMemoryError.
+        c10::OutOfMemoryError(e.thrown_from(), message);
+  }
+
   // Map the error code to the corresponding c10::Error subclass to be
   // consistent with PyTorch CPU's error handling. These different c10::Error
   // subclasses will be translated to different Python exception types by
@@ -1242,6 +1247,9 @@ void TranslateToC10ErrorAndThrow(const TtError& e) {
     case error::kPythonNotImplementedError:
       throw  // Translates to Python NotImplementedError.
           c10::NotImplementedError(e.thrown_from(), message);
+    case error::kResourceExhausted:
+      throw  // Translates to Python torch.OutOfMemoryError.
+          c10::OutOfMemoryError(e.thrown_from(), message);
     default:
       throw  // Translates to Python RuntimeError.
           c10::Error(e.thrown_from(), message);

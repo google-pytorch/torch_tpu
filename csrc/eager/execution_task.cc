@@ -303,11 +303,7 @@ absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
     } else if (argument.is_materialized()) {
       // Argument has either succeeded or failed; check that it didn't fail.
       // AwaitBuffer is non-blocking when is_materialized() is true.
-      auto buffer_or = argument.AwaitBuffer();
-      if (!buffer_or.ok()) {
-        return TT_ERROR(error::kFailedPrecondition)
-               << "a required argument is in a failed state";
-      }
+      TT_RETURN_IF_ERROR(argument.AwaitBuffer().status());
     } else if (argument.is_materializing()) {
       // Input isn't ready yet, so we will wait and recheck it during Run().
       continue;

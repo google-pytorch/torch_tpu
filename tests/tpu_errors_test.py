@@ -353,12 +353,25 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     # The result tensor would need 4 TB, which is impossible to allocate.
     t3 = torch.mm(t1, t2)
     with et.assert_raises_message(
-        RuntimeError,
+        torch.OutOfMemoryError,
         tpu=re.compile(
             r"""to_copy\(\): the TPU ran out of memory while awaiting the materialization of value float32\[1048576, 1048576\]:(.|\n)*"""
         ),
     ):
       t3.to("cpu")
+    tt_testing.reset_eager_state()
+
+  @et.why_tpu_only("Testing TPU OOM behavior on chained view operations.")
+  def test_oom_chained_view_op(self):
+    """Tests that chained view ops on an OOM tensor raise OutOfMemoryError with root cause."""
+    b = torch.empty(100 * 1024**3, dtype=torch.uint8, device="tpu")
+    b.fill_(1)
+    torch.accelerator.synchronize()
+    with et.assert_raises_message(
+        torch.OutOfMemoryError,
+        tpu=re.compile(r"""(.|\n)*out of memory(.|\n)*"""),
+    ):
+      b[:8].sum().item()
     tt_testing.reset_eager_state()
 
   @et.why_tpu_only("TODO: support complex32 on TPU.")

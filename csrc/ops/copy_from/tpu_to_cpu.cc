@@ -118,11 +118,14 @@ absl::Status CopyTpuToCpu(const at::Tensor& src, const at::Tensor& dest,
   // Materialize if deferred, no-op if already materialized.
   // If src is a view, this will materialize both the base buffer and the
   // ephemeral view buffer.
-  TT_ASSIGN_OR_RETURN(const DeviceBufferRef materialized_src_buf, [&]() {
-    tsl::profiler::TraceMe trace_mat("CopyTpuToCpu::MaterializeAndReturn");
-    return MaterializeAndReturn(src, MaterializationReason::kCpuTransfer,
-                                block_mode);
-  }());
+  TT_ASSIGN_OR_RETURN(
+      const DeviceBufferRef materialized_src_buf,
+      [&]() {
+        tsl::profiler::TraceMe trace_mat("CopyTpuToCpu::MaterializeAndReturn");
+        return MaterializeAndReturn(src, MaterializationReason::kCpuTransfer,
+                                    block_mode);
+      }(),
+      TranslateXlaTensorOomError(_, dest.scalar_type(), src.sizes()));
 
   if (!non_blocking) {
     ABSL_CHECK(materialized_src_buf.is_materializing())  // CRASH_OK
