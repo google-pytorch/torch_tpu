@@ -334,9 +334,17 @@ at::Generator MakeDeviceGenerator(c10::DeviceIndex idx = -1);
 
 // Sets the seed for the generator of the given device index. If idx is -1,
 // sets the seed for the generator of the current device.
+//
+// Like `torch.cuda.manual_seed()`, this does not initialize the TPU: if the TPU
+// is not initialized yet, the seed is recorded and applied when the generator
+// is created.
 void SetManualSeed(uint64_t seed, c10::DeviceIndex idx = -1);
 
 // Sets the seed for all TPU generators.
+//
+// Like `torch.cuda.manual_seed_all()`, this does not initialize the TPU: if the
+// TPU is not initialized yet, the seed is recorded and applied when the
+// generators are created.
 void SetManualSeedAll(uint64_t seed);
 
 }  // namespace torch_tpu

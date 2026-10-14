@@ -1953,6 +1953,21 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "lazy_seed_test",
+    srcs = ["lazy_seed_test.py"],
+    main = "lazy_seed_test.py",
+    tags = ["requires-tpu-v5lite"],
+    deps = [
+        ":seed_test_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
+    ],
+)
+
+torch_tpu_py_test(
     name = "rng_cuda_ref_test",
     srcs = ["rng_cuda_ref_test.py"],
     args = ["--backend=tpu"],

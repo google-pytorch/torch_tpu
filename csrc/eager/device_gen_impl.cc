@@ -27,11 +27,13 @@
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/Generator.h"
 #include "absl/base/no_destructor.h"
+#include "absl/base/thread_annotations.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/synchronization/mutex.h"
 #include "c10/core/Device.h"
 #include "c10/core/DeviceGuard.h"
 #include "c10/core/DispatchKey.h"
@@ -160,6 +162,102 @@ GetExportModeDefaultGenerators() {
   return kInstance;
 }
 
+// Returns the index of the current TPU device. This does not initialize the
+// TPU.
+c10::DeviceIndex GetCurrentDeviceIndexFromGuard() {
+  const auto* guard =
+      c10::impl::getDeviceGuardImpl(c10::DeviceType::PrivateUse1);
+  TT_CHECK_THROW(guard != nullptr, error::kFailedPrecondition)
+      << "PrivateUse1 device guard is not registered.";
+  return guard->getDevice().index();
+}
+
+// Seeds set through `SetManualSeed()` and `SetManualSeedAll()` before the TPU
+// is initialized.
+//
+// Like `torch.cuda`, seeding must not initialize the device. A process can call
+// `torch.manual_seed()` without ever using the TPU, e.g. an HTTP client running
+// next to a server that owns the TPU devices, where initializing would fail
+// because the devices are busy. Instead, the seeds are recorded here and the
+// default generators pick them up when they are created.
+class PendingSeeds {
+ public:
+  [[nodiscard]] static PendingSeeds& GetInstance() {
+    static absl::NoDestructor<PendingSeeds> instance;
+    return *instance;
+  }
+
+  // If the TPU is not initialized, records `seed` for device `idx` (the current
+  // device if -1) and returns true. Otherwise, returns false.
+  [[nodiscard]] bool MaybeRecordForDevice(uint64_t seed, c10::DeviceIndex idx)
+      ABSL_LOCKS_EXCLUDED(mutex_) {
+    absl::MutexLock lock(mutex_);
+    if (PjrtBackend::GetInstance().IsInitialized()) {
+      return false;
+    }
+    if (idx == -1) {
+      // Resolve the current device now, as the caller would expect, rather
+      // than when the seed is applied.
+      idx = GetCurrentDeviceIndexFromGuard();
+    }
+    per_device_[idx] = seed;
+    return true;
+  }
+
+  // If the TPU is not initialized, records `seed` for all devices and returns
+  // true. Otherwise, returns false.
+  [[nodiscard]] bool MaybeRecordForAllDevices(uint64_t seed)
+      ABSL_LOCKS_EXCLUDED(mutex_) {
+    absl::MutexLock lock(mutex_);
+    if (PjrtBackend::GetInstance().IsInitialized()) {
+      return false;
+    }
+    all_devices_ = seed;
+    // A later seed for all devices overrides earlier per-device seeds.
+    per_device_.clear();
+    return true;
+  }
+
+  // Returns the recorded seed of each of the `num_devices` devices, if any, and
+  // clears the recorded seeds.
+  //
+  // Must only be called after the TPU is initialized. Seeds recorded before
+  // that are then guaranteed to be returned here, as recording and taking are
+  // serialized and nothing is recorded once the TPU is initialized.
+  [[nodiscard]] std::vector<std::optional<uint64_t>> Take(int num_devices)
+      ABSL_LOCKS_EXCLUDED(mutex_) {
+    absl::MutexLock lock(mutex_);
+    std::vector<std::optional<uint64_t>> seeds(num_devices, all_devices_);
+    for (const auto& [idx, seed] : per_device_) {
+      if (idx >= 0 && idx < num_devices) {
+        seeds[idx] = seed;
+      } else {
+        ABSL_LOG(WARNING) << "Ignoring the seed set for TPU device "
+                          << static_cast<int32_t>(idx)
+                          << " before TPU initialization: expected a device "
+                             "index between 0 and "
+                          << num_devices - 1;
+      }
+    }
+    all_devices_.reset();
+    per_device_.clear();
+    return seeds;
+  }
+
+ private:
+  friend class absl::NoDestructor<PendingSeeds>;
+
+  PendingSeeds() = default;
+
+  absl::Mutex mutex_;
+  // The seed of the latest `SetManualSeedAll()` call, if any.
+  std::optional<uint64_t> all_devices_ ABSL_GUARDED_BY(mutex_);
+  // The seeds of `SetManualSeed()` calls since the latest `SetManualSeedAll()`
+  // call, which override `all_devices_`.
+  absl::flat_hash_map<c10::DeviceIndex, uint64_t> per_device_
+      ABSL_GUARDED_BY(mutex_);
+};
+
 }  // namespace
 
 absl::Status InitDefaultGenerator(DeviceGeneratorImpl* gen_impl,
@@ -219,10 +317,14 @@ class DeviceGenerators {
     generators_.resize(num_devices_);
     generator_init_flags_.clear();
     generator_init_flags_.resize(num_devices_);
+    initial_seeds_.assign(num_devices_, std::nullopt);
   }
 
   std::vector<absl::StatusOr<at::Generator>> generators_;
   std::deque<c10::once_flag> generator_init_flags_;
+  // The seed each generator is created with, if it was set before the TPU was
+  // initialized. Otherwise, the generator gets a nondeterministic seed.
+  std::vector<std::optional<uint64_t>> initial_seeds_;
   const int num_devices_ = -1;
 };
 
@@ -232,11 +334,7 @@ c10::DeviceIndex NormalizeDeviceIndex(c10::DeviceIndex idx) {
   const int32_t num_devices =
       DeviceGenerators::GetDefaultInstance().num_devices();
   if (idx == -1) {
-    const auto* guard =
-        c10::impl::getDeviceGuardImpl(c10::DeviceType::PrivateUse1);
-    TT_CHECK_THROW(guard != nullptr, error::kFailedPrecondition)
-        << "PrivateUse1 device guard is not registered.";
-    idx = guard->getDevice().index();
+    idx = GetCurrentDeviceIndexFromGuard();
   }
   TT_CHECK_THROW(idx >= 0 && idx < num_devices, error::kFailedPrecondition)
       << "expected device_index between 0 and " << num_devices - 1 << ", got "
@@ -313,9 +411,9 @@ c10::intrusive_ptr<DeviceGeneratorState> DeviceGeneratorState::clone() const {
 
 DeviceGenerators& DeviceGenerators::GetDefaultInstance() {
   // If TPU initialization failed, `deviceCount()` reports 0 devices, which
-  // would be cached below and make every generator operation (e.g. seeding in
-  // `torch.manual_seed()`) silently a no-op or fail with an unrelated error
-  // later. Surface the underlying initialization error instead.
+  // would be cached below and make every generator operation (e.g. sampling
+  // random numbers) fail with an unrelated error later. Surface the underlying
+  // initialization error instead.
   TT_THROW_IF_ERROR(PjrtBackend::GetInstance().EnsureInitialized());
   // We cannot use absl::NoDestructor here because the constructor is private.
   static auto* const kInstance = []() -> DeviceGenerators* {
@@ -331,6 +429,8 @@ DeviceGenerators& DeviceGenerators::GetDefaultInstance() {
 DeviceGenerators::DeviceGenerators(int num_devices)
     : num_devices_(num_devices) {
   ResetGenerators();
+  // The TPU is initialized by now, so no more seeds will be recorded.
+  initial_seeds_ = PendingSeeds::GetInstance().Take(num_devices_);
 }
 
 void DeviceGenerators::SetExportModeDefaultGenerator(
@@ -360,8 +460,10 @@ at::Generator& DeviceGenerators::GetEagerDefaultGenerator(at::DeviceIndex idx) {
   c10::call_once(generator_init_flags_[idx], [&] {
     auto gen = at::make_generator<EagerModeDeviceGeneratorImpl>(idx);
     auto* gen_impl = gen.get<EagerModeDeviceGeneratorImpl>();
-    auto random = c10::detail::getNonDeterministicRandom(false);
-    auto status = InitDefaultGenerator(gen_impl, random);
+    const uint64_t seed = initial_seeds_[idx].has_value()
+                              ? *initial_seeds_[idx]
+                              : c10::detail::getNonDeterministicRandom(false);
+    auto status = InitDefaultGenerator(gen_impl, seed);
     if (!status.ok()) {
       generator = status;
     } else {
@@ -751,6 +853,9 @@ at::Generator MakeDeviceGenerator(c10::DeviceIndex idx) {
 }
 
 void SetManualSeed(uint64_t seed, c10::DeviceIndex idx) {
+  if (PendingSeeds::GetInstance().MaybeRecordForDevice(seed, idx)) {
+    return;
+  }
   auto& gen =
       DeviceGenerators::GetDefaultInstance().GetEagerDefaultGenerator(idx);
   // Ensure state write targets the specified device even if called from
@@ -760,6 +865,9 @@ void SetManualSeed(uint64_t seed, c10::DeviceIndex idx) {
 }
 
 void SetManualSeedAll(uint64_t seed) {
+  if (PendingSeeds::GetInstance().MaybeRecordForAllDevices(seed)) {
+    return;
+  }
   const int num_devices = DeviceGenerators::GetDefaultInstance().num_devices();
   for (int i = 0; i < num_devices; ++i) {
     SetManualSeed(seed, i);

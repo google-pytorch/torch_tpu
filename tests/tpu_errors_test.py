@@ -5418,10 +5418,22 @@ _SEED_FNS = {
 
 
 def _seed_in_fresh_process(local_rank: int, seed_fn_name: str) -> None:
-  """Worker that seeds through `seed_fn_name` as the first TPU access."""
+  """Worker that seeds through `seed_fn_name` without using the TPU."""
   del local_rank  # Unused.
   multiprocessing.parse_absl_flags()
   _SEED_FNS[seed_fn_name](0)
+  if torch.tpu.is_initialized():
+    raise AssertionError(f"{seed_fn_name}() initialized the TPU")
+
+
+def _seed_then_use_tpu_in_fresh_process(
+    local_rank: int, seed_fn_name: str
+) -> None:
+  """Worker that seeds through `seed_fn_name`, then uses the TPU."""
+  del local_rank  # Unused.
+  multiprocessing.parse_absl_flags()
+  _SEED_FNS[seed_fn_name](0)
+  torch.ones(1, device="tpu").cpu()
 
 
 def _init_process_group_in_fresh_process(local_rank: int) -> None:
@@ -5438,7 +5450,8 @@ class InitializationErrorsTest(et.TpuOnlyErrorTestBase):
   TPU initialization runs at most once per process and its status is sticky,
   so each test runs its TPU access in a freshly spawned worker. This process
   holds the TPU devices, so the worker cannot acquire them and its TPU
-  initialization fails.
+  initialization fails. Seeding does not initialize the TPU, so the failure is
+  only raised once the worker uses the TPU.
   """
 
   def setUp(self):
@@ -5456,11 +5469,21 @@ class InitializationErrorsTest(et.TpuOnlyErrorTestBase):
       mp.spawn(fn, args=args, nprocs=1, join=True)
 
   @et.why_tpu_only("TPU initialization can only fail on a TPU host.")
-  def test_manual_seed_raises_tpu_init_failure(self):
+  def test_tpu_use_after_manual_seed_raises_tpu_init_failure(self):
     for seed_fn_name in _SEED_FNS:
       with self.subTest(seed_fn=seed_fn_name):
         self.assert_worker_raises_tpu_init_failure(
-            _seed_in_fresh_process, seed_fn_name
+            _seed_then_use_tpu_in_fresh_process, seed_fn_name
+        )
+
+  @et.why_tpu_only("TPU initialization can only fail on a TPU host.")
+  def test_manual_seed_does_not_initialize_tpu(self):
+    # Seeding must not touch the TPU, so it succeeds in a process that never
+    # uses the TPU even though another process holds the TPU devices.
+    for seed_fn_name in _SEED_FNS:
+      with self.subTest(seed_fn=seed_fn_name):
+        mp.spawn(
+            _seed_in_fresh_process, args=(seed_fn_name,), nprocs=1, join=True
         )
 
   @et.why_tpu_only("TPU initialization can only fail on a TPU host.")

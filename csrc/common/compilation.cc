@@ -527,16 +527,22 @@ static absl::StatusOr<CustomCompilerOptionsContextState> MakeCompilationContext(
 // function is memoized, so the default instance is is initialized exactly
 // once.
 static const CustomCompilerOptionsContextState& GetDefaultCompilationContext() {
-  static const absl::NoDestructor<CustomCompilerOptionsContextState> ctx([] {
-    auto context = MakeCompilationContext(/*overrides=*/{});
-    ABSL_CHECK(  // CRASH_OK=obvious compiler option misconfiguration
-        context.ok())
-        << "Failed to create default compilation context: " << context.status();
-    // Lock the excess precision setting now that the default options are
-    // memoized. Future changes have no effect on XLA compilations.
-    LockAllowExcessPrecision();
-    return std::move(*context);
-  }());
+  static const absl::NoDestructor<CustomCompilerOptionsContextState> ctx(
+      []() -> CustomCompilerOptionsContextState {
+        // The default options depend on the TPU. Raise a failed TPU
+        // initialization (e.g. the TPU devices being held by another process)
+        // as an error rather than crashing below.
+        TT_THROW_IF_ERROR(PjrtBackend::GetInstance().EnsureInitialized());
+        auto context = MakeCompilationContext(/*overrides=*/{});
+        ABSL_CHECK(  // CRASH_OK=obvious compiler option misconfiguration
+            context.ok())
+            << "Failed to create default compilation context: "
+            << context.status();
+        // Lock the excess precision setting now that the default options are
+        // memoized. Future changes have no effect on XLA compilations.
+        LockAllowExcessPrecision();
+        return std::move(*context);
+      }());
   return *ctx;
 }
 
