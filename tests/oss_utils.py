@@ -63,7 +63,7 @@ def skip_in_oss(
 
 
 def skip_if_libtpu_version(
-    pred: Callable[[tuple[int, ...]], bool],
+    pred: Callable[[utils.TorchVersion], bool],
     message: str,
 ) -> Callable[[_T], _T]:
   """Decorator to skip a test class, method, or function in OSS when `pred(libtpu_version)` is true."""
