@@ -67,7 +67,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "distributed__composable_fsdp_fully_shard_comm_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "distributed/_composable/fsdp/test_fully_shard_comm",
 )
 
@@ -179,7 +178,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "distributed_fsdp_utils_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "distributed/fsdp/test_utils",
 )
 
@@ -223,13 +221,11 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "distributed_c10d_torchcomms_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "distributed/test_c10d_torchcomms",
 )
 
 torch_tpu_torch_test(
     name = "distributed_dynamo_distributed_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "distributed/test_dynamo_distributed",
 )
 
@@ -306,13 +302,11 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "dynamo_fx_annotate_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "dynamo/test_fx_annotate",
 )
 
 torch_tpu_torch_test(
     name = "dynamo_higher_order_ops_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "dynamo/test_higher_order_ops",
 )
 
@@ -349,7 +343,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "dynamo_repros_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "dynamo/test_repros",
 )
 
@@ -399,19 +392,16 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "functorch_ac_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "functorch/test_ac",
 )
 
 torch_tpu_torch_test(
     name = "functorch_aot_joint_with_descriptors_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "functorch/test_aot_joint_with_descriptors",
 )
 
 torch_tpu_torch_test(
     name = "functorch_compile_to_python_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "functorch/test_compile_to_python",
 )
 
@@ -434,7 +424,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "functorch_memory_efficient_fusion_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "functorch/test_memory_efficient_fusion",
 )
 
@@ -452,7 +441,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "higher_order_ops_invoke_subgraph_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "higher_order_ops/test_invoke_subgraph",
 )
 
@@ -512,19 +500,16 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "inductor_mix_order_reduction_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "inductor/test_mix_order_reduction",
 )
 
 torch_tpu_torch_test(
     name = "inductor_mmdecomp_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "inductor/test_mmdecomp",
 )
 
 torch_tpu_torch_test(
     name = "inductor_op_dtype_prop_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "inductor/test_op_dtype_prop",
 )
 
@@ -535,7 +520,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "inductor_slice_scatter_chunking_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "inductor/test_slice_scatter_chunking",
 )
 
@@ -710,7 +694,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "comparison_utils_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "test_comparison_utils",
 )
 
@@ -732,7 +715,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "custom_ops_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "test_custom_ops",
 )
 
@@ -756,7 +738,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "dynamic_shapes_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "test_dynamic_shapes",
 )
 
@@ -768,7 +749,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "fake_tensor_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "test_fake_tensor",
 )
 
@@ -923,7 +903,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "out_dtype_op_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "test_out_dtype_op",
 )
 
@@ -1107,7 +1086,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "torch_np_basic_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "torch_np/test_basic",
 )
 # GENERATED_TEST_TARGETS_END
