@@ -321,6 +321,33 @@ def smoke_test(session: nox.Session, device: str, torch_variant: str) -> None:
 
 
 @nox.session
+def wheel_test(session: nox.Session) -> None:
+  """Run structural, metadata, and symbol-isolation checks on the built wheel."""
+  wheel = _dist_wheel(session)
+  session.install(
+      str(wheel),
+      "pytest>=9",
+      f"torch=={_newest_supported_torch()}+cpu",
+      *_torch_index_args("cpu"),
+  )
+  env = {
+      "WHEEL_PATH": str(wheel.resolve()),
+      "PYPROJECT_PATH": str(
+          (pathlib.Path(__file__).parent / "pyproject.toml").resolve()
+      ),
+  }
+  session.run(
+      "pytest",
+      "--capture=sys",
+      "ci/wheel/pywrap_split_test.py",
+      "ci/wheel/wheel_single_source_test.py",
+      "ci/wheel/wheel_structure_test.py",
+      *session.posargs,
+      env=env,
+  )
+
+
+@nox.session
 @nox.parametrize("torch_version", _TESTED_TORCH_VERSIONS)
 def intermediate_patch_abi(session: nox.Session, torch_version: str) -> None:
   """Run the smoke tests against an intermediate PyTorch release.
@@ -367,6 +394,37 @@ def tpu_smoke_all_versions(session: nox.Session, torch_version: str) -> None:
       "tpu",
       f"torch=={torch_version}+cpu",
       *_torch_index_args("cpu"),
+  )
+
+
+@nox.session
+@nox.parametrize("torch_variant", ["cpu", "cuda"])
+@nox.parametrize("torch_version", _ALL_RELEASED_TORCH_VERSIONS)
+def cpu_smoke_all_versions(
+    session: nox.Session, torch_variant: str, torch_version: str
+) -> None:
+  """Run the CPU smoke tests against every supported PyTorch release and variant.
+
+  Installs the wheel in dist/ with each released PyTorch version in
+  WHEEL_TORCH_VERSIONS and INTERMEDIATE_PATCH_VERSIONS, for both the PyTorch CPU
+  wheel (+cpu) and the default PyPI CUDA wheel, and runs the CPU smoke suite
+  against it.
+
+  Args:
+    session: the nox session the checks run in.
+    torch_variant: the torch build to install (`cpu` or `cuda`).
+    torch_version: the PyTorch release to install and test.
+  """
+  torch_spec = (
+      f"torch=={torch_version}+cpu"
+      if torch_variant == "cpu"
+      else f"torch=={torch_version}"
+  )
+  _install_and_run_smoke_tests(
+      session,
+      "cpu",
+      torch_spec,
+      *_torch_index_args(torch_variant),
   )
 
 
