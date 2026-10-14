@@ -104,6 +104,10 @@ stable, and deprecated, the user code shouldn't need to be changed.
     *   **experimental** / **stable** / **deprecated**: add an entry in
         `__tt_api_stages__` in the module
         ([examples](https://github.com/search?q=repo%3Agoogle-pytorch%2Ftorch_tpu+%2F__tt_api_stages__.*%3D%2F+lang%3Apy&type=code)).
+    *   Exception: the `__version__` of a public module (e.g.
+        `torch.tpu.__version__`) is public, although it starts with `_`. The API
+        scanner lists it, and `tt_apis_test` fails unless it has an entry in the
+        module's `__tt_api_stages__`.
 *   To mark a C++ type bound to Python via pybind11:
     *   **internal**: start the name with `_`.
     *   **experimental** / **stable** / **deprecated**: use the corresponding

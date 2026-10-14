@@ -51,7 +51,10 @@ py_dist_info(
     name = "torch_tpu_dist_info",
     package_name = "torch_tpu",
     entry_points = ENTRY_POINTS,
-    version = WHEEL_VERSION,
+    # The version that `torch.tpu.__version__` returns. Like torch's google3
+    # `torch.__version__` (`<version>+google3`), google3 builds append a
+    # `+google3` local version label. OSS builds use WHEEL_VERSION as is.
+    version = WHEEL_VERSION,  # copybara:comment_replace version = WHEEL_VERSION + "+google3",
 )
 
 torch_tpu_py_library(

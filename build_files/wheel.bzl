@@ -59,6 +59,7 @@ WHEEL_PY_TARGETS = [
     "//src/torch_tpu/_internal/utils:tracer_utils",
     "//src/torch_tpu/_internal:env_utils",
     "//src/torch_tpu/_internal:public_api",
+    "//src/torch_tpu/_internal:version",
     "//src/torch_tpu/_internal:warnings",
     "//src/torch_tpu/_internal/benchmarks:export_adapter",
     "//src/torch_tpu/_internal/benchmarks:xprof_adapter",

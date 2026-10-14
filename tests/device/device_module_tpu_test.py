@@ -83,7 +83,11 @@ class TpuDeviceModuleTest(
             for name in _device_module._DeviceModuleMeta.__dict__
             if not name.startswith("_")
         }
-        | set(_device_module.__tt_api_stages__.keys())
+        | {
+            name
+            for name in _device_module.__tt_api_stages__
+            if not name.startswith("_")
+        }
     )
     actual_exports = set(torch.tpu.__all__) - {
         "compiler",

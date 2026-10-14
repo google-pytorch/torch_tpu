@@ -32,7 +32,10 @@ WHEEL_CONFIG="${WHEEL_CONFIG:---config=wheel_nightly}"
 # explicitly empty value yields the plain pyproject version (e.g. 0.1.1). The
 # Kokoro wrapper decides the suffix for release candidates: it runs this script
 # once with an empty suffix and once with the rcN it parsed from the Louhi
-# release name (e.g. 0.1.1rc0). Other builds get a .dev suffix.
+# release name (e.g. 0.1.1rc0). Other builds get a .dev suffix. Unlike the
+# date-only .devYYYYMMDD default of ci/build_wheels.sh, it includes the time of
+# day: the nightly job runs several times a day and uploads every wheel to
+# Artifact Registry, which rejects a second upload of the same file name.
 if [[ "${WHEEL_CONFIG}" == "--config=wheel_release" ]]; then
   WHEEL_VERSION_EXTRAS="${WHEEL_VERSION_EXTRAS-}"
   release_args=(--release)

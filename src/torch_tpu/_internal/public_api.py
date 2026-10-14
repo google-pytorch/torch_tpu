@@ -137,6 +137,7 @@ _PUBLIC_MODULES: Mapping[str, ModuleSpec] = {
             "Precision": _tpu_attr("Precision"),
             "Stream": _tpu_attr("Stream"),
             "TpuLayout": _tpu_attr("TpuLayout"),
+            "__version__": _tpu_attr("__version__"),
             "allow_excess_precision": Property(
                 f"{_DEVICE_MODULE}:_DeviceModuleMeta.allow_excess_precision"
             ),
@@ -322,6 +323,11 @@ def _import_target(target: str) -> Any:
   return obj
 
 
+def _is_dunder(name: str) -> bool:
+  """Returns whether `name` is a dunder name, e.g. `__version__`."""
+  return name.startswith("__") and name.endswith("__")
+
+
 class _PublicApiModule(types.ModuleType):
   """Lazy `torch.tpu` module backed by a `ModuleSpec`."""
 
@@ -337,8 +343,13 @@ class _PublicApiModule(types.ModuleType):
     self._spec = spec
     self._child_names = frozenset(child_names)
     self._attr_exports = dict(attr_exports)
+    # Like `torch.__all__`, `__all__` doesn't list dunder exports such as
+    # `__version__`, and `dir()` lists the same names as `__all__`.
     self._all_names = tuple(
-        sorted(set(spec.exports.keys()) | self._child_names)
+        sorted(
+            {name for name in spec.exports if not _is_dunder(name)}
+            | self._child_names
+        )
     )
     self.__all__ = list(self._all_names)
 
@@ -372,7 +383,7 @@ class _PublicApiModule(types.ModuleType):
     if (
         fallback_target is not None
         and name.startswith("_")
-        and not (name.startswith("__") and name.endswith("__"))
+        and not _is_dunder(name)
     ):
       fb_obj = _import_target(fallback_target)
       try:

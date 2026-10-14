@@ -28,7 +28,9 @@ It uses a dual-strategy approach to discover and categorize APIs:
      path to a TorchTPU object is reported, but the members of a TorchTPU module
      or class are listed only at its home (where it's defined), and any other
      path to it gets a single entry. Modules, classes and other callables that
-     a module imports from other libraries are skipped.
+     a module imports from other libraries are skipped. The `__version__` of
+     each TorchTPU module walked is public too, and its stage must come from
+     the module's `__tt_api_stages__` map.
    - Accelerator Python APIs: Dynamically inspects `torch.accelerator` (and its
      public submodules) and probes each public API at runtime on TPU to include
      only APIs implemented for TPU.
@@ -153,6 +155,9 @@ PUBLIC_NAMESPACES: Tuple[str, ...] = (
 )
 
 _PUBLIC_PYTHON_API_CATEGORY = "Public Python API"
+
+# The attribute that holds a module's version, e.g. `torch.tpu.__version__`.
+MODULE_VERSION_ATTR = "__version__"
 
 # The `tt_apis.yaml` category of the groups of public paths to the same object.
 DUPLICATED_EXPORT_CATEGORY = "Duplicated Export"
@@ -367,18 +372,37 @@ def _get_python_api_stage_info(
     )
 
   # 2. Check __tt_api_stages__ map on the parent object
-  stages_map = getattr(current_object, annotations.TT_API_STAGES_MAP, {})
-  if isinstance(stages_map, dict) and attr_name in stages_map:
-    api_stage_info = stages_map[attr_name]
-    stage = getattr(api_stage_info, "stage", None)
-    if stage is not None:
-      return Stage(stage), getattr(api_stage_info, "version", None), None
+  map_stage_info = _get_stages_map_stage_info(attr_name, current_object)
+  if map_stage_info is not None:
+    return map_stage_info
 
   # 3. Check naming heuristic fallback for unannotated internal APIs
   if attr_name.startswith("_") or "internal" in attr_name.lower():
     return Stage.INTERNAL, None, None
 
   return _NO_STAGE_INFO
+
+
+def _get_stages_map_stage_info(
+    attr_name: str, current_object: Any
+) -> Optional[_StageInfo]:
+  """Returns an API's stage info from the `__tt_api_stages__` map of its holder.
+
+  Args:
+      attr_name: The name of the attribute in `current_object`.
+      current_object: The module or class that holds the attribute.
+
+  Returns:
+      A (stage, deprecated_in, prefer) tuple, or None if the map doesn't give
+      the attribute a stage.
+  """
+  stages_map = getattr(current_object, annotations.TT_API_STAGES_MAP, {})
+  if isinstance(stages_map, dict) and attr_name in stages_map:
+    api_stage_info = stages_map[attr_name]
+    stage = getattr(api_stage_info, "stage", None)
+    if stage is not None:
+      return Stage(stage), getattr(api_stage_info, "version", None), None
+  return None
 
 
 def _get_python_api_stage(
@@ -587,6 +611,22 @@ def _extract_python_apis(roots: Sequence[Tuple[Any, str]]) -> List[ApiEntry]:
         current_prefix: The current prefix string.
     """
     listed_at[id(current_object)] = current_prefix
+
+    # A module's `__version__` is public although it starts with "_", and
+    # `dir()` doesn't necessarily list it (e.g. `dir(torch.tpu)` doesn't). A
+    # `str` can't carry a stage decorator, and the naming heuristic doesn't
+    # apply, so its stage comes from the module's `__tt_api_stages__` map only.
+    if isinstance(current_object, types.ModuleType):
+      try:
+        getattr(current_object, MODULE_VERSION_ATTR)
+      except Exception:  # pylint: disable=broad-except
+        pass
+      else:
+        _add(
+            f"{current_prefix}.{MODULE_VERSION_ATTR}",
+            _get_stages_map_stage_info(MODULE_VERSION_ATTR, current_object)
+            or _NO_STAGE_INFO,
+        )
 
     stages_map = getattr(current_object, annotations.TT_API_STAGES_MAP, {})
     attr_names = set(dir(current_object))
@@ -1109,6 +1149,28 @@ def discover_python_apis() -> Tuple[List[ApiEntry], List[ApiEntry]]:
   return (
       public_python_apis,
       sorted(python_flags, key=lambda x: x.name),
+  )
+
+
+def find_module_versions_without_stage(apis: Sequence[ApiEntry]) -> List[str]:
+  """Returns the public module `__version__`s in `apis` that have no stage.
+
+  A `str` can't carry a stage decorator, so the stage of a module's
+  `__version__` must come from the module's `__tt_api_stages__` map.
+
+  Args:
+      apis: The discovered APIs, e.g. from `discover_python_apis`.
+
+  Returns:
+      The sorted names of the unannotated `__version__` APIs, e.g.
+      `["torch.tpu.__version__"]`.
+  """
+  return sorted(
+      api.name
+      for api in apis
+      if api.category == _PUBLIC_PYTHON_API_CATEGORY
+      and api.name.endswith(f".{MODULE_VERSION_ATTR}")
+      and api.stage is None
   )
 
 

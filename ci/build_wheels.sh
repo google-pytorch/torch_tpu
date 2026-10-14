@@ -25,7 +25,7 @@
 # Usage:
 #   ci/build_wheels.sh [--release] [--output-dir DIR] PY_VERSION... [-- BAZEL_ARG...]
 #
-#   --release       Build a release wheel: no .devTIMESTAMP version suffix.
+#   --release       Build a release wheel: no .devYYYYMMDD version suffix.
 #                   The default is a dev build, whose suffix is computed once
 #                   here so every Python version in one invocation shares the
 #                   same version string.
@@ -78,7 +78,7 @@ fi
 if [[ "${RELEASE}" == "true" ]]; then
   WHEEL_VERSION_EXTRAS="${WHEEL_VERSION_EXTRAS:-}"
 else
-  WHEEL_VERSION_EXTRAS="${WHEEL_VERSION_EXTRAS:-.dev$(date +%Y%m%d%H%M%S)}"
+  WHEEL_VERSION_EXTRAS="${WHEEL_VERSION_EXTRAS:-.dev$(date +%Y%m%d)}"
 fi
 echo "===> WHEEL_VERSION_EXTRAS: '${WHEEL_VERSION_EXTRAS}'"
 

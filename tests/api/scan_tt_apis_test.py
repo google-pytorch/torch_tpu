@@ -651,6 +651,56 @@ class ScanTtApisTest(seed_test_utils.RepeatableTest):
         ],
     )
 
+  def test_extract_python_apis_lists_module_version_with_map_stage(self):
+    """Verifies that a module's `__version__` is listed with its map stage."""
+
+    class FakeVersionedModule(types.ModuleType):
+
+      # Like `torch.tpu`, the module doesn't list `__version__` in `dir()`.
+      def __dir__(self):
+        return ["other_library"]
+
+    fake_module = FakeVersionedModule("torch_tpu.fake_versioned")
+    fake_module.__version__ = "1.2.3"
+    fake_module.__tt_api_stages__ = {
+        "__version__": annotations.ApiStageInfo(
+            stage=Stage.STABLE, reason="The version."
+        )
+    }
+    # The `__version__` of a module from another library isn't listed.
+    other_library = types.ModuleType("other_library")
+    other_library.__version__ = "4.5.6"
+    fake_module.other_library = other_library
+
+    entries = scan_tt_apis._extract_python_apis(
+        [(fake_module, "torch_tpu.fake_versioned")]
+    )
+
+    self.assertEqual(
+        {e.name: e.stage for e in entries},
+        {"torch_tpu.fake_versioned.__version__": Stage.STABLE},
+    )
+    self.assertEmpty(scan_tt_apis.find_module_versions_without_stage(entries))
+
+  def test_find_module_versions_without_stage_flags_unannotated_version(self):
+    """Verifies that a module's `__version__` without a stage is flagged."""
+    fake_module = types.ModuleType("torch_tpu.fake_versioned")
+    fake_module.__version__ = "1.2.3"
+
+    entries = scan_tt_apis._extract_python_apis(
+        [(fake_module, "torch_tpu.fake_versioned")]
+    )
+
+    # The naming heuristic doesn't make `__version__` internal.
+    self.assertEqual(
+        {e.name: e.stage for e in entries},
+        {"torch_tpu.fake_versioned.__version__": None},
+    )
+    self.assertEqual(
+        scan_tt_apis.find_module_versions_without_stage(entries),
+        ["torch_tpu.fake_versioned.__version__"],
+    )
+
   def test_extract_python_apis_lists_members_once_at_home(self):
     """Verifies that members are listed at home and aliases get one entry."""
     home_module = types.ModuleType("torch_tpu.fake_home")

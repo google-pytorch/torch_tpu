@@ -51,6 +51,7 @@ and its removal go through the deprecation process.
 *   `torch.accelerator.set_device_index`
 *   `torch.accelerator.set_stream`
 *   `torch.accelerator.synchronize`
+*   `torch.tpu.__version__`
 *   `torch.tpu.ops.max_pool1d`
 *   `torch.tpu.ops.max_pool1d_backward`
 *   `torch.tpu.ops.max_pool2d`

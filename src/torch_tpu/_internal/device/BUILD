@@ -38,6 +38,7 @@ torch_tpu_py_library(
         "//csrc/eager:tpu_aten_kernels",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal:env",
+        "//src/torch_tpu/_internal:version",
         "//src/torch_tpu/_internal/device_utils:annotations",
         "//src/torch_tpu/_internal/distributed:device_mesh",
         "//src/torch_tpu/_internal/execution_mode",

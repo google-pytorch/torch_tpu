@@ -19,7 +19,10 @@ set -exu -o history -o allexport
 
 echo "===> Starting tpu_sync torch wheel build in Kokoro..."
 
-# Prepare wheel version string with metadata date suffix (similar to GitHub)
+# Prepare wheel version string with metadata date suffix (similar to GitHub).
+# Unlike the date-only .devYYYYMMDD default of ci/build_wheels.sh, it includes
+# the time of day, so that wheels built on the same day have different file
+# names: Artifact Registry rejects a second upload of the same file name.
 WHEEL_VERSION_EXTRAS="${WHEEL_VERSION_EXTRAS:-.dev$(date +%Y%m%d%H%M%S)}"
 export WHEEL_VERSION_EXTRAS
 echo "WHEEL_VERSION_EXTRAS: ${WHEEL_VERSION_EXTRAS}"

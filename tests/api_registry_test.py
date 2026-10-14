@@ -15,13 +15,16 @@
 """Unit tests for public TorchTPU API exposure and registration."""
 
 import importlib
+import importlib.metadata
 import runpy
 import sys
 import types
 import warnings
 
 from absl.testing import absltest
+from packaging import version as packaging_version
 import torch
+from torch import torch_version
 import torch_tpu
 from torch_tpu import _loader  # build_cleaner: keep
 from torch_tpu._internal import compiler_options as internal_compiler_options
@@ -64,6 +67,26 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
           AttributeError
       ):
         _ = getattr(torch.tpu, bad_attr)
+
+  def test_version(self):
+    """Verifies torch.tpu.__version__ is the installed torch_tpu version."""
+    with warnings.catch_warnings(record=True) as caught:
+      warnings.simplefilter("always")
+      version = torch.tpu.__version__
+    # A stable API doesn't warn.
+    self.assertEmpty(caught)
+
+    # Like `torch.__version__`, it's a `TorchVersion`.
+    self.assertIsInstance(version, torch_version.TorchVersion)
+    self.assertEqual(version, importlib.metadata.version("torch_tpu"))
+    self.assertGreaterEqual(version, "0.1")
+    self.assertEqual(
+        packaging_version.Version(version),
+        packaging_version.Version(importlib.metadata.version("torch_tpu")),
+    )
+    # Like other dunder attributes, it isn't listed.
+    self.assertNotIn("__version__", torch.tpu.__all__)
+    self.assertNotIn("__version__", dir(torch.tpu))
 
   def test_tpu_profiler_config_accessibility(self):
     """Verifies TpuProfilerConfig is accessible via torch.tpu.profiler."""

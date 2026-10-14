@@ -60,6 +60,11 @@ def _make_fake_impl_module() -> types.ModuleType:
           reason="ExpConst is experimental.",
           value="exp_value",
       ),
+      "__version__": annotations.ApiStageInfo(
+          stage=annotations.Stage.STABLE,
+          reason="The version of the fake package.",
+          value="1.2.3",
+      ),
   }
 
   class FakeDeviceClass(metaclass=_FakeMeta):
@@ -111,6 +116,7 @@ class PublicApiTest(absltest.TestCase):  # ABSLTEST_OK=pure Python; no RNG
         "fake_root.tpu": public_api.ModuleSpec(
             exports={
                 "ExpConst": "fake_impl:FakeDeviceClass.ExpConst",
+                "__version__": "fake_impl:FakeDeviceClass.__version__",
                 "current_device": "fake_impl:FakeDeviceClass.current_device",
                 "window_num_stripes": public_api.Property(
                     "fake_impl:_FakeMeta.window_num_stripes"
@@ -204,6 +210,16 @@ class PublicApiTest(absltest.TestCase):  # ABSLTEST_OK=pure Python; no RNG
         dir(tpu_mod.distributed),
         ["exported_fn"],
     )
+
+  def test_dunder_export_resolves_but_is_not_listed(self) -> None:
+    public_api.install(self._sample_table())
+    tpu_mod = sys.modules["fake_root.tpu"]
+    with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("always")
+      self.assertEqual(tpu_mod.__version__, "1.2.3")
+      self.assertEmpty(w)
+    self.assertNotIn("__version__", tpu_mod.__all__)
+    self.assertNotIn("__version__", dir(tpu_mod))
 
   def test_private_fallback_and_attribute_errors(self) -> None:
     public_api.install(self._sample_table())

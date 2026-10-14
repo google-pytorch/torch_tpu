@@ -73,6 +73,7 @@ torch.tpu.TpuLayout: {category: Public Python API, defined_in: runtime, stage: E
 torch.tpu.TpuLayout.element_size_in_bits: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.TpuLayout.minor_to_major: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.TpuLayout.tiles: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.__version__: {category: Public Python API, defined_in: runtime, stage: Stable}
 torch.tpu.allow_excess_precision getter: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.allow_excess_precision setter: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.compiler.custom_compiler_options: {category: Public Python API, defined_in: runtime, stage: Experimental}

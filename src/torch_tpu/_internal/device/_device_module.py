@@ -28,6 +28,7 @@ import torch
 from torch._dynamo.device_interface import DeviceInterface
 from torch_tpu._internal import env
 from torch_tpu._internal import execution_mode
+from torch_tpu._internal import version as _version_module
 from torch_tpu._internal.device import _device_ops_backend
 import torch_tpu._internal.device_utils.annotations as _layout_module
 import torch_tpu._internal.execution_mode as _execution_mode_module
@@ -127,6 +128,20 @@ class _DefaultGeneratorsProperty:
     return self._cached_default_generators
 
 
+class _VersionProperty:
+  """Descriptor that returns the TorchTPU version (`torch.tpu.__version__`).
+
+  It reads the version on first access rather than when this module is
+  imported, so importing TorchTPU doesn't need the distribution metadata.
+  """
+
+  def __get__(
+      self, instance: Any, owner: Any
+  ) -> torch.torch_version.TorchVersion:
+    del instance, owner
+    return _version_module.get_version()
+
+
 # __tt_api_stages__ maps attribute names to ApiStageInfo stage metadata.
 #
 # Tracks lifecycle stage annotations for module attributes on `torch.tpu`. Each
@@ -164,6 +179,13 @@ __tt_api_stages__: dict[str, annotations.ApiStageInfo] = {
         stage=annotations.Stage.EXPERIMENTAL,
         reason="On-device layout of TPU tensors.",
         value=_layout_module.TpuLayout,
+    ),
+    # A `str` can't carry a stage decorator, so the stage of `__version__` is
+    # here. The API scanner requires it.
+    "__version__": annotations.ApiStageInfo(
+        stage=annotations.Stage.STABLE,
+        reason="The version of TorchTPU.",
+        value=_VersionProperty(),
     ),
 }
 

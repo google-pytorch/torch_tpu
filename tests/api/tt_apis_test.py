@@ -279,6 +279,22 @@ class TtApisTest(seed_test_utils.RepeatableTest):
     if lines:
       self.fail("\n".join(lines))
 
+  def test_module_versions_have_stages(self):
+    # A `str` can't carry a stage decorator, so the stage of a public module's
+    # `__version__` must come from the module's `__tt_api_stages__` map.
+    unannotated = scan_tt_apis.find_module_versions_without_stage(
+        self.public_python_apis
+    )
+    if unannotated:
+      self.fail(
+          "The `__version__` of every public TorchTPU module needs a stage. A"
+          " `str` can't carry a stage decorator, so add a `__version__` entry"
+          " (an `ApiStageInfo` from `"
+          + _PYTHON_STAGE_ANNOTATIONS_PATH
+          + "`) to the module's `__tt_api_stages__` map for:\n"
+          + "\n".join(f"  {name}" for name in unannotated)
+      )
+
   def test_public_classes_have_no_public_instance_attributes(self):
     # The scanner discovers APIs with `dir`, which doesn't list instance
     # attributes, so a public one would be a public API that tt_apis.yaml
