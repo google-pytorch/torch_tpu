@@ -236,32 +236,34 @@ print(
 
 ### **4b. Synchronous Debug Eager — Pinpoint the Exact Failing Line**
 
-In normal deferred mode, errors surface at the *materialization point*
-(`.cpu()`), not the line that caused them. Running in synchronous debug mode (or
-calling `torch.accelerator.synchronize()` after each operation) forces immediate
-host-device synchronization so errors surface on the exact culprit line.
+In the default eager mode (DeferNever), errors surface when a result is read
+back to the host (e.g. `.cpu()`), not on the line that caused them.
+`torch.accelerator.synchronize()` only waits for queued work and does not
+necessarily raise these errors. Running in synchronous debug mode
+(`TORCH_TPU_LAUNCH_BLOCKING=1`) forces immediate host-device synchronization so
+errors surface on the exact culprit line.
 
 ```python
 print("Running with synchronous op verification (Debug Eager pattern)...")
-print("Each operation synchronizes immediately to isolate failures.\n")
+print("Each result is read immediately to isolate failures.\n")
 
-# Simulating synchronous op dispatch (equivalent to TORCH_TPU_LAUNCH_BLOCKING=1)
+# Approximate TORCH_TPU_LAUNCH_BLOCKING=1: read each result right after its op
 p = torch.randn(4, 4, device=device, dtype=torch.bfloat16)
 q = torch.randn(4, 4, device=device, dtype=torch.bfloat16)
 torch.accelerator.synchronize()
 
-r = p + q  # Synchronize after op to catch errors immediately
-torch.accelerator.synchronize()
+r = p + q  # Read the result right after the op to catch its errors
+r.cpu()
 print(f"p + q completed: shape={r.shape}")
 
-# In this mode, an error would appear on THIS line, not later at .cpu()
+# With TORCH_TPU_LAUNCH_BLOCKING=1, an error would appear on THIS line
 s = r @ q  # Also immediate
-torch.accelerator.synchronize()
+s.cpu()
 print(f"r @ q completed: shape={s.shape}")
 
 print(
-    "\n✅ Synchronous dispatch (TORCH_TPU_LAUNCH_BLOCKING=1 or explicit"
-    " torch.accelerator.synchronize()) forces immediate execution — useful"
+    "\n✅ Synchronous dispatch (TORCH_TPU_LAUNCH_BLOCKING=1, or reading each"
+    " result right after its op) forces immediate execution — useful"
     " for NaN/Inf debugging."
 )
 print("⚠️  Much slower than deferred mode. Use only for debugging.")
