@@ -78,6 +78,7 @@ def _rbe_tpu_exec_properties(tags, tpu_generation, region):
         "test.dockerPrivileged": "true",  # The TPU is /dev/vfio.
         # TODO: b/567928058 - Try running tests as a non-root user.
         "test.dockerRunAsRoot": "true",
+        "test.dockerShmSize": "4g",
     }
     if "requires-net:external" in tags:
         exec_properties["test.dockerNetwork"] = "standard"

@@ -955,6 +955,7 @@ def _v5_rbe_exec_properties(pool):
         "test.Pool": pool,
         "test.dockerPrivileged": "true",
         "test.dockerRunAsRoot": "true",
+        "test.dockerShmSize": "4g",
     }
 
 # What a single-chip v5 test gets in the default region. Analysis tests that
