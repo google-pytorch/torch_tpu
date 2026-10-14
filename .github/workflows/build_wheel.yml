@@ -164,14 +164,14 @@ jobs:
             # On release branches, collapse into the existing standard entry so
             # no separate PyTorch Nightly job is scheduled.
             wheel_version: ${{ needs.setup.outputs.is_release_branch == 'true' && 'standard' || 'nightly' }}
-            custom_name: ${{ needs.setup.outputs.is_release_branch == 'true' && '' || 'CPU (PyTorch Nightly)' }}
+            custom_name: ${{ needs.setup.outputs.is_release_branch != 'true' && 'CPU (PyTorch Nightly)' || '' }}
             # Presubmit installs the exact nightly snapshot the wheel's
             # nightly glue was built against (requirements/
             # requirements_torch_nightly.txt), so the check is deterministic
             # and gates hard. Postsubmit installs the *latest* nightly, which
             # can drift ABI-incompatibly from that snapshot -- a failure
             # there is the signal to refresh the lock.
-            nox_smoke_test: ${{ needs.setup.outputs.is_release_branch == 'true' && '' || (github.event_name == 'pull_request' && 'cpu-nightly-pinned' || 'cpu-nightly') }}
+            nox_smoke_test: ${{ needs.setup.outputs.is_release_branch == 'true' && 'cpu-cpu' || (github.event_name == 'pull_request' && 'cpu-nightly-pinned' || 'cpu-nightly') }}
     runs-on: linux-x86-n4-16
     container:
       image: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:dddf008479144c57182b56a6d00bfc1f38f8f2ef206e2bc26ff6c0a401ded47e  # Tag infrastructure-public-image-083516c6af6a (built 2026-10-13)
