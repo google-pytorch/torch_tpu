@@ -24,6 +24,7 @@
 
 #include "absl/container/inlined_vector.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "csrc/common/dimension_types.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "xla/layout.h"
@@ -82,6 +83,7 @@ class Shape {
 
   const std::optional<CustomLayout>& layout() const { return layout_; }
   void set_layout(CustomLayout layout) { layout_ = std::move(layout); }
+  void clear_layout() { layout_ = std::nullopt; }
 
   friend bool operator==(const Shape& lhs, const Shape& rhs) {
     return lhs.dtype_ == rhs.dtype_ && lhs.dimensions_ == rhs.dimensions_ &&
@@ -110,6 +112,18 @@ absl::StatusOr<Shape> MakeShape(const xla::Shape& xla_shape);
 xla::Layout ToXlaLayout(const CustomLayout& layout);
 
 std::string ToString(const Shape& s);
+
+// Returns true if `layout_tiles` match `default_tiles`.
+bool TilesMatchDefault(absl::Span<const Indices> layout_tiles,
+                       absl::Span<const xla::Tile> default_tiles);
+bool TilesMatchDefault(absl::Span<const xla::Tile> layout_tiles,
+                       absl::Span<const xla::Tile> default_tiles);
+
+// Returns true if `mtm_a` and `mtm_b` have the same relative order for all
+// non-degenerate dimensions (dimensions > 1).
+bool MinorToMajorMatchesIgnoringDegenerate(
+    absl::Span<const int64_t> mtm_a, absl::Span<const int64_t> mtm_b,
+    absl::Span<const int64_t> dimensions);
 
 }  // namespace torch_tpu
 

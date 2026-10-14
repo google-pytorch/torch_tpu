@@ -86,7 +86,8 @@ std::string GetTier3CacheEntryPath(const CompilationCacheKey& key) {
 
 absl::StatusOr<SharedLoadedExecutableWithMetadata> GetFromTier3Cache(
     const CompilationCacheKey& key,
-    const std::optional<xla::PjRtDeviceDimensions>& subslice_origin) {
+    const std::optional<xla::PjRtDeviceDimensions>& subslice_origin,
+    Param3DLayoutScanPolicy param_3d_layout_scan_policy) {
   // Read the cache file into a char buffer.
   const std::string cache_entry_path = GetTier3CacheEntryPath(key);
   ABSL_VLOG(1) << "Reading tier-3 cache for key " << key << " at path "
@@ -101,8 +102,8 @@ absl::StatusOr<SharedLoadedExecutableWithMetadata> GetFromTier3Cache(
                << key << " at path " << cache_entry_path;
 
   // Load the executable from the char buffer.
-  return LoadSerializedExecutable(CacheTier::kTier3, key, data,
-                                  subslice_origin);
+  return LoadSerializedExecutable(CacheTier::kTier3, key, data, subslice_origin,
+                                  param_3d_layout_scan_policy);
 }
 
 }  // namespace torch_tpu

@@ -206,7 +206,8 @@ class MappedCacheEntry {
 absl::StatusOr<SharedLoadedExecutableWithMetadata> GetFromTier2Cache(
     const CompilationCacheKey& key, absl::Time request_start,
     Tier2CacheEntryStats& stats,
-    const std::optional<xla::PjRtDeviceDimensions>& subslice_origin) {
+    const std::optional<xla::PjRtDeviceDimensions>& subslice_origin,
+    Param3DLayoutScanPolicy param_3d_layout_scan_policy) {
   const absl::Time read_start = absl::Now();
 
   // Use mmap() to load the cache file into memory. This avoids making a copy of
@@ -218,7 +219,7 @@ absl::StatusOr<SharedLoadedExecutableWithMetadata> GetFromTier2Cache(
   TT_ASSIGN_OR_RETURN(
       SharedLoadedExecutableWithMetadata executable,
       LoadSerializedExecutable(CacheTier::kTier2, key, mapped_entry.data(),
-                               subslice_origin));
+                               subslice_origin, param_3d_layout_scan_policy));
 
   stats.pre_read_duration = read_start - request_start;
   stats.read_duration = absl::Now() - read_start;

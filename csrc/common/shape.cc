@@ -16,12 +16,16 @@
 
 #include "csrc/common/shape.h"
 
+#include <cstddef>
+#include <cstdint>
 #include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "absl/container/inlined_vector.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -44,7 +48,7 @@ absl::StatusOr<Shape> MakeShape(const xla::Shape& xla_shape) {
     for (const auto& tile : xla_shape.layout().tiles()) {
       layout.tiles.push_back(CopyIntVector(tile.dimensions()));
     }
-    layout.element_size_in_bits = XlaEquivalentBitwidth(result_dtype);
+    layout.element_size_in_bits = xla_shape.layout().element_size_in_bits();
     shape.set_layout(std::move(layout));
   }
   return shape;
@@ -73,6 +77,74 @@ std::string ToString(const Shape& s) {
     os << "]";
   }
   return os.str();
+}
+
+bool TilesMatchDefault(absl::Span<const Indices> layout_tiles,
+                       absl::Span<const xla::Tile> default_tiles) {
+  if (layout_tiles.empty()) {
+    return true;
+  }
+  if (layout_tiles.size() != default_tiles.size()) {
+    return false;
+  }
+  for (size_t t = 0; t < layout_tiles.size(); ++t) {
+    if (absl::MakeConstSpan(layout_tiles[t]) != default_tiles[t].dimensions()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool TilesMatchDefault(absl::Span<const xla::Tile> layout_tiles,
+                       absl::Span<const xla::Tile> default_tiles) {
+  if (layout_tiles.empty()) {
+    return true;
+  }
+  if (layout_tiles.size() != default_tiles.size()) {
+    return false;
+  }
+  for (size_t t = 0; t < layout_tiles.size(); ++t) {
+    if (layout_tiles[t] != default_tiles[t]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool MinorToMajorMatchesIgnoringDegenerate(
+    absl::Span<const int64_t> mtm_a, absl::Span<const int64_t> mtm_b,
+    absl::Span<const int64_t> dimensions) {
+  if (mtm_a == mtm_b) {
+    return true;
+  }
+  if (mtm_a.size() != mtm_b.size() || mtm_a.size() != dimensions.size()) {
+    return false;
+  }
+  bool has_degenerate = false;
+  for (int64_t dim : dimensions) {
+    if (dim <= 1) {
+      has_degenerate = true;
+      break;
+    }
+  }
+  if (!has_degenerate) {
+    return false;
+  }
+  absl::InlinedVector<int64_t, 6> filtered_a;
+  absl::InlinedVector<int64_t, 6> filtered_b;
+  for (int64_t axis : mtm_a) {
+    if (axis >= 0 && axis < static_cast<int64_t>(dimensions.size()) &&
+        dimensions[axis] > 1) {
+      filtered_a.push_back(axis);
+    }
+  }
+  for (int64_t axis : mtm_b) {
+    if (axis >= 0 && axis < static_cast<int64_t>(dimensions.size()) &&
+        dimensions[axis] > 1) {
+      filtered_b.push_back(axis);
+    }
+  }
+  return filtered_a == filtered_b;
 }
 
 }  // namespace torch_tpu

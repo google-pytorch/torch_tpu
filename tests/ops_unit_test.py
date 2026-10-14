@@ -16002,6 +16002,54 @@ class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
     self.assert_close(golden_result=expected.cpu(), torch_tpu_result=res.cpu())
     self.assert_close(golden_result=expected.cpu(), torch_tpu_result=out.cpu())
 
+  def test_ragged_dot_and_elementwise_update_eager_numerical_accuracy(self):
+    """Tests numerical accuracy of eager ragged_dot and 3D updates."""
+    device = torch.device("tpu")
+    m, k, n, g = 4, 3, 2, 5
+    lhs = torch.arange(m * k, dtype=torch.float32, device=device).reshape(m, k)
+    rhs = torch.arange(g * k * n, dtype=torch.float32, device=device).reshape(
+        g, k, n
+    )
+    group_sizes = torch.tensor(
+        [1, 1, 0, 1, 1], dtype=torch.int32, device=device
+    )
+
+    # 1. Eager ragged_dot on default layout weights.
+    out = torch.tpu.ops.ragged_dot(lhs, rhs, group_sizes)
+    expected_out = torch.asarray(
+        [
+            [10.0, 13.0],
+            [100.0, 112.0],
+            [424.0, 445.0],
+            [784.0, 814.0],
+        ],
+        dtype=torch.float32,
+    )
+    self.assert_close(golden_result=expected_out, torch_tpu_result=out.cpu())
+
+    # 2. Eager 3D elementwise update (e.g. w + exp_avg).
+    exp_avg = torch.full_like(rhs, 2.0)
+    updated_rhs = rhs + exp_avg
+    expected_updated_rhs = rhs.cpu() + 2.0
+    self.assert_close(
+        golden_result=expected_updated_rhs,
+        torch_tpu_result=updated_rhs.cpu(),
+    )
+
+    # 3. Subsequent eager ragged_dot using the updated weights.
+    out2 = torch.tpu.ops.ragged_dot(lhs, updated_rhs, group_sizes)
+    lhs_cpu = lhs.cpu()
+    rhs_updated_cpu = expected_updated_rhs
+    expected_out2 = torch.zeros(m, n, dtype=torch.float32)
+    idx = 0
+    for i, gs in enumerate([1, 1, 0, 1, 1]):
+      if gs > 0:
+        expected_out2[idx : idx + gs] = (
+            lhs_cpu[idx : idx + gs] @ rhs_updated_cpu[i]
+        )
+        idx += gs
+    self.assert_close(golden_result=expected_out2, torch_tpu_result=out2.cpu())
+
   def test_ragged_dot_weight_grad_on_tpu(self):
     """Tests the tpu.ragged_dot_weight_grad custom op on TPU.
 
@@ -16038,10 +16086,11 @@ class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
     self.assert_close(golden_result=expected, torch_tpu_result=res.cpu())
 
   @parameterized.named_parameters(
-      dict(testcase_name="eager", compile_test=False),
-      dict(testcase_name="compiled", compile_test=True),
+      dict(testcase_name="compiled", mode="compile"),
+      dict(testcase_name="defer_and_fuse", mode="defer_and_fuse"),
+      dict(testcase_name="defer_never", mode="defer_never"),
   )
-  def test_ragged_dot_autograd_on_tpu(self, compile_test: bool = False):
+  def test_ragged_dot_autograd_on_tpu(self, mode: str = "compile"):
     """Tests full autograd backward differentiation for tpu.ragged_dot on TPU.
 
     Verifies that calling .backward() on the output of torch.tpu.ops.ragged_dot
@@ -16079,9 +16128,17 @@ class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
       return torch.tpu.ops.ragged_dot(x, w, s)
 
     # Execute forward pass (either via torch.compile or eager).
-    if compile_test:
+    if mode == "compile":
       compiled_op = torch.compile(op_fn, backend="tpu")
       out_tpu = compiled_op(lhs_tpu, rhs_tpu, group_sizes)
+    elif mode == "defer_and_fuse":
+      with execution_mode.set_eager_mode(
+          execution_mode.EagerMode.DEFER_AND_FUSE
+      ):
+        out_tpu = op_fn(lhs_tpu, rhs_tpu, group_sizes)
+    elif mode == "defer_never":
+      with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_NEVER):
+        out_tpu = op_fn(lhs_tpu, rhs_tpu, group_sizes)
     else:
       out_tpu = op_fn(lhs_tpu, rhs_tpu, group_sizes)
 
@@ -16103,23 +16160,200 @@ class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
     self.assert_close(
         golden_result=out_cpu,
         torch_tpu_result=out_tpu.cpu(),
-        atol=5e-2,
-        rtol=1e-1,
+        atol=1e-2,
+        rtol=2e-2,
     )
     # Verify activation gradient (grad_lhs) matches CPU reference.
     self.assert_close(
         golden_result=lhs_cpu.grad,
         torch_tpu_result=lhs_tpu.grad.cpu(),
-        atol=5e-2,
-        rtol=1e-1,
+        atol=1e-2,
+        rtol=2e-2,
     )
     # Verify weight gradient (grad_rhs) matches CPU reference.
     self.assert_close(
         golden_result=rhs_cpu.grad,
         torch_tpu_result=rhs_tpu.grad.cpu(),
-        atol=5e-2,
-        rtol=1e-1,
+        atol=1e-2,
+        rtol=2e-2,
     )
+
+    # Cover adopted 3D weight subsequently consumed by a default layout compiled
+    # executable under both eager modes (reverse relayout path in
+    # EnqueueExecutable).
+    def consumer_fn(w):
+      return (w * 2.0).sum()
+
+    compiled_consumer = torch.compile(consumer_fn, backend="tpu")
+    expected_consumer = (rhs_cpu * 2.0).sum()
+    for eager_mode in (
+        execution_mode.EagerMode.DEFER_AND_FUSE,
+        execution_mode.EagerMode.DEFER_NEVER,
+    ):
+      with execution_mode.set_eager_mode(eager_mode):
+        res_consumer = compiled_consumer(rhs_tpu)
+        self.assert_close(
+            golden_result=expected_consumer,
+            torch_tpu_result=res_consumer.cpu(),
+            atol=1e-2,
+            rtol=2e-2,
+        )
+
+  @parameterized.named_parameters(
+      dict(testcase_name="direct", transposed=False),
+      dict(testcase_name="transposed", transposed=True),
+  )
+  def test_ragged_dot_multi_step_compile_with_optimizer_updates(
+      self, transposed: bool
+  ):
+    """Tests multi-step compiled training with 3D expert weights."""
+    orig_prec = torch.get_float32_matmul_precision()
+    torch.set_float32_matmul_precision("highest")
+    try:
+      device = torch.device("tpu")
+      g, k, n = 3, 4, 3
+      gs = [2, 1, 3]
+      m = sum(gs)
+      group_sizes = torch.tensor(gs, dtype=torch.int32, device=device)
+
+      if transposed:
+        # [G, N, K] weights used as w.transpose(1, 2) in forward
+        w_cpu = torch.randn(g, n, k, dtype=torch.float32, requires_grad=True)
+      else:
+        # [G, K, N] direct weights
+        w_cpu = torch.randn(g, k, n, dtype=torch.float32, requires_grad=True)
+
+      w_tpu = w_cpu.detach().clone().to(device).requires_grad_(True)
+
+      def model_fn(x, w, gs_tensor):
+        eff_w = w.transpose(1, 2) if transposed else w
+        return torch.tpu.ops.ragged_dot(x, eff_w, gs_tensor)
+
+      compiled_model = torch.compile(model_fn, backend="tpu")
+
+      for step in range(3):
+        x_cpu = torch.randn(m, k, dtype=torch.float32)
+        x_tpu = x_cpu.to(device)
+
+        out_tpu = compiled_model(x_tpu, w_tpu, group_sizes)
+        loss_tpu = out_tpu.sum()
+        loss_tpu.backward()
+
+        eff_w_cpu = w_cpu.transpose(1, 2) if transposed else w_cpu
+        out_slices = []
+        idx = 0
+        for i, size in enumerate(gs):
+          if size > 0:
+            out_slices.append(x_cpu[idx : idx + size] @ eff_w_cpu[i])
+            idx += size
+        out_cpu = torch.cat(out_slices, dim=0)
+        loss_cpu = out_cpu.sum()
+        loss_cpu.backward()
+
+        self.assert_close(
+            golden_result=out_cpu,
+            torch_tpu_result=out_tpu.cpu(),
+            atol=1e-4,
+            rtol=1e-4,
+        )
+        self.assert_close(
+            golden_result=w_cpu.grad,
+            torch_tpu_result=w_tpu.grad.cpu(),
+            atol=1e-4,
+            rtol=1e-4,
+        )
+
+        with torch.no_grad():
+          w_tpu.add_(w_tpu.grad, alpha=-0.5)
+          w_tpu.grad.zero_()
+          w_cpu.add_(w_cpu.grad, alpha=-0.5)
+          w_cpu.grad.zero_()
+    finally:
+      torch.set_float32_matmul_precision(orig_prec)
+
+  @parameterized.named_parameters(
+      dict(testcase_name="defer_and_fuse", defer=True),
+      dict(testcase_name="immediate_eager", defer=False),
+  )
+  def test_ragged_dot_back_to_back_eager_downstream_consumer(self, defer: bool):
+    """Tests back-to-back eager calls feeding a downstream eager op."""
+    device = torch.device("tpu")
+    m, k, n, g = 6, 4, 3, 3
+    gs = [2, 1, 3]
+    group_sizes = torch.tensor(gs, dtype=torch.int32, device=device)
+    rhs = torch.randn(g, k, n, dtype=torch.float32, device=device)
+    rhs_cpu = rhs.cpu()
+
+    # Step 1: cache miss, Step 2: cache hit
+    for _ in range(2):
+      lhs = torch.randn(m, k, dtype=torch.float32, device=device)
+      lhs_cpu = lhs.cpu()
+
+      if defer:
+        with execution_mode.set_eager_mode(
+            execution_mode.EagerMode.DEFER_AND_FUSE
+        ):
+          out = torch.tpu.ops.ragged_dot(lhs, rhs, group_sizes)
+          res = out * 2.0 + 1.0
+      else:
+        with execution_mode.set_eager_mode(
+            execution_mode.EagerMode.DEFER_NEVER
+        ):
+          out = torch.tpu.ops.ragged_dot(lhs, rhs, group_sizes)
+          res = out * 2.0 + 1.0
+
+      out_slices = []
+      idx = 0
+      for i, size in enumerate(gs):
+        if size > 0:
+          out_slices.append(lhs_cpu[idx : idx + size] @ rhs_cpu[i])
+          idx += size
+      expected = torch.cat(out_slices, dim=0) * 2.0 + 1.0
+      self.assert_close(
+          golden_result=expected,
+          torch_tpu_result=res.cpu(),
+          atol=1e-2,
+          rtol=2e-2,
+      )
+
+  @oss_utils.skip_if_libtpu_version(
+      lambda v: v < (0, 0, 53),
+      "Requires libtpu >= 0.0.53 for dynamic ragged_dot support.",
+  )
+  def test_ragged_dot_compile_dynamic_shapes(self):
+    """Tests torch.compile ragged_dot with dynamic token dimension M."""
+    device = torch.device("tpu")
+    k, n, g = 4, 3, 3
+    rhs = torch.randn(g, k, n, dtype=torch.float32, device=device)
+    rhs_cpu = rhs.cpu()
+
+    def op_fn(x, w, s):
+      return torch.tpu.ops.ragged_dot(x, w, s)
+
+    compiled_fn = torch.compile(op_fn, backend="tpu")
+
+    for gs in ([2, 0, 4], [3, 1, 4]):
+      m = sum(gs)
+      group_sizes = torch.tensor(gs, dtype=torch.int32, device=device)
+      lhs = torch.randn(m, k, dtype=torch.float32, device=device)
+      lhs_cpu = lhs.cpu()
+
+      torch._dynamo.mark_dynamic(lhs, 0, min=2, max=32)
+      out = compiled_fn(lhs, rhs, group_sizes)
+
+      out_slices = []
+      idx = 0
+      for i, size in enumerate(gs):
+        if size > 0:
+          out_slices.append(lhs_cpu[idx : idx + size] @ rhs_cpu[i])
+          idx += size
+      expected = torch.cat(out_slices, dim=0)
+      self.assert_close(
+          golden_result=expected,
+          torch_tpu_result=out.cpu(),
+          atol=1e-2,
+          rtol=2e-2,
+      )
 
   @absltest.skip("b/498564738")
   def test_set_dimension_logical_size_on_tpu(self):

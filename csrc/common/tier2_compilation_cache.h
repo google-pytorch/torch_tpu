@@ -79,7 +79,9 @@ absl::StatusOr<SharedLoadedExecutableWithMetadata> GetFromTier2Cache(
     const CompilationCacheKey& key, absl::Time request_start,
     Tier2CacheEntryStats& stats,
     const std::optional<xla::PjRtDeviceDimensions>& subslice_origin =
-        std::nullopt);
+        std::nullopt,
+    Param3DLayoutScanPolicy param_3d_layout_scan_policy =
+        Param3DLayoutScanPolicy::kAuto);
 
 // Returns the path to the tier-2 cache file for the given key.
 [[nodiscard]] std::string GetTier2CacheEntryPath(

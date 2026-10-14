@@ -1716,21 +1716,22 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
   ImplInternal<OpName::kRaggedDot>(
       m, +[](const at::Tensor& lhs, const at::Tensor& rhs,
              const at::Tensor& group_sizes) {
-        return at::empty({lhs.size(0), rhs.size(2)},
-                         lhs.options().dtype(at::result_type(lhs, rhs)));
+        return at::empty_symint({lhs.sym_size(0), rhs.sym_size(2)},
+                                lhs.options().dtype(at::result_type(lhs, rhs)));
       });
   ImplInternal<OpName::kRaggedDotOut>(
       m,
       +[](const at::Tensor& lhs, const at::Tensor& rhs,
           const at::Tensor& group_sizes, at::Tensor& out) -> at::Tensor& {
-        at::native::resize_output(out, {lhs.size(0), rhs.size(2)});
+        at::native::resize_output_symint(out,
+                                         {lhs.sym_size(0), rhs.sym_size(2)});
         return out;
       });
   ImplInternal<OpName::kRaggedDotWeightGrad>(
       m, +[](const at::Tensor& lhs, const at::Tensor& grad_output,
              const at::Tensor& group_sizes) {
-        return at::empty(
-            {group_sizes.size(0), lhs.size(1), grad_output.size(1)},
+        return at::empty_symint(
+            {group_sizes.sym_size(0), lhs.sym_size(1), grad_output.sym_size(1)},
             lhs.options().dtype(at::result_type(lhs, grad_output)));
       });
   ImplInternal<OpName::kRaggedAllToAll>(

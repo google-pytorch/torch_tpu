@@ -125,10 +125,13 @@ bool IsFastRuntimeConvolutionCandidate(const DeferredOp& op) {
   // - Why O2 is slower: O2 cannot improve vector lane utilization further, but
   //   still incurs the 6-overlay paging cost and 35 MB VMEM allocation,
   //   regressing latency to ~0.55 ms fwd / ~2.17 ms train (~2.4x slowdown).
-  if (input_ref.shape().layout().has_value()) {
-    const auto& m2m = input_ref.shape().layout()->minor_to_major;
-    if (!m2m.empty() && m2m.front() == 1) {
-      return false;
+  if (input_ref.has_custom_layout()) {
+    const Shape input_shape = input_ref.shape();
+    if (input_shape.layout().has_value()) {
+      const auto& m2m = input_shape.layout()->minor_to_major;
+      if (!m2m.empty() && m2m.front() == 1) {
+        return false;
+      }
     }
   }
 

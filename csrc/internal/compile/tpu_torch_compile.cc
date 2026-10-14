@@ -329,11 +329,12 @@ std::optional<PyLayout> PyGetDeviceLayoutIfMaterialized(
     return std::nullopt;
   }
 
-  auto pjrt_buffer_or = buffer_ref.AwaitBuffer();
+  auto pjrt_buffer_or = buffer_ref.GetSharedBuffer();
   if (!pjrt_buffer_or.ok()) {
     TT_THROW_TT_ERROR_(pjrt_buffer_or.status(), TT_SOURCE_LOCATION);
   }
-  auto* pjrt_buffer = std::move(pjrt_buffer_or).value();
+  std::shared_ptr<xla::PjRtBuffer> pjrt_buffer =
+      std::move(pjrt_buffer_or).value();
 
   const auto pjrt_layout = pjrt_buffer->layout();
   if (!pjrt_layout) {

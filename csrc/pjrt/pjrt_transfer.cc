@@ -229,11 +229,14 @@ absl::StatusOr<DeviceBufferRef> HostToDeviceTransfer::RunAfter(
 
   if (joined_wait_for.IsReady()) {
     // Nothing to wait for, start the transfer immediately.
+    const CustomLayoutCheck custom_layout_check =
+        impl_->layout.has_value() ? CustomLayoutCheck::kCheck
+                                  : CustomLayoutCheck::kSkip;
     TT_ASSIGN_OR_RETURN(std::unique_ptr<xla::PjRtBuffer> buffer,
                         StartTransfer(std::move(impl_)));
-    TT_ASSIGN_OR_RETURN(
-        device_buffer_ref_,
-        DeviceBufferList::CreateMaterialized(std::move(buffer)));
+    TT_ASSIGN_OR_RETURN(device_buffer_ref_,
+                        DeviceBufferList::CreateMaterialized(
+                            std::move(buffer), custom_layout_check));
     return device_buffer_ref_.value();
   } else {
     // Create a pending DeviceBufferRef that will be updated when the transfer
@@ -327,15 +330,15 @@ void DeviceToHostTransfer::OnToLiteralReady(
   // impl is destructed here
 }
 
-absl::StatusOr<xla::PjRtBuffer* absl_nonnull>
+absl::StatusOr<std::shared_ptr<xla::PjRtBuffer>>
 DeviceToHostTransfer::VerifyMaterialization(
     absl::Status ready_status, const DeviceToHostTransferImpl& impl) {
   if (!ready_status.ok()) {
     return ready_status;
   }
-  TT_ASSIGN_OR_RETURN(xla::PjRtBuffer* absl_nonnull buffer,
-                      impl.buffer_ref.AwaitBuffer());
-  if (buffer->IsDeleted()) {
+  TT_ASSIGN_OR_RETURN(std::shared_ptr<xla::PjRtBuffer> buffer,
+                      impl.buffer_ref.GetSharedBuffer());
+  if (buffer == nullptr || buffer->IsDeleted()) {
     return TT_ERROR(error::kUnavailable)
            << "cannot start a device to host copy from a donated or "
               "deleted buffer";
@@ -348,12 +351,13 @@ void DeviceToHostTransfer::OnTransferReady(
     absl_nonnull std::unique_ptr<DeviceToHostTransferImpl> impl) {
   // Verify that the materialization succeeded by retrieving the PjRtBuffer.
   // If we can't, forward the error to the promise.
-  absl::StatusOr<xla::PjRtBuffer*> buffer_or =
+  absl::StatusOr<std::shared_ptr<xla::PjRtBuffer>> buffer_or =
       VerifyMaterialization(ready_status, *impl);
   if (!buffer_or.ok()) {
     impl->promise.Set(buffer_or.status());
     return;  // impl is destructed here
   }
+  std::shared_ptr<xla::PjRtBuffer> pjrt_buffer = std::move(*buffer_or);
 
   // Materialization succeeded.
   // If we are copying FP4 data, we will copy to the temporary fp4_receiver
@@ -367,11 +371,12 @@ void DeviceToHostTransfer::OnTransferReady(
       static_cast<char*>(effective_dst_ptr), xla_shape);
 
   // Start the transfer and queue the callback for when it completes.
-  xla::Future<> to_literal_future = (*buffer_or)->ToLiteral(literal.get());
-  to_literal_future.OnReady([literal = std::move(literal),
-                             impl = std::move(impl)](absl::Status s) mutable {
-    OnToLiteralReady(s, std::move(impl));
-  });
+  xla::Future<> to_literal_future = pjrt_buffer->ToLiteral(literal.get());
+  to_literal_future.OnReady(
+      [literal = std::move(literal), impl = std::move(impl),
+       keep_buffer = std::move(pjrt_buffer)](absl::Status s) mutable {
+        OnToLiteralReady(s, std::move(impl));
+      });
   // impl is destructed here
 }
 
@@ -449,6 +454,7 @@ struct PreparedRawDmaBuffer::Holder {
   // alive. Declared first so it is destroyed last after ~Holder() releases the
   // PJRT_RawBuffer alias.
   DeviceBufferRef device_buffer_ref;
+  std::shared_ptr<xla::PjRtBuffer> pjrt_buffer;
   // Global PjRt C API function table pointer.
   const PJRT_Api* c_api{nullptr};
   // PjRt RawBuffer extension function table pointer.
@@ -456,9 +462,11 @@ struct PreparedRawDmaBuffer::Holder {
   // Handle to the active raw buffer alias on the TPU device.
   PJRT_RawBuffer* buffer{nullptr};
 
-  Holder(DeviceBufferRef ref, const PJRT_Api* api,
-         const PJRT_RawBuffer_Extension* ext, PJRT_RawBuffer* buf)
+  Holder(DeviceBufferRef ref, std::shared_ptr<xla::PjRtBuffer> pjrt_buf,
+         const PJRT_Api* api, const PJRT_RawBuffer_Extension* ext,
+         PJRT_RawBuffer* buf)
       : device_buffer_ref(std::move(ref)),
+        pjrt_buffer(std::move(pjrt_buf)),
         c_api(api),
         extension(ext),
         buffer(buf) {}
@@ -483,13 +491,14 @@ struct PreparedRawDmaBuffer::Holder {
 absl::StatusOr<PreparedRawDmaBuffer> PreparedRawDmaBuffer::Prepare(
     DeviceBufferRef buffer_ref) {
   // Await the PjRtBuffer from the reference and verify computation readiness.
-  TT_ASSIGN_OR_RETURN(xla::PjRtBuffer * buffer, buffer_ref.AwaitBuffer());
+  TT_ASSIGN_OR_RETURN(std::shared_ptr<xla::PjRtBuffer> pjrt_buffer,
+                      buffer_ref.GetSharedBuffer());
   TT_RETURN_IF_ERROR(
-      AdaptXlaError(buffer->GetReadyFuture().Await(),
+      AdaptXlaError(pjrt_buffer->GetReadyFuture().Await(),
                     "TPU buffer computation failed or not ready"));
 
   // Ensure the buffer is backed by the PjRt C API client.
-  auto* capi_buffer = dynamic_cast<xla::PjRtCApiBuffer*>(buffer);
+  auto* capi_buffer = dynamic_cast<xla::PjRtCApiBuffer*>(pjrt_buffer.get());
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=initialization condition
       capi_buffer != nullptr, error::kInvalidArgument)
       << "Expected PjRtCApiBuffer.";
@@ -529,8 +538,9 @@ absl::StatusOr<PreparedRawDmaBuffer> PreparedRawDmaBuffer::Prepare(
                          "Failed to create raw alias of buffer");
   }
 
-  return PreparedRawDmaBuffer(std::make_shared<Holder>(
-      std::move(buffer_ref), c_api, extension, create_args.raw_buffer));
+  return PreparedRawDmaBuffer(
+      std::make_shared<Holder>(std::move(buffer_ref), std::move(pjrt_buffer),
+                               c_api, extension, create_args.raw_buffer));
 }
 
 absl::StatusOr<xla::Future<>> PreparedRawDmaBuffer::CopyDtoH(

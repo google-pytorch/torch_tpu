@@ -102,6 +102,29 @@ GraphKey AnnotateGraphKeyWithArgumentLayouts(
 GraphKey AnnotateGraphKeyWithDonatedInputs(
     const GraphKey& graph_key, absl::Span<const int64_t> donated_inputs);
 
+// Controls whether compilation may override argument layouts to target
+// specialized C-order layout for chlo.ragged_dot parameters. Only compiled mode
+// (e.g. torch.compile) may pass kAllow, because it relayouts parameters at
+// runtime via EnqueueExecutable. Eager execution passes kDisallow to preserve
+// physical argument buffer layouts.
+enum class ArgumentLayoutOverridePolicy {
+  kAllow,
+  kDisallow,
+};
+
+struct RelayoutBufferResult {
+  DeviceBufferRef buffer;
+  bool cache_hit = false;
+};
+
+// Creates a deferred identity-relayout DeviceBufferRef targeting
+// `required_mtm` if `buf`'s current on-device layout differs, and updates
+// `buf`'s layout metadata. Returns std::nullopt when `buf` already has
+// `required_mtm`.
+absl::StatusOr<std::optional<RelayoutBufferResult>>
+MaybeCreate3DArgumentRelayoutBuffer(DeviceBufferRef& buf,
+                                    const Indices& required_mtm);
+
 // A traversed graph of deferred ops, ready to be compiled and (optionally)
 // executed.
 // TODO(bawilson): add tests once at::Tensor dependency is removed from core
@@ -145,7 +168,9 @@ class Traversal {
   CompilationCacheKey GetCacheKey(
       CompileOptionsKey compile_options_key,
       absl::Span<const CustomLayout> argument_layouts,
-      absl::Span<const int64_t> donated_inputs) const;
+      absl::Span<const int64_t> donated_inputs,
+      ArgumentLayoutOverridePolicy argument_layout_override_policy =
+          ArgumentLayoutOverridePolicy::kDisallow) const;
 
   // Validates that the provided arguments are a valid reordering of the
   // Traversal's arguments, and if they are, overwrites the previous arguments_
@@ -222,8 +247,9 @@ class Traversal {
       absl::Span<const CustomLayout> argument_layouts = {},
       absl::Span<const int64_t> donated_inputs = {},
       std::optional<std::string_view> module_name = std::nullopt,
-      std::optional<CompilationCacheKey>* absl_nullable out_cache_key =
-          nullptr) const;
+      std::optional<CompilationCacheKey>* absl_nullable out_cache_key = nullptr,
+      ArgumentLayoutOverridePolicy argument_layout_override_policy =
+          ArgumentLayoutOverridePolicy::kAllow) const;
 
   // Resolves the target device assignment across all deferred operations in
   // `execution_order_`.
@@ -323,6 +349,13 @@ class Traversal {
   // placement overrides, or std::nullopt if no overrides are needed.
   std::optional<CompilationSpec> MaybeUpdateSpecWithLayout(
       const CompilationSpec& spec, absl::Span<const int64_t> resolved_da) const;
+  absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>>
+  BuildMlirModuleWithArgIndices(
+      mlir::MLIRContext& mlir_context, bool use_stablehlo_bounds,
+      absl::Span<const int64_t> donated_inputs,
+      std::optional<std::string_view> module_name,
+      Indices* absl_nullable out_main_arg_indices) const;
+
   // Helper function for BuildMlirFunction.
   // Returns the MLIR op corresponding to the provided buffer ref,
   // the one corresponding to the dynamically redirected buffer ref, or an

@@ -53,11 +53,14 @@
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Types.h"
 #include "mlir/IR/ValueRange.h"
+#include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/Register.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "stablehlo/integrations/cpp/builder/ChloBuilder.h"
 #include "stablehlo/integrations/cpp/builder/FuncBuilder.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "xla/pjrt/pjrt_executable.h"
 
 namespace torch_tpu {
@@ -249,6 +252,19 @@ TEST_F(TraversalTest, TopLevelDonationChangesCacheKey) {
             "1d516e396e48000c_0d51927151d176ea_0000000000000000");
   EXPECT_EQ(donate_0_1.CompactFormat(),
             "6edccdc229483441_0d51927151d176ea_0000000000000000");
+}
+
+TEST_F(TraversalTest, GetCacheKeyDifferentiatesLayoutOverridePolicy) {
+  TT_ASSERT_OK_AND_ASSIGN(auto refs, DeviceBufferList::CreateDeferred(
+                                         OpName::kAdd, DummyBuilder, {},
+                                         OpParamCacheKeys::Empty(), {shape_}));
+  TT_ASSERT_OK_AND_ASSIGN(auto traversal, Traversal::Create({refs[0]}));
+  const CompileOptionsKey kCompileOptionsKey(0);
+  const CompilationCacheKey key_disallow = traversal->GetCacheKey(
+      kCompileOptionsKey, {}, {}, ArgumentLayoutOverridePolicy::kDisallow);
+  const CompilationCacheKey key_allow = traversal->GetCacheKey(
+      kCompileOptionsKey, {}, {}, ArgumentLayoutOverridePolicy::kAllow);
+  EXPECT_NE(key_disallow, key_allow);
 }
 
 TEST_F(TraversalTest, ReadableStringWithTraceback) {
@@ -446,7 +462,8 @@ TEST_F(TraversalTest, CompilePopulatesAndResetsOutCacheKey) {
   ASSERT_TRUE(out_cache_key.has_value());
   EXPECT_EQ(*out_cache_key,
             tr->GetCacheKey(compile_options_key_, {tiled_layout},
-                            /*donated_inputs=*/{}));
+                            /*donated_inputs=*/{},
+                            ArgumentLayoutOverridePolicy::kAllow));
 
   // Verify that an early validation failure resets out_cache_key to nullopt.
   EXPECT_FALSE(tr->Compile(spec, UnboundedKernelPolicy::kDisallow,
@@ -706,6 +723,361 @@ TEST_F(TraversalTest, NameScopesAttachToMlirLocationsWithoutChangingCacheKey) {
       DebugString(layer0_module.get(), DebugStringOptions::kEnableDebugInfo);
   EXPECT_THAT(mlir_text,
               testing::HasSubstr("loc(\"layers.0[Block]/empty/empty\""));
+}
+
+TEST_F(TraversalTest, CompileAnnotatesRaggedDotConnected3DLayouts) {
+  Shape shape_rhs(Dimensions{128, 1440, 2880}, mlir::ElementType::BF16);
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      DeviceBufferRef ref_rhs,
+      DeviceBufferList::CreatePlaceholder(Dimensions{128, 1440, 2880},
+                                          mlir::ElementType::BF16));
+  ref_rhs.set_layout(CustomLayout{.minor_to_major = {2, 1, 0}});
+  TT_ASSERT_OK_AND_ASSIGN(
+      DeviceBufferRef ref_exp_avg,
+      DeviceBufferList::CreatePlaceholder(Dimensions{128, 1440, 2880},
+                                          mlir::ElementType::BF16));
+
+  MlirOpBuilder update_builder = [](mlir::MlirBuilder& builder,
+                                    absl::Span<mlir::MlirOp> inputs)
+      -> absl::StatusOr<DynamicMlirOpResults> {
+    mlir::OpBuilder& op_builder = builder.getOpBuilder();
+    mlir::Location loc = builder.getLoc();
+    mlir::Value updated_rhs =
+        mlir::stablehlo::AddOp::create(op_builder, loc, inputs[0].getValue(),
+                                       inputs[1].getValue())
+            .getResult();
+    return DynamicMlirOpResults{mlir::MlirOp(builder, updated_rhs)};
+  };
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::vector<DeviceBufferRef> refs_out,
+      DeviceBufferList::CreateDeferred(
+          OpName::kGroupedMm, std::move(update_builder), {ref_rhs, ref_exp_avg},
+          OpParamCacheKeys::Empty(), {shape_rhs}));
+
+  TT_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Traversal> tr,
+                          Traversal::Create(refs_out));
+  const auto reorder_status =
+      tr->ValidateAndReorderArguments({ref_rhs, ref_exp_avg});
+  ASSERT_TRUE(reorder_status.ok()) << reorder_status;
+
+  CompilationSpec spec(std::make_unique<xla::CompileOptions>(),
+                       compile_options_key_);
+  std::string mlir_text;
+  const std::vector<CustomLayout> default_arg_layouts = {
+      CustomLayout{.minor_to_major = {2, 1, 0}},
+      CustomLayout{.minor_to_major = {0, 2, 1}, .tiles = {{8, 128}, {2, 1}}},
+  };
+  TT_ASSERT_OK_AND_ASSIGN(
+      const CompiledKernel kernel,
+      tr->Compile(spec, UnboundedKernelPolicy::kDisallow, &mlir_text,
+                  /*use_stablehlo_bounds=*/false, default_arg_layouts));
+  kernel.fixed_shape_kernel.wait();
+  EXPECT_THAT(
+      mlir_text,
+      testing::AllOf(testing::HasSubstr("%arg0: tensor<128x1440x2880xbf16> "
+                                        "{mhlo.layout_mode = \"{2,1,0}\"}"),
+                     testing::HasSubstr("%arg1: tensor<128x1440x2880xbf16> "
+                                        "{mhlo.layout_mode = "
+                                        "\"{0,2,1:T(8,128)(2,1)}\"}")));
+}
+
+TEST_F(TraversalTest,
+       CompileAnnotatesRaggedDot3DOperandsAndOutputsWithoutPresetLayouts) {
+  Shape shape_lhs(Dimensions{128, 128}, mlir::ElementType::BF16);
+  Shape shape_rhs_3d(Dimensions{8, 128, 128}, mlir::ElementType::BF16);
+  Shape shape_group_sizes(Dimensions{8}, mlir::ElementType::I32);
+  Shape shape_bias_3d(Dimensions{8, 128, 128}, mlir::ElementType::BF16);
+  Shape shape_dot_out(Dimensions{128, 128}, mlir::ElementType::BF16);
+  Shape shape_out_3d(Dimensions{8, 128, 128}, mlir::ElementType::BF16);
+
+  TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef ref_lhs,
+                          DeviceBufferList::CreatePlaceholder(
+                              shape_lhs.dimensions(), shape_lhs.dtype()));
+  TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef ref_rhs_3d,
+                          DeviceBufferList::CreatePlaceholder(
+                              shape_rhs_3d.dimensions(), shape_rhs_3d.dtype()));
+  TT_ASSERT_OK_AND_ASSIGN(
+      DeviceBufferRef ref_group_sizes,
+      DeviceBufferList::CreatePlaceholder(shape_group_sizes.dimensions(),
+                                          shape_group_sizes.dtype()));
+  TT_ASSERT_OK_AND_ASSIGN(
+      DeviceBufferRef ref_bias_3d,
+      DeviceBufferList::CreatePlaceholder(shape_bias_3d.dimensions(),
+                                          shape_bias_3d.dtype()));
+
+  MlirOpBuilder ragged_dot_builder = [](mlir::MlirBuilder& builder,
+                                        absl::Span<mlir::MlirOp> inputs)
+      -> absl::StatusOr<DynamicMlirOpResults> {
+    mlir::MlirOp rhs_t = mlir::stablehlo::Transpose(inputs[1], {0, 2, 1});
+
+    const auto dimension_numbers =
+        mlir::chlo::RaggedDotDimensionNumbersAttr::get(
+            &builder.getContext(), /*lhsBatchingDimensions=*/{},
+            /*rhsBatchingDimensions=*/{},
+            /*lhsContractingDimensions=*/{1},
+            /*rhsContractingDimensions=*/{1},
+            /*lhsRaggedDimensions=*/{0},
+            /*rhsGroupDimensions=*/{0});
+    auto precision_attr = mlir::chlo::PrecisionAttr::get(
+        &builder.getContext(),
+        mlir::chlo::Precision::DEFAULT);  // EXPLICIT_PRECISION_OK=test IR
+                                          // construction
+    auto precision_config = mlir::ArrayAttr::get(
+        &builder.getContext(), {precision_attr, precision_attr});
+    const mlir::Type out_type = mlir::makeTensorType(
+        builder.getContext(), {128, 128}, mlir::ElementType::BF16);
+    mlir::MlirOp ragged_dot =
+        mlir::chlo::RaggedDot(out_type, inputs[0], rhs_t, inputs[2],
+                              dimension_numbers, precision_config);
+
+    mlir::MlirOp add_3d = mlir::stablehlo::Add(inputs[1], inputs[3]);
+
+    return DynamicMlirOpResults{ragged_dot, add_3d};
+  };
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::vector<DeviceBufferRef> refs_out,
+      DeviceBufferList::CreateDeferred(
+          OpName::kRaggedDot, std::move(ragged_dot_builder),
+          {ref_lhs, ref_rhs_3d, ref_group_sizes, ref_bias_3d},
+          OpParamCacheKeys::Empty(), {shape_dot_out, shape_out_3d}));
+
+  TT_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Traversal> tr,
+                          Traversal::Create(refs_out));
+  const auto ragged_reorder_status = tr->ValidateAndReorderArguments(
+      {ref_lhs, ref_rhs_3d, ref_group_sizes, ref_bias_3d});
+  ASSERT_TRUE(ragged_reorder_status.ok()) << ragged_reorder_status;
+
+  CompilationSpec spec(std::make_unique<xla::CompileOptions>(),
+                       compile_options_key_);
+  std::string mlir_text;
+  TT_ASSERT_OK_AND_ASSIGN(
+      const CompiledKernel kernel,
+      tr->Compile(spec, UnboundedKernelPolicy::kDisallow, &mlir_text,
+                  /*use_stablehlo_bounds=*/false, /*argument_layouts=*/{}));
+  kernel.fixed_shape_kernel.wait();
+  // %arg0 (2D lhs) must NOT be seeded with any layout annotation.
+  EXPECT_THAT(mlir_text, testing::Not(testing::HasSubstr(
+                             "%arg0: tensor<128x128xbf16> {mhlo.layout_mode")));
+  // %arg1 (pre-transpose [G,N,K]) must have {1,2,0} pulled back through
+  // {0,2,1}.
+  EXPECT_THAT(
+      mlir_text,
+      testing::AllOf(
+          testing::HasSubstr(
+              "%arg1: tensor<8x128x128xbf16> {mhlo.layout_mode = \"{1,2,0}\"}"),
+          testing::HasSubstr(
+              "%arg3: tensor<8x128x128xbf16> {mhlo.layout_mode = \"{1,2,0}\"}"),
+          testing::HasSubstr(
+              "tensor<8x128x128xbf16> {mhlo.layout_mode = \"{1,2,0}\"}")));
+  if (kernel.fixed_shape_kernel.get().ok()) {
+    const auto& exec = *kernel.fixed_shape_kernel.get();
+    EXPECT_FALSE(exec->output_shapes()[0].layout().has_value());
+    ASSERT_TRUE(exec->output_shapes()[1].layout().has_value());
+    EXPECT_EQ(exec->output_shapes()[1].layout()->minor_to_major,
+              Indices({1, 2, 0}));
+  }
+}
+
+TEST_F(TraversalTest, RaggedDotLayoutsPreservedOnCacheHit) {
+  CompilationCache::GetInstance().SetAllowCacheMode(true);
+
+  Shape shape_lhs(Dimensions{128, 128}, mlir::ElementType::BF16);
+  Shape shape_rhs_3d(Dimensions{8, 128, 128}, mlir::ElementType::BF16);
+  Shape shape_group_sizes(Dimensions{8}, mlir::ElementType::I32);
+  Shape shape_bias_3d(Dimensions{8, 128, 128}, mlir::ElementType::BF16);
+  Shape shape_dot_out(Dimensions{128, 128}, mlir::ElementType::BF16);
+  Shape shape_out_3d(Dimensions{8, 128, 128}, mlir::ElementType::BF16);
+
+  auto make_traversal = [&]() -> absl::StatusOr<std::unique_ptr<Traversal>> {
+    TT_ASSIGN_OR_RETURN(DeviceBufferRef ref_lhs,
+                        DeviceBufferList::CreatePlaceholder(
+                            shape_lhs.dimensions(), shape_lhs.dtype()));
+    TT_ASSIGN_OR_RETURN(DeviceBufferRef ref_rhs_3d,
+                        DeviceBufferList::CreatePlaceholder(
+                            shape_rhs_3d.dimensions(), shape_rhs_3d.dtype()));
+    TT_ASSIGN_OR_RETURN(
+        DeviceBufferRef ref_group_sizes,
+        DeviceBufferList::CreatePlaceholder(shape_group_sizes.dimensions(),
+                                            shape_group_sizes.dtype()));
+    TT_ASSIGN_OR_RETURN(DeviceBufferRef ref_bias_3d,
+                        DeviceBufferList::CreatePlaceholder(
+                            shape_bias_3d.dimensions(), shape_bias_3d.dtype()));
+
+    MlirOpBuilder ragged_dot_builder = [](mlir::MlirBuilder& builder,
+                                          absl::Span<mlir::MlirOp> inputs)
+        -> absl::StatusOr<DynamicMlirOpResults> {
+      mlir::MlirOp rhs_t = mlir::stablehlo::Transpose(inputs[1], {0, 2, 1});
+
+      const auto dimension_numbers =
+          mlir::chlo::RaggedDotDimensionNumbersAttr::get(
+              &builder.getContext(), /*lhsBatchingDimensions=*/{},
+              /*rhsBatchingDimensions=*/{},
+              /*lhsContractingDimensions=*/{1},
+              /*rhsContractingDimensions=*/{1},
+              /*lhsRaggedDimensions=*/{0},
+              /*rhsGroupDimensions=*/{0});
+      auto precision_attr = mlir::chlo::PrecisionAttr::get(
+          &builder.getContext(),
+          mlir::chlo::Precision::DEFAULT);  // EXPLICIT_PRECISION_OK=test IR
+                                            // construction
+      auto precision_config = mlir::ArrayAttr::get(
+          &builder.getContext(), {precision_attr, precision_attr});
+      const mlir::Type out_type = mlir::makeTensorType(
+          builder.getContext(), {128, 128}, mlir::ElementType::BF16);
+      mlir::MlirOp ragged_dot =
+          mlir::chlo::RaggedDot(out_type, inputs[0], rhs_t, inputs[2],
+                                dimension_numbers, precision_config);
+
+      mlir::MlirOp add_3d = mlir::stablehlo::Add(inputs[1], inputs[3]);
+
+      return DynamicMlirOpResults{ragged_dot, add_3d};
+    };
+
+    TT_ASSIGN_OR_RETURN(
+        std::vector<DeviceBufferRef> refs_out,
+        DeviceBufferList::CreateDeferred(
+            OpName::kRaggedDot, std::move(ragged_dot_builder),
+            {ref_lhs, ref_rhs_3d, ref_group_sizes, ref_bias_3d},
+            OpParamCacheKeys::Empty(), {shape_dot_out, shape_out_3d}));
+
+    TT_ASSIGN_OR_RETURN(std::unique_ptr<Traversal> tr,
+                        Traversal::Create(refs_out));
+    TT_RETURN_IF_ERROR(tr->ValidateAndReorderArguments(
+        {ref_lhs, ref_rhs_3d, ref_group_sizes, ref_bias_3d}));
+    return tr;
+  };
+
+  CompilationSpec spec1(std::make_unique<xla::CompileOptions>(),
+                        compile_options_key_);
+
+  // 1. First compile (cache miss).
+  TT_ASSERT_OK_AND_ASSIGN(auto tr1, make_traversal());
+  TT_ASSERT_OK_AND_ASSIGN(
+      const CompiledKernel kernel1,
+      tr1->Compile(spec1, UnboundedKernelPolicy::kDisallow,
+                   /*out_mlir_text=*/nullptr,
+                   /*use_stablehlo_bounds=*/false, /*argument_layouts=*/{}));
+  kernel1.fixed_shape_kernel.wait();
+
+  // 2. Second compile (cache hit).
+  CompilationSpec spec2(std::make_unique<xla::CompileOptions>(),
+                        compile_options_key_);
+  TT_ASSERT_OK_AND_ASSIGN(auto tr2, make_traversal());
+  TT_ASSERT_OK_AND_ASSIGN(
+      const CompiledKernel kernel2,
+      tr2->Compile(spec2, UnboundedKernelPolicy::kDisallow,
+                   /*out_mlir_text=*/nullptr,
+                   /*use_stablehlo_bounds=*/false, /*argument_layouts=*/{}));
+  kernel2.fixed_shape_kernel.wait();
+
+  // Verify same cached executable is returned and output layouts match.
+  EXPECT_EQ(kernel1.fixed_shape_kernel.get(), kernel2.fixed_shape_kernel.get());
+  if (kernel2.fixed_shape_kernel.get().ok()) {
+    const auto& exec = *kernel2.fixed_shape_kernel.get();
+    EXPECT_FALSE(exec->output_shapes()[0].layout().has_value());
+    ASSERT_TRUE(exec->output_shapes()[1].layout().has_value());
+    EXPECT_EQ(exec->output_shapes()[1].layout()->minor_to_major,
+              Indices({1, 2, 0}));
+  }
+}
+
+TEST_F(TraversalTest,
+       RaggedDotLayoutAnnotatedCorrectlyWithBoundedDynamicArguments) {
+  Shape shape_dyn(Dimensions{128, 128}, mlir::ElementType::BF16);
+  Shape shape_lhs(Dimensions{128, 128}, mlir::ElementType::BF16);
+  Shape shape_rhs_3d(Dimensions{8, 128, 128}, mlir::ElementType::BF16);
+  Shape shape_group_sizes(Dimensions{8}, mlir::ElementType::I32);
+  Shape shape_bias_3d(Dimensions{8, 128, 128}, mlir::ElementType::BF16);
+  Shape shape_dot_out(Dimensions{128, 128}, mlir::ElementType::BF16);
+  Shape shape_out_3d(Dimensions{8, 128, 128}, mlir::ElementType::BF16);
+
+  TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef ref_dyn,
+                          DeviceBufferList::CreatePlaceholder(
+                              shape_dyn.dimensions(), shape_dyn.dtype()));
+  ASSERT_EQ(ref_dyn.MarkDynamic(/*dimension=*/0, /*lower_bound=*/2,
+                                /*upper_bound=*/128),
+            absl::OkStatus());
+
+  TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef ref_lhs,
+                          DeviceBufferList::CreatePlaceholder(
+                              shape_lhs.dimensions(), shape_lhs.dtype()));
+  TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef ref_rhs_3d,
+                          DeviceBufferList::CreatePlaceholder(
+                              shape_rhs_3d.dimensions(), shape_rhs_3d.dtype()));
+  TT_ASSERT_OK_AND_ASSIGN(
+      DeviceBufferRef ref_group_sizes,
+      DeviceBufferList::CreatePlaceholder(shape_group_sizes.dimensions(),
+                                          shape_group_sizes.dtype()));
+  TT_ASSERT_OK_AND_ASSIGN(
+      DeviceBufferRef ref_bias_3d,
+      DeviceBufferList::CreatePlaceholder(shape_bias_3d.dimensions(),
+                                          shape_bias_3d.dtype()));
+
+  MlirOpBuilder ragged_dot_builder = [](mlir::MlirBuilder& builder,
+                                        absl::Span<mlir::MlirOp> inputs)
+      -> absl::StatusOr<DynamicMlirOpResults> {
+    mlir::MlirOp rhs_t = mlir::stablehlo::Transpose(inputs[2], {0, 2, 1});
+
+    const auto dimension_numbers =
+        mlir::chlo::RaggedDotDimensionNumbersAttr::get(
+            &builder.getContext(), /*lhsBatchingDimensions=*/{},
+            /*rhsBatchingDimensions=*/{}, /*lhsContractingDimensions=*/{1},
+            /*rhsContractingDimensions=*/{1}, /*lhsRaggedDimensions=*/{0},
+            /*rhsGroupDimensions=*/{0});
+    auto precision_attr = mlir::chlo::PrecisionAttr::get(
+        &builder.getContext(),
+        mlir::chlo::Precision::DEFAULT);  // EXPLICIT_PRECISION_OK=test IR
+                                          // construction
+    auto precision_config = mlir::ArrayAttr::get(
+        &builder.getContext(), {precision_attr, precision_attr});
+    const mlir::Type out_type = mlir::makeTensorType(
+        builder.getContext(), {128, 128}, mlir::ElementType::BF16);
+    mlir::MlirOp ragged_dot =
+        mlir::chlo::RaggedDot(out_type, inputs[1], rhs_t, inputs[3],
+                              dimension_numbers, precision_config);
+    mlir::MlirOp add_3d = mlir::stablehlo::Add(inputs[2], inputs[4]);
+    return DynamicMlirOpResults{ragged_dot, add_3d};
+  };
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::vector<DeviceBufferRef> refs_out,
+      DeviceBufferList::CreateDeferred(
+          OpName::kRaggedDot, std::move(ragged_dot_builder),
+          {ref_dyn, ref_lhs, ref_rhs_3d, ref_group_sizes, ref_bias_3d},
+          OpParamCacheKeys::Empty(), {shape_dot_out, shape_out_3d}));
+
+  TT_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Traversal> tr,
+                          Traversal::Create(refs_out));
+  const auto ragged_reorder_status = tr->ValidateAndReorderArguments(
+      {ref_dyn, ref_lhs, ref_rhs_3d, ref_group_sizes, ref_bias_3d});
+  ASSERT_TRUE(ragged_reorder_status.ok()) << ragged_reorder_status;
+
+  std::vector<CustomLayout> argument_layouts(5);
+  argument_layouts[2] = CustomLayout{.minor_to_major = {1, 2, 0}};
+
+  CompilationSpec spec(std::make_unique<xla::CompileOptions>(),
+                       compile_options_key_);
+  std::string mlir_text;
+  TT_ASSERT_OK_AND_ASSIGN(
+      const CompiledKernel kernel,
+      tr->Compile(spec, UnboundedKernelPolicy::kDisallow, &mlir_text,
+                  /*use_stablehlo_bounds=*/false, argument_layouts));
+  kernel.fixed_shape_kernel.wait();
+
+  // The dynamic dimension scalar argument (%arg0: tensor<i32>) must NOT have
+  // any mhlo.layout_mode.
+  EXPECT_THAT(
+      mlir_text,
+      testing::Not(testing::HasSubstr("%arg0: tensor<i32> {mhlo.layout_mode")));
+  // The 3D tensor argument in @main (arg index shifted to %arg3 by %arg0
+  // tensor<i32>) must have {1,2,0} layout attached.
+  EXPECT_THAT(
+      mlir_text,
+      testing::HasSubstr(
+          "%arg3: tensor<8x128x128xbf16> {mhlo.layout_mode = \"{1,2,0}\"}"));
 }
 
 }  // namespace

@@ -43,7 +43,9 @@ namespace torch_tpu {
 absl::StatusOr<SharedLoadedExecutableWithMetadata> GetFromTier3Cache(
     const CompilationCacheKey& key,
     const std::optional<xla::PjRtDeviceDimensions>& subslice_origin =
-        std::nullopt);
+        std::nullopt,
+    Param3DLayoutScanPolicy param_3d_layout_scan_policy =
+        Param3DLayoutScanPolicy::kAuto);
 
 }  // namespace torch_tpu
 

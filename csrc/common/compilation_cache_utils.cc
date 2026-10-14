@@ -110,7 +110,8 @@ FingerprintType GetTorchTpuBinaryFingerprint() {
 
 absl::StatusOr<SharedLoadedExecutableWithMetadata> LoadSerializedExecutable(
     CacheTier tier, const CompilationCacheKey& key, const std::string_view data,
-    const std::optional<xla::PjRtDeviceDimensions>& subslice_origin) {
+    const std::optional<xla::PjRtDeviceDimensions>& subslice_origin,
+    Param3DLayoutScanPolicy param_3d_layout_scan_policy) {
   TT_ASSIGN_OR_RETURN(
       xla::PjRtClient* const client, PjrtBackend::GetInstance().GetClient(),
       _ << "PjRtClient must be initialized before accessing the " << tier
@@ -125,7 +126,9 @@ absl::StatusOr<SharedLoadedExecutableWithMetadata> LoadSerializedExecutable(
               data.size(), " bytes")));
   return LoadedExecutableWithMetadata::MakeShared(
       std::move(pjrt_executable), /*argument_indices=*/{},
-      /*unbounded_dynamic_execution_metadata=*/std::nullopt, subslice_origin);
+      /*unbounded_dynamic_execution_metadata=*/std::nullopt, subslice_origin,
+      /*non_default_3d_param_layouts=*/{},
+      /*explicit_argument_layouts=*/std::nullopt, param_3d_layout_scan_policy);
 }
 
 absl::Status AtomicWriteToCacheFile(const std::string& cache_entry_path,

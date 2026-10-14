@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <iterator>
 #include <memory>
 #include <optional>
@@ -35,6 +36,7 @@
 #include "absl/base/nullability.h"
 #include "absl/base/optimization.h"
 #include "absl/base/thread_annotations.h"
+#include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/container/inlined_vector.h"
 #include "absl/log/absl_check.h"
@@ -49,10 +51,12 @@
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/context_manager.h"
+#include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/reroute_warnings.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/status_builder.h"
+#include "csrc/common/utils.h"
 #include "csrc/eager/current_stream.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/eager_mode.h"
@@ -60,7 +64,9 @@
 #include "csrc/eager/execution_task.h"
 #include "csrc/eager/split_traversal.h"
 #include "csrc/eager/structured_log_buffer.h"
+#include "csrc/eager/traversal.h"
 #include "csrc/eager/traversal_utils.h"
+#include "csrc/pjrt/pjrt_utils.h"
 #include "mlir/IR/MLIRContext.h"
 #include "xla/future.h"
 #include "xla/pjrt/pjrt_client.h"
@@ -108,7 +114,8 @@ xla::Future<void> GetSnapshotDeviceReadyFuture(const DeviceBufferRef& ref) {
   xla::Future<void> ready = ref.GetReadyFuture();
   if (ready.IsKnownReady() && !ready.Await().ok() &&
       ref.GetMaterializationFuture().IsKnownReady()) {
-    if (const auto buf = ref.AwaitBuffer(); buf.ok() && (*buf)->IsDeleted()) {
+    if (const auto buf = ref.GetSharedBuffer();
+        buf.ok() && (*buf)->IsDeleted()) {
       return xla::Future<void>(absl::OkStatus());
     }
   }
@@ -702,6 +709,229 @@ absl::StatusOr<std::vector<DeviceBufferRef>> EnqueueExecutable(
     SharedLoadedExecutableWithMetadata executable,
     std::vector<DeviceBufferRef> arguments,
     absl::Span<const Shape> output_shapes, std::string_view task_name) {
+  const auto& non_default_3d_params =
+      executable->non_default_3d_param_layouts();
+
+  bool any_arg_has_custom_layout = false;
+  for (const auto& arg : arguments) {
+    if (arg.has_custom_layout()) {
+      any_arg_has_custom_layout = true;
+      break;
+    }
+  }
+
+  absl::flat_hash_map<DeviceBufferRef, int> orig_arg_counts;
+  if (!non_default_3d_params.empty() || any_arg_has_custom_layout) {
+    for (const auto& arg : arguments) {
+      orig_arg_counts[arg]++;
+    }
+  }
+
+  if (!non_default_3d_params.empty()) {
+    for (const auto& param_layout : non_default_3d_params) {
+      const int64_t param_idx = param_layout.param_idx;
+      if (param_idx < 0 || param_idx >= arguments.size()) continue;
+      DeviceBufferRef orig_arg = arguments[param_idx];
+      TT_ASSIGN_OR_RETURN(std::optional<RelayoutBufferResult> relayout_result,
+                          MaybeCreate3DArgumentRelayoutBuffer(
+                              orig_arg, param_layout.minor_to_major));
+      if (relayout_result.has_value()) {
+        if (relayout_result->cache_hit) {
+          if (param_layout.is_donated) {
+            orig_arg.EvictCachedRelayoutBufferIfSame(
+                param_layout.minor_to_major, relayout_result->buffer);
+          }
+          arguments[param_idx] = std::move(relayout_result->buffer);
+        } else {
+          DeviceBufferRef relayout_ref = std::move(relayout_result->buffer);
+          if (relayout_ref.is_deferred()) {
+            if (!relayout_ref.device_buffer_list()->deferred_op_recorded()) {
+              relayout_ref.device_buffer_list()->set_deferred_op_recorded(true);
+              RecordDeferredOpCreated(relayout_ref.device_buffer_list());
+            }
+          }
+          // Materialize and adopt one-by-one so the previous buffer is freed
+          // before allocating the next relayout buffer, preventing peak HBM
+          // memory spikes on multi-layer models.
+          TT_RETURN_IF_ERROR(Materialize(
+              {relayout_ref}, MaterializationReason::kCompileModeExecution,
+              GraphSplitMode::kSplitGraph));
+          const Shape param_shape = orig_arg.shape();
+          const bool is_default_layout =
+              !param_shape.layout().has_value() ||
+              IsDefaultDeviceLayout(*param_shape.layout(),
+                                    orig_arg.element_type(),
+                                    orig_arg.dimensions());
+          if (is_default_layout && !param_layout.is_donated &&
+              orig_arg_counts[orig_arg] == 1) {
+            TT_ASSIGN_OR_RETURN(
+                std::vector<EventSnapshot> device_snapshots,
+                MaterializeDevice(orig_arg.device_index(),
+                                  MaterializationReason::kCompileModeExecution,
+                                  GraphSplitMode::kSplitGraph));
+            for (const EventSnapshot& snapshot : device_snapshots) {
+              TT_RETURN_IF_ERROR(snapshot.Synchronize());
+            }
+            TT_RETURN_IF_ERROR(relayout_ref.Synchronize());
+            TT_RETURN_IF_ERROR(orig_arg.Synchronize());
+            TT_ASSIGN_OR_RETURN(std::shared_ptr<xla::PjRtBuffer> pjrt_buf,
+                                relayout_ref.GetSharedBuffer());
+            CustomLayout target_layout;
+            target_layout.minor_to_major = param_layout.minor_to_major;
+            if (pjrt_buf->on_device_shape().has_layout()) {
+              for (const auto& tile :
+                   pjrt_buf->on_device_shape().layout().tiles()) {
+                target_layout.tiles.push_back(CopyIntVector(tile.dimensions()));
+              }
+            }
+            target_layout.element_size_in_bits =
+                pjrt_buf->on_device_shape().layout().element_size_in_bits();
+            TT_RETURN_IF_ERROR(orig_arg.AdoptMaterializedBufferFrom(
+                relayout_ref, std::move(target_layout)));
+          } else {
+            if (!param_layout.is_donated && orig_arg_counts[orig_arg] == 1) {
+              TT_RETURN_IF_ERROR(
+                  relayout_ref.GetMaterializationFuture().Await());
+              auto buf_or = relayout_ref.GetSharedBuffer();
+              if (buf_or.ok() && *buf_or != nullptr &&
+                  !(*buf_or)->IsDeleted()) {
+                auto ready = (*buf_or)->GetReadyFuture();
+                if (!(ready.IsKnownReady() && !ready.Await().ok())) {
+                  orig_arg.SetCachedRelayoutBuffer(param_layout.minor_to_major,
+                                                   relayout_ref);
+                  ready.OnReady([weak_orig = orig_arg.weak(),
+                                 weak_relayout = relayout_ref.weak(),
+                                 target_mtm = param_layout.minor_to_major](
+                                    absl::Status status) {
+                    if (!status.ok()) {
+                      auto orig = weak_orig.lock();
+                      auto relayout = weak_relayout.lock();
+                      if (orig.has_value() && relayout.has_value()) {
+                        orig->EvictCachedRelayoutBufferIfSame(target_mtm,
+                                                              *relayout);
+                      }
+                    }
+                  });
+                }
+              }
+            }
+            arguments[param_idx] = std::move(relayout_ref);
+          }
+        }
+      }
+    }
+  }
+
+  // Handle 3D arguments whose current layout differs from a parameter layout
+  // in parameter_device_shapes() (e.g. buffers adopted into a non-default
+  // layout running in an executable compiled for default layout) using
+  // relayout_cache_ without mutating transient or shared buffers with blocking
+  // Synchronize(). Fast-path dense models without custom layouts.
+  if (any_arg_has_custom_layout) {
+    struct ReverseCandidate {
+      DeviceBufferRef orig_arg;
+      Indices expected_mtm;
+      DeviceBufferRef relayout_ref;
+      bool is_donated = false;
+    };
+    std::vector<ReverseCandidate> reverse_candidates;
+    std::vector<DeviceBufferRef> unmaterialized_reverse_relayout_refs;
+    const auto& param_shapes = executable->parameter_device_shapes();
+    for (size_t i = 0; i < arguments.size() && i < param_shapes.size(); ++i) {
+      if (!arguments[i].has_custom_layout()) continue;
+      if (!param_shapes[i].has_value()) continue;
+      const xla::Shape& param_shape = *param_shapes[i];
+      if (!param_shape.IsArray() || param_shape.dimensions().size() != 3 ||
+          !param_shape.has_layout()) {
+        continue;
+      }
+      const auto& expected_mtm = param_shape.layout().minor_to_major();
+      const Shape arg_shape = arguments[i].shape();
+      if (arg_shape.layout().has_value() &&
+          !arg_shape.layout()->minor_to_major.empty()) {
+        const CustomLayout& arg_layout = *arg_shape.layout();
+        const bool both_tiles_empty =
+            arg_layout.tiles.empty() && param_shape.layout().tiles().empty();
+        const bool mtm_matches =
+            both_tiles_empty ? MinorToMajorMatchesIgnoringDegenerate(
+                                   arg_layout.minor_to_major, expected_mtm,
+                                   param_shape.dimensions())
+                             : (arg_layout.minor_to_major ==
+                                absl::Span<const int64_t>(expected_mtm));
+        const bool tiles_match =
+            arg_layout.tiles.empty() || param_shape.layout().tiles().empty() ||
+            TilesMatchDefault(arg_layout.tiles, param_shape.layout().tiles());
+        if (!(mtm_matches && tiles_match)) {
+          DeviceBufferRef orig_arg = arguments[i];
+          const Indices expected_mtm_vec = CopyIntVector(expected_mtm);
+          const bool is_donated =
+              executable->IsDonated3DParam(static_cast<int64_t>(i));
+          TT_ASSIGN_OR_RETURN(
+              std::optional<RelayoutBufferResult> relayout_result,
+              MaybeCreate3DArgumentRelayoutBuffer(orig_arg, expected_mtm_vec));
+          if (relayout_result.has_value()) {
+            if (relayout_result->cache_hit) {
+              if (is_donated) {
+                orig_arg.EvictCachedRelayoutBufferIfSame(
+                    expected_mtm_vec, relayout_result->buffer);
+              }
+              arguments[i] = std::move(relayout_result->buffer);
+            } else {
+              DeviceBufferRef relayout_ref = std::move(relayout_result->buffer);
+              if (relayout_ref.is_deferred()) {
+                if (!relayout_ref.device_buffer_list()
+                         ->deferred_op_recorded()) {
+                  relayout_ref.device_buffer_list()->set_deferred_op_recorded(
+                      true);
+                  RecordDeferredOpCreated(relayout_ref.device_buffer_list());
+                }
+                unmaterialized_reverse_relayout_refs.push_back(relayout_ref);
+              }
+              reverse_candidates.push_back(
+                  ReverseCandidate{.orig_arg = orig_arg,
+                                   .expected_mtm = expected_mtm_vec,
+                                   .relayout_ref = relayout_ref,
+                                   .is_donated = is_donated});
+              arguments[i] = std::move(relayout_ref);
+            }
+          }
+        }
+      }
+    }
+    if (!unmaterialized_reverse_relayout_refs.empty()) {
+      TT_RETURN_IF_ERROR(
+          Materialize(unmaterialized_reverse_relayout_refs,
+                      MaterializationReason::kCompileModeExecution,
+                      GraphSplitMode::kSplitGraph));
+    }
+    for (const auto& candidate : reverse_candidates) {
+      if (!candidate.is_donated && orig_arg_counts[candidate.orig_arg] == 1) {
+        TT_RETURN_IF_ERROR(
+            candidate.relayout_ref.GetMaterializationFuture().Await());
+        auto buf_or = candidate.relayout_ref.GetSharedBuffer();
+        if (buf_or.ok() && *buf_or != nullptr && !(*buf_or)->IsDeleted()) {
+          auto ready = (*buf_or)->GetReadyFuture();
+          if (!(ready.IsKnownReady() && !ready.Await().ok())) {
+            candidate.orig_arg.SetCachedRelayoutBuffer(candidate.expected_mtm,
+                                                       candidate.relayout_ref);
+            ready.OnReady([weak_orig = candidate.orig_arg.weak(),
+                           weak_relayout = candidate.relayout_ref.weak(),
+                           target_mtm =
+                               candidate.expected_mtm](absl::Status status) {
+              if (!status.ok()) {
+                auto orig = weak_orig.lock();
+                auto relayout = weak_relayout.lock();
+                if (orig.has_value() && relayout.has_value()) {
+                  orig->EvictCachedRelayoutBufferIfSame(target_mtm, *relayout);
+                }
+              }
+            });
+          }
+        }
+      }
+    }
+  }
+
   // Get the stream from the calling thread, not from the execution worker
   // thread.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();

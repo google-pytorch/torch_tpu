@@ -51,6 +51,7 @@
 #include "gtest/gtest.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "xla/layout.h"
+#include "xla/pjrt/pjrt_client.h"
 
 namespace torch_tpu {
 namespace {
@@ -181,8 +182,13 @@ TEST_F(CopyCpuToTpuTest, KeepsDefaultLayoutOfDestination) {
   ASSERT_THAT(CopyCpuToTpu(src_, dest, TransferSyncMode::kIsolated), IsOk());
 
   TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef buffer, GetBuffer(dest));
-  EXPECT_THAT(buffer.shape().layout(),
-              HasLayout(ElementsAre(1, 0), ElementsAre(ElementsAre(8, 128))));
+  EXPECT_FALSE(buffer.shape().layout().has_value());
+  TT_ASSERT_OK_AND_ASSIGN(std::shared_ptr<xla::PjRtBuffer> pjrt_buffer,
+                          buffer.GetSharedBuffer());
+  const xla::Layout xla_layout = pjrt_buffer->layout()->xla_layout();
+  EXPECT_THAT(xla_layout.minor_to_major(), ElementsAre(1, 0));
+  ASSERT_EQ(xla_layout.tiles().size(), 1);
+  EXPECT_THAT(xla_layout.tiles()[0].dimensions(), ElementsAre(8, 128));
   TT_ASSERT_OK_AND_ASSIGN(const at::Tensor copied, ToCpu(dest));
   EXPECT_TRUE(at::equal(copied, src_));
 }

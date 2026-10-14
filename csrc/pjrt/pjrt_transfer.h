@@ -189,8 +189,8 @@ class DeviceToHostTransfer {
   // Verifies that the materialization of the buffer_ref succeeded.
   // If ready_status is not ok, or if a valid, non-deleted PjRtBuffer cannot be
   // obtained, returns the error. Otherwise, returns a non-null, non-deleted
-  // PjRtBuffer*.
-  static absl::StatusOr<xla::PjRtBuffer* absl_nonnull> VerifyMaterialization(
+  // shared_ptr<PjRtBuffer>.
+  static absl::StatusOr<std::shared_ptr<xla::PjRtBuffer>> VerifyMaterialization(
       absl::Status ready_status, const DeviceToHostTransferImpl& impl);
 
   // A callback invoked when materialization has provided a PjRtBuffer to copy

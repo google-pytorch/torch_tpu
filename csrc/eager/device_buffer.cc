@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <ostream>
 #include <sstream>
 #include <string>
@@ -29,6 +30,7 @@
 
 #include "absl/algorithm/container.h"
 #include "absl/base/nullability.h"
+#include "absl/container/inlined_vector.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
@@ -68,8 +70,9 @@ bool IsPinnedHostBuffer(const xla::PjRtBuffer* absl_nullable buffer) {
   return buffer->memory_space()->kind() == "pinned_host";
 }
 
-DeviceBufferList::Data::Data(NoDataType no_data_type)
-    : no_data_type_(no_data_type),
+DeviceBufferList::Data::Data(NoDataType no_data_type, bool allow_adoption)
+    : allow_adoption_(allow_adoption),
+      no_data_type_(no_data_type),
       materialization_pending_(no_data_type_.value() !=
                                NoDataType::kPlaceholder) {
   if (materialization_pending_) {
@@ -84,8 +87,9 @@ DeviceBufferList::Data::Data(NoDataType no_data_type)
 }
 
 DeviceBufferList::Data::Data(
-    absl_nonnull std::shared_ptr<DeferredOp> deferred_op)
-    : constant_(IsConstantOp(deferred_op->op_name())),
+    absl_nonnull std::shared_ptr<DeferredOp> deferred_op, bool allow_adoption)
+    : allow_adoption_(allow_adoption),
+      constant_(IsConstantOp(deferred_op->op_name())),
       deferred_op_(std::move(deferred_op)) {
   auto [promise, future] = xla::MakePromise<void>();
   materialization_promise_ = std::move(promise);
@@ -93,14 +97,19 @@ DeviceBufferList::Data::Data(
 }
 
 DeviceBufferList::Data::Data(
-    absl_nonnull std::unique_ptr<xla::PjRtBuffer> buffer)
-    : materialization_pending_(true), materialization_started_(true) {
+    absl_nonnull std::unique_ptr<xla::PjRtBuffer> buffer, bool allow_adoption)
+    : allow_adoption_(allow_adoption),
+      materialization_pending_(true),
+      materialization_started_(true) {
   auto client_or = PjrtBackend::GetInstance().GetSharedClient();
   ABSL_CHECK(client_or.ok()) << client_or.status();  // CRASH_OK
   std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers;
   buffers.push_back(std::move(buffer));
-  materialized_buffers_ =
-      MaterializedData(std::move(client_or).value(), std::move(buffers));
+  {
+    absl::WriterMutexLock lock(buffers_mutex_);
+    materialized_buffers_ =
+        MaterializedData(std::move(client_or).value(), std::move(buffers));
+  }
   auto [promise, future] = xla::MakePromise<void>();
   materialization_promise_ = std::move(promise);
   materialization_future_ = std::move(future);
@@ -168,8 +177,11 @@ absl::Status DeviceBufferList::Data::SetMaterializationStarted(
   TT_ASSIGN_OR_RETURN(auto client,
                       PjrtBackend::GetInstance().GetSharedClient());
 
-  materialized_buffers_ =
-      MaterializedData(std::move(client), std::move(buffers));
+  {
+    absl::WriterMutexLock lock(buffers_mutex_);
+    materialized_buffers_ =
+        MaterializedData(std::move(client), std::move(buffers));
+  }
   materialization_promise_.Set(absl::OkStatus());
 
   return absl::OkStatus();
@@ -186,8 +198,7 @@ void DeviceBufferList::Data::ValidateMaterializedBuffers(int64_t index) const {
       << materialized_buffers_->buffers().size();
 }
 
-absl::StatusOr<xla::PjRtBuffer* absl_nonnull>
-DeviceBufferList::Data::operator[](int64_t index) const {
+absl::Status DeviceBufferList::Data::WaitForMaterialized() const {
   TT_RET_CHECK(!is_placeholder(), error::kFailedPrecondition)
       << "placeholders do not have buffers";
 
@@ -195,13 +206,50 @@ DeviceBufferList::Data::operator[](int64_t index) const {
     TT_RETURN_IF_ERROR(materialization_future_.Await());
   }
 
-  if (!materialization_status_.ok()) {
-    return materialization_status_;
+  return materialization_status_;
+}
+
+absl::StatusOr<xla::PjRtBuffer* absl_nonnull>
+DeviceBufferList::Data::operator[](int64_t index) const {
+  TT_RETURN_IF_ERROR(WaitForMaterialized());
+  if (!allow_adoption_) {
+    return ReadBufferWithoutLock(index);
+  }
+  absl::ReaderMutexLock lock(buffers_mutex_);
+  ValidateMaterializedBuffers(index);
+  return materialized_buffers_->buffers()[index].get();
+}
+
+absl::StatusOr<std::shared_ptr<xla::PjRtBuffer>>
+DeviceBufferList::Data::GetSharedBuffer(int64_t index) const {
+  TT_RETURN_IF_ERROR(WaitForMaterialized());
+  if (!allow_adoption_) {
+    return GetSharedBufferWithoutLock(index);
+  }
+  absl::ReaderMutexLock lock(buffers_mutex_);
+  ValidateMaterializedBuffers(index);
+  return materialized_buffers_->buffers()[index];
+}
+
+absl::Status DeviceBufferList::Data::AdoptMaterializedBuffer(
+    int64_t index, std::shared_ptr<xla::PjRtBuffer> new_buffer) {
+  ABSL_CHECK(allow_adoption_)  // CRASH_OK=invariant
+      << "cannot adopt buffer when adoption is disabled";
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=internal check; callers filter
+                 // placeholders
+      !is_placeholder(), error::kFailedPrecondition)
+      << "cannot adopt into a placeholder";
+
+  if (!materialization_future_.IsKnownReady()) {
+    TT_RETURN_IF_ERROR(materialization_future_.Await());
   }
 
-  ValidateMaterializedBuffers(index);
+  TT_RETURN_IF_ERROR(materialization_status_);
 
-  return materialized_buffers_->buffers()[index].get();
+  absl::WriterMutexLock lock(buffers_mutex_);
+  ValidateMaterializedBuffers(index);
+  materialized_buffers_->set_buffer(index, std::move(new_buffer));
+  return absl::OkStatus();
 }
 
 std::ostream& DeviceBufferList::Data::PrintDebug(std::ostream& os) const {
@@ -229,6 +277,11 @@ std::ostream& DeviceBufferList::Data::PrintDebug(std::ostream& os) const {
   // Materialization finished without an error. Safe to access
   // materialized_buffers_->buffers.
   os << "materialized, ready";
+  absl::ReaderMutexLock lock(buffers_mutex_);
+  if (!materialized_buffers_.has_value() ||
+      materialized_buffers_->buffers().empty()) {
+    return os << ", empty";
+  }
   xla::PjRtBuffer* maybe_pjrt_buffer =
       materialized_buffers_->buffers()[0].get();
   if (maybe_pjrt_buffer == nullptr) {
@@ -261,7 +314,8 @@ size_t DeviceBufferList::size_bytes(int64_t index) const {
 }
 
 absl::StatusOr<size_t> DeviceBufferList::pjrt_buffer_size(int64_t index) const {
-  TT_ASSIGN_OR_RETURN(xla::PjRtBuffer* const pjrt_buffer, AwaitBuffer(index));
+  TT_ASSIGN_OR_RETURN(std::shared_ptr<xla::PjRtBuffer> pjrt_buffer,
+                      GetSharedBuffer(index));
 
   TT_RET_CHECK(!pjrt_buffer->IsDeleted(), error::kFailedPrecondition)
       << "DeviceBufferRef has a PjRtBuffer, but it is deleted";
@@ -327,7 +381,8 @@ absl::Status DeviceBufferList::Synchronize() const {
     return absl::OkStatus();
   }
   for (auto i = 0; i < size(); ++i) {
-    TT_ASSIGN_OR_RETURN(auto* buffer, AwaitBuffer(i));
+    TT_ASSIGN_OR_RETURN(std::shared_ptr<xla::PjRtBuffer> buffer,
+                        GetSharedBuffer(i));
     if (buffer->IsDeleted()) {
       continue;
     }
@@ -350,15 +405,19 @@ absl::StatusOr<xla::PjRtBuffer* absl_nonnull> DeviceBufferList::AwaitBuffer(
 std::atomic_uint64_t DeviceBufferList::g_creation_index_ = 0;
 
 absl::StatusOr<DeviceBufferRef> DeviceBufferList::CreateMaterialized(
-    absl_nonnull std::unique_ptr<xla::PjRtBuffer> buffer) {
-  Dimensions dimensions = CopyIntVector(buffer->on_device_shape().dimensions());
-  TT_ASSIGN_OR_RETURN(
-      const auto element_type,
-      ConvertTo<mlir::ElementType>(buffer->on_device_shape().element_type()));
+    absl_nonnull std::unique_ptr<xla::PjRtBuffer> buffer,
+    CustomLayoutCheck custom_layout_check) {
+  Dimensions dimensions =
+      custom_layout_check == CustomLayoutCheck::kSkip
+          ? CopyIntVector(buffer->dimensions())
+          : CopyIntVector(buffer->on_device_shape().dimensions());
+  TT_ASSIGN_OR_RETURN(const auto element_type,
+                      ConvertTo<mlir::ElementType>(buffer->element_type()));
   TT_RETURN_IF_ERROR(ValidateTensorByteSize(dimensions, element_type));
   // Can't use make_shared because the constructor is private.
-  auto device_buffer_list = std::shared_ptr<DeviceBufferList>(
-      new DeviceBufferList(std::move(buffer), element_type));
+  auto device_buffer_list =
+      std::shared_ptr<DeviceBufferList>(new DeviceBufferList(
+          std::move(buffer), element_type, custom_layout_check));
   return DeviceBufferRef(std::move(device_buffer_list), 0);
 }
 
@@ -501,6 +560,7 @@ absl::StatusOr<DeviceBufferRef> DeviceBufferList::CreatePendingTransfer(
 }
 
 absl::Status DeviceBufferList::SetAsPendingMaterialization() {
+  InvalidateRelayoutCache();
   ABSL_VLOG(1)
       << "[SetAsPendingMaterialization] Setting to pending materialization";
   return data_.SetAsPendingMaterialization();
@@ -589,17 +649,120 @@ void DeviceBufferList::CheckMaterialization(
 
 absl::Status DeviceBufferList::SetAsMaterialized(
     std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers) {
+  InvalidateRelayoutCache();
   CheckMaterialization(buffers);
   ABSL_VLOG(1) << "[SetAsMaterialized] Setting as materialized";
   return data_.SetMaterializationStarted(std::move(buffers));
 }
 
 void DeviceBufferList::SetAsError(absl::Status error) {
+  InvalidateRelayoutCache();
   auto set_error_status = data_.SetMaterializationError(error);
   if (!set_error_status.ok()) {
     ABSL_LOG(ERROR) << "[SetAsError] Failed to set materialization error: "
                     << set_error_status;
   }
+}
+
+void DeviceBufferList::set_layout(int64_t index, CustomLayout layout) {
+  absl::WriterMutexLock lock(mutex_);
+  shapes_.at(index).set_layout(std::move(layout));
+  has_custom_layout_.store(true, std::memory_order_release);
+  InvalidateRelayoutCacheLocked();
+}
+
+absl::Status DeviceBufferList::AdoptMaterializedBufferFrom(
+    int64_t index, const DeviceBufferRef& relayout_ref,
+    CustomLayout target_layout) {
+  ABSL_CHECK(index >= 0 && index < shapes_.size());  // CRASH_OK
+  TT_ASSIGN_OR_RETURN(std::shared_ptr<xla::PjRtBuffer> new_buffer,
+                      relayout_ref.GetSharedBuffer());
+  if (!data_.materialization_future().IsKnownReady()) {
+    TT_RETURN_IF_ERROR(data_.materialization_future().Await());
+  }
+  {
+    absl::WriterMutexLock lock(mutex_);
+    TT_RETURN_IF_ERROR(data_.AdoptMaterializedBuffer(index, new_buffer));
+    if (target_layout.tiles.empty() &&
+        new_buffer->on_device_shape().has_layout()) {
+      for (const auto& tile : new_buffer->on_device_shape().layout().tiles()) {
+        target_layout.tiles.push_back(CopyIntVector(tile.dimensions()));
+      }
+      target_layout.element_size_in_bits =
+          new_buffer->on_device_shape().layout().element_size_in_bits();
+    }
+    shapes_[index].set_layout(std::move(target_layout));
+    has_custom_layout_.store(true, std::memory_order_release);
+    is_synchronized_.store(false, std::memory_order_release);
+    InvalidateRelayoutCacheLocked();
+  }
+  return absl::OkStatus();
+}
+
+absl::StatusOr<std::shared_ptr<xla::PjRtBuffer>>
+DeviceBufferList::GetSharedBuffer(int64_t index) const {
+  return data_.GetSharedBuffer(index);
+}
+
+void DeviceBufferList::PopulateLayoutMetadata(int64_t index,
+                                              CustomLayout layout) {
+  absl::WriterMutexLock lock(mutex_);
+  if (!shapes_.at(index).layout().has_value()) {
+    shapes_[index].set_layout(std::move(layout));
+    has_custom_layout_.store(true, std::memory_order_release);
+  }
+}
+
+void DeviceBufferList::EvictCachedRelayoutBufferIfSame(
+    int64_t index, const Indices& target_mtm,
+    const DeviceBufferRef& expected_ref) {
+  absl::WriterMutexLock lock(mutex_);
+  auto it = relayout_cache_.find(RelayoutKey{index, target_mtm});
+  if (it != relayout_cache_.end() && it->second == expected_ref) {
+    relayout_cache_.erase(it);
+  }
+}
+
+std::optional<DeviceBufferRef> DeviceBufferList::GetCachedRelayoutBuffer(
+    int64_t index, const Indices& target_mtm) const {
+  absl::WriterMutexLock lock(mutex_);
+  const auto it = relayout_cache_.find(RelayoutKey{index, target_mtm});
+  if (it != relayout_cache_.end()) {
+    DeviceBufferRef cached = it->second;
+    if (!cached.GetMaterializationFuture().IsKnownReady()) {
+      relayout_cache_.erase(it);
+      return std::nullopt;
+    }
+    auto buf_or = cached.GetSharedBuffer();
+    if (!buf_or.ok() || *buf_or == nullptr || (*buf_or)->IsDeleted()) {
+      relayout_cache_.erase(it);
+      return std::nullopt;
+    }
+    auto ready_future = (*buf_or)->GetReadyFuture();
+    if (ready_future.IsKnownReady() && !ready_future.Await().ok()) {
+      relayout_cache_.erase(it);
+      return std::nullopt;
+    }
+    return cached;
+  }
+  return std::nullopt;
+}
+
+void DeviceBufferList::SetCachedRelayoutBuffer(int64_t index,
+                                               const Indices& target_mtm,
+                                               DeviceBufferRef relayout_buf) {
+  absl::WriterMutexLock lock(mutex_);
+  relayout_cache_.insert_or_assign(RelayoutKey{index, target_mtm},
+                                   std::move(relayout_buf));
+}
+
+void DeviceBufferList::InvalidateRelayoutCache() {
+  absl::WriterMutexLock lock(mutex_);
+  InvalidateRelayoutCacheLocked();
+}
+
+void DeviceBufferList::InvalidateRelayoutCacheLocked() {
+  relayout_cache_.clear();
 }
 
 absl::Status DeviceBufferList::MarkDynamic(int64_t index, int64_t dimension,
@@ -609,6 +772,7 @@ absl::Status DeviceBufferList::MarkDynamic(int64_t index, int64_t dimension,
       << "Index " << index << " is out of bounds for DeviceBufferList of size "
       << shapes_.size() << ".";
 
+  absl::WriterMutexLock lock(mutex_);
   Shape& shape = shapes_[index];
 
   TT_RET_CHECK(lower_bound >= 2, error::kInvalidArgument)
@@ -646,17 +810,23 @@ absl::Status DeviceBufferList::MarkDynamic(int64_t index, int64_t dimension,
                                           .lower_bound = lower_bound,
                                           .upper_bound = upper_bound});
   }
+  has_dynamic_dimensions_.store(true, std::memory_order_release);
   return absl::OkStatus();
 };
 
 bool DeviceBufferList::on_device_shape_is_dynamic(int64_t index) const {
   ABSL_CHECK(index >= 0 && index < shapes_.size());  // CRASH_OK
+  absl::ReaderMutexLock lock(mutex_);
   return shapes_[index].on_device_shape_is_dynamic();
 }
 
-absl::Span<const BoundedDynamicDimension> DeviceBufferList::dynamic_dimensions(
-    int64_t index) const {
+absl::InlinedVector<BoundedDynamicDimension, 1>
+DeviceBufferList::dynamic_dimensions(int64_t index) const {
+  if (!has_dynamic_dimensions()) {
+    return {};
+  }
   ABSL_CHECK(index >= 0 && index < shapes_.size());  // CRASH_OK
+  absl::ReaderMutexLock lock(mutex_);
   return shapes_[index].dynamic_dimensions();
 }
 
@@ -721,8 +891,8 @@ void DeviceBufferRef::set_is_pinned_host() const {
   return device_buffer_list_->is_constant();
 }
 
-[[nodiscard]] const Shape& DeviceBufferRef::shape() const {
-  return device_buffer_list_->shapes()[index_];
+[[nodiscard]] Shape DeviceBufferRef::shape() const {
+  return device_buffer_list_->shape(index_);
 }
 
 [[nodiscard]] absl::Span<const int64_t> DeviceBufferRef::dimensions() const {
@@ -773,7 +943,7 @@ void DeviceBufferList::RecordChildOp(uint64_t child_index) const {
 
 xla::Future<void> DeviceBufferRef::GetReadyFuture() const {
   if (GetMaterializationFuture().IsKnownReady()) {
-    auto buffer_or = AwaitBuffer();
+    auto buffer_or = GetSharedBuffer();
     if (!buffer_or.ok()) {
       return xla::Future<void>(buffer_or.status());
     }
@@ -806,7 +976,7 @@ xla::Future<void> DeviceBufferRef::GetReadyFuture() const {
       promise.Set(status);
       return;
     }
-    auto buffer_or = device_buffer_list->AwaitBuffer(index);
+    auto buffer_or = device_buffer_list->GetSharedBuffer(index);
     if (!buffer_or.ok()) {
       promise.Set(buffer_or.status());
       return;
@@ -833,8 +1003,8 @@ bool DeviceBufferRef::on_device_shape_is_dynamic() const {
   return device_buffer_list()->on_device_shape_is_dynamic(index_);
 }
 
-absl::Span<const BoundedDynamicDimension> DeviceBufferRef::dynamic_dimensions()
-    const {
+absl::InlinedVector<BoundedDynamicDimension, 1>
+DeviceBufferRef::dynamic_dimensions() const {
   return device_buffer_list()->dynamic_dimensions(index_);
 }
 

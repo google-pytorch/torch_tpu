@@ -82,13 +82,18 @@ struct CacheEntryStats {
 
 class CompilationCache;
 
+using OutputLayoutsPromise = std::promise<SharedOutputLayouts>;
+using OutputLayoutsFuture = std::shared_future<SharedOutputLayouts>;
+
 // A cache entry, which is a future executable with its metadata.
 // Invariant: executable_future is associated with executable_promise.
 class CacheEntry {
  public:
   CacheEntry()
       : executable_promise_(std::make_shared<LoadedExecutablePromise>()),
-        executable_future_(executable_promise_->get_future().share()) {}
+        executable_future_(executable_promise_->get_future().share()),
+        output_layouts_promise_(std::make_shared<OutputLayoutsPromise>()),
+        output_layouts_future_(output_layouts_promise_->get_future().share()) {}
 
   // This class is movable but not copyable.
   CacheEntry(CacheEntry&&) = default;
@@ -106,6 +111,15 @@ class CacheEntry {
     return executable_promise_;
   }
 
+  [[nodiscard]] const OutputLayoutsFuture& output_layouts_future() const {
+    return output_layouts_future_;
+  }
+
+  [[nodiscard]] const std::shared_ptr<OutputLayoutsPromise>&
+  output_layouts_promise() const {
+    return output_layouts_promise_;
+  }
+
   [[nodiscard]] CacheEntryStats& stats() const { return stats_; }
 
  private:
@@ -113,6 +127,8 @@ class CacheEntry {
   // and destroyed after it.
   std::shared_ptr<LoadedExecutablePromise> executable_promise_;
   SharedLoadedExecutableWithMetadataFuture executable_future_;
+  std::shared_ptr<OutputLayoutsPromise> output_layouts_promise_;
+  OutputLayoutsFuture output_layouts_future_;
   mutable CacheEntryStats stats_;
 };
 
@@ -334,7 +350,9 @@ class CompilationCache {
   //  - compile_options: The compile options to use for the compilation.
   void EnqueueCompilation(const CompilationCacheKey& key,
                           ContextedModule contexted_module,
-                          UniqueCompileOptions compile_options)
+                          UniqueCompileOptions compile_options,
+                          Param3DLayoutScanPolicy param_3d_layout_scan_policy =
+                              Param3DLayoutScanPolicy::kAuto)
       ABSL_LOCKS_EXCLUDED(cache_mutex_);
 
   // Sets the cache to dump the input StableHLO module for any cache misses.
@@ -382,6 +400,8 @@ class CompilationCache {
   struct CacheLookupInternal {
     absl_nonnull std::shared_ptr<LoadedExecutablePromise> executable_promise;
     SharedLoadedExecutableWithMetadataFuture executable_future;
+    absl_nonnull std::shared_ptr<OutputLayoutsPromise> output_layouts_promise;
+    OutputLayoutsFuture output_layouts_future;
     std::optional<ShapeDynamismMetadata> shape_dynamism_metadata;
     bool needs_compilation = false;
     bool dump_on_cache_miss = false;
@@ -450,7 +470,9 @@ class CompilationCache {
   // going through the tier-2/3 caches first.
   void EnqueueCompilation(const CompilationCacheKey& key, CacheEntryKind kind,
                           LoadedExecutableBuilder executable_builder,
-                          UniqueCompileOptions compile_options)
+                          UniqueCompileOptions compile_options,
+                          Param3DLayoutScanPolicy param_3d_layout_scan_policy =
+                              Param3DLayoutScanPolicy::kAuto)
       ABSL_LOCKS_EXCLUDED(cache_mutex_);
 
   // Retrieves a cache entry or create a new one as needed. This updates the
@@ -540,7 +562,9 @@ class CompilationCache {
   // after a failed tier-2 cache lookup.
   void Compile(const CompilationCacheKey& key, CacheEntryKind kind,
                LoadedExecutableBuilder executable_builder,
-               UniqueCompileOptions compile_options)
+               UniqueCompileOptions compile_options,
+               Param3DLayoutScanPolicy param_3d_layout_scan_policy =
+                   Param3DLayoutScanPolicy::kAuto)
       ABSL_LOCKS_EXCLUDED(cache_mutex_);
 
   // Returns true if the cache is enabled and the tier-2 cache is configured.
@@ -557,11 +581,12 @@ class CompilationCache {
   //  - `cache_mutex_` is not held.
   // After the compilation is done successfully, the cache entry for `key` will
   // be updated with the compiled executable.
-  void GetFromTier2OrCompile(const CompilationCacheKey& key,
-                             CacheEntryKind kind,
-                             LoadedExecutableBuilder executable_builder,
-                             UniqueCompileOptions compile_options)
-      ABSL_LOCKS_EXCLUDED(cache_mutex_);
+  void GetFromTier2OrCompile(
+      const CompilationCacheKey& key, CacheEntryKind kind,
+      LoadedExecutableBuilder executable_builder,
+      UniqueCompileOptions compile_options,
+      Param3DLayoutScanPolicy param_3d_layout_scan_policy =
+          Param3DLayoutScanPolicy::kAuto) ABSL_LOCKS_EXCLUDED(cache_mutex_);
 
   // Tries to get the compilation result from the tier-3 cache; if not found,
   // compiles the graph and stores the executable in the tier-1/2/3 caches.
@@ -582,8 +607,9 @@ class CompilationCache {
       LoadedExecutableBuilder executable_builder,
       UniqueCompileOptions compile_options,
       const std::optional<xla::PjRtDeviceDimensions>& subslice_origin,
-      Tier2CacheEntryLock& lock, absl::Time request_start)
-      ABSL_LOCKS_EXCLUDED(cache_mutex_);
+      Tier2CacheEntryLock& lock, absl::Time request_start,
+      Param3DLayoutScanPolicy param_3d_layout_scan_policy =
+          Param3DLayoutScanPolicy::kAuto) ABSL_LOCKS_EXCLUDED(cache_mutex_);
 
   // Main mutex for protecting cache statistics and cache-only mode.
   mutable absl::Mutex cache_mutex_;
