@@ -83,6 +83,7 @@ class Shape {
 
   const std::optional<CustomLayout>& layout() const { return layout_; }
   void set_layout(CustomLayout layout) { layout_ = std::move(layout); }
+  void clear_layout() { layout_ = std::nullopt; }
 
   friend bool operator==(const Shape& lhs, const Shape& rhs) {
     return lhs.dtype_ == rhs.dtype_ && lhs.dimensions_ == rhs.dimensions_ &&

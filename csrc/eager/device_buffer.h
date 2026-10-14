@@ -31,6 +31,7 @@
 #include "absl/algorithm/container.h"
 #include "absl/base/nullability.h"
 #include "absl/base/thread_annotations.h"
+#include "absl/container/flat_hash_map.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/log/absl_vlog_is_on.h"
@@ -246,7 +247,7 @@ class DeviceBufferRef {
   // constant-folding and avoiding materializing uninitialized memory.
   [[nodiscard]] bool is_constant() const;
 
-  [[nodiscard]] const Shape& shape() const;
+  [[nodiscard]] Shape shape() const;
   void set_layout(CustomLayout layout) const;
 
   // The logical dimensions of the referenced buffer.
@@ -270,6 +271,14 @@ class DeviceBufferRef {
   // error encountered during materialization, or a pointer to the
   // PjRtBuffer.
   absl::StatusOr<xla::PjRtBuffer* absl_nonnull> AwaitBuffer() const;
+
+  // Adopts the materialized buffer from `relayout_ref` and updates this
+  // buffer's layout to `target_layout`, dropping the previous buffer.
+  absl::Status AdoptMaterializedBufferFrom(const DeviceBufferRef& relayout_ref,
+                                           CustomLayout target_layout) const;
+
+  // Returns a shared pointer to the materialized PjRtBuffer backing this ref.
+  absl::StatusOr<std::shared_ptr<xla::PjRtBuffer>> GetSharedBuffer() const;
 
   // Returns a future that is ready when the device buffer has an available
   // PjRtBuffer (or an error if materialization fails).
@@ -309,6 +318,15 @@ class DeviceBufferRef {
   // May be empty if the DeviceBufferRef is not dynamic.
   [[nodiscard]] absl::Span<const BoundedDynamicDimension> dynamic_dimensions()
       const;
+
+  // Returns the cached relayout buffer for this buffer slot with target_mtm,
+  // if one exists.
+  [[nodiscard]] std::optional<DeviceBufferRef> GetCachedRelayoutBuffer(
+      const Indices& target_mtm) const;
+
+  // Caches a relayout buffer for this buffer slot with target_mtm.
+  void SetCachedRelayoutBuffer(const Indices& target_mtm,
+                               DeviceBufferRef relayout_buf) const;
 
   [[nodiscard]] bool operator==(const DeviceBufferRef& other) const {
     // std::shared_ptr equality is a pointer equality check, not a value
@@ -665,11 +683,38 @@ class DeviceBufferList {
   // Returns the number of buffers in the DeviceBufferList.
   [[nodiscard]] int64_t size() const { return shapes_.size(); }
 
-  // Returns a span of all of the buffer shapes in the DeviceBufferList.
-  [[nodiscard]] absl::Span<const Shape> shapes() const { return shapes_; }
-  void set_layout(int64_t index, CustomLayout layout) {
-    shapes_.at(index).set_layout(std::move(layout));
+  // Returns all of the buffer shapes in the DeviceBufferList.
+  [[nodiscard]] std::vector<Shape> shapes() const {
+    absl::MutexLock lock(mutex_);
+    return shapes_;
   }
+  [[nodiscard]] Shape shape(int64_t index) const {
+    absl::MutexLock lock(mutex_);
+    ABSL_CHECK(index >= 0 && index < shapes_.size());  // CRASH_OK
+    return shapes_[index];
+  }
+  void set_layout(int64_t index, CustomLayout layout);
+
+  // Adopts a materialized buffer from `relayout_ref` at `index` and updates its
+  // layout to `target_layout`, dropping the previous buffer to free device HBM.
+  absl::Status AdoptMaterializedBufferFrom(int64_t index,
+                                           const DeviceBufferRef& relayout_ref,
+                                           CustomLayout target_layout);
+
+  // Returns the shared pointer to the materialized PjRtBuffer at `index`.
+  absl::StatusOr<std::shared_ptr<xla::PjRtBuffer>> GetSharedBuffer(
+      int64_t index) const;
+
+  // Returns the cached relayout buffer for `index` with `target_mtm`, if any.
+  [[nodiscard]] std::optional<DeviceBufferRef> GetCachedRelayoutBuffer(
+      int64_t index, const Indices& target_mtm) const;
+
+  // Caches a relayout buffer for `index` with `target_mtm`.
+  void SetCachedRelayoutBuffer(int64_t index, const Indices& target_mtm,
+                               DeviceBufferRef relayout_buf);
+
+  // Clears the relayout cache when the underlying buffer changes state.
+  void InvalidateRelayoutCache();
 
   // Note: all methods which take an index will crash if the index is invalid.
 
@@ -1020,6 +1065,25 @@ class DeviceBufferList {
   // ready futures.
   mutable std::atomic<bool> is_synchronized_{false};
 
+  struct RelayoutKey {
+    int64_t index;
+    Indices target_mtm;
+
+    bool operator==(const RelayoutKey& other) const {
+      return index == other.index && target_mtm == other.target_mtm;
+    }
+
+    template <typename H>
+    friend H AbslHashValue(H h, const RelayoutKey& key) {
+      return H::combine(std::move(h), key.index, key.target_mtm);
+    }
+  };
+
+  mutable absl::Mutex mutex_;
+  absl::flat_hash_map<RelayoutKey, DeviceBufferRef> relayout_cache_
+      ABSL_GUARDED_BY(mutex_);
+  void InvalidateRelayoutCacheLocked() ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
+
   // A DeviceBufferList::Data is the data backing a DeviceBufferList. It is a
   // thread-safe class that allows for deferred ops (or placeholders) to later
   // be replaced with materialized buffers, or with an error if materialization
@@ -1034,6 +1098,16 @@ class DeviceBufferList {
       MaterializedData(
           std::shared_ptr<xla::PjRtClient> absl_nonnull client,
           std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers)
+          : client_(std::move(client)) {
+        ABSL_CHECK(client_ != nullptr);  // CRASH_OK
+        buffers_.reserve(buffers.size());
+        for (auto& buf : buffers) {
+          buffers_.push_back(std::move(buf));
+        }
+      }
+
+      MaterializedData(std::shared_ptr<xla::PjRtClient> absl_nonnull client,
+                       std::vector<std::shared_ptr<xla::PjRtBuffer>> buffers)
           : client_(std::move(client)), buffers_(std::move(buffers)) {
         ABSL_CHECK(client_ != nullptr);  // CRASH_OK
       }
@@ -1042,15 +1116,18 @@ class DeviceBufferList {
         return client_;
       }
 
-      [[nodiscard]] absl::Span<const
-                               absl_nonnull std::unique_ptr<xla::PjRtBuffer>>
-      buffers() const {
+      [[nodiscard]] absl::Span<const std::shared_ptr<xla::PjRtBuffer>> buffers()
+          const {
         return buffers_;
+      }
+
+      void set_buffer(int64_t index, std::shared_ptr<xla::PjRtBuffer> buffer) {
+        buffers_.at(index) = std::move(buffer);
       }
 
      private:
       std::shared_ptr<xla::PjRtClient> absl_nonnull client_;
-      std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers_;
+      std::vector<std::shared_ptr<xla::PjRtBuffer>> buffers_;
     };
 
     // Creates a either a placeholder DeviceBufferList::Data, or a pending
@@ -1109,6 +1186,15 @@ class DeviceBufferList {
     absl::StatusOr<xla::PjRtBuffer* absl_nonnull> operator[](
         int64_t index) const;
 
+    // Returns a shared pointer to the PjRtBuffer at the given index.
+    absl::StatusOr<std::shared_ptr<xla::PjRtBuffer>> GetSharedBuffer(
+        int64_t index) const;
+
+    // Adopts a new PjRtBuffer at the given index, replacing the existing
+    // buffer and dropping its reference.
+    absl::Status AdoptMaterializedBuffer(
+        int64_t index, std::shared_ptr<xla::PjRtBuffer> new_buffer);
+
     // Returns true if this DeviceBufferList::Data is a placeholder.
     // This will never change state.
     [[nodiscard]] bool is_placeholder() const {
@@ -1155,7 +1241,8 @@ class DeviceBufferList {
     std::ostream& PrintDebug(std::ostream& os) const;
 
    private:
-    void ValidateMaterializedBuffers(int64_t index) const;
+    void ValidateMaterializedBuffers(int64_t index) const
+        ABSL_SHARED_LOCKS_REQUIRED(buffers_mutex_);
 
     // If the DeviceBufferList::Data was created by a constant or
     // "torch.empty()" op, then we will try to avoid materializing it, to
@@ -1171,17 +1258,13 @@ class DeviceBufferList {
     absl_nullable std::shared_ptr<DeferredOp> deferred_op_
         ABSL_GUARDED_BY(deferred_op_mutex_);
 
-    // After the DeviceBufferList::Data is materialized, the optional
-    // materialized_buffers_ will be populated with a nonempty list of
-    // materialized_buffers_->buffers(), or the materialization_status_ field
-    // will be set to a non-OK status. These are NOT mutex-guarded; once they
-    // have been set, they are immutable, and can be safely read concurrently.
-    // The materialization_started_ flag is used to assign responsibility for
-    // setting these fields, and the materialization_promise_ and
-    // materialization_future_ are used to notify that the critical section is
-    // over and it is safe to read them.
+    // Materialized buffers are guarded by buffers_mutex_ to permit safe
+    // adoption of relayout buffers (e.g. for non-default 3D expert weights)
+    // while preventing data races with concurrent reader threads.
+    mutable absl::Mutex buffers_mutex_;
     absl::Status materialization_status_ = absl::OkStatus();
-    std::optional<MaterializedData> materialized_buffers_;
+    std::optional<MaterializedData> materialized_buffers_
+        ABSL_GUARDED_BY(buffers_mutex_);
 
     // If the DeviceBufferList::Data was created as a placeholder, it will never
     // change state, and we don't need to ever acquire a mutex or check any
@@ -1200,9 +1283,6 @@ class DeviceBufferList {
     // materialized_buffers_ or materialization_status_ field (but not both),
     // and then fulfilling the materialization_promise_.
     //
-    // Once the materialization_future_ is ready, materialization_status_ and
-    // materialized_buffers_->buffers() can be read without locking.
-
     // This is set to true by the first caller to SetAsPendingMaterialization.
     // This first caller is responsible for clearing the DeferredOp (if it
     // exists).
@@ -1219,8 +1299,6 @@ class DeviceBufferList {
     // successfully started materialization or failed to materialize.
     // This is NOT mutex-guarded; is is safe to access as soon as the Data is
     // created, but may not be populated until later.
-    // Once the future is ready and has an OK status, the
-    // materialized_buffers_->buffers() can be safely accessed without locking.
     // WARNING: attempting to access a PjRtBuffer before this future is ready
     // will block the caller until the promise is set by another thread.
     xla::Future<> materialization_future_;
@@ -1248,6 +1326,28 @@ class DeviceBufferList {
 
 inline void DeviceBufferRef::set_layout(CustomLayout layout) const {
   device_buffer_list_->set_layout(index_, std::move(layout));
+}
+
+inline absl::Status DeviceBufferRef::AdoptMaterializedBufferFrom(
+    const DeviceBufferRef& relayout_ref, CustomLayout target_layout) const {
+  return device_buffer_list_->AdoptMaterializedBufferFrom(
+      index_, relayout_ref, std::move(target_layout));
+}
+
+inline absl::StatusOr<std::shared_ptr<xla::PjRtBuffer>>
+DeviceBufferRef::GetSharedBuffer() const {
+  return device_buffer_list_->GetSharedBuffer(index_);
+}
+
+inline std::optional<DeviceBufferRef> DeviceBufferRef::GetCachedRelayoutBuffer(
+    const Indices& target_mtm) const {
+  return device_buffer_list_->GetCachedRelayoutBuffer(index_, target_mtm);
+}
+
+inline void DeviceBufferRef::SetCachedRelayoutBuffer(
+    const Indices& target_mtm, DeviceBufferRef relayout_buf) const {
+  device_buffer_list_->SetCachedRelayoutBuffer(index_, target_mtm,
+                                               std::move(relayout_buf));
 }
 
 }  // namespace torch_tpu

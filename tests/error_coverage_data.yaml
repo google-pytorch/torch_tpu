@@ -39,7 +39,7 @@ csrc/distributed/slicebuilder/discovery.cc: {remaining: 4, total: 4, infeasible:
 csrc/distributed/utils.cc: {remaining: 1, total: 3, infeasible: 0}
 csrc/distributed/window_tpu.cc: {remaining: 10, total: 12, infeasible: 0}
 csrc/eager/device_assignment_pipeline.cc: {remaining: 3, total: 5, infeasible: 1}
-csrc/eager/device_buffer.cc: {remaining: 7, total: 16, infeasible: 4}
+csrc/eager/device_buffer.cc: {remaining: 7, total: 18, infeasible: 6}
 csrc/eager/device_buffer_utils.cc: {remaining: 10, total: 12, infeasible: 0}
 csrc/eager/device_gen_impl.cc: {remaining: 9, total: 18, infeasible: 5}
 csrc/eager/events_queue.cc: {remaining: 0, total: 3, infeasible: 2}

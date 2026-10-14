@@ -290,5 +290,76 @@ TEST_F(TupleArgumentsTest, KeepsArgumentLayoutsOfAlreadyTupledArguments) {
   EXPECT_EQ(parameter_shapes[0].tuple_shapes().size(), kTupledArguments);
 }
 
+TEST(TilesMatchDefaultTest, EmptyLayoutTilesMatchesDefault) {
+  xla::Tile tile({8, 128});
+  EXPECT_TRUE(TilesMatchDefault(absl::Span<const Indices>{},
+                                absl::Span<const xla::Tile>{&tile, 1}));
+  EXPECT_TRUE(TilesMatchDefault(absl::Span<const xla::Tile>{},
+                                absl::Span<const xla::Tile>{&tile, 1}));
+}
+
+TEST(TilesMatchDefaultTest, MatchingTilesReturnTrue) {
+  Indices tile_dims = {8, 128};
+  xla::Tile default_tile({8, 128});
+  EXPECT_TRUE(TilesMatchDefault(absl::Span<const Indices>{&tile_dims, 1},
+                                absl::Span<const xla::Tile>{&default_tile, 1}));
+  EXPECT_TRUE(TilesMatchDefault(absl::Span<const xla::Tile>{&default_tile, 1},
+                                absl::Span<const xla::Tile>{&default_tile, 1}));
+}
+
+TEST(TilesMatchDefaultTest, MismatchedTilesReturnFalse) {
+  Indices tile_dims = {4, 128};
+  xla::Tile default_tile({8, 128});
+  EXPECT_FALSE(
+      TilesMatchDefault(absl::Span<const Indices>{&tile_dims, 1},
+                        absl::Span<const xla::Tile>{&default_tile, 1}));
+  xla::Tile other_tile({4, 128});
+  EXPECT_FALSE(
+      TilesMatchDefault(absl::Span<const xla::Tile>{&other_tile, 1},
+                        absl::Span<const xla::Tile>{&default_tile, 1}));
+}
+
+TEST_F(TupleArgumentsTest, NonDefault3DParamLayoutsPopulation) {
+  auto compile_3d = [&](const xla::Shape& shape, std::optional<Indices> mtm)
+      -> absl::StatusOr<SharedLoadedExecutableWithMetadata> {
+    xla::XlaBuilder builder("test_3d");
+    xla::Parameter(&builder, 0, shape, "param0");
+    TT_ASSIGN_OR_RETURN(const xla::XlaComputation computation, builder.Build());
+    xla::CompileOptions options;
+    if (mtm.has_value()) {
+      xla::Shape arg_shape = shape;
+      *arg_shape.mutable_layout() = xla::LayoutUtil::MakeLayout(*mtm);
+      options.argument_layouts = {arg_shape};
+    }
+    TT_ASSIGN_OR_RETURN(
+        auto exec, client_->CompileAndLoad(computation, std::move(options)));
+    return LoadedExecutableWithMetadata::MakeShared(std::move(exec));
+  };
+
+  // 1. Default 3D layout {2, 1, 0}: non_default_3d_param_layouts must be empty.
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto meta_default,
+      compile_3d(xla::ShapeUtil::MakeShape(xla::F32, {8, 128, 64}),
+                 std::nullopt));
+  EXPECT_TRUE(meta_default->non_default_3d_param_layouts().empty());
+
+  // 2. Explicit non-default 3D layout {0, 1, 2}: populated with param_idx = 0.
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto meta_custom,
+      compile_3d(xla::ShapeUtil::MakeShape(xla::F32, {8, 128, 64}),
+                 Indices({0, 1, 2})));
+  ASSERT_EQ(meta_custom->non_default_3d_param_layouts().size(), 1);
+  EXPECT_EQ(meta_custom->non_default_3d_param_layouts()[0].param_idx, 0);
+  EXPECT_EQ(meta_custom->non_default_3d_param_layouts()[0].minor_to_major,
+            Indices({0, 1, 2}));
+
+  // 3. Degenerate size 1 dimension (e.g. {1, 4, 768}): skipped.
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto meta_degen,
+      compile_3d(xla::ShapeUtil::MakeShape(xla::F32, {1, 4, 768}),
+                 Indices({0, 1, 2})));
+  EXPECT_TRUE(meta_degen->non_default_3d_param_layouts().empty());
+}
+
 }  // namespace
 }  // namespace torch_tpu

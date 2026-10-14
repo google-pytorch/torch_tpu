@@ -62,7 +62,9 @@
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/python_context.h"
 #include "csrc/pjrt/pjrt_utils.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/Support/Casting.h"
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/Dialect/Func/Extensions/InlinerExtension.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -81,6 +83,7 @@
 #include "mlir/Support/DebugStringHelper.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/Passes.h"
+#include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/FuncBuilder.h"
@@ -318,6 +321,33 @@ GraphKey AnnotateGraphKeyWithDonatedInputs(
                   graph_key.dimensions_key());
 }
 
+namespace {
+
+GraphKey AnnotateGraphKeyWithOutputLayouts(
+    const GraphKey& graph_key, absl::Span<const DeviceBufferRef> outputs) {
+  FingerprintType fp = graph_key.shapeless_key().key();
+  bool changed = false;
+  constexpr uint64_t kOutputLayoutDomain = 0x3d210b00ULL;
+  for (size_t i = 0; i < outputs.size(); ++i) {
+    if (outputs[i].shape().layout().has_value() &&
+        !outputs[i].shape().layout()->minor_to_major.empty()) {
+      const CustomLayout& layout = *outputs[i].shape().layout();
+      fp = FingerprintCat(fp, kOutputLayoutDomain);
+      fp = FingerprintCat(fp, static_cast<uint64_t>(i));
+      fp = FingerprintCat(fp, FingerprintCat(layout.minor_to_major));
+      for (const Indices& tile : layout.tiles) {
+        fp = FingerprintCat(fp, FingerprintCat(tile));
+      }
+      fp = FingerprintCat(fp, layout.element_size_in_bits);
+      changed = true;
+    }
+  }
+  if (!changed) return graph_key;
+  return GraphKey(ShapelessKey(fp), graph_key.dimensions_key());
+}
+
+}  // namespace
+
 CompilationCacheKey Traversal::GetCacheKey(
     CompileOptionsKey compile_options_key,
     absl::Span<const CustomLayout> argument_layouts,
@@ -325,8 +355,9 @@ CompilationCacheKey Traversal::GetCacheKey(
   if (graph_key_ == std::nullopt) {
     graph_key_ = BuildGraphKey();
   }
-  const GraphKey layout_key =
-      AnnotateGraphKeyWithArgumentLayouts(*graph_key_, argument_layouts);
+  const GraphKey layout_key = AnnotateGraphKeyWithOutputLayouts(
+      AnnotateGraphKeyWithArgumentLayouts(*graph_key_, argument_layouts),
+      outputs_);
   return CompilationCacheKey(
       AnnotateGraphKeyWithDonatedInputs(layout_key, donated_inputs),
       compile_options_key);
@@ -790,40 +821,309 @@ std::vector<Shape> GetShapes(absl::Span<const DeviceBufferRef> buffers) {
   return shapes;
 }
 
-void AnnotateArgumentLayouts(mlir::ModuleOp module,
-                             absl::Span<const DeviceBufferRef> arguments,
-                             absl::Span<const CustomLayout> argument_layouts) {
-  if (argument_layouts.empty()) return;
+bool IsDefaultMinorToMajor(const DeviceBufferRef& buffer,
+                           absl::Span<const int64_t> minor_to_major) {
+  const absl::StatusOr<xla::Layout> default_layout_or =
+      GetDefaultDeviceLayout(buffer.element_type(), buffer.dimensions());
+  if (default_layout_or.ok()) {
+    return default_layout_or->minor_to_major() == minor_to_major;
+  }
+  // Fallback when PJRT client is uninitialized (e.g. unit tests without TPU).
+  // TPU default minor-to-major for rank 3 is {0, 2, 1}.
+  if (buffer.dimensions().size() == 3) {
+    const Indices kDefault3D = {0, 2, 1};
+    return minor_to_major == absl::Span<const int64_t>(kDefault3D);
+  }
+  return false;
+}
+
+struct RaggedDot3DLayoutTargets {
+  absl::flat_hash_map<size_t, Indices> arg_layouts;
+  absl::flat_hash_map<size_t, Indices> result_layouts;
+};
+
+// GENERIC: semantic chlo.ragged_dot batched 3D expert tensors have rank 3
+// (G, K, N) and {0, 2, 1} is the batched matrix transpose permutation.
+constexpr int64_t kRaggedDotExpertRank = 3;
+
+bool IsShapePreserving3DElementwiseOp(mlir::Operation& op) {
+  if (op.getNumResults() != 1) return false;
+  auto res_type =
+      mlir::dyn_cast<mlir::RankedTensorType>(op.getResult(0).getType());
+  if (!res_type || res_type.getRank() != kRaggedDotExpertRank) return false;
+  return llvm::isa<
+      mlir::stablehlo::AddOp, mlir::stablehlo::SubtractOp,
+      mlir::stablehlo::MulOp, mlir::stablehlo::DivOp, mlir::stablehlo::RemOp,
+      mlir::stablehlo::MaxOp, mlir::stablehlo::MinOp, mlir::stablehlo::PowOp,
+      mlir::stablehlo::SqrtOp, mlir::stablehlo::RsqrtOp, mlir::stablehlo::ExpOp,
+      mlir::stablehlo::Expm1Op, mlir::stablehlo::LogOp,
+      mlir::stablehlo::Log1pOp, mlir::stablehlo::TanhOp,
+      mlir::stablehlo::LogisticOp, mlir::stablehlo::SineOp,
+      mlir::stablehlo::CosineOp, mlir::stablehlo::AbsOp, mlir::stablehlo::NegOp,
+      mlir::stablehlo::SignOp, mlir::stablehlo::CeilOp,
+      mlir::stablehlo::FloorOp, mlir::stablehlo::RoundNearestEvenOp,
+      mlir::stablehlo::RoundOp, mlir::stablehlo::ConvertOp,
+      mlir::stablehlo::BitcastConvertOp, mlir::stablehlo::SelectOp,
+      mlir::stablehlo::ClampOp>(&op);
+}
+
+bool Is3DMatrixTransposeOp(mlir::Operation& op) {
+  auto transpose_op = llvm::dyn_cast<mlir::stablehlo::TransposeOp>(op);
+  if (!transpose_op) return false;
+  auto res_type = mlir::dyn_cast<mlir::RankedTensorType>(
+      transpose_op.getResult().getType());
+  if (!res_type || res_type.getRank() != kRaggedDotExpertRank) return false;
+  llvm::ArrayRef<int64_t> perm = transpose_op.getPermutation();
+  return perm == llvm::ArrayRef<int64_t>({0, 2, 1});
+}
+
+Indices PullbackLayoutThroughTranspose(llvm::ArrayRef<int64_t> permutation,
+                                       const Indices& output_mtm) {
+  Indices input_mtm(output_mtm.size());
+  for (size_t i = 0; i < output_mtm.size(); ++i) {
+    input_mtm[i] = permutation[output_mtm[i]];
+  }
+  return input_mtm;
+}
+
+Indices PushforwardLayoutThroughTranspose(llvm::ArrayRef<int64_t> permutation,
+                                          const Indices& input_mtm) {
+  Indices inv_perm(permutation.size());
+  for (size_t i = 0; i < permutation.size(); ++i) {
+    inv_perm[permutation[i]] = i;
+  }
+  Indices output_mtm(input_mtm.size());
+  for (size_t i = 0; i < input_mtm.size(); ++i) {
+    output_mtm[i] = inv_perm[input_mtm[i]];
+  }
+  return output_mtm;
+}
+
+void SeedFromRaggedDotOperand(
+    mlir::Value val, const Indices& required_mtm,
+    llvm::DenseMap<mlir::Value, Indices>& required_layouts) {
+  auto type = mlir::dyn_cast<mlir::RankedTensorType>(val.getType());
+  if (!type || type.getRank() != kRaggedDotExpertRank) return;
+  auto [it, inserted] = required_layouts.try_emplace(val, required_mtm);
+  if (!inserted) {
+    return;
+  }
+  mlir::Operation* def = val.getDefiningOp();
+  if (def == nullptr) return;
+
+  if (llvm::isa<mlir::stablehlo::ConvertOp, mlir::stablehlo::BitcastConvertOp>(
+          def)) {
+    SeedFromRaggedDotOperand(def->getOperand(0), required_mtm,
+                             required_layouts);
+    return;
+  }
+  if (Is3DMatrixTransposeOp(*def)) {
+    auto transpose_op = llvm::cast<mlir::stablehlo::TransposeOp>(def);
+    const Indices pulled_mtm = PullbackLayoutThroughTranspose(
+        transpose_op.getPermutation(), required_mtm);
+    SeedFromRaggedDotOperand(def->getOperand(0), pulled_mtm, required_layouts);
+  }
+}
+
+void SeedFromRaggedDotResult(
+    mlir::Value val, const Indices& required_mtm,
+    llvm::DenseMap<mlir::Value, Indices>& required_layouts) {
+  auto type = mlir::dyn_cast<mlir::RankedTensorType>(val.getType());
+  if (!type || type.getRank() != kRaggedDotExpertRank) return;
+  auto [it, inserted] = required_layouts.try_emplace(val, required_mtm);
+  if (!inserted) {
+    return;
+  }
+  for (mlir::Operation* user : val.getUsers()) {
+    if (Is3DMatrixTransposeOp(*user)) {
+      auto transpose_op = llvm::cast<mlir::stablehlo::TransposeOp>(user);
+      const Indices pushed_mtm = PushforwardLayoutThroughTranspose(
+          transpose_op.getPermutation(), required_mtm);
+      SeedFromRaggedDotResult(user->getResult(0), pushed_mtm, required_layouts);
+    } else if (llvm::isa<mlir::stablehlo::ConvertOp,
+                         mlir::stablehlo::BitcastConvertOp>(user)) {
+      SeedFromRaggedDotResult(user->getResult(0), required_mtm,
+                              required_layouts);
+    }
+  }
+}
+
+// Finds 3D @main arguments and results that flow into or out of a
+// `chlo.ragged_dot` op (either directly, through a {0, 2, 1} matrix transpose
+// that XLA absorbs into ragged-dot dimension numbers, or through 3D
+// shape-preserving elementwise optimizer updates). XLA's AssignRaggedDotLayout
+// and Mosaic Gmm require C-order {2, 1, 0} on 3D ragged-dot RHS operands and
+// outputs. Transposed operands pull back their required layout through
+// {0, 2, 1} to require {1, 2, 0}.
+RaggedDot3DLayoutTargets CollectRaggedDot3DArgsAndResults(
+    mlir::ModuleOp module, absl::Span<const DeviceBufferRef> arguments,
+    absl::Span<const CustomLayout> argument_layouts) {
+  RaggedDot3DLayoutTargets targets;
+  mlir::func::FuncOp main = module.lookupSymbol<mlir::func::FuncOp>("main");
+  if (!main) return targets;
+
+  llvm::DenseMap<mlir::Value, Indices> required_layouts;
+  main.walk([&](mlir::Operation* op) {
+    if (op->getName().getStringRef() != "chlo.ragged_dot") return;
+    if (auto ragged_dot = llvm::dyn_cast<mlir::chlo::RaggedDotOp>(op)) {
+      auto dn = ragged_dot.getRaggedDotDimensionNumbers();
+      llvm::ArrayRef<int64_t> rhs_group_dims = dn.getRhsGroupDimensions();
+      mlir::Value rhs = ragged_dot.getRhs();
+      auto rhs_type = mlir::dyn_cast<mlir::RankedTensorType>(rhs.getType());
+      if (rhs_type && rhs_type.getRank() == kRaggedDotExpertRank &&
+          !rhs_group_dims.empty() && rhs_group_dims[0] == 0) {
+        SeedFromRaggedDotOperand(rhs, {2, 1, 0}, required_layouts);
+      }
+      for (mlir::Value res : ragged_dot->getResults()) {
+        auto res_type = mlir::dyn_cast<mlir::RankedTensorType>(res.getType());
+        if (res_type && res_type.getRank() == kRaggedDotExpertRank) {
+          SeedFromRaggedDotResult(res, {2, 1, 0}, required_layouts);
+        }
+      }
+    }
+  });
+
+  for (size_t i = 0; i < arguments.size() && i < main.getNumArguments(); ++i) {
+    if (arguments[i].dimensions().size() !=
+        static_cast<size_t>(kRaggedDotExpertRank)) {
+      continue;
+    }
+    std::optional<CustomLayout> explicit_layout;
+    if (i < argument_layouts.size() &&
+        !argument_layouts[i].minor_to_major.empty()) {
+      explicit_layout = argument_layouts[i];
+    } else if (Shape s = arguments[i].shape();
+               s.layout().has_value() && !s.layout()->minor_to_major.empty()) {
+      explicit_layout = s.layout();
+    }
+    if (explicit_layout.has_value() &&
+        !IsDefaultMinorToMajor(arguments[i], explicit_layout->minor_to_major)) {
+      required_layouts.try_emplace(main.getArgument(i),
+                                   explicit_layout->minor_to_major);
+    }
+  }
+
+  if (required_layouts.empty()) {
+    return targets;
+  }
+
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    main.walk([&](mlir::Operation* op) {
+      if (!IsShapePreserving3DElementwiseOp(*op)) return;
+      mlir::Value res = op->getResult(0);
+      auto res_type = mlir::cast<mlir::RankedTensorType>(res.getType());
+      const Indices* found_layout = nullptr;
+      if (auto it = required_layouts.find(res); it != required_layouts.end()) {
+        found_layout = &it->second;
+      } else {
+        for (mlir::Value oper : op->getOperands()) {
+          auto oper_type =
+              mlir::dyn_cast<mlir::RankedTensorType>(oper.getType());
+          if (oper_type && oper_type.getShape() == res_type.getShape()) {
+            if (auto it = required_layouts.find(oper);
+                it != required_layouts.end()) {
+              found_layout = &it->second;
+              break;
+            }
+          }
+        }
+      }
+      if (found_layout == nullptr) return;
+      const Indices layout_to_propagate = *found_layout;
+      if (required_layouts.try_emplace(res, layout_to_propagate).second) {
+        changed = true;
+      }
+      for (mlir::Value oper : op->getOperands()) {
+        auto oper_type = mlir::dyn_cast<mlir::RankedTensorType>(oper.getType());
+        if (oper_type && oper_type.getShape() == res_type.getShape()) {
+          if (required_layouts.try_emplace(oper, layout_to_propagate).second) {
+            changed = true;
+          }
+        }
+      }
+    });
+  }
+
+  for (size_t i = 0; i < arguments.size() && i < main.getNumArguments(); ++i) {
+    if (auto it = required_layouts.find(main.getArgument(i));
+        it != required_layouts.end()) {
+      targets.arg_layouts[i] = it->second;
+    }
+  }
+  main.walk([&](mlir::func::ReturnOp ret_op) {
+    for (size_t i = 0; i < ret_op.getNumOperands(); ++i) {
+      if (auto it = required_layouts.find(ret_op.getOperand(i));
+          it != required_layouts.end()) {
+        targets.result_layouts[i] = it->second;
+      }
+    }
+  });
+  return targets;
+}
+
+void AnnotateArgumentLayouts(
+    mlir::ModuleOp module, absl::Span<const DeviceBufferRef> arguments,
+    absl::Span<const CustomLayout> argument_layouts,
+    const absl::flat_hash_map<size_t, Indices>& ragged_dot_3d_args) {
+  if (arguments.empty()) return;
 
   mlir::func::FuncOp main = module.lookupSymbol<mlir::func::FuncOp>("main");
   ABSL_CHECK(main)  // CRASH_OK: Should never call API on a malformed module.
       << "MLIR module does not contain a main function for argument layouts.";
 
-  ABSL_CHECK_EQ(argument_layouts.size(), arguments.size())  // CRASH_OK
-      << "argument_layouts size (" << argument_layouts.size()
-      << ") must match arguments size (" << arguments.size() << ")";
-  ABSL_CHECK_LE(argument_layouts.size(), main.getNumArguments())  // CRASH_OK
-      << "argument_layouts size (" << argument_layouts.size()
+  if (!argument_layouts.empty()) {
+    ABSL_CHECK_EQ(argument_layouts.size(), arguments.size())  // CRASH_OK
+        << "argument_layouts size (" << argument_layouts.size()
+        << ") must match arguments size (" << arguments.size() << ")";
+  }
+  ABSL_CHECK_LE(arguments.size(), main.getNumArguments())  // CRASH_OK
+      << "arguments size (" << arguments.size()
       << ") exceeds MLIR main argument count (" << main.getNumArguments()
       << ")";
 
   mlir::Builder builder(main.getContext());
-  for (size_t i = 0; i < argument_layouts.size(); ++i) {
-    const CustomLayout& layout = argument_layouts[i];
-    if (!layout.minor_to_major.empty()) {
+  for (size_t i = 0; i < arguments.size(); ++i) {
+    if (auto it = ragged_dot_3d_args.find(i); it != ragged_dot_3d_args.end()) {
+      const Indices& target_mtm = it->second;
+      Shape s = arguments[i].shape();
+      if (s.layout().has_value() && s.layout()->minor_to_major == target_mtm &&
+          !s.layout()->tiles.empty()) {
+        const CustomLayout& layout = *s.layout();
+        main.setArgAttr(i, "mhlo.layout_mode",
+                        builder.getStringAttr(ToXlaLayout(layout).ToString()));
+      } else {
+        main.setArgAttr(i, "mhlo.layout_mode",
+                        builder.getStringAttr(absl::StrCat(
+                            "{", absl::StrJoin(target_mtm, ","), "}")));
+      }
+      continue;
+    }
+
+    std::optional<CustomLayout> layout;
+    if (i < argument_layouts.size() &&
+        !argument_layouts[i].minor_to_major.empty()) {
+      layout = argument_layouts[i];
+    } else if (Shape s = arguments[i].shape();
+               s.layout().has_value() && !s.layout()->minor_to_major.empty()) {
+      layout = s.layout();
+    }
+    if (layout.has_value()) {
       absl::Span<const int64_t> dims = arguments[i].dimensions();
-      ABSL_CHECK_GE(layout.minor_to_major.size(), dims.size())  // CRASH_OK
-          << "minor_to_major size (" << layout.minor_to_major.size()
+      ABSL_CHECK_GE(layout->minor_to_major.size(), dims.size())  // CRASH_OK
+          << "minor_to_major size (" << layout->minor_to_major.size()
           << ") is smaller than argument " << i << " rank (" << dims.size()
           << ")";
       main.setArgAttr(i, "mhlo.layout_mode",
-                      builder.getStringAttr(ToXlaLayout(layout).ToString()));
+                      builder.getStringAttr(ToXlaLayout(*layout).ToString()));
     }
   }
 }
 
-void AnnotateOutputLayouts(mlir::ModuleOp module,
-                           absl::Span<const DeviceBufferRef> outputs) {
+void AnnotateOutputLayouts(
+    mlir::ModuleOp module, absl::Span<const DeviceBufferRef> outputs,
+    const absl::flat_hash_map<size_t, Indices>& ragged_dot_3d_results) {
   mlir::func::FuncOp main = module.lookupSymbol<mlir::func::FuncOp>("main");
   ABSL_CHECK(main)  // CRASH_OK: Should never call API on a malformed module.
       << "MLIR module does not contain a main function for output layouts.";
@@ -833,13 +1133,22 @@ void AnnotateOutputLayouts(mlir::ModuleOp module,
 
   mlir::Builder builder(main.getContext());
   for (size_t i = 0; i < outputs.size(); ++i) {
-    if (!outputs[i].shape().layout().has_value()) continue;
-    const CustomLayout& layout = *outputs[i].shape().layout();
-    if (!layout.minor_to_major.empty() &&
-        !IsDefaultDeviceLayout(layout, outputs[i].element_type(),
-                               outputs[i].dimensions())) {
+    if (outputs[i].shape().layout().has_value()) {
+      const CustomLayout& layout = *outputs[i].shape().layout();
+      if (!layout.minor_to_major.empty() &&
+          !IsDefaultDeviceLayout(layout, outputs[i].element_type(),
+                                 outputs[i].dimensions())) {
+        main.setResultAttr(
+            i, "mhlo.layout_mode",
+            builder.getStringAttr(ToXlaLayout(layout).ToString()));
+      }
+    } else if (auto it = ragged_dot_3d_results.find(i);
+               it != ragged_dot_3d_results.end()) {
+      const Indices& target_mtm = it->second;
       main.setResultAttr(i, "mhlo.layout_mode",
-                         builder.getStringAttr(ToXlaLayout(layout).ToString()));
+                         builder.getStringAttr(absl::StrCat(
+                             "{", absl::StrJoin(target_mtm, ","), "}")));
+      outputs[i].set_layout(CustomLayout{.minor_to_major = target_mtm});
     }
   }
 }
@@ -993,8 +1302,11 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
     TT_ASSIGN_OR_RETURN(auto module,
                         BuildMlirModule(mlir_context, use_stablehlo_bounds,
                                         donated_inputs, module_name));
-    AnnotateArgumentLayouts(*module, arguments_, argument_layouts);
-    AnnotateOutputLayouts(*module, outputs_);
+    const RaggedDot3DLayoutTargets ragged_dot_3d =
+        CollectRaggedDot3DArgsAndResults(*module, arguments_, argument_layouts);
+    AnnotateArgumentLayouts(*module, arguments_, argument_layouts,
+                            ragged_dot_3d.arg_layouts);
+    AnnotateOutputLayouts(*module, outputs_, ragged_dot_3d.result_layouts);
     if (out_mlir_text != nullptr) {
       *out_mlir_text = MlirModuleToString(*module);
     }
@@ -1480,6 +1792,80 @@ absl::StatusOr<std::string> GetGraphviz(
                                 }),
                   "\n}\n");
   return result;
+}
+
+absl::StatusOr<std::optional<DeviceBufferRef>>
+MaybeCreate3DArgumentRelayoutBuffer(DeviceBufferRef& buf,
+                                    const Indices& required_mtm) {
+  if (buf.dimensions().size() != required_mtm.size()) {
+    return std::nullopt;
+  }
+  if (const auto cached = buf.GetCachedRelayoutBuffer(required_mtm);
+      cached.has_value()) {
+    return cached;
+  }
+  if (buf.shape().layout().has_value() &&
+      buf.shape().layout()->minor_to_major == required_mtm) {
+    return std::nullopt;
+  }
+  if (!buf.shape().layout().has_value()) {
+    TT_ASSIGN_OR_RETURN(
+        const xla::Layout default_layout,
+        GetDefaultDeviceLayout(buf.element_type(), buf.dimensions()));
+    if (default_layout.minor_to_major() ==
+        absl::Span<const int64_t>(required_mtm)) {
+      CustomLayout layout;
+      layout.minor_to_major = required_mtm;
+      for (const auto& tile : default_layout.tiles()) {
+        layout.tiles.push_back(CopyIntVector(tile.dimensions()));
+      }
+      layout.element_size_in_bits = XlaEquivalentBitwidth(buf.element_type());
+      buf.set_layout(std::move(layout));
+      return std::nullopt;
+    }
+  }
+  if (buf.is_placeholder()) {
+    return std::nullopt;
+  }
+  TT_ASSIGN_OR_RETURN(xla::PjRtBuffer* const pjrt_buf, buf.AwaitBuffer());
+  const xla::Shape on_device_shape = pjrt_buf->on_device_shape();
+  const xla::Layout& current_xla_layout = on_device_shape.layout();
+  if (current_xla_layout.minor_to_major() ==
+      absl::Span<const int64_t>(required_mtm)) {
+    CustomLayout layout;
+    layout.minor_to_major = required_mtm;
+    for (const auto& tile : current_xla_layout.tiles()) {
+      layout.tiles.push_back(CopyIntVector(tile.dimensions()));
+    }
+    layout.element_size_in_bits = XlaEquivalentBitwidth(buf.element_type());
+    buf.set_layout(std::move(layout));
+    return std::nullopt;
+  }
+
+  CustomLayout current_layout;
+  current_layout.minor_to_major =
+      CopyIntVector(current_xla_layout.minor_to_major());
+  for (const auto& tile : current_xla_layout.tiles()) {
+    current_layout.tiles.push_back(CopyIntVector(tile.dimensions()));
+  }
+  current_layout.element_size_in_bits =
+      XlaEquivalentBitwidth(buf.element_type());
+  buf.set_layout(std::move(current_layout));
+
+  Shape target_shape(CopyIntVector(buf.dimensions()), buf.element_type());
+  target_shape.set_layout(CustomLayout{.minor_to_major = required_mtm});
+  MlirOpBuilder identity_builder = [](mlir::MlirBuilder& /*builder*/,
+                                      absl::Span<mlir::MlirOp> inputs)
+      -> absl::StatusOr<DynamicMlirOpResults> {
+    return DynamicMlirOpResults{inputs[0]};
+  };
+  TT_ASSIGN_OR_RETURN(
+      std::vector<DeviceBufferRef> refs,
+      DeviceBufferList::CreateDeferred(
+          OpName::kToCopy, std::move(identity_builder), {buf},
+          OpParamCacheKeys::Empty(), {std::move(target_shape)}));
+  buf.SetCachedRelayoutBuffer(required_mtm, refs[0]);
+  return std::move(refs[0]);
 }
 
 }  // namespace torch_tpu

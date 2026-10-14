@@ -144,6 +144,16 @@ class LoadedExecutableWithMetadata {
           unbounded_dynamic_execution_metadata = std::nullopt,
       std::optional<xla::PjRtDeviceDimensions> subslice_origin = std::nullopt);
 
+  struct Param3DLayout {
+    int64_t param_idx = 0;
+    Indices minor_to_major;
+
+    friend bool operator==(const Param3DLayout& lhs, const Param3DLayout& rhs) {
+      return lhs.param_idx == rhs.param_idx &&
+             lhs.minor_to_major == rhs.minor_to_major;
+    }
+  };
+
   static SharedLoadedExecutableWithMetadata WithArgumentIndices(
       const SharedLoadedExecutableWithMetadata& existing,
       Indices argument_indices) {
@@ -152,7 +162,8 @@ class LoadedExecutableWithMetadata {
             existing->executable_, existing->output_shapes_,
             existing->parameter_device_shapes_, std::move(argument_indices),
             existing->unbounded_dynamic_execution_metadata_,
-            existing->subslice_origin_));
+            existing->subslice_origin_,
+            existing->non_default_3d_param_layouts_));
   }
 
   static SharedLoadedExecutableWithMetadata WithDynamicExecutionMetadata(
@@ -163,7 +174,24 @@ class LoadedExecutableWithMetadata {
             existing->executable_, existing->output_shapes_,
             existing->parameter_device_shapes_, existing->argument_indices_,
             std::move(unbounded_dynamic_execution_metadata),
-            existing->subslice_origin_));
+            existing->subslice_origin_,
+            existing->non_default_3d_param_layouts_));
+  }
+
+  static SharedLoadedExecutableWithMetadata With3DParamLayouts(
+      const SharedLoadedExecutableWithMetadata& existing,
+      std::vector<Param3DLayout> non_default_3d_param_layouts,
+      std::vector<std::optional<xla::Shape>> parameter_device_shapes = {}) {
+    auto param_shapes = parameter_device_shapes.empty()
+                            ? existing->parameter_device_shapes_
+                            : std::move(parameter_device_shapes);
+    return std::shared_ptr<const LoadedExecutableWithMetadata>(
+        new LoadedExecutableWithMetadata(
+            existing->executable_, existing->output_shapes_,
+            std::move(param_shapes), existing->argument_indices_,
+            existing->unbounded_dynamic_execution_metadata_,
+            existing->subslice_origin_,
+            std::move(non_default_3d_param_layouts)));
   }
 
   const xla::PjRtExecutable* GetExecutable() const {
@@ -188,6 +216,21 @@ class LoadedExecutableWithMetadata {
   unbounded_dynamic_execution_metadata() const {
     return unbounded_dynamic_execution_metadata_;
   }
+  // Returns the 3D parameters whose on-device layout differs from default.
+  const std::vector<Param3DLayout>& non_default_3d_param_layouts() const {
+    return non_default_3d_param_layouts_;
+  }
+  // Deprecated compatibility accessor returning parameter indices with {2,1,0}.
+  Indices c_order_3d_param_indices() const {
+    Indices indices;
+    const Indices kDescending3D = {2, 1, 0};
+    for (const auto& layout : non_default_3d_param_layouts_) {
+      if (layout.minor_to_major == kDescending3D) {
+        indices.push_back(layout.param_idx);
+      }
+    }
+    return indices;
+  }
 
   // The subslice origin the executable was loaded at (see GetSubsliceOrigin);
   // nullopt if it was loaded for the full topology. Needed to load it again,
@@ -204,14 +247,17 @@ class LoadedExecutableWithMetadata {
       Indices argument_indices = {},
       std::optional<UnboundedDynamicExecutionMetadata>
           unbounded_dynamic_execution_metadata = std::nullopt,
-      std::optional<xla::PjRtDeviceDimensions> subslice_origin = std::nullopt)
+      std::optional<xla::PjRtDeviceDimensions> subslice_origin = std::nullopt,
+      std::vector<Param3DLayout> non_default_3d_param_layouts = {})
       : executable_(std::move(executable)),
         output_shapes_(std::move(output_shapes)),
         parameter_device_shapes_(std::move(parameter_device_shapes)),
         argument_indices_(std::move(argument_indices)),
         unbounded_dynamic_execution_metadata_(
             std::move(unbounded_dynamic_execution_metadata)),
-        subslice_origin_(std::move(subslice_origin)) {}
+        subslice_origin_(std::move(subslice_origin)),
+        non_default_3d_param_layouts_(std::move(non_default_3d_param_layouts)) {
+  }
 
   absl_nonnull std::shared_ptr<const xla::PjRtLoadedExecutable> executable_;
   // Cached output shapes for the executable.
@@ -222,6 +268,7 @@ class LoadedExecutableWithMetadata {
   std::optional<UnboundedDynamicExecutionMetadata>
       unbounded_dynamic_execution_metadata_;
   std::optional<xla::PjRtDeviceDimensions> subslice_origin_;
+  std::vector<Param3DLayout> non_default_3d_param_layouts_;
 };
 
 using LoadedExecutablePromise =
@@ -328,6 +375,12 @@ absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>>
 CompileAndLoadMlirModule(xla::PjRtClient& client,
                          xla::MaybeOwningMlirModule module,
                          xla::CompileOptions options);
+
+// Returns true if `layout_tiles` match `default_tiles`.
+bool TilesMatchDefault(absl::Span<const Indices> layout_tiles,
+                       absl::Span<const xla::Tile> default_tiles);
+bool TilesMatchDefault(absl::Span<const xla::Tile> layout_tiles,
+                       absl::Span<const xla::Tile> default_tiles);
 
 // Creates an MLIR context and registers all required TPU dialects.
 absl_nonnull std::unique_ptr<mlir::MLIRContext> MakeMlirContext();
