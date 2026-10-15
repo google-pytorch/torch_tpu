@@ -48,6 +48,7 @@ torch_tpu_py_library(
         "//src/torch_tpu/_internal/compile/fx_passes:mark_activation_checkpoints",
         "//src/torch_tpu/_internal/compile/fx_passes:mark_embedded_constants",
         "//src/torch_tpu/_internal/export",
+        "//src/torch_tpu/_internal/utils",
     ],
 )
 

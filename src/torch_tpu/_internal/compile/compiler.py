@@ -50,6 +50,7 @@ from torch_tpu._internal.compile.torch_tpu_compiled_executable import AsyncCompi
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import CompiledArtifact
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import NoOpCompiledArtifact
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import TorchTpuCompiledExecutable
+from torch_tpu._internal.utils import utils
 from torch_tpu._internal.benchmarks import xprof_adapter
 
 
@@ -227,6 +228,25 @@ def get_non_default_device_layout(t: Any) -> Any | None:
     return None
   # Like eager execution, compares only minor_to_major and tiles.
   return None if layout[:2] == default_layout[:2] else layout
+
+
+# TODO: b/576283069 - Remove once minimum OSS PyTorch is >= 2.12.0 (pytorch/pytorch#182421).
+def _backfill_backward_graph_tags(
+    gm_or_graph: torch.fx.GraphModule | torch.fx.Graph,
+) -> None:
+  """Backfills `autograd_backward=True` on separate backward graphs for PyTorch < 2.12.
+
+  Upstreamed in PyTorch 2.12 (`_extract_fwd_bwd_modules` in
+  `torch._functorch.partitioners`).
+  """
+  graph = (
+      gm_or_graph.graph
+      if isinstance(gm_or_graph, torch.fx.GraphModule)
+      else gm_or_graph
+  )
+  for node in graph.nodes:
+    if node.op in ("call_function", "get_attr"):
+      node.meta["autograd_backward"] = True
 
 
 def _mark_auto_functionalized_mutations(
@@ -564,10 +584,12 @@ class StaticCompiler(Compiler):
     graph_transform_observer.GraphTransformObserver(
         graph_module, "mark_embedded_constants"
     ).apply_graph_pass(mark_embedded_constants.apply)
-    if not is_fwd:
-      graph_transform_observer.GraphTransformObserver(
-          graph_module, "mark_activation_checkpoints"
-      ).apply_graph_pass(mark_activation_checkpoints.apply)
+    # TODO: b/576283069 - Remove once minimum OSS PyTorch is >= 2.12.0.
+    if not is_fwd and utils.get_torch_version() < (2, 12):
+      _backfill_backward_graph_tags(graph_module)
+    graph_transform_observer.GraphTransformObserver(
+        graph_module, "mark_activation_checkpoints"
+    ).apply_graph_pass(mark_activation_checkpoints.apply)
 
     graph_module.graph.lint()
     graph_module.recompile()
