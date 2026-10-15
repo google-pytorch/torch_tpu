@@ -124,6 +124,41 @@ torch_tpu_cc_test(
 )
 
 torch_tpu_cc_library(
+    name = "optimize_sdpa_and_softmax_reductions",
+    srcs = ["optimize_sdpa_and_softmax_reductions.cc"],
+    hdrs = ["optimize_sdpa_and_softmax_reductions.h"],
+    deps = [
+        "@com_google_absl//absl/log:absl_check",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:SideEffectInterfaces",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "optimize_sdpa_and_softmax_reductions_test",
+    srcs = ["optimize_sdpa_and_softmax_reductions_test.cc"],
+    deps = [
+        ":optimize_sdpa_and_softmax_reductions",
+        "//csrc/common:oss_test_main",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Parser",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:reference_api",
+        "@stablehlo//:reference_configuration",
+        "@stablehlo//:register",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "reassociate_norm_weights",
     srcs = ["reassociate_norm_weights.cc"],
     hdrs = ["reassociate_norm_weights.h"],

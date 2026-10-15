@@ -22,6 +22,7 @@
 #include "csrc/mlir/passes/fold_concat_softmax.h"
 #include "csrc/mlir/passes/guard_zero_operand_custom_calls.h"
 #include "csrc/mlir/passes/lower_separable_gather_to_dot.h"
+#include "csrc/mlir/passes/optimize_sdpa_and_softmax_reductions.h"
 #include "csrc/mlir/passes/reassociate_norm_weights.h"
 #include "csrc/mlir/pipeline.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
@@ -54,6 +55,9 @@ void RegisterTorchTpuPasses() {
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return createUnguardZeroOperandCustomCallsPass();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return createOptimizeSdpaAndSoftmaxReductionsPass();
   });
   mlir::registerPassPipeline(
       "torch-tpu-optimization-pipeline",
