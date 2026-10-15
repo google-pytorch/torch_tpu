@@ -78,10 +78,6 @@ _FUSED_BROADCAST_SKIP = (
     " construction. Co-located broadcast device order is untestable here."
 )
 
-# Fused cases whose collective runs on a different device set than the
-# world-mesh kernel; compiling them into one module must fail.
-_FUSED_DEVICE_SET_MISMATCH_CASES = frozenset({"all_reduce_subgroup"})
-
 
 # Broadcast roots: first, last, middle.
 def _broadcast_sources(world_size: int) -> tuple[int, ...]:
@@ -628,9 +624,6 @@ def run_collective_solo(case_name: str) -> None:
 def run_collective_fused(case_name: str) -> None:
   """Runs one collective in the same compiled module as the kernel.
 
-  The kernel's mesh spans the world, so a collective over a half-world subgroup
-  runs on a different device set and must be rejected rather than fused.
-
   Args:
     case_name: The `_CollectiveCase.name` to run.
   """
@@ -643,13 +636,6 @@ def run_collective_fused(case_name: str) -> None:
     x = torch.full((1, _ROWS, _COLS), rank, dtype=torch.int32, device="tpu")
     case = _select_case(case_name, rank, world_size)
     payload = torch.tensor(case.payload, dtype=torch.int32, device="tpu")
-    if case.name in _FUSED_DEVICE_SET_MISMATCH_CASES:
-      with absltest.TestCase().assertRaisesRegex(  # ABSLTEST_OK=helper only ASSERT_RAISES_OK=Requires multi-device hardware to test device set mismatch rejection in traversal
-          (RuntimeError, torch._dynamo.exc.BackendCompilerFailed),
-          r"device assignment mismatch across operations",
-      ):
-        _run_fused(case, payload, op, x)
-      return
     observed = _run_fused(case, payload, op, x)
     if observed != case.expected:
       raise AssertionError(

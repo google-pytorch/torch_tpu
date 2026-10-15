@@ -76,6 +76,7 @@ torch_tpu_cc_library(
         "//csrc/eager:events_queue",
         "//csrc/eager:materialize",
         "//csrc/eager:op_dispatcher",
+        "//csrc/eager:process_group_partitions",
         "//csrc/eager:structured_log_buffer",
         "//csrc/eager:tensor_to_buffer",
         "//csrc/ops:op_builder_utils",

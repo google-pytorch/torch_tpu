@@ -70,6 +70,7 @@ torch_tpu_cc_test(
     tags = if_oss(["requires-tpu-v5lite"]),
     deps = [
         ":device_assignment_pipeline",
+        ":process_group_partitions",
         "//csrc/common:error_utils",
         "//csrc/common:oss_test_main",
         "//csrc/common:status_test_utils",
@@ -953,6 +954,23 @@ torch_tpu_cc_library(
 )
 
 torch_tpu_cc_library(
+    name = "process_group_partitions",
+    srcs = ["process_group_partitions.cc"],
+    hdrs = ["process_group_partitions.h"],
+    deps = [
+        "//csrc/common:error_utils",
+        "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/base:no_destructor",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/synchronization",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "device_assignment_pipeline",
     srcs = [
         "device_assignment_pipeline.cc",
@@ -962,8 +980,10 @@ torch_tpu_cc_library(
     ],
     deps = [
         ":device_buffer",
+        ":process_group_partitions",
         "//csrc/common:error_utils",
         "//csrc/ops:op_names",
+        "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",

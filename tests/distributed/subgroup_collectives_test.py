@@ -265,8 +265,8 @@ def run_unaligned_subgroups() -> None:
   expected = torch.full((4,), float(world_size + half), dtype=torch.float32)
   utils.assert_close(res, expected)
 
-  # The world and subgroup collectives run on different device sets, so they
-  # cannot be fused into one executable.
+  # Fused into one executable, the program runs on the world and the subgroup
+  # collective is tiled over both groups.
   @torch.compile(backend="tpu", fullgraph=True)
   @torch.tpu.distributed.spmd_safe
   def fused_fn(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -276,12 +276,8 @@ def run_unaligned_subgroups() -> None:
 
   x = torch.ones(4, device="tpu")
   y = torch.ones(4, device="tpu")
-  try:
-    fused_fn(x, y).cpu()
-  except RuntimeError as e:
-    assert "device assignment mismatch across operations" in str(e), e
-  else:
-    raise AssertionError("the world and subgroup collectives were fused")
+  res = fused_fn(x, y).cpu()
+  utils.assert_close(res, expected)
 
 
 def _run_with_cleanup(test_fn) -> None:

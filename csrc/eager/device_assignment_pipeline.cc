@@ -16,12 +16,15 @@
 
 #include "csrc/eager/device_assignment_pipeline.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
+#include "absl/algorithm/container.h"
 #include "absl/base/nullability.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
@@ -33,6 +36,7 @@
 #include "absl/types/span.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/eager/device_buffer.h"
+#include "csrc/eager/process_group_partitions.h"
 #include "csrc/ops/op_names.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/SmallVector.h"
@@ -169,6 +173,149 @@ absl::Status VerifySameDeviceSet(absl::Span<const int64_t> resolved_da,
   return absl::OkStatus();
 }
 
+// Tiles a 2D `replica_groups` attribute of an op that runs on one group of a
+// partition over every group of that partition: each row of positions in the
+// op's group becomes one row per group in `tiles` (the positions of that
+// group's members in the program's device assignment). Returns std::nullopt if
+// `attr` holds a position outside the group.
+std::optional<mlir::DenseIntElementsAttr> TileReplicaGroupsAttr(
+    mlir::DenseIntElementsAttr attr,
+    absl::Span<const std::vector<int64_t>> tiles) {  // INT_VEC_OK
+  auto shaped_type = mlir::dyn_cast<mlir::RankedTensorType>(attr.getType());
+  if (!shaped_type || shaped_type.getRank() != 2 || tiles.empty()) {
+    return std::nullopt;
+  }
+  const int64_t num_rows = shaped_type.getDimSize(0);
+  const int64_t row_size = shaped_type.getDimSize(1);
+  std::vector<int64_t> positions;  // INT_VEC_OK
+  for (const llvm::APInt& val : attr.getValues<llvm::APInt>()) {
+    positions.push_back(val.getSExtValue());
+  }
+  std::vector<int64_t> tiled;  // INT_VEC_OK
+  tiled.reserve(positions.size() * tiles.size());
+  for (const std::vector<int64_t>& tile : tiles) {  // INT_VEC_OK
+    for (int64_t p : positions) {
+      if (p < 0 || p >= static_cast<int64_t>(tile.size())) {
+        return std::nullopt;
+      }
+      tiled.push_back(tile[p]);
+    }
+  }
+  auto tiled_type = mlir::RankedTensorType::get(
+      {num_rows * static_cast<int64_t>(tiles.size()), row_size},
+      shaped_type.getElementType());
+  return mlir::DenseIntElementsAttr::get(tiled_type, tiled);
+}
+
+// The groups of `partition` inside `resolved_da`, each as the positions of its
+// members in `resolved_da` in group-rank order. Every group must lie entirely
+// inside or entirely outside `resolved_da`, and the groups inside must cover
+// it.
+absl::StatusOr<std::vector<std::vector<int64_t>>>  // INT_VEC_OK
+PartitionTiles(const DeviceIdPartition& partition,
+               absl::Span<const int64_t> resolved_da) {
+  absl::flat_hash_map<int64_t, int64_t> position;
+  for (int64_t p = 0; p < static_cast<int64_t>(resolved_da.size()); ++p) {
+    position[resolved_da[p]] = p;
+  }
+  std::vector<std::vector<int64_t>> tiles;  // INT_VEC_OK
+  size_t covered = 0;
+  for (const std::vector<int64_t>& group : partition) {  // INT_VEC_OK
+    std::vector<int64_t> tile;                           // INT_VEC_OK
+    for (int64_t device : group) {
+      if (auto it = position.find(device); it != position.end()) {
+        tile.push_back(it->second);
+      }
+    }
+    if (tile.empty()) {
+      continue;
+    }
+    TT_RET_CHECK(tile.size() == group.size(), error::kInternal)
+        << "process group on devices " << VectorToString(group)
+        << " lies partly outside the program's devices "
+        << VectorToString(resolved_da);
+    covered += tile.size();
+    tiles.push_back(std::move(tile));
+  }
+  TT_RET_CHECK(covered == resolved_da.size(), error::kInternal)
+      << "the process groups of an op do not cover the program's devices "
+      << VectorToString(resolved_da);
+  return tiles;
+}
+
+bool IsSameDeviceSet(absl::Span<const int64_t> da,
+                     const absl::flat_hash_set<int64_t>& devices) {
+  return da.size() == devices.size() &&
+         absl::c_all_of(da, [&](int64_t d) { return devices.contains(d); });
+}
+
+// Resolves a program whose ops run on different device sets. The program runs
+// on the smallest set of devices that holds every op's devices and, for the
+// process group of every op, every group of its partition that shares a device
+// with the set. Each collective is then tiled over the groups of its partition
+// (see RemapReplicaOrderInOperation), as one program per stage of a pipeline
+// keeps to that stage. Returns `mismatch` if an op's process group has no
+// registered partition.
+absl::StatusOr<std::vector<int64_t>>  // INT_VEC_OK
+ResolveMixedDeviceAssignment(absl::Span<const OpDeviceAssignment> ops,
+                             absl::Span<const int64_t> pallas_da,
+                             absl::Status mismatch) {
+  absl::flat_hash_set<int64_t> devices(pallas_da.begin(), pallas_da.end());
+  std::vector<DeviceIdPartition> partitions;
+  absl::flat_hash_set<std::vector<int64_t>> looked_up;  // INT_VEC_OK
+  for (const OpDeviceAssignment& op : ops) {
+    if (op.device_assignment.empty()) {
+      continue;
+    }
+    devices.insert(op.device_assignment.begin(), op.device_assignment.end());
+    if (!looked_up
+             .insert(std::vector<int64_t>(  // INT_VEC_OK
+                 op.device_assignment.begin(), op.device_assignment.end()))
+             .second) {
+      continue;
+    }
+    TT_ASSIGN_OR_RETURN(std::optional<DeviceIdPartition> partition,
+                        LookupProcessGroupPartition(op.device_assignment));
+    if (!partition.has_value()) {
+      return mismatch;
+    }
+    partitions.push_back(*std::move(partition));
+  }
+  for (bool grown = true; grown;) {
+    grown = false;
+    for (const DeviceIdPartition& partition : partitions) {
+      for (const std::vector<int64_t>& group : partition) {  // INT_VEC_OK
+        if (absl::c_any_of(group,
+                           [&](int64_t d) { return devices.contains(d); })) {
+          for (int64_t d : group) {
+            grown = devices.insert(d).second || grown;
+          }
+        }
+      }
+    }
+  }
+  std::vector<int64_t> resolved_da(devices.begin(),  // INT_VEC_OK
+                                   devices.end());
+  absl::c_sort(resolved_da);
+  if (!pallas_da.empty()) {
+    TT_RET_CHECK(IsSameDeviceSet(pallas_da, devices), error::kInvalidArgument)
+        << "Pallas kernels in a program that combines process groups must run "
+        << "on the program's devices " << VectorToString(resolved_da)
+        << ", got " << VectorToString(pallas_da);
+    return std::vector<int64_t>(pallas_da.begin(),  // INT_VEC_OK
+                                pallas_da.end());
+  }
+  // Keep the order of an op that already runs on every device, so that it
+  // needs no rewriting.
+  for (const OpDeviceAssignment& op : ops) {
+    if (IsSameDeviceSet(op.device_assignment, devices)) {
+      return std::vector<int64_t>(  // INT_VEC_OK
+          op.device_assignment.begin(), op.device_assignment.end());
+    }
+  }
+  return resolved_da;
+}
+
 void RewriteCustomCallBackendConfig(
     mlir::Operation* op, absl::Span<const int64_t> rank_to_partition) {
   if (!mlir::isa<mlir::stablehlo::CustomCallOp>(op)) {
@@ -202,8 +349,9 @@ void RewriteCustomCallBackendConfig(
 absl::StatusOr<std::vector<int64_t>>  // INT_VEC_OK
 ResolveDeviceAssignment(absl::Span<const OpDeviceAssignment> ops,
                         absl::Span<const PallasDeviceAssignment> pallas_ops) {
-  std::vector<int64_t> resolved_da =  // INT_VEC_OK
+  const std::vector<int64_t> pallas_da =  // INT_VEC_OK
       ResolvePallasDeviceAssignment(pallas_ops);
+  std::vector<int64_t> resolved_da = pallas_da;  // INT_VEC_OK
 
   for (size_t i = 0; i < ops.size(); ++i) {
     const auto& op = ops[i];
@@ -214,7 +362,11 @@ ResolveDeviceAssignment(absl::Span<const OpDeviceAssignment> ops,
       resolved_da.assign(op.device_assignment.begin(),
                          op.device_assignment.end());
     } else if (resolved_da != op.device_assignment) {
-      TT_RETURN_IF_ERROR(VerifySameDeviceSet(resolved_da, op, i));
+      absl::Status same_set = VerifySameDeviceSet(resolved_da, op, i);
+      if (!same_set.ok()) {
+        return ResolveMixedDeviceAssignment(ops, pallas_da,
+                                            std::move(same_set));
+      }
     }
   }
 
@@ -247,6 +399,75 @@ ResolveDeviceAssignmentForTraversal(
   return ResolveDeviceAssignment(ops, pallas_ops);
 }
 
+namespace {
+
+// Rewrites the collectives of an op that runs on one group of a partition so
+// that the program, which runs on `resolved_da`, performs them on every group
+// of the partition inside `resolved_da`.
+absl::Status TileOperationOverPartition(mlir::Operation* absl_nonnull root_op,
+                                        absl::Span<const int64_t> op_da,
+                                        absl::Span<const int64_t> resolved_da) {
+  TT_ASSIGN_OR_RETURN(std::optional<DeviceIdPartition> partition,
+                      LookupProcessGroupPartition(op_da));
+  TT_RET_CHECK(partition.has_value(), error::kInvalidArgument)
+      << "op device assignment " << VectorToString(op_da)
+      << " is not a permutation of the resolved device assignment "
+      << VectorToString(resolved_da)
+      << " and belongs to no known process group";
+  TT_ASSIGN_OR_RETURN(
+      const std::vector<std::vector<int64_t>> tiles,  // INT_VEC_OK
+      PartitionTiles(*partition, resolved_da));
+  absl::Status status = absl::OkStatus();
+  const auto tile = [&](mlir::Operation* op, mlir::DenseIntElementsAttr attr,
+                        std::string_view name) {
+    std::optional<mlir::DenseIntElementsAttr> tiled =
+        TileReplicaGroupsAttr(attr, tiles);
+    if (!tiled.has_value()) {
+      status = TT_ERROR(error::kInternal)
+               << "cannot tile " << name << " of an op on devices "
+               << VectorToString(op_da);
+      return attr;
+    }
+    return *tiled;
+  };
+  root_op->walk([&](mlir::Operation* op) {
+    if (auto rg_attr =
+            op->getAttrOfType<mlir::DenseIntElementsAttr>("replica_groups")) {
+      op->setAttr("replica_groups", tile(op, rg_attr, "replica_groups"));
+    }
+    if (auto st_attr = op->getAttrOfType<mlir::DenseIntElementsAttr>(
+            "source_target_pairs")) {
+      op->setAttr("source_target_pairs",
+                  tile(op, st_attr, "source_target_pairs"));
+    }
+    if (!mlir::isa<mlir::stablehlo::CustomCallOp>(op)) {
+      return;
+    }
+    auto dict_attr = op->getAttrOfType<mlir::DictionaryAttr>("backend_config");
+    auto rg_attr = dict_attr
+                       ? mlir::dyn_cast_or_null<mlir::DenseIntElementsAttr>(
+                             dict_attr.get("replica_groups"))
+                       : nullptr;
+    if (!rg_attr) {
+      return;
+    }
+    llvm::SmallVector<mlir::NamedAttribute> new_attrs;
+    for (const mlir::NamedAttribute& named_attr : dict_attr) {
+      if (named_attr.getName() == "replica_groups") {
+        new_attrs.emplace_back(named_attr.getName(),
+                               tile(op, rg_attr, "replica_groups"));
+      } else {
+        new_attrs.push_back(named_attr);
+      }
+    }
+    op->setAttr("backend_config",
+                mlir::DictionaryAttr::get(op->getContext(), new_attrs));
+  });
+  return status;
+}
+
+}  // namespace
+
 absl::Status RemapReplicaOrderInOperation(
     mlir::Operation* absl_nonnull root_op, absl::Span<const int64_t> op_da,
     absl::Span<const int64_t> resolved_da) {
@@ -256,10 +477,9 @@ absl::Status RemapReplicaOrderInOperation(
 
   const std::optional<std::vector<int64_t>>  // INT_VEC_OK
       rank_to_partition = BuildRankToPartition(op_da, resolved_da);
-  TT_RET_CHECK(rank_to_partition.has_value(), error::kInvalidArgument)
-      << "op device assignment " << VectorToString(op_da)
-      << " is not a permutation of the resolved device assignment "
-      << VectorToString(resolved_da);
+  if (!rank_to_partition.has_value()) {
+    return TileOperationOverPartition(root_op, op_da, resolved_da);
+  }
 
   root_op->walk([&](mlir::Operation* op) {
     if (auto rg_attr =

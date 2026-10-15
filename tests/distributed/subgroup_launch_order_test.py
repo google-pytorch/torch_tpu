@@ -440,8 +440,11 @@ def run_uneven_pair_scans() -> None:
   utils.assert_close(w.cpu(), torch.tensor([float(sum(range(_WORLD)))]))
 
 
-def run_subgroup_shares_no_program() -> None:
-  """A subgroup's program holds no other group and no sharded-table lookup."""
+def run_mixed_programs_run_on_the_world() -> None:
+  """Programs that combine a pair's collectives with world ops run on the world.
+
+  The pair's collective is tiled over every pair, so all ranks take part.
+  """
   dist.init_process_group(backend="tpu_dist")
   rank = int(os.environ["RANK"])
   assert int(os.environ["WORLD_SIZE"]) == _WORLD
@@ -457,12 +460,9 @@ def run_subgroup_shares_no_program() -> None:
 
   x = torch.ones(4, device="tpu")
   y = torch.ones(4, device="tpu")
-  try:
-    mixed(x, y).cpu()
-  except RuntimeError as e:
-    assert "device assignment mismatch across operations" in str(e), e
-  else:
-    raise AssertionError("the world and pair collectives shared a program")
+  utils.assert_close(
+      mixed(x, y).cpu(), torch.full((4,), float(_WORLD + 2), dtype=torch.float32)
+  )
 
   # A sparse-dense-matmul lookup shards its table across the SparseCores of
   # all devices (carrying the full-slice device assignment at dispatch time):
@@ -504,12 +504,8 @@ def run_subgroup_shares_no_program() -> None:
     dist.all_reduce(activations, group=my_pair)
     return activations
 
-  try:
-    lookup(*csr, torch.zeros((32, 8), device="tpu")).cpu()
-  except RuntimeError as e:
-    assert "device assignment mismatch across operations" in str(e), e
-  else:
-    raise AssertionError("the lookup ran in the program of the pair")
+  activations = lookup(*csr, torch.zeros((32, 8), device="tpu")).cpu()
+  utils.assert_close(activations, torch.zeros_like(activations))
 
 
 def run_uneven_group_all_to_all(layout: str) -> None:
@@ -780,10 +776,10 @@ class SubgroupLaunchOrderTest(seed_test_utils.MultiProcessRepeatableTest):
         fn=run_uneven_pair_scans,
     )
 
-  def test_subgroup_shares_no_program(self):
+  def test_mixed_programs_run_on_the_world(self):
     distributed_utils.dist_run(
         nproc_per_node=_WORLD,
-        fn=run_subgroup_shares_no_program,
+        fn=run_mixed_programs_run_on_the_world,
     )
 
   def test_compiled_half_programs_through_the_aot_cache(self):

@@ -30,6 +30,7 @@
 #include "c10/util/Exception.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/status_test_utils.h"
+#include "csrc/eager/process_group_partitions.h"
 #include "csrc/ops/op_names.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
@@ -839,6 +840,192 @@ TEST(DeviceAssignmentPipelineTest,
   // localizes to {2, 0, 3, 1} and slice 1 to {0, 2, 1, 3}.
   EXPECT_FALSE(SamePerSliceCommunicationPattern(rg_c_bad, /*group_size=*/4,
                                                 resolved_da_bad));
+}
+
+// Registers `partition` for each of its groups, as every process group of a
+// layout does on its own process.
+void RegisterLayout(const DeviceIdPartition& partition) {
+  for (const std::vector<int64_t>& group : partition) {  // INT_VEC_OK
+    RegisterProcessGroupPartition(group, partition);
+  }
+}
+
+TEST(DeviceAssignmentPipelineTest,
+     MixedGroupsResolveToTheDevicesClosedUnderTheirLayouts) {
+  ClearProcessGroupPartitions();
+  // Context parallelism 4 x tensor parallelism 2 over 8 devices.
+  RegisterLayout({{0, 1}, {2, 3}, {4, 5}, {6, 7}});
+  RegisterLayout({{0, 2, 4, 6}, {1, 3, 5, 7}});
+  const std::vector<int64_t> tp = {0, 1};         // INT_VEC_OK
+  const std::vector<int64_t> pcp = {0, 2, 4, 6};  // INT_VEC_OK
+
+  const absl::StatusOr<std::vector<int64_t>> resolved =  // INT_VEC_OK
+      ResolveDeviceAssignment({
+          OpDeviceAssignment{OpName::kDistributedAllReduce, tp},
+          OpDeviceAssignment{OpName::kDistributedAllReduce, pcp},
+      });
+
+  ASSERT_TRUE(resolved.ok()) << resolved.status();
+  EXPECT_THAT(*resolved, testing::ElementsAre(0, 1, 2, 3, 4, 5, 6, 7));
+  ClearProcessGroupPartitions();
+}
+
+TEST(DeviceAssignmentPipelineTest, MixedGroupsOfOneStageStayInTheStage) {
+  ClearProcessGroupPartitions();
+  // Two pipeline stages of 4 devices, each with context parallelism 2 x tensor
+  // parallelism 2.
+  RegisterLayout({{0, 1}, {2, 3}, {4, 5}, {6, 7}});
+  RegisterLayout({{0, 2}, {1, 3}, {4, 6}, {5, 7}});
+  const std::vector<int64_t> tp = {4, 5};   // INT_VEC_OK
+  const std::vector<int64_t> pcp = {4, 6};  // INT_VEC_OK
+
+  const absl::StatusOr<std::vector<int64_t>> resolved =  // INT_VEC_OK
+      ResolveDeviceAssignment({
+          OpDeviceAssignment{OpName::kDistributedAllReduce, tp},
+          OpDeviceAssignment{OpName::kDistributedAllReduce, pcp},
+      });
+
+  ASSERT_TRUE(resolved.ok()) << resolved.status();
+  EXPECT_THAT(*resolved, testing::ElementsAre(4, 5, 6, 7));
+  ClearProcessGroupPartitions();
+}
+
+TEST(DeviceAssignmentPipelineTest, MixedGroupsKeepTheOrderOfAWorldOp) {
+  ClearProcessGroupPartitions();
+  // Tensor parallelism over the world x decode context parallelism 4.
+  const std::vector<int64_t> world = {0, 1, 4, 5, 6, 7, 2, 3};  // INT_VEC_OK
+  RegisterLayout({world});
+  RegisterLayout({{0, 1, 4, 5}, {6, 7, 2, 3}});
+  const std::vector<int64_t> dcp = {6, 7, 2, 3};  // INT_VEC_OK
+
+  const absl::StatusOr<std::vector<int64_t>> resolved =  // INT_VEC_OK
+      ResolveDeviceAssignment({
+          OpDeviceAssignment{OpName::kDistributedAllReduce, dcp},
+          OpDeviceAssignment{OpName::kDistributedAllReduce, world},
+      });
+
+  ASSERT_TRUE(resolved.ok()) << resolved.status();
+  EXPECT_THAT(*resolved, testing::ElementsAreArray(world));
+  ClearProcessGroupPartitions();
+}
+
+TEST(DeviceAssignmentPipelineTest, MixedGroupsFollowThePallasMesh) {
+  ClearProcessGroupPartitions();
+  RegisterLayout({{0, 1}, {2, 3}, {4, 5}, {6, 7}});
+  const std::vector<int64_t> mesh = {7, 6, 5, 4, 3, 2, 1, 0};  // INT_VEC_OK
+  const std::vector<int64_t> tp = {2, 3};                      // INT_VEC_OK
+
+  const absl::StatusOr<std::vector<int64_t>> resolved =  // INT_VEC_OK
+      ResolveDeviceAssignment(
+          {OpDeviceAssignment{OpName::kDistributedAllReduce, tp}},
+          {PallasDeviceAssignment{mesh}});
+  ASSERT_TRUE(resolved.ok()) << resolved.status();
+  EXPECT_THAT(*resolved, testing::ElementsAreArray(mesh));
+
+  // The tensor-parallel layout reaches devices outside a half-world mesh.
+  RegisterLayout({{0, 4}, {1, 5}, {2, 6}, {3, 7}});
+  const std::vector<int64_t> half_mesh = {0, 1, 2, 3};  // INT_VEC_OK
+  const std::vector<int64_t> cross = {0, 4};            // INT_VEC_OK
+  const absl::StatusOr<std::vector<int64_t>> outside =  // INT_VEC_OK
+      ResolveDeviceAssignment(
+          {OpDeviceAssignment{OpName::kDistributedAllReduce, tp},
+           OpDeviceAssignment{OpName::kDistributedAllReduce, cross}},
+          {PallasDeviceAssignment{half_mesh}});
+  EXPECT_FALSE(outside.ok());
+  EXPECT_THAT(outside.status().message(),
+              testing::HasSubstr("must run on the program's devices"));
+  ClearProcessGroupPartitions();
+}
+
+TEST(DeviceAssignmentPipelineTest,
+     RemapReplicaOrderInOperationTilesAGroupOverItsLayout) {
+  ClearProcessGroupPartitions();
+  RegisterLayout({{0, 1}, {2, 3}, {4, 5}, {6, 7}});
+  mlir::MLIRContext mlir_context;
+  mlir_context.loadDialect<mlir::stablehlo::StablehloDialect>();
+  mlir_context.loadDialect<mlir::func::FuncDialect>();
+  mlir::ModuleBuilder mb(mlir_context, "test_module");
+  mlir::func::FunctionBuilder fb(mb, "main");
+  auto tensor_type =
+      mlir::makeTensorType(mlir_context, {8}, mlir::ElementType::F32);
+  mlir::MlirOp arg = mlir::func::Argument(fb, tensor_type);
+  mlir::MlirOp reduce_op = mlir::stablehlo::Neg(arg);
+  reduce_op.getValue().getDefiningOp()->setAttr(
+      "replica_groups",
+      mlir::DenseIntElementsAttr::get(
+          mlir::RankedTensorType::get(
+              {1, 2}, mlir::IntegerType::get(&mlir_context, 64)),
+          llvm::ArrayRef<int64_t>({0, 1})));
+  mlir::MlirOp permute_op = mlir::stablehlo::Abs(reduce_op);
+  permute_op.getValue().getDefiningOp()->setAttr(
+      "source_target_pairs",
+      mlir::DenseIntElementsAttr::get(
+          mlir::RankedTensorType::get(
+              {2, 2}, mlir::IntegerType::get(&mlir_context, 64)),
+          llvm::ArrayRef<int64_t>({0, 1, 1, 0})));
+  mlir::func::Return(fb, {permute_op});
+  auto module = mb.build();
+
+  const std::vector<int64_t> op_da = {2, 3};  // INT_VEC_OK
+  const std::vector<int64_t>                  // INT_VEC_OK
+      resolved_da = {7, 6, 5, 4, 3, 2, 1, 0};
+  ASSERT_TRUE(RemapReplicaOrderInOperation(reduce_op.getValue().getDefiningOp(),
+                                           op_da, resolved_da)
+                  .ok());
+  ASSERT_TRUE(RemapReplicaOrderInOperation(
+                  permute_op.getValue().getDefiningOp(), op_da, resolved_da)
+                  .ok());
+
+  // Pair {d0, d1} sits at positions {7 - d0, 7 - d1} of `resolved_da`.
+  EXPECT_THAT(ExtractDenseIntAttrValues(reduce_op.getValue().getDefiningOp(),
+                                        "replica_groups"),
+              testing::ElementsAre(7, 6, 5, 4, 3, 2, 1, 0));
+  EXPECT_THAT(
+      ExtractDenseIntAttrValues(permute_op.getValue().getDefiningOp(),
+                                "source_target_pairs"),
+      testing::ElementsAre(7, 6, 6, 7, 5, 4, 4, 5, 3, 2, 2, 3, 1, 0, 0, 1));
+  ClearProcessGroupPartitions();
+}
+
+TEST(DeviceAssignmentPipelineTest, MixedGroupsWithoutALayoutAreRejected) {
+  ClearProcessGroupPartitions();
+  const std::vector<int64_t> world = {0, 1, 2, 3, 4, 5, 6, 7};  // INT_VEC_OK
+  const std::vector<int64_t> half = {0, 1, 2, 3};               // INT_VEC_OK
+  RegisterLayout({world});
+
+  const absl::StatusOr<std::vector<int64_t>> resolved =  // INT_VEC_OK
+      ResolveDeviceAssignment({
+          OpDeviceAssignment{OpName::kDistributedAllReduce, world},
+          OpDeviceAssignment{OpName::kDistributedAllReduce, half},
+      });
+
+  EXPECT_FALSE(resolved.ok());
+  EXPECT_THAT(
+      resolved.status().message(),
+      testing::HasSubstr("device assignment mismatch across operations"));
+  ClearProcessGroupPartitions();
+}
+
+TEST(DeviceAssignmentPipelineTest, GroupsInConflictingLayoutsAreRejected) {
+  ClearProcessGroupPartitions();
+  RegisterLayout({{0, 1}, {2, 3}, {4, 5}, {6, 7}});
+  RegisterLayout({{0, 1}, {2, 4}, {3, 5}, {6, 7}});
+  // Registering a layout again, in any group order, has no effect.
+  RegisterLayout({{0, 2, 4, 6}, {1, 3, 5, 7}});
+  RegisterLayout({{1, 3, 5, 7}, {0, 2, 4, 6}});
+  const std::vector<int64_t> pair = {0, 1};       // INT_VEC_OK
+  const std::vector<int64_t> pcp = {0, 2, 4, 6};  // INT_VEC_OK
+
+  const absl::StatusOr<std::vector<int64_t>> resolved =  // INT_VEC_OK
+      ResolveDeviceAssignment({
+          OpDeviceAssignment{OpName::kDistributedAllReduce, pair},
+          OpDeviceAssignment{OpName::kDistributedAllReduce, pcp},
+      });
+
+  EXPECT_FALSE(resolved.ok());
+  EXPECT_THAT(resolved.status().message(),
+              testing::HasSubstr("created in different layouts"));
+  ClearProcessGroupPartitions();
 }
 
 }  // namespace

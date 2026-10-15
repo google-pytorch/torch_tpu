@@ -98,6 +98,7 @@
 #include "csrc/eager/events_queue.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/op_dispatcher.h"
+#include "csrc/eager/process_group_partitions.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/macros/kernel.h"
@@ -1734,6 +1735,7 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
   DeviceGroup local_partitions(size_);
   std::iota(local_partitions.begin(), local_partitions.end(), 0);
   replica_groups_ = DeviceGroupList({std::move(local_partitions)});
+  RegisterPartition(world_size);
   ABSL_VLOG(1) << "[ProcessGroupTpu] ctor done: pg_id=" << pg_id
                << ", elapsed=" << NowMs() - ctor_t0 << " ms";
 
@@ -1746,6 +1748,39 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
                << ", device id: " << addressable_device_id_
                << ", group device ids: " << ToString(member_device_ids_)
                << ", replica groups: " << ToString(replica_groups_);
+}
+
+void ProcessGroupTpu::RegisterPartition(int64_t world_size) {
+  if (size_ == world_size) {
+    RegisterProcessGroupPartition(member_device_ids_,
+                                  DeviceIdPartition{member_device_ids_});
+    return;
+  }
+  const std::vector<int64_t>& rank_to_device_id =  // INT_VEC_OK
+      WorldTopology().rank_to_device_id;
+  if (size_ == 1) {
+    DeviceIdPartition partition;
+    for (int64_t device : rank_to_device_id) {
+      partition.push_back({device});
+    }
+    RegisterProcessGroupPartition(member_device_ids_, std::move(partition));
+    return;
+  }
+  // Groups of different sizes cannot be tiled over each other.
+  if (world_size % size_ != 0) {
+    return;
+  }
+  TT_ASSIGN_OR_THROW(const DeviceGroupList subgroups,
+                     GatherAllSubgroups(member_world_ranks_, world_size));
+  DeviceIdPartition partition;
+  for (const DeviceGroup& ranks : subgroups) {
+    std::vector<int64_t>& devices = partition.emplace_back();  // INT_VEC_OK
+    devices.reserve(ranks.size());
+    for (int64_t rank : ranks) {
+      devices.push_back(rank_to_device_id[rank]);
+    }
+  }
+  RegisterProcessGroupPartition(member_device_ids_, std::move(partition));
 }
 
 void ProcessGroupTpu::shutdown() {}

@@ -408,6 +408,10 @@ class ProcessGroupTpu : public c10d::Backend {
   // world rank of each member, indexed by PG rank.
   absl::StatusOr<DeviceGroup> GatherMemberWorldRanks();
 
+  // Registers this group's partition (see process_group_partitions.h) so that
+  // programs combining its collectives with those of other groups can compile.
+  void RegisterPartition(int64_t world_size);
+
   // Exchanges `member_world_ranks` across all world ranks and returns the
   // unique, non-overlapping subgroups (as world ranks) that partition the
   // world. Returns an error if the subgroups overlap or do not cover the world.
