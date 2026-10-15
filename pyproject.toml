@@ -214,3 +214,36 @@ max-returns = 6
 "**/tests/**" = ["D", "PLR0913", "PLR2004", "PLR6301"]
 "**/*_test.py" = ["D", "PLR0913", "PLR2004", "PLR6301"]
 "**/examples/**" = ["D", "PLR2004"]
+
+# LINT.IfChange(custom_linter_config)
+[tool.custom_linter]
+monorepo_canonical_root = "//depot/monorepo/torch_tpu"
+monorepo_rules_file = "custom_lint_rules.METADATA"
+oss_canonical_root = "torch_tpu/oss"
+oss_rules_file = "ci/custom_lint_rules.METADATA"
+oss_path_maps = [
+    ["ci/custom_lint_rules.METADATA", "torch_tpu/custom_lint_rules.METADATA"],
+    ["src/torch_tpu", "torch_tpu"],
+    ["LICENSE", "torch_tpu/LICENSE"],
+    ["build_files", "torch_tpu/build_files"],
+    ["csrc", "torch_tpu/csrc"],
+    ["docker", "torch_tpu/docker"],
+    ["docs", "torch_tpu/docs"],
+    ["examples", "torch_tpu/examples"],
+    ["perflab", "torch_tpu/perflab"],
+    ["tests", "torch_tpu/tests"],
+    # Files that Copybara moves from oss/torch_tpu/ over their monorepo version.
+    ["csrc/common/contain.cc", "torch_tpu/oss/torch_tpu/csrc/common/contain.cc"],
+    ["csrc/common/environment.cc", "torch_tpu/oss/torch_tpu/csrc/common/environment.cc"],
+    ["csrc/common/environment_test.cc", "torch_tpu/oss/torch_tpu/csrc/common/environment_test.cc"],
+    ["src/torch_tpu/_internal/distributed/multiprocessing.py", "torch_tpu/oss/torch_tpu/_internal/distributed/multiprocessing.py"],
+    ["src/torch_tpu/_internal/benchmarks/export_adapter.py", "torch_tpu/oss/torch_tpu/_internal/benchmarks/export_adapter.py"],
+    ["src/torch_tpu/_internal/benchmarks/xprof_adapter.py", "torch_tpu/oss/torch_tpu/_internal/benchmarks/xprof_adapter.py"],
+]
+max_entire_file_bytes = 1048576
+excluded_path_regex = '(^|/)(custom_linter/([^/]+/)*[^/]+\.py|custom_lint[^/]*\.py|custom_lint_rules\.METADATA|copy\.bara\.sky)$|.*\.(orig|bak|gz|tgz|bz2|xz|zst|zip|tar|whl|so|a|o|dylib|dll|pyc|pyo|png|jpg|jpeg|gif|ico|webp|pdf|woff|woff2|ttf|otf|npz|npy|pt|pth|ckpt|safetensors|parquet|onnx|pb)$|.*\.del\..*'
+# LINT.ThenChange(
+#     ../copy.bara.sky:custom_lint_rules_move,
+#     ../copy.bara.sky:src_torch_tpu_move,
+#     ../copy.bara.sky:oss_root_moves,
+# )

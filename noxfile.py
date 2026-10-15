@@ -96,21 +96,27 @@ def _pinned_nightly_torch() -> str:
 
 @nox.session
 def lint(session: nox.Session) -> None:
-  """Run clang-format check, Python lint (ruff), Bazel formatting (buildifier), and directory layout check."""
+  """Run linting and formatting checks."""
   session.install("clang-format", "ruff")
   session.run("ci/tools/clang_format.sh", "lint", external=True)
   session.run("ci/tools/ruff_lint.sh", "lint", external=True)
   session.run("ci/tools/buildifier_lint.sh", "lint", external=True)
   session.run("python3", "ci/tools/check_directory_layout.py", external=True)
+  # Repository-specific rules from ci/custom_lint_rules.METADATA (e.g. use
+  # torch_tpu_cc_library instead of cc_library); only changed lines are checked.
+  session.run(
+      "python", "-m", "ci.tools.custom_linter", "--root", ".", external=False
+  )
 
 
 @nox.session
 def format(session: nox.Session) -> None:  # pylint: disable=redefined-builtin
-  """Apply clang-format fixes, Python lint (ruff), and Bazel formatting (buildifier) to modified files automatically."""
+  """Apply automatic formatting fixes."""
   session.install("clang-format", "ruff")
   session.run("ci/tools/clang_format.sh", "format", external=True)
   session.run("ci/tools/ruff_lint.sh", "fix", external=True)
   session.run("ci/tools/buildifier_lint.sh", "format", external=True)
+  # Custom convention rules have no autofix.
 
 
 @nox.session(venv_backend="none")
@@ -147,8 +153,8 @@ def actionlint(session: nox.Session) -> None:
 # there.
 @nox.session
 def test_ci_tools(session: nox.Session) -> None:
-  """Run unit tests for CI scripts and test generation tools."""
-  session.install("pyyaml")
+  """Run unit tests for CI scripts, custom lint scripts, and test generation tools."""
+  session.install("pyyaml", "pytest")
   session.run(
       "python",
       "-m",
@@ -159,6 +165,7 @@ def test_ci_tools(session: nox.Session) -> None:
       "ci/tools/run_bazel_diff_test.py",
       "ci/tools/gen_torch_tests_test.py",
   )
+  session.run("python", "-m", "pytest", "ci/tools/custom_linter/tests")
 
 
 # Use venv_backend="none" to allow running the script directly in the host.
