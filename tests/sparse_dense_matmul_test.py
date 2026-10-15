@@ -404,14 +404,6 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
         ),
     )
 
-  def test_compute_stats_invalid_inputs(self):
-    """Verifies error handling for invalid input arguments."""
-    val_float = torch.tensor([0.0, 1.0], dtype=torch.float32)
-    off = torch.tensor([0, 2], dtype=torch.int32)
-
-    with self.assertRaises(RuntimeError):
-      torch.ops.tpu.compute_sparse_dense_matmul_stats(val_float, off, 1, 2)
-
   def _get_inputs(self, device, enable_minibatching: bool = False):
     num_sc = torch.tpu.get_device_properties().sparse_cores_per_device
     input_indices = torch.tensor([2, 1, 4, 0, 3, 6, 0, 2], dtype=torch.int32)

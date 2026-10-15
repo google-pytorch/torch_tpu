@@ -1815,7 +1815,7 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal:testing",
         "//src/torch_tpu/_internal/compile:compiler",
         "//src/torch_tpu/_internal/compile:flex_attention",
-        "//src/torch_tpu/_internal/compile:tpu_torch_compile",
+        "//src/torch_tpu/_internal/compile:tpu_torch_compile",  # build_cleaner: keep
         "//src/torch_tpu/_internal/distributed",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/dynamism",
@@ -1887,7 +1887,7 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal:testing",
         "//src/torch_tpu/_internal/compile:compiler",
         "//src/torch_tpu/_internal/compile:flex_attention",
-        "//src/torch_tpu/_internal/compile:tpu_torch_compile",
+        "//src/torch_tpu/_internal/compile:tpu_torch_compile",  # build_cleaner: keep
         "//src/torch_tpu/_internal/distributed",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/dynamism",

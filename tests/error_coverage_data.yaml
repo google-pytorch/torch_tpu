@@ -40,7 +40,7 @@ csrc/distributed/window_tpu.cc: {infeasible: 0, remaining: 10, total: 12}
 csrc/eager/device_assignment_pipeline.cc: {infeasible: 1, remaining: 3, total: 5}
 csrc/eager/device_buffer.cc: {infeasible: 4, remaining: 7, total: 16}
 csrc/eager/device_buffer_utils.cc: {infeasible: 0, remaining: 10, total: 12}
-csrc/eager/device_gen_impl.cc: {infeasible: 5, remaining: 9, total: 18}
+csrc/eager/device_gen_impl.cc: {infeasible: 5, remaining: 8, total: 18}
 csrc/eager/events_queue.cc: {infeasible: 1, remaining: 1, total: 3}
 csrc/eager/execution_task.cc: {infeasible: 1, remaining: 11, total: 12}
 csrc/eager/host_allocator.cc: {infeasible: 0, remaining: 0, total: 1}
@@ -155,7 +155,7 @@ csrc/ops/hardswish/hardswish_aten_kernels.cc: {infeasible: 0, remaining: 0, tota
 csrc/ops/hardtanh/hardtanh_aten_kernels.cc: {infeasible: 0, remaining: 0, total: 5}
 csrc/ops/histc/histc_aten_kernels.cc: {infeasible: 0, remaining: 1, total: 7}
 csrc/ops/im2col/im2col.cc: {infeasible: 0, remaining: 1, total: 1}
-csrc/ops/im2col/im2col_aten_kernels.cc: {infeasible: 0, remaining: 6, total: 6}
+csrc/ops/im2col/im2col_aten_kernels.cc: {infeasible: 0, remaining: 4, total: 6}
 csrc/ops/index/index.cc: {infeasible: 4, remaining: 0, total: 4}
 csrc/ops/index/index_aten_kernels.cc: {infeasible: 0, remaining: 0, total: 6}
 csrc/ops/index_fill/index_fill_aten_kernels.cc: {infeasible: 0, remaining: 0, total: 3}
