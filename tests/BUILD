@@ -882,6 +882,9 @@ torch_tpu_py_test(
     ],
     data = _GPU_GOLDENS_DATA,
     main = "ops_test.py",
+    # TODO: b/573795143 - Re-enable in OSS. With PyTorch 2.11, seeding the TPU
+    # generator during an FX trace aborts the test since cl/999480932.
+    notest_oss = True,  # NOTEST_OSS_OK=b/573795143
     run_on_accelerators = [
         "requires-tpu-v6e",
         "requires-tpu-v5lite",
