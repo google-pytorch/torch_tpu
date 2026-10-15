@@ -2089,27 +2089,83 @@ def _sanitize_rope_parameters(
     cfg: _ConfigWrapper, *, default_theta: float = 10000.0
 ) -> None:
   """Sanitizes rope_parameters on a wrapped config object or dict."""
-  if "rope_parameters" in cfg:
-    rope_params = cfg.get("rope_parameters")
-    if not rope_params:
-      rope_theta = cfg.get("rope_theta", default_theta) or default_theta
+  if "rope_parameters" not in cfg:
+    return
+  raw_cfg = cfg.unwrap() if isinstance(cfg, _ConfigWrapper) else cfg
+  cls_default_theta = getattr(raw_cfg, "default_theta", default_theta)
+  scalar_default_theta = (
+      float(cls_default_theta)
+      if isinstance(cls_default_theta, (int, float))
+      and not isinstance(cls_default_theta, bool)
+      else default_theta
+  )
+
+  rope_params = cfg.get("rope_parameters")
+  if not rope_params:
+    if isinstance(cls_default_theta, dict):
+      cfg.rope_parameters = {
+          "full_attention": {
+              "rope_type": "default",
+              "rope_theta": float(
+                  cls_default_theta.get("global", default_theta)
+              ),
+          },
+          "sliding_attention": {
+              "rope_type": "default",
+              "rope_theta": float(
+                  cls_default_theta.get("local", default_theta)
+              ),
+          },
+      }
+    else:
+      rope_theta = cfg.get("rope_theta")
+      if not isinstance(rope_theta, (int, float)) or isinstance(
+          rope_theta, bool
+      ):
+        rope_theta = scalar_default_theta
       cfg.rope_parameters = {
           "rope_type": "default",
           "rope_theta": float(rope_theta),
       }
-    else:
-      raw_params = (
-          rope_params.unwrap()
-          if isinstance(rope_params, _ConfigWrapper)
-          else rope_params
-      )
-      if isinstance(raw_params, dict):
-        if "rope_type" not in raw_params and "type" in raw_params:
-          raw_params["rope_type"] = raw_params["type"]
-        if "rope_theta" not in raw_params:
-          rope_theta = cfg.get("rope_theta", default_theta) or default_theta
-          raw_params["rope_theta"] = float(rope_theta)
-        cfg.rope_parameters = raw_params
+    return
+
+  raw_params = (
+      rope_params.unwrap()
+      if isinstance(rope_params, _ConfigWrapper)
+      else rope_params
+  )
+  if not isinstance(raw_params, dict):
+    return
+
+  # Nested per-layer-type rope_parameters dict (e.g. ModernBert, Gemma3,
+  # Gemma4, Olmo3, MiMoV2Flash), keyed by attention layer type such as
+  # "full_attention" / "sliding_attention".
+  if any(isinstance(v, (dict, _ConfigWrapper)) for v in raw_params.values()):
+    for layer_key, sub_val in list(raw_params.items()):
+      if isinstance(sub_val, _ConfigWrapper):
+        sub_val = sub_val.unwrap()
+      if isinstance(sub_val, dict):
+        if "rope_type" not in sub_val:
+          sub_val["rope_type"] = sub_val.get("type", "default")
+        if "rope_theta" not in sub_val or sub_val["rope_theta"] is None:
+          if isinstance(cls_default_theta, dict):
+            theta_key = "global" if "full" in layer_key else "local"
+            fallback_theta = cls_default_theta.get(theta_key, default_theta)
+          else:
+            fallback_theta = scalar_default_theta
+          sub_val["rope_theta"] = float(fallback_theta)
+        raw_params[layer_key] = sub_val
+    cfg.rope_parameters = raw_params
+    return
+
+  if "rope_type" not in raw_params and "type" in raw_params:
+    raw_params["rope_type"] = raw_params["type"]
+  if "rope_theta" not in raw_params or raw_params["rope_theta"] is None:
+    rope_theta = cfg.get("rope_theta")
+    if not isinstance(rope_theta, (int, float)) or isinstance(rope_theta, bool):
+      rope_theta = scalar_default_theta
+    raw_params["rope_theta"] = float(rope_theta)
+  cfg.rope_parameters = raw_params
 
 
 def _sanitize_common_config_dict_fields(
@@ -2230,22 +2286,16 @@ def _sanitize_common_config_dict_fields(
   ):
     config_dict["num_feat_extract_layers"] = len(config_dict["conv_dim"])
 
-  # Ensure rope_parameters / rope_scaling are compatible with dataclass configs.
-  if "rope_scaling" in config_dict and (
-      "rope_parameters" not in config_dict
-      or config_dict["rope_parameters"] is None
-  ):
-    rope_params = (
-        dict(config_dict["rope_scaling"])
-        if isinstance(config_dict["rope_scaling"], dict)
-        else config_dict["rope_scaling"]
-    )
-    if isinstance(rope_params, dict):
-      if "rope_theta" in config_dict:
-        rope_params.setdefault("rope_theta", config_dict["rope_theta"])
-      if "rope_type" not in rope_params and "type" in rope_params:
-        rope_params["rope_type"] = rope_params["type"]
-    config_dict["rope_parameters"] = rope_params
+  # Normalize legacy rope_scaling dicts in place without pre-populating
+  # rope_parameters, so multi-layer-type configs (e.g. Gemma3TextConfig,
+  # Olmo3Config, ModernBertConfig) can initialize their nested
+  # {"full_attention": ..., "sliding_attention": ...} structure in
+  # convert_rope_params_to_dict() before applying rope_scaling.
+  if isinstance(config_dict.get("rope_scaling"), dict):
+    rope_scaling = dict(config_dict["rope_scaling"])
+    if "rope_type" not in rope_scaling and "type" in rope_scaling:
+      rope_scaling["rope_type"] = rope_scaling["type"]
+    config_dict["rope_scaling"] = rope_scaling
 
   # For offline execution, disable downloading pretrained backbones.
   if not load_weights and "use_pretrained_backbone" in config_dict:
@@ -2334,24 +2384,39 @@ def _coerce_dataclass_fields(
       ):
         cfg_dict[std_attr] = cfg_dict[model_attr]
 
+  if "rope_theta" in cfg_dict and cfg_dict["rope_theta"] is None:
+    cfg_dict.pop("rope_theta", None)
+
   if "rope_parameters" in known_fields:
+    cls_default_theta = getattr(cfg_cls, "default_theta", 10000.0)
     rope_params = cfg_dict.get("rope_parameters")
-    if not rope_params:
-      rope_scaling = cfg_dict.get("rope_scaling")
-      if isinstance(rope_scaling, dict):
-        rope_params = dict(rope_scaling)
-      else:
-        rope_params = {}
     if isinstance(rope_params, dict):
-      rope_theta = cfg_dict.get("rope_theta")
-      if rope_theta is None:
-        rope_theta = getattr(cfg_cls, "default_theta", 10000.0)
-      rope_params.setdefault(
-          "rope_theta",
-          float(rope_theta) if rope_theta is not None else 10000.0,
-      )
-      rope_params.setdefault("rope_type", rope_params.get("type", "default"))
-    cfg_dict["rope_parameters"] = rope_params
+      if any(isinstance(v, dict) for v in rope_params.values()):
+        for layer_key, sub_val in rope_params.items():
+          if isinstance(sub_val, dict):
+            sub_val.setdefault("rope_type", sub_val.get("type", "default"))
+            if "rope_theta" not in sub_val or sub_val["rope_theta"] is None:
+              if isinstance(cls_default_theta, dict):
+                theta_key = "global" if "full" in layer_key else "local"
+                fallback_theta = cls_default_theta.get(theta_key, 10000.0)
+              elif isinstance(cls_default_theta, (int, float)):
+                fallback_theta = cls_default_theta
+              else:
+                fallback_theta = 10000.0
+              sub_val["rope_theta"] = float(fallback_theta)
+      elif not isinstance(cls_default_theta, dict):
+        rope_theta = cfg_dict.get("rope_theta")
+        if not isinstance(rope_theta, (int, float)) or isinstance(
+            rope_theta, bool
+        ):
+          rope_theta = (
+              cls_default_theta
+              if isinstance(cls_default_theta, (int, float))
+              else 10000.0
+          )
+        rope_params.setdefault("rope_theta", float(rope_theta))
+        rope_params.setdefault("rope_type", rope_params.get("type", "default"))
+        cfg_dict["rope_parameters"] = rope_params
 
   for fname, f in known_fields.items():
     if fname in cfg_dict:

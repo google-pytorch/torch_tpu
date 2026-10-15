@@ -2361,6 +2361,84 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
         model_cls_remap, module_registry.diffusers.PixArtTransformer2DModel
     )
 
+  def test_modernbert_dict_default_theta_and_nested_rope_parameters(self):
+    raw_cfg = {
+        "model_type": "modernbert",
+        "architectures": ["ModernBertForMaskedLM"],
+        "hidden_size": 64,
+        "intermediate_size": 128,
+        "num_hidden_layers": 2,
+        "num_attention_heads": 4,
+        "vocab_size": 256,
+        "global_rope_theta": 160000.0,
+        "local_rope_theta": 10000.0,
+    }
+    cfg = module_registry._instantiate_transformers_config_class(
+        module_registry.transformers.ModernBertConfig, raw_cfg
+    )
+    sanitized = module_registry._sanitize_config(
+        module_registry._wrap_config(cfg)
+    )
+    rope_params = sanitized.rope_parameters.unwrap()
+    self.assertNotIn("rope_theta", rope_params)
+    self.assertIn("full_attention", rope_params)
+    self.assertIn("sliding_attention", rope_params)
+    self.assertEqual(rope_params["full_attention"]["rope_theta"], 160000.0)
+    self.assertEqual(rope_params["sliding_attention"]["rope_theta"], 10000.0)
+
+    nested_raw_cfg = {
+        **raw_cfg,
+        "rope_parameters": {
+            "full_attention": {"rope_theta": 160000.0, "rope_type": "default"},
+            "sliding_attention": {
+                "rope_theta": 160000.0,
+                "rope_type": "default",
+            },
+        },
+    }
+    cfg_nested = module_registry._instantiate_transformers_config_class(
+        module_registry.transformers.ModernBertConfig, nested_raw_cfg
+    )
+    sanitized_nested = module_registry._sanitize_config(
+        module_registry._wrap_config(cfg_nested)
+    )
+    nested_params = sanitized_nested.rope_parameters.unwrap()
+    self.assertNotIn("rope_theta", nested_params)
+    self.assertEqual(nested_params["full_attention"]["rope_theta"], 160000.0)
+    self.assertEqual(nested_params["sliding_attention"]["rope_theta"], 160000.0)
+
+    # Multi-layer-type configs (Gemma3TextConfig, Olmo3Config) with legacy
+    # rope_scaling should populate full_attention without KeyError.
+    gemma3_cfg = module_registry._instantiate_transformers_config_class(
+        module_registry.transformers.Gemma3TextConfig,
+        {
+            "model_type": "gemma3_text",
+            "rope_scaling": {"type": "linear", "factor": 8.0},
+        },
+    )
+    sanitized_gemma3 = module_registry._sanitize_config(
+        module_registry._wrap_config(gemma3_cfg)
+    )
+    gemma3_rope = sanitized_gemma3.rope_parameters.unwrap()
+    self.assertEqual(gemma3_rope["full_attention"]["rope_type"], "linear")
+    self.assertEqual(gemma3_rope["full_attention"]["factor"], 8.0)
+    self.assertEqual(gemma3_rope["sliding_attention"]["rope_type"], "default")
+
+    olmo3_cfg = module_registry._instantiate_transformers_config_class(
+        module_registry.transformers.Olmo3Config,
+        {
+            "model_type": "olmo3",
+            "rope_scaling": {"type": "linear", "factor": 4.0},
+        },
+    )
+    sanitized_olmo3 = module_registry._sanitize_config(
+        module_registry._wrap_config(olmo3_cfg)
+    )
+    olmo3_rope = sanitized_olmo3.rope_parameters.unwrap()
+    self.assertEqual(olmo3_rope["full_attention"]["rope_type"], "linear")
+    self.assertEqual(olmo3_rope["full_attention"]["factor"], 4.0)
+    self.assertEqual(olmo3_rope["sliding_attention"]["rope_type"], "default")
+
 
 if __name__ == "__main__":
   absltest.main()
