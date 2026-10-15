@@ -127,7 +127,7 @@ void EmitTorchWarnOnce(const std::string& msg) {
 
 void EmitTorchWarnDeprecation(const std::string& msg) {
   HANDLE_TH_ERRORS
-  TORCH_WARN_DEPRECATION(msg);
+  TORCH_WARN_DEPRECATION(msg);  // TORCH_WARN_OK=test_utility
   END_HANDLE_TH_ERRORS_PYBIND
 }
 
