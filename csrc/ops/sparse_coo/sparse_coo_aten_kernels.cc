@@ -141,14 +141,13 @@ absl::StatusOr<at::Tensor> CopyOrCastValuesTensor(
     const auto builder_fn = [out_dtype](mlir::MlirOp val_op) {
       return CastIfNeeded(val_op, out_dtype);
     };
-    const Dimensions out_dims = CopyIntVector(src_values.sizes());
     TT_ASSIGN_OR_RETURN(
         auto res_buf,
         (DispatchOp<1, 1>(builder_fn, src_values,
                           {.out_dtype = out_dtype,
-                           .out_dims = out_dims,
+                           .out_dims = src_values.sizes(),
                            .op_param_cache_keys = std::move(pk)})));
-    return MakeTensor(std::move(res_buf));
+    return MakeTensor(res_buf);
   }
   TT_ASSIGN_OR_RETURN(
       at::Tensor dst,
@@ -167,16 +166,15 @@ absl::StatusOr<at::Tensor> ScaleValuesOnTpu(const at::Tensor& values,
   }
   TT_ASSIGN_OR_RETURN(const auto out_dtype,
                       ConvertTo<mlir::ElementType>(target_dtype));
-  const Dimensions out_dims = CopyIntVector(values.sizes());
   const auto builder_fn = [out_dtype](FixedSizeSpan<mlir::MlirOp, 2> inputs) {
     return BuildMulSparseScalarShlo(inputs[0], inputs[1], out_dtype);
   };
   TT_ASSIGN_OR_RETURN(
       auto res_buf, (DispatchOp<2, 1>(builder_fn, {values, alpha_tensor},
                                       {.out_dtype = out_dtype,
-                                       .out_dims = out_dims,
+                                       .out_dims = values.sizes(),
                                        .op_param_cache_keys = std::move(pk)})));
-  return MakeTensor(std::move(res_buf));
+  return MakeTensor(res_buf);
 }
 
 absl::StatusOr<int64_t> ExtractOutputSize(const at::Tensor& count_tensor) {
@@ -223,7 +221,6 @@ at::Tensor& AddOutDenseSparse(const at::Tensor& self, const at::Tensor& other,
       << common_dtype << " and " << out.scalar_type();
   TT_ASSIGN_OR_THROW(const auto out_dtype,
                      ConvertTo<mlir::ElementType>(out.scalar_type()));
-  const Dimensions out_dims = CopyIntVector(self.sizes());
   if (alpha_tensor_opt.has_value()) {
     const auto builder_fn = [out_dtype](FixedSizeSpan<mlir::MlirOp, 4> inputs) {
       return BuildAddDenseSparseShlo(inputs[0], inputs[1], inputs[2], inputs[3],
@@ -233,7 +230,7 @@ at::Tensor& AddOutDenseSparse(const at::Tensor& self, const at::Tensor& other,
         builder_fn,
         {self, other._indices(), other._values(), *alpha_tensor_opt}, out,
         {.out_dtype = out_dtype,
-         .out_dims = out_dims,
+         .out_dims = self.sizes(),
          .op_param_cache_keys = std::move(pk)})));
   } else {
     const auto builder_fn = [out_dtype](FixedSizeSpan<mlir::MlirOp, 3> inputs) {
@@ -243,7 +240,7 @@ at::Tensor& AddOutDenseSparse(const at::Tensor& self, const at::Tensor& other,
     TT_THROW_IF_ERROR((DispatchOpOut<3>(
         builder_fn, {self, other._indices(), other._values()}, out,
         {.out_dtype = out_dtype,
-         .out_dims = out_dims,
+         .out_dims = self.sizes(),
          .op_param_cache_keys = std::move(pk)})));
   }
   return out;
@@ -346,8 +343,8 @@ at::Tensor& AddOutSparseSparse(const at::Tensor& self, const at::Tensor& other,
                            .out_dims_list = out_dims_list,
                            .op_param_cache_keys = std::move(pk)})));
     SetSparseCooTensorInPlace(out, self.sparse_dim(), self.dense_dim(),
-                              self.sizes(), MakeTensor(std::move(results[0])),
-                              MakeTensor(std::move(results[1])),
+                              self.sizes(), MakeTensor(results[0]),
+                              MakeTensor(results[1]),
                               /*is_coalesced=*/false);
   } else {
     const auto builder_fn = [val_dtype](FixedSizeSpan<mlir::MlirOp, 4> inputs) {
@@ -363,8 +360,8 @@ at::Tensor& AddOutSparseSparse(const at::Tensor& self, const at::Tensor& other,
                            .out_dims_list = out_dims_list,
                            .op_param_cache_keys = std::move(pk)})));
     SetSparseCooTensorInPlace(out, self.sparse_dim(), self.dense_dim(),
-                              self.sizes(), MakeTensor(std::move(results[0])),
-                              MakeTensor(std::move(results[1])),
+                              self.sizes(), MakeTensor(results[0]),
+                              MakeTensor(results[1]),
                               /*is_coalesced=*/false);
   }
   return out;
@@ -548,7 +545,6 @@ at::Tensor& MulOutSparseImpl(const at::Tensor& self, const at::Tensor& other,
   const at::Tensor sp_values = sp._values();
   TT_ASSIGN_OR_THROW(const auto out_dtype,
                      ConvertTo<mlir::ElementType>(out.scalar_type()));
-  const Dimensions val_dims = CopyIntVector(sp_values.sizes());
   const auto builder_fn = [out_dtype](FixedSizeSpan<mlir::MlirOp, 2> inputs) {
     return BuildMulSparseScalarShlo(inputs[0], inputs[1], out_dtype);
   };
@@ -558,7 +554,7 @@ at::Tensor& MulOutSparseImpl(const at::Tensor& self, const at::Tensor& other,
     TT_THROW_IF_ERROR(
         (DispatchOpOut<2>(builder_fn, {sp_values, scalar_dev}, out_values,
                           {.out_dtype = out_dtype,
-                           .out_dims = val_dims,
+                           .out_dims = sp_values.sizes(),
                            .op_param_cache_keys = std::move(pk)})));
     return out;
   }
@@ -569,10 +565,10 @@ at::Tensor& MulOutSparseImpl(const at::Tensor& self, const at::Tensor& other,
   TT_ASSIGN_OR_THROW(
       auto res_buf, (DispatchOp<2, 1>(builder_fn, {sp_values, scalar_dev},
                                       {.out_dtype = out_dtype,
-                                       .out_dims = val_dims,
+                                       .out_dims = sp_values.sizes(),
                                        .op_param_cache_keys = std::move(pk)})));
   SetSparseCooTensorInPlace(out, sp.sparse_dim(), sp.dense_dim(), sp.sizes(),
-                            new_indices, MakeTensor(std::move(res_buf)),
+                            new_indices, MakeTensor(res_buf),
                             sp.is_coalesced());
   return out;
 }
@@ -595,7 +591,6 @@ at::Tensor& NegOutSparseImpl(const at::Tensor& self, OpParamCacheKeys pk,
   const at::Tensor self_values = self._values();
   TT_ASSIGN_OR_THROW(const auto out_dtype,
                      ConvertTo<mlir::ElementType>(out.scalar_type()));
-  const Dimensions val_dims = CopyIntVector(self_values.sizes());
   const auto builder_fn = [out_dtype](mlir::MlirOp input) {
     return BuildNegSparseShlo(input, out_dtype);
   };
@@ -605,7 +600,7 @@ at::Tensor& NegOutSparseImpl(const at::Tensor& self, OpParamCacheKeys pk,
     TT_THROW_IF_ERROR(
         (DispatchOpOut<1>(builder_fn, self_values, out_values,
                           {.out_dtype = out_dtype,
-                           .out_dims = val_dims,
+                           .out_dims = self_values.sizes(),
                            .op_param_cache_keys = std::move(pk)})));
     return out;
   }
@@ -616,11 +611,11 @@ at::Tensor& NegOutSparseImpl(const at::Tensor& self, OpParamCacheKeys pk,
   TT_ASSIGN_OR_THROW(
       auto res_buf, (DispatchOp<1, 1>(builder_fn, self_values,
                                       {.out_dtype = out_dtype,
-                                       .out_dims = val_dims,
+                                       .out_dims = self_values.sizes(),
                                        .op_param_cache_keys = std::move(pk)})));
-  SetSparseCooTensorInPlace(
-      out, self.sparse_dim(), self.dense_dim(), self.sizes(), new_indices,
-      MakeTensor(std::move(res_buf)), self.is_coalesced());
+  SetSparseCooTensorInPlace(out, self.sparse_dim(), self.dense_dim(),
+                            self.sizes(), new_indices, MakeTensor(res_buf),
+                            self.is_coalesced());
   return out;
 }
 
@@ -757,11 +752,8 @@ at::Tensor AtenCoalesceSparse(const at::Tensor& self) {
                        ConvertTo<mlir::ElementType>(c10::ScalarType::Long));
     const std::array<mlir::ElementType, 3> out_dtypes = {i64_dtype, val_dtype,
                                                          i64_dtype};
-    const Dimensions ind_dims = CopyIntVector(indices.sizes());
-    const Dimensions val_dims = CopyIntVector(values.sizes());
-    const Dimensions count_dims = {};
     const std::array<absl::Span<const int64_t>, 3> out_dims_list = {
-        ind_dims, val_dims, count_dims};
+        indices.sizes(), values.sizes(), {}};
 
     const auto coalesce_builder = [](FixedSizeSpan<mlir::MlirOp, 2> inputs) {
       return BuildCoalesceAndCountShlo(inputs[0], inputs[1]);
@@ -772,11 +764,9 @@ at::Tensor AtenCoalesceSparse(const at::Tensor& self) {
                           {.out_dtypes = out_dtypes,
                            .out_dims_list = out_dims_list,
                            .op_param_cache_keys = OpParamCacheKeys::Empty()})));
-    const at::Tensor compacted_indices =
-        MakeTensor(std::move(coalesce_results[0]));
-    const at::Tensor compacted_values =
-        MakeTensor(std::move(coalesce_results[1]));
-    const at::Tensor count_tensor = MakeTensor(std::move(coalesce_results[2]));
+    const at::Tensor compacted_indices = MakeTensor(coalesce_results[0]);
+    const at::Tensor compacted_values = MakeTensor(coalesce_results[1]);
+    const at::Tensor count_tensor = MakeTensor(coalesce_results[2]);
     TT_ASSIGN_OR_THROW(const int64_t output_size,
                        ExtractOutputSize(count_tensor));
     if (output_size == self._nnz()) {
@@ -784,9 +774,9 @@ at::Tensor AtenCoalesceSparse(const at::Tensor& self) {
                                  self.sizes(), compacted_indices,
                                  compacted_values, /*is_coalesced=*/true);
     }
-    Dimensions sliced_ind_dims = ind_dims;
+    Dimensions sliced_ind_dims = CopyIntVector(indices.sizes());
     sliced_ind_dims[1] = output_size;
-    Dimensions sliced_val_dims = val_dims;
+    Dimensions sliced_val_dims = CopyIntVector(values.sizes());
     sliced_val_dims[0] = output_size;
     const std::array<mlir::ElementType, 2> slice_dtypes = {i64_dtype,
                                                            val_dtype};
@@ -804,9 +794,8 @@ at::Tensor AtenCoalesceSparse(const at::Tensor& self) {
                            .out_dims_list = slice_dims_list,
                            .op_param_cache_keys = std::move(slice_pk)})));
     return MakeSparseCooTensor(self.sparse_dim(), self.dense_dim(),
-                               self.sizes(),
-                               MakeTensor(std::move(slice_results[0])),
-                               MakeTensor(std::move(slice_results[1])),
+                               self.sizes(), MakeTensor(slice_results[0]),
+                               MakeTensor(slice_results[1]),
                                /*is_coalesced=*/true);
   });
 }
@@ -827,9 +816,7 @@ at::Tensor AtenToDenseSparse(const at::Tensor& self,
           const auto zero_builder =
               [out_dims, out_dtype](
                   mlir::MlirBuilder& builder) -> absl::StatusOr<mlir::MlirOp> {
-            return MakeConstant(
-                builder, c10::Scalar(0), out_dtype,
-                mlir::ArrayRef<int64_t>(out_dims.data(), out_dims.size()));
+            return MakeConstant(builder, c10::Scalar(0), out_dtype, out_dims);
           };
           TT_ASSIGN_OR_THROW(
               auto zero_buf,
@@ -837,7 +824,7 @@ at::Tensor AtenToDenseSparse(const at::Tensor& self,
                                 {.out_dtype = out_dtype,
                                  .out_dims = out_dims,
                                  .op_param_cache_keys = std::move(pk)})));
-          return MakeTensor(std::move(zero_buf));
+          return MakeTensor(zero_buf);
         }
         const auto dense_builder =
             [out_dims, out_dtype](FixedSizeSpan<mlir::MlirOp, 2> inputs) {
@@ -850,7 +837,7 @@ at::Tensor AtenToDenseSparse(const at::Tensor& self,
                               {.out_dtype = out_dtype,
                                .out_dims = out_dims,
                                .op_param_cache_keys = std::move(pk)})));
-        return MakeTensor(std::move(dense_buf));
+        return MakeTensor(dense_buf);
       });
 }
 
