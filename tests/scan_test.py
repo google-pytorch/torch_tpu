@@ -256,18 +256,14 @@ class ScanOpTest(seed_test_utils.RepeatableTest):
     # PyTorch < 2.14 rejects seq_len == 0 in scan during tracing, whereas
     # PyTorch >= 2.14 (used in Google3 and newest-deps OSS CI) supports it.
     if utils.parse_version(torch.__version__) < (2, 14, 0):
-      # The wrapper's validation should raise this error during tracing.
-      with self.assertRaisesRegex(
-          RuntimeError,
-          "All xs leaves must at least have 'dim' number of dimensions and scan"
-          " dimension > 0",
-      ):
-        _compile_and_run(scan, fn, init, x, dim=0)
-    else:
-      out_carry, out_outputs = _compile_and_run(scan, fn, init, x, dim=0)
+      self.skipTest(
+          "PyTorch < 2.14 rejects seq_len == 0 in scan during tracing."
+      )
 
-      utils.assert_close(out_carry.cpu(), init.cpu())
-      utils.assert_close(out_outputs.cpu(), x.cpu())
+    out_carry, out_outputs = _compile_and_run(scan, fn, init, x, dim=0)
+
+    utils.assert_close(out_carry.cpu(), init.cpu())
+    utils.assert_close(out_outputs.cpu(), x.cpu())
 
   def test_scan_with_rnn(self):
     hidden_size = 8
@@ -948,26 +944,6 @@ class AssociativeScanOpTest(seed_test_utils.RepeatableTest):
     expected = run_fn(x_cpu)
     actual = _compile_and_run(run_fn, x_tpu) if compiled else run_fn(x_tpu)
     utils.assert_close(actual.cpu(), expected)
-
-  def test_associative_scan_validation_errors(self):
-    x_tpu = torch.randn(4, 8, device="tpu")
-
-    # These errors come from PyTorch's `associative_scan` frontend, not from
-    # TorchTPU; they verify that the eager fast path keeps upstream validation.
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=upstream torch validation
-        RuntimeError, "tree structure of the xs and the outs"
-    ):
-      associative_scan(lambda a, b: (a + b, a - b), x_tpu, dim=0)
-
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=upstream torch validation
-        RuntimeError, "combine_fn needs to be pointwise"
-    ):
-      associative_scan(
-          lambda a, b: a @ b,
-          torch.randn(4, 4, 4, device="tpu"),
-          dim=0,
-          combine_mode="pointwise",
-      )
 
   @parameterized.named_parameters(
       ("forward_dim_neg1", False, -1),

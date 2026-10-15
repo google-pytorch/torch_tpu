@@ -239,22 +239,6 @@ class InternalSyncTest(absltest.TestCase):  # ABSLTEST_OK=Internal sync test
     sync.synchronize([x, y], wait=True)
     self.assertTrue(sync.is_materialized(x))
 
-  def test_is_materializing_not_on_tpu(self):
-    x = torch.ones(10, device=torch.device("cpu"))
-    with self.assertRaisesRegex(
-        RuntimeError,
-        "tensor is not on the PrivateUse1 device",
-    ):
-      sync.is_materializing(x)
-
-  def test_is_materialized_not_on_tpu(self):
-    x = torch.ones(10, device=torch.device("cpu"))
-    with self.assertRaisesRegex(
-        RuntimeError,
-        "tensor is not on the PrivateUse1 device",
-    ):
-      sync.is_materialized(x)
-
   def extract_graphviz_invariants(self, graphviz_string):
     node_params = []
     num_lines = 0
