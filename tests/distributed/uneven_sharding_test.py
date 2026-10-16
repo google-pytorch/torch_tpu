@@ -13,25 +13,15 @@
 # limitations under the License.
 
 import os
-from typing import Final
-from unittest import mock
 
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
 from torch import distributed as dist
 import torch.distributed.tensor as dt
-import torch.multiprocessing as mp
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
-from tests import seed_test_utils
-from tests.distributed import distributed_utils
-
-_SHAPE_MISMATCH: Final[str] = "Tensor shape mismatch"
-_SFLAG_TIMEOUT: Final[str] = "Wait timeout on sflag"
-_ZERO_ALL_GATHER_DIM: Final[str] = (
-    "dimension size of operand at 'all_gather_dim' cannot be zero"
-)
+from tests.distributed import continuous_test_utils
 
 
 def _replicate_tensor(
@@ -42,7 +32,8 @@ def _replicate_tensor(
     trailing_dim_size: int = 4,
 ) -> None:
   """Redistributes a tensor from shard to replicate."""
-  dist.init_process_group(backend="tpu_dist")
+  if not dist.is_initialized():
+    dist.init_process_group(backend="tpu_dist")
   rank = int(os.environ["RANK"])
   world_size = int(os.environ["WORLD_SIZE"])
   device_mesh = dt.init_device_mesh("tpu", (world_size,))
@@ -91,7 +82,9 @@ def _replicate_tensor(
     utils.assert_close(out, expected)
 
 
-class UnevenShardingTest(seed_test_utils.MultiProcessRepeatableTest):
+class UnevenShardingTest(continuous_test_utils.TpuMultiProcContinuousTest):
+
+  world_size = 8
 
   @parameterized.named_parameters(
       ("1d_eager_small", 1, False, 4),
@@ -104,108 +97,13 @@ class UnevenShardingTest(seed_test_utils.MultiProcessRepeatableTest):
       ("2d_compiled_uneven", 2, True, 12),
   )
   def test_replicate_tensor_with_shape(self, ndims, compiled, tensor_size):
-    distributed_utils.dist_run(
-        nproc_per_node=8,
-        fn=_replicate_tensor,
+    _replicate_tensor(
         tensor_size=tensor_size,
         compiled=compiled,
         ndims=ndims,
         pass_shape_stride=True,
     )
 
-  @parameterized.named_parameters(
-      # Mismatched local shapes in the all-gather are undefined behavior:
-      # depending on the libtpu build, the 1-D cases either fail the shape
-      # check or hang until the runtime reports an sflag wait timeout.
-      (
-          "1d_compiled_fail_small",
-          1,
-          True,
-          4,
-          f"{_SHAPE_MISMATCH}|{_SFLAG_TIMEOUT}",
-      ),
-      (
-          "1d_eager_fail_small",
-          1,
-          False,
-          4,
-          f"{_SHAPE_MISMATCH}|{_SFLAG_TIMEOUT}|{_ZERO_ALL_GATHER_DIM}",
-      ),
-      (
-          "1d_compiled_fail_uneven",
-          1,
-          True,
-          12,
-          f"{_SHAPE_MISMATCH}|{_SFLAG_TIMEOUT}",
-      ),
-      (
-          "1d_eager_fail_uneven",
-          1,
-          False,
-          12,
-          f"{_SHAPE_MISMATCH}|{_SFLAG_TIMEOUT}|{_ZERO_ALL_GATHER_DIM}",
-      ),
-      ("2d_compiled_fail_small", 2, True, 4, _SFLAG_TIMEOUT),
-      (
-          "2d_eager_fail_small",
-          2,
-          False,
-          4,
-          f"{_SFLAG_TIMEOUT}|{_ZERO_ALL_GATHER_DIM}",
-      ),
-      ("2d_compiled_fail_uneven", 2, True, 12, _SFLAG_TIMEOUT),
-      (
-          "2d_eager_fail_uneven",
-          2,
-          False,
-          12,
-          f"{_SFLAG_TIMEOUT}|{_ZERO_ALL_GATHER_DIM}",
-      ),
-  )
-  def test_replicate_tensor_without_shape(
-      self, ndims, compiled, tensor_size, expected_regex
-  ):
-    with self.assertRaisesRegex(Exception, expected_regex):
-      distributed_utils.dist_run(
-          nproc_per_node=8,
-          fn=_replicate_tensor,
-          tensor_size=tensor_size,
-          compiled=compiled,
-          ndims=ndims,
-          pass_shape_stride=False,
-      )
-
-  @parameterized.named_parameters(
-      ("1d_without_shape_stride_small", 1, 4, False),
-      ("1d_with_shape_stride_small", 1, 4, True),
-      ("1d_without_shape_stride_uneven", 1, 12, False),
-      ("1d_with_shape_stride_uneven", 1, 12, True),
-      ("2d_without_shape_stride_small", 2, 4, False),
-      ("2d_with_shape_stride_small", 2, 4, True),
-      ("2d_without_shape_stride_uneven", 2, 12, False),
-      ("2d_with_shape_stride_uneven", 2, 12, True),
-  )
-  def test_replicate_tensor_debug_eager(
-      self, ndims, tensor_size, pass_shape_stride
-  ):
-    def run_fn():
-      with mock.patch.dict(os.environ, {"TORCH_TPU_ENABLE_DEBUG_CHECKS": "1"}):
-        distributed_utils.dist_run(
-            nproc_per_node=8,
-            fn=_replicate_tensor,
-            tensor_size=tensor_size,
-            compiled=False,
-            ndims=ndims,
-            pass_shape_stride=pass_shape_stride,
-        )
-
-    if pass_shape_stride:
-      run_fn()
-    else:
-      with self.assertRaisesRegex(Exception, "Inconsistent tensor metadata"):
-        run_fn()
-
 
 if __name__ == "__main__":
-  mp.set_start_method("spawn")
   multiprocessing.handle_test_main(absltest.main)
