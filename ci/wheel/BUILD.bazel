@@ -33,7 +33,11 @@ load("//build_files:entry_points.bzl", "ENTRY_POINTS")
 load("//build_files:wheel.bzl", "WHEEL_PY_TARGETS")
 load("//ci/wheel:pywrap_mapper.bzl", "remap_pywrap_binaries")
 load("//shims/build_files:torch_version.bzl", "version_suffix")
-load("//shims/py_rules:pytype.bzl", "pytype_strict_binary")
+load(
+    "//shims/py_rules:pytype.bzl",
+    "pytype_strict_binary",
+    "pytype_strict_contrib_test",
+)
 
 package(
     default_visibility = PACKAGE_DEFAULT_VISIBILITY,
@@ -253,23 +257,49 @@ torch_tpu_py_test(
     ],
 )
 
+pytype_strict_binary(
+    name = "pytorch_abi_symbols",
+    srcs = ["pytorch_abi_symbols.py"],
+    main = "pytorch_abi_symbols.py",
+    visibility = ["//visibility:public"],
+)
+
+pytype_strict_contrib_test(
+    name = "pytorch_abi_symbols_test",
+    size = "small",
+    srcs = ["pytorch_abi_symbols_test.py"],
+    deps = [
+        ":pytorch_abi_symbols",
+    ],
+)
+
 # Structural checks on the multi-ABI wheel: one shared libxla_base.so, a glue +
-# torch common per built version, the shared base is XLA-only, and no libtorch
-# is bundled. Needs nm/readelf/c++filt (binutils), which the image provides.
+# torch common per built version, the shared base is XLA-only, no libtorch is
+# bundled, and the 2.15.0 glue PyTorch ABI symbols are within the checked-in
+# high-water mark (whose symbols remain defined in the PyTorch 2.15.0 wheel).
+# Needs nm/readelf/c++filt (binutils), which the image provides.
 torch_tpu_py_test(
     name = "wheel_structure_test",
     srcs = ["wheel_structure_test.py"],
-    env = {"WHEEL_PATH": "$(location :torch_tpu_wheel)"},
+    data = [
+        "pytorch_symbols_2_15_0.txt",
+        "@pypi_torch_2_15_0_314//:whl",
+    ],
+    env = {
+        "PYTORCH_2_15_0_SYMBOLS_PATH": "$(location pytorch_symbols_2_15_0.txt)",
+        "PYTORCH_2_15_0_WHEEL_PATH": "$(location @pypi_torch_2_15_0_314//:whl)",
+        "WHEEL_PATH": "$(location :torch_tpu_wheel)",
+    },
     is_wheel_test = True,
-    nolocal = "Only run against explicit wheel targets",
-    # `nolocal` keeps this out of wildcard expansion, but bazel-diff feeds
-    # impacted targets as explicit labels, which ignores it. Same reasoning as
-    # wheel_single_source_test above.
+    # Only meaningful against the wheel we actually ship, so it is skipped as
+    # incompatible outside a wheel build rather than dragging the wheel (and
+    # its build guard) into every job that happens to touch these files.
     target_compatible_with = select({
         "//:wheel_build_enabled": [],
         "//conditions:default": ["@platforms//:incompatible"],
     }),
     deps = [
+        ":pytorch_abi_symbols",
         "//shims/absl_py/testing:absltest",
     ],
 )

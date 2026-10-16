@@ -28,7 +28,10 @@ versions. This test opens the built wheel (`WHEEL_PATH`) and asserts:
     the XLA commit it must share, ship under torch_tpu/include/, the header
     behind its opt-in guard;
   * each per-version torch common exports the tensor_buffer API for external
-    plugins.
+    plugins;
+  * the undefined PyTorch ABI symbols referenced by the 2.15.0 glue libraries
+    remain within the checked-in high-water mark, and every symbol in the
+    high-water mark remains defined in PyTorch 2.15.0's shared libraries.
 """
 
 from collections.abc import Sequence, Set
@@ -42,6 +45,7 @@ from typing import Final
 import zipfile
 
 from absl.testing import absltest
+from ci.wheel import pytorch_abi_symbols
 
 # The single shared, version-independent XLA/MLIR base library.
 _XLA_BASE: Final[str] = "torch_tpu/csrc/common/libxla_base.so"
@@ -85,6 +89,20 @@ def _wheel_path() -> pathlib.Path:
   path = os.environ.get("WHEEL_PATH")
   assert path, "WHEEL_PATH environment variable is not set"
   return pathlib.Path(path)
+
+
+def _pytorch_2_15_0_symbols_path() -> pathlib.Path:
+  path = os.environ.get("PYTORCH_2_15_0_SYMBOLS_PATH")
+  if path:
+    return pathlib.Path(path)
+  return pathlib.Path(__file__).with_name("pytorch_symbols_2_15_0.txt")
+
+
+def _pytorch_2_15_0_wheel_path() -> pathlib.Path | None:
+  path = os.environ.get("PYTORCH_2_15_0_WHEEL_PATH")
+  if path:
+    return pathlib.Path(path)
+  return None
 
 
 def _demangle(names: Sequence[str]) -> Sequence[str]:
@@ -255,6 +273,33 @@ class WheelStructureTest(absltest.TestCase):  # ABSLTEST_OK=Wheel test
         "The shared XLA base must define no PyTorch symbols (so it is identical"
         f" for every version), but defines: {pytorch_symbols[:20]}",
     )
+
+  def test_pytorch_2_15_0_symbols_compatible(self):
+    self.assertIn(
+        "2_15_0",
+        self._built_versions(),
+        "Expected PyTorch 2.15.0 glue libraries in wheel.",
+    )
+    high_water_mark = pytorch_abi_symbols.load_symbols(
+        _pytorch_2_15_0_symbols_path()
+    )
+    wheel_symbols = pytorch_abi_symbols.extract_dir_pytorch_symbols(
+        self._wheel_root, "2.15.0"
+    )
+    pytorch_wheel_path = _pytorch_2_15_0_wheel_path()
+    pytorch_defined = (
+        pytorch_abi_symbols.extract_pytorch_wheel_defined_symbols(
+            pytorch_wheel_path
+        )
+        if pytorch_wheel_path is not None
+        else None
+    )
+    result = pytorch_abi_symbols.check_symbols_compatible(
+        high_water_mark,
+        wheel_symbols,
+        pytorch_defined_symbols=pytorch_defined,
+    )
+    self.assertTrue(result.is_compatible, msg=result.format_report())
 
   # TODO(pganssle): Fails today -- pywrap_library force-adds every dynamic dep
   # (libtorch) to all common-lib partitions, including this base. Strip the
