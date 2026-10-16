@@ -20,6 +20,7 @@ import os
 from typing import Any, TypeVar
 import unittest
 
+from torch import torch_version
 from torch_tpu._internal.utils import utils
 
 _T = TypeVar("_T", bound=Callable[..., Any])
@@ -63,7 +64,7 @@ def skip_in_oss(
 
 
 def skip_if_libtpu_version(
-    pred: Callable[[tuple[int, ...]], bool],
+    pred: Callable[[torch_version.TorchVersion], bool],
     message: str,
 ) -> Callable[[_T], _T]:
   """Decorator to skip a test class, method, or function in OSS when `pred(libtpu_version)` is true."""

@@ -14,10 +14,12 @@
 
 from collections.abc import Sequence
 import math
+import sys
 from typing import Any
 
 from absl.testing import absltest
 import torch
+from torch import torch_version
 from torch_tpu._internal import dynamism
 from torch_tpu._internal.utils import test_fixtures
 from torch_tpu._internal.utils import test_utils
@@ -808,14 +810,39 @@ class AllTest(seed_test_utils.RepeatableTest):
     self.assertIsNone(utils.get_primary_tensor_output("non_tensor_string"))
     self.assertIsNone(utils.get_primary_tensor_output([]))
 
+  def test_parse_version(self):
+    self.assertIs(test_utils.parse_version, utils.parse_version)
+    ver = utils.parse_version("0.0.41.dev20260101")
+    self.assertIsInstance(ver, torch_version.TorchVersion)
+    self.assertEqual(ver, torch_version.TorchVersion("0.0.41"))
+    self.assertEqual(ver, (0, 0, 41))
+
   def test_get_torch_version(self):
     self.assertIs(test_utils.get_torch_version, utils.get_torch_version)
     with absltest.mock.patch.object(torch, "__version__", "2.11.0+cpu"):
-      self.assertEqual(utils.get_torch_version(), (2, 11, 0))
-      self.assertLess(utils.get_torch_version(), (2, 12))
+      ver = utils.get_torch_version()
+      self.assertIsInstance(ver, torch_version.TorchVersion)
+      self.assertEqual(ver, torch_version.TorchVersion("2.11.0"))
+      self.assertEqual(ver, (2, 11, 0))
+      self.assertLess(ver, (2, 12))
     with absltest.mock.patch.object(torch, "__version__", "2.12.0.dev20260301"):
-      self.assertEqual(utils.get_torch_version(), (2, 12, 0))
-      self.assertGreaterEqual(utils.get_torch_version(), (2, 12))
+      ver = utils.get_torch_version()
+      self.assertIsInstance(ver, torch_version.TorchVersion)
+      self.assertEqual(ver, torch_version.TorchVersion("2.12.0"))
+      self.assertEqual(ver, (2, 12, 0))
+      self.assertGreaterEqual(ver, (2, 12))
+
+  def test_libtpu_version(self):
+    self.assertIs(test_utils.libtpu_version, utils.libtpu_version)
+    mock_libtpu = absltest.mock.MagicMock()
+    mock_libtpu.__version__ = "0.0.51.dev20260401"
+    with absltest.mock.patch.dict(sys.modules, {"libtpu": mock_libtpu}):
+      ver = utils.libtpu_version()
+      self.assertIsInstance(ver, torch_version.TorchVersion)
+      self.assertEqual(ver, torch_version.TorchVersion("0.0.51"))
+      self.assertEqual(ver, (0, 0, 51))
+    with absltest.mock.patch.dict(sys.modules, {"libtpu": None}):
+      self.assertIsNone(utils.libtpu_version())
 
 
 if __name__ == "__main__":

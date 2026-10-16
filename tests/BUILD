@@ -131,6 +131,7 @@ torch_tpu_py_library(
     srcs = ["oss_utils.py"],
     visibility = ["//:__subpackages__"],
     deps = [
+        "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/utils",
     ] + if_oss(
         ["//shims/libtpu"],
@@ -168,6 +169,7 @@ torch_tpu_py_test(
         ":oss_utils",
         ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/utils",
     ],

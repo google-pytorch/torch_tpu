@@ -24,6 +24,7 @@ import time
 from typing import Any, Callable, Sequence, TextIO, TypeAlias
 
 import torch
+from torch import torch_version
 from torch.utils import _pytree
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import export as torch_tpu_export
@@ -596,12 +597,8 @@ class ActivationTracer(contextlib.ContextDecorator):
     return False
 
 
-# We represent version numbers as `tuple[int, ...]` rather than
-# `packaging.version.Version` to avoid adding an external `packaging`
-# dependency to the `torch_tpu` runtime library and every test `BUILD` target
-# that compares versions.
-def parse_version(version: str) -> tuple[int, ...]:
-  """Parses the leading numeric components of a version string into a tuple.
+def parse_version(version: str) -> torch_version.TorchVersion:
+  """Parses the leading numeric components of a version string into a TorchVersion.
 
   Stops at the first non-numeric component so pre-release / nightly suffixes
   (e.g. "0.0.41.dev20260101") compare by their numeric prefix.
@@ -610,7 +607,8 @@ def parse_version(version: str) -> tuple[int, ...]:
     version: A version string such as "0.0.41".
 
   Returns:
-    The leading numeric components, e.g. (0, 0, 41).
+    The leading numeric components as a TorchVersion, e.g.
+    TorchVersion("0.0.41").
   """
   components = []
   for part in version.split("."):
@@ -621,12 +619,12 @@ def parse_version(version: str) -> tuple[int, ...]:
       digits += ch
     if not digits:
       break
-    components.append(int(digits))
-  return tuple(components)
+    components.append(str(int(digits)))
+  return torch_version.TorchVersion(".".join(components))
 
 
-def libtpu_version() -> tuple[int, ...] | None:
-  """Returns the parsed version tuple of libtpu in OSS, or None in google3."""
+def libtpu_version() -> torch_version.TorchVersion | None:
+  """Returns the parsed version of libtpu in OSS, or None in google3."""
   try:
     import libtpu  # pylint: disable=g-import-not-at-top  # pyrefly: ignore[missing-import]
   except ImportError:
@@ -637,8 +635,8 @@ def libtpu_version() -> tuple[int, ...] | None:
   return parse_version(version)
 
 
-def get_torch_version() -> tuple[int, ...]:
-  """Returns the parsed version tuple of torch."""
+def get_torch_version() -> torch_version.TorchVersion:
+  """Returns the parsed version of torch."""
   return parse_version(torch.__version__)
 
 
