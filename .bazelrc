@@ -1,4 +1,5 @@
 
+# DO NOT SUBMIT: temporary comment to trigger full OSS presubmit run.
 # Show various config startup information to aid debugging.
 common --announce_rc
 
