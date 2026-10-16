@@ -22,6 +22,7 @@
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/mlir/instrumentation.h"
+#include "csrc/mlir/passes/fold_axial_and_split_half_rope.h"
 #include "csrc/mlir/passes/fold_concat_softmax.h"
 #include "csrc/mlir/passes/lower_separable_gather_to_dot.h"
 #include "csrc/mlir/passes/reassociate_norm_weights.h"
@@ -51,6 +52,7 @@ void AddShloPasses(mlir::PassManager& pm) {
   pm.addNestedPass<mlir::func::FuncOp>(
       mlir::stablehlo::createStablehloTargetIndependentOptimizationPass());
   pm.addNestedPass<mlir::func::FuncOp>(createFoldConcatSoftmaxPass());
+  pm.addNestedPass<mlir::func::FuncOp>(createFoldAxialAndSplitHalfRopePass());
 }
 
 }  // namespace

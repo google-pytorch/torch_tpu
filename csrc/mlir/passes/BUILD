@@ -41,6 +41,41 @@ torch_tpu_cc_library(
 )
 
 torch_tpu_cc_library(
+    name = "fold_axial_and_split_half_rope",
+    srcs = ["fold_axial_and_split_half_rope.cc"],
+    hdrs = ["fold_axial_and_split_half_rope.h"],
+    deps = [
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:SideEffectInterfaces",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "fold_axial_and_split_half_rope_test",
+    srcs = ["fold_axial_and_split_half_rope_test.cc"],
+    deps = [
+        ":fold_axial_and_split_half_rope",
+        "//csrc/common:oss_test_main",
+        "@com_google_absl//absl/status:status_matchers",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Parser",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:reference_api",
+        "@stablehlo//:reference_configuration",
+        "@stablehlo//:register",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "fold_concat_softmax",
     srcs = ["fold_concat_softmax.cc"],
     hdrs = ["fold_concat_softmax.h"],
