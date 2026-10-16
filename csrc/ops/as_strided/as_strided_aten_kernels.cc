@@ -33,7 +33,6 @@
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
-#include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/macros/kernel.h"
@@ -57,8 +56,8 @@ absl::StatusOr<at::Tensor> AsStrided(const at::Tensor& self,
   TT_ASSIGN_OR_RETURN(mlir::ElementType tensor_element_type,
                       ConvertTo<mlir::ElementType>(self.scalar_type()));
 
-  Dimensions size_dims = CopyIntVector(size);
-  Strides stride_dims = CopyIntVector(stride);
+  Dimensions size_dims(size.begin(), size.end());
+  Strides stride_dims(stride.begin(), stride.end());
 
   TT_RETURN_IF_ERROR(ValidateProvidedLayoutDataFitsInStorage(
       storage_numel, storage_element_type, size_dims, stride_dims,

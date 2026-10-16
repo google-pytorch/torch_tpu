@@ -29,7 +29,6 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
-#include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/ops/macros/kernel.h"
@@ -75,7 +74,7 @@ at::Tensor& AtenUniform_(at::Tensor& self, double from, double to,
 
     TT_ASSIGN_OR_THROW(mlir::ElementType output_dtype,
                        ConvertTo<mlir::ElementType>(self_real.scalar_type()));
-    auto dims = CopyIntVector(self_real.sizes());
+    Dimensions dims(self_real.sizes().begin(), self_real.sizes().end());
 
     TT_THROW_IF_ERROR(DispatchRngOp(
         self_real, generator,

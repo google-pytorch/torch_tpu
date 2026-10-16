@@ -100,7 +100,7 @@ absl::StatusOr<DeviceBufferRef> AtenIm2Col(const at::Tensor& self,
       // unsqueezed. Squeeze it back to (C*kH*kW, L).
       return Squeeze(result, {0});
     }
-    return absl::StatusOr<mlir::MlirOp>(result);
+    return result;
   };
 
   TT_ASSIGN_OR_RETURN(const auto elem_type,

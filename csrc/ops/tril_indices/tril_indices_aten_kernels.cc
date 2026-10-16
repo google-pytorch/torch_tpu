@@ -39,8 +39,9 @@
 #include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
+namespace {
 
-static absl::StatusOr<MlirNullaryOpBuilder> GetTrilIndicesFunctional(
+absl::StatusOr<MlirNullaryOpBuilder> GetTrilIndicesFunctional(
     int64_t row, int64_t col, int64_t offset, int64_t tril_size,
     at::ScalarType dtype) {
   TT_ASSIGN_OR_RETURN(auto mlir_elem_type, ConvertTo<mlir::ElementType>(dtype));
@@ -52,6 +53,8 @@ static absl::StatusOr<MlirNullaryOpBuilder> GetTrilIndicesFunctional(
                                 mlir_type);
   };
 }
+
+}  // namespace
 
 at::Tensor AtenTrilIndices(int64_t row, int64_t col, int64_t offset,
                            std::optional<at::ScalarType> dtype_opt,
