@@ -1509,7 +1509,26 @@ TEST(ErrorMessageGuidelinesDeathTest, StartsWithUppercaseLetter) {
       ThrowWithMessage("failed to materialize: Dimension size negative"),
       HasSubstr("start with a lowercase character"));
 }
-
+TEST(ErrorMessageGuidelinesDeathTest, StartsWithOpName) {
+  EXPECT_DEATH(ThrowWithMessage("select() cannot be applied to a 0-dim tensor"),
+               HasSubstr("not start with an op name"));
+  EXPECT_DEATH(
+      ThrowWithMessage("select(): cannot be applied to a 0-dim tensor"),
+      HasSubstr("not start with an op name"));
+  EXPECT_DEATH(
+      ThrowWithMessage("select( ): cannot be applied to a 0-dim tensor"),
+      HasSubstr("not start with an op name"));
+  EXPECT_DEATH(
+      ThrowWithMessage("torch.select() cannot be applied to a 0-dim tensor"),
+      HasSubstr("not start with an op name"));
+  EXPECT_DEATH(
+      ThrowWithMessage(
+          "torch.ops.aten.select() cannot be applied to a 0-dim tensor"),
+      HasSubstr("not start with an op name"));
+  EXPECT_DEATH(
+      ThrowWithMessage("at::select() cannot be applied to a 0-dim tensor"),
+      HasSubstr("not start with an op name"));
+}
 TEST(ErrorMessageGuidelinesDeathTest, NoSpaceSurroundingXlaErrorSentinel) {
   // Missing space before.
   EXPECT_DEATH(
@@ -1635,6 +1654,13 @@ TEST(ErrorMessageGuidelinesPassTest, MultilineErrorMessage) {
           "failed to materialize: failed to run executable: multiline error "
           "message\nwith a second line"),
       c10::Error);
+}
+
+TEST(ErrorMessageGuidelinesPassTest, ParenthesesInMessage) {
+  EXPECT_THROW(
+      ThrowWithMessage("expected tensor with shape (2, 3), got (4, 5)"),
+      c10::Error);
+  EXPECT_THROW(ThrowWithMessage("dim (0) must be non-negative"), c10::Error);
 }
 
 #endif  // TT_CHECKS_ERROR_FORMAT
