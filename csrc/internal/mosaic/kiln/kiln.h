@@ -26,9 +26,9 @@
 //
 //   auto kernel = CreateKernel(
 //       GridSpec{.name = "add", .grid = {m / tm}},
-//       InSpec{{tm, n}, f32, row_map},
-//       InSpec{{tm, n}, f32, row_map},
-//       OutSpec{{tm, n}, f32, row_map},
+//       InSpec{f32(tm, n), row_map},
+//       InSpec{f32(tm, n), row_map},
+//       OutSpec{f32(tm, n), row_map},
 //       [&](Ref x, Ref y, Ref out) {
 //         out = Tile(x) + Tile(y);
 //       });
@@ -71,6 +71,7 @@
 #include "csrc/internal/mosaic/kiln/core/ref.h"           // IWYU pragma: export
 #include "csrc/internal/mosaic/kiln/core/scalar.h"        // IWYU pragma: export
 #include "csrc/internal/mosaic/kiln/core/semaphore.h"     // IWYU pragma: export
+#include "csrc/internal/mosaic/kiln/core/shape.h"         // IWYU pragma: export
 #include "csrc/internal/mosaic/kiln/core/specs.h"         // IWYU pragma: export
 #include "csrc/internal/mosaic/kiln/core/tile.h"          // IWYU pragma: export
 #include "csrc/internal/mosaic/kiln/core/value_base.h"    // IWYU pragma: export

@@ -34,9 +34,7 @@ namespace tpu = mlir::tpu;
 
 void ValidateCopyRefs(const Ref& src_ref, const Ref& dst_ref,
                       const Semaphore& sem) {
-  ABSL_CHECK_EQ(src_ref.dtype(), dst_ref.dtype())  // CRASH_OK
-      << "DMA source and destination Refs must have the same dtype";
-  ABSL_CHECK(src_ref.shape() == dst_ref.shape())  // CRASH_OK
+  ABSL_CHECK_EQ(src_ref.shape(), dst_ref.shape())  // CRASH_OK
       << "DMA source and destination Refs must have matching shapes";
   ABSL_CHECK(  // CRASH_OK
       sem.is_dma() || (src_ref.memory_space() != MemorySpace::kSmem &&
@@ -167,7 +165,7 @@ AsyncRemoteCopyDescriptor AsyncRemoteCopy(Ref src_ref, Ref dst_ref,
 Scalar DeviceId() {
   mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
   return internal::wrap<Scalar>(tpu::DeviceIdOp::create(b, b.getI32Type()),
-                                Int32Type());
+                                i32);
 }
 
 }  // namespace torch_tpu::kiln

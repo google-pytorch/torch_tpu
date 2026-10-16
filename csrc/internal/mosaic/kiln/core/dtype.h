@@ -17,25 +17,24 @@
 #ifndef TORCH_TPU_CSRC_INTERNAL_MOSAIC_KILN_CORE_DTYPE_H_
 #define TORCH_TPU_CSRC_INTERNAL_MOSAIC_KILN_CORE_DTYPE_H_
 
+#include <concepts>
 #include <cstdint>
-#include <limits>
 #include <ostream>
 #include <string_view>
 
-#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/ArrayRef.h"
 
 namespace torch_tpu::kiln {
 
-using Shape = llvm::SmallVector<int64_t, 4>;
-
-// Sentinel for a runtime-sized (dynamic) dimension in a `Shape` (`?` in MLIR),
-// matching `mlir::ShapedType::kDynamic`. Only valid in `Shape` specifications
-// (for dynamic slice sizes, pass a runtime `Scalar` to `Slice` or use `all`).
-inline constexpr int64_t kDynamic = std::numeric_limits<int64_t>::min();
+class Shape;
 
 // An element data type.
 class DType {
  public:
+  // TODO(willfroom): replace this with a bit field of:
+  // - log2(width): 3 bits
+  // - float vs int: 1 bit
+  // - signedness: 1 bit
   enum class Kind : uint8_t {
     kBool,
     kI8,
@@ -53,7 +52,17 @@ class DType {
 
   constexpr explicit DType(Kind kind) : kind_(kind) {}
 
+  constexpr DType(const DType&) = default;
+  constexpr DType& operator=(const DType&) = default;
+  constexpr DType(DType&&) noexcept = default;
+  constexpr DType& operator=(DType&&) noexcept = default;
+
   constexpr Kind kind() const { return kind_; }
+
+  Shape operator()(llvm::ArrayRef<int64_t> dims) const;
+
+  template <std::convertible_to<int64_t>... Dims>
+  Shape operator()(Dims... dims) const;
 
   constexpr bool IsBool() const { return kind_ == Kind::kBool; }
 
@@ -146,19 +155,21 @@ inline std::ostream& operator<<(std::ostream& os, DType dtype) {
   return os << dtype.ToString();
 }
 
-// Types
-constexpr DType BoolType() { return DType(DType::Kind::kBool); }
-constexpr DType Int8Type() { return DType(DType::Kind::kI8); }
-constexpr DType Int16Type() { return DType(DType::Kind::kI16); }
-constexpr DType Int32Type() { return DType(DType::Kind::kI32); }
-constexpr DType Int64Type() { return DType(DType::Kind::kI64); }
-constexpr DType UInt8Type() { return DType(DType::Kind::kU8); }
-constexpr DType UInt16Type() { return DType(DType::Kind::kU16); }
-constexpr DType UInt32Type() { return DType(DType::Kind::kU32); }
-constexpr DType UInt64Type() { return DType(DType::Kind::kU64); }
-constexpr DType Float16Type() { return DType(DType::Kind::kF16); }
-constexpr DType BFloat16Type() { return DType(DType::Kind::kBF16); }
-constexpr DType Float32Type() { return DType(DType::Kind::kF32); }
+// Types.
+// Intentionally deviate from Google style guide (k-prefix for constexpr values)
+// to improve readability of the DSL.
+inline constexpr DType bool_(DType::Kind::kBool);
+inline constexpr DType i8(DType::Kind::kI8);
+inline constexpr DType i16(DType::Kind::kI16);
+inline constexpr DType i32(DType::Kind::kI32);
+inline constexpr DType i64(DType::Kind::kI64);
+inline constexpr DType u8(DType::Kind::kU8);
+inline constexpr DType u16(DType::Kind::kU16);
+inline constexpr DType u32(DType::Kind::kU32);
+inline constexpr DType u64(DType::Kind::kU64);
+inline constexpr DType f16(DType::Kind::kF16);
+inline constexpr DType bf16(DType::Kind::kBF16);
+inline constexpr DType f32(DType::Kind::kF32);
 
 }  // namespace torch_tpu::kiln
 

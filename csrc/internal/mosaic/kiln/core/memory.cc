@@ -24,6 +24,7 @@
 #include "csrc/internal/mosaic/kiln/core/dtype.h"
 #include "csrc/internal/mosaic/kiln/core/ref.h"
 #include "csrc/internal/mosaic/kiln/core/semaphore.h"
+#include "csrc/internal/mosaic/kiln/core/shape.h"
 #include "csrc/internal/mosaic/kiln/core/specs.h"
 #include "csrc/internal/mosaic/op_builders.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -60,36 +61,38 @@ Ref Alloca(const ScratchSpec& spec) {
   mlir::MLIRContext* ctx = b.getContext();
   ABSL_CHECK(spec.space != MemorySpace::kHbm)  // CRASH_OK
       << "Cannot allocate HBM in a kernel";
-  for (int64_t dim : spec.shape) {
+  llvm::ArrayRef<int64_t> dims = spec.shape.dims();
+  const DType dtype = spec.shape.dtype();
+  for (int64_t dim : dims) {
     ABSL_CHECK_GT(dim, 0)  // CRASH_OK
         << "Alloca() requires static positive dimensions";
   }
   switch (spec.space) {
     case MemorySpace::kVmem: {
-      ABSL_CHECK(!spec.shape.empty())  // CRASH_OK
+      ABSL_CHECK(!dims.empty())  // CRASH_OK
           << "VMEM Alloca() requires at least a 1D shape";
-      ABSL_CHECK(!spec.dtype.IsBool() &&  // CRASH_OK
-                 spec.dtype.GetIntOrFloatBitWidth() <= 32u)
+      ABSL_CHECK(!dtype.IsBool() &&  // CRASH_OK
+                 dtype.GetIntOrFloatBitWidth() <= 32u)
           << "VMEM Alloca() does not support bool (i1) or 64-bit element types";
-      mlir::Type elem_type = internal::ToMlirType(spec.dtype, ctx);
+      mlir::Type elem_type = internal::ToMlirType(dtype, ctx);
       mlir::MemRefType type =
-          mlir::torch_tpu::GetVmemMemRefType(ctx, spec.shape, elem_type);
+          mlir::torch_tpu::GetVmemMemRefType(ctx, dims, elem_type);
       return internal::wrap<Ref>(mlir::memref::AllocaOp::create(b, type),
-                                 spec.dtype);
+                                 dtype);
     }
     case MemorySpace::kSmem: {
-      ABSL_CHECK_EQ(spec.dtype.GetIntOrFloatBitWidth(), 32u)  // CRASH_OK
+      ABSL_CHECK_EQ(dtype.GetIntOrFloatBitWidth(), 32u)  // CRASH_OK
           << "SMEM Alloca() requires a 32-bit element type";
-      mlir::Type elem_type = internal::ToMlirType(spec.dtype, ctx);
+      mlir::Type elem_type = internal::ToMlirType(dtype, ctx);
       mlir::MemRefType type =
-          mlir::torch_tpu::GetSmemMemRefType(ctx, spec.shape, elem_type);
+          mlir::torch_tpu::GetSmemMemRefType(ctx, dims, elem_type);
       return internal::wrap<Ref>(mlir::memref::AllocaOp::create(b, type),
-                                 spec.dtype);
+                                 dtype);
     }
     default:
       ABSL_CHECK(false)  // CRASH_OK
           << "Unsupported memory space for Alloca()";
-      return internal::wrap<Ref>(mlir::Value(), spec.dtype);
+      return internal::wrap<Ref>(mlir::Value(), dtype);
   }
 }
 
@@ -99,7 +102,7 @@ Semaphore AllocaDmaSemaphore() {
       {}, tpu::DMASemaphoreType::get(ctx), "AllocaDmaSemaphore()"));
 }
 
-SemaphoreArray AllocaDmaSemaphore(Shape shape) {
+SemaphoreArray AllocaDmaSemaphore(Dimensions shape) {
   ABSL_CHECK(!shape.empty())  // CRASH_OK
       << "AllocaDmaSemaphore(shape) requires a non-empty shape";
   mlir::MLIRContext* ctx = internal::CurrentBuilder().getContext();
@@ -113,7 +116,7 @@ Semaphore AllocaSemaphore() {
       {}, tpu::SemaphoreType::get(ctx), "AllocaSemaphore()"));
 }
 
-SemaphoreArray AllocaSemaphore(Shape shape) {
+SemaphoreArray AllocaSemaphore(Dimensions shape) {
   ABSL_CHECK(!shape.empty())  // CRASH_OK
       << "AllocaSemaphore(shape) requires a non-empty shape";
   mlir::MLIRContext* ctx = internal::CurrentBuilder().getContext();

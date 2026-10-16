@@ -25,6 +25,7 @@
 #include "csrc/internal/mosaic/kiln/core/dtype.h"
 #include "csrc/internal/mosaic/kiln/core/index_arg.h"
 #include "csrc/internal/mosaic/kiln/core/scalar.h"
+#include "csrc/internal/mosaic/kiln/core/shape.h"
 #include "csrc/internal/mosaic/kiln/core/specs.h"
 #include "csrc/internal/mosaic/kiln/core/tile.h"
 #include "csrc/internal/mosaic/kiln/core/value_base.h"
@@ -104,14 +105,15 @@ class Ref : public ValueBase {
   // (`tpu.vector_store` / Pallas `pltpu.store`).
   void Store(Tile value, std::optional<Tile> mask = std::nullopt);
 
-  llvm::ArrayRef<int64_t> shape() const;
+  llvm::ArrayRef<int64_t> dims() const;
+  Shape shape() const { return Shape(dims(), dtype()); }
   MemorySpace memory_space() const;
   int64_t rank() const;
   bool HasStaticShape() const;
   bool IsDynamicDim(int64_t axis) const;
 
   // Queries the size of dimension `axis` as an i32 Scalar (`memref.dim` for
-  // dynamic dimensions, or a constant `I32(shape()[axis])` for static
+  // dynamic dimensions, or a constant `I32(dims()[axis])` for static
   // dimensions).
   Scalar Dim(int64_t axis) const;
 

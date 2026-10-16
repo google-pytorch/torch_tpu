@@ -101,7 +101,7 @@ void For(IndexArg lower, IndexArg upper, IndexArg step,
   b.setInsertionPointToStart(for_op.getBody());
   mlir::Value iv = mlir::arith::IndexCastOp::create(b, b.getI32Type(),
                                                     for_op.getInductionVar());
-  body(internal::wrap<Scalar>(iv, Int32Type()));
+  body(internal::wrap<Scalar>(iv, i32));
 }
 
 void RunScoped(absl::FunctionRef<void()> body) {

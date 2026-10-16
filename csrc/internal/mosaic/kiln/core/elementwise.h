@@ -101,13 +101,13 @@ class WithElementwiseOps {
   Derived Bitcast(DType target) const {
     return Ops::Bitcast(derived(), target);
   }
-  Derived ToI32() const { return AsType(Int32Type()); }
-  Derived ToU8() const { return AsType(UInt8Type()); }
-  Derived ToU16() const { return AsType(UInt16Type()); }
-  Derived ToU32() const { return AsType(UInt32Type()); }
-  Derived ToU64() const { return AsType(UInt64Type()); }
-  Derived ToF32() const { return AsType(Float32Type()); }
-  Derived ToBF16() const { return AsType(BFloat16Type()); }
+  Derived ToI32() const { return AsType(i32); }
+  Derived ToU8() const { return AsType(u8); }
+  Derived ToU16() const { return AsType(u16); }
+  Derived ToU32() const { return AsType(u32); }
+  Derived ToU64() const { return AsType(u64); }
+  Derived ToF32() const { return AsType(f32); }
+  Derived ToBF16() const { return AsType(bf16); }
 
   // Arithmetic on integer or floating-point operands.
   friend Derived operator-(Derived v) { return Ops::Neg(v); }

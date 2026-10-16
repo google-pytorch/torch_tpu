@@ -26,7 +26,9 @@
 #include "csrc/internal/mosaic/kiln/core/elementwise_impl.h"  // IWYU pragma: keep
 #include "csrc/internal/mosaic/kiln/core/index_arg.h"
 #include "csrc/internal/mosaic/kiln/core/literal.h"
+#include "csrc/internal/mosaic/kiln/core/mlir_utils.h"
 #include "csrc/internal/mosaic/kiln/core/scalar.h"
+#include "csrc/internal/mosaic/kiln/core/shape.h"
 #include "csrc/internal/mosaic/kiln/core/value_base.h"
 #include "csrc/internal/mosaic/op_builders.h"
 #include "llvm/ADT/APFloat.h"
@@ -85,9 +87,9 @@ mlir::TypedAttr MinValue(mlir::ImplicitLocOpBuilder& b, DType dtype) {
 Tile Reduce(const Tile& t, int axis, vector::CombiningKind kind,
             mlir::TypedAttr init) {
   mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
-  llvm::ArrayRef<int64_t> shape = t.shape();
+  llvm::ArrayRef<int64_t> dims = t.dims();
   ABSL_CHECK(axis >= 0 && axis < t.rank());  // CRASH_OK
-  Shape reduced(shape);
+  Dimensions reduced(dims);
   reduced.erase(reduced.begin() + axis);
   llvm::SmallVector<bool> mask(t.rank(), false);
   mask[axis] = true;
@@ -95,7 +97,7 @@ Tile Reduce(const Tile& t, int axis, vector::CombiningKind kind,
       b, mlir::VectorType::get(reduced, internal::ToMlirType(t.dtype())), init);
   mlir::Value r = vector::MultiDimReductionOp::create(b, internal::unwrap(t),
                                                       acc, mask, kind);
-  Shape keepdims(shape);
+  Dimensions keepdims(dims);
   keepdims[axis] = 1;
   return internal::wrap<Tile>(r, t.dtype()).Reshape(keepdims);
 }
@@ -110,7 +112,7 @@ Tile::Tile(const void* impl, DType dtype) : ValueBase(impl, dtype) {
 
 Tile::Tile(Scalar scalar) : Tile(Splat(scalar, {})) {}
 
-llvm::ArrayRef<int64_t> Tile::shape() const {
+llvm::ArrayRef<int64_t> Tile::dims() const {
   return VectorTypeOf(*this).getShape();
 }
 
@@ -121,7 +123,7 @@ int64_t Tile::num_elements() const {
 }
 
 Tile Tile::Reshape(llvm::ArrayRef<int64_t> shape) const {
-  if (shape == this->shape()) return *this;
+  if (shape == dims()) return *this;
   mlir::Type elem_type = internal::ToMlirType(dtype());
   ABSL_CHECK_EQ(num_elements(),  // CRASH_OK
                 mlir::VectorType::get(shape, elem_type).getNumElements())
@@ -134,7 +136,7 @@ Tile Tile::Reshape(llvm::ArrayRef<int64_t> shape) const {
 }
 
 Tile Tile::Squeeze() const {
-  llvm::ArrayRef<int64_t> s = shape();
+  llvm::ArrayRef<int64_t> s = dims();
   while (s.size() > 2 && s.front() == 1) s = s.drop_front();
   return Reshape(s);
 }
@@ -156,9 +158,9 @@ Tile Tile::Lanes(int64_t n) const {
   ABSL_CHECK_GT(rank(), 0)  // CRASH_OK
       << "Lanes() requires a tile of rank >= 1";
   ABSL_CHECK_GT(n, 0) << "Lanes() target size must be positive";  // CRASH_OK
-  const int64_t lane = shape().back();
+  const int64_t lane = dims().back();
   if (lane == n) return *this;
-  Shape target(shape());
+  Dimensions target(dims());
   target.back() = n;
   if (lane == 1) return BroadcastTo(target);
   if (n < lane) {
@@ -181,7 +183,7 @@ Tile Tile::Slice(llvm::ArrayRef<int64_t> offsets,
         << "Slice() offset must be non-negative";
     ABSL_CHECK_GT(sizes[i], 0)  // CRASH_OK
         << "Slice() size must be positive";
-    ABSL_CHECK_LE(offsets[i] + sizes[i], shape()[i])  // CRASH_OK
+    ABSL_CHECK_LE(offsets[i] + sizes[i], dims()[i])  // CRASH_OK
         << "Slice() out of bounds for dimension " << i;
   }
   return internal::wrap<Tile>(
@@ -209,7 +211,7 @@ Tile Tile::Gather(Tile indices, llvm::ArrayRef<int32_t> dimensions) const {
       indices.dtype().IsInt())
       << "Gather() indices must have an integer dtype";
   if (indices.rank() == 0) {
-    indices = indices.BroadcastTo(shape());
+    indices = indices.BroadcastTo(dims());
   }
   ABSL_CHECK_EQ(rank(), indices.rank())  // CRASH_OK
       << "Gather() source and indices must have the same rank";
@@ -229,9 +231,10 @@ Scalar Tile::Extract(llvm::ArrayRef<int64_t> indices) const {
   ABSL_CHECK_EQ(static_cast<int64_t>(indices.size()), rank())  // CRASH_OK
       << "Extract() requires one index per tile dimension";
   for (int64_t i = 0; i < rank(); ++i) {
-    ABSL_CHECK(indices[i] >= 0 && indices[i] < shape()[i])  // CRASH_OK
+    llvm::ArrayRef<int64_t> dimensions = dims();
+    ABSL_CHECK(indices[i] >= 0 && indices[i] < dimensions[i])  // CRASH_OK
         << "Extract() index " << indices[i] << " out of bounds for dimension "
-        << i << " of size " << shape()[i];
+        << i << " of size " << dimensions[i];
   }
   return internal::wrap<Scalar>(
       vector::ExtractOp::create(internal::CurrentBuilder(),
@@ -240,46 +243,43 @@ Scalar Tile::Extract(llvm::ArrayRef<int64_t> indices) const {
 }
 
 Tile Tile::Full(Literal value) const {
-  return ::torch_tpu::kiln::Full(shape(), dtype(), value);
+  return ::torch_tpu::kiln::Full(shape(), value);
 }
 
-Tile Zeros(llvm::ArrayRef<int64_t> shape, DType dtype) {
-  return Full(shape, dtype, 0.0);
-}
+Tile Zeros(const Shape& shape) { return Full(shape, /*value=*/0.0); }
 
-Tile Full(llvm::ArrayRef<int64_t> shape, DType dtype, Literal value) {
+Tile Full(const Shape& shape, Literal value) {
   mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
   return internal::wrap<Tile>(
-      SplatConstant(b,
-                    mlir::VectorType::get(shape, internal::ToMlirType(dtype)),
-                    internal::LiteralToAttr(b, dtype, value)),
-      dtype);
+      SplatConstant(b, internal::ToMlirVectorType(shape),
+                    internal::LiteralToAttr(b, shape.dtype(), value)),
+      shape.dtype());
 }
 
-Tile NInf(llvm::ArrayRef<int64_t> shape, DType dtype) {
-  ABSL_CHECK(dtype.IsFloat())  // CRASH_OK
+Tile NInf(const Shape& shape) {
+  ABSL_CHECK(shape.dtype().IsFloat())  // CRASH_OK
       << "NInf() requires a floating-point dtype";
   mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
   return internal::wrap<Tile>(
-      SplatConstant(b,
-                    mlir::VectorType::get(shape, internal::ToMlirType(dtype)),
-                    MinValue(b, dtype)),
-      dtype);
+      SplatConstant(b, internal::ToMlirVectorType(shape),
+                    MinValue(b, shape.dtype())),
+      shape.dtype());
 }
 
-Tile Iota(llvm::ArrayRef<int64_t> shape, DType dtype, int axis) {
-  ABSL_CHECK(dtype.IsInt()) << "Iota() requires an integer dtype";  // CRASH_OK
-  ABSL_CHECK(axis >= 0 && axis < static_cast<int>(shape.size()))    // CRASH_OK
-      << "Iota() axis " << axis << " out of bounds for rank " << shape.size();
-  for (int64_t dim : shape) {
+Tile Iota(const Shape& shape, int axis) {
+  ABSL_CHECK(shape.dtype().IsInt())  // CRASH_OK
+      << "Iota() requires an integer dtype";
+  ABSL_CHECK(axis >= 0 &&  // CRASH_OK
+             axis < static_cast<int>(shape.rank()))
+      << "Iota() axis " << axis << " out of bounds for rank " << shape.rank();
+  for (int64_t dim : shape.dims()) {
     ABSL_CHECK_GT(dim, 0)  // CRASH_OK
         << "Iota() shape dimensions must be positive";
   }
   mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
   return internal::wrap<Tile>(
-      mlir::torch_tpu::CreateIotaOp(
-          b, mlir::VectorType::get(shape, internal::ToMlirType(dtype)), axis),
-      dtype);
+      mlir::torch_tpu::CreateIotaOp(b, internal::ToMlirVectorType(shape), axis),
+      shape.dtype());
 }
 
 Tile Splat(Scalar scalar, llvm::ArrayRef<int64_t> shape) {
@@ -334,8 +334,8 @@ Tile Dot(Tile lhs, Tile rhs, const DotOptions& options) {
   ABSL_CHECK(lhs.dtype().IsIntOrFloat() &&  // CRASH_OK
              rhs.dtype().IsIntOrFloat())
       << "Dot() operands must be integer or floating-point tiles";
-  const int64_t lhs_k = lhs.shape()[options.transpose_lhs ? 0 : 1];
-  const int64_t rhs_k = rhs.shape()[options.transpose_rhs ? 1 : 0];
+  const int64_t lhs_k = lhs.dims()[options.transpose_lhs ? 0 : 1];
+  const int64_t rhs_k = rhs.dims()[options.transpose_rhs ? 1 : 0];
   ABSL_CHECK_EQ(lhs_k, rhs_k)  // CRASH_OK
       << "Dot() contracting dimensions must match (" << lhs_k << " vs " << rhs_k
       << ")";
@@ -354,7 +354,7 @@ Tile Dot(Tile lhs, Tile rhs, const DotOptions& options) {
     }
   }
   // Matmuls always produce a float32 result.
-  DType result_dtype = Float32Type();
+  DType result_dtype = f32;
   return internal::wrap<Tile>(
       mlir::torch_tpu::CreateMatmul(
           internal::CurrentBuilder(), internal::unwrap(lhs),

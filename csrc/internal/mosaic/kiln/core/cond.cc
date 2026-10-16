@@ -36,21 +36,21 @@ Cond operator&&(Cond lhs, Cond rhs) {
   return internal::wrap<Cond>(
       mlir::arith::AndIOp::create(internal::CurrentBuilder(),
                                   internal::unwrap(lhs), internal::unwrap(rhs)),
-      BoolType());
+      bool_);
 }
 
 Cond operator||(Cond lhs, Cond rhs) {
   return internal::wrap<Cond>(
       mlir::arith::OrIOp::create(internal::CurrentBuilder(),
                                  internal::unwrap(lhs), internal::unwrap(rhs)),
-      BoolType());
+      bool_);
 }
 
 Cond operator!(Cond cond) {
   mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
   mlir::Value t = mlir::arith::ConstantOp::create(b, b.getBoolAttr(true));
   return internal::wrap<Cond>(
-      mlir::arith::XOrIOp::create(b, internal::unwrap(cond), t), BoolType());
+      mlir::arith::XOrIOp::create(b, internal::unwrap(cond), t), bool_);
 }
 
 }  // namespace torch_tpu::kiln

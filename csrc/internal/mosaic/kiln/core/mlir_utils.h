@@ -23,6 +23,7 @@
 #include "csrc/internal/mosaic/kiln/core/context.h"
 #include "csrc/internal/mosaic/kiln/core/index_arg.h"
 #include "csrc/internal/mosaic/kiln/core/scalar.h"
+#include "csrc/internal/mosaic/kiln/core/shape.h"
 #include "llvm/Support/Casting.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Value.h"
@@ -33,6 +34,9 @@ template <typename T>
 inline mlir::MemRefType MemRefTypeOf(const T& val) {
   return llvm::cast<mlir::MemRefType>(unwrap(val).getType());
 }
+
+// Get the mlir::VectorType corresponding to the given Shape.
+mlir::VectorType ToMlirVectorType(const Shape& shape);
 
 void ValidateI32IndexArg(const IndexArg& arg, bool require_positive,
                          std::string_view name);

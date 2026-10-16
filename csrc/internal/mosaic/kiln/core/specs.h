@@ -20,8 +20,8 @@
 #include <string>
 #include <utility>
 
-#include "csrc/internal/mosaic/kiln/core/dtype.h"
 #include "csrc/internal/mosaic/kiln/core/index_map.h"
+#include "csrc/internal/mosaic/kiln/core/shape.h"
 #include "llvm/ADT/SmallVector.h"
 
 namespace torch_tpu::kiln {
@@ -50,20 +50,17 @@ enum class BlockRole { kNone, kIn, kOut };
 template <BlockRole Role = BlockRole::kNone>
 struct BasicBlockSpec {
   Shape shape;
-  DType dtype;
   IndexMap map;
-  MemorySpace space;
+  MemorySpace space = MemorySpace::kVmem;
 
-  static BasicBlockSpec Vmem(Shape shape, DType dtype,
-                             IndexMap map = IndexMap()) {
-    return {std::move(shape), dtype, std::move(map), MemorySpace::kVmem};
+  static BasicBlockSpec Vmem(Shape shape, IndexMap map = IndexMap()) {
+    return {std::move(shape), std::move(map), MemorySpace::kVmem};
   }
-  static BasicBlockSpec Smem(Shape shape, DType dtype,
-                             IndexMap map = IndexMap()) {
-    return {std::move(shape), dtype, std::move(map), MemorySpace::kSmem};
+  static BasicBlockSpec Smem(Shape shape, IndexMap map = IndexMap()) {
+    return {std::move(shape), std::move(map), MemorySpace::kSmem};
   }
-  static BasicBlockSpec Hbm(Shape shape, DType dtype) {
-    return {std::move(shape), dtype, IndexMap(), MemorySpace::kHbm};
+  static BasicBlockSpec Hbm(Shape shape) {
+    return {std::move(shape), IndexMap(), MemorySpace::kHbm};
   }
 };
 
@@ -73,25 +70,23 @@ using OutSpec = BasicBlockSpec<BlockRole::kOut>;
 
 struct ScratchSpec {
   Shape shape;
-  DType dtype;
-  MemorySpace space;
+  MemorySpace space = MemorySpace::kVmem;
 
-  static ScratchSpec Vmem(Shape shape, DType dtype) {
-    return {std::move(shape), dtype, MemorySpace::kVmem};
+  static ScratchSpec Vmem(Shape shape) {
+    return {std::move(shape), MemorySpace::kVmem};
   }
-  static ScratchSpec Smem(Shape shape, DType dtype) {
-    return {std::move(shape), dtype, MemorySpace::kSmem};
+  static ScratchSpec Smem(Shape shape) {
+    return {std::move(shape), MemorySpace::kSmem};
   }
 };
 
 struct ScalarPrefetchSpec {
   Shape shape;
-  DType dtype;
 };
 
 struct GridSpec {
   std::string name = "kernel";
-  Shape grid;
+  Dimensions grid;
   // One entry per grid axis. Defaults to `kParallel` for every axis.
   llvm::SmallVector<DimensionSemantics, 4> dimension_semantics;
 };

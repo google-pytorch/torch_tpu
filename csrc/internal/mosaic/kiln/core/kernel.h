@@ -96,12 +96,12 @@ inline auto RegisterSpec(KernelSpec& k, const ScalarPrefetchSpec& s) {
 }
 inline auto RegisterSpec(KernelSpec& k, const InSpec& s) {
   int idx = k.in_specs.size();
-  k.in_specs.push_back({s.shape, s.dtype, s.map, s.space});
+  k.in_specs.push_back({s.shape, s.map, s.space});
   return [idx] { return In(idx); };
 }
 inline auto RegisterSpec(KernelSpec& k, const OutSpec& s) {
   int idx = k.out_specs.size();
-  k.out_specs.push_back({s.shape, s.dtype, s.map, s.space});
+  k.out_specs.push_back({s.shape, s.map, s.space});
   return [idx] { return Out(idx); };
 }
 inline auto RegisterSpec(KernelSpec& k, const ScratchSpec& s) {

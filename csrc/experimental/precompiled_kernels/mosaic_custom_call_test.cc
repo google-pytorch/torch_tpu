@@ -43,16 +43,14 @@ TEST(DynamicMosaic, CopiesDifferentShapesWithOneExecutable) {
   TT_ASSERT_OK_AND_ASSIGN(auto client, CreateKernelTestClient());
   xla::HloRunner runner(std::move(client));
   // Copy from src to dst, with runtime-varying dimensions.
-  const kiln::Shape dynamic_2d = {kiln::kDynamic, kiln::kDynamic};
+  const kiln::Shape dynamic_2d = kiln::f32(kiln::kDynamic, kiln::kDynamic);
   TT_ASSERT_OK_AND_ASSIGN(
       kiln::Kernel kernel,
       kiln::CreateKernel(
-          kiln::GridSpec{.name = "main"},
-          kiln::InSpec::Hbm(dynamic_2d, kiln::Float32Type()),
-          kiln::InSpec::Hbm(dynamic_2d, kiln::Float32Type()),
-          kiln::OutSpec::Hbm(dynamic_2d, kiln::Float32Type()),
+          kiln::GridSpec{.name = "main"}, kiln::InSpec::Hbm(dynamic_2d),
+          kiln::InSpec::Hbm(dynamic_2d), kiln::OutSpec::Hbm(dynamic_2d),
           [](kiln::Ref src, kiln::Ref /*destination*/, kiln::Ref dst) {
-            kiln::Ref tile = kiln::AllocaVmem({8, 128}, kiln::Float32Type());
+            kiln::Ref tile = kiln::AllocaVmem(kiln::f32(8, 128));
             kiln::Semaphore sem = kiln::AllocaDmaSemaphore();
             kiln::For(0, src.Dim(0), 8, [&](kiln::Scalar row) {
               kiln::For(0, src.Dim(1), 128, [&](kiln::Scalar col) {

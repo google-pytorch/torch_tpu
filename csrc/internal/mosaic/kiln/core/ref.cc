@@ -25,6 +25,7 @@
 #include "csrc/internal/mosaic/kiln/core/index_arg.h"
 #include "csrc/internal/mosaic/kiln/core/mlir_utils.h"
 #include "csrc/internal/mosaic/kiln/core/scalar.h"
+#include "csrc/internal/mosaic/kiln/core/shape.h"
 #include "csrc/internal/mosaic/kiln/core/specs.h"
 #include "csrc/internal/mosaic/kiln/core/tile.h"
 #include "csrc/internal/mosaic/kiln/core/value_base.h"
@@ -183,9 +184,8 @@ Ref::operator Tile() const {
       << "Tile load requires a VMEM ref (use AsyncCopy for HBM)";
   mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
   return internal::wrap<Tile>(
-      vector::LoadOp::create(
-          b, mlir::VectorType::get(shape(), internal::ToMlirType(dtype())),
-          internal::unwrap(*this), ZeroIndices(b, rank())),
+      vector::LoadOp::create(b, internal::ToMlirVectorType(shape()),
+                             internal::unwrap(*this), ZeroIndices(b, rank())),
       dtype());
 }
 
@@ -195,12 +195,12 @@ void Ref::Store(Tile value, std::optional<Tile> mask) {
   ABSL_CHECK(IsVmemRef(*this))  // CRASH_OK
       << "Tile store requires a VMEM ref (use AsyncCopy for HBM)";
   Tile converted = value.AsType(dtype());
-  Tile shaped = converted.ToShape(shape());
+  Tile shaped = converted.ToShape(dims());
   mlir::Value mask_value;
   if (mask.has_value()) {
     ABSL_CHECK(mask->dtype().IsBool())  // CRASH_OK
         << "Masked tile store requires an i1 mask tile";
-    Tile shaped_mask = mask->ToShape(shape());
+    Tile shaped_mask = mask->ToShape(dims());
     mask_value = internal::unwrap(shaped_mask);
   }
 
@@ -210,7 +210,7 @@ void Ref::Store(Tile value, std::optional<Tile> mask) {
                              mask_value, /*add=*/false);
 }
 
-llvm::ArrayRef<int64_t> Ref::shape() const {
+llvm::ArrayRef<int64_t> Ref::dims() const {
   return internal::MemRefTypeOf(*this).getShape();
 }
 
@@ -248,12 +248,12 @@ bool Ref::IsDynamicDim(int64_t axis) const {
 
 Scalar Ref::Dim(int64_t axis) const {
   if (!IsDynamicDim(axis)) {
-    return I32(shape()[axis]);
+    return I32(dims()[axis]);
   }
   mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
   mlir::Value dim_idx = memref::DimOp::create(b, internal::unwrap(*this), axis);
   return internal::wrap<Scalar>(
-      arith::IndexCastOp::create(b, b.getI32Type(), dim_idx), Int32Type());
+      arith::IndexCastOp::create(b, b.getI32Type(), dim_idx), i32);
 }
 
 namespace internal {

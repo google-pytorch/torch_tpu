@@ -119,7 +119,7 @@ void Append(kiln::Scalar row, kiln::Scalar col, kiln::Ref count,
 // Gather a runtime-selected lane, then extract its replicated value as a
 // scalar.
 kiln::Scalar ExtractLane(kiln::Tile values, kiln::Scalar lane) {
-  kiln::Tile gathered = kiln::Gather(values, kiln::Splat(lane, values.shape()),
+  kiln::Tile gathered = kiln::Gather(values, kiln::Splat(lane, values.dims()),
                                      /*axis=*/1);
   return kiln::Extract(gathered, {0, 0});
 }
@@ -128,7 +128,7 @@ kiln::Scalar ExtractLane(kiln::Tile values, kiln::Scalar lane) {
 kiln::Cond IsNonzero(kiln::Tile values, kiln::Scalar lane) {
   // TPU scalar arithmetic is integer-only. Compare float magnitude bits:
   // any set bit is nonzero, which excludes only +0.0 and -0.0.
-  kiln::Scalar bits = Bitcast(ExtractLane(values, lane), kiln::Int32Type());
+  kiln::Scalar bits = Bitcast(ExtractLane(values, lane), kiln::i32);
   return (bits & 0x7fffffff) > 0;
 }
 
@@ -150,26 +150,23 @@ kiln::Tile LoadRow(kiln::Scalar row, kiln::Scalar col, kiln::Ref input,
 // The HLO wrapper provides runtime dimensions and the result/destination
 // alias.
 absl::StatusOr<kiln::Kernel> BuildNonzeroIndices() {
-  const kiln::Shape dynamic_2d = {kiln::kDynamic, kiln::kDynamic};
+  const kiln::Dimensions dynamic_2d = {kiln::kDynamic, kiln::kDynamic};
   return kiln::CreateKernel(
-      kiln::GridSpec{.name = "main"},
-      kiln::InSpec::Hbm(dynamic_2d, kiln::Float32Type()),
-      kiln::InSpec::Hbm(dynamic_2d, kiln::Int32Type()),
-      kiln::OutSpec::Hbm(dynamic_2d, kiln::Int32Type()),
+      kiln::GridSpec{.name = "main"}, kiln::InSpec::Hbm(kiln::f32(dynamic_2d)),
+      kiln::InSpec::Hbm(kiln::i32(dynamic_2d)),
+      kiln::OutSpec::Hbm(kiln::i32(dynamic_2d)),
       [](kiln::Ref input, kiln::Ref /*destination*/, kiln::Ref output) {
         // The result aliases the private destination; only the result is
         // written. Allocate one input tile, two coordinate stages and a
         // scalar count.
-        kiln::Ref tile =
-            kiln::AllocaVmem({kSublanes, kLanes}, kiln::Float32Type());
-        kiln::Ref stage_rows = kiln::AllocaVmem({1, kLanes}, kiln::Int32Type());
-        kiln::Ref stage_cols = kiln::AllocaVmem({1, kLanes}, kiln::Int32Type());
-        kiln::Ref count = kiln::AllocaSmem({}, kiln::Int32Type());
+        kiln::Ref tile = kiln::AllocaVmem(kiln::f32(kSublanes, kLanes));
+        kiln::Ref stage_rows = kiln::AllocaVmem(kiln::i32(1, kLanes));
+        kiln::Ref stage_cols = kiln::AllocaVmem(kiln::i32(1, kLanes));
+        kiln::Ref count = kiln::AllocaSmem(kiln::i32());
         kiln::Semaphore sem = kiln::AllocaDmaSemaphore();
-        kiln::Tile position =
-            kiln::Iota({1, kLanes}, kiln::Int32Type(), /*axis=*/1);
-        stage_rows = kiln::Zeros({1, kLanes}, kiln::Int32Type());
-        stage_cols = kiln::Zeros({1, kLanes}, kiln::Int32Type());
+        kiln::Tile position = kiln::Iota(kiln::i32(1, kLanes), /*axis=*/1);
+        stage_rows = kiln::Zeros(kiln::i32(1, kLanes));
+        stage_cols = kiln::Zeros(kiln::i32(1, kLanes));
         count = kiln::I32(0);
         // Coordinates fit S32: zero the native int64 high words once; the scan
         // and flushes only write low words.

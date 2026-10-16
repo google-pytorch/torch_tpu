@@ -55,11 +55,11 @@ Scalar::Scalar(const void* impl, DType dtype) : ValueBase(impl, dtype) {
 }
 
 Scalar::Scalar(Cond cond)
-    : Scalar(internal::unwrap(cond).getAsOpaquePointer(), BoolType()) {}
+    : Scalar(internal::unwrap(cond).getAsOpaquePointer(), bool_) {}
 
 Scalar::operator Cond() const {
   ABSL_CHECK(dtype().IsBool()) << "Cond requires a bool scalar";  // CRASH_OK
-  return internal::wrap<Cond>(internal::unwrap(*this), BoolType());
+  return internal::wrap<Cond>(internal::unwrap(*this), bool_);
 }
 
 Scalar MultipleOf(Scalar value, int32_t multiple) {
@@ -77,9 +77,9 @@ Scalar Scalar::MakeConstant(Literal value) const {
   return MakeScalarConstant(dtype(), value);
 }
 
-Scalar I32(Literal value) { return MakeScalarConstant(Int32Type(), value); }
-Scalar U32(Literal value) { return MakeScalarConstant(UInt32Type(), value); }
-Scalar F32(Literal value) { return MakeScalarConstant(Float32Type(), value); }
+Scalar I32(Literal value) { return MakeScalarConstant(i32, value); }
+Scalar U32(Literal value) { return MakeScalarConstant(u32, value); }
+Scalar F32(Literal value) { return MakeScalarConstant(f32, value); }
 
 template struct internal::ElementwiseOps<Scalar, Cond>;
 

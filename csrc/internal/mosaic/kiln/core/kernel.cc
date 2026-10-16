@@ -35,6 +35,7 @@
 #include "csrc/internal/mosaic/kiln/core/index_map.h"
 #include "csrc/internal/mosaic/kiln/core/ref.h"
 #include "csrc/internal/mosaic/kiln/core/scalar.h"
+#include "csrc/internal/mosaic/kiln/core/shape.h"
 #include "csrc/internal/mosaic/kiln/core/specs.h"
 #include "csrc/internal/mosaic/kiln/passes/fold_memref_slice.h"
 #include "csrc/internal/mosaic/op_builders.h"
@@ -85,16 +86,15 @@ struct KernelScope {
             internal::wrap<T>(entry->getArgument(arg++), get_dtype(i)));
       }
     };
-    bind(program_ids, spec.grid.grid.size(),
-         [](size_t) { return Int32Type(); });
+    bind(program_ids, spec.grid.grid.size(), [](size_t) { return i32; });
     bind(scalar_prefetch, spec.scalar_prefetch.size(),
-         [&](size_t i) { return spec.scalar_prefetch[i].dtype; });
+         [&](size_t i) { return spec.scalar_prefetch[i].shape.dtype(); });
     bind(inputs, spec.in_specs.size(),
-         [&](size_t i) { return spec.in_specs[i].dtype; });
+         [&](size_t i) { return spec.in_specs[i].shape.dtype(); });
     bind(outputs, spec.out_specs.size(),
-         [&](size_t i) { return spec.out_specs[i].dtype; });
+         [&](size_t i) { return spec.out_specs[i].shape.dtype(); });
     bind(scratch, spec.scratch.size(),
-         [&](size_t i) { return spec.scratch[i].dtype; });
+         [&](size_t i) { return spec.scratch[i].shape.dtype(); });
   }
   ~KernelScope() { tls_scope = prev; }
 
@@ -120,17 +120,16 @@ KernelScope& CurrentScope() {
   return *KernelScope::tls_scope;
 }
 
-mlir::MemRefType BlockType(mlir::MLIRContext* ctx,
-                           llvm::ArrayRef<int64_t> shape, DType dtype,
+mlir::MemRefType BlockType(mlir::MLIRContext* ctx, const Shape& shape,
                            MemorySpace space) {
-  mlir::Type elem_type = internal::ToMlirType(dtype, ctx);
+  mlir::Type elem_type = internal::ToMlirType(shape.dtype(), ctx);
   switch (space) {
     case MemorySpace::kVmem:
-      return mlir::torch_tpu::GetVmemMemRefType(ctx, shape, elem_type);
+      return mlir::torch_tpu::GetVmemMemRefType(ctx, shape.dims(), elem_type);
     case MemorySpace::kSmem:
-      return mlir::torch_tpu::GetSmemMemRefType(ctx, shape, elem_type);
+      return mlir::torch_tpu::GetSmemMemRefType(ctx, shape.dims(), elem_type);
     case MemorySpace::kHbm:
-      return mlir::torch_tpu::GetHbmMemRefType(ctx, shape, elem_type);
+      return mlir::torch_tpu::GetHbmMemRefType(ctx, shape.dims(), elem_type);
   }
 }
 
@@ -157,10 +156,10 @@ absl::StatusOr<mlir::FlatSymbolRefAttr> EmitIndexMapFunction(
     const KernelSpec& spec, llvm::ArrayRef<mlir::Type> prefetch_types,
     const IndexMap& map, int64_t block_rank, int64_t index) {
   const std::string name = absl::StrCat(spec.grid.name, "_index_map_", index);
-  mlir::Type i32 = b.getI32Type();
-  llvm::SmallVector<mlir::Type> arg_types(spec.grid.grid.size(), i32);
+  mlir::Type i32_type = b.getI32Type();
+  llvm::SmallVector<mlir::Type> arg_types(spec.grid.grid.size(), i32_type);
   arg_types.append(prefetch_types.begin(), prefetch_types.end());
-  llvm::SmallVector<mlir::Type> result_types(block_rank, i32);
+  llvm::SmallVector<mlir::Type> result_types(block_rank, i32_type);
 
   mlir::OpBuilder::InsertionGuard guard(b);
   b.setInsertionPoint(kernel_fn);
@@ -209,7 +208,7 @@ absl::Status SetGridAttributes(mlir::ImplicitLocOpBuilder& b,
       window_params.push_back(b.getDictionaryAttr({}));
       continue;
     }
-    const int64_t block_rank = s.shape.size();
+    const int64_t block_rank = s.shape.rank();
     if (s.map.has_mapping()) {
       TT_ASSIGN_OR_RETURN(
           mlir::FlatSymbolRefAttr index_map_ref,
@@ -217,7 +216,8 @@ absl::Status SetGridAttributes(mlir::ImplicitLocOpBuilder& b,
                                index_map_idx++));
       window_params.push_back(b.getDictionaryAttr({
           b.getNamedAttr("transform_indices", index_map_ref),
-          b.getNamedAttr("window_bounds", b.getDenseI64ArrayAttr(s.shape)),
+          b.getNamedAttr("window_bounds",
+                         b.getDenseI64ArrayAttr(s.shape.dims())),
       }));
     } else {
       llvm::SmallVector<mlir::AffineExpr> results(block_rank,
@@ -332,20 +332,21 @@ absl::StatusOr<Kernel> BuildKernel(const KernelSpec& spec,
   b.setInsertionPointToEnd(module.getBody());
 
   // Argument list follows the Mosaic calling convention.
-  mlir::Type i32 = b.getI32Type();
+  mlir::Type i32_type = b.getI32Type();
   llvm::SmallVector<mlir::Type> prefetch_types;
   for (const ScalarPrefetchSpec& p : spec.scalar_prefetch) {
     prefetch_types.push_back(mlir::torch_tpu::GetSmemMemRefType(
-        context, p.shape, internal::ToMlirType(p.dtype, context)));
+        context, p.shape.dims(),
+        internal::ToMlirType(p.shape.dtype(), context)));
   }
-  llvm::SmallVector<mlir::Type> arg_types(grid_rank, i32);
+  llvm::SmallVector<mlir::Type> arg_types(grid_rank, i32_type);
   arg_types.append(prefetch_types);
   for (const BlockSpec& s :
        llvm::concat<const BlockSpec>(spec.in_specs, spec.out_specs)) {
-    arg_types.push_back(BlockType(context, s.shape, s.dtype, s.space));
+    arg_types.push_back(BlockType(context, s.shape, s.space));
   }
   for (const ScratchSpec& s : spec.scratch) {
-    arg_types.push_back(BlockType(context, s.shape, s.dtype, s.space));
+    arg_types.push_back(BlockType(context, s.shape, s.space));
   }
 
   auto fn = mlir::func::FuncOp::create(b, spec.grid.name,

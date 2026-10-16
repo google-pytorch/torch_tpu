@@ -105,11 +105,10 @@ CmpResult Compare(T lhs, T rhs, mlir::arith::CmpFPredicate fpred,
   mlir::ImplicitLocOpBuilder& b = CurrentBuilder();
   if (lhs.dtype().IsFloat()) {
     return wrap<CmpResult>(
-        mlir::arith::CmpFOp::create(b, fpred, values[0], values[1]),
-        BoolType());
+        mlir::arith::CmpFOp::create(b, fpred, values[0], values[1]), bool_);
   }
   return wrap<CmpResult>(
-      mlir::arith::CmpIOp::create(b, ipred, values[0], values[1]), BoolType());
+      mlir::arith::CmpIOp::create(b, ipred, values[0], values[1]), bool_);
 }
 
 template <typename CmpResult, typename T>

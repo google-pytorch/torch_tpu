@@ -25,10 +25,12 @@
 #include "csrc/internal/mosaic/kiln/core/context.h"
 #include "csrc/internal/mosaic/kiln/core/index_arg.h"
 #include "csrc/internal/mosaic/kiln/core/scalar.h"
+#include "csrc/internal/mosaic/kiln/core/shape.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/Support/Casting.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Value.h"
 
 namespace torch_tpu::kiln::internal {
@@ -51,6 +53,10 @@ void ValidateConstantBound(const llvm::APInt& val, bool is_unsigned,
 }
 
 }  // namespace
+
+mlir::VectorType ToMlirVectorType(const Shape& shape) {
+  return mlir::VectorType::get(shape.dims(), ToMlirType(shape.dtype()));
+}
 
 void ValidateI32IndexArg(const IndexArg& arg, bool require_positive,
                          std::string_view name) {

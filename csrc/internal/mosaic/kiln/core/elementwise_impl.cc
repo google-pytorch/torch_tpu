@@ -22,6 +22,7 @@
 #include "absl/log/absl_check.h"
 #include "csrc/internal/mosaic/kiln/core/context.h"
 #include "csrc/internal/mosaic/kiln/core/dtype.h"
+#include "csrc/internal/mosaic/kiln/core/shape.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Casting.h"
@@ -43,10 +44,10 @@ llvm::ArrayRef<int64_t> ShapeOf(mlir::Value value) {
 
 // numpy broadcasting rule over two static shapes; CHECK-fails if the shapes
 // are not broadcastable.
-Shape BroadcastShapes(llvm::ArrayRef<int64_t> lhs,
-                      llvm::ArrayRef<int64_t> rhs) {
+Dimensions BroadcastShapes(llvm::ArrayRef<int64_t> lhs,
+                           llvm::ArrayRef<int64_t> rhs) {
   const int64_t rank = std::max(lhs.size(), rhs.size());
-  Shape result(rank, 1);
+  Dimensions result(rank, 1);
   for (int64_t i = 0; i < rank; ++i) {
     const int64_t l = i < rank - static_cast<int64_t>(lhs.size())
                           ? 1
@@ -80,7 +81,7 @@ void AlignShapes(llvm::MutableArrayRef<mlir::Value> values) {
       })) {
     return;
   }
-  Shape shape;
+  Dimensions shape;
   for (mlir::Value v : values) {
     shape = BroadcastShapes(shape, ShapeOf(v));
   }

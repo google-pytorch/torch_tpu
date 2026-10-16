@@ -73,7 +73,7 @@ Scalar Semaphore::Read() const {
   mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
   return internal::wrap<Scalar>(
       tpu::SemaphoreReadOp::create(b, b.getI32Type(), internal::unwrap(*this)),
-      Int32Type());
+      i32);
 }
 
 void Semaphore::Signal(IndexArg amount, SemaphoreSignalOptions options) const {

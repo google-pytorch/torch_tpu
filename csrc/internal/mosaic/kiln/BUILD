@@ -38,6 +38,7 @@ torch_tpu_cc_library(
         "//csrc/internal/mosaic/kiln/core:ref",
         "//csrc/internal/mosaic/kiln/core:scalar",
         "//csrc/internal/mosaic/kiln/core:semaphore",
+        "//csrc/internal/mosaic/kiln/core:shape",
         "//csrc/internal/mosaic/kiln/core:specs",
         "//csrc/internal/mosaic/kiln/core:tile",
         "//csrc/internal/mosaic/kiln/core:value_base",
@@ -52,6 +53,7 @@ torch_tpu_cc_test(
         "//csrc/common:oss_test_main",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
         "@xla//xla/hlo/testlib:filecheck",
     ],
 )
