@@ -16,6 +16,7 @@
 
 #include "csrc/internal/mosaic/kiln/passes/fold_memref_slice.h"
 
+#include <cstdint>
 #include <memory>
 
 #include "llvm/ADT/STLExtras.h"
@@ -56,7 +57,7 @@ mlir::LogicalResult FoldMemRefSliceAndSqueeze(OpT op) {
   while (true) {
     if (auto squeeze_op = memref.getDefiningOp<mlir::tpu::MemRefSqueezeOp>()) {
       FAILUREOR_ASSIGN_OR_RETURN(
-          llvm::SmallVector<int> squeezed_dims,
+          llvm::SmallVector<int64_t> squeezed_dims,
           mlir::tpu::computeSqueezedDimsChecked(
               squeeze_op, squeeze_op.getInput().getType().getShape(),
               squeeze_op.getType().getShape()));
