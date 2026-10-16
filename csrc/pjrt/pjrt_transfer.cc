@@ -202,8 +202,6 @@ absl::StatusOr<DeviceBufferRef> TpuMallocAndMemcpyHtoD(
   ABSL_VLOG(1) << "[TpuMallocAndMemcpyHtoD INTERNAL] Got memory space: "
                << memory_space->DebugString();
 
-  xla::PjRtClient::HostBufferSemantics semantics =
-      xla::PjRtClient::HostBufferSemantics::kImmutableUntilTransferCompletes;
   const void* effective_host_data = host_data;
 
   if (host_data != nullptr && element_type == mlir::ElementType::F4E2M1FN) {
@@ -230,6 +228,12 @@ absl::StatusOr<DeviceBufferRef> TpuMallocAndMemcpyHtoD(
              "nullptr as effective_host_data.";
     }
   }
+
+  xla::PjRtClient::HostBufferSemantics semantics =
+      (!non_blocking || !backing_data.empty())
+          ? xla::PjRtClient::HostBufferSemantics::
+                kImmutableUntilTransferCompletes
+          : xla::PjRtClient::HostBufferSemantics::kImmutableOnlyDuringCall;
 
   ABSL_VLOG(1) << "[TpuMallocAndMemcpyHtoD INTERNAL] Calling "
                   "client->BufferFromHostBuffer with"
