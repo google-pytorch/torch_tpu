@@ -9511,7 +9511,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     self.assert_close_tpu_vs_cpu(test_fn)
 
   def test_scatter_add_broadcast_index_lowers_to_row_scatter(self):
-    """The broadcast-index scatter_add lowers to a row (window) scatter.
+    """The broadcast index scatter_add lowers to a row (window) scatter.
 
     The numerics tests above pass whether or not the fast path fires, so this
     guards the lowering itself: assert the emitted StableHLO is the efficient
@@ -9519,6 +9519,15 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     scatter (`update_window_dims = []`, one index entry per element).
     """
     t, k, feat = 8, 4, 6
+
+    def test_fn_1d(device: torch.device) -> torch.Tensor:
+      ids = (torch.arange(t * k, device=device) % t).unsqueeze(-1)
+      src = torch.ones(t * k, feat, device=device)
+      out = torch.zeros(t, feat, device=device)
+      return out.scatter_add(0, ids.expand_as(src), src)
+
+    self.assert_close_tpu_vs_cpu(test_fn_1d)
+
     ids = (torch.arange(t * k) % t).to("tpu")
     src = torch.ones(t * k, feat, device="cpu").to("tpu")
     with execution_mode.set_eager_mode(
@@ -9532,6 +9541,27 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     self.assertIn("stablehlo.scatter", mlir_text)
     self.assertIn("update_window_dims = [1]", mlir_text)
     self.assertNotIn("update_window_dims = []", mlir_text)
+
+    def test_fn_2d(device: torch.device) -> torch.Tensor:
+      ids_2d = (torch.arange(t * k, device=device) % t).view(t * k, 1)
+      src = torch.ones(t * k, feat, device=device)
+      out = torch.zeros(t, feat, device=device)
+      return out.scatter_add(0, ids_2d.expand_as(src), src)
+
+    self.assert_close_tpu_vs_cpu(test_fn_2d)
+
+    ids_2d = ids.view(t * k, 1)
+    with execution_mode.set_eager_mode(
+        execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
+    ):
+      out_2d = torch.zeros(t, feat, device="tpu")
+      result_2d = out_2d.scatter_add(0, ids_2d.expand_as(src), src)
+    mlir_text_2d = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir([result_2d], [ids_2d, src])
+    )
+    self.assertIn("stablehlo.scatter", mlir_text_2d)
+    self.assertIn("update_window_dims = [1]", mlir_text_2d)
+    self.assertNotIn("update_window_dims = []", mlir_text_2d)
 
   @parameterized.product(
       dtype=[torch.float32, torch.bfloat16],
@@ -9643,6 +9673,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         tpu_torch_compile.build_mlir([gathered], [base_idx, x])
     )
     self.assertIn("stablehlo.dot_general", gather_mlir)
+    self.assertIn("stablehlo.select", gather_mlir)
     self.assertNotIn("stablehlo.gather", gather_mlir)
 
     with execution_mode.set_eager_mode(
@@ -9655,6 +9686,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         tpu_torch_compile.build_mlir([scattered], [base_idx, src])
     )
     self.assertIn("stablehlo.dot_general", scatter_mlir)
+    self.assertIn("stablehlo.select", scatter_mlir)
     self.assertNotIn("stablehlo.scatter", scatter_mlir)
 
   @parameterized.product(

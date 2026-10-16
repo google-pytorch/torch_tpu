@@ -74,35 +74,63 @@ mlir::MlirOp GetIdentityValue(mlir::MlirBuilder& builder, mlir::Type type,
   return MakeScalarConstant(builder, 0.0, type);
 }
 
-// If `index` is a broadcast of a 1-D tensor that is constant along every
-// dimension except `dim` -- i.e. the `ids[:, None].expand_as(src)` form emitted
-// by the idiomatic top-k MoE token-combine -- returns that original 1-D tensor,
+// Returns the original 1D index tensor if index is a broadcast of a 1D tensor
+// that is constant along every dimension except dim (such as the
+// `ids[:, None].expand_as(src)` form emitted by top-k MoE token combine),
 // else nullopt. For such an index the per-element scatter update
-// `out[index[i][j], j] += src[i][j]` is invariant in `j`, so a scatter-add
-// collapses exactly to an index_add over the 1-D tensor. Both eager and
+// `out[index[i][j], j] += src[i][j]` is invariant in `j`, so a scatter add
+// collapses exactly to an index_add over the 1D tensor. Both eager and
 // compiled execution hand this builder the broadcast, so detecting it here
 // fixes the lowering for every execution mode.
 std::optional<mlir::MlirOp> GetRowBroadcastIndex(mlir::MlirOp index,
                                                  int64_t dim) {
+  mlir::Value raw_index_val = index.getValue();
+  while (auto conv = mlir::dyn_cast_or_null<mlir::stablehlo::ConvertOp>(
+             raw_index_val.getDefiningOp())) {
+    raw_index_val = conv.getOperand();
+  }
   auto broadcast = mlir::dyn_cast_or_null<mlir::stablehlo::BroadcastInDimOp>(
-      index.getValue().getDefiningOp());
+      raw_index_val.getDefiningOp());
   if (!broadcast) {
     return std::nullopt;
   }
   auto operand_type =
       mlir::dyn_cast<mlir::RankedTensorType>(broadcast.getOperand().getType());
-  if (!operand_type || operand_type.getRank() != 1) {
+  auto index_type = mlir::dyn_cast<mlir::RankedTensorType>(index.getType());
+  if (!operand_type || !index_type || !operand_type.hasStaticShape() ||
+      !index_type.hasStaticShape() || operand_type.getRank() < 1) {
     return std::nullopt;
   }
-  // The single input dim must map only to the scatter dim, so the broadcast
-  // introduces constant values along every other dim.
+  // Every non-scatter dimension in the pre-broadcast operand must have extent
+  // 1, and the scatter dimension must match index.size(dim), so the broadcast
+  // introduces constant values along every dimension except dim.
   llvm::ArrayRef<int64_t> broadcast_dims = broadcast.getBroadcastDimensions();
-  if (broadcast_dims.size() != 1 || broadcast_dims[0] != dim) {
+  bool found_scatter_dim = false;
+  for (int64_t i = 0; i < static_cast<int64_t>(broadcast_dims.size()); ++i) {
+    const int64_t out_d = broadcast_dims[i];
+    const int64_t in_size = operand_type.getDimSize(i);
+    if (out_d == dim) {
+      if (in_size != index_type.getDimSize(dim)) {
+        return std::nullopt;
+      }
+      found_scatter_dim = true;
+    } else if (in_size != 1) {
+      return std::nullopt;
+    }
+  }
+  if (!found_scatter_dim) {
     return std::nullopt;
   }
-  // The pre-broadcast operand is the original 1-D index (length
-  // index.size(dim)).
-  return mlir::MlirOp(index.getBuilder(), broadcast.getOperand());
+  mlir::MlirOp base_op(index.getBuilder(), broadcast.getOperand());
+  if (operand_type.getRank() != 1) {
+    base_op = mlir::stablehlo::Reshape(base_op, {index_type.getDimSize(dim)});
+  }
+  if (GetTensorTypeOrDie(base_op).getElementType() !=
+      index_type.getElementType()) {
+    base_op = mlir::stablehlo::ConvertElementType(base_op,
+                                                  index_type.getElementType());
+  }
+  return base_op;
 }
 
 bool ReshapeScalarsToRank1(mlir::MlirOp& self,
@@ -278,8 +306,16 @@ mlir::MlirOp EmitBroadcastScatterDot(mlir::MlirOp self,
                                               /*iota_dimension=*/base_rank);
   mlir::MlirOp mask = mlir::stablehlo::Compare(
       idx_expanded, iota_p, mlir::stablehlo::ComparisonDirection::EQ);
-  mlir::MlirOp weights =
-      mlir::stablehlo::ConvertElementType(mask, fast_comp_type);
+  auto ind_comp_type = mlir::RankedTensorType::get(ind_shape, fast_comp_type);
+  mlir::MlirOp one_scalar =
+      MakeScalarConstant(fast_builder, 1.0, fast_comp_type);
+  mlir::MlirOp zero_scalar =
+      MakeScalarConstant(fast_builder, 0.0, fast_comp_type);
+  mlir::MlirOp one =
+      mlir::stablehlo::BroadcastInDim(ind_comp_type, one_scalar, {});
+  mlir::MlirOp zero =
+      mlir::stablehlo::BroadcastInDim(ind_comp_type, zero_scalar, {});
+  mlir::MlirOp weights = mlir::stablehlo::Select(mask, one, zero);
   auto dot_dims = mlir::stablehlo::DotDimensionNumbersAttr::get(
       &self.getContext(),
       /*lhsBatchingDimensions=*/plan.batch_dims,
