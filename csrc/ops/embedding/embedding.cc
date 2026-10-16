@@ -57,7 +57,63 @@ absl::StatusOr<mlir::MlirOp> BuildEmbeddingGather(mlir::MlirBuilder& builder,
                                                   mlir::MlirOp weight,
                                                   mlir::MlirOp indices) {
   const mlir::RankedTensorType weight_type = GetTensorTypeOrDie(weight);
-  const int64_t indices_rank = GetTensorTypeOrDie(indices).getRank();
+  const mlir::RankedTensorType indices_type = GetTensorTypeOrDie(indices);
+  const int64_t indices_rank = indices_type.getRank();
+  const int64_t vocab_size = weight_type.getDimSize(0);
+  if (vocab_size <= std::numeric_limits<int32_t>::max() &&
+      indices_type.getElementType().isInteger(64)) {
+    indices =
+        mlir::stablehlo::ConvertElementType(indices, mlir::ElementType::I32);
+  }
+  const mlir::Type weight_elem_type = weight_type.getElementType();
+  const int64_t embedding_dim =
+      weight_type.getRank() == 2 ? weight_type.getDimSize(1) : 0;
+  if (vocab_size > 0 && vocab_size <= embedding_dim && indices_rank >= 1 &&
+      weight_type.getRank() == 2 &&
+      (weight_elem_type.isBF16() || weight_elem_type.isF16() ||
+       weight_elem_type.isF32())) {
+    int64_t num_indices = 1;
+    for (int64_t dim_size : indices_type.getShape()) {
+      num_indices *= dim_size;
+    }
+    if (vocab_size <= num_indices) {
+      mlir::Type i32_type = builder.getOpBuilder().getI32Type();
+      mlir::MlirOp flat_indices =
+          mlir::stablehlo::Reshape(indices, {num_indices});
+      auto zero_i32 =
+          MakeConstant(builder, 0, i32_type, Dimensions{num_indices});
+      auto max_i32 = MakeConstant(builder, vocab_size - 1, i32_type,
+                                  Dimensions{num_indices});
+      mlir::MlirOp clamped_indices =
+          mlir::stablehlo::Clamp(zero_i32, flat_indices, max_i32);
+      auto bcast_type =
+          mlir::RankedTensorType::get({num_indices, vocab_size}, i32_type);
+      mlir::MlirOp indices_2d =
+          mlir::stablehlo::BroadcastInDim(bcast_type, clamped_indices, {0});
+      mlir::MlirOp iota_2d = mlir::stablehlo::Iota(builder, bcast_type, 1);
+      mlir::MlirOp match_mask = mlir::stablehlo::Compare(
+          indices_2d, iota_2d, mlir::stablehlo::ComparisonDirection::EQ);
+      TT_ASSIGN_OR_RETURN(mlir::ElementType weight_mlir_dtype,
+                          ConvertTo<mlir::ElementType>(weight_elem_type));
+      mlir::MlirOp indicator =
+          mlir::stablehlo::ConvertElementType(match_mask, weight_mlir_dtype);
+      auto dot_dims = mlir::stablehlo::DotDimensionNumbersAttr::get(
+          &builder.getContext(), /*lhsBatchingDimensions=*/{},
+          /*rhsBatchingDimensions=*/{}, /*lhsContractingDimensions=*/{1},
+          /*rhsContractingDimensions=*/{0});
+      auto precision = mlir::stablehlo::PrecisionConfigAttr::get(
+          &builder.getContext(), {mlir::stablehlo::Precision::HIGHEST,
+                                  mlir::stablehlo::Precision::HIGHEST});
+      auto out_2d_type = mlir::RankedTensorType::get(
+          {num_indices, weight_type.getDimSize(1)}, weight_elem_type);
+      mlir::MlirOp out_2d = mlir::stablehlo::DotGeneral(
+          out_2d_type, indicator, weight, dot_dims, precision);
+      Dimensions out_shape(indices_type.getShape().begin(),
+                           indices_type.getShape().end());
+      out_shape.push_back(weight_type.getDimSize(1));
+      return mlir::stablehlo::Reshape(out_2d, out_shape);
+    }
+  }
   llvm::SmallVector<int64_t, 1> offset_dims;
   for (int64_t i = 1; i < weight_type.getRank(); ++i) {
     offset_dims.push_back(indices_rank + i - 1);
@@ -858,6 +914,11 @@ absl::StatusOr<mlir::MlirOp> BuildEmbeddingDenseBackwardShlo(
   const int64_t num_indices =
       GetTensorTypeOrDie(flattened_indices).getDimSize(0);
   const int64_t num_weights_value = num_weights.expect_int();
+  if (num_weights_value <= std::numeric_limits<int32_t>::max() &&
+      GetTensorTypeOrDie(flattened_indices).getElementType().isInteger(64)) {
+    flattened_indices = mlir::stablehlo::ConvertElementType(
+        flattened_indices, mlir::ElementType::I32);
+  }
   const int64_t embedding_dim =
       grad_tensor_type.getDimSize(grad_tensor_type.getRank() - 1);
 
@@ -910,12 +971,45 @@ absl::StatusOr<mlir::MlirOp> BuildEmbeddingDenseBackwardShlo(
         mask_broadcasted, zeros_broadcasted, formatted_grad_output);
   }
 
-  TT_ASSIGN_OR_RETURN(auto scatter_indices, Unsqueeze(flattened_indices, 1));
-  auto grad_weights =
-      BuildSimpleScatter(builder, initial_grad_weights, scatter_indices,
-                         formatted_grad_output, HasWindow::kYes);
+  mlir::MlirOp grad_weights;
+  if (num_weights_value > 0 && num_weights_value <= embedding_dim &&
+      num_weights_value <= num_indices && !scale_grad_by_freq &&
+      (accumulation_element_type.isBF16() ||
+       accumulation_element_type.isF16() ||
+       accumulation_element_type.isF32())) {
+    mlir::Type i32_type = builder.getOpBuilder().getI32Type();
+    auto grid_type =
+        mlir::RankedTensorType::get({num_weights_value, num_indices}, i32_type);
+    mlir::MlirOp iota_vocab = mlir::stablehlo::Iota(builder, grid_type, 0);
+    mlir::MlirOp idx_2d =
+        mlir::stablehlo::BroadcastInDim(grid_type, flattened_indices, {1});
+    mlir::MlirOp is_match = mlir::stablehlo::Compare(
+        iota_vocab, idx_2d, mlir::stablehlo::ComparisonDirection::EQ);
+    TT_ASSIGN_OR_RETURN(
+        mlir::ElementType acc_mlir_dtype,
+        ConvertTo<mlir::ElementType>(accumulation_element_type));
+    mlir::MlirOp indicator =
+        mlir::stablehlo::ConvertElementType(is_match, acc_mlir_dtype);
+    auto dot_dims = mlir::stablehlo::DotDimensionNumbersAttr::get(
+        &builder.getContext(), /*lhsBatchingDimensions=*/{},
+        /*rhsBatchingDimensions=*/{}, /*lhsContractingDimensions=*/{1},
+        /*rhsContractingDimensions=*/{0});
+    auto precision = mlir::stablehlo::PrecisionConfigAttr::get(
+        &builder.getContext(), {mlir::stablehlo::Precision::HIGHEST,
+                                mlir::stablehlo::Precision::HIGHEST});
+    auto out_2d_type = mlir::RankedTensorType::get(
+        {num_weights_value, embedding_dim}, accumulation_element_type);
+    grad_weights = mlir::stablehlo::DotGeneral(
+        out_2d_type, indicator, formatted_grad_output, dot_dims, precision);
+  } else {
+    TT_ASSIGN_OR_RETURN(auto scatter_indices, Unsqueeze(flattened_indices, 1));
+    grad_weights =
+        BuildSimpleScatter(builder, initial_grad_weights, scatter_indices,
+                           formatted_grad_output, HasWindow::kYes);
+  }
 
   if (scale_grad_by_freq) {
+    TT_ASSIGN_OR_RETURN(auto scatter_indices, Unsqueeze(flattened_indices, 1));
     auto initial_count_weights = mlir::stablehlo::Constant(
         builder,
         mlir::DenseElementsAttr::get(
