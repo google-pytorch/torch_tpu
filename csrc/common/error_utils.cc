@@ -246,6 +246,28 @@ absl::Status StartsWithNonUppercaseLetter(const std::string_view message) {
   return absl::OkStatus();
 }
 
+// Returns OK if message does not start with an op or function call name (e.g.
+// "foo()" or "foo():"). Pre-conditions: The error message must not be empty.
+//
+// TT_KERNEL automatically prefixes the op name (e.g. "op_name(): "). Error
+// messages passed to TT_CHECK_THROW should not include an op name prefix.
+absl::Status DoesNotStartWithOpName(const std::string_view message) {
+  ABSL_CHECK(  // CRASH_OK
+      !message.empty())
+      << kPreconditionViolatedError;
+
+  static const LazyRE2 kOpNamePrefixPattern = {
+      R"(^(?:[a-zA-Z_]\w*(?:\.|::))*[a-zA-Z_]\w*\s*\(\s*\)\s*:?)"};
+
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Error message checks crash and are
+                 // unreachable from Python.
+      !RE2::PartialMatch(message, *kOpNamePrefixPattern), error::kInternal)
+      << "The error message should not start with an op name (e.g. 'op()' or "
+         "'op(): ') as that is automatically added by TT_KERNEL.";
+
+  return absl::OkStatus();
+}
+
 // Check: ends with an alphanumeric character.
 //
 // Pre-conditions:
@@ -658,6 +680,8 @@ void CheckTorchTpuCoreMessage(ErrorMessageChecksResult& r,
   //                          |__ upper case letter not allowed.
   PopulateResultIfError(r, StartsWithNonUppercaseLetter(message),
                         CheckKind::kEnforce, context);
+  PopulateResultIfError(r, DoesNotStartWithOpName(message), CheckKind::kEnforce,
+                        context);
 
   // Only relevant on TorchTPU error messages.
   // - False positives might come from XLA compiler errors.
