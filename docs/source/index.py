@@ -36,7 +36,7 @@ def _(mo):
  <img src="images/logo.png#gh-light-mode-only" alt="TorchTPU" style="width: 10%;">
 </p>
 <p align="center">
-<a href="https://github.com/google-pytorch/torch_tpu"><b>GitHub</b></a> | <a href="https://discuss.pytorch.org/c/tpu/45"><b>Discussion Forum</b></a> | <a href="https://docs.cloud.google.com/tpu/docs/pytorch-stack"><b>PyTorch on TPU</b></a>
+<a href="https://github.com/google-pytorch/torch_tpu"><b>GitHub</b></a> | <a href="https://discuss.pytorch.org/c/tpu/45"><b>Discussion Forum</b></a> | <a href="https://docs.cloud.google.com/tpu/docs/pytorch-on-tpu"><b>PyTorch on TPU</b></a>
 </p>
 
 ## About
