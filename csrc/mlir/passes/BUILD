@@ -105,4 +105,37 @@ torch_tpu_cc_library(
     ],
 )
 
+torch_tpu_cc_library(
+    name = "flatten_spatial_layernorm",
+    srcs = ["flatten_spatial_layernorm.cc"],
+    hdrs = ["flatten_spatial_layernorm.h"],
+    deps = [
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:SideEffectInterfaces",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "flatten_spatial_layernorm_test",
+    srcs = ["flatten_spatial_layernorm_test.cc"],
+    deps = [
+        ":flatten_spatial_layernorm",
+        "//csrc/common:oss_test_main",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Parser",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:reference_api",
+        "@stablehlo//:reference_configuration",
+        "@stablehlo//:register",
+    ],
+)
+
 torch_tpu_package_end()
