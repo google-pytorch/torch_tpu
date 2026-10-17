@@ -105,4 +105,37 @@ torch_tpu_cc_library(
     ],
 )
 
+torch_tpu_cc_library(
+    name = "trim_convolution_padding_overhang",
+    srcs = ["trim_convolution_padding_overhang.cc"],
+    hdrs = ["trim_convolution_padding_overhang.h"],
+    deps = [
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:SideEffectInterfaces",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "trim_convolution_padding_overhang_test",
+    srcs = ["trim_convolution_padding_overhang_test.cc"],
+    deps = [
+        ":trim_convolution_padding_overhang",
+        "//csrc/common:oss_test_main",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Parser",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:reference_api",
+        "@stablehlo//:reference_configuration",
+        "@stablehlo//:register",
+    ],
+)
+
 torch_tpu_package_end()
