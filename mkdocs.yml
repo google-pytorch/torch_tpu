@@ -94,10 +94,6 @@ plugins:
   - glightbox
   - open-in-new-tab
   - table-reader
-  - redirects:
-      redirect_maps:
-        index.md: index.md
-
 
 markdown_extensions:
   - attr_list
