@@ -47,7 +47,8 @@ struct PallasDeviceAssignment {
 // Resolves a single target device assignment across `ops` and `pallas_ops`.
 // If `pallas_ops` is non-empty, its device assignment serves as the
 // authoritative anchor. If the ops run on different device sets, resolves to
-// their global device assignments when those share one device set. Otherwise,
+// the smallest set closed under the groups of their layouts (their global
+// device assignments) when those agree on that set. Otherwise,
 // differing device assignments emit an explicit diagnostic warning and return
 // an error (or throw if Pallas DAs conflict).
 absl::StatusOr<std::vector<int64_t>>  // INT_VEC_OK
@@ -66,9 +67,9 @@ ResolveDeviceAssignmentForTraversal(
 // `source_target_pairs`, and CustomCall `backend_config` replica groups) from
 // `op_da` into partition indices of `resolved_da` using 1-to-1 index
 // permutation. If `op_da` is not a permutation of `resolved_da`, instead tiles
-// the attributes over every group of the op's layout, `global_da` (the devices
-// of every group, group by group), which must be a permutation of
-// `resolved_da`.
+// the attributes over the groups of the op's layout, `global_da` (the devices
+// of every group, group by group), inside `resolved_da`, which together must
+// be a permutation of `resolved_da`.
 absl::Status RewriteAndTileOperationForSubgroup(
     mlir::Operation* absl_nonnull root_op, absl::Span<const int64_t> op_da,
     absl::Span<const int64_t> resolved_da,

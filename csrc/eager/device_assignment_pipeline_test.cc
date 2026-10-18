@@ -315,6 +315,34 @@ TEST(DeviceAssignmentPipelineTest, MixedGroupsResolveToTheGlobalDevices) {
   EXPECT_THAT(resolved, testing::ElementsAre(0, 1, 2, 3, 4, 5, 6, 7));
 }
 
+TEST(DeviceAssignmentPipelineTest,
+     MixedGroupsInsideAPipelineStageResolveToTheStage) {
+  // Two pipeline stages of four devices, with tensor-parallel pairs and
+  // context-parallel pairs inside each stage. A program of stage 1 that
+  // combines the two stays on the stage, in the order of the first layout; a
+  // Pallas kernel over the stage's mesh anchors the order instead.
+  const std::vector<int64_t> tp_pair = {4, 5};  // INT_VEC_OK
+  const std::vector<int64_t> tp_layout = {0, 1, 2, 3,
+                                          4, 5, 6, 7};  // INT_VEC_OK
+  const std::vector<int64_t> pcp_pair = {4, 6};         // INT_VEC_OK
+  const std::vector<int64_t> pcp_layout = {0, 2, 1, 3,
+                                           4, 6, 5, 7};  // INT_VEC_OK
+  const std::vector<int64_t> stage_mesh = {6, 7, 4, 5};  // INT_VEC_OK
+  const std::vector<OpDeviceAssignment> ops = {
+      OpDeviceAssignment{OpName::kDistributedAllReduce, tp_pair, tp_layout},
+      OpDeviceAssignment{OpName::kDistributedAllReduce, pcp_pair, pcp_layout},
+  };
+
+  TT_ASSERT_OK_AND_ASSIGN(const std::vector<int64_t> resolved,  // INT_VEC_OK
+                          ResolveDeviceAssignment(ops));
+  EXPECT_THAT(resolved, testing::ElementsAre(4, 5, 6, 7));
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      const std::vector<int64_t> resolved_with_mesh,  // INT_VEC_OK
+      ResolveDeviceAssignment(ops, {PallasDeviceAssignment{stage_mesh}}));
+  EXPECT_THAT(resolved_with_mesh, testing::ElementsAre(6, 7, 4, 5));
+}
+
 TEST(DeviceAssignmentPipelineTest, MixedGroupsWithoutGlobalDevicesAreRejected) {
   const std::vector<int64_t> world = {0, 1, 2, 3, 4, 5, 6, 7};  // INT_VEC_OK
   const std::vector<int64_t> half = {0, 1, 2, 3};               // INT_VEC_OK

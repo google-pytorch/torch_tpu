@@ -774,7 +774,7 @@ torch_tpu_py_test(
         "v7",
         reason = "Only multi-core-per-chip TPU v7x has a non-identity rank-to-device mapping",
     ),
-    shard_count = 2,
+    shard_count = 3,
     tags = if_oss(
         ["exclusive"],
         [],

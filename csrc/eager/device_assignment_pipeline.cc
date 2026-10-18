@@ -210,14 +210,35 @@ void RewriteCustomCallBackendConfig(
               mlir::DictionaryAttr::get(op->getContext(), new_attrs));
 }
 
-// Resolves a program whose ops run on different device sets to the devices of
-// the ops' layouts (the world): each op's collectives are then tiled over every
-// group of its layout (see RewriteAndTileOperationForSubgroup). Returns
-// `mismatch` if an op's global devices differ from the others'.
+// Resolves a program whose ops run on different device sets to the smallest
+// set closed under the groups of the ops' layouts (a pipeline stage's program
+// stays on the stage); each op's collectives are then tiled over the groups
+// of its layout inside it (see RewriteAndTileOperationForSubgroup). Returns
+// `mismatch` if the ops' layouts, restricted to that set, do not agree.
 absl::StatusOr<std::vector<int64_t>>  // INT_VEC_OK
 ResolveGlobalDeviceAssignment(absl::Span<const OpDeviceAssignment> ops,
                               absl::Span<const int64_t> pallas_da,
                               absl::Status mismatch) {
+  absl::flat_hash_set<int64_t> devices(pallas_da.begin(), pallas_da.end());
+  for (const OpDeviceAssignment& op : ops) {
+    devices.insert(op.device_assignment.begin(), op.device_assignment.end());
+  }
+  for (bool grown = true; grown;) {
+    grown = false;
+    for (const OpDeviceAssignment& op : ops) {
+      const size_t size = op.device_assignment.size();
+      const absl::Span<const int64_t> layout = op.global_device_assignment;
+      for (size_t g = 0; size > 0 && g + size <= layout.size(); g += size) {
+        const absl::Span<const int64_t> group = layout.subspan(g, size);
+        const auto in_set = [&](int64_t d) { return devices.contains(d); };
+        if (std::any_of(group.begin(), group.end(), in_set) &&
+            !std::all_of(group.begin(), group.end(), in_set)) {
+          devices.insert(group.begin(), group.end());
+          grown = true;
+        }
+      }
+    }
+  }
   std::vector<int64_t> resolved_da(pallas_da.begin(),  // INT_VEC_OK
                                    pallas_da.end());
   for (size_t i = 0; i < ops.size(); ++i) {
@@ -225,9 +246,14 @@ ResolveGlobalDeviceAssignment(absl::Span<const OpDeviceAssignment> ops,
     if (op.device_assignment.empty()) {
       continue;
     }
-    const absl::Span<const int64_t> global_da =
-        op.global_device_assignment.empty() ? op.device_assignment
-                                            : op.global_device_assignment;
+    std::vector<int64_t> global_da;  // INT_VEC_OK
+    for (int64_t d : op.global_device_assignment.empty()
+                         ? op.device_assignment
+                         : op.global_device_assignment) {
+      if (devices.contains(d)) {
+        global_da.push_back(d);
+      }
+    }
     if (resolved_da.empty()) {
       resolved_da.assign(global_da.begin(), global_da.end());
     } else if (resolved_da != global_da &&
@@ -292,22 +318,35 @@ std::optional<mlir::DenseIntElementsAttr> TileReplicaGroupsAttr(
 
 // Rewrites the collectives of an op that runs on one group of a layout, whose
 // groups are `global_da` group by group, so that the program, which runs on
-// `resolved_da`, performs them on every group of the layout.
+// `resolved_da`, performs them on every group of the layout inside
+// `resolved_da`.
 absl::Status TileOperationOverGroups(mlir::Operation* absl_nonnull root_op,
                                      absl::Span<const int64_t> op_da,
                                      absl::Span<const int64_t> global_da,
                                      absl::Span<const int64_t> resolved_da) {
   const int64_t group_size = op_da.size();
+  const absl::flat_hash_set<int64_t> resolved(resolved_da.begin(),
+                                              resolved_da.end());
+  std::vector<int64_t> layout_da;  // INT_VEC_OK
+  const int64_t layout_size = global_da.size();
+  for (int64_t g = 0; group_size > 0 && g + group_size <= layout_size;
+       g += group_size) {
+    const absl::Span<const int64_t> group = global_da.subspan(g, group_size);
+    if (std::all_of(group.begin(), group.end(),
+                    [&](int64_t d) { return resolved.contains(d); })) {
+      layout_da.insert(layout_da.end(), group.begin(), group.end());
+    }
+  }
   const std::optional<std::vector<int64_t>>  // INT_VEC_OK
-      rank_to_partition = BuildRankToPartition(global_da, resolved_da);
-  TT_RET_CHECK(group_size > 0 && !global_da.empty() &&
-                   global_da.size() % op_da.size() == 0 &&
+      rank_to_partition = BuildRankToPartition(layout_da, resolved_da);
+  TT_RET_CHECK(group_size > 0 && !layout_da.empty() &&
+                   layout_da.size() % op_da.size() == 0 &&
                    rank_to_partition.has_value(),
                error::kInvalidArgument)
       << "op device assignment " << VectorToString(op_da)
       << " is not a permutation of the resolved device assignment "
       << VectorToString(resolved_da);
-  const int64_t num_groups = global_da.size() / group_size;
+  const int64_t num_groups = layout_da.size() / group_size;
   std::vector<std::vector<int64_t>> tiles(num_groups);  // INT_VEC_OK
   for (int64_t g = 0; g < num_groups; ++g) {
     tiles[g].assign(rank_to_partition->begin() + g * group_size,
