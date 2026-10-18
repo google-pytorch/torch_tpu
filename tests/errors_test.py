@@ -6835,6 +6835,20 @@ Supported combinations for non-constant padding:
       {"testcase_name": "min", "op": torch.min, "op_name": "min"},
       {"testcase_name": "max", "op": torch.max, "op_name": "max"},
   )
+  def test_min_max_empty_reduction_dim(self, op, op_name: str):
+    for shape in ((0,), (0, 2)):
+      with self.subTest(shape=shape):
+        inp = torch.empty(shape, device=et.device())
+        with et.assert_raises_message(
+            IndexError,
+            tpu=f"""{op_name}(): Expected reduction dim 0 to have non-zero size.""",
+        ):
+          op(inp, dim=0)
+
+  @parameterized.named_parameters(
+      {"testcase_name": "min", "op": torch.min, "op_name": "min"},
+      {"testcase_name": "max", "op": torch.max, "op_name": "max"},
+  )
   def test_min_max_unary_out_dtype_mismatch(self, op, op_name: str):
     """Verifies that unary min/max disallows invalid downcasting to out tensor."""
     inp = torch.ones(5, device=et.device(), dtype=torch.float32)
@@ -9454,6 +9468,15 @@ Device-side assertion tracking was not enabled by user.""",
         message_reviewed_by="gunhyun",
     ):
       torch.linalg.solve_ex(a_non_square, b_non_square, out=(res, info))
+
+  def test_linalg_solve_ex_singular_check_errors_true(self):
+    a = torch.tensor([[1.0, 1.0], [1.0, 1.0]], device=et.device())
+    b = torch.ones(2, 1, device=et.device())
+    with et.assert_raises_message(
+        torch._C._LinAlgError,
+        tpu="""linalg.solve_ex: The solver failed because the input matrix is singular.""",
+    ):
+      torch.linalg.solve_ex(a, b, check_errors=True)
 
   def test_linalg_solve_triangular_out_dtype_mismatch(self):
     a = torch.randn(3, 3, device=et.device(), dtype=torch.float32)
@@ -16324,6 +16347,36 @@ class UpsampleBilinear2dAaErrorTest(et.ErrorTestBase):
     ):
       torch.ops.aten._upsample_bilinear2d_aa.out(
           t, [10, 10], False, None, None, out=out
+      )
+
+  def test_im2col_invalid_input_dims(self):
+    x_2d = torch.randn(2, 2, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""im2col(): expected input to have 3 or 4 dimensions, got 2""",
+        gpu="""Expected 3D or 4D (batch mode) tensor with possibly 0 batch size and other non-zero dimensions for input, but got: [2, 2]""",
+    ):
+      torch.ops.aten.im2col(
+          x_2d,
+          kernel_size=(2, 2),
+          dilation=(1, 1),
+          padding=(0, 0),
+          stride=(1, 1),
+      )
+
+  def test_im2col_non_positive_output_shape(self):
+    x_small = torch.randn(1, 1, 2, 2, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""im2col(): expected output shape to be positive, got 0x0""",
+        gpu="""Given input with spatial size (2, 2), kernel_size=(3, 3), dilation=(1, 1), padding=(0, 0), calculated shape of the array of sliding blocks as (0, 0), but its components must be at least one.""",
+    ):
+      torch.ops.aten.im2col(
+          x_small,
+          kernel_size=(3, 3),
+          dilation=(1, 1),
+          padding=(0, 0),
+          stride=(1, 1),
       )
 
 
