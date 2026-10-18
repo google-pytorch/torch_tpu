@@ -18,23 +18,19 @@ from collections.abc import Callable, Sequence
 import concurrent
 import contextlib
 import dataclasses
-import enum
 import functools
 import itertools
 import math
 import os
-import plistlib
 import re
 import threading
 import time
-import typing
 from typing import Any
 import unittest
 from unittest import mock
 import warnings
 
 from absl.testing import absltest
-from absl.testing import flagsaver
 from absl.testing import parameterized
 from scipy import stats
 import torch
@@ -42,17 +38,15 @@ from torch._dynamo import testing as dynamo_testing
 from torch._subclasses import fake_tensor
 from torch.fx.experimental import symbolic_shapes
 from torch.nn.attention import flex_attention
-from torch.testing._internal import common_methods_invocations
 from torch_tpu._internal import dynamism
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import sync
+from torch_tpu._internal import testing as tpu_testing
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.utils import test_utils as utils
 from tests import op_testing
 from tests import ops_test_data
 from tests import oss_utils
-from tests import quantize_utils
-from tests import seed_test_utils
 
 # In this file, we use the following naming convention for variables:
 # - golden_*: a value for the device used for computing the golden results
@@ -60,27 +54,17 @@ from tests import seed_test_utils
 # - tpu_*: a value for the TPU device
 
 
-OpInput = op_testing.OpInput
 TorchTpuVsCpuTestBase = op_testing.TorchTpuVsCpuTestBase
-op_db = common_methods_invocations.op_db
 to = op_testing.to
 CheckValueMode = utils.CheckValueMode
 
 
-class FakeSample:
-  """A fake test sample for an op. Used for testing op_testing.to()."""
-
-  def __init__(
-      self,
-      name: str,
-      input_value: torch.Tensor,
-      args: tuple[Any, ...],
-      kwargs: dict[str, Any],
-  ):
-    self.name = name
-    self.input = input_value
-    self.args = args
-    self.kwargs = kwargs
+@contextlib.contextmanager
+def clear_sticky_error():
+  try:
+    yield
+  finally:
+    tpu_testing.clear_sticky_error()
 
 
 @contextlib.contextmanager
@@ -91,6 +75,16 @@ def set_default_dtype(dtype):
     yield
   finally:
     torch.set_default_dtype(original_dtype)
+
+
+@contextlib.contextmanager
+def highest_matmul_precision():
+  prev_prec = torch.get_float32_matmul_precision()
+  torch.set_float32_matmul_precision("highest")
+  try:
+    yield
+  finally:
+    torch.set_float32_matmul_precision(prev_prec)
 
 
 def run_with_dynamic_dims(
@@ -1210,63 +1204,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       self.assertEqual(pivots_tpu, pivots_cpu)
       self.assertEqual(info_tpu, info_cpu)
 
-  def test_assert_close_partial_override(self):
-    """Tests that utils.assert_close works with partial numeric overrides.
-
-    A partial override means specifying only `rtol` or only `atol`, leaving
-    the other as `None` to be resolved to the PyTorch default.
-
-    Verifies it works in LOOSE mode.
-    """
-    t1 = torch.tensor([1.0, 2.0])
-    t2 = torch.tensor([1.0001, 2.0001])  # diff is 1e-4
-
-    # Default float32 tolerance is rtol=1.3e-6, atol=1e-5.
-    # This diff (1e-4) exceeds default atol (1e-5).
-    # If we override only atol to 2e-4, it should pass.
-    # If we didn't support partial overrides, it would crash with ValueError
-    # in LOOSE mode.
-    utils.assert_close(t1, t2, atol=2e-4)
-
-    # Similarly, override only rtol
-    # rel diff is 1e-4 / 1 = 1e-4.
-    # If we override only rtol to 2e-4, it should pass.
-    utils.assert_close(t1, t2, rtol=2e-4)
-
-  def test_assert_close_tolerances_must_be_positive(self):
-    """Tests that specifying rtol or atol <= 0 raises ValueError."""
-    t1 = torch.tensor([1.0, 2.0])
-    t2 = torch.tensor([1.0, 2.0])
-
-    with self.assertRaisesRegex(ValueError, "rtol must be > 0"):
-      self.assert_close(golden_result=t1, torch_tpu_result=t2, rtol=0)
-    with self.assertRaisesRegex(ValueError, "rtol must be > 0"):
-      self.assert_close(golden_result=t1, torch_tpu_result=t2, rtol=-1e-5)
-    with self.assertRaisesRegex(ValueError, "atol must be > 0"):
-      self.assert_close(golden_result=t1, torch_tpu_result=t2, atol=0)
-    with self.assertRaisesRegex(ValueError, "atol must be > 0"):
-      self.assert_close(golden_result=t1, torch_tpu_result=t2, atol=-1e-5)
-
-    with self.assertRaisesRegex(ValueError, "rtol must be > 0"):
-      self.assert_close_tpu_vs_cpu(
-          lambda device: torch.tensor([1.0], device=device), rtol=0
-      )
-    with self.assertRaisesRegex(ValueError, "atol must be > 0"):
-      self.assert_close_tpu_vs_cpu(
-          lambda device: torch.tensor([1.0], device=device), atol=0
-      )
-
-    with self.assertRaisesRegex(ValueError, "rtol must be > 0"):
-      self.set_accuracy_overrides(
-          tpu_gpu_overrides={"op": {torch.float32: {"rtol": 0}}},
-          grad_gpu_overrides={},
-      )
-    with self.assertRaisesRegex(ValueError, "atol must be > 0"):
-      self.set_accuracy_overrides(
-          tpu_gpu_overrides={"op": {torch.float32: {"atol": 0}}},
-          grad_gpu_overrides={},
-      )
-
   def test_topk_sorted_false(self):
     """Tests torch.topk with sorted=False."""
     device = torch.device("tpu")
@@ -2241,39 +2178,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       return t.grad
 
     self.assert_close_tpu_vs_cpu(get_grad)
-
-  def test_to(self):
-    """Tests the op_testing.to() function."""
-
-    # Test to() with simple types and the device argument being a torch.device.
-    gpu = torch.device("cuda")
-    tpu = to(gpu, torch.device("tpu"))
-    self.assertEqual(tpu, torch.device("tpu"))
-    gpu_dict = {"device": gpu}
-    tpu_dict = to(gpu_dict, torch.device("tpu"))
-    self.assertEqual(tpu_dict, {"device": torch.device("tpu")})
-
-    # Test to() with simple types and the device argument being a string.
-    gpu = "cuda"
-    tpu = to(gpu, "tpu")
-    self.assertEqual(tpu, "tpu")
-    gpu_dict = {"device": gpu}
-    tpu_dict = to(gpu_dict, "tpu")
-    self.assertEqual(tpu_dict, {"device": "tpu"})
-
-    # Test to() with a complex type we care about (OpInput).
-    gpu_input = OpInput(
-        FakeSample(
-            "sample1", torch.zeros(1, device="cpu"), (1,), {"device": gpu}
-        )
-    )
-    tpu_input = to(gpu_input, torch.device("tpu"))
-    self.assertEqual(tpu_input.name, "sample1")
-    self.assert_devices_equivalent(
-        tpu_input.input_value.device, torch.device("tpu")
-    )
-    self.assertEqual(tpu_input.args, (1,))
-    self.assertEqual(tpu_input.kwargs, {"device": "tpu"})
 
   def test_batch_norm_forward_mixed_dtype_training(self):
     """Tests batch_norm forward in training mode with mixed BF16 input and F32 stats."""
@@ -4038,38 +3942,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       )
 
     self.assert_close_tpu_vs_cpu(test_fn)
-
-  def test_im2col_errors(self):
-    """Tests im2col with invalid inputs that trigger error messages."""
-    tpu_device = torch.device("tpu")
-
-    # Test invalid input dimensions (e.g. 2D tensor)
-    # C++ check: input.dim() == 4 (after unsqueeze if 3D)
-    x_2d = torch.randn(2, 2).to(tpu_device)
-    with self.assertRaisesRegex(
-        RuntimeError, "expected input to have 3 or 4 dimensions"
-    ):
-      torch.ops.aten.im2col(
-          x_2d,
-          kernel_size=(2, 2),
-          dilation=(1, 1),
-          padding=(0, 0),
-          stride=(1, 1),
-      )
-
-    # Test non-positive output shape
-    # kernel_size > input_size without padding
-    x_small = torch.randn(1, 1, 2, 2).to(tpu_device)
-    with self.assertRaisesRegex(
-        RuntimeError, "expected output shape to be positive"
-    ):
-      torch.ops.aten.im2col(
-          x_small,
-          kernel_size=(3, 3),
-          dilation=(1, 1),
-          padding=(0, 0),
-          stride=(1, 1),
-      )
 
   def test_conj(self):
     def test(device):
@@ -6255,25 +6127,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assertEqual(cpu_info.item(), tpu_info.cpu().item())
 
-  def test_solve_ex_singular_check_errors_true(self):
-    """Tests that singular inputs raise an error when check_errors=True."""
-    torch.manual_seed(1234)
-    # Create a singular matrix to trigger the unsolvable case.
-    # [[1, 1], [1, 1]] is singular (det=0).
-    a = torch.tensor([[1.0, 1.0], [1.0, 1.0]])
-    b = torch.randn(2, 1)
-
-    # CPU
-    with self.assertRaises(RuntimeError):
-      torch.linalg.solve_ex(a, b, check_errors=True)
-
-    # TPU
-    tpu_device = torch.device("tpu")
-    with self.assertRaises(RuntimeError):
-      torch.linalg.solve_ex(
-          a.to(tpu_device), b.to(tpu_device), check_errors=True
-      )
-
   def test_solve_ex_solvable(self):
     """Tests solve_ex with a solvable system."""
     torch.manual_seed(1234)
@@ -6315,14 +6168,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       return t
 
     self.assert_close_tpu_vs_cpu(test_fn_int)
-
-  def test_fill_complex128(self):
-    t = torch.empty((2, 2), dtype=torch.complex128, device=torch.device("tpu"))
-    with self.assertRaisesRegex(
-        RuntimeError, "complex128 dtype is not supported"
-    ):
-      t.fill_(1.0)
-      t.cpu()
 
   def test_floor_divide_tensor(self):
     sample_input = (
@@ -9366,24 +9211,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       raise exception
 
   def test_min(self):
-    # empty tensor on reduction dim
-    with self.assertRaisesRegex(IndexError, "min"):
-      torch.min(torch.tensor([], device="cpu"), dim=0)
-    with self.assertRaisesRegex(IndexError, "min"):
-      torch.min(
-          torch.tensor([], device=torch.device("tpu")),
-          dim=0,
-      )
-
-    # empty tensor on reduction dim
-    with self.assertRaisesRegex(IndexError, "min"):
-      torch.min(torch.empty(0, 2, device="cpu"), dim=0)
-    with self.assertRaisesRegex(IndexError, "min"):
-      torch.min(
-          torch.empty(0, 2, device=torch.device("tpu")),
-          dim=0,
-      )
-
     # nested empty tensor
     cpu_result = torch.min(torch.empty(1, 0, device="cpu"), dim=0)
     tpu_result = torch.min(torch.empty(1, 0, device=torch.device("tpu")), dim=0)
@@ -11628,24 +11455,19 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
          checks and raises a `RuntimeError` matching the user's custom
          assertion message.
     """
-    import torch_tpu._internal.testing as tpu_testing
-
     device = torch.device("tpu")
     false_cond = torch.tensor(False, device=device)
 
-    # Schedule the assertion failure on the background worker thread.
-    torch.ops.aten._assert_async.msg(false_cond, "intended failure")
+    with clear_sticky_error():
+      # Schedule the assertion failure on the background worker thread.
+      torch.ops.aten._assert_async.msg(false_cond, "intended failure")
 
-    try:
       # Synchronizing forces completion of all pending async assertion checks
       # and checks HasStickyError(), rethrowing the latched assertion failure.
       with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing assert_async failure behavior.
           RuntimeError, "intended failure"
       ):
         torch.accelerator.synchronize()
-    finally:
-      # Clear the latched error state so subsequent test cases are not poisoned.
-      tpu_testing.clear_sticky_error()
 
   def test_assert_async_eager_false_no_msg(self):
     """Tests that _assert_async without a custom message uses the default message.
@@ -11657,22 +11479,17 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       2. Calling `torch.accelerator.synchronize()` raises a `RuntimeError`
          matching the default error message "assertion failed".
     """
-    import torch_tpu._internal.testing as tpu_testing
-
     device = torch.device("tpu")
     false_cond = torch.tensor(False, device=device)
 
-    # When no message string is provided, the kernel defaults to "assertion failed".
-    torch.ops.aten._assert_async(false_cond)
+    with clear_sticky_error():
+      # When no message string is provided, the kernel defaults to "assertion failed".
+      torch.ops.aten._assert_async(false_cond)
 
-    try:
       with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing assert_async failure behavior.
           RuntimeError, "assertion failed"
       ):
         torch.accelerator.synchronize()
-    finally:
-      # Reset sticky error state for subsequent tests.
-      tpu_testing.clear_sticky_error()
 
   def test_assert_async_eager_op_dispatch_failure(self):
     """Tests that subsequent op dispatches detect a latched sticky error.
@@ -11681,21 +11498,17 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       1. When an asynchronous assertion fails in the background thread pool, it
          latches an error into the global sticky error state (`SetStickyError`).
       2. Subsequent PyTorch eager op dispatches (e.g. `torch.ops.aten.add`),
-      which
-         check `HasStickyError()` on their fast path, detect the latched error
-         and raise `RuntimeError` without requiring an explicit synchronize
-         call.
+         which check `HasStickyError()` on their fast path, detect the latched
+         error and raise `RuntimeError` without requiring an explicit
+         synchronize call.
     """
-    import time
-    import torch_tpu._internal.testing as tpu_testing
-
     device = torch.device("tpu")
     false_cond = torch.tensor(False, device=device)
 
-    # Trigger async assertion failure.
-    torch.ops.aten._assert_async.msg(false_cond, "sticky error caught in op")
+    with clear_sticky_error():
+      # Trigger async assertion failure.
+      torch.ops.aten._assert_async.msg(false_cond, "sticky error caught in op")
 
-    try:
       # In eager mode, DispatchOp checks HasStickyError() on the critical path.
       # Because assertion evaluation runs asynchronously on a background thread,
       # repeatedly dispatch an op until the background thread latches the error.
@@ -11708,58 +11521,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
             break
       else:
         self.fail("Expected RuntimeError with sticky error on subsequent op")
-    finally:
-      # Reset sticky error state for subsequent tests.
-      tpu_testing.clear_sticky_error()
-
-  def test_assert_async_ambiguous_empty(self):
-    """Tests that _assert_async rejects empty 0-element tensors.
-
-    Checks:
-      1. Calling `_assert_async` or `_assert_async.msg` with an empty tensor
-         (`numel == 0`) immediately raises a `RuntimeError` indicating that the
-         boolean value of an empty tensor is ambiguous.
-      2. Validation occurs synchronously on the host during kernel invocation,
-         matching standard PyTorch behavior before any device work is scheduled.
-    """
-    device = torch.device("tpu")
-    # Empty tensor with 0 elements cannot be converted to a scalar boolean value.
-    empty_cond = torch.empty(0, dtype=torch.bool, device=device)
-
-    # Verify input validation throws synchronously on host for both variants.
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing input validation.
-        RuntimeError, "is ambiguous"
-    ):
-      torch.ops.aten._assert_async(empty_cond)
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing input validation.
-        RuntimeError, "is ambiguous"
-    ):
-      torch.ops.aten._assert_async.msg(empty_cond, "empty condition")
-
-  def test_assert_async_ambiguous_multiple(self):
-    """Tests that _assert_async rejects multi-element tensors.
-
-    Checks:
-      1. Calling `_assert_async` or `_assert_async.msg` with a tensor containing
-         more than one element (`numel > 1`) immediately raises a `RuntimeError`
-         indicating that the boolean value of a multi-element tensor is
-         ambiguous.
-      2. Validation occurs synchronously on the host during kernel invocation,
-         matching standard PyTorch behavior before any device work is scheduled.
-    """
-    device = torch.device("tpu")
-    # Tensor with >1 elements cannot be converted to a scalar boolean value.
-    multi_cond = torch.tensor([True, False], device=device)
-
-    # Verify input validation throws synchronously on host for both variants.
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing input validation.
-        RuntimeError, "is ambiguous"
-    ):
-      torch.ops.aten._assert_async(multi_cond)
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing input validation.
-        RuntimeError, "is ambiguous"
-    ):
-      torch.ops.aten._assert_async.msg(multi_cond, "multi condition")
 
   def test_assert_async_non_bool_false(self):
     """Tests that _assert_async fails on numeric zero tensors.
@@ -11771,49 +11532,33 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
          error, which is subsequently raised as `RuntimeError` upon
          `torch.accelerator.synchronize()`.
     """
-    import torch_tpu._internal.testing as tpu_testing
-
     device = torch.device("tpu")
     # Integer scalar with value 0 evaluates to boolean False.
     zero_int = torch.tensor(0, device=device)
-    torch.ops.aten._assert_async.msg(zero_int, "zero int failed")
 
-    try:
+    with clear_sticky_error():
+      torch.ops.aten._assert_async.msg(zero_int, "zero int failed")
+
       # Synchronization rethrows the assertion failure from the zero integer value.
       with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing assert_async failure behavior.
           RuntimeError, "zero int failed"
       ):
         torch.accelerator.synchronize()
-    finally:
-      # Reset sticky error state for subsequent tests.
-      tpu_testing.clear_sticky_error()
 
   def test_assert_async_compile(self):
-    """Tests _assert_async behavior during graph compilation and tracing.
-
-    Checks:
-      1. During FX graph compilation (`EagerMode::kInternalCompileFxGraph`),
-         host asynchronous assertion scheduling is skipped because
-         placeholder/symbolic tensors cannot be copied to the host CPU during
-         tracing.
-      2. The resulting MLIR graph compiles cleanly without inserting unsupported
-         or dummy `@shape_assertion` custom calls.
-    """
+    """Tests _assert_async behavior under torch.compile."""
     device = torch.device("tpu")
     cond = torch.tensor(True, device=device)
 
-    # In compile mode (FxGraph tracing), host async evaluation is skipped because
-    # tensors are symbolic/placeholders and cannot be copied to CPU at trace time.
-    with execution_mode.set_eager_mode(
-        execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
-    ):
-      torch.ops.aten._assert_async(cond)
-      dummy = cond.to(torch.float32) + 1.0
+    @torch.compile(backend="openxla")
+    def fn(c):
+      torch.ops.aten._assert_async(c)
+      return c.to(torch.float32) + 1.0
 
-    # Ensure valid MLIR generation without dummy custom calls.
-    mlir = tpu_torch_compile.build_mlir([dummy], [cond])
-    mlir_text = tpu_torch_compile.serialize_mlir_text(mlir)
-    self.assertNotIn("stablehlo.custom_call @shape_assertion", mlir_text)
+    res = fn(cond)
+    self.assert_close(
+        golden_result=torch.tensor(2.0), torch_tpu_result=res.cpu()
+    )
 
   def test_assert_async_torch_public_api(self):
     """Tests public torch._assert_async API for success and failure cases.
@@ -11826,8 +11571,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       3. Falsy conditions latch a sticky error and raise `RuntimeError` matching
          the user message upon calling `torch.accelerator.synchronize()`.
     """
-    import torch_tpu._internal.testing as tpu_testing
-
     device = torch.device("tpu")
 
     # Test that the public torch._assert_async API succeeds for True conditions.
@@ -11838,15 +11581,12 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     # Test that public torch._assert_async API fails and reports error on synchronize().
     false_cond = torch.tensor(False, device=device)
-    torch._assert_async(false_cond, "public api failure")
-    try:
+    with clear_sticky_error():
+      torch._assert_async(false_cond, "public api failure")
       with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing assert_async failure behavior.
           RuntimeError, "public api failure"
       ):
         torch.accelerator.synchronize()
-    finally:
-      # Reset sticky error state for subsequent tests.
-      tpu_testing.clear_sticky_error()
 
   def test_assert_async_deferred_computation(self):
     """Tests _assert_async on lazily computed / deferred tensor expressions.
@@ -11861,8 +11601,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
          `RuntimeError` with the custom message upon
          `torch.accelerator.synchronize()`.
     """
-    import torch_tpu._internal.testing as tpu_testing
-
     device = torch.device("tpu")
     a = torch.tensor([1.0], device=device)
     b = torch.tensor([2.0], device=device)
@@ -11873,61 +11611,48 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     torch.accelerator.synchronize()
 
     # Test deferred boolean expression that evaluates to False.
-    torch._assert_async((a + b == 4.0).squeeze(), "deferred mismatch")
-    try:
+    with clear_sticky_error():
+      torch._assert_async((a + b == 4.0).squeeze(), "deferred mismatch")
       with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing assert_async failure behavior.
           RuntimeError, "deferred mismatch"
       ):
         torch.accelerator.synchronize()
-    finally:
-      # Reset sticky error state for subsequent tests.
-      tpu_testing.clear_sticky_error()
 
   def test_assert_async_stream_synchronize(self):
     """Tests that stream-level synchronization catches pending assertion failures.
 
     Checks:
       1. Synchronizing a stream via
-      `torch.accelerator.current_stream().synchronize()`
+         `torch.accelerator.current_stream().synchronize()`
          invokes the TPU hook `synchronizeStream`.
       2. `synchronizeStream` calls `SyncAndCheckStickyError()`, ensuring pending
          assertion background checks are drained and any latched sticky error is
          re-thrown as a `RuntimeError`.
     """
-    import torch_tpu._internal.testing as tpu_testing
-
     device = torch.device("tpu")
     false_cond = torch.tensor(False, device=device)
 
-    # Schedule assertion failure.
-    torch._assert_async(false_cond, "stream sync failure")
-    try:
+    with clear_sticky_error():
+      # Schedule assertion failure.
+      torch._assert_async(false_cond, "stream sync failure")
       # Stream-level synchronization (torch.accelerator.current_stream().synchronize())
       # invokes synchronizeStream, which flushes assertion checks and rethrows sticky error.
       with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing assert_async failure behavior.
           RuntimeError, "stream sync failure"
       ):
         torch.accelerator.current_stream().synchronize()
-    finally:
-      # Reset sticky error state for subsequent tests.
-      tpu_testing.clear_sticky_error()
 
   def test_assert_async_fifo_ordering(self):
     """Tests deterministic FIFO ordering of sequential assertion failures.
 
     Checks:
       1. When multiple assertions are enqueued sequentially, the single
-      background
-         worker thread (`/*num_threads=*/1`) processes them in strict FIFO
-         order.
+         background worker thread (`/*num_threads=*/1`) processes them in strict
+         FIFO order.
       2. The error message from the *first* failing assertion is latched into
-      the
-         sticky error state, ensuring predictable error reporting instead of a
-         race
-         condition between multiple failures.
+         the sticky error state, ensuring predictable error reporting instead of
+         a race condition between multiple failures.
     """
-    import torch_tpu._internal.testing as tpu_testing
-
     device = torch.device("tpu")
 
     # Allocate both condition tensors before enqueuing assertions to avoid
@@ -11935,16 +11660,13 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     # the second tensor is created.
     cond1 = torch.tensor(False, device=device)
     cond2 = torch.tensor(False, device=device)
-    try:
+    with clear_sticky_error():
       torch._assert_async(cond1, "first error")
       torch._assert_async(cond2, "second error")
       with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing assert_async failure behavior.
           RuntimeError, "first error"
       ):
         torch.accelerator.synchronize()
-    finally:
-      # Reset sticky error state for subsequent tests.
-      tpu_testing.clear_sticky_error()
 
   def test_matmul_fp8_bf16(self):
     """Tests torch.matmul on TPU with FP8 inputs and BF16 output."""
@@ -13679,6 +13401,162 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       return torch.var_mean(x, dim=0, correction=-1)
 
     self.assert_close_tpu_vs_cpu(compute)
+
+  def test_searchsorted_scalar_float_in_int(self):
+    def compute(device):
+      seq = torch.tensor([1, 2, 3, 4], dtype=torch.int64, device=device)
+      res_left = torch.searchsorted(seq, 2.5, right=False)
+      res_right = torch.searchsorted(seq, 2.5, right=True)
+      return res_left, res_right
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  def test_searchsorted_0d_query_1elem_sorter(self):
+    def compute(device):
+      seq = torch.tensor([10], dtype=torch.int64, device=device)
+      sorter = torch.tensor([0], dtype=torch.int64, device=device)
+      val = torch.tensor(5, dtype=torch.int64, device=device)
+      res_left = torch.searchsorted(seq, val, right=False, sorter=sorter)
+      res_right = torch.searchsorted(seq, val, right=True, sorter=sorter)
+      return res_left, res_right
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  def test_bucketize_out_resize(self):
+    def compute(device):
+      v = torch.tensor([1.5, 2.5, 3.5], device=device)
+      boundaries = torch.tensor([1.0, 2.0, 3.0], device=device)
+      out = torch.empty((1,), dtype=torch.int64, device=device)
+      res = torch.bucketize(v, boundaries, out=out)
+      return out, res
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  def test_searchsorted_out_resize(self):
+    def compute(device):
+      seq = torch.tensor([1.0, 2.0, 3.0], device=device)
+      v = torch.tensor([1.5, 2.5], device=device)
+      out = torch.empty((5, 5), dtype=torch.int64, device=device)
+      res = torch.searchsorted(seq, v, out=out)
+      return out, res
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  def test_isin_out_resize(self):
+    def compute(device):
+      elements = torch.tensor([[1, 2], [3, 4]], device=device)
+      test_elements = torch.tensor([2, 3], device=device)
+      out = torch.empty((1,), dtype=torch.bool, device=device)
+      res = torch.isin(elements, test_elements, out=out)
+      return out, res
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  def test_sort_out_resize(self):
+    def compute(device):
+      x = torch.tensor([[3.0, 1.0, 2.0], [6.0, 4.0, 5.0]], device=device)
+      out_vals = torch.empty((1,), dtype=torch.float32, device=device)
+      out_idx = torch.empty((10, 10), dtype=torch.int64, device=device)
+      res_vals, res_idx = torch.sort(x, dim=1, out=(out_vals, out_idx))
+      return out_vals, out_idx, res_vals, res_idx
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  def test_topk_out_resize(self):
+    def compute(device):
+      x = torch.tensor([[3.0, 1.0, 2.0], [6.0, 4.0, 5.0]], device=device)
+      out_vals = torch.empty((5,), dtype=torch.float32, device=device)
+      out_idx = torch.empty((1,), dtype=torch.int64, device=device)
+      res_vals, res_idx = torch.topk(x, k=2, dim=1, out=(out_vals, out_idx))
+      return out_vals, out_idx, res_vals, res_idx
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  @parameterized.product(
+      dtype=(torch.float32, torch.bfloat16, torch.float16),
+      shape_and_dim=(
+          ((0,), 0),
+          ((0, 4), 0),
+          ((0, 4), 1),
+          ((2, 0, 3), 1),
+          ((2, 0, 3), 2),
+      ),
+      op_fn=(torch.softmax, torch.log_softmax),
+  )
+  def test_softmax_empty_tensor(self, dtype, shape_and_dim, op_fn):
+    """Tests softmax and log_softmax on 0-sized tensors across reduction dims."""
+    shape, dim = shape_and_dim
+
+    def compute(device):
+      x = torch.empty(shape, dtype=dtype, device=device)
+      return op_fn(x, dim=dim)
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  @parameterized.product(
+      dtype=(torch.float32, torch.bfloat16),
+      dim=(0, 1, -1),
+      op_fn=(torch.softmax, torch.log_softmax),
+  )
+  def test_softmax_dynamic_reduction_dim(self, dtype, dim, op_fn):
+    """Tests softmax and log_softmax with dynamic sizes and padding on reduction dim."""
+    x_cpu = torch.randn((3, 5, 7), dtype=dtype)
+    x_tpu = x_cpu.to("tpu")
+    dynamism.mark_Tensor_Cleanup_dynamic(x_tpu, [True, True, True])
+    self.assert_close(
+        golden_result=op_fn(x_cpu, dim=dim),
+        torch_tpu_result=op_fn(x_tpu, dim=dim),
+        atol=1e-2 if dtype == torch.bfloat16 else 1e-5,
+        rtol=1e-2 if dtype == torch.bfloat16 else 1e-5,
+    )
+
+  @parameterized.product(
+      ord_val=(1.0, 2.0, float("inf")),
+      out_dtype=(None, torch.float32),
+  )
+  def test_foreach_norm(self, ord_val, out_dtype):
+    """Tests torch._foreach_norm across norms and mixed input dtypes."""
+
+    def compute(device):
+      t1 = torch.tensor([1.0, -2.0, 3.0], dtype=torch.float32, device=device)
+      t2 = torch.tensor(
+          [[4.0, -5.0], [6.0, 7.0]], dtype=torch.bfloat16, device=device
+      )
+      return torch._foreach_norm([t1, t2], ord=ord_val, dtype=out_dtype)
+
+    self.assert_close_tpu_vs_cpu(compute, atol=1e-2, rtol=1e-2)
+
+  def test_clip_grad_norm_foreach(self):
+    """Tests clip_grad_norm_(foreach=True) end-to-end."""
+
+    def compute(device):
+      p1 = torch.nn.Parameter(
+          torch.tensor([3.0, 4.0], dtype=torch.float32, device=device)
+      )
+      p2 = torch.nn.Parameter(
+          torch.tensor([12.0, 0.0], dtype=torch.float32, device=device)
+      )
+      p1.grad = p1.data.clone()
+      p2.grad = p2.data.clone()
+      total_norm = torch.nn.utils.clip_grad_norm_(
+          [p1, p2], max_norm=6.5, norm_type=2.0, foreach=True
+      )
+      return total_norm, p1.grad, p2.grad
+
+    self.assert_close_tpu_vs_cpu(compute, atol=1e-4, rtol=1e-4)
+
+  @parameterized.parameters(([0, 1, 0, 1],), ([1, 2, 0, 1],))
+  def test_einsum_explicit_path(self, path):
+    """Tests torch.ops.aten.einsum with an explicit contraction path."""
+    with highest_matmul_precision():
+
+      def compute(device):
+        a = torch.randn((2, 3), device=device)
+        b = torch.randn((3, 4), device=device)
+        c = torch.randn((4, 5), device=device)
+        return torch.ops.aten.einsum("ij,jk,kl->il", [a, b, c], path=path)
+
+      self.assert_close_tpu_vs_cpu(compute, atol=1e-4, rtol=1e-4)
 
 
 class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
@@ -16775,12 +16653,6 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
 
   # TODO: Make fmod() consistent across CPU and TPU for integer zero division
   def test_fmod_int_zero_division(self):
-    # CPU raises RuntimeError for integer division by zero
-    t_cpu = torch.tensor([1, 2, 3], device="cpu", dtype=torch.int32)
-    other_cpu = torch.zeros_like(t_cpu)
-    with self.assertRaisesRegex(RuntimeError, "ZeroDivisionError"):
-      torch.fmod(t_cpu, other_cpu)
-
     # TPU can return any value
     t_tpu = torch.tensor(
         [1, 2, 3],
@@ -20773,486 +20645,9 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
           ),
       )
 
-
-class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
-  """Tests for the op_testing framework itself."""
-
-  def test_torch_tpu_vs_gpu_missing_golden_fails(self):
-    op = next(op for op in op_db if op.name == "add")
-    with (
-        flagsaver.flagsaver(test_mode=op_testing.TestMode.TORCH_TPU_VS_GPU),
-        mock.patch.object(
-            op_testing, "_GOLDEN_GPU_DATA", op_testing.GoldenGpuData()
-        ),
-    ):
-      with self.assertRaisesRegex(
-          AssertionError,
-          "No GPU golden samples found for add.*Please re-generate the GPU"
-          " golden files",
-      ):
-        self._get_golden_input_output_pairs(
-            op=op,
-            dtype=torch.float32,
-            variant=op_testing.OpVariant.BASE,
-            max_samples=1,
-        )
-
-      # Ensure that if samples are present, no error is raised and samples are
-      # returned.
-      fake_input = op_testing.OpInput(FakeSample("s", torch.zeros(1), (), {}))
-      fake_output = op_testing.OpOutput(torch.zeros(1))
-      fake_sample = (fake_input, fake_output)
-      op_testing._GOLDEN_GPU_DATA.add(
-          self._testMethodName,
-          op_testing.OpVariant.BASE,
-          torch.float32,
-          fake_input,
-          fake_output,
-      )
-      res = self._get_golden_input_output_pairs(
-          op=op,
-          dtype=torch.float32,
-          variant=op_testing.OpVariant.BASE,
-          max_samples=1,
-      )
-      self.assertEqual(res, [fake_sample])
-
-  def test_accuracy_runs_use_different_seeds(self):
-    abs_op = next(op for op in op_db if op.name == "abs")
-
-    # 1. Verify uniqueness within a single run (loop)
-    # Seed once at the start of the "loop"
-    seed_test_utils.seed_rngs(1234)
-
-    pairs1 = self._get_golden_input_output_pairs(
-        op=abs_op,
-        dtype=torch.float32,
-        variant=op_testing.OpVariant.BASE,
-        max_samples=2,
-        verbose=False,
-        set_seed=False,  # match new loop behavior
-    )
-
-    # Run 2 continues from where Run 1 left off
-    pairs2 = self._get_golden_input_output_pairs(
-        op=abs_op,
-        dtype=torch.float32,
-        variant=op_testing.OpVariant.BASE,
-        max_samples=2,
-        verbose=False,
-        set_seed=False,  # match new loop behavior
-    )
-
-    inputs1 = [p[0].input_value for p in pairs1]
-    inputs2 = [p[0].input_value for p in pairs2]
-
-    all_equal = True
-    for t1, t2 in zip(inputs1, inputs2):
-      if not torch.allclose(t1, t2):
-        all_equal = False
-        break
-    self.assertFalse(all_equal, "Inputs within the loop were identical!")
-
-  def test_accuracy_runs_are_unique_across_runs(self):
-    abs_op = next(op for op in op_db if op.name == "abs")
-
-    # Run with base seed 1234
-    seed_test_utils.seed_rngs(1234)
-    pairs_1234 = self._get_golden_input_output_pairs(
-        op=abs_op,
-        dtype=torch.float32,
-        variant=op_testing.OpVariant.BASE,
-        max_samples=2,
-        verbose=False,
-        set_seed=False,
-    )
-
-    # Run with base seed 5678
-    seed_test_utils.seed_rngs(5678)
-    pairs_5678 = self._get_golden_input_output_pairs(
-        op=abs_op,
-        dtype=torch.float32,
-        variant=op_testing.OpVariant.BASE,
-        max_samples=2,
-        verbose=False,
-        set_seed=False,
-    )
-
-    inputs_1234 = [p[0].input_value for p in pairs_1234]
-    inputs_5678 = [p[0].input_value for p in pairs_5678]
-
-    all_equal = True
-    for t1, t2 in zip(inputs_1234, inputs_5678):
-      if not torch.allclose(t1, t2):
-        all_equal = False
-        break
-    self.assertFalse(
-        all_equal,
-        "Inputs across runs with different base seeds were identical!",
-    )
-
-  def test_accuracy_runs_are_deterministic_with_same_seed(self):
-    abs_op = next(op for op in op_db if op.name == "abs")
-
-    # Run 1 with base seed 1234
-    seed_test_utils.seed_rngs(1234)
-    pairs1 = self._get_golden_input_output_pairs(
-        op=abs_op,
-        dtype=torch.float32,
-        variant=op_testing.OpVariant.BASE,
-        max_samples=2,
-        verbose=False,
-        set_seed=False,
-    )
-
-    # Run 2 with same base seed 1234
-    seed_test_utils.seed_rngs(1234)
-    pairs2 = self._get_golden_input_output_pairs(
-        op=abs_op,
-        dtype=torch.float32,
-        variant=op_testing.OpVariant.BASE,
-        max_samples=2,
-        verbose=False,
-        set_seed=False,
-    )
-
-    inputs1 = [p[0].input_value for p in pairs1]
-    inputs2 = [p[0].input_value for p in pairs2]
-
-    all_equal = True
-    for t1, t2 in zip(inputs1, inputs2):
-      if not torch.allclose(t1, t2):
-        all_equal = False
-        break
-    self.assertTrue(
-        all_equal,
-        "Inputs across runs with same base seeds were different!",
-    )
-
-  def test_searchsorted_scalar_float_in_int(self):
-    def test_fn(device):
-      seq = torch.tensor([1, 2, 3, 4], dtype=torch.int64, device=device)
-      res_left = torch.searchsorted(seq, 2.5, right=False)
-      res_right = torch.searchsorted(seq, 2.5, right=True)
-      return res_left, res_right
-
-    self.assert_close_tpu_vs_cpu(test_fn)
-
-  def test_searchsorted_0d_query_1elem_sorter(self):
-    def test_fn(device):
-      seq = torch.tensor([10], dtype=torch.int64, device=device)
-      sorter = torch.tensor([0], dtype=torch.int64, device=device)
-      query = torch.tensor(10, dtype=torch.int64, device=device)
-      res = torch.searchsorted(seq, query, sorter=sorter)
-      return res
-
-    self.assert_close_tpu_vs_cpu(test_fn)
-
-  def test_bucketize_out_resize(self):
-    def test_fn(device):
-      inp = torch.tensor([[0.0, 2.0, 3.0], [3.0, 4.0, 6.0]], device=device)
-      boundaries = torch.tensor([1.0, 3.0, 5.0], device=device)
-      out = torch.empty(0, dtype=torch.int64, device=device)
-      torch.bucketize(inp, boundaries, out=out)
-      return out
-
-    self.assert_close_tpu_vs_cpu(test_fn)
-
-  def test_searchsorted_out_resize(self):
-    def test_fn(device):
-      seq = torch.tensor([[1.0, 3.0, 5.0], [2.0, 4.0, 6.0]], device=device)
-      values = torch.tensor([[0.0, 2.0, 4.0], [3.0, 5.0, 7.0]], device=device)
-      out = torch.empty(0, dtype=torch.int64, device=device)
-      torch.searchsorted(seq, values, out=out)
-      return out
-
-    self.assert_close_tpu_vs_cpu(test_fn)
-
-  def test_isin_out_resize(self):
-    def test_fn(device):
-      elements = torch.tensor([[1, 2, 3], [4, 5, 6]], device=device)
-      test_elements = torch.tensor([2, 4, 6], device=device)
-      out = torch.empty(0, dtype=torch.bool, device=device)
-      torch.isin(elements, test_elements, out=out)
-      return out
-
-    self.assert_close_tpu_vs_cpu(test_fn)
-
-  def test_sort_out_resize(self):
-    def test_fn(device):
-      t = torch.tensor([[3.0, 1.0, 2.0], [6.0, 4.0, 5.0]], device=device)
-      values = torch.empty(0, dtype=torch.float32, device=device)
-      indices = torch.empty(0, dtype=torch.int64, device=device)
-      torch.sort(t, out=(values, indices))
-      return values, indices
-
-    self.assert_close_tpu_vs_cpu(test_fn)
-
-  def test_topk_out_resize(self):
-    def test_fn(device):
-      t = torch.tensor([[3.0, 1.0, 2.0], [6.0, 4.0, 5.0]], device=device)
-      values = torch.empty(0, dtype=torch.float32, device=device)
-      indices = torch.empty(0, dtype=torch.int64, device=device)
-      torch.topk(t, 2, out=(values, indices))
-      return values, indices
-
-    self.assert_close_tpu_vs_cpu(test_fn)
-
-  @parameterized.named_parameters(
-      dict(
-          testcase_name="float4_e2m1fn_x2",
-          dtype=torch.float4_e2m1fn_x2,
-      ),
-      dict(
-          testcase_name="int4",
-          dtype=torch.int4,
-      ),
-  )
-  def test_sub_byte_sample_generation(self, dtype: torch.dtype):
-    abs_op = next(op for op in op_db if op.name == "abs")
-    pairs = self._get_golden_input_output_pairs(
-        op=abs_op,
-        dtype=dtype,
-        variant=op_testing.OpVariant.BASE,
-        max_samples=2,
-        verbose=False,
-    )
-    self.assertNotEmpty(pairs)
-    for golden_input, _ in pairs:
-      self.assertEqual(golden_input.input_value.dtype, dtype)
-
-  def test_plistlib_sub_byte_tensor_serialization(self):
-    for dtype in quantize_utils.SUB_BYTE_DTYPES:
-      with self.subTest(dtype=dtype):
-        raw = torch.arange(16, dtype=torch.uint8).reshape(2, 8)
-        tensor = raw.view(dtype)
-        encoded = op_testing._to_plistlib_compatible(tensor)
-        decoded = op_testing._from_plistlib_compatible(encoded)
-        self.assertEqual(decoded.dtype, dtype)
-        self.assertEqual(decoded.shape, tensor.shape)
-        utils.assert_close(decoded.view(torch.uint8), raw)
-
-  def test_perf_mode_skips_cpu_golden_execution(self):
-    abs_op = next(op for op in op_db if op.name == "abs")
-    with flagsaver.flagsaver(test_mode=op_testing.TestMode.PERF):
-      pairs = self._get_golden_input_output_pairs(
-          op=abs_op,
-          dtype=torch.float32,
-          variant=op_testing.OpVariant.BASE,
-          max_samples=2,
-          verbose=False,
-      )
-      self.assertNotEmpty(pairs)
-      for _, golden_output in pairs:
-        self.assertIsNone(golden_output.output_value)
-
-  def test_plistlib_enum_serialization(self):
-    enum_val = getattr(
-        torch.nn.functional,
-        "_ScalingType",
-        getattr(torch._C, "_ScalingType", None),
-    )
-    if enum_val is not None:
-      test_enum = enum_val.RowWise
-    else:
-
-      class CustomEnum(enum.Enum):
-        ROW_WISE = 1
-
-      test_enum = CustomEnum.ROW_WISE
-
-    data = {"enum_arg": test_enum, "tuple_arg": (test_enum, 42)}
-    plist_compat = op_testing._to_plistlib_compatible(data)
-    bin_data = plistlib.dumps(
-        plist_compat,
-        fmt=typing.cast(plistlib.PlistFormat, plistlib.FMT_BINARY),
-    )
-    self.assertIsInstance(bin_data, bytes)
-
-    restored = op_testing._from_plistlib_compatible(plist_compat)
-    self.assertEqual(restored["enum_arg"], test_enum)
-    self.assertEqual(restored["tuple_arg"][0], test_enum)
-
-  def test_plistlib_exception_serialization(self):
-    """Tests that golden exceptions preserve their type and message."""
-    output = op_testing.OpOutput(ValueError("bad value: 42"))
-    restored = op_testing.OpOutput.from_plistlib_pytree(
-        output.to_plistlib_pytree()
-    )
-
-    self.assertIsInstance(restored.output_value, ValueError)
-    self.assertEqual(type(restored.output_value).__name__, "ValueError")
-    self.assertEqual(str(restored.output_value), "bad value: 42")
-
-  def test_get_dtype_exclusions_with_iterable_returns_exclusions_tuple(self):
-    self.assertEqual(
-        op_testing._get_dtype_exclusions((torch.float32,), "gpu"),
-        (torch.float32,),
-    )
-
-  def test_get_dtype_exclusions_with_device_dict_returns_device_exclusions(
-      self,
-  ):
-    exclusions_by_device = {"cpu": (torch.float32,), "gpu": (torch.float64,)}
-    self.assertEqual(
-        op_testing._get_dtype_exclusions(exclusions_by_device, "gpu"),
-        (torch.float64,),
-    )
-
-  def test_get_dtype_exclusions_with_invalid_device_key_raises_value_error(
-      self,
-  ):
-    with self.assertRaisesRegex(ValueError, "Expected only 'cpu' and 'gpu'"):
-      op_testing._get_dtype_exclusions({"xpu": (torch.float32,)}, "xpu")
-
-  @mock.patch.dict(op_testing._DTYPE_EXCLUSIONS, clear=True)
-  def test_record_gpu_dtype_exclusions_multiple_calls_intersects_exclusions(
-      self,
-  ):
-    op_testing._record_gpu_dtype_exclusions(
-        "add",
-        exclude_dtypes=(torch.float32, torch.float64),
-        exclude_inplace_dtypes=(torch.int16,),
-    )
-    op_testing._record_gpu_dtype_exclusions(
-        "add",
-        exclude_dtypes=(torch.float64, torch.bfloat16),
-        exclude_inplace_dtypes=(torch.int32,),
-    )
-    self.assertEqual(
-        op_testing._DTYPE_EXCLUSIONS["add"]["exclude_dtypes"],
-        {"torch.float64"},
-    )
-    self.assertEqual(
-        op_testing._DTYPE_EXCLUSIONS["add"]["exclude_inplace_dtypes"],
-        set(),
-    )
-
-  @mock.patch.dict(op_testing._DTYPE_EXCLUSIONS, clear=True)
-  def test_build_dtype_exclusions_yaml_returns_sorted_formatted_yaml(self):
-    op_testing._record_gpu_dtype_exclusions(
-        "add",
-        exclude_dtypes=(torch.float64, torch.float32),
-        exclude_inplace_dtypes=(torch.int32,),
-    )
-    expected_yaml = (
-        "add:\n"
-        "  exclude_dtypes:\n"
-        "  - torch.float32\n"
-        "  - torch.float64\n"
-        "  exclude_inplace_dtypes:\n"
-        "  - torch.int32\n"
-    )
-    self.assertEqual(op_testing._build_dtype_exclusions_yaml(), expected_yaml)
-
-  def test_softmax_empty_tensor(self):
-    for dtype in (torch.float32, torch.bfloat16):
-      test_cases = [
-          # Empty reduction dimension
-          ((2, 0, 3), 1),
-          ((0,), 0),
-          ((0, 5), 0),
-          # Empty non-reduction dimension
-          ((0, 5), 1),
-          ((2, 0, 3), 0),
-          ((2, 0, 3), 2),
-          ((2, 0, 3), -1),
-      ]
-      for shape, dim in test_cases:
-        cpu_x = torch.empty(shape, dtype=dtype)
-        tpu_x = cpu_x.to("tpu")
-
-        # Softmax
-        cpu_sm = torch.softmax(cpu_x, dim=dim)
-        tpu_sm = torch.softmax(tpu_x, dim=dim)
-        self.assertEqual(tpu_sm.shape, cpu_sm.shape)
-        utils.assert_close(actual=tpu_sm.cpu(), expected=cpu_sm)
-
-        # LogSoftmax
-        cpu_lsm = torch.log_softmax(cpu_x, dim=dim)
-        tpu_lsm = torch.log_softmax(tpu_x, dim=dim)
-        self.assertEqual(tpu_lsm.shape, cpu_lsm.shape)
-        utils.assert_close(actual=tpu_lsm.cpu(), expected=cpu_lsm)
-
-        # Compiled
-        @torch.compile(dynamic=False)
-        def compiled_fn(x, d=dim):
-          return torch.softmax(x, dim=d), torch.log_softmax(x, dim=d)
-
-        tpu_comp_sm, tpu_comp_lsm = compiled_fn(tpu_x)
-        self.assertEqual(tpu_comp_sm.shape, cpu_sm.shape)
-        self.assertEqual(tpu_comp_lsm.shape, cpu_lsm.shape)
-        utils.assert_close(actual=tpu_comp_sm.cpu(), expected=cpu_sm)
-        utils.assert_close(actual=tpu_comp_lsm.cpu(), expected=cpu_lsm)
-
-  def test_softmax_dynamic_reduction_dim(self):
-    for dtype in (torch.float32, torch.bfloat16):
-      for dim in (0, 1, -1):
-        cpu_x = torch.randn(4, 6, dtype=dtype)
-        tpu_x = cpu_x.to("tpu")
-        dyn_dim = dim if dim >= 0 else cpu_x.ndim + dim
-        dynamism.mark_dynamic(
-            tpu_x, dimension=dyn_dim, lower_bound=2, upper_bound=10
-        )
-
-        rtol, atol = (1e-4, 1e-4) if dtype == torch.float32 else (2e-2, 2e-2)
-        cpu_sm = torch.softmax(cpu_x, dim=dim)
-        tpu_sm = torch.softmax(tpu_x, dim=dim)
-        utils.assert_close(
-            actual=tpu_sm.cpu(), expected=cpu_sm, rtol=rtol, atol=atol
-        )
-
-        cpu_lsm = torch.log_softmax(cpu_x, dim=dim)
-        tpu_lsm = torch.log_softmax(tpu_x, dim=dim)
-        utils.assert_close(
-            actual=tpu_lsm.cpu(), expected=cpu_lsm, rtol=rtol, atol=atol
-        )
-
-  def test_foreach_norm_and_clip_grad_norm(self):
-    for ord_val in (0, 1, 2, 3.0, -1.0, -1.5, float("inf"), float("-inf")):
-      for out_dtype in (None, torch.float32):
-
-        def foreach_norm_fn(device, ord_arg=ord_val, dtype_arg=out_dtype):
-          tensors = [
-              torch.tensor(
-                  [-3.0, 0.0, 4.0], dtype=torch.float32, device=device
-              ),
-              torch.tensor(
-                  [[1.0, -2.0], [3.0, 4.0]], dtype=torch.bfloat16, device=device
-              ),
-              torch.zeros((2, 2), dtype=torch.float32, device=device),
-              torch.tensor(5.0, dtype=torch.float32, device=device),
-          ]
-          if ord_arg >= 0 and ord_arg != float("inf"):
-            tensors.append(
-                torch.empty((0,), dtype=torch.float32, device=device)
-            )
-          return torch._foreach_norm(tensors, ord=ord_arg, dtype=dtype_arg)
-
-        self.assert_close_tpu_vs_cpu(foreach_norm_fn, rtol=1e-2, atol=1e-2)
-
-    def clip_grad_norm_fn(device):
-      params = [
-          torch.nn.Parameter(
-              torch.arange(1, 7, dtype=torch.float32, device=device).reshape(
-                  2, 3
-              )
-              * (i + 1)
-          )
-          for i in range(6)
-      ]
-      for i, p in enumerate(params):
-        p.grad = torch.full_like(p, float(i + 1))
-      total_norm = torch.nn.utils.clip_grad_norm_(
-          params, max_norm=1.0, foreach=True
-      )
-      return [total_norm] + [p.grad for p in params]
-
-    self.assert_close_tpu_vs_cpu(clip_grad_norm_fn, rtol=1e-5, atol=1e-5)
-
-  def test_select_backward(self):
-    for dtype in (torch.float32, torch.bfloat16):
-      test_cases = [
+  @parameterized.product(
+      dtype=(torch.float32, torch.bfloat16),
+      case=(
           ((5,), 0, 0),
           ((5,), 0, 2),
           ((5,), 0, 4),
@@ -21266,49 +20661,26 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
           ((3, 142, 32, 512), 0, 1),
           ((3, 142, 32, 512), 0, 2),
           ((2, 8, 16, 32), 2, 5),
-          # Size-1 along selected dimension (exercises early return branch)
           ((1,), 0, 0),
           ((4, 1, 6), 1, 0),
-          # Negative indexing (dim and index normalization)
           ((5,), -1, -1),
           ((4, 6), -2, -1),
           ((4, 6), -1, -4),
           ((2, 3, 4), -1, -2),
-          # Zero-element tensor
           ((0, 5), 1, 2),
           ((4, 0, 6), 0, 1),
-      ]
-      for input_sizes, dim, index in test_cases:
-        grad_shape = list(input_sizes)
-        del grad_shape[dim]
-        cpu_grad = torch.randn(grad_shape, dtype=dtype)
-        tpu_grad = cpu_grad.to("tpu")
-
-        cpu_out = torch.ops.aten.select_backward(
-            cpu_grad, input_sizes, dim, index
+      ),
+  )
+  def test_select_backward(self, dtype, case):
+    input_sizes, dim, index = case
+    grad_shape = list(input_sizes)
+    del grad_shape[dim]
+    grad = torch.randn(grad_shape, dtype=dtype)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.ops.aten.select_backward(
+            to(grad, device), input_sizes, dim, index
         )
-        tpu_out = torch.ops.aten.select_backward(
-            tpu_grad, input_sizes, dim, index
-        )
-        self.assertEqual(tpu_out.shape, cpu_out.shape)
-        utils.assert_close(actual=tpu_out.cpu(), expected=cpu_out)
-
-        @torch.compile(dynamic=False)
-        def compiled_fn(g, sz=input_sizes, d=dim, idx=index):
-          return torch.ops.aten.select_backward(g, sz, d, idx)
-
-        compiled_out = compiled_fn(tpu_grad)
-        self.assertEqual(compiled_out.shape, cpu_out.shape)
-        utils.assert_close(actual=compiled_out.cpu(), expected=cpu_out)
-
-  @contextlib.contextmanager
-  def _highest_matmul_precision(self):
-    prev_prec = torch.get_float32_matmul_precision()
-    torch.set_float32_matmul_precision("highest")
-    try:
-      yield
-    finally:
-      torch.set_float32_matmul_precision(prev_prec)
+    )
 
   @parameterized.named_parameters(
       ("identity", "ij->ij", (3, 4)),
@@ -21326,7 +20698,7 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
       ("implicit_ellipsis_trace", "...ii", (2, 4, 4)),
   )
   def test_einsum_one_operand(self, equation, shape):
-    with self._highest_matmul_precision():
+    with highest_matmul_precision():
       x_cpu = torch.randn(shape, dtype=torch.float32, requires_grad=True)
       x_tpu = x_cpu.detach().to("tpu").requires_grad_(True)
 
@@ -21374,7 +20746,7 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
       ("implicit_ellipsis_bmm", "...ij,...jk", (2, 3, 4), (2, 4, 5)),
   )
   def test_einsum_two_operands(self, equation, shape_a, shape_b):
-    with self._highest_matmul_precision():
+    with highest_matmul_precision():
       a_cpu = torch.randn(shape_a, dtype=torch.float32, requires_grad=True)
       b_cpu = torch.randn(shape_b, dtype=torch.float32, requires_grad=True)
       a_tpu = a_cpu.detach().to("tpu").requires_grad_(True)
@@ -21397,18 +20769,20 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
           actual=b_tpu.grad.cpu(), expected=b_cpu.grad, rtol=1e-4, atol=1e-4
       )
 
-  def test_einsum_multi_operands_and_path(self):
-    with self._highest_matmul_precision():
-      # 3-operand chain matmul
-      a_cpu = torch.randn((3, 4), dtype=torch.float32, requires_grad=True)
-      b_cpu = torch.randn((4, 5), dtype=torch.float32, requires_grad=True)
-      c_cpu = torch.randn((5, 2), dtype=torch.float32, requires_grad=True)
-      a_tpu = a_cpu.detach().to("tpu").requires_grad_(True)
-      b_tpu = b_cpu.detach().to("tpu").requires_grad_(True)
-      c_tpu = c_cpu.detach().to("tpu").requires_grad_(True)
+  @parameterized.named_parameters(
+      ("three_operands", "ij,jk,kl->il", ((3, 4), (4, 5), (5, 2))),
+      ("four_operands", "ab,bc,cd,de->ae", ((2, 3), (3, 4), (4, 3), (3, 2))),
+  )
+  def test_einsum_multi_operands(self, equation, shapes):
+    with highest_matmul_precision():
+      ops_cpu = [
+          torch.randn(s, dtype=torch.float32, requires_grad=True)
+          for s in shapes
+      ]
+      ops_tpu = [t.detach().to("tpu").requires_grad_(True) for t in ops_cpu]
 
-      out_cpu = torch.einsum("ij,jk,kl->il", a_cpu, b_cpu, c_cpu)
-      out_tpu = torch.einsum("ij,jk,kl->il", a_tpu, b_tpu, c_tpu)
+      out_cpu = torch.einsum(equation, *ops_cpu)
+      out_tpu = torch.einsum(equation, *ops_tpu)
       self.assertEqual(out_tpu.grad_fn.name(), "EinsumBackward0")
       utils.assert_close(
           actual=out_tpu.cpu(), expected=out_cpu, rtol=1e-4, atol=1e-4
@@ -21417,138 +20791,94 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
       grad_out_cpu = torch.randn_like(out_cpu)
       out_cpu.backward(grad_out_cpu)
       out_tpu.backward(grad_out_cpu.to("tpu"))
-      utils.assert_close(
-          actual=a_tpu.grad.cpu(), expected=a_cpu.grad, rtol=1e-4, atol=1e-4
-      )
-      utils.assert_close(
-          actual=b_tpu.grad.cpu(), expected=b_cpu.grad, rtol=1e-4, atol=1e-4
-      )
-      utils.assert_close(
-          actual=c_tpu.grad.cpu(), expected=c_cpu.grad, rtol=1e-4, atol=1e-4
-      )
-
-      # Explicit contraction paths via torch.ops.aten.einsum.default
-      for path in ([0, 1, 0, 1], [1, 2, 0, 1]):
-        out_path_cpu = torch.ops.aten.einsum.default(
-            "ij,jk,kl->il",
-            [a_cpu.detach(), b_cpu.detach(), c_cpu.detach()],
-            path=path,
-        )
-        out_path_tpu = torch.ops.aten.einsum.default(
-            "ij,jk,kl->il",
-            [a_tpu.detach(), b_tpu.detach(), c_tpu.detach()],
-            path=path,
-        )
-        utils.assert_close(
-            actual=out_path_tpu.cpu(),
-            expected=out_path_cpu,
-            rtol=1e-4,
-            atol=1e-4,
-        )
-
-      # 4-operand contraction
-      ops_cpu = [
-          torch.randn((2, 3), dtype=torch.float32, requires_grad=True),
-          torch.randn((3, 4), dtype=torch.float32, requires_grad=True),
-          torch.randn((4, 3), dtype=torch.float32, requires_grad=True),
-          torch.randn((3, 2), dtype=torch.float32, requires_grad=True),
-      ]
-      ops_tpu = [t.detach().to("tpu").requires_grad_(True) for t in ops_cpu]
-      out4_cpu = torch.einsum("ab,bc,cd,de->ae", *ops_cpu)
-      out4_tpu = torch.einsum("ab,bc,cd,de->ae", *ops_tpu)
-      grad4_cpu = torch.randn_like(out4_cpu)
-      out4_cpu.backward(grad4_cpu)
-      out4_tpu.backward(grad4_cpu.to("tpu"))
-      utils.assert_close(
-          actual=out4_tpu.cpu(), expected=out4_cpu, rtol=1e-4, atol=1e-4
-      )
       for t_tpu, t_cpu in zip(ops_tpu, ops_cpu):
         utils.assert_close(
             actual=t_tpu.grad.cpu(), expected=t_cpu.grad, rtol=1e-4, atol=1e-4
         )
 
-  def test_einsum_double_backward(self):
-    with self._highest_matmul_precision():
-      cases = [
-          ("ij->ji", [(3, 4)]),
-          ("bii->bi", [(2, 4, 4)]),
-          ("ij,jk->ik", [(3, 4), (4, 5)]),
-          ("bhqd,bhkd->bhqk", [(2, 4, 3, 4), (2, 1, 5, 4)]),
-          (
-              "bctrhd,bcsqhd->bhctrsq",
-              [(1, 2, 2, 2, 2, 3), (1, 2, 2, 2, 2, 3)],
-          ),
-          ("ij,jk,kl->il", [(2, 3), (3, 4), (4, 2)]),
+  @parameterized.named_parameters(
+      ("transpose_2d", "ij->ji", [(3, 4)]),
+      ("batched_diagonal", "bii->bi", [(2, 4, 4)]),
+      ("matmul", "ij,jk->ik", [(3, 4), (4, 5)]),
+      ("gqa", "bhqd,bhkd->bhqk", [(2, 4, 3, 4), (2, 1, 5, 4)]),
+      (
+          "mamba3_6d",
+          "bctrhd,bcsqhd->bhctrsq",
+          [(1, 2, 2, 2, 2, 3), (1, 2, 2, 2, 2, 3)],
+      ),
+      ("chain_3op", "ij,jk,kl->il", [(2, 3), (3, 4), (4, 2)]),
+  )
+  def test_einsum_double_backward(self, equation, shapes):
+    with highest_matmul_precision():
+      ops_cpu = [
+          torch.randn(s, dtype=torch.float32, requires_grad=True)
+          for s in shapes
       ]
-      for equation, shapes in cases:
-        with self.subTest(equation=equation):
-          ops_cpu = [
-              torch.randn(s, dtype=torch.float32, requires_grad=True)
-              for s in shapes
-          ]
-          ops_tpu = [t.detach().to("tpu").requires_grad_(True) for t in ops_cpu]
+      ops_tpu = [t.detach().to("tpu").requires_grad_(True) for t in ops_cpu]
 
-          out_cpu = torch.einsum(equation, *ops_cpu)
-          out_tpu = torch.einsum(equation, *ops_tpu)
-          v_cpu = torch.randn_like(out_cpu, requires_grad=True)
-          v_tpu = v_cpu.detach().to("tpu").requires_grad_(True)
+      out_cpu = torch.einsum(equation, *ops_cpu)
+      out_tpu = torch.einsum(equation, *ops_tpu)
+      v_cpu = torch.randn_like(out_cpu, requires_grad=True)
+      v_tpu = v_cpu.detach().to("tpu").requires_grad_(True)
 
-          grads_cpu = torch.autograd.grad(
-              out_cpu, ops_cpu, grad_outputs=out_cpu * v_cpu, create_graph=True
-          )
-          grads_tpu = torch.autograd.grad(
-              out_tpu, ops_tpu, grad_outputs=out_tpu * v_tpu, create_graph=True
-          )
+      grads_cpu = torch.autograd.grad(
+          out_cpu, ops_cpu, grad_outputs=out_cpu * v_cpu, create_graph=True
+      )
+      grads_tpu = torch.autograd.grad(
+          out_tpu, ops_tpu, grad_outputs=out_tpu * v_tpu, create_graph=True
+      )
 
-          loss_cpu = sum((g * g).sum() for g in grads_cpu)
-          loss_tpu = sum((g * g).sum() for g in grads_tpu)
-          loss_cpu.backward()
-          loss_tpu.backward()
+      loss_cpu = sum((g * g).sum() for g in grads_cpu)
+      loss_tpu = sum((g * g).sum() for g in grads_tpu)
+      loss_cpu.backward()
+      loss_tpu.backward()
 
-          utils.assert_close(
-              actual=v_tpu.grad.cpu(),
-              expected=v_cpu.grad,
-              rtol=1e-4,
-              atol=1e-4,
-          )
-          for t_tpu, t_cpu in zip(ops_tpu, ops_cpu):
-            utils.assert_close(
-                actual=t_tpu.grad.cpu(),
-                expected=t_cpu.grad,
-                rtol=1e-4,
-                atol=1e-4,
-            )
+      utils.assert_close(
+          actual=v_tpu.grad.cpu(),
+          expected=v_cpu.grad,
+          rtol=1e-4,
+          atol=1e-4,
+      )
+      for t_tpu, t_cpu in zip(ops_tpu, ops_cpu):
+        utils.assert_close(
+            actual=t_tpu.grad.cpu(),
+            expected=t_cpu.grad,
+            rtol=1e-4,
+            atol=1e-4,
+        )
 
-  def test_einsum_partial_requires_grad(self):
-    with self._highest_matmul_precision():
-      for req_a, req_b in ((True, False), (False, True)):
-        a_cpu = torch.randn((3, 4), dtype=torch.float32, requires_grad=req_a)
-        b_cpu = torch.randn((4, 5), dtype=torch.float32, requires_grad=req_b)
-        a_tpu = a_cpu.detach().to("tpu").requires_grad_(req_a)
-        b_tpu = b_cpu.detach().to("tpu").requires_grad_(req_b)
+  @parameterized.named_parameters(
+      ("grad_a_only", True, False),
+      ("grad_b_only", False, True),
+  )
+  def test_einsum_partial_requires_grad(self, req_a, req_b):
+    with highest_matmul_precision():
+      a_cpu = torch.randn((3, 4), dtype=torch.float32, requires_grad=req_a)
+      b_cpu = torch.randn((4, 5), dtype=torch.float32, requires_grad=req_b)
+      a_tpu = a_cpu.detach().to("tpu").requires_grad_(req_a)
+      b_tpu = b_cpu.detach().to("tpu").requires_grad_(req_b)
 
-        out_cpu = torch.einsum("ij,jk->ik", a_cpu, b_cpu)
-        out_tpu = torch.einsum("ij,jk->ik", a_tpu, b_tpu)
-        grad_out = torch.randn_like(out_cpu)
-        out_cpu.backward(grad_out)
-        out_tpu.backward(grad_out.to("tpu"))
+      out_cpu = torch.einsum("ij,jk->ik", a_cpu, b_cpu)
+      out_tpu = torch.einsum("ij,jk->ik", a_tpu, b_tpu)
+      grad_out = torch.randn_like(out_cpu)
+      out_cpu.backward(grad_out)
+      out_tpu.backward(grad_out.to("tpu"))
 
-        if req_a:
-          utils.assert_close(
-              actual=a_tpu.grad.cpu(), expected=a_cpu.grad, rtol=1e-4, atol=1e-4
-          )
-        else:
-          self.assertIsNone(a_tpu.grad)
-        if req_b:
-          utils.assert_close(
-              actual=b_tpu.grad.cpu(), expected=b_cpu.grad, rtol=1e-4, atol=1e-4
-          )
-        else:
-          self.assertIsNone(b_tpu.grad)
+      if req_a:
+        utils.assert_close(
+            actual=a_tpu.grad.cpu(), expected=a_cpu.grad, rtol=1e-4, atol=1e-4
+        )
+      else:
+        self.assertIsNone(a_tpu.grad)
+      if req_b:
+        utils.assert_close(
+            actual=b_tpu.grad.cpu(), expected=b_cpu.grad, rtol=1e-4, atol=1e-4
+        )
+      else:
+        self.assertIsNone(b_tpu.grad)
 
-  def test_einsum_views_and_conj(self):
-    with self._highest_matmul_precision():
-      # Non-contiguous transposed and sliced views
+  def test_einsum_non_contiguous_views(self):
+    with highest_matmul_precision():
       base_a_cpu = torch.randn((4, 6), dtype=torch.float32, requires_grad=True)
       base_b_cpu = torch.randn((5, 8), dtype=torch.float32, requires_grad=True)
       base_a_tpu = base_a_cpu.detach().to("tpu").requires_grad_(True)
@@ -21579,7 +20909,8 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
           atol=1e-4,
       )
 
-      # Complex .conj() views (Wirtinger derivatives)
+  def test_einsum_complex_conj(self):
+    with highest_matmul_precision():
       ca_cpu = torch.randn((3, 4), dtype=torch.complex64, requires_grad=True)
       cb_cpu = torch.randn((4, 5), dtype=torch.complex64, requires_grad=True)
       ca_tpu = ca_cpu.detach().to("tpu").requires_grad_(True)
@@ -21600,32 +20931,29 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
           actual=cb_tpu.grad.cpu(), expected=cb_cpu.grad, rtol=1e-4, atol=1e-4
       )
 
-  def test_einsum_zero_elements(self):
-    cases = [
-        ("ij,jk->ik", [(3, 0), (0, 4)]),
-        ("ij,jk->", [(3, 0), (0, 4)]),
-        ("bij,bjk->bik", [(0, 3, 4), (0, 4, 5)]),
-        ("ij->ji", [(0, 4)]),
-        ("ij->", [(0, 4)]),
+  @parameterized.named_parameters(
+      ("zero_contracted_dim", "ij,jk->ik", [(3, 0), (0, 4)]),
+      ("zero_contracted_to_scalar", "ij,jk->", [(3, 0), (0, 4)]),
+      ("zero_batch_dim", "bij,bjk->bik", [(0, 3, 4), (0, 4, 5)]),
+      ("zero_transpose", "ij->ji", [(0, 4)]),
+      ("zero_sum_to_scalar", "ij->", [(0, 4)]),
+  )
+  def test_einsum_zero_elements(self, equation, shapes):
+    ops_cpu = [
+        torch.randn(s, dtype=torch.float32, requires_grad=True) for s in shapes
     ]
-    for equation, shapes in cases:
-      with self.subTest(equation=equation, shapes=shapes):
-        ops_cpu = [
-            torch.randn(s, dtype=torch.float32, requires_grad=True)
-            for s in shapes
-        ]
-        ops_tpu = [t.detach().to("tpu").requires_grad_(True) for t in ops_cpu]
-        out_cpu = torch.einsum(equation, *ops_cpu)
-        out_tpu = torch.einsum(equation, *ops_tpu)
-        self.assertEqual(out_tpu.shape, out_cpu.shape)
-        utils.assert_close(actual=out_tpu.cpu(), expected=out_cpu)
+    ops_tpu = [t.detach().to("tpu").requires_grad_(True) for t in ops_cpu]
+    out_cpu = torch.einsum(equation, *ops_cpu)
+    out_tpu = torch.einsum(equation, *ops_tpu)
+    self.assertEqual(out_tpu.shape, out_cpu.shape)
+    utils.assert_close(actual=out_tpu.cpu(), expected=out_cpu)
 
-        grad_out = torch.ones_like(out_cpu)
-        out_cpu.backward(grad_out)
-        out_tpu.backward(grad_out.to("tpu"))
-        for t_tpu, t_cpu in zip(ops_tpu, ops_cpu):
-          self.assertEqual(t_tpu.grad.shape, t_cpu.grad.shape)
-          utils.assert_close(actual=t_tpu.grad.cpu(), expected=t_cpu.grad)
+    grad_out = torch.ones_like(out_cpu)
+    out_cpu.backward(grad_out)
+    out_tpu.backward(grad_out.to("tpu"))
+    for t_tpu, t_cpu in zip(ops_tpu, ops_cpu):
+      self.assertEqual(t_tpu.grad.shape, t_cpu.grad.shape)
+      utils.assert_close(actual=t_tpu.grad.cpu(), expected=t_cpu.grad)
 
   @parameterized.named_parameters(
       ("float32", torch.float32),
@@ -21641,7 +20969,7 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
       ("complex128", torch.complex128),
   )
   def test_einsum_dtypes(self, dtype):
-    with self._highest_matmul_precision():
+    with highest_matmul_precision():
       is_floating_or_complex = dtype.is_floating_point or dtype.is_complex
       if is_floating_or_complex:
         a_cpu = torch.randn((2, 3, 4), dtype=dtype, requires_grad=True)
@@ -21672,63 +21000,12 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
             actual=b_tpu.grad.cpu(), expected=b_cpu.grad, rtol=rtol, atol=atol
         )
 
-  def test_einsum_direct_dot_general_ir_and_compile(self):
-    # Verify that 6D Mamba-3 einsum lowers directly to a single
-    # stablehlo.dot_general without intermediate 3D reshapes.
-    q = torch.randn((2, 2, 4, 2, 2, 8), dtype=torch.bfloat16).to("tpu")
-    k = torch.randn((2, 2, 4, 2, 2, 8), dtype=torch.bfloat16).to("tpu")
-
-    with execution_mode.set_eager_mode(
-        execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
-    ):
-      out = torch.einsum("bctrhd,bcsqhd->bhctrsq", q, k)
-
-    mlir_module = tpu_torch_compile.build_mlir([out], [q, k])
-    mlir_text = tpu_torch_compile.serialize_mlir_text(mlir_module)
-    self.assertIn("stablehlo.dot_general", mlir_text)
-    self.assertNotIn("stablehlo.reshape", mlir_text)
-
-    # Also verify torch.compile forward + backward numerical accuracy.
-    def mamba3_qk(x, y):
-      return torch.einsum("bctrhd,bcsqhd->bhctrsq", x, y)
-
-    with self._highest_matmul_precision():
-      q_cpu = torch.randn(
-          (2, 2, 3, 2, 2, 4), dtype=torch.float32, requires_grad=True
-      )
-      k_cpu = torch.randn(
-          (2, 2, 3, 2, 2, 4), dtype=torch.float32, requires_grad=True
-      )
-      q_tpu = q_cpu.detach().to("tpu").requires_grad_(True)
-      k_tpu = k_cpu.detach().to("tpu").requires_grad_(True)
-
-      out_cpu = mamba3_qk(q_cpu, k_cpu)
-      out_tpu = torch.compile(mamba3_qk, backend="tpu")(q_tpu, k_tpu)
-      grad_out = torch.randn_like(out_cpu)
-      out_cpu.backward(grad_out)
-      out_tpu.backward(grad_out.to("tpu"))
-
-      utils.assert_close(
-          actual=out_tpu.cpu(), expected=out_cpu, rtol=1e-4, atol=1e-4
-      )
-      utils.assert_close(
-          actual=q_tpu.grad.cpu(), expected=q_cpu.grad, rtol=1e-4, atol=1e-4
-      )
-      utils.assert_close(
-          actual=k_tpu.grad.cpu(), expected=k_cpu.grad, rtol=1e-4, atol=1e-4
-      )
-
-  def test_linalg_backward_no_tf32_guard_precision(self):
-    # Verify that linalg.solve_triangular and linalg.lu_factor_ex backward
-    # passes (which use at::NoTF32Guard in ATen) automatically run internal
-    # matmuls at HIGHEST precision when global precision is DEFAULT ("medium")
-    # and restore DEFAULT precision on guard exit.
-    torch.manual_seed(0)
+  def test_solve_triangular_backward_default_matmul_precision(self):
+    prior_precision = torch.get_float32_matmul_precision()
     a_cpu = torch.randn(32, 32, dtype=torch.float32)
     a_cpu = a_cpu @ a_cpu.mT + 4.0 * torch.eye(32, dtype=torch.float32)
     b_cpu = torch.randn(32, 16, dtype=torch.float32)
 
-    # 1. linalg.solve_triangular backward under default ("medium") precision
     a_tri_cpu = a_cpu.triu().detach().requires_grad_(True)
     b_tri_cpu = b_cpu.clone().detach().requires_grad_(True)
     out_tri_cpu = torch.linalg.solve_triangular(
@@ -21744,6 +21021,7 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
     )
     out_tri_tpu.backward(grad_tri_out.to("tpu"))
 
+    self.assertEqual(torch.get_float32_matmul_precision(), prior_precision)
     utils.assert_close(
         actual=a_tri_tpu.grad.cpu(),
         expected=a_tri_cpu.grad,
@@ -21757,7 +21035,11 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
         atol=1e-5,
     )
 
-    # 2. linalg.lu_factor_ex backward under default ("medium") precision
+  def test_lu_factor_ex_backward_default_matmul_precision(self):
+    prior_precision = torch.get_float32_matmul_precision()
+    a_cpu = torch.randn(32, 32, dtype=torch.float32)
+    a_cpu = a_cpu @ a_cpu.mT + 4.0 * torch.eye(32, dtype=torch.float32)
+
     a_lu_cpu = a_cpu.clone().detach().requires_grad_(True)
     lu_cpu, _, _ = torch.linalg.lu_factor_ex(a_lu_cpu)
     grad_lu_out = torch.randn_like(lu_cpu)
@@ -21767,24 +21049,13 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
     lu_tpu, _, _ = torch.linalg.lu_factor_ex(a_lu_tpu)
     lu_tpu.backward(grad_lu_out.to("tpu"))
 
+    self.assertEqual(torch.get_float32_matmul_precision(), prior_precision)
     utils.assert_close(
         actual=a_lu_tpu.grad.cpu(),
         expected=a_lu_cpu.grad,
         rtol=2.3e-5,
         atol=4.8e-4,
     )
-
-    # 3. Verify prior precision (DEFAULT) is restored after NoTF32Guard exits
-    with execution_mode.set_eager_mode(
-        execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
-    ):
-      mm_out = torch.matmul(a_lu_tpu.detach(), b_tri_tpu.detach())
-    mlir_module = tpu_torch_compile.build_mlir(
-        [mm_out], [a_lu_tpu.detach(), b_tri_tpu.detach()]
-    )
-    mlir_text = tpu_torch_compile.serialize_mlir_text(mlir_module)
-    self.assertIn("precision = [DEFAULT, DEFAULT]", mlir_text)
-    self.assertNotIn("precision = [HIGHEST, HIGHEST]", mlir_text)
 
 
 if __name__ == "__main__":

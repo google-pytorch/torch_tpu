@@ -14,12 +14,14 @@
 
 """Unit tests for the op_testing framework."""
 
+import enum
 import gzip
 import hashlib
 import os
 import pathlib
 import plistlib
 import tempfile
+import typing
 from typing import Any
 import unittest
 from unittest import mock
@@ -32,6 +34,8 @@ from torch.testing._internal import common_methods_invocations
 from torch_tpu._internal.utils import test_utils
 from tests import goldens_pin
 from tests import op_testing
+from tests import quantize_utils
+from tests import seed_test_utils
 from tests import test_utils as tests_test_utils
 
 
@@ -582,6 +586,354 @@ class OpTestingTest(op_testing.OpInfoTestBase):
         compiled_fn(torch.ones(i))
 
     self.assertEqual(cnt.frame_count, num_subtests)
+
+  def test_torch_tpu_vs_gpu_missing_golden_fails(self):
+    op = next(op for op in op_db if op.name == "add")
+    with (
+        flagsaver.flagsaver(test_mode=op_testing.TestMode.TORCH_TPU_VS_GPU),
+        mock.patch.object(
+            op_testing, "_GOLDEN_GPU_DATA", op_testing.GoldenGpuData()
+        ),
+    ):
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing missing golden error.
+          AssertionError,
+          "No GPU golden samples found for add.*Please re-generate the GPU"
+          " golden files",
+      ):
+        self._get_golden_input_output_pairs(
+            op=op,
+            dtype=torch.float32,
+            variant=op_testing.OpVariant.BASE,
+            max_samples=1,
+        )
+
+      fake_input = op_testing.OpInput(FakeSample("s", torch.zeros(1), (), {}))
+      fake_output = op_testing.OpOutput(torch.zeros(1))
+      fake_sample = (fake_input, fake_output)
+      op_testing._GOLDEN_GPU_DATA.add(
+          self._testMethodName,
+          op_testing.OpVariant.BASE,
+          torch.float32,
+          fake_input,
+          fake_output,
+      )
+      res = self._get_golden_input_output_pairs(
+          op=op,
+          dtype=torch.float32,
+          variant=op_testing.OpVariant.BASE,
+          max_samples=1,
+      )
+      self.assertEqual(res, [fake_sample])
+
+  def test_accuracy_runs_use_different_seeds(self):
+    abs_op = next(op for op in op_db if op.name == "abs")
+    seed_test_utils.seed_rngs(1234)
+
+    pairs1 = self._get_golden_input_output_pairs(
+        op=abs_op,
+        dtype=torch.float32,
+        variant=op_testing.OpVariant.BASE,
+        max_samples=2,
+        verbose=False,
+        set_seed=False,
+    )
+    pairs2 = self._get_golden_input_output_pairs(
+        op=abs_op,
+        dtype=torch.float32,
+        variant=op_testing.OpVariant.BASE,
+        max_samples=2,
+        verbose=False,
+        set_seed=False,
+    )
+
+    inputs1 = [p[0].input_value for p in pairs1]
+    inputs2 = [p[0].input_value for p in pairs2]
+    self.assertFalse(
+        all(torch.equal(t1, t2) for t1, t2 in zip(inputs1, inputs2)),
+        "Inputs within the loop were identical!",
+    )
+
+  def test_accuracy_runs_are_unique_across_runs(self):
+    abs_op = next(op for op in op_db if op.name == "abs")
+
+    seed_test_utils.seed_rngs(1234)
+    pairs_1234 = self._get_golden_input_output_pairs(
+        op=abs_op,
+        dtype=torch.float32,
+        variant=op_testing.OpVariant.BASE,
+        max_samples=2,
+        verbose=False,
+        set_seed=False,
+    )
+
+    seed_test_utils.seed_rngs(5678)
+    pairs_5678 = self._get_golden_input_output_pairs(
+        op=abs_op,
+        dtype=torch.float32,
+        variant=op_testing.OpVariant.BASE,
+        max_samples=2,
+        verbose=False,
+        set_seed=False,
+    )
+
+    inputs_1234 = [p[0].input_value for p in pairs_1234]
+    inputs_5678 = [p[0].input_value for p in pairs_5678]
+    self.assertFalse(
+        all(torch.equal(t1, t2) for t1, t2 in zip(inputs_1234, inputs_5678)),
+        "Inputs across runs with different base seeds were identical!",
+    )
+
+  def test_accuracy_runs_are_deterministic_with_same_seed(self):
+    abs_op = next(op for op in op_db if op.name == "abs")
+
+    seed_test_utils.seed_rngs(1234)
+    pairs1 = self._get_golden_input_output_pairs(
+        op=abs_op,
+        dtype=torch.float32,
+        variant=op_testing.OpVariant.BASE,
+        max_samples=2,
+        verbose=False,
+        set_seed=False,
+    )
+
+    seed_test_utils.seed_rngs(1234)
+    pairs2 = self._get_golden_input_output_pairs(
+        op=abs_op,
+        dtype=torch.float32,
+        variant=op_testing.OpVariant.BASE,
+        max_samples=2,
+        verbose=False,
+        set_seed=False,
+    )
+
+    inputs1 = [p[0].input_value for p in pairs1]
+    inputs2 = [p[0].input_value for p in pairs2]
+    self.assertTrue(
+        all(torch.equal(t1, t2) for t1, t2 in zip(inputs1, inputs2)),
+        "Inputs across runs with same base seeds were different!",
+    )
+
+  @parameterized.named_parameters(
+      dict(testcase_name="float4_e2m1fn_x2", dtype=torch.float4_e2m1fn_x2),
+      dict(testcase_name="int4", dtype=torch.int4),
+  )
+  def test_sub_byte_sample_generation(self, dtype: torch.dtype):
+    abs_op = next(op for op in op_db if op.name == "abs")
+    pairs = self._get_golden_input_output_pairs(
+        op=abs_op,
+        dtype=dtype,
+        variant=op_testing.OpVariant.BASE,
+        max_samples=2,
+        verbose=False,
+    )
+    self.assertNotEmpty(pairs)
+    for golden_input, _ in pairs:
+      self.assertEqual(golden_input.input_value.dtype, dtype)
+
+  @parameterized.parameters(*quantize_utils.SUB_BYTE_DTYPES)
+  def test_plistlib_sub_byte_tensor_serialization(self, dtype: torch.dtype):
+    raw = torch.arange(16, dtype=torch.uint8).reshape(2, 8)
+    tensor = raw.view(dtype)
+    encoded = op_testing._to_plistlib_compatible(tensor)
+    decoded = op_testing._from_plistlib_compatible(encoded)
+    self.assertEqual(decoded.dtype, dtype)
+    self.assertEqual(decoded.shape, tensor.shape)
+    test_utils.assert_close(decoded.view(torch.uint8), raw)
+
+  def test_perf_mode_skips_cpu_golden_execution(self):
+    abs_op = next(op for op in op_db if op.name == "abs")
+    with flagsaver.flagsaver(test_mode=op_testing.TestMode.PERF):
+      pairs = self._get_golden_input_output_pairs(
+          op=abs_op,
+          dtype=torch.float32,
+          variant=op_testing.OpVariant.BASE,
+          max_samples=2,
+          verbose=False,
+      )
+      self.assertNotEmpty(pairs)
+      for _, golden_output in pairs:
+        self.assertIsNone(golden_output.output_value)
+
+  def test_plistlib_enum_serialization(self):
+    enum_val = getattr(
+        torch.nn.functional,
+        "_ScalingType",
+        getattr(torch._C, "_ScalingType", None),
+    )
+    if enum_val is not None:
+      test_enum = enum_val.RowWise
+    else:
+
+      class CustomEnum(enum.Enum):
+        ROW_WISE = 1
+
+      test_enum = CustomEnum.ROW_WISE
+
+    data = {"enum_arg": test_enum, "tuple_arg": (test_enum, 42)}
+    plist_compat = op_testing._to_plistlib_compatible(data)
+    bin_data = plistlib.dumps(
+        plist_compat,
+        fmt=typing.cast(plistlib.PlistFormat, plistlib.FMT_BINARY),
+    )
+    self.assertIsInstance(bin_data, bytes)
+
+    restored = op_testing._from_plistlib_compatible(plist_compat)
+    self.assertEqual(restored["enum_arg"], test_enum)
+    self.assertEqual(restored["tuple_arg"][0], test_enum)
+
+  def test_plistlib_exception_serialization(self):
+    """Tests that golden exceptions preserve their type and message."""
+    output = op_testing.OpOutput(ValueError("bad value: 42"))
+    restored = op_testing.OpOutput.from_plistlib_pytree(
+        output.to_plistlib_pytree()
+    )
+
+    self.assertIsInstance(restored.output_value, ValueError)
+    self.assertEqual(type(restored.output_value).__name__, "ValueError")
+    self.assertEqual(str(restored.output_value), "bad value: 42")
+
+  def test_get_dtype_exclusions_with_iterable_returns_exclusions_tuple(self):
+    self.assertEqual(
+        op_testing._get_dtype_exclusions((torch.float32,), "gpu"),
+        (torch.float32,),
+    )
+
+  def test_get_dtype_exclusions_with_device_dict_returns_device_exclusions(
+      self,
+  ):
+    exclusions_by_device = {"cpu": (torch.float32,), "gpu": (torch.float64,)}
+    self.assertEqual(
+        op_testing._get_dtype_exclusions(exclusions_by_device, "gpu"),
+        (torch.float64,),
+    )
+
+  def test_get_dtype_exclusions_with_invalid_device_key_raises_value_error(
+      self,
+  ):
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing invalid device key error.
+        ValueError, "Expected only 'cpu' and 'gpu'"
+    ):
+      op_testing._get_dtype_exclusions({"xpu": (torch.float32,)}, "xpu")
+
+  @mock.patch.dict(op_testing._DTYPE_EXCLUSIONS, clear=True)
+  def test_record_gpu_dtype_exclusions_multiple_calls_intersects_exclusions(
+      self,
+  ):
+    op_testing._record_gpu_dtype_exclusions(
+        "add",
+        exclude_dtypes=(torch.float32, torch.float64),
+        exclude_inplace_dtypes=(torch.int16,),
+    )
+    op_testing._record_gpu_dtype_exclusions(
+        "add",
+        exclude_dtypes=(torch.float64, torch.bfloat16),
+        exclude_inplace_dtypes=(torch.int32,),
+    )
+    self.assertEqual(
+        op_testing._DTYPE_EXCLUSIONS["add"]["exclude_dtypes"],
+        {"torch.float64"},
+    )
+    self.assertEqual(
+        op_testing._DTYPE_EXCLUSIONS["add"]["exclude_inplace_dtypes"],
+        set(),
+    )
+
+  @mock.patch.dict(op_testing._DTYPE_EXCLUSIONS, clear=True)
+  def test_build_dtype_exclusions_yaml_returns_sorted_formatted_yaml(self):
+    op_testing._record_gpu_dtype_exclusions(
+        "add",
+        exclude_dtypes=(torch.float64, torch.float32),
+        exclude_inplace_dtypes=(torch.int32,),
+    )
+    expected_yaml = (
+        "add:\n"
+        "  exclude_dtypes:\n"
+        "  - torch.float32\n"
+        "  - torch.float64\n"
+        "  exclude_inplace_dtypes:\n"
+        "  - torch.int32\n"
+    )
+    self.assertEqual(op_testing._build_dtype_exclusions_yaml(), expected_yaml)
+
+  def test_assert_close_partial_override(self):
+    """Tests that test_utils.assert_close works with partial numeric overrides."""
+    t1 = torch.tensor([1.0, 2.0])
+    t2 = torch.tensor([1.0001, 2.0001])
+
+    test_utils.assert_close(t1, t2, atol=2e-4)
+    test_utils.assert_close(t1, t2, rtol=2e-4)
+
+  @parameterized.parameters(0, -1e-5)
+  def test_assert_close_tolerances_must_be_positive(self, invalid_tol):
+    """Tests that specifying rtol or atol <= 0 raises ValueError."""
+    t1 = torch.tensor([1.0, 2.0])
+    t2 = torch.tensor([1.0, 2.0])
+
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing tolerance validation error.
+        ValueError, "rtol must be > 0"
+    ):
+      self.assert_close(golden_result=t1, torch_tpu_result=t2, rtol=invalid_tol)
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing tolerance validation error.
+        ValueError, "atol must be > 0"
+    ):
+      self.assert_close(golden_result=t1, torch_tpu_result=t2, atol=invalid_tol)
+
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing tolerance validation error.
+        ValueError, "rtol must be > 0"
+    ):
+      self.assert_close_tpu_vs_cpu(
+          lambda device: torch.tensor([1.0], device=device), rtol=invalid_tol
+      )
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing tolerance validation error.
+        ValueError, "atol must be > 0"
+    ):
+      self.assert_close_tpu_vs_cpu(
+          lambda device: torch.tensor([1.0], device=device), atol=invalid_tol
+      )
+
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing tolerance validation error.
+        ValueError, "rtol must be > 0"
+    ):
+      self.set_accuracy_overrides(
+          tpu_gpu_overrides={"op": {torch.float32: {"rtol": invalid_tol}}},
+          grad_gpu_overrides={},
+      )
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing tolerance validation error.
+        ValueError, "atol must be > 0"
+    ):
+      self.set_accuracy_overrides(
+          tpu_gpu_overrides={"op": {torch.float32: {"atol": invalid_tol}}},
+          grad_gpu_overrides={},
+      )
+
+  def test_to(self):
+    """Tests the op_testing.to() function."""
+    gpu = torch.device("cuda")
+    tpu = op_testing.to(gpu, torch.device("tpu"))
+    self.assertEqual(tpu, torch.device("tpu"))
+    gpu_dict = {"device": gpu}
+    tpu_dict = op_testing.to(gpu_dict, torch.device("tpu"))
+    self.assertEqual(tpu_dict, {"device": torch.device("tpu")})
+
+    gpu = "cuda"
+    tpu = op_testing.to(gpu, "tpu")
+    self.assertEqual(tpu, "tpu")
+    gpu_dict = {"device": gpu}
+    tpu_dict = op_testing.to(gpu_dict, "tpu")
+    self.assertEqual(tpu_dict, {"device": "tpu"})
+
+    gpu_input = op_testing.OpInput(
+        FakeSample(
+            "sample1", torch.zeros(1, device="cpu"), (1,), {"device": gpu}
+        )
+    )
+    tpu_input = op_testing.to(gpu_input, torch.device("tpu"))
+    self.assertEqual(tpu_input.name, "sample1")
+    self.assert_devices_equivalent(
+        tpu_input.input_value.device, torch.device("tpu")
+    )
+    self.assertEqual(tpu_input.args, (1,))
+    self.assertEqual(tpu_input.kwargs, {"device": "tpu"})
 
 
 if __name__ == "__main__":
