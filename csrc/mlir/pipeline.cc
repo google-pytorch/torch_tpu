@@ -22,6 +22,7 @@
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/mlir/instrumentation.h"
+#include "csrc/mlir/passes/demote_f64_narrowed_ops.h"
 #include "csrc/mlir/passes/fold_concat_softmax.h"
 #include "csrc/mlir/passes/lower_separable_gather_to_dot.h"
 #include "csrc/mlir/passes/reassociate_norm_weights.h"
@@ -43,6 +44,7 @@ void AddCleanupPasses(mlir::PassManager& pm) {
 }
 
 void AddShloPasses(mlir::PassManager& pm) {
+  pm.addNestedPass<mlir::func::FuncOp>(createDemoteF64NarrowedOpsPass());
   if (GetBooleanEnvOnce<kTorchTpuInternalEnableReassociateNormWeightsEnvVar>()
           .value_or(true)) {
     pm.addNestedPass<mlir::func::FuncOp>(createReassociateNormWeightsPass());
