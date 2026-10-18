@@ -82,6 +82,7 @@ def torch_tpu_torch_test_impl(
         "//shims/torch:tensorboard_support",
         "//shims/torch:testing_internal",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal/device:_device_ops_backend",
         "//src/torch_tpu/_internal/utils:annotations",
         "//tests/torch:torch_test_configs",
         "@pypi//pyyaml",

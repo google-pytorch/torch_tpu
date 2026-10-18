@@ -158,7 +158,6 @@ _ROOT_NAMESPACES: tuple[str, ...] = (
 
 # Internal implementation environment variables from csrc/common/env_vars.h
 _INTERNAL_IMPLEMENTATION_ENV_VARS: frozenset[str] = frozenset({
-    "ACCELERATOR_TYPE",
     "ALLOW_MULTIPLE_LIBTPU_LOAD",
     "CLOUD_TPU_TASK_ID",
     "MEGASCALE_DEBUG_PORT",

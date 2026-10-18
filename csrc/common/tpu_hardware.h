@@ -18,6 +18,8 @@
 
 #include <string_view>
 
+#include "absl/status/statusor.h"
+
 namespace torch_tpu {
 
 // Returns whether any device node through which libtpu could reach a TPU
@@ -44,6 +46,23 @@ namespace torch_tpu {
     std::string_view dev_dir = "/dev",
     std::string_view dev_borg_dir = "/dev_borg",
     std::string_view proc_devices = "/proc/devices");
+
+// Returns whether `accelerator_type` is a multi-device-per-chip TPU without
+// megacore that requires 4D TPU bounds ("1,1,1,1") instead of 3D ("1,1,1") for
+// single-device initialization.
+//
+// `accelerator_type` must be in the case-insensitive format
+// `<generation>-<device_count>`, where `<device_count>` is a positive integer
+// (e.g., "v5litepod-4", "v7x-8") and `<generation>` is one of:
+// - Single-device-per-chip or megacore generations (returns false):
+//   "v4", "v5e", "v5litepod", "v5p", "v6e", "v8t", "tpu8t".
+// - Multi-device-per-chip generations without megacore (returns true):
+//   "v7", "v7x", "tpu7", "tpu7x", "v8i", "tpu8i".
+//
+// Returns an InvalidArgumentError if `accelerator_type` is empty, does not
+// match `<generation>-<device_count>`, or has an unrecognized `<generation>`.
+absl::StatusOr<bool> IsMultiDevicePerChipAcceleratorType(
+    std::string_view accelerator_type);
 
 }  // namespace torch_tpu
 

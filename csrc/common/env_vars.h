@@ -218,6 +218,8 @@ inline constexpr char kTorchcommRankEnvVar[] = "TORCHCOMM_RANK";
 // The number of processes as seen by torchcomm. Takes precedence over
 // WORLD_SIZE.
 inline constexpr char kTorchcommSizeEnvVar[] = "TORCHCOMM_SIZE";
+inline constexpr char kTpuAcceleratorTypeEnvVar[] =
+    "TPU_ACCELERATOR_TYPE";  // Set by Google Cloud.
 inline constexpr char kTpuChipsPerHostBoundsEnvVar[] =
     "TPU_CHIPS_PER_HOST_BOUNDS";  // Read by Google Cloud.
 inline constexpr char kTpuChipsPerProcessBoundsEnvVar[] =
@@ -258,7 +260,7 @@ inline constexpr char kXlaFlagsEnvVar[] = "XLA_FLAGS";
 inline constexpr auto kEnvVarToStage =
     MakeConstexprMap<std::string_view, std::optional<SymbolStage>>({
         // go/keep-sorted start
-        {kAcceleratorTypeEnvVar, SymbolStage::InternalImplementation()},
+        {kAcceleratorTypeEnvVar, SymbolStage::InternalApi()},
         {kAllowMultipleLibtpuLoadEnvVar, SymbolStage::InternalImplementation()},
         {kCloudTpuTaskIdEnvVar, SymbolStage::InternalImplementation()},
         {kJobCompletionIndexEnvVar, SymbolStage::InternalApi()},
@@ -334,6 +336,7 @@ inline constexpr auto kEnvVarToStage =
         {kTorchTraceEnvVar, SymbolStage::Experimental()},
         {kTorchcommRankEnvVar, SymbolStage::Experimental()},
         {kTorchcommSizeEnvVar, SymbolStage::Experimental()},
+        {kTpuAcceleratorTypeEnvVar, SymbolStage::InternalApi()},
         {kTpuChipsPerHostBoundsEnvVar, SymbolStage::InternalImplementation()},
         {kTpuChipsPerProcessBoundsEnvVar,
          SymbolStage::InternalImplementation()},

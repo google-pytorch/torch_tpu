@@ -20,6 +20,7 @@
 #include <sys/sysmacros.h>
 
 #include <cerrno>
+#include <cstddef>
 #include <fstream>
 #include <memory>
 #include <optional>
@@ -29,10 +30,12 @@
 
 #include "absl/algorithm/container.h"
 #include "absl/functional/function_ref.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/ascii.h"
 #include "absl/strings/match.h"
 #include "absl/strings/numbers.h"
 #include "absl/strings/str_cat.h"
+#include "csrc/common/error_utils.h"
 
 namespace torch_tpu {
 namespace {
@@ -191,6 +194,37 @@ bool HasTpuDeviceNodes(std::string_view dev_dir, std::string_view dev_borg_dir,
       [&](const int accel_major) {  // REF_CAPTURE_OK=called synchronously
         return absl::c_linear_search(*registered_majors, accel_major);
       });
+}
+
+absl::StatusOr<bool> IsMultiDevicePerChipAcceleratorType(
+    std::string_view accelerator_type) {
+  const size_t dash_pos = accelerator_type.find('-');
+  int device_count = 0;
+  if (dash_pos == std::string_view::npos || dash_pos == 0 ||
+      !absl::SimpleAtoi(accelerator_type.substr(dash_pos + 1), &device_count) ||
+      device_count <= 0) {
+    return TT_ERROR(error::kInvalidArgument)
+           << "expected accelerator type in format "
+              "'<generation>-<device_count>' (e.g., 'v4-8', 'v5litepod-4', "
+              "'v7x-8'), got '"
+           << accelerator_type << "'";
+  }
+  const std::string generation =
+      absl::AsciiStrToLower(accelerator_type.substr(0, dash_pos));
+  // TPU v7 (e.g. "v7x-8", "tpu7x-8") and TPU v8i (e.g. "v8i-8", "tpu8i-8")
+  // have 2 devices per chip without megacore.
+  if (generation == "v7" || generation == "v7x" || generation == "tpu7" ||
+      generation == "tpu7x" || generation == "v8i" || generation == "tpu8i") {
+    return true;
+  }
+  if (generation == "v4" || generation == "v5e" || generation == "v5litepod" ||
+      generation == "v5p" || generation == "v6e" || generation == "v8t" ||
+      generation == "tpu8t") {
+    return false;
+  }
+  return TT_ERROR(error::kInvalidArgument)
+         << "unrecognized TPU generation '" << generation
+         << "' in accelerator type '" << accelerator_type << "'";
 }
 
 }  // namespace torch_tpu

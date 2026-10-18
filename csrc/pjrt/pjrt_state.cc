@@ -248,9 +248,15 @@ absl::Status PjrtBackend::InitializeInternal() {
     device_type = PjRtDeviceType::kTpu;
     plugin_name = kTpuPjrtName;
 
-    if (const auto& world_size_or =
-            GetRequiredIntegerEnvOnce<int, kWorldSizeEnvVar>();
-        world_size_or.ok()) {
+    // When WORLD_SIZE is not set (or is 1), TorchTPU defaults to single-device
+    // mode.
+    const auto& world_size_or =
+        GetRequiredIntegerEnvOnce<int, kWorldSizeEnvVar>();
+    const bool single_device = !world_size_or.ok() || *world_size_or == 1;
+    if (single_device) {
+      TT_RETURN_IF_ERROR(InitializeSingleDeviceEnvironment()).SetPrepend()
+          << "failed to initialize single-device environment: ";
+    } else {
       TT_ASSIGN_OR_RETURN(auto config, GetDistributedWorkerConfiguration());
       TT_RETURN_IF_ERROR(InitializeDistributedEnvironment(config)).SetPrepend()
           << "failed to initialize distributed environment: ";

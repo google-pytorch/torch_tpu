@@ -22,6 +22,7 @@
 
 #include <cerrno>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <ios>
 #include <string>
@@ -29,13 +30,19 @@
 #include <vector>
 
 #include "absl/log/absl_check.h"
+#include "absl/status/status_matchers.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/types/span.h"
+#include "csrc/common/error_utils.h"
+#include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
 namespace torch_tpu {
 namespace {
+
+using absl_testing::IsOkAndHolds;
+using absl_testing::StatusIs;
 
 // Scoped temporary directory mimicking /dev (including /dev/vfio,
 // /dev/vfio/devices and /dev/accel), /dev_borg and /proc/devices.
@@ -352,6 +359,35 @@ TEST(HasTpuDeviceNodesTest, ReturnsTrueWhenDevDirCannotBeListed) {
   EXPECT_TRUE(HasTpuDeviceNodes(fake.dev_dir(), fake.dev_borg_dir(),
                                 fake.proc_devices()));
   ASSERT_EQ(chmod(fake.dev_dir().c_str(), 0700), 0);
+}
+
+TEST(IsMultiDevicePerChipAcceleratorTypeTest,
+     ReturnsFalseForSingleDevicePerChipGenerations) {
+  for (std::string_view type :
+       {"v4-8", "v5e-1", "v5litepod-4", "v5p-8", "v6e-8", "v8t-8", "tpu8t-8"}) {
+    EXPECT_THAT(IsMultiDevicePerChipAcceleratorType(type), IsOkAndHolds(false))
+        << type;
+  }
+}
+
+TEST(IsMultiDevicePerChipAcceleratorTypeTest,
+     ReturnsTrueForMultiDevicePerChipGenerations) {
+  for (std::string_view type :
+       {"v7-8", "v7x-8", "V7X-8", "tpu7-8", "tpu7x-16", "v8i-8", "tpu8i-8"}) {
+    EXPECT_THAT(IsMultiDevicePerChipAcceleratorType(type), IsOkAndHolds(true))
+        << type;
+  }
+}
+
+TEST(IsMultiDevicePerChipAcceleratorTypeTest,
+     RejectsMalformedAndUnrecognizedAcceleratorTypes) {
+  for (std::string_view type :
+       {"", "v7", "v7x", "v7x-", "-8", "v7x-0", "v7x--8", "v7x-abc", "invalid",
+        "v99-8", "unknown-4"}) {
+    EXPECT_THAT(IsMultiDevicePerChipAcceleratorType(type).status(),
+                StatusIs(error::kInvalidArgument))
+        << type;
+  }
 }
 
 }  // namespace

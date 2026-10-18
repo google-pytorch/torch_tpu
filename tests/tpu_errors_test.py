@@ -5034,6 +5034,19 @@ module {
     ):
       env.set_libtpu_version("0.2.0")
 
+  @et.why_tpu_only("TPU accelerator type format is TPU-specific.")
+  def test_invalid_tpu_accelerator_type(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""is_multi_device_per_chip_accelerator_type(): expected accelerator type in format '<generation>-<device_count>' (e.g., 'v4-8', 'v5litepod-4', 'v7x-8'), got 'v7x'""",
+    ):
+      tt_testing.is_multi_device_per_chip_accelerator_type("v7x")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""is_multi_device_per_chip_accelerator_type(): unrecognized TPU generation 'v99' in accelerator type 'v99-8'""",
+    ):
+      tt_testing.is_multi_device_per_chip_accelerator_type("v99-8")
+
   @et.why_tpu_only("TorchTPU specific export mode generator error.")
   def test_set_export_mode_default_device_generator_invalid_device(self):
     expected_msg = re.compile(

@@ -470,11 +470,25 @@ TEST(EnvironmentDeathTest,
      InitSingleDevEnv_RespectsExistingSingleTpuVisibleDevicesEnvVar) {
   EXPECT_EXIT(
       {
+        unsetenv(kAllowMultipleLibtpuLoadEnvVar);
+        unsetenv(kTpuAcceleratorTypeEnvVar);
+        unsetenv(kAcceleratorTypeEnvVar);
+        unsetenv(kTorchTpuTopologyEnvVar);
+        unsetenv(kTpuHostBoundsEnvVar);
+        unsetenv(kTpuChipsPerHostBoundsEnvVar);
+        unsetenv(kTpuProcessBoundsEnvVar);
+        unsetenv(kTpuChipsPerProcessBoundsEnvVar);
         setenv(kTpuVisibleDevicesEnvVar, "3", 1);
         EXPECT_TRUE(InitializeSingleDeviceEnvironment().ok());
         EXPECT_STREQ(std::getenv(kTpuVisibleDevicesEnvVar), "3");
         EXPECT_STREQ(std::getenv(kTpuVisibleChipsEnvVar), "3");
-        _exit(0);
+        EXPECT_EQ(std::getenv(kTorchTpuTopologyEnvVar), nullptr);
+        EXPECT_STREQ(std::getenv(kTpuHostBoundsEnvVar), "1,1,1");
+        EXPECT_STREQ(std::getenv(kTpuChipsPerHostBoundsEnvVar), "1,1,1");
+        EXPECT_STREQ(std::getenv(kTpuProcessBoundsEnvVar), "1,1,1");
+        EXPECT_STREQ(std::getenv(kTpuChipsPerProcessBoundsEnvVar), "1,1,1");
+        EXPECT_STREQ(std::getenv(kAllowMultipleLibtpuLoadEnvVar), "1");
+        _exit(testing::Test::HasFailure() ? 1 : 0);
       },
       ExitedWithCode(0), "");
 }
@@ -483,11 +497,18 @@ TEST(EnvironmentDeathTest,
      InitSingleDevEnv_OverwritesMultiDeviceTpuVisibleDevicesEnvVar) {
   EXPECT_EXIT(
       {
+        unsetenv(kTpuAcceleratorTypeEnvVar);
+        unsetenv(kAcceleratorTypeEnvVar);
         setenv(kTpuVisibleDevicesEnvVar, "0,1", 1);
         EXPECT_TRUE(InitializeSingleDeviceEnvironment().ok());
         EXPECT_STREQ(std::getenv(kTpuVisibleDevicesEnvVar), "0");
         EXPECT_STREQ(std::getenv(kTpuVisibleChipsEnvVar), "0");
-        _exit(0);
+        EXPECT_STREQ(std::getenv(kTpuHostBoundsEnvVar), "1,1,1");
+        EXPECT_STREQ(std::getenv(kTpuChipsPerHostBoundsEnvVar), "1,1,1");
+        EXPECT_STREQ(std::getenv(kTpuProcessBoundsEnvVar), "1,1,1");
+        EXPECT_STREQ(std::getenv(kTpuChipsPerProcessBoundsEnvVar), "1,1,1");
+        EXPECT_STREQ(std::getenv(kAllowMultipleLibtpuLoadEnvVar), "1");
+        _exit(testing::Test::HasFailure() ? 1 : 0);
       },
       ExitedWithCode(0), "");
 }
@@ -500,7 +521,7 @@ TEST(EnvironmentDeathTest,
         EXPECT_TRUE(InitializeSingleDeviceEnvironment().ok());
         EXPECT_STREQ(std::getenv(kTpuVisibleDevicesEnvVar), "0");
         EXPECT_STREQ(std::getenv(kTpuVisibleChipsEnvVar), "0");
-        _exit(0);
+        _exit(testing::Test::HasFailure() ? 1 : 0);
       },
       ExitedWithCode(0), "");
 }
@@ -509,12 +530,82 @@ TEST(EnvironmentDeathTest,
      InitSingleDevEnv_OverwritesExistingTpuVisibleChipsEnvVar) {
   EXPECT_EXIT(
       {
+        unsetenv(kAllowMultipleLibtpuLoadEnvVar);
+        unsetenv(kTpuAcceleratorTypeEnvVar);
+        unsetenv(kAcceleratorTypeEnvVar);
+        unsetenv(kTorchTpuTopologyEnvVar);
+        unsetenv(kTpuHostBoundsEnvVar);
+        unsetenv(kTpuChipsPerHostBoundsEnvVar);
+        unsetenv(kTpuProcessBoundsEnvVar);
+        unsetenv(kTpuChipsPerProcessBoundsEnvVar);
         setenv(kTpuVisibleChipsEnvVar, "2", 1);
         unsetenv(kTpuVisibleDevicesEnvVar);
         EXPECT_TRUE(InitializeSingleDeviceEnvironment().ok());
         EXPECT_STREQ(std::getenv(kTpuVisibleDevicesEnvVar), "0");
         EXPECT_STREQ(std::getenv(kTpuVisibleChipsEnvVar), "0");
-        _exit(0);
+        EXPECT_EQ(std::getenv(kTorchTpuTopologyEnvVar), nullptr);
+        EXPECT_STREQ(std::getenv(kTpuHostBoundsEnvVar), "1,1,1");
+        EXPECT_STREQ(std::getenv(kTpuChipsPerHostBoundsEnvVar), "1,1,1");
+        EXPECT_STREQ(std::getenv(kTpuProcessBoundsEnvVar), "1,1,1");
+        EXPECT_STREQ(std::getenv(kTpuChipsPerProcessBoundsEnvVar), "1,1,1");
+        EXPECT_STREQ(std::getenv(kAllowMultipleLibtpuLoadEnvVar), "1");
+        _exit(testing::Test::HasFailure() ? 1 : 0);
+      },
+      ExitedWithCode(0), "");
+}
+
+TEST(EnvironmentDeathTest,
+     InitSingleDevEnv_Sets4DBoundsForMultiDevicePerChipAcceleratorType) {
+  EXPECT_EXIT(
+      {
+        unsetenv(kAcceleratorTypeEnvVar);
+        setenv(kTpuAcceleratorTypeEnvVar, "tpu7x-8", 1);
+        EXPECT_TRUE(InitializeSingleDeviceEnvironment().ok());
+        EXPECT_STREQ(std::getenv(kTpuHostBoundsEnvVar), "1,1,1,1");
+        EXPECT_STREQ(std::getenv(kTpuChipsPerHostBoundsEnvVar), "1,1,1,1");
+        EXPECT_STREQ(std::getenv(kTpuProcessBoundsEnvVar), "1,1,1,1");
+        EXPECT_STREQ(std::getenv(kTpuChipsPerProcessBoundsEnvVar), "1,1,1,1");
+        _exit(testing::Test::HasFailure() ? 1 : 0);
+      },
+      ExitedWithCode(0), "");
+  EXPECT_EXIT(
+      {
+        unsetenv(kTpuAcceleratorTypeEnvVar);
+        setenv(kAcceleratorTypeEnvVar, "tpu8i-8", 1);
+        EXPECT_TRUE(InitializeSingleDeviceEnvironment().ok());
+        EXPECT_STREQ(std::getenv(kTpuHostBoundsEnvVar), "1,1,1,1");
+        EXPECT_STREQ(std::getenv(kTpuChipsPerHostBoundsEnvVar), "1,1,1,1");
+        EXPECT_STREQ(std::getenv(kTpuProcessBoundsEnvVar), "1,1,1,1");
+        EXPECT_STREQ(std::getenv(kTpuChipsPerProcessBoundsEnvVar), "1,1,1,1");
+        _exit(testing::Test::HasFailure() ? 1 : 0);
+      },
+      ExitedWithCode(0), "");
+  EXPECT_EXIT(
+      {
+        setenv(kTpuAcceleratorTypeEnvVar, "v6e-8", 1);
+        setenv(kAcceleratorTypeEnvVar, "tpu7x-8", 1);
+        EXPECT_TRUE(InitializeSingleDeviceEnvironment().ok());
+        EXPECT_STREQ(std::getenv(kTpuHostBoundsEnvVar), "1,1,1");
+        EXPECT_STREQ(std::getenv(kTpuChipsPerHostBoundsEnvVar), "1,1,1");
+        EXPECT_STREQ(std::getenv(kTpuProcessBoundsEnvVar), "1,1,1");
+        EXPECT_STREQ(std::getenv(kTpuChipsPerProcessBoundsEnvVar), "1,1,1");
+        _exit(testing::Test::HasFailure() ? 1 : 0);
+      },
+      ExitedWithCode(0), "");
+  EXPECT_EXIT(
+      {
+        unsetenv(kAcceleratorTypeEnvVar);
+        setenv(kTpuAcceleratorTypeEnvVar, "invalid_type", 1);
+        EXPECT_FALSE(InitializeSingleDeviceEnvironment().ok());
+        _exit(testing::Test::HasFailure() ? 1 : 0);
+      },
+      ExitedWithCode(0), "");
+  EXPECT_EXIT(
+      {
+        unsetenv(kAcceleratorTypeEnvVar);
+        setenv(kTpuAcceleratorTypeEnvVar, "v99-8", 1);
+        EXPECT_FALSE(InitializeSingleDeviceEnvironment().ok());
+        _exit(testing::Test::HasFailure() ? 1 : 0);
       },
       ExitedWithCode(0), "");
 }
