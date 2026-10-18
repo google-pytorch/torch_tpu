@@ -523,6 +523,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kEqual>(m, AtenEqual);
   ImplStable<OpName::kErfInvOut>(m, AtenErfInvOut);
   ImplStable<OpName::kErfOut>(m, AtenErfOut);
+  ImplStable<OpName::kEuclideanDist>(m, AtenEuclideanDist);
   ImplStable<OpName::kExp2Out>(m, AtenExp2Out);
   ImplStable<OpName::kExpM1Out>(m, AtenExpm1Out);
   ImplStable<OpName::kExpOut>(m, AtenExpOut);
@@ -1251,6 +1252,7 @@ TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
   ImplStable<OpName::kCtcLossPublic>(m, AtenCtcLossPublicAutograd);
   ImplStable<OpName::kCtcLossPublicTensor>(m, AtenCtcLossPublicTensorAutograd);
   ImplStable<OpName::kEinsum>(m, AtenEinsumAutograd);
+  ImplStable<OpName::kEuclideanDist>(m, AtenEuclideanDist);
   ImplStable<OpName::kFftFft>(m, AtenFftFft);
   ImplStable<OpName::kFftFftOut>(m, AtenFftFftOut);
   ImplStable<OpName::kFftIfft>(m, AtenFftIfft);

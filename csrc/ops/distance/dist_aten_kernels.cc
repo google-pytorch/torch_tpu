@@ -23,6 +23,7 @@
 #include <utility>
 
 #include "ATen/core/TensorBody.h"
+#include "ATen/ops/_cdist_forward.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
@@ -39,7 +40,6 @@
 #include "csrc/ops/index_select/index_select.h"
 #include "csrc/ops/linalg/vector_norm/pnorm.h"
 #include "csrc/ops/macros/kernel.h"
-#include "csrc/ops/nullary_aten_kernels.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/reductions/reductions.h"
@@ -417,9 +417,15 @@ absl::StatusOr<mlir::MlirOp> BuildCdistBackwardShlo(
     mlir::MlirOp grad_op, mlir::MlirOp x1_op, mlir::MlirOp x2_op, double p,
     mlir::MlirOp cdist_op, const Dimensions common_batch_shape, int64_t r1,
     int64_t r2, int64_t c) {
+  TT_ASSIGN_OR_RETURN(mlir::ElementType out_type, GetElementType(x1_op));
+  TT_ASSIGN_OR_RETURN(mlir::ElementType compute_dtype,
+                      InferComputationDtype(out_type));
+  TT_ASSIGN_OR_RETURN(grad_op, CastIfNeeded(grad_op, compute_dtype));
+  TT_ASSIGN_OR_RETURN(x1_op, CastIfNeeded(x1_op, compute_dtype));
+  TT_ASSIGN_OR_RETURN(x2_op, CastIfNeeded(x2_op, compute_dtype));
+  TT_ASSIGN_OR_RETURN(cdist_op, CastIfNeeded(cdist_op, compute_dtype));
   const mlir::RankedTensorType x1_type = GetTensorTypeOrDie(x1_op);
   const mlir::Type element_type = x1_type.getElementType();
-  TT_ASSIGN_OR_RETURN(mlir::ElementType out_type, GetElementType(x1_op));
   mlir::MlirBuilder& builder = x1_op.getBuilder();
 
   const int64_t common_batch_rank = common_batch_shape.size();
@@ -455,7 +461,7 @@ absl::StatusOr<mlir::MlirOp> BuildCdistBackwardShlo(
   mlir::MlirOp unreduced_grad;
   if (p == 0.0) {
     // Case 1: p = 0.0 (Hamming distance gradient is 0.0)
-    auto zero = MakeScalarConstant(builder, 0.0, out_type);
+    auto zero = MakeScalarConstant(builder, 0.0, compute_dtype);
     unreduced_grad = mlir::stablehlo::BroadcastInDim(bcast_type, zero, {});
   } else if (p == 1.0) {
     // Case 2: p = 1.0 (Manhattan distance, gradient: grad * sign(diff))
@@ -465,9 +471,9 @@ absl::StatusOr<mlir::MlirOp> BuildCdistBackwardShlo(
     // Case 3: p = 2.0 (Euclidean distance, gradient: grad * diff / cdist)
     // Replace cdist with 1.0 where cdist is 0.0 to avoid division-by-zero,
     // then mask those positions to 0.0.
-    auto zero = MakeScalarConstant(builder, 0.0, out_type);
+    auto zero = MakeScalarConstant(builder, 0.0, compute_dtype);
     auto zero_bcast = mlir::stablehlo::BroadcastInDim(bcast_type, zero, {});
-    auto one = MakeScalarConstant(builder, 1.0, out_type);
+    auto one = MakeScalarConstant(builder, 1.0, compute_dtype);
     auto one_bcast = mlir::stablehlo::BroadcastInDim(bcast_type, one, {});
     auto cdist_is_zero = mlir::stablehlo::Compare(
         cdist_bcast, zero_bcast, mlir::stablehlo::ComparisonDirection::EQ);
@@ -491,9 +497,9 @@ absl::StatusOr<mlir::MlirOp> BuildCdistBackwardShlo(
     // Case 5: General p (Minkowski distance)
     // Gradient: sign(diff) * |diff|^(p-1) * grad / cdist^(p-1)
     // Use safety condition to mask division-by-zero positions to 0.0.
-    auto zero = MakeScalarConstant(builder, 0.0, out_type);
+    auto zero = MakeScalarConstant(builder, 0.0, compute_dtype);
     auto zero_bcast = mlir::stablehlo::BroadcastInDim(bcast_type, zero, {});
-    auto one = MakeScalarConstant(builder, 1.0, out_type);
+    auto one = MakeScalarConstant(builder, 1.0, compute_dtype);
     auto one_bcast = mlir::stablehlo::BroadcastInDim(bcast_type, one, {});
 
     auto cdist_is_zero = mlir::stablehlo::Compare(
@@ -507,7 +513,7 @@ absl::StatusOr<mlir::MlirOp> BuildCdistBackwardShlo(
       cond = mlir::stablehlo::Or(cdist_is_zero, diff_is_zero);
     }
 
-    auto p_minus_1 = MakeScalarConstant(builder, p - 1.0, out_type);
+    auto p_minus_1 = MakeScalarConstant(builder, p - 1.0, compute_dtype);
     auto p_minus_1_bcast =
         mlir::stablehlo::BroadcastInDim(bcast_type, p_minus_1, {});
 
@@ -529,7 +535,7 @@ absl::StatusOr<mlir::MlirOp> BuildCdistBackwardShlo(
   }
 
   // Reduce sum over R2 (dimension common_batch_rank + 1)
-  auto zero = MakeScalarConstant(builder, 0.0, out_type);
+  auto zero = MakeScalarConstant(builder, 0.0, compute_dtype);
   auto reduce_op = mlir::stablehlo::Reduce(
       builder,
       /*inputs=*/{unreduced_grad},
@@ -542,7 +548,7 @@ absl::StatusOr<mlir::MlirOp> BuildCdistBackwardShlo(
 
       /*dimensions=*/{common_batch_rank + 1});
 
-  return reduce_op[0];
+  return CastIfNeeded(reduce_op[0], out_type);
 }
 
 bool IsBFloatOrHalf(const at::Tensor& tensor) {
@@ -605,9 +611,12 @@ at::Tensor AtenCdistForward(const at::Tensor& x1, const at::Tensor& x2,
     }
 
     // Add check for bf16 and float16 after the empty dimension check,
-    // because they are supported for empty tensors but not for non-empty ones.
-    TT_THROW_IF_ERROR(ValidateNotBFloatOrHalf(x1, "first argument's"));
-    TT_THROW_IF_ERROR(ValidateNotBFloatOrHalf(x2, "second argument's"));
+    // because they are supported for empty tensors and for Euclidean distance
+    // with compute_mode == 1 (_euclidean_dist delegation).
+    if (p != 2.0 || mode != 1) {
+      TT_THROW_IF_ERROR(ValidateNotBFloatOrHalf(x1, "first argument's"));
+      TT_THROW_IF_ERROR(ValidateNotBFloatOrHalf(x2, "second argument's"));
+    }
 
     auto op_builder = [p, mode, common_batch_shape, r1, r2,
                        c](FixedSizeSpan<mlir::MlirOp, 2> inputs)
@@ -663,8 +672,10 @@ at::Tensor AtenCdistBackward(const at::Tensor& grad, const at::Tensor& x1,
       }
     }
 
-    TT_THROW_IF_ERROR(ValidateNotBFloatOrHalf(x1, "first argument's"));
-    TT_THROW_IF_ERROR(ValidateNotBFloatOrHalf(x2, "second argument's"));
+    if (p != 2.0) {
+      TT_THROW_IF_ERROR(ValidateNotBFloatOrHalf(x1, "first argument's"));
+      TT_THROW_IF_ERROR(ValidateNotBFloatOrHalf(x2, "second argument's"));
+    }
 
     auto op_builder = [p, common_batch_shape, r1, r2,
                        c](FixedSizeSpan<mlir::MlirOp, 4> inputs)
@@ -683,6 +694,10 @@ at::Tensor AtenCdistBackward(const at::Tensor& grad, const at::Tensor& x1,
 
     return MakeTensor(std::move(result_buf));
   });
+}
+
+at::Tensor AtenEuclideanDist(const at::Tensor& x1, const at::Tensor& x2) {
+  return at::_cdist_forward(x1, x2, /*p=*/2.0, /*compute_mode=*/1);
 }
 
 at::Tensor AtenPdistForward(const at::Tensor& self, double p) {

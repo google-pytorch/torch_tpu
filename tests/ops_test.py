@@ -912,11 +912,6 @@ ACCURACY_OVERRIDES_GRAD_VS_GPU: dict[
             torch.float16: {"rtol": 2.3e-3},
             torch.float32: {"rtol": 1.2e-3, "atol": 1.1},
         },
-        "cdist": {
-            torch.bfloat16: {"rtol": 1.3e-1, "atol": 3.8e-1},
-            torch.float16: {"rtol": 5e-1, "atol": 2.3e-1},
-            torch.float32: {"rtol": 2.4, "atol": 6.9e-1},
-        },
         "clamp": {
             torch.bfloat16: {"atol": 0.6},
             torch.float16: {"atol": 0.6},

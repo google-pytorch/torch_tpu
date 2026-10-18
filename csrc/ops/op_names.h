@@ -218,6 +218,7 @@ enum class OpName {
   kEqual,
   kErfInvOut,
   kErfOut,
+  kEuclideanDist,
   kExp2Out,
   kExpM1Out,
   kExpOut,
@@ -1279,6 +1280,8 @@ ToString(  // NOLINT(google-readability-function-size)
       return "erfinv.out";
     case OpName::kErfOut:
       return "erf.out";
+    case OpName::kEuclideanDist:
+      return "_euclidean_dist";
     case OpName::kExp2Out:
       return "exp2.out";
     case OpName::kExpM1Out:
