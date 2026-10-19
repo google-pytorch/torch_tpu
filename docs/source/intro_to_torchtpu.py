@@ -93,7 +93,7 @@ def _(mo):
     * Dynamic Shapes cause recompilations
       * `torch.compile` sets `dynamic=False` by default on TorchTPU. `dynamic=None` or `dynamic=True` are not yet supported for production. [See discussion on dynamic shapes](./dynamic_shapes.md)
       * As example, running decode/generate step on Hugging Face LLMs will involve recompilations at each step unless bounded dynamism is enabled.
-    * View ops may be expensive on TPU (see [TorchTPU memory model](./torchtpu_memory_model.md)
+    * View ops may be expensive on TPU (see [TorchTPU memory model](./torchtpu_memory_model.md))
     * MPMD with collectives is supported for functionality, but it will not reach peak performance yet. Collective overlap with compute has [some constraints](./distributed_support.md):
       * Full stream support with SparseCore offload will come in the near future.
       * Use SimpleFSDP with `torch.compile()` as opposed to FSDPv2 with eager or `torch.compile` see [FSDP best practices](./case_studies_fsdp.md)

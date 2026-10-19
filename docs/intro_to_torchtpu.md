@@ -127,7 +127,7 @@ and [torchtpu-feedback@google.com](mailto:torchtpu-feedback@google.com).
     *   As example, running decode/generate step on Hugging Face LLMs will
         involve recompilations at each step unless bounded dynamism is enabled.
 *   View ops may be expensive on TPU (see
-    [TorchTPU memory model](./torchtpu_memory_model.md)
+    [TorchTPU memory model](./torchtpu_memory_model.md))
 *   MPMD with collectives is supported for functionality, but it will not reach
     peak performance yet. Collective overlap with compute has
     [some constraints](./distributed_support.md):
