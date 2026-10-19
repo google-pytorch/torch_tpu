@@ -29,6 +29,41 @@ package(
 )
 
 torch_tpu_cc_library(
+    name = "sink_3d_head_split_and_flatten_layernorm",
+    srcs = ["sink_3d_head_split_and_flatten_layernorm.cc"],
+    hdrs = ["sink_3d_head_split_and_flatten_layernorm.h"],
+    deps = [
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:SideEffectInterfaces",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:chlo_ops",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "sink_3d_head_split_and_flatten_layernorm_test",
+    srcs = ["sink_3d_head_split_and_flatten_layernorm_test.cc"],
+    deps = [
+        ":sink_3d_head_split_and_flatten_layernorm",
+        "//csrc/common:oss_test_main",
+        "//csrc/mlir:pipeline",
+        "@com_google_absl//absl/status:status_matchers",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Parser",
+        "@stablehlo//:reference_api",
+        "@stablehlo//:reference_configuration",
+        "@stablehlo//:register",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "dummy_pass",
     srcs = ["dummy_pass.cc"],
     hdrs = ["dummy_pass.h"],
