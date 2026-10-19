@@ -46,6 +46,20 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "profiler_impl_errors_test",
+    srcs = ["profiler_impl_errors_test.py"],
+    main = "profiler_impl_errors_test.py",
+    tags = ["nosan"],  # *san builds are low-value for error tests.
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/profiler",
+        "//tests:seed_test_utils",
+        "@pypi//portpicker",
+    ],
+)
+
+torch_tpu_py_test(
     name = "profiler_api_test",
     srcs = ["profiler_api_test.py"],
     main = "profiler_api_test.py",
@@ -67,12 +81,39 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "profiler_api_errors_test",
+    srcs = ["profiler_api_errors_test.py"],
+    main = "profiler_api_errors_test.py",
+    tags = ["nosan"],  # *san builds are low-value for error tests.
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/profiler",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "profiler_backend_test",
     srcs = ["profiler_backend_test.py"],
     main = "profiler_backend_test.py",
     tags = [
         "requires-tpu-v5lite",
     ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/profiler",
+        "//tests:seed_test_utils",
+        "@pypi//portpicker",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "profiler_backend_errors_test",
+    srcs = ["profiler_backend_errors_test.py"],
+    main = "profiler_backend_errors_test.py",
+    tags = ["nosan"],  # *san builds are low-value for error tests.
     deps = [
         "//shims/absl_py/testing:absltest",
         "//src/torch_tpu",
@@ -147,6 +188,25 @@ torch_tpu_py_test(
         "//tests:seed_test_utils",
         "@tsl//tsl/profiler/protobuf:profiler_options_proto_py_proto",
         "@tsl//tsl/profiler/protobuf:xplane_proto_py_proto",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "profiler_integration_errors_test",
+    timeout = "long",
+    srcs = ["profiler_integration_errors_test.py"],
+    main = "profiler_integration_errors_test.py",
+    tags = [
+        "nosan",  # *san builds are low-value for error tests.
+        "requires-tpu-v5lite",
+    ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/profiler:profiler_config",
+        "//tests:seed_test_utils",
     ],
 )
 
