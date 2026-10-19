@@ -26,7 +26,6 @@
 #include "c10/core/ScalarType.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
-#include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
@@ -117,10 +116,6 @@ absl::Status Addmv(const at::Tensor& self, const at::Tensor& mat,
                       ConvertTo<mlir::ElementType>(out.scalar_type()));
 
   const auto precision = GetAndAddPrecisionTo(param_keys);
-  Dimensions result_shape = {mat.size(0)};
-  DispatchOpOptions<1> options = {.out_dtype = out_dtype,
-                                  .out_dims = result_shape,
-                                  .op_param_cache_keys = std::move(param_keys)};
 
   // If beta is zero, the content of self is not used, so we can skip it.
   // Because beta is zero, PyTorch will pass an uninitialized tensor to self as
@@ -136,7 +131,10 @@ absl::Status Addmv(const at::Tensor& self, const at::Tensor& mat,
                                     precision);
     };
     return DispatchOpOut<3>(std::move(op_builder), {mat, vec, alpha_tensor},
-                            out, std::move(options));
+                            out,
+                            {.out_dtype = out_dtype,
+                             .out_dims = {mat.size(0)},
+                             .op_param_cache_keys = std::move(param_keys)});
   }
 
   auto op_builder = [out_dtype,
@@ -149,7 +147,9 @@ absl::Status Addmv(const at::Tensor& self, const at::Tensor& mat,
   TT_ASSIGN_OR_RETURN(auto beta_tensor, beta.GetTensor(out.scalar_type()));
   return DispatchOpOut<5>(std::move(op_builder),
                           {self, mat, vec, beta_tensor, alpha_tensor}, out,
-                          std::move(options));
+                          {.out_dtype = out_dtype,
+                           .out_dims = {mat.size(0)},
+                           .op_param_cache_keys = std::move(param_keys)});
 }
 
 absl::Status ValidateAddmvInputs(const at::Tensor& self, const at::Tensor& mat,
