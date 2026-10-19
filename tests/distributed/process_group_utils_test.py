@@ -127,16 +127,6 @@ class ProcessGroupUtilsTest(seed_test_utils.RepeatableTest):
     self.assertIsNone(process_group_utils._get_collective_op(x))
     self.assertIsNone(process_group_utils._get_collective_op(node_add))
 
-  def test_extract_process_group_id_non_collective_op_raises(self) -> None:
-    graph = torch.fx.Graph()
-    x = graph.placeholder("x")
-    node = graph.call_function(operator.add, args=(x, x))
-    with self.assertRaisesRegex(
-        ValueError,
-        "expected node target to be in .* torch_tpu bug",
-    ):
-      process_group_utils._extract_process_group_id_from_node(node)
-
   def test_extract_process_group_id_from_kwargs_group_name(self) -> None:
     graph = torch.fx.Graph()
     x = graph.placeholder("x")
@@ -203,38 +193,6 @@ class ProcessGroupUtilsTest(seed_test_utils.RepeatableTest):
             pg_id, ProcessGroupId(range(self.world_size), self.world_size)
         )
 
-  def test_extract_process_group_id_empty_ranks_raises(self) -> None:
-    graph = torch.fx.Graph()
-    x = graph.placeholder("x")
-    node = graph.call_function(
-        torch.ops._c10d_functional.all_reduce,
-        args=(x, "sum", []),
-    )
-    with self.assertRaisesRegex(ValueError, "ranks cannot be empty"):
-      process_group_utils._extract_process_group_id_from_node(node)
-
-  def test_extract_process_group_id_missing_group_raises(self) -> None:
-    graph = torch.fx.Graph()
-    x = graph.placeholder("x")
-    node = graph.call_function(
-        torch.ops._c10d_functional.all_reduce,
-        args=(x, "sum"),
-    )
-    with self.assertRaisesRegex(
-        ValueError, "Could not infer process group argument"
-    ):
-      process_group_utils._extract_process_group_id_from_node(node)
-
-  def test_extract_process_group_id_unsupported_group_type_raises(self) -> None:
-    graph = torch.fx.Graph()
-    x = graph.placeholder("x")
-    node = graph.call_function(
-        torch.ops._c10d_functional.all_reduce,
-        args=(x, "sum", 3.14),
-    )
-    with self.assertRaisesRegex(ValueError, "Unsupported process group type"):
-      process_group_utils._extract_process_group_id_from_node(node)
-
   def test_extract_process_group_id_str(self) -> None:
     graph = torch.fx.Graph()
     x = graph.placeholder("x")
@@ -246,27 +204,6 @@ class ProcessGroupUtilsTest(seed_test_utils.RepeatableTest):
     self.assertEqual(
         pg_id, ProcessGroupId(range(self.world_size), self.world_size)
     )
-
-  def test_extract_process_group_id_uninitialized_dist_raises(self) -> None:
-    dist.destroy_process_group()
-    graph = torch.fx.Graph()
-    x = graph.placeholder("x")
-    node_str = graph.call_function(
-        torch.ops._c10d_functional.all_reduce,
-        args=(x, "sum", "0"),
-    )
-    node_int = graph.call_function(
-        torch.ops._c10d_functional.all_reduce,
-        args=(x, "sum", 0),
-    )
-    with self.assertRaisesRegex(
-        RuntimeError, "Could not resolve the process group"
-    ):
-      process_group_utils._extract_process_group_id_from_node(node_str)
-    with self.assertRaisesRegex(
-        RuntimeError, "Could not resolve the process group"
-    ):
-      process_group_utils._extract_process_group_id_from_node(node_int)
 
   def test_get_num_collectives_per_pg_empty_graph(self) -> None:
     class EmptyModule(torch.nn.Module):
@@ -330,46 +267,6 @@ class ProcessGroupIdTest(seed_test_utils.RepeatableTest):
     pg = ProcessGroupId([0, 2, 3], world_size=4)
     self.assertEqual(pg.ranks, (0, 2, 3))
     self.assertEqual(pg.world_size, 4)
-
-  def test_empty_ranks_raises_value_error(self) -> None:
-    with self.assertRaisesRegex(ValueError, "ranks cannot be empty"):
-      ProcessGroupId([])
-
-  def test_negative_rank_raises_value_error(self) -> None:
-    with self.assertRaisesRegex(ValueError, "All ranks must be non-negative"):
-      ProcessGroupId([-1, 0])
-
-  def test_invalid_world_size_raises_value_error(self) -> None:
-    with self.assertRaisesRegex(
-        ValueError, "world_size must be strictly positive"
-    ):
-      ProcessGroupId([0, 1], world_size=0)
-    with self.assertRaisesRegex(
-        ValueError, "world_size must be strictly positive"
-    ):
-      ProcessGroupId([0, 1], world_size=-2)
-
-  def test_rank_out_of_world_size_raises_value_error(self) -> None:
-    with self.assertRaisesRegex(ValueError, r"All ranks must be in \[0, 4\)"):
-      ProcessGroupId([0, 4], world_size=4)
-    with self.assertRaisesRegex(ValueError, r"All ranks must be in \[0, 2\)"):
-      ProcessGroupId([0, 2], world_size=2)
-
-  def test_duplicate_ranks_raises_value_error(self) -> None:
-    with self.assertRaisesRegex(
-        ValueError, "ranks must not contain duplicates"
-    ):
-      ProcessGroupId([0, 1, 1])
-
-  def test_unsorted_ranks_raises_value_error(self) -> None:
-    with self.assertRaisesRegex(
-        ValueError, "ranks must be sorted in ascending order"
-    ):
-      ProcessGroupId([1, 0])
-    with self.assertRaisesRegex(
-        ValueError, "ranks must be sorted in ascending order"
-    ):
-      ProcessGroupId([0, 3, 2])
 
   def test_hash_and_equality(self) -> None:
     pg1 = ProcessGroupId([0, 1])

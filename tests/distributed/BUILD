@@ -262,6 +262,25 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "torchcomm_tpu_errors_test",
+    srcs = ["torchcomm_tpu_errors_test.py"],
+    nobuild_oss = True,  # NOBUILD_OSS_OK=torchcomms is not yet available in OSS
+    tags = [
+        "nosan",  # *san builds are low-value for error tests.
+    ],
+    deps = if_oss(
+        [],
+        ["@pypi//torchcomms"],
+    ) + [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/distributed:torchcomm_tpu",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "torchcomm_multi_tpu_test",
     srcs = ["torchcomm_multi_tpu_test.py"],
     nobuild_oss = True,  # NOBUILD_OSS_OK=torchcomms is not yet available in OSS
@@ -796,6 +815,52 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "uneven_sharding_errors_test",
+    timeout = "long",
+    srcs = ["uneven_sharding_errors_test.py"],
+    args = if_oss(
+        [],
+        [
+            "--xla_tpu_collect_sflag_wait_stats_trace=true",
+            "--xla_tpu_debug_sflag_wait_shalt_on_detection=true",
+            "--xla_tpu_debug_sc_sflag_wait_timeout_ms=10000",
+            "--xla_tpu_debug_sflag_wait_timeout_ms=10000",
+        ],
+    ),
+    env = if_oss(
+        {
+            "LIBTPU_INIT_ARGS": " ".join([
+                "--undefok=xla_tpu_debug_sc_sflag_wait_timeout_ms",
+                "--xla_tpu_collect_sflag_wait_stats_trace=true",
+                "--xla_tpu_debug_sflag_wait_shalt_on_detection=true",
+                "--xla_tpu_debug_sc_sflag_wait_timeout_ms=10000",
+                "--xla_tpu_debug_sflag_wait_timeout_ms=10000",
+            ]),
+            "TORCH_DISABLE_ADDR2LINE": "1",
+        },
+        {},
+    ),
+    shard_count = 4,
+    tags = if_oss(
+        ["exclusive"],
+        [],
+    ) + [
+        "nosan",  # *san builds are low-value for error tests.
+        "requires-tpu-v5lite:8",
+    ],
+    deps = [
+        ":distributed_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/utils:test_utils",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "fairscale_tp_test",
     srcs = ["fairscale_tp_test.py"],
     # TODO(b/549484939): Clean this up once we switch to dynamically linked libtpu.
@@ -1131,6 +1196,21 @@ torch_tpu_py_test(
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/distributed:process_group_utils",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "process_group_utils_errors_test",
+    srcs = ["process_group_utils_errors_test.py"],
+    tags = [
+        "nosan",  # *san builds are low-value for error tests.
+    ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:process_group_utils",

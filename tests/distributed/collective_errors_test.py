@@ -44,7 +44,6 @@ from tests import error_testing as et
 from tests.distributed import continuous_test_utils
 from tests.distributed import distributed_utils
 
-
 _UNSUPPORTED_64BIT_REDUCE_OPS = (
     (
         torch.int64,
@@ -577,8 +576,42 @@ def run_scatter_mismatch_input_shapes() -> None:
   # Intentionally do NOT call scatter on non-root ranks.
 
 
+def run_barrier_rejects_foreign_device_ids() -> None:
+  """Tests barrier rejects device ids this process does not own."""
+  # A process addresses a single TPU, so only [0] is meaningful. When the first
+  # device id is out of bounds (e.g. [1]), c10d::ProcessGroup::barrier fails
+  # while allocating the dispatch tensor on tpu:1. When the first id is 0 but
+  # multiple ids are given, ProcessGroupTpu::barrier rejects device_ids.
+  for device_ids, exc_type, msg_regex in (
+      (
+          [1],
+          RuntimeError,
+          r"device index 1 is out of bounds of the number of addressable"
+          r" devices 1",
+      ),
+      (
+          [0, 0],
+          NotImplementedError,
+          r"device_ids in barrier options is not supported, except "
+          r"device_ids=\[0\] which names this process's own device",
+      ),
+      (
+          [0, 1],
+          NotImplementedError,
+          r"device_ids in barrier options is not supported, except "
+          r"device_ids=\[0\] which names this process's own device",
+      ),
+  ):
+    with et.assert_raises_message(
+        exc_type,
+        tpu=re.compile(f".*{msg_regex}.*", re.DOTALL),
+    ):
+      torch.distributed.barrier(device_ids=device_ids)
+
+
 def run_collective_validation_errors() -> None:
   """Runs synchronous collective input validation error checks."""
+  run_barrier_rejects_foreign_device_ids()
   run_all_reduce_error()
   run_all_gather_tensor_wrong_number_output_dimensions()
   run_all_gather_tensor_wrong_concat_dimension()
