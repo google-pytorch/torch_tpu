@@ -17,12 +17,18 @@
 import collections
 from collections.abc import Mapping, Sequence
 import contextlib
+import dataclasses
+import enum
 import os
 import re
 from typing import Any, TypeAlias
 from unittest import mock
 from absl.testing import absltest
 from absl.testing import parameterized
+import jax
+from jax.experimental import pallas as pl
+import jax.numpy as jnp
+from packaging import version
 import torch
 import torch.distributed as dist
 from torch.fx.experimental.proxy_tensor import make_fx
@@ -31,6 +37,7 @@ from torch.nn.attention import flex_attention
 from torch.testing._internal.distributed import fake_pg
 from torch.tpu import distributed  # pyrefly: ignore[missing-import]
 from torch.utils import _pytree as pytree
+from torch_tpu._internal import compile as tpu_compile
 from torch_tpu._internal import dynamism
 from torch_tpu._internal import env
 from torch_tpu._internal import env_utils
@@ -48,6 +55,7 @@ from torch_tpu._internal.utils import hardware
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import error_testing as et
+from tests import oss_utils
 from tests.distributed import distributed_utils
 
 EagerMode: TypeAlias = execution_mode.EagerMode
@@ -5160,6 +5168,55 @@ module {
       start.elapsed_time(end)
     end.synchronize()
 
+  @et.why_tpu_only("torch.tpu stream implementation is TPU-specific.")
+  def test_stream_default_stream_query_unimplemented(self):
+    expected_msg = (
+        "Streams and Events are not fully implemented in TorchTPU. Please file"
+        " a feature request describing your use case."
+    )
+    with et.assert_raises_message(NotImplementedError, tpu=expected_msg):
+      default_stream = torch.tpu.default_stream()
+      default_stream.query()
+
+  @et.why_tpu_only("torch.tpu stream implementation is TPU-specific.")
+  def test_stream_query_unimplemented(self):
+    s = torch.tpu.Stream()
+    expected_msg = (
+        "Streams and Events are not fully implemented in TorchTPU. Please file"
+        " a feature request describing your use case."
+    )
+    with et.assert_raises_message(NotImplementedError, tpu=expected_msg):
+      s.query()
+
+  @et.why_tpu_only("torch.tpu stream implementation is TPU-specific.")
+  def test_stream_priority_range_unimplemented(self):
+    s = torch.tpu.Stream()
+    expected_msg = (
+        "Streams and Events are not fully implemented in TorchTPU. Please file"
+        " a feature request describing your use case."
+    )
+    with et.assert_raises_message(NotImplementedError, tpu=expected_msg):
+      s.priority_range()
+
+  @et.why_tpu_only("torch.tpu event implementation is TPU-specific.")
+  def test_event_record_invalid_type(self):
+    event = torch.tpu.Event()
+    with et.assert_raises_message(
+        TypeError,
+        tpu=re.compile(r".*expected torch\.Stream, but got str.*", re.DOTALL),
+    ):
+      event.record("invalid")
+
+  @et.why_tpu_only("torch.tpu event implementation is TPU-specific.")
+  def test_event_ipc_handle_unimplemented(self):
+    e = torch.tpu.Event()
+    expected_msg = (
+        "Streams and Events are not fully implemented in TorchTPU. Please file"
+        " a feature request describing your use case."
+    )
+    with et.assert_raises_message(NotImplementedError, tpu=expected_msg):
+      e.ipc_handle()
+
   @et.why_tpu_only("torch.tpu.allow_excess_precision is TPU-specific.")
   def test_allow_excess_precision_after_compilation(self):
     # Run an op to initialize the TPU device and compilation context.
@@ -5406,6 +5463,49 @@ module {
       op_fn(t)
 
 
+class _PallasCustomType:
+  pass
+
+
+@dataclasses.dataclass
+class _PallasDataclass:
+  bq: int = 16
+
+
+class _PallasStrEnum(enum.StrEnum):
+  MODE_A = "mode_a"
+  MODE_B = "mode_b"
+
+
+class _PallasEnum(enum.Enum):
+  OPT_1 = 1
+  OPT_2 = 2
+
+
+def _is_deferred_mode():
+  return execution_mode.eager_mode in (
+      EagerMode.DEFER_AND_FUSE,
+      _EagerMode.INTERNAL_DEFER_ALL,
+      EagerMode._INTERNAL_COMPILE_FX_GRAPH,
+  )
+
+
+def _add_vectors_kernel_body(x_ref, y_ref, o_ref):
+  x, y = x_ref[...], y_ref[...]
+  o_ref[...] = x + y
+
+
+def _add_vectors_jax(x: jax.Array, y: jax.Array) -> jax.Array:
+  dt = jax.ShapeDtypeStruct(x.shape, x.dtype)
+  pallas_call = pl.pallas_call(_add_vectors_kernel_body, out_shape=dt)
+  return pallas_call(x, y)
+
+
+@pallas.jax_op("pallas::test_pass_through")
+def _pass_through(x: jax.Array) -> jax.Array:
+  return x
+
+
 class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
 
   @et.why_tpu_only("Testing PyBind error translation on TPU.")
@@ -5537,6 +5637,563 @@ class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
         ):
           with self.assertRaises(type(exc)):
             pallas.get_default_pallas_mesh()
+
+  def _assert_donated(self, x: torch.Tensor):
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r".*(Buffer has been deleted or donated|cannot start a device to"
+            r" host copy from a donated or deleted buffer).*",
+            re.DOTALL,
+        ),
+    ):
+      x.cpu()
+
+  @et.why_tpu_only("Pallas buffer donation is TPU-specific.")
+  def test_pallas_kernel_donating(self):
+    tt_testing.reset_eager_state()
+    donating_add_vectors = pallas.jax_op(
+        "pallas::donating_add_vectors",
+        _add_vectors_jax,
+        donate_argnums=(0,),
+    )
+    x = torch.tensor([0.1, 0.2, 0.3], dtype=torch.float32, device="tpu")
+    y = torch.tensor([0.4, 0.5, 0.6], dtype=torch.float32, device="tpu")
+    expected = torch.add(x, y).to("cpu")
+    actual = donating_add_vectors(x, y).to("cpu")
+    utils.assert_close(actual, expected)
+    self._assert_donated(x)
+
+  @et.why_tpu_only("Pallas buffer donation is TPU-specific.")
+  def test_pallas_kernel_donation_invalidates_deferred_op(self):
+    tt_testing.reset_eager_state()
+    donating_add_vectors = pallas.jax_op(
+        "pallas::donating_add_vectors_deferred",
+        _add_vectors_jax,
+        donate_argnums=(0,),
+    )
+    x = torch.tensor([0.1, 0.2, 0.3], dtype=torch.float32, device="tpu")
+    y = torch.tensor([0.4, 0.5, 0.6], dtype=torch.float32, device="tpu")
+    z = donating_add_vectors(x, y)
+    z.cpu()
+    self._assert_donated(x)
+
+  @et.why_tpu_only("Pallas buffer donation in compiled mode is TPU-specific.")
+  def test_pallas_kernel_donating_compiled_mode(self):
+    tt_testing.reset_eager_state()
+    torch_donating_add_vectors = pallas.jax_op(
+        "pallas::add_vectors_donated_compiled",
+        _add_vectors_jax,
+        donate_argnums=(0,),
+    )
+
+    x = torch.tensor([0.1, 0.2, 0.3], dtype=torch.float32, device="tpu")
+    y = torch.tensor([0.4, 0.5, 0.6], dtype=torch.float32, device="tpu")
+
+    @torch.compile(
+        fullgraph=True, dynamic=False, backend=tpu_compile.TpuBackend()
+    )
+    def donated_add_vectors_sum(x, y):
+      return torch_donating_add_vectors(x, y).sum()
+
+    expected_updated_x = torch.add(
+        torch.tensor([0.1, 0.2, 0.3], dtype=torch.float32, device="cpu"),
+        torch.tensor([0.4, 0.5, 0.6], dtype=torch.float32, device="cpu"),
+    )
+    expected_sum = expected_updated_x.sum()
+
+    actual_sum = donated_add_vectors_sum(x, y)
+    utils.assert_close(actual_sum.to("cpu"), expected_sum)
+    self._assert_donated(x)
+
+  @et.why_tpu_only("Pallas buffer donation in compiled mode is TPU-specific.")
+  def test_pallas_kernel_compiled_mode_donation_invalidates_deferred_op(self):
+    tt_testing.reset_eager_state()
+    donating_add_vectors = pallas.jax_op(
+        "pallas::donating_add_vectors_compiled_deferred",
+        _add_vectors_jax,
+        donate_argnums=(0,),
+    )
+
+    x = torch.tensor([[0.1, 0.2, 0.3]], dtype=torch.float32, device="tpu")
+    y = torch.tensor([[0.4, 0.5, 0.6]], dtype=torch.float32, device="tpu")
+
+    pre_x_sum = x.sum()
+    debugs: list[tpu_compile.TpuCompileDebug] = []
+
+    @torch.compile(
+        fullgraph=True,
+        dynamic=False,
+        backend=tpu_compile.TpuBackend(),
+        options={"debug_callback": debugs.append},
+    )
+    def donated_add_vectors_sum(x, y):
+      return donating_add_vectors(x, y).sum()
+
+    _ = donated_add_vectors_sum(x, y)
+
+    self.assertLen(debugs, 1)
+    executables = debugs[0].compiled_executables
+    self.assertLen(executables, 1)
+    self.assertIn(
+        "jax.buffer_donor",
+        debugs[0].stablehlo_forward_text[0],
+    )
+
+    if _is_deferred_mode():
+      self._assert_donated(pre_x_sum)
+    else:
+      pre_x_sum.cpu()
+
+  @et.why_tpu_only("Pallas buffer donation is TPU-specific.")
+  def test_pallas_jax_kernel_wrapper_with_donation(self):
+    tt_testing.reset_eager_state()
+
+    @pallas.jax_op("pallas::add_fn_donated", donate_argnums=(0,))
+    def add_fn(x: jax.Array, y: jax.Array) -> jax.Array:
+      return jax.numpy.add(x, y)
+
+    x = torch.tensor([0.1, 0.2, 0.3], dtype=torch.float32, device="tpu")
+    y = torch.tensor([0.4, 0.5, 0.6], dtype=torch.float32, device="tpu")
+    expected = torch.add(x, y).to("cpu")
+    actual = add_fn(x, y)
+    utils.assert_close(actual.cpu(), expected)
+    self._assert_donated(x)
+
+  @et.why_tpu_only("Pallas symbolic shapes are TPU-specific.")
+  def test_pallas_symbolic_shape_raises_error(self):
+    tt_testing.reset_eager_state()
+    symbolic_shape = torch.fx.experimental.symbolic_shapes
+    shape_env = symbolic_shape.ShapeEnv()
+
+    x = torch.randn(5, device="tpu")
+    with torch._subclasses.FakeTensorMode(shape_env=shape_env) as mode:
+      fake_x = mode.from_tensor(
+          x,
+          symbolic_context=symbolic_shape.StatelessSymbolicContext(
+              dynamic_sizes=[symbolic_shape.DimDynamic.DYNAMIC]
+          ),
+      )
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=re.compile(
+              r".*Symbolic dimensions are not supported.*", re.DOTALL
+          ),
+      ):
+        _pass_through(fake_x)
+
+  @et.why_tpu_only("Pallas custom kernel aliasing is TPU-specific.")
+  def test_pallas_inconsistent_donate_and_aliases_raises_error(self):
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile(
+            r".*donate_argnums must be None or the same as the keys of"
+            r" input_output_aliases\..*",
+            re.DOTALL,
+        ),
+    ):
+      pallas.custom_jax_kernel(
+          _add_vectors_jax,
+          name="add_vectors_alias_inconsistent",
+          input_output_aliases={0: 0},
+          donate_argnums=(1,),
+      )
+
+  @et.why_tpu_only("Pallas custom call export is TPU-specific.")
+  def test_pallas_custom_call_unsupported_raises_error(self):
+    if oss_utils.is_oss() and version.Version(
+        jax.__version__
+    ) < version.Version("0.10.3"):
+      self.skipTest("Jax version doesn't support custom_call export.")
+
+    def custom_call_fn(x: jax.Array) -> jax.Array:
+      return jax.ffi.ffi_call(
+          "test_custom_call", jax.ShapeDtypeStruct(x.shape, x.dtype)
+      )(x)
+
+    custom_call_op = pallas.jax_op(
+        "test::pallas_custom_call_err", custom_call_fn
+    )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r".*failed to compile MLIR module -- the XLA compiler failed with:"
+            r" custom emitter for test_custom_call not found.*",
+            re.DOTALL,
+        ),
+    ):
+      x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device="tpu")
+      y = custom_call_op(x)
+      y.cpu()
+    tt_testing.reset_eager_state()
+
+  @et.why_tpu_only("Pallas fp4 contiguous layout is TPU-specific.")
+  def test_pallas_fp4_non_contiguous_error(self):
+    u8_t = torch.zeros((8, 256), dtype=torch.uint8)
+    fp4_t = u8_t.view(torch.float4_e2m1fn_x2).to("tpu")
+
+    fp4_t_transposed = fp4_t.t()
+    self.assertFalse(fp4_t_transposed.is_contiguous())
+
+    def fn_identity(x: jax.Array) -> jax.Array:
+      return x
+
+    op = pallas.jax_op("repro::identity_error_fp4", fn_identity)
+
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile(
+            r".*expected packed dimension of float4_e2m1fn_x2 tensor to be"
+            r" contiguous \(stride 1\).*",
+            re.DOTALL,
+        ),
+    ):
+      op(fp4_t_transposed)
+
+  @et.why_tpu_only("Pallas enum validation is TPU-specific.")
+  def test_pallas_container_invalid_enum_rejected(self):
+    class ExecutionMode(enum.StrEnum):
+      FAST = "FAST"
+      ACCURATE = "ACCURATE"
+
+    def custom_fused_kernel(
+        x: jax.Array,
+        y: jax.Array,
+        bias: jax.Array | None = None,
+        *,
+        out_dtype: jnp.dtype = jnp.float32,
+        window_sizes: tuple[int, int] = (64, 64),
+        strides: Sequence[int] = (128, 128, 128),
+        mode: ExecutionMode | str = ExecutionMode.FAST,
+        return_aux: bool = False,
+    ) -> tuple[jax.Array, jax.Array | None]:
+      del bias, out_dtype, window_sizes, strides, mode, return_aux
+      return (x + y), None
+
+    op = pallas.jax_op(
+        "test::pallas_custom_fused_invalid_enum", custom_fused_kernel
+    )
+
+    x = torch.ones((4, 8), dtype=torch.bfloat16, device="tpu")
+    y = torch.full((4, 8), 2.0, dtype=torch.bfloat16, device="tpu")
+
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile(r".*", re.DOTALL),
+    ):
+      op(
+          x,
+          y,
+          mode="INVALID_MODE",
+      )
+
+  @et.why_tpu_only("Pallas buffer donation is TPU-specific.")
+  def test_pallas_donate_argnums_with_static_arguments(self):
+    def kernel_donate_with_static(
+        scale: int,
+        x: jax.Array,
+        y: jax.Array,
+    ) -> jax.Array:
+      return (x + y) * scale
+
+    op = pallas.jax_op(
+        "test::kernel_donate_with_static_err",
+        kernel_donate_with_static,
+        donate_argnums=(
+            2,
+        ),  # donate y (argument 2 in signature, index 1 in tensors)
+    )
+    t1 = torch.ones((2, 2), dtype=torch.float32, device="tpu")
+    t2 = torch.full((2, 2), 2.0, dtype=torch.float32, device="tpu")
+    res = op(3, t1, t2)
+    utils.assert_close(res.cpu(), torch.full((2, 2), 9.0))
+    self._assert_donated(t2)
+
+  @et.why_tpu_only("Pallas buffer donation is TPU-specific.")
+  def test_pallas_donate_argnums_with_optional_none_tensor(self):
+    def kernel_donate_with_optional(
+        opt: jax.Array | None,
+        x: jax.Array,
+    ) -> jax.Array:
+      return x * 2.0 if opt is None else x + opt
+
+    op_opt = pallas.jax_op(
+        "test::kernel_donate_with_opt_none",
+        kernel_donate_with_optional,
+        donate_argnums=(1,),
+    )
+    t_donated_none = torch.full((2, 2), 3.0, dtype=torch.float32, device="tpu")
+    res_none = op_opt(None, t_donated_none)
+    utils.assert_close(res_none.cpu(), torch.full((2, 2), 6.0))
+    self._assert_donated(t_donated_none)
+
+  @et.why_tpu_only("Pallas buffer donation is TPU-specific.")
+  def test_pallas_donate_argnums_with_optional_some_tensor(self):
+    def kernel_donate_with_optional(
+        opt: jax.Array | None,
+        x: jax.Array,
+    ) -> jax.Array:
+      return x * 2.0 if opt is None else x + opt
+
+    op_opt = pallas.jax_op(
+        "test::kernel_donate_with_opt_some",
+        kernel_donate_with_optional,
+        donate_argnums=(1,),
+    )
+    t_opt = torch.ones((2, 2), dtype=torch.float32, device="tpu")
+    t_donated_some = torch.full((2, 2), 3.0, dtype=torch.float32, device="tpu")
+    res_some = op_opt(t_opt, t_donated_some)
+    utils.assert_close(res_some.cpu(), torch.full((2, 2), 4.0))
+    self._assert_donated(t_donated_some)
+
+  @et.why_tpu_only("Pallas buffer donation is TPU-specific.")
+  def test_pallas_donate_argnums_after_sequence_of_tensors(self):
+    def kernel_donate_after_seq(
+        xs: Sequence[jax.Array],
+        y: jax.Array,
+    ) -> jax.Array:
+      return xs[0] + xs[1] + y
+
+    op_seq_after = pallas.jax_op(
+        "test::kernel_donate_after_seq_err",
+        kernel_donate_after_seq,
+        donate_argnums=(1,),
+    )
+    s0 = torch.ones((2, 2), dtype=torch.float32, device="tpu")
+    s1 = torch.full((2, 2), 2.0, dtype=torch.float32, device="tpu")
+    y_donated = torch.full((2, 2), 4.0, dtype=torch.float32, device="tpu")
+    res_seq_after = op_seq_after([s0, s1], y_donated)
+    utils.assert_close(res_seq_after.cpu(), torch.full((2, 2), 7.0))
+    self._assert_donated(y_donated)
+
+  @et.why_tpu_only("Pallas buffer donation is TPU-specific.")
+  def test_pallas_donate_sequence_of_tensors_itself(self):
+    def kernel_donate_seq(
+        xs: Sequence[jax.Array],
+        y: jax.Array,
+    ) -> list[jax.Array]:
+      return [xs[0] + y, xs[1] * y]
+
+    op_seq_donate = pallas.jax_op(
+        "test::kernel_donate_seq_err",
+        kernel_donate_seq,
+        donate_argnums=(0,),
+    )
+    d0 = torch.ones((2, 2), dtype=torch.float32, device="tpu")
+    d1 = torch.full((2, 2), 2.0, dtype=torch.float32, device="tpu")
+    y_kept = torch.full((2, 2), 4.0, dtype=torch.float32, device="tpu")
+    res_seq_donate = op_seq_donate([d0, d1], y_kept)
+    utils.assert_close(res_seq_donate[0].cpu(), torch.full((2, 2), 5.0))
+    self._assert_donated(d0)
+
+  @et.why_tpu_only("Pallas signature validation is TPU-specific.")
+  def test_pallas_signature_invalid_dict_arg_rejected(self):
+    def invalid_fn_dict(x: jax.Array, y: dict[str, int]) -> jax.Array:
+      del y
+      return x
+
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile(
+            r".*Arguments at indices \[1\] are invalid.*", re.DOTALL
+        ),
+    ):
+      pallas.jax_op("test::pallas_sig_invalid_dict", invalid_fn_dict)
+
+  @et.why_tpu_only("Pallas signature validation is TPU-specific.")
+  def test_pallas_signature_invalid_custom_type_arg_rejected(self):
+    def invalid_fn_custom(x: jax.Array, y: _PallasCustomType) -> jax.Array:
+      del y
+      return x
+
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile(
+            r".*Arguments at indices \[1\] are invalid.*", re.DOTALL
+        ),
+    ):
+      pallas.jax_op("test::pallas_sig_invalid_custom", invalid_fn_custom)
+
+  @et.why_tpu_only("Pallas signature validation is TPU-specific.")
+  def test_pallas_signature_invalid_seq_str_arg_rejected(self):
+    def invalid_fn_seq_str(x: jax.Array, y: Sequence[str]) -> jax.Array:
+      del y
+      return x
+
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile(
+            r".*Arguments at indices \[1\] are invalid.*", re.DOTALL
+        ),
+    ):
+      pallas.jax_op("test::pallas_sig_invalid_seq_str", invalid_fn_seq_str)
+
+  @et.why_tpu_only("Pallas signature validation is TPU-specific.")
+  def test_pallas_signature_invalid_seq_enum_arg_rejected(self):
+    def invalid_fn_seq_enum(
+        x: jax.Array, y: Sequence[_PallasStrEnum]
+    ) -> jax.Array:
+      del y
+      return x
+
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile(
+            r".*Arguments at indices \[1\] are invalid.*", re.DOTALL
+        ),
+    ):
+      pallas.jax_op("test::pallas_sig_invalid_seq_enum", invalid_fn_seq_enum)
+
+  @et.why_tpu_only("Pallas signature validation is TPU-specific.")
+  def test_pallas_signature_invalid_return_custom_type_rejected(self):
+    def invalid_return_fn(x: jax.Array) -> _PallasCustomType:
+      del x
+      return _PallasCustomType()
+
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile(r".*The return annotation is invalid.*", re.DOTALL),
+    ):
+      pallas.jax_op("test::pallas_sig_invalid_ret_custom", invalid_return_fn)
+
+  @et.why_tpu_only("Pallas signature validation is TPU-specific.")
+  def test_pallas_signature_invalid_return_str_rejected(self):
+    def fn_return_str(x: jax.Array) -> str:
+      del x
+      return "foo"
+
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile(r".*The return annotation is invalid.*", re.DOTALL),
+    ):
+      pallas.jax_op("test::pallas_sig_fn_return_str", fn_return_str)
+
+  @et.why_tpu_only("Pallas signature validation is TPU-specific.")
+  def test_pallas_signature_invalid_return_dtype_rejected(self):
+    def fn_return_dtype(x: jax.Array) -> jnp.dtype:
+      del x
+      return jnp.float32
+
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile(r".*The return annotation is invalid.*", re.DOTALL),
+    ):
+      pallas.jax_op("test::pallas_sig_fn_return_dtype", fn_return_dtype)
+
+  @et.why_tpu_only("Pallas signature validation is TPU-specific.")
+  def test_pallas_signature_invalid_return_enum_rejected(self):
+    def fn_return_enum(x: jax.Array) -> _PallasEnum:
+      del x
+      return _PallasEnum.OPT_1
+
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile(r".*The return annotation is invalid.*", re.DOTALL),
+    ):
+      pallas.jax_op("test::pallas_sig_fn_return_enum", fn_return_enum)
+
+  @et.why_tpu_only("Pallas signature validation is TPU-specific.")
+  def test_pallas_signature_invalid_jitted_function_rejected(self):
+    def my_fn(x: _PallasCustomType) -> _PallasCustomType:
+      return x
+
+    jitted = jax.jit(my_fn)
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile(
+            r".*Arguments at indices \[0\] are invalid.*", re.DOTALL
+        ),
+    ):
+      pallas.jax_op("test::pallas_sig_jitted_invalid", jitted)
+
+  @et.why_tpu_only("Pallas signature validation is TPU-specific.")
+  def test_pallas_signature_unannotated_arguments_rejected(self):
+    def unannotated_fn(x) -> jax.Array:
+      return x
+
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile(
+            r".*Missing argument type annotation for JAX function.*", re.DOTALL
+        ),
+    ):
+      pallas.jax_op("test::pallas_sig_unannotated", unannotated_fn)
+
+  @et.why_tpu_only("Pallas signature validation is TPU-specific.")
+  def test_pallas_signature_dataclass_arg_rejected(self):
+    def fn_with_dataclass(x: jax.Array, cfg: _PallasDataclass) -> jax.Array:
+      del cfg
+      return x
+
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile(r".*Invalid signature for JAX function.*", re.DOTALL),
+    ):
+      pallas.jax_op("test::pallas_sig_fn_with_dataclass", fn_with_dataclass)
+
+  @et.why_tpu_only("Pallas signature validation is TPU-specific.")
+  def test_pallas_signature_kw_dataclass_arg_rejected(self):
+    def fn_with_kw_dataclass(
+        x: jax.Array, *, cfg: _PallasDataclass = _PallasDataclass()
+    ) -> jax.Array:
+      del cfg
+      return x
+
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile(r".*Invalid signature for JAX function.*", re.DOTALL),
+    ):
+      pallas.jax_op(
+          "test::pallas_sig_fn_with_kw_dataclass", fn_with_kw_dataclass
+      )
+
+  @et.why_tpu_only("Pallas signature validation is TPU-specific.")
+  def test_pallas_signature_custom_obj_arg_rejected(self):
+    def fn_with_custom_obj(x: jax.Array, obj: _PallasCustomType) -> jax.Array:
+      del obj
+      return x
+
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile(r".*Invalid signature for JAX function.*", re.DOTALL),
+    ):
+      pallas.jax_op("test::pallas_sig_fn_with_custom_obj", fn_with_custom_obj)
+
+  @et.why_tpu_only("Pallas signature validation is TPU-specific.")
+  def test_pallas_signature_dict_return_rejected(self):
+    def fn_with_dict_return(x: jax.Array) -> dict[str, jax.Array]:
+      return {"out": x}
+
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile(r".*Invalid signature for JAX function.*", re.DOTALL),
+    ):
+      pallas.jax_op("test::pallas_sig_fn_with_dict_return", fn_with_dict_return)
+
+  @et.why_tpu_only("Pallas signature validation is TPU-specific.")
+  def test_pallas_signature_set_return_rejected(self):
+    def fn_with_set_return(x: jax.Array) -> set[jax.Array]:
+      return {x}
+
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile(r".*Invalid signature for JAX function.*", re.DOTALL),
+    ):
+      pallas.jax_op("test::pallas_sig_fn_with_set_return", fn_with_set_return)
+
+  @et.why_tpu_only("Pallas signature validation is TPU-specific.")
+  def test_pallas_signature_invalid_union_return_rejected(self):
+    def fn_return_invalid_union(x: jax.Array) -> jax.Array | int:
+      return x
+
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile(r".*The return annotation is invalid.*", re.DOTALL),
+    ):
+      pallas.jax_op(
+          "test::pallas_sig_fn_return_invalid_union", fn_return_invalid_union
+      )
 
   @et.why_tpu_only(
       "GPU raises NotImplementedError from avg_pool2d_out_cuda_frame instead of"
