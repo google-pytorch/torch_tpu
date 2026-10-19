@@ -49,10 +49,35 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/compile",
-        "//src/torch_tpu/_internal/execution_mode",
         "//src/torch_tpu/_internal/pallas",
         "//src/torch_tpu/_internal/pallas:pallas_compat",
         "//src/torch_tpu/_internal/utils",
+        "//src/torch_tpu/_internal/utils:test_utils",
+        "//tests:seed_test_utils",
+        "@pypi//jax",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "pallas_errors_test",
+    srcs = ["pallas_errors_test.py"],
+    env = {
+        "IS_OSS": if_oss("1", "0"),
+        "TPU_PREMAPPED_BUFFER_SIZE": "0",
+    },
+    tags = [
+        "nosan",  # *san builds are low-value for error tests.
+        "requires-tpu-v5lite",
+    ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/jax:pallas",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal:testing",
+        "//src/torch_tpu/_internal/compile",
+        "//src/torch_tpu/_internal/execution_mode",
+        "//src/torch_tpu/_internal/pallas",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
         "@pypi//jax",
@@ -72,6 +97,26 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal/pallas",
+        "//tests:seed_test_utils",
+        "@pypi//jax",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "pallas_signature_errors_test",
+    srcs = ["pallas_signature_errors_test.py"],
+    env = {
+        "IS_OSS": if_oss("1", "0"),
+        "TPU_PREMAPPED_BUFFER_SIZE": "0",
+    },
+    tags = [
+        "nosan",  # *san builds are low-value for error tests.
+    ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal:testing",
         "//src/torch_tpu/_internal/pallas",
         "//tests:seed_test_utils",
         "@pypi//jax",

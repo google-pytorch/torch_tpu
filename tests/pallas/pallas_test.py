@@ -16,40 +16,25 @@
 
 import enum
 import functools
-import os
 import pathlib
-import re
 import sys
-from typing import Optional, Sequence, Tuple, TypeAlias
+from typing import Optional, Sequence, Tuple
 from unittest import mock
 import warnings
 from absl.testing import absltest
 import jax
 from jax.experimental import pallas as pl
 import jax.numpy as jnp
-from packaging import version
 import torch
 import torch._library.custom_ops as torch_custom_ops
 import torch.distributed as dist
 from torch_tpu._internal import compile as tpu_compile
-from torch_tpu._internal import execution_mode
 from torch_tpu._internal import pallas
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.pallas import _compat
 from torch_tpu._internal.utils import test_utils
 from torch_tpu._internal.utils import utils
 from tests import seed_test_utils
-
-EagerMode: TypeAlias = execution_mode.EagerMode
-_EagerMode: TypeAlias = execution_mode._EagerMode
-
-
-def _is_deferred_mode():
-  return execution_mode.eager_mode in (
-      EagerMode.DEFER_AND_FUSE,
-      _EagerMode.INTERNAL_DEFER_ALL,
-      EagerMode._INTERNAL_COMPILE_FX_GRAPH,
-  )
 
 
 def add_vectors_kernel_body(x_ref, y_ref, o_ref):
@@ -139,16 +124,6 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
     super().setUp()
     tt_testing.reset_eager_state()
     self.device = torch.device("tpu")
-
-  def _assert_donated(self, x: torch.Tensor):
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=verify buffer donation
-        RuntimeError,
-        re.compile(
-            r".*(Buffer has been deleted or donated|cannot start a device to"
-            r" host copy from a donated or deleted buffer).*"
-        ),
-    ):
-      x.cpu()
 
   def test_kernel_single_output_decorator(self):
     x = torch.tensor([0.1, 0.2, 0.3], dtype=torch.float32, device=self.device)
@@ -245,26 +220,6 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
     test_utils.assert_close(actual_add, expected_add)
     test_utils.assert_close(actual_sub, expected_sub)
 
-  def test_kernel_donating(self):
-
-    donating_add_vectors = pallas.jax_op(
-        "pallas::donating_add_vectors",
-        add_vectors_jax,
-        donate_argnums=(0,),
-    )
-    x = torch.tensor([0.1, 0.2, 0.3], dtype=torch.float32, device=self.device)
-    y = torch.tensor([0.4, 0.5, 0.6], dtype=torch.float32, device=self.device)
-    expected = torch.add(x, y).to("cpu")
-    actual = donating_add_vectors(x, y).to("cpu")
-    test_utils.assert_close(actual, expected)
-    # x should be donated by the output
-    self._assert_donated(x)
-    # y should not be donated
-    expected_y = torch.tensor(
-        [0.4, 0.5, 0.6], dtype=torch.float32, device="cpu"
-    )
-    test_utils.assert_close(y.to("cpu"), expected_y)
-
   def test_kernel_donation_inplace(self):
 
     donating_add_vectors = pallas.jax_op(
@@ -284,22 +239,6 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
     test_utils.assert_close(x, expected)
     expected_y = torch.tensor([0.4, 0.5, 0.6], dtype=torch.float32)
     test_utils.assert_close(y.to("cpu"), expected_y)
-
-  def test_kernel_donation_invalidates_deferred_op(self):
-
-    donating_add_vectors = pallas.jax_op(
-        "pallas::donating_add_vectors",
-        add_vectors_jax,
-        donate_argnums=(0,),
-    )
-    x = torch.tensor([0.1, 0.2, 0.3], dtype=torch.float32, device=self.device)
-    y = torch.tensor([0.4, 0.5, 0.6], dtype=torch.float32, device=self.device)
-
-    # Run the donating operation, consuming the pre-donation value of x.
-    z = donating_add_vectors(x, y)
-    z.cpu()  # force execution
-
-    self._assert_donated(x)
 
   def test_pallas_kernel_compiled_mode(self):
 
@@ -356,33 +295,6 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
     test_utils.assert_close(x_grad_actual, x_grad_expected)
     test_utils.assert_close(y_grad_actual, y_grad_expected)
 
-  def test_kernel_donating_compiled_mode(self):
-
-    torch_donating_add_vectors = pallas.jax_op(
-        "pallas::add_vectors_donated",
-        add_vectors_jax,
-        donate_argnums=(0,),
-    )
-
-    x = torch.tensor([0.1, 0.2, 0.3], dtype=torch.float32, device=self.device)
-    y = torch.tensor([0.4, 0.5, 0.6], dtype=torch.float32, device=self.device)
-
-    @torch.compile(
-        fullgraph=True, dynamic=False, backend=tpu_compile.TpuBackend()
-    )
-    def donated_add_vectors_sum(x, y):
-      return torch_donating_add_vectors(x, y).sum()
-
-    expected_updated_x = torch.add(
-        torch.tensor([0.1, 0.2, 0.3], dtype=torch.float32, device="cpu"),
-        torch.tensor([0.4, 0.5, 0.6], dtype=torch.float32, device="cpu"),
-    )
-    expected_sum = expected_updated_x.sum()
-
-    actual_sum = donated_add_vectors_sum(x, y)
-    test_utils.assert_close(actual_sum.to("cpu"), expected_sum)
-    self._assert_donated(x)
-
   def test_kernel_donation_inplace_compiled_mode(self):
 
     donating_add_vectors = pallas.jax_op(
@@ -405,51 +317,6 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
     test_utils.assert_close(x, expected)
     expected_y = torch.tensor([0.4, 0.5, 0.6], dtype=torch.float32)
     test_utils.assert_close(y.to("cpu"), expected_y)
-
-  def test_kernel_compiled_mode_donation_invalidates_deferred_op(self):
-
-    donating_add_vectors = pallas.jax_op(
-        "pallas::donating_add_vectors",
-        add_vectors_jax,
-        donate_argnums=(0,),
-    )
-
-    # These tensors are intentionally 2D as it triggers the flatten -> unflatten
-    # behaviour (b/479542146).
-    x = torch.tensor([[0.1, 0.2, 0.3]], dtype=torch.float32, device=self.device)
-    y = torch.tensor([[0.4, 0.5, 0.6]], dtype=torch.float32, device=self.device)
-
-    # Create a deferred op that depends on the pre-donation value of x.
-    pre_x_sum = x.sum()
-
-    debugs: list[tpu_compile.TpuCompileDebug] = []
-
-    # Run a donating compiled operation.
-    @torch.compile(
-        fullgraph=True,
-        dynamic=False,
-        backend=tpu_compile.TpuBackend(),
-        options={"debug_callback": debugs.append},
-    )
-    def donated_add_vectors_sum(x, y):
-      return donating_add_vectors(x, y).sum()
-
-    _ = donated_add_vectors_sum(x, y)
-
-    self.assertLen(debugs, 1)
-    executables = debugs[0].compiled_executables
-    self.assertLen(executables, 1)
-    self.assertIn(
-        "jax.buffer_donor",
-        debugs[0].stablehlo_forward_text[0],
-    )
-
-    # The pre-donation value of x can no longer be used if we are in deferred
-    # mode.
-    if _is_deferred_mode():
-      self._assert_donated(pre_x_sum)
-    else:
-      pre_x_sum.cpu()
 
   def test_kernel_compile_both_donated_and_non_donated_ops(self):
 
@@ -493,21 +360,6 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
     expected = torch.add(x, y).to("cpu")
     actual = add_fn(x, y).to("cpu")
     test_utils.assert_close(actual, expected)
-
-  def test_jax_kernel_wrapper_with_donation(self):
-    """Test a kernel wrapper with a donated argument."""
-
-    @pallas.jax_op("pallas::add_fn", donate_argnums=(0,))
-    def add_fn(x: jax.Array, y: jax.Array) -> jax.Array:
-      return jax.numpy.add(x, y)
-
-    x = torch.tensor([0.1, 0.2, 0.3], dtype=torch.float32, device=self.device)
-    y = torch.tensor([0.4, 0.5, 0.6], dtype=torch.float32, device=self.device)
-    expected = torch.add(x, y).to("cpu")
-    actual = add_fn(x, y)
-    test_utils.assert_close(actual.cpu(), expected)
-    # x should be donated by the output.
-    self._assert_donated(x)
 
   def test_jax_kernel_with_trace_time_conditional(self):
     """Test a kernel wrapper that has a trace time conditional.
@@ -645,23 +497,6 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
     z = kernel_op(x)
     test_utils.assert_close(z.cpu(), x.cpu() + 1)
 
-  def test_symbolic_shape_raises_error(self):
-    symbolic_shape = torch.fx.experimental.symbolic_shapes
-    shape_env = symbolic_shape.ShapeEnv()
-
-    x = torch.randn(5, device=self.device)
-    with torch._subclasses.FakeTensorMode(shape_env=shape_env) as mode:
-      fake_x = mode.from_tensor(
-          x,
-          symbolic_context=symbolic_shape.StatelessSymbolicContext(
-              dynamic_sizes=[symbolic_shape.DimDynamic.DYNAMIC]
-          ),
-      )
-      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=verify symbolic shape
-          RuntimeError, "Symbolic dimensions are not supported"
-      ):
-        pass_through(fake_x)
-
   def test_fake_tensor_on_tpu(self):
     x = torch.randn(5, device="tpu")
     with torch._subclasses.FakeTensorMode() as mode:
@@ -719,19 +554,6 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
     actual_sum = aliased_add_vectors_sum(x, y)
     test_utils.assert_close(actual_sum.to("cpu"), expected_sum)
     test_utils.assert_close(x.to("cpu"), expected_updated_x)
-
-  def test_inconsistent_donate_and_aliases_raises_error(self):
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=no jax in errors tests
-        ValueError,
-        "donate_argnums must be None or the same as the keys of"
-        " input_output_aliases.",
-    ):
-      pallas.custom_jax_kernel(
-          add_vectors_jax,
-          name="add_vectors",
-          input_output_aliases={0: 0},
-          donate_argnums=(1,),
-      )
 
   def test_jax_dot_grad_for_backwards(self):
     """Test usage of jax.grad to generate a backwards function.
@@ -988,29 +810,6 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
       # grad_y = grad_mul * x + grad_add (passes straight through)
       self.assertEqual(grad_y.item(), 2.0 * -4.0 - 3.0)
 
-  def test_custom_call(self):
-    is_oss = os.getenv("IS_OSS", "0") == "1"
-    jax_version = version.Version(jax.__version__)
-    if is_oss and jax_version < version.Version("0.10.3"):
-      self.skipTest("Jax version doesn't support custom_call export.")
-
-    def custom_call_fn(x: jax.Array) -> jax.Array:
-      return jax.ffi.ffi_call(
-          "test_custom_call", jax.ShapeDtypeStruct(x.shape, x.dtype)
-      )(x)
-
-    custom_call_op = pallas.jax_op("test::custom_call", custom_call_fn)
-
-    # Check that it successfully reaches XLA and raises an error.
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=no jax in errors tests
-        RuntimeError,
-        expected_regex="""failed to compile MLIR module -- the XLA compiler failed with: custom emitter for test_custom_call not found""",
-    ):
-      x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
-      y = custom_call_op(x)
-      y.cpu()
-    tt_testing.reset_eager_state()
-
   def test_wrapper_tensor_support(self):
 
     class MockWrapperTensor(torch.Tensor):
@@ -1196,16 +995,6 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
 
 class TestPallasCompat(seed_test_utils.RepeatableTest):
 
-  def _assert_donated(self, x: torch.Tensor):
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=verify buffer donation
-        RuntimeError,
-        re.compile(
-            r".*(Buffer has been deleted or donated|cannot start a device to"
-            r" host copy from a donated or deleted buffer).*"
-        ),
-    ):
-      x.cpu()
-
   def _skip_if_fp4_unsupported(self) -> None:
     """Skips the test without TPU devices, e.g. on TPU v4 and older generations.
 
@@ -1328,27 +1117,6 @@ class TestPallasCompat(seed_test_utils.RepeatableTest):
 
     self.assertEqual(out.dtype, torch.float4_e2m1fn_x2)
     self.assertEqual(out.shape, fp4_t.shape)
-
-  def test_fp4_non_contiguous_error(self):
-
-    u8_t = torch.zeros((8, 256), dtype=torch.uint8)
-    fp4_t = u8_t.view(torch.float4_e2m1fn_x2).to("tpu")
-
-    # Transpose to make it non-contiguous
-    fp4_t_transposed = fp4_t.t()
-    self.assertFalse(fp4_t_transposed.is_contiguous())
-
-    def fn_identity(x: jax.Array) -> jax.Array:
-      return x
-
-    op = pallas.jax_op("repro::identity_error", fn_identity)
-
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=no jax in errors tests
-        ValueError,
-        "expected packed dimension of float4_e2m1fn_x2 tensor to be "
-        "contiguous \\(stride 1\\)",
-    ):
-      op(fp4_t_transposed)
 
   def test_fp4_outer_non_contiguous_supported(self):
 
@@ -1497,17 +1265,7 @@ class TestPallasCompat(seed_test_utils.RepeatableTest):
         out_bias.cpu(), torch.full((4, 8), 496.0, dtype=torch.float32)
     )
 
-    # 4. Invalid enum value rejection
-    with self.assertRaises(  # ASSERT_RAISES_OK=Testing enum validation
-        ValueError
-    ):
-      op(
-          x,
-          y,
-          mode="INVALID_MODE",
-      )
-
-    # 5. Fullgraph torch.compile invocation with return_aux=True and torch.dtype
+    # 4. Fullgraph torch.compile invocation with return_aux=True and torch.dtype
     @torch.compile(backend="tpu", fullgraph=True)
     def compiled_fn(a, b):
       return op(
@@ -1529,7 +1287,7 @@ class TestPallasCompat(seed_test_utils.RepeatableTest):
         aux_compiled.cpu(), torch.full((4,), 480.0 * 8, dtype=torch.float32)
     )
 
-    # 6. Fullgraph torch.compile invocation with return_aux=False
+    # 5. Fullgraph torch.compile invocation with return_aux=False
     @torch.compile(backend="tpu", fullgraph=True)
     def compiled_fn_no_aux(a, b):
       return op(
@@ -1548,7 +1306,7 @@ class TestPallasCompat(seed_test_utils.RepeatableTest):
     self.assertIsNone(aux_compiled_no_aux)
     test_utils.assert_close(out_compiled_no_aux.cpu(), out_eager.cpu())
 
-    # 7. Omitted container default arguments: should use default window_sizes=(64, 64) and strides=(128, 128, 128)
+    # 6. Omitted container default arguments: should use default window_sizes=(64, 64) and strides=(128, 128, 128)
     out_default, aux_default = op(x, y)
     self.assertEqual(out_default.dtype, torch.float32)
     self.assertIsNone(aux_default)
@@ -1620,100 +1378,15 @@ class TestPallasCompat(seed_test_utils.RepeatableTest):
     res_compiled = compiled_fn(t)
     test_utils.assert_close(res_compiled.cpu(), torch.full((2, 2), 64.0))
 
-  def test_donate_argnums_with_static_arguments(self):
-    """Verifies donate_argnums properly maps when static arguments precede tensors."""
+  def test_input_output_aliases_with_optional_tensor(self):
+    """Verifies input_output_aliases when an optional None tensor precedes the aliased tensor."""
 
-    def kernel_donate_with_static(
-        scale: int,
-        x: jax.Array,
-        y: jax.Array,
-    ) -> jax.Array:
-      return (x + y) * scale
-
-    op = pallas.jax_op(
-        "test::kernel_donate_with_static",
-        kernel_donate_with_static,
-        donate_argnums=(
-            2,
-        ),  # donate y (argument 2 in signature, index 1 in tensors)
-    )
-    t1 = torch.ones((2, 2), dtype=torch.float32, device="tpu")
-    t2 = torch.full((2, 2), 2.0, dtype=torch.float32, device="tpu")
-    res = op(3, t1, t2)
-    test_utils.assert_close(res.cpu(), torch.full((2, 2), 9.0))
-    self._assert_donated(t2)
-
-  def test_donate_argnums_with_optional_and_sequence_tensors(self):
-    """Verifies donate_argnums and input_output_aliases with optional None and sequence tensors."""
-
-    # 1. Optional tensor passed as None or Tensor preceding a donated tensor
     def kernel_donate_with_optional(
         opt: jax.Array | None,
         x: jax.Array,
     ) -> jax.Array:
       return x * 2.0 if opt is None else x + opt
 
-    op_opt = pallas.jax_op(
-        "test::kernel_donate_with_optional",
-        kernel_donate_with_optional,
-        donate_argnums=(1,),
-    )
-    t_donated_none = torch.full((2, 2), 3.0, dtype=torch.float32, device="tpu")
-    res_none = op_opt(None, t_donated_none)
-    test_utils.assert_close(res_none.cpu(), torch.full((2, 2), 6.0))
-    self._assert_donated(t_donated_none)
-
-    t_opt = torch.ones((2, 2), dtype=torch.float32, device="tpu")
-    t_donated_some = torch.full((2, 2), 3.0, dtype=torch.float32, device="tpu")
-    res_some = op_opt(t_opt, t_donated_some)
-    test_utils.assert_close(res_some.cpu(), torch.full((2, 2), 4.0))
-    test_utils.assert_close(t_opt.cpu(), torch.ones((2, 2)))
-    self._assert_donated(t_donated_some)
-
-    # 2. Sequence of tensors preceding a donated tensor
-    def kernel_donate_after_seq(
-        xs: Sequence[jax.Array],
-        y: jax.Array,
-    ) -> jax.Array:
-      return xs[0] + xs[1] + y
-
-    op_seq_after = pallas.jax_op(
-        "test::kernel_donate_after_seq",
-        kernel_donate_after_seq,
-        donate_argnums=(1,),
-    )
-    s0 = torch.ones((2, 2), dtype=torch.float32, device="tpu")
-    s1 = torch.full((2, 2), 2.0, dtype=torch.float32, device="tpu")
-    y_donated = torch.full((2, 2), 4.0, dtype=torch.float32, device="tpu")
-    res_seq_after = op_seq_after([s0, s1], y_donated)
-    test_utils.assert_close(res_seq_after.cpu(), torch.full((2, 2), 7.0))
-    test_utils.assert_close(s0.cpu(), torch.ones((2, 2)))
-    test_utils.assert_close(s1.cpu(), torch.full((2, 2), 2.0))
-    self._assert_donated(y_donated)
-
-    # 3. Donating a sequence of tensors itself (requires matching output buffers for XLA aliasing)
-    def kernel_donate_seq(
-        xs: Sequence[jax.Array],
-        y: jax.Array,
-    ) -> list[jax.Array]:
-      return [xs[0] + y, xs[1] * y]
-
-    op_seq_donate = pallas.jax_op(
-        "test::kernel_donate_seq",
-        kernel_donate_seq,
-        donate_argnums=(0,),
-    )
-    d0 = torch.ones((2, 2), dtype=torch.float32, device="tpu")
-    d1 = torch.full((2, 2), 2.0, dtype=torch.float32, device="tpu")
-    y_kept = torch.full((2, 2), 4.0, dtype=torch.float32, device="tpu")
-    res_seq_donate = op_seq_donate([d0, d1], y_kept)
-    test_utils.assert_close(res_seq_donate[0].cpu(), torch.full((2, 2), 5.0))
-    test_utils.assert_close(res_seq_donate[1].cpu(), torch.full((2, 2), 8.0))
-    test_utils.assert_close(y_kept.cpu(), torch.full((2, 2), 4.0))
-    self._assert_donated(d0)
-    self._assert_donated(d1)
-
-    # 4. input_output_aliases when an optional None tensor precedes the aliased tensor
     aliased_opt_kernel = pallas.custom_jax_kernel(
         kernel_donate_with_optional,
         input_output_aliases={1: 0},

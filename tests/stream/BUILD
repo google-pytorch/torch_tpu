@@ -54,6 +54,21 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "stream_errors_test",
+    srcs = ["stream_errors_test.py"],
+    tags = [
+        "nosan",  # *san builds are low-value for error tests.
+        "requires-tpu-v5lite",
+    ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "copy_test",
     srcs = ["copy_test.py"],
     tags = [
