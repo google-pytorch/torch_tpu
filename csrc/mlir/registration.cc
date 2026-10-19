@@ -23,6 +23,7 @@
 #include "csrc/mlir/passes/guard_zero_operand_custom_calls.h"
 #include "csrc/mlir/passes/lower_separable_gather_to_dot.h"
 #include "csrc/mlir/passes/reassociate_norm_weights.h"
+#include "csrc/mlir/passes/unflatten_batched_dot_general.h"
 #include "csrc/mlir/pipeline.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/StringRef.h"
@@ -54,6 +55,9 @@ void RegisterTorchTpuPasses() {
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return createUnguardZeroOperandCustomCallsPass();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return createUnflattenBatchedDotGeneralPass();
   });
   mlir::registerPassPipeline(
       "torch-tpu-optimization-pipeline",
