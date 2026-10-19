@@ -995,7 +995,6 @@ torch_tpu_py_test(
     name = "ragged_all_to_all_test",
     timeout = "long",
     srcs = ["ragged_all_to_all_test.py"],
-    shard_count = 3,
     tags = if_oss(
         ["exclusive"],
         [],
@@ -1006,13 +1005,12 @@ torch_tpu_py_test(
         "requires-tpu-v5lite:8",
     ],
     deps = [
-        ":distributed_utils",
+        ":continuous_test_utils",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/utils:test_utils",
-        "//tests:seed_test_utils",
     ],
 )
 

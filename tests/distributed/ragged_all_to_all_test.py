@@ -14,15 +14,12 @@
 
 """Tests for ragged_all_to_all in a distributed environment on TPU."""
 
-import os
-
 from absl.testing import absltest
 import torch
 from torch import distributed as dist
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
-from tests import seed_test_utils
-from tests.distributed import distributed_utils
+from tests.distributed import continuous_test_utils
 
 
 def run_ragged_all_to_all_test() -> None:
@@ -43,9 +40,8 @@ def run_ragged_all_to_all_test() -> None:
     (world_size - 1) * world_size],
     representing a distributed transpose of the operand grid across ranks.
   """
-  dist.init_process_group(backend="tpu_dist")
-  rank = int(os.environ["RANK"])
-  world_size = int(os.environ["WORLD_SIZE"])
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
 
   # Remote destination offsets: rank i places its slice on destination dst at offset rank.
   output_offsets = torch.tensor([rank] * world_size, dtype=torch.int32).tpu()
@@ -80,9 +76,6 @@ def run_ragged_all_to_all_test() -> None:
 
   utils.assert_close(result.cpu(), expected)
 
-  dist.barrier()
-  dist.destroy_process_group()
-
 
 def run_ragged_all_to_all_uneven_test() -> None:
   """Tests the lower-level torch.tpu.ops.ragged_all_to_all custom call with uneven splits.
@@ -108,9 +101,8 @@ def run_ragged_all_to_all_uneven_test() -> None:
     contains elements [src * 100 + offset .. src * 100 + offset + count] sent
     from src.
   """
-  dist.init_process_group(backend="tpu_dist")
-  rank = int(os.environ["RANK"])
-  world_size = int(os.environ["WORLD_SIZE"])
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
 
   # Communication split matrix: matrix[src][dst] is the number of elements
   # sent from src to dst. Rank i sends 2 elements to (i+1)%world_size, 1 to others.
@@ -175,9 +167,6 @@ def run_ragged_all_to_all_uneven_test() -> None:
   expected = torch.cat(expected_slices)
   utils.assert_close(result.cpu(), expected)
 
-  dist.barrier()
-  dist.destroy_process_group()
-
 
 def run_dist_all_to_all_single_uneven_test() -> None:
   """Tests high-level torch.distributed.all_to_all_single with uneven split sizes.
@@ -199,9 +188,8 @@ def run_dist_all_to_all_single_uneven_test() -> None:
     ranks
     src = 0..world_size - 1 in rank order.
   """
-  dist.init_process_group(backend="tpu_dist")
-  rank = int(os.environ["RANK"])
-  world_size = int(os.environ["WORLD_SIZE"])
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
 
   # 1. Define the uneven communication pattern.
   # matrix[src][dst] defines the number of elements sent from `src` to `dst`.
@@ -254,9 +242,6 @@ def run_dist_all_to_all_single_uneven_test() -> None:
   # 5. Verify the received output matches the expected tensor values.
   utils.assert_close(output.cpu(), expected)
 
-  dist.barrier()
-  dist.destroy_process_group()
-
 
 def run_ragged_all_to_all_autograd_test() -> None:
   """Tests the backward autograd pass of torch.tpu.ops.ragged_all_to_all with uneven splits.
@@ -279,9 +264,8 @@ def run_ragged_all_to_all_autograd_test() -> None:
     dst routes its grad_output[dst_offset : dst_offset + length] back into
     operand.grad[input_offsets[dst] : input_offsets[dst] + length].
   """
-  dist.init_process_group(backend="tpu_dist")
-  rank = int(os.environ["RANK"])
-  world_size = int(os.environ["WORLD_SIZE"])
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
 
   # Communication split matrix: matrix[src][dst] is the number of elements
   # sent from src to dst. Rank i sends 2 elements to (i+1)%world_size, 1 to others.
@@ -361,9 +345,6 @@ def run_ragged_all_to_all_autograd_test() -> None:
   expected_grad = torch.cat(expected_grad_slices)
   utils.assert_close(operand.grad.cpu(), expected_grad)
 
-  dist.barrier()
-  dist.destroy_process_group()
-
 
 def run_ragged_all_to_all_autograd_zero_sized_and_padding_test() -> None:
   """Tests ragged_all_to_all backward with zero-sized slices and unsent padding.
@@ -384,9 +365,8 @@ def run_ragged_all_to_all_autograd_zero_sized_and_padding_test() -> None:
        gradient (torch.zeros(pad_len)), ensuring no out-of-bounds accumulation
        occurs.
   """
-  dist.init_process_group(backend="tpu_dist")
-  rank = int(os.environ["RANK"])
-  world_size = int(os.environ["WORLD_SIZE"])
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
 
   # Asymmetric split matrix containing non-uniform sizes and zero-sized slices.
   matrix = [
@@ -471,9 +451,6 @@ def run_ragged_all_to_all_autograd_zero_sized_and_padding_test() -> None:
       torch.zeros(pad_len, dtype=torch.float32),
   )
 
-  dist.barrier()
-  dist.destroy_process_group()
-
 
 def run_ragged_all_to_all_autograd_bfloat16_and_chained_test() -> None:
   """Tests autograd backward with bfloat16 dtype and chained operations.
@@ -493,9 +470,8 @@ def run_ragged_all_to_all_autograd_bfloat16_and_chained_test() -> None:
        operand.grad numerically matches 8.0 * operand + 4.0 within bfloat16
        tolerance (atol=1e-2, rtol=1e-2).
   """
-  dist.init_process_group(backend="tpu_dist")
-  rank = int(os.environ["RANK"])
-  world_size = int(os.environ["WORLD_SIZE"])
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
 
   # Cyclic communication pattern: rank i sends 3 tokens to (i+1)%world_size,
   # and 0 tokens to all other peers.
@@ -569,9 +545,6 @@ def run_ragged_all_to_all_autograd_bfloat16_and_chained_test() -> None:
       rtol=1e-2,
   )
 
-  dist.barrier()
-  dist.destroy_process_group()
-
 
 def run_ragged_all_to_all_autograd_2d_test() -> None:
   """Tests ragged_all_to_all autograd with 2D tensors [tokens, hidden_dim].
@@ -592,9 +565,8 @@ def run_ragged_all_to_all_autograd_2d_test() -> None:
     routed 2D gradient slices, verifying that multidimensional feature vectors
     are preserved and correctly routed back to source token positions.
   """
-  dist.init_process_group(backend="tpu_dist")
-  rank = int(os.environ["RANK"])
-  world_size = int(os.environ["WORLD_SIZE"])
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
 
   hidden_dim = 16
   # Uneven split matrix: rank i sends 2 tokens to (i+1)%world_size, 1 to others.
@@ -678,9 +650,6 @@ def run_ragged_all_to_all_autograd_2d_test() -> None:
 
   utils.assert_close(operand.grad.cpu(), expected_grad)
 
-  dist.barrier()
-  dist.destroy_process_group()
-
 
 def run_ragged_all_to_all_autograd_multiple_iterations_test() -> None:
   """Tests multiple sequential forward+backward training iterations.
@@ -700,9 +669,8 @@ def run_ragged_all_to_all_autograd_multiple_iterations_test() -> None:
     derived step-scaled gradient slices without numerical drift, stale memory
     accumulation, or buffer corruption from previous iterations.
   """
-  dist.init_process_group(backend="tpu_dist")
-  rank = int(os.environ["RANK"])
-  world_size = int(os.environ["WORLD_SIZE"])
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
 
   matrix = [
       [(2 if j == (i + 1) % world_size else 1) for j in range(world_size)]
@@ -775,9 +743,6 @@ def run_ragged_all_to_all_autograd_multiple_iterations_test() -> None:
     expected_grad = torch.cat(expected_grad_slices)
     utils.assert_close(operand.grad.cpu(), expected_grad)
 
-  dist.barrier()
-  dist.destroy_process_group()
-
 
 def run_ragged_all_to_all_no_grad_test() -> None:
   """Tests execution within torch.no_grad() context.
@@ -798,9 +763,8 @@ def run_ragged_all_to_all_no_grad_test() -> None:
        data [rank, rank + world_size, ..., rank + (world_size - 1) *
        world_size].
   """
-  dist.init_process_group(backend="tpu_dist")
-  rank = int(os.environ["RANK"])
-  world_size = int(os.environ["WORLD_SIZE"])
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
 
   output_offsets = torch.tensor([rank] * world_size, dtype=torch.int32).tpu()
   send_sizes = torch.tensor([1] * world_size, dtype=torch.int32).tpu()
@@ -837,11 +801,8 @@ def run_ragged_all_to_all_no_grad_test() -> None:
   )
   utils.assert_close(result.cpu(), expected)
 
-  dist.barrier()
-  dist.destroy_process_group()
 
-
-class RaggedAllToAllTest(seed_test_utils.MultiProcessRepeatableTest):
+class RaggedAllToAllTest(continuous_test_utils.TpuMultiProcContinuousTest):
   """Tests the ragged_all_to_all TPU collective operation and autograd.
 
   Exercises ragged all-to-all communication and backward gradient routing across
@@ -850,79 +811,44 @@ class RaggedAllToAllTest(seed_test_utils.MultiProcessRepeatableTest):
   and iteration sequences.
   """
 
+  world_size = 8
+
   def test_ragged_all_to_all(self):
     """Tests symmetric 1-element ragged all-to-all resulting in a distributed transpose."""
-    world_size = 8
-    distributed_utils.dist_run(
-        nproc_per_node=world_size,
-        fn=run_ragged_all_to_all_test,
-    )
+    run_ragged_all_to_all_test()
 
   def test_ragged_all_to_all_uneven(self):
     """Tests ragged all-to-all custom call with non-uniform slice sizes and manual offsets."""
-    world_size = 8
-    distributed_utils.dist_run(
-        nproc_per_node=world_size,
-        fn=run_ragged_all_to_all_uneven_test,
-    )
+    run_ragged_all_to_all_uneven_test()
 
   def test_ragged_all_to_all_autograd(self):
     """Tests backward autograd gradient routing across ranks with uneven splits."""
-    world_size = 8
-    distributed_utils.dist_run(
-        nproc_per_node=world_size,
-        fn=run_ragged_all_to_all_autograd_test,
-    )
+    run_ragged_all_to_all_autograd_test()
 
   def test_ragged_all_to_all_autograd_zero_sized_and_padding(self):
     """Tests backward pass with zero-sized communication channels and unsent padding."""
-    world_size = 8
-    distributed_utils.dist_run(
-        nproc_per_node=world_size,
-        fn=run_ragged_all_to_all_autograd_zero_sized_and_padding_test,
-    )
+    run_ragged_all_to_all_autograd_zero_sized_and_padding_test()
 
   def test_ragged_all_to_all_autograd_bfloat16_and_chained(self):
     """Tests autograd backward with bfloat16 dtype and chained math operations."""
-    world_size = 8
-    distributed_utils.dist_run(
-        nproc_per_node=world_size,
-        fn=run_ragged_all_to_all_autograd_bfloat16_and_chained_test,
-    )
+    run_ragged_all_to_all_autograd_bfloat16_and_chained_test()
 
   def test_dist_all_to_all_single_uneven(self):
     """Tests high-level torch.distributed.all_to_all_single with non-uniform split sizes."""
-    world_size = 8
-    distributed_utils.dist_run(
-        nproc_per_node=world_size,
-        fn=run_dist_all_to_all_single_uneven_test,
-    )
+    run_dist_all_to_all_single_uneven_test()
 
   def test_ragged_all_to_all_autograd_2d(self):
     """Tests autograd backward on 2D tensors [tokens, hidden_dim] for MoE routing."""
-    world_size = 8
-    distributed_utils.dist_run(
-        nproc_per_node=world_size,
-        fn=run_ragged_all_to_all_autograd_2d_test,
-    )
+    run_ragged_all_to_all_autograd_2d_test()
 
   def test_ragged_all_to_all_autograd_multiple_iterations(self):
     """Tests 5 consecutive training iterations verifying state cleanup and memory safety."""
-    world_size = 8
-    distributed_utils.dist_run(
-        nproc_per_node=world_size,
-        fn=run_ragged_all_to_all_autograd_multiple_iterations_test,
-    )
+    run_ragged_all_to_all_autograd_multiple_iterations_test()
 
   def test_ragged_all_to_all_no_grad(self):
     """Tests execution inside torch.no_grad() ensuring detached output and no grad state."""
-    world_size = 8
-    distributed_utils.dist_run(
-        nproc_per_node=world_size,
-        fn=run_ragged_all_to_all_no_grad_test,
-    )
+    run_ragged_all_to_all_no_grad_test()
 
 
 if __name__ == "__main__":
-  torch.multiprocessing.set_start_method("spawn")
   multiprocessing.handle_test_main(absltest.main)
