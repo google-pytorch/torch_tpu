@@ -453,16 +453,43 @@ def _process_fx_outputs(
   unique_output_indices: list[int] = []
   output_map: list[_DedupedTensorOutput | _NonTensorPassthrough | None] = []
   index_by_dedupe_key: dict[_TensorDedupeKey, int] = {}
+  index_by_ssa_key: dict[tuple[Any, ...], int] = {}
+
+  output_nodes = gm.graph.find_nodes(op="output")
+  flat_output_nodes: list[Any] = []
+  if output_nodes:
+    flat_output_nodes, _ = pytree.tree_flatten(output_nodes[0].args[0])
+
+  has_matching_output_nodes = len(flat_output_nodes) == len(flat_outputs)
 
   for idx, item in enumerate(flat_outputs):
     if item is None:
       output_map.append(None)
     elif isinstance(item, torch.Tensor):
-      key = _TensorDedupeKey.from_tensor(item)
-      if key not in index_by_dedupe_key:
-        index_by_dedupe_key[key] = len(deduped_outputs)
+      tensor_key = _TensorDedupeKey.from_tensor(item)
+      ssa_key = None
+      if has_matching_output_nodes and isinstance(
+          flat_output_nodes[idx], torch.fx.Node
+      ):
+        ssa_key = (
+            flat_output_nodes[idx],
+            item.dtype,
+            item.shape,
+            item.stride(),
+            item.storage_offset(),
+        )
+
+      canonical_idx = index_by_dedupe_key.get(tensor_key)
+      if canonical_idx is None and ssa_key is not None:
+        canonical_idx = index_by_ssa_key.get(ssa_key)
+
+      if canonical_idx is None:
+        canonical_idx = len(deduped_outputs)
+        index_by_dedupe_key[tensor_key] = canonical_idx
+        if ssa_key is not None:
+          index_by_ssa_key[ssa_key] = canonical_idx
         deduped_outputs.append(item)
-        expected_layouts.append(key.layout)
+        expected_layouts.append(tensor_key.layout)
         unique_output_indices.append(idx)
         is_dyn = (
             dynamic_outputs[idx]
@@ -470,7 +497,12 @@ def _process_fx_outputs(
             else False
         )
         deduped_dynamic_outputs.append(is_dyn)
-      output_map.append(_DedupedTensorOutput(index_by_dedupe_key[key]))
+      else:
+        index_by_dedupe_key[tensor_key] = canonical_idx
+        if ssa_key is not None:
+          index_by_ssa_key[ssa_key] = canonical_idx
+
+      output_map.append(_DedupedTensorOutput(canonical_idx))
     elif idx in output_to_input_map:
       output_map.append(_NonTensorPassthrough(output_to_input_map[idx]))
     else:

@@ -142,7 +142,8 @@ class LoadedExecutableWithMetadata {
       Indices argument_indices = {},
       std::optional<UnboundedDynamicExecutionMetadata>
           unbounded_dynamic_execution_metadata = std::nullopt,
-      std::optional<xla::PjRtDeviceDimensions> subslice_origin = std::nullopt);
+      std::optional<xla::PjRtDeviceDimensions> subslice_origin = std::nullopt,
+      Indices output_passthrough_arg_indices = {});
 
   static SharedLoadedExecutableWithMetadata WithArgumentIndices(
       const SharedLoadedExecutableWithMetadata& existing,
@@ -152,7 +153,22 @@ class LoadedExecutableWithMetadata {
             existing->executable_, existing->output_shapes_,
             existing->parameter_device_shapes_, std::move(argument_indices),
             existing->unbounded_dynamic_execution_metadata_,
-            existing->subslice_origin_));
+            existing->subslice_origin_,
+            existing->output_passthrough_arg_indices_));
+  }
+
+  // Returns a copy of existing with the given output passthrough argument
+  // indices.
+  static SharedLoadedExecutableWithMetadata WithOutputPassthroughArgIndices(
+      const SharedLoadedExecutableWithMetadata& existing,
+      Indices output_passthrough_arg_indices) {
+    return std::shared_ptr<const LoadedExecutableWithMetadata>(
+        new LoadedExecutableWithMetadata(
+            existing->executable_, existing->output_shapes_,
+            existing->parameter_device_shapes_, existing->argument_indices_,
+            existing->unbounded_dynamic_execution_metadata_,
+            existing->subslice_origin_,
+            std::move(output_passthrough_arg_indices)));
   }
 
   static SharedLoadedExecutableWithMetadata WithDynamicExecutionMetadata(
@@ -163,7 +179,8 @@ class LoadedExecutableWithMetadata {
             existing->executable_, existing->output_shapes_,
             existing->parameter_device_shapes_, existing->argument_indices_,
             std::move(unbounded_dynamic_execution_metadata),
-            existing->subslice_origin_));
+            existing->subslice_origin_,
+            existing->output_passthrough_arg_indices_));
   }
 
   const xla::PjRtExecutable* GetExecutable() const {
@@ -184,6 +201,11 @@ class LoadedExecutableWithMetadata {
     return parameter_device_shapes_;
   }
   const Indices& argument_indices() const { return argument_indices_; }
+  // Returns the mapping of logical output positions to deduplicated base
+  // argument indices.
+  const Indices& output_passthrough_arg_indices() const {
+    return output_passthrough_arg_indices_;
+  }
   const std::optional<UnboundedDynamicExecutionMetadata>&
   unbounded_dynamic_execution_metadata() const {
     return unbounded_dynamic_execution_metadata_;
@@ -204,14 +226,17 @@ class LoadedExecutableWithMetadata {
       Indices argument_indices = {},
       std::optional<UnboundedDynamicExecutionMetadata>
           unbounded_dynamic_execution_metadata = std::nullopt,
-      std::optional<xla::PjRtDeviceDimensions> subslice_origin = std::nullopt)
+      std::optional<xla::PjRtDeviceDimensions> subslice_origin = std::nullopt,
+      Indices output_passthrough_arg_indices = {})
       : executable_(std::move(executable)),
         output_shapes_(std::move(output_shapes)),
         parameter_device_shapes_(std::move(parameter_device_shapes)),
         argument_indices_(std::move(argument_indices)),
         unbounded_dynamic_execution_metadata_(
             std::move(unbounded_dynamic_execution_metadata)),
-        subslice_origin_(std::move(subslice_origin)) {}
+        subslice_origin_(std::move(subslice_origin)),
+        output_passthrough_arg_indices_(
+            std::move(output_passthrough_arg_indices)) {}
 
   absl_nonnull std::shared_ptr<const xla::PjRtLoadedExecutable> executable_;
   // Cached output shapes for the executable.
@@ -222,6 +247,7 @@ class LoadedExecutableWithMetadata {
   std::optional<UnboundedDynamicExecutionMetadata>
       unbounded_dynamic_execution_metadata_;
   std::optional<xla::PjRtDeviceDimensions> subslice_origin_;
+  Indices output_passthrough_arg_indices_;
 };
 
 using LoadedExecutablePromise =

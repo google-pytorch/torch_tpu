@@ -382,6 +382,34 @@ class BackendSerializationTest(seed_test_utils.RepeatableTest):
     res = _backend.to_device(compiled_fn(x), "cpu")
     utils.assert_close(res[0], x.cpu() + 1)
 
+  def test_passthrough_output_serialization(self):
+    def model_with_passthrough(x, y):
+      return x + y, x, y
+
+    x = torch.randn(4, 8, device="tpu")
+    y = torch.randn(4, 8, device="tpu")
+    gm = dynamo_graph_capture_for_export(model_with_passthrough)(x, y)
+
+    backend = _backend.TpuBackend(enable_serialization=True)
+    compiled_fn = backend(gm, [x, y])
+
+    result = compiled_fn(x, y)
+    result_cpu = _backend.to_device(result, "cpu")
+    utils.assert_close(result_cpu[0], x.cpu() + y.cpu())
+    utils.assert_close(result_cpu[1], x.cpu())
+    utils.assert_close(result_cpu[2], y.cpu())
+
+    entry = compiled_fn.serialize()
+    self.assertIsNotNone(entry)
+    pickled = pickle.dumps(entry)
+    restored_fn = deserialize_bundled_cache_entry(pickle.loads(pickled))
+
+    restored_result = restored_fn(x, y)
+    restored_result_cpu = _backend.to_device(restored_result, "cpu")
+    utils.assert_close(restored_result_cpu[0], x.cpu() + y.cpu())
+    utils.assert_close(restored_result_cpu[1], x.cpu())
+    utils.assert_close(restored_result_cpu[2], y.cpu())
+
 
 if __name__ == "__main__":
   absltest.main()

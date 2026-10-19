@@ -167,7 +167,8 @@ LoadedExecutableWithMetadata::MakeShared(
     absl_nonnull std::unique_ptr<xla::PjRtLoadedExecutable> executable,
     Indices argument_indices,
     std::optional<UnboundedDynamicExecutionMetadata> dynamic_execution_metadata,
-    std::optional<xla::PjRtDeviceDimensions> subslice_origin) {
+    std::optional<xla::PjRtDeviceDimensions> subslice_origin,
+    Indices output_passthrough_arg_indices) {
   TT_RET_CHECK(executable, error::kInternal)
       << "cannot create SharedLoadedExecutableWithMetadata from null "
          "executable.";
@@ -194,7 +195,8 @@ LoadedExecutableWithMetadata::MakeShared(
       new LoadedExecutableWithMetadata(
           std::move(executable), std::move(output_shapes),
           std::move(parameter_device_shapes), std::move(argument_indices),
-          std::move(dynamic_execution_metadata), std::move(subslice_origin)));
+          std::move(dynamic_execution_metadata), std::move(subslice_origin),
+          std::move(output_passthrough_arg_indices)));
 }
 
 absl::StatusOr<SharedLoadedExecutableWithMetadata> Compile(

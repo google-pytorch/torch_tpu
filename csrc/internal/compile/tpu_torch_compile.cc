@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -388,7 +389,33 @@ std::vector<std::optional<PyLayout>> PyGetOutputLayoutsFromMetadata(
     const LoadedExecutableWithMetadata& executable_metadata) {
   const xla::PjRtLoadedExecutable* executable =
       executable_metadata.GetLoadedExecutable();
-  return PyGetOutputLayouts(*executable);
+  std::vector<std::optional<PyLayout>> pjrt_output_layouts =
+      PyGetOutputLayouts(*executable);
+  const Indices& passthrough_indices =
+      executable_metadata.output_passthrough_arg_indices();
+  if (passthrough_indices.empty()) {
+    return pjrt_output_layouts;
+  }
+  std::vector<std::optional<PyLayout>> param_layouts =
+      PyGetParameterLayouts(*executable);
+  std::vector<std::optional<PyLayout>> full_output_layouts;
+  full_output_layouts.reserve(passthrough_indices.size());
+  size_t pjrt_idx = 0;
+  for (int64_t arg_idx : passthrough_indices) {
+    if (arg_idx >= 0) {
+      ABSL_CHECK_LT(static_cast<size_t>(arg_idx), param_layouts.size())
+          << "Passthrough argument index " << arg_idx
+          << " is out of bounds for parameter layouts (" << param_layouts.size()
+          << "). This is a TorchTPU bug.";  // CRASH_OK=internal invariant
+      full_output_layouts.push_back(param_layouts[arg_idx]);
+    } else {
+      ABSL_CHECK_LT(pjrt_idx, pjrt_output_layouts.size())
+          << "Ran out of PJRT output layouts while reconstructing outputs. "
+          << "This is a TorchTPU bug.";  // CRASH_OK=internal invariant
+      full_output_layouts.push_back(std::move(pjrt_output_layouts[pjrt_idx++]));
+    }
+  }
+  return full_output_layouts;
 }
 
 // Returns a ContextedModule corresponding to the graph terminating at
@@ -1215,6 +1242,41 @@ CompileResult PyGetOrCompileSliceModule(
   return result;
 }
 
+namespace {
+
+// The trailing NUL byte is explicitly included as part of the 16-byte magic.
+constexpr std::string_view kSerializedExecutableMetadataMagic(
+    "TT_EXEC_META_V1\0", 16);
+
+void AppendIndexVector(const Indices& indices, std::string* out) {
+  const uint64_t count = indices.size();
+  out->append(reinterpret_cast<const char*>(&count), sizeof(count));
+  if (count > 0) {
+    out->append(reinterpret_cast<const char*>(indices.data()),
+                count * sizeof(int64_t));
+  }
+}
+
+[[nodiscard]] bool ConsumeIndexVector(std::string_view* data, Indices* out) {
+  uint64_t count = 0;
+  if (data->size() < sizeof(count)) {
+    return false;
+  }
+  std::memcpy(&count, data->data(), sizeof(count));
+  data->remove_prefix(sizeof(count));
+  if (count > data->size() / sizeof(int64_t)) {
+    return false;
+  }
+  out->resize(count);
+  if (count > 0) {
+    std::memcpy(out->data(), data->data(), count * sizeof(int64_t));
+    data->remove_prefix(count * sizeof(int64_t));
+  }
+  return true;
+}
+
+}  // namespace
+
 py::bytes PySerializeExecutable(
     const SharedLoadedExecutableWithMetadata& executable) {
   // Only the PjRt executable is serialized, and `LoadSerializedExecutableImpl`
@@ -1227,12 +1289,43 @@ py::bytes PySerializeExecutable(
   TT_ASSIGN_OR_THROW(const std::string serialized,
                      executable->GetExecutable()->SerializeExecutable(),
                      _.SetPrepend() << "failed to serialize executable: ");
-  return py::bytes(serialized);
+  const Indices& arg_indices = executable->argument_indices();
+  const Indices& passthrough_indices =
+      executable->output_passthrough_arg_indices();
+  if (arg_indices.empty() && passthrough_indices.empty()) {
+    return py::bytes(serialized);
+  }
+  std::string envelope;
+  envelope.reserve(
+      kSerializedExecutableMetadataMagic.size() + 2 * sizeof(uint64_t) +
+      (arg_indices.size() + passthrough_indices.size()) * sizeof(int64_t) +
+      serialized.size());
+  envelope.append(kSerializedExecutableMetadataMagic);
+  AppendIndexVector(arg_indices, &envelope);
+  AppendIndexVector(passthrough_indices, &envelope);
+  envelope.append(serialized);
+  return py::bytes(envelope);
 }
+
+namespace {
 
 absl::StatusOr<SharedLoadedExecutableWithMetadata> LoadSerializedExecutableImpl(
     std::string_view data,
     const std::optional<std::vector<int32_t>>& subslice_origin) {
+  Indices arg_indices;
+  Indices passthrough_indices;
+  if (data.size() >= kSerializedExecutableMetadataMagic.size() &&
+      data.substr(0, kSerializedExecutableMetadataMagic.size()) ==
+          kSerializedExecutableMetadataMagic) {
+    std::string_view cursor =
+        data.substr(kSerializedExecutableMetadataMagic.size());
+    if (!ConsumeIndexVector(&cursor, &arg_indices) ||
+        !ConsumeIndexVector(&cursor, &passthrough_indices)) {
+      return TT_ERROR(error::kInvalidArgument)
+             << "failed to parse serialized executable metadata envelope";
+    }
+    data = cursor;
+  }
   TT_ASSIGN_OR_RETURN(xla::PjRtClient* const client,
                       PjrtBackend::GetInstance().GetClient());
   // `subslice_origin` comes from the pickle (see
@@ -1245,10 +1338,49 @@ absl::StatusOr<SharedLoadedExecutableWithMetadata> LoadSerializedExecutableImpl(
       std::unique_ptr<xla::PjRtLoadedExecutable> pjrt_executable,
       AdaptXlaError(LoadSerializedExecutableAtOrigin(*client, data, origin),
                     /* context= */ "failed to load serialized executable"));
-  return LoadedExecutableWithMetadata::MakeShared(
-      std::move(pjrt_executable), /*argument_indices=*/{},
-      /*unbounded_dynamic_execution_metadata=*/std::nullopt, std::move(origin));
+  TT_ASSIGN_OR_RETURN(SharedLoadedExecutableWithMetadata loaded_executable,
+                      LoadedExecutableWithMetadata::MakeShared(
+                          std::move(pjrt_executable), std::move(arg_indices),
+                          /*unbounded_dynamic_execution_metadata=*/std::nullopt,
+                          std::move(origin), std::move(passthrough_indices)));
+
+  TT_ASSIGN_OR_RETURN(
+      const auto& param_layouts,
+      loaded_executable->GetExecutable()->GetParameterLayouts());
+  const size_t num_params = param_layouts.size();
+  for (int64_t arg_idx : loaded_executable->argument_indices()) {
+    if (arg_idx < 0 || static_cast<size_t>(arg_idx) >= num_params) {
+      return TT_ERROR(error::kInvalidArgument)
+             << "expected argument index in [0, " << num_params << "), got "
+             << arg_idx;
+    }
+  }
+  const Indices& passthroughs =
+      loaded_executable->output_passthrough_arg_indices();
+  for (int64_t passthrough_idx : passthroughs) {
+    if (passthrough_idx < -1 ||
+        (passthrough_idx >= 0 &&
+         static_cast<size_t>(passthrough_idx) >= num_params)) {
+      return TT_ERROR(error::kInvalidArgument)
+             << "expected passthrough index to be -1 or in [0, " << num_params
+             << "), got " << passthrough_idx;
+    }
+  }
+  if (!passthroughs.empty()) {
+    const size_t computed_count =
+        std::count(passthroughs.begin(), passthroughs.end(), -1);
+    const size_t num_outputs = loaded_executable->output_shapes().size();
+    if (computed_count != num_outputs) {
+      return TT_ERROR(error::kInvalidArgument)
+             << "expected " << num_outputs
+             << " computed outputs (passthrough index -1), got "
+             << computed_count;
+    }
+  }
+  return loaded_executable;
 }
+
+}  // namespace
 
 SharedLoadedExecutableWithMetadata PyLoadSerializedExecutable(
     py::bytes& serialized_bytes,

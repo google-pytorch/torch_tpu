@@ -16,7 +16,9 @@
 
 import functools
 import itertools
+import pickle
 import re
+import struct
 import textwrap
 import threading
 from typing import TypeAlias
@@ -2617,6 +2619,248 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     results = tpu_torch_compile.execute(compile_result.executable, [x, x])
     self.assertLen(results, 1)
     utils.assert_close(results[0].cpu(), (x + x).cpu())
+
+  def test_static_compiler_elides_unmodified_input_passthrough_outputs(self):
+    def model_fn(x, y):
+      return x + y, x, y
+
+    x = torch.randn(4, 8, device=self.device)
+    y = torch.randn(4, 8, device=self.device)
+
+    gm = make_fx(model_fn)(x, y)
+    comp = StaticCompiler(debug=True)
+    compiled_executable = comp(gm, [x, y])
+
+    self.assertIsNotNone(compiled_executable)
+    self.assertIn(') -> tensor<4x8xf32> {', compiled_executable.mlir_text)
+    self.assertIn('return %0 : tensor<4x8xf32>', compiled_executable.mlir_text)
+    self.assertNotIn('return %0, %arg0', compiled_executable.mlir_text)
+    self.assertLen(compiled_executable._executable.get_output_layouts(), 3)
+
+    x_cpu = x.cpu().clone()
+    y_cpu = y.cpu().clone()
+    out_sum, out_x, out_y = compiled_executable(x, y)
+    utils.assert_close(out_sum.cpu(), x_cpu + y_cpu)
+    utils.assert_close(out_x.cpu(), x_cpu)
+    utils.assert_close(out_y.cpu(), y_cpu)
+
+  def test_static_compiler_passthrough_serialization_roundtrip(self):
+    def model_fn(x, y):
+      return x + y, x, y
+
+    x = torch.randn(4, 8, device=self.device)
+    y = torch.randn(4, 8, device=self.device)
+
+    gm = make_fx(model_fn)(x, y)
+    comp = StaticCompiler(debug=True)
+    compiled_executable = comp(gm, [x, y])
+
+    x_cpu = x.cpu().clone()
+    y_cpu = y.cpu().clone()
+
+    pickled = pickle.dumps(compiled_executable)
+    restored_executable = pickle.loads(pickled)
+    res_sum, res_x, res_y = restored_executable(x, y)
+    utils.assert_close(res_sum.cpu(), x_cpu + y_cpu)
+    utils.assert_close(res_x.cpu(), x_cpu)
+    utils.assert_close(res_y.cpu(), y_cpu)
+
+    raw_serialized = tpu_torch_compile.serialize_executable(
+        compiled_executable._executable
+    )
+    self.assertIsNotNone(raw_serialized)
+    raw_restored = tpu_torch_compile.load_serialized_executable(raw_serialized)
+    self.assertIsNotNone(raw_restored)
+    self.assertLen(raw_restored.get_output_layouts(), 3)
+
+  def test_static_compiler_passthrough_output_isolated_from_input_mutation(
+      self,
+  ):
+    def model_fn(x, y):
+      return x + y, x, y
+
+    x = torch.randn(4, 8, device=self.device)
+    y = torch.randn(4, 8, device=self.device)
+
+    gm = make_fx(model_fn)(x, y)
+    comp = StaticCompiler(debug=True)
+    compiled_executable = comp(gm, [x, y])
+
+    x_cpu = x.cpu().clone()
+    y_cpu = y.cpu().clone()
+    out_sum, out_x, out_y = compiled_executable(x, y)
+
+    # Mutating x in-place after execution must not corrupt the returned out_x.
+    x.add_(10.0)
+    utils.assert_close(x.cpu(), x_cpu + 10.0)
+    utils.assert_close(out_x.cpu(), x_cpu)
+
+    # Mutating the returned passthrough out_y in-place must not corrupt y.
+    out_y.sub_(5.0)
+    utils.assert_close(out_y.cpu(), y_cpu - 5.0)
+    utils.assert_close(y.cpu(), y_cpu)
+
+  def test_static_compiler_donated_inputs_not_elided(self):
+    def model_fn(x, y):
+      return x + y, x
+
+    x = torch.randn(4, 8, device=self.device)
+    y = torch.randn(4, 8, device=self.device)
+
+    gm = make_fx(model_fn)(x, y)
+    comp = StaticCompiler(debug=True)
+    compiled_executable = comp(gm, [x, y], donated_inputs=[0])
+
+    self.assertIsNotNone(compiled_executable)
+    # Donated input must not be elided; MLIR still returns %arg0.
+    self.assertIn('return %0, %arg0', compiled_executable.mlir_text)
+    self.assertLen(compiled_executable._executable.get_output_layouts(), 2)
+
+    x_cpu = x.cpu().clone()
+    y_cpu = y.cpu().clone()
+    out_sum, out_x = compiled_executable(x, y)
+    utils.assert_close(out_sum.cpu(), x_cpu + y_cpu)
+    utils.assert_close(out_x.cpu(), x_cpu)
+
+  def test_static_compiler_duplicate_arguments_passthrough(self):
+    def model_fn(x, y):
+      return x + y, x
+
+    x = torch.randn(4, 8, device=self.device)
+    gm = make_fx(model_fn)(x, x)
+    comp = StaticCompiler(debug=True)
+    compiled_executable = comp(gm, [x, x])
+
+    self.assertIsNotNone(compiled_executable)
+    self.assertNotIn('return %0, %arg0', compiled_executable.mlir_text)
+    self.assertLen(compiled_executable._executable.get_output_layouts(), 2)
+
+    x_cpu = x.cpu().clone()
+    out_sum, out_x = compiled_executable(x, x)
+    utils.assert_close(out_sum.cpu(), x_cpu + x_cpu)
+    utils.assert_close(out_x.cpu(), x_cpu)
+
+  def test_static_compiler_duplicate_fx_outputs_deduplicated(self):
+    def model_fn(x, y):
+      prod = x * y
+      return prod, prod, prod
+
+    x = torch.randn(4, 8, device=self.device)
+    y = torch.randn(4, 8, device=self.device)
+    gm = make_fx(model_fn)(x, y)
+    comp = StaticCompiler(debug=True)
+    compiled_executable = comp(gm, [x, y])
+
+    self.assertIsNotNone(compiled_executable)
+    # The MLIR function must return only 1 tensor output, not 3 duplicate
+    # copies.
+    self.assertIn('return %0 : tensor<4x8xf32>', compiled_executable.mlir_text)
+    self.assertNotIn('return %0, %0', compiled_executable.mlir_text)
+
+    x_cpu = x.cpu().clone()
+    y_cpu = y.cpu().clone()
+    expected = x_cpu * y_cpu
+    out1, out2, out3 = compiled_executable(x, y)
+    utils.assert_close(out1.cpu(), expected)
+    utils.assert_close(out2.cpu(), expected)
+    utils.assert_close(out3.cpu(), expected)
+
+  def test_static_compiler_view_passthrough_not_elided(self):
+    def model_fn(x, y):
+      return x + y, x[1:], x.t()
+
+    x = torch.randn(4, 8, device=self.device)
+    y = torch.randn(4, 8, device=self.device)
+    gm = make_fx(model_fn)(x, y)
+    comp = StaticCompiler(debug=True)
+    compiled_executable = comp(gm, [x, y])
+
+    self.assertIsNotNone(compiled_executable)
+    # The sliced view and transposed view must not be elided as whole-buffer
+    # passthroughs.
+    self.assertLen(compiled_executable._executable.get_output_layouts(), 3)
+
+    x_cpu = x.cpu().clone()
+    y_cpu = y.cpu().clone()
+    out_sum, out_slice, out_t = compiled_executable(x, y)
+    utils.assert_close(out_sum.cpu(), x_cpu + y_cpu)
+    utils.assert_close(out_slice.cpu(), x_cpu[1:])
+    utils.assert_close(out_t.cpu(), x_cpu.t())
+
+  def test_load_serialized_executable_metadata_envelope_validation(self):
+    def model_fn(x, y):
+      return x + y
+
+    x = torch.randn(2, 2, device=self.device)
+    y = torch.randn(2, 2, device=self.device)
+    gm = make_fx(model_fn)(x, y)
+    comp = StaticCompiler(debug=True)
+    compiled_executable = comp(gm, [x, y])
+    raw_serialized = tpu_torch_compile.serialize_executable(
+        compiled_executable._executable
+    )
+
+    magic = b'TT_EXEC_META_V1\x00'
+
+    with self.assertRaisesRegex(
+        RuntimeError,
+        (
+            r'load_serialized_executable\(\): failed to load executable: '
+            r'failed to parse serialized executable metadata envelope'
+        ),
+    ):
+      tpu_torch_compile.load_serialized_executable(magic + b'\x01\x00')
+
+    # Corrupt argument index (e.g. 10 >= num_params 2).
+    bad_arg_data = (
+        magic
+        + struct.pack('<Q', 1)
+        + struct.pack('<q', 10)
+        + struct.pack('<Q', 0)
+        + raw_serialized
+    )
+    with self.assertRaisesRegex(
+        RuntimeError,
+        (
+            r'load_serialized_executable\(\): failed to load executable: '
+            r'expected argument index in \[0, 2\), got 10'
+        ),
+    ):
+      tpu_torch_compile.load_serialized_executable(bad_arg_data)
+
+    # Corrupt passthrough index (e.g. 10 >= num_params 2).
+    bad_passthrough_data = (
+        magic
+        + struct.pack('<Q', 0)
+        + struct.pack('<Q', 1)
+        + struct.pack('<q', 10)
+        + raw_serialized
+    )
+    with self.assertRaisesRegex(
+        RuntimeError,
+        (
+            r'load_serialized_executable\(\): failed to load executable: '
+            r'expected passthrough index to be -1 or in \[0, 2\), got 10'
+        ),
+    ):
+      tpu_torch_compile.load_serialized_executable(bad_passthrough_data)
+
+    # Mismatched computed output count (0 computed outputs vs 1 expected).
+    bad_output_count_data = (
+        magic
+        + struct.pack('<Q', 0)
+        + struct.pack('<Q', 1)
+        + struct.pack('<q', 0)
+        + raw_serialized
+    )
+    with self.assertRaisesRegex(
+        RuntimeError,
+        (
+            r'load_serialized_executable\(\): failed to load executable: '
+            r'expected 1 computed outputs \(passthrough index -1\), got 0'
+        ),
+    ):
+      tpu_torch_compile.load_serialized_executable(bad_output_count_data)
 
 
 if __name__ == '__main__':

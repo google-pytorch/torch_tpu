@@ -356,6 +356,71 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ExtractMlirFromGraph(
   return mlir_module;
 }
 
+// Elides unmodified non donated input buffers returned directly as outputs so
+// XLA does not allocate duplicate output buffers or emit HBM to HBM copies.
+// Invariants:
+// - Result buffer must be non-deferred, static shape, contiguous, with 0
+//   storage offset and shape/strides matching the original input argument.
+//   Views (e.g. slices or transpositions) must remain computed outputs for XLA.
+// - Donated inputs must never be elided as PJRT invalidates donated buffers.
+// - At least one computed output must remain, because Traversal::Create
+//   requires a non-empty result set.
+[[nodiscard]] Indices ComputeOutputPassthroughArgIndices(
+    absl::Span<const DeviceBufferRef> argument_refs,
+    absl::Span<const at::Tensor> argument_tensors,
+    const Indices& argument_indices,
+    absl::Span<const at::Tensor> result_tensors,
+    std::vector<DeviceBufferRef>& result_refs,
+    absl::Span<const int64_t> unique_donated_inputs) {
+  Indices candidate_passthrough_indices(result_refs.size(), -1);
+  bool has_passthrough_output = false;
+  bool has_computed_output = false;
+  for (size_t j = 0; j < result_refs.size(); ++j) {
+    const DeviceBufferRef& result_ref = result_refs[j];
+    const at::Tensor& res_tensor = result_tensors[j];
+    if (!result_ref.is_deferred() && !result_ref.on_device_shape_is_dynamic() &&
+        result_ref.dynamic_dimensions().empty()) {
+      auto it = absl::c_find(argument_refs, result_ref);
+      if (it != argument_refs.cend()) {
+        const int64_t base_idx = std::distance(argument_refs.cbegin(), it);
+        if (!absl::c_linear_search(unique_donated_inputs, base_idx)) {
+          auto arg_it = absl::c_find(argument_indices, base_idx);
+          if (arg_it != argument_indices.cend()) {
+            const int64_t arg_idx =
+                std::distance(argument_indices.cbegin(), arg_it);
+            const at::Tensor& arg_tensor = argument_tensors[arg_idx];
+            if (res_tensor.sizes() == arg_tensor.sizes() &&
+                res_tensor.strides() == arg_tensor.strides() &&
+                res_tensor.storage_offset() == 0 &&
+                arg_tensor.storage_offset() == 0 &&
+                res_tensor.is_contiguous() && arg_tensor.is_contiguous() &&
+                res_tensor.dtype() == arg_tensor.dtype()) {
+              candidate_passthrough_indices[j] = base_idx;
+              has_passthrough_output = true;
+              continue;
+            }
+          }
+        }
+      }
+    }
+    has_computed_output = true;
+  }
+
+  if (!has_passthrough_output || !has_computed_output) {
+    return {};
+  }
+
+  std::vector<DeviceBufferRef> filtered_result_refs;
+  filtered_result_refs.reserve(result_refs.size());
+  for (size_t j = 0; j < result_refs.size(); ++j) {
+    if (candidate_passthrough_indices[j] < 0) {
+      filtered_result_refs.push_back(std::move(result_refs[j]));
+    }
+  }
+  result_refs = std::move(filtered_result_refs);
+  return candidate_passthrough_indices;
+}
+
 absl::StatusOr<AsyncCompileResult> TraverseAndCompile(
     const std::vector<at::Tensor>& result_tensors,
     const std::vector<at::Tensor>& argument_tensors,
@@ -395,6 +460,20 @@ absl::StatusOr<AsyncCompileResult> TraverseAndCompile(
 
   bool has_duplicates = argument_refs.size() < argument_tensors.size();
 
+  // Re-map donated inputs to deduplicated unique base arguments.
+  Indices unique_donated_inputs = options.donated_inputs;
+  if (has_duplicates && !options.donated_inputs.empty()) {
+    for (int64_t& donated_idx : unique_donated_inputs) {
+      if (donated_idx >= 0 && donated_idx < argument_indices.size()) {
+        donated_idx = argument_indices[donated_idx];
+      }
+    }
+    std::sort(unique_donated_inputs.begin(), unique_donated_inputs.end());
+    unique_donated_inputs.erase(
+        std::unique(unique_donated_inputs.begin(), unique_donated_inputs.end()),
+        unique_donated_inputs.end());
+  }
+
   std::vector<DeviceBufferRef> result_refs;
   result_refs.reserve(result_tensors.size());
   for (const at::Tensor& tensor : result_tensors) {
@@ -409,6 +488,10 @@ absl::StatusOr<AsyncCompileResult> TraverseAndCompile(
     result_refs.push_back(std::move(buffer_ref));
   }
 
+  Indices output_passthrough_arg_indices = ComputeOutputPassthroughArgIndices(
+      argument_refs, argument_tensors, argument_indices, result_tensors,
+      result_refs, unique_donated_inputs);
+
   TT_ASSIGN_OR_CRASH(  // CRASH_OK=implies a bug in compile backend if this
                        // happens
       auto traversal, Traversal::Create(std::move(result_refs)),
@@ -418,20 +501,6 @@ absl::StatusOr<AsyncCompileResult> TraverseAndCompile(
   ABSL_CHECK_OK(  // CRASH_OK=implies a bug in compile backend if this happens
       traversal->ValidateAndReorderArguments(std::move(argument_refs)))
       << "failed to validate and reorder traversal inputs";
-
-  // Re-map donated inputs to deduplicated unique base arguments.
-  Indices unique_donated_inputs = options.donated_inputs;
-  if (has_duplicates && !options.donated_inputs.empty()) {
-    for (int64_t& donated_idx : unique_donated_inputs) {
-      if (donated_idx >= 0 && donated_idx < argument_indices.size()) {
-        donated_idx = argument_indices[donated_idx];
-      }
-    }
-    std::sort(unique_donated_inputs.begin(), unique_donated_inputs.end());
-    unique_donated_inputs.erase(
-        std::unique(unique_donated_inputs.begin(), unique_donated_inputs.end()),
-        unique_donated_inputs.end());
-  }
 
   // Map argument layouts onto the deduplicated base buffers. A base buffer
   // takes its layout from an argument that covers the whole buffer unchanged:
@@ -510,16 +579,19 @@ absl::StatusOr<AsyncCompileResult> TraverseAndCompile(
 
   return AsyncCompileResult(
       std::move(module), std::move(compiled_kernel.fixed_shape_kernel),
-      has_duplicates ? std::move(argument_indices) : Indices{});
+      has_duplicates ? std::move(argument_indices) : Indices{},
+      std::move(output_passthrough_arg_indices));
 }
 
 AsyncCompileResult::AsyncCompileResult(
     absl_nullable std::shared_ptr<ContextedModule> module,
     SharedLoadedExecutableWithMetadataFuture executable_future,
-    Indices argument_indices)
+    Indices argument_indices, Indices output_passthrough_arg_indices)
     : module_(std::move(module)),
       executable_future_(std::move(executable_future)),
-      argument_indices_(std::move(argument_indices)) {
+      argument_indices_(std::move(argument_indices)),
+      output_passthrough_arg_indices_(
+          std::move(output_passthrough_arg_indices)) {
   ABSL_DCHECK(executable_future_.valid());
 }
 
@@ -543,9 +615,18 @@ absl::StatusOr<SharedLoadedExecutableWithMetadata> AsyncCompileResult::Get() {
     ABSL_DCHECK(executable_future_.valid());
     absl::StatusOr<SharedLoadedExecutableWithMetadata> status_or =
         executable_future_.get();
-    if (status_or.ok() && !argument_indices_.empty()) {
-      resolved_executable_ = LoadedExecutableWithMetadata::WithArgumentIndices(
-          *status_or, std::move(argument_indices_));
+    if (status_or.ok()) {
+      SharedLoadedExecutableWithMetadata executable = *std::move(status_or);
+      if (!argument_indices_.empty()) {
+        executable = LoadedExecutableWithMetadata::WithArgumentIndices(
+            executable, std::move(argument_indices_));
+      }
+      if (!output_passthrough_arg_indices_.empty()) {
+        executable =
+            LoadedExecutableWithMetadata::WithOutputPassthroughArgIndices(
+                executable, std::move(output_passthrough_arg_indices_));
+      }
+      resolved_executable_ = std::move(executable);
     } else {
       resolved_executable_ = std::move(status_or);
     }
@@ -658,6 +739,8 @@ template <typename TensorSpan>
 std::vector<at::Tensor> ExecuteCompiledModelImpl(
     const SharedLoadedExecutableWithMetadata& executable,
     TensorSpan argument_tensors, absl::Span<const OutputShape> output_shapes) {
+  const Indices& passthrough_indices =
+      executable->output_passthrough_arg_indices();
   // Fast path: for static shapes (output_shapes is empty), the executable
   // already owns the precomputed output shapes. Borrowing an absl::Span avoids
   // allocating and deep-copying a std::vector<Shape> on every single step.
@@ -666,8 +749,20 @@ std::vector<at::Tensor> ExecuteCompiledModelImpl(
   if (output_shapes.empty()) {
     result_shapes = executable->output_shapes();
   } else {
+    std::vector<OutputShape> filtered_output_shapes;
+    absl::Span<const OutputShape> pjrt_output_shapes = output_shapes;
+    if (!passthrough_indices.empty() &&
+        output_shapes.size() == passthrough_indices.size()) {
+      filtered_output_shapes.reserve(executable->output_shapes().size());
+      for (size_t j = 0; j < passthrough_indices.size(); ++j) {
+        if (passthrough_indices[j] < 0) {
+          filtered_output_shapes.push_back(output_shapes[j]);
+        }
+      }
+      pjrt_output_shapes = filtered_output_shapes;
+    }
     TT_ASSIGN_OR_THROW(dynamic_result_shapes,
-                       GetOutputShapes(executable, output_shapes));
+                       GetOutputShapes(executable, pjrt_output_shapes));
     result_shapes = dynamic_result_shapes;
   }
   // Get the materialized buffers for the bases of the argument tensors.
@@ -677,16 +772,61 @@ std::vector<at::Tensor> ExecuteCompiledModelImpl(
                      _.SetPrepend()
                          << "failed to prepare compiled mode arguments: ");
 
+  std::vector<DeviceBufferRef> passthrough_buffer_refs;
+  if (!passthrough_indices.empty()) {
+    const size_t num_passthrough =
+        std::count_if(passthrough_indices.begin(), passthrough_indices.end(),
+                      [](int64_t idx) { return idx >= 0; });
+    passthrough_buffer_refs.reserve(num_passthrough);
+    for (int64_t arg_idx : passthrough_indices) {
+      if (arg_idx >= 0) {
+        ABSL_CHECK(  // CRASH_OK=implies a bug in compile backend if this
+                     // happens
+            arg_idx < static_cast<int64_t>(argument_buffer_refs.size()))
+            << "Passthrough argument index " << arg_idx
+            << " is out of bounds for " << argument_buffer_refs.size()
+            << " base arguments. This is a TorchTPU bug.";
+        passthrough_buffer_refs.push_back(argument_buffer_refs[arg_idx]);
+      }
+    }
+  }
+
   TT_ASSIGN_OR_THROW(
       std::vector<DeviceBufferRef> result_buffer_refs,
       EnqueueExecutable(executable, std::move(argument_buffer_refs),
                         result_shapes));
 
-  auto num_outputs = result_buffer_refs.size();
+  if (passthrough_indices.empty()) {
+    const size_t num_outputs = result_buffer_refs.size();
+    std::vector<at::Tensor> output_tensors;
+    output_tensors.reserve(num_outputs);
+    for (auto& result_buffer : result_buffer_refs) {
+      output_tensors.push_back(MakeTensor(std::move(result_buffer)));
+    }
+
+    return output_tensors;
+  }
+
   std::vector<at::Tensor> output_tensors;
-  output_tensors.reserve(num_outputs);
-  for (auto& result_buffer : result_buffer_refs) {
-    output_tensors.push_back(MakeTensor(std::move(result_buffer)));
+  output_tensors.reserve(passthrough_indices.size());
+  ABSL_CHECK_EQ(  // CRASH_OK=implies a bug in compile backend if this happens
+      passthrough_buffer_refs.size() + result_buffer_refs.size(),
+      passthrough_indices.size())
+      << "Passthrough and computed output counts do not sum to the logical "
+         "output count. This is a TorchTPU bug.";
+  size_t passthrough_idx = 0;
+  size_t pjrt_idx = 0;
+  for (size_t j = 0; j < passthrough_indices.size(); ++j) {
+    if (passthrough_indices[j] >= 0) {
+      ABSL_DCHECK_LT(passthrough_idx, passthrough_buffer_refs.size());
+      const DeviceBufferRef& saved_passthrough_ref =
+          passthrough_buffer_refs[passthrough_idx++];
+      output_tensors.push_back(MakeTensor(saved_passthrough_ref));
+    } else {
+      ABSL_DCHECK_LT(pjrt_idx, result_buffer_refs.size());
+      output_tensors.push_back(
+          MakeTensor(std::move(result_buffer_refs[pjrt_idx++])));
+    }
   }
 
   return output_tensors;

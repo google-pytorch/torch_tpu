@@ -115,13 +115,20 @@ class AsyncCompileResult {
   //     base buffer, `Traversal` deduplicates them so the XLA computation takes
   //     only the `K` unique base buffers as parameters; `argument_indices`
   //     records which unique base buffer each original input maps to so runtime
-  //     execution can deduplicate call-site arguments in the same order. Empty
+  //     execution can deduplicate call site arguments in the same order. Empty
   //     when all input tensors already have distinct base buffers (`K == N`),
   //     and attached to the resolved `LoadedExecutableWithMetadata` via
   //     `WithArgumentIndices` on the first call to `Get()`.
+  //   `output_passthrough_arg_indices`: Optional mapping of length `M` (the
+  //     logical output count of `TraverseAndCompile`) where entry `j` having
+  //     value `k >= 0` indicates that logical output `j` is an unmodified
+  //     passthrough of deduplicated base argument `k`, and `-1` indicates that
+  //     logical output `j` is taken in order from the outputs produced by the
+  //     compiled XLA executable.
   AsyncCompileResult(absl_nullable std::shared_ptr<ContextedModule> module,
                      SharedLoadedExecutableWithMetadataFuture executable_future,
-                     Indices argument_indices);
+                     Indices argument_indices,
+                     Indices output_passthrough_arg_indices = {});
 
   AsyncCompileResult(const AsyncCompileResult&) = delete;
   AsyncCompileResult& operator=(const AsyncCompileResult&) = delete;
@@ -137,7 +144,8 @@ class AsyncCompileResult {
   bool IsReady() const;
 
   // Blocks until compilation finishes and returns the executable, with any
-  // deduplicated argument indices applied once.
+  // deduplicated argument indices and output passthrough argument indices
+  // applied once.
   //
   // May be called repeatedly and concurrently from multiple threads; every
   // call returns the same executable (or error status).
@@ -148,6 +156,7 @@ class AsyncCompileResult {
   absl_nullable std::shared_ptr<ContextedModule> module_;
   SharedLoadedExecutableWithMetadataFuture executable_future_;
   Indices argument_indices_;
+  Indices output_passthrough_arg_indices_;
   std::optional<absl::StatusOr<SharedLoadedExecutableWithMetadata>>
       resolved_executable_;
 };
