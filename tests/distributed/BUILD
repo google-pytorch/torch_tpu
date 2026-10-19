@@ -480,14 +480,20 @@ torch_tpu_py_test(
         REQUIRES_V5_MULTI_DEVICE,
         "nosan",  # *san has low value for error tests.
     ],
-    deps = [
+    deps = if_oss(
+        [],
+        ["@pypi//torchcomms"],
+    ) + [
         ":continuous_test_utils",
         ":distributed_utils",
         "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal:testing",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/distributed:process_group_utils",
+        "//src/torch_tpu/_internal/distributed:torchcomm_tpu",
         "//src/torch_tpu/_internal/pallas",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:error_testing",
@@ -512,14 +518,20 @@ torch_tpu_py_test(
         "nosan",  # *san builds are low-value for error tests.
         "requires-tpu-v5lite:8",
     ],
-    deps = [
+    deps = if_oss(
+        [],
+        ["@pypi//torchcomms"],
+    ) + [
         ":continuous_test_utils",
         ":distributed_utils",
         "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal:testing",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/distributed:process_group_utils",
+        "//src/torch_tpu/_internal/distributed:torchcomm_tpu",
         "//src/torch_tpu/_internal/pallas",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:error_testing",

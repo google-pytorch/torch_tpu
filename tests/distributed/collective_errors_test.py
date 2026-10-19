@@ -27,10 +27,13 @@ before the open source release.
 """
 
 import datetime
+import operator
 import os
 import re
+from unittest import mock
 
 from absl.testing import absltest
+from absl.testing import parameterized
 import jax
 from jax.sharding import PartitionSpec as P
 import torch
@@ -38,12 +41,20 @@ from torch import distributed as dist
 import torch.multiprocessing as mp
 from torch_tpu._internal import pallas
 from torch_tpu._internal import testing as tt_testing
+from torch_tpu._internal.distributed import process_group_utils
+from torch_tpu._internal.distributed import torchcomm_tpu
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import error_testing as et
 from tests.distributed import continuous_test_utils
 from tests.distributed import distributed_utils
 
+try:
+  import torchcomms
+except ImportError:
+  torchcomms = None
+
+ProcessGroupId = process_group_utils.ProcessGroupId
 
 _UNSUPPORTED_64BIT_REDUCE_OPS = (
     (
@@ -577,8 +588,42 @@ def run_scatter_mismatch_input_shapes() -> None:
   # Intentionally do NOT call scatter on non-root ranks.
 
 
+def run_barrier_rejects_foreign_device_ids() -> None:
+  """Tests barrier rejects device ids this process does not own."""
+  # A process addresses a single TPU, so only [0] is meaningful. When the first
+  # device id is out of bounds (e.g. [1]), c10d::ProcessGroup::barrier fails
+  # while allocating the dispatch tensor on tpu:1. When the first id is 0 but
+  # multiple ids are given, ProcessGroupTpu::barrier rejects device_ids.
+  for device_ids, exc_type, msg_regex in (
+      (
+          [1],
+          RuntimeError,
+          r"device index 1 is out of bounds of the number of addressable"
+          r" devices 1",
+      ),
+      (
+          [0, 0],
+          NotImplementedError,
+          r"device_ids in barrier options is not supported, except "
+          r"device_ids=\[0\] which names this process's own device",
+      ),
+      (
+          [0, 1],
+          NotImplementedError,
+          r"device_ids in barrier options is not supported, except "
+          r"device_ids=\[0\] which names this process's own device",
+      ),
+  ):
+    with et.assert_raises_message(
+        exc_type,
+        tpu=re.compile(f".*{msg_regex}.*", re.DOTALL),
+    ):
+      torch.distributed.barrier(device_ids=device_ids)
+
+
 def run_collective_validation_errors() -> None:
   """Runs synchronous collective input validation error checks."""
+  run_barrier_rejects_foreign_device_ids()
   run_all_reduce_error()
   run_all_gather_tensor_wrong_number_output_dimensions()
   run_all_gather_tensor_wrong_concat_dimension()
@@ -1196,6 +1241,34 @@ class CollectiveErrorsTest(
   def test_all_to_all_collective_errors(self):
     run_all_to_all_collective_errors()
 
+  def test_uneven_all_gather_into_tensor_dim0_raises(self):
+    world_size = dist.get_world_size()
+    x = torch.ones((2, 2), device="tpu", dtype=torch.float32)
+    output = torch.empty(
+        (2 * world_size - 1, 2), device="tpu", dtype=torch.float32
+    )
+    expected_msg = (
+        "distributed.all_gather_into_tensor(): expected output for"
+        " concatenation to be a tensor with size equal to world size * input"
+        " size at dimension 0, got output shape"
+        f" [{2 * world_size - 1}, 2], input shape [2, 2], and world size"
+        f" {world_size}"
+    )
+    with et.assert_raises_message(RuntimeError, tpu=expected_msg):
+      torch.distributed.all_gather_into_tensor(output, x)
+
+  def test_uneven_reduce_scatter_tensor_dim0_raises(self):
+    world_size = dist.get_world_size()
+    output = torch.zeros((3, 4, 5), device="tpu")
+    input_invalid = torch.zeros((10, 4, 5), device="tpu")
+    expected_msg = (
+        "distributed.reduce_scatter_tensor(): expected the input tensor to be"
+        f" either of shape [{world_size*3}, 4, 5] or of shape [{world_size},"
+        " 3, 4, 5], got [10, 4, 5]"
+    )
+    with et.assert_raises_message(RuntimeError, tpu=expected_msg):
+      torch.distributed.reduce_scatter_tensor(output, input_invalid)
+
 
 class ProcessGroupTpuErrorsTest(et.TpuOnlyDistributedErrorTestBase):
 
@@ -1214,6 +1287,224 @@ class ProcessGroupTpuErrorsTest(et.TpuOnlyDistributedErrorTestBase):
         nproc_per_node=_PG_WORLD_SIZE,
         fn=run_missing_rank_and_local_rank_out_of_range,
     )
+
+  def test_collective_after_finalize_raises_runtime_error(self):
+    if torchcomms is None:
+      self.skipTest("torchcomms is not available")
+    torchcomm_tpu.register_torchcomms_tpu()
+    comm = torchcomms.new_comm("tpu", torch.device("cpu"), name="test_finalize")
+    comm.finalize()
+    dummy_tensor = torch.tensor([1.0])
+    with et.assert_raises_message(
+        RuntimeError, tpu=re.compile(r".*finalized.*", re.DOTALL)
+    ):
+      comm.all_reduce(dummy_tensor, op=torchcomms.ReduceOp.SUM, async_op=False)
+
+  def test_to_dist_reduce_op_unsupported_raises_value_error(self):
+    if torchcomms is None:
+      self.skipTest("torchcomms is not available")
+    torchcomm_tpu.register_torchcomms_tpu()
+    invalid_op = mock.MagicMock(spec=torchcomms.ReduceOp)
+    invalid_op.type = "UNSUPPORTED_TYPE"
+    with et.assert_raises_message(ValueError, tpu=re.compile(r".*", re.DOTALL)):
+      torchcomm_tpu._to_dist_reduce_op(invalid_op)
+
+  @parameterized.named_parameters(
+      ("create_pair_comm", lambda b, t: b.create_pair_comm(1)),
+      ("split_group", lambda b, t: b.split_group([0, 1])),
+      ("reconfigure", lambda b, t: b.reconfigure(ranks=[0, 1], size=2)),
+      ("create_window", lambda b, t: b.create_window(t)),
+      ("map_remote_tensor", lambda b, t: b.map_remote_tensor(t, peer_rank=1)),
+      ("create_batch", lambda b, t: b.create_batch()),
+      ("all_reduce_coalesced", lambda b, t: b.all_reduce_coalesced([t])),
+      ("all_gather_coalesced", lambda b, t: b.all_gather_coalesced([[t]], [t])),
+      (
+          "reduce_scatter_coalesced",
+          lambda b, t: b.reduce_scatter_coalesced([t], [[t]]),
+      ),
+      (
+          "all_to_all_coalesced",
+          lambda b, t: b.all_to_all_coalesced([[t]], [[t]]),
+      ),
+      ("reduce", lambda b, t: b.reduce(t, dst=0)),
+      ("gather", lambda b, t: b.gather(input_tensor=t, dst=0)),
+      ("scatter", lambda b, t: b.scatter(output_tensor=t, src=0)),
+      ("monitored_barrier", lambda b, t: b.monitored_barrier()),
+      (
+          "register_flight_recorder_hook",
+          lambda b, t: b.register_flight_recorder_hook(mock.MagicMock()),
+      ),
+      (
+          "get_flight_recorder_traces",
+          lambda b, t: b.get_flight_recorder_traces(),
+      ),
+      (
+          "broadcast_object_list",
+          lambda b, t: b.broadcast_object_list([1, 2, 3]),
+      ),
+      ("all_gather_object", lambda b, t: b.all_gather_object([], {"a": 1})),
+      ("gather_object", lambda b, t: b.gather_object({"a": 1})),
+      ("scatter_object_list", lambda b, t: b.scatter_object_list([])),
+  )
+  def test_unsupported_stubs_raise_not_implemented(self, stub_fn):
+    if torchcomms is None:
+      self.skipTest("torchcomms is not available")
+    torchcomm_tpu.register_torchcomms_tpu()
+    comm = torchcomms.new_comm("tpu", torch.device("cpu"), name="test_stubs")
+    backend = comm.get_backend_impl()
+    t = torch.zeros(4, device="cpu")
+    try:
+      with et.assert_raises_message(
+          NotImplementedError, tpu=re.compile(r".*", re.DOTALL)
+      ):
+        stub_fn(backend, t)
+    finally:
+      comm.finalize()
+
+  def test_get_device_SetsDefault(self):
+    comm = torchcomm_tpu.TorchCommTPU(backend_name="tpu", device=None)
+    self.assertIsNotNone(comm.get_device())
+
+  def test_all_gather_single_mismatched_size_raises(self):
+    comm = torchcomm_tpu.TorchCommTPU(backend_name="tpu", device="cpu")
+    with et.assert_raises_message(
+        RuntimeError, tpu=re.compile(r".*not initialized.*", re.DOTALL)
+    ):
+      comm.all_gather_single(torch.zeros(4), torch.zeros(2))
+
+  def test_extract_process_group_id_non_collective_op_raises(self) -> None:
+    graph = torch.fx.Graph()
+    x = graph.placeholder("x")
+    node = graph.call_function(operator.add, args=(x, x))
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile(
+            r".*expected node target to be in .* torch_tpu bug.*", re.DOTALL
+        ),
+    ):
+      process_group_utils._extract_process_group_id_from_node(node)
+
+  def test_extract_process_group_id_empty_ranks_raises(self) -> None:
+    graph = torch.fx.Graph()
+    x = graph.placeholder("x")
+    node = graph.call_function(
+        torch.ops._c10d_functional.all_reduce,
+        args=(x, "sum", []),
+    )
+    with et.assert_raises_message(
+        ValueError, tpu=re.compile(r".*ranks cannot be empty.*", re.DOTALL)
+    ):
+      process_group_utils._extract_process_group_id_from_node(node)
+
+  def test_extract_process_group_id_missing_group_raises(self) -> None:
+    graph = torch.fx.Graph()
+    x = graph.placeholder("x")
+    node = graph.call_function(
+        torch.ops._c10d_functional.all_reduce,
+        args=(x, "sum"),
+    )
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile(
+            r".*Could not infer process group argument.*", re.DOTALL
+        ),
+    ):
+      process_group_utils._extract_process_group_id_from_node(node)
+
+  def test_extract_process_group_id_unsupported_group_type_raises(self) -> None:
+    graph = torch.fx.Graph()
+    x = graph.placeholder("x")
+    node = graph.call_function(
+        torch.ops._c10d_functional.all_reduce,
+        args=(x, "sum", 3.14),
+    )
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile(r".*Unsupported process group type.*", re.DOTALL),
+    ):
+      process_group_utils._extract_process_group_id_from_node(node)
+
+  def test_extract_process_group_id_uninitialized_dist_str_raises(self) -> None:
+    graph = torch.fx.Graph()
+    x = graph.placeholder("x")
+    node_str = graph.call_function(
+        torch.ops._c10d_functional.all_reduce,
+        args=(x, "sum", "0"),
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(r".*Could not resolve the process group.*", re.DOTALL),
+    ):
+      process_group_utils._extract_process_group_id_from_node(node_str)
+
+  def test_extract_process_group_id_uninitialized_dist_int_raises(self) -> None:
+    graph = torch.fx.Graph()
+    x = graph.placeholder("x")
+    node_int = graph.call_function(
+        torch.ops._c10d_functional.all_reduce,
+        args=(x, "sum", 0),
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(r".*Could not resolve the process group.*", re.DOTALL),
+    ):
+      process_group_utils._extract_process_group_id_from_node(node_int)
+
+  def test_empty_ranks_raises_value_error(self) -> None:
+    with et.assert_raises_message(
+        ValueError, tpu=re.compile(r".*ranks cannot be empty.*", re.DOTALL)
+    ):
+      ProcessGroupId([])
+
+  def test_negative_rank_raises_value_error(self) -> None:
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile(r".*All ranks must be non-negative.*", re.DOTALL),
+    ):
+      ProcessGroupId([-1, 0])
+
+  @parameterized.named_parameters(
+      ("zero", 0),
+      ("negative", -2),
+  )
+  def test_invalid_world_size_raises_value_error(self, world_size: int) -> None:
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile(r".*world_size must be strictly positive.*", re.DOTALL),
+    ):
+      ProcessGroupId([0, 1], world_size=world_size)
+
+  @parameterized.named_parameters(
+      ("rank_4_world_size_4", [0, 4], 4, r".*All ranks must be in \[0, 4\).*"),
+      ("rank_2_world_size_2", [0, 2], 2, r".*All ranks must be in \[0, 2\).*"),
+  )
+  def test_rank_out_of_world_size_raises_value_error(
+      self, ranks: list[int], world_size: int, pattern: str
+  ) -> None:
+    with et.assert_raises_message(
+        ValueError, tpu=re.compile(pattern, re.DOTALL)
+    ):
+      ProcessGroupId(ranks, world_size=world_size)
+
+  def test_duplicate_ranks_raises_value_error(self) -> None:
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile(r".*ranks must not contain duplicates.*", re.DOTALL),
+    ):
+      ProcessGroupId([0, 1, 1])
+
+  @parameterized.named_parameters(
+      ("descending", [1, 0]),
+      ("unsorted_tail", [0, 3, 2]),
+  )
+  def test_unsorted_ranks_raises_value_error(self, ranks: list[int]) -> None:
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile(
+            r".*ranks must be sorted in ascending order.*", re.DOTALL
+        ),
+    ):
+      ProcessGroupId(ranks)
 
 
 if __name__ == "__main__":
