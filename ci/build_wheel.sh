@@ -85,6 +85,6 @@ echo "===> Running Twine check over built wheels..."
 docker run --rm \
   -v "${WHEEL_DIR}:/dist" \
   "${CONTAINER_IMAGE}" \
-  bash -c "uv run --isolated --with twine twine check /dist/torch_tpu-*.whl"
+  bash -c "uv run --isolated --with twine twine check --strict /dist/torch_tpu-*.whl"
 
 echo "===> Kokoro wheel build successful!"

@@ -52,7 +52,7 @@ runs:
       shell: bash
       run: |
         WHEEL_DIR=dist
-        uv run --isolated --no-project --with twine twine check $WHEEL_DIR/*.whl
+        uv run --isolated --no-project --with twine twine check --strict $WHEEL_DIR/*.whl
     - name: Upload wheel to GCS
       id: upload
       shell: bash

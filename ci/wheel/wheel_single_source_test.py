@@ -12,7 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import email.message
+import email.parser
 import os
+import pathlib
 import tomllib
 import zipfile
 
@@ -30,6 +33,25 @@ def normalize_req(req_string):
   )
 
 
+def get_wheel_metadata_files(wheel_path: str) -> list[str]:
+  """Returns all archive member paths containing 'METADATA'."""
+  with zipfile.ZipFile(wheel_path, "r") as z:
+    return [n for n in z.namelist() if "METADATA" in n]
+
+
+def read_wheel_metadata(wheel_path: str) -> email.message.Message:
+  """Parses the .dist-info/METADATA file from the built wheel."""
+  with zipfile.ZipFile(wheel_path, "r") as z:
+    metadata_files = [
+        n for n in z.namelist() if n.endswith(".dist-info/METADATA")
+    ]
+    if not metadata_files:
+      raise FileNotFoundError(
+          "Could not find .dist-info/METADATA file in wheel."
+      )
+    return email.parser.BytesParser().parsebytes(z.read(metadata_files[0]))
+
+
 def get_wheel_dependencies(wheel_path, pyproject_path, is_local_torch):
   """Parses pyproject.toml and the built wheel to extract dependencies."""
   # 1. Parse expected dependencies from pyproject.toml.
@@ -44,30 +66,42 @@ def get_wheel_dependencies(wheel_path, pyproject_path, is_local_torch):
     }
 
   # 2. Extract actual dependencies from the wheel.
-  actual_deps = set()
-  with zipfile.ZipFile(wheel_path, "r") as z:
-    # Strictly look for the core METADATA file in the dist-info folder
-    metadata_files = [
-        n for n in z.namelist() if n.endswith(".dist-info/METADATA")
-    ]
-    if not metadata_files:
-      raise FileNotFoundError(
-          "Could not find .dist-info/METADATA file in wheel."
-      )
-
-    with z.open(metadata_files[0]) as f:
-      for line in f.read().decode("utf-8").splitlines():
-        if line.lower().startswith("requires-dist:"):
-          # Extract the raw string after the colon.
-          req = line.split(":", 1)[1]
-          # Drop environment markers.
-          req = req.split(";")[0]
-          actual_deps.add(normalize_req(req))
+  msg = read_wheel_metadata(wheel_path)
+  actual_deps = {
+      normalize_req(req.split(";")[0])
+      for req in msg.get_all("Requires-Dist") or ()
+  }
 
   return expected_deps, actual_deps
 
 
 class WheelSingleSourceTest(absltest.TestCase):  # ABSLTEST_OK=Wheel test
+
+  def test_single_metadata_file_in_wheel(self):
+    metadata_files = get_wheel_metadata_files(os.environ["WHEEL_PATH"])
+    self.assertLen(
+        metadata_files,
+        1,
+        "Expected exactly one file matching '*METADATA*' in the wheel (Twine"
+        " searches all entries containing 'METADATA'), but found:"
+        f" {metadata_files}",
+    )
+    self.assertTrue(
+        metadata_files[0].endswith(".dist-info/METADATA"),
+        f"Expected .dist-info/METADATA, got {metadata_files[0]}",
+    )
+
+  def test_description_and_summary_match(self):
+    pyproject_path = pathlib.Path(os.environ["PYPROJECT_PATH"])
+    with pyproject_path.open("rb") as f:
+      pyproject = tomllib.load(f)
+    readme_path = pyproject_path.parent / pyproject["project"]["readme"]
+    expected_readme = readme_path.read_text(encoding="utf-8").strip()
+
+    msg = read_wheel_metadata(os.environ["WHEEL_PATH"])
+    self.assertEqual(msg["Summary"], pyproject["project"]["description"])
+    self.assertEqual(msg["Description-Content-Type"], "text/markdown")
+    self.assertEqual(msg.get_payload().strip(), expected_readme)
 
   def test_dependencies_match(self):
     expected_deps, actual_deps = get_wheel_dependencies(
