@@ -390,7 +390,6 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu:_loader",
         "//src/torch_tpu/_internal/compile:compiler",
-        "//src/torch_tpu/_internal/compile:debug",
         "//src/torch_tpu/_internal/compile:tpu_backend",
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",
         "//src/torch_tpu/_internal/device_utils:annotations",
@@ -680,6 +679,91 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/compile:torch_tpu_compiled_executable",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "async_compile_errors_test",
+    srcs = ["async_compile_errors_test.py"],
+    tags = [
+        "nosan",  # *san builds are low-value for error tests.
+        "requires-net:external",
+        "requires-tpu-v5lite",
+    ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal:testing",
+        "//src/torch_tpu/_internal/compile",
+        "//src/torch_tpu/_internal/compile:compiler",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "async_compiled_artifact_errors_test",
+    srcs = ["async_compiled_artifact_errors_test.py"],
+    tags = [
+        "nosan",  # *san builds are low-value for error tests.
+    ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile:torch_tpu_compiled_executable",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "compile_api_errors_test",
+    srcs = ["compile_api_errors_test.py"],
+    tags = [
+        "nosan",  # *san builds are low-value for error tests.
+        "requires-tpu-v5lite",
+    ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal:testing",
+        "//src/torch_tpu/_internal/compile:compiler",
+        "//src/torch_tpu/_internal/compile:debug",
+        "//src/torch_tpu/_internal/compile:tpu_torch_compile",
+        "//src/torch_tpu/_internal/execution_mode",
+        "//src/torch_tpu/_internal/utils:test_utils",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "ensure_no_dynamic_errors_test",
+    srcs = ["ensure_no_dynamic_errors_test.py"],
+    tags = [
+        "nosan",  # *san builds are low-value for error tests.
+        "requires-tpu-v5lite",
+    ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal:testing",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "sink_get_attr_constants_errors_test",
+    srcs = ["sink_get_attr_constants_errors_test.py"],
+    tags = [
+        "nosan",  # *san builds are low-value for error tests.
+    ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile/fx_passes:sink_get_attr_constants",
         "//tests:seed_test_utils",
     ],
 )

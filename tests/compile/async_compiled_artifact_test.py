@@ -157,54 +157,6 @@ class AsyncCompiledArtifactTest(seed_test_utils.RepeatableTest):
     artifact.set_triton_bundle(triton_bundle=None)
     self.assertFalse(artifact.is_resolved)
 
-  def test_magic_attributes_do_not_resolve_and_raise_attribute_error(self):
-    future = concurrent.futures.Future()
-    artifact = AsyncCompiledArtifact(future)
-
-    with self.assertRaises(AttributeError):
-      _ = artifact.__non_existent_magic_attr__
-
-    self.assertFalse(artifact.is_resolved)
-
-    # Special framework attributes return class defaults without resolving
-    self.assertIsNone(artifact._fx_graph_cache_key)
-    self.assertFalse(artifact._is_fallback)
-    self.assertFalse(artifact.is_resolved)
-
-  def test_exception_propagation_on_resolve(self):
-    future = concurrent.futures.Future()
-    future.set_exception(RuntimeError("Simulated XLA compilation failure"))
-
-    artifact = AsyncCompiledArtifact(future)
-    self.assertFalse(artifact.is_resolved)
-
-    with self.assertRaisesRegex(
-        RuntimeError, "Simulated XLA compilation failure"
-    ):
-      artifact.resolve()
-
-    self.assertFalse(artifact.is_resolved)
-
-  def test_exception_propagation_on_call(self):
-    future = concurrent.futures.Future()
-    future.set_exception(ValueError("Invalid tensor layout"))
-
-    artifact = AsyncCompiledArtifact(future)
-
-    with self.assertRaisesRegex(ValueError, "Invalid tensor layout"):
-      artifact([])
-
-    self.assertFalse(artifact.is_resolved)
-
-  def test_exception_propagation_on_getattr(self):
-    future = concurrent.futures.Future()
-    future.set_exception(RuntimeError("Compile error"))
-
-    artifact = AsyncCompiledArtifact(future)
-
-    with self.assertRaisesRegex(RuntimeError, "Compile error"):
-      _ = artifact.some_missing_attr
-
   def test_exception_does_not_raise_on_passive_checks(self):
     future = concurrent.futures.Future()
     future.set_exception(RuntimeError("Compile error"))

@@ -1786,28 +1786,6 @@ class DynamicDropoutTest(seed_test_utils.RepeatableTest):
 
 class DynamicErrorHandlingTest(seed_test_utils.RepeatableTest):
 
-  def test_mlir_lowering_failure_raises_not_implemented_error(self):
-    def simple(x):
-      return x + 1.0
-
-    with mock.patch.object(
-        _backend.compiler.StaticCompiler,
-        "__call__",
-        side_effect=RuntimeError("MLIR lowering failed"),
-    ):
-      compiled = torch.compile(simple, backend="tpu")
-      device = torch.accelerator.current_accelerator()
-      t = torch.ones(4, device=device)
-      torch._dynamo.mark_dynamic(t, 0, min=2, max=8)
-      with self.assertRaises(
-          (NotImplementedError, torch._dynamo.exc.BackendCompilerFailed)
-      ) as ctx:
-        compiled(t)
-      self.assertIn(
-          "torch.compile(..., dynamic=False, ...)", str(ctx.exception)
-      )
-      self.assertIn("MLIR lowering failed", str(ctx.exception))
-
   def test_dynamic_compiler_options(self):
     def simple(x):
       return x + 1.0
