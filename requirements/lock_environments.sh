@@ -24,7 +24,7 @@
 #     https://docs.astral.sh/uv/getting-started/installation/
 #   Navigate to the directory containing the pyproject.toml file.
 #   Run this script.
-#     $ ./requirements/lock_environments.sh
+#     $ ./requirements/lock_environments.sh [--pytorch-index-base URL]
 
 set -e
 
@@ -33,6 +33,26 @@ working_dir="$script_dir/.."
 cd "$working_dir"
 
 PYTHON_PLATFORM="x86_64-manylinux_2_31"
+
+PYTORCH_INDEX_BASE="https://download.pytorch.org"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --pytorch-index-base)
+      PYTORCH_INDEX_BASE="$2"
+      shift 2
+      ;;
+    --pytorch-index-base=*)
+      PYTORCH_INDEX_BASE="${1#*=}"
+      shift
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      echo "Usage: $0 [--pytorch-index-base URL]" >&2
+      exit 2
+      ;;
+  esac
+done
 
 # Loop over supported Python versions and generate the full-environment locks.
 for version in "3.11" "3.12" "3.13" "3.14"; do
@@ -68,7 +88,6 @@ for version in "3.11" "3.12" "3.13" "3.14"; do
     --python-platform "$PYTHON_PLATFORM" \
     --resolution lowest-direct \
     --generate-hashes \
-    --index-url https://pypi.org/simple \
     --output-file "$REQUIREMENTS_CUDA_FILE"
 done
 
@@ -116,8 +135,7 @@ for version in $(uv run --no-project bazel/pytorch_versions.py EXTRA_PYTORCH_VER
   # the PyTorch CPU index while PyPI stays the primary index.
   uv pip compile - \
     --no-deps \
-    --index-url https://pypi.org/simple \
-    --extra-index-url https://download.pytorch.org/whl/cpu \
+    --extra-index-url "$PYTORCH_INDEX_BASE/whl/cpu" \
     --python-platform "$PYTHON_PLATFORM" \
     --index-strategy unsafe-best-match \
     --generate-hashes \
@@ -139,8 +157,7 @@ fi
 
 uv pip compile - \
   --no-deps \
-  --index-url https://pypi.org/simple \
-  --extra-index-url https://download.pytorch.org/whl/nightly/cpu \
+  --extra-index-url "$PYTORCH_INDEX_BASE/whl/nightly/cpu" \
   --python-platform "$PYTHON_PLATFORM" \
   --index-strategy unsafe-best-match \
   --prerelease allow \
