@@ -28,9 +28,7 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
-#include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
-#include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
@@ -68,14 +66,12 @@ absl::Status FillTensorHelper(at::Tensor& self, const at::Tensor& fill_value,
     return result_op;
   };
 
-  TT_ASSIGN_OR_RETURN(
-      auto result_buf,
-      DispatchOp<1>(std::move(op_builder),
-                    /*inputs=*/{fill_value},
-                    {.out_dtype = out_mlir_element_type,
-                     .out_dims = target_sizes,
-                     .op_param_cache_keys = std::move(param_keys)}));
-  return AssignBufferToAtTensor(std::move(result_buf), self);
+  return DispatchOpOut<1>(std::move(op_builder),
+                          /*inputs=*/{fill_value},
+                          /*outputs=*/self,
+                          {.out_dtype = out_mlir_element_type,
+                           .out_dims = target_sizes,
+                           .op_param_cache_keys = std::move(param_keys)});
 }
 
 }  // namespace
