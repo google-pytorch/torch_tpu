@@ -409,7 +409,6 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu:_loader",
         "//src/torch_tpu/_internal/compile:compiler",
-        "//src/torch_tpu/_internal/compile:debug",
         "//src/torch_tpu/_internal/compile:tpu_backend",
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",
         "//src/torch_tpu/_internal/device_utils:annotations",

@@ -48,14 +48,6 @@ class EnsureNoDynamicTest(seed_test_utils.RepeatableTest):
     compiled = torch.compile(simple, backend="tpu")
     compiled(input_1).to("cpu")
 
-  def test_dynamic_true_not_supported(self):
-    input_1 = torch.tensor([0.1, 0.2], device=torch.device("tpu"))
-
-    compiled = torch.compile(simple, dynamic=True, backend="tpu")
-    with self.assertRaises(Exception) as err:
-      compiled(input_1).to("cpu")
-    self.assertIn("dynamic=True", str(err.exception))
-
   def test_dynamic_none_and_size_change_recompile_supported(self):
     input_1 = torch.tensor([0.1, 0.2])
     input_1_tpu = input_1.to(torch.device("tpu"))

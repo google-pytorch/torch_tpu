@@ -16,6 +16,7 @@
 
 import collections
 from collections.abc import Mapping, Sequence
+import concurrent.futures
 import contextlib
 import os
 import re
@@ -25,12 +26,14 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import torch
 import torch.distributed as dist
+from torch.fx import Graph, GraphModule
 from torch.fx.experimental.proxy_tensor import make_fx
 import torch.multiprocessing as mp
 from torch.nn.attention import flex_attention
 from torch.testing._internal.distributed import fake_pg
 from torch.tpu import distributed  # pyrefly: ignore[missing-import]
 from torch.utils import _pytree as pytree
+from torch_tpu._internal import compile as internal_compile
 from torch_tpu._internal import dynamism
 from torch_tpu._internal import env
 from torch_tpu._internal import env_utils
@@ -40,6 +43,8 @@ from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import flex_attention as tpu_flex_attention
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.compiler import StaticCompiler
+from torch_tpu._internal.compile.fx_passes import sink_get_attr_constants
+from torch_tpu._internal.compile.torch_tpu_compiled_executable import AsyncCompiledArtifact
 from torch_tpu._internal.distributed import distributed as internal_distributed
 from torch_tpu._internal.export import export as torch_tpu_export
 from torch_tpu._internal.pallas import tpu_torch_pallas
@@ -1682,6 +1687,20 @@ Please use clone() or contiguous() to copy the tensor before writing""",
           q, k, v, attn_mask=attn_mask
       ).cpu()
 
+  @et.why_tpu_only("torch.compile(..., dynamic=True) error is TPU specific.")
+  def test_dynamic_true_not_supported(self):
+    input_1 = torch.tensor([0.1, 0.2], device=et.device())
+
+    def simple(x):
+      return 0.3 * x
+
+    compiled = torch.compile(simple, dynamic=True, backend="tpu")
+    with et.assert_raises_message(
+        Exception,
+        tpu=re.compile(r".*dynamic=True.*", re.DOTALL),
+    ):
+      compiled(input_1).to("cpu")
+
   @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
   def test_mark_dynamic_multiple_dimensions_failure(self):
     inp = torch.ones(10, 10, device=et.device(), dtype=torch.float32)
@@ -1911,6 +1930,56 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         tpu="""dynamic_reshape(): expected shape to be a list of int32 tensors, got float32 tensor at index 0""",
     ):
       torch.ops.tpu._dynamic_reshape(inp, shape, static_shape, is_dynamic)
+
+  @et.why_tpu_only("Shape guard constraint validation is TPU specific.")
+  def test_single_symbol_reshape_invalid_bound_raises_constraint_violation(
+      self,
+  ):
+    class Model(torch.nn.Module):
+
+      def forward(self, x):
+        return x.reshape(3, -1)
+
+    compiled = torch.compile(Model(), backend="tpu")
+
+    x1 = torch.arange(12, dtype=torch.float32, device=et.device()).reshape(2, 6)
+    # Total elements = 2 * s. Reshape to (3, -1) requires (2 * s) % 3 == 0.
+    # An upper bound of max=10 violates this guard since (2 * 10) % 3 != 0.
+    torch._dynamo.mark_dynamic(x1, 1, min=2, max=10)
+
+    with et.assert_raises_message(
+        torch._dynamo.exc.BackendCompilerFailed,
+        tpu=re.compile(r".*ConstraintViolationError.*", re.DOTALL),
+    ):
+      compiled(x1)
+
+  @et.why_tpu_only("Shape guard constraint validation is TPU specific.")
+  def test_joint_multi_symbol_reshape_invalid_bound_raises_constraint_violation(
+      self,
+  ):
+    class Model(torch.nn.Module):
+
+      def forward(self, x):
+        return x.reshape(3, -1)
+
+    compiled = torch.compile(Model(), backend="tpu")
+
+    # Initial shape [6, 6] (total elements 36, divisible by 3).
+    # Hints: s0=6, s1=6.
+    # Individually with hints:
+    #   s0_ub * s1_hint = 8 * 6 = 48 (divisible by 3) -> passes individually
+    #   s0_hint * s1_ub = 6 * 8 = 48 (divisible by 3) -> passes individually
+    # Jointly at upper bounds:
+    #   s0_ub * s1_ub = 8 * 8 = 64 (64 % 3 != 0) -> fails jointly
+    x1 = torch.arange(36, dtype=torch.float32, device=et.device()).reshape(6, 6)
+    torch._dynamo.mark_dynamic(x1, 0, min=2, max=8)
+    torch._dynamo.mark_dynamic(x1, 1, min=2, max=8)
+
+    with et.assert_raises_message(
+        torch._dynamo.exc.BackendCompilerFailed,
+        tpu=re.compile(r".*ConstraintViolationError.*", re.DOTALL),
+    ):
+      compiled(x1)
 
   @et.why_tpu_only("The op pad_real_to_static is TPU only for internal use.")
   def test_pad_real_to_static_input_rank_mismatch(self):
@@ -2265,6 +2334,285 @@ Please use clone() or contiguous() to copy the tensor before writing""",
           inputs=inputs, deduped_outputs=[torch.ones(4, device=et.device())]
       )
 
+  @et.why_tpu_only("Asynchronous compilation is TPU-specific.")
+  def test_async_compile_error_propagation(self):
+    """Verifies that background compilation failures surface cleanly during resolution."""
+
+    class SimpleModel(torch.nn.Module):
+
+      def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x + 1.0
+
+    model = SimpleModel().to(et.device())
+
+    def failing_compile(*args, **kwargs):
+      raise RuntimeError("Simulated XLA lowering failure")
+
+    with mock.patch.object(StaticCompiler, "_compile", failing_compile):
+      compiled = torch.compile(
+          torch.no_grad()(model),
+          backend="tpu",
+          fullgraph=True,
+          dynamic=False,
+          options={"async_compile": True},
+      )
+
+      with self.assertRaises(  # ASSERT_RAISES_OK=AsyncCompilationSubmitted is normal control flow to return compilation future
+          internal_compile.AsyncCompilationSubmitted
+      ) as ctx:
+        compiled(torch.ones(4, 4, device=et.device()))
+      exc = ctx.exception
+      art = exc.artifact
+      self.assertIsNotNone(art)
+
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""Simulated XLA lowering failure""",
+      ):
+        art.resolve()
+
+  @et.why_tpu_only("AsyncCompiledArtifact is TPU-specific.")
+  def test_magic_attributes_do_not_resolve_and_raise_attribute_error(self):
+    future = concurrent.futures.Future()
+    artifact = AsyncCompiledArtifact(future)
+
+    with et.assert_raises_message(
+        AttributeError,
+        tpu=re.compile(r".*__non_existent_magic_attr__.*", re.DOTALL),
+    ):
+      _ = artifact.__non_existent_magic_attr__
+
+    self.assertFalse(artifact.is_resolved)
+
+    # Special framework attributes return class defaults without resolving
+    self.assertIsNone(artifact._fx_graph_cache_key)
+    self.assertFalse(artifact._is_fallback)
+    self.assertFalse(artifact.is_resolved)
+
+  @et.why_tpu_only("AsyncCompiledArtifact is TPU-specific.")
+  def test_exception_propagation_on_resolve(self):
+    future = concurrent.futures.Future()
+    future.set_exception(RuntimeError("Simulated XLA compilation failure"))
+
+    artifact = AsyncCompiledArtifact(future)
+    self.assertFalse(artifact.is_resolved)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""Simulated XLA compilation failure""",
+    ):
+      artifact.resolve()
+
+    self.assertFalse(artifact.is_resolved)
+
+  @et.why_tpu_only("AsyncCompiledArtifact is TPU-specific.")
+  def test_exception_propagation_on_call(self):
+    future = concurrent.futures.Future()
+    future.set_exception(ValueError("Invalid tensor layout"))
+
+    artifact = AsyncCompiledArtifact(future)
+
+    with et.assert_raises_message(
+        ValueError,
+        tpu="""Invalid tensor layout""",
+    ):
+      artifact([])
+
+    self.assertFalse(artifact.is_resolved)
+
+  @et.why_tpu_only("AsyncCompiledArtifact is TPU-specific.")
+  def test_exception_propagation_on_getattr(self):
+    future = concurrent.futures.Future()
+    future.set_exception(RuntimeError("Compile error"))
+
+    artifact = AsyncCompiledArtifact(future)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""Compile error""",
+    ):
+      _ = artifact.some_missing_attr
+
+  @et.why_tpu_only("Compiled custom generator graph break behavior.")
+  def test_compiled_generator_arg_triggers_graph_break(self):
+    """Verifies passing custom generator triggers graph break."""
+    torch._inductor.config.compile_threads = 1
+    g = torch.Generator(device=et.device())
+    g.manual_seed(42)
+    x = torch.zeros(10, device=et.device())
+
+    def fn_pass_gen(x, gen):
+      return torch.rand_like(x, generator=gen)
+
+    with et.assert_raises_message(
+        torch._dynamo.exc.Unsupported,
+        tpu=re.compile(r".*", re.DOTALL),
+    ):
+      torch.compile(fn_pass_gen, fullgraph=True)(x, g)
+
+  @et.why_tpu_only("Compiled manual seed inside fn graph break behavior.")
+  def test_compiled_manual_seed_inside_fn_triggers_graph_break(self):
+    """Verifies seeding inside compiled function triggers graph break."""
+    torch._inductor.config.compile_threads = 1
+    x = torch.zeros(10, device=et.device())
+
+    def fn_manual_seed(x):
+      torch.manual_seed(42)
+      return torch.rand_like(x)
+
+    with et.assert_raises_message(
+        torch._dynamo.exc.Unsupported,
+        tpu=re.compile(r".*", re.DOTALL),
+    ):
+      torch.compile(fn_manual_seed, fullgraph=True)(x)
+
+  @et.why_tpu_only(
+      "Compiled generator instantiation inside fn graph break behavior."
+  )
+  def test_compiled_generator_instantiation_inside_fn_triggers_graph_break(
+      self,
+  ):
+    """Verifies using generator in compiled function triggers graph break."""
+    torch._inductor.config.compile_threads = 1
+    x = torch.zeros(10, device=et.device())
+
+    def fn_create_gen(x):
+      g = torch.Generator(device=et.device())
+      return torch.rand_like(x, generator=g)
+
+    with et.assert_raises_message(
+        torch._dynamo.exc.Unsupported,
+        tpu=re.compile(r".*", re.DOTALL),
+    ):
+      torch.compile(fn_create_gen, fullgraph=True)(x)
+
+  @et.why_tpu_only("Compiled graphsafe_get_state graph break behavior.")
+  def test_compiled_graphsafe_get_state_triggers_graph_break(self):
+    """Verifies graphsafe_get_state triggers a graph break in torch.compile."""
+    torch._inductor.config.compile_threads = 1
+    x = torch.zeros(10, device=et.device())
+    g = torch.Generator(device=et.device())
+
+    def fn_get_state(x):
+      _ = g.graphsafe_get_state()
+      return torch.rand_like(x)
+
+    with et.assert_raises_message(
+        torch._dynamo.exc.Unsupported,
+        tpu=re.compile(r".*", re.DOTALL),
+    ):
+      torch.compile(fn_get_state, fullgraph=True)(x)
+
+  @et.why_tpu_only("Compiled graphsafe_set_state graph break behavior.")
+  def test_compiled_graphsafe_set_state_triggers_graph_break(self):
+    """Verifies graphsafe_set_state triggers a graph break in torch.compile."""
+    torch._inductor.config.compile_threads = 1
+    x = torch.zeros(10, device=et.device())
+    g = torch.Generator(device=et.device())
+    saved_state = g.clone_state()
+
+    def fn_set_state(x):
+      g.graphsafe_set_state(saved_state)
+      return torch.rand_like(x)
+
+    with et.assert_raises_message(
+        torch._dynamo.exc.Unsupported,
+        tpu=re.compile(r".*", re.DOTALL),
+    ):
+      torch.compile(fn_set_state, fullgraph=True)(x)
+
+  @et.why_tpu_only("Tests RNG behavior on compilation failure on TPU.")
+  def test_compile_tracing_failure_restores_eager_rng(self):
+    """Verifies compilation tracing failure restores eager generator state."""
+    torch._inductor.config.compile_threads = 1
+    torch.tpu.manual_seed(42)
+    expected = torch.rand(10, device=et.device())
+
+    torch.tpu.manual_seed(42)
+
+    def failing_fn(x):
+      _ = torch.rand_like(x)
+      raise RuntimeError("Simulated tracing failure")
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(r".*Simulated tracing failure.*", re.DOTALL),
+    ):
+      torch.compile(failing_fn, fullgraph=True)(
+          torch.ones(10, device=et.device())
+      )
+
+    actual = torch.rand(10, device=et.device())
+    self.assertTrue(torch.equal(expected, actual))
+
+  @et.why_tpu_only("Tests RNG state non-rollback on eager error on TPU.")
+  def test_eager_exception_after_rng_op_does_not_rollback(self):
+    """Verifies exception in Python does not roll back advanced RNG state."""
+    torch.tpu.manual_seed(42)
+    _ = torch.rand(10, device=et.device())
+    expected_next = torch.rand(10, device=et.device())
+
+    torch.tpu.manual_seed(42)
+    try:
+      _ = torch.rand(10, device=et.device())
+      raise RuntimeError("Simulated eager error")
+    except RuntimeError:
+      pass
+
+    actual_next = torch.rand(10, device=et.device())
+    self.assertTrue(torch.equal(expected_next, actual_next))
+
+  @et.why_tpu_only("Tests RNG progression on compiled runtime error on TPU.")
+  def test_compiled_runtime_error_without_catch(self):
+    """Verifies runtime error in compiled fn does not rollback RNG state."""
+    torch._inductor.config.compile_threads = 1
+    torch.tpu.manual_seed(42)
+    _ = torch.rand(10, device=et.device())
+    expected_next = torch.rand(10, device=et.device())
+
+    torch.tpu.manual_seed(42)
+
+    @torch.compile(fullgraph=False)
+    def fn(x):
+      r = torch.rand_like(x)
+      if x.sum() > 0:
+        raise RuntimeError("Runtime error after compiled execution")
+      return r
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""Runtime error after compiled execution""",
+    ):
+      fn(torch.ones(10, device=et.device()))
+
+    actual_next = torch.rand(10, device=et.device())
+    self.assertTrue(torch.equal(expected_next, actual_next))
+
+  @et.why_tpu_only("Tests caught error inside compiled fn on TPU.")
+  def test_compiled_runtime_error_with_catch(self):
+    """Verifies caught error inside compiled fn preserves RNG progression."""
+    torch._inductor.config.compile_threads = 1
+    torch.tpu.manual_seed(42)
+    _ = torch.rand(10, device=et.device())
+    expected_next = torch.rand(10, device=et.device())
+
+    torch.tpu.manual_seed(42)
+
+    @torch.compile(fullgraph=False)
+    def fn_with_try_catch(x):
+      r = torch.rand_like(x)
+      try:
+        if x.sum() > 0:
+          raise RuntimeError("Caught error inside function")
+      except RuntimeError:
+        pass
+      return r
+
+    _ = fn_with_try_catch(torch.ones(10, device=et.device()))
+
+    actual_next = torch.rand(10, device=et.device())
+    self.assertTrue(torch.equal(expected_next, actual_next))
+
   @et.why_tpu_only("build_mlir() input validation is TPU-only.")
   def test_build_mlir_duplicate_input(self):
     with execution_mode.set_eager_mode(EagerMode._INTERNAL_COMPILE_FX_GRAPH):
@@ -2442,6 +2790,61 @@ Please use clone() or contiguous() to copy the tensor before writing""",
           executable, [x, y], [tpu_torch_compile.OutputShape([15])]
       )
 
+  @et.why_tpu_only("For testing TPU compile API validation with forced layout.")
+  def test_traverse_and_compile_with_forced_layout(self):
+    input_tensor = torch.ones(2, 3, device=et.device())
+    input_tensor.cpu()  # Force materialization
+    # Force non-default layout [0, 1]. Execution should FAIL with
+    # default input.
+    with execution_mode.set_eager_mode(EagerMode._INTERNAL_COMPILE_FX_GRAPH):
+      x2 = torch.ones(2, 3, device="cpu").to(device=et.device())
+      z2 = x2 + x2
+
+    compile_result_fail = tpu_torch_compile.traverse_and_compile(
+        [z2], [x2], argument_layouts=[[0, 1]]
+    )
+    self.assertIsNotNone(compile_result_fail.executable)
+
+    results_fail = tpu_torch_compile.execute(
+        compile_result_fail.executable, [input_tensor]
+    )
+    self.assertLen(results_fail, 1)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(r".*layout.*", re.DOTALL | re.IGNORECASE),
+    ):
+      results_fail[0].cpu()
+
+    tt_testing.reset_eager_state()
+
+  @et.why_tpu_only(
+      "sink_get_attr_constants FX pass validation is TPU-specific."
+  )
+  def test_placeholder_arg_count_mismatch_raises_value_error(self):
+    sub_graph = Graph()
+    sub_x = sub_graph.placeholder("x")
+    sub_c = sub_graph.placeholder("c")
+    sub_out = sub_graph.call_function(torch.ops.aten.add.Tensor, (sub_x, sub_c))
+    sub_graph.output(sub_out)
+    submod = GraphModule(torch.nn.Module(), sub_graph)
+
+    # Submodule has 2 placeholders but the call site only passes 1 argument.
+    parent_graph = Graph()
+    p_x = parent_graph.placeholder("x")
+    call_submod = parent_graph.call_module("submod_0", (p_x,))
+    parent_graph.output(call_submod)
+
+    parent_root = torch.nn.Module()
+    parent_root.submod_0 = submod
+    parent_gm = GraphModule(parent_root, parent_graph)
+
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile(r".*", re.DOTALL),
+    ):
+      sink_get_attr_constants.apply(parent_gm)
+
   @et.why_tpu_only("For testing TPU compile API validation.")
   def test_traverse_and_compile_invalid_layout_size(self):
     with execution_mode.set_eager_mode(_EagerMode.INTERNAL_DEFER_ALL):
@@ -2543,6 +2946,29 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         tpu="""compile_mlir(): expected valid layout for argument 0, got layout [0, 0] for shape [2, 3]""",
     ):
       tpu_torch_compile.compile_mlir(mlir, argument_layouts=[[0, 0]])
+
+  @et.why_tpu_only("MLIR lowering failure handling is TPU-specific.")
+  def test_mlir_lowering_failure_raises_not_implemented_error(self):
+    def simple(x):
+      return x + 1.0
+
+    with mock.patch.object(
+        StaticCompiler,
+        "__call__",
+        side_effect=RuntimeError("MLIR lowering failed"),
+    ):
+      compiled = torch.compile(simple, backend="tpu")
+      t = torch.ones(4, device=et.device())
+      torch._dynamo.mark_dynamic(t, 0, min=2, max=8)
+      with et.assert_raises_message(
+          Exception,
+          tpu=re.compile(
+              r".*MLIR lowering failed.*torch\.compile\(\.\.\., dynamic=False,"
+              r" \.\.\.\).*",
+              re.DOTALL,
+          ),
+      ):
+        compiled(t)
 
   @et.why_tpu_only("For testing TPU compile API validation.")
   def test_compile_mlir_missing_main(self):

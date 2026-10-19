@@ -33,7 +33,6 @@ from torch_tpu._internal.compile import _backend
 from torch_tpu._internal.compile import compiler
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.compiler import StaticCompiler
-from torch_tpu._internal.compile.debug import TpuCompileDebug
 from torch_tpu._internal.device_utils import annotations
 from torch_tpu._internal.utils import test_utils as utils
 from tests import seed_test_utils
@@ -125,30 +124,6 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     )
     self.assertLen(results_pass, 1)
     results_pass[0].cpu()  # Verify it passes
-
-    # Case 2: Force non-default layout [0, 1]. Execution should FAIL with
-    # default input.
-    with eager_mode_compile_fx_graph():
-      x2 = torch.ones(2, 3, device='cpu').to(device=torch.device('tpu'))
-      z2 = x2 + x2
-
-    compile_result_fail = tpu_torch_compile.traverse_and_compile(
-        [z2], [x2], argument_layouts=[[0, 1]]
-    )
-    self.assertIsNotNone(compile_result_fail.executable)
-
-    results_fail = tpu_torch_compile.execute(
-        compile_result_fail.executable, [input_tensor]
-    )
-    self.assertLen(results_fail, 1)
-
-    with self.assertRaises(  # ASSERT_RAISES_OK=verifying behavior not message
-        RuntimeError
-    ) as err:
-      results_fail[0].cpu()
-
-    self.assertIn('layout', str(err.exception).lower())
-    tt_testing.reset_eager_state()
 
   def test_compilation_cache_with_forced_layouts(self):
     # Enable cache (should be enabled by default, but let's be sure)
@@ -1670,45 +1645,6 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     utils.assert_close(
         at_bound_padded.cpu(), torch.ones(1, 8, dtype=torch.int32)
     )
-
-  def test_static_compiler_buffer_donation(self):
-    def simple_fn(x, y):
-      return x + y, x * 2
-
-    x = torch.randn(2, 3, device=self.device)
-    y = torch.randn(2, 3, device=self.device)
-
-    gm = make_fx(simple_fn)(x, y)
-
-    debug: TpuCompileDebug = TpuCompileDebug()
-    comp = StaticCompiler(debug=debug)
-
-    donated_inputs = [0]
-    compiled_executable = comp(gm, [x, y], donated_inputs=donated_inputs)
-
-    self.assertIsNotNone(compiled_executable)
-    self.assertLen(debug.stablehlo_forward_text, 1)
-    self.assertIn('jax.buffer_donor = true', debug.stablehlo_forward_text[0])
-
-    x_cpu = x.cpu().clone()
-    y_cpu = y.cpu().clone()
-    expected_add = x_cpu + y_cpu
-    expected_mul = x_cpu * 2
-
-    res = compiled_executable(x, y)
-
-    utils.assert_close(res[0].cpu(), expected_add)
-    utils.assert_close(res[1].cpu(), expected_mul)
-
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=verify buffer donation
-        RuntimeError,
-        r'to_copy\(\): cannot start a device to host copy from a donated or'
-        r' deleted buffer',
-    ):
-      x.cpu()
-
-    # y should still be accessible
-    y.cpu()
 
   def test_static_compiler_buffer_donation_changes_cache_key(self):
     def simple_fn(x, y):

@@ -204,6 +204,15 @@ class AsyncCompileTest(seed_test_utils.RepeatableTest):
     _reset()
     super().tearDown()
 
+  def _submit_async_compile(
+      self, fn: Callable[..., Any], *args: Any, **kwargs: Any
+  ):
+    with self.assertRaises(  # ASSERT_RAISES_OK=AsyncCompilationSubmitted is normal control flow to return compilation future
+        tpu_compile.AsyncCompilationSubmitted
+    ) as ctx:
+      fn(*args, **kwargs)
+    return ctx.exception
+
   def test_async_compile_basic(self):
     model = SimpleModel().to("tpu")
     bucket_sizes = [4, 8, 16]
@@ -241,17 +250,13 @@ class AsyncCompileTest(seed_test_utils.RepeatableTest):
           options={"async_compile": True},
       )
 
-      with self.assertRaises(tpu_compile.AsyncCompilationSubmitted) as cm1:
-        compiled(*shape1)
-      art1 = cm1.exception.artifact
+      art1 = self._submit_async_compile(compiled, *shape1).artifact
       self.assertIsNotNone(art1)
       self.assertFalse(art1.is_resolved)
 
       self.assertTrue(barrier.wait_for_compile_start(0))
 
-      with self.assertRaises(tpu_compile.AsyncCompilationSubmitted) as cm2:
-        compiled(*shape2)
-      art2 = cm2.exception.artifact
+      art2 = self._submit_async_compile(compiled, *shape2).artifact
       self.assertIsNotNone(art2)
 
       self.assertFalse(
@@ -324,9 +329,8 @@ class AsyncCompileTest(seed_test_utils.RepeatableTest):
 
       artifacts = []
       for shape in bucket_shapes:
-        with self.assertRaises(tpu_compile.AsyncCompilationSubmitted) as cm:
-          compiled(*shape)
-        art = canary.watch(cm.exception.artifact)
+        exc = self._submit_async_compile(compiled, *shape)
+        art = canary.watch(exc.artifact)
         artifacts.append(art)
         for a in artifacts:
           self.assertFalse(a.is_resolved)
@@ -434,35 +438,6 @@ class AsyncCompileTest(seed_test_utils.RepeatableTest):
 
     test_utils.assert_close(res1.cpu(), res2.cpu())
 
-  def test_async_compile_error_propagation(self):
-    """Verifies that background compilation failures surface cleanly during resolution."""
-    model = SimpleModel().to("tpu")
-
-    def failing_compile(*args, **kwargs):
-      raise RuntimeError("Simulated XLA lowering failure")
-
-    with mock.patch.object(
-        tpu_compiler_mod.StaticCompiler, "_compile", failing_compile
-    ):
-      compiled = torch.compile(
-          torch.no_grad()(model),
-          backend="tpu",
-          fullgraph=True,
-          dynamic=False,
-          options={"async_compile": True},
-      )
-
-      with self.assertRaises(tpu_compile.AsyncCompilationSubmitted) as cm:
-        compiled(torch.ones(4, 4, device="tpu"))
-
-      art = cm.exception.artifact
-      self.assertIsNotNone(art)
-
-      with self.assertRaisesRegex(
-          RuntimeError, "Simulated XLA lowering failure"
-      ):
-        art.resolve()
-
   def test_async_compile_cache_hit_no_recompile(self):
     """Verifies that repeated invocations on warmed-up shapes do not trigger recompilation."""
     model = SimpleModel().to("tpu")
@@ -520,11 +495,10 @@ class AsyncCompileTest(seed_test_utils.RepeatableTest):
     )
 
     x = torch.ones(7, 13, device="tpu")
-    with self.assertRaises(tpu_compile.AsyncCompilationSubmitted) as cm:
-      compiled_model(x)
+    exc = self._submit_async_compile(compiled_model, x)
 
-    self.assertIsNotNone(cm.exception.artifact)
-    cm.exception.resolve()
+    self.assertIsNotNone(exc.artifact)
+    exc.resolve()
 
     res = compiled_model(x)
     self.assertEqual(res.shape, (7, 13))
@@ -541,12 +515,9 @@ class AsyncCompileTest(seed_test_utils.RepeatableTest):
     )
 
     x = torch.ones(3, 7, device="tpu")
-    with self.assertRaises(tpu_compile.AsyncCompilationSubmitted) as cm:
-      compiled_model(x)
+    exc = self._submit_async_compile(compiled_model, x)
 
-    resolved_count = tpu_compile.resolve_compilations(
-        [cm.exception, cm.exception.artifact]
-    )
+    resolved_count = tpu_compile.resolve_compilations([exc, exc.artifact])
     self.assertGreaterEqual(resolved_count, 1)
 
   def test_concurrent_fx_to_mlir_thread_safety(self):
