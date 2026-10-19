@@ -1066,19 +1066,18 @@ torch_tpu_py_test(
     exec_properties = {
         "test.mem": "28g",
     },
-    shard_count = 4,
     tags = if_oss(
         ["exclusive"],
         [],
     ) + [
         "noasan",  # TODO(b/555734615): fix the test in asan mode.
         "notsan",  # TODO(b/555734615): fix the time-out in tsan mode.
-        # Exactly 8 chips are required because the test hardcodes _world_size = 8 to match the
+        # Exactly 8 chips are required because the test hardcodes world_size = 8 to match the
         # topology and avoid uninitialized chips in OSS CI.
         "requires-tpu-v5lite:8",
     ],
     deps = [
-        ":distributed_utils",
+        ":continuous_test_utils",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
@@ -1089,7 +1088,6 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/distributed:collective_ops",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/utils:test_utils",
-        "//tests:seed_test_utils",
     ],
 )
 
