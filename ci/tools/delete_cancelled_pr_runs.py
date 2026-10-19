@@ -370,7 +370,7 @@ def main(args: Sequence[str] | None = None) -> int:
   logging.basicConfig(level=logging.INFO, format="%(message)s")
   parsed = parse_args(args)
   try:
-    delete_cancelled_pr_runs(
+    summary = delete_cancelled_pr_runs(
         repository=parsed.repository,
         head_ref=parsed.head_ref,
         current_run_id=parsed.current_run_id,
@@ -379,6 +379,16 @@ def main(args: Sequence[str] | None = None) -> int:
     )
   except Exception as e:
     logging.exception("Failed to clean up workflow runs: %s", e)
+    return 1
+
+  if summary.failed:
+    # A run left behind keeps showing up as a cancelled check on the commit,
+    # which is what this job exists to prevent, so don't report success.
+    logging.error(
+        "Failed to delete %d workflow run(s): %s",
+        len(summary.failed),
+        list(summary.failed),
+    )
     return 1
   return 0
 

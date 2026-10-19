@@ -411,6 +411,13 @@ class DeleteCancelledPrRunsTest(
   def test_main_succeeds_when_everything_is_deleted(self):
     self.assertEqual(self._main(_FakeGh(list_pages=([_run(1)],))), 0)
 
+  def test_main_fails_when_a_delete_fails(self):
+    fake = _FakeGh(
+        list_pages=([_run(1)],),
+        delete_errors={1: http.HTTPStatus.FORBIDDEN},
+    )
+    self.assertEqual(self._main(fake), 1)
+
   def test_main_fails_when_listing_fails(self):
     self.assertEqual(
         self._main(_FakeGh(list_error=http.HTTPStatus.FORBIDDEN)), 1
