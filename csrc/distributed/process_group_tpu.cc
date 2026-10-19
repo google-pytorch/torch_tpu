@@ -225,15 +225,15 @@ absl::StatusOr<ReduceScatterShapeMode> ValidateReduceScatterInputTensorShape(
                << ToString(concat_mode_dims);
 
   // Stack mode: prepend new dimension of size pg_size, and remaining dims same.
-  Dimensions stack_mode_dims(output.dim() + 1);
-  stack_mode_dims[0] = process_group_size;
-  for (int i = 0; i < output.dim(); ++i) {
-    stack_mode_dims[i + 1] = output.size(i);
-  }
+  Dimensions stack_mode_dims;
+  stack_mode_dims.reserve(output.dim() + 1);
+  stack_mode_dims.push_back(process_group_size);
+  stack_mode_dims.insert(stack_mode_dims.end(), output.sizes().begin(),
+                         output.sizes().end());
   ABSL_VLOG(1) << "ValidateReduceScatterInputTensorShape: stack_mode_dims: "
                << ToString(stack_mode_dims);
 
-  Dimensions actual_input_dims{input.sizes().begin(), input.sizes().end()};
+  Dimensions actual_input_dims = CopyIntVector(input.sizes());
   ABSL_VLOG(1) << "ValidateReduceScatterInputTensorShape: actual_input_dims: "
                << ToString(actual_input_dims);
 
@@ -2800,17 +2800,15 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::alltoall(
                                             .op_param_cache_keys =
                                                 OpParamCacheKeys::Empty()}));
 
-          at::Tensor concatenated_input =
-              MakeTensor(std::move(concatenated_input_buf));
-          at::Tensor output_placeholder =
-              MakeTensor(std::move(output_placeholder_buf));
+          at::Tensor concatenated_input = MakeTensor(concatenated_input_buf);
+          at::Tensor output_placeholder = MakeTensor(output_placeholder_buf);
 
           TT_ASSIGN_OR_THROW(
               DeviceBufferRef ragged_output_buf,
               AllToAllBaseUnevenSplits(output_placeholder, concatenated_input,
                                        output_split_sizes, input_split_sizes));
 
-          at::Tensor ragged_output = MakeTensor(std::move(ragged_output_buf));
+          at::Tensor ragged_output = MakeTensor(ragged_output_buf);
           TT_ASSIGN_OR_THROW(auto slice_param_keys,
                              TT_MAKE_OP_PARAM_CACHE_KEYS(slice_sizes));
           auto slice_builder =

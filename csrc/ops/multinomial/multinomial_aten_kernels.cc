@@ -123,7 +123,7 @@ at::Tensor AtenMultinomial(const at::Tensor& self, int64_t num_samples,
 
               TT_THROW_IF_ERROR(gen->AdvanceDeviceStateTensor(
                   usage.num_elements, usage.bit_width));
-              return MakeTensor(std::move(result_buf));
+              return MakeTensor(result_buf);
             });
 }
 

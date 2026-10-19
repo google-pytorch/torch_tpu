@@ -46,11 +46,10 @@ mlir::DenseIntElementsAttr BuildReplicaGroupsAttr(
 
   // MLIR builder requires a representation using flat list + shape.
   // TODO: Simplify this after b/445264222
-  DeviceGroup flattened_ids(num_groups * group_size);
-  for (int64_t i = 0; i < num_groups; ++i) {
-    for (int64_t j = 0; j < group_size; ++j) {
-      flattened_ids[i * group_size + j] = device_groups[i][j];
-    }
+  DeviceGroup flattened_ids;
+  flattened_ids.reserve(num_groups * group_size);
+  for (const auto& group : device_groups) {
+    flattened_ids.insert(flattened_ids.end(), group.begin(), group.end());
   }
 
   return llvm::cast<mlir::DenseIntElementsAttr>(

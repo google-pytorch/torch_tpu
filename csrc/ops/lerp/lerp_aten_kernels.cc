@@ -61,18 +61,14 @@ absl::StatusOr<MlirOpResults<1>> BuildLerpShlo(mlir::MlirOp self,
   TT_ASSIGN_OR_RETURN(weight,
                       ComplexSafeConvertElementType(weight, common_type));
 
-  // Apply broadcast if needed - unclear if there is a better way to unpack
-  // the return array, std::tie fails in OSS CI.
+  // Apply broadcast if needed.
   TT_ASSIGN_OR_RETURN((auto [self_bcast, end_bcast, weight_bcast]),
                       ApplyBroadcastIfNeeded(self, end, weight));
-  self = self_bcast;
-  end = end_bcast;
-  weight = weight_bcast;
 
   // Compute result = self + weight * (end - self)
-  auto diff_op = mlir::stablehlo::Subtract(end, self);
-  auto mul_op = mlir::stablehlo::Mul(weight, diff_op);
-  return mlir::stablehlo::Add(self, mul_op);
+  auto diff_op = mlir::stablehlo::Subtract(end_bcast, self_bcast);
+  auto mul_op = mlir::stablehlo::Mul(weight_bcast, diff_op);
+  return mlir::stablehlo::Add(self_bcast, mul_op);
 }
 
 NAryMlirOpBuilder<3> GetLerpTensorOutFunctional(mlir::ElementType common_type) {
