@@ -18171,6 +18171,64 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
     assert_with_tol(functools.partial(test_dtypes_fn, in_dtype=torch.bfloat16))
     assert_with_tol(functools.partial(test_dtypes_fn, in_dtype=torch.float64))
 
+  def test_native_norm(self):
+    # aten::native_norm is not registered on CPU in PyTorch, so compare against
+    # torch.linalg.vector_norm on CPU.
+    x_cpu = torch.tensor([[1.0, -2.0], [3.0, -4.0]], dtype=torch.float32)
+    x_tpu = x_cpu.to("tpu")
+    utils.assert_close(
+        actual=torch.ops.aten.native_norm.default(x_tpu, 2.0).cpu(),
+        expected=torch.linalg.vector_norm(x_cpu, ord=2.0),
+    )
+    for ord_arg, ref_ord in (
+        (None, 2.0),
+        (2.0, 2.0),
+        (float("inf"), float("inf")),
+    ):
+      with self.subTest(ord=ord_arg):
+        utils.assert_close(
+            actual=torch.ops.aten.native_norm.ScalarOpt_dim_dtype(
+                x_tpu, ord_arg, [1], False, None
+            ).cpu(),
+            expected=torch.linalg.vector_norm(
+                x_cpu, ord=ref_ord, dim=[1], keepdim=False
+            ),
+        )
+
+    # Exercise ord == 0.0 for both default and ScalarOpt_dim_dtype overloads
+    # (lowers natively via BuildPNormShlo/BuildZeroNormShlo).
+    x_zero_cpu = torch.tensor(
+        [[0.0, 2.0, 0.0], [1.0, 0.0, -3.0]], dtype=torch.float32
+    )
+    x_zero_tpu = x_zero_cpu.to("tpu")
+    utils.assert_close(
+        actual=torch.ops.aten.native_norm.default(x_zero_tpu, 0.0).cpu(),
+        expected=torch.linalg.vector_norm(x_zero_cpu, ord=0.0),
+    )
+    utils.assert_close(
+        actual=torch.ops.aten.native_norm.ScalarOpt_dim_dtype(
+            x_zero_tpu, 0.0, [1], False, None
+        ).cpu(),
+        expected=torch.linalg.vector_norm(
+            x_zero_cpu, ord=0.0, dim=[1], keepdim=False
+        ),
+    )
+
+    # Empty tensor whose reduced dimension is non-empty must succeed for
+    # ord < 0 and +/-inf.
+    x_empty_cpu = torch.empty((0, 3), dtype=torch.float32)
+    x_empty_tpu = x_empty_cpu.to("tpu")
+    for ord_val in (float("inf"), float("-inf"), -1.0):
+      with self.subTest(empty_ord=ord_val):
+        actual = torch.ops.aten.native_norm.ScalarOpt_dim_dtype(
+            x_empty_tpu, ord_val, [1], False, None
+        ).cpu()
+        expected = torch.linalg.vector_norm(
+            x_empty_cpu, ord=ord_val, dim=[1], keepdim=False
+        )
+        self.assertEqual(actual.shape, (0,))
+        utils.assert_close(actual=actual, expected=expected)
+
   def test_layer_norm_backward(self):
     def fn(device):
       c, h, w = 2, 2, 4
