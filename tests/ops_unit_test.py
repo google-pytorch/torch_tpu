@@ -16665,6 +16665,44 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
         )
     )
 
+  def test_addmm_bool_scalars(self):
+    """torch.addmm() should accept Python bool scalars for beta and alpha."""
+
+    def make_test_fn(b, m1, m2, beta, alpha, out=None):
+      if out is None:
+        return lambda device: torch.addmm(
+            b.to(device),
+            m1.to(device),
+            m2.to(device),
+            beta=beta,
+            alpha=alpha,
+        )
+      return lambda device: torch.addmm(
+          b.to(device),
+          m1.to(device),
+          m2.to(device),
+          beta=beta,
+          alpha=alpha,
+          out=out.clone().to(device),
+      )
+
+    for dtype in (torch.float32, torch.bfloat16):
+      b = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=dtype)
+      m1 = torch.tensor([[5.0, 6.0], [7.0, 8.0]], dtype=dtype)
+      m2 = torch.tensor([[9.0, 1.0], [2.0, 3.0]], dtype=dtype)
+      out = torch.empty(2, 2, dtype=dtype)
+
+      for beta, alpha in (
+          (False, True),
+          (True, False),
+          (True, True),
+          (False, False),
+      ):
+        self.assert_close_tpu_vs_cpu(make_test_fn(b, m1, m2, beta, alpha))
+        self.assert_close_tpu_vs_cpu(
+            make_test_fn(b, m1, m2, beta, alpha, out=out)
+        )
+
   def test_linspace_steps_zero(self):
     def test_fn(device):
       return torch.linspace(0, 10, steps=0, device=device)

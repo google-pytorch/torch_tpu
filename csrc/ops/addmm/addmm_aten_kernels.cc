@@ -125,9 +125,7 @@ absl::StatusOr<mlir::ElementType> ValidateAddmmInputsAndGetOutputDtype(
     at::ScalarType out_scalar_type) {
   TT_RET_CHECK(self.scalar_type() != at::kBool &&
                    mat1.scalar_type() != at::kBool &&
-                   mat2.scalar_type() != at::kBool &&
-                   beta.scalar().type() != at::kBool &&
-                   alpha.scalar().type() != at::kBool,
+                   mat2.scalar_type() != at::kBool,
                error::kInvalidArgument)
       << "boolean dtypes are not supported";
   TT_RET_CHECK(
