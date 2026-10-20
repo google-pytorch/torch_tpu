@@ -45,6 +45,7 @@
 #include "c10/core/ScalarType.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/device_type.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -714,6 +715,15 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLinalgLuOut(
       (a, IgnoreInCacheKey(pivot, "Delegates to AtenLinalgLuFactorExOut"), p, l,
        u),
       {
+        TT_CHECK_THROW(IsPrivateUse1Device(p) && IsPrivateUse1Device(l) &&
+                           IsPrivateUse1Device(u),
+                       error::kInvalidArgument)
+            << "expected all output tensors to be on "
+            << GetPrivateUse1DeviceDebugName() << ", got " << p.device() << ", "
+            << l.device() << ", and " << u.device();
+        TT_CHECK_THROW(a.dim() >= 2, error::kInvalidArgument)
+            << "expected input tensor to have at least 2 dimensions, got "
+            << a.dim();
         TT_THROW_IF_ERROR(ValidateOutDtype(p, a.scalar_type(),
                                            /*allow_out_dtype_cast=*/false));
         TT_THROW_IF_ERROR(ValidateOutDtype(l, a.scalar_type(),
@@ -722,13 +732,12 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLinalgLuOut(
                                            /*allow_out_dtype_cast=*/false));
 
         at::Tensor lu = at::empty_like(a);
-        Dimensions pivot_dims = CopyIntVector(a.sizes());
-        pivot_dims.pop_back();
-        int pivot_size = std::min(a.size(-2), a.size(-1));
-        pivot_dims[pivot_dims.size() - 1] = pivot_size;
+        Dimensions batch_dims(a.sizes().begin(), a.sizes().end() - 2);
+        Dimensions pivot_dims = batch_dims;
+        pivot_dims.push_back(std::min(a.size(-2), a.size(-1)));
         at::Tensor pivots = at::empty(pivot_dims, a.options().dtype(at::kInt));
-        at::Tensor info = at::empty(pivot_dims, a.options().dtype(at::kInt));
-        AtenLinalgLuFactorExOut(a, pivot, /*check_errors=*/true, lu, pivots,
+        at::Tensor info = at::empty(batch_dims, a.options().dtype(at::kInt));
+        AtenLinalgLuFactorExOut(a, pivot, /*check_errors=*/false, lu, pivots,
                                 info);
         AtenLuUnpackOut(lu, pivots, /*unpack_data=*/true,
                         /*unpack_pivots=*/true, p, l, u);
