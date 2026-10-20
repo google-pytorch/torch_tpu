@@ -8681,6 +8681,52 @@ Supported combinations for non-constant padding:
     ):
       torch.norm(t, p=2, dim=[0, 0])
 
+  def test_foreach_norm_invalid_inputs(self):
+    x = torch.tensor([1.0, 2.0], device=et.device(), dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""foreach_norm(): expected ord to be integer or float, got bool""",
+        gpu="""foreach_tensor_norm_cuda expects ord to be integer or float""",
+    ):
+      torch._foreach_norm([x], ord=True)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""foreach_norm(): expected dtype to be floating point or complex, got int32""",
+        gpu="""_foreach_tensor_norm_cuda: dtype should be floating point or complex, but got Int""",
+    ):
+      torch._foreach_norm([x], ord=2, dtype=torch.int32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""foreach_norm(): expected dtype to match complexness of input (float32), got complex64""",
+        gpu="""_foreach_tensor_norm_cuda: dtype should be real for real inputs, but got ComplexFloat""",
+    ):
+      torch._foreach_norm([x], ord=2, dtype=torch.complex64)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""foreach_norm(): expected dtype to be safely castable from float32 without narrowing, got float16""",
+        gpu="""_foreach_tensor_norm_cuda: the dtype of the input (Float) should be convertible without narrowing to the specified dtype (Half)""",
+    ):
+      torch._foreach_norm([x], ord=2, dtype=torch.float16)
+
+    x_empty = torch.empty((0,), device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""foreach_norm(): expected non-empty tensor for ord inf, got numel 0""",
+        gpu="""_foreach_norm cannot compute the infinity norm on an empty tensor because the operation does not have an identity""",
+    ):
+      torch._foreach_norm([x_empty], ord=float("inf"))
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""foreach_norm(): expected non-empty tensor for ord -1, got numel 0""",
+        gpu="""linalg.vector_norm cannot compute the -1 norm on an empty tensor because the operation does not have an identity""",
+    ):
+      torch._foreach_norm([x_empty], ord=-1.0)
+
   def test_rms_norm_int(self):
     inp = torch.ones(5, 5, device=et.device(), dtype=torch.int32)
     normalized_shape = (5,)
