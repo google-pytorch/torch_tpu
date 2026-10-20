@@ -3871,6 +3871,17 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     ):
       torch.ops.aten.gelu_backward.grad_input(t, t, grad_input=grad_input)
 
+    t_float = torch.ones(2, device=et.device(), dtype=torch.float32)
+    grad_input_int = torch.empty(2, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gelu_backward(): result type float32 can't be cast to the desired output type int32""",
+        gpu="""result type Float can't be cast to the desired output type Int""",
+    ):
+      torch.ops.aten.gelu_backward.grad_input(
+          t_float, t_float, grad_input=grad_input_int
+      )
+
   def test_glu_unsupported_input_dtype(self):
     if et.is_on_gpu():
       # On TPU, passing an integer tensor raises RuntimeError ("expected
