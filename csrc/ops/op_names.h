@@ -591,6 +591,7 @@ enum class OpName {
   kMmDtypeOut,
   kMmOut,
   kMseLossBackward,
+  kMseLossBackwardGradInput,
   kMseLossOut,
   kMul,
   kMulOut,
@@ -2032,6 +2033,8 @@ ToString(  // NOLINT(google-readability-function-size)
       return "mm.out";
     case OpName::kMseLossBackward:
       return "mse_loss_backward";
+    case OpName::kMseLossBackwardGradInput:
+      return "mse_loss_backward.grad_input";
     case OpName::kMseLossOut:
       return "mse_loss.out";
     case OpName::kMul:

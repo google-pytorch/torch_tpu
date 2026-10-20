@@ -879,6 +879,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kMmDtypeOut>(m, AtenMmDtypeOut);
   ImplStable<OpName::kMmOut>(m, AtenMmOut);
   ImplStable<OpName::kMseLossBackward>(m, AtenMseLossBackward);
+  ImplStable<OpName::kMseLossBackwardGradInput>(m,
+                                                AtenMseLossBackwardGradInput);
   ImplStable<OpName::kMseLossOut>(m, AtenMseLossOut);
   ImplStable<OpName::kMulOut>(m, AtenMulOut);
   ImplStable<OpName::kMultinomial>(m, AtenMultinomial);

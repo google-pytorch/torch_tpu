@@ -24,6 +24,10 @@
 #include "ATen/core/TensorBody.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
+#include "c10/core/ScalarType.h"
+#include "csrc/common/aten_utils.h"
+#include "csrc/common/device_type.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -44,6 +48,23 @@
 
 namespace torch_tpu {
 namespace {
+
+absl::Status ValidateInPlaceBroadcast(const at::Tensor& out,
+                                      absl::Span<const at::Tensor> inputs,
+                                      const Dimensions& output_dims) {
+  for (const at::Tensor& input : inputs) {
+    if (out.is_alias_of(input)) {
+      TT_RET_CHECK(absl::MakeConstSpan(out.sizes()) == output_dims,
+                   error::kInvalidArgument)
+          << "output with shape " << ToString(output_dims)
+          << " doesn't match the broadcast shape of the tensor being operated "
+             "on in-place, which has shape "
+          << ToString(out.sizes());
+      break;
+    }
+  }
+  return absl::OkStatus();
+}
 
 absl::StatusOr<mlir::MlirOp> BuildMseLossShlo(mlir::MlirOp self_op,
                                               mlir::MlirOp target_op,
@@ -199,6 +220,59 @@ at::Tensor AtenMseLossBackward(const at::Tensor& grad_output,
             (DispatchOp<3>(std::move(op_builder), {grad_output, self, target},
                            std::move(options))));
         return MakeTensor(result_buf);
+      });
+}
+
+at::Tensor& AtenMseLossBackwardGradInput(const at::Tensor& grad_output,
+                                         const at::Tensor& self,
+                                         const at::Tensor& target,
+                                         int64_t reduction,
+                                         at::Tensor& grad_input) {
+  TT_KERNEL(
+      OpName::kMseLossBackwardGradInput, param_keys,
+      (grad_output, self, target, reduction, grad_input), {
+        TT_CHECK_THROW(IsPrivateUse1Device(grad_input), error::kInvalidArgument)
+            << "expected grad_input tensor to be on "
+            << GetPrivateUse1DeviceDebugName() << ", got "
+            << grad_input.device();
+        const c10::ScalarType promoted_type = c10::promoteTypes(
+            c10::promoteTypes(self.scalar_type(), target.scalar_type()),
+            grad_output.scalar_type());
+        TT_CHECK_THROW(c10::isFloatingType(promoted_type),
+                       error::kInvalidArgument)
+            << "expected the input dtype to be a floating-point type, got "
+            << torch_tpu::ToString(promoted_type);
+        TT_THROW_IF_ERROR(ValidateOutDtype(grad_input, promoted_type,
+                                           /*allow_out_dtype_cast=*/true));
+
+        TT_ASSIGN_OR_THROW(Dimensions out_dims,
+                           InferSize(self, target, grad_output));
+        TT_THROW_IF_ERROR(ValidateInPlaceBroadcast(
+            grad_input, {grad_output, self, target}, out_dims));
+
+        TT_ASSIGN_OR_THROW(const mlir::ElementType computation_dtype,
+                           ConvertTo<mlir::ElementType>(promoted_type));
+        TT_ASSIGN_OR_THROW(
+            const mlir::ElementType out_dtype,
+            ConvertTo<mlir::ElementType>(grad_input.scalar_type()));
+
+        auto op_builder = [reduction](FixedSizeSpan<mlir::MlirOp, 3> inputs)
+            -> absl::StatusOr<mlir::MlirOp> {
+          auto& [grad_output_op, self_op, target_op] = inputs;
+          return BuildMseLossBackwardShlo(grad_output_op, self_op, target_op,
+                                          reduction);
+        };
+
+        DispatchOpOptions<1> options = {
+            .out_dtype = out_dtype,
+            .out_dims = out_dims,
+            .computation_dtype = computation_dtype,
+            .op_param_cache_keys = std::move(param_keys),
+        };
+        TT_THROW_IF_ERROR(DispatchOpOut<3>(std::move(op_builder),
+                                           {grad_output, self, target},
+                                           grad_input, std::move(options)));
+        return grad_input;
       });
 }
 
