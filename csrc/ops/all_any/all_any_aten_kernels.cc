@@ -25,6 +25,7 @@
 #include "ATen/core/TensorBody.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
@@ -32,7 +33,6 @@
 #include "csrc/common/to_string.h"
 #include "csrc/ops/all_any/all_any.h"
 #include "csrc/ops/macros/kernel.h"
-#include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/reductions/reduction_utils.h"
 #include "csrc/ops/reductions/reductions.h"
@@ -43,22 +43,6 @@
 namespace torch_tpu {
 
 namespace {
-
-MlirUnaryOpBuilder GetAllBuilder(Dimensions reduce_dims,
-                                 ReductionMode reduction_mode) {
-  return [reduce_dims = std::move(reduce_dims),
-          reduction_mode](mlir::MlirOp input) {
-    return BuildAllShlo(input, reduce_dims, reduction_mode);
-  };
-}
-
-MlirUnaryOpBuilder GetAnyBuilder(Dimensions reduce_dims,
-                                 ReductionMode reduction_mode) {
-  return [reduce_dims = std::move(reduce_dims),
-          reduction_mode](mlir::MlirOp input) {
-    return BuildAnyShlo(input, reduce_dims, reduction_mode);
-  };
-}
 
 struct AllAnyReductionParams {
   Dimensions dims_to_reduce;
@@ -103,74 +87,60 @@ mlir::ElementType GetAllAnyOutDtype(const at::Tensor& out) {
                                         : mlir::ElementType::PRED;
 }
 
+using AllAnyShloBuilder = absl::StatusOr<mlir::MlirOp> (*)(
+    mlir::MlirOp, absl::Span<const int64_t>, ReductionMode);
+
+at::Tensor& AllAnyOutImpl(const at::Tensor& self,
+                          c10::OptionalArrayRef<int64_t> dims, bool keep_dim,
+                          at::Tensor& out, OpParamCacheKeys param_keys,
+                          AllAnyShloBuilder op_builder_fn) {
+  TT_THROW_IF_ERROR(ValidateAllAnyOut(out));
+  TT_ASSIGN_OR_THROW(auto params,
+                     GetAllAnyReductionParams(self, dims, keep_dim));
+  TT_THROW_IF_ERROR(UnaryOpOut(self, out,
+                               [reduce_dims = std::move(params.dims_to_reduce),
+                                reduction_mode = params.reduction_mode,
+                                op_builder_fn](mlir::MlirOp input) {
+                                 return op_builder_fn(input, reduce_dims,
+                                                      reduction_mode);
+                               },
+                               {.op_param_cache_keys = std::move(param_keys),
+                                .out_dtype = GetAllAnyOutDtype(out),
+                                .out_dims = params.reduced_shape,
+                                .allow_out_dtype_cast = false}));
+  return out;
+}
+
 }  // namespace
 
 at::Tensor& AtenAllOut(const at::Tensor& self, int64_t dim, bool keep_dim,
                        at::Tensor& out) {
   TT_KERNEL(OpName::kAllOut, param_keys, (self, dim, keep_dim, out), {
-    TT_THROW_IF_ERROR(ValidateAllAnyOut(out));
-    TT_ASSIGN_OR_THROW(auto params,
-                       GetAllAnyReductionParams(self, {dim}, keep_dim));
-    TT_THROW_IF_ERROR(UnaryOpOut(
-        self, out,
-        GetAllBuilder(std::move(params.dims_to_reduce), params.reduction_mode),
-        {.op_param_cache_keys = std::move(param_keys),
-         .out_dtype = GetAllAnyOutDtype(out),
-         .out_dims = std::move(params.reduced_shape),
-         .allow_out_dtype_cast = false}));
-    return out;
+    return AllAnyOutImpl(self, {dim}, keep_dim, out, std::move(param_keys),
+                         BuildAllShlo);
   });
 }
 
 // This is all.all_out, NOT all.out.
 at::Tensor& AtenAllAllOut(const at::Tensor& self, at::Tensor& out) {
   TT_KERNEL(OpName::kAllAllOut, _, (self, out), {
-    TT_THROW_IF_ERROR(ValidateAllAnyOut(out));
-    TT_ASSIGN_OR_THROW(
-        auto params,
-        GetAllAnyReductionParams(self, std::nullopt, /*keep_dims=*/false));
-    TT_THROW_IF_ERROR(UnaryOpOut(
-        self, out,
-        GetAllBuilder(std::move(params.dims_to_reduce), params.reduction_mode),
-        {.op_param_cache_keys = OpParamCacheKeys::Empty(),
-         .out_dtype = GetAllAnyOutDtype(out),
-         .out_dims = std::move(params.reduced_shape),
-         .allow_out_dtype_cast = false}));
-    return out;
+    return AllAnyOutImpl(self, std::nullopt, /*keep_dim=*/false, out,
+                         OpParamCacheKeys::Empty(), BuildAllShlo);
   });
 }
 
 at::Tensor& AtenAnyOut(const at::Tensor& self, int64_t dim, bool keep_dim,
                        at::Tensor& out) {
   TT_KERNEL(OpName::kAnyOut, param_keys, (self, dim, keep_dim, out), {
-    TT_THROW_IF_ERROR(ValidateAllAnyOut(out));
-    TT_ASSIGN_OR_THROW(auto params,
-                       GetAllAnyReductionParams(self, {dim}, keep_dim));
-    TT_THROW_IF_ERROR(UnaryOpOut(
-        self, out,
-        GetAnyBuilder(std::move(params.dims_to_reduce), params.reduction_mode),
-        {.op_param_cache_keys = std::move(param_keys),
-         .out_dtype = GetAllAnyOutDtype(out),
-         .out_dims = std::move(params.reduced_shape),
-         .allow_out_dtype_cast = false}));
-    return out;
+    return AllAnyOutImpl(self, {dim}, keep_dim, out, std::move(param_keys),
+                         BuildAnyShlo);
   });
 }
 
 at::Tensor& AtenAnyAllOut(const at::Tensor& self, at::Tensor& out) {
   TT_KERNEL(OpName::kAnyAllOut, _, (self, out), {
-    TT_THROW_IF_ERROR(ValidateAllAnyOut(out));
-    TT_ASSIGN_OR_THROW(
-        auto params,
-        GetAllAnyReductionParams(self, std::nullopt, /*keep_dims=*/false));
-    TT_THROW_IF_ERROR(UnaryOpOut(
-        self, out,
-        GetAnyBuilder(std::move(params.dims_to_reduce), params.reduction_mode),
-        {.op_param_cache_keys = OpParamCacheKeys::Empty(),
-         .out_dtype = GetAllAnyOutDtype(out),
-         .out_dims = std::move(params.reduced_shape),
-         .allow_out_dtype_cast = false}));
-    return out;
+    return AllAnyOutImpl(self, std::nullopt, /*keep_dim=*/false, out,
+                         OpParamCacheKeys::Empty(), BuildAnyShlo);
   });
 }
 

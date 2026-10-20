@@ -17,12 +17,12 @@
 #include "csrc/ops/all_any/all_any.h"
 
 #include <cstdint>
+#include <type_traits>
 
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/reductions/reductions.h"
-#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -33,9 +33,17 @@
 namespace torch_tpu {
 namespace stablehlo = mlir::stablehlo;
 
-absl::StatusOr<mlir::MlirOp> BuildAllShlo(mlir::MlirOp input_op,
-                                          absl::Span<const int64_t> reduce_dims,
-                                          ReductionMode reduction_mode) {
+namespace {
+
+template <typename OpType>
+absl::StatusOr<mlir::MlirOp> BuildAllAnyReductionShlo(
+    mlir::MlirOp input_op, absl::Span<const int64_t> reduce_dims,
+    ReductionMode reduction_mode) {
+  static_assert(std::is_same_v<OpType, stablehlo::AndOp> ||
+                    std::is_same_v<OpType, stablehlo::OrOp>,
+                "BuildAllAnyReductionShlo only supports stablehlo::AndOp and "
+                "stablehlo::OrOp");
+  constexpr bool kIdentityValue = std::is_same_v<OpType, stablehlo::AndOp>;
   mlir::MlirBuilder& builder = input_op.getBuilder();
   const mlir::RankedTensorType input_tensor_type = GetTensorTypeOrDie(input_op);
   if (!IsBooleanType(input_tensor_type)) {
@@ -43,41 +51,34 @@ absl::StatusOr<mlir::MlirOp> BuildAllShlo(mlir::MlirOp input_op,
         mlir::stablehlo::ConvertElementType(input_op, mlir::ElementType::PRED);
   }
 
-  auto true_value = MakeScalarConstant(builder, true, mlir::ElementType::PRED);
+  auto init_value =
+      MakeScalarConstant(builder, kIdentityValue, mlir::ElementType::PRED);
   mlir::Type mlir_type =
       mlir::getElementType(builder.getContext(), mlir::ElementType::PRED);
 
   auto reduce_fn = [mlir_type](mlir::RegionBuilder& rb) {
-    stablehlo::buildReduceBody<stablehlo::AndOp>(mlir_type, rb.getRegion(),
-                                                 rb.getOpBuilder());
+    stablehlo::buildReduceBody<OpType>(mlir_type, rb.getRegion(),
+                                       rb.getOpBuilder());
   };
 
-  return BuildReductionShlo(input_op, reduce_dims, mlir_type, true_value,
+  return BuildReductionShlo(input_op, reduce_dims, mlir_type, init_value,
                             reduce_fn, reduction_mode);
+}
+
+}  // namespace
+
+absl::StatusOr<mlir::MlirOp> BuildAllShlo(mlir::MlirOp input_op,
+                                          absl::Span<const int64_t> reduce_dims,
+                                          ReductionMode reduction_mode) {
+  return BuildAllAnyReductionShlo<stablehlo::AndOp>(input_op, reduce_dims,
+                                                    reduction_mode);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildAnyShlo(mlir::MlirOp input_op,
                                           absl::Span<const int64_t> reduce_dims,
                                           ReductionMode reduction_mode) {
-  mlir::MlirBuilder& builder = input_op.getBuilder();
-  const mlir::RankedTensorType input_tensor_type = GetTensorTypeOrDie(input_op);
-  if (!IsBooleanType(input_tensor_type)) {
-    input_op =
-        mlir::stablehlo::ConvertElementType(input_op, mlir::ElementType::PRED);
-  }
-
-  auto false_value =
-      MakeScalarConstant(builder, false, mlir::ElementType::PRED);
-  mlir::Type mlir_type =
-      mlir::getElementType(builder.getContext(), mlir::ElementType::PRED);
-
-  auto reduce_fn = [mlir_type](mlir::RegionBuilder& rb) {
-    stablehlo::buildReduceBody<stablehlo::OrOp>(mlir_type, rb.getRegion(),
-                                                rb.getOpBuilder());
-  };
-
-  return BuildReductionShlo(input_op, reduce_dims, mlir_type, false_value,
-                            reduce_fn, reduction_mode);
+  return BuildAllAnyReductionShlo<stablehlo::OrOp>(input_op, reduce_dims,
+                                                   reduction_mode);
 }
 
 }  // namespace torch_tpu

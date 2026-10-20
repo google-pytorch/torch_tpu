@@ -16,8 +16,6 @@
 
 #include "csrc/ops/logical/logical.h"
 
-#include <utility>
-
 #include "absl/status/statusor.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/ops/op_builder_utils.h"
@@ -54,24 +52,29 @@ absl::StatusOr<BroadcastedOperands> BroadcastLogicalOperands(
   return BroadcastedOperands{.self = self_broadcast, .other = other_broadcast};
 }
 
+template <typename OpFn>
+absl::StatusOr<mlir::MlirOp> BuildBinaryLogicalShlo(mlir::MlirOp self,
+                                                    mlir::MlirOp other,
+                                                    OpFn op_fn) {
+  TT_ASSIGN_OR_RETURN(auto operands, BroadcastLogicalOperands(self, other));
+  return op_fn(operands.self, operands.other);
+}
+
 }  // namespace
 
 absl::StatusOr<mlir::MlirOp> BuildLogicalAndShlo(mlir::MlirOp self,
                                                  mlir::MlirOp other) {
-  TT_ASSIGN_OR_RETURN(auto operands, BroadcastLogicalOperands(self, other));
-  return stablehlo::And(operands.self, operands.other);
+  return BuildBinaryLogicalShlo(self, other, stablehlo::And);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildLogicalOrShlo(mlir::MlirOp self,
                                                 mlir::MlirOp other) {
-  TT_ASSIGN_OR_RETURN(auto operands, BroadcastLogicalOperands(self, other));
-  return stablehlo::Or(operands.self, operands.other);
+  return BuildBinaryLogicalShlo(self, other, stablehlo::Or);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildLogicalXorShlo(mlir::MlirOp self,
                                                  mlir::MlirOp other) {
-  TT_ASSIGN_OR_RETURN(auto operands, BroadcastLogicalOperands(self, other));
-  return stablehlo::Xor(operands.self, operands.other);
+  return BuildBinaryLogicalShlo(self, other, stablehlo::Xor);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildLogicalNotShlo(mlir::MlirOp self) {
