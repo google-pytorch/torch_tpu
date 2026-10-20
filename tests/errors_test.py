@@ -7833,6 +7833,44 @@ Supported combinations for non-constant padding:
     ):
       torch.linalg.lu_factor_ex(a, check_errors=True)
 
+  def test_linalg_lu_factor_ex_invalid_inputs(self):
+    a = torch.eye(3, device=et.device(), dtype=torch.float32)
+
+    with self.subTest("out_on_cpu"):
+      lu = torch.empty((3, 3), device="cpu", dtype=torch.float32)
+      pivots = torch.empty((3,), device=et.device(), dtype=torch.int32)
+      info = torch.empty((), device=et.device(), dtype=torch.int32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linalg_lu_factor_ex(): expected all output tensors to be on tpu, got cpu, tpu:0, and tpu:0""",
+          gpu="""Expected all tensors to be on the same device, but got pivots is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA_linalg_lu_factor_ex_out_out)""",
+      ):
+        torch.linalg.lu_factor_ex(a, out=(lu, pivots, info))
+
+    with self.subTest("rank_too_low_with_pivot_false"):
+      a_1d = torch.ones(4, device=et.device(), dtype=torch.float32)
+      lu = torch.empty((4, 4), device=et.device(), dtype=torch.float32)
+      pivots = torch.empty((4,), device=et.device(), dtype=torch.int32)
+      info = torch.empty((), device=et.device(), dtype=torch.int32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linalg_lu_factor_ex(): expected input tensor to have at least 2 dimensions, got 1""",
+          gpu="""torch.lu_factor: Expected tensor with 2 or more dimensions. Got size: [4] instead""",
+      ):
+        torch.linalg.lu_factor_ex(a_1d, pivot=False, out=(lu, pivots, info))
+
+    with self.subTest("partial_overlap_lu_and_a"):
+      a_mat = torch.eye(3, device=et.device(), dtype=torch.float32)
+      lu_view = a_mat.t()
+      pivots = torch.empty((3,), device=et.device(), dtype=torch.int32)
+      info = torch.empty((), device=et.device(), dtype=torch.int32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""linalg_lu_factor_ex(): unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location""",
+          gpu="""unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.""",
+      ):
+        torch.linalg.lu_factor_ex(a_mat, out=(lu_view, pivots, info))
+
   def test_linalg_cholesky_ex_rank_too_low(self):
     a = torch.ones(4, device=et.device())
     out = (

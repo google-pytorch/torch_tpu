@@ -24,6 +24,7 @@
 #include <utility>
 #include <vector>
 
+#include "ATen/MemoryOverlap.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/IListRef_inl.h"
 #include "ATen/ops/_linalg_check_errors.h"
@@ -461,6 +462,30 @@ absl::Status ApplyPivotsInPlace(at::Tensor& tensor, const at::Tensor& pivots,
   return absl::OkStatus();
 }
 
+absl::Status ValidateLuFactorExInputs(const at::Tensor& a, const at::Tensor& lu,
+                                      const at::Tensor& pivots,
+                                      const at::Tensor& info) {
+  TT_RET_CHECK(IsPrivateUse1Device(lu) && IsPrivateUse1Device(pivots) &&
+                   IsPrivateUse1Device(info),
+               error::kInvalidArgument)
+      << "expected all output tensors to be on "
+      << GetPrivateUse1DeviceDebugName() << ", got " << lu.device() << ", "
+      << pivots.device() << ", and " << info.device();
+  TT_RET_CHECK(a.dim() >= 2, error::kInvalidArgument)
+      << "expected input tensor to have at least 2 dimensions, got " << a.dim();
+  TT_RETURN_IF_ERROR(ValidateOutDtype(lu, a.scalar_type(),
+                                      /*allow_out_dtype_cast=*/false));
+  TT_RETURN_IF_ERROR(ValidateOutDtype(pivots, at::kInt,
+                                      /*allow_out_dtype_cast=*/false));
+  TT_RETURN_IF_ERROR(ValidateOutDtype(info, at::kInt,
+                                      /*allow_out_dtype_cast=*/false));
+  TT_RET_CHECK(at::get_overlap_status(lu, a) != at::MemOverlapStatus::Partial,
+               error::kInvalidArgument)
+      << "unsupported operation: some elements of the input tensor and the "
+         "written-to tensor refer to a single memory location";
+  return absl::OkStatus();
+}
+
 }  // namespace
 
 std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLinalgLuFactorExOut(
@@ -471,11 +496,8 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLinalgLuFactorExOut(
       (a, pivot, IgnoreInCacheKey(check_errors, "Doesn't affect SHLO"), lu,
        pivots, info),
       {
-        TT_CHECK_THROW(pivot, error::kInvalidArgument)
-            << "non-pivoting decomposition is not supported";
-        TT_CHECK_THROW(a.dim() >= 2, error::kInvalidArgument)
-            << "expected input tensor to have at least 2 dimensions, got "
-            << a.dim();
+        TT_THROW_IF_ERROR(ValidateLuFactorExInputs(a, lu, pivots, info));
+
         const int n = a.size(a.dim() - 2);
         const int m = a.size(a.dim() - 1);
         const int num_batch_dims = a.dim() - 2;
@@ -483,13 +505,6 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLinalgLuFactorExOut(
             CopyIntVector(a.sizes().slice(0, num_batch_dims));
         Dimensions pivot_dims = batch_dims;
         pivot_dims.push_back(std::min(n, m));
-
-        TT_THROW_IF_ERROR(ValidateOutDtype(lu, a.scalar_type(),
-                                           /*allow_out_dtype_cast=*/false));
-        TT_THROW_IF_ERROR(ValidateOutDtype(pivots, at::kInt,
-                                           /*allow_out_dtype_cast=*/false));
-        TT_THROW_IF_ERROR(ValidateOutDtype(info, at::kInt,
-                                           /*allow_out_dtype_cast=*/false));
 
         if (a.numel() == 0) {
           TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(lu, a.sizes()));
@@ -500,6 +515,8 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLinalgLuFactorExOut(
         }
 
         TT_THROW_IF_ERROR(ValidateLuSupportedDtype(a));
+        TT_CHECK_THROW(pivot, error::kInvalidArgument)
+            << "non-pivoting decomposition is not supported";
 
         TT_ASSIGN_OR_THROW(mlir::ElementType out_mlir_type,
                            ConvertTo<mlir::ElementType>(a.scalar_type()));
@@ -511,6 +528,8 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLinalgLuFactorExOut(
              .op_param_cache_keys = std::move(param_keys)})));
         // Pivots are 0-based, but torch uses 1-based indexing.
         pivots.add_(1);
+        at::Tensor saved_pivots =
+            pivots.is_alias_of(info) ? pivots.clone() : at::Tensor();
         // Find the first non-zero diagonal element.
         auto diagonal = at::diagonal(lu, /*offset=*/0, -2, -1);
         auto zeros = at::eq(diagonal, 0).to(c10::ScalarType::Double);
@@ -522,6 +541,9 @@ std::tuple<at::Tensor&, at::Tensor&, at::Tensor&> AtenLinalgLuFactorExOut(
         if (check_errors) {
           at::_linalg_check_errors(info, "torch.linalg.lu_factor_ex",
                                    a.dim() == 2);
+        }
+        if (saved_pivots.defined()) {
+          pivots.copy_(saved_pivots);
         }
         return {lu, pivots, info};
       });
