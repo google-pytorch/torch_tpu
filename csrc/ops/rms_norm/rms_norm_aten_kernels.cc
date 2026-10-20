@@ -250,7 +250,6 @@ at::Tensor AtenRmsNorm(const at::Tensor& input,
 
         TT_ASSIGN_OR_THROW(const auto elem_dtype,
                            ConvertTo<mlir::ElementType>(input.scalar_type()));
-        Dimensions output_dims = CopyIntVector(input_sizes);
 
         std::vector<at::Tensor> inputs = {input};
         if (has_weight) {
@@ -262,10 +261,10 @@ at::Tensor AtenRmsNorm(const at::Tensor& input,
             (DispatchOp<kDynamicSize, 1>(
                 std::move(op_builder), inputs,
                 {.out_dtype = elem_dtype,
-                 .out_dims = output_dims,
+                 .out_dims = input_sizes,
                  .op_param_cache_keys = std::move(param_keys)})));
 
-        return MakeTensor(std::move(output_buf));
+        return MakeTensor(output_buf);
       });
 }
 
@@ -371,7 +370,6 @@ std::tuple<at::Tensor, at::Tensor> AtenFusedRmsNorm(
 
         TT_ASSIGN_OR_THROW(const auto output_dtype,
                            ConvertTo<mlir::ElementType>(input.scalar_type()));
-        Dimensions output_dims = CopyIntVector(input_sizes);
 
         std::vector<at::Tensor> inputs = {input};
         if (weight.has_value() && weight->defined()) {
@@ -392,11 +390,11 @@ std::tuple<at::Tensor, at::Tensor> AtenFusedRmsNorm(
             (DispatchOp<kDynamicSize, 2>(
                 std::move(op_builder), inputs,
                 {.out_dtypes = {elem_dtype, rstd_elem_dtype},
-                 .out_dims_list = {output_dims, rstd_buffer_shape},
+                 .out_dims_list = {input_sizes, rstd_buffer_shape},
                  .op_param_cache_keys = std::move(param_keys)})));
 
-        return std::make_tuple(MakeTensor(std::move(output_bufs[0])),
-                               MakeTensor(std::move(output_bufs[1])));
+        return std::make_tuple(MakeTensor(output_bufs[0]),
+                               MakeTensor(output_bufs[1]));
       });
 }
 
@@ -434,12 +432,9 @@ std::tuple<at::Tensor, at::Tensor> AtenFusedRmsNormBackward(
         const auto input_sizes = input.sizes();
         Dimensions input_dims = CopyIntVector(input_sizes);
 
-        Dimensions weight_dims;
-        if (has_weight) {
-          weight_dims = CopyIntVector(weight.value().sizes());
-        } else {
-          weight_dims = CopyIntVector(normalized_shape);
-        }
+        const Dimensions weight_dims =
+            has_weight ? CopyIntVector(weight.value().sizes())
+                       : CopyIntVector(normalized_shape);
 
         const at::ScalarType w_dtype =
             has_weight ? weight.value().scalar_type() : input.scalar_type();
@@ -529,10 +524,8 @@ std::tuple<at::Tensor, at::Tensor> AtenFusedRmsNormBackward(
                  .out_dims_list = {grad_in_dims, grad_w_dims},
                  .op_param_cache_keys = std::move(param_keys)})));
 
-        return {output_mask[0] ? MakeTensor(std::move(output_bufs[0]))
-                               : at::Tensor(),
-                output_mask[1] ? MakeTensor(std::move(output_bufs[1]))
-                               : at::Tensor()};
+        return {output_mask[0] ? MakeTensor(output_bufs[0]) : at::Tensor(),
+                output_mask[1] ? MakeTensor(output_bufs[1]) : at::Tensor()};
       });
 }
 

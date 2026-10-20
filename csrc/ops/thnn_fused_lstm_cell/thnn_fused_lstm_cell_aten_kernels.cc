@@ -431,8 +431,8 @@ AtenThnnFusedLstmCellBackwardImpl(const std::optional<at::Tensor>& grad_hy,
                               {.out_dtypes = out_dtypes,
                                .out_dims_list = out_dims_list,
                                .op_param_cache_keys = std::move(param_keys)})));
-        at::Tensor grad_gates = MakeTensor(std::move(gg));
-        at::Tensor grad_cx = MakeTensor(std::move(gcx));
+        at::Tensor grad_gates = MakeTensor(gg);
+        at::Tensor grad_cx = MakeTensor(gcx);
 
         at::Tensor grad_bias;  // UNINITIALIZED_TENSOR_OK
         if (has_bias) {

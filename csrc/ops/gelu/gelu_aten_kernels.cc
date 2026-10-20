@@ -28,7 +28,6 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
 #include "csrc/common/to_string.h"
-#include "csrc/common/utils.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/ops/gelu/gelu.h"
 #include "csrc/ops/macros/kernel.h"
@@ -132,13 +131,12 @@ at::Tensor& AtenGeluBackwardGradInput(const at::Tensor& grad_output,
           return BuildGeluBackwardGradInputShlo(grad_output_op, input_op,
                                                 approximate, out_dtype);
         };
-        auto output_shape = CopyIntVector(self.sizes());
 
         TT_THROW_IF_ERROR(DispatchOpOut<2>(
             std::move(op_builder), {grad_output, self}, grad_input,
             /*options=*/
             {.out_dtype = out_dtype,
-             .out_dims = output_shape,
+             .out_dims = self.sizes(),
              .op_param_cache_keys = std::move(param_keys)}));
         return grad_input;
       });
