@@ -18775,6 +18775,24 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
     self.assertEqual(res_bf16.shape, (0, 4))
     self.assertEqual(res_bf16.dtype, torch.bfloat16)
 
+    for dtype in (torch.bfloat16, torch.float16):
+      x1_c0 = torch.randn(2, 0, device=torch.device("tpu"), dtype=dtype)
+      x2_c0 = torch.randn(3, 0, device=torch.device("tpu"), dtype=dtype)
+      res_c0 = torch.cdist(x1_c0, x2_c0)
+      self.assertEqual(res_c0.shape, (2, 3))
+      self.assertEqual(res_c0.dtype, dtype)
+      utils.assert_close(res_c0.cpu(), torch.zeros(2, 3, dtype=dtype))
+
+      x1_bwd = torch.randn(
+          4, 5, device=torch.device("tpu"), dtype=dtype, requires_grad=True
+      )
+      x2_bwd = torch.randn(0, 5, device=torch.device("tpu"), dtype=dtype)
+      torch.cdist(x1_bwd, x2_bwd, p=2.0).sum().backward()
+      self.assertIsNotNone(x1_bwd.grad)
+      self.assertEqual(x1_bwd.grad.shape, (4, 5))
+      self.assertEqual(x1_bwd.grad.dtype, dtype)
+      utils.assert_close(x1_bwd.grad.cpu(), torch.zeros(4, 5, dtype=dtype))
+
   def test_cdist_with_different_p_values(self):
     p_values = [0.0, 1.0, 2.0, float("inf")]
     x1 = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
