@@ -14,7 +14,9 @@
 
 name: "Build and Upload Wheel"
 
-description: "Builds a torch_tpu wheel, runs twine checks, and uploads to GCS"
+description: >-
+  Builds or reuses a cached torch_tpu wheel, runs twine checks, and uploads to
+  GCS
 inputs:
   python_version:
     description: "Python version to build for"
@@ -26,6 +28,12 @@ inputs:
       PyTorch-nightly glue).
     required: false
     default: ""
+  reuse_cached_wheel:
+    description: >-
+      Whether to reuse an existing wheel from the GCS tree-SHA cache when the
+      repository tree matches a previously built wheel.
+    required: false
+    default: "false"
 outputs:
   gcs_wheel_path:
     description: "The GCS path to the built wheel file"
@@ -36,10 +44,54 @@ outputs:
 runs:
   using: "composite"
   steps:
+    - name: Check GCS wheel cache
+      id: cache_check
+      shell: bash
+      env:
+        PYTHON_VERSION: ${{ inputs.python_version }}
+        EXTRA_BAZEL_ARGS: ${{ inputs.extra_bazel_args }}
+        REUSE_CACHED_WHEEL: ${{ inputs.reuse_cached_wheel }}
+      run: |
+        git config --global --add safe.directory "$GITHUB_WORKSPACE" || true
+        CACHE_HIT="false"
+        CACHE_DIR=""
+        if [[ -z "$(git status --porcelain 2>/dev/null)" ]]; then
+          TREE_SHA=$(git rev-parse "HEAD^{tree}" 2>/dev/null || true)
+          if [[ -n "${TREE_SHA}" ]]; then
+            GCC_VER="$(gcc -dumpfullversion -dumpversion 2>/dev/null || true)"
+            LDD_VER="$(ldd --version 2>/dev/null | head -n 1 || true)"
+            ENV_FINGERPRINT="${GCC_VER}|${LDD_VER}"
+            ARGS_HASH=$(
+              printf "%s|%s" "${EXTRA_BAZEL_ARGS}" "${ENV_FINGERPRINT}" \
+                | sha256sum | cut -c1-12
+            )
+            CACHE_BASE="gs://torch-tpu-ci-transient/wheel-cache/${TREE_SHA}"
+            CACHE_DIR="${CACHE_BASE}/py${PYTHON_VERSION}-${ARGS_HASH}"
+            if [[ "${REUSE_CACHED_WHEEL}" == "true" ]]; then
+              CACHED_WHEEL=$(
+                gcloud storage ls "${CACHE_DIR}/*.whl" 2>/dev/null \
+                  | tail -n 1 || true
+              )
+              if [[ -n "${CACHED_WHEEL}" ]]; then
+                mkdir -p dist
+                rm -f dist/*.whl
+                if gcloud storage cp "${CACHED_WHEEL}" dist/; then
+                  echo "Reusing cached wheel from ${CACHED_WHEEL}"
+                  CACHE_HIT="true"
+                else
+                  rm -f dist/*.whl
+                fi
+              fi
+            fi
+          fi
+        fi
+        echo "cache_hit=${CACHE_HIT}" >> "$GITHUB_OUTPUT"
+        echo "cache_dir=${CACHE_DIR}" >> "$GITHUB_OUTPUT"
     # The build itself lives in the shared ci/build_wheels.sh -- the same
     # script the Kokoro publisher runs -- so the wheel CI tests is built
     # exactly like the wheel that gets published.
     - name: Build wheel
+      if: steps.cache_check.outputs.cache_hit != 'true'
       shell: bash
       env:
         PYTHON_VERSION: ${{ inputs.python_version }}
@@ -49,6 +101,7 @@ runs:
         ci/build_wheels.sh --output-dir dist "${PYTHON_VERSION}" -- \
           --color=yes --curses=no ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
     - name: Check wheel metadata
+      if: steps.cache_check.outputs.cache_hit != 'true'
       shell: bash
       run: |
         WHEEL_DIR=dist
@@ -56,11 +109,21 @@ runs:
     - name: Upload wheel to GCS
       id: upload
       shell: bash
+      env:
+        CACHE_HIT: ${{ steps.cache_check.outputs.cache_hit }}
+        CACHE_DIR: ${{ steps.cache_check.outputs.cache_dir }}
       run: |
         WHEEL_DIR=dist
-        WHEEL_PATH=$(ls $WHEEL_DIR/*.whl | head -n 1)
+        WHEEL_PATH=$(ls $WHEEL_DIR/*.whl | tail -n 1)
         WHEEL_FILENAME=$(basename "$WHEEL_PATH")
         GCS_PATH="gs://torch-tpu-ci-transient/artifacts/${{ github.workflow }}/${{ github.run_number }}/${{ github.run_attempt }}/$WHEEL_FILENAME"
         gcloud storage cp "$WHEEL_PATH" "$GCS_PATH"
+        if [[ "${CACHE_HIT}" != "true" && -n "${CACHE_DIR}" ]]; then
+          if ! gcloud storage ls "${CACHE_DIR}/*.whl" >/dev/null 2>&1; then
+            gcloud storage cp "$WHEEL_PATH" \
+              "${CACHE_DIR}/${WHEEL_FILENAME}" || true
+          fi
+        fi
         echo "gcs_wheel_path=$GCS_PATH" >> $GITHUB_OUTPUT
         echo "gcs_wheel_dir=gs://torch-tpu-ci-transient/artifacts/${{ github.workflow }}/${{ github.run_number }}/${{ github.run_attempt }}/" >> $GITHUB_OUTPUT
+

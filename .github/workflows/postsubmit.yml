@@ -194,6 +194,7 @@ jobs:
         uses: ./.github/actions/build-wheel
         with:
           python_version: "3.12"
+          reuse_cached_wheel: "true"
 
   # TODO(b/570278640): Re-enable vllm_perf_eval once vLLM Perf Eval is fixed.
   # vllm_perf_eval:

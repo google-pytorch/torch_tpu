@@ -46,7 +46,8 @@ jobs:
         id: build
         uses: ./.github/actions/build-wheel
         with:
-          python_version: 3.12
+          python_version: "3.12"
+          reuse_cached_wheel: "true"
 
   run_tpu_benchmarks:
     name: Run TorchTPU TPU benchmarks
