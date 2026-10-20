@@ -18,6 +18,7 @@
 
 #include <memory>
 
+#include "csrc/mlir/passes/commute_pointwise_dags_across_channel_transposes.h"
 #include "csrc/mlir/passes/dummy_pass.h"
 #include "csrc/mlir/passes/fold_concat_softmax.h"
 #include "csrc/mlir/passes/lower_separable_gather_to_dot.h"
@@ -40,6 +41,9 @@ void RegisterTorchTpuPasses() {
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return createFoldConcatSoftmaxPass();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return createCommutePointwiseDagsAcrossChannelTransposesPass();
   });
 }
 

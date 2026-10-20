@@ -52,6 +52,7 @@ torch_tpu_cc_library(
         ":instrumentation",
         "//csrc/common:env_vars",
         "//csrc/common:error_utils",
+        "//csrc/mlir/passes:commute_pointwise_dags_across_channel_transposes",
         "//csrc/mlir/passes:fold_concat_softmax",
         "//csrc/mlir/passes:lower_separable_gather_to_dot",
         "//csrc/mlir/passes:reassociate_norm_weights",
@@ -88,6 +89,7 @@ torch_tpu_cc_library(
     srcs = ["registration.cc"],
     hdrs = ["registration.h"],
     deps = [
+        "//csrc/mlir/passes:commute_pointwise_dags_across_channel_transposes",
         "//csrc/mlir/passes:dummy_pass",
         "//csrc/mlir/passes:fold_concat_softmax",
         "//csrc/mlir/passes:lower_separable_gather_to_dot",
