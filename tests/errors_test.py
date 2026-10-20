@@ -8681,6 +8681,39 @@ Supported combinations for non-constant padding:
     ):
       torch.norm(t, p=2, dim=[0, 0])
 
+  def test_norm_empty_reduction(self):
+    x_empty = torch.empty((0,), device=et.device(), dtype=torch.float32)
+    out = torch.empty((), device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""norm(): expected non-empty reduction dimension for ord inf, got size 0 along dim 0""",
+        gpu="""linalg.vector_norm cannot compute the inf norm on an empty tensor because the operation does not have an identity""",
+    ):
+      torch.ops.aten.norm.out(x_empty, float("inf"), [], False, out=out)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""norm(): expected non-empty reduction dimension for ord -1, got size 0 along dim 0""",
+        gpu="""linalg.vector_norm cannot compute the -1 norm on an empty tensor because the operation does not have an identity""",
+    ):
+      torch.ops.aten.norm.out(x_empty, -1.0, [], False, out=out)
+
+    x_2d = torch.empty((2, 0), device=et.device(), dtype=torch.float32)
+    out_2d = torch.empty((2,), device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""norm(): expected non-empty reduction dimension for ord inf, got size 0 along dim 1""",
+        gpu="""linalg.vector_norm cannot compute the inf norm on the dimension 1because this dimension is empty and the operation does not have an identity""",
+    ):
+      torch.ops.aten.norm.out(x_2d, float("inf"), [1], False, out=out_2d)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""norm(): expected non-empty reduction dimension for ord -1, got size 0 along dim 1""",
+        gpu="""linalg.vector_norm cannot compute the -1 norm on the dimension 1because this dimension is empty and the operation does not have an identity""",
+    ):
+      torch.ops.aten.norm.out(x_2d, -1.0, [1], False, out=out_2d)
+
   def test_rms_norm_int(self):
     inp = torch.ones(5, 5, device=et.device(), dtype=torch.int32)
     normalized_shape = (5,)
