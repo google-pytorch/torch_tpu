@@ -358,11 +358,11 @@ TEST_F(KilnTest, ScalarFloatOperations) {
 // The same integer hash written once and applied to both a Scalar and a Tile.
 template <typename T>
 T Fmix32(T h) {
-  h = h ^ (h >> 16);
-  h = h * 0x85EBCA6Bu;
-  h = h ^ (h >> 13);
-  h = h * 0xC2B2AE35u;
-  h = h ^ (h >> 16);
+  h ^= h >> 16;
+  h *= 0x85EBCA6Bu;
+  h ^= h >> 13;
+  h *= 0xC2B2AE35u;
+  h ^= h >> 16;
   return h;
 }
 
@@ -599,6 +599,264 @@ TEST_F(KilnTest, TileScalarComparisonAndSelect) {
     CHECK:         %[[ZERO_LS:.*]] = arith.constant dense<0.000000e+00> : vector<32x128xf32>
     CHECK:         arith.select %[[EQ_MASK]], %[[ZERO_LS]], %[[SEL_LS_SPLAT]] : vector<32x128xi1>, vector<32x128xf32>
     CHECK:         tpu.vector_store %[[OUT]]
+  )");
+}
+
+TEST_F(KilnTest, ScalarCompoundAssignmentArithmetic) {
+  absl::StatusOr<Kernel> kernel =
+      CreateKernel(GridSpec{.name = "scalar_compound_arith", .grid = {2, 2}},
+                   OutSpec::Smem(f32(1)), [&](Ref out) {
+                     Scalar s = ProgramId(0);
+                     Scalar rhs = ProgramId(1);
+                     Scalar& s_ref = (s += rhs);
+                     EXPECT_EQ(&s_ref, &s);
+                     s += 2;
+                     s -= rhs;
+                     s -= 1;
+                     s *= rhs;
+                     s *= 3;
+                     s /= rhs;
+                     s /= 2;
+                     s %= rhs;
+                     s %= 5;
+
+                     Scalar sf = s.ToF32();
+                     Scalar rhs_f = rhs.ToF32();
+                     sf += rhs_f;
+                     sf += 1.5;
+                     sf -= rhs_f;
+                     sf -= 0.5;
+                     sf *= rhs_f;
+                     sf *= 2.0;
+                     sf /= rhs_f;
+                     sf /= 4.0;
+
+                     out(0) = sf;
+                   });
+  ASSERT_THAT(kernel, IsOk());
+  ExpectKernelMatches(std::move(*kernel), R"(
+    CHECK-LABEL: func.func @scalar_compound_arith(
+    CHECK-SAME: %[[PID0:arg[0-9]+]]: i32, %[[PID1:arg[0-9]+]]: i32,
+    CHECK-SAME: %[[OUT:arg[0-9]+]]: memref<1xf32, #tpu.memory_space<smem>>)
+    CHECK:      %[[S1:.*]] = arith.addi %[[PID0]], %[[PID1]] : i32
+    CHECK:      %[[S2:.*]] = arith.addi %[[S1]], %{{.*}} : i32
+    CHECK:      %[[S3:.*]] = arith.subi %[[S2]], %[[PID1]] : i32
+    CHECK:      %[[S4:.*]] = arith.subi %[[S3]], %{{.*}} : i32
+    CHECK:      %[[S5:.*]] = arith.muli %[[S4]], %[[PID1]] : i32
+    CHECK:      %[[S6:.*]] = arith.muli %[[S5]], %{{.*}} : i32
+    CHECK:      %[[S7:.*]] = arith.divsi %[[S6]], %[[PID1]] : i32
+    CHECK:      %[[S8:.*]] = arith.divsi %[[S7]], %{{.*}} : i32
+    CHECK:      %[[S9:.*]] = arith.remsi %[[S8]], %[[PID1]] : i32
+    CHECK:      %[[S10:.*]] = arith.remsi %[[S9]], %{{.*}} : i32
+    CHECK:      %[[SF0:.*]] = arith.sitofp %[[S10]] : i32 to f32
+    CHECK:      %[[RHSF:.*]] = arith.sitofp %[[PID1]] : i32 to f32
+    CHECK:      %[[SF1:.*]] = arith.addf %[[SF0]], %[[RHSF]] : f32
+    CHECK:      %[[SF2:.*]] = arith.addf %[[SF1]], %{{.*}} : f32
+    CHECK:      %[[SF3:.*]] = arith.subf %[[SF2]], %[[RHSF]] : f32
+    CHECK:      %[[SF4:.*]] = arith.subf %[[SF3]], %{{.*}} : f32
+    CHECK:      %[[SF5:.*]] = arith.mulf %[[SF4]], %[[RHSF]] : f32
+    CHECK:      %[[SF6:.*]] = arith.mulf %[[SF5]], %{{.*}} : f32
+    CHECK:      %[[SF7:.*]] = arith.divf %[[SF6]], %[[RHSF]] : f32
+    CHECK:      %[[SF8:.*]] = arith.divf %[[SF7]], %{{.*}} : f32
+    CHECK:      memref.store %[[SF8]], %{{.*}}[]
+  )");
+}
+
+TEST_F(KilnTest, ScalarCompoundAssignmentBitwise) {
+  absl::StatusOr<Kernel> kernel =
+      CreateKernel(GridSpec{.name = "scalar_compound_bitwise", .grid = {2, 2}},
+                   OutSpec::Smem(i32(1)), [&](Ref out) {
+                     Scalar s = ProgramId(0);
+                     Scalar rhs = ProgramId(1);
+                     s &= rhs;
+                     s &= 0x7F;
+                     s |= rhs;
+                     s |= 0x01;
+                     s ^= rhs;
+                     s ^= 0x55;
+                     s <<= rhs;
+                     s <<= 2;
+                     s >>= rhs;
+                     s >>= 1;
+                     out(0) = s;
+                   });
+  ASSERT_THAT(kernel, IsOk());
+  ExpectKernelMatches(std::move(*kernel), R"(
+    CHECK-LABEL: func.func @scalar_compound_bitwise(
+    CHECK-SAME: %[[PID0:arg[0-9]+]]: i32, %[[PID1:arg[0-9]+]]: i32,
+    CHECK-SAME: %[[OUT:arg[0-9]+]]: memref<1xi32, #tpu.memory_space<smem>>)
+    CHECK:      %[[S1:.*]] = arith.andi %[[PID0]], %[[PID1]] : i32
+    CHECK:      %[[S2:.*]] = arith.andi %[[S1]], %{{.*}} : i32
+    CHECK:      %[[S3:.*]] = arith.ori %[[S2]], %[[PID1]] : i32
+    CHECK:      %[[S4:.*]] = arith.ori %[[S3]], %{{.*}} : i32
+    CHECK:      %[[S5:.*]] = arith.xori %[[S4]], %[[PID1]] : i32
+    CHECK:      %[[S6:.*]] = arith.xori %[[S5]], %{{.*}} : i32
+    CHECK:      %[[S7:.*]] = arith.shli %[[S6]], %[[PID1]] : i32
+    CHECK:      %[[S8:.*]] = arith.shli %[[S7]], %{{.*}} : i32
+    CHECK:      %[[S9:.*]] = arith.shrsi %[[S8]], %[[PID1]] : i32
+    CHECK:      %[[S10:.*]] = arith.shrsi %[[S9]], %{{.*}} : i32
+    CHECK:      memref.store %[[S10]], %{{.*}}[]
+  )");
+}
+
+TEST_F(KilnTest, TileFloatCompoundAssignment) {
+  absl::StatusOr<Kernel> kernel =
+      CreateKernel(GridSpec{.name = "tile_float_compound_assign", .grid = {2}},
+                   InSpec{f32(8, 128)}, InSpec{f32(8, 128)},
+                   OutSpec{f32(8, 128)}, [&](Ref in0, Ref in1, Ref out) {
+                     Tile f(in0);
+                     Tile rhs(in1);
+                     Scalar sf = ProgramId(0).ToF32();
+                     Tile& f_ref = (f += rhs);
+                     EXPECT_EQ(&f_ref, &f);
+                     f += sf;
+                     f += 1.0;
+                     f -= rhs;
+                     f -= sf;
+                     f -= 0.5;
+                     f *= rhs;
+                     f *= sf;
+                     f *= 2.0;
+                     f /= rhs;
+                     f /= sf;
+                     f /= 4.0;
+                     out = f;
+                   });
+  ASSERT_THAT(kernel, IsOk());
+  ExpectKernelMatches(std::move(*kernel), R"(
+    CHECK-LABEL: func.func @tile_float_compound_assign(
+    CHECK-SAME: %[[PID:arg[0-9]+]]: i32,
+    CHECK-SAME: %[[IN0:arg[0-9]+]]: memref<8x128xf32, #tpu.memory_space<vmem>>,
+    CHECK-SAME: %[[IN1:arg[0-9]+]]: memref<8x128xf32, #tpu.memory_space<vmem>>,
+    CHECK-SAME: %[[OUT:arg[0-9]+]]: memref<8x128xf32, #tpu.memory_space<vmem>>)
+    CHECK:      %[[F0:.*]] = vector.load %[[IN0]]
+    CHECK:      %[[RHS:.*]] = vector.load %[[IN1]]
+    CHECK:      %[[SF:.*]] = arith.sitofp %[[PID]] : i32 to f32
+    CHECK:      %[[F1:.*]] = arith.addf %[[F0]], %[[RHS]] : vector<8x128xf32>
+    CHECK:      %[[SPLAT:.*]] = vector.broadcast %[[SF]] : f32 to vector<8x128xf32>
+    CHECK:      %[[F2:.*]] = arith.addf %[[F1]], %[[SPLAT]] : vector<8x128xf32>
+    CHECK:      %[[C1:.*]] = arith.constant dense<1.000000e+00> : vector<8x128xf32>
+    CHECK:      %[[F3:.*]] = arith.addf %[[F2]], %[[C1]] : vector<8x128xf32>
+    CHECK:      %[[F4:.*]] = arith.subf %[[F3]], %[[RHS]] : vector<8x128xf32>
+    CHECK:      %[[F5:.*]] = arith.subf %[[F4]], %{{.*}} : vector<8x128xf32>
+    CHECK:      %[[F6:.*]] = arith.subf %[[F5]], %{{.*}} : vector<8x128xf32>
+    CHECK:      %[[F7:.*]] = arith.mulf %[[F6]], %[[RHS]] : vector<8x128xf32>
+    CHECK:      %[[F8:.*]] = arith.mulf %[[F7]], %{{.*}} : vector<8x128xf32>
+    CHECK:      %[[F9:.*]] = arith.mulf %[[F8]], %{{.*}} : vector<8x128xf32>
+    CHECK:      %[[F10:.*]] = arith.divf %[[F9]], %[[RHS]] : vector<8x128xf32>
+    CHECK:      %[[F11:.*]] = arith.divf %[[F10]], %{{.*}} : vector<8x128xf32>
+    CHECK:      %[[F12:.*]] = arith.divf %[[F11]], %{{.*}} : vector<8x128xf32>
+    CHECK:      tpu.vector_store %[[OUT]][%{{.*}}, %{{.*}}], %[[F12]]
+  )");
+}
+
+TEST_F(KilnTest, TileIntCompoundAssignmentArithmetic) {
+  absl::StatusOr<Kernel> kernel =
+      CreateKernel(GridSpec{.name = "tile_int_compound_arith", .grid = {2}},
+                   InSpec{i32(8, 128)}, InSpec{i32(8, 128)},
+                   OutSpec{i32(8, 128)}, [&](Ref in0, Ref in1, Ref out) {
+                     Tile i(in0);
+                     Tile rhs(in1);
+                     Scalar s = ProgramId(0);
+                     i += rhs;
+                     i += s;
+                     i += 1;
+                     i -= rhs;
+                     i -= s;
+                     i -= 1;
+                     i *= rhs;
+                     i *= s;
+                     i *= 3;
+                     i /= rhs;
+                     i /= s;
+                     i /= 2;
+                     i %= rhs;
+                     i %= s;
+                     i %= 7;
+                     out = i;
+                   });
+  ASSERT_THAT(kernel, IsOk());
+  ExpectKernelMatches(std::move(*kernel), R"(
+    CHECK-LABEL: func.func @tile_int_compound_arith(
+    CHECK-SAME: %[[PID:arg[0-9]+]]: i32,
+    CHECK-SAME: %[[IN0:arg[0-9]+]]: memref<8x128xi32, #tpu.memory_space<vmem>>,
+    CHECK-SAME: %[[IN1:arg[0-9]+]]: memref<8x128xi32, #tpu.memory_space<vmem>>,
+    CHECK-SAME: %[[OUT:arg[0-9]+]]: memref<8x128xi32, #tpu.memory_space<vmem>>)
+    CHECK:      %[[I0:.*]] = vector.load %[[IN0]]
+    CHECK:      %[[RHS:.*]] = vector.load %[[IN1]]
+    CHECK:      %[[I1:.*]] = arith.addi %[[I0]], %[[RHS]] : vector<8x128xi32>
+    CHECK:      %[[SPLAT:.*]] = vector.broadcast %[[PID]] : i32 to vector<8x128xi32>
+    CHECK:      %[[I2:.*]] = arith.addi %[[I1]], %[[SPLAT]] : vector<8x128xi32>
+    CHECK:      %[[C1:.*]] = arith.constant dense<1> : vector<8x128xi32>
+    CHECK:      %[[I3:.*]] = arith.addi %[[I2]], %[[C1]] : vector<8x128xi32>
+    CHECK:      %[[I4:.*]] = arith.subi %[[I3]], %[[RHS]] : vector<8x128xi32>
+    CHECK:      %[[I5:.*]] = arith.subi %[[I4]], %{{.*}} : vector<8x128xi32>
+    CHECK:      %[[I6:.*]] = arith.subi %[[I5]], %{{.*}} : vector<8x128xi32>
+    CHECK:      %[[I7:.*]] = arith.muli %[[I6]], %[[RHS]] : vector<8x128xi32>
+    CHECK:      %[[I8:.*]] = arith.muli %[[I7]], %{{.*}} : vector<8x128xi32>
+    CHECK:      %[[I9:.*]] = arith.muli %[[I8]], %{{.*}} : vector<8x128xi32>
+    CHECK:      %[[I10:.*]] = arith.divsi %[[I9]], %[[RHS]] : vector<8x128xi32>
+    CHECK:      %[[I11:.*]] = arith.divsi %[[I10]], %{{.*}} : vector<8x128xi32>
+    CHECK:      %[[I12:.*]] = arith.divsi %[[I11]], %{{.*}} : vector<8x128xi32>
+    CHECK:      %[[I13:.*]] = arith.remsi %[[I12]], %[[RHS]] : vector<8x128xi32>
+    CHECK:      %[[I14:.*]] = arith.remsi %[[I13]], %{{.*}} : vector<8x128xi32>
+    CHECK:      %[[I15:.*]] = arith.remsi %[[I14]], %{{.*}} : vector<8x128xi32>
+    CHECK:      tpu.vector_store %[[OUT]][%{{.*}}, %{{.*}}], %[[I15]]
+  )");
+}
+
+TEST_F(KilnTest, TileCompoundAssignmentBitwise) {
+  absl::StatusOr<Kernel> kernel =
+      CreateKernel(GridSpec{.name = "tile_compound_bitwise", .grid = {2}},
+                   InSpec{i32(8, 128)}, InSpec{i32(8, 128)},
+                   OutSpec{i32(8, 128)}, [&](Ref in0, Ref in1, Ref out) {
+                     Tile i(in0);
+                     Tile rhs(in1);
+                     Scalar s = ProgramId(0);
+                     i &= rhs;
+                     i &= s;
+                     i &= 0xFF;
+                     i |= rhs;
+                     i |= s;
+                     i |= 0x0F;
+                     i ^= rhs;
+                     i ^= s;
+                     i ^= 0x55;
+                     i <<= rhs;
+                     i <<= s;
+                     i <<= 1;
+                     i >>= rhs;
+                     i >>= s;
+                     i >>= 1;
+                     out = i;
+                   });
+  ASSERT_THAT(kernel, IsOk());
+  ExpectKernelMatches(std::move(*kernel), R"(
+    CHECK-LABEL: func.func @tile_compound_bitwise(
+    CHECK-SAME: %[[PID:arg[0-9]+]]: i32,
+    CHECK-SAME: %[[IN0:arg[0-9]+]]: memref<8x128xi32, #tpu.memory_space<vmem>>,
+    CHECK-SAME: %[[IN1:arg[0-9]+]]: memref<8x128xi32, #tpu.memory_space<vmem>>,
+    CHECK-SAME: %[[OUT:arg[0-9]+]]: memref<8x128xi32, #tpu.memory_space<vmem>>)
+    CHECK:      %[[I0:.*]] = vector.load %[[IN0]]
+    CHECK:      %[[RHS:.*]] = vector.load %[[IN1]]
+    CHECK:      %[[I1:.*]] = arith.andi %[[I0]], %[[RHS]] : vector<8x128xi32>
+    CHECK:      %[[SPLAT:.*]] = vector.broadcast %[[PID]] : i32 to vector<8x128xi32>
+    CHECK:      %[[I2:.*]] = arith.andi %[[I1]], %[[SPLAT]] : vector<8x128xi32>
+    CHECK:      %[[CFF:.*]] = arith.constant dense<255> : vector<8x128xi32>
+    CHECK:      %[[I3:.*]] = arith.andi %[[I2]], %[[CFF]] : vector<8x128xi32>
+    CHECK:      %[[I4:.*]] = arith.ori %[[I3]], %[[RHS]] : vector<8x128xi32>
+    CHECK:      %[[I5:.*]] = arith.ori %[[I4]], %{{.*}} : vector<8x128xi32>
+    CHECK:      %[[I6:.*]] = arith.ori %[[I5]], %{{.*}} : vector<8x128xi32>
+    CHECK:      %[[I7:.*]] = arith.xori %[[I6]], %[[RHS]] : vector<8x128xi32>
+    CHECK:      %[[I8:.*]] = arith.xori %[[I7]], %{{.*}} : vector<8x128xi32>
+    CHECK:      %[[I9:.*]] = arith.xori %[[I8]], %{{.*}} : vector<8x128xi32>
+    CHECK:      %[[I10:.*]] = arith.shli %[[I9]], %[[RHS]] : vector<8x128xi32>
+    CHECK:      %[[I11:.*]] = arith.shli %[[I10]], %{{.*}} : vector<8x128xi32>
+    CHECK:      %[[I12:.*]] = arith.shli %[[I11]], %{{.*}} : vector<8x128xi32>
+    CHECK:      %[[I13:.*]] = arith.shrsi %[[I12]], %[[RHS]] : vector<8x128xi32>
+    CHECK:      %[[I14:.*]] = arith.shrsi %[[I13]], %{{.*}} : vector<8x128xi32>
+    CHECK:      %[[I15:.*]] = arith.shrsi %[[I14]], %{{.*}} : vector<8x128xi32>
+    CHECK:      tpu.vector_store %[[OUT]][%{{.*}}, %{{.*}}], %[[I15]]
   )");
 }
 

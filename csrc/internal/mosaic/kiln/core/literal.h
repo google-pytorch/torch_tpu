@@ -86,6 +86,22 @@ class WithOperandOps {
     return rhs.Coerce(lhs) % rhs;
   }
 
+  friend Derived& operator+=(Derived& lhs, Other rhs) {
+    return lhs = lhs + rhs;
+  }
+  friend Derived& operator-=(Derived& lhs, Other rhs) {
+    return lhs = lhs - rhs;
+  }
+  friend Derived& operator*=(Derived& lhs, Other rhs) {
+    return lhs = lhs * rhs;
+  }
+  friend Derived& operator/=(Derived& lhs, Other rhs) {
+    return lhs = lhs / rhs;
+  }
+  friend Derived& operator%=(Derived& lhs, Other rhs) {
+    return lhs = lhs % rhs;
+  }
+
   // Bitwise / logical ops
   friend Derived operator&(Derived lhs, Other rhs) {
     return lhs & lhs.Coerce(rhs);
@@ -110,6 +126,22 @@ class WithOperandOps {
   }
   friend Derived operator>>(Other lhs, Derived rhs) {
     return rhs.Coerce(lhs) >> rhs;
+  }
+
+  friend Derived& operator&=(Derived& lhs, Other rhs) {
+    return lhs = lhs & rhs;
+  }
+  friend Derived& operator|=(Derived& lhs, Other rhs) {
+    return lhs = lhs | rhs;
+  }
+  friend Derived& operator^=(Derived& lhs, Other rhs) {
+    return lhs = lhs ^ rhs;
+  }
+  friend Derived& operator<<=(Derived& lhs, Other rhs) {
+    return lhs = lhs << rhs;
+  }
+  friend Derived& operator>>=(Derived& lhs, Other rhs) {
+    return lhs = lhs >> rhs;
   }
 
   // Elementwise min / max / select

@@ -129,6 +129,22 @@ class WithElementwiseOps {
     return Ops::Rem(lhs, rhs);
   }
 
+  friend Derived& operator+=(Derived& lhs, Derived rhs) {
+    return lhs = lhs + rhs;
+  }
+  friend Derived& operator-=(Derived& lhs, Derived rhs) {
+    return lhs = lhs - rhs;
+  }
+  friend Derived& operator*=(Derived& lhs, Derived rhs) {
+    return lhs = lhs * rhs;
+  }
+  friend Derived& operator/=(Derived& lhs, Derived rhs) {
+    return lhs = lhs / rhs;
+  }
+  friend Derived& operator%=(Derived& lhs, Derived rhs) {
+    return lhs = lhs % rhs;
+  }
+
   // Bitwise / logical ops on integer and bool (mask) operands. `>>` is an
   // arithmetic shift for signed types, and logical shift for unsigned types.
   friend Derived operator&(Derived lhs, Derived rhs) {
@@ -145,6 +161,22 @@ class WithElementwiseOps {
   }
   friend Derived operator>>(Derived lhs, Derived rhs) {
     return Ops::ShiftRight(lhs, rhs);
+  }
+
+  friend Derived& operator&=(Derived& lhs, Derived rhs) {
+    return lhs = lhs & rhs;
+  }
+  friend Derived& operator|=(Derived& lhs, Derived rhs) {
+    return lhs = lhs | rhs;
+  }
+  friend Derived& operator^=(Derived& lhs, Derived rhs) {
+    return lhs = lhs ^ rhs;
+  }
+  friend Derived& operator<<=(Derived& lhs, Derived rhs) {
+    return lhs = lhs << rhs;
+  }
+  friend Derived& operator>>=(Derived& lhs, Derived rhs) {
+    return lhs = lhs >> rhs;
   }
   friend Derived operator!(Derived v) { return Ops::LogicalNot(v); }
 
