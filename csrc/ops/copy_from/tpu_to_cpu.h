@@ -21,6 +21,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "csrc/eager/device_buffer.h"
+#include "csrc/ops/copy_from/copy_common.h"
 
 namespace torch_tpu {
 
@@ -28,21 +29,21 @@ namespace torch_tpu {
 // src and dest may have different dtypes.
 // src and dest may have different shapes as long as src is broadcastable to
 // dest.
-// If non_blocking is true, this will return without blocking the caller
-// if possible; however if dest is non-dense, a blocking copy will be required.
+// If transfer_sync_mode is kEagerNonBlocking, this will return without blocking
+// the caller if possible; however if dest is non-dense, a blocking copy will be
+// required.
 absl::Status CopyTpuToCpu(const at::Tensor& src, const at::Tensor& dest,
-                          bool non_blocking);
+                          TransferSyncMode transfer_sync_mode);
 
 // Writes the values of src_buffer_ref (on TPU) to a new, contiguous CPU tensor.
-// This is always a blocking copy.
 absl::StatusOr<at::Tensor> CopyDeviceBufferRefToCpuTensor(
-    const DeviceBufferRef& src_buffer_ref);
+    const DeviceBufferRef& src_buffer_ref, TransferSyncMode transfer_sync_mode);
 
 // Writes the values of src_buffer_ref (on TPU) to the given CPU pointer.
 // The caller is responsible for allocating sufficient memory for dest_ptr.
-// This is always a blocking copy.
 absl::Status CopyDeviceBufferRefToCpuPtr(const DeviceBufferRef& src_buffer_ref,
-                                         void* dest_ptr);
+                                         void* dest_ptr,
+                                         TransferSyncMode transfer_sync_mode);
 
 }  // namespace torch_tpu
 

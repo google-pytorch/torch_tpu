@@ -37,6 +37,7 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
+#include "csrc/ops/copy_from/copy_common.h"
 #include "csrc/ops/copy_from/tpu_to_cpu.h"
 #include "csrc/ops/index_select/index_select.h"
 #include "csrc/ops/macros/kernel.h"
@@ -445,8 +446,8 @@ absl::StatusOr<BuildUniqueConsecutiveShloOutputs> BuildUniqueConsecutiveShlo(
 absl::StatusOr<int64_t> ExtractOutputSize(const at::Tensor& count_tensor) {
   at::Tensor count_cpu = at::empty(
       {}, at::TensorOptions().dtype(c10::ScalarType::Long).device(at::kCPU));
-  TT_RETURN_IF_ERROR(
-      CopyTpuToCpu(count_tensor, count_cpu, /*non_blocking=*/false));
+  TT_RETURN_IF_ERROR(CopyTpuToCpu(count_tensor, count_cpu,
+                                  GetTransferSyncMode(/*non_blocking=*/false)));
   return count_cpu.item<int64_t>();
 }
 

@@ -39,6 +39,7 @@ torch_tpu_cc_library(
         "//csrc/eager:tensor_to_buffer",
         "//csrc/ops:op_builder_utils",
         "//csrc/ops:op_names",
+        "//csrc/ops/copy_from:copy_common",
         "//csrc/ops/copy_from:tpu_to_cpu",
         "//csrc/ops/macros:kernel",
         "//shims/torch:aten_headers",

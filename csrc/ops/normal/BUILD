@@ -44,6 +44,7 @@ torch_tpu_cc_library(
         "//csrc/ops:python_context",
         "//csrc/ops:rng_utils",
         "//csrc/ops:xla_utils",
+        "//csrc/ops/copy_from:copy_common",
         "//csrc/ops/copy_from:tpu_to_cpu",
         "//csrc/ops/macros:kernel",
         "//csrc/ops/min_max",

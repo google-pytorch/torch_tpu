@@ -37,6 +37,7 @@
 #include "csrc/eager/eager_mode.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
+#include "csrc/ops/copy_from/copy_common.h"
 #include "csrc/ops/copy_from/tpu_to_cpu.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_names.h"
@@ -114,7 +115,10 @@ void ScheduleAsyncAssertionCheck(const at::Tensor& self,
     // This is a blocking transfer on a background thread, which is async
     // relative to the thread that called `ScheduleAsyncAssertionCheck`.
     // It needs to be blocking so that we can immediately call ".item()" below.
-    auto status_or_tensor = CopyDeviceBufferRefToCpuTensor(materialized_buf);
+    // It also needs to be isolated so that we don't interrupt the stream
+    // from a background thread.
+    auto status_or_tensor = CopyDeviceBufferRefToCpuTensor(
+        materialized_buf, TransferSyncMode::kIsolated);
     if (!status_or_tensor.ok()) {
       SetStickyError(status_or_tensor.status());
       return;

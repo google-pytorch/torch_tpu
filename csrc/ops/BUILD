@@ -386,6 +386,7 @@ torch_tpu_cc_library(
         "//csrc/eager:eager_mode",
         "//csrc/eager:structured_log_buffer",
         "//csrc/eager:tensor_to_buffer",
+        "//csrc/ops/copy_from:copy_common",
         "//csrc/ops/copy_from:tpu_to_cpu",
         "//csrc/ops/macros:kernel",
         "//shims/torch:aten_headers",

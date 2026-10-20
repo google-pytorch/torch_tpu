@@ -43,6 +43,7 @@
 #include "csrc/common/utils.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
+#include "csrc/ops/copy_from/copy_common.h"
 #include "csrc/ops/copy_from/tpu_to_cpu.h"
 #include "csrc/ops/cumsum/cumsum.h"
 #include "csrc/ops/index_select/index_select.h"
@@ -477,8 +478,8 @@ absl::StatusOr<RepeatsStats> ComputeRepeatsSumAndMinOnHost(
                                            .dtype(repeats.scalar_type())
                                            .device(at::kCPU));
   if (!repeats.is_cpu()) {
-    TT_RETURN_IF_ERROR(
-        CopyTpuToCpu(repeats, host_repeats, /*non_blocking=*/false));
+    TT_RETURN_IF_ERROR(CopyTpuToCpu(
+        repeats, host_repeats, GetTransferSyncMode(/*non_blocking=*/false)));
   }
   RepeatsStats stats{0, std::numeric_limits<int64_t>::max()};
   if (host_repeats.scalar_type() == at::kLong) {

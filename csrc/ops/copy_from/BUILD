@@ -16,7 +16,12 @@
 # benawilson
 # basioli-k
 
-load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end")
+load(
+    "//build_files:build_defs.bzl",
+    "torch_tpu_cc_library",
+    "torch_tpu_cc_test",
+    "torch_tpu_package_end",
+)
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -28,6 +33,7 @@ torch_tpu_cc_library(
     srcs = ["copy_from_aten_kernels.cc"],
     hdrs = ["copy_from_aten_kernels.h"],
     deps = [
+        ":copy_common",
         ":cpu_to_tpu",
         ":tpu_to_cpu",
         ":tpu_to_tpu",
@@ -82,6 +88,7 @@ torch_tpu_cc_library(
     srcs = ["cpu_to_tpu.cc"],
     hdrs = ["cpu_to_tpu.h"],
     deps = [
+        ":copy_common",
         "//csrc/common:error_utils",
         "//csrc/common:layout_utils",
         "//csrc/common:to_string",
@@ -148,12 +155,26 @@ torch_tpu_cc_library(
     srcs = ["copy_common.cc"],
     hdrs = ["copy_common.h"],
     deps = [
+        "//csrc/common:context_states",
         "//csrc/common:dimension_types",
         "//csrc/common:error_utils",
+        "//csrc/eager:eager_mode",
         "//csrc/ops/as_strided:as_strided_aten_kernels",
         "//shims/torch:aten_headers",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "copy_common_test",
+    srcs = ["copy_common_test.cc"],
+    requires_libtpu = True,
+    deps = [
+        ":copy_common",
+        "//csrc/common:context_states",
+        "//csrc/common:oss_test_main",
+        "//csrc/eager:eager_mode",
     ],
 )
 

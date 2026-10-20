@@ -29,6 +29,7 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/events_queue.h"
 #include "csrc/eager/tensor_to_buffer.h"
+#include "csrc/ops/copy_from/copy_common.h"
 #include "csrc/pjrt/pjrt_transfer.h"
 #include "torch/headeronly/core/MemoryFormat.h"
 #include "xla/xla_data.pb.h"
@@ -36,7 +37,7 @@
 namespace torch_tpu {
 
 absl::Status CopyCpuToTpu(const at::Tensor& src, const at::Tensor& dest,
-                          bool non_blocking) {
+                          TransferSyncMode transfer_sync_mode) {
   ABSL_VLOG(1) << "[AtenCopyFrom] CPU -> TPU copy path for "
                << ToString(src, "src");
   if (src.numel() == 0) {
@@ -52,12 +53,13 @@ absl::Status CopyCpuToTpu(const at::Tensor& src, const at::Tensor& dest,
                                .memory_format(at::MemoryFormat::Contiguous),
                            /*non_blocking=*/false, /*copy=*/true);
   }
-  if (non_blocking && effective_src.data_ptr() != src.data_ptr()) {
+  if (transfer_sync_mode == TransferSyncMode::kEagerNonBlocking &&
+      effective_src.data_ptr() != src.data_ptr()) {
     // If to() created a copy, then effective_src will be
     // dropped at the end of this function, invalidating the non-blocking
     // copy. We must do a blocking copy to avoid this.
     // TODO(bawilson): implement a non-blocking copy using a CPU->TPU->TPU path
-    non_blocking = false;
+    transfer_sync_mode = TransferSyncMode::kIsolated;
   }
 
   TT_ASSIGN_OR_RETURN(TpuLayout tpu_layout, ResolveTpuLayout(effective_src));
@@ -70,12 +72,12 @@ absl::Status CopyCpuToTpu(const at::Tensor& src, const at::Tensor& dest,
       DeviceBufferRef tpu_buf,
       TpuMallocAndMemcpyHtoD(effective_src.data_ptr(), tpu_layout.element_type,
                              tpu_layout.sizes));
-  if (non_blocking) {
-    RecordAsyncHostToDevice(tpu_buf);
-  } else {
+  if (transfer_sync_mode == TransferSyncMode::kIsolated) {
     TT_RETURN_IF_ERROR(AdaptXlaError(
         tpu_buf.Synchronize(),
         /* context= */ "failed to copy buffer from host to device"));
+  } else {
+    RecordAsyncHostToDevice(tpu_buf);
   }
   TT_RETURN_IF_ERROR(AssignBufferToAtTensor(tpu_buf, dest));
   return absl::OkStatus();

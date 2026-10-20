@@ -38,6 +38,7 @@
 #include "csrc/common/device_type.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/eager/tensor_to_buffer.h"
+#include "csrc/ops/copy_from/copy_common.h"
 #include "csrc/ops/copy_from/cpu_to_tpu.h"
 #include "csrc/ops/copy_from/tpu_to_cpu.h"
 #include "csrc/ops/copy_from/tpu_to_tpu.h"
@@ -204,6 +205,7 @@ at::Tensor CopyTensor(const at::Tensor& src, const at::Tensor& self_dest,
   }
 
   TT_ASSIGN_OR_THROW(CopyType to_copy_type, GetCopyType(src, self_dest));
+  const TransferSyncMode transfer_sync_mode = GetTransferSyncMode(non_blocking);
 
   switch (to_copy_type) {
     case CopyType::kCpuToTpu:
@@ -212,10 +214,10 @@ at::Tensor CopyTensor(const at::Tensor& src, const at::Tensor& self_dest,
         TT_ASSIGN_OR_THROW(at::Tensor temp_tpu,
                            MakeEmptyTensor(src.sizes(), self_dest.scalar_type(),
                                            self_dest.device()));
-        TT_THROW_IF_ERROR(CopyCpuToTpu(src, temp_tpu, non_blocking));
+        TT_THROW_IF_ERROR(CopyCpuToTpu(src, temp_tpu, transfer_sync_mode));
         TT_THROW_IF_ERROR(CopyTpuToTpu(temp_tpu, self_dest));
       } else {
-        TT_THROW_IF_ERROR(CopyCpuToTpu(src, self_dest, non_blocking));
+        TT_THROW_IF_ERROR(CopyCpuToTpu(src, self_dest, transfer_sync_mode));
       }
       break;
     case CopyType::kTpuToTpu:
@@ -223,7 +225,7 @@ at::Tensor CopyTensor(const at::Tensor& src, const at::Tensor& self_dest,
       break;
     case CopyType::kTpuToCpu:
       // CopyTpuToCpu handles broadcasting/dtype change via fallback CPU copy.
-      TT_THROW_IF_ERROR(CopyTpuToCpu(src, self_dest, non_blocking));
+      TT_THROW_IF_ERROR(CopyTpuToCpu(src, self_dest, transfer_sync_mode));
       break;
   }
 

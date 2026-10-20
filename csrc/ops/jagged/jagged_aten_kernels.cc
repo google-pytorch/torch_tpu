@@ -42,6 +42,7 @@
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
+#include "csrc/ops/copy_from/copy_common.h"
 #include "csrc/ops/copy_from/tpu_to_cpu.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
@@ -84,8 +85,9 @@ absl::StatusOr<Indices> GetCpuOffsets(const at::Tensor& offsets_tensor) {
         auto materialized_buf,
         MaterializeAndReturn(offsets_tensor,
                              MaterializationReason::kScalarConversion));
-    TT_RETURN_IF_ERROR(
-        CopyDeviceBufferRefToCpuPtr(materialized_buf, offsets.data()));
+    TT_RETURN_IF_ERROR(CopyDeviceBufferRefToCpuPtr(
+        materialized_buf, offsets.data(),
+        GetTransferSyncMode(/*non_blocking=*/false)));
   }
   return offsets;
 }

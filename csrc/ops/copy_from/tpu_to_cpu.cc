@@ -133,7 +133,8 @@ bool CanCopyStorageDirect(const at::Tensor& src, const at::Tensor& dest,
 
 // Materializes src_buffer_ref and copies it directly into dest_ptr.
 absl::Status CopyDeviceBufferRefToCpuPtrImpl(
-    const DeviceBufferRef& src_buffer_ref, void* dest_ptr, bool non_blocking) {
+    const DeviceBufferRef& src_buffer_ref, void* dest_ptr,
+    TransferSyncMode transfer_sync_mode) {
   if (src_buffer_ref.size_bytes() == 0) {
     // Copying nothing is a no-op.
     return absl::OkStatus();
@@ -142,8 +143,9 @@ absl::Status CopyDeviceBufferRefToCpuPtrImpl(
       dest_ptr != nullptr, error::kInvalidArgument)
       << "cannot copy a nonzero amount of data to a null pointer";
   const MaterializationBlockMode block_mode =
-      non_blocking ? MaterializationBlockMode::kNonBlocking
-                   : MaterializationBlockMode::kBlockUntilStarted;
+      (transfer_sync_mode == TransferSyncMode::kEagerNonBlocking)
+          ? MaterializationBlockMode::kNonBlocking
+          : MaterializationBlockMode::kBlockUntilStarted;
   {
     tsl::profiler::TraceMe trace_mat("CopyTpuToCpu::MaterializeBase");
     TT_RETURN_IF_ERROR(TranslateXlaTensorOomError(
@@ -153,7 +155,7 @@ absl::Status CopyDeviceBufferRefToCpuPtrImpl(
         src_buffer_ref.dimensions()));
   }
   xla::Future<> future = TpuMemcpyDtoHDirect(src_buffer_ref, dest_ptr);
-  if (non_blocking) {
+  if (transfer_sync_mode == TransferSyncMode::kEagerNonBlocking) {
     RecordAsyncDeviceToHost(std::move(future));
     return absl::OkStatus();
   }
@@ -165,11 +167,11 @@ absl::Status CopyDeviceBufferRefToCpuPtrImpl(
 // ephemeral buffers.
 absl::Status CopyTpuToCpuStorageDirect(const at::Tensor& src,
                                        const at::Tensor& dest,
-                                       bool non_blocking) {
+                                       TransferSyncMode transfer_sync_mode) {
   TT_ASSIGN_OR_RETURN(DeviceBufferRef base_buf, GetBaseBuffer(src));
   ABSL_DCHECK(CanCopyStorageDirect(src, dest, base_buf.element_type()));
   return CopyDeviceBufferRefToCpuPtrImpl(base_buf, dest.data_ptr(),
-                                         non_blocking);
+                                         transfer_sync_mode);
 }
 
 // Converts a TPU source tensor into a contiguous DeviceBufferRef with the same
@@ -177,7 +179,8 @@ absl::Status CopyTpuToCpuStorageDirect(const at::Tensor& src,
 // destination's storage.
 absl::Status CopyTpuToCpuWithTpuConversion(
     const at::Tensor& src, const at::Tensor& dest,
-    mlir::ElementType src_base_element_type, bool non_blocking) {
+    mlir::ElementType src_base_element_type,
+    TransferSyncMode transfer_sync_mode) {
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=checked in "to" or "copy_" first
       src.dim() <= dest.dim(), error::kInvalidArgument)
       << "source tensor is not broadcastable to destination tensor; source "
@@ -222,7 +225,8 @@ absl::Status CopyTpuToCpuWithTpuConversion(
     // In the case where src and dest are identical transposes of a contiguous
     // storage (no broadcast or type conversion) then after the transpose, we
     // can copy directly from src to dest.
-    return CopyTpuToCpuStorageDirect(viewed_src, viewed_dest, non_blocking);
+    return CopyTpuToCpuStorageDirect(viewed_src, viewed_dest,
+                                     transfer_sync_mode);
   }
 
   // Convert the source tensor to the destination tensor's dtype, if needed.
@@ -243,7 +247,7 @@ absl::Status CopyTpuToCpuWithTpuConversion(
   TT_ASSIGN_OR_RETURN(DeviceBufferRef converted_src_buf,
                       GetBuffer(converted_src));
   return CopyDeviceBufferRefToCpuPtrImpl(converted_src_buf, dest.data_ptr(),
-                                         non_blocking);
+                                         transfer_sync_mode);
 }
 
 // PJRT can only asynchronously copy from a TPU tensor into contiguous CPU
@@ -257,13 +261,18 @@ absl::Status CopyTpuToCpuWithTpuConversion(
 // data transferred, and does conversions (both bitcasting from the base buffer
 // to the src dtype, and non-bitcast conversions from src to dest dtypes) on
 // host where they tend to be faster/more efficient.
-absl::Status CopyTpuToCpuWithCpuConversion(const at::Tensor& src,
-                                           const at::Tensor& dest) {
+absl::Status CopyTpuToCpuWithCpuConversion(
+    const at::Tensor& src, const at::Tensor& dest,
+    TransferSyncMode transfer_sync_mode) {
   // Materialize the contiguous base buffer of the source tensor and copy it to
-  // a temporary CPU tensor.
+  // a temporary CPU tensor. This must be blocking to avoid freeing cpu_temp
+  // while it is still being used.
   TT_ASSIGN_OR_RETURN(DeviceBufferRef base_buf, GetBaseBuffer(src));
-  TT_ASSIGN_OR_RETURN(at::Tensor cpu_temp,
-                      CopyDeviceBufferRefToCpuTensor(base_buf));
+  if (transfer_sync_mode == TransferSyncMode::kEagerNonBlocking) {
+    transfer_sync_mode = TransferSyncMode::kIsolated;
+  }
+  TT_ASSIGN_OR_RETURN(at::Tensor cpu_temp, CopyDeviceBufferRefToCpuTensor(
+                                               base_buf, transfer_sync_mode));
 
   // View the source Storage on host in the same way as on TPU.
   auto* cpu_temp_impl = cpu_temp.unsafeGetTensorImpl();
@@ -288,7 +297,7 @@ absl::Status CopyTpuToCpuWithCpuConversion(const at::Tensor& src,
 }  // namespace
 
 absl::Status CopyTpuToCpu(const at::Tensor& src, const at::Tensor& dest,
-                          bool non_blocking) {
+                          TransferSyncMode transfer_sync_mode) {
   tsl::profiler::TraceMe trace("CopyTpuToCpu");
   ABSL_VLOG(1) << "[AtenCopyFrom] TPU -> CPU copy path for "
                << ToString(src, "src");
@@ -310,22 +319,22 @@ absl::Status CopyTpuToCpu(const at::Tensor& src, const at::Tensor& dest,
   if (CanCopyStorageDirect(src, dest, src_buf.element_type())) {
     // Ideal case: copy directly from TPU to CPU storage with no materialized
     // view, with async capability.
-    return CopyTpuToCpuStorageDirect(src, dest, non_blocking);
+    return CopyTpuToCpuStorageDirect(src, dest, transfer_sync_mode);
   }
 
   if (!dest.is_non_overlapping_and_dense()) {
     // If we need to write non-consecutive bytes, we must do a blocking copy
     // with CPU conversion, even if the user requested a non-blocking copy,
     // because we cannot write consecutive bytes into the dest directly.
-    return CopyTpuToCpuWithCpuConversion(src, dest);
+    return CopyTpuToCpuWithCpuConversion(src, dest, transfer_sync_mode);
   }
 
-  if (non_blocking) {
+  if (transfer_sync_mode == TransferSyncMode::kEagerNonBlocking) {
     // If we can do a non-blocking copy and the user requested it, we do so.
     // This will materialize a view tensor with the size, shape, and dtype of
     // dest, and copy into its storage.
     return CopyTpuToCpuWithTpuConversion(src, dest, src_buf.element_type(),
-                                         non_blocking);
+                                         transfer_sync_mode);
   }
 
   // This is a blocking copy which does not require a CPU conversion, but we
@@ -359,19 +368,21 @@ absl::Status CopyTpuToCpu(const at::Tensor& src, const at::Tensor& dest,
   // work on the TPU; view operations are usually free on CPU.
   if (tpu_conversion_transfer_cost < cpu_conversion_transfer_cost) {
     return CopyTpuToCpuWithTpuConversion(src, dest, src_buf.element_type(),
-                                         non_blocking);
+                                         transfer_sync_mode);
   }
-  return CopyTpuToCpuWithCpuConversion(src, dest);
+  return CopyTpuToCpuWithCpuConversion(src, dest, transfer_sync_mode);
 }
 
 absl::Status CopyDeviceBufferRefToCpuPtr(const DeviceBufferRef& src_buffer_ref,
-                                         void* dest_ptr) {
+                                         void* dest_ptr,
+                                         TransferSyncMode transfer_sync_mode) {
   return CopyDeviceBufferRefToCpuPtrImpl(src_buffer_ref, dest_ptr,
-                                         /*non_blocking=*/false);
+                                         transfer_sync_mode);
 }
 
 absl::StatusOr<at::Tensor> CopyDeviceBufferRefToCpuTensor(
-    const DeviceBufferRef& src_buffer_ref) {
+    const DeviceBufferRef& src_buffer_ref,
+    TransferSyncMode transfer_sync_mode) {
   const at::ScalarType src_scalar_type =
       ConvertTo<at::ScalarType>(src_buffer_ref.element_type());
   at::IntArrayRef contiguous_dims = src_buffer_ref.dimensions();
@@ -397,9 +408,8 @@ absl::StatusOr<at::Tensor> CopyDeviceBufferRefToCpuTensor(
                                   .dtype(src_scalar_type)
                                   .device(at::DeviceType::CPU)
                                   .memory_format(at::MemoryFormat::Contiguous));
-  TT_RETURN_IF_ERROR(CopyDeviceBufferRefToCpuPtrImpl(src_buffer_ref,
-                                                     dest.data_ptr(),
-                                                     /*non_blocking=*/false));
+  TT_RETURN_IF_ERROR(CopyDeviceBufferRefToCpuPtrImpl(
+      src_buffer_ref, dest.data_ptr(), transfer_sync_mode));
   return dest;
 }
 

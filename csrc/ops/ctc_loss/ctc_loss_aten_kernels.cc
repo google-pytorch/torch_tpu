@@ -43,6 +43,7 @@
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/binary.h"
+#include "csrc/ops/copy_from/copy_common.h"
 #include "csrc/ops/copy_from/tpu_to_cpu.h"
 #include "csrc/ops/cumsum/cumsum.h"
 #include "csrc/ops/macros/kernel.h"
@@ -95,7 +96,7 @@ absl::StatusOr<int64_t> GetMaxTargetLength(const at::Tensor& targets,
   const at::Tensor target_lengths_cpu = at::empty(
       target_lengths.sizes(), target_lengths.options().device(at::kCPU));
   TT_RETURN_IF_ERROR(CopyTpuToCpu(target_lengths, target_lengths_cpu,
-                                  /*non_blocking=*/false));
+                                  GetTransferSyncMode(/*non_blocking=*/false)));
 
   const at::Tensor target_lengths_long =
       (target_lengths_cpu.scalar_type() == at::kLong)

@@ -19,13 +19,14 @@
 
 #include "ATen/core/TensorBody.h"
 #include "absl/status/status.h"
+#include "csrc/ops/copy_from/copy_common.h"
 
 namespace torch_tpu {
 
 // Copies the value out of the source CPU tensor and assigns it to the
 // destination TPU tensor.
 absl::Status CopyCpuToTpu(const at::Tensor& src, const at::Tensor& dest,
-                          bool non_blocking);
+                          TransferSyncMode transfer_sync_mode);
 
 }  // namespace torch_tpu
 

@@ -30,6 +30,7 @@
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
+#include "csrc/ops/copy_from/copy_common.h"
 #include "csrc/ops/copy_from/tpu_to_cpu.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
@@ -105,8 +106,9 @@ bool AtenEqual(const at::Tensor& self, const at::Tensor& other) {
     TT_ASSIGN_OR_THROW(
         auto materialized_result_buf,
         MaterializeAndReturn(result, MaterializationReason::kScalarConversion));
-    TT_THROW_IF_ERROR(
-        CopyDeviceBufferRefToCpuPtr(materialized_result_buf, &result_scalar));
+    TT_THROW_IF_ERROR(CopyDeviceBufferRefToCpuPtr(
+        materialized_result_buf, &result_scalar,
+        GetTransferSyncMode(/*non_blocking=*/false)));
   });
 
   return result_scalar;
