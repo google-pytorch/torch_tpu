@@ -29,6 +29,7 @@ from absl.testing import flagsaver
 from absl.testing import parameterized
 import torch
 from torch.testing._internal import common_methods_invocations
+from torch.utils import _pytree
 from torch_tpu._internal.utils import test_utils
 from tests import goldens_pin
 from tests import op_testing
@@ -113,6 +114,81 @@ class OpTestingTest(op_testing.OpInfoTestBase):
             max_samples=None,
         )
         self.assertEqual(res, fake_samples)
+
+  def _make_golden_sample_tree(
+      self, op_name: str, value: float
+  ) -> _pytree.PyTree:
+    data = op_testing.GoldenGpuData()
+    sample = (
+        op_testing.OpInput(
+            FakeSample(f"s_{value}", torch.tensor([value]), (), {})
+        ),
+        op_testing.OpOutput(torch.tensor([value])),
+    )
+    data.add(op_name, op_testing.OpVariant.BASE, torch.float32, *sample)
+    return data.to_plistlib_pytree()
+
+  def test_golden_gpu_data_merge_is_lazy(self):
+    tree = self._make_golden_sample_tree("test_op", 1.0)
+    golden_data = op_testing.GoldenGpuData()
+
+    # Merging alone must not trigger tensor deserialization.
+    with mock.patch.object(
+        op_testing.OpInput,
+        "from_plistlib_pytree",
+        wraps=op_testing.OpInput.from_plistlib_pytree,
+    ) as mock_deser:
+      golden_data.merge_plistlib_pytree(tree)
+      mock_deser.assert_not_called()
+
+  def test_golden_gpu_data_get_samples_deserializes_and_caches_in_place(self):
+    tree = self._make_golden_sample_tree("test_op", 1.0)
+    golden_data = op_testing.GoldenGpuData()
+    golden_data.merge_plistlib_pytree(tree)
+
+    with mock.patch.object(
+        op_testing.OpInput,
+        "from_plistlib_pytree",
+        wraps=op_testing.OpInput.from_plistlib_pytree,
+    ) as mock_deser:
+      samples1 = golden_data.get_samples(
+          "test_op", op_testing.OpVariant.BASE, torch.float32
+      )
+      samples2 = golden_data.get_samples(
+          "test_op", op_testing.OpVariant.BASE, torch.float32
+      )
+
+    # Deserialized once, cached for subsequent calls, returns correct tensor.
+    self.assertEqual(mock_deser.call_count, 1)
+    self.assertIs(samples1[0], samples2[0])
+    self.assertEqual(samples1[0][1].output_value.item(), 1.0)
+
+  def test_golden_gpu_data_incremental_merge_does_not_redecode_existing_samples(
+      self,
+  ):
+    # Load sample 1 and trigger its deserialization.
+    tree1 = self._make_golden_sample_tree("test_op", 1.0)
+    tree2 = self._make_golden_sample_tree("test_op", 2.0)
+    golden_data = op_testing.GoldenGpuData()
+    golden_data.merge_plistlib_pytree(tree1)
+    golden_data.get_samples("test_op", op_testing.OpVariant.BASE, torch.float32)
+
+    # Merge sample 2 and retrieve all samples.
+    with mock.patch.object(
+        op_testing.OpInput,
+        "from_plistlib_pytree",
+        wraps=op_testing.OpInput.from_plistlib_pytree,
+    ) as mock_deser:
+      golden_data.merge_plistlib_pytree(tree2)
+      samples = golden_data.get_samples(
+          "test_op", op_testing.OpVariant.BASE, torch.float32
+      )
+
+    # Only sample 2 was decoded (call count is 1, not 2).
+    self.assertEqual(mock_deser.call_count, 1)
+    self.assertLen(samples, 2)
+    self.assertEqual(samples[0][1].output_value.item(), 1.0)
+    self.assertEqual(samples[1][1].output_value.item(), 2.0)
 
   @parameterized.named_parameters(
       ("coo", lambda t: t.to_sparse()),

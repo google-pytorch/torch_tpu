@@ -2936,13 +2936,21 @@ def _golden_dtype_key(
   return _dtype_str(dtype)
 
 
+_GoldenSample = (
+    tuple["OpInput", "OpOutput"] | Callable[[], tuple["OpInput", "OpOutput"]]
+)
+
+
 class GoldenGpuData:
   """Golden GPU input/output samples collected per op test.
 
   The samples are organized in a three-level structure keyed by the test case
   name, the op variant (e.g. BASE, INPLACE, or OUT), and the dtype_key:
 
-    test_case_name -> op variant -> dtype_key -> [(OpInput, OpOutput), ...]
+    test_case_name -> op variant -> dtype_key -> [sample, ...]
+
+  Each sample is either a decoded `(OpInput, OpOutput)` pair or a zero-argument
+  callable that lazily deserializes and returns the pair on demand.
 
   The `dtype_key` is a string:
     - For standard tests: the dtype name without "torch." prefix (e.g.,
@@ -2961,16 +2969,13 @@ class GoldenGpuData:
     * In the torch_tpu_vs_gpu mode, `merge_plistlib_pytree()` populates this
       from the GPU golden files and `get_samples()` reads the results back to
       compare TorchTPU results against the GPU results.
-
-  This class stores only plain built-in containers (no function objects), so
-  instances remain picklable.
   """
 
   def __init__(self) -> None:
-    # Maps test_case_name -> OpVariant value -> dtype_key -> input/output pairs.
+    # Maps test_case_name -> OpVariant value -> dtype_key -> samples.
     self._data: dict[
         str,
-        dict[str, dict[str, list[tuple["OpInput", "OpOutput"]]]],
+        dict[str, dict[str, list[_GoldenSample]]],
     ] = {}
 
   def add(
@@ -2997,9 +3002,15 @@ class GoldenGpuData:
   ) -> Sequence[tuple["OpInput", "OpOutput"]]:
     """Returns the recorded samples for the key, or an empty list if absent."""
     key = _golden_dtype_key(dtype, out_dtype_override)
-    return (
+    samples = (
         self._data.get(test_case_name, {}).get(variant.value, {}).get(key, [])
     )
+    # Lazily deserialize callable samples on first access, caching the result
+    # in-place to avoid re-decoding on subsequent reads.
+    for i, sample in enumerate(samples):
+      if callable(sample):
+        samples[i] = sample()
+    return typing.cast(Sequence[tuple["OpInput", "OpOutput"]], samples)
 
   def clear(self) -> None:
     """Removes all recorded golden data."""
@@ -3007,7 +3018,7 @@ class GoldenGpuData:
 
   def _samples_for(
       self, test_case_name: str, variant_name: str, dtype_key: str
-  ) -> list[tuple["OpInput", "OpOutput"]]:
+  ) -> list[_GoldenSample]:
     """Returns the mutable sample list for the key, creating it if needed."""
     return (
         self._data.setdefault(test_case_name, {})
@@ -3017,6 +3028,13 @@ class GoldenGpuData:
 
   def to_plistlib_pytree(self) -> _pytree.PyTree:
     """Encodes the golden data into a plistlib-compatible pytree."""
+    # Ensure any lazily-deferred samples are fully deserialized before saving.
+    for variant_to_dt in self._data.values():
+      for dt_to_samples in variant_to_dt.values():
+        for samples in dt_to_samples.values():
+          for i, sample in enumerate(samples):
+            if callable(sample):
+              samples[i] = sample()
 
     def leaf_func(x: "OpInput | OpOutput") -> _pytree.PyTree:
       return x.to_plistlib_pytree()
@@ -3032,10 +3050,16 @@ class GoldenGpuData:
       for variant_name, dt_to_encoded_samples in variant_to_dt.items():
         for dtype_name, encoded_samples in dt_to_encoded_samples.items():
           samples = self._samples_for(test_case_name, variant_name, dtype_name)
+          # Store lazy callables instead of eagerly deserializing all tensors.
+          # Default args (inp=..., out=...) are needed so each loop iteration
+          # captures its sample values at function definition time.
           for encoded_op_input, encoded_op_output in encoded_samples:
-            op_input = OpInput.from_plistlib_pytree(encoded_op_input)
-            op_output = OpOutput.from_plistlib_pytree(encoded_op_output)
-            samples.append((op_input, op_output))
+            samples.append(
+                lambda inp=encoded_op_input, out=encoded_op_output: (
+                    OpInput.from_plistlib_pytree(inp),
+                    OpOutput.from_plistlib_pytree(out),
+                )
+            )
 
 
 # Collects the golden GPU results for each op test. See GoldenGpuData for the
