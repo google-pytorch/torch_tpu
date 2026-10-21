@@ -107,6 +107,11 @@ struct UnboundedDynamicExecutionMetadata {
   std::vector<DonatedOutputParam> donated_output_params;
   std::vector<MetadataParamBinding> metadata_params;
   std::vector<xla::Shape> pjrt_param_shapes;
+  // Optional on-device layouts produced by the kernel for each logical output.
+  // When non-empty, `Traversal::Compile` attaches these layouts to the output
+  // `DeviceBufferRef`s so downstream consumers compile against the layout the
+  // kernel actually produces.
+  std::vector<CustomLayout> output_layouts;
 
   // Returns whether this executable can serve a call with the given logical
   // input and output shapes. Consulted when scanning cache entries that share
@@ -225,6 +230,7 @@ struct CompiledKernel {
   // TODO(b/563604764): Rename this field as it can also hold dynamic kernels.
   SharedLoadedExecutableWithMetadataFuture fixed_shape_kernel;
   std::optional<DynamicKernelAdapter> dynamic_kernel_adapter;
+  std::vector<CustomLayout> output_layouts;
 };
 
 // Builder function for a loaded executable.

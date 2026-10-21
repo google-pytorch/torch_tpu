@@ -43,11 +43,9 @@ namespace torch_tpu {
 //   [R/2, R) hold zeroed high words), donates it, and bitcasts the result back
 //   to S64[K,2]. The detour exists only because Mosaic does not support S64
 //   memrefs; callers never see it.
-//   NB: requires K > 2 because the XLA default layout for S64[K,2] switches to
-//   {1,0:T(2,128)} when K <= 2.
 //
 // Caller-checked arithmetic bounds: 1 <= M <= INT32_MAX,
-// 1 <= N <= INT32_MAX - 127, and 3 <= K <= min(M*N, INT32_MAX).
+// 1 <= N <= INT32_MAX - 127, and 1 <= K <= min(M*N, INT32_MAX).
 //
 // Matches the LoadedExecutableBuilder signature, so it can be passed directly
 // to CompilationCache::AddUnboundedDynamicCacheEntry. The kernel's build

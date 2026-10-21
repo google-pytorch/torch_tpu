@@ -16,6 +16,7 @@
 
 #include "csrc/eager/materialize.h"
 
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -39,11 +40,13 @@
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/eager/tpu_hooks.h"
+#include "csrc/eager/traversal.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/python_context.h"
 #include "csrc/pjrt/pjrt_state.h"
 #include "gtest/gtest.h"
+#include "mlir/IR/MLIRContext.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
@@ -133,6 +136,66 @@ TEST_F(MaterializeTest, CompilerOptionsPropagateToMaterializeThread) {
   const PerfStats stats = CompilationCache::GetInstance().GetCacheStats();
   ASSERT_EQ(stats.per_entry_stats.size(), 1);
   EXPECT_EQ(stats.per_entry_stats[0].key.compile_options_key(), expected_key);
+}
+
+TEST_F(MaterializeTest, CompileSetsOutputLayoutFromUnboundedDynamicCacheHit) {
+  const ScopedPythonContextCapturer capturer(OpName::kAdd);
+  CompilationCache& cache = CompilationCache::GetInstance();
+  cache.EvictAll();
+  cache.SetAllowCacheMode(true);
+
+  const Shape shape_2d(Dimensions{128, 64}, mlir::ElementType::F32);
+  const auto dummy_builder = [shape_2d](mlir::MlirBuilder& builder,
+                                        absl::Span<mlir::MlirOp>) {
+    return DynamicMlirOpResults{BuildFillUninitialized(
+        builder, shape_2d.dtype(), shape_2d.dimensions())};
+  };
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::vector<DeviceBufferRef> refs_a,
+      DeviceBufferList::CreateDeferred(OpName::kEmpty, dummy_builder, {},
+                                       OpParamCacheKeys::Empty(), {shape_2d}));
+  DeviceBufferRef ref_a = refs_a[0];
+
+  MlirOpBuilder identity_builder = [](mlir::MlirBuilder& /*builder*/,
+                                      absl::Span<mlir::MlirOp> inputs)
+      -> absl::StatusOr<DynamicMlirOpResults> {
+    return DynamicMlirOpResults{inputs[0]};
+  };
+  TT_ASSERT_OK_AND_ASSIGN(std::vector<DeviceBufferRef> refs_b,
+                          DeviceBufferList::CreateDeferred(
+                              OpName::kAdd, std::move(identity_builder),
+                              {ref_a}, OpParamCacheKeys::Empty(), {shape_2d}));
+  DeviceBufferRef ref_b = refs_b[0];
+  ASSERT_FALSE(ref_b.shape().layout().has_value());
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<Traversal> tr,
+      Traversal::Create({ref_b}, {ref_a.device_buffer_list().get()}));
+  CompilationSpec spec = GetCompilationSpec(CompilationMode::kFastCompile);
+  const CompilationCacheKey key =
+      tr->GetCacheKey(spec.compile_options_key, /*argument_layouts=*/{},
+                      /*donated_inputs=*/{});
+
+  const MlirComputationBuilder computation_builder =
+      [&](mlir::MLIRContext& context) { return tr->BuildMlirModule(context); };
+  TT_ASSERT_OK_AND_ASSIGN(
+      LoadedExecutableBuilder executable_builder,
+      MlirComputationBuilderToExecutableBuilder(computation_builder));
+  const CustomLayout expected_output_layout{.minor_to_major = {0, 1},
+                                            .tiles = {{2, 128}}};
+  UnboundedDynamicExecutionMetadata dynamic_meta{
+      .output_layouts = {expected_output_layout},
+  };
+  ASSERT_TRUE(cache
+                  .AddUnboundedDynamicCacheEntry(
+                      key, std::move(executable_builder), dynamic_meta)
+                  .ok());
+
+  TT_ASSERT_OK_AND_ASSIGN(const CompiledKernel kernel,
+                          tr->Compile(spec, /*out_mlir_text=*/nullptr,
+                                      /*use_stablehlo_bounds=*/false));
+  ASSERT_TRUE(ref_b.shape().layout().has_value());
+  EXPECT_EQ(*ref_b.shape().layout(), expected_output_layout);
 }
 
 class PinnedHostPropagationTest : public testing::Test {

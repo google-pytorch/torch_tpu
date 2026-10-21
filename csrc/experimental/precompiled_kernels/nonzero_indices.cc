@@ -222,7 +222,7 @@ BitcastToLogicalIndices(std::vector<std::unique_ptr<xla::PjRtBuffer>> results,
                         const absl::Span<const Shape> logical_output_shapes) {
   const Shape& logical = logical_output_shapes[0];
   // The kernel's documented destination layout; see the buffer contract in
-  // the header. K > 2 keeps XLA's default S64[K,2] layout at {0,1:T(2,128)}.
+  // the header.
   const xla::Layout layout({0, 1}, {xla::Tile({2, 128})});
   const Dimensions dims = logical.dimensions();
   TT_ASSIGN_OR_RETURN(
@@ -270,6 +270,10 @@ UnboundedDynamicExecutionMetadata MakeNonzeroDynamicMetadata() {
               },
           },
       .pjrt_param_shapes = NonzeroParameters(),
+      .output_layouts =
+          {
+              CustomLayout{.minor_to_major = {0, 1}, .tiles = {{2, 128}}},
+          },
       .output_transform = BitcastToLogicalIndices,
       .is_compatible =
           [](absl::Span<const Shape> input_shapes,
@@ -279,7 +283,7 @@ UnboundedDynamicExecutionMetadata MakeNonzeroDynamicMetadata() {
                    input_shapes[0].dtype() == mlir::ElementType::F32 &&
                    output_shapes.size() == 1 &&
                    output_shapes[0].dimensions().size() == 2 &&
-                   output_shapes[0].dimensions()[0] > 2 &&
+                   output_shapes[0].dimensions()[0] > 0 &&
                    output_shapes[0].dimensions()[1] == 2 &&
                    output_shapes[0].dtype() == mlir::ElementType::I64;
           },

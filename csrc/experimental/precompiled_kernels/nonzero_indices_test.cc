@@ -181,21 +181,17 @@ class NonzeroIndicesTest : public testing::Test {
 
   void CheckMosaicKernelCorrectness(int64_t rows, int64_t cols, int64_t k) {
     SCOPED_TRACE(testing::Message() << rows << "x" << cols << " K=" << k);
-    ASSERT_GT(k, 2);
+    ASSERT_GT(k, 0);
     auto input = MakeInput(rows, cols, k);
     auto expected = ReferenceIndices(input);
-    TT_ASSERT_OK_AND_ASSIGN(const xla::Layout layout,
-                            client_->GetDefaultLayout(xla::S64, {k, 2}));
-    // The layout the kernel bitcasts its result to. XLA's default layout for
-    // S64[K,2] is {0,1:T(2,128)} only when K > 2 (for K <= 2 it is
-    // {1,0:T(2,128)}, which the kernel does not support).
-    EXPECT_EQ(layout, xla::Layout({0, 1}, {xla::Tile({2, 128})}));
     TT_ASSERT_OK_AND_ASSIGN(auto buffers, PrepareOperands(input));
 
     const Shape logical_output({k, 2}, mlir::ElementType::I64);
     TT_ASSERT_OK_AND_ASSIGN(const auto outputs,
                             ExecuteKernel(buffers, logical_output));
     ASSERT_EQ(outputs.size(), 1);
+    EXPECT_EQ(outputs[0]->on_device_shape().layout(),
+              xla::Layout({0, 1}, {xla::Tile({2, 128})}));
     TT_ASSERT_OK_AND_ASSIGN(auto actual, outputs[0]->ToLiteral().Await());
     EXPECT_EQ(*actual, expected);
     TT_ASSERT_OK_AND_ASSIGN(auto unchanged, buffers[0]->ToLiteral().Await());
@@ -217,7 +213,7 @@ TEST_F(NonzeroIndicesTest, ReusesExecutableAcrossShapesAndCounts) {
       {1, 3}, {3, 1}, {3, 7}, {9, 129}, {17, 257}, {1, 16385}};
   for (auto [rows, cols] : shapes) {
     const int64_t size = rows * cols;
-    const int64_t ks[] = {3, 127, 128, 129, 1023, 1024, 1025, size};
+    const int64_t ks[] = {1, 2, 3, 127, 128, 129, 1023, 1024, 1025, size};
     for (int64_t k : ks) {
       if (k <= size) CheckMosaicKernelCorrectness(rows, cols, k);
     }
@@ -237,7 +233,8 @@ TEST_F(NonzeroIndicesTest, UnboundedDynamicCacheServesKernel) {
                   .ok());
 
   const std::tuple<int64_t, int64_t, int64_t> cases[] = {
-      {3, 7, 5}, {17, 257, 44}, {17, 257, 4369}, {1, 16385, 1025}};
+      {3, 7, 1},     {3, 7, 2},       {3, 7, 5},
+      {17, 257, 44}, {17, 257, 4369}, {1, 16385, 1025}};
   const xla::PjRtLoadedExecutable* registered = nullptr;
   for (const auto [rows, cols, k] : cases) {
     SCOPED_TRACE(testing::Message() << rows << "x" << cols << " K=" << k);
@@ -259,6 +256,9 @@ TEST_F(NonzeroIndicesTest, UnboundedDynamicCacheServesKernel) {
             xla::CompileOptions()));
     EXPECT_EQ(cache.GetCacheHits(), hits_before + 1);
     EXPECT_EQ(cache.GetCacheMisses(), misses_before);
+    ASSERT_EQ(kernel.output_layouts.size(), 1);
+    EXPECT_EQ(kernel.output_layouts[0],
+              (CustomLayout{.minor_to_major = {0, 1}, .tiles = {{2, 128}}}));
     TT_ASSERT_OK_AND_ASSIGN(SharedLoadedExecutableWithMetadata executable,
                             kernel.fixed_shape_kernel.get());
     ASSERT_TRUE(executable->unbounded_dynamic_execution_metadata().has_value());

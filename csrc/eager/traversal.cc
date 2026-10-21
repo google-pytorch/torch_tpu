@@ -1064,18 +1064,32 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
   }
   ABSL_VLOG(1) << "[Compile] compilation cache key: " << compilation_cache_key;
 
-  if (mutable_compilation_spec.has_value()) {
-    return CompilationCache::GetInstance().GetOrCompile(
-        std::move(compilation_cache_key), argument_shapes, output_shapes,
-        std::move(final_op_builder),
-        std::move(mutable_compilation_spec->xla_compile_options),
-        /*use_dynamic_adapters=*/!use_stablehlo_bounds);
+  TT_ASSIGN_OR_RETURN(
+      CompiledKernel compiled_kernel,
+      mutable_compilation_spec.has_value()
+          ? CompilationCache::GetInstance().GetOrCompile(
+                std::move(compilation_cache_key), argument_shapes,
+                output_shapes, std::move(final_op_builder),
+                std::move(mutable_compilation_spec->xla_compile_options),
+                /*use_dynamic_adapters=*/!use_stablehlo_bounds)
+          : CompilationCache::GetInstance().GetOrCompile(
+                std::move(compilation_cache_key), argument_shapes,
+                output_shapes, std::move(final_op_builder),
+                *effective_compilation_spec.xla_compile_options,
+                /*use_dynamic_adapters=*/!use_stablehlo_bounds));
+  if (!compiled_kernel.output_layouts.empty()) {
+    TT_RET_CHECK(compiled_kernel.output_layouts.size() == outputs_.size(),
+                 error::kInternal)
+        << "expected output_layouts size ("
+        << compiled_kernel.output_layouts.size() << ") to match outputs size ("
+        << outputs_.size() << ")";
+    for (size_t i = 0; i < outputs_.size(); ++i) {
+      if (!compiled_kernel.output_layouts[i].minor_to_major.empty()) {
+        outputs_[i].set_layout(compiled_kernel.output_layouts[i]);
+      }
+    }
   }
-  return CompilationCache::GetInstance().GetOrCompile(
-      std::move(compilation_cache_key), argument_shapes, output_shapes,
-      std::move(final_op_builder),
-      *effective_compilation_spec.xla_compile_options,
-      /*use_dynamic_adapters=*/!use_stablehlo_bounds);
+  return compiled_kernel;
 }
 
 bool IsSimpleNodeTraversal(const Traversal& traversal) {

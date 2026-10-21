@@ -513,6 +513,7 @@ CompilationCache::GetUnboundedDynamicCacheEntry(
       return CacheLookupInternal{
           .executable_promise = entry.cache_entry.executable_promise(),
           .executable_future = entry.cache_entry.executable_future(),
+          .output_layouts = entry.dynamic_meta.output_layouts,
           .needs_compilation = false,
           .dump_on_cache_miss = false,
       };
@@ -945,11 +946,16 @@ absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompileImpl(
   // xla::CompileOptions.
   if (!cache_lookup.needs_compilation &&
       !cache_lookup.shape_dynamism_metadata.has_value()) {
-    return CompiledKernel{.fixed_shape_kernel = cache_lookup.executable_future};
+    return CompiledKernel{
+        .fixed_shape_kernel = cache_lookup.executable_future,
+        .output_layouts = std::move(cache_lookup.output_layouts),
+    };
   }
 
-  CompiledKernel compiled_kernel{.fixed_shape_kernel =
-                                     cache_lookup.executable_future};
+  CompiledKernel compiled_kernel{
+      .fixed_shape_kernel = cache_lookup.executable_future,
+      .output_layouts = std::move(cache_lookup.output_layouts),
+  };
   CompilationCacheKey storage_key = key;
   if (cache_lookup.shape_dynamism_metadata.has_value()) {
     // Create a key for the storage of the dynamic executable.

@@ -379,6 +379,7 @@ class CompilationCache {
     absl_nonnull std::shared_ptr<LoadedExecutablePromise> executable_promise;
     SharedLoadedExecutableWithMetadataFuture executable_future;
     std::optional<ShapeDynamismMetadata> shape_dynamism_metadata;
+    std::vector<CustomLayout> output_layouts;
     bool needs_compilation = false;
     bool dump_on_cache_miss = false;
   };
