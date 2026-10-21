@@ -95,13 +95,17 @@ jobs:
       pub_sub_gcp_project_id: "ml-oss-benchmarking-production"
       pub_sub_gcp_topic_id: "private-torch-tpu-prod"
       runner: "linux-x86-n4-16"
-      # absltest rejects a TEST_RANDOMIZE_ORDERING_SEED that is not a positive
-      # integer, so the run ID rather than the commit SHA seeds the test order.
+      # Use fixed seeds so each benchmark lands in the same shard, in the same
+      # order, at every commit. Seeding by commit SHA or run ID reshuffles the
+      # shard partition per commit, which fragments per-shard metric history in
+      # MLCompass and breaks autobisect (the bisected model is often not in the
+      # dispatched shard at intermediate commits). TEST_RANDOMIZE_ORDERING_SEED=0
+      # disables absltest's in-shard shuffle.
       custom_env_vars: |
         TORCH_TPU_WHEEL=${{ needs.build_wheel.outputs.gcs_wheel_path }}
         TORCH_TPU_PYTHON_VERSION=3.12
-        TORCH_TPU_BENCHMARK_ORDER_SEED=${{ needs.build_wheel.outputs.resolved_sha }}
-        TEST_RANDOMIZE_ORDERING_SEED=${{ github.run_id }}
+        TORCH_TPU_BENCHMARK_ORDER_SEED=torch_tpu_oss_benchmarks
+        TEST_RANDOMIZE_ORDERING_SEED=0
         TESTBRIDGE_TEST_ONLY=${{ (github.event_name == 'schedule' && github.event.schedule != '0 0 * * *') && '*_compiled' || '' }}
 
   run_gpu_benchmarks:
@@ -124,10 +128,10 @@ jobs:
       pub_sub_gcp_project_id: "ml-oss-benchmarking-production"
       pub_sub_gcp_topic_id: "private-torch-tpu-prod"
       runner: "linux-x86-n4-16"
-      # TEST_RANDOMIZE_ORDERING_SEED must be a positive integer; see
+      # Fixed seeds keep the shard partition stable across commits; see
       # run_tpu_benchmarks.
       custom_env_vars: |
         TORCH_TPU_WHEEL=${{ needs.build_wheel.outputs.gcs_wheel_path }}
         TORCH_TPU_PYTHON_VERSION=3.12
-        TORCH_TPU_BENCHMARK_ORDER_SEED=${{ needs.build_wheel.outputs.resolved_sha }}
-        TEST_RANDOMIZE_ORDERING_SEED=${{ github.run_id }}
+        TORCH_TPU_BENCHMARK_ORDER_SEED=torch_tpu_oss_benchmarks
+        TEST_RANDOMIZE_ORDERING_SEED=0
