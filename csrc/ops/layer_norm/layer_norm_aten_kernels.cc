@@ -189,8 +189,25 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenLayerNormBackward(
         const bool compute_dbeta = bias_opt.has_value() && bias_opt->defined();
         const bool has_weight = weight_opt.has_value() && weight_opt->defined();
 
+        // A bf16/f16 input with fp32 weight and bias (autocast) gets fp32
+        // parameter grads, as on CPU; otherwise they take the input's dtype.
+        const auto is_float = [](const std::optional<at::Tensor>& t) {
+          return !t.has_value() || !t->defined() ||
+                 t->scalar_type() == at::kFloat;
+        };
+        const bool mixed = (x.scalar_type() == at::kBFloat16 ||
+                            x.scalar_type() == at::kHalf) &&
+                           (has_weight || compute_dbeta) &&
+                           is_float(weight_opt) && is_float(bias_opt);
+        TT_ASSIGN_OR_THROW(const auto elem_dtype,
+                           ConvertTo<mlir::ElementType>(x.scalar_type()));
+        TT_ASSIGN_OR_THROW(const auto param_dtype,
+                           ConvertTo<mlir::ElementType>(
+                               mixed ? at::kFloat : x.scalar_type()));
+
         Dimensions normalized_shape_vec = CopyIntVector(normalized_shape);
-        auto op_builder = [has_weight, compute_dbeta, normalized_shape_vec](
+        auto op_builder = [has_weight, compute_dbeta, normalized_shape_vec,
+                           param_dtype](
                               absl::Span<const mlir::MlirOp> inputs,
                               mlir::MlirBuilder& builder)
             -> absl::StatusOr<MlirOpResults<3>> {
@@ -212,14 +229,14 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenLayerNormBackward(
               LayerNormBackwardShloResults results,
               BuildLayerNormBackwardShlo(dy, x, mean, rstd, weight_op,
                                          normalized_shape_vec, compute_dbeta));
-          return {{results.grad_input, results.grad_weight, results.grad_bias}};
+          TT_ASSIGN_OR_RETURN(mlir::MlirOp grad_weight,
+                              CastIfNeeded(results.grad_weight, param_dtype));
+          TT_ASSIGN_OR_RETURN(mlir::MlirOp grad_bias,
+                              CastIfNeeded(results.grad_bias, param_dtype));
+          return {{results.grad_input, grad_weight, grad_bias}};
         };
 
-        // Get output dtype and output dims.
-        TT_ASSIGN_OR_THROW(const auto output_dtype,
-                           ConvertTo<mlir::ElementType>(x.scalar_type()));
-        const auto elem_dtype = output_dtype;
-
+        // Get output dims.
         Dimensions input_dims = CopyIntVector(x.sizes());
         Dimensions normalized_dims = CopyIntVector(normalized_shape);
         Dimensions weight_grad_dims =
@@ -237,7 +254,7 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenLayerNormBackward(
             (auto [grad_input_buf, grad_weight_buf, grad_bias_buf]),
             (DispatchOp<kDynamicSize, 3>(
                 std::move(op_builder), inputs,
-                {.out_dtypes = {elem_dtype, elem_dtype, elem_dtype},
+                {.out_dtypes = {elem_dtype, param_dtype, param_dtype},
                  .out_dims_list = {input_dims, weight_grad_dims,
                                    bias_grad_dims},
                  .op_param_cache_keys = std::move(param_keys)})));

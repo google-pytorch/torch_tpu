@@ -138,6 +138,40 @@ class AmpTest(seed_test_utils.RepeatableTest):
 }"""
     self.assertEqual(mlir_text.strip(), expected_mlir.strip())
 
+  def test_layer_norm_bf16_input_fp32_params(self):
+    # Under autocast, a bf16 activation reaches LayerNorm's fp32 weight and
+    # bias. Expect a bf16 output and input grad, fp32 weight and bias grads,
+    # and fp32 accuracy throughout.
+    x = (torch.randn(4, 16, 32) * 3 + 1).bfloat16()
+    w = torch.rand(32) + 0.5
+    b = torch.randn(32)
+    dy = torch.randn(4, 16, 32).bfloat16()
+
+    def run(device, dtype, params):
+      inp = x.to(device, dtype, copy=True).requires_grad_()
+      weight, bias = (
+          p.to(device, copy=True).requires_grad_() if p is not None else None
+          for p in params
+      )
+      out = torch.nn.functional.layer_norm(inp, (32,), weight, bias)
+      out.backward(dy.to(device, out.dtype))
+      grads = [p.grad for p in (weight, bias) if p is not None]
+      return [out, inp.grad] + grads
+
+    cases = {"weight_and_bias": (w, b), "weight": (w, None), "bias": (None, b)}
+    for name, params in cases.items():
+      with self.subTest(name):
+        actual = run("tpu", torch.bfloat16, params)
+        expected = run("cpu", torch.float32, params)  # Same values, in fp32.
+        dtypes = [torch.bfloat16] * 2 + [torch.float32] * (len(actual) - 2)
+        for a, e, dtype in zip(actual, expected, dtypes):
+          self.assertEqual(a.dtype, dtype)
+          # 1e-4 still catches fp32 grads rounded to bf16 (~4e-3).
+          tol = {"rtol": 1e-4, "atol": 1e-4}
+          if dtype == torch.bfloat16:
+            tol = {}
+          torch.testing.assert_close(a.cpu(), e.to(dtype), **tol)
+
 
 if __name__ == "__main__":
   absltest.main()
