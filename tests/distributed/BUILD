@@ -745,9 +745,9 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
-    name = "uneven_sharding_test",
+    name = "uneven_sharding_errors_test",
     timeout = "long",
-    srcs = ["uneven_sharding_test.py"],
+    srcs = ["uneven_sharding_errors_test.py"],
     args = if_oss(
         [],
         [
@@ -770,6 +770,31 @@ torch_tpu_py_test(
         },
         {},
     ),
+    shard_count = 8,
+    tags = if_oss(
+        ["exclusive"],
+        [],
+    ) + [
+        "noasan",  # Disabled due to b/497035517.
+        "nomsan",  # Disabled due to b/516945438.
+        "notsan",  # Disabled due to b/497035517.
+        "requires-tpu-v5lite:8",
+    ],
+    deps = [
+        ":distributed_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/utils:test_utils",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "uneven_sharding_test",
+    srcs = ["uneven_sharding_test.py"],
     shard_count = 8,
     tags = if_oss(
         ["exclusive"],
