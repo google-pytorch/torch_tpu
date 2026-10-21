@@ -273,15 +273,21 @@ UnboundedDynamicExecutionMetadata MakeNonzeroDynamicMetadata() {
       .output_transform = BitcastToLogicalIndices,
       .is_compatible =
           [](absl::Span<const Shape> input_shapes,
-             absl::Span<const Shape> output_shapes) {
-            return input_shapes.size() == 1 &&
+             absl::Span<const xla::Layout> input_layouts,
+             absl::Span<const Shape> output_shapes,
+             absl::Span<const xla::Layout> output_layouts) {
+            return input_shapes.size() == 1 && input_layouts.size() == 1 &&
                    input_shapes[0].dimensions().size() == 2 &&
                    input_shapes[0].dtype() == mlir::ElementType::F32 &&
-                   output_shapes.size() == 1 &&
+                   input_layouts[0] ==
+                       xla::Layout({1, 0}, {xla::Tile({8, 128})}) &&
+                   output_shapes.size() == 1 && output_layouts.size() == 1 &&
                    output_shapes[0].dimensions().size() == 2 &&
                    output_shapes[0].dimensions()[0] > 2 &&
                    output_shapes[0].dimensions()[1] == 2 &&
-                   output_shapes[0].dtype() == mlir::ElementType::I64;
+                   output_shapes[0].dtype() == mlir::ElementType::I64 &&
+                   output_layouts[0] ==
+                       xla::Layout({0, 1}, {xla::Tile({2, 128})});
           },
   };
   return dynamic_meta;

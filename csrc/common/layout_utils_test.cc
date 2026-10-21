@@ -16,6 +16,7 @@
 
 #include "csrc/common/layout_utils.h"
 
+#include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "ATen/ops/empty.h"
 #include "c10/core/ScalarType.h"
@@ -135,6 +136,31 @@ TEST(LayoutUtilsTest, ResolveTpuLayout_FP4TensorNonContiguous_ReturnsError) {
 
   auto layout_or = ResolveTpuLayout(tensor);
   EXPECT_EQ(layout_or.status().code(), error::kInvalidArgument);
+}
+
+TEST(LayoutUtilsTest, ResolveXlaLayoutsWithCustomLayout) {
+  Shape default_bitwidth_shape({16, 128}, mlir::ElementType::F32);
+  default_bitwidth_shape.set_layout(CustomLayout{
+      .minor_to_major = {0, 1},
+      .tiles = {{8, 128}},
+      .element_size_in_bits = 32,
+  });
+
+  Shape custom_bitwidth_shape({16, 128}, mlir::ElementType::I8);
+  custom_bitwidth_shape.set_layout(CustomLayout{
+      .minor_to_major = {1, 0},
+      .tiles = {{8, 128}},
+      .element_size_in_bits = 4,
+  });
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      const auto layouts,
+      ResolveXlaLayouts({default_bitwidth_shape, custom_bitwidth_shape}));
+  ASSERT_EQ(layouts.size(), 2);
+  EXPECT_EQ(layouts[0], xla::Layout({0, 1}, {xla::Tile({8, 128})},
+                                    /*element_size_in_bits=*/0));
+  EXPECT_EQ(layouts[1], xla::Layout({1, 0}, {xla::Tile({8, 128})},
+                                    /*element_size_in_bits=*/4));
 }
 
 }  // namespace

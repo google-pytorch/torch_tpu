@@ -109,10 +109,13 @@ struct UnboundedDynamicExecutionMetadata {
   std::vector<xla::Shape> pjrt_param_shapes;
 
   // Returns whether this executable can serve a call with the given logical
-  // input and output shapes. Consulted when scanning cache entries that share
-  // a shapeless key.
-  using CompatibilityFunc = bool (*)(absl::Span<const Shape> input_shapes,
-                                     absl::Span<const Shape> output_shapes);
+  // input and output shapes and their resolved on-device layouts. Consulted
+  // when scanning cache entries that share a shapeless key.
+  using CompatibilityFunc =
+      bool (*)(absl::Span<const Shape> input_shapes,
+               absl::Span<const xla::Layout> input_layouts,
+               absl::Span<const Shape> output_shapes,
+               absl::Span<const xla::Layout> output_layouts);
 
   OutputTransform absl_nullable output_transform = nullptr;
   CompatibilityFunc is_compatible = nullptr;

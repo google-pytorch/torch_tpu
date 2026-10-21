@@ -783,11 +783,7 @@ std::vector<Shape> GetShapes(absl::Span<const DeviceBufferRef> buffers) {
   std::vector<Shape> shapes;
   shapes.reserve(buffers.size());
   for (const auto& buffer : buffers) {
-    Shape shape(CopyIntVector(buffer.dimensions()), buffer.element_type());
-    for (const auto& dynamic_dim : buffer.dynamic_dimensions()) {
-      shape.dynamic_dimensions().push_back(dynamic_dim);
-    }
-    shapes.push_back(std::move(shape));
+    shapes.push_back(buffer.shape());
   }
   return shapes;
 }

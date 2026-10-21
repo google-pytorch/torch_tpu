@@ -43,6 +43,7 @@
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/compile_options_key.h"
 #include "csrc/common/contain.h"
+#include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fingerprint_utils.h"
@@ -61,13 +62,8 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "xla/hlo/builder/xla_builder.h"
-#include "xla/hlo/builder/xla_computation.h"
-#include "xla/layout_util.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
-#include "xla/shape.h"
-#include "xla/shape_util.h"
 #include "xla/xla_data.pb.h"
 
 ABSL_DECLARE_FLAG(bool, torch_tpu_internal_enable_compilation_container);
@@ -564,6 +560,76 @@ TEST_F(CompilationCacheTest, UnboundedDynamicCacheOutputShapeMismatch) {
       cache.GetOrCompile(
           test_key, {Shape(Dimensions({128, 128}), mlir::ElementType::F32)},
           {Shape(Dimensions({128, 128, 256}), mlir::ElementType::F32)},
+          [](mlir::MLIRContext& context) {
+            return mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
+          },
+          std::make_unique<xla::CompileOptions>()));
+
+  EXPECT_FALSE(result.fixed_shape_kernel.get().ok());
+  EXPECT_EQ(cache.GetCacheHits(), 0);
+  EXPECT_EQ(cache.GetCacheMisses(), 1);
+  CompilationCache::ShutDown();
+}
+
+TEST_F(CompilationCacheTest, UnboundedDynamicCacheLayoutMismatch) {
+  CompilationCache& cache = CompilationCache::GetInstance();
+
+  CompilationCacheKey key(
+      GraphKey(ShapelessKey(Fingerprint(std::string_view("dummykey"))),
+               DimensionsKey({})),
+      CompileOptionsKey({}));
+
+  ASSERT_TRUE(cache
+                  .AddUnboundedDynamicCacheEntry(key, CreateDummyExecutable,
+                                                 MakeDummyDynamicMetadata())
+                  .ok());
+
+  CompilationCacheKey test_key(
+      GraphKey(key.graph_key().shapeless_key(), DimensionsKey({1, 2, 3})),
+      CompileOptionsKey({}));
+  Shape transposed_input(Dimensions({128, 128}), mlir::ElementType::F32);
+  transposed_input.set_layout(
+      CustomLayout{.minor_to_major = {0, 1}, .tiles = {{8, 128}}});
+  TT_ASSERT_OK_AND_ASSIGN(
+      CompiledKernel result,
+      cache.GetOrCompile(
+          test_key, {transposed_input},
+          {Shape(Dimensions({128, 128}), mlir::ElementType::F32)},
+          [](mlir::MLIRContext& context) {
+            return mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
+          },
+          std::make_unique<xla::CompileOptions>()));
+
+  EXPECT_FALSE(result.fixed_shape_kernel.get().ok());
+  EXPECT_EQ(cache.GetCacheHits(), 0);
+  EXPECT_EQ(cache.GetCacheMisses(), 1);
+  CompilationCache::ShutDown();
+}
+
+TEST_F(CompilationCacheTest, UnboundedDynamicCacheOutputLayoutMismatch) {
+  CompilationCache& cache = CompilationCache::GetInstance();
+
+  CompilationCacheKey key(
+      GraphKey(ShapelessKey(Fingerprint(std::string_view("dummykey"))),
+               DimensionsKey({})),
+      CompileOptionsKey({}));
+
+  ASSERT_TRUE(cache
+                  .AddUnboundedDynamicCacheEntry(key, CreateDummyExecutable,
+                                                 MakeDummyDynamicMetadata())
+                  .ok());
+
+  CompilationCacheKey test_key(
+      GraphKey(key.graph_key().shapeless_key(), DimensionsKey({1, 2, 3})),
+      CompileOptionsKey({}));
+  Shape transposed_output(Dimensions({128, 128}), mlir::ElementType::F32);
+  transposed_output.set_layout(
+      CustomLayout{.minor_to_major = {0, 1}, .tiles = {{8, 128}}});
+  TT_ASSERT_OK_AND_ASSIGN(
+      CompiledKernel result,
+      cache.GetOrCompile(
+          test_key, {Shape(Dimensions({128, 128}), mlir::ElementType::F32)},
+          {transposed_output},
           [](mlir::MLIRContext& context) {
             return mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
           },

@@ -16,6 +16,7 @@
 
 #include "csrc/common/compilation_cache_test_utils.h"
 
+#include <cstdint>
 #include <memory>
 #include <utility>
 
@@ -27,6 +28,7 @@
 #include "csrc/common/shape.h"
 #include "xla/hlo/builder/xla_builder.h"
 #include "xla/hlo/builder/xla_computation.h"
+#include "xla/layout.h"
 #include "xla/layout_util.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
@@ -38,9 +40,17 @@ namespace torch_tpu {
 namespace {
 
 bool IsCompatible(absl::Span<const Shape> input_shapes,
-                  absl::Span<const Shape> output_shapes) {
-  return input_shapes.size() == 1 && input_shapes[0].dimensions().size() == 2 &&
-         output_shapes.size() == 1 && output_shapes[0].dimensions().size() == 2;
+                  absl::Span<const xla::Layout> input_layouts,
+                  absl::Span<const Shape> output_shapes,
+                  absl::Span<const xla::Layout> output_layouts) {
+  return input_shapes.size() == 1 && input_layouts.size() == 1 &&
+         input_shapes[0].dimensions().size() == 2 &&
+         input_layouts[0].minor_to_major() ==
+             absl::Span<const int64_t>({1, 0}) &&
+         output_shapes.size() == 1 && output_layouts.size() == 1 &&
+         output_shapes[0].dimensions().size() == 2 &&
+         output_layouts[0].minor_to_major() ==
+             absl::Span<const int64_t>({1, 0});
 }
 
 }  // namespace
