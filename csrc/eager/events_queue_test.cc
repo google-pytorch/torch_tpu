@@ -94,7 +94,7 @@ TEST_F(EventsQueueTest, GetsLiveDeferredBuffers) {
   // Both a and b are live and unsynced and will be materialized on the next
   // stream materialization or device materialization.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-  EventSnapshot::Record(device_index, stream_id, {});
+  (void)EventSnapshot::Record(device_index, stream_id, {});
   auto pending_snapshots =
       PrepareSnapshotMaterializations(device_index, stream_id);
 
@@ -116,7 +116,7 @@ TEST_F(EventsQueueTest, IgnoresPlaceholderBuffers) {
 
   // The placeholder does not need to be synced.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-  EventSnapshot::Record(device_index, stream_id, {});
+  (void)EventSnapshot::Record(device_index, stream_id, {});
   auto pending_snapshots =
       PrepareSnapshotMaterializations(device_index, stream_id);
   EXPECT_TRUE(pending_snapshots.empty());
@@ -134,7 +134,7 @@ TEST_F(EventsQueueTest, SyncIgnoresEmptyBuffers) {
 
   // The empty buffer does not need to be synced.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-  EventSnapshot::Record(device_index, stream_id, {});
+  (void)EventSnapshot::Record(device_index, stream_id, {});
   auto pending_snapshots =
       PrepareSnapshotMaterializations(device_index, stream_id);
 
@@ -156,7 +156,7 @@ TEST_F(EventsQueueTest, IgnoresAlreadyMaterializedBuffers) {
 
   // The placeholder does not need to be synced.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-  EventSnapshot::Record(device_index, stream_id, {});
+  (void)EventSnapshot::Record(device_index, stream_id, {});
   auto pending_snapshots =
       PrepareSnapshotMaterializations(device_index, stream_id);
 
@@ -202,7 +202,7 @@ TEST_F(EventsQueueTest, ClearsBuffersAfterMaterialization) {
 
   // We don't need to sync the buffer anymore.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-  EventSnapshot::Record(device_index, stream_id, {});
+  (void)EventSnapshot::Record(device_index, stream_id, {});
   auto pending_snapshots =
       PrepareSnapshotMaterializations(device_index, stream_id);
 
@@ -226,7 +226,7 @@ TEST_F(EventsQueueTest, StopsTrackingAfterClearEventsQueue) {
   ClearAllStreams();
 
   // The buffer is no longer tracked.
-  EventSnapshot::Record(device_index, stream_id, {});
+  (void)EventSnapshot::Record(device_index, stream_id, {});
   auto pending_snapshots1 =
       PrepareSnapshotMaterializations(device_index, stream_id);
 
@@ -235,7 +235,7 @@ TEST_F(EventsQueueTest, StopsTrackingAfterClearEventsQueue) {
   // Create a second data pointer to the same buffer.
   ref.device_buffer_list()->IncrementLiveDataPtrs(ref.index());
 
-  EventSnapshot::Record(device_index, stream_id, {});
+  (void)EventSnapshot::Record(device_index, stream_id, {});
   // The buffer is live, but the DeferredOp was cleared and so does not need
   // to be materialized.
   auto pending_snapshots2 =
@@ -282,7 +282,7 @@ TEST_F(EventsQueueTest, DeadCodeEliminated) {
 
   const auto device_index = list_d->device_index();
   const auto stream_id = list_d->stream_id();
-  EventSnapshot::Record(device_index, stream_id, {list_d});
+  (void)EventSnapshot::Record(device_index, stream_id, {list_d});
   auto pending_snapshots =
       PrepareSnapshotMaterializations(device_index, stream_id);
 
@@ -339,7 +339,7 @@ TEST_F(EventsQueueTest, DeadSideEffectsRetained) {
 
   const auto device_index = list_d->device_index();
   const auto stream_id = list_d->stream_id();
-  EventSnapshot::Record(device_index, stream_id, {list_d});
+  (void)EventSnapshot::Record(device_index, stream_id, {list_d});
   auto pending_snapshots =
       PrepareSnapshotMaterializations(device_index, stream_id);
   ASSERT_EQ(pending_snapshots.size(), 1);
@@ -379,7 +379,7 @@ TEST_F(EventsQueueTest, MaterializationIgnoresUnusedEmptyOps) {
 
   const auto device_index = non_empty_list->device_index();
   const auto stream_id = non_empty_list->stream_id();
-  EventSnapshot::Record(device_index, stream_id, {non_empty_list});
+  (void)EventSnapshot::Record(device_index, stream_id, {non_empty_list});
   auto pending_snapshots =
       PrepareSnapshotMaterializations(device_index, stream_id);
   ASSERT_EQ(pending_snapshots.size(), 1);
@@ -477,7 +477,7 @@ TEST_F(EventsQueueTest, PrepareStreamTraversals) {
   ExchangeCurrentStreamId(device_index, default_stream_id);
 
   // Ask for a plan to materialize the stream for a and b (but not c).
-  EventSnapshot::Record(device_index, default_stream_id, {});
+  (void)EventSnapshot::Record(device_index, default_stream_id, {});
   auto pending_snapshots =
       PrepareSnapshotMaterializations(device_index, default_stream_id);
   ASSERT_EQ(pending_snapshots.size(), 1);
@@ -527,7 +527,7 @@ TEST_F(EventsQueueTest, StreamsMaterializeSeparately) {
   ExchangeCurrentStreamId(device_index, default_stream_id);
 
   // Ask for a plan to materialize the stream for c (but not a or b)
-  EventSnapshot::Record(device_index, non_default_stream_id, {});
+  (void)EventSnapshot::Record(device_index, non_default_stream_id, {});
   auto pending_snapshots =
       PrepareSnapshotMaterializations(device_index, non_default_stream_id);
   ASSERT_EQ(pending_snapshots.size(), 1);
@@ -546,7 +546,7 @@ TEST_F(EventsQueueTest, RetainsFailedCompletedFutures) {
 
   RecordAsyncDeviceToHost(std::move(failed_future));
 
-  EventSnapshot::Record(device_index, stream_id);
+  (void)EventSnapshot::Record(device_index, stream_id);
   auto pending_snapshots =
       PrepareSnapshotMaterializations(device_index, stream_id);
   ASSERT_EQ(pending_snapshots.size(), 1);
@@ -566,7 +566,7 @@ TEST_F(EventsQueueTest, PrunesSuccessfulCompletedFutures) {
 
   RecordAsyncDeviceToHost(std::move(ok_future));
 
-  EventSnapshot::Record(device_index, stream_id);
+  (void)EventSnapshot::Record(device_index, stream_id);
   auto pending_snapshots =
       PrepareSnapshotMaterializations(device_index, stream_id);
   EXPECT_TRUE(pending_snapshots.empty());
@@ -590,14 +590,14 @@ TEST_F(EventsQueueTest, StreamMustMaterializeEmptyTensors) {
   const auto stream_id = empty_list->stream_id();
 
   // A normal stream materialization does not materialize the empty tensor.
-  EventSnapshot::Record(device_index, stream_id, {});
+  (void)EventSnapshot::Record(device_index, stream_id, {});
   auto pending_snapshots =
       PrepareSnapshotMaterializations(device_index, stream_id);
 
   EXPECT_TRUE(pending_snapshots.empty());
 
   // A stream materialization that must materialize the empty tensor does so.
-  EventSnapshot::Record(device_index, stream_id, {empty_list});
+  (void)EventSnapshot::Record(device_index, stream_id, {empty_list});
   pending_snapshots = PrepareSnapshotMaterializations(device_index, stream_id);
   ASSERT_EQ(pending_snapshots.size(), 1);
   // Constant ops are listed only in must_materialize, but not must_execute.
@@ -652,7 +652,7 @@ TEST_F(EventsQueueTest, MultipleSnapshotsPulled) {
   auto list_a = ref_a.device_buffer_list();
   RecordDeferredOpCreated(list_a);
 
-  EventSnapshot::Record(list_a->device_index(), list_a->stream_id(), {});
+  (void)EventSnapshot::Record(list_a->device_index(), list_a->stream_id(), {});
 
   TT_ASSERT_OK_AND_ASSIGN(auto refs_b, DeviceBufferList::CreateDeferred(
                                            OpName::kAdd, DummyBuilder, {},
@@ -661,7 +661,7 @@ TEST_F(EventsQueueTest, MultipleSnapshotsPulled) {
   auto list_b = ref_b.device_buffer_list();
   RecordDeferredOpCreated(list_b);
 
-  EventSnapshot::Record(list_b->device_index(), list_b->stream_id(), {});
+  (void)EventSnapshot::Record(list_b->device_index(), list_b->stream_id(), {});
 
   // Get the pending snapshots.
   auto pending_snapshots = PrepareSnapshotMaterializations(
@@ -692,7 +692,7 @@ TEST_F(EventsQueueTest, NotPulledAfterLastSnapshot) {
   auto list_a = ref_a.device_buffer_list();
   RecordDeferredOpCreated(list_a);
 
-  EventSnapshot::Record(list_a->device_index(), list_a->stream_id(), {});
+  (void)EventSnapshot::Record(list_a->device_index(), list_a->stream_id(), {});
 
   // Enqueue an op after the snapshot, but don't request a second snapshot.
   TT_ASSERT_OK_AND_ASSIGN(auto refs_b, DeviceBufferList::CreateDeferred(
@@ -728,7 +728,7 @@ TEST_F(EventsQueueTest, SingleOpFastPathAndExtraConstantFallback) {
   auto list_single = ref_single.device_buffer_list();
   RecordDeferredOpCreated(list_single);
 
-  EventSnapshot::Record(device_index, stream_id, {list_single});
+  (void)EventSnapshot::Record(device_index, stream_id, {list_single});
   auto pending_snapshots =
       PrepareSnapshotMaterializations(device_index, stream_id);
   ASSERT_EQ(pending_snapshots.size(), 1);
@@ -756,7 +756,7 @@ TEST_F(EventsQueueTest, SingleOpFastPathAndExtraConstantFallback) {
   auto empty_list = empty_ref.device_buffer_list();
   RecordDeferredOpCreated(empty_list);
 
-  EventSnapshot::Record(device_index, stream_id, {list_op, empty_list});
+  (void)EventSnapshot::Record(device_index, stream_id, {list_op, empty_list});
   pending_snapshots = PrepareSnapshotMaterializations(device_index, stream_id);
   ASSERT_EQ(pending_snapshots.size(), 1);
   EXPECT_THAT(pending_snapshots[0].must_execute, testing::ElementsAre(list_op));
@@ -782,7 +782,7 @@ TEST_F(EventsQueueTest, NodeMatcherAcrossSmallAndLargeSpans) {
       nodes.push_back(refs[0].device_buffer_list());
       RecordDeferredOpCreated(refs[0].device_buffer_list());
     }
-    EventSnapshot::Record(device_index, stream_id, nodes);
+    (void)EventSnapshot::Record(device_index, stream_id, nodes);
     auto pending_snapshots =
         PrepareSnapshotMaterializations(device_index, stream_id);
     ASSERT_EQ(pending_snapshots.size(), 1);
@@ -1030,7 +1030,7 @@ TEST(RepeatedOpsTest, DoesNotDetectRepetitionsOverSnapshots) {
 
   // Request an event snapshot.
   auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-  EventSnapshot::Record(device_index, stream_id);
+  (void)EventSnapshot::Record(device_index, stream_id);
 
   // When we push the second repetition, it is not detected, as the state was
   // reset after the snapshot.

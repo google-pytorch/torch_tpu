@@ -207,8 +207,9 @@ absl::Status DeferAndFuseDispatch(absl::Span<const DeviceBufferRef> results,
         allow_materialization) {
       // Start a background materialization of the current stream; don't
       // wait for it to complete.
-      MaterializeCurrentStream(MaterializationReason::kRepeatedOpDetection,
-                               GetRepeatedOpsGraphSplitMode());
+      (void)MaterializeCurrentStream(
+          MaterializationReason::kRepeatedOpDetection,
+          GetRepeatedOpsGraphSplitMode());
     }
   } else {
     RecordDeferredOpCreated(device_buffer_list);

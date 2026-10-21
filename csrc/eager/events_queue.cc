@@ -380,7 +380,7 @@ class StreamState {
   void RecordCompiledExecutionTask(ExecutionTask&& execution_task,
                                    EagerMode eager_mode) {
     absl::MutexLock lock(mu_);
-    RequestEventSnapshotLocked(
+    (void)RequestEventSnapshotLocked(
         /*must_materialize=*/{}, MaterializationReason::kCompileModeExecution,
         GraphSplitMode::kSplitGraph, eager_mode, std::move(execution_task));
   }
