@@ -552,33 +552,20 @@ std::string ConsumeMlirDiagnostics(
 // Applies Numpy's broadcasting rules, if needed. See
 // https://numpy.org/devdocs//user/basics.broadcasting.html#broadcastable-arrays
 
+// Applies Numpy's broadcasting rules to a dynamic span of ops, if needed.
+absl::StatusOr<std::vector<mlir::MlirOp>> ApplyBroadcastIfNeeded(
+    absl::Span<const mlir::MlirOp> ops);
+
 // This overload takes a fixed number of inputs as an std::array, and returns
 // the same number of outputs.
 template <int kNumInputs>
 absl::StatusOr<std::array<mlir::MlirOp, kNumInputs>> ApplyBroadcastIfNeeded(
     std::array<mlir::MlirOp, kNumInputs> ops) {
   static_assert(kNumInputs > 0, "ApplyBroadcastIfNeeded requires >= 1 input");
-  if (ABSL_VLOG_IS_ON(3)) {
-    ABSL_VLOG(3) << "[ApplyBroadcastIfNeeded] Broadcasting ops:" << '\n';
-    for (const mlir::MlirOp& op : ops) {
-      ABSL_VLOG(3) << "  " << mlir::debugString(op.getType()) << " from op "
-                   << op.ToString() << '\n';
-    }
-  }
-
-  mlir::SmallVector<mlir::Value, kNumInputs> values = llvm::map_to_vector(
-      ops, [](const mlir::MlirOp& op) { return op.getValue(); });
-  mlir::BaseScopedDiagnosticHandler diag_handler(values[0].getContext());
-  auto broadcasted_values_or_fail = mlir::stablehlo::numpyBroadcastIfNeeded(
-      ops[0].getBuilder().getOpBuilder(), values);
-  TT_RET_CHECK(mlir::succeeded(broadcasted_values_or_fail),
-               error::kInvalidArgument)
-      << "failed to broadcast tensors: "
-      << ConsumeMlirDiagnostics(diag_handler);
-  mlir::SmallVector<mlir::Value, kNumInputs> broadcasted_values =
-      std::move(*broadcasted_values_or_fail);
+  TT_ASSIGN_OR_RETURN(std::vector<mlir::MlirOp> broadcasted,
+                      ApplyBroadcastIfNeeded(absl::MakeConstSpan(ops)));
   for (int i = 0; i < kNumInputs; ++i) {
-    ops[i] = mlir::MlirOp(ops[i].getBuilder(), broadcasted_values[i]);
+    ops[i] = broadcasted[i];
   }
   return std::move(ops);
 }
@@ -591,10 +578,6 @@ ApplyBroadcastIfNeeded(Op1 op1, Op2 op2, Ops... ops) {
   return ApplyBroadcastIfNeeded<2 + sizeof...(Ops)>(
       std::array<mlir::MlirOp, 2 + sizeof...(Ops)>{op1, op2, ops...});
 }
-
-// Applies Numpy's broadcasting rules to a dynamic span of ops, if needed.
-absl::StatusOr<std::vector<mlir::MlirOp>> ApplyBroadcastIfNeeded(
-    absl::Span<const mlir::MlirOp> ops);
 
 absl::StatusOr<mlir::MlirOp> Broadcast(mlir::MlirOp input,
                                        absl::Span<const int64_t> output_dims,
