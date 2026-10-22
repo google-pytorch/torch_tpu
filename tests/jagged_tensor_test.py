@@ -1643,6 +1643,79 @@ class JaggedTensorTest(seed_test_utils.RepeatableTest):
     # Calling on already compact tensor returns original tensor
     self.assertIs(jagged_ops.strip_jagged_padding(nt), nt)
 
+  def test_align_and_strip_preserve_lengths(self):
+    """Tests that align and strip keep the lengths of a jagged tensor."""
+    # Two slots of 4 and 6 tokens that hold sequences of 2 and 3 tokens, so
+    # the valid sequences are [0, 1] and [4, 5, 6].
+    values = torch.arange(10.0, device="tpu").reshape(10, 1)
+    offsets = torch.tensor([0, 4, 10], dtype=torch.int64, device="tpu")
+    lengths = torch.tensor([2, 3], dtype=torch.int64, device="tpu")
+    nt = torch.nested.nested_tensor_from_jagged(
+        values, offsets, lengths=lengths
+    )
+    expected = [t.cpu() for t in nt.unbind()]
+
+    # Align 10 tokens to 12; offsets, lengths and sequences are kept
+    aligned_nt = jagged_ops.align_jagged_to_multiple(nt, multiple=4)
+    self.assertEqual(aligned_nt.values().shape, (12, 1))
+    utils.assert_close(aligned_nt.offsets().cpu(), offsets.cpu())
+    utils.assert_close(aligned_nt.lengths().cpu(), lengths.cpu())
+    for got, want in zip(aligned_nt.unbind(), expected, strict=True):
+      utils.assert_close(got.cpu(), want)
+
+    # Strip back to 10 tokens; lengths and sequences are kept
+    stripped_nt = jagged_ops.strip_jagged_padding(aligned_nt, valid_tokens=10)
+    self.assertEqual(stripped_nt.values().shape, (10, 1))
+    utils.assert_close(stripped_nt.lengths().cpu(), lengths.cpu())
+    for got, want in zip(stripped_nt.unbind(), expected, strict=True):
+      utils.assert_close(got.cpu(), want)
+
+  def test_align_and_strip_preserve_cached_seqlens(self):
+    """Tests that align and strip keep the cached min/max sequence lengths."""
+    # Sequence lengths 3 and 4, with min/max seqlen cached on the input
+    nt = torch.nested.nested_tensor_from_jagged(
+        torch.randn(7, 2, device="tpu"),
+        torch.tensor([0, 3, 7], dtype=torch.int64, device="tpu"),
+        min_seqlen=3,
+        max_seqlen=4,
+    )
+
+    aligned_nt = jagged_ops.align_jagged_to_multiple(nt, multiple=4)
+    stripped_nt = jagged_ops.strip_jagged_padding(aligned_nt, valid_tokens=7)
+
+    # Both results still have the cached values. `_maybe_*` reads the cache
+    # only, so None here would mean the cache was dropped.
+    # pylint: disable=protected-access
+    for result in (aligned_nt, stripped_nt):
+      self.assertEqual(result._maybe_min_seqlen, 3)
+      self.assertEqual(result._maybe_max_seqlen, 4)
+
+  def test_align_and_strip_transposed_ragged_dim(self):
+    """Tests align and strip when the ragged dim is not the first values dim."""
+    # With 2 features, values dims 0 and 1 differ in size, so padding the
+    # wrong dim is caught. With 7 features, both dims match the 7 tokens, so
+    # a size check on the wrong dim would find nothing to strip.
+    for features in [2, 7]:
+      t1 = torch.randn(3, features, device="tpu")
+      t2 = torch.randn(4, features, device="tpu")
+      nt = torch.nested.nested_tensor([t1, t2], layout=torch.jagged)
+      nt_t = nt.transpose(1, 2)  # Values (features, 7), ragged_idx 2.
+
+      # Align 7 tokens to 8 along values dim 1; the nested shape is kept
+      aligned_nt = jagged_ops.align_jagged_to_multiple(nt_t, multiple=4)
+      self.assertEqual(aligned_nt.shape, nt_t.shape)
+      self.assertEqual(aligned_nt.values().shape, (features, 8))
+      utils.assert_close(aligned_nt.values()[:, :7].cpu(), nt_t.values().cpu())
+
+      # Strip back to 7 tokens; each sequence matches its input again
+      stripped_nt = jagged_ops.strip_jagged_padding(aligned_nt)
+      self.assertEqual(stripped_nt.shape, nt_t.shape)
+      self.assertEqual(stripped_nt.values().shape, (features, 7))
+      for got, want in zip(
+          stripped_nt.transpose(1, 2).unbind(), [t1, t2], strict=True
+      ):
+        utils.assert_close(got.cpu(), want.cpu())
+
   def test_inplace_residual_accumulation(self):
     """Verifies that in-place residual addition (add_) operates zero-copy and matches out-of-place add."""
     t1_x = torch.randn(3, 16, device="tpu")
