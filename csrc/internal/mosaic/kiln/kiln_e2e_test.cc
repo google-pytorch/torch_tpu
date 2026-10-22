@@ -345,6 +345,56 @@ TEST_F(KilnE2eTest, DynamicHbmTiledLoopWithDma) {
   }
 }
 
+// One compiled kernel sums the 128-element chunks of an HBM vector: the chunks
+// are streamed with EmitPipeline into a VMEM accumulator, which is copied to
+// the HBM output at the end.
+TEST_F(KilnE2eTest, PipelinedSum) {
+  constexpr int64_t kChunk = 128;
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      Kernel kernel,
+      CreateKernel(
+          GridSpec{.name = "pipelined_sum_e2e"}, InSpec::Hbm(f32(kDynamic)),
+          OutSpec::Hbm(f32(kChunk)), ScratchSpec::Vmem(f32(kChunk)),
+          [&](Ref in, Ref out, Ref acc) {
+            const PipelineInput input{
+                .hbm = in, .block_shape = {kChunk}, .region = [](Scalar step) {
+                  return BlockRegion{
+                      .offsets = {MultipleOf(step * kChunk, kChunk)},
+                      .sizes = {kChunk}};
+                }};
+            acc = Zeros(acc.shape());
+            EmitPipeline(0, in.Dim(0) / kChunk, {input},
+                         [&](const PipelineStep& s) {
+                           acc = Tile(acc) + Tile(s.inputs[0]);
+                         });
+            AsyncCopy(acc, out, AllocaDmaSemaphore()).Wait();
+          }));
+
+  EXPECT_THAT(kernel.Verify(), IsOk());
+  TT_ASSERT_OK_AND_ASSIGN(std::string serialized,
+                          std::move(kernel).Serialize());
+
+  // A single chunk never prefetches.
+  for (int64_t num_chunks : {1, 5}) {
+    const int64_t n = num_chunks * kChunk;
+    SCOPED_TRACE(absl::StrCat("n=", n));
+    std::vector<float> input_vec(n);
+    for (int64_t i = 0; i < n; ++i) {
+      input_vec[i] = static_cast<float>(i % 17 - 8);
+    }
+    std::vector<float> expected_vec(kChunk, 0.0f);
+    for (int64_t chunk = 0; chunk < num_chunks; ++chunk) {
+      for (int64_t i = 0; i < kChunk; ++i) {
+        expected_vec[i] += input_vec[chunk * kChunk + i];
+      }
+    }
+    xla::Literal in_lit = xla::LiteralUtil::CreateR1<float>(input_vec);
+    xla::Literal exp_lit = xla::LiteralUtil::CreateR1<float>(expected_vec);
+    RunAndCompare(serialized, {&in_lit}, exp_lit);
+  }
+}
+
 TEST_F(KilnE2eTest, DynamicMemrefSliceSizesAndScopedDma) {
   TT_ASSERT_OK_AND_ASSIGN(
       Kernel kernel,

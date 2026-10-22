@@ -312,4 +312,25 @@ torch_tpu_cc_library(
     ],
 )
 
+torch_tpu_cc_library(
+    name = "pipeline",
+    srcs = ["pipeline.cc"],
+    hdrs = ["pipeline.h"],
+    deps = [
+        ":control_flow",
+        ":dma",
+        ":dtype",
+        ":index_arg",
+        ":memory",
+        ":ref",
+        ":scalar",
+        ":semaphore",
+        ":shape",
+        ":specs",
+        "@com_google_absl//absl/functional:function_ref",
+        "@com_google_absl//absl/log:absl_check",
+        "@llvm-project//llvm:Support",
+    ],
+)
+
 torch_tpu_package_end()
