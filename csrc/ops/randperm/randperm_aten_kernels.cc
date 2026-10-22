@@ -106,9 +106,10 @@ at::Tensor& AtenRandpermGeneratorOut(c10::SymInt n,
     const int64_t num_elements = n_int;
     const int64_t bit_width = 64;
 
+    const at::IntArrayRef out_dims = out.sizes();
     TT_THROW_IF_ERROR(DispatchRngOp(
         out, generator,
-        [n_int, output_dtype, out, &param_keys](at::Tensor rng_input_state)
+        [n_int, output_dtype, out_dims, &param_keys](at::Tensor rng_input_state)
             -> absl::StatusOr<std::vector<DeviceBufferRef>> {
           TT_ASSIGN_OR_RETURN(
               auto buf,
@@ -119,7 +120,7 @@ at::Tensor& AtenRandpermGeneratorOut(c10::SymInt n,
                   },
                   {rng_input_state},
                   {.out_dtype = output_dtype,
-                   .out_dims = out.sizes(),
+                   .out_dims = out_dims,
                    .op_param_cache_keys = std::move(param_keys)}));
           return std::vector<DeviceBufferRef>{std::move(buf)};
         },
