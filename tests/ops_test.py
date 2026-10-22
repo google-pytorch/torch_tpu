@@ -935,14 +935,14 @@ ACCURACY_OVERRIDES_GRAD_VS_GPU: dict[
             torch.float32: {"rtol": 6.5e-6, "atol": 5e-5},
         },
         "clamp": {
-            torch.bfloat16: {"atol": 0.6},
-            torch.float16: {"atol": 0.6},
+            torch.bfloat16: {"atol": 6e-1},
+            torch.float16: {"atol": 6e-1},
         },
         "clamp_max": {
-            torch.bfloat16: {"atol": 0.6},
+            torch.bfloat16: {"atol": 6e-1},
         },
         "clamp_min": {
-            torch.bfloat16: {"atol": 0.6},
+            torch.bfloat16: {"atol": 6e-1},
         },
         "cumprod": {
             torch.bfloat16: {"rtol": 1.7e-1, "atol": 1.2e-2},
@@ -960,10 +960,10 @@ ACCURACY_OVERRIDES_GRAD_VS_GPU: dict[
             torch.float32: {"rtol": 5e-5, "atol": 3.1e-3},
         },
         "fmax": {
-            torch.bfloat16: {"atol": 0.6},
+            torch.bfloat16: {"atol": 6e-1},
         },
         "fmin": {
-            torch.bfloat16: {"atol": 0.6},
+            torch.bfloat16: {"atol": 6e-1},
         },
         "kron": {
             torch.float16: {"rtol": 2.8e-3, "atol": 6.3e-2},
