@@ -602,8 +602,12 @@ def update_command(repo_root: str) -> str:
         f" //{repo_paths.G3_REPO_PATH}/tests:error_coverage_test"
         " --test_arg=--print_coverage_data --test_output=all"
     )
+  # Like the OSS presubmit, run with the newest supported dependencies on 8 TPU
+  # v5e chips.
   return (
-      "bazel test --config=ci_tpu_v5"
+      "cp requirements/requirements_3_14_latest.txt"
+      " requirements/requirements_3_14.txt && bazel test"
+      " --config=ci_tpu_v5_newest_deps"
       ' --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"'
       " //tests:error_coverage_test --test_arg=--print_coverage_data"
       " --test_output=all"

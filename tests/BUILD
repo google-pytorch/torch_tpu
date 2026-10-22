@@ -2903,8 +2903,8 @@ torch_tpu_py_test(
 )
 
 # Fails if a change adds error macros that errors_test.py, tpu_errors_test.py or
-# distributed/collective_errors_test.py don't cover. It needs 8 chips because
-# collective_errors_test_cov runs in it.
+# distributed/collective_errors_test.py don't cover.
+# In OSS, only the presubmit job with the newest dependencies runs it.
 torch_tpu_py_test(
     name = "error_coverage_test",
     timeout = "long",
@@ -2916,8 +2916,20 @@ torch_tpu_py_test(
         "//csrc:all_cpp_files_recursive",
         "//tests/distributed:collective_errors_test_cov",
     ],
-    notest_oss = True,  # NOTEST_OSS_OK=Enabled in OSS in a follow-up change.
-    tags = [
+    tags = if_oss(
+        [
+            # collective_errors_test_cov needs all 8 chips.
+            "exclusive",
+            # Some error tests need PyTorch features (e.g. activation offloading)
+            # that only the newest supported PyTorch has. The OSS presubmit job
+            # with the newest dependencies runs this test on every PR.
+            "requires-newest-deps",
+            # The baseline is for TPU v5e, and collective_errors_test_cov needs
+            # 8 chips.
+            "fails-on-tpu-v7",
+        ],
+        [],
+    ) + [
         "nofastbuild",
         "nosan",  # *san builds are low-value for error tests.
         "requires-tpu-v5lite:8",
