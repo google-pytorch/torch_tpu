@@ -211,15 +211,17 @@ void SyncAndCheckStickyError();
 // returns the error status if any was recorded.
 absl::Status SyncAndReturnStickyError();
 
-// Adapts an external error from OpenXLA to comply to TorchTPU error guidelines.
+// Attaches a TorchTPU context to an error from OpenXLA (compiler, PjRt,
+// libtpu).
 //
 // If `status` is OK, returns it unchanged.
 //
-// If `status` contains an error:
-//   1. Cleans the original error message using `AdaptExternalErrorMessage`.
-//   2. Prepends the error message with `context` and `kXlaCompilerFailedWith`.
-//   3. Returns a new status with the formatted message, preserving the original
-//      status code and any payloads (metadata).
+// If `status` contains an error, returns a new status with the message
+// `context` + `kXlaCompilerFailedWith` + the original message, preserving the
+// original status code and any payloads (metadata). The original message is
+// passed through verbatim (not reformatted to TorchTPU guidelines): the
+// sentinel marks where it begins, and the error format checks skip everything
+// after it.
 //
 // Example:
 //   TT_ASSIGN_OR_RETURN(
@@ -244,7 +246,10 @@ absl::StatusOr<T> AdaptXlaError(absl::StatusOr<T> status_or,
 // payloads. If `status` is OK, returns it unchanged.
 absl::Status AdaptVfioDeviceCollisionError(absl::Status status);
 
-// Adapts an external error message to conform to guidelines.
+// Adapts a PyTorch (c10/ATen/c10d) error message to conform to guidelines.
+//
+// Not used for OpenXLA errors: those are passed through verbatim after
+// `kXlaCompilerFailedWith` by `AdaptXlaError`.
 [[nodiscard]] std::string AdaptExternalErrorMessage(std::string_view message);
 
 // Formats the given number of items. E.g.
