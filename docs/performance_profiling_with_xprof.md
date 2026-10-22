@@ -56,6 +56,7 @@ device tracer levels as well as output directory structures.
 | `device_tracer_level` | `int`          | `1`     | Controls TPU hardware device tracer <br> verbosity (0=off, 1=on). |
 | `python_tracer_level` | `int`          | `0`     | Controls Python function tracing <br> level (0=off, 1=on). |
 | `run_dir`             | `pathlib.Path` | `None`  | Output directory where TPU hardware trace <br> files (`.xplane.pb`) are saved. |
+| `worker_rank`         | `str`          | `None`  | Worker rank appended as a suffix to the <br> XPlane filename (`<hostname>_<rank>.xplane.pb`). |
 <!-- mdformat on -->
 
 ```python
@@ -68,6 +69,7 @@ config = TpuProfilerConfig(
     device_tracer_level=1,
     python_tracer_level=0,
     run_dir=pathlib.Path("./profiler_output"),
+    worker_rank="0",
 )
 
 with torch.profiler.profile(
