@@ -956,8 +956,8 @@ class TpuBackend:
           )(graph_module, example_inputs)
 
       if input_indices:
-        # An input can lose its layout after compilation, e.g. copy_() and
-        # load_state_dict() give a tensor the default layout. Like Dynamo does
+        # An input can lose its layout after compilation, e.g. copy_() from a
+        # TPU tensor gives a tensor the source's layout. Like Dynamo does
         # for new shapes, compile again for the new layouts of these inputs.
         programs = {_layouts_key(input_layouts): result}
 

@@ -161,6 +161,30 @@ class AnnotationsTest(
     test_utils.assert_close(add_one(x).cpu(), expected + 1.0)
     self.assertLen(debugs, 2)
 
+  def test_copy_from_cpu_keeps_layout(self):
+    device = torch.device("tpu")
+    # Column-major, which takes as many bytes as the default row-major layout.
+    layout = tpu_annotations.TpuLayout(minor_to_major=[0, 1], tiles=[[8, 128]])
+    expected = torch.arange(128 * 128, dtype=torch.float32).reshape(128, 128)
+    with tpu_annotations.LayoutContext(layout):
+      x = torch.zeros_like(expected).to(device)
+
+    # Like load_state_dict, copy_ from the CPU keeps `x`'s layout.
+    x.copy_(expected)
+    test_utils.assert_close(x.cpu(), expected)
+    x_layout = tpu_torch_compile.get_device_layout_if_materialized(x)
+    self.assertEqual(tpu_annotations.TpuLayout(*x_layout), layout)
+
+    # An active LayoutContext decides the layout instead.
+    row_major = tpu_annotations.TpuLayout(
+        minor_to_major=[1, 0], tiles=[[8, 128]]
+    )
+    with tpu_annotations.LayoutContext(row_major):
+      x.copy_(expected)
+    test_utils.assert_close(x.cpu(), expected)
+    x_layout = tpu_torch_compile.get_device_layout_if_materialized(x)
+    self.assertEqual(tpu_annotations.TpuLayout(*x_layout), row_major)
+
   def test_compiled_program_recompiles_after_copy_resets_layout(self):
     device = torch.device("tpu")
     # Column-major, which takes as many bytes as the default row-major layout.
@@ -185,9 +209,9 @@ class AnnotationsTest(
     test_utils.assert_close(add_one(x).cpu(), expected + 1.0)
     self.assertLen(debugs, 1)
 
-    # Like load_state_dict, copy_ gives `x` the default layout, so the next call
-    # compiles a program for it.
-    x.copy_(expected)
+    # Copying from a default-layout TPU tensor gives `x` the default layout, so
+    # the next call compiles a program for it.
+    x.copy_(expected.to(device))
     test_utils.assert_close(add_one(x).cpu(), expected + 1.0)
     self.assertLen(debugs, 2)
 
