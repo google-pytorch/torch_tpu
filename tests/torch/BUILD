@@ -368,6 +368,12 @@ torch_tpu_torch_test(
 )
 
 torch_tpu_torch_test(
+    name = "export_converter_test",
+    notap = "b/563402379",  # NOTAP_OK=torch tests
+    torch_test_module = "export/test_converter",
+)
+
+torch_tpu_torch_test(
     name = "export_hop_test",
     notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "export/test_hop",
@@ -380,6 +386,12 @@ torch_tpu_torch_test(
 )
 
 torch_tpu_torch_test(
+    name = "export_passes_test",
+    notap = "b/563402379",  # NOTAP_OK=torch tests
+    torch_test_module = "export/test_passes",
+)
+
+torch_tpu_torch_test(
     name = "export_serialize_test",
     torch_test_module = "export/test_serialize",
 )
@@ -388,6 +400,12 @@ torch_tpu_torch_test(
     name = "export_torchbind_test",
     notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "export/test_torchbind",
+)
+
+torch_tpu_torch_test(
+    name = "functorch_dim_split_test",
+    notap = "b/563402379",  # NOTAP_OK=torch tests
+    torch_test_module = "functorch/dim/test_split",
 )
 
 torch_tpu_torch_test(
@@ -475,6 +493,18 @@ torch_tpu_torch_test(
 )
 
 torch_tpu_torch_test(
+    name = "inductor_custom_lowering_test",
+    notap = "b/563402379",  # NOTAP_OK=torch tests
+    torch_test_module = "inductor/test_custom_lowering",
+)
+
+torch_tpu_torch_test(
+    name = "inductor_decompose_mem_bound_mm_test",
+    notap = "b/563402379",  # NOTAP_OK=torch tests
+    torch_test_module = "inductor/test_decompose_mem_bound_mm",
+)
+
+torch_tpu_torch_test(
     name = "inductor_flex_attention_test",
     notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "inductor/test_flex_attention",
@@ -490,6 +520,12 @@ torch_tpu_torch_test(
     name = "inductor_fp8_test",
     notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "inductor/test_fp8",
+)
+
+torch_tpu_torch_test(
+    name = "inductor_fused_attention_test",
+    notap = "b/563402379",  # NOTAP_OK=torch tests
+    torch_test_module = "inductor/test_fused_attention",
 )
 
 torch_tpu_torch_test(
@@ -636,6 +672,12 @@ torch_tpu_torch_test(
 torch_tpu_torch_test(
     name = "profiler_trace_validator_test",
     torch_test_module = "profiler/test_trace_validator",
+)
+
+torch_tpu_torch_test(
+    name = "python_native_tensor_utils_test",
+    notap = "b/563402379",  # NOTAP_OK=torch tests
+    torch_test_module = "python_native/test_tensor_utils",
 )
 
 torch_tpu_torch_test(
