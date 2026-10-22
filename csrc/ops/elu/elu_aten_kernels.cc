@@ -50,22 +50,23 @@ absl::StatusOr<mlir::MlirOp> BuildEluShlo(mlir::MlirOp input_op,
       ApplyBroadcastIfNeeded(input_op, alpha_op, scale_op, input_scale_op));
 
   auto zero_op = MakeConstantLike(input_bcast, 0.0);
-  auto one = MakeConstantLike(input_bcast, 1.0);
+
+  // As in PyTorch, the branch depends on the sign of self, and input_scale
+  // only applies to the negative path (e.g. celu: input_scale = 1 / alpha).
+  auto pred = mlir::stablehlo::Compare(
+      input_bcast, zero_op, mlir::stablehlo::ComparisonDirection::GT);
+
+  // --- Positive path: scale * self ---
+  auto positive_val = mlir::stablehlo::Mul(input_bcast, scale_bcast);
 
   //  y = self * input_scale
   auto input_scaled = mlir::stablehlo::Mul(input_bcast, input_scale_bcast);
-  auto pred = mlir::stablehlo::Compare(
-      input_scaled, zero_op, mlir::stablehlo::ComparisonDirection::GT);
-
-  // --- Positive path: scale * input_scaled ---
-  auto positive_val = mlir::stablehlo::Mul(input_scaled, scale_bcast);
 
   // --- Negative path: scale * alpha * (exp(input_scaled) - 1) ---
-  auto exp_input_scaled = mlir::stablehlo::Exp(input_scaled);
-  auto exp_input_scaled_minus_1 =
-      mlir::stablehlo::Subtract(exp_input_scaled, one);
-  auto exp_alpha_scaled =
-      mlir::stablehlo::Mul(alpha_bcast, exp_input_scaled_minus_1);
+  // Use expm1: exp(input_scaled) - 1 loses precision when input_scaled is
+  // close to 0, because exp(input_scaled) is then close to 1.
+  auto expm1_input_scaled = mlir::stablehlo::Expm1(input_scaled);
+  auto exp_alpha_scaled = mlir::stablehlo::Mul(alpha_bcast, expm1_input_scaled);
   auto negative_val = mlir::stablehlo::Mul(exp_alpha_scaled, scale_bcast);
 
   return mlir::stablehlo::Select(pred, /*on_true=*/positive_val,

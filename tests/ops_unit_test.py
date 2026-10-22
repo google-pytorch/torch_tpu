@@ -12425,6 +12425,61 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(compute)
 
+  def test_elu_small_negative_input_precision_float32(self):
+    """Tests elu, selu and celu in float32 for negative inputs close to 0.
+
+    exp(x) - 1 loses precision when x is close to 0, so the kernel uses
+    expm1(x), as PyTorch does on CPU and CUDA.
+    """
+    x = -torch.logspace(-8.0, 0.0, 801, dtype=torch.float64)
+    selu_alpha = 1.6732632423543772848170429916717
+    selu_scale = 1.0507009873554804934193349852946
+    cases = [
+        (torch.nn.functional.elu, torch.expm1(x)),
+        (torch.nn.functional.selu, selu_scale * selu_alpha * torch.expm1(x)),
+        (
+            functools.partial(torch.nn.functional.celu, alpha=2.0),
+            2.0 * torch.expm1(x / 2.0),
+        ),
+    ]
+    x_tpu = x.to(torch.float32).to("tpu")
+    for op, want in cases:
+      got = op(x_tpu)
+      # TPU's float32 expm1 is within about 1.2e-4 of the reference here; the
+      # cancellation in exp(x) - 1 gives errors of 100% and more.
+      utils.assert_close(got.cpu().double(), want, rtol=1e-3, atol=0.0)
+
+  def test_elu_input_scale_only_scales_negative_inputs(self):
+    """Tests that elu applies input_scale to negative inputs only.
+
+    celu(x, alpha) calls elu(x, alpha, scale=1, input_scale=1 / alpha), so
+    celu(x) must equal x for positive x.
+    """
+    x = torch.tensor([-3.0, -0.5, -1e-3, 0.0, 1e-3, 0.5, 3.0])
+    for alpha, scale, input_scale in [
+        (1.0, 1.0, 0.5),
+        (2.0, 1.5, 0.5),
+        (1.0, 1.0, -2.0),
+    ]:
+
+      def compute(device, alpha=alpha, scale=scale, input_scale=input_scale):
+        return torch.ops.aten.elu(
+            to(x, device), alpha, scale=scale, input_scale=input_scale
+        )
+
+      # rtol covers TPU's float32 expm1 error (e.g. expm1(6) with
+      # input_scale=-2); a wrongly scaled branch is off by 50% or more.
+      self.assert_close_tpu_vs_cpu(compute, rtol=1e-3, atol=1e-6)
+
+    for alpha in [2.0, 0.5, -1.0]:
+      self.assert_close_tpu_vs_cpu(
+          lambda device, alpha=alpha: torch.nn.functional.celu(
+              to(x, device), alpha=alpha
+          ),
+          rtol=1e-3,
+          atol=1e-6,
+      )
+
   def test_ceil_integral(self):
     for dtype in [torch.int32, torch.uint8]:
       x = torch.tensor([-2, -1, 0, 1, 2], dtype=dtype)
