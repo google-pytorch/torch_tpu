@@ -350,6 +350,7 @@ absl::Status TernaryOpOut(const at::Tensor& self, const at::Tensor& other,
     TT_ASSIGN_OR_RETURN(other_op, CastIfNeeded(other_op, input_element_type));
     TT_ASSIGN_OR_RETURN(self_op, CastIfNeeded(self_op, computation_dtype));
     TT_ASSIGN_OR_RETURN(other_op, CastIfNeeded(other_op, computation_dtype));
+    TT_ASSIGN_OR_RETURN(third_op, CastIfNeeded(third_op, computation_dtype));
     TT_ASSIGN_OR_RETURN(auto result, op_builder(self_op, other_op, third_op));
     // Match TensorIterator: round to the natural result dtype before casting to
     // a differently typed out tensor.
@@ -360,7 +361,6 @@ absl::Status TernaryOpOut(const at::Tensor& self, const at::Tensor& other,
       {.op_name = opts.op_name,
        .out_dtype = out_element_type,
        .out_dims = output_dims,
-       .computation_dtype = computation_dtype,
        .op_param_cache_keys = std::move(opts.op_param_cache_keys),
        .split_mode = opts.split_mode,
        .donated_indices = std::move(opts.donated_indices)});

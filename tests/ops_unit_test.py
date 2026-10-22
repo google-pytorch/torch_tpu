@@ -1163,6 +1163,24 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       self.assertEqual(actual.dtype, dtype)
       utils.assert_close(actual.cpu(), expected, rtol=0, atol=0)
 
+  @parameterized.parameters(False, True)
+  def test_add_alpha_integral_scalar(self, use_compiled):
+    """Rounds an int32 scalar before converting it to opmath precision."""
+    def add(x, y):
+      return torch.add(x, y, alpha=2)
+
+    kernel = (
+        torch.compile(add, backend="tpu", fullgraph=True, dynamic=False)
+        if use_compiled
+        else add
+    )
+    x = torch.tensor(16842753, dtype=torch.int32, device="tpu")
+    y = torch.full((33,), -8388608.0, dtype=torch.bfloat16, device="tpu")
+    expected = torch.full((33,), 131072.0, dtype=torch.bfloat16)
+    actual = kernel(x, y)
+    self.assertEqual(actual.dtype, torch.bfloat16)
+    utils.assert_close(actual.cpu(), expected, rtol=0, atol=0)
+
   @parameterized.product(
       dtype=[torch.uint16, torch.uint32, torch.uint64],
       use_compiled=[False, True],
