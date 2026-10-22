@@ -103,6 +103,10 @@ class GenTorchTestsTest(unittest.TestCase):  # UNITTEST_OK=testing tools
         )""")
     self.assertEqual(target_def, expected)
 
+  def test_torch_test_target_root_utils(self):
+    target_def = gen_torch_tests.torch_test_target("test_utils")
+    self.assertIn('name = "test_utils_test"', target_def)
+
   def test_build_file_path_default_with_bazel_workspace_directory(self):
     workspace_dir = self.test_root / "workspace"
     expected_build = workspace_dir / "tests" / "torch" / "BUILD"
