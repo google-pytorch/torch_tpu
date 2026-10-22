@@ -2930,6 +2930,7 @@ torch_tpu_py_test(
     tags = [
         "exclusive",
         "nosan",
+        "requires-newest-deps",
         "requires-tpu-v5lite:8",
     ],
     deps = [

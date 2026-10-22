@@ -37,6 +37,7 @@ _BINARIES = (
 
 
 def _canon(path):
+  path = path.removeprefix("./")
   for prefix in ("third_party/py/torch_tpu/", "oss/torch_tpu/"):
     if path.startswith(prefix):
       path = path[len(prefix):]
@@ -70,6 +71,13 @@ class SpikeTest(absltest.TestCase):
     t0 = time.time()
     repo_root = repo_paths.get_repo_root_in_runfiles()
     report.append(f"repo_root={repo_root}")
+    import torch  # pylint: disable=g-import-not-at-top
+    report.append(f"torch={torch.__version__}")
+    try:
+      from torch._functorch._activation_offloading import offload_ops  # pylint: disable=g-import-not-at-top
+      report.append(f"offload_ops available: {offload_ops}")
+    except ImportError as e:
+      report.append(f"offload_ops NOT available: {e}")
     file_to_locs = _scan(repo_root)
     report.append(
         f"scanned {len(file_to_locs)} files with macros in"
