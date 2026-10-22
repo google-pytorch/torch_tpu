@@ -49,6 +49,7 @@ from torch.testing._internal import common_device_type  # pylint: disable=g-bad-
 from torch.testing._internal import common_utils
 from torch_tpu._internal.utils import annotations
 from tests.torch import torch_test_configs
+from tests.torch import utils
 
 _TORCH_TEST_DIR_ENV_VAR: Final = "TORCH_TPU_INTERNAL_PYTORCH_TEST_DIR"
 _TORCH_TEST_MODULE_ENV_VAR: Final = "TORCH_TPU_INTERNAL_TORCH_TEST_MODULE"
@@ -77,6 +78,7 @@ def _set_private_use1_test_configs(test_module: str) -> None:
   base.set_test_configs(
       test_exclusions=torch_test_configs.TEST_EXCLUSIONS.get(test_module)
   )
+  utils.patch_pytest_xfail_for_unittest()
 
 
 def _filter_device_generic_tests() -> None:

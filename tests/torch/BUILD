@@ -20,6 +20,7 @@ load(
     "//build_files:build_defs.bzl",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
+    "torch_tpu_py_test",
 )
 load("//shims/build_files:torch_rules.bzl", "torch_tpu_torch_test")
 load("//shims/py_rules:pytype.bzl", "pytype_strict_binary")
@@ -30,6 +31,27 @@ torch_tpu_py_library(
     name = "torch_test_configs",
     testonly = True,
     srcs = ["torch_test_configs.py"],
+    deps = ["//shims/torch:pytorch"],
+)
+
+torch_tpu_py_library(
+    name = "utils",
+    testonly = True,
+    srcs = ["utils.py"],
+    deps = [
+        "@pypi//pytest",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "utils_test",
+    srcs = ["utils_test.py"],
+    deps = [
+        ":utils",
+        "//shims/absl_py/testing:absltest",
+        "//src/torch_tpu",
+        "@pypi//pytest",
+    ],
 )
 
 pytype_strict_binary(
@@ -38,6 +60,7 @@ pytype_strict_binary(
     srcs = ["torch_test_runner.py"],
     deps = [
         ":torch_test_configs",
+        ":utils",
         "//shims/absl_py:app",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
@@ -188,7 +211,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "distributed_pipelining_microbatch_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "distributed/pipelining/test_microbatch",
 )
 
@@ -285,7 +307,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "dynamo_dynamo_decompositions_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "dynamo/test_dynamo_decompositions",
 )
 
@@ -368,6 +389,12 @@ torch_tpu_torch_test(
 )
 
 torch_tpu_torch_test(
+    name = "export_converter_test",
+    notap = "b/563402379",  # NOTAP_OK=torch tests
+    torch_test_module = "export/test_converter",
+)
+
+torch_tpu_torch_test(
     name = "export_hop_test",
     notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "export/test_hop",
@@ -380,6 +407,12 @@ torch_tpu_torch_test(
 )
 
 torch_tpu_torch_test(
+    name = "export_passes_test",
+    notap = "b/563402379",  # NOTAP_OK=torch tests
+    torch_test_module = "export/test_passes",
+)
+
+torch_tpu_torch_test(
     name = "export_serialize_test",
     torch_test_module = "export/test_serialize",
 )
@@ -388,6 +421,12 @@ torch_tpu_torch_test(
     name = "export_torchbind_test",
     notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "export/test_torchbind",
+)
+
+torch_tpu_torch_test(
+    name = "functorch_dim_split_test",
+    notap = "b/563402379",  # NOTAP_OK=torch tests
+    torch_test_module = "functorch/dim/test_split",
 )
 
 torch_tpu_torch_test(
@@ -475,6 +514,18 @@ torch_tpu_torch_test(
 )
 
 torch_tpu_torch_test(
+    name = "inductor_custom_lowering_test",
+    notap = "b/563402379",  # NOTAP_OK=torch tests
+    torch_test_module = "inductor/test_custom_lowering",
+)
+
+torch_tpu_torch_test(
+    name = "inductor_decompose_mem_bound_mm_test",
+    notap = "b/563402379",  # NOTAP_OK=torch tests
+    torch_test_module = "inductor/test_decompose_mem_bound_mm",
+)
+
+torch_tpu_torch_test(
     name = "inductor_flex_attention_test",
     notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "inductor/test_flex_attention",
@@ -493,8 +544,13 @@ torch_tpu_torch_test(
 )
 
 torch_tpu_torch_test(
-    name = "inductor_inductor_scheduler_test",
+    name = "inductor_fused_attention_test",
     notap = "b/563402379",  # NOTAP_OK=torch tests
+    torch_test_module = "inductor/test_fused_attention",
+)
+
+torch_tpu_torch_test(
+    name = "inductor_inductor_scheduler_test",
     torch_test_module = "inductor/test_inductor_scheduler",
 )
 
@@ -574,7 +630,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "nn_dropout_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "nn/test_dropout",
 )
 
@@ -587,19 +642,16 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "nn_init_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "nn/test_init",
 )
 
 torch_tpu_torch_test(
     name = "nn_lazy_modules_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "nn/test_lazy_modules",
 )
 
 torch_tpu_torch_test(
     name = "nn_multihead_attention_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "nn/test_multihead_attention",
 )
 
@@ -622,7 +674,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "profiler_execution_trace_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "profiler/test_execution_trace",
 )
 
@@ -645,8 +696,13 @@ torch_tpu_torch_test(
 )
 
 torch_tpu_torch_test(
-    name = "quantization_core_experimental_bits_test",
+    name = "python_native_tensor_utils_test",
     notap = "b/563402379",  # NOTAP_OK=torch tests
+    torch_test_module = "python_native/test_tensor_utils",
+)
+
+torch_tpu_torch_test(
+    name = "quantization_core_experimental_bits_test",
     torch_test_module = "quantization/core/experimental/test_bits",
 )
 
@@ -658,13 +714,11 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "accelerator_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "test_accelerator",
 )
 
 torch_tpu_torch_test(
     name = "ao_sparsity_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "test_ao_sparsity",
 )
 
@@ -688,7 +742,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "bmm_outer_product_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "test_bmm_outer_product",
 )
 
@@ -704,7 +757,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "complex_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "test_complex",
 )
 
@@ -804,7 +856,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "matmul_cuda_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "test_matmul_cuda",
 )
 
@@ -850,13 +901,11 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "numpy_interop_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "test_numpy_interop",
 )
 
 torch_tpu_torch_test(
     name = "opaque_obj_v2_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "test_opaque_obj_v2",
 )
 
@@ -969,7 +1018,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "serialization_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "test_serialization",
 )
 
@@ -1072,7 +1120,7 @@ torch_tpu_torch_test(
 )
 
 torch_tpu_torch_test(
-    name = "utils_test",
+    name = "test_utils_test",
     notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "test_utils",
 )
