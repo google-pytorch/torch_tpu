@@ -1123,6 +1123,47 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     utils.assert_close(kernel(x, y).cpu(), expected, rtol=0, atol=0)
 
   @parameterized.product(
+      dtype=[torch.bfloat16, torch.float16],
+      scalar_operand=["self", "other"],
+      use_compiled=[False, True],
+  )
+  def test_add_alpha_mixed_scalar(self, dtype, scalar_operand, use_compiled):
+    """Promotes a wider zero-dim operand before widening for opmath."""
+    is_bf16 = dtype == torch.bfloat16
+    wide_value = 1.004150390625 if is_bf16 else 1.000518798828125
+    if scalar_operand == "other":
+      x = torch.zeros((33,), dtype=dtype, device="tpu")
+      y = torch.tensor(wide_value, dtype=torch.float32, device="tpu")
+      alpha = 3
+      expected_value = 3.03125 if is_bf16 else 3.00390625
+    else:
+      x = torch.tensor(wide_value, dtype=torch.float32, device="tpu")
+      y = torch.full((33,), -0.5, dtype=dtype, device="tpu")
+      alpha = 2
+      expected_value = 0.0078125 if is_bf16 else 0.0009765625
+
+    def add_variants(x, y):
+      out = torch.empty((33,), dtype=dtype, device="tpu")
+      torch.add(x, y, alpha=alpha, out=out)
+      return (
+          torch.add(x, y, alpha=alpha),
+          torch.ops.aten.add.Tensor(x, y, alpha=alpha),
+          out,
+      )
+
+    kernel = (
+        torch.compile(
+            add_variants, backend="tpu", fullgraph=True, dynamic=False
+        )
+        if use_compiled
+        else add_variants
+    )
+    expected = torch.full((33,), expected_value, dtype=dtype)
+    for actual in kernel(x, y):
+      self.assertEqual(actual.dtype, dtype)
+      utils.assert_close(actual.cpu(), expected, rtol=0, atol=0)
+
+  @parameterized.product(
       dtype=[torch.uint16, torch.uint32, torch.uint64],
       use_compiled=[False, True],
   )
