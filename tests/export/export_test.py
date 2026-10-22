@@ -16,6 +16,7 @@
 
 import os
 from absl.testing import absltest
+from absl.testing import parameterized
 import torch
 import torch.export
 from torch_tpu._internal.export import export as torch_tpu_export
@@ -72,11 +73,267 @@ class TestExportLinearMode(seed_test_utils.RepeatableTest):
     self.assertIn("stablehlo.add", mlir_text)
 
     # Check for namescope / opname
-    self.assertIn('loc("linear/linear"', mlir_text)
+    self.assertIn('loc("linear1[Linear]/linear/linear"', mlir_text)
+    # Ops directly in the root module have no module scope.
+    self.assertIn('loc("add/add"', mlir_text)
 
     # Check for file info
     current_filename = os.path.basename(__file__)
     self.assertIn(current_filename, mlir_text)
+
+  def test_export_nested_module_name_scopes(self):
+    class SimpleAttention(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.q_proj = torch.nn.Linear(8, 8)
+
+      def forward(self, x):
+        return self.q_proj(x)
+
+    class SimpleTransformerBlock(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.attn = SimpleAttention()
+
+      def forward(self, x):
+        return self.attn(x)
+
+    class SimpleModel(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.layers = torch.nn.ModuleList([SimpleTransformerBlock()])
+
+      def forward(self, x):
+        return self.layers[0](x)
+
+    sample_input = (torch.ones(8),)
+    exported = torch.export.export(SimpleModel(), args=sample_input)
+    exported_mlir = torch_tpu_export.exported_to_mlir(exported)
+    mlir_text = exported_mlir.serialize_text(enable_debug_info=True)
+    self.assertIn(
+        'loc("layers.0[SimpleTransformerBlock]/'
+        "attn[SimpleAttention]/"
+        'q_proj[Linear]/linear/linear"',
+        mlir_text,
+    )
+
+
+class _Block(torch.nn.Module):
+
+  def __init__(self):
+    super().__init__()
+    self.proj = torch.nn.Linear(8, 8)
+
+  def forward(self, x):
+    return self.proj(x)
+
+
+class _Stack(torch.nn.Module):
+
+  def __init__(self):
+    super().__init__()
+    self.layers = torch.nn.ModuleList([_Block(), _Block()])
+
+  def forward(self, x):
+    for layer in self.layers:
+      x = layer(x)
+    return x
+
+
+def _capture_dynamo_graphs(fn, *args):
+  """Compiles `fn` with Dynamo and returns the captured graph modules."""
+  graphs = []
+
+  def capture_backend(gm, example_inputs):
+    del example_inputs  # Unused.
+    graphs.append(gm)
+    return gm.forward
+
+  torch._dynamo.reset()
+  torch.compile(fn, backend=capture_backend, fullgraph=True)(*args)
+  return graphs
+
+
+def _call_model(model, x):
+  return model(x)
+
+
+class ModuleNameScopeTest(seed_test_utils.RepeatableTest):
+
+  @parameterized.named_parameters(
+      ("export_root", "", []),
+      ("export_submodule", "layers.0", ["layers.0[_Block]"]),
+      ("export_child_named_self", "self", ["self[_Block]"]),
+      ("export_slash_in_name", "submodules/a/b", ["submodules_a_b[_Block]"]),
+      ("dynamo_root", "L['self']", []),
+      ("dynamo_double_quote_root", 'L["self"]', []),
+      ("dynamo_global_self_root", "G['self']", []),
+      ("dynamo_submodule", "L['self'].layers.0", ["layers.0[_Block]"]),
+      ("dynamo_child_named_self", "L['self'].self", ["self[_Block]"]),
+      (
+          "dynamo_subscript_submodule",
+          "L['self'].layers[0]",
+          ["layers.0[_Block]"],
+      ),
+      ("dynamo_root_subscript", "L['self'][0]", ["0[_Block]"]),
+      (
+          "dynamo_dict_subscript",
+          "L['self'].submodules['block']",
+          ["submodules.block[_Block]"],
+      ),
+      (
+          "dynamo_double_quote_submodule",
+          'L["self"].layers.0',
+          ["layers.0[_Block]"],
+      ),
+      ("dynamo_local_root", "L['model']", ["model[_Block]"]),
+      (
+          "dynamo_local_submodule",
+          "L['model'].layers.0",
+          ["model.layers.0[_Block]"],
+      ),
+      (
+          "dynamo_global_submodule",
+          "G['model'].layers.0",
+          ["model.layers.0[_Block]"],
+      ),
+      (
+          "dynamo_double_quote_global_submodule",
+          'G["model"].layers.0',
+          ["model.layers.0[_Block]"],
+      ),
+  )
+  def test_extract_node_name_scopes_from_module_fqn(self, fqn, expected):
+    node = torch.fx.Graph().placeholder("x")
+    node.meta["nn_module_stack"] = {"module": (fqn, _Block)}
+    self.assertEqual(torch_tpu_export._extract_node_name_scopes(node), expected)
+
+  def test_extract_node_name_scopes_deduplicates_repeated_fqn_but_keeps_nested_containers(
+      self,
+  ):
+    # A module FQN repeated on the stack (e.g. `@1` keys) is collapsed.
+    node = torch.fx.Graph().placeholder("x")
+    node.meta["nn_module_stack"] = {
+        "L__self__": ("L['self']", _Stack),
+        "L__self___layers_0": ("L['self'].layers[0]", _Block),
+        "L__self___layers_0@1": ("L['self'].layers[0]", _Block),
+        "L__self___layers_0_proj": (
+            "L['self'].layers[0].proj",
+            torch.nn.Linear,
+        ),
+    }
+    self.assertEqual(
+        torch_tpu_export._extract_node_name_scopes(node),
+        ["layers.0[_Block]", "proj[Linear]"],
+    )
+
+    # Distinct nested modules with identical relative names (e.g. nested
+    # Sequential containers at `0`, `0.0`, `0.0.0`) are preserved.
+    nested_seq_node = torch.fx.Graph().placeholder("x")
+    nested_seq_node.meta["nn_module_stack"] = {
+        "root": ("", torch.nn.Sequential),
+        "seq_0": ("0", torch.nn.Sequential),
+        "seq_0_0": ("0.0", torch.nn.Sequential),
+        "seq_0_0_0": ("0.0.0", torch.nn.Linear),
+    }
+    self.assertEqual(
+        torch_tpu_export._extract_node_name_scopes(nested_seq_node),
+        ["0[Sequential]", "0[Sequential]", "0[Linear]"],
+    )
+
+  def test_extract_node_name_scopes_from_nested_non_self_module_stack(self):
+    node = torch.fx.Graph().placeholder("x")
+    node.meta["nn_module_stack"] = {
+        "L__model__": ("L['model']", _Stack),
+        "L__model___layers_0": ("L['model'].layers.0", _Block),
+        "L__model___layers_0_proj": (
+            "L['model'].layers.0.proj",
+            "torch.nn.modules.linear.Linear",
+        ),
+    }
+    self.assertEqual(
+        torch_tpu_export._extract_node_name_scopes(node),
+        ["model[_Stack]", "layers.0[_Block]", "proj[Linear]"],
+    )
+
+  def test_extract_node_name_scopes_from_fwd_nn_module_stack(self):
+    node = torch.fx.Graph().placeholder("x")
+    node.meta["fwd_nn_module_stack"] = {
+        "L__self__": ("L['self']", _Stack),
+        "L__self___layers_1": ("L['self'].layers.1", _Block),
+        "L__self___layers_1_proj": (
+            "L['self'].layers.1.proj",
+            "torch.nn.modules.linear.Linear",
+        ),
+    }
+    self.assertEqual(
+        torch_tpu_export._extract_node_name_scopes(node),
+        ["layers.1[_Block]", "proj[Linear]"],
+    )
+
+  def test_extract_node_name_scopes_without_module_stack(self):
+    node = torch.fx.Graph().placeholder("x")
+    self.assertEqual(torch_tpu_export._extract_node_name_scopes(node), [])
+
+  def test_extract_node_name_scopes_with_malformed_metadata(self):
+    node = torch.fx.Graph().placeholder("x")
+    node.meta["nn_module_stack"] = ["not_a_mapping"]
+    self.assertEqual(torch_tpu_export._extract_node_name_scopes(node), [])
+
+    node.meta["nn_module_stack"] = {
+        "not_a_tuple": "layers.0",
+        "too_short": ("layers.0",),
+        "valid": ("layers.0", _Block),
+    }
+    self.assertEqual(
+        torch_tpu_export._extract_node_name_scopes(node),
+        ["layers.0[_Block]"],
+    )
+
+  def test_dynamo_name_scopes_of_compiled_module(self):
+    (gm,) = _capture_dynamo_graphs(_Stack(), torch.ones(2, 8))
+    scopes = [
+        torch_tpu_export._extract_node_name_scopes(node)
+        for node in gm.graph.nodes
+        if node.op == "call_function"
+    ]
+    self.assertIn(["layers.0[_Block]", "proj[Linear]"], scopes)
+    self.assertIn(["layers.1[_Block]", "proj[Linear]"], scopes)
+
+  def test_dynamo_name_scopes_of_function_with_module_argument(self):
+    # Dynamo roots the module FQNs at the `model` argument, i.e. `L['model']`.
+    (gm,) = _capture_dynamo_graphs(_call_model, _Stack(), torch.ones(2, 8))
+    scopes = [
+        torch_tpu_export._extract_node_name_scopes(node)
+        for node in gm.graph.nodes
+        if node.op == "call_function"
+    ]
+    self.assertIn(["model[_Stack]", "layers.0[_Block]", "proj[Linear]"], scopes)
+    self.assertIn(["model[_Stack]", "layers.1[_Block]", "proj[Linear]"], scopes)
+
+  def test_compiled_module_name_scopes_in_forward_and_backward(self):
+    if not torch.accelerator.is_available():
+      self.skipTest("TPU accelerator not available in this test environment.")
+    torch._dynamo.reset()
+    debugs = []
+    compiled = torch.compile(
+        _Stack().to("tpu"),
+        backend="tpu",
+        options={"debug_callback": debugs.append},
+    )
+
+    x = torch.ones(2, 8, device="tpu", requires_grad=True)
+    compiled(x).sum().backward()
+
+    self.assertLen(debugs, 1)
+    forward_mlir = "\n".join(debugs[0].stablehlo_forward_text)
+    backward_mlir = "\n".join(debugs[0].stablehlo_backward_text)
+    for mlir_text in (forward_mlir, backward_mlir):
+      self.assertIn('loc("layers.0[_Block]/proj[Linear]/', mlir_text)
+      self.assertIn('loc("layers.1[_Block]/proj[Linear]/', mlir_text)
 
 
 class ExportTest(seed_test_utils.RepeatableTest):

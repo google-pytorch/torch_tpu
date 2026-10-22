@@ -81,6 +81,65 @@ class ComplexLoopedModel(torch.nn.Module):
     return self.fc_out(x)
 
 
+class SimpleAttention(torch.nn.Module):
+
+  def __init__(self, d_model: int):
+    super().__init__()
+    self.q_proj = torch.nn.Linear(d_model, d_model, bias=False)
+    self.k_proj = torch.nn.Linear(d_model, d_model, bias=False)
+    self.v_proj = torch.nn.Linear(d_model, d_model, bias=False)
+    self.out_proj = torch.nn.Linear(d_model, d_model, bias=False)
+
+  def forward(self, x: torch.Tensor) -> torch.Tensor:
+    q = self.q_proj(x)
+    k = self.k_proj(x)
+    v = self.v_proj(x)
+    scores = torch.matmul(q, k.transpose(-2, -1))
+    probs = torch.softmax(scores, dim=-1)
+    return self.out_proj(torch.matmul(probs, v))
+
+
+class SimpleMLP(torch.nn.Module):
+
+  def __init__(self, d_model: int):
+    super().__init__()
+    self.fc1 = torch.nn.Linear(d_model, d_model * 4, bias=False)
+    self.act = torch.nn.GELU()
+    self.fc2 = torch.nn.Linear(d_model * 4, d_model, bias=False)
+
+  def forward(self, x: torch.Tensor) -> torch.Tensor:
+    return self.fc2(self.act(self.fc1(x)))
+
+
+class SimpleTransformerBlock(torch.nn.Module):
+
+  def __init__(self, d_model: int):
+    super().__init__()
+    self.norm1 = torch.nn.LayerNorm(d_model)
+    self.attn = SimpleAttention(d_model)
+    self.norm2 = torch.nn.LayerNorm(d_model)
+    self.mlp = SimpleMLP(d_model)
+
+  def forward(self, x: torch.Tensor) -> torch.Tensor:
+    x = x + self.attn(self.norm1(x))
+    return x + self.mlp(self.norm2(x))
+
+
+class SimpleTransformerModel(torch.nn.Module):
+
+  def __init__(self, d_model: int, num_layers: int):
+    super().__init__()
+    self.layers = torch.nn.ModuleList(
+        [SimpleTransformerBlock(d_model) for _ in range(num_layers)]
+    )
+    self.head = torch.nn.Linear(d_model, d_model, bias=False)
+
+  def forward(self, x: torch.Tensor) -> torch.Tensor:
+    for layer in self.layers:
+      x = layer(x)
+    return self.head(x)
+
+
 def _cleanup_profile_dir() -> None:
   try:
     shutil.rmtree(_get_profile_dir())
@@ -512,6 +571,59 @@ class ProfilerIntegrationTest(seed_test_utils.RepeatableTest):
         content,
         "Python annotation not found in XPlane!",
     )
+
+  def test_compiled_module_name_scopes(self):
+    """Checks that the module hierarchy of a compiled model reaches the trace."""
+    device = torch.device("tpu")
+    d_model = 256
+    model = SimpleTransformerModel(d_model, num_layers=2).to(device)
+    compiled_model = torch.compile(model, backend="tpu")
+    x = torch.randn((4, 128, d_model), device=device, requires_grad=True)
+
+    def train_step():
+      loss = compiled_model(x).sum()
+      loss.backward()
+      tpu_sync.synchronize(loss)
+      torch.accelerator.synchronize()
+
+    # Compile both the initial gradient creation and the gradient accumulation
+    # before tracing.
+    for _ in range(2):
+      train_step()
+
+    # Keep the trace in the test outputs, from where it can be opened in XProf.
+    undeclared_outputs_dir = os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR")
+    if undeclared_outputs_dir:
+      output_dir = pathlib.Path(undeclared_outputs_dir) / "module_name_scopes"
+      output_dir.mkdir(parents=True, exist_ok=True)
+    else:
+      output_dir = pathlib.Path(self.create_tempdir().full_path)
+
+    _cleanup_profile_dir()
+
+    with torch.profiler.profile(
+        activities=[
+            torch.profiler.ProfilerActivity.CPU,
+            torch.profiler.ProfilerActivity.TPU,  # type: ignore
+        ],
+        on_trace_ready=torch.profiler.tensorboard_trace_handler(output_dir),
+    ) as prof:
+      for _ in range(2):
+        train_step()
+        prof.step()
+
+    self._get_and_copy_xplane(output_dir / "xplane.pb")
+
+    # The module scopes reach the trace through the HLO op metadata.
+    content = (output_dir / "xplane.pb").read_bytes()
+    for scope in (
+        b"layers.0[SimpleTransformerBlock]",
+        b"layers.1[SimpleTransformerBlock]",
+        b"attn[SimpleAttention]",
+        b"mlp[SimpleMLP]",
+        b"q_proj[Linear]",
+    ):
+      self.assertIn(scope, content)
 
   def test_tpu_profiler_config_override(self):
     """Verifies that TPU-specific profiler options are correctly applied."""

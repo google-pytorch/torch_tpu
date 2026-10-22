@@ -41,6 +41,7 @@
 
 #include "absl/base/nullability.h"
 #include "absl/flags/declare.h"
+#include "absl/types/span.h"
 #include "csrc/common/context_states.h"
 #include "csrc/ops/op_names.h"
 #include "mlir/IR/Location.h"
@@ -70,6 +71,8 @@ struct PythonTraceback {
 using SharedTraceback = absl_nonnull std::shared_ptr<const PythonTraceback>;
 using MaybeSharedTraceback =
     absl_nullable std::shared_ptr<const PythonTraceback>;
+using MaybeSharedNameScopes =
+    absl_nullable std::shared_ptr<const std::vector<std::string>>;
 
 // Returns the active traceback mode.
 [[nodiscard]] TracebackMode GetTracebackMode();
@@ -98,7 +101,8 @@ class PythonContext {
  public:
   PythonContext() = default;
   PythonContext(std::vector<std::string> op_call_chain,
-                MaybeSharedTraceback traceback);
+                MaybeSharedTraceback traceback,
+                MaybeSharedNameScopes name_scopes = nullptr);
   // This type is move-only.
   PythonContext(PythonContext&& other) = default;
   PythonContext& operator=(PythonContext&& other) = default;
@@ -107,13 +111,22 @@ class PythonContext {
 
   // Returns a copy of this PythonContext.
   [[nodiscard]] PythonContext Copy() const {
-    return PythonContext(op_call_chain_, traceback_);
+    return PythonContext(op_call_chain_, traceback_, name_scopes_);
   }
 
   // Returns the names of the ops in the op call chain leading to the current
   // op.
   [[nodiscard]] const std::vector<std::string>& op_call_chain() const {
     return op_call_chain_;
+  }
+
+  // Returns the hierarchical name scopes (e.g. from nn_module_stack) active
+  // when the op was captured, ordered from outer to inner (root -> leaf).
+  [[nodiscard]] absl::Span<const std::string> name_scopes() const {
+    if (name_scopes_ == nullptr) {
+      return {};
+    }
+    return *name_scopes_;
   }
 
   // Returns the python traceback of the op, if one has been captured.
@@ -130,6 +143,8 @@ class PythonContext {
   std::vector<std::string> op_call_chain_;
   // The python traceback of the op, if one has been captured.
   MaybeSharedTraceback traceback_;
+  // Optional hierarchical name scopes surrounding the op.
+  MaybeSharedNameScopes name_scopes_;
 };
 
 // Encapsulates the name of the Python API boundary call.
@@ -200,6 +215,12 @@ class ScopedPythonContextCapturer {
   // Like GetContext(), but returns std::nullopt if no
   // ScopedPythonContextCapturer is alive for the current thread.
   [[nodiscard]] static std::optional<PythonContext> MaybeGetContext();
+
+  // Pushes or pops a full name scope hierarchy (e.g. from `nn_module_stack`) on
+  // the current thread's `ContextManagerState` stack. Every `PushNameScopes`
+  // call must be balanced by a matching `PopNameScopes` call.
+  static void PushNameScopes(std::vector<std::string> scopes);
+  static void PopNameScopes();
 
   // For testing only: override the traceback of all currently alive contexts.
   static void SetTracebackForTesting(MaybeSharedTraceback traceback) {

@@ -24,6 +24,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/cleanup/cleanup.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
@@ -67,6 +68,13 @@ namespace {
 absl::StatusOr<DynamicMlirOpResults> DummyBuilder(
     mlir::MlirBuilder& /*builder*/, absl::Span<mlir::MlirOp> /*inputs*/) {
   return DynamicMlirOpResults{};
+}
+
+// An MLIR op builder that negates its single input.
+absl::StatusOr<DynamicMlirOpResults> NegBuilder(
+    mlir::MlirBuilder& builder, absl::Span<mlir::MlirOp> inputs) {
+  return DynamicMlirOpResults{
+      builder.create<mlir::stablehlo::NegOp>(inputs[0].getValue())};
 }
 
 class TraversalTest : public testing::Test {
@@ -637,6 +645,67 @@ TEST_F(TraversalTest,
   ASSERT_NE(main_func, nullptr);
   EXPECT_TRUE(main_func.getOps<mlir::func::CallOp>().empty());
   EXPECT_FALSE(main_func.getOps<mlir::stablehlo::NegOp>().empty());
+}
+
+TEST_F(TraversalTest, NameScopesAttachToMlirLocationsWithoutChangingCacheKey) {
+  TT_ASSERT_OK_AND_ASSIGN(
+      const DeviceBufferRef input_ref,
+      DeviceBufferList::CreatePlaceholder(shape_.dimensions(), shape_.dtype()));
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      const std::vector<DeviceBufferRef> unscoped_refs,
+      DeviceBufferList::CreateDeferred(OpName::kNeg, NegBuilder, {input_ref},
+                                       OpParamCacheKeys::Empty(), {shape_}));
+  TT_ASSERT_OK_AND_ASSIGN(const std::unique_ptr<Traversal> unscoped_traversal,
+                          Traversal::Create({unscoped_refs[0]}));
+
+  std::vector<DeviceBufferRef> layer0_refs;
+  {
+    ScopedPythonContextCapturer::PushNameScopes({"layers.0[Block]"});
+    absl::Cleanup pop = [] { ScopedPythonContextCapturer::PopNameScopes(); };
+    TT_ASSERT_OK_AND_ASSIGN(
+        layer0_refs,
+        DeviceBufferList::CreateDeferred(OpName::kNeg, NegBuilder, {input_ref},
+                                         OpParamCacheKeys::Empty(), {shape_}));
+  }
+  TT_ASSERT_OK_AND_ASSIGN(const std::unique_ptr<Traversal> layer0_traversal,
+                          Traversal::Create({layer0_refs[0]}));
+
+  std::vector<DeviceBufferRef> layer1_refs;
+  {
+    ScopedPythonContextCapturer::PushNameScopes({"layers.1[Block]"});
+    absl::Cleanup pop = [] { ScopedPythonContextCapturer::PopNameScopes(); };
+    TT_ASSERT_OK_AND_ASSIGN(
+        layer1_refs,
+        DeviceBufferList::CreateDeferred(OpName::kNeg, NegBuilder, {input_ref},
+                                         OpParamCacheKeys::Empty(), {shape_}));
+  }
+  TT_ASSERT_OK_AND_ASSIGN(const std::unique_ptr<Traversal> layer1_traversal,
+                          Traversal::Create({layer1_refs[0]}));
+
+  const CompileOptionsKey kCompileOptionsKey(0);
+  const CompilationCacheKey unscoped_key =
+      unscoped_traversal->GetCacheKey(kCompileOptionsKey, {}, {});
+  const CompilationCacheKey layer0_key =
+      layer0_traversal->GetCacheKey(kCompileOptionsKey, {}, {});
+  const CompilationCacheKey layer1_key =
+      layer1_traversal->GetCacheKey(kCompileOptionsKey, {}, {});
+
+  EXPECT_EQ(unscoped_key, layer0_key);
+  EXPECT_EQ(layer0_key, layer1_key);
+
+  mlir::MLIRContext mlir_context;
+  mlir::DialectRegistry registry;
+  mlir::stablehlo::registerAllDialects(registry);
+  mlir_context.appendDialectRegistry(registry);
+  mlir_context.loadAllAvailableDialects();
+
+  TT_ASSERT_OK_AND_ASSIGN(mlir::OwningOpRef<mlir::ModuleOp> layer0_module,
+                          layer0_traversal->BuildMlirModule(mlir_context));
+  const std::string mlir_text =
+      DebugString(layer0_module.get(), DebugStringOptions::kEnableDebugInfo);
+  EXPECT_THAT(mlir_text,
+              testing::HasSubstr("loc(\"layers.0[Block]/empty/empty\""));
 }
 
 }  // namespace

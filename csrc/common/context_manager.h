@@ -65,6 +65,7 @@ using ContextManagerState = std::variant<
     EnableTracebacksContextState,       // for `enable_tracebacks`
     IsSpmdSafeContextState,             // for `spmd_safe`
     LayoutContextState,                 // for `layout`
+    NameScopeContextState,              // for `name_scope`
     PrecisionContextState,              // for `precision`
     ProfileContextState                 // for `profile`
     // go/keep-sorted end
