@@ -2878,6 +2878,28 @@ torch_tpu_py_test(
     ],
 )
 
+# Measures how well the error tests cover the error macros in the C++ sources.
+torch_tpu_py_library(
+    name = "error_coverage_lib",
+    testonly = True,
+    srcs = ["error_coverage_lib.py"],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":repo_paths",
+        "//shims/absl_py/logging",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "error_coverage_lib_test",
+    srcs = ["error_coverage_lib_test.py"],
+    deps = [
+        ":error_coverage_lib",
+        "//shims/absl_py/testing:absltest",
+        "//src/torch_tpu",
+    ],
+)
+
 # Fails if a Markdown file published on GitHub uses g3doc multi-line tables,
 # which GitHub can't render.
 torch_tpu_py_test(
