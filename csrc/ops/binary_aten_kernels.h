@@ -162,7 +162,9 @@ absl::Status BinaryOpOut(const at::Tensor& tensor, const OtherType& other,
 
 // Performs output tensor processing for Ternary operations on TPU.
 // Validates that `out` is on the TPU, enforces shape constraints for in-place
-// aliasing, and dispatches via DispatchOpOut.
+// aliasing, and dispatches via DispatchOpOut. Computation includes the internal
+// third operand's dtype; the result is rounded to the natural result dtype
+// before casting to `out`.
 absl::Status TernaryOpOut(const at::Tensor& self, const at::Tensor& other,
                           const at::Tensor& third, at::Tensor& out,
                           MlirTernaryOpBuilder op_builder,

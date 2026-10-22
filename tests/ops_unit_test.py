@@ -1091,6 +1091,38 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
             utils.assert_close(actual.cpu(), expected, rtol=0, atol=0)
 
   @parameterized.product(
+      dtypes=[
+          (torch.bfloat16, torch.float32),
+          (torch.bfloat16, torch.float16),
+          (torch.float16, torch.float32),
+          (torch.float16, torch.bfloat16),
+      ],
+      use_compiled=[False, True],
+  )
+  def test_add_alpha_out_dtype(self, dtypes, use_compiled):
+    """Rounds to the input result dtype before writing a different out dtype."""
+    dtype, out_dtype = dtypes
+
+    def add_out(x, y):
+      out = torch.empty_like(x, dtype=out_dtype)
+      return torch.add(x, y, alpha=0.1, out=out)
+
+    kernel = (
+        torch.compile(add_out, backend="tpu", fullgraph=True, dynamic=False)
+        if use_compiled
+        else add_out
+    )
+    x = torch.full((33,), 0.052978515625, dtype=dtype, device="tpu")
+    y = torch.full((33,), -0.53125, dtype=dtype, device="tpu")
+    expected_value = (
+        -0.0001468658447265625
+        if dtype == torch.bfloat16
+        else -0.00014650821685791016
+    )
+    expected = torch.full((33,), expected_value, dtype=dtype).to(out_dtype)
+    utils.assert_close(kernel(x, y).cpu(), expected, rtol=0, atol=0)
+
+  @parameterized.product(
       dtype=[torch.uint16, torch.uint32, torch.uint64],
       use_compiled=[False, True],
   )

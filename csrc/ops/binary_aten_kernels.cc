@@ -326,7 +326,7 @@ absl::Status TernaryOpOut(const at::Tensor& self, const at::Tensor& other,
     }
   }
   // An internal scalar can carry more precision than the natural result dtype,
-  // e.g. the opmath alpha in add. Preserve it until the final output cast.
+  // e.g. the opmath alpha in add. Preserve it through the arithmetic.
   promoted_scalar_type =
       c10::promoteTypes(promoted_scalar_type, third_tpu.scalar_type());
   TT_ASSIGN_OR_RETURN(mlir::ElementType computation_dtype,
@@ -334,10 +334,17 @@ absl::Status TernaryOpOut(const at::Tensor& self, const at::Tensor& other,
   TT_ASSIGN_OR_RETURN(const auto out_element_type,
                       ConvertTo<mlir::ElementType>(out.scalar_type()));
 
-  auto ternary_builder = [op_builder = std::move(op_builder)](
-                             FixedSizeSpan<mlir::MlirOp, 3> inputs) {
+  TT_ASSIGN_OR_RETURN(const auto result_element_type,
+                      internal::ToElementType(expected_result_type));
+  auto ternary_builder =
+      [op_builder = std::move(op_builder),
+       result_element_type](FixedSizeSpan<mlir::MlirOp, 3> inputs)
+      -> absl::StatusOr<mlir::MlirOp> {
     auto& [self_op, other_op, third_op] = inputs;
-    return op_builder(self_op, other_op, third_op);
+    TT_ASSIGN_OR_RETURN(auto result, op_builder(self_op, other_op, third_op));
+    // Match TensorIterator: round to the natural result dtype before casting to
+    // a differently typed out tensor.
+    return CastIfNeeded(result, result_element_type);
   };
   return DispatchOpOut<3>(
       std::move(ternary_builder), {self_tpu, other_tpu, third_tpu}, out,
@@ -1096,6 +1103,7 @@ at::Tensor& AtenAddOut(const at::Tensor& self, const at::Tensor& other,
       return out;
     }
 
+    TT_THROW_IF_ERROR(ValidateNotLowPrecisionFloat(promoted_scalar_type));
     TT_ASSIGN_OR_THROW(const auto promoted_element_type,
                        internal::ToElementType(promoted_scalar_type));
     TT_ASSIGN_OR_THROW(const auto computation_dtype,
