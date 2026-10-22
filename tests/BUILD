@@ -1769,7 +1769,7 @@ torch_tpu_py_test(
     ],
     env = TEST_COV_ENV,
     main = "errors_test.py",
-    notap = "Run as a data dep by error_coverage_test in TAP opt presubmit.",
+    notap = "Run as a data dep by :error_coverage_test.",
     tags = [
         "nosan",  # *san builds are low-value for error tests.
         "requires-tpu-v5lite",
@@ -1799,7 +1799,7 @@ torch_tpu_py_test(
     ],
     env = TEST_COV_ENV,
     main = "tpu_errors_test.py",
-    notap = "Run as a data dep by error_coverage_test in TAP opt presubmit.",
+    notap = "Run as a data dep by :error_coverage_test.",
     tags = [
         "nosan",  # *san builds are low-value for error tests.
         "requires-tpu-v5lite",
@@ -2874,6 +2874,60 @@ torch_tpu_py_test(
         ":cpp_style_lib",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
+        "//src/torch_tpu",
+    ],
+)
+
+# Measures how well the error tests cover the error macros in the C++ sources.
+torch_tpu_py_library(
+    name = "error_coverage_lib",
+    testonly = True,
+    srcs = ["error_coverage_lib.py"],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":repo_paths",
+        "//shims/absl_py/logging",
+        "@pypi//pyyaml",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "error_coverage_lib_test",
+    srcs = ["error_coverage_lib_test.py"],
+    deps = [
+        ":error_coverage_lib",
+        ":repo_paths",
+        "//shims/absl_py/testing:absltest",
+        "//src/torch_tpu",
+    ],
+)
+
+# Fails if a change adds error macros that errors_test.py, tpu_errors_test.py or
+# distributed/collective_errors_test.py don't cover. It needs 8 chips because
+# collective_errors_test_cov runs in it.
+torch_tpu_py_test(
+    name = "error_coverage_test",
+    timeout = "long",
+    srcs = ["error_coverage_test.py"],
+    data = [
+        "error_coverage_data.yaml",
+        ":errors_test_cov",
+        ":tpu_errors_test_cov",
+        "//csrc:all_cpp_files_recursive",
+        "//tests/distributed:collective_errors_test_cov",
+    ],
+    notest_oss = True,  # NOTEST_OSS_OK=Enabled in OSS in a follow-up change.
+    tags = [
+        "nofastbuild",
+        "nosan",  # *san builds are low-value for error tests.
+        "requires-tpu-v5lite:8",
+    ],
+    deps = [
+        ":error_coverage_lib",
+        ":repo_paths",
+        "//shims/absl_py/flags",
+        "//shims/absl_py/logging",
+        "//shims/absl_py/testing:absltest",
         "//src/torch_tpu",
     ],
 )
