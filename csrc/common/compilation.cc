@@ -261,9 +261,9 @@ CompileAndLoadMlirModule(xla::PjRtClient& client,
       }
     }
   }
-  return AdaptXlaError(CompileAndLoadMaybeSubslice(client, std::move(module),
-                                                   std::move(options)),
-                       /* context= */ "failed to compile MLIR module");
+  return WrapXlaError(CompileAndLoadMaybeSubslice(client, std::move(module),
+                                                  std::move(options)),
+                      /* context= */ "failed to compile MLIR module");
 }
 
 // Updates `map` with the contents of `updates`. If a key appears in both `map`

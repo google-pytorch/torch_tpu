@@ -1224,8 +1224,8 @@ absl::StatusOr<SharedLoadedExecutableWithMetadata> LoadSerializedExecutableImpl(
   }
   TT_ASSIGN_OR_RETURN(
       std::unique_ptr<xla::PjRtLoadedExecutable> pjrt_executable,
-      AdaptXlaError(LoadSerializedExecutableAtOrigin(*client, data, origin),
-                    /* context= */ "failed to load serialized executable"));
+      WrapXlaError(LoadSerializedExecutableAtOrigin(*client, data, origin),
+                   /* context= */ "failed to load serialized executable"));
   return LoadedExecutableWithMetadata::MakeShared(
       std::move(pjrt_executable), /*argument_indices=*/{},
       /*unbounded_dynamic_execution_metadata=*/std::nullopt, std::move(origin));

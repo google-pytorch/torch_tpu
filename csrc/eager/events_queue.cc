@@ -873,9 +873,9 @@ void RecordAsyncHostToDevice(const DeviceBufferRef& device_buffer_ref) {
       [error_map_promise =
            std::move(error_map_promise)](const absl::Status& status) mutable {
         error_map_promise.Set(
-            AdaptXlaError(status,
-                          /*context=*/"failed to copy buffer from host to "
-                                      "device"));
+            WrapXlaError(status,
+                         /*context=*/"failed to copy buffer from host to "
+                                     "device"));
       });
   MarkStreamActive(device_buffer_ref.device_index(),
                    device_buffer_ref.stream_id(), std::move(error_map_future));

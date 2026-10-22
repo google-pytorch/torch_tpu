@@ -461,9 +461,8 @@ BitcastToLogicalIndices(std::vector<std::unique_ptr<xla::PjRtBuffer>> results,
   const Dimensions dims = logical.dimensions();
   TT_ASSIGN_OR_RETURN(
       results[0],
-      AdaptXlaError(
-          results[0]->Bitcast(xla::S64, dims, &layout),
-          /*context=*/"failed to bitcast the nonzero indices to S64"));
+      WrapXlaError(results[0]->Bitcast(xla::S64, dims, &layout),
+                   /*context=*/"failed to bitcast the nonzero indices to S64"));
   return results;
 }
 
@@ -541,7 +540,7 @@ BuildNonzeroIndicesExecutable(xla::PjRtClient& client,
   build.set_result_layout(hlo->entry_computation_layout().result_shape());
   compile_options->argument_layouts = parameters;
   const xla::XlaComputation computation(hlo->ToProto());
-  return AdaptXlaError(
+  return WrapXlaError(
       client.CompileAndLoad(computation, std::move(*compile_options)),
       /*context=*/"failed to compile the nonzero indices kernel");
 }

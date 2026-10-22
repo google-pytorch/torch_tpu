@@ -28,15 +28,15 @@ namespace torch_tpu {
 
 absl::StatusOr<std::unique_ptr<xla::PjRtClient>> CreateKernelTestClient() {
   TT_ASSIGN_OR_RETURN(bool initialized,
-                      AdaptXlaError(pjrt::IsPjrtPluginInitialized("tpu"),
-                                    "failed to query test plugin"));
+                      WrapXlaError(pjrt::IsPjrtPluginInitialized("tpu"),
+                                   "failed to query test plugin"));
   if (!initialized) {
-    TT_RETURN_IF_ERROR(AdaptXlaError(pjrt::InitializePjrtPlugin("tpu"),
-                                     "failed to initialize test plugin"));
+    TT_RETURN_IF_ERROR(WrapXlaError(pjrt::InitializePjrtPlugin("tpu"),
+                                    "failed to initialize test plugin"));
   }
   TT_ASSIGN_OR_RETURN(
       auto client,
-      AdaptXlaError(xla::GetCApiClient("tpu"), "failed to create test client"));
+      WrapXlaError(xla::GetCApiClient("tpu"), "failed to create test client"));
   return client;
 }
 

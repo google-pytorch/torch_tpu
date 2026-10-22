@@ -811,15 +811,14 @@ void ClearStickyError() {
   internal::g_has_sticky_error.store(false, std::memory_order_release);
 }
 
-absl::Status AdaptXlaError(const absl::Status& status,
-                           const std::string_view context) {
+absl::Status WrapXlaError(const absl::Status& status,
+                          const std::string_view context) {
   if (status.ok()) {
     return status;
   }
 
-  const std::string adapted = AdaptExternalErrorMessage(status.message());
-  return StatusBuilder(std::move(status)).SetOverride()
-         << absl::StrCat(context, kXlaCompilerFailedWith, adapted);
+  return StatusBuilder(status).SetPrepend()
+         << context << kXlaCompilerFailedWith;
 }
 
 namespace {
