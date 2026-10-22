@@ -1766,7 +1766,7 @@ torch_tpu_py_test(
     ],
     env = TEST_COV_ENV,
     main = "errors_test.py",
-    notap = "Run as a data dep by error_coverage_test in TAP opt presubmit.",
+    notap = "Run as a data dep by :error_coverage_test.",
     tags = [
         "nosan",  # *san builds are low-value for error tests.
         "requires-tpu-v5lite",
@@ -1796,7 +1796,7 @@ torch_tpu_py_test(
     ],
     env = TEST_COV_ENV,
     main = "tpu_errors_test.py",
-    notap = "Run as a data dep by error_coverage_test in TAP opt presubmit.",
+    notap = "Run as a data dep by :error_coverage_test.",
     tags = [
         "nosan",  # *san builds are low-value for error tests.
         "requires-tpu-v5lite",
@@ -2871,6 +2871,78 @@ torch_tpu_py_test(
         ":cpp_style_lib",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
+        "//src/torch_tpu",
+    ],
+)
+
+# Measures how well the error tests cover the error macros in the C++ sources.
+torch_tpu_py_library(
+    name = "error_coverage_lib",
+    testonly = True,
+    srcs = ["error_coverage_lib.py"],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":repo_paths",
+        "//shims/absl_py/logging",
+        "@pypi//pyyaml",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "error_coverage_lib_test",
+    srcs = ["error_coverage_lib_test.py"],
+    deps = [
+        ":error_coverage_lib",
+        "//shims/absl_py/testing:absltest",
+        "//src/torch_tpu",
+    ],
+)
+
+# Internal-only: the baseline of the internal C++ files, and the internal update
+# tool. Copybara replaces them with empty lists.
+_ERROR_COVERAGE_TEST_INTERNAL_ARGS = []
+
+_ERROR_COVERAGE_TEST_INTERNAL_DATA = []
+
+# Fails if a change adds error macros that errors_test.py, tpu_errors_test.py or
+# distributed/collective_errors_test.py don't cover.
+# In OSS, only the presubmit job with the newest dependencies runs it.
+torch_tpu_py_test(
+    name = "error_coverage_test",
+    timeout = "long",
+    srcs = ["error_coverage_test.py"],
+    args = _ERROR_COVERAGE_TEST_INTERNAL_ARGS,
+    data = _ERROR_COVERAGE_TEST_INTERNAL_DATA + [
+        "error_coverage_data.yaml",
+        ":errors_test_cov",
+        ":tpu_errors_test_cov",
+        "//csrc:all_cpp_files_recursive",
+        "//tests/distributed:collective_errors_test_cov",
+    ],
+    tags = if_oss(
+        [
+            # collective_errors_test_cov needs all 8 chips.
+            "exclusive",
+            # Some error tests need PyTorch features (e.g. activation offloading)
+            # that only the newest supported PyTorch has. The OSS presubmit job
+            # with the newest dependencies runs this test on every PR.
+            "requires-newest-deps",
+            # The baseline is for TPU v5e, and collective_errors_test_cov needs
+            # 8 chips.
+            "fails-on-tpu-v7",
+        ],
+        [],
+    ) + [
+        "nofastbuild",
+        "nosan",  # *san builds are low-value for error tests.
+        "requires-tpu-v5lite:8",
+    ],
+    deps = [
+        ":error_coverage_lib",
+        ":repo_paths",
+        "//shims/absl_py/flags",
+        "//shims/absl_py/logging",
+        "//shims/absl_py/testing:absltest",
         "//src/torch_tpu",
     ],
 )
