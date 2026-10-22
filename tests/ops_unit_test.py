@@ -1165,7 +1165,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
   @parameterized.parameters(False, True)
   def test_add_alpha_integral_scalar(self, use_compiled):
-    """Rounds an int32 scalar before converting it to opmath precision."""
+    """Preserves scalar input casting before opmath widening."""
     def add(x, y):
       return torch.add(x, y, alpha=2)
 
@@ -1176,10 +1176,10 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     )
     x = torch.tensor(16842753, dtype=torch.int32, device="tpu")
     y = torch.full((33,), -8388608.0, dtype=torch.bfloat16, device="tpu")
-    expected = torch.full((33,), 131072.0, dtype=torch.bfloat16)
+    expected = torch.add(x.to(torch.bfloat16), y, alpha=2)
     actual = kernel(x, y)
     self.assertEqual(actual.dtype, torch.bfloat16)
-    utils.assert_close(actual.cpu(), expected, rtol=0, atol=0)
+    utils.assert_close(actual.cpu(), expected.cpu(), rtol=0, atol=0)
 
   @parameterized.product(
       dtype=[torch.uint16, torch.uint32, torch.uint64],
