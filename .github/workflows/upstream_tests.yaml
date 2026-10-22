@@ -29,17 +29,15 @@ on:
       pytorch-git-ref:
         description: 'Git ref to checkout pytorch/pytorch'
         type: string
-        default: 'v2.15.0-rc4'
+        default: 'ff30875f25530b355ab830bbde00b7a5363bafa4'
       torch-pip-spec:
         description: 'The pip requirement of the torch wheel'
         type: string
-        default: 'torch==2.15.0+cpu'
+        default: 'torch==2.16.0.dev20261012+cpu'
       torch-pip-index:
         description: 'The pip index URL to download the torch wheel from'
         type: string
-        # TODO(b/571958437): switch back to whl/cpu and v2.15.0 once
-        # PyTorch 2.15.0 final is published.
-        default: 'https://download.pytorch.org/whl/test/cpu'
+        default: 'https://download.pytorch.org/whl/nightly/cpu'
   pull_request:
     branches:
       - main
@@ -99,7 +97,7 @@ jobs:
         with:
           repository: pytorch/pytorch
           path: pytorch
-          ref: ${{ inputs.pytorch-git-ref || 'v2.15.0-rc4' }}
+          ref: ${{ inputs.pytorch-git-ref || 'ff30875f25530b355ab830bbde00b7a5363bafa4' }}
 
       - name: Extract Default Python Version
         run: |
@@ -109,8 +107,8 @@ jobs:
 
       - name: Download PyTorch Wheel
         env:
-          TORCH_PIP_SPEC: ${{ inputs.torch-pip-spec || 'torch==2.15.0+cpu' }}
-          TORCH_PIP_INDEX: ${{ inputs.torch-pip-index || 'https://download.pytorch.org/whl/test/cpu' }}
+          TORCH_PIP_SPEC: ${{ inputs.torch-pip-spec || 'torch==2.16.0.dev20261012+cpu' }}
+          TORCH_PIP_INDEX: ${{ inputs.torch-pip-index || 'https://download.pytorch.org/whl/nightly/cpu' }}
         run: |
           mkdir -p dist/local
           pip download --no-deps --pre "${TORCH_PIP_SPEC}" \
