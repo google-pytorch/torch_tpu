@@ -1032,6 +1032,93 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
           )
       )
 
+  @parameterized.product(
+      dtype=[torch.bfloat16, torch.float16],
+      use_compiled=[False, True],
+  )
+  def test_add_alpha_opmath(self, dtype, use_compiled):
+    """Keeps alpha and the multiply intermediate in opmath precision."""
+
+    def add_variants(x, y, alpha):
+      out = torch.empty_like(x)
+      torch.add(x, y, alpha=alpha, out=out)
+      foreach_inplace = [x.clone()]
+      torch._foreach_add_(foreach_inplace, [y], alpha=alpha)
+      return {
+          "tensor": torch.add(x, y, alpha=alpha),
+          "aten": torch.ops.aten.add.Tensor(x, y, alpha=alpha),
+          "inplace": x.clone().add_(y, alpha=alpha),
+          "out": out,
+          "foreach": torch._foreach_add([x], [y], alpha=alpha)[0],
+          "foreach_inplace": foreach_inplace[0],
+      }
+
+    kernel = (
+        torch.compile(
+            add_variants, backend="tpu", fullgraph=True, dynamic=False
+        )
+        if use_compiled
+        else add_variants
+    )
+    is_bf16 = dtype == torch.bfloat16
+    cases = [
+        # Near cancellation exposes rounding alpha=0.1 to the input dtype.
+        (
+            "alpha_precision",
+            0.1,
+            0.052978515625,
+            -0.53125,
+            -0.0001468658447265625 if is_bf16 else -0.00014650821685791016,
+        ),
+        # Alpha is exact, so this isolates rounding the multiply before adding.
+        (
+            "intermediate_precision",
+            1.5,
+            -1.0,
+            0.66796875 if is_bf16 else 0.66650390625,
+            0.001953125 if is_bf16 else -0.000244140625,
+        ),
+        # Alpha exceeds fp16's range, but the inputs and final result do not.
+        ("alpha_range", 65536.0, 1.0, 0.0009765625, 65.0),
+    ]
+    for name, alpha, x_value, y_value, expected_value in cases:
+      with self.subTest(case=name):
+        x = torch.full((33,), x_value, dtype=dtype, device="tpu")
+        y = torch.full((33,), y_value, dtype=dtype, device="tpu")
+        expected = torch.full((33,), expected_value, dtype=dtype)
+        for api, actual in kernel(x, y, alpha).items():
+          with self.subTest(api=api):
+            utils.assert_close(actual.cpu(), expected, rtol=0, atol=0)
+
+  @parameterized.product(
+      dtype=[torch.uint16, torch.uint32, torch.uint64],
+      use_compiled=[False, True],
+  )
+  def test_add_alpha_unsigned(self, dtype, use_compiled):
+    """Computing alpha's dtype must preserve supported unsigned types."""
+
+    def add_variants(x, y):
+      out = torch.empty_like(x)
+      torch.add(x, y, alpha=2, out=out)
+      return (
+          torch.add(x, y, alpha=2),
+          x.clone().add_(y, alpha=2),
+          out,
+      )
+
+    kernel = (
+        torch.compile(
+            add_variants, backend="tpu", fullgraph=True, dynamic=False
+        )
+        if use_compiled
+        else add_variants
+    )
+    x = torch.tensor([1, 2, 3], dtype=dtype, device="tpu")
+    y = torch.tensor([4, 5, 6], dtype=dtype, device="tpu")
+    for actual in kernel(x, y):
+      self.assertEqual(actual.dtype, dtype)
+      self.assertEqual(actual.cpu().tolist(), [9, 12, 15])
+
   def test_foreach_add_sub_alpha(self):
     """Tests foreach_add and foreach_sub with different alphas."""
     tensors1 = [

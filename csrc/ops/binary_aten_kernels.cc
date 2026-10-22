@@ -325,6 +325,10 @@ absl::Status TernaryOpOut(const at::Tensor& self, const at::Tensor& other,
       promoted_scalar_type = c10::get_default_dtype_as_scalartype();
     }
   }
+  // An internal scalar can carry more precision than the natural result dtype,
+  // e.g. the opmath alpha in add. Preserve it until the final output cast.
+  promoted_scalar_type =
+      c10::promoteTypes(promoted_scalar_type, third_tpu.scalar_type());
   TT_ASSIGN_OR_RETURN(mlir::ElementType computation_dtype,
                       internal::ToElementType(promoted_scalar_type));
   TT_ASSIGN_OR_RETURN(const auto out_element_type,
@@ -1092,8 +1096,13 @@ at::Tensor& AtenAddOut(const at::Tensor& self, const at::Tensor& other,
       return out;
     }
 
-    TT_ASSIGN_OR_THROW(const at::Tensor alpha_tensor,
-                       promoted_alpha.GetTensor(promoted_scalar_type));
+    TT_ASSIGN_OR_THROW(const auto promoted_element_type,
+                       internal::ToElementType(promoted_scalar_type));
+    TT_ASSIGN_OR_THROW(const auto computation_dtype,
+                       InferComputationDtype(promoted_element_type));
+    TT_ASSIGN_OR_THROW(
+        const at::Tensor alpha_tensor,
+        promoted_alpha.GetTensor(ConvertTo<at::ScalarType>(computation_dtype)));
 
     auto op_builder =
         [](mlir::MlirOp self_op, mlir::MlirOp other_op,
