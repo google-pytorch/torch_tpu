@@ -38,7 +38,14 @@ namespace torch_tpu {
 namespace {
 
 void AddCleanupPasses(mlir::PassManager& pm) {
-  pm.addPass(mlir::createCSEPass());
+  // TODO(b/574869112): Re-enable CSE by default once its prefill regression is
+  // fixed. Merging common subexpressions in large prefill graphs makes them
+  // ~10% slower on TPU (vLLM Qwen3.5-35B TTFT 124 -> 136 ms; GLM-5.2-FP8
+  // TPOT ~250 -> ~554 ms with the full pipeline).
+  if (GetBooleanEnvOnce<kTorchTpuInternalPassesEnableMlirCseEnvVar>().value_or(
+          false)) {
+    pm.addPass(mlir::createCSEPass());
+  }
   pm.addNestedPass<mlir::func::FuncOp>(mlir::createCanonicalizerPass());
 }
 
