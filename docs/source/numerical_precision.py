@@ -123,13 +123,13 @@ def init():
     torch.accelerator.synchronize()
     return res
 
-  for mode in [Precision.DEFAULT, Precision.HIGH, Precision.HIGHEST]:
-    with precision(mode):
+  for _mode in [Precision.DEFAULT, Precision.HIGH, Precision.HIGHEST]:
+    with precision(_mode):
       # Warm up to compile the graph before timing steady-state execution
       run_matmul()
       start = time.perf_counter()
       run_matmul()
-      print(f"{mode} time: {time.perf_counter() - start:.4f}s")
+      print(f"{_mode} time: {time.perf_counter() - start:.4f}s")
   return Precision, a, b, device, precision, torch
 
 
@@ -149,11 +149,11 @@ def _(Precision, a, b, precision, torch):
   # CPU float32 reference result
   c_ref = torch.matmul(a.cpu(), b.cpu())
 
-  for mode in [Precision.DEFAULT, Precision.HIGH, Precision.HIGHEST]:
-    with precision(mode):
+  for _mode in [Precision.DEFAULT, Precision.HIGH, Precision.HIGHEST]:
+    with precision(_mode):
       res = torch.matmul(a, b)
       diff = res.cpu() - c_ref
-      print(f"Mode: {mode}")
+      print(f"Mode: {_mode}")
       print(f"  Max Absolute Error: {diff.abs().max():.6e}")
       print(
           "  Mean Relative Error: "
