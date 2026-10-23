@@ -29,6 +29,7 @@ before the open source release.
 import datetime
 import os
 import re
+from typing import Final
 
 from absl.testing import absltest
 import jax
@@ -1063,7 +1064,7 @@ def run_all_to_all_collective_errors() -> None:
 
 
 # Constants and helpers for ProcessGroupTpuErrorsTest.
-_PG_WORLD_SIZE = 8
+_PG_WORLD_SIZE: Final[int] = distributed_utils.get_tpu_device_count()
 
 # In the missing-rank test, this rank never creates the process group.
 _ABSENT_RANK = _PG_WORLD_SIZE - 1
@@ -1081,11 +1082,13 @@ _LONG_TIMEOUT = datetime.timedelta(seconds=180)
 _API_PREFIX = r"(?:create_process_group\(\): )?"
 
 # Error that the collector (rank 0) reports when `_ABSENT_RANK` never joins.
-_COLLECTOR_ERROR = (
-    r"collector \(node holding world_topo:0\): failed after \d+ms with 7/8"
-    r" peer keys filled from 7 arrived nodes; missing keys \[world_topo:7\]:"
-    r" world_store wait nlag:world_topo:0:8:node:7: wait timeout after \d+ms,"
-    r" keys: \S+"
+_COLLECTOR_ERROR: Final[str] = (
+    r"collector \(node holding world_topo:0\): failed after \d+ms with"
+    rf" {_PG_WORLD_SIZE - 1}/{_PG_WORLD_SIZE} peer keys filled from"
+    rf" {_PG_WORLD_SIZE - 1} arrived nodes; missing keys"
+    rf" \[world_topo:{_ABSENT_RANK}\]: world_store wait"
+    rf" nlag:world_topo:0:{_PG_WORLD_SIZE}:node:{_ABSENT_RANK}: wait timeout"
+    r" after \d+ms, keys: \S+"
 )
 
 
@@ -1102,7 +1105,7 @@ def _barrier(store: dist.Store, name: str) -> None:
 
 
 def run_missing_rank_and_local_rank_out_of_range() -> None:
-  """Tests missing-rank store timeouts on ranks 0..6 and out-of-range LOCAL_RANK on `_ABSENT_RANK`."""
+  """Tests missing-rank store timeouts and out-of-range LOCAL_RANK."""
   rank = int(os.environ["RANK"])
   store = dist.TCPStore(
       os.environ["MASTER_ADDR"],
@@ -1115,18 +1118,19 @@ def run_missing_rank_and_local_rank_out_of_range() -> None:
   _barrier(store, "ready")
 
   if rank == _ABSENT_RANK:
-    # TorchTPU caches LOCAL_RANK (0-7 here) before this function runs, but on a
-    # single host first reads TORCH_TPU_DEVICES_PER_HOST when the process group
-    # is created, so shrink the latter on `_ABSENT_RANK` to put it out of range.
-    # It fails before touching the store, leaving `world_topo:7` missing for the
-    # remaining ranks.
+    # TorchTPU caches LOCAL_RANK before this function runs, but on a single host
+    # first reads TORCH_TPU_DEVICES_PER_HOST when the process group is created,
+    # so shrink the latter on `_ABSENT_RANK` to put it out of range. It fails
+    # before touching the store, leaving `_ABSENT_RANK`'s `world_topo` key
+    # missing for the remaining ranks.
     local_world_size = _PG_WORLD_SIZE // 2
     os.environ["TORCH_TPU_DEVICES_PER_HOST"] = str(local_world_size)
     expected_msg = re.compile(
-        _API_PREFIX
-        + r"expected environment variable LOCAL_RANK to be in \[0, 4\)"
+        _API_PREFIX + r"expected environment variable LOCAL_RANK to be in"
+        rf" \[0, {local_world_size}\)"
         rf" \(TORCH_TPU_DEVICES_PER_HOST\), got {rank} \(local_rank={rank}"
-        r" devices_per_host=4 world_size=8\).*",
+        rf" devices_per_host={local_world_size}"
+        rf" world_size={_PG_WORLD_SIZE}\).*",
         re.DOTALL,
     )
     with et.assert_raises_message(RuntimeError, tpu=expected_msg):
@@ -1147,8 +1151,8 @@ def run_missing_rank_and_local_rank_out_of_range() -> None:
     elif rank == _EARLY_TIMEOUT_RANK:
       timeout = _EARLY_TIMEOUT
       expected_pattern = (
-          r"world_store get nlag:world_topo:0:8:table: wait timeout after"
-          r" \d+ms, keys: \S+"
+          rf"world_store get nlag:world_topo:0:{_PG_WORLD_SIZE}:table: wait"
+          r" timeout after \d+ms, keys: \S+"
       )
     else:
       timeout = _LONG_TIMEOUT
@@ -1185,7 +1189,6 @@ class CollectiveErrorsTest(
     continuous_test_utils.TpuMultiProcContinuousTest,
     et.TpuOnlyDistributedErrorTestBase,
 ):
-  world_size = distributed_utils.get_tpu_device_count()
 
   def test_collective_validation_errors(self):
     run_collective_validation_errors()
