@@ -36,7 +36,6 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch/headeronly/core/ScalarType.h"
-#include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
 std::tuple<at::Tensor&, at::Tensor&> AtenTopKValues(
@@ -60,10 +59,9 @@ std::tuple<at::Tensor&, at::Tensor&> AtenTopKValues(
 
         // TODO(b/435537869): Optimize sorted = false.
 
-        const auto self_sizes = self.sizes();
         TT_ASSIGN_OR_THROW(const auto elem_type,
                            ConvertTo<mlir::ElementType>(self.scalar_type()));
-        Dimensions output_dims = CopyIntVector(self_sizes);
+        Dimensions output_dims = CopyIntVector(self.sizes());
         if (self.dim() > 0) {
           output_dims[wrapped_dim] = k;
         }
