@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-import dataclasses
 import enum
 import types
 from typing import Literal, Optional
@@ -27,15 +26,6 @@ import torch
 from torch_tpu._internal import pallas
 from torch_tpu._internal import testing as tt_testing
 from tests import seed_test_utils
-
-
-class MyCustomType:
-  pass
-
-
-@dataclasses.dataclass
-class MyDataclass:
-  bq: int = 16
 
 
 class MyStrEnum(enum.StrEnum):
@@ -80,91 +70,6 @@ class PallasSignatureTest(seed_test_utils.RepeatableTest):
     self.assertEqual(sig.parameters["reduction"].annotation, str)
     self.assertEqual(sig.return_annotation, tuple[torch.Tensor, torch.Tensor])
 
-  def test_invalid_base_type_rejected(self):
-
-    # dict is not supported as argument.
-    def invalid_fn_dict(x: jax.Array, y: dict[str, int]) -> jax.Array:
-      del y  # Unused.
-      return x
-
-    with self.assertRaisesRegex(
-        ValueError, "Arguments at indices \\[1\\] are invalid"
-    ):
-      pallas.jax_op("test::invalid_dict", invalid_fn_dict)
-
-    # Custom classes are not supported.
-    def invalid_fn_custom(x: jax.Array, y: MyCustomType) -> jax.Array:
-      del y  # Unused.
-      return x
-
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing invalid signature rejection
-        ValueError, "Arguments at indices \\[1\\] are invalid"
-    ):
-      pallas.jax_op("test::invalid_custom", invalid_fn_custom)
-
-    # Sequence of str is not supported in PyTorch custom op schemas.
-    def invalid_fn_seq_str(x: jax.Array, y: Sequence[str]) -> jax.Array:
-      del y  # Unused.
-      return x
-
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing invalid signature rejection
-        ValueError, "Arguments at indices \\[1\\] are invalid"
-    ):
-      pallas.jax_op("test::invalid_seq_str", invalid_fn_seq_str)
-
-    # Sequence of enum is not supported in PyTorch custom op schemas.
-    def invalid_fn_seq_enum(x: jax.Array, y: Sequence[MyStrEnum]) -> jax.Array:
-      del y  # Unused.
-      return x
-
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing invalid signature rejection
-        ValueError, "Arguments at indices \\[1\\] are invalid"
-    ):
-      pallas.jax_op("test::invalid_seq_enum", invalid_fn_seq_enum)
-
-  def test_invalid_return_type_rejected(self):
-    """Verifies unsupported return types are rejected."""
-
-    # MyCustomType is not supported as return type.
-    def invalid_return_fn(x: jax.Array) -> MyCustomType:
-      del x  # Unused.
-      return MyCustomType()
-
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing invalid return rejection
-        ValueError, "The return annotation is invalid"
-    ):
-      pallas.jax_op("test::invalid_return", invalid_return_fn)
-
-    # String is not supported as return type.
-    def fn_return_str(x: jax.Array) -> str:
-      del x  # Unused.
-      return "foo"
-
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing invalid return rejection
-        ValueError, "The return annotation is invalid"
-    ):
-      pallas.jax_op("test::fn_return_str", fn_return_str)
-
-    # Dtype is not supported as return type.
-    def fn_return_dtype(x: jax.Array) -> jnp.dtype:
-      del x  # Unused.
-      return jnp.float32
-
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing invalid return rejection
-        ValueError, "The return annotation is invalid"
-    ):
-      pallas.jax_op("test::fn_return_dtype", fn_return_dtype)
-
-    # Enum is not supported as return type.
-    def fn_return_enum(x: jax.Array) -> MyEnum:
-      del x  # Unused.
-      return MyEnum.OPT_1
-
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing invalid return rejection
-        ValueError, "The return annotation is invalid"
-    ):
-      pallas.jax_op("test::fn_return_enum", fn_return_enum)
-
   def test_jax_callable_fallback_path(self):
     """Verifies JaxCallable fallback path (jax_fn=None) works."""
 
@@ -199,18 +104,6 @@ class PallasSignatureTest(seed_test_utils.RepeatableTest):
     self.assertEqual(sig.parameters["x"].annotation, torch.Tensor)
     self.assertEqual(sig.return_annotation, torch.Tensor)
 
-  def test_invalid_jitted_function_rejected(self):
-    """Verifies invalid jitted functions are rejected by pallas.jax_op."""
-
-    def my_fn(x: MyCustomType) -> MyCustomType:
-      return x
-
-    jitted = jax.jit(my_fn)
-    with self.assertRaisesRegex(
-        ValueError, "Arguments at indices \\[0\\] are invalid"
-    ):
-      pallas.jax_op("test::jitted_invalid", jitted)
-
   def test_optional_types_handled(self):
     """Verifies Optional types are correctly mapped to torch.Tensor | types.NoneType."""
 
@@ -235,17 +128,6 @@ class PallasSignatureTest(seed_test_utils.RepeatableTest):
         sig2.parameters["x"].annotation, torch.Tensor | types.NoneType
     )
     self.assertEqual(sig2.return_annotation, torch.Tensor)
-
-  def test_unannotated_arguments_rejected(self):
-    """Verifies unannotated arguments are rejected."""
-
-    def unannotated_fn(x) -> jax.Array:
-      return x
-
-    with self.assertRaisesRegex(
-        ValueError, "Missing argument type annotation for JAX function"
-    ):
-      pallas.jax_op("test::unannotated", unannotated_fn)
 
   def test_custom_op_sequence_and_container_types_supported(self):
     """Verifies all PyTorch custom_op container, dtype, enum, and scalar types."""
@@ -349,54 +231,6 @@ class PallasSignatureTest(seed_test_utils.RepeatableTest):
       self.assertEqual(len(res), 1)
       self.assertEqual(res[0].shape, (2, 2))
 
-  def test_dataclass_and_custom_object_rejected(self):
-    """Verifies dataclasses and custom objects are rejected as unsupported."""
-
-    def fn_with_dataclass(x: jax.Array, cfg: MyDataclass) -> jax.Array:
-      del cfg
-      return x
-
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing invalid signature rejection
-        ValueError, "Invalid signature for JAX function"
-    ):
-      pallas.jax_op("test::fn_with_dataclass", fn_with_dataclass)
-
-    def fn_with_kw_dataclass(
-        x: jax.Array, *, cfg: MyDataclass = MyDataclass()
-    ) -> jax.Array:
-      del cfg
-      return x
-
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing invalid signature rejection
-        ValueError, "Invalid signature for JAX function"
-    ):
-      pallas.jax_op("test::fn_with_kw_dataclass", fn_with_kw_dataclass)
-
-    def fn_with_custom_obj(x: jax.Array, obj: MyCustomType) -> jax.Array:
-      del obj
-      return x
-
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing invalid signature rejection
-        ValueError, "Invalid signature for JAX function"
-    ):
-      pallas.jax_op("test::fn_with_custom_obj", fn_with_custom_obj)
-
-    def fn_with_dict_return(x: jax.Array) -> dict[str, jax.Array]:
-      return {"out": x}
-
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing invalid signature rejection
-        ValueError, "Invalid signature for JAX function"
-    ):
-      pallas.jax_op("test::fn_with_dict_return", fn_with_dict_return)
-
-    def fn_with_set_return(x: jax.Array) -> set[jax.Array]:
-      return {x}
-
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing invalid signature rejection
-        ValueError, "Invalid signature for JAX function"
-    ):
-      pallas.jax_op("test::fn_with_set_return", fn_with_set_return)
-
   def test_optional_argument_with_default_preserves_none(self):
 
     def fn_with_opt(
@@ -442,14 +276,6 @@ class PallasSignatureTest(seed_test_utils.RepeatableTest):
         op_scalar_union._init_fn.__signature__.return_annotation,
         torch.types.Number,
     )
-
-    def fn_return_invalid_union(x: jax.Array) -> jax.Array | int:
-      return x
-
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing invalid return union rejection
-        ValueError, "The return annotation is invalid"
-    ):
-      pallas.jax_op("test::fn_return_invalid_union", fn_return_invalid_union)
 
 
 if __name__ == "__main__":

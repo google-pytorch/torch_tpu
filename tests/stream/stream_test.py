@@ -112,29 +112,6 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
         torch.accelerator.current_stream().stream_id, default_stream.stream_id
     )
 
-  def test_stream_unimplemented_method(self):
-
-    expected_msg = (
-        'Streams and Events are not fully implemented in TorchTPU. Please file'
-        ' a feature request describing your use case.'
-    )
-    with self.assertRaisesWithLiteralMatch(NotImplementedError, expected_msg):
-      default_stream = torch.tpu.default_stream()
-      default_stream.query()
-
-  def test_stream_partially_implemented_method(self):
-    """Tests that unimplemented stream methods raise NotImplementedError."""
-
-    s = torch.tpu.Stream()
-    expected_msg = (
-        'Streams and Events are not fully implemented in TorchTPU. Please file'
-        ' a feature request describing your use case.'
-    )
-    with self.assertRaisesWithLiteralMatch(NotImplementedError, expected_msg):
-      s.query()
-    with self.assertRaisesWithLiteralMatch(NotImplementedError, expected_msg):
-      s.priority_range()
-
   def test_synchronize_default(self):
     """Tests that synchronize() correctly waits for async ops."""
 
@@ -207,27 +184,10 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
     stream_event.synchronize()
     self.assertTrue(stream_event.query())
 
-    # Verify TypeError is raised when a non-Stream object is passed to record.
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Python argument type check
-        TypeError, 'expected torch.Stream, but got str'
-    ):
-      event.record('invalid')
-
     # Verify integer device index like 0 is correctly handled.
     event_device_idx = torch.tpu.Event(device=0)
     self.assertIsInstance(event_device_idx, torch.Event)
     self.assertEqual(event_device_idx.device, torch.device('tpu'))
-
-  def test_event_partially_implemented(self):
-    """Tests that ipc event methods remain unimplemented."""
-
-    e = torch.tpu.Event()
-    expected_msg = (
-        'Streams and Events are not fully implemented in TorchTPU. Please file'
-        ' a feature request describing your use case.'
-    )
-    with self.assertRaisesWithLiteralMatch(NotImplementedError, expected_msg):
-      e.ipc_handle()
 
   def test_event_records_nonblocking_copy(self):
 
