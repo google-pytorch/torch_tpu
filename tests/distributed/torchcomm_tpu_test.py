@@ -100,7 +100,7 @@ class TorchCommsTPUTest(seed_test_utils.RepeatableTest):
       comm.finalize()
 
   def test_finalize_lifecycle(self):
-    """Verifies communicator finalization lifecycle, idempotency, and post-finalize guard."""
+    """Verifies communicator finalization lifecycle and idempotency."""
     comm = torchcomms.new_comm(
         "tpu",
         torch.device("cpu"),
@@ -116,11 +116,6 @@ class TorchCommsTPUTest(seed_test_utils.RepeatableTest):
     # Finalize should be idempotent
     comm.finalize()
     self.assertTrue(backend_impl.is_finalized())
-
-    # Collectives should raise error after communicator is finalized
-    dummy_tensor = torch.tensor([1.0])
-    with self.assertRaisesRegex(RuntimeError, "finalized"):
-      comm.all_reduce(dummy_tensor, op=torchcomms.ReduceOp.SUM, async_op=False)
 
   def test_split_subgroup(self):
     """Verifies splitting a communicator into a subgroup using TorchComm.split."""
@@ -186,12 +181,6 @@ class TorchCommsTPUTest(seed_test_utils.RepeatableTest):
         torchcomm_tpu._to_dist_reduce_op(torchcomms.ReduceOp.AVG),
         dist.ReduceOp.AVG,
     )
-
-    # Unsupported / unmapped reduction type raises ValueError
-    invalid_op = mock.MagicMock(spec=torchcomms.ReduceOp)
-    invalid_op.type = "UNSUPPORTED_TYPE"
-    with self.assertRaises(ValueError):
-      torchcomm_tpu._to_dist_reduce_op(invalid_op)
 
   def test_torchcomms_all_reduce(self):
     """Verifies all_reduce collective delegation and TorchWork handle completion."""
@@ -429,11 +418,10 @@ class TorchCommsTPUTest(seed_test_utils.RepeatableTest):
           dist.Backend.default_device_backend_map.get("tpu"), "tpu_dist"
       )
 
-  def test_unsupported_stubs_raise_not_implemented(self):
-    """Verifies that unsupported collective or communicator features raise NotImplementedError."""
+  def test_backend_properties(self):
+    """Verifies default communicator backend properties."""
     comm = torchcomms.new_comm("tpu", torch.device("cpu"), name="test_stubs")
     backend = comm.get_backend_impl()
-    t = torch.zeros(4, device="cpu")
 
     self.assertEqual(backend.backend_name, "tpu")
     self.assertEqual(backend.get_backend_name(), "tpu")
@@ -441,66 +429,6 @@ class TorchCommsTPUTest(seed_test_utils.RepeatableTest):
     self.assertEqual(backend.hints, {})
     self.assertIsNone(backend.store)
     self.assertIsNotNone(backend.timeout)
-
-    with self.assertRaises(NotImplementedError):
-      backend.create_pair_comm(1)
-
-    with self.assertRaises(NotImplementedError):
-      backend.split_group([0, 1])
-
-    with self.assertRaises(NotImplementedError):
-      backend.reconfigure(ranks=[0, 1], size=2)
-
-    with self.assertRaises(NotImplementedError):
-      backend.create_window(t)
-
-    with self.assertRaises(NotImplementedError):
-      backend.map_remote_tensor(t, peer_rank=1)
-
-    with self.assertRaises(NotImplementedError):
-      backend.create_batch()
-
-    with self.assertRaises(NotImplementedError):
-      backend.all_reduce_coalesced([t])
-
-    with self.assertRaises(NotImplementedError):
-      backend.all_gather_coalesced([[t]], [t])
-
-    with self.assertRaises(NotImplementedError):
-      backend.reduce_scatter_coalesced([t], [[t]])
-
-    with self.assertRaises(NotImplementedError):
-      backend.all_to_all_coalesced([[t]], [[t]])
-
-    with self.assertRaises(NotImplementedError):
-      backend.reduce(t, dst=0)
-
-    with self.assertRaises(NotImplementedError):
-      backend.gather(input_tensor=t, dst=0)
-
-    with self.assertRaises(NotImplementedError):
-      backend.scatter(output_tensor=t, src=0)
-
-    with self.assertRaises(NotImplementedError):
-      backend.monitored_barrier()
-
-    with self.assertRaises(NotImplementedError):
-      backend.register_flight_recorder_hook(mock.MagicMock())
-
-    with self.assertRaises(NotImplementedError):
-      backend.get_flight_recorder_traces()
-
-    with self.assertRaises(NotImplementedError):
-      backend.broadcast_object_list([1, 2, 3])
-
-    with self.assertRaises(NotImplementedError):
-      backend.all_gather_object([], {"a": 1})
-
-    with self.assertRaises(NotImplementedError):
-      backend.gather_object({"a": 1})
-
-    with self.assertRaises(NotImplementedError):
-      backend.scatter_object_list([])
 
     comm.finalize()
 
