@@ -503,7 +503,7 @@ torch_tpu_py_test(
     ],
     env = TEST_COV_ENV,
     main = "collective_errors_test.py",
-    notap = "Run as a data dep by error_coverage_test in TAP opt presubmit.",
+    notap = "Run as a data dep by //tests:error_coverage_test.",
     tags = if_oss(
         ["exclusive"],
         [],
