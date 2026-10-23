@@ -67,6 +67,7 @@
 #include "csrc/internal/mosaic/kiln/core/kernel.h"        // IWYU pragma: export
 #include "csrc/internal/mosaic/kiln/core/literal.h"       // IWYU pragma: export
 #include "csrc/internal/mosaic/kiln/core/memory.h"        // IWYU pragma: export
+#include "csrc/internal/mosaic/kiln/core/pipeline.h"      // IWYU pragma: export
 #include "csrc/internal/mosaic/kiln/core/ref.h"           // IWYU pragma: export
 #include "csrc/internal/mosaic/kiln/core/scalar.h"        // IWYU pragma: export
 #include "csrc/internal/mosaic/kiln/core/semaphore.h"     // IWYU pragma: export

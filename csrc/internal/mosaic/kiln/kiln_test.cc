@@ -1967,5 +1967,44 @@ TEST_F(KilnTest, ConstructsShapesFromDTypeCallOperator) {
   EXPECT_EQ(ss.str(), "f32[8, 128]");
 }
 
+TEST_F(KilnTest, EmitPipeline) {
+  constexpr int64_t kBlock = 128;
+  absl::StatusOr<Kernel> kernel = CreateKernel(
+      GridSpec{.name = "emit_pipeline_inputs"}, InSpec::Hbm(f32(kDynamic)),
+      OutSpec::Hbm(f32(kBlock)), ScratchSpec::Vmem(f32(kBlock)),
+      [&](Ref in, Ref out, Ref acc) {
+        const PipelineInput input{
+            .hbm = in, .block_shape = {kBlock}, .region = [](Scalar step) {
+              return BlockRegion{.offsets = {MultipleOf(step * kBlock, kBlock)},
+                                 .sizes = {kBlock}};
+            }};
+        acc = Zeros(acc.shape());
+        EmitPipeline(0, in.Dim(0) / kBlock, {input},
+                     [&](const PipelineStep& s) {
+                       acc = Tile(acc) + Tile(s.inputs[0]);
+                     });
+        AsyncCopy(acc, out, AllocaDmaSemaphore()).Wait();
+      });
+  ASSERT_THAT(kernel, IsOk());
+
+  // The copy of step s + 1 is started before waiting for the copy of step s.
+  ExpectKernelMatches(std::move(*kernel), R"(
+    CHECK-LABEL: func.func @emit_pipeline_inputs(
+    CHECK:         "tpu.region"() ({
+    CHECK:           memref.alloca() : memref<256xf32, #tpu.memory_space<vmem>>
+    CHECK:           tpu.sem_alloc : memref<2x!tpu.dma_semaphore
+    CHECK:           scf.if
+    CHECK:             tpu.enqueue_dma
+    CHECK:             scf.for
+    CHECK:               scf.if
+    CHECK:                 tpu.enqueue_dma
+    CHECK:               tpu.wait_dma
+    CHECK:               arith.addf
+    CHECK:           tpu.yield
+    CHECK:         tpu.enqueue_dma
+    CHECK:         tpu.wait_dma
+  )");
+}
+
 }  // namespace
 }  // namespace torch_tpu::kiln

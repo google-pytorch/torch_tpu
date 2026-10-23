@@ -34,6 +34,7 @@ torch_tpu_cc_library(
         "//csrc/internal/mosaic/kiln/core:kernel",
         "//csrc/internal/mosaic/kiln/core:literal",
         "//csrc/internal/mosaic/kiln/core:memory",
+        "//csrc/internal/mosaic/kiln/core:pipeline",
         "//csrc/internal/mosaic/kiln/core:ref",
         "//csrc/internal/mosaic/kiln/core:scalar",
         "//csrc/internal/mosaic/kiln/core:semaphore",
