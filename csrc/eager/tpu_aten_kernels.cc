@@ -110,6 +110,7 @@
 #include "csrc/ops/fake_quantize/fused_moving_avg_obs_fq_helper_aten_kernels.h"
 #include "csrc/ops/fft/fft_aten_kernels.h"
 #include "csrc/ops/fill/fill_aten_kernels.h"
+#include "csrc/ops/flex_attention/flex_attention_aten_kernels.h"
 #include "csrc/ops/flip/flip_aten_kernels.h"
 #include "csrc/ops/fmax/fmax_aten_kernels.h"
 #include "csrc/ops/fmin/fmin_aten_kernels.h"
@@ -1302,6 +1303,11 @@ TORCH_LIBRARY(tpu, m) {
       "bool ceil_mode) -> Tensor");
   m.def("_ragged_dot(Tensor lhs, Tensor rhs, Tensor group_sizes) -> Tensor");
   m.def(
+      "_flex_attention_fwd(Tensor q, Tensor k, Tensor v, "
+      "Tensor kv_num_blocks, Tensor kv_indices, int mask_batch, "
+      "int mask_heads, int q_block, int kv_block, float scale) "
+      "-> (Tensor, Tensor)");
+  m.def(
       "_ragged_dot.out(Tensor lhs, Tensor rhs, Tensor group_sizes, *, "
       "Tensor(a!) out) -> Tensor(a!)");
   m.def(
@@ -1750,6 +1756,7 @@ TORCH_LIBRARY_IMPL(tpu, PrivateUse1, m) {
   // ImplDeprecated to mark their API stages.
   ImplInternal<OpName::kDistributedSend>(m, TorchTpuSend);
   ImplInternal<OpName::kDistributedRecv>(m, TorchTpuRecv);
+  ImplInternal<OpName::kFlexAttentionFwd>(m, FlexAttentionFwd);
   ImplInternal<OpName::kMaxPool1d>(m, TpuMaxPool1d);
   ImplInternal<OpName::kMaxPool1dBackward>(m, TpuMaxPool1dBackward);
   ImplInternal<OpName::kMaxPool2d>(m, TpuMaxPool2d);

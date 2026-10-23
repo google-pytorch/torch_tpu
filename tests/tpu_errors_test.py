@@ -27,6 +27,7 @@ import torch
 import torch.distributed as dist
 from torch.fx.experimental.proxy_tensor import make_fx
 import torch.multiprocessing as mp
+from torch.nn.attention import flex_attention
 from torch.testing._internal.distributed import fake_pg
 from torch.tpu import distributed  # pyrefly: ignore[missing-import]
 from torch.utils import _pytree as pytree
@@ -36,6 +37,7 @@ from torch_tpu._internal import env_utils
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import pallas
 from torch_tpu._internal import testing as tt_testing
+from torch_tpu._internal.compile import flex_attention_kiln
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.compiler import StaticCompiler
 from torch_tpu._internal.distributed import distributed as internal_distributed
@@ -5934,6 +5936,42 @@ class ForkErrorsTest(et.TpuOnlyErrorTestBase):
         torch.tpu._init_runtime_options()
       torch.tpu._shutdown_runtime()
     self.assertFalse(torch.tpu._is_in_bad_fork())
+
+
+class FlexAttentionErrorsTest(et.TpuOnlyErrorTestBase):
+  """Tests the input checks of the flex_attention kernel wrapper."""
+
+  def _inputs(self, seq):
+    return (torch.randn(1, 1, seq, 128, device=et.device()) for _ in range(3))
+
+  @et.why_tpu_only("The flex_attention Kiln kernel only exists on TPU.")
+  def test_non_tile_aligned_sequence(self):
+    q, k, v = self._inputs(1024)
+    block_mask = flex_attention.create_block_mask(
+        flex_attention.noop_mask, 1, 1, 1024, 1024, device="cpu"
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""flex_attention_fwd(): sequence lengths must be multiples of the block sizes (got q_len=1000, kv_len=1024, q_block=128, kv_block=128)""",
+    ):
+      flex_attention_kiln.flex_attention_fwd(q[:, :, :1000], k, v, block_mask)
+
+  @et.why_tpu_only("The flex_attention Kiln kernel only exists on TPU.")
+  def test_partial_blocks(self):
+    q, k, v = self._inputs(1024)
+    causal = flex_attention.create_block_mask(
+        lambda b, h, q_idx, kv_idx: q_idx >= kv_idx,
+        1,
+        1,
+        1024,
+        1024,
+        device="cpu",
+    )
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""flex_attention on TPU does not support partially masked blocks yet""",
+    ):
+      flex_attention_kiln.flex_attention_fwd(q, k, v, causal)
 
 
 if __name__ == "__main__":
