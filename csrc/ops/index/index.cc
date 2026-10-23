@@ -18,29 +18,41 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <optional>
 #include <vector>
 
 #include "absl/log/absl_log.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_join.h"
-#include "csrc/common/aten_utils.h"
+#include "absl/types/span.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/ops/nonzero/nonzero.h"
 #include "csrc/ops/op_builder_utils.h"
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallVector.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Types.h"
 #include "mlir/Support/DebugStringHelper.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "stablehlo/transforms/StablehloBroadcastLowering.h"
 
 namespace torch_tpu {
 
+namespace stablehlo = mlir::stablehlo;
+
 namespace {
+
+constexpr int64_t kMinUniformRowWidth = 256;
+constexpr int64_t kMinUniformElements = 4096;
+constexpr int64_t kMinUniformRows = 4;
 
 struct DynamicUnindexedDim {
   mlir::stablehlo::DimensionInfo dim_info;
@@ -56,9 +68,57 @@ bool AreConsecutive(const Indices& indexed_dims) {
   return true;
 }
 
-}  // namespace
+absl::StatusOr<mlir::MlirOp> BuildRowUniformMaskIndexTrueBranch(
+    mlir::RegionBuilder& true_rb, mlir::MlirOp self, mlir::MlirOp col0,
+    int64_t dim_indexed, int64_t mask_rank, int64_t num_rows, int64_t row_width,
+    int64_t selected_rows, mlir::RankedTensorType out_type) {
+  const mlir::RankedTensorType self_type = GetTensorTypeOrDie(self);
+  const mlir::ArrayRef<int64_t> self_shape = self_type.getShape();
+  const mlir::Type i1_type = true_rb.getOpBuilder().getI1Type();
+  mlir::MlirOp true_col0(true_rb, col0.getValue());
+  mlir::MlirOp col0_1d = stablehlo::Reshape(
+      mlir::makeTensorType(true_rb.getContext(), {num_rows}, i1_type),
+      true_col0);
+  mlir::MlirOp iota_r =
+      stablehlo::Iota(true_rb,
+                      mlir::makeTensorType(true_rb.getContext(), {num_rows},
+                                           mlir::ElementType::I32),
+                      /*dim=*/0);
+  auto comparator = [i1_type](mlir::RegionBuilder& rb) {
+    mlir::OpBuilder& op_builder = rb.getOpBuilder();
+    stablehlo::buildSortComparisonBody(
+        {i1_type, op_builder.getI32Type()}, stablehlo::ComparisonDirection::GT,
+        /*compare_type=*/std::nullopt, &rb.getRegion(), &op_builder);
+  };
+  auto sort_outputs = stablehlo::Sort(true_rb, {col0_1d, iota_r}, comparator,
+                                      /*dim=*/0, /*is_stable=*/true);
+  mlir::MlirOp selected_row_indices = stablehlo::Slice(
+      sort_outputs[1], /*start_indices=*/{0},
+      /*limit_indices=*/{selected_rows}, /*stride_indices=*/{1});
 
-namespace stablehlo = mlir::stablehlo;
+  Dimensions self_rows_shape;
+  self_rows_shape.reserve(self_shape.size() - mask_rank + 2);
+  for (int64_t i = 0; i < dim_indexed; ++i) {
+    self_rows_shape.push_back(self_shape[i]);
+  }
+  self_rows_shape.push_back(num_rows);
+  self_rows_shape.push_back(row_width);
+  for (size_t i = dim_indexed + mask_rank; i < self_shape.size(); ++i) {
+    self_rows_shape.push_back(self_shape[i]);
+  }
+
+  mlir::MlirOp true_self(true_rb, self.getValue());
+  mlir::MlirOp self_rows = stablehlo::Reshape(
+      mlir::makeTensorType(true_rb.getContext(), self_rows_shape,
+                           self_type.getElementType()),
+      true_self);
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp gathered_rows,
+      BuildIndexShlo({self_rows, selected_row_indices}, {dim_indexed}));
+  return stablehlo::Reshape(out_type, gathered_rows);
+}
+
+}  // namespace
 
 absl::StatusOr<mlir::MlirOp> BuildIndexShlo(
     mlir::ArrayRef<mlir::MlirOp> input_ops, Indices indexed_dims) {
@@ -183,27 +243,11 @@ absl::StatusOr<mlir::MlirOp> BuildIndexShlo(
   return stablehlo::ConvertElementType(result, self_type.getElementType());
 }
 
-absl::StatusOr<mlir::MlirOp> BuildBooleanMaskIndexShlo(
+absl::StatusOr<mlir::MlirOp> BuildBooleanMaskIndexScalarShlo(
     mlir::MlirOp self, mlir::MlirOp mask, int64_t dim_indexed,
     int64_t num_non_zero_elements) {
-  // In PyTorch, an M-dimensional boolean mask with K `True` entries replaces
-  // the M indexed dimensions `[dim_indexed, dim_indexed + M - 1]` of `self`
-  // with a single 1D dimension of size K in row-major order.
-  //
-  // Performing all reshapes, nonzero index extraction, and gathering inside
-  // this single StableHLO lowering avoids multiple ATen tensor-level dispatches
-  // (e.g. `.flatten()` and `AtenNonzero`) outside `op_builder`, keeping the
-  // computation fused in one graph for XLA optimization.
   const int64_t mask_rank = GetTensorTypeOrDie(mask).getRank();
 
-  // Step 1: Adjust `self` and `mask` so that the masked dimensions of `self`
-  // correspond to a single dimension at `dim_indexed` and `mask` is 1D:
-  // - When `mask_rank == 0` (0D scalar boolean mask), no dimensions of `self`
-  //   are consumed; instead, a new dimension of size 1 is inserted at
-  //   `dim_indexed` via `Unsqueeze`, and `mask` is flattened to shape `(1,)`.
-  // - When `mask_rank > 1` (multi-dimensional boolean mask), the M masked
-  //   dimensions `[dim_indexed, dim_indexed + M - 1]` of `self` are collapsed
-  //   into a single dimension at `dim_indexed`, and `mask` is flattened to 1D.
   if (mask_rank == 0) {
     TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=dim_indexed is guaranteed to
                           // be in [0, self.dim()].
@@ -239,24 +283,90 @@ absl::StatusOr<mlir::MlirOp> BuildBooleanMaskIndexShlo(
     mask = Flatten(mask);
   }
 
-  // If the indexed dimension of `self` has size 0 (i.e. `mask` has 0 elements
-  // and `num_non_zero_elements == 0`), `self` after Step 1 already has the
-  // exact output shape, whereas `stablehlo.gather` requires `slice_sizes[d] ==
-  // 1 <= operand.dim(d)` on collapsed slice dimensions.
   if (GetTensorTypeOrDie(self).getDimSize(dim_indexed) == 0) {
     return self;
   }
 
-  // Step 2: Compute the 1D linear indices of the `True` elements in `mask`.
-  // `BuildNonzeroShlo` on a 1D mask returns shape `(num_non_zero_elements, 1)`,
-  // which we flatten to `(num_non_zero_elements,)`.
   TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=1D mask nonzero always succeeds.
       mlir::MlirOp nonzero_indices,
       BuildNonzeroShlo(num_non_zero_elements, mask));
   mlir::MlirOp flat_indices = Flatten(nonzero_indices);
 
-  // Step 3: Gather from `self` along `dim_indexed` using the 1D flat indices.
   return BuildIndexShlo({self, flat_indices}, {dim_indexed});
+}
+
+absl::StatusOr<mlir::MlirOp> BuildBooleanMaskIndexShlo(
+    mlir::MlirOp self, mlir::MlirOp mask, int64_t dim_indexed,
+    int64_t num_non_zero_elements) {
+  const mlir::RankedTensorType self_type = GetTensorTypeOrDie(self);
+  const mlir::RankedTensorType mask_type = GetTensorTypeOrDie(mask);
+  const int64_t mask_rank = mask_type.getRank();
+  if (mask_rank < 3 || !self_type.hasStaticShape() ||
+      !mask_type.hasStaticShape() ||
+      mask_type.getNumElements() < kMinUniformElements ||
+      mask_type.getNumElements() > std::numeric_limits<int32_t>::max()) {
+    return BuildBooleanMaskIndexScalarShlo(self, mask, dim_indexed,
+                                           num_non_zero_elements);
+  }
+
+  const mlir::ArrayRef<int64_t> mask_shape = mask_type.getShape();
+  const mlir::ArrayRef<int64_t> self_shape = self_type.getShape();
+  const int64_t row_width = mask_shape[mask_rank - 1];
+  int64_t collapsed_dim_size = 1;
+  for (int64_t i = dim_indexed; i < dim_indexed + mask_rank; ++i) {
+    collapsed_dim_size *= self_shape[i];
+  }
+  const int64_t num_rows = collapsed_dim_size / row_width;
+  if (row_width < kMinUniformRowWidth || num_rows < kMinUniformRows ||
+      self_shape[dim_indexed + mask_rank - 1] != row_width ||
+      collapsed_dim_size < row_width || num_non_zero_elements < row_width ||
+      num_non_zero_elements % row_width != 0) {
+    return BuildBooleanMaskIndexScalarShlo(self, mask, dim_indexed,
+                                           num_non_zero_elements);
+  }
+
+  const int64_t selected_rows = num_non_zero_elements / row_width;
+  mlir::MlirBuilder& builder = self.getBuilder();
+  mlir::MlirOp col0;
+  mlir::MlirOp is_row_uniform =
+      SliceMaskFirstColumnAndCheckRowUniform(mask, col0);
+
+  Dimensions out_shape;
+  out_shape.reserve(self_shape.size() - mask_rank + 1);
+  for (int64_t i = 0; i < dim_indexed; ++i) {
+    out_shape.push_back(self_shape[i]);
+  }
+  out_shape.push_back(num_non_zero_elements);
+  for (size_t i = dim_indexed + mask_rank; i < self_shape.size(); ++i) {
+    out_shape.push_back(self_shape[i]);
+  }
+  const mlir::RankedTensorType out_type = mlir::makeTensorType(
+      builder.getContext(), out_shape, self_type.getElementType());
+
+  auto if_op = stablehlo::IfOp::create(builder.getOpBuilder(), builder.getLoc(),
+                                       mlir::TypeRange{out_type},
+                                       is_row_uniform.getValue());
+
+  {
+    mlir::RegionBuilder true_rb(builder, if_op->getRegion(0));
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp true_out,
+                        BuildRowUniformMaskIndexTrueBranch(
+                            true_rb, self, col0, dim_indexed, mask_rank,
+                            num_rows, row_width, selected_rows, out_type));
+    stablehlo::Return(true_rb, {true_out});
+  }
+
+  {
+    mlir::RegionBuilder false_rb(builder, if_op->getRegion(1));
+    TT_ASSIGN_OR_RETURN(
+        mlir::MlirOp false_out,
+        BuildBooleanMaskIndexScalarShlo(mlir::MlirOp(false_rb, self.getValue()),
+                                        mlir::MlirOp(false_rb, mask.getValue()),
+                                        dim_indexed, num_non_zero_elements));
+    stablehlo::Return(false_rb, {false_out});
+  }
+
+  return mlir::MlirOp(builder, if_op.getResult(0));
 }
 
 }  // namespace torch_tpu

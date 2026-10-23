@@ -767,6 +767,40 @@ mlir::MlirOp GetNonzeroMask(mlir::MlirOp input) {
                                   mlir::stablehlo::ComparisonDirection::NE);
 }
 
+mlir::MlirOp SliceMaskFirstColumnAndCheckRowUniform(mlir::MlirOp mask,
+                                                    mlir::MlirOp& col0_out) {
+  mlir::MlirBuilder& builder = mask.getBuilder();
+  const mlir::RankedTensorType mask_type = GetTensorTypeOrDie(mask);
+  const mlir::ArrayRef<int64_t> mask_shape = mask_type.getShape();
+  const int64_t rank = mask_type.getRank();
+  const mlir::Type i1_type = builder.getOpBuilder().getI1Type();
+  Dimensions slice_start(rank, 0);
+  Dimensions slice_limit(mask_shape.begin(), mask_shape.end());
+  slice_limit[rank - 1] = 1;
+  Strides slice_strides(rank, 1);
+  col0_out =
+      mlir::stablehlo::Slice(mask, slice_start, slice_limit, slice_strides);
+
+  Dimensions all_dims(rank);
+  for (int64_t d = 0; d < rank; ++d) {
+    all_dims[d] = d;
+  }
+  mlir::MlirOp col0_bcast = mlir::stablehlo::BroadcastInDim(
+      mask_type, col0_out, absl::MakeConstSpan(all_dims));
+  mlir::MlirOp row_eq = mlir::stablehlo::Compare(
+      mask, col0_bcast, mlir::stablehlo::ComparisonDirection::EQ);
+  mlir::MlirOp init_true =
+      MakeScalarConstant(builder, true, mlir::ElementType::PRED);
+  mlir::SmallVector<mlir::MlirOp> reduced = mlir::stablehlo::Reduce(
+      builder, {row_eq}, {init_true},
+      [i1_type](mlir::RegionBuilder& rb) {
+        mlir::stablehlo::buildReduceBody<mlir::stablehlo::AndOp>(
+            i1_type, rb.getRegion(), rb.getOpBuilder());
+      },
+      absl::MakeConstSpan(all_dims));
+  return reduced[0];
+}
+
 RngBitGeneratorResults RngBitGeneratorLike(
     mlir::MlirOp rng_input_state, mlir::RankedTensorType output_type,
     mlir::stablehlo::RngAlgorithmAttr rng_alg,

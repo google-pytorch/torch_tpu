@@ -21130,6 +21130,89 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
     self.assertIn("tensor<131072x1xf32>", mlir_text)
     self.assertNotIn("tensor<2048x64xf32>", mlir_text)
 
+  def test_masked_scatter_materialized_row_uniform_3d_mask(self):
+    inputs_cpu = torch.randn(2, 64, 128, dtype=torch.bfloat16)
+    m_2d = torch.arange(2 * 64).reshape(2, 64) % 3 == 0
+    uniform_mask = m_2d.unsqueeze(-1).expand(2, 64, 128).contiguous()
+    non_uniform_mask = uniform_mask.clone()
+    non_uniform_mask[0, 3, 7] = not non_uniform_mask[0, 3, 0]
+    source_cpu = torch.randn(2 * 64 * 128, dtype=torch.bfloat16)
+
+    compiled_scatter = torch.compile(torch.masked_scatter, backend="tpu")
+
+    for mask_cpu in (uniform_mask, non_uniform_mask):
+      expected = torch.masked_scatter(inputs_cpu, mask_cpu, source_cpu)
+      actual_eager = torch.masked_scatter(
+          inputs_cpu.to("tpu"), mask_cpu.to("tpu"), source_cpu.to("tpu")
+      ).cpu()
+      utils.assert_close(actual=actual_eager, expected=expected)
+
+      actual_compiled = compiled_scatter(
+          inputs_cpu.to("tpu"), mask_cpu.to("tpu"), source_cpu.to("tpu")
+      ).cpu()
+      utils.assert_close(actual=actual_compiled, expected=expected)
+
+    compiled_expand = torch.compile(
+        lambda x, m, s: x.masked_scatter(m.unsqueeze(-1).expand_as(x), s),
+        backend="tpu",
+    )
+    expected_expand = inputs_cpu.masked_scatter(
+        m_2d.unsqueeze(-1).expand_as(inputs_cpu), source_cpu
+    )
+    actual_expand = compiled_expand(
+        inputs_cpu.to("tpu"), m_2d.to("tpu"), source_cpu.to("tpu")
+    ).cpu()
+    utils.assert_close(actual=actual_expand, expected=expected_expand)
+
+  def test_nonzero_materialized_row_uniform_3d_mask(self):
+    m_2d = torch.arange(2 * 64).reshape(2, 64) % 3 == 0
+    uniform_mask = m_2d.unsqueeze(-1).expand(2, 64, 128).contiguous()
+
+    # Case 1: Single flipped element (row not uniform, output size not a
+    # multiple of 128).
+    non_uniform_single = uniform_mask.clone()
+    non_uniform_single[0, 3, 7] = not non_uniform_single[0, 3, 0]
+
+    # Case 2: Swapped pair across two rows so output_size stays a multiple of
+    # 128, forcing the runtime `stablehlo.if` to take its false branch.
+    non_uniform_same_count = uniform_mask.clone()
+    non_uniform_same_count[0, 0, 7] = False
+    non_uniform_same_count[0, 1, 7] = True
+
+    compiled_nonzero = torch.compile(torch.nonzero, backend="tpu")
+
+    for mask_cpu in (uniform_mask, non_uniform_single, non_uniform_same_count):
+      expected = torch.nonzero(mask_cpu)
+      actual_eager = torch.nonzero(mask_cpu.to("tpu")).cpu()
+      utils.assert_close(actual=actual_eager, expected=expected)
+
+      actual_compiled = compiled_nonzero(mask_cpu.to("tpu")).cpu()
+      utils.assert_close(actual=actual_compiled, expected=expected)
+
+  def test_boolean_mask_index_materialized_row_uniform_3d_mask(self):
+    inputs_cpu = torch.randn(2, 64, 128, dtype=torch.bfloat16)
+    m_2d = torch.arange(2 * 64).reshape(2, 64) % 3 == 0
+    uniform_mask = m_2d.unsqueeze(-1).expand(2, 64, 128).contiguous()
+
+    non_uniform_single = uniform_mask.clone()
+    non_uniform_single[0, 3, 7] = not non_uniform_single[0, 3, 0]
+
+    non_uniform_same_count = uniform_mask.clone()
+    non_uniform_same_count[0, 0, 7] = False
+    non_uniform_same_count[0, 1, 7] = True
+
+    compiled_index = torch.compile(lambda x, m: x[m], backend="tpu")
+
+    for mask_cpu in (uniform_mask, non_uniform_single, non_uniform_same_count):
+      expected = inputs_cpu[mask_cpu]
+      actual_eager = inputs_cpu.to("tpu")[mask_cpu.to("tpu")].cpu()
+      utils.assert_close(actual=actual_eager, expected=expected)
+
+      actual_compiled = compiled_index(
+          inputs_cpu.to("tpu"), mask_cpu.to("tpu")
+      ).cpu()
+      utils.assert_close(actual=actual_compiled, expected=expected)
+
   def test_slice_scatter(self):
     # Fast-path 1: Full replacement (step == 1 && slice_len == total_len)
     t = torch.randn(4, 8)

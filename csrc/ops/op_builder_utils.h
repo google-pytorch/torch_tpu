@@ -418,6 +418,12 @@ absl::StatusOr<mlir::MlirOp> MakeConstantLike(mlir::MlirOp input,
 // can see them. See b/562066667.
 mlir::MlirOp GetNonzeroMask(mlir::MlirOp input);
 
+// Slices the first column along the innermost dimension (rank - 1) of `mask`
+// (stored in `col0_out`), and returns a scalar boolean tensor (i1) indicating
+// whether every element in each row equals its first column.
+mlir::MlirOp SliceMaskFirstColumnAndCheckRowUniform(mlir::MlirOp mask,
+                                                    mlir::MlirOp& col0_out);
+
 struct RngBitGeneratorResults {
   mlir::MlirOp output_state;
   mlir::MlirOp output;

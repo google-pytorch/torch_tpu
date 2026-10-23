@@ -53,7 +53,6 @@ torch_tpu_cc_library(
     deps = [
         "//csrc/common:dimension_types",
         "//csrc/common:error_utils",
-        "//csrc/common:utils",
         "//csrc/ops:op_builder_utils",
         "//csrc/ops/reductions",
         "//csrc/ops/sort",
@@ -61,6 +60,7 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Support",
