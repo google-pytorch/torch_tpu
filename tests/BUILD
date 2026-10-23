@@ -1299,6 +1299,22 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "op_testing_errors_test",
+    srcs = ["op_testing_errors_test.py"],
+    tags = [
+        "nosan",  # *san builds are low-value for error tests.
+    ],
+    deps = [
+        ":op_testing",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:flagsaver",
+        "//shims/torch:pytorch",
+        "//shims/torch:testing_internal",
+        "//src/torch_tpu",
+    ],
+)
+
+torch_tpu_py_test(
     name = "sparse_dense_matmul_test",
     timeout = "long",
     srcs = ["sparse_dense_matmul_test.py"],

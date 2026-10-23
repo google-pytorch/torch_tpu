@@ -24,9 +24,12 @@ from unittest import mock
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
+from torch._higher_order_ops import associative_scan
+from torch._higher_order_ops import scan
 import torch.distributed as dist
 from torch.fx.experimental.proxy_tensor import make_fx
 import torch.multiprocessing as mp
+from torch.nested._internal import nested_tensor as nt_internal
 from torch.testing._internal.distributed import fake_pg
 from torch.tpu import distributed  # pyrefly: ignore[missing-import]
 from torch.utils import _pytree as pytree
@@ -5934,6 +5937,453 @@ class ForkErrorsTest(et.TpuOnlyErrorTestBase):
         torch.tpu._init_runtime_options()
       torch.tpu._shutdown_runtime()
     self.assertFalse(torch.tpu._is_in_bad_fork())
+
+
+class CoreOpAndTensorErrorsTest(et.TpuOnlyErrorTestBase):
+  """Tests error handling for core operators and tensor primitives."""
+
+  @et.why_tpu_only(
+      "Testing jagged/nested tensor add mismatched offsets on TPU."
+  )
+  def test_nested_tensor_add_mismatched_offsets(self):
+    t_a = torch.randn(5, 4, device="tpu")
+    t_b = torch.randn(5, 4, device="tpu")
+    offsets_a = torch.tensor([0, 2, 5], dtype=torch.int64, device="tpu")
+    offsets_b = torch.tensor([0, 3, 5], dtype=torch.int64, device="tpu")
+
+    nt_a = nt_internal.nested_view_from_values_offsets(t_a, offsets_a)
+    nt_b = nt_internal.nested_view_from_values_offsets(t_b, offsets_b)
+
+    with et.assert_raises_message(
+        RuntimeError, tpu=re.compile(r".*", re.DOTALL)
+    ):
+      _ = nt_a + nt_b
+
+  @et.why_tpu_only("Testing im2col operator validation on TPU.")
+  def test_im2col_errors(self):
+    tpu_device = torch.device("tpu")
+    x_2d = torch.randn(2, 2, device=tpu_device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r".*expected input to have 3 or 4 dimensions.*", re.DOTALL
+        ),
+    ):
+      torch.ops.aten.im2col(
+          x_2d,
+          kernel_size=(2, 2),
+          dilation=(1, 1),
+          padding=(0, 0),
+          stride=(1, 1),
+      )
+
+    x_small = torch.randn(1, 1, 2, 2, device=tpu_device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(r".*expected output shape to be positive.*", re.DOTALL),
+    ):
+      torch.ops.aten.im2col(
+          x_small,
+          kernel_size=(3, 3),
+          dilation=(1, 1),
+          padding=(0, 0),
+          stride=(1, 1),
+      )
+
+  @et.why_tpu_only("Testing solve_ex singular check errors on TPU.")
+  def test_solve_ex_singular_check_errors_true(self):
+    """Tests that singular inputs raise an error when check_errors=True."""
+    torch.manual_seed(1234)
+    a = torch.tensor([[1.0, 1.0], [1.0, 1.0]])
+    b = torch.randn(2, 1)
+
+    # CPU
+    with et.assert_raises_message(
+        RuntimeError, tpu=re.compile(r".*", re.DOTALL)
+    ):
+      torch.linalg.solve_ex(a, b, check_errors=True)
+
+    # TPU
+    tpu_device = torch.device("tpu")
+    with et.assert_raises_message(
+        RuntimeError, tpu=re.compile(r".*", re.DOTALL)
+    ):
+      torch.linalg.solve_ex(
+          a.to(tpu_device), b.to(tpu_device), check_errors=True
+      )
+
+  @et.why_tpu_only(
+      "Tests error checking on invalid offsets, dimensions, and parameters for"
+      " jagged tensor ops on TPU."
+  )
+  def test_jagged_invalid_inputs_error_handling(self):
+    """Tests error checking on invalid offsets, dimensions, and parameters."""
+    values = torch.randn(5, 4, device="tpu")
+    offsets = torch.tensor([0, 2, 5], dtype=torch.int64, device="tpu")
+    dense = torch.randn(2, 3, 4, device="tpu")
+
+    # Negative max_length check
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r""".*expected max_lengths\[0\] to be >= 0.*""", re.DOTALL
+        ),
+    ):
+      torch.ops.aten._jagged_to_padded_dense_forward(
+          values, [offsets], [-1], 0.0
+      )
+
+    # Multiple jagged dimensions rejected
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(r""".*expected only 1 offset tensor.*""", re.DOTALL),
+    ):
+      torch.ops.aten._jagged_to_padded_dense_forward(
+          values, [offsets, offsets], [3], 0.0
+      )
+
+    # 2D offsets tensor rejected
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r""".*expected offsets to have only 1 dimension.*""", re.DOTALL
+        ),
+    ):
+      torch.ops.aten._jagged_to_padded_dense_forward(
+          values, [offsets.unsqueeze(0)], [3], 0.0
+      )
+
+    # 1D dense tensor in padded_dense_to_jagged rejected
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r""".*expected dense to have >= 2 dimensions.*""", re.DOTALL
+        ),
+    ):
+      torch.ops.aten._padded_dense_to_jagged_forward(
+          torch.randn(5, device="tpu"), [offsets]
+      )
+
+    # total_L mismatch rejected
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r""".*expected the last offset to match total_L.*""", re.DOTALL
+        ),
+    ):
+      torch.ops.aten._padded_dense_to_jagged_forward(
+          dense, [offsets], total_L=999
+      )
+
+    # Offset sequence length exceeding dense sequence length rejected
+    invalid_offsets = torch.tensor([0, 10, 20], dtype=torch.int64, device="tpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r""".*expected all batch items to have length <=.*""", re.DOTALL
+        ),
+    ):
+      torch.ops.aten._padded_dense_to_jagged_forward(dense, [invalid_offsets])
+
+    # Non-int64 offsets rejected
+    int32_offsets = torch.tensor([0, 2, 5], dtype=torch.int32, device="tpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r""".*expected offsets to be of dtype int64.*""", re.DOTALL
+        ),
+    ):
+      torch.ops.aten._jagged_to_padded_dense_forward(
+          values, [int32_offsets], [3], 0.0
+      )
+
+    # Non-zero start offsets rejected
+    nonzero_start_offsets = torch.tensor(
+        [1, 2, 5], dtype=torch.int64, device="tpu"
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(r""".*expected the first offset to be 0.*""", re.DOTALL),
+    ):
+      torch.ops.aten._jagged_to_padded_dense_forward(
+          values, [nonzero_start_offsets], [3], 0.0
+      )
+
+    # Non-monotonic offsets rejected
+    decreasing_offsets = torch.tensor(
+        [0, 5, 2], dtype=torch.int64, device="tpu"
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r""".*expected offsets to be non-decreasing.*""", re.DOTALL
+        ),
+    ):
+      torch.ops.aten._jagged_to_padded_dense_forward(
+          values, [decreasing_offsets], [3], 0.0
+      )
+
+    # 0D values tensor rejected
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r""".*(?:values must be at least 1D|expected values to have >= 1 dimensions).*""",
+            re.DOTALL,
+        ),
+    ):
+      torch.ops.aten._jagged_to_padded_dense_forward(
+          torch.tensor(1.0, device="tpu"), [offsets], [3], 0.0
+      )
+
+    # Offsets referencing more elements than available in values rejected
+    out_of_bounds_offsets = torch.tensor(
+        [0, 10], dtype=torch.int64, device="tpu"
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r""".*expected the last offset to be <= the number of values.*""",
+            re.DOTALL,
+        ),
+    ):
+      torch.ops.aten._jagged_to_padded_dense_forward(
+          values, [out_of_bounds_offsets], [10], 0.0
+      )
+
+    # Offsets batch size mismatching dense batch size rejected
+    mismatched_batch_offsets = torch.tensor(
+        [0, 1, 2, 3], dtype=torch.int64, device="tpu"
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r""".*expected dense first dimension size to match the batch size inferred from the offsets.*""",
+            re.DOTALL,
+        ),
+    ):
+      torch.ops.aten._padded_dense_to_jagged_forward(
+          dense, [mismatched_batch_offsets]
+      )
+
+  @et.why_tpu_only(
+      "Testing compute_sparse_dense_matmul_stats invalid input error on TPU."
+  )
+  def test_compute_stats_invalid_inputs(self):
+    val_float = torch.tensor([0.0, 1.0], dtype=torch.float32)
+    off = torch.tensor([0, 2], dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(r".*indices must be int32.*", re.DOTALL),
+    ):
+      torch.ops.tpu.compute_sparse_dense_matmul_stats(val_float, off, 1, 2)
+
+  @et.why_tpu_only("Testing scan op error handling on TPU for PyTorch < 2.14.")
+  @et.skip_if(
+      lambda: utils.parse_version(torch.__version__) >= (2, 14, 0),
+      "PyTorch >= 2.14 supports seq_len == 0 in scan",
+  )
+  def test_scan_zero_length_xs(self):
+    def fn(carry, x):
+      return carry + x, carry + x
+
+    x = torch.empty(0, 1, device="tpu")
+    init = torch.tensor([5.0], device="tpu")
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r".*All xs leaves must at least have 'dim' number of dimensions and"
+            r" scan dimension > 0.*",
+            re.DOTALL,
+        ),
+    ):
+      compiled = torch.compile(scan, backend="tpu", dynamic=False)
+      compiled(fn, init, x, dim=0)
+
+  @et.why_tpu_only(
+      "Testing buffer donation invalidation error after _fused_adamw_ on TPU."
+  )
+  def test_fused_adamw_donates_first_argument_error(self):
+    # TODO: b/576318333 - Re-enable once torch.compile of _fused_adamw_ passes
+    # functionalization.
+    self.skipTest("b/576318333: functionalization fails for _fused_adamw_.")
+
+    @torch.compile(
+        fullgraph=True,
+        backend="tpu",
+        options={"serializable": False},
+    )
+    def step_fn(params, grads, exp_avgs, exp_avg_sqs, state_steps, lr):
+      torch.ops.aten._fused_adamw_.default(
+          params,
+          grads,
+          exp_avgs,
+          exp_avg_sqs,
+          [],
+          state_steps,
+          lr=lr,
+          beta1=0.9,
+          beta2=0.999,
+          weight_decay=0.01,
+          eps=1e-8,
+          amsgrad=False,
+          maximize=False,
+      )
+
+    p = torch.tensor([1.0, 2.0], dtype=torch.float32, device="tpu")
+    g = torch.tensor([0.1, 0.2], dtype=torch.float32, device="tpu")
+    ea = torch.tensor([0.01, 0.02], dtype=torch.float32, device="tpu")
+    eas = torch.tensor([0.001, 0.002], dtype=torch.float32, device="tpu")
+    step = torch.tensor([1], dtype=torch.int64, device="tpu")
+
+    old_p_view = p.view_as(p)
+
+    step_fn([p], [g], [ea], [eas], [step], 0.001)
+
+    self.assertIsNotNone(p.cpu())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r"to_copy\(\): cannot start a device to host copy from a donated or"
+            r" deleted buffer",
+            re.DOTALL,
+        ),
+    ):
+      old_p_view.cpu()
+
+  @et.why_tpu_only("Testing empty tensor min reduction errors on TPU.")
+  def test_min_empty_reduction_dim(self):
+    # empty tensor on reduction dim
+    with et.assert_raises_message(
+        IndexError, tpu=re.compile(r".*min.*", re.DOTALL)
+    ):
+      torch.min(torch.tensor([], device="cpu"), dim=0)
+    with et.assert_raises_message(
+        IndexError, tpu=re.compile(r".*min.*", re.DOTALL)
+    ):
+      torch.min(
+          torch.tensor([], device=torch.device("tpu")),
+          dim=0,
+      )
+
+    # empty tensor on reduction dim
+    with et.assert_raises_message(
+        IndexError, tpu=re.compile(r".*min.*", re.DOTALL)
+    ):
+      torch.min(torch.empty(0, 2, device="cpu"), dim=0)
+    with et.assert_raises_message(
+        IndexError, tpu=re.compile(r".*min.*", re.DOTALL)
+    ):
+      torch.min(
+          torch.empty(0, 2, device=torch.device("tpu")),
+          dim=0,
+      )
+
+  @et.why_tpu_only("Testing set_rng_state ByteTensor validation on TPU.")
+  def test_set_rng_state_error_tpu(self):
+    device = torch.device("tpu")
+    state = torch.zeros(16, dtype=torch.uint8, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r".*expect rng state to be a torch\.ByteTensor.*", re.DOTALL
+        ),
+    ):
+      torch.tpu.set_rng_state(state, device)
+
+  @et.why_tpu_only("Testing Generator set_state ByteTensor validation on TPU.")
+  def test_generator_set_state_error_tpu(self):
+    device = torch.device("tpu")
+    g = torch.Generator(device=device)
+    state = g.get_state().to(device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r".*expect rng state to be a torch\.ByteTensor.*", re.DOTALL
+        ),
+    ):
+      g.set_state(state)
+
+  @et.why_tpu_only("Testing inplace detach on view error on TPU.")
+  def test_inplace_detach_fails_with_view(self):
+    x = torch.randn(3, 2, device=torch.device("tpu"), requires_grad=True)
+    y = x.view(-1)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(r".*Can't detach views in-place.*", re.DOTALL),
+    ):
+      y.detach_()
+      y.to("cpu")
+
+  @et.why_tpu_only("Testing expand mutation on view error on TPU.")
+  def test_expand_mutate_view_fails(self):
+    base = torch.zeros(1, device=torch.device("tpu"))
+    view = base.expand(1000)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r".*unsupported operation: more than one element of the written-to"
+            r" tensor refers to a single memory location\. Please"
+            r" clone\(\) the tensor before performing the operation\..*",
+            re.DOTALL,
+        ),
+    ):
+      view.add_(1.0)
+
+  @et.why_tpu_only("Testing unfold mutation on view error on TPU.")
+  def test_unfold_mutate_view_fails(self):
+    base = torch.zeros(1024, 128, device=torch.device("tpu"))
+    view = base.unfold(dimension=1, size=127, step=1)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r".*inplace writes to overlapping views are undefined behavior and"
+            r" are not supported.*",
+            re.DOTALL,
+        ),
+    ):
+      view.add_(1.0)
+
+  @et.why_tpu_only("Testing fmod int zero division behavior on TPU and CPU.")
+  def test_fmod_int_zero_division(self):
+    # CPU raises RuntimeError for integer division by zero
+    t_cpu = torch.tensor([1, 2, 3], device="cpu", dtype=torch.int32)
+    other_cpu = torch.zeros_like(t_cpu)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(r".*ZeroDivisionError.*", re.DOTALL),
+    ):
+      torch.fmod(t_cpu, other_cpu)
+
+    # TPU can return any value on integer zero division without raising.
+    t_tpu = torch.tensor(
+        [1, 2, 3], device=torch.device("tpu"), dtype=torch.int32
+    )
+    other_tpu = torch.zeros_like(t_tpu)
+    result = torch.fmod(t_tpu, other_tpu)
+    self.assertEqual(result.shape, (3,))
+
+  @et.why_tpu_only("Testing associative scan validation errors on TPU.")
+  def test_associative_scan_validation_errors(self):
+    x_tpu = torch.randn(4, 8, device="tpu")
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(r".*tree structure of the xs and the outs.*", re.DOTALL),
+    ):
+      associative_scan(lambda a, b: (a + b, a - b), x_tpu, dim=0)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(r".*combine_fn needs to be pointwise.*", re.DOTALL),
+    ):
+      associative_scan(
+          lambda a, b: a @ b,
+          torch.randn(4, 4, 4, device="tpu"),
+          dim=0,
+          combine_mode="pointwise",
+      )
 
 
 if __name__ == "__main__":
