@@ -159,7 +159,7 @@ jobs:
           gcs_wheel_dir: ${{ env.GCS_WHEEL_DIR }}
           python_version: ${{ env.PYTHON_VERSION }}
       - name: Check wheel metadata
-        run: uv run --isolated --no-project --with twine twine check dist/*.whl
+        run: uv run --isolated --no-project --with twine twine check --strict dist/*.whl
       - name: Run wheel characterization tests via nox
         run: uvx nox --force-python "${PYTHON_VERSION}" -s wheel_test
 

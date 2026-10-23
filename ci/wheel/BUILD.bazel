@@ -208,7 +208,7 @@ py_wheel(
         "ci/wheel/remapped_pywrap_binaries_pkg",
         "src",
     ],
-    summary = "TPU/XLA support for PyTorch",
+    summary = "TPU support for PyTorch",
     tags = ["manual"],
     # Publishing runs via twine outside Bazel. See ci/upload_wheel.sh.
     # Suppress the auto-generated `.publish` target, which rules_python
@@ -234,6 +234,7 @@ torch_tpu_py_test(
     name = "wheel_single_source_test",
     srcs = ["wheel_single_source_test.py"],
     data = [
+        "//:README.md",
         "//:pyproject.toml",
     ],
     env = select({

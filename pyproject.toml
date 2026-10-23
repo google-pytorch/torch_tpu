@@ -16,6 +16,8 @@
 [project]
 name = "torch_tpu"
 version = "0.2.1"
+description = "TPU support for PyTorch"
+readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 # LINT.IfChange(requires_python)
