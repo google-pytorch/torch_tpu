@@ -52,3 +52,27 @@ files.
 The `docs/markdown/` directory contains the generated Markdown exports from the
 Marimo sources. These Markdown files are used by MkDocs to build the HTML
 documentation.
+
+## Translations
+
+The site is also published in Japanese (`ja`), Korean (`ko`), Simplified
+Chinese (`zh`), Brazilian Portuguese (`pt-BR`), Spanish (`es`), French (`fr`),
+German (`de`), and Italian (`it`). The `mkdocs-static-i18n` plugin builds each
+language under its own URL prefix, for example `/ja/faq/`.
+
+Each translation is a Markdown file next to its English page, named
+`<page>.<locale>.md`. For example, the Japanese version of `faq.md` is
+`faq.ja.md`. If a page has no translation, the site shows the English page.
+
+When you translate or update a page, follow these rules:
+
+*   Keep code blocks, inline code, URLs, HTML comments, and callout markers
+    such as `> **Note:**` exactly as they are in the English page.
+*   End each translated heading with the English heading id, for example
+    `## Requisiti { #requirements }`, so that links and anchors work in every
+    language.
+*   When the English page changes, update its translations in the same change
+    or soon after.
+
+Translated section titles for the navigation menu are set under
+`nav_translations` in `mkdocs.yml`.
