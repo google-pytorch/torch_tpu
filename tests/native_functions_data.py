@@ -208,7 +208,6 @@ UNREGISTERED_OPS = frozenset([
     'fractional_max_pool3d_backward.grad_input',
     'frexp.Tensor_out',
     'from_file',
-    'gcd.out',
     'geometric_',
     'glu_backward_jvp',
     'glu_jvp',

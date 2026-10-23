@@ -119,6 +119,7 @@
 #include "csrc/ops/fused_adamw/fused_adamw_aten_kernels.h"
 #include "csrc/ops/fused_sgd/fused_sgd_aten_kernels.h"
 #include "csrc/ops/gather/gather_aten_kernels.h"
+#include "csrc/ops/gcd/gcd_aten_kernels.h"
 #include "csrc/ops/gelu/gelu_aten_kernels.h"
 #include "csrc/ops/glu/glu_aten_kernels.h"
 #include "csrc/ops/grid_sampler/grid_sampler_aten_kernels.h"
@@ -729,6 +730,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kFusedSgdTensorLr>(m, AtenFusedSgdTensorLr);
   ImplStable<OpName::kGather>(m, AtenGather);
   ImplStable<OpName::kGatherOut>(m, AtenGatherOut);
+  ImplStable<OpName::kGcdOut>(m, AtenGcdOut);
   ImplStable<OpName::kGeScalarOut>(m, AtenGeScalarOut);
   ImplStable<OpName::kGeTensorOut>(m, AtenGeTensorOut);
   ImplStable<OpName::kGelu>(m, AtenGelu);
