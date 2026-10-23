@@ -96,6 +96,89 @@ plugins:
   - glightbox
   - open-in-new-tab
   - table-reader
+  # Translations live next to the English page as `<page>.<locale>.md`.
+  - i18n:
+      docs_structure: suffix
+      fallback_to_default: true
+      reconfigure_material: true
+      reconfigure_search: true
+      languages:
+        - locale: en
+          default: true
+          name: English
+          build: true
+        - locale: ja
+          name: 日本語
+          build: true
+          nav_translations:
+            Home: ホーム
+            Get started with TorchTPU: TorchTPU を使ってみる
+            In-depth: 詳細
+            Case studies: ケーススタディ
+            Analyze your workload: ワークロードを分析する
+        - locale: ko
+          name: 한국어
+          build: true
+          nav_translations:
+            Home: 홈
+            Get started with TorchTPU: TorchTPU 시작하기
+            In-depth: 심층 분석
+            Case studies: 사례 연구
+            Analyze your workload: 워크로드 분석
+        - locale: zh
+          name: 简体中文
+          build: true
+          nav_translations:
+            Home: 首页
+            Get started with TorchTPU: TorchTPU 入门
+            In-depth: 深入了解
+            Case studies: 案例研究
+            Analyze your workload: 分析工作负载
+        - locale: pt-BR
+          name: Português (Brasil)
+          build: true
+          nav_translations:
+            Home: Início
+            Get started with TorchTPU: Primeiros passos com o TorchTPU
+            In-depth: Detalhes técnicos
+            Case studies: Estudos de caso
+            Analyze your workload: Analise sua carga de trabalho
+        - locale: es
+          name: Español
+          build: true
+          nav_translations:
+            Home: Inicio
+            Get started with TorchTPU: Primeros pasos con TorchTPU
+            In-depth: Información detallada
+            Case studies: Casos prácticos
+            Analyze your workload: Analiza tu carga de trabajo
+        - locale: fr
+          name: Français
+          build: true
+          nav_translations:
+            Home: Accueil
+            Get started with TorchTPU: Premiers pas avec TorchTPU
+            In-depth: Approfondissement
+            Case studies: Études de cas
+            Analyze your workload: Analyser votre charge de travail
+        - locale: de
+          name: Deutsch
+          build: true
+          nav_translations:
+            Home: Startseite
+            Get started with TorchTPU: Erste Schritte mit TorchTPU
+            In-depth: Details
+            Case studies: Fallstudien
+            Analyze your workload: Arbeitslast analysieren
+        - locale: it
+          name: Italiano
+          build: true
+          nav_translations:
+            Home: Home
+            Get started with TorchTPU: Inizia a utilizzare TorchTPU
+            In-depth: Approfondimenti
+            Case studies: Casi di studio
+            Analyze your workload: Analizza il tuo carico di lavoro
 
 
 markdown_extensions:
