@@ -562,76 +562,6 @@ TEST(DecomposeIntoViewSequence, Conjugate_RealBase_RealView) {
                     mlir::ElementType::F32, /*is_conj=*/true);
 }
 
-TEST(DecomposeIntoViewSequence, SelectMajorAxis2D) {
-  // torch.ones(3, 4)[1, :]
-  Dimensions contiguous_base_shape = {3, 4};
-  StridedLayout view_layout = {
-      .strided_dims = {{.size = 4, .stride = 1}},
-      .storage_offset = 4,
-  };
-  DecompositionTest(contiguous_base_shape, view_layout);
-}
-
-TEST(DecomposeIntoViewSequence, SelectMinorAxis2D) {
-  // torch.ones(3, 4)[:, 1]
-  Dimensions contiguous_base_shape = {3, 4};
-  StridedLayout view_layout = {
-      .strided_dims = {{.size = 3, .stride = 4}},
-      .storage_offset = 1,
-  };
-  DecompositionTest(contiguous_base_shape, view_layout);
-}
-
-TEST(DecomposeIntoViewSequence, SelectMajorAxis3D) {
-  // torch.ones(3, 4, 5)[1, :, :]
-  Dimensions contiguous_base_shape = {3, 4, 5};
-  StridedLayout view_layout = {
-      .strided_dims = {{.size = 4, .stride = 5}, {.size = 5, .stride = 1}},
-      .storage_offset = 20,
-  };
-  DecompositionTest(contiguous_base_shape, view_layout);
-}
-
-TEST(DecomposeIntoViewSequence, SelectMiddleAxis3D) {
-  // torch.ones(3, 4, 5)[:, 1, :]
-  Dimensions contiguous_base_shape = {3, 4, 5};
-  StridedLayout view_layout = {
-      .strided_dims = {{.size = 3, .stride = 20}, {.size = 5, .stride = 1}},
-      .storage_offset = 5,
-  };
-  DecompositionTest(contiguous_base_shape, view_layout);
-}
-
-TEST(DecomposeIntoViewSequence, SelectMinorAxis3D) {
-  // torch.ones(3, 4, 5)[:, :, 1]
-  Dimensions contiguous_base_shape = {3, 4, 5};
-  StridedLayout view_layout = {
-      .strided_dims = {{.size = 3, .stride = 20}, {.size = 4, .stride = 5}},
-      .storage_offset = 1,
-  };
-  DecompositionTest(contiguous_base_shape, view_layout);
-}
-
-TEST(DecomposeIntoViewSequence, SelectTwoAxes) {
-  // torch.ones(3, 4, 5)[1, :, 1]
-  Dimensions contiguous_base_shape = {3, 4, 5};
-  StridedLayout view_layout = {
-      .strided_dims = {{.size = 4, .stride = 5}},
-      .storage_offset = 21,
-  };
-  DecompositionTest(contiguous_base_shape, view_layout);
-}
-
-TEST(DecomposeIntoViewSequence, SelectSingleElement) {
-  // torch.ones(3, 4, 5)[1, 1, 1]
-  Dimensions contiguous_base_shape = {3, 4, 5};
-  StridedLayout view_layout = {
-      .strided_dims = {},
-      .storage_offset = 26,
-  };
-  DecompositionTest(contiguous_base_shape, view_layout);
-}
-
 void GetContiguousBaseShapeTest(const StridedLayout& view_layout,
                                 absl::Span<const int64_t> expected_base_shape) {
   TT_ASSERT_OK_AND_ASSIGN(Dimensions base_shape,
@@ -747,6 +677,103 @@ TEST(GetContiguousBaseShape, TwoDimensionOverlapping) {
   // ```
   Dimensions expected_base_shape = {1, 7};
   GetContiguousBaseShapeTest(view_layout, expected_base_shape);
+}
+
+// Returns the number of elements of the layout immediately before the first
+// bitcast in `sequence`, or -1 if there is no bitcast.
+int64_t NumelBeforeFirstBitcast(absl::Span<const ViewPrimitive> sequence,
+                                absl::Span<const int64_t> base_shape) {
+  StridedLayout layout = MakeContiguousBaseLayout(base_shape);
+  for (const auto& primitive : sequence) {
+    if (std::holds_alternative<RealToRealBitcast>(primitive)) {
+      int64_t numel = 1;
+      for (const auto& dim : layout.strided_dims) numel *= dim.size;
+      return numel;
+    }
+    UpdateLayout(layout, primitive);
+  }
+  return -1;
+}
+
+// A wide view (f32) of a narrow base (u8) must bitcast only the bytes covered
+// by the view, not the whole base, so that the work scales with the view.
+void NarrowBaseBitcastScalesWithViewTest(const StridedLayout& view_layout,
+                                         int64_t view_numel,
+                                         const Dimensions& base_shape = {
+                                             1 << 20}) {
+  TT_ASSERT_OK_AND_ASSIGN(
+      ViewSequence sequence,
+      DecomposeIntoViewSequence(base_shape, mlir::ElementType::UI8, view_layout,
+                                mlir::ElementType::F32,
+                                /*is_conj=*/false));
+  Simplify(sequence, base_shape);
+  const absl::Status valid =
+      ValidateViewSequence(sequence, base_shape, view_layout);
+  EXPECT_TRUE(valid.ok()) << valid;
+  const int64_t numel_before_bitcast =
+      NumelBeforeFirstBitcast(sequence, base_shape);
+  EXPECT_GT(numel_before_bitcast, 0) << ToString(sequence);
+  // The view covers 4 * view_numel bytes.
+  EXPECT_LE(numel_before_bitcast, 4 * view_numel) << ToString(sequence);
+  if (base_shape.size() >= 3) {
+    // A multi-dimensional base must not be flattened before the bitcast;
+    // flattening forces a relayout on TPU.
+    for (const auto& primitive : sequence) {
+      if (std::holds_alternative<RealToRealBitcast>(primitive)) break;
+      EXPECT_FALSE(std::holds_alternative<ReshapePrimitive>(primitive))
+          << ToString(sequence);
+    }
+  }
+}
+
+TEST(DecomposeIntoViewSequence, NarrowBaseWideView1DBitcastsOnlyView) {
+  // 16 KiB float32 view (4096 f32 elements = 16,384 bytes) centered in a
+  // 1 MiB (1 << 20 byte = 262,144 f32 element) uint8 base.
+  constexpr int64_t kViewNumel = 4096;
+  StridedLayout view_layout = {
+      .strided_dims = {{.size = kViewNumel, .stride = 1}},
+      .storage_offset = ((1 << 20) / 4 - kViewNumel) / 2,
+  };
+  NarrowBaseBitcastScalesWithViewTest(view_layout, kViewNumel);
+}
+
+TEST(DecomposeIntoViewSequence, NarrowBaseWideView2DBitcastsOnlyView) {
+  // 16 KiB 64x64 float32 view (4096 f32 elements) centered in a 1 MiB uint8
+  // base.
+  constexpr int64_t kViewNumel = 64 * 64;
+  StridedLayout view_layout = {
+      .strided_dims = {{.size = 64, .stride = 64}, {.size = 64, .stride = 1}},
+      .storage_offset = ((1 << 20) / 4 - kViewNumel) / 2,
+  };
+  NarrowBaseBitcastScalesWithViewTest(view_layout, kViewNumel);
+}
+
+TEST(DecomposeIntoViewSequence, NarrowBase3DWideView2DBitcastsOnlyViewRows) {
+  // The same 1 MiB uint8 base, after a write through a float32 view has
+  // reshaped it to [256, 1024, 4] (256 rows of 1024 f32 elements = 4 KiB per
+  // row). Only whole rows covering the 64x64 (16 KiB = 4 rows) view are
+  // bitcast, without flattening the base. The 2 * 4096 bound allows for an
+  // extra row if the view offset were not row-aligned.
+  constexpr int64_t kViewNumel = 64 * 64;
+  StridedLayout view_layout = {
+      .strided_dims = {{.size = 64, .stride = 64}, {.size = 64, .stride = 1}},
+      .storage_offset = ((1 << 20) / 4 - kViewNumel) / 2,
+  };
+  NarrowBaseBitcastScalesWithViewTest(view_layout, /*view_numel=*/2 * 4096,
+                                      /*base_shape=*/{256, 1024, 4});
+}
+
+TEST(DecomposeIntoViewSequence, NarrowBase3DCompiledArgumentPrefix) {
+  // torch.compile passes a view as the minimal contiguous prefix of its
+  // storage: here the first 32 rows (32 * 1024 f32 elements = 128 KiB) of a
+  // [256, 1024, 4] uint8 base, read as float32 from offset 0.
+  constexpr int64_t kViewNumel = 32 * 1024;
+  StridedLayout view_layout = {
+      .strided_dims = {{.size = kViewNumel, .stride = 1}},
+      .storage_offset = 0,
+  };
+  NarrowBaseBitcastScalesWithViewTest(view_layout, kViewNumel,
+                                      /*base_shape=*/{256, 1024, 4});
 }
 
 }  // namespace

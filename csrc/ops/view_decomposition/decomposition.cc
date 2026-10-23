@@ -19,6 +19,8 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <numeric>
+#include <optional>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -1222,6 +1224,142 @@ absl::Status RemoveExtraDim(StridedLayout& head_layout,
   return absl::OkStatus();
 }
 
+// Returns true if `base_dtype` and `view_dtype` are both real element types and
+// `view_dtype` has a bitwidth that is a strict integer multiple of
+// `base_dtype`'s bitwidth (e.g. uint8 base viewed as float32).
+bool IsBaseDtypeSmallerThanView(const mlir::ElementType base_dtype,
+                                const mlir::ElementType view_dtype) {
+  if (base_dtype == view_dtype || IsComplex(base_dtype) ||
+      IsComplex(view_dtype)) {
+    return false;
+  }
+  const int64_t base_bitwidth = TorchEquivalentBitwidth(base_dtype);
+  const int64_t view_bitwidth = TorchEquivalentBitwidth(view_dtype);
+  return base_bitwidth > 0 && view_bitwidth > base_bitwidth &&
+         view_bitwidth % base_bitwidth == 0;
+}
+
+// The rows (indices along dimension 0) of a contiguous base that cover a view,
+// see GetNarrowBaseViewRows.
+struct NarrowBaseViewRows {
+  // The first row covered by the view.
+  int64_t start = 0;
+  // One past the last row covered by the view.
+  int64_t limit = 0;
+  // The view's storage offset relative to the first row, in view elements.
+  int64_t view_offset = 0;
+  // The number of base elements per view element.
+  int64_t ratio = 1;
+};
+
+// Precondition: IsBaseDtypeSmallerThanView(contiguous_base_dtype, view_dtype).
+// Returns the range of rows of the base (along dimension 0) that cover the
+// view, if that is fewer rows than the whole base. Otherwise, returns
+// std::nullopt.
+//
+// Bitcasting to a wider dtype first would process the whole base, e.g. a 4 MiB
+// float32 view of a 256 MiB uint8 bucket would bitcast all 256 MiB. Slicing the
+// base rows first makes the work scale with the view. Only dimension 0 is
+// sliced, so the base keeps its shape (and TPU layout) otherwise; e.g. a base
+// of shape [rows, 1024, 4] can still be bitcast without a relayout.
+std::optional<NarrowBaseViewRows> GetNarrowBaseViewRows(
+    absl::Span<const int64_t> contiguous_base_shape,
+    const mlir::ElementType contiguous_base_dtype,
+    const StridedLayout& view_layout, const mlir::ElementType view_dtype) {
+  if (contiguous_base_shape.empty()) {
+    return std::nullopt;
+  }
+  const int64_t base_bitwidth = TorchEquivalentBitwidth(contiguous_base_dtype);
+  const int64_t view_bitwidth = TorchEquivalentBitwidth(view_dtype);
+  const int64_t ratio = view_bitwidth / base_bitwidth;
+
+  // The number of view elements spanned by the view, starting at its offset.
+  int64_t view_extent = 1;
+  for (const auto& dim : view_layout.strided_dims) {
+    if (dim.stride < 0) return std::nullopt;
+    view_extent += (dim.size - 1) * dim.stride;
+  }
+  // The range of base elements covered by the view.
+  const int64_t start = view_layout.storage_offset * ratio;
+  const int64_t limit = (view_layout.storage_offset + view_extent) * ratio;
+
+  const int64_t num_rows = contiguous_base_shape[0];
+  int64_t row_numel = 1;
+  for (int64_t i = 1; i < contiguous_base_shape.size(); ++i) {
+    row_numel *= contiguous_base_shape[i];
+  }
+  if (row_numel <= 0 || limit > num_rows * row_numel) {
+    return std::nullopt;
+  }
+  // The first row must start at a whole view element, so round it down to a
+  // multiple of `row_alignment` rows.
+  const int64_t row_alignment = ratio / std::gcd(row_numel, ratio);
+  const int64_t row_start = start / row_numel / row_alignment * row_alignment;
+  const int64_t row_limit = (limit + row_numel - 1) / row_numel;
+  if (row_start == 0 && row_limit == num_rows) {
+    return std::nullopt;
+  }
+  return NarrowBaseViewRows{
+      .start = row_start,
+      .limit = row_limit,
+      .view_offset = view_layout.storage_offset - row_start * row_numel / ratio,
+      .ratio = ratio,
+  };
+}
+
+// Decomposes a view of a narrow base by first slicing the base to `rows`, then
+// decomposing the view of those rows.
+absl::StatusOr<ViewSequence> DecomposeNarrowBaseViewRows(
+    absl::Span<const int64_t> contiguous_base_shape,
+    const mlir::ElementType contiguous_base_dtype,
+    const StridedLayout& view_layout, const mlir::ElementType view_dtype,
+    bool is_conj, const NarrowBaseViewRows& rows) {
+  SlicePrimitive slice;
+  slice.slice_dims.reserve(contiguous_base_shape.size());
+  slice.slice_dims.push_back(
+      {.start_index = rows.start, .limit_index = rows.limit, .stride = 1});
+  Dimensions sliced_shape = {rows.limit - rows.start};
+  for (int64_t i = 1; i < contiguous_base_shape.size(); ++i) {
+    slice.slice_dims.push_back({.start_index = 0,
+                                .limit_index = contiguous_base_shape[i],
+                                .stride = 1});
+    sliced_shape.push_back(contiguous_base_shape[i]);
+  }
+  ViewSequence result;
+  result.push_back(std::move(slice));
+
+  // A 1D base, or a 2D base of shape [n, ratio], has a lane-sparse TPU layout
+  // for the bitcast, which XLA lowers to strided slices that are each copied
+  // separately. Reshape the (small) sliced window to [rows, columns, ratio]
+  // so the bitcast reads a dense [rows, columns] tile layout instead.
+  if (sliced_shape.size() <= 2) {
+    int64_t window_numel = 1;
+    for (const int64_t size : sliced_shape) window_numel *= size;
+    int64_t columns = 1024;
+    while (columns > 1 && window_numel % (columns * rows.ratio) != 0) {
+      columns /= 2;
+    }
+    if (columns > 1) {
+      Dimensions new_shape = {window_numel / (columns * rows.ratio), columns,
+                              rows.ratio};
+      result.push_back(
+          ReshapePrimitive{.base_sizes = sliced_shape, .new_sizes = new_shape});
+      sliced_shape = std::move(new_shape);
+    }
+  }
+
+  StridedLayout sliced_view_layout = view_layout;
+  sliced_view_layout.storage_offset = rows.view_offset;
+  TT_ASSIGN_OR_RETURN(
+      ViewSequence sliced_sequence,
+      DecomposeIntoViewSequence(sliced_shape, contiguous_base_dtype,
+                                sliced_view_layout, view_dtype, is_conj));
+  for (auto& primitive : sliced_sequence) {
+    result.push_back(std::move(primitive));
+  }
+  return result;
+}
+
 }  // namespace
 
 // Implementation notes:
@@ -1247,6 +1385,18 @@ absl::StatusOr<ViewSequence> DecomposeIntoViewSequence(
     mlir::ElementType view_dtype, bool is_conj) {
   CheckViewPreconditions(contiguous_base_shape, contiguous_base_dtype,
                          view_layout, view_dtype);
+
+  // For a view wider than a narrow base, slice the base rows that the view
+  // covers before decomposing (and bitcasting) the rest.
+  if (IsBaseDtypeSmallerThanView(contiguous_base_dtype, view_dtype)) {
+    if (const std::optional<NarrowBaseViewRows> rows =
+            GetNarrowBaseViewRows(contiguous_base_shape, contiguous_base_dtype,
+                                  view_layout, view_dtype)) {
+      return DecomposeNarrowBaseViewRows(contiguous_base_shape,
+                                         contiguous_base_dtype, view_layout,
+                                         view_dtype, is_conj, *rows);
+    }
+  }
 
   // Work backwards, find the layout shape we need to reshape and slice to,
   // and note the last three operations necessary to achieve the view layout.
