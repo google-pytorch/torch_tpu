@@ -24,12 +24,17 @@
 namespace torch_tpu::kiln {
 
 // Structured control flow inside a kernel body.
+//
+// All callbacks below (`then_body`, `else_body`, and `body`) are invoked
+// synchronously to trace the IR region before the call returns and are not
+// retained afterwards, so capturing local variables by reference is safe.
 void If(Scalar cond, absl::FunctionRef<void()> then_body);
 void If(Scalar cond, absl::FunctionRef<void()> then_body,
         absl::FunctionRef<void()> else_body);
 
 // Loops from `lower` to `upper` (exclusive) by positive `step`, passing the
 // current induction variable to `body` as a signed i32 `Scalar` (`scf.for`).
+// `body` is invoked synchronously once before `For` returns.
 void For(IndexArg lower, IndexArg upper, IndexArg step,
          absl::FunctionRef<void(Scalar)> body);
 inline void For(IndexArg lower, IndexArg upper,
@@ -40,7 +45,8 @@ inline void For(IndexArg upper, absl::FunctionRef<void(Scalar)> body) {
   For(0, upper, 1, body);
 }
 
-// Executes `body` inside a `tpu.region` (Pallas `pl.run_scoped`).
+// Executes `body` synchronously inside a `tpu.region` (Pallas `pl.run_scoped`)
+// before `RunScoped` returns.
 void RunScoped(absl::FunctionRef<void()> body);
 
 }  // namespace torch_tpu::kiln

@@ -29,6 +29,12 @@ using IndexIndices = llvm::SmallVector<IndexArg, 4>;
 
 // Maps grid indices to block indices (Pallas `index_map`). Inside `IndexFn`,
 // `ProgramId(axis)` and `ScalarPrefetch(i)` are bound to the function's args.
+//
+// Unlike `CreateKernel`, `If`, `For`, and `RunScoped`, `IndexMap` stores `fn`
+// and invokes it later when `BuildKernel` / `CreateKernel` runs. Any variables
+// captured by reference in `fn` must outlive the `BuildKernel` / `CreateKernel`
+// call; in particular, an `IndexMap` returned from a helper function must not
+// capture local variables of that helper by reference.
 class IndexMap {
  public:
   using IndexFn = std::function<IndexIndices()>;  // STD_FUNCTION_OK
