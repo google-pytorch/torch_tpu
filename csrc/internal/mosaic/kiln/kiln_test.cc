@@ -35,6 +35,7 @@
 #include "csrc/common/error_utils.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "llvm/ADT/SmallVector.h"
 #include "xla/hlo/testlib/filecheck.h"
 
 namespace torch_tpu::kiln {
@@ -1994,6 +1995,24 @@ TEST(KilnTest, ConstructsShapesFromDTypeCallOperator) {
   std::ostringstream ss;
   ss << mat_f32;
   EXPECT_EQ(ss.str(), "f32[8, 128]");
+}
+
+TEST(KilnTest, RefAtSlicesWithAListOfIndexers) {
+  absl::StatusOr<Kernel> kernel = CreateKernel(
+      GridSpec{.name = "ref_at", .grid = {1}}, InSpec::Vmem(f32(4, 32, 128)),
+      OutSpec::Vmem(f32(8, 128)), [&](Ref in, Ref out) {
+        // The same view as `in(1, Slice(8, 8), all)`.
+        const llvm::SmallVector<Indexer, 3> indexers = {1, Slice(8, 8), all};
+        Ref view = in.At(indexers);
+        EXPECT_THAT(view.dims(), ElementsAre(8, 128));
+        out = Tile(view);
+      });
+  EXPECT_THAT(kernel, IsOkAndMatchesIr(R"(
+    CHECK-LABEL: func.func @ref_at(
+    CHECK-SAME:    %{{.*}}: i32, %[[IN:arg[0-9]+]]: memref<4x32x128xf32, #tpu.memory_space<vmem>>
+    CHECK:         %[[SLICE:.*]] = tpu.memref_slice %[[IN]]{{.*}} -> memref<1x8x128xf32, #tpu.memory_space<vmem>>
+    CHECK:         tpu.memref_squeeze %[[SLICE]] : {{.*}} -> memref<8x128xf32, #tpu.memory_space<vmem>>
+  )"));
 }
 
 // Like Pallas, a grid-free kernel has no grid or window attributes, so that XLA
