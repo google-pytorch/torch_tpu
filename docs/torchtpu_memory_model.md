@@ -101,7 +101,7 @@ metadata provides a way to map from an index tuple into a tensor, into a byte
 offset into the linear 1D buffer array backing that `Tensor`.
 
 Second, a `torch.Tensor` is a *logical* representation of a mathematical object.
-When you matrix-multiply two tensors, the result is another ``, with an
+When you matrix-multiply two tensors, the result is another `Tensor`, with an
 appropriate shape, representing the outcome. The exact pattern of strides and
 storage offset are of minimal importance here; what the `Tensor` means as a
 computation is more relevant than what the tensor is as a memory reference.
