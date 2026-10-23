@@ -172,11 +172,16 @@ at::Tensor MakeTensor(
 //    enable_autodonation: if true and the base buffer of the tensor has only
 //      one live data pointer that is about to be overwritten, then donate the
 //      base buffer to the result if possible.
+//    bump_version: if true, bumps the version counter of the tensor, like
+//      in-place ops do. Pass false only for writes that PyTorch's CPU and CUDA
+//      kernels make without bumping it, e.g. `native_batch_norm` updating the
+//      running statistics that autograd saves for the backward.
 // Requires:
 //    result_buf and tensor must have the same shape and dtype.
 absl::Status AssignBufferToAtTensor(DeviceBufferRef result_buf,
                                     const at::Tensor& tensor,
-                                    bool enable_autodonation = false);
+                                    bool enable_autodonation = false,
+                                    bool bump_version = true);
 
 // Returns true if `tensor` is a pure reinterpretation of all the bytes of
 // `base` (the base DeviceBufferRef of its storage).

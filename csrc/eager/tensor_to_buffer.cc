@@ -134,7 +134,8 @@ void OverwriteDataPtr(const c10::DataPtr& data_ptr,
 
 absl::Status AssignBufferToAtTensor(DeviceBufferRef result_buf,
                                     const at::Tensor& tensor,
-                                    bool enable_autodonation) {
+                                    bool enable_autodonation,
+                                    bool bump_version) {
   TT_RET_CHECK(tensor.device().type() == GetPrivateUse1DeviceType(),
                error::kInvalidArgument)
       << "expected tensor to be on " << GetPrivateUse1DeviceDebugName()
@@ -251,8 +252,11 @@ absl::Status AssignBufferToAtTensor(DeviceBufferRef result_buf,
                      std::move(new_base_buffer_ref));
   }
 
-  // Bump the version to tell PyTorch how to handle functionalization
-  tensor.unsafeGetTensorImpl()->bump_version();
+  // Bump the version counter for autograd in-place tracking and
+  // functionalization.
+  if (bump_version) {
+    tensor.unsafeGetTensorImpl()->bump_version();
+  }
 
   ABSL_VLOG(1) << "[AssignBufferToAtTensor] Final tensor after assignment:"
                << ToString(tensor)
