@@ -18,17 +18,58 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <utility>
+#include <vector>
 
 #include "ATen/core/TensorBody.h"
+#include "absl/log/absl_log.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/shape.h"
+#include "csrc/common/to_string.h"
+#include "csrc/pjrt/pjrt_state.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "xla/layout.h"
+#include "xla/pjrt/pjrt_client.h"
+#include "xla/util.h"
+#include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
+namespace {
+
+// Applies any overrides from `shape.layout()` onto `layout`.
+void ApplyCustomLayout(const Shape& shape, xla::Layout& layout) {
+  if (!shape.layout().has_value()) {
+    return;
+  }
+  const CustomLayout& custom_layout = *shape.layout();
+  if (!custom_layout.minor_to_major.empty()) {
+    *layout.mutable_minor_to_major() =
+        xla::DimensionVector(custom_layout.minor_to_major.begin(),
+                             custom_layout.minor_to_major.end());
+  }
+  // Dynamic on-device buffers have physical tiling determined by their upper
+  // bounds rather than their runtime logical dimensions, so static custom
+  // tiles do not apply.
+  if (!shape.on_device_shape_is_dynamic() && !custom_layout.tiles.empty()) {
+    layout.clear_tiles();
+    for (const Indices& tile_dims : custom_layout.tiles) {
+      layout.mutable_tiles()->emplace_back(tile_dims);
+    }
+  }
+  if (custom_layout.element_size_in_bits != 0 &&
+      custom_layout.element_size_in_bits !=
+          XlaEquivalentBitwidth(shape.dtype())) {
+    layout.set_element_size_in_bits(custom_layout.element_size_in_bits);
+  }
+}
+
+}  // namespace
 
 absl::StatusOr<TpuLayout> ResolveTpuLayout(const at::Tensor& tensor) {
   const auto scalar_type = tensor.scalar_type();
@@ -70,6 +111,63 @@ absl::StatusOr<TpuLayout> ResolveTpuLayout(const at::Tensor& tensor) {
     offset *= 2;
   }
   return TpuLayout{std::move(sizes), std::move(strides), offset, dtype};
+}
+
+absl::StatusOr<std::vector<xla::Layout>> ResolveXlaLayouts(
+    absl::Span<const Shape> shapes) {
+  if (shapes.empty()) {
+    return std::vector<xla::Layout>{};
+  }
+  TT_ASSIGN_OR_RETURN(xla::PjRtClient* const client,
+                      PjrtBackend::GetInstance().GetClient());
+  std::vector<xla::Layout> layouts;
+  layouts.reserve(shapes.size());
+  for (const Shape& shape : shapes) {
+    TT_ASSIGN_OR_RETURN(
+        xla::Layout layout,
+        AdaptXlaError(client->GetDefaultLayout(
+                          ConvertTo<xla::PrimitiveType>(shape.dtype()),
+                          shape.dimensions()),
+                      /*context=*/"failed to get default layout"));
+    ApplyCustomLayout(shape, layout);
+    layouts.push_back(std::move(layout));
+  }
+  return layouts;
+}
+
+absl::StatusOr<std::optional<CustomLayout>>
+ExtractCustomLayoutIfDifferentFromDefault(const Shape& shape) {
+  if (!shape.layout().has_value()) {
+    return std::nullopt;
+  }
+  TT_ASSIGN_OR_RETURN(xla::PjRtClient* const client,
+                      PjrtBackend::GetInstance().GetClient());
+  TT_ASSIGN_OR_RETURN(
+      const xla::Layout default_layout,
+      AdaptXlaError(
+          client->GetDefaultLayout(ConvertTo<xla::PrimitiveType>(shape.dtype()),
+                                   shape.dimensions()),
+          /*context=*/"failed to get default layout"));
+  xla::Layout resolved_layout = default_layout;
+  ApplyCustomLayout(shape, resolved_layout);
+  if (resolved_layout == default_layout) {
+    return std::nullopt;
+  }
+  ABSL_VLOG(3) << "[ExtractCustomLayoutIfDifferentFromDefault] Layout "
+               << resolved_layout.ToString()
+               << " differs from PjRT default layout "
+               << default_layout.ToString() << " for shape ("
+               << ToString(shape.dimensions()) << ")";
+  CustomLayout result = *shape.layout();
+  if (shape.on_device_shape_is_dynamic()) {
+    // Dynamic on-device buffers (e.g. outputs of compiled models with bounded
+    // dynamism) have physical tiling determined by their upper bounds rather
+    // than their runtime logical dimensions. Propagate minor_to_major but omit
+    // tiling so downstream eager kernels do not force static tile padding onto
+    // the dynamic buffer.
+    result.tiles.clear();
+  }
+  return result;
 }
 
 }  // namespace torch_tpu

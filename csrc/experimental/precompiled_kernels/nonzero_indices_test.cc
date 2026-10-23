@@ -21,6 +21,7 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <optional>
@@ -42,6 +43,7 @@
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/compilation_cache.h"
+#include "csrc/common/compile_options_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/shape.h"
@@ -241,7 +243,13 @@ TEST_F(NonzeroIndicesTest, UnboundedDynamicCacheServesKernel) {
   const xla::PjRtLoadedExecutable* registered = nullptr;
   for (const auto [rows, cols, k] : cases) {
     SCOPED_TRACE(testing::Message() << rows << "x" << cols << " K=" << k);
-    const Shape input_shape({rows, cols}, mlir::ElementType::F32);
+    Shape input_shape({rows, cols}, mlir::ElementType::F32);
+    if (rows < 8) {
+      // XLA's default compact tile height shrinks below 8 when rows < 5, while
+      // `PrepareOperands` explicitly allocates `{1,0:T(8,128)}`.
+      input_shape.set_layout(
+          CustomLayout{.minor_to_major = {1, 0}, .tiles = {{8, 128}}});
+    }
     const Shape output_shape({k, 2}, mlir::ElementType::I64);
     const CompilationCacheKey key = NonZeroCacheKey();
 
@@ -275,6 +283,61 @@ TEST_F(NonzeroIndicesTest, UnboundedDynamicCacheServesKernel) {
     ASSERT_EQ(outputs.size(), 1);
     TT_ASSERT_OK_AND_ASSIGN(auto actual, outputs[0]->ToLiteral().Await());
     EXPECT_EQ(*actual, ReferenceIndices(input));
+  }
+
+  cache.EvictAll();
+}
+
+TEST_F(NonzeroIndicesTest, UnboundedDynamicCacheRejectsIncompatibleLayouts) {
+  CompilationCache& cache = CompilationCache::GetInstance();
+  ASSERT_TRUE(cache
+                  .AddUnboundedDynamicCacheEntry(NonZeroCacheKey(),
+                                                 BuildNonzeroIndicesExecutable,
+                                                 MakeNonzeroDynamicMetadata())
+                  .ok());
+
+  const Shape valid_input({17, 257}, mlir::ElementType::F32);
+  // 1. Default XLA layout for F32[3,7] is {1,0:T(4,128)}, not {1,0:T(8,128)}.
+  const Shape small_rows_input({3, 7}, mlir::ElementType::F32);
+  // 2. Transposed input layout {0,1:T(8,128)}.
+  Shape transposed_input({17, 257}, mlir::ElementType::F32);
+  transposed_input.set_layout(
+      CustomLayout{.minor_to_major = {0, 1}, .tiles = {{8, 128}}});
+  const Shape valid_output({5, 2}, mlir::ElementType::I64);
+  // 3. Output layout {1,0:T(2,128)} instead of {0,1:T(2,128)}.
+  Shape row_major_output({5, 2}, mlir::ElementType::I64);
+  row_major_output.set_layout(
+      CustomLayout{.minor_to_major = {1, 0}, .tiles = {{2, 128}}});
+
+  const std::pair<Shape, Shape> incompatible_cases[] = {
+      {small_rows_input, valid_output},
+      {transposed_input, valid_output},
+      {valid_input, row_major_output},
+  };
+
+  for (int64_t i = 0; i < std::size(incompatible_cases); ++i) {
+    const auto& [input_shape, output_shape] = incompatible_cases[i];
+    const CompilationCacheKey key(
+        GraphKey(NonZeroCacheKey().graph_key().shapeless_key(),
+                 DimensionsKey({i})),
+        CompileOptionsKey({}));
+    const int64_t hits_before = cache.GetCacheHits();
+    const int64_t misses_before = cache.GetCacheMisses();
+    bool builder_called = false;
+    TT_ASSERT_OK_AND_ASSIGN(
+        CompiledKernel kernel,
+        cache.GetOrCompile(
+            key, {input_shape}, {output_shape},
+            [&builder_called](mlir::MLIRContext& context)
+                -> absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> {
+              builder_called = true;
+              return mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
+            },
+            xla::CompileOptions()));
+    EXPECT_TRUE(builder_called);
+    EXPECT_FALSE(kernel.fixed_shape_kernel.get().ok());
+    EXPECT_EQ(cache.GetCacheHits(), hits_before);
+    EXPECT_EQ(cache.GetCacheMisses(), misses_before + 1);
   }
 
   cache.EvictAll();

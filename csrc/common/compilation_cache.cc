@@ -61,6 +61,7 @@
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/flags.h"
+#include "csrc/common/layout_utils.h"
 #include "csrc/common/reroute_warnings.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/thread_pool.h"
@@ -76,10 +77,12 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "tsl/platform/numbers.h"
 #include "xla/hlo/utils/concurrency/concurrency_utils.h"
+#include "xla/layout.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_compiler.h"
 #include "xla/pjrt/pjrt_device_dimensions.h"
 #include "xla/pjrt/pjrt_executable.h"
+#include "xla/xla_data.pb.h"
 
 ABSL_FLAG(int32_t, torch_tpu_internal_num_compilation_threads, 0,
           "The number of threads to use for compilation. If 0, use the default "
@@ -491,6 +494,23 @@ CompilationCache::GetUnboundedDynamicCacheEntry(
     return std::nullopt;
   }
 
+  absl::StatusOr<std::vector<xla::Layout>> input_layouts =
+      ResolveXlaLayouts(input_shapes);
+  if (!input_layouts.ok()) {
+    ABSL_LOG(WARNING) << "Failed to resolve input layouts for unbounded "
+                         "dynamic cache lookup: "
+                      << input_layouts.status();
+    return std::nullopt;
+  }
+  absl::StatusOr<std::vector<xla::Layout>> output_layouts =
+      ResolveXlaLayouts(output_shapes);
+  if (!output_layouts.ok()) {
+    ABSL_LOG(WARNING) << "Failed to resolve output layouts for unbounded "
+                         "dynamic cache lookup: "
+                      << output_layouts.status();
+    return std::nullopt;
+  }
+
   for (const auto& entry : it->second) {
     // In-flight entries are served as well: callers then wait on the same
     // future as the thread adding the entry instead of compiling themselves.
@@ -504,7 +524,8 @@ CompilationCache::GetUnboundedDynamicCacheEntry(
     }
     const UnboundedDynamicExecutionMetadata::CompatibilityFunc is_compatible =
         entry.dynamic_meta.is_compatible;
-    if (!is_compatible || is_compatible(input_shapes, output_shapes)) {
+    if (!is_compatible || is_compatible(input_shapes, *input_layouts,
+                                        output_shapes, *output_layouts)) {
       perf_stats_.num_cache_hits++;
       entry.cache_entry.stats().read_count++;
       entry.cache_entry.stats().last_read = absl::Now();

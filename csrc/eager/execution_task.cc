@@ -46,9 +46,9 @@
 #include "csrc/common/compilation.h"
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/dimension_types.h"
-#include "csrc/common/dtype.h"
 #include "csrc/common/dynamism_utils.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/layout_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
@@ -58,13 +58,10 @@
 #include "csrc/eager/traversal.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/pjrt/pjrt_execute.h"
-#include "csrc/pjrt/pjrt_state.h"
 #include "llvm/ADT/STLExtras.h"
 #include "mlir/IR/MLIRContext.h"
 #include "tsl/profiler/lib/traceme.h"
-#include "xla/layout.h"
 #include "xla/pjrt/pjrt_client.h"
-#include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
 
@@ -202,80 +199,21 @@ void FinalizePushTraceEvent(std::unique_ptr<StructuredLogEvent> event,
   StructuredLogBuffer::GetInstance().Push(std::move(event));
 }
 
-// Returns whether the specified layout tiles match the device default tiles.
-// If layout_tiles is empty, default device tiling is assumed.
-bool TilesMatchDefault(absl::Span<const Indices> layout_tiles,
-                       absl::Span<const xla::Tile> default_tiles) {
-  if (layout_tiles.empty()) {
-    return true;
-  }
-  if (layout_tiles.size() != default_tiles.size()) {
-    return false;
-  }
-  for (size_t t = 0; t < layout_tiles.size(); ++t) {
-    if (absl::MakeConstSpan(layout_tiles[t]) != default_tiles[t].dimensions()) {
-      return false;
-    }
-  }
-  return true;
-}
-
 absl::StatusOr<std::vector<CustomLayout>>
 ExtractArgumentLayoutsIfDifferentFromDefault(const Traversal& traversal) {
   std::vector<CustomLayout> argument_layouts;
-  TT_ASSIGN_OR_RETURN(xla::PjRtClient* const client,
-                      PjrtBackend::GetInstance().GetClient());
   const auto& arguments = traversal.arguments();
   for (size_t i = 0; i < arguments.size(); ++i) {
-    const DeviceBufferRef& arg = arguments[i];
-    const Shape& shape = arg.shape();
-    const std::optional<CustomLayout>& layout_opt = shape.layout();
-    if (!layout_opt.has_value()) {
-      continue;
-    }
-
-    const Indices& minor_to_major = layout_opt->minor_to_major;
-    const xla::PrimitiveType element_type =
-        ConvertTo<xla::PrimitiveType>(arg.element_type());
     TT_ASSIGN_OR_RETURN(
-        const auto default_layout,
-        client->GetDefaultLayout(element_type, arg.dimensions()));
-
-    if (arg.on_device_shape_is_dynamic()) {
-      // Dynamic on-device buffers (e.g. outputs of compiled models with bounded
-      // dynamism) have physical tiling determined by their upper bounds rather
-      // than their runtime logical dimensions. If their dimension ordering
-      // matches the default layout, no layout annotation is needed. If their
-      // dimension ordering differs, propagate minor_to_major but omit tiling so
-      // downstream eager kernels do not force static tile padding onto the
-      // dynamic buffer.
-      if (minor_to_major == default_layout.minor_to_major()) {
-        continue;
-      }
-      if (argument_layouts.empty()) {
-        argument_layouts.resize(arguments.size());
-      }
-      CustomLayout dynamic_layout = *layout_opt;
-      dynamic_layout.tiles.clear();
-      argument_layouts[i] = std::move(dynamic_layout);
+        std::optional<CustomLayout> custom_layout,
+        ExtractCustomLayoutIfDifferentFromDefault(arguments[i].shape()));
+    if (!custom_layout.has_value()) {
       continue;
     }
-
-    if (minor_to_major == default_layout.minor_to_major() &&
-        TilesMatchDefault(layout_opt->tiles, default_layout.tiles())) {
-      continue;
-    }
-    ABSL_VLOG(3)
-        << "[ExtractArgumentLayoutsIfDifferentFromDefault] Argument layout "
-        << ToString(minor_to_major) << " differs from PjRT default layout "
-        << default_layout.ToString() << " for shape ("
-        << ToString(arg.dimensions()) << "), setting layout to "
-        << ToString(minor_to_major);
-
     if (argument_layouts.empty()) {
       argument_layouts.resize(arguments.size());
     }
-    argument_layouts[i] = *layout_opt;
+    argument_layouts[i] = *std::move(custom_layout);
   }
   return argument_layouts;
 }
