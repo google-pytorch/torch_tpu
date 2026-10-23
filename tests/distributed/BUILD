@@ -781,7 +781,7 @@ torch_tpu_py_test(
         "noasan",  # Disabled due to b/497035517.
         "nomsan",  # Disabled due to b/516945438.
         "notsan",  # Disabled due to b/497035517.
-        "requires-tpu-v5lite:8",
+        REQUIRES_V5_MULTI_DEVICE,
     ],
     deps = [
         ":distributed_utils",
@@ -963,11 +963,9 @@ torch_tpu_py_test(
         ["exclusive"],
         [],
     ) + [
+        REQUIRES_V5_MULTI_DEVICE,
         "noasan",  # TODO(b/555734615): fix the test in asan mode.
         "notsan",  # TODO(b/555734615): fix the time-out in tsan mode.
-        # Exactly 8 chips are required because the test hardcodes _world_size = 8 to match the
-        # topology and avoid uninitialized chips in OSS CI.
-        "requires-tpu-v5lite:8",
     ],
     deps = [
         ":distributed_utils",

@@ -23,6 +23,7 @@
 
 load(
     "//build_files:build_defs.bzl",
+    "REQUIRES_V5_MULTI_DEVICE",
     "if_oss",
     "torch_tpu_package_end",
     "torch_tpu_py_test",
@@ -106,7 +107,7 @@ torch_tpu_py_test(
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
-        "requires-tpu-v5lite:8",
+        REQUIRES_V5_MULTI_DEVICE,
     ],
     deps = [
         "//shims/absl_py/logging",
@@ -119,6 +120,7 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/pallas",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests/distributed:continuous_test_utils",
+        "//tests/distributed:distributed_utils",
         "@pypi//jax",
     ],
 )
