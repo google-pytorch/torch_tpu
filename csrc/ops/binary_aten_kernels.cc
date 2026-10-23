@@ -325,22 +325,42 @@ absl::Status TernaryOpOut(const at::Tensor& self, const at::Tensor& other,
       promoted_scalar_type = c10::get_default_dtype_as_scalartype();
     }
   }
+  TT_ASSIGN_OR_RETURN(const auto input_element_type,
+                      internal::ToElementType(promoted_scalar_type));
+  // An internal scalar can carry more precision than the natural result dtype,
+  // e.g. the opmath alpha in add. Preserve it through the arithmetic.
+  promoted_scalar_type =
+      c10::promoteTypes(promoted_scalar_type, third_tpu.scalar_type());
   TT_ASSIGN_OR_RETURN(mlir::ElementType computation_dtype,
                       internal::ToElementType(promoted_scalar_type));
   TT_ASSIGN_OR_RETURN(const auto out_element_type,
                       ConvertTo<mlir::ElementType>(out.scalar_type()));
 
-  auto ternary_builder = [op_builder = std::move(op_builder)](
-                             FixedSizeSpan<mlir::MlirOp, 3> inputs) {
+  TT_ASSIGN_OR_RETURN(const auto result_element_type,
+                      internal::ToElementType(expected_result_type));
+  auto ternary_builder =
+      [op_builder = std::move(op_builder), input_element_type,
+       computation_dtype,
+       result_element_type](FixedSizeSpan<mlir::MlirOp, 3> inputs)
+      -> absl::StatusOr<mlir::MlirOp> {
     auto& [self_op, other_op, third_op] = inputs;
-    return op_builder(self_op, other_op, third_op);
+    // Preserve input promotion before widening for opmath. A wider zero-dim
+    // operand must first round to the dtype selected by result_type.
+    TT_ASSIGN_OR_RETURN(self_op, CastIfNeeded(self_op, input_element_type));
+    TT_ASSIGN_OR_RETURN(other_op, CastIfNeeded(other_op, input_element_type));
+    TT_ASSIGN_OR_RETURN(self_op, CastIfNeeded(self_op, computation_dtype));
+    TT_ASSIGN_OR_RETURN(other_op, CastIfNeeded(other_op, computation_dtype));
+    TT_ASSIGN_OR_RETURN(third_op, CastIfNeeded(third_op, computation_dtype));
+    TT_ASSIGN_OR_RETURN(auto result, op_builder(self_op, other_op, third_op));
+    // Match TensorIterator: round to the natural result dtype before casting to
+    // a differently typed out tensor.
+    return CastIfNeeded(result, result_element_type);
   };
   return DispatchOpOut<3>(
       std::move(ternary_builder), {self_tpu, other_tpu, third_tpu}, out,
       {.op_name = opts.op_name,
        .out_dtype = out_element_type,
        .out_dims = output_dims,
-       .computation_dtype = computation_dtype,
        .op_param_cache_keys = std::move(opts.op_param_cache_keys),
        .split_mode = opts.split_mode,
        .donated_indices = std::move(opts.donated_indices)});
@@ -1092,8 +1112,14 @@ at::Tensor& AtenAddOut(const at::Tensor& self, const at::Tensor& other,
       return out;
     }
 
-    TT_ASSIGN_OR_THROW(const at::Tensor alpha_tensor,
-                       promoted_alpha.GetTensor(promoted_scalar_type));
+    TT_THROW_IF_ERROR(ValidateNotLowPrecisionFloat(promoted_scalar_type));
+    TT_ASSIGN_OR_THROW(const auto promoted_element_type,
+                       internal::ToElementType(promoted_scalar_type));
+    TT_ASSIGN_OR_THROW(const auto computation_dtype,
+                       InferComputationDtype(promoted_element_type));
+    TT_ASSIGN_OR_THROW(
+        const at::Tensor alpha_tensor,
+        promoted_alpha.GetTensor(ConvertTo<at::ScalarType>(computation_dtype)));
 
     auto op_builder =
         [](mlir::MlirOp self_op, mlir::MlirOp other_op,
