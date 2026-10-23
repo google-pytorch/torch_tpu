@@ -163,8 +163,6 @@ def run_dtensor_1d_partial_to_shard() -> None:
 
 class DTensor1DimTest(continuous_test_utils.TpuMultiProcContinuousTest):
 
-  world_size = 8
-
   def test_apply_op(self):
     run_dtensor_1d_apply_op()
 
@@ -203,8 +201,6 @@ def run_dtensor_2d_shard_to_shard() -> None:
 
 class DTensor2DimTest(continuous_test_utils.TpuMultiProcContinuousTest):
 
-  world_size = 8
-
   def test_shard_to_shard(self):
     run_dtensor_2d_shard_to_shard()
 
@@ -228,8 +224,6 @@ def run_sync_dtensor() -> None:
 
 
 class DTensorSyncTest(continuous_test_utils.TpuMultiProcContinuousTest):
-
-  world_size = 8
 
   def test_sync_dtensor(self):
     run_sync_dtensor()

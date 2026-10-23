@@ -866,12 +866,34 @@ jobs:
         (
             "v5_4chip",
             {"requires-tpu", "requires-tpu-v5lite:4", "presubmit-v5"},
-            False,
             True,
+            False,
         ),
         (
             "v5_8chip",
             {"requires-tpu", "requires-tpu-v5lite:8", "presubmit-v5"},
+            False,
+            True,
+        ),
+        (
+            "v5_4chip_and_8chip",
+            {
+                "requires-tpu",
+                "requires-tpu-v5lite:4",
+                "requires-tpu-v5lite:8",
+                "presubmit-v5",
+            },
+            False,
+            True,
+        ),
+        (
+            "v5_4chip_no_remote_exec",
+            {
+                "requires-tpu",
+                "requires-tpu-v5lite:4",
+                "no-remote-exec",
+                "presubmit-v5",
+            },
             False,
             True,
         ),
