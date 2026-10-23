@@ -31,6 +31,7 @@
 #include "absl/status/status.h"
 #include "absl/strings/str_join.h"
 #include "absl/types/span.h"
+#include "c10/core/DeviceGuard.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -337,6 +338,9 @@ absl::Status CopyTpuToCpu(const at::Tensor& src, const at::Tensor& dest,
   // Surface warnings rerouted from background threads that the copy waited on,
   // also on errors.
   absl::Cleanup cleanup = [] { SurfaceReroutedWarnings(); };
+  // Blocking copies synchronize the current stream, which must be the stream
+  // of the source tensor's device rather than the caller's current device.
+  c10::DeviceGuard device_guard(src.device());
 
   if (src.numel() == 0) {
     // Shortcut: no data to move. Create a new storage for dest if it doesn't
