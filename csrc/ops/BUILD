@@ -256,6 +256,7 @@ torch_tpu_cc_test(
         "//shims/torch:torch_headers",
         "//shims/torch/c10/util:base_headers",
         "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Parser",
         "@llvm-project//mlir:Support",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
     ],

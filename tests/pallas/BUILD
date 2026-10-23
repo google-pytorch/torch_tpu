@@ -54,6 +54,7 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/ops:splash_attention",
         "//src/torch_tpu/_internal/pallas",
         "//src/torch_tpu/_internal/pallas:pallas_compat",
+        "//src/torch_tpu/_internal/profiler:named_scope",
         "//src/torch_tpu/_internal/utils",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",

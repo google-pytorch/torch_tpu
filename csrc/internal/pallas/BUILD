@@ -44,6 +44,7 @@ torch_tpu_cc_library(
         "//csrc/ops:custom_kernels",
         "//csrc/ops:op_builder_utils",
         "//csrc/ops:op_names",
+        "//csrc/ops:python_context",
         "//csrc/ops/macros:kernel",
         "//shims/pybind11",
         "//shims/torch:aten_headers",

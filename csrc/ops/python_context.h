@@ -44,6 +44,7 @@
 #include "absl/types/span.h"
 #include "csrc/common/context_states.h"
 #include "csrc/ops/op_names.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/MLIRContext.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -231,6 +232,13 @@ class ScopedPythonContextCapturer {
   static void PushNameScopes(std::vector<std::string> scopes);
   static void PopNameScopes();
 
+  // Overrides the op name of the currently active capturer on this thread (for
+  // example, replacing the generic `custom_kernel` placeholder with the
+  // registered custom/Pallas kernel name). Any `::`, `:`, or `/` characters in
+  // `op_name` are replaced with `_` so the kernel name forms a single XProf
+  // scope level without colliding with XProf's `op_name:op_type` delimiter.
+  static void OverrideCurrentOpName(std::string_view op_name);
+
   // For testing only: override the traceback of all currently alive contexts.
   static void SetTracebackForTesting(MaybeSharedTraceback traceback) {
     traceback_ = std::move(traceback);
@@ -351,6 +359,12 @@ class ScopedPythonContextProvider {
 //   #locRoot = loc("NAME/SCOPES/op_name"(#locCallstack))
 [[nodiscard]] mlir::Location MakeMlirLocation(
     mlir::MLIRContext& ctx, const PythonContext& python_context);
+
+// Rewrites top-level `mlir::CallSiteLoc` locations produced by MLIR function
+// inlining so that each inlined callee operation's `NameLoc` inherits the
+// caller's hierarchical name-scope prefix (including the called custom/Pallas
+// kernel name) while preserving both callee and caller stack frames.
+void PropagateInlinedCallerLocations(mlir::ModuleOp module);
 
 }  // namespace torch_tpu
 

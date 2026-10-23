@@ -17,6 +17,7 @@
 #include "csrc/ops/python_context.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -33,6 +34,7 @@
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
+#include "absl/strings/str_replace.h"
 #include "absl/types/span.h"
 #include "csrc/common/context_manager.h"
 #include "csrc/common/context_states.h"
@@ -41,8 +43,10 @@
 #include "csrc/ops/op_names.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Operation.h"
 #include "mlir/Support/DebugStringHelper.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -190,8 +194,17 @@ std::string MakeNameScopeOpStringFromCallChain(
   // Unreachable?
   if (python_context.op_call_chain().empty()) return "";
 
-  // Curr op is the last op in the call chain.
   mlir::ArrayRef<std::string> op_call_chain(python_context.op_call_chain());
+  // `tpu_torch_pallas.call_custom_kernel` pushes
+  // `PythonApiName{"call_custom_kernel"}` at the pybind boundary (used by
+  // `GetRootOpName` for error messages) before `TT_KERNEL` pushes the custom
+  // kernel op name. Drop the outer pybind wrapper when formatting XProf scopes
+  // so the kernel name sits directly under the caller's module and
+  // `named_scope` hierarchy.
+  if (op_call_chain.size() > 1 &&
+      op_call_chain.front() == "call_custom_kernel") {
+    op_call_chain = op_call_chain.drop_front();
+  }
   auto curr_op = op_call_chain.back();
 
   // Name scope is everything but the current op.
@@ -222,6 +235,200 @@ MaybeSharedNameScopes GetActiveNameScopes(
     return nullptr;
   }
   return active;
+}
+
+bool IsFrameNameLocation(mlir::Location location) {
+  auto name_loc = mlir::dyn_cast<mlir::NameLoc>(location);
+  return name_loc && mlir::isa<mlir::FileLineColLoc>(name_loc.getChildLoc());
+}
+
+bool IsTracebackLocation(mlir::Location location) {
+  if (IsFrameNameLocation(location) ||
+      mlir::isa<mlir::FileLineColLoc>(location)) {
+    return true;
+  }
+  if (auto call_loc = mlir::dyn_cast<mlir::CallSiteLoc>(location)) {
+    return IsTracebackLocation(call_loc.getCallee()) &&
+           IsTracebackLocation(call_loc.getCaller());
+  }
+  return false;
+}
+
+// `MakeNameScopeOpStringFromCallChain` duplicates the leaf op name for
+// single-op call chains (`<scopes>/<op>/<op>`) so XProf sees `<scopes>/<op>`
+// as the scope prefix and `<op>` as the leaf op. When that op is an inlined
+// `func.call`, strip the trailing duplicate segment so the caller scope prefix
+// is `<scopes>/<op>` rather than `<scopes>/<op>/<op>`.
+std::string_view StripTrailingDuplicateScope(std::string_view name) {
+  const size_t last_slash = name.rfind('/');
+  if (last_slash == std::string_view::npos) {
+    return name;
+  }
+  const std::string_view last_seg = name.substr(last_slash + 1);
+  const std::string_view prefix = name.substr(0, last_slash);
+  const size_t prev_slash = prefix.rfind('/');
+  const std::string_view prev_seg = prev_slash == std::string_view::npos
+                                        ? prefix
+                                        : prefix.substr(prev_slash + 1);
+  if (!last_seg.empty() && prev_seg == last_seg) {
+    return prefix;
+  }
+  return name;
+}
+
+// Unpacked components of an op's MLIR location (`FusedLoc` or `NameLoc`),
+// separating an optional `:`-suffixed XLA op-type `NameLoc` prefix from the
+// hierarchical op name and child source/traceback location. `op_type_prefix`
+// and `op_name` are non-owning views into interned `mlir::StringAttr` storage
+// owned by the `mlir::MLIRContext`.
+struct OpLocationInfo {
+  std::optional<std::string_view> op_type_prefix;
+  std::string_view op_name;
+  mlir::Location child_loc;
+};
+
+OpLocationInfo ExtractNameLocationInfo(mlir::NameLoc name_loc) {
+  if (IsFrameNameLocation(name_loc)) {
+    return {std::nullopt, "", name_loc};
+  }
+  const std::string_view name = name_loc.getName().strref();
+  if (!absl::EndsWith(name, ":")) {
+    return {std::nullopt, name, name_loc.getChildLoc()};
+  }
+  if (auto inner_name_loc =
+          mlir::dyn_cast<mlir::NameLoc>(name_loc.getChildLoc());
+      inner_name_loc && !IsFrameNameLocation(inner_name_loc)) {
+    return {name, inner_name_loc.getName().strref(),
+            inner_name_loc.getChildLoc()};
+  }
+  return {name, "", name_loc.getChildLoc()};
+}
+
+mlir::Location FirstNonUnknownSibling(mlir::FusedLoc fused_loc,
+                                      mlir::Location skip_loc) {
+  for (mlir::Location other_loc : fused_loc.getLocations()) {
+    if (other_loc != skip_loc && !mlir::isa<mlir::UnknownLoc>(other_loc)) {
+      return other_loc;
+    }
+  }
+  return mlir::UnknownLoc::get(fused_loc.getContext());
+}
+
+OpLocationInfo ExtractOpLocationInfo(mlir::Location loc) {
+  if (auto name_loc = mlir::dyn_cast<mlir::NameLoc>(loc)) {
+    return ExtractNameLocationInfo(name_loc);
+  }
+  auto fused_loc = mlir::dyn_cast<mlir::FusedLoc>(loc);
+  if (!fused_loc) {
+    return {std::nullopt, "", loc};
+  }
+  for (mlir::Location sub_loc : fused_loc.getLocations()) {
+    auto name_loc = mlir::dyn_cast<mlir::NameLoc>(sub_loc);
+    if (!name_loc) {
+      continue;
+    }
+    OpLocationInfo info = ExtractNameLocationInfo(name_loc);
+    if (!info.op_name.empty()) {
+      if (mlir::isa<mlir::UnknownLoc>(info.child_loc)) {
+        info.child_loc = FirstNonUnknownSibling(fused_loc, sub_loc);
+      }
+      return info;
+    }
+  }
+  return {std::nullopt, "", loc};
+}
+
+mlir::Location BuildOpLocation(mlir::MLIRContext* ctx,
+                               std::optional<std::string_view> op_type_prefix,
+                               std::string_view op_name,
+                               mlir::Location child_loc) {
+  const bool fuse_child = mlir::isa<mlir::FileLineColLoc>(child_loc);
+  mlir::Location result =
+      mlir::NameLoc::get(mlir::StringAttr::get(ctx, op_name),
+                         fuse_child ? mlir::UnknownLoc::get(ctx) : child_loc);
+  if (op_type_prefix.has_value()) {
+    result =
+        mlir::NameLoc::get(mlir::StringAttr::get(ctx, *op_type_prefix), result);
+  }
+  return fuse_child ? mlir::FusedLoc::get(ctx, {result, child_loc}) : result;
+}
+
+std::string MergeInlinedOpName(std::string_view caller_scope,
+                               std::string_view callee_name) {
+  std::string merged_name;
+  if (callee_name.empty()) {
+    // XProf's `ParseTfNameScopes` pops the final `/`-delimited segment as the
+    // leaf op name, so duplicate the trailing caller segment to preserve the
+    // full `caller_scope` in the scope hierarchy.
+    const size_t last_slash = caller_scope.rfind('/');
+    const std::string_view caller_leaf =
+        last_slash == std::string_view::npos
+            ? caller_scope
+            : caller_scope.substr(last_slash + 1);
+    merged_name = absl::StrCat(caller_scope, "/", caller_leaf);
+  } else {
+    const std::string prefix = absl::StrCat(caller_scope, "/");
+    merged_name = absl::StartsWith(callee_name, prefix)
+                      ? std::string(callee_name)
+                      : absl::StrCat(prefix, callee_name);
+  }
+  // XProf formats `StatType::kTfOp` as `<op_name>:<op_type>` and splits on the
+  // first `:`, so sanitize any `:` in `merged_name` to avoid truncating scopes.
+  return absl::StrReplaceAll(merged_name, {{"::", "_"}, {":", "_"}});
+}
+
+mlir::Location CombineInlinedChildLocations(mlir::MLIRContext* ctx,
+                                            const OpLocationInfo& callee_info,
+                                            const OpLocationInfo& caller_info,
+                                            std::string_view caller_scope) {
+  if (mlir::isa<mlir::UnknownLoc>(callee_info.child_loc)) {
+    return caller_info.child_loc;
+  }
+  if (mlir::isa<mlir::UnknownLoc>(caller_info.child_loc)) {
+    return callee_info.child_loc;
+  }
+  mlir::Location callee_frame = callee_info.child_loc;
+  // XLA's `StackFrameIndexBuilder` requires every frame inside a `CallSiteLoc`
+  // to be a `NameLoc(func_name, FileLineColLoc)`. Wrap a bare `FileLineColLoc`
+  // callee location (from `FusedLoc`) so XLA retains it alongside caller
+  // frames.
+  if (mlir::isa<mlir::FileLineColLoc>(callee_frame)) {
+    const std::string_view frame_name =
+        callee_info.op_name.empty() ? caller_scope : callee_info.op_name;
+    callee_frame = mlir::NameLoc::get(mlir::StringAttr::get(ctx, frame_name),
+                                      callee_frame);
+  }
+  return mlir::CallSiteLoc::get(callee_frame, caller_info.child_loc);
+}
+
+mlir::Location ResolveInlinedLocation(mlir::Location loc) {
+  auto call_loc = mlir::dyn_cast<mlir::CallSiteLoc>(loc);
+  if (!call_loc || IsTracebackLocation(loc)) {
+    return loc;
+  }
+
+  const mlir::Location callee_loc =
+      ResolveInlinedLocation(call_loc.getCallee());
+  const mlir::Location caller_loc =
+      ResolveInlinedLocation(call_loc.getCaller());
+
+  const OpLocationInfo caller_info = ExtractOpLocationInfo(caller_loc);
+  if (caller_info.op_name.empty()) {
+    return callee_loc;
+  }
+  const OpLocationInfo callee_info = ExtractOpLocationInfo(callee_loc);
+  const std::string_view caller_scope =
+      StripTrailingDuplicateScope(caller_info.op_name);
+  const std::string merged_name =
+      MergeInlinedOpName(caller_scope, callee_info.op_name);
+
+  mlir::MLIRContext* ctx = loc.getContext();
+  const mlir::Location combined_child =
+      CombineInlinedChildLocations(ctx, callee_info, caller_info, caller_scope);
+  const std::optional<std::string_view> op_type_prefix =
+      callee_info.op_type_prefix.has_value() ? callee_info.op_type_prefix
+                                             : caller_info.op_type_prefix;
+  return BuildOpLocation(ctx, op_type_prefix, merged_name, combined_child);
 }
 
 }  // namespace
@@ -346,6 +553,26 @@ void ScopedPythonContextCapturer::PushNameScopes(
 
 void ScopedPythonContextCapturer::PopNameScopes() {
   PopContextState<NameScopeContextState>();
+}
+
+void ScopedPythonContextCapturer::OverrideCurrentOpName(
+    const std::string_view op_name) {
+  ABSL_CHECK(!op_names_.empty())  // CRASH_OK
+      << "ScopedPythonContextCapturer::OverrideCurrentOpName() called when "
+         "the context capturer stack is empty. This is a torch_tpu bug.";
+  if (op_name.empty()) {
+    return;
+  }
+  op_names_.back() =
+      absl::StrReplaceAll(op_name, {{"::", "_"}, {":", "_"}, {"/", "_"}});
+}
+
+void PropagateInlinedCallerLocations(mlir::ModuleOp module) {
+  module.walk([](mlir::Operation* op) {
+    if (mlir::isa<mlir::CallSiteLoc>(op->getLoc())) {
+      op->setLoc(ResolveInlinedLocation(op->getLoc()));
+    }
+  });
 }
 
 thread_local  // CPP_THREAD_LOCAL_OK=needed only in the dispatching thread.

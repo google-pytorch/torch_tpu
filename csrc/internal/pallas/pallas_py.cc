@@ -36,6 +36,7 @@
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
+#include "csrc/ops/python_context.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -138,6 +139,7 @@ std::vector<at::Tensor> PyCallCustomKernel(
       (name, kernel_key, inputs, output_shapes, donate_argnums,
        device_assignment),
       {
+        ScopedPythonContextCapturer::OverrideCurrentOpName(name);
         if (output_shapes.empty()) {
           return {};
         }

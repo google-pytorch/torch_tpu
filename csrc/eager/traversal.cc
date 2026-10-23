@@ -776,6 +776,7 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
                  // input.
       mlir::succeeded(pm.run(module.get())), error::kInternal)
       << "failed to inline functions in MLIR module";
+  PropagateInlinedCallerLocations(module.get());
 
   return module;
 }
