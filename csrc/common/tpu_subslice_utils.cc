@@ -71,7 +71,7 @@ absl::StatusOr<std::optional<Subslice>> MaybeMakeSubslice(
                       client.GetTopologyDescription());
   TT_ASSIGN_OR_RETURN(const int num_devices,
                       topology->LogicalDeviceCountOfDefaultType());
-  if (num_partitions == num_devices) {
+  if (num_partitions >= num_devices) {
     return std::nullopt;
   }
   TT_ASSIGN_OR_RETURN(const int cores_per_chip,
@@ -81,10 +81,17 @@ absl::StatusOr<std::optional<Subslice>> MaybeMakeSubslice(
   std::vector<ChipAndCore> chip_and_core;
   chip_and_core.reserve(num_partitions);
   for (int p = 0; p < num_partitions; ++p) {
+    const int64_t device_id = device_assignment(0, p);
+    // In multi-slice topologies, GetTopologyDescription() describes a single
+    // slice of `num_devices` logical devices while device IDs encode the slice
+    // offset outside [0, num_devices).
+    if (device_id < 0 || device_id >= num_devices) {
+      return std::nullopt;
+    }
     TT_ASSIGN_OR_RETURN(
         const auto location,
         topology->ChipCoordAndCoreIndexForLogicalDeviceOfDefaultType(
-            xla::GlobalDeviceId(device_assignment(0, p))));
+            xla::GlobalDeviceId(device_id)));
     chip_and_core.push_back({location.first, location.second});
   }
   xla::PjRtDeviceDimensions min_chip = chip_and_core[0].chip;

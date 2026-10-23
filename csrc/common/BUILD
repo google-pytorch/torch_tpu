@@ -449,6 +449,30 @@ torch_tpu_cc_library(
     ],
 )
 
+torch_tpu_cc_test(
+    name = "tpu_subslice_utils_test",
+    srcs = ["tpu_subslice_utils_test.cc"],
+    deps = [
+        ":error_utils",
+        ":tpu_subslice_utils",
+        "//csrc/common:oss_test_main",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
+        "@xla//xla:shape_util",
+        "@xla//xla:xla_data_proto_cc",
+        "@xla//xla/pjrt:pjrt_client",
+        "@xla//xla/pjrt:pjrt_common",
+        "@xla//xla/pjrt:pjrt_compiler",
+        "@xla//xla/pjrt:pjrt_device_description",
+        "@xla//xla/pjrt:pjrt_device_dimensions",
+        "@xla//xla/pjrt:pjrt_executable",
+        "@xla//xla/runtime:device_id",
+        "@xla//xla/service:device_assignment",
+    ],
+)
+
 torch_tpu_cc_library(
     name = "tier2_compilation_cache",
     srcs = ["tier2_compilation_cache.cc"],
