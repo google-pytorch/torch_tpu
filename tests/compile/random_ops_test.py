@@ -72,8 +72,12 @@ class RandomOpsTest(seed_test_utils.RepeatableTest):
         torch.manual_seed(seed)
       curr_outs = _get_cpu_tensors(runner())
       if prev_outs is not None:
-        with self.assertRaises(AssertionError):
-          utils.assert_close(curr_outs, prev_outs, atol=atol, rtol=rtol)
+        self.assertFalse(
+            all(
+                torch.allclose(c, p, atol=atol, rtol=rtol)
+                for c, p in zip(curr_outs, prev_outs)
+            )
+        )
       prev_outs = curr_outs
 
   def assert_random_outputs(
