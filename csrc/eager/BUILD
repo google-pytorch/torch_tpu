@@ -786,6 +786,7 @@ torch_tpu_cc_library(
         "//csrc/ops/fake_quantize:fused_moving_avg_obs_fq_helper_aten_kernels",
         "//csrc/ops/fft:fft_aten_kernels",
         "//csrc/ops/fill:fill_aten_kernels",
+        "//csrc/ops/flex_attention:flex_attention_aten_kernels",
         "//csrc/ops/flip:flip_aten_kernels",
         "//csrc/ops/fmax:fmax_aten_kernels",
         "//csrc/ops/fmin:fmin_aten_kernels",

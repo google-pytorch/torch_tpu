@@ -38,6 +38,24 @@ package(
 exports_files(["data/goldfish.jpg"])
 
 torch_tpu_py_test(
+    name = "flex_attention_kiln_test",
+    srcs = ["flex_attention_kiln_test.py"],
+    tags = [
+        "requires-tpu-v5lite",
+    ],
+    deps = [
+        "//csrc/eager:tpu_aten_kernels",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile:flex_attention_kiln",
+        "//src/torch_tpu/_internal/utils:test_utils",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "detect_causal_mask_test",
     srcs = ["detect_causal_mask_test.py"],
     # Run on single-chip TPU v7 for faster TorchDynamo/Inductor compilation
