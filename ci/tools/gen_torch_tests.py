@@ -97,7 +97,12 @@ def torch_test_target(test_module: str) -> str:
   """
   # Normalize the module path to a test target name.
   *dirs, basename = test_module.split("/")
-  name = "_".join([*dirs, basename.removeprefix("test_"), "test"])
+  base = basename.removeprefix("test_")
+  # Avoid collision with tests/torch:utils_test.
+  if not dirs and base == "utils":
+    name = "test_utils_test"
+  else:
+    name = "_".join([*dirs, base, "test"])
 
   notap = (
       '    notap = "b/563402379",  # NOTAP_OK=torch tests\n'
