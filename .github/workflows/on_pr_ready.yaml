@@ -22,6 +22,8 @@ on:
   # See https://docs.github.com/en/enterprise-cloud@latest/actions/reference/security/securely-using-pull_request_target#deciding-whether-to-use-pull_request_target
   # for more details.
   pull_request_target:  # zizmor: ignore[dangerous-triggers]
+    branches:
+      - main
     types: [opened, ready_for_review]
 
 permissions: {}
