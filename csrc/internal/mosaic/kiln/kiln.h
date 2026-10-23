@@ -72,7 +72,8 @@
 #include "csrc/internal/mosaic/kiln/core/semaphore.h"     // IWYU pragma: export
 #include "csrc/internal/mosaic/kiln/core/shape.h"         // IWYU pragma: export
 #include "csrc/internal/mosaic/kiln/core/specs.h"         // IWYU pragma: export
-#include "csrc/internal/mosaic/kiln/core/tile.h"          // IWYU pragma: export
-#include "csrc/internal/mosaic/kiln/core/value_base.h"    // IWYU pragma: export
+#include "csrc/internal/mosaic/kiln/core/stablehlo_splice.h"  // IWYU pragma: export
+#include "csrc/internal/mosaic/kiln/core/tile.h"        // IWYU pragma: export
+#include "csrc/internal/mosaic/kiln/core/value_base.h"  // IWYU pragma: export
 
 #endif  // TORCH_TPU_CSRC_INTERNAL_MOSAIC_KILN_KILN_H_

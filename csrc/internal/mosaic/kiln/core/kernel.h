@@ -73,6 +73,10 @@ class Kernel {
   // Verifies the kernel's internal consistency.
   absl::Status Verify() const;
 
+  // Whether the body contains StableHLO ops (see SpliceStablehlo) that Mosaic
+  // must legalize before compiling the kernel (`needs_hlo_passes`).
+  bool NeedsHloPasses() const;
+
  private:
   struct Impl;
   explicit Kernel(std::unique_ptr<Impl> impl);

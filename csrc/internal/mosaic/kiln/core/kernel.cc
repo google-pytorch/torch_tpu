@@ -42,6 +42,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -55,6 +56,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Operation.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
@@ -290,6 +292,18 @@ absl::StatusOr<std::string> Kernel::Serialize() && {
            << "failed to serialize mosaic kernel";
   }
   return ToString();
+}
+
+bool Kernel::NeedsHloPasses() const {
+  // StableHLO ops and the tensor ops bridging to them (see SpliceStablehlo)
+  // only appear in a body through the splice, and Mosaic's HLO passes are
+  // what lower both.
+  bool found = false;
+  impl_->module->walk([&](mlir::Operation* op) {
+    const llvm::StringRef dialect = op->getName().getDialectNamespace();
+    found |= dialect == "stablehlo";
+  });
+  return found;
 }
 
 absl::Status Kernel::Verify() const {
