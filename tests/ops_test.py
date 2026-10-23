@@ -2333,6 +2333,14 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_gather(self):
     self.do_test_op("gather")
 
+  def test_gcd(self):
+    self.do_test_op(
+        "gcd",
+        # Cap samples to avoid shard timeouts, as for lcm (gcd compiles a while
+        # loop per shape/dtype across base, out, and inplace variants).
+        max_samples_per_op_dtype=6,
+    )
+
   def test_ge(self):
     self.do_test_op(
         "ge",

@@ -13931,6 +13931,157 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       ("int32", torch.int32),
       ("int64", torch.int64),
   )
+  def test_gcd_zero_and_signs(self, dtype: torch.dtype):
+    """Tests gcd with zero edge cases and negative inputs across integer dtypes."""
+
+    def compute(device):
+      if dtype == torch.uint8:
+        a = torch.tensor([0, 0, 12, 12, 15, 7, 255], dtype=dtype, device=device)
+        b = torch.tensor([0, 18, 0, 18, 20, 13, 85], dtype=dtype, device=device)
+      else:
+        a = torch.tensor(
+            [0, 0, 12, -12, 12, -12, 15, -7], dtype=dtype, device=device
+        )
+        b = torch.tensor(
+            [0, 18, 0, 18, -18, -18, 20, 13], dtype=dtype, device=device
+        )
+      return torch.gcd(a, b)
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  def test_gcd_fibonacci_and_int_min(self):
+    """Tests worst-case Fibonacci pairs and INT_MIN cases that match PyTorch."""
+
+    def compute_int8(device):
+      a = torch.tensor(
+          [89, -128, -128, -128, 0], dtype=torch.int8, device=device
+      )
+      b = torch.tensor([55, 0, -128, 1, -128], dtype=torch.int8, device=device)
+      return torch.gcd(a, b)
+
+    def compute_int16(device):
+      a = torch.tensor(
+          [28657, -32768, -32768, -32768, 0], dtype=torch.int16, device=device
+      )
+      b = torch.tensor(
+          [17711, 0, -32768, 1, -32768], dtype=torch.int16, device=device
+      )
+      return torch.gcd(a, b)
+
+    def compute_int32(device):
+      a = torch.tensor(
+          [1836311903, -2147483648, -2147483648, -2147483648, 0],
+          dtype=torch.int32,
+          device=device,
+      )
+      b = torch.tensor(
+          [1134903170, 0, -2147483648, 1, -2147483648],
+          dtype=torch.int32,
+          device=device,
+      )
+      return torch.gcd(a, b)
+
+    def compute_int64(device):
+      a = torch.tensor(
+          [7540113804746346429, -(2**63), -(2**63), -(2**63), 0],
+          dtype=torch.int64,
+          device=device,
+      )
+      b = torch.tensor(
+          [4660046610375530309, 0, -(2**63), 1, -(2**63)],
+          dtype=torch.int64,
+          device=device,
+      )
+      return torch.gcd(a, b)
+
+    self.assert_close_tpu_vs_cpu(compute_int8)
+    self.assert_close_tpu_vs_cpu(compute_int16)
+    self.assert_close_tpu_vs_cpu(compute_int32)
+    self.assert_close_tpu_vs_cpu(compute_int64)
+
+  def test_gcd_int_min_nonnegative_result(self):
+    """Tests that gcd results involving INT_MIN are nonnegative on TPU.
+
+    Unlike CPU and GPU, which return e.g. gcd(INT_MIN, 6) == -2, TPU makes every
+    remainder nonnegative and returns 2.
+    """
+    for dtype in (torch.int8, torch.int16, torch.int32, torch.int64):
+      with self.subTest(dtype=dtype):
+        int_min = torch.iinfo(dtype).min
+        a = torch.tensor([int_min, int_min, 6], dtype=dtype, device="tpu")
+        b = torch.tensor([6, 96, int_min], dtype=dtype, device="tpu")
+        self.assertEqual(torch.gcd(a, b).cpu().tolist(), [2, 32, 2])
+
+  def test_gcd_promotion_out_cast_and_shapes(self):
+    """Tests mixed-dtype promotion, out casting, resizing, 0-D, and 0-element tensors."""
+
+    def compute(device):
+      a_i16 = torch.tensor(
+          [[12, -18], [0, 7]], dtype=torch.int16, device=device
+      )
+      b_i32 = torch.tensor([18, 24], dtype=torch.int32, device=device)
+      res_promoted = torch.gcd(a_i16, b_i32)
+
+      a_i8 = torch.tensor([-12, 100], dtype=torch.int8, device=device)
+      b_u8 = torch.tensor([18, 250], dtype=torch.uint8, device=device)
+      res_i8_u8_promo = torch.gcd(a_i8, b_u8)
+
+      b_bool = torch.tensor([True, False], dtype=torch.bool, device=device)
+      res_bool_promo = torch.gcd(b_i32, b_bool)
+
+      out_i32 = torch.empty((2, 2), dtype=torch.int32, device=device)
+      torch.gcd(a_i16, a_i16, out=out_i32)
+
+      out_f32 = torch.empty((2, 2), dtype=torch.float32, device=device)
+      torch.gcd(a_i16, b_i32, out=out_f32)
+
+      out_resized = torch.empty(0, dtype=torch.int32, device=device)
+      torch.gcd(a_i16, b_i32, out=out_resized)
+
+      s1 = torch.tensor(-12, dtype=torch.int32, device=device)
+      s2 = torch.tensor(18, dtype=torch.int32, device=device)
+      res_scalar = torch.gcd(s1, s2)
+
+      empty_a = torch.empty((2, 0, 3), dtype=torch.int32, device=device)
+      empty_b = torch.empty((1, 0, 3), dtype=torch.int32, device=device)
+      res_empty = torch.gcd(empty_a, empty_b)
+
+      return (
+          res_promoted,
+          res_i8_u8_promo,
+          res_bool_promo,
+          out_i32,
+          out_f32,
+          out_resized,
+          res_scalar,
+          res_empty,
+      )
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  def test_gcd_inplace_and_out_buffer_donation(self):
+    """Tests in-place gcd_ and out=x buffer donation in DEFER_NEVER mode."""
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_NEVER):
+
+      def compute(device):
+        x1 = torch.tensor([12, -18, 0, 21], dtype=torch.int32, device=device)
+        y1 = torch.tensor([18, 24, 5, 14], dtype=torch.int32, device=device)
+        torch.gcd(x1, y1, out=x1)
+
+        x2 = torch.tensor([15, -20, 8, 0], dtype=torch.int32, device=device)
+        y2 = torch.tensor([25, 30, 12, 0], dtype=torch.int32, device=device)
+        x2.gcd_(y2)
+        return x1, x2
+
+      self.assert_close_tpu_vs_cpu(compute)
+
+  @parameterized.named_parameters(
+      ("int8", torch.int8),
+      ("uint8", torch.uint8),
+      ("int16", torch.int16),
+      ("int32", torch.int32),
+      ("int64", torch.int64),
+  )
   def test_lcm_zero_and_signs(self, dtype: torch.dtype):
     """Tests lcm with zero edge cases and negative inputs across integer dtypes."""
 
