@@ -326,6 +326,48 @@ absl::StatusOr<MlirOpResults<3>> BuildBatchNormBackwardInference(
   return {{grad_input, grad_weight, grad_bias}};
 }
 
+// Normalizes `input` with its batch statistics. Returns the output in input
+// precision, and the batch mean and biased batch variance in `acc_dtype`.
+MlirOpResults<3> BuildBatchNormTrainingWithVariance(
+    mlir::MlirOp input, mlir::MlirOp weight, mlir::MlirOp bias, double eps,
+    mlir::ElementType acc_dtype) {
+  const mlir::ElementType input_dtype = GetElementTypeOrDie(input);
+
+  // Promotion to accumulation precision.
+  input = mlir::stablehlo::ConvertElementType(input, acc_dtype);
+  weight = mlir::stablehlo::ConvertElementType(weight, acc_dtype);
+  bias = mlir::stablehlo::ConvertElementType(bias, acc_dtype);
+
+  auto outputs = mlir::stablehlo::BatchNormTraining(
+      input, weight, bias, llvm::APFloat(static_cast<float>(eps)),
+      kTorchFeaturesDimensionIndex);
+
+  // Output tensor needs to be in input precision.
+  auto output_tensor =
+      mlir::stablehlo::ConvertElementType(outputs[0], input_dtype);
+
+  // Stats outputs need to be in acc_dtype (F32) for PyTorch compatibility.
+  auto output_mean = mlir::stablehlo::ConvertElementType(outputs[1], acc_dtype);
+  auto output_variance =
+      mlir::stablehlo::ConvertElementType(outputs[2], acc_dtype);
+  return {output_tensor, output_mean, output_variance};
+}
+
+// Returns (1 - momentum) * running_stat + momentum * batch_stat, computed in
+// the element type of `batch_stat` and returned in that of `running_stat`.
+mlir::MlirOp UpdateRunningStat(mlir::MlirOp running_stat,
+                               mlir::MlirOp batch_stat, mlir::MlirOp momentum) {
+  const mlir::ElementType running_dtype = GetElementTypeOrDie(running_stat);
+  running_stat = mlir::stablehlo::ConvertElementType(
+      running_stat, GetElementTypeOrDie(batch_stat));
+  auto one = MakeConstantLike(momentum, 1.0);
+  auto one_minus_momentum = mlir::stablehlo::Subtract(one, momentum);
+  auto keep = mlir::stablehlo::Mul(running_stat, one_minus_momentum);
+  auto add = mlir::stablehlo::Mul(batch_stat, momentum);
+  auto new_running_stat = mlir::stablehlo::Add(keep, add);
+  return mlir::stablehlo::ConvertElementType(new_running_stat, running_dtype);
+}
+
 }  // namespace
 
 absl::StatusOr<MlirOpResults<3>> BuildBatchNormBackward(
@@ -378,27 +420,8 @@ absl::StatusOr<MlirOpResults<3>> BuildBatchNorm(
                : MakeConstant(builder, 0.0, input_dtype, {num_features});
 
   if (training) {
-    // Promotion to accumulation precision.
-    input = mlir::stablehlo::ConvertElementType(input, acc_dtype);
-    weight = mlir::stablehlo::ConvertElementType(weight, acc_dtype);
-    bias = mlir::stablehlo::ConvertElementType(bias, acc_dtype);
-
-    auto outputs = mlir::stablehlo::BatchNormTraining(
-        input, weight, bias, llvm::APFloat(static_cast<float>(eps)),
-        kTorchFeaturesDimensionIndex);
-    auto output_tensor = std::move(outputs[0]);
-
-    // Output tensor needs to be in input precision.
-    output_tensor =
-        mlir::stablehlo::ConvertElementType(output_tensor, input_dtype);
-
-    auto output_mean = std::move(outputs[1]);
-    auto& output_variance = outputs[2];
-
-    // Stats outputs need to be in acc_dtype (F32) for PyTorch compatibility.
-    output_mean = mlir::stablehlo::ConvertElementType(output_mean, acc_dtype);
-    output_variance =
-        mlir::stablehlo::ConvertElementType(output_variance, acc_dtype);
+    auto [output_tensor, output_mean, output_variance] =
+        BuildBatchNormTrainingWithVariance(input, weight, bias, eps, acc_dtype);
     auto output_inverted_variance = ComputeInvStd(output_variance, eps);
     return {{output_tensor, output_mean, output_inverted_variance}};
 
@@ -435,6 +458,59 @@ absl::StatusOr<MlirOpResults<3>> BuildBatchNorm(
     auto output_inverted_variance = ComputeInvStd(running_variance, eps);
     return {{output_tensor, output_mean, output_inverted_variance}};
   }
+}
+
+absl::StatusOr<MlirOpResults<5>> BuildBatchNormTrainingAndUpdateStats(
+    mlir::MlirOp input, std::optional<mlir::MlirOp> weight_opt,
+    std::optional<mlir::MlirOp> bias_opt, mlir::MlirOp running_mean,
+    mlir::MlirOp running_variance, mlir::MlirOp momentum, double eps,
+    mlir::ElementType acc_dtype) {
+  ABSL_VLOG(1) << "BuildBatchNormTrainingAndUpdateStats "
+               << " input=" << input.ToString() << " eps=" << eps;
+  mlir::MlirBuilder& builder = input.getBuilder();
+
+  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
+  const mlir::ElementType input_dtype = GetElementTypeOrDie(input);
+  int64_t num_features = input_type.getDimSize(kTorchFeaturesDimensionIndex);
+  mlir::MlirOp weight =
+      weight_opt ? *weight_opt
+                 : MakeConstant(builder, 1.0, input_dtype, {num_features});
+  mlir::MlirOp bias =
+      bias_opt ? *bias_opt
+               : MakeConstant(builder, 0.0, input_dtype, {num_features});
+
+  auto [output_tensor, output_mean, output_variance] =
+      BuildBatchNormTrainingWithVariance(input, weight, bias, eps, acc_dtype);
+  auto output_inverted_variance = ComputeInvStd(output_variance, eps);
+
+  // Like PyTorch, update running_var with the unbiased batch variance,
+  // var * n / (n - 1), where n is the number of elements per channel.
+  const Dimensions reduce_dims =
+      GetBatchDimensions(input_type.getRank(), kTorchFeaturesDimensionIndex);
+  const mlir::Type stats_elem_type =
+      GetTensorTypeOrDie(output_variance).getElementType();
+  mlir::MlirOp n = GetNumElements(input, stats_elem_type, reduce_dims);
+  mlir::MlirOp one = MakeScalarConstant(builder, 1.0, stats_elem_type);
+  mlir::MlirOp n_minus_one = mlir::stablehlo::Subtract(n, one);
+  mlir::MlirOp n_over_n_minus_one = mlir::stablehlo::Div(n, n_minus_one);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp unbiased_factor,
+                      BroadcastIfNeeded(n_over_n_minus_one, output_variance));
+  auto unbiased_variance =
+      mlir::stablehlo::Mul(output_variance, unbiased_factor);
+
+  // `momentum` is a scalar input rather than a constant, so the program does
+  // not depend on its value (with `momentum=None`, nn.BatchNorm passes a new
+  // value on every step).
+  momentum = mlir::stablehlo::ConvertElementType(
+      momentum, GetElementTypeOrDie(output_mean));
+  TT_ASSIGN_OR_RETURN(momentum, BroadcastIfNeeded(momentum, output_mean));
+  auto new_running_mean =
+      UpdateRunningStat(running_mean, output_mean, momentum);
+  auto new_running_variance =
+      UpdateRunningStat(running_variance, unbiased_variance, momentum);
+
+  return {{output_tensor, output_mean, output_inverted_variance,
+           new_running_mean, new_running_variance}};
 }
 
 }  // namespace torch_tpu

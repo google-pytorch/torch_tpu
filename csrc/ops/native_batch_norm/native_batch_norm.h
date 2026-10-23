@@ -37,6 +37,19 @@ absl::StatusOr<MlirOpResults<3>> BuildBatchNorm(
     std::optional<mlir::MlirOp> running_variance_opt, bool training,
     double momentum, double eps, mlir::ElementType acc_dtype);
 
+// Builds training-mode batch norm and updates the running stats as PyTorch
+// does:
+//   running_mean = (1 - momentum) * running_mean + momentum * mean
+//   running_var = (1 - momentum) * running_var + momentum * unbiased_var
+// `momentum` is a scalar tensor. Returns (output, save_mean, save_invstd,
+// new_running_mean, new_running_variance); the new running stats have the
+// element types of `running_mean` and `running_variance`.
+absl::StatusOr<MlirOpResults<5>> BuildBatchNormTrainingAndUpdateStats(
+    mlir::MlirOp input, std::optional<mlir::MlirOp> weight_opt,
+    std::optional<mlir::MlirOp> bias_opt, mlir::MlirOp running_mean,
+    mlir::MlirOp running_variance, mlir::MlirOp momentum, double eps,
+    mlir::ElementType acc_dtype);
+
 absl::StatusOr<MlirOpResults<3>> BuildBatchNormBackward(
     mlir::MlirOp grad_out, mlir::MlirOp input,
     std::optional<mlir::MlirOp> weight_opt,

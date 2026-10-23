@@ -158,6 +158,97 @@ absl::StatusOr<BatchNormDispatchParams> PrepareBatchNormDispatch(
   };
 }
 
+// Returns true if training-mode batch norm must update the running stats.
+// PyTorch requires both running stats or neither. Like `at::batch_norm`, an
+// empty input leaves them unchanged.
+bool ShouldUpdateRunningStats(const at::Tensor& input,
+                              const std::optional<at::Tensor>& running_mean,
+                              const std::optional<at::Tensor>& running_variance,
+                              bool training) {
+  return training && running_mean && running_variance && input.numel() > 0;
+}
+
+// Allocates (out, save_mean, save_invstd) for the batch norm of `input`.
+absl::StatusOr<std::tuple<at::Tensor, at::Tensor, at::Tensor>>
+MakeBatchNormOutputs(const at::Tensor& input) {
+  const auto acc_type = ToAccumulateType(input.scalar_type());
+  const Dimensions features_dims = {input.size(kTorchFeaturesDimensionIndex)};
+  TT_ASSIGN_OR_RETURN(
+      at::Tensor out,
+      MakeEmptyTensor(input.sizes(), input.scalar_type(), input.device()));
+  TT_ASSIGN_OR_RETURN(at::Tensor save_mean,
+                      MakeEmptyTensor(features_dims, acc_type, input.device()));
+  TT_ASSIGN_OR_RETURN(at::Tensor save_invstd,
+                      MakeEmptyTensor(features_dims, acc_type, input.device()));
+  return std::make_tuple(std::move(out), std::move(save_mean),
+                         std::move(save_invstd));
+}
+
+// Runs training-mode batch norm, and writes the updated running stats into
+// `running_mean` and `running_variance` in place, as PyTorch's CPU and CUDA
+// kernels do.
+absl::Status TpuBatchNormTrainingUpdateStatsOut(
+    const at::Tensor& input, std::optional<at::Tensor> weight,
+    std::optional<at::Tensor> bias, const at::Tensor& running_mean,
+    const at::Tensor& running_variance, double momentum, double eps,
+    OpParamCacheKeys param_keys, at::Tensor& out, at::Tensor& save_mean,
+    at::Tensor& save_invstd) {
+  TT_RETURN_IF_ERROR(ValidateIsFloating(input, /*arg_name=*/"input"));
+  TT_ASSIGN_OR_RETURN(const auto input_dtype,
+                      ConvertTo<mlir::ElementType>(input.scalar_type()));
+  const auto acc_type = ToAccumulateType(input.scalar_type());
+  TT_ASSIGN_OR_RETURN(const auto acc_dtype,
+                      ConvertTo<mlir::ElementType>(acc_type));
+  TT_ASSIGN_OR_RETURN(const auto running_mean_dtype,
+                      ConvertTo<mlir::ElementType>(running_mean.scalar_type()));
+  TT_ASSIGN_OR_RETURN(
+      const auto running_var_dtype,
+      ConvertTo<mlir::ElementType>(running_variance.scalar_type()));
+  const Dimensions features_dims = {input.size(kTorchFeaturesDimensionIndex)};
+
+  // Pass momentum as a tensor input rather than a constant, so the program
+  // does not depend on its value.
+  TT_ASSIGN_OR_RETURN(const at::Tensor momentum_tensor,
+                      PromoteScalar(at::Scalar(momentum)).GetTensor(acc_type));
+
+  std::vector<at::Tensor> inputs = {input, running_mean, running_variance,
+                                    momentum_tensor};
+  inputs.reserve(6);
+
+  const int weight_idx = weight ? inputs.size() : -1;
+  if (weight) {
+    inputs.push_back(*weight);
+  }
+
+  const int bias_idx = bias ? inputs.size() : -1;
+  if (bias) {
+    inputs.push_back(*bias);
+  }
+
+  auto op_builder =
+      [weight_idx, bias_idx, eps, acc_dtype](
+          absl::Span<mlir::MlirOp> mlir_inputs,
+          mlir::MlirBuilder& builder) -> absl::StatusOr<MlirOpResults<5>> {
+    std::optional<mlir::MlirOp> weight_op =
+        GetOptionalMlirOp(mlir_inputs, weight_idx);
+    std::optional<mlir::MlirOp> bias_op =
+        GetOptionalMlirOp(mlir_inputs, bias_idx);
+    return BuildBatchNormTrainingAndUpdateStats(
+        /*input=*/mlir_inputs[0], weight_op, bias_op,
+        /*running_mean=*/mlir_inputs[1], /*running_variance=*/mlir_inputs[2],
+        /*momentum=*/mlir_inputs[3], eps, acc_dtype);
+  };
+
+  return DispatchOpOut<kDynamicSize, 5>(
+      std::move(op_builder), inputs,
+      {out, save_mean, save_invstd, running_mean, running_variance},
+      {.out_dtypes = {input_dtype, acc_dtype, acc_dtype, running_mean_dtype,
+                      running_var_dtype},
+       .out_dims_list = {input.sizes(), features_dims, features_dims,
+                         features_dims, features_dims},
+       .op_param_cache_keys = std::move(param_keys)});
+}
+
 absl::StatusOr<DeviceBufferRefArray<3>> TpuBatchNorm(
     const at::Tensor& input, std::optional<at::Tensor> weight,
     std::optional<at::Tensor> bias, std::optional<at::Tensor> running_mean,
@@ -186,6 +277,13 @@ absl::Status TpuBatchNormOut(const at::Tensor& input,
                              bool training, double momentum, double eps,
                              OpParamCacheKeys param_keys, at::Tensor& out,
                              at::Tensor& save_mean, at::Tensor& save_invstd) {
+  if (ShouldUpdateRunningStats(input, running_mean, running_variance,
+                               training)) {
+    return TpuBatchNormTrainingUpdateStatsOut(
+        input, std::move(weight), std::move(bias), *running_mean,
+        *running_variance, momentum, eps, std::move(param_keys), out, save_mean,
+        save_invstd);
+  }
   TT_ASSIGN_OR_RETURN(auto p, PrepareBatchNormDispatch(
                                   input, weight, bias, running_mean,
                                   running_variance, training, momentum, eps));
@@ -316,6 +414,18 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenNativeBatchNorm(
             (input, weight, bias, running_mean, running_variance, training,
              IgnoreInCacheKey(momentum, "Doesn't affect SHLO"), eps),
             {
+              if (ShouldUpdateRunningStats(
+                      input, SanitizeOptionalTensor(running_mean),
+                      SanitizeOptionalTensor(running_variance), training)) {
+                TT_ASSIGN_OR_THROW((auto [out, save_mean, save_invstd]),
+                                   MakeBatchNormOutputs(input));
+                TT_THROW_IF_ERROR(TpuBatchNormTrainingUpdateStatsOut(
+                    input, SanitizeOptionalTensor(weight),
+                    SanitizeOptionalTensor(bias), *running_mean,
+                    *running_variance, momentum, eps, std::move(param_keys),
+                    out, save_mean, save_invstd));
+                return {out, save_mean, save_invstd};
+              }
               TT_ASSIGN_OR_THROW(
                   (auto [output, mean, variance_inverse]),
                   TpuBatchNorm(input, SanitizeOptionalTensor(weight),

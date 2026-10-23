@@ -2667,6 +2667,71 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(run_op)
 
+  @parameterized.product(
+      op_name=["native_batch_norm", "_native_batch_norm_legit"],
+      input_dtype=[torch.float32, torch.bfloat16],
+  )
+  def test_batch_norm_training_updates_running_stats_in_place(
+      self, op_name, input_dtype
+  ):
+    """Tests that training-mode batch norm updates running stats in place."""
+    c = 3
+    input_val = (torch.randn(4, c, 5, 6) * 2 + 5).to(input_dtype)
+    weight = torch.randn(c)
+    bias = torch.randn(c)
+    running_mean = torch.randn(c)
+    running_var = torch.rand(c) + 0.5
+
+    def run_forward(device):
+      # Clone, since `.to("cpu")` returns the same tensor and the op updates it
+      # in place.
+      mean = running_mean.clone().to(device)
+      var = running_var.clone().to(device)
+      outputs = getattr(torch.ops.aten, op_name)(
+          input_val.to(device),
+          weight.to(device),
+          bias.to(device),
+          mean,
+          var,
+          True,  # training
+          0.3,  # momentum
+          1e-5,  # eps
+      )
+      return (*outputs, mean, var)
+
+    # Comparison results: (output, save_mean, save_invstd, running_mean,
+    # running_var). The running stats must match the CPU's in-place update.
+    if input_dtype == torch.bfloat16:
+      self.assert_close_tpu_vs_cpu(run_forward, rtol=3e-2, atol=2e-2)
+    else:
+      self.assert_close_tpu_vs_cpu(run_forward)
+
+  @parameterized.product(momentum=[0.1, None], compiled=[False, True])
+  def test_batch_norm_module_training_updates_running_stats(
+      self, momentum, compiled
+  ):
+    """Tests that nn.BatchNorm2d running stats match the CPU after training."""
+    inputs = [torch.randn(8, 3, 16, 16) * 2 + 5 for _ in range(3)]
+
+    def run_training(device):
+      bn = torch.nn.BatchNorm2d(3, momentum=momentum).to(device).train()
+      step = bn
+      if compiled and torch.device(device).type == "tpu":
+        step = torch.compile(bn, backend="tpu")
+      for x in inputs:
+        output = step(x.to(device))
+      # Inference uses the running stats.
+      bn.eval()
+      return (
+          output,
+          bn.running_mean,
+          bn.running_var,
+          bn.num_batches_tracked,
+          bn(inputs[0].to(device)),
+      )
+
+    self.assert_close_tpu_vs_cpu(run_training)
+
   def test_native_batch_norm_legit_no_stats_out(self):
     input_dtype = torch.float32
     stats_dtype = torch.float32
