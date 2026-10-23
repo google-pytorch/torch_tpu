@@ -395,15 +395,16 @@ common:ci_tpu_v5 --test_tag_filters=requires-tpu,-notest,-nobuild,-fails-on-tpu-
 common:ci_tpu_v5 --local_test_jobs=8
 
 common:ci_tpu_v5_presubmit --config=ci_tpu_v5
-# Single-chip v5e presubmit tests run on RBE (see ci_rbe_presubmit), so the
-# self-hosted 8-chip runner only runs multi-chip and no-remote-exec v5e tests.
-common:ci_tpu_v5_presubmit --test_tag_filters=requires-tpu-v5lite:4,requires-tpu-v5lite:8,requires-tpu-v5p:4,no-remote-exec,-notest,-nobuild,-nopresubmit,-fails-on-tpu-v5,-presubmit-v6,-presubmit-v7,-requires-newest-deps
+# Single-chip and 4-chip v5e presubmit tests run on RBE (see ci_rbe_presubmit),
+# so the self-hosted 8-chip runner only runs 8-chip v5e, v5p, and no-remote-exec
+# v5e tests.
+common:ci_tpu_v5_presubmit --test_tag_filters=requires-tpu-v5lite:8,requires-tpu-v5p:4,no-remote-exec,-notest,-nobuild,-nopresubmit,-fails-on-tpu-v5,-presubmit-v6,-presubmit-v7,-requires-newest-deps
 
-# The single-chip v5e tests ci_rbe_presubmit runs, for the self-hosted 8-chip
-# runner when RBE is disabled or fails. Must stay in sync with the TPU half of
-# ci_rbe_presubmit's filter (see list_ci_tests_test.py).
+# The single-chip and 4-chip v5e tests ci_rbe_presubmit runs, for the
+# self-hosted 8-chip runner when RBE is disabled or fails. Must stay in sync
+# with the TPU half of ci_rbe_presubmit's filter (see list_ci_tests_test.py).
 common:ci_tpu_v5_rbe_fallback --config=ci_tpu_v5
-common:ci_tpu_v5_rbe_fallback --test_tag_filters=presubmit-v5,-notest,-nobuild,-nopresubmit,-fails-on-tpu-v5,-requires-tpu-v5lite:4,-requires-tpu-v5lite:8,-requires-tpu-v5p:4,-no-remote-exec,-requires-newest-deps
+common:ci_tpu_v5_rbe_fallback --test_tag_filters=presubmit-v5,-notest,-nobuild,-nopresubmit,-fails-on-tpu-v5,-requires-tpu-v5lite:8,-requires-tpu-v5p:4,-no-remote-exec,-requires-newest-deps
 
 # Runs only the tests tagged `requires-newest-deps`, which need the newest
 # supported dependencies (requirements/requirements_3_14_latest.txt). Every
@@ -497,10 +498,15 @@ common:rbe_test_execution --test_env=HOST_BOUNDS=
 common:rbe_test_execution --test_env=VBAR_CONTROL_SERVICE_URL=
 
 # CI presubmit on Google Cloud RBE: CPU tests plus TPU tests that have an RBE
-# pool. Today that's single-chip v5e (ct5lp-hightpu-1t). A test's pool follows
-# its presubmit-v<N> tag, not its requires-tpu-* tags, so v6/v7 tests are left
-# out by that tag and multi-chip v5 tests by their `:8`/`:4` tags. Tests that
-# cannot run in the RBE container environment are tagged no-remote-exec.
+# pool. Today that's single-chip and 4-chip v5e (ct5lp-hightpu-1t and
+# ct5lp-hightpu-4t). A test's pool follows its presubmit-v<N> and chip-count
+# tags, so v6/v7 tests are left out by presubmit-v<N> and 8-chip v5e / v5p tests
+# by their `:8`/`:4` tags. Tests that cannot run in the RBE container
+# environment are tagged no-remote-exec.
+#
+# Only us-west1 and us-central1 have 4-chip v5e pools, so don't run this with
+# another --//:_rbe_region: 4-chip tests would land on the CPU pool and fail.
+# TODO: b/567928058 - Drop this note once every region has a 4-chip pool.
 #
 # This repeats `ci` minus remote_execution_readwrite, whose platform would
 # otherwise come ahead of rbe_platform in --extra_execution_platforms.
@@ -514,7 +520,7 @@ common:ci_rbe_presubmit --color=yes
 common:ci_rbe_presubmit --curses=no
 common:ci_rbe_presubmit --config=rbe_test_execution
 common:ci_rbe_presubmit --build_tag_filters=-nobuild,-requires-gpu,-cuda-build-test
-common:ci_rbe_presubmit --test_tag_filters=-nobuild,-notest,-nopresubmit,-fails-on-tpu-v5,-requires-gpu,-cuda-build-test,-presubmit-v6,-presubmit-v7,-requires-tpu-v5lite:4,-requires-tpu-v5lite:8,-requires-tpu-v5p:4,-no-remote-exec,-requires-newest-deps
+common:ci_rbe_presubmit --test_tag_filters=-nobuild,-notest,-nopresubmit,-fails-on-tpu-v5,-requires-gpu,-cuda-build-test,-presubmit-v6,-presubmit-v7,-requires-tpu-v5lite:8,-requires-tpu-v5p:4,-no-remote-exec,-requires-newest-deps
 
 # TPU wheel version extras for local default builds.
 build --define WHEEL_VERSION_EXTRAS=

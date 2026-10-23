@@ -24,6 +24,7 @@ load(
 )
 load("//bazel:supported_python_versions.bzl", "DEFAULT_PYTHON_VERSION", "SUPPORTED_PYTHON_VERSIONS")
 load("//build_files:rbe.bzl", "add_rbe_exec_properties", "select_rbe_shard_count")
+load("//build_files:tpu_tags.bzl", "get_tpu_chip_count", "get_tpu_generation")
 load("//shims/build_cleaner:build_defs.bzl", "register_extension_info")
 load("//shims/build_files:build_defs.bzl", "process_accelerator_tags")
 load("//shims/build_files:torch_version.bzl", "is_backend_dep", "reset_torch_config")
@@ -65,17 +66,6 @@ _TORCH_TPU_COPTS = [
 # assigning an OSS presubmit runner to a test.
 TPU_GENERATION_PREFERENCES = ["v5", "v7", "v6"]
 
-# Maps a `requires-tpu-<version>` tag to the TPU generation it corresponds to.
-# Hardware is selected by the `presubmit-v<N>` tag filters in .bazelrc, not
-# by `requires-tpu-<version>`, so a test asking for a specific accelerator
-# must be given the matching generation.
-TPU_VERSION_TO_GENERATION = {
-    "requires-tpu-v5lite": "v5",
-    "requires-tpu-v5p": "v5",
-    "requires-tpu-v6e": "v6",
-    "requires-tpu-v7x": "v7",
-}
-
 # Number of TPU chips available on a single OSS CI runner VM per generation.
 OSS_TPU_RUNNER_CHIPS = {
     "v5": 8,
@@ -91,17 +81,6 @@ TEST_COV_ENV = {
     "TORCH_SHOW_CPP_STACKTRACES": "1",
     "TORCH_TPU_ENABLE_DEBUG_CHECKS": "1",
 }
-
-def _get_tpu_generation(tag):
-    """Returns the TPU generation for a `requires-tpu-<version>[:<chips>]` tag."""
-    return TPU_VERSION_TO_GENERATION.get(tag.split(":")[0])
-
-def _get_tpu_chip_count(tag):
-    """Returns the chip count from a `requires-tpu-<version>:<chips>` tag, or None."""
-    if _get_tpu_generation(tag) == None or ":" not in tag:
-        return None
-    _, chips_str = tag.split(":", 1)
-    return int(chips_str) if chips_str.isdigit() else None
 
 def _clamp_shard_count(is_oss, tags, shard_count):
     """Clamps shard_count in OSS to the maximum number of concurrent shards per test.
@@ -132,9 +111,9 @@ def _clamp_shard_count(is_oss, tags, shard_count):
         return 1
 
     for tag in tags:
-        required_chips = _get_tpu_chip_count(tag)
+        required_chips = get_tpu_chip_count(tag)
         if required_chips != None and required_chips > 0:
-            gen = _get_tpu_generation(tag)
+            gen = get_tpu_generation(tag)
             runner_chips = OSS_TPU_RUNNER_CHIPS.get(gen)
             if runner_chips != None:
                 available_slots = max(1, runner_chips // required_chips)
@@ -176,7 +155,7 @@ def if_oss(oss_value, internal_value = None):
 # single-chip "requires-tpu-v5lite" and 8-chip "requires-tpu-v5lite:8"), so it
 # must only be used in the OSS branch of `if_oss(...)`. We write the internal
 # codename here rather than the exported external tag because:
-# 1. `build_defs.bzl` keys `TPU_VERSION_TO_GENERATION` on `"requires-tpu-v5lite"`
+# 1. `tpu_tags.bzl` keys `_TPU_VERSION_TO_GENERATION` on `"requires-tpu-v5lite"`
 #    before Copybara export.
 # 2. Copybara's reversible `tpu_codenames_to_external` transform rewrites the
 #    internal codenames to external tags across all BUILD/.bzl files and fails
@@ -275,7 +254,6 @@ def _fail_on_generic_requires_tpu_tag(tags):
 # Exported for build_defs_test.bzl.
 is_backend_dep_for_testing = is_backend_dep
 get_tpu_version_for_testing = _get_tpu_version
-get_tpu_chip_count_for_testing = _get_tpu_chip_count
 clamp_shard_count_for_testing = _clamp_shard_count
 
 def torch_tpu_cc_library(name, srcs = [], hdrs = [], copts = None, features = None, **kwargs):
@@ -333,7 +311,7 @@ def _is_cuda_test(tags):
 
 def _is_tpu_tag(tag):
     """Returns true if the tag is a TPU accelerator requirement tag."""
-    return tag.startswith("requires-tpu") or _get_tpu_generation(tag) != None
+    return tag.startswith("requires-tpu") or get_tpu_generation(tag) != None
 
 # build_test targets verify skipped tests still build, thus exclude skip tags
 # to ensure they are picked up by build.
@@ -343,6 +321,8 @@ _BUILD_TEST_EXCLUDED_TAGS = (
     "notest",
     "nonightly",
     "ops-test",
+    # A build_test is a no-op, so it doesn't need the machine to itself.
+    "exclusive",
 )
 
 def _sort_inplace(a_list):
@@ -624,6 +604,21 @@ def _check_and_adjust_test_tags(
             if not tpu_generation:
                 fail("TPU tests failing on all generations in OSS should use notest_oss instead.")
 
+    # Bazel forces exclusive tests to run locally, which keeps them off RBE.
+    # exclusive-if-local drops that, so every OSS exclusive test (CPU ones too)
+    # can run on RBE, but Bazel still runs these tests one at a time there.
+    # TODO: b/567928058 - Drop the tag for tests with an RBE pool so they run
+    # in parallel.
+    # torch_tpu_py_test sets TORCH_TPU_EXCLUSIVE_TEST from the caller's tags,
+    # so it still sees "exclusive".
+    # One remove() is enough: no target repeats "exclusive", and a leftover copy
+    # would only keep that test local. Nothing writes exclusive-if-local by
+    # hand, so there's no check for it.
+    if is_oss and "exclusive" in tags:
+        tags.remove("exclusive")
+        if "exclusive-if-local" not in tags:
+            tags.append("exclusive-if-local")
+
     process_accelerator_tags(tags)
     _sort_inplace(tags)
 
@@ -803,7 +798,7 @@ def torch_tpu_cc_test(
         shard_count = raw_shard_count,
     )
     if result.shard_count != None:
-        kwargs["shard_count"] = select_rbe_shard_count(raw_shard_count, result.shard_count)
+        kwargs["shard_count"] = select_rbe_shard_count(raw_shard_count, result.shard_count, effective_tags)
 
     if requires_libtpu == None:
         # requires-tpu is a generic tag automatically applied whenever at least
@@ -1287,12 +1282,15 @@ def torch_tpu_py_test(
             fail("'run_on_accelerators' and 'oss_presubmit_tpu_generation' are mutually exclusive. " +
                  "The TPU generation is derived from each accelerator tag.")
 
+        # Hardware is selected by the `presubmit-v<N>` tag filters in .bazelrc,
+        # not by `requires-tpu-<version>`, so each accelerator's target must be
+        # given the matching generation.
         target_specs = []
         for requires_acc in run_on_accelerators:
-            generation = _get_tpu_generation(requires_acc)
+            generation = get_tpu_generation(requires_acc)
             if not generation:
                 fail("Unknown accelerator '%s'. Please add it to " % requires_acc +
-                     "TPU_VERSION_TO_GENERATION.")
+                     "_TPU_VERSION_TO_GENERATION in tpu_tags.bzl.")
 
             other_gen_tags = [
                 "fails-on-tpu-" + gen
@@ -1346,7 +1344,7 @@ def torch_tpu_py_test(
 
         target_kwargs = dict(kwargs)
         if result.shard_count != None:
-            target_kwargs["shard_count"] = select_rbe_shard_count(raw_shard_count, result.shard_count)
+            target_kwargs["shard_count"] = select_rbe_shard_count(raw_shard_count, result.shard_count, target_tags)
         target_kwargs["env"] = test_env
         add_rbe_exec_properties(target_kwargs, target_tags, result.tpu_generation)
 
