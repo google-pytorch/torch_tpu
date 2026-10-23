@@ -52,7 +52,8 @@ std::vector<at::Tensor> PyCreateScanOp(
     const std::vector<at::Tensor>& inits, const std::vector<at::Tensor>& inputs,
     const std::shared_ptr<ContextedModule>& body_module,
     ScanDirection scan_direction, const std::vector<at::Tensor>& dummy_outputs,
-    int64_t num_scan_inputs);
+    int64_t num_scan_inputs,
+    const std::vector<int64_t>& donated_inits = {});  // INT_VEC_OK
 
 // Creates an associative scan operation on TPU.
 //

@@ -16,6 +16,7 @@
 
 import functools
 import importlib
+import os
 import types
 
 import torch
@@ -185,7 +186,10 @@ def _handle_scan_impl(combine_fn, init, xs, additional_inputs, reverse=False):
   # Compile the body sub-graph to MLIR.
   body_args = init_args + x_list + extra_args
   body_args = _pin_offloaded_body_args(actual_combine_fn, body_args)
-  body_mlir = export.fx_to_mlir(actual_combine_fn, args=body_args)
+  # The body MLIR is inlined into the loop; it needs no executable of its own.
+  body_mlir = export.fx_to_mlir(
+      actual_combine_fn, args=body_args, compile_executable=False
+  )
 
   # Call the C++ binding to create a deferred scan operation.
   scan_direction = (
@@ -194,7 +198,9 @@ def _handle_scan_impl(combine_fn, init, xs, additional_inputs, reverse=False):
       else tpu_torch_compile.ScanDirection.kForward
   )
   num_scan_inputs = len(xs_list)
-  inputs = xs_list + extra_list
+  # Non-tensor additional inputs (e.g. SymInts lifted by Dynamo) are baked into
+  # the body module by `fx_to_mlir`; only tensors are loop operands.
+  inputs = xs_list + [t for t in extra_list if isinstance(t, torch.Tensor)]
   return tpu_torch_compile.create_scan_op(
       inits=init_list,
       inputs=inputs,
@@ -202,7 +208,24 @@ def _handle_scan_impl(combine_fn, init, xs, additional_inputs, reverse=False):
       scan_direction=scan_direction,
       dummy_ys=dummy_ys,
       num_scan_inputs=num_scan_inputs,
+      donated_inits=_donated_inits(init_list),
   )
+
+
+def _donated_inits(init_list):
+  """Returns the carry-init indices to donate to the scan loop.
+
+  Donation lets XLA alias a carried graph input (e.g. a KV cache that the loop
+  updates and the graph writes back) with the loop result instead of holding
+  both. Opt-in via TORCH_TPU_INTERNAL_SCAN_DONATE_INITS: "1" donates every
+  init; a comma-separated list donates those indices.
+  """
+  value = os.environ.get("TORCH_TPU_INTERNAL_SCAN_DONATE_INITS", "")
+  if not value or value == "0":
+    return []
+  if value == "1":
+    return list(range(len(init_list)))
+  return [int(i) for i in value.split(",")]
 
 
 def _slice_placeholders(xs_list, dim):

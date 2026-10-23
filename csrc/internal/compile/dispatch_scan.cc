@@ -1007,12 +1007,20 @@ std::vector<at::Tensor> PyCreateScanOp(
     const std::vector<at::Tensor>& inits, const std::vector<at::Tensor>& inputs,
     const std::shared_ptr<ContextedModule>& body_module,
     ScanDirection scan_direction, const std::vector<at::Tensor>& dummy_outputs,
-    int64_t num_scan_inputs) {
+    int64_t num_scan_inputs,
+    const std::vector<int64_t>& donated_inits) {  // INT_VEC_OK
   ScopedPythonContextCapturer capturer(OpName::kCustomKernel);
 
   TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=Internal TorchTPU error.
       !inputs.empty(), error::kInvalidArgument)
       << "expected at least 1 input tensor";
+  for (const int64_t donated_init : donated_inits) {
+    TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=Internal TorchTPU error.
+        donated_init >= 0 && donated_init < inits.size(),
+        error::kInvalidArgument)
+        << "donated init index " << donated_init << " is out of bounds for "
+        << inits.size() << " inits";
+  }
 
   TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=Internal TorchTPU error.
       num_scan_inputs > 0, error::kInvalidArgument)
@@ -1132,6 +1140,9 @@ std::vector<at::Tensor> PyCreateScanOp(
           .op_param_cache_keys = std::move(cache_keys),
           .inputs = std::move(input_buffers),
           .output_shapes = std::move(output_shapes),
+          // Carry inits occupy the leading op inputs, so their indices are
+          // also op input indices.
+          .donated_indices = Indices(donated_inits.begin(), donated_inits.end()),
           .device_assignment = body_module->device_assignment(),
       }));
 

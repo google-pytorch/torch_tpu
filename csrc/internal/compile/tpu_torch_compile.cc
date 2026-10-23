@@ -685,6 +685,33 @@ CompileResult PyTraverseAndCompile(
   };
 }
 
+// Traverses the graph and builds its MLIR module without XLA compilation.
+std::shared_ptr<ContextedModule> PyTraverseAndBuildMlirModule(
+    const std::vector<at::Tensor>& result_tensors,
+    const std::vector<at::Tensor>& argument_tensors,
+    bool use_stablehlo_bounds = false,
+    std::optional<std::vector<py::object>> argument_layouts_opt = std::nullopt,
+    const std::vector<int64_t>& donated_inputs = {},  // INT_VEC_OK
+    const std::optional<std::string>& module_name = std::nullopt) {
+  ScopedPythonContextCapturer capturer(OpName::kCompileMlir);
+  ScopedPythonContextProvider provider(
+      ScopedPythonContextCapturer::GetContext());
+
+  auto options = ConvertTraverseAndCompileOptions(
+      argument_tensors, /*fast_compile=*/false, /*build_mlir_module=*/true,
+      use_stablehlo_bounds, std::move(argument_layouts_opt), donated_inputs,
+      module_name);
+  options.skip_compile = true;
+
+  absl::StatusOr<AsyncCompileResult> status_or;
+  {
+    py::gil_scoped_release release;
+    status_or = TraverseAndCompile(result_tensors, argument_tensors, options);
+  }
+  TT_ASSIGN_OR_THROW(AsyncCompileResult result, std::move(status_or));
+  return result.module();
+}
+
 void PyPushEnableTracebacks(std::optional<bool> enabled) {
   const EnableTracebacksContextState state =
       enabled.has_value()
@@ -2242,6 +2269,15 @@ TT_PYBIND11_MODULE(tpu_torch_compile, m) {
         "Returns:\n"
         "  CompileResult: The compiled module and executable.");
 
+  m.def("traverse_and_build_mlir_module", PyTraverseAndBuildMlirModule,
+        py::arg("result_tensors"), py::arg("argument_tensors"),
+        py::arg("use_stablehlo_bounds") = false,
+        py::arg("argument_layouts") = py::none(),
+        py::arg("donated_inputs") = std::vector<int64_t>{},  // INT_VEC_OK
+        py::arg("module_name") = py::none(),
+        "Traverses the graph from outputs to arguments and builds its MLIR "
+        "module without compiling it.");
+
   m.def("async_traverse_and_compile", PyAsyncTraverseAndCompile,
         py::arg("result_tensors"), py::arg("argument_tensors"),
         py::arg("fast_compile") = false, py::arg("build_mlir_module") = false,
@@ -2406,6 +2442,7 @@ TT_PYBIND11_MODULE(tpu_torch_compile, m) {
   m.def("create_scan_op", &PyCreateScanOp, py::arg("inits"), py::arg("inputs"),
         py::arg("body_module"), py::arg("scan_direction"), py::arg("dummy_ys"),
         py::arg("num_scan_inputs"),
+        py::arg("donated_inits") = std::vector<int64_t>{},  // INT_VEC_OK
         "Creates a deferred scan operation and returns the output tensors.");
   m.def("create_associative_scan_op", &PyCreateAssociativeScanOp,
         py::arg("inputs"), py::arg("body_module"), py::arg("scan_direction"),

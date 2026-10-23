@@ -166,6 +166,10 @@ struct TraverseAndCompileOptions {
   Indices donated_inputs;
   // Optional custom module name.
   std::optional<std::string> module_name = std::nullopt;
+  // If true, only build the MLIR module (requires `build_mlir_module`) and skip
+  // XLA compilation; the returned executable future resolves to an error. Used
+  // for subgraphs (e.g. scan bodies) whose MLIR is inlined into a parent.
+  bool skip_compile = false;
 };
 
 // Traverses the graph from `result_tensors` back to `argument_tensors`,
