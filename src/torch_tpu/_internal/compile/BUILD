@@ -99,7 +99,6 @@ torch_tpu_py_library(
         ":flex_attention_redirect",
         ":grouped_mm_meta",
         ":meta_registration_overrides",
-        ":nested_compile_region",
         ":scan",
         ":tpu_backend",
         "//shims/torch:pytorch",
@@ -119,18 +118,6 @@ torch_tpu_py_library(
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal:warnings",
         "//src/torch_tpu/_internal/utils:tt_warnings",
-    ],
-)
-
-torch_tpu_py_library(
-    name = "nested_compile_region",
-    srcs = ["nested_compile_region.py"],
-    deps = [
-        ":tpu_torch_compile",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu/_internal/compile/fx_passes:mark_embedded_constants",
-        "//src/torch_tpu/_internal/export",
-        "//src/torch_tpu/_internal/pallas:tpu_torch_pallas",
     ],
 )
 
