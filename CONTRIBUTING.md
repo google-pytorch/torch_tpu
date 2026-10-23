@@ -61,9 +61,9 @@ on an existing issue:
 *   **Check for existing work**: Check whether the issue has an assignee, read
     its comments, and look for linked pull requests. If someone is assigned to
     it, has said they are working on it, or has already opened a pull request
-    referencing it, someone is likely already working on it. (If an assigned
-    issue has had no recent activity, feel free to ask in a comment whether it
-    is free to pick up.)
+    referencing it, someone is likely already working on it.
+    - If an assigned issue has had no recent activity, feel free to ask in a
+      comment whether it is free to pick up.
 *   **Comment before you start**: If the issue is unassigned, leave a comment on
     it to express your interest in working on it. A maintainer _may_ then assign
     the issue to you.
