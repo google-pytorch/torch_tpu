@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <optional>
 #include <utility>
+#include <variant>
 
 #include "csrc/internal/mosaic/kiln/core/dtype.h"
 #include "csrc/internal/mosaic/kiln/core/index_arg.h"
@@ -55,6 +56,10 @@ struct SliceDim {
 inline SliceDim Slice(IndexArg offset, IndexArg size) {
   return SliceDim{offset, size};
 }
+
+// One dimension of `Ref::At`: an index (which collapses the dimension), a
+// `Slice(offset, size)`, or `all`.
+using Indexer = std::variant<IndexArg, SliceDim, All>;
 
 class Ref;
 
@@ -129,6 +134,10 @@ class Ref : public ValueBase {
         internal::DimDesc::From(std::forward<Dims>(dims))...};
     return internal::SliceRefImpl(*this, descs);
   }
+
+  // Same as `operator()`, with the dimensions given as a list, e.g. when their
+  // number is only known when the kernel is built (Pallas `ref.at[...]`).
+  Ref At(llvm::ArrayRef<Indexer> indexers) const;
 
  private:
   friend struct internal::ValueAccess;

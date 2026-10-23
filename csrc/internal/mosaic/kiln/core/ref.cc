@@ -18,6 +18,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <variant>
 
 #include "absl/log/absl_check.h"
 #include "csrc/internal/mosaic/kiln/core/context.h"
@@ -254,6 +255,15 @@ Scalar Ref::Dim(int64_t axis) const {
   mlir::Value dim_idx = memref::DimOp::create(b, internal::unwrap(*this), axis);
   return internal::wrap<Scalar>(
       arith::IndexCastOp::create(b, b.getI32Type(), dim_idx), i32);
+}
+
+Ref Ref::At(llvm::ArrayRef<Indexer> indexers) const {
+  llvm::SmallVector<internal::DimDesc, 4> dims;
+  for (const Indexer& indexer : indexers) {
+    dims.push_back(std::visit(
+        [](const auto& v) { return internal::DimDesc::From(v); }, indexer));
+  }
+  return internal::SliceRefImpl(*this, dims);
 }
 
 namespace internal {
