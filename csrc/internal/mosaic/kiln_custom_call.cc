@@ -61,6 +61,7 @@ absl::StatusOr<mlir::stablehlo::CustomCallOp> CreateKilnCustomCallOp(
     mlir::ValueRange inputs, mlir::TypeRange output_types,
     std::optional<int64_t> vmem_limit_bytes) {
   TT_RETURN_IF_ERROR(kernel.Verify());
+  const bool needs_hlo_passes = kernel.NeedsHloPasses();
   TT_ASSIGN_OR_RETURN(const std::string body, std::move(kernel).Serialize());
 
   std::string scoped_memory_configs;
@@ -81,11 +82,13 @@ absl::StatusOr<mlir::stablehlo::CustomCallOp> CreateKilnCustomCallOp(
         "custom_call_config": {
           "body": "%s",
           "needs_layout_passes": true,
+          "needs_hlo_passes": %s,
           "serialization_format": 1
         },
         "device_type": "DEVICE_TYPE_TENSORCORE"%s
       })",
-      absl::Base64Escape(body), scoped_memory_configs);
+      absl::Base64Escape(body), needs_hlo_passes ? "true" : "false",
+      scoped_memory_configs);
 
   llvm::SmallVector<mlir::Attribute> input_layouts;
   input_layouts.reserve(inputs.size());

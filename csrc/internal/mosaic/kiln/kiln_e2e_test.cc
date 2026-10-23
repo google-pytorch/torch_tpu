@@ -73,7 +73,7 @@ class KilnE2eTest : public testing::Test {
   // single `tpu_custom_call`.
   absl::StatusOr<xla::Literal> RunKernel(
       std::string_view serialized, absl::Span<const xla::Literal* const> inputs,
-      const xla::Shape& result_shape) {
+      const xla::Shape& result_shape, bool needs_hlo_passes = false) {
     xla::HloComputation::Builder builder("main");
     std::vector<xla::HloInstruction*> operands;
     operands.reserve(inputs.size());
@@ -88,7 +88,8 @@ class KilnE2eTest : public testing::Test {
     call->set_raw_backend_config_string(absl::StrCat(
         R"({"device_type":"DEVICE_TYPE_TENSORCORE","custom_call_config":{"body":")",
         absl::Base64Escape(serialized),
-        R"(","serialization_format":1,"needs_layout_passes":true,"needs_hlo_passes":false}})"));
+        R"(","serialization_format":1,"needs_layout_passes":true,"needs_hlo_passes":)",
+        needs_hlo_passes ? "true" : "false", "}}"));
 
     auto hlo = std::make_unique<xla::HloModule>("kiln_e2e_kernel",
                                                 xla::HloModuleConfig());
@@ -103,9 +104,11 @@ class KilnE2eTest : public testing::Test {
   void RunAndCompare(std::string_view serialized,
                      absl::Span<const xla::Literal* const> inputs,
                      const xla::Literal& expected,
-                     std::optional<xla::ErrorSpec> error_spec = std::nullopt) {
-    TT_ASSERT_OK_AND_ASSIGN(xla::Literal actual,
-                            RunKernel(serialized, inputs, expected.shape()));
+                     std::optional<xla::ErrorSpec> error_spec = std::nullopt,
+                     bool needs_hlo_passes = false) {
+    TT_ASSERT_OK_AND_ASSIGN(
+        xla::Literal actual,
+        RunKernel(serialized, inputs, expected.shape(), needs_hlo_passes));
     EXPECT_TRUE(
         xla::LiteralTestUtil::NearOrEqual(expected, actual, error_spec));
   }
@@ -117,9 +120,10 @@ class KilnE2eTest : public testing::Test {
                      const xla::Literal& expected,
                      std::optional<xla::ErrorSpec> error_spec = std::nullopt) {
     EXPECT_THAT(kernel.Verify(), IsOk());
+    const bool needs_hlo_passes = kernel.NeedsHloPasses();
     TT_ASSERT_OK_AND_ASSIGN(std::string serialized,
                             std::move(kernel).Serialize());
-    RunAndCompare(serialized, inputs, expected, error_spec);
+    RunAndCompare(serialized, inputs, expected, error_spec, needs_hlo_passes);
   }
 
   template <typename Fn>
@@ -225,6 +229,49 @@ TEST_F(KilnE2eTest, ScalarPrefetchGatherAndReduce) {
       });
 
   RunAndCompare(std::move(kernel), {&indices, &table}, expected);
+}
+
+// Splices a StableHLO module computing (a + b) * a into the body. The add is
+// done in f64, the way TorchTPU lowers Python-scalar arithmetic, to exercise
+// the demotion to f32.
+TEST_F(KilnE2eTest, SpliceStablehloIntoKernelBody) {
+  constexpr int64_t kRows = 8, kCols = 128;
+  constexpr char kModule[] = R"mlir(
+    module {
+      func.func @main(%a: tensor<8x128xf32>, %b: tensor<8x128xf32>) -> tensor<8x128xf32> {
+        %a64 = stablehlo.convert %a : (tensor<8x128xf32>) -> tensor<8x128xf64>
+        %b64 = stablehlo.convert %b : (tensor<8x128xf32>) -> tensor<8x128xf64>
+        %sum64 = stablehlo.add %a64, %b64 : tensor<8x128xf64>
+        %sum = stablehlo.convert %sum64 : (tensor<8x128xf64>) -> tensor<8x128xf32>
+        %out = stablehlo.multiply %sum, %a : tensor<8x128xf32>
+        return %out : tensor<8x128xf32>
+      }
+    })mlir";
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      Kernel kernel,
+      CreateKernel(GridSpec{.name = "splice_e2e", .grid = {1}},
+                   InSpec{f32(kRows, kCols)}, InSpec{f32(kRows, kCols)},
+                   OutSpec{f32(kRows, kCols)}, [&](Ref a, Ref b, Ref out) {
+                     TT_ASSERT_OK_AND_ASSIGN(
+                         Tile result,
+                         SpliceStablehlo(kModule, {Tile(a), Tile(b)}));
+                     out = result;
+                   }));
+  EXPECT_TRUE(kernel.NeedsHloPasses());
+
+  xla::Literal a = Make2dF32(kRows, kCols, [](int64_t r, int64_t c) {
+    return static_cast<float>((r * kCols + c) % 17 - 8) * 0.25f;
+  });
+  xla::Literal b = Make2dF32(kRows, kCols, [](int64_t r, int64_t c) {
+    return static_cast<float>((r + c) % 5) * 0.5f;
+  });
+  xla::Literal expected = Make2dF32(kRows, kCols, [&](int64_t r, int64_t c) {
+    const float x = a.Get<float>({r, c});
+    return (x + b.Get<float>({r, c})) * x;
+  });
+
+  RunAndCompare(std::move(kernel), {&a, &b}, expected);
 }
 
 TEST_F(KilnE2eTest, TileAndScalarControlFlowOperations) {

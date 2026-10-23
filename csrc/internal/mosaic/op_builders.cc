@@ -25,6 +25,7 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/Attributes.h"
@@ -39,6 +40,7 @@
 #include "mlir/IR/Verifier.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LLVM.h"
+#include "stablehlo/dialect/StablehloOps.h"
 #include "xla/mosaic/dialect/tpu/tpu_dialect.h"
 #include "xla/mosaic/dialect/tpu/transforms/serde.h"
 
@@ -153,7 +155,8 @@ std::unique_ptr<MLIRContext> CreateMlirContextWithDialects() {
   DialectRegistry registry;
   registry.insert<arith::ArithDialect, func::FuncDialect, memref::MemRefDialect,
                   vector::VectorDialect, scf::SCFDialect, tpu::TPUDialect,
-                  math::MathDialect>();
+                  math::MathDialect, tensor::TensorDialect,
+                  stablehlo::StablehloDialect>();
   auto context = std::make_unique<MLIRContext>(registry);
   context->loadAllAvailableDialects();
   context->allowUnregisteredDialects();

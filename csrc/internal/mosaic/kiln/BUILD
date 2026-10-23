@@ -39,6 +39,7 @@ torch_tpu_cc_library(
         "//csrc/internal/mosaic/kiln/core:semaphore",
         "//csrc/internal/mosaic/kiln/core:shape",
         "//csrc/internal/mosaic/kiln/core:specs",
+        "//csrc/internal/mosaic/kiln/core:stablehlo_splice",
         "//csrc/internal/mosaic/kiln/core:tile",
         "//csrc/internal/mosaic/kiln/core:value_base",
     ],

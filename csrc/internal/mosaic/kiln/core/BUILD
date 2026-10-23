@@ -158,6 +158,28 @@ torch_tpu_cc_library(
 )
 
 torch_tpu_cc_library(
+    name = "stablehlo_splice",
+    srcs = ["stablehlo_splice.cc"],
+    hdrs = ["stablehlo_splice.h"],
+    deps = [
+        ":context",
+        ":dtype",
+        ":tile",
+        "//csrc/common:error_utils",
+        "@com_google_absl//absl/status:statusor",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:ArithDialect",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Parser",
+        "@llvm-project//mlir:Support",
+        "@llvm-project//mlir:TensorDialect",
+        "@llvm-project//mlir:VectorDialect",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "tile",
     srcs = ["tile.cc"],
     hdrs = ["tile.h"],
