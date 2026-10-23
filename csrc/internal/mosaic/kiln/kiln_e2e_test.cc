@@ -159,8 +159,7 @@ TEST_F(KilnE2eTest, BlockwiseMatmulWithScratchAccumulator) {
           OutSpec{f32(kTm, kTn), IndexMap([] {
                     return IndexIndices{ProgramId(0), ProgramId(1)};
                   })},
-          ScratchSpec::Vmem(f32(kTm, kTn)),
-          [&](Ref a, Ref b, Ref out, Ref acc) {
+          ScratchSpec::Vmem(f32(kTm, kTn)), [](Ref a, Ref b, Ref out, Ref acc) {
             Scalar kk = ProgramId(2);
             If(kk == 0, [&] { acc = Zeros(acc.shape()); });
             acc = Tile(acc) + Dot(Tile(a), Tile(b),
@@ -200,7 +199,7 @@ TEST_F(KilnE2eTest, ScalarPrefetchGatherAndReduce) {
                    OutSpec{f32(kTileRows, kChunk), IndexMap([] {
                              return IndexIndices{ProgramId(0), 0};
                            })},
-                   [&](Ref /*indices*/, Ref rows, Ref out) {
+                   [](Ref /*indices*/, Ref rows, Ref out) {
                      Tile total = Zeros(out.shape());
                      for (int64_t c = 0; c < kCols; c += kChunk) {
                        total = total + Tile(rows(all, Slice(c, kChunk)));
@@ -234,7 +233,7 @@ TEST_F(KilnE2eTest, TileAndScalarControlFlowOperations) {
       Kernel kernel,
       CreateKernel(GridSpec{.name = "tile_scalar_e2e", .grid = {1}},
                    InSpec{f32(kRows, kCols)}, OutSpec{f32(kRows, kCols)},
-                   [&](Ref in, Ref out) {
+                   [](Ref in, Ref out) {
                      out = Tile(in);
                      For(0, 4,
                          [&](Scalar i) { out = Tile(out) + i.AsType(f32); });
@@ -261,7 +260,7 @@ TEST_F(KilnE2eTest, GridFreeKernelWithVmemOperands) {
       Kernel kernel,
       CreateKernel(GridSpec{.name = "grid_free_vmem_e2e"},
                    InSpec::Vmem(f32(8, 128)), OutSpec::Vmem(f32(8, 128)),
-                   [&](Ref in, Ref out) { out = Tile(in) * 2.0; }));
+                   [](Ref in, Ref out) { out = Tile(in) * 2.0; }));
   xla::Literal input = Make2dF32(8, 128, [](int64_t r, int64_t c) {
     return static_cast<float>(r * 128 + c);
   });
@@ -283,7 +282,7 @@ TEST_F(KilnE2eTest, GridKernelWithHbmAndDma) {
                    InSpec::Vmem(f32(kTileRows, kCols)),
                    OutSpec::Hbm(f32(kSteps * kTileRows, kCols)),
                    ScratchSpec::Vmem(f32(2, kTileRows, kCols)),
-                   [&](Ref hbm_in, Ref vmem_bias, Ref hbm_out, Ref vmem_bufs) {
+                   [](Ref hbm_in, Ref vmem_bias, Ref hbm_out, Ref vmem_bufs) {
                      SemaphoreArray sems = AllocaDmaSemaphore({2});
                      Scalar step = ProgramId(0);
                      Scalar slot = step % 2;
@@ -329,7 +328,7 @@ TEST_F(KilnE2eTest, DynamicHbmTiledLoopWithDma) {
       CreateKernel(GridSpec{.name = "dynamic_hbm_scale_e2e"},
                    InSpec::Hbm(f32(kDynamic, kCols)),
                    OutSpec::Hbm(f32(kDynamic, kCols)),
-                   [&](Ref hbm_in, Ref hbm_out) {
+                   [](Ref hbm_in, Ref hbm_out) {
                      Ref vmem_tile = AllocaVmem(f32(kTileRows, kCols));
                      Semaphore sem = AllocaDmaSemaphore();
 
@@ -367,7 +366,7 @@ TEST_F(KilnE2eTest, DynamicMemrefSliceSizesAndScopedDma) {
       CreateKernel(
           GridSpec{.name = "dynamic_slices_e2e"},
           InSpec::Hbm(f32(kDynamic, kDynamic)),
-          OutSpec::Hbm(f32(kDynamic, kDynamic)), [&](Ref hbm_in, Ref hbm_out) {
+          OutSpec::Hbm(f32(kDynamic, kDynamic)), [](Ref hbm_in, Ref hbm_out) {
             Scalar r = hbm_in.Dim(0);
             Scalar c = hbm_in.Dim(1);
             Scalar half_rows = MultipleOf((r >> 1), 8);

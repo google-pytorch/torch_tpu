@@ -98,7 +98,7 @@ TEST(KilnTest, BlockwiseMatmul) {
       OutSpec{bf16(kTm, kTn), IndexMap([] {
                 return IndexIndices{ProgramId(0), ProgramId(1)};
               })},
-      ScratchSpec{f32(kTm, kTn)}, [&](Ref a, Ref b, Ref out, Ref acc) {
+      ScratchSpec{f32(kTm, kTn)}, [](Ref a, Ref b, Ref out, Ref acc) {
         Scalar kk = ProgramId(2);
         If(kk == 0, [&] { acc = Zeros(acc.shape()); });
         acc = Tile(acc) + Dot(Tile(a), Tile(b));
@@ -162,7 +162,7 @@ TEST(KilnTest, ScalarPrefetchAndLoop) {
       ScalarPrefetchSpec{i32(kRows)}, InSpec{f32(1, kCols), gathered},
       OutSpec{f32(1, kChunk),
               IndexMap([] { return IndexIndices{ProgramId(0), 0}; })},
-      [&](Ref /*indices*/, Ref rows, Ref out) {
+      [](Ref /*indices*/, Ref rows, Ref out) {
         Tile total = Zeros(f32(1, kChunk));
         for (int64_t c = 0; c < kCols; c += kChunk) {
           total = total + Tile(rows(0, Slice(c, kChunk)));
@@ -208,7 +208,7 @@ TEST(KilnTest, RefSliceRankCollapsing) {
   absl::StatusOr<Kernel> kernel =
       CreateKernel(GridSpec{.name = "rank_collapse", .grid = {1}},
                    InSpec{.shape = f32(1, 1, 32, 128)},
-                   OutSpec{.shape = f32(32, 128)}, [&](Ref in4d, Ref out2d) {
+                   OutSpec{.shape = f32(32, 128)}, [](Ref in4d, Ref out2d) {
                      // in4d(0, 0) collapses the first 2 dimensions, resulting
                      // in rank 2.
                      Tile tile2d(in4d(0, 0));
@@ -229,7 +229,7 @@ TEST(KilnTest, LiteralOverloads) {
   absl::StatusOr<Kernel> kernel =
       CreateKernel(GridSpec{.name = "literal_ops", .grid = {1}},
                    InSpec{f32(32, 128)}, InSpec{i32(32, 128)},
-                   OutSpec{f32(32, 128)}, [&](Ref f_in, Ref i_in, Ref out) {
+                   OutSpec{f32(32, 128)}, [](Ref f_in, Ref i_in, Ref out) {
                      Tile f(f_in);
                      Tile i(i_in);
 
@@ -305,7 +305,7 @@ TEST(KilnTest, ScalarFloatOperations) {
       CreateKernel(GridSpec{.name = "scalar_float_ops", .grid = {1}},
                    InSpec{.shape = f32(32, 128), .space = MemorySpace::kSmem},
                    OutSpec{.shape = f32(32, 128), .space = MemorySpace::kSmem},
-                   [&](Ref in, Ref out) {
+                   [](Ref in, Ref out) {
                      Scalar sf = F32(2.5);
                      EXPECT_TRUE(sf.dtype().IsFloat());
                      EXPECT_FALSE(sf.dtype().IsInt());
@@ -380,7 +380,7 @@ T Fmix32(T h) {
 TEST(KilnTest, BitwiseOperations) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "bitwise_ops", .grid = {4}}, InSpec{u32(32, 128)},
-      OutSpec{u32(32, 128)}, [&](Ref in, Ref out) {
+      OutSpec{u32(32, 128)}, [](Ref in, Ref out) {
         Scalar pid = ProgramId(0).AsType(u32);
         Scalar stream = Fmix32(pid ^ 0x9E3779B9u);
         Scalar shifted = (stream << 1) | (stream & 1);
@@ -429,7 +429,7 @@ TEST(KilnTest, BitwiseOperations) {
 TEST(KilnTest, TileScalarSplat) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "tile_scalar_splat", .grid = {1}}, InSpec{f32(32, 128)},
-      OutSpec{i32(32, 128)}, [&](Ref float_in, Ref out) {
+      OutSpec{i32(32, 128)}, [](Ref float_in, Ref out) {
         Tile float_tile(float_in);
         Scalar int_scalar = I32(42);
 
@@ -461,7 +461,7 @@ TEST(KilnTest, TileScalarArithmetic) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "tile_scalar_arith", .grid = {2}}, InSpec{f32(32, 128)},
       InSpec{i32(32, 128)}, OutSpec{f32(32, 128)},
-      [&](Ref float_in, Ref int_in, Ref out) {
+      [](Ref float_in, Ref int_in, Ref out) {
         Tile float_tile(float_in);
         Tile int_tile(int_in);
 
@@ -510,7 +510,7 @@ TEST(KilnTest, TileScalarArithmetic) {
 TEST(KilnTest, TileScalarBitwise) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "tile_scalar_bitwise", .grid = {1}},
-      InSpec{i32(32, 128)}, OutSpec{i32(32, 128)}, [&](Ref int_in, Ref out) {
+      InSpec{i32(32, 128)}, OutSpec{i32(32, 128)}, [](Ref int_in, Ref out) {
         Tile int_tile(int_in);
         Scalar int_scalar = I32(42);
 
@@ -552,7 +552,7 @@ TEST(KilnTest, TileScalarComparisonAndSelect) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "tile_scalar_cmp_select", .grid = {1}},
       InSpec{f32(32, 128)}, InSpec{i32(32, 128)}, OutSpec{f32(32, 128)},
-      [&](Ref float_in, Ref int_in, Ref out) {
+      [](Ref float_in, Ref int_in, Ref out) {
         Tile float_tile(float_in);
         Tile int_tile(int_in);
 
@@ -611,7 +611,7 @@ TEST(KilnTest, TileScalarComparisonAndSelect) {
 TEST(KilnTest, ScalarCompoundAssignmentArithmetic) {
   absl::StatusOr<Kernel> kernel =
       CreateKernel(GridSpec{.name = "scalar_compound_arith", .grid = {2, 2}},
-                   OutSpec::Smem(f32(1)), [&](Ref out) {
+                   OutSpec::Smem(f32(1)), [](Ref out) {
                      Scalar s = ProgramId(0);
                      Scalar rhs = ProgramId(1);
                      Scalar& s_ref = (s += rhs);
@@ -670,7 +670,7 @@ TEST(KilnTest, ScalarCompoundAssignmentArithmetic) {
 TEST(KilnTest, ScalarCompoundAssignmentBitwise) {
   absl::StatusOr<Kernel> kernel =
       CreateKernel(GridSpec{.name = "scalar_compound_bitwise", .grid = {2, 2}},
-                   OutSpec::Smem(i32(1)), [&](Ref out) {
+                   OutSpec::Smem(i32(1)), [](Ref out) {
                      Scalar s = ProgramId(0);
                      Scalar rhs = ProgramId(1);
                      s &= rhs;
@@ -707,7 +707,7 @@ TEST(KilnTest, TileFloatCompoundAssignment) {
   absl::StatusOr<Kernel> kernel =
       CreateKernel(GridSpec{.name = "tile_float_compound_assign", .grid = {2}},
                    InSpec{f32(8, 128)}, InSpec{f32(8, 128)},
-                   OutSpec{f32(8, 128)}, [&](Ref in0, Ref in1, Ref out) {
+                   OutSpec{f32(8, 128)}, [](Ref in0, Ref in1, Ref out) {
                      Tile f(in0);
                      Tile rhs(in1);
                      Scalar sf = ProgramId(0).ToF32();
@@ -757,7 +757,7 @@ TEST(KilnTest, TileIntCompoundAssignmentArithmetic) {
   absl::StatusOr<Kernel> kernel =
       CreateKernel(GridSpec{.name = "tile_int_compound_arith", .grid = {2}},
                    InSpec{i32(8, 128)}, InSpec{i32(8, 128)},
-                   OutSpec{i32(8, 128)}, [&](Ref in0, Ref in1, Ref out) {
+                   OutSpec{i32(8, 128)}, [](Ref in0, Ref in1, Ref out) {
                      Tile i(in0);
                      Tile rhs(in1);
                      Scalar s = ProgramId(0);
@@ -811,7 +811,7 @@ TEST(KilnTest, TileCompoundAssignmentBitwise) {
   absl::StatusOr<Kernel> kernel =
       CreateKernel(GridSpec{.name = "tile_compound_bitwise", .grid = {2}},
                    InSpec{i32(8, 128)}, InSpec{i32(8, 128)},
-                   OutSpec{i32(8, 128)}, [&](Ref in0, Ref in1, Ref out) {
+                   OutSpec{i32(8, 128)}, [](Ref in0, Ref in1, Ref out) {
                      Tile i(in0);
                      Tile rhs(in1);
                      Scalar s = ProgramId(0);
@@ -864,7 +864,7 @@ TEST(KilnTest, TileCompoundAssignmentBitwise) {
 TEST(KilnTest, RotateGatherExtractBitcastAndMaskedStore) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "rotate_gather_extract_bitcast_store", .grid = {1}},
-      InSpec{f32(8, 128)}, OutSpec{i32(1, 128)}, [&](Ref in, Ref out) {
+      InSpec{f32(8, 128)}, OutSpec{i32(1, 128)}, [](Ref in, Ref out) {
         Scalar step = ProgramId(0);
         Tile rotated = Rotate(Tile(in), 8 - (step & 7), /*axis=*/0);
         Tile row0 = rotated.Slice({0, 0}, {1, 128});
@@ -904,7 +904,7 @@ TEST(KilnTest, RotateGatherExtractBitcastAndMaskedStore) {
 TEST(KilnTest, ForLoopWithInductionVarAndBounds) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "for_loop", .grid = {1}}, InSpec{f32(32, 128)},
-      OutSpec{f32(32, 128)}, [&](Ref in, Ref out) {
+      OutSpec{f32(32, 128)}, [](Ref in, Ref out) {
         // Loop with static bounds.
         For(0, 10, [&](Scalar i) {
           EXPECT_TRUE(i.dtype().IsInt());
@@ -958,17 +958,17 @@ TEST(KilnTest, ScalarMismatchedTypesFail) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "mismatched", .grid = {1}}, InSpec{f32(32, 128)},
       InSpec{i32(32, 128)}, InSpec{u32(32, 128)}, OutSpec{f32(32, 128)},
-      [&](Ref f_in, Ref i_in, Ref u_in, Ref out) {
+      [](Ref f_in, Ref i_in, Ref u_in, Ref out) {
         Scalar s_i = I32(1);
         Scalar s_u = U32(1);
         Scalar s_f = F32(1.0);
         EXPECT_DEATH(s_i + s_f, "\\+ requires operands of the same dtype");
         EXPECT_DEATH(s_i + s_u, "\\+ requires operands of the same dtype");
         EXPECT_DEATH(!s_i, "! requires a bool operand");
-        EXPECT_DEATH(If(s_i, [&] {}),
+        EXPECT_DEATH(If(s_i, [] {}),
                      "If\\(\\) condition must be a bool scalar");
         EXPECT_DEATH(Select(s_i, s_i, s_i), "Select\\(\\) mask must be bool");
-        EXPECT_DEATH(For(s_f, [&](Scalar) {}),
+        EXPECT_DEATH(For(s_f, [](Scalar) {}),
                      "IndexArg requires an integer scalar");
 
         Tile t_f(f_in);
@@ -1111,7 +1111,7 @@ INSTANTIATE_TEST_SUITE_P(
 TEST(KilnTest, DTypeInTileAndScalarOps) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "dtype_ops", .grid = {1}}, InSpec{f32(32, 128)},
-      OutSpec{f32(32, 128)}, [&](Ref in, Ref out) {
+      OutSpec{f32(32, 128)}, [](Ref in, Ref out) {
         EXPECT_EQ(in.dtype(), f32);
         EXPECT_EQ(out.dtype(), f32);
         EXPECT_EQ(in.shape(), f32(32, 128));
@@ -1164,7 +1164,7 @@ TEST(KilnTest, DTypeInTileAndScalarOps) {
 TEST(KilnTest, SimplifiedOverloadsAndBounds) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "simplified_ops", .grid = {1}}, InSpec{f32(32, 128)},
-      OutSpec{f32(32, 128)}, [&](Ref in, Ref out) {
+      OutSpec{f32(32, 128)}, [](Ref in, Ref out) {
         Scalar zero = I32(0);
         Scalar ten = I32(10);
 
@@ -1284,7 +1284,7 @@ TEST(KilnTest, UnsignedOperations) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "unsigned_ops", .grid = {1}}, InSpec{u32(32, 128)},
       InSpec{u32(32, 128)}, OutSpec{u32(32, 128)},
-      [&](Ref in_a, Ref in_b, Ref out) {
+      [](Ref in_a, Ref in_b, Ref out) {
         Tile a(in_a);
         Tile b(in_b);
         EXPECT_TRUE(a.dtype().IsUnsigned());
@@ -1368,7 +1368,7 @@ TEST(KilnTest, UnsignedAndSignedCasts) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "unsigned_casts", .grid = {1}}, InSpec{f32(32, 128)},
       InSpec{u8(32, 128)}, InSpec{i8(32, 128)}, OutSpec{f32(32, 128)},
-      [&](Ref in_f, Ref in_u8, Ref in_i8, Ref out) {
+      [](Ref in_f, Ref in_u8, Ref in_i8, Ref out) {
         Tile f(in_f);
         Tile u(in_u8);
         Tile i(in_i8);
@@ -1410,7 +1410,7 @@ TEST(KilnTest, DynamicMemrefSliceSizesAndAll) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "dynamic_slices"},
       InSpec::Vmem(f32(kDynamic, kDynamic, 128)), OutSpec::Vmem(f32(8, 128)),
-      [&](Ref dyn_in, Ref /*vmem_out*/) {
+      [](Ref dyn_in, Ref /*vmem_out*/) {
         EXPECT_EQ(dyn_in.memory_space(), MemorySpace::kVmem);
         EXPECT_FALSE(dyn_in.HasStaticShape());
         EXPECT_TRUE(dyn_in.IsDynamicDim(0));
@@ -1468,7 +1468,7 @@ TEST(KilnTest, DynamicMemrefSliceSizesAndAll) {
 TEST(KilnTest, SteppedForScopedAllocaAndUnsignedBounds) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "stepped_for_alloca"}, InSpec::Vmem(f32(kDynamic, 128)),
-      OutSpec::Vmem(f32(8, 128)), [&](Ref dyn_in, Ref vmem_out) {
+      OutSpec::Vmem(f32(8, 128)), [](Ref dyn_in, Ref vmem_out) {
         Ref local_smem = AllocaSmem(i32(1));
         Ref scalar_smem = AllocaSmem(i32());
         EXPECT_EQ(local_smem.memory_space(), MemorySpace::kSmem);
@@ -1523,7 +1523,7 @@ TEST(KilnTest, SteppedForScopedAllocaAndUnsignedBounds) {
 TEST(KilnTest, DynamicShapeSliceAndAllocaValidationErrors) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "validation_errors"}, InSpec::Vmem(f32(kDynamic, 128)),
-      OutSpec::Vmem(f32(8, 128)), [&](Ref dyn_in, Ref vmem_out) {
+      OutSpec::Vmem(f32(8, 128)), [](Ref dyn_in, Ref vmem_out) {
         Scalar rows = dyn_in.Dim(0);
         EXPECT_DEATH(static_cast<void>(Tile(dyn_in)),
                      "Tile load requires a Ref with a static shape");
@@ -1554,9 +1554,9 @@ TEST(KilnTest, DynamicShapeSliceAndAllocaValidationErrors) {
         EXPECT_DEATH(static_cast<void>(dyn_in(
                          all, Slice(std::numeric_limits<int32_t>::max(), 8))),
                      "Slice offset \\+ size must not exceed dimension size");
-        EXPECT_DEATH(For(0, 16, 0, [&](Scalar) {}),
+        EXPECT_DEATH(For(0, 16, 0, [](Scalar) {}),
                      "Loop step must be positive");
-        EXPECT_DEATH(For(0, 16, I32(0), [&](Scalar) {}),
+        EXPECT_DEATH(For(0, 16, I32(0), [](Scalar) {}),
                      "Loop step must be positive");
         EXPECT_DEATH(static_cast<void>(AllocaSmem(i32(0))),
                      "Alloca\\(\\) requires static positive dimensions");
@@ -1583,7 +1583,7 @@ TEST(KilnTest, DynamicShapeSliceAndAllocaValidationErrors) {
 TEST(KilnTest, SemaphoreAndBarrierOperations) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "semaphores", .grid = {1}}, InSpec::Hbm(f32(8, 128)),
-      OutSpec::Vmem(f32(8, 128)), [&](Ref, Ref) {
+      OutSpec::Vmem(f32(8, 128)), [](Ref, Ref) {
         Scalar dst_dev = (ProgramId(0) + 1) % 2;
 
         Semaphore dma_sem0 = AllocaDmaSemaphore();
@@ -1639,7 +1639,7 @@ TEST(KilnTest, HbmAndSemaphoreValidationErrors) {
       GridSpec{.name = "bad_hbm_in", .grid = {1}},
       InSpec{f32(8, 128), IndexMap([] { return IndexIndices{0, 0}; }),
              MemorySpace::kHbm},
-      OutSpec::Vmem(f32(8, 128)), [&](Ref, Ref) {});
+      OutSpec::Vmem(f32(8, 128)), [](Ref, Ref) {});
   EXPECT_THAT(bad_hbm_in_map,
               StatusIs(error::kInvalidArgument,
                        HasSubstr("HBM operands do not support index_map")));
@@ -1648,7 +1648,7 @@ TEST(KilnTest, HbmAndSemaphoreValidationErrors) {
       GridSpec{.name = "bad_hbm_out", .grid = {1}}, InSpec::Vmem(f32(8, 128)),
       OutSpec{f32(8, 128), IndexMap([] { return IndexIndices{0, 0}; }),
               MemorySpace::kHbm},
-      [&](Ref, Ref) {});
+      [](Ref, Ref) {});
   EXPECT_THAT(bad_hbm_out_map,
               StatusIs(error::kInvalidArgument,
                        HasSubstr("HBM operands do not support index_map")));
@@ -1656,7 +1656,7 @@ TEST(KilnTest, HbmAndSemaphoreValidationErrors) {
   absl::StatusOr<Kernel> bad_grid_free_map = CreateKernel(
       GridSpec{.name = "bad_grid_free_map"},
       InSpec{f32(8, 128), IndexMap([] { return IndexIndices{0, 0}; })},
-      OutSpec::Vmem(f32(8, 128)), [&](Ref, Ref) {});
+      OutSpec::Vmem(f32(8, 128)), [](Ref, Ref) {});
   EXPECT_THAT(
       bad_grid_free_map,
       StatusIs(error::kInvalidArgument,
@@ -1665,14 +1665,14 @@ TEST(KilnTest, HbmAndSemaphoreValidationErrors) {
   absl::StatusOr<Kernel> bad_hbm_scratch = CreateKernel(
       GridSpec{.name = "bad_hbm_scratch", .grid = {1}},
       InSpec::Vmem(f32(8, 128)), OutSpec::Vmem(f32(8, 128)),
-      ScratchSpec{f32(8, 128), MemorySpace::kHbm}, [&](Ref, Ref, Ref) {});
+      ScratchSpec{f32(8, 128), MemorySpace::kHbm}, [](Ref, Ref, Ref) {});
   EXPECT_THAT(bad_hbm_scratch,
               StatusIs(error::kInvalidArgument,
                        HasSubstr("Scratch operands cannot use HBM")));
 
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "hbm_sem_errors"}, InSpec::Hbm(f32(kDynamic, 128)),
-      OutSpec::Vmem(f32(8, 128)), [&](Ref hbm_in, Ref vmem_out) {
+      OutSpec::Vmem(f32(8, 128)), [](Ref hbm_in, Ref vmem_out) {
         SemaphoreArray dma_sems = AllocaDmaSemaphore({2});
         SemaphoreArray reg_sems = AllocaSemaphore({2, 3});
         Semaphore reg_sem = AllocaSemaphore();
@@ -1728,7 +1728,7 @@ TEST(KilnTest, HbmAndSemaphoreValidationErrors) {
 TEST(KilnTest, DmaOperations) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "dma_ops"}, InSpec::Hbm(f32(8, 128)),
-      OutSpec::Vmem(f32(8, 128)), [&](Ref hbm_in, Ref vmem_out) {
+      OutSpec::Vmem(f32(8, 128)), [](Ref hbm_in, Ref vmem_out) {
         Scalar dev_id = DeviceId();
         Semaphore sem = AllocaDmaSemaphore();
         Semaphore send_sem = AllocaDmaSemaphore();
@@ -1825,7 +1825,7 @@ TEST(KilnTest, UnboundedDynamicDma) {
       GridSpec{.name = "unbounded_dynamic_dma"},
       InSpec::Hbm(f32(kDynamic, 128)), OutSpec::Hbm(f32(kDynamic, 128)),
       ScratchSpec::Vmem(f32(8, 128)),
-      [&](Ref hbm_in, Ref hbm_out, Ref vmem_buf) {
+      [](Ref hbm_in, Ref hbm_out, Ref vmem_buf) {
         Semaphore in_sem = AllocaDmaSemaphore();
         Semaphore out_sem = AllocaDmaSemaphore();
         Scalar rows = hbm_in.Dim(0);
@@ -1864,7 +1864,7 @@ TEST(KilnTest, UnboundedDynamicDma) {
 TEST(KilnTest, DmaValidationErrors) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "dma_errors"}, InSpec::Hbm(f32(kDynamic, 128)),
-      OutSpec::Vmem(f32(8, 128)), [&](Ref hbm_in, Ref vmem_out) {
+      OutSpec::Vmem(f32(8, 128)), [](Ref hbm_in, Ref vmem_out) {
         SemaphoreArray dma_sems = AllocaDmaSemaphore({2});
         Semaphore reg_sem = AllocaSemaphore();
         Ref hbm_tile = hbm_in(Slice(0, 8), all);
@@ -1940,7 +1940,7 @@ TEST(KilnTest, CanonicalizeFoldsMemRefSliceAndEliminatesDeadOps) {
   absl::StatusOr<Kernel> kernel =
       CreateKernel(GridSpec{.name = "canonicalize_smem", .grid = {4}},
                    ScalarPrefetchSpec{i32(4)}, OutSpec::Smem(i32(4, 8)),
-                   [&](Ref idx, Ref out) {
+                   [](Ref idx, Ref out) {
                      Scalar i = ProgramId(0);
                      Scalar v = Scalar(idx(i));
                      out(i, 0) = v;
@@ -2001,7 +2001,7 @@ TEST(KilnTest, ConstructsShapesFromDTypeCallOperator) {
 TEST(KilnTest, GridFreeKernelOmitsGridAttributes) {
   EXPECT_THAT(CreateKernel(GridSpec{.name = "grid_free"},
                            InSpec::Hbm(f32(8, 128)), OutSpec::Vmem(f32(8, 128)),
-                           [&](Ref in, Ref out) {
+                           [](Ref in, Ref out) {
                              AsyncCopy(in, out, AllocaDmaSemaphore()).Wait();
                            }),
               IsOkAndMatchesIr(R"(

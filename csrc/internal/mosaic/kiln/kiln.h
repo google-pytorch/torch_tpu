@@ -29,34 +29,38 @@
 //       InSpec{f32(tm, n), row_map},
 //       InSpec{f32(tm, n), row_map},
 //       OutSpec{f32(tm, n), row_map},
-//       [&](Ref x, Ref y, Ref out) {
+//       [](Ref x, Ref y, Ref out) {
 //         out = Tile(x) + Tile(y);
 //       });
 //
 // Concepts map 1:1 onto Pallas TPU:
-//   * GridSpec / InSpec / OutSpec / ScratchSpec <-> pallas_call specs
-//   * std::optional<InSpec / OutSpec>           <-> optional operand ->
-//   std::optional<Ref>
-//   * ProgramId / NumPrograms                   <-> pl.program_id /
-//   pl.num_programs
-//   * ref(0, 0) / ref(0, Slice(c, kChunk), all) <-> ref slicing; emits
-//   tpu::MemRefSlice / Squeeze
-//   * Tile(ref) / ref = tile / Scalar(ref)      <-> load/store on ref arguments
-//   * Tile                                      <-> a jax.Array value inside
-//   the kernel
-//   * Scalar                                    <-> scalar (SMEM / grid index)
-//   values
-//   * If / For / RunScoped                      <-> pl.when / lax.fori_loop /
-//   pl.run_scoped
-//   * AsyncCopy / MakeAsyncCopy                 <-> pltpu.async_copy /
-//   pltpu.make_async_copy
-//   * AsyncRemoteCopy / MakeAsyncRemoteCopy     <-> pltpu.async_remote_copy /
-//   pltpu.make_async_remote_copy
-//   * DeviceId                                  <-> tpu.device_id
-//   * Semaphore / SemaphoreArray                <-> pltpu.SemaphoreType /
-//   tpu.sem_alloc
-//   * kDynamic / ref.Dim(axis) / MultipleOf     <-> dynamic memref dimensions
-//   and divisibility assumptions (pl.multiple_of)
+//   * GridSpec / InSpec / OutSpec / ScratchSpec
+//     <-> pallas_call specs
+//   * std::optional<InSpec / OutSpec>
+//     <-> optional operand -> std::optional<Ref>
+//   * ProgramId / NumPrograms
+//     <-> pl.program_id / pl.num_programs
+//   * ref(0, 0) / ref(0, Slice(c, kChunk), all)
+//     <-> ref slicing; emits tpu::MemRefSlice / Squeeze
+//   * Tile(ref) / ref = tile / Scalar(ref)
+//     <-> load/store on ref arguments
+//   * Tile
+//     <-> a jax.Array value inside the kernel
+//   * Scalar
+//     <-> scalar (SMEM / grid index) values
+//   * If / For / RunScoped
+//     <-> pl.when / lax.fori_loop / pl.run_scoped
+//   * AsyncCopy / MakeAsyncCopy
+//     <-> pltpu.async_copy / pltpu.make_async_copy
+//   * AsyncRemoteCopy / MakeAsyncRemoteCopy
+//     <-> pltpu.async_remote_copy / pltpu.make_async_remote_copy
+//   * DeviceId
+//     <-> tpu.device_id
+//   * Semaphore / SemaphoreArray
+//     <-> pltpu.SemaphoreType / tpu.sem_alloc
+//   * kDynamic / ref.Dim(axis) / MultipleOf
+//     <-> dynamic memref dimensions and divisibility assumptions
+//         (pl.multiple_of)
 //
 #include "csrc/internal/mosaic/kiln/core/control_flow.h"  // IWYU pragma: export
 #include "csrc/internal/mosaic/kiln/core/dma.h"           // IWYU pragma: export
