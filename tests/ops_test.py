@@ -2567,6 +2567,14 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_gather(self):
     self.do_test_op("gather")
 
+  def test_gcd(self):
+    self.do_test_op(
+        "gcd",
+        # Cap samples to avoid shard timeouts, as for lcm (gcd compiles a while
+        # loop per shape/dtype across base, out, and inplace variants).
+        max_samples_per_op_dtype=6,
+    )
+
   def test_ge(self):
     self.do_test_op(
         "ge",
@@ -4655,10 +4663,6 @@ class TestOps(op_testing.OpInfoTestBase):
   @op_testing.unimplemented_on_tpu
   def test_frexp(self):
     self.do_test_op("frexp")
-
-  @op_testing.unimplemented_on_tpu
-  def test_gcd(self):
-    self.do_test_op("gcd")
 
   @op_testing.unimplemented_on_tpu
   def test_geometric(self):
