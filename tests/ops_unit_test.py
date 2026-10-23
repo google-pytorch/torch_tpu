@@ -23419,6 +23419,68 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
 
       self.assert_close_tpu_vs_cpu(compute_f32_c64)
 
+  def test_compiled_broadcast_contractions_and_unit_reductions(self):
+    def fn(c_in, b_in, l_in, h_in, enc_in, ln_w, ln_b, q_in, k_in, v_in):
+      c_rep = c_in.repeat_interleave(4, dim=2)
+      b_rep = b_in.repeat_interleave(4, dim=2)
+      c_chunks = c_rep.reshape(1, 2, 16, 8, 32)
+      b_chunks = b_rep.reshape(1, 2, 16, 8, 32)
+      g = (c_chunks[:, :, :, None, :, :] * b_chunks[:, :, None, :, :, :]).sum(
+          dim=-1
+      )
+      m = (g[..., None] * l_in.permute(0, 2, 3, 4, 1)[..., None]).sum(dim=-1)
+      y_diag = (m[..., None] * h_in[:, :, None]).sum(dim=3)
+      ln_out = torch.nn.functional.layer_norm(enc_in, (64,), ln_w, ln_b, 1e-5)
+      scores = torch.bmm(q_in, k_in)
+      probs = torch.nn.functional.softmax(scores, dim=-1)
+      attn_out = torch.bmm(probs, v_in)
+      return y_diag, ln_out, attn_out
+
+    torch.manual_seed(0)
+    c_cpu = torch.randn(1, 32, 2, 32, dtype=torch.bfloat16).float()
+    b_cpu = torch.randn(1, 32, 2, 32, dtype=torch.bfloat16).float()
+    l_cpu = torch.randn(1, 8, 2, 16, 16, dtype=torch.bfloat16).float()
+    h_cpu = torch.randn(1, 2, 16, 8, 16, dtype=torch.bfloat16).float()
+    enc_cpu = torch.randn(32, 1, 64, dtype=torch.bfloat16)
+    ln_w_cpu = torch.randn(64, dtype=torch.bfloat16)
+    ln_b_cpu = torch.randn(64, dtype=torch.bfloat16)
+    q_cpu = torch.randn(4, 1, 16, dtype=torch.bfloat16)
+    k_cpu = torch.randn(4, 16, 1, dtype=torch.bfloat16)
+    v_cpu = torch.randn(4, 1, 16, dtype=torch.bfloat16)
+
+    y_ref, ln_ref, attn_ref = fn(
+        c_cpu,
+        b_cpu,
+        l_cpu,
+        h_cpu,
+        enc_cpu,
+        ln_w_cpu,
+        ln_b_cpu,
+        q_cpu,
+        k_cpu,
+        v_cpu,
+    )
+    compiled_fn = torch.compile(fn, backend="tpu")
+    y_tpu, ln_tpu, attn_tpu = compiled_fn(
+        c_cpu.to("tpu"),
+        b_cpu.to("tpu"),
+        l_cpu.to("tpu"),
+        h_cpu.to("tpu"),
+        enc_cpu.to("tpu"),
+        ln_w_cpu.to("tpu"),
+        ln_b_cpu.to("tpu"),
+        q_cpu.to("tpu"),
+        k_cpu.to("tpu"),
+        v_cpu.to("tpu"),
+    )
+    utils.assert_close(actual=y_tpu.cpu(), expected=y_ref, rtol=1e-1, atol=1e-1)
+    utils.assert_close(
+        actual=ln_tpu.cpu(), expected=ln_ref, rtol=2e-2, atol=2e-2
+    )
+    utils.assert_close(
+        actual=attn_tpu.cpu(), expected=attn_ref, rtol=1e-2, atol=1e-2
+    )
+
 
 if __name__ == "__main__":
   absltest.main()

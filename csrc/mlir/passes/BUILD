@@ -29,6 +29,21 @@ package(
 )
 
 torch_tpu_cc_library(
+    name = "canonicalize_broadcast_contractions_and_unit_reductions",
+    srcs = ["canonicalize_broadcast_contractions_and_unit_reductions.cc"],
+    hdrs = ["canonicalize_broadcast_contractions_and_unit_reductions.h"],
+    deps = [
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:SideEffectInterfaces",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "dummy_pass",
     srcs = ["dummy_pass.cc"],
     hdrs = ["dummy_pass.h"],
