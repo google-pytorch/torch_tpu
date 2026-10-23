@@ -38,22 +38,6 @@ If you run into a bug or crash, please include:
 *   **Environment details**: Your PyTorch version, `torch_tpu` version and TPU
     hardware generation if applicable.
 
-### Claiming an Issue
-
-To help avoid duplicate work, please follow these practices before starting
-on an existing issue:
-
-*   **Check for existing work**: Read the issue's comments and look for linked
-    pull requests. If someone has said they are working on it, or a pull request
-    already references it, the issue is likely taken.
-*   **Comment before you start**: Leave a comment on the issue to express
-    your interest to work on it. A maintainer _may_ then assign the issue to you.
-*   **Assignees**: An issue's assignee is usually the maintainer responsible for
-    it, which does not necessarily mean they are writing a fix. Your comment
-    lets them confirm whether the issue is free to pick up.
-*   **Overlapping fixes**: If several fixes for the same issue are proposed
-    anyway, maintainers may choose the one that best addresses the issue.
-
 ## Before You Begin
 
 ### Sign Our Contributor License Agreement
@@ -68,6 +52,23 @@ contribution; signing simply gives us permission to redistribute your changes.
 If you have already signed the Google CLA for another open-source project, you
 likely do not need to sign it again. A CLA bot checks pull requests
 automatically and guides you if action is needed.
+
+### Claiming an Issue
+
+To help avoid duplicate work, please follow these practices before starting
+on an existing issue:
+
+*   **Check for existing work**: Check whether the issue has an assignee, read
+    its comments, and look for linked pull requests. If someone is assigned to
+    it, has said they are working on it, or has already opened a pull request
+    referencing it, someone is likely already working on it. (If an assigned
+    issue has had no recent activity, feel free to ask in a comment whether it
+    is free to pick up.)
+*   **Comment before you start**: If the issue is unassigned, leave a comment on
+    it to express your interest in working on it. A maintainer _may_ then assign
+    the issue to you.
+*   **Overlapping fixes**: If several fixes for the same issue are proposed
+    anyway, maintainers may choose the one that best addresses the issue.
 
 ### Review Our Community Guidelines
 
