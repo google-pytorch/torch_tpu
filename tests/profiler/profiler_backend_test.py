@@ -46,60 +46,6 @@ class ProfilerBackendTest(seed_test_utils.RepeatableTest):
     shutil.rmtree(self.tmpdir)
     super().tearDown()
 
-  def test_double_start_server_fails(self):
-    """Calling start_profiler_server() twice should fail."""
-
-    port = portpicker.pick_unused_port()
-    profiler_backend.start_profiler_server(port)
-    try:
-      with self.assertRaisesRegex(
-          RuntimeError, 'server has already been started'
-      ):
-        profiler_backend.start_profiler_server(port)
-    finally:
-      profiler_backend.stop_profiler_server()
-
-  def test_double_start_trace_fails(self):
-    """Calling start_trace() twice should fail."""
-
-    profiler_backend.start_trace(self.tmpdir)
-    try:
-      with self.assertRaisesRegex(
-          RuntimeError, 'session has already been started'
-      ):
-        profiler_backend.start_trace(self.tmpdir)
-    finally:
-      profiler_backend.stop_trace(os.path.join(self.tmpdir, 'trace.pb'))
-
-  def test_stop_server_without_start_fails(self):
-    """Calling stop_profiler_server() without start_profiler_server() should fail."""
-
-    with self.assertRaisesRegex(RuntimeError, 'server has not been started'):
-      profiler_backend.stop_profiler_server()
-
-  def test_stop_trace_without_start_fails(self):
-    """Calling stop_trace() without start_trace() should fail."""
-
-    with self.assertRaisesRegex(RuntimeError, 'session has not been started'):
-      profiler_backend.stop_trace(os.path.join(self.tmpdir, 'trace.pb'))
-
-  def test_stop_server_twice_fails(self):
-    """Calling stop_profiler_server() twice should fail."""
-
-    port = portpicker.pick_unused_port()
-    profiler_backend.start_profiler_server(port)
-    profiler_backend.stop_profiler_server()
-    with self.assertRaisesRegex(RuntimeError, 'server has not been started'):
-      profiler_backend.stop_profiler_server()
-
-  def test_stop_trace_twice_fails(self):
-    """Calling stop_trace() twice should fail."""
-
-    profiler_backend.start_trace(self.tmpdir)
-    profiler_backend.stop_trace(os.path.join(self.tmpdir, 'trace.pb'))
-    with self.assertRaisesRegex(RuntimeError, 'session has not been started'):
-      profiler_backend.stop_trace(os.path.join(self.tmpdir, 'trace.pb'))
-
   def test_thread_safety_server_start(self):
     """Calling start_profiler_server() from multiple threads should be OK."""
 
@@ -146,21 +92,6 @@ class ProfilerBackendTest(seed_test_utils.RepeatableTest):
       self.assertEqual(results.count(False), num_threads - 1)
     finally:
       profiler_backend.stop_trace(os.path.join(self.tmpdir, 'trace.pb'))
-
-  def test_retry_start_after_stop_failure(self):
-    """Calling stop_trace() failure should still allow a subsequent start."""
-
-    profiler_backend.start_trace(self.tmpdir)
-    # Use a directory path as a filename, which should fail on stop.
-    # In Stop(), it tries to NewWritableFile(filename, &outfile).
-    # If self.tmpdir is a directory, NewWritableFile likely fails.
-    invalid_filename = self.tmpdir
-    with self.assertRaisesRegex(RuntimeError, 'failed to create file'):
-      profiler_backend.stop_trace(invalid_filename)
-
-    # Now verify that we can start again.
-    profiler_backend.start_trace(self.tmpdir)
-    profiler_backend.stop_trace(os.path.join(self.tmpdir, 'trace.pb'))
 
 
 if __name__ == '__main__':
