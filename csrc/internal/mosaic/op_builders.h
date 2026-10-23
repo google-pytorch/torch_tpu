@@ -32,7 +32,7 @@
 #include "mlir/Support/LLVM.h"
 #include "xla/mosaic/dialect/tpu/tpu_dialect.h"
 
-namespace mlir::torch_tpu {  // NON_TORCH_TPU_OK=TODO(willfroom): migrate this.
+namespace torch_tpu {
 
 constexpr int kDefaultSerializationVersion = 13;
 
@@ -45,57 +45,64 @@ struct MatmulOptions {
   bool transpose_lhs = false;
   bool transpose_rhs = false;
   // MXU contraction precision (`nullopt` defaults to 1-pass kBF16).
-  std::optional<tpu::ContractPrecision> precision = std::nullopt;
+  std::optional<mlir::tpu::ContractPrecision> precision = std::nullopt;
 };
 
 // Creates a matmul for two 2D vectors.
-Value CreateMatmul(ImplicitLocOpBuilder& builder, Value lhs, Value rhs,
-                   const MatmulOptions& options = MatmulOptions());
+mlir::Value CreateMatmul(mlir::ImplicitLocOpBuilder& builder, mlir::Value lhs,
+                         mlir::Value rhs,
+                         const MatmulOptions& options = MatmulOptions());
 
 // Helper to build a tpu::IotaOp.
-Value CreateIotaOp(ImplicitLocOpBuilder& builder, Type type, int32_t dimension);
+mlir::Value CreateIotaOp(mlir::ImplicitLocOpBuilder& builder, mlir::Type type,
+                         int32_t dimension);
 
 // Helper to build a tpu::RepeatOp.
-Value CreateRepeatOp(ImplicitLocOpBuilder& builder, Value input,
-                     int64_t dimension, int64_t target_dim_size);
+mlir::Value CreateRepeatOp(mlir::ImplicitLocOpBuilder& builder,
+                           mlir::Value input, int64_t dimension,
+                           int64_t target_dim_size);
 
-Value CreateReciprocal(ImplicitLocOpBuilder& b, Value input);
+mlir::Value CreateReciprocal(mlir::ImplicitLocOpBuilder& b, mlir::Value input);
 
 // Helper to build a memref type with vmem tpu::Vmem memory space.
-mlir::MemRefType GetVmemMemRefType(MLIRContext* context,
-                                   ArrayRef<int64_t> shape, Type element_type);
+mlir::MemRefType GetVmemMemRefType(mlir::MLIRContext* context,
+                                   mlir::ArrayRef<int64_t> shape,
+                                   mlir::Type element_type);
 
 // Helper to build a memref type with smem tpu::Smem memory space.
-mlir::MemRefType GetSmemMemRefType(MLIRContext* context,
-                                   ArrayRef<int64_t> shape, Type element_type);
+mlir::MemRefType GetSmemMemRefType(mlir::MLIRContext* context,
+                                   mlir::ArrayRef<int64_t> shape,
+                                   mlir::Type element_type);
 
 // Helper to build a memref type with hbm tpu::MemorySpace::kHbm memory space.
-mlir::MemRefType GetHbmMemRefType(MLIRContext* context, ArrayRef<int64_t> shape,
-                                  Type element_type);
+mlir::MemRefType GetHbmMemRefType(mlir::MLIRContext* context,
+                                  mlir::ArrayRef<int64_t> shape,
+                                  mlir::Type element_type);
 
 // Helper to build a memref type with semaphore_mem
 // tpu::MemorySpace::kSemaphoreMem memory space.
-mlir::MemRefType GetSemaphoreMemRefType(MLIRContext* context,
-                                        ArrayRef<int64_t> shape,
-                                        Type element_type);
+mlir::MemRefType GetSemaphoreMemRefType(mlir::MLIRContext* context,
+                                        mlir::ArrayRef<int64_t> shape,
+                                        mlir::Type element_type);
 
 // Helper to build a tpu:: dimension semantics attribute.
-mlir::Attribute GetDimensionSemanticsAttr(MLIRContext* context,
+mlir::Attribute GetDimensionSemanticsAttr(mlir::MLIRContext* context,
                                           DimensionSemantics semantics);
 
 // Helper to create an MLIR context with the dialects needed for TorchTPU
 // kernels.
-std::unique_ptr<MLIRContext> CreateMlirContextWithDialects();
+std::unique_ptr<mlir::MLIRContext> CreateMlirContextWithDialects();
 
 // Add tpu.core_type = #tpu.core_type<kTc> attribute to the function.
-void SetTcCoreTypeAttr(func::FuncOp fn);
+void SetTcCoreTypeAttr(mlir::func::FuncOp fn);
 
 // Serialize the given module to a string.
 // This is required to have backwards / forwards compatibility with different
 // versions of libtpu.
-LogicalResult SerializeMosaicKernel(
-    ModuleOp module, int serialization_version = kDefaultSerializationVersion);
+mlir::LogicalResult SerializeMosaicKernel(
+    mlir::ModuleOp module,
+    int serialization_version = kDefaultSerializationVersion);
 
-}  // namespace mlir::torch_tpu
+}  // namespace torch_tpu
 
 #endif  // TORCH_TPU_CSRC_INTERNAL_MOSAIC_OP_BUILDERS_H_

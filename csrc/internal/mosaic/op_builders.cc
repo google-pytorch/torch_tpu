@@ -21,10 +21,13 @@
 
 #include "absl/log/absl_check.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Arith/IR/ArithDialect.h"
+#include "mlir/Dialect/Func/IR/FuncDialect.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/MemRef/IR/MemRefDialect.h"
+#include "mlir/Dialect/SCF/IR/SCFDialect.h"
+#include "mlir/Dialect/Vector/IR/VectorDialect.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/Attributes.h"
@@ -42,51 +45,55 @@
 #include "xla/mosaic/dialect/tpu/tpu_dialect.h"
 #include "xla/mosaic/dialect/tpu/transforms/serde.h"
 
-namespace mlir::torch_tpu {  // NON_TORCH_TPU_OK=TODO(willfroom): migrate this.
+namespace torch_tpu {
 
-static_assert(kDefaultSerializationVersion <= tpu::MosaicSerdePass::kVersion);
+static_assert(kDefaultSerializationVersion <=
+              mlir::tpu::MosaicSerdePass::kVersion);
 
-Value CreateMatmul(ImplicitLocOpBuilder& builder, Value lhs, Value rhs,
-                   const MatmulOptions& options) {
-  auto dimension_numbers = tpu::defaultDimensionNumbers(
+mlir::Value CreateMatmul(mlir::ImplicitLocOpBuilder& builder, mlir::Value lhs,
+                         mlir::Value rhs, const MatmulOptions& options) {
+  auto dimension_numbers = mlir::tpu::defaultDimensionNumbers(
       builder, options.transpose_lhs, options.transpose_rhs);
 
-  auto lhs_type = mlir::cast<VectorType>(lhs.getType());
-  auto rhs_type = mlir::cast<VectorType>(rhs.getType());
+  auto lhs_type = mlir::cast<mlir::VectorType>(lhs.getType());
+  auto rhs_type = mlir::cast<mlir::VectorType>(rhs.getType());
 
   auto lhs_shape = lhs_type.getShape();
   auto rhs_shape = rhs_type.getShape();
 
-  SmallVector<int64_t> output_shape = {
+  mlir::SmallVector<int64_t> output_shape = {
       lhs_shape[options.transpose_lhs ? 1 : 0],
       rhs_shape[options.transpose_rhs ? 0 : 1]};
 
-  auto accumulator_type = VectorType::get(output_shape, builder.getF32Type());
-  Value accumulator =
-      arith::ConstantOp::create(builder, accumulator_type,
-                                DenseElementsAttr::get(accumulator_type, 0.0f));
+  auto accumulator_type =
+      mlir::VectorType::get(output_shape, builder.getF32Type());
+  mlir::Value accumulator = mlir::arith::ConstantOp::create(
+      builder, accumulator_type,
+      mlir::DenseElementsAttr::get(accumulator_type, 0.0f));
 
-  tpu::ContractPrecisionAttr precision_attr =
+  mlir::tpu::ContractPrecisionAttr precision_attr =
       options.precision.has_value()
-          ? tpu::ContractPrecisionAttr::get(builder.getContext(),
-                                            *options.precision)
+          ? mlir::tpu::ContractPrecisionAttr::get(builder.getContext(),
+                                                  *options.precision)
           : nullptr;
 
   // Hard-set transpose_<lhs/rhs> as they are ignored when dimension_numbers is
   // provided.
-  return tpu::MatmulOp::create(builder, accumulator_type, lhs, rhs, accumulator,
-                               /*transpose_lhs=*/false, /*transpose_rhs=*/false,
-                               precision_attr, dimension_numbers, false);
+  return mlir::tpu::MatmulOp::create(
+      builder, accumulator_type, lhs, rhs, accumulator,
+      /*transpose_lhs=*/false, /*transpose_rhs=*/false, precision_attr,
+      dimension_numbers, false);
 }
 
-Value CreateIotaOp(ImplicitLocOpBuilder& builder, Type type,
-                   int32_t dimension) {
-  return tpu::IotaOp::create(builder, type, {dimension});
+mlir::Value CreateIotaOp(mlir::ImplicitLocOpBuilder& builder, mlir::Type type,
+                         int32_t dimension) {
+  return mlir::tpu::IotaOp::create(builder, type, {dimension});
 }
 
-Value CreateRepeatOp(ImplicitLocOpBuilder& builder, Value input,
-                     int64_t dimension, int64_t target_dim_size) {
-  VectorType input_type = mlir::cast<VectorType>(input.getType());
+mlir::Value CreateRepeatOp(mlir::ImplicitLocOpBuilder& builder,
+                           mlir::Value input, int64_t dimension,
+                           int64_t target_dim_size) {
+  mlir::VectorType input_type = mlir::cast<mlir::VectorType>(input.getType());
   int64_t input_dim_size = input_type.getDimSize(dimension);
 
   ABSL_CHECK_EQ(target_dim_size % input_dim_size, 0);  // CRASH_OK
@@ -95,86 +102,92 @@ Value CreateRepeatOp(ImplicitLocOpBuilder& builder, Value input,
     return input;
   }
 
-  SmallVector<int64_t> output_shape(input_type.getShape());
+  mlir::SmallVector<int64_t> output_shape(input_type.getShape());
   output_shape[dimension] = target_dim_size;
-  VectorType output_type =
-      VectorType::get(output_shape, input_type.getElementType());
-  SmallVector<Value> operands(num_repeats, input);
-  return tpu::ConcatenateOp::create(builder, output_type, operands, dimension);
+  mlir::VectorType output_type =
+      mlir::VectorType::get(output_shape, input_type.getElementType());
+  mlir::SmallVector<mlir::Value> operands(num_repeats, input);
+  return mlir::tpu::ConcatenateOp::create(builder, output_type, operands,
+                                          dimension);
 }
 
-Value CreateReciprocal(ImplicitLocOpBuilder& b, Value input) {
-  return tpu::ReciprocalOp::create(b, input, /*approx=*/false,
-                                   /*full_range=*/false);
+mlir::Value CreateReciprocal(mlir::ImplicitLocOpBuilder& b, mlir::Value input) {
+  return mlir::tpu::ReciprocalOp::create(b, input, /*approx=*/false,
+                                         /*full_range=*/false);
 }
 
-mlir::MemRefType GetVmemMemRefType(MLIRContext* context,
-                                   ArrayRef<int64_t> shape, Type element_type) {
-  return MemRefType::get(
+mlir::MemRefType GetVmemMemRefType(mlir::MLIRContext* context,
+                                   mlir::ArrayRef<int64_t> shape,
+                                   mlir::Type element_type) {
+  return mlir::MemRefType::get(
       shape, element_type, nullptr,
-      tpu::MemorySpaceAttr::get(context, tpu::MemorySpace::kVmem));
+      mlir::tpu::MemorySpaceAttr::get(context, mlir::tpu::MemorySpace::kVmem));
 }
 
-mlir::MemRefType GetSmemMemRefType(MLIRContext* context,
-                                   ArrayRef<int64_t> shape, Type element_type) {
-  return MemRefType::get(
+mlir::MemRefType GetSmemMemRefType(mlir::MLIRContext* context,
+                                   mlir::ArrayRef<int64_t> shape,
+                                   mlir::Type element_type) {
+  return mlir::MemRefType::get(
       shape, element_type, nullptr,
-      tpu::MemorySpaceAttr::get(context, tpu::MemorySpace::kSmem));
+      mlir::tpu::MemorySpaceAttr::get(context, mlir::tpu::MemorySpace::kSmem));
 }
 
-mlir::MemRefType GetHbmMemRefType(MLIRContext* context, ArrayRef<int64_t> shape,
-                                  Type element_type) {
-  return MemRefType::get(
+mlir::MemRefType GetHbmMemRefType(mlir::MLIRContext* context,
+                                  mlir::ArrayRef<int64_t> shape,
+                                  mlir::Type element_type) {
+  return mlir::MemRefType::get(
       shape, element_type, nullptr,
-      tpu::MemorySpaceAttr::get(context, tpu::MemorySpace::kHbm));
+      mlir::tpu::MemorySpaceAttr::get(context, mlir::tpu::MemorySpace::kHbm));
 }
 
-mlir::MemRefType GetSemaphoreMemRefType(MLIRContext* context,
-                                        ArrayRef<int64_t> shape,
-                                        Type element_type) {
-  return MemRefType::get(
+mlir::MemRefType GetSemaphoreMemRefType(mlir::MLIRContext* context,
+                                        mlir::ArrayRef<int64_t> shape,
+                                        mlir::Type element_type) {
+  return mlir::MemRefType::get(
       shape, element_type, nullptr,
-      tpu::MemorySpaceAttr::get(context, tpu::MemorySpace::kSemaphoreMem));
+      mlir::tpu::MemorySpaceAttr::get(context,
+                                      mlir::tpu::MemorySpace::kSemaphoreMem));
 }
 
-mlir::Attribute GetDimensionSemanticsAttr(MLIRContext* context,
+mlir::Attribute GetDimensionSemanticsAttr(mlir::MLIRContext* context,
                                           DimensionSemantics semantics) {
   switch (semantics) {
     case DimensionSemantics::kParallel:
-      return tpu::DimensionSemanticsAttr::get(
-          context, tpu::DimensionSemantics::parallel);
+      return mlir::tpu::DimensionSemanticsAttr::get(
+          context, mlir::tpu::DimensionSemantics::parallel);
     case DimensionSemantics::kArbitrary:
-      return tpu::DimensionSemanticsAttr::get(
-          context, tpu::DimensionSemantics::arbitrary);
+      return mlir::tpu::DimensionSemanticsAttr::get(
+          context, mlir::tpu::DimensionSemantics::arbitrary);
   }
 }
 
-std::unique_ptr<MLIRContext> CreateMlirContextWithDialects() {
-  DialectRegistry registry;
-  registry.insert<arith::ArithDialect, func::FuncDialect, memref::MemRefDialect,
-                  vector::VectorDialect, scf::SCFDialect, tpu::TPUDialect,
-                  math::MathDialect>();
-  auto context = std::make_unique<MLIRContext>(registry);
+std::unique_ptr<mlir::MLIRContext> CreateMlirContextWithDialects() {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
+                  mlir::memref::MemRefDialect, mlir::vector::VectorDialect,
+                  mlir::scf::SCFDialect, mlir::tpu::TPUDialect,
+                  mlir::math::MathDialect>();
+  auto context = std::make_unique<mlir::MLIRContext>(registry);
   context->loadAllAvailableDialects();
   context->allowUnregisteredDialects();
   return context;
 }
 
-void SetTcCoreTypeAttr(func::FuncOp fn) {
-  fn->setAttr("tpu.core_type",
-              tpu::CoreTypeAttr::get(fn.getContext(), tpu::CoreType::kTc));
+void SetTcCoreTypeAttr(mlir::func::FuncOp fn) {
+  fn->setAttr("tpu.core_type", mlir::tpu::CoreTypeAttr::get(
+                                   fn.getContext(), mlir::tpu::CoreType::kTc));
 }
 
-LogicalResult SerializeMosaicKernel(ModuleOp module,
-                                    int serialization_version) {
-  PassManager pm(module.getContext());
-  if (failed(verify(module))) {
-    return failure();
+mlir::LogicalResult SerializeMosaicKernel(mlir::ModuleOp module,
+                                          int serialization_version) {
+  mlir::PassManager pm(module.getContext());
+  if (mlir::failed(mlir::verify(module))) {
+    return mlir::failure();
   }
 
-  pm.addPass(tpu::createMosaicSerdePass(tpu::MosaicSerdePassOptions{
+  pm.addPass(mlir::tpu::createMosaicSerdePass(mlir::tpu::MosaicSerdePassOptions{
       .serialize = true, .target_version = serialization_version}));
   return pm.run(module);
 }
 
-}  // namespace mlir::torch_tpu
+}  // namespace torch_tpu

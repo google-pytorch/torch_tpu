@@ -165,8 +165,8 @@ Tile Tile::Lanes(int64_t n) const {
     return Slice(llvm::SmallVector<int64_t>(rank(), 0), target);
   }
   return internal::wrap<Tile>(
-      mlir::torch_tpu::CreateRepeatOp(internal::CurrentBuilder(),
-                                      internal::unwrap(*this), rank() - 1, n),
+      CreateRepeatOp(internal::CurrentBuilder(), internal::unwrap(*this),
+                     rank() - 1, n),
       dtype());
 }
 
@@ -237,13 +237,9 @@ Scalar Tile::Extract(llvm::ArrayRef<int64_t> indices) const {
       dtype());
 }
 
-Tile Tile::Full(Literal value) const {
-  return torch_tpu::kiln::Full(shape(), value);
-}
+Tile Tile::Full(Literal value) const { return kiln::Full(shape(), value); }
 
-Tile Tile::Splat(Scalar scalar) const {
-  return torch_tpu::kiln::Splat(scalar, dims());
-}
+Tile Tile::Splat(Scalar scalar) const { return kiln::Splat(scalar, dims()); }
 
 Tile Zeros(const Shape& shape) { return Full(shape, /*value=*/0.0); }
 
@@ -277,8 +273,7 @@ Tile Iota(const Shape& shape, int axis) {
   }
   mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
   return internal::wrap<Tile>(
-      mlir::torch_tpu::CreateIotaOp(b, internal::ToMlirVectorType(shape), axis),
-      shape.dtype());
+      CreateIotaOp(b, internal::ToMlirVectorType(shape), axis), shape.dtype());
 }
 
 Tile Splat(Scalar scalar, llvm::ArrayRef<int64_t> shape) {
@@ -355,12 +350,11 @@ Tile Dot(Tile lhs, Tile rhs, const DotOptions& options) {
   // Matmuls always produce a float32 result.
   DType result_dtype = f32;
   return internal::wrap<Tile>(
-      mlir::torch_tpu::CreateMatmul(
-          internal::CurrentBuilder(), internal::unwrap(lhs),
-          internal::unwrap(rhs),
-          mlir::torch_tpu::MatmulOptions{.transpose_lhs = options.transpose_lhs,
-                                         .transpose_rhs = options.transpose_rhs,
-                                         .precision = precision}),
+      CreateMatmul(internal::CurrentBuilder(), internal::unwrap(lhs),
+                   internal::unwrap(rhs),
+                   MatmulOptions{.transpose_lhs = options.transpose_lhs,
+                                 .transpose_rhs = options.transpose_rhs,
+                                 .precision = precision}),
       result_dtype);
 }
 
