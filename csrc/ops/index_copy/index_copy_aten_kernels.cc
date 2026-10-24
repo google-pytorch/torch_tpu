@@ -26,11 +26,9 @@
 #include "c10/core/ScalarType.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
-#include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
-#include "csrc/common/utils.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/ops/index_copy/index_copy.h"
 #include "csrc/ops/index_utils.h"
@@ -66,12 +64,11 @@ absl::Status IndexCopy(const at::Tensor& self, int64_t dim,
 
   TT_ASSIGN_OR_RETURN(const auto output_dtype,
                       ConvertTo<mlir::ElementType>(self.scalar_type()));
-  Dimensions output_dims = CopyIntVector(self.sizes());
 
   return DispatchOpOut<3>(std::move(index_copy_op_builder),
                           {self, index, source}, out,
                           {.out_dtype = output_dtype,
-                           .out_dims = output_dims,
+                           .out_dims = self.sizes(),
                            .op_param_cache_keys = std::move(param_keys)});
 }
 
