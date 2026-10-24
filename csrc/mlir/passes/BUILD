@@ -29,6 +29,40 @@ package(
 )
 
 torch_tpu_cc_library(
+    name = "canonicalize_gqa_and_masked_online_softmax",
+    srcs = ["canonicalize_gqa_and_masked_online_softmax.cc"],
+    hdrs = ["canonicalize_gqa_and_masked_online_softmax.h"],
+    deps = [
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:SideEffectInterfaces",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:chlo_ops",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "canonicalize_gqa_and_masked_online_softmax_test",
+    srcs = ["canonicalize_gqa_and_masked_online_softmax_test.cc"],
+    deps = [
+        ":canonicalize_gqa_and_masked_online_softmax",
+        "//csrc/common:oss_test_main",
+        "//csrc/mlir:pipeline",
+        "@com_google_absl//absl/status:status_matchers",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Parser",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:chlo_ops",
+        "@stablehlo//:register",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "dummy_pass",
     srcs = ["dummy_pass.cc"],
     hdrs = ["dummy_pass.h"],
