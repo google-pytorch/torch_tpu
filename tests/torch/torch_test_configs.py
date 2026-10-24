@@ -478,7 +478,6 @@ TEST_EXCLUSIONS: Final[Mapping[str, Mapping[str, str | Sequence[str]]]] = {
         ],
     },
     "test_testing": {
-        "TestAssertCloseMultiDevice": "*",
         "TestMakeTensor": [
             "test_exclude_zero",
             "test_low_ge_high",
