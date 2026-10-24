@@ -85,7 +85,18 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: "Fetch Base Commit"
-        run: git fetch --no-tags --depth=1 origin ${{ github.event.pull_request.base.sha || 'main' }}
+        shell: "bash"
+        run: |
+          if [ -n "${{ github.event.pull_request.head.sha }}" ]; then
+            PR_COMMITS="${{ github.event.pull_request.commits }}"
+            PR_COMMITS="${PR_COMMITS:-0}"
+            git fetch --no-tags --depth=$((PR_COMMITS + 1)) origin "${{ github.event.pull_request.head.sha }}"
+          fi
+          if [ -n "${{ github.event.pull_request.base.sha }}" ]; then
+            git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.base.sha }}"
+          else
+            git fetch --no-tags --depth=1 origin "main:refs/remotes/origin/main"
+          fi
 
       # uv is a blazing-fast, single-binary replacement for pip, pipx, and virtualenv written in
       # Rust.
@@ -104,6 +115,7 @@ jobs:
       - name: "Run code linting checks via Nox"
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: uvx nox -s lint
 
       - name: "Run actionlint via Nox"
