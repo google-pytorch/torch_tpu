@@ -1652,9 +1652,9 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
         std::vector<at::Tensor> results;
         results.reserve(dummy_outputs.size());
         for (const auto& dummy : dummy_outputs) {
-          results.push_back(
-              at::empty(dummy.sizes(),
-                        csr_tensors[0].options().dtype(dummy.scalar_type())));
+          results.push_back(at::empty_symint(
+              dummy.sym_sizes(),
+              csr_tensors[0].options().dtype(dummy.scalar_type())));
         }
         return results;
       });
