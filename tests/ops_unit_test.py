@@ -11696,6 +11696,88 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(run)
 
+  @parameterized.product(
+      shape=[
+          (4, 4),
+          (10, 10),
+          (2, 3, 3),
+          (2, 3, 4, 4),
+          (0, 0),
+          (0, 3, 3),
+          (2, 0, 0),
+      ],
+      dtype=[
+          torch.float32,
+          torch.float64,
+          torch.complex64,
+          torch.complex128,
+      ],
+      upper=[False, True],
+  )
+  def test_linalg_cholesky_ex(self, shape, dtype, upper):
+    n = shape[-1]
+    a = torch.randn(shape, dtype=dtype)
+    eye = torch.eye(n, dtype=dtype).expand(shape)
+    spd = a @ a.mH + eye * max(n, 1)
+
+    def run(device):
+      l_func, info_func = torch.linalg.cholesky_ex(spd.to(device), upper=upper)
+      l_out = torch.empty_like(spd, device=device)
+      info_out = torch.empty(shape[:-2], dtype=torch.int32, device=device)
+      torch.linalg.cholesky_ex(
+          spd.to(device), upper=upper, out=(l_out, info_out)
+      )
+      # Also test pre-allocated non-contiguous (Fortran-strided) destination `l`.
+      l_noncontig = torch.empty_like(spd, device=device).mT
+      info_noncontig = torch.empty(shape[:-2], dtype=torch.int32, device=device)
+      torch.linalg.cholesky_ex(
+          spd.to(device), upper=upper, out=(l_noncontig, info_noncontig)
+      )
+      return (
+          l_func,
+          info_func,
+          l_out,
+          info_out,
+          l_noncontig,
+          info_noncontig,
+      )
+
+    rtol = 1e-6 if dtype in (torch.float64, torch.complex128) else 1e-4
+    atol = 1e-6 if dtype in (torch.float64, torch.complex128) else 1e-4
+    self.assert_close_tpu_vs_cpu(run, rtol=rtol, atol=atol)
+
+  @parameterized.product(
+      dtype=[
+          torch.float32,
+          torch.float64,
+          torch.complex64,
+          torch.complex128,
+      ],
+      upper=[False, True],
+  )
+  def test_linalg_cholesky_ex_non_positive_definite(self, dtype, upper):
+    # Batch of 3 matrices:
+    # - batch 0: positive-definite (succeeds, info == 0)
+    # - batch 1: fails at 1st leading minor (A[0, 0] == -1, info == 1)
+    # - batch 2: fails at 2nd leading minor (A[1, 1] == -1, info > 0)
+    batch = torch.stack([
+        torch.tensor([[4.0, 0.0], [0.0, 9.0]], dtype=dtype),
+        torch.tensor([[-1.0, 0.0], [0.0, 4.0]], dtype=dtype),
+        torch.tensor([[4.0, 0.0], [0.0, -1.0]], dtype=dtype),
+    ]).to("tpu")
+
+    l_tpu, info_tpu = torch.linalg.cholesky_ex(
+        batch, upper=upper, check_errors=False
+    )
+    info_cpu = info_tpu.cpu()
+    self.assertEqual(info_cpu[0].item(), 0)
+    self.assertEqual(info_cpu[1].item(), 1)
+    self.assertGreater(info_cpu[2].item(), 0)
+
+    # Verify the valid batch element (index 0) still matches CPU factor.
+    l_expected, _ = torch.linalg.cholesky_ex(batch[0].cpu(), upper=upper)
+    self.assertEqual(l_tpu[0].cpu(), l_expected)
+
   def _assert_all_nan(self, *tensors):
     for t in tensors:
       self.assertTrue(torch.isnan(t.to("cpu")).all())
