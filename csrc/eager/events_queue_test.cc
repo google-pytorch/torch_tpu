@@ -595,6 +595,104 @@ TEST_F(EventsQueueTest, PrunesSuccessfulCompletedFutures) {
   EXPECT_TRUE(snapshot_request.futures.empty());
 }
 
+TEST_F(EventsQueueTest, WriteBackLastDeviceOutputAttachesToNextSnapshot) {
+  ClearAllStreams();
+  ScopedPythonContextCapturer capturer(OpName::kEmpty);
+  Shape shape(Dimensions{8}, mlir::ElementType::F32);
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+
+  TT_ASSERT_OK_AND_ASSIGN(auto refs_a, DeviceBufferList::CreateDeferred(
+                                           OpName::kAdd, DummyBuilder, {},
+                                           OpParamCacheKeys::Empty(), {shape}));
+  DeviceBufferRef ref_a = refs_a[0];
+
+  // Write back only a `last_device_output` (with empty `futures`), simulating
+  // a MaterializationTask that processed a graph break without a trailing
+  // SnapshotRequest.
+  WriteBackMaterializationFutures(device_index, stream_id, /*futures=*/{},
+                                  ref_a);
+
+  // Recording a snapshot with no new deferred ops should still be treated as
+  // meaningful work because `last_device_output_` is populated, and should
+  // transfer `ref_a` into the new SnapshotRequest while clearing
+  // `last_device_output_`.
+  auto snapshot_future_1 = EventSnapshot::Record(device_index, stream_id);
+  // Recording a second snapshot immediately with no new work should reuse the
+  // first snapshot's promise because `last_device_output_` was consumed.
+  auto snapshot_future_2 = EventSnapshot::Record(device_index, stream_id);
+
+  auto ready_work = GetReadyWork(device_index, stream_id);
+  ASSERT_EQ(ready_work.size(), 1);
+  ASSERT_TRUE(std::holds_alternative<SnapshotRequest>(ready_work[0]));
+  auto& snapshot_request = std::get<SnapshotRequest>(ready_work[0]);
+  ASSERT_TRUE(snapshot_request.last_device_output.has_value());
+  EXPECT_EQ(*snapshot_request.last_device_output, ref_a);
+
+  auto resolved_snapshot =
+      std::make_shared<EventSnapshot>(xla::Future<void>(absl::OkStatus()));
+  snapshot_request.snapshot_promise.Set(resolved_snapshot);
+  TT_ASSERT_OK_AND_ASSIGN(auto snap_1, snapshot_future_1.Await());
+  TT_ASSERT_OK_AND_ASSIGN(auto snap_2, snapshot_future_2.Await());
+  EXPECT_EQ(snap_1, snap_2);
+}
+
+TEST_F(EventsQueueTest, WriteBackAttachesToPendingSnapshotRequest) {
+  ClearAllStreams();
+  ScopedPythonContextCapturer capturer(OpName::kEmpty);
+  Shape shape(Dimensions{8}, mlir::ElementType::F32);
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+
+  TT_ASSERT_OK_AND_ASSIGN(auto refs_a, DeviceBufferList::CreateDeferred(
+                                           OpName::kAdd, DummyBuilder, {},
+                                           OpParamCacheKeys::Empty(), {shape}));
+  DeviceBufferRef ref_a = refs_a[0];
+  RecordDeferredOpCreated(ref_a.device_buffer_list());
+  EventSnapshot::Record(device_index, stream_id);
+
+  TT_ASSERT_OK_AND_ASSIGN(auto refs_b, DeviceBufferList::CreateDeferred(
+                                           OpName::kAdd, DummyBuilder, {},
+                                           OpParamCacheKeys::Empty(), {shape}));
+  DeviceBufferRef ref_b = refs_b[0];
+  auto [promise, future] = xla::MakePromise<void>();
+  std::vector<xla::Future<void>> writeback_futures = {std::move(future)};
+
+  // When a SnapshotRequest is already queued in `ready_work_`,
+  // WriteBackMaterializationFutures attaches both the futures and
+  // `last_device_output` directly to that pending SnapshotRequest.
+  WriteBackMaterializationFutures(device_index, stream_id,
+                                  std::move(writeback_futures), ref_b);
+
+  auto ready_work = GetReadyWork(device_index, stream_id);
+  ASSERT_EQ(ready_work.size(), 2);
+  ASSERT_TRUE(std::holds_alternative<SnapshotRequest>(ready_work[1]));
+  const auto& snapshot_request = std::get<SnapshotRequest>(ready_work[1]);
+  EXPECT_EQ(snapshot_request.futures.size(), 1);
+  ASSERT_TRUE(snapshot_request.last_device_output.has_value());
+  EXPECT_EQ(*snapshot_request.last_device_output, ref_b);
+  promise.Set(absl::OkStatus());
+}
+
+TEST_F(EventsQueueTest, ClearAllStreamsResetsLastDeviceOutput) {
+  ClearAllStreams();
+  ScopedPythonContextCapturer capturer(OpName::kEmpty);
+  Shape shape(Dimensions{8}, mlir::ElementType::F32);
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+
+  TT_ASSERT_OK_AND_ASSIGN(auto refs_a, DeviceBufferList::CreateDeferred(
+                                           OpName::kAdd, DummyBuilder, {},
+                                           OpParamCacheKeys::Empty(), {shape}));
+  WriteBackMaterializationFutures(device_index, stream_id, /*futures=*/{},
+                                  refs_a[0]);
+  ClearAllStreams();
+
+  EventSnapshot::Record(device_index, stream_id);
+  auto ready_work = GetReadyWork(device_index, stream_id);
+  ASSERT_EQ(ready_work.size(), 1);
+  ASSERT_TRUE(std::holds_alternative<SnapshotRequest>(ready_work[0]));
+  const auto& snapshot_request = std::get<SnapshotRequest>(ready_work[0]);
+  EXPECT_FALSE(snapshot_request.last_device_output.has_value());
+}
+
 TEST_F(EventsQueueTest, StreamMustMaterializeEmptyTensors) {
   ClearAllStreams();
   ScopedPythonContextCapturer capturer(OpName::kEmpty);
