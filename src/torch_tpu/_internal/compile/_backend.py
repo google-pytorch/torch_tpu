@@ -66,6 +66,7 @@ from torch_tpu._internal.compile.debug import TpuCompileDebug
 from torch_tpu._internal.compile.dynamic import dynamic_compiler
 from torch_tpu._internal.distributed import device_mesh
 from torch_tpu._internal.distributed import process_group_utils
+from torch_tpu._internal.precision import precision_impl
 from torch_tpu._internal.sync import sync
 from torch_tpu._internal.utils import utils
 from torch_tpu._internal.benchmarks import xprof_adapter
@@ -352,13 +353,14 @@ def _serialization_context(
         functorch_config.patch("bundled_autograd_cache", True),
     )
     pg_tag = _process_group_cache_key_tag(graph_module)
-    if pg_tag:
-      tag = compiler_config.cache_key_tag
-      stack.enter_context(
-          compiler_config.patch(  # pyrefly: ignore[missing-attribute]
-              cache_key_tag=f"{tag}:{pg_tag}" if tag else pg_tag
-          )
-      )
+    precision_tag = f"prec={precision_impl._get_precision().name}"  # pylint: disable=protected-access
+    extra_tag = f"{pg_tag}:{precision_tag}" if pg_tag else precision_tag
+    tag = compiler_config.cache_key_tag
+    stack.enter_context(
+        compiler_config.patch(  # pyrefly: ignore[missing-attribute]
+            cache_key_tag=f"{tag}:{extra_tag}" if tag else extra_tag
+        )
+    )
 
     # The default tensor metadata extraction methods below are used during cache
     # key generation and unfortunately they zero-out `storage_offset` in the
@@ -674,6 +676,23 @@ def _guard_input_storage_offsets(graph_module: torch.fx.GraphModule) -> None:
     dynamo_guards.install_guard(guard)
 
 
+def _guard_matmul_precision() -> None:
+  """Installs a Dynamo guard on the active matmul precision state."""
+  tracing_context = torch._guards.TracingContext.try_get()
+  if tracing_context is None:
+    return
+
+  get_precision_source = dynamo_source.ImportSource("torch_tpu")
+  for attr in ["_internal", "precision", "precision_impl", "_get_precision"]:
+    get_precision_source = dynamo_source.AttrSource(get_precision_source, attr)
+  precision_source = dynamo_source.AttrSource(
+      dynamo_source.CallFunctionNoArgsSource(get_precision_source),
+      "value",
+  )
+  guard = precision_source.make_guard(dynamo_guards.GuardBuilder.EQUALS_MATCH)
+  dynamo_guards.install_guard(guard)
+
+
 _VALID_SYMBOL_REGEX = re.compile(r"[^a-zA-Z0-9_]")
 
 
@@ -870,6 +889,7 @@ class TpuBackend:
 
     _log_gm_and_inputs("__call__", "Pre", graph_module, example_inputs)
     _guard_input_storage_offsets(graph_module)
+    _guard_matmul_precision()
     input_layouts = {}
     # The inputs with non-default layouts, which are checked on each call.
     input_indices = []
