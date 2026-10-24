@@ -172,6 +172,15 @@ def _use_absltest_main() -> None:
   unittest.main = absltest_main  # pyrefly: ignore[bad-assignment]
 
 
+def _initialize_tpu_runtime() -> None:
+  """Initializes the TPU runtime with a D2H transfer.
+
+  Ensures `torch.tpu.device_count()` reports the devices addressable by this
+  process, rather than the host's PCI devices, before any test enumerates them.
+  """
+  torch.zeros(1, device="tpu").cpu()
+
+
 def main(argv: Sequence[str]) -> None:
   if len(argv) > 1:
     raise app.UsageError("Too many command-line arguments.")
@@ -197,6 +206,7 @@ def main(argv: Sequence[str]) -> None:
   # TPU variant per instantiation.
   os.environ["PYTORCH_TESTING_DEVICE_FOR_CUSTOM"] = "tpu"
   os.environ["PYTORCH_TESTING_DEVICE_ONLY_FOR"] = "tpu"
+  _initialize_tpu_runtime()
   _set_private_use1_test_configs(test_module)
   _filter_device_generic_tests()
 
