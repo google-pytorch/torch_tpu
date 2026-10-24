@@ -268,5 +268,59 @@ TEST_F(PjrtExecuteTest,
                HasSubstr("expected argument 2 to have on-device layout")));
 }
 
+TEST_F(PjrtExecuteTest,
+       Execute_ArgumentLayoutValidation_ValidatesOrSkipsAsRequested) {
+  xla::XlaBuilder builder("layout_validation_test");
+  xla::Shape default_layout_shape =
+      xla::ShapeUtil::MakeShapeWithDenseLayout(xla::F32, /*dimensions=*/{8, 8},
+                                               /*minor_to_major=*/{1, 0});
+  xla::XlaOp p0 = xla::Parameter(&builder, 0, default_layout_shape, "input_0");
+  TT_ASSERT_OK_AND_ASSIGN(xla::XlaComputation computation, builder.Build(p0));
+
+  xla::CompileOptions compile_options;
+  compile_options.argument_layouts = {default_layout_shape};
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<xla::PjRtLoadedExecutable> loaded_exec,
+      client_->CompileAndLoad(computation, compile_options));
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      SharedLoadedExecutableWithMetadata executable,
+      LoadedExecutableWithMetadata::MakeShared(std::move(loaded_exec),
+                                               /*argument_indices=*/{}));
+
+  // Create an input buffer with a transposed on-device layout ({0, 1}).
+  xla::Shape transposed_layout_shape =
+      xla::ShapeUtil::MakeShapeWithDenseLayout(xla::F32, /*dimensions=*/{8, 8},
+                                               /*minor_to_major=*/{0, 1});
+  const std::vector<float> host_input(64, 1.0f);
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<xla::PjRtBuffer> mismatched_input_buf,
+      client_->BufferFromHostBuffer(
+          host_input.data(), xla::F32, /*dims=*/{8, 8},
+          /*byte_strides=*/std::nullopt,
+          xla::PjRtClient::HostBufferSemantics::kImmutableOnlyDuringCall,
+          /*on_done_with_host_buffer=*/nullptr, memory_space_,
+          &transposed_layout_shape.layout()));
+
+  const Shape logical_shape({8, 8}, mlir::ElementType::F32);
+
+  // With ArgumentLayoutValidation::kValidate, Execute() rejects the mismatched
+  // layout before calling PjRtLoadedExecutable::Execute.
+  EXPECT_THAT(
+      Execute(executable, {mismatched_input_buf.get()},
+              /*logical_output_shapes=*/{logical_shape},
+              ArgumentLayoutValidation::kValidate),
+      StatusIs(error::kInvalidArgument,
+               HasSubstr("expected argument 0 to have on-device layout")));
+
+  // With ArgumentLayoutValidation::kSkip, Execute() skips
+  // ValidateArgumentLayouts and dispatches directly to PJRT.
+  TT_ASSERT_OK_AND_ASSIGN(PjRtBufferPointers skipped_result,
+                          Execute(executable, {mismatched_input_buf.get()},
+                                  /*logical_output_shapes=*/{logical_shape},
+                                  ArgumentLayoutValidation::kSkip));
+  EXPECT_EQ(skipped_result.size(), 1);
+}
+
 }  // namespace
 }  // namespace torch_tpu

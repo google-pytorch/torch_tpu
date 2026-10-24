@@ -494,18 +494,19 @@ absl::Status DeviceBufferList::SetAsPendingMaterialization() {
 namespace {
 
 // Checks that the requested `at_shape` that a deferred op expects is valid for
-// the given `buffer_shape` that is on device.
+// the given `buffer` that is on device.
 //
-// For static dimensions the buffer and op shape must match exactly, for bounded
-// dimensions, only check upper bounds. We could get the real on-device shape
-// from `buffers[i]->logical_dimensions()`, but this is a device syncing
-// operation (blocking), so we want to avoid it.
+// For static dimensions the buffer and op shape must match exactly; for bounded
+// dimensions, only check upper bounds. Only queries `buffer.on_device_shape()`
+// (which lazily constructs an `xla::Shape` inside `PjRtCApiBuffer`) when a
+// dimension size differs from `at_shape`. We could get the real on-device shape
+// from `buffer.logical_dimensions()`, but this is a device-syncing operation
+// (blocking), so we want to avoid it.
 //
-// This function will crash if `at_shape` is not valid for the given
-// `buffer_shape`.
-void CheckBufferShape(const Shape& at_shape, const xla::Shape& buffer_shape) {
+// This function will crash if `at_shape` is not valid for `buffer`.
+void CheckBufferShape(const Shape& at_shape, const xla::PjRtBuffer& buffer) {
   // Ranks must match
-  absl::Span<const int64_t> buffer_dims = buffer_shape.dimensions();
+  absl::Span<const int64_t> buffer_dims = buffer.dimensions();
   ABSL_CHECK_EQ(at_shape.dimensions().size(), buffer_dims.size())  // CRASH_OK
       << "Expected the PjRtBuffer to have the same number of dimensions as "
          "this DeviceBufferList ("
@@ -514,7 +515,10 @@ void CheckBufferShape(const Shape& at_shape, const xla::Shape& buffer_shape) {
 
   // Static dims must match and dynamic dims must be LTE the upper bound.
   for (int64_t d = 0; d < at_shape.dimensions().size(); ++d) {
-    if (buffer_shape.is_dynamic_dimension(d)) {
+    if (at_shape.dimensions()[d] == buffer_dims[d]) {
+      continue;
+    }
+    if (buffer.on_device_shape().is_dynamic_dimension(d)) {
       ABSL_CHECK_LE(at_shape.dimensions()[d], buffer_dims[d])  // CRASH_OK
           << "Expected the size of dimension " << d
           << " of the PjRtBuffer (marked as dynamic in this buffer) of shape "
@@ -549,7 +553,7 @@ void DeviceBufferList::CheckMaterialization(
     ABSL_CHECK(!buffers[i]->IsDeleted())  // CRASH_OK
         << "Buffer " << i << " is deleted.";
 
-    CheckBufferShape(shapes_[i], buffers[i]->on_device_shape());
+    CheckBufferShape(shapes_[i], *buffers[i]);
 
     TT_ASSIGN_OR_CRASH(  // CRASH_OK
         mlir::ElementType actual_element_type,
