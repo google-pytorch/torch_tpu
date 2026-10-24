@@ -91,6 +91,42 @@ torch_tpu_cc_test(
 )
 
 torch_tpu_cc_library(
+    name = "propagate_single_sink_slices_and_zero_pads",
+    srcs = ["propagate_single_sink_slices_and_zero_pads.cc"],
+    hdrs = ["propagate_single_sink_slices_and_zero_pads.h"],
+    deps = [
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:SideEffectInterfaces",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:chlo_ops",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "propagate_single_sink_slices_and_zero_pads_test",
+    srcs = ["propagate_single_sink_slices_and_zero_pads_test.cc"],
+    deps = [
+        ":propagate_single_sink_slices_and_zero_pads",
+        "//csrc/common:oss_test_main",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Parser",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:chlo_ops",
+        "@stablehlo//:reference_api",
+        "@stablehlo//:reference_configuration",
+        "@stablehlo//:register",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "reassociate_norm_weights",
     srcs = ["reassociate_norm_weights.cc"],
     hdrs = ["reassociate_norm_weights.h"],
