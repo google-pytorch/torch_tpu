@@ -16,9 +16,7 @@
 
 #include "csrc/ops/mm/mm_aten_kernels.h"
 
-#include <cstdint>
 #include <optional>
-#include <string_view>
 #include <utility>
 
 #include "ATen/core/TensorBody.h"
@@ -99,7 +97,6 @@ absl::Status Mm(const at::Tensor& lhs, const at::Tensor& rhs, at::Tensor& out,
                 OpParamCacheKeys param_keys,
                 std::optional<at::ScalarType> out_dtype = std::nullopt) {
   TT_RETURN_IF_ERROR(ValidateMmOutInputs(lhs, rhs, out, out_dtype));
-  int64_t output_dims[2] = {lhs.size(0), rhs.size(1)};
 
   // if out_dtype is not specified, use the scalar type of the inputs
   at::ScalarType target_scalar_type =
@@ -126,7 +123,7 @@ absl::Status Mm(const at::Tensor& lhs, const at::Tensor& rhs, at::Tensor& out,
 
   return DispatchOpOut<2>(std::move(op_builder), {lhs, rhs}, out,
                           {.out_dtype = target_elem_dtype,
-                           .out_dims = output_dims,
+                           .out_dims = {lhs.size(0), rhs.size(1)},
                            .op_param_cache_keys = std::move(param_keys)});
 }
 
@@ -135,9 +132,9 @@ absl::Status Mm(const at::Tensor& lhs, const at::Tensor& rhs, at::Tensor& out,
 at::Tensor AtenMmDtype(const at::Tensor& lhs, const at::Tensor& rhs,
                        at::ScalarType out_dtype) {
   TT_KERNEL(OpName::kMmDtype, param_keys, (lhs, rhs, out_dtype), {
-    int64_t output_dims[2] = {lhs.size(0), rhs.size(1)};
-    TT_ASSIGN_OR_THROW(at::Tensor out,
-                       MakeEmptyTensor(output_dims, out_dtype, lhs.device()));
+    TT_ASSIGN_OR_THROW(
+        at::Tensor out,
+        MakeEmptyTensor({lhs.size(0), rhs.size(1)}, out_dtype, lhs.device()));
     TT_THROW_IF_ERROR(Mm(lhs, rhs, out, std::move(param_keys), out_dtype));
     return out;
   });

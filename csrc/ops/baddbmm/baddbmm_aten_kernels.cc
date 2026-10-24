@@ -248,7 +248,6 @@ ReturnType DispatchBaddbmm(
 
   TT_ASSIGN_OR_RETURN(mlir::ElementType out_dtype_mlir,
                       ConvertTo<mlir::ElementType>(out_dtype));
-  Dimensions out_dims = {batch1.size(0), batch1.size(1), batch2.size(2)};
 
   bool beta_is_zero = beta.IsZero();
   bool has_beta_tensor = beta_tensor.has_value();
@@ -263,10 +262,11 @@ ReturnType DispatchBaddbmm(
 
   return dispatch_fn(
       std::move(op_builder), std::move(inputs),
-      DispatchOpOptions<1>{.op_name = op_name_override,
-                           .out_dtype = out_dtype_mlir,
-                           .out_dims = out_dims,
-                           .op_param_cache_keys = std::move(param_keys)});
+      DispatchOpOptions<1>{
+          .op_name = op_name_override,
+          .out_dtype = out_dtype_mlir,
+          .out_dims = {batch1.size(0), batch1.size(1), batch2.size(2)},
+          .op_param_cache_keys = std::move(param_keys)});
 }
 
 template <typename ReturnType, typename DispatchFn>

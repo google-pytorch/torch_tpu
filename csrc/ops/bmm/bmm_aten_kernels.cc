@@ -25,7 +25,6 @@
 #include "c10/core/ScalarType.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
-#include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
@@ -35,7 +34,6 @@
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/bmm/bmm.h"
 #include "csrc/ops/macros/kernel.h"
-#include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/precision_context.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -101,7 +99,6 @@ ReturnType DispatchBmm(const at::Tensor& self, const at::Tensor& mat2,
   TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(out_dtype));
   TT_ASSIGN_OR_RETURN(mlir::ElementType output_dtype_mlir,
                       ConvertTo<mlir::ElementType>(out_dtype));
-  Dimensions output_dims_vec = {self.size(0), self.size(1), mat2.size(2)};
 
   const auto current_precision = GetAndAddPrecisionTo(param_keys);
   auto op_builder = [output_dtype_mlir,
@@ -111,11 +108,11 @@ ReturnType DispatchBmm(const at::Tensor& self, const at::Tensor& mat2,
     return BuildBmmShlo(self_op, mat2_op, output_dtype_mlir, current_precision);
   };
 
-  return dispatch_fn(
-      std::move(op_builder),
-      DispatchOpOptions<1>{.out_dtype = output_dtype_mlir,
-                           .out_dims = std::move(output_dims_vec),
-                           .op_param_cache_keys = std::move(param_keys)});
+  return dispatch_fn(std::move(op_builder),
+                     DispatchOpOptions<1>{
+                         .out_dtype = output_dtype_mlir,
+                         .out_dims = {self.size(0), self.size(1), mat2.size(2)},
+                         .op_param_cache_keys = std::move(param_keys)});
 }
 
 absl::StatusOr<DeviceBufferRef> Bmm(const at::Tensor& self,
