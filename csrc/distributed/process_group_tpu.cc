@@ -62,6 +62,7 @@
 #include "absl/strings/str_format.h"
 #include "absl/strings/str_join.h"
 #include "absl/strings/str_split.h"
+#include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
 #include "c10/core/TensorOptions.h"
@@ -1968,8 +1969,9 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::experimental_send(
                        device_buffer.AwaitBuffer());
 
     pjrt_buffers.push_back(pjrt_buffer);
-    transfer_keys.push_back(
-        GetCrossHostTransferKey(src_device_id, dst_device_id, tag, i));
+    absl::MutexLock lock(p2p_seq_mu_);
+    transfer_keys.push_back(GetCrossHostTransferKey(
+        src_device_id, dst_device_id, tag, send_seq_[{dst_rank, tag}]++));
   }
 
   // Initiate the cross-host send logic, which will block until
@@ -1997,8 +1999,9 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::experimental_recv(
                        ConvertTo<xla::PrimitiveType>(tensor.scalar_type()));
     xla::Shape xla_shape = xla::ShapeUtil::MakeShape(xla_dtype, tensor.sizes());
     recv_shapes.push_back(std::move(xla_shape));
-    transfer_keys.push_back(
-        GetCrossHostTransferKey(src_device_id, dst_device_id, tag, i));
+    absl::MutexLock lock(p2p_seq_mu_);
+    transfer_keys.push_back(GetCrossHostTransferKey(
+        src_device_id, dst_device_id, tag, recv_seq_[{src_rank, tag}]++));
   }
 
   // Initiate the receive process. This creates placeholder buffers and

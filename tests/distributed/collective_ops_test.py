@@ -654,8 +654,8 @@ def run_isend_irecv() -> None:
     send_work.wait()
 
 
-def run_send_recv_same_tag():
-  """Tests send and recv with the same tag for different src and dst ranks."""
+def run_send_recv_same_tag() -> None:
+  """Tests send and recv with the same tag across pairs and repeated calls."""
   dist.init_process_group(backend="tpu_dist")
 
   rank = dist.get_rank()
@@ -663,22 +663,37 @@ def run_send_recv_same_tag():
   if world_size < 2:
     return
 
-  # Use the same tag for all send/recv pairs to check if tag uniqueness is not
-  # required when src and dst ranks are different.
+  # Reuse the same tag across different (src, dst) pairs, repeated transfers
+  # between the same pair, reverse-direction transfers, and one-to-many sends.
   p2p_tag = 0
+  tensor_shape = (32, 32)
 
   ranks = list(range(world_size))
-  for [src_rank, dst_rank] in zip(ranks[0::2], ranks[1::2]):
-    tensor_shape = (32, 32)
-    tensor_value = float(src_rank) ** 2 + float(dst_rank)
+  for step in range(3):
+    for [r0, r1] in zip(ranks[0::2], ranks[1::2]):
+      for src_rank, dst_rank in ((r0, r1), (r1, r0)):
+        tensor_value = (
+            float(src_rank) ** 2 + float(dst_rank) + float(step * 100)
+        )
+        if rank == src_rank:
+          x = torch.full(tensor_shape, tensor_value, device="tpu")
+          torch.tpu.ops.send([x], dst=dst_rank, tag=p2p_tag).wait()
+        elif rank == dst_rank:
+          recv_buffer = torch.zeros(tensor_shape, device="tpu")
+          torch.tpu.ops.recv([recv_buffer], src=src_rank, tag=p2p_tag).wait()
+          expected = torch.full(tensor_shape, tensor_value)
+          utils.assert_close(recv_buffer.cpu(), expected)
 
-    if rank == src_rank:
+  # Verify per-(peer_rank, tag) counter isolation when rank 0 sends to each peer
+  # using the same tag.
+  for dst_rank in range(1, world_size):
+    tensor_value = float(1000 + dst_rank)
+    if rank == 0:
       x = torch.full(tensor_shape, tensor_value, device="tpu")
       torch.tpu.ops.send([x], dst=dst_rank, tag=p2p_tag).wait()
     elif rank == dst_rank:
       recv_buffer = torch.zeros(tensor_shape, device="tpu")
-      torch.tpu.ops.recv([recv_buffer], src=src_rank, tag=p2p_tag).wait()
-
+      torch.tpu.ops.recv([recv_buffer], src=0, tag=p2p_tag).wait()
       expected = torch.full(tensor_shape, tensor_value)
       utils.assert_close(recv_buffer.cpu(), expected)
 

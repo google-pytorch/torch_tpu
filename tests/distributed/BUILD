@@ -1102,7 +1102,6 @@ torch_tpu_py_test(
     srcs = ["window_tpu_test.py"],
     autoload = True,
     notest_oss = True,  # NOTEST_OSS_OK=Requires PJRT RawBuffer extension not yet exported in OSS libtpu.
-    shard_count = 2,
     tags = if_oss(
         ["exclusive"],
         [],
