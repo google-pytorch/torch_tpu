@@ -22,6 +22,7 @@
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/mlir/instrumentation.h"
+#include "csrc/mlir/passes/canonicalize_gqa_and_masked_online_softmax.h"
 #include "csrc/mlir/passes/fold_concat_softmax.h"
 #include "csrc/mlir/passes/lower_separable_gather_to_dot.h"
 #include "csrc/mlir/passes/reassociate_norm_weights.h"
@@ -48,8 +49,15 @@ void AddShloPasses(mlir::PassManager& pm) {
     pm.addNestedPass<mlir::func::FuncOp>(createReassociateNormWeightsPass());
   }
   pm.addNestedPass<mlir::func::FuncOp>(createLowerSeparableGatherToDotPass());
+  // Run before target independent optimization to normalize GQA contractions
+  // and fold constant step affine sequence masks early. Re-run after to catch
+  // any SDPA patterns exposed by target independent algebraic simplification.
+  pm.addNestedPass<mlir::func::FuncOp>(
+      createCanonicalizeGqaAndMaskedOnlineSoftmaxPass());
   pm.addNestedPass<mlir::func::FuncOp>(
       mlir::stablehlo::createStablehloTargetIndependentOptimizationPass());
+  pm.addNestedPass<mlir::func::FuncOp>(
+      createCanonicalizeGqaAndMaskedOnlineSoftmaxPass());
   pm.addNestedPass<mlir::func::FuncOp>(createFoldConcatSoftmaxPass());
 }
 
