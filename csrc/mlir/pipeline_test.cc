@@ -289,5 +289,79 @@ module {
   EXPECT_EQ(max_reduce_count, 2);
 }
 
+TEST(PipelineTest, HoistsWidenedSoftcapFromReduceMaxAndBarriersMultiDotGrad) {
+  static constexpr const char* kIr = R"mlir(
+module {
+  func.func @main(
+      %logits: tensor<4x16xbf16>,
+      %dy: tensor<4x16xf32>,
+      %w: tensor<16x8xbf16>,
+      %h: tensor<4x8xbf16>) -> (tensor<4xf32>, tensor<4x8xbf16>, tensor<16x8xbf16>) {
+    %f32 = stablehlo.convert %logits : (tensor<4x16xbf16>) -> tensor<4x16xf32>
+    %s = stablehlo.constant dense<0.25> : tensor<4x16xf32>
+    %scaled = stablehlo.multiply %f32, %s : tensor<4x16xf32>
+    %c = stablehlo.constant dense<20.0> : tensor<4x16xf32>
+    %div = stablehlo.divide %scaled, %c : tensor<4x16xf32>
+    %t = stablehlo.tanh %div : tensor<4x16xf32>
+    %capped = stablehlo.multiply %t, %c : tensor<4x16xf32>
+    %neg_inf = stablehlo.constant dense<0xFF800000> : tensor<f32>
+    %max = stablehlo.reduce(%capped init: %neg_inf) across dimensions = [1]
+        : (tensor<4x16xf32>, tensor<f32>) -> tensor<4xf32>
+      reducer(%lhs: tensor<f32>, %rhs: tensor<f32>) {
+        %m = stablehlo.maximum %lhs, %rhs : tensor<f32>
+        stablehlo.return %m : tensor<f32>
+      }
+    %bcast_max = stablehlo.broadcast_in_dim %max, dims = [0]
+        : (tensor<4xf32>) -> tensor<4x16xf32>
+    %shifted = stablehlo.subtract %capped, %bcast_max : tensor<4x16xf32>
+    %e = stablehlo.exponential %shifted : tensor<4x16xf32>
+    %diff = stablehlo.subtract %dy, %e : tensor<4x16xf32>
+    %t2 = stablehlo.multiply %t, %t : tensor<4x16xf32>
+    %one = stablehlo.constant dense<1.0> : tensor<4x16xf32>
+    %dt = stablehlo.subtract %one, %t2 : tensor<4x16xf32>
+    %grad_f32 = stablehlo.multiply %diff, %dt : tensor<4x16xf32>
+    %grad_bf16 = stablehlo.convert %grad_f32
+        : (tensor<4x16xf32>) -> tensor<4x16xbf16>
+    %dx = "stablehlo.dot_general"(%grad_bf16, %w) <{
+        dot_dimension_numbers = #stablehlo.dot<
+            lhs_contracting_dimensions = [1],
+            rhs_contracting_dimensions = [0]>
+    }> : (tensor<4x16xbf16>, tensor<16x8xbf16>) -> tensor<4x8xbf16>
+    %grad_t = stablehlo.transpose %grad_bf16, dims = [1, 0]
+        : (tensor<4x16xbf16>) -> tensor<16x4xbf16>
+    %dw = "stablehlo.dot_general"(%grad_t, %h) <{
+        dot_dimension_numbers = #stablehlo.dot<
+            lhs_contracting_dimensions = [1],
+            rhs_contracting_dimensions = [0]>
+    }> : (tensor<16x4xbf16>, tensor<4x8xbf16>) -> tensor<16x8xbf16>
+    return %max, %dx, %dw : tensor<4xf32>, tensor<4x8xbf16>, tensor<16x8xbf16>
+  }
+}
+)mlir";
+
+  mlir::DialectRegistry registry;
+  mlir::stablehlo::registerAllDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::parseSourceString<mlir::ModuleOp>(kIr, &context);
+  ASSERT_TRUE(module);
+
+  EXPECT_THAT(RunTorchTpuOptimizationPasses(*module, &context), IsOk());
+
+  int barrier_count = 0;
+  int rank1_tanh_count = 0;
+  module->walk(
+      [&](mlir::stablehlo::OptimizationBarrierOp) { ++barrier_count; });
+  module->walk([&](mlir::stablehlo::TanhOp op) {
+    if (mlir::cast<mlir::RankedTensorType>(op.getType()).getRank() == 1) {
+      ++rank1_tanh_count;
+    }
+  });
+  EXPECT_EQ(barrier_count, 1);
+  EXPECT_EQ(rank1_tanh_count, 1);
+}
+
 }  // namespace
 }  // namespace torch_tpu
