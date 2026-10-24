@@ -412,10 +412,26 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversal(
     task_name = absl::StrCat(compiled_traversal_or->compilation_cache_key);
   }
   Traversal::Parts traversal_parts = traversal->IntoParts();
-  return ExecutionTask(std::move(task_name),
-                       std::move(traversal_parts.arguments),
-                       std::move(traversal_parts.outputs),
-                       std::move(compiled_traversal_or->compiled_kernel));
+  // Fixed-shape eager traversals without pinned-host buffers extract and key
+  // compilation on the exact custom layouts of `arguments`, so runtime layout
+  // validation is redundant. When any argument or output is on pinned host
+  // memory (where ApplyPlacementsToCompileSpec clears custom device layouts on
+  // the compile options) or a dynamic kernel adapter is used, retain runtime
+  // layout validation.
+  const auto is_pinned_host = [](const DeviceBufferRef& ref) {
+    return ref.is_pinned_host();
+  };
+  const ArgumentLayoutValidation layout_validation =
+      (compiled_traversal_or->compiled_kernel.dynamic_kernel_adapter
+           .has_value() ||
+       llvm::any_of(traversal_parts.arguments, is_pinned_host) ||
+       llvm::any_of(traversal_parts.outputs, is_pinned_host))
+          ? ArgumentLayoutValidation::kValidate
+          : ArgumentLayoutValidation::kSkip;
+  return ExecutionTask(
+      std::move(task_name), std::move(traversal_parts.arguments),
+      std::move(traversal_parts.outputs),
+      std::move(compiled_traversal_or->compiled_kernel), layout_validation);
 }
 
 absl::StatusOr<ExecutionTask> ExecutionTask::FromExecutable(
@@ -520,14 +536,16 @@ void LogCompilationWait(const CompiledKernel& compiled_kernel,
 absl::StatusOr<PjRtBufferPointers> RunSequentialExecutables(
     absl::Span<const SharedLoadedExecutableWithMetadata> executables,
     std::vector<xla::PjRtBuffer*> argument_buffers,
-    absl::Span<const Shape> logical_output_shapes, std::string_view task_name) {
+    absl::Span<const Shape> logical_output_shapes, std::string_view task_name,
+    ArgumentLayoutValidation layout_validation) {
   std::vector<PjRtBufferPointers> intermediate_results;
   for (auto& executable : executables) {
-    TT_ASSIGN_OR_RETURN(
-        PjRtBufferPointers results,
-        Execute(executable, std::move(argument_buffers), logical_output_shapes),
-        _.SetPrepend() << "failed to enqueue execution for task_name="
-                       << task_name << ": ");
+    TT_ASSIGN_OR_RETURN(PjRtBufferPointers results,
+                        Execute(executable, std::move(argument_buffers),
+                                logical_output_shapes, layout_validation),
+                        _.SetPrepend()
+                            << "failed to enqueue execution for task_name="
+                            << task_name << ": ");
     argument_buffers.clear();
     argument_buffers.reserve(results.size());
     for (const auto& result : results) {
@@ -620,6 +638,7 @@ ExecutionTask::GetCachedExecutables(std::string_view task_name) {
 absl::StatusOr<std::vector<xla::PjRtBuffer* absl_nullable>>
 ExecutionTask::GetArgumentBuffers() {
   std::vector<xla::PjRtBuffer*> root_args;
+  root_args.reserve(arguments_.size());
   for (const auto&& [index, argument] : llvm::enumerate(arguments_)) {
     if (argument.is_executing()) {
       ABSL_VLOG(1) << "Get PjRtBuffer for DeviceBufferRef index: " << index;
@@ -713,7 +732,14 @@ absl::Status ExecutionTask::RunInternal() {
   ABSL_VLOG(1) << "[ExecutionTask::Run] Retrieved " << argument_buffers.size()
                << " argument buffers for task_name=" << task_name;
 
-  std::vector<Shape> output_shapes = GetShapesFromDeviceBuffers(outputs_);
+  std::vector<Shape> output_shapes;
+  if (llvm::any_of(
+          cached_executables,
+          [](const SharedLoadedExecutableWithMetadata& exe) {
+            return exe->unbounded_dynamic_execution_metadata().has_value();
+          })) {
+    output_shapes = GetShapesFromDeviceBuffers(outputs_);
+  }
 
   // Run all cached executables in sequence to get the PjRtBuffer pointers.
   ABSL_VLOG(1) << "[ExecutionTask::Run] Executing job for task_name="
@@ -721,7 +747,7 @@ absl::Status ExecutionTask::RunInternal() {
   TT_ASSIGN_OR_RETURN(
       PjRtBufferPointers final_results,
       RunSequentialExecutables(cached_executables, std::move(argument_buffers),
-                               output_shapes, task_name));
+                               output_shapes, task_name, layout_validation_));
 
   // Assign the final results to the output nodes.
   TT_RETURN_IF_ERROR(SetOutputNodesAsMaterialized(std::move(final_results)));

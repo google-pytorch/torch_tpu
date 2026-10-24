@@ -35,6 +35,17 @@ namespace torch_tpu {
 using PjRtBufferPointers =
     std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>>;
 
+// Controls whether Execute() validates that each runtime argument buffer's
+// on-device layout matches the layout the executable was compiled for.
+enum class ArgumentLayoutValidation {
+  // Validate runtime argument layouts against compiled parameter layouts.
+  kValidate,
+  // Skip runtime argument layout validation. Safe when the executable was just
+  // compiled or looked up in the compilation cache using the exact layouts of
+  // the provided argument buffers.
+  kSkip,
+};
+
 // Launches the executable. This is a synchronous call, and will block
 // until the execution is fully enqueued (but not completed). Calls for D2H
 // on the returned buffers will block until the execution and transfer from
@@ -43,10 +54,15 @@ using PjRtBufferPointers =
 // logical `argument_buffers`, pre-allocated donated dynamic output buffers, and
 // disjoint S32[rank] runtime shape metadata buffers to their physical PjRt
 // parameter positions.
+// When `layout_validation` is `ArgumentLayoutValidation::kValidate`, checks
+// that each static argument buffer's on-device layout matches the layout the
+// executable was compiled for.
 absl::StatusOr<PjRtBufferPointers> Execute(
     const SharedLoadedExecutableWithMetadata& executable,
     std::vector<xla::PjRtBuffer* absl_nullable> argument_buffers,
-    absl::Span<const Shape> logical_output_shapes);
+    absl::Span<const Shape> logical_output_shapes,
+    ArgumentLayoutValidation layout_validation =
+        ArgumentLayoutValidation::kValidate);
 
 }  // namespace torch_tpu
 
