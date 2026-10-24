@@ -183,6 +183,7 @@ torch_tpu_cc_library(
     srcs = ["sparse_dense_matmul_activation_unstack_aten_kernels.cc"],
     hdrs = ["sparse_dense_matmul_activation_unstack_aten_kernels.h"],
     deps = [
+        "//csrc/common:const_tensor",
         "//csrc/common:dimension_types",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
