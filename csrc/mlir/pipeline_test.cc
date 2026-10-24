@@ -289,5 +289,48 @@ module {
   EXPECT_EQ(max_reduce_count, 2);
 }
 
+TEST(PipelineTest, FactorsCrossAxisReshapeSlicesAndHoistsWindowCones) {
+  static constexpr const char* kIr = R"mlir(
+module {
+  func.func @main(
+      %x: tensor<1x8x16xbf16>,
+      %w: tensor<16x40xbf16>) -> tensor<1x4x1xbf16> {
+    %x2d = stablehlo.reshape %x : (tensor<1x8x16xbf16>) -> tensor<8x16xbf16>
+    %mm = "stablehlo.dot_general"(%x2d, %w) <{
+        dot_dimension_numbers = #stablehlo.dot<
+            lhs_contracting_dimensions = [1],
+            rhs_contracting_dimensions = [0]>
+    }> : (tensor<8x16xbf16>, tensor<16x40xbf16>) -> tensor<8x40xbf16>
+    %mm3d = stablehlo.reshape %mm : (tensor<8x40xbf16>) -> tensor<1x8x40xbf16>
+    %flat = stablehlo.reshape %mm3d : (tensor<1x8x40xbf16>) -> tensor<64x5xbf16>
+    %s = stablehlo.slice %flat [56:60, 0:1]
+        : (tensor<64x5xbf16>) -> tensor<4x1xbf16>
+    %out = stablehlo.reshape %s : (tensor<4x1xbf16>) -> tensor<1x4x1xbf16>
+    return %out : tensor<1x4x1xbf16>
+  }
+}
+)mlir";
+
+  mlir::DialectRegistry registry;
+  mlir::stablehlo::registerAllDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::parseSourceString<mlir::ModuleOp>(kIr, &context);
+  ASSERT_TRUE(module);
+
+  EXPECT_THAT(RunTorchTpuOptimizationPasses(*module, &context), IsOk());
+
+  int shrunk_dot_count = 0;
+  module->walk([&](mlir::stablehlo::DotGeneralOp dot) {
+    auto ty = mlir::cast<mlir::RankedTensorType>(dot.getType());
+    if (ty.getDimSize(0) == 1 && ty.getDimSize(1) == 20) {
+      ++shrunk_dot_count;
+    }
+  });
+  EXPECT_EQ(shrunk_dot_count, 1);
+}
+
 }  // namespace
 }  // namespace torch_tpu

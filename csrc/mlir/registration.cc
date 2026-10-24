@@ -19,6 +19,7 @@
 #include <memory>
 
 #include "csrc/mlir/passes/dummy_pass.h"
+#include "csrc/mlir/passes/factor_cross_axis_reshape_slices_and_hoist_window_cones.h"
 #include "csrc/mlir/passes/fold_concat_softmax.h"
 #include "csrc/mlir/passes/lower_separable_gather_to_dot.h"
 #include "csrc/mlir/passes/reassociate_norm_weights.h"
@@ -40,6 +41,9 @@ void RegisterTorchTpuPasses() {
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return createFoldConcatSoftmaxPass();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return createFactorCrossAxisReshapeSlicesAndHoistWindowConesPass();
   });
 }
 
