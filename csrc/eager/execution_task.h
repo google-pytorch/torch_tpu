@@ -66,6 +66,9 @@ class ExecutionTask {
   //   * Mark all nodes in the traversal as having been executed
   //   * Begin compiling the traversal into a kernel (or kernels)
   //   * Set all outputs to the "pending materialization" state
+  //   * Skip runtime argument layout validation for fixed-shape device-only
+  //     traversals, whose compilation cache key already encodes the exact
+  //     argument layouts.
   static absl::StatusOr<ExecutionTask> FromTraversal(
       absl_nonnull std::unique_ptr<Traversal> traversal,
       mlir::MLIRContext& mlir_context, const CompilationSpec& compilation_spec,
@@ -95,11 +98,14 @@ class ExecutionTask {
   explicit ExecutionTask(std::string name,
                          std::vector<DeviceBufferRef> arguments,
                          std::vector<DeviceBufferRef> outputs,
-                         CompiledKernel compiled_kernel)
+                         CompiledKernel compiled_kernel,
+                         ArgumentLayoutValidation layout_validation =
+                             ArgumentLayoutValidation::kValidate)
       : name_(std::move(name)),
         arguments_(std::move(arguments)),
         outputs_(std::move(outputs)),
-        compiled_kernel_(std::move(compiled_kernel)) {}
+        compiled_kernel_(std::move(compiled_kernel)),
+        layout_validation_(layout_validation) {}
 
   // Runs the execution task and early-returns if there is any failure.
   absl::Status RunInternal();
@@ -127,6 +133,11 @@ class ExecutionTask {
   // The compiled kernel; or, more precisely, the futures for the compiled
   // kernel and any dynamic adapters.
   CompiledKernel compiled_kernel_;
+  // Controls whether Execute() validates runtime argument layouts against the
+  // compiled parameter layouts. Set to kSkip for fixed-shape device-only eager
+  // traversals, which compile or look up the executable using the exact layouts
+  // of `arguments_`.
+  ArgumentLayoutValidation layout_validation_;
 };
 
 // The result of attempting to make a batch of ExecutionTasks from a list of
