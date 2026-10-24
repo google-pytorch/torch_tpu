@@ -41,6 +41,41 @@ torch_tpu_cc_library(
 )
 
 torch_tpu_cc_library(
+    name = "factor_head_norm_and_complex_rope_sublanes",
+    srcs = ["factor_head_norm_and_complex_rope_sublanes.cc"],
+    hdrs = ["factor_head_norm_and_complex_rope_sublanes.h"],
+    deps = [
+        "@com_google_absl//absl/log:absl_check",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:SideEffectInterfaces",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "factor_head_norm_and_complex_rope_sublanes_test",
+    srcs = ["factor_head_norm_and_complex_rope_sublanes_test.cc"],
+    deps = [
+        "//csrc/common:oss_test_main",
+        "//csrc/mlir:pipeline",
+        "@com_google_absl//absl/status:status_matchers",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Parser",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:reference_api",
+        "@stablehlo//:reference_configuration",
+        "@stablehlo//:register",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "fold_concat_softmax",
     srcs = ["fold_concat_softmax.cc"],
     hdrs = ["fold_concat_softmax.h"],
