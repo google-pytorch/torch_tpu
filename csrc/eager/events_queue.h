@@ -47,12 +47,33 @@ void RecordDeferredOpCreated(const SharedDeviceBufferList& device_buffer_list);
 
 // Records on the events queue that a new deferred op has been created, and
 // applies the repeated ops heuristic.
-// Returns true if the stream should be materialized.
+// Returns true if the stream should be materialized. While the heuristic's
+// graph breaks are suspended on the stream (see SuspendRepeatedOpsGraphBreaks),
+// returns false instead, and the stream remembers that a graph break was
+// requested.
 bool RecordDeferredOpAndDetectRepetition(
     const SharedDeviceBufferList& device_buffer_list);
 
-// Resets the state of the repeated ops heuristic for all streams, but leaves
-// all events in the queue.
+// Suspends the graph breaks requested by the repeated ops heuristic on the
+// stream of `device_buffer_list`, until ResumeRepeatedOpsGraphBreaks() is
+// called for that stream or a graph break is inserted on it for any reason.
+//
+// This keeps the heuristic from splitting a sequence of deferred ops that must
+// be compiled into the same graph, such as the ops of an in-place update that
+// donates the destination tensor's buffer before the tensor's c10::DataPtr is
+// updated to the result.
+void SuspendRepeatedOpsGraphBreaks(
+    const SharedDeviceBufferList& device_buffer_list);
+
+// Resumes the graph breaks requested by the repeated ops heuristic on the given
+// stream. Returns true if the heuristic requested a graph break while they were
+// suspended, in which case the caller should insert one.
+[[nodiscard]] bool ResumeRepeatedOpsGraphBreaks(c10::DeviceIndex device_index,
+                                                c10::StreamId stream_id);
+
+// Resets the state of the repeated ops heuristic for all streams, including
+// any graph break it requested while suspended, but leaves all events in the
+// queue.
 void ResetRepeatedOpsHeuristicState();
 
 // Clears all references to DeviceBufferLists from the events queue, forgets all

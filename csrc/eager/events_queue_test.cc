@@ -1297,6 +1297,115 @@ TEST(RepeatedOpsTest, DoesNotDetectRepetitionsOverSnapshots) {
   EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_a));
   EXPECT_TRUE(RecordDeferredOpAndDetectRepetition(list_b));
 }
+
+TEST(RepeatedOpsTest, ReportsSuspendedGraphBreakOnResume) {
+  ClearAllStreams();
+  ScopedPythonContextCapturer capturer(OpName::kEmpty);
+  Shape shape(Dimensions{8}, mlir::ElementType::F32);
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+
+  // Create two lists for two different OpNames.
+  TT_ASSERT_OK_AND_ASSIGN(auto refs_a, DeviceBufferList::CreateDeferred(
+                                           OpName::kAdd, DummyBuilder, {},
+                                           OpParamCacheKeys::Empty(), {shape}));
+  auto list_a = refs_a[0].device_buffer_list();
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto refs_b,
+      DeviceBufferList::CreateDeferred(OpName::kBaddbmmDtype, DummyBuilder, {},
+                                       OpParamCacheKeys::Empty(), {shape}));
+  auto list_b = refs_b[0].device_buffer_list();
+
+  // There is nothing to report before graph breaks are ever suspended.
+  EXPECT_FALSE(ResumeRepeatedOpsGraphBreaks(device_index, stream_id));
+
+  // Push (abab), suspending graph breaks before the op that completes the
+  // second repetition: the repetition is detected, but not reported.
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_a));
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_b));
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_a));
+  SuspendRepeatedOpsGraphBreaks(list_b);
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_b));
+
+  // The requested graph break is reported once, on resume.
+  EXPECT_TRUE(ResumeRepeatedOpsGraphBreaks(device_index, stream_id));
+  EXPECT_FALSE(ResumeRepeatedOpsGraphBreaks(device_index, stream_id));
+
+  // Once resumed, the next repetition is reported right away.
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_a));
+  EXPECT_TRUE(RecordDeferredOpAndDetectRepetition(list_b));
+}
+
+TEST(RepeatedOpsTest, GraphBreakEndsSuspension) {
+  ClearAllStreams();
+  ScopedPythonContextCapturer capturer(OpName::kEmpty);
+  Shape shape(Dimensions{8}, mlir::ElementType::F32);
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+
+  // Create two lists for two different OpNames.
+  TT_ASSERT_OK_AND_ASSIGN(auto refs_a, DeviceBufferList::CreateDeferred(
+                                           OpName::kAdd, DummyBuilder, {},
+                                           OpParamCacheKeys::Empty(), {shape}));
+  auto list_a = refs_a[0].device_buffer_list();
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto refs_b,
+      DeviceBufferList::CreateDeferred(OpName::kBaddbmmDtype, DummyBuilder, {},
+                                       OpParamCacheKeys::Empty(), {shape}));
+  auto list_b = refs_b[0].device_buffer_list();
+
+  // The suspension also covers the ops recorded after the op that started it.
+  SuspendRepeatedOpsGraphBreaks(list_a);
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_a));
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_b));
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_a));
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_b));
+
+  // A graph break satisfies the requested graph break and ends the suspension,
+  // so the next repetition is reported right away.
+  InsertGraphBreak(device_index, stream_id, {}, MaterializationReason::kUnknown,
+                   GraphSplitMode::kSplitGraph);
+  // Take the graph break's work off the stream, as the ops cannot be executed.
+  EXPECT_EQ(GetReadyWork(device_index, stream_id).size(), 1);
+  EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list_a));
+  EXPECT_TRUE(RecordDeferredOpAndDetectRepetition(list_b));
+  EXPECT_FALSE(ResumeRepeatedOpsGraphBreaks(device_index, stream_id));
+}
+
+TEST(RepeatedOpsTest, ResetDropsSuspendedGraphBreak) {
+  ClearAllStreams();
+  ScopedPythonContextCapturer capturer(OpName::kEmpty);
+  Shape shape(Dimensions{8}, mlir::ElementType::F32);
+  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+
+  TT_ASSERT_OK_AND_ASSIGN(auto refs, DeviceBufferList::CreateDeferred(
+                                         OpName::kAdd, DummyBuilder, {},
+                                         OpParamCacheKeys::Empty(), {shape}));
+  auto list = refs[0].device_buffer_list();
+
+  // Push (aaaa) while graph breaks are suspended, so that a graph break is
+  // requested.
+  SuspendRepeatedOpsGraphBreaks(list);
+  for (int i = 0; i < 4; ++i) {
+    EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list));
+  }
+  EXPECT_TRUE(ResumeRepeatedOpsGraphBreaks(device_index, stream_id));
+
+  // Push (aa) while graph breaks are suspended, completing another repetition.
+  // Resetting the heuristic drops the requested graph break.
+  SuspendRepeatedOpsGraphBreaks(list);
+  for (int i = 0; i < 2; ++i) {
+    EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list));
+  }
+  ResetRepeatedOpsHeuristicState();
+  EXPECT_FALSE(ResumeRepeatedOpsGraphBreaks(device_index, stream_id));
+
+  // So does clearing the streams.
+  SuspendRepeatedOpsGraphBreaks(list);
+  for (int i = 0; i < 4; ++i) {
+    EXPECT_FALSE(RecordDeferredOpAndDetectRepetition(list));
+  }
+  ClearAllStreams();
+  EXPECT_FALSE(ResumeRepeatedOpsGraphBreaks(device_index, stream_id));
+}
 }  // namespace
 
 }  // namespace torch_tpu

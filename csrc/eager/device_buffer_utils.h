@@ -17,10 +17,10 @@
 #ifndef TORCH_TPU_CSRC_EAGER_DEVICE_BUFFER_UTILS_H_
 #define TORCH_TPU_CSRC_EAGER_DEVICE_BUFFER_UTILS_H_
 
-#include <cstdint>
 #include <optional>
 #include <vector>
 
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "csrc/common/cache_key.h"
@@ -63,7 +63,20 @@ struct DeferredOpParams {
   Indices donated_indices = {};
   // Device assignment for the operation (e.g. rank-to-device mapping).
   DeviceAssignment device_assignment = {};
-  // Whether to allow materialization of the operation.
+  // Whether creating the op may immediately trigger the eager materialization
+  // that the current eager mode performs after creating an op: executing the
+  // current stream in the kDeferNever modes, or inserting a graph break when
+  // the repeated ops heuristic detects a loop in kDeferAndFuse.
+  //
+  // Set to false for the ops of a sequence that must be compiled into the same
+  // graph, such as the ops of an in-place update that donates the destination
+  // tensor's buffer before the tensor's c10::DataPtr is updated to the result
+  // (see DispatchOpOut). The op is still recorded on the events queue, but the
+  // eager materialization is postponed until the caller calls
+  // RunPostponedMaterialization() at the end of the sequence. In kDeferAndFuse,
+  // this also suspends the repeated ops heuristic's graph breaks on the current
+  // stream until then, including for ops created later in the sequence with
+  // `allow_materialization = true`.
   bool allow_materialization = true;
 };
 
@@ -72,6 +85,21 @@ struct DeferredOpParams {
 // CreateEmptyDeviceBufferRef.
 absl::StatusOr<std::vector<DeviceBufferRef>> CreateDeferredDeviceBufferList(
     DeferredOpParams&& params);
+
+// Runs the eager materialization that the current eager mode postponed for the
+// deferred ops created with `allow_materialization = false` (see
+// DeferredOpParams):
+//  - kDeferNever: starts executing the current stream in the background.
+//  - kDeferNeverAndLaunchBlocking: executes the current stream and waits for
+//    the execution to complete.
+//  - kDeferAndFuse: resumes the repeated ops heuristic's graph breaks on the
+//    current stream, and inserts a graph break if the heuristic requested one
+//    while they were suspended.
+//  - Other modes: does nothing.
+//
+// Must be called once all the ops of the sequence have been created and their
+// results have been assigned to their destination tensors.
+absl::Status RunPostponedMaterialization();
 
 // Computes the OpParamCacheKeys for CreateConstantDeviceBufferRefImpl.
 absl::StatusOr<OpParamCacheKeys> ComputeConstantDeviceBufferRefOpParamCacheKeys(

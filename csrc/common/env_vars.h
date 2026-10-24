@@ -122,8 +122,7 @@ inline constexpr char kTorchTpuHandshakePortEnvVar[] =
 inline constexpr char kTorchTpuInternalDetectRepeatedOpsEnvVar[] =
     "TORCH_TPU_INTERNAL_DETECT_REPEATED_OPS";
 // If set to "1" or "true", disables input buffer donation for in-place ATen
-// operations in DeferNever eager mode. Default is false (buffer donation is
-// enabled).
+// operations in eager mode. Default is false (buffer donation is enabled).
 inline constexpr char kTorchTpuInternalDisableInplaceBufferDonationEnvVar[] =
     "TORCH_TPU_INTERNAL_DISABLE_INPLACE_BUFFER_DONATION";
 // Specifies where to dump optimization pass IR artifacts (e.g. "print" or a

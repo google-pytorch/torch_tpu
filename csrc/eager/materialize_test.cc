@@ -24,12 +24,15 @@
 #include "absl/cleanup/cleanup.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/time/clock.h"
+#include "absl/time/time.h"
 #include "absl/types/span.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/compilation_cache.h"
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/compile_options_key.h"
+#include "csrc/common/context_states.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/shape.h"
@@ -37,6 +40,7 @@
 #include "csrc/eager/current_stream.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/device_buffer_utils.h"
+#include "csrc/eager/eager_mode.h"
 #include "csrc/eager/events_queue.h"
 #include "csrc/eager/split_traversal.h"
 #include "csrc/eager/structured_log_buffer.h"
@@ -235,6 +239,94 @@ TEST_F(MaterializeTest, OutOfOrderUnexecutedPending) {
   EXPECT_NE(
       finished_status.message().find("detected an out of order execution"),
       std::string::npos);
+}
+
+// Creates a deferred op that fills an 8-element F32 tensor, handling its
+// creation as dictated by the current eager mode.
+absl::StatusOr<DeviceBufferRef> CreateFillOp(const bool allow_materialization) {
+  internal::DeferredOpParams params{
+      .op_name = OpName::kAdd,
+      .op_builder = [](mlir::MlirBuilder& builder, absl::Span<mlir::MlirOp>)
+          -> absl::StatusOr<DynamicMlirOpResults> {
+        return DynamicMlirOpResults{
+            BuildFillUninitialized(builder, mlir::ElementType::F32, {8})};
+      },
+      .op_param_cache_keys = OpParamCacheKeys::Empty(),
+      .output_shapes = {Shape(Dimensions{8}, mlir::ElementType::F32)},
+      .allow_materialization = allow_materialization,
+  };
+  TT_ASSIGN_OR_RETURN(
+      std::vector<DeviceBufferRef> refs,
+      internal::CreateDeferredDeviceBufferList(std::move(params)));
+  TT_RET_CHECK(refs.size() == 1, error::kInternal)
+      << "expected 1 output, got " << refs.size();
+  return std::move(refs[0]);
+}
+
+// Waits until `ref` is no longer deferred, i.e. until its materialization has
+// started. Returns false if it is still deferred after `timeout`.
+bool WaitUntilNotDeferred(const DeviceBufferRef& ref,
+                          const absl::Duration timeout) {
+  const absl::Time deadline = absl::Now() + timeout;
+  while (ref.is_deferred()) {
+    if (absl::Now() > deadline) {
+      return false;
+    }
+    absl::SleepFor(absl::Milliseconds(1));
+  }
+  return true;
+}
+
+TEST_F(MaterializeTest, RunPostponedMaterializationExecutesOpsInDeferNever) {
+  ClearAllStreams();
+  const ScopedPythonContextCapturer capturer(OpName::kAdd);
+  const EagerMode prev_mode = GetEagerMode();
+  SetEagerMode(EagerMode::kDeferNever);
+  absl::Cleanup cleanup_mode = [prev_mode] { SetEagerMode(prev_mode); };
+
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef ref,
+                          CreateFillOp(/*allow_materialization=*/false));
+  EXPECT_TRUE(ref.is_deferred());
+
+  // Running the postponed materialization executes the op.
+  ASSERT_EQ(internal::RunPostponedMaterialization(), absl::OkStatus());
+  ASSERT_TRUE(WaitUntilNotDeferred(ref, absl::Minutes(1)));
+  EXPECT_EQ(ref.Synchronize(), absl::OkStatus());
+}
+
+TEST_F(MaterializeTest,
+       RunPostponedMaterializationInsertsRepeatedOpsGraphBreakInDeferAndFuse) {
+  ClearAllStreams();
+  const ScopedPythonContextCapturer capturer(OpName::kAdd);
+  const EagerMode prev_mode = GetEagerMode();
+  SetEagerMode(EagerMode::kDeferAndFuse);
+  absl::Cleanup cleanup_mode = [prev_mode] { SetEagerMode(prev_mode); };
+
+  // Create four copies of an op with materialization disallowed: the repeated
+  // ops heuristic requests a graph break on the fourth one, which must be
+  // postponed.
+  std::vector<DeviceBufferRef> refs;
+  refs.reserve(4);
+  for (int i = 0; i < 4; ++i) {
+    TT_ASSERT_OK_AND_ASSIGN(DeviceBufferRef ref,
+                            CreateFillOp(/*allow_materialization=*/false));
+    refs.push_back(std::move(ref));
+  }
+
+  // Sleep for 100ms. This is enough that a background materialization should
+  // have started if there was a materialization attempt.
+  absl::SleepFor(absl::Milliseconds(100));
+  for (const DeviceBufferRef& ref : refs) {
+    EXPECT_TRUE(ref.is_deferred());
+  }
+
+  // Running the postponed materialization inserts the requested graph break,
+  // which executes all the ops.
+  ASSERT_EQ(internal::RunPostponedMaterialization(), absl::OkStatus());
+  for (const DeviceBufferRef& ref : refs) {
+    ASSERT_TRUE(WaitUntilNotDeferred(ref, absl::Minutes(1)));
+    EXPECT_EQ(ref.Synchronize(), absl::OkStatus());
+  }
 }
 
 class PinnedHostPropagationTest : public testing::Test {
