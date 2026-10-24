@@ -480,6 +480,8 @@ enum class OpName {
   kIndexTensorOut,
   kIndices,
   kIndicesInternal,
+  kIntMm,
+  kIntMmOut,
   kIrshiftScalar,
   kIrshiftTensor,
   kIsCoalesced,
@@ -1805,6 +1807,10 @@ ToString(  // NOLINT(google-readability-function-size)
       return "indices";
     case OpName::kIndicesInternal:
       return "_indices";
+    case OpName::kIntMm:
+      return "_int_mm";
+    case OpName::kIntMmOut:
+      return "_int_mm.out";
     case OpName::kIrshiftScalar:
       return "__irshift__.Scalar";
     case OpName::kIrshiftTensor:

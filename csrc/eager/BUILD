@@ -812,6 +812,7 @@ torch_tpu_cc_library(
         "//csrc/ops/index_put:index_put_aten_kernels",
         "//csrc/ops/index_reduce:index_reduce_aten_kernels",
         "//csrc/ops/index_select:index_select_aten_kernels",
+        "//csrc/ops/int_mm:int_mm_aten_kernels",
         "//csrc/ops/is:is_aten_kernels",
         "//csrc/ops/isin:isin_aten_kernels",
         "//csrc/ops/jagged:jagged_aten_kernels",

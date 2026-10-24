@@ -138,6 +138,7 @@
 #include "csrc/ops/index_put/index_put_aten_kernels.h"
 #include "csrc/ops/index_reduce/index_reduce_aten_kernels.h"
 #include "csrc/ops/index_select/index_select_aten_kernels.h"
+#include "csrc/ops/int_mm/int_mm_aten_kernels.h"
 #include "csrc/ops/is/is_aten_kernels.h"
 #include "csrc/ops/isin/isin_aten_kernels.h"
 #include "csrc/ops/jagged/jagged_aten_kernels.h"
@@ -776,6 +777,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kIndexReduceOut>(m, TpuAtenIndexReduceOut);
   ImplStable<OpName::kIndexSelect>(m, TpuAtenIndexSelect);
   ImplStable<OpName::kIndexTensorOut>(m, AtenIndexTensorOut);
+  ImplStable<OpName::kIntMm>(m, AtenIntMm);
+  ImplStable<OpName::kIntMmOut>(m, AtenIntMmOut);
   ImplStable<OpName::kIrshiftScalar>(m, AtenIrshiftScalar);
   ImplStable<OpName::kIrshiftTensor>(m, AtenIrshiftTensor);
   ImplStable<OpName::kIsInScalarTensorOut>(m, AtenIsInScalarTensorOut);

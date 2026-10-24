@@ -71,8 +71,6 @@ UNREGISTERED_OPS = frozenset([
     '_histogramdd_from_bin_cts',
     '_histogramdd_from_bin_tensors',
     '_indices',
-    '_int_mm',
-    '_int_mm.out',
     '_linalg_det.result',
     '_linalg_eigh.eigenvalues',
     '_linalg_eigvals',
