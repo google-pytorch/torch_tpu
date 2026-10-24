@@ -1572,6 +1572,76 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         out_f64, torch.tensor([5.0], dtype=torch.float64, device=device)
     )
 
+  def test_acos_boundary_and_precision(self):
+    device = torch.device("tpu")
+
+    # 1. Boundary and interior points precision across floating point dtypes.
+    for dtype in [torch.float16, torch.bfloat16, torch.float32]:
+      x_vals = torch.tensor(
+          [-1.0, -0.75, -0.5, 0.0, 0.5, 0.75, 1.0], dtype=dtype
+      )
+
+      def compute(device, x=x_vals):
+        return torch.acos(x.to(device))
+
+      if dtype == torch.bfloat16:
+        self.assert_close_tpu_vs_cpu(compute, rtol=1e-2, atol=1e-2)
+      elif dtype == torch.float16:
+        self.assert_close_tpu_vs_cpu(compute, rtol=1e-3, atol=1e-3)
+      else:
+        self.assert_close_tpu_vs_cpu(compute)
+
+    # 2. Out of domain inputs (|x| > 1.0) generating NaN.
+    for dtype in [torch.float16, torch.bfloat16, torch.float32]:
+      out_of_domain = torch.tensor(
+          [-2.0, -1.05, 1.05, 2.0], dtype=dtype, device=device
+      )
+      res = torch.acos(out_of_domain)
+      self.assertTrue(torch.all(torch.isnan(res.cpu())).item())
+
+    # 3. Exact boundary mathematical values.
+    for dtype in [torch.float16, torch.bfloat16, torch.float32]:
+      t_one = torch.tensor([1.0], dtype=dtype)
+      t_neg_one = torch.tensor([-1.0], dtype=dtype)
+      t_zero = torch.tensor([0.0], dtype=dtype)
+      utils.assert_close(torch.acos(t_one.to(device)).cpu(), torch.acos(t_one))
+      utils.assert_close(
+          torch.acos(t_neg_one.to(device)).cpu(), torch.acos(t_neg_one)
+      )
+      utils.assert_close(
+          torch.acos(t_zero.to(device)).cpu(), torch.acos(t_zero)
+      )
+
+    self.assertEqual(
+        torch.acos(
+            torch.tensor([1.0], dtype=torch.float32, device=device)
+        ).item(),
+        0.0,
+    )
+    self.assertAlmostEqual(
+        torch.acos(
+            torch.tensor([-1.0], dtype=torch.float32, device=device)
+        ).item(),
+        math.pi,
+        places=5,
+    )
+    self.assertAlmostEqual(
+        torch.acos(
+            torch.tensor([0.0], dtype=torch.float32, device=device)
+        ).item(),
+        math.pi / 2,
+        places=5,
+    )
+
+    # 4. Integer input promotion.
+    for dtype in [torch.int32, torch.int64]:
+      int_vals = torch.tensor([-1, 0, 1], dtype=dtype)
+
+      def compute_int(device, x=int_vals):
+        return torch.acos(x.to(device))
+
+      self.assert_close_tpu_vs_cpu(compute_int)
+
   def test_logcumsumexp_out_dtype(self):
     device = torch.device("tpu")
     x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=device)
