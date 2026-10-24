@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/LegacyTypeDispatch.h"
@@ -30,6 +31,9 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_format.h"
+#include "c10/core/SymInt.h"
+#include "c10/core/SymIntArrayRef.h"
+#include "csrc/common/const_tensor.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -206,30 +210,43 @@ absl::Status ValidateSparseGatherBackwardInputs(
 
 }  // namespace
 
-absl::Status ValidateSparseGatherInputs(const at::Tensor& row_pointers,
-                                        const at::Tensor& indices,
-                                        const at::Tensor& operand,
+absl::Status ValidateSparseGatherInputs(const ConstTensor& row_pointers,
+                                        const ConstTensor& indices,
+                                        const ConstTensor& operand,
                                         int64_t max_non_zeroes_per_row) {
-  TT_RET_CHECK(row_pointers.dim() == 1, error::kInvalidArgument)
-      << "expected row_pointers to be a 1D tensor, got a " << row_pointers.dim()
-      << "D tensor of shape " << ToString(row_pointers.sizes());
+  TT_ASSIGN_OR_RETURN(const int64_t row_pointers_dim, row_pointers.dim());
+  TT_ASSIGN_OR_RETURN(const c10::SymIntArrayRef row_pointers_sizes,
+                      row_pointers.sym_sizes());
+  TT_RET_CHECK(row_pointers_dim == 1, error::kInvalidArgument)
+      << "expected row_pointers to be a 1D tensor, got a " << row_pointers_dim
+      << "D tensor of shape " << ToString(row_pointers_sizes);
 
-  TT_RET_CHECK(indices.dim() == 1, error::kInvalidArgument)
-      << "expected indices to be a 1D tensor, got a " << indices.dim()
-      << "D tensor of shape " << ToString(indices.sizes());
+  TT_ASSIGN_OR_RETURN(const int64_t indices_dim, indices.dim());
+  TT_ASSIGN_OR_RETURN(const c10::SymIntArrayRef indices_sizes,
+                      indices.sym_sizes());
+  TT_RET_CHECK(indices_dim == 1, error::kInvalidArgument)
+      << "expected indices to be a 1D tensor, got a " << indices_dim
+      << "D tensor of shape " << ToString(indices_sizes);
 
-  TT_RET_CHECK(operand.dim() == 2, error::kInvalidArgument)
-      << "expected operand to be a 2D tensor, got a " << operand.dim()
-      << "D tensor of shape " << ToString(operand.sizes());
+  TT_ASSIGN_OR_RETURN(const int64_t operand_dim, operand.dim());
+  TT_ASSIGN_OR_RETURN(const c10::SymIntArrayRef operand_sizes,
+                      operand.sym_sizes());
+  TT_RET_CHECK(operand_dim == 2, error::kInvalidArgument)
+      << "expected operand to be a 2D tensor, got a " << operand_dim
+      << "D tensor of shape " << ToString(operand_sizes);
 
-  TT_RET_CHECK(indices.size(0) == row_pointers.size(0) * max_non_zeroes_per_row,
-               error::kInvalidArgument)
+  const c10::SymInt& num_rows = row_pointers_sizes[0];
+  const c10::SymInt& num_indices = indices_sizes[0];
+  const c10::SymInt expected_num_indices = num_rows * max_non_zeroes_per_row;
+  // For symbolic sizes, this adds a relational guard but doesn't specialize.
+  TT_RET_CHECK(
+      num_indices.sym_eq(expected_num_indices).guard_bool(__FILE__, __LINE__),
+      error::kInvalidArgument)
       << "expected indices length to match the maximum number of "
          "non-zeroes, i.e. row_pointers length * maximum number of "
          "non-zeroes per row ("
-      << row_pointers.size(0) << " * " << max_non_zeroes_per_row << " = "
-      << row_pointers.size(0) * max_non_zeroes_per_row << "), got "
-      << indices.size(0);
+      << num_rows << " * " << max_non_zeroes_per_row << " = "
+      << expected_num_indices << "), got " << num_indices;
 
   // SparseGather relies on SparseCore hardware to execute. If not tracing for
   // meta shape inference, ensure that the active TPU device supports
@@ -315,7 +332,8 @@ at::Tensor AtenSparseGatherAutograd::forward(
     int64_t max_non_zeroes_per_row) {
   // Save indices and operand metadata for backward.
   ctx->save_for_backward({indices});
-  ctx->saved_data["operand_sizes"] = operand.sizes().vec();  // VEC_OK
+  // Saved as SymInts so that tracing with symbolic shapes doesn't specialize.
+  ctx->saved_data["operand_sizes"] = operand.sym_sizes();
   ctx->saved_data["operand_scalar_type"] =
       static_cast<int64_t>(operand.scalar_type());
 
@@ -335,7 +353,8 @@ torch::autograd::variable_list AtenSparseGatherAutograd::backward(
     torch::autograd::variable_list grad_outputs) {
   const auto saved = ctx->get_saved_variables();
   const at::Tensor& indices = saved[0];
-  const auto operand_sizes = ctx->saved_data["operand_sizes"].toIntVector();
+  const std::vector<c10::SymInt> operand_sizes =
+      ctx->saved_data["operand_sizes"].toSymIntVector();
   const auto operand_scalar_type = static_cast<at::ScalarType>(
       ctx->saved_data["operand_scalar_type"].toInt());
 
@@ -350,7 +369,7 @@ torch::autograd::variable_list AtenSparseGatherAutograd::backward(
             .typed<at::Tensor(const at::Tensor&, const at::Tensor&,
                               const at::Tensor&)>());
 
-    at::Tensor grad_operand_template = at::zeros(
+    at::Tensor grad_operand_template = at::zeros_symint(
         operand_sizes, grad_output.options().dtype(operand_scalar_type));
     at::AutoDispatchBelowADInplaceOrView guard;
     grad_operand = sparse_gather_backward_op->call(grad_output, indices,

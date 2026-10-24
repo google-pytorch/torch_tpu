@@ -22,6 +22,7 @@
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "absl/status/status.h"
+#include "csrc/common/const_tensor.h"
 #include "torch/csrc/autograd/custom_function.h"
 
 namespace torch_tpu {
@@ -40,9 +41,9 @@ namespace torch_tpu {
  *
  * @return OK if the inputs are valid, otherwise an error status.
  */
-absl::Status ValidateSparseGatherInputs(const at::Tensor& row_pointers,
-                                        const at::Tensor& indices,
-                                        const at::Tensor& operand,
+absl::Status ValidateSparseGatherInputs(const ConstTensor& row_pointers,
+                                        const ConstTensor& indices,
+                                        const ConstTensor& operand,
                                         int64_t max_non_zeroes_per_row);
 
 /**

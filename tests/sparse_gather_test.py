@@ -17,6 +17,9 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import numpy as np
 import torch
+from torch._dynamo import testing as dynamo_testing
+from torch._subclasses import fake_tensor
+from torch.fx.experimental import symbolic_shapes
 from tests import op_testing
 from tests import seed_test_utils
 
@@ -103,6 +106,74 @@ class SparseGatherMetaTest(seed_test_utils.RepeatableTest):
     self.assertTrue(out.is_meta)
     self.assertEqual(out.shape, torch.Size([table_depth, table_width]))
     self.assertEqual(out.dtype, dtype)
+
+  @parameterized.parameters("meta", "tpu")
+  def test_sparse_gather_fake_symbolic_shapes(self, device):
+    """Tests sparse_gather doesn't specialize symbolic dims of FakeTensors."""
+    # Only TPU tensors go through the autograd kernel.
+    use_autograd = device == "tpu"
+    if use_autograd and not torch.accelerator.is_available():
+      self.skipTest("TPU accelerator not available in this test environment.")
+    max_non_zeroes = 8
+    shape_env = symbolic_shapes.ShapeEnv()
+    mode = fake_tensor.FakeTensorMode(shape_env=shape_env)
+
+    def make_fake(*shape, dtype):
+      return mode.from_tensor(
+          torch.empty(shape, dtype=dtype, device=device),
+          symbolic_context=symbolic_shapes.StatelessSymbolicContext(
+              dynamic_sizes=[symbolic_shapes.DimDynamic.DYNAMIC] * len(shape)
+          ),
+      )
+
+    row_pointers = make_fake(4, dtype=torch.int32)
+    indices = make_fake(4 * max_non_zeroes, dtype=torch.int32)
+    operand = make_fake(128, 16, dtype=torch.float32)
+    with mode:
+      operand.requires_grad_(use_autograd)
+      out = torch.tpu.ops.sparse_gather(
+          row_pointers, indices, operand, max_non_zeroes_per_row=max_non_zeroes
+      )
+      sizes = [
+          *row_pointers.shape,
+          *indices.shape,
+          *operand.shape,
+          *out.shape,
+      ]
+      if use_autograd:
+        (grad_operand,) = torch.autograd.grad(out.sum(), operand)
+        sizes.extend(grad_operand.shape)
+    for size in sizes:
+      self.assertIsInstance(size, torch.SymInt)
+    specialized = [
+        size for size in sizes if shape_env.replace(size.node.expr).is_number
+    ]
+    self.assertEmpty(specialized)
+
+  def test_sparse_gather_compile_dynamic_shapes(self):
+    """Tests compiled sparse_gather recompiles only once for dynamic shapes."""
+    torch._dynamo.reset()
+    self.addCleanup(torch._dynamo.reset)
+    counter = dynamo_testing.CompileCounter()
+    max_non_zeroes = 8
+
+    @torch.compile(backend=counter, fullgraph=True)
+    def fn(row_pointers, indices, operand):
+      return torch.tpu.ops.sparse_gather(
+          row_pointers, indices, operand, max_non_zeroes_per_row=max_non_zeroes
+      )
+
+    for n in (2, 3, 4):
+      # All dims change between calls.
+      row_pointers = torch.empty(n, dtype=torch.int32, device="meta")
+      indices = torch.empty(
+          n * max_non_zeroes, dtype=torch.int32, device="meta"
+      )
+      operand = torch.empty(n + 10, n + 1, device="meta")
+      out = fn(row_pointers, indices, operand)
+      self.assertEqual(out.shape, (n * max_non_zeroes, n + 1))
+    # One static frame, then one dynamic frame that serves all later sizes.
+    self.assertEqual(counter.frame_count, 2)
 
 
 class SparseGatherTest(op_testing.TorchTpuTestBase):
