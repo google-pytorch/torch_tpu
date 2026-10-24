@@ -33,6 +33,7 @@ The `torch.compile()` function has the following relevant arguments:
 from collections.abc import Callable, Iterator, Mapping, Sequence
 import concurrent.futures
 import contextlib
+import copy
 import dataclasses
 import functools
 import hashlib
@@ -58,6 +59,7 @@ from torch._functorch._aot_autograd.schemas import AOTAutogradCacheInfo
 from torch._functorch._aot_autograd.schemas import SerializableAOTDispatchCompiler
 import torch._functorch.config as functorch_config
 import torch.compiler.config as compiler_config
+from torch.multiprocessing.reductions import StorageWeakRef
 from torch.utils import _python_dispatch
 from torch.utils import _pytree
 from torch_tpu._internal import execution_mode
@@ -811,6 +813,238 @@ def _get_module_name(
   return f"{clean_name}_split{split_idx}_{phase}"
 
 
+_STRIDE_SENSITIVE_VIEW_OPS = frozenset(
+    op
+    for base in (
+        getattr(torch.ops.aten, "as_strided", None),
+        getattr(torch.ops.aten, "as_strided_", None),
+        getattr(torch.ops.aten, "as_strided_scatter", None),
+        getattr(torch.ops.aten, "view_as_complex", None),
+        getattr(getattr(torch.ops.aten, "view", None), "dtype", None),
+        getattr(
+            getattr(torch.ops, "inductor", None), "reinterpret_tensor", None
+        ),
+    )
+    if base is not None
+    for op in (base, getattr(base, "default", None))
+    if op is not None
+)
+
+
+def _has_stride_sensitive_view_user(placeholder_node: torch.fx.Node) -> bool:
+  """Returns whether `placeholder_node` feeds a stride-sensitive view op."""
+  worklist = list(placeholder_node.users)
+  visited: set[torch.fx.Node] = set()
+  while worklist:
+    user = worklist.pop()
+    if user in visited:
+      continue
+    visited.add(user)
+    if user.op == "call_function":
+      overload_pkt = getattr(user.target, "_overloadpacket", user.target)
+      if (
+          user.target in _STRIDE_SENSITIVE_VIEW_OPS
+          or overload_pkt in _STRIDE_SENSITIVE_VIEW_OPS
+      ):
+        return True
+    if user.op != "output":
+      worklist.extend(user.users)
+  return False
+
+
+def _canonicalize_saved_backward_views(
+    fw_module: torch.fx.GraphModule,
+    bw_module: torch.fx.GraphModule,
+    num_fwd_outputs: int,
+) -> None:
+  """Canonicalizes non-contiguous saved activations between fw and bw graphs."""
+  fw_output_nodes = fw_module.graph.find_nodes(op="output")
+  bw_output_nodes = bw_module.graph.find_nodes(op="output")
+  if not fw_output_nodes or not bw_output_nodes:
+    return
+  fw_output_node = fw_output_nodes[0]
+  if not fw_output_node.args or not isinstance(
+      fw_output_node.args[0], (tuple, list)
+  ):
+    return
+  fw_outs = list(fw_output_node.args[0])
+  if num_fwd_outputs >= len(fw_outs):
+    return
+
+  user_out_nodes = {
+      n for n in fw_outs[:num_fwd_outputs] if isinstance(n, torch.fx.Node)
+  }
+  bw_placeholders = {
+      n.name: n for n in bw_module.graph.find_nodes(op="placeholder")
+  }
+
+  kept_storages: list[Any] = []
+
+  def get_storage_key(tensor: torch.Tensor) -> StorageWeakRef:
+    st = tensor.untyped_storage()
+    kept_storages.append(st)
+    return StorageWeakRef(st)
+
+  non_donatable_storages: set[StorageWeakRef] = set()
+  bw_out_args = bw_output_nodes[0].args[0] if bw_output_nodes[0].args else ()
+  for n in (
+      *fw_module.graph.find_nodes(op="placeholder"),
+      *fw_outs[:num_fwd_outputs],
+      *(bw_out_args if isinstance(bw_out_args, (tuple, list)) else ()),
+  ):
+    if isinstance(n, torch.fx.Node) and isinstance(
+        val := n.meta.get("val"), torch.Tensor
+    ):
+      if not val.is_sparse:
+        non_donatable_storages.add(get_storage_key(val))
+
+  saved_storage_counts: dict[StorageWeakRef, int] = {}
+  for n in fw_outs[num_fwd_outputs:]:
+    if isinstance(n, torch.fx.Node) and isinstance(
+        val := n.meta.get("val"), torch.Tensor
+    ):
+      if not val.is_sparse:
+        st_key = get_storage_key(val)
+        saved_storage_counts[st_key] = saved_storage_counts.get(st_key, 0) + 1
+
+  existing_names = {n.name for n in fw_module.graph.nodes}
+  changed = False
+  canonicalized_bw_phs: list[torch.fx.Node] = []
+  for idx in range(num_fwd_outputs, len(fw_outs)):
+    node = fw_outs[idx]
+    if (
+        not isinstance(node, torch.fx.Node)
+        or node.op == "placeholder"
+        or node in user_out_nodes
+    ):
+      continue
+    if _is_ao_op(node, "offload") or _is_ao_op(node, "reload"):
+      continue
+    # pylint: disable-next=protected-access
+    if split_compiler._is_getitem_of_collective(node):
+      continue
+    val = node.meta.get("val")
+    if not isinstance(val, torch.Tensor) or val.is_sparse:
+      continue
+    if compiler.has_dynamic_symints((val,)):
+      continue
+    if not all(isinstance(s, int) and s > 0 for s in val.shape):
+      continue
+    if not all(isinstance(st, int) for st in val.stride()):
+      continue
+    if not isinstance(val.storage_offset(), int):
+      continue
+    if val.is_contiguous() and val.storage_offset() == 0:
+      continue
+    if any(s > 1 and st <= 0 for s, st in zip(val.shape, val.stride())):
+      continue
+    if (
+        torch._debug_has_internal_overlap(val) == 1
+        or val.numel() * val.element_size() > val.untyped_storage().nbytes()
+    ):
+      continue
+    st_key = get_storage_key(val)
+    if (
+        st_key in non_donatable_storages
+        or saved_storage_counts.get(st_key, 0) != 1
+    ):
+      continue
+    bw_ph = bw_placeholders.get(node.name)
+    if bw_ph is None or not isinstance(bw_ph.meta.get("val"), torch.Tensor):
+      continue
+    if _has_stride_sensitive_view_user(bw_ph):
+      continue
+
+    orig_name = node.name
+    view_name = f"{orig_name}_view"
+    suffix = 0
+    while view_name in existing_names:
+      suffix += 1
+      view_name = f"{orig_name}_view_{suffix}"
+    existing_names.add(view_name)
+
+    contig_val = torch.ops.aten.clone.default(
+        val, memory_format=torch.contiguous_format
+    )
+    with fw_module.graph.inserting_after(node):
+      contig_node = fw_module.graph.call_function(
+          torch.ops.aten.clone.default,
+          (node,),
+          {"memory_format": torch.contiguous_format},
+      )
+    contig_node.meta = copy.copy(node.meta)
+    contig_node.meta["val"] = contig_val
+    if isinstance(contig_node.meta.get("example_value"), torch.Tensor):
+      contig_node.meta["example_value"] = contig_val
+    if "tensor_meta" in contig_node.meta:
+      contig_node.meta["tensor_meta"] = (
+          torch.fx.passes.shape_prop._extract_tensor_metadata(contig_val)
+      )
+    node.name = view_name
+    contig_node.name = orig_name
+    fw_outs[idx] = contig_node
+
+    bw_ph.meta["val"] = torch.ops.aten.clone.default(
+        bw_ph.meta["val"], memory_format=torch.contiguous_format
+    )
+    if isinstance(bw_ph.meta.get("example_value"), torch.Tensor):
+      bw_ph.meta["example_value"] = torch.ops.aten.clone.default(
+          bw_ph.meta["example_value"],
+          memory_format=torch.contiguous_format,
+      )
+    if "tensor_meta" in bw_ph.meta:
+      bw_ph.meta["tensor_meta"] = (
+          torch.fx.passes.shape_prop._extract_tensor_metadata(bw_ph.meta["val"])
+      )
+    canonicalized_bw_phs.append(bw_ph)
+    changed = True
+
+  if changed:
+    worklist = list(canonicalized_bw_phs)
+    visited: set[torch.fx.Node] = set()
+    while worklist:
+      curr = worklist.pop()
+      for user in curr.users:
+        if user in visited:
+          continue
+        visited.add(user)
+        if user.op == "call_function":
+          if user.target in (
+              torch.ops.aten.view.default,
+              torch.ops.aten._unsafe_view.default,
+          ):
+            user.target = torch.ops.aten.reshape.default
+        if user.op != "output":
+          worklist.append(user)
+    fw_output_node.args = (
+        tuple(fw_outs)
+        if isinstance(fw_output_node.args[0], tuple)
+        else fw_outs,
+    )
+    fw_module.graph.lint()
+    bw_module.graph.lint()
+    fw_module.recompile()
+    bw_module.recompile()
+
+
+def _partition_with_saved_view_canonicalization(
+    joint_gm: torch.fx.GraphModule,
+    joint_inputs: Any,
+    *,
+    num_fwd_outputs: int,
+    **kwargs: Any,
+) -> tuple[torch.fx.GraphModule, torch.fx.GraphModule]:
+  """Partitions the joint graph and canonicalizes saved backward views."""
+  fw_module, bw_module = min_cut_rematerialization_partition(
+      joint_gm,
+      joint_inputs,
+      num_fwd_outputs=num_fwd_outputs,
+      **kwargs,
+  )
+  _canonicalize_saved_backward_views(fw_module, bw_module, num_fwd_outputs)
+  return fw_module, bw_module
+
+
 class TpuBackend:
   """TPU backend for torch.compile() integration."""
 
@@ -1043,7 +1277,7 @@ class TpuBackend:
           result = aot_autograd(
               fw_compiler=fw_compiler,
               bw_compiler=bw_compiler,
-              partition_fn=min_cut_rematerialization_partition,
+              partition_fn=_partition_with_saved_view_canonicalization,
               decompositions=_TPU_DECOMPOSITIONS,  # pyrefly: ignore[bad-argument-type]
               keep_inference_input_mutations=False,
           )(graph_module, example_inputs)
