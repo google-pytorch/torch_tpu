@@ -426,6 +426,7 @@ enum class OpName {
   kFusedSgdTensorLr,
   kGather,
   kGatherOut,
+  kGcdOut,
   kGe,
   kGeOut,
   kGeScalarOut,
@@ -1697,6 +1698,8 @@ ToString(  // NOLINT(google-readability-function-size)
       return "gather";
     case OpName::kGatherOut:
       return "gather.out";
+    case OpName::kGcdOut:
+      return "gcd.out";
     case OpName::kGe:
       return "ge";
     case OpName::kGeOut:

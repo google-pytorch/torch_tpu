@@ -16467,6 +16467,47 @@ class MaskedSoftmaxErrorTest(et.ErrorTestBase):
       ):
         torch.nn.functional.linear(inp, weight, bias)
 
+  def test_gcd_unsupported_float_dtype(self):
+    a = torch.tensor([1.0, 2.0], device=et.device(), dtype=torch.float32)
+    b = torch.tensor([3.0, 4.0], device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu=""""gcd_cuda" not implemented for 'Float'""",
+        tpu="""gcd(): expected the promoted input dtype to be an integer type, got float32""",
+    ):
+      torch.gcd(a, b)
+
+  def test_gcd_unsupported_bool_dtype(self):
+    a = torch.tensor([True, False], device=et.device(), dtype=torch.bool)
+    b = torch.tensor([True, True], device=et.device(), dtype=torch.bool)
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu=""""gcd_cuda" not implemented for 'Bool'""",
+        tpu="""gcd(): expected the promoted input dtype to be an integer type, got bool""",
+    ):
+      torch.gcd(a, b)
+
+  def test_gcd_unsupported_complex_dtype(self):
+    a = torch.tensor([1 + 1j], device=et.device(), dtype=torch.complex64)
+    b = torch.tensor([2 + 2j], device=et.device(), dtype=torch.complex64)
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu=""""gcd_cuda" not implemented for 'ComplexFloat'""",
+        tpu="""gcd(): expected the promoted input dtype to be an integer type, got complex64""",
+    ):
+      torch.gcd(a, b)
+
+  def test_gcd_invalid_out_cast(self):
+    a = torch.tensor([1.0, 2.0], device=et.device(), dtype=torch.float32)
+    b = torch.tensor([3.0, 4.0], device=et.device(), dtype=torch.float32)
+    out = torch.empty(2, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""result type Float can't be cast to the desired output type Int""",
+        tpu="""gcd(): result type float32 can't be cast to the desired output type int32""",
+    ):
+      torch.gcd(a, b, out=out)
+
   def test_lcm_unsupported_float_dtype(self):
     a = torch.tensor([1.0, 2.0], device=et.device(), dtype=torch.float32)
     b = torch.tensor([3.0, 4.0], device=et.device(), dtype=torch.float32)
