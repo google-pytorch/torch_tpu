@@ -1585,8 +1585,9 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
             << "expected embedding_table to be a 2D tensor, got a "
             << embedding_table.dim() << "D tensor of shape "
             << ToString(embedding_table.sizes());
-        return at::empty({device_batch_size, embedding_table.size(1)},
-                         embedding_table.options());
+        return at::empty_symint(
+            {c10::SymInt(device_batch_size), embedding_table.sym_size(1)},
+            embedding_table.options());
       });
   ImplInternal<OpName::kSparseGather>(
       m,

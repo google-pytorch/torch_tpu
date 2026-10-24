@@ -18,6 +18,9 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import numpy as np
 import torch
+from torch._dynamo import testing as dynamo_testing
+from torch._subclasses import fake_tensor
+from torch.fx.experimental import symbolic_shapes
 from torch_tpu._internal.compile import tpu_torch_compile
 import torch_tpu._internal.device_utils.annotations as tpu_annotations
 from tests import op_testing
@@ -536,6 +539,78 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
 
     expected = self._get_expected_forward_output()
     self.assert_close(golden_result=expected, torch_tpu_result=out.cpu())
+
+  @parameterized.parameters("meta", "tpu")
+  def test_sparse_dense_matmul_fake_symbolic_shapes(self, device):
+    """Tests sparse_dense_matmul doesn't specialize symbolic FakeTensor dims."""
+    device_batch_size = 16
+    shape_env = symbolic_shapes.ShapeEnv()
+    mode = fake_tensor.FakeTensorMode(shape_env=shape_env)
+
+    def make_fake(*shape, dtype):
+      return mode.from_tensor(
+          torch.empty(shape, dtype=dtype, device=device),
+          symbolic_context=symbolic_shapes.StatelessSymbolicContext(
+              dynamic_sizes=[symbolic_shapes.DimDynamic.DYNAMIC] * len(shape)
+          ),
+      )
+
+    row_pointers = make_fake(64, dtype=torch.int32)
+    embedding_ids = make_fake(128, dtype=torch.int32)
+    sample_ids = make_fake(128, dtype=torch.int32)
+    gains = make_fake(128, dtype=torch.float32)
+    embedding_table = make_fake(32, 8, dtype=torch.float32)
+    with mode:
+      out = torch.tpu.ops.sparse_dense_matmul(
+          row_pointers,
+          embedding_ids,
+          sample_ids,
+          gains,
+          embedding_table,
+          device_batch_size=device_batch_size,
+          max_ids_per_partition=16,
+          max_unique_ids_per_partition=16,
+      )
+    sizes = [*embedding_table.shape, out.shape[1]]
+    for size in sizes:
+      self.assertIsInstance(size, torch.SymInt)
+    specialized = [
+        size for size in sizes if shape_env.replace(size.node.expr).is_number
+    ]
+    self.assertEmpty(specialized)
+    self.assertEqual(out.shape[0], device_batch_size)
+
+  def test_sparse_dense_matmul_compile_dynamic_shapes(self):
+    """Tests compiled sparse_dense_matmul recompiles once for dynamic shapes."""
+    torch._dynamo.reset()
+    self.addCleanup(torch._dynamo.reset)
+    counter = dynamo_testing.CompileCounter()
+    device_batch_size = 16
+
+    @torch.compile(backend=counter, fullgraph=True)
+    def fn(row_pointers, embedding_ids, sample_ids, gains, embedding_table):
+      return torch.tpu.ops.sparse_dense_matmul(
+          row_pointers,
+          embedding_ids,
+          sample_ids,
+          gains,
+          embedding_table,
+          device_batch_size=device_batch_size,
+          max_ids_per_partition=16,
+          max_unique_ids_per_partition=16,
+      )
+
+    for n in (2, 3, 4):
+      # All dims change between calls.
+      row_pointers = torch.empty(n * 8, dtype=torch.int32, device="meta")
+      embedding_ids = torch.empty(n * 16, dtype=torch.int32, device="meta")
+      sample_ids = torch.empty(n * 16, dtype=torch.int32, device="meta")
+      gains = torch.empty(n * 16, dtype=torch.float32, device="meta")
+      embedding_table = torch.empty(n * 32, n + 4, device="meta")
+      out = fn(row_pointers, embedding_ids, sample_ids, gains, embedding_table)
+      self.assertEqual(out.shape, (device_batch_size, n + 4))
+    # One static frame, then one dynamic frame that serves all later sizes.
+    self.assertEqual(counter.frame_count, 2)
 
   def test_sparse_dense_matmul_grad_eager_device_assignment(self):
     device = torch.device("tpu")
