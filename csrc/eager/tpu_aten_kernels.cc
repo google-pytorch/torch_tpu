@@ -1595,7 +1595,8 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
           int64_t max_non_zeroes_per_row) -> at::Tensor {
         TT_THROW_IF_ERROR(ValidateSparseGatherInputs(
             row_pointers, indices, operand, max_non_zeroes_per_row));
-        return at::empty({indices.size(0), operand.size(1)}, operand.options());
+        return at::empty_symint({indices.sym_size(0), operand.sym_size(1)},
+                                operand.options());
       });
   ImplInternal<OpName::kSparseGatherBackward>(
       m,
