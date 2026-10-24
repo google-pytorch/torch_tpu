@@ -33,6 +33,7 @@ torch_tpu_cc_library(
     hdrs = ["collectives_aten_kernels.h"],
     deps = [
         "//csrc/common:cache_key",
+        "//csrc/common:const_tensor",
         "//csrc/common:dimension_types",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
@@ -51,6 +52,7 @@ torch_tpu_cc_library(
         "//csrc/ops/macros:kernel",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
+        "//shims/torch/c10/core:base_headers",
         "//shims/torch/c10/util:base_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
         "@com_google_absl//absl/log:absl_check",
