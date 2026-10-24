@@ -26,7 +26,6 @@
 #include "ATen/core/TensorBody.h"
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
-#include "csrc/common/context_states.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/eager/eager_mode.h"

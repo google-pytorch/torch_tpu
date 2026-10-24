@@ -16,7 +16,6 @@
 
 #include "csrc/ops/copy_from/copy_common.h"
 
-#include "csrc/common/context_states.h"
 #include "csrc/eager/eager_mode.h"
 #include "gtest/gtest.h"
 

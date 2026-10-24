@@ -65,7 +65,6 @@
 #include "c10/util/Exception.h"
 #include "c10/util/Optional.h"
 #include "c10/util/StringUtil.h"
-#include "csrc/common/context_states.h"
 #include "csrc/common/device_type.h"
 #include "csrc/common/env_vars.h"
 #include "csrc/common/status_builder.h"

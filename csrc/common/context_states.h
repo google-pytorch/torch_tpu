@@ -31,32 +31,7 @@ namespace torch_tpu {
 // managers. By convention, the context state type is denoted by appending
 // `ContextState` to the name of the context manager.
 
-// The op defer mode.
-enum class EagerMode {
-  // kDeferAndFuse defers all ops except those that cannot be deferred.  This
-  // provides a higher performance eager mode.
-  kDeferAndFuse,
-  // kDeferNever marks all ops to be executed immediately, similarly to PyTorch
-  // on CUDA eager mode. This is primarily used for debugging, as it has
-  // suboptimal compile and execution performance.
-  kDeferNever,
-  // kDeferNeverAndLaunchBlocking marks all ops to be executed immediately and
-  // waits for the compilation of one op before dispatching the next one.
-  // Some expensive runtime checks are also performed in this mode. This
-  // should be used only for debugging, as it has the worst execution
-  // performance.
-  kDeferNeverAndLaunchBlocking,
-  // kInternalDeferAll attempts to defer all ops. If an op cannot be deferred,
-  // it will raise a runtime exception. This can be used to enforce a "manual
-  // sync" mode of execution, where explicit synchronization is required before
-  // any execution will occur. This is primarily used for debugging and testing
-  // and is not intended for most users.
-  kInternalDeferAll,
-  // kInternalCompileFxGraph fully prevents all eager mode operations from
-  // being executed on-device. This is used in compilation and export tracing
-  // (e.g., `torch.compile` or `torch.export`).
-  kInternalCompileFxGraph,
-};
+enum class EagerMode;
 
 // The state of the `eager_mode` context manager.
 using EagerModeContextState = EagerMode;

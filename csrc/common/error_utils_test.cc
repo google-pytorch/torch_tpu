@@ -39,7 +39,6 @@
 #include "absl/types/span.h"
 #include "c10/util/Exception.h"
 #include "csrc/common/cache_key.h"
-#include "csrc/common/context_states.h"
 #include "csrc/common/env_vars.h"
 #include "csrc/common/status_builder.h"
 #include "csrc/common/status_test_utils.h"

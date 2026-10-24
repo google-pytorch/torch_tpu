@@ -34,7 +34,6 @@ torch_tpu_cc_library(
         "dynamism.h",
     ],
     deps = [
-        "//csrc/common:context_states",
         "//csrc/common:error_utils",
         "//csrc/common:shape",
         "//csrc/eager:device_buffer",

@@ -15,7 +15,6 @@
  */
 
 #include "absl/flags/flag.h"
-#include "csrc/common/context_states.h"
 #include "csrc/common/flags.h"
 #include "csrc/eager/eager_mode.h"
 #include "gtest/gtest.h"

@@ -20,6 +20,7 @@
 #include "absl/cleanup/cleanup.h"
 #include "csrc/common/context_manager.h"
 #include "csrc/common/context_states.h"
+#include "csrc/eager/eager_mode.h"
 #include "gtest/gtest.h"
 
 namespace torch_tpu {
