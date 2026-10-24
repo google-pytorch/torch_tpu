@@ -591,16 +591,17 @@ bool PopulateResultIfError(ErrorMessageChecksResult& r,
 // Runs checks on the entire error message.
 //
 // Pre-conditions:
-//   - The error message should be trimmed (i.e. no surrounding whitespace).
+//   - The error message should not be empty after trimming.
+//
+// The XLA compiler error is passed through verbatim, so only checks that don't
+// depend on its content (e.g. its trailing characters) run here.
 //
 // Populates `r` on any check failure.
 void CheckFullMessage(ErrorMessageChecksResult& r,
                       const std::string_view message) {
-  ABSL_CHECK(!HasSurroundingWhitespaces(message))  // CRASH_OK
+  ABSL_CHECK(!absl::StripAsciiWhitespace(message).empty())  // CRASH_OK
       << kPreconditionViolatedError;
 
-  PopulateResultIfError(r, EndsWithAlphaNumAndAllowedCharacters(message),
-                        CheckKind::kEnforce);
   PopulateResultIfError(r, HasNoSpacesSurroundingSentinel(message),
                         CheckKind::kEnforce);
 }
@@ -623,6 +624,11 @@ void CheckMessageWithoutXlaCompilerError(ErrorMessageChecksResult& r,
       << kPreconditionViolatedError;
   ABSL_CHECK(!HasXlaCompilerError(message))  // CRASH_OK
       << kPreconditionViolatedError;
+
+  // XLA compiler errors might end with a period or other punctuation, but we
+  // don't have control over it.
+  PopulateResultIfError(r, EndsWithAlphaNumAndAllowedCharacters(message),
+                        CheckKind::kEnforce, context);
 
   for (const auto& pair : type_name_pairs) {
     // Error messages coming from the OpenXLA project might contain StableHLO
@@ -690,6 +696,18 @@ void CheckTorchTpuCoreMessage(ErrorMessageChecksResult& r,
   constexpr std::string_view kTorchTpuCoreContext =
       "On TorchTPU core error message: ";
 
+  // Full Error Message
+  // The XLA compiler error is passed through verbatim, so the whitespace checks
+  // only run on the next group (i.e. on the part of the message we control).
+  const bool is_trimmed_error_empty = PopulateResultIfError(
+      r, TrimmedErrorMessageIsNotEmpty(message), CheckKind::kEnforce);
+
+  if (is_trimmed_error_empty) {
+    return r;
+  }
+
+  CheckFullMessage(r, message);
+
   // Trimmed error message.
   //
   // It's reset at the start of each group, where the current error message gets
@@ -700,26 +718,22 @@ void CheckTorchTpuCoreMessage(ErrorMessageChecksResult& r,
   // stop running the checks.
   std::optional<std::string_view> trimmed;
 
-  // Full Error Message
-  // Following checks assume there are no leading or trailing whitespaces.
-  trimmed = TrimAndCheckMessage(r, message);
-
-  if (!trimmed.has_value()) {
-    return r;
-  }
-
-  CheckFullMessage(r, *trimmed);
-
   // No XLA Compiler Error Message
-  // Following checks assume that there is no XLA compiler error.
-  trimmed = TrimAndCheckMessage(r, RemoveXlaCompilerError(*trimmed),
-                                kNoXlaErrorContext);
+  // Following checks assume that there is no XLA compiler error, and that there
+  // are no leading or trailing whitespaces.
+  //
+  // Only mention the removed XLA compiler error in the failure reasons if there
+  // was one to begin with.
+  const std::string_view no_xla_error_context =
+      HasXlaCompilerError(message) ? kNoXlaErrorContext : "";
+  trimmed = TrimAndCheckMessage(r, RemoveXlaCompilerError(message),
+                                no_xla_error_context);
 
   if (!trimmed.has_value()) {
     return r;
   }
 
-  CheckMessageWithoutXlaCompilerError(r, *trimmed, kNoXlaErrorContext);
+  CheckMessageWithoutXlaCompilerError(r, *trimmed, no_xla_error_context);
 
   // TorchTPU Core Error Message
   // Following checks assume that there are no context prefixes.
@@ -1002,9 +1016,10 @@ absl::Status AdaptXlaError(const absl::Status& status,
     return status;
   }
 
-  const std::string adapted = AdaptExternalErrorMessage(status.message());
-  return StatusBuilder(std::move(status)).SetOverride()
-         << absl::StrCat(context, kXlaCompilerFailedWith, adapted);
+  // The XLA error is passed through verbatim: `kXlaCompilerFailedWith` marks
+  // where it begins, and the format checks skip everything after it.
+  return StatusBuilder(status).SetPrepend()
+         << context << kXlaCompilerFailedWith;
 }
 
 namespace {

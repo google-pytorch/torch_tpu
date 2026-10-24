@@ -1004,7 +1004,7 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
     # Check that it successfully reaches XLA and raises an error.
     with self.assertRaisesRegex(  # ASSERT_RAISES_OK=no jax in errors tests
         RuntimeError,
-        expected_regex="""failed to compile MLIR module -- the XLA compiler failed with: custom emitter for test_custom_call not found""",
+        expected_regex="""failed to compile MLIR module -- the XLA compiler failed with: Custom emitter for test_custom_call not found""",
     ):
       x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
       y = custom_call_op(x)

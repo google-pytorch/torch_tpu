@@ -1532,7 +1532,8 @@ TEST(ErrorMessageGuidelinesDeathTest, ContainsStableHloTypeName) {
 
 TEST(ErrorMessageGuidelinesDeathTest, NonAlphaNumTrailingChar) {
   EXPECT_DEATH(ThrowWithMessage("dimension size negative."),
-               HasSubstr("end with either an alpha-numeric"));
+               AllOf(HasSubstr("end with either an alpha-numeric"),
+                     Not(HasSubstr("After removing the XLA compiler error"))));
   // Multiple non-alphanumeric characters.
   EXPECT_DEATH(ThrowWithMessage("dimension size negative..."),
                HasSubstr("end with either an alpha-numeric"));
@@ -1591,6 +1592,29 @@ TEST(ErrorMessageGuidelinesPassTest, StableHloTypeNameOnXlaError) {
                c10::Error);
 }
 
+TEST(ErrorMessageGuidelinesPassTest, VerbatimXlaErrorIsNotChecked) {
+  // XLA errors are passed through verbatim after the sentinel.
+  EXPECT_THROW(ThrowWithContextForXlaError(
+                   /* context= */ "failed to initialize the PjRt client",
+                   /* xla_error_message= */ "TPU initialization failed."),
+               c10::Error);
+  EXPECT_THROW(ThrowWithContextForXlaError(
+                   /* context= */ "failed to compile MLIR module",
+                   /* xla_error_message= */ "Expected 3D, got 2D.\n"),
+               c10::Error);
+}
+
+TEST(ErrorMessageGuidelinesDeathTest, ContextBeforeXlaErrorIsStillChecked) {
+  EXPECT_DEATH(ThrowWithContextForXlaError(
+                   /* context= */ "Failed to initialize the PjRt client",
+                   /* xla_error_message= */ "TPU initialization failed."),
+               HasSubstr("start with a lowercase character"));
+  EXPECT_DEATH(ThrowWithContextForXlaError(
+                   /* context= */ "failed to initialize the PjRt client.",
+                   /* xla_error_message= */ "TPU initialization failed."),
+               HasSubstr("end with either an alpha-numeric"));
+}
+
 TEST(ErrorMessageGuidelinesPassTest, ExpectedGotFormat) {
   EXPECT_THROW(ThrowWithMessage("expected 3D tensor, got 2D"), c10::Error);
   // Valid format after a single context prefix.
@@ -1638,6 +1662,20 @@ TEST(ErrorMessageGuidelinesPassTest, MultilineErrorMessage) {
 }
 
 #endif  // TT_CHECKS_ERROR_FORMAT
+
+TEST(AdaptXlaErrorTest, PassesMessageThroughVerbatim) {
+  const absl::Status status = AdaptXlaError(
+      absl::Status(error::kInternal, "TPU initialization failed.\n"),
+      /* context= */ "failed to initialize the PjRt client");
+  EXPECT_EQ(status.code(), error::kInternal);
+  EXPECT_EQ(status.message(),
+            "failed to initialize the PjRt client -- the XLA compiler failed "
+            "with: TPU initialization failed.\n");
+}
+
+TEST(AdaptXlaErrorTest, ReturnsOkStatusUnchanged) {
+  EXPECT_TRUE(AdaptXlaError(absl::OkStatus(), "context").ok());
+}
 
 TEST(ErrorUtilsTest, GetRequiredEnvOnceReturnsValueWhenSet) {
   setenv(kTorchTpuTopologyEnvVar, "2x2x1", 1);
