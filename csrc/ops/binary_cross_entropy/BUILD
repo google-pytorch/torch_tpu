@@ -29,11 +29,9 @@ torch_tpu_cc_library(
     hdrs = ["binary_cross_entropy_aten_kernels.h"],
     deps = [
         "//csrc/common:cache_key",
-        "//csrc/common:dimension_types",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
         "//csrc/common:to_string",
-        "//csrc/common:utils",
         "//csrc/eager:op_dispatcher",
         "//csrc/eager:tensor_to_buffer",
         "//csrc/ops:binary",
