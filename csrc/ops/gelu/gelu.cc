@@ -60,17 +60,19 @@ absl::StatusOr<mlir::MlirOp> BuildGeluApproximateShlo(mlir::MlirOp input_op) {
   return stablehlo::Div(input_op, denom);
 }
 
+// Exact gelu: y = 0.5 * x * (1 + erf(x / sqrt(2)))
+//               = 0.5 * x * erfc(-x / sqrt(2)).
+// The erfc form avoids the cancellation in 1 + erf(...) for negative x, where
+// erf(...) is close to -1.
 absl::StatusOr<mlir::MlirOp> BuildGeluNoneShlo(mlir::MlirOp input_op) {
   auto k_0_5 = MakeConstantLike(input_op, 0.5);
-  auto k_1_0 = MakeConstantLike(input_op, 1.0);
-  auto k_alpha = MakeConstantLike(
-      input_op, 0.5 * std::numbers::sqrt2);  // 1/sqrt(2) == sqrt(2)/2
+  auto k_neg_alpha = MakeConstantLike(
+      input_op, -0.5 * std::numbers::sqrt2);  // -1/sqrt(2) == -sqrt(2)/2
 
-  auto self_alpha = stablehlo::Mul(input_op, k_alpha);
-  auto erf_out = chlo::Erf(self_alpha);
-  auto one_plus_erf = stablehlo::Add(k_1_0, erf_out);
+  auto self_neg_alpha = stablehlo::Mul(input_op, k_neg_alpha);
+  auto erfc_out = chlo::Erfc(self_neg_alpha);
   auto half_x = stablehlo::Mul(k_0_5, input_op);
-  return stablehlo::Mul(half_x, one_plus_erf);
+  return stablehlo::Mul(half_x, erfc_out);
 }
 
 // When approximation_type == "tanh", we compute the approximate gelu formula.
@@ -138,27 +140,26 @@ absl::StatusOr<mlir::MlirOp> BuildGeluBackwardGradInputApproximateShlo(
 //
 // Forward Exact Formula:
 //   y = x * CDF(x)
-//   CDF(x) = 0.5 * (1 + erf(x / sqrt(2)))
+//   CDF(x) = 0.5 * (1 + erf(x / sqrt(2))) = 0.5 * erfc(-x / sqrt(2))
 //
 // Backward Derivative (dy/dx):
 //   dy/dx = CDF(x) + x * PDF(x)
 //   PDF(x) = (1 / sqrt(2*pi)) * exp(-x^2 / 2)
 absl::StatusOr<mlir::MlirOp> BuildGeluBackwardGradInputNoneShlo(
     mlir::MlirOp grad_output_op, mlir::MlirOp input_op) {
-  auto k_alpha = MakeConstantLike(
-      input_op, 0.5 * std::numbers::sqrt2);  // 1/sqrt(2) == sqrt(2)/2
+  auto k_neg_alpha = MakeConstantLike(
+      input_op, -0.5 * std::numbers::sqrt2);  // -1/sqrt(2) == -sqrt(2)/2
   // kBeta = 1 / sqrt(2 * pi)
   auto k_beta =
       MakeConstantLike(input_op, 1.0 / std::sqrt(2.0 * std::numbers::pi));
   auto k_0_5 = MakeConstantLike(input_op, 0.5);
-  auto k_1_0 = MakeConstantLike(input_op, 1.0);
   auto k_neg_0_5 = MakeConstantLike(input_op, -0.5);
 
-  // 1. Calculate CDF(x) = 0.5 * (1 + erf(x / sqrt(2)))
-  mlir::MlirOp self_alpha = stablehlo::Mul(input_op, k_alpha);
-  mlir::MlirOp erf_out = chlo::Erf(self_alpha);
-  mlir::MlirOp one_plus_erf = stablehlo::Add(k_1_0, erf_out);
-  mlir::MlirOp cdf = stablehlo::Mul(k_0_5, one_plus_erf);
+  // 1. Calculate CDF(x) = 0.5 * erfc(-x / sqrt(2)). This is equal to
+  //    0.5 * (1 + erf(x / sqrt(2))) but avoids its cancellation for negative x.
+  mlir::MlirOp self_neg_alpha = stablehlo::Mul(input_op, k_neg_alpha);
+  mlir::MlirOp erfc_out = chlo::Erfc(self_neg_alpha);
+  mlir::MlirOp cdf = stablehlo::Mul(k_0_5, erfc_out);
 
   // 2. Calculate PDF(x) = (1 / sqrt(2*pi)) * exp(-x^2 / 2)
   mlir::MlirOp self_sq = stablehlo::Mul(input_op, input_op);
