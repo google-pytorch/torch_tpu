@@ -14,25 +14,21 @@
 
 """Tests PyTorch distributed collectives on multiple TPUs.
 
-- For each test case, the main process creates a spec of the world (common
-  information all workers need to agree on) and N worker processes (one
-  per TPU) based on the same world spec.
-- Each worker process is started with a different rank. It initializes
-  its environment and runs the test logic for its rank.
-- The test logic is expressed as a (rank, world_spec) -> None function. It runs
-  PyTorch distributed collectives and checks that they behave as expected.
-
-This isn't quite how this will be used in open source, so we should revisit this
-before the open source release.
+- `CollectiveOpsTest` uses `TpuMultiProcContinuousTest`: N worker processes (one
+  per TPU) are spawned once and share a process group across tests. Each test
+  method runs on every rank.
+- Tests that need fresh worker processes (e.g. to exercise process exit) use
+  `distributed_utils.dist_run()`, which spawns N workers per test.
 """
 
 import os
 import time
-from typing import Any, Callable, List, Union
+from typing import Any, Callable, Final, List, Union
 
 from absl import logging
 from absl.testing import absltest
 from absl.testing import parameterized
+from torch_tpu._internal.utils import hardware
 
 if __name__ == "__main__":  # We are in the parent process.
   # Pick a likely unique cache root for this run. This makes it less likely for
@@ -57,44 +53,13 @@ import torch.multiprocessing as mp
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
+from tests.distributed import continuous_test_utils
 from tests.distributed import distributed_utils
 
 _SKIP_P2P_ON_TPU_V7_REASON = (
     "P2P send/recv aborts in libtpu on TPU v7 (b/540414751)."
 )
-try:
-  _IS_TPU_V7 = torch.tpu.get_device_properties().name == "TPU v7"
-except RuntimeError:  # No TPU generation that TorchTPU supports is attached.
-  _IS_TPU_V7 = False
-
-
-def _test_wrapper(
-    test_fn: Callable[..., None], *args: Any, **kwargs: Any
-) -> None:
-  """Wrapper to initialize and cleanup the distributed environment for tests.
-
-  This helper ensures that every test rank initializes the TPU device and
-  process group. After the test function completes, it performs a final
-  synchronization barrier to ensure all workers have finished before
-  destroying the process group, preventing premature exit crashes.
-
-  Args:
-    test_fn: The test function to execute.
-    *args: Positional arguments for the test function.
-    **kwargs: Keyword arguments for the test function.
-  """
-  dist.init_process_group(backend="tpu_dist")
-  try:
-    test_fn(*args, **kwargs)
-  finally:
-    # Ensure all ranks synchronize at the end of each test so that every worker
-    # in the slice completes. This prevents one rank from destroying the process
-    # group while others are still performing collectives or verification.
-    # TODO: remove this wrapper when we figure out a principled way to prevent
-    # the premature exit.
-    if dist.is_initialized():
-      dist.barrier()
-      dist.destroy_process_group()
+_IS_TPU_V7 = torch.tpu.get_device_name() == "TPU v7"
 
 
 def _all_reduce_input_fn_rank(r, w):
@@ -136,6 +101,7 @@ def _all_reduce_bitwise_input_fn(r, w):
     List of 3 integers for bitwise operation tests.
   """
 
+  # Assuming world size w = 8
   # Example values:
   # val1: Sets the r-th bit and the (w-1-r)-th bit.
   # val2: Simple arithmetic series based on rank.
@@ -146,15 +112,15 @@ def _all_reduce_bitwise_input_fn(r, w):
   return [val1, val2, val3]
 
 
-def run_all_reduce(
+def _run_all_reduce(
     input_fn: Callable[[int, int], List[Union[int, float]]],
     reduce_op: torch.distributed.ReduceOp,
     expected: List[Union[int, float]],
     dtype: torch.dtype,
 ) -> None:
   """Tests all-reduce functionality."""
-  rank = int(os.environ["RANK"])
-  world_size = int(os.environ["WORLD_SIZE"])
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
   device = "tpu"
   input_list = input_fn(rank, world_size)
   x = torch.tensor(input_list, dtype=dtype, device=device)
@@ -181,10 +147,10 @@ def run_all_reduce(
   utils.assert_close(x.cpu(), expected_tensor)
 
 
-def run_all_gather() -> None:
+def _run_all_gather() -> None:
   """Tests all-gather functionality."""
-  rank = int(os.environ["RANK"])
-  world_size = int(os.environ["WORLD_SIZE"])
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
   x = torch.tensor([1.0, float(rank)], device="tpu", dtype=torch.float32)
   outputs = [
       torch.zeros(2, device="tpu", dtype=torch.float32)
@@ -204,10 +170,10 @@ def run_all_gather() -> None:
     )
 
 
-def run_all_gather_scalar() -> None:
+def _run_all_gather_scalar() -> None:
   """Tests all_gather on scalar input."""
-  rank = int(os.environ["RANK"])
-  world_size = int(os.environ["WORLD_SIZE"])
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
   outputs = [
       torch.tensor(0, device="tpu", dtype=torch.float32)
       for _ in range(world_size)
@@ -219,10 +185,10 @@ def run_all_gather_scalar() -> None:
     assert scalar.item() == idx
 
 
-def run_all_gather_tensor_concat() -> None:
+def _run_all_gather_tensor_concat() -> None:
   """Tests all_gather_into_tensor with concatenation."""
-  rank = int(os.environ["RANK"])
-  world_size = int(os.environ["WORLD_SIZE"])
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
   x = torch.tensor([rank, rank], device="tpu", dtype=torch.float32)
   output = torch.zeros(world_size * 2, device="tpu", dtype=torch.float32)
   handle = torch.distributed.all_gather_into_tensor(output, x, async_op=True)
@@ -235,10 +201,10 @@ def run_all_gather_tensor_concat() -> None:
   utils.assert_close(output_cpu, expected)
 
 
-def run_all_gather_tensor_scalar() -> None:
+def _run_all_gather_tensor_scalar() -> None:
   """Tests all_gather_into_tensor on scalar input."""
-  rank = int(os.environ["RANK"])
-  world_size = int(os.environ["WORLD_SIZE"])
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
   x = torch.tensor(rank, device="tpu", dtype=torch.float32)
   output = torch.zeros(world_size, device="tpu", dtype=torch.float32)
   torch.distributed.all_gather_into_tensor(output, x, async_op=False)
@@ -247,10 +213,10 @@ def run_all_gather_tensor_scalar() -> None:
   utils.assert_close(output_cpu, expected)
 
 
-def run_all_gather_tensor_stack() -> None:
+def _run_all_gather_tensor_stack() -> None:
   """Tests all_gather_into_tensor with stacking."""
-  rank = int(os.environ["RANK"])
-  world_size = int(os.environ["WORLD_SIZE"])
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
   x = torch.tensor([rank, rank], device="tpu", dtype=torch.float32)
   output = torch.zeros((world_size, 2), device="tpu", dtype=torch.float32)
   torch.distributed.all_gather_into_tensor(output, x, async_op=False)
@@ -262,7 +228,7 @@ def run_all_gather_tensor_stack() -> None:
   utils.assert_close(output_cpu, expected)
 
 
-def run_all_gather_rank_order() -> None:
+def _run_all_gather_rank_order() -> None:
   """Tests all_gather_into_tensor and all_to_all rank ordering across TPU cores.
 
   Verifies that collectives preserve logical rank ordering [0, 1, ...,
@@ -272,8 +238,8 @@ def run_all_gather_rank_order() -> None:
   on multi-core TPU hosts (e.g. TPU v5e 2x4 cores), covering both default
   process group (group=None) and explicit full-world subgroup (dist.new_group).
   """
-  rank = int(os.environ["RANK"])
-  world_size = int(os.environ["WORLD_SIZE"])
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
   device = torch.device("tpu", torch.accelerator.current_device_index())
   expected = torch.arange(world_size, dtype=torch.float32)
 
@@ -346,7 +312,7 @@ def _check_dim_collectives(fn: Callable[..., Any], group: Any) -> None:
   )
 
 
-def run_experimental_collectives_on_dim() -> None:
+def _run_experimental_collectives_on_dim() -> None:
   """Tests the experimental collectives on a non-leading dim of a 2D mesh."""
   # Mesh dim 0 groups are strided ({0, 4}, ...), dim 1 groups are contiguous.
   mesh = device_mesh.init_device_mesh("tpu", (2, dist.get_world_size() // 2))
@@ -380,10 +346,10 @@ def run_experimental_collectives_on_dim() -> None:
   assert "scatter_dimension = 1" in stablehlo, stablehlo
 
 
-def run_gather_scalar() -> None:
+def _run_gather_scalar() -> None:
   """Tests gather on scalar input."""
-  rank = int(os.environ["RANK"])
-  world_size = int(os.environ["WORLD_SIZE"])
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
   dst = 0
   tensor = torch.tensor(rank, device="tpu", dtype=torch.float32)
   if rank == dst:
@@ -403,10 +369,10 @@ def run_gather_scalar() -> None:
       )
 
 
-def run_gather_tensor() -> None:
+def _run_gather_tensor() -> None:
   """Tests gather on tensor input."""
-  rank = int(os.environ["RANK"])
-  world_size = int(os.environ["WORLD_SIZE"])
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
   dst = 0
   tensor = torch.tensor([rank, rank], device="tpu", dtype=torch.float32)
   if rank == dst:
@@ -426,14 +392,14 @@ def run_gather_tensor() -> None:
       )
 
 
-def run_gather_with_root_subset_use() -> None:
+def _run_gather_with_root_subset_use() -> None:
   """Tests gather when only a subset of outputs is used on the root rank.
 
   This test verifies that gather does not hang when only a subset of output
   tensors are used on the root rank, matching eager PyTorch behavior.
   """
-  rank = int(os.environ["RANK"])
-  world_size = int(os.environ["WORLD_SIZE"])
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
   dst = 0
   tensor = torch.tensor([rank, rank], device="tpu", dtype=torch.float32)
   if rank == dst:
@@ -451,10 +417,10 @@ def run_gather_with_root_subset_use() -> None:
     res.cpu()
 
 
-def run_reduce_scatter() -> None:
+def _run_reduce_scatter() -> None:
   """Tests reduce-scatter functionality."""
-  rank = int(os.environ["RANK"])
-  world_size = int(os.environ["WORLD_SIZE"])
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
   inputs = []
   for i in range(world_size):
     inputs.append(
@@ -474,21 +440,19 @@ def run_reduce_scatter() -> None:
   output_cpu = output.cpu()
   logging.info("reduce_scatter output (rank %d): %s", rank, output_cpu)
 
-  sum_r = float(sum(range(world_size)))
-  sum_r2 = float(sum(i**2 for i in range(world_size)))
   expected = torch.tensor([
       [world_size, rank * world_size, rank**2 * world_size],
-      [sum_r, sum_r2, rank * sum_r],
+      [28.0, 140.0, rank * 28.0],
   ])
 
   logging.info("reduce_scatter expected (rank %d): %s", rank, expected)
   utils.assert_close(output_cpu, expected)
 
 
-def run_reduce_scatter_tensor_stack() -> None:
+def _run_reduce_scatter_tensor_stack() -> None:
   """Tests reduce_scatter_tensor (in stack input mode) functionality."""
-  rank = int(os.environ["RANK"])
-  world_size = int(os.environ["WORLD_SIZE"])
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
 
   # We run a [world_size, world_size, 3, 4, 5] --> [3, 4, 5] reduce-scatter.
   # Construct input tensors for all ranks (each unreduced, full-size) on CPU:
@@ -514,10 +478,10 @@ def run_reduce_scatter_tensor_stack() -> None:
   utils.assert_close(output_cpu, expected, rtol=1e-4, atol=1e-6)
 
 
-def run_reduce_scatter_tensor_concat() -> None:
+def _run_reduce_scatter_tensor_concat() -> None:
   """Tests reduce_scatter_tensor (in concat input mode) functionality."""
-  rank = int(os.environ["RANK"])
-  world_size = int(os.environ["WORLD_SIZE"])
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
 
   # We run a [world_size*3, 4, 5] --> [3, 4, 5] reduce-scatter operation.
   # Construct input tensors for all ranks (each unreduced, full-size) on CPU:
@@ -543,10 +507,10 @@ def run_reduce_scatter_tensor_concat() -> None:
   utils.assert_close(output_cpu, expected, rtol=1e-4, atol=1e-6)
 
 
-def run_reduce_scatter_tensor_avg() -> None:
+def _run_reduce_scatter_tensor_avg() -> None:
   """Tests reduce_scatter_tensor with an AVG reduction op."""
-  rank = int(os.environ["RANK"])
-  world_size = int(os.environ["WORLD_SIZE"])
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
 
   # We run a [world_size*3, 4] --> [3, 4] reduce-scatter operation.
   # Construct input tensors for all ranks (each unreduced, full-size) on CPU:
@@ -566,10 +530,10 @@ def run_reduce_scatter_tensor_avg() -> None:
   utils.assert_close(output_cpu, expected)
 
 
-def run_broadcast() -> None:
+def _run_broadcast() -> None:
   """Tests collective broadcast functionality."""
-  rank = int(os.environ["RANK"])
-  world_size = int(os.environ["WORLD_SIZE"])
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
 
   # Try broadcasting from all possible src ranks:
   for src_rank in range(world_size):
@@ -584,9 +548,9 @@ def run_broadcast() -> None:
     utils.assert_close(x.cpu(), expected)
 
 
-def run_broadcast_objects() -> None:
+def _run_broadcast_objects() -> None:
   """Tests broadcast_object_list collective."""
-  rank = int(os.environ["RANK"])
+  rank = dist.get_rank()
   source_objects = [17, "foo", {"key": False}]
   num_objects = len(source_objects)
   objects: list[Any | None]
@@ -600,11 +564,10 @@ def run_broadcast_objects() -> None:
   ), f"Rank {rank}: expected object list {source_objects}, got {objects}"
 
 
-def run_send_recv() -> None:
+def _run_send_recv() -> None:
   """Tests point-to-point blocking send and recv functionality."""
-  dist.init_process_group(backend="tpu_dist")
-  rank = int(os.environ["RANK"])
-  world_size = int(os.environ["WORLD_SIZE"])
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
 
   if world_size < 2:
     return
@@ -622,11 +585,10 @@ def run_send_recv() -> None:
     utils.assert_close(recv_buffer.cpu(), expected)
 
 
-def run_isend_irecv() -> None:
+def _run_isend_irecv() -> None:
   """Tests point-to-point asynchronous isend and irecv functionality."""
-  dist.init_process_group(backend="tpu_dist")
-  rank = int(os.environ["RANK"])
-  world_size = int(os.environ["WORLD_SIZE"])
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
 
   if world_size < 2:
     return
@@ -654,10 +616,8 @@ def run_isend_irecv() -> None:
     send_work.wait()
 
 
-def run_send_recv_same_tag():
+def _run_send_recv_same_tag() -> None:
   """Tests send and recv with the same tag for different src and dst ranks."""
-  dist.init_process_group(backend="tpu_dist")
-
   rank = dist.get_rank()
   world_size = dist.get_world_size()
   if world_size < 2:
@@ -683,10 +643,10 @@ def run_send_recv_same_tag():
       utils.assert_close(recv_buffer.cpu(), expected)
 
 
-def run_collectives_with_non_uniform_deferred_ops() -> None:
+def _run_collectives_with_non_uniform_deferred_ops() -> None:
   """Tests collective functionality with non-uniform (per-rank) deferred ops."""
-  rank = int(os.environ["RANK"])
-  world_size = int(os.environ["WORLD_SIZE"])
+  rank = dist.get_rank()
+  world_size = dist.get_world_size()
 
   # Create input tensors with deferred ops on some (but not all) of the ranks.
   def make_input():
@@ -723,53 +683,9 @@ def run_collectives_with_non_uniform_deferred_ops() -> None:
   )
 
 
-def run_barrier(async_op: bool) -> None:
-  """Tests barrier functionality."""
-  torch.distributed.barrier(async_op=async_op)
-
-
-def run_barrier_with_device_ids(async_op: bool) -> None:
-  """Tests barrier accepts device_ids naming this process's own device."""
-  torch.distributed.barrier(
-      device_ids=[torch.accelerator.current_device_index()], async_op=async_op
-  )
-
-
-def run_barrier_rejects_foreign_device_ids() -> None:
-  """Tests barrier rejects device ids this process does not own."""
-  # A process addresses a single TPU, so only [0] is meaningful. When the first
-  # device id is out of bounds (e.g. [1]), c10d::ProcessGroup::barrier fails
-  # while allocating the dispatch tensor on tpu:1. When the first id is 0 but
-  # multiple ids are given, ProcessGroupTpu::barrier rejects device_ids.
-  for device_ids, exc_type, msg_regex in (
-      (
-          [1],
-          RuntimeError,
-          r"device index 1 is out of bounds of the number of addressable"
-          r" devices 1",
-      ),
-      (
-          [0, 0],
-          NotImplementedError,
-          r"device_ids in barrier options is not supported, except "
-          r"device_ids=\[0\] which names this process's own device",
-      ),
-      (
-          [0, 1],
-          NotImplementedError,
-          r"device_ids in barrier options is not supported, except "
-          r"device_ids=\[0\] which names this process's own device",
-      ),
-  ):
-    with absltest.TestCase().assertRaisesRegex(  # ABSLTEST_OK=just using helper
-        exc_type, msg_regex
-    ):
-      torch.distributed.barrier(device_ids=device_ids)
-
-
-def run_barrier_blocking(async_op: bool) -> None:
+def _run_barrier_blocking(async_op: bool) -> None:
   """Tests barrier functionality blocks."""
-  rank = int(os.environ["RANK"])
+  rank = dist.get_rank()
 
   # Ensure all ranks start reasonably close to each other.
   torch.distributed.barrier()
@@ -811,8 +727,9 @@ def run_barrier_blocking(async_op: bool) -> None:
       )
 
 
-def run_rank_variable_dead_collective_without_hang(world_size: int) -> None:
+def _run_rank_variable_dead_collective_without_hang(world_size: int) -> None:
   """Tests that process exits on some ranks will not cause hangs on others."""
+  dist.init_process_group(backend="tpu_dist")
   rank = int(os.environ["RANK"])
   input_tensor = torch.ones(1, dtype=torch.float32, device="cpu").to(
       device="tpu"
@@ -829,320 +746,221 @@ def run_rank_variable_dead_collective_without_hang(world_size: int) -> None:
   utils.assert_close(result, expected)
 
 
-class CollectiveOpsTest(seed_test_utils.MultiProcessRepeatableTest):
-  _world_size = distributed_utils.get_tpu_device_count()
+class CollectiveOpsTest(continuous_test_utils.TpuMultiProcContinuousTest):
+  world_size = int(
+      os.environ.get("WORLD_SIZE", hardware.get_tpu_device_count() or 8)
+  )
 
-  def test_all_reduce_sum(self):
-    w = self._world_size
-    distributed_utils.dist_run(
-        nproc_per_node=w,
-        fn=_test_wrapper,
-        test_fn=run_all_reduce,
-        input_fn=_all_reduce_input_fn_rank,
-        reduce_op=torch.distributed.ReduceOp.SUM,
-        expected=[
-            0.0,
-            float(w),
-            float(sum(range(w))),
-            float(sum(r**2 for r in range(w))),
-        ],
-        dtype=torch.float32,
-    )
-
-  def test_all_reduce_avg(self):
-    w = self._world_size
-    distributed_utils.dist_run(
-        nproc_per_node=w,
-        fn=_test_wrapper,
-        test_fn=run_all_reduce,
-        input_fn=_all_reduce_input_fn_rank,
-        reduce_op=torch.distributed.ReduceOp.AVG,
-        expected=[
-            0.0,
-            1.0,
-            sum(range(w)) / w,
-            sum(r**2 for r in range(w)) / w,
-        ],
-        dtype=torch.float32,
-    )
-
-  def test_all_reduce_product(self):
-    distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
-        fn=_test_wrapper,
-        test_fn=run_all_reduce,
-        input_fn=_all_reduce_input_fn_rank,
-        reduce_op=torch.distributed.ReduceOp.PRODUCT,
-        expected=[0.0, 1.0, 0.0, 0.0],
-        dtype=torch.float32,
-    )
-
-  def test_all_reduce_min(self):
-    distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
-        fn=_test_wrapper,
-        test_fn=run_all_reduce,
-        input_fn=_all_reduce_input_fn_rank,
-        reduce_op=torch.distributed.ReduceOp.MIN,
-        expected=[0.0, 1.0, 0.0, 0.0],
-        dtype=torch.float32,
-    )
-
-  def test_all_reduce_max(self):
-    w = self._world_size
-    distributed_utils.dist_run(
-        nproc_per_node=w,
-        fn=_test_wrapper,
-        test_fn=run_all_reduce,
-        input_fn=_all_reduce_input_fn_rank,
-        reduce_op=torch.distributed.ReduceOp.MAX,
-        expected=[0.0, 1.0, float(w - 1), float((w - 1) ** 2)],
-        dtype=torch.float32,
-    )
-
-  def test_all_reduce_band(self):
-    distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
-        fn=_test_wrapper,
-        test_fn=run_all_reduce,
-        input_fn=_all_reduce_bitwise_input_fn,
-        reduce_op=torch.distributed.ReduceOp.BAND,
-        expected=[0, 0, 255],
-        dtype=torch.int32,
-    )
-
-  def test_all_reduce_bor(self):
-    w = self._world_size
-    bor_val2 = 0
-    for r in range(w):
-      bor_val2 |= r * 3
-    distributed_utils.dist_run(
-        nproc_per_node=w,
-        fn=_test_wrapper,
-        test_fn=run_all_reduce,
-        input_fn=_all_reduce_bitwise_input_fn,
-        reduce_op=torch.distributed.ReduceOp.BOR,
-        expected=[(1 << w) - 1, bor_val2, 255],
-        dtype=torch.int32,
+  @parameterized.named_parameters(
+      (
+          "sum",
+          _all_reduce_input_fn_rank,
+          torch.distributed.ReduceOp.SUM,
+          [0.0, 8.0, 28.0, 140.0],
+          torch.float32,
+      ),
+      (
+          "avg",
+          _all_reduce_input_fn_rank,
+          torch.distributed.ReduceOp.AVG,
+          [0.0, 1.0, 3.5, 17.5],
+          torch.float32,
+      ),
+      (
+          "product",
+          _all_reduce_input_fn_rank,
+          torch.distributed.ReduceOp.PRODUCT,
+          [0.0, 1.0, 0.0, 0.0],
+          torch.float32,
+      ),
+      (
+          "min",
+          _all_reduce_input_fn_rank,
+          torch.distributed.ReduceOp.MIN,
+          [0.0, 1.0, 0.0, 0.0],
+          torch.float32,
+      ),
+      (
+          "max",
+          _all_reduce_input_fn_rank,
+          torch.distributed.ReduceOp.MAX,
+          [0.0, 1.0, 7.0, 49.0],
+          torch.float32,
+      ),
+      (
+          "band",
+          _all_reduce_bitwise_input_fn,
+          torch.distributed.ReduceOp.BAND,
+          [0, 0, 255],
+          torch.int32,
+      ),
+      (
+          "bor",
+          _all_reduce_bitwise_input_fn,
+          torch.distributed.ReduceOp.BOR,
+          [255, 31, 255],
+          torch.int32,
+      ),
+      (
+          "bxor",
+          _all_reduce_bitwise_input_fn,
+          torch.distributed.ReduceOp.BXOR,
+          [0, 8, 0],
+          torch.int32,
+      ),
+      (
+          "sum_fixed_values",
+          _all_reduce_input_fn_const,
+          torch.distributed.ReduceOp.SUM,
+          [8, 16, 24, 32],
+          torch.float32,
+      ),
+      (
+          "product_fixed_values",
+          _all_reduce_input_fn_const,
+          torch.distributed.ReduceOp.PRODUCT,
+          [1.0, 256.0, 6561.0, 65536.0],
+          torch.float32,
+      ),
+  )
+  def test_all_reduce(
+      self,
+      input_fn: Callable[[int, int], List[Union[int, float]]],
+      reduce_op: torch.distributed.ReduceOp,
+      expected: List[Union[int, float]],
+      dtype: torch.dtype,
+  ) -> None:
+    _run_all_reduce(
+        input_fn=input_fn,
+        reduce_op=reduce_op,
+        expected=expected,
+        dtype=dtype,
     )
 
-  def test_all_reduce_bxor(self):
-    w = self._world_size
-    bxor_val2 = 0
-    for r in range(w):
-      bxor_val2 ^= r * 3
-    distributed_utils.dist_run(
-        nproc_per_node=w,
-        fn=_test_wrapper,
-        test_fn=run_all_reduce,
-        input_fn=_all_reduce_bitwise_input_fn,
-        reduce_op=torch.distributed.ReduceOp.BXOR,
-        expected=[0, bxor_val2, 0 if w % 2 == 0 else 255],
-        dtype=torch.int32,
+  def test_all_gather(self) -> None:
+    _run_all_gather()
+
+  def test_all_gather_scalar(self) -> None:
+    _run_all_gather_scalar()
+
+  def test_all_gather_tensor_concat(self) -> None:
+    _run_all_gather_tensor_concat()
+
+  def test_all_gather_tensor_scalar(self) -> None:
+    _run_all_gather_tensor_scalar()
+
+  def test_all_gather_tensor_stack(self) -> None:
+    _run_all_gather_tensor_stack()
+
+  def test_all_gather_rank_order(self) -> None:
+    _run_all_gather_rank_order()
+
+  def test_experimental_collectives_on_dim(self) -> None:
+    _run_experimental_collectives_on_dim()
+
+  def test_gather_scalar(self) -> None:
+    _run_gather_scalar()
+
+  def test_gather_tensor(self) -> None:
+    _run_gather_tensor()
+
+  def test_gather_with_root_subset_use(self) -> None:
+    _run_gather_with_root_subset_use()
+
+  def test_reduce_scatter(self) -> None:
+    _run_reduce_scatter()
+
+  def test_reduce_scatter_tensor_stack(self) -> None:
+    _run_reduce_scatter_tensor_stack()
+
+  def test_reduce_scatter_tensor_concat(self) -> None:
+    _run_reduce_scatter_tensor_concat()
+
+  def test_reduce_scatter_tensor_avg(self) -> None:
+    _run_reduce_scatter_tensor_avg()
+
+  def test_broadcast(self) -> None:
+    _run_broadcast()
+
+  def test_broadcast_objects(self) -> None:
+    _run_broadcast_objects()
+
+  def test_collectives_with_non_uniform_deferred_ops(self) -> None:
+    _run_collectives_with_non_uniform_deferred_ops()
+
+  def test_barrier(self) -> None:
+    torch.distributed.barrier(async_op=False)
+    torch.distributed.barrier(async_op=True)
+
+  def test_barrier_with_device_ids(self) -> None:
+    torch.distributed.barrier(
+        device_ids=[torch.accelerator.current_device_index()], async_op=False
+    )
+    torch.distributed.barrier(
+        device_ids=[torch.accelerator.current_device_index()], async_op=True
     )
 
-  def test_all_reduce_sum_fixed_values(self):
-    w = self._world_size
-    distributed_utils.dist_run(
-        nproc_per_node=w,
-        fn=_test_wrapper,
-        test_fn=run_all_reduce,
-        input_fn=_all_reduce_input_fn_const,
-        reduce_op=torch.distributed.ReduceOp.SUM,
-        expected=[1 * w, 2 * w, 3 * w, 4 * w],
-        dtype=torch.float32,
-    )
-
-  def test_all_reduce_product_fixed_values(self):
-    w = self._world_size
-    distributed_utils.dist_run(
-        nproc_per_node=w,
-        fn=_test_wrapper,
-        test_fn=run_all_reduce,
-        input_fn=_all_reduce_input_fn_const,
-        reduce_op=torch.distributed.ReduceOp.PRODUCT,
-        expected=[1.0, float(2**w), float(3**w), float(4**w)],
-        dtype=torch.float32,
-    )
-
-  def test_all_gather(self):
-    distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
-        fn=_test_wrapper,
-        test_fn=run_all_gather,
-    )
-
-  def test_all_gather_scalar(self):
-    distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
-        fn=_test_wrapper,
-        test_fn=run_all_gather_scalar,
-    )
-
-  def test_all_gather_tensor_concat(self):
-    distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
-        fn=_test_wrapper,
-        test_fn=run_all_gather_tensor_concat,
-    )
-
-  def test_all_gather_tensor_scalar(self):
-    distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
-        fn=_test_wrapper,
-        test_fn=run_all_gather_tensor_scalar,
-    )
-
-  def test_all_gather_tensor_stack(self):
-    distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
-        fn=_test_wrapper,
-        test_fn=run_all_gather_tensor_stack,
-    )
-
-  def test_all_gather_rank_order(self):
-    distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
-        fn=_test_wrapper,
-        test_fn=run_all_gather_rank_order,
-    )
-
-  def test_experimental_collectives_on_dim(self):
-    distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
-        fn=_test_wrapper,
-        test_fn=run_experimental_collectives_on_dim,
-    )
-
-  def test_gather_scalar(self):
-    distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
-        fn=_test_wrapper,
-        test_fn=run_gather_scalar,
-    )
-
-  def test_gather_tensor(self):
-    distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
-        fn=_test_wrapper,
-        test_fn=run_gather_tensor,
-    )
-
-  def test_gather_with_root_subset_use(self):
-    distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
-        fn=_test_wrapper,
-        test_fn=run_gather_with_root_subset_use,
-    )
-
-  def test_reduce_scatter(self):
-    distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
-        fn=_test_wrapper,
-        test_fn=run_reduce_scatter,
-    )
-
-  def test_reduce_scatter_tensor_stack(self):
-    distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
-        fn=_test_wrapper,
-        test_fn=run_reduce_scatter_tensor_stack,
-    )
-
-  def test_reduce_scatter_tensor_concat(self):
-    distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
-        fn=_test_wrapper,
-        test_fn=run_reduce_scatter_tensor_concat,
-    )
-
-  def test_reduce_scatter_tensor_avg(self):
-    distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
-        fn=_test_wrapper,
-        test_fn=run_reduce_scatter_tensor_avg,
-    )
-
-  def test_broadcast(self):
-    distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
-        fn=_test_wrapper,
-        test_fn=run_broadcast,
-    )
-
-  def test_broadcast_objects(self):
-    distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
-        fn=_test_wrapper,
-        test_fn=run_broadcast_objects,
-    )
-
-  def test_collectives_with_non_uniform_deferred_ops(self):
-    distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
-        fn=_test_wrapper,
-        test_fn=run_collectives_with_non_uniform_deferred_ops,
-    )
-
-  def test_barrier(self):
-    distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
-        fn=_test_wrapper,
-        test_fn=run_barrier,
-        async_op=False,
-    )
-    distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
-        fn=_test_wrapper,
-        test_fn=run_barrier,
-        async_op=True,
-    )
+  def test_barrier_rejects_foreign_device_ids(self) -> None:
+    # A process addresses a single TPU, so only [0] is meaningful. When the
+    # first device id is out of bounds (e.g. [1]), c10d::ProcessGroup::barrier
+    # fails while allocating the dispatch tensor on tpu:1. When the first id is
+    # 0 but multiple ids are given, ProcessGroupTpu::barrier rejects device_ids.
+    for device_ids, exc_type, msg_regex in (
+        (
+            [1],
+            RuntimeError,
+            r"device index 1 is out of bounds of the number of addressable"
+            r" devices 1",
+        ),
+        (
+            [0, 0],
+            NotImplementedError,
+            r"device_ids in barrier options is not supported, except "
+            r"device_ids=\[0\] which names this process's own device",
+        ),
+        (
+            [0, 1],
+            NotImplementedError,
+            r"device_ids in barrier options is not supported, except "
+            r"device_ids=\[0\] which names this process's own device",
+        ),
+    ):
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=just using helper
+          exc_type, msg_regex
+      ):
+        torch.distributed.barrier(device_ids=device_ids)
 
   @parameterized.named_parameters(
       ("sync", False),
       ("async", True),
   )
-  def test_barrier_with_device_ids(self, async_op: bool):
-    distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
-        fn=_test_wrapper,
-        test_fn=run_barrier_with_device_ids,
-        async_op=async_op,
-    )
-
-  def test_barrier_rejects_foreign_device_ids(self):
-    distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
-        fn=_test_wrapper,
-        test_fn=run_barrier_rejects_foreign_device_ids,
-    )
+  def test_barrier_blocking(self, async_op: bool) -> None:
+    _run_barrier_blocking(async_op=async_op)
 
   @absltest.skipIf(_IS_TPU_V7, _SKIP_P2P_ON_TPU_V7_REASON)
-  def test_send_recv(self):
-    distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
-        fn=run_send_recv,
-    )
+  def test_send_recv(self) -> None:
+    _run_send_recv()
 
   @absltest.skipIf(_IS_TPU_V7, _SKIP_P2P_ON_TPU_V7_REASON)
-  def test_isend_irecv(self):
-    distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
-        fn=run_isend_irecv,
-    )
+  def test_isend_irecv(self) -> None:
+    _run_isend_irecv()
 
   @absltest.skipIf(_IS_TPU_V7, _SKIP_P2P_ON_TPU_V7_REASON)
-  def test_send_recv_same_tag(self):
-    distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
-        fn=run_send_recv_same_tag,
-    )
+  def test_send_recv_same_tag(self) -> None:
+    _run_send_recv_same_tag()
 
-  def test_rank_variable_dead_collective_without_hang(self):
+
+class ProcessExitTest(seed_test_utils.MultiProcessRepeatableTest):
+  """Tests that need each worker process to exit at the end of the test."""
+
+  _world_size: Final[int] = int(
+      os.environ.get("WORLD_SIZE", hardware.get_tpu_device_count() or 8)
+  )
+
+  def test_rank_variable_dead_collective_without_hang(self) -> None:
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
-        fn=_test_wrapper,
-        test_fn=run_rank_variable_dead_collective_without_hang,
+        fn=_run_rank_variable_dead_collective_without_hang,
         world_size=self._world_size,
     )
 
