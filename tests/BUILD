@@ -391,6 +391,7 @@ torch_tpu_py_library(
         ":oss_utils",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:hardware",
     ],
 )
 

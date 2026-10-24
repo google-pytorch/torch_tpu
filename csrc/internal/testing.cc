@@ -143,6 +143,12 @@ void EmitTtWarnOnce(WarningCategory category, const std::string& msg) {
   END_HANDLE_TH_ERRORS_PYBIND
 }
 
+bool PyIsMultiDevicePerChip(std::string_view accelerator_type) {
+  TT_ASSIGN_OR_THROW(const bool is_multi_device,
+                     IsMultiDevicePerChipAcceleratorType(accelerator_type));
+  return is_multi_device;
+}
+
 }  // namespace
 
 // Internal testing utilities.
@@ -210,6 +216,12 @@ TT_PYBIND11_MODULE(testing, m) {
       "has_tpu_device_nodes", []() -> bool { return HasTpuDeviceNodes(); },
       "Returns whether a device node through which the TPU runtime could "
       "reach a TPU exists at the default paths.");
+  m.def("is_multi_device_per_chip_accelerator_type", &PyIsMultiDevicePerChip,
+        py::arg("accelerator_type"),
+        "Returns whether the given accelerator type has multiple devices per "
+        "chip without megacore. Raises RuntimeError if `accelerator_type` is "
+        "not in '<generation>-<device_count>' format or has an unrecognized "
+        "generation.");
   m.def(
       "pjrt_init_attempted",
       []() -> bool { return PjrtBackend::GetInstance().InitAttempted(); },

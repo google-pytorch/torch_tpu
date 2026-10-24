@@ -47,6 +47,7 @@ import torch
 import torch_tpu  # pylint: disable=unused-import  # noqa: F401
 from torch.testing._internal import common_device_type  # pylint: disable=g-bad-import-order
 from torch.testing._internal import common_utils
+from torch_tpu._internal.device import _device_ops_backend
 from torch_tpu._internal.utils import annotations
 from tests.torch import torch_test_configs
 
@@ -69,6 +70,14 @@ def _set_private_use1_test_configs(test_module: str) -> None:
         "Ensure `import torch_tpu` precedes any imports from "
         "`torch.testing._internal` in the test runner."
     )
+
+  # Initialize the TPU runtime before any test is instantiated.
+  # `instantiate_device_type_tests` calls `get_all_devices()` for
+  # `@deviceCountAtLeast` tests at import time, i.e. via `device_count()`. Before
+  # initialization, `device_count()` counts physical TPU PCI devices, which can
+  # exceed the devices addressable by this process (b/577219302). Initializing
+  # first makes it return the addressable device count.
+  _device_ops_backend._get_device_count()  # pylint: disable=protected-access
 
   # Resolve the base's device type ("tpu") up front so every generated class
   # has "TPU" suffix.

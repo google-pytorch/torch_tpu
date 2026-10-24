@@ -15,6 +15,7 @@
 #ifndef TORCH_TPU_CSRC_COMMON_DEVICE_UTILS_H_
 #define TORCH_TPU_CSRC_COMMON_DEVICE_UTILS_H_
 
+#include <string>
 #include <string_view>
 
 #include "absl/strings/numbers.h"
@@ -36,6 +37,15 @@ inline bool IsSingleDeviceSpecified(std::string_view val) {
     return false;
   }
   return true;
+}
+
+// Returns `configured_devices` if it specifies a single device index, or
+// `default_device` otherwise.
+inline std::string SelectSingleDevice(std::string_view configured_devices,
+                                      std::string_view default_device) {
+  return IsSingleDeviceSpecified(configured_devices)
+             ? std::string(configured_devices)
+             : std::string(default_device);
 }
 
 }  // namespace torch_tpu

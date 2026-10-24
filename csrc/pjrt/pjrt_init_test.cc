@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#include <unistd.h>
+
 #include <cstdlib>
 #include <string>
 
@@ -32,6 +34,7 @@ namespace torch_tpu {
 namespace {
 
 using absl_testing::StatusIs;
+using testing::ExitedWithCode;
 using testing::HasSubstr;
 
 class PjRtInitTest : public testing::Test {
@@ -43,6 +46,48 @@ class PjRtInitTest : public testing::Test {
     PjrtBackend::GetInstance().Shutdown();
   }
 };
+
+// Initializes the PJRT TPU backend in single-device mode, verifies that the
+// runtime sees 1 addressable and 1 global device, and shuts down the backend.
+void VerifySingleDevicePjRtInit() {
+  PjrtBackend::GetInstance().SetPjRtInitializationOptions(
+      {.device_type = "tpu"});
+  ASSERT_EQ(PjrtBackend::GetInstance().EnsureInitialized(), absl::OkStatus());
+  TT_ASSERT_OK_AND_ASSIGN(xla::PjRtClient * client,
+                          PjrtBackend::GetInstance().GetClient());
+  ASSERT_NE(client, nullptr);
+  EXPECT_EQ(client->addressable_device_count(), 1);
+  TT_ASSERT_OK_AND_ASSIGN(int device_count,
+                          PjrtBackend::GetInstance().GetGlobalDeviceCount());
+  EXPECT_EQ(device_count, 1);
+  PjrtBackend::GetInstance().Shutdown();
+}
+
+TEST(PjRtInitDeathTest,
+     EnsureInitializedSucceedsWhenWorldSizeIsOneWithoutDistEnvVars) {
+  EXPECT_EXIT(
+      {
+        SetEnv<kWorldSizeEnvVar>("1");
+        unsetenv(kTorchTpuSlicebuilderAddressesEnvVar);
+        unsetenv(kTorchTpuTopologyEnvVar);
+        VerifySingleDevicePjRtInit();
+        _exit(testing::Test::HasFailure() ? 1 : 0);
+      },
+      ExitedWithCode(0), "");
+}
+
+TEST(PjRtInitDeathTest,
+     EnsureInitializedSucceedsWhenWorldSizeIsUnsetWithoutDistEnvVars) {
+  EXPECT_EXIT(
+      {
+        unsetenv(kWorldSizeEnvVar);
+        unsetenv(kTorchTpuSlicebuilderAddressesEnvVar);
+        unsetenv(kTorchTpuTopologyEnvVar);
+        VerifySingleDevicePjRtInit();
+        _exit(testing::Test::HasFailure() ? 1 : 0);
+      },
+      ExitedWithCode(0), "");
+}
 
 TEST_F(PjRtInitTest, InitializePjRtIsLazy) {
   ASSERT_FALSE(PjrtBackend::GetInstance().IsInitialized());

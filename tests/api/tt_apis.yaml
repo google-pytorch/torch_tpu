@@ -186,6 +186,7 @@ torch.tpu.synchronize: {category: Public Python API, defined_in: runtime, prefer
 torch.tpu.topology_aware_mesh: {category: Public Python API, defined_in: runtime, deprecated_in: 0.2.0, stage: Deprecated}
 
 # --- Environment Variable ---
+ACCELERATOR_TYPE: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
 JOB_COMPLETION_INDEX: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
 LIBTPU_INIT_ARGS: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Stable}
 LOCAL_RANK: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Stable}
@@ -226,6 +227,7 @@ TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT: {category: Environment Variable, defined
 TORCH_TPU_TOPOLOGY: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
 TORCH_TPU_XPROF_SESSION_ID: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
 TORCH_TRACE: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Experimental}
+TPU_ACCELERATOR_TYPE: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}
 TPU_PREMAPPED_BUFFER_SIZE: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Stable}
 TPU_VISIBLE_DEVICES: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Stable}
 TPU_WORKER_HOSTNAMES: {category: Environment Variable, defined_in: csrc/common/env_vars.h, stage: Internal}

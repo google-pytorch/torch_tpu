@@ -27,7 +27,8 @@ namespace torch_tpu {
 absl::Status InitializeDistributedEnvironment(
     const DistributedWorkerConfiguration& config);
 
-// Configures the local environment for single-device execution.
+// Configures the local environment for single-device execution, including
+// single-device visibility and topology/bounds settings.
 absl::Status InitializeSingleDeviceEnvironment();
 
 // Returns whether the TPU device paths that libtpu should use are configured

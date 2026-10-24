@@ -18,6 +18,7 @@
 
 #include <cstddef>
 #include <cstdlib>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -25,6 +26,7 @@
 #include "absl/algorithm/container.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
@@ -33,6 +35,7 @@
 #include "csrc/common/device_utils.h"
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/tpu_hardware.h"
 #include "csrc/distributed/slicebuilder/discovery.h"
 
 namespace torch_tpu {
@@ -176,6 +179,67 @@ void EnsureUndefokFlag(std::string_view flag_name,
   });
 }
 
+// Returns the accelerator type from TPU_ACCELERATOR_TYPE or ACCELERATOR_TYPE
+// (e.g., "v4-8", "v5litepod-4", "v7x-8"), or a NotFoundError if neither is
+// set.
+absl::StatusOr<std::string> GetAcceleratorTypeFromEnv() {
+  for (const std::optional<std::string>& env_val :
+       {GetEnvOnce<kTpuAcceleratorTypeEnvVar>(),
+        GetEnvOnce<kAcceleratorTypeEnvVar>()}) {
+    if (env_val.has_value() && !env_val->empty()) {
+      return *env_val;
+    }
+  }
+  return TT_ERROR(  // ERROR_COV_INFEASIBLE=Caught by caller.
+             error::kNotFound)
+         << "Neither " << kTpuAcceleratorTypeEnvVar << " nor "
+         << kAcceleratorTypeEnvVar << " is set.";
+}
+
+// Returns the single-device TPU bounds string ("1,1,1,1" or "1,1,1") for the
+// accelerator type configured in the environment.
+// TODO: Consolidate the OSS and Google3 multi-device-per-chip detection and
+// single-device bounds implementations.
+absl::StatusOr<std::string> GetSingleDeviceTpuBoundsString() {
+  const absl::StatusOr<std::string> accelerator_type =
+      GetAcceleratorTypeFromEnv();
+  if (absl::IsNotFound(accelerator_type.status())) {
+    return "1,1,1";
+  }
+  TT_RETURN_IF_ERROR(accelerator_type.status());
+  TT_ASSIGN_OR_RETURN(const bool is_multi_device_per_chip,
+                      IsMultiDevicePerChipAcceleratorType(*accelerator_type));
+  return is_multi_device_per_chip ? "1,1,1,1" : "1,1,1";
+}
+
+// TPU_VISIBLE_DEVICES is our source of truth for device visibility.
+// Because libtpu prioritizes TPU_VISIBLE_CHIPS over TPU_VISIBLE_DEVICES when
+// non-empty, we explicitly overwrite TPU_VISIBLE_CHIPS to match
+// TPU_VISIBLE_DEVICES so that external settings do not override device
+// selection.
+void SelectVisibleDevice(std::string_view default_dev) {
+  const std::optional<std::string>& visible_devices_env =
+      GetEnvOnce<kTpuVisibleDevicesEnvVar>();
+  const std::string target_dev =
+      SelectSingleDevice(visible_devices_env.value_or(""), default_dev);
+  SetEnv<kTpuVisibleDevicesEnvVar>(target_dev);
+  SetEnv<kTpuVisibleChipsEnvVar>(target_dev);
+}
+
+// Sets the libtpu host/process bounds environment variables and enables
+// concurrent libtpu loads across processes on the same host.
+void SetTpuBoundsEnv(const std::string& host_bounds,
+                     const std::string& chips_bounds) {
+  SetEnv<kTpuHostBoundsEnvVar>(host_bounds);
+  SetEnv<kTpuChipsPerHostBoundsEnvVar>(chips_bounds);
+  SetEnv<kTpuProcessBoundsEnvVar>(host_bounds);
+  SetEnv<kTpuChipsPerProcessBoundsEnvVar>(chips_bounds);
+
+  // Avoid multi-process libtpu lock file collisions across distributed workers
+  // or independent single-device processes on the same host, see b/487769788.
+  SetEnv<kAllowMultipleLibtpuLoadEnvVar>("1");
+}
+
 }  // namespace
 
 absl::Status InitializeDistributedEnvironment(
@@ -192,28 +256,13 @@ absl::Status InitializeDistributedEnvironment(
   const int slice_rank = config.rank % static_cast<int>(addresses.size());
   SetEnv<kCloudTpuTaskIdEnvVar>(absl::StrCat(slice_rank));
 
-  // TPU_VISIBLE_DEVICES is our source of truth for device visibility.
-  // Because libtpu prioritizes TPU_VISIBLE_CHIPS over TPU_VISIBLE_DEVICES when
-  // non-empty, we explicitly overwrite TPU_VISIBLE_CHIPS to match
-  // TPU_VISIBLE_DEVICES so that external settings do not override device
-  // selection.
-  const auto& visible_devices_env = GetEnvOnce<kTpuVisibleDevicesEnvVar>();
-  const std::string target_dev = (visible_devices_env.has_value() &&
-                                  IsSingleDeviceSpecified(*visible_devices_env))
-                                     ? *visible_devices_env
-                                     : absl::StrCat(config.local_rank);
-  SetEnv<kTpuVisibleDevicesEnvVar>(target_dev);
-  SetEnv<kTpuVisibleChipsEnvVar>(target_dev);
+  SelectVisibleDevice(absl::StrCat(config.local_rank));
 
   const std::vector<std::string> topology_dims =
       absl::StrSplit(config.topology, ',');
   const std::string chips_bounds =
       (topology_dims.size() == 4) ? "1,1,1,1" : "1,1,1";
-
-  SetEnv<kTpuHostBoundsEnvVar>(config.topology);
-  SetEnv<kTpuChipsPerHostBoundsEnvVar>(chips_bounds);
-  SetEnv<kTpuProcessBoundsEnvVar>(config.topology);
-  SetEnv<kTpuChipsPerProcessBoundsEnvVar>(chips_bounds);
+  SetTpuBoundsEnv(config.topology, chips_bounds);
 
   // The free slicebuilder port of this process.
   SetEnv<kTpuProcessPortEnvVar>(config.sb_port);
@@ -227,9 +276,6 @@ absl::Status InitializeDistributedEnvironment(
   // The addresses of all other workers in the slice.
   SetEnv<kTpuProcessAddressesEnvVar>(absl::StrJoin(addresses, ","));
 
-  // Avoid multi-process libtpu lock in GCP init, see b/487769788.
-  SetEnv<kAllowMultipleLibtpuLoadEnvVar>("1");
-
   const std::string libtpu_init_args_str =
       ConfigureLibtpuInitArgs(GetEnvOnce<kLibtpuInitArgsEnvVar>().value_or(""));
   SetEnv<kLibtpuInitArgsEnvVar>(libtpu_init_args_str);
@@ -237,18 +283,10 @@ absl::Status InitializeDistributedEnvironment(
 }
 
 absl::Status InitializeSingleDeviceEnvironment() {
-  // TPU_VISIBLE_DEVICES is our source of truth for device visibility.
-  // Because libtpu prioritizes TPU_VISIBLE_CHIPS over TPU_VISIBLE_DEVICES when
-  // non-empty, we explicitly overwrite TPU_VISIBLE_CHIPS to match
-  // TPU_VISIBLE_DEVICES so that external settings do not override device
-  // selection.
-  const auto& visible_devices_env = GetEnvOnce<kTpuVisibleDevicesEnvVar>();
-  const std::string target_dev = (visible_devices_env.has_value() &&
-                                  IsSingleDeviceSpecified(*visible_devices_env))
-                                     ? *visible_devices_env
-                                     : "0";
-  SetEnv<kTpuVisibleDevicesEnvVar>(target_dev);
-  SetEnv<kTpuVisibleChipsEnvVar>(target_dev);
+  SelectVisibleDevice("0");
+  TT_ASSIGN_OR_RETURN(const std::string bounds,
+                      GetSingleDeviceTpuBoundsString());
+  SetTpuBoundsEnv(bounds, bounds);
   return absl::OkStatus();
 }
 
