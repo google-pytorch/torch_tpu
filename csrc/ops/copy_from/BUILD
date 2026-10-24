@@ -157,7 +157,6 @@ torch_tpu_cc_library(
     srcs = ["copy_common.cc"],
     hdrs = ["copy_common.h"],
     deps = [
-        "//csrc/common:context_states",
         "//csrc/common:dimension_types",
         "//csrc/common:error_utils",
         "//csrc/eager:eager_mode",
@@ -174,7 +173,6 @@ torch_tpu_cc_test(
     requires_libtpu = True,
     deps = [
         ":copy_common",
-        "//csrc/common:context_states",
         "//csrc/common:oss_test_main",
         "//csrc/eager:eager_mode",
     ],

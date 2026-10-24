@@ -22,7 +22,6 @@
 #include "ATen/core/ATen_fwd.h"
 #include "absl/cleanup/cleanup.h"
 #include "absl/types/span.h"
-#include "csrc/common/context_states.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/status_test_utils.h"
 #include "csrc/eager/device_buffer.h"

@@ -214,7 +214,6 @@ torch_tpu_cc_test(
         ":dispatch_scan",
         "//csrc/common:cache_key",
         "//csrc/common:compilation",
-        "//csrc/common:context_states",
         "//csrc/common:dimension_types",
         "//csrc/common:error_utils",
         "//csrc/common:fingerprint_utils",

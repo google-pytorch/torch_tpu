@@ -46,7 +46,6 @@
 #include "c10/util/Optional.h"
 #include "c10/util/intrusive_ptr.h"
 #include "csrc/common/cache_key.h"
-#include "csrc/common/context_states.h"
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/eager/device_buffer.h"

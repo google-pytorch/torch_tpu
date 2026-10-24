@@ -171,7 +171,6 @@ torch_tpu_cc_test(
     srcs = ["op_builder_utils_test.cc"],
     deps = [
         ":op_builder_utils",
-        "//csrc/common:context_states",
         "//csrc/common:dimension_types",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
@@ -377,7 +376,6 @@ torch_tpu_cc_library(
     deps = [
         ":op_names",
         "//csrc/common:cache_key",
-        "//csrc/common:context_states",
         "//csrc/common:error_utils",
         "//csrc/common:reroute_warnings",
         "//csrc/common:thread_pool",

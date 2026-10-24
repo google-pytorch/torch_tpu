@@ -232,7 +232,6 @@ torch_tpu_cc_library(
     srcs = ["error_utils.cc"],
     hdrs = ["error_utils.h"],
     deps = [
-        ":context_states",
         ":device_type",
         ":env_vars",
         ":macro_utils",
@@ -298,7 +297,6 @@ torch_tpu_cc_test(
     srcs = ["error_utils_test.cc"],
     deps = [
         ":cache_key",
-        ":context_states",
         ":env_vars",
         ":error_utils",
         ":status_builder",
@@ -1869,6 +1867,7 @@ torch_tpu_cc_test(
         ":context_manager",
         ":context_states",
         "//csrc/common:oss_test_main",
+        "//csrc/eager:eager_mode",
         "//shims/torch",
         "@com_google_absl//absl/cleanup",
     ],
