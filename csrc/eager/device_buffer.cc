@@ -46,6 +46,7 @@
 #include "csrc/common/shape.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
+#include "csrc/eager/device_assignment.h"
 #include "csrc/eager/eager_mode.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
@@ -380,9 +381,8 @@ absl::StatusOr<std::vector<DeviceBufferRef>> DeviceBufferList::CreateDeferred(
   int64_t num_outputs = output_shapes.size();
 
   const auto eager_mode = GetEagerMode();
-  const bool is_defer_never = IsDeferNeverMode(eager_mode);
 
-  // Runtime validation for in-place buffer donation in DeferNever mode:
+  // Runtime validation for in-place buffer donation in eager mode:
   //
   // In PjRt, buffer donation transfers physical ownership of the underlying
   // device memory buffer to the operation output, consuming and invalidating
@@ -425,8 +425,9 @@ absl::StatusOr<std::vector<DeviceBufferRef>> DeviceBufferList::CreateDeferred(
   //
   // Note: We bypass this check for custom kernels (Pallas), which manage buffer
   // donation explicitly through their compiler/runtime signatures, and for
-  // non-DeferNever modes (where DAG buffer assignment is handled globally).
-  if (is_defer_never && !donated_indices.empty() &&
+  // internal graph-capture modes (where DAG buffer assignment is handled
+  // globally).
+  if (SupportsInplaceBufferDonation(eager_mode) && !donated_indices.empty() &&
       op_name != OpName::kCustomKernel) {
     Indices safe_donated_indices;
     safe_donated_indices.reserve(donated_indices.size());

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for in-place buffer donation in DeferNever eager mode."""
+"""Unit tests for in-place buffer donation in eager modes."""
 
 import gc
 
@@ -156,7 +156,7 @@ class InplaceBufferDonationTest(seed_test_utils.RepeatableTest):
       self.assertLess(extra_mem, 4 * 1024 * 1024)
       self.assertTrue(torch.equal(x.cpu(), torch.full((num_elements,), 2.0)))
 
-  def test_inplace_peak_memory_spikes_without_donation_in_defer_and_fuse(self):
+  def test_inplace_peak_memory_no_spike_in_defer_and_fuse(self):
     with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
       # 16 MB tensor (4M float32 elements)
       num_elements = 4 * 1024 * 1024
@@ -173,14 +173,208 @@ class InplaceBufferDonationTest(seed_test_utils.RepeatableTest):
       base_mem = torch.accelerator.memory_allocated()
 
       x.add_(1.0)
-      _ = x.cpu()  # Force execution in DeferAndFuse
       torch.accelerator.synchronize()
 
       peak_mem = torch.accelerator.max_memory_allocated()
       extra_mem = peak_mem - base_mem
-      # Without buffer donation, a separate 16 MB buffer is allocated for
-      # the output.
-      self.assertGreaterEqual(extra_mem, 12 * 1024 * 1024)
+      # With buffer donation enabled in DeferAndFuse, the 16 MB buffer is reused
+      # in-place without allocating a separate output buffer.
+      self.assertLess(extra_mem, 4 * 1024 * 1024)
+      self.assertTrue(torch.equal(x.cpu(), torch.full((num_elements,), 2.0)))
+
+  def test_inplace_peak_memory_spikes_when_donation_disabled_in_defer_and_fuse(
+      self,
+  ):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      execution_mode.disable_inplace_buffer_donation = True
+      try:
+        # 16 MB tensor (4M float32 elements)
+        num_elements = 4 * 1024 * 1024
+        x = torch.zeros(num_elements, dtype=torch.float32, device=self.device)
+        _ = x.cpu()
+
+        # Warmup to compile and initialize runtime buffers
+        x.add_(1.0)
+        _ = x.cpu()
+        torch.accelerator.synchronize()
+        gc.collect()
+
+        torch.accelerator.reset_peak_memory_stats()
+        base_mem = torch.accelerator.memory_allocated()
+
+        x.add_(1.0)
+        _ = x.cpu()  # Force execution in DeferAndFuse
+        torch.accelerator.synchronize()
+
+        peak_mem = torch.accelerator.max_memory_allocated()
+        extra_mem = peak_mem - base_mem
+        # Without buffer donation, a separate 16 MB buffer is allocated for
+        # the output.
+        self.assertGreaterEqual(extra_mem, 12 * 1024 * 1024)
+      finally:
+        execution_mode.disable_inplace_buffer_donation = False
+
+  def test_fused_inplace_chain_donates_buffer_in_defer_and_fuse(self):
+    """Verifies a deferred chain of in-place ops fuses and donates in DeferAndFuse."""
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      num_elements = 4 * 1024 * 1024  # 16 MB
+      x = torch.zeros(num_elements, dtype=torch.float32, device=self.device)
+      _ = x.cpu()
+
+      # Warmup the fused chain
+      x.add_(1.0)
+      x.mul_(2.0)
+      x.sub_(0.5)
+      torch.accelerator.synchronize()
+      gc.collect()
+
+      x.zero_()
+      torch.accelerator.synchronize()
+      gc.collect()
+
+      old_view = x.view_as(x)
+      torch.accelerator.reset_peak_memory_stats()
+      base_mem = torch.accelerator.memory_allocated()
+
+      x.add_(1.0)
+      x.mul_(2.0)
+      x.sub_(0.5)
+      torch.accelerator.synchronize()
+
+      peak_mem = torch.accelerator.max_memory_allocated()
+      extra_mem = peak_mem - base_mem
+      self.assertLess(extra_mem, 4 * 1024 * 1024)
+      expected = torch.full((num_elements,), 1.5)
+      self.assertTrue(torch.equal(x.cpu(), expected))
+      self.assertTrue(torch.equal(old_view.cpu(), expected))
+
+  def test_view_inplace_and_repeated_loops_donate_in_defer_and_fuse(self):
+    """Verifies view in-place ops, repeated loops, and clone safety in DeferAndFuse."""
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      # 1. Non-zero offset slice in-place donation
+      base = torch.tensor(
+          [10.0, 1.0, 2.0, 3.0], dtype=torch.float32, device=self.device
+      )
+      s = base[1:]
+      s.add_(5.0)
+      s.mul_(2.0)
+      self.assertTrue(
+          torch.equal(base.cpu(), torch.tensor([10.0, 12.0, 14.0, 16.0]))
+      )
+
+      # 2. Non-contiguous transpose view in-place donation
+      mat = torch.tensor(
+          [[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32, device=self.device
+      )
+      mat_t = mat.t()
+      mat_t.add_(10.0)
+      self.assertTrue(
+          torch.equal(mat.cpu(), torch.tensor([[11.0, 12.0], [13.0, 14.0]]))
+      )
+      self.assertTrue(
+          torch.equal(mat_t.cpu(), torch.tensor([[11.0, 13.0], [12.0, 14.0]]))
+      )
+
+      # 3. Shallow clone safety: mutating `a` in-place must not corrupt `b`
+      a = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
+      _ = a.cpu()
+      b = a.clone()
+      a.add_(10.0)
+      self.assertTrue(torch.equal(b.cpu(), torch.tensor([1.0, 2.0, 3.0])))
+      self.assertTrue(torch.equal(a.cpu(), torch.tensor([11.0, 12.0, 13.0])))
+
+      # 4. Repeated-op detection loop with contiguous and view in-place ops,
+      # including one that also reads a non-donated view of the donated base.
+      x = torch.zeros((2, 4), dtype=torch.float32, device=self.device)
+      y = torch.zeros((2, 4), dtype=torch.float32, device=self.device)
+      z = torch.ones((2, 4), dtype=torch.float32, device=self.device)
+      for _ in range(8):
+        x.add_(1.0)
+        y[0].add_(2.0)
+        z[0].add_(z[1])
+      self.assertTrue(torch.equal(x.cpu(), torch.full((2, 4), 8.0)))
+      self.assertTrue(
+          torch.equal(
+              y.cpu(),
+              torch.tensor([[16.0, 16.0, 16.0, 16.0], [0.0, 0.0, 0.0, 0.0]]),
+          )
+      )
+      self.assertTrue(
+          torch.equal(
+              z.cpu(),
+              torch.tensor([[9.0, 9.0, 9.0, 9.0], [1.0, 1.0, 1.0, 1.0]]),
+          )
+      )
+
+  def test_inplace_buffer_donation_in_internal_defer_all(self):
+    """Verifies in-place buffer donation and view/clone safety in INTERNAL_DEFER_ALL."""
+    # pylint: disable=protected-access
+    with execution_mode.set_eager_mode(
+        execution_mode._EagerMode.INTERNAL_DEFER_ALL
+    ):
+      # pylint: enable=protected-access
+      num_elements = 4 * 1024 * 1024  # 16 MB
+      x = torch.zeros(num_elements, dtype=torch.float32, device=self.device)
+      _ = x.cpu()
+
+      # Warmup fused chain
+      x.add_(1.0)
+      x.mul_(2.0)
+      x.sub_(0.5)
+      _ = x.cpu()
+      torch.accelerator.synchronize()
+      gc.collect()
+
+      x.zero_()
+      _ = x.cpu()
+      torch.accelerator.synchronize()
+      gc.collect()
+
+      old_view = x.view_as(x)
+      torch.accelerator.reset_peak_memory_stats()
+      base_mem = torch.accelerator.memory_allocated()
+
+      x.add_(1.0)
+      x.mul_(2.0)
+      x.sub_(0.5)
+      torch.accelerator.synchronize()
+
+      peak_mem = torch.accelerator.max_memory_allocated()
+      extra_mem = peak_mem - base_mem
+      self.assertLess(extra_mem, 4 * 1024 * 1024)
+      expected = torch.full((num_elements,), 1.5)
+      self.assertTrue(torch.equal(x.cpu(), expected))
+      self.assertTrue(torch.equal(old_view.cpu(), expected))
+
+      # Slice and transpose view in-place donation + shallow clone safety
+      base = torch.tensor(
+          [10.0, 1.0, 2.0, 3.0], dtype=torch.float32, device=self.device
+      )
+      s = base[1:]
+      s.add_(5.0)
+      s.mul_(2.0)
+      self.assertTrue(
+          torch.equal(base.cpu(), torch.tensor([10.0, 12.0, 14.0, 16.0]))
+      )
+
+      mat = torch.tensor(
+          [[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32, device=self.device
+      )
+      mat_t = mat.t()
+      mat_t.add_(10.0)
+      self.assertTrue(
+          torch.equal(mat.cpu(), torch.tensor([[11.0, 12.0], [13.0, 14.0]]))
+      )
+      self.assertTrue(
+          torch.equal(mat_t.cpu(), torch.tensor([[11.0, 13.0], [12.0, 14.0]]))
+      )
+
+      a = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
+      _ = a.cpu()
+      b = a.clone()
+      a.add_(10.0)
+      self.assertTrue(torch.equal(b.cpu(), torch.tensor([1.0, 2.0, 3.0])))
+      self.assertTrue(torch.equal(a.cpu(), torch.tensor([11.0, 12.0, 13.0])))
 
   def test_non_zero_offset_inplace_donates_in_defer_never(self):
     """Verifies that non-zero offset slices are able to donate in DeferNever."""

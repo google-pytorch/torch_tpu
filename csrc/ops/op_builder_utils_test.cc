@@ -51,6 +51,7 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Value.h"
+#include "mlir/IR/ValueRange.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/Register.h"
@@ -660,6 +661,16 @@ TEST(EagerModeTest, IsDeferNeverMode) {
   EXPECT_FALSE(IsDeferNeverMode(EagerMode::kDeferAndFuse));
   EXPECT_FALSE(IsDeferNeverMode(EagerMode::kInternalDeferAll));
   EXPECT_FALSE(IsDeferNeverMode(EagerMode::kInternalCompileFxGraph));
+}
+
+TEST(EagerModeTest, SupportsInplaceBufferDonation) {
+  EXPECT_TRUE(SupportsInplaceBufferDonation(EagerMode::kDeferNever));
+  EXPECT_TRUE(
+      SupportsInplaceBufferDonation(EagerMode::kDeferNeverAndLaunchBlocking));
+  EXPECT_TRUE(SupportsInplaceBufferDonation(EagerMode::kDeferAndFuse));
+  EXPECT_TRUE(SupportsInplaceBufferDonation(EagerMode::kInternalDeferAll));
+  EXPECT_FALSE(
+      SupportsInplaceBufferDonation(EagerMode::kInternalCompileFxGraph));
 }
 
 TEST(ReshapeFromStaticDimensions, StaticShape) {

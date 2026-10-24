@@ -43,6 +43,7 @@
 #include "csrc/common/shape.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
+#include "csrc/eager/current_stream.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/eager_mode.h"
 #include "csrc/eager/events_queue.h"
@@ -142,28 +143,24 @@ void ApplyComputationDtype(internal::DeferredOpParams& params) {
   };
 }
 
-// Handles post-op creation events for the kDeferNever and
-// kDeferNeverAndLaunchBlocking eager modes.
-absl::Status DeferNeverDispatch(absl::Span<const DeviceBufferRef> results,
-                                const OpName op_name, const bool block,
-                                const bool allow_materialization) {
-  const auto& device_buffer_list = results[0].device_buffer_list();
-  if (IsMetadataOnly(op_name)) {
-    // Don't eagerly materialize metadata-only ops.
-    return absl::OkStatus();
-  }
-
-  if (!allow_materialization) {
-    return absl::OkStatus();
-  }
-
+// Executes the deferred ops recorded on the current stream, as the kDeferNever
+// eager modes do after creating an op: kDeferNever starts the execution in the
+// background without waiting for it, and kDeferNeverAndLaunchBlocking also
+// waits for it to complete and surfaces any error. `eager_mode` must be one of
+// these two modes.
+//
+// Deferred ops whose outputs are referenced by live tensors are always
+// materialized; `must_materialize` lists additional deferred ops to
+// materialize.
+absl::Status ExecuteCurrentStreamForDeferNever(
+    const EagerMode eager_mode,
+    absl::Span<const SharedDeviceBufferList> must_materialize) {
+  ABSL_DCHECK(IsDeferNeverMode(eager_mode));
   // materialize.cc and events_queue.h will respect OpSplitMode, even with
   // GraphSplitMode::kFullGraph.
   const MaterializationReason reason = MaterializationReason::kDebugMode;
   const GraphSplitMode graph_split_mode = GraphSplitMode::kFullGraph;
-  absl::Span<const SharedDeviceBufferList> must_materialize(&device_buffer_list,
-                                                            1);
-  if (block) {
+  if (eager_mode == EagerMode::kDeferNeverAndLaunchBlocking) {
     // In DeferNeverAndLaunchBlocking, we do a full stream sync after every op.
     auto snapshot_future =
         MaterializeCurrentStream(reason, graph_split_mode, must_materialize);
@@ -175,6 +172,29 @@ absl::Status DeferNeverDispatch(absl::Span<const DeviceBufferRef> results,
     EagerlyExecuteCurrentStream(reason, graph_split_mode, must_materialize);
   }
   return absl::OkStatus();
+}
+
+// Handles post-op creation events for the kDeferNever and
+// kDeferNeverAndLaunchBlocking eager modes.
+absl::Status DeferNeverDispatch(absl::Span<const DeviceBufferRef> results,
+                                const OpName op_name,
+                                const EagerMode eager_mode,
+                                const bool allow_materialization) {
+  if (IsMetadataOnly(op_name)) {
+    // Don't eagerly materialize metadata-only ops.
+    return absl::OkStatus();
+  }
+
+  if (!allow_materialization) {
+    // The caller materializes the op later (see RunPostponedMaterialization).
+    return absl::OkStatus();
+  }
+
+  // The outputs of the new op are not referenced by any tensor yet, so they
+  // must be materialized explicitly.
+  const auto& device_buffer_list = results[0].device_buffer_list();
+  return ExecuteCurrentStreamForDeferNever(
+      eager_mode, absl::MakeConstSpan(&device_buffer_list, 1));
 }
 
 constexpr std::string_view kRepeatedOpSafeMode = "safe";
@@ -203,11 +223,15 @@ absl::Status DeferAndFuseDispatch(absl::Span<const DeviceBufferRef> results,
   const auto& device_buffer_list = results[0].device_buffer_list();
 
   if (MustApplyRepeatedOpsHeuristic()) {
+    if (!allow_materialization) {
+      // Keep the heuristic from splitting the sequence of ops that this op
+      // belongs to, until RunPostponedMaterialization() is called.
+      SuspendRepeatedOpsGraphBreaks(device_buffer_list);
+    }
     // Record the deferred op and detect any repetitions.
-    // If a repetition is detected, materialize the current stream (unless
-    // materialization is disabled).
-    if (RecordDeferredOpAndDetectRepetition(device_buffer_list) &&
-        allow_materialization) {
+    // If a repetition is detected, materialize the current stream (unless the
+    // heuristic's graph breaks are suspended on it).
+    if (RecordDeferredOpAndDetectRepetition(device_buffer_list)) {
       // Start a background materialization of the current stream; don't
       // wait for it to complete.
       EagerlyExecuteCurrentStream(MaterializationReason::kRepeatedOpDetection,
@@ -236,17 +260,12 @@ absl::StatusOr<std::vector<DeviceBufferRef>> CreateDeferredDeviceBufferList(
           std::move(params.donated_indices),
           std::move(params.device_assignment)));
 
-  switch (GetEagerMode()) {
+  const EagerMode eager_mode = GetEagerMode();
+  switch (eager_mode) {
     case EagerMode::kDeferNever:
-      RecordDeferredOpCreated(results[0].device_buffer_list());
-      TT_RETURN_IF_ERROR(DeferNeverDispatch(results, params.op_name,
-                                            /*block=*/false,
-                                            params.allow_materialization));
-      break;
     case EagerMode::kDeferNeverAndLaunchBlocking:
       RecordDeferredOpCreated(results[0].device_buffer_list());
-      TT_RETURN_IF_ERROR(DeferNeverDispatch(results, params.op_name,
-                                            /*block=*/true,
+      TT_RETURN_IF_ERROR(DeferNeverDispatch(results, params.op_name, eager_mode,
                                             params.allow_materialization));
       break;
     case EagerMode::kDeferAndFuse:
@@ -262,6 +281,34 @@ absl::StatusOr<std::vector<DeviceBufferRef>> CreateDeferredDeviceBufferList(
       break;
   }
   return results;
+}
+
+absl::Status RunPostponedMaterialization() {
+  const EagerMode eager_mode = GetEagerMode();
+  switch (eager_mode) {
+    case EagerMode::kDeferNever:
+    case EagerMode::kDeferNeverAndLaunchBlocking:
+      // The outputs of the postponed ops are referenced by their destination
+      // tensors by now, so they are materialized without being listed
+      // explicitly.
+      return ExecuteCurrentStreamForDeferNever(eager_mode,
+                                               /*must_materialize=*/{});
+    case EagerMode::kDeferAndFuse: {
+      const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+      if (ResumeRepeatedOpsGraphBreaks(device_index, stream_id)) {
+        // Start a background materialization of the current stream; don't
+        // wait for it to complete.
+        EagerlyExecuteStream(device_index, stream_id,
+                             MaterializationReason::kRepeatedOpDetection,
+                             GetRepeatedOpsGraphSplitMode());
+      }
+      return absl::OkStatus();
+    }
+    case EagerMode::kInternalDeferAll:
+    case EagerMode::kInternalCompileFxGraph:
+      // These modes never materialize eagerly.
+      return absl::OkStatus();
+  }
 }
 
 absl::StatusOr<OpParamCacheKeys> ComputeConstantDeviceBufferRefOpParamCacheKeys(
@@ -646,6 +693,9 @@ absl::StatusOr<DeviceBufferRef> CreateViewDeviceBufferRef(
       .inputs = std::move(inputs),
       .output_shapes = std::move(output_shapes),
       .donated_indices = std::move(donated_indices),
+      // A view that donates its base must be compiled into the same graph as
+      // the later ops that read the base (see DonateBase::kDonate).
+      .allow_materialization = donate_base == DonateBase::kDoNotDonate,
   };
   TT_ASSIGN_OR_RETURN(auto results, internal::CreateDeferredDeviceBufferList(
                                         std::move(params)));
@@ -719,6 +769,10 @@ absl::StatusOr<DeviceBufferRef> CreateInverseViewDeviceBufferRef(
       .inputs = std::move(inputs),
       .output_shapes = std::move(output_shapes),
       .donated_indices = std::move(donated_indices),
+      // A write-back that donates the base is created while the tensor's
+      // c10::DataPtr still references the base; the DataPtr is updated to the
+      // result only afterwards (see AssignBufferToAtTensor).
+      .allow_materialization = !donate_base,
   };
   TT_ASSIGN_OR_RETURN(auto results, internal::CreateDeferredDeviceBufferList(
                                         std::move(params)));

@@ -248,11 +248,13 @@ std::string EncodeParamCacheKey(const std::optional<PromotedScalar>& value) {
 // Safety and layout invariants verified for each donor-destination pair:
 // 1. In-place aliasing: destination must alias donor (is_alias_of).
 // 2. Feature flag & execution mode: donation must be enabled via
-//    IsInplaceBufferDonationEnabled() and restricted to synchronous eager modes
-//    (kDeferNever, kDeferNeverAndLaunchBlocking). In deferred execution
-//    (kDeferAndFuse), automated donation is currently not done.
-// 3. Dense layout: donor must be contiguous, zero-offset, unconjugated,
-//    non-empty, and identical in shape to the destination dimensions.
+//    IsInplaceBufferDonationEnabled() and restricted to eager execution modes
+//    that support in-place buffer donation (kDeferNever,
+//    kDeferNeverAndLaunchBlocking, kDeferAndFuse, and kInternalDeferAll).
+// 3. Shape: donor must be non-empty and identical in shape to the destination
+//    dimensions. The donor may be a view (e.g. a slice or a transpose), in
+//    which case its base buffer is donated to the ops that read the view and
+//    write the result back to the base.
 // 4. Data type: donor element type must match the destination element type.
 // 5. Single donation constraint: In XLA / StableHLO, each device buffer can be
 //    donated to at most ONE output buffer. Once an input is donated, it and all
@@ -268,7 +270,7 @@ void AutoDonateInPlaceBuffers(
     absl::Span<const at::Tensor> inputs, Indices& donated_indices,
     std::vector<uint8_t>& output_donated) {
   if (!donated_indices.empty() || !IsInplaceBufferDonationEnabled() ||
-      !IsDeferNeverMode(GetEagerMode())) {
+      !SupportsInplaceBufferDonation(GetEagerMode())) {
     return;
   }
 

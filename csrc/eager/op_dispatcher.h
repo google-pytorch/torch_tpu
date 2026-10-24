@@ -33,7 +33,6 @@
 #include "absl/types/span.h"
 #include "c10/util/Optional.h"
 #include "csrc/common/cache_key.h"
-#include "csrc/common/context_states.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
@@ -42,11 +41,6 @@
 #include "csrc/eager/device_assignment.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/device_buffer_utils.h"
-#include "csrc/eager/eager_mode.h"
-#include "csrc/eager/events_queue.h"
-#include "csrc/eager/materialize.h"
-#include "csrc/eager/split_traversal.h"
-#include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
@@ -131,6 +125,11 @@ struct DispatchOpOptions {
   OpSplitMode split_mode = OpSplitMode::kNone;
   Indices donated_indices = {};
   DeviceAssignment device_assignment = {};
+  // Set by DispatchOpOut when it has automatically donated input buffers to the
+  // outputs (see AutoDonateInPlaceBuffers). The bases of the donated inputs are
+  // then donated to any views created for them, and the op is created with
+  // materialization disallowed (see DeferredOpParams::allow_materialization).
+  // Kernels should not set this directly.
   bool autodonated = false;
 };
 
@@ -148,6 +147,11 @@ struct DispatchOpOptions<kDynamicSize> {
   OpSplitMode split_mode = OpSplitMode::kNone;
   Indices donated_indices = {};
   DeviceAssignment device_assignment = {};
+  // Set by DispatchOpOut when it has automatically donated input buffers to the
+  // outputs (see AutoDonateInPlaceBuffers). The bases of the donated inputs are
+  // then donated to any views created for them, and the op is created with
+  // materialization disallowed (see DeferredOpParams::allow_materialization).
+  // Kernels should not set this directly.
   bool autodonated = false;
 };
 
@@ -164,6 +168,11 @@ struct DispatchOpOptions<1> {
   OpSplitMode split_mode = OpSplitMode::kNone;
   Indices donated_indices = {};
   DeviceAssignment device_assignment = {};
+  // Set by DispatchOpOut when it has automatically donated input buffers to the
+  // outputs (see AutoDonateInPlaceBuffers). The bases of the donated inputs are
+  // then donated to any views created for them, and the op is created with
+  // materialization disallowed (see DeferredOpParams::allow_materialization).
+  // Kernels should not set this directly.
   bool autodonated = false;
 };
 
@@ -451,6 +460,15 @@ absl::StatusOr<DeviceBufferRefArray<kNumOutputs>> DispatchOp(
 // `donated_indices` is not explicitly specified in `options`. After
 // dispatching, resizes each output (if its shape differs) and assigns the
 // resulting device buffer to that output tensor.
+//
+// Until an output is assigned its new buffer, it still references the input
+// buffer donated to the op (and to any view and write-back ops created for
+// it). A graph break before then would either materialize the donated buffer
+// as a separate graph output, defeating the donation, or consume a donated
+// buffer that a later op of the dispatch still reads. Autodonating dispatches
+// therefore create their ops with materialization disallowed (see
+// DeferredOpParams::allow_materialization), and run the postponed eager
+// materialization once all outputs have been assigned.
 template <int kArity, int kNumOutputs = 1>
 absl::Status DispatchOpOut(NAryMlirOpBuilder<kArity, kNumOutputs> op_builder,
                            const OpInputs<kArity>& inputs,
@@ -491,16 +509,7 @@ absl::Status DispatchOpOut(NAryMlirOpBuilder<kArity, kNumOutputs> op_builder,
         outputs_span, absl::MakeSpan(result_bufs), output_donated));
   }
   if (autodonated) {
-    if (GetEagerMode() == EagerMode::kDeferNeverAndLaunchBlocking) {
-      auto snapshot_future = MaterializeCurrentStream(
-          MaterializationReason::kDebugMode, GraphSplitMode::kFullGraph);
-      TT_ASSIGN_OR_RETURN(auto snapshot, snapshot_future.Await());
-      TT_RETURN_IF_ERROR(snapshot->Synchronize());
-      TT_RETURN_IF_ERROR(SyncAndReturnStickyError());
-    } else {
-      EagerlyExecuteCurrentStream(MaterializationReason::kDebugMode,
-                                  GraphSplitMode::kFullGraph);
-    }
+    TT_RETURN_IF_ERROR(internal::RunPostponedMaterialization());
   }
   return absl::OkStatus();
 }

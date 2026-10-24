@@ -177,6 +177,8 @@ class StreamState {
     absl::MutexLock lock(mu_);
     repetition_hashes_.clear();
     repetition_i_ = 0;
+    repeated_ops_graph_breaks_suspended_ = false;
+    repeated_ops_graph_break_requested_ = false;
     // Drop all unresolved SnapshotEvents and fail their promises.
     absl::Status cancel_status = TT_ERROR(error::kCancelled)
                                  << "stream state was cleared";
@@ -294,7 +296,7 @@ class StreamState {
       case StreamState::CheckLastRepeatedSequenceResult::kRepetitionComplete:
         // We expected to see [A, B, C] and just completed [A, B, C];
         // materialize C to take advantage of the already compiled loop region.
-        return true;
+        return RequestRepeatedOpsGraphBreakLocked();
       case StreamState::CheckLastRepeatedSequenceResult::kPatternBreak:
         // We expected to see [A, B, C] but just saw op D.
         // Reset and scan for a new repeated pattern.
@@ -315,7 +317,18 @@ class StreamState {
 
     // Get the last node of each loop of the repeated sequence, and the last
     // node in the non-looping prefix (if any).
-    return true;
+    return RequestRepeatedOpsGraphBreakLocked();
+  }
+
+  void SuspendRepeatedOpsGraphBreaks() {
+    absl::MutexLock lock(mu_);
+    repeated_ops_graph_breaks_suspended_ = true;
+  }
+
+  bool ResumeRepeatedOpsGraphBreaks() {
+    absl::MutexLock lock(mu_);
+    repeated_ops_graph_breaks_suspended_ = false;
+    return std::exchange(repeated_ops_graph_break_requested_, false);
   }
 
   void InsertGraphBreak(std::vector<SharedDeviceBufferList> must_materialize,
@@ -351,6 +364,7 @@ class StreamState {
     absl::MutexLock lock(mu_);
     repetition_hashes_.clear();
     repetition_i_ = 0;
+    repeated_ops_graph_break_requested_ = false;
     for (auto& deferred_op_event : deferred_ops_) {
       deferred_op_event.deferred_op_hash = 0;
     }
@@ -426,6 +440,20 @@ class StreamState {
   void RecordRepeatedHashPattern(int64_t repetition_length)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
 
+  // Helper function for RecordDeferredOpAndDetectRepetition, called when the
+  // newest op completes a repeated sequence.
+  // Returns true if the caller should insert a graph break now. If graph breaks
+  // are suspended, returns false and records the request for
+  // ResumeRepeatedOpsGraphBreaks() instead.
+  [[nodiscard]] bool RequestRepeatedOpsGraphBreakLocked()
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+    if (!repeated_ops_graph_breaks_suspended_) {
+      return true;
+    }
+    repeated_ops_graph_break_requested_ = true;
+    return false;
+  }
+
   void InsertGraphBreakLocked(
       std::vector<SharedDeviceBufferList> must_materialize,
       MaterializationReason reason, GraphSplitMode mode, EagerMode eager_mode,
@@ -448,6 +476,12 @@ class StreamState {
     // The queue is now empty; reset the repetition index to start scanning for
     // an existing or new pattern.
     repetition_i_ = 0;
+    // This graph break satisfies any graph break that the repeated ops
+    // heuristic requested while suspended, and ends the suspension, so that a
+    // suspension that is never resumed (e.g. because the dispatch that started
+    // it failed) cannot outlive the next graph break.
+    repeated_ops_graph_breaks_suspended_ = false;
+    repeated_ops_graph_break_requested_ = false;
     if (!must_execute.empty() || !must_materialize.empty()) {
       ready_work_.push_back(
           EagerExecution{std::move(must_execute), std::move(must_materialize),
@@ -563,6 +597,13 @@ class StreamState {
   std::vector<size_t> repetition_hashes_ ABSL_GUARDED_BY(mu_);
   // The index of the next hash in repetition_hashes_ to check.
   int64_t repetition_i_ = 0;
+
+  // Whether graph breaks requested by the repeated ops heuristic are suspended
+  // (see SuspendRepeatedOpsGraphBreaks).
+  bool repeated_ops_graph_breaks_suspended_ ABSL_GUARDED_BY(mu_) = false;
+  // Whether the repeated ops heuristic requested a graph break while graph
+  // breaks were suspended.
+  bool repeated_ops_graph_break_requested_ ABSL_GUARDED_BY(mu_) = false;
 
   std::atomic<CorePinningMode> core_pinning_mode_ = CorePinningMode::kUnpinned;
 };
@@ -996,6 +1037,17 @@ bool RecordDeferredOpAndDetectRepetition(
   }
   return GetStreamFor(device_buffer_list)
       ->RecordDeferredOpAndDetectRepetition(device_buffer_list);
+}
+
+void SuspendRepeatedOpsGraphBreaks(
+    const SharedDeviceBufferList& device_buffer_list) {
+  GetStreamFor(device_buffer_list)->SuspendRepeatedOpsGraphBreaks();
+}
+
+bool ResumeRepeatedOpsGraphBreaks(c10::DeviceIndex device_index,
+                                  c10::StreamId stream_id) {
+  return GetOrCreateStreamState(device_index, stream_id)
+      ->ResumeRepeatedOpsGraphBreaks();
 }
 
 void ResetRepeatedOpsHeuristicState() {
