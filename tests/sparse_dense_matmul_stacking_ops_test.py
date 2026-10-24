@@ -17,6 +17,9 @@
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
+from torch._dynamo import testing as dynamo_testing
+from torch._subclasses import fake_tensor
+from torch.fx.experimental import symbolic_shapes
 import torch.nn.functional as F
 from tests import op_testing
 from tests import oss_utils
@@ -153,6 +156,52 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
       torch.tpu.ops.sparse_dense_matmul_activation_unstack(
           stacked_2d, [32, 32], [0, 32]
       )
+
+  @parameterized.parameters("meta", "tpu")
+  def test_unstack_fake_symbolic_feature_dim(self, device):
+    """Tests unstack doesn't specialize a symbolic stacked feature dim."""
+    # Only TPU tensors go through the autograd kernel.
+    if device == "tpu" and not torch.accelerator.is_available():
+      self.skipTest("TPU accelerator not available in this test environment.")
+    shape_env = symbolic_shapes.ShapeEnv()
+    mode = fake_tensor.FakeTensorMode(shape_env=shape_env)
+    # Dim 0 must equal sum(per_feature_batch_sizes), so only dim 1 is dynamic.
+    stacked = mode.from_tensor(
+        torch.empty(64, 32, dtype=torch.float32, device=device),
+        symbolic_context=symbolic_shapes.StatelessSymbolicContext(
+            dynamic_sizes=[
+                symbolic_shapes.DimDynamic.STATIC,
+                symbolic_shapes.DimDynamic.DYNAMIC,
+            ]
+        ),
+    )
+    feature_dim = stacked.shape[1]
+    with mode:
+      results = torch.tpu.ops.sparse_dense_matmul_activation_unstack(
+          stacked, [32, 32], [16, 32]
+      )
+    self.assertEqual([r.shape for r in results], [(32, 16), (32, 32)])
+    self.assertIsInstance(feature_dim, torch.SymInt)
+    self.assertFalse(shape_env.replace(feature_dim.node.expr).is_number)
+
+  def test_unstack_compile_dynamic_feature_dim(self):
+    """Tests compiled unstack recompiles only once for a dynamic feature dim."""
+    torch._dynamo.reset()
+    self.addCleanup(torch._dynamo.reset)
+    counter = dynamo_testing.CompileCounter()
+
+    @torch.compile(backend=counter, fullgraph=True)
+    def fn(stacked):
+      return torch.tpu.ops.sparse_dense_matmul_activation_unstack(
+          stacked, [32, 32], [8, 12]
+      )
+
+    for stacked_dim in (16, 17, 18):
+      stacked = torch.empty(64, stacked_dim, device="meta")
+      results = fn(stacked)
+      self.assertEqual([r.shape for r in results], [(32, 8), (32, 12)])
+    # One static frame, then one dynamic frame that serves all later sizes.
+    self.assertEqual(counter.frame_count, 2)
 
   def test_stack_meta_shape(self):
     g1 = torch.empty(32, 16, device="meta", dtype=torch.float32)

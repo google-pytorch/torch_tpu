@@ -32,12 +32,15 @@
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
+#include "c10/core/SymInt.h"
+#include "c10/core/SymIntArrayRef.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Support/LLVM.h"
 // NOTE: Do not add torch/csrc/autograd/node.h here; see the note on
 // AtenSparseDenseMatmulActivationUnstackAutograd in the header.
+#include "csrc/common/const_tensor.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -118,12 +121,16 @@ auto SparseDenseMatmulActivationUnstackBuilder(
 }  // namespace
 
 absl::Status ValidateSparseDenseMatmulActivationUnstackInputs(
-    const at::Tensor& stacked_activations,
+    const ConstTensor& stacked_activations,
     at::IntArrayRef per_feature_batch_sizes, at::IntArrayRef per_feature_dims) {
-  TT_RET_CHECK(stacked_activations.dim() == 2, error::kInvalidArgument)
+  TT_ASSIGN_OR_RETURN(const int64_t stacked_activations_dim,
+                      stacked_activations.dim());
+  TT_ASSIGN_OR_RETURN(const c10::SymIntArrayRef stacked_activations_sizes,
+                      stacked_activations.sym_sizes());
+  TT_RET_CHECK(stacked_activations_dim == 2, error::kInvalidArgument)
       << "expected stacked_activations to be a 2D tensor, got a "
-      << stacked_activations.dim() << "D tensor of shape "
-      << ToString(stacked_activations.sizes());
+      << stacked_activations_dim << "D tensor of shape "
+      << ToString(stacked_activations_sizes);
 
   TT_RET_CHECK(stacked_activations.scalar_type() == at::kFloat,
                error::kInvalidArgument)
@@ -140,7 +147,9 @@ absl::Status ValidateSparseDenseMatmulActivationUnstackInputs(
          "size, got "
       << per_feature_batch_sizes.size() << " and " << per_feature_dims.size();
 
-  const int64_t stacked_embedding_dim = stacked_activations.size(1);
+  // For a symbolic stacked_embedding_dim, the comparison below adds a
+  // relational guard but doesn't specialize.
+  const c10::SymInt& stacked_embedding_dim = stacked_activations_sizes[1];
   int64_t total_batch_size = 0;
   for (size_t i = 0; i < per_feature_batch_sizes.size(); ++i) {
     TT_RET_CHECK(per_feature_batch_sizes[i] > 0, error::kInvalidArgument)
@@ -149,7 +158,8 @@ absl::Status ValidateSparseDenseMatmulActivationUnstackInputs(
     TT_RET_CHECK(per_feature_dims[i] > 0, error::kInvalidArgument)
         << "expected per_feature_dims[" << i << "] to be positive, got "
         << per_feature_dims[i];
-    TT_RET_CHECK(per_feature_dims[i] <= stacked_embedding_dim,
+    TT_RET_CHECK(stacked_embedding_dim.sym_ge(per_feature_dims[i])
+                     .guard_bool(__FILE__, __LINE__),
                  error::kInvalidArgument)
         << "expected per_feature_dims[" << i << "] (" << per_feature_dims[i]
         << ") to be at most stacked_embedding_dim (" << stacked_embedding_dim
@@ -157,9 +167,11 @@ absl::Status ValidateSparseDenseMatmulActivationUnstackInputs(
     total_batch_size += per_feature_batch_sizes[i];
   }
 
-  TT_RET_CHECK(stacked_activations.size(0) == total_batch_size,
+  const c10::SymInt& stacked_batch_size = stacked_activations_sizes[0];
+  TT_RET_CHECK(stacked_batch_size.sym_eq(total_batch_size)
+                   .guard_bool(__FILE__, __LINE__),
                error::kInvalidArgument)
-      << "expected stacked_activations dim 0 (" << stacked_activations.size(0)
+      << "expected stacked_activations dim 0 (" << stacked_batch_size
       << ") to match total stacked batch size (" << total_batch_size << ")";
 
   return absl::OkStatus();
@@ -231,8 +243,9 @@ std::vector<at::Tensor> AtenSparseDenseMatmulActivationUnstackAutograd::forward(
     torch::autograd::AutogradContext* ctx,
     const at::Tensor& stacked_activations,
     at::IntArrayRef per_feature_batch_sizes, at::IntArrayRef per_feature_dims) {
-  ctx->saved_data["stacked_batch_size"] = stacked_activations.size(0);
-  ctx->saved_data["stacked_feature_dim"] = stacked_activations.size(1);
+  // Saved as SymInts so that tracing with symbolic shapes doesn't specialize.
+  ctx->saved_data["stacked_batch_size"] = stacked_activations.sym_size(0);
+  ctx->saved_data["stacked_feature_dim"] = stacked_activations.sym_size(1);
   ctx->saved_data["per_feature_batch_sizes"] =
       per_feature_batch_sizes.vec();                             // VEC_OK
   ctx->saved_data["per_feature_dims"] = per_feature_dims.vec();  // VEC_OK
@@ -254,10 +267,14 @@ AtenSparseDenseMatmulActivationUnstackAutograd::backward(
     std::vector<at::Tensor> grad_outputs) {
   at::Tensor grad_stacked;  // UNINITIALIZED_TENSOR_OK
   if (ctx->needs_input_grad(0)) {
+    // The `int` arguments of `tpu::_sparse_dense_matmul_gradient_stack` force
+    // symbolic sizes to be specialized here.
     const int64_t stacked_batch_size =
-        ctx->saved_data["stacked_batch_size"].toInt();
+        ctx->saved_data["stacked_batch_size"].toSymInt().guard_int(__FILE__,
+                                                                   __LINE__);
     const int64_t stacked_feature_dim =
-        ctx->saved_data["stacked_feature_dim"].toInt();
+        ctx->saved_data["stacked_feature_dim"].toSymInt().guard_int(__FILE__,
+                                                                    __LINE__);
     const auto per_feature_batch_sizes =
         ctx->saved_data["per_feature_batch_sizes"].toIntVector();
     const auto per_feature_dims =
