@@ -14,10 +14,34 @@
 
 """TorchTPU library."""
 
+import importlib.metadata
 import pathlib
 
 from torch_tpu import _tcmalloc_check
 from torch_tpu import _versioned_so_loader
+
+
+def _get_version(distribution: str = "torch_tpu") -> str:
+  """Returns the version of `distribution` from its installed metadata.
+
+  Wheels and Bazel builds both generate this metadata from the package version,
+  so the version number isn't duplicated here.
+
+  Args:
+    distribution: The distribution to look up.
+
+  Returns:
+    The version, or "0.0.0+unknown" if no metadata for `distribution` is on
+    `sys.path`. That fallback is a valid PEP 440 version that sorts before every
+    release, so callers that parse the version keep working.
+  """
+  try:
+    return importlib.metadata.version(distribution)
+  except importlib.metadata.PackageNotFoundError:
+    return "0.0.0+unknown"
+
+
+__version__: str = _get_version()
 
 # Install the version-dispatch import hook before any torch_tpu._internal C++
 # extension is imported, so imports resolve to the glue built for the installed
