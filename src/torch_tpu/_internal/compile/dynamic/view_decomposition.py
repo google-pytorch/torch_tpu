@@ -265,6 +265,17 @@ def _delinearize_storage_offset(
   if storage_offset == 0:
     return [0] * num_dims
 
+  if num_dims == 0:
+    # A 0-d base has no dimension the offset could be distributed over,
+    # and the slice/permute view vocabulary cannot express taking the
+    # single element at a non-zero storage offset either. Decline with
+    # the module's usual unsupported-layout signal instead of indexing
+    # into the empty offsets list below.
+    raise NotImplementedError(
+        "Unsupported view decomposition: cannot delinearize storage"
+        f" offset {_fmt_sym(storage_offset)} over a 0-d base."
+    )
+
   # Fast path when all values are concrete integers
   if isinstance(storage_offset, int) and all(
       isinstance(s, int) for s in base_strides
@@ -688,6 +699,18 @@ def decompose_into_view_sequence(
   if _is_contiguous_tensor(val):
     return None
 
+  if len(val.shape) == 0:
+    # A scalar carries no layout to decompose, and slice/permute ops
+    # cannot express selecting the element at a non-zero storage offset
+    # from a 1-d base (a slice of it would have shape (1,), not ()).
+    # Leave the input alone, as with contiguous layouts.
+    logging.debug(
+        "decompose_into_view_sequence: leaving 0-d tensor with storage"
+        " offset %s alone",
+        _fmt_sym(val.storage_offset()),
+    )
+    return None
+
   shape = list(val.shape)
   strides = list(val.stride())
   storage_offset = val.storage_offset()
@@ -717,6 +740,12 @@ def get_base_tensor(tensor: torch.Tensor) -> torch.Tensor:
       tensor, torch.Tensor
   ), f"Expected torch.Tensor, got {type(tensor)}"
   if _is_contiguous_tensor(tensor):
+    return tensor
+
+  if tensor.ndim == 0:
+    # Mirrors decompose_into_view_sequence: a scalar is its own base,
+    # since no slice/permute sequence over a wider base can reproduce
+    # a 0-d result at a non-zero storage offset.
     return tensor
 
   base_shape, _, _ = _decompose_layout(tensor, compute_slice_ops=False)

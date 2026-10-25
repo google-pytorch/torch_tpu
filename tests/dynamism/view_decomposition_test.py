@@ -803,6 +803,45 @@ class ViewDecompositionTest(seed_test_utils.RepeatableTest):
         self.assertEqual(self.guards_after, self.guards_before)
 
 
+  def test_zero_dim_view_with_storage_offset_left_alone(self):
+    """Tests 0-d views with a non-zero storage offset do not crash.
+
+    Regression test: select(0, 1) on a 2-element tensor is a valid 0-d
+    view, but decomposition used to raise IndexError in
+    _delinearize_storage_offset, whose per-dimension offsets list is
+    empty for a 0-d base. Slice/permute ops cannot express taking the
+    element at the offset either, so the scalar is left alone instead:
+    decomposition returns None and the tensor is its own base.
+    """
+    cases = [
+        torch.tensor([0, 1]).select(0, 1),
+        torch.arange(6.0).view(2, 3)[1, 2],
+    ]
+    for view in cases:
+      self.assertEqual(view.shape, ())
+      self.assertNotEqual(view.storage_offset(), 0)
+      self.assertIsNone(
+          view_decomposition.decompose_into_view_sequence(view)
+      )
+      base = view_decomposition.get_base_tensor(view)
+      self.assertIs(base, view)
+      utils.assert_close(base, view)
+
+    # The helper itself declines cleanly rather than raising IndexError.
+    with self.assertRaises(NotImplementedError):  # ASSERT_RAISES_OK=Unit test.
+      view_decomposition._delinearize_storage_offset(1, [])
+    self.assertEqual(
+        view_decomposition._delinearize_storage_offset(0, []), []
+    )
+
+    # A 0-d tensor at offset 0 goes through the contiguous path as before.
+    scalar = torch.arange(3.0)[0]
+    self.assertIsNone(
+        view_decomposition.decompose_into_view_sequence(scalar)
+    )
+    self.assertIs(view_decomposition.get_base_tensor(scalar), scalar)
+
+
 def _storage_numel(tensor: torch.Tensor) -> int:
   return tensor.untyped_storage().nbytes() // tensor.element_size()
 
