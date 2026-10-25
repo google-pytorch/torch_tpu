@@ -41,6 +41,9 @@ _GOOGLE_PCI_VENDOR_ID: Final[str] = "0x1ae0"
 # Directory with an entry per PCI device of the host.
 _PCI_DEVICES_DIR: Final[pathlib.Path] = pathlib.Path("/sys/bus/pci/devices")
 
+# Directory with character device nodes for accelerators.
+_DEV_DIR: Final[pathlib.Path] = pathlib.Path("/dev")
+
 # Directory with a node per IOMMU group that VFIO exposes to user space.
 _VFIO_DIR: Final[pathlib.Path] = pathlib.Path("/dev/vfio")
 
@@ -50,6 +53,14 @@ _VFIO_DIR: Final[pathlib.Path] = pathlib.Path("/dev/vfio")
 # dimensions. Generations that expose each TensorCore of a chip as a separate
 # device (TPU v7 and TPU v8i) have a trailing cores-per-chip dimension, e.g.
 # (1, 2, 1, 2) for the 4 devices of a 1x2x1 mesh of 2 chips.
+_V4_TOPOLOGY: Final[Mapping[int, tuple[int, ...]]] = (
+    immutabledict.immutabledict({
+        1: (1, 1, 1),
+        2: (1, 2, 1),
+        4: (2, 2, 1),
+        8: (2, 2, 2),
+    })
+)
 _V5P_TOPOLOGY: Final[Mapping[int, tuple[int, ...]]] = (
     immutabledict.immutabledict({
         1: (1, 1, 1),
@@ -139,7 +150,7 @@ class SparseCoreSpec:
 class TpuSpec:
   """Specs of a TPU generation that TorchTPU supports.
 
-  TorchTPU doesn't run on TPU v4 and older generations, so they have no
+  TorchTPU doesn't run on TPU v2/v3 and older generations, so they have no
   constants on `TpuSpec`.
 
   Attributes:
@@ -171,6 +182,7 @@ class TpuSpec:
   topologies: Mapping[int, tuple[int, ...]]
   sparse_core_spec: SparseCoreSpec | None = None
 
+  V4: ClassVar[TpuSpec]
   V5P: ClassVar[TpuSpec]
   V5E: ClassVar[TpuSpec]
   V6E: ClassVar[TpuSpec]
@@ -234,6 +246,14 @@ class TpuSpec:
 # device kind of the initialized PJRT device instead. It lists the generations
 # without SparseCores, so unlike `TpuSpec`, it assumes that generations it
 # doesn't know have SparseCores. Keep both in sync when adding TPU generations.
+TpuSpec.V4 = TpuSpec(
+    name="TPU v4",
+    devices_per_chip=1,
+    hbm_bytes_per_chip=32 * 1024**3,
+    bf16_flops_per_chip=275 * 10**12,
+    topologies=_V4_TOPOLOGY,
+    sparse_core_spec=None,
+)
 TpuSpec.V5P = TpuSpec(
     name="TPU v5p",
     devices_per_chip=1,
@@ -287,6 +307,7 @@ TpuSpec.V8T = TpuSpec(
 # util/platforminfo/pci_ids.h.
 _TPU_SPEC_BY_PCI_DEVICE_ID: Final[Mapping[str, TpuSpec]] = (
     immutabledict.immutabledict({
+        "0x005e": TpuSpec.V4,
         "0x0062": TpuSpec.V5P,
         "0x0063": TpuSpec.V5E,
         "0x006f": TpuSpec.V6E,
@@ -396,7 +417,9 @@ def _scan_pci_tpus() -> tuple[int, TpuSpec | None]:
             group_id = (device_path / "iommu_group").readlink().name
             (_VFIO_DIR / group_id).stat()
           except (OSError, IOError):
-            continue
+            # Cloud TPU v4 VMs expose chips via /dev/accel* rather than /dev/vfio.
+            if not any(_DEV_DIR.glob("accel*")):
+              continue
 
           count += 1
           if first_tpu_spec is None:
@@ -424,9 +447,9 @@ def get_tpu_device_count() -> int:
 
   - TPUs whose PCI device ID isn't in `_TPU_SPEC_BY_PCI_DEVICE_ID`, e.g. future
     generations;
-  - TPUs whose IOMMU group isn't exposed under `/dev/vfio`, which is normal in
-    containers that expose only the VFIO groups allocated to them;
-  - TPUs bound to a non-VFIO driver, e.g. reached through `/dev/accel*`.
+  - TPUs whose IOMMU group isn't exposed under `/dev/vfio` (or `/dev/accel*`
+    on TPU v4), which is normal in containers that expose only the devices
+    allocated to them.
 
   So 0 doesn't mean the host has no TPUs. It's also not the number of devices
   the PJRT runtime will use, which can be smaller.

@@ -50,6 +50,7 @@ class _FakePciDevice:
   vendor_id: str | None = "0x1ae0"  # Google
   iommu_group: str | None = None
   vfio_exposed: bool = True
+  accel_exposed: bool = False
 
 
 def _fake_tpus(
@@ -164,18 +165,36 @@ class TpuTopologyMockTest(seed_test_utils.RepeatableTest):
         expected_spec=hardware.TpuSpec.V8T,
     )
 
-  def test_v4_is_not_recognized(self):
-    # TorchTPU doesn't run on TPU v4, so it is treated like any other
-    # unrecognized device: no topology, the generic "TPU" name, and None from
-    # `get_tpu_spec()`.
+  @parameterized.parameters(
+      (1, "1,1,1"),
+      (2, "1,2,1"),
+      (4, "2,2,1"),
+      (8, "2,2,2"),
+  )
+  def test_v4_chips(self, num_chips, expected_topology):
     self._run_mock_test(
-        _fake_tpus("0x005e", 4),
-        None,
-        expected_device_count=0,
-        expected_device_name="TPU",
-        expected_spec=None,
+        _fake_tpus("0x005e", num_chips),
+        expected_topology,
+        expected_device_count=num_chips,
+        expected_device_name="TPU v4",
+        expected_spec=hardware.TpuSpec.V4,
     )
-
+  def test_v4_chips_with_accel_fallback(self):
+    # On Cloud TPU v4 VMs, chips are exposed via /dev/accel* rather than VFIO.
+    self._run_mock_test(
+        [
+            _FakePciDevice(
+                address="0000:00:04.0",
+                device_id="0x005e",
+                iommu_group=None,
+                accel_exposed=True,
+            )
+        ],
+        "1,1,1",
+        expected_device_count=1,
+        expected_device_name="TPU v4",
+        expected_spec=hardware.TpuSpec.V4,
+    )
   def test_no_tpu_devices(self):
     self._run_mock_test(
         [],
@@ -311,7 +330,8 @@ class TpuTopologyMockTest(seed_test_utils.RepeatableTest):
     """Makes `hardware` scan a fake sysfs and devfs with the given devices."""
     root = pathlib.Path(self.create_tempdir().full_path)
     pci_devices_dir = root / "sys" / "bus" / "pci" / "devices"
-    vfio_dir = root / "dev" / "vfio"
+    dev_dir = root / "dev"
+    vfio_dir = dev_dir / "vfio"
     pci_devices_dir.mkdir(parents=True)
     vfio_dir.mkdir(parents=True)
     for device in devices:
@@ -327,10 +347,13 @@ class TpuTopologyMockTest(seed_test_utils.RepeatableTest):
         )
         if device.vfio_exposed:
           (vfio_dir / device.iommu_group).touch()
+      if device.accel_exposed:
+        (dev_dir / "accel0").touch()
 
     self.enter_context(
         mock.patch.object(hardware, "_PCI_DEVICES_DIR", pci_devices_dir)
     )
+    self.enter_context(mock.patch.object(hardware, "_DEV_DIR", dev_dir))
     self.enter_context(mock.patch.object(hardware, "_VFIO_DIR", vfio_dir))
 
   def _run_mock_test(
@@ -432,6 +455,16 @@ class NvidiaGpuMockTest(seed_test_utils.RepeatableTest):
 class DeviceCapabilityTest(seed_test_utils.RepeatableTest):
 
   @parameterized.parameters(
+      (
+          hardware.TpuSpec.V4,
+          "TPU v4",
+          1,
+          32 * 1024**3,
+          32 * 1024**3,
+          275 * 10**12,
+          275 * 10**12,
+          None,
+      ),
       (
           hardware.TpuSpec.V5P,
           "TPU v5p",
@@ -539,6 +572,7 @@ class DeviceCapabilityTest(seed_test_utils.RepeatableTest):
           self.assertEqual(math.prod(topology[3:]), tpu_spec.devices_per_chip)
 
   @parameterized.parameters(
+      (hardware.TpuSpec.V4, True),
       (hardware.TpuSpec.V5P, False),
       (hardware.TpuSpec.V5E, True),
       (hardware.TpuSpec.V6E, False),
