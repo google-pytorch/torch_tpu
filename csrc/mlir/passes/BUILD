@@ -29,6 +29,22 @@ package(
 )
 
 torch_tpu_cc_library(
+    name = "canonicalize_unmasked_sdpa_and_backward_softmax",
+    srcs = ["canonicalize_unmasked_sdpa_and_backward_softmax.cc"],
+    hdrs = ["canonicalize_unmasked_sdpa_and_backward_softmax.h"],
+    deps = [
+        "@com_google_absl//absl/log:absl_check",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:SideEffectInterfaces",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "dummy_pass",
     srcs = ["dummy_pass.cc"],
     hdrs = ["dummy_pass.h"],
