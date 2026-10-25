@@ -289,5 +289,104 @@ module {
   EXPECT_EQ(max_reduce_count, 2);
 }
 
+TEST(PipelineTest, CanonicalizesBatchedLogSoftmaxAndDualDotGrad) {
+  static constexpr const char* kIr = R"mlir(
+module {
+  func.func @main(
+      %x: tensor<8x16xbf16>,
+      %w: tensor<32x16xbf16>,
+      %dy: tensor<8x32xf32>) -> (tensor<8x32xf32>, tensor<32x16xbf16>, tensor<8x16xbf16>) {
+    %min_f32 = stablehlo.constant dense<0xFF800000> : tensor<f32>
+    %zero_f32 = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+    %c30_bf16 = stablehlo.constant dense<3.000000e+01> : tensor<2x4x32xbf16>
+    %c1_bf16 = stablehlo.constant dense<1.000000e+00> : tensor<2x4x32xbf16>
+    %wt = stablehlo.transpose %w, dims = [1, 0] : (tensor<32x16xbf16>) -> tensor<16x32xbf16>
+    %logits_2d = stablehlo.dot_general %x, %wt, contracting_dims = [1] x [0] : (tensor<8x16xbf16>, tensor<16x32xbf16>) -> tensor<8x32xbf16>
+    %logits_3d = stablehlo.reshape %logits_2d : (tensor<8x32xbf16>) -> tensor<2x4x32xbf16>
+    %div_3d = stablehlo.divide %logits_3d, %c30_bf16 : tensor<2x4x32xbf16>
+    %tanh_3d = stablehlo.tanh %div_3d : tensor<2x4x32xbf16>
+    %mul_3d = stablehlo.multiply %tanh_3d, %c30_bf16 : tensor<2x4x32xbf16>
+    %capped_f32_3d = stablehlo.convert %mul_3d : (tensor<2x4x32xbf16>) -> tensor<2x4x32xf32>
+    %capped_f32_2d = stablehlo.reshape %capped_f32_3d : (tensor<2x4x32xf32>) -> tensor<8x32xf32>
+    %max = stablehlo.reduce(%capped_f32_2d init: %min_f32) across dimensions = [1] : (tensor<8x32xf32>, tensor<f32>) -> tensor<8xf32>
+     reducer(%lhs: tensor<f32>, %rhs: tensor<f32>) {
+      %m = stablehlo.maximum %lhs, %rhs : tensor<f32>
+      stablehlo.return %m : tensor<f32>
+    }
+    %bcast_max = stablehlo.broadcast_in_dim %max, dims = [0] : (tensor<8xf32>) -> tensor<8x32xf32>
+    %shifted = stablehlo.subtract %capped_f32_2d, %bcast_max : tensor<8x32xf32>
+    %exp = stablehlo.exponential %shifted : tensor<8x32xf32>
+    %sum = stablehlo.reduce(%exp init: %zero_f32) across dimensions = [1] : (tensor<8x32xf32>, tensor<f32>) -> tensor<8xf32>
+     reducer(%lhs: tensor<f32>, %rhs: tensor<f32>) {
+      %a = stablehlo.add %lhs, %rhs : tensor<f32>
+      stablehlo.return %a : tensor<f32>
+    }
+    %log_sum = stablehlo.log %sum : tensor<8xf32>
+    %bcast_log = stablehlo.broadcast_in_dim %log_sum, dims = [0] : (tensor<8xf32>) -> tensor<8x32xf32>
+    %log_probs = stablehlo.subtract %shifted, %bcast_log : tensor<8x32xf32>
+    %probs = stablehlo.exponential %log_probs : tensor<8x32xf32>
+    %grad_lsm = stablehlo.subtract %dy, %probs : tensor<8x32xf32>
+    %grad_3d_f32 = stablehlo.reshape %grad_lsm : (tensor<8x32xf32>) -> tensor<2x4x32xf32>
+    %grad_3d_bf16 = stablehlo.convert %grad_3d_f32 : (tensor<2x4x32xf32>) -> tensor<2x4x32xbf16>
+    %grad_scaled = stablehlo.multiply %grad_3d_bf16, %c30_bf16 : tensor<2x4x32xbf16>
+    %tanh_sq = stablehlo.multiply %tanh_3d, %tanh_3d : tensor<2x4x32xbf16>
+    %one_minus = stablehlo.subtract %c1_bf16, %tanh_sq : tensor<2x4x32xbf16>
+    %tanh_bwd = stablehlo.multiply %grad_scaled, %one_minus : tensor<2x4x32xbf16>
+    %grad_unscaled = stablehlo.divide %tanh_bwd, %c30_bf16 : tensor<2x4x32xbf16>
+    %grad_2d = stablehlo.reshape %grad_unscaled : (tensor<2x4x32xbf16>) -> tensor<8x32xbf16>
+    %grad_2d_t = stablehlo.transpose %grad_2d, dims = [1, 0] : (tensor<8x32xbf16>) -> tensor<32x8xbf16>
+    %dw = stablehlo.dot_general %grad_2d_t, %x, contracting_dims = [1] x [0] : (tensor<32x8xbf16>, tensor<8x16xbf16>) -> tensor<32x16xbf16>
+    %dx = stablehlo.dot_general %grad_2d, %w, contracting_dims = [1] x [0] : (tensor<8x32xbf16>, tensor<32x16xbf16>) -> tensor<8x16xbf16>
+    return %log_probs, %dw, %dx : tensor<8x32xf32>, tensor<32x16xbf16>, tensor<8x16xbf16>
+  }
+}
+)mlir";
+
+  mlir::DialectRegistry registry;
+  mlir::stablehlo::registerAllDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::parseSourceString<mlir::ModuleOp>(kIr, &context);
+  ASSERT_TRUE(module);
+
+  EXPECT_THAT(RunTorchTpuOptimizationPasses(*module, &context), IsOk());
+
+  int rank3_tensor_count = 0;
+  int bf16_max_reduce_count = 0;
+  int barrier_count = 0;
+  int div_count = 0;
+
+  module->walk([&](mlir::Operation* op) {
+    for (mlir::Value res : op->getResults()) {
+      if (auto rtt = mlir::dyn_cast<mlir::RankedTensorType>(res.getType())) {
+        if (rtt.getRank() == 3) {
+          ++rank3_tensor_count;
+        }
+      }
+    }
+    if (llvm::isa<mlir::stablehlo::OptimizationBarrierOp>(op)) {
+      ++barrier_count;
+    }
+    if (llvm::isa<mlir::stablehlo::DivOp>(op)) {
+      ++div_count;
+    }
+    if (auto reduce = mlir::dyn_cast<mlir::stablehlo::ReduceOp>(op)) {
+      auto res_ty =
+          mlir::dyn_cast<mlir::RankedTensorType>(reduce.getResult(0).getType());
+      if (res_ty && res_ty.getElementType().isBF16()) {
+        reduce.getBody().walk(
+            [&](mlir::stablehlo::MaxOp) { ++bf16_max_reduce_count; });
+      }
+    }
+  });
+
+  EXPECT_EQ(rank3_tensor_count, 0);
+  EXPECT_EQ(bf16_max_reduce_count, 1);
+  EXPECT_EQ(barrier_count, 1);
+  EXPECT_EQ(div_count, 1);
+}
+
 }  // namespace
 }  // namespace torch_tpu
