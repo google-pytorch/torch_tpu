@@ -670,7 +670,24 @@ CompileResult PyTraverseAndCompile(
     bool build_mlir_module = false, bool use_stablehlo_bounds = false,
     std::optional<std::vector<py::object>> argument_layouts_opt = std::nullopt,
     const std::vector<int64_t>& donated_inputs = {},  // INT_VEC_OK
-    const std::optional<std::string>& module_name = std::nullopt) {
+    const std::optional<std::string>& module_name = std::nullopt,
+    bool compile_executable = true) {
+  if (!compile_executable) {
+    ScopedPythonContextCapturer capturer(OpName::kCompileMlir);
+    ScopedPythonContextProvider provider(
+        ScopedPythonContextCapturer::GetContext());
+    auto options = ConvertTraverseAndCompileOptions(
+        argument_tensors, fast_compile, build_mlir_module, use_stablehlo_bounds,
+        std::move(argument_layouts_opt), donated_inputs, module_name);
+    options.compile_executable = false;
+    absl::StatusOr<AsyncCompileResult> status_or;
+    {
+      py::gil_scoped_release release;
+      status_or = TraverseAndCompile(result_tensors, argument_tensors, options);
+    }
+    TT_ASSIGN_OR_THROW(AsyncCompileResult result, std::move(status_or));
+    return CompileResult{.module = result.module(), .executable = nullptr};
+  }
   AsyncCompileResult async_result = PyAsyncTraverseAndCompile(
       result_tensors, argument_tensors, fast_compile, build_mlir_module,
       use_stablehlo_bounds, std::move(argument_layouts_opt), donated_inputs,
@@ -2234,27 +2251,30 @@ TT_PYBIND11_MODULE(tpu_torch_compile, m) {
   m.def("get_default_layout", &PyGetDefaultLayout, py::arg("dtype"),
         py::arg("shape"));
   m.def("is_device_shape_dynamic", &PyIsDeviceShapeDynamic, py::arg("tensor"));
-  m.def("traverse_and_compile", PyTraverseAndCompile, py::arg("result_tensors"),
-        py::arg("argument_tensors"), py::arg("fast_compile") = false,
-        py::arg("build_mlir_module") = false,
-        py::arg("use_stablehlo_bounds") = false,
-        py::arg("argument_layouts") = py::none(),
-        py::arg("donated_inputs") = std::vector<int64_t>{},  // INT_VEC_OK
-        py::arg("module_name") = py::none(),
-        "Traverses the graph from outputs to arguments and compiles it. \n\n"
-        "Args:\n"
-        "  result_tensors: The output tensors to compile.\n"
-        "  argument_tensors: The input tensors to compile.\n"
-        "  fast_compile: Whether to use the fast compile mode.\n"
-        "  build_mlir_module: Whether to build the MLIR module.\n"
-        "  use_stablehlo_bounds: Whether to use the StableHLO bounds for"
-        "    dynamic inputs.\n"
-        "  argument_layouts: Optional layout of the input arguments. If not"
-        "    empty, the size must match the number of arguments.\n"
-        "  donated_inputs: Optional list of argument indices to donate.\n"
-        "  module_name: Optional name for the compiled MLIR module.\n"
-        "Returns:\n"
-        "  CompileResult: The compiled module and executable.");
+  m.def(
+      "traverse_and_compile", PyTraverseAndCompile, py::arg("result_tensors"),
+      py::arg("argument_tensors"), py::arg("fast_compile") = false,
+      py::arg("build_mlir_module") = false,
+      py::arg("use_stablehlo_bounds") = false,
+      py::arg("argument_layouts") = py::none(),
+      py::arg("donated_inputs") = std::vector<int64_t>{},  // INT_VEC_OK
+      py::arg("module_name") = py::none(), py::arg("compile_executable") = true,
+      "Traverses the graph from outputs to arguments and compiles it. \n\n"
+      "Args:\n"
+      "  result_tensors: The output tensors to compile.\n"
+      "  argument_tensors: The input tensors to compile.\n"
+      "  fast_compile: Whether to use the fast compile mode.\n"
+      "  build_mlir_module: Whether to build the MLIR module.\n"
+      "  use_stablehlo_bounds: Whether to use the StableHLO bounds for"
+      "    dynamic inputs.\n"
+      "  argument_layouts: Optional layout of the input arguments. If not"
+      "    empty, the size must match the number of arguments.\n"
+      "  donated_inputs: Optional list of argument indices to donate.\n"
+      "  module_name: Optional name for the compiled MLIR module.\n"
+      "  compile_executable: Whether to XLA-compile the graph. If false, only\n"
+      "    the MLIR module is built and the executable is None.\n"
+      "Returns:\n"
+      "  CompileResult: The compiled module and executable.");
 
   m.def("async_traverse_and_compile", PyAsyncTraverseAndCompile,
         py::arg("result_tensors"), py::arg("argument_tensors"),
