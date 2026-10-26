@@ -29,6 +29,40 @@ package(
 )
 
 torch_tpu_cc_library(
+    name = "canonicalize_axis_unbind_and_zero_padded_sums",
+    srcs = ["canonicalize_axis_unbind_and_zero_padded_sums.cc"],
+    hdrs = ["canonicalize_axis_unbind_and_zero_padded_sums.h"],
+    deps = [
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:Support",
+        "@llvm-project//mlir:TransformUtils",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "canonicalize_axis_unbind_and_zero_padded_sums_test",
+    srcs = ["canonicalize_axis_unbind_and_zero_padded_sums_test.cc"],
+    deps = [
+        "//csrc/common:oss_test_main",
+        "//csrc/mlir:pipeline",
+        "@com_google_absl//absl/status:status_matchers",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Parser",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:reference_api",
+        "@stablehlo//:reference_configuration",
+        "@stablehlo//:register",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "dummy_pass",
     srcs = ["dummy_pass.cc"],
     hdrs = ["dummy_pass.h"],

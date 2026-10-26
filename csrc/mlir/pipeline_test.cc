@@ -289,5 +289,70 @@ module {
   EXPECT_EQ(max_reduce_count, 2);
 }
 
+TEST(PipelineTest, CanonicalizesAxisUnbindAndZeroPaddedSums) {
+  constexpr const char* kIr = R"mlir(
+module {
+  func.func @main(
+      %x: tensor<2x4x2x128xf32>,
+      %g0: tensor<2x4x128xf32>,
+      %g1: tensor<2x4x128xf32>)
+      -> (tensor<2x4x128xf32>, tensor<2x4x128xf32>, tensor<2x4x2x128xf32>) {
+    %s0 = stablehlo.slice %x [0:2, 0:4, 0:1, 0:128]
+        : (tensor<2x4x2x128xf32>) -> tensor<2x4x1x128xf32>
+    %r0 = stablehlo.reshape %s0
+        : (tensor<2x4x1x128xf32>) -> tensor<2x4x128xf32>
+    %s1 = stablehlo.slice %x [0:2, 0:4, 1:2, 0:128]
+        : (tensor<2x4x2x128xf32>) -> tensor<2x4x1x128xf32>
+    %r1 = stablehlo.reshape %s1
+        : (tensor<2x4x1x128xf32>) -> tensor<2x4x128xf32>
+    %zero = stablehlo.constant dense<0.0> : tensor<f32>
+    %u0 = stablehlo.reshape %g0
+        : (tensor<2x4x128xf32>) -> tensor<2x4x1x128xf32>
+    %p0 = stablehlo.pad %u0, %zero,
+        low = [0, 0, 0, 0], high = [0, 0, 1, 0], interior = [0, 0, 0, 0]
+        : (tensor<2x4x1x128xf32>, tensor<f32>) -> tensor<2x4x2x128xf32>
+    %u1 = stablehlo.reshape %g1
+        : (tensor<2x4x128xf32>) -> tensor<2x4x1x128xf32>
+    %p1 = stablehlo.pad %u1, %zero,
+        low = [0, 0, 1, 0], high = [0, 0, 0, 0], interior = [0, 0, 0, 0]
+        : (tensor<2x4x1x128xf32>, tensor<f32>) -> tensor<2x4x2x128xf32>
+    %sum = stablehlo.add %p0, %p1 : tensor<2x4x2x128xf32>
+    return %r0, %r1, %sum
+        : tensor<2x4x128xf32>, tensor<2x4x128xf32>, tensor<2x4x2x128xf32>
+  }
+}
+)mlir";
+
+  mlir::DialectRegistry registry;
+  mlir::stablehlo::registerAllDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::parseSourceString<mlir::ModuleOp>(kIr, &context);
+  ASSERT_TRUE(module);
+
+  EXPECT_THAT(RunTorchTpuOptimizationPasses(*module, &context), IsOk());
+
+  int pad_count = 0;
+  int add_count = 0;
+  int concat_count = 0;
+  module->walk([&](mlir::Operation* op) {
+    if (mlir::isa<mlir::stablehlo::PadOp>(op)) {
+      ++pad_count;
+    }
+    if (mlir::isa<mlir::stablehlo::AddOp>(op)) {
+      ++add_count;
+    }
+    if (mlir::isa<mlir::stablehlo::ConcatenateOp>(op)) {
+      ++concat_count;
+    }
+  });
+
+  EXPECT_EQ(pad_count, 0);
+  EXPECT_EQ(add_count, 0);
+  EXPECT_EQ(concat_count, 1);
+}
+
 }  // namespace
 }  // namespace torch_tpu
