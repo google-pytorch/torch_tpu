@@ -84,9 +84,8 @@ absl::StatusOr<mlir::SmallVector<mlir::MlirOp>> BuildDistributedAllGatherShlo(
       Dimensions stacked_shape;
       stacked_shape.reserve(input_shape.size() + 1);
       stacked_shape.push_back(group_size);
-      for (int64_t dim : input_shape) {
-        stacked_shape.push_back(dim);
-      }
+      stacked_shape.insert(stacked_shape.end(), input_shape.begin(),
+                           input_shape.end());
       return mlir::SmallVector<mlir::MlirOp>{
           mlir::stablehlo::Reshape(gather_output, stacked_shape)};
     }
