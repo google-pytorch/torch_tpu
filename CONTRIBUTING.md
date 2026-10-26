@@ -211,8 +211,7 @@ A constructive review process relies on mutual respect for time and attention.
 *   **Small, focused PRs**: Submit pull requests that do one thing well. A
     concise 100-line diff gets reviewed far faster than a 1,000-line rewrite.
 *   **Clear context**: Explain what your change does and why it is needed. All
-    non-trivial PRs must link to the relevant GitHub issue
-    [using keywords](https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/using-keywords-in-issues-and-pull-requests).
+    non-trivial PRs must [link to the relevant GitHub issue](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue).
 *   **Shepherd your change**: Keep an eye on CI checks, address reviewer notes,
     and let us know if you get blocked or need to step away.
 
