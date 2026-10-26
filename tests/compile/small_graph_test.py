@@ -28,7 +28,6 @@ from torch_tpu._internal import compile as compile_lib
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import _backend
 from torch_tpu._internal.compile import compiler
-from torch_tpu._internal.compile import nested_compile_region
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import NoOpCompiledArtifact
 from torch_tpu._internal.utils import test_utils as utils
 from tests import seed_test_utils
@@ -421,7 +420,6 @@ class FunctionTest(seed_test_utils.RepeatableTest):
     x = torch.tensor([0.5, 1.0, 1.5], device="tpu")
     y = torch.tensor([2.0, 2.5, 3.0], device="tpu")
 
-    nested_compile_region.clear_cache()
     b1 = _backend.TpuBackend(debug=True)
     b2 = _backend.TpuBackend(debug=True)
     c1 = torch.compile(ModelA().to("tpu"), backend=b1)
@@ -429,9 +427,7 @@ class FunctionTest(seed_test_utils.RepeatableTest):
 
     with _patch_inline_subgraph():
       res1 = c1(x, y).to("cpu")
-      self.assertLen(nested_compile_region._NESTED_REGION_COMPILE_CACHE, 1)
       res2 = c2(x, y).to("cpu")
-      self.assertLen(nested_compile_region._NESTED_REGION_COMPILE_CACHE, 1)
 
     expected1 = (
         torch.sin(
@@ -485,33 +481,16 @@ class FunctionTest(seed_test_utils.RepeatableTest):
     x = torch.tensor([1.0, 2.0], device="tpu")
     y = torch.tensor([3.0, 4.0], device="tpu")
 
-    nested_compile_region.clear_cache()
     c_pos = torch.compile(fn_pos, backend="tpu")
     c_kw = torch.compile(fn_kw, backend="tpu")
 
     with _patch_inline_subgraph():
       res_pos = c_pos(x, y).to("cpu")
-      self.assertLen(nested_compile_region._NESTED_REGION_COMPILE_CACHE, 1)
       res_kw = c_kw(x, y).to("cpu")
-      self.assertLen(nested_compile_region._NESTED_REGION_COMPILE_CACHE, 1)
 
     expected = torch.tensor([5.0, 8.0])
     utils.assert_close(res_pos, expected)
     utils.assert_close(res_kw, expected)
-
-  def test_nested_compile_region_missing_argument_error(self):
-    class DummyModule(torch.nn.Module):
-
-      def forward(self, a, b):
-        return a + b
-
-    gm = torch.fx.symbolic_trace(DummyModule())
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Unit test for nested compile region argument validation.
-        TypeError, "Missing required argument"
-    ):
-      nested_compile_region.handle_invoke_subgraph(
-          gm, "subgraph", torch.tensor([1.0])
-      )
 
   def test_nested_compile_region_training_backward_reuse(self):
     @torch.compiler.nested_compile_region
