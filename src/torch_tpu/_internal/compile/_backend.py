@@ -64,6 +64,7 @@ from torch_tpu._internal.compile import compiler
 from torch_tpu._internal.compile import split_compiler
 from torch_tpu._internal.compile.debug import TpuCompileDebug
 from torch_tpu._internal.compile.dynamic import dynamic_compiler
+from torch_tpu._internal.compile.fx_passes import invoke_subgraph_to_scan
 from torch_tpu._internal.distributed import device_mesh
 from torch_tpu._internal.distributed import process_group_utils
 from torch_tpu._internal.sync import sync
@@ -940,9 +941,24 @@ class TpuBackend:
         if async_compile
         else contextlib.nullcontext()
     )
-    with _serialization_context(
-        graph_module, example_inputs, serializable
-    ) as captured_entry:
+    # How `invoke_subgraph_to_scan` rewrites the graph depends on annotations,
+    # which are node metadata and so not part of the AOTAutograd cache key.
+    # Tag the key with them, so that changing them recompiles.
+    scan_tag = invoke_subgraph_to_scan.cache_key_tag(graph_module)
+    tag = compiler_config.cache_key_tag
+    scan_tag_context = (
+        compiler_config.patch(  # pyrefly: ignore[missing-attribute]
+            cache_key_tag=f"{tag}:{scan_tag}" if tag else scan_tag
+        )
+        if scan_tag
+        else contextlib.nullcontext()
+    )
+    with (
+        scan_tag_context,
+        _serialization_context(
+            graph_module, example_inputs, serializable
+        ) as captured_entry,
+    ):
       with save_context:
         with execution_mode.set_eager_mode(
             execution_mode.EagerMode._INTERNAL_COMPILE_FX_GRAPH
