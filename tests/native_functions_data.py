@@ -269,7 +269,6 @@ UNREGISTERED_OPS = frozenset([
     'miopen_depthwise_convolution',
     'miopen_rnn',
     'miopen_rnn_backward',
-    'mish.out',
     'mkldnn_adaptive_avg_pool2d',
     'mkldnn_adaptive_avg_pool2d.out',
     'mkldnn_adaptive_avg_pool2d_backward',
@@ -497,6 +496,9 @@ REGISTRATION_OVERRIDES = frozenset([
     # masked_fill_.
     'masked_fill.Scalar',
     'masked_fill.Tensor',
+    # mish_backward is registered to lower directly to a single fused StableHLO
+    # kernel (BuildMishBackwardShlo), overriding the default decomposition.
+    'mish_backward',
     'native_layer_norm',  # pending removal
     # new_full, new_ones, new_zeros, ones, and ones_like are registered
     # directly to lower to a single StableHLO constant instead of the composite

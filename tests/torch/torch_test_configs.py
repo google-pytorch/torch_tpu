@@ -77,6 +77,10 @@ TEST_EXCLUSIONS: Final[
 ] = {
     # TODO(b/573758862): track per-test exclusion reasons and triage.
     # go/keep-sorted start block=yes
+    "distributed/_composable/fsdp/test_fully_shard_comm": {
+        # TODO(b/581257203): Re-enable once multi-threaded FSDP stream sync is fixed.
+        "TestFullyShardCustomAllocation": ["test_strided_allocation"],
+    },
     "distributed/fsdp/test_utils": {
         "TestUtils": ["test_apply_to_tensors"],
     },
