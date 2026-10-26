@@ -14104,6 +14104,312 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     res_cpu = torch.ops.aten.silu_backward(grad_out, x)
     utils.assert_close(res_tpu, res_cpu)
 
+  # ============================================================================
+  # aten::mish, aten::mish_, aten::mish.out, and aten::mish_backward tests
+  # ============================================================================
+
+  def test_mish(self):
+    for dtype in (torch.float32, torch.float64, torch.bfloat16, torch.float16):
+      for shape in ((), (0,), (5,), (2, 3, 4)):
+        x = torch.randn(shape, dtype=dtype)
+        self.assert_close_tpu_vs_cpu(
+            lambda device, x=x: (
+                torch.ops.aten.mish.default(to(x, device)),
+                torch.nn.functional.mish(to(x, device)),
+            ),
+            atol=2e-4,
+        )
+
+    # Non-contiguous tensors
+    x_nc = torch.randn(4, 6, dtype=torch.float32)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.nn.functional.mish(to(x_nc, device).t()[:, ::2]),
+        rtol=1e-4,
+        atol=2e-4,
+    )
+
+    # Extreme values
+    for dtype in (torch.float32, torch.float64, torch.bfloat16, torch.float16):
+      x_ext = torch.tensor(
+          [
+              -100.0,
+              -50.0,
+              -20.0,
+              -10.0,
+              -1.0,
+              0.0,
+              1.0,
+              10.0,
+              20.0,
+              50.0,
+              88.0,
+              89.0,
+              100.0,
+              float("inf"),
+              float("-inf"),
+              float("nan"),
+          ],
+          dtype=dtype,
+      )
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x_ext=x_ext: torch.nn.functional.mish(
+              to(x_ext, device)
+          ),
+          atol=2e-4,
+      )
+
+    # out= variant: pre-allocated same shape, resized from empty(0), and in-place aliasing out=x
+    x_out = torch.randn(2, 3, dtype=torch.float32)
+
+    def compute_out(device):
+      inp = to(x_out, device)
+      out_same = torch.empty_like(inp)
+      torch.ops.aten.mish.out(inp, out=out_same)
+      out_empty = torch.empty(0, dtype=torch.float32, device=device)
+      torch.ops.aten.mish.out(inp, out=out_empty)
+      out_alias = inp.clone()
+      torch.ops.aten.mish.out(out_alias, out=out_alias)
+      return out_same, out_empty, out_alias
+
+    self.assert_close_tpu_vs_cpu(compute_out, rtol=1e-4, atol=2e-4)
+
+    # In-place mish_ and F.mish(x, inplace=True)
+    def compute_inplace(device):
+      x1 = to(x_out, device).clone()
+      torch.ops.aten.mish_.default(x1)
+      x2 = to(x_out, device).clone()
+      torch.nn.functional.mish(x2, inplace=True)
+      return x1, x2
+
+    self.assert_close_tpu_vs_cpu(compute_inplace, rtol=1e-4, atol=2e-4)
+
+    # End-to-end autograd and second-order autograd
+    grad_out = torch.randn(2, 3, dtype=torch.float32)
+
+    def compute_autograd(device):
+      inp = to(x_out, device).detach().requires_grad_(True)
+      y = torch.nn.functional.mish(inp)
+      y.backward(to(grad_out, device))
+      return y.detach(), inp.grad
+
+    self.assert_close_tpu_vs_cpu(compute_autograd, rtol=1e-4, atol=2e-4)
+
+    def compute_second_order(device):
+      inp = to(x_out, device).detach().requires_grad_(True)
+      g = to(grad_out, device).detach().requires_grad_(True)
+      (dx,) = torch.autograd.grad(
+          torch.nn.functional.mish(inp), inp, g, create_graph=True
+      )
+      ddx, dg = torch.autograd.grad(dx.sum(), (inp, g))
+      return dx.detach(), ddx, dg
+
+    self.assert_close_tpu_vs_cpu(compute_second_order, rtol=1e-4, atol=2e-4)
+
+    # torch.compile
+    @torch.compile(backend="tpu")
+    def compiled_mish(t):
+      return torch.nn.functional.mish(t)
+
+    res_tpu = compiled_mish(to(x_out, "tpu")).cpu()
+    res_cpu = torch.nn.functional.mish(x_out)
+    utils.assert_close(res_tpu, res_cpu, rtol=1e-4, atol=2e-4)
+
+  @parameterized.product(
+      dtype=[torch.float32, torch.float64, torch.bfloat16, torch.float16],
+      shape=[(5,), (2, 3, 4), ()],
+  )
+  def test_mish_backward(self, dtype, shape):
+    grad_out = torch.randn(shape, dtype=dtype)
+    x = torch.randn(shape, dtype=dtype)
+
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.ops.aten.mish_backward(
+            to(grad_out, device), to(x, device)
+        ),
+        atol=2e-4,
+    )
+
+  def test_mish_backward_zero_numel(self):
+    for shape in ((0,), (2, 0, 3)):
+      grad_out = torch.empty(shape, dtype=torch.float32)
+      x = torch.empty(shape, dtype=torch.float32)
+      self.assert_close_tpu_vs_cpu(
+          lambda device, g=grad_out, inp=x: torch.ops.aten.mish_backward(
+              to(g, device), to(inp, device)
+          )
+      )
+
+  @parameterized.parameters(
+      torch.float32, torch.float64, torch.bfloat16, torch.float16
+  )
+  def test_mish_backward_extreme_values(self, dtype):
+    x = torch.tensor(
+        [
+            -100.0,
+            -50.0,
+            -20.0,
+            -10.0,
+            -1.0,
+            -1e-3,
+            -0.0,
+            0.0,
+            1e-3,
+            1.0,
+            10.0,
+            20.0,
+            50.0,
+            88.0,
+            89.0,
+            100.0,
+            float("inf"),
+            float("-inf"),
+            float("nan"),
+        ],
+        dtype=dtype,
+    )
+    grad_out = torch.ones_like(x)
+
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.ops.aten.mish_backward(
+            to(grad_out, device), to(x, device)
+        ),
+        atol=2e-4,
+    )
+
+  @parameterized.parameters(
+      ((2, 3), (3,)),
+      ((1, 4), (3, 1)),
+      ((), (2, 2)),
+      ((2, 0, 3), (1, 0, 1)),
+  )
+  def test_mish_backward_broadcasting(self, grad_shape, self_shape):
+    grad_out = torch.randn(grad_shape, dtype=torch.float32)
+    x = torch.randn(self_shape, dtype=torch.float32)
+
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.ops.aten.mish_backward(
+            to(grad_out, device), to(x, device)
+        ),
+        rtol=1e-4,
+        atol=2e-4,
+    )
+
+  def test_mish_backward_non_contiguous(self):
+    grad_out = torch.randn(4, 6, dtype=torch.float32)
+    x = torch.randn(6, 4, dtype=torch.float32)
+
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.ops.aten.mish_backward(
+            to(grad_out, device)[:, ::2], to(x, device).t()[:, ::2]
+        ),
+        rtol=1e-4,
+        atol=2e-4,
+    )
+
+  def test_mish_backward_fake_tensor(self):
+    with fake_tensor.FakeTensorMode():
+      fg = torch.randn(2, 1, 4, dtype=torch.bfloat16, device="tpu")
+      fx = torch.randn(2, 3, 4, dtype=torch.bfloat16, device="tpu")
+      f_out = torch.ops.aten.mish_backward(fg, fx)
+      self.assertEqual(f_out.shape, (2, 3, 4))
+      self.assertEqual(f_out.dtype, torch.bfloat16)
+
+      f_int = torch.ones(2, 3, dtype=torch.int32, device="tpu")
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing FakeTensorMode dtype validation.
+          (RuntimeError, NotImplementedError), "not implemented for"
+      ):
+        torch.ops.aten.mish_backward(f_int, f_int)
+
+      f_f32 = torch.ones(2, 3, dtype=torch.float32, device="tpu")
+      f_fp8 = torch.zeros(2, 3, dtype=torch.float8_e4m3fn, device="tpu")
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing FakeTensorMode mixed float8 validation.
+          NotImplementedError, "not implemented for float8_e4m3fn"
+      ):
+        torch.ops.aten.mish_backward(f_fp8, f_f32)
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing FakeTensorMode mixed float8 validation.
+          NotImplementedError, "not implemented for float8_e4m3fn"
+      ):
+        torch.ops.aten.mish_backward(f_f32, f_fp8)
+
+  @parameterized.named_parameters(
+      (
+          "bfloat16_grad_float32_self",
+          torch.bfloat16,
+          torch.float32,
+          torch.float32,
+      ),
+      (
+          "float32_grad_bfloat16_self",
+          torch.float32,
+          torch.bfloat16,
+          torch.bfloat16,
+      ),
+  )
+  def test_mish_backward_mixed_dtypes(
+      self, grad_dtype, self_dtype, expected_dtype
+  ):
+    grad_out = torch.randn(2, 3, dtype=grad_dtype)
+    x = torch.randn(2, 3, dtype=self_dtype)
+
+    def compute(device):
+      res = torch.ops.aten.mish_backward(to(grad_out, device), to(x, device))
+      self.assertEqual(res.dtype, expected_dtype)
+      return res
+
+    self.assert_close_tpu_vs_cpu(compute, rtol=1e-2, atol=1e-2)
+
+  def test_mish_backward_error_non_broadcastable(self):
+    grad_out = torch.randn(2, 3, dtype=torch.float32)
+    x = torch.randn(4, 5, dtype=torch.float32)
+
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.ops.aten.mish_backward(
+            to(grad_out, device), to(x, device)
+        ),
+        allow_failure=True,
+    )
+
+  def test_mish_backward_compile(self):
+    x = torch.randn(3, 4, dtype=torch.bfloat16)
+    grad_out = torch.randn(3, 4, dtype=torch.bfloat16)
+
+    def mish_fwd_bwd(inp, g):
+      out = torch.nn.functional.mish(inp)
+      return torch.autograd.grad(out, inp, g)[0]
+
+    bwd_fx = make_fx(mish_fwd_bwd, tracing_mode="fake")(
+        to(x, "tpu").requires_grad_(True), to(grad_out, "tpu")
+    )
+    bwd_targets = [
+        n.target for n in bwd_fx.graph.nodes if n.op == "call_function"
+    ]
+    self.assertIn(torch.ops.aten.mish_backward.default, bwd_targets)
+
+    @torch.compile(backend="tpu")
+    def compiled_mish_bwd(g, inp):
+      return torch.ops.aten.mish_backward(g, inp)
+
+    res_tpu = compiled_mish_bwd(to(grad_out, "tpu"), to(x, "tpu")).cpu()
+    res_cpu = torch.ops.aten.mish_backward(grad_out, x)
+    utils.assert_close(res_tpu, res_cpu, atol=2e-4)
+
+    # Verify symbolic dynamic dimensions are not specialized by mish or mish_backward.
+    self.assertEmpty(
+        run_with_dynamic_dims(
+            torch.nn.functional.mish,
+            [(torch.randn(3, 4, device="tpu"), [True, True])],
+        )
+    )
+    self.assertEmpty(
+        run_with_dynamic_dims(
+            torch.ops.aten.mish_backward,
+            [
+                (torch.randn(3, 4, device="tpu"), [True, True]),
+                (torch.randn(3, 4, device="tpu"), [True, True]),
+            ],
+        )
+    )
+
   def test_min_max_rwb_fusion(self):
     # Lowering min/max value outputs to MaxOp/MinOp (instead of SelectOp)
     # ensures XLA DCE simplifies unused-index reductions to kMaximum/kMinimum

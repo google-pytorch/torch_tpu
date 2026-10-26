@@ -851,6 +851,7 @@ torch_tpu_cc_library(
         "//csrc/ops/masked_scatter:masked_scatter_aten_kernels",
         "//csrc/ops/masked_select:masked_select_aten_kernels",
         "//csrc/ops/min_max:min_max_aten_kernels",
+        "//csrc/ops/mish:mish_aten_kernels",
         "//csrc/ops/mm:mm_aten_kernels",
         "//csrc/ops/mse_loss:mse_loss_aten_kernels",
         "//csrc/ops/multinomial:multinomial_aten_kernels",

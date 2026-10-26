@@ -163,6 +163,7 @@
 #include "csrc/ops/masked_scatter/masked_scatter_aten_kernels.h"
 #include "csrc/ops/masked_select/masked_select_aten_kernels.h"
 #include "csrc/ops/min_max/min_max_aten_kernels.h"
+#include "csrc/ops/mish/mish_aten_kernels.h"
 #include "csrc/ops/mm/mm_aten_kernels.h"
 #include "csrc/ops/mse_loss/mse_loss_aten_kernels.h"
 #include "csrc/ops/multinomial/multinomial_aten_kernels.h"
@@ -873,6 +874,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kMinDimMin>(m, AtenMinDimMin);
   ImplStable<OpName::kMinUnaryOut>(m, AtenMinUnaryOut);
   ImplStable<OpName::kMinimumOut>(m, AtenMinimumOut);
+  ImplStable<OpName::kMishBackward>(m, AtenMishBackward);
+  ImplStable<OpName::kMishOut>(m, AtenMishOut);
   ImplStable<OpName::kMmDtype>(m, AtenMmDtype);
   ImplStable<OpName::kMmDtypeOut>(m, AtenMmDtypeOut);
   ImplStable<OpName::kMmOut>(m, AtenMmOut);
@@ -1266,6 +1269,7 @@ TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
   ImplStable<OpName::kFftRfft>(m, AtenFftRfft);
   ImplStable<OpName::kFftRfftOut>(m, AtenFftRfftOut);
   ImplStable<OpName::kLinear>(m, AtenLinearAutograd);
+  ImplStable<OpName::kMishBackward>(m, AtenMishBackwardAutograd);
   ImplStable<OpName::kNllLossNd>(m, AtenNllLossNdAutograd);
   ImplStable<OpName::kRepeatInterleaveSelfInt>(
       m, AtenRepeatInterleaveSelfIntAutograd);

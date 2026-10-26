@@ -3133,6 +3133,17 @@ class TestOps(op_testing.OpInfoTestBase):
         + _if_tpu_vs_gpu_compiled((torch.complex64,), ()),
     )
 
+  def test_nn_functional_mish(self):
+    if (
+        not op_testing._gen_gpu_golden_mode()
+        and not op_testing._dump_dtype_exclusions_mode()
+        and not op_testing._GOLDEN_GPU_DATA.get_samples(
+            "test_nn_functional_mish", op_testing.OpVariant.BASE, torch.float32
+        )
+    ):
+      self.skipTest("TODO: generate GPU goldens for nn.functional.mish")
+    self.do_test_op("nn.functional.mish")
+
   def test_nn_functional_silu(self):
     self.do_test_op(
         "nn.functional.silu",
