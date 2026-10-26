@@ -35,7 +35,6 @@ torch_tpu_cc_library(
         "//csrc/ops:unary_aten_kernels",
         "//csrc/ops/macros:kernel",
         "//shims/torch:aten_headers",
-        "//shims/torch:torch_headers",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
     ],
 )
