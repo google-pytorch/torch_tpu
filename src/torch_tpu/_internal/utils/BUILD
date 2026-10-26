@@ -53,6 +53,7 @@ torch_tpu_py_library(
         "//src/torch_tpu/_internal/execution_mode",
         "//src/torch_tpu/_internal/export",
         "//src/torch_tpu/_internal/sync",
+        "@pypi//packaging",
     ],
 )
 
@@ -190,6 +191,7 @@ torch_tpu_py_library(
         ":tt_warnings",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal:warnings",
+        "@pypi//packaging",
     ],
 )
 

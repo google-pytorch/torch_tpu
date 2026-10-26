@@ -86,6 +86,7 @@ torch_tpu_py_library(
 torch_tpu_py_library(
     name = "_versioned_so_loader",
     srcs = ["_versioned_so_loader.py"],
+    deps = ["@pypi//packaging"],
 )
 
 torch_tpu_py_library(

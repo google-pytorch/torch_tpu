@@ -42,6 +42,7 @@ import sys
 import textwrap
 from typing import Any, Callable, Mapping, Optional, TypeVar
 
+from packaging import version as packaging_version
 import torch
 from torch_tpu._internal import warnings
 from torch_tpu._internal.utils import tt_warnings
@@ -57,18 +58,8 @@ _FRAMEWORK_PACKAGES: tuple[str, ...] = ("torch", "torch_tpu")
 
 
 def parse_version(version: str) -> tuple[int, ...]:
-  """Parses leading numeric components from a version string into a tuple."""
-  components = []
-  for part in version.split("."):
-    digits = ""
-    for ch in part:
-      if not ch.isdigit():
-        break
-      digits += ch
-    if not digits:
-      break
-    components.append(int(digits))
-  return tuple(components)
+  """Parses the release components of a PEP 440 version string into a tuple."""
+  return packaging_version.Version(version).release
 
 
 @functools.lru_cache(maxsize=1)

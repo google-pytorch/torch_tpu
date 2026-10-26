@@ -43,7 +43,7 @@ LibtpuVersionState& GetState() {
 
 }  // namespace
 
-void SetLibtpuVersion(std::string_view version) {
+void SetLibtpuVersion(std::string_view version, Version parsed_version) {
   LibtpuVersionState& state = GetState();
   absl::MutexLock lock(state.mutex);
   if (state.version.has_value()) {
@@ -57,7 +57,6 @@ void SetLibtpuVersion(std::string_view version) {
     ABSL_LOG(INFO) << "libtpu not installed.";
     return;
   }
-  TT_ASSIGN_OR_THROW(const Version parsed_version, Version::Parse(version));
   state.version = std::string(version);
   state.parsed_version = parsed_version;
   ABSL_LOG(INFO) << "Setting libtpu version to: " << *state.version;

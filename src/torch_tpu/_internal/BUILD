@@ -44,6 +44,7 @@ pybind_extension(
         "torch_tpu/csrc/common",
     ],
     py_deps = [
+        "@pypi//packaging",
         "//shims/torch:pytorch",
     ],
     wrap_py_init = True,
@@ -53,8 +54,10 @@ pybind_extension(
         "//csrc/common:libtpu_version",
         "//csrc/common:pybind_error_utils",
         "//csrc/common:utils",
+        "//csrc/common:version",
         "//shims/torch:torch_headers",
         "@com_google_absl//absl/log:absl_log",
+        "@com_google_absl//absl/status:statusor",
     ],
 )
 

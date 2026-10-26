@@ -50,9 +50,10 @@ import importlib.metadata
 import importlib.util
 import inspect
 import pathlib
-import re
 import sys
 import types
+
+from packaging import version as packaging_version
 
 
 def _parse(suffix: str) -> tuple[int, ...]:
@@ -78,29 +79,15 @@ def installed_torch_version() -> str | None:
     return None
 
 
-# A PEP 440 version whose release segment starts with a major.minor.patch
-# triple, which is captured; everything the grammar allows after that triple is
-# matched but discarded. Spelling it out rather than taking the leading triple
-# and ignoring the rest keeps an unparseable version unparseable (None), which
-# is what disables the dispatch instead of misdirecting it.
-_RELEASE_TRIPLE = re.compile(
-    r"""^v?(\d+)\.(\d+)\.(\d+)                               # release triple
-        (?:\.\d+)*                                             # further release parts
-        (?:[-_.]?(?:a|b|c|rc|alpha|beta|pre|preview)[-_.]?\d*)?  # pre-release
-        (?:-\d+|[-_.]?(?:post|rev|r)[-_.]?\d*)?                 # post-release
-        (?:[-_.]?dev[-_.]?\d*)?                                 # dev release
-        (?:\+[a-z0-9]+(?:[-_.][a-z0-9]+)*)?$                    # local version
-    """,
-    re.VERBOSE | re.IGNORECASE,
-)
-
-
 def version_suffix(version: str) -> str | None:
   """Turns a torch version into a glue suffix ("2.13.0+cpu" -> "2_13_0")."""
-  match = _RELEASE_TRIPLE.match(version)
-  if match is None:
+  try:
+    parsed = packaging_version.Version(version)
+  except packaging_version.InvalidVersion:
     return None
-  return "_".join(match.groups())
+  if parsed.epoch != 0 or len(parsed.release) < 3:
+    return None
+  return "_".join(str(part) for part in parsed.release[:3])
 
 
 def torch_version_suffix() -> str | None:

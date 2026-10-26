@@ -13,21 +13,87 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
 
 #include "absl/log/absl_log.h"
+#include "absl/status/statusor.h"
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/libtpu_version.h"
 #include "csrc/common/pybind_error_utils.h"
 #include "csrc/common/utils.h"
+#include "csrc/common/version.h"
+#include "pybind11/pytypes.h"
 #include "pybind11/stl.h"
 
 namespace torch_tpu {
 namespace {
+
+template <typename T>
+absl::StatusOr<T> CastVersionComponent(const pybind11::handle& obj,
+                                       std::string_view version) {
+  T value = 0;
+  bool fits = false;
+  try {
+    value = obj.cast<T>();
+    fits = (value >= 0);
+  } catch (const pybind11::builtin_exception&) {
+    fits = false;
+  } catch (const pybind11::error_already_set&) {
+    fits = false;
+  }
+  TT_RET_CHECK(fits, error::kInvalidArgument)
+      << "version component '" << pybind11::str(obj).cast<std::string>()
+      << "' overflows in '" << version << "'";
+  return value;
+}
+
+// Parses a PEP 440 version string via Python's `packaging.version.Version` into
+// a `torch_tpu::Version`.
+absl::StatusOr<Version> ParsePep440Version(std::string_view version) {
+  pybind11::object parsed;
+  pybind11::tuple release;
+  bool valid_pep440 = false;
+  try {
+    parsed = PyBindModule::Import("packaging.version").attr("Version")(version);
+    release = parsed.attr("release").cast<pybind11::tuple>();
+    valid_pep440 =
+        (parsed.attr("epoch").cast<int>() == 0 && release.size() <= 4);
+  } catch (const pybind11::error_already_set&) {
+    valid_pep440 = false;
+  }
+  TT_RET_CHECK(valid_pep440, error::kInvalidArgument)
+      << "expected a valid PEP 440 version string with at most 4 release "
+         "components, got '"
+      << version << "'";
+
+  std::array<int, 4> parts = {0, 0, 0, 0};
+  for (size_t i = 0; i < release.size(); ++i) {
+    TT_ASSIGN_OR_RETURN(parts[i],
+                        CastVersionComponent<int>(release[i], version));
+  }
+
+  int64_t dev = Version::kStable;
+  pybind11::object dev_obj = parsed.attr("dev");
+  if (!dev_obj.is_none()) {
+    TT_ASSIGN_OR_RETURN(dev, CastVersionComponent<int64_t>(dev_obj, version));
+  }
+  return Version(parts[0], parts[1], parts[2], parts[3], dev);
+}
+
+void PySetLibtpuVersion(std::string_view version) {
+  if (version.empty()) {
+    SetLibtpuVersion(version, Version::Max());
+    return;
+  }
+  TT_ASSIGN_OR_THROW(const Version parsed_version, ParsePep440Version(version));
+  SetLibtpuVersion(version, parsed_version);
+}
 
 // Returns the Boolean value of the environment variable `name`, or
 // `default_value` if the variable is unset or cannot be parsed as a Boolean.
@@ -136,7 +202,7 @@ TT_PYBIND11_MODULE(env, m) {
 #else
   m.attr("TORCH_TPU_IS_OPTIMIZED_BUILD") = false;
 #endif
-  m.def("set_libtpu_version", &SetLibtpuVersion, pybind11::arg("version"));
+  m.def("set_libtpu_version", &PySetLibtpuVersion, pybind11::arg("version"));
   m.def("get_libtpu_version", &GetLibtpuVersionString);
   m.def("reset_libtpu_version_for_testing", &ResetLibtpuVersionForTesting);
   m.def("get_enable_debug_checks", &GetEnableDebugChecks);

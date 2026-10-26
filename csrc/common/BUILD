@@ -103,13 +103,8 @@ torch_tpu_cc_library(
     srcs = ["version.cc"],
     hdrs = ["version.h"],
     deps = [
-        ":error_utils",
         "@com_google_absl//absl/log:absl_log",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
-        "@com_googlesource_code_re2//:re2",
     ],
 )
 
@@ -117,10 +112,8 @@ torch_tpu_cc_test(
     name = "version_test",
     srcs = ["version_test.cc"],
     deps = [
-        ":error_utils",
         ":version",
         "//csrc/common:oss_test_main",
-        "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/strings",
     ],
 )

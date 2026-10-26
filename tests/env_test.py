@@ -70,6 +70,18 @@ class EnvTest(seed_test_utils.RepeatableTest):
 
     self.assertEqual(env.get_libtpu_version(), expected_version)
 
+    for version in (
+        "0.0.50.1",
+        "0.0.50.1.dev20261026",
+        "0.0.47.dev20260824+nightly",
+        "0.0.47.dev202605201400",
+        "0.0.48rc1",
+        "0.1",
+    ):
+      env.reset_libtpu_version_for_testing()
+      env.set_libtpu_version(version)
+      self.assertEqual(env.get_libtpu_version(), version)
+
   def test_libtpu_version_not_loaded(self) -> None:
     self.assertIsNone(env.get_libtpu_version())
 

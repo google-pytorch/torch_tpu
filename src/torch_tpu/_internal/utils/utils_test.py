@@ -816,6 +816,7 @@ class AllTest(seed_test_utils.RepeatableTest):
     with absltest.mock.patch.object(torch, "__version__", "2.12.0.dev20260301"):
       self.assertEqual(utils.get_torch_version(), (2, 12, 0))
       self.assertGreaterEqual(utils.get_torch_version(), (2, 12))
+    self.assertEqual(utils.parse_version("0.0.50.1"), (0, 0, 50, 1))
 
 
 if __name__ == "__main__":
