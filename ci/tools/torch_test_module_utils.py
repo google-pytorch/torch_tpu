@@ -72,7 +72,6 @@ DISABLED_TEST_MODULES: Final[frozenset[str]] = frozenset({
     "nn/test_lazy_modules",
     "profiler/test_memory_profiler",
     "python_native/test_tensor_utils",
-    "test_autograd",
     "test_binary_ufuncs",
     "test_complex",
     "test_decomp",
@@ -82,14 +81,11 @@ DISABLED_TEST_MODULES: Final[frozenset[str]] = frozenset({
     "test_masked",
     "test_maskedtensor",
     "test_meta",
-    "test_modules",
     "test_multiprocessing",
     "test_nestedtensor",
-    "test_nn",
     "test_ops",
     "test_ops_fwd_gradients",
     "test_ops_gradients",
-    "test_ops_jit",
     "test_ops_unbacked",
     "test_overrides",
     "test_reductions",
@@ -101,7 +97,6 @@ DISABLED_TEST_MODULES: Final[frozenset[str]] = frozenset({
     "test_spectral_ops",
     "test_stateless_rng",
     "test_tensor_creation_ops",
-    "test_torch",
     "test_unary_ufuncs",
     # go/keep-sorted end
 })
@@ -128,13 +123,12 @@ TEST_MODULE_SHARDS: Final[Mapping[str, int]] = {
     "test_indexing": 8,
     "test_linalg": 4,
     "test_meta": 30,
-    "test_modules": 2,
+    "test_modules": 48,
     "test_nestedtensor": 5,
-    "test_nn": 2,
+    "test_nn": 10,
     "test_ops": 50,
     "test_ops_fwd_gradients": 5,
     "test_ops_gradients": 20,
-    "test_ops_jit": 6,
     "test_optim": 2,
     "test_overrides": 15,
     "test_reductions": 2,
@@ -142,7 +136,7 @@ TEST_MODULE_SHARDS: Final[Mapping[str, int]] = {
     "test_sort_and_select": 4,
     "test_tensor_creation_ops": 8,
     "test_testing": 4,
-    "test_torch": 8,
+    "test_torch": 4,
     "test_type_promotion": 4,
     "test_unary_ufuncs": 50,
     "test_view_ops": 4,
@@ -231,6 +225,16 @@ _UNRUNNABLE_TEST_MODULES: Final[frozenset[str]] = frozenset({
     # go/keep-sorted end
 })
 
+# Test modules for legacy or out-of-scope PyTorch features, e.g. TorchScript.
+_OUT_OF_SCOPE_TEST_MODULES: Final[frozenset[str]] = frozenset({
+    # go/keep-sorted start
+    # Tests OpInfo operators with TorchScript, which is deprecated in PyTorch.
+    "test_ops_jit",
+    # go/keep-sorted end
+})
+
 EXCLUDED_TEST_MODULES: Final[frozenset[str]] = (
-    _ACCELERATOR_SPECIFIC_TEST_MODULES | _UNRUNNABLE_TEST_MODULES
+    _ACCELERATOR_SPECIFIC_TEST_MODULES
+    | _OUT_OF_SCOPE_TEST_MODULES
+    | _UNRUNNABLE_TEST_MODULES
 )
