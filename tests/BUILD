@@ -1270,7 +1270,7 @@ torch_tpu_py_test(
         "requires-tpu-v6e",
         "requires-tpu-v5lite",
     ],
-    shard_count = 20,
+    shard_count = 50,
     tags = [
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
@@ -1423,7 +1423,7 @@ torch_tpu_py_test(
         "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT": "/tmp/my_cache",
     },
     main = "ops_unit_test.py",
-    shard_count = 30,
+    shard_count = 50,
     tags = [
         "fails-on-tpu-v7",  # Numeric divergence in scaled_mm on TPU v7.
         "nomsan",  # TODO: fix the test in msan mode.
@@ -1463,7 +1463,7 @@ torch_tpu_py_test(
         "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT": "/tmp/my_cache",
     },
     main = "ops_unit_test.py",
-    shard_count = 30,
+    shard_count = 50,
     tags = [
         "fails-on-tpu-v7",  # Numeric divergence in scaled_mm on TPU v7.
         "nomsan",  # TODO: fix the test in msan mode.
