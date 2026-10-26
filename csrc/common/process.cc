@@ -49,7 +49,7 @@ pid_t GetTopmostTorchTpuProcessPid() {
       return env_pid;
     }
     const pid_t self_pid = getpid();
-    SetEnv<kTorchTpuInternalTopmostPidEnvVar>(absl::StrCat(self_pid));
+    SafeSetEnv<kTorchTpuInternalTopmostPidEnvVar>(absl::StrCat(self_pid));
     return self_pid;
   }();
   return topmost_pid;

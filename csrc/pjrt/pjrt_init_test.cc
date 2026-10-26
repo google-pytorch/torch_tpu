@@ -66,7 +66,7 @@ TEST(PjRtInitDeathTest,
      EnsureInitializedSucceedsWhenWorldSizeIsOneWithoutDistEnvVars) {
   EXPECT_EXIT(
       {
-        SetEnv<kWorldSizeEnvVar>("1");
+        setenv(kWorldSizeEnvVar, "1", /*overwrite=*/1);
         unsetenv(kTorchTpuSlicebuilderAddressesEnvVar);
         unsetenv(kTorchTpuTopologyEnvVar);
         VerifySingleDevicePjRtInit();

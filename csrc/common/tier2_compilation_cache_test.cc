@@ -118,6 +118,9 @@ CompilationCacheKey MakeCacheKey(uint64_t shapeless_key, int num_dims) {
 class TpuTestEnvironment : public testing::Environment {
  public:
   void SetUp() override {
+    // The env var is memoized on first use, so it's set once for all tests.
+    SafeSetEnv<kTorchTpuTier2CompilationCacheEnvVar>(
+        absl::StrCat("my_cache_", getpid()));
     PjrtBackend::GetInstance().SetPjRtInitializationOptions(
         {.device_type = "tpu"});
     ABSL_CHECK_OK(PjrtBackend::GetInstance().EnsureInitialized());
@@ -131,8 +134,6 @@ auto* const test_env =
 class Tier2CacheTest : public testing::Test {
  protected:
   Tier2CacheTest() {
-    SetEnv<kTorchTpuTier2CompilationCacheEnvVar>(
-        absl::StrCat("my_cache_", getpid()));
     cache_path_ = GetTier2CompilationCachePath();
 
     // Ensure the cache directory exists. Otherwise tests that run first

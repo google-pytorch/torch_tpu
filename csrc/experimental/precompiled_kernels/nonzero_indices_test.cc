@@ -131,7 +131,7 @@ class NonzeroIndicesTest : public testing::Test {
   static void SetUpTestSuite() {
     if (client_ != nullptr) return;
 
-    SetEnv<kTorchTpuInternalUseUnboundedDynamicKernelsEnvVar>("1");
+    SafeSetEnv<kTorchTpuInternalUseUnboundedDynamicKernelsEnvVar>("1");
 
     TT_ASSERT_OK_AND_ASSIGN(client_, PjrtBackend::GetInstance().GetClient());
     ASSERT_FALSE(client_->addressable_devices().empty());
