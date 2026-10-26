@@ -289,5 +289,36 @@ module {
   EXPECT_EQ(max_reduce_count, 2);
 }
 
+TEST(PipelineTest, LowersPairedPatchifyConvolutionsToDot) {
+  static constexpr const char* kIr = R"mlir(
+module {
+  func.func @main(%x: tensor<1x3x8x8xbf16>, %w: tensor<16x3x4x4xbf16>, %dy: tensor<1x16x2x2xbf16>) -> (tensor<1x16x2x2xbf16>, tensor<16x3x4x4xbf16>) {
+    %fwd = stablehlo.convolution(%x, %w) dim_numbers = [b, f, 0, 1]x[o, i, 0, 1]->[b, f, 0, 1], window = {stride = [4, 4], pad = [[0, 0], [0, 0]], rhs_dilate = [1, 1]} {batch_group_count = 1 : i64, feature_group_count = 1 : i64} : (tensor<1x3x8x8xbf16>, tensor<16x3x4x4xbf16>) -> tensor<1x16x2x2xbf16>
+    %dw = stablehlo.convolution(%x, %dy) dim_numbers = [f, b, 0, 1]x[i, o, 0, 1]->[f, b, 0, 1], window = {stride = [1, 1], pad = [[0, 0], [0, 0]], rhs_dilate = [4, 4]} {batch_group_count = 1 : i64, feature_group_count = 1 : i64} : (tensor<1x3x8x8xbf16>, tensor<1x16x2x2xbf16>) -> tensor<16x3x4x4xbf16>
+    return %fwd, %dw : tensor<1x16x2x2xbf16>, tensor<16x3x4x4xbf16>
+  }
+}
+)mlir";
+
+  mlir::DialectRegistry registry;
+  mlir::stablehlo::registerAllDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::parseSourceString<mlir::ModuleOp>(kIr, &context);
+  ASSERT_TRUE(module);
+
+  EXPECT_THAT(RunTorchTpuOptimizationPasses(*module, &context), IsOk());
+
+  int conv_count = 0;
+  int dot_count = 0;
+  module->walk([&](mlir::stablehlo::ConvolutionOp) { ++conv_count; });
+  module->walk([&](mlir::stablehlo::DotGeneralOp) { ++dot_count; });
+
+  EXPECT_EQ(conv_count, 0);
+  EXPECT_EQ(dot_count, 2);
+}
+
 }  // namespace
 }  // namespace torch_tpu

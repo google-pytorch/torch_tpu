@@ -56,6 +56,41 @@ torch_tpu_cc_library(
 )
 
 torch_tpu_cc_library(
+    name = "lower_patchify_conv_backward_to_dot",
+    srcs = ["lower_patchify_conv_backward_to_dot.cc"],
+    hdrs = ["lower_patchify_conv_backward_to_dot.h"],
+    deps = [
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:SideEffectInterfaces",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "lower_patchify_conv_backward_to_dot_test",
+    srcs = ["lower_patchify_conv_backward_to_dot_test.cc"],
+    deps = [
+        ":lower_patchify_conv_backward_to_dot",
+        "//csrc/common:oss_test_main",
+        "//csrc/mlir:pipeline",
+        "@com_google_absl//absl/status:status_matchers",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Parser",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:reference_api",
+        "@stablehlo//:reference_configuration",
+        "@stablehlo//:register",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "lower_separable_gather_to_dot",
     srcs = ["lower_separable_gather_to_dot.cc"],
     hdrs = ["lower_separable_gather_to_dot.h"],

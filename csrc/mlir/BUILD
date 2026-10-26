@@ -53,6 +53,7 @@ torch_tpu_cc_library(
         "//csrc/common:env_vars",
         "//csrc/common:error_utils",
         "//csrc/mlir/passes:fold_concat_softmax",
+        "//csrc/mlir/passes:lower_patchify_conv_backward_to_dot",
         "//csrc/mlir/passes:lower_separable_gather_to_dot",
         "//csrc/mlir/passes:reassociate_norm_weights",
         "@com_google_absl//absl/status",
@@ -90,6 +91,7 @@ torch_tpu_cc_library(
     deps = [
         "//csrc/mlir/passes:dummy_pass",
         "//csrc/mlir/passes:fold_concat_softmax",
+        "//csrc/mlir/passes:lower_patchify_conv_backward_to_dot",
         "//csrc/mlir/passes:lower_separable_gather_to_dot",
         "//csrc/mlir/passes:reassociate_norm_weights",
         "@llvm-project//mlir:IR",
