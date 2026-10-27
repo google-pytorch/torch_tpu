@@ -85,6 +85,7 @@ torch_tpu_py_library(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "@pypi//jax",
+        "@pypi//numpy",
     ],
 )
 

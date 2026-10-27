@@ -48,6 +48,7 @@ from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_ke
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_mask
 from jax.experimental.pallas.ops.tpu.splash_attention.splash_attention_kernel import QKVLayout
 import jax.numpy as jnp
+import numpy as np
 import torch
 import torch_tpu  # pylint: disable=unused-import
 
@@ -148,25 +149,30 @@ def _make_splash_attention_fn(
 
   is_mqa = n_kv_heads == 1
 
-  if is_mqa:
-    splash_kernel = splash_attention_kernel.make_splash_mqa(
-        mask=multi_head_mask,
-        head_shards=1,
-        q_seq_shards=1,
-        block_sizes=block_sizes,
-    )
-  else:
-    splash_kernel = splash_attention_kernel.make_splash_mha(
-        mask=multi_head_mask,
-        head_shards=1,
-        q_seq_shards=1,
-        block_sizes=block_sizes,
-    )
+  with jax.default_device(jax.devices("cpu")[0]):
+    if is_mqa:
+      splash_kernel = splash_attention_kernel.make_splash_mqa(
+          mask=multi_head_mask,
+          head_shards=1,
+          q_seq_shards=1,
+          block_sizes=block_sizes,
+      )
+    else:
+      splash_kernel = splash_attention_kernel.make_splash_mha(
+          mask=multi_head_mask,
+          head_shards=1,
+          q_seq_shards=1,
+          block_sizes=block_sizes,
+      )
 
   # Static mask infos and kernel kwargs from creation time.
-  fwd_mask_info = splash_kernel.fwd_mask_info
-  dq_mask_info = splash_kernel.dq_mask_info
-  dkv_mask_info = splash_kernel.dkv_mask_info
+  fwd_mask_info = jax.tree_util.tree_map(
+      np.asarray, splash_kernel.fwd_mask_info
+  )
+  dq_mask_info = jax.tree_util.tree_map(np.asarray, splash_kernel.dq_mask_info)
+  dkv_mask_info = jax.tree_util.tree_map(
+      np.asarray, splash_kernel.dkv_mask_info
+  )
   _mask_value = splash_kernel.kwargs.get("mask_value", _DEFAULT_MASK_VALUE)
   _mask_function = splash_kernel.kwargs.get("mask_function", None)
   _attn_logits_soft_cap = splash_kernel.kwargs.get("attn_logits_soft_cap", None)
