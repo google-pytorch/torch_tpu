@@ -104,6 +104,9 @@ at::Tensor AtenRoll(const at::Tensor& self, at::IntArrayRef shifts,
   Indices shifts_vec = CopyIntVector(shifts);
 
   TT_KERNEL(OpName::kRoll, param_keys, (self, shifts_vec, normalized_dims), {
+    // DO NOT MERGE: deliberate uncovered error macro (negative test).
+    TT_CHECK_THROW(shifts.size() < 1000000, error::kInvalidArgument)
+        << "never fires: error coverage negative test";
     TT_CHECK_THROW(
         shifts.size() == dims.size() || (dims.empty() && shifts.size() <= 1),
         error::kInvalidArgument)
