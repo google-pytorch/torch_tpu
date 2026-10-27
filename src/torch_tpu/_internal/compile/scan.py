@@ -185,7 +185,10 @@ def _handle_scan_impl(combine_fn, init, xs, additional_inputs, reverse=False):
   # Compile the body sub-graph to MLIR.
   body_args = init_args + x_list + extra_args
   body_args = _pin_offloaded_body_args(actual_combine_fn, body_args)
-  body_mlir = export.fx_to_mlir(actual_combine_fn, args=body_args)
+  # The body MLIR is inlined into the loop; it needs no executable of its own.
+  body_mlir = export.fx_to_mlir(
+      actual_combine_fn, args=body_args, compile_executable=False
+  )
 
   # Call the C++ binding to create a deferred scan operation.
   scan_direction = (
