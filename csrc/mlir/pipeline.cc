@@ -22,6 +22,7 @@
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/mlir/instrumentation.h"
+#include "csrc/mlir/passes/canonicalize_pointwise_conv_and_finite_sdpa_biases.h"
 #include "csrc/mlir/passes/fold_concat_softmax.h"
 #include "csrc/mlir/passes/guard_zero_operand_custom_calls.h"
 #include "csrc/mlir/passes/lower_separable_gather_to_dot.h"
@@ -65,6 +66,8 @@ void AddShloPasses(mlir::OpPassManager& pm) {
   pm.addNestedPass<mlir::func::FuncOp>(
       mlir::stablehlo::createStablehloTargetIndependentOptimizationPass());
   pm.addNestedPass<mlir::func::FuncOp>(createFoldConcatSoftmaxPass());
+  pm.addNestedPass<mlir::func::FuncOp>(
+      createCanonicalizePointwiseConvAndFiniteSdpaBiasesPass());
 }
 
 }  // namespace

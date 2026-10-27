@@ -52,6 +52,7 @@ torch_tpu_cc_library(
         ":instrumentation",
         "//csrc/common:env_vars",
         "//csrc/common:error_utils",
+        "//csrc/mlir/passes:canonicalize_pointwise_conv_and_finite_sdpa_biases",
         "//csrc/mlir/passes:fold_concat_softmax",
         "//csrc/mlir/passes:guard_zero_operand_custom_calls",
         "//csrc/mlir/passes:lower_separable_gather_to_dot",
@@ -86,6 +87,7 @@ torch_tpu_cc_library(
     hdrs = ["registration.h"],
     deps = [
         ":pipeline",
+        "//csrc/mlir/passes:canonicalize_pointwise_conv_and_finite_sdpa_biases",
         "//csrc/mlir/passes:dummy_pass",
         "//csrc/mlir/passes:fold_concat_softmax",
         "//csrc/mlir/passes:guard_zero_operand_custom_calls",
