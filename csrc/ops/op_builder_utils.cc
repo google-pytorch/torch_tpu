@@ -2012,4 +2012,39 @@ absl::StatusOr<mlir::MlirOp> ReshapeToStaticDimensions(
                                      static_shape_after);
 }
 
+mlir::MlirOp SliceFp4InputIfNeeded(mlir::MlirOp op,
+                                   absl::Span<const int64_t> logical_dims) {
+  auto type = GetTensorTypeOrDie(op);
+  const int64_t rank = type.getRank();
+  ABSL_CHECK_EQ(rank, static_cast<int64_t>(logical_dims.size()));  // CRASH_OK
+  auto shape = type.getShape();
+  if (shape ==
+      llvm::ArrayRef<int64_t>(logical_dims.data(), logical_dims.size())) {
+    return op;
+  }
+  const Indices start_indices(rank, 0);
+  const Indices limit_indices(logical_dims.begin(), logical_dims.end());
+  const Strides strides(rank, 1);
+  return mlir::stablehlo::Slice(op, start_indices, limit_indices, strides);
+}
+
+mlir::MlirOp PadFp4OutputIfNeeded(mlir::MlirOp op) {
+  if (GetElementTypeOrDie(op) != mlir::ElementType::F4E2M1FN) {
+    return op;
+  }
+  auto type = GetTensorTypeOrDie(op);
+  const auto rank = type.getRank();
+  if (rank == 0) {
+    return op;
+  }
+  const Dimensions low_padding(rank, 0);
+  Dimensions high_padding(rank, 0);
+  high_padding.back() = type.getShape().back();
+  const Dimensions interior_padding(rank, 0);
+  auto zero_pad_val =
+      MakeScalarConstant(op.getBuilder(), 0.0, type.getElementType());
+  return mlir::stablehlo::Pad(op, zero_pad_val, low_padding, high_padding,
+                              interior_padding);
+}
+
 }  // namespace torch_tpu

@@ -16,6 +16,7 @@
 
 #include "csrc/ops/scaled_mm/scaled_mm_aten_kernels.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string_view>
@@ -114,7 +115,11 @@ absl::StatusOr<mlir::MlirOp> BuildScaledMmShlo(
     mlir::MlirOp lhs, mlir::MlirOp rhs, mlir::MlirOp scale_a,
     mlir::MlirOp scale_b, std::optional<mlir::MlirOp> bias,
     std::optional<mlir::MlirOp> scale_result,
-    std::optional<mlir::Type> out_dtype, mlir::stablehlo::Precision precision) {
+    std::optional<mlir::Type> out_dtype, mlir::stablehlo::Precision precision,
+    int64_t m, int64_t k, int64_t n) {
+  lhs = SliceFp4InputIfNeeded(lhs, {m, k});
+  rhs = SliceFp4InputIfNeeded(rhs, {k, n});
+
   // 1. Perform matrix multiplication with inferred computation dtype.
   TT_ASSIGN_OR_RETURN(mlir::MlirOp mm_result,
                       BuildStablehloDotGeneral(lhs, rhs, precision));
@@ -190,7 +195,7 @@ absl::StatusOr<mlir::MlirOp> BuildScaledMmShlo(
         mlir::stablehlo::ConvertElementType(scaled_result, *out_dtype);
   }
 
-  return scaled_result;
+  return PadFp4OutputIfNeeded(scaled_result);
 }
 
 // SWIZZLE_32_4_4 requires fixed 128x4 hardware tiles (interleaving
@@ -526,7 +531,7 @@ absl::StatusOr<mlir::MlirOp> ApplyScalesAndBias(
     scaled_result =
         mlir::stablehlo::ConvertElementType(scaled_result, *out_dtype);
   }
-  return scaled_result;
+  return PadFp4OutputIfNeeded(scaled_result);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildScaledMmV2Shlo(
@@ -534,7 +539,11 @@ absl::StatusOr<mlir::MlirOp> BuildScaledMmV2Shlo(
     mlir::MlirOp scale_b, std::optional<mlir::MlirOp> bias,
     std::optional<mlir::Type> out_dtype, mlir::stablehlo::Precision precision,
     at::blas::ScalingType scaling_a, at::blas::ScalingType scaling_b,
-    at::blas::SwizzleType swiz_a, at::blas::SwizzleType swiz_b) {
+    at::blas::SwizzleType swiz_a, at::blas::SwizzleType swiz_b, int64_t m,
+    int64_t k, int64_t n) {
+  lhs = SliceFp4InputIfNeeded(lhs, {m, k});
+  rhs = SliceFp4InputIfNeeded(rhs, {k, n});
+
   // The blocked scale buffer carries no shape of its own, so its logical
   // extents come from the operand it scales: [M, K / 32] and [K / 32, N].
   const auto lhs_shape = GetTensorTypeOrDie(lhs).getShape();
@@ -579,7 +588,7 @@ absl::StatusOr<mlir::MlirOp> BuildScaledMmV2Shlo(
                               !is_rhs_block, bias, out_dtype);
   } else {
     return BuildScaledMmShlo(lhs, rhs, scale_a, scale_b, bias, std::nullopt,
-                             out_dtype, precision);
+                             out_dtype, precision, m, k, n);
   }
 }
 
@@ -634,10 +643,12 @@ absl::Status ValidateScaledMmInputs(
   return absl::OkStatus();
 }
 
-auto GetScaledMmOpBuilder(bool has_bias, bool has_scale_result,
+auto GetScaledMmOpBuilder(int64_t m, int64_t k, int64_t n, bool has_bias,
+                          bool has_scale_result,
                           mlir::ElementType target_elem_dtype,
                           mlir::stablehlo::Precision current_precision) {
-  return [has_bias, has_scale_result, target_elem_dtype, current_precision](
+  return [m, k, n, has_bias, has_scale_result, target_elem_dtype,
+          current_precision](
              absl::Span<mlir::MlirOp> builder_inputs,
              mlir::MlirBuilder& builder) -> absl::StatusOr<mlir::MlirOp> {
     mlir::MlirOp lhs_op = builder_inputs[0];
@@ -659,8 +670,8 @@ auto GetScaledMmOpBuilder(bool has_bias, bool has_scale_result,
                         GetMlirType(builder.getContext(), target_elem_dtype));
 
     return BuildScaledMmShlo(lhs_op, rhs_op, scale_a_op, scale_b_op, bias_op,
-                             scale_result_op, out_dtype_mlir,
-                             current_precision);
+                             scale_result_op, out_dtype_mlir, current_precision,
+                             m, k, n);
   };
 }
 
@@ -695,6 +706,9 @@ absl::Status ScaledMmOut(const at::Tensor& self, const at::Tensor& mat2,
                                       /*allow_out_dtype_cast=*/false));
   TT_ASSIGN_OR_RETURN(mlir::ElementType target_elem_dtype,
                       ConvertTo<mlir::ElementType>(target_scalar_type));
+  if (target_elem_dtype == mlir::ElementType::F4E2M1FN) {
+    output_dims.back() *= 2;
+  }
 
   TT_ASSIGN_OR_RETURN(mlir::ElementType self_elem_dtype,
                       ConvertTo<mlir::ElementType>(self.scalar_type()));
@@ -710,7 +724,10 @@ absl::Status ScaledMmOut(const at::Tensor& self, const at::Tensor& mat2,
   std::vector<at::Tensor> inputs =
       BuildScaledMmInputs(self, mat2, scale_a, scale_b, bias, scale_result,
                           has_bias, has_scale_result);
-  auto op_builder = GetScaledMmOpBuilder(has_bias, has_scale_result,
+  const int64_t m = self.size(0);
+  const int64_t k = self.size(1);
+  const int64_t n = mat2.size(1);
+  auto op_builder = GetScaledMmOpBuilder(m, k, n, has_bias, has_scale_result,
                                          target_elem_dtype, current_precision);
 
   return DispatchOpOut<kDynamicSize>(
@@ -808,6 +825,9 @@ absl::Status ScaledMmV2Out(const at::Tensor& self, const at::Tensor& mat2,
                                       /*allow_out_dtype_cast=*/false));
   TT_ASSIGN_OR_RETURN(mlir::ElementType target_elem_dtype,
                       ConvertTo<mlir::ElementType>(target_scalar_type));
+  if (target_elem_dtype == mlir::ElementType::F4E2M1FN) {
+    output_dims.back() *= 2;
+  }
 
   TT_ASSIGN_OR_RETURN(mlir::ElementType self_elem_dtype,
                       ConvertTo<mlir::ElementType>(self.scalar_type()));
@@ -829,9 +849,12 @@ absl::Status ScaledMmV2Out(const at::Tensor& self, const at::Tensor& mat2,
     inputs.push_back(*bias);
   }
 
+  const int64_t m = self.size(0);
+  const int64_t k = self.size(1);
+  const int64_t n = mat2.size(1);
   auto op_builder =
-      [has_bias, target_elem_dtype, current_precision, scaling_a, scaling_b,
-       swiz_a,
+      [m, k, n, has_bias, target_elem_dtype, current_precision, scaling_a,
+       scaling_b, swiz_a,
        swiz_b](absl::Span<mlir::MlirOp> builder_inputs,
                mlir::MlirBuilder& builder) -> absl::StatusOr<mlir::MlirOp> {
     mlir::MlirOp lhs_op = builder_inputs[0];
@@ -849,7 +872,7 @@ absl::Status ScaledMmV2Out(const at::Tensor& self, const at::Tensor& mat2,
 
     return BuildScaledMmV2Shlo(lhs_op, rhs_op, scale_a_op, scale_b_op, bias_op,
                                out_dtype_mlir, current_precision, scaling_a,
-                               scaling_b, swiz_a, swiz_b);
+                               scaling_b, swiz_a, swiz_b, m, k, n);
   };
 
   return DispatchOpOut<kDynamicSize>(
