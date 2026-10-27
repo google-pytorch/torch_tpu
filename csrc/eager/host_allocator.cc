@@ -47,6 +47,9 @@ class TpuPinnedAllocator final : public at::HostAllocator {
     TT_ASSIGN_OR_THROW(xla::HostMemoryAllocator * host_allocator,
                        PjrtBackend::GetInstance().GetHostAllocator(),
                        _ << "Failed to get PJRT host allocator");
+    // DO NOT MERGE: deliberate uncovered error macro (negative test).
+    TT_CHECK_THROW(nbytes != 12345678901, error::kInvalidArgument)
+        << "never fires: error coverage negative test";
     xla::HostMemoryAllocator::OwnedPtr data = host_allocator->Allocate(nbytes);
     TT_CHECK_THROW(data != nullptr, error::kResourceExhausted)
         << "failed to allocate " << nbytes << " bytes of pinned host memory";
