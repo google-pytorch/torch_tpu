@@ -722,6 +722,7 @@ class RunBazelDiffTest(unittest.TestCase):
         r"^bazel build --config=ci_tpu_v5_presubmit"
         r' --run_under="\$\(pwd\)/ci/tools/parallel_accelerator_execute.sh"'
         r" --nobuild --build_tests_only --skip_incompatible_explicit_targets"
+        r" --bes_backend= --remote_executor= --remote_cache="
         r" --target_pattern_file=/w/impacted_targets.txt"
         r" --build_event_json_file=\S+/bep.json$",
     )
@@ -1033,6 +1034,7 @@ class MainTest(unittest.TestCase):
       self.assertIn(
           "--cqueryCommandOptions=--config=ci_tpu_v7_presubmit", call.args
       )
+      self.assertIn("--cqueryExpression=//...:all-targets", call.args)
 
   def test_calculate_mode_reports_no_work_when_config_selects_no_test(self):
     """Impacted targets this config filters out must skip the runner."""

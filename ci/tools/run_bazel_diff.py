@@ -382,9 +382,17 @@ def config_selects_tests(
   config_flag = f"--config={shlex.quote(bazel_config)} " if bazel_config else ""
   with tempfile.TemporaryDirectory() as tmp_dir:
     bep_file = pathlib.Path(tmp_dir) / "bep.json"
+    # Clear `--bes_backend=`, `--remote_executor=`, and `--remote_cache=` after
+    # the config and extra flags: the CI configs inherit `common:ci` (which
+    # enables ResultStore BES and RBE), and `rbe_presubmit` also passes
+    # `--remote_executor` in `extra_bazel_flags`. `--nobuild` executes no
+    # actions and only reads the local `--build_event_json_file`, so disabling
+    # remote backends avoids ~25-35s of ResultStore/RBE gRPC setup and BEP
+    # upload overhead.
     cmd = (
         f"bazel build {config_flag}{extra_bazel_flags} --nobuild"
         " --build_tests_only --skip_incompatible_explicit_targets"
+        " --bes_backend= --remote_executor= --remote_cache="
         f" --target_pattern_file={shlex.quote(os.fspath(targets_file))}"
         f" --build_event_json_file={shlex.quote(os.fspath(bep_file))}"
     )
@@ -821,8 +829,20 @@ def main(argv: Sequence[str]) -> int:
   print(f"Computing impacted targets between {base_sha} and {current_sha}...")
 
   # Every mode hashes with the runner's own config, so the `calculate` job sees
-  # exactly the configured graph the test job will build.
-  cquery_args = (f"--cqueryCommandOptions=--config={opts.bazel_config}",)
+  # exactly the configured graph the test job will build. Restrict the cquery
+  # expression to workspace targets (`//...:all-targets`) rather than
+  # bazel-diff's default `deps(//...:all-targets)`: without
+  # `--fineGrainedHashExternalRepos`, bazel-diff rewrites every external repo
+  # rule input to `//external:<repo>` (hashed via `bazel mod`) and traverses
+  # intra-workspace dependencies in memory, while changes to `MODULE.bazel` or
+  # `requirements/*` already trigger a full test run via
+  # `is_global_bazel_config_modified`. Skipping the ~130k external targets
+  # (`@llvm-project`, `@xla`, `@pypi_torch_*`, etc.) avoids serializing a
+  # ~300 MB cquery proto on every `generate-hashes` invocation.
+  cquery_args = (
+      f"--cqueryCommandOptions=--config={opts.bazel_config}",
+      "--cqueryExpression=//...:all-targets",
+  )
 
   print("--- Generating Base Hashes ---")
   print(f"PR detected. Fetching exact base SHA: {base_sha}")
