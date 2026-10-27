@@ -32,6 +32,7 @@ It takes no command-line arguments and requires following environment variables:
 The test runner exits with 0 on success, and non-zero on failure.
 """
 
+import collections
 from collections.abc import Sequence
 import os
 import pathlib
@@ -46,6 +47,7 @@ from absl.testing import absltest
 import torch
 import torch_tpu  # pylint: disable=unused-import  # noqa: F401
 from torch.testing._internal import common_device_type  # pylint: disable=g-bad-import-order
+from torch.testing._internal import common_modules
 from torch.testing._internal import common_utils
 from torch_tpu._internal.utils import annotations
 from tests.torch import torch_test_configs
@@ -73,10 +75,44 @@ def _set_private_use1_test_configs(test_module: str) -> None:
   # Resolve the base's device type ("tpu") up front so every generated class
   # has "TPU" suffix.
   base.setUpClass()
-  # TODO(b/523293280): extend test configs with TPU-specific overrides.
   base.set_test_configs(
-      test_exclusions=torch_test_configs.TEST_EXCLUSIONS.get(test_module)
+      op_overrides=torch_test_configs.OP_OVERRIDES.get(test_module),
+      test_exclusions=torch_test_configs.TEST_EXCLUSIONS.get(test_module),
   )
+
+
+def _apply_module_overrides(test_module: str) -> None:
+  """Applies TorchTPU decorators to ModuleInfo entries of `module_db`.
+
+  Unlike OpInfo-based tests, ModuleInfo-based tests, i.e. tests parametrized by
+  `@modules`, have no PrivateUse1 override hook upstream. `@modules` keeps
+  references to the `ModuleInfo` entries of `common_modules.module_db` and
+  resolves their decorators while the test module instantiates device-generic
+  tests, so the decorators are appended before the test module is executed.
+
+  Args:
+    test_module: The name of the test module to run.
+
+  Raises:
+    ValueError: If `MODULE_OVERRIDES` refers to an unknown `ModuleInfo` name.
+  """
+  overrides = torch_test_configs.MODULE_OVERRIDES.get(test_module)
+  if not overrides:
+    return
+
+  module_infos = collections.defaultdict(list)
+  for module_info in common_modules.module_db:
+    module_infos[module_info.name].append(module_info)
+  if unknown := sorted(set(overrides) - set(module_infos)):
+    raise ValueError(f"Unknown ModuleInfo names in MODULE_OVERRIDES: {unknown}")
+
+  device_type = torch._C._get_privateuse1_backend_name()  # pylint: disable=protected-access
+  for name, decorators in overrides.items():
+    # Mirrors `op_overrides`, which binds decorators to the PrivateUse1 device.
+    for decorator in decorators:
+      decorator.device_type = device_type
+    for module_info in module_infos[name]:
+      module_info.decorators = (*module_info.decorators, *decorators)
 
 
 def _filter_device_generic_tests() -> None:
@@ -198,6 +234,7 @@ def main(argv: Sequence[str]) -> None:
   os.environ["PYTORCH_TESTING_DEVICE_FOR_CUSTOM"] = "tpu"
   os.environ["PYTORCH_TESTING_DEVICE_ONLY_FOR"] = "tpu"
   _set_private_use1_test_configs(test_module)
+  _apply_module_overrides(test_module)
   _filter_device_generic_tests()
 
   # TODO(b/571605100): fix upstream tests to use public APIs only and then
