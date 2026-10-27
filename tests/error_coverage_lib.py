@@ -754,6 +754,9 @@ def run_cov_tests(repo_root: str) -> str:
       failure = binary
       break
     outputs.append(stdout)
+  allout = "".join(outputs)
+  report.append("HOST_ALLOCATOR COVERED: " + repr(sorted({l for l in allout.splitlines() if "host_allocator" in l})))
+  report.append("PINNED LINES: " + repr([l for l in allout.splitlines() if "pinned host memory" in l][:5]))
   msg = "\n".join(report)
   print(msg, flush=True)
   raise RuntimeError("WATCHDOG REPORT (debug, intentional):\n" + msg)
