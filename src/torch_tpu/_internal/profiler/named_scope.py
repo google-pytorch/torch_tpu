@@ -21,6 +21,7 @@ from typing import Any, ParamSpec, TypeVar, cast
 
 import torch
 from torch_tpu._internal.compile import tpu_torch_compile
+from torch_tpu._internal.utils import annotations
 
 # Prefix of the `node.meta["custom"]` keys that carry `named_scope` names
 # through torch.compile and torch.export. Each name gets its own key so that
@@ -130,6 +131,9 @@ def _validate_name(name: str) -> None:
     )
 
 
+@annotations.experimental(
+    "torch.tpu.profiler.named_scope is experimental and subject to change."
+)
 def named_scope(name: str) -> _NameScope:
   """Names the TPU ops issued inside the context or the decorated function.
 
@@ -157,10 +161,10 @@ def named_scope(name: str) -> _NameScope:
 
   Example:
 
-    with named_scope.named_scope("route"):
+    with torch.tpu.profiler.named_scope("route"):
       weights = router(x)
 
-    @named_scope.named_scope("permute")
+    @torch.tpu.profiler.named_scope("permute")
     def permute(x, indices):
       ...
 
