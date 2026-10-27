@@ -120,6 +120,31 @@ TEST(LayoutUtilsTest, ResolveTpuLayout_FP4TensorWithOffset_Success) {
   EXPECT_EQ(layout.element_type, mlir::ElementType::F4E2M1FN);
 }
 
+TEST(LayoutUtilsTest, ResolveTpuLayout_FP4TransposedTensor_Success) {
+  auto tensor =
+      at::empty({4, 8}, at::TensorOptions().dtype(at::kFloat4_e2m1fn_x2)).t();
+
+  TT_ASSERT_OK_AND_ASSIGN(auto layout, ResolveTpuLayout(tensor));
+
+  EXPECT_EQ(layout.sizes, Dimensions({16, 4}));
+  EXPECT_EQ(layout.strides, Strides({1, 16}));
+  EXPECT_EQ(layout.storage_offset, 0);
+  EXPECT_EQ(layout.element_type, mlir::ElementType::F4E2M1FN);
+}
+
+TEST(LayoutUtilsTest, ResolveTpuLayout_FP4TransposedTensorWithOffset_Success) {
+  auto base_tensor =
+      at::empty({10, 8}, at::TensorOptions().dtype(at::kFloat4_e2m1fn_x2));
+  auto tensor = base_tensor.slice(0, 1, 3).slice(1, 2, 6).t();
+
+  TT_ASSERT_OK_AND_ASSIGN(auto layout, ResolveTpuLayout(tensor));
+
+  EXPECT_EQ(layout.sizes, Dimensions({8, 2}));
+  EXPECT_EQ(layout.strides, Strides({1, 16}));
+  EXPECT_EQ(layout.storage_offset, 20);
+  EXPECT_EQ(layout.element_type, mlir::ElementType::F4E2M1FN);
+}
+
 TEST(LayoutUtilsTest, ResolveTpuLayout_ZeroDimFP4Tensor_ReturnsError) {
   auto tensor = at::empty({}, at::TensorOptions().dtype(at::kFloat4_e2m1fn_x2));
   auto layout_or = ResolveTpuLayout(tensor);

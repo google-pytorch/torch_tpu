@@ -220,6 +220,184 @@ class FP4Test(seed_test_utils.RepeatableTest):
     utils.assert_close(eq_res, expected_eq)
     utils.assert_close(ne_res, expected_ne)
 
+  def test_fp4_scaled_mm_contiguous(self):
+    """b/577752120 Case 1: row-major contiguous FP4 scaled_mm."""
+    device = "tpu"
+    m, k, n = 128, 128, 128
+    a_f32 = torch.randn(m, k, dtype=torch.float32, device=device)
+    b_f32 = torch.randn(k, n, dtype=torch.float32, device=device)
+    a = a_f32.to(torch.float4_e2m1fn_x2)
+    b = b_f32.to(torch.float4_e2m1fn_x2)
+    sa = torch.tensor([1.5], dtype=torch.float32, device=device)
+    sb = torch.tensor([2.0], dtype=torch.float32, device=device)
+
+    out = torch._scaled_mm(a, b, sa, sb, out_dtype=torch.bfloat16)
+    self.assertEqual(out.shape, torch.Size([m, n]))
+    self.assertEqual(out.dtype, torch.bfloat16)
+
+    ref = (torch.matmul(a.to(torch.float32), b.to(torch.float32)) * sa * sb).to(
+        torch.bfloat16
+    )
+    utils.assert_close(
+        out.to(torch.float32), ref.to(torch.float32), atol=1e-1, rtol=1e-1
+    )
+
+  def test_scaled_mm_fp4_transposed_rhs(self):
+    """b/577752120 Case 2: transposed rhs FP4 scaled_mm eager and torch.compile."""
+    device = "tpu"
+    m, k, n = 128, 128, 128
+    a_f32 = torch.randn(m, k, dtype=torch.float32, device=device)
+    b_raw_f32 = torch.randn(n, k, dtype=torch.float32, device=device)
+    a = a_f32.to(torch.float4_e2m1fn_x2)
+    b = b_raw_f32.to(torch.float4_e2m1fn_x2).t()
+    sa = torch.tensor([1.5], dtype=torch.float32, device=device)
+    sb = torch.tensor([2.0], dtype=torch.float32, device=device)
+
+    out = torch._scaled_mm(a, b, sa, sb, out_dtype=torch.bfloat16)
+    self.assertEqual(out.shape, torch.Size([m, n]))
+    self.assertEqual(out.dtype, torch.bfloat16)
+
+    ref = (torch.matmul(a.to(torch.float32), b.to(torch.float32)) * sa * sb).to(
+        torch.bfloat16
+    )
+    utils.assert_close(
+        out.to(torch.float32), ref.to(torch.float32), atol=1e-1, rtol=1e-1
+    )
+
+    compiled_fn = torch.compile(
+        lambda x, y, s1, s2: torch._scaled_mm(
+            x, y, s1, s2, out_dtype=torch.bfloat16
+        ),
+        backend="tpu",
+    )
+    compiled_out = compiled_fn(a, b, sa, sb)
+    utils.assert_close(
+        compiled_out.to(torch.float32),
+        out.to(torch.float32),
+        atol=1e-2,
+        rtol=1e-2,
+    )
+
+  def test_scaled_mm_fp4_v2_and_out_variants(self):
+    """b/577752120: _scaled_mm.out, _scaled_mm_v2, and _scaled_mm_v2.out with transposed FP4 RHS."""
+    device = "tpu"
+    m, k, n = 128, 128, 128
+    a_f32 = torch.randn(m, k, dtype=torch.float32, device=device)
+    b_raw_f32 = torch.randn(n, k, dtype=torch.float32, device=device)
+    a = a_f32.to(torch.float4_e2m1fn_x2)
+    b = b_raw_f32.to(torch.float4_e2m1fn_x2).t()
+    sa = torch.tensor([1.5], dtype=torch.float32, device=device)
+    sb = torch.tensor([2.0], dtype=torch.float32, device=device)
+
+    # 1. aten._scaled_mm.out with out_dtype=float4_e2m1fn_x2 and out tensor
+    out_fp4 = torch.empty((m, n), dtype=torch.float4_e2m1fn_x2, device=device)
+    res_out = torch.ops.aten._scaled_mm.out(
+        a, b, sa, sb, out_dtype=torch.float4_e2m1fn_x2, out=out_fp4
+    )
+    self.assertEqual(res_out.shape, torch.Size([m, n]))
+    self.assertEqual(res_out.dtype, torch.float4_e2m1fn_x2)
+    self.assertIs(res_out, out_fp4)
+
+    # 2. torch._scaled_mm_v2 with transposed FP4 RHS
+    scale_a = [sa]
+    scale_b = [sb]
+    recipe_a = [0]
+    recipe_b = [0]
+    swizzle_a = [0]
+    swizzle_b = [0]
+    out_v2 = torch._scaled_mm_v2(
+        a,
+        b,
+        scale_a,
+        recipe_a,
+        swizzle_a,
+        scale_b,
+        recipe_b,
+        swizzle_b,
+        None,
+        torch.bfloat16,
+    )
+    self.assertEqual(out_v2.shape, torch.Size([m, n]))
+    self.assertEqual(out_v2.dtype, torch.bfloat16)
+
+    expected_bfloat16 = torch._scaled_mm(a, b, sa, sb, out_dtype=torch.bfloat16)
+    utils.assert_close(
+        out_v2.to(torch.float32),
+        expected_bfloat16.to(torch.float32),
+        atol=1e-2,
+        rtol=1e-2,
+    )
+
+    # 3. torch.ops.aten._scaled_mm_v2.out with transposed FP4 RHS
+    out_v2_bf16 = torch.empty((m, n), dtype=torch.bfloat16, device=device)
+    res_v2_out = torch.ops.aten._scaled_mm_v2.out(
+        a,
+        b,
+        scale_a,
+        recipe_a,
+        swizzle_a,
+        scale_b,
+        recipe_b,
+        swizzle_b,
+        None,
+        torch.bfloat16,
+        out=out_v2_bf16,
+    )
+    self.assertEqual(res_v2_out.shape, torch.Size([m, n]))
+    self.assertIs(res_v2_out, out_v2_bf16)
+    utils.assert_close(
+        res_v2_out.to(torch.float32),
+        expected_bfloat16.to(torch.float32),
+        atol=1e-2,
+        rtol=1e-2,
+    )
+
+  def test_fp4_scaled_mm_transposed_both_fp4_out(self):
+    """Transposed lhs and rhs with FP4 output."""
+    device = "tpu"
+    m, k, n = 128, 128, 128
+    a_raw = torch.randn(k, m, dtype=torch.float32, device=device).to(
+        torch.float4_e2m1fn_x2
+    )
+    b_raw = torch.randn(n, k, dtype=torch.float32, device=device).to(
+        torch.float4_e2m1fn_x2
+    )
+    a = a_raw.t()
+    b = b_raw.t()
+    sa = torch.tensor([1.0], dtype=torch.float32, device=device)
+    sb = torch.tensor([1.0], dtype=torch.float32, device=device)
+
+    out = torch._scaled_mm(a, b, sa, sb, out_dtype=torch.float4_e2m1fn_x2)
+    self.assertEqual(out.shape, torch.Size([m, n]))
+    self.assertEqual(out.dtype, torch.float4_e2m1fn_x2)
+
+    ref = (torch.matmul(a.to(torch.float32), b.to(torch.float32)) * sa * sb).to(
+        torch.float4_e2m1fn_x2
+    )
+    utils.assert_close(
+        out.to(torch.float32), ref.to(torch.float32), atol=2e-1, rtol=2e-1
+    )
+
+  def test_fp4_transposed_copy_and_cast(self):
+    """Transposed FP4 dequantization and contiguity copy."""
+    device = "tpu"
+    x = torch.randn(64, 128, dtype=torch.float32, device=device).to(
+        torch.float4_e2m1fn_x2
+    )
+    x_t = x.t()
+    self.assertEqual(x_t.shape, torch.Size([128, 64]))
+
+    # Cast transposed FP4 to float32
+    x_t_f32 = x_t.to(torch.float32)
+    self.assertEqual(x_t_f32.shape, torch.Size([128, 64]))
+    utils.assert_close(x_t_f32, x.to(torch.float32).t())
+
+    # Contiguous copy
+    x_contig = x_t.contiguous()
+    self.assertEqual(x_contig.shape, torch.Size([128, 64]))
+    self.assertEqual(x_contig.dtype, torch.float4_e2m1fn_x2)
+    utils.assert_close(x_contig.to(torch.float32), x.to(torch.float32).t())
+
 
 if __name__ == "__main__":
   absltest.main()

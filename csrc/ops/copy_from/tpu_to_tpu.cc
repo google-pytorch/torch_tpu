@@ -16,6 +16,7 @@
 
 #include "csrc/ops/copy_from/tpu_to_tpu.h"
 
+#include <cstddef>
 #include <utility>
 
 #include "ATen/core/TensorBody.h"
@@ -43,44 +44,15 @@
 namespace torch_tpu {
 namespace {
 
-// Slices the first half of elements to discard the padding.
-// A packed FP4 tensor has 2N physical elements on TPU (1 byte per unpacked
-// element). When dequantizing, we retrieve the first N elements and discard the
-// padding.
-absl::StatusOr<mlir::MlirOp> SliceFP4(mlir::MlirOp input) {
-  auto input_type = GetTensorTypeOrDie(input);
-  auto rank = input_type.getRank();
-
-  const Indices start_indices(rank, 0);
-  Indices limit_indices(input_type.getShape().begin(),
-                        input_type.getShape().end());
-  if (rank > 0) {
-    ABSL_DCHECK_EQ(limit_indices.back() % 2, 0)
-        << "Expected even last dimension for FP4, got " << limit_indices.back();
-    limit_indices.back() /= 2;
-  }
-  const Strides strides(rank, 1);
-
-  return mlir::stablehlo::Slice(input, start_indices, limit_indices, strides);
-}
-
-// Zero-pads the last dimension to double the size (logical N -> physical 2N).
-absl::StatusOr<mlir::MlirOp> PadFP4(mlir::MlirOp input) {
-  auto input_type = GetTensorTypeOrDie(input);
-  auto rank = input_type.getRank();
-
-  const Dimensions low_padding(rank, 0);
-  Dimensions high_padding(rank, 0);
-  if (rank > 0) {
-    high_padding.back() = input_type.getShape().back();
-  }
-  const Dimensions interior_padding(rank, 0);
-
-  auto zero_pad_value =
-      MakeScalarConstant(input.getBuilder(), 0.0, input_type.getElementType());
-
-  return mlir::stablehlo::Pad(input, zero_pad_value, low_padding, high_padding,
-                              interior_padding);
+// For FP4 tensors, if the packed dimension (stride 1) is not in the same
+// position in src and dest (e.g. one is transposed), we cannot simply
+// assign or share buffers; we must materialize through copy_op_builder.
+bool HasFp4StrideMismatch(const at::Tensor& src, const at::Tensor& dest) {
+  const bool is_dest_fp4 = dest.scalar_type() == at::kFloat4_e2m1fn_x2;
+  const bool is_src_fp4 = src.scalar_type() == at::kFloat4_e2m1fn_x2;
+  return (is_src_fp4 || is_dest_fp4) &&
+         (src.dim() > 0 && dest.dim() > 0 &&
+          (src.strides().back() == 1) != (dest.strides().back() == 1));
 }
 
 }  // namespace
@@ -104,7 +76,12 @@ absl::Status CopyTpuToTpu(const at::Tensor& src, const at::Tensor& dest) {
   TT_RETURN_IF_ERROR(BroadcastAndTranspose(viewed_src, viewed_dest));
   ABSL_CHECK(viewed_src.sizes() == viewed_dest.sizes());  // CRASH_OK
 
-  if (src.dtype() == dest.dtype()) {
+  const bool is_dest_fp4 = dest.scalar_type() == at::kFloat4_e2m1fn_x2;
+  const bool is_src_fp4 = src.scalar_type() == at::kFloat4_e2m1fn_x2;
+
+  const bool fp4_stride_mismatch = HasFp4StrideMismatch(src, dest);
+
+  if (src.dtype() == dest.dtype() && !fp4_stride_mismatch) {
     // Shape and type match, can simply reuse the existing DeviceBufferRef
     // from src for dest.
     //
@@ -123,8 +100,6 @@ absl::Status CopyTpuToTpu(const at::Tensor& src, const at::Tensor& dest) {
 
   // If the dtype is different or shape is different, then we need to dispatch
   // a StableHLO op.
-  const bool is_dest_fp4 = dest.scalar_type() == at::kFloat4_e2m1fn_x2;
-  const bool is_src_fp4 = src.scalar_type() == at::kFloat4_e2m1fn_x2;
 
   if (is_dest_fp4 || is_src_fp4) {
     TT_RET_CHECK(viewed_dest.dim() > 0, error::kInvalidArgument)
@@ -135,15 +110,17 @@ absl::Status CopyTpuToTpu(const at::Tensor& src, const at::Tensor& dest) {
   TT_ASSIGN_OR_RETURN(const auto out_dtype,
                       ConvertTo<mlir::ElementType>(dest.scalar_type()));
 
+  Dimensions dest_logical_sizes = CopyIntVector(viewed_dest.sizes());
   auto copy_op_builder =
-      [out_dtype, is_src_fp4,
-       is_dest_fp4](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
+      [out_dtype, is_src_fp4, is_dest_fp4,
+       dest_logical_sizes = std::move(dest_logical_sizes)](
+          mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
     auto formatted = input;
 
     // 1. If source is FP4, it is physically 2N. Slice it to logical shape N
     //    before any broadcasting.
     if (is_src_fp4) {
-      TT_ASSIGN_OR_RETURN(formatted, SliceFP4(formatted));
+      formatted = SliceFp4InputIfNeeded(formatted, dest_logical_sizes);
     }
 
     // 2. Cast to the target element type.
@@ -154,7 +131,7 @@ absl::Status CopyTpuToTpu(const at::Tensor& src, const at::Tensor& dest) {
     // 3. If destination is FP4, it must be physically 2M. Pad it from logical
     //    shape M to physical shape 2M.
     if (is_dest_fp4) {
-      TT_ASSIGN_OR_RETURN(formatted, PadFP4(formatted));
+      formatted = PadFp4OutputIfNeeded(formatted);
     }
 
     return formatted;

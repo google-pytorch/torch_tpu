@@ -541,7 +541,11 @@ absl::StatusOr<mlir::MlirOp> BuildScaledGroupedMmShlo(
     mlir::MlirOp self_op, mlir::MlirOp mat2_op, mlir::MlirOp scale_a,
     mlir::MlirOp scale_b, std::optional<mlir::MlirOp> offs_op,
     std::optional<mlir::MlirOp> bias, std::optional<mlir::MlirOp> scale_result,
-    mlir::ElementType out_dtype, mlir::stablehlo::Precision precision) {
+    mlir::ElementType out_dtype, mlir::stablehlo::Precision precision,
+    absl::Span<const int64_t> self_logical_dims,
+    absl::Span<const int64_t> mat2_logical_dims) {
+  self_op = SliceFp4InputIfNeeded(self_op, self_logical_dims);
+  mat2_op = SliceFp4InputIfNeeded(mat2_op, mat2_logical_dims);
   const mlir::RankedTensorType self_type = GetTensorTypeOrDie(self_op);
   const mlir::RankedTensorType mat2_type = GetTensorTypeOrDie(mat2_op);
   TT_ASSIGN_OR_RETURN(const mlir::ElementType self_elem_type,
@@ -600,7 +604,7 @@ absl::StatusOr<mlir::MlirOp> BuildScaledGroupedMmShlo(
   }
 
   scaled_result = mlir::stablehlo::ConvertElementType(scaled_result, out_dtype);
-  return scaled_result;
+  return PadFp4OutputIfNeeded(scaled_result);
 }
 
 // Validates the `_grouped_mm` inputs that can be checked without looking at
@@ -759,19 +763,11 @@ absl::StatusOr<DeviceBufferRef> GroupedMm(
   return result_buffer;
 }
 
-absl::StatusOr<DeviceBufferRef> ScaledGroupedMm(
+absl::Status ValidateScaledGroupedMmArgs(
     const at::Tensor& self, const at::Tensor& mat2, const at::Tensor& scale_a,
     const at::Tensor& scale_b, const std::optional<at::Tensor>& offs,
     const std::optional<at::Tensor>& bias,
-    const std::optional<at::Tensor>& scale_result,
-    std::optional<at::ScalarType> out_dtype, OpParamCacheKeys& param_keys) {
-  const bool has_offs = offs.has_value() && offs->defined();
-  const bool has_bias = bias.has_value() && bias->defined();
-  const bool has_scale_result =
-      scale_result.has_value() && scale_result->defined();
-
-  TT_ASSIGN_OR_RETURN(auto out_size, GetGroupedMmOutputSize(self, mat2, offs));
-
+    const std::optional<at::Tensor>& scale_result) {
   const bool tensorwise = IsScalar(scale_a) && IsScalar(scale_b);
   const bool rowwise = IsRowwiseScales(self, mat2, scale_a, scale_b, offs);
   TT_RET_CHECK(tensorwise || rowwise, error::kPythonNotImplementedError)
@@ -780,22 +776,46 @@ absl::StatusOr<DeviceBufferRef> ScaledGroupedMm(
       << ToString(self.sizes()) << " and mat2 " << ToString(mat2.sizes())
       << ", got scale_a " << ToString(scale_a.sizes()) << " and scale_b "
       << ToString(scale_b.sizes());
-  if (has_bias) {
+  if (bias.has_value() && bias->defined()) {
     TT_RET_CHECK(IsScalar(*bias), error::kPythonNotImplementedError)
         << "expected bias to be 1D or scalar, got " << bias->dim() << "D";
   }
-  if (has_scale_result) {
+  if (scale_result.has_value() && scale_result->defined()) {
     TT_RET_CHECK(IsScalar(*scale_result), error::kPythonNotImplementedError)
         << "expected scale_result to be 1D or scalar, got "
         << scale_result->dim() << "D";
   }
+  return absl::OkStatus();
+}
+
+absl::StatusOr<DeviceBufferRef> ScaledGroupedMm(
+    const at::Tensor& self, const at::Tensor& mat2, const at::Tensor& scale_a,
+    const at::Tensor& scale_b, const std::optional<at::Tensor>& offs,
+    const std::optional<at::Tensor>& bias,
+    const std::optional<at::Tensor>& scale_result,
+    std::optional<at::ScalarType> out_dtype, OpParamCacheKeys& param_keys) {
+  TT_RETURN_IF_ERROR(ValidateScaledGroupedMmArgs(self, mat2, scale_a, scale_b,
+                                                 offs, bias, scale_result));
+
+  const bool has_offs = offs.has_value() && offs->defined();
+  const bool has_bias = bias.has_value() && bias->defined();
+  const bool has_scale_result =
+      scale_result.has_value() && scale_result->defined();
+
+  TT_ASSIGN_OR_RETURN(auto out_size, GetGroupedMmOutputSize(self, mat2, offs));
 
   const at::ScalarType target_dtype = out_dtype.value_or(self.scalar_type());
   TT_ASSIGN_OR_RETURN(mlir::ElementType output_elem_type,
                       ConvertTo<mlir::ElementType>(target_dtype));
 
   Dimensions out_dims_vec(out_size.begin(), out_size.end());
+  if (output_elem_type == mlir::ElementType::F4E2M1FN) {
+    out_dims_vec.back() *= 2;
+  }
   const auto current_precision = GetAndAddPrecisionTo(param_keys);
+
+  Dimensions self_logical_dims(self.sizes().begin(), self.sizes().end());
+  Dimensions mat2_logical_dims(mat2.sizes().begin(), mat2.sizes().end());
 
   std::vector<at::Tensor> inputs = {self, mat2, scale_a, scale_b};
   if (has_offs) inputs.push_back(*offs);
@@ -804,7 +824,8 @@ absl::StatusOr<DeviceBufferRef> ScaledGroupedMm(
 
   auto op_builder =
       [output_elem_type, current_precision, has_offs, has_bias,
-       has_scale_result](
+       has_scale_result, self_logical_dims = std::move(self_logical_dims),
+       mat2_logical_dims = std::move(mat2_logical_dims)](
           absl::Span<mlir::MlirOp> inputs,
           mlir::MlirBuilder& builder) -> absl::StatusOr<mlir::MlirOp> {
     auto self_op = inputs[0];
@@ -823,7 +844,8 @@ absl::StatusOr<DeviceBufferRef> ScaledGroupedMm(
         auto result,
         BuildScaledGroupedMmShlo(self_op, mat2_op, scale_a_op, scale_b_op,
                                  offs_op, bias_op, scale_result_op,
-                                 output_elem_type, current_precision));
+                                 output_elem_type, current_precision,
+                                 self_logical_dims, mat2_logical_dims));
     return result;
   };
 
@@ -1086,8 +1108,13 @@ at::Tensor& AtenScaledGroupedMmV2Out(
         TT_THROW_IF_ERROR(
             ValidateOutDtype(out, out_dtype.value_or(self.scalar_type()),
                              /*allow_out_dtype_cast=*/false));
-        TT_THROW_IF_ERROR(
-            ResizeTensorIfShapeDiffers(out, result_buffer.dimensions()));
+        Dimensions out_dims(result_buffer.dimensions().begin(),
+                            result_buffer.dimensions().end());
+        if (result_buffer.element_type() == mlir::ElementType::F4E2M1FN &&
+            !out_dims.empty()) {
+          out_dims.back() /= 2;
+        }
+        TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, out_dims));
         TT_THROW_IF_ERROR(
             AssignBufferToAtTensor(std::move(result_buffer), out));
         return out;

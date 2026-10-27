@@ -163,13 +163,24 @@ absl::StatusOr<DeviceBufferRef> MakeBuffer(
                         .op_param_cache_keys = std::move(op_param_cache_keys)});
 }
 
+Dimensions GetExpectedBufferDimensions(const at::Tensor& tensor) {
+  Dimensions dims(tensor.sizes().begin(), tensor.sizes().end());
+  if (tensor.scalar_type() == c10::ScalarType::Float4_e2m1fn_x2 &&
+      !dims.empty()) {
+    dims.back() *= 2;
+  }
+  return dims;
+}
+
 bool IsEligibleDonor(const at::Tensor& in, const at::Tensor& out,
                      mlir::ElementType out_dtype,
                      at::IntArrayRef destination_dims) {
   // An in-place operation is one where the out-tensor is an alias of the
   // in-tensor and does not change shape or dtype.
-  if (!out.is_alias_of(in) || in.numel() == 0 ||
-      in.sizes() != destination_dims) {
+  if (!out.is_alias_of(in) || in.numel() == 0) {
+    return false;
+  }
+  if (GetExpectedBufferDimensions(in) != destination_dims) {
     return false;
   }
   const auto in_dtype = ConvertTo<mlir::ElementType>(in.scalar_type());
@@ -300,8 +311,15 @@ absl::Status AssignBufferToOutput(const at::Tensor& output,
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Output tensors are always defined.
       output.defined(), error::kInvalidArgument)
       << "expected defined output tensor";
-  TT_RETURN_IF_ERROR(
-      ResizeTensorIfShapeDiffers(output, result_buffer.dimensions()));
+  if (GetExpectedBufferDimensions(output) != result_buffer.dimensions()) {
+    Dimensions dims(result_buffer.dimensions().begin(),
+                    result_buffer.dimensions().end());
+    if (output.scalar_type() == c10::ScalarType::Float4_e2m1fn_x2 &&
+        !dims.empty()) {
+      dims.back() /= 2;
+    }
+    TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(output, dims));
+  }
   return AssignBufferToAtTensor(std::move(result_buffer), output,
                                 enable_autodonation);
 }

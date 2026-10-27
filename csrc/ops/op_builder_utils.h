@@ -934,6 +934,17 @@ absl::StatusOr<mlir::MlirOp> ReshapeFromStaticDimensions(
 absl::StatusOr<mlir::MlirOp> ReshapeToStaticDimensions(
     mlir::MlirOp op, const Dimensions& static_shape_after);
 
+// Slices an FP4 input op from its physical shape (where one dimension is
+// doubled due to 4-bit packing) to `logical_dims` if needed. Returns `op`
+// unchanged if its shape already matches `logical_dims`.
+mlir::MlirOp SliceFp4InputIfNeeded(mlir::MlirOp op,
+                                   absl::Span<const int64_t> logical_dims);
+
+// Zero-pads the last dimension of `op` if its element type is F4E2M1FN,
+// converting its logical shape into physical buffer shape (doubled last
+// dimension). Returns `op` unchanged if it is not F4E2M1FN.
+mlir::MlirOp PadFp4OutputIfNeeded(mlir::MlirOp op);
+
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_CSRC_OPS_OP_BUILDER_UTILS_H_
