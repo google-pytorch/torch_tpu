@@ -15763,13 +15763,14 @@ Device-side assertion tracking was not enabled by user.""",
       # RuntimeError: pin_memory=True requires a CUDA or other accelerator
       # backend; no pinned memory allocator is available on this system.
       self.skipTest("GPU allocation can't find host allocator")
-    ONE_HUNDRED_TB = 100 * 1024 * 1024 * 1024 * 1024
+    # More than the 64-bit virtual address space can map.
+    too_many_bytes = 1 << 62
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""failed to allocate 109951162777600 bytes of pinned host memory""",
+        tpu="""failed to allocate 4611686018427387904 bytes of pinned host memory""",
     ):
       torch.zeros(
-          ONE_HUNDRED_TB, dtype=torch.uint8, device="cpu", pin_memory=True
+          too_many_bytes, dtype=torch.uint8, device="cpu", pin_memory=True
       )
 
 

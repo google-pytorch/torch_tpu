@@ -709,7 +709,8 @@ def run_cov_tests(repo_root: str) -> str:
   }
   env.update(COV_ENV)
   outputs = []
-  report = [f"START {_fmt(_sample())}"]
+  import resource
+  report = [f"START memlock={resource.getrlimit(resource.RLIMIT_MEMLOCK)} {_fmt(_sample())}"]
   failure = None
   for binary in COV_TEST_BINARIES:
     test_path = os.path.join(repo_root, binary)
