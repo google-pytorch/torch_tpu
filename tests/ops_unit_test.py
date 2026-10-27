@@ -21893,6 +21893,91 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
         sim = torch.nn.functional.cosine_similarity(cpu, tpu.cpu(), dim=-1)
         self.assertGreater(sim.mean().item(), 0.9999)
 
+  @parameterized.parameters(4, 2)
+  def test_splash_sdpa_strides_match_fake(self, h_kv: int):
+    """Tests that splash_sdpa output and grad strides match its fake kernels.
+
+    torch.compile traces with the strides of the fake kernels, so any mismatch
+    can make views traced on the outputs fail at runtime. The inputs are
+    transposed views, as models build them, so a fake output that copies the
+    input strides would not match the contiguous kernel output.
+
+    Args:
+      h_kv: Number of key/value heads (4 for MHA, 2 for GQA).
+    """
+    bsz, seq, h_q, dh = 1, 128, 4, 128
+    torch.manual_seed(0)
+    leaves = {
+        "query": torch.randn(bsz, seq, h_q, dh, dtype=torch.bfloat16),
+        "key": torch.randn(bsz, seq, h_kv, dh, dtype=torch.bfloat16),
+        "value": torch.randn(bsz, seq, h_kv, dh, dtype=torch.bfloat16),
+    }
+    grad_out = torch.randn(bsz, h_q, seq, dh, dtype=torch.bfloat16)
+
+    def compute():
+      inputs = {
+          name: leaf.to("tpu").requires_grad_().transpose(1, 2)
+          for name, leaf in leaves.items()
+      }
+      grads = {}
+      for name, x in inputs.items():
+        x.register_hook(functools.partial(grads.__setitem__, name))
+      out = torch.tpu.ops.splash_sdpa(
+          *inputs.values(), is_causal=True, enable_gqa=h_q != h_kv
+      )
+      out.backward(grad_out.to("tpu"))
+      return out, grads
+
+    out, grads = compute()
+    with fake_tensor.FakeTensorMode(allow_non_fake_inputs=True):
+      fake_out, fake_grads = compute()
+    self.assertEqual(out.stride(), fake_out.stride())
+    for name in leaves:
+      with self.subTest(f"{name}_grad_stride"):
+        self.assertEqual(grads[name].stride(), fake_grads[name].stride())
+
+  def test_splash_sdpa_compiled_head_merge(self):
+    """Tests a compiled head merge on the splash_sdpa output.
+
+    Before the fake kernels returned contiguous outputs, torch.compile traced
+    `out.transpose(1, 2).reshape(...)` as a view, and it failed at runtime with
+    "view(): cannot create a view of shape ...".
+    """
+    bsz, seq, h_q, h_kv, dh, dm = 1, 128, 4, 2, 128, 256
+
+    def run_attention(h, wq, wkv, wo):
+      q = (h @ wq).view(bsz, seq, h_q, dh).transpose(1, 2)
+      k = (h @ wkv).view(bsz, seq, h_kv, dh).transpose(1, 2)
+      v = (h @ wkv).view(bsz, seq, h_kv, dh).transpose(1, 2)
+      out = torch.tpu.ops.splash_sdpa(q, k, v, is_causal=True, enable_gqa=True)
+      return out.transpose(1, 2).reshape(bsz, seq, h_q * dh) @ wo
+
+    torch.manual_seed(0)
+    leaves = [
+        torch.randn(bsz, seq, dm, dtype=torch.bfloat16),
+        torch.randn(dm, h_q * dh, dtype=torch.bfloat16) / dm**0.5,
+        torch.randn(dm, h_kv * dh, dtype=torch.bfloat16) / dm**0.5,
+        torch.randn(h_q * dh, dm, dtype=torch.bfloat16) / (h_q * dh) ** 0.5,
+    ]
+    grad_out = torch.randn(bsz, seq, dm, dtype=torch.bfloat16)
+
+    def compute(fn):
+      args = [leaf.to("tpu").requires_grad_() for leaf in leaves]
+      out = fn(*args)
+      out.backward(grad_out.to("tpu"))
+      return out, [a.grad for a in args]
+
+    eager_out, eager_grads = compute(run_attention)
+    compiled_out, compiled_grads = compute(
+        torch.compile(run_attention, dynamic=False, backend="tpu")
+    )
+    utils.assert_close(compiled_out, eager_out, rtol=1e-2, atol=1e-2)
+    for name, compiled, eager in zip(
+        ("h", "wq", "wkv", "wo"), compiled_grads, eager_grads
+    ):
+      with self.subTest(f"{name}_grad"):
+        utils.assert_close(compiled, eager, rtol=1e-2, atol=1e-2)
+
   def test_scaled_dot_product_attention_dropout(self):
     """Verifies FlashAttention dropout rate and 1/(1-p) scaling."""
     batch_size, num_heads, seq_len, head_dim = 2, 4, 128, 128
