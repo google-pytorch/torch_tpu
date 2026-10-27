@@ -177,6 +177,7 @@ torch.tpu.pallas.get_pallas_mesh: {category: Public Python API, defined_in: runt
 torch.tpu.pallas.jax_op: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.precision: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.profiler.TpuProfilerConfig: {category: Public Python API, defined_in: runtime, stage: Experimental}
+torch.tpu.profiler.named_scope: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.set_device: {category: Public Python API, defined_in: runtime, prefer: torch.accelerator.set_device_index, stage: Internal}
 torch.tpu.set_eager_mode: {category: Public Python API, defined_in: runtime, stage: Experimental}
 torch.tpu.set_rng_state: {category: Public Python API, defined_in: runtime, stage: Experimental}
