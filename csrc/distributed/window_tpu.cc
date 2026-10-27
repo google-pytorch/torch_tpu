@@ -235,7 +235,7 @@ c10::intrusive_ptr<c10d::Work> WindowTpu::PutPeerP2P(const at::Tensor& tensor,
   std::vector<c10::intrusive_ptr<c10d::Work>> sub_works;
   sub_works.reserve(chunks.size());
   for (size_t i = 0; i < chunks.size(); ++i) {
-    std::vector<at::Tensor> chunk_tensors = {chunks[i].contiguous()};
+    std::vector<at::Tensor> chunk_tensors = {chunks[i]};
     sub_works.push_back(backend_->send(chunk_tensors, static_cast<int>(dstRank),
                                        static_cast<int>(i)));
   }
@@ -298,7 +298,7 @@ c10::intrusive_ptr<c10d::Work> WindowTpu::signal(
   std::vector<c10::intrusive_ptr<c10d::Work>> sub_works;
   sub_works.reserve(chunks.size());
   for (size_t i = 0; i < chunks.size(); ++i) {
-    std::vector<at::Tensor> chunk_tensors = {chunks[i].contiguous()};
+    std::vector<at::Tensor> chunk_tensors = {chunks[i]};
     sub_works.push_back(backend_->send(
         chunk_tensors, static_cast<int>(peerRank), static_cast<int>(i)));
   }

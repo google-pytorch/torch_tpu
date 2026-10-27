@@ -391,7 +391,7 @@ class ProcessGroupTpu : public c10d::Backend {
   // Extracts receive descriptors from store_ and sends buffers to a
   // remote device.
   absl::StatusOr<c10::intrusive_ptr<c10::ivalue::Future>> CrossHostSendBuffers(
-      std::vector<xla::PjRtBuffer*>& buffers,
+      absl::Span<const DeviceBufferRef> buffers,
       absl::Span<const xla::CrossHostTransferKey> transfer_keys);
 
   // Populates store_ with receive descriptors and places buffers

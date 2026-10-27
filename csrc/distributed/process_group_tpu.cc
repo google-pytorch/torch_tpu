@@ -108,6 +108,7 @@
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch/csrc/distributed/c10d/Work.hpp"
 #include "torch/headeronly/core/ScalarType.h"
+#include "xla/future.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/runtime/device_id.h"
 #include "xla/shape.h"
@@ -121,27 +122,9 @@ class TpuWork : public c10d::Work {
   explicit TpuWork(std::vector<at::Tensor> result_tensors, int rank = -1,
                    c10d::OpType op_type = c10d::OpType::UNKNOWN,
                    c10::intrusive_ptr<c10::ivalue::Future> future = nullptr)
-      : Work(rank, op_type), results_(std::move(result_tensors)) {
-    results_future_ = c10::make_intrusive<c10::ivalue::Future>(
-        c10::ListType::create(c10::TensorType::get()));
-
-    // If the future is null, mark the results future as completed. Otherwise,
-    // add a callback to mark the results future as completed when the future
-    // is completed.
-    if (future) {
-      future->addCallback([this](c10::ivalue::Future& future) {
-        if (future.hasError()) {
-          results_future_->setError(std::make_exception_ptr(TtError(
-              TT_ERROR(error::kInternal) << future.tryRetrieveErrorMessage(),
-              TT_SOURCE_LOCATION)));
-        } else {
-          results_future_->markCompleted(c10::IValue(results_));
-        }
-      });
-    } else {
-      results_future_->markCompleted(c10::IValue(results_));
-    }
-  }
+      : Work(rank, op_type),
+        results_(std::move(result_tensors)),
+        source_future_(std::move(future)) {}
 
   // This class is neither copyable nor movable.
   TpuWork(const TpuWork&) = delete;
@@ -150,16 +133,21 @@ class TpuWork : public c10d::Work {
   TpuWork& operator=(TpuWork&&) = delete;
 
   // NOTE: We implement TpuWork to match the PyTorch API surface.
-  bool isCompleted() override { return results_future_->completed(); }
+  bool isCompleted() override {
+    return !source_future_ || source_future_->completed();
+  }
 
   bool isSuccess() const override {
-    return results_future_->completed() && !results_future_->hasError();
+    return !source_future_ ||
+           (source_future_->completed() && !source_future_->hasError());
   }
 
   bool wait(std::chrono::milliseconds timeout) override {
-    results_future_->wait();
-    TT_CHECK_THROW(!results_future_->hasError(), error::kInternal)
-        << results_future_->tryRetrieveErrorMessage();
+    if (source_future_) {
+      source_future_->wait();
+      TT_CHECK_THROW(!source_future_->hasError(), error::kInternal)
+          << source_future_->tryRetrieveErrorMessage();
+    }
     return true;
   }
 
@@ -168,12 +156,30 @@ class TpuWork : public c10d::Work {
   void abort() override {}
 
   c10::intrusive_ptr<c10::ivalue::Future> getFuture() override {
-    return results_future_;
+    auto results_future = c10::make_intrusive<c10::ivalue::Future>(
+        c10::ListType::create(c10::TensorType::get()));
+    c10::IValue results_ivalue(results_);
+    if (!source_future_) {
+      results_future->markCompleted(std::move(results_ivalue));
+      return results_future;
+    }
+    source_future_->addCallback(
+        [results_future, results_ivalue = std::move(results_ivalue)](
+            c10::ivalue::Future& future) {
+          if (future.hasError()) {
+            results_future->setError(std::make_exception_ptr(TtError(
+                TT_ERROR(error::kInternal) << future.tryRetrieveErrorMessage(),
+                TT_SOURCE_LOCATION)));
+          } else {
+            results_future->markCompleted(results_ivalue);
+          }
+        });
+    return results_future;
   }
 
  private:
   std::vector<at::Tensor> results_;
-  c10::intrusive_ptr<c10::ivalue::Future> results_future_;
+  c10::intrusive_ptr<c10::ivalue::Future> source_future_;
 
   friend class ::torch_tpu::ProcessGroupTpu;  // To allow changing op type.
 };
@@ -602,7 +608,7 @@ absl::StatusOr<PjRtDeviceAttributes> DeserializeDeviceAttributes(
 
 absl::StatusOr<c10::intrusive_ptr<c10::ivalue::Future>>
 ProcessGroupTpu::CrossHostSendBuffers(
-    std::vector<xla::PjRtBuffer*>& buffers,
+    absl::Span<const DeviceBufferRef> buffers,
     absl::Span<const xla::CrossHostTransferKey> transfer_keys) {
   TT_RET_CHECK(transfer_keys.size() == buffers.size(), error::kInvalidArgument)
       << "expected transfer keys to be the same size as buffers, got "
@@ -615,6 +621,13 @@ ProcessGroupTpu::CrossHostSendBuffers(
   if (buffers.empty()) {
     all_sent_future->markCompleted(c10::IValue());
     return all_sent_future;
+  }
+
+  std::vector<xla::PjRtBuffer*> pjrt_buffers;
+  pjrt_buffers.reserve(buffers.size());
+  for (const auto& buffer : buffers) {
+    TT_ASSIGN_OR_RETURN(xla::PjRtBuffer * pjrt_buffer, buffer.AwaitBuffer());
+    pjrt_buffers.push_back(pjrt_buffer);
   }
 
   // Map transfer keys to their corresponding store keys to retrieve the
@@ -633,32 +646,36 @@ ProcessGroupTpu::CrossHostSendBuffers(
     descriptors = store_->multiGet(descriptor_keys);
   } catch (const std::exception& e) {
     all_sent_future->setError(std::current_exception());
+    return all_sent_future;
   }
 
   auto remaining_sends = std::make_shared<std::atomic<size_t>>(buffers.size());
+  auto has_error = std::make_shared<std::atomic<bool>>(false);
   for (size_t i = 0; i < descriptors.size(); ++i) {
-    const std::string descriptor(descriptors[i].begin(), descriptors[i].end());
+    std::string descriptor(descriptors[i].begin(), descriptors[i].end());
 
-    buffers[i]->CopyToRemoteDevice(
+    pjrt_buffers[i]->CopyToRemoteDevice(
         std::move(descriptor),
-        [all_sent_future, remaining_sends](absl::Status status,
-                                           bool sends_were_enqueued) {
-          // If the aggregate future has already been resolved (likely due to a
-          // failure in a parallel callback), exit immediately.
-          if (all_sent_future->completed()) {
-            return;
-          }
+        [all_sent_future, remaining_sends, has_error,
+         device_buffer_list = buffers[i].device_buffer_list()](
+            absl::Status status, bool sends_were_enqueued) mutable {
+          device_buffer_list.reset();
 
           if (!status.ok()) {
-            all_sent_future->setError(std::make_exception_ptr(
-                TtError(TT_ERROR(error::kInternal)
-                            << "PjRtBuffer::CopyToRemoteDevice: " << status,
-                        TT_SOURCE_LOCATION)));
+            if (!has_error->exchange(true)) {
+              all_sent_future->setError(std::make_exception_ptr(
+                  TtError(TT_ERROR(error::kInternal)
+                              << "PjRtBuffer::CopyToRemoteDevice: " << status,
+                          TT_SOURCE_LOCATION)));
+            }
           } else if (!sends_were_enqueued) {
-            all_sent_future->setError(std::make_exception_ptr(TtError(
-                TT_ERROR(error::kInternal) << "PjRtBuffer::CopyToRemoteDevice: "
-                                              "sends were not enqueued",
-                TT_SOURCE_LOCATION)));
+            if (!has_error->exchange(true)) {
+              all_sent_future->setError(std::make_exception_ptr(
+                  TtError(TT_ERROR(error::kInternal)
+                              << "PjRtBuffer::CopyToRemoteDevice: "
+                                 "sends were not enqueued",
+                          TT_SOURCE_LOCATION)));
+            }
           } else if (remaining_sends->fetch_sub(1) == 1) {
             // fetch_sub returns the value before subtraction. If it was 1,
             // this is the final transfer to complete successfully.
@@ -1950,24 +1967,22 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::broadcast(
 
 c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::experimental_send(
     std::vector<at::Tensor>& tensors, int dst_rank, int tag) {
-  std::vector<xla::PjRtBuffer*> pjrt_buffers;
+  std::vector<DeviceBufferRef> device_buffers;
   std::vector<xla::CrossHostTransferKey> transfer_keys;
 
-  pjrt_buffers.reserve(tensors.size());
+  device_buffers.reserve(tensors.size());
   transfer_keys.reserve(tensors.size());
 
   int64_t src_device_id = addressable_device_id_;
   int64_t dst_device_id = member_device_ids_[dst_rank];
   for (size_t i = 0; i < tensors.size(); ++i) {
     const auto& tensor = tensors[i];
-    // Extract the underlying hardware buffer from the tensor.
+    // Materialize the underlying hardware buffer from the tensor.
     TT_ASSIGN_OR_THROW(
-        const DeviceBufferRef device_buffer,
+        DeviceBufferRef device_buffer,
         MaterializeAndReturn(tensor, MaterializationReason::kDistributedOp));
-    TT_ASSIGN_OR_THROW(xla::PjRtBuffer * pjrt_buffer,
-                       device_buffer.AwaitBuffer());
 
-    pjrt_buffers.push_back(pjrt_buffer);
+    device_buffers.push_back(std::move(device_buffer));
     transfer_keys.push_back(
         GetCrossHostTransferKey(src_device_id, dst_device_id, tag, i));
   }
@@ -1976,7 +1991,7 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::experimental_send(
   // descriptors from the receiver are available in the store and then
   // begin the asynchronous transfer.
   TT_ASSIGN_OR_THROW(auto send_future,
-                     CrossHostSendBuffers(pjrt_buffers, transfer_keys));
+                     CrossHostSendBuffers(device_buffers, transfer_keys));
 
   return c10::make_intrusive<TpuWork>(tensors, getRank(), c10d::OpType::SEND,
                                       std::move(send_future));
@@ -2008,17 +2023,34 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::experimental_recv(
       auto recv_buffers,
       CrossHostReceiveBuffers(recv_shapes, std::move(transfer_keys)));
 
+  std::vector<xla::Future<>> ready_futures;
+  ready_futures.reserve(tensors.size());
+
   // Bind the incoming PJRT buffer back to the tensors.
   for (size_t i = 0; i < tensors.size(); ++i) {
     auto& tensor = tensors[i];
     std::unique_ptr<xla::PjRtBuffer> buffer = std::move(recv_buffers[i]);
     TT_ASSIGN_OR_THROW(auto device_buffer,
                        DeviceBufferList::CreateMaterialized(std::move(buffer)));
+    ready_futures.push_back(device_buffer.GetReadyFuture());
 
     TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(device_buffer), tensor));
   }
 
-  return c10::make_intrusive<TpuWork>(tensors, getRank(), c10d::OpType::RECV);
+  auto recv_future =
+      c10::make_intrusive<c10::ivalue::Future>(c10::NoneType::get());
+  xla::JoinFutures(ready_futures).OnReady([recv_future](absl::Status status) {
+    if (!status.ok()) {
+      recv_future->setError(std::make_exception_ptr(TtError(
+          TT_ERROR(error::kInternal) << "Cross-host receive failed: " << status,
+          TT_SOURCE_LOCATION)));
+    } else {
+      recv_future->markCompleted(c10::IValue());
+    }
+  });
+
+  return c10::make_intrusive<TpuWork>(tensors, getRank(), c10d::OpType::RECV,
+                                      std::move(recv_future));
 }
 
 c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::allgather(
