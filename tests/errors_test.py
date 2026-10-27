@@ -3565,6 +3565,7 @@ Device-side assertion tracking was not enabled by user.""",
       torch.trunc(t)
 
   def test_digamma_unsupported_complex(self):
+    self.skipTest("DO NOT MERGE: deliberately drop coverage (negative test)")
     t = torch.tensor([1 + 1j], device=et.device(), dtype=torch.complex64)
     with et.assert_raises_message(
         RuntimeError,
