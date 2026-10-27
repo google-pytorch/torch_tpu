@@ -35,6 +35,7 @@ dependencies = [
     # versions. If you have code that needs a newer libtpu version, please make
     # it conditioned on the version.
     "libtpu>=0.0.50",
+    "packaging>=24.2",
     "portpicker>=1.6",
     "tensorboard>=2.20",
     "frozendict>=2",

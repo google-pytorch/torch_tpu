@@ -25,11 +25,13 @@
 
 namespace torch_tpu {
 
-// Sets the libtpu version string.
+// Sets the libtpu version string and its parsed `Version` representation.
+// If `version` is empty, `parsed_version` is ignored and `GetLibtpuVersion()`
+// remains `Version::Max()`.
 // Calling SetLibtpuVersion with a different version after it has already been
 // set will trigger a check failure. Calling it with the exact same version is
 // a no-op.
-void SetLibtpuVersion(std::string_view version);
+void SetLibtpuVersion(std::string_view version, Version parsed_version);
 
 // Returns the libtpu version string set via SetLibtpuVersion, or std::nullopt
 // if never set. If libtpu was not found, the returned optional contains an

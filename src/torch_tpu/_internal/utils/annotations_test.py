@@ -1134,6 +1134,7 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
         annotations.parse_version("2.11.0.dev20260101"), (2, 11, 0)
     )
     self.assertEqual(annotations.parse_version("2.11.0+cpu"), (2, 11, 0))
+    self.assertEqual(annotations.parse_version("0.0.50.1"), (0, 0, 50, 1))
     self.assertIsInstance(annotations.get_torch_version(), tuple)
     self.assertGreaterEqual(len(annotations.get_torch_version()), 2)
 

@@ -23,6 +23,7 @@ import sys
 import time
 from typing import Any, Callable, Sequence, TextIO, TypeAlias
 
+from packaging import version as packaging_version
 import torch
 from torch.utils import _pytree
 from torch_tpu._internal import execution_mode
@@ -596,33 +597,16 @@ class ActivationTracer(contextlib.ContextDecorator):
     return False
 
 
-# We represent version numbers as `tuple[int, ...]` rather than
-# `packaging.version.Version` to avoid adding an external `packaging`
-# dependency to the `torch_tpu` runtime library and every test `BUILD` target
-# that compares versions.
 def parse_version(version: str) -> tuple[int, ...]:
-  """Parses the leading numeric components of a version string into a tuple.
-
-  Stops at the first non-numeric component so pre-release / nightly suffixes
-  (e.g. "0.0.41.dev20260101") compare by their numeric prefix.
+  """Parses the release components of a PEP 440 version string into a tuple.
 
   Args:
-    version: A version string such as "0.0.41".
+    version: A PEP 440 version string such as "0.0.41" or "0.0.41.dev20260101".
 
   Returns:
-    The leading numeric components, e.g. (0, 0, 41).
+    The numeric release components, e.g. (0, 0, 41) or (0, 0, 50, 1).
   """
-  components = []
-  for part in version.split("."):
-    digits = ""
-    for ch in part:
-      if not ch.isdigit():
-        break
-      digits += ch
-    if not digits:
-      break
-    components.append(int(digits))
-  return tuple(components)
+  return packaging_version.Version(version).release
 
 
 def libtpu_version() -> tuple[int, ...] | None:

@@ -31,7 +31,6 @@ csrc/common/layout_utils.cc: {infeasible: 1, remaining: 1, total: 2}
 csrc/common/libtpu_version.cc: {infeasible: 0, remaining: 0, total: 1}
 csrc/common/static_shape_check.cc: {infeasible: 0, remaining: 0, total: 1}
 csrc/common/tier2_compilation_cache.cc: {infeasible: 0, remaining: 3, total: 3}
-csrc/common/version.cc: {infeasible: 0, remaining: 0, total: 2}
 csrc/distributed/process_group_tpu.cc: {infeasible: 36, remaining: 25, total: 98}
 csrc/distributed/slicebuilder/discovery.cc: {infeasible: 0, remaining: 4, total: 4}
 csrc/distributed/utils.cc: {infeasible: 0, remaining: 1, total: 3}
@@ -57,6 +56,7 @@ csrc/internal/device/device_rt.cc: {infeasible: 1, remaining: 5, total: 8}
 csrc/internal/dynamism/dynamism.cc: {infeasible: 0, remaining: 0, total: 1}
 csrc/internal/dynamism/dynamism_ops.cc: {infeasible: 0, remaining: 9, total: 10}
 csrc/internal/dynamism/dynamism_py.cc: {infeasible: 0, remaining: 2, total: 2}
+csrc/internal/env.cc: {infeasible: 0, remaining: 0, total: 2}
 csrc/internal/mosaic/kiln/core/kernel.cc: {infeasible: 0, remaining: 8, total: 8}
 csrc/internal/profiler/profiler_api.cc: {infeasible: 0, remaining: 5, total: 5}
 csrc/internal/profiler/tpu_profiler_plugin.cc: {infeasible: 0, remaining: 6, total: 6}
