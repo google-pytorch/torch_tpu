@@ -23824,6 +23824,81 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
 
         self.assert_close_tpu_vs_cpu(test_fn)
 
+  def test_polygamma_eager_dynamic(self) -> None:
+    # Test polygamma with bounded dynamism in eager modes (b/568040779).
+    for mode in (
+        execution_mode.EagerMode.DEFER_NEVER,
+        execution_mode.EagerMode.DEFER_AND_FUSE,
+    ):
+      with execution_mode.set_eager_mode(mode):
+        for n in (1, 2):
+          for dtype in (torch.float32, torch.bfloat16):
+            rtol, atol = (
+                (1e-4, 1e-4) if dtype == torch.float32 else (5e-2, 5e-2)
+            )
+            with self.subTest(mode=mode, n=n, dtype=dtype):
+              x_cpu = torch.tensor([1.5, 2.5, 3.5, 4.5], dtype=dtype)
+              x_tpu = x_cpu.to("tpu")
+              dynamism.mark_dynamic(
+                  x_tpu, dimension=0, lower_bound=2, upper_bound=8
+              )
+              # 1. Functional torch.polygamma
+              actual_func = torch.polygamma(n, x_tpu).cpu()
+              expected = torch.polygamma(n, x_cpu)
+              utils.assert_close(
+                  actual=actual_func,
+                  expected=expected,
+                  rtol=rtol,
+                  atol=atol,
+              )
+              # 2. Out variant torch.polygamma(..., out=...)
+              out_tpu = torch.zeros(4, dtype=dtype, device="tpu")
+              dynamism.mark_dynamic(
+                  out_tpu, dimension=0, lower_bound=2, upper_bound=8
+              )
+              torch.polygamma(n, x_tpu, out=out_tpu)
+              utils.assert_close(
+                  actual=out_tpu.cpu(),
+                  expected=expected,
+                  rtol=rtol,
+                  atol=atol,
+              )
+
+  def test_polygamma_compiled_dynamic(self) -> None:
+    # Test polygamma with bounded dynamism under torch.compile (b/568040779).
+    for n in (1, 2):
+      for dtype in (torch.float32, torch.bfloat16):
+        rtol, atol = (1e-4, 1e-4) if dtype == torch.float32 else (5e-2, 5e-2)
+        with self.subTest(n=n, dtype=dtype):
+
+          def polygamma_fn(x, n=n):
+            return torch.polygamma(n, x)
+
+          compiled_fn = torch.compile(polygamma_fn, backend="tpu")
+          for vals in (
+              [-1.5, -0.5, 1.5, 2.5],
+              [-2.5, -1.5, -0.5, 1.5, 2.5, 3.5],
+          ):
+            x_cpu = torch.tensor(vals, dtype=dtype, requires_grad=True)
+            x_tpu = x_cpu.detach().clone().to("tpu").requires_grad_(True)
+            torch._dynamo.mark_dynamic(x_tpu, 0, min=2, max=8)
+            actual = compiled_fn(x_tpu)
+            expected = torch.polygamma(n, x_cpu)
+            utils.assert_close(
+                actual=actual.cpu(), expected=expected, rtol=rtol, atol=atol
+            )
+            # Verify backward gradients under torch.compile
+            grad_cpu = torch.ones_like(expected)
+            grad_tpu = grad_cpu.to("tpu")
+            actual.backward(grad_tpu)
+            expected.backward(grad_cpu)
+            utils.assert_close(
+                actual=x_tpu.grad.cpu(),
+                expected=x_cpu.grad,
+                rtol=rtol,
+                atol=atol,
+            )
+
   def test_masked_softmax(self):
     def test_fn(device):
       results = []
