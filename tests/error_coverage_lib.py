@@ -612,3 +612,147 @@ def update_command(repo_root: str) -> str:
       " //tests:error_coverage_test --test_arg=--print_coverage_data"
       " --test_output=all"
   )
+
+
+# DEBUG (DO NOT MERGE): watchdog that samples memory and processes while the
+# error tests run, and kills them before the runner's container runs out.
+def _read(path):
+  try:
+    with open(path) as f:
+      return f.read().strip()
+  except OSError:
+    return None
+
+
+def _meminfo():
+  out = {}
+  for line in (_read("/proc/meminfo") or "").splitlines():
+    k, v = line.split(":", 1)
+    out[k] = int(v.split()[0]) // 1024  # MB
+  return out
+
+
+def _cgroup_mem():
+  cur = _read("/sys/fs/cgroup/memory.current") or _read(
+      "/sys/fs/cgroup/memory/memory.usage_in_bytes")
+  mx = _read("/sys/fs/cgroup/memory.max") or _read(
+      "/sys/fs/cgroup/memory/memory.limit_in_bytes")
+  def mb(x):
+    try:
+      return int(x) // (1 << 20)
+    except (TypeError, ValueError):
+      return None
+  return mb(cur), mb(mx)
+
+
+def _procs():
+  rows = []
+  for pid in os.listdir("/proc"):
+    if not pid.isdigit():
+      continue
+    status = _read(f"/proc/{pid}/status")
+    if not status:
+      continue
+    d = {}
+    for line in status.splitlines():
+      if ":" in line:
+        k, v = line.split(":", 1)
+        d[k] = v.strip()
+    rss = int(d.get("VmRSS", "0 kB").split()[0]) // 1024
+    cmd = (_read(f"/proc/{pid}/cmdline") or "").replace("\0", " ")[:150]
+    rows.append((rss, int(d.get("Threads", "0")), pid, cmd))
+  rows.sort(reverse=True)
+  return rows
+
+
+def _sample():
+  import time as _t
+  mi = _meminfo()
+  cur, mx = _cgroup_mem()
+  procs = _procs()
+  pids = _read("/sys/fs/cgroup/pids.current")
+  pids_max = _read("/sys/fs/cgroup/pids.max")
+  shm = os.statvfs("/dev/shm")
+  shm_used = (shm.f_blocks - shm.f_bfree) * shm.f_frsize // (1 << 20)
+  return {
+      "t": _t.strftime("%T"),
+      "total": mi.get("MemTotal"),
+      "avail": mi.get("MemAvailable"),
+      "cg": cur,
+      "cg_max": mx,
+      "nproc": len(procs),
+      "nthreads": sum(p[1] for p in procs),
+      "pids": f"{pids}/{pids_max}",
+      "shm": shm_used,
+      "top": procs[:6],
+  }
+
+
+def _fmt(s):
+  head = (f"{s['t']} total={s['total']}MB avail={s['avail']}MB "
+          f"cg={s['cg']}/{s['cg_max']}MB procs={s['nproc']} "
+          f"threads={s['nthreads']} pids={s['pids']} shm={s['shm']}MB")
+  tops = "\n".join(f"    rss={r}MB thr={t} pid={p} {c}" for r, t, p, c in s["top"])
+  return head + "\n" + tops
+
+
+def run_cov_tests(repo_root: str) -> str:
+  """DEBUG version with a memory watchdog."""
+  import signal
+  import tempfile
+  import threading
+  import time as _t
+  env = {
+      name: value
+      for name, value in os.environ.items()
+      if name not in _PARENT_TEST_RUNNER_ENV_VARS
+  }
+  env.update(COV_ENV)
+  outputs = []
+  report = [f"START {_fmt(_sample())}"]
+  failure = None
+  for binary in COV_TEST_BINARIES:
+    test_path = os.path.join(repo_root, binary)
+    out_f = tempfile.TemporaryFile()
+    err_f = tempfile.TemporaryFile()
+    t0 = _t.time()
+    proc = subprocess.Popen(
+        [test_path, "--test_mode=cov"], stdout=out_f, stderr=err_f, env=env,
+        start_new_session=True)
+    samples = []
+    killed = None
+    while proc.poll() is None:
+      s = _sample()
+      samples.append(s)
+      low_avail = s["avail"] is not None and s["avail"] < 0.12 * s["total"]
+      low_cg = (s["cg"] is not None and s["cg_max"] is not None
+                and s["cg_max"] < (1 << 40) and s["cg"] > 0.85 * s["cg_max"])
+      too_many = s["nthreads"] > 30000
+      if low_avail or low_cg or too_many:
+        killed = f"KILLED low_avail={low_avail} low_cg={low_cg} too_many_threads={too_many}"
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+        break
+      _t.sleep(1)
+    dt = _t.time() - t0
+    peak = min(samples, key=lambda s: s["avail"] or 1 << 60) if samples else None
+    peak_thr = max(samples, key=lambda s: s["nthreads"]) if samples else None
+    report.append(f"BINARY {binary} rc={proc.returncode} time={dt:.1f}s {killed or ''}")
+    if peak:
+      report.append(f"  MIN AVAIL: {_fmt(peak)}")
+      report.append(f"  MAX THREADS: {_fmt(peak_thr)}")
+    # Every 10th sample, for the trend.
+    for s in samples[::10]:
+      report.append(f"  trend {s['t']} avail={s['avail']} cg={s['cg']} procs={s['nproc']} threads={s['nthreads']} shm={s['shm']}")
+    out_f.seek(0)
+    err_f.seek(0)
+    stdout = out_f.read().decode("utf-8", "replace")
+    stderr = err_f.read().decode("utf-8", "replace")
+    if killed or proc.returncode != 0:
+      report.append(f"  STDERR tail:\n{stderr[-6000:]}")
+      failure = binary
+      break
+    outputs.append(stdout)
+  msg = "\n".join(report)
+  print(msg, flush=True)
+  raise RuntimeError("WATCHDOG REPORT (debug, intentional):\n" + msg)
