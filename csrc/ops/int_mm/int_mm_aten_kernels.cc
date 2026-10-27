@@ -16,7 +16,6 @@
 
 #include "csrc/ops/int_mm/int_mm_aten_kernels.h"
 
-#include <cstdint>
 #include <utility>
 
 #include "absl/status/status.h"
@@ -24,6 +23,7 @@
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/device_type.h"
+#include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
 #include "csrc/common/to_string.h"
@@ -46,28 +46,30 @@ absl::Status ValidateIntMmInputs(const at::Tensor& self,
   TT_RETURN_IF_ERROR(ValidateIsMatrix(self, "self"));
   TT_RETURN_IF_ERROR(ValidateIsMatrix(mat2, "mat2"));
   TT_RET_CHECK(self.size(1) == mat2.size(0), error::kInvalidArgument)
-      << "self.size(1) needs to match mat2.size(0), got " << self.size(1)
-      << " and " << mat2.size(0);
-  TT_RET_CHECK(
-      self.scalar_type() == at::kChar && mat2.scalar_type() == at::kChar,
-      error::kInvalidArgument)
-      << "expected int8 inputs, got " << ToString(self.scalar_type()) << " and "
-      << ToString(mat2.scalar_type());
+      << "expected the two arguments' 2D shapes to be compatible for matrix "
+         "multiplication, got ("
+      << self.size(0) << ", " << self.size(1) << ") and (" << mat2.size(0)
+      << ", " << mat2.size(1) << ")";
+  TT_RET_CHECK(self.scalar_type() == at::kChar, error::kInvalidArgument)
+      << "expected self dtype to be int8, got " << ToString(self.scalar_type());
+  TT_RET_CHECK(mat2.scalar_type() == at::kChar, error::kInvalidArgument)
+      << "expected mat2 dtype to be int8, got " << ToString(mat2.scalar_type());
   TT_RET_CHECK(self.device().type() == GetPrivateUse1DeviceType() &&
                    self.device() == mat2.device(),
                error::kInvalidArgument)
-      << "expected both inputs on the same TPU device, got " << self.device()
-      << " and " << mat2.device();
+      << "expected both inputs on the same TPU device, got "
+      << ToString(self.device()) << " and " << ToString(mat2.device());
   return absl::OkStatus();
 }
 
-absl::Status IntMm(const at::Tensor& self, const at::Tensor& mat2,
-                   at::Tensor& out, OpParamCacheKeys param_keys) {
-  TT_RETURN_IF_ERROR(ValidateIntMmInputs(self, mat2));
+absl::Status ValidateIntMmOutInputs(const at::Tensor& self,
+                                    const at::Tensor& mat2,
+                                    const at::Tensor& out) {
   TT_RETURN_IF_ERROR(ValidateOutDtype(out, at::kInt,
                                       /*allow_out_dtype_cast=*/false));
   TT_RET_CHECK(out.device() == self.device(), error::kInvalidArgument)
-      << "expected out on " << self.device() << ", got " << out.device();
+      << "expected out on " << ToString(self.device()) << ", got "
+      << ToString(out.device());
   TT_RETURN_IF_ERROR(ValidateIsMatrix(out, "out"));
   // Native ATen _int_mm.out requires an existing, contiguous result of the
   // correct shape. It does not resize an incorrectly shaped out tensor.
@@ -77,25 +79,34 @@ absl::Status IntMm(const at::Tensor& self, const at::Tensor& mat2,
       << "], got " << ToString(out.sizes());
   TT_RET_CHECK(out.is_contiguous(), error::kInvalidArgument)
       << "expected out to be contiguous";
+  return absl::OkStatus();
+}
 
+absl::StatusOr<mlir::MlirOp> BuildIntMmShlo(
+    FixedSizeSpan<mlir::MlirOp, 2> inputs,
+    mlir::stablehlo::Precision precision) {
+  mlir::MlirBuilder& builder = inputs[0].getBuilder();
+  const auto dimensions = mlir::stablehlo::DotDimensionNumbersAttr::get(
+      &builder.getContext(), /*lhsBatchingDimensions=*/{},
+      /*rhsBatchingDimensions=*/{}, /*lhsContractingDimensions=*/{1},
+      /*rhsContractingDimensions=*/{0});
+  const auto precisions = mlir::stablehlo::PrecisionConfigAttr::get(
+      &builder.getContext(), {precision, precision});
+  // Keep i8 operands and request i32 accumulation directly.
+  return mlir::stablehlo::DotGeneral(inputs[0], inputs[1], dimensions,
+                                     precisions, mlir::ElementType::I32);
+}
+
+absl::Status IntMm(const at::Tensor& self, const at::Tensor& mat2,
+                   at::Tensor& out, OpParamCacheKeys param_keys) {
   const auto precision = GetAndAddPrecisionTo(param_keys);
-  auto builder = [precision](FixedSizeSpan<mlir::MlirOp, 2> inputs)
-      -> absl::StatusOr<mlir::MlirOp> {
-    auto& ctx = inputs[0].getContext();
-    const int64_t lhs_contracting[1] = {1};
-    const int64_t rhs_contracting[1] = {0};
-    const auto dimensions = mlir::stablehlo::DotDimensionNumbersAttr::get(
-        &ctx, {}, {}, lhs_contracting, rhs_contracting);
-    const auto precisions =
-        mlir::stablehlo::PrecisionConfigAttr::get(&ctx, {precision, precision});
-    // Keep i8 operands and request i32 accumulation directly.
-    return mlir::stablehlo::DotGeneral(inputs[0], inputs[1], dimensions,
-                                       precisions, mlir::ElementType::I32);
+  auto builder = [precision](FixedSizeSpan<mlir::MlirOp, 2> inputs) {
+    return BuildIntMmShlo(inputs, precision);
   };
-  const int64_t shape[2] = {self.size(0), mat2.size(1)};
+  const Dimensions out_dims = {self.size(0), mat2.size(1)};
   return DispatchOpOut<2>(std::move(builder), {self, mat2}, out,
                           {.out_dtype = mlir::ElementType::I32,
-                           .out_dims = shape,
+                           .out_dims = out_dims,
                            .op_param_cache_keys = std::move(param_keys)});
 }
 
@@ -104,9 +115,9 @@ absl::Status IntMm(const at::Tensor& self, const at::Tensor& mat2,
 at::Tensor AtenIntMm(const at::Tensor& self, const at::Tensor& mat2) {
   TT_KERNEL(OpName::kIntMm, param_keys, (self, mat2), {
     TT_THROW_IF_ERROR(ValidateIntMmInputs(self, mat2));
-    const int64_t shape[2] = {self.size(0), mat2.size(1)};
+    const Dimensions out_dims = {self.size(0), mat2.size(1)};
     TT_ASSIGN_OR_THROW(at::Tensor out,
-                       MakeEmptyTensor(shape, at::kInt, self.device()));
+                       MakeEmptyTensor(out_dims, at::kInt, self.device()));
     TT_THROW_IF_ERROR(IntMm(self, mat2, out, std::move(param_keys)));
     return out;
   });
@@ -115,6 +126,8 @@ at::Tensor AtenIntMm(const at::Tensor& self, const at::Tensor& mat2) {
 at::Tensor& AtenIntMmOut(const at::Tensor& self, const at::Tensor& mat2,
                          at::Tensor& out) {
   TT_KERNEL(OpName::kIntMmOut, param_keys, (self, mat2, out), {
+    TT_THROW_IF_ERROR(ValidateIntMmInputs(self, mat2));
+    TT_THROW_IF_ERROR(ValidateIntMmOutInputs(self, mat2, out));
     TT_THROW_IF_ERROR(IntMm(self, mat2, out, std::move(param_keys)));
     return out;
   });
