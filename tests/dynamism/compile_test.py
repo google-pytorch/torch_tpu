@@ -295,6 +295,53 @@ class CompileTest(seed_test_utils.RepeatableTest):
     metrics = self.call_and_compare(reduction_func, test_inputs, None)
     self.assertEqual(metrics["bounded_compile_events"], 1)
 
+  def test_var_std_dynamic_reduction_dim(self):
+    def var_std_func(x):
+      var, mean = torch.var_mean(x, dim=0, correction=0)
+      return torch.stack([torch.var(x, dim=0), torch.std(x, dim=0), var, mean])
+
+    test_inputs = [
+        (torch.randn(8, 17),),
+        (torch.randn(5, 17),),
+        (torch.randn(16, 17),),
+    ]
+    mark_dynamic_tests_info = [
+        ((True, [(0, 2, 16)]),),
+        ((True, [(0, 2, 16)]),),
+        ((True, [(0, 2, 16)]),),
+    ]
+    metrics = self.call_and_compare(
+        var_std_func, test_inputs, mark_dynamic_tests_info
+    )
+    self.assertEqual(metrics["bounded_compile_events"], 1)
+
+  def test_var_std_two_dynamic_reduction_dims(self):
+    def var_std_func(x):
+      var, mean = torch.var_mean(x, dim=(0, 1))
+      return torch.stack([
+          torch.var(x, dim=(0, 1), correction=0),
+          torch.std(x, dim=(0, 1), correction=20),
+          var,
+          mean,
+      ])
+
+    # Dims 0 and 1 change independently. At (2, 3), correction=20 clamps the
+    # std denominator to 0.
+    test_inputs = [
+        (torch.randn(8, 6, 17),),
+        (torch.randn(5, 12, 17),),
+        (torch.randn(2, 3, 17),),
+    ]
+    mark_dynamic_tests_info = [
+        ((True, [(0, 2, 16), (1, 2, 16)]),),
+        ((True, [(0, 2, 16), (1, 2, 16)]),),
+        ((True, [(0, 2, 16), (1, 2, 16)]),),
+    ]
+    metrics = self.call_and_compare(
+        var_std_func, test_inputs, mark_dynamic_tests_info
+    )
+    self.assertEqual(metrics["bounded_compile_events"], 1)
+
   def test_matmul(self):
     def simple_matmul(x, y):
       return torch.matmul(x, y)

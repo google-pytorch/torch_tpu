@@ -15202,6 +15202,73 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(compute)
 
+  @parameterized.named_parameters(
+      ("defer_never", execution_mode.EagerMode.DEFER_NEVER),
+      ("defer_and_fuse", execution_mode.EagerMode.DEFER_AND_FUSE),
+  )
+  def test_var_std_dynamic_reduction_dim(self, eager_mode):
+    """Tests var/std/var_mean over a bounded dynamic dim at several sizes."""
+    # Sizes 5, 13 and 2 reuse the programs compiled for size 8. An unmarked
+    # shape within the bounds reuses them too. At size 2, correction=2.5
+    # clamps the denominator to 0.
+    sizes = ((8, True), (5, True), (13, True), (2, True), (11, False))
+    with execution_mode.set_eager_mode(eager_mode):
+      for dtype in (torch.float32, torch.bfloat16, torch.complex64):
+        for n, marked in sizes:
+          x_cpu = torch.randn(n, 6, 3, dtype=dtype)
+
+          def compute(device, x_cpu=x_cpu, marked=marked):
+            x = x_cpu.to(device)
+            if marked and str(device).startswith("tpu"):
+              dynamism.mark_dynamic(
+                  x, dimension=0, lower_bound=2, upper_bound=16
+              )
+            out_dtype = x_cpu.dtype.to_real()
+            var_out = torch.empty(6, 3, dtype=out_dtype, device=device)
+            std_out = torch.empty(6, 3, dtype=out_dtype, device=device)
+            torch.var(x, dim=0, out=var_out)
+            torch.std(x, dim=0, correction=2.5, out=std_out)
+            return (
+                torch.var(x, dim=0),
+                torch.var(x, dim=0, keepdim=True, correction=2.5),
+                torch.var(x),
+                torch.std(x, dim=0, correction=2.5),
+                torch.std(x, dim=(0, 2), keepdim=True),
+                torch.var_mean(x, dim=0, correction=0),
+                torch.var_mean(x, dim=0, correction=2.5),
+                torch.var_mean(x, dim=(0, 2)),
+                var_out,
+                std_out,
+            )
+
+          with self.subTest(dtype=dtype, n=n, marked=marked):
+            self.assert_close_tpu_vs_cpu(compute)
+
+  def test_var_std_out_narrower_than_input(self):
+    """Tests var/std of float64 input with a float32 out=."""
+
+    # The count 2**24 + 1 is not a float32 value. Rounding it to float32 for
+    # the mean gives this constant input a nonzero variance.
+    def compute(device):
+      x = torch.full((2**24 + 1,), 2.0**20, dtype=torch.float64, device=device)
+      var_out = torch.empty((), dtype=torch.float32, device=device)
+      std_out = torch.empty((), dtype=torch.float32, device=device)
+      torch.var(x, dim=0, out=var_out)
+      torch.std(x, dim=0, out=std_out)
+      return var_out, std_out
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  def test_var_complex_out_error_type(self):
+    """Tests var with a complex out= raises the same error type as CPU."""
+    x_cpu = torch.randn(4, 3)
+
+    def compute(device):
+      out = torch.empty(3, dtype=torch.complex64, device=device)
+      return torch.var(x_cpu.to(device), dim=0, out=out)
+
+    self.assert_close_tpu_vs_cpu(compute, allow_failure=True)
+
   def test_sdpa_overrideable_meta_checks_kv_seq_len(self):
     """Tests SDPA overrideable meta checks and guards key/value sequence lengths."""
     shape_env = symbolic_shapes.ShapeEnv(duck_shape=False)
