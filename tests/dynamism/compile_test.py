@@ -19,6 +19,7 @@ from unittest import mock
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
+from torch._dynamo.backends.common import aot_autograd
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import _backend
 from torch_tpu._internal.utils import test_utils as utils
@@ -615,6 +616,120 @@ class CompileTest(seed_test_utils.RepeatableTest):
     out = compiled(x)
     expected = torch.full((2, 3), 4.0, device="cpu")
     utils.assert_close(out.cpu(), expected)
+
+  def test_64bit_pad_subgraph_caches_and_preserves_runtime_shape(self):
+    def fn(x):
+      return x * 2 + 1
+
+    executables = []
+    orig_dc_call = _backend.dynamic_compiler.DynamicCompiler.__call__
+
+    def capture_executable(dc_self, *args, **kwargs):
+      exe = orig_dc_call(dc_self, *args, **kwargs)
+      executables.append(exe)
+      return exe
+
+    ttc = _backend.dynamic_compiler.tpu_torch_compile
+    x3 = torch.arange(12, device=self.device, dtype=torch.int64).reshape(3, 4)
+    x6 = torch.arange(24, device=self.device, dtype=torch.int64).reshape(6, 4)
+    torch._dynamo.mark_dynamic(x3, 0, min=2, max=8)
+    torch._dynamo.mark_dynamic(x6, 0, min=2, max=8)
+
+    with mock.patch.object(
+        _backend.dynamic_compiler.DynamicCompiler,
+        "__call__",
+        autospec=True,
+        side_effect=capture_executable,
+    ):
+      compiled = torch.compile(fn, backend="tpu", fullgraph=True)
+      out3 = compiled(x3)
+      out6 = compiled(x6)
+      utils.assert_close(out3.cpu(), fn(x3.cpu()))
+      utils.assert_close(out6.cpu(), fn(x6.cpu()))
+
+      stats_before = torch.tpu._get_cache_stats()
+      out3_repeat = compiled(x3)
+      stats_after = torch.tpu._get_cache_stats()
+      utils.assert_close(out3_repeat.cpu(), fn(x3.cpu()))
+
+    self.assertLen(executables, 1)
+    self.assertEqual(
+        stats_after.num_compilations - stats_before.num_compilations, 0
+    )
+    self.assertGreaterEqual(
+        stats_after.num_cache_hits - stats_before.num_cache_hits, 1
+    )
+
+    dyn_exec = executables[0]
+    (padded_x3,) = dyn_exec._compile_and_execute_pad_subgraph([x3], 0)
+    self.assertEqual(padded_x3.shape, (3, 4))
+    self.assertTrue(ttc.is_device_shape_dynamic(padded_x3))
+    self.assertTrue(
+        ttc.has_matching_dynamic_device_bounds(padded_x3, ([0], [8]))
+    )
+    utils.assert_close(padded_x3.cpu(), x3.cpu())
+
+    (reused_x3,) = dyn_exec._compile_and_execute_pad_subgraph([padded_x3], 0)
+    self.assertIs(reused_x3, padded_x3)
+
+    # A dynamic 64-bit buffer produced under a smaller bound (<=4) is re-padded
+    # — never reused raw — to the exact bound of a multi-bucket executable
+    # (<=128 / <=256), and its values stay bit-exact.
+    @torch.compile(backend="tpu", fullgraph=True)
+    def produce_small(x):
+      return x + 10
+
+    x_small = torch.arange(32, device=self.device, dtype=torch.int64).reshape(
+        2, 16
+    )
+    torch._dynamo.mark_dynamic(x_small, 0, min=2, max=4)
+    y_small = produce_small(x_small)
+    self.assertTrue(ttc.is_device_shape_dynamic(y_small))
+    self.assertTrue(ttc.has_matching_dynamic_device_bounds(y_small, ([0], [4])))
+    self.assertFalse(
+        ttc.has_matching_dynamic_device_bounds(y_small, ([0], [128]))
+    )
+
+    mb_executables = []
+
+    def capture_mb_executable(dc_self, *args, **kwargs):
+      exe = orig_dc_call(dc_self, *args, **kwargs)
+      mb_executables.append(exe)
+      return exe
+
+    torch._dynamo.mark_dynamic(y_small, 0, min=2, max=256)
+    with mock.patch.object(
+        _backend.dynamic_compiler.DynamicCompiler,
+        "__call__",
+        autospec=True,
+        side_effect=capture_mb_executable,
+    ):
+      compiled_mb = torch.compile(
+          fn,
+          backend="tpu",
+          fullgraph=True,
+          options={"num_dynamic_buckets": 2, "dynamic_bucket_size": 128},
+      )
+      out_mb = compiled_mb(y_small)
+    utils.assert_close(out_mb.cpu(), fn(y_small.cpu()))
+
+    mb_exec = mb_executables[0]
+    (b0_padded,) = mb_exec._compile_and_execute_pad_subgraph([y_small], 0)
+    self.assertIsNot(b0_padded, y_small)
+    self.assertTrue(
+        ttc.has_matching_dynamic_device_bounds(b0_padded, ([0], [128]))
+    )
+    utils.assert_close(b0_padded.cpu(), y_small.cpu())
+
+    (b0_reused,) = mb_exec._compile_and_execute_pad_subgraph([b0_padded], 0)
+    self.assertIs(b0_reused, b0_padded)
+
+    (b1_repadded,) = mb_exec._compile_and_execute_pad_subgraph([b0_padded], 1)
+    self.assertIsNot(b1_repadded, b0_padded)
+    self.assertTrue(
+        ttc.has_matching_dynamic_device_bounds(b1_repadded, ([0], [256]))
+    )
+    utils.assert_close(b1_repadded.cpu(), y_small.cpu())
 
 
 class SymIntArithmeticTest(seed_test_utils.RepeatableTest):
@@ -1807,6 +1922,103 @@ class DynamicErrorHandlingTest(seed_test_utils.RepeatableTest):
           "torch.compile(..., dynamic=False, ...)", str(ctx.exception)
       )
       self.assertIn("MLIR lowering failed", str(ctx.exception))
+
+  def test_zero_element_dynamic_input_is_rejected(self):
+    def fn(x):
+      return x * 2 + 1
+
+    device = torch.accelerator.current_accelerator()
+    for dtype in (torch.int64, torch.float32):
+      x0 = torch.zeros((0, 6), device=device, dtype=dtype)
+      # Static compilation handles zero-element inputs.
+      compiled_static = torch.compile(
+          fn, backend="tpu", dynamic=False, fullgraph=True
+      )
+      utils.assert_close(compiled_static(x0).cpu(), fn(x0.cpu()))
+
+      # Bounded dynamism cannot bind a zero-element buffer to a bounded
+      # parameter (neither via PadRealToStatic nor via the pad subgraph), so
+      # the backend reports it up front instead of failing inside PJRT.
+      torch._dynamo.mark_dynamic(x0, 1, min=2, max=8)
+      compiled = torch.compile(fn, backend="tpu", fullgraph=True)
+      with self.assertRaises(  # ASSERT_RAISES_OK=Python backend error.
+          (NotImplementedError, torch._dynamo.exc.BackendCompilerFailed)
+      ) as ctx:
+        compiled(x0)
+      self.assertIn(
+          "Zero-element dynamic input tensor at position", str(ctx.exception)
+      )
+      self.assertIn("(shape [0, s", str(ctx.exception))
+      self.assertIn(
+          "torch.compile(..., dynamic=False, ...)", str(ctx.exception)
+      )
+
+  def test_zero_element_dynamic_input_check_is_guard_free(self):
+    """The compile-time rejection reads static/known-zero dims only and adds no guard."""
+    seen = {}
+
+    def fw_compiler(graph_module, example_inputs):
+      shape_env = next(
+          x.node.shape_env
+          for x in example_inputs
+          if isinstance(x, torch.SymInt)
+      )
+      guards_before = set(shape_env.guards)
+      with self.assertRaises(  # ASSERT_RAISES_OK=Python backend error.
+          NotImplementedError
+      ) as ctx:
+        _backend.dynamic_compiler.DynamicCompiler()(
+            graph_module, list(example_inputs)
+        )
+      seen["message"] = str(ctx.exception)
+      seen["guards_before"] = guards_before
+      seen["guards_after"] = set(shape_env.guards)
+      return graph_module
+
+    @torch.compile(backend=aot_autograd(fw_compiler=fw_compiler))
+    def f(x):
+      return x * 2 + 1
+
+    x = torch.zeros((0, 6), dtype=torch.int64)
+    # Leave upper bound unbounded so SymBoundsManager.add_bound_checks would
+    # leak `s0 <= 128` onto shape_env.guards if reached before validation.
+    torch._dynamo.mark_dynamic(x, 1)
+    f(x)
+
+    self.assertIn("Zero-element dynamic input tensor", seen["message"])
+    self.assertEqual(seen["guards_after"], seen["guards_before"])
+
+  def test_runtime_zero_derived_dynamic_input_is_rejected(self):
+    """Rejects derived symbolic shapes that evaluate to zero at runtime."""
+
+    def fn(x, w):
+      y = x[3:]
+      return (y.to(w.dtype) @ w).sum()
+
+    device = torch.accelerator.current_accelerator()
+    with torch.fx.experimental._config.patch(backed_size_oblivious=True):  # pylint: disable=protected-access
+      for dtype in (torch.int64, torch.float32):
+        w = torch.ones(
+            (4, 2), device=device, dtype=torch.float32, requires_grad=True
+        )
+        x5 = torch.ones((5, 4), device=device, dtype=dtype)
+        torch._dynamo.mark_dynamic(x5, 0, min=3, max=8)
+        compiled = torch.compile(fn, backend="tpu", fullgraph=True)
+
+        # Compile forward and backward at s0=5 where saved activation y is (2, 4).
+        compiled(x5, w).backward()
+
+        # At s0=3 (within [3, 8]), the saved activation (y or y.T) enters the
+        # compiled backward executable with a zero-sized runtime dimension.
+        w.grad = None
+        x3 = torch.ones((3, 4), device=device, dtype=dtype)
+        loss3 = compiled(x3, w)
+        with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Python backend error.
+            NotImplementedError,
+            r"Zero-element dynamic input tensor.*shape \[(?:0, 4|4,"
+            r" 0)\].*dynamic=False",
+        ):
+          loss3.backward()
 
   def test_dynamic_compiler_options(self):
     def simple(x):

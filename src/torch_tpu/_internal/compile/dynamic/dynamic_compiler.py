@@ -31,6 +31,7 @@ from torch_tpu._internal.compile.dynamic import sym_utils
 from torch_tpu._internal.compile.dynamic import view_ops_passes
 from torch_tpu._internal.compile.dynamic.dynamic_executable import BucketCompilationSpec
 from torch_tpu._internal.compile.dynamic.dynamic_executable import DynamicTpuCompiledExecutable
+from torch_tpu._internal.compile.dynamic.dynamic_executable import validate_dynamic_example_inputs
 from torch_tpu._internal.compile.dynamic.graph_transformations import apply_dynamism_transformations
 from torch_tpu._internal.compile.dynamic.graph_transformations import apply_pre_dynamism_transformations
 from torch_tpu._internal.compile.dynamic.output_sym_shape import create_output_sym_shapes
@@ -260,6 +261,8 @@ class DynamicCompiler(compiler.Compiler):
         " inputs: %s",
         example_inputs,
     )
+
+    validate_dynamic_example_inputs(example_inputs)
 
     # Create a SymInt bounds manager.
     sym_bounds_manager = SymBoundsManager(example_inputs)

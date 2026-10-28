@@ -216,8 +216,9 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> GetDynamicPadModule(
   ABSL_VLOG(2)
       << "[GetDynamicPadModule] Creating a padding module for dynamism with "
       << shapes.size() << " shapes.";
-  TT_RET_CHECK(!shapes.empty(), error::kInvalidArgument)
-      << "dynamic_pad_module requires at least one shape.";
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Validated before the cache lookup.
+      !shapes.empty(), error::kInvalidArgument)
+      << "dynamic_pad_module requires at least one shape";
   std::string module_name = "dynamic_pad_module";
   mlir::ModuleBuilder mb(mlir_context, module_name);
   mlir::func::FunctionBuilder fb(mb, "main");
@@ -227,10 +228,13 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> GetDynamicPadModule(
   for (int i = 0; i < shapes.size(); ++i) {
     const Shape& shape = shapes[i];
     auto type = makeTensorType(mlir_context, shape.dimensions(), shape.dtype());
-    // Zero-sized tensors are not passed to the executable.
-    if (type.getNumElements() == 0) {
-      continue;
-    }
+    // Every shape must map to exactly one parameter and one result, as
+    // DynamicPadModuleCacheKey counts them; MakePadDynamicShapes rejects
+    // non-positive dimensions before the cache lookup.
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Validated before the cache lookup.
+        type.getNumElements() != 0, error::kInvalidArgument)
+        << "dynamic_pad_module requires non-empty shapes, got shape "
+        << ToString(shape.dimensions()) << " for input " << i;
     auto input_op = mlir::func::Argument(fb, type);
     if (shape.dynamic_dimensions().empty()) {
       results.push_back(input_op);
@@ -241,25 +245,21 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> GetDynamicPadModule(
       padded_dimensions[dynamic_dim.dimension] = dynamic_dim.upper_bound;
     }
     TT_ASSIGN_OR_RETURN(auto padded_op, Pad(input_op, padded_dimensions));
-    if (shape.dynamic_dimensions().empty()) {
-      results.push_back(padded_op);
-    } else {
-      auto current_op = padded_op;
-      for (const auto& dynamic_dim : shape.dynamic_dimensions()) {
-        auto size_op =
-            mlir::stablehlo::GetDimensionSize(input_op, dynamic_dim.dimension);
-        // Prevent GetDimensionSize on the statically-shaped input parameter
-        // from constant-folding directly into SetDimensionSize's size operand.
-        // When input_shape[dim] == upper_bound, MLIR-to-HLO lowering treats
-        // SetDimensionSize(x, ConstantOp(upper_bound), dim) as
-        // xla::RemoveDynamicDimension, which strips dynamism from the output
-        // buffer and omits the on-device dynamic shape metadata prefix.
-        auto barrier_ops = mlir::stablehlo::OptimizationBarrier(fb, {size_op});
-        current_op = mlir::stablehlo::SetDimensionSize(
-            current_op, barrier_ops[0], dynamic_dim.dimension);
-      }
-      results.push_back(current_op);
+    auto current_op = padded_op;
+    for (const auto& dynamic_dim : shape.dynamic_dimensions()) {
+      auto size_op =
+          mlir::stablehlo::GetDimensionSize(input_op, dynamic_dim.dimension);
+      // Prevent GetDimensionSize on the statically-shaped input parameter
+      // from constant-folding directly into SetDimensionSize's size operand.
+      // When input_shape[dim] == upper_bound, MLIR-to-HLO lowering treats
+      // SetDimensionSize(x, ConstantOp(upper_bound), dim) as
+      // xla::RemoveDynamicDimension, which strips dynamism from the output
+      // buffer and omits the on-device dynamic shape metadata prefix.
+      auto barrier_ops = mlir::stablehlo::OptimizationBarrier(fb, {size_op});
+      current_op = mlir::stablehlo::SetDimensionSize(current_op, barrier_ops[0],
+                                                     dynamic_dim.dimension);
     }
+    results.push_back(current_op);
   }
   mlir::func::Return(fb, results);
   auto module = mb.build();

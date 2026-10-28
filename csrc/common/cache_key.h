@@ -923,6 +923,11 @@ Dimensions GetUpperBounds(absl::Span<const DimensionBounds> bounds);
 GraphKey PadModuleCacheKey(absl::Span<const Shape> dynamic_shapes,
                            bool pad_only_module = false);
 
+// Returns a cache key for the dynamic pad module (padding to upper bounds and
+// setting logical dimension sizes on device) for the given input dynamic
+// shapes.
+GraphKey DynamicPadModuleCacheKey(absl::Span<const Shape> dynamic_shapes);
+
 // Returns a cache key for the slice module with the given target and padded
 // shapes.
 GraphKey SliceModuleCacheKey(absl::Span<const Dimensions> target_shapes,

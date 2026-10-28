@@ -2033,15 +2033,89 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("Dynamic compilation is TPU-only.")
   def test_get_dynamic_pad_module_empty_shapes(self):
-    expected = re.compile(
-        r".*get_dynamic_pad_module\(\): dynamic_pad_module requires at least"
-        r" one shape\..*"
-    )
     with et.assert_raises_message(
         RuntimeError,
-        tpu=expected,
+        tpu="""get_dynamic_pad_module(): expected at least one tensor to pad, got none""",
     ):
       tpu_torch_compile.get_dynamic_pad_module([], [])
+
+  @et.why_tpu_only("Dynamic compilation is TPU-only.")
+  def test_get_dynamic_pad_module_mismatched_bounds_list_size(self):
+    tensor_info = [([1, 4], torch.int64)]
+    bounds_list = [([1], [8]), ([1], [8])]
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""get_dynamic_pad_module(): expected tensor info and bounds list to have the same size, got 1 and 2""",
+    ):
+      tpu_torch_compile.get_dynamic_pad_module(tensor_info, bounds_list)
+
+  @et.why_tpu_only("Dynamic compilation is TPU-only.")
+  def test_get_dynamic_pad_module_zero_dimension(self):
+    tensor_info = [([0, 4], torch.int64)]
+    bounds_list = [([1], [8])]
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""get_dynamic_pad_module(): expected all tensor dimensions to be positive, got dimension 0 with size 0 for input tensor 0 with shape [0, 4]""",
+    ):
+      tpu_torch_compile.get_dynamic_pad_module(tensor_info, bounds_list)
+
+  @et.why_tpu_only("Dynamic compilation is TPU-only.")
+  def test_get_dynamic_pad_module_negative_dimension(self):
+    tensor_info = [([-1, 4], torch.int64)]
+    bounds_list = [([1], [8])]
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""get_dynamic_pad_module(): expected all tensor dimensions to be positive, got dimension 0 with size -1 for input tensor 0 with shape [-1, 4]""",
+    ):
+      tpu_torch_compile.get_dynamic_pad_module(tensor_info, bounds_list)
+
+  @et.why_tpu_only("Dynamic compilation is TPU-only.")
+  def test_get_dynamic_pad_module_duplicate_dynamic_dims(self):
+    tensor_info = [([1, 4], torch.int64)]
+    bounds_list = [([1, 1], [8, 6])]
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""get_dynamic_pad_module(): expected unique dynamic dimension indices, got duplicate dimension 1 for input tensor 0""",
+    ):
+      tpu_torch_compile.get_dynamic_pad_module(tensor_info, bounds_list)
+
+  @et.why_tpu_only("Dynamic compilation is TPU-only.")
+  def test_has_matching_dynamic_device_bounds_mismatched_bounds_size(self):
+    tensor = torch.ones(2, 4, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""has_matching_dynamic_device_bounds(): expected dimension indices and upper bounds to have the same size, got 1 and 2""",
+    ):
+      tpu_torch_compile.has_matching_dynamic_device_bounds(
+          tensor, ([1], [8, 16])
+      )
+
+  @et.why_tpu_only("Dynamic compilation is TPU-only.")
+  def test_has_matching_dynamic_device_bounds_dim_out_of_bounds(self):
+    tensor = torch.ones(2, 4, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""has_matching_dynamic_device_bounds(): expected dimension index to be within bounds [0, 1], got 2 for tensor with shape [2, 4]""",
+    ):
+      tpu_torch_compile.has_matching_dynamic_device_bounds(tensor, ([2], [8]))
+
+  @et.why_tpu_only("Dynamic compilation is TPU-only.")
+  def test_has_matching_dynamic_device_bounds_duplicate_dynamic_dims(self):
+    tensor = torch.ones(2, 4, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""has_matching_dynamic_device_bounds(): expected unique dynamic dimension indices, got duplicate dimension 1""",
+    ):
+      tpu_torch_compile.has_matching_dynamic_device_bounds(
+          tensor, ([1, 1], [8, 8])
+      )
 
   @parameterized.named_parameters(
       dict(

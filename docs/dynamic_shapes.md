@@ -207,8 +207,8 @@ step (~100x faster) with zero recompilations:
     compiles a bounded-dynamic executable for the `[17, 128]` bucket using the
     initial input tensor layout.
 *   **Step 3 (`seq_len=18 -> 19`):** The bounded-dynamic output buffer produced
-    by step 2 has XLA's padded output layout, so TorchTPU compiles the `[17,
-    128]` bucket once more for that steady-state XLA layout.
+    by step 2 has XLA's padded output layout, so TorchTPU compiles the
+    `[17, 128]` bucket once more for that steady-state XLA layout.
 *   **Steps 4–10 (`seq_len=19 -> 26`):** Both the sequence length (within the
     `<= 128` bucket) and the XLA buffer layout match the cached executable, so
     every subsequent step dispatches the pre-compiled XLA executable directly
@@ -249,6 +249,10 @@ in mind when applying it to your models:
     shapes yet.
 *   **Views as model inputs:** Support for passing tensor views directly as
     inputs to the compiled model is limited.
+*   **Zero-element dynamic inputs:** A dynamic input tensor with a zero-sized
+    dimension (such as an empty `(0, S)` cache with `S` dynamic, or a slice that
+    becomes empty at runtime) raises `NotImplementedError`; compile such calls
+    with `dynamic=False`.
 *   **Data-dependent dynamism:** Operations whose output shapes depend on
     runtime tensor values (such as `torch.nonzero`) are not supported.
 *   **Custom kernels:** Bounded dynamic shapes are not supported with custom TPU

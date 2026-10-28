@@ -475,6 +475,69 @@ GraphKey PadModuleCacheKey(absl::Span<const Shape> dynamic_shapes,
   return graph.GetKey();
 }
 
+GraphKey DynamicPadModuleCacheKey(absl::Span<const Shape> dynamic_shapes) {
+  ABSL_VLOG(3) << "[DynamicPadModuleCacheKey] Creating a cache key for a "
+               << "dynamic pad module with " << dynamic_shapes.size()
+               << " shapes.";
+
+  if (ABSL_VLOG_IS_ON(3)) {
+    LogShapes(dynamic_shapes, "[DynamicPadModuleCacheKey]");
+  }
+  GraphSignature graph;
+
+  for (const Shape& shape : dynamic_shapes) {
+    graph.AddInput(shape.dimensions(), shape.dtype());
+  }
+
+  for (size_t i = 0; i < dynamic_shapes.size(); ++i) {
+    const int input_idx = static_cast<int>(i);
+    const Shape& shape = dynamic_shapes[i];
+
+    if (shape.dynamic_dimensions().empty()) {
+      graph.AddGraphOutput(input_idx);
+      continue;
+    }
+
+    Dimensions padded_dimensions = shape.dimensions();
+    for (const auto& dynamic_dim : shape.dynamic_dimensions()) {
+      padded_dimensions[dynamic_dim.dimension] = dynamic_dim.upper_bound;
+    }
+
+    int current_tensor_index =
+        graph.AddOp(OpName::kPadUninitialized_, OpParamCacheKeys::Empty(),
+                    /*donated_inputs=*/{},
+                    [&]  // REF_CAPTURE_OK=called synchronously
+                    (GraphSignature::OpSignatureBuilder& op) {
+                      op.AddInput(input_idx);
+                      op.AddOutput(padded_dimensions, shape.dtype());
+                    });
+
+    for (const auto& dynamic_dim : shape.dynamic_dimensions()) {
+      TT_ASSIGN_OR_CRASH(  // CRASH_OK=Infallible int64 param encoding
+          OpParamCacheKeys params,
+          *OpParamCacheKeysBuilder().SetParam("dimension_index",
+                                              dynamic_dim.dimension));
+      const int dim_size_index =
+          graph.AddOp(OpName::kGetDimensionSize, params, /*donated_inputs=*/{},
+                      [input_idx](GraphSignature::OpSignatureBuilder& op) {
+                        op.AddInput(input_idx);
+                        op.AddOutput({1}, mlir::ElementType::I32);
+                      });
+      current_tensor_index = graph.AddOp(
+          OpName::kSetDimensionLogicalSize, params, /*donated_inputs=*/{},
+          [&]  // REF_CAPTURE_OK=called synchronously
+          (GraphSignature::OpSignatureBuilder& op) {
+            op.AddInput(current_tensor_index);
+            op.AddInput(dim_size_index);
+            op.AddOutput(padded_dimensions, shape.dtype());
+          });
+    }
+
+    graph.AddGraphOutput(current_tensor_index);
+  }
+  return graph.GetKey();
+}
+
 GraphKey SliceModuleCacheKey(
     absl::Span<const Dimensions> target_shapes,
     absl::Span<const Dimensions> padded_shapes,
