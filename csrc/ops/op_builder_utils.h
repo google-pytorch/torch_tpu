@@ -238,15 +238,31 @@ absl::StatusOr<mlir::Type> GetMlirType(mlir::MLIRContext& ctx,
 absl::StatusOr<mlir::DenseElementsAttr> GetVerifiedMinFiniteValue(
     mlir::MlirBuilder& builder, mlir::RankedTensorType constant_tensor_type);
 
-// Returns an attribute for the minimum finite value for a given type. This is
-// used for initializing the minimum finite value for operations like argmax.
+// Returns an attribute for the minimum finite value for a given type, or null
+// if the type is not supported. To start a max reduction, use
+// GetMaxReductionIdentityAttr instead.
 [[nodiscard]] mlir::Attribute GetMinFiniteValueAttr(mlir::Type element_type,
                                                     mlir::OpBuilder& builder);
 
-// Returns an attribute for the maximum finite value for a given type. This is
-// used for initializing the maximum finite value for operations like argmin.
+// Returns an attribute for the maximum finite value for a given type, or null
+// if the type is not supported. To start a min reduction, use
+// GetMinReductionIdentityAttr instead.
 [[nodiscard]] mlir::Attribute GetMaxFiniteValueAttr(mlir::Type element_type,
                                                     mlir::OpBuilder& builder);
+
+// Returns the identity (initial value) of a max reduction over `element_type`:
+// -inf for floating-point types that have infinities, and the minimum finite
+// value otherwise, as in PyTorch. A max over only -inf then yields -inf.
+// Returns null if the type is not supported.
+[[nodiscard]] mlir::Attribute GetMaxReductionIdentityAttr(
+    mlir::Type element_type, mlir::OpBuilder& builder);
+
+// Returns the identity (initial value) of a min reduction over `element_type`:
+// +inf for floating-point types that have infinities, and the maximum finite
+// value otherwise, as in PyTorch. A min over only +inf then yields +inf.
+// Returns null if the type is not supported.
+[[nodiscard]] mlir::Attribute GetMinReductionIdentityAttr(
+    mlir::Type element_type, mlir::OpBuilder& builder);
 
 // Returns the maximum representable finite value for a given floating-point
 // type as a double. Asserts (ABSL_CHECK) that the type is a floating-point

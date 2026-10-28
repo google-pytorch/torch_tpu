@@ -40,9 +40,10 @@ absl::StatusOr<mlir::MlirOp> BuildAMinMaxShlo(Dimensions dims,
   mlir::Type input_element_type = input_type.getElementType();
   mlir::MlirBuilder& builder = input_op.getBuilder();
   mlir::Attribute min_max_init_attr =
-      op == AMinMaxOp::kAmax
-          ? GetMinFiniteValueAttr(input_element_type, builder.getOpBuilder())
-          : GetMaxFiniteValueAttr(input_element_type, builder.getOpBuilder());
+      op == AMinMaxOp::kAmax ? GetMaxReductionIdentityAttr(
+                                   input_element_type, builder.getOpBuilder())
+                             : GetMinReductionIdentityAttr(
+                                   input_element_type, builder.getOpBuilder());
   mlir::DenseElementsAttr value_init_attr = mlir::DenseElementsAttr::get(
       mlir::RankedTensorType::get({}, input_element_type), min_max_init_attr);
   mlir::MlirOp value_init = stablehlo::Constant(builder, value_init_attr);
@@ -77,9 +78,9 @@ absl::StatusOr<MlirOpResults<2>> BuildFusedAMinMaxShlo(Dimensions dims,
   }
 
   mlir::Attribute min_init_attr =
-      GetMaxFiniteValueAttr(input_element_type, builder.getOpBuilder());
+      GetMinReductionIdentityAttr(input_element_type, builder.getOpBuilder());
   mlir::Attribute max_init_attr =
-      GetMinFiniteValueAttr(input_element_type, builder.getOpBuilder());
+      GetMaxReductionIdentityAttr(input_element_type, builder.getOpBuilder());
 
   mlir::DenseElementsAttr min_value_init_attr = mlir::DenseElementsAttr::get(
       mlir::RankedTensorType::get({}, input_element_type), min_init_attr);

@@ -5062,6 +5062,31 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
           torch.tensor([0, 0, 3, 0], dtype=torch.int32, device="tpu"),
       )
 
+  def test_histc_dynamic_bounds_infinite_input(self):
+    """Tests the computed range of inputs with an infinite min or max.
+
+    That range is not finite, so histc raises, and the message reports the
+    range: [inf, inf] for an all-inf input, not a finite start value. histc
+    checks a computed range only with debug checks, which
+    DEFER_NEVER_AND_LAUNCH_BLOCKING turns on when
+    TORCH_TPU_ENABLE_DEBUG_CHECKS is unset.
+    """
+    inf = float("inf")
+    for values, bounds in (
+        ([inf, inf], "inf and inf"),
+        ([-inf, -inf], "-inf and -inf"),
+        ([-inf, inf], "-inf and inf"),
+    ):
+      with self.subTest(values=values):
+        with execution_mode.set_eager_mode(
+            execution_mode.EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
+        ):
+          with self.assertRaisesRegex(  # ASSERT_RAISES_OK=The range is only visible in the message.
+              RuntimeError,
+              f"expected min and max to be finite, got {bounds}\\.",
+          ):
+            torch.histc(torch.tensor(values, dtype=torch.float32, device="tpu"))
+
   def test_histc_explicit_bounds(self):
     inputs = torch.tensor([0.1, 1.1, 3.1, 5.1, 1.1])
     bins = 8
@@ -15384,6 +15409,61 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     utils.assert_close(torch.argmax(x_tpu, dim=0), torch.argmax(x_cpu, dim=0))
     utils.assert_close(torch.argmin(x_tpu, dim=0), torch.argmin(x_cpu, dim=0))
 
+  def test_min_max_infinite_rows(self):
+    # Verify values and indices of min/max reductions and scans over rows of
+    # only -inf or +inf, matching CPU. OpsGradUnitTest checks the gradients.
+    inf = float("inf")
+    for dtype in (torch.float32, torch.float16, torch.bfloat16):
+      base = torch.tensor(
+          [[-inf, -inf, -inf], [inf, inf, inf], [-inf, 1.0, -inf]],
+          dtype=dtype,
+      )
+      # The lowest finite value must beat -inf in argmax.
+      lowest = torch.tensor([-inf, torch.finfo(dtype).min], dtype=dtype)
+
+      def run(device, base=base, lowest=lowest):
+        x = base.to(device)
+        y = lowest.to(device)
+        return (
+            torch.amax(x, dim=1),
+            torch.amin(x, dim=1),
+            *torch.max(x, dim=1),
+            *torch.min(x, dim=1),
+            *torch.aminmax(x, dim=1),
+            torch.max(x[0]),
+            torch.min(x[1]),
+            *torch.cummax(x, dim=1),
+            *torch.cummin(x, dim=1),
+            torch.argmax(y),
+            torch.argmin(-y),
+            *torch.max(y, dim=0),
+            *torch.min(-y, dim=0),
+            # keepdim, and the rows as columns of a transposed view.
+            torch.amax(x, dim=1, keepdim=True),
+            *torch.min(x, dim=1, keepdim=True),
+            torch.amin(x.t(), dim=0),
+            *torch.max(x.t(), dim=0),
+            *torch.cummax(x.t(), dim=0),
+            *torch.cummin(x.t(), dim=0),
+        )
+
+      self.assert_close_tpu_vs_cpu(run)
+
+      def run_compiled(device, base=base):
+        def reductions(x):
+          return (
+              torch.amax(x, dim=1),
+              *torch.max(x, dim=1),
+              *torch.cummax(x, dim=1),
+              *torch.cummin(x, dim=1),
+          )
+
+        if torch.device(device).type == "tpu":
+          reductions = torch.compile(reductions, backend="tpu", dynamic=False)
+        return reductions(base.to(device))
+
+      self.assert_close_tpu_vs_cpu(run_compiled)
+
   def test_max_pool2d_with_indices_nan_selected_index(self):
     # Verify both values and selected_index for max_pool2d_with_indices on NaN windows.
     pool_in = torch.tensor(
@@ -19805,6 +19885,38 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
         return out, x.grad
 
       self.assert_close_tpu_vs_cpu(run_no_indices)
+
+  def test_min_max_infinite_rows_grad(self):
+    """Tests min/max reduction and scan gradients over -inf/+inf rows."""
+    inf = float("inf")
+    for dtype in (torch.float32, torch.float16, torch.bfloat16):
+      base = torch.tensor(
+          [[-inf, -inf, -inf], [inf, inf, inf], [-inf, 1.0, -inf]],
+          dtype=dtype,
+      )
+      # max/min(dim) must select the finite extreme, not the -inf/+inf.
+      lowest = torch.tensor([-inf, torch.finfo(dtype).min], dtype=dtype)
+
+      def run(device, base=base, lowest=lowest):
+        grads = []
+        for x_cpu, reduce_fn in (
+            (base, lambda x: torch.amax(x, dim=1)),
+            (base, lambda x: torch.amin(x, dim=1)),
+            (base, lambda x: torch.max(x, dim=1).values),
+            (base, lambda x: torch.min(x, dim=1).values),
+            (base, lambda x: torch.max(x[0])),
+            (base, lambda x: torch.min(x[1])),
+            (base, lambda x: torch.cummax(x, dim=1).values),
+            (base, lambda x: torch.cummin(x, dim=1).values),
+            (lowest, lambda x: torch.max(x, dim=0).values),
+            (-lowest, lambda x: torch.min(x, dim=0).values),
+        ):
+          x = x_cpu.detach().clone().to(device).requires_grad_(True)
+          reduce_fn(x).sum().backward()
+          grads.append(x.grad)
+        return grads
+
+      self.assert_close_tpu_vs_cpu(run)
 
   def test_max_pool1d_grad(self):
     """Tests nn.functional.max_pool1d backward without indices."""
