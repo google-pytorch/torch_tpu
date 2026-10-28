@@ -212,6 +212,22 @@ def has_dynamic_shape(val: Any) -> bool:
   )
 
 
+def can_use_pad_real_to_static(tensor: torch.Tensor) -> bool:
+  """Returns whether a dynamic input tensor can be padded via PadRealToStatic.
+
+  In the current libtpu, XLA:TPU's ComplexRewriter (for complex64/complex128)
+  and XPrecisionRewriter (for 64-bit integer/float planes, e.g. int64, float64)
+  do not rewrite 8-byte or 16-byte element types on
+  CustomCall("PadRealToStatic"), so such inputs are padded by the external
+  dynamic pad subgraph and consumed in-graph through
+  set_dimension_logical_size. Once PJRT parameter metadata clearing and
+  multi-plane PadRealToStatic lowering are available in the minimum supported
+  libtpu (OSS currently pins libtpu>=0.0.50), gate this check on
+  `utils.libtpu_version()` and later remove it.
+  """
+  return tensor.dtype.itemsize not in (8, 16)
+
+
 def is_symexpr_node(node: torch.fx.Node) -> bool:
   """Checks if the FX node represents a complex math expression (e.g., s0 + 1).
 

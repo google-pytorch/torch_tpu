@@ -55,10 +55,10 @@ csrc/eager/traversal.cc: {infeasible: 1, remaining: 10, total: 13}
 csrc/experimental/batch_transfer/batch_transfer.cc: {infeasible: 0, remaining: 21, total: 21}
 csrc/internal/compile/compiled_mode.cc: {infeasible: 1, remaining: 8, total: 13}
 csrc/internal/compile/dispatch_scan.cc: {infeasible: 19, remaining: 0, total: 19}
-csrc/internal/compile/tpu_torch_compile.cc: {infeasible: 0, remaining: 4, total: 20}
+csrc/internal/compile/tpu_torch_compile.cc: {infeasible: 0, remaining: 4, total: 27}
 csrc/internal/device/device_rt.cc: {infeasible: 1, remaining: 5, total: 8}
 csrc/internal/dynamism/dynamism.cc: {infeasible: 0, remaining: 0, total: 1}
-csrc/internal/dynamism/dynamism_ops.cc: {infeasible: 0, remaining: 9, total: 10}
+csrc/internal/dynamism/dynamism_ops.cc: {infeasible: 2, remaining: 9, total: 11}
 csrc/internal/dynamism/dynamism_py.cc: {infeasible: 0, remaining: 2, total: 2}
 csrc/internal/mosaic/kiln/core/kernel.cc: {infeasible: 0, remaining: 8, total: 8}
 csrc/internal/mosaic/kiln/mlir/stablehlo_splice.cc: {infeasible: 1, remaining: 10, total: 11}

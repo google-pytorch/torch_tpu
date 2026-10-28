@@ -31,6 +31,7 @@ from torch_tpu._internal.compile.dynamic import sym_utils
 from torch_tpu._internal.compile.dynamic import view_ops_passes
 from torch_tpu._internal.compile.dynamic.dynamic_executable import BucketCompilationSpec
 from torch_tpu._internal.compile.dynamic.dynamic_executable import DynamicTpuCompiledExecutable
+from torch_tpu._internal.compile.dynamic.dynamic_executable import validate_dynamic_example_inputs
 from torch_tpu._internal.compile.dynamic.graph_transformations import apply_dynamism_transformations
 from torch_tpu._internal.compile.dynamic.graph_transformations import apply_pre_dynamism_transformations
 from torch_tpu._internal.compile.dynamic.output_sym_shape import create_output_sym_shapes
@@ -92,22 +93,6 @@ def _create_bounded_model_inputs(
       model_input_bounds.append(None)
 
   return bounded_model_inputs, model_input_bounds
-
-
-def _can_use_pad_real_to_static(
-    example_inputs: Sequence[Any],
-) -> bool:
-  """Returns True if dynamic input tensors can be lowered to pad_real_to_static."""
-  for arg in example_inputs:
-    # dtype.itemsize is the element size in bytes (8 bytes = 64-bit,
-    # 16 bytes = 128-bit).
-    if (
-        isinstance(arg, torch.Tensor)
-        and sym_utils.has_dynamic_shape(arg)
-        and arg.dtype.itemsize in (8, 16)
-    ):
-      return False
-  return True
 
 
 class DynamicCompiler(compiler.Compiler):
@@ -175,7 +160,6 @@ class DynamicCompiler(compiler.Compiler):
       graph_module: torch.fx.GraphModule,
       example_inputs: Sequence[InputType],
       symbol_bounds: SymbolBounds,
-      use_pad_real_to_static: bool,
   ) -> BucketCompilationSpec:
     """Transforms a cloned FX graph and creates bounded inputs for `symbol_bounds`."""
     cloned_graph_module = torch.fx.GraphModule(
@@ -187,7 +171,6 @@ class DynamicCompiler(compiler.Compiler):
         cloned_graph_module,
         example_inputs,
         symbol_bounds,
-        use_pad_real_to_static=use_pad_real_to_static,
     )
 
     # TODO: Prevent truncation of log lines.
@@ -261,6 +244,8 @@ class DynamicCompiler(compiler.Compiler):
         example_inputs,
     )
 
+    validate_dynamic_example_inputs(example_inputs)
+
     # Create a SymInt bounds manager.
     sym_bounds_manager = SymBoundsManager(example_inputs)
 
@@ -295,14 +280,11 @@ class DynamicCompiler(compiler.Compiler):
     # if the bound constraint isn't satisfied.
     sym_bounds_manager.add_bound_checks(merged_symbol_bounds)
 
-    use_pad_real_to_static = _can_use_pad_real_to_static(example_inputs)
-
     bucket_specs = [
         self._prepare_bucket_spec(
             graph_module=graph_module,
             example_inputs=example_inputs,
             symbol_bounds=symbol_bounds,
-            use_pad_real_to_static=use_pad_real_to_static,
         )
         for symbol_bounds in bucketed_symbol_bounds
     ]
@@ -314,7 +296,6 @@ class DynamicCompiler(compiler.Compiler):
         output_sym_shapes=output_sym_shapes,
         is_fwd=is_fwd,
         view_arg_indices=view_arg_indices,
-        use_pad_real_to_static=use_pad_real_to_static,
         module_name=module_name,
         num_lookahead_buckets=self._num_lookahead_buckets,
     )

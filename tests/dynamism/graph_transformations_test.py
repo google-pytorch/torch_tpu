@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 from collections.abc import Callable
+import copy
 from typing import Any
 from absl.testing import absltest
 import torch
@@ -23,8 +24,14 @@ from torch._dynamo.backends.common import aot_autograd
 from torch_tpu._internal.compile.dynamic import graph_transform_context
 from torch_tpu._internal.compile.dynamic import graph_transformations
 from torch_tpu._internal.compile.dynamic import sym_bounds_manager
+from torch_tpu._internal.compile.dynamic import sym_utils
 from torch_tpu._internal.compile.dynamic import view_ops_passes
 from tests import seed_test_utils
+
+
+def _uses_pad_subgraph(dtype: torch.dtype) -> bool:
+  """Whether dynamic inputs of `dtype` bypass in-graph PadRealToStatic."""
+  return not sym_utils.can_use_pad_real_to_static(torch.empty(0, dtype=dtype))
 
 
 class GraphTransformationsTest(seed_test_utils.RepeatableTest):
@@ -449,6 +456,120 @@ class GraphTransformationsTest(seed_test_utils.RepeatableTest):
     self._check_input_dynamic_view_pass_metadata(
         lambda seq_len: torch.ones(2, seq_len, 8)[:, 1:3, 2:6],
         [torch.ops.aten.slice.Tensor, torch.ops.aten.slice.Tensor],
+    )
+
+  def test_handle_dynamic_input_tensor_pass_per_tensor_dtype(self):
+    """Routes each dynamic input by `sym_utils.can_use_pad_real_to_static` without adding guards."""
+    captured_gm = None
+    guards_before = None
+    guards_after = None
+
+    def fw_compiler(graph_module, example_inputs):
+      nonlocal captured_gm, guards_before, guards_after
+      shape_env = next(
+          inp.node.shape_env
+          for inp in example_inputs
+          if isinstance(inp, torch.SymInt)
+      )
+      cloned_gm = torch.fx.GraphModule(
+          graph_module, copy.deepcopy(graph_module.graph)
+      )
+      bm = sym_bounds_manager.SymBoundsManager(example_inputs)
+      ctx = graph_transform_context.GraphTransformContext(
+          cloned_gm, example_inputs, bm.get_fallback_symbol_bounds()
+      )
+      placeholders = list(
+          cloned_gm.graph.find_nodes(op="placeholder", sort=True)
+      )
+
+      guards_before = len(shape_env.guards)
+      graph_transformations.ScanInputsCreatePlaceholdersPass(ctx, placeholders)(
+          cloned_gm
+      )
+      graph_transformations.HandleDynamicInputTensorPass(ctx, placeholders)(
+          cloned_gm
+      )
+      guards_after = len(shape_env.guards)
+      captured_gm = cloned_gm
+      return graph_module
+
+    @torch.compile(backend=aot_autograd(fw_compiler=fw_compiler))
+    def f(ids, f64_x, kv, hidden, u8_x, complex_x, complex128_x):
+      return (
+          ids.unsqueeze(-1).to(hidden.dtype) + hidden + u8_x.to(hidden.dtype),
+          f64_x + 1.0,
+          kv + 1.0,
+          complex_x + 1.0,
+          complex128_x + 1.0,
+      )
+
+    # One dynamic input per dtype, each dynamic along dimension 1.
+    input_dtypes = (
+        torch.int64,
+        torch.float64,
+        torch.bfloat16,
+        torch.float32,
+        torch.uint8,
+        torch.complex64,
+        torch.complex128,
+    )
+    ids = torch.ones((2, 6), dtype=torch.int64)
+    f64_x = torch.ones((2, 6), dtype=torch.float64)
+    kv = torch.ones((2, 10, 8), dtype=torch.bfloat16)
+    hidden = torch.ones((2, 6, 8), dtype=torch.float32)
+    u8_x = torch.ones((2, 6, 8), dtype=torch.uint8)
+    complex_x = torch.ones((2, 6), dtype=torch.complex64)
+    complex128_x = torch.ones((2, 6), dtype=torch.complex128)
+    torch._dynamo.mark_dynamic(ids, 1, min=2, max=16)
+    torch._dynamo.mark_dynamic(f64_x, 1, min=2, max=16)
+    torch._dynamo.mark_dynamic(kv, 1, min=4, max=32)
+    torch._dynamo.mark_dynamic(hidden, 1, min=2, max=16)
+    torch._dynamo.mark_dynamic(u8_x, 1, min=2, max=16)
+    torch._dynamo.mark_dynamic(complex_x, 1, min=2, max=16)
+    torch._dynamo.mark_dynamic(complex128_x, 1, min=2, max=16)
+
+    f(ids, f64_x, kv, hidden, u8_x, complex_x, complex128_x)
+
+    self.assertIsNotNone(captured_gm)
+    self.assertEqual(guards_before, guards_after)
+
+    pad_nodes = list(
+        captured_gm.graph.find_nodes(
+            op="call_function",
+            target=torch.ops.tpu._pad_real_to_static,
+        )
+    )
+    set_dim_nodes = list(
+        captured_gm.graph.find_nodes(
+            op="call_function",
+            target=torch.ops.tpu._set_dimension_logical_size,
+        )
+    )
+    expected_set_dim_dtypes = {d for d in input_dtypes if _uses_pad_subgraph(d)}
+    expected_pad_dtypes = set(input_dtypes) - expected_set_dim_dtypes
+    self.assertLen(pad_nodes, len(expected_pad_dtypes))
+    self.assertLen(set_dim_nodes, len(expected_set_dim_dtypes))
+
+    pad_dtypes = {node.args[0].meta["val"].dtype for node in pad_nodes}
+    set_dim_dtypes = {node.args[0].meta["val"].dtype for node in set_dim_nodes}
+    self.assertEqual(pad_dtypes, expected_pad_dtypes)
+    self.assertEqual(set_dim_dtypes, expected_set_dim_dtypes)
+
+    def runtime_size_arg(dtype: torch.dtype, dim: int) -> torch.fx.Node:
+      """Returns the runtime-size placeholder consumed for `dim` of the `dtype` input."""
+      for node in pad_nodes:
+        if node.args[0].meta["val"].dtype == dtype:
+          return node.args[1][dim]
+      for node in set_dim_nodes:
+        if node.args[0].meta["val"].dtype == dtype and node.args[1] == dim:
+          return node.args[2]
+      self.fail(f"no dynamic input lowering found for {dtype}")
+
+    # The shared sequence-length symbol reuses one runtime size placeholder
+    # across the lowerings of ids (int64) and hidden (float32), whichever
+    # lane each of them takes.
+    self.assertEqual(
+        runtime_size_arg(torch.float32, 1), runtime_size_arg(torch.int64, 1)
     )
 
 

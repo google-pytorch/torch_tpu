@@ -1338,6 +1338,7 @@ torch_tpu_cc_test(
         ":dimension_types",
         ":error_utils",
         ":fingerprint_utils",
+        ":shape",
         ":status_test_utils",
         "//csrc/common:oss_test_main",
         "//csrc/ops:op_names",

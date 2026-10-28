@@ -356,6 +356,61 @@ bool PyIsDeviceShapeDynamic(const at::Tensor& tensor) {
   return buffer_ref.on_device_shape_is_dynamic();
 }
 
+bool PyHasMatchingDynamicDeviceBounds(const at::Tensor& tensor,
+                                      const TensorBounds& expected_bounds) {
+  TT_CHECK_THROW(expected_bounds.dynamic_dims.size() ==
+                     expected_bounds.upper_bounds.size(),
+                 error::kInvalidArgument)
+      << "expected dimension indices and upper bounds to have the same size, "
+         "got "
+      << expected_bounds.dynamic_dims.size() << " and "
+      << expected_bounds.upper_bounds.size();
+  const int64_t rank = tensor.dim();
+  absl::InlinedVector<std::optional<int64_t>, 8> expected_dynamic_upper(
+      rank, std::nullopt);
+  for (size_t i = 0; i < expected_bounds.dynamic_dims.size(); ++i) {
+    const int64_t dim_idx = expected_bounds.dynamic_dims[i];
+    TT_CHECK_THROW(dim_idx >= 0 && dim_idx < rank, error::kInvalidArgument)
+        << "expected dimension index to be within bounds [0, " << rank - 1
+        << "], got " << dim_idx << " for tensor with shape "
+        << ToString(tensor.sizes());
+    TT_CHECK_THROW(!expected_dynamic_upper[dim_idx].has_value(),
+                   error::kInvalidArgument)
+        << "expected unique dynamic dimension indices, got duplicate "
+           "dimension "
+        << dim_idx;
+    expected_dynamic_upper[dim_idx] = expected_bounds.upper_bounds[i];
+  }
+  if (!TensorHasTrivialLayout(tensor)) {
+    return false;
+  }
+  TT_ASSIGN_OR_THROW(DeviceBufferRef buffer_ref, GetBuffer(tensor));
+  if (!buffer_ref.on_device_shape_is_dynamic() ||
+      !buffer_ref.is_materializing()) {
+    return false;
+  }
+  TT_ASSIGN_OR_THROW(xla::PjRtBuffer * pjrt_buffer, buffer_ref.AwaitBuffer());
+  const xla::Shape& on_device_shape = pjrt_buffer->on_device_shape();
+  if (static_cast<int64_t>(on_device_shape.dimensions().size()) != rank) {
+    return false;
+  }
+  for (int64_t d = 0; d < rank; ++d) {
+    if (expected_dynamic_upper[d].has_value()) {
+      const int64_t ub = *expected_dynamic_upper[d];
+      if (!on_device_shape.is_dynamic_dimension(d) ||
+          on_device_shape.dimensions(d) != ub || tensor.sizes()[d] > ub) {
+        return false;
+      }
+    } else {
+      if (on_device_shape.is_dynamic_dimension(d) ||
+          on_device_shape.dimensions(d) != tensor.sizes()[d]) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 std::vector<std::optional<PyLayout>> PyGetParameterLayouts(
     const xla::PjRtLoadedExecutable& executable) {
   TT_ASSIGN_OR_THROW(const auto& layouts, executable.GetParameterLayouts());
@@ -741,15 +796,30 @@ void PyClearExportModeDefaultDeviceGenerators() {
 }
 
 namespace {
+// Validates the pad module inputs before any compilation cache lookup, so that
+// an invalid request never poisons a cache entry (an empty request would map to
+// the empty graph key shared by all pad modules).
 std::vector<Shape> MakePadDynamicShapes(
     const std::vector<TensorInfo>& tensor_info,
     const std::vector<TensorBounds>& bounds_list) {
+  TT_CHECK_THROW(!tensor_info.empty(), error::kInvalidArgument)
+      << "expected at least one tensor to pad, got none";
+  TT_CHECK_THROW(tensor_info.size() == bounds_list.size(),
+                 error::kInvalidArgument)
+      << "expected tensor info and bounds list to have the same size, got "
+      << tensor_info.size() << " and " << bounds_list.size();
   std::vector<Shape> dynamic_shapes;
   dynamic_shapes.reserve(tensor_info.size());
-  for (int i = 0; i < tensor_info.size(); ++i) {
+  for (size_t i = 0; i < tensor_info.size(); ++i) {
     const auto& dynamic_dims = bounds_list[i].dynamic_dims;
     const auto& upper_bounds = bounds_list[i].upper_bounds;
     Dimensions dims = CopyIntVector(tensor_info[i].shape);
+    for (size_t d = 0; d < dims.size(); ++d) {
+      TT_CHECK_THROW(dims[d] > 0, error::kInvalidArgument)
+          << "expected all tensor dimensions to be positive, got dimension "
+          << d << " with size " << dims[d] << " for input tensor " << i
+          << " with shape " << ToString(dims);
+    }
     TT_ASSIGN_OR_THROW(mlir::ElementType element_type,
                        ConvertTo<mlir::ElementType>(tensor_info[i].dtype));
     Shape shape(dims, element_type);
@@ -760,15 +830,23 @@ std::vector<Shape> MakePadDynamicShapes(
            "got "
         << dynamic_dims.size() << " and " << upper_bounds.size();
 
-    for (int j = 0; j < dynamic_dims.size(); ++j) {
+    absl::InlinedVector<bool, 8> seen_dims(dims.size(), false);
+    for (size_t j = 0; j < dynamic_dims.size(); ++j) {
       const int64_t dim_index = dynamic_dims[j];
       const int64_t dim_upper_bound = upper_bounds[j];
 
-      TT_CHECK_THROW(dim_index >= 0 && dim_index < dims.size(),
-                     error::kInvalidArgument)
+      TT_CHECK_THROW(
+          dim_index >= 0 && dim_index < static_cast<int64_t>(dims.size()),
+          error::kInvalidArgument)
           << "expected dimension index to be within bounds [0, "
-          << dims.size() - 1 << "], got " << dim_index << " for input tensor "
-          << i << " with shape " << ToString(dims);
+          << static_cast<int64_t>(dims.size()) - 1 << "], got " << dim_index
+          << " for input tensor " << i << " with shape " << ToString(dims);
+
+      TT_CHECK_THROW(!seen_dims[dim_index], error::kInvalidArgument)
+          << "expected unique dynamic dimension indices, got duplicate "
+             "dimension "
+          << dim_index << " for input tensor " << i;
+      seen_dims[dim_index] = true;
 
       const int64_t dim_size = dims[dim_index];
       TT_CHECK_THROW(dim_upper_bound >= dim_size, error::kInvalidArgument)
@@ -1029,8 +1107,8 @@ CompileResult PyGetOrCompilePadModule(
   return result;
 }
 
-// Returns a CompileResult containing the executable and the MLIR
-// module for a pad subgraph.
+// Returns a CompileResult containing the executable and optionally the MLIR
+// module for a dynamic pad subgraph.
 // Args:
 //   tensor_info: A list of pairs, where each pair contains the shape of a
 //     tensor and its scalar type.
@@ -1039,6 +1117,9 @@ CompileResult PyGetOrCompilePadModule(
 //   fast_compile: If true, use the compiler profile optimized for eager
 //         execution; otherwise, use the profile optimized for
 //         torch.compile.
+//   build_mlir_module: If true, populate the module field in the CompileResult
+//     with the MLIR module for the pad subgraph.
+//   is_caching_disabled: If true, do not use the cache.
 // Returns:
 //   A CompileResult containing the executable and optionally the MLIR module
 //   for the pad subgraph.
@@ -1046,23 +1127,25 @@ CompileResult PyGetOrCompilePadModule(
 //   tensor_info = [([1, 4], torch.int64)]
 //   bounds_list = [([1], [8])]. // Dynamic dimension is 1, upper bound is 8.
 //  MLIR module:
-// module @pad_module {
+// module @dynamic_pad_module {
 //   func.func @main(%arg0: tensor<1x4xi64>) -> tensor<1x?xi64,
 //   #stablehlo.bounds<?, 8>> {
 //     %c = stablehlo.constant dense<0> : tensor<i64>
-//     %c1 = stablehlo.constant dense<1> : tensor<i64>
 //     %0 = stablehlo.pad %arg0, %c, low = [0, 0], high = [0, 4],
 //       interior = [0, 0] : (tensor<1x4xi64>, tensor<i64>) -> tensor<1x8xi64>
-//     %1 = stablehlo.get_dimension_size %0, %c1 : (tensor<1x8xi64>) -> i64
-//     %2 = stablehlo.set_dimension_size %0, %1, dim = 1 :
-//       (tensor<1x8xi64>, tensor<i64>) ->
-//        tensor<1x?xi64, #stablehlo.bounds<?,8>>
-//     return %2
+//     %1 = stablehlo.get_dimension_size %arg0, dim = 1 :
+//       (tensor<1x4xi64>) -> tensor<i32>
+//     %2 = stablehlo.optimization_barrier %1 : tensor<i32>
+//     %3 = stablehlo.set_dimension_size %0, %2, dim = 1 :
+//       (tensor<1x8xi64>, tensor<i32>) ->
+//        tensor<1x?xi64, #stablehlo.bounds<?, 8>>
+//     return %3 : tensor<1x?xi64, #stablehlo.bounds<?, 8>>
 //   }
 // }
 CompileResult PyGetDynamicPadModule(
     const std::vector<TensorInfo>& tensor_info,
-    const std::vector<TensorBounds>& bounds_list, const bool fast_compile) {
+    const std::vector<TensorBounds>& bounds_list, const bool fast_compile,
+    const bool build_mlir_module, const bool is_caching_disabled) {
   std::vector<Shape> dynamic_shapes =
       MakePadDynamicShapes(tensor_info, bounds_list);
 
@@ -1076,19 +1159,20 @@ CompileResult PyGetDynamicPadModule(
                                              : CompilationMode::kFastRuntime;
   CompilationSpec compilation_spec = GetCompilationSpec(compilation_mode);
 
-  std::optional<ContextedModule> contexted_module;
+  const CompilationCacheKey cache_key(
+      /*graph_key=*/DynamicPadModuleCacheKey(dynamic_shapes),
+      /*compile_options_key=*/compilation_spec.compile_options_key);
 
-  TT_ASSIGN_OR_THROW(contexted_module, ContextedModule::Make(pad_builder),
-                     _ << "failed to build MLIR module");
+  std::vector<Shape> runtime_input_shapes = ToStaticShapes(dynamic_shapes);
+  std::vector<Shape> padded_output_shapes = ToPaddedShapes(dynamic_shapes);
 
   TT_ASSIGN_OR_THROW(
-      SharedLoadedExecutableWithMetadata executable,
-      CompileMlirExecutable(xla::MaybeOwningMlirModule(contexted_module->get()),
-                            std::move(compilation_spec.xla_compile_options)));
-
-  return CompileResult{
-      .module = std::make_shared<ContextedModule>(std::move(*contexted_module)),
-      .executable = std::move(executable)};
+      CompileResult result,
+      CompileModuleWithCache(std::move(pad_builder), cache_key,
+                             runtime_input_shapes, padded_output_shapes,
+                             std::move(compilation_spec.xla_compile_options),
+                             build_mlir_module, is_caching_disabled));
+  return result;
 }
 
 // Precompiles the slice subgraph for the given shapes. Doesn't wait for the
@@ -2234,6 +2318,8 @@ TT_PYBIND11_MODULE(tpu_torch_compile, m) {
   m.def("get_default_layout", &PyGetDefaultLayout, py::arg("dtype"),
         py::arg("shape"));
   m.def("is_device_shape_dynamic", &PyIsDeviceShapeDynamic, py::arg("tensor"));
+  m.def("has_matching_dynamic_device_bounds", &PyHasMatchingDynamicDeviceBounds,
+        py::arg("tensor"), py::arg("tensor_bounds"));
   m.def("traverse_and_compile", PyTraverseAndCompile, py::arg("result_tensors"),
         py::arg("argument_tensors"), py::arg("fast_compile") = false,
         py::arg("build_mlir_module") = false,
@@ -2319,11 +2405,15 @@ TT_PYBIND11_MODULE(tpu_torch_compile, m) {
 
   m.def("get_dynamic_pad_module", PyGetDynamicPadModule, py::arg("tensor_info"),
         py::arg("bounds_list"), py::arg("fast_compile") = false,
+        py::arg("build_mlir_module") = false,
+        py::arg("is_caching_disabled") = false,
         "Returns the compiled PJRT executable for a dynamic pad subgraph.\n\n"
         "Args:\n"
         "  tensor_info: A list of (shape, dtype) pairs for each tensor.\n"
         "  bounds_list: A list of (dynamic_dimensions, upper_bounds) pairs.\n"
-        "  fast_compile: Whether to use the fast compile mode.");
+        "  fast_compile: Whether to use the fast compile mode.\n"
+        "  build_mlir_module: Whether to build the MLIR module.\n"
+        "  is_caching_disabled: Whether to use the cache.");
 
   m.def("precompile_pad_module", PyPrecompilePadModule, py::arg("tensor_info"),
         py::arg("bounds_list"), py::arg("fast_compile") = false,

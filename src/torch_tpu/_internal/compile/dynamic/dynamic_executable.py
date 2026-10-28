@@ -56,6 +56,31 @@ class _TensorInfo(NamedTuple):
   dtype: torch.dtype
 
 
+def validate_dynamic_example_input(idx: int, arg: torch.Tensor) -> None:
+  """Rejects dynamic example inputs that bounded dynamism cannot execute.
+
+  A zero-element tensor cannot be bound to a bounded dynamic executable
+  parameter: PJRT rejects its device buffer at a PadRealToStatic parameter
+  (RuntimeProgramInputMismatch) and the pad subgraph requires non-empty shapes
+  (see MakePadDynamicShapes). Only statically known-zero dimensions are
+  rejected via `sym_utils.is_statically_equal`, so no Dynamo guard is
+  installed.
+  """
+  if any(sym_utils.is_statically_equal(d, 0) for d in arg.shape):
+    raise NotImplementedError(
+        f"Zero-element dynamic input tensor at position {idx} (shape"
+        f" {list(arg.shape)}) is not supported in dynamic shapes compilation."
+        " Please set torch.compile(..., dynamic=False, ...) and try again."
+    )
+
+
+def validate_dynamic_example_inputs(example_inputs: Sequence[Any]) -> None:
+  """Validates all dynamic tensor example inputs without adding Dynamo guards."""
+  for idx, arg in enumerate(example_inputs):
+    if isinstance(arg, torch.Tensor) and sym_utils.has_dynamic_shape(arg):
+      validate_dynamic_example_input(idx, arg)
+
+
 class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
   """A callable wrapper for dynamic MLIR programs with TPU executable."""
 
@@ -67,7 +92,6 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
       output_sym_shapes: Sequence[OutputSymShape],
       is_fwd: bool,
       view_arg_indices: set[int],
-      use_pad_real_to_static: bool = True,
       module_name: str | None = None,
       num_lookahead_buckets: int | None = None,
   ):
@@ -86,8 +110,6 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
         backward pass (False).
       view_arg_indices: Input argument indices whose view tensors were
         decomposed into base tensors.
-      use_pad_real_to_static: Whether inputs are padded in-graph via
-        pad_real_to_static instead of a pad subgraph.
       module_name: Optional custom name for the compiled MLIR module.
       num_lookahead_buckets: Number of subsequent buckets to asynchronously
         pre-compile ahead of the current bucket. Defaults to the total number of
@@ -120,7 +142,6 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
     ]
     self._unique_output_indices: Sequence[int] | None = None
 
-    self._use_pad_subgraph = not use_pad_real_to_static
     self._default_scalar_tensor_cache = {}
     self._prepare_input_packing_plan()
     self._backend_device = None
@@ -130,23 +151,25 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
       self._backend_device = torch.accelerator.current_accelerator()
     return self._backend_device
 
-  def _get_dynamic_input_tensors(
+  def _validate_dynamic_input_tensors(
       self,
       args: Sequence[Any],
-  ) -> list[torch.Tensor]:
-    """Returns dynamic input tensors and validates they are on device."""
-    tensor_args = []
-
+  ) -> None:
+    """Validates that all dynamic input tensors reside on device and are non-empty."""
     for idx in self._dynamic_input_indices:
-      arg = args[idx]
-      if arg.device.type == "cpu":
+      tensor = args[idx]
+      if tensor.device.type == "cpu":
         raise ValueError(
             "CPU tensors are not supported in dynamic shapes compilation,"
             " please move inputs to TPU."
         )
-      tensor_args.append(arg)
-
-    return tensor_args
+      if 0 in tensor.shape:
+        raise NotImplementedError(
+            f"Zero-element dynamic input tensor at position {idx} (shape"
+            f" {list(tensor.shape)}) is not supported in dynamic shapes"
+            " compilation. Please set torch.compile(..., dynamic=False, ...)"
+            " and try again."
+        )
 
   def _compile_and_execute_pad_subgraph(
       self,
@@ -162,21 +185,33 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
     pad_module_args = []
     pad_module_info = []
     pad_module_bounds = []
-    dynamic_tensor_bounds = self._bucket_dynamic_tensor_bounds[bucket_idx]
+    dynamic_tensor_bounds = self._bucket_pad_tensor_bounds[bucket_idx]
 
     for i, tensor in enumerate(tensor_args):
+      bounds = dynamic_tensor_bounds[i]
       if tpu_torch_compile.is_device_shape_dynamic(tensor):
-        # Already dynamic, reuse it
-        outputs[i] = tensor
-      else:
-        # Non-dynamic tensor, pad and make it dynamic
-        bounds = dynamic_tensor_bounds[i]
-        pad_module_indices.append(i)
-        pad_module_args.append(tensor)
-        pad_module_info.append(
-            _TensorInfo(shape=list(tensor.shape), dtype=tensor.dtype)
-        )
-        pad_module_bounds.append(bounds)
+        if tpu_torch_compile.has_matching_dynamic_device_bounds(tensor, bounds):
+          # Already dynamic with matching physical bucket bounds; reuse it.
+          outputs[i] = tensor
+          continue
+        # Defensive re-pad when a dynamic input arrives from another bucket or
+        # producer upper bound: keeping the exact bucket bound avoids main-graph
+        # XPrecisionSplit full-extent over-reads on smaller producer buffers and
+        # PJRT D2H runtime bounds checks on larger ones. Materialize a fresh
+        # static default-layout TPU buffer via host transfer because PJRT's
+        # RemoveDynamicShapeMetadataIfPresent retains the producer buffer's
+        # minor_to_major and upper-bound T(8,128) tile on
+        # logical_on_device_shape, which mismatches the pad module's
+        # default-layout Compact2ndMinor static parameter in
+        # CheckBufferCompatibilities (and XPrecisionSplit static plane offsets).
+        tensor = tensor.cpu().to(tensor.device)
+
+      pad_module_indices.append(i)
+      pad_module_args.append(tensor)
+      pad_module_info.append(
+          _TensorInfo(shape=list(tensor.shape), dtype=tensor.dtype)
+      )
+      pad_module_bounds.append(bounds)
 
     if pad_module_args:
       logging.debug(
@@ -189,6 +224,7 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
       compile_result = tpu_torch_compile.get_dynamic_pad_module(
           pad_module_info,
           pad_module_bounds,
+          build_mlir_module=logging.level_debug(),
       )
 
       if compile_result.module is not None:
@@ -201,8 +237,12 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
             ),
         )
 
+      output_shapes = [
+          tpu_torch_compile.OutputShape(list(tensor.shape), is_dynamic=True)
+          for tensor in pad_module_args
+      ]
       pad_outputs = tpu_torch_compile.execute(
-          compile_result.executable, pad_module_args
+          compile_result.executable, pad_module_args, output_shapes
       )
 
       for idx, output in zip(pad_module_indices, pad_outputs):
@@ -211,22 +251,25 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
     assert all(x is not None for x in outputs), "Not all outputs were filled"
     return outputs
 
-  def _prepare_input_packing_plan(self):
+  def _prepare_input_packing_plan(self) -> None:
     self._static_tensor_map = []
-    self._dynamic_tensor_map = []
+    self._pad_tensor_map = []
     self._dynamic_scalar_map = []
     self._static_scalar_map = []
     self._dynamic_input_indices = []
-    self._bucket_dynamic_tensor_bounds = [
-        [b for b in spec.model_input_bounds if b is not None]
-        for spec in self._bucket_specs
-    ]
+    self._pad_input_indices = []
+    self._dynamic_target_indices: set[int] = set()
     self._symbol_to_input_loc: dict[sympy.Symbol, int] = {}
 
+    pad_bounds_indices: list[int] = []
+    bounds_idx = 0
     target_idx = 0
     pad_idx = 0
 
     for idx, arg in enumerate(self._example_inputs):
+      arg_bounds_idx = bounds_idx
+      bounds_idx += 2 if isinstance(arg, torch.SymInt) else 1
+
       if arg is None:
         continue
 
@@ -240,9 +283,16 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
           self._symbol_to_input_loc[sym_expr] = idx
       elif isinstance(arg, torch.Tensor):
         if sym_utils.has_dynamic_shape(arg):
-          self._dynamic_tensor_map.append((pad_idx, target_idx))
+          validate_dynamic_example_input(idx, arg)
           self._dynamic_input_indices.append(idx)
-          pad_idx += 1
+          self._dynamic_target_indices.add(target_idx)
+          if sym_utils.can_use_pad_real_to_static(arg):
+            self._static_tensor_map.append((idx, target_idx))
+          else:
+            self._pad_input_indices.append(idx)
+            self._pad_tensor_map.append((pad_idx, target_idx))
+            pad_bounds_indices.append(arg_bounds_idx)
+            pad_idx += 1
         else:
           self._static_tensor_map.append((idx, target_idx))
       else:
@@ -251,9 +301,10 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
       target_idx += 1
 
     self._model_inputs_template_length = target_idx
-    self._dynamic_target_indices = {
-        target_idx for _, target_idx in self._dynamic_tensor_map
-    }
+    self._bucket_pad_tensor_bounds = [
+        [spec.model_input_bounds[i] for i in pad_bounds_indices]
+        for spec in self._bucket_specs
+    ]
     self._symbol_bucket_uppers: list[tuple[int, tuple[int, ...]]] = [
         (
             arg_idx,
@@ -296,19 +347,20 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
   def _get_model_inputs(
       self,
       args: Sequence[Any],
-      pad_outputs: Sequence[torch.Tensor],
+      pad_outputs: Sequence[torch.Tensor] = (),
   ) -> list[Any]:
     """Assembles the actual runtime inputs for the model executable.
 
     Args:
       args: The original arguments passed to the `__call__` method.
-      pad_outputs: The output tensors from the pad subgraph, which are the
-        statically padded versions of the dynamic input tensors.
+      pad_outputs: The output tensors from the pad subgraph for 64-bit/128-bit
+        dynamic input tensors.
 
     Returns:
-      A list of inputs for the model executable, where dynamic tensors are
-      replaced by their padded versions and dynamic scalar SymInts are
-      converted to tensors.
+      A list of inputs for the model executable, where 64-bit/128-bit dynamic
+      tensors are replaced by their padded versions, <8-byte dynamic tensors
+      are passed through directly, and dynamic scalar SymInts are converted to
+      tensors.
     """
     model_inputs = [None] * self._model_inputs_template_length
     backend_device = self._get_backend_device()
@@ -316,7 +368,7 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
     for arg_idx, target_idx in self._static_tensor_map:
       model_inputs[target_idx] = args[arg_idx]
 
-    for pad_idx, target_idx in self._dynamic_tensor_map:
+    for pad_idx, target_idx in self._pad_tensor_map:
       model_inputs[target_idx] = pad_outputs[pad_idx]
 
     for arg_idx, target_idx in self._dynamic_scalar_map:
@@ -537,15 +589,16 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
         self._bucket_specs[bucket_idx].symbol_bounds,
     )
 
-    tensor_args = self._get_dynamic_input_tensors(args)
+    self._validate_dynamic_input_tensors(args)
 
-    # Run pad subgraph first if needed (for 64-bit/128-bit tensors)
-    if self._use_pad_subgraph:
+    # Run pad subgraph only for 64-bit/128-bit dynamic input tensors.
+    if self._pad_input_indices:
+      pad_inputs = [args[idx] for idx in self._pad_input_indices]
       pad_outputs = self._compile_and_execute_pad_subgraph(
-          tensor_args, bucket_idx
+          pad_inputs, bucket_idx
       )
     else:
-      pad_outputs = tensor_args
+      pad_outputs = ()
 
     # Construct inputs for the model executable
     model_inputs = self._get_model_inputs(args, pad_outputs)

@@ -15,14 +15,23 @@
 """Test demonstrating dynamic execution through torch.compile()."""
 
 from collections.abc import Callable, Sequence
+from typing import Any
 from unittest import mock
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
+from torch._dynamo.backends.common import aot_autograd
+from torch.utils._sympy.value_ranges import ValueRanges
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import _backend
+from torch_tpu._internal.compile.dynamic import sym_utils
 from torch_tpu._internal.utils import test_utils as utils
 from tests import seed_test_utils
+
+
+def _uses_pad_subgraph(dtype: torch.dtype) -> bool:
+  """Whether dynamic inputs of `dtype` are padded by the external pad subgraph."""
+  return not sym_utils.can_use_pad_real_to_static(torch.empty(0, dtype=dtype))
 
 
 class CompileTest(seed_test_utils.RepeatableTest):
@@ -615,6 +624,926 @@ class CompileTest(seed_test_utils.RepeatableTest):
     out = compiled(x)
     expected = torch.full((2, 3), 4.0, device="cpu")
     utils.assert_close(out.cpu(), expected)
+
+  def test_64bit_pad_subgraph_caches_and_preserves_runtime_shape(self):
+    def fn(x):
+      return x * 2 + 1
+
+    executables = []
+    orig_dc_call = _backend.dynamic_compiler.DynamicCompiler.__call__
+
+    def capture_executable(dc_self, *args, **kwargs):
+      exe = orig_dc_call(dc_self, *args, **kwargs)
+      executables.append(exe)
+      return exe
+
+    ttc = _backend.dynamic_compiler.tpu_torch_compile
+    x3 = torch.arange(12, device=self.device, dtype=torch.int64).reshape(3, 4)
+    x6 = torch.arange(24, device=self.device, dtype=torch.int64).reshape(6, 4)
+    torch._dynamo.mark_dynamic(x3, 0, min=2, max=8)
+    torch._dynamo.mark_dynamic(x6, 0, min=2, max=8)
+
+    with mock.patch.object(
+        _backend.dynamic_compiler.DynamicCompiler,
+        "__call__",
+        autospec=True,
+        side_effect=capture_executable,
+    ):
+      compiled = torch.compile(fn, backend="tpu", fullgraph=True)
+      out3 = compiled(x3)
+      out6 = compiled(x6)
+      utils.assert_close(out3.cpu(), fn(x3.cpu()))
+      utils.assert_close(out6.cpu(), fn(x6.cpu()))
+
+      stats_before = torch.tpu._get_cache_stats()
+      out3_repeat = compiled(x3)
+      stats_after = torch.tpu._get_cache_stats()
+      utils.assert_close(out3_repeat.cpu(), fn(x3.cpu()))
+
+    self.assertLen(executables, 1)
+    self.assertEqual(
+        stats_after.num_compilations - stats_before.num_compilations, 0
+    )
+    self.assertGreaterEqual(
+        stats_after.num_cache_hits - stats_before.num_cache_hits, 1
+    )
+
+    dyn_exec = executables[0]
+    (padded_x3,) = dyn_exec._compile_and_execute_pad_subgraph([x3], 0)
+    self.assertEqual(padded_x3.shape, (3, 4))
+    self.assertTrue(ttc.is_device_shape_dynamic(padded_x3))
+    self.assertTrue(
+        ttc.has_matching_dynamic_device_bounds(padded_x3, ([0], [8]))
+    )
+    utils.assert_close(padded_x3.cpu(), x3.cpu())
+
+    (reused_x3,) = dyn_exec._compile_and_execute_pad_subgraph([padded_x3], 0)
+    self.assertIs(reused_x3, padded_x3)
+
+    # A dynamic 64-bit buffer produced under a smaller bound (<=4) is re-padded
+    # — never reused raw — to the exact bound of a multi-bucket executable
+    # (<=128 / <=256), and its values stay bit-exact.
+    @torch.compile(backend="tpu", fullgraph=True)
+    def produce_small(x):
+      return x + 10
+
+    x_small = torch.arange(32, device=self.device, dtype=torch.int64).reshape(
+        2, 16
+    )
+    torch._dynamo.mark_dynamic(x_small, 0, min=2, max=4)
+    y_small = produce_small(x_small)
+    self.assertTrue(ttc.is_device_shape_dynamic(y_small))
+    self.assertTrue(ttc.has_matching_dynamic_device_bounds(y_small, ([0], [4])))
+    self.assertFalse(
+        ttc.has_matching_dynamic_device_bounds(y_small, ([0], [128]))
+    )
+
+    mb_executables = []
+
+    def capture_mb_executable(dc_self, *args, **kwargs):
+      exe = orig_dc_call(dc_self, *args, **kwargs)
+      mb_executables.append(exe)
+      return exe
+
+    torch._dynamo.mark_dynamic(y_small, 0, min=2, max=256)
+    with mock.patch.object(
+        _backend.dynamic_compiler.DynamicCompiler,
+        "__call__",
+        autospec=True,
+        side_effect=capture_mb_executable,
+    ):
+      compiled_mb = torch.compile(
+          fn,
+          backend="tpu",
+          fullgraph=True,
+          options={"num_dynamic_buckets": 2, "dynamic_bucket_size": 128},
+      )
+      out_mb = compiled_mb(y_small)
+    utils.assert_close(out_mb.cpu(), fn(y_small.cpu()))
+
+    mb_exec = mb_executables[0]
+    (b0_padded,) = mb_exec._compile_and_execute_pad_subgraph([y_small], 0)
+    self.assertIsNot(b0_padded, y_small)
+    self.assertTrue(
+        ttc.has_matching_dynamic_device_bounds(b0_padded, ([0], [128]))
+    )
+    utils.assert_close(b0_padded.cpu(), y_small.cpu())
+
+    (b0_reused,) = mb_exec._compile_and_execute_pad_subgraph([b0_padded], 0)
+    self.assertIs(b0_reused, b0_padded)
+
+    (b1_repadded,) = mb_exec._compile_and_execute_pad_subgraph([b0_padded], 1)
+    self.assertIsNot(b1_repadded, b0_padded)
+    self.assertTrue(
+        ttc.has_matching_dynamic_device_bounds(b1_repadded, ([0], [256]))
+    )
+    utils.assert_close(b1_repadded.cpu(), y_small.cpu())
+
+  def test_mixed_int64_and_bfloat16_per_tensor_pad_real_to_static(self):
+    vocab_size, hidden_dim, num_heads, head_dim = 128, 64, 4, 16
+    embed_w = (
+        torch.randn(
+            vocab_size, hidden_dim, dtype=torch.bfloat16, device=self.device
+        )
+        * 0.05
+    )
+    wq = (
+        torch.randn(
+            hidden_dim, hidden_dim, dtype=torch.bfloat16, device=self.device
+        )
+        * 0.05
+    )
+    wk = (
+        torch.randn(
+            hidden_dim, hidden_dim, dtype=torch.bfloat16, device=self.device
+        )
+        * 0.05
+    )
+    wv = (
+        torch.randn(
+            hidden_dim, hidden_dim, dtype=torch.bfloat16, device=self.device
+        )
+        * 0.05
+    )
+
+    def attn_step(input_ids, k_cache, v_cache):
+      h = torch.nn.functional.embedding(input_ids, embed_w)
+      b, s, _ = h.shape
+      q = (h @ wq).view(b, s, num_heads, head_dim).transpose(1, 2)
+      kn = (h @ wk).view(b, s, num_heads, head_dim).transpose(1, 2)
+      vn = (h @ wv).view(b, s, num_heads, head_dim).transpose(1, 2)
+      k_full = torch.cat([k_cache, kn], dim=2)
+      v_full = torch.cat([v_cache, vn], dim=2)
+      return torch.nn.functional.scaled_dot_product_attention(
+          q, k_full, v_full, is_causal=False
+      )
+
+    def make_inputs(seq_len, kv_len):
+      ids = torch.randint(
+          0, vocab_size, (2, seq_len), dtype=torch.int64, device=self.device
+      )
+      kc = torch.randn(
+          2,
+          num_heads,
+          kv_len,
+          head_dim,
+          dtype=torch.bfloat16,
+          device=self.device,
+      )
+      vc = torch.randn(
+          2,
+          num_heads,
+          kv_len,
+          head_dim,
+          dtype=torch.bfloat16,
+          device=self.device,
+      )
+      torch._dynamo.mark_dynamic(ids, 1, min=2, max=32)
+      torch._dynamo.mark_dynamic(kc, 2, min=8, max=64)
+      torch._dynamo.mark_dynamic(vc, 2, min=8, max=64)
+      return ids, kc, vc
+
+    ttc = _backend.dynamic_compiler.tpu_torch_compile
+    orig_dc_call = _backend.dynamic_compiler.DynamicCompiler.__call__
+    orig_get_pad = ttc.get_dynamic_pad_module
+    executables = []
+    pad_call_infos = []
+    debugs = []
+
+    def capture_dc(dc_self, *args, **kwargs):
+      exe = orig_dc_call(dc_self, *args, **kwargs)
+      executables.append(exe)
+      return exe
+
+    def wrap_get_pad(tensor_info, bounds_list, *args, **kwargs):
+      pad_call_infos.append(list(tensor_info))
+      return orig_get_pad(tensor_info, bounds_list, *args, **kwargs)
+
+    compiled = torch.compile(
+        attn_step,
+        backend="tpu",
+        fullgraph=True,
+        options={"debug_callback": debugs.append},
+    )
+
+    in_7 = make_inputs(7, 24)
+    in_19 = make_inputs(19, 40)
+    in_7_repeat = make_inputs(7, 48)
+
+    with (
+        mock.patch.object(
+            _backend.dynamic_compiler.DynamicCompiler,
+            "__call__",
+            autospec=True,
+            side_effect=capture_dc,
+        ),
+        mock.patch.object(
+            ttc, "get_dynamic_pad_module", side_effect=wrap_get_pad
+        ),
+    ):
+      out_7 = compiled(*in_7)
+      out_19 = compiled(*in_19)
+      stats_before = torch.tpu._get_cache_stats()
+      out_7_repeat = compiled(*in_7_repeat)
+      stats_after = torch.tpu._get_cache_stats()
+
+    utils.assert_close(
+        out_7.float().cpu(),
+        attn_step(*in_7).float().cpu(),
+        rtol=2e-2,
+        atol=2e-2,
+    )
+    utils.assert_close(
+        out_19.float().cpu(),
+        attn_step(*in_19).float().cpu(),
+        rtol=2e-2,
+        atol=2e-2,
+    )
+    utils.assert_close(
+        out_7_repeat.float().cpu(),
+        attn_step(*in_7_repeat).float().cpu(),
+        rtol=2e-2,
+        atol=2e-2,
+    )
+
+    self.assertLen(executables, 1)
+    # Inputs: int64 ids and two bfloat16 caches; only the dtypes that bypass
+    # PadRealToStatic reach the pad subgraph.
+    expected_pad_dtypes = [
+        d
+        for d in (torch.int64, torch.bfloat16, torch.bfloat16)
+        if _uses_pad_subgraph(d)
+    ]
+    self.assertEqual(
+        [[info.dtype for info in info_list] for info_list in pad_call_infos],
+        [expected_pad_dtypes] * 3 if expected_pad_dtypes else [],
+    )
+
+    # Repeating S=7 (even with a new KV=48) reuses the main executable from
+    # _model_executables and the cached pad module: no new compilation.
+    self.assertEqual(
+        stats_after.num_compilations - stats_before.num_compilations, 0
+    )
+    self.assertGreaterEqual(
+        stats_after.num_cache_hits - stats_before.num_cache_hits, 1
+    )
+
+    mlir_text = debugs[0].stablehlo_forward_text[0]
+    self.assertEqual(mlir_text.count("func.func @main"), 1)
+    self.assertEqual(
+        mlir_text.count("@PadRealToStatic"), 3 - len(expected_pad_dtypes)
+    )
+    self.assertIn("stablehlo.set_dimension_size", mlir_text)
+
+  def _run_mixed_edge_fn(
+      self,
+  ) -> tuple[
+      Callable[..., torch.Tensor],
+      list[tuple[Any, tuple[Any, ...]]],
+      list[tuple[tuple[Any, ...], torch.Tensor]],
+  ]:
+    """Compiles and runs a mixed int64/bfloat16 graph across multiple buckets.
+
+    The graph takes a standalone SymInt, a dynamic bfloat16 view, int64 ids and
+    multi-bucket bounds (`opt_bias=None` and `scale` are constant-folded by
+    Dynamo and never reach the backend; the packing plan for such inputs is
+    covered by test_prepare_input_packing_plan_mixed_inputs).
+
+    Returns:
+      The eager function, the recorded `(executable, unpacked args)` of every
+      `DynamicTpuCompiledExecutable.__call__`, and `(args, output)` pairs for
+      the bucket-0 and bucket-1 calls.
+    """
+    embed_w = (
+        torch.randn(64, 16, dtype=torch.bfloat16, device=self.device) * 0.1
+    )
+
+    def mixed_edge_fn(
+        opt_bias, sym_offset, kv_transposed_view, scale, input_ids
+    ):
+      tok_emb = torch.nn.functional.embedding(input_ids, embed_w)
+      pooled = kv_transposed_view.mean(dim=1, keepdim=True)
+      out = tok_emb * scale + pooled + sym_offset * 0.01
+      return out if opt_bias is None else out + opt_bias
+
+    compiled_edge = torch.compile(
+        mixed_edge_fn,
+        backend="tpu",
+        fullgraph=True,
+        options={"num_dynamic_buckets": 4},
+    )
+
+    def make_edge_args(sym_off, seq_len, kv_len):
+      kv_base = torch.randn(
+          2, 16, kv_len, dtype=torch.bfloat16, device=self.device
+      )
+      kv_view = kv_base.transpose(1, 2)
+      torch._dynamo.mark_dynamic(kv_view, 1, min=4, max=384)
+      ids = torch.randint(
+          0, 64, (2, seq_len), dtype=torch.int64, device=self.device
+      )
+      torch._dynamo.mark_dynamic(ids, 1, min=4, max=384)
+      return None, sym_off, kv_view, 0.5, ids
+
+    captured_exe_calls = []
+    orig_exe_call = (
+        _backend.dynamic_compiler.DynamicTpuCompiledExecutable.__call__
+    )
+
+    def record_exe_call(exe_self, *exe_args):
+      unpacked = (
+          tuple(exe_args[0])
+          if len(exe_args) == 1 and isinstance(exe_args[0], (list, tuple))
+          else tuple(exe_args)
+      )
+      captured_exe_calls.append((exe_self, unpacked))
+      return orig_exe_call(exe_self, *exe_args)
+
+    # Two distinct sym_off values trigger Dynamo automatic int symbolization.
+    args_w0 = make_edge_args(2, 8, 32)
+    args_b0 = make_edge_args(3, 12, 40)
+    args_b1 = make_edge_args(5, 150, 200)
+    with mock.patch.object(
+        _backend.dynamic_compiler.DynamicTpuCompiledExecutable,
+        "__call__",
+        record_exe_call,
+    ):
+      _ = compiled_edge(*args_w0)
+      out_b0 = compiled_edge(*args_b0)
+      out_b1 = compiled_edge(*args_b1)
+    return (
+        mixed_edge_fn,
+        captured_exe_calls,
+        [(args_b0, out_b0), (args_b1, out_b1)],
+    )
+
+  def test_mixed_int64_and_bfloat16_multibucket_packing(self):
+    """Packs a SymInt, a dynamic bfloat16 view and int64 ids across buckets."""
+    mixed_edge_fn, _, runs = self._run_mixed_edge_fn()
+    for args, out in runs:
+      utils.assert_close(
+          out.float().cpu(),
+          mixed_edge_fn(*args).float().cpu(),
+          rtol=2e-2,
+          atol=2e-2,
+      )
+
+  def test_mixed_int64_and_bfloat16_rejects_cpu_dynamic_input(self):
+    """CPU-tensor validation still covers <8-byte dynamic inputs outside the pad lane."""
+    _, captured_exe_calls, _ = self._run_mixed_edge_fn()
+    exe, captured_args = captured_exe_calls[-1]
+    expected_pad_dtypes = [
+        d for d in (torch.bfloat16, torch.int64) if _uses_pad_subgraph(d)
+    ]
+    self.assertLen(exe._pad_input_indices, len(expected_pad_dtypes))  # pylint: disable=protected-access
+    self.assertLen(exe._dynamic_input_indices, 2)  # pylint: disable=protected-access
+    bf16_dyn_idx = next(
+        idx
+        for idx in exe._dynamic_input_indices  # pylint: disable=protected-access
+        if captured_args[idx].dtype == torch.bfloat16
+    )
+    bad_args = list(captured_args)
+    bad_args[bf16_dyn_idx] = torch.randn(
+        2, 16, 200, dtype=torch.bfloat16, device="cpu"
+    ).transpose(1, 2)
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Internal exe check.
+        ValueError,
+        "CPU tensors are not supported in dynamic shapes compilation",
+    ):
+      exe(*bad_args)
+
+  def test_mixed_int64_and_bfloat16_autograd(self):
+    """AOTAutograd forward + backward with requires_grad=True on bfloat16 + dynamic int64."""
+
+    def train_step(input_ids, hidden_act, proj_w):
+      emb = torch.nn.functional.embedding(input_ids, proj_w)
+      return ((emb + hidden_act) ** 2).sum()
+
+    compiled_train = torch.compile(train_step, backend="tpu", fullgraph=True)
+    proj_w = torch.randn(
+        64, 16, dtype=torch.bfloat16, device=self.device, requires_grad=True
+    )
+    for seq_len in (6, 14):
+      ids = torch.randint(
+          0, 64, (2, seq_len), dtype=torch.int64, device=self.device
+      )
+      act = torch.randn(
+          2,
+          seq_len,
+          16,
+          dtype=torch.bfloat16,
+          device=self.device,
+          requires_grad=True,
+      )
+      torch._dynamo.mark_dynamic(ids, 1, min=2, max=32)
+      torch._dynamo.mark_dynamic(act, 1, min=2, max=32)
+
+      proj_w.grad = None
+      loss = compiled_train(ids, act, proj_w)
+      loss.backward()
+      got_act_grad = act.grad.float().cpu()
+      got_w_grad = proj_w.grad.float().cpu()
+
+      ref_w = proj_w.detach().clone().float().cpu().requires_grad_(True)
+      ref_act = act.detach().clone().float().cpu().requires_grad_(True)
+      ref_loss = train_step(ids.cpu(), ref_act, ref_w)
+      ref_loss.backward()
+
+      utils.assert_close(loss.float().cpu(), ref_loss, rtol=2e-2, atol=2e-2)
+      utils.assert_close(got_act_grad, ref_act.grad, rtol=3e-2, atol=3e-2)
+      utils.assert_close(got_w_grad, ref_w.grad, rtol=3e-2, atol=3e-2)
+
+  def test_prepare_input_packing_plan_mixed_inputs(self):
+    """Checks the per-dtype pad/static split, bounds alignment and guard-freeness."""
+    seen = {}
+
+    def fw_compiler(graph_module, example_inputs):
+      traced = list(example_inputs)
+      sym = next(x for x in traced if isinstance(x, torch.SymInt))
+      ids_fake = next(
+          x
+          for x in traced
+          if isinstance(x, torch.Tensor) and x.dtype == torch.int64
+      )
+      kv_fake = next(
+          x
+          for x in traced
+          if isinstance(x, torch.Tensor) and x.dtype == torch.float32
+      )
+      c128_fake = next(
+          x
+          for x in traced
+          if isinstance(x, torch.Tensor) and x.dtype == torch.complex128
+      )
+      # Synthetic argument list: None and the Python float never reach the
+      # backend from Dynamo, but the packing plan must still skip them.
+      synthetic_inputs = [
+          None,
+          sym,
+          kv_fake,
+          0.5,
+          ids_fake,
+          torch.ones(3),
+          c128_fake,
+      ]
+      symbols = set(sym.node.expr.free_symbols)
+      for tensor in (ids_fake, kv_fake, c128_fake):
+        for d in tensor.shape:
+          if isinstance(d, torch.SymInt):
+            symbols |= d.node.expr.free_symbols
+
+      def make_spec(upper):
+        bounds = _backend.dynamic_compiler.SymbolBounds(
+            {s: ValueRanges(2, upper) for s in symbols}
+        )
+        bounded_inputs, input_bounds = (
+            _backend.dynamic_compiler._create_bounded_model_inputs(  # pylint: disable=protected-access
+                synthetic_inputs, bounds
+            )
+        )
+        return _backend.dynamic_compiler.BucketCompilationSpec(
+            symbol_bounds=bounds,
+            graph_module=graph_module,
+            bounded_model_inputs=bounded_inputs,
+            model_input_bounds=input_bounds,
+        )
+
+      specs = [make_spec(64), make_spec(128)]
+      shape_env = sym.node.shape_env
+      guards_before = len(shape_env.guards)
+      exe = _backend.dynamic_compiler.DynamicTpuCompiledExecutable(
+          static_compiler=_backend.compiler.StaticCompiler(),
+          example_inputs=synthetic_inputs,
+          bucket_specs=specs,
+          output_sym_shapes=[],
+          is_fwd=True,
+          view_arg_indices=set(),
+      )
+      seen["guards_added"] = len(shape_env.guards) - guards_before
+      seen["exe"] = exe
+      seen["specs"] = specs
+      return graph_module
+
+    @torch.compile(backend=aot_autograd(fw_compiler=fw_compiler), dynamic=True)
+    def f(ids, kv, c128, n):
+      return ids.sum() + kv.sum() + c128.abs().sum() + n
+
+    f(
+        torch.ones((2, 6), dtype=torch.int64),
+        torch.ones((3, 10, 8)),
+        torch.ones((4, 5), dtype=torch.complex128),
+        3,
+    )
+
+    exe, specs = seen["exe"], seen["specs"]
+    # Building the plan (including the zero-element check) must not add guards.
+    self.assertEqual(seen["guards_added"], 0)
+
+    # Model input positions skip the None: sym -> 0, kv -> 1, 0.5 -> 2,
+    # ids -> 3, static tensor -> 4, c128 -> 5. Tensors in argument order as
+    # (arg index, model input position, dtype, rank, dynamic); dynamic tensors
+    # whose dtype bypasses PadRealToStatic go through the pad subgraph.
+    tensor_entries = [
+        (2, 1, torch.float32, 3, True),
+        (4, 3, torch.int64, 2, True),
+        (5, 4, torch.float32, 1, False),
+        (6, 5, torch.complex128, 2, True),
+    ]
+    pad_entries = [
+        e for e in tensor_entries if e[4] and _uses_pad_subgraph(e[2])
+    ]
+    pad_arg_indices = [i for i, *_ in pad_entries]
+    self.assertEqual(exe._model_inputs_template_length, 6)  # pylint: disable=protected-access
+    self.assertEqual(exe._dynamic_scalar_map, [(1, 0)])  # pylint: disable=protected-access
+    self.assertEqual(exe._static_scalar_map, [(3, 2)])  # pylint: disable=protected-access
+    self.assertEqual(
+        exe._static_tensor_map,  # pylint: disable=protected-access
+        [(i, t) for i, t, *_ in tensor_entries if i not in pad_arg_indices],
+    )
+    self.assertEqual(exe._pad_input_indices, pad_arg_indices)  # pylint: disable=protected-access
+    self.assertEqual(
+        exe._pad_tensor_map,  # pylint: disable=protected-access
+        [(pad_idx, t) for pad_idx, (_, t, *_) in enumerate(pad_entries)],
+    )
+    self.assertEqual(exe._dynamic_input_indices, [2, 4, 6])  # pylint: disable=protected-access
+    self.assertEqual(exe._dynamic_target_indices, {1, 3, 5})  # pylint: disable=protected-access
+
+    # model_input_bounds has one entry per argument except two for the SymInt
+    # (value + runtime size placeholder), so every tensor after it sits at
+    # argument index + 1 (int64 at 5 and complex128 at 7).
+    for spec, pad_bounds in zip(specs, exe._bucket_pad_tensor_bounds):  # pylint: disable=protected-access
+      self.assertLen(pad_bounds, len(pad_entries))
+      for bounds, (arg_idx, *_) in zip(pad_bounds, pad_entries):
+        self.assertIs(bounds, spec.model_input_bounds[arg_idx + 1])
+    for pad_idx, (_, _, _, rank, _) in enumerate(pad_entries):
+      self.assertEqual(
+          [
+              list(b[pad_idx].upper_bounds)
+              for b in exe._bucket_pad_tensor_bounds  # pylint: disable=protected-access
+          ],
+          [[64] * rank, [128] * rank],
+      )
+      self.assertEqual(
+          list(exe._bucket_pad_tensor_bounds[0][pad_idx].dynamic_dims),  # pylint: disable=protected-access
+          list(range(rank)),
+      )
+
+  def test_64bit_input_with_two_dynamic_dims(self):
+    def fn(x):
+      return x * 2 + 1
+
+    ttc = _backend.dynamic_compiler.tpu_torch_compile
+    orig_get_pad = ttc.get_dynamic_pad_module
+    pad_calls = []
+
+    def wrap_get_pad(tensor_info, bounds_list, *args, **kwargs):
+      pad_calls.append((
+          [tuple(info.shape) for info in tensor_info],
+          [(list(b.dynamic_dims), list(b.upper_bounds)) for b in bounds_list],
+      ))
+      return orig_get_pad(tensor_info, bounds_list, *args, **kwargs)
+
+    def make_input(rows, cols):
+      x = torch.arange(
+          rows * cols, device=self.device, dtype=torch.int64
+      ).reshape(rows, cols)
+      torch._dynamo.mark_dynamic(x, 0, min=2, max=8)
+      torch._dynamo.mark_dynamic(x, 1, min=2, max=16)
+      return x
+
+    x_a = make_input(3, 5)
+    x_b = make_input(6, 11)
+    with mock.patch.object(
+        ttc, "get_dynamic_pad_module", side_effect=wrap_get_pad
+    ):
+      compiled = torch.compile(fn, backend="tpu", fullgraph=True)
+      utils.assert_close(compiled(x_a).cpu(), fn(x_a.cpu()))
+      utils.assert_close(compiled(x_b).cpu(), fn(x_b.cpu()))
+      stats_before = torch.tpu._get_cache_stats()
+      utils.assert_close(compiled(x_a).cpu(), fn(x_a.cpu()))
+      stats_after = torch.tpu._get_cache_stats()
+
+    # Each call pads the int64 input to the single bucket's bounds unless int64
+    # takes in-graph PadRealToStatic, in which case no pad program runs.
+    expected_pad_calls = (
+        [
+            ([(3, 5)], [([0, 1], [8, 16])]),
+            ([(6, 11)], [([0, 1], [8, 16])]),
+            ([(3, 5)], [([0, 1], [8, 16])]),
+        ]
+        if _uses_pad_subgraph(torch.int64)
+        else []
+    )
+    self.assertEqual(pad_calls, expected_pad_calls)
+    self.assertEqual(
+        stats_after.num_compilations - stats_before.num_compilations, 0
+    )
+
+  def test_mixed_int64_and_bfloat16_fed_back_decode_loop(self):
+    """Feeds compiled dynamic KV outputs back as inputs across decode steps."""
+    vocab_size, hidden_dim, num_heads, head_dim = 128, 512, 4, 128
+    embed_w = (
+        torch.randn(
+            vocab_size, hidden_dim, dtype=torch.bfloat16, device=self.device
+        )
+        * 0.05
+    )
+    wk = (
+        torch.randn(
+            hidden_dim, hidden_dim, dtype=torch.bfloat16, device=self.device
+        )
+        * 0.05
+    )
+    wv = (
+        torch.randn(
+            hidden_dim, hidden_dim, dtype=torch.bfloat16, device=self.device
+        )
+        * 0.05
+    )
+
+    def decode_step(next_token, k_cache, v_cache):
+      h = torch.nn.functional.embedding(next_token, embed_w)
+      b, s, _ = h.shape
+      kn = (h @ wk).view(b, s, num_heads, head_dim).transpose(1, 2)
+      vn = (h @ wv).view(b, s, num_heads, head_dim).transpose(1, 2)
+      k_full = torch.cat([k_cache, kn], dim=2)
+      v_full = torch.cat([v_cache, vn], dim=2)
+      scores = torch.matmul(kn, k_full.transpose(-2, -1)) * head_dim**-0.5
+      attn = torch.matmul(torch.softmax(scores.float(), dim=-1), v_full.float())
+      return attn.to(torch.bfloat16), k_full, v_full
+
+    ttc = _backend.dynamic_compiler.tpu_torch_compile
+    orig_get_pad = ttc.get_dynamic_pad_module
+    pad_dtypes = []
+
+    def wrap_get_pad(tensor_info, bounds_list, *args, **kwargs):
+      pad_dtypes.append([info.dtype for info in tensor_info])
+      return orig_get_pad(tensor_info, bounds_list, *args, **kwargs)
+
+    batch, kv_len = 2, 130
+    tok = torch.randint(
+        0, vocab_size, (batch, 1), dtype=torch.int64, device=self.device
+    )
+    torch._dynamo.mark_dynamic(tok, 0, min=2, max=8)
+    k_cache = torch.randn(
+        batch,
+        num_heads,
+        kv_len,
+        head_dim,
+        dtype=torch.bfloat16,
+        device=self.device,
+    )
+    v_cache = torch.randn(
+        batch,
+        num_heads,
+        kv_len,
+        head_dim,
+        dtype=torch.bfloat16,
+        device=self.device,
+    )
+    for cache in (k_cache, v_cache):
+      torch._dynamo.mark_dynamic(cache, 0, min=2, max=8)
+      torch._dynamo.mark_dynamic(cache, 2, min=16, max=256)
+
+    compiled = torch.compile(decode_step, backend="tpu", fullgraph=True)
+    ref_k, ref_v = k_cache.clone(), v_cache.clone()
+    k_cur, v_cur = k_cache, v_cache
+    step_outputs = []
+    with mock.patch.object(
+        ttc, "get_dynamic_pad_module", side_effect=wrap_get_pad
+    ):
+      for step in range(4):
+        attn, k_cur, v_cur = compiled(tok, k_cur, v_cur)
+        step_outputs.append((attn, k_cur, v_cur))
+        self.assertTrue(ttc.is_device_shape_dynamic(k_cur))
+        self.assertEqual(
+            tuple(k_cur.shape), (batch, num_heads, kv_len + step + 1, head_dim)
+        )
+        if step == 0:
+          compilations_after_first_step = (
+              torch.tpu._get_cache_stats().num_compilations
+          )
+      compilations_after_last_step = (
+          torch.tpu._get_cache_stats().num_compilations
+      )
+
+    # Only dtypes outside the PadRealToStatic lane (the int64 token tensor
+    # today) go through the pad subgraph; the fed-back bfloat16 caches are
+    # consumed in-graph. Steps 2-4 compile nothing new.
+    expected_pad_dtypes = (
+        [torch.int64] if _uses_pad_subgraph(torch.int64) else []
+    )
+    self.assertEqual(
+        pad_dtypes, [expected_pad_dtypes] * 4 if expected_pad_dtypes else []
+    )
+    self.assertEqual(
+        compilations_after_last_step, compilations_after_first_step
+    )
+
+    # Eager references are computed after the loop so that their own
+    # compilations do not perturb the cache statistics above.
+    for attn, k_cur, v_cur in step_outputs:
+      ref_attn, ref_k, ref_v = decode_step(tok, ref_k, ref_v)
+      utils.assert_close(
+          attn.float().cpu(), ref_attn.float().cpu(), rtol=2e-2, atol=2e-2
+      )
+      utils.assert_close(
+          k_cur.float().cpu(), ref_k.float().cpu(), rtol=2e-2, atol=2e-2
+      )
+      utils.assert_close(
+          v_cur.float().cpu(), ref_v.float().cpu(), rtol=2e-2, atol=2e-2
+      )
+
+  def test_mixed_int64_and_bfloat16_multibucket_dynamic_reuse(self):
+    """Reuses or re-pads dynamic int64 buffers across producer-bound and bucket transitions."""
+    vocab_size, hidden_dim = 256, 64
+    embed_w = (
+        torch.randn(
+            vocab_size, hidden_dim, dtype=torch.bfloat16, device=self.device
+        )
+        * 0.05
+    )
+
+    @torch.compile(backend="tpu", fullgraph=True)
+    def produce_small_ids(ids):
+      return (ids + 3) % vocab_size
+
+    @torch.compile(
+        backend="tpu",
+        fullgraph=True,
+        options={"num_dynamic_buckets": 2, "dynamic_bucket_size": 128},
+    )
+    def produce_bucket0_ids(ids):
+      return (ids + 5) % vocab_size
+
+    def mixed_step(ids, kv):
+      tok_mean = torch.nn.functional.embedding(ids, embed_w).mean(dim=(0, 1))
+      kv_mean = kv.mean(dim=0)
+      return tok_mean + kv_mean
+
+    ttc = _backend.dynamic_compiler.tpu_torch_compile
+    orig_get_pad = ttc.get_dynamic_pad_module
+    pad_bounds_log = []
+
+    def wrap_get_pad(tensor_info, bounds_list, *args, **kwargs):
+      pad_bounds_log.append(
+          [(list(b.dynamic_dims), list(b.upper_bounds)) for b in bounds_list]
+      )
+      return orig_get_pad(tensor_info, bounds_list, *args, **kwargs)
+
+    # 1. Dynamic int64 output bounded to <=4.
+    raw_small = torch.randint(
+        0, vocab_size, (2, 16), dtype=torch.int64, device=self.device
+    )
+    torch._dynamo.mark_dynamic(raw_small, 0, min=2, max=4)
+    ids_dyn = produce_small_ids(raw_small)
+    self.assertTrue(ttc.is_device_shape_dynamic(ids_dyn))
+    self.assertTrue(ttc.has_matching_dynamic_device_bounds(ids_dyn, ([0], [4])))
+
+    # 2. Dynamic int64 output bounded to <=128 (Bucket 0 of the consumer).
+    raw_b0 = torch.randint(
+        0, vocab_size, (6, 16), dtype=torch.int64, device=self.device
+    )
+    torch._dynamo.mark_dynamic(raw_b0, 0, min=2, max=256)
+    ids_b0_dyn = produce_bucket0_ids(raw_b0)
+    self.assertTrue(ttc.is_device_shape_dynamic(ids_b0_dyn))
+    self.assertTrue(
+        ttc.has_matching_dynamic_device_bounds(ids_b0_dyn, ([0], [128]))
+    )
+
+    compiled_step = torch.compile(
+        mixed_step,
+        backend="tpu",
+        fullgraph=True,
+        options={"num_dynamic_buckets": 3, "dynamic_bucket_size": 128},
+    )
+
+    kv_32 = torch.randn(
+        32, hidden_dim, dtype=torch.bfloat16, device=self.device
+    )
+    kv_200 = torch.randn(
+        200, hidden_dim, dtype=torch.bfloat16, device=self.device
+    )
+    torch._dynamo.mark_dynamic(ids_dyn, 0, min=2, max=384)
+    torch._dynamo.mark_dynamic(ids_b0_dyn, 0, min=2, max=384)
+    torch._dynamo.mark_dynamic(kv_32, 0, min=8, max=384)
+    torch._dynamo.mark_dynamic(kv_200, 0, min=8, max=384)
+
+    with mock.patch.object(
+        ttc, "get_dynamic_pad_module", side_effect=wrap_get_pad
+    ):
+      # The <=4 producer buffer is re-padded to the exact bounds of Bucket 0
+      # (<=128) and Bucket 1 (<=256).
+      out_small_b0 = compiled_step(ids_dyn, kv_32)
+      out_small_b1 = compiled_step(ids_dyn, kv_200)
+      pad_count_before_b0_reuse = len(pad_bounds_log)
+
+      # Bucket-0 ids_b0_dyn (<=128) reuses its dynamic buffer in Bucket 0 (kv=32)
+      # with zero pad-subgraph calls, then re-pads to <=256 in Bucket 1 (kv=200).
+      out_b0_reuse = compiled_step(ids_b0_dyn, kv_32)
+      pad_count_after_b0_reuse = len(pad_bounds_log)
+      out_b0_to_b1 = compiled_step(ids_b0_dyn, kv_200)
+
+    self.assertEqual(pad_count_after_b0_reuse, pad_count_before_b0_reuse)
+    if _uses_pad_subgraph(torch.int64):
+      self.assertEqual(
+          pad_bounds_log,
+          [[([0], [128])], [([0], [256])], [([0], [256])]],
+      )
+    else:
+      self.assertEmpty(pad_bounds_log)
+
+    for ids_in, kv_in, got in (
+        (ids_dyn, kv_32, out_small_b0),
+        (ids_dyn, kv_200, out_small_b1),
+        (ids_b0_dyn, kv_32, out_b0_reuse),
+        (ids_b0_dyn, kv_200, out_b0_to_b1),
+    ):
+      ref = mixed_step(ids_in, kv_in)
+      utils.assert_close(
+          got.float().cpu(), ref.float().cpu(), rtol=2e-2, atol=2e-2
+      )
+
+  def test_mixed_high_precision_and_float32_dynamic_inputs(self):
+    """Runs float64 and complex64 dynamic inputs next to a float32 PadRealToStatic input."""
+    ttc = _backend.dynamic_compiler.tpu_torch_compile
+    orig_get_pad = ttc.get_dynamic_pad_module
+
+    def mixed_fn(hp_x, f32_y):
+      return hp_x + hp_x, f32_y * 2.0 + 1.0
+
+    pad_dtypes = []
+
+    def wrap_get_pad(tensor_info, bounds_list, *args, **kwargs):
+      pad_dtypes.append([info.dtype for info in tensor_info])
+      return orig_get_pad(tensor_info, bounds_list, *args, **kwargs)
+
+    # Dynamic complex128 (C128) routing is verified at the FX-pass and
+    # packing-plan boundaries; XLA:TPU does not yet support dynamic C128 device
+    # buffers at runtime.
+    for hp_dtype in (torch.float64, torch.complex64):
+      pad_dtypes.clear()
+      compiled = torch.compile(mixed_fn, backend="tpu", fullgraph=True)
+      for rows in (3, 7):
+        hp_cpu = torch.randn(rows, 8, dtype=hp_dtype)
+        f32_cpu = torch.randn(rows, 8, dtype=torch.float32)
+        hp_tpu = hp_cpu.to(self.device)
+        f32_tpu = f32_cpu.to(self.device)
+        torch._dynamo.mark_dynamic(hp_tpu, 0, min=2, max=16)
+        torch._dynamo.mark_dynamic(f32_tpu, 0, min=2, max=16)
+
+        with mock.patch.object(
+            ttc, "get_dynamic_pad_module", side_effect=wrap_get_pad
+        ):
+          got_hp, got_f32 = compiled(hp_tpu, f32_tpu)
+
+        ref_hp, ref_f32 = mixed_fn(hp_cpu, f32_cpu)
+        utils.assert_close(got_hp.cpu(), ref_hp, rtol=1e-5, atol=1e-5)
+        utils.assert_close(got_f32.cpu(), ref_f32, rtol=1e-5, atol=1e-5)
+
+      # Only the high-precision input is padded by the pad program (once per
+      # distinct runtime shape), and only while its dtype bypasses
+      # PadRealToStatic.
+      self.assertEqual(
+          pad_dtypes,
+          [[hp_dtype], [hp_dtype]] if _uses_pad_subgraph(hp_dtype) else [],
+      )
+
+  @absltest.skipUnless(
+      not _uses_pad_subgraph(torch.int64),
+      "int64 dynamic inputs still take the external pad subgraph",
+  )
+  def test_int64_dynamic_input_uses_in_graph_pad_real_to_static(self):
+    """Once libtpu supports it, int64 inputs are padded in-graph without a pad program."""
+
+    def fn(x):
+      return x * 2 + 1
+
+    ttc = _backend.dynamic_compiler.tpu_torch_compile
+    debugs = []
+    x3 = torch.arange(12, device=self.device, dtype=torch.int64).reshape(3, 4)
+    x6 = torch.arange(24, device=self.device, dtype=torch.int64).reshape(6, 4)
+    torch._dynamo.mark_dynamic(x3, 0, min=2, max=8)
+    torch._dynamo.mark_dynamic(x6, 0, min=2, max=8)
+
+    with mock.patch.object(
+        ttc, "get_dynamic_pad_module", wraps=ttc.get_dynamic_pad_module
+    ) as get_pad:
+      compiled = torch.compile(
+          fn,
+          backend="tpu",
+          fullgraph=True,
+          options={"debug_callback": debugs.append},
+      )
+      out3 = compiled(x3)
+      out6 = compiled(x6)
+
+    utils.assert_close(out3.cpu(), fn(x3.cpu()))
+    utils.assert_close(out6.cpu(), fn(x6.cpu()))
+    get_pad.assert_not_called()
+    mlir_text = debugs[0].stablehlo_forward_text[0]
+    self.assertEqual(mlir_text.count("@PadRealToStatic"), 1)
+    self.assertRegex(mlir_text, r"@PadRealToStatic\([^\n]*xi64")
 
 
 class SymIntArithmeticTest(seed_test_utils.RepeatableTest):
@@ -1807,6 +2736,103 @@ class DynamicErrorHandlingTest(seed_test_utils.RepeatableTest):
           "torch.compile(..., dynamic=False, ...)", str(ctx.exception)
       )
       self.assertIn("MLIR lowering failed", str(ctx.exception))
+
+  def test_zero_element_dynamic_input_is_rejected(self):
+    def fn(x):
+      return x * 2 + 1
+
+    device = torch.accelerator.current_accelerator()
+    for dtype in (torch.int64, torch.float32):
+      x0 = torch.zeros((0, 6), device=device, dtype=dtype)
+      # Static compilation handles zero-element inputs.
+      compiled_static = torch.compile(
+          fn, backend="tpu", dynamic=False, fullgraph=True
+      )
+      utils.assert_close(compiled_static(x0).cpu(), fn(x0.cpu()))
+
+      # Bounded dynamism cannot bind a zero-element buffer to a bounded
+      # parameter (neither via PadRealToStatic nor via the pad subgraph), so
+      # the backend reports it up front instead of failing inside PJRT.
+      torch._dynamo.mark_dynamic(x0, 1, min=2, max=8)
+      compiled = torch.compile(fn, backend="tpu", fullgraph=True)
+      with self.assertRaises(  # ASSERT_RAISES_OK=Python backend error.
+          (NotImplementedError, torch._dynamo.exc.BackendCompilerFailed)
+      ) as ctx:
+        compiled(x0)
+      self.assertIn(
+          "Zero-element dynamic input tensor at position", str(ctx.exception)
+      )
+      self.assertIn("(shape [0, s", str(ctx.exception))
+      self.assertIn(
+          "torch.compile(..., dynamic=False, ...)", str(ctx.exception)
+      )
+
+  def test_zero_element_dynamic_input_check_is_guard_free(self):
+    """The compile-time rejection reads static/known-zero dims only and adds no guard."""
+    seen = {}
+
+    def fw_compiler(graph_module, example_inputs):
+      shape_env = next(
+          x.node.shape_env
+          for x in example_inputs
+          if isinstance(x, torch.SymInt)
+      )
+      guards_before = set(shape_env.guards)
+      with self.assertRaises(  # ASSERT_RAISES_OK=Python backend error.
+          NotImplementedError
+      ) as ctx:
+        _backend.dynamic_compiler.DynamicCompiler()(
+            graph_module, list(example_inputs)
+        )
+      seen["message"] = str(ctx.exception)
+      seen["guards_before"] = guards_before
+      seen["guards_after"] = set(shape_env.guards)
+      return graph_module
+
+    @torch.compile(backend=aot_autograd(fw_compiler=fw_compiler))
+    def f(x):
+      return x * 2 + 1
+
+    x = torch.zeros((0, 6), dtype=torch.int64)
+    # Leave upper bound unbounded so SymBoundsManager.add_bound_checks would
+    # leak `s0 <= 128` onto shape_env.guards if reached before validation.
+    torch._dynamo.mark_dynamic(x, 1)
+    f(x)
+
+    self.assertIn("Zero-element dynamic input tensor", seen["message"])
+    self.assertEqual(seen["guards_after"], seen["guards_before"])
+
+  def test_runtime_zero_derived_dynamic_input_is_rejected(self):
+    """Rejects derived symbolic shapes that evaluate to zero at runtime."""
+
+    def fn(x, w):
+      y = x[3:]
+      return (y.to(w.dtype) @ w).sum()
+
+    device = torch.accelerator.current_accelerator()
+    with torch.fx.experimental._config.patch(backed_size_oblivious=True):  # pylint: disable=protected-access
+      for dtype in (torch.int64, torch.float32):
+        w = torch.ones(
+            (4, 2), device=device, dtype=torch.float32, requires_grad=True
+        )
+        x5 = torch.ones((5, 4), device=device, dtype=dtype)
+        torch._dynamo.mark_dynamic(x5, 0, min=3, max=8)
+        compiled = torch.compile(fn, backend="tpu", fullgraph=True)
+
+        # Compile forward and backward at s0=5 where saved activation y is (2, 4).
+        compiled(x5, w).backward()
+
+        # At s0=3 (within [3, 8]), the saved activation (y or y.T) enters the
+        # compiled backward executable with a zero-sized runtime dimension.
+        w.grad = None
+        x3 = torch.ones((3, 4), device=device, dtype=dtype)
+        loss3 = compiled(x3, w)
+        with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Python backend error.
+            NotImplementedError,
+            r"Zero-element dynamic input tensor.*shape \[(?:0, 4|4,"
+            r" 0)\].*dynamic=False",
+        ):
+          loss3.backward()
 
   def test_dynamic_compiler_options(self):
     def simple(x):
