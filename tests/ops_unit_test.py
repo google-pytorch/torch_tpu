@@ -14163,6 +14163,26 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     self.assert_close_tpu_vs_cpu(compute_int32_fibonacci)
     self.assert_close_tpu_vs_cpu(compute_int64)
 
+  @parameterized.parameters(torch.int8, torch.int16, torch.int32, torch.int64)
+  def test_lcm_int_min_gcd_sign(self, dtype: torch.dtype):
+    """Tests LCM when the shared GCD has a negative remainder at INT_MIN."""
+    int_min = torch.iinfo(dtype).min
+
+    def compute(device):
+      a = torch.tensor(
+          [int_min, int_min, int_min, 6, 96, 0, int_min],
+          dtype=dtype,
+          device=device,
+      )
+      b = torch.tensor(
+          [6, 32, 96, int_min, int_min, int_min, int_min],
+          dtype=dtype,
+          device=device,
+      )
+      return torch.lcm(a, b)
+
+    self.assert_close_tpu_vs_cpu(compute)
+
   def test_lcm_promotion_out_cast_and_shapes(self):
     """Tests mixed-dtype promotion, out casting, resizing, 0-D, and 0-element tensors."""
 
