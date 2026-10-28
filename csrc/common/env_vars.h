@@ -143,6 +143,11 @@ inline constexpr char kTorchTpuInternalHandshakeTimeoutSEnvVar[] =
 // not expected. Default is "true".
 inline constexpr char kTorchTpuInternalMaterializeCollectiveTensorsEnvVar[] =
     "TORCH_TPU_INTERNAL_MATERIALIZE_COLLECTIVE_TENSORS";
+// If set to "1" or "true", runs the CSE pass in the TorchTPU MLIR optimization
+// pass pipeline. Default is "false" until b/574869112 is fixed: CSE regresses
+// vLLM prefill performance on TPU.
+inline constexpr char kTorchTpuInternalPassesEnableMlirCseEnvVar[] =
+    "TORCH_TPU_INTERNAL_PASSES_ENABLE_MLIR_CSE";
 // If set to "1", all traversals which contain exactly one distributed operation
 // (a "skinny collective") will be automatically pinned to the SparseCore.
 // This will not override manually specified stream pinning.
@@ -315,6 +320,8 @@ inline constexpr auto kEnvVarToStage =
          SymbolStage::InternalApi()},
         {kTorchTpuInternalHandshakeTimeoutSEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuInternalMaterializeCollectiveTensorsEnvVar,
+         SymbolStage::InternalApi()},
+        {kTorchTpuInternalPassesEnableMlirCseEnvVar,
          SymbolStage::InternalApi()},
         {kTorchTpuInternalSkinnyScOffloadEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuInternalSplitRngStateUpdate, SymbolStage::InternalApi()},

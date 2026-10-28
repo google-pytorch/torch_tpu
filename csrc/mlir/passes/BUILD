@@ -73,6 +73,7 @@ torch_tpu_cc_library(
 torch_tpu_cc_test(
     name = "lower_separable_gather_to_dot_test",
     srcs = ["lower_separable_gather_to_dot_test.cc"],
+    env = {"TORCH_TPU_INTERNAL_PASSES_ENABLE_MLIR_CSE": "1"},
     deps = [
         "//csrc/common:oss_test_main",
         "//csrc/mlir:pipeline",
