@@ -104,20 +104,6 @@ class ProfilerApiTest(seed_test_utils.RepeatableTest):
     found_files = os.listdir(trace_dir)
     self.assertIn('test_host_42.xplane.pb', found_files)
 
-  def test_profile_api_with_invalid_rank(self):
-    output_dir = self.create_tempdir('profile_api_with_invalid_rank').full_path
-    handler = profiler.xprof_trace_handler(
-        dir_name=output_dir, worker_rank='../../invalid'
-    )
-    with self.assertRaisesRegex(
-        ValueError, 'worker_rank cannot contain path separators'
-    ):
-      with profiler.profile(
-          activities=[profiler.ProfilerActivity.CPU],
-          on_trace_ready=handler,
-      ):
-        pass
-
   @mock.patch('socket.gethostname', return_value='test_host')
   def test_profile_api_without_rank(self, _):
     output_dir = self.create_tempdir('profile_api_without_rank').full_path
@@ -177,16 +163,6 @@ class ProfilerApiTest(seed_test_utils.RepeatableTest):
             f' {found_files}'
         ),
     )
-
-  def test_profile_api_gpu_unsupported(self):
-    output_dir = self.create_tempdir('profile_api_gpu_unsupported').full_path
-    handler = profiler.xprof_trace_handler(dir_name=output_dir)
-    with self.assertRaisesRegex(ValueError, 'GPU profiling is not supported.'):
-      with profiler.profile(
-          activities=[profiler.ProfilerActivity.GPU],
-          on_trace_ready=handler,
-      ):
-        pass
 
   def test_profiler_options_tpu_only(self):
     options = _api._get_profile_options([profiler.ProfilerActivity.TPU])

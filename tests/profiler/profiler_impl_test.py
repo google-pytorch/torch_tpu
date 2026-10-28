@@ -45,50 +45,6 @@ class ProfilerInternalTest(seed_test_utils.RepeatableTest):
       if server is not None:
         profiler_impl.stop_server()
 
-  def test_double_start_server_fails(self):
-    """Tests that starting the server twice fails."""
-    server = None
-    port1 = portpicker.pick_unused_port()
-    try:
-      server = profiler_impl.start_server(port1)
-      self.assertIsNotNone(server)
-      with self.assertRaises(ValueError):
-        # Try to start on the same port - should fail inside start_server
-        profiler_impl.start_server(port1)
-    finally:
-      if server is not None:
-        profiler_impl.stop_server()
-
-  def test_double_start_server_diff_ports_fails(self):
-    """Tests that starting the server twice fails."""
-    server = None
-    port1 = portpicker.pick_unused_port()
-    port2 = portpicker.pick_unused_port()
-    try:
-      server = profiler_impl.start_server(port1)
-      self.assertIsNotNone(server)
-      with self.assertRaises(ValueError):
-        # Try to start on the different ports
-        profiler_impl.start_server(port2)
-    finally:
-      if server is not None:
-        profiler_impl.stop_server()
-
-  def test_double_start_trace_fails(self):
-    tmpdir = self.create_tempdir('test_double_start_trace_fails').full_path
-    try:
-      profiler_impl.start_trace(tmpdir)
-      with self.assertRaises(RuntimeError):
-        profiler_impl.start_trace(tmpdir)
-    finally:
-      # Ensure stop_trace is called if start_trace succeeded the first time
-      if profiler_impl._profile_state.profile_session is not None:
-        profiler_impl.stop_trace()
-
-  def test_stop_trace_without_start_fails(self):
-    with self.assertRaises(RuntimeError):
-      profiler_impl.stop_trace()
-
   def test_start_stop_trace(self):
     """Tests the start_trace and stop_trace functions."""
     output_dir = self.create_tempdir('start_stop_trace').full_path

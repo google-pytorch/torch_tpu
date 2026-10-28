@@ -59,8 +59,8 @@ csrc/internal/dynamism/dynamism.cc: {infeasible: 0, remaining: 0, total: 1}
 csrc/internal/dynamism/dynamism_ops.cc: {infeasible: 0, remaining: 9, total: 10}
 csrc/internal/dynamism/dynamism_py.cc: {infeasible: 0, remaining: 2, total: 2}
 csrc/internal/mosaic/kiln/core/kernel.cc: {infeasible: 0, remaining: 8, total: 8}
-csrc/internal/profiler/profiler_api.cc: {infeasible: 0, remaining: 5, total: 5}
-csrc/internal/profiler/tpu_profiler_plugin.cc: {infeasible: 0, remaining: 6, total: 6}
+csrc/internal/profiler/profiler_api.cc: {infeasible: 0, remaining: 1, total: 5}
+csrc/internal/profiler/tpu_profiler_plugin.cc: {infeasible: 0, remaining: 5, total: 6}
 csrc/internal/sync/sync.cc: {infeasible: 0, remaining: 2, total: 2}
 csrc/internal/sync/sync_py.cc: {infeasible: 0, remaining: 0, total: 2}
 csrc/internal/testing.cc: {infeasible: 0, remaining: 0, total: 3}

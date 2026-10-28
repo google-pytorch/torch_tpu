@@ -23,6 +23,7 @@ from typing import Any, TypeAlias
 from unittest import mock
 from absl.testing import absltest
 from absl.testing import parameterized
+import portpicker
 import torch
 import torch.distributed as dist
 from torch.fx.experimental.proxy_tensor import make_fx
@@ -36,6 +37,7 @@ from torch_tpu._internal import env
 from torch_tpu._internal import env_utils
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import pallas
+from torch_tpu._internal import profiler
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import flex_attention as tpu_flex_attention
 from torch_tpu._internal.compile import tpu_torch_compile
@@ -43,6 +45,9 @@ from torch_tpu._internal.compile.compiler import StaticCompiler
 from torch_tpu._internal.distributed import distributed as internal_distributed
 from torch_tpu._internal.export import export as torch_tpu_export
 from torch_tpu._internal.pallas import tpu_torch_pallas
+from torch_tpu._internal.profiler import _impl as profiler_impl
+from torch_tpu._internal.profiler import _profiler_backend as profiler_backend
+from torch_tpu._internal.profiler.profiler_config import TpuProfilerConfig
 from torch_tpu._internal.sync import sync
 from torch_tpu._internal.utils import hardware
 from torch_tpu._internal.utils import test_utils as utils
@@ -5088,6 +5093,252 @@ module {
         tpu="""nll_loss_nd(): expected reduction to be one of ['none', 'mean', 'sum'], got 3""",
     ):
       torch.ops.aten.nll_loss_nd(t, target, None, 3, -100)
+
+  @et.why_tpu_only("TPU profiler API error validation.")
+  def test_profile_api_with_invalid_rank(self):
+    output_dir = self.create_tempdir("profile_api_with_invalid_rank").full_path
+    handler = profiler.xprof_trace_handler(
+        dir_name=output_dir, worker_rank="../../invalid"
+    )
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile(
+            r".*worker_rank cannot contain path separators.*", re.DOTALL
+        ),
+    ):
+      with profiler.profile(
+          activities=[profiler.ProfilerActivity.CPU],
+          on_trace_ready=handler,
+      ):
+        pass
+
+  @et.why_tpu_only("TPU profiler API error validation.")
+  def test_profile_api_gpu_unsupported(self):
+    output_dir = self.create_tempdir("profile_api_gpu_unsupported").full_path
+    handler = profiler.xprof_trace_handler(dir_name=output_dir)
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile(r".*GPU profiling is not supported\..*", re.DOTALL),
+    ):
+      with profiler.profile(
+          activities=[profiler.ProfilerActivity.GPU],
+          on_trace_ready=handler,
+      ):
+        pass
+
+  @et.why_tpu_only("TPU profiler backend C++ API error validation.")
+  def test_profiler_backend_double_start_server_fails(self):
+    """Calling start_profiler_server() twice should fail."""
+    port = portpicker.pick_unused_port()
+    profiler_backend.start_profiler_server(port)
+    try:
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=re.compile(r".*server has already been started.*", re.DOTALL),
+      ):
+        profiler_backend.start_profiler_server(port)
+    finally:
+      profiler_backend.stop_profiler_server()
+
+  @et.why_tpu_only("TPU profiler backend C++ API error validation.")
+  def test_profiler_backend_double_start_trace_fails(self):
+    """Calling start_trace() twice should fail."""
+    tmpdir = self.create_tempdir("backend_double_start_trace").full_path
+    profiler_backend.start_trace(tmpdir)
+    try:
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=re.compile(r".*session has already been started.*", re.DOTALL),
+      ):
+        profiler_backend.start_trace(tmpdir)
+    finally:
+      profiler_backend.stop_trace(os.path.join(tmpdir, "trace.pb"))
+
+  @et.why_tpu_only("TPU profiler backend C++ API error validation.")
+  def test_profiler_backend_stop_server_without_start_fails(self):
+    """Calling stop_profiler_server() without start_profiler_server() should fail."""
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(r".*server has not been started.*", re.DOTALL),
+    ):
+      profiler_backend.stop_profiler_server()
+
+  @et.why_tpu_only("TPU profiler backend C++ API error validation.")
+  def test_profiler_backend_stop_trace_without_start_fails(self):
+    """Calling stop_trace() without start_trace() should fail."""
+    tmpdir = self.create_tempdir("backend_stop_without_start").full_path
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(r".*session has not been started.*", re.DOTALL),
+    ):
+      profiler_backend.stop_trace(os.path.join(tmpdir, "trace.pb"))
+
+  @et.why_tpu_only("TPU profiler backend C++ API error validation.")
+  def test_profiler_backend_stop_server_twice_fails(self):
+    """Calling stop_profiler_server() twice should fail."""
+    port = portpicker.pick_unused_port()
+    profiler_backend.start_profiler_server(port)
+    profiler_backend.stop_profiler_server()
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(r".*server has not been started.*", re.DOTALL),
+    ):
+      profiler_backend.stop_profiler_server()
+
+  @et.why_tpu_only("TPU profiler backend C++ API error validation.")
+  def test_profiler_backend_stop_trace_twice_fails(self):
+    """Calling stop_trace() twice should fail."""
+    tmpdir = self.create_tempdir("backend_stop_trace_twice").full_path
+    profiler_backend.start_trace(tmpdir)
+    profiler_backend.stop_trace(os.path.join(tmpdir, "trace.pb"))
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(r".*session has not been started.*", re.DOTALL),
+    ):
+      profiler_backend.stop_trace(os.path.join(tmpdir, "trace.pb"))
+
+  @et.why_tpu_only("TPU profiler backend C++ API error validation.")
+  def test_profiler_backend_retry_start_after_stop_failure(self):
+    """Calling stop_trace() failure should still allow a subsequent start."""
+    tmpdir = self.create_tempdir("backend_retry_start").full_path
+    profiler_backend.start_trace(tmpdir)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(r".*failed to create file.*", re.DOTALL),
+    ):
+      profiler_backend.stop_trace(tmpdir)
+
+    profiler_backend.start_trace(tmpdir)
+    profiler_backend.stop_trace(os.path.join(tmpdir, "trace.pb"))
+
+  @et.why_tpu_only("TPU profiler internal _impl error validation.")
+  def test_profiler_impl_double_start_server_fails(self):
+    """Tests that starting the server twice on same port fails."""
+    server = None
+    port1 = portpicker.pick_unused_port()
+    try:
+      server = profiler_impl.start_server(port1)
+      self.assertIsNotNone(server)
+      with et.assert_raises_message(
+          ValueError,
+          tpu=re.compile(r".*", re.DOTALL),
+      ):
+        profiler_impl.start_server(port1)
+    finally:
+      if server is not None:
+        profiler_impl.stop_server()
+
+  @et.why_tpu_only("TPU profiler internal _impl error validation.")
+  def test_profiler_impl_double_start_server_diff_ports_fails(self):
+    """Tests that starting the server twice on different ports fails."""
+    server = None
+    port1 = portpicker.pick_unused_port()
+    port2 = portpicker.pick_unused_port()
+    try:
+      server = profiler_impl.start_server(port1)
+      self.assertIsNotNone(server)
+      with et.assert_raises_message(
+          ValueError,
+          tpu=re.compile(r".*", re.DOTALL),
+      ):
+        profiler_impl.start_server(port2)
+    finally:
+      if server is not None:
+        profiler_impl.stop_server()
+
+  @et.why_tpu_only("TPU profiler internal _impl error validation.")
+  def test_profiler_impl_double_start_trace_fails(self):
+    tmpdir = self.create_tempdir("impl_double_start_trace").full_path
+    try:
+      profiler_impl.start_trace(tmpdir)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=re.compile(r".*", re.DOTALL),
+      ):
+        profiler_impl.start_trace(tmpdir)
+    finally:
+      if profiler_impl._profile_state.profile_session is not None:
+        profiler_impl.stop_trace()
+
+  @et.why_tpu_only("TPU profiler internal _impl error validation.")
+  def test_profiler_impl_stop_trace_without_start_fails(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(r".*", re.DOTALL),
+    ):
+      profiler_impl.stop_trace()
+
+  @et.why_tpu_only("TPU profiler integration error validation.")
+  def test_invalid_profiler_config(self):
+    """Tests that invalid profiler configuration raises a Python exception."""
+    device = torch.device("tpu")
+    output_dir = self.create_tempdir("invalid_config").full_path
+
+    bad_config = torch.profiler._ExperimentalConfig(
+        custom_profiler_config="invalid_option_missing_colon"
+    )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r".*expected the config item to be in the 'key:value' format, got"
+            r" 'invalid_option_missing_colon'.*",
+            re.DOTALL,
+        ),
+    ):
+      with torch.profiler.profile(
+          activities=[
+              torch.profiler.ProfilerActivity.CPU,
+              torch.profiler.ProfilerActivity.TPU,  # type: ignore
+          ],
+          on_trace_ready=torch.profiler.tensorboard_trace_handler(output_dir),
+          experimental_config=bad_config,
+      ):
+        _ = torch.ones((16, 16)).to(device) @ torch.ones((16, 16)).to(device)
+
+  @parameterized.named_parameters(
+      ("colon", "invalid:key", "value"),
+      ("comma", "invalid,key", "value"),
+  )
+  @et.why_tpu_only("TPU profiler config validation.")
+  def test_tpu_profiler_config_invalid_characters_in_experimental_options(
+      self, key, value
+  ):
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile(
+            r".*Experimental option keys cannot contain ':' or ','.*", re.DOTALL
+        ),
+    ):
+      TpuProfilerConfig(experimental_options={key: value})
+
+  @parameterized.named_parameters(
+      ("zero", 0),
+      ("positive_int", 42),
+      ("negative_int", -1),
+      ("float", 3.5),
+      ("bool", True),
+      ("dict", {"rank": 1}),
+  )
+  @et.why_tpu_only("TPU profiler config validation.")
+  def test_tpu_profiler_config_worker_rank_invalid_type(self, invalid_rank):
+    with et.assert_raises_message(
+        TypeError,
+        tpu=re.compile(r".*", re.DOTALL),
+    ):
+      TpuProfilerConfig(worker_rank=invalid_rank)
+
+  @parameterized.named_parameters(
+      ("colon", "worker:1"),
+      ("comma", "worker,1"),
+  )
+  @et.why_tpu_only("TPU profiler config validation.")
+  def test_tpu_profiler_config_worker_rank_invalid_value(self, invalid_rank):
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile(r".*", re.DOTALL),
+    ):
+      TpuProfilerConfig(worker_rank=invalid_rank)
 
   @et.why_tpu_only(
       "torch.tpu.Event is a TorchTPU class; errors_test.py covers torch.Event."
