@@ -803,38 +803,31 @@ class ViewDecompositionTest(seed_test_utils.RepeatableTest):
         self.assertEqual(self.guards_after, self.guards_before)
 
 
-  def test_zero_dim_view_with_storage_offset_left_alone(self):
-    """Tests 0-d views with a non-zero storage offset do not crash.
-
-    Regression test: select(0, 1) on a 2-element tensor is a valid 0-d
-    view, but decomposition used to raise IndexError in
-    _delinearize_storage_offset, whose per-dimension offsets list is
-    empty for a 0-d base. Slice/permute ops cannot express taking the
-    element at the offset either, so the scalar is left alone instead:
-    decomposition returns None and the tensor is its own base.
-    """
+  def test_zero_dim_view_with_storage_offset_is_not_decomposed(self):
+    """Tests that 0-d views with a storage offset are passed through as is."""
     cases = [
         torch.tensor([0, 1]).select(0, 1),
         torch.arange(6.0).view(2, 3)[1, 2],
     ]
     for view in cases:
-      self.assertEqual(view.shape, ())
-      self.assertNotEqual(view.storage_offset(), 0)
-      self.assertIsNone(
-          view_decomposition.decompose_into_view_sequence(view)
-      )
-      base = view_decomposition.get_base_tensor(view)
-      self.assertIs(base, view)
-      utils.assert_close(base, view)
+      with self.subTest(view=view):
+        self.assertEqual(view.shape, ())
+        self.assertNotEqual(view.storage_offset(), 0)
+        self.assertIsNone(
+            view_decomposition.decompose_into_view_sequence(view)
+        )
+        self.assertIs(view_decomposition.get_base_tensor(view), view)
 
-    # The helper itself declines cleanly rather than raising IndexError.
+  def test_delinearize_storage_offset_zero_dims(self):
+    """Tests that a non-zero offset over zero dims raises, and 0 returns []."""
     with self.assertRaises(NotImplementedError):  # ASSERT_RAISES_OK=Unit test.
       view_decomposition._delinearize_storage_offset(1, [])
     self.assertEqual(
         view_decomposition._delinearize_storage_offset(0, []), []
     )
 
-    # A 0-d tensor at offset 0 goes through the contiguous path as before.
+  def test_zero_dim_tensor_without_offset_is_contiguous(self):
+    """Tests that a 0-d tensor at offset 0 goes through the contiguous path."""
     scalar = torch.arange(3.0)[0]
     self.assertIsNone(
         view_decomposition.decompose_into_view_sequence(scalar)

@@ -266,11 +266,7 @@ def _delinearize_storage_offset(
     return [0] * num_dims
 
   if num_dims == 0:
-    # A 0-d base has no dimension the offset could be distributed over,
-    # and the slice/permute view vocabulary cannot express taking the
-    # single element at a non-zero storage offset either. Decline with
-    # the module's usual unsupported-layout signal instead of indexing
-    # into the empty offsets list below.
+    # A non-zero offset can't be distributed over zero dimensions.
     raise NotImplementedError(
         "Unsupported view decomposition: cannot delinearize storage"
         f" offset {_fmt_sym(storage_offset)} over a 0-d base."
@@ -699,7 +695,8 @@ def decompose_into_view_sequence(
   if _is_contiguous_tensor(val):
     return None
 
-  if len(val.shape) == 0:
+  if val.ndim == 0:
+    # TODO: lizliang - Decompose 0-d views once `select` is supported.
     # A scalar carries no layout to decompose, and slice/permute ops
     # cannot express selecting the element at a non-zero storage offset
     # from a 1-d base (a slice of it would have shape (1,), not ()).
