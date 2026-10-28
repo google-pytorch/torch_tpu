@@ -1,6 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
-# Licensed under the BSD-style license in the accompanying FLEX_SHARD_LICENSE.
+# Licensed under the BSD-style license in FlexShard's upstream LICENSE.
+# See the pinned FlexShard dependency in README.md.
 """Experimental graph executor for FlexShard storage, not the CUDA runtime.
 
 Only 1D fully-sharded or replicated data parallelism is supported. Collectives
