@@ -13950,32 +13950,38 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     self.assert_close_tpu_vs_cpu(compute)
 
   def test_gcd_fibonacci_and_int_min(self):
-    """Tests worst-case Fibonacci pairs and INT_MIN cases that match PyTorch."""
+    """Tests Fibonacci pairs in both orders and INT_MIN against CPU."""
 
     def compute_int8(device):
       a = torch.tensor(
-          [89, -128, -128, -128, 0], dtype=torch.int8, device=device
+          [89, 55, -128, -128, -128, 0], dtype=torch.int8, device=device
       )
-      b = torch.tensor([55, 0, -128, 1, -128], dtype=torch.int8, device=device)
+      b = torch.tensor(
+          [55, 89, 0, -128, 1, -128], dtype=torch.int8, device=device
+      )
       return torch.gcd(a, b)
 
     def compute_int16(device):
       a = torch.tensor(
-          [28657, -32768, -32768, -32768, 0], dtype=torch.int16, device=device
+          [28657, 17711, -32768, -32768, -32768, 0],
+          dtype=torch.int16,
+          device=device,
       )
       b = torch.tensor(
-          [17711, 0, -32768, 1, -32768], dtype=torch.int16, device=device
+          [17711, 28657, 0, -32768, 1, -32768],
+          dtype=torch.int16,
+          device=device,
       )
       return torch.gcd(a, b)
 
     def compute_int32(device):
       a = torch.tensor(
-          [1836311903, -2147483648, -2147483648, -2147483648, 0],
+          [1836311903, 1134903170, -2147483648, -2147483648, -2147483648, 0],
           dtype=torch.int32,
           device=device,
       )
       b = torch.tensor(
-          [1134903170, 0, -2147483648, 1, -2147483648],
+          [1134903170, 1836311903, 0, -2147483648, 1, -2147483648],
           dtype=torch.int32,
           device=device,
       )
@@ -13983,12 +13989,26 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     def compute_int64(device):
       a = torch.tensor(
-          [7540113804746346429, -(2**63), -(2**63), -(2**63), 0],
+          [
+              7540113804746346429,
+              4660046610375530309,
+              -(2**63),
+              -(2**63),
+              -(2**63),
+              0,
+          ],
           dtype=torch.int64,
           device=device,
       )
       b = torch.tensor(
-          [4660046610375530309, 0, -(2**63), 1, -(2**63)],
+          [
+              4660046610375530309,
+              7540113804746346429,
+              0,
+              -(2**63),
+              1,
+              -(2**63),
+          ],
           dtype=torch.int64,
           device=device,
       )
@@ -14116,8 +14136,13 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     def compute(device):
       if dtype == torch.uint8:
-        a = torch.tensor([0, 0, 12, 12, 15, 7], dtype=dtype, device=device)
-        b = torch.tensor([0, 18, 0, 18, 20, 13], dtype=dtype, device=device)
+        # High-bit inputs check unsigned promotion and wrapped output values.
+        a = torch.tensor(
+            [0, 0, 12, 12, 15, 7, 128, 200, 255], dtype=dtype, device=device
+        )
+        b = torch.tensor(
+            [0, 18, 0, 18, 20, 13, 64, 150, 85], dtype=dtype, device=device
+        )
       else:
         a = torch.tensor(
             [0, 0, 12, -12, 12, -12, 15, -7], dtype=dtype, device=device
@@ -14130,7 +14155,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     self.assert_close_tpu_vs_cpu(compute)
 
   def test_lcm_narrow_overflow_and_int_min(self):
-    """Tests narrow integer overflow, INT_MIN, and large coprime Fibonacci pairs."""
+    """Tests overflow, INT_MIN, and large coprime Fibonacci pairs."""
 
     def compute_int8(device):
       a = torch.tensor([-20, -128, -128, 100], dtype=torch.int8, device=device)
@@ -14143,18 +14168,30 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       return torch.lcm(a, b)
 
     def compute_int32_fibonacci(device):
+      # The final three LCMs fit in int32 even though a * b overflows.
       a = torch.tensor(
-          [1836311903, -2147483648, 46340], dtype=torch.int32, device=device
+          [1836311903, -2147483648, 46340, 2**30, 2**30, -(2**30)],
+          dtype=torch.int32,
+          device=device,
       )
-      b = torch.tensor([1134903170, 1, 46341], dtype=torch.int32, device=device)
+      b = torch.tensor(
+          [1134903170, 1, 46341, 2**30, 2**29, 2**29],
+          dtype=torch.int32,
+          device=device,
+      )
       return torch.lcm(a, b)
 
     def compute_int64(device):
+      # The final three LCMs fit in int64 even though a * b overflows.
       a = torch.tensor(
-          [1836311903, -(2**63), 1000000007], dtype=torch.int64, device=device
+          [1836311903, -(2**63), 1000000007, 2**62, 2**62, -(2**62)],
+          dtype=torch.int64,
+          device=device,
       )
       b = torch.tensor(
-          [1134903170, 1, 1000000009], dtype=torch.int64, device=device
+          [1134903170, 1, 1000000009, 2**62, 2**61, 2**61],
+          dtype=torch.int64,
+          device=device,
       )
       return torch.lcm(a, b)
 
