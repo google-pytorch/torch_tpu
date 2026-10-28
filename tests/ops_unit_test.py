@@ -13999,21 +13999,41 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     self.assert_close_tpu_vs_cpu(compute_int32)
     self.assert_close_tpu_vs_cpu(compute_int64)
 
-  def test_gcd_int_min_nonnegative_result(self):
-    """Tests that gcd results involving INT_MIN are nonnegative on TPU.
+  @parameterized.parameters(torch.int8, torch.int16, torch.int32, torch.int64)
+  def test_gcd_int_min_parity(self, dtype: torch.dtype):
+    """Tests signed remainders and overflow at INT_MIN against CPU."""
+    int_min = torch.iinfo(dtype).min
+    int_max = torch.iinfo(dtype).max
 
-    Unlike CPU and GPU, which return e.g. gcd(INT_MIN, 6) == -2, TPU makes every
-    remainder nonnegative and returns 2.
-    """
-    for dtype in (torch.int8, torch.int16, torch.int32, torch.int64):
-      with self.subTest(dtype=dtype):
-        int_min = torch.iinfo(dtype).min
-        a = torch.tensor([int_min, int_min, 6], dtype=dtype, device="tpu")
-        b = torch.tensor([6, 96, int_min], dtype=dtype, device="tpu")
-        self.assertEqual(torch.gcd(a, b).cpu().tolist(), [2, 32, 2])
+    def compute(device):
+      # Broadcasting tests every ordered pair, including INT_MIN with zero,
+      # itself, divisors, non-divisors, and the other integer boundaries.
+      values = torch.tensor(
+          [
+              int_min,
+              int_min + 1,
+              -96,
+              -32,
+              -6,
+              -1,
+              0,
+              1,
+              6,
+              32,
+              96,
+              int_max - 1,
+              int_max,
+          ],
+          dtype=dtype,
+          device=device,
+      )
+      return torch.gcd(values[:, None], values[None, :])
+
+    # Integer comparisons use exact equality with the default tolerances.
+    self.assert_close_tpu_vs_cpu(compute)
 
   def test_gcd_promotion_out_cast_and_shapes(self):
-    """Tests mixed-dtype promotion, out casting, resizing, 0-D, and 0-element tensors."""
+    """Tests promotion, out casting, resizing, scalar/empty shapes, and views."""
 
     def compute(device):
       a_i16 = torch.tensor(
@@ -14046,6 +14066,14 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       empty_b = torch.empty((1, 0, 3), dtype=torch.int32, device=device)
       res_empty = torch.gcd(empty_a, empty_b)
 
+      a_transposed = a_i16.t()
+      b_sliced = torch.tensor(
+          [18, 0, 24, 0], dtype=torch.int32, device=device
+      )[::2]
+      self.assertFalse(a_transposed.is_contiguous())
+      self.assertFalse(b_sliced.is_contiguous())
+      res_noncontiguous = torch.gcd(a_transposed, b_sliced)
+
       return (
           res_promoted,
           res_i8_u8_promo,
@@ -14055,6 +14083,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
           out_resized,
           res_scalar,
           res_empty,
+          res_noncontiguous,
       )
 
     self.assert_close_tpu_vs_cpu(compute)

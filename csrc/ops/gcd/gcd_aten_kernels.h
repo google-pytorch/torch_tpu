@@ -27,10 +27,9 @@ namespace torch_tpu {
 // share the same shape and an int8, uint8, int16, int32 or int64 element type.
 // The result has the element type of the inputs.
 //
-// Unlike `torch.gcd` on CPU and GPU, every remainder is made nonnegative, so a
-// result that depends on the most negative value of the type is positive, e.g.
-// `gcd(INT32_MIN, 6)` is 2 rather than -2. `gcd(INT32_MIN, 0)` is still
-// `INT32_MIN`, matching PyTorch.
+// Absolute values are taken in the input element type and remainders retain
+// their sign, matching PyTorch's behavior when abs(INT_MIN) overflows. For
+// example, gcd(INT32_MIN, 6) is -2 and gcd(INT32_MIN, 0) is INT32_MIN.
 absl::StatusOr<mlir::MlirOp> BuildGcdShlo(mlir::MlirOp a, mlir::MlirOp b);
 
 at::Tensor& AtenGcdOut(const at::Tensor& self, const at::Tensor& other,
