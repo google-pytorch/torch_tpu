@@ -123,8 +123,15 @@ reset_torch_config = rule(
 # matched specifically rather than the whole repo. Keep in sync with the torch
 # pip hubs declared in MODULE.bazel.
 _TORCH_DEP_PREFIXES = (
+    "@pypi//torch:",
+    "@pypi_cuda//torch:",
     "@pypi_torch_",
     "@local_torch//",
+)
+
+_TORCH_EXACT_DEPS = (
+    "@pypi//torch",
+    "@pypi_cuda//torch",
 )
 
 def is_backend_dep(dep):
@@ -144,6 +151,8 @@ def is_backend_dep(dep):
       True if the dep is a version-independent backend dep, False otherwise.
     """
     if type(dep) != "string" or not dep.startswith("@"):
+        return False
+    if dep in _TORCH_EXACT_DEPS:
         return False
     for torch_prefix in _TORCH_DEP_PREFIXES:
         if dep.startswith(torch_prefix):

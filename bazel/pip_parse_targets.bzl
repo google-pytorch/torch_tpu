@@ -14,7 +14,6 @@
 
 """Macro phase bzl code for pip_parse customizations."""
 
-load("@rules_cc//cc:cc_import.bzl", "cc_import")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 
 def define_extra_torch_targets():
@@ -24,12 +23,21 @@ def define_extra_torch_targets():
         name = "torch_headers",
         hdrs = native.glob(
             include = [
-                "site-packages/torch/include/**/*.h",
-                "site-packages/torch/include/**/*.hpp",
-                "site-packages/torch/include/*.h",
-                "site-packages/torch/include/*.hpp",
+                "site-packages/torch/**/*.h",
+                "site-packages/torch/**/*.hpp",
+                "site-packages/torch/**/*.hh",
+                "site-packages/torch/**/*.hxx",
+                "site-packages/torch/**/*.cuh",
+                "site-packages/torch/**/*.inc",
+                "site-packages/torch/**/*.inl",
+                "site-packages/torch/**/*.tcc",
             ],
-            exclude = [],
+            # Exclude PyTorch's bundled google/protobuf headers from declared
+            # inputs so they do not shadow @com_google_protobuf in
+            # sandboxed/remote builds.
+            exclude = [
+                "site-packages/torch/include/google/protobuf/**",
+            ],
         ),
         # NOTE: There's a Bazel bug with strip_include_prefix where it
         # incorrectly thinks files provided by another target using
@@ -39,10 +47,9 @@ def define_extra_torch_targets():
         includes = [
             "site-packages/torch/include",
             "site-packages/torch/include/torch/csrc/api/include",
+            "site-packages/torch/include/kineto",
         ],
-        deps = [
-            "@com_google_protobuf//:protobuf",
-        ],
+        visibility = ["//visibility:public"],
     )
 
     # This is a subset of all the `.so` files bundled into the PyTorch wheel.
@@ -55,9 +62,13 @@ def define_extra_torch_targets():
     ]
 
     for lib_name in standard_libs:
-        cc_import(
+        cc_library(
+            # ALLOW_CC_TARGETS=Defines external PyTorch wheel targets in OSS Bazel build
             name = lib_name,
-            shared_library = "site-packages/torch/lib/{}.so".format(lib_name),
+            srcs = native.glob([
+                "site-packages/torch/lib/{}.so".format(lib_name),
+            ]),
+            visibility = ["//visibility:public"],
         )
 
     cc_library(
@@ -65,7 +76,6 @@ def define_extra_torch_targets():
         name = "libtorch",
         srcs = native.glob([
             "site-packages/torch/lib/libtorch.so",
-            "site-packages/torch/lib/libtorch.dylib",
         ]),
         deps = [
             ":libc10",
