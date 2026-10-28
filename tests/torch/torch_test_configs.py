@@ -20,9 +20,35 @@ https://github.com/pytorch/pytorch/blob/main/docs/source/accelerator/testing.md.
 
 from collections.abc import Mapping, Sequence
 from typing import Final
+import unittest
 
 import torch
 from torch.testing._internal.opinfo import core as opinfo_core
+
+
+def _xfail(
+    cls_name: str,
+    test_name: str,
+    *,
+    dtypes: Sequence[torch.dtype] | None = None,
+) -> opinfo_core.DecorateInfo:
+  """Marks TPU variants of `@ops` / `@modules` tests as expected failures."""
+  return opinfo_core.DecorateInfo(
+      unittest.expectedFailure, cls_name, test_name, dtypes=dtypes
+  )
+
+
+def _skip(
+    cls_name: str,
+    test_name: str,
+    *,
+    dtypes: Sequence[torch.dtype] | None = None,
+) -> opinfo_core.DecorateInfo:
+  """Skips TPU variants of `@ops` / `@modules` tests, e.g. crashing ones."""
+  return opinfo_core.DecorateInfo(
+      unittest.skip("Skipped on TPU"), cls_name, test_name, dtypes=dtypes
+  )
+
 
 # Decorators applied to OpInfo-based tests, i.e. tests parametrized by `@ops`,
 # for TPU.
@@ -40,6 +66,37 @@ from torch.testing._internal.opinfo import core as opinfo_core
 # Unlike `TEST_EXCLUSIONS`, which cannot tell apart the ops of an `@ops` test,
 # this targets individual ops and dtypes of a test method.
 OP_OVERRIDES: Final[
+    Mapping[str, Mapping[str, Sequence[opinfo_core.DecorateInfo]]]
+] = {
+    # go/keep-sorted start block=yes
+    "distributed/tensor/test_dtensor_ops": {
+        "grid_sampler_3d": [
+            _xfail("TestUnbackedDTensorOps", "test_unbacked_dtensor_op_db"),
+        ],
+        "nn.functional.linear_cross_entropy": [
+            _skip("TestCompiledDTensorOps", "test_compiled_dtensor_op_db"),
+        ],
+    },
+    "export/test_hop": {
+        "auto_functionalize.simple": [
+            _xfail("TestHOPDevice", "test_aot_export"),
+            _xfail("TestHOPDevice", "test_pre_dispatch_export"),
+            _xfail("TestHOPDevice", "test_retrace_export"),
+            _xfail("TestHOPDevice", "test_serialize_export"),
+        ],
+    },
+    # go/keep-sorted end
+}
+
+# Decorators applied to ModuleInfo-based tests, i.e. tests parametrized by
+# `@modules`, for TPU.
+#
+# Same as `OP_OVERRIDES`, but keyed by test module and then by
+# `ModuleInfo.name`, e.g. "nn.Linear". Upstream has no PrivateUse1 equivalent of
+# `op_overrides` for `@modules`, so the test runner appends these decorators to
+# the matching entries of `common_modules.module_db` before running the test
+# module.
+MODULE_OVERRIDES: Final[
     Mapping[str, Mapping[str, Sequence[opinfo_core.DecorateInfo]]]
 ] = {}
 
@@ -76,6 +133,11 @@ TEST_EXCLUSIONS: Final[
         "MicrobatchTestsDevices": [
             "test_split_block_mask",
         ],
+    },
+    "distributed/tensor/test_dtensor_ops": {
+        "TestLocalDTensorOps": "*",
+        "TestMultiThreadedDTensorOps": "*",
+        "TestSingleDimStrategies": "*",
     },
     "dynamo/test_debug_utils": {
         "TestInductorConfigOverrideIntegration": [
@@ -166,6 +228,25 @@ TEST_EXCLUSIONS: Final[
             "test_per_sample_grads_embeddingnet",
             "test_per_sample_grads_simple",
         ],
+    },
+    "inductor/test_flex_attention": {
+        "TestBlockMask": [
+            "test_backward_error_with_none_q_indices",
+            "test_block_mask_check_does_not_specialize_backed_dynamic_length",
+            "test_block_mask_vs_sequence_lengths",
+            "test_broadcasted_head_block_mask",
+            "test_compiling_create_block_mask_no_recompile",
+            "test_create_is_cuda_graphable",
+            "test_eager_tracing_correctness",
+            "test_flex_attention_poison_mod_bwd",
+            "test_flex_attention_poison_mod_fwd",
+            "test_flex_attention_poisoned_rel_logits",
+            "test_forward_pass_with_none_q_indices",
+            "test_upcast_appropriately",
+        ],
+        "TestFlexAttention": "*",
+        "TestLearnableBiases": "*",
+        "TestPagedAttention": "*",
     },
     "inductor/test_slice_scatter_chunking": {
         "TestSliceScatterChunking": [
@@ -355,6 +436,14 @@ TEST_EXCLUSIONS: Final[
         "TestBmmOuterProductDevice": [
             "test_non_current_device_outer_product",
         ],
+    },
+    "test_complex": {
+        "TestComplexTensor": {
+            "test_all": "*",
+            "test_dtype_inference": {"dtypes": [torch.float16]},
+            "test_eq": {"dtypes": [torch.complex128]},
+            "test_ne": {"dtypes": [torch.complex128]},
+        },
     },
     "test_custom_ops": {
         "TestCustomOpTesting": [
