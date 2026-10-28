@@ -66,3 +66,13 @@ def get_pallas_mesh(
   return pallas._get_pallas_mesh(  # pylint: disable=protected-access
       axis_names, mesh_shape=mesh_shape, process_group=process_group
   )
+
+
+# DO NOT SUBMIT: fake API to check how the OSS newest-deps presubmit reports
+# missing tt_apis.yaml entries.
+@annotations.experimental(
+    "torch.tpu.pallas.fake_api_for_ci_test is a DO-NOT-SUBMIT test API."
+)
+def fake_api_for_ci_test() -> int:
+  """Returns 42. DO NOT SUBMIT."""
+  return 42

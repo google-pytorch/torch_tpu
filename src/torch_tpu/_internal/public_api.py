@@ -292,6 +292,9 @@ _PUBLIC_MODULES: Mapping[str, ModuleSpec] = {
     "torch.tpu.pallas": ModuleSpec(
         exports={
             # go/keep-sorted start
+            "fake_api_for_ci_test": (
+                "torch_tpu._internal.pallas.mesh:fake_api_for_ci_test"
+            ),
             "get_pallas_mesh": (
                 "torch_tpu._internal.pallas.mesh:get_pallas_mesh"
             ),
