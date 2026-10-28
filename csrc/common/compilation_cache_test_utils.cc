@@ -19,12 +19,16 @@
 #include <memory>
 #include <utility>
 
+#include "absl/log/absl_check.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/shape.h"
+#include "csrc/common/unbounded_dynamic_kernel_registry.h"
 #include "xla/hlo/builder/xla_builder.h"
 #include "xla/hlo/builder/xla_computation.h"
 #include "xla/layout_util.h"
@@ -63,6 +67,25 @@ CreateDummyExecutable(xla::PjRtClient& client,
 
   TT_ASSIGN_OR_RETURN(xla::XlaComputation computation, builder.Build(p0));
   return client.CompileAndLoad(computation, std::move(*compile_options));
+}
+
+absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>>
+CreateFailingExecutable(xla::PjRtClient& client,
+                        UniqueCompileOptions compile_options) {
+  return TT_ERROR(  // ERROR_COV_INFEASIBLE=test utility function
+             error::kInternal)
+         << "Kernel build failed.";
+}
+
+void RegisterDummyKernel(const CompilationCacheKey& key,
+                         UnboundedDynamicKernel::BuildFn build) {
+  const absl::Status status =
+      UnboundedDynamicKernelRegistry::GetInstance().RegisterKernel(
+          UnboundedDynamicKernel{.build = build,
+                                 .metadata = MakeDummyDynamicMetadata(),
+                                 .key = key});
+  ABSL_CHECK(status.ok() || absl::IsAlreadyExists(status))  // CRASH_OK
+      << status;
 }
 
 }  // namespace torch_tpu

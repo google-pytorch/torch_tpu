@@ -95,6 +95,8 @@ GPU_SM100: Final[str] = "gpu_sm100"
 _DEFAULT_GPU_GOLDEN_ARCH: Final[str] = GPU_SM100
 # Test method attribute set by @record_gpu_goldens_on.
 _GPU_GOLDEN_ARCH_ATTR: Final[str] = "gpu_golden_arch"
+# Test method attribute set by @test_unbounded_dynamic.
+_UNBOUNDED_DYNAMIC_ATTR: Final[str] = "unbounded_dynamic_spec"
 
 _GPU_GOLDEN_HOPPER_SUFFIX: Final[str] = "_hopper"
 
@@ -171,6 +173,16 @@ _USE_COMPILED: Final[flags.FlagHolder[bool]] = flags.DEFINE_bool(
     "use_compiled",
     False,
     "Use compiled torch_tpu backend.",
+)
+
+_UNBOUNDED_DYNAMIC_TESTS_ONLY: Final[flags.FlagHolder[bool]] = (
+    flags.DEFINE_bool(
+        "unbounded_dynamic_tests_only",
+        False,
+        "Run only the tests decorated with @test_unbounded_dynamic, and check"
+        " that their matching subtests are served by an unbounded dynamic"
+        " kernel. Requires TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS=1.",
+    )
 )
 
 _IGNORE_ACCURACY_OVERRIDES: Final[flags.FlagHolder[bool]] = flags.DEFINE_bool(
@@ -3999,6 +4011,82 @@ def record_gpu_goldens_on(arch: str):
   return decorator
 
 
+@dataclasses.dataclass(frozen=True)
+class UnboundedDynamicSpec:
+  """The subtests of an op that must run on a registered unbounded dynamic kernel.
+
+  Attributes:
+    dtypes: The dtypes the kernel serves.
+    is_compatible: Returns whether the kernel serves the given op input tensor
+      (e.g. based on its rank and extents). If None, any input of a listed dtype
+      is served.
+    variants: The op variants the kernel serves.
+  """
+
+  dtypes: frozenset[torch.dtype]
+  is_compatible: Callable[[torch.Tensor], bool] | None
+  variants: frozenset[OpVariant]
+
+  def matches(
+      self, variant: OpVariant, dtype: torch.dtype, op_input: "OpInput"
+  ) -> bool:
+    """Returns whether the subtest must run on the unbounded dynamic kernel."""
+    if variant not in self.variants or dtype not in self.dtypes:
+      return False
+    if not isinstance(op_input.input_value, torch.Tensor):
+      return False
+    return self.is_compatible is None or bool(
+        self.is_compatible(op_input.input_value)
+    )
+
+
+def test_unbounded_dynamic(
+    *,
+    dtypes: Iterable[torch.dtype],
+    is_compatible: Callable[[torch.Tensor], bool] | None = None,
+    variants: Iterable[OpVariant] = (OpVariant.BASE,),
+):
+  """Decorator that checks the op's matching subtests use an unbounded kernel.
+
+  Only takes effect with --unbounded_dynamic_tests_only, which runs just the
+  decorated tests (see the ops_test_unbounded_dynamic target, which also sets
+  TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS=1). There, every subtest
+  whose variant, dtype and input match must be served by a kernel from the
+  `UnboundedDynamicKernelRegistry`, checked with the compilation cache's
+  `num_unbounded_dynamic_registry_hits` stat.
+
+  Example:
+
+    class TestOps(op_testing.OpInfoTestBase):
+
+      @op_testing.test_unbounded_dynamic(
+          dtypes=[torch.float32], is_compatible=lambda x: x.dim() == 2
+      )
+      def test_nonzero(self):
+        ...
+
+  Args:
+    dtypes: The dtypes the kernel serves.
+    is_compatible: Returns whether the kernel serves the given op input tensor.
+      If None, any input of a listed dtype is served.
+    variants: The op variants the kernel serves.
+
+  Returns:
+    A decorator that tags the test method and returns it unchanged.
+  """
+  spec = UnboundedDynamicSpec(
+      dtypes=frozenset(dtypes),
+      is_compatible=is_compatible,
+      variants=frozenset(variants),
+  )
+
+  def decorator(func):
+    setattr(func, _UNBOUNDED_DYNAMIC_ATTR, spec)
+    return func
+
+  return decorator
+
+
 def _dump_dtype_exclusions_mode() -> bool:
   """Returns true if the test is running in dump_dtype_exclusions mode."""
   return _TEST_MODE.value == TestMode.DUMP_DTYPE_EXCLUSIONS
@@ -5298,12 +5386,30 @@ class OpInfoTestBase(TorchTpuTestBase):
     super().setUp()
     # Each test records its goldens on one GPU: the one set by
     # @record_gpu_goldens_on, or the default GPU if untagged.
+    method = getattr(self, self._testMethodName, None)
     if _gen_gpu_golden_mode():
-      method = getattr(self, self._testMethodName, None)
       arch = getattr(method, _GPU_GOLDEN_ARCH_ATTR, _DEFAULT_GPU_GOLDEN_ARCH)
       if golden_target_gpu_arch() != arch:
         self.skipTest(
             f"GPU goldens for {self._testMethodName} are recorded on {arch}."
+        )
+    # The subtests that must run on an unbounded dynamic kernel, set by
+    # @test_unbounded_dynamic.
+    self._unbounded_dynamic_spec: UnboundedDynamicSpec | None = getattr(
+        method, _UNBOUNDED_DYNAMIC_ATTR, None
+    )
+    if _UNBOUNDED_DYNAMIC_TESTS_ONLY.value:
+      if self._unbounded_dynamic_spec is None:
+        self.skipTest(
+            f"{self._testMethodName} is not decorated with"
+            " @test_unbounded_dynamic."
+        )
+      if os.environ.get(
+          "TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS", ""
+      ).lower() not in ("1", "true"):
+        self.fail(
+            "--unbounded_dynamic_tests_only requires"
+            " TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS=1."
         )
 
   def _get_golden_input_output_pairs(
@@ -5907,6 +6013,19 @@ class OpInfoTestBase(TorchTpuTestBase):
     compiler_options = (
         {"xla_optimization_level": _OPT_LEVEL.value} if _OPT_LEVEL.value else {}
     )
+    spec = getattr(self, "_unbounded_dynamic_spec", None)
+    check_unbounded_dynamic = (
+        _UNBOUNDED_DYNAMIC_TESTS_ONLY.value
+        and spec is not None
+        and not run_op_kwargs.get("compute_grad", False)
+        and not run_op_kwargs.get("use_compiled", False)
+        and spec.matches(variant, dtype, golden_input)
+    )
+    hits_before = (
+        torch.tpu._get_cache_stats().num_unbounded_dynamic_registry_hits  # pylint: disable=protected-access
+        if check_unbounded_dynamic
+        else 0
+    )
     with compiler.custom_compiler_options(compiler_options):
       torch_tpu_result = self._run_op(
           op=op,
@@ -5916,6 +6035,13 @@ class OpInfoTestBase(TorchTpuTestBase):
           device=torch.device("tpu"),
           subtest_name=subtest_name,
           **run_op_kwargs,
+      )
+    if check_unbounded_dynamic and not isinstance(torch_tpu_result, Exception):
+      self.assertGreater(
+          torch.tpu._get_cache_stats().num_unbounded_dynamic_registry_hits,  # pylint: disable=protected-access
+          hits_before,
+          f"{subtest_name} was not served by an unbounded dynamic kernel, but"
+          " it matches @test_unbounded_dynamic.",
       )
     return torch_tpu_result, torch_tpu_printable_input
 
@@ -6164,6 +6290,21 @@ class OpInfoTestBase(TorchTpuTestBase):
 
     op_name = _op_name_for_logging(op, variant)
 
+    spec = getattr(self, "_unbounded_dynamic_spec", None)
+    if _UNBOUNDED_DYNAMIC_TESTS_ONLY.value and (
+        spec is None
+        or compute_grad
+        or use_compiled
+        or dtype not in spec.dtypes
+        or variant not in spec.variants
+    ):
+      print(
+          f"Skipping test for {op_name}() (variant={variant.value}) with dtype"
+          f" {dtype} as no unbounded dynamic kernel serves it.",
+          flush=True,
+      )
+      return
+
     print(
         f">>> Testing {op_name}() (variant={variant.value}) with dtype"
         f" {dtype} ...",
@@ -6209,6 +6350,19 @@ class OpInfoTestBase(TorchTpuTestBase):
             f"Skipping test sample for {op_name}() with dtype {dtype} on"
             " TorchTPU as filtered by the skip_if function.\n"
             f"{golden_input}",
+            flush=True,
+        )
+        continue
+
+      if (
+          _UNBOUNDED_DYNAMIC_TESTS_ONLY.value
+          and spec is not None
+          and not spec.matches(variant, dtype, golden_input)
+      ):
+        print(
+            f"Skipping test sample for {op_name}() with dtype {dtype} on"
+            " TorchTPU as it is not compatible with the unbounded dynamic"
+            f" kernel.\n{golden_input}",
             flush=True,
         )
         continue
