@@ -14815,32 +14815,38 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     self.assert_close_tpu_vs_cpu(compute)
 
   def test_gcd_fibonacci_and_int_min(self):
-    """Tests worst-case Fibonacci pairs and INT_MIN cases that match PyTorch."""
+    """Tests Fibonacci pairs in both orders and INT_MIN against CPU."""
 
     def compute_int8(device):
       a = torch.tensor(
-          [89, -128, -128, -128, 0], dtype=torch.int8, device=device
+          [89, 55, -128, -128, -128, 0], dtype=torch.int8, device=device
       )
-      b = torch.tensor([55, 0, -128, 1, -128], dtype=torch.int8, device=device)
+      b = torch.tensor(
+          [55, 89, 0, -128, 1, -128], dtype=torch.int8, device=device
+      )
       return torch.gcd(a, b)
 
     def compute_int16(device):
       a = torch.tensor(
-          [28657, -32768, -32768, -32768, 0], dtype=torch.int16, device=device
+          [28657, 17711, -32768, -32768, -32768, 0],
+          dtype=torch.int16,
+          device=device,
       )
       b = torch.tensor(
-          [17711, 0, -32768, 1, -32768], dtype=torch.int16, device=device
+          [17711, 28657, 0, -32768, 1, -32768],
+          dtype=torch.int16,
+          device=device,
       )
       return torch.gcd(a, b)
 
     def compute_int32(device):
       a = torch.tensor(
-          [1836311903, -2147483648, -2147483648, -2147483648, 0],
+          [1836311903, 1134903170, -2147483648, -2147483648, -2147483648, 0],
           dtype=torch.int32,
           device=device,
       )
       b = torch.tensor(
-          [1134903170, 0, -2147483648, 1, -2147483648],
+          [1134903170, 1836311903, 0, -2147483648, 1, -2147483648],
           dtype=torch.int32,
           device=device,
       )
@@ -14848,12 +14854,26 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     def compute_int64(device):
       a = torch.tensor(
-          [7540113804746346429, -(2**63), -(2**63), -(2**63), 0],
+          [
+              7540113804746346429,
+              4660046610375530309,
+              -(2**63),
+              -(2**63),
+              -(2**63),
+              0,
+          ],
           dtype=torch.int64,
           device=device,
       )
       b = torch.tensor(
-          [4660046610375530309, 0, -(2**63), 1, -(2**63)],
+          [
+              4660046610375530309,
+              7540113804746346429,
+              0,
+              -(2**63),
+              1,
+              -(2**63),
+          ],
           dtype=torch.int64,
           device=device,
       )
