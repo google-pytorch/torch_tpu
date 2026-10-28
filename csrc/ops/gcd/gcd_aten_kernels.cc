@@ -49,22 +49,21 @@ constexpr int32_t kMaxGcdIterationsI32 = 47;
 constexpr int32_t kMaxGcdIterationsI64 = 95;
 
 // Runs the Euclidean algorithm on `a` and `b`, which must share the same shape
-// and signed 32-bit or 64-bit integer element type.
+// and signed 32-bit or 64-bit integer element type. Callers must take absolute
+// values in the original element type before promoting narrow signed inputs.
 mlir::MlirOp BuildEuclideanGcdShlo(mlir::MlirOp a, mlir::MlirOp b,
                                    const int32_t max_iters) {
   mlir::MlirBuilder& builder = a.getBuilder();
-  auto a_abs = mlir::stablehlo::Abs(a);
-  auto b_abs = mlir::stablehlo::Abs(b);
   auto zero_i32 = MakeScalarConstant(builder, 0, mlir::ElementType::I32);
 
-  // Run the Euclidean algorithm (`(a, b) = (b, |a % b|)`) in a
+  // Run the Euclidean algorithm (`(a, b) = (b, a % b)`) in a
   // `stablehlo.while` loop for a fixed number of iterations (`i < max_iters`).
   // The loop carries the state tuple `(i, a, b)`:
   //   - `args[0]` (`i`): scalar I32 loop counter in `[0, max_iters)`.
   //   - `args[1]` (`a`): current dividend tensor (converges to `gcd(a, b)`).
   //   - `args[2]` (`b`): current divisor/remainder tensor (converges to 0).
   auto loop = mlir::stablehlo::While(
-      builder, {zero_i32, a_abs, b_abs},
+      builder, {zero_i32, a, b},
       [max_iters](mlir::RegionBuilder& cond) {
         // Loop condition: continue while `i < max_iters`.
         auto args = mlir::stablehlo::Arguments(
@@ -86,7 +85,7 @@ mlir::MlirOp BuildEuclideanGcdShlo(mlir::MlirOp a, mlir::MlirOp b,
         auto next_i = mlir::stablehlo::Add(i_val, one_i32);
 
         // Advance unconverged elements (`b_val != 0`) by one Euclidean step
-        // `(next_a, next_b) = (b_val, |a_val % b_val|)` while keeping already
+        // `(next_a, next_b) = (b_val, a_val % b_val)` while keeping already
         // converged elements (`b_val == 0`) unchanged at `(a_val, 0)`.
         auto zero = MakeConstantLike(a_val, 0);
         auto one = MakeConstantLike(a_val, 1);
@@ -95,10 +94,9 @@ mlir::MlirOp BuildEuclideanGcdShlo(mlir::MlirOp a, mlir::MlirOp b,
         // Substitute 1 for zero divisors before `Rem` to avoid division by
         // zero; the dummy remainder is discarded by `Select` below.
         auto safe_b = mlir::stablehlo::Select(is_nonzero, b_val, one);
-        auto rem_signed = mlir::stablehlo::Rem(a_val, safe_b);
-        // Take `Abs` of the remainder in case `a_abs` was `INT_MIN` (whose
-        // initial `Abs` overflows back to negative in two's complement).
-        auto rem = mlir::stablehlo::Abs(rem_signed);
+        // Preserve signed remainders when an initial absolute value overflows
+        // at INT_MIN, matching PyTorch's Euclidean algorithm.
+        auto rem = mlir::stablehlo::Rem(a_val, safe_b);
         auto next_a = mlir::stablehlo::Select(is_nonzero, b_val, a_val);
         auto next_b = mlir::stablehlo::Select(is_nonzero, rem, zero);
 
@@ -132,16 +130,23 @@ absl::StatusOr<mlir::MlirOp> BuildGcdShlo(mlir::MlirOp a, mlir::MlirOp b) {
   TT_ASSIGN_OR_RETURN(const mlir::ElementType elem_type, GetElementType(a));
   switch (elem_type) {
     case mlir::ElementType::I32:
-      return BuildEuclideanGcdShlo(a, b, kMaxGcdIterationsI32);
+      return BuildEuclideanGcdShlo(mlir::stablehlo::Abs(a),
+                                   mlir::stablehlo::Abs(b),
+                                   kMaxGcdIterationsI32);
     case mlir::ElementType::I64:
-      return BuildEuclideanGcdShlo(a, b, kMaxGcdIterationsI64);
+      return BuildEuclideanGcdShlo(mlir::stablehlo::Abs(a),
+                                   mlir::stablehlo::Abs(b),
+                                   kMaxGcdIterationsI64);
     case mlir::ElementType::I8:
     case mlir::ElementType::UI8:
     case mlir::ElementType::I16: {
-      // `stablehlo.abs` rejects unsigned integers, so compute in i32 and
-      // convert back. Every GCD of these types fits in the type, except that
-      // the GCD of the type's minimum and 0 (or itself) wraps back to the
-      // minimum, as it does in PyTorch.
+      // Take absolute values before widening so INT_MIN wraps in the original
+      // signed type, as in PyTorch. Unsigned inputs are already nonnegative
+      // and `stablehlo.abs` rejects them.
+      if (elem_type != mlir::ElementType::UI8) {
+        a = mlir::stablehlo::Abs(a);
+        b = mlir::stablehlo::Abs(b);
+      }
       auto a_i32 =
           mlir::stablehlo::ConvertElementType(a, mlir::ElementType::I32);
       auto b_i32 =
