@@ -334,7 +334,7 @@ def _(mo):
     | `MASTER_PORT` | Port on `MASTER_ADDR` used for `torch.distributed` rendezvous. |
     | `TORCH_DEVICE_BACKEND_AUTOLOAD` | Set to `"0"` to disable automatic registration of the `torch_tpu` backend. |
     | `TORCH_TPU_ALLOW_LEGACY_DEVICE_APIS` | When enabled, allows calling internal `torch.tpu` device APIs (those with a `torch.accelerator` equivalent) from outside PyTorch core with a one-time warning instead of raising a `RuntimeError`. Use this only as a temporary fix; migrating to `torch.accelerator.*` is preferred, and this variable will likely be removed in a future release. |
-    | `LIBTPU_INIT_ARGS` | Space-separated initialization flags passed to `libtpu` and the PJRT runtime. |
+    | `LIBTPU_INIT_ARGS` | Space-separated initialization flags passed to `libtpu` and the PJRT runtime, including TPU compiler flags such as `--xla_tpu_*`. Generic XLA flags such as `--xla_dump_to` are rejected here; put those in `XLA_FLAGS`. See [Which variable for which flag](#which-variable-for-which-flag). |
     | `TPU_PREMAPPED_BUFFER_SIZE` | Premapped host-to-device memory buffer size in bytes for the PJRT client. |
     | `TMPDIR` | Temporary directory used by the runtime and compiler. |
 
@@ -362,7 +362,7 @@ def _(mo):
     | `TORCH_TPU_LAUNCH_BLOCKING` | When enabled (`"1"`/`"true"`), sets the default eager mode to `EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING`. |
     | `TORCH_TPU_TIER2_COMPILATION_CACHE` | Directory name under `/dev/shm/torch_tpu_cache/` for the host-local compilation cache (or `"disabled"`). |
     | `TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT` | Path (e.g., `gs://...` or local path) to the persistent Tier-3 compilation cache shared across hosts and runs. |
-    | `XLA_FLAGS` | Space-separated XLA compiler flags (e.g., `--xla_dump_hlo_as_text --xla_dump_to=...`). |
+    | `XLA_FLAGS` | Space-separated generic XLA compiler and debug flags (e.g., `--xla_dump_hlo_as_text --xla_dump_to=...`). TPU compiler flags such as `--xla_tpu_*` are rejected here; put those in `LIBTPU_INIT_ARGS`. See [Which variable for which flag](#which-variable-for-which-flag). |
 
     ### **Debugging, Safety, Profiling, and Tracing**
 
@@ -436,6 +436,30 @@ def _(mo):
     x = torch.randn(10, device=device)
     y = (x + 1).to("cpu")
     ```
+
+    #### **Which variable for which flag**
+
+    XLA flags are read from two different places, and each one rejects flags that
+    belong to the other. An unknown flag in either variable stops the process
+    when the backend initializes:
+
+    | Flag kind | Examples | Set in | If set in the other variable |
+    | :--- | :--- | :--- | :--- |
+    | Generic XLA compiler and debug flags | `--xla_dump_to`, `--xla_dump_hlo_as_text` | `XLA_FLAGS` | `LIBTPU_INIT_ARGS` fails with `Unknown command line flag 'xla_dump_to'` |
+    | TPU compiler flags | `--xla_tpu_enable_async_collective_fusion` | `LIBTPU_INIT_ARGS` | `XLA_FLAGS` fails with `Unknown flag in XLA_FLAGS: --xla_tpu_...` |
+
+    ```python
+    import os
+
+    os.environ["XLA_FLAGS"] = "--xla_dump_hlo_as_text --xla_dump_to=/tmp/hlo_dump"
+    os.environ["LIBTPU_INIT_ARGS"] = "--xla_tpu_enable_async_collective_fusion=true"
+
+    import torch
+    ```
+
+    If either variable reports an unknown flag, check that the flag is in the
+    right variable and that it exists in your installed `torch_tpu`/`libtpu`
+    version; flag names can change between releases.
 
     #### **4. Multi-Tiered Compilation Caching (`TORCH_TPU_TIER2_COMPILATION_CACHE` & `TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT`)**
 
