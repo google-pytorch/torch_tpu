@@ -20,9 +20,35 @@ https://github.com/pytorch/pytorch/blob/main/docs/source/accelerator/testing.md.
 
 from collections.abc import Mapping, Sequence
 from typing import Final
+import unittest
 
 import torch
 from torch.testing._internal.opinfo import core as opinfo_core
+
+
+def _xfail(
+    cls_name: str,
+    test_name: str,
+    *,
+    dtypes: Sequence[torch.dtype] | None = None,
+) -> opinfo_core.DecorateInfo:
+  """Marks TPU variants of `@ops` / `@modules` tests as expected failures."""
+  return opinfo_core.DecorateInfo(
+      unittest.expectedFailure, cls_name, test_name, dtypes=dtypes
+  )
+
+
+def _skip(
+    cls_name: str,
+    test_name: str,
+    *,
+    dtypes: Sequence[torch.dtype] | None = None,
+) -> opinfo_core.DecorateInfo:
+  """Skips TPU variants of `@ops` / `@modules` tests, e.g. crashing ones."""
+  return opinfo_core.DecorateInfo(
+      unittest.skip("Skipped on TPU"), cls_name, test_name, dtypes=dtypes
+  )
+
 
 # Decorators applied to OpInfo-based tests, i.e. tests parametrized by `@ops`,
 # for TPU.
@@ -40,6 +66,1580 @@ from torch.testing._internal.opinfo import core as opinfo_core
 # Unlike `TEST_EXCLUSIONS`, which cannot tell apart the ops of an `@ops` test,
 # this targets individual ops and dtypes of a test method.
 OP_OVERRIDES: Final[
+    Mapping[str, Mapping[str, Sequence[opinfo_core.DecorateInfo]]]
+] = {
+    # go/keep-sorted start block=yes
+    "distributed/tensor/test_dtensor_ops": {
+        "grid_sampler_3d": [
+            _xfail("TestUnbackedDTensorOps", "test_unbacked_dtensor_op_db"),
+        ],
+        "nn.functional.linear_cross_entropy": [
+            _skip("TestCompiledDTensorOps", "test_compiled_dtensor_op_db"),
+        ],
+    },
+    "dynamo/test_dynamo_ops": {
+        "abs": [
+            _xfail(
+                "TestTensorMetaProp",
+                "test_inplace_ops_propagate_requires_grad_metadata",
+                dtypes=(torch.complex32,),
+            ),
+        ],
+        "add": [
+            _xfail(
+                "TestTensorMetaProp",
+                "test_inplace_ops_propagate_requires_grad_metadata",
+                dtypes=(torch.complex32,),
+            ),
+        ],
+        "addbmm": [
+            _xfail(
+                "TestTensorMetaProp",
+                "test_inplace_ops_propagate_requires_grad_metadata",
+                dtypes=(
+                    torch.bfloat16,
+                    torch.complex128,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                ),
+            ),
+        ],
+        "as_strided": [
+            _xfail(
+                "TestTensorMetaProp",
+                "test_inplace_ops_propagate_requires_grad_metadata",
+                dtypes=(torch.complex32,),
+            ),
+        ],
+        "as_strided.partial_views": [
+            _xfail(
+                "TestTensorMetaProp",
+                "test_inplace_ops_propagate_requires_grad_metadata",
+                dtypes=(torch.complex32,),
+            ),
+        ],
+        "baddbmm": [
+            _xfail(
+                "TestTensorMetaProp",
+                "test_inplace_ops_propagate_requires_grad_metadata",
+                dtypes=(torch.complex128,),
+            ),
+        ],
+        "conj_physical": [
+            _xfail(
+                "TestTensorMetaProp",
+                "test_inplace_ops_propagate_requires_grad_metadata",
+                dtypes=(torch.complex32,),
+            ),
+        ],
+        "copysign": [
+            _xfail(
+                "TestTensorMetaProp",
+                "test_inplace_ops_propagate_requires_grad_metadata",
+                dtypes=(
+                    torch.bfloat16,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                ),
+            ),
+        ],
+        "div.no_rounding_mode": [
+            _xfail(
+                "TestTensorMetaProp",
+                "test_inplace_ops_propagate_requires_grad_metadata",
+                dtypes=(torch.complex128,),
+            ),
+        ],
+        "eq": [
+            _xfail(
+                "TestTensorMetaProp",
+                "test_inplace_ops_propagate_requires_grad_metadata",
+                dtypes=(torch.complex32,),
+            ),
+        ],
+        "fill": [
+            _xfail(
+                "TestTensorMetaProp",
+                "test_inplace_ops_propagate_requires_grad_metadata",
+                dtypes=(torch.complex32,),
+            ),
+        ],
+        "hypot": [
+            _xfail(
+                "TestTensorMetaProp",
+                "test_inplace_ops_propagate_requires_grad_metadata",
+            ),
+        ],
+        "index_add": [
+            _xfail(
+                "TestTensorMetaProp",
+                "test_inplace_ops_propagate_requires_grad_metadata",
+                dtypes=(
+                    torch.bfloat16,
+                    torch.complex32,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                ),
+            ),
+        ],
+        "index_copy": [
+            _xfail(
+                "TestTensorMetaProp",
+                "test_inplace_ops_propagate_requires_grad_metadata",
+                dtypes=(
+                    torch.bfloat16,
+                    torch.complex32,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                ),
+            ),
+        ],
+        "index_fill": [
+            _xfail(
+                "TestTensorMetaProp",
+                "test_inplace_ops_propagate_requires_grad_metadata",
+                dtypes=(
+                    torch.bfloat16,
+                    torch.complex32,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                ),
+            ),
+        ],
+        "index_put": [
+            _xfail(
+                "TestTensorMetaProp",
+                "test_inplace_ops_propagate_requires_grad_metadata",
+                dtypes=(
+                    torch.bfloat16,
+                    torch.complex32,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                ),
+            ),
+        ],
+        "index_reduce.amax": [
+            _skip(
+                "TestTensorMetaProp",
+                "test_inplace_ops_propagate_requires_grad_metadata",
+            ),
+        ],
+        "index_reduce.amin": [
+            _skip(
+                "TestTensorMetaProp",
+                "test_inplace_ops_propagate_requires_grad_metadata",
+            ),
+        ],
+        "index_reduce.mean": [
+            _skip(
+                "TestTensorMetaProp",
+                "test_inplace_ops_propagate_requires_grad_metadata",
+            ),
+        ],
+        "index_reduce.prod": [
+            _skip(
+                "TestTensorMetaProp",
+                "test_inplace_ops_propagate_requires_grad_metadata",
+            ),
+        ],
+        "masked_fill": [
+            _xfail(
+                "TestTensorMetaProp",
+                "test_inplace_ops_propagate_requires_grad_metadata",
+                dtypes=(torch.complex32,),
+            ),
+        ],
+        "mul": [
+            _xfail(
+                "TestTensorMetaProp",
+                "test_inplace_ops_propagate_requires_grad_metadata",
+                dtypes=(torch.complex32,),
+            ),
+        ],
+        "neg": [
+            _xfail(
+                "TestTensorMetaProp",
+                "test_inplace_ops_propagate_requires_grad_metadata",
+                dtypes=(torch.complex32,),
+            ),
+        ],
+        "sgn": [
+            _xfail(
+                "TestTensorMetaProp",
+                "test_inplace_ops_propagate_requires_grad_metadata",
+                dtypes=(torch.complex32,),
+            ),
+        ],
+        "squeeze": [
+            _xfail(
+                "TestTensorMetaProp",
+                "test_inplace_ops_propagate_requires_grad_metadata",
+                dtypes=(torch.complex32,),
+            ),
+        ],
+        "squeeze.multiple": [
+            _xfail(
+                "TestTensorMetaProp",
+                "test_inplace_ops_propagate_requires_grad_metadata",
+                dtypes=(torch.complex32,),
+            ),
+        ],
+        "sub": [
+            _xfail(
+                "TestTensorMetaProp",
+                "test_inplace_ops_propagate_requires_grad_metadata",
+                dtypes=(torch.complex32,),
+            ),
+        ],
+        "transpose": [
+            _xfail(
+                "TestTensorMetaProp",
+                "test_inplace_ops_propagate_requires_grad_metadata",
+                dtypes=(torch.complex32,),
+            ),
+        ],
+        "tril": [
+            _xfail(
+                "TestTensorMetaProp",
+                "test_inplace_ops_propagate_requires_grad_metadata",
+                dtypes=(torch.complex32,),
+            ),
+        ],
+        "triu": [
+            _xfail(
+                "TestTensorMetaProp",
+                "test_inplace_ops_propagate_requires_grad_metadata",
+                dtypes=(torch.complex32,),
+            ),
+        ],
+        "true_divide": [
+            _xfail(
+                "TestTensorMetaProp",
+                "test_inplace_ops_propagate_requires_grad_metadata",
+                dtypes=(torch.complex128,),
+            ),
+        ],
+        "unsqueeze": [
+            _xfail(
+                "TestTensorMetaProp",
+                "test_inplace_ops_propagate_requires_grad_metadata",
+                dtypes=(torch.complex32,),
+            ),
+        ],
+    },
+    "export/test_hop": {
+        "auto_functionalize.simple": [
+            _xfail("TestHOPDevice", "test_aot_export"),
+            _xfail("TestHOPDevice", "test_pre_dispatch_export"),
+            _xfail("TestHOPDevice", "test_retrace_export"),
+            _xfail("TestHOPDevice", "test_serialize_export"),
+        ],
+    },
+    "export/test_opinfo_schema": {
+        "__rmatmul__": [
+            _xfail("TestOpInfo", "test_schema_check_op", dtypes=(torch.int32,)),
+        ],
+        "_batch_norm_with_update": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "addbmm": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "addmm": [
+            _xfail("TestOpInfo", "test_schema_check_op", dtypes=(torch.int32,)),
+        ],
+        "addmm.decomposed": [
+            _xfail("TestOpInfo", "test_schema_check_op", dtypes=(torch.int32,)),
+        ],
+        "addmv": [
+            _xfail("TestOpInfo", "test_schema_check_op", dtypes=(torch.int32,)),
+        ],
+        "baddbmm": [
+            _xfail("TestOpInfo", "test_schema_check_op", dtypes=(torch.int32,)),
+        ],
+        "bmm": [
+            _xfail("TestOpInfo", "test_schema_check_op", dtypes=(torch.int32,)),
+        ],
+        "cauchy": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "chalf": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "cholesky_inverse": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "cholesky_solve": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "combinations": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "copysign": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "cross": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "dot": [
+            _xfail("TestOpInfo", "test_schema_check_op", dtypes=(torch.int32,)),
+        ],
+        "erfc": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "frexp": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "gcd": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "geometric": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "hash_tensor": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "heaviside": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "histogram": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "histogramdd": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "hypot": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "i0": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "igamma": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "igammac": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "inner": [
+            _xfail("TestOpInfo", "test_schema_check_op", dtypes=(torch.int32,)),
+        ],
+        "kthvalue": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "linalg.cholesky": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "linalg.cholesky_ex": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "linalg.cross": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "linalg.det": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "linalg.eig": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "linalg.eigh": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "linalg.eigvals": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "linalg.eigvalsh": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "linalg.householder_product": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "linalg.ldl_factor": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "linalg.ldl_factor_ex": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "linalg.ldl_solve": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "linalg.lstsq": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "linalg.lstsq.grad_oriented": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "linalg.matrix_rank.hermitian": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "linalg.matrix_sqrth": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "linalg.multi_dot": [
+            _xfail("TestOpInfo", "test_schema_check_op", dtypes=(torch.int32,)),
+        ],
+        "linalg.pinv.hermitian": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "linalg.polar": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "linalg.slogdet": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "log_normal": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "logaddexp": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "logaddexp2": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "logdet": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "logspace": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "logspace.tensor_overload": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "masked.logaddexp": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "masked.median": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "matmul": [
+            _xfail("TestOpInfo", "test_schema_check_op", dtypes=(torch.int32,)),
+        ],
+        "matrix_exp": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "median": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "mm": [
+            _xfail("TestOpInfo", "test_schema_check_op", dtypes=(torch.int32,)),
+        ],
+        "mode": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "mv": [
+            _xfail("TestOpInfo", "test_schema_check_op", dtypes=(torch.int32,)),
+        ],
+        "nanmean": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "nanmedian": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "nansum": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "native_dropout_backward": [
+            _xfail("TestOpInfo", "test_schema_check_op", dtypes=(torch.int32,)),
+        ],
+        "nextafter": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "nn.functional.adaptive_max_pool3d": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "nn.functional.bilinear": [
+            _xfail("TestOpInfo", "test_schema_check_op", dtypes=(torch.int32,)),
+        ],
+        "nn.functional.fractional_max_pool2d": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "nn.functional.fractional_max_pool3d": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "nn.functional.huber_loss": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "nn.functional.max_pool2d": [
+            _xfail("TestOpInfo", "test_schema_check_op", dtypes=(torch.int32,)),
+        ],
+        "nn.functional.max_pool3d": [
+            _xfail("TestOpInfo", "test_schema_check_op", dtypes=(torch.int32,)),
+        ],
+        "nn.functional.max_unpool1d": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "nn.functional.max_unpool1d.grad": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "nn.functional.max_unpool2d": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "nn.functional.max_unpool2d.grad": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "nn.functional.max_unpool3d": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "nn.functional.max_unpool3d.grad": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "nn.functional.mish": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "nn.functional.pad.replicate_negative": [
+            _skip("TestOpInfo", "test_schema_check_op"),
+        ],
+        "nn.functional.rrelu": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "nn.functional.smooth_l1_loss": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "nonzero_static": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "ormqr": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "renorm": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "sinc": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "sparse.sampled_addmm": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "special.airy_ai": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "special.bessel_j0": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "special.bessel_j1": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "special.bessel_y0": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "special.bessel_y1": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "special.chebyshev_polynomial_t": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "special.chebyshev_polynomial_u": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "special.chebyshev_polynomial_v": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "special.chebyshev_polynomial_w": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "special.entr": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "special.erfcx": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "special.hermite_polynomial_h": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "special.hermite_polynomial_he": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "special.i0e": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "special.i1": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "special.i1e": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "special.laguerre_polynomial_l": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "special.legendre_polynomial_p": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "special.log_ndtr": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "special.modified_bessel_i0": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "special.modified_bessel_i1": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "special.modified_bessel_k0": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "special.modified_bessel_k1": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "special.ndtri": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "special.scaled_modified_bessel_k0": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "special.scaled_modified_bessel_k1": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "special.shifted_chebyshev_polynomial_t": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "special.shifted_chebyshev_polynomial_u": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "special.shifted_chebyshev_polynomial_v": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "special.shifted_chebyshev_polynomial_w": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "special.spherical_bessel_j0": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "special.xlog1py": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "special.zeta": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "std_mean": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "std_mean.unbiased": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "tensordot": [
+            _xfail("TestOpInfo", "test_schema_check_op", dtypes=(torch.int32,)),
+        ],
+        "to_sparse": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "trace": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "triangular_solve": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "triu_indices": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "unique": [
+            _xfail("TestOpInfo", "test_schema_check_op"),
+        ],
+        "vdot": [
+            _xfail("TestOpInfo", "test_schema_check_op", dtypes=(torch.int32,)),
+        ],
+    },
+    "test_reductions": {
+        "_refs.all": [
+            _xfail(
+                "TestReductions", "test_identity", dtypes=(torch.complex128,)
+            ),
+        ],
+        "_refs.any": [
+            _xfail(
+                "TestReductions", "test_identity", dtypes=(torch.complex128,)
+            ),
+        ],
+        "_refs.count_nonzero": [
+            _xfail(
+                "TestReductions", "test_identity", dtypes=(torch.complex128,)
+            ),
+        ],
+        "_refs.linalg.vector_norm": [
+            _xfail(
+                "TestReductions", "test_identity", dtypes=(torch.complex128,)
+            ),
+            _xfail(
+                "TestReductions",
+                "test_nan_policy_propagate",
+                dtypes=(torch.complex128,),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_transposed",
+                dtypes=(torch.complex128,),
+            ),
+        ],
+        "_refs.mean": [
+            _xfail(
+                "TestReductions",
+                "test_nan_policy_propagate",
+                dtypes=(torch.complex128, torch.complex64),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_transposed",
+                dtypes=(torch.complex128,),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_ref_duplicate_values",
+                dtypes=(torch.complex128,),
+            ),
+        ],
+        "_refs.prod": [
+            _xfail(
+                "TestReductions", "test_identity", dtypes=(torch.complex128,)
+            ),
+            _xfail(
+                "TestReductions",
+                "test_nan_policy_propagate",
+                dtypes=(torch.complex128, torch.complex64),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_transposed",
+                dtypes=(torch.complex128,),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_ref_duplicate_values",
+                dtypes=(torch.complex128,),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_ref_small_input",
+                dtypes=(torch.complex128,),
+            ),
+        ],
+        "_refs.std": [
+            _xfail("TestReductions", "test_dim_ndim_limit"),
+            _xfail(
+                "TestReductions",
+                "test_nan_policy_propagate",
+                dtypes=(torch.complex128,),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_transposed",
+                dtypes=(torch.complex128,),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_ref_duplicate_values",
+                dtypes=(torch.complex128,),
+            ),
+        ],
+        "_refs.sum": [
+            _xfail(
+                "TestReductions", "test_identity", dtypes=(torch.complex128,)
+            ),
+            _xfail(
+                "TestReductions",
+                "test_nan_policy_propagate",
+                dtypes=(torch.complex128, torch.complex64),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_transposed",
+                dtypes=(torch.complex128,),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_ref_duplicate_values",
+                dtypes=(torch.complex128,),
+            ),
+        ],
+        "_refs.var": [
+            _xfail(
+                "TestReductions",
+                "test_nan_policy_propagate",
+                dtypes=(torch.complex128,),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_transposed",
+                dtypes=(torch.complex128,),
+            ),
+        ],
+        "all": [
+            _xfail(
+                "TestReductions", "test_identity", dtypes=(torch.complex128,)
+            ),
+        ],
+        "any": [
+            _xfail(
+                "TestReductions", "test_identity", dtypes=(torch.complex128,)
+            ),
+        ],
+        "count_nonzero": [
+            _xfail("TestReductions", "test_dim_ndim_limit"),
+            _xfail(
+                "TestReductions", "test_identity", dtypes=(torch.complex128,)
+            ),
+        ],
+        "hash_tensor": [
+            _xfail("TestReductions", "test_dim_default"),
+            _xfail("TestReductions", "test_dim_default_keepdim"),
+            _xfail("TestReductions", "test_dim_multi"),
+            _xfail("TestReductions", "test_dim_multi_keepdim"),
+            _xfail("TestReductions", "test_dim_multi_unsorted"),
+            _xfail("TestReductions", "test_dim_multi_unsorted_keepdim"),
+            _xfail("TestReductions", "test_dim_none"),
+            _xfail("TestReductions", "test_dim_none_keepdim"),
+            _xfail("TestReductions", "test_dim_single"),
+            _xfail("TestReductions", "test_dim_single_keepdim"),
+            _xfail("TestReductions", "test_empty_tensor_nonempty_slice"),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_all",
+                dtypes=(
+                    torch.bfloat16,
+                    torch.bool,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                    torch.int16,
+                    torch.int32,
+                    torch.int64,
+                    torch.int8,
+                    torch.uint8,
+                ),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_expanded",
+                dtypes=(
+                    torch.bfloat16,
+                    torch.bool,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                    torch.int16,
+                    torch.int32,
+                    torch.int64,
+                    torch.int8,
+                    torch.uint8,
+                ),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_innermost",
+                dtypes=(
+                    torch.bfloat16,
+                    torch.bool,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                    torch.int16,
+                    torch.int32,
+                    torch.int64,
+                    torch.int8,
+                    torch.uint8,
+                ),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_outermost",
+                dtypes=(
+                    torch.bfloat16,
+                    torch.bool,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                    torch.int16,
+                    torch.int32,
+                    torch.int64,
+                    torch.int8,
+                    torch.uint8,
+                ),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_transposed",
+                dtypes=(
+                    torch.bfloat16,
+                    torch.bool,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                    torch.int16,
+                    torch.int32,
+                    torch.int64,
+                    torch.int8,
+                    torch.uint8,
+                ),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_ref_duplicate_values",
+                dtypes=(
+                    torch.bool,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                    torch.int16,
+                    torch.int32,
+                    torch.int64,
+                    torch.int8,
+                    torch.uint8,
+                ),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_ref_extremal_values",
+                dtypes=(torch.float32,),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_ref_large_input_1D",
+                dtypes=(torch.float64,),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_ref_large_input_2D",
+                dtypes=(torch.float64,),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_ref_scalar_input",
+                dtypes=(
+                    torch.bool,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                    torch.int16,
+                    torch.int32,
+                    torch.int64,
+                    torch.int8,
+                    torch.uint8,
+                ),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_ref_small_input",
+                dtypes=(
+                    torch.bool,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                    torch.int16,
+                    torch.int32,
+                    torch.int64,
+                    torch.int8,
+                    torch.uint8,
+                ),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_result_dtype",
+                dtypes=(
+                    torch.bfloat16,
+                    torch.bool,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                    torch.int16,
+                    torch.int32,
+                    torch.int64,
+                    torch.int8,
+                    torch.uint8,
+                ),
+            ),
+        ],
+        "linalg.vector_norm": [
+            _xfail(
+                "TestReductions", "test_identity", dtypes=(torch.complex128,)
+            ),
+            _xfail(
+                "TestReductions",
+                "test_nan_policy_propagate",
+                dtypes=(torch.complex128,),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_transposed",
+                dtypes=(torch.complex128,),
+            ),
+        ],
+        "masked.amax": [
+            _xfail(
+                "TestReductions",
+                "test_reference_masked",
+                dtypes=(torch.bfloat16, torch.float16, torch.float32),
+            ),
+        ],
+        "masked.amin": [
+            _xfail(
+                "TestReductions",
+                "test_reference_masked",
+                dtypes=(torch.bfloat16, torch.float16, torch.float32),
+            ),
+        ],
+        "masked.logsumexp": [
+            _xfail(
+                "TestReductions",
+                "test_nan_policy_propagate",
+                dtypes=(torch.complex128, torch.complex64),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_transposed",
+                dtypes=(torch.complex128,),
+            ),
+        ],
+        "masked.mean": [
+            _xfail(
+                "TestReductions",
+                "test_nan_policy_propagate",
+                dtypes=(torch.complex128, torch.complex64),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_transposed",
+                dtypes=(torch.complex128,),
+            ),
+        ],
+        "masked.prod": [
+            _xfail(
+                "TestReductions", "test_identity", dtypes=(torch.complex128,)
+            ),
+            _xfail(
+                "TestReductions",
+                "test_nan_policy_propagate",
+                dtypes=(torch.complex128, torch.complex64),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_transposed",
+                dtypes=(torch.complex128,),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_ref_duplicate_values",
+                dtypes=(torch.complex128,),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_ref_small_input",
+                dtypes=(torch.complex128,),
+            ),
+        ],
+        "masked.std": [
+            _xfail(
+                "TestReductions",
+                "test_nan_policy_propagate",
+                dtypes=(torch.complex128, torch.complex64),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_transposed",
+                dtypes=(torch.complex128,),
+            ),
+            _skip(
+                "TestReductions",
+                "test_ref_duplicate_values",
+                dtypes=(torch.complex128,),
+            ),
+            _skip(
+                "TestReductions",
+                "test_ref_small_input",
+                dtypes=(torch.complex128,),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_reference_masked",
+                dtypes=(torch.complex128,),
+            ),
+        ],
+        "masked.sum": [
+            _xfail(
+                "TestReductions", "test_identity", dtypes=(torch.complex128,)
+            ),
+            _xfail(
+                "TestReductions",
+                "test_nan_policy_propagate",
+                dtypes=(torch.complex128, torch.complex64),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_transposed",
+                dtypes=(torch.complex128,),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_ref_duplicate_values",
+                dtypes=(torch.complex128,),
+            ),
+        ],
+        "masked.var": [
+            _xfail(
+                "TestReductions",
+                "test_nan_policy_propagate",
+                dtypes=(torch.complex128, torch.complex64),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_transposed",
+                dtypes=(torch.complex128,),
+            ),
+            _skip(
+                "TestReductions",
+                "test_ref_small_input",
+                dtypes=(torch.complex128,),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_reference_masked",
+                dtypes=(torch.complex128,),
+            ),
+        ],
+        "mean": [
+            _xfail(
+                "TestReductions",
+                "test_nan_policy_propagate",
+                dtypes=(torch.complex128, torch.complex64),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_transposed",
+                dtypes=(torch.complex128,),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_ref_duplicate_values",
+                dtypes=(torch.complex128,),
+            ),
+        ],
+        "nanmean": [
+            _xfail("TestReductions", "test_dim_default"),
+            _xfail("TestReductions", "test_dim_default_keepdim"),
+            _xfail("TestReductions", "test_dim_multi"),
+            _xfail("TestReductions", "test_dim_multi_keepdim"),
+            _xfail("TestReductions", "test_dim_multi_unsorted"),
+            _xfail("TestReductions", "test_dim_multi_unsorted_keepdim"),
+            _xfail("TestReductions", "test_dim_none"),
+            _xfail("TestReductions", "test_dim_none_keepdim"),
+            _xfail("TestReductions", "test_dim_single"),
+            _xfail("TestReductions", "test_dim_single_keepdim"),
+            _xfail("TestReductions", "test_empty_tensor_empty_slice"),
+            _xfail("TestReductions", "test_empty_tensor_nonempty_slice"),
+            _xfail(
+                "TestReductions",
+                "test_nan_policy_omit",
+                dtypes=(
+                    torch.bfloat16,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                ),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_all",
+                dtypes=(
+                    torch.bfloat16,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                ),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_expanded",
+                dtypes=(
+                    torch.bfloat16,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                ),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_innermost",
+                dtypes=(
+                    torch.bfloat16,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                ),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_outermost",
+                dtypes=(
+                    torch.bfloat16,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                ),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_transposed",
+                dtypes=(
+                    torch.bfloat16,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                ),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_ref_duplicate_values",
+                dtypes=(torch.float16, torch.float32, torch.float64),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_ref_extremal_values",
+                dtypes=(torch.float32,),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_ref_large_input_1D",
+                dtypes=(torch.float64,),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_ref_large_input_2D",
+                dtypes=(torch.float64,),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_ref_scalar_input",
+                dtypes=(torch.float16, torch.float32, torch.float64),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_ref_small_input",
+                dtypes=(torch.float32, torch.float64),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_result_dtype",
+                dtypes=(
+                    torch.bfloat16,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                ),
+            ),
+        ],
+        "nansum": [
+            _xfail("TestReductions", "test_dim_default"),
+            _xfail("TestReductions", "test_dim_default_keepdim"),
+            _xfail("TestReductions", "test_dim_multi"),
+            _xfail("TestReductions", "test_dim_multi_keepdim"),
+            _xfail("TestReductions", "test_dim_multi_unsorted"),
+            _xfail("TestReductions", "test_dim_multi_unsorted_keepdim"),
+            _xfail("TestReductions", "test_dim_ndim_limit"),
+            _xfail("TestReductions", "test_dim_none"),
+            _xfail("TestReductions", "test_dim_none_keepdim"),
+            _xfail("TestReductions", "test_dim_offbounds"),
+            _xfail("TestReductions", "test_dim_single"),
+            _xfail("TestReductions", "test_dim_single_keepdim"),
+            _xfail("TestReductions", "test_empty_tensor_empty_slice"),
+            _xfail("TestReductions", "test_empty_tensor_nonempty_slice"),
+            _xfail(
+                "TestReductions",
+                "test_identity",
+                dtypes=(
+                    torch.bfloat16,
+                    torch.bool,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                    torch.int16,
+                    torch.int32,
+                    torch.int64,
+                    torch.int8,
+                    torch.uint8,
+                ),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_nan_policy_omit",
+                dtypes=(
+                    torch.bfloat16,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                ),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_all",
+                dtypes=(
+                    torch.bfloat16,
+                    torch.bool,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                    torch.int16,
+                    torch.int32,
+                    torch.int64,
+                    torch.int8,
+                    torch.uint8,
+                ),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_expanded",
+                dtypes=(
+                    torch.bfloat16,
+                    torch.bool,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                    torch.int16,
+                    torch.int32,
+                    torch.int64,
+                    torch.int8,
+                    torch.uint8,
+                ),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_innermost",
+                dtypes=(
+                    torch.bfloat16,
+                    torch.bool,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                    torch.int16,
+                    torch.int32,
+                    torch.int64,
+                    torch.int8,
+                    torch.uint8,
+                ),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_outermost",
+                dtypes=(
+                    torch.bfloat16,
+                    torch.bool,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                    torch.int16,
+                    torch.int32,
+                    torch.int64,
+                    torch.int8,
+                    torch.uint8,
+                ),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_transposed",
+                dtypes=(
+                    torch.bfloat16,
+                    torch.bool,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                    torch.int16,
+                    torch.int32,
+                    torch.int64,
+                    torch.int8,
+                    torch.uint8,
+                ),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_ref_duplicate_values",
+                dtypes=(
+                    torch.bool,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                    torch.int16,
+                    torch.int32,
+                    torch.int64,
+                    torch.int8,
+                    torch.uint8,
+                ),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_ref_extremal_values",
+                dtypes=(torch.float32,),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_ref_large_input_1D",
+                dtypes=(torch.float64,),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_ref_large_input_2D",
+                dtypes=(torch.float64,),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_ref_scalar_input",
+                dtypes=(
+                    torch.bool,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                    torch.int16,
+                    torch.int32,
+                    torch.int64,
+                    torch.int8,
+                    torch.uint8,
+                ),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_ref_small_input",
+                dtypes=(
+                    torch.bool,
+                    torch.float32,
+                    torch.float64,
+                    torch.int16,
+                    torch.int32,
+                    torch.int64,
+                    torch.int8,
+                    torch.uint8,
+                ),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_result_dtype",
+                dtypes=(
+                    torch.bfloat16,
+                    torch.bool,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                    torch.int16,
+                    torch.int32,
+                    torch.int64,
+                    torch.int8,
+                    torch.uint8,
+                ),
+            ),
+        ],
+        "prod": [
+            _xfail(
+                "TestReductions", "test_identity", dtypes=(torch.complex128,)
+            ),
+            _xfail(
+                "TestReductions",
+                "test_nan_policy_propagate",
+                dtypes=(torch.complex128, torch.complex64),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_transposed",
+                dtypes=(torch.complex128,),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_ref_duplicate_values",
+                dtypes=(torch.complex128,),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_ref_small_input",
+                dtypes=(torch.complex128,),
+            ),
+        ],
+        "std": [
+            _xfail("TestReductions", "test_dim_ndim_limit"),
+            _xfail(
+                "TestReductions",
+                "test_nan_policy_propagate",
+                dtypes=(torch.complex128,),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_transposed",
+                dtypes=(torch.complex128,),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_ref_duplicate_values",
+                dtypes=(torch.complex128,),
+            ),
+        ],
+        "std.unbiased": [
+            _xfail("TestReductions", "test_dim_ndim_limit"),
+            _xfail(
+                "TestReductions",
+                "test_nan_policy_propagate",
+                dtypes=(torch.complex128,),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_transposed",
+                dtypes=(torch.complex128,),
+            ),
+        ],
+        "sum": [
+            _xfail(
+                "TestReductions", "test_identity", dtypes=(torch.complex128,)
+            ),
+            _xfail(
+                "TestReductions",
+                "test_nan_policy_propagate",
+                dtypes=(torch.complex128, torch.complex64),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_transposed",
+                dtypes=(torch.complex128,),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_ref_duplicate_values",
+                dtypes=(torch.complex128,),
+            ),
+        ],
+        "var": [
+            _xfail("TestReductions", "test_dim_ndim_limit"),
+            _xfail(
+                "TestReductions",
+                "test_nan_policy_propagate",
+                dtypes=(torch.complex128,),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_transposed",
+                dtypes=(torch.complex128,),
+            ),
+        ],
+        "var.unbiased": [
+            _xfail("TestReductions", "test_dim_ndim_limit"),
+            _xfail(
+                "TestReductions",
+                "test_nan_policy_propagate",
+                dtypes=(torch.complex128,),
+            ),
+            _xfail(
+                "TestReductions",
+                "test_noncontiguous_transposed",
+                dtypes=(torch.complex128,),
+            ),
+        ],
+    },
+    # go/keep-sorted end
+}
+
+# Decorators applied to ModuleInfo-based tests, i.e. tests parametrized by
+# `@modules`, for TPU.
+#
+# Same as `OP_OVERRIDES`, but keyed by test module and then by
+# `ModuleInfo.name`, e.g. "nn.Linear". Upstream has no PrivateUse1 equivalent of
+# `op_overrides` for `@modules`, so the test runner appends these decorators to
+# the matching entries of `common_modules.module_db` before running the test
+# module.
+MODULE_OVERRIDES: Final[
     Mapping[str, Mapping[str, Sequence[opinfo_core.DecorateInfo]]]
 ] = {}
 
@@ -76,6 +1676,11 @@ TEST_EXCLUSIONS: Final[
         "MicrobatchTestsDevices": [
             "test_split_block_mask",
         ],
+    },
+    "distributed/tensor/test_dtensor_ops": {
+        "TestLocalDTensorOps": "*",
+        "TestMultiThreadedDTensorOps": "*",
+        "TestSingleDimStrategies": "*",
     },
     "dynamo/test_debug_utils": {
         "TestInductorConfigOverrideIntegration": [
@@ -166,6 +1771,25 @@ TEST_EXCLUSIONS: Final[
             "test_per_sample_grads_embeddingnet",
             "test_per_sample_grads_simple",
         ],
+    },
+    "inductor/test_flex_attention": {
+        "TestBlockMask": [
+            "test_backward_error_with_none_q_indices",
+            "test_block_mask_check_does_not_specialize_backed_dynamic_length",
+            "test_block_mask_vs_sequence_lengths",
+            "test_broadcasted_head_block_mask",
+            "test_compiling_create_block_mask_no_recompile",
+            "test_create_is_cuda_graphable",
+            "test_eager_tracing_correctness",
+            "test_flex_attention_poison_mod_bwd",
+            "test_flex_attention_poison_mod_fwd",
+            "test_flex_attention_poisoned_rel_logits",
+            "test_forward_pass_with_none_q_indices",
+            "test_upcast_appropriately",
+        ],
+        "TestFlexAttention": "*",
+        "TestLearnableBiases": "*",
+        "TestPagedAttention": "*",
     },
     "inductor/test_slice_scatter_chunking": {
         "TestSliceScatterChunking": [
@@ -355,6 +1979,14 @@ TEST_EXCLUSIONS: Final[
         "TestBmmOuterProductDevice": [
             "test_non_current_device_outer_product",
         ],
+    },
+    "test_complex": {
+        "TestComplexTensor": {
+            "test_all": "*",
+            "test_dtype_inference": {"dtypes": [torch.float16]},
+            "test_eq": {"dtypes": [torch.complex128]},
+            "test_ne": {"dtypes": [torch.complex128]},
+        },
     },
     "test_custom_ops": {
         "TestCustomOpTesting": [
@@ -628,6 +2260,103 @@ TEST_EXCLUSIONS: Final[
             "test_logspace_with_complex_input",
         ],
     },
+    "test_reductions": {
+        "TestReductions": {
+            "test_all_any_vs_numpy": {
+                "dtypes": [
+                    torch.bool,
+                    torch.complex128,
+                    torch.complex64,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                    torch.int16,
+                    torch.int32,
+                    torch.int64,
+                    torch.int8,
+                ]
+            },
+            "test_aminmax_out_overlap": {"dtypes": [torch.float32]},
+            "test_argminmax_multiple": "*",
+            "test_bincount": "*",
+            "test_bucketization": "*",
+            "test_count_nonzero": {
+                "dtypes": [
+                    torch.complex128,
+                    torch.complex64,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                ]
+            },
+            "test_dim_reduction_fns": {
+                "dtypes": [
+                    torch.bfloat16,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                    torch.int16,
+                    torch.int32,
+                    torch.int64,
+                    torch.int8,
+                ]
+            },
+            "test_dim_reduction_less_than_64": "*",
+            "test_histc": "*",
+            "test_histc_min_max_errors": "*",
+            "test_histc_out_dtype": {"dtypes": [torch.float32, torch.float64]},
+            "test_logcumsumexp_complex": {
+                "dtypes": [torch.complex128, torch.complex64]
+            },
+            "test_logsumexp": {
+                "dtypes": [
+                    torch.complex128,
+                    torch.complex64,
+                    torch.float32,
+                    torch.float64,
+                ]
+            },
+            "test_mean_dim": "*",
+            "test_median_corner_cases": "*",
+            "test_median_nan_values": {
+                "dtypes": [torch.float32, torch.float64]
+            },
+            "test_median_real_values": "*",
+            "test_mode": "*",
+            "test_mode_boolean": "*",
+            "test_mode_large": "*",
+            "test_mode_wrong_dtype": "*",
+            "test_nansum": "*",
+            "test_nansum_int_out_dtype_float_input": {
+                "dtypes": [torch.int32, torch.int64]
+            },
+            "test_nansum_int_out_dtype_matches_inductor": {
+                "dtypes": [torch.int32, torch.int64]
+            },
+            "test_nansum_out_dtype": "*",
+            "test_nansum_vs_numpy": "*",
+            "test_prod": {"dtypes": [torch.float32]},
+            "test_quantile_large_input": {"dtypes": [torch.float64]},
+            "test_reduce_dtype": "*",
+            "test_reduction_vectorize_along_input_corner": "*",
+            "test_repeated_dim": "*",
+            "test_std_mean": "*",
+            "test_std_mean_all_dims": "*",
+            "test_std_mean_correction": "*",
+            "test_std_mean_some_dims": "*",
+            "test_sum_cpu_device_mismatch": "*",
+            "test_sum_noncontig_lowp": "*",
+            "test_sum_vs_numpy": {
+                "dtypes": [torch.float16, torch.float32, torch.float64]
+            },
+            "test_tensor_compare_ops_argmax_argmix_kthvalue_dim_empty": "*",
+            "test_tensor_compare_ops_empty": "*",
+            "test_var_vs_numpy": {
+                "dtypes": [torch.complex128, torch.complex64]
+            },
+            "test_warn_invalid_degrees_of_freedom": "*",
+        },
+    },
     "test_scaled_matmul_cuda": {
         "TestFP8Matmul": [
             "test_float32_output_errors_with_bias",
@@ -639,6 +2368,28 @@ TEST_EXCLUSIONS: Final[
             "test_scaled_mm_vs_emulated_row_wise",
             "test_zero_dim_tensorwise",
         ],
+    },
+    "test_scatter_gather_ops": {
+        "TestScatterGatherDevice": {
+            "test_gather": {"dtypes": [torch.complex128]},
+            "test_scatter_": {
+                "dtypes": [torch.complex64, torch.float16, torch.float32]
+            },
+            "test_scatter__reductions": {
+                "dtypes": [torch.complex64, torch.float16, torch.float32]
+            },
+            "test_scatter__scalar": {
+                "dtypes": [torch.complex64, torch.float16, torch.float32]
+            },
+            "test_scatter_add_": {
+                "dtypes": [torch.complex64, torch.float16, torch.float32]
+            },
+            "test_scatter_reduce_amax": "*",
+            "test_scatter_reduce_amin": "*",
+            "test_scatter_reduce_mean": "*",
+            "test_scatter_reduce_prod": "*",
+            "test_scatter_reduce_sum": "*",
+        },
     },
     "test_serialization": {
         "TestSerializationAccelerator": [
@@ -671,6 +2422,129 @@ TEST_EXCLUSIONS: Final[
             "test_unique",
             "test_unique_dim",
         ],
+    },
+    "test_tensor_creation_ops": {
+        "TestAsArray": [
+            "test_copy_from_dlpack_mult_devices",
+            "test_copy_from_tensor_mult_devices",
+        ],
+        "TestLikeTensorCreation": [
+            "test_ones_like_multiple_device",
+            "test_zeros_like_multiple_device",
+        ],
+        "TestRandomTensorCreation": {
+            "test_normal_std_error": "*",
+            "test_rand": {"dtypes": [torch.complex32]},
+            "test_randint_distribution": "*",
+            "test_randn": {"dtypes": [torch.complex32]},
+            "test_randperm": "*",
+            "test_randperm_device_compatibility": "*",
+            "test_uniform_from_to": {
+                "dtypes": [torch.float16, torch.float32, torch.float64]
+            },
+        },
+        "TestTensorCreation": {
+            "test_arange": "*",
+            "test_as_strided_neg": "*",
+            "test_cat_all_dtypes_and_devices": "*",
+            "test_cat_empty_legacy": "*",
+            "test_cat_mem_overlap": "*",
+            "test_cat_out_fast_path_dim0_dim1": {"dtypes": [torch.complex128]},
+            "test_cat_out_memory_format": "*",
+            "test_cat_stack_cross_devices": "*",
+            "test_combinations": "*",
+            "test_dstack": {
+                "dtypes": [
+                    torch.complex128,
+                    torch.complex64,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                ]
+            },
+            "test_empty_full": "*",
+            "test_eye": "*",
+            "test_fill_all_dtypes_and_devices": "*",
+            "test_float_to_int_conversion_finite": {
+                "dtypes": [torch.int32, torch.int64, torch.uint8]
+            },
+            "test_float_to_int_conversion_nonfinite": {
+                "dtypes": [
+                    torch.int16,
+                    torch.int32,
+                    torch.int64,
+                    torch.int8,
+                    torch.uint8,
+                ]
+            },
+            "test_hstack_column_stack": {
+                "dtypes": [
+                    torch.complex128,
+                    torch.complex64,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                ]
+            },
+            "test_kaiser": {"dtypes": [torch.float32, torch.float64]},
+            "test_kaiser_window": {
+                "dtypes": [
+                    torch.bfloat16,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                ]
+            },
+            "test_like_fn_stride_proparation_vs_tensoriterator_unary_op": "*",
+            "test_linlogspace_mem_overlap": "*",
+            "test_linspace": "*",
+            "test_linspace_vs_numpy": {"dtypes": [torch.complex128]},
+            "test_logspace": "*",
+            "test_logspace_base2": {"dtypes": [torch.float32, torch.float64]},
+            "test_logspace_deduction": "*",
+            "test_logspace_device_vs_cpu": {
+                "dtypes": [torch.float32, torch.float64]
+            },
+            "test_logspace_special_steps": {
+                "dtypes": [torch.float32, torch.float64]
+            },
+            "test_logspace_vs_numpy": {
+                "dtypes": [torch.float32, torch.float64]
+            },
+            "test_new_empty_strided": "*",
+            "test_ones": "*",
+            "test_random_bool": "*",
+            "test_random_from_to": "*",
+            "test_random_from_to_bool": "*",
+            "test_random_to": "*",
+            "test_range": {"dtypes": [torch.float32]},
+            "test_range_warning": "*",
+            "test_repeat_interleave": "*",
+            "test_roll": "*",
+            "test_strided_mismatched_stride_shape": "*",
+            "test_tensor_device": "*",
+            "test_tensor_factories_empty": "*",
+            "test_torch_complex": {"dtypes": [torch.float16]},
+            "test_torch_complex_out_dtype_error": {
+                "dtypes": [torch.float32, torch.float64]
+            },
+            "test_torch_complex_same_dtype_error": {
+                "dtypes": [torch.float32, torch.float64]
+            },
+            "test_torch_polar": {"dtypes": [torch.float16]},
+            "test_vander_types": {"dtypes": [torch.complex128]},
+            "test_vstack_row_stack": {
+                "dtypes": [
+                    torch.complex128,
+                    torch.complex64,
+                    torch.float16,
+                    torch.float32,
+                    torch.float64,
+                ]
+            },
+            "test_zeros": "*",
+            "test_zeros_bounds_checking": "*",
+        },
     },
     "test_testing": {
         "TestAssertCloseMultiDevice": "*",
