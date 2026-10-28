@@ -212,7 +212,7 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "distributed_tensor_dtensor_ops_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
+    shard_count = 12,
     torch_test_module = "distributed/tensor/test_dtensor_ops",
 )
 
@@ -371,13 +371,11 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "export_converter_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "export/test_converter",
 )
 
 torch_tpu_torch_test(
     name = "export_hop_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "export/test_hop",
 )
 
@@ -389,7 +387,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "export_passes_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "export/test_passes",
 )
 
@@ -406,7 +403,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "functorch_dim_split_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "functorch/dim/test_split",
 )
 
@@ -508,7 +504,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "inductor_flex_attention_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "inductor/test_flex_attention",
 )
 
@@ -526,7 +521,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "inductor_fused_attention_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "inductor/test_fused_attention",
 )
 
@@ -627,7 +621,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "nn_lazy_modules_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "nn/test_lazy_modules",
 )
 
@@ -734,7 +727,6 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "complex_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
     torch_test_module = "test_complex",
 )
 
@@ -786,12 +778,6 @@ torch_tpu_torch_test(
     notap = "b/563402379",  # NOTAP_OK=torch tests
     shard_count = 4,
     torch_test_module = "test_foreach",
-)
-
-torch_tpu_torch_test(
-    name = "fx_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
-    torch_test_module = "test_fx",
 )
 
 torch_tpu_torch_test(
@@ -901,12 +887,6 @@ torch_tpu_torch_test(
     notap = "b/563402379",  # NOTAP_OK=torch tests
     shard_count = 20,
     torch_test_module = "test_ops_gradients",
-)
-
-torch_tpu_torch_test(
-    name = "ops_unbacked_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
-    torch_test_module = "test_ops_unbacked",
 )
 
 torch_tpu_torch_test(
