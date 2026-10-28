@@ -235,10 +235,14 @@ kiln::Tile DropoutKeepMask(const FlashAttnConfig& config, const Tiling& tiling,
   kiln::Tile q_abs = kiln::Iota(i32_shape, 0) + q_start;
   kiln::Tile kv_abs = kiln::Iota(i32_shape, 1) + kv_start;
 
-  // 4. Pack the coordinates into a single word, then avalanche. The pack is
-  // exactly injective while padded_q * padded_kv <= 2^32, so within a stream
-  // no two positions can share a hash.
-  kiln::Tile key = q_abs * config.padded_kv_sequence_length + kv_abs;
+  // 4. Pack the coordinates into a single word, then avalanche. The stride is
+  // the unpadded kv length: the forward and backward kernels can pad the
+  // sequence to different tile multiples, and both must drop the same
+  // positions. The pack is exactly injective over unpadded positions while
+  // q_len * kv_len <= 2^32, so within a stream no two of them can share a
+  // hash. Padded positions are masked out, so it does not matter that their
+  // keys can collide with unpadded ones.
+  kiln::Tile key = q_abs * config.kv_sequence_length + kv_abs;
   kiln::Tile hash = Fmix32(key ^ stream);
 
   // 5. Keep iff uint32(hash) >= round(dropout_rate * 2^32). Only a signed
