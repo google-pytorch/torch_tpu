@@ -20,9 +20,35 @@ https://github.com/pytorch/pytorch/blob/main/docs/source/accelerator/testing.md.
 
 from collections.abc import Mapping, Sequence
 from typing import Final
+import unittest
 
 import torch
 from torch.testing._internal.opinfo import core as opinfo_core
+
+
+def _xfail(
+    cls_name: str,
+    test_name: str,
+    *,
+    dtypes: Sequence[torch.dtype] | None = None,
+) -> opinfo_core.DecorateInfo:
+  """Marks TPU variants of `@ops` / `@modules` tests as expected failures."""
+  return opinfo_core.DecorateInfo(
+      unittest.expectedFailure, cls_name, test_name, dtypes=dtypes
+  )
+
+
+def _skip(
+    cls_name: str,
+    test_name: str,
+    *,
+    dtypes: Sequence[torch.dtype] | None = None,
+) -> opinfo_core.DecorateInfo:
+  """Skips TPU variants of `@ops` / `@modules` tests, e.g. crashing ones."""
+  return opinfo_core.DecorateInfo(
+      unittest.skip("Skipped on TPU"), cls_name, test_name, dtypes=dtypes
+  )
+
 
 # Decorators applied to OpInfo-based tests, i.e. tests parametrized by `@ops`,
 # for TPU.
@@ -40,6 +66,29 @@ from torch.testing._internal.opinfo import core as opinfo_core
 # Unlike `TEST_EXCLUSIONS`, which cannot tell apart the ops of an `@ops` test,
 # this targets individual ops and dtypes of a test method.
 OP_OVERRIDES: Final[
+    Mapping[str, Mapping[str, Sequence[opinfo_core.DecorateInfo]]]
+] = {
+    # go/keep-sorted start block=yes
+    "export/test_hop": {
+        "auto_functionalize.simple": [
+            _xfail("TestHOPDevice", "test_aot_export"),
+            _xfail("TestHOPDevice", "test_pre_dispatch_export"),
+            _xfail("TestHOPDevice", "test_retrace_export"),
+            _xfail("TestHOPDevice", "test_serialize_export"),
+        ],
+    },
+    # go/keep-sorted end
+}
+
+# Decorators applied to ModuleInfo-based tests, i.e. tests parametrized by
+# `@modules`, for TPU.
+#
+# Same as `OP_OVERRIDES`, but keyed by test module and then by
+# `ModuleInfo.name`, e.g. "nn.Linear". Upstream has no PrivateUse1 equivalent of
+# `op_overrides` for `@modules`, so the test runner appends these decorators to
+# the matching entries of `common_modules.module_db` before running the test
+# module.
+MODULE_OVERRIDES: Final[
     Mapping[str, Mapping[str, Sequence[opinfo_core.DecorateInfo]]]
 ] = {}
 
@@ -355,6 +404,14 @@ TEST_EXCLUSIONS: Final[
         "TestBmmOuterProductDevice": [
             "test_non_current_device_outer_product",
         ],
+    },
+    "test_complex": {
+        "TestComplexTensor": {
+            "test_all": "*",
+            "test_dtype_inference": {"dtypes": [torch.float16]},
+            "test_eq": {"dtypes": [torch.complex128]},
+            "test_ne": {"dtypes": [torch.complex128]},
+        },
     },
     "test_custom_ops": {
         "TestCustomOpTesting": [
