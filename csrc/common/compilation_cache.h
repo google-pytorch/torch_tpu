@@ -43,6 +43,7 @@
 #include "csrc/common/shape.h"
 #include "csrc/common/thread_pool.h"
 #include "csrc/common/tier2_compilation_cache.h"
+#include "csrc/common/unbounded_dynamic_kernel_registry.h"
 #include "csrc/common/utils.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "xla/pjrt/pjrt_client.h"
@@ -124,15 +125,6 @@ struct BoundedDynamicCacheEntry {
   // The shape dynamism metadata required to generate the adapters around the
   // middle executable.
   ShapeDynamismMetadata shape_dynamism_metadata;
-};
-
-struct UnboundedDynamicCacheEntry {
-  CompilationCacheKey key;
-  // Consulted for compatibility checks while the executable is still in
-  // flight, and attached to the executable when it is published to
-  // `cache_entry` (whether compiled or loaded from a persistent tier).
-  UnboundedDynamicExecutionMetadata dynamic_meta;
-  CacheEntry cache_entry;
 };
 
 // Aggregated statistics for the compilation cache.
@@ -335,27 +327,6 @@ class CompilationCache {
   // executables in HBM.
   std::string HbmUsageSummary() const ABSL_LOCKS_EXCLUDED(cache_mutex_);
 
-  // Adds an executable with an associated compatibility predicate to the
-  // unbounded dynamic cache under the given key's shapeless key. The executable
-  // goes through the same tiered lookup as regular compilations: it is loaded
-  // from the tier-2/3 caches when present, and otherwise built with
-  // `executable_builder` and written back to them. Blocks until the entry is
-  // ready. Adding a key that is already present is a no-op.
-  //
-  // Parameters:
-  //  - key: The key to add to the unbounded dynamic cache.
-  //  - executable_builder: Builds the executable on a persistent cache miss.
-  //  - dynamic_meta: Attached to the executable, whichever tier it comes from.
-  //
-  // Returns:
-  //   An error status if the PjRtClient is not initialized, if building the
-  //   executable fails, or if the entry is evicted before it is ready.
-  absl::Status AddUnboundedDynamicCacheEntry(
-      const CompilationCacheKey& key,
-      LoadedExecutableBuilder executable_builder,
-      const UnboundedDynamicExecutionMetadata& dynamic_meta)
-      ABSL_LOCKS_EXCLUDED(cache_mutex_);
-
  private:
   friend class CompilationCacheTestHelper;
 
@@ -382,27 +353,26 @@ class CompilationCache {
 
   // The internal variant type for GetOrCreateCacheEntry, which returns
   // CacheEntry internal data that can be used outside of a lock, given a
-  // CompilationCacheKey. If the key directly matches an entry in the
-  // executable_cache_, we will return the executable_promise and
-  // executable_future from the CacheEntry. Otherwise, we will check if the
-  // ShapelessKey matches an entry in the bounded_dynamic_cache_. If so, we will
-  // check if the input shapes are compatible with any of the bounded dynamic
-  // entries, and return the internals of the middle executable cache entry
-  // and the shape dynamism metadata. If an entry was created or if
-  // allow_cache_mode_ is false, we will set needs_compilation to true.
+  // CompilationCacheKey. The lookup tries, in order: the static cache
+  // (executable_cache_) keyed by `key`; the unbounded dynamic kernel registry,
+  // serving or creating the entry of a registered kernel that accepts the
+  // shapes; and the bounded_dynamic_cache_, matching the ShapelessKey and
+  // returning the internals of the middle executable cache entry along with
+  // the shape dynamism metadata. If an entry was created or if
+  // allow_cache_mode_ is false, needs_compilation is set to true.
   struct CacheLookupInternal {
     absl_nonnull std::shared_ptr<LoadedExecutablePromise> executable_promise;
     SharedLoadedExecutableWithMetadataFuture executable_future;
     std::optional<ShapeDynamismMetadata> shape_dynamism_metadata;
     bool needs_compilation = false;
     bool dump_on_cache_miss = false;
+    // Set when `needs_compilation` is true and the entry belongs to a
+    // registered unbounded dynamic kernel: the kernel is built instead of the
+    // traced computation. Points into the process-wide registry, which never
+    // frees or moves its kernels.
+    const UnboundedDynamicKernel* absl_nullable unbounded_dynamic_kernel =
+        nullptr;
   };
-
-  // Returns a pointer to the unbounded dynamic cache entry for `key` if found,
-  // otherwise returns nullptr.
-  [[nodiscard]] const UnboundedDynamicCacheEntry*
-  FindUnboundedDynamicCacheEntryOrNull(const CompilationCacheKey& key) const
-      ABSL_EXCLUSIVE_LOCKS_REQUIRED(cache_mutex_);
 
   // Returns a pointer to the tier-1 cache entry for `key` in the cache selected
   // by `kind`, or nullptr if it is not there.
@@ -412,6 +382,8 @@ class CompilationCache {
 
   // Retrieves the entry for `key` from the tier-1 cache selected by `kind`,
   // recording the hit. If the key is not found in that cache, returns nullopt.
+  // Unbounded dynamic entries whose build failed are returned without recording
+  // a hit, since callers skip them.
   std::optional<CacheLookupInternal> GetCacheEntry(
       const CompilationCacheKey& key, CacheEntryKind kind) const
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(cache_mutex_);
@@ -419,25 +391,28 @@ class CompilationCache {
   using BoundedDynamicCache =
       absl::flat_hash_map<ShapelessKey, std::vector<BoundedDynamicCacheEntry>,
                           ShapelessKey::Hash>;
-  using UnboundedDynamicCache =
-      absl::flat_hash_map<ShapelessKey, std::vector<UnboundedDynamicCacheEntry>,
-                          ShapelessKey::Hash>;
   // Retrieves the bounded dynamic cache entries that match this key. If the
   // key is not found in the bounded dynamic cache, returns nullopt.
   std::optional<BoundedDynamicCache::iterator> GetBoundedDynamicCacheEntries(
       ShapelessKey shapeless_key) ABSL_EXCLUSIVE_LOCKS_REQUIRED(cache_mutex_);
 
-  // Retrieves a cache entry from the unbounded dynamic cache that is compatible
-  // with `input_shapes` and `output_shapes`. If no compatible entry is found,
-  // returns nullopt.
-  std::optional<CacheLookupInternal> GetUnboundedDynamicCacheEntry(
-      ShapelessKey key, absl::Span<const Shape> input_shapes,
-      absl::Span<const Shape> output_shapes) const
+  // Looks `key` up against the unbounded dynamic kernel registry. If
+  // auto-loading is enabled and a registered kernel under the key's shapeless
+  // key accepts `input_shapes` / `output_shapes`, returns a lookup for that
+  // kernel's tier-1 entry: the existing one if it is in flight or succeeded,
+  // or a newly created pending one (with `unbounded_dynamic_kernel` set so the
+  // kernel is built instead of the traced computation). Returns nullopt if
+  // auto-loading is disabled, no kernel matches, or the kernel's existing entry
+  // failed to build, in which case the caller falls back to the other tiers.
+  std::optional<CacheLookupInternal> GetOrCreateUnboundedDynamicCacheEntry(
+      const CompilationCacheKey& key, absl::Span<const Shape> input_shapes,
+      absl::Span<const Shape> output_shapes)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(cache_mutex_);
 
-  // Creates a cache entry in the static cache. If the key is already in the
-  // static cache, it will crash.
-  CacheLookupInternal AddStaticCacheEntry(const CompilationCacheKey& key)
+  // Creates a pending entry for `key` in the tier-1 cache selected by `kind`.
+  // Crashes if the key is already present in that cache.
+  CacheLookupInternal AddCacheEntry(const CompilationCacheKey& key,
+                                    CacheEntryKind kind)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(cache_mutex_);
 
   // Creates a new bounded dynamic cache entry for the given key and input
@@ -606,9 +581,12 @@ class CompilationCache {
   // dynamic shapes.
   BoundedDynamicCache bounded_dynamic_cache_ ABSL_GUARDED_BY(cache_mutex_);
 
-  // The cache of successfully compiled executables with unbounded dynamic
-  // shapes.
-  UnboundedDynamicCache unbounded_dynamic_cache_ ABSL_GUARDED_BY(cache_mutex_);
+  // The tier-1 entries of registered unbounded dynamic kernels, keyed by the
+  // kernel's key. Holds in-flight, successful and failed builds alike; failed
+  // entries stay until eviction and are skipped by lookups.
+  absl::flat_hash_map<CompilationCacheKey, CacheEntry,
+                      CompilationCacheKey::Hash>
+      unbounded_dynamic_cache_ ABSL_GUARDED_BY(cache_mutex_);
 
   // Cache statistics.
   mutable PerfStats perf_stats_ ABSL_GUARDED_BY(cache_mutex_);
@@ -622,6 +600,11 @@ class CompilationCache {
   // If true, the cache will dump the input StableHLO module for any cache
   // misses.
   bool dump_on_cache_miss_ ABSL_GUARDED_BY(cache_mutex_) = false;
+  // If true, a cache miss whose input shapes are accepted by a kernel in the
+  // `UnboundedDynamicKernelRegistry` loads that kernel instead of compiling
+  // the traced computation. Initialized from
+  // TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS; true by default.
+  bool auto_load_unbounded_dynamic_kernels_ ABSL_GUARDED_BY(cache_mutex_);
 
   // The current initialization options.
   CompilationCacheInitializationOptions options_ ABSL_GUARDED_BY(cache_mutex_);

@@ -7717,6 +7717,15 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     # count is the leading extent of the output, which is already part of the
     # cache key, so the kernels must stay distinct without an op param cache
     # key for it.
+    if (
+        os.environ.get("TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS")
+        != "0"
+    ):
+      self.skipTest(
+          "The precompiled unbounded dynamic nonzero kernel would serve these"
+          " inputs instead of the static kernels under test; run by"
+          " ops_unit_test_static_nonzero, which disables it."
+      )
     shape = (7, 11)  # Unused by other nonzero tests, so the cache starts cold.
 
     def make_input(num_nonzero, offset):
