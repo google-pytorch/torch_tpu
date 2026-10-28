@@ -2391,6 +2391,17 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     ):
       torch.std(t, dim=0, out=out)
 
+  def test_reduction_unsupported_complex_out_dtype_std(self):
+    """Std out-variant fails when a real input has a complex output dtype."""
+    t = torch.ones(2, 3, device=et.device(), dtype=torch.float32)
+    out = torch.empty(3, device=et.device(), dtype=torch.complex64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""std(): expected the output dtype not to be complex for a real input, got complex64""",
+        gpu=""""std_cuda" not implemented for 'ComplexFloat'""",
+    ):
+      torch.std(t, dim=0, out=out)
+
   def test_reduction_unsupported_int_dtype_var_out(self):
     """Var out-variant fails when input has integral dtype."""
     t = torch.ones(2, 3, device=et.device(), dtype=torch.int32)
@@ -2410,6 +2421,17 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
         RuntimeError,
         tpu="""var(): result type float32 can't be cast to the desired output type int32""",
         gpu="""result type Float can't be cast to the desired output type Int""",
+    ):
+      torch.var(t, dim=0, out=out)
+
+  def test_reduction_unsupported_complex_out_dtype_var(self):
+    """Var out-variant fails when a real input has a complex output dtype."""
+    t = torch.ones(2, 3, device=et.device(), dtype=torch.float32)
+    out = torch.empty(3, device=et.device(), dtype=torch.complex64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""var(): expected the output dtype not to be complex for a real input, got complex64""",
+        gpu=""""std_cuda" not implemented for 'ComplexFloat'""",
     ):
       torch.var(t, dim=0, out=out)
 
