@@ -35,6 +35,7 @@ torch_tpu_cc_library(
         "@llvm-project//mlir:IR",
         "@stablehlo//:stablehlo_ops",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
+        "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
     ],
 )
 

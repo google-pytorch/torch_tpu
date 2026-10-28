@@ -779,6 +779,12 @@ absl::StatusOr<std::vector<int64_t>> GetWorldDeviceAssignment() {  // INT_VEC_OK
   }
   const std::vector<int64_t>& world_rank_to_device_id =  // INT_VEC_OK
       GetGlobalRankToDeviceId();
+  if (static_cast<int64_t>(world_rank_to_device_id.size()) > num_devices) {
+    // Virtual multi-host: the world's ranks repeat this slice's devices.
+    TT_ASSIGN_OR_RETURN(const VirtualMultiHostFold fold,
+                        FoldVirtualMultiHostGroup(world_rank_to_device_id));
+    return fold.physical_device_ids;
+  }
   if (!world_rank_to_device_id.empty()) {
     return world_rank_to_device_id;
   }
@@ -1738,7 +1744,16 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
   TT_ASSIGN_OR_THROW(const xla::PjRtClient* const pjrt_client,
                      PjrtBackend::GetInstance().GetClient());
 
-  const int64_t world_size = pjrt_client->devices().size();
+  // Virtual multi-host (TORCH_TPU_VIRTUAL_MULTIHOST, distributed/utils.h): the
+  // torch world is larger than this process's PJRT slice; the store-based
+  // protocols below span the whole world, the compiled collectives only the
+  // local slice.
+  TT_ASSIGN_OR_THROW(const bool virtual_multihost,
+                     PjrtBackend::GetInstance().IsVirtualMultiHost());
+  int64_t world_size = pjrt_client->devices().size();
+  if (virtual_multihost) {
+    TT_ASSIGN_OR_THROW(world_size, PjrtBackend::GetInstance().GetWorldSize());
+  }
 
   // Addressable device "assigned" to this process/rank:
   TT_CHECK_THROW(pjrt_client->addressable_devices().size() == 1,
@@ -1820,6 +1835,23 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
   DeviceGroup local_partitions(size_);
   std::iota(local_partitions.begin(), local_partitions.end(), 0);
   replica_groups_ = DeviceGroupList({std::move(local_partitions)});
+  if (virtual_multihost) {
+    // Members on other slices repeat this slice's device ids: compile for the
+    // local members only and remember the fold the collectives pad by.
+    TT_ASSIGN_OR_THROW(const VirtualMultiHostFold fold,
+                       FoldVirtualMultiHostGroup(member_device_ids_));
+    device_assignment_.local = fold.physical_device_ids;
+    replica_groups_ = replica_groups_.WithVirtualFold(fold.fold);
+    device_assignment_.global = UniqueDeviceIds(device_assignment_.global);
+    if (fold.fold > 1) {
+      ABSL_LOG(WARNING) << "[ProcessGroupTpu] rank " << rank << " of "
+                        << group_size << ": virtual multi-host group spans "
+                        << fold.fold << " slices; collectives run on "
+                        << ToString(device_assignment_.local)
+                        << " only and pad their outputs (not numerically "
+                           "meaningful)";
+    }
+  }
   ABSL_VLOG(1) << "[ProcessGroupTpu] ctor done: pg_id=" << pg_id
                << ", elapsed=" << NowMs() - ctor_t0
                << " ms, num_subgroups=" << subgroup_member_world_ranks.size();

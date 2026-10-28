@@ -52,11 +52,37 @@ torch_tpu_cc_library(
 )
 
 torch_tpu_cc_library(
+    name = "world_config",
+    srcs = ["world_config.cc"],
+    hdrs = ["world_config.h"],
+    deps = [
+        "//csrc/common:env_vars",
+        "//csrc/common:error_utils",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "world_config_test",
+    srcs = ["world_config_test.cc"],
+    deps = [
+        ":world_config",
+        "//csrc/common:env_vars",
+        "//csrc/common:error_utils",
+        "//csrc/common:oss_test_main",
+        "//csrc/common:status_test_utils",
+        "@com_google_absl//absl/status:status_matchers",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "pjrt_state",
     srcs = ["pjrt_state.cc"],
     hdrs = ["pjrt_state.h"],
     deps = [
         ":pjrt",
+        ":world_config",
         "//csrc/common:contain",
         "//csrc/common:device_type",
         "//csrc/common:discovery",

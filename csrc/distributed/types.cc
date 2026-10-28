@@ -51,6 +51,15 @@ DeviceGroupList::DeviceGroupList(std::vector<DeviceGroup> groups,
 DeviceGroupList::DeviceGroupList(std::initializer_list<DeviceGroup> groups)
     : DeviceGroupList(std::vector<DeviceGroup>(groups)) {}
 
+DeviceGroupList DeviceGroupList::WithVirtualFold(int64_t virtual_fold) const {
+  DeviceGroupList folded = *this;
+  folded.virtual_fold_ = virtual_fold;
+  folded.fingerprint_ =
+      virtual_fold == 1 ? Fingerprint(groups_)
+                        : FingerprintCat(Fingerprint(groups_), virtual_fold);
+  return folded;
+}
+
 std::ostream& operator<<(std::ostream& os, const DeviceGroupList& list) {
   return os << ToString(list.groups());
 }
