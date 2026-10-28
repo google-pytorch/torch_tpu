@@ -958,96 +958,6 @@ class JaggedTensorTest(seed_test_utils.RepeatableTest):
     )
     self.assertEqual(recovered_values.shape, (15, 16))
 
-  def test_invalid_inputs_error_handling(self):
-    """Tests error checking on invalid offsets, dimensions, and parameters."""
-    values = torch.randn(5, 4, device="tpu")
-    offsets = torch.tensor([0, 2, 5], dtype=torch.int64, device="tpu")
-    dense = torch.randn(2, 3, 4, device="tpu")
-
-    # Negative max_length check
-    with self.assertRaises(RuntimeError):
-      torch.ops.aten._jagged_to_padded_dense_forward(
-          values, [offsets], [-1], 0.0
-      )
-
-    # Multiple jagged dimensions rejected
-    with self.assertRaises(RuntimeError):
-      torch.ops.aten._jagged_to_padded_dense_forward(
-          values, [offsets, offsets], [3], 0.0
-      )
-
-    # 2D offsets tensor rejected
-    with self.assertRaises(RuntimeError):
-      torch.ops.aten._jagged_to_padded_dense_forward(
-          values, [offsets.unsqueeze(0)], [3], 0.0
-      )
-
-    # 1D dense tensor in padded_dense_to_jagged rejected
-    with self.assertRaises(RuntimeError):
-      torch.ops.aten._padded_dense_to_jagged_forward(
-          torch.randn(5, device="tpu"), [offsets]
-      )
-
-    # total_L mismatch rejected
-    with self.assertRaises(RuntimeError):
-      torch.ops.aten._padded_dense_to_jagged_forward(
-          dense, [offsets], total_L=999
-      )
-
-    # Offset sequence length exceeding dense sequence length rejected
-    invalid_offsets = torch.tensor([0, 10, 20], dtype=torch.int64, device="tpu")
-    with self.assertRaises(RuntimeError):
-      torch.ops.aten._padded_dense_to_jagged_forward(dense, [invalid_offsets])
-
-    # Non-int64 offsets rejected
-    int32_offsets = torch.tensor([0, 2, 5], dtype=torch.int32, device="tpu")
-    with self.assertRaises(RuntimeError):
-      torch.ops.aten._jagged_to_padded_dense_forward(
-          values, [int32_offsets], [3], 0.0
-      )
-
-    # Non-zero start offsets rejected
-    nonzero_start_offsets = torch.tensor(
-        [1, 2, 5], dtype=torch.int64, device="tpu"
-    )
-    with self.assertRaises(RuntimeError):
-      torch.ops.aten._jagged_to_padded_dense_forward(
-          values, [nonzero_start_offsets], [3], 0.0
-      )
-
-    # Non-monotonic offsets rejected
-    decreasing_offsets = torch.tensor(
-        [0, 5, 2], dtype=torch.int64, device="tpu"
-    )
-    with self.assertRaises(RuntimeError):
-      torch.ops.aten._jagged_to_padded_dense_forward(
-          values, [decreasing_offsets], [3], 0.0
-      )
-
-    # 0D values tensor rejected
-    with self.assertRaises(RuntimeError):
-      torch.ops.aten._jagged_to_padded_dense_forward(
-          torch.tensor(1.0, device="tpu"), [offsets], [3], 0.0
-      )
-
-    # Offsets referencing more elements than available in values rejected
-    out_of_bounds_offsets = torch.tensor(
-        [0, 10], dtype=torch.int64, device="tpu"
-    )
-    with self.assertRaises(RuntimeError):
-      torch.ops.aten._jagged_to_padded_dense_forward(
-          values, [out_of_bounds_offsets], [10], 0.0
-      )
-
-    # Offsets batch size mismatching dense batch size rejected
-    mismatched_batch_offsets = torch.tensor(
-        [0, 1, 2, 3], dtype=torch.int64, device="tpu"
-    )
-    with self.assertRaises(RuntimeError):
-      torch.ops.aten._padded_dense_to_jagged_forward(
-          dense, [mismatched_batch_offsets]
-      )
-
   # ---------------------------------------------------------------------------
   # Pointwise & Activation Kernels Unit Tests
   # ---------------------------------------------------------------------------
@@ -1277,19 +1187,6 @@ class JaggedTensorTest(seed_test_utils.RepeatableTest):
     utils.assert_close(values_a.grad.cpu(), values_b.detach().cpu())
     utils.assert_close(values_b.grad.cpu(), values_a.detach().cpu())
     utils.assert_close(bias.grad.cpu(), torch.full((4,), 5.0))
-
-  def test_binary_mismatched_offsets_error(self):
-    """Tests that binary operations between jagged tensors with mismatched offsets raise RuntimeError."""
-    t_a = torch.randn(5, 4, device="tpu")
-    t_b = torch.randn(5, 4, device="tpu")
-    offsets_a = torch.tensor([0, 2, 5], dtype=torch.int64, device="tpu")
-    offsets_b = torch.tensor([0, 3, 5], dtype=torch.int64, device="tpu")
-
-    nt_a = nt_internal.nested_view_from_values_offsets(t_a, offsets_a)
-    nt_b = nt_internal.nested_view_from_values_offsets(t_b, offsets_b)
-
-    with self.assertRaises(RuntimeError):
-      _ = nt_a + nt_b
 
   # ---------------------------------------------------------------------------
   # Core Neural Network Modules Unit Tests

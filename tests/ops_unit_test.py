@@ -1296,30 +1296,46 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     t1 = torch.tensor([1.0, 2.0])
     t2 = torch.tensor([1.0, 2.0])
 
-    with self.assertRaisesRegex(ValueError, "rtol must be > 0"):
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=op_testing validation
+        ValueError, "rtol must be > 0"
+    ):
       self.assert_close(golden_result=t1, torch_tpu_result=t2, rtol=0)
-    with self.assertRaisesRegex(ValueError, "rtol must be > 0"):
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=op_testing validation
+        ValueError, "rtol must be > 0"
+    ):
       self.assert_close(golden_result=t1, torch_tpu_result=t2, rtol=-1e-5)
-    with self.assertRaisesRegex(ValueError, "atol must be > 0"):
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=op_testing validation
+        ValueError, "atol must be > 0"
+    ):
       self.assert_close(golden_result=t1, torch_tpu_result=t2, atol=0)
-    with self.assertRaisesRegex(ValueError, "atol must be > 0"):
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=op_testing validation
+        ValueError, "atol must be > 0"
+    ):
       self.assert_close(golden_result=t1, torch_tpu_result=t2, atol=-1e-5)
 
-    with self.assertRaisesRegex(ValueError, "rtol must be > 0"):
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=op_testing validation
+        ValueError, "rtol must be > 0"
+    ):
       self.assert_close_tpu_vs_cpu(
           lambda device: torch.tensor([1.0], device=device), rtol=0
       )
-    with self.assertRaisesRegex(ValueError, "atol must be > 0"):
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=op_testing validation
+        ValueError, "atol must be > 0"
+    ):
       self.assert_close_tpu_vs_cpu(
           lambda device: torch.tensor([1.0], device=device), atol=0
       )
 
-    with self.assertRaisesRegex(ValueError, "rtol must be > 0"):
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=op_testing validation
+        ValueError, "rtol must be > 0"
+    ):
       self.set_accuracy_overrides(
           tpu_gpu_overrides={"op": {torch.float32: {"rtol": 0}}},
           grad_gpu_overrides={},
       )
-    with self.assertRaisesRegex(ValueError, "atol must be > 0"):
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=op_testing validation
+        ValueError, "atol must be > 0"
+    ):
       self.set_accuracy_overrides(
           tpu_gpu_overrides={"op": {torch.float32: {"atol": 0}}},
           grad_gpu_overrides={},
@@ -4401,38 +4417,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(test_fn)
 
-  def test_im2col_errors(self):
-    """Tests im2col with invalid inputs that trigger error messages."""
-    tpu_device = torch.device("tpu")
-
-    # Test invalid input dimensions (e.g. 2D tensor)
-    # C++ check: input.dim() == 4 (after unsqueeze if 3D)
-    x_2d = torch.randn(2, 2).to(tpu_device)
-    with self.assertRaisesRegex(
-        RuntimeError, "expected input to have 3 or 4 dimensions"
-    ):
-      torch.ops.aten.im2col(
-          x_2d,
-          kernel_size=(2, 2),
-          dilation=(1, 1),
-          padding=(0, 0),
-          stride=(1, 1),
-      )
-
-    # Test non-positive output shape
-    # kernel_size > input_size without padding
-    x_small = torch.randn(1, 1, 2, 2).to(tpu_device)
-    with self.assertRaisesRegex(
-        RuntimeError, "expected output shape to be positive"
-    ):
-      torch.ops.aten.im2col(
-          x_small,
-          kernel_size=(3, 3),
-          dilation=(1, 1),
-          padding=(0, 0),
-          stride=(1, 1),
-      )
-
   def test_conj(self):
     def test(device):
       x = torch.tensor([[1 + 1j, 2 - 2j], [3 + 3j, 4 - 4j]]).to(device=device)
@@ -6839,25 +6823,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assertEqual(cpu_info.item(), tpu_info.cpu().item())
 
-  def test_solve_ex_singular_check_errors_true(self):
-    """Tests that singular inputs raise an error when check_errors=True."""
-    torch.manual_seed(1234)
-    # Create a singular matrix to trigger the unsolvable case.
-    # [[1, 1], [1, 1]] is singular (det=0).
-    a = torch.tensor([[1.0, 1.0], [1.0, 1.0]])
-    b = torch.randn(2, 1)
-
-    # CPU
-    with self.assertRaises(RuntimeError):
-      torch.linalg.solve_ex(a, b, check_errors=True)
-
-    # TPU
-    tpu_device = torch.device("tpu")
-    with self.assertRaises(RuntimeError):
-      torch.linalg.solve_ex(
-          a.to(tpu_device), b.to(tpu_device), check_errors=True
-      )
-
   def test_solve_ex_solvable(self):
     """Tests solve_ex with a solvable system."""
     torch.manual_seed(1234)
@@ -6899,14 +6864,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       return t
 
     self.assert_close_tpu_vs_cpu(test_fn_int)
-
-  def test_fill_complex128(self):
-    t = torch.empty((2, 2), dtype=torch.complex128, device=torch.device("tpu"))
-    with self.assertRaisesRegex(
-        RuntimeError, "complex128 dtype is not supported"
-    ):
-      t.fill_(1.0)
-      t.cpu()
 
   def test_floor_divide_tensor(self):
     sample_input = (
@@ -10096,24 +10053,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       raise exception
 
   def test_min(self):
-    # empty tensor on reduction dim
-    with self.assertRaisesRegex(IndexError, "min"):
-      torch.min(torch.tensor([], device="cpu"), dim=0)
-    with self.assertRaisesRegex(IndexError, "min"):
-      torch.min(
-          torch.tensor([], device=torch.device("tpu")),
-          dim=0,
-      )
-
-    # empty tensor on reduction dim
-    with self.assertRaisesRegex(IndexError, "min"):
-      torch.min(torch.empty(0, 2, device="cpu"), dim=0)
-    with self.assertRaisesRegex(IndexError, "min"):
-      torch.min(
-          torch.empty(0, 2, device=torch.device("tpu")),
-          dim=0,
-      )
-
     # nested empty tensor
     cpu_result = torch.min(torch.empty(1, 0, device="cpu"), dim=0)
     tpu_result = torch.min(torch.empty(1, 0, device=torch.device("tpu")), dim=0)
@@ -18477,13 +18416,8 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
 
   # TODO: Make fmod() consistent across CPU and TPU for integer zero division
   def test_fmod_int_zero_division(self):
-    # CPU raises RuntimeError for integer division by zero
-    t_cpu = torch.tensor([1, 2, 3], device="cpu", dtype=torch.int32)
-    other_cpu = torch.zeros_like(t_cpu)
-    with self.assertRaisesRegex(RuntimeError, "ZeroDivisionError"):
-      torch.fmod(t_cpu, other_cpu)
-
-    # TPU can return any value
+    # TPU can return any value on integer zero division without raising.
+    # CPU raises RuntimeError for integer division by zero.
     t_tpu = torch.tensor(
         [1, 2, 3],
         device=torch.device("tpu"),
@@ -23022,7 +22956,7 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
             op_testing, "_GOLDEN_GPU_DATA", op_testing.GoldenGpuData()
         ),
     ):
-      with self.assertRaisesRegex(
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Op testing framework golden missing validation.
           AssertionError,
           "No GPU golden samples found for add.*Please re-generate the GPU"
           " golden files",

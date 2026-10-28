@@ -21,6 +21,7 @@ import unittest
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
+from torch.nested._internal import nested_tensor as nt_internal
 from torch_tpu._internal.utils import utils
 from torch_tpu._internal.distributed import multiprocessing
 from tests import error_testing as et
@@ -2395,6 +2396,24 @@ Device-side assertion tracking was not enabled by user.""",
         tpu="""unfold(): expected step > 0, got 0""",
     ):
       t.unfold(0, 2, 0)
+
+  def test_inplace_detach_fails_with_view(self):
+    x = torch.randn(3, 2, device=et.device(), requires_grad=True)
+    y = x.view(-1)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""Can't detach views in-place. Use detach() instead. If you are using DistributedDataParallel (DDP) for training, and gradient_as_bucket_view is set as True, gradients are views of DDP buckets, and hence detach_() cannot be called on these gradients. To fix this error, please refer to the Optimizer.zero_grad() function in torch/optim/optimizer.py as the solution.""",
+    ):
+      y.detach_()
+
+  def test_expand_mutate_view_fails(self):
+    base = torch.zeros(1, device=et.device())
+    view = base.expand(1000)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""unsupported operation: more than one element of the written-to tensor refers to a single memory location. Please clone() the tensor before performing the operation.""",
+    ):
+      view.add_(1.0)
 
   def test_std_out_dtype_mismatch(self):
     """Verifies that std raises RuntimeError when downcasting out tensor."""
@@ -7267,6 +7286,13 @@ Supported combinations for non-constant padding:
           inp, w, None, (1, 1), (0, 0), (1, 1), False, (0, 0), 1, out=out_bf16
       )
 
+  def test_min_empty_reduction_dim(self):
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""min(): Expected reduction dim 0 to have non-zero size.""",
+    ):
+      torch.min(torch.empty(0, 2, device=et.device()), dim=0)
+
   @parameterized.named_parameters(
       {"testcase_name": "min", "op": torch.min, "op_name": "min"},
       {"testcase_name": "max", "op": torch.max, "op_name": "max"},
@@ -10208,6 +10234,17 @@ Device-side assertion tracking was not enabled by user.""",
         message_reviewed_by="gunhyun",
     ):
       torch.linalg.solve_ex(a_non_square, b_non_square, out=(res, info))
+
+  def test_linalg_solve_ex_singular_check_errors(self):
+    """Tests that singular inputs raise an error when check_errors=True."""
+    a = torch.tensor([[1.0, 1.0], [1.0, 1.0]], device=et.device())
+    b = torch.randn(2, 1, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""solve: The solver failed because the input matrix is singular.""",
+        gpu="""torch.linalg.solve_ex: The solver failed because the input matrix is singular.""",
+    ):
+      torch.linalg.solve_ex(a, b, check_errors=True)
 
   def test_linalg_solve_triangular_out_dtype_mismatch(self):
     a = torch.randn(3, 3, device=et.device(), dtype=torch.float32)
@@ -15032,6 +15069,24 @@ Device-side assertion tracking was not enabled by user.""",
       torch.ops.aten._jagged_to_padded_dense_forward(
           values, [offsets], [3], 0.0
       )
+
+  def test_nested_tensor_add_mismatched_offsets(self):
+    t_a = torch.randn(5, 4, device=et.device())
+    t_b = torch.randn(5, 4, device=et.device())
+    offsets_a = torch.tensor([0, 2, 5], dtype=torch.int64, device=et.device())
+    offsets_b = torch.tensor([0, 3, 5], dtype=torch.int64, device=et.device())
+
+    nt_a = nt_internal.nested_view_from_values_offsets(t_a, offsets_a)
+    nt_b = nt_internal.nested_view_from_values_offsets(t_b, offsets_b)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r"cannot call binary pointwise function add(\.Tensor)? with inputs"
+            r" of shapes \(2, j\d+, 4\) and \(2, j\d+, 4\)"
+        ),
+    ):
+      _ = nt_a + nt_b
 
   def test_leaky_relu_backward_negative_slope_with_self_is_result(self):
     grad_output = torch.ones(2, device=et.device())

@@ -96,23 +96,6 @@ class RngTest(seed_test_utils.RepeatableTest):
     val2 = torch.randn(10, generator=g, device=device)
     self.assertTrue(torch.equal(val1, val2))
 
-  def test_set_rng_state_error_tpu(self):
-    device = torch.device("tpu")
-    state = torch.tpu.get_rng_state(device).to(device)
-    with self.assertRaisesRegex(
-        RuntimeError, "expect rng state to be a torch.ByteTensor"
-    ):
-      torch.tpu.set_rng_state(state, device)
-
-  def test_generator_set_state_error_tpu(self):
-    device = torch.device("tpu")
-    g = torch.Generator(device=device)
-    state = g.get_state().to(device)
-    with self.assertRaisesRegex(
-        RuntimeError, "expect rng state to be a torch.ByteTensor"
-    ):
-      g.set_state(state)
-
   def test_get_rng_state_in_fake_tensor_mode(self):
     device = torch.device("tpu")
     with fake_tensor.FakeTensorMode(allow_non_fake_inputs=False):

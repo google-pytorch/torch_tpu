@@ -404,6 +404,25 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       torch.index_copy(self_tensor, 0, index, source, out=t)
 
+  @et.why_tpu_only(
+      "TorchTPU prohibits inplace writes to overlapping unfold views."
+  )
+  def test_unfold_mutate_view_fails(self):
+    base = torch.zeros(1024, 128, device=et.device())
+    view = base.unfold(dimension=1, size=127, step=1)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r"add_?\(\): inplace writes to overlapping views are undefined"
+            r" behavior and are not supported\.\nBecause multiple logical"
+            r" tensor indices point to the same buffer elements, writes from"
+            r" multiple indices may overwrite each other\.\nPlease use"
+            r" clone\(\)"
+            r" or contiguous\(\) to copy the tensor before writing"
+        ),
+    ):
+      view.add_(1.0)
+
   @et.why_tpu_only("Testing TPU OOM behavior.")
   def test_mm_with_oom_result(self):
     """Tests that mm with a large result that OOMs fails with expected error."""
@@ -1136,6 +1155,40 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
       # cpu() is needed because the error is triggered inside the op builder.
       outputs[0].cpu()
+
+  @et.why_tpu_only(
+      "TorchTPU im2col kernel provides custom argument validation."
+  )
+  def test_im2col_invalid_input_dimensions(self):
+    x_2d = torch.randn(2, 2, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""im2col(): expected input to have 3 or 4 dimensions, got 2""",
+    ):
+      torch.ops.aten.im2col(
+          x_2d,
+          kernel_size=(2, 2),
+          dilation=(1, 1),
+          padding=(0, 0),
+          stride=(1, 1),
+      )
+
+  @et.why_tpu_only(
+      "TorchTPU im2col kernel provides custom argument validation."
+  )
+  def test_im2col_non_positive_output_shape(self):
+    x_small = torch.randn(1, 1, 2, 2, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""im2col(): expected output shape to be positive, got 0x0""",
+    ):
+      torch.ops.aten.im2col(
+          x_small,
+          kernel_size=(3, 3),
+          dilation=(1, 1),
+          padding=(0, 0),
+          stride=(1, 1),
+      )
 
   @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
   def test_convolution_dynamic_kernel(self):
@@ -2750,6 +2803,60 @@ module {
     ):
       torch.tpu.set_rng_state(torch.zeros(16, dtype=torch.uint8), 1)
 
+  @et.why_tpu_only("TPU set_rng_state expects state to be a CPU ByteTensor.")
+  def test_set_rng_state_wrong_dtype(self):
+    device = et.device()
+    state = torch.zeros(16, dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r"(set_rng_state\(\): )?expect rng state to be a torch\.ByteTensor"
+        ),
+    ):
+      torch.tpu.set_rng_state(state, device)
+
+  @et.why_tpu_only("TPU set_rng_state expects state to be a CPU ByteTensor.")
+  def test_set_rng_state_non_cpu_tensor(self):
+    device = et.device()
+    state = torch.zeros(16, dtype=torch.uint8, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r"(set_rng_state\(\): )?expect rng state to be a torch\.ByteTensor"
+        ),
+    ):
+      torch.tpu.set_rng_state(state, device)
+
+  @et.why_tpu_only(
+      "TPU Generator.set_state expects state to be a CPU ByteTensor."
+  )
+  def test_generator_set_state_wrong_dtype(self):
+    device = et.device()
+    g = torch.Generator(device=device)
+    state = torch.zeros(16, dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r"(set_state\(\): )?expect rng state to be a torch\.ByteTensor"
+        ),
+    ):
+      g.set_state(state)
+
+  @et.why_tpu_only(
+      "TPU Generator.set_state expects state to be a CPU ByteTensor."
+  )
+  def test_generator_set_state_non_cpu_tensor(self):
+    device = et.device()
+    g = torch.Generator(device=device)
+    state = g.get_state().to(device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r"(set_state\(\): )?expect rng state to be a torch\.ByteTensor"
+        ),
+    ):
+      g.set_state(state)
+
   # TODO(marcosyukio): check if this test passes on CUDA with CC >= 8.9.
   @et.why_tpu_only(
       "TPU enforces scale orientation ([M, 1] / [1, N]); CPU has no equivalent"
@@ -2878,6 +2985,54 @@ module {
           amsgrad=False,
           maximize=False,
       )
+
+  @et.why_tpu_only(
+      "Buffer donation invalidation is a TPU-specific optimization."
+  )
+  def test_fused_adamw_donates_first_argument_error(self):
+    # TODO: b/576318333 - Re-enable once torch.compile of _fused_adamw_ passes
+    # functionalization.
+    self.skipTest("b/576318333: functionalization fails for _fused_adamw_.")
+
+    @torch.compile(
+        fullgraph=True,
+        backend="tpu",
+        options={"serializable": False},
+    )
+    def step_fn(params, grads, exp_avgs, exp_avg_sqs, state_steps, lr):
+      torch.ops.aten._fused_adamw_.default(
+          params,
+          grads,
+          exp_avgs,
+          exp_avg_sqs,
+          [],
+          state_steps,
+          lr=lr,
+          beta1=0.9,
+          beta2=0.999,
+          weight_decay=0.01,
+          eps=1e-8,
+          amsgrad=False,
+          maximize=False,
+      )
+
+    p = torch.tensor([1.0, 2.0], dtype=torch.float32, device="tpu")
+    g = torch.tensor([0.1, 0.2], dtype=torch.float32, device="tpu")
+    ea = torch.tensor([0.01, 0.02], dtype=torch.float32, device="tpu")
+    eas = torch.tensor([0.001, 0.002], dtype=torch.float32, device="tpu")
+    step = torch.tensor([1], dtype=torch.int64, device="tpu")
+
+    old_p_view = p.view_as(p)
+
+    step_fn([p], [g], [ea], [eas], [step], 0.001)
+
+    self.assertIsNotNone(p.cpu())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""to_copy(): cannot start a device to host copy from a donated or deleted buffer""",
+    ):
+      old_p_view.cpu()
 
   @et.why_tpu_only("GPU missing check: out-of-bounds read corrupts computation")
   def test_fused_adam_mismatched_state_steps_size(self):
