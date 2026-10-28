@@ -628,10 +628,16 @@ ProcessGroupTpu::CrossHostSendBuffers(
   }
 
   // Retrieve descriptors from the distributed store. This is a blocking call
-  // that waits until the remote receiver has posted its descriptors.
+  // that waits until the remote receiver has posted its descriptors. Each
+  // descriptor is read exactly once, so its key is removed right away; the
+  // store would otherwise keep one entry per transferred tensor for the
+  // process group's lifetime.
   std::vector<std::vector<uint8_t>> descriptors;
   try {
     descriptors = store_->multiGet(descriptor_keys);
+    for (const auto& descriptor_key : descriptor_keys) {
+      store_->deleteKey(descriptor_key);
+    }
   } catch (const std::exception& e) {
     all_sent_future->setError(std::current_exception());
   }

@@ -654,6 +654,8 @@ def _run_send_recv_same_tag() -> None:
   # between the same pair, reverse-direction transfers, and one-to-many sends.
   p2p_tag = 0
   tensor_shape = (32, 32)
+  store = dist.distributed_c10d._get_default_store()
+  num_store_keys = store.num_keys()
 
   ranks = list(range(world_size))
   for step in range(3):
@@ -683,6 +685,15 @@ def _run_send_recv_same_tag() -> None:
       torch.tpu.ops.recv([recv_buffer], src=0, tag=p2p_tag).wait()
       expected = torch.full(tensor_shape, tensor_value)
       utils.assert_close(recv_buffer.cpu(), expected)
+
+  # A sender removes each receive descriptor from the store once it has read
+  # it, so the transfers leave the store as they found it.
+  dist.barrier()
+  if store.num_keys() != num_store_keys:
+    raise AssertionError(
+        f"{store.num_keys() - num_store_keys} receive descriptors left in the"
+        " store after the transfers"
+    )
 
 
 def _run_collectives_with_non_uniform_deferred_ops() -> None:
