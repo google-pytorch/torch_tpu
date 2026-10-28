@@ -303,16 +303,32 @@ class FP4Test(seed_test_utils.RepeatableTest):
     scale_b = torch.tensor([2.0], dtype=torch.float32, device=device)
 
     # _scaled_mm.out producing float4_e2m1fn_x2 and growing a non-empty out=
+    scale_a_fp4 = torch.tensor([0.125], dtype=torch.float32, device=device)
+    scale_b_fp4 = torch.tensor([0.25], dtype=torch.float32, device=device)
     out_fp4 = torch.empty((4, 4), dtype=torch.float4_e2m1fn_x2, device=device)
     torch.ops.aten._scaled_mm.out(
         a,
         b,
-        scale_a,
-        scale_b,
+        scale_a_fp4,
+        scale_b_fp4,
         out_dtype=torch.float4_e2m1fn_x2,
         out=out_fp4,
     )
     self.assertEqual(out_fp4.shape, torch.Size([m, n // 2]))
+    expected_fp4_f32 = (
+        torch.matmul(a_f32, b_raw_f32.t())
+        * scale_a_fp4.cpu()
+        * scale_b_fp4.cpu()
+    )
+    expected_fp4 = quantize_utils.quantize_to_float4_e2m1fn_x2(
+        expected_fp4_f32.reshape(2 * m, n // 2)
+    )[:m]
+    utils.assert_close(
+        quantize_utils.decode_sub_byte_tensor(out_fp4.cpu()),
+        quantize_utils.decode_sub_byte_tensor(expected_fp4),
+        atol=0.5,
+        rtol=0.0,
+    )
 
     # _scaled_mm_v2 and _scaled_mm_v2.out with TensorWise and BlockWise1x32 (2*K)
     out_v2 = torch._scaled_mm_v2(
@@ -389,6 +405,29 @@ class FP4Test(seed_test_utils.RepeatableTest):
     )
     self.assertEqual(unit_t.shape, torch.Size([1, 4]))
     self.assertTrue(torch.equal(unit_t, unit_t))
+
+    # Returning transposed FP4 views (both odd and even N, and unit slice) from
+    # torch.compile
+    compile_transpose = torch.compile(
+        lambda x: x.to(torch.float4_e2m1fn_x2).t(), backend="tpu"
+    )
+    for n_rows in (3, 4):
+      x_f32 = torch.tensor(
+          [[0.5, -1.0, 1.5, -2.0]] * n_rows, dtype=torch.float32
+      )
+      out_t = compile_transpose(x_f32.to(device))
+      eager_t = x_f32.to(device).to(torch.float4_e2m1fn_x2).t()
+      self.assertEqual(out_t.shape, torch.Size([4, n_rows]))
+      self.assertEqual(out_t.stride(), (1, 4))
+      utils.assert_close(out_t.cpu(), eager_t.cpu())
+      utils.assert_close(out_t.t().to(torch.float32).cpu(), x_f32)
+
+    compile_unit_slice = torch.compile(lambda x: x.t()[:1, :], backend="tpu")
+    sliced_t = compile_unit_slice(b_raw_cpu.to(device))
+    self.assertEqual(sliced_t.shape, torch.Size([1, n]))
+    self.assertEqual(sliced_t.stride(), (1, k_packed))
+    utils.assert_close(sliced_t.cpu(), b[:1, :].cpu())
+    utils.assert_close(sliced_t.t().cpu(), b_raw_cpu[:, :1])
 
 
 if __name__ == "__main__":

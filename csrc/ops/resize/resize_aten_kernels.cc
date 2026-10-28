@@ -27,7 +27,6 @@
 #include "absl/status/status.h"
 #include "c10/util/ArrayRef.h"
 #include "c10/util/Optional.h"
-#include "c10/util/accumulate.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"

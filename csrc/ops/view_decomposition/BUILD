@@ -511,10 +511,12 @@ torch_tpu_cc_library(
         "//csrc/eager:device_buffer_utils",
         "//csrc/eager:tensor_to_buffer",
         "//shims/torch:aten_headers",
+        "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
+        "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
     ],
 )
 

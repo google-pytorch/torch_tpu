@@ -209,6 +209,7 @@ pybind_extension(
         "//csrc/common:dtype",
         "//csrc/common:env_vars",
         "//csrc/common:error_utils",
+        "//csrc/common:layout_utils",
         "//csrc/common:pybind_error_utils",
         "//csrc/common:shape",
         "//csrc/common:to_string",

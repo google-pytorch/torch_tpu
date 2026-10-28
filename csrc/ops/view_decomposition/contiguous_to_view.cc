@@ -18,11 +18,11 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <optional>
 #include <utility>
 #include <vector>
 
 #include "ATen/core/TensorBody.h"
+#include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -36,6 +36,7 @@
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/view_decomposition/decomposition.h"
 #include "csrc/ops/view_decomposition/strided_layout.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 
 namespace torch_tpu {
 
@@ -140,6 +141,21 @@ Dimensions GetNonOverlappingWindowShape(
   return non_overlapping_window_shape;
 }
 
+// Returns the PyTorch logical tensor dimensions corresponding to `buffer`.
+// For `F4E2M1FN`, the trailing dimension of `buffer` is unpacked (2x) and is
+// halved to match the packed `float4_e2m1fn_x2` tensor shape created by
+// `MakeTensor`.
+Dimensions GetLogicalTensorDimensions(const DeviceBufferRef& buffer) {
+  Dimensions dims(buffer.dimensions().begin(), buffer.dimensions().end());
+  if (buffer.element_type() == mlir::ElementType::F4E2M1FN) {
+    ABSL_CHECK(!dims.empty());         // CRASH_OK
+    ABSL_CHECK_EQ(dims.back() % 2, 0)  // CRASH_OK
+        << "Last dimension of FP4 must be even, got " << dims.back();
+    dims.back() /= 2;
+  }
+  return dims;
+}
+
 // One window of data that needs to be written to the output tensor.
 struct NonOverlappingWindow {
   // The logical values that will be written into the output tensor.
@@ -168,13 +184,15 @@ absl::StatusOr<std::vector<NonOverlappingWindow>> GetNonOverlappingWindows(
     int64_t target_storage_offset) {
   // Set up the properties which are constant across all windows.
   // Find which specific dimensions are overlapping.
-  const Indices overlapping_axes =
-      GetOverlappingAxes(contiguous_buffer.dimensions(), target_strides);
-  const Dimensions non_overlapping_window_shape = GetNonOverlappingWindowShape(
-      contiguous_buffer.dimensions(), target_strides, overlapping_axes);
-  const Strides read_strides =
-      GetStrides(MakeContiguousBaseLayout(contiguous_buffer.dimensions()));
   const at::Tensor duplicated_tensor = MakeTensor(contiguous_buffer);
+  const absl::Span<const int64_t> tensor_dims(duplicated_tensor.sizes().data(),
+                                              duplicated_tensor.sizes().size());
+  const Indices overlapping_axes =
+      GetOverlappingAxes(tensor_dims, target_strides);
+  const Dimensions non_overlapping_window_shape = GetNonOverlappingWindowShape(
+      tensor_dims, target_strides, overlapping_axes);
+  const Strides read_strides =
+      GetStrides(MakeContiguousBaseLayout(tensor_dims));
 
   // Output value.
   std::vector<NonOverlappingWindow> non_overlapping_windows;
@@ -239,16 +257,16 @@ absl::Status WriteWindowsToTensor(
     const at::Tensor& output_tensor, absl::Span<const int64_t> target_strides,
     std::vector<NonOverlappingWindow> non_overlapping_windows) {
   for (auto& window : non_overlapping_windows) {
+    const Dimensions window_dims =
+        GetLogicalTensorDimensions(window.window_value);
     // Take a view of the correct destination slice in the output tensor.
     at::Tensor writable_window = output_tensor;  // intentional copy
     writable_window.unsafeGetTensorImpl()->set_sizes_and_strides(
-        window.window_value.dimensions(), target_strides,
-        window.write_storage_offset);
+        window_dims, target_strides, window.write_storage_offset);
 
     // Copy the window values into the output tensor slice.
-    ABSL_VLOG(3) << "Writing into window of shape "
-                 << ToString(window.window_value.dimensions()) << ", strides "
-                 << ToString(target_strides) << ", at offset "
+    ABSL_VLOG(3) << "Writing into window of shape " << ToString(window_dims)
+                 << ", strides " << ToString(target_strides) << ", at offset "
                  << window.write_storage_offset;
     TT_RETURN_IF_ERROR(AssignBufferToAtTensor(std::move(window.window_value),
                                               writable_window));
@@ -268,9 +286,9 @@ absl::StatusOr<at::Tensor> ContiguousToView(
   TT_RET_CHECK(target_storage_offset >= 0, error::kInvalidArgument)
       << "target_storage_offset must be non-negative";
 
+  const Dimensions tensor_dims = GetLogicalTensorDimensions(contiguous_buffer);
   if (target_storage_offset == 0 &&
-      GetStrides(MakeContiguousBaseLayout(contiguous_buffer.dimensions())) ==
-          target_strides) {
+      GetStrides(MakeContiguousBaseLayout(tensor_dims)) == target_strides) {
     ABSL_VLOG(2) << "[ContiguousToView] Buffer is already contiguous, no op";
     // The target view is a contiguous base. Lift directly into output tensor.
     return MakeTensor(contiguous_buffer);
@@ -280,13 +298,16 @@ absl::StatusOr<at::Tensor> ContiguousToView(
   StridedLayout target_view_layout{
       .storage_offset = target_storage_offset,
   };
-  for (auto i = 0; i < contiguous_buffer.dimensions().size(); ++i) {
+  for (auto i = 0; i < tensor_dims.size(); ++i) {
     target_view_layout.strided_dims.push_back(
-        {.size = contiguous_buffer.dimensions()[i],
-         .stride = target_strides[i]});
+        {.size = tensor_dims[i], .stride = target_strides[i]});
   }
   TT_ASSIGN_OR_RETURN(Dimensions target_contiguous_base_shape,
                       GetContiguousBaseShape(target_view_layout));
+  if (contiguous_buffer.element_type() == mlir::ElementType::F4E2M1FN) {
+    ABSL_CHECK(!target_contiguous_base_shape.empty());  // CRASH_OK
+    target_contiguous_base_shape.back() *= 2;
+  }
   TT_ASSIGN_OR_RETURN(
       DeviceBufferRef empty_contiguous_base,
       CreateEmptyDeviceBufferRef(target_contiguous_base_shape,
@@ -307,7 +328,7 @@ absl::StatusOr<at::Tensor> ContiguousToView(
 
   // Apply the target view to the output tensor.
   output_tensor.unsafeGetTensorImpl()->set_sizes_and_strides(
-      contiguous_buffer.dimensions(), target_strides, target_storage_offset);
+      tensor_dims, target_strides, target_storage_offset);
   ABSL_VLOG(1) << "[ContiguousToView] Successfully created view of shape "
                << ToString(output_tensor.sizes()) << ", strides "
                << ToString(output_tensor.strides()) << ", at offset "

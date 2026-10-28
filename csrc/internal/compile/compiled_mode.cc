@@ -49,6 +49,7 @@
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/layout_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/tpu_subslice_utils.h"
@@ -98,6 +99,22 @@ inline const at::Tensor& DerefTensor(const at::Tensor* t) { return *t; }
 bool NeedsMaterialize(const DeviceBufferRef& buffer_ref) {
   const auto& node = buffer_ref.device_buffer_list();
   return node != nullptr && (node->is_deferred() || node->is_placeholder());
+}
+
+// Normalizes a graph output tensor before extracting its DeviceBufferRef.
+// `MakeTensor` halves the trailing dimension of every `F4E2M1FN` output buffer
+// to construct a contiguous `float4_e2m1fn_x2` tensor, so a transposed
+// `float4_e2m1fn_x2` view whose packed (stride-1) dimension is not the last
+// dimension must have its packed dimension transposed to the end before
+// `GetBuffer` (and transposed back by `FxOutputReconstructor`).
+absl::StatusOr<DeviceBufferRef> GetResultBuffer(const at::Tensor& tensor) {
+  if (tensor.scalar_type() == at::kFloat4_e2m1fn_x2) {
+    const int64_t packed_dim = FindFp4PackedDim(tensor);
+    if (packed_dim >= 0 && packed_dim != tensor.dim() - 1) {
+      return GetBuffer(tensor.transpose(packed_dim, tensor.dim() - 1));
+    }
+  }
+  return GetBuffer(tensor);
 }
 
 // To call a compiled PjRtExecutable, we need to get materialized base buffers
@@ -333,7 +350,7 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ExtractMlirFromGraph(
   std::vector<DeviceBufferRef> result_refs;
   result_refs.reserve(result_tensors.size());
   for (const at::Tensor& tensor : result_tensors) {
-    TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref, GetBuffer(tensor),
+    TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref, GetResultBuffer(tensor),
                         _.SetPrepend()
                             << "failed to get buffer from result tensor: "
                             << ToString(tensor));
@@ -402,7 +419,7 @@ absl::StatusOr<AsyncCompileResult> TraverseAndCompile(
   for (const at::Tensor& tensor : result_tensors) {
     TT_ASSIGN_OR_CRASH(  // CRASH_OK=implies a bug in compile backend if this
                          // happens
-        auto buffer_ref, GetBuffer(tensor),
+        auto buffer_ref, GetResultBuffer(tensor),
         _ << "failed to get device buffer from result tensor: "
           << ToString(tensor));
     ABSL_CHECK(  // CRASH_OK=implies a bug in compile backend if this happens

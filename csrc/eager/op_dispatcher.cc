@@ -320,9 +320,10 @@ absl::Status AssignBufferToOutput(const at::Tensor& output,
   Dimensions logical_dims(result_buffer.dimensions().begin(),
                           result_buffer.dimensions().end());
   if (result_buffer.element_type() == mlir::ElementType::F4E2M1FN) {
-    ABSL_CHECK(!logical_dims.empty());         // CRASH_OK
-    ABSL_CHECK_EQ(logical_dims.back() % 2, 0)  // CRASH_OK
-        << "Last dimension of FP4 must be even, got " << logical_dims.back();
+    ABSL_CHECK(!logical_dims.empty());  // CRASH_OK
+    TT_RET_CHECK(logical_dims.back() % 2 == 0, error::kInvalidArgument)
+        << "expected last dimension of float4_e2m1fn_x2 output to be even, got "
+        << logical_dims.back();
     logical_dims.back() /= 2;
   }
   TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(output, logical_dims));
