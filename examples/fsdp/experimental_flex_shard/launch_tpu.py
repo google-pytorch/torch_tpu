@@ -1,8 +1,8 @@
-"""Launch the unvalidated FlexShard smoke test on one TPU host.
+"""Launch the experimental FlexShard smoke test on one TPU host.
 
 Match the manual FSDP example's launch setup: initialize the environment before
-starting workers, and run one worker per detected device. No TPU run has been
-performed for this experimental example.
+starting workers, and run one worker per detected device. See README.md for the
+single-host validation scope and remaining accuracy and performance gates.
 """
 
 import torch

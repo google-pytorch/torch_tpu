@@ -1,4 +1,4 @@
-"""Unvalidated TPU smoke test; use launch_tpu.py on a configured TPU host.
+"""TPU smoke test; use launch_tpu.py on a configured TPU host.
 
 Requires mutually compatible TorchTPU, PyTorch, and public FlexShard builds.
 FlexShard requires PyTorch >= 2.16.0.dev0; this test has no compatibility shim.
@@ -42,16 +42,18 @@ def main():
   x = torch.randn(8, 128, device="tpu", dtype=torch.bfloat16)
   y = torch.randn(8, 64, device="tpu", dtype=torch.bfloat16)
 
-  def forward_backward(x, y):
+  def forward_loss(x, y):
     with torch.fx.traceback.annotate({"spmd_safe": True}):
-      loss = nn.functional.mse_loss(model(x).float(), y.float())
-      (loss / world_size).backward()
-      return loss.detach()
+      return nn.functional.mse_loss(model(x).float(), y.float()) / world_size
 
-  step = torch.compile(forward_backward, backend="tpu", fullgraph=True)
+  # Capture forward/loss and let AOTAutograd compile the backward separately.
+  # Tracing Tensor.backward() into this checkpointed custom-autograd graph
+  # fragments the backward phase and violates PyTorch's fused remat contract.
+  step = torch.compile(forward_loss, backend="tpu", fullgraph=True)
   for _ in range(3):
     optimizer.zero_grad(set_to_none=True)
-    step(x, y)
+    loss = step(x, y)
+    loss.backward()
     optimizer.step()
   torch.accelerator.synchronize()
   dist.destroy_process_group()

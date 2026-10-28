@@ -1,9 +1,10 @@
 # Experimental traceable FlexShard executor
 
 This example explores using FlexShard storage with parameter-access collectives
-that remain visible to graph capture and activation checkpointing. **TPU
-execution is unvalidated.** Keep `simple_fsdp.py` and the existing examples as the
-supported paths; this is not a TPU port of the public `flex_shard()` runtime.
+that remain visible to graph capture and activation checkpointing. Single-host
+TPU smoke and FP32 training checks pass; strict BF16 accuracy against the CPU
+reference remains unresolved. Keep `simple_fsdp.py` and the existing examples as
+the supported paths; this is not a TPU port of the public `flex_shard()` runtime.
 
 ## What the example uses
 
@@ -72,10 +73,35 @@ device count rather than assuming eight workers.
 
 `tpu_smoke.py` uses `tpu_dist`, a 1D TPU `DeviceMesh`, `spmd_safe` annotation,
 forward activation checkpointing, and `torch.compile(backend="tpu",
-fullgraph=True)`. It is an **unrun smoke test**, not a numerical or performance
-benchmark. Before replacing SimpleFSDP, validate byte-backed storage and dtype
-views, TPU lowering and execution of collective/autograd graphs, distributed
-numerical accuracy, and checkpoint peak memory and performance.
+fullgraph=True)` for forward and scaled loss. Backward runs outside Dynamo's
+compiled function and is compiled separately by AOTAutograd. This avoids the
+fused rematerialization pass's single-backward-region limitation for the custom
+autograd graph; it is not a fused forward/backward/optimizer step.
+
+High-level functional collectives already insert a wait during tracing, or wait
+on eager consumption. The executor does not wrap them in another `wait_tensor`,
+which would produce a nested-wait graph that TorchTPU rejects.
+
+### Validation scope
+
+On one TPU7x host with eight PyTorch device ranks, a TorchTPU build from this
+example's source base and `torch==2.16.0.dev20261007+cpu` passed:
+
+- The checkpointed BF16 smoke test.
+- Three-step FP32 sharding and replication checks against CPU global-batch
+  references, including losses, every local gradient, SGD updates, and parameter
+  trajectories. Forward/backward FX and StableHLO contain the expected
+  collectives and FP32 reductions.
+- Three-step checkpointed BF16 parity against stock SimpleFSDP on the same TPU
+  runtime. Losses, SGD updates, and used parameter values matched exactly;
+  maximum gradient difference was `2.33e-10`.
+
+Strict BF16 CPU-reference gradient tolerances (`rtol=0.03`, `atol=2e-6`) still
+fail in both this executor and stock SimpleFSDP. The shared discrepancy remains
+unresolved; baseline parity does not establish CPU-reference accuracy.
+Multi-host execution, checkpoint peak memory, performance, and distributed or
+optimizer checkpoint integration remain unvalidated. The smoke test alone does
+not establish these gates or make this a validated SimpleFSDP replacement.
 
 ## Use the experimental entry point
 

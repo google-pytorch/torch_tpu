@@ -117,7 +117,8 @@ class _GraphUnshard(torch.autograd.Function):
     if bucket.replicated or bucket.world_size == 1:
       gathered = send
     else:
-      gathered = fc.wait_tensor(fc.all_gather_single(send, 0, bucket.group))
+      # Functional wrappers wait while tracing, or on first eager use.
+      gathered = fc.all_gather_single(send, 0, bucket.group)
     rows = gathered.reshape(1 if bucket.replicated else bucket.world_size, -1)
     outputs = []
     offset = 0
@@ -177,7 +178,7 @@ class _GraphUnshard(torch.autograd.Function):
       reduced = (
         send
         if bucket.world_size == 1
-        else fc.wait_tensor(fc.all_reduce(send, "sum", bucket.group))
+        else fc.all_reduce(send, "sum", bucket.group)
       )
     else:
       rows = []
@@ -197,9 +198,7 @@ class _GraphUnshard(torch.autograd.Function):
       reduced = (
         send
         if bucket.world_size == 1
-        else fc.wait_tensor(
-          fc.reduce_scatter_single(send, "sum", 0, bucket.group)
-        )
+        else fc.reduce_scatter_single(send, "sum", 0, bucket.group)
       )
     if bucket.storage.gradient_reduce_op == dist.ReduceOp.AVG:
       factor = bucket.storage.gradient_divide_factor or bucket.world_size
