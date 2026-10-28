@@ -1367,6 +1367,49 @@ torch_tpu_py_test(
     ],
 )
 
+# Runs the ops_unit_test tests of nonzero's static kernels with the precompiled
+# unbounded dynamic nonzero kernel disabled, since it would otherwise serve
+# their inputs.
+torch_tpu_py_test(
+    name = "ops_unit_test_static_nonzero",
+    srcs = ["ops_unit_test.py"],
+    args = [
+        "OpsUnitTest.test_nonzero_reuses_static_kernel_for_same_num_nonzero_functional",
+        "OpsUnitTest.test_nonzero_reuses_static_kernel_for_same_num_nonzero_out",
+    ],
+    env = {"TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS": "0"},
+    main = "ops_unit_test.py",
+    run_on_accelerators = [
+        "requires-tpu-v6e",
+        "requires-tpu-v5lite",
+    ],
+    tags = [
+        "nomsan",  # TODO: fix the test in msan mode.
+        "notsan",  # TODO: fix the test in tsan mode.
+    ],
+    deps = [
+        ":op_testing",
+        ":ops_test_data",
+        ":oss_utils",
+        ":quantize_utils",
+        "//csrc/eager:tpu_aten_kernels",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:flagsaver",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//shims/torch:testing_internal",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile:compiler",
+        "//src/torch_tpu/_internal/compile:flex_attention_redirect",
+        "//src/torch_tpu/_internal/compile:tpu_torch_compile",
+        "//src/torch_tpu/_internal/dynamism",
+        "//src/torch_tpu/_internal/execution_mode",
+        "//src/torch_tpu/_internal/sync",
+        "//src/torch_tpu/_internal/utils:test_utils",
+        "@pypi//scipy",
+    ],
+)
+
 torch_tpu_py_test(
     name = "sparse_dense_matmul_test",
     timeout = "long",

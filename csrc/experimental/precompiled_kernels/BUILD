@@ -156,6 +156,7 @@ torch_tpu_cc_test(
         "//csrc/common:compilation",
         "//csrc/common:compilation_cache",
         "//csrc/common:dimension_types",
+        "//csrc/common:env_vars",
         "//csrc/common:error_utils",
         "//csrc/common:oss_test_main",
         "//csrc/common:shape",

@@ -20,8 +20,10 @@
 #include <memory>
 
 #include "absl/status/statusor.h"
+#include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/compilation_spec.h"
+#include "csrc/common/unbounded_dynamic_kernel_registry.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
 
@@ -32,11 +34,25 @@ namespace torch_tpu {
 UnboundedDynamicExecutionMetadata MakeDummyDynamicMetadata();
 
 // Compiles a trivial identity computation with `client`. Matches the
-// LoadedExecutableBuilder signature, so it can be passed directly to
-// CompilationCache::AddUnboundedDynamicCacheEntry.
+// UnboundedDynamicKernel::BuildFn signature, so it can be registered directly
+// with UnboundedDynamicKernelRegistry.
 absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>>
 CreateDummyExecutable(xla::PjRtClient& client,
                       UniqueCompileOptions compile_options);
+
+// Always fails. Matches the UnboundedDynamicKernel::BuildFn signature, for
+// tests that need a registered kernel whose build fails.
+absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>>
+CreateFailingExecutable(xla::PjRtClient& client,
+                        UniqueCompileOptions compile_options);
+
+// Registers a kernel built by `build` with `MakeDummyDynamicMetadata()` under
+// `key`, ignoring kAlreadyExists so that tests sharing a process can register
+// the same key repeatedly. The registry is process-wide and append-only, so
+// tests must use keys that are unique to the behaviour they exercise.
+void RegisterDummyKernel(
+    const CompilationCacheKey& key,
+    UnboundedDynamicKernel::BuildFn build = CreateDummyExecutable);
 
 }  // namespace torch_tpu
 
