@@ -1819,7 +1819,8 @@ absl::Status HandleExpandReshape(
         << " for output shape [" << absl::StrJoin(static_shape_after, ",")
         << "] is greater than the inferred bound of " << output_dyn_bound;
     output_dims[output_bound_dim] = {.size = output_dyn_bound,
-                                     .boundOp = op.getValue()};
+                                     .boundOp = op.getValue(),
+                                     .boundOpDim = inputIdx};
     ABSL_VLOG(3) << "[HandleExpandReshape] output_bound_dim: "
                  << output_bound_dim
                  << " output_dyn_bound: " << op_dims[inputIdx].size;
@@ -1877,14 +1878,46 @@ absl::Status HandleTransposeLikeReshape(
 
     // Transfer bounded dynamism from input to output.
     if (op_dims[i].boundOp.has_value()) {
-      output_dims[j] = {.size = op_dims[i].size, .boundOp = op.getValue()};
+      output_dims[j] = {
+          .size = op_dims[i].size, .boundOp = op.getValue(), .boundOpDim = i};
     }
   }
 
   return absl::OkStatus();
 }
 
+// Returns whether a reshape with result dimensions `output_dims` maps every
+// bounded dynamic dimension of the input (with dimensions `op_dims`) to a
+// single output dimension of the same size, i.e. only inserts, removes or moves
+// size-1 dimensions around the bounded dimensions (e.g.
+// [1, C, ?H, ?W] -> [C, ?H, ?W, 1]).
+bool PreservesBoundedDimensions(
+    const mlir::stablehlo::Dimensions& op_dims,
+    const mlir::SmallVector<mlir::stablehlo::DimensionInfo>& output_dims) {
+  const int64_t num_bounded_input_dims =
+      absl::c_count_if(op_dims, [](const mlir::stablehlo::DimensionInfo& dim) {
+        return dim.boundOp.has_value();
+      });
+  int64_t num_bounded_output_dims = 0;
+  for (const mlir::stablehlo::DimensionInfo& dim : output_dims) {
+    if (!dim.boundOp.has_value()) continue;
+    if (dim.boundOpDim < 0 || op_dims[dim.boundOpDim].size != dim.size) {
+      return false;
+    }
+    ++num_bounded_output_dims;
+  }
+  return num_bounded_output_dims == num_bounded_input_dims;
+}
+
 }  // namespace
+
+mlir::MlirOp ReshapeAtBounds(mlir::MlirOp op,
+                             const mlir::stablehlo::Dimensions& output_dims) {
+  StaticAtBounds static_op = MakeStaticAtBounds(op);
+  mlir::MlirOp result =
+      mlir::stablehlo::Reshape(static_op.op, GetStaticShape(output_dims));
+  return BoundFromDimensions(result, output_dims);
+}
 
 // Returns a string representation of the reassociation indices for debugging.
 std::string ReassociationToString(const ReshapeReassociation& reassociation) {
@@ -2009,6 +2042,16 @@ absl::StatusOr<mlir::MlirOp> ReshapeFromStaticDimensions(
   } else if (reassociation.type == ReshapeType::kTransposeLike) {
     TT_RETURN_IF_ERROR(HandleTransposeLikeReshape(
         op, op_dims, static_shape_before, static_shape_after, output_dims));
+  }
+
+  // StableHLO `reshape` results may have at most one bounded dimension.
+  const int64_t num_bounded_output_dims = absl::c_count_if(
+      output_dims, [](const mlir::stablehlo::DimensionInfo& dim) {
+        return dim.boundOp.has_value();
+      });
+  if (num_bounded_output_dims > 1 &&
+      PreservesBoundedDimensions(op_dims, output_dims)) {
+    return ReshapeAtBounds(op, output_dims);
   }
 
   mlir::RankedTensorType dynamic_shape_after =
