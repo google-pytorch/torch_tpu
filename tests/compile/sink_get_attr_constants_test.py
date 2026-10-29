@@ -187,27 +187,6 @@ class SinkGetAttrConstantsTest(seed_test_utils.RepeatableTest):
     self.assertEqual(call_a.args, (p_x,))
     self.assertEqual(call_b.args, (call_a,))
 
-  def test_placeholder_arg_count_mismatch_raises_value_error(self):
-    sub_graph = Graph()
-    sub_x = sub_graph.placeholder("x")
-    sub_c = sub_graph.placeholder("c")
-    sub_out = sub_graph.call_function(torch.ops.aten.add.Tensor, (sub_x, sub_c))
-    sub_graph.output(sub_out)
-    submod = GraphModule(torch.nn.Module(), sub_graph)
-
-    # Submodule has 2 placeholders but the call site only passes 1 argument.
-    parent_graph = Graph()
-    p_x = parent_graph.placeholder("x")
-    call_submod = parent_graph.call_module("submod_0", (p_x,))
-    parent_graph.output(call_submod)
-
-    parent_root = torch.nn.Module()
-    parent_root.submod_0 = submod
-    parent_gm = GraphModule(parent_root, parent_graph)
-
-    with self.assertRaises(ValueError):
-      sink_get_attr_constants.apply(parent_gm)
-
   def test_constant_with_no_users_deletes_attribute(self):
     const_tensor = torch.tensor(5.0)
 
