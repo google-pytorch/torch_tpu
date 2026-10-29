@@ -2988,15 +2988,16 @@ Device-side assertion tracking was not enabled by user.""",
       )
 
   def test_cumsum_with_unsupported_dtype(self):
+    t = torch.ones(2, 2, device=et.device())
+    output = torch.empty(0, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
         gpu="""Expected out tensor to have dtype c10::dummy_int1_7_t<1>, but got float instead""",
         tpu="""cumsum(): expected the output dtype to be int1, got float32""",
         message_reviewed_by="wan",
     ):
-      t = torch.ones(2, 2, device=et.device())
-      output = torch.empty_like(t)
       torch.cumsum(t, dim=1, dtype=torch.int1, out=output)
+    self.assertEqual(output.shape, (0,))
 
   def test_cumsum_bool_out(self):
     with et.assert_raises_message(
@@ -3028,15 +3029,16 @@ Device-side assertion tracking was not enabled by user.""",
       torch.cumprod(x, dim=0, out=x)
 
   def test_cumsum_out_dtype_mismatch(self):
+    t = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+    out = torch.empty(0, device=et.device(), dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
         gpu="""Expected out tensor to have dtype double, but got float instead""",
         tpu="""cumsum(): expected the output dtype to be float64, got float32""",
         message_reviewed_by="wan",
     ):
-      t = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
-      out = torch.empty(2, 2, device=et.device(), dtype=torch.float32)
       torch.cumsum(t, dim=0, dtype=torch.float64, out=out)
+    self.assertEqual(out.shape, (0,))
 
   def test_cumprod_out_dtype_mismatch(self):
     with et.assert_raises_message(
@@ -3050,26 +3052,28 @@ Device-side assertion tracking was not enabled by user.""",
       torch.cumprod(t, dim=0, dtype=torch.float64, out=out)
 
   def test_cumsum_dimension_out_of_range(self):
+    t = torch.ones(1, device=et.device())
+    output = torch.empty(0, device=et.device())
     with et.assert_raises_message(
         IndexError,
         gpu="""Dimension out of range (expected to be in range of [-1, 0], but got 1)""",
         tpu="""cumsum(): expected dimension to be in range [-1, 0], got 1""",
         message_reviewed_by="wan",
     ):
-      t = torch.ones(1, device=et.device())
-      output = torch.empty_like(t)
       torch.cumsum(t, dim=1, out=output)
+    self.assertEqual(output.shape, (0,))
 
   def test_cumsum_scalar_dimension_out_of_range(self):
+    t = torch.tensor(1.0, device=et.device())
+    output = torch.empty(2, device=et.device())
     with et.assert_raises_message(
         IndexError,
         gpu="""Dimension out of range (expected to be in range of [-1, 0], but got 1)""",
         tpu="""cumsum(): expected dimension to be either 0 or -1 for a shape with 0 dimensions, got 1""",
         message_reviewed_by="wan",
     ):
-      t = torch.tensor(1.0, device=et.device())
-      output = torch.empty_like(t)
       torch.cumsum(t, dim=1, out=output)
+    self.assertEqual(output.shape, (2,))
 
   def test_cumsum_cpu_out_tensor(self):
     for shape in [(), (0,), (3,)]:
