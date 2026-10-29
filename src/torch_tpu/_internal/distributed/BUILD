@@ -49,6 +49,7 @@ torch_tpu_py_library(
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/device:_device_ops_backend",
         "//src/torch_tpu/_internal/utils:annotations",
+        "@pypi//lazy_importer",
     ],
 )
 
@@ -137,6 +138,7 @@ torch_tpu_py_library(
         ":tpu_distributed",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
+        "@pypi//lazy_importer",
         "@pypi//numpy",
     ],
 )

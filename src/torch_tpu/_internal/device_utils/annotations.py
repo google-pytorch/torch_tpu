@@ -16,9 +16,15 @@
 
 import dataclasses
 from typing import List
+from lazy_importer import lazy_importer
 import torch
 from torch_tpu._internal.device_utils import annotations_py
 from torch_tpu._internal.utils import annotations as api_annotations
+
+__lazy_modules__ = frozenset({"torch_tpu._internal.compile.tpu_torch_compile"})
+
+with lazy_importer():
+  import torch_tpu._internal.compile.tpu_torch_compile as tpu_torch_compile
 
 field = dataclasses.field
 dataclass = dataclasses.dataclass
@@ -114,6 +120,4 @@ def get_device_layout_if_materialized(
     `TpuLayout`, or None if the tensor has no device buffer yet, e.g. because
     the computation that produces it hasn't started.
   """
-  from torch_tpu._internal.compile import tpu_torch_compile  # pylint: disable=g-import-not-at-top
-
   return tpu_torch_compile.get_device_layout_if_materialized(tensor)

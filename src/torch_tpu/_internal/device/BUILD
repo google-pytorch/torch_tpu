@@ -50,6 +50,7 @@ torch_tpu_py_library(
         "//src/torch_tpu/_internal/stream:streams",
         "//src/torch_tpu/_internal/utils:annotations",
         "//src/torch_tpu/_internal/utils:hardware",
+        "@pypi//lazy_importer",
     ],
 )
 

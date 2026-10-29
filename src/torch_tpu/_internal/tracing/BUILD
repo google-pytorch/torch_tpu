@@ -36,6 +36,7 @@ torch_tpu_py_library(
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",
+        "@pypi//lazy_importer",
     ],
 )
 

@@ -24,6 +24,7 @@ from collections.abc import Mapping
 import dataclasses
 import sys
 from typing import Any, Final, List
+from lazy_importer import lazy_importer
 import torch
 from torch_tpu._internal import env
 from torch_tpu._internal import execution_mode
@@ -34,6 +35,11 @@ import torch_tpu._internal.precision as _precision_module
 from torch_tpu._internal.stream import streams
 from torch_tpu._internal.utils import annotations
 from torch_tpu._internal.utils import hardware
+
+__lazy_modules__ = frozenset({"torch_tpu._internal.distributed.device_mesh"})
+
+with lazy_importer():
+  import torch_tpu._internal.distributed.device_mesh as device_mesh
 
 experimental = annotations.experimental
 get_torch_version = annotations.get_torch_version
@@ -1270,8 +1276,6 @@ class TpuDeviceModule(_DeviceModule):
     Returns:
       An int64 tensor of global torch ranks mapping the requested layout.
     """
-    from torch_tpu._internal.distributed import device_mesh  # pylint: disable=g-import-not-at-top
-
     return device_mesh.topology_aware_mesh(
         cls._device_type,
         mesh_shape,

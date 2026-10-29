@@ -42,10 +42,16 @@ import math
 from typing import Optional, Tuple
 
 from absl import logging
+from lazy_importer import lazy_importer
 import numpy as np
 import torch
 import torch.distributed as dist
 from torch_tpu._internal.distributed import tpu_distributed
+
+__lazy_modules__ = frozenset({"torch_tpu._internal.distributed.device_utils"})
+
+with lazy_importer():
+  import torch_tpu._internal.distributed.device_utils as mesh_utils
 
 
 @dataclasses.dataclass(frozen=True)
@@ -279,8 +285,6 @@ def topology_aware_mesh(
         "topology_aware_mesh."
     )
   world_size = dist.get_world_size()
-
-  from torch_tpu._internal.distributed import device_utils as mesh_utils  # pylint: disable=g-import-not-at-top
 
   infos = _gather_global_device_info(device_type)
   if len({i.id for i in infos}) != world_size:

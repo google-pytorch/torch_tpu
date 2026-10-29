@@ -22,9 +22,15 @@ so that e.g. `torch.tpu.distributed.window_num_stripes = 8` invokes the setter.
 from collections.abc import Callable
 from typing import Any
 
+from lazy_importer import lazy_importer
 import torch
 from torch_tpu._internal.device import _device_ops_backend
 from torch_tpu._internal.utils import annotations
+
+__lazy_modules__ = frozenset({"torch_tpu._internal.distributed.device_mesh"})
+
+with lazy_importer():
+  import torch_tpu._internal.distributed.device_mesh as device_mesh
 
 
 def _get_backend_fn(name: str) -> Callable[..., Any]:
@@ -138,8 +144,6 @@ def topology_aware_mesh(
   Returns:
     An int64 tensor of global torch ranks mapping the requested layout.
   """
-  from torch_tpu._internal.distributed import device_mesh  # pylint: disable=g-import-not-at-top
-
   return device_mesh.topology_aware_mesh(
       "tpu",
       mesh_shape,
