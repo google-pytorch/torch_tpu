@@ -160,7 +160,7 @@ csrc/ops/im2col/im2col_aten_kernels.cc: {infeasible: 0, remaining: 6, total: 6}
 csrc/ops/index/index.cc: {infeasible: 4, remaining: 0, total: 4}
 csrc/ops/index/index_aten_kernels.cc: {infeasible: 0, remaining: 0, total: 6}
 csrc/ops/index_fill/index_fill_aten_kernels.cc: {infeasible: 0, remaining: 0, total: 3}
-csrc/ops/index_put/index_put_aten_kernels.cc: {infeasible: 0, remaining: 0, total: 8}
+csrc/ops/index_put/index_put_aten_kernels.cc: {infeasible: 0, remaining: 0, total: 9}
 csrc/ops/index_reduce/index_reduce_aten_kernels.cc: {infeasible: 0, remaining: 1, total: 1}
 csrc/ops/index_select/index_select_aten_kernels.cc: {infeasible: 0, remaining: 0, total: 3}
 csrc/ops/index_utils.cc: {infeasible: 0, remaining: 0, total: 7}

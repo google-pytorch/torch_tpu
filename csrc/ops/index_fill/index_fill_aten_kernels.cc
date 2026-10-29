@@ -131,6 +131,15 @@ absl::Status DispatchIndexFill(at::Tensor& self, int64_t dim,
                            .op_param_cache_keys = std::move(param_keys)});
 }
 
+absl::StatusOr<at::Tensor> ResolveIndexFillValueTensor(
+    const at::Tensor& value, const at::ScalarType self_dtype) {
+  if (!IsCpuDevice(value)) {
+    return value;
+  }
+  PromotedScalar promoted_value = PromoteScalar(value.item());
+  return promoted_value.GetTensor(self_dtype);
+}
+
 }  // namespace
 
 at::Tensor& AtenIndexFillIntScalar_(at::Tensor& self, int64_t dim,
@@ -153,17 +162,20 @@ at::Tensor& AtenIndexFillIntScalar_(at::Tensor& self, int64_t dim,
 at::Tensor& AtenIndexFillIntTensor_(at::Tensor& self, int64_t dim,
                                     const at::Tensor& index,
                                     const at::Tensor& value) {
-  TT_KERNEL(
-      OpName::kIndexFillIntTensor, param_keys, (self, dim, index, value), {
-        TT_THROW_IF_ERROR(ValidateIndexFillInputs(self, dim, index));
-        TT_CHECK_THROW(value.dim() == 0, error::kInvalidArgument)
-            << "expected value to be a 0-D tensor, got " << value.dim()
-            << "-D tensor";
+  TT_KERNEL(OpName::kIndexFillIntTensor, param_keys, (self, dim, index, value),
+            {
+              TT_THROW_IF_ERROR(ValidateIndexFillInputs(self, dim, index));
+              TT_CHECK_THROW(value.dim() == 0, error::kInvalidArgument)
+                  << "expected value to be a 0-D tensor, got " << value.dim()
+                  << "-D tensor";
+              TT_ASSIGN_OR_THROW(
+                  const at::Tensor value_tensor,
+                  ResolveIndexFillValueTensor(value, self.scalar_type()));
 
-        TT_THROW_IF_ERROR(
-            DispatchIndexFill(self, dim, index, value, std::move(param_keys)));
-        return self;
-      });
+              TT_THROW_IF_ERROR(DispatchIndexFill(
+                  self, dim, index, value_tensor, std::move(param_keys)));
+              return self;
+            });
 }
 
 }  // namespace torch_tpu

@@ -20,9 +20,11 @@
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
+#include "ATen/core/Scalar.h"
 #include "ATen/core/TensorBody.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -43,6 +45,15 @@ namespace torch_tpu {
 
 namespace {
 
+absl::StatusOr<at::Tensor> ResolveFillValueTensor(
+    const at::Tensor& fill_value, const at::ScalarType out_aten_type) {
+  if (!IsCpuDevice(fill_value)) {
+    return fill_value;
+  }
+  PromotedScalar promoted_fill_value = PromoteScalar(fill_value.item());
+  return promoted_fill_value.GetTensor(out_aten_type);
+}
+
 absl::Status FillTensorHelper(at::Tensor& self, const at::Tensor& fill_value,
                               OpParamCacheKeys param_keys) {
   auto out_aten_type = self.scalar_type();
@@ -56,6 +67,8 @@ absl::Status FillTensorHelper(at::Tensor& self, const at::Tensor& fill_value,
   TT_RET_CHECK(fill_value_dims_size == 0, error::kInvalidArgument)
       << "expected value to be a 0-D tensor, got " << fill_value_dims_size
       << "-D";
+  TT_ASSIGN_OR_RETURN(const at::Tensor resolved_fill_value,
+                      ResolveFillValueTensor(fill_value, out_aten_type));
 
   auto op_builder =
       [sizes = CopyIntVector(self.sizes()), out_mlir_element_type](
@@ -69,7 +82,7 @@ absl::Status FillTensorHelper(at::Tensor& self, const at::Tensor& fill_value,
   TT_ASSIGN_OR_RETURN(
       auto result_buf,
       DispatchOp<1>(std::move(op_builder),
-                    /*inputs=*/{fill_value},
+                    /*inputs=*/{resolved_fill_value},
                     {.out_dtype = out_mlir_element_type,
                      .out_dims = self.sizes(),
                      .op_param_cache_keys = std::move(param_keys)}));

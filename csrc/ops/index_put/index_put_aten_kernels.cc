@@ -21,6 +21,7 @@
 
 #include "ATen/ExpandUtils.h"
 #include "ATen/core/ATen_fwd.h"
+#include "ATen/core/Scalar.h"
 #include "ATen/core/TensorBody.h"
 #include "ATen/ops/permute.h"
 #include "absl/container/inlined_vector.h"
@@ -31,6 +32,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 #include "absl/types/span.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -486,6 +488,37 @@ absl::Status IndexPut(
        .op_param_cache_keys = std::move(param_keys)});
 }
 
+// Upstream ATen transfers 0-D CPU `values` to `self.device()` in
+// `_index_put_impl_`, and additionally dispatches `!accumulate`
+// single-boolean-mask assignments with a 0-D CPU `values` tensor through
+// `masked_fill_(mask, values.item())` when the mask resides on `self.device()`.
+absl::StatusOr<at::Tensor> ResolveIndexPutValuesTensor(
+    const at::Tensor& self,
+    const c10::List<std::optional<at::Tensor>>& indices_list_opt,
+    const std::optional<BooleanMaskInfo>& mask_info, const at::Tensor& values,
+    const bool accumulate) {
+  if (!IsCpuDevice(values) || values.dim() != 0) {
+    return values;
+  }
+  if (!accumulate && mask_info.has_value() &&
+      indices_list_opt[mask_info->index_start_dim].value().device() ==
+          self.device()) {
+    PromotedScalar promoted_values = PromoteScalar(values.item());
+    TT_ASSIGN_OR_RETURN(const bool can_cast_without_overflow,
+                        CanCastScalarWithoutOverflow(promoted_values.scalar(),
+                                                     self.scalar_type()));
+    TT_RET_CHECK(can_cast_without_overflow, error::kInvalidArgument)
+        << "expected value to be representable as "
+        << ToString(self.scalar_type()) << ", got "
+        << ToString(promoted_values.scalar());
+    return promoted_values.GetTensor(self.scalar_type());
+  }
+  if (values.scalar_type() == self.scalar_type()) {
+    return ResolveAuxiliaryTensorDevice(values, self.device().index());
+  }
+  return values;
+}
+
 absl::Status IndexPutHelper(
     at::Tensor& self,
     const c10::List<std::optional<at::Tensor>>& indices_list_opt,
@@ -499,17 +532,22 @@ absl::Status IndexPutHelper(
       << " indices for tensor of dimension " << self.dim() << ", got "
       << indices_list_opt.size();
 
-  TT_RET_CHECK(values.scalar_type() == self.scalar_type(),
+  const auto mask_info = GetSingleBooleanMaskInfo(indices_list_opt);
+  TT_ASSIGN_OR_RETURN(
+      const at::Tensor resolved_values,
+      ResolveIndexPutValuesTensor(self, indices_list_opt, mask_info, values,
+                                  accumulate));
+
+  TT_RET_CHECK(resolved_values.scalar_type() == self.scalar_type(),
                error::kInvalidArgument)
       << "expected dtypes of values and destination to be the same, got "
-      << ToString(values.scalar_type()) << " and "
+      << ToString(resolved_values.scalar_type()) << " and "
       << ToString(self.scalar_type());
 
   TT_RETURN_IF_ERROR(ValidateIndicesType(indices_list_opt));
 
-  const auto mask_info = GetSingleBooleanMaskInfo(indices_list_opt);
   if (mask_info.has_value() &&
-      CanUseSelectWithValues(self, values, mask_info->index_start_dim,
+      CanUseSelectWithValues(self, resolved_values, mask_info->index_start_dim,
                              mask_info->mask_dim)) {
     // For scenarios where the indices contain a boolean mask and values can be
     // broadcast to self without varying across the masked dimensions, we can
@@ -520,9 +558,9 @@ absl::Status IndexPutHelper(
     //
     return IndexPutWithBooleanMask(
         self, indices_list_opt[mask_info->index_start_dim].value(),
-        mask_info->index_start_dim, values, accumulate, out);
+        mask_info->index_start_dim, resolved_values, accumulate, out);
   }
-  return IndexPut(self, indices_list_opt, values, accumulate, out);
+  return IndexPut(self, indices_list_opt, resolved_values, accumulate, out);
 }
 
 }  // namespace
