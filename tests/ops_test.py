@@ -2958,6 +2958,12 @@ class TestOps(op_testing.OpInfoTestBase):
     )
 
   @category("nonzero")
+  # The precompiled nonzero kernel serves F32[M,N] inputs with more than 2
+  # nonzero elements.
+  @op_testing.test_unbounded_dynamic(
+      dtypes=[torch.float32],
+      is_compatible=lambda x: x.dim() == 2 and torch.count_nonzero(x) > 2,
+  )
   def test_nonzero(self):
     self.do_test_op(
         "nonzero",

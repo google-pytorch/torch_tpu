@@ -574,6 +574,8 @@ torch_tpu_py_library(
 # * ops_test_dynamic: TPU vs GPU, bounds a dimension.
 # * ops_test_dynamic_compiled: TPU vs GPU, bounds a dimension under torch.compile.
 # * ops_test_compiled: TPU vs GPU (torch.compile TpuBackend vs GPU inductor backend).
+# * ops_test_unbounded_dynamic: TPU vs GPU with unbounded dynamic kernels enabled,
+#   only for tests tagged @op_testing.test_unbounded_dynamic.
 
 # We chose to manually maintain the duplicate tests instead of using a for-loop to generate the
 # targets because:
@@ -879,6 +881,46 @@ torch_tpu_py_test(
         "requires-tpu-v5lite",
     ],
     shard_count = 1,  # This test has only 1 test case.
+    tags = [
+        "noasan",  # This test times out in asan mode.
+        "nomsan",  # This test times out in msan mode.
+        "notsan",  # TODO: fix the test in tsan mode.  # This test times out in tsan mode.
+        "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
+    ] + _OSS_GOLDEN_TAGS,
+    deps = [
+        ":dynamism_test_utils",
+        ":op_testing",
+        ":oss_utils",
+        ":quantize_utils",
+        "//csrc/eager:tpu_aten_kernels",
+        "//shims/absl_py/flags",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "ops_test_unbounded_dynamic",
+    timeout = "long",
+    srcs = ["ops_test.py"],
+    args = [
+        "--unbounded_dynamic_tests_only",
+        # Only the samples an unbounded dynamic kernel serves run, so take all
+        # of them: the first few are often incompatible (e.g. scalars).
+        "--max_samples_per_op_dtype=-1",
+    ],
+    data = _GPU_GOLDENS_DATA,
+    env = {"TORCH_TPU_INTERNAL_USE_UNBOUNDED_DYNAMIC_KERNELS": "1"},
+    main = "ops_test.py",
+    # Skip this in OSS presubmit when it's overloaded.
+    nopresubmit_oss = _WHEN_OSS_PRESUBMIT_OVERLOADED,
+    run_on_accelerators = [
+        "requires-tpu-v6e",
+        "requires-tpu-v5lite",
+    ],
+    shard_count = 1,  # Only the tests tagged @test_unbounded_dynamic run.
     tags = [
         "noasan",  # This test times out in asan mode.
         "nomsan",  # This test times out in msan mode.

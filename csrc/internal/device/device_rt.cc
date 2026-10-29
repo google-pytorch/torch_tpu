@@ -510,6 +510,8 @@ TT_PYBIND11_MODULE(_device_ops_backend, m) {
       .def_readonly("num_cache_reqs", &PerfStats::num_cache_reqs)
       .def_readonly("num_cache_hits", &PerfStats::num_cache_hits)
       .def_readonly("num_compilations", &PerfStats::num_compilations)
+      .def_readonly("num_unbounded_dynamic_registry_hits",
+                    &PerfStats::num_unbounded_dynamic_registry_hits)
       // Gets the peak memory used by the host during compilation. Resetting
       // value during eviction is not supported, limitation with cgroups v2.
       .def_readonly("peak_compilation_host_memory_bytes",

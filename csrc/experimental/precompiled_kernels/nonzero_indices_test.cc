@@ -43,6 +43,7 @@
 #include "csrc/common/compilation.h"
 #include "csrc/common/compilation_cache.h"
 #include "csrc/common/dimension_types.h"
+#include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/status_test_utils.h"
@@ -127,6 +128,8 @@ class NonzeroIndicesTest : public testing::Test {
  protected:
   static void SetUpTestSuite() {
     if (client_ != nullptr) return;
+
+    SetEnv<kTorchTpuInternalUseUnboundedDynamicKernelsEnvVar>("1");
 
     TT_ASSERT_OK_AND_ASSIGN(client_, PjrtBackend::GetInstance().GetClient());
     ASSERT_FALSE(client_->addressable_devices().empty());
@@ -228,18 +231,9 @@ TEST_F(NonzeroIndicesTest, ReusesExecutableAcrossShapesAndCounts) {
   }
 }
 
-// Registers the kernel in the unbounded dynamic cache under the key
-// torch.nonzero looks it up with. Lookups for any F32[M,N] input and count K
-// must then hit that entry instead of compiling, and the kernel it returns
-// must produce the correct indices.
 TEST_F(NonzeroIndicesTest, UnboundedDynamicCacheServesKernel) {
   CompilationCache& cache = CompilationCache::GetInstance();
-  UnboundedDynamicKernel nonzero = GetNonzeroUnboundedDynamicKernel();
-  const CompilationCacheKey key = nonzero.key;
-  ASSERT_TRUE(cache
-                  .AddUnboundedDynamicCacheEntry(key, nonzero.build,
-                                                 std::move(nonzero.metadata))
-                  .ok());
+  const CompilationCacheKey key = GetNonzeroUnboundedDynamicKernel().key;
 
   const std::tuple<int64_t, int64_t, int64_t> cases[] = {
       {3, 7, 5}, {17, 257, 44}, {17, 257, 4369}, {1, 16385, 1025}};
@@ -258,11 +252,17 @@ TEST_F(NonzeroIndicesTest, UnboundedDynamicCacheServesKernel) {
             [](mlir::MLIRContext&)
                 -> absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> {
               return TT_ERROR(error::kInternal)
-                     << "nonzero must hit the unbounded dynamic cache";
+                     << "nonzero must be served by the registered kernel";
             },
             xla::CompileOptions()));
-    EXPECT_EQ(cache.GetCacheHits(), hits_before + 1);
-    EXPECT_EQ(cache.GetCacheMisses(), misses_before);
+    // The first lookup misses and builds the kernel; later ones hit it.
+    if (registered == nullptr) {
+      EXPECT_EQ(cache.GetCacheHits(), hits_before);
+      EXPECT_EQ(cache.GetCacheMisses(), misses_before + 1);
+    } else {
+      EXPECT_EQ(cache.GetCacheHits(), hits_before + 1);
+      EXPECT_EQ(cache.GetCacheMisses(), misses_before);
+    }
     TT_ASSERT_OK_AND_ASSIGN(SharedLoadedExecutableWithMetadata executable,
                             kernel.fixed_shape_kernel.get());
     ASSERT_TRUE(executable->unbounded_dynamic_execution_metadata().has_value());
