@@ -41,6 +41,7 @@ dependencies = [
     "tensorboard>=2.20",
     "frozendict>=2",
     "immutabledict>=4",
+    "lazy-importer>=0.1.0",
     "pyzmq>=27",
 ]
 

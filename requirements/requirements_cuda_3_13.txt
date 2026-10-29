@@ -1409,6 +1409,10 @@ kiwisolver==1.5.1 \
     --hash=sha256:fc271a6f0a2126958f4090e5507b9da5848927dae331f8f763bd4aa642b3d2cd \
     --hash=sha256:febcce10f2bcdbb80b4ea919238a6a4ac13dbc4c7cadbe8d5d75c3682f8b5404
     # via matplotlib
+lazy-importer==0.1.0 \
+    --hash=sha256:b2e296716ce015c0cd80e57b940e52727c5b934b34b8656d5ce06bdd0ee5fbdd \
+    --hash=sha256:bd93fab7bef18e842eea02b839410954d37889140dc64ca4d9680aec6880c739
+    # via torch-tpu (pyproject.toml)
 libtpu==0.0.50 \
     --hash=sha256:069fa6b5504fcf716fadbfaa7f09601d8d4ed865704bf29b43f23209a6de1ab3 \
     --hash=sha256:64a959441c0ad4a278e9013024c8b542f40eed5b559902592303377242378671 \
