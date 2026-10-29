@@ -29,6 +29,36 @@ package(
 )
 
 torch_tpu_cc_library(
+    name = "canonicalize_batched_log_softmax_and_dual_dot_grad",
+    srcs = ["canonicalize_batched_log_softmax_and_dual_dot_grad.cc"],
+    hdrs = ["canonicalize_batched_log_softmax_and_dual_dot_grad.h"],
+    deps = [
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:chlo_ops",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "canonicalize_batched_log_softmax_and_dual_dot_grad_test",
+    srcs = ["canonicalize_batched_log_softmax_and_dual_dot_grad_test.cc"],
+    deps = [
+        ":canonicalize_batched_log_softmax_and_dual_dot_grad",
+        "//csrc/common:oss_test_main",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Parser",
+        "@llvm-project//mlir:Pass",
+        "@stablehlo//:register",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "dummy_pass",
     srcs = ["dummy_pass.cc"],
     hdrs = ["dummy_pass.h"],
