@@ -221,13 +221,10 @@ config_setting(
     visibility = ["//visibility:public"],
 )
 
-# The Python-version rows only apply to the default torch version (which
-# builds at the sentinel); the extra versions are selected on //:_torch_version
-# alone (see //shims/torch). Pinning the torch version here keeps these
-# mutually exclusive with the //:torch_<v> settings, so a glue transitioned to
-# an extra version under a wheel-test build (whose top-level PYTHON_VERSION
-# leaks into the transitioned config) does not match both rows and trip an
-# "ambiguous match" on the torch shim selects.
+# The Python-version wheel-test rows only apply to the default torch version
+# (which builds at the sentinel); pinning the torch version here keeps
+# wheel_test_with_local_torch_<v> a strict specialization of wheel_test_<v> so
+# local-torch wheel-test select() expressions do not trip an "ambiguous match".
 [config_setting(
     name = "wheel_test_" + v.replace(".", "_"),
     define_values = {"PYTHON_VERSION": v},
