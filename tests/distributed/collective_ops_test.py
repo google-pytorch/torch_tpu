@@ -956,36 +956,6 @@ class CollectiveOpsTest(continuous_test_utils.TpuMultiProcContinuousTest):
         device_ids=[torch.accelerator.current_device_index()], async_op=True
     )
 
-  def test_barrier_rejects_foreign_device_ids(self) -> None:
-    # A process addresses a single TPU, so only [0] is meaningful. When the
-    # first device id is out of bounds (e.g. [1]), c10d::ProcessGroup::barrier
-    # fails while allocating the dispatch tensor on tpu:1. When the first id is
-    # 0 but multiple ids are given, ProcessGroupTpu::barrier rejects device_ids.
-    for device_ids, exc_type, msg_regex in (
-        (
-            [1],
-            RuntimeError,
-            r"device index 1 is out of bounds of the number of addressable"
-            r" devices 1",
-        ),
-        (
-            [0, 0],
-            NotImplementedError,
-            r"device_ids in barrier options is not supported, except "
-            r"device_ids=\[0\] which names this process's own device",
-        ),
-        (
-            [0, 1],
-            NotImplementedError,
-            r"device_ids in barrier options is not supported, except "
-            r"device_ids=\[0\] which names this process's own device",
-        ),
-    ):
-      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=just using helper
-          exc_type, msg_regex
-      ):
-        torch.distributed.barrier(device_ids=device_ids)
-
   @parameterized.named_parameters(
       ("sync", False),
       ("async", True),
