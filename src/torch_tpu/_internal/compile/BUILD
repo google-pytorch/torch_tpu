@@ -274,4 +274,12 @@ torch_tpu_py_library(
     srcs = ["debug.py"],
 )
 
+torch_tpu_py_library(
+    name = "largest_common_spanning_subgraph",
+    srcs = ["largest_common_spanning_subgraph.py"],
+    deps = [
+        "//shims/torch:pytorch",
+    ],
+)
+
 torch_tpu_package_end()
