@@ -14,6 +14,7 @@
 
 from absl.testing import absltest
 import torch
+import torch._dynamo.source
 from torch import fx
 from torch_tpu._internal.compile.fx_passes import reorder_symints
 from tests import seed_test_utils

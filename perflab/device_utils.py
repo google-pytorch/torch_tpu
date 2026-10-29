@@ -22,6 +22,7 @@ from typing import Any, Callable, Final
 from absl import logging
 import psutil
 import torch
+import torch._inductor.config
 from torch.utils._pytree import tree_flatten
 from torch_tpu._internal.benchmarks import xprof_adapter
 

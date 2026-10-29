@@ -18,6 +18,7 @@ from unittest import mock
 
 from absl.testing import absltest
 import torch
+import torch._inductor.config
 from torch_tpu._internal.utils import test_utils
 from torch_tpu._internal.benchmarks import xprof_adapter
 from perflab import device_utils

@@ -53,6 +53,15 @@ torch_tpu_py_library(
     ],
 )
 
+torch_tpu_py_library(
+    name = "_device_interface",
+    srcs = ["_device_interface.py"],
+    deps = [
+        ":_device_module",
+        "//shims/torch:pytorch",
+    ],
+)
+
 pybind_extension(
     name = "_device_ops_backend",
     srcs = ["//csrc/internal/device:device_rt.cc"],

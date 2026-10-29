@@ -16,4 +16,5 @@
 
 ENTRY_POINTS = {
     "torch.backends": ["torch_tpu = torch_tpu._loader:load"],
+    "torch_dynamo_backends": ["tpu = torch_tpu._internal.compile:backend"],
 }

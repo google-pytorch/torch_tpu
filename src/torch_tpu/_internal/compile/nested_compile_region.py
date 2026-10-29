@@ -224,9 +224,3 @@ def handle_invoke_subgraph(
   # Reconstruct the original output structure
   return reconstruct_fn(bound_operands, results)
 
-
-for _key in (
-    torch._C.DispatchKey.XLA,
-    torch._C.DispatchKey.PrivateUse1,
-):
-  torch.ops.higher_order.invoke_subgraph.py_impl(_key)(handle_invoke_subgraph)

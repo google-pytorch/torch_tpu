@@ -28,6 +28,7 @@ from absl.testing import absltest
 from absl.testing import flagsaver
 from absl.testing import parameterized
 import torch
+import torch._dynamo.testing
 from torch.testing._internal import common_methods_invocations
 from torch.utils import _pytree
 from torch_tpu._internal.utils import test_utils

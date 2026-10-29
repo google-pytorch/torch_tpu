@@ -24,6 +24,7 @@ from typing import Any, Callable
 from absl import flags
 from absl.testing import absltest
 import torch
+import torch._inductor.config
 import torch.multiprocessing as mp
 from torch_tpu._internal.utils import annotations
 from torch_tpu._internal.distributed import multiprocessing

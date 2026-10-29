@@ -37,6 +37,7 @@ from jax import numpy as jnp
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
 import torch
+import torch._dynamo.exc
 from torch import distributed as dist
 from torch_tpu._internal import pallas
 from torch_tpu._internal.distributed import device_mesh

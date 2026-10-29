@@ -21,6 +21,7 @@ from typing import Final
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
+import torch._dynamo.utils
 from torch_tpu._internal.device import _device_ops_backend
 
 DEFAULT_RANDOM_SEED: Final[int] = 1234

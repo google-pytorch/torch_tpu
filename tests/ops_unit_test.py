@@ -39,6 +39,7 @@ from absl.testing import parameterized
 from scipy import stats
 import torch
 from torch._dynamo import testing as dynamo_testing
+import torch._dynamo.source
 from torch._subclasses import fake_tensor
 from torch.fx.experimental import symbolic_shapes
 from torch.fx.experimental.proxy_tensor import make_fx

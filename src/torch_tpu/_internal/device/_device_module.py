@@ -25,7 +25,6 @@ import dataclasses
 import sys
 from typing import Any, Final, List
 import torch
-from torch._dynamo.device_interface import DeviceInterface
 from torch_tpu._internal import env
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal.device import _device_ops_backend
@@ -1297,35 +1296,6 @@ def get_device_module(device_type: str) -> type[_DeviceModule]:
     )
 
   return TpuDeviceModule
-
-
-class TpuDeviceInterface(TpuDeviceModule, DeviceInterface):
-  """Device interface implementation for TPU devices in TorchDynamo."""
-
-  exchange_device = TpuDeviceModule._exchange_device
-  get_compute_capability = TpuDeviceModule._get_compute_capability
-  get_multi_processor_count = TpuDeviceModule._get_multi_processor_count
-  is_gpu = TpuDeviceModule._is_gpu
-  is_triton_capable = TpuDeviceModule._is_triton_capable
-  maybe_exchange_device = TpuDeviceModule._maybe_exchange_device
-
-
-def get_device_interface(device_type: str) -> type[DeviceInterface]:
-  """Retrieves the DeviceInterface implementation for the specified device.
-
-  Args:
-    device_type: A valid device type, currently only "tpu".
-
-  Returns:
-    A class that can be passed to
-    torch._dynamo.device_interface.register_interface_for_device.
-  """
-  if device_type != "tpu":
-    raise ValueError(
-        f"Unknown device type {device_type!r}, only 'tpu' is supported."
-    )
-
-  return TpuDeviceInterface
 
 
 class TpuStreamContext:

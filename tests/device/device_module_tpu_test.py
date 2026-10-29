@@ -21,7 +21,9 @@ from absl.testing import parameterized
 import torch
 from torch._dynamo.device_interface import DeviceInterface
 from torch._dynamo.device_interface import get_interface_for_device
+from torch_tpu._internal import compile as tpu_compile
 from torch_tpu._internal import testing as tt_testing
+from torch_tpu._internal.device import _device_interface
 from torch_tpu._internal.device import _device_module
 from torch_tpu._internal.utils import annotations
 from tests.device import device_module_testing
@@ -38,6 +40,14 @@ class TpuDeviceModuleTest(
     device_module_testing.DeviceModuleBase,
     absltest.TestCase,  # ABSLTEST_OK=Reference to absltest.TestCase
 ):
+
+  @classmethod
+  def setUpClass(cls):
+    super().setUpClass()
+    # TpuDeviceInterface registration is deferred until the TPU compile
+    # backend initializes (e.g. via torch.compile or ensure_initialized()).
+    # Direct tests of Dynamo device interface methods require compiler init.
+    tpu_compile.ensure_initialized()
 
   @property
   def device_module(self):
@@ -65,9 +75,12 @@ class TpuDeviceModuleTest(
     self.assertEqual(next(m.parameters()).device.type, "tpu")
 
   def test_device_interface_registration_always_wins(self):
-    """Verifies device_interface from _loader.py is registered as device interface."""
+    """Verifies our DeviceInterface wins once the compile backend initializes."""
+    # Registration is deferred until the compile backend initializes, which
+    # `torch.compile` does before Dynamo can look up the device interface.
+    tpu_compile.ensure_initialized()
     iface = get_interface_for_device("tpu")
-    self.assertEqual(iface, _device_module.TpuDeviceInterface)
+    self.assertEqual(iface, _device_interface.TpuDeviceInterface)
     self.assertTrue(issubclass(iface, _device_module.TpuDeviceModule))
     self.assertTrue(issubclass(iface, DeviceInterface))
 

@@ -572,7 +572,11 @@ def forbid_in_torch_compile(reason: str) -> Callable[[_T], _T]:
     doc = inspect.cleandoc(getattr(target, "__doc__", None) or "")
     _safe_setattr(target, "__doc__", f"{doc}\n\n{note}".lstrip())
 
-    return torch._dynamo.forbid_in_graph(target)
+    # Mirrors upstream torch._dynamo.forbid_in_graph
+    # (torch/_dynamo/decorators.py:619-632) directly setting _dynamo_forbidden
+    # to avoid eagerly importing torch._dynamo.
+    _safe_setattr(target, "_dynamo_forbidden", True)
+    return target
 
   return decorator
 

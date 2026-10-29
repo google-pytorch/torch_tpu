@@ -32,6 +32,9 @@ from unittest import mock
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
+import torch._dynamo.exc
+import torch._functorch.config
+import torch._functorch.partitioners
 from torch import fx
 from torch import nn
 import torch.nn.functional as F

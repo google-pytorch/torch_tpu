@@ -816,4 +816,33 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_test(
+    name = "lazy_backend_registration_test",
+    srcs = ["lazy_backend_registration_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu:_loader",
+        "//src/torch_tpu/_internal/compile",
+        "//src/torch_tpu/_internal/compile:tpu_backend",
+        "//src/torch_tpu/_internal/device:_device_interface",
+        "//src/torch_tpu/_internal/device:_device_module",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "lazy_scan_tpu_test",
+    srcs = ["lazy_scan_tpu_test.py"],
+    tags = [
+        "requires-tpu-v5lite",
+    ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu:_loader",
+    ],
+)
+
 torch_tpu_package_end()

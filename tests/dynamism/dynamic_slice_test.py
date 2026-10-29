@@ -26,6 +26,7 @@ from typing import Any, NamedTuple
 
 from absl.testing import absltest
 import torch
+import torch._dynamo.exc
 from torch._dynamo.backends.common import aot_autograd
 import torch.nn.functional as F
 from torch_tpu._internal import testing as tt_testing

@@ -312,6 +312,25 @@ class PublicApiTest(absltest.TestCase):  # ABSLTEST_OK=pure Python; no RNG
     self.assertLen(w, 1)
     self.assertEqual(w[0].filename, "<string>")
 
+  def test_real_public_modules_property_targets_resolve_to_properties(
+      self,
+  ) -> None:
+    """Verifies Property targets in _PUBLIC_MODULES resolve to properties."""
+    prop_count = 0
+    for mod_name, mod_spec in public_api._PUBLIC_MODULES.items():
+      for export_name, export_spec in mod_spec.exports.items():
+        if isinstance(export_spec, public_api.Property):
+          target = export_spec.target
+          obj = public_api._import_target(target)
+          self.assertIsInstance(
+              obj,
+              property,
+              f"Property export {mod_name}.{export_name} (target {target!r})"
+              f" resolved to {type(obj)!r}, expected property.",
+          )
+          prop_count += 1
+    self.assertGreater(prop_count, 0)
+
 
 if __name__ == "__main__":
   absltest.main()

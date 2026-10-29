@@ -19,13 +19,13 @@ import importlib
 import types
 
 import torch
-from torch._higher_order_ops import associative_scan as _orig_associative_scan
 from torch._higher_order_ops import utils as _hop_utils
 from torch._inductor import utils as _inductor_utils
 import torch.export
 import torch.utils._pytree as pytree
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal.compile import _backend
+from torch_tpu._internal.compile import _scan_registration
 from torch_tpu._internal.compile import compiler
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.export import export
@@ -512,13 +512,7 @@ def _eager_tpu_associative_scan(
 
 # An unpatched copy of upstream `associative_scan`, used as the fallback once
 # `_install_associative_scan_patch` has replaced the original's `__code__`.
-_SAVED_ORIG_ASSOCIATIVE_SCAN = types.FunctionType(
-    _orig_associative_scan.__code__,
-    _orig_associative_scan.__globals__,
-    _orig_associative_scan.__name__,
-    _orig_associative_scan.__defaults__,
-    _orig_associative_scan.__closure__,
-)
+_SAVED_ORIG_ASSOCIATIVE_SCAN = _scan_registration._SAVED_ORIG_ASSOCIATIVE_SCAN
 
 
 def _tpu_scan_dim(leaves_xs, dim, reverse) -> int | None:
@@ -647,59 +641,3 @@ def _tpu_associative_scan(
       combine_fn, xs, dim, reverse=reverse, combine_mode=combine_mode
   )
 
-
-def _delegating_entrypoint(
-    combine_fn,
-    xs,
-    dim: int,
-    reverse: bool = False,
-    combine_mode: str = "pointwise",
-):
-  # This code runs with upstream's module globals, where
-  # `_install_associative_scan_patch` defines `_tpu_associative_scan`.
-  return _tpu_associative_scan(
-      combine_fn, xs, dim, reverse=reverse, combine_mode=combine_mode
-  )
-
-
-def _install_associative_scan_patch():
-  """Routes `torch._higher_order_ops.associative_scan` to the TPU fast path.
-
-  This swaps the function's `__code__` in place rather than rebinding module
-  attributes. That way references imported before `torch_tpu` also take the
-  TPU path, and the function object's identity is unchanged.
-  """
-  orig_fn = _orig_associative_scan
-  if getattr(orig_fn, "_tpu_patched", False):
-    return
-  orig_fn.__globals__["_tpu_associative_scan"] = _tpu_associative_scan
-  orig_fn.__code__ = _delegating_entrypoint.__code__
-  orig_fn.__defaults__ = _delegating_entrypoint.__defaults__
-  setattr(orig_fn, "_tpu_patched", True)
-
-
-try:
-  # pylint: disable=g-import-not-at-top
-  # pylint: disable=protected-access
-  import torch._C
-
-  for key in (
-      torch._C.DispatchKey.XLA,
-      torch._C.DispatchKey.PrivateUse1,
-      torch._C.DispatchKey.Meta,
-  ):
-    torch.ops.higher_order.scan.py_impl(key)(_handle_scan_impl)
-
-  for key in (
-      torch._C.DispatchKey.XLA,
-      torch._C.DispatchKey.PrivateUse1,
-  ):
-    torch.ops.higher_order.associative_scan.py_impl(key)(
-        _handle_associative_scan_impl
-    )
-
-  _install_associative_scan_patch()
-except (AttributeError, RuntimeError):
-  # AttributeError: Safe to ignore if the environment lacks XLA/TPU support.
-  # RuntimeError: Safe to ignore if the implementation is already registered.
-  pass

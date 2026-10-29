@@ -16,6 +16,7 @@
 
 from absl.testing import absltest
 import torch
+import torch._dynamo.exc
 from torch_tpu._internal import compiler_options
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import precision

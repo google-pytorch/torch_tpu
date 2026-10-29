@@ -16,6 +16,7 @@
 
 from absl.testing import absltest
 import torch
+import torch._dynamo.source
 from torch import fx
 from torch_tpu._internal.compile.fx_passes import clone_mutated_returned_placeholders
 from tests import seed_test_utils

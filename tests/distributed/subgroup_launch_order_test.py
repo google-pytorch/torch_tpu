@@ -35,6 +35,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import jax
 import torch
+import torch._dynamo.exc
 from torch import distributed as dist
 from torch._dynamo.utils import counters
 import torch._functorch.config as functorch_config

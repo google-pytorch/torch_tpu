@@ -20,6 +20,7 @@ from unittest import mock
 from absl.testing import absltest
 from absl.testing import flagsaver
 import torch
+import torch._dynamo.utils
 import torch.nn as nn
 from torch_tpu._internal.optimizers import sgd
 from torch_tpu._internal.utils import test_utils

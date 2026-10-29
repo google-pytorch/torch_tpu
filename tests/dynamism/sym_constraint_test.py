@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from absl.testing import absltest
 import torch
+import torch._dynamo.exc
 from torch_tpu._internal.utils import test_utils as utils
 from tests import seed_test_utils
 

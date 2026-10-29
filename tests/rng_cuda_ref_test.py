@@ -22,6 +22,8 @@ from absl import flags
 from absl import logging
 from absl.testing import absltest
 import torch
+import torch._dynamo.exc
+import torch._inductor.config
 from torch_tpu._internal.utils import annotations
 from tests import accelerator_test_utils
 from tests import oss_utils

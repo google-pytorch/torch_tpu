@@ -76,7 +76,6 @@ def patch() -> None:
 
   _doc_len_cache = weakref.WeakKeyDictionary()
 
-  @torch.compiler.assume_constant_result
   def _get_doc_len(
       block_mask: flex_attention.BlockMask,
       q_len: int,
@@ -111,7 +110,6 @@ def patch() -> None:
 
   _causal_mask_cache = weakref.WeakKeyDictionary()
 
-  @torch.compiler.assume_constant_result
   def _is_causal_block_mask(
       block_mask: flex_attention.BlockMask,
       q_len: int,
@@ -139,6 +137,12 @@ def patch() -> None:
 
     is_causal = torch.equal(bool_mask[0, 0], expected)
     return cache.setdefault(key, is_causal)
+
+  # Mirrors upstream torch._dynamo.assume_constant_result
+  # (torch/_dynamo/decorators.py:176-178) directly setting
+  # _dynamo_marked_constant to avoid eagerly importing torch._dynamo.
+  _get_doc_len._dynamo_marked_constant = True
+  _is_causal_block_mask._dynamo_marked_constant = True
 
   def _get_sdpa_attn_bias(
       block_mask: flex_attention.BlockMask,

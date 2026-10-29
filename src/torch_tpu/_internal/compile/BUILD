@@ -86,6 +86,22 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
+    name = "_scan_registration",
+    srcs = ["_scan_registration.py"],
+    deps = [
+        "//shims/torch:pytorch",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "_nested_compile_region_registration",
+    srcs = ["_nested_compile_region_registration.py"],
+    deps = [
+        "//shims/torch:pytorch",
+    ],
+)
+
+torch_tpu_py_library(
     name = "compile",
     srcs = [
         "__init__.py",
@@ -95,6 +111,8 @@ torch_tpu_py_library(
         "//learning/agents/tern/torch_agent:__subpackages__",
     ],
     deps = [
+        ":_nested_compile_region_registration",
+        ":_scan_registration",
         ":debug",
         ":flex_attention_redirect",
         ":grouped_mm_meta",
@@ -103,6 +121,7 @@ torch_tpu_py_library(
         ":scan",
         ":tpu_backend",
         "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal/device:_device_interface",
     ],
 )
 
@@ -177,6 +196,7 @@ torch_tpu_py_library(
     name = "scan",
     srcs = ["scan.py"],
     deps = [
+        ":_scan_registration",
         ":compiler",
         ":tpu_backend",
         ":tpu_torch_compile",

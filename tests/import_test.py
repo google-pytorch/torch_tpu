@@ -18,9 +18,11 @@ import collections
 from collections.abc import Mapping, Set
 import importlib
 import importlib.util
+import json
 import os
 import pkgutil
 import queue
+import subprocess
 import sys
 import traceback
 import types
@@ -229,6 +231,42 @@ class ImportTest(parameterized.TestCase):  # ABSLTEST_OK=Import test
         worker_fn,
         env_vars=env_vars,
     )
+
+  def test_autoload_does_not_load_heavy_modules(self) -> None:
+    """Verifies plain `import torch` does not load Dynamo, Inductor, etc."""
+    cmd = [
+        sys.executable,
+        "-c",
+        (
+            "import json, sys, torch\n"
+            "assert 'torch_tpu._loader' in sys.modules, "
+            "'torch_tpu._loader not loaded'\n"
+            "forbidden = [\n"
+            "    'torch._dynamo',\n"
+            "    'torch._inductor',\n"
+            "    'torch_tpu._internal.compile._backend',\n"
+            "    'zmq',\n"
+            "]\n"
+            "loaded = [m for m in forbidden if m in sys.modules]\n"
+            "print(json.dumps({'loaded': loaded}))\n"
+            "if loaded:\n"
+            "    sys.exit(1)\n"
+        ),
+    ]
+    res = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    self.assertEqual(
+        res.returncode,
+        0,
+        f"Plain import torch loaded forbidden modules:\nstdout:"
+        f" {res.stdout}\nstderr: {res.stderr}",
+    )
+    data = json.loads(res.stdout.strip())
+    self.assertEqual(data["loaded"], [])
 
 
 if __name__ == "__main__":

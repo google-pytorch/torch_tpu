@@ -14,6 +14,8 @@
 
 """Module to handle autoloading torch_tpu as torch.tpu."""
 
+from __future__ import annotations
+
 import functools
 import importlib.metadata
 import os
@@ -21,6 +23,7 @@ import sys
 import threading
 from typing import Any, Final
 
+from lazy_importer import lazy_importer
 from torch_tpu._internal import env_utils
 
 _AUTOLOAD_ENV_VAR: Final[str] = "TORCH_DEVICE_BACKEND_AUTOLOAD"
@@ -38,15 +41,41 @@ os.environ[_AUTOLOAD_ENV_VAR] = "0"  # PY_ENVIRON_OK=pre-torch.
 
 # pylint: disable=g-import-not-at-top
 import torch
-import torch._dynamo.backends.registry as backend_registry
-from torch._dynamo.device_interface import get_interface_for_device
-from torch._dynamo.device_interface import register_interface_for_device
-from torch.utils import _pytree as pytree
 from torch_tpu._internal import public_api
-from torch_tpu._internal.compile import _backend
-from torch_tpu._internal.device import _device_module
-from torch_tpu._internal.distributed import tpu_distributed
 from torch_tpu._internal.utils import hardware
+
+__lazy_modules__: Final[frozenset[str]] = frozenset({
+    "torch._dynamo.backends.registry",
+    "torch.utils._pytree",
+    "torch_tpu._internal.compile._backend",
+    "torch_tpu._internal.device._device_module",
+    "torch_tpu._internal.distributed.from_local",
+    "torch_tpu._internal.distributed.torchcomm_tpu",
+    "torch_tpu._internal.distributed.tpu_distributed",
+    "torch_tpu._internal.env",
+    "torch_tpu._internal.pooling.patch",
+    "torch_tpu._internal.precision.precision_impl",
+    "torch_tpu._internal.profiler",
+    "torch_tpu._internal.tracing",
+    "torch_tpu._internal.utils.tt_warnings",
+    "torch_tpu._internal.warnings",
+})
+
+with lazy_importer():
+  import torch._dynamo.backends.registry as backend_registry
+  import torch.utils._pytree as pytree
+  import torch_tpu._internal.compile._backend as _backend
+  import torch_tpu._internal.device._device_module as _device_module
+  import torch_tpu._internal.distributed.from_local as from_local
+  import torch_tpu._internal.distributed.torchcomm_tpu as torchcomm_tpu
+  import torch_tpu._internal.distributed.tpu_distributed as tpu_distributed
+  import torch_tpu._internal.env as env
+  import torch_tpu._internal.pooling.patch as pooling_patch
+  import torch_tpu._internal.precision.precision_impl as precision_impl
+  import torch_tpu._internal.profiler as profiler
+  import torch_tpu._internal.tracing as tracing
+  import torch_tpu._internal.utils.tt_warnings as tt_warnings
+  import torch_tpu._internal.warnings as tt_internal_warnings
 
 # pylint: enable=g-import-not-at-top
 
@@ -74,11 +103,6 @@ _INDUCTOR_TPU_ERROR: Final[str] = (
 )
 
 public_api.install()
-
-# Enable tracing through recurrent layers (RNN, LSTM, GRU) in Dynamo to avoid
-# graph breaks and leverage TorchTPU's fused StableHLO kernels.
-if hasattr(torch._dynamo.config, "allow_rnn"):
-  torch._dynamo.config.allow_rnn = True
 
 
 def _has_tpu_inputs(example_inputs) -> bool:
@@ -151,6 +175,8 @@ def _is_tpu_backend(backend: Any) -> bool:
 # default to dynamic=False for TPU backends.
 @functools.wraps(_torch_compile)
 def _default_tpu_compile(*args, **kwargs):
+  import torch_tpu._internal.compile  # pylint: disable=g-import-not-at-top
+  torch_tpu._internal.compile.register_with_dynamo()
   # If an explicit backend is not specified, use DefaultBackendSelector.
   if kwargs.get("backend") is None:
     kwargs["backend"] = _default_backend_selector
@@ -167,39 +193,28 @@ def _set_libtpu_version() -> None:
   except importlib.metadata.PackageNotFoundError:
     pass
 
-  from torch_tpu._internal import env  # pylint: disable=g-import-not-at-top
-
   env.set_libtpu_version(version)
 
 
 def _warn_if_unoptimized() -> None:
   """Warns if TorchTPU is running in OSS with an unoptimized build."""
-  from torch_tpu._internal import env  # pylint: disable=g-import-not-at-top
-
   if not env.IS_INTERNAL_TORCH_TPU and not env.TORCH_TPU_IS_OPTIMIZED_BUILD:
-    from torch_tpu._internal import warnings  # pylint: disable=g-import-not-at-top
-    from torch_tpu._internal.utils import tt_warnings  # pylint: disable=g-import-not-at-top
-
     tt_warnings.warn(
         "[UNOPTIMIZED BUILD] TorchTPU was compiled in an unoptimized mode."
         " Performance will be degraded. For production workloads, compile with"
         " '-c opt' (default).",
-        warnings.UNOPTIMIZED_BUILD,
+        tt_internal_warnings.UNOPTIMIZED_BUILD,
         stacklevel=7,
     )
 
 
 def _patch_dtensor() -> None:
   """Overrides `from_local` to warn when shape/stride are omitted."""
-  from torch_tpu._internal.distributed import from_local  # pylint: disable=g-import-not-at-top
-
   from_local.patch_from_local()
 
 
 def _patch_max_pool() -> None:
   """Patches PyTorch max pooling operations with TPU-optimized variants."""
-  from torch_tpu._internal.pooling import patch as pooling_patch  # pylint: disable=g-import-not-at-top
-
   pooling_patch.patch_max_pool()
 
 
@@ -226,7 +241,7 @@ def _init_device_impl(device: str) -> torch.device:
   # These imports register things as import-time side effects, so we want to
   # make sure they are imported at load time.
   # pylint: disable=unused-import,g-import-not-at-top
-  # For torch.compile() "tpu" backend registration.
+  # For eager-relevant patches (flex_attention, meta registrations).
   import torch_tpu._internal.compile  # pylint: disable=unused-import  # ruff: ignore[unused-import]
 
   # For monkeypatching torch.autograd.Variable._execution_engine.
@@ -238,20 +253,6 @@ def _init_device_impl(device: str) -> torch.device:
 
   device_module = _device_module.get_device_module(device)
   device_module._init_runtime_options()  # pylint: disable=protected-access
-  # We call `get_interface_for_device` here to force the device interfaces
-  # defined upstream (which as of torch 2.13 includes one for TPU) to be
-  # initialized and mapped (which happens once), that way if any code somehow
-  # manages to call `get_interface_for_device` before we're able to register
-  # our own DeviceInterface it won't clobber the one we register below.
-  # This will not be needed once we become an in-tree backend in which case we
-  # will move our DeviceModule implementation upstream similar to existing ones
-  # for CUDA and other backends.
-  try:
-    get_interface_for_device(device)
-  except NotImplementedError:
-    pass
-  device_interface = _device_module.get_device_interface(device)
-  register_interface_for_device(device, device_interface)
 
   torch.utils.rename_privateuse1_backend(device)
   # Generate `Tensor.is_{device}`, `Tensor.{device}()`, `Module.{device}()`,
@@ -299,8 +300,6 @@ def _init_device_impl(device: str) -> torch.device:
     # register_backend string-handling bug fixed upstream in
     # pytorch/pytorch#187960; the list form is correct regardless.
     print("Initializing TPU distributed runtime", file=sys.stderr)
-    from torch_tpu._internal.distributed import torchcomm_tpu  # pylint: disable=g-import-not-at-top
-
     torch.distributed.Backend.register_backend(
         "tpu_dist", tpu_distributed.create_process_group, devices=["tpu"]
     )
@@ -310,8 +309,6 @@ def _init_device_impl(device: str) -> torch.device:
     torchcomm_tpu.register_torchcomms_tpu()
 
   # Register the Kineto backend using the internal C++ lifecycle module.
-  from torch_tpu._internal import profiler  # pylint: disable=g-import-not-at-top
-
   profiler.register_kineto_backend()
 
   # Pass installed libtpu version to C++ runtime if available.
@@ -328,8 +325,6 @@ def _init_device_impl(device: str) -> torch.device:
 
   # Monkey patch torch.set_float32_matmul_precision and
   # torch.get_float32_matmul_precision to maintain global precision state.
-  from torch_tpu._internal.precision import precision_impl  # pylint: disable=g-import-not-at-top
-
   @functools.wraps(torch.set_float32_matmul_precision)
   def _tpu_set_precision(precision: str) -> None:
     match precision:
@@ -402,8 +397,6 @@ def load() -> None:
 
   # Start the eager-mode trace daemon if TORCH_TRACE was set at process
   # startup. No-op when TORCH_TRACE is unset.
-  from torch_tpu._internal import tracing  # pylint: disable=g-import-not-at-top
-
   tracing.enable_if_requested()
 
 
