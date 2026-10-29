@@ -829,7 +829,6 @@ class ViewDecompositionTest(seed_test_utils.RepeatableTest):
     self.assertIsNone(view_decomposition.decompose_into_view_sequence(scalar))
     self.assertIs(view_decomposition.get_base_tensor(scalar), scalar)
 
-
   def test_decompose_base_exceeding_storage_raises(self):
     """Tests that views whose inferred base exceeds their storage raise."""
     cases = [
@@ -842,9 +841,13 @@ class ViewDecompositionTest(seed_test_utils.RepeatableTest):
     ]
     for view in cases:
       with self.subTest(view=view):
-        with self.assertRaises(NotImplementedError):  # ASSERT_RAISES_OK=Unit test.
+        with self.assertRaises(  # ASSERT_RAISES_OK=internal signal.
+          NotImplementedError
+        ):
           view_decomposition.decompose_into_view_sequence(view)
-        with self.assertRaises(NotImplementedError):  # ASSERT_RAISES_OK=Unit test.
+        with self.assertRaises(  # ASSERT_RAISES_OK=internal signal.
+          NotImplementedError
+        ):
           view_decomposition.get_base_tensor(view)
 
   def test_decompose_strided_slice_trailing_unit_dim_fits_storage(self):
