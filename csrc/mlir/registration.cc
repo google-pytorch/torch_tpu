@@ -18,6 +18,7 @@
 
 #include <memory>
 
+#include "csrc/mlir/passes/canonicalize_rms_norm_and_layer_norm_backward.h"
 #include "csrc/mlir/passes/dummy_pass.h"
 #include "csrc/mlir/passes/fold_concat_softmax.h"
 #include "csrc/mlir/passes/lower_separable_gather_to_dot.h"
@@ -32,6 +33,9 @@ namespace torch_tpu {
 void RegisterTorchTpuPasses() {
   mlir::registerPass(
       []() -> std::unique_ptr<mlir::Pass> { return createDummyPass(); });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return createCanonicalizeRmsNormAndLayerNormBackwardPass();
+  });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return createLowerSeparableGatherToDotPass();
   });
