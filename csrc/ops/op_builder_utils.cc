@@ -1010,6 +1010,46 @@ absl::StatusOr<std::vector<mlir::MlirOp>> ApplyBroadcastIfNeeded(
   return result;
 }
 
+absl::StatusOr<mlir::MlirOp> BoundDimensionLike(mlir::MlirOp input,
+                                                const int64_t dim,
+                                                mlir::MlirOp like,
+                                                const int64_t like_dim) {
+  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
+  const mlir::RankedTensorType like_type = GetTensorTypeOrDie(like);
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Callers pass in-range dimensions.
+      dim >= 0 && dim < input_type.getRank() && like_dim >= 0 &&
+          like_dim < like_type.getRank(),
+      error::kInvalidArgument)
+      << "expected dimensions " << dim << " and " << like_dim
+      << " to be in range for ranks " << input_type.getRank() << " and "
+      << like_type.getRank();
+  if (!like_type.isDynamicDim(like_dim) || input_type.isDynamicDim(dim)) {
+    return input;
+  }
+
+  const int64_t size = input_type.getDimSize(dim);
+  const int64_t bound = GetDimensions(like)[like_dim].size;
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=MarkDynamic keeps the runtime size
+                 // within the bounds and callers validate equal sizes.
+      size <= bound, error::kInvalidArgument)
+      << "expected dimension " << dim << " of size " << size
+      << " to be at most the upper bound " << bound
+      << " of bounded dynamic dimension " << like_dim;
+  if (size < bound) {
+    const int64_t rank = input_type.getRank();
+    const Dimensions low_padding(rank, 0);
+    Dimensions high_padding(rank, 0);
+    high_padding[dim] = bound - size;
+    const Dimensions interior_padding(rank, 0);
+    mlir::MlirOp zero =
+        MakeScalarConstant(input.getBuilder(), 0, input_type.getElementType());
+    input = stablehlo::Pad(input, zero, low_padding, high_padding,
+                           interior_padding);
+  }
+  mlir::MlirOp runtime_size = stablehlo::GetDimensionSize(like, like_dim);
+  return stablehlo::SetDimensionSize(input, runtime_size, dim);
+}
+
 absl::StatusOr<mlir::MlirOp> Broadcast(mlir::MlirOp input,
                                        absl::Span<const int64_t> output_dims,
                                        absl::Span<const int64_t> bcast_dims) {

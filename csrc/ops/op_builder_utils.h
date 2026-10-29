@@ -520,6 +520,21 @@ absl::StatusOr<mlir::MlirOp> BroadcastIfNeeded(
     mlir::MlirOp input, mlir::MlirOp target,
     absl::Span<const int64_t> broadcast_dimensions = {});
 
+// Makes dimension `dim` of `input` bounded dynamic like dimension `like_dim` of
+// `like`: `input` is zero-padded along `dim` up to the upper bound of
+// `like_dim`, and `dim` is then bounded by the runtime size of `like_dim`.
+// Returns `input` unchanged if `like_dim` is static or `dim` is already bounded
+// dynamic.
+//
+// This pairs dimensions that XLA requires to have the same upper bound, such as
+// the contracting dimensions of a dot_general when only one operand is bounded
+// dynamic. The static size of `dim` must not exceed the upper bound of
+// `like_dim`, and the caller must guarantee that it equals the runtime size of
+// `like_dim` (e.g. by validating the ATen tensor sizes).
+absl::StatusOr<mlir::MlirOp> BoundDimensionLike(mlir::MlirOp input, int64_t dim,
+                                                mlir::MlirOp like,
+                                                int64_t like_dim);
+
 // Generates an Iota tensor with the same shape as the reference op,
 // filled with sequential integers along iota_dimension.
 //

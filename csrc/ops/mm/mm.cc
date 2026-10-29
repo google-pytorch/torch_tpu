@@ -38,18 +38,16 @@ absl::StatusOr<mlir::MlirOp> BuildMmShlo(mlir::MlirOp lhs, mlir::MlirOp rhs,
   mlir::MlirBuilder& builder = lhs.getBuilder();
   mlir::MLIRContext& ctx = builder.getContext();
   const mlir::RankedTensorType lhs_tensor_type = GetTensorTypeOrDie(lhs);
-  auto lhs_shape = lhs_tensor_type.getShape();
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Rank constraint is checked before Mlir
                  // lowering.
-      lhs_shape.size() == 2, error::kInvalidArgument)
+      lhs_tensor_type.getRank() == 2, error::kInvalidArgument)
       << "BuildMmShlo: lhs must be a 2D tensor, got rank "
       << lhs_tensor_type.getRank();
 
   const mlir::RankedTensorType rhs_tensor_type = GetTensorTypeOrDie(rhs);
-  auto rhs_shape = rhs_tensor_type.getShape();
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Rank constraint is checked before Mlir
                  // lowering.
-      rhs_shape.size() == 2, error::kInvalidArgument)
+      rhs_tensor_type.getRank() == 2, error::kInvalidArgument)
       << "BuildMmShlo: rhs must be a 2D tensor, got rank "
       << rhs_tensor_type.getRank();
 
@@ -61,12 +59,9 @@ absl::StatusOr<mlir::MlirOp> BuildMmShlo(mlir::MlirOp lhs, mlir::MlirOp rhs,
       << "BuildMmShlo: lhs and rhs must have the same element type, got "
       << mlir::debugString(lhs_tensor_type.getElementType()) << " and "
       << mlir::debugString(rhs_tensor_type.getElementType());
-  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Dimension constraint is checked before
-                 // Mlir lowering.
-      lhs_shape[1] == rhs_shape[0], error::kInvalidArgument)
-      << "BuildMmShlo: lhs and rhs must have the same contracting dimension, "
-         "got "
-      << lhs_shape[1] << " and " << rhs_shape[0];
+  // The contracting dimension sizes are validated on the ATen tensors by the
+  // caller (`ValidateMmOutInputs`); they are not compared here because a
+  // bounded dynamic dimension is `mlir::ShapedType::kDynamic` in the MLIR type.
 
   // XLA doesn't support matmul with i64, so we convert them to f64.
   const bool is_any_i64 = lhs_tensor_type.getElementType().isInteger(64) ||
@@ -75,6 +70,13 @@ absl::StatusOr<mlir::MlirOp> BuildMmShlo(mlir::MlirOp lhs, mlir::MlirOp rhs,
     lhs = stablehlo::ConvertElementType(lhs, mlir::ElementType::F64);
     rhs = stablehlo::ConvertElementType(rhs, mlir::ElementType::F64);
   }
+
+  // XLA requires the contracting dimensions to have the same upper bound, so
+  // when only one of them is bounded dynamic, bound the other one like it.
+  TT_ASSIGN_OR_RETURN(lhs,
+                      BoundDimensionLike(lhs, /*dim=*/1, rhs, /*like_dim=*/0));
+  TT_ASSIGN_OR_RETURN(rhs,
+                      BoundDimensionLike(rhs, /*dim=*/0, lhs, /*like_dim=*/1));
 
   // Explanation: (m , n) @ (n, p) -> (m, p)
   // n is a contracting dimension, m and p are result dimensions.

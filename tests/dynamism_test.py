@@ -280,6 +280,59 @@ class DynamismTest(seed_test_utils.RepeatableTest):
     )
     self._run_bounded_dynamism_test(torch.addmm, mark_dynamic, *args)
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="lhs_contracting_dim",
+          dynamic_dims=[(0, 1)],
+          expected_output_dynamic_dims=[],
+      ),
+      dict(
+          testcase_name="rhs_contracting_dim",
+          dynamic_dims=[(1, 0)],
+          expected_output_dynamic_dims=[],
+      ),
+      dict(
+          testcase_name="lhs_contracting_dim_and_rhs_cols",
+          dynamic_dims=[(0, 1), (1, 1)],
+          expected_output_dynamic_dims=[1],
+      ),
+      dict(
+          testcase_name="rhs_contracting_dim_and_lhs_rows",
+          dynamic_dims=[(1, 0), (0, 0)],
+          expected_output_dynamic_dims=[0],
+      ),
+  )
+  def test_mm_one_sided_dynamic_contracting_dim(
+      self,
+      dynamic_dims: Sequence[tuple[int, int]],
+      expected_output_dynamic_dims: Sequence[int],
+  ):
+    """Marks the contracting dim dynamic on only one of the two operands.
+
+    Args:
+      dynamic_dims: (operand index, dim) pairs to mark dynamic with bounds [2,
+        10]. Exactly one operand has its contracting dim marked.
+      expected_output_dynamic_dims: The output dims expected to be dynamic.
+    """
+
+    def mark_dynamic(*tensors: torch.Tensor) -> None:
+      for arg, dim in dynamic_dims:
+        dynamism.mark_dynamic(tensors[arg], dim, 2, 10)
+
+    args = (
+        torch.arange(15, dtype=torch.float32).reshape(3, 5),
+        torch.arange(20, dtype=torch.float32).reshape(5, 4),
+    )
+    act = self._run_bounded_dynamism_test(torch.mm, mark_dynamic, *args)
+    act_dynamism_info = dynamism.get_dynamism_info(act)
+    self.assertCountEqual(
+        [info.dimension for info in act_dynamism_info],
+        expected_output_dynamic_dims,
+    )
+    for info in act_dynamism_info:
+      self.assertEqual(info.lower_bound, 2)
+      self.assertEqual(info.upper_bound, 10)
+
   @absltest.skip("torch.sort lowering needs MakeIotaLike lowering")
   def test_sort_dynamic_sort_dim(self):
     def mark_dynamic(x):

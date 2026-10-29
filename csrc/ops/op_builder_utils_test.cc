@@ -860,6 +860,140 @@ TEST(ApplyBroadcastIfNeeded, SpanBoundedAndStaticDimensionsFailure) {
   ExpectRaisedAsC10Error(result.status());
 }
 
+// Returns a [10, 4] f32 op whose dim 0 is bounded dynamic with upper bound 10
+// and runtime size 5.
+mlir::MlirOp MakeBoundedLikeOp(mlir::ModuleBuilder& mb) {
+  mlir::OpBuilder& op_builder = mb.getOpBuilder();
+  mlir::MlirOp runtime_size = MakeConstant(mb, 5, op_builder.getI32Type(), {});
+  mlir::MlirOp base = MakeConstant(mb, 1.0f, op_builder.getF32Type(), {10, 4});
+  return mlir::stablehlo::SetDimensionSize(base, runtime_size, /*dim=*/0);
+}
+
+TEST(BoundDimensionLike, PadsAndBoundsStaticDim) {
+  OpBuilderUtilsBuilder builder;
+  mlir::ModuleBuilder& mb = builder.get();
+  mlir::OpBuilder& op_builder = mb.getOpBuilder();
+  mlir::MlirOp input = MakeConstant(mb, 1.0f, op_builder.getF32Type(), {3, 5});
+  mlir::MlirOp like = MakeBoundedLikeOp(mb);
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      mlir::MlirOp result,
+      BoundDimensionLike(input, /*dim=*/1, like, /*like_dim=*/0));
+
+  const auto result_type = mlir::cast<mlir::RankedTensorType>(result.getType());
+  EXPECT_FALSE(result_type.isDynamicDim(0));
+  EXPECT_EQ(result_type.getDimSize(0), 3);
+  EXPECT_TRUE(result_type.isDynamicDim(1));
+  const mlir::stablehlo::Dimensions dims = GetDimensions(result);
+  ASSERT_EQ(dims.size(), 2);
+  EXPECT_EQ(dims[0].size, 3);
+  EXPECT_FALSE(dims[0].boundOp.has_value());
+  EXPECT_EQ(dims[1].size, 10);
+  EXPECT_TRUE(dims[1].boundOp.has_value());
+
+  // The input is zero-padded up to the upper bound before being bounded.
+  auto set_dimension_size = mlir::dyn_cast<mlir::stablehlo::SetDimensionSizeOp>(
+      result.getValue().getDefiningOp());
+  ASSERT_TRUE(set_dimension_size);
+  auto pad = mlir::dyn_cast<mlir::stablehlo::PadOp>(
+      set_dimension_size.getOperand().getDefiningOp());
+  ASSERT_TRUE(pad);
+  EXPECT_EQ(pad.getOperand(), input.getValue());
+  EXPECT_THAT(mlir::cast<mlir::RankedTensorType>(pad.getType()).getShape(),
+              ElementsAre(3, 10));
+  EXPECT_THAT(pad.getEdgePaddingLow(), ElementsAre(0, 0));
+  EXPECT_THAT(pad.getEdgePaddingHigh(), ElementsAre(0, 5));
+  EXPECT_THAT(pad.getInteriorPadding(), ElementsAre(0, 0));
+}
+
+TEST(BoundDimensionLike, BoundsStaticDimOfBoundSizeWithoutPadding) {
+  OpBuilderUtilsBuilder builder;
+  mlir::ModuleBuilder& mb = builder.get();
+  mlir::OpBuilder& op_builder = mb.getOpBuilder();
+  mlir::MlirOp input = MakeConstant(mb, 1.0f, op_builder.getF32Type(), {3, 10});
+  mlir::MlirOp like = MakeBoundedLikeOp(mb);
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      mlir::MlirOp result,
+      BoundDimensionLike(input, /*dim=*/1, like, /*like_dim=*/0));
+
+  const auto result_type = mlir::cast<mlir::RankedTensorType>(result.getType());
+  EXPECT_EQ(result_type.getDimSize(0), 3);
+  EXPECT_TRUE(result_type.isDynamicDim(1));
+  const mlir::stablehlo::Dimensions dims = GetDimensions(result);
+  ASSERT_EQ(dims.size(), 2);
+  EXPECT_EQ(dims[1].size, 10);
+  EXPECT_TRUE(dims[1].boundOp.has_value());
+
+  auto set_dimension_size = mlir::dyn_cast<mlir::stablehlo::SetDimensionSizeOp>(
+      result.getValue().getDefiningOp());
+  ASSERT_TRUE(set_dimension_size);
+  EXPECT_EQ(set_dimension_size.getOperand(), input.getValue());
+}
+
+TEST(BoundDimensionLike, ReturnsInputWhenLikeDimIsStatic) {
+  OpBuilderUtilsBuilder builder;
+  mlir::ModuleBuilder& mb = builder.get();
+  mlir::OpBuilder& op_builder = mb.getOpBuilder();
+  mlir::MlirOp input = MakeConstant(mb, 1.0f, op_builder.getF32Type(), {3, 5});
+  mlir::MlirOp like = MakeConstant(mb, 1.0f, op_builder.getF32Type(), {5, 4});
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      mlir::MlirOp result,
+      BoundDimensionLike(input, /*dim=*/1, like, /*like_dim=*/0));
+
+  EXPECT_EQ(result.getValue(), input.getValue());
+}
+
+TEST(BoundDimensionLike, ReturnsInputWhenDimIsAlreadyDynamic) {
+  OpBuilderUtilsBuilder builder;
+  mlir::ModuleBuilder& mb = builder.get();
+  mlir::OpBuilder& op_builder = mb.getOpBuilder();
+  mlir::MlirOp runtime_size = MakeConstant(mb, 5, op_builder.getI32Type(), {});
+  mlir::MlirOp base = MakeConstant(mb, 1.0f, op_builder.getF32Type(), {3, 10});
+  mlir::MlirOp input =
+      mlir::stablehlo::SetDimensionSize(base, runtime_size, /*dim=*/1);
+  mlir::MlirOp like = MakeBoundedLikeOp(mb);
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      mlir::MlirOp result,
+      BoundDimensionLike(input, /*dim=*/1, like, /*like_dim=*/0));
+
+  EXPECT_EQ(result.getValue(), input.getValue());
+}
+
+TEST(BoundDimensionLike, FailsWhenSizeExceedsUpperBound) {
+  OpBuilderUtilsBuilder builder;
+  mlir::ModuleBuilder& mb = builder.get();
+  mlir::OpBuilder& op_builder = mb.getOpBuilder();
+  mlir::MlirOp input = MakeConstant(mb, 1.0f, op_builder.getF32Type(), {3, 12});
+  mlir::MlirOp like = MakeBoundedLikeOp(mb);
+
+  const absl::StatusOr<mlir::MlirOp> result =
+      BoundDimensionLike(input, /*dim=*/1, like, /*like_dim=*/0);
+
+  ASSERT_FALSE(result.ok());
+  EXPECT_EQ(result.status().code(), error::kInvalidArgument);
+  EXPECT_THAT(result.status().message(),
+              testing::HasSubstr("expected dimension 1 of size 12 to be at "
+                                 "most the upper bound 10"));
+}
+
+TEST(BoundDimensionLike, FailsWhenDimIsOutOfRange) {
+  OpBuilderUtilsBuilder builder;
+  mlir::ModuleBuilder& mb = builder.get();
+  mlir::OpBuilder& op_builder = mb.getOpBuilder();
+  mlir::MlirOp input = MakeConstant(mb, 1.0f, op_builder.getF32Type(), {3, 5});
+  mlir::MlirOp like = MakeBoundedLikeOp(mb);
+
+  const absl::StatusOr<mlir::MlirOp> result =
+      BoundDimensionLike(input, /*dim=*/2, like, /*like_dim=*/0);
+
+  ASSERT_FALSE(result.ok());
+  EXPECT_EQ(result.status().code(), error::kInvalidArgument);
+  EXPECT_THAT(result.status().message(),
+              testing::HasSubstr("to be in range for ranks 2 and 2"));
+}
 TEST(GetNumElements, StaticShape) {
   OpBuilderUtilsBuilder op_builder_utils_builder;
   mlir::ModuleBuilder& mb = op_builder_utils_builder.get();
