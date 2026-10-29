@@ -12,66 +12,79 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# PyTorch Out-of-Tree (OOT) Dispatch / CRCR Integration
+# PyTorch Out-of-Tree (OOT) / CRCR Nightly Integration
 #
-# Origin: Based on the PyTorch CRCR (Cross-Repository Continuous Registration) template
-# https://github.com/pytorch/crcr-test/blob/main/README.md#step-3-create-a-dispatch-receiver-workflow.
+# Origin: Based on the PyTorch CRCR (Cross-Repository CI Relay) nightly callback pattern
+# https://github.com/pytorch/crcr-test/blob/main/README.md.
 #
-# Purpose: Triggers CI runs in response to upstream PyTorch https://github.com/pytorch/pytorch push
-# events via repository_dispatch webhooks, running the TorchTPU native test suite against new
-# upstream commits and reporting status back to the PyTorch CRCR relay.
+# Purpose: Runs daily on a scheduled cadence (or on demand via workflow_dispatch / the
+# `ci:crcr-nightly` PR label), running the TorchTPU native test suite against upstream
+# https://github.com/pytorch/pytorch `main` and reporting status back to the PyTorch CRCR HUD
+# (`event-type: nightly`).
 #
 # Expected Behaviors:
-# 1. The PyTorch CRCR relay sends a `repository_dispatch` webhook of type `push` when commits land
-#    in upstream `main` or when a `ciflow` tag is created.
-# 2. This workflow triggers, checking out TorchTPU and the specific PyTorch SHA provided in the
-#    webhook payload (`client_payload.payload.after`).
-# 3. It reports `in_progress` to CRCR, runs the TorchTPU native test targets, and reports the final
-#    job conclusion back to CRCR via `pytorch/test-infra/.github/actions/cross-repo-ci-relay-callback`.
-#
-# Anti-pattern warning: No `workflow_dispatch` triggers or remote connection debugging steps to this
-# workflow. See go/ml-github-actions:connect#enable-workflow-dispatch.
-# This workflow relies entirely on the `client_payload` from the `repository_dispatch` webhook to
-# determine which PyTorch SHA to check out. A manual `workflow_dispatch` run will lack this payload,
-# causing the PyTorch checkout step to fail or silently fall back to `main`, defeating the purpose
-# of debugging a specific failing commit.
-#
-# Test: Because GitHub strictly limits `repository_dispatch` events to the default branch `main`, we
-# physically cannot trigger the workflow from a PR. To test modifications to this workflow in a PR
-# before merging, follow these steps:
-# 1. Temporarily swap the `on: repository_dispatch` block below for a PR trigger:
-#      on:
-#        pull_request:
-#          branches:
-#            - main
-# 2. In the "Checkout PyTorch at dispatched SHA" step, temporarily replace the `ref:` variable with
-#    a hardcoded, valid PyTorch SHA.
-# 3. Trigger the workflow.
-# 4. CRITICAL: Revert these temporary changes in steps 1 and 2 before submitting your PR.
+# 1. Runs once daily via `schedule` (`cron: "30 10 * * *"`), on manual `workflow_dispatch`, or on
+#    PRs labeled with `ci:crcr-nightly`.
+# 2. Checks out TorchTPU and resolves the latest `pytorch/pytorch` `main` SHA (or the optional
+#    `pytorch_sha` input from `workflow_dispatch`).
+# 3. Runs the TorchTPU native test targets and reports the final job conclusion to the CRCR HUD
+#    (`https://hud.pytorch.org/crcr/google-pytorch/torch_tpu?event=nightly`) via
+#    `pytorch/test-infra/.github/actions/cross-repo-ci-relay-callback`.
 
 name: PyTorch Out-of-Tree Dispatch
 
 on:
-  repository_dispatch:
-    types:
-      - push
-
-run-name: >-
-  Dispatch - ${{ github.event.client_payload.payload.ref }}
+  workflow_dispatch:
+    inputs:
+      pytorch_sha:
+        description: "Optional upstream PyTorch commit SHA to test (defaults to refs/heads/main)"
+        required: false
+        type: string
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened, labeled]
+  schedule:
+    # Run once daily at 10:30 UTC.
+    - cron: "30 10 * * *"
 
 concurrency:
-  group: >-
-    oot-${{ github.event.client_payload.payload.repository.full_name }}-${{ github.event.client_payload.payload.ref || github.run_id }}
-  cancel-in-progress: false
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  # Don't cancel in-progress jobs for main branch.
+  cancel-in-progress: ${{ github.ref_name != 'main' }}
 
 permissions:
   contents: read
 
 jobs:
+  resolve_sha:
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:crcr-nightly')
+    name: "Resolve upstream PyTorch SHA"
+    runs-on: ubuntu-latest
+    outputs:
+      pytorch_sha: ${{ steps.resolve_sha.outputs.pytorch_sha }}
+    steps:
+      - name: Resolve PyTorch SHA
+        id: resolve_sha
+        env:
+          INPUT_SHA: ${{ inputs.pytorch_sha }}
+        run: |
+          if [ -n "${INPUT_SHA}" ]; then
+            PYTORCH_SHA="${INPUT_SHA}"
+          else
+            PYTORCH_SHA=$(git ls-remote https://github.com/pytorch/pytorch.git refs/heads/main | awk '{print $1}')
+          fi
+          if [ -z "${PYTORCH_SHA}" ]; then
+            echo "::error::Failed to resolve upstream PyTorch SHA."
+            exit 1
+          fi
+          echo "Resolved PyTorch SHA: ${PYTORCH_SHA}"
+          echo "pytorch_sha=${PYTORCH_SHA}" >> "$GITHUB_OUTPUT"
+
   run_tests:
-    # Only trigger on upstream main branch merges and filter out the massive firehose of ciflow
-    # tags, ghstack branches, and developer pushes that the PyTorch CRCR relay blindly forwards.
-    if: github.event.client_payload.payload.ref == 'refs/heads/main'
+    needs: resolve_sha
     name: "Presubmit on ${{ matrix.job_info.name || matrix.job_info.runner }} against dispatched PyTorch"
     permissions:
       contents: read
@@ -87,6 +100,11 @@ jobs:
             extra_flags: "",
           },
           {
+            runner: "linux-x86-ct5lp-224-8tpu",
+            config: "ci_tpu_v5_presubmit",
+            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
+          },
+          {
             runner: "linux-x86-tpu7x-224-4tpu",
             config: "ci_tpu_v7_presubmit",
             extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
@@ -95,6 +113,8 @@ jobs:
     runs-on: ${{ matrix.job_info.runner }}
     container:
       image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:dddf008479144c57182b56a6d00bfc1f38f8f2ef206e2bc26ff6c0a401ded47e"  # Tag infrastructure-public-image-083516c6af6a (built 2026-10-13)
+      # Disable ipc isolation to prevent shm limit issues.
+      options: --ipc=host
 
     steps:
       # The k8s container hook mounts the runner's /home/runner/_work volume at
@@ -110,22 +130,14 @@ jobs:
           mkdir -p /home/runner
           ln -sfn /__w /home/runner/_work
 
-      - name: Report in_progress to CRCR
-        continue-on-error: true
-        timeout-minutes: 5
-        uses: pytorch/test-infra/.github/actions/cross-repo-ci-relay-callback@28dee7456d0348d74a5faa85098bb028b263ee2b  # main
-        with:
-          status: in_progress
-          job-name: "Presubmit on ${{ matrix.job_info.name || matrix.job_info.runner }}"
-
       - name: Checkout TorchTPU
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - name: Checkout PyTorch at dispatched SHA
+      - name: Checkout PyTorch at resolved SHA
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: pytorch/pytorch
-          ref: ${{ github.event.client_payload.payload.after }}
+          ref: ${{ needs.resolve_sha.outputs.pytorch_sha }}
           path: pytorch
 
       - name: Fix Git Workspace Ownership
@@ -133,7 +145,7 @@ jobs:
 
       - name: Run TorchTPU Native Tests
         env:
-          PYTORCH_SHA: ${{ github.event.client_payload.payload.after }}
+          PYTORCH_SHA: ${{ needs.resolve_sha.outputs.pytorch_sha }}
         run: |
           echo "Testing against PyTorch SHA: ${PYTORCH_SHA}"
 
@@ -159,19 +171,10 @@ jobs:
             exit $BAZEL_EXIT_CODE
           fi
 
-      - name: Log event to step summary
-        if: always()
-        env:
-          EVENT_JSON: ${{ toJson(github.event) }}
-        run: |
-          {
-            echo '```json'
-            echo "$EVENT_JSON"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
       - name: Report completion to CRCR
-        if: always()
+        if: >-
+          always() && !cancelled() &&
+          (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref_name == 'main'))
         continue-on-error: true
         timeout-minutes: 5
         uses: pytorch/test-infra/.github/actions/cross-repo-ci-relay-callback@28dee7456d0348d74a5faa85098bb028b263ee2b  # main
@@ -179,3 +182,21 @@ jobs:
           status: completed
           conclusion: ${{ job.status }}
           job-name: "Presubmit on ${{ matrix.job_info.name || matrix.job_info.runner }}"
+          delivery-id: ${{ needs.resolve_sha.outputs.pytorch_sha }}
+          event-type: nightly
+
+      - name: Log event to step summary
+        if: always()
+        env:
+          EVENT_JSON: ${{ toJson(github.event) }}
+        run: |
+          if [ -f /tmp/relay_response.json ]; then
+            echo "CRCR Relay response body:"
+            cat /tmp/relay_response.json
+            echo ""
+          fi
+          {
+            echo '```json'
+            echo "$EVENT_JSON"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

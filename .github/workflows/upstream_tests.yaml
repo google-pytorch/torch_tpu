@@ -64,6 +64,9 @@ jobs:
     if: >-
       github.event_name != 'pull_request' ||
       contains(github.event.pull_request.labels.*.name, 'ci:torch-tests')
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -73,6 +76,11 @@ jobs:
             runner: "linux-x86-ct5lp-224-8tpu",
             config: "ci_tpu_v5",
           },
+          {
+            name: "TPU v7x",
+            runner: "linux-x86-tpu7x-224-4tpu",
+            config: "ci_tpu_v7",
+          },
         ]
     # Use self-hosted runners. For a Linux runner, a corresponding container image used for the
     # workflow is required.
@@ -80,8 +88,23 @@ jobs:
     runs-on: ${{ matrix.job_info.runner }}
     container:
       image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:dddf008479144c57182b56a6d00bfc1f38f8f2ef206e2bc26ff6c0a401ded47e"  # Tag infrastructure-public-image-083516c6af6a (built 2026-10-13)
+      # Disable ipc isolation to prevent shm limit issues.
+      options: --ipc=host
 
     steps:
+      # The k8s container hook mounts the runner's /home/runner/_work volume at
+      # /__w inside the job container. Composite actions that expand
+      # ${{ github.action_path }} in `run:` reference /home/runner/_work/_actions,
+      # so symlink /home/runner/_work -> /__w before invoking external composite actions.
+      - name: Map runner work directory in container
+        continue-on-error: true
+        run: |
+          if [ -d "/home/runner/_work" ] && [ ! -L "/home/runner/_work" ]; then
+            rmdir /home/runner/_work
+          fi
+          mkdir -p /home/runner
+          ln -sfn /__w /home/runner/_work
+
       - name: Checkout TorchTPU
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
@@ -99,6 +122,22 @@ jobs:
           path: pytorch
           ref: ${{ inputs.pytorch-git-ref || 'ff30875f25530b355ab830bbde00b7a5363bafa4' }}
 
+      - name: Fix Git Workspace Ownership
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/pytorch"
+
+      - name: Resolve PyTorch SHA
+        id: resolve_sha
+        run: |
+          PYTORCH_SHA=$(git -C "$GITHUB_WORKSPACE/pytorch" rev-parse HEAD)
+          if [ -z "${PYTORCH_SHA}" ]; then
+            echo "::error::Failed to resolve checked-out PyTorch commit SHA."
+            exit 1
+          fi
+          echo "[INFO] Resolved PyTorch SHA: ${PYTORCH_SHA}"
+          echo "pytorch_sha=${PYTORCH_SHA}" >> "$GITHUB_OUTPUT"
+
       - name: Extract Default Python Version
         run: |
           PYTHON_VERSION=$(grep '^DEFAULT_PYTHON_VERSION =' bazel/supported_python_versions.bzl | cut -d '"' -f2)
@@ -109,19 +148,48 @@ jobs:
         env:
           TORCH_PIP_SPEC: ${{ inputs.torch-pip-spec || 'torch==2.16.0.dev20261012+cpu' }}
           TORCH_PIP_INDEX: ${{ inputs.torch-pip-index || 'https://download.pytorch.org/whl/nightly/cpu' }}
+          EXPECTED_PYTORCH_SHA: ${{ steps.resolve_sha.outputs.pytorch_sha }}
         run: |
           mkdir -p dist/local
           pip download --no-deps --pre "${TORCH_PIP_SPEC}" \
             --index-url "${TORCH_PIP_INDEX}" -d dist/local \
             --python-version "${PYTHON_VERSION}" --only-binary=:all:
           set -- "$PWD/dist/local/torch-"*.whl
-          echo "TORCH_SOURCE=$1" >> "$GITHUB_ENV"
-          echo "[INFO] Downloaded PyTorch wheel to: $1"
+          if [ ! -f "$1" ]; then
+            echo "::error::Failed to download PyTorch wheel for ${TORCH_PIP_SPEC}."
+            exit 1
+          fi
+          export TORCH_SOURCE="$1"
+          echo "TORCH_SOURCE=${TORCH_SOURCE}" >> "$GITHUB_ENV"
+          echo "[INFO] Downloaded PyTorch wheel to: ${TORCH_SOURCE}"
 
-      - name: Run Bazel Test
+          python3 - << 'EOF'
+          import os, sys, zipfile
+          wheel_path = os.environ["TORCH_SOURCE"]
+          expected_sha = os.environ["EXPECTED_PYTORCH_SHA"]
+          pip_spec = os.environ["TORCH_PIP_SPEC"]
+          ns = {}
+          with zipfile.ZipFile(wheel_path) as zf:
+            exec(zf.read("torch/version.py").decode("utf-8"), ns)
+          wheel_version = ns.get("__version__", "")
+          wheel_sha = ns.get("git_version", "")
+          print(f"[INFO] Validated wheel metadata: __version__={wheel_version}, git_version={wheel_sha}")
+          if pip_spec.startswith("torch=="):
+            expected_version = pip_spec.split("==", 1)[1]
+            if wheel_version != expected_version:
+              sys.exit(f"ERROR: Wheel __version__ ({wheel_version}) does not match TORCH_PIP_SPEC ({expected_version}).")
+          if wheel_sha != expected_sha:
+            sys.exit(f"ERROR: Wheel git_version ({wheel_sha}) does not match checked-out PyTorch SHA ({expected_sha}).")
+          EOF
+
+      - name: Build Bazel Targets
+        id: build
+        env:
+          EXPECTED_PYTORCH_SHA: ${{ steps.resolve_sha.outputs.pytorch_sha }}
         run: |
           TORCH_TEST_TARGETS=$(bazel query 'kind("py_test", //tests/torch:all)' | tr '\n' ' ')
-          echo "[INFO] Running test targets: ${TORCH_TEST_TARGETS}"
+          echo "TORCH_TEST_TARGETS=${TORCH_TEST_TARGETS}" >> "$GITHUB_ENV"
+          echo "[INFO] Building test targets: ${TORCH_TEST_TARGETS}"
 
           # Leave ${TORCH_TEST_TARGETS} unquoted so space-separated targets expand.
           # shellcheck disable=SC2086
@@ -133,6 +201,35 @@ jobs:
             --test_env=TORCH_TPU_INTERNAL_PYTORCH_TEST_DIR="$GITHUB_WORKSPACE/pytorch/test" \
             --keep_going \
             ${TORCH_TEST_TARGETS}
+
+          LOCAL_TORCH_VERSION_PY="$(bazel info output_base)/external/+_repo_rules+local_torch/site-packages/torch/version.py"
+          if [ ! -f "${LOCAL_TORCH_VERSION_PY}" ]; then
+            echo "::error::@local_torch repository did not extract torch/version.py at ${LOCAL_TORCH_VERSION_PY}."
+            exit 1
+          fi
+          grep -F "${EXPECTED_PYTORCH_SHA}" "${LOCAL_TORCH_VERSION_PY}"
+          echo "[INFO] Verified @local_torch extracted wheel matching SHA ${EXPECTED_PYTORCH_SHA}:"
+          cat "${LOCAL_TORCH_VERSION_PY}"
+
+      - name: Report build to CRCR
+        # TODO(b/566301487): CRITICAL - Temporary PR allowance to verify CRCR HUD reporting before submitting.
+        # Restore `(github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref_name == 'main'))` before landing.
+        if: always() && !cancelled() && steps.build.outcome != 'skipped'
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: pytorch/test-infra/.github/actions/cross-repo-ci-relay-callback@28dee7456d0348d74a5faa85098bb028b263ee2b  # main
+        with:
+          status: completed
+          conclusion: ${{ steps.build.outcome }}
+          job-name: "Build PyTorch tests on ${{ matrix.job_info.name || matrix.job_info.runner }}"
+          delivery-id: ${{ steps.resolve_sha.outputs.pytorch_sha }}
+          event-type: nightly
+
+      - name: Run Bazel Test
+        run: |
+          echo "[INFO] Running test targets: ${TORCH_TEST_TARGETS}"
+
+          # Leave ${TORCH_TEST_TARGETS} unquoted so space-separated targets expand.
           # shellcheck disable=SC2086
           bazel test \
             --config=${{ matrix.job_info.config }} \
@@ -142,3 +239,17 @@ jobs:
             --test_env=TORCH_TPU_INTERNAL_PYTORCH_TEST_DIR="$GITHUB_WORKSPACE/pytorch/test" \
             --keep_going \
             ${TORCH_TEST_TARGETS}
+
+      - name: Report completion to CRCR
+        # TODO(b/566301487): CRITICAL - Temporary PR allowance to verify CRCR HUD reporting before submitting.
+        # Restore `(github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref_name == 'main'))` before landing.
+        if: always() && !cancelled()
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: pytorch/test-infra/.github/actions/cross-repo-ci-relay-callback@28dee7456d0348d74a5faa85098bb028b263ee2b  # main
+        with:
+          status: completed
+          conclusion: ${{ job.status }}
+          job-name: "PyTorch tests on ${{ matrix.job_info.name || matrix.job_info.runner }}"
+          delivery-id: ${{ steps.resolve_sha.outputs.pytorch_sha }}
+          event-type: nightly
