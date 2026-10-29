@@ -18,6 +18,7 @@
 
 #include <cstddef>
 #include <cstdlib>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -26,6 +27,7 @@
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/strings/match.h"
+#include "absl/strings/numbers.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 #include "absl/strings/str_split.h"
@@ -38,17 +40,73 @@
 namespace torch_tpu {
 namespace {
 
-// libtpu's default MegaScale port. Local rank 0 keeps it, so a MegaScale
-// coordinator address of `<MASTER_ADDR>:8080` still reaches global rank 0.
-constexpr int kMegascaleBasePort = 8080;
+// libtpu's default MegaScale port when neither MEGASCALE_COORDINATOR_ADDRESS
+// nor MEGASCALE_PORT specifies a base port.
+constexpr int kMegascaleDefaultBasePort = 8080;
+constexpr int kMaxTcpPort = 65535;
+
+// Returns the `:port` suffix of `address` (after any IPv6 `]`), or
+// std::nullopt if `address` has no port suffix.
+[[nodiscard]] std::optional<std::string_view> CoordinatorAddressPort(
+    std::string_view address) {
+  if (absl::StartsWith(address, "[")) {
+    const size_t bracket_pos = address.find(']');
+    if (bracket_pos == std::string_view::npos ||
+        bracket_pos + 1 >= address.size() || address[bracket_pos + 1] != ':') {
+      return std::nullopt;
+    }
+    return address.substr(bracket_pos + 2);
+  }
+  const size_t colon_pos = address.find(':');
+  if (colon_pos == std::string_view::npos ||
+      address.find(':', colon_pos + 1) != std::string_view::npos) {
+    return std::nullopt;
+  }
+  return address.substr(colon_pos + 1);
+}
+
+// Resolves local rank 0's MegaScale port from `coordinator_address` first (so
+// hooks that pre-set MEGASCALE_PORT to `base_port + local_rank` still anchor on
+// rank 0's coordinator port), then from `MEGASCALE_PORT` (when pre-set at the
+// container level, e.g. 8081 on GKE KubeRay), falling back to 8080.
+[[nodiscard]] int ResolveMegascaleBasePort(
+    std::string_view coordinator_address) {
+  int port = 0;
+  if (const std::optional<std::string_view> addr_port =
+          CoordinatorAddressPort(coordinator_address);
+      addr_port.has_value() && absl::SimpleAtoi(*addr_port, &port) &&
+      port > 0 && port <= kMaxTcpPort) {
+    return port;
+  }
+  const char* const env_port =
+      std::getenv(kMegascalePortEnvVar);  // GETENV_OK=libtpu's env
+  if (env_port != nullptr && absl::SimpleAtoi(env_port, &port) && port > 0 &&
+      port <= kMaxTcpPort) {
+    return port;
+  }
+  return kMegascaleDefaultBasePort;
+}
 
 // Gives the process with `local_rank` its own MegaScale ports in a multi-slice
 // job. libtpu defaults the MegaScale port to 8080 and the MegaScale debug port
 // to 8081 in every process, so the processes on a host would collide. The
-// ports are interleaved (8080/8081, 8082/8083, ...) so that no process's
-// MegaScale port is another process's debug port.
+// ports are interleaved (`base_port` + 2k, `base_port` + 2k + 1) so that no
+// process's MegaScale port is another process's debug port, while local rank 0
+// keeps `base_port` to match the MegaScale coordinator address.
 void AssignMegascalePorts(const int local_rank) {
-  const int megascale_port = kMegascaleBasePort + 2 * local_rank;
+  const char* const raw_coord =
+      std::getenv(kMegascaleCoordinatorAddressEnvVar);  // GETENV_OK=libtpu
+  const std::string_view coord_addr =
+      raw_coord != nullptr ? raw_coord : std::string_view();
+  const int base_port = ResolveMegascaleBasePort(coord_addr);
+  if (!coord_addr.empty() && !absl::StrContains(coord_addr, ':')) {
+    // Pin a portless coordinator address to `base_port` before overwriting
+    // MEGASCALE_PORT, since libtpu otherwise appends each process's own
+    // MEGASCALE_PORT (`base_port + 2 * local_rank`).
+    SetEnv<kMegascaleCoordinatorAddressEnvVar>(
+        absl::StrCat(coord_addr, ":", base_port));
+  }
+  const int megascale_port = base_port + 2 * local_rank;
   const int megascale_debug_port = megascale_port + 1;
   ABSL_LOG(INFO) << "Multi-slice job detected, setting " << kMegascalePortEnvVar
                  << "=" << megascale_port << " and "
