@@ -432,10 +432,20 @@ absl::StatusOr<mlir::MlirOp> BuildGroupedMmShlo(
     std::optional<mlir::MlirOp> offs_op, mlir::ElementType out_dtype,
     mlir::stablehlo::Precision precision) {
   const mlir::RankedTensorType self_type = GetTensorTypeOrDie(self_op);
-  const bool transpose_mat2 = UnwrapTransposed3dMat2(mat2_op);
-  const mlir::RankedTensorType mat2_type = GetTensorTypeOrDie(mat2_op);
-
   const bool a_is_2d = self_type.getRank() == 2;
+  // For the ragged 2D x 3D case, keep a [0, 2, 1] transpose of mat2 explicit
+  // instead of folding it into the RaggedDot rhs contracting dim. Folding hands
+  // XLA:TPU a contracting-dim-minor [g, n, k] rhs, for which TPU layout
+  // assignment keeps k in lanes and the RaggedDotExpander tiling search can
+  // fail (e.g. HF Gemma 4 gate_up [128, 1408, 2816]: estimated_cycles=INT64_MAX
+  // and [1, 16, 1] windows, ~50x slower). With an explicit [g, k, n] rhs, XLA
+  // fuses the relayout into the matmul operand.
+  // TODO: b/579516880 - Remove once XLA:TPU handles k-minor ragged dot rhs.
+  const bool keep_explicit_mat2_transpose =
+      a_is_2d && GetTensorTypeOrDie(mat2_op).getRank() == 3;
+  const bool transpose_mat2 =
+      !keep_explicit_mat2_transpose && UnwrapTransposed3dMat2(mat2_op);
+  const mlir::RankedTensorType mat2_type = GetTensorTypeOrDie(mat2_op);
   const bool b_is_2d = mat2_type.getRank() == 2;
 
   // Upcast input tensors to the computation precision (e.g., F32 or BF16)
