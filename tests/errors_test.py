@@ -13126,6 +13126,169 @@ Device-side assertion tracking was not enabled by user.""",
           0,
       )
 
+  def test_native_multi_head_attention_undefined_mask_type(self):
+    device = et.device()
+    query = torch.ones(2, 4, 8, device=device)
+    key = torch.ones(2, 4, 8, device=device)
+    value = torch.ones(2, 4, 8, device=device)
+    qkv_weight = torch.ones(24, 8, device=device)
+    qkv_bias = torch.ones(24, device=device)
+    proj_weight = torch.ones(8, 8, device=device)
+    proj_bias = torch.ones(8, device=device)
+    mask = torch.zeros(4, 4, dtype=torch.bool, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_multi_head_attention(): expected mask_type to be defined when mask is provided, got None""",
+        gpu="""Mask Type should be defined""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten._native_multi_head_attention(
+          query,
+          key,
+          value,
+          8,
+          2,
+          qkv_weight,
+          qkv_bias,
+          proj_weight,
+          proj_bias,
+          mask,
+          True,
+          True,
+          None,
+      )
+
+  def test_native_multi_head_attention_invalid_mask_type(self):
+    device = et.device()
+    query = torch.ones(2, 4, 8, device=device)
+    key = torch.ones(2, 4, 8, device=device)
+    value = torch.ones(2, 4, 8, device=device)
+    qkv_weight = torch.ones(24, 8, device=device)
+    qkv_bias = torch.ones(24, device=device)
+    proj_weight = torch.ones(8, 8, device=device)
+    proj_bias = torch.ones(8, device=device)
+    mask = torch.zeros(4, 4, dtype=torch.bool, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_multi_head_attention(): expected mask_type to be 0, 1, or 2, got 99""",
+        gpu="""Mask Type should be 0 (src_mask), 1 (src_key_padding_mask), or 2 (default_mask)""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.ops.aten._native_multi_head_attention(
+          query,
+          key,
+          value,
+          8,
+          2,
+          qkv_weight,
+          qkv_bias,
+          proj_weight,
+          proj_bias,
+          mask,
+          True,
+          True,
+          99,
+      )
+
+  def test_native_multi_head_attention_invalid_src_mask_shape(self):
+    device = et.device()
+    query = torch.ones(2, 4, 8, device=device)
+    key = torch.ones(2, 4, 8, device=device)
+    value = torch.ones(2, 4, 8, device=device)
+    qkv_weight = torch.ones(24, 8, device=device)
+    qkv_bias = torch.ones(24, device=device)
+    proj_weight = torch.ones(8, 8, device=device)
+    proj_bias = torch.ones(8, device=device)
+    # A src_mask (mask_type 0) must be [T, T]; [1, T] must not broadcast.
+    mask = torch.zeros(1, 4, dtype=torch.bool, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_multi_head_attention(): expected 2-D mask shape to be [4, 4] for mask_type 0, got [1, 4]""",
+        gpu="""Mask shape should match input. mask: [1, 4] input: [2, 2, 4, 4]""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.ops.aten._native_multi_head_attention(
+          query,
+          key,
+          value,
+          8,
+          2,
+          qkv_weight,
+          qkv_bias,
+          proj_weight,
+          proj_bias,
+          mask,
+          True,
+          True,
+          0,
+      )
+
+  def test_native_multi_head_attention_invalid_src_key_padding_mask_shape(self):
+    device = et.device()
+    query = torch.ones(2, 4, 8, device=device)
+    key = torch.ones(2, 4, 8, device=device)
+    value = torch.ones(2, 4, 8, device=device)
+    qkv_weight = torch.ones(24, 8, device=device)
+    qkv_bias = torch.ones(24, device=device)
+    proj_weight = torch.ones(8, 8, device=device)
+    proj_bias = torch.ones(8, device=device)
+    # A src_key_padding_mask (mask_type 1) must be [B, T], not [T, T].
+    mask = torch.zeros(4, 4, dtype=torch.bool, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_multi_head_attention(): expected 2-D mask shape to be [2, 4] for mask_type 1, got [4, 4]""",
+        gpu="""Mask shape should match input. mask: [4, 4] input: [2, 2, 4, 4]""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.ops.aten._native_multi_head_attention(
+          query,
+          key,
+          value,
+          8,
+          2,
+          qkv_weight,
+          qkv_bias,
+          proj_weight,
+          proj_bias,
+          mask,
+          True,
+          True,
+          1,
+      )
+
+  def test_native_multi_head_attention_2d_default_mask(self):
+    device = et.device()
+    query = torch.ones(2, 4, 8, device=device)
+    key = torch.ones(2, 4, 8, device=device)
+    value = torch.ones(2, 4, 8, device=device)
+    qkv_weight = torch.ones(24, 8, device=device)
+    qkv_bias = torch.ones(24, device=device)
+    proj_weight = torch.ones(8, 8, device=device)
+    proj_bias = torch.ones(8, device=device)
+    # A default_mask (mask_type 2) must be the full 4-D [B, H, T, T] mask.
+    mask = torch.zeros(4, 4, dtype=torch.bool, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_multi_head_attention(): expected 4-D mask for mask_type 2, got 2-D tensor of shape [4, 4]""",
+        gpu="""Mask shape should match input. mask: [4, 4] input: [2, 2, 4, 4]""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch.ops.aten._native_multi_head_attention(
+          query,
+          key,
+          value,
+          8,
+          2,
+          qkv_weight,
+          qkv_bias,
+          proj_weight,
+          proj_bias,
+          mask,
+          True,
+          True,
+          2,
+      )
+
   @parameterized.named_parameters(
       dict(
           testcase_name="bfloat16",
@@ -14196,6 +14359,256 @@ Device-side assertion tracking was not enabled by user.""",
           ffn_w2,
           ffn_b2,
           mask,
+      )
+
+  def test_transformer_encoder_layer_fwd_undefined_mask_type(self):
+    embed_dim = 16
+    num_heads = 4
+    d_ff = 32
+    device = et.device()
+    src = torch.randn(2, 8, 16, device=device)
+    qkv_w = torch.randn(3 * embed_dim, embed_dim, device=device)
+    qkv_b = torch.randn(3 * embed_dim, device=device)
+    proj_w = torch.randn(embed_dim, embed_dim, device=device)
+    proj_b = torch.randn(embed_dim, device=device)
+    norm_w1 = torch.ones(embed_dim, device=device)
+    norm_b1 = torch.zeros(embed_dim, device=device)
+    norm_w2 = torch.ones(embed_dim, device=device)
+    norm_b2 = torch.zeros(embed_dim, device=device)
+    ffn_w1 = torch.randn(d_ff, embed_dim, device=device)
+    ffn_b1 = torch.randn(d_ff, device=device)
+    ffn_w2 = torch.randn(embed_dim, d_ff, device=device)
+    ffn_b2 = torch.randn(embed_dim, device=device)
+    mask = torch.zeros(8, 8, dtype=torch.bool, device=device)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""transformer_encoder_layer_fwd(): expected mask_type to be defined when mask is provided, got None""",
+        gpu="""Mask Type should be defined""",
+        message_reviewed_by="wan",
+    ):
+      torch._transformer_encoder_layer_fwd(
+          src,
+          embed_dim,
+          num_heads,
+          qkv_w,
+          qkv_b,
+          proj_w,
+          proj_b,
+          True,
+          True,
+          1e-5,
+          norm_w1,
+          norm_b1,
+          norm_w2,
+          norm_b2,
+          ffn_w1,
+          ffn_b1,
+          ffn_w2,
+          ffn_b2,
+          mask,
+          None,
+      )
+
+  def test_transformer_encoder_layer_fwd_invalid_mask_type(self):
+    embed_dim = 16
+    num_heads = 4
+    d_ff = 32
+    device = et.device()
+    src = torch.randn(2, 8, 16, device=device)
+    qkv_w = torch.randn(3 * embed_dim, embed_dim, device=device)
+    qkv_b = torch.randn(3 * embed_dim, device=device)
+    proj_w = torch.randn(embed_dim, embed_dim, device=device)
+    proj_b = torch.randn(embed_dim, device=device)
+    norm_w1 = torch.ones(embed_dim, device=device)
+    norm_b1 = torch.zeros(embed_dim, device=device)
+    norm_w2 = torch.ones(embed_dim, device=device)
+    norm_b2 = torch.zeros(embed_dim, device=device)
+    ffn_w1 = torch.randn(d_ff, embed_dim, device=device)
+    ffn_b1 = torch.randn(d_ff, device=device)
+    ffn_w2 = torch.randn(embed_dim, d_ff, device=device)
+    ffn_b2 = torch.randn(embed_dim, device=device)
+    mask = torch.zeros(8, 8, dtype=torch.bool, device=device)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""transformer_encoder_layer_fwd(): expected mask_type to be 0, 1, or 2, got 99""",
+        gpu="""Mask Type should be 0 (src_mask), 1 (src_key_padding_mask), or 2 (default_mask)""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch._transformer_encoder_layer_fwd(
+          src,
+          embed_dim,
+          num_heads,
+          qkv_w,
+          qkv_b,
+          proj_w,
+          proj_b,
+          True,
+          True,
+          1e-5,
+          norm_w1,
+          norm_b1,
+          norm_w2,
+          norm_b2,
+          ffn_w1,
+          ffn_b1,
+          ffn_w2,
+          ffn_b2,
+          mask,
+          99,
+      )
+
+  def test_transformer_encoder_layer_fwd_invalid_src_mask_shape(self):
+    embed_dim = 16
+    num_heads = 4
+    d_ff = 32
+    device = et.device()
+    src = torch.randn(2, 8, 16, device=device)
+    qkv_w = torch.randn(3 * embed_dim, embed_dim, device=device)
+    qkv_b = torch.randn(3 * embed_dim, device=device)
+    proj_w = torch.randn(embed_dim, embed_dim, device=device)
+    proj_b = torch.randn(embed_dim, device=device)
+    norm_w1 = torch.ones(embed_dim, device=device)
+    norm_b1 = torch.zeros(embed_dim, device=device)
+    norm_w2 = torch.ones(embed_dim, device=device)
+    norm_b2 = torch.zeros(embed_dim, device=device)
+    ffn_w1 = torch.randn(d_ff, embed_dim, device=device)
+    ffn_b1 = torch.randn(d_ff, device=device)
+    ffn_w2 = torch.randn(embed_dim, d_ff, device=device)
+    ffn_b2 = torch.randn(embed_dim, device=device)
+    # A src_mask (mask_type 0) must be [T, T]; [1, T] must not broadcast.
+    mask = torch.zeros(1, 8, dtype=torch.bool, device=device)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""transformer_encoder_layer_fwd(): expected 2-D mask shape to be [8, 8] for mask_type 0, got [1, 8]""",
+        gpu="""Mask shape should match input. mask: [1, 8] input: [2, 4, 8, 8]""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch._transformer_encoder_layer_fwd(
+          src,
+          embed_dim,
+          num_heads,
+          qkv_w,
+          qkv_b,
+          proj_w,
+          proj_b,
+          True,
+          True,
+          1e-5,
+          norm_w1,
+          norm_b1,
+          norm_w2,
+          norm_b2,
+          ffn_w1,
+          ffn_b1,
+          ffn_w2,
+          ffn_b2,
+          mask,
+          0,
+      )
+
+  def test_transformer_encoder_layer_fwd_invalid_src_key_padding_mask_shape(
+      self,
+  ):
+    embed_dim = 16
+    num_heads = 4
+    d_ff = 32
+    device = et.device()
+    src = torch.randn(2, 8, 16, device=device)
+    qkv_w = torch.randn(3 * embed_dim, embed_dim, device=device)
+    qkv_b = torch.randn(3 * embed_dim, device=device)
+    proj_w = torch.randn(embed_dim, embed_dim, device=device)
+    proj_b = torch.randn(embed_dim, device=device)
+    norm_w1 = torch.ones(embed_dim, device=device)
+    norm_b1 = torch.zeros(embed_dim, device=device)
+    norm_w2 = torch.ones(embed_dim, device=device)
+    norm_b2 = torch.zeros(embed_dim, device=device)
+    ffn_w1 = torch.randn(d_ff, embed_dim, device=device)
+    ffn_b1 = torch.randn(d_ff, device=device)
+    ffn_w2 = torch.randn(embed_dim, d_ff, device=device)
+    ffn_b2 = torch.randn(embed_dim, device=device)
+    # A src_key_padding_mask (mask_type 1) must be [B, T], not [T, T].
+    mask = torch.zeros(8, 8, dtype=torch.bool, device=device)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""transformer_encoder_layer_fwd(): expected 2-D mask shape to be [2, 8] for mask_type 1, got [8, 8]""",
+        gpu="""Mask shape should match input. mask: [8, 8] input: [2, 4, 8, 8]""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch._transformer_encoder_layer_fwd(
+          src,
+          embed_dim,
+          num_heads,
+          qkv_w,
+          qkv_b,
+          proj_w,
+          proj_b,
+          True,
+          True,
+          1e-5,
+          norm_w1,
+          norm_b1,
+          norm_w2,
+          norm_b2,
+          ffn_w1,
+          ffn_b1,
+          ffn_w2,
+          ffn_b2,
+          mask,
+          1,
+      )
+
+  def test_transformer_encoder_layer_fwd_2d_default_mask(self):
+    embed_dim = 16
+    num_heads = 4
+    d_ff = 32
+    device = et.device()
+    src = torch.randn(2, 8, 16, device=device)
+    qkv_w = torch.randn(3 * embed_dim, embed_dim, device=device)
+    qkv_b = torch.randn(3 * embed_dim, device=device)
+    proj_w = torch.randn(embed_dim, embed_dim, device=device)
+    proj_b = torch.randn(embed_dim, device=device)
+    norm_w1 = torch.ones(embed_dim, device=device)
+    norm_b1 = torch.zeros(embed_dim, device=device)
+    norm_w2 = torch.ones(embed_dim, device=device)
+    norm_b2 = torch.zeros(embed_dim, device=device)
+    ffn_w1 = torch.randn(d_ff, embed_dim, device=device)
+    ffn_b1 = torch.randn(d_ff, device=device)
+    ffn_w2 = torch.randn(embed_dim, d_ff, device=device)
+    ffn_b2 = torch.randn(embed_dim, device=device)
+    # A default_mask (mask_type 2) must be the full 4-D [B, H, T, T] mask.
+    mask = torch.zeros(8, 8, dtype=torch.bool, device=device)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""transformer_encoder_layer_fwd(): expected 4-D mask for mask_type 2, got 2-D tensor of shape [8, 8]""",
+        gpu="""Mask shape should match input. mask: [8, 8] input: [2, 4, 8, 8]""",
+        message_reviewed_by="adivinpatel",
+    ):
+      torch._transformer_encoder_layer_fwd(
+          src,
+          embed_dim,
+          num_heads,
+          qkv_w,
+          qkv_b,
+          proj_w,
+          proj_b,
+          True,
+          True,
+          1e-5,
+          norm_w1,
+          norm_b1,
+          norm_w2,
+          norm_b2,
+          ffn_w1,
+          ffn_b1,
+          ffn_w2,
+          ffn_b2,
+          mask,
+          2,
       )
 
   def test_ones_unsupported_dtype(self):
