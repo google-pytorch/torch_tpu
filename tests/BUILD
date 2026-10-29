@@ -2890,6 +2890,23 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_test(
+    name = "view_narrow_dtype_test",
+    size = "medium",
+    srcs = ["view_narrow_dtype_test.py"],
+    main = "view_narrow_dtype_test.py",
+    run_on_accelerators = ["requires-tpu-v6e"],
+    shard_count = 2,
+    deps = [
+        ":seed_test_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/execution_mode",
+    ],
+)
+
 torch_tpu_py_library(
     name = "run_upstream_example",
     srcs = ["run_upstream_example.py"],
