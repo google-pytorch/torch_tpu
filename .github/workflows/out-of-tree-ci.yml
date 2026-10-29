@@ -14,22 +14,10 @@
 
 # PyTorch Out-of-Tree (OOT) / CRCR Nightly Integration
 #
-# Origin: Based on the PyTorch CRCR (Cross-Repository CI Relay) nightly callback pattern
-# https://github.com/pytorch/crcr-test/blob/main/README.md.
-#
-# Purpose: Runs daily on a scheduled cadence (or on demand via workflow_dispatch / the
-# `ci:crcr-nightly` PR label), running the TorchTPU native test suite against upstream
-# https://github.com/pytorch/pytorch `main` and reporting status back to the PyTorch CRCR HUD
-# (`event-type: nightly`).
-#
-# Expected Behaviors:
-# 1. Runs once daily via `schedule` (`cron: "30 10 * * *"`), on manual `workflow_dispatch`, or on
-#    PRs labeled with `ci:crcr-nightly`.
-# 2. Checks out TorchTPU and resolves the latest `pytorch/pytorch` `main` SHA (or the optional
-#    `pytorch_sha` input from `workflow_dispatch`).
-# 3. Runs the TorchTPU native test targets and reports the final job conclusion to the CRCR HUD
-#    (`https://hud.pytorch.org/crcr/google-pytorch/torch_tpu?event=nightly`) via
-#    `pytorch/test-infra/.github/actions/cross-repo-ci-relay-callback`.
+# Runs daily (or via workflow_dispatch / the `ci:crcr-nightly` PR label), building and running
+# the upstream PyTorch device-generic test suite (`//tests/torch:all`) against the latest PyTorch
+# nightly CPU wheel (`--config=local_torch`) and its matching `pytorch/pytorch` commit SHA, and
+# reporting build and test status to the PyTorch CRCR HUD (`event-type: nightly`).
 
 name: PyTorch Out-of-Tree Dispatch
 
@@ -37,20 +25,23 @@ on:
   workflow_dispatch:
     inputs:
       pytorch_sha:
-        description: "Optional upstream PyTorch commit SHA to test (defaults to refs/heads/main)"
+        description: "Optional upstream PyTorch commit SHA override (defaults to git_version of the resolved wheel)"
         required: false
+        type: string
+      torch_pip_spec:
+        description: "Optional pip requirement of the torch wheel (defaults to latest unpinned nightly 'torch')"
+        required: false
+        default: "torch"
         type: string
   pull_request:
     branches:
       - main
     types: [opened, synchronize, reopened, labeled]
   schedule:
-    # Run once daily at 10:30 UTC.
-    - cron: "30 10 * * *"
+    - cron: "30 10 * * *"  # Run once daily at 10:30 UTC.
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
-  # Don't cancel in-progress jobs for main branch.
   cancel-in-progress: ${{ github.ref_name != 'main' }}
 
 permissions:
@@ -61,31 +52,49 @@ jobs:
     if: >-
       github.event_name != 'pull_request' ||
       contains(github.event.pull_request.labels.*.name, 'ci:crcr-nightly')
-    name: "Resolve upstream PyTorch SHA"
+    name: "Resolve upstream PyTorch nightly wheel and SHA"
     runs-on: ubuntu-latest
     outputs:
       pytorch_sha: ${{ steps.resolve_sha.outputs.pytorch_sha }}
+      torch_pip_spec: ${{ steps.resolve_sha.outputs.torch_pip_spec }}
+      python_version: ${{ steps.resolve_sha.outputs.python_version }}
     steps:
-      - name: Resolve PyTorch SHA
+      - name: Checkout TorchTPU
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          sparse-checkout: bazel/supported_python_versions.bzl
+          sparse-checkout-cone-mode: false
+
+      - name: Resolve PyTorch nightly wheel and SHA
         id: resolve_sha
         env:
           INPUT_SHA: ${{ inputs.pytorch_sha }}
+          INPUT_PIP_SPEC: ${{ inputs.torch_pip_spec || 'torch' }}
         run: |
-          if [ -n "${INPUT_SHA}" ]; then
-            PYTORCH_SHA="${INPUT_SHA}"
-          else
-            PYTORCH_SHA=$(git ls-remote https://github.com/pytorch/pytorch.git refs/heads/main | awk '{print $1}')
-          fi
-          if [ -z "${PYTORCH_SHA}" ]; then
-            echo "::error::Failed to resolve upstream PyTorch SHA."
+          PYTHON_VERSION=$(awk -F'"' '/^DEFAULT_PYTHON_VERSION =/ {print $2}' bazel/supported_python_versions.bzl)
+          pip download --no-deps --pre "${INPUT_PIP_SPEC}" \
+            --index-url https://download.pytorch.org/whl/nightly/cpu \
+            -d /tmp/torch_whl --python-version "${PYTHON_VERSION}" --only-binary=:all:
+
+          VERSION_PY=$(unzip -p /tmp/torch_whl/torch-*.whl torch/version.py)
+          WHEEL_VERSION=$(printf '%s\n' "${VERSION_PY}" | awk -F"'" '/^__version__/ {print $2}')
+          WHEEL_SHA=$(printf '%s\n' "${VERSION_PY}" | awk -F"'" '/^git_version/ {print $2}')
+          PYTORCH_SHA="${INPUT_SHA:-${WHEEL_SHA}}"
+
+          if [ -z "${WHEEL_VERSION}" ] || [ -z "${PYTORCH_SHA}" ]; then
+            echo "::error::Failed to resolve wheel version (${WHEEL_VERSION}) or PyTorch SHA (${PYTORCH_SHA})."
             exit 1
           fi
-          echo "Resolved PyTorch SHA: ${PYTORCH_SHA}"
-          echo "pytorch_sha=${PYTORCH_SHA}" >> "$GITHUB_OUTPUT"
+          echo "[INFO] Resolved wheel torch==${WHEEL_VERSION} (git_version=${WHEEL_SHA}, target SHA=${PYTORCH_SHA})"
+          {
+            echo "python_version=${PYTHON_VERSION}"
+            echo "torch_pip_spec=torch==${WHEEL_VERSION}"
+            echo "pytorch_sha=${PYTORCH_SHA}"
+          } >> "$GITHUB_OUTPUT"
 
   run_tests:
     needs: resolve_sha
-    name: "Presubmit on ${{ matrix.job_info.name || matrix.job_info.runner }} against dispatched PyTorch"
+    name: "PyTorch tests on ${{ matrix.job_info.name || matrix.job_info.runner }}"
     permissions:
       contents: read
       id-token: write
@@ -94,33 +103,22 @@ jobs:
       matrix:
         job_info: [
           {
-            name: "CPU",
-            runner: "linux-x86-n4-16",
-            config: "ci_cpu_presubmit",
-            extra_flags: "",
-          },
-          {
+            name: "TPU v5",
             runner: "linux-x86-ct5lp-224-8tpu",
-            config: "ci_tpu_v5_presubmit",
-            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
+            config: "ci_tpu_v5",
           },
           {
+            name: "TPU v7x",
             runner: "linux-x86-tpu7x-224-4tpu",
-            config: "ci_tpu_v7_presubmit",
-            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
-          }
+            config: "ci_tpu_v7",
+          },
         ]
     runs-on: ${{ matrix.job_info.runner }}
     container:
       image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:dddf008479144c57182b56a6d00bfc1f38f8f2ef206e2bc26ff6c0a401ded47e"  # Tag infrastructure-public-image-083516c6af6a (built 2026-10-13)
-      # Disable ipc isolation to prevent shm limit issues.
       options: --ipc=host
 
     steps:
-      # The k8s container hook mounts the runner's /home/runner/_work volume at
-      # /__w inside the job container. Composite actions that expand
-      # ${{ github.action_path }} in `run:` reference /home/runner/_work/_actions,
-      # so symlink /home/runner/_work -> /__w before invoking external composite actions.
       - name: Map runner work directory in container
         continue-on-error: true
         run: |
@@ -141,62 +139,66 @@ jobs:
           path: pytorch
 
       - name: Fix Git Workspace Ownership
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-
-      - name: Run TorchTPU Native Tests
-        env:
-          PYTORCH_SHA: ${{ needs.resolve_sha.outputs.pytorch_sha }}
         run: |
-          echo "Testing against PyTorch SHA: ${PYTORCH_SHA}"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/pytorch"
 
-          bazel build //... \
-            --config=${{ matrix.job_info.config }} \
-            --override_repository="pytorch=$GITHUB_WORKSPACE/pytorch" \
-            ${{ matrix.job_info.extra_flags }}
-
-          set +e
-          bazel test //... \
-            --config=${{ matrix.job_info.config }} \
-            --override_repository="pytorch=$GITHUB_WORKSPACE/pytorch" \
-            ${{ matrix.job_info.extra_flags }}
-
-          BAZEL_EXIT_CODE=$?
-          set -e
-
-          if [ $BAZEL_EXIT_CODE -eq 4 ]; then
-            echo "No tests found (Exit Code 4). Treating as success."
-            exit 0
-          elif [ $BAZEL_EXIT_CODE -ne 0 ]; then
-            echo "Bazel test failed with exit code $BAZEL_EXIT_CODE."
-            exit $BAZEL_EXIT_CODE
+      - name: Download and Validate PyTorch Nightly Wheel
+        env:
+          PYTHON_VERSION: ${{ needs.resolve_sha.outputs.python_version }}
+          TORCH_PIP_SPEC: ${{ needs.resolve_sha.outputs.torch_pip_spec }}
+          EXPECTED_PYTORCH_SHA: ${{ needs.resolve_sha.outputs.pytorch_sha }}
+          INPUT_SHA_OVERRIDE: ${{ inputs.pytorch_sha }}
+        run: |
+          mkdir -p dist/local
+          pip download --no-deps --pre "${TORCH_PIP_SPEC}" \
+            --index-url https://download.pytorch.org/whl/nightly/cpu \
+            -d dist/local --python-version "${PYTHON_VERSION}" --only-binary=:all:
+          set -- "$PWD/dist/local/torch-"*.whl
+          [ -f "$1" ] || { echo "::error::Wheel not found for ${TORCH_PIP_SPEC}"; exit 1; }
+          if [ -z "${INPUT_SHA_OVERRIDE}" ]; then
+            unzip -p "$1" torch/version.py | grep -F "${EXPECTED_PYTORCH_SHA}"
           fi
+          echo "TORCH_SOURCE=$1" >> "$GITHUB_ENV"
+
+      - name: Build PyTorch Device-Generic Tests
+        id: build
+        run: |
+          TORCH_TEST_TARGETS=$(bazel query 'kind("py_test", //tests/torch:all)' | tr '\n' ' ')
+          BAZEL_CRCR_ARGS="--config=${{ matrix.job_info.config }} --config=local_torch --repo_env=TORCH_SOURCE=${TORCH_SOURCE} --run_under=${PWD}/ci/tools/parallel_accelerator_execute.sh --test_env=TORCH_TPU_INTERNAL_PYTORCH_TEST_DIR=${GITHUB_WORKSPACE}/pytorch/test --keep_going ${TORCH_TEST_TARGETS}"
+          echo "BAZEL_CRCR_ARGS=${BAZEL_CRCR_ARGS}" >> "$GITHUB_ENV"
+          # shellcheck disable=SC2086
+          bazel build ${BAZEL_CRCR_ARGS}
+
+      - name: Report build to CRCR
+        # TODO(b/566301487): CRITICAL - Temporary PR allowance to verify CRCR HUD reporting before submitting.
+        # Restore `(github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref_name == 'main'))` before landing.
+        if: always() && !cancelled() && steps.build.outcome != 'skipped'
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: pytorch/test-infra/.github/actions/cross-repo-ci-relay-callback@28dee7456d0348d74a5faa85098bb028b263ee2b  # main
+        with:
+          status: completed
+          conclusion: ${{ steps.build.outcome }}
+          job-name: "Build PyTorch tests on ${{ matrix.job_info.name || matrix.job_info.runner }}"
+          delivery-id: ${{ needs.resolve_sha.outputs.pytorch_sha }}
+          event-type: nightly
+
+      - name: Run PyTorch Device-Generic Tests
+        run: |
+          # shellcheck disable=SC2086
+          bazel test ${BAZEL_CRCR_ARGS}
 
       - name: Report completion to CRCR
-        if: >-
-          always() && !cancelled() &&
-          (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref_name == 'main'))
+        # TODO(b/566301487): CRITICAL - Temporary PR allowance to verify CRCR HUD reporting before submitting.
+        # Restore `(github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref_name == 'main'))` before landing.
+        if: always() && !cancelled()
         continue-on-error: true
         timeout-minutes: 5
         uses: pytorch/test-infra/.github/actions/cross-repo-ci-relay-callback@28dee7456d0348d74a5faa85098bb028b263ee2b  # main
         with:
           status: completed
           conclusion: ${{ job.status }}
-          job-name: "Presubmit on ${{ matrix.job_info.name || matrix.job_info.runner }}"
+          job-name: "PyTorch tests on ${{ matrix.job_info.name || matrix.job_info.runner }}"
           delivery-id: ${{ needs.resolve_sha.outputs.pytorch_sha }}
           event-type: nightly
-
-      - name: Log event to step summary
-        if: always()
-        env:
-          EVENT_JSON: ${{ toJson(github.event) }}
-        run: |
-          if [ -f /tmp/relay_response.json ]; then
-            echo "CRCR Relay response body:"
-            cat /tmp/relay_response.json
-            echo ""
-          fi
-          {
-            echo '```json'
-            echo "$EVENT_JSON"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
