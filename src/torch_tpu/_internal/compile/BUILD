@@ -45,6 +45,7 @@ torch_tpu_py_library(
         "//src/torch_tpu/_internal/benchmarks:xprof_adapter",
         "//src/torch_tpu/_internal/compile/fx_passes:detect_causal_mask",
         "//src/torch_tpu/_internal/compile/fx_passes:fold_gqa",
+        "//src/torch_tpu/_internal/compile/fx_passes:invoke_subgraph_to_scan",
         "//src/torch_tpu/_internal/compile/fx_passes:mark_activation_checkpoints",
         "//src/torch_tpu/_internal/compile/fx_passes:mark_embedded_constants",
         "//src/torch_tpu/_internal/export",
@@ -99,7 +100,6 @@ torch_tpu_py_library(
         ":flex_attention_redirect",
         ":grouped_mm_meta",
         ":meta_registration_overrides",
-        ":nested_compile_region",
         ":scan",
         ":tpu_backend",
         "//shims/torch:pytorch",
@@ -131,21 +131,18 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
-    name = "nested_compile_region",
-    srcs = ["nested_compile_region.py"],
-    deps = [
-        ":tpu_torch_compile",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu/_internal/compile/fx_passes:mark_embedded_constants",
-        "//src/torch_tpu/_internal/export",
-        "//src/torch_tpu/_internal/pallas:tpu_torch_pallas",
-    ],
-)
-
-torch_tpu_py_library(
     name = "meta_registration_overrides",
     srcs = ["meta_registration_overrides.py"],
     deps = ["//shims/torch:pytorch"],
+)
+
+torch_tpu_py_library(
+    name = "nested_compile_region",
+    srcs = ["nested_compile_region.py"],
+    deps = [
+        "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal/compile/fx_passes:invoke_subgraph_to_scan",
+    ],
 )
 
 torch_tpu_py_library(
@@ -165,6 +162,7 @@ torch_tpu_py_library(
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/benchmarks:xprof_adapter",
         "//src/torch_tpu/_internal/compile/dynamic:dynamic_compiler",
+        "//src/torch_tpu/_internal/compile/fx_passes:invoke_subgraph_to_scan",
         "//src/torch_tpu/_internal/distributed:device_mesh",
         "//src/torch_tpu/_internal/distributed:process_group_utils",
         "//src/torch_tpu/_internal/execution_mode",
