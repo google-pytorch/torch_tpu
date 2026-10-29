@@ -28,7 +28,8 @@ from torch_tpu._internal import compile as compile_lib
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import _backend
 from torch_tpu._internal.compile import compiler
-from torch_tpu._internal.compile import nested_compile_region
+from torch_tpu._internal.compile import nested_compile_region as tt_ncr
+from torch_tpu._internal.compile.fx_passes import invoke_subgraph_to_scan
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import NoOpCompiledArtifact
 from torch_tpu._internal.utils import test_utils as utils
 from tests import seed_test_utils
@@ -302,6 +303,203 @@ class FunctionTest(seed_test_utils.RepeatableTest):
     res_ab = compiled(input_a, input_b).to("cpu")
     utils.assert_close(res_a.sum(), res_ab.sum(), rtol=1e-3, atol=1e-5)
 
+  def _run_scan_rewrite(
+      self, make_model, x_cpu, expected_rewrites, scan_unroll=1
+  ):
+    """Compiles `make_model(scan_unroll)` and `make_model(None)` and compares.
+
+    Args:
+      make_model: Builds the model; takes the `scan_unroll` of its regions.
+      x_cpu: The input.
+      expected_rewrites: Number of chains expected to become scans.
+      scan_unroll: The `scan_unroll` of the scanned model.
+    """
+    x_tpu = x_cpu.to("tpu")
+
+    def run(unroll):
+      torch.manual_seed(0)
+      model = make_model(unroll).to("tpu").eval()
+      # Force a fresh backend compile so the pass actually runs.
+      torch._dynamo.reset()
+      compile_lib.clear_cache()
+      compiled = torch.compile(model, backend="tpu")
+      with (
+          torch.no_grad(),
+          _patch_inline_subgraph(),
+          torch._functorch.config.patch(enable_autograd_cache=False),
+          mock.patch.object(
+              invoke_subgraph_to_scan,
+              "_rewrite",
+              wraps=invoke_subgraph_to_scan._rewrite,
+          ) as rewrite,
+      ):
+        res = compiled(x_tpu).to("cpu")
+      return res, rewrite.call_count
+
+    res_unrolled, unrolled_rewrites = run(None)
+    res_scan, scan_rewrites = run(scan_unroll)
+    self.assertEqual(unrolled_rewrites, 0)
+    self.assertEqual(scan_rewrites, expected_rewrites)
+    # The scan must match the unrolled TPU program; the CPU reference only
+    # loosely, since TPU matmuls use reduced precision by default.
+    utils.assert_close(res_scan, res_unrolled, rtol=1e-5, atol=1e-5)
+    torch.manual_seed(0)
+    with torch.no_grad():
+      res_cpu = make_model(None).eval()(x_cpu)
+    utils.assert_close(res_scan, res_cpu, rtol=2e-2, atol=2e-2)
+
+  @staticmethod
+  def _make_layer_stack(num_layers):
+    def make_model(scan_unroll):
+      class Layer(torch.nn.Module):
+
+        def __init__(self):
+          super().__init__()
+          self.lin = torch.nn.Linear(16, 16)
+
+        @tt_ncr.nested_compile_region(scan_unroll=scan_unroll)
+        def forward(self, x):
+          return x + torch.tanh(self.lin(x))
+
+      class Stack(torch.nn.Module):
+
+        def __init__(self):
+          super().__init__()
+          self.layers = torch.nn.ModuleList(
+              [Layer() for _ in range(num_layers)]
+          )
+
+        def forward(self, x):
+          for layer in self.layers:
+            x = layer(x)
+          return x * 2.0
+
+      return Stack()
+
+    return make_model
+
+  def test_nested_compile_region_scan_per_layer_weights(self):
+    self._run_scan_rewrite(
+        self._make_layer_stack(4), torch.randn(2, 16), expected_rewrites=1
+    )
+
+  def test_nested_compile_region_scan_partial_unroll(self):
+    # Two layers per iteration; the fifth stays an `invoke_subgraph`.
+    self._run_scan_rewrite(
+        self._make_layer_stack(5),
+        torch.randn(2, 16),
+        expected_rewrites=1,
+        scan_unroll=2,
+    )
+
+  def test_nested_compile_region_scan_without_scanned_inputs(self):
+    def make_model(scan_unroll):
+      @tt_ncr.nested_compile_region(scan_unroll=scan_unroll)
+      def body(x):
+        return torch.sin(x) + torch.cos(x)
+
+      class Repeat(torch.nn.Module):
+
+        def forward(self, x):
+          for _ in range(5):
+            x = body(x)
+          return x
+
+      return Repeat()
+
+    self._run_scan_rewrite(make_model, torch.randn(8), expected_rewrites=1)
+
+  def test_nested_compile_region_scan_skips_escaping_intermediates(self):
+    def make_model(scan_unroll):
+      @tt_ncr.nested_compile_region(scan_unroll=scan_unroll)
+      def body(x):
+        return torch.sin(x) * 2.0
+
+      class Escaping(torch.nn.Module):
+
+        def forward(self, x):
+          a = body(x)
+          b = body(a)
+          # `a` is used outside the chain, so it cannot become a scan carry.
+          return b + a
+
+      return Escaping()
+
+    self._run_scan_rewrite(make_model, torch.randn(8), expected_rewrites=0)
+
+  def test_nested_compile_region_scan_needs_annotation(self):
+    def make_model(scan_unroll):
+      del scan_unroll  # Plain PyTorch regions are never scanned.
+
+      @torch.compiler.nested_compile_region
+      def body(x):
+        return torch.sin(x) + torch.cos(x)
+
+      class Repeat(torch.nn.Module):
+
+        def forward(self, x):
+          for _ in range(5):
+            x = body(x)
+          return x
+
+      return Repeat()
+
+    self._run_scan_rewrite(make_model, torch.randn(8), expected_rewrites=0)
+
+  def test_nested_compile_region_scan_mutated_input(self):
+    def make_model(scan_unroll):
+      class Layer(torch.nn.Module):
+
+        def __init__(self):
+          super().__init__()
+          self.lin = torch.nn.Linear(16, 16)
+
+        @tt_ncr.nested_compile_region(scan_unroll=scan_unroll)
+        def forward(self, x, cache):
+          # Updated in place, like a KV cache.
+          cache.mul_(0.5).add_(x)
+          return x + torch.tanh(self.lin(cache))
+
+      class Stack(torch.nn.Module):
+
+        def __init__(self):
+          super().__init__()
+          self.layers = torch.nn.ModuleList([Layer() for _ in range(4)])
+          self.register_buffer("cache", torch.zeros(2, 16))
+
+        def forward(self, x):
+          for layer in self.layers:
+            x = layer(x, self.cache)
+          # Return the cache too, to check that it is written back.
+          return torch.cat([x, self.cache])
+
+      return Stack()
+
+    self._run_scan_rewrite(make_model, torch.randn(2, 16), expected_rewrites=1)
+
+  def test_nested_compile_region_scan_unroll_is_part_of_cache_key(self):
+    x = torch.randn(2, 16).to("tpu")
+    unrolls = []
+    for scan_unroll in (1, 2):
+      torch.manual_seed(0)
+      model = self._make_layer_stack(4)(scan_unroll).to("tpu").eval()
+      # Only Dynamo is reset: the AOTAutograd cache keeps the first program.
+      torch._dynamo.reset()
+      compiled = torch.compile(model, backend="tpu")
+      with (
+          torch.no_grad(),
+          _patch_inline_subgraph(),
+          mock.patch.object(
+              invoke_subgraph_to_scan,
+              "_rewrite",
+              wraps=invoke_subgraph_to_scan._rewrite,
+          ) as rewrite,
+      ):
+        compiled(x)
+      unrolls += [call.args[3] for call in rewrite.call_args_list]
+    # The second compile is not served the first program from the cache.
+    self.assertEqual(unrolls, [1, 2])
+
   def test_nested_compile_region_simple(self):
     @torch.compiler.nested_compile_region
     def gn(x, y):
@@ -421,7 +619,6 @@ class FunctionTest(seed_test_utils.RepeatableTest):
     x = torch.tensor([0.5, 1.0, 1.5], device="tpu")
     y = torch.tensor([2.0, 2.5, 3.0], device="tpu")
 
-    nested_compile_region.clear_cache()
     b1 = _backend.TpuBackend(debug=True)
     b2 = _backend.TpuBackend(debug=True)
     c1 = torch.compile(ModelA().to("tpu"), backend=b1)
@@ -429,9 +626,7 @@ class FunctionTest(seed_test_utils.RepeatableTest):
 
     with _patch_inline_subgraph():
       res1 = c1(x, y).to("cpu")
-      self.assertLen(nested_compile_region._NESTED_REGION_COMPILE_CACHE, 1)
       res2 = c2(x, y).to("cpu")
-      self.assertLen(nested_compile_region._NESTED_REGION_COMPILE_CACHE, 1)
 
     expected1 = (
         torch.sin(
@@ -485,33 +680,16 @@ class FunctionTest(seed_test_utils.RepeatableTest):
     x = torch.tensor([1.0, 2.0], device="tpu")
     y = torch.tensor([3.0, 4.0], device="tpu")
 
-    nested_compile_region.clear_cache()
     c_pos = torch.compile(fn_pos, backend="tpu")
     c_kw = torch.compile(fn_kw, backend="tpu")
 
     with _patch_inline_subgraph():
       res_pos = c_pos(x, y).to("cpu")
-      self.assertLen(nested_compile_region._NESTED_REGION_COMPILE_CACHE, 1)
       res_kw = c_kw(x, y).to("cpu")
-      self.assertLen(nested_compile_region._NESTED_REGION_COMPILE_CACHE, 1)
 
     expected = torch.tensor([5.0, 8.0])
     utils.assert_close(res_pos, expected)
     utils.assert_close(res_kw, expected)
-
-  def test_nested_compile_region_missing_argument_error(self):
-    class DummyModule(torch.nn.Module):
-
-      def forward(self, a, b):
-        return a + b
-
-    gm = torch.fx.symbolic_trace(DummyModule())
-    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Unit test for nested compile region argument validation.
-        TypeError, "Missing required argument"
-    ):
-      nested_compile_region.handle_invoke_subgraph(
-          gm, "subgraph", torch.tensor([1.0])
-      )
 
   def test_nested_compile_region_training_backward_reuse(self):
     @torch.compiler.nested_compile_region

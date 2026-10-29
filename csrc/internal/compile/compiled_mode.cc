@@ -477,17 +477,30 @@ absl::StatusOr<AsyncCompileResult> TraverseAndCompile(
     base_argument_layouts = options.argument_layouts;
   }
 
-  const CompilationSpec compilation_spec =
-      GetCompilationSpec(options.compilation_mode);
-  TT_ASSIGN_OR_RETURN(
-      auto compiled_kernel,
-      traversal->Compile(compilation_spec, nullptr,
-                         options.use_stablehlo_bounds, base_argument_layouts,
-                         unique_donated_inputs, options.module_name),
-      _.SetPrepend() << "failed to compile traversal: ");
+  SharedLoadedExecutableWithMetadataFuture executable_future;
+  if (!options.compile_executable) {
+    // Callers that skip compilation never await the executable.
+    absl::Status skipped = TT_ERROR(  // ERROR_COV_INFEASIBLE=never awaited
+                               error::kFailedPrecondition)
+                           << "XLA compilation was skipped";
+    LoadedExecutablePromise promise;
+    promise.set_value(std::move(skipped));
+    executable_future = promise.get_future().share();
+  } else {
+    const CompilationSpec compilation_spec =
+        GetCompilationSpec(options.compilation_mode);
+    TT_ASSIGN_OR_RETURN(
+        auto compiled_kernel,
+        traversal->Compile(compilation_spec, nullptr,
+                           options.use_stablehlo_bounds, base_argument_layouts,
+                           unique_donated_inputs, options.module_name),
+        _.SetPrepend() << "failed to compile traversal: ");
+    executable_future = std::move(compiled_kernel.fixed_shape_kernel);
+  }
 
   std::shared_ptr<ContextedModule> module = nullptr;
-  if (options.build_mlir_module) {
+  // Without an executable, the module is the only result.
+  if (options.build_mlir_module || !options.compile_executable) {
     ABSL_VLOG(1) << "Building MLIR module as requested.";
 
     TT_ASSIGN_OR_CRASH(  // CRASH_OK=implies a bug in compile backend if this
@@ -510,7 +523,7 @@ absl::StatusOr<AsyncCompileResult> TraverseAndCompile(
   }
 
   return AsyncCompileResult(
-      std::move(module), std::move(compiled_kernel.fixed_shape_kernel),
+      std::move(module), std::move(executable_future),
       has_duplicates ? std::move(argument_indices) : Indices{});
 }
 
