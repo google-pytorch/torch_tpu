@@ -18,7 +18,22 @@ common --analysis_testing_deps_limit=16000
 # while we have 3.14 configured.
 common --repo_env=HERMETIC_PYTHON_VERSION=3.14
 
+# TODO: Remove --enable_workspace=false, common:workspace, and WORKSPACE* in a
+# follow-up CL now that Bazel 9 has removed WORKSPACE.
 common --enable_bzlmod=true --enable_workspace=false
+
+# TODO: Remove once transitive dependencies explicitly load all rules/providers
+# removed from Bazel 9 built-ins:
+# - +@rules_cc: @com_github_grpc_grpc (bazel/cc_grpc_library.bzl,
+#   bazel/grpc_build_system.bzl), @rules_go (go/private/rules/cgo.bzl), and
+#   @rules_ml_toolchain (fixed on upstream main +
+#   https://github.com/google-ml-infra/rules_ml_toolchain/pull/340 once the
+#   MODULE.bazel pin is bumped past 236a498)
+# - +@rules_java: @protoc-gen-validate (bazel/protobuf.bzl uses JavaInfo)
+# - +@rules_shell: @rules_ml_toolchain (cc/sanitizers/sanitizer_wrapper.bzl,
+#   fixed on upstream main once the MODULE.bazel pin is bumped past 236a498)
+# - +@com_google_protobuf: @cel-spec (proto/cel/expr/BUILD.bazel)
+common --incompatible_autoload_externally=+@rules_cc,+@rules_java,+@rules_shell,+@com_google_protobuf
 
 # Config to enable legacy WORKSPACE. Use with --config=workspace.
 common:workspace --enable_bzlmod=false

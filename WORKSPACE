@@ -112,18 +112,6 @@ load("@xla//third_party/py:python_init_toolchains.bzl", "python_init_toolchains"
 
 python_init_toolchains()
 
-load("//bazel:pip_parse.bzl", "torch_tpu_pip_parse")
-
-torch_tpu_pip_parse()
-
-load("@pypi//:requirements.bzl", "install_deps")
-
-install_deps()
-
-load("@pypi_cuda//:requirements.bzl", install_cuda_deps = "install_deps")
-
-install_cuda_deps()
-
 load("@xla//:workspace2.bzl", "xla_workspace2")
 
 xla_workspace2()
