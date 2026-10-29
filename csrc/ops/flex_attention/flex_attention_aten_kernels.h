@@ -18,6 +18,7 @@
 #define TORCH_TPU_CSRC_OPS_FLEX_ATTENTION_FLEX_ATTENTION_ATEN_KERNELS_H_
 
 #include <cstdint>
+#include <string_view>
 #include <tuple>
 
 #include "ATen/core/TensorBody.h"
@@ -25,13 +26,15 @@
 namespace torch_tpu {
 
 // torch.ops.tpu._flex_attention_fwd. `kv_num_blocks` / `kv_indices` are the
-// BlockMask tables flattened to int32 1-D. Returns (out in q's dtype, lse f32
-// [B, Hq, 1, T] in log2 units).
+// BlockMask tables flattened to int32 1-D. `score_mod_mlir` / `mask_mod_mlir`
+// are the mods as StableHLO text (see flex_attention.mod_to_mlir), empty
+// for none. Returns (out in q's dtype, lse f32 [B, Hq, 1, T] in log2 units).
 std::tuple<at::Tensor, at::Tensor> FlexAttentionFwd(
     const at::Tensor& q, const at::Tensor& k, const at::Tensor& v,
     const at::Tensor& kv_num_blocks, const at::Tensor& kv_indices,
     int64_t mask_batch, int64_t mask_heads, int64_t q_block, int64_t kv_block,
-    double scale);
+    double scale, std::string_view score_mod_mlir,
+    std::string_view mask_mod_mlir);
 
 }  // namespace torch_tpu
 

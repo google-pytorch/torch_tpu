@@ -1310,8 +1310,8 @@ TORCH_LIBRARY(tpu, m) {
   m.def(
       "_flex_attention_fwd(Tensor q, Tensor k, Tensor v, "
       "Tensor kv_num_blocks, Tensor kv_indices, int mask_batch, "
-      "int mask_heads, int q_block, int kv_block, float scale) "
-      "-> (Tensor, Tensor)");
+      "int mask_heads, int q_block, int kv_block, float scale, "
+      "str score_mod_mlir, str mask_mod_mlir) -> (Tensor, Tensor)");
   m.def(
       "_ragged_dot.out(Tensor lhs, Tensor rhs, Tensor group_sizes, *, "
       "Tensor(a!) out) -> Tensor(a!)");

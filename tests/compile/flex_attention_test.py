@@ -38,38 +38,57 @@ _LSE_TOLERANCES = {
 }
 
 
-# The kernel has no per-element mask yet, so only block-aligned masks apply.
+def _identity(score, b, h, q_idx, kv_idx):
+  del b, h, q_idx, kv_idx
+  return score
+
+
+# Block-aligned masks: no partially visible block.
 def _block_causal(b, h, q_idx, kv_idx):
   del b, h
   return q_idx // _BLOCK >= kv_idx // _BLOCK
-
-
-def _block_diagonal(b, h, q_idx, kv_idx):
-  del b, h
-  return q_idx // _BLOCK == kv_idx // _BLOCK
 
 
 def _block_causal_empty_first_row(b, h, q_idx, kv_idx):
   return (q_idx >= _BLOCK) & _block_causal(b, h, q_idx, kv_idx)
 
 
-def _block_mask(mask_mod, seq):
+# Element-level masks: partially visible blocks.
+def _causal(b, h, q_idx, kv_idx):
+  del b, h
+  return q_idx >= kv_idx
+
+
+def _sliding_window(b, h, q_idx, kv_idx):
+  del b, h
+  return (q_idx >= kv_idx) & (q_idx - kv_idx < 700)
+
+
+def _documents(b, h, q_idx, kv_idx):
+  del b, h
+  return (q_idx // 768 == kv_idx // 768) & (q_idx >= kv_idx)
+
+
+def _window_per_batch(b, h, q_idx, kv_idx):
+  del h
+  return (q_idx >= kv_idx) & (q_idx - kv_idx < 640 + 384 * b)
+
+
+def _alibi(score, b, h, q_idx, kv_idx):
+  del b
+  return score - 0.1 * (h + 1) * (q_idx - kv_idx).abs()
+
+
+def _block_mask(mask_mod, batch, seq):
   return fa.create_block_mask(
-      mask_mod, 1, 1, seq, seq, device="cpu", BLOCK_SIZE=_BLOCK
+      mask_mod, batch, 1, seq, seq, device="cpu", BLOCK_SIZE=_BLOCK
   )
 
 
-def _reference(q, k, v, mask_mod, scale):
+def _reference(q, k, v, block_mask, scale, score_mod):
   q, k, v = (t.detach().cpu().float() for t in (q, k, v))
-  identity = lambda score, b, h, q_idx, kv_idx: score
   out, lse, _ = math_attention(
-      q,
-      k,
-      v,
-      identity,
-      _block_mask(mask_mod, q.shape[-2]).as_tuple(),
-      scale,
-      {},
+      q, k, v, score_mod, block_mask.as_tuple(), scale, {}
   )
   return out, lse
 
@@ -84,19 +103,36 @@ class FlexAttentionKilnTest(seed_test_utils.RepeatableTest):
     v = torch.randn(batch, kv_heads, seq, dim, dtype=dtype, device=device)
     return q, k, v
 
-  def _run(self, q, k, v, mask_mod):
-    """Returns (out, lse, ref_out, ref_lse) on CPU."""
+  def _check(
+      self,
+      q,
+      k,
+      v,
+      mask_mod,
+      *,
+      score_mod=None,
+      mask_batch=1,
+      rows=slice(None),
+      block_mask=None,
+  ):
+    """Runs the kernel and compares (out, lse) with the CPU reference."""
     scale = q.shape[-1] ** -0.5
+    if block_mask is None:
+      block_mask = _block_mask(mask_mod, mask_batch, q.shape[-2])
     out, lse = flex_attention.flex_attention_fwd(
-        q, k, v, _block_mask(mask_mod, q.shape[-2]), scale=scale
+        q,
+        k,
+        v,
+        block_mask,
+        scale=scale,
+        score_mod=score_mod,
     )
     self.assertEqual(out.dtype, q.dtype)
     self.assertEqual(lse.dtype, torch.float32)
-    ref_out, ref_lse = _reference(q, k, v, mask_mod, scale)
-    return out.cpu().float(), lse.cpu(), ref_out, ref_lse
-
-  def _check(self, q, k, v, mask_mod, rows=slice(None)):
-    out, lse, ref_out, ref_lse = self._run(q, k, v, mask_mod)
+    ref_out, ref_lse = _reference(
+        q, k, v, block_mask, scale, score_mod or _identity
+    )
+    out, lse = out.cpu().float(), lse.cpu()
     test_utils.assert_close(
         out[:, :, rows], ref_out[:, :, rows], **_TOLERANCES[q.dtype]
     )
@@ -107,16 +143,20 @@ class FlexAttentionKilnTest(seed_test_utils.RepeatableTest):
 
   @parameterized.product(
       dtype=[torch.float32, torch.bfloat16],
-      seq=[512, 2048],
-      mask_mod=[fa.noop_mask, _block_causal, _block_diagonal],
+      mask_mod=[fa.noop_mask, _block_causal],
   )
-  def test_matches_reference(self, dtype, seq, mask_mod):
-    q, k, v = self._inputs(1, 2, 2, seq, 128, dtype)
+  def test_matches_reference(self, dtype, mask_mod):
+    q, k, v = self._inputs(1, 2, 2, 2048, 128, dtype)
     self._check(q, k, v, mask_mod)
 
-  @parameterized.parameters(torch.float32, torch.bfloat16)
-  def test_batched_gqa(self, dtype):
-    q, k, v = self._inputs(2, 8, 2, 1024, 128, dtype)
+  def test_single_tile(self):
+    # The first and last KV step of a row are the same grid step.
+    q, k, v = self._inputs(1, 2, 2, _BLOCK, 128, torch.float32)
+    self._check(q, k, v, fa.noop_mask)
+
+  def test_batched_gqa(self):
+    # The block mask is shared across the batch (mask_batch=1).
+    q, k, v = self._inputs(2, 8, 2, 1024, 128, torch.float32)
     self._check(q, k, v, _block_causal)
 
   def test_fully_masked_rows_give_zero_and_neg_inf_lse(self):
@@ -127,6 +167,35 @@ class FlexAttentionKilnTest(seed_test_utils.RepeatableTest):
     )
     self.assertTrue((out[:, :, :_BLOCK] == 0).all())
     self.assertTrue((lse[:, :, :_BLOCK] == -torch.inf).all())
+
+  @parameterized.parameters(_sliding_window, _documents)
+  def test_mask_mod(self, mask_mod):
+    q, k, v = self._inputs(1, 2, 2, 2048, 128, torch.float32)
+    self._check(q, k, v, mask_mod)
+
+  def test_mask_mod_uses_batch_with_gqa(self):
+    q, k, v = self._inputs(2, 4, 2, 2048, 128, torch.float32)
+    self._check(q, k, v, _window_per_batch, mask_batch=2)
+
+  def test_mask_mod_applies_to_a_single_block_list(self):
+    # Full and partial blocks in one list (separate_full_blocks=False).
+    seq = 2048
+    dense = _block_mask(_causal, 1, seq).to_dense()
+    block_mask = fa.BlockMask.from_kv_blocks(
+        dense.sum(-1).to(torch.int32),
+        dense.argsort(dim=-1, descending=True, stable=True).to(torch.int32),
+        BLOCK_SIZE=_BLOCK,
+        mask_mod=_causal,
+        seq_lengths=(seq, seq),
+    )
+    self.assertIsNone(block_mask.full_kv_num_blocks)
+    q, k, v = self._inputs(1, 2, 2, seq, 128, torch.float32)
+    self._check(q, k, v, _causal, block_mask=block_mask)
+
+  @parameterized.parameters(torch.float32, torch.bfloat16)
+  def test_score_mod(self, dtype):
+    q, k, v = self._inputs(1, 2, 2, 1024, 128, dtype)
+    self._check(q, k, v, _causal, score_mod=_alibi)
 
 
 if __name__ == "__main__":
