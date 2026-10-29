@@ -202,6 +202,7 @@ process. Use it at your own risk. Using it triggers a one-time warning.
 *   `torch.tpu.pallas.jax_op`
 *   `torch.tpu.precision`
 *   `torch.tpu.profiler.TpuProfilerConfig`
+*   `torch.tpu.profiler.named_scope`
 *   `torch.tpu.set_eager_mode`
 *   `torch.tpu.set_rng_state`
 *   `torch.tpu.stream`

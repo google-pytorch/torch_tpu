@@ -306,6 +306,9 @@ _PUBLIC_MODULES: Mapping[str, ModuleSpec] = {
             "TpuProfilerConfig": (
                 "torch_tpu._internal.profiler.profiler_config:TpuProfilerConfig"
             ),
+            "named_scope": (
+                "torch_tpu._internal.profiler.named_scope:named_scope"
+            ),
             # go/keep-sorted end
         },
         doc="Public profiler API for TorchTPU (`torch.tpu.profiler`).",
