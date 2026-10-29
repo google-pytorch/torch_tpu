@@ -198,6 +198,13 @@ inline constexpr char kTorchTpuTier3CompilationCacheRootEnvVar[] =
     "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT";
 inline constexpr char kTorchTpuTopologyEnvVar[] =
     "TORCH_TPU_TOPOLOGY";  // Set by Torch TPU specific launchers.
+// Opts into virtual multi-host mode: WORLD_SIZE may be a multiple of the
+// PJRT slice's device count (several per-host slices form one torch world),
+// and collectives of process groups spanning slices run on the local slice
+// only, with outputs padded to the logical group shapes. Compile / profile
+// only: cross-slice results are NOT numerically meaningful.
+inline constexpr char kTorchTpuVirtualMultiHostEnvVar[] =
+    "TORCH_TPU_VIRTUAL_MULTIHOST";
 // Identifies the XProf profiling session shared by all workers of a job. Set
 // by Torch TPU specific launchers when it is not already set.
 inline constexpr char kTorchTpuXprofSessionIdEnvVar[] =
@@ -319,6 +326,7 @@ inline constexpr auto kEnvVarToStage =
         {kTorchTpuTier2CompilationCacheEnvVar, SymbolStage::Experimental()},
         {kTorchTpuTier3CompilationCacheRootEnvVar, SymbolStage::Experimental()},
         {kTorchTpuTopologyEnvVar, SymbolStage::Experimental()},
+        {kTorchTpuVirtualMultiHostEnvVar, SymbolStage::Experimental()},
         {kTorchTpuXprofSessionIdEnvVar, SymbolStage::Experimental()},
         {kTorchTraceEnvVar, SymbolStage::Experimental()},
         {kTorchcommRankEnvVar, SymbolStage::Experimental()},

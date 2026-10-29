@@ -18,6 +18,7 @@
 #define TORCH_TPU_CSRC_DISTRIBUTED_UTILS_H_
 
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "csrc/distributed/types.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -27,8 +28,46 @@
 
 namespace torch_tpu {
 
+// Virtual multi-host (TORCH_TPU_VIRTUAL_MULTIHOST, pjrt_state.h WorldConfig):
+// a torch world of N ranks runs on K per-host PJRT slices that cannot talk to
+// each other. A process group whose members span slices is "folded": its
+// collectives are compiled for the physical devices of the local slice only,
+// and their outputs are padded to the logical group's shapes. Results are
+// shape-correct, never numerically meaningful across slices.
+struct VirtualMultiHostFold {
+  // The device ids the group's collectives run on (one per physical member,
+  // in process-group rank order of the first slice).
+  DeviceGroup physical_device_ids;
+  // logical group size / physical group size (1: nothing to fold).
+  int64_t fold = 1;
+};
+
+// Folds a process group's member device ids (one per process-group rank, in
+// rank order) when they repeat the same per-slice devices: `member_device_ids`
+// must be `physical_device_ids` tiled `fold` times, `physical_device_ids`
+// having no duplicates. Groups confined to one slice fold to themselves
+// (`fold == 1`). Any other layout (interleaved slices, partial tiles, empty
+// groups) is an invalid-argument error, so a misconfigured world fails loudly
+// instead of compiling for the wrong devices.
+absl::StatusOr<VirtualMultiHostFold> FoldVirtualMultiHostGroup(
+    const DeviceGroup& member_device_ids);
+
+// The distinct device ids of `device_ids` in order of first appearance: the
+// local slice's devices behind a virtual multi-host world's device assignment
+// (which lists every slice's devices once per subgroup).
+DeviceGroup UniqueDeviceIds(const DeviceGroup& device_ids);
+
+// The groups a folded list's collectives actually run on: each group's first
+// `size / virtual_fold()` partitions. The identity for `virtual_fold() == 1`.
+DeviceGroupList FoldReplicaGroups(const DeviceGroupList& device_groups);
+
+// The size of a group the collectives are compiled for:
+// `device_groups[0].size() / device_groups.virtual_fold()`.
+int64_t PhysicalGroupSize(const DeviceGroupList& device_groups);
+
 // Given device ids organized into (sub)groups, construct a MLIR constant
-// used for `replica_groups` attribute in all the StableHLO collectives.
+// used for `replica_groups` attribute in all the StableHLO collectives. A
+// folded list (virtual multi-host) yields its physical groups.
 mlir::DenseIntElementsAttr BuildReplicaGroupsAttr(
     mlir::MlirBuilder& builder, const DeviceGroupList& device_groups);
 

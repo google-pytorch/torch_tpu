@@ -31,6 +31,7 @@
 #include "absl/status/statusor.h"
 #include "absl/synchronization/mutex.h"
 #include "csrc/common/device_type.h"
+#include "csrc/pjrt/world_config.h"
 #include "xla/pjrt/host_memory_allocator.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/tsl/framework/allocator.h"
@@ -112,6 +113,15 @@ class PjrtBackend {
   // Returns the global device count. Triggers lazy initialization if needed.
   absl::StatusOr<int> GetGlobalDeviceCount() ABSL_LOCKS_EXCLUDED(mutex_);
 
+  // Returns the torch world size (WorldConfig::world_size). Equal to the
+  // global device count except in virtual multi-host mode. Triggers lazy
+  // initialization if needed.
+  absl::StatusOr<int> GetWorldSize() ABSL_LOCKS_EXCLUDED(mutex_);
+
+  // Whether virtual multi-host mode is active (WorldConfig::virtual_multihost).
+  // Triggers lazy initialization if needed.
+  absl::StatusOr<bool> IsVirtualMultiHost() ABSL_LOCKS_EXCLUDED(mutex_);
+
   // Returns the global ID of the current device. Triggers lazy initialization
   // if needed.
   absl::StatusOr<int> GetGlobalDeviceId() ABSL_LOCKS_EXCLUDED(mutex_);
@@ -156,6 +166,8 @@ class PjrtBackend {
   PjRtDeviceType device_type_ ABSL_GUARDED_BY(mutex_) =
       PjRtDeviceType::kUnknown;
   int global_device_count_ ABSL_GUARDED_BY(mutex_) = 0;
+  int world_size_ ABSL_GUARDED_BY(mutex_) = 0;
+  bool virtual_multihost_ ABSL_GUARDED_BY(mutex_) = false;
   int global_device_id_ ABSL_GUARDED_BY(mutex_) = -1;
   PjRtInitializationOptions options_ ABSL_GUARDED_BY(mutex_) = {};
   bool init_attempted_ ABSL_GUARDED_BY(mutex_) = false;

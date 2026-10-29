@@ -46,6 +46,7 @@
 #include "csrc/common/utils.h"
 #include "csrc/distributed/slicebuilder/discovery.h"
 #include "csrc/pjrt/pjrt_client.h"
+#include "csrc/pjrt/world_config.h"
 #include "tsl/profiler/lib/profiler_factory.h"
 #include "tsl/profiler/lib/profiler_interface.h"
 #include "xla/backends/profiler/plugin/plugin_tracer.h"  // IWYU pragma: keep for xla::profiler::PluginTracer
@@ -308,12 +309,23 @@ absl::Status PjrtBackend::InitializeInternal() {
 
   // Initialize the global device count. This is used by the CompilationCache
   // to determine the number of replicas of the XLA computation.
-  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=We can hit this error check, but we
-                 // currently do not propagate its status.
-      world_size == 1 || world_size == device_count, error::kInvalidArgument)
-      << "invalid world_size configuration: expected 1 or " << device_count
-      << ", but got " << world_size
-      << ". Please check your environment variables";
+  TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=We can hit this error check,
+                        // but we currently do not propagate its status.
+      const WorldConfig world,
+      ResolveWorldConfig(
+          world_size, device_count,
+          GetBooleanEnvOnce<kTorchTpuVirtualMultiHostEnvVar>().value_or(
+              false)));
+  if (world.virtual_multihost) {
+    ABSL_LOG(WARNING) << kTorchTpuVirtualMultiHostEnvVar
+                      << ": emulating a world of " << world.world_size
+                      << " ranks on a slice of " << world.global_device_count
+                      << " devices. Collectives of process groups that span "
+                         "slices run on the local slice only and their "
+                         "outputs are padded to the logical shapes: results "
+                         "are shape-correct but NOT numerically meaningful "
+                         "(compile / profile only).";
+  }
 
   if (addressable_devices.size() > 1 && world_size == 1) {
     ABSL_LOG(WARNING) << "Only using 1 device out of all the "
@@ -322,7 +334,9 @@ absl::Status PjrtBackend::InitializeInternal() {
 
   device_ = addressable_devices[0];
   device_type_ = device_type;
-  global_device_count_ = world_size;
+  global_device_count_ = world.global_device_count;
+  world_size_ = world.world_size;
+  virtual_multihost_ = world.virtual_multihost;
   global_device_id_ = device_->global_device_id().value();
   return absl::OkStatus();
 }
@@ -379,6 +393,24 @@ absl::StatusOr<int> PjrtBackend::GetGlobalDeviceCount() {
     return TT_ERROR(error::kInternal) << "PjRt is not initialized";
   }
   return global_device_count_;
+}
+
+absl::StatusOr<int> PjrtBackend::GetWorldSize() {
+  TT_RETURN_IF_ERROR(EnsureInitialized());
+  absl::ReaderMutexLock lock(mutex_);
+  if (client_ == nullptr) {
+    return TT_ERROR(error::kInternal) << "PjRt is not initialized";
+  }
+  return world_size_;
+}
+
+absl::StatusOr<bool> PjrtBackend::IsVirtualMultiHost() {
+  TT_RETURN_IF_ERROR(EnsureInitialized());
+  absl::ReaderMutexLock lock(mutex_);
+  if (client_ == nullptr) {
+    return TT_ERROR(error::kInternal) << "PjRt is not initialized";
+  }
+  return virtual_multihost_;
 }
 
 absl::StatusOr<int> PjrtBackend::GetGlobalDeviceId() {
@@ -448,6 +480,8 @@ void PjrtBackend::Shutdown() {
   device_ = nullptr;
   device_type_ = PjRtDeviceType::kUnknown;
   global_device_count_ = 0;
+  world_size_ = 0;
+  virtual_multihost_ = false;
   init_attempted_ = false;
   init_status_ = absl::OkStatus();
   ABSL_VLOG(1) << "PjRt shut down.";
