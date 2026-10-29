@@ -123,6 +123,13 @@ build --disk_cache=~/.cache/bazel/bazel-disk-cache
 build --experimental_disk_cache_gc_max_age=90d
 build --experimental_disk_cache_gc_max_size=100G
 
+# Every TPU test asks for its chips with a resources:tpu:<chips> tag (see
+# build_files/build_defs.bzl), and Bazel fails a local test whose resource it
+# doesn't track. 8 is the biggest runner (OSS_TPU_RUNNER_CHIPS in
+# build_defs.bzl); the ci_tpu_* configs set the chip count of the runner they
+# run on.
+common --local_resources=tpu=8
+
 # Don't implicitly add repo roots to sys.path. This avoids top-level import
 # name collisions.
 # TODO: b/460162708 - This must be true because XNNPACK relies on its
@@ -372,17 +379,17 @@ test:ci_tpu_base --remote_upload_local_results=true
 common:ci_tpu_nightly --config=ci_tpu_base
 common:ci_tpu_nightly --test_tag_filters=requires-tpu,-notest,-nobuild,-nonightly,-requires-newest-deps
 common:ci_tpu_nightly --test_timeout=-1,-1,-1,4800
-common:ci_tpu_nightly --local_test_jobs=8
+common:ci_tpu_nightly --local_resources=tpu=8
 
 # Settings for hardware-specific CI runs on TPU v5, v6, v7.
 #
-# Each of these configs sets --local_test_jobs to the chip count of the runner
-# it is used on. TPU tests run under parallel_accelerator_execute.sh, which
-# gives each test exclusive use of one chip, so the number of concurrent test
-# jobs must not exceed the number of chips. Without an explicit value Bazel
-# derives --local_test_jobs from --jobs, which remote_execution_readonly sets
-# to 200: the excess tests would spin in the wrapper's one-second retry loop
-# while their own test timeout ran down.
+# Each of these configs sets --local_resources=tpu to the chip count of the
+# runner it is used on. TPU tests run under parallel_accelerator_execute.sh,
+# which gives each test one chip, or every chip for an exclusive test, so the
+# chips the running tests use must not exceed the chips on the runner. Bazel
+# only reads the resources:tpu tags while --local_test_jobs is 0, its default,
+# so don't set it. Tests that went over the limit would spin in the wrapper's
+# one-second retry loop while their own test timeout ran down.
 #
 # The runner for each generation is fixed across every workflow that uses these
 # configs (presubmit, postsubmit, local_torch, upstream, out-of-tree, wheel
@@ -392,18 +399,19 @@ common:ci_tpu_nightly --local_test_jobs=8
 # Runs on linux-x86-ct5lp-224-8tpu.
 common:ci_tpu_v5 --config=ci_tpu_base
 common:ci_tpu_v5 --test_tag_filters=requires-tpu,-notest,-nobuild,-fails-on-tpu-v5,-requires-newest-deps
-common:ci_tpu_v5 --local_test_jobs=8
+common:ci_tpu_v5 --local_resources=tpu=8
 
 common:ci_tpu_v5_presubmit --config=ci_tpu_v5
-# Single-chip v5e presubmit tests run on RBE (see ci_rbe_presubmit), so the
-# self-hosted 8-chip runner only runs multi-chip and no-remote-exec v5e tests.
-common:ci_tpu_v5_presubmit --test_tag_filters=requires-tpu-v5lite:4,requires-tpu-v5lite:8,requires-tpu-v5p:4,no-remote-exec,-notest,-nobuild,-nopresubmit,-fails-on-tpu-v5,-presubmit-v6,-presubmit-v7,-requires-newest-deps
+# Single-chip and 4-chip v5e presubmit tests run on RBE (see ci_rbe_presubmit),
+# so the self-hosted 8-chip runner only runs 8-chip v5e, v5p, and no-remote-exec
+# v5e tests.
+common:ci_tpu_v5_presubmit --test_tag_filters=requires-tpu-v5lite:8,requires-tpu-v5p:4,no-remote-exec,-notest,-nobuild,-nopresubmit,-fails-on-tpu-v5,-presubmit-v6,-presubmit-v7,-requires-newest-deps
 
-# The single-chip v5e tests ci_rbe_presubmit runs, for the self-hosted 8-chip
-# runner when RBE is disabled or fails. Must stay in sync with the TPU half of
-# ci_rbe_presubmit's filter (see list_ci_tests_test.py).
+# The single-chip and 4-chip v5e tests ci_rbe_presubmit runs, for the
+# self-hosted 8-chip runner when RBE is disabled or fails. Must stay in sync
+# with the TPU half of ci_rbe_presubmit's filter (see list_ci_tests_test.py).
 common:ci_tpu_v5_rbe_fallback --config=ci_tpu_v5
-common:ci_tpu_v5_rbe_fallback --test_tag_filters=presubmit-v5,-notest,-nobuild,-nopresubmit,-fails-on-tpu-v5,-requires-tpu-v5lite:4,-requires-tpu-v5lite:8,-requires-tpu-v5p:4,-no-remote-exec,-requires-newest-deps
+common:ci_tpu_v5_rbe_fallback --test_tag_filters=presubmit-v5,-notest,-nobuild,-nopresubmit,-fails-on-tpu-v5,-requires-tpu-v5lite:8,-requires-tpu-v5p:4,-no-remote-exec,-requires-newest-deps
 
 # Runs only the tests tagged `requires-newest-deps`, which need the newest
 # supported dependencies (requirements/requirements_3_14_latest.txt). Every
@@ -418,7 +426,7 @@ common:ci_tpu_v5_nightly --test_timeout=-1,-1,-1,4800
 # Runs on linux-x86-ct6e-180-8tpu.
 common:ci_tpu_v6 --config=ci_tpu_base
 common:ci_tpu_v6 --test_tag_filters=requires-tpu,-notest,-nobuild,-fails-on-tpu-v6,-requires-newest-deps
-common:ci_tpu_v6 --local_test_jobs=8
+common:ci_tpu_v6 --local_resources=tpu=8
 
 common:ci_tpu_v6_presubmit --config=ci_tpu_v6
 common:ci_tpu_v6_presubmit --test_tag_filters=-notest,-nobuild,-nopresubmit,-fails-on-tpu-v6,presubmit-v6,-requires-newest-deps
@@ -428,7 +436,11 @@ common:ci_tpu_v7 --config=ci_tpu_base
 common:ci_tpu_v7 --test_tag_filters=requires-tpu,-notest,-nobuild,-fails-on-tpu-v7,-requires-newest-deps
 common:ci_tpu_v7 --test_env=TORCH_TPU_ACCELERATOR_COUNT="4"
 common:ci_tpu_v7 --test_env=ALLOW_MULTIPLE_LIBTPU_LOAD=true
-common:ci_tpu_v7 --local_test_jobs=4
+# Exclusive tests ask for tpu:8 (see build_files/build_defs.bzl), which only
+# fits here because Bazel 8.6 runs an oversized request on an idle resource.
+# TODO: b/567928058 - Pass --allow_one_action_on_resource_unavailable here when
+# moving past Bazel 8.6.
+common:ci_tpu_v7 --local_resources=tpu=4
 
 common:ci_tpu_v7_presubmit --config=ci_tpu_v7
 common:ci_tpu_v7_presubmit --test_tag_filters=-notest,-nobuild,-nopresubmit,-fails-on-tpu-v7,presubmit-v7,-requires-newest-deps
@@ -497,10 +509,15 @@ common:rbe_test_execution --test_env=HOST_BOUNDS=
 common:rbe_test_execution --test_env=VBAR_CONTROL_SERVICE_URL=
 
 # CI presubmit on Google Cloud RBE: CPU tests plus TPU tests that have an RBE
-# pool. Today that's single-chip v5e (ct5lp-hightpu-1t). A test's pool follows
-# its presubmit-v<N> tag, not its requires-tpu-* tags, so v6/v7 tests are left
-# out by that tag and multi-chip v5 tests by their `:8`/`:4` tags. Tests that
-# cannot run in the RBE container environment are tagged no-remote-exec.
+# pool. Today that's single-chip and 4-chip v5e (ct5lp-hightpu-1t and
+# ct5lp-hightpu-4t). A test's pool follows its presubmit-v<N> and chip-count
+# tags, so v6/v7 tests are left out by presubmit-v<N> and 8-chip v5e / v5p tests
+# by their `:8`/`:4` tags. Tests that cannot run in the RBE container
+# environment are tagged no-remote-exec.
+#
+# Only us-west1 and us-central1 have 4-chip v5e pools, so don't run this with
+# another --//:_rbe_region: 4-chip tests would land on the CPU pool and fail.
+# TODO: b/567928058 - Drop this note once every region has a 4-chip pool.
 #
 # This repeats `ci` minus remote_execution_readwrite, whose platform would
 # otherwise come ahead of rbe_platform in --extra_execution_platforms.
@@ -514,7 +531,7 @@ common:ci_rbe_presubmit --color=yes
 common:ci_rbe_presubmit --curses=no
 common:ci_rbe_presubmit --config=rbe_test_execution
 common:ci_rbe_presubmit --build_tag_filters=-nobuild,-requires-gpu,-cuda-build-test
-common:ci_rbe_presubmit --test_tag_filters=-nobuild,-notest,-nopresubmit,-fails-on-tpu-v5,-requires-gpu,-cuda-build-test,-presubmit-v6,-presubmit-v7,-requires-tpu-v5lite:4,-requires-tpu-v5lite:8,-requires-tpu-v5p:4,-no-remote-exec,-requires-newest-deps
+common:ci_rbe_presubmit --test_tag_filters=-nobuild,-notest,-nopresubmit,-fails-on-tpu-v5,-requires-gpu,-cuda-build-test,-presubmit-v6,-presubmit-v7,-requires-tpu-v5lite:8,-requires-tpu-v5p:4,-no-remote-exec,-requires-newest-deps
 
 # TPU wheel version extras for local default builds.
 build --define WHEEL_VERSION_EXTRAS=

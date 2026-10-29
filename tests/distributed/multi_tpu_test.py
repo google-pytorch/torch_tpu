@@ -26,15 +26,13 @@ from tests.distributed import continuous_test_utils
 
 class MultiTpuTest(continuous_test_utils.TpuMultiProcContinuousTest):
 
-  world_size = 8
-
   def test_global_device_count(self) -> None:
     # Verify that rank-related environment variables are set by launcher.
     self.assertIn("RANK", os.environ)
     self.assertIn("LOCAL_RANK", os.environ)
     self.assertIn("GROUP_RANK", os.environ)
     self.assertIn("WORLD_SIZE", os.environ)
-    self.assertEqual(int(os.environ["WORLD_SIZE"]), 8)
+    self.assertEqual(int(os.environ["WORLD_SIZE"]), self.world_size)
     self.assertEqual(int(os.environ["RANK"]), self.rank)
 
     self.assertEqual(dist.get_world_size(), self.world_size)

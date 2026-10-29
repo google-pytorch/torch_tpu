@@ -41,6 +41,12 @@ exports_files([
 bzl_library(
     name = "rbe_bzl",
     srcs = ["rbe.bzl"],
+    deps = [":tpu_tags_bzl"],
+)
+
+bzl_library(
+    name = "tpu_tags_bzl",
+    srcs = ["tpu_tags.bzl"],
 )
 
 bzl_library(
@@ -48,6 +54,7 @@ bzl_library(
     srcs = ["build_defs.bzl"],
     deps = [
         ":rbe_bzl",
+        ":tpu_tags_bzl",
         "//bazel:supported_python_versions_bzl",
         "//shims/build_cleaner:build_defs_lib",
         "//shims/build_files:build_defs_bzl",
@@ -101,6 +108,7 @@ bzl_library(
     deps = [
         ":build_defs_bzl",
         ":rbe_bzl",
+        ":tpu_tags_bzl",
         "@rules_testing//lib:analysis_test_bzl",
         "@rules_testing//lib:test_suite_bzl",
     ],

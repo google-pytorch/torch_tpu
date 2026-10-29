@@ -21,7 +21,6 @@ load(
     # go/keep-sorted start
     "check_and_adjust_test_tags_for_testing",
     "clamp_shard_count_for_testing",
-    "get_tpu_chip_count_for_testing",
     "get_tpu_version_for_testing",
     "is_backend_dep_for_testing",
     "is_oss",
@@ -32,7 +31,15 @@ load(
 )
 load(
     "//build_files:rbe.bzl",
+    "has_rbe_pool",
+    "rbe_shard_count_for_testing",
     "rbe_tpu_exec_properties_for_testing",
+)
+load(
+    "//build_files:tpu_tags.bzl",
+    "get_tpu_chip_count",
+    "get_tpu_generation",
+    "required_tpu_chip_count",
 )
 
 _TagsInfo = provider(
@@ -649,6 +656,19 @@ def _test_build_test_excludes_tpu_tags(env):
     env.expect.that_bool(result.create_build_test).equals(True)
     env.expect.that_collection(result.build_test_tags).contains_exactly(["custom_tag"])
 
+def _test_build_test_excludes_exclusive_tag(env):
+    """Tests that build_test_tags drop the exclusive tag."""
+    for is_oss_build in [False, True]:
+        result = check_and_adjust_test_tags_for_testing(
+            is_oss = is_oss_build,
+            notap = "reason",
+            tags = ["custom_tag", "exclusive"],
+        )
+        env.expect.where(is_oss = is_oss_build).that_bool(result.create_build_test).equals(True)
+        env.expect.where(is_oss = is_oss_build).that_collection(
+            result.build_test_tags,
+        ).contains_exactly(["custom_tag"])
+
 def _test_ops_test_build_test(env):
     """Tests that ops-test generates a build_test in OSS with ops-test and TPU tags excluded."""
     tags = ["custom_tag", "ops-test", "requires-tpu-v5lite"]
@@ -879,13 +899,7 @@ def _test_get_tpu_version(env):
 def _test_shard_count_clamping(env):
     """Tests that shard_count is automatically clamped in OSS to the maximum concurrent shards per test."""
 
-    # 0. _get_tpu_chip_count extracts chip counts from multi-chip TPU tags.
-    env.expect.that_int(get_tpu_chip_count_for_testing("requires-tpu-v5lite:8")).equals(8)
-    env.expect.that_int(get_tpu_chip_count_for_testing("requires-tpu-v7x:4")).equals(4)
-    env.expect.that_bool(get_tpu_chip_count_for_testing("requires-tpu-v5lite") == None).equals(True)
-    env.expect.that_bool(get_tpu_chip_count_for_testing("cpu:8") == None).equals(True)
-
-    # 1. Exclusive tag in OSS clamps shard_count > 1 down to 1.
+    # 1. In OSS, exclusive clamps shard_count to 1 and becomes exclusive-if-local so it can run on RBE.
     tags_exclusive = ["exclusive", "requires-tpu-v5lite:8"]
     res_exclusive = check_and_adjust_test_tags_for_testing(
         is_oss = True,
@@ -893,6 +907,18 @@ def _test_shard_count_clamping(env):
         shard_count = 8,
     )
     env.expect.that_int(res_exclusive.shard_count).equals(1)
+    env.expect.that_collection(tags_exclusive).contains("exclusive-if-local")
+    env.expect.that_collection(tags_exclusive).not_contains("exclusive")
+
+    # Internal builds keep exclusive as is.
+    tags_exclusive_internal = ["exclusive", "requires-tpu-v5lite:8"]
+    check_and_adjust_test_tags_for_testing(
+        is_oss = False,
+        tags = tags_exclusive_internal,
+        shard_count = 8,
+    )
+    env.expect.that_collection(tags_exclusive_internal).contains("exclusive")
+    env.expect.that_collection(tags_exclusive_internal).not_contains("exclusive-if-local")
 
     # 2. Multi-chip tag on OSS runner without 'exclusive' clamps to runner_chips // required_chips.
     clamped_v5_8chips = clamp_shard_count_for_testing(
@@ -932,9 +958,110 @@ def _test_shard_count_clamping(env):
     )
     env.expect.that_int(clamped_internal_forge).equals(12)
 
+def _test_tpu_tags(env):
+    """Tests the requires-tpu-<version>[:<chips>] tag parsers in tpu_tags.bzl."""
+    env.expect.that_str(get_tpu_generation("requires-tpu-v5lite")).equals("v5")
+    env.expect.that_str(get_tpu_generation("requires-tpu-v5p:4")).equals("v5")
+    env.expect.that_str(get_tpu_generation("requires-tpu-v6e")).equals("v6")
+    env.expect.that_str(get_tpu_generation("requires-tpu-v7x:4")).equals("v7")
+    env.expect.that_bool(get_tpu_generation("cpu:8") == None).equals(True)
+
+    env.expect.that_int(get_tpu_chip_count("requires-tpu-v5lite:8")).equals(8)
+    env.expect.that_int(get_tpu_chip_count("requires-tpu-v7x:4")).equals(4)
+    env.expect.that_bool(get_tpu_chip_count("requires-tpu-v5lite") == None).equals(True)
+    env.expect.that_bool(get_tpu_chip_count("requires-tpu-v5lite:abc") == None).equals(True)
+    env.expect.that_bool(get_tpu_chip_count("cpu:8") == None).equals(True)
+
+    for tags, expected in [
+        ([], 1),
+        (["requires-tpu-v5lite"], 1),
+        (["requires-tpu-v5lite:0"], 1),
+        (["cpu:8", "requires-tpu-v5lite:4"], 4),
+        (["requires-tpu-v5lite:4", "requires-tpu-v5lite:8"], 8),
+    ]:
+        env.expect.where(tags = tags).that_int(required_tpu_chip_count(tags)).equals(expected)
+
+# In these tests "requires-tpu" stands in for the requires-tpu-<version> tag
+# Copybara exports, which is what makes OSS pick a TPU generation.
+
+def _test_oss_rbe_pooled_tpu_test_drops_exclusive_tags(env):
+    """Tests that an exclusive TPU test with an RBE pool gets neither exclusive tag in OSS."""
+    for tags in [
+        ["exclusive", "requires-tpu", "requires-tpu-v5lite"],
+        ["exclusive", "requires-tpu", "requires-tpu-v5lite:4"],
+    ]:
+        original_tags = list(tags)
+        check_and_adjust_test_tags_for_testing(is_oss = True, tags = tags)
+        expect = env.expect.where(tags = original_tags).that_collection(tags)
+        expect.not_contains("exclusive")
+        expect.not_contains("exclusive-if-local")
+
+def _test_oss_exclusive_non_pooled_test_keeps_exclusive_if_local(env):
+    """Tests that exclusive CPU tests and TPU tests without an RBE pool keep exclusive-if-local in OSS."""
+    for tags in [
+        ["exclusive"],
+        ["exclusive", "no-remote-exec"],
+        ["exclusive", "requires-tpu", "requires-tpu-v5lite:8"],
+        ["exclusive", "ok-to-wait-for-v5p-in-presubmit", "requires-tpu", "requires-tpu-v5p:4"],
+        ["exclusive", "no-remote-exec", "requires-tpu", "requires-tpu-v5lite:4"],
+        ["exclusive", "fails-on-tpu-v5", "ok-to-wait-for-v7x-in-presubmit", "requires-tpu-v7x", "requires-tpu"],
+    ]:
+        original_tags = list(tags)
+        check_and_adjust_test_tags_for_testing(is_oss = True, tags = tags)
+        expect = env.expect.where(tags = original_tags).that_collection(tags)
+        expect.contains("exclusive-if-local")
+        expect.not_contains("exclusive")
+
+def _test_oss_tpu_resources_tag(env):
+    """Tests that OSS TPU tests ask for their chips, or the whole runner if exclusive, with resources:tpu."""
+    for tags, expected in [
+        (["requires-tpu", "requires-tpu-v5lite"], "resources:tpu:1"),
+        (["requires-tpu", "requires-tpu-v5lite:4"], "resources:tpu:4"),
+        (["requires-tpu", "requires-tpu-v5lite:8"], "resources:tpu:8"),
+        (["ok-to-wait-for-v5p-in-presubmit", "requires-tpu", "requires-tpu-v5p:4"], "resources:tpu:4"),
+        (["fails-on-tpu-v5", "ok-to-wait-for-v7x-in-presubmit", "requires-tpu-v7x:4", "requires-tpu"], "resources:tpu:4"),
+        (["exclusive", "requires-tpu", "requires-tpu-v5lite"], "resources:tpu:8"),
+        (["exclusive", "requires-tpu", "requires-tpu-v5lite:4"], "resources:tpu:8"),
+        (["exclusive", "no-remote-exec", "requires-tpu", "requires-tpu-v5lite:4"], "resources:tpu:8"),
+        (["exclusive", "fails-on-tpu-v5", "ok-to-wait-for-v7x-in-presubmit", "requires-tpu-v7x:4", "requires-tpu"], "resources:tpu:8"),
+    ]:
+        original_tags = list(tags)
+        check_and_adjust_test_tags_for_testing(is_oss = True, tags = tags)
+        env.expect.where(tags = original_tags).that_collection(
+            [t for t in tags if t.startswith("resources:")],
+        ).contains_exactly([expected])
+
+def _test_tpu_resources_tag_only_on_oss_tpu_tests(env):
+    """Tests that CPU tests and internal builds get no resources:tpu tag."""
+    for is_oss_build, tags in [
+        (True, ["exclusive"]),
+        (True, ["no-remote-exec"]),
+        (False, ["requires-tpu", "requires-tpu-v5lite:4"]),
+        (False, ["exclusive", "requires-tpu", "requires-tpu-v5lite:4"]),
+    ]:
+        original_tags = list(tags)
+        check_and_adjust_test_tags_for_testing(is_oss = is_oss_build, tags = tags)
+        env.expect.where(is_oss = is_oss_build, tags = original_tags).that_collection(
+            [t for t in tags if t.startswith("resources:")],
+        ).contains_exactly([])
+
+def _test_build_test_excludes_tpu_resources_tag(env):
+    """Tests that a TPU test's build_test doesn't inherit its resources:tpu tag."""
+    tags = ["custom_tag", "requires-tpu", "requires-tpu-v5lite:4"]
+    result = check_and_adjust_test_tags_for_testing(
+        is_oss = True,
+        nopresubmit_oss = "reason",
+        tags = tags,
+    )
+    env.expect.that_collection(tags).contains("resources:tpu:4")
+    env.expect.that_bool(result.create_build_test).equals(True)
+    env.expect.that_collection(result.build_test_tags).contains_exactly(["custom_tag"])
+
 # --- OSS RBE routing tests ---
 
 _V5_RBE_TAGS = ["requires-tpu"]
+_V5_4CHIP_RBE_TAGS = ["requires-tpu", "requires-tpu-v5lite:4"]
+_V5_4CHIP_NO_REMOTE_TAGS = ["no-remote-exec", "requires-tpu", "requires-tpu-v5lite:4"]
 
 # The default value of `//:_rbe_region` (OSS only).
 _DEFAULT_RBE_REGION = "us-west1"
@@ -950,6 +1077,11 @@ _V5_RBE_POOLS = {
     "us-west1": "ci_tpu_v5_full_rbe",
 }
 
+_V5_4CHIP_RBE_POOLS = {
+    "us-central1": "ci_tpu_v5_4chip_central1_rbe",
+    "us-west1": "ci_tpu_v5_4chip_west1_rbe",
+}
+
 def _v5_rbe_exec_properties(pool):
     return {
         "test.Pool": pool,
@@ -957,16 +1089,21 @@ def _v5_rbe_exec_properties(pool):
         "test.dockerRunAsRoot": "true",
     }
 
-# What a single-chip v5 test gets in the default region. Analysis tests that
-# expect it must pin `//:_rbe_region` to _DEFAULT_RBE_REGION, since CI passes
-# --//:_rbe_region=<region> for the region it runs in.
+# What a single-chip or 4-chip v5 test gets in the default region. Analysis
+# tests that expect it must pin `//:_rbe_region` to _DEFAULT_RBE_REGION, since
+# CI passes --//:_rbe_region=<region> for the region it runs in.
 _V5_RBE_EXEC_PROPERTIES = _v5_rbe_exec_properties(_V5_RBE_POOLS[_DEFAULT_RBE_REGION])
+_V5_4CHIP_RBE_EXEC_PROPERTIES = _v5_rbe_exec_properties(_V5_4CHIP_RBE_POOLS[_DEFAULT_RBE_REGION])
 
 _V5_RBE_ENV = {
     "TPU_ACCELERATOR_TYPE": "v5e-1",
     "TPU_SKIP_MDS_QUERY": "1",
     "TPU_WORKER_HOSTNAMES": "127.0.0.1",
     "TPU_WORKER_ID": "0",
+}
+
+_V5_4CHIP_RBE_ENV = _V5_RBE_ENV | {
+    "TPU_ACCELERATOR_TYPE": "v5e-4",
 }
 
 def _expect_no_rbe_exec_properties(env, tags, tpu_generation, region):
@@ -981,6 +1118,16 @@ def _test_rbe_oss_v5_test_gets_pool(env):
         env.expect.where(region = region).that_dict(
             rbe_tpu_exec_properties_for_testing(_V5_RBE_TAGS, "v5", region),
         ).contains_exactly(_v5_rbe_exec_properties(pool))
+
+def _test_rbe_oss_v5_4chip_test_gets_pool(env):
+    """Tests that a 4-chip v5 test gets the 4-chip pool in us-west1/us-central1 and None elsewhere."""
+    for region, pool in _V5_4CHIP_RBE_POOLS.items():
+        env.expect.where(region = region).that_dict(
+            rbe_tpu_exec_properties_for_testing(_V5_4CHIP_RBE_TAGS, "v5", region),
+        ).contains_exactly(_v5_rbe_exec_properties(pool))
+    for region in _V5_RBE_POOLS:
+        if region not in _V5_4CHIP_RBE_POOLS:
+            _expect_no_rbe_exec_properties(env, _V5_4CHIP_RBE_TAGS, "v5", region)
 
 def _test_rbe_oss_network_tag_sets_docker_network(env):
     """Tests that requires-net:external adds test.dockerNetwork=standard on top of the region's pool."""
@@ -999,18 +1146,55 @@ def _test_rbe_internal_test_gets_nothing(env):
         _expect_no_rbe_exec_properties(env, _V5_RBE_TAGS, None, region)
 
 def _test_rbe_test_without_pool_gets_nothing(env):
-    """Tests that CPU, v7 and multi-chip v5 tests don't get a TPU pool, even in regions with a v5 pool."""
+    """Tests that CPU, v7, v5p-4, 8-chip v5e, and no-remote-exec tests don't get a TPU pool."""
     for tpu_generation, tags in [
         (None, []),
         # TODO: b/567928058 - Once v7x and 8-chip v5e RBE worker pools are added
-        # to _RBE_TPU_POOLS, move these two cases into positive pool tests
+        # to _RBE_TPU_POOLS, move these three cases into positive pool tests
         # expecting `_V5_RBE_EXEC_PROPERTIES | {"test.Pool": "ci_tpu_v7_full_rbe"}`
         # and `_V5_RBE_EXEC_PROPERTIES | {"test.Pool": "ci_tpu_v5_8chip_full_rbe"}`.
         ("v7", ["requires-tpu-v7x", "requires-tpu"]),
         ("v5", ["requires-tpu", "requires-tpu-v5lite:8"]),
+        ("v5", ["requires-tpu", "requires-tpu-v5lite:4", "requires-tpu-v5lite:8"]),
+        # Not v5e, so these must not match the 4-chip v5e pool even with
+        # tpu_generation "v5". There is no v5p RBE pool.
+        ("v5", ["requires-tpu", "requires-tpu-v5p:4"]),
+        ("v5", ["requires-tpu", "requires-tpu-v6e:4"]),
+        ("v5", ["requires-tpu", "requires-tpu-v7x:4"]),
+        ("v5", _V5_4CHIP_NO_REMOTE_TAGS),
+        ("v5", ["no-remote-exec"] + _V5_RBE_TAGS),
     ]:
         for region in _V5_RBE_POOLS:
             _expect_no_rbe_exec_properties(env, tags, tpu_generation, region)
+
+def _test_has_rbe_pool(env):
+    """Tests which tests an RBE pool can run."""
+    for tags, tpu_generation, expected in [
+        ([], None, True),
+        (["no-remote-exec"], None, False),
+        (_V5_RBE_TAGS, "v5", True),
+        (_V5_4CHIP_RBE_TAGS, "v5", True),
+        (_V5_4CHIP_NO_REMOTE_TAGS, "v5", False),
+        (["requires-tpu", "requires-tpu-v5lite:8"], "v5", False),
+        (["requires-tpu", "requires-tpu-v5p:4"], "v5", False),
+        (["requires-tpu-v7x", "requires-tpu"], "v7", False),
+    ]:
+        env.expect.where(tags = tags, tpu_generation = tpu_generation).that_bool(
+            has_rbe_pool(tags, tpu_generation),
+        ).equals(expected)
+
+def _test_rbe_shard_count_capped_per_pool(env):
+    """Tests that the RBE shard count is capped at the 4-chip v5e pool's size and left alone elsewhere."""
+    for raw_shard_count, tags, tpu_generation, expected in [
+        (12, _V5_4CHIP_RBE_TAGS, "v5", 4),
+        (4, _V5_4CHIP_RBE_TAGS, "v5", 4),
+        (2, _V5_4CHIP_RBE_TAGS, "v5", 2),
+        (12, _V5_RBE_TAGS, "v5", 12),
+        (12, [], None, 12),
+    ]:
+        env.expect.where(raw_shard_count = raw_shard_count, tags = tags).that_int(
+            rbe_shard_count_for_testing(raw_shard_count, tags, tpu_generation),
+        ).equals(expected)
 
 def _test_rbe_unknown_region_gets_nothing(env):
     """Tests that a v5 test in a region with no v5 pool gets no exec_properties."""
@@ -1019,6 +1203,7 @@ def _test_rbe_unknown_region_gets_nothing(env):
 def _test_rbe_macro_exec_properties_impl(env, targets):
     """Verifies exec_properties, env, and shard_count emitted by torch_tpu_py_test and torch_tpu_cc_test."""
     expected_v5 = _V5_RBE_EXEC_PROPERTIES if is_oss() else {}
+    expected_v5_4chip = _V5_4CHIP_RBE_EXEC_PROPERTIES if is_oss() else {}
     expected_v5_net = (
         _V5_RBE_EXEC_PROPERTIES | {"test.dockerNetwork": "standard"}
     ) if is_oss() else {}
@@ -1033,6 +1218,42 @@ def _test_rbe_macro_exec_properties_impl(env, targets):
     env.expect.that_dict(targets.py_v5[_TagsInfo].exec_properties).contains_exactly(expected_v5)
     env.expect.that_dict(targets.py_v5[_TagsInfo].env).contains_exactly({})
     env.expect.that_int(targets.py_v5[_TagsInfo].shard_count).equals(1 if is_oss() else 8)
+
+    env.expect.that_dict(targets.py_v5_4chip[_TagsInfo].exec_properties).contains_exactly(expected_v5_4chip)
+    env.expect.that_dict(targets.py_v5_4chip[_TagsInfo].env).contains_exactly({})
+    env.expect.that_int(targets.py_v5_4chip[_TagsInfo].shard_count).equals(1 if is_oss() else 4)
+
+    # Not exclusive, so OSS clamps to OSS_TPU_RUNNER_CHIPS["v5"] // 4.
+    env.expect.that_dict(targets.py_v5_4chip_nonexclusive[_TagsInfo].exec_properties).contains_exactly(expected_v5_4chip)
+    env.expect.that_int(targets.py_v5_4chip_nonexclusive[_TagsInfo].shard_count).equals(2 if is_oss() else 12)
+
+    for k in ["py_v5p", "py_v5_4chip_no_remote"]:
+        info = getattr(targets, k)[_TagsInfo]
+        expect = env.expect.where(subject = k)
+        expect.that_dict(info.exec_properties).contains_exactly({})
+        expect.that_dict(info.env).contains_exactly({})
+        expect.that_int(info.shard_count).equals(1 if is_oss() else 4)
+
+    # Only exclusive TPU tests without an RBE pool keep exclusive-if-local.
+    for k, tpu_resources, has_exclusive_if_local in [
+        ("py_v5", 8, False),
+        ("py_v5_4chip", 8, False),
+        ("py_v5_4chip_nonexclusive", 4, False),
+        ("py_v5p", 8, True),
+        ("py_v5_4chip_no_remote", 8, True),
+        ("py_multichip", 8, False),
+        ("py_v7", 1, False),
+        ("py_cpu", None, False),
+        ("cc_v5", 8, False),
+    ]:
+        tags = getattr(targets, k)[_TagsInfo].tags
+        expect = env.expect.where(subject = k)
+        expected_resources = ["resources:tpu:%d" % tpu_resources] if is_oss() and tpu_resources else []
+        expect.that_collection([t for t in tags if t.startswith("resources:")]).contains_exactly(expected_resources)
+        if not is_oss():
+            continue
+        expect.that_collection(tags).not_contains("exclusive")
+        expect.that_bool("exclusive-if-local" in tags).equals(has_exclusive_if_local)
 
     env.expect.that_dict(targets.py_v5_net[_TagsInfo].exec_properties).contains_exactly(expected_v5_net)
 
@@ -1067,23 +1288,29 @@ def _test_rbe_macro_exec_properties_impl(env, targets):
     if not is_oss():
         return
 
-    # Config prefix -> pool a single-chip v5 test on RBE should land in.
-    # us-west1 is the default region, so it also covers the `//conditions:default`
-    # branch of the macros' region select.
-    for prefix, pool in [
-        ("west1_", _V5_RBE_POOLS["us-west1"]),
-        ("central1_", _V5_RBE_POOLS["us-central1"]),
-        ("east1_", _V5_RBE_POOLS["us-east1"]),
-        ("asia_se1_", _V5_RBE_POOLS["asia-southeast1"]),
+    # Config prefix -> pool a single-chip or 4-chip v5 test on RBE should land
+    # in. us-west1 is the default region, so it also covers the
+    # `//conditions:default` branch of the macros' region select.
+    for prefix, region in [
+        ("west1_", "us-west1"),
+        ("central1_", "us-central1"),
+        ("east1_", "us-east1"),
+        ("asia_se1_", "asia-southeast1"),
     ]:
-        tpu = _v5_rbe_exec_properties(pool)
+        tpu = _v5_rbe_exec_properties(_V5_RBE_POOLS[region])
+        pool_4chip = _V5_4CHIP_RBE_POOLS.get(region)
+        tpu_4chip = _v5_rbe_exec_properties(pool_4chip) if pool_4chip != None else {}
         override = tpu | {"test.Pool": "custom_pool", "test.mem": "32g"}
         for k, exec_properties, test_env, shard_count in [
             ("py_v5", tpu, _V5_RBE_ENV, 8),
+            ("py_v5_4chip", tpu_4chip, _V5_4CHIP_RBE_ENV, 4),
+            ("py_v5_4chip_nonexclusive", tpu_4chip, _V5_4CHIP_RBE_ENV, 4),
+            ("py_v5p", {}, {}, 1),
+            ("py_v5_4chip_no_remote", {}, {}, 1),
             ("py_v5_net", tpu | {"test.dockerNetwork": "standard"}, _V5_RBE_ENV, None),
             ("py_override", override, _V5_RBE_ENV | caller_env, None),
             ("py_cpu", {}, {}, None),
-            ("py_multichip", {}, {}, 8),
+            ("py_multichip", {}, {}, 1),
             ("py_v7", {}, {}, None),
             ("cc_v5", tpu, _V5_RBE_ENV, 4),
             ("cc_override", override, _V5_RBE_ENV | caller_env, None),
@@ -1109,6 +1336,30 @@ def _test_rbe_macro_exec_properties(name):
         name = name + "_py_v5",
         tags = ["exclusive", "requires-tpu-v5lite"],
         shard_count = 8,
+        **common_py_kwargs
+    )
+    torch_tpu_py_test(
+        name = name + "_py_v5_4chip",
+        tags = ["exclusive", "requires-tpu-v5lite:4"],
+        shard_count = 4,
+        **common_py_kwargs
+    )
+    torch_tpu_py_test(
+        name = name + "_py_v5_4chip_nonexclusive",
+        tags = ["requires-tpu-v5lite:4"],
+        shard_count = 12,
+        **common_py_kwargs
+    )
+    torch_tpu_py_test(
+        name = name + "_py_v5p",
+        tags = ["exclusive", "requires-tpu-v5p:4"],
+        shard_count = 4,
+        **common_py_kwargs
+    )
+    torch_tpu_py_test(
+        name = name + "_py_v5_4chip_no_remote",
+        tags = ["exclusive", "no-remote-exec", "requires-tpu-v5lite:4"],
+        shard_count = 4,
         **common_py_kwargs
     )
     torch_tpu_py_test(
@@ -1160,6 +1411,10 @@ def _test_rbe_macro_exec_properties(name):
     )
     subject_names = [
         "py_v5",
+        "py_v5_4chip",
+        "py_v5_4chip_nonexclusive",
+        "py_v5p",
+        "py_v5_4chip_no_remote",
         "py_v5_net",
         "py_override",
         "py_cpu",
@@ -1224,10 +1479,13 @@ def build_defs_test_suite(name):
         basic_tests = [
             # go/keep-sorted start
             _test_build_test_excludes_cpu_tags,
+            _test_build_test_excludes_exclusive_tag,
+            _test_build_test_excludes_tpu_resources_tag,
             _test_build_test_excludes_tpu_tags,
             _test_cuda_build_test,
             _test_cuda_nopresubmit,
             _test_get_tpu_version,
+            _test_has_rbe_pool,
             _test_internal_manual_nonightly_oss_tag,
             _test_internal_manual_nopresubmit_oss_tag,
             _test_internal_nobuild_oss,
@@ -1243,6 +1501,7 @@ def build_defs_test_suite(name):
             _test_nopresubmit_nolocal_build_test_tags,
             _test_notap,
             _test_ops_test_build_test,
+            _test_oss_exclusive_non_pooled_test_keeps_exclusive_if_local,
             _test_oss_manual_nonightly_oss_tag,
             _test_oss_manual_nopresubmit_oss_tag,
             _test_oss_nobuild_oss,
@@ -1256,12 +1515,18 @@ def build_defs_test_suite(name):
             _test_oss_presubmit_tpu_generation_implicit,
             _test_oss_presubmit_tpu_generation_implicit_default_v5,
             _test_oss_presubmit_tpu_generation_implicit_v6,
+            _test_oss_rbe_pooled_tpu_test_drops_exclusive_tags,
+            _test_oss_tpu_resources_tag,
             _test_rbe_internal_test_gets_nothing,
             _test_rbe_oss_network_tag_sets_docker_network,
+            _test_rbe_oss_v5_4chip_test_gets_pool,
             _test_rbe_oss_v5_test_gets_pool,
+            _test_rbe_shard_count_capped_per_pool,
             _test_rbe_test_without_pool_gets_nothing,
             _test_rbe_unknown_region_gets_nothing,
             _test_shard_count_clamping,
+            _test_tpu_resources_tag_only_on_oss_tpu_tests,
+            _test_tpu_tags,
             # go/keep-sorted end
         ],
     )
