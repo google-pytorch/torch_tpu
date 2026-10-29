@@ -127,4 +127,94 @@ torch_tpu_py_test(
     ],
 )
 
+# The pallas_verify tests run on CPU: multi-chip kernels execute on virtual CPU
+# devices in TPU interpret mode, so they need no TPU.
+torch_tpu_py_test(
+    name = "pallas_verify_errors_test",
+    srcs = ["pallas_verify_errors_test.py"],
+    tags = [
+        "nosan",  # *san builds are low-value for error tests.
+    ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/jax:pallas",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/pallas",
+        "//src/torch_tpu/_internal/pallas/verify:findings",
+        "//src/torch_tpu/_internal/pallas/verify:idl_solver",
+        "//src/torch_tpu/_internal/pallas/verify:jaxpr_model",
+        "//src/torch_tpu/_internal/pallas/verify:verifier",
+        "//tests:seed_test_utils",
+        "@pypi//jax",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "pallas_verify_fx_test",
+    srcs = ["pallas_verify_fx_test.py"],
+    env = {
+        # Keeps JAX off the TPU of OSS CI hosts.
+        "JAX_PLATFORMS": "cpu",
+        "XLA_FLAGS": "--xla_force_host_platform_device_count=4",
+    },
+    shard_count = 2,
+    # CPU interpret mode is too slow with an unoptimized jaxlib.
+    tags = ["nofastbuild"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/jax:pallas",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/pallas",
+        "//src/torch_tpu/_internal/pallas:mock_device",
+        "//src/torch_tpu/_internal/pallas/verify:findings",
+        "//src/torch_tpu/_internal/pallas/verify:fx_verifier",
+        "//src/torch_tpu/_internal/pallas/verify:verifier",
+        "//tests:seed_test_utils",
+        "@pypi//jax",
+        "@pypi//numpy",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "pallas_verify_idl_solver_test",
+    srcs = ["pallas_verify_idl_solver_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/pallas/verify:idl_solver",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "pallas_verify_kernel_test",
+    srcs = ["pallas_verify_kernel_test.py"],
+    env = {
+        # Keeps JAX off the TPU of OSS CI hosts.
+        "JAX_PLATFORMS": "cpu",
+        "XLA_FLAGS": "--xla_force_host_platform_device_count=4",
+    },
+    shard_count = 4,
+    # CPU interpret mode is too slow with an unoptimized jaxlib.
+    tags = ["nofastbuild"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/jax:pallas",
+        "//shims/jax:pallas_tpu",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/pallas",
+        "//src/torch_tpu/_internal/pallas:mock_device",
+        "//src/torch_tpu/_internal/pallas/verify:findings",
+        "//src/torch_tpu/_internal/pallas/verify:interpret_verifier",
+        "//src/torch_tpu/_internal/pallas/verify:jaxpr_model",
+        "//src/torch_tpu/_internal/pallas/verify:verifier",
+        "//tests:seed_test_utils",
+        "@pypi//jax",
+        "@pypi//numpy",
+    ],
+)
+
 torch_tpu_package_end()
