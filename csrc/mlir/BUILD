@@ -52,6 +52,7 @@ torch_tpu_cc_library(
         ":instrumentation",
         "//csrc/common:env_vars",
         "//csrc/common:error_utils",
+        "//csrc/mlir/passes:factor_cross_axis_reshape_slices_and_hoist_window_cones",
         "//csrc/mlir/passes:fold_concat_softmax",
         "//csrc/mlir/passes:lower_separable_gather_to_dot",
         "//csrc/mlir/passes:reassociate_norm_weights",
@@ -89,6 +90,7 @@ torch_tpu_cc_library(
     hdrs = ["registration.h"],
     deps = [
         "//csrc/mlir/passes:dummy_pass",
+        "//csrc/mlir/passes:factor_cross_axis_reshape_slices_and_hoist_window_cones",
         "//csrc/mlir/passes:fold_concat_softmax",
         "//csrc/mlir/passes:lower_separable_gather_to_dot",
         "//csrc/mlir/passes:reassociate_norm_weights",
