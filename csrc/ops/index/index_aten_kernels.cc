@@ -23,12 +23,13 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "ATen/ops/count_nonzero.h"
+#include "absl/algorithm/container.h"
 #include "absl/functional/bind_front.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "c10/util/Optional.h"
-#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -50,30 +51,28 @@ namespace torch_tpu {
 namespace {
 
 struct IndicesInfo {
-  // Defined tensor indices.
-  //
-  // In contrast to the `indices_list_opt`, this is a list of tensors, where all
-  // tensors are defined. However, they might not correspond to consecutive
-  // dimensions.
-  std::vector<at::Tensor> indices;
-
-  // List of indexed dimensions.
-  //
-  // For each tensor `indices[i]`, `dimensions[i]` represents which dimension
-  // `indices[i]` indexes.
-  Indices dimensions;
+  // The defined index tensors, on the device of `self`, with the dimensions of
+  // `self` they index. They might not index consecutive dimensions.
+  std::vector<IndexEntry> entries;
 
   // Number of non-zero (`True`) elements when indexing with a boolean mask.
   std::optional<int64_t> num_non_zero_elements;
 };
 
-// Computes the number of non-zero (`True`) elements in `mask` on TPU via
-// `BuildNonzeroGetOutputSizeShlo` and materializes the scalar count on CPU.
-// This count is required ahead of time to determine the data-dependent output
-// shape of boolean mask indexing.
+// Computes the number of non-zero (`True`) elements in `mask`. This count is
+// required ahead of time to determine the data-dependent output shape of
+// boolean mask indexing.
+//
+// A CPU `mask` is counted on the host with `at::count_nonzero`, which only runs
+// the CPU kernel and never dispatches a TPU op. A TPU `mask` is counted on TPU
+// via `BuildNonzeroGetOutputSizeShlo` and the scalar count is materialized on
+// CPU.
 absl::StatusOr<int64_t> GetNumNonZeroElements(const at::Tensor& mask) {
   if (mask.numel() == 0) {
     return 0;
+  }
+  if (mask.is_cpu()) {
+    return at::count_nonzero(mask).item<int64_t>();
   }
   TT_ASSIGN_OR_RETURN(at::Tensor num_non_zero_elements,
                       UnaryOp(mask,
@@ -86,79 +85,46 @@ absl::StatusOr<int64_t> GetNumNonZeroElements(const at::Tensor& mask) {
   return num_non_zero_elements.cpu().item<int64_t>();
 }
 
-// Preprocess and check the `indices_list_opt` input into `IndicesInfo`.
-absl::StatusOr<IndicesInfo> ValidateAndGetIndicesInfo(
-    const at::Tensor& self,
-    const c10::List<c10::optional<at::Tensor>>& indices_list_opt) {
+// Converts the parsed `entries` of `self` (see `ParseIndexEntries`) into
+// `IndicesInfo`, with all index tensors moved to the device of `self`. Only
+// checks the `index`-specific rule that a boolean mask is the only defined
+// index.
+absl::StatusOr<IndicesInfo> GetIndicesInfo(const at::Tensor& self,
+                                           std::vector<IndexEntry> entries) {
+  const bool has_bool_mask = absl::c_any_of(
+      entries, [](const IndexEntry& entry) { return entry.is_mask; });
+  // TODO(b/567574040): Add support for more than one bool index tensor.
+  TT_RET_CHECK(!has_bool_mask || entries.size() == 1,
+               error::kPythonNotImplementedError)
+      << "indexing with more than one bool tensor is not yet supported";
+
   IndicesInfo info;
-  int64_t dim_indexed = 0;
-  bool has_bool_mask = false;
-
-  for (int64_t i = 0; i < indices_list_opt.size(); ++i) {
-    const auto& tensor = indices_list_opt[i];
-
-    // An undefined/nullopt entry corresponds to a full slice (`:`), which
-    // advances the current dimension of `self` by 1.
-    if (!tensor.has_value() || !tensor->defined()) {
-      TT_RET_CHECK(dim_indexed < self.dim(), error::kIndexError)
-          << "too many indices for tensor of dimension " << self.dim();
-      dim_indexed++;
-      continue;
-    }
-
-    const at::Tensor& index_tensor = *tensor;
-    if (IsBool(index_tensor)) {
-      // TODO(b/567574040): Add support for more than one bool index tensor.
-      TT_RET_CHECK(!has_bool_mask && info.indices.empty(),
-                   error::kPythonNotImplementedError)
-          << "indexing with more than one bool tensor is not yet supported";
-      has_bool_mask = true;
-
-      // Validate that each dimension of the boolean mask matches the
-      // corresponding dimension of `self` starting at `dim_indexed` (accounting
-      // for any preceding `:` slices).
-      for (int64_t mask_dim = 0; mask_dim < index_tensor.dim(); ++mask_dim) {
-        const int64_t self_dim = dim_indexed + mask_dim;
-        TT_RET_CHECK(self_dim < self.dim() &&
-                         index_tensor.size(mask_dim) == self.size(self_dim),
-                     error::kIndexError)
-            << "expected the shape of the mask at index " << mask_dim
-            << " to match the shape of the indexed tensor at index " << self_dim
-            << ", got mask shape " << index_tensor.sizes()
-            << " and indexed tensor shape " << self.sizes();
-      }
-
+  for (IndexEntry& entry : entries) {
+    if (entry.is_mask) {
       // Compute the number of `True` elements for the output shape, and store
-      // the unflattened mask along with `dim_indexed` so that all reshapes,
-      // nonzero extraction, and gathering happen inside a single StableHLO
-      // `op_builder` lowering (`BuildBooleanMaskIndexShlo`).
+      // the unflattened mask along with its first indexed dimension so that all
+      // reshapes, nonzero extraction, and gathering happen inside a single
+      // StableHLO `op_builder` lowering (`BuildBooleanMaskIndexShlo`).
       // An M-D mask consumes M dimensions of `self` (a 0D mask consumes 0
-      // dimensions and inserts a new dimension at `dim_indexed`).
+      // dimensions and inserts a new dimension at its first indexed dimension).
+      // The count is computed before moving a CPU mask to TPU so that it can
+      // be done on the host.
       TT_ASSIGN_OR_RETURN(info.num_non_zero_elements,
-                          GetNumNonZeroElements(index_tensor));
-      info.indices.push_back(index_tensor);
-      info.dimensions.push_back(dim_indexed);
-      dim_indexed += index_tensor.dim();
-    } else {
-      // TODO(b/567574040): Add support for more than one bool index tensor.
-      TT_RET_CHECK(!has_bool_mask, error::kPythonNotImplementedError)
-          << "indexing with more than one bool tensor is not yet supported";
-      TT_RET_CHECK(dim_indexed < self.dim(), error::kIndexError)
-          << "too many indices for tensor of dimension " << self.dim();
-      info.indices.push_back(index_tensor);
-      info.dimensions.push_back(dim_indexed++);
+                          GetNumNonZeroElements(entry.tensor));
     }
+    TT_ASSIGN_OR_RETURN(entry.tensor,
+                        MoveIndexToDevice(entry.tensor, self.device()));
   }
+  info.entries = std::move(entries);
 
-  TT_RET_CHECK(!info.indices.empty(), error::kInvalidArgument)
-      << "expected at least one index tensor to be defined, got 0";
-
-  // Negative-index resolution copies indices to CPU for bounds validation and
-  // wrapping. For boolean masks, indices are generated on-device by
-  // `BuildNonzeroShlo` and are guaranteed to be non-negative `[0, dim_size)`.
+  // Negative integer indices are wrapped on TPU by adding the size of the
+  // indexed dimension (no bounds checking is done; see
+  // `ResolveNegativeIndices`). This is skipped for boolean masks, whose
+  // positions are generated on-device by `BuildNonzeroShlo` and are guaranteed
+  // to be non-negative `[0, dim_size)`.
   if (!has_bool_mask) {
     TT_RETURN_IF_ERROR(
-        ResolveNegativeIndices(info.indices, self.sizes(), info.dimensions));
+        ResolveNegativeIndices(absl::MakeSpan(info.entries), self.sizes()));
   }
 
   return info;
@@ -172,8 +138,8 @@ absl::StatusOr<Dimensions> GetOutputDims(const at::Tensor& self,
   // `dims_consumed == 0`, so a new dimension is inserted at `dim_indexed`),
   // while leading and trailing unindexed dimensions are preserved.
   if (info.num_non_zero_elements.has_value()) {
-    const int64_t dim_indexed = info.dimensions[0];
-    const int64_t dims_consumed = info.indices[0].dim();
+    const int64_t dim_indexed = info.entries[0].first_dim;
+    const int64_t dims_consumed = info.entries[0].tensor.dim();
     Dimensions output_dims;
     output_dims.reserve(self.dim() - dims_consumed + 1);
     for (int64_t i = 0; i < dim_indexed; ++i) {
@@ -196,16 +162,17 @@ absl::StatusOr<Dimensions> GetOutputDims(const at::Tensor& self,
 
   bool indexed_dimensions_consecutive = true;
 
+  const std::vector<IndexEntry>& entries = info.entries;
   for (int i = 0, j = 0; i < self.dim(); ++i) {
-    if (j < info.dimensions.size() && i == info.dimensions[j]) {
+    if (j < entries.size() && i == entries[j].first_dim) {
       if (j > 0 && indexed_dimensions_consecutive &&
-          info.dimensions[j - 1] != i - 1) {
+          entries[j - 1].first_dim != i - 1) {
         indexed_dimensions_consecutive = false;
       }
 
       TT_ASSIGN_OR_RETURN(
           broadcasted_index_shape,
-          InferSize(broadcasted_index_shape, info.indices[j].sizes()));
+          InferSize(broadcasted_index_shape, entries[j].tensor.sizes()));
 
       j++;
     } else {
@@ -218,7 +185,7 @@ absl::StatusOr<Dimensions> GetOutputDims(const at::Tensor& self,
                       unindexed_dims_shape.size());
 
   size_t insertion_index =
-      indexed_dimensions_consecutive ? info.dimensions[0] : 0;
+      indexed_dimensions_consecutive ? entries[0].first_dim : 0;
 
   output_dims.insert(output_dims.end(), unindexed_dims_shape.begin(),
                      unindexed_dims_shape.begin() + insertion_index);
@@ -244,14 +211,16 @@ at::Tensor& AtenIndexTensorOut(
                         "This is being tracked by the dimensions variable"),
        out),
       {
+        TT_ASSIGN_OR_THROW(std::vector<IndexEntry> entries,
+                           ParseIndexEntries(self, indices_list_opt));
         TT_ASSIGN_OR_THROW(IndicesInfo info,
-                           ValidateAndGetIndicesInfo(self, indices_list_opt));
+                           GetIndicesInfo(self, std::move(entries)));
 
         TT_ASSIGN_OR_THROW(Dimensions output_dims, GetOutputDims(self, info));
         // The indices_list_opt gets ignored in the cache key, but we still
         // want to record which dimensions are indexed and, for boolean masks,
         // the data-dependent output size.
-        const auto& dimensions = info.dimensions;
+        Indices dimensions = GetFirstDims(info.entries);
         const int64_t num_non_zero_elements =
             info.num_non_zero_elements.value_or(-1);
         TT_ASSIGN_OR_THROW(
@@ -259,11 +228,12 @@ at::Tensor& AtenIndexTensorOut(
             TT_MAKE_OP_PARAM_CACHE_KEYS(dimensions, num_non_zero_elements));
 
         ABSL_VLOG(2) << "[AtenIndexTensorOut] self: " << ToString(self);
-        for (const auto& t : info.indices) {
-          ABSL_VLOG(2) << "[AtenIndexTensorOut] indices_list: " << ToString(t);
+        for (const IndexEntry& entry : info.entries) {
+          ABSL_VLOG(2) << "[AtenIndexTensorOut] indices_list: "
+                       << ToString(entry.tensor);
         }
         ABSL_VLOG(2) << "[AtenIndexTensorOut] indexed_dims: "
-                     << ToString(info.dimensions);
+                     << ToString(dimensions);
         ABSL_VLOG(2) << "[AtenIndexTensorOut] output_dims: "
                      << ToString(output_dims);
 
@@ -271,8 +241,12 @@ at::Tensor& AtenIndexTensorOut(
           output_dims = {};
         }
 
-        std::vector<at::Tensor> self_and_indices(std::move(info.indices));
-        self_and_indices.insert(self_and_indices.begin(), self);
+        std::vector<at::Tensor> self_and_indices;
+        self_and_indices.reserve(info.entries.size() + 1);
+        self_and_indices.push_back(self);
+        for (IndexEntry& entry : info.entries) {
+          self_and_indices.push_back(std::move(entry.tensor));
+        }
 
         TT_ASSIGN_OR_THROW(const auto computation_dtype,
                            ConvertTo<mlir::ElementType>(self.scalar_type()));
@@ -281,7 +255,7 @@ at::Tensor& AtenIndexTensorOut(
         // collapsing, mask flattening, nonzero index computation, and gather)
         // or standard integer tensor indexing in a single `op_builder` call.
         auto index_op_builder =
-            [indexed_dimensions = std::move(info.dimensions),
+            [indexed_dimensions = std::move(dimensions),
              num_non_zero_elements = info.num_non_zero_elements](
                 absl::Span<mlir::MlirOp> inputs, mlir::MlirBuilder& builder) {
               if (num_non_zero_elements.has_value()) {

@@ -2784,12 +2784,11 @@ Device-side assertion tracking was not enabled by user.""",
       torch.addcmul(s_i64, t1_i64, t2_i64, value=1e20)
 
   def test_index_put_too_many_indices_error(self):
-    # TODO(mkkhanna): Fix exception type for TPU.
-    err_type = RuntimeError if et.is_on_tpu() else IndexError
     with et.assert_raises_message(
-        err_type,
+        IndexError,
         gpu="""too many indices for tensor of dimension 1 (got 2)""",
-        tpu="""index_put_(): expected at most 1 indices for tensor of dimension 1, got 2""",
+        tpu="""index_put_(): too many indices for tensor of dimension 1 (got 2)""",
+        message_reviewed_by="jihonggan",
     ):
       torch.index_put_(
           torch.tensor([0, 1], device=et.device()),
@@ -2800,12 +2799,65 @@ Device-side assertion tracking was not enabled by user.""",
           torch.tensor([0], device=et.device()),
       )
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="0d_mask_and_int_index",
+          shape=(3,),
+          indices_fn=lambda d: [
+              torch.tensor(False, device=d),
+              torch.tensor([0], device=d),
+          ],
+          num_indices=2,
+      ),
+      dict(
+          testcase_name="0d_mask_between_slices",
+          shape=(2, 3),
+          indices_fn=lambda d: [None, torch.tensor(True, device=d), None],
+          num_indices=3,
+      ),
+  )
+  def test_index_put_more_list_entries_than_dims_error(
+      self, shape, indices_fn, num_indices
+  ):
+    # A 0-d mask consumes no dimension of `self` but still counts as an index
+    # list entry for `index_put_`.
+    ndim = len(shape)
+    with et.assert_raises_message(
+        IndexError,
+        gpu=f"""too many indices for tensor of dimension {ndim} (got {num_indices})""",
+        tpu=f"""index_put_(): too many indices for tensor of dimension {ndim} (got {num_indices})""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.ops.aten.index_put_(
+          torch.zeros(*shape, device=et.device()),
+          indices_fn(et.device()),
+          torch.tensor(1.0, device=et.device()),
+      )
+
+  def test_index_put_trailing_slice_exceeds_dims_error(self):
+    # `Tensor.index_put_` rejects `None` indices, so use the aten op. PyTorch
+    # rejects this unless the value is a single-element CPU tensor and
+    # accumulate=False, which takes its `masked_fill` fast path; TorchTPU
+    # rejects it consistently (see tpu_errors_test).
+    with et.assert_raises_message(
+        RuntimeError if et.is_on_gpu() else IndexError,
+        gpu="""The size of tensor a (2) must match the size of tensor b (12) at non-singleton dimension 1""",
+        tpu="""index_put_(): too many indices for tensor of dimension 3""",
+        message_reviewed_by="jihonggan",
+    ):
+      torch.ops.aten.index_put_(
+          torch.zeros(2, 3, 4, device=et.device()),
+          [None, torch.ones(3, 4, dtype=torch.bool, device=et.device()), None],
+          torch.ones(2, 12, device=et.device()),
+      )
+
   def test_index_put_index_dtype_error(self):
     err_type = RuntimeError if et.is_on_tpu() else IndexError
     with et.assert_raises_message(
         err_type,
         gpu="""tensors used as indices must be long, int, byte or bool tensors""",
-        tpu="""index_put_(): expected index tensors to have dtype bool, byte, int32, or int64, got float32 at index 0""",
+        tpu="""index_put_(): expected index tensors to have dtype bool, int32, or int64, got float32 at index 0""",
+        message_reviewed_by="jihonggan",
     ):
       torch.index_put_(
           torch.tensor([0, 1], device=et.device()),
@@ -2871,18 +2923,20 @@ Device-side assertion tracking was not enabled by user.""",
           torch.tensor([0], dtype=torch.int64, device=et.device()),
       )
 
-  def test_index_put_index_or_indices_must_be_specified_error(self):
+  def test_index_put_no_defined_index_error(self):
     if et.is_on_gpu():
       # On TPU, passing empty indices () raises a clean Python RuntimeError
-      # ("indices must be specified"). On GPU, this triggers an internal C++
-      # assertion in OffsetCalculator.cuh instead of a standard Python error.
+      # ("expected at least one index tensor to be defined"). On GPU, this
+      # triggers an internal C++ assertion in OffsetCalculator.cuh instead of a
+      # standard Python error.
       self.skipTest("GPU behavior difference")
     with et.assert_raises_message(
         RuntimeError,
         gpu=re.compile(
             r"""N <= iter\.ntensors\(\) INTERNAL ASSERT FAILED at.*OffsetCalculator\.cuh.*please report a bug to PyTorch\.\s*"""
         ),
-        tpu="""index_put_(): indices must be specified""",
+        tpu="""index_put_(): expected at least one index tensor to be defined, got 0""",
+        message_reviewed_by="jihonggan",
     ):
       torch.index_put_(
           torch.tensor([[0, 1], [2, 3]], device=et.device()),
@@ -2891,9 +2945,8 @@ Device-side assertion tracking was not enabled by user.""",
       )
 
   def test_index_put_decompose_with_mask_mask_shape_mismatch(self):
-    err_type = RuntimeError if et.is_on_tpu() else IndexError
     with et.assert_raises_message(
-        err_type,
+        IndexError,
         gpu="""The shape of the mask [3, 5] at index 0 does not match the shape of the indexed tensor [2, 5] at index 0""",
         tpu="""index_put_(): expected the shape of the mask at index 0 to match the shape of the indexed tensor at index 0, got mask shape [3, 5] and indexed tensor shape [2, 5]""",
     ):
@@ -2909,9 +2962,8 @@ Device-side assertion tracking was not enabled by user.""",
   def test_index_put_decompose_with_mask_error_mask_dim_more_than_indexed_tensor_dim(
       self,
   ):
-    err_type = RuntimeError if et.is_on_tpu() else IndexError
     with et.assert_raises_message(
-        err_type,
+        IndexError,
         gpu="""Dimension out of range (expected to be in range of [-1, 0], but got 1)""",
         tpu="""index_put_(): expected the shape of the mask at index 1 to match the shape of the indexed tensor at index 1, got mask shape [2, 2] and indexed tensor shape [2]""",
     ):
@@ -2922,9 +2974,8 @@ Device-side assertion tracking was not enabled by user.""",
       )
 
   def test_index_put_decompose_with_multiple_mask_error(self):
-    err_type = RuntimeError if et.is_on_tpu() else IndexError
     with et.assert_raises_message(
-        err_type,
+        IndexError,
         gpu="""The shape of the mask [4] at index 0 does not match the shape of the indexed tensor [3, 5] at index 1""",
         tpu="""index_put_(): expected the shape of the mask at index 0 to match the shape of the indexed tensor at index 1, got mask shape [4] and indexed tensor shape [3, 5]""",
     ):
@@ -3612,11 +3663,11 @@ Device-side assertion tracking was not enabled by user.""",
       )
 
   def test_index_put_too_many_indices_after_expanding_boolean_tensors(self):
-    err_type = RuntimeError if et.is_on_tpu() else IndexError
     with et.assert_raises_message(
-        err_type,
+        IndexError,
         gpu="""Dimension out of range (expected to be in range of [-2, 1], but got 2)""",
-        tpu="""index_put_(): expected at most 2 indices for tensor of dimension 2, got 3 index tensors after expanding boolean indices""",
+        tpu="""index_put_(): too many indices for tensor of dimension 2""",
+        message_reviewed_by="jihonggan",
     ):
       t = torch.zeros(10, 20, device=et.device())
       mask = torch.zeros(10, 20, dtype=torch.bool, device=et.device())
@@ -8019,9 +8070,9 @@ Supported combinations for non-constant padding:
   def test_index_too_many_indices(self):
     t = torch.ones(2, 2, device=et.device())
     indices = [
-        torch.ones(2, device=et.device()),
-        torch.ones(2, device=et.device()),
-        torch.ones(2, device=et.device()),
+        torch.ones(2, dtype=torch.long, device=et.device()),
+        torch.ones(2, dtype=torch.long, device=et.device()),
+        torch.ones(2, dtype=torch.long, device=et.device()),
     ]
 
     # Call the out overload.
