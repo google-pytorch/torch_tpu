@@ -18,11 +18,15 @@
 
 #include <cstdint>
 #include <numbers>
+#include <optional>
+#include <string>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
 
 #include "ATen/core/TensorBody.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
@@ -34,10 +38,12 @@
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/internal/mosaic/kiln/kiln.h"
+#include "csrc/internal/mosaic/kiln/mlir/stablehlo_splice.h"
 #include "csrc/internal/mosaic/kiln_custom_call.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -65,6 +71,9 @@ struct FlexAttnConfig {
   int64_t mask_batch;
   int64_t mask_heads;
   float scale;
+  // StableHLO modules over one [q_block, kv_block] tile (empty: no mod).
+  std::string score_mod_mlir;  // @main(score f32, b, h, q_idx, kv_idx) -> f32
+  std::string mask_mod_mlir;   // @main(b, h, q_idx, kv_idx) -> i1
 
   int64_t num_q_blocks() const { return q_len / q_block; }
   int64_t num_kv_blocks() const { return kv_len / kv_block; }
@@ -108,6 +117,38 @@ kiln::Scalar CurrentKvBlock(kiln::Ref kv_num_blocks, kiln::Ref kv_indices,
 kiln::Scalar KvHead(const FlexAttnConfig& c) {
   kiln::Scalar h = kiln::ProgramId(kHeadAxis);
   return c.gqa_groups() == 1 ? h : h / c.gqa_groups();
+}
+
+// Applies the score / mask mods to the scores `s` (natural units) of the
+// current tile.
+absl::StatusOr<kiln::Tile> ApplyMods(const FlexAttnConfig& c,
+                                     kiln::Ref kv_num_blocks,
+                                     kiln::Ref kv_indices, kiln::Tile s) {
+  if (c.score_mod_mlir.empty() && c.mask_mod_mlir.empty()) return s;
+  // The mods were traced at the full tile shape (see mod_to_mlir).
+  const llvm::ArrayRef<int64_t> shape = s.dims();
+  const kiln::Tile b = kiln::Splat(kiln::ProgramId(kBatchAxis), shape);
+  const kiln::Tile h = kiln::Splat(kiln::ProgramId(kHeadAxis), shape);
+  const kiln::Tile q_idx = (kiln::Iota(kiln::i32(c.q_block, 1), 0) +
+                            kiln::ProgramId(kQBlockAxis) * c.q_block)
+                               .BroadcastTo(shape);
+  const kiln::Tile kv_idx =
+      (kiln::Iota(kiln::i32(1, c.kv_block), 1) +
+       CurrentKvBlock(kv_num_blocks, kv_indices, c) * c.kv_block)
+          .BroadcastTo(shape);
+  // s = score_mod(s, b, h, q_idx, kv_idx)
+  if (!c.score_mod_mlir.empty()) {
+    TT_ASSIGN_OR_RETURN(
+        s, kiln::SpliceStablehlo(c.score_mod_mlir, {s, b, h, q_idx, kv_idx}));
+  }
+  // s = mask_mod(b, h, q_idx, kv_idx) ? s : -inf
+  if (!c.mask_mod_mlir.empty()) {
+    TT_ASSIGN_OR_RETURN(
+        const kiln::Tile keep,
+        kiln::SpliceStablehlo(c.mask_mod_mlir, {b, h, q_idx, kv_idx}));
+    s = Select(keep, s, kiln::NInf(s.shape()));
+  }
+  return s;
 }
 
 // Flex attention forward: flash attention that visits only the KV blocks
@@ -154,7 +195,9 @@ absl::StatusOr<kiln::Kernel> BuildFlexAttentionKernel(const FlexAttnConfig& c) {
     pv_options.precision = kiln::ContractPrecision::kFP32;
   }
 
-  return kiln::CreateKernel(
+  // The body callback cannot return errors, so mod splice errors land here.
+  absl::Status mod_status;
+  absl::StatusOr<kiln::Kernel> kernel = kiln::CreateKernel(
       kiln::GridSpec{
           .name = "flex_attention_fwd",
           .grid = {c.batch, c.q_heads, nq, nkv},
@@ -174,7 +217,7 @@ absl::StatusOr<kiln::Kernel> BuildFlexAttentionKernel(const FlexAttnConfig& c) {
       kiln::ScratchSpec::Vmem(
           f32(c.q_block, c.v_dim)),  // acc: unnormalized out
       [&]                            // REF_CAPTURE_OK=called synchronously
-      (kiln::Ref kv_num_blocks, kiln::Ref /*kv_indices*/, kiln::Ref q_ref,
+      (kiln::Ref kv_num_blocks, kiln::Ref kv_indices, kiln::Ref q_ref,
        kiln::Ref k_ref, kiln::Ref v_ref, kiln::Ref out_ref, kiln::Ref lse_ref,
        kiln::Ref m_ref, kiln::Ref l_ref, kiln::Ref acc_ref) {
         const kiln::Scalar j = kiln::ProgramId(kKvStepAxis);
@@ -192,21 +235,34 @@ absl::StatusOr<kiln::Kernel> BuildFlexAttentionKernel(const FlexAttnConfig& c) {
           const kiln::Tile q = kiln::Tile(q_ref(0, 0));
           const kiln::Tile k = kiln::Tile(k_ref(0, 0));
           const kiln::Tile v = kiln::Tile(v_ref(0, 0));
-          const kiln::Tile s = kiln::Dot(q, k, qk_options) * (c.scale * kLog2e);
+          // Mods see the scores in natural units; the softmax runs in the
+          // log2 domain.
+          const kiln::Tile scores = kiln::Dot(q, k, qk_options) * c.scale;
+          absl::StatusOr<kiln::Tile> modded =
+              ApplyMods(c, kv_num_blocks, kv_indices, scores);
+          if (!modded.ok()) {
+            mod_status = modded.status();
+            return;  // The kernel is discarded below.
+          }
+          const kiln::Tile s = *modded * kLog2e;
 
-          const kiln::Tile m_prev = kiln::Tile(m_ref).Lanes(1);
-          const kiln::Tile l_prev = kiln::Tile(l_ref).Lanes(1);
-          const kiln::Tile m_new = Max(m_prev, kiln::MaxReduce(s, 1));
+          // m and l stay lane-replicated [q_block, 128]: broadcasting a
+          // [q_block, 1] column across the kv_block lanes every step is
+          // costlier than repeating whole vregs.
+          const kiln::Tile m_prev = kiln::Tile(m_ref);
+          const kiln::Tile l_prev = kiln::Tile(l_ref);
+          const kiln::Tile m_new =
+              Max(m_prev, kiln::MaxReduce(s, 1).Lanes(kLanes));
           // Rows with no visible key yet have m == -inf; use 0 in the
           // exponents so they give exp2(-inf) = 0 rather than NaN.
           const kiln::Tile m_safe =
               Select(m_new == kiln::NInf(m_new.shape()), 0.0, m_new);
           const kiln::Tile alpha = Exp2(m_prev - m_safe);
-          const kiln::Tile p = Exp2(s - m_safe);
-          acc_ref = kiln::Tile(acc_ref) * alpha +
+          const kiln::Tile p = Exp2(s - m_safe.Lanes(c.kv_block));
+          acc_ref = kiln::Tile(acc_ref) * alpha.Lanes(c.v_dim) +
                     kiln::Dot(p.AsType(c.dtype), v, pv_options);
-          m_ref = m_new.Lanes(kLanes);
-          l_ref = (l_prev * alpha + kiln::SumReduce(p, 1)).Lanes(kLanes);
+          m_ref = m_new;
+          l_ref = l_prev * alpha + kiln::SumReduce(p, 1).Lanes(kLanes);
         });
 
         // End of the row: normalize and emit out / lse.
@@ -222,6 +278,8 @@ absl::StatusOr<kiln::Kernel> BuildFlexAttentionKernel(const FlexAttnConfig& c) {
               Select(is_empty, kiln::NInf(m.shape()), m + Log2(safe_l)));
         });
       });
+  TT_RETURN_IF_ERROR(mod_status);
+  return kernel;
 }
 
 absl::StatusOr<kiln::DType> ToKilnDType(at::ScalarType dtype) {
@@ -240,7 +298,8 @@ absl::StatusOr<FlexAttnConfig> MakeConfig(
     const at::Tensor& q, const at::Tensor& k, const at::Tensor& v,
     const at::Tensor& kv_num_blocks, const at::Tensor& kv_indices,
     int64_t mask_batch, int64_t mask_heads, int64_t q_block, int64_t kv_block,
-    double scale) {
+    double scale, std::string_view score_mod_mlir,
+    std::string_view mask_mod_mlir) {
   TT_RET_CHECK(q.dim() == 4 && k.dim() == 4 && v.dim() == 4,
                error::kInvalidArgument)
       << "expected 4-D q, k and v, got " << q.dim() << "-D, " << k.dim()
@@ -285,6 +344,8 @@ absl::StatusOr<FlexAttnConfig> MakeConfig(
       .mask_batch = mask_batch,
       .mask_heads = mask_heads,
       .scale = static_cast<float>(scale),
+      .score_mod_mlir = std::string(score_mod_mlir),
+      .mask_mod_mlir = std::string(mask_mod_mlir),
   };
 
   const int64_t table_rows = mask_batch * mask_heads * c.num_q_blocks();
@@ -308,10 +369,12 @@ absl::StatusOr<std::tuple<at::Tensor, at::Tensor>> FlexAttentionFwdImpl(
     const at::Tensor& q, const at::Tensor& k, const at::Tensor& v,
     const at::Tensor& kv_num_blocks, const at::Tensor& kv_indices,
     int64_t mask_batch, int64_t mask_heads, int64_t q_block, int64_t kv_block,
-    double scale, OpParamCacheKeys param_keys) {
-  TT_ASSIGN_OR_RETURN(const FlexAttnConfig config,
-                      MakeConfig(q, k, v, kv_num_blocks, kv_indices, mask_batch,
-                                 mask_heads, q_block, kv_block, scale));
+    double scale, std::string_view score_mod_mlir,
+    std::string_view mask_mod_mlir, OpParamCacheKeys param_keys) {
+  TT_ASSIGN_OR_RETURN(
+      const FlexAttnConfig config,
+      MakeConfig(q, k, v, kv_num_blocks, kv_indices, mask_batch, mask_heads,
+                 q_block, kv_block, scale, score_mod_mlir, mask_mod_mlir));
 
   const Dimensions out_dims = {config.batch, config.q_heads, config.q_len,
                                config.v_dim};
@@ -334,8 +397,11 @@ absl::StatusOr<std::tuple<at::Tensor, at::Tensor>> FlexAttentionFwdImpl(
     }
     TT_ASSIGN_OR_RETURN(
         auto custom_call,
-        CreateKilnCustomCallOp(op_builder, builder.getLoc(), std::move(kernel),
-                               operands, result_types));
+        CreateKilnCustomCallOp(
+            op_builder, builder.getLoc(), std::move(kernel), operands,
+            result_types, /*vmem_limit_bytes=*/std::nullopt,
+            /*needs_hlo_passes=*/!config.score_mod_mlir.empty() ||
+                !config.mask_mod_mlir.empty()));
     DynamicMlirOpResults results;
     results.push_back(mlir::MlirOp(builder, custom_call.getResult(0)));
     results.push_back(mlir::MlirOp(builder, custom_call.getResult(1)));
@@ -366,16 +432,18 @@ std::tuple<at::Tensor, at::Tensor> FlexAttentionFwd(
     const at::Tensor& q, const at::Tensor& k, const at::Tensor& v,
     const at::Tensor& kv_num_blocks, const at::Tensor& kv_indices,
     int64_t mask_batch, int64_t mask_heads, int64_t q_block, int64_t kv_block,
-    double scale) {
+    double scale, std::string_view score_mod_mlir,
+    std::string_view mask_mod_mlir) {
   TT_KERNEL(OpName::kFlexAttentionFwd, param_keys,
             (q, k, v, kv_num_blocks, kv_indices, mask_batch, mask_heads,
-             q_block, kv_block, scale),
+             q_block, kv_block, scale, score_mod_mlir, mask_mod_mlir),
             {
               TT_ASSIGN_OR_THROW(
                   auto results,
                   FlexAttentionFwdImpl(q, k, v, kv_num_blocks, kv_indices,
                                        mask_batch, mask_heads, q_block,
-                                       kv_block, scale, std::move(param_keys)));
+                                       kv_block, scale, score_mod_mlir,
+                                       mask_mod_mlir, std::move(param_keys)));
               return results;
             });
 }

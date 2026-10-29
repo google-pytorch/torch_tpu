@@ -116,7 +116,9 @@ torch_tpu_py_library(
     name = "flex_attention",
     srcs = ["flex_attention.py"],
     deps = [
+        ":tpu_torch_compile",
         "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal/execution_mode",
     ],
 )
 

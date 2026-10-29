@@ -5568,6 +5568,8 @@ class FlexAttentionErrorsTest(et.TpuOnlyErrorTestBase):
         q_block=128,
         kv_block=128,
         scale=1.0,
+        score_mod_mlir="",
+        mask_mod_mlir="",
     )
     args.update(overrides)
     return torch.ops.tpu._flex_attention_fwd(*args.values())
@@ -5657,23 +5659,36 @@ class FlexAttentionErrorsTest(et.TpuOnlyErrorTestBase):
           kv_indices=torch.zeros(3, dtype=torch.int32, device=et.device())
       )
 
-  # Only until the kernel gets a per-element mask.
-  @et.why_tpu_only("The flex_attention Kiln kernel only exists on TPU.")
-  def test_partial_blocks(self):
-    q, k, v = self._inputs(1024)
-    causal = flex_attention.create_block_mask(
-        lambda b, h, q_idx, kv_idx: q_idx >= kv_idx,
-        1,
-        1,
-        1024,
-        1024,
-        device="cpu",
+  def _causal_mask(self):
+    return flex_attention.create_block_mask(
+        lambda b, h, q_idx, kv_idx: q_idx >= kv_idx, 1, 1, 1024, 1024, "cpu"
     )
+
+  @et.why_tpu_only("The flex_attention Kiln kernel only exists on TPU.")
+  def test_mask_mod_must_return_bool(self):
+    q, k, v = self._inputs(1024)
+    block_mask = self._causal_mask()
+    block_mask.mask_mod = lambda b, h, q_idx, kv_idx: q_idx - kv_idx
     with et.assert_raises_message(
-        NotImplementedError,
-        tpu="""flex_attention on TPU does not support partially masked blocks yet""",
+        TypeError,
+        tpu="""expected mask_mod to return torch.bool, got torch.int32""",
     ):
-      tpu_flex_attention.flex_attention_fwd(q, k, v, causal)
+      tpu_flex_attention.flex_attention_fwd(q, k, v, block_mask)
+
+  @et.why_tpu_only("The flex_attention Kiln kernel only exists on TPU.")
+  def test_score_mod_must_keep_the_tile_shape(self):
+    q, k, v = self._inputs(1024)
+    with et.assert_raises_message(
+        ValueError,
+        tpu="""expected score_mod to return shape [128, 128], got [128]""",
+    ):
+      tpu_flex_attention.flex_attention_fwd(
+          q,
+          k,
+          v,
+          self._causal_mask(),
+          score_mod=lambda score, b, h, q_idx, kv_idx: score.sum(-1),
+      )
 
 
 if __name__ == "__main__":
