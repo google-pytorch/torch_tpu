@@ -12560,6 +12560,19 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(test_broadcasting_fn)
 
+    # Test float16 and bfloat16 opmath precision
+    for dtype in (torch.float16, torch.bfloat16):
+      with self.subTest(dtype=dtype):
+        gx = torch.linspace(0.5, 10.0, 50, dtype=dtype)
+        gy = torch.linspace(0.5, 10.0, 50, dtype=dtype)
+        x, y = torch.meshgrid(gx, gy, indexing="ij")
+        expected = torch.xlogy(x.float(), y.float()).to(dtype)
+        actual = torch.xlogy(x.to("tpu"), y.to("tpu"))
+        self.assert_close(
+            golden_result=expected,
+            torch_tpu_result=actual,
+        )
+
   def test_xlogy_scalar_and_cpu_scalar_tensors(self):
     """Tests xlogy scalar overloads and 0-D CPU scalar tensors."""
     # Scalar self
