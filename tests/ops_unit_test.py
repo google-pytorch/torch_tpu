@@ -20010,6 +20010,50 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(run_zero_output_3d)
 
+  def test_adaptive_avg_pool_low_precision_non_divisible(self):
+    """Tests 16-bit adaptive_avg_pool2d/3d on non-divisible sizes.
+
+    These sizes take the gather/scatter lowering, whose window sums and
+    gradient accumulation must happen in float32. The CPU bfloat16/float16
+    kernels accumulate some of these paths in the 16-bit type, so the golden
+    result is computed in float32 on CPU and cast back.
+    """
+    torch.manual_seed(0)
+    x2d = torch.randn(4, 16, 97, 97) + 3.0
+    x2d_small = torch.randn(4, 16, 14, 14) + 3.0
+    grad2d = torch.randn(4, 16, 5, 5)
+    x3d = torch.randn(2, 8, 10, 10, 10) + 3.0
+    grad3d = torch.randn(2, 8, 3, 3, 3)
+
+    def pool(fn, x, out_size, grad, dtype, device):
+      compute_dtype = torch.float32 if str(device) == "cpu" else dtype
+      inp = x.to(dtype).to(compute_dtype).to(device)
+      if grad is None:
+        return fn(inp, out_size).to(dtype)
+      inp.requires_grad_()
+      fn(inp, out_size).backward(grad.to(dtype).to(compute_dtype).to(device))
+      return inp.grad.to(dtype)
+
+    adaptive_2d = torch.nn.functional.adaptive_avg_pool2d
+    adaptive_3d = torch.nn.functional.adaptive_avg_pool3d
+    for dtype in (torch.bfloat16, torch.float16):
+      cases = {
+          "adaptive_avg_pool2d": (adaptive_2d, x2d, (6, 6), None),
+          "adaptive_avg_pool2d_backward": (
+              adaptive_2d,
+              x2d_small,
+              (5, 5),
+              grad2d,
+          ),
+          "adaptive_avg_pool3d": (adaptive_3d, x3d, (3, 3, 3), None),
+          "adaptive_avg_pool3d_backward": (adaptive_3d, x3d, (3, 3, 3), grad3d),
+      }
+      for op, (fn, x, out_size, grad) in cases.items():
+        with self.subTest(dtype=dtype, op=op):
+          self.assert_close_tpu_vs_cpu(
+              functools.partial(pool, fn, x, out_size, grad, dtype)
+          )
+
   def test_ldexp_large_exponent(self):
     def compute(device):
       exponent = 127
