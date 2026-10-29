@@ -54,7 +54,6 @@ class ScanExposedInternalApisTest(absltest.TestCase):  # ABSLTEST_OK=tool test
 
   def test_visitor_extracts_internal_python_imports(self):
     code = textwrap.dedent("""
-      import marimo as mo
       from torch_tpu._internal import execution_mode as em
       from torch_tpu._internal.utils import utils
       import torch.tpu._private_mod

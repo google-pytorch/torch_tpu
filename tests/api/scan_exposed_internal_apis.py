@@ -126,8 +126,8 @@ _GOOGLE3_SCAN_EXPOSED_INTERNAL_APIS_LABEL = (
 # The directories to scan, relative to the TorchTPU repository root. Keep in
 # sync with the `exposed_internal_apis_data` filegroup in BUILD.
 DEFAULT_SCAN_SUBDIRS: tuple[str, ...] = (
+    "docs",
     "docs/notebooks",
-    "docs/source",
     "examples",
 )
 

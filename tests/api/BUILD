@@ -131,12 +131,12 @@ filegroup(
     srcs = [
         "exposed_internal_apis.yaml",
         "tt_apis.yaml",
+        "//docs:all_doc_files_recursive",
+        "//docs:all_ipynb_files_recursive",
+        "//docs:all_py_files_recursive",
         "//docs/notebooks:all_doc_files_recursive",
         "//docs/notebooks:all_ipynb_files_recursive",
         "//docs/notebooks:all_py_files_recursive",
-        "//docs/source:all_doc_files_recursive",
-        "//docs/source:all_ipynb_files_recursive",
-        "//docs/source:all_py_files_recursive",
         "//examples:all_doc_files_recursive",
         "//examples:all_ipynb_files_recursive",
         "//examples:all_py_files_recursive",
@@ -167,8 +167,8 @@ pytype_strict_binary(
 )
 
 # Fails if exposed_internal_apis.yaml is out of sync with the internal APIs and
-# environment variables that the docs and examples use. It scans
-# docs/notebooks, docs/source and examples.
+# environment variables that the docs and examples use. It scans docs,
+# docs/notebooks, and examples.
 torch_tpu_py_test(
     name = "exposed_internal_apis_test",
     srcs = ["exposed_internal_apis_test.py"],
