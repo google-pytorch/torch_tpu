@@ -243,9 +243,18 @@ at::Tensor PyMakePlaceholderLike(const at::Tensor& arg_tensor,
   // First, we get a base shape for the contiguous base tensor.
   // This is the smallest amount of data necessary to back the view.
   // If arg_tensor is already contiguous, then this will just be its shape.
-  TT_ASSIGN_OR_THROW(
-      const Dimensions minimal_base_sizes,
-      GetContiguousBaseShape(StridedLayout::FromTensor(arg_tensor)));
+  //
+  // The base starts at the view's own storage offset, not at the start of the
+  // storage: otherwise the executable's parameter shape would depend on the
+  // offset (e.g. x[32:64] would need a [64, ...] base), and an executable
+  // compiled for one slice would be reused for another slice with a different
+  // offset and get a buffer of the wrong size (RuntimeProgramInputMismatch,
+  // https://github.com/google-pytorch/torch_tpu/issues/4409). This must match
+  // PrepareCompiledModeArgumentsImpl in compiled_mode.cc.
+  StridedLayout arg_layout = StridedLayout::FromTensor(arg_tensor);
+  arg_layout.storage_offset = 0;
+  TT_ASSIGN_OR_THROW(const Dimensions minimal_base_sizes,
+                     GetContiguousBaseShape(arg_layout));
 
   // Then, we create a contiguous placeholder tensor with this shape.
   TT_ASSIGN_OR_THROW(
@@ -270,9 +279,9 @@ at::Tensor PyMakePlaceholderLike(const at::Tensor& arg_tensor,
   } else {
     // Finally, we create a view of the base tensor with the same striding as
     // the original view, and preserve the requires_grad property.
-    view_tensor =
-        base_tensor.as_strided(arg_tensor.sizes(), arg_tensor.strides(),
-                               arg_tensor.sym_storage_offset().expect_int());
+    view_tensor = base_tensor.as_strided(arg_tensor.sizes(),
+                                         arg_tensor.strides(),
+                                         /*storage_offset=*/0);
   }
 
   if (arg_tensor.requires_grad()) {
