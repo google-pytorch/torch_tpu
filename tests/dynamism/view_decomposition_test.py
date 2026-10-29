@@ -820,7 +820,9 @@ class ViewDecompositionTest(seed_test_utils.RepeatableTest):
 
   def test_delinearize_storage_offset_zero_dims(self):
     """Tests that a non-zero offset over zero dims raises, and 0 returns []."""
-    with self.assertRaises(NotImplementedError):  # ASSERT_RAISES_OK=Unit test.
+    with self.assertRaises(   # ASSERT_RAISES_OK=internal signal.
+      NotImplementedError
+    ):
       view_decomposition._delinearize_storage_offset(1, [])
     self.assertEqual(
         view_decomposition._delinearize_storage_offset(0, []), []
