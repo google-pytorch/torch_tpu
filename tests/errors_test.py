@@ -2871,6 +2871,37 @@ Device-side assertion tracking was not enabled by user.""",
           torch.tensor([0], dtype=torch.int64, device=et.device()),
       )
 
+  def test_index_put_non_0d_cpu_values_error(self):
+    t = torch.zeros(4, dtype=torch.float32, device=et.device())
+    idx = torch.tensor([0, 1], dtype=torch.long, device=et.device())
+    val_1d_cpu = torch.tensor([3.5, 4.5], dtype=torch.float32, device="cpu")
+
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!""",
+        tpu="""index_put_(): expected tensor to be on tpu, got cpu""",
+    ):
+      t.index_put_((idx[:1],), val_1d_cpu[:1])
+
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!""",
+        tpu="""index_put_(): expected tensor to be on tpu, got cpu""",
+    ):
+      t[idx] = val_1d_cpu
+
+  def test_index_put_boolean_mask_cpu_0d_value_overflow_error(self):
+    t = torch.ones(2, 2, dtype=torch.uint8, device=et.device())
+    mask = torch.ones(2, 2, dtype=torch.bool, device=et.device())
+    val_cpu = torch.tensor(2**31, dtype=torch.int64, device="cpu")
+
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""value cannot be converted to type uint8_t without overflow""",
+        tpu="""index_put_(): expected value to be representable as uint8, got 2147483648""",
+    ):
+      t[mask] = val_cpu
+
   def test_index_put_index_or_indices_must_be_specified_error(self):
     if et.is_on_gpu():
       # On TPU, passing empty indices () raises a clean Python RuntimeError

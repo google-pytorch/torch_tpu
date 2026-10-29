@@ -6966,6 +6966,46 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         ),
     )
 
+  def test_fill_cpu_0d_value_tensor(self):
+    val_f32 = torch.tensor(-3.25, dtype=torch.float32, device="cpu")
+    val_bf16 = torch.tensor(2.5, dtype=torch.bfloat16, device="cpu")
+    val_i32 = torch.tensor(7, dtype=torch.int32, device="cpu")
+    val_f64 = torch.tensor(1.5, dtype=torch.float64, device="cpu")
+    val_bool = torch.tensor(True, dtype=torch.bool, device="cpu")
+    val_neg_inf = torch.tensor(-float("inf"), dtype=torch.float32, device="cpu")
+
+    def compute(device):
+      t_inplace = torch.zeros(2, 3, dtype=torch.float32, device=device)
+      t_inplace.fill_(val_f32)
+      t_out = torch.fill(
+          torch.ones(2, 3, dtype=torch.float32, device=device), val_neg_inf
+      )
+      t_bf16 = torch.zeros(4, dtype=torch.bfloat16, device=device)
+      t_bf16.fill_(val_bf16)
+      t_i32 = torch.zeros(3, dtype=torch.int32, device=device)
+      t_i32.fill_(val_i32)
+      t_bool = torch.zeros(3, dtype=torch.bool, device=device)
+      t_bool.fill_(val_bool)
+      t_cross_i32 = torch.zeros(2, 2, dtype=torch.float32, device=device)
+      t_cross_i32.fill_(val_i32)
+      t_cross_f64 = torch.fill(
+          torch.zeros(2, 2, dtype=torch.float32, device=device), val_f64
+      )
+      t_empty = torch.empty((0, 3), dtype=torch.float32, device=device)
+      t_empty.fill_(val_f32)
+      return (
+          t_inplace,
+          t_out,
+          t_bf16,
+          t_i32,
+          t_bool,
+          t_cross_i32,
+          t_cross_f64,
+          t_empty,
+      )
+
+    self.assert_close_tpu_vs_cpu(compute)
+
   def test_fill_scalar(self):
     def test_fn(device):
       t = torch.tensor([1.0, 2.0, 3.0], device=device)
@@ -14026,6 +14066,127 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       return t, t_empty
 
     self.assert_close_tpu_vs_cpu(scatter_2d_and_empty)
+
+  def test_index_put_cpu_0d_value_tensor(self):
+    val_f32 = torch.tensor(3.5, dtype=torch.float32, device="cpu")
+    val_add_f32 = torch.tensor(-1.25, dtype=torch.float32, device="cpu")
+    val_bf16 = torch.tensor(2.0, dtype=torch.bfloat16, device="cpu")
+    val_i32 = torch.tensor(9, dtype=torch.int32, device="cpu")
+    mask_cpu = torch.tensor([True, False, True, False], device="cpu")
+
+    def compute(device):
+      idx = torch.tensor([0, 2], dtype=torch.long, device=device)
+      empty_idx = torch.tensor([], dtype=torch.long, device=device)
+      mask_dev = torch.tensor(
+          [[True, False, True], [False, True, False]],
+          dtype=torch.bool,
+          device=device,
+      )
+
+      mask_1d_dev = torch.tensor(
+          [True, False, True],
+          dtype=torch.bool,
+          device=device,
+      )
+
+      t_idx = torch.zeros(4, 2, dtype=torch.float32, device=device)
+      t_idx[idx] = val_f32
+      t_idx[idx] += val_add_f32
+
+      t_out = torch.index_put(
+          torch.ones(4, 2, dtype=torch.float32, device=device), (idx,), val_f32
+      )
+
+      t_bf16 = torch.zeros(4, dtype=torch.bfloat16, device=device)
+      t_bf16[idx] = val_bf16
+
+      t_i32 = torch.zeros(4, dtype=torch.int32, device=device)
+      t_i32[idx] = val_i32
+
+      t_mask_dev = torch.ones(2, 3, dtype=torch.float32, device=device)
+      t_mask_dev[mask_dev] = val_f32
+      t_mask_dev[mask_dev] += val_add_f32
+
+      t_mask_cross = torch.ones(2, 3, dtype=torch.float32, device=device)
+      t_mask_cross[mask_dev] = val_i32
+
+      t_mask_sliced = torch.ones(2, 3, dtype=torch.float32, device=device)
+      t_mask_sliced[:, mask_1d_dev] = val_i32
+
+      t_mask_cpu = torch.ones(4, 2, dtype=torch.float32, device=device)
+      t_mask_cpu[mask_cpu] = val_f32
+
+      t_empty = torch.ones(3, dtype=torch.float32, device=device)
+      t_empty[empty_idx] = val_f32
+      return (
+          t_idx,
+          t_out,
+          t_bf16,
+          t_i32,
+          t_mask_dev,
+          t_mask_cross,
+          t_mask_sliced,
+          t_mask_cpu,
+          t_empty,
+      )
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  def test_index_fill_cpu_0d_value_tensor(self):
+    val_f32 = torch.tensor(-4.5, dtype=torch.float32, device="cpu")
+    val_bf16 = torch.tensor(6.0, dtype=torch.bfloat16, device="cpu")
+    val_i32 = torch.tensor(11, dtype=torch.int32, device="cpu")
+    val_f64 = torch.tensor(2.25, dtype=torch.float64, device="cpu")
+
+    def compute(device):
+      idx0 = torch.tensor([0, 2], dtype=torch.long, device=device)
+      idx1 = torch.tensor([1], dtype=torch.long, device=device)
+      empty_idx = torch.tensor([], dtype=torch.long, device=device)
+      scalar_idx = torch.tensor([0], dtype=torch.long, device=device)
+
+      t_inplace = torch.ones(3, 2, dtype=torch.float32, device=device)
+      t_inplace.index_fill_(0, idx0, val_f32)
+
+      t_out = torch.index_fill(
+          torch.zeros(3, 2, dtype=torch.float32, device=device),
+          -1,
+          idx1,
+          val_f32,
+      )
+
+      t_bf16 = torch.zeros(3, 2, dtype=torch.bfloat16, device=device)
+      t_bf16.index_fill_(0, idx0, val_bf16)
+
+      t_i32 = torch.zeros(3, 2, dtype=torch.int32, device=device)
+      t_i32.index_fill_(0, idx0, val_i32)
+
+      t_cross_i32 = torch.zeros(3, 2, dtype=torch.float32, device=device)
+      t_cross_i32.index_fill_(0, idx0, val_i32)
+
+      t_cross_f64 = torch.index_fill(
+          torch.zeros(3, 2, dtype=torch.float32, device=device),
+          0,
+          idx0,
+          val_f64,
+      )
+
+      t_empty_idx = torch.ones(3, 2, dtype=torch.float32, device=device)
+      t_empty_idx.index_fill_(0, empty_idx, val_f32)
+
+      t_0d = torch.tensor(1.0, dtype=torch.float32, device=device)
+      t_0d.index_fill_(0, scalar_idx, val_f32)
+      return (
+          t_inplace,
+          t_out,
+          t_bf16,
+          t_i32,
+          t_cross_i32,
+          t_cross_f64,
+          t_empty_idx,
+          t_0d,
+      )
+
+    self.assert_close_tpu_vs_cpu(compute)
 
   def test_masked_fill_inplace_tensor_value_different_dtype(self):
     input_value = torch.randn(2, 3, dtype=torch.float32)
