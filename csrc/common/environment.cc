@@ -269,6 +269,10 @@ absl::Status InitializeSingleDeviceEnvironment(
   return absl::OkStatus();
 }
 
+// In OSS, the libtpu shared library reads `TPU_VISIBLE_CHIPS` and
+// `TPU_VISIBLE_DEVICES` itself when it initializes.
+void ApplyTpuVisibleDevices() {}
+
 // In OSS, libtpu is loaded dynamically, so its absl flags (such as
 // --deepsea_hal_included_devicepaths) aren't linked into this process. Read
 // the env vars that libtpu reads instead. Internally, libtpu is linked

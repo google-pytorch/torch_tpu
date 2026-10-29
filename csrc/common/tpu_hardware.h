@@ -113,9 +113,23 @@ struct TpuSpec {
 };
 
 // Returns the number of supported Google TPU PCI devices under
-// `pci_devices_dir` whose IOMMU group is exposed under `vfio_dir`. Does not
-// initialize any TPU runtime.
+// `pci_devices_dir` whose IOMMU group is exposed under `vfio_dir` as a
+// character device that this process can read and write.
+//
+// This function does not initialize any TPU runtime and ignores placeholders at
+// TPU VFIO paths that a sandbox doesn't allocate to this process, such as
+// unreadable regular files.
 [[nodiscard]] int64_t GetTpuDeviceCount(
+    std::string_view pci_devices_dir = "/sys/bus/pci/devices",
+    std::string_view vfio_dir = "/dev/vfio");
+
+// Like GetTpuDeviceCount(), but if `TPU_VISIBLE_DEVICES` is a comma-separated
+// list of chip indices, caps the count at the number of devices on that many
+// chips, like `CUDA_VISIBLE_DEVICES` caps the GPU count. Reads
+// `TPU_VISIBLE_DEVICES` on every call, since it may change until the TPU
+// runtime is initialized. TorchTPU itself may rewrite it when it initializes
+// the runtime, so this is meant for use before then.
+[[nodiscard]] int64_t GetVisibleTpuDeviceCount(
     std::string_view pci_devices_dir = "/sys/bus/pci/devices",
     std::string_view vfio_dir = "/dev/vfio");
 

@@ -44,6 +44,10 @@ class _FakePciDevice:
     iommu_group: IOMMU group that the device's `iommu_group` symlink points to,
       or None to omit the symlink.
     vfio_exposed: Whether `/dev/vfio` has a node for the IOMMU group.
+    vfio_placeholder: Whether `/dev/vfio` has a placeholder for the IOMMU group
+      instead of a node, i.e. an empty regular file without any permissions,
+      like the ones that some sandboxes put at the paths of TPUs that they don't
+      allocate to the process. Only used if `vfio_exposed` is False.
   """
 
   address: str
@@ -51,6 +55,7 @@ class _FakePciDevice:
   vendor_id: str | None = "0x1ae0"  # Google
   iommu_group: str | None = None
   vfio_exposed: bool = True
+  vfio_placeholder: bool = False
 
 
 def _fake_tpus(
@@ -235,6 +240,43 @@ class TpuTopologyMockTest(seed_test_utils.RepeatableTest):
         expected_spec=hardware.TpuSpec.V6E,
     )
 
+  def test_ignores_vfio_group_placeholders(self):
+    # A 1-chip sandbox on an 8-chip host has a VFIO group node only for
+    # its own chip, and placeholders for the other chips.
+    self._run_mock_test(
+        [
+            dataclasses.replace(
+                device, vfio_exposed=i == 5, vfio_placeholder=i != 5
+            )
+            for i, device in enumerate(_fake_tpus("0x0063", 8))
+        ],
+        "1,1,1",
+        expected_device_count=1,
+        expected_device_name="TPU v5e",
+        expected_spec=hardware.TpuSpec.V5E,
+    )
+
+  @parameterized.parameters(
+      ("3", 1),
+      ("0,1,2,3", 4),
+      # Malformed values don't restrict the devices.
+      ("0,,1", 8),
+  )
+  def test_visible_count_counts_only_devices_of_visible_chips(
+      self, visible_devices, expected_visible_count
+  ):
+    self._set_up_pci_fs(_fake_tpus("0x0063", 8))
+    with mock.patch.dict(os.environ, {"TPU_VISIBLE_DEVICES": visible_devices}):
+      self.assertEqual(
+          hardware.get_visible_tpu_device_count(), expected_visible_count
+      )
+      # The host's count and topology don't depend on TPU_VISIBLE_DEVICES.
+      self.assertEqual(hardware.get_tpu_device_count(), 8)
+      self.assertEqual(
+          hardware.get_tpu_topology(),
+          ",".join(map(str, hardware.TpuSpec.V5E.topologies[8])),
+      )
+
   def test_ignores_non_tpu_pci_devices(self):
     self._run_mock_test(
         [
@@ -309,6 +351,10 @@ class TpuTopologyMockTest(seed_test_utils.RepeatableTest):
   def _patch_pci_dirs(
       self, pci_devices_dir: pathlib.Path, vfio_dir: pathlib.Path
   ) -> None:
+    # Test runners may pin each test to a TPU with TPU_VISIBLE_DEVICES, which
+    # caps the visible device count.
+    self.enter_context(mock.patch.dict(os.environ))
+    os.environ.pop("TPU_VISIBLE_DEVICES", None)
     self.enter_context(
         mock.patch.object(
             hardware._hardware_backend,
@@ -325,6 +371,17 @@ class TpuTopologyMockTest(seed_test_utils.RepeatableTest):
             "get_tpu_device_count",
             functools.partial(
                 hardware._hardware_backend.get_tpu_device_count,
+                pci_devices_dir=os.fspath(pci_devices_dir),
+                vfio_dir=os.fspath(vfio_dir),
+            ),
+        )
+    )
+    self.enter_context(
+        mock.patch.object(
+            hardware._hardware_backend,
+            "get_visible_tpu_device_count",
+            functools.partial(
+                hardware._hardware_backend.get_visible_tpu_device_count,
                 pci_devices_dir=os.fspath(pci_devices_dir),
                 vfio_dir=os.fspath(vfio_dir),
             ),
@@ -361,7 +418,13 @@ class TpuTopologyMockTest(seed_test_utils.RepeatableTest):
             root / "sys" / "kernel" / "iommu_groups" / device.iommu_group
         )
         if device.vfio_exposed:
-          (vfio_dir / device.iommu_group).touch()
+          # /dev/null is a character device that any process can read and
+          # write, like the VFIO group node of a TPU allocated to the process.
+          (vfio_dir / device.iommu_group).symlink_to("/dev/null")
+        elif device.vfio_placeholder:
+          placeholder = vfio_dir / device.iommu_group
+          placeholder.touch()
+          placeholder.chmod(0)
 
     self._patch_pci_dirs(pci_devices_dir, vfio_dir)
 
