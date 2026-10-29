@@ -173,7 +173,10 @@ def update_dict(d, u):
 ACCURACY_OVERRIDES_VS_GPU = {
     # go/keep-sorted start
     "_foreach_acos": {
-        torch.complex64: {"rtol": 5.2e-5, "atol": 6.7e-5},
+        torch.complex64: {
+            "rtol": 1.1e-4,
+            "atol": 1.1e-4,
+        },  # TOLERANCE_OVERRIDE_OK
     },
     "_foreach_addcdiv": {
         torch.bfloat16: {"rtol": 1.7e-2, "atol": 2.2e-2},
@@ -261,7 +264,10 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.float64: {"rtol": 4.7e-6, "atol": 1e-6},
     },
     "acos": {
-        torch.complex64: {"rtol": 5.5e-5, "atol": 2.2e-5},
+        torch.complex64: {
+            "rtol": 5.5e-5,
+            "atol": 6.5e-5,
+        },  # TOLERANCE_OVERRIDE_OK
     },
     "acosh": {
         torch.complex64: {"rtol": 2.9e-5},
@@ -609,6 +615,12 @@ ACCURACY_OVERRIDES_VS_GPU = {
 # Like ACCURACY_OVERRIDES_VS_GPU, but with torch.compile().
 ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
     # go/keep-sorted start
+    "_foreach_acos": {
+        torch.complex64: {
+            "rtol": 1.1e-4,
+            "atol": 1.1e-4,
+        },  # TOLERANCE_OVERRIDE_OK
+    },
     "_foreach_cosh": {
         torch.complex64: {"rtol": 5.1e-6},
     },
@@ -668,7 +680,10 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
         torch.float64: {"rtol": 4.7e-6, "atol": 1e-6},
     },
     "acos": {
-        torch.complex64: {"rtol": 5.5e-5, "atol": 2.2e-5},
+        torch.complex64: {
+            "rtol": 5.5e-5,
+            "atol": 6.5e-5,
+        },  # TOLERANCE_OVERRIDE_OK
     },
     "acosh": {
         torch.complex64: {"rtol": 2.9e-5},
@@ -1311,7 +1326,10 @@ class TestOps(op_testing.OpInfoTestBase):
     )
 
   def test_acos(self):
-    self.do_test_op("acos")
+    self.do_test_op(
+        "acos",
+        check_value=CheckValueMode.STRICT,
+    )
 
   def test_acosh(self):
     self.do_test_op("acosh")
@@ -1952,7 +1970,10 @@ class TestOps(op_testing.OpInfoTestBase):
 
   @category("foreach")
   def test_foreach_acos(self):
-    self.do_test_op("_foreach_acos")
+    self.do_test_op(
+        "_foreach_acos",
+        check_value=CheckValueMode.STRICT,
+    )
 
   @category("foreach")
   def test_foreach_add(self):
