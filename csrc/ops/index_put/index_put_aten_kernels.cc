@@ -22,6 +22,7 @@
 #include "ATen/ExpandUtils.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "ATen/ops/nonzero.h"
 #include "ATen/ops/permute.h"
 #include "absl/container/inlined_vector.h"
 #include "absl/log/absl_check.h"
@@ -31,6 +32,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 #include "absl/types/span.h"
+#include "c10/core/Device.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -53,142 +55,81 @@ namespace torch_tpu {
 
 namespace {
 
-absl::Status ValidateIndicesType(
-    const c10::List<std::optional<at::Tensor>>& indices_list_opt) {
-  for (int64_t i = 0; i < indices_list_opt.size(); ++i) {
-    auto maybe_tensor = indices_list_opt[i];
-    if (!maybe_tensor.has_value() || !maybe_tensor.value().defined()) {
-      // tensor is not defined when it is None. This happens in case of
-      // slicing for example: self[indices, :, indices] = bar. In this case
-      // the second index tensor will be undefined.
-      continue;
-    }
-    const auto& index_tensor = maybe_tensor.value();
-
-    TT_RET_CHECK(index_tensor.scalar_type() == c10::ScalarType::Int ||
-                     index_tensor.scalar_type() == c10::ScalarType::Long ||
-                     index_tensor.scalar_type() == c10::ScalarType::Byte ||
-                     index_tensor.scalar_type() == c10::ScalarType::Bool,
-                 error::kInvalidArgument)
-        << "expected index tensors to have dtype bool, byte, int32, or int64, "
-           "got "
-        << ToString(index_tensor.scalar_type()) << " at index " << i;
+// Returns the positions of the non-zero elements of `mask` on `device`, with
+// shape (L, mask.dim()). A CPU `mask` is evaluated on the host, which avoids a
+// TPU nonzero and its device-to-host sync for the data-dependent output size.
+// Calling `at::nonzero` on a CPU `mask` is fine here since it only runs the CPU
+// kernel and never dispatches a TPU op.
+absl::StatusOr<at::Tensor> GetNonzeroPositionsOnDevice(
+    const at::Tensor& mask, const c10::Device& device) {
+  if (mask.is_cpu()) {
+    return MoveIndexToDevice(at::nonzero(mask), device);
   }
-  return absl::OkStatus();
+  return AtenNonzero(mask);
 }
 
-// Preprocesses indices tensor list by converting boolean tensor masks into
-// 1D integer positional index tensors.
+// Converts the parsed `entries` (see `ParseIndexEntries`) into purely integer
+// index entries on the device of `self`.
 //
-// This function takes a list of indices tensors. It transforms this list into
-// a vector of purely integer tensors. Boolean tensors are handled by:
-// 1. Validating their shape against the corresponding dimensions of 'self'.
-// 2. Computing the non-zero indices.
-// 3. Decomposing the columns of the non-zero result, with each column
-//    becoming a separate 1D integer tensor in the output list.
-//
-// The function also populates an 'indexed_dims' vector, which maps each
-// tensor in the returned list to the specific dimension of the 'self' tensor
-// it indexes.
-//
-// Boolean tensors:
-//   - A boolean tensor at `indices_list_opt[i]` with rank `k`
-//     will index dimensions {i, i+1, ..., i+k-1} of 'self' if the last index
-//     tensor indexed up to dimension i-1 of 'self'.
-//   - Shape Validation: The shape of the boolean tensor must exactly match the
-//     sizes of the corresponding dimensions {i, ..., i+k-1} in 'self'.
-//     E.g., index_tensor.shape == (self.size(i), ..., self.size(i+k-1)).
-//   - NonZero Conversion: `AtenNonzero()` is called, yielding a
-//     tensor of shape (L, k), where L is the number of True elements.
-//   - Decomposition: This (L, k) tensor is split into k column vectors. The
-//   j-th
-//     column (0 <= j < k) becomes a 1D integer tensor of shape (L,) and is
-//     added to the result list. This j-th column tensor provides the indices
-//     for dimension i+j of 'self'.
-//
-absl::StatusOr<std::vector<at::Tensor>> ConvertBooleanIndicesToPositional(
-    const at::Tensor& self,
-    const c10::List<std::optional<at::Tensor>>& indices_list_opt,
-    Indices& indexed_dims) {
-  std::vector<at::Tensor> index_tensors;
-  int64_t dim_indexed = 0;
-  for (int64_t i = 0; i < indices_list_opt.size(); ++i) {
-    auto maybe_tensor = indices_list_opt[i];
-    if (!maybe_tensor.has_value() || !maybe_tensor.value().defined()) {
-      // this dimension of self tensor sliced out, so we
-      // move to the next dimension.
-      dim_indexed++;
-      continue;
-    }
-    const auto& index_tensor = maybe_tensor.value();
-
-    if (index_tensor.scalar_type() == c10::ScalarType::Bool) {
-      int64_t self_dim = dim_indexed;
-      for (int64_t mask_dim = 0; mask_dim < index_tensor.dim(); ++mask_dim) {
-        TT_RET_CHECK(self_dim < self.dim() && index_tensor.sizes()[mask_dim] ==
-                                                  self.sizes()[self_dim],
-                     error::kInvalidArgument)
-            << "expected the shape of the mask at index " << mask_dim
-            << " to match the shape of the indexed tensor at index " << self_dim
-            << ", got mask shape " << index_tensor.sizes()
-            << " and indexed tensor shape " << self.sizes();
-        self_dim++;
-      }
-
-      at::Tensor nonzero_result =
-          AtenNonzero(index_tensor);  // Shape (L, mask_ndim)
+// A boolean mask of rank `k` that covers dimensions {d, ..., d+k-1} of `self`
+// is converted with `AtenNonzero()` (or `at::nonzero()` on the host for a CPU
+// mask) into a tensor of shape (L, k), where L is the number of True elements.
+// Its j-th column (0 <= j < k) becomes a 1D integer index entry of shape (L,)
+// that indexes dimension d+j of `self`.
+absl::StatusOr<std::vector<IndexEntry>> ConvertBooleanIndicesToPositional(
+    const at::Tensor& self, absl::Span<const IndexEntry> entries) {
+  std::vector<IndexEntry> positional_entries;
+  for (const IndexEntry& entry : entries) {
+    if (entry.is_mask) {
+      TT_ASSIGN_OR_RETURN(
+          at::Tensor nonzero_result,  // Shape (L, mask_ndim)
+          GetNonzeroPositionsOnDevice(entry.tensor, self.device()));
       // Decompose the columns of the non-zero result, with each column becoming
-      // a separate 1D integer tensor.
-      for (int64_t i = 0; i < index_tensor.dim(); ++i) {
-        index_tensors.push_back(nonzero_result.select(/*dim=*/1, /*index=*/i));
-
-        // each dimension of mask tensor indexes a dimension of the
-        // self tensor in the same order.
-        indexed_dims.push_back(dim_indexed++);
+      // a separate 1D integer tensor. Each dimension of the mask indexes a
+      // dimension of `self` in the same order.
+      for (int64_t i = 0; i < entry.tensor.dim(); ++i) {
+        positional_entries.push_back(
+            {.tensor = nonzero_result.select(/*dim=*/1, /*index=*/i),
+             .first_dim = entry.first_dim + i,
+             .is_mask = false});
       }
     } else {
-      index_tensors.push_back(index_tensor);
-      indexed_dims.push_back(dim_indexed++);
+      TT_ASSIGN_OR_RETURN(at::Tensor tpu_index,
+                          MoveIndexToDevice(entry.tensor, self.device()));
+      positional_entries.push_back({.tensor = std::move(tpu_index),
+                                    .first_dim = entry.first_dim,
+                                    .is_mask = false});
     }
   }
-  ABSL_VLOG(1) << "[IndexPut] indexed_dims: "
-               << absl::StrJoin(indexed_dims, ", ");
-  return index_tensors;
+  return positional_entries;
 }
 
-bool AreIndicesContiguous(const Indices& indexed_dims) {
-  if (indexed_dims.empty()) {
-    return true;
-  }
-  for (int64_t i = 1; i < indexed_dims.size(); ++i) {
-    if (indexed_dims[i] != indexed_dims[i - 1] + 1) {
+// Returns whether `entries` index consecutive dimensions of `self`, in order.
+bool AreIndicesContiguous(absl::Span<const IndexEntry> entries) {
+  for (int64_t i = 1; i < entries.size(); ++i) {
+    if (entries[i].first_dim != entries[i - 1].first_dim + 1) {
       return false;
     }
   }
   return true;
 }
 
-// Moves the indexed dimensions of 'self' to the front of the tensor.
-//
-// This function takes a list of index tensors and a list of dimensions that
-// were indexed. It returns a new tensor where the indexed dimensions have been
-// moved to the front of the tensor, in the order they were indexed.
+// Moves the dimensions of `self` indexed by the integer index `entries` to the
+// front of the tensor, in the order they are indexed, and updates the
+// `first_dim` of `entries` to match.
 //
 // For example, if 'self' is (4, 5, 6, 7) and the indexed dimensions are {1, 3},
-// the result will be (5, 7, 4, 6).
+// the result will be (5, 7, 4, 6), and the indexed dimensions become {0, 1}.
 //
 at::Tensor MoveIndicesToFront(const at::Tensor& self,
-                              std::vector<at::Tensor>& index_tensors,
-                              const Indices& indexed_dims) {
+                              std::vector<IndexEntry>& entries) {
   absl::InlinedVector<bool, 6> is_dim_indexed(self.dim(), false);
-  for (int64_t d : indexed_dims) {
-    is_dim_indexed[d] = true;
-  }
-
   Indices permutation;
   permutation.reserve(self.dim());
-  for (int64_t i = 0; i < indexed_dims.size(); ++i) {
-    permutation.push_back(indexed_dims[i]);
+  for (int64_t i = 0; i < entries.size(); ++i) {
+    is_dim_indexed[entries[i].first_dim] = true;
+    permutation.push_back(entries[i].first_dim);
+    entries[i].first_dim = i;
   }
   for (int64_t dim = 0; dim < self.dim(); ++dim) {
     if (!is_dim_indexed[dim]) {
@@ -220,10 +161,10 @@ at::Tensor MoveIndicesToFront(const at::Tensor& self,
 //  in this grid corresponds to the index pair (idx0[i, 0], idx1[0, j]).
 //
 absl::StatusOr<Dimensions> GetIndexBroadcastShape(
-    const std::vector<at::Tensor>& index_tensors) {
+    absl::Span<const IndexEntry> entries) {
   Dimensions broadcast_shape;
-  for (int64_t i = 0; i < index_tensors.size(); ++i) {
-    const auto& index_tensor = index_tensors[i];
+  for (const IndexEntry& entry : entries) {
+    const at::Tensor& index_tensor = entry.tensor;
     if (broadcast_shape.empty()) {
       broadcast_shape = CopyIntVector(index_tensor.sizes());
     } else {
@@ -299,37 +240,6 @@ absl::StatusOr<Dimensions> GetValuesBroadcastShape(
   return values_broadcast_shape;
 }
 
-struct BooleanMaskInfo {
-  int64_t index_start_dim;
-  int64_t mask_dim;
-};
-
-// Returns mask info if the indices list contains a single boolean index tensor.
-std::optional<BooleanMaskInfo> GetSingleBooleanMaskInfo(
-    const c10::List<std::optional<at::Tensor>>& indices_list_opt) {
-  std::optional<BooleanMaskInfo> mask_info;
-  for (int64_t i = 0; i < indices_list_opt.size(); ++i) {
-    auto maybe_tensor = indices_list_opt[i];
-    if (!maybe_tensor.has_value() || !maybe_tensor.value().defined()) {
-      continue;
-    }
-    const auto& index_tensor = maybe_tensor.value();
-    if (index_tensor.scalar_type() == c10::ScalarType::Bool) {
-      if (mask_info.has_value()) {
-        // Only one boolean mask is allowed.
-        return std::nullopt;
-      }
-      mask_info = BooleanMaskInfo{
-          .index_start_dim = i,
-          .mask_dim = index_tensor.dim(),
-      };
-    } else {
-      return std::nullopt;
-    }
-  }
-  return mask_info;
-}
-
 // Returns true if the values tensor can be broadcast into self for a boolean
 // mask index_put lowering using stablehlo.select.
 //
@@ -340,13 +250,13 @@ std::optional<BooleanMaskInfo> GetSingleBooleanMaskInfo(
 // across the masked dimensions (i.e. any dimension in values corresponding to
 // a masked dimension in self must have size 1 or be omitted).
 bool CanUseSelectWithValues(const at::Tensor& self, const at::Tensor& values,
-                            int64_t index_start_dim, int64_t mask_dim) {
+                            const IndexEntry& mask) {
   Dimensions target_shape;
-  for (int64_t i = 0; i < index_start_dim; ++i) {
+  for (int64_t i = 0; i < mask.first_dim; ++i) {
     target_shape.push_back(self.size(i));
   }
   target_shape.push_back(1);
-  for (int64_t i = index_start_dim + mask_dim; i < self.dim(); ++i) {
+  for (int64_t i = mask.first_dim + mask.tensor.dim(); i < self.dim(); ++i) {
     target_shape.push_back(self.size(i));
   }
   return at::is_expandable_to(values.sizes(), target_shape);
@@ -361,21 +271,12 @@ bool CanUseSelectWithValues(const at::Tensor& self, const at::Tensor& values,
 // This function dispatches to the appropriate StableHLO implementation based
 // on the presence of a boolean mask in the indices.
 absl::Status IndexPutWithBooleanMask(const at::Tensor& self,
-                                     const at::Tensor& mask,
-                                     int64_t index_start_dim,
+                                     const IndexEntry& mask_entry,
                                      const at::Tensor& values,
                                      const bool accumulate, at::Tensor& out) {
-  int64_t self_dim = index_start_dim;
-  for (int64_t mask_dim = 0; mask_dim < mask.dim(); ++mask_dim) {
-    TT_RET_CHECK(self_dim < self.dim() &&
-                     mask.sizes()[mask_dim] == self.sizes()[self_dim],
-                 error::kInvalidArgument)
-        << "expected the shape of the mask at index " << mask_dim
-        << " to match the shape of the indexed tensor at index " << self_dim
-        << ", got mask shape " << mask.sizes() << " and indexed tensor shape "
-        << self.sizes();
-    self_dim++;
-  }
+  const int64_t index_start_dim = mask_entry.first_dim;
+  TT_ASSIGN_OR_RETURN(at::Tensor mask,
+                      MoveIndexToDevice(mask_entry.tensor, self.device()));
   TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=the op creates cache keys
                         // successfully.
       auto param_keys,
@@ -396,40 +297,34 @@ absl::Status IndexPutWithBooleanMask(const at::Tensor& self,
                            .op_param_cache_keys = std::move(param_keys)});
 }
 
-absl::Status IndexPut(
-    at::Tensor& self,
-    const c10::List<std::optional<at::Tensor>>& indices_list_opt,
-    const at::Tensor& values, const bool accumulate, at::Tensor& out) {
-  Indices indexed_dims;
-  TT_ASSIGN_OR_RETURN(
-      std::vector<at::Tensor> index_tensors,
-      ConvertBooleanIndicesToPositional(self, indices_list_opt, indexed_dims));
+absl::Status IndexPut(at::Tensor& self, absl::Span<const IndexEntry> entries,
+                      const at::Tensor& values, const bool accumulate,
+                      at::Tensor& out) {
+  TT_ASSIGN_OR_RETURN(std::vector<IndexEntry> positional_entries,
+                      ConvertBooleanIndicesToPositional(self, entries));
+  ABSL_VLOG(1) << "[IndexPut] indexed_dims: "
+               << absl::StrJoin(GetFirstDims(positional_entries), ", ");
 
   TT_RETURN_IF_ERROR(
-      ResolveNegativeIndices(index_tensors, self.sizes(), indexed_dims));
+      ResolveNegativeIndices(absl::MakeSpan(positional_entries), self.sizes()));
 
-  TT_RET_CHECK(!indexed_dims.empty(), error::kInvalidArgument)
+  // `ParseIndexEntries` guarantees at least one defined index, but 0-d masks
+  // expand to no index tensors. This is reached when every defined index is a
+  // 0-d mask and the `IndexPutWithBooleanMask` path was not taken.
+  TT_RET_CHECK(!positional_entries.empty(), error::kInvalidArgument)
       << "indices must be specified";
 
-  TT_RET_CHECK(index_tensors.size() <= self.dim(), error::kInvalidArgument)
-      << "expected at most " << self.dim()
-      << " indices for tensor of dimension " << self.dim() << ", got "
-      << index_tensors.size()
-      << " index tensors after expanding boolean indices";
-
-  int64_t index_start_dim = indexed_dims.front();
-  int64_t index_end_dim = indexed_dims.back();
-  if (!AreIndicesContiguous(indexed_dims)) {
-    self = MoveIndicesToFront(self, index_tensors, indexed_dims);
+  if (!AreIndicesContiguous(positional_entries)) {
+    self = MoveIndicesToFront(self, positional_entries);
     out = self;
     ABSL_VLOG(1) << "[IndexPut] self after moving indices to front: "
                  << self.sizes();
-    index_start_dim = 0;
-    index_end_dim = index_tensors.size() - 1;
   }
+  const int64_t index_start_dim = positional_entries.front().first_dim;
+  const int64_t index_end_dim = positional_entries.back().first_dim;
 
   TT_ASSIGN_OR_RETURN(Dimensions index_broadcast_shape,
-                      GetIndexBroadcastShape(index_tensors));
+                      GetIndexBroadcastShape(positional_entries));
   ABSL_VLOG(1) << "[IndexPut] indices broadcast shape: ("
                << absl::StrJoin(index_broadcast_shape, ", ")
                << "), index_start_dim: " << index_start_dim
@@ -443,10 +338,10 @@ absl::Status IndexPut(
                << absl::StrJoin(values_broadcast_shape, ", ") << ")";
 
   std::vector<at::Tensor> all_tensors;
+  all_tensors.reserve(positional_entries.size() + 2);
   all_tensors.push_back(self);
-  for (int64_t i = 0; i < index_tensors.size(); ++i) {
-    const auto& tensor = index_tensors[i];
-    all_tensors.push_back(tensor);
+  for (IndexEntry& entry : positional_entries) {
+    all_tensors.push_back(std::move(entry.tensor));
   }
   all_tensors.push_back(values);
 
@@ -489,10 +384,12 @@ absl::Status IndexPutHelper(
   ABSL_VLOG(1) << "[IndexPut] values: " << values.sizes();
   ABSL_VLOG(1) << "[IndexPut] indices_list_opt: " << indices_list_opt.size();
 
-  TT_RET_CHECK(indices_list_opt.size() <= self.dim(), error::kInvalidArgument)
-      << "expected at most " << self.dim()
-      << " indices for tensor of dimension " << self.dim() << ", got "
-      << indices_list_opt.size();
+  // Like PyTorch's `index_put_`, this counts list entries (a 0-d mask counts as
+  // one) in addition to the dimensions checked by `ParseIndexEntries` (a 0-d
+  // mask consumes none). `index` intentionally doesn't have this check.
+  TT_RET_CHECK(indices_list_opt.size() <= self.dim(), error::kIndexError)
+      << "too many indices for tensor of dimension " << self.dim() << " (got "
+      << indices_list_opt.size() << ")";
 
   TT_RET_CHECK(values.scalar_type() == self.scalar_type(),
                error::kInvalidArgument)
@@ -500,12 +397,11 @@ absl::Status IndexPutHelper(
       << ToString(values.scalar_type()) << " and "
       << ToString(self.scalar_type());
 
-  TT_RETURN_IF_ERROR(ValidateIndicesType(indices_list_opt));
+  TT_ASSIGN_OR_RETURN(std::vector<IndexEntry> entries,
+                      ParseIndexEntries(self, indices_list_opt));
 
-  const auto mask_info = GetSingleBooleanMaskInfo(indices_list_opt);
-  if (mask_info.has_value() &&
-      CanUseSelectWithValues(self, values, mask_info->index_start_dim,
-                             mask_info->mask_dim)) {
+  if (entries.size() == 1 && entries[0].is_mask &&
+      CanUseSelectWithValues(self, values, entries[0])) {
     // For scenarios where the indices contain a boolean mask and values can be
     // broadcast to self without varying across the masked dimensions, we can
     // use the more efficient stablehlo.select to implement the index_put
@@ -513,11 +409,9 @@ absl::Status IndexPutHelper(
     //
     // self[mask] = broadcastable_value
     //
-    return IndexPutWithBooleanMask(
-        self, indices_list_opt[mask_info->index_start_dim].value(),
-        mask_info->index_start_dim, values, accumulate, out);
+    return IndexPutWithBooleanMask(self, entries[0], values, accumulate, out);
   }
-  return IndexPut(self, indices_list_opt, values, accumulate, out);
+  return IndexPut(self, entries, values, accumulate, out);
 }
 
 }  // namespace

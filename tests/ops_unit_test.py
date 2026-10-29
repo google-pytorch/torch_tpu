@@ -7438,6 +7438,258 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(boolean_indexing)
 
+  # PyTorch allows indexing a device tensor with index tensors that live on
+  # CPU (`dev_tensor[{cpu,dev}_tensor]`), so the index tensors are deliberately
+  # kept on CPU here while `self` is moved to the device under test.
+  @parameterized.named_parameters(
+      (
+          "1d_bool_mask",
+          lambda: torch.randn(4, 3),
+          lambda: torch.tensor([True, False, True, True]),
+          lambda x, i: x[i],
+      ),
+      (
+          "all_true_1d_bool_mask",
+          lambda: torch.arange(4),
+          lambda: torch.ones(4, dtype=torch.bool),
+          lambda x, i: x[i],
+      ),
+      (
+          "all_false_1d_bool_mask",
+          lambda: torch.randn(4, 3),
+          lambda: torch.zeros(4, dtype=torch.bool),
+          lambda x, i: x[i],
+      ),
+      (
+          "1d_bool_mask_with_leading_slice",
+          lambda: torch.randn(2, 5, 3),
+          lambda: torch.tensor([False, True, True, False, True]),
+          lambda x, i: x[:, i],
+      ),
+      (
+          "2d_bool_mask_with_leading_slice",
+          lambda: torch.randn(2, 3, 4),
+          lambda: torch.tensor([
+              [True, False, True, False],
+              [False, False, True, True],
+              [True, True, False, False],
+          ]),
+          lambda x, i: x[:, i],
+      ),
+      (
+          "non_contiguous_2d_bool_mask",
+          lambda: torch.randn(4, 3, 2),
+          lambda: torch.tensor([
+              [True, False, True, False],
+              [False, False, True, True],
+              [True, True, False, False],
+          ]).t(),
+          lambda x, i: x[i],
+      ),
+      (
+          "0d_bool_mask",
+          lambda: torch.randn(2, 3),
+          lambda: torch.tensor(True),
+          lambda x, i: x[i],
+      ),
+      (
+          "empty_bool_mask",
+          lambda: torch.randn(0, 3),
+          lambda: torch.zeros(0, dtype=torch.bool),
+          lambda x, i: x[i],
+      ),
+      (
+          "1d_bool_mask_aten_index_out",
+          lambda: torch.randn(4, 3),
+          lambda: torch.tensor([True, False, True, True]),
+          lambda x, i: torch.ops.aten.index.Tensor_out(
+              x, [i], out=torch.empty(0, dtype=x.dtype, device=x.device)
+          ),
+      ),
+      (
+          "long_indices",
+          lambda: torch.randn(5, 3),
+          lambda: torch.tensor([2, 0, -1, 2]),
+          lambda x, i: x[i],
+      ),
+      (
+          "long_indices_with_leading_slice",
+          lambda: torch.randn(2, 5, 3),
+          lambda: torch.tensor([[4, 0], [1, -2]]),
+          lambda x, i: x[:, i],
+      ),
+      (
+          "int_indices",
+          lambda: torch.randn(5, 3),
+          lambda: torch.tensor([3, 1], dtype=torch.int32),
+          lambda x, i: x[i],
+      ),
+  )
+  def test_index_with_cpu_indices(self, x_fn, index_fn, index_op):
+    x = x_fn()
+    index = index_fn()
+    self.assert_close_tpu_vs_cpu(lambda device: index_op(x.to(device), index))
+
+  def test_index_with_mixed_cpu_and_device_indices(self):
+    x = torch.randn(4, 5, 3)
+    cpu_index = torch.tensor([3, 0, -1])
+    device_index = torch.tensor([1, 4, 2])
+    self.assert_close_tpu_vs_cpu(
+        lambda device: x.to(device)[cpu_index, device_index.to(device)]
+    )
+
+  @parameterized.named_parameters(
+      (
+          "bool_mask_broadcast_value",
+          lambda: torch.randn(4, 3),
+          lambda: [torch.tensor([True, False, True, True])],
+          lambda: torch.tensor(2.5),
+      ),
+      (
+          "bool_mask_per_row_values",
+          lambda: torch.randn(4, 3),
+          lambda: [torch.tensor([True, False, True, True])],
+          lambda: torch.randn(3, 3),
+      ),
+      (
+          "bool_mask_with_leading_slice",
+          lambda: torch.randn(2, 4, 3),
+          lambda: [None, torch.tensor([True, False, True, True])],
+          lambda: torch.randn(2, 3, 3),
+      ),
+      (
+          "2d_bool_mask",
+          lambda: torch.randn(3, 4),
+          lambda: [
+              torch.tensor([
+                  [True, False, True, False],
+                  [False, False, True, True],
+                  [True, True, False, False],
+              ])
+          ],
+          lambda: torch.randn(6),
+      ),
+      (
+          "non_contiguous_2d_bool_mask_per_element_values",
+          lambda: torch.randn(4, 3),
+          lambda: [
+              torch.tensor([
+                  [True, False, True, False],
+                  [False, False, True, True],
+                  [True, True, False, False],
+              ]).t()
+          ],
+          lambda: torch.randn(6),
+      ),
+      (
+          "long_indices",
+          lambda: torch.randn(5, 3),
+          lambda: [torch.tensor([-1, 0, 2])],
+          lambda: torch.randn(3, 3),
+      ),
+      (
+          "long_indices_with_leading_slice",
+          lambda: torch.randn(2, 5),
+          lambda: [None, torch.tensor([4, 1])],
+          lambda: torch.randn(2, 2),
+      ),
+      (
+          "multiple_long_indices",
+          lambda: torch.randn(4, 5),
+          lambda: [torch.tensor([0, 3]), torch.tensor([-1, 2])],
+          lambda: torch.randn(2),
+      ),
+      (
+          "int_indices",
+          lambda: torch.randn(5, 3),
+          lambda: [torch.tensor([3, -1], dtype=torch.int32)],
+          lambda: torch.randn(2, 3),
+      ),
+      (
+          "empty_bool_mask_broadcast_value",
+          lambda: torch.randn(0, 3),
+          lambda: [torch.zeros(0, dtype=torch.bool)],
+          lambda: torch.tensor(2.5),
+      ),
+      (
+          "empty_bool_mask_per_row_values",
+          lambda: torch.randn(0, 3),
+          lambda: [torch.zeros(0, dtype=torch.bool)],
+          lambda: torch.randn(0, 3),
+      ),
+      (
+          "bool_mask_and_long_index",
+          lambda: torch.randn(4, 5),
+          lambda: [
+              torch.tensor([True, False, True, True]),
+              torch.tensor([0, 4, -2]),
+          ],
+          lambda: torch.randn(3),
+      ),
+  )
+  def test_index_put_with_cpu_indices(self, x_fn, indices_fn, values_fn):
+    x = x_fn()
+    indices = indices_fn()
+    values = values_fn()
+    for accumulate in (False, True):
+      with self.subTest(accumulate=accumulate):
+        # `x` is cloned since `x.to("cpu")` aliases `x`, which `index_put_`
+        # would otherwise modify in place. `torch.ops.aten.index_put_` is used
+        # since the `Tensor.index_put_` Python binding rejects `None` indices.
+        self.assert_close_tpu_vs_cpu(
+            lambda device, accumulate=accumulate: torch.ops.aten.index_put_(
+                x.clone().to(device), indices, values.to(device), accumulate
+            )
+        )
+
+  # CPU PyTorch only supports a 0-d bool mask in `index_put_` through its
+  # `masked_fill_` fast path (scalar value, `accumulate=False`); otherwise its
+  # CPU index kernel hits an internal assert, so only that case is compared.
+  @parameterized.parameters(True, False)
+  def test_index_put_with_cpu_0d_bool_mask(self, mask_value):
+    x = torch.randn(2, 3)
+    mask = torch.tensor(mask_value)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.ops.aten.index_put_(
+            x.clone().to(device), [mask], torch.tensor(2.5).to(device), False
+        )
+    )
+
+  @parameterized.named_parameters(
+      (
+          "long_indices",
+          lambda: torch.randn(4, 5),
+          lambda: torch.tensor([0, 3]),
+          lambda: torch.tensor([-1, 2]),
+          lambda: torch.randn(2),
+      ),
+      (
+          "bool_mask_and_long_index",
+          lambda: torch.randn(4, 5),
+          lambda: torch.tensor([True, False, True, True]),
+          lambda: torch.tensor([0, 4, -2]),
+          lambda: torch.randn(3),
+      ),
+  )
+  def test_index_put_with_mixed_cpu_and_device_indices(
+      self, x_fn, cpu_index_fn, device_index_fn, values_fn
+  ):
+    x = x_fn()
+    cpu_index = cpu_index_fn()
+    device_index = device_index_fn()
+    values = values_fn()
+    for accumulate in (False, True):
+      with self.subTest(accumulate=accumulate):
+        self.assert_close_tpu_vs_cpu(
+            lambda device, accumulate=accumulate: x.clone()
+            .to(device)
+            .index_put_(
+                [cpu_index, device_index.to(device)],
+                values.to(device),
+                accumulate=accumulate,
+            )
+        )
+
   def test_is_nonzero(self):
     def assert_is_nonzero_equal_on_cpu_vs_tpu(tensor: torch.Tensor):
       cpu_result = torch.is_nonzero(tensor.to("cpu"))
@@ -22121,6 +22373,19 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
                   f" {actual=}"
               ),
           )
+
+  def test_index_backward_with_cpu_mask(self):
+    # The backward of `index` scatters the gradient with
+    # `_index_put_impl_(accumulate=True)` using the saved CPU mask.
+    x = torch.randn(4, 3)
+    mask = torch.tensor([True, False, True, True])
+
+    def index_grad(device):
+      x_device = x.to(device).detach().requires_grad_()
+      x_device[mask].pow(2).sum().backward()
+      return x_device.grad
+
+    self.assert_close_tpu_vs_cpu(index_grad)
 
   def test_index_put_boolean(self):
     # Case 1: Standard 1D boolean advanced indexing
