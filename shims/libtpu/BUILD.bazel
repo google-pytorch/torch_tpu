@@ -27,12 +27,6 @@ alias(
 
 alias(
     name = "pypi_libtpu_whl",
-    actual = select({
-        "//:wheel_test_3_11": "@pypi_libtpu_311//:whl",
-        "//:wheel_test_3_12": "@pypi_libtpu_312//:whl",
-        "//:wheel_test_3_13": "@pypi_libtpu_313//:whl",
-        "//:wheel_test_3_14": "@pypi_libtpu_314//:whl",
-        "//conditions:default": "@pypi_libtpu_314//:whl",
-    }),
+    actual = "@pypi//libtpu:whl",
     visibility = ["//visibility:public"],
 )

@@ -458,8 +458,10 @@ def _test_is_backend_dep(env):
         "@com_google_absl//absl/status",
         "@eigen_archive//:eigen3",
         "@com_googlesource_code_re2//:re2",
-        # Non-torch package in the shared @pypi hub -> still backend.
+        # Non-torch package in the shared @pypi hub -> still backend, even when
+        # its package name starts with "torch".
         "@pypi//numpy:numpy_headers",
+        "@pypi//torchax",
         # Classification keys on the known torch sources, not on the substring
         # "torch": a backend repo whose label happens to contain it is not torch.
         "@backend_with_torch_in_name//:lib",
@@ -471,9 +473,12 @@ def _test_is_backend_dep(env):
     for dep in [
         "//shims/torch:torch_headers",
         "@local_torch//:libc10",
-        "@pypi_torch_2_12_1_312//:libc10",
-        "@pypi_torch_312//:libtorch_cpu",
-        "//shims/torch:torch_headers",
+        "@pypi_torch_2_12_1//torch:libc10",
+        "@pypi_cuda//torch:libc10",
+        # Split "@" + "pypi//" so Copybara's reversible @pypi// label
+        # rewrite does not fail on a raw @pypi// literal in internal sources.
+        "@" + "pypi//torch:libtorch_cpu",
+        "@" + "pypi//torch",
         "//csrc/common:dtype",
         ":a_local_target",
     ]:

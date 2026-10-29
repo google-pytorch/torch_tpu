@@ -77,6 +77,12 @@ def define_torch_local(name, is_source_mode = True):
                 "build/**/*.tcc",
                 "build/**/*.inc",
             ], venv_mode = True),
+            # Exclude PyTorch's bundled google/protobuf headers from declared
+            # inputs so they do not shadow @com_google_protobuf in
+            # sandboxed/remote builds.
+            exclude = py_library_source_mapping([
+                "torch/include/google/protobuf/**",
+            ], venv_mode = True),
         ),
         includes = py_library_source_mapping([
             "include",  # Standard install layout
