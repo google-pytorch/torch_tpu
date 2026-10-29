@@ -480,14 +480,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
     },
     # Tolerance overrides justified for performance: native bfloat16/float16
     # pooling computations avoid costly intermediate upcasts to float32.
-    "nn.functional.adaptive_avg_pool2d": {
-        torch.bfloat16: {"rtol": 1.8e-2, "atol": 2.5e-2},
-        torch.float16: {"rtol": 2.5e-3, "atol": 4.5e-3},
-    },
-    "nn.functional.adaptive_avg_pool3d": {
-        torch.bfloat16: {"rtol": 1.8e-2, "atol": 2.0e-2},
-        torch.float16: {"rtol": 3.5e-3, "atol": 3.0e-3},
-    },
     "nn.functional.avg_pool1d": {
         torch.float16: {"rtol": 1.9e-3, "atol": 7.4e-4},
     },
@@ -797,14 +789,6 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
     },
     # Tolerance overrides justified for performance: native bfloat16/float16
     # pooling computations avoid costly intermediate upcasts to float32.
-    "nn.functional.adaptive_avg_pool2d": {
-        torch.bfloat16: {"rtol": 1.8e-2, "atol": 2.5e-2},
-        torch.float16: {"rtol": 2.5e-3, "atol": 4.5e-3},
-    },
-    "nn.functional.adaptive_avg_pool3d": {
-        torch.bfloat16: {"rtol": 1.8e-2, "atol": 2.0e-2},
-        torch.float16: {"rtol": 3.5e-3, "atol": 3.0e-3},
-    },
     "nn.functional.avg_pool2d": {
         torch.bfloat16: {"rtol": 3.1e-2, "atol": 4.5e-2},
         torch.float16: {"rtol": 3.1e-3, "atol": 4.1e-3},
