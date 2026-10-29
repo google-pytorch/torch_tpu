@@ -199,9 +199,19 @@ absl::StatusOr<LayerNormShloResults> BuildLayerNormShlo(
       mlir::stablehlo::Mul(input_minus_mean, rstd_broadcasted);
 
   // Compute affine output by multiplying normalized input by gamma and adding
-  // beta.
+  // beta. Under autocast, a bf16/f16 input can come with fp32 gamma and beta;
+  // then apply them in fp32 and cast once at the end, as the CPU kernel does.
+  const auto is_f32 = [](const std::optional<mlir::MlirOp>& op) {
+    return !op.has_value() || GetTensorTypeOrDie(*op).getElementType().isF32();
+  };
+  const bool mixed = (element_type.isBF16() || element_type.isF16()) &&
+                     (weight_op.has_value() || bias_op.has_value()) &&
+                     is_f32(weight_op) && is_f32(bias_op);
+  const mlir::RankedTensorType affine_type =
+      mixed ? stats_tensor_type : input_type;
+
   mlir::MlirOp normalized_input_casted = normalized_input;
-  if (stats_type != element_type) {
+  if (stats_type != element_type && !mixed) {
     normalized_input_casted =
         mlir::stablehlo::ConvertElementType(normalized_input, element_type);
   }
@@ -209,7 +219,7 @@ absl::StatusOr<LayerNormShloResults> BuildLayerNormShlo(
   mlir::MlirOp normalized_input_times_weight = normalized_input_casted;
   if (weight_op.has_value()) {
     mlir::MlirOp weight_broadcasted =
-        mlir::stablehlo::BroadcastInDim(input_type, *weight_op, reduction_axes);
+        mlir::stablehlo::BroadcastInDim(affine_type, *weight_op, reduction_axes);
     normalized_input_times_weight =
         mlir::stablehlo::Mul(normalized_input_casted, weight_broadcasted);
   }
@@ -217,10 +227,14 @@ absl::StatusOr<LayerNormShloResults> BuildLayerNormShlo(
   mlir::MlirOp affine_output = normalized_input_times_weight;
   if (bias_op.has_value()) {
     mlir::MlirOp bias_broadcasted =
-        mlir::stablehlo::BroadcastInDim(input_type, *bias_op, reduction_axes);
+        mlir::stablehlo::BroadcastInDim(affine_type, *bias_op, reduction_axes);
 
     affine_output =
         mlir::stablehlo::Add(normalized_input_times_weight, bias_broadcasted);
+  }
+  if (mixed) {
+    affine_output =
+        mlir::stablehlo::ConvertElementType(affine_output, element_type);
   }
 
   // mean and rstd are returned without trailing size-1 dimensions.
@@ -369,10 +383,10 @@ absl::StatusOr<LayerNormBackwardShloResults> BuildLayerNormBackwardShlo(
   dx = mlir::stablehlo::Subtract(dx, x_hat_a2);
   dx = mlir::stablehlo::Mul(dx, rstd_bcast);
 
+  // dgamma and dbeta stay in the accumulation type; the caller picks their
+  // dtype.
   if (needs_upcast) {
     dx = mlir::stablehlo::ConvertElementType(dx, orig_elem_type);
-    dgamma = mlir::stablehlo::ConvertElementType(dgamma, orig_elem_type);
-    dbeta = mlir::stablehlo::ConvertElementType(dbeta, orig_elem_type);
   }
 
   return LayerNormBackwardShloResults{
