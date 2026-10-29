@@ -37,7 +37,6 @@ except (ImportError, ModuleNotFoundError):
 RowParallelLinear = layers.RowParallelLinear
 ColumnParallelLinear = layers.ColumnParallelLinear
 RANDOM_SEED = 42
-WORLD_SIZE = 8
 BATCH_SIZE = 64
 MODEL_DIM = 128
 
@@ -122,8 +121,6 @@ def _copy_weights_to_tp_model(
 
 
 class FairscaleTest(continuous_test_utils.TpuMultiProcContinuousTest):
-
-  world_size = WORLD_SIZE
 
   @classmethod
   def _init_pg(cls, rank: int, world_size: int, rdvz_file: str | None) -> None:

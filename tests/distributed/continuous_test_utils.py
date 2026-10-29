@@ -83,7 +83,8 @@ class TpuMultiProcContinuousTest(
 ):
   """Runs each test on `world_size` TPU workers that persist across tests.
 
-  Subclasses must set `world_size`.
+  `world_size` defaults to the number of TPU chips on the host; the class is
+  skipped if none are found.
   """
 
   @classmethod
