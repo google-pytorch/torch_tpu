@@ -21,9 +21,10 @@ import functools
 import os
 import sys
 import time
-from typing import Any, Callable, Sequence, TextIO, TypeAlias
+from typing import Any, Callable, Sequence, TYPE_CHECKING, TextIO, TypeAlias
 
 import torch
+from torch import torch_version
 from torch.utils import _pytree
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import export as torch_tpu_export
@@ -596,37 +597,53 @@ class ActivationTracer(contextlib.ContextDecorator):
     return False
 
 
-# We represent version numbers as `tuple[int, ...]` rather than
-# `packaging.version.Version` to avoid adding an external `packaging`
-# dependency to the `torch_tpu` runtime library and every test `BUILD` target
-# that compares versions.
-def parse_version(version: str) -> tuple[int, ...]:
-  """Parses the leading numeric components of a version string into a tuple.
+if TYPE_CHECKING:
 
-  Stops at the first non-numeric component so pre-release / nightly suffixes
-  (e.g. "0.0.41.dev20260101") compare by their numeric prefix.
+  class TorchVersion(torch_version.TorchVersion):
+    """Type-checking view of `torch.torch_version.TorchVersion`.
+
+    `torch.torch_version.TorchVersion` attaches its comparison methods with
+    `setattr` at runtime, so static type checkers only see the `str` ones and
+    reject comparisons against tuples, e.g. `get_torch_version() < (2, 12)`.
+    """
+
+    def __lt__(self, other: Any) -> bool:
+      ...
+
+    def __le__(self, other: Any) -> bool:
+      ...
+
+    def __gt__(self, other: Any) -> bool:
+      ...
+
+    def __ge__(self, other: Any) -> bool:
+      ...
+
+else:
+  TorchVersion = torch_version.TorchVersion
+
+
+def parse_version(version: str) -> TorchVersion:
+  """Parses a PEP 440 version string into a TorchVersion of its base version.
+
+  Drops pre-release, post-release, dev and local segments so nightly and
+  internal builds (e.g. "0.0.41.dev20260101" or "2.15.0a0+google3") compare by
+  their epoch and release numbers.
 
   Args:
-    version: A version string such as "0.0.41".
+    version: A PEP 440 version string such as "0.0.41".
 
   Returns:
-    The leading numeric components, e.g. (0, 0, 41).
+    The base version as a TorchVersion, e.g. TorchVersion("0.0.41").
+
+  Raises:
+    ValueError: If `version` is not a valid PEP 440 version.
   """
-  components = []
-  for part in version.split("."):
-    digits = ""
-    for ch in part:
-      if not ch.isdigit():
-        break
-      digits += ch
-    if not digits:
-      break
-    components.append(int(digits))
-  return tuple(components)
+  return TorchVersion(torch_version.Version(version).base_version)
 
 
-def libtpu_version() -> tuple[int, ...] | None:
-  """Returns the parsed version tuple of libtpu in OSS, or None in google3."""
+def libtpu_version() -> TorchVersion | None:
+  """Returns the parsed version of libtpu in OSS, or None in google3."""
   try:
     import libtpu  # pylint: disable=g-import-not-at-top  # pyrefly: ignore[missing-import]
   except ImportError:
@@ -637,8 +654,8 @@ def libtpu_version() -> tuple[int, ...] | None:
   return parse_version(version)
 
 
-def get_torch_version() -> tuple[int, ...]:
-  """Returns the parsed version tuple of torch."""
+def get_torch_version() -> TorchVersion:
+  """Returns the parsed version of torch."""
   return parse_version(torch.__version__)
 
 
