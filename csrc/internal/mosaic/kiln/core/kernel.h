@@ -23,6 +23,7 @@
 #include <optional>
 #include <string>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 
 #include "absl/functional/function_ref.h"
@@ -46,8 +47,9 @@ int GridRank();
 
 // Access to kernel ref arguments by position (used by `CreateKernel` to unpack
 // arguments into the user callback, and usable inside `IndexMap::IndexFn` for
-// `ScalarPrefetch`).
-Ref ScalarPrefetch(int i);
+// `ScalarPrefetch`). Scalar-prefetch operands are always in SMEM; the memory
+// space of the others depends on their spec (see `Ref::As`).
+SmemRef ScalarPrefetch(int i);
 Ref In(int i);
 Ref Out(int i);
 Ref Scratch(int i);
@@ -83,7 +85,8 @@ class Kernel {
 };
 
 // Low-level entry point taking an assembled `KernelSpec`. Prefer `CreateKernel`
-// below, which unpacks each spec into a `Ref` parameter on the body callback.
+// below, which unpacks each spec into a typed ref parameter on the body
+// callback.
 //
 // `body` is invoked synchronously before `BuildKernel` returns and is not
 // retained afterwards, so capturing local variables by reference is safe.
@@ -97,29 +100,35 @@ inline auto RegisterSpec(KernelSpec& k, const ScalarPrefetchSpec& s) {
   k.scalar_prefetch.push_back(s);
   return [idx] { return ScalarPrefetch(idx); };
 }
-inline auto RegisterSpec(KernelSpec& k, const InSpec& s) {
+template <MemorySpace kSpace>
+auto RegisterSpec(KernelSpec& k,
+                  const BasicBlockSpec<BlockRole::kIn, kSpace>& s) {
   int idx = k.in_specs.size();
-  k.in_specs.push_back({s.shape, s.map, s.space});
-  return [idx] { return In(idx); };
+  k.in_specs.push_back({s.shape, s.map, kSpace});
+  return [idx] { return In(idx).As<TypedRef<kSpace>>(); };
 }
-inline auto RegisterSpec(KernelSpec& k, const OutSpec& s) {
+template <MemorySpace kSpace>
+auto RegisterSpec(KernelSpec& k,
+                  const BasicBlockSpec<BlockRole::kOut, kSpace>& s) {
   int idx = k.out_specs.size();
-  k.out_specs.push_back({s.shape, s.map, s.space});
-  return [idx] { return Out(idx); };
+  k.out_specs.push_back({s.shape, s.map, kSpace});
+  return [idx] { return Out(idx).As<TypedRef<kSpace>>(); };
 }
-inline auto RegisterSpec(KernelSpec& k, const ScratchSpec& s) {
+template <MemorySpace kSpace>
+auto RegisterSpec(KernelSpec& k, const BasicScratchSpec<kSpace>& s) {
   int idx = k.scratch.size();
-  k.scratch.push_back(s);
-  return [idx] { return Scratch(idx); };
+  k.scratch.push_back({s.shape, kSpace});
+  return [idx] { return Scratch(idx).As<TypedRef<kSpace>>(); };
 }
 template <typename Spec>
 auto RegisterSpec(KernelSpec& k, const std::optional<Spec>& s) {
   using Resolver = decltype(RegisterSpec(k, *s));
+  using Result = std::invoke_result_t<const Resolver&>;
   std::optional<Resolver> inner;
   if (s.has_value()) {
     inner.emplace(RegisterSpec(k, *s));
   }
-  return [inner = std::move(inner)]() -> std::optional<Ref> {
+  return [inner = std::move(inner)]() -> std::optional<Result> {
     if (!inner.has_value()) return std::nullopt;
     return (*inner)();
   };
@@ -148,10 +157,14 @@ absl::StatusOr<Kernel> CreateKernelImpl(GridSpec grid,
 // Builds a Mosaic kernel from a `GridSpec`, a variadic list of operand specs
 // (`ScalarPrefetchSpec`, `InSpec`, `OutSpec`, `ScratchSpec`, or
 // `std::optional<...>` of any of those), and a trailing body callback whose
-// parameters receive the corresponding `Ref` (or `std::optional<Ref>`) values:
+// parameters receive the corresponding refs, typed by the memory space of their
+// spec (`SmemRef` for scalar prefetch, `VmemRef` for default `InSpec` /
+// `OutSpec` / `ScratchSpec`, `HbmRef` for `InSpec::Hbm(...)`, ...), or
+// `std::optional` of those:
 //
 //   CreateKernel(grid_spec, in0, in1, opt_mask, out0, scratch0,
-//                [](Ref a, Ref b, std::optional<Ref> mask, Ref c, Ref acc) {
+//                [](VmemRef a, VmemRef b, std::optional<VmemRef> mask,
+//                   VmemRef c, VmemRef acc) {
 //                  ...
 //                });
 //

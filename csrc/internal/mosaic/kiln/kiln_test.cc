@@ -80,18 +80,46 @@ Matcher<const absl::StatusOr<Kernel>&> IsOkAndMatchesIr(
   return IsOkAndHolds(MatchesIr(pattern));
 }
 
-// Copy assignment rebinds a `Ref`; memory is only accessed through `Load` and
-// `Store`. A `Ref` cannot be assigned from or converted to a value.
+// Refs are cheap handles; copy assignment rebinds them. Memory is only
+// accessed through `Load` and `Store`, so a ref cannot be assigned from or
+// converted to a value.
+static_assert(std::is_trivially_copyable_v<Ref>);
+static_assert(std::is_trivially_copyable_v<VmemRef>);
 static_assert(std::is_copy_assignable_v<Ref>);
+static_assert(std::is_copy_assignable_v<VmemRef>);
 static_assert(!std::is_assignable_v<Ref&, Tile>);
 static_assert(!std::is_assignable_v<Ref&, Scalar>);
+static_assert(!std::is_assignable_v<VmemRef&, Tile>);
+static_assert(!std::is_assignable_v<SmemRef&, Scalar>);
 static_assert(!std::is_constructible_v<Tile, Ref>);
 static_assert(!std::is_constructible_v<Scalar, Ref>);
+static_assert(!std::is_constructible_v<Tile, VmemRef>);
+static_assert(!std::is_constructible_v<Scalar, SmemRef>);
 
-// `Load` loads a `Tile` and `LoadScalar` loads a `Scalar`.
+// Typed refs convert implicitly to `Ref`, but not to each other or back (that
+// needs the checked `Ref::As`).
+static_assert(std::is_convertible_v<VmemRef, Ref>);
+static_assert(std::is_convertible_v<SmemRef, Ref>);
+static_assert(std::is_convertible_v<HbmRef, Ref>);
+static_assert(!std::is_convertible_v<Ref, VmemRef>);
+static_assert(!std::is_convertible_v<VmemRef, SmemRef>);
+static_assert(!std::is_convertible_v<HbmRef, VmemRef>);
+// Nothing can rebind a typed ref through a common base.
+static_assert(!std::is_assignable_v<internal::RefBase&, SmemRef>);
+static_assert(!std::is_assignable_v<ValueBase&, SmemRef>);
+
+// The memory space of a typed ref determines what `Load` returns.
+static_assert(std::is_same_v<decltype(Load(std::declval<VmemRef>())), Tile>);
+static_assert(std::is_same_v<decltype(Load(std::declval<SmemRef>())), Scalar>);
+// `Load` of an untyped ref loads a `Tile` and `LoadScalar` loads a `Scalar`.
 static_assert(std::is_same_v<decltype(Load(std::declval<Ref>())), Tile>);
 static_assert(
     std::is_same_v<decltype(LoadScalar(std::declval<Ref>())), Scalar>);
+
+// Slicing preserves the memory space.
+static_assert(
+    std::is_same_v<decltype(std::declval<VmemRef>()(0, all)), VmemRef>);
+static_assert(std::is_same_v<decltype(std::declval<Ref>()(0, all)), Ref>);
 
 // out[i, j] += a[i, k] @ b[k, j], with K as the innermost ("arbitrary") grid
 // axis and an f32 accumulator in scratch.
@@ -320,8 +348,7 @@ TEST(KilnTest, LiteralOverloads) {
 TEST(KilnTest, ScalarFloatOperations) {
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "scalar_float_ops", .grid = {1}},
-      InSpec{.shape = f32(32, 128), .space = MemorySpace::kSmem},
-      OutSpec{.shape = f32(32, 128), .space = MemorySpace::kSmem},
+      InSpec::Smem(f32(32, 128)), OutSpec::Smem(f32(32, 128)),
       [](Ref in, Ref out) {
         Scalar sf = F32(2.5);
         EXPECT_TRUE(sf.dtype().IsFloat());
@@ -382,6 +409,20 @@ TEST(KilnTest, ScalarFloatOperations) {
     CHECK:         %[[OUT_SQ:.*]] = tpu.memref_squeeze %[[OUT_SLICE]]
     CHECK:         memref.store %[[RES]], %[[OUT_SQ]][] : memref<f32, #tpu.memory_space<smem>>
   )"));
+}
+
+TEST(KilnDeathTest, SmemLoadAndStoreRequire0dRefs) {
+  ASSERT_THAT(
+      CreateKernel(GridSpec{.name = "smem_rank_errors", .grid = {1}},
+                   InSpec::Smem(f32(32, 128)), OutSpec::Smem(f32(32, 128)),
+                   [](SmemRef in, SmemRef out) {
+                     EXPECT_DEATH(static_cast<void>(Load(in)),
+                                  "Load\\(\\) of a Scalar requires a 0-D ref");
+                     EXPECT_DEATH(Store(out, F32(1.0)),
+                                  "Store\\(\\) of a Scalar requires a 0-D ref");
+                     Store(out(0, 0), Load(in(0, 0)));
+                   }),
+      IsOk());
 }
 
 // The same integer hash written once and applied to both a Scalar and a Tile.
@@ -1087,12 +1128,8 @@ TEST(KilnDeathTest, ScalarMismatchedTypesFail) {
 
         EXPECT_DEATH(f_in(0, 0, 0), "Too many slice indices");
         EXPECT_DEATH(f_in(0, Slice(0, 0)), "Slice size must be positive");
-        EXPECT_DEATH(static_cast<void>(LoadScalar(f_in)),
-                     "LoadScalar\\(\\) requires a 0-D ref");
         EXPECT_DEATH(static_cast<void>(LoadScalar(f_in(0, 0))),
                      "LoadScalar\\(\\) requires an SMEM ref");
-        EXPECT_DEATH(Store(f_in, F32(1.0)),
-                     "Store\\(\\) of a Scalar requires a 0-D ref");
         EXPECT_DEATH(Store(f_in(0, 0), F32(1.0)),
                      "Store\\(\\) of a Scalar requires an SMEM ref");
         EXPECT_DEATH(Store(out, t_f, {.mask = t_i}),
@@ -1671,17 +1708,19 @@ TEST(KilnDeathTest, DynamicShapeSliceAndAllocaValidationErrors) {
         EXPECT_DEATH(For(0, 16, I32(0), [](Scalar) {}),
                      "Loop step must be positive");
         EXPECT_DEATH(static_cast<void>(AllocaSmem(i32(0))),
-                     "Alloca\\(\\) requires static positive dimensions");
+                     "AllocaSmem\\(\\) requires static positive dimensions");
         EXPECT_DEATH(static_cast<void>(AllocaSmem(bf16())),
-                     "SMEM Alloca\\(\\) requires a 32-bit element type");
+                     "AllocaSmem\\(\\) requires a 32-bit element type");
         EXPECT_DEATH(static_cast<void>(AllocaSmem(i16(1))),
-                     "SMEM Alloca\\(\\) requires a 32-bit element type");
+                     "AllocaSmem\\(\\) requires a 32-bit element type");
+        EXPECT_DEATH(static_cast<void>(AllocaVmem(f32(0, 128))),
+                     "AllocaVmem\\(\\) requires static positive dimensions");
         EXPECT_DEATH(static_cast<void>(AllocaVmem(f32())),
-                     "VMEM Alloca\\(\\) requires at least a 1D shape");
+                     "AllocaVmem\\(\\) requires at least a 1D shape");
         EXPECT_DEATH(static_cast<void>(AllocaVmem(bool_(8, 128))),
-                     "VMEM Alloca\\(\\) does not support bool");
+                     "AllocaVmem\\(\\) does not support bool");
         EXPECT_DEATH(static_cast<void>(AllocaVmem(i64(8, 128))),
-                     "VMEM Alloca\\(\\) does not support bool \\(i1\\) or "
+                     "AllocaVmem\\(\\) does not support bool \\(i1\\) or "
                      "64-bit element types");
       });
   ASSERT_THAT(kernel, IsOk());
@@ -1747,40 +1786,38 @@ TEST(KilnTest, SemaphoreAndBarrierOperations) {
 
 TEST(KilnDeathTest, HbmAndSemaphoreValidationErrors) {
   // HBM input/output specs with index_map are rejected by BuildKernel.
-  absl::StatusOr<Kernel> bad_hbm_in_map = CreateKernel(
-      GridSpec{.name = "bad_hbm_in", .grid = {1}},
-      InSpec{f32(8, 128), IndexMap([] { return IndexIndices{0, 0}; }),
-             MemorySpace::kHbm},
-      OutSpec::Vmem(f32(8, 128)), [](Ref, Ref) {});
-  EXPECT_THAT(bad_hbm_in_map,
+  EXPECT_THAT(CreateKernel(
+                  GridSpec{.name = "bad_hbm_in", .grid = {1}},
+                  BasicBlockSpec<BlockRole::kIn, MemorySpace::kHbm>{
+                      f32(8, 128), IndexMap([] { return IndexIndices{0, 0}; })},
+                  OutSpec::Vmem(f32(8, 128)), [](Ref, Ref) {}),
               StatusIs(error::kInvalidArgument,
                        HasSubstr("HBM operands do not support index_map")));
 
-  absl::StatusOr<Kernel> bad_hbm_out_map = CreateKernel(
-      GridSpec{.name = "bad_hbm_out", .grid = {1}}, InSpec::Vmem(f32(8, 128)),
-      OutSpec{f32(8, 128), IndexMap([] { return IndexIndices{0, 0}; }),
-              MemorySpace::kHbm},
-      [](Ref, Ref) {});
-  EXPECT_THAT(bad_hbm_out_map,
+  EXPECT_THAT(CreateKernel(
+                  GridSpec{.name = "bad_hbm_out", .grid = {1}},
+                  InSpec::Vmem(f32(8, 128)),
+                  BasicBlockSpec<BlockRole::kOut, MemorySpace::kHbm>{
+                      f32(8, 128), IndexMap([] { return IndexIndices{0, 0}; })},
+                  [](Ref, Ref) {}),
               StatusIs(error::kInvalidArgument,
                        HasSubstr("HBM operands do not support index_map")));
 
-  absl::StatusOr<Kernel> bad_grid_free_map = CreateKernel(
-      GridSpec{.name = "bad_grid_free_map"},
-      InSpec{f32(8, 128), IndexMap([] { return IndexIndices{0, 0}; })},
-      OutSpec::Vmem(f32(8, 128)), [](Ref, Ref) {});
   EXPECT_THAT(
-      bad_grid_free_map,
+      CreateKernel(
+          GridSpec{.name = "bad_grid_free_map"},
+          InSpec{f32(8, 128), IndexMap([] { return IndexIndices{0, 0}; })},
+          OutSpec::Vmem(f32(8, 128)), [](Ref, Ref) {}),
       StatusIs(error::kInvalidArgument,
                HasSubstr("index_map windowing requires a non-empty grid")));
 
-  absl::StatusOr<Kernel> bad_hbm_scratch = CreateKernel(
-      GridSpec{.name = "bad_hbm_scratch", .grid = {1}},
-      InSpec::Vmem(f32(8, 128)), OutSpec::Vmem(f32(8, 128)),
-      ScratchSpec{f32(8, 128), MemorySpace::kHbm}, [](Ref, Ref, Ref) {});
-  EXPECT_THAT(bad_hbm_scratch,
-              StatusIs(error::kInvalidArgument,
-                       HasSubstr("Scratch operands cannot use HBM")));
+  EXPECT_THAT(
+      CreateKernel(GridSpec{.name = "bad_hbm_scratch", .grid = {1}},
+                   InSpec::Vmem(f32(8, 128)), OutSpec::Vmem(f32(8, 128)),
+                   BasicScratchSpec<MemorySpace::kHbm>{f32(8, 128)},
+                   [](Ref, Ref, Ref) {}),
+      StatusIs(error::kInvalidArgument,
+               HasSubstr("Scratch operands cannot use HBM")));
 
   absl::StatusOr<Kernel> kernel = CreateKernel(
       GridSpec{.name = "hbm_sem_errors"}, InSpec::Hbm(f32(kDynamic, 128)),
@@ -1791,12 +1828,9 @@ TEST(KilnDeathTest, HbmAndSemaphoreValidationErrors) {
         EXPECT_EQ(reg_sems.rank(), 2);
         EXPECT_FALSE(reg_sems.is_dma());
         Ref hbm_tile = hbm_in(Slice(0, 8), all);
-        EXPECT_DEATH(static_cast<void>(
-                         Alloca(ScratchSpec{f32(8, 128), MemorySpace::kHbm})),
-                     "Cannot allocate HBM in a kernel");
-        EXPECT_DEATH(
-            static_cast<void>(Alloca(ScratchSpec{f32(0), MemorySpace::kHbm})),
-            "Cannot allocate HBM in a kernel");
+        EXPECT_EQ(hbm_tile.memory_space(), MemorySpace::kHbm);
+        EXPECT_DEATH(static_cast<void>(hbm_tile.As<VmemRef>()),
+                     "Ref is in HBM but its type requires VMEM");
         EXPECT_DEATH(static_cast<void>(AllocaDmaSemaphore(Dimensions{})),
                      "AllocaDmaSemaphore\\(shape\\) requires a non-empty "
                      "shape");
@@ -1818,8 +1852,6 @@ TEST(KilnDeathTest, HbmAndSemaphoreValidationErrors) {
                      "Load\\(\\) requires a VMEM ref");
         EXPECT_DEATH(Store(hbm_tile, Load(vmem_out)),
                      "Store\\(\\) of a Tile requires a VMEM ref");
-        EXPECT_DEATH(static_cast<void>(Load(hbm_in)),
-                     "Load\\(\\) requires a Ref with a static shape");
         EXPECT_DEATH(dma_sems(0).Signal(1),
                      "Semaphore::Signal\\(\\) requires a regular semaphore");
         EXPECT_DEATH(dma_sems(0).Wait(1),

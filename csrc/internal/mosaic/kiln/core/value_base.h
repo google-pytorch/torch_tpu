@@ -27,12 +27,19 @@ struct ValueAccess;
 
 // Common base for Kiln SSA handles (`Scalar`, `Tile`, `Ref`). Holds
 // an opaque pointer to the underlying IR value and its Kiln element dtype.
+// Copy operations are protected so that a handle cannot be sliced or rebound
+// through a `ValueBase` reference (e.g. rebinding a `VmemRef` to an SMEM
+// memref).
 class ValueBase {
  public:
   DType dtype() const { return dtype_; }
 
  protected:
   ValueBase(const void* impl, DType dtype) : impl_(impl), dtype_(dtype) {}
+  ValueBase(const ValueBase&) = default;
+  ValueBase& operator=(const ValueBase&) = default;
+  ~ValueBase() = default;
+
   const void* impl() const { return impl_; }
 
  private:

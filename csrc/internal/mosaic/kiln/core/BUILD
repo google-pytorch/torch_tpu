@@ -240,7 +240,6 @@ torch_tpu_cc_library(
         ":ref",
         ":semaphore",
         ":shape",
-        ":specs",
         "//csrc/internal/mosaic:op_builders",
         "@com_google_absl//absl/log:absl_check",
         "@llvm-project//llvm:Support",
