@@ -158,7 +158,6 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/compile",
         "//src/torch_tpu/_internal/compile:compiler",
-        "//src/torch_tpu/_internal/compile:nested_compile_region",
         "//src/torch_tpu/_internal/compile:torch_tpu_compiled_executable",
         "//src/torch_tpu/_internal/compile:tpu_backend",
         "//src/torch_tpu/_internal/utils:test_utils",
@@ -632,6 +631,65 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "nested_compile_region_errors_test",
+    srcs = ["nested_compile_region_errors_test.py"],
+    tags = [
+        "nosan",  # *san builds are low-value for error tests.
+    ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile:nested_compile_region",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "nested_compile_region_test",
+    srcs = ["nested_compile_region_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile:nested_compile_region",
+        "//src/torch_tpu/_internal/compile/fx_passes:invoke_subgraph_to_scan",
+        "//src/torch_tpu/_internal/utils:test_utils",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "invoke_subgraph_to_scan_test",
+    srcs = ["invoke_subgraph_to_scan_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile/fx_passes:invoke_subgraph_to_scan",
+        "//src/torch_tpu/_internal/utils:test_utils",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "invoke_subgraph_to_scan_tpu_test",
+    srcs = ["invoke_subgraph_to_scan_tpu_test.py"],
+    tags = [
+        "requires-net:external",
+        "requires-tpu-v5lite",
+    ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile/fx_passes:invoke_subgraph_to_scan",
+        "//src/torch_tpu/_internal/utils:test_utils",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "clone_mutated_returned_placeholders_test",
     srcs = ["clone_mutated_returned_placeholders_test.py"],
     deps = [
@@ -809,7 +867,6 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal:testing",
         "//src/torch_tpu/_internal/compile",
-        "//src/torch_tpu/_internal/compile:nested_compile_region",
         "//src/torch_tpu/_internal/compile:tpu_backend",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
