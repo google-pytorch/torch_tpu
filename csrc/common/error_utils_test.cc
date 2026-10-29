@@ -1685,6 +1685,15 @@ TEST_F(ErrorMessageGuidelinesDeathTest,
                 "alpha-numeric"));
 }
 
+TEST_F(ErrorMessageGuidelinesPassTest, UppercaseStartAndNewlineOnXlaError) {
+  // The XLA compiler error is passed through verbatim, so it may start with an
+  // uppercase letter or end with a newline.
+  EXPECT_THROW(ThrowWithContextForXlaError(
+                   /* context= */ "failed to initialize the PjRt client",
+                   /* xla_error_message= */ "TPU initialization failed\n"),
+               c10::Error);
+}
+
 TEST_F(ErrorMessageGuidelinesPassTest, ExpectedGotFormat) {
   EXPECT_THROW(ThrowWithMessage("expected 3D tensor, got 2D"), c10::Error);
   // Valid format after a single context prefix.
@@ -1763,6 +1772,20 @@ TEST(AdaptExternalErrorMessage,
             "torchTPUs are not supported");
   EXPECT_EQ(AdaptExternalErrorMessage("XLA_FLAGS is not set"),
             "xLA_FLAGS is not set");
+}
+
+TEST(WrapXlaErrorTest, PassesMessageThroughVerbatim) {
+  const absl::Status status = WrapXlaError(
+      absl::Status(error::kInternal, "TPU initialization failed.\n"),
+      /* context= */ "failed to initialize the PjRt client");
+  EXPECT_EQ(status.code(), error::kInternal);
+  EXPECT_EQ(status.message(),
+            "failed to initialize the PjRt client -- the XLA compiler failed "
+            "with: TPU initialization failed.\n");
+}
+
+TEST(WrapXlaErrorTest, ReturnsOkStatusUnchanged) {
+  EXPECT_TRUE(WrapXlaError(absl::OkStatus(), "context").ok());
 }
 
 TEST(ErrorUtilsTest, GetRequiredEnvOnceReturnsValueWhenSet) {

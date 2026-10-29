@@ -95,7 +95,7 @@ class KilnE2eTest : public testing::Test {
     auto hlo = std::make_unique<xla::HloModule>("kiln_e2e_kernel",
                                                 xla::HloModuleConfig());
     hlo->AddEntryComputationWithLayouts(builder.Build());
-    return AdaptXlaError(
+    return WrapXlaError(
         runner_->Execute(std::move(hlo), inputs, /*run_hlo_passes=*/true),
         "failed to execute Kiln kernel on TPU");
   }

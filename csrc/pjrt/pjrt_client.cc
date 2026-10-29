@@ -31,7 +31,7 @@ namespace torch_tpu {
 absl::StatusOr<absl_nonnull std::unique_ptr<xla::PjRtClient>> GetPjRtClient(
     const std::string& device_type, int64_t tpu_premapped_buffer_size) {
   if (device_type == "tpu") {
-    return AdaptXlaError(
+    return WrapXlaError(
         xla::GetCApiClient(
             "tpu", {{"premapped_buffer_size", tpu_premapped_buffer_size}}),
         /*context=*/"failed to retrieve the PjRt client");

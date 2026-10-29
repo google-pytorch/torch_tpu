@@ -331,8 +331,8 @@ absl::Status DeviceBufferList::Synchronize() const {
     }
     auto future = buffer->GetReadyFuture();
     TT_RETURN_IF_ERROR(
-        AdaptXlaError(future.Await(),
-                      /* context= */ "failed to synchronize device buffer"));
+        WrapXlaError(future.Await(),
+                     /* context= */ "failed to synchronize device buffer"));
   }
   // Mark the list synchronized so subsequent callers (or multi-tensor output
   // synchronization loops sharing this DeviceBufferList) short-circuit.
@@ -763,7 +763,7 @@ xla::Future<void> DeviceBufferRef::GetReadyFuture() const {
     if (ready_future.IsKnownReady()) {
       absl::Status status = ready_future.Await();
       if (!status.ok()) {
-        return AdaptXlaError(status, "buffer failed to execute");
+        return WrapXlaError(status, "buffer failed to execute");
       }
       return ready_future;
     }
@@ -771,7 +771,7 @@ xla::Future<void> DeviceBufferRef::GetReadyFuture() const {
     ready_future.OnReady([promise = std::move(promise),
                           device_buffer_list = device_buffer_list_](
                              const absl::Status& status) mutable {
-      promise.Set(AdaptXlaError(status, "buffer failed to execute"));
+      promise.Set(WrapXlaError(status, "buffer failed to execute"));
     });
     return future;
   }
@@ -797,7 +797,7 @@ xla::Future<void> DeviceBufferRef::GetReadyFuture() const {
     ready_future.OnReady([promise = std::move(promise),
                           device_buffer_list = std::move(device_buffer_list)](
                              const absl::Status& status) mutable {
-      promise.Set(AdaptXlaError(status, "buffer failed to execute"));
+      promise.Set(WrapXlaError(status, "buffer failed to execute"));
       device_buffer_list.reset();
     });
   });
