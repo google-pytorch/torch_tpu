@@ -15839,6 +15839,44 @@ module {{
         actual_compiled.cpu(), expected.cpu(), rtol=1e-2, atol=1e-2
     )
 
+  def test_grouped_mm_2d_3d_transposed_rhs_stablehlo(self):
+    """Pins the 2D x 3D lowering of a transposed rhs to a [g, k, n] operand.
+
+    Folding the transpose into the RaggedDot contracting dim gives XLA:TPU a
+    contracting-dim-minor [g, n, k] rhs, which it can tile very poorly, so the
+    transpose must stay explicit and the rhs must contract on dim 1.
+    """
+    num_groups, m, k, n = 4, 256, 128, 256
+    device = torch.device("tpu")
+    lhs = torch.randn(m, k, dtype=torch.bfloat16, device=device)
+    rhs_storage = torch.randn(num_groups, n, k, dtype=torch.bfloat16)
+    rhs_storage = rhs_storage.to(device)
+    offs = torch.tensor([64, 128, 192, 256], dtype=torch.int32, device=device)
+
+    torch.compiler.reset()
+    debugs = []
+    compiled = torch.compile(
+        lambda x, w, o: torch._grouped_mm(x, w.transpose(-2, -1), offs=o),
+        backend="tpu",
+        dynamic=False,
+        options={"serializable": False, "debug_callback": debugs.append},
+    )
+    compiled(lhs, rhs_storage, offs)
+    text = "\n".join(
+        t for debug in debugs for t in debug.stablehlo_forward_text
+    )
+
+    self.assertIn("chlo.ragged_dot", text)
+    self.assertIn("dims = [0, 2, 1]", text)
+    for attr in (
+        "lhs_contracting_dimensions = [1]",
+        "rhs_contracting_dimensions = [1]",
+        "lhs_ragged_dimensions = [0]",
+        "rhs_group_dimensions = [0]",
+    ):
+      self.assertIn(attr, text)
+    self.assertNotIn("rhs_contracting_dimensions = [2]", text)
+
   def test_aten_grouped_mm_meta_symbolic_shapes(self):
     """Tests the TPU meta preserves SymInt shapes without guarding."""
     shape_env = symbolic_shapes.ShapeEnv()
