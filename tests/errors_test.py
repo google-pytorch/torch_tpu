@@ -4511,6 +4511,92 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       torch.ops.aten._cdist_backward(grad, x1, x2, 1.0, cdist)
 
+  def test_cdist_forward_invalid_inputs(self):
+    x_1d = torch.ones(3, device=et.device())
+    x_2d = torch.ones(2, 3, device=et.device())
+    x_cols4 = torch.ones(2, 4, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""cdist_forward(): expected the first argument to have at least 2 dimensions, got 1""",
+        gpu="""cdist only supports at least 2D tensors, X1 got: 1D""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ops.aten._cdist_forward(x_1d, x_2d, 2.0, None)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""cdist_forward(): expected the second argument to have at least 2 dimensions, got 1""",
+        gpu="""cdist only supports at least 2D tensors, X2 got: 1D""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ops.aten._cdist_forward(x_2d, x_1d, 2.0, None)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""cdist_forward(): expected the first and second arguments to have the same number of columns, got 3 and 4""",
+        gpu="""X1 and X2 must have the same number of columns. X1: 3 X2: 4""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ops.aten._cdist_forward(x_2d, x_cols4, 2.0, None)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""cdist_forward(): expected the first and second arguments to be on the same device, got tpu:0 and cpu""",
+        gpu="""Expected all tensors to be on the same device, but got x2 is on cpu, different from other tensors on cuda:0 (when checking argument in method wrapper_CUDA___cdist_forward)""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ops.aten._cdist_forward(
+          x_2d, torch.ones(2, 3, device="cpu"), 2.0, None
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""cdist_forward(): expected compute_mode to be in range [0, 2], got 99""",
+        gpu="""possible modes: 0, 1, 2, but was: 99""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ops.aten._cdist_forward(x_2d, x_2d, 1.0, 99)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""cdist_forward(): expected the first and second arguments to have the same dtype, got float32 and float64""",
+        gpu="""expected scalar type Float but found Double""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.cdist(x_2d, x_2d.to(torch.float64), p=1.0)
+
+  def test_cdist_backward_invalid_inputs(self):
+    grad = torch.ones(2, 2, device=et.device())
+    x1 = torch.ones(2, 2, device=et.device())
+    x2 = torch.ones(2, 2, device=et.device())
+    cdist = torch.ones(2, 2, device=et.device())
+    x_1d = torch.ones(2, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError if et.is_on_tpu() else IndexError,
+        tpu="""cdist_backward(): expected the first argument to have at least 2 dimensions, got 1""",
+        gpu="""Dimension out of range (expected to be in range of [-1, 0], but got -2)""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ops.aten._cdist_backward(grad, x_1d, x2, 1.0, cdist)
+
+    with et.assert_raises_message(
+        RuntimeError if et.is_on_tpu() else IndexError,
+        tpu="""cdist_backward(): expected the second argument to have at least 2 dimensions, got 1""",
+        gpu="""Dimension out of range (expected to be in range of [-1, 0], but got -2)""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ops.aten._cdist_backward(grad, x1, x_1d, 1.0, cdist)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""cdist_backward(): expected grad, x1, x2, and cdist to have the same dtype, got float32, float32, float64, and float32""",
+        gpu="""expected scalar type Float but found Double""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ops.aten._cdist_backward(grad, x1, x2.to(torch.float64), 1.0, cdist)
+
   def test_exponential_unsupported_dtypes(self):
     device = et.device()
     t_int = torch.ones((2, 2), device=device, dtype=torch.int32)
