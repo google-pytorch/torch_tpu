@@ -53,7 +53,6 @@ DISABLED_TEST_MODULES: Final[frozenset[str]] = frozenset({
     "functorch/test_vmap",
     "higher_order_ops/test_print",
     "higher_order_ops/test_with_effects",
-    "inductor/test_compiled_autograd",
     "inductor/test_compiled_optimizers",
     "inductor/test_custom_lowering",
     "inductor/test_decompose_mem_bound_mm",
@@ -93,6 +92,19 @@ DISABLED_TEST_MODULES: Final[frozenset[str]] = frozenset({
     "test_unary_ufuncs",
     # go/keep-sorted end
 })
+
+_NO_CPP_COMPILER: Final[str] = (
+    "Inductor CPU backend requires a C++ compiler unavailable in Google3."
+)
+
+# Mapping from test module names to reasons why they are disabled in Google3
+# only. These test modules fail due to Google3-specific test environment issues,
+# e.g. toolchains, and still run in OSS.
+INTERNAL_DISABLED_TEST_MODULES: Final[Mapping[str, str]] = {
+    # go/keep-sorted start
+    "inductor/test_compiled_autograd": _NO_CPP_COMPILER,
+    # go/keep-sorted end
+}
 
 # Mapping from test module names to number of shards.
 # Per https://bazel.build/reference/be/common-definitions#common-attributes-tests,

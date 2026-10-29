@@ -18,6 +18,7 @@
 
 load(
     "//build_files:build_defs.bzl",
+    "if_oss",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
 )
@@ -481,7 +482,7 @@ torch_tpu_torch_test(
 
 torch_tpu_torch_test(
     name = "inductor_compiled_autograd_test",
-    notap = "b/563402379",  # NOTAP_OK=torch tests
+    notap = if_oss(None, "Inductor CPU backend requires a C++ compiler unavailable in Google3."),  # NOTAP_OK=torch tests
     torch_test_module = "inductor/test_compiled_autograd",
 )
 
