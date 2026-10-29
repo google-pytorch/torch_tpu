@@ -21522,15 +21522,19 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
         )
 
   @parameterized.named_parameters(
-      ("flash_bfloat16", 128, 4, 4, torch.bfloat16, False),
-      ("math_float32_mha", 24, 4, 4, torch.float32, False),
-      ("math_float32_gqa", 24, 4, 2, torch.float32, True),
+      ("flash_bfloat16", 128, 128, 4, 4, torch.bfloat16, False),
+      ("math_bfloat16_mha", 128, 24, 4, 4, torch.bfloat16, False),
+      ("math_bfloat16_gqa", 128, 24, 4, 2, torch.bfloat16, True),
+      ("short_seq_bfloat16_mha", 64, 128, 4, 4, torch.bfloat16, False),
+      ("short_seq_bfloat16_gqa", 64, 128, 4, 2, torch.bfloat16, True),
+      ("math_float32_mha", 128, 24, 4, 4, torch.float32, False),
+      ("math_float32_gqa", 128, 24, 4, 2, torch.float32, True),
   )
   def test_scaled_dot_product_attention_scaling_precision(
-      self, head_dim, num_heads_q, num_heads_kv, dtype, enable_gqa
+      self, seq_len, head_dim, num_heads_q, num_heads_kv, dtype, enable_gqa
   ):
     """Tests FlashAttention LSE forward/backward consistency and F32 post-dot scaling."""
-    batch_size, seq_len = 2, 128
+    batch_size = 2
     torch.manual_seed(42)
     q_init = torch.randn(
         batch_size, num_heads_q, seq_len, head_dim, dtype=dtype
