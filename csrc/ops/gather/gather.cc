@@ -199,7 +199,12 @@ mlir::MlirOp EmitBroadcastGatherDot(mlir::MlirOp self, int64_t dim,
       stablehlo::Iota(builder, ind_i32_type, /*iota_dimension=*/base_rank);
   mlir::MlirOp mask = stablehlo::Compare(idx_expanded, iota_p,
                                          stablehlo::ComparisonDirection::EQ);
-  mlir::MlirOp weights = stablehlo::ConvertElementType(mask, computation_type);
+  auto ind_comp_type = mlir::RankedTensorType::get(ind_shape, computation_type);
+  mlir::MlirOp one_scalar = MakeScalarConstant(builder, 1.0, computation_type);
+  mlir::MlirOp zero_scalar = MakeScalarConstant(builder, 0.0, computation_type);
+  mlir::MlirOp one = stablehlo::BroadcastInDim(ind_comp_type, one_scalar, {});
+  mlir::MlirOp zero = stablehlo::BroadcastInDim(ind_comp_type, zero_scalar, {});
+  mlir::MlirOp weights = stablehlo::Select(mask, one, zero);
   auto dot_dims = stablehlo::DotDimensionNumbersAttr::get(
       &self.getContext(),
       /*lhsBatchingDimensions=*/plan.batch_dims,
