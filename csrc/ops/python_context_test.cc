@@ -17,6 +17,7 @@
 #include "csrc/ops/python_context.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -27,8 +28,11 @@
 #include "csrc/ops/op_names.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/OwningOpRef.h"
+#include "mlir/Parser/Parser.h"
 #include "mlir/Support/DebugStringHelper.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
@@ -303,6 +307,148 @@ TEST(ScopedPythonContextCapturer, NameScopesRestoreViaDebugInfoGuard) {
 
   EXPECT_THAT(unguarded_context.name_scopes(), IsEmpty());
   EXPECT_THAT(guarded_context.name_scopes(), ElementsAre("backward_phase"));
+}
+
+TEST(ScopedPythonContextCapturer,
+     OverrideCurrentOpNameSanitizesDelimitersAndPreservesRootOpName) {
+  mlir::MLIRContext ctx;
+  RaiiContextCapturer block_scope(std::vector<std::string>{"layers.0[Block]"});
+
+  ScopedPythonContextCapturer api_capturer(PythonApiName{"call_custom_kernel"});
+  ScopedPythonContextCapturer kernel_capturer(OpName::kCustomKernel);
+  ScopedPythonContextCapturer::OverrideCurrentOpName("pallas::ns/my_kernel");
+  // Empty override is a no-op and preserves the existing op name.
+  ScopedPythonContextCapturer::OverrideCurrentOpName("");
+
+  const PythonContext context = ScopedPythonContextCapturer::GetContext();
+  const mlir::Location loc = MakeMlirLocation(ctx, context);
+
+  EXPECT_THAT(context.op_call_chain(),
+              ElementsAre("call_custom_kernel", "pallas_ns_my_kernel"));
+  // Root op name for error messages remains `call_custom_kernel`, while XProf
+  // location formatting drops the pybind wrapper and uses the kernel name.
+  EXPECT_EQ(GetRootOpName(std::nullopt), "call_custom_kernel");
+  EXPECT_EQ(mlir::debugString(loc),
+            "loc(\"layers.0[Block]/pallas_ns_my_kernel/pallas_ns_my_kernel\")");
+}
+
+TEST(PropagateInlinedCallerLocationsTest,
+     PrependsCallerScopeAndPreservesStackFrames) {
+  mlir::MLIRContext ctx;
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::parseSourceString<mlir::ModuleOp>(
+          R"mlir(
+            module {} loc(callsite(
+              "jit(add_vectors)/pallas_call"("jax_kernel"("kernel.py":12:0))
+              at "layers.0[Block]/pallas_add_vectors/pallas_add_vectors"(
+                "forward"("model.py":42:0))))
+          )mlir",
+          &ctx);
+  ASSERT_TRUE(module);
+
+  PropagateInlinedCallerLocations(module.get());
+
+  EXPECT_EQ(
+      mlir::debugString(module->getLoc()),
+      R"(loc("layers.0[Block]/pallas_add_vectors/jit(add_vectors)/pallas_call"(callsite("jax_kernel"("kernel.py":12:0) at "forward"("model.py":42:0)))))");
+}
+
+TEST(PropagateInlinedCallerLocationsTest,
+     FallsBackToCallerNameWhenCalleeIsUnknownLoc) {
+  mlir::MLIRContext ctx;
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::parseSourceString<mlir::ModuleOp>(
+          R"mlir(
+            module {} loc(callsite(
+              unknown
+              at "layers.1[Block]/pallas_kernel_add/pallas_kernel_add"))
+          )mlir",
+          &ctx);
+  ASSERT_TRUE(module);
+
+  PropagateInlinedCallerLocations(module.get());
+
+  EXPECT_EQ(mlir::debugString(module->getLoc()),
+            R"(loc("layers.1[Block]/pallas_kernel_add/pallas_kernel_add"))");
+}
+
+TEST(PropagateInlinedCallerLocationsTest,
+     UnwrapsFusedLocAndPreservesOpTypePrefixAndSanitizesColons) {
+  mlir::MLIRContext ctx;
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::parseSourceString<mlir::ModuleOp>(
+          R"mlir(
+            module {} loc(callsite(
+              fused["custom_call:"("jit(ns::kernel)/pallas_call"), "kernel.py":10:0]
+              at "layers.0[Block]/pallas_phase/pallas_phase"))
+          )mlir",
+          &ctx);
+  ASSERT_TRUE(module);
+
+  PropagateInlinedCallerLocations(module.get());
+
+  EXPECT_EQ(
+      mlir::debugString(module->getLoc()),
+      R"(loc(fused["custom_call:"("layers.0[Block]/pallas_phase/jit(ns_kernel)/pallas_call"), "kernel.py":10:0]))");
+}
+
+TEST(PropagateInlinedCallerLocationsTest,
+     WrapsBareFileLineColCalleeInFrameNameLocWhenCallerHasTraceback) {
+  mlir::MLIRContext ctx;
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::parseSourceString<mlir::ModuleOp>(
+          R"mlir(
+            module {} loc(callsite(
+              fused["jit(add_vectors)/pallas_call", "kernel.py":10:0]
+              at "layers.0[Block]/pallas_add_vectors/pallas_add_vectors"(
+                "forward"("model.py":42:0))))
+          )mlir",
+          &ctx);
+  ASSERT_TRUE(module);
+
+  PropagateInlinedCallerLocations(module.get());
+
+  EXPECT_EQ(
+      mlir::debugString(module->getLoc()),
+      R"(loc("layers.0[Block]/pallas_add_vectors/jit(add_vectors)/pallas_call"(callsite("jit(add_vectors)/pallas_call"("kernel.py":10:0) at "forward"("model.py":42:0)))))");
+}
+
+TEST(PropagateInlinedCallerLocationsTest,
+     ResolvesMultiLevelNestedCallSiteLocations) {
+  mlir::MLIRContext ctx;
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::parseSourceString<mlir::ModuleOp>(
+          R"mlir(
+            module {} loc(callsite(
+              callsite("add.1" at "helper_fn/helper_fn")
+              at "layers.0[Block]/custom_op/custom_op"))
+          )mlir",
+          &ctx);
+  ASSERT_TRUE(module);
+
+  PropagateInlinedCallerLocations(module.get());
+
+  EXPECT_EQ(mlir::debugString(module->getLoc()),
+            R"(loc("layers.0[Block]/custom_op/helper_fn/add.1"))");
+}
+
+TEST(PropagateInlinedCallerLocationsTest,
+     LeavesPureTracebackCallSiteLocUnchanged) {
+  mlir::MLIRContext ctx;
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::parseSourceString<mlir::ModuleOp>(
+          R"mlir(
+            module {} loc(callsite(
+              "callee_fn"("a.py":1:0) at "caller_fn"("b.py":2:0)))
+          )mlir",
+          &ctx);
+  ASSERT_TRUE(module);
+
+  PropagateInlinedCallerLocations(module.get());
+
+  EXPECT_EQ(
+      mlir::debugString(module->getLoc()),
+      R"(loc(callsite("callee_fn"("a.py":1:0) at "caller_fn"("b.py":2:0))))");
 }
 
 }  // namespace

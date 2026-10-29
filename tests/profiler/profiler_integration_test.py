@@ -22,9 +22,12 @@ import unittest
 from absl import logging
 from absl.testing import absltest
 from absl.testing import parameterized
+import jax
+from jax.experimental import pallas as pl
 import torch
 from torch.autograd import profiler
 from torch_tpu._internal import execution_mode
+from torch_tpu._internal import pallas
 from torch_tpu._internal import sync as tpu_sync
 from torch_tpu._internal.profiler import named_scope
 from torch_tpu._internal.profiler.profiler_config import TpuProfilerConfig
@@ -787,6 +790,96 @@ class ProfilerIntegrationTest(seed_test_utils.RepeatableTest):
         b"attn[ScopedAttention]/sdpa/softmax_backward_data/softmax_backward_data",
         xplane_bytes,
     )
+
+  def test_pallas_kernel_name_scopes(self):
+    """Checks that Pallas kernels carry caller scopes and kernel names."""
+
+    def add_vectors_kernel(x_ref, y_ref, o_ref):
+      o_ref[...] = x_ref[...] + y_ref[...]
+
+    @pallas.jax_op("pallas::add_vectors")
+    def pallas_add_vectors(x: jax.Array, y: jax.Array) -> jax.Array:
+      dt = jax.ShapeDtypeStruct(x.shape, x.dtype)
+      return pl.pallas_call(add_vectors_kernel, out_shape=dt)(x, y)
+
+    class PallasBlock(torch.nn.Module):
+
+      def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        x = x + y
+        with named_scope.named_scope("pallas_phase"):
+          return pallas_add_vectors(x, y)
+
+    class PallasModel(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.layers = torch.nn.ModuleList([PallasBlock(), PallasBlock()])
+
+      def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        for layer in self.layers:
+          x = layer(x, y)
+        return x
+
+    device = torch.device("tpu")
+    model = PallasModel().to(device)
+    compiled_model = torch.compile(model, backend="tpu")
+    x = torch.ones((8, 128), dtype=torch.float32, device=device)
+    y = torch.ones((8, 128), dtype=torch.float32, device=device)
+    eager_x = torch.ones((4, 128), dtype=torch.float32, device=device)
+    eager_y = torch.ones((4, 128), dtype=torch.float32, device=device)
+
+    def step():
+      compiled_out = compiled_model(x, y)
+      with named_scope.named_scope("eager_pallas_scope"):
+        eager_out = pallas_add_vectors(eager_x, eager_y)
+      tpu_sync.synchronize(compiled_out)
+      tpu_sync.synchronize(eager_out)
+      torch.accelerator.synchronize()
+
+    # Warmup compilation before tracing.
+    step()
+
+    output_dir = pathlib.Path(self.create_tempdir("pallas_scopes").full_path)
+    _cleanup_profile_dir()
+
+    with torch.profiler.profile(
+        activities=[
+            torch.profiler.ProfilerActivity.CPU,
+            torch.profiler.ProfilerActivity.TPU,  # type: ignore
+        ],
+        on_trace_ready=torch.profiler.tensorboard_trace_handler(output_dir),
+    ) as prof:
+      step()
+      prof.step()
+
+    self._get_and_copy_xplane(output_dir / "xplane.pb")
+    xspace = xplane_pb2.XSpace.FromString(
+        (output_dir / "xplane.pb").read_bytes()
+    )
+    executed_tf_ops = _device_tf_ops(xspace)
+    self.assertNotEmpty(executed_tf_ops, _describe_xspace(xspace))
+    self.assertContainsSubset(
+        (
+            (
+                "layers.0[PallasBlock]/pallas_phase/"
+                "pallas_add_vectors/jit(pallas_add_vectors)/pallas_call:"
+            ),
+            (
+                "layers.1[PallasBlock]/pallas_phase/"
+                "pallas_add_vectors/jit(pallas_add_vectors)/pallas_call:"
+            ),
+            (
+                "eager_pallas_scope/"
+                "pallas_add_vectors/jit(pallas_add_vectors)/pallas_call:"
+            ),
+        ),
+        executed_tf_ops,
+    )
+    self.assertEmpty([
+        tf_op
+        for tf_op in executed_tf_ops
+        if "pallas_add_vectors" in tf_op and tf_op.count(":") != 1
+    ])
 
   def test_tpu_profiler_config_override(self):
     """Verifies that TPU-specific profiler options are correctly applied."""

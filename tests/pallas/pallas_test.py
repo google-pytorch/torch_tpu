@@ -38,6 +38,7 @@ from torch_tpu._internal import pallas
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.ops import splash_attention
 from torch_tpu._internal.pallas import _compat
+from torch_tpu._internal.profiler import named_scope
 from torch_tpu._internal.utils import test_utils
 from torch_tpu._internal.utils import utils
 from tests import seed_test_utils
@@ -1193,6 +1194,49 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
             res[1]._elem,
             jax.numpy.array([-3.0, -3.0, -3.0], dtype=jax.numpy.float32),
         )
+    )
+
+  def test_pallas_kernel_name_scopes_in_compiled_mlir(self):
+    """Verifies Pallas ops carry caller module/named scopes and kernel name."""
+
+    class Block(torch.nn.Module):
+
+      def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        x = x + y
+        with named_scope.named_scope("pallas_phase"):
+          return add_vectors(x, y)
+
+    class Model(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.layers = torch.nn.ModuleList([Block(), Block()])
+
+      def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        for layer in self.layers:
+          x = layer(x, y)
+        return x
+
+    debugs = []
+    compiled_model = torch.compile(
+        Model().to(self.device),
+        backend="tpu",
+        options={"debug_callback": debugs.append},
+    )
+    x = torch.ones((8, 128), dtype=torch.float32, device=self.device)
+    y = torch.ones((8, 128), dtype=torch.float32, device=self.device)
+    out = compiled_model(x, y)
+    test_utils.assert_close(out.cpu(), torch.full((8, 128), 5.0))
+
+    self.assertLen(debugs, 1)
+    forward_mlir = "\n".join(debugs[0].stablehlo_forward_text)
+    self.assertIn(
+        'loc("layers.0[Block]/pallas_phase/pallas_add_vectors/',
+        forward_mlir,
+    )
+    self.assertIn(
+        'loc("layers.1[Block]/pallas_phase/pallas_add_vectors/',
+        forward_mlir,
     )
 
 

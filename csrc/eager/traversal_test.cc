@@ -47,9 +47,11 @@
 #include "llvm/ADT/SmallVector.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/DialectRegistry.h"
+#include "mlir/IR/Location.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Types.h"
@@ -63,6 +65,8 @@
 
 namespace torch_tpu {
 namespace {
+
+using ::testing::HasSubstr;
 
 // A dummy MLIR op builder for testing purposes.
 absl::StatusOr<DynamicMlirOpResults> DummyBuilder(
@@ -706,6 +710,84 @@ TEST_F(TraversalTest, NameScopesAttachToMlirLocationsWithoutChangingCacheKey) {
       DebugString(layer0_module.get(), DebugStringOptions::kEnableDebugInfo);
   EXPECT_THAT(mlir_text,
               testing::HasSubstr("loc(\"layers.0[Block]/empty/empty\""));
+}
+
+TEST_F(TraversalTest,
+       BuildMlirModulePropagatesCallerScopesIntoInlinedCustomKernels) {
+  TT_ASSERT_OK_AND_ASSIGN(
+      const DeviceBufferRef input_ref,
+      DeviceBufferList::CreatePlaceholder(shape_.dimensions(), shape_.dtype()));
+
+  auto make_custom_kernel_call_builder = [](mlir::MlirBuilder& builder,
+                                            absl::Span<mlir::MlirOp> inputs)
+      -> absl::StatusOr<DynamicMlirOpResults> {
+    mlir::ModuleOp module_op = GetModuleOp(builder);
+    auto helper_func =
+        module_op.lookupSymbol<mlir::func::FuncOp>("shared_custom_neg_kernel");
+    if (!helper_func) {
+      mlir::OpBuilder module_builder(module_op.getBodyRegion());
+      const mlir::Type input_type = inputs[0].getValue().getType();
+      const mlir::Location inner_op_loc =
+          mlir::NameLoc::get(mlir::StringAttr::get(
+              &builder.getContext(), "jit(custom_neg)/pallas_call"));
+      helper_func = mlir::func::FuncOp::create(
+          module_builder, inner_op_loc, "shared_custom_neg_kernel",
+          mlir::FunctionType::get(&builder.getContext(), {input_type},
+                                  {input_type}));
+      helper_func.setPrivate();
+      mlir::Block* entry_block = helper_func.addEntryBlock();
+      mlir::OpBuilder helper_builder =
+          mlir::OpBuilder::atBlockBegin(entry_block);
+      auto negated = mlir::stablehlo::NegOp::create(
+          helper_builder, inner_op_loc, entry_block->getArgument(0));
+      mlir::func::ReturnOp::create(helper_builder, inner_op_loc,
+                                   mlir::ValueRange{negated.getResult()});
+    }
+    llvm::SmallVector<mlir::MlirOp> call_results =
+        mlir::func::Call(builder, helper_func, inputs);
+    return DynamicMlirOpResults(call_results.begin(), call_results.end());
+  };
+
+  std::vector<DeviceBufferRef> layer0_refs;
+  {
+    ScopedPythonContextCapturer::PushNameScopes({"layers.0[Block]"});
+    absl::Cleanup pop = [] { ScopedPythonContextCapturer::PopNameScopes(); };
+    ScopedPythonContextCapturer::OverrideCurrentOpName("pallas::custom_neg");
+    TT_ASSERT_OK_AND_ASSIGN(
+        layer0_refs, DeviceBufferList::CreateDeferred(
+                         OpName::kCustomKernel, make_custom_kernel_call_builder,
+                         {input_ref}, OpParamCacheKeys::Empty(), {shape_}));
+  }
+
+  std::vector<DeviceBufferRef> layer1_refs;
+  {
+    ScopedPythonContextCapturer::PushNameScopes({"layers.1[Block]"});
+    absl::Cleanup pop = [] { ScopedPythonContextCapturer::PopNameScopes(); };
+    ScopedPythonContextCapturer::OverrideCurrentOpName("pallas::custom_neg");
+    TT_ASSERT_OK_AND_ASSIGN(
+        layer1_refs,
+        DeviceBufferList::CreateDeferred(
+            OpName::kCustomKernel, make_custom_kernel_call_builder,
+            {layer0_refs[0]}, OpParamCacheKeys::Empty(), {shape_}));
+  }
+
+  TT_ASSERT_OK_AND_ASSIGN(const std::unique_ptr<Traversal> traversal,
+                          Traversal::Create({layer1_refs[0]}));
+
+  mlir::MLIRContext mlir_context;
+  mlir::DialectRegistry registry;
+  mlir::stablehlo::registerAllDialects(registry);
+  mlir_context.appendDialectRegistry(registry);
+  mlir_context.loadAllAvailableDialects();
+
+  TT_ASSERT_OK_AND_ASSIGN(mlir::OwningOpRef<mlir::ModuleOp> module,
+                          traversal->BuildMlirModule(mlir_context));
+  const std::string mlir_text =
+      DebugString(module.get(), DebugStringOptions::kEnableDebugInfo);
+  EXPECT_THAT(mlir_text, HasSubstr("loc(\"layers.0[Block]/pallas_custom_neg/"
+                                   "jit(custom_neg)/pallas_call\""));
+  EXPECT_THAT(mlir_text, HasSubstr("loc(\"layers.1[Block]/pallas_custom_neg/"
+                                   "jit(custom_neg)/pallas_call\""));
 }
 
 }  // namespace
