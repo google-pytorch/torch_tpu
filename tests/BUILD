@@ -1810,8 +1810,10 @@ torch_tpu_py_test(
         "--test_mode=tpu",
     ],
     env = {
+        "IS_OSS": if_oss("1", "0"),
         "TORCH_SHOW_CPP_STACKTRACES": "0",
         "TORCH_TPU_ENABLE_DEBUG_CHECKS": "1",
+        "TPU_PREMAPPED_BUFFER_SIZE": "0",
     },
     main = "tpu_errors_test.py",
     tags = [
@@ -1825,17 +1827,20 @@ torch_tpu_py_test(
     ),
     deps = [
         ":error_testing",
+        ":oss_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
+        "//shims/jax:pallas",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal:env",
         "//src/torch_tpu/_internal:env_utils",
         "//src/torch_tpu/_internal:testing",
+        "//src/torch_tpu/_internal/compile",
         "//src/torch_tpu/_internal/compile:compiler",
         "//src/torch_tpu/_internal/compile:flex_attention",
-        "//src/torch_tpu/_internal/compile:tpu_torch_compile",
+        "//src/torch_tpu/_internal/compile:tpu_torch_compile",  # build_cleaner: keep
         "//src/torch_tpu/_internal/distributed",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/dynamism",
@@ -1847,6 +1852,8 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/utils:hardware",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests/distributed:distributed_utils",
+        "@pypi//jax",
+        "@pypi//packaging",
     ],
 )
 
@@ -1887,7 +1894,11 @@ torch_tpu_py_test(
     args = [
         "--test_mode=cov",
     ],
-    env = TEST_COV_ENV,
+    env = dict(
+        TEST_COV_ENV,
+        IS_OSS = if_oss("1", "0"),
+        TPU_PREMAPPED_BUFFER_SIZE = "0",
+    ),
     main = "tpu_errors_test.py",
     notap = "Run as a data dep by :error_coverage_test.",
     tags = [
@@ -1897,17 +1908,20 @@ torch_tpu_py_test(
     visibility = ["//:__subpackages__"],
     deps = [
         ":error_testing",
+        ":oss_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
+        "//shims/jax:pallas",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal:env",
         "//src/torch_tpu/_internal:env_utils",
         "//src/torch_tpu/_internal:testing",
+        "//src/torch_tpu/_internal/compile",
         "//src/torch_tpu/_internal/compile:compiler",
         "//src/torch_tpu/_internal/compile:flex_attention",
-        "//src/torch_tpu/_internal/compile:tpu_torch_compile",
+        "//src/torch_tpu/_internal/compile:tpu_torch_compile",  # build_cleaner: keep
         "//src/torch_tpu/_internal/distributed",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/dynamism",
@@ -1919,6 +1933,8 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/utils:hardware",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests/distributed:distributed_utils",
+        "@pypi//jax",
+        "@pypi//packaging",
     ],
 )
 
