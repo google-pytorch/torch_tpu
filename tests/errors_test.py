@@ -16712,6 +16712,119 @@ Got a.dtype()=Float8_e4m3fn, scale_a.dtype()=Float, scale_a.size()=[1], scale_a.
           too_many_bytes, dtype=torch.uint8, device="cpu", pin_memory=True
       )
 
+  def test_mish_invalid_dtype(self):
+    for dtype, tpu_dtype, gpu_dtype in (
+        (torch.bool, "bool", "Bool"),
+        (torch.int32, "int32", "Int"),
+        (torch.int64, "int64", "Long"),
+        (torch.uint8, "uint8", "Byte"),
+        (torch.int8, "int8", "Char"),
+        (torch.int16, "int16", "Short"),
+        (torch.complex64, "complex64", "ComplexFloat"),
+        (torch.complex128, "complex128", "ComplexDouble"),
+        (torch.float8_e4m3fn, "float8_e4m3fn", "Float8_e4m3fn"),
+        (torch.float8_e5m2, "float8_e5m2", "Float8_e5m2"),
+    ):
+      with self.subTest(dtype=tpu_dtype):
+        t = torch.empty(5, device=et.device(), dtype=dtype)
+        with et.assert_raises_message(
+            NotImplementedError,
+            tpu=f"""mish(): not implemented for {tpu_dtype}""",
+            gpu=f""""mish_cuda" not implemented for '{gpu_dtype}'""",
+            message_reviewed_by="adivinpatel",
+        ):
+          torch.nn.functional.mish(t)
+
+  def test_mish_out_errors(self):
+    x = torch.ones(4, device=et.device(), dtype=torch.float32)
+
+    with self.subTest("out_on_cpu"):
+      out_cpu = torch.empty(4, device="cpu", dtype=torch.float32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""mish(): expected the output tensor to be on tpu, got cpu""",
+          gpu="""Expected all tensors to be on the same device, but got self is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA_mish_out_out)""",
+          message_reviewed_by="adivinpatel",
+      ):
+        torch.ops.aten.mish.out(x, out=out_cpu)
+
+    with self.subTest("out_dtype_bfloat16"):
+      out_bf16 = torch.empty(4, device=et.device(), dtype=torch.bfloat16)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""mish(): expected the output dtype to be float32, got bfloat16""",
+          gpu="""Found dtype BFloat16 but expected Float""",
+          message_reviewed_by="adivinpatel",
+      ):
+        torch.ops.aten.mish.out(x, out=out_bf16)
+
+    with self.subTest("out_dtype_float64"):
+      out_f64 = torch.empty(4, device=et.device(), dtype=torch.float64)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""mish(): expected the output dtype to be float32, got float64""",
+          gpu="""Found dtype Double but expected Float""",
+          message_reviewed_by="adivinpatel",
+      ):
+        torch.ops.aten.mish.out(x, out=out_f64)
+
+  def test_mish_backward_invalid_dtype(self):
+    for dtype, tpu_dtype, gpu_dtype in (
+        (torch.bool, "bool", "Bool"),
+        (torch.int32, "int32", "Int"),
+        (torch.int64, "int64", "Long"),
+        (torch.uint8, "uint8", "Byte"),
+        (torch.int8, "int8", "Char"),
+        (torch.int16, "int16", "Short"),
+        (torch.complex64, "complex64", "ComplexFloat"),
+        (torch.complex128, "complex128", "ComplexDouble"),
+        (torch.float8_e4m3fn, "float8_e4m3fn", "Float8_e4m3fn"),
+        (torch.float8_e5m2, "float8_e5m2", "Float8_e5m2"),
+    ):
+      with self.subTest(dtype=tpu_dtype):
+        grad = torch.empty(5, device=et.device(), dtype=dtype)
+        self_val = torch.empty(5, device=et.device(), dtype=dtype)
+        with et.assert_raises_message(
+            NotImplementedError,
+            tpu=f"""mish_backward(): not implemented for {tpu_dtype}""",
+            gpu=f""""mish_backward_cuda" not implemented for '{gpu_dtype}'""",
+            message_reviewed_by="adivinpatel",
+        ):
+          torch.ops.aten.mish_backward(grad, self_val)
+
+    with self.subTest("mixed_float_grad_int_self_cast_error"):
+      grad_f32 = torch.ones(5, device=et.device(), dtype=torch.float32)
+      self_i32 = torch.ones(5, device=et.device(), dtype=torch.int32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""mish_backward(): result type float32 can't be cast to the desired output type int32""",
+          gpu="""result type Float can't be cast to the desired output type Int""",
+          message_reviewed_by="adivinpatel",
+      ):
+        torch.ops.aten.mish_backward(grad_f32, self_i32)
+
+    with self.subTest("grad_output_on_cpu"):
+      grad_cpu = torch.ones(5, device="cpu", dtype=torch.float32)
+      self_dev = torch.ones(5, device=et.device(), dtype=torch.float32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""mish_backward(): expected grad_output to be on tpu, got cpu""",
+          gpu="""Expected all tensors to be on the same device, but got self is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA__mish_backward)""",
+          message_reviewed_by="adivinpatel",
+      ):
+        torch.ops.aten.mish_backward(grad_cpu, self_dev)
+
+    with self.subTest("self_on_cpu"):
+      grad_dev = torch.ones(5, device=et.device(), dtype=torch.float32)
+      self_cpu = torch.ones(5, device="cpu", dtype=torch.float32)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""mish_backward(): expected self to be on tpu, got cpu""",
+          gpu="""Expected all tensors to be on the same device, but got self is on cpu, different from other tensors on cuda:0 (when checking argument in method wrapper_CUDA__mish_backward)""",
+          message_reviewed_by="adivinpatel",
+      ):
+        torch.ops.aten.mish_backward(grad_dev, self_cpu)
+
 
 class InputPreprocessingErrorTest(et.ErrorTestBase):
 
@@ -16835,6 +16948,7 @@ class ComputeStatsErrorTest(et.ErrorTestBase):
         tpu="""Invalid offsets range [0, 10) for indices size 3""",
     ):
       torch.ops.tpu.compute_sparse_dense_matmul_stats(indices, offsets, 1, 4)
+
 
 class MaskedSoftmaxErrorTest(et.ErrorTestBase):
 

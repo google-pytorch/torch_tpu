@@ -184,6 +184,7 @@ csrc/ops/masked_fill/masked_fill_aten_kernels.cc: {infeasible: 0, remaining: 0, 
 csrc/ops/masked_scatter/masked_scatter_aten_kernels.cc: {infeasible: 0, remaining: 0, total: 4}
 csrc/ops/masked_select/masked_select_aten_kernels.cc: {infeasible: 0, remaining: 0, total: 3}
 csrc/ops/min_max/min_max_aten_kernels.cc: {infeasible: 0, remaining: 0, total: 4}
+csrc/ops/mish/mish_aten_kernels.cc: {infeasible: 0, remaining: 0, total: 4}
 csrc/ops/mm/mm.cc: {infeasible: 4, remaining: 0, total: 4}
 csrc/ops/mm/mm_aten_kernels.cc: {infeasible: 0, remaining: 0, total: 5}
 csrc/ops/mse_loss/mse_loss_aten_kernels.cc: {infeasible: 0, remaining: 0, total: 5}

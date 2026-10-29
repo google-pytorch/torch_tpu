@@ -1070,6 +1070,58 @@ class DynamismTest(seed_test_utils.RepeatableTest):
     self.assertEqual(grad_x_dynamism_info[0].upper_bound, upper_bound)
     self.assertEmpty(dynamism.get_dynamism_info(act[1]))
 
+  @parameterized.parameters(
+      torch.float32, torch.bfloat16, torch.float16, torch.float64
+  )
+  def test_mish_dynamic_input(self, dtype):
+    mark_dynamic = lambda x: dynamism.mark_dynamic(x, 0, 2, 12)
+    x = torch.randn(5, 4, dtype=dtype)
+    tol = 1e-2 if dtype in (torch.bfloat16, torch.float16) else 2e-4
+    act = self._run_bounded_dynamism_test(
+        torch.nn.functional.mish, mark_dynamic, x, rtol=tol, atol=tol
+    )
+    act_dynamism_info = dynamism.get_dynamism_info(act)
+    self.assertLen(act_dynamism_info, 1)
+    self.assertEqual(act_dynamism_info[0].dimension, 0)
+    self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+    self.assertEqual(act_dynamism_info[0].upper_bound, 12)
+
+  def test_mish_backward_dynamic_input(self):
+    def mark_dynamic_same(grad_out, x):
+      dynamism.mark_dynamic(grad_out, 0, 2, 12)
+      dynamism.mark_dynamic(x, 0, 2, 12)
+
+    grad_out = torch.randn(5, 4, dtype=torch.float32)
+    x = torch.randn(5, 4, dtype=torch.float32)
+    act = self._run_bounded_dynamism_test(
+        torch.ops.aten.mish_backward,
+        mark_dynamic_same,
+        grad_out,
+        x,
+        rtol=2e-4,
+        atol=2e-4,
+    )
+    act_dynamism_info = dynamism.get_dynamism_info(act)
+    self.assertLen(act_dynamism_info, 1)
+    self.assertEqual(act_dynamism_info[0].dimension, 0)
+    self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+    self.assertEqual(act_dynamism_info[0].upper_bound, 12)
+
+    def mark_dynamic_bcast(grad_out_b, x_b):
+      dynamism.mark_dynamic(grad_out_b, 0, 2, 10)
+      dynamism.mark_dynamic(x_b, 1, 2, 15)
+
+    grad_out_b = torch.randn(3, 1, dtype=torch.float32)
+    x_b = torch.randn(1, 4, dtype=torch.float32)
+    self._run_bounded_dynamism_test(
+        torch.ops.aten.mish_backward,
+        mark_dynamic_bcast,
+        grad_out_b,
+        x_b,
+        rtol=2e-4,
+        atol=2e-4,
+    )
+
 
 if __name__ == "__main__":
   absltest.main()
