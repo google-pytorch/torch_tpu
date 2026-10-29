@@ -14483,28 +14483,48 @@ Device-side assertion tracking was not enabled by user.""",
       torch.ops.aten._logcumsumexp(t, 1)
 
   def test_logcumsumexp_dimension_out_of_range(self):
+    t = torch.ones(1, device=et.device())
     with et.assert_raises_message(
         IndexError,
         tpu="""logcumsumexp(): expected dimension to be in range [-1, 0], got 1""",
         gpu="""Dimension out of range (expected to be in range of [-1, 0], but got 1)""",
         message_reviewed_by="wan",
     ):
-      t = torch.ones(1, device=et.device())
       torch.logcumsumexp(t, dim=1)
 
+    out = torch.empty(0, device=et.device())
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""logcumsumexp(): expected dimension to be in range [-1, 0], got 1""",
+        gpu="""Dimension out of range (expected to be in range of [-1, 0], but got 1)""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.logcumsumexp(t, dim=1, out=out)
+    self.assertEqual(out.shape, (0,))
+
   def test_logcumsumexp_scalar_dimension_out_of_range(self):
+    t = torch.tensor(1.0, device=et.device())
     with et.assert_raises_message(
         IndexError,
         tpu="""logcumsumexp(): expected dimension to be either 0 or -1 for a shape with 0 dimensions, got 1""",
         gpu="""Dimension out of range (expected to be in range of [-1, 0], but got 1)""",
         message_reviewed_by="wan",
     ):
-      t = torch.tensor(1.0, device=et.device())
       torch.logcumsumexp(t, dim=1)
+
+    out = torch.empty(2, device=et.device())
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""logcumsumexp(): expected dimension to be either 0 or -1 for a shape with 0 dimensions, got 1""",
+        gpu="""Dimension out of range (expected to be in range of [-1, 0], but got 1)""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.logcumsumexp(t, dim=1, out=out)
+    self.assertEqual(out.shape, (2,))
 
   def test_logcumsumexp_out_dtype_mismatch(self):
     t = torch.ones(5, device=et.device(), dtype=torch.float32)
-    out = torch.ones(5, device=et.device(), dtype=torch.int32)
+    out = torch.ones(1, device=et.device(), dtype=torch.int32)
     with et.assert_raises_message(
         RuntimeError,
         tpu="""logcumsumexp(): result type float32 can't be cast to the desired output type int32""",
@@ -14512,6 +14532,8 @@ Device-side assertion tracking was not enabled by user.""",
         message_reviewed_by="wan",
     ):
       torch.ops.aten._logcumsumexp.out(t, 0, out=out)
+    if et.is_on_tpu():
+      self.assertEqual(out.shape, (1,))
 
   def test_unsafe_masked_index_error(self):
     with et.assert_raises_message(

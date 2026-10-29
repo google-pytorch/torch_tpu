@@ -30,7 +30,6 @@
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
-#include "csrc/ops/resize/resize_aten_kernels.h"
 #include "csrc/ops/scan_builder.h"
 #include "csrc/ops/unary_aten_kernels.h"
 #include "llvm/ADT/APFloat.h"
@@ -179,8 +178,6 @@ at::Tensor AtenLogcumsumexp(const at::Tensor& self, const int64_t dim) {
 at::Tensor& AtenLogcumsumexpOut(const at::Tensor& self, const int64_t dim,
                                 at::Tensor& out) {
   TT_KERNEL(OpName::kLogcumsumexpOut, param_keys, (self, dim, out), {
-    TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, self.sizes()));
-
     // The out variant is unreachable in eager mode: functionalization rewrites
     // _logcumsumexp.out into the functional _logcumsumexp plus a copy, so the
     // identical check in AtenLogcumsumexp fires first. Kept as a defensive
