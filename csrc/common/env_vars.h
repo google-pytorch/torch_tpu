@@ -55,6 +55,10 @@ inline constexpr char kLibtpuInitArgsEnvVar[] =
 inline constexpr char kLocalRankEnvVar[] = "LOCAL_RANK";    // Set by launchers.
 inline constexpr char kMasterAddrEnvVar[] = "MASTER_ADDR";  // Set by launchers.
 inline constexpr char kMasterPortEnvVar[] = "MASTER_PORT";  // Set by launchers.
+// The address of the MegaScale coordinator in a multi-slice job. Set by GKE or
+// distributed launchers and read by libtpu.
+inline constexpr char kMegascaleCoordinatorAddressEnvVar[] =
+    "MEGASCALE_COORDINATOR_ADDRESS";
 // The MegaScale debug server port of this process. Read by libtpu, which
 // defaults it to 8081 in every process.
 inline constexpr char kMegascaleDebugPortEnvVar[] = "MEGASCALE_DEBUG_PORT";
@@ -272,6 +276,8 @@ inline constexpr auto kEnvVarToStage =
         // environment variable widely used by production workloads. The
         // TorchTPU team is committed to honor this env var.
         {kMasterPortEnvVar, SymbolStage::Stable()},
+        {kMegascaleCoordinatorAddressEnvVar,
+         SymbolStage::InternalImplementation()},
         {kMegascaleDebugPortEnvVar, SymbolStage::InternalImplementation()},
         {kMegascalePortEnvVar, SymbolStage::InternalImplementation()},
         // Marked as Stable because it is an established distributed launcher

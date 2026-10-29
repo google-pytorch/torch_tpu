@@ -329,14 +329,30 @@ DistributedWorkerConfiguration MultisliceConfig(const int local_rank) {
 }
 
 // Runs InitializeDistributedEnvironment(config) in a death test child and
-// prints the resulting MegaScale ports to stderr as
-// "ports=<MEGASCALE_PORT>,<MEGASCALE_DEBUG_PORT>" for EXPECT_EXIT to match.
-void InitAndPrintMegascalePorts(const DistributedWorkerConfiguration& config) {
+// prints the resulting MegaScale coordinator address and ports to stderr as
+// "coord=<MEGASCALE_COORDINATOR_ADDRESS>
+// ports=<MEGASCALE_PORT>,<MEGASCALE_DEBUG_PORT>" for EXPECT_EXIT to match.
+void InitAndPrintMegascalePorts(
+    const DistributedWorkerConfiguration& config,
+    const char* const coordinator_address = nullptr,
+    const char* const initial_megascale_port = nullptr) {
+  if (coordinator_address != nullptr) {
+    setenv(kMegascaleCoordinatorAddressEnvVar, coordinator_address, 1);
+  } else {
+    unsetenv(kMegascaleCoordinatorAddressEnvVar);
+  }
+  if (initial_megascale_port != nullptr) {
+    setenv(kMegascalePortEnvVar, initial_megascale_port, 1);
+  } else {
+    unsetenv(kMegascalePortEnvVar);
+  }
+  unsetenv(kMegascaleDebugPortEnvVar);
   if (!InitializeDistributedEnvironment(config).ok()) _exit(1);
+  const char* const coord = std::getenv(kMegascaleCoordinatorAddressEnvVar);
   const char* const port = std::getenv(kMegascalePortEnvVar);
   const char* const debug_port = std::getenv(kMegascaleDebugPortEnvVar);
-  std::fprintf(stderr, "ports=%s,%s\n", port ? port : "unset",
-               debug_port ? debug_port : "unset");
+  std::fprintf(stderr, "coord=%s ports=%s,%s\n", coord ? coord : "unset",
+               port ? port : "unset", debug_port ? debug_port : "unset");
   _exit(0);
 }
 
@@ -350,6 +366,48 @@ TEST(EnvironmentDeathTest,
      InitDistEnvKeepsDefaultMegascalePortsForLocalRankZero) {
   EXPECT_EXIT(InitAndPrintMegascalePorts(MultisliceConfig(/*local_rank=*/0)),
               ExitedWithCode(0), "ports=8080,8081");
+}
+
+TEST(EnvironmentDeathTest,
+     InitDistEnvDerivesMegascaleBasePortFromCoordinatorAddress) {
+  EXPECT_EXIT(InitAndPrintMegascalePorts(MultisliceConfig(/*local_rank=*/0),
+                                         /*coordinator_address=*/"slice0:8081",
+                                         /*initial_megascale_port=*/"8081"),
+              ExitedWithCode(0), "coord=slice0:8081 ports=8081,8082");
+  EXPECT_EXIT(InitAndPrintMegascalePorts(MultisliceConfig(/*local_rank=*/3),
+                                         /*coordinator_address=*/"slice0:8081",
+                                         /*initial_megascale_port=*/"8081"),
+              ExitedWithCode(0), "coord=slice0:8081 ports=8087,8088");
+  // When a startup hook pre-sets MEGASCALE_PORT to `base_port + local_rank`
+  // (8084 for local_rank=3), the coordinator address port still takes
+  // precedence as the base port.
+  EXPECT_EXIT(InitAndPrintMegascalePorts(MultisliceConfig(/*local_rank=*/3),
+                                         /*coordinator_address=*/"slice0:8081",
+                                         /*initial_megascale_port=*/"8084"),
+              ExitedWithCode(0), "coord=slice0:8081 ports=8087,8088");
+  EXPECT_EXIT(
+      InitAndPrintMegascalePorts(MultisliceConfig(/*local_rank=*/2),
+                                 /*coordinator_address=*/"[2001:db8::1]:8081"),
+      ExitedWithCode(0), "coord=\\[2001:db8::1\\]:8081 ports=8085,8086");
+}
+
+TEST(EnvironmentDeathTest,
+     InitDistEnvPinsPortlessCoordinatorAddressToMegascaleBasePort) {
+  EXPECT_EXIT(InitAndPrintMegascalePorts(MultisliceConfig(/*local_rank=*/0),
+                                         /*coordinator_address=*/"10.8.0.5",
+                                         /*initial_megascale_port=*/"8081"),
+              ExitedWithCode(0), "coord=10.8.0.5:8081 ports=8081,8082");
+  EXPECT_EXIT(InitAndPrintMegascalePorts(MultisliceConfig(/*local_rank=*/3),
+                                         /*coordinator_address=*/"10.8.0.5",
+                                         /*initial_megascale_port=*/"8081"),
+              ExitedWithCode(0), "coord=10.8.0.5:8081 ports=8087,8088");
+  EXPECT_EXIT(InitAndPrintMegascalePorts(MultisliceConfig(/*local_rank=*/3),
+                                         /*coordinator_address=*/"slice0"),
+              ExitedWithCode(0), "coord=slice0:8080 ports=8086,8087");
+  EXPECT_EXIT(InitAndPrintMegascalePorts(MultisliceConfig(/*local_rank=*/0),
+                                         /*coordinator_address=*/"slice0:bad",
+                                         /*initial_megascale_port=*/"-1"),
+              ExitedWithCode(0), "coord=slice0:bad ports=8080,8081");
 }
 
 TEST(EnvironmentDeathTest, InitDistEnvLeavesMegascalePortsUnsetForSingleSlice) {
