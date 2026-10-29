@@ -157,6 +157,10 @@ absl::Status ValidateAddmvInputs(const at::Tensor& self, const at::Tensor& mat,
                                  const at::Scalar& alpha) {
   TT_RET_CHECK(!IsBool(self), error::kInvalidArgument)
       << "the dtype of the first argument cannot be bool";
+  TT_RET_CHECK(self.dim() <= 1, error::kInvalidArgument)
+      << "expected the first argument to be a vector or scalar (0D or 1D "
+         "tensor), got "
+      << self.dim() << "D tensor";
 
   TT_RET_CHECK(mat.numel() == 0 || !c10::isIntegralType(mat.scalar_type(),
                                                         /*includeBool=*/false),
@@ -186,6 +190,16 @@ absl::Status ValidateAddmvInputs(const at::Tensor& self, const at::Tensor& mat,
   TT_RET_CHECK(!IsBool(beta) && !IsComplex(beta), error::kInvalidArgument)
       << "expected the dtype of beta to be neither complex nor bool, got "
       << ToString(beta.type());
+
+  if (self.dim() == 1) {
+    TT_RET_CHECK(self.size(0) == 1 || self.size(0) == mat.size(0),
+                 error::kInvalidArgument)
+        << "expected the first argument (vector of size [" << self.size(0)
+        << "]) to match the first dimension of the second argument (matrix of "
+           "size ["
+        << absl::StrJoin(mat.sizes(), /* separator= */ ", ") << "]), got "
+        << self.size(0) << " vs " << mat.size(0);
+  }
 
   TT_RET_CHECK(mat.size(1) == vec.size(0), error::kInvalidArgument)
       << "expected the last dimension of the second argument (matrix of size ["
