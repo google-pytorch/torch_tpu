@@ -244,8 +244,6 @@ def run_dtensor_dcp_state_dict_optimizer(checkpoint_dir: str) -> None:
 
 class DCPTest(continuous_test_utils.TpuMultiProcContinuousTest):
 
-  world_size = 8
-
   # Workers run concurrently in this harness; derive a deterministic path
   # so all ranks agree on the exact same checkpoint directory.
   def _create_checkpoint_dir(self) -> str:
