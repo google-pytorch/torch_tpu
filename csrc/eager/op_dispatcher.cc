@@ -100,6 +100,8 @@ absl::StatusOr<DeviceBufferRef> MakeBuffer(
     // that we may miss some opportunities to reuse scalars across threads,
     // but it might be a net win overall given that scalar buffers are cheap
     // to create.
+    // Upper bound on cached scalar buffers per thread; see the eviction below.
+    constexpr size_t kMaxCachedScalarBuffers = 1024;
     static thread_local  // CPP_THREAD_LOCAL_OK=unrelated to Python threads.
         absl::flat_hash_map<HashableScalar, DeviceBufferRef>
             scalar_map;
@@ -134,6 +136,15 @@ absl::StatusOr<DeviceBufferRef> MakeBuffer(
                             /*dimensions=*/{})
                             .Run());
     RecordAsyncHostToDevice(buf_ref);
+    // Bound the cache. Workloads that produce many distinct scalars (learning
+    // rate schedules, step counters, interpolation coefficients) would
+    // otherwise grow it without limit and leak one device buffer per value
+    // (issue #6036). Entries are ref-counted handles, so dropping them cannot
+    // invalidate a buffer that a caller or an in-flight transfer still holds.
+    // Scalar buffers are cheap to recreate, so clearing is preferred over LRU.
+    if (scalar_map.size() >= kMaxCachedScalarBuffers) {
+      scalar_map.clear();
+    }
     scalar_map.insert({hashable_scalar, buf_ref});
     return buf_ref;
   }

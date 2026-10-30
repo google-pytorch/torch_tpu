@@ -2326,6 +2326,21 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "scalar_buffer_cache_test",
+    size = "medium",
+    srcs = ["scalar_buffer_cache_test.py"],
+    main = "scalar_buffer_cache_test.py",
+    tags = ["requires-tpu-v5lite"],
+    deps = [
+        ":seed_test_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/execution_mode",
+    ],
+)
+
+torch_tpu_py_test(
     name = "inplace_buffer_donation_test",
     size = "medium",
     srcs = ["inplace_buffer_donation_test.py"],
