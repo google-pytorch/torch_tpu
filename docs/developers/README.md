@@ -13,4 +13,5 @@ TorchTPU, read the documentation in the [parent directory](../README.md).
 
 ## Tooling
 
+*   [GitHub work dashboard](dashboard/README.md)
 *   [Listing CI test targets](list_ci_tests_guide.md)

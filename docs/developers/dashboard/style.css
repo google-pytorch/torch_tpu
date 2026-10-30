@@ -1,0 +1,401 @@
+/**
+ * Copyright 2026 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+:root {
+  --text: #1f2328;
+  --muted: #59636e;
+  --border: #d0d7de;
+  --subtle: #f0f3f6;
+  --blue: #0969da;
+}
+
+body {
+  margin: 0;
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans",
+    Helvetica, Arial, sans-serif;
+  color: var(--text);
+  background: #f6f8fa;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+a {
+  color: var(--blue);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+input,
+select,
+button {
+  font: inherit;
+  font-size: 13px;
+}
+
+input,
+select {
+  padding: 6px 10px;
+  color: var(--text);
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+input:focus,
+select:focus {
+  outline: 2px solid var(--blue);
+  border-color: transparent;
+}
+
+/* Header */
+header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 24px;
+  font-size: 12px;
+  color: #d0d7de;
+  background: #24292f;
+}
+
+header h1 {
+  flex: 1;
+  margin: 0;
+  font-size: 18px;
+  color: #fff;
+}
+
+header h1 a {
+  color: #fff;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+header input {
+  width: 145px;
+  padding: 4px 8px;
+}
+
+.pill {
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #e6edf3;
+  background: #3e4348;
+  border: 1px solid #505459;
+  border-radius: 6px;
+}
+
+.pill:hover {
+  text-decoration: none;
+  background: #55595e;
+}
+
+/* Layout */
+main {
+  max-width: 1400px;
+  margin: 16px auto;
+  padding: 0 20px 40px;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-bottom: 12px;
+}
+
+.card {
+  margin-bottom: 16px;
+  padding: 16px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgba(31, 35, 40, 0.04);
+}
+
+.grow {
+  flex: 1;
+}
+
+.muted {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.label,
+summary {
+  font-weight: 600;
+  color: var(--muted);
+}
+
+summary {
+  margin-bottom: 8px;
+  cursor: pointer;
+}
+
+h2 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+/* Buttons */
+.btn {
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--subtle);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.btn:hover {
+  text-decoration: none;
+  background: #e3e8ee;
+}
+
+.btn.primary {
+  color: #fff;
+  background: var(--blue);
+  border-color: var(--blue);
+}
+
+.btn.primary:hover {
+  background: #0550ae;
+}
+
+.btn.active {
+  color: var(--blue);
+  background: #ddf4ff;
+  border-color: var(--blue);
+}
+
+/* View tabs, filters, and query */
+.tabs {
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tab {
+  margin-bottom: -1px;
+  padding: 8px 18px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+}
+
+.tab:hover,
+.tab.active {
+  color: var(--text);
+}
+
+.tab.active {
+  border-bottom-color: var(--blue);
+}
+
+#filters label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+#filters select {
+  width: 200px;
+}
+
+.query {
+  margin: 0;
+  padding: 8px 12px;
+  background: var(--subtle);
+  border-radius: 6px;
+}
+
+code {
+  font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  word-break: break-all;
+}
+
+/* Status banner */
+#banner {
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: #0550ae;
+  background: #ddf4ff;
+  border: 1px solid #54aeff;
+  border-radius: 6px;
+}
+
+#banner.warning {
+  color: #7d4e00;
+  background: #fff8c5;
+  border-color: #d4a72c;
+}
+
+#banner.error {
+  color: #cf222e;
+  background: #ffebe9;
+  border-color: #ff8182;
+}
+
+/* Results */
+.results {
+  padding: 0;
+  overflow: hidden;
+}
+
+.toolbar {
+  margin: 0;
+  padding: 10px 16px;
+  background: var(--subtle);
+  border-bottom: 1px solid var(--border);
+}
+
+.scroll {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  padding: 10px 12px;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--border);
+}
+
+th {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  background: #f9fbfd;
+  cursor: pointer;
+  user-select: none;
+}
+
+th:hover,
+.arrow {
+  color: var(--blue);
+}
+
+tbody tr:hover {
+  background: #f6f8fa;
+}
+
+td.number {
+  font-weight: 600;
+}
+
+td.updated,
+td.comments {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+a.title {
+  margin-right: 6px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+a.title:hover {
+  color: var(--blue);
+}
+
+a.user {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-right: 6px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+a.user img {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+}
+
+/* Badges */
+.badge {
+  display: inline-block;
+  margin: 0 4px 2px 0;
+  padding: 1px 7px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  background: #eaeef2;
+  border-radius: 12px;
+}
+
+.badge.blue {
+  font-weight: 600;
+  color: var(--blue);
+  background: #ddf4ff;
+}
+
+.badge.gray {
+  color: var(--muted);
+}
+
+.badge.urgent,
+.badge.high,
+.badge.medium,
+.badge.low {
+  font-weight: 600;
+}
+
+.badge.urgent {
+  color: #cf222e;
+  background: #ffebe9;
+}
+
+.badge.high {
+  color: #bc4c00;
+  background: #fff1e5;
+}
+
+.badge.medium {
+  color: #9a6700;
+  background: #fff8c5;
+}
+
+.badge.low {
+  color: #1a7f37;
+  background: #dafbe1;
+}
