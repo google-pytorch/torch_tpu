@@ -268,8 +268,7 @@ absl::Status AddTpuPartitioningPasses(xla::HloModule* module,
           .removeAllGatherReduceScatterForCMV1 = false,
           .avoidReshardsOnNamedComputations = false
           /*shardy_options.dedup_functions_fully()*/,
-      },
-      /*enableNativeNonFlatSupport=*/false);
+      });
 
   xla::spmd::SPMDCollectiveOpsCreator collective_creator =
       xla::spmd::GetDefaultCollectiveOpsCreator(
