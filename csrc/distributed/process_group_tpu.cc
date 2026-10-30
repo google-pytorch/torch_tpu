@@ -667,6 +667,17 @@ ProcessGroupTpu::CrossHostSendBuffers(
           }
         });
   }
+  if (!descriptors.empty()) {
+    for (const std::string& key : descriptor_keys) {
+      try {
+        store_->deleteKey(key);
+      } catch (const std::exception& e) {
+        ABSL_LOG_EVERY_N_SEC(WARNING, 60)
+            << "failed to delete P2P descriptor key " << key
+            << " from the store: " << e.what();
+      }
+    }
+  }
   return all_sent_future;
 }
 
