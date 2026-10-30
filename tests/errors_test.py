@@ -1373,21 +1373,33 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
     out = torch.empty((32, 16), dtype=torch.int32, device=et.device())
     if case == "self_rank":
       a = a[:, 0]
-      gpu = "Expected self to be of dimension 2 but got 1"
+      if utils.get_torch_version() >= (2, 15):
+        gpu = "_int_mm: self must be a matrix, got 1-D tensor"
+      else:
+        gpu = "Expected self to be of dimension 2 but got 1"
       tpu = (
         "expected the self argument to be a 2D tensor (matrix), got 1D"
         " of shape [32]"
       )
     elif case == "mat2_rank":
       b = b.unsqueeze(-1)
-      gpu = "Expected mat2 to be of dimension 2 but got 3"
+      if utils.get_torch_version() >= (2, 15):
+        gpu = "_int_mm: mat2 must be a matrix, got 3-D tensor"
+      else:
+        gpu = "Expected mat2 to be of dimension 2 but got 3"
       tpu = (
         "expected the mat2 argument to be a 2D tensor (matrix), got 3D"
         " of shape [64, 16, 1]"
       )
     else:
       b = b[:32]
-      gpu = "self.size(1) needs to match mat2.size(0) but got 64 and 32"
+      if utils.get_torch_version() >= (2, 15):
+        gpu = (
+          "_int_mm: mat1 and mat2 shapes cannot be multiplied"
+          " (32x64 and 32x16)"
+        )
+      else:
+        gpu = "self.size(1) needs to match mat2.size(0) but got 64 and 32"
       tpu = (
         "expected the two arguments' 2D shapes to be compatible for matrix"
         " multiplication, got (32, 64) and (32, 16)"

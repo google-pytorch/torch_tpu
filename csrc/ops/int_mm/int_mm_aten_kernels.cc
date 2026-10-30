@@ -27,6 +27,7 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
 #include "csrc/common/to_string.h"
+#include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/macros/kernel.h"
@@ -97,17 +98,18 @@ absl::StatusOr<mlir::MlirOp> BuildIntMmShlo(
                                      precisions, mlir::ElementType::I32);
 }
 
-absl::Status IntMm(const at::Tensor& self, const at::Tensor& mat2,
-                   at::Tensor& out, OpParamCacheKeys param_keys) {
+absl::StatusOr<DeviceBufferRef> IntMm(const at::Tensor& self,
+                                      const at::Tensor& mat2,
+                                      OpParamCacheKeys param_keys) {
   const auto precision = GetAndAddPrecisionTo(param_keys);
   auto builder = [precision](FixedSizeSpan<mlir::MlirOp, 2> inputs) {
     return BuildIntMmShlo(inputs, precision);
   };
   const Dimensions out_dims = {self.size(0), mat2.size(1)};
-  return DispatchOpOut<2>(std::move(builder), {self, mat2}, out,
-                          {.out_dtype = mlir::ElementType::I32,
-                           .out_dims = out_dims,
-                           .op_param_cache_keys = std::move(param_keys)});
+  return DispatchOp<2>(std::move(builder), {self, mat2},
+                       {.out_dtype = mlir::ElementType::I32,
+                        .out_dims = out_dims,
+                        .op_param_cache_keys = std::move(param_keys)});
 }
 
 }  // namespace
@@ -115,11 +117,8 @@ absl::Status IntMm(const at::Tensor& self, const at::Tensor& mat2,
 at::Tensor AtenIntMm(const at::Tensor& self, const at::Tensor& mat2) {
   TT_KERNEL(OpName::kIntMm, param_keys, (self, mat2), {
     TT_THROW_IF_ERROR(ValidateIntMmInputs(self, mat2));
-    const Dimensions out_dims = {self.size(0), mat2.size(1)};
-    TT_ASSIGN_OR_THROW(at::Tensor out,
-                       MakeEmptyTensor(out_dims, at::kInt, self.device()));
-    TT_THROW_IF_ERROR(IntMm(self, mat2, out, std::move(param_keys)));
-    return out;
+    TT_ASSIGN_OR_THROW(auto result, IntMm(self, mat2, std::move(param_keys)));
+    return MakeTensor(std::move(result));
   });
 }
 
@@ -128,7 +127,9 @@ at::Tensor& AtenIntMmOut(const at::Tensor& self, const at::Tensor& mat2,
   TT_KERNEL(OpName::kIntMmOut, param_keys, (self, mat2, out), {
     TT_THROW_IF_ERROR(ValidateIntMmInputs(self, mat2));
     TT_THROW_IF_ERROR(ValidateIntMmOutInputs(self, mat2, out));
-    TT_THROW_IF_ERROR(IntMm(self, mat2, out, std::move(param_keys)));
+    TT_ASSIGN_OR_THROW(auto result, IntMm(self, mat2, std::move(param_keys)));
+    TT_THROW_IF_ERROR(internal::AssignBufferToOutput(
+        out, std::move(result), /*enable_autodonation=*/false));
     return out;
   });
 }
