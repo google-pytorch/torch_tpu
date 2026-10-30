@@ -817,6 +817,7 @@ torch_tpu_cc_library(
         "//csrc/ops/fused_adamw:fused_adamw_aten_kernels",
         "//csrc/ops/fused_sgd:fused_sgd_aten_kernels",
         "//csrc/ops/gather:gather_aten_kernels",
+        "//csrc/ops/gcd:gcd_aten_kernels",
         "//csrc/ops/gelu:gelu_aten_kernels",
         "//csrc/ops/glu:glu_aten_kernels",
         "//csrc/ops/gru:gru_aten_kernels",
