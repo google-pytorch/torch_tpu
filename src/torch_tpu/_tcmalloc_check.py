@@ -79,7 +79,7 @@ def _has_sanitizer_init(global_syms: ctypes.CDLL) -> bool:
 
 # The prefix of `torch_tpu._internal.warnings.TCMALLOC` warnings; see the module
 # docstring for why it's hard-coded. Tests check that it matches the C++ value.
-TCMALLOC_WARNING_PREFIX: Final[str] = "<TorchTpu/Performance/TcMalloc/> "
+TCMALLOC_WARNING_PREFIX: Final[str] = "//TorchTpu/Performance/TcMalloc// "
 
 
 def install_default_filters() -> None:
@@ -143,7 +143,7 @@ def check_tcmalloc() -> None:
       " performance may be degraded due to glibc ptmalloc contention. Preload"
       " libtcmalloc before starting Python (e.g."
       " LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libtcmalloc_minimal.so.4), or set"
-      ' PYTHONWARNINGS="ignore:<TorchTpu/Performance/TcMalloc/" to suppress'
+      ' PYTHONWARNINGS="ignore://TorchTpu/Performance/TcMalloc/" to suppress'
       " this warning.",
       UserWarning,
       stacklevel=2,

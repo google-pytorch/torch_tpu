@@ -49,25 +49,25 @@ enum class WarningCategory {
 constexpr std::string_view GetWarningPrefix(WarningCategory category) {
   switch (category) {
     case WarningCategory::kTorchTpu:
-      return "<TorchTpu/> ";
+      return "//TorchTpu// ";
     case WarningCategory::kPerformance:
-      return "<TorchTpu/Performance/> ";
+      return "//TorchTpu/Performance// ";
     case WarningCategory::kUnoptimizedBuild:
-      return "<TorchTpu/Performance/UnoptimizedBuild/> ";
+      return "//TorchTpu/Performance/UnoptimizedBuild// ";
     case WarningCategory::kTcMalloc:
-      return "<TorchTpu/Performance/TcMalloc/> ";
+      return "//TorchTpu/Performance/TcMalloc// ";
     case WarningCategory::kCorrectness:
-      return "<TorchTpu/Correctness/> ";
+      return "//TorchTpu/Correctness// ";
     case WarningCategory::kApiStage:
-      return "<TorchTpu/ApiStage/> ";
+      return "//TorchTpu/ApiStage// ";
     case WarningCategory::kInternalApi:
-      return "<TorchTpu/ApiStage/InternalApi/> ";
+      return "//TorchTpu/ApiStage/InternalApi// ";
     case WarningCategory::kExperimentalApi:
-      return "<TorchTpu/ApiStage/ExperimentalApi/> ";
+      return "//TorchTpu/ApiStage/ExperimentalApi// ";
     case WarningCategory::kDeprecatedApi:
-      return "<TorchTpu/ApiStage/DeprecatedApi/> ";
+      return "//TorchTpu/ApiStage/DeprecatedApi// ";
   }
-  return "<TorchTpu/> ";
+  return "//TorchTpu// ";
 }
 
 // Returns whether warnings in `category` are emitted as Python
