@@ -156,6 +156,38 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
     ):
       _ = getattr(internal_pallas, "non_existent_attribute")
 
+  def test_pallas_verifier_api_registry(self):
+    """Verifies public exposure, metadata, and proxy behavior for torch.tpu.pallas.verifier."""
+    verifier_mod = importlib.import_module("torch.tpu.pallas.verifier")
+    self.assertIs(verifier_mod, torch.tpu.pallas.verifier)
+    expected_symbols = [
+        "CounterexampleStep",
+        "DmaScheduleMode",
+        "FindingCategory",
+        "InterpretSweepConfig",
+        "Phase",
+        "Severity",
+        "UninitMemoryMode",
+        "VerificationError",
+        "VerificationFinding",
+        "VerificationMode",
+        "VerificationOptions",
+        "VerificationReport",
+        "verify",
+    ]
+
+    self.assertEqual(dir(torch.tpu.pallas.verifier), expected_symbols)
+    for name in expected_symbols:
+      sym = getattr(torch.tpu.pallas.verifier, name)
+      self.assertEqual(
+          getattr(sym, annotations.TT_API_STAGE, None),
+          annotations.Stage.EXPERIMENTAL.value,
+      )
+    with self.assertRaises(  # ASSERT_RAISES_OK=Verifies proxy module raises AttributeError for non-existent attributes
+        AttributeError
+    ):
+      _ = getattr(torch.tpu.pallas.verifier, "non_existent_attribute")
+
   def test_ops_optimization_barrier_registry(self):
     """Verifies exposure, identity, metadata and proxy behavior for the barrier."""
     # 1. Submodule import and symbol identity

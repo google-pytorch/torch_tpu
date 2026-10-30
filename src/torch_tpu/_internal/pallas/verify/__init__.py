@@ -15,9 +15,13 @@
 """Pallas kernel and PyTorch program verification for TorchTPU."""
 
 # pylint: disable=g-importing-member
+from torch_tpu._internal.pallas.verify.findings import CounterexampleStep
+from torch_tpu._internal.pallas.verify.findings import DmaScheduleMode
 from torch_tpu._internal.pallas.verify.findings import FindingCategory
+from torch_tpu._internal.pallas.verify.findings import InterpretSweepConfig
 from torch_tpu._internal.pallas.verify.findings import Phase
 from torch_tpu._internal.pallas.verify.findings import Severity
+from torch_tpu._internal.pallas.verify.findings import UninitMemoryMode
 from torch_tpu._internal.pallas.verify.findings import VerificationError
 from torch_tpu._internal.pallas.verify.findings import VerificationFinding
 from torch_tpu._internal.pallas.verify.findings import VerificationReport
@@ -28,9 +32,13 @@ from torch_tpu._internal.pallas.verify.verifier import verify
 # PEP 8 requires this to be a list of strings, not a tuple or a list of objects.
 __all__ = [
     # go/keep-sorted start
+    "CounterexampleStep",
+    "DmaScheduleMode",
     "FindingCategory",
+    "InterpretSweepConfig",
     "Phase",
     "Severity",
+    "UninitMemoryMode",
     "VerificationError",
     "VerificationFinding",
     "VerificationMode",
