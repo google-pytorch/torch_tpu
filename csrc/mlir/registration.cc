@@ -18,6 +18,7 @@
 
 #include <memory>
 
+#include "csrc/mlir/passes/canonicalize_pointwise_conv_and_finite_sdpa_biases.h"
 #include "csrc/mlir/passes/dummy_pass.h"
 #include "csrc/mlir/passes/fold_concat_softmax.h"
 #include "csrc/mlir/passes/guard_zero_operand_custom_calls.h"
@@ -48,6 +49,9 @@ void RegisterTorchTpuPasses() {
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return createFoldConcatSoftmaxPass();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return createCanonicalizePointwiseConvAndFiniteSdpaBiasesPass();
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return createGuardZeroOperandCustomCallsPass();

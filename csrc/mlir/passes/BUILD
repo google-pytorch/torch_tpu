@@ -29,6 +29,38 @@ package(
 )
 
 torch_tpu_cc_library(
+    name = "canonicalize_pointwise_conv_and_finite_sdpa_biases",
+    srcs = ["canonicalize_pointwise_conv_and_finite_sdpa_biases.cc"],
+    hdrs = ["canonicalize_pointwise_conv_and_finite_sdpa_biases.h"],
+    deps = [
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "canonicalize_pointwise_conv_and_finite_sdpa_biases_test",
+    srcs = ["canonicalize_pointwise_conv_and_finite_sdpa_biases_test.cc"],
+    deps = [
+        ":canonicalize_pointwise_conv_and_finite_sdpa_biases",
+        "//csrc/common:oss_test_main",
+        "//csrc/mlir:pipeline",
+        "@com_google_absl//absl/status:status_matchers",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Parser",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:register",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "dummy_pass",
     srcs = ["dummy_pass.cc"],
     hdrs = ["dummy_pass.h"],
