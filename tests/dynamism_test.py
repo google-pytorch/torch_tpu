@@ -1197,6 +1197,29 @@ class DynamismTest(seed_test_utils.RepeatableTest):
     for grad_affine in act[1:]:
       self.assertEmpty(dynamism.get_dynamism_info(grad_affine))
 
+  def test_linalg_cross_dynamic_batch_dim(self):
+    shape = (4, 3, 5)
+    dyn_dim = 0
+    upper_bound = 12
+    a = torch.randn(shape, dtype=torch.float32)
+    b = torch.randn(shape, dtype=torch.float32)
+
+    def mark_dynamic(x: torch.Tensor, y: torch.Tensor) -> None:
+      dynamism.mark_dynamic(x, dyn_dim, 2, upper_bound)
+      dynamism.mark_dynamic(y, dyn_dim, 2, upper_bound)
+
+    def cross_fn(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+      return torch.linalg.cross(x, y, dim=1)
+
+    act = self._run_bounded_dynamism_test(
+        cross_fn, mark_dynamic, a, b, rtol=1e-5, atol=1e-5
+    )
+    act_dynamism_info = dynamism.get_dynamism_info(act)
+    self.assertLen(act_dynamism_info, 1)
+    self.assertEqual(act_dynamism_info[0].dimension, dyn_dim)
+    self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+    self.assertEqual(act_dynamism_info[0].upper_bound, upper_bound)
+
 
 if __name__ == "__main__":
   absltest.main()
