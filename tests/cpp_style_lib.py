@@ -14,7 +14,7 @@
 
 """Helper library for C++ style linter."""
 
-from collections.abc import Generator
+from collections.abc import Generator, Iterator, Sequence
 import os
 import pathlib
 import re
@@ -96,7 +96,7 @@ class CppFile:
   def __repr__(self) -> str:
     return self.torch_tpu_path
 
-  def get_namespace(self) -> Generator[tuple[list[str], str], None, None]:
+  def get_namespace(self) -> Iterator[tuple[Sequence[str], str]]:
     """Yields ((active_namespace...), line) for each line in the file.
 
     Example:
@@ -117,7 +117,7 @@ class CppFile:
 
   def get_namespace_with_line_number(
       self,
-  ) -> Generator[tuple[int, list[str], str], None, None]:
+  ) -> Iterator[tuple[int, list[str], str]]:
     """Like `get_namespace`, but also yields the 1-based line number first.
 
     For lines that open or close a namespace, the yielded namespaces are the
@@ -212,7 +212,7 @@ _DEFINE_RE = re.compile(r"^#define\s+(\w+)")
 _ENDIF_RE = re.compile(r"^#endif(?:\s+(?://|/\*)\s*(\w+))?")
 
 
-def check_header_guard(file: CppFile) -> list[str]:
+def check_header_guard(file: CppFile) -> Sequence[str]:
   """Checks if a CppFile has the correct header guard.
 
   Args:
@@ -317,7 +317,7 @@ def _has_marker_with_reason(line: str) -> bool:
   return bool(marker and (marker.group("reason") or "").strip())
 
 
-def _format_namespace(segments: list[str]) -> str:
+def _format_namespace(segments: Sequence[str]) -> str:
   """Formats namespace segments for error messages, e.g. `foo::(anonymous)`."""
   return "::".join(segment or "(anonymous)" for segment in segments)
 
@@ -343,7 +343,7 @@ def _nested_namespace_error(active_namespaces: list[str]) -> str | None:
   )
 
 
-def check_unapproved_namespace(file: CppFile) -> list[str]:
+def check_unapproved_namespace(file: CppFile) -> Sequence[str]:
   """Checks if a CppFile uses any unapproved nested namespaces.
 
   Namespaces nested under torch_tpu must be one of the approved names, and only
@@ -380,7 +380,7 @@ def check_unapproved_namespace(file: CppFile) -> list[str]:
   return errors
 
 
-def check_namespace_root(file: CppFile) -> list[str]:
+def check_namespace_root(file: CppFile) -> Sequence[str]:
   """Checks that every top-level namespace in a CppFile is rooted at torch_tpu.
 
   Every `namespace ... {` that is not nested in another namespace must start

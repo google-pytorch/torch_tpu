@@ -14,6 +14,7 @@
 
 """Unit tests for standalone distributed benchmark runner."""
 
+from collections.abc import Set
 import importlib.util
 import os
 import shutil
@@ -59,8 +60,8 @@ class _FakeDistRun:
 
   def __init__(
       self,
-      failing_specs: set[str],
-      unsupported_specs: frozenset[str] = frozenset(),
+      failing_specs: Set[str],
+      unsupported_specs: Set[str] = frozenset(),
   ):
     self._failing_specs = failing_specs
     self._unsupported_specs = unsupported_specs

@@ -19,7 +19,7 @@ See go/torch-tpu-op-test for more details.
 
 import builtins
 import collections
-from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence, Set
 import copy
 import dataclasses
 import enum
@@ -1913,12 +1913,12 @@ def _make_fused_opt_tensors(
     state_dtype: torch.dtype | None = None,
     shapes: Sequence[Sequence[int]] = ((4,), (2, 2)),
 ) -> tuple[
-    list[torch.Tensor],
-    list[torch.Tensor],
-    list[torch.Tensor],
-    list[torch.Tensor],
-    list[torch.Tensor],
-    list[torch.Tensor],
+    Sequence[torch.Tensor],
+    Sequence[torch.Tensor],
+    Sequence[torch.Tensor],
+    Sequence[torch.Tensor],
+    Sequence[torch.Tensor],
+    Sequence[torch.Tensor],
 ]:
   """Constructs deterministic multi-tensor inputs for fused optimizers (no randn)."""
   if state_dtype is None:
@@ -1993,12 +1993,12 @@ def _make_fused_opt_tensors(
 def _make_dummy_unsupported_tensors(
     device: str | torch.device, dtype: torch.dtype
 ) -> tuple[
-    list[torch.Tensor],
-    list[torch.Tensor],
-    list[torch.Tensor],
-    list[torch.Tensor],
-    list[torch.Tensor],
-    list[torch.Tensor],
+    Sequence[torch.Tensor],
+    Sequence[torch.Tensor],
+    Sequence[torch.Tensor],
+    Sequence[torch.Tensor],
+    Sequence[torch.Tensor],
+    Sequence[torch.Tensor],
 ]:
   if dtype in quantize_utils.SUB_BYTE_DTYPES:
     t = torch.zeros((4,), dtype=torch.uint8, device=device).view(dtype)
@@ -4636,7 +4636,7 @@ class GoldenGpuData:
 
   def _samples_for(
       self, test_case_name: str, variant_name: str, dtype_key: str
-  ) -> list[_GoldenSample]:
+  ) -> MutableSequence[_GoldenSample]:
     """Returns the mutable sample list for the key, creating it if needed."""
     return (
         self._data.setdefault(test_case_name, {})
@@ -5194,7 +5194,7 @@ def _sample_inputs(
     op: OpInfo,
     device: torch.device,
     dtype: torch.dtype,
-) -> list[SampleInput]:
+) -> Sequence[SampleInput]:
   """Generates sample inputs for an op on the given device.
 
   Args:
@@ -6220,7 +6220,7 @@ def _has_differentiable_input(op_input: OpInput) -> bool:
   )
 
 
-def _pinned_symbols(shape_env: symbolic_shapes.ShapeEnv) -> set[sympy.Basic]:
+def _pinned_symbols(shape_env: symbolic_shapes.ShapeEnv) -> Set[sympy.Basic]:
   """Returns the symbols that `shape_env` pinned to a constant.
 
   A symbol is pinned if it was replaced with a constant (e.g. by a guard
@@ -8104,7 +8104,7 @@ def _save_golden_file() -> None:
     f.write(bin_data)
 
 
-def _golden_keys(encoded_data: _pytree.PyTree) -> set[_GoldenKey]:
+def _golden_keys(encoded_data: _pytree.PyTree) -> Set[_GoldenKey]:
   """Returns the golden keys `encoded_data` holds samples for."""
   return {
       (test_case_name, variant_name, dtype_name)

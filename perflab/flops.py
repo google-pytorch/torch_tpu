@@ -30,7 +30,7 @@ that the attention formula ignores causal masking, and that ops without a
 formula or a decomposition into ops with one (e.g. `_grouped_mm`) count zero.
 """
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 import dataclasses
 
 from absl import logging
@@ -134,7 +134,9 @@ def count_step_flops(
   return flop_count
 
 
-def check_utilization(name: str, metric_map: Mapping[str, float]) -> list[str]:
+def check_utilization(
+    name: str, metric_map: Mapping[str, float]
+) -> Sequence[str]:
   """Logs a warning for each implausible FLOPs metric of a benchmark case.
 
   A model FLOPs utilization (MFU) above 1 means that the FLOPs were counted

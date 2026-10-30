@@ -68,6 +68,7 @@ This module intercepts calls at the Python level
    Dynamo, AOTAutograd, and `functorch`.
 """
 
+from collections.abc import Sequence
 import functools
 from typing import Any
 import torch
@@ -110,10 +111,10 @@ class _TpuMaxPool1dFunction(torch.autograd.Function):
   @staticmethod
   def forward(
       input: torch.Tensor,
-      kernel_size: list[int],
-      stride: list[int],
-      padding: list[int],
-      dilation: list[int],
+      kernel_size: Sequence[int],
+      stride: Sequence[int],
+      padding: Sequence[int],
+      dilation: Sequence[int],
       ceil_mode: bool,
   ) -> torch.Tensor:
     """Executes native 1D max pooling without index materialization."""
@@ -124,7 +125,14 @@ class _TpuMaxPool1dFunction(torch.autograd.Function):
   @staticmethod
   def setup_context(
       ctx: Any,
-      inputs: tuple[Any, ...],
+      inputs: tuple[
+          torch.Tensor,
+          Sequence[int],
+          Sequence[int],
+          Sequence[int],
+          Sequence[int],
+          bool,
+      ],
       output: Any,
   ) -> None:
     """Saves only the forward input tensor and pooling metadata for backward.
@@ -171,10 +179,10 @@ class _TpuMaxPool2dFunction(torch.autograd.Function):
   @staticmethod
   def forward(
       input: torch.Tensor,
-      kernel_size: list[int],
-      stride: list[int],
-      padding: list[int],
-      dilation: list[int],
+      kernel_size: Sequence[int],
+      stride: Sequence[int],
+      padding: Sequence[int],
+      dilation: Sequence[int],
       ceil_mode: bool,
   ) -> torch.Tensor:
     """Executes native 2D max pooling without index materialization."""
@@ -185,7 +193,14 @@ class _TpuMaxPool2dFunction(torch.autograd.Function):
   @staticmethod
   def setup_context(
       ctx: Any,
-      inputs: tuple[Any, ...],
+      inputs: tuple[
+          torch.Tensor,
+          Sequence[int],
+          Sequence[int],
+          Sequence[int],
+          Sequence[int],
+          bool,
+      ],
       output: Any,
   ) -> None:
     """Saves only the forward input tensor and pooling metadata for backward.
@@ -232,10 +247,10 @@ class _TpuMaxPool3dFunction(torch.autograd.Function):
   @staticmethod
   def forward(
       input: torch.Tensor,
-      kernel_size: list[int],
-      stride: list[int],
-      padding: list[int],
-      dilation: list[int],
+      kernel_size: Sequence[int],
+      stride: Sequence[int],
+      padding: Sequence[int],
+      dilation: Sequence[int],
       ceil_mode: bool,
   ) -> torch.Tensor:
     """Executes native 3D max pooling without index materialization."""
@@ -246,7 +261,14 @@ class _TpuMaxPool3dFunction(torch.autograd.Function):
   @staticmethod
   def setup_context(
       ctx: Any,
-      inputs: tuple[Any, ...],
+      inputs: tuple[
+          torch.Tensor,
+          Sequence[int],
+          Sequence[int],
+          Sequence[int],
+          Sequence[int],
+          bool,
+      ],
       output: Any,
   ) -> None:
     """Saves only the forward input tensor and pooling metadata for backward.

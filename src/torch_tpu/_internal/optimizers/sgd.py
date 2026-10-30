@@ -15,6 +15,7 @@
 """SGD optimizer implementations for TPU tracing."""
 
 import abc
+from collections.abc import Mapping
 import dataclasses
 from typing import ClassVar
 
@@ -80,7 +81,7 @@ class _SgdBase(_optim.Optimizer):
       " notice."
   )
   def init_param_group(
-      self, params: dict[str, torch.Tensor] | torch.nn.Module
+      self, params: Mapping[str, torch.Tensor] | torch.nn.Module
   ) -> ParamGroup:
     """Initializes SGD optimizer state from model parameters or nn.Module."""
     if isinstance(params, torch.nn.Module):
@@ -88,6 +89,8 @@ class _SgdBase(_optim.Optimizer):
           name.replace(".", "_"): param.detach()
           for name, param in params.named_parameters()
       }
+    else:
+      params = dict(params)
     if not params:
       return self.ParamGroup(params={})
 
@@ -121,7 +124,7 @@ class _SgdBase(_optim.Optimizer):
       "step() is experimental and may change or be removed without notice."
   )
   def step(
-      self, param_group: ParamGroup, grads: dict[str, torch.Tensor]
+      self, param_group: ParamGroup, grads: Mapping[str, torch.Tensor]
   ) -> ParamGroup:
     """Performs optimizer step on param_group given grads and returns updated ParamGroup."""
     pass
@@ -161,7 +164,7 @@ class ReferenceSgd(_SgdBase):
     param.copy_(new_p)
 
   def step(
-      self, param_group: _SgdBase.ParamGroup, grads: dict[str, torch.Tensor]
+      self, param_group: _SgdBase.ParamGroup, grads: Mapping[str, torch.Tensor]
   ) -> _SgdBase.ParamGroup:
     """Reference pure PyTorch implementation of SGD step."""
     for name, param in param_group.params.items():
@@ -229,7 +232,7 @@ class Sgd(_SgdBase):
       "step() is experimental and may change or be removed without notice."
   )
   def step(
-      self, param_group: _SgdBase.ParamGroup, grads: dict[str, torch.Tensor]
+      self, param_group: _SgdBase.ParamGroup, grads: Mapping[str, torch.Tensor]
   ) -> _SgdBase.ParamGroup:
     """Torch SGD step calling torch.optim.sgd.sgd directly."""
     param_keys = list(param_group.params.keys())

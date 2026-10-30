@@ -32,7 +32,7 @@ Example:
 """
 
 import argparse
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence, Set
 import dataclasses
 import datetime
 import enum
@@ -468,7 +468,7 @@ def _sum_runner_counts(
     runner_counts: Sequence[RunnerCount] | None,
     *,
     name: str | None = None,
-    exec_kinds: frozenset[str] = frozenset(),
+    exec_kinds: Set[str] = frozenset(),
 ) -> int | None:
   """Sums the counts of runners matching `name` or one of `exec_kinds`.
 
@@ -697,7 +697,7 @@ def bq_load(ndjson_path: pathlib.Path, bq_table: str) -> None:
 
 def _read_rows(
     bep_files: Iterable[pathlib.Path], context: RunContext
-) -> list[InvocationRow]:
+) -> Sequence[InvocationRow]:
   """Reads one row per BEP file.
 
   Args:

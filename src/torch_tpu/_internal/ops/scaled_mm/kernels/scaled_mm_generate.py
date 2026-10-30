@@ -202,7 +202,7 @@ def register_recipe(name: str, generator: Callable[..., str]) -> None:
   _RECIPE_GENERATORS[name] = generator
 
 
-def get_supported_recipes() -> list[str]:
+def get_supported_recipes() -> Sequence[str]:
   """Returns the sorted list of registered recipe names."""
   return sorted(_RECIPE_GENERATORS.keys())
 

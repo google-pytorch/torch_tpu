@@ -1162,7 +1162,7 @@ def resolve_compilations(artifacts: Sequence[Any]) -> int:
 
 def _unpack_warmup_args(
     args: Any,
-) -> tuple[tuple[Any, ...], dict[str, Any]]:
+) -> tuple[tuple[Any, ...], Mapping[str, Any]]:
   """Unpacks warmup argument item into positional tuple and keyword dictionary."""
   if isinstance(args, tuple):
     if (

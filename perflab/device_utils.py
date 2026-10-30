@@ -97,7 +97,7 @@ def _get_peak_hbm_memory_mb(
 _POST_WARMUP_STEP_TRACE_PREFIX: Final[str] = 'post_warmup_step'
 
 
-def _extract_step_windows_ps(xspace: Any) -> list[tuple[int, int]]:
+def _extract_step_windows_ps(xspace: Any) -> Sequence[tuple[int, int]]:
   """Extracts host (start_ps, end_ps) windows for post_warmup_step TraceMes."""
   windows: list[tuple[int, int]] = []
   for plane in getattr(xspace, 'planes', []):
@@ -470,7 +470,9 @@ def _collect_tensors(tensors: Any) -> Sequence[torch.Tensor]:
   return collected
 
 
-def collect_tensors_on(device_type: str, tensors: Any) -> list[torch.Tensor]:
+def collect_tensors_on(
+    device_type: str, tensors: Any
+) -> Sequence[torch.Tensor]:
   """Returns the tensors on `device_type` reachable from `tensors`.
 
   Args:
@@ -483,7 +485,10 @@ def collect_tensors_on(device_type: str, tensors: Any) -> list[torch.Tensor]:
 def synchronize(
     device,
     tensor_to_sync: (
-        torch.Tensor | dict[str, torch.Tensor] | Sequence[torch.Tensor] | None
+        torch.Tensor
+        | Mapping[str, torch.Tensor]
+        | Sequence[torch.Tensor]
+        | None
     ) = None,
 ):
   """Synchronizes the device with the given tensor(s).

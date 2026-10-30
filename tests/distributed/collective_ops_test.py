@@ -21,7 +21,7 @@
   `distributed_utils.dist_run()`, which spawns N workers per test.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 import os
 import time
 from typing import Any
@@ -139,9 +139,9 @@ def _all_reduce_bitwise_input_fn(r, w):
 
 
 def _run_all_reduce(
-    input_fn: Callable[[int, int], list[int | float]],
+    input_fn: Callable[[int, int], Sequence[int | float]],
     reduce_op: torch.distributed.ReduceOp,
-    expected: list[int | float],
+    expected: Sequence[int | float],
     dtype: torch.dtype,
 ) -> None:
   """Tests all-reduce functionality."""

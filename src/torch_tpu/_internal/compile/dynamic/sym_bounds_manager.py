@@ -82,7 +82,7 @@ class SymBoundsManager:
       output_sym_shapes: Sequence[output_sym_shape.OutputSymShape],
       num_buckets: int = 1,
       bucket_step: int = 128,
-  ) -> list[symbol_bounds.SymbolBounds]:
+  ) -> Sequence[symbol_bounds.SymbolBounds]:
     """Computes a sequence of bucketed SymbolBounds using 128k - c alignment.
 
     For each atomic symbol `s` with lower bound `L` and positive constant offset

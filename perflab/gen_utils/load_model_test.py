@@ -14,6 +14,7 @@
 
 """Tests for load_model."""
 
+from collections.abc import Mapping
 import types
 from typing import Any
 from unittest import mock
@@ -47,7 +48,7 @@ def _deberta_config(
   )
 
 
-def _fake_registry(model: nn.Module, inputs: dict[str, Any]) -> Any:
+def _fake_registry(model: nn.Module, inputs: Mapping[str, torch.Tensor]) -> Any:
   """Returns a module registry whose only module spec yields `model`."""
   module_spec = types.SimpleNamespace(
       module_factory=lambda dtype=None: (
@@ -141,7 +142,7 @@ class LoadModelTest(seed_test_utils.RepeatableTest):
 
   def _load(
       self, model: nn.Module, is_training: bool
-  ) -> tuple[nn.Module, dict[str, Any]]:
+  ) -> tuple[nn.Module, Mapping[str, torch.Tensor]]:
     with mock.patch.object(
         model_helpers,
         "get_module_registry",
@@ -193,7 +194,7 @@ class LoadModelTest(seed_test_utils.RepeatableTest):
 
   def _load_tapas(
       self, model: nn.Module, is_training: bool
-  ) -> tuple[nn.Module, dict[str, Any]]:
+  ) -> tuple[nn.Module, Mapping[str, torch.Tensor]]:
     with mock.patch.object(
         model_helpers,
         "get_module_registry",
@@ -232,7 +233,7 @@ class LoadModelTest(seed_test_utils.RepeatableTest):
       run_scope: context_lib.RunScope = context_lib.RunScope.FULL,
       batch_size: int = 1,
       **config_kwargs: int,
-  ) -> tuple[nn.Module, dict[str, Any]]:
+  ) -> tuple[nn.Module, Mapping[str, torch.Tensor]]:
     ctx = context_lib.Context(
         target=target_lib.make_target(platform=target_lib.Platform.CPU),
         run_scope=run_scope,

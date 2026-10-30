@@ -144,7 +144,7 @@ def _parse_topology(topology_str: str) -> tuple[int, int, int]:
 def _get_slice_host_coordinates(
     topology_str: str,
     chips_per_host: tuple[int, int, int] = _CHIPS_PER_HOST,
-) -> list[tuple[int, int, int]]:
+) -> Sequence[tuple[int, int, int]]:
   """Computes and returns all host coordinates in the slice, topologically sorted.
 
   Host coordinates (Hx, Hy, Hz) are derived from mesh bounds (Mx, My, Mz) and
@@ -263,7 +263,7 @@ def _calculate_topological_node_rank(
   )
 
 
-def _query_local_device_coords() -> list[int] | None:
+def _query_local_device_coords() -> Sequence[int] | None:
   """Returns the physical coordinates of this host's TPU device, if available.
 
   The coordinates are queried in a short-lived child process, because querying

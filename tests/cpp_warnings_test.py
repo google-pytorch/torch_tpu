@@ -14,6 +14,7 @@
 
 """Tests that TT_WARN and TT_WARN_ONCE from C++ honor Python warning filters."""
 
+from collections.abc import Sequence
 import re
 import warnings
 
@@ -43,8 +44,8 @@ _EXPECTED_PREFIXES = {
 
 
 def _matching(
-    recorded: list[warnings.WarningMessage], text: str
-) -> list[warnings.WarningMessage]:
+    recorded: Sequence[warnings.WarningMessage], text: str
+) -> Sequence[warnings.WarningMessage]:
   return [w for w in recorded if text in str(w.message)]
 
 

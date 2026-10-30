@@ -19,7 +19,7 @@ operations and device boundaries, compiling its TPU submodules, and running its
 CPU submodules eagerly.
 """
 
-from collections.abc import Callable, Collection, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, MutableMapping, Sequence, Set
 import contextlib
 import copy
 import functools
@@ -72,7 +72,7 @@ _RANK_COLLECTIVE_COUNTS_LOCK = threading.Lock()
 
 def _submit_handshake(
     executable_fingerprint: str,
-    pg_to_num_collectives: dict[ProcessGroupId, int],
+    pg_to_num_collectives: Mapping[ProcessGroupId, int],
     graph_module_str: str | None = None,
 ) -> bool:
   """Submits a handshake message across participating ranks.
@@ -226,7 +226,9 @@ def _is_getitem_of_collective(node: torch.fx.Node) -> bool:
   return False
 
 
-def _collect_namedtuple_types(arg: Any, seen: dict[type[Any], None]) -> None:
+def _collect_namedtuple_types(
+    arg: Any, seen: MutableMapping[type[tuple[Any, ...]], None]
+) -> None:
   """Recursively collects namedtuple types from an FX node argument."""
   if isinstance(arg, tuple) and hasattr(arg, "_fields"):
     seen.setdefault(type(arg), None)
@@ -277,7 +279,7 @@ _NON_CONSTANT_OP_TAGS = frozenset({
 })
 
 
-def _tensor_device_types(node: torch.fx.Node) -> set[str]:
+def _tensor_device_types(node: torch.fx.Node) -> Set[str]:
   """Returns the device types of the tensors in the value of `node`."""
   return {
       leaf.device.type
@@ -487,7 +489,7 @@ class _SubmodCompiler(torch.fx.interpreter.Interpreter):
   def compile_submod(
       self,
       input_mod: torch.fx.GraphModule,
-      args: list[torch.Tensor],
+      args: Sequence[InputType],
       kwargs: Any,
       submod_name: str | None = None,
   ) -> Any:
@@ -593,7 +595,7 @@ class _SplitCompiledExecutable(CompiledArtifact):
       self,
       target: torch.fx.GraphModule,
       recompile_fn: Callable[[], "_SplitCompiledExecutable"] | None = None,
-      pg_to_num_collectives: dict[ProcessGroupId, int] | None = None,
+      pg_to_num_collectives: Mapping[ProcessGroupId, int] | None = None,
       graph_module_str: str | None = None,
   ):
     """Initializes a _SplitCompiledExecutable.
@@ -723,7 +725,7 @@ class _SplitCompiledExecutable(CompiledArtifact):
 def _unpickle_split_compiled_executable(
     target: torch.fx.GraphModule,
     recompile_fn: Callable[[], "_SplitCompiledExecutable"] | None = None,
-    pg_to_num_collectives: dict[ProcessGroupId, int] | None = None,
+    pg_to_num_collectives: Mapping[ProcessGroupId, int] | None = None,
     graph_module_str: str | None = None,
 ) -> _SplitCompiledExecutable:
   """Reconstructs a _SplitCompiledExecutable from target.
@@ -981,7 +983,7 @@ class SplitCompiler(compiler.Compiler):
     )
 
     should_handshake = False
-    pg_to_num_collectives: dict[ProcessGroupId, int] = {}
+    pg_to_num_collectives: Mapping[ProcessGroupId, int] = {}
     if handshake_stage != tpu_torch_compile.HandshakeStage.OFF:
       pg_to_num_collectives = process_group_utils.get_num_collectives_per_pg(
           graph_module

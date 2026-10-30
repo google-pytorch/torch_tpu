@@ -20,6 +20,7 @@ plus whole-tensor cosine similarity, which catches near-zero cancelling outputs
 whose unbounded relative error rtol/atol cannot grade.
 """
 
+from collections.abc import Mapping
 from typing import Any
 
 from jax.experimental.pallas import tpu as pltpu
@@ -44,7 +45,7 @@ F32_ACCUM_ATOL = 2e-2
 _F32_ACCUM_CHIPS = (pltpu.ChipVersion.TPU_V5E, pltpu.ChipVersion.TPU_V6E)
 
 
-def fp8_tolerance() -> dict[str, float]:
+def fp8_tolerance() -> Mapping[str, float]:
   """Returns `rtol`/`atol` kwargs for FP8 GEMM outputs on the current TPU."""
   if pltpu.get_tpu_info().chip_version in _F32_ACCUM_CHIPS:
     return dict(rtol=F32_ACCUM_RTOL, atol=F32_ACCUM_ATOL)

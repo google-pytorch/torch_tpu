@@ -34,7 +34,7 @@ process instead. TorchTPU's own tests can set
 error.
 """
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, MutableMapping
 import dataclasses
 import enum
 import functools
@@ -582,7 +582,7 @@ def _resolve_module_attribute(
     stages_map: Mapping[str, ApiStageInfo],
     name: str,
     module_name: str,
-    tt_api_globals: dict[str, Any] | type | None,
+    tt_api_globals: MutableMapping[str, Any] | type | None,
 ) -> Any:
   """Resolves a dynamic module attribute from a stages map and emits warnings if applicable.
 

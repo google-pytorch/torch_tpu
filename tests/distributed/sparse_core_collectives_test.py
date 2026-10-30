@@ -20,6 +20,7 @@ SparseCore op such as `sparse_gather` carries none. Either runs in one program
 with a collective over the world, whose devices follow the world rank order.
 """
 
+from collections.abc import Sequence
 from absl.testing import absltest
 import torch
 from torch import distributed as dist
@@ -108,7 +109,7 @@ def _expected_activations(rank: int) -> torch.Tensor:
   return _global_table()[_lookup_ids(rank).long()]
 
 
-def _lookup_inputs(rank: int) -> list[torch.Tensor]:
+def _lookup_inputs(rank: int) -> Sequence[torch.Tensor]:
   """The CSR inputs and the local table shard of `rank`, on the TPU."""
   csr = torch.ops.tpu.preprocess_sparse_dense_matmul_input(
       _lookup_ids(rank),

@@ -14,6 +14,7 @@
 
 """TPU implementation for torch.ops.higher_order.scan and associative_scan."""
 
+from collections.abc import Set
 import functools
 import importlib
 import types
@@ -317,7 +318,7 @@ _IMMUTABLE_SCALAR_TYPES = (
 )
 
 
-def _referenced_names(code: types.CodeType) -> set[str]:
+def _referenced_names(code: types.CodeType) -> Set[str]:
   """Returns the global/attribute names used by `code` and its nested code."""
   names = set(code.co_names)
   for const in code.co_consts:

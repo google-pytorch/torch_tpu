@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import bisect
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Sequence, Set
 import dataclasses
 from typing import Any, NamedTuple
 
@@ -66,7 +66,7 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
       bucket_specs: Sequence[BucketCompilationSpec],
       output_sym_shapes: Sequence[OutputSymShape],
       is_fwd: bool,
-      view_arg_indices: set[int],
+      view_arg_indices: Set[int],
       use_pad_real_to_static: bool = True,
       module_name: str | None = None,
       num_lookahead_buckets: int | None = None,
@@ -133,7 +133,7 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
   def _get_dynamic_input_tensors(
       self,
       args: Sequence[Any],
-  ) -> list[torch.Tensor]:
+  ) -> Sequence[torch.Tensor]:
     """Returns dynamic input tensors and validates they are on device."""
     tensor_args = []
 
@@ -152,7 +152,7 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
       self,
       tensor_args: Sequence[torch.Tensor],
       bucket_idx: int,
-  ) -> list[torch.Tensor]:
+  ) -> Sequence[torch.Tensor]:
     """Compiles and executes the pad subgraph."""
     if not tensor_args:
       return []
@@ -297,7 +297,7 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
       self,
       args: Sequence[Any],
       pad_outputs: Sequence[torch.Tensor],
-  ) -> list[Any]:
+  ) -> Sequence[Any]:
     """Assembles the actual runtime inputs for the model executable.
 
     Args:
@@ -334,7 +334,7 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
 
   def _get_model_inputs_layouts(
       self, model_inputs: Sequence[Any]
-  ) -> tuple[tuple[tuple[int, ...], ...], list[list[int]]]:
+  ) -> tuple[tuple[tuple[int, ...], ...], Sequence[Sequence[int]]]:
     argument_layouts = []
     for idx, val in enumerate(model_inputs):
       if isinstance(val, torch.Tensor):
@@ -360,7 +360,7 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
   def _compute_output_shapes(
       self,
       args: Sequence[Any],
-  ) -> list[tpu_torch_compile.OutputShape] | None:
+  ) -> Sequence[tpu_torch_compile.OutputShape] | None:
     """Computes the runtime output shapes from symbolic shapes and arguments."""
     if not self._output_sym_shapes:
       return None

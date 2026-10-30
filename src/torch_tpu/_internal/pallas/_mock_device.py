@@ -14,6 +14,7 @@
 
 """Abstract device mocks for compile-only Pallas mesh generation."""
 
+from collections.abc import Sequence
 from torch import distributed as dist
 from torch_tpu._internal import env
 
@@ -33,10 +34,10 @@ class _PallasMockClient:
       return dist.get_world_size()
     return env.get_int_env_once("WORLD_SIZE", default_value=1)
 
-  def devices(self) -> list:
+  def devices(self) -> Sequence["_PallasDevice"]:
     return []
 
-  def local_devices(self) -> list:
+  def local_devices(self) -> Sequence["_PallasDevice"]:
     return []
 
 

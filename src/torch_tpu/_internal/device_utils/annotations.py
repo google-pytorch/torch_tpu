@@ -14,6 +14,7 @@
 
 """API for providing XLA specific annotations on torch tensors."""
 
+from collections.abc import Sequence
 import dataclasses
 import torch
 from torch_tpu._internal.device_utils import annotations_py
@@ -102,7 +103,7 @@ class LayoutContext:
 @api_annotations.experimental("Getter for the on-device layout of TPU tensors.")
 def get_device_layout_if_materialized(
     tensor: torch.Tensor,
-) -> tuple[list[int], list[list[int]], int] | None:
+) -> tuple[Sequence[int], Sequence[Sequence[int]], int] | None:
   """Returns the fields of the `TpuLayout` of a TPU tensor's device buffer.
 
   Args:

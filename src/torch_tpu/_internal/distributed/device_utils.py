@@ -451,7 +451,7 @@ def _create_device_mesh_for_nd_torus_splitting_axes(
   return logical_mesh, assignment
 
 
-def _get_prime_factors(x: int) -> list[int]:
+def _get_prime_factors(x: int) -> Sequence[int]:
   """Returns a sorted list of prime factors for the given number."""
   assert x > 0
   factors = []
@@ -772,8 +772,8 @@ def _transpose_trick(
       *_TRANSPOSE_TRICKS[topology][mesh_shape_no_trivial_dims]
   )
 
-def _canonicalize_axis_sizes(axis_sizes: Sequence[int]
-                             ) -> tuple[int, ...] | None:
+
+def _canonicalize_axis_sizes(axis_sizes: Sequence[int]) -> Sequence[int] | None:
   new_sizes = []
   for s in axis_sizes:
     try:
@@ -781,6 +781,7 @@ def _canonicalize_axis_sizes(axis_sizes: Sequence[int]
     except:
       return None
   return tuple(new_sizes)
+
 
 def create_device_mesh(
     mesh_shape: Sequence[int],

@@ -1283,7 +1283,7 @@ class EinsumDynamicOpInfo(DynamicOpInfo):
     return op_info.name == "einsum"
 
   @staticmethod
-  def _tokenize_subscript(sub: str) -> list[str]:
+  def _tokenize_subscript(sub: str) -> Sequence[str]:
     tokens = []
     i = 0
     while i < len(sub):
@@ -1300,7 +1300,7 @@ class EinsumDynamicOpInfo(DynamicOpInfo):
   @classmethod
   def _parse_einsum_labels(
       cls, tensors: Sequence[torch.Tensor], equation: str
-  ) -> tuple[list[list[str]], list[str]]:
+  ) -> tuple[Sequence[Sequence[str]], Sequence[str]]:
     parts = equation.split("->")
     lhs = parts[0]
     subs = lhs.split(",")

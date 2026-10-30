@@ -26,7 +26,7 @@ tensors to the benchmark dtype (`Module.to(dtype)` would drop its imaginary
 part).
 """
 
-from typing import Any
+from collections.abc import Mapping, Sequence
 
 import torch
 from torch import nn
@@ -132,8 +132,8 @@ def build_model(
 
 def cross_entropy_loss(
     model: nn.Module,
-    input_args: tuple[Any, ...],
-    input_kwargs: dict[str, Any],
+    input_args: Sequence[torch.Tensor],
+    input_kwargs: Mapping[str, torch.Tensor],
 ) -> torch.Tensor:
   """Next-token cross entropy over fp32 logits (torchtitan returns logits)."""
   input_kwargs = dict(input_kwargs)

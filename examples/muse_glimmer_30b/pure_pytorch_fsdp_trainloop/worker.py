@@ -72,8 +72,10 @@ def profile_trainloop(
   trainable_params.extend([p for p in head.parameters() if p.requires_grad])
   optimizer = torch.optim.AdamW(trainable_params, lr=1e-5)
 
-  non_fsdp_params = model_fsdp.get_non_fsdp_params(m)
-  non_fsdp_params.extend(model_fsdp.get_non_fsdp_params(head))
+  non_fsdp_params = [
+      *model_fsdp.get_non_fsdp_params(m),
+      *model_fsdp.get_non_fsdp_params(head),
+  ]
 
   # Put many small collective all-reduce ops under compile for optimizations.
   non_fsdp_all_reducer = torch.compile(

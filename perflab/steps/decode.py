@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections.abc import Mapping, Sequence, Set
 import copy
 import functools
 import inspect
@@ -106,7 +107,7 @@ def _apply_projection(
 
 
 @functools.lru_cache(maxsize=256)
-def _inspect_params(fn: Any) -> tuple[frozenset[str], bool] | None:
+def _inspect_params(fn: Any) -> tuple[Set[str], bool] | None:
   """Returns (parameter names, accepts **kwargs) for fn, or None if unknown."""
   try:
     sig = inspect.signature(fn)
@@ -117,7 +118,7 @@ def _inspect_params(fn: Any) -> tuple[frozenset[str], bool] | None:
   )
 
 
-def _forward_param_spec(target_fn: Any) -> tuple[frozenset[str], bool] | None:
+def _forward_param_spec(target_fn: Any) -> tuple[Set[str], bool] | None:
   """Memoized `_inspect_params`, safe to call on every decode step.
 
   The decode loop calls this once per generated token, so the underlying
@@ -368,7 +369,7 @@ def _clone_linear_attention_state(states: Any) -> _LinearState | None:
 
 def _snapshot_linear_attention_states(
     cache: Any, include_conv: bool
-) -> dict[int, dict[str, _LinearState]] | None:
+) -> Mapping[int, Mapping[str, _LinearState]] | None:
   """Clones the per-layer linear-attention (SSM) states of a cache.
 
   Both `conv_states` and `recurrent_states` are mutated in place via `copy_()`
@@ -423,7 +424,7 @@ def _copy_or_replace(current: Any, want: torch.Tensor) -> torch.Tensor:
 
 
 def _restore_linear_attention_states(
-    cache: Any, snapshot: dict[int, dict[str, _LinearState]]
+    cache: Any, snapshot: Mapping[int, Mapping[str, _LinearState]]
 ) -> None:
   """Restores states captured by `_snapshot_linear_attention_states`."""
   layers = getattr(cache, "layers", None) or []
@@ -444,7 +445,7 @@ def _restore_linear_attention_states(
 
 def _snapshot_module_recurrent_states(
     model: Any,
-) -> list[tuple[Any, str, torch.Tensor]]:
+) -> Sequence[tuple[Any, str, torch.Tensor]]:
   """Clones recurrent state tensors stored directly on model submodules.
 
   Some architectures (notably RecurrentGemma's RG-LRU and 1D-conv blocks) keep
@@ -470,7 +471,7 @@ def _snapshot_module_recurrent_states(
 
 
 def _restore_module_recurrent_states(
-    snapshots: list[tuple[Any, str, torch.Tensor]] | None,
+    snapshots: Sequence[tuple[Any, str, torch.Tensor]] | None,
 ) -> None:
   """Restores submodule recurrent state tensors saved by `_snapshot_module_recurrent_states`."""
   if not snapshots:
@@ -730,7 +731,7 @@ class DecodeStepper(common.BaseStepper):
   def _prepare_forward_kwargs(
       m: Any,
       cache: Any,
-      base_kwargs: dict[str, Any],
+      base_kwargs: Mapping[str, Any],
   ) -> dict[str, Any]:
     """Prepares kwargs matching the model forward signature."""
     call_kwargs = dict(base_kwargs)

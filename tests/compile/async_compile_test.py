@@ -14,7 +14,7 @@
 
 """Unit tests for experimental asynchronous compilation and warmup overlapping."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, MutableMapping
 import threading
 from typing import Any
 from unittest import mock
@@ -71,7 +71,7 @@ class MultiOutputModel(nn.Module):
 
   def forward(
       self, x: torch.Tensor
-  ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
+  ) -> tuple[torch.Tensor, torch.Tensor, Mapping[str, torch.Tensor]]:
     return x + 1.0, x * 2.0, {"sub": x - 3.0}
 
 
@@ -100,7 +100,7 @@ class CompileBarrier:
     self.call_count = 0
 
   def _get_event(
-      self, event_dict: dict[int, threading.Event], index: int
+      self, event_dict: MutableMapping[int, threading.Event], index: int
   ) -> threading.Event:
     with self._lock:
       if index not in event_dict:

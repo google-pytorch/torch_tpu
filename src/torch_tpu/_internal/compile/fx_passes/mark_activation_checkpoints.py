@@ -25,7 +25,7 @@ pass.
 """
 
 import collections
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator, Mapping, MutableMapping, Sequence, Set
 import operator
 import torch
 from torch import fx
@@ -169,7 +169,7 @@ def _is_barrier_input_tensor(node: fx.Node) -> bool:
 
 def _group_remat_nodes_by_region(
     graph: fx.Graph,
-) -> tuple[dict[int, set[fx.Node]], list[int]]:
+) -> tuple[Mapping[int, Set[fx.Node]], Sequence[int]]:
   """Groups backward remat nodes by `ac_graph_id` in backward execution order.
 
   Args:
@@ -235,11 +235,11 @@ def _group_remat_nodes_by_region(
 
 
 def _collect_region_nodes(
-    remat_nodes: set[fx.Node],
+    remat_nodes: Collection[fx.Node],
     entry_idx: int,
     next_remat_min: int,
-    node_order: dict[fx.Node, int],
-) -> set[fx.Node]:
+    node_order: Mapping[fx.Node, int],
+) -> Set[fx.Node]:
   """Returns the set of FX nodes that make up a region's backward computation.
 
   In the linear FX instruction order, a checkpoint region's backward pass
@@ -326,8 +326,8 @@ def _collect_region_nodes(
 
 def _hoist_tuple_getitems(
     graph: fx.Graph,
-    entry_indices: list[int],
-    node_order: dict[fx.Node, int],
+    entry_indices: Sequence[int],
+    node_order: MutableMapping[fx.Node, int],
 ) -> None:
   """Hoists straddling `operator.getitem` nodes to follow their parent tuple.
 
@@ -364,10 +364,10 @@ def _hoist_tuple_getitems(
 
 
 def _merge_interleaved_regions(
-    remat_by_region: dict[int, set[fx.Node]],
-    ordered_regions: list[int],
-    node_order: dict[fx.Node, int],
-) -> tuple[dict[int, set[fx.Node]], list[int]]:
+    remat_by_region: Mapping[int, Set[fx.Node]],
+    ordered_regions: Sequence[int],
+    node_order: Mapping[fx.Node, int],
+) -> tuple[Mapping[int, Set[fx.Node]], Sequence[int]]:
   """Merges each region whose remat nodes reach past the next region's entry.
 
   Some PyTorch versions (such as 2.11 and 2.14) schedule the remat ops of

@@ -50,7 +50,11 @@ _ReconstructFxOutputsFn: TypeAlias = Callable[
 
 
 def _normalize_output_shape(
-    shape: tpu_torch_compile.OutputShape | tuple[Any, bool] | Sequence[int],
+    shape: (
+        tpu_torch_compile.OutputShape
+        | tuple[Sequence[int], bool]
+        | Sequence[int]
+    ),
 ) -> tpu_torch_compile.OutputShape:
   """Normalizes user or framework shape specifications to OutputShape."""
   if isinstance(shape, tpu_torch_compile.OutputShape):
@@ -425,7 +429,7 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
     self._mlir_text = value
 
   @property
-  def parameter_layouts(self) -> list[Any]:
+  def parameter_layouts(self) -> Sequence[Any]:
     """Returns the parameter layouts expected by the executable."""
     return self._executable.get_parameter_layouts()
 

@@ -14,7 +14,7 @@
 
 """Unit tests for ops."""
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence, Set
 import concurrent
 import contextlib
 import dataclasses
@@ -77,7 +77,7 @@ class FakeSample:
       name: str,
       input_value: torch.Tensor,
       args: tuple[Any, ...],
-      kwargs: dict[str, Any],
+      kwargs: Mapping[str, typing.Any],
   ):
     self.name = name
     self.input = input_value
@@ -99,7 +99,7 @@ def run_with_dynamic_dims(
     fn: Callable[..., Any],
     inputs: Sequence[tuple[torch.Tensor, Sequence[bool]]],
     no_grad: bool = False,
-) -> set[str]:
+) -> Set[str]:
   """Runs `fn` on FakeTensors with backed symbolic dims.
 
   Args:
@@ -16396,7 +16396,7 @@ module {{
 
   def _ragged_k_group_sizes(
       self, num_tokens: int, num_groups: int, layout: str
-  ) -> list[int]:
+  ) -> Sequence[int]:
     """Returns per-group token counts for a ragged-K grouped_mm test."""
     if layout == "uneven":
       gen = torch.Generator().manual_seed(num_tokens + num_groups)
@@ -16423,7 +16423,7 @@ module {{
       out: torch.Tensor,
       lhs_ref: torch.Tensor,
       rhs_ref: torch.Tensor,
-      group_sizes: list[int],
+      group_sizes: Sequence[int],
   ) -> None:
     """Compares a Case 3 result with a CPU fp32 per-group reference.
 
@@ -16968,7 +16968,7 @@ module {{
   def _make_rowwise_inputs(
       self,
       layout: str,
-      group_sizes: list[int],
+      group_sizes: Sequence[int],
       ragged_size: int | None = None,
       m: int = 16,
       k: int = 32,
@@ -19520,8 +19520,8 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
       self,
       op_name: str,
       dtype: torch.dtype,
-      x_shape: tuple[int, ...],
-      w_shape: tuple[int, ...],
+      x_shape: Sequence[int],
+      w_shape: Sequence[int],
   ) -> None:
     """Verifies that convolution backward bias accumulates in float32."""
     fn = getattr(torch.nn.functional, op_name)
@@ -24283,7 +24283,7 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
       align_corners=[False, True],
   )
   def test_grid_sample_reflection_unit_spatial_dim(
-      self, in_shape: tuple[int, ...], align_corners: bool
+      self, in_shape: Sequence[int], align_corners: bool
   ) -> None:
     torch.manual_seed(0)
     grid_shape = (2, 3, 3, 2) if len(in_shape) == 4 else (1, 2, 2, 2, 3)
