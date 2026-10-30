@@ -19,15 +19,15 @@
 #
 # Against the staged wheel in a virtualenv (nox):
 #   smoke_tpu          nox installs the wheel with every released PyTorch and
-#                      runs the smoke suite, for every Python (3.11-3.14t), on
+#                      runs the smoke suite, for every Python (3.11-3.15t), on
 #                      v5e/v6e/v7x.
 #   wheel_test         twine metadata check, single-source dependency check,
 #                      wheel structure check, and pywrap split check, for every
-#                      Python (3.11-3.14t).
+#                      Python (3.11-3.15t).
 #   compat_cpu         nox installs the wheel at highest dependency resolution
 #                      with every released PyTorch (both CPU and CUDA builds)
 #                      and runs the CPU smoke suite, for every Python
-#                      (3.11-3.14t).
+#                      (3.11-3.15t).
 #
 # Regular Bazel test suites from source_sha:
 #   bazel_tpu          TPU Python and C++ tests, one job per TPU generation,
@@ -95,7 +95,7 @@ jobs:
             runner: "linux-x86-ct6e-180-8tpu"
           - name: "TPU v7x 1-chip"
             runner: "linux-x86-tpu7x-56-1tpu"
-        python_version: ["3.11", "3.12", "3.13", "3.14", "3.14t"]
+        python_version: ["3.11", "3.12", "3.13", "3.14", "3.15", "3.14t", "3.15t"]
     runs-on: ${{ matrix.tpu.runner }}
     timeout-minutes: 45
     container:
@@ -131,7 +131,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python_version: ["3.11", "3.12", "3.13", "3.14", "3.14t"]
+        python_version: ["3.11", "3.12", "3.13", "3.14", "3.15", "3.14t", "3.15t"]
     runs-on: linux-x86-n4-16
     timeout-minutes: 45
     container:
@@ -173,7 +173,7 @@ jobs:
       # with uv resolving the highest compatible versions of all runtime
       # dependencies from PyPI.
       matrix:
-        python_version: ["3.11", "3.12", "3.13", "3.14", "3.14t"]
+        python_version: ["3.11", "3.12", "3.13", "3.14", "3.15", "3.14t", "3.15t"]
     runs-on: linux-x86-n4-16
     timeout-minutes: 60
     container:
@@ -353,7 +353,7 @@ jobs:
     env:
       PYTHON_VERSION: ${{ matrix.python_version }}
       BAZEL_CONFIG: ${{ matrix.tpu.bazel_config }}
-      TORCH_VERSION: "2.14.0"
+      TORCH_VERSION: "2.15.0"
     steps:
       - name: Checkout TorchTPU
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1

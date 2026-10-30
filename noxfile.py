@@ -38,23 +38,12 @@ os.environ.setdefault("UV_HTTP_RETRIES", "10")
 os.environ.setdefault("UV_HTTP_TIMEOUT", "120")
 
 # The indexes that may satisfy the `torch` dependency for each variant. The
-# `cpu` and `cuda` variants include PyTorch's RC test channels so release
-# candidates in WHEEL_TORCH_VERSIONS resolve alongside final releases. The
 # `local` variant installs no torch from an index at all: it uses the torch
 # wheel file in dist/local/ that the torch_tpu wheel was built against
 # (--config=local_torch builds).
-# TODO(b/571958437): The `/whl/test/cpu` and `/whl/test/cu130` entries (and the
-# multi-index `/whl/test/` handling in `_torch_index_args` below) are only
-# needed while PyTorch 2.15.0 is a release candidate. Remove them once PyTorch
-# 2.15.0 final is published to PyPI and `download.pytorch.org/whl/cpu`.
 _TORCH_INDEXES: Final[Mapping[str, Sequence[str]]] = {
-    "cpu": (
-        "https://download.pytorch.org/whl/cpu",
-        "https://download.pytorch.org/whl/test/cpu",  # TODO(b/571958437): Remove after 2.15.0 GA.
-    ),
-    "cuda": (
-        "https://download.pytorch.org/whl/test/cu130",  # TODO(b/571958437): Remove after 2.15.0 GA.
-    ),
+    "cpu": ("https://download.pytorch.org/whl/cpu",),
+    "cuda": (),
     "local": (),
     "nightly": ("https://download.pytorch.org/whl/nightly/cpu",),
     "nightly-pinned": ("https://download.pytorch.org/whl/nightly/cpu",),
@@ -69,11 +58,11 @@ def _torch_index_args(variant: str) -> Sequence[str]:
   args: list[str] = []
   for index in indexes:
     args += ["--extra-index-url", index]
-  # --index-strategy unsafe-best-match lets the "+cpu" local build, RC test
-  # build, or newer nightly prerelease resolve across the PyTorch extra indexes
-  # while PyPI stays the primary index for non-torch runtime and PEP 517
-  # build-system dependencies (the PyTorch indexes carry setuptools>=78
-  # alongside an outdated packaging<24.2, which breaks source builds on 3.14t).
+  # --index-strategy unsafe-best-match lets the "+cpu" local build or newer
+  # nightly prerelease resolve from the PyTorch extra index while PyPI stays the
+  # primary index for non-torch runtime and PEP 517 build-system dependencies
+  # (the PyTorch indexes carry setuptools>=78 alongside an outdated
+  # packaging<24.2, which breaks source builds on 3.14t).
   args += ["--index-strategy", "unsafe-best-match"]
   return args
 
@@ -156,6 +145,7 @@ def test_ci_tools(session: nox.Session) -> None:
       "-m",
       "unittest",
       "ci/tools/resolve_base_sha_test.py",
+      "ci/tools/check_dependency_caveats_test.py",
       "ci/tools/check_directory_layout_test.py",
       "ci/tools/list_ci_tests_test.py",
       "ci/tools/run_bazel_diff_test.py",
@@ -349,6 +339,34 @@ def wheel_test(session: nox.Session) -> None:
   )
 
 
+# PyTorch < 2.15.0 does not support Python 3.15 (no cp315/cp315t CUDA wheels on
+# PyPI, no cp315/cp315t CPU wheels for < 2.13.0, and torch.compile raises
+# RuntimeError on Python 3.15 before 2.15.0).
+_MIN_TORCH_FOR_PYTHON: Final[Mapping[str, tuple[int, ...]]] = {
+    "3.15": (2, 15, 0),
+}
+
+
+def _skip_if_torch_unsupported_on_python(
+    session: nox.Session, torch_version: str
+) -> None:
+  """Skip the session if `torch_version` does not support the active Python."""
+  python_version = (
+      session.python
+      if isinstance(session.python, str)
+      else os.environ.get("PYTHON_VERSION", "")
+  ).removesuffix("t")
+  min_torch = _MIN_TORCH_FOR_PYTHON.get(python_version)
+  if (
+      min_torch is not None
+      and tuple(map(int, torch_version.split("."))) < min_torch
+  ):
+    session.skip(
+        f"PyTorch {torch_version} does not support Python {python_version}"
+        f" (requires >= {'.'.join(map(str, min_torch))})"
+    )
+
+
 @nox.session
 @nox.parametrize("torch_version", _TESTED_TORCH_VERSIONS)
 def intermediate_patch_abi(session: nox.Session, torch_version: str) -> None:
@@ -368,6 +386,7 @@ def intermediate_patch_abi(session: nox.Session, torch_version: str) -> None:
     session: the nox session the checks run in.
     torch_version: the intermediate PyTorch release to install and test.
   """
+  _skip_if_torch_unsupported_on_python(session, torch_version)
   _install_and_run_smoke_tests(
       session,
       "cpu",
@@ -391,6 +410,7 @@ def tpu_smoke_all_versions(session: nox.Session, torch_version: str) -> None:
     session: the nox session the checks run in.
     torch_version: the PyTorch release to install and test.
   """
+  _skip_if_torch_unsupported_on_python(session, torch_version)
   _install_and_run_smoke_tests(
       session,
       "tpu",
@@ -417,6 +437,7 @@ def cpu_smoke_all_versions(
     torch_variant: the torch build to install (`cpu` or `cuda`).
     torch_version: the PyTorch release to install and test.
   """
+  _skip_if_torch_unsupported_on_python(session, torch_version)
   torch_spec = (
       f"torch=={torch_version}+cpu"
       if torch_variant == "cpu"

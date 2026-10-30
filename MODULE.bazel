@@ -8,7 +8,9 @@ SUPPORTED_PYTHON_VERSIONS = [
     "3.12",
     "3.13",
     "3.14",
+    "3.15",
     "3.14t",
+    "3.15t",
 ]
 
 # rules_python's python.toolchain and pip.parse key off the major.minor CPython
@@ -220,6 +222,7 @@ EXTRA_PYTORCH_VERSIONS = [
     "2.12.0",
     "2.13.0",
     "2.14.0",
+    "2.15.0",
 ]
 
 # The release version the nightly channel currently leads up to. Its glue's

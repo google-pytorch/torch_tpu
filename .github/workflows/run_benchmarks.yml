@@ -55,10 +55,10 @@ on:
           - "3.12"
           - "3.13"
           - "3.14"
+          - "3.15"
 
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
   build_wheel:
@@ -90,6 +90,12 @@ jobs:
       !cancelled() &&
       (needs.build_wheel.result == 'success' ||
        needs.build_wheel.result == 'skipped')
+    permissions:
+      contents: read  # Required by run-benchmarks.yaml for actions/checkout.
+      # The reusable run-benchmarks.yaml workflow declares `pull-requests: write`
+      # at the workflow level (for its optional `post_pr_comment` feature), so
+      # GitHub Actions requires caller jobs to grant it.
+      pull-requests: write
     uses: google-ml-infra/bap/.github/workflows/run-benchmarks.yaml@ff212b97420bf479bd492d64e4b549534c22cd91 # main
     with:
       registry_file: "perflab/benchmark_registry.pbtxt"

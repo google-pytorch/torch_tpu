@@ -33,6 +33,10 @@ working_dir="$script_dir/.."
 cd "$working_dir"
 
 PYTHON_PLATFORM="x86_64-manylinux_2_31"
+# Ignore host-level uv configuration (e.g. /etc/uv/uv.toml on Cloudtop) so
+# lockfiles always resolve directly against PyPI and the indexes in
+# pyproject.toml.
+export UV_NO_CONFIG=1
 
 # Loop over supported Python versions and generate the full-environment locks.
 for version in "3.11" "3.12" "3.13" "3.14"; do
@@ -163,3 +167,42 @@ if [ "$pinned_release" != "$declared" ]; then
   echo "and MODULE.bazel to $pinned_release." >&2
   exit 1
 fi
+
+# Python 3.15 caveats:
+# - grain and array-record (a required Linux dependency of tensorflow-datasets)
+#   do not publish source distributions or Python 3.15 wheels on PyPI, and
+#   flax (via tensorstore/uvloop) and dm-tree do not yet publish Python 3.15
+#   binary wheels for their C/C++ extensions, so we exclude them when locking
+#   Python 3.15.
+# - Under --resolution lowest-direct, uv otherwise resolves older minimum
+#   versions that predate Python 3.15 and only ship source distributions;
+#   --only-binary forces resolution to versions with prebuilt cp315 wheels.
+# - PyTorch < 2.15 blocks torch.compile on Python 3.15 and does not publish
+#   cp315 CUDA wheels on PyPI, so constrain torch>=2.15.0 and
+#   torchvision>=0.29.2.
+# - datasets<5.0.0 constrains pyarrow<24.0.0 (which has no cp315 wheel);
+#   huggingface-hub<1.19.0 imports dataclasses._MISSING_TYPE (removed in Python
+#   3.15); torchax<0.0.14.dev20261002 accesses torch.ops.aten.prod.dim_Dimname
+#   and torch.ops.aten.qr (removed in PyTorch 2.15).
+for variant in "cpu" "cuda"; do
+  if [ "$variant" = "cpu" ]; then
+    REQUIREMENTS_FILE="requirements/requirements_3_15.txt"
+    VARIANT_ARGS=()
+  else
+    REQUIREMENTS_FILE="requirements/requirements_cuda_3_15.txt"
+    VARIANT_ARGS=(--no-sources --index-url https://pypi.org/simple)
+  fi
+  echo "Generating ${variant^^} lock file for Python 3.15 -> $REQUIREMENTS_FILE"
+  rm -f "$REQUIREMENTS_FILE"
+  uv pip compile pyproject.toml \
+    "${VARIANT_ARGS[@]}" \
+    --all-extras \
+    --python-version 3.15 \
+    --python-platform "$PYTHON_PLATFORM" \
+    --resolution lowest-direct \
+    --generate-hashes \
+    --only-binary numpy,scipy,pillow,matplotlib,grpcio-tools,pydantic-core,pyarrow,aiohttp \
+    --constraint <(printf "datasets>=5.0.0\nhuggingface-hub>=1.19.0\ntorch>=2.15.0\ntorchvision>=0.29.2\n") \
+    --overrides <(printf "grain ; python_version < '3.15'\ntensorflow-datasets ; python_version < '3.15'\nflax ; python_version < '3.15'\ndm-tree ; python_version < '3.15'\ntorchax>=0.0.14.dev20261002\n") \
+    --output-file "$REQUIREMENTS_FILE"
+done
