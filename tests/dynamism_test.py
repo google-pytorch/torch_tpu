@@ -850,6 +850,112 @@ class DynamismTest(seed_test_utils.RepeatableTest):
     self.assertEmpty(dynamism.get_dynamism_info(grads[1]))
     self.assertEmpty(dynamism.get_dynamism_info(grads[2]))
 
+  # `+ 1` leaves nonzero values past the runtime sizes of the bounded inputs,
+  # which the average pooling backward must ignore. pool_args are kernel_size,
+  # stride, padding, ceil_mode, count_include_pad and divisor_override.
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="avg_pool2d_spatial",
+          input_shape=(2, 3, 16, 4),
+          pool_args=([3, 1], [2, 1], [1, 0], False, True, None),
+          dim=2,
+          upper_bound=30,
+      ),
+      dict(
+          testcase_name="avg_pool2d_spatial_ceil_mode_divisor_override",
+          input_shape=(2, 3, 4, 16),
+          pool_args=([3, 3], [2, 2], [1, 1], True, True, 2),
+          dim=3,
+          upper_bound=30,
+      ),
+      dict(
+          # Only the batch dimension is bounded, so every divisor mode works.
+          testcase_name="avg_pool2d_batch_ceil_mode_exclude_pad",
+          input_shape=(3, 2, 5, 6),
+          pool_args=([2, 2], [2, 2], [1, 1], True, False, None),
+          dim=0,
+          upper_bound=8,
+      ),
+      dict(
+          testcase_name="avg_pool2d_unbatched",
+          input_shape=(3, 4, 16),
+          pool_args=([1, 3], [1, 2], [0, 1], False, True, None),
+          dim=2,
+          upper_bound=30,
+      ),
+      dict(
+          # bfloat16 pooling computes in float32 and casts back.
+          testcase_name="avg_pool3d_spatial_bfloat16",
+          input_shape=(2, 2, 3, 4, 10),
+          pool_args=([1, 2, 3], [1, 2, 2], [0, 1, 1], False, True, None),
+          dim=4,
+          upper_bound=20,
+          dtype=torch.bfloat16,
+      ),
+      dict(
+          # The input is bounded in the batch dimension and grad_output in the
+          # channel dimension, so grad_output is padded in the batch dimension
+          # and sliced in the channel dimension.
+          testcase_name="avg_pool2d_opposite_non_spatial_bounds",
+          input_shape=(3, 2, 4, 8),
+          pool_args=([2, 2], [2, 2], [0, 0], False, False, None),
+          dim=0,
+          upper_bound=8,
+          grad_output_dim=1,
+          grad_output_upper_bound=6,
+      ),
+  )
+  def test_avg_pool_backward_dynamic_input(
+      self,
+      input_shape: tuple[int, ...],
+      pool_args: tuple[list[int], list[int], list[int], bool, bool, int | None],
+      dim: int,
+      upper_bound: int,
+      grad_output_dim: int | None = None,
+      grad_output_upper_bound: int | None = None,
+      dtype: torch.dtype = torch.float32,
+  ):
+    pool_name = f"avg_pool{len(pool_args[0])}d"
+    pool_fn = getattr(torch.ops.aten, pool_name)
+    pool_backward_fn = getattr(torch.ops.aten, f"{pool_name}_backward")
+
+    def backward_fn(grad_output: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+      if grad_output.device.type == "cpu" and dtype == torch.bfloat16:
+        # CPU has no bfloat16 avg_pool3d, so the CPU reference runs in float32
+        # on the same bfloat16 values.
+        return pool_backward_fn(
+            grad_output.float() + 1, x.float() + 1, *pool_args
+        ).to(dtype)
+      return pool_backward_fn(grad_output + 1, x + 1, *pool_args)
+
+    # Integer values keep the pooling sums exact on TPU.
+    x = torch.randint(-3, 4, input_shape, dtype=torch.float32)
+    grad_output = torch.randint(-3, 4, pool_fn(x, *pool_args).shape).to(dtype)
+    if grad_output_dim is None:
+      grad_output_dim = dim
+      bounded_shape = list(input_shape)
+      bounded_shape[dim] = upper_bound
+      grad_output_upper_bound = pool_fn(
+          torch.zeros(bounded_shape), *pool_args
+      ).shape[dim]
+    x = x.to(dtype)
+
+    def mark_dynamic(grad_output: torch.Tensor, x: torch.Tensor) -> None:
+      dynamism.mark_dynamic(
+          grad_output, grad_output_dim, 2, grad_output_upper_bound
+      )
+      dynamism.mark_dynamic(x, dim, 2, upper_bound)
+
+    tol = 1e-2 if dtype == torch.bfloat16 else 1e-5
+    grad_input = self._run_bounded_dynamism_test(
+        backward_fn, mark_dynamic, grad_output, x, rtol=tol, atol=tol
+    )
+    grad_input_dynamism_info = dynamism.get_dynamism_info(grad_input)
+    self.assertLen(grad_input_dynamism_info, 1)
+    self.assertEqual(grad_input_dynamism_info[0].dimension, dim)
+    self.assertEqual(grad_input_dynamism_info[0].lower_bound, 2)
+    self.assertEqual(grad_input_dynamism_info[0].upper_bound, upper_bound)
+
   @parameterized.named_parameters(
       dict(
           testcase_name="linear_2d_no_bias",

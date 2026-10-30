@@ -1390,6 +1390,44 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         # cpu() is needed because the error is triggered inside the op builder.
         grad_weight.cpu()
 
+  @parameterized.named_parameters(
+      ("exclude_pad", True, False, False),
+      ("ceil_mode", True, True, True),
+      ("grad_output_only", False, False, False),
+  )
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_avg_pool2d_backward_dynamic_spatial_dimension(
+      self, mark_input: bool, count_include_pad: bool, ceil_mode: bool
+  ):
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      grad_output = torch.ones(1, 2, 2, 4, device=et.device())
+      inp = torch.ones(1, 2, 4, 8, device=et.device())
+
+      # Mark the last spatial dimension of grad_output, and of the input if
+      # mark_input, as dynamic. Without a constant divisor, the backward
+      # rejects a bounded spatial dimension in either of them.
+      dynamism.mark_dynamic(grad_output, 3, 2, 4)
+      input_type = "tensor<1x2x4x8xf32>"
+      if mark_input:
+        dynamism.mark_dynamic(inp, 3, 2, 8)
+        input_type = "tensor<1x2x4x?xf32, #stablehlo.bounds<?, ?, ?, 8>>"
+
+      with et.assert_raises_message(
+          NotImplementedError,
+          tpu=f"""avg_pool2d_backward(): expected static spatial dimensions of the input and grad_output or a constant divisor (divisor_override, or count_include_pad=True with ceil_mode=False), got input type {input_type} and grad_output type tensor<1x2x2x?xf32, #stablehlo.bounds<?, ?, ?, 4>> with count_include_pad={count_include_pad} and ceil_mode={ceil_mode}""",
+      ):
+        # cpu() is needed because the error is triggered inside the op builder.
+        torch.ops.aten.avg_pool2d_backward(
+            grad_output,
+            inp,
+            kernel_size=[2, 2],
+            stride=[2, 2],
+            padding=[0, 0],
+            ceil_mode=ceil_mode,
+            count_include_pad=count_include_pad,
+            divisor_override=None,
+        ).cpu()
+
   @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
   def test_embedding_bag_dynamic_shape_arg(self):
     with self.subTest(arg="indices"):

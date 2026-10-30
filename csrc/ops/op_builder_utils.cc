@@ -170,12 +170,7 @@ mlir::MlirOp ConvolutionResultSize(const ConvolutionWindow& window,
   return stablehlo::Div(numerator, stride);
 }
 
-// An operand made static at its upper bounds.
-struct StaticAtBounds {
-  mlir::MlirOp op;
-  // Runtime size of each bounded dimension, nullopt for static dimensions.
-  std::vector<std::optional<mlir::MlirOp>> runtime_sizes;
-};
+}  // namespace
 
 // Makes `input` static at its upper bounds, keeping the runtime sizes of its
 // bounded dimensions.
@@ -197,6 +192,8 @@ StaticAtBounds MakeStaticAtBounds(mlir::MlirOp input) {
   return result;
 }
 
+namespace {
+
 // Returns whether `dims` has any bounded dynamic dimension.
 bool HasBoundedDimension(const std::optional<stablehlo::Dimensions>& dims) {
   return dims.has_value() &&
@@ -204,6 +201,8 @@ bool HasBoundedDimension(const std::optional<stablehlo::Dimensions>& dims) {
            return dim.boundOp.has_value();
          });
 }
+
+}  // namespace
 
 // Bounds the dimensions of the static `input` that have a boundOp in `dims`.
 mlir::MlirOp BoundFromDimensions(mlir::MlirOp input,
@@ -224,7 +223,7 @@ mlir::MlirOp BoundFromDimensions(mlir::MlirOp input,
 mlir::MlirOp ZeroPastRuntimeSizes(
     mlir::MlirOp input,
     const std::vector<std::optional<mlir::MlirOp>>& runtime_sizes,
-    const std::optional<int64_t> unzeroed_dim = std::nullopt) {
+    const std::optional<int64_t> unzeroed_dim) {
   std::optional<mlir::MlirOp> in_bounds;
   for (int64_t dim = 0; dim < static_cast<int64_t>(runtime_sizes.size());
        ++dim) {
@@ -245,6 +244,8 @@ mlir::MlirOp ZeroPastRuntimeSizes(
   mlir::MlirOp zero = MakeConstantLike(input, 0);
   return stablehlo::Select(*in_bounds, input, zero);
 }
+
+namespace {
 
 // Returns the windows of the convolution spatial dimensions. Absent window
 // attributes mean no stride, padding or dilation.

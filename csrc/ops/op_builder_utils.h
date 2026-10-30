@@ -23,6 +23,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "ATen/ExpandUtils.h"
 #include "ATen/core/ATen_fwd.h"
@@ -442,6 +443,29 @@ RngBitGeneratorResults RngBitGeneratorLike(
     mlir::MlirOp rng_input_state, mlir::RankedTensorType output_type,
     mlir::stablehlo::RngAlgorithmAttr rng_alg,
     std::optional<mlir::MlirOp> shape_reference = std::nullopt);
+
+// An operand made static at its upper bounds.
+struct StaticAtBounds {
+  mlir::MlirOp op;
+  // Runtime size of each bounded dimension, nullopt for static dimensions.
+  std::vector<std::optional<mlir::MlirOp>> runtime_sizes;
+};
+
+// Makes `input` static at its upper bounds, keeping the runtime sizes of its
+// bounded dimensions.
+StaticAtBounds MakeStaticAtBounds(mlir::MlirOp input);
+
+// Bounds the dimensions of the static `input` that have a boundOp in `dims`.
+mlir::MlirOp BoundFromDimensions(mlir::MlirOp input,
+                                 const mlir::stablehlo::Dimensions& dims);
+
+// Zeroes the elements of the static `input` past the runtime sizes in
+// `runtime_sizes`, skipping dimensions without a runtime size and
+// `unzeroed_dim`.
+mlir::MlirOp ZeroPastRuntimeSizes(
+    mlir::MlirOp input,
+    const std::vector<std::optional<mlir::MlirOp>>& runtime_sizes,
+    std::optional<int64_t> unzeroed_dim = std::nullopt);
 
 // Builds a stablehlo.convolution that also supports bounded dynamic dimensions.
 // Takes the same arguments as mlir::stablehlo::Convolution, plus optional

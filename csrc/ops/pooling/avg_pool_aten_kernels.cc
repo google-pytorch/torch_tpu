@@ -16,6 +16,7 @@
 
 #include "csrc/ops/pooling/avg_pool_aten_kernels.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -54,6 +55,7 @@
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
+#include "mlir/Support/DebugStringHelper.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -292,6 +294,59 @@ absl::StatusOr<mlir::MlirOp> BuildAvgPoolShlo(
   return CastIfNeeded(result, orig_dtype);
 }
 
+// Pads with zeros or slices the bounded non-spatial (batch and channel)
+// dimensions of the static `grad_output` to the static sizes of `input`. In
+// these dimensions, the two operands can have different upper bounds, or only
+// one of them can be bounded. Their runtime sizes are equal, and the elements
+// of `grad_output` past its runtime sizes are zero. Dimensions that are static
+// in both operands are left unchanged.
+mlir::MlirOp MatchNonSpatialSizes(mlir::MlirOp grad_output,
+                                  const StaticAtBounds& input,
+                                  const StaticAtBounds& static_grad_output,
+                                  int64_t spatial_dim_count) {
+  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input.op);
+  const mlir::RankedTensorType grad_type = GetTensorTypeOrDie(grad_output);
+  const int64_t rank = grad_type.getRank();
+  if (rank != input_type.getRank() || rank < spatial_dim_count) {
+    return grad_output;
+  }
+  Dimensions pad_high(rank, 0);
+  Dimensions limit_indices(grad_type.getShape().begin(),
+                           grad_type.getShape().end());
+  bool needs_pad = false;
+  bool needs_slice = false;
+  for (int64_t dim = 0; dim < rank - spatial_dim_count; ++dim) {
+    if (!input.runtime_sizes[dim].has_value() &&
+        !static_grad_output.runtime_sizes[dim].has_value()) {
+      continue;
+    }
+    const int64_t grad_size = grad_type.getDimSize(dim);
+    const int64_t input_size = input_type.getDimSize(dim);
+    if (grad_size < input_size) {
+      pad_high[dim] = input_size - grad_size;
+      needs_pad = true;
+    } else if (grad_size > input_size) {
+      needs_slice = true;
+    }
+    // A padded dimension already has the input size, so the slice keeps it.
+    limit_indices[dim] = input_size;
+  }
+  if (needs_pad) {
+    mlir::MlirOp zero = MakeScalarConstant(grad_output.getBuilder(), 0,
+                                           grad_type.getElementType());
+    grad_output = mlir::stablehlo::Pad(grad_output, zero,
+                                       /*low=*/Dimensions(rank, 0), pad_high,
+                                       /*interior=*/Dimensions(rank, 0));
+  }
+  if (needs_slice) {
+    grad_output = mlir::stablehlo::Slice(grad_output,
+                                         /*start_indices=*/Dimensions(rank, 0),
+                                         limit_indices,
+                                         /*strides=*/Dimensions(rank, 1));
+  }
+  return grad_output;
+}
+
 // Mathematically, average pooling is a linear transformation that can be
 // decomposed into two steps:
 // * A Convolution with a kernel consisting entirely of 1s.
@@ -390,6 +445,44 @@ absl::StatusOr<mlir::MlirOp> BuildAvgPoolBackwardShlo(
   TT_ASSIGN_OR_RETURN(input, CastIfNeeded(input, compute_dtype));
   auto& builder = grad_output.getBuilder();
 
+  // 0. Bounded dynamic dimensions come from dynamic shapes. Like
+  //    ConvolutionLike, run the backward on operands made static at their upper
+  //    bounds, and bound the result to the runtime sizes of the input. The
+  //    elements of grad_output past its runtime sizes are undefined, so zero
+  //    them. The divisor of a window near the end of a bounded spatial
+  //    dimension depends on its runtime size unless the divisor is constant.
+  //    Invalid ranks are rejected by CreateBatchInput below.
+  const mlir::stablehlo::Dimensions input_dims = GetDimensions(input);
+  const StaticAtBounds static_input = MakeStaticAtBounds(input);
+  const StaticAtBounds static_grad_output = MakeStaticAtBounds(grad_output);
+  auto has_bounded_spatial_dim =
+      [spatial_dim_count](const StaticAtBounds& operand) {
+        const auto& sizes = operand.runtime_sizes;
+        return static_cast<int64_t>(sizes.size()) >= spatial_dim_count &&
+               std::any_of(sizes.end() - spatial_dim_count, sizes.end(),
+                           [](const std::optional<mlir::MlirOp>& size) {
+                             return size.has_value();
+                           });
+      };
+  TT_RET_CHECK((!has_bounded_spatial_dim(static_input) &&
+                !has_bounded_spatial_dim(static_grad_output)) ||
+                   divisor_override.has_value() ||
+                   (count_include_pad && !ceil_mode),
+               error::kPythonNotImplementedError)
+      << "expected static spatial dimensions of the input and grad_output or "
+         "a constant divisor (divisor_override, or count_include_pad=True "
+         "with ceil_mode=False), got input type "
+      << mlir::debugString(GetTensorTypeOrDie(input))
+      << " and grad_output type "
+      << mlir::debugString(GetTensorTypeOrDie(grad_output))
+      << " with count_include_pad=" << (count_include_pad ? "True" : "False")
+      << " and ceil_mode=" << (ceil_mode ? "True" : "False");
+  input = static_input.op;
+  grad_output = MatchNonSpatialSizes(
+      ZeroPastRuntimeSizes(static_grad_output.op,
+                           static_grad_output.runtime_sizes),
+      static_input, static_grad_output, spatial_dim_count);
+
   // 1. Create batch inputs for both input and grad_output
   TT_ASSIGN_OR_RETURN(auto batch_input_info,
                       CreateBatchInput(input, spatial_dim_count));
@@ -484,8 +577,10 @@ absl::StatusOr<mlir::MlirOp> BuildAvgPoolBackwardShlo(
       SliceBackwardResult(full_conv_result, init_value, input_type,
                           ceil_padding_pairs, num_dims, spatial_dim_count);
 
-  auto result = RemoveTrivialBatch(
-      sliced_grad, batch_input_info.original_dim_size, spatial_dim_count);
+  auto result = BoundFromDimensions(
+      RemoveTrivialBatch(sliced_grad, batch_input_info.original_dim_size,
+                         spatial_dim_count),
+      input_dims);
   return CastIfNeeded(result, orig_dtype);
 }
 

@@ -20035,6 +20035,33 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(test_fn)
 
+  @parameterized.parameters(
+      ("avg_pool2d", (2, 3, 4, 16)),
+      ("avg_pool3d", (2, 2, 3, 4, 10)),
+  )
+  def test_avg_pool_backward_compiled_dynamic(self, op_name, input_shape):
+    """Tests a compiled forward and backward with a dynamic last dimension."""
+    pool_fn = getattr(torch.nn.functional, op_name)
+
+    def pool(x):
+      return pool_fn(x, kernel_size=3, stride=2, padding=1)
+
+    compiled_pool = torch.compile(pool, backend="tpu", fullgraph=True)
+    torch.manual_seed(42)
+    for length in (input_shape[-1], input_shape[-1] + 7):
+      x_cpu = torch.randn(*input_shape[:-1], length, requires_grad=True)
+      x_tpu = x_cpu.detach().to("tpu").requires_grad_(True)
+      torch._dynamo.mark_dynamic(x_tpu, x_tpu.dim() - 1)
+
+      out_cpu = pool(x_cpu)
+      out_tpu = compiled_pool(x_tpu)
+      utils.assert_close(actual=out_tpu.cpu(), expected=out_cpu)
+
+      grad_out = torch.randn_like(out_cpu)
+      out_cpu.backward(grad_out)
+      out_tpu.backward(grad_out.to("tpu"))
+      utils.assert_close(actual=x_tpu.grad.cpu(), expected=x_cpu.grad)
+
   def test_avg_pool2d_ceil_mode_count_include_pad(self):
     """Tests avg_pool2d with ceil_mode=True and count_include_pad=True.
 
