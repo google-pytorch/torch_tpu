@@ -56,20 +56,6 @@ llvm::SmallVector<mlir::Value> ZeroIndices(mlir::ImplicitLocOpBuilder& b,
   return llvm::SmallVector<mlir::Value>(rank, zero);
 }
 
-bool HasMemorySpace(const Ref& r, tpu::MemorySpace expected_space) {
-  auto space = llvm::dyn_cast_or_null<tpu::MemorySpaceAttr>(
-      internal::MemRefTypeOf(r).getMemorySpace());
-  return space && space.getValue() == expected_space;
-}
-
-bool IsSmemRef(const Ref& r) {
-  return HasMemorySpace(r, tpu::MemorySpace::kSmem);
-}
-
-bool IsVmemRef(const Ref& r) {
-  return HasMemorySpace(r, tpu::MemorySpace::kVmem);
-}
-
 int64_t ResolveSliceDimSize(const internal::DimDesc& spec, int64_t source_dim) {
   if (spec.kind == internal::DimDesc::Kind::kAll) {
     return source_dim;
@@ -146,17 +132,9 @@ mlir::Value EmitMemRefSlice(mlir::ImplicitLocOpBuilder& b, mlir::Value source,
 
 }  // namespace
 
-Ref::Ref(const void* impl, DType dtype) : ValueBase(impl, dtype) {
-  ABSL_CHECK(  // CRASH_OK
-      llvm::isa<mlir::MemRefType>(internal::unwrap(*this).getType()))
-      << "Ref must be a memref value";
-}
-
-Tile Load(Ref src) {
+Tile Load(VmemRef src) {
   ABSL_CHECK(src.HasStaticShape())  // CRASH_OK
       << "Load() requires a Ref with a static shape";
-  ABSL_CHECK(IsVmemRef(src))  // CRASH_OK
-      << "Load() requires a VMEM ref (use AsyncCopy for HBM)";
   mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
   return internal::wrap<Tile>(
       vector::LoadOp::create(b, internal::ToMlirVectorType(src.shape()),
@@ -164,22 +142,18 @@ Tile Load(Ref src) {
       src.dtype());
 }
 
-Scalar LoadScalar(Ref src) {
+Scalar Load(SmemRef src) {
   ABSL_CHECK_EQ(src.rank(), 0)  // CRASH_OK
-      << "LoadScalar() requires a 0-D ref";
-  ABSL_CHECK(IsSmemRef(src))  // CRASH_OK
-      << "LoadScalar() requires an SMEM ref";
+      << "Load() of a Scalar requires a 0-D ref";
   return internal::wrap<Scalar>(
       memref::LoadOp::create(internal::CurrentBuilder(), internal::unwrap(src),
                              mlir::ValueRange{}),
       src.dtype());
 }
 
-void Store(Ref dst, Tile value, const StoreOptions& options) {
+void Store(VmemRef dst, Tile value, const StoreOptions& options) {
   ABSL_CHECK(dst.HasStaticShape())  // CRASH_OK
       << "Store() of a Tile requires a Ref with a static shape";
-  ABSL_CHECK(IsVmemRef(dst))  // CRASH_OK
-      << "Store() of a Tile requires a VMEM ref (use AsyncCopy for HBM)";
   Tile converted = value.AsType(dst.dtype());
   Tile shaped = converted.ToShape(dst.dims());
   mlir::Value mask_value;
@@ -196,23 +170,60 @@ void Store(Ref dst, Tile value, const StoreOptions& options) {
                              /*add=*/false);
 }
 
-void Store(Ref dst, Scalar value) {
+void Store(SmemRef dst, Scalar value) {
   ABSL_CHECK_EQ(dst.rank(), 0)  // CRASH_OK
       << "Store() of a Scalar requires a 0-D ref";
-  ABSL_CHECK(IsSmemRef(dst))  // CRASH_OK
-      << "Store() of a Scalar requires an SMEM ref";
   memref::StoreOp::create(internal::CurrentBuilder(),
                           internal::unwrap(value.AsType(dst.dtype())),
                           internal::unwrap(dst), mlir::ValueRange{});
 }
 
-llvm::ArrayRef<int64_t> Ref::dims() const {
-  return internal::MemRefTypeOf(*this).getShape();
+Tile Load(Ref src) {
+  ABSL_CHECK(src.memory_space() == MemorySpace::kVmem)  // CRASH_OK
+      << "Load() requires a VMEM ref (use AsyncCopy for HBM)";
+  return Load(src.As<VmemRef>());
 }
 
-MemorySpace Ref::memory_space() const {
+Scalar LoadScalar(Ref src) {
+  ABSL_CHECK(src.memory_space() == MemorySpace::kSmem)  // CRASH_OK
+      << "LoadScalar() requires an SMEM ref";
+  return Load(src.As<SmemRef>());
+}
+
+void Store(Ref dst, Tile value, const StoreOptions& options) {
+  ABSL_CHECK(dst.memory_space() == MemorySpace::kVmem)  // CRASH_OK
+      << "Store() of a Tile requires a VMEM ref (use AsyncCopy for HBM)";
+  Store(dst.As<VmemRef>(), value, options);
+}
+
+void Store(Ref dst, Scalar value) {
+  ABSL_CHECK(dst.memory_space() == MemorySpace::kSmem)  // CRASH_OK
+      << "Store() of a Scalar requires an SMEM ref";
+  Store(dst.As<SmemRef>(), value);
+}
+
+namespace internal {
+
+RefBase::RefBase(const void* impl, DType dtype) : ValueBase(impl, dtype) {
+  ABSL_CHECK(  // CRASH_OK
+      llvm::isa<mlir::MemRefType>(unwrap(*this).getType()))
+      << "Ref must be a memref value";
+}
+
+RefBase::RefBase(const void* impl, DType dtype, MemorySpace expected_space)
+    : RefBase(impl, dtype) {
+  ABSL_CHECK(memory_space() == expected_space)  // CRASH_OK
+      << "Ref is in " << memory_space() << " but its type requires "
+      << expected_space;
+}
+
+llvm::ArrayRef<int64_t> RefBase::dims() const {
+  return MemRefTypeOf(*this).getShape();
+}
+
+MemorySpace RefBase::memory_space() const {
   auto space = llvm::dyn_cast_or_null<tpu::MemorySpaceAttr>(
-      internal::MemRefTypeOf(*this).getMemorySpace());
+      MemRefTypeOf(*this).getMemorySpace());
   ABSL_CHECK(space != nullptr)  // CRASH_OK
       << "Ref is missing a TPU memory space attribute";
   switch (space.getValue()) {
@@ -229,39 +240,37 @@ MemorySpace Ref::memory_space() const {
   }
 }
 
-int64_t Ref::rank() const { return internal::MemRefTypeOf(*this).getRank(); }
+int64_t RefBase::rank() const { return MemRefTypeOf(*this).getRank(); }
 
-bool Ref::HasStaticShape() const {
-  return internal::MemRefTypeOf(*this).hasStaticShape();
+bool RefBase::HasStaticShape() const {
+  return MemRefTypeOf(*this).hasStaticShape();
 }
 
-bool Ref::IsDynamicDim(int64_t axis) const {
+bool RefBase::IsDynamicDim(int64_t axis) const {
   ABSL_CHECK_GE(axis, 0) << "Dimension axis must be non-negative";  // CRASH_OK
   ABSL_CHECK_LT(axis, rank())                                       // CRASH_OK
       << "Dimension axis " << axis << " out of bounds for rank " << rank();
-  return internal::MemRefTypeOf(*this).isDynamicDim(axis);
+  return MemRefTypeOf(*this).isDynamicDim(axis);
 }
 
-Scalar Ref::Dim(int64_t axis) const {
+Scalar RefBase::Dim(int64_t axis) const {
   if (!IsDynamicDim(axis)) {
     return I32(dims()[axis]);
   }
-  mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
-  mlir::Value dim_idx = memref::DimOp::create(b, internal::unwrap(*this), axis);
-  return internal::wrap<Scalar>(
-      arith::IndexCastOp::create(b, b.getI32Type(), dim_idx), i32);
+  mlir::ImplicitLocOpBuilder& b = CurrentBuilder();
+  mlir::Value dim_idx = memref::DimOp::create(b, unwrap(*this), axis);
+  return wrap<Scalar>(arith::IndexCastOp::create(b, b.getI32Type(), dim_idx),
+                      i32);
 }
 
-Ref Ref::At(llvm::ArrayRef<Indexer> indexers) const {
-  llvm::SmallVector<internal::DimDesc, 4> dims;
+const void* RefBase::AtImpl(llvm::ArrayRef<Indexer> indexers) const {
+  llvm::SmallVector<DimDesc, 4> dims;
   for (const Indexer& indexer : indexers) {
-    dims.push_back(std::visit(
-        [](const auto& v) { return internal::DimDesc::From(v); }, indexer));
+    dims.push_back(
+        std::visit([](const auto& v) { return DimDesc::From(v); }, indexer));
   }
-  return internal::SliceRefImpl(*this, dims);
+  return SliceMemRefImpl(impl(), dims);
 }
-
-namespace internal {
 
 const void* SliceMemRefImpl(const void* base_impl,
                             llvm::ArrayRef<DimDesc> dims) {
@@ -299,11 +308,6 @@ const void* SliceMemRefImpl(const void* base_impl,
   }
 
   return current.getAsOpaquePointer();
-}
-
-Ref SliceRefImpl(Ref base, llvm::ArrayRef<DimDesc> dims) {
-  const void* sliced = SliceMemRefImpl(unwrap(base).getAsOpaquePointer(), dims);
-  return wrap<Ref>(mlir::Value::getFromOpaquePointer(sliced), base.dtype());
 }
 
 }  // namespace internal

@@ -32,6 +32,21 @@ enum class MemorySpace {
   kHbm,
 };
 
+template <typename Sink>
+void AbslStringify(Sink& sink, MemorySpace space) {
+  switch (space) {
+    case MemorySpace::kVmem:
+      sink.Append("VMEM");
+      return;
+    case MemorySpace::kSmem:
+      sink.Append("SMEM");
+      return;
+    case MemorySpace::kHbm:
+      sink.Append("HBM");
+      return;
+  }
+}
+
 // Iteration order guarantees for a grid dimension (Pallas
 // `dimension_semantics`).
 enum class DimensionSemantics {
@@ -43,40 +58,45 @@ enum class DimensionSemantics {
   kArbitrary,
 };
 
-enum class BlockRole { kNone, kIn, kOut };
+enum class BlockRole { kIn, kOut };
 
-// Block specification for a kernel operand, optionally tagged with a role
-// (`kIn` / `kOut`) for `CreateKernel` overload resolution.
-template <BlockRole Role = BlockRole::kNone>
+// Block specification for a kernel operand, tagged with a role (`kIn` / `kOut`)
+// for `CreateKernel` overload resolution and with the memory space of the `Ref`
+// it produces (`VmemRef` / `SmemRef` / `HbmRef`).
+template <BlockRole Role, MemorySpace kSpace = MemorySpace::kVmem>
 struct BasicBlockSpec {
   Shape shape;
   IndexMap map;
-  MemorySpace space = MemorySpace::kVmem;
 
-  static BasicBlockSpec Vmem(Shape shape, IndexMap map = IndexMap()) {
-    return {std::move(shape), std::move(map), MemorySpace::kVmem};
+  static BasicBlockSpec<Role, MemorySpace::kVmem> Vmem(
+      Shape shape, IndexMap map = IndexMap()) {
+    return {std::move(shape), std::move(map)};
   }
-  static BasicBlockSpec Smem(Shape shape, IndexMap map = IndexMap()) {
-    return {std::move(shape), std::move(map), MemorySpace::kSmem};
+  static BasicBlockSpec<Role, MemorySpace::kSmem> Smem(
+      Shape shape, IndexMap map = IndexMap()) {
+    return {std::move(shape), std::move(map)};
   }
-  static BasicBlockSpec Hbm(Shape shape) {
-    return {std::move(shape), IndexMap(), MemorySpace::kHbm};
+  static BasicBlockSpec<Role, MemorySpace::kHbm> Hbm(Shape shape) {
+    return {std::move(shape), IndexMap()};
   }
 };
 
-using BlockSpec = BasicBlockSpec<>;
+// VMEM by default; use `InSpec::Smem(...)` / `InSpec::Hbm(...)` for other
+// memory spaces.
 using InSpec = BasicBlockSpec<BlockRole::kIn>;
 using OutSpec = BasicBlockSpec<BlockRole::kOut>;
 
+// Scratch buffer specification, tagged with the memory space of the `Ref` it
+// produces.
+template <MemorySpace kSpace = MemorySpace::kVmem>
 struct ScratchSpec {
   Shape shape;
-  MemorySpace space = MemorySpace::kVmem;
 
-  static ScratchSpec Vmem(Shape shape) {
-    return {std::move(shape), MemorySpace::kVmem};
+  static ScratchSpec<MemorySpace::kVmem> Vmem(Shape shape) {
+    return {std::move(shape)};
   }
-  static ScratchSpec Smem(Shape shape) {
-    return {std::move(shape), MemorySpace::kSmem};
+  static ScratchSpec<MemorySpace::kSmem> Smem(Shape shape) {
+    return {std::move(shape)};
   }
 };
 
@@ -91,12 +111,23 @@ struct GridSpec {
   llvm::SmallVector<DimensionSemantics, 4> dimension_semantics;
 };
 
+// The untyped form of a kernel's operands, as passed to `BuildKernel`.
 struct KernelSpec {
+  struct Block {
+    Shape shape;
+    IndexMap map;
+    MemorySpace space = MemorySpace::kVmem;
+  };
+  struct ScratchBuffer {
+    Shape shape;
+    MemorySpace space = MemorySpace::kVmem;
+  };
+
   GridSpec grid;
   llvm::SmallVector<ScalarPrefetchSpec, 2> scalar_prefetch;
-  llvm::SmallVector<BlockSpec, 8> in_specs;
-  llvm::SmallVector<BlockSpec, 4> out_specs;
-  llvm::SmallVector<ScratchSpec, 4> scratch;
+  llvm::SmallVector<Block, 8> in_specs;
+  llvm::SmallVector<Block, 4> out_specs;
+  llvm::SmallVector<ScratchBuffer, 4> scratch;
 };
 
 }  // namespace torch_tpu::kiln

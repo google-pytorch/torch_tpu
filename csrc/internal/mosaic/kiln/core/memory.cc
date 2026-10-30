@@ -25,7 +25,6 @@
 #include "csrc/internal/mosaic/kiln/core/ref.h"
 #include "csrc/internal/mosaic/kiln/core/semaphore.h"
 #include "csrc/internal/mosaic/kiln/core/shape.h"
-#include "csrc/internal/mosaic/kiln/core/specs.h"
 #include "csrc/internal/mosaic/op_builders.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -41,57 +40,56 @@ namespace {
 
 namespace tpu = mlir::tpu;
 
-mlir::Value AllocaSemaphoreValue(llvm::ArrayRef<int64_t> shape,
-                                 mlir::Type elem_type,
-                                 std::string_view fn_name) {
-  for (int64_t dim : shape) {
+void CheckStaticPositiveDims(llvm::ArrayRef<int64_t> dims,
+                             std::string_view fn_name) {
+  for (int64_t dim : dims) {
     ABSL_CHECK_GT(dim, 0)  // CRASH_OK
         << fn_name << " requires static positive dimensions";
   }
+}
+
+mlir::Value AllocaSemaphoreValue(llvm::ArrayRef<int64_t> shape,
+                                 mlir::Type elem_type,
+                                 std::string_view fn_name) {
+  CheckStaticPositiveDims(shape, fn_name);
   mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
   mlir::MemRefType type =
       GetSemaphoreMemRefType(b.getContext(), shape, elem_type);
   return tpu::AllocaSemaphoreOp::create(b, type);
 }
 
-}  // namespace
-
-Ref Alloca(const ScratchSpec& spec) {
+// Emits a `memref.alloca` of `shape`, with the memref type built by
+// `get_memref_type` (e.g. `GetVmemMemRefType`) in the memory space of `RefT`.
+template <typename RefT>
+RefT EmitAlloca(const Shape& shape, std::string_view fn_name,
+                mlir::MemRefType (*get_memref_type)(mlir::MLIRContext*,
+                                                    llvm::ArrayRef<int64_t>,
+                                                    mlir::Type)) {
+  CheckStaticPositiveDims(shape.dims(), fn_name);
   mlir::ImplicitLocOpBuilder& b = internal::CurrentBuilder();
   mlir::MLIRContext* ctx = b.getContext();
-  ABSL_CHECK(spec.space != MemorySpace::kHbm)  // CRASH_OK
-      << "Cannot allocate HBM in a kernel";
-  llvm::ArrayRef<int64_t> dims = spec.shape.dims();
-  const DType dtype = spec.shape.dtype();
-  for (int64_t dim : dims) {
-    ABSL_CHECK_GT(dim, 0)  // CRASH_OK
-        << "Alloca() requires static positive dimensions";
-  }
-  switch (spec.space) {
-    case MemorySpace::kVmem: {
-      ABSL_CHECK(!dims.empty())  // CRASH_OK
-          << "VMEM Alloca() requires at least a 1D shape";
-      ABSL_CHECK(!dtype.IsBool() &&  // CRASH_OK
-                 dtype.GetIntOrFloatBitWidth() <= 32u)
-          << "VMEM Alloca() does not support bool (i1) or 64-bit element types";
-      mlir::Type elem_type = internal::ToMlirType(dtype, ctx);
-      mlir::MemRefType type = GetVmemMemRefType(ctx, dims, elem_type);
-      return internal::wrap<Ref>(mlir::memref::AllocaOp::create(b, type),
-                                 dtype);
-    }
-    case MemorySpace::kSmem: {
-      ABSL_CHECK_EQ(dtype.GetIntOrFloatBitWidth(), 32u)  // CRASH_OK
-          << "SMEM Alloca() requires a 32-bit element type";
-      mlir::Type elem_type = internal::ToMlirType(dtype, ctx);
-      mlir::MemRefType type = GetSmemMemRefType(ctx, dims, elem_type);
-      return internal::wrap<Ref>(mlir::memref::AllocaOp::create(b, type),
-                                 dtype);
-    }
-    default:
-      ABSL_CHECK(false)  // CRASH_OK
-          << "Unsupported memory space for Alloca()";
-      return internal::wrap<Ref>(mlir::Value(), dtype);
-  }
+  const mlir::MemRefType type = get_memref_type(
+      ctx, shape.dims(), internal::ToMlirType(shape.dtype(), ctx));
+  return internal::wrap<RefT>(mlir::memref::AllocaOp::create(b, type),
+                              shape.dtype());
+}
+
+}  // namespace
+
+VmemRef AllocaVmem(const Shape& shape) {
+  const DType dtype = shape.dtype();
+  ABSL_CHECK(!shape.dims().empty())  // CRASH_OK
+      << "AllocaVmem() requires at least a 1D shape";
+  ABSL_CHECK(!dtype.IsBool() &&  // CRASH_OK
+             dtype.GetIntOrFloatBitWidth() <= 32u)
+      << "AllocaVmem() does not support bool (i1) or 64-bit element types";
+  return EmitAlloca<VmemRef>(shape, "AllocaVmem()", GetVmemMemRefType);
+}
+
+SmemRef AllocaSmem(const Shape& shape) {
+  ABSL_CHECK_EQ(shape.dtype().GetIntOrFloatBitWidth(), 32u)  // CRASH_OK
+      << "AllocaSmem() requires a 32-bit element type";
+  return EmitAlloca<SmemRef>(shape, "AllocaSmem()", GetSmemMemRefType);
 }
 
 Semaphore AllocaDmaSemaphore() {
