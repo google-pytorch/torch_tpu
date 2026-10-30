@@ -131,19 +131,33 @@ TEST(LayoutUtilsTest, ResolveTpuLayout_FP4TensorTransposed_Success) {
   EXPECT_EQ(layout.storage_offset, 0);
   EXPECT_EQ(layout.element_type, mlir::ElementType::F4E2M1FN);
 
-  auto unit_trailing =
+  auto unit_leading_transposed_strided =
       at::empty({1, 4}, at::TensorOptions().dtype(at::kFloat4_e2m1fn_x2)).t();
-  unit_trailing.as_strided_({4, 1}, {1, 1}, 0);
+  TT_ASSERT_OK_AND_ASSIGN(auto unit_leading_strided_layout,
+                          ResolveTpuLayout(unit_leading_transposed_strided));
+  EXPECT_EQ(unit_leading_strided_layout.sizes, Dimensions({8, 1}));
+  EXPECT_EQ(unit_leading_strided_layout.strides, Strides({1, 8}));
+
+  auto unit_trailing =
+      at::empty({4, 1}, at::TensorOptions().dtype(at::kFloat4_e2m1fn_x2));
   TT_ASSERT_OK_AND_ASSIGN(auto unit_layout, ResolveTpuLayout(unit_trailing));
   EXPECT_EQ(unit_layout.sizes, Dimensions({4, 2}));
   EXPECT_EQ(unit_layout.strides, Strides({2, 1}));
 
-  auto unit_leading_transposed =
-      at::empty({4, 1}, at::TensorOptions().dtype(at::kFloat4_e2m1fn_x2)).t();
+  auto unit_leading_transposed = unit_trailing.t();
   TT_ASSERT_OK_AND_ASSIGN(auto unit_leading_layout,
                           ResolveTpuLayout(unit_leading_transposed));
   EXPECT_EQ(unit_leading_layout.sizes, Dimensions({2, 4}));
   EXPECT_EQ(unit_leading_layout.strides, Strides({1, 2}));
+
+  auto unit_slice_of_transposed =
+      at::empty({3, 4}, at::TensorOptions().dtype(at::kFloat4_e2m1fn_x2))
+          .t()
+          .slice(/*dim=*/0, /*start=*/0, /*end=*/1);
+  TT_ASSERT_OK_AND_ASSIGN(auto unit_slice_layout,
+                          ResolveTpuLayout(unit_slice_of_transposed));
+  EXPECT_EQ(unit_slice_layout.sizes, Dimensions({2, 3}));
+  EXPECT_EQ(unit_slice_layout.strides, Strides({1, 8}));
 
   auto both_unit =
       at::empty({1, 1}, at::TensorOptions().dtype(at::kFloat4_e2m1fn_x2)).t();
@@ -168,10 +182,9 @@ TEST(LayoutUtilsTest, ResolveTpuLayout_FP4TensorNonContiguous_ReturnsError) {
   auto layout_or = ResolveTpuLayout(tensor);
   EXPECT_EQ(layout_or.status().code(), error::kInvalidArgument);
 
-  auto invalid_unit_stride =
-      at::empty({10, 8}, at::TensorOptions().dtype(at::kFloat4_e2m1fn_x2));
-  invalid_unit_stride.as_strided_({1, 4}, {1, 2}, 0);
-  EXPECT_EQ(ResolveTpuLayout(invalid_unit_stride).status().code(),
+  auto transposed_non_contiguous =
+      base_tensor.t().slice(/*dim=*/0, /*start=*/0, /*end=*/8, /*step=*/2);
+  EXPECT_EQ(ResolveTpuLayout(transposed_non_contiguous).status().code(),
             error::kInvalidArgument);
 }
 

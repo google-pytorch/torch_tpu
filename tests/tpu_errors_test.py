@@ -598,6 +598,23 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       x[:, ::2].cpu()
 
+  @et.why_tpu_only(
+      "CPU does not support float4_e2m1fn_x2 in scaled_mm; TPU packs two FP4"
+      " values per byte along the last output dimension."
+  )
+  def test_scaled_mm_fp4_odd_output_last_dim_raises(self):
+    """Tests that scaled_mm with float4_e2m1fn_x2 out_dtype and odd N fails."""
+    device = et.device()
+    a = torch.zeros((16, 16), dtype=torch.float4_e2m1fn_x2, device=device)
+    b = torch.zeros((3, 16), dtype=torch.float4_e2m1fn_x2, device=device).t()
+    scale_a = torch.ones((1,), dtype=torch.float32, device=device)
+    scale_b = torch.ones((1,), dtype=torch.float32, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scaled_mm(): expected last dimension of float4_e2m1fn_x2 output to be even, got 3""",
+    ):
+      torch._scaled_mm(a, b, scale_a, scale_b, out_dtype=torch.float4_e2m1fn_x2)
+
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_histc_bounds_unsupported_dtype(self):
     """Tests that torch.histc() fails when the bounds have an unsupported dtype."""

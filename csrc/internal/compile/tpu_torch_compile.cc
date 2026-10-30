@@ -43,6 +43,7 @@
 #include "absl/types/span.h"
 #include "c10/core/Device.h"
 #include "c10/core/DeviceGuard.h"
+#include "c10/core/ScalarType.h"
 #include "c10/util/Optional.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
@@ -54,6 +55,7 @@
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/layout_utils.h"
 #include "csrc/common/pybind_error_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/to_string.h"
@@ -1304,6 +1306,19 @@ at::Tensor ForceStrides(const at::Tensor& tensor,
     return tensor;
   }
 
+  if (tensor.scalar_type() == at::kFloat4_e2m1fn_x2) {
+    const int64_t target_packed_dim =
+        FindFp4PackedDim(tensor.sizes(), target_strides_ref);
+    if (target_packed_dim >= 0 && target_packed_dim != tensor.dim() - 1) {
+      Dimensions transposed_strides = target_strides;
+      std::swap(transposed_strides[target_packed_dim],
+                transposed_strides.back());
+      return ForceStrides(tensor.transpose(target_packed_dim, tensor.dim() - 1),
+                          transposed_strides, target_storage_offset)
+          .transpose(target_packed_dim, tensor.dim() - 1);
+    }
+  }
+
   // Fast path: if the tensor is already contiguous with zero storage offset and
   // the target layout only differs in strides along size-1 dimensions (e.g.
   // shape (1, 32, 512) with stride (512, 512, 1)), every element maps to the
@@ -1455,6 +1470,7 @@ class FxOutputReconstructor {
     Dimensions shape;
     Dimensions stride;
     int64_t storage_offset;
+    int64_t fp4_packed_dim = -1;
     bool is_dynamic = false;
     bool is_standard_contiguous = false;
     bool is_physically_contiguous = false;
@@ -1589,6 +1605,16 @@ class FxOutputReconstructor {
           at::IntArrayRef(layout.shape.data(), layout.shape.size()),
           at::IntArrayRef(layout.stride.data(), layout.stride.size()),
           layout.storage_offset);
+      if (layout.dtype == at::kFloat4_e2m1fn_x2) {
+        layout.fp4_packed_dim = FindFp4PackedDim(
+            at::IntArrayRef(layout.shape.data(), layout.shape.size()),
+            at::IntArrayRef(layout.stride.data(), layout.stride.size()));
+        if (layout.fp4_packed_dim !=
+            static_cast<int64_t>(layout.shape.size()) - 1) {
+          layout.is_standard_contiguous = false;
+          layout.is_physically_contiguous = false;
+        }
+      }
       layouts_.push_back(std::move(layout));
       ++idx;
     }
@@ -1732,6 +1758,11 @@ class FxOutputReconstructor {
       return deduped_outputs[idx];
     }();
     const ExpectedTensorLayout& layout = layouts_[idx];
+    if (!layout.is_dynamic && layout.fp4_packed_dim >= 0 &&
+        layout.fp4_packed_dim != tensor.dim() - 1 &&
+        FindFp4PackedDim(tensor) == tensor.dim() - 1) {
+      tensor = tensor.transpose(layout.fp4_packed_dim, tensor.dim() - 1);
+    }
     if ((entry.needs_layout_check || !outputs_are_fresh_pjrt) &&
         !layout.is_dynamic && !layout.MatchesTensor(tensor)) {
       if (outputs_are_fresh_pjrt && entry.can_move &&

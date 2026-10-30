@@ -20,9 +20,11 @@
 #include <cstdint>
 #include <utility>
 
+#include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
+#include "c10/util/ArrayRef.h"  // IWYU pragma: keep for at::IntArrayRef
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
@@ -30,33 +32,34 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 
 namespace torch_tpu {
-namespace {
 
-int64_t FindFp4PackedDim(const at::Tensor& tensor) {
-  const int64_t rank = tensor.dim();
-  if (rank == 0) {
+int64_t FindFp4PackedDim(at::IntArrayRef sizes, at::IntArrayRef strides) {
+  const int64_t rank = sizes.size();
+  if (rank == 0 || strides.size() != sizes.size()) {
     return -1;
   }
-  if (tensor.stride(rank - 1) != 1) {
+  if (strides[rank - 1] != 1) {
     for (int64_t d = 0; d < rank - 1; ++d) {
-      if (tensor.stride(d) == 1 && tensor.size(d) > 1) {
+      if (strides[d] == 1) {
         return d;
       }
     }
     return -1;
   }
-  if (tensor.size(rank - 1) == 1) {
+  if (sizes[rank - 1] <= 1) {
     return rank - 1;
   }
   for (int64_t d = 0; d < rank - 1; ++d) {
-    if (tensor.size(d) == 1 && tensor.stride(d) == 1) {
+    if (sizes[d] == 1 && strides[d] == 1) {
       return d;
     }
   }
   return rank - 1;
 }
 
-}  // namespace
+int64_t FindFp4PackedDim(const at::Tensor& tensor) {
+  return FindFp4PackedDim(tensor.sizes(), tensor.strides());
+}
 
 absl::StatusOr<TpuLayout> ResolveTpuLayout(const at::Tensor& tensor) {
   const auto scalar_type = tensor.scalar_type();

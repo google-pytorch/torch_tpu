@@ -19,12 +19,20 @@
 
 #include <cstdint>
 
+#include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "absl/status/statusor.h"
+#include "c10/util/ArrayRef.h"  // IWYU pragma: keep for at::IntArrayRef
 #include "csrc/common/dimension_types.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 
 namespace torch_tpu {
+
+// Returns the index of the packed (stride-1) dimension for a
+// `float4_e2m1fn_x2` layout with the given `sizes` and `strides`, or -1 if no
+// valid contiguous packed dimension exists.
+int64_t FindFp4PackedDim(at::IntArrayRef sizes, at::IntArrayRef strides);
+int64_t FindFp4PackedDim(const at::Tensor& tensor);
 
 // Represents the layout metrics of a TPU tensor mapped from PyTorch.
 struct TpuLayout {
