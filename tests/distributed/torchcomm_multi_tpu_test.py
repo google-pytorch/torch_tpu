@@ -193,8 +193,5 @@ class TorchCommsMultiTpuTest(continuous_test_utils.TpuMultiProcContinuousTest):
     self._run_with_comm(_body)
 
 
-# Alias for backward compatibility
-TorchCommMultiTpuTest = TorchCommsMultiTpuTest
-
 if __name__ == "__main__":
   multiprocessing.handle_test_main(absltest.main)
